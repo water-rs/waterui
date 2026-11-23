@@ -73,15 +73,24 @@ fn stepper_updates(ui: UiBuilder) {
   dispatches — touch is what scrolls); `press_named_key_with` / `press_character_key_with`
   dispatch a full key stroke — press, then release — under explicit `Modifiers`, and
   `key_down` / `key_up` hold a key across calls.
+- **Perceptual visual diffing and blank-frame detection.** `Snapshot` and `RgbaImage`
+  provide pure-Rust blank-frame analysis (`analyze_blank` / `analyze_blank_frame`) and,
+  with the default `flip` feature, NVIDIA LDR-FLIP perceptual diffing
+  (`compare_flip`, `compare_flip_with`, `FlipThresholds`, `magma_heatmap`).
+- **Static HTML gallery reports** (feature `gallery`). `GalleryReport` and
+  `write_gallery_artifacts` emit `report.json` and a self-contained `index.html` gallery
+  for comparing reference, candidate, and FLIP heatmap captures. Downstream tooling such
+  as `water preview test` can depend on `waterui-testing` with
+  `default-features = false, features = ["gallery"]` without pulling `hydrolysis`,
+  `waterui`, or `wgpu`.
 - **Performance harness.** `ui().perf(view)` / `perf_with` measure steady-state offscreen
   frames (`PerfConfig`, `PerfReport`) with per-phase Hydrolysis timings and process
   resource samples.
 - **TypeScript views** (feature `ts`). A session mounts a view that reaches a `tsx!`
-  mount: `ui()` installs the runtime loaded from the bundle `WATERUI_TS_BUNDLE` names,
-  which `water test` builds and sets before it runs `cargo nextest`. An absolute path is
-  used as written; a relative one resolves against `CARGO_MANIFEST_DIR`. With the variable
-  unset, a test that mounts no TypeScript is unaffected and one that does fails at the
-  mount with a message naming the variable and `water test`.
+  mount: `ui()` installs the runtime loaded from the bundle `WATERUI_TS_BUNDLE` names.
+  An absolute path is used as written; a relative one resolves against `CARGO_MANIFEST_DIR`.
+  With the variable unset, a test that mounts no TypeScript is unaffected and one that does
+  fails at the mount naming `WATERUI_TS_BUNDLE`.
 
 Because the tree under test is the [Hydrolysis accessibility tree](https://github.com/water-rs/hydrolysis),
 every test doubles as an accessibility-correctness test: a component that cannot be

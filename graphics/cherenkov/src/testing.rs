@@ -5,6 +5,8 @@
 /// The committed layer op a [`SurfaceTree`](crate::SurfaceTree) applies, for
 /// tests that build a sampled tree without an engine.
 pub use cherenkov_record::LayerOp;
+#[cfg(target_arch = "wasm32")]
+use core::future::ready;
 use std::collections::HashSet;
 use std::sync::mpsc::Sender;
 
@@ -215,6 +217,8 @@ struct NullProducer {
     /// The submitted frame's marker: `Some` once one landed, so a later
     /// bind reports its declared alpha like the GPU backend's slot.
     current: Option<()>,
+    /// Latched source cadence vote from `FrameSink::set_source_rate`.
+    source_rate: Option<crate::FrameRate>,
     /// The bindings hold a [`GpuProducer`](crate::GpuProducer) clone
     /// like the GPU backend's `Binding` — a binding's unbind drops the
     /// clone on the render thread, so the last reference can die
@@ -223,6 +227,21 @@ struct NullProducer {
 }
 
 impl NullRenderer {
+    fn frame_redraw(&self) -> FrameRedraw {
+        let mut redraw = FrameRedraw::default();
+        for producer in self.producers.values() {
+            let Some(rate) = producer.source_rate else {
+                continue;
+            };
+            for &(surface, _) in producer.bindings.keys() {
+                if !self.hidden.contains(&surface) {
+                    redraw.vote(surface, rate);
+                }
+            }
+        }
+        redraw
+    }
+
     fn register_image(&mut self, id: ImageId, _image: &ImageUpload) -> Result<(), ResourceError> {
         if self.reject.contains(&NullReject::Image) {
             return Err(ResourceError::Image("injected rejection".into()));
@@ -541,7 +560,7 @@ impl Renderer for NullRenderer {
                 layers,
             }));
         }
-        Ok((FrameRedraw::default(), ()))
+        Ok((self.frame_redraw(), ()))
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -579,7 +598,7 @@ impl Renderer for NullRenderer {
                 layers,
             }));
         }
-        core::future::ready(Ok((FrameRedraw::default(), ())))
+        ready(Ok((self.frame_redraw(), ())))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -713,6 +732,7 @@ impl crate::GpuContent for Null {
                 NullProducer {
                     content: Some(()),
                     current: None,
+                    source_rate: None,
                     bindings: FxHashMap::default(),
                 },
             );
@@ -727,6 +747,7 @@ impl crate::GpuContent for Null {
                 NullProducer {
                     content: None,
                     current: None,
+                    source_rate: None,
                     bindings: FxHashMap::default(),
                 },
             );
@@ -769,6 +790,16 @@ impl crate::GpuContent for Null {
             let _ = r.events.send(Event::ProducerFrame(surface, layer));
         }
         bound
+    }
+
+    fn set_source_rate(
+        r: &mut NullRenderer,
+        id: crate::ProducerId,
+        rate: Option<crate::FrameRate>,
+    ) {
+        if let Some(producer) = r.producers.get_mut(&id) {
+            producer.source_rate = rate;
+        }
     }
 
     fn retire_gpu_producer(r: &mut NullRenderer, id: crate::ProducerId) {
@@ -1727,7 +1758,10 @@ fn next_schedules_the_frame_rate() {
                 // A running spring wants the fast class.
                 match $crate::__engine_wait!(render_at(&engine, t0 + TICK)) {
                     Next::At { rate, .. } => {
-                        assert!(*rate.start() <= 60 && *rate.end() >= 120, "rate {rate:?}");
+                        assert!(
+                            rate.minimum() >= 80.0 && rate.maximum() >= 120.0,
+                            "rate {rate:?}"
+                        );
                     }
                     next => panic!("expected At while the spring runs, got {next:?}"),
                 }
@@ -1748,7 +1782,7 @@ fn next_schedules_the_frame_rate() {
                 let next = $crate::__engine_wait!(render_at(&engine, t2));
                 match next {
                     Next::At { rate, .. } => {
-                        assert!(*rate.end() <= 60, "rate {rate:?}");
+                        assert!(rate.maximum() <= 60.0, "rate {rate:?}");
                     }
                     Next::Idle => {}
                 }
@@ -2362,15 +2396,29 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(
-        debug_assertions,
-        should_panic(expected = "refresh range must be positive and ordered")
-    )]
-    fn an_invalid_refresh_range_keeps_the_previous_one() {
-        let target = Offscreen::new((8, 8), OffscreenFormat::LinearF16);
-        let before = target.refresh.clone();
-        let target = target.rate(0..=30);
-        assert_eq!(target.refresh, before);
+    fn a_frame_sink_source_rate_votes_without_requesting_redraw() {
+        use crate::FrameRate;
+        let (engine, _rx) = engine();
+        let surface = engine
+            .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16), || {})
+            .expect("surface");
+        let layer = surface.layer();
+        let (producer, sink) = engine.frame_producer();
+        surface.update(|tx| {
+            tx[surface.root()].push(&layer);
+            tx[&layer].content(producer.at((16, 16)));
+        });
+        assert_eq!(engine.render(FrameTime::now()).expect("render"), Next::Idle);
+        assert_eq!(surface.rate_vote(), None);
+
+        sink.set_source_rate(Some(FrameRate::fixed(24.0)));
+        assert_eq!(engine.render(FrameTime::now()).expect("render"), Next::Idle);
+        assert_eq!(surface.next_frame(), Next::Idle);
+        assert_eq!(surface.rate_vote(), Some(FrameRate::fixed(24.0)));
+
+        sink.set_source_rate(None);
+        assert_eq!(engine.render(FrameTime::now()).expect("render"), Next::Idle);
+        assert_eq!(surface.rate_vote(), None);
     }
 
     #[test]
@@ -3723,6 +3771,8 @@ pub fn ownership(members: &[(f32, [f32; 2])], member: usize) -> f32 {
 
 /// Retained-lowering equivalence checks for first-party backends.
 pub mod incremental;
+
+pub mod allocations;
 
 /// A surface wake-up with no host behind it, for a harness that drives a
 /// renderer directly and renders on its own schedule.

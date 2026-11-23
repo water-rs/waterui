@@ -22,7 +22,7 @@ use nami::{Binding, Computed, Signal};
 use waterui_core::Environment;
 use waterui_core::animation::{Animation, ChangeAnimation};
 use waterui_core::id::Id;
-use waterui_core::interaction::InteractionState;
+use waterui_interaction::interaction::InteractionState;
 
 use crate::renderer::chrome::{LiveChrome, PartRuns, PartStep, varies_live};
 use crate::renderer::{HydrolysisRenderer, RenderContext};

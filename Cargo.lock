@@ -20,9 +20,9 @@ checksum = "366ffbaa4442f4684d91e2cd7c5ea7c4ed8add41959a31447066e279e432b618"
 
 [[package]]
 name = "accesskit"
-version = "0.25.1"
+version = "0.25.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ad442f58ee04714aaa0ba0a2768c1ea1935b29507bb22ddece8cbbc76db02932"
+checksum = "4e883d1d28c5fd5568c79ed2d2bd48d9f2fd3945c8974ed0f53690ceddb051be"
 dependencies = [
  "enumn",
  "serde",
@@ -45,9 +45,9 @@ dependencies = [
 
 [[package]]
 name = "accesskit_consumer"
-version = "0.39.1"
+version = "0.39.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8a45e2bb300bea6d5f33a82c3e051c3ddc6f41c209750f68a0acbe991a284344"
+checksum = "f3da8f27636015191b2264ee1df681503170a632cafd832fdc1edfdd4e3a2fd3"
 dependencies = [
  "accesskit",
  "hashbrown 0.17.1",
@@ -55,9 +55,9 @@ dependencies = [
 
 [[package]]
 name = "accesskit_ios"
-version = "0.2.1"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "28e539d64b27fd4c14de8f78ada8f7c944c092f52f7e49fb63316507a57f6937"
+checksum = "a5280724673bbfa8b30a838c013500b719392989be3b97c5a9964062c252c232"
 dependencies = [
  "accesskit",
  "accesskit_consumer",
@@ -96,7 +96,7 @@ dependencies = [
  "futures-lite",
  "futures-util",
  "serde",
- "zbus",
+ "zbus 5.19.0",
 ]
 
 [[package]]
@@ -157,9 +157,9 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "aes"
-version = "0.9.3"
+version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "35f0f96ce78e38c3dc6d8948aa8163d06385be74000f3c7a95bf1eef35d3ea32"
+checksum = "fc0fc36d7440d015b45468ba08a21e80e056ebbd014c611c6298bb7503e04bd1"
 dependencies = [
  "cipher",
  "cpubits",
@@ -442,6 +442,14 @@ name = "anyhow"
 version = "1.0.104"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
+
+[[package]]
+name = "apple-availability"
+version = "0.5.1"
+dependencies = [
+ "objc2 0.6.5",
+ "waterui-macros",
+]
 
 [[package]]
 name = "apple-planes"
@@ -820,9 +828,9 @@ dependencies = [
 
 [[package]]
 name = "async-tungstenite"
-version = "0.34.1"
+version = "0.35.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8447f02eaa65412035e2d3eeaa3fc82bbb8d7137c84c5976b4af685136012ee9"
+checksum = "d6ab5b7664abf9ccae07576888c72bc93750c7090c1ff4ffee9317cc05d11618"
 dependencies = [
  "async-net",
  "atomic-waker",
@@ -879,7 +887,7 @@ dependencies = [
  "enumflags2",
  "serde",
  "static_assertions",
- "zbus",
+ "zbus 5.19.0",
  "zbus-lockstep",
  "zbus-lockstep-macros",
  "zbus_names",
@@ -894,7 +902,7 @@ checksum = "2230e48787ed3eb4088996eab66a32ca20c0b67bbd4fd6cdfe79f04f1f04c9fc"
 dependencies = [
  "atspi-common",
  "serde",
- "zbus",
+ "zbus 5.19.0",
 ]
 
 [[package]]
@@ -1356,23 +1364,50 @@ dependencies = [
 
 [[package]]
 name = "broadcast-common"
-version = "9.4.0"
+version = "12.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ddf56ffc722dcf1b8b2051b4f302d2f6a9e20d070c7f7e592ed9dfbd7ccb9976"
+checksum = "45590e2e230ffaa80c18e10b708e2a11fa3578b241d9b41afa011e5083142c6d"
 dependencies = [
+ "base64 0.23.1",
  "chrono",
+ "erased-serde",
  "hex",
- "libm",
+ "iso-639",
+ "quick-xml 0.42.0",
+ "serde",
+]
+
+[[package]]
+name = "broadcast-dash"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "097506ab85a5a6deca12a3f4a474666a4404978e2e91ae336e32c771b6d67a83"
+dependencies = [
+ "broadcast-common",
+ "jiff",
+ "quick-xml 0.42.0",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
 name = "broadcast-hls"
-version = "0.3.1"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "823e3ad60d21f38c006149b7f432bdaf1050f1321237d9a4a3c87ab841367ee7"
+checksum = "09e500f9dc341c36aed758f4ff96f00a408c22d51fa3df444aa225b350784a6e"
 dependencies = [
  "broadcast-common",
+ "jiff",
  "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "broadcast-smooth"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "23897602613ff527774e2841e5bab3e8f0351d3fb59773810132590dff7705e9"
+dependencies = [
+ "broadcast-common",
  "thiserror 2.0.21",
 ]
 
@@ -1595,6 +1630,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "cc-data"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "accbc11c5fc1608dd56f60b3591784cfffd4a9a4a593b98ddb47064e04a784ee"
+dependencies = [
+ "broadcast-common",
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "cef"
 version = "150.2.1+150.0.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1685,6 +1731,7 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
  "waterui-contract",
+ "waterui-frame-rate",
  "web-time",
 ]
 
@@ -1714,7 +1761,7 @@ dependencies = [
  "objc2-metal 0.3.2",
  "peniko",
  "plist",
- "pollster 1.0.1",
+ "pollster",
  "read-fonts 0.45.1",
  "serde",
  "serde_json",
@@ -1758,6 +1805,7 @@ dependencies = [
  "skrifa 0.48.0",
  "tracing",
  "waterui-contract",
+ "waterui-frame-rate",
 ]
 
 [[package]]
@@ -1800,7 +1848,7 @@ dependencies = [
  "objc2-quartz-core 0.3.2",
  "objc2-ui-kit 0.3.2",
  "png",
- "pollster 1.0.1",
+ "pollster",
  "proc-macro2 1.0.107",
  "quote 1.0.47",
  "rayon",
@@ -1816,6 +1864,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-test",
  "waterui-contract",
+ "waterui-frame-rate",
  "web-sys",
  "wgpu",
 ]
@@ -1862,6 +1911,7 @@ dependencies = [
  "thiserror 2.0.21",
  "waterui-contract",
  "waterui-easing",
+ "waterui-frame-rate",
  "web-time",
 ]
 
@@ -2160,8 +2210,10 @@ dependencies = [
  "oslog",
  "thiserror 2.0.21",
  "tracing",
+ "tracing-subscriber",
  "waterui-contract",
  "waterui-easing",
+ "waterui-frame-rate",
  "wgpu",
  "wgpu-hal",
 ]
@@ -2235,6 +2287,16 @@ checksum = "4356eba6976435498d05a311ee9fc486da3bc81c200d3f0d7dd9703b41913f92"
 dependencies = [
  "bytes",
  "memchr",
+]
+
+[[package]]
+name = "compio-buf"
+version = "0.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b51a2c35873865376ed4cdb6cfeb602b6cf569815f017ddd7bd8f86ad49b34c7"
+dependencies = [
+ "bytes",
+ "libc",
 ]
 
 [[package]]
@@ -2653,6 +2715,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ctor"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "83cf0d42651b16c6dfe68685716d18480d18a9c39c62d76e8cf3eb6ed5d8bcbf"
+dependencies = [
+ "dtor",
+]
+
+[[package]]
 name = "ctrlc"
 version = "3.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2755,15 +2826,6 @@ dependencies = [
  "thiserror 2.0.21",
  "tracing",
  "url",
-]
-
-[[package]]
-name = "dasp_frame"
-version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b2a3937f5fe2135702897535c8d4a5553f8b116f76c1529088797f2eee7c5cd6"
-dependencies = [
- "dasp_sample",
 ]
 
 [[package]]
@@ -3046,6 +3108,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "dns-lookup"
+version = "4.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "263c0ccfc6b3b6a93e959edad4f985779e76c0b36dbb2e13e3d27c690974adf1"
+dependencies = [
+ "cfg-if 1.0.5",
+ "libc",
+ "socket2",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "doc-comment"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3101,6 +3175,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "dtor"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "edf234dd1594d6dd434a8fb8cada51ddbbc593e40e4a01556a0b31c62da2775b"
+
+[[package]]
 name = "dunce"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3108,17 +3188,17 @@ checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 
 [[package]]
 name = "dvb-si"
-version = "11.1.0"
+version = "14.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6905924ef6b9311b316e0c0ded8a73b4537538eaad95a817e15f096474f1aed7"
+checksum = "7a21c9ac623c45a65baadb4b43cc5dd728d9861d51fcd7b33dd95380f10e03cc"
 dependencies = [
  "broadcast-common",
  "bytes",
  "chrono",
  "encoding_rs",
- "libm",
  "mpeg-ts",
  "num_enum",
+ "serde",
  "thiserror 2.0.21",
 ]
 
@@ -3127,18 +3207,6 @@ name = "dyn-clone"
 version = "1.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
-
-[[package]]
-name = "ebur128"
-version = "0.1.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e227cc62d64d6fe01abbef48134b9c1f17d470cef1e7a56337ad05b1f81df7f9"
-dependencies = [
- "bitflags 1.3.2",
- "dasp_frame",
- "dasp_sample",
- "smallvec",
-]
 
 [[package]]
 name = "ed25519"
@@ -3419,9 +3487,9 @@ dependencies = [
 
 [[package]]
 name = "executor-core"
-version = "0.7.1"
+version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2de25163ce4b5cac207bec1f1ebf6a1cf3033c7e02bf331e0d31cb50d239d058"
+checksum = "6e23c83035e046cd2f832c9979c4398fedf0a5d2f3b82870b119c28f24949d45"
 dependencies = [
  "async-channel",
  "async-executor",
@@ -3594,9 +3662,11 @@ dependencies = [
  "futures-util",
  "half",
  "image",
- "pollster 1.0.1",
+ "pollster",
  "thiserror 2.0.21",
  "tracing",
+ "waterkit-video-core",
+ "waterkit-video-processing",
  "waterui-contract",
  "web-time",
  "wgpu",
@@ -3835,9 +3905,9 @@ dependencies = [
 
 [[package]]
 name = "form_urlencoded"
-version = "1.2.2"
+version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
+checksum = "afa489199eaffb1211795df1c6236ce1ad0d41a6fa45250add73e3b02420f06e"
 dependencies = [
  "percent-encoding",
 ]
@@ -4598,6 +4668,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "http-kit"
+version = "0.8.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "960febb0754b5f7fb0fd404ddf39be6aca98e64bbc874e1051bcbe2ff3c01907"
+dependencies = [
+ "bytes",
+ "bytestr",
+ "cookie",
+ "eyre",
+ "futures-lite",
+ "http",
+ "http-body",
+ "http-body-util",
+ "mime",
+ "pin-project-lite",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+]
+
+[[package]]
+name = "http-kit-io"
+version = "0.6.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0c626295762e8c3a72d1aadd09e3c7884a1449069a5d140659a2b34d8f8440d2"
+dependencies = [
+ "bytes",
+ "compio-buf",
+ "futures-core",
+ "futures-io",
+ "futures-lite",
+ "libc",
+]
+
+[[package]]
 name = "httparse"
 version = "1.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4623,6 +4728,7 @@ name = "hydrolysis"
 version = "0.3.1"
 dependencies = [
  "accesskit",
+ "accesskit_ios",
  "accesskit_winit",
  "android_logger",
  "approx",
@@ -4635,6 +4741,7 @@ dependencies = [
  "cherenkov-cpu",
  "cherenkov-gpu",
  "cherenkov-record",
+ "cocoa-ui",
  "console_error_panic_hook",
  "cookie",
  "ctrlc",
@@ -4643,7 +4750,9 @@ dependencies = [
  "futures",
  "futures-core",
  "getrandom 0.4.3",
+ "gungraun",
  "hydrolysis",
+ "hydrolysis-style",
  "icu_locale",
  "icu_properties",
  "icu_provider",
@@ -4668,7 +4777,7 @@ dependencies = [
  "parley 0.12.0",
  "peniko",
  "png",
- "pollster 1.0.1",
+ "pollster",
  "raw-window-handle",
  "read-fonts 0.45.1",
  "rustc-hash 2.1.3",
@@ -4676,12 +4785,14 @@ dependencies = [
  "serde_json",
  "signal-hook",
  "skrifa 0.48.0",
+ "softbuffer",
  "tempfile",
  "thiserror 2.0.21",
  "tiny_http",
  "toml 1.1.8+spec-1.1.0",
  "tracing",
  "tracing-log",
+ "tracing-panic",
  "tracing-subscriber",
  "ui-events-winit",
  "unicode-segmentation",
@@ -4690,21 +4801,26 @@ dependencies = [
  "waterkit-clipboard",
  "waterkit-menu",
  "waterui",
+ "waterui-apple-menu",
  "waterui-assets",
  "waterui-assets-core",
  "waterui-backend-core",
+ "waterui-browser-cef",
+ "waterui-browser-wpe",
  "waterui-controls",
  "waterui-core",
  "waterui-form",
+ "waterui-frame-rate",
  "waterui-graphics",
- "waterui-icon",
  "waterui-image",
  "waterui-inspector-protocol",
+ "waterui-interaction",
  "waterui-layout",
  "waterui-locale",
- "waterui-map",
+ "waterui-map-gpu",
  "waterui-navigation",
  "waterui-shape",
+ "waterui-structural-transition",
  "waterui-text",
  "waterui-url",
  "waterui-video",
@@ -4720,7 +4836,7 @@ dependencies = [
  "winit",
  "x11-dl",
  "x11rb 0.14.0",
- "zbus",
+ "zbus 5.19.0",
 ]
 
 [[package]]
@@ -4739,7 +4855,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis-m3"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis-m3?branch=main#6e4f83a3543393042d4af849a5a8a75ba5ce54bf"
+source = "git+https://github.com/water-rs/hydrolysis-m3?branch=main#d17673a23ee22743029e003963cfeffa199b6644"
 dependencies = [
  "hydrolysis",
  "material-color-utils",
@@ -4748,6 +4864,23 @@ dependencies = [
  "waterui-controls",
  "waterui-core",
  "waterui-graphics",
+]
+
+[[package]]
+name = "hydrolysis-style"
+version = "0.5.1"
+dependencies = [
+ "approx",
+ "cherenkov-record",
+ "kurbo",
+ "nami",
+ "waterui",
+ "waterui-controls",
+ "waterui-core",
+ "waterui-graphics",
+ "waterui-interaction",
+ "waterui-shape",
+ "waterui-text",
 ]
 
 [[package]]
@@ -4891,9 +5024,9 @@ name = "icons-example"
 version = "0.1.0"
 dependencies = [
  "waterui",
+ "waterui-apple",
  "waterui-icons-lucide",
  "waterui-icons-material-icon",
- "waterui-icons-sf-symbol",
 ]
 
 [[package]]
@@ -5564,6 +5697,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
 
 [[package]]
+name = "iso-639"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ad7d3f647f560b2e5c7d7da6d9326223893247feb3e086a388a14654683aa2f2"
+
+[[package]]
 name = "iso8601"
 version = "0.6.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6081,6 +6220,7 @@ name = "liquid-glass-example"
 version = "0.1.0"
 dependencies = [
  "waterui",
+ "waterui-apple",
 ]
 
 [[package]]
@@ -6585,9 +6725,9 @@ dependencies = [
 
 [[package]]
 name = "moxcms"
-version = "0.9.1"
+version = "0.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "396077b717181ce3f9a6b66739b269b82d756be5ec0f76be0bc40a7c51775830"
+checksum = "561875e11b3d8618524f974f85e4bbd05a64a112b8f7541ffcc236b5166c0564"
 dependencies = [
  "num-traits",
  "pxfm",
@@ -6647,11 +6787,12 @@ dependencies = [
 
 [[package]]
 name = "mp4-emsg"
-version = "0.4.1"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "002fcab7399be83c8d67b089c21d0b75ad5837a71f4656ea8fbeeff7b521545b"
+checksum = "662b5b6cf2fb8b7e651ead526a8ae9f0aed9e29fc42d40880382fbf250d7721a"
 dependencies = [
  "broadcast-common",
+ "serde",
  "thiserror 2.0.21",
 ]
 
@@ -6671,30 +6812,32 @@ dependencies = [
 
 [[package]]
 name = "mpeg-pes"
-version = "0.5.0"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cad12f82a15913495f50f94dd452047b480b1b21986cd56fd69c023be28c24bd"
+checksum = "c08ec15613f5fcf65dceb5ec2134089ce10263e15e0961030bc093b18d2f41c4"
 dependencies = [
  "broadcast-common",
+ "serde",
  "thiserror 2.0.21",
 ]
 
 [[package]]
 name = "mpeg-ps"
-version = "0.5.0"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "55e72c936ea284933e7dea961e34d5bec97daa37c5d752dfc7f138b0adc94c90"
+checksum = "d36ba8eaee1f3de9e5d1363288b07348a1acf81859f88c4d143075f547764e14"
 dependencies = [
  "broadcast-common",
  "mpeg-pes",
+ "serde",
  "thiserror 2.0.21",
 ]
 
 [[package]]
 name = "mpeg-ts"
-version = "0.5.0"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ca718b2706da7eec14cf0f3bbaa1235ba0a7e18f315e6a49ce395c9eb84ea3d5"
+checksum = "3becd0ff359b68ce5e1e2e2d35fd8fedd31bd28ac1cb956c2207e0f6f5be8f63"
 dependencies = [
  "broadcast-common",
  "bytes",
@@ -6704,15 +6847,15 @@ dependencies = [
 
 [[package]]
 name = "mpris-server"
-version = "0.10.0"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "70cf358e9a9516cc35ed40eebd56cbe80f5190a7a2b3cd0c2d358c86b879132b"
+checksum = "0b8bd72df87f89d5c791fa8a8155fce408596ae20c34fefce84c17168c5d304a"
 dependencies = [
  "async-channel",
  "futures-channel",
  "serde",
  "trait-variant",
- "zbus",
+ "zbus 6.3.0",
 ]
 
 [[package]]
@@ -6749,8 +6892,8 @@ dependencies = [
 
 [[package]]
 name = "naga"
-version = "30.0.1"
-source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#9e0ab702c11f5db7b62670eaf9aeaf8a2f8ff7b5"
+version = "30.0.2"
+source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#68544c99579524dd46cc73eac03b49f8f680b768"
 dependencies = [
  "arrayvec",
  "bit-set 0.10.0",
@@ -6774,8 +6917,8 @@ dependencies = [
 
 [[package]]
 name = "naga-types"
-version = "30.0.1"
-source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#9e0ab702c11f5db7b62670eaf9aeaf8a2f8ff7b5"
+version = "30.0.2"
+source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#68544c99579524dd46cc73eac03b49f8f680b768"
 dependencies = [
  "hashbrown 0.17.1",
  "indexmap 2.14.2",
@@ -6786,8 +6929,7 @@ dependencies = [
 [[package]]
 name = "nami"
 version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fb9d0d54676f434e59decc077a6c67ad318933ec1ac7cebaf78204bea41f7d82"
+source = "git+https://github.com/water-rs/nami?branch=main#a549338055efa3e4f907055b90f18bf14a86a337"
 dependencies = [
  "async-channel",
  "async-io",
@@ -6804,8 +6946,7 @@ dependencies = [
 [[package]]
 name = "nami-core"
 version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d15d89a677ebfdd18f7085dabaff2fef8a17e127c79b77f869cab2854bc024d5"
+source = "git+https://github.com/water-rs/nami?branch=main#a549338055efa3e4f907055b90f18bf14a86a337"
 dependencies = [
  "kurbo",
 ]
@@ -6813,8 +6954,7 @@ dependencies = [
 [[package]]
 name = "nami-derive"
 version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5548d158e51d8a5f5a0a278f32d4d6297c15b8c17d2ebbc5c956052c06d6d121"
+source = "git+https://github.com/water-rs/nami?branch=main#a549338055efa3e4f907055b90f18bf14a86a337"
 dependencies = [
  "proc-macro2 1.0.107",
  "quote 1.0.47",
@@ -7281,6 +7421,7 @@ dependencies = [
  "objc2-core-video",
  "objc2-foundation 0.3.2",
  "objc2-quartz-core 0.3.2",
+ "objc2-uniform-type-identifiers 0.3.2",
 ]
 
 [[package]]
@@ -8592,12 +8733,6 @@ dependencies = [
 
 [[package]]
 name = "pollster"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2f3a9f18d041e6d0e102a0a46750538147e5e8992d3b4873aaafee2520b00ce3"
-
-[[package]]
-name = "pollster"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bc6355899e1c9462875b6757c79f3caa011a1fdae12bbb1a2e72dd1f234f8336"
@@ -8800,7 +8935,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "proc-macro2 1.0.107",
  "quote 1.0.47",
  "syn 2.0.119",
@@ -9185,6 +9320,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "reachability-app"
+version = "0.1.0"
+dependencies = [
+ "waterui",
+]
+
+[[package]]
 name = "read-fonts"
 version = "0.41.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9423,9 +9565,9 @@ dependencies = [
 
 [[package]]
 name = "rfd"
-version = "0.17.2"
+version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "20dafead71c16a34e1ff357ddefc8afc11e7d51d6d2b9fbd07eaa48e3e540220"
+checksum = "c4b9d4857b10297ffb0f64cae711e983a7aeaee561848d56d429d3858bd8ed93"
 dependencies = [
  "block2 0.6.2",
  "dispatch2",
@@ -9436,8 +9578,9 @@ dependencies = [
  "objc2-app-kit 0.3.2",
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
+ "objc2-uniform-type-identifiers 0.3.2",
  "percent-encoding",
- "pollster 0.4.0",
+ "pollster",
  "raw-window-handle",
  "wasm-bindgen",
  "wasm-bindgen-futures",
@@ -9559,22 +9702,24 @@ dependencies = [
 ]
 
 [[package]]
-name = "rtcp-packet"
-version = "0.5.0"
+name = "rtmp-runtime"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "885ff5a4d71f0bc73acb6cb65a1b92ff9b3dd315b22920c73383c41018a75b70"
+checksum = "4382d23e657f570d3582f6d2bde22802e0a51317f418dc5a24f3a2f0d87757d2"
 dependencies = [
  "broadcast-common",
+ "subtle",
  "thiserror 2.0.21",
 ]
 
 [[package]]
 name = "rtp-packet"
-version = "0.4.0"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5e90bb0dff7dd49086be03f6c6b90b87c6a8a0457e66b4470a4853e0b2fb7d8a"
+checksum = "0ba9f85f74ba0a2869d64a6404e743a95066706fbc2511227f3b657f21942e85"
 dependencies = [
  "broadcast-common",
+ "serde",
  "thiserror 2.0.21",
 ]
 
@@ -9834,9 +9979,9 @@ dependencies = [
 
 [[package]]
 name = "sdp-types"
-version = "0.2.0"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "46d46be065d0565cf5c6703b6ba9f92b0de85b20a4c83f87e110bc0a1040b1bc"
+checksum = "bef408d5c8c27b151ef7cc88b34636ea95fcfbff66bbc04c2621960a2ea735d3"
 dependencies = [
  "bstr",
  "fallible-iterator",
@@ -10065,17 +10210,6 @@ dependencies = [
  "proc-macro2 1.0.107",
  "quote 1.0.47",
  "syn 3.0.9",
-]
-
-[[package]]
-name = "sha1"
-version = "0.10.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a978451301f4db1d02937a4ab3ccce137717b81826e79b7d49ffe3244a13c3b8"
-dependencies = [
- "cfg-if 1.0.5",
- "cpufeatures 0.2.17",
- "digest 0.10.7",
 ]
 
 [[package]]
@@ -10438,6 +10572,37 @@ checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "softbuffer"
+version = "0.4.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aac18da81ebbf05109ab275b157c22a653bb3c12cf884450179942f81bcbf6c3"
+dependencies = [
+ "as-raw-xcb-connection",
+ "bytemuck",
+ "fastrand",
+ "js-sys",
+ "memmap2",
+ "ndk",
+ "objc2 0.6.5",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-foundation 0.3.2",
+ "objc2-quartz-core 0.3.2",
+ "raw-window-handle",
+ "redox_syscall 0.5.18",
+ "rustix 1.1.5",
+ "tiny-xlib",
+ "tracing",
+ "wasm-bindgen",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-sys",
+ "web-sys",
+ "windows-sys 0.61.2",
+ "x11rb 0.13.2",
 ]
 
 [[package]]
@@ -11100,6 +11265,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cdb87b95ec50ddfa440816d227a17b2ccbdda963a316a727fda0fc4334f7d134"
 dependencies = [
  "deranged",
+ "js-sys",
  "num-conv",
  "powerfmt",
  "serde_core",
@@ -11125,15 +11291,27 @@ dependencies = [
 
 [[package]]
 name = "timestretch"
-version = "0.15.0"
+version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "381e42525f3f1239707c0e30f72d2fe8503bda3bb9dbdec1769332b9cb7344be"
+checksum = "ad484075af6caf97e09f3f869bed42c99ff4fea501f6df6ad65d5bb8c7186808"
 dependencies = [
- "arc-swap",
- "ebur128",
+ "timestretch-core",
+]
+
+[[package]]
+name = "timestretch-accelerate"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ffbbc9a0a366ab1e33dbb5edc124d0aa2f7a29f9cf05e16718490c460e50aae5"
+
+[[package]]
+name = "timestretch-core"
+version = "0.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fa8cb1cae3fd3788a7a9e704dd079d7dc56b00a8b2d0688e9be94130ebcbe1aa"
+dependencies = [
  "rustfft",
- "serde",
- "serde_json",
+ "timestretch-accelerate",
 ]
 
 [[package]]
@@ -11188,6 +11366,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "tiny-xlib"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a90a0ca3ee6a69f2ad28fd11621a4c3f03b371f366be500b64df260c4ffbafb4"
+dependencies = [
+ "as-raw-xcb-connection",
+ "ctor",
+ "libloading 0.8.9",
+ "pkg-config",
+ "tracing",
+]
+
+[[package]]
 name = "tiny_http"
 version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11232,7 +11423,9 @@ dependencies = [
  "libc",
  "mio",
  "pin-project-lite",
+ "signal-hook-registry",
  "socket2",
+ "tracing",
  "windows-sys 0.61.2",
 ]
 
@@ -11492,23 +11685,27 @@ dependencies = [
 
 [[package]]
 name = "transmux"
-version = "0.26.0"
+version = "0.31.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "28cf5c3888f10c78f102b9f0c4b00c0e777d9afba09f687ed2385b36c9d59147"
+checksum = "5b847959525e6f0be85a8529243ef909c15966827cd14aec30b792ee75e241bf"
 dependencies = [
  "base64 0.23.1",
  "broadcast-common",
+ "broadcast-dash",
  "broadcast-hls",
+ "broadcast-smooth",
  "bytes",
+ "cc-data",
  "dvb-si",
  "hex",
  "jiff",
+ "memchr",
  "mp4-emsg",
  "mpeg-pes",
  "mpeg-ps",
  "mpeg-ts",
  "quick-xml 0.42.0",
- "rtcp-packet",
+ "rtmp-runtime",
  "rtp-packet",
  "sdp-types",
  "serde",
@@ -11573,9 +11770,8 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
 name = "trybuild"
-version = "1.0.122"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62db9c92d704393fbf2132041720cc80b689f2d3f28521015c2ac866223c11b8"
+version = "1.0.125"
+source = "git+https://github.com/lexoliu/trybuild?branch=normalize-git-checkouts#6c053caa95978918651a75ca82fdda54078cac51"
 dependencies = [
  "glob",
  "serde",
@@ -11594,17 +11790,17 @@ checksum = "d2df906b07856748fa3f6e0ad0cbaa047052d4a7dd609e231c4f72cee8c36f31"
 
 [[package]]
 name = "tungstenite"
-version = "0.29.0"
+version = "0.30.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6c01152af293afb9c7c2a57e4b559c5620b421f6d133261c60dd2d0cdb38e6b8"
+checksum = "e48ac77174b19c110a50ab2128b24215ac9cb40e0e12e093fb602d175c569d22"
 dependencies = [
  "bytes",
  "data-encoding",
  "http",
  "httparse",
  "log",
- "rand 0.9.5",
- "sha1 0.10.7",
+ "rand 0.10.3",
+ "sha1",
  "thiserror 2.0.21",
 ]
 
@@ -11815,9 +12011,9 @@ dependencies = [
 
 [[package]]
 name = "url"
-version = "2.5.8"
+version = "2.5.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff67a8a4397373c3ef660812acab3268222035010ab8680ec4215f38ba3d0eed"
+checksum = "f00cd2407bb42c0ef17be88d4cf020f5cceffd121665bac9b8b9493a369b3b1a"
 dependencies = [
  "form_urlencoded",
  "idna",
@@ -11880,9 +12076,9 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
 name = "uuid"
-version = "1.28.0"
+version = "1.29.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7cc1186384beb7dd8eedea376413fd654937285ea6c9cfbb928dc3043ea4b606"
+checksum = "bed99139f7dac9b5cfe5f17be4d66dc7079a34dee1d74bcc77217119240e267c"
 dependencies = [
  "getrandom 0.4.3",
  "js-sys",
@@ -12225,8 +12421,8 @@ dependencies = [
 
 [[package]]
 name = "waterkit-audio"
-version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=main#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
+version = "0.3.0"
+source = "git+https://github.com/water-rs/waterkit?branch=main#0d6c1b2a9e2bdda87939339d167a1b34efe10166"
 dependencies = [
  "async-channel",
  "block2 0.6.2",
@@ -12240,7 +12436,6 @@ dependencies = [
  "ndk",
  "ndk-context",
  "ndk-sys",
- "num-traits",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-av-foundation",
@@ -12266,14 +12461,14 @@ dependencies = [
  "waterkit-core",
  "web-sys",
  "windows",
- "zbus",
- "zenwave 0.7.1",
+ "zbus 6.3.0",
+ "zenwave 0.12.0",
 ]
 
 [[package]]
 name = "waterkit-build"
-version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=main#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
+version = "0.3.0"
+source = "git+https://github.com/water-rs/waterkit?branch=main#0d6c1b2a9e2bdda87939339d167a1b34efe10166"
 dependencies = [
  "futures-channel",
  "jni 0.22.4",
@@ -12283,8 +12478,8 @@ dependencies = [
 
 [[package]]
 name = "waterkit-camera"
-version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=main#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
+version = "0.3.0"
+source = "git+https://github.com/water-rs/waterkit?branch=main#0d6c1b2a9e2bdda87939339d167a1b34efe10166"
 dependencies = [
  "async-channel",
  "core-graphics-types 0.2.0",
@@ -12331,8 +12526,8 @@ dependencies = [
 
 [[package]]
 name = "waterkit-clipboard"
-version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=main#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
+version = "0.3.0"
+source = "git+https://github.com/water-rs/waterkit?branch=main#0d6c1b2a9e2bdda87939339d167a1b34efe10166"
 dependencies = [
  "async-channel",
  "block2 0.6.2",
@@ -12363,8 +12558,8 @@ dependencies = [
 
 [[package]]
 name = "waterkit-codec"
-version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=main#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
+version = "0.3.0"
+source = "git+https://github.com/water-rs/waterkit?branch=main#0d6c1b2a9e2bdda87939339d167a1b34efe10166"
 dependencies = [
  "avif-parse",
  "cfg_aliases",
@@ -12372,7 +12567,7 @@ dependencies = [
  "image",
  "jni 0.22.4",
  "libc",
- "moxcms 0.9.1",
+ "moxcms 0.9.2",
  "ndk",
  "ndk-sys",
  "num-traits",
@@ -12403,8 +12598,8 @@ dependencies = [
 
 [[package]]
 name = "waterkit-core"
-version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=main#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
+version = "0.3.0"
+source = "git+https://github.com/water-rs/waterkit?branch=main#0d6c1b2a9e2bdda87939339d167a1b34efe10166"
 dependencies = [
  "dispatch2",
  "executor-core",
@@ -12419,8 +12614,8 @@ dependencies = [
 
 [[package]]
 name = "waterkit-deeplink"
-version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=main#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
+version = "0.3.0"
+source = "git+https://github.com/water-rs/waterkit?branch=main#0d6c1b2a9e2bdda87939339d167a1b34efe10166"
 dependencies = [
  "async-channel",
  "block2 0.6.2",
@@ -12438,13 +12633,13 @@ dependencies = [
  "waterkit-build",
  "waterkit-core",
  "windows",
- "zbus",
+ "zbus 6.3.0",
 ]
 
 [[package]]
 name = "waterkit-dialog"
-version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=main#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
+version = "0.3.0"
+source = "git+https://github.com/water-rs/waterkit?branch=main#0d6c1b2a9e2bdda87939339d167a1b34efe10166"
 dependencies = [
  "block2 0.6.2",
  "dispatch2",
@@ -12466,8 +12661,8 @@ dependencies = [
 
 [[package]]
 name = "waterkit-fs"
-version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=main#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
+version = "0.3.0"
+source = "git+https://github.com/water-rs/waterkit?branch=main#0d6c1b2a9e2bdda87939339d167a1b34efe10166"
 dependencies = [
  "async-fs",
  "dirs 7.0.0",
@@ -12484,8 +12679,8 @@ dependencies = [
 
 [[package]]
 name = "waterkit-haptic"
-version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=main#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
+version = "0.3.0"
+source = "git+https://github.com/water-rs/waterkit?branch=main#0d6c1b2a9e2bdda87939339d167a1b34efe10166"
 dependencies = [
  "block2 0.6.2",
  "futures",
@@ -12500,13 +12695,13 @@ dependencies = [
  "waterkit-build",
  "waterkit-core",
  "windows",
- "zbus",
+ "zbus 6.3.0",
 ]
 
 [[package]]
 name = "waterkit-location"
-version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=main#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
+version = "0.3.0"
+source = "git+https://github.com/water-rs/waterkit?branch=main#0d6c1b2a9e2bdda87939339d167a1b34efe10166"
 dependencies = [
  "async-channel",
  "dispatch2",
@@ -12525,13 +12720,13 @@ dependencies = [
  "waterkit-permission",
  "web-sys",
  "windows",
- "zbus",
+ "zbus 6.3.0",
 ]
 
 [[package]]
 name = "waterkit-menu"
-version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=main#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
+version = "0.3.0"
+source = "git+https://github.com/water-rs/waterkit?branch=main#0d6c1b2a9e2bdda87939339d167a1b34efe10166"
 dependencies = [
  "async-channel",
  "futures",
@@ -12545,8 +12740,8 @@ dependencies = [
 
 [[package]]
 name = "waterkit-permission"
-version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=main#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
+version = "0.3.0"
+source = "git+https://github.com/water-rs/waterkit?branch=main#0d6c1b2a9e2bdda87939339d167a1b34efe10166"
 dependencies = [
  "async-channel",
  "async-io",
@@ -12578,13 +12773,13 @@ dependencies = [
  "waterkit-core",
  "web-sys",
  "windows",
- "zbus",
+ "zbus 6.3.0",
 ]
 
 [[package]]
 name = "waterkit-video"
-version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=main#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
+version = "0.3.0"
+source = "git+https://github.com/water-rs/waterkit?branch=main#0d6c1b2a9e2bdda87939339d167a1b34efe10166"
 dependencies = [
  "waterkit-video-container",
  "waterkit-video-core",
@@ -12594,8 +12789,8 @@ dependencies = [
 
 [[package]]
 name = "waterkit-video-container"
-version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=main#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
+version = "0.3.0"
+source = "git+https://github.com/water-rs/waterkit?branch=main#0d6c1b2a9e2bdda87939339d167a1b34efe10166"
 dependencies = [
  "broadcast-common",
  "byteorder",
@@ -12609,16 +12804,16 @@ dependencies = [
 
 [[package]]
 name = "waterkit-video-core"
-version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=main#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
+version = "0.3.0"
+source = "git+https://github.com/water-rs/waterkit?branch=main#0d6c1b2a9e2bdda87939339d167a1b34efe10166"
 dependencies = [
  "thiserror 2.0.21",
 ]
 
 [[package]]
 name = "waterkit-video-player"
-version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=main#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
+version = "0.3.0"
+source = "git+https://github.com/water-rs/waterkit?branch=main#0d6c1b2a9e2bdda87939339d167a1b34efe10166"
 dependencies = [
  "aes",
  "async-channel",
@@ -12651,9 +12846,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "waterkit-video-streaming"
+name = "waterkit-video-processing"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/waterkit?branch=main#1ffa11df1a9f6ffbdec3aea1ff2d6e06b2820600"
+source = "git+https://github.com/water-rs/waterkit?branch=main#0d6c1b2a9e2bdda87939339d167a1b34efe10166"
+dependencies = [
+ "waterkit-video-core",
+ "wgpu",
+]
+
+[[package]]
+name = "waterkit-video-streaming"
+version = "0.3.0"
+source = "git+https://github.com/water-rs/waterkit?branch=main#0d6c1b2a9e2bdda87939339d167a1b34efe10166"
 dependencies = [
  "async-fs",
  "base64 0.23.1",
@@ -12669,7 +12873,7 @@ dependencies = [
  "uuid",
  "waterkit-video-core",
  "windows",
- "zenwave 0.7.1",
+ "zenwave 0.12.0",
 ]
 
 [[package]]
@@ -12681,6 +12885,15 @@ dependencies = [
  "waterui-dylib",
  "waterui-internal",
  "waterui-testing",
+]
+
+[[package]]
+name = "waterui-accessibility"
+version = "0.5.1"
+dependencies = [
+ "nami",
+ "suiteki",
+ "waterui-core",
 ]
 
 [[package]]
@@ -12712,7 +12925,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "objc2-metal 0.3.2",
  "objc2-quartz-core 0.3.2",
- "pollster 1.0.1",
+ "pollster",
  "serde_json",
  "skrifa 0.48.0",
  "thiserror 2.0.21",
@@ -12722,24 +12935,36 @@ dependencies = [
  "waterkit-audio",
  "waterkit-build",
  "waterui",
+ "waterui-accessibility",
+ "waterui-apple-menu",
  "waterui-backend-core",
+ "waterui-browser-cef",
+ "waterui-capture",
  "waterui-core",
+ "waterui-frame-rate",
  "waterui-graphics",
+ "waterui-interaction",
  "waterui-locale",
  "waterui-map",
  "waterui-meta",
  "waterui-preview-protocol",
+ "waterui-resources",
+ "waterui-structural-transition",
+ "waterui-testing",
  "waterui-video",
  "waterui-webview",
  "wgpu-hal",
 ]
 
 [[package]]
-name = "waterui-apple-os"
+name = "waterui-apple-menu"
 version = "0.5.1"
 dependencies = [
- "objc2 0.6.5",
- "waterui-macros",
+ "cocoa-ui",
+ "nami",
+ "tracing",
+ "waterui-controls",
+ "waterui-core",
 ]
 
 [[package]]
@@ -12755,6 +12980,7 @@ dependencies = [
  "waterui-assets-core",
  "waterui-core",
  "waterui-media",
+ "waterui-resources",
  "waterui-url",
  "waterui-video",
 ]
@@ -12807,20 +13033,25 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "waterui",
+ "waterui-accessibility",
  "waterui-core",
+ "waterui-interaction",
  "waterui-layout",
+ "waterui-meta",
+ "waterui-structural-transition",
  "web-time",
 ]
 
 [[package]]
 name = "waterui-barcode"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/barcode?branch=main#43c3018566525c3894038b0fc04f17c77c11d70c"
+source = "git+https://github.com/water-rs/barcode?branch=main#3955172fbe2217978a5779d58a14dc0569eb7cad"
 dependencies = [
  "barcoders",
  "fast_qr",
  "nami",
  "thiserror 2.0.21",
+ "waterui-accessibility",
  "waterui-core",
  "waterui-graphics",
 ]
@@ -12828,7 +13059,7 @@ dependencies = [
 [[package]]
 name = "waterui-browser-cef"
 version = "0.1.0"
-source = "git+https://github.com/water-rs/browsers?branch=main#f3637e7d6017d44a755040132fd361446ed65114"
+source = "git+https://github.com/water-rs/browsers?branch=main#93a5a4d87f0ec93de0c2bab077a3f45272d2d335"
 dependencies = [
  "async-channel",
  "base64 0.23.1",
@@ -12855,6 +13086,7 @@ dependencies = [
  "suiteki",
  "thiserror 2.0.21",
  "tracing",
+ "waterui-accessibility",
  "waterui-chromium",
  "waterui-core",
  "waterui-graphics",
@@ -12868,7 +13100,7 @@ dependencies = [
 [[package]]
 name = "waterui-browser-wpe"
 version = "0.1.0"
-source = "git+https://github.com/water-rs/browsers?branch=main#f3637e7d6017d44a755040132fd361446ed65114"
+source = "git+https://github.com/water-rs/browsers?branch=main#93a5a4d87f0ec93de0c2bab077a3f45272d2d335"
 dependencies = [
  "cookie",
  "executor-core",
@@ -12883,6 +13115,7 @@ dependencies = [
  "serde_json",
  "suiteki",
  "tracing",
+ "waterui-accessibility",
  "waterui-core",
  "waterui-graphics",
  "waterui-url",
@@ -12894,15 +13127,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "waterui-capture"
+version = "0.5.1"
+dependencies = [
+ "nami",
+ "thiserror 2.0.21",
+ "waterui-core",
+]
+
+[[package]]
 name = "waterui-chart"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/chart?branch=main#eb21d2101128d7d4e6a0e6ebbd85323e70bfbbde"
+source = "git+https://github.com/water-rs/chart?branch=main#2e99e1fb708f2f5808a83fb6a2943ba29bcb86a0"
 dependencies = [
  "bytemuck",
  "nami",
  "num-traits",
+ "waterui-accessibility",
  "waterui-core",
  "waterui-graphics",
+ "waterui-interaction",
  "waterui-layout",
  "waterui-shape",
  "waterui-text",
@@ -12922,7 +13166,9 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "tracing",
+ "waterui-accessibility",
  "waterui-core",
+ "waterui-graphics",
  "waterui-layout",
  "waterui-macros",
  "waterui-url",
@@ -12988,7 +13234,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
- "sha1 0.11.0",
+ "sha1",
  "sha2",
  "shlex 2.0.1",
  "smol",
@@ -13053,8 +13299,9 @@ dependencies = [
  "serde",
  "thiserror 2.0.21",
  "waterui",
+ "waterui-accessibility",
  "waterui-core",
- "waterui-icon",
+ "waterui-interaction",
  "waterui-layout",
  "waterui-locale",
  "waterui-macros",
@@ -13067,8 +13314,6 @@ name = "waterui-core"
 version = "0.5.1"
 dependencies = [
  "anyhow",
- "bitflags 2.13.2",
- "keyboard-types",
  "nami",
  "num-traits",
  "serde",
@@ -13077,7 +13322,9 @@ dependencies = [
  "thiserror 2.0.21",
  "waterui-contract",
  "waterui-easing",
+ "waterui-frame-rate",
  "waterui-macros",
+ "waterui-meta",
 ]
 
 [[package]]
@@ -13107,6 +13354,7 @@ dependencies = [
  "waterui-core",
  "waterui-form",
  "waterui-graphics",
+ "waterui-interaction",
  "waterui-layout",
  "waterui-locale",
  "waterui-macros",
@@ -13115,6 +13363,13 @@ dependencies = [
  "waterui-text",
  "waterui-url",
  "zeroize",
+]
+
+[[package]]
+name = "waterui-frame-rate"
+version = "0.5.1"
+dependencies = [
+ "nami",
 ]
 
 [[package]]
@@ -13148,7 +13403,7 @@ dependencies = [
  "objc2-core-foundation",
  "objc2-core-video",
  "objc2-metal 0.3.2",
- "pollster 1.0.1",
+ "pollster",
  "send_wrapper",
  "shaderloom",
  "thiserror 2.0.21",
@@ -13157,6 +13412,7 @@ dependencies = [
  "waterui",
  "waterui-color",
  "waterui-core",
+ "waterui-frame-rate",
  "waterui-testing",
  "waterui-text",
  "wgpu",
@@ -13167,7 +13423,6 @@ dependencies = [
 name = "waterui-icon"
 version = "0.5.1"
 dependencies = [
- "suiteki",
  "waterui",
  "waterui-core",
  "waterui-graphics",
@@ -13210,6 +13465,7 @@ dependencies = [
  "waterui",
  "waterui-icon",
  "waterui-icons-codegen",
+ "waterui-svg",
  "waterui-testing",
 ]
 
@@ -13223,29 +13479,14 @@ dependencies = [
  "waterui",
  "waterui-icon",
  "waterui-icons-codegen",
+ "waterui-svg",
  "waterui-testing",
-]
-
-[[package]]
-name = "waterui-icons-native"
-version = "0.5.1"
-dependencies = [
- "suiteki",
- "waterui-icon",
-]
-
-[[package]]
-name = "waterui-icons-sf-symbol"
-version = "0.5.1"
-dependencies = [
- "suiteki",
- "waterui-icon",
 ]
 
 [[package]]
 name = "waterui-image"
 version = "0.5.0"
-source = "git+https://github.com/water-rs/image?branch=main#0988ed3225cb941672deb7881665b81182ee50af"
+source = "git+https://github.com/water-rs/image?branch=main#37778a7e1afeecbf8d85674b44d5d27db888ffbd"
 dependencies = [
  "half",
  "image",
@@ -13293,6 +13534,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "waterui-inspector-runtime"
+version = "0.5.1"
+dependencies = [
+ "async-channel",
+ "getrandom 0.4.3",
+ "nami",
+ "tracing",
+ "tracing-subscriber",
+ "waterui-core",
+ "waterui-inspector-protocol",
+]
+
+[[package]]
+name = "waterui-interaction"
+version = "0.5.1"
+dependencies = [
+ "bitflags 2.13.2",
+ "keyboard-types",
+ "nami",
+ "waterui-core",
+]
+
+[[package]]
 name = "waterui-internal"
 version = "0.5.1"
 dependencies = [
@@ -13300,48 +13564,48 @@ dependencies = [
  "cpu-time",
  "executor-core",
  "futures",
- "getrandom 0.4.3",
  "nami",
  "native-executor",
  "object 0.40.0",
  "pastey 0.2.3",
- "pulldown-cmark",
  "suiteki",
  "thiserror 2.0.21",
  "tracing",
- "tracing-subscriber",
- "tree-sitter",
- "tree-sitter-md",
  "unicode-segmentation",
  "waterkit-deeplink",
  "waterkit-haptic",
  "waterui",
+ "waterui-accessibility",
  "waterui-assets",
  "waterui-assets-macros",
  "waterui-assets-planner",
  "waterui-barcode",
+ "waterui-capture",
  "waterui-chart",
  "waterui-controls",
  "waterui-core",
  "waterui-form",
  "waterui-graphics",
  "waterui-icon",
- "waterui-inspector-protocol",
+ "waterui-inspector-runtime",
+ "waterui-interaction",
  "waterui-layout",
  "waterui-locale",
  "waterui-macros",
- "waterui-math",
+ "waterui-map",
+ "waterui-markdown",
  "waterui-media",
  "waterui-meta",
  "waterui-navigation",
  "waterui-particle",
+ "waterui-resources",
  "waterui-shape",
+ "waterui-structural-transition",
  "waterui-svg",
  "waterui-text",
  "waterui-ts",
  "waterui-url",
  "waterui-video",
- "waterui-video-gpu",
  "waterui-webview",
  "waterui-widgets",
  "web-time",
@@ -13355,7 +13619,6 @@ dependencies = [
  "num-traits",
  "smallvec",
  "waterui",
- "waterui-color",
  "waterui-contract",
  "waterui-core",
  "waterui-testing",
@@ -13421,7 +13684,7 @@ dependencies = [
 [[package]]
 name = "waterui-map-gpu"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/map-gpu?branch=main#243bbd7ab2cb7598e05123decd62b8f176d6a4dc"
+source = "git+https://github.com/water-rs/map-gpu?branch=main#001ab8296bf9fde845a50835f37e770de10456c6"
 dependencies = [
  "arc-swap",
  "blocking",
@@ -13448,12 +13711,36 @@ dependencies = [
  "thiserror 2.0.21",
  "tracing",
  "url",
+ "waterui-accessibility",
  "waterui-core",
  "waterui-graphics",
+ "waterui-interaction",
  "waterui-map",
  "waterui-url",
  "web-time",
  "zenwave 0.6.1",
+]
+
+[[package]]
+name = "waterui-markdown"
+version = "0.5.1"
+dependencies = [
+ "executor-core",
+ "nami",
+ "native-executor",
+ "pulldown-cmark",
+ "suiteki",
+ "tracing",
+ "tree-sitter",
+ "tree-sitter-md",
+ "waterkit-deeplink",
+ "waterui-color",
+ "waterui-controls",
+ "waterui-core",
+ "waterui-layout",
+ "waterui-math",
+ "waterui-media",
+ "waterui-text",
 ]
 
 [[package]]
@@ -13523,9 +13810,11 @@ dependencies = [
  "waterkit-dialog",
  "waterkit-fs",
  "waterui",
+ "waterui-capture",
  "waterui-controls",
  "waterui-core",
  "waterui-image",
+ "waterui-interaction",
  "waterui-layout",
  "waterui-macros",
  "waterui-media",
@@ -13552,7 +13841,6 @@ dependencies = [
  "waterui-controls",
  "waterui-core",
  "waterui-graphics",
- "waterui-icon",
  "waterui-icons-lucide",
  "waterui-testing",
  "waterui-text",
@@ -13562,7 +13850,7 @@ dependencies = [
 [[package]]
 name = "waterui-particle"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/particle?branch=main#d0c256d437a4141b94d202e550c42fd0cb8a7cb5"
+source = "git+https://github.com/water-rs/particle?branch=main#80b2263df87bcbc93272b74e17591f06ac098c0a"
 dependencies = [
  "bytemuck",
  "encase",
@@ -13585,12 +13873,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "waterui-resources"
+version = "0.5.1"
+dependencies = [
+ "waterui-core",
+]
+
+[[package]]
 name = "waterui-shape"
 version = "0.5.1"
 dependencies = [
  "nami",
  "waterui-core",
  "waterui-graphics",
+]
+
+[[package]]
+name = "waterui-structural-transition"
+version = "0.5.1"
+dependencies = [
+ "waterui-core",
 ]
 
 [[package]]
@@ -13613,6 +13915,7 @@ version = "0.5.1"
 dependencies = [
  "accesskit",
  "approx",
+ "askama",
  "async-io",
  "bitflags 2.13.2",
  "cargo_metadata",
@@ -13621,10 +13924,12 @@ dependencies = [
  "hydrolysis-m3",
  "image",
  "kurbo",
- "pollster 1.0.1",
+ "pollster",
+ "rayon",
  "serde",
  "serde_json",
  "sysinfo",
+ "thiserror 2.0.21",
  "waterui",
  "waterui-assets-planner",
  "waterui-core",
@@ -13646,8 +13951,10 @@ dependencies = [
  "two-face",
  "waterkit-clipboard",
  "waterui",
+ "waterui-accessibility",
  "waterui-color",
  "waterui-core",
+ "waterui-interaction",
  "waterui-layout",
  "waterui-locale",
  "waterui-macros",
@@ -13762,7 +14069,7 @@ dependencies = [
 [[package]]
 name = "waterui-video-gpu"
 version = "0.4.0"
-source = "git+https://github.com/water-rs/video-gpu?branch=main#d33791afe1201e598e584c9db1a4142d15f04585"
+source = "git+https://github.com/water-rs/video-gpu?branch=main#65b050ed8dfa70e3ffb26e33991078864f2004c5"
 dependencies = [
  "async-channel",
  "executor-core",
@@ -13779,9 +14086,11 @@ dependencies = [
  "waterkit-core",
  "waterkit-fs",
  "waterkit-video",
+ "waterui-accessibility",
  "waterui-controls",
  "waterui-core",
  "waterui-graphics",
+ "waterui-interaction",
  "waterui-layout",
  "waterui-text",
  "waterui-video",
@@ -13795,13 +14104,12 @@ version = "0.5.1"
 name = "waterui-webview"
 version = "0.5.1"
 dependencies = [
+ "apple-availability",
  "base64 0.23.1",
  "cookie",
  "divan",
  "executor-core",
  "futures",
- "objc2 0.6.5",
- "objc2-web-kit",
  "percent-encoding",
  "serde",
  "serde_json",
@@ -13813,7 +14121,6 @@ dependencies = [
  "tracing",
  "waterkit-deeplink",
  "waterui",
- "waterui-apple-os",
  "waterui-core",
  "waterui-layout",
  "waterui-testing",
@@ -13965,9 +14272,9 @@ dependencies = [
 
 [[package]]
 name = "webpki-root-certs"
-version = "1.0.10"
+version = "1.0.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "58ec80e73fd8baf57bf0d9615554c75348bda990d6d5bbeab964dd068319fecb"
+checksum = "293198dcebfb821155b5092ab94b5a82ff180eddd7241df3bd6e66a4ffd1a585"
 dependencies = [
  "rustls-pki-types",
 ]
@@ -14036,8 +14343,8 @@ dependencies = [
 
 [[package]]
 name = "wgpu"
-version = "30.0.1"
-source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#9e0ab702c11f5db7b62670eaf9aeaf8a2f8ff7b5"
+version = "30.0.2"
+source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#68544c99579524dd46cc73eac03b49f8f680b768"
 dependencies = [
  "arrayvec",
  "bitflags 2.13.2",
@@ -14065,8 +14372,8 @@ dependencies = [
 
 [[package]]
 name = "wgpu-core"
-version = "30.0.1"
-source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#9e0ab702c11f5db7b62670eaf9aeaf8a2f8ff7b5"
+version = "30.0.2"
+source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#68544c99579524dd46cc73eac03b49f8f680b768"
 dependencies = [
  "arrayvec",
  "bit-set 0.10.0",
@@ -14099,32 +14406,32 @@ dependencies = [
 
 [[package]]
 name = "wgpu-core-deps-apple"
-version = "30.0.1"
-source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#9e0ab702c11f5db7b62670eaf9aeaf8a2f8ff7b5"
+version = "30.0.2"
+source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#68544c99579524dd46cc73eac03b49f8f680b768"
 dependencies = [
  "wgpu-hal",
 ]
 
 [[package]]
 name = "wgpu-core-deps-emscripten"
-version = "30.0.1"
-source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#9e0ab702c11f5db7b62670eaf9aeaf8a2f8ff7b5"
+version = "30.0.2"
+source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#68544c99579524dd46cc73eac03b49f8f680b768"
 dependencies = [
  "wgpu-hal",
 ]
 
 [[package]]
 name = "wgpu-core-deps-wasm"
-version = "30.0.1"
-source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#9e0ab702c11f5db7b62670eaf9aeaf8a2f8ff7b5"
+version = "30.0.2"
+source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#68544c99579524dd46cc73eac03b49f8f680b768"
 dependencies = [
  "wgpu-hal",
 ]
 
 [[package]]
 name = "wgpu-core-deps-windows-linux-android"
-version = "30.0.1"
-source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#9e0ab702c11f5db7b62670eaf9aeaf8a2f8ff7b5"
+version = "30.0.2"
+source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#68544c99579524dd46cc73eac03b49f8f680b768"
 dependencies = [
  "wgpu-hal",
 ]
@@ -14149,8 +14456,8 @@ dependencies = [
 
 [[package]]
 name = "wgpu-hal"
-version = "30.0.1"
-source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#9e0ab702c11f5db7b62670eaf9aeaf8a2f8ff7b5"
+version = "30.0.2"
+source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#68544c99579524dd46cc73eac03b49f8f680b768"
 dependencies = [
  "android_system_properties",
  "arrayvec",
@@ -14204,8 +14511,8 @@ dependencies = [
 
 [[package]]
 name = "wgpu-naga-bridge"
-version = "30.0.1"
-source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#9e0ab702c11f5db7b62670eaf9aeaf8a2f8ff7b5"
+version = "30.0.2"
+source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#68544c99579524dd46cc73eac03b49f8f680b768"
 dependencies = [
  "naga",
  "wgpu-types",
@@ -14224,8 +14531,8 @@ dependencies = [
 
 [[package]]
 name = "wgpu-types"
-version = "30.0.1"
-source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#9e0ab702c11f5db7b62670eaf9aeaf8a2f8ff7b5"
+version = "30.0.2"
+source = "git+https://github.com/water-rs/wgpu?branch=fix%2Fmetal-shared-memory-v30#68544c99579524dd46cc73eac03b49f8f680b768"
 dependencies = [
  "bitflags 2.13.2",
  "bytemuck",
@@ -14775,9 +15082,9 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 
 [[package]]
 name = "wl-clipboard-rs"
-version = "0.9.4"
+version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4d7888ccd4896447b2d14d3a9350a85df2aeb6f181e2e7a31349d104ac46cac1"
+checksum = "959c7ac3b8afde864f7a7448ac16f29b2b83350b7eccbf77fb781c3999aa6848"
 dependencies = [
  "libc",
  "log",
@@ -15005,9 +15312,9 @@ dependencies = [
 
 [[package]]
 name = "yuv"
-version = "0.8.19"
+version = "0.8.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a295923535c00a4e72a50a0a1130097f93160b39892dd4d2d006b1e2b90d6bf9"
+checksum = "3d109d1eacc7b034329873d2d848039b365c65ab7d751b19ee84e4921c62c607"
 dependencies = [
  "num-traits",
 ]
@@ -15042,9 +15349,38 @@ dependencies = [
  "uuid",
  "windows-sys 0.61.2",
  "winnow 1.0.4",
- "zbus_macros",
+ "zbus_macros 5.19.0",
  "zbus_names",
  "zvariant",
+]
+
+[[package]]
+name = "zbus"
+version = "6.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6b4aae740b23927ceabed962431abab2cdefb9f7f885e5bbab062da09bf580e4"
+dependencies = [
+ "async-trait",
+ "bitflags 2.13.2",
+ "endi",
+ "futures-core",
+ "hex",
+ "libc",
+ "ordered-stream",
+ "rustix 1.1.5",
+ "serde",
+ "serde_repr",
+ "socket2",
+ "tokio",
+ "tracing",
+ "uds_windows",
+ "uuid",
+ "windows-sys 0.61.2",
+ "winnow 1.0.4",
+ "zbus_macros 6.3.0",
+ "zbus_utils",
+ "zcheapstr",
+ "zruntime",
 ]
 
 [[package]]
@@ -15087,6 +15423,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "zbus_macros"
+version = "6.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "37c9dd4beaf145c16fcb2902862f50da86e54aed13dd368ddf64a1d17e6b8529"
+dependencies = [
+ "proc-macro2 1.0.107",
+ "quote 1.0.47",
+ "syn 3.0.9",
+ "zbus_utils",
+]
+
+[[package]]
 name = "zbus_names"
 version = "4.3.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -15095,6 +15443,19 @@ dependencies = [
  "serde",
  "winnow 1.0.4",
  "zvariant",
+]
+
+[[package]]
+name = "zbus_utils"
+version = "6.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "af55e52da295311b368c45bcae221f020e28e97a2420360170ce389218e76ec7"
+dependencies = [
+ "proc-macro2 1.0.107",
+ "quote 1.0.47",
+ "serde",
+ "syn 3.0.9",
+ "winnow 1.0.4",
 ]
 
 [[package]]
@@ -15133,7 +15494,7 @@ dependencies = [
  "base64 0.22.1",
  "cfg_aliases",
  "dirs 6.0.0",
- "dns-lookup",
+ "dns-lookup 3.0.1",
  "executor-core",
  "futures-channel",
  "futures-io",
@@ -15142,7 +15503,7 @@ dependencies = [
  "gloo-timers 0.3.0",
  "http",
  "http-body-util",
- "http-kit",
+ "http-kit 0.4.3",
  "httpdate",
  "hyper",
  "hyper-util",
@@ -15177,11 +15538,10 @@ dependencies = [
  "async-lock",
  "async-net",
  "async-trait",
- "async-tungstenite",
  "base64 0.22.1",
  "cfg_aliases",
  "dirs 6.0.0",
- "dns-lookup",
+ "dns-lookup 3.0.1",
  "executor-core",
  "futures-channel",
  "futures-io",
@@ -15192,7 +15552,7 @@ dependencies = [
  "hickory-resolver",
  "http",
  "http-body-util",
- "http-kit",
+ "http-kit 0.4.3",
  "httpdate",
  "hyper",
  "hyper-util",
@@ -15218,6 +15578,64 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasm-streams",
  "web-sys",
+]
+
+[[package]]
+name = "zenwave"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2caf0440d2e45b764b01bd81db255e2ef36d63e4ac467cf1d8ffce36b7626e6f"
+dependencies = [
+ "anyhow",
+ "async-fs",
+ "async-io",
+ "async-lock",
+ "async-net",
+ "async-trait",
+ "async-tungstenite",
+ "base64 0.23.1",
+ "cfg_aliases",
+ "cookie_store",
+ "dirs 7.0.0",
+ "dns-lookup 4.0.2",
+ "executor-core",
+ "futures-channel",
+ "futures-io",
+ "futures-rustls",
+ "futures-util",
+ "gloo-timers 0.4.0",
+ "hickory-proto",
+ "hickory-resolver",
+ "http",
+ "http-body-util",
+ "http-kit 0.8.2",
+ "http-kit-io",
+ "httpdate",
+ "hyper",
+ "hyper-util",
+ "jni 0.22.4",
+ "jni-min-helper",
+ "js-sys",
+ "libc",
+ "native-tls",
+ "ndk-context",
+ "once_cell",
+ "rustls",
+ "rustls-pki-types",
+ "rustls-platform-verifier",
+ "serde",
+ "serde_json",
+ "socket2",
+ "thiserror 2.0.21",
+ "time",
+ "tower-service",
+ "tracing",
+ "url",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wasm-streams",
+ "web-sys",
+ "webpki-root-certs",
 ]
 
 [[package]]
@@ -15361,6 +15779,20 @@ dependencies = [
  "crc32fast",
  "log",
  "simd-adler32",
+]
+
+[[package]]
+name = "zruntime"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ce6a55d4f521760475a30f7b96779508fe8c40dc834478709454dd1d5f0ebc72"
+dependencies = [
+ "futures-core",
+ "futures-io",
+ "rustix 1.1.5",
+ "socket2",
+ "tracing",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

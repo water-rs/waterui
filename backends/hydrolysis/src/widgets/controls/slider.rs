@@ -4,8 +4,8 @@ use crate::renderer::chrome::{ChromeContent, IndicatorContent, LiveChromeParts, 
 #[cfg(feature = "accessibility")]
 use crate::renderer::slider_step_for_range;
 use crate::renderer::{
-    GroupOpacity, HydroNativeView, HydroState, HydrolysisRenderer, RenderContext,
-    WidgetRenderContext, slider_value_epsilon,
+    GroupOpacity, HeldChild, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext,
+    slider_value_epsilon,
 };
 use crate::theme::{
     DragMapping, Inputs, SliderLayout, SliderLook, SliderSpec, SpecTint, WidgetTheme,
@@ -22,16 +22,14 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use waterui::ViewExt as _;
 use waterui_controls::ControlSize;
-use waterui_controls::label::{Label, LabelDisplayMode};
+use waterui_controls::label::{ControlLabel, LabelDisplayMode};
 use waterui_controls::slider::{SliderConfig, ValueFormatter, snap};
-use waterui_core::AnyView;
 use waterui_core::Environment;
-use waterui_core::Native;
 use waterui_core::contract_violation;
-use waterui_core::interaction::InteractionState;
 use waterui_core::layout::Alignment;
 use waterui_core::layout::Size as LayoutSize;
 use waterui_core::layout::{HorizontalAlignment, LayoutDirection, ProposalSize, ViewDimensions};
+use waterui_interaction::interaction::InteractionState;
 use waterui_text::IntoText as _;
 use waterui_text::styled::StyledStr;
 
@@ -43,15 +41,13 @@ use crate::widgets::util::{label_beside_control_bounds, widget_disabled};
 /// `Widget` node holds them as [`RetainedSubview`]s built once and re-flushed each
 /// frame; the cloneable `label`/`range`/`value` drive the track and accessibility.
 pub struct SliderRenderState<E: crate::text::TextEngine> {
-    label: Label,
+    label: ControlLabel<HeldChild<E>>,
     /// The main label as a retained node sub-view, re-flushed each frame at its
     /// rect (reactive content stays live through the node's own re-flush). The
     /// cloneable `label` is kept alongside for accessibility resolution.
     label_view: RetainedSubview<E>,
     min_value_label: RetainedSubview<E>,
     max_value_label: RetainedSubview<E>,
-    /// Whether a label is set beside either end of the track.
-    value_labels: bool,
     range: RangeInclusive<f64>,
     step: Option<f64>,
     value: Binding<f64>,
@@ -89,7 +85,18 @@ fn valid_range(range: RangeInclusive<f64>) -> RangeInclusive<f64> {
 }
 
 impl<E: crate::text::TextEngine> SliderRenderState<E> {
-    pub(crate) fn from_config(config: SliderConfig) -> Self {
+    /// The label this control contributes to a node naming itself from its
+    /// content: its own label.
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn contributed_label(
+        &self,
+        _renderer: &mut crate::renderer::SemanticCore<E>,
+        env: &Environment,
+    ) -> Option<String> {
+        crate::renderer::SemanticCore::<E>::accessibility_label_from_label(&self.label, env)
+    }
+
+    pub(crate) fn from_config(config: SliderConfig<HeldChild<E>>) -> Self {
         let (label, min_value_label, max_value_label, range, value, size, value_indicator, step) =
             config.into_parts();
         let range = valid_range(range);
@@ -99,11 +106,10 @@ impl<E: crate::text::TextEngine> SliderRenderState<E> {
             value.map(move |value: f64| (value.clamp(start, end) - start) / (end - start)),
         );
         Self {
-            label_view: RetainedSubview::new(AnyView::new(label.clone())),
+            label_view: RetainedSubview::held(label.build()),
             label,
-            value_labels: !min_value_label.is::<()>() || !max_value_label.is::<()>(),
-            min_value_label: RetainedSubview::new(min_value_label),
-            max_value_label: RetainedSubview::new(max_value_label),
+            min_value_label: RetainedSubview::held(min_value_label),
+            max_value_label: RetainedSubview::held(max_value_label),
             range,
             step,
             value,
@@ -140,13 +146,21 @@ impl<E: crate::text::TextEngine> SliderRenderState<E> {
             | self.max_value_label.take_layout_dirty_if_built()
     }
 
+    /// Whether a label beside either end of the track draws anything: an
+    /// unset one is `()`, which realizes as an empty node.
+    fn value_labels(&self) -> bool {
+        [&self.min_value_label, &self.max_value_label]
+            .into_iter()
+            .any(|label| label.node().is_some_and(|node| !node.is_empty()))
+    }
+
     fn spec(&self, env: &Environment) -> SliderSpec {
         slider_spec(
             &self.label,
             self.size,
             &self.range,
             self.step,
-            self.value_labels,
+            self.value_labels(),
             self.value_indicator.is_some(),
             env,
         )
@@ -183,8 +197,8 @@ impl<E: crate::text::TextEngine> SliderRenderState<E> {
 }
 
 /// The spec of a slider in `env`.
-fn slider_spec(
-    label: &Label,
+fn slider_spec<S>(
+    label: &ControlLabel<S>,
     size: ControlSize,
     range: &RangeInclusive<f64>,
     step: Option<f64>,
@@ -202,43 +216,6 @@ fn slider_spec(
         value_labels,
         value_indicator,
     )
-}
-
-impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<SliderConfig> {
-    fn intrinsic(
-        state: &mut HydroState<E>,
-        view: &Self,
-        env: &Environment,
-        theme: &Rc<dyn crate::theme::WidgetTheme>,
-    ) -> LayoutSize {
-        measure_slider_intrinsic(view.as_inner(), state, env, theme)
-    }
-}
-
-/// Measures a slider from its config, without a retained node.
-pub fn measure_slider_intrinsic<E: crate::text::TextEngine>(
-    slider: &SliderConfig,
-    state: &mut HydroState<E>,
-    env: &Environment,
-    theme: &Rc<dyn crate::theme::WidgetTheme>,
-) -> LayoutSize {
-    let value_labels = !slider.min_value_label().is::<()>() || !slider.max_value_label().is::<()>();
-    let spec = slider_spec(
-        slider.label(),
-        slider.size(),
-        slider.range(),
-        slider.step(),
-        value_labels,
-        slider.value_indicator().is_some(),
-        env,
-    );
-    let look = theme.slider(&spec, env);
-    let measured = Measured {
-        label: crate::renderer::measure_label_intrinsic(slider.label(), state, env, theme),
-        min: crate::renderer::measure_view_intrinsic(slider.min_value_label(), state, env, theme),
-        max: crate::renderer::measure_view_intrinsic(slider.max_value_label(), state, env, theme),
-    };
-    intrinsic_size(&look, &spec, &measured)
 }
 
 /// The sizes of a slider's labels, as measured.
@@ -339,12 +316,12 @@ fn place(look: &SliderLook, spec: &SliderSpec, measured: &Measured, bounds: Rect
     let (left, right) = drawn.sides(layout, direction);
     let band = drawn.band(layout);
     let label = (drawn.label > 0.0).then(|| {
-        Rect::new(
-            bounds.x0,
-            bounds.y0,
-            bounds.x1,
-            (bounds.y0 + drawn.label).min(bounds.y1),
-        )
+        let width = f64::from(measured.label.width).min(bounds.width()).max(0.0);
+        let (x0, x1) = match direction {
+            LayoutDirection::LeftToRight => (bounds.x0, bounds.x0 + width),
+            LayoutDirection::RightToLeft => (bounds.x1 - width, bounds.x1),
+        };
+        Rect::new(x0, bounds.y0, x1, (bounds.y0 + drawn.label).min(bounds.y1))
     });
     let row = Rect::new(
         bounds.x0,
@@ -390,10 +367,10 @@ fn place(look: &SliderLook, spec: &SliderSpec, measured: &Measured, bounds: Rect
     clippy::too_many_arguments,
     reason = "the node's fields, passed apart because the caller holds the state borrowed"
 )]
-fn slider_accessibility_parts<E: crate::text::TextEngine>(
+fn slider_accessibility_parts<E: crate::text::TextEngine, S>(
     renderer: &mut crate::renderer::SemanticCore<E>,
     ctx: Option<RenderContext>,
-    label: &Label,
+    label: &ControlLabel<S>,
     range: &RangeInclusive<f64>,
     step: Option<f64>,
     value: &Binding<f64>,
@@ -788,9 +765,7 @@ pub fn render_slider_parts<E: crate::text::TextEngine>(
         let text = Rc::clone(text);
         let styled: Computed<StyledStr> =
             Computed::new(value_binding.map(move |value: f64| text(value)));
-        let mut subview = RetainedSubview::new(AnyView::new(
-            styled.into_text().alignment(Alignment::Center),
-        ));
+        let mut subview = RetainedSubview::new(styled.into_text().alignment(Alignment::Center));
         subview.ensure_built(ctx.renderer_mut(), env);
         indicator_text = Some(subview);
     }
@@ -999,10 +974,81 @@ pub fn emit_slider_accessibility<E: crate::text::TextEngine>(
 
 #[cfg(test)]
 mod tests {
-    use super::{dragged_value, valid_range};
-    use crate::theme::DragMapping;
-    use kurbo::{Point, Rect};
-    use waterui_core::layout::LayoutDirection;
+    use super::{Measured, dragged_value, place, valid_range};
+    use crate::theme::{
+        DragMapping, HitRegion, Knob, Motion, SliderLayout, SliderLook, SliderSpec, SpecTint,
+    };
+    use core::time::Duration;
+    use kurbo::{Point, Rect, Size};
+    use waterui::animation::Animation;
+    use waterui_controls::ControlSize;
+    use waterui_core::Environment;
+    use waterui_core::layout::{LayoutDirection, Size as LayoutSize};
+
+    fn test_slider_look() -> SliderLook {
+        SliderLook::new(
+            SliderLayout {
+                row_height: 30.0,
+                track_inset: 12.0,
+                label_inset: 0.0,
+                label_gap: 8.0,
+                minimum_track: 72.0,
+                label_spacing: Some(6.0),
+            },
+            Knob {
+                size: Size::new(24.0, 24.0),
+                hit: HitRegion::NONE,
+            },
+            DragMapping::Absolute,
+            Motion::uniform(Animation::linear(Duration::from_millis(15))),
+        )
+    }
+
+    #[test]
+    fn place_aligns_main_label_to_the_leading_edge_and_mirrors_in_rtl() {
+        let look = test_slider_look();
+        let env = Environment::new();
+        let bounds = Rect::new(10.0, 20.0, 310.0, 76.0);
+        let measured = Measured {
+            label: LayoutSize::new(56.0, 18.0),
+            min: LayoutSize::zero(),
+            max: LayoutSize::zero(),
+        };
+
+        let ltr_spec = SliderSpec::new(
+            ControlSize::Medium,
+            0.0..=1.0,
+            None,
+            LayoutDirection::LeftToRight,
+            SpecTint::resolve(&env),
+            true,
+            false,
+            false,
+        );
+        let ltr = place(&look, &ltr_spec, &measured, bounds);
+        assert_eq!(ltr.label, Some(Rect::new(10.0, 20.0, 66.0, 38.0)));
+
+        let rtl_spec = SliderSpec::new(
+            ControlSize::Medium,
+            0.0..=1.0,
+            None,
+            LayoutDirection::RightToLeft,
+            SpecTint::resolve(&env),
+            true,
+            false,
+            false,
+        );
+        let rtl = place(&look, &rtl_spec, &measured, bounds);
+        assert_eq!(rtl.label, Some(Rect::new(254.0, 20.0, 310.0, 38.0)));
+
+        let wide = Measured {
+            label: LayoutSize::new(500.0, 18.0),
+            min: LayoutSize::zero(),
+            max: LayoutSize::zero(),
+        };
+        let clamped = place(&look, &ltr_spec, &wide, bounds);
+        assert_eq!(clamped.label, Some(Rect::new(10.0, 20.0, 310.0, 38.0)));
+    }
 
     #[test]
     #[cfg_attr(

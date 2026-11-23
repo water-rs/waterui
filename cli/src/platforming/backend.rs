@@ -33,9 +33,8 @@ pub enum HydrolysisRender {
     /// The GPU backend alone: a host without a usable GPU backend fails at
     /// startup with an unsupported-device error.
     Gpu,
-    /// The CPU backend alone, with no `wgpu` in the build. Presenting it to
-    /// a desktop window is water-rs/waterui#4064; until then only offscreen
-    /// rendering builds with it.
+    /// The CPU backend alone, with no `wgpu` in the build. Desktop windows
+    /// present its frames through `softbuffer`.
     Cpu,
     /// Both: rendering is on the GPU when the host has a usable hardware
     /// adapter and on the CPU otherwise.

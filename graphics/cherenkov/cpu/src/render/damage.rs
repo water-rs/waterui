@@ -211,14 +211,43 @@ impl Damage {
                     active += apron;
                     maximum = maximum.max(active);
                 }
+                #[cfg(feature = "shaders")]
+                Item::PushContentEffect { apron, .. } => {
+                    self.filter_aprons.push(*apron);
+                    active += apron;
+                    maximum = maximum.max(active);
+                }
                 Item::PopFilter { .. } => {
                     active -= self.filter_aprons.pop().expect("paired filter scope");
+                }
+                #[cfg(feature = "shaders")]
+                Item::PopContentEffect { .. } => {
+                    active -= self
+                        .filter_aprons
+                        .pop()
+                        .expect("paired content-effect scope");
                 }
                 Item::Capture(capture) => self.captures.push(Dependency::capture(capture, h)),
                 _ => {}
             }
         }
         maximum.min(h)
+    }
+
+    /// Pixels in the selected full-width bands, clipping the final band.
+    pub fn pixels(&self, (width, height): (u32, u32)) -> u64 {
+        let height = u64::from(height);
+        let rows: u64 = self
+            .bands
+            .rectangles()
+            .iter()
+            .map(|rect| {
+                let start = (u64::from(rect.y0()) * BAND_H as u64).min(height);
+                let end = (u64::from(rect.y1()) * BAND_H as u64).min(height);
+                end - start
+            })
+            .sum();
+        rows * u64::from(width)
     }
 
     pub const fn bands(&self) -> &Region {
@@ -282,5 +311,23 @@ pub(super) fn record_rows(
             commands.push(rows);
             span.end = commands.len();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn damage_pixels_clip_the_last_band_and_clear_on_idle() {
+        let height = BAND_H + 3;
+        let size = (37, u32::try_from(height).expect("test height fits u32"));
+        let clear = ([0.0; 4], cherenkov::BlendSpace::Linear);
+        let mut damage = Damage::default();
+        damage.prepare(&[], height, clear, 0, false);
+        assert_eq!(damage.pixels(size), u64::from(size.0) * u64::from(size.1));
+        damage.commit();
+        damage.prepare(&[], height, clear, 0, false);
+        assert_eq!(damage.pixels(size), 0);
     }
 }

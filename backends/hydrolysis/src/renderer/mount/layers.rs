@@ -20,7 +20,9 @@ use cherenkov_record::{
 };
 
 use waterui_core::contract_violation;
-use waterui_graphics::backend::{HeldResources, NextFrame, SceneUpdate};
+use waterui_graphics::backend::HeldResources;
+#[cfg(hydrolysis_scene_view)]
+use waterui_graphics::backend::{NextFrame, SceneUpdate};
 
 use super::backdrop::{
     BackdropGroupKey, ChromeBackdropGroups, ChromeGroupKey, ChromeParams, MaterialBackdropGroups,
@@ -30,15 +32,18 @@ use super::cell::NodeCell;
 use super::container::{ContainerMember, solo_effect};
 use super::motion::{LayerMotion, Motion};
 use super::placement::Placement;
+#[cfg(hydrolysis_scene_view)]
+use super::program::SceneContentSource;
 use super::program::{
     ChromeMaterial, InnerProgram, Item, LiveItem, LiveOpacity, MaterialRequest, ProducerContent,
-    Program, RunKey, SceneContentSource, ScopeKey, ScopeLive, ScopeProps,
+    Program, RunKey, ScopeKey, ScopeLive, ScopeProps,
 };
 use super::stretch::{ShownStretch, StretchFilter};
 use super::target::LayerTarget;
 use crate::renderer::ProducerWake;
 use crate::renderer::chrome::LiveSource;
 use crate::renderer::recording::{LoweredResources, SolidRect};
+use crate::text::TextEngine;
 
 /// The liveness token of one node's layers: parents list children by
 /// `(LayerId, Weak<LayerToken>)`, so a dropped child is told apart from a
@@ -270,10 +275,11 @@ fn write_props<T: LayerTarget<E>, E: crate::text::TextEngine>(
             None => edit.clear_blend_space(),
         };
     }
-    if written.clip != props.clip {
-        match &props.clip {
-            Some(clip) => edit.clip(clip.clone()),
-            None => edit.clear_clip(),
+    if written.clip != props.clip || written.live.clip != props.live.clip {
+        match (&props.live.clip, &props.clip) {
+            (Some(live), _) => edit.clip(live.live()),
+            (None, Some(clip)) => edit.clip(clip.clone()),
+            (None, None) => edit.clear_clip(),
         };
     }
     if written.filter != props.filter {
@@ -321,6 +327,8 @@ pub struct ScopeLayer<E: crate::text::TextEngine> {
     layer: Layer,
     placement: Rc<Placement>,
     props: LayerProps,
+    /// Display scale at which `props.live.content_effect` was last mounted.
+    content_effect_scale: f64,
     runs: Vec<RunLayer<E>>,
     /// The `ChromeMaterial` member layers inside the scope, in program
     /// order.
@@ -643,6 +651,7 @@ impl<E: crate::text::TextEngine> Default for SceneFrames<E> {
 
 impl<E: crate::text::TextEngine> SceneFrames<E> {
     /// Files `request`, made by the content `owner` presents.
+    #[cfg(hydrolysis_scene_view)]
     fn file(&mut self, owner: &Rc<NodeCell<E>>, request: NextFrame) {
         match request {
             NextFrame::Idle => {}
@@ -707,6 +716,7 @@ pub struct CommitCx<'m, 'tx, 's, T: LayerTarget<E>, E: crate::text::TextEngine> 
     wakes: &'m mut dyn FnMut(&Rc<NodeCell<E>>) -> ProducerWake,
     /// Where the scene nodes this commit presents file the frames their
     /// content asks for next.
+    #[cfg_attr(not(any(trybuild, hydrolysis_scene_view)), expect(dead_code))]
     scene_frames: &'m mut SceneFrames<E>,
 }
 
@@ -824,15 +834,20 @@ impl<T: LayerTarget<E>, E: crate::text::TextEngine> Mount<T, E> {
         if let Some(refusal) = T::BACKDROP_SHADER_REFUSAL
             && !registry.is_empty()
         {
+            let names = registry
+                .shaders()
+                .map(|(key, _)| format!("{key:?}"))
+                .chain(
+                    registry
+                        .content_shaders()
+                        .map(|(key, _)| format!("{key:?}")),
+                )
+                .collect::<Vec<_>>()
+                .join(", ");
             contract_violation!(
-                "hydrolysis materials: the theme registered the backdrop shaders {}, but {refusal}; \
-                 the material chrome is not drawn; attach the theme to a GPU engine or register \
-                 no shaders",
-                registry
-                    .shaders()
-                    .map(|(key, _)| format!("{key:?}"))
-                    .collect::<Vec<_>>()
-                    .join(", "),
+                "hydrolysis materials: the theme registered the material shaders {names}, but \
+                 {refusal}; the material chrome is not drawn; attach the theme to a GPU or CPU \
+                 engine or register no shaders"
             );
         }
         let root = Shared::root(&shared);
@@ -1249,6 +1264,7 @@ pub fn commit_cell<T: LayerTarget<E>, E: crate::text::TextEngine>(
             .then(|| layers.frame.id())
             .or(canvas);
         commit_chrome(cx, &mut layers, child_canvas);
+        refresh_scope_content_effects(cx, &mut layers.scopes);
         for child in committed_cells(&layers) {
             commit_cell(cx, &child, child_canvas, true);
         }
@@ -1362,6 +1378,7 @@ fn lower_program<T: LayerTarget<E>, E: crate::text::TextEngine>(
         child_canvas,
     );
 
+    #[cfg(hydrolysis_scene_view)]
     assert!(
         items.is_empty() || !matches!(producer, Some(ProducerContent::Scene(_))),
         "hydrolysis commit: a scene view's frame holds only its scene"
@@ -1537,6 +1554,10 @@ fn lower_inner<T: LayerTarget<E>, E: crate::text::TextEngine>(
 /// view's recording holds.
 fn commit_producer<T: LayerTarget<E>, E: crate::text::TextEngine>(
     cx: &mut CommitCx<'_, '_, '_, T, E>,
+    #[cfg_attr(
+        not(any(hydrolysis_scene_view, hydrolysis_gpu)),
+        expect(unused_variables)
+    )]
     cell: &Rc<NodeCell<E>>,
     layers: &mut NodeLayers<E>,
     producer: Option<&ProducerContent>,
@@ -1546,6 +1567,7 @@ fn commit_producer<T: LayerTarget<E>, E: crate::text::TextEngine>(
         Some(ProducerContent::Hosted { runtime, bounds }) => {
             mount_hosted(cx, layers, runtime, *bounds);
         }
+        #[cfg(hydrolysis_scene_view)]
         Some(ProducerContent::Scene(source)) => {
             // Content updated in place keeps the set its installed
             // recording named.
@@ -1564,6 +1586,8 @@ fn commit_producer<T: LayerTarget<E>, E: crate::text::TextEngine>(
             bounds,
             visible,
         }) => mount_external(cx, cell, layers, runtime, *bounds, *visible),
+        #[cfg(not(any(hydrolysis_scene_view, hydrolysis_gpu)))]
+        Some(_) => unreachable!("ProducerContent has no variants in this build"),
         None => {
             if let Some((layer, _)) = layers.install.take() {
                 cx.retire_layer(layer);
@@ -1577,6 +1601,7 @@ fn commit_producer<T: LayerTarget<E>, E: crate::text::TextEngine>(
 /// when either differs from what it was last told, ahead of the frame the
 /// commit is about to start — the surface's first, and the first at every new
 /// size. `deliver` hands the event to the surface's handler.
+#[cfg(any(hydrolysis_scene_view, hydrolysis_gpu))]
 fn announce_surface_size(
     tracker: &mut crate::renderer::ResizeTracker,
     bounds: kurbo::Rect,
@@ -1594,6 +1619,7 @@ fn announce_surface_size(
 /// its frame against the target's resource table, rebuilding it when the
 /// table changed since its last record. Returns the resources a new
 /// recording names; `None` when the installed recording stays.
+#[cfg(hydrolysis_scene_view)]
 fn mount_scene<T: LayerTarget<E>, E: crate::text::TextEngine>(
     cx: &mut CommitCx<'_, '_, '_, T, E>,
     cell: &Rc<NodeCell<E>>,
@@ -2183,6 +2209,29 @@ fn lower_live<T: LayerTarget<E>, E: crate::text::TextEngine>(
     lives.len() - 1
 }
 
+/// Rebinds mounted scope content effects when the display scale changed
+/// without a node re-flush.
+fn refresh_scope_content_effects<T: LayerTarget<E>, E: TextEngine>(
+    cx: &mut CommitCx<'_, '_, '_, T, E>,
+    scopes: &mut [ScopeLayer<E>],
+) {
+    for scope in scopes {
+        if let Some(effect) = &scope.props.live.content_effect
+            && scope.content_effect_scale.to_bits() != cx.display_scale.to_bits()
+        {
+            T::mount_content_effect(
+                cx.host,
+                cx.tx,
+                &scope.layer,
+                effect.shader(),
+                effect.effect(),
+                cx.display_scale,
+            );
+            scope.content_effect_scale = cx.display_scale;
+        }
+    }
+}
+
 /// Lowers one scope, kept by its key across commits; returns its index in
 /// `scopes_new`.
 fn lower_scope<T: LayerTarget<E>, E: crate::text::TextEngine>(
@@ -2202,6 +2251,7 @@ fn lower_scope<T: LayerTarget<E>, E: crate::text::TextEngine>(
                 layer: cx.layer(),
                 placement: Rc::clone(placement),
                 props: LayerProps::DEFAULT,
+                content_effect_scale: 0.0,
                 runs: Vec::new(),
                 members: Vec::new(),
                 lives: Vec::new(),
@@ -2212,6 +2262,25 @@ fn lower_scope<T: LayerTarget<E>, E: crate::text::TextEngine>(
             |at| scopes_old.swap_remove(at),
         );
     scope.placement = Rc::clone(placement);
+    if scope.props.live.content_effect != props.live.content_effect
+        || (props.live.content_effect.is_some()
+            && scope.content_effect_scale.to_bits() != cx.display_scale.to_bits())
+    {
+        if let Some(effect) = &props.live.content_effect {
+            T::mount_content_effect(
+                cx.host,
+                cx.tx,
+                &scope.layer,
+                effect.shader(),
+                effect.effect(),
+                cx.display_scale,
+            );
+            scope.content_effect_scale = cx.display_scale;
+        } else {
+            T::clear_content_effect(cx.tx, &scope.layer);
+            scope.content_effect_scale = 0.0;
+        }
+    }
     write_props(
         cx.tx,
         &scope.layer,

@@ -12,6 +12,7 @@ use accesskit::{Action, ActionRequest, Role, TreeId, TreeUpdate};
 use nami::Binding;
 use nami::Signal as _;
 use waterui::ViewExt as _;
+use waterui::metadata::context_menu::IntoContextMenu;
 use waterui::prelude::{ContextMenu, DismissContextMenu, Use};
 use waterui_controls::button::button;
 use waterui_controls::menu::{CommandExt as _, MenuItem};
@@ -73,9 +74,9 @@ fn primary_click(x: f32, y: f32) -> [InputEvent; 2] {
 /// what `bounds_of` returns is what the preview lifts and the menu clears.
 /// `menu` is a factory because the builder closure is `Fn`, and `ContextMenu`
 /// is not `Clone`.
-fn host_view_with_spacer(
+fn host_view_with_spacer<M: IntoContextMenu + 'static>(
     spacer: f32,
-    menu: impl Fn() -> ContextMenu + 'static,
+    menu: impl Fn() -> M + 'static,
 ) -> AnyViewBuilder<AnyView> {
     // The trailing spacer fills the window column, so the host sits `spacer`
     // points below the window's top edge rather than in a centred block
@@ -91,11 +92,13 @@ fn host_view_with_spacer(
     })
 }
 
-fn host_view(menu: impl Fn() -> ContextMenu + 'static) -> AnyViewBuilder<AnyView> {
+fn host_view<M: IntoContextMenu + 'static>(
+    menu: impl Fn() -> M + 'static,
+) -> AnyViewBuilder<AnyView> {
     host_view_with_spacer(110.0, menu)
 }
 
-fn runtime(menu: impl Fn() -> ContextMenu + 'static) -> HeadlessRuntime {
+fn runtime<M: IntoContextMenu + 'static>(menu: impl Fn() -> M + 'static) -> HeadlessRuntime {
     HeadlessRuntime::new_for_tests(
         test_environment(),
         host_view(menu),
@@ -109,10 +112,10 @@ fn runtime(menu: impl Fn() -> ContextMenu + 'static) -> HeadlessRuntime {
 /// every context menu with a divider and an "Inspect element" row, so the
 /// menu stands `3 * row_height + padding` tall — a `240`-high window leaves
 /// no room beside any source for the below/above placements to show.
-fn runtime_sized(
+fn runtime_sized<M: IntoContextMenu + 'static>(
     spacer: f32,
     window: (u32, u32),
-    menu: impl Fn() -> ContextMenu + 'static,
+    menu: impl Fn() -> M + 'static,
 ) -> HeadlessRuntime {
     let mut runtime = HeadlessRuntime::new_for_tests(
         test_environment(),
@@ -861,16 +864,12 @@ fn a_divider_row_takes_the_themes_divider_spacing() {
     let rows = row
         + row
         + divider
-        + if cfg!(all(
-            debug_assertions,
-            feature = "inspector",
-            not(target_arch = "wasm32")
-        )) {
+        + if cfg!(all(debug_assertions, hydrolysis_inspector)) {
             divider + row
         } else {
             0.0
         };
-    let expected = crate::renderer::POPUP_MENU_PANEL_MARGIN
+    let expected = MinimalTestTheme::panel_margin()
         .mul_add(2.0, f64::mul_add(menu_metrics.vertical_padding, 2.0, rows));
     assert!(
         (f64::from(frame.height()) - expected).abs() < 1.0,
@@ -890,7 +889,7 @@ fn the_plain_popup_draws_the_theme_panel() {
     let _ = secondary_click_label(&mut runtime, "host");
     let pop = runtime.popup_frame(0).expect("the popup mounts");
 
-    let m = crate::num_cast::f64_as_u32(crate::renderer::POPUP_MENU_PANEL_MARGIN);
+    let m = crate::num_cast::f64_as_u32(MinimalTestTheme::panel_margin());
     // The window's transparent ring: well outside the panel.
     assert!(
         pixel(&pop, 1, 1)[3] < 16,
@@ -946,7 +945,7 @@ fn a_disabled_command_draws_its_label_dimmed_and_stays_inert() {
     // Rows lay out under the panel margin: first the disabled `Copy`, then
     // `Paste` — each `row_height` tall inside `vertical_padding`.
     let metrics = MinimalTestTheme::menu_layout();
-    let margin = crate::num_cast::f64_as_u32(crate::renderer::POPUP_MENU_PANEL_MARGIN);
+    let margin = crate::num_cast::f64_as_u32(MinimalTestTheme::panel_margin());
     let row_top = margin + crate::num_cast::f64_as_u32(metrics.vertical_padding);
     let row_bottom = row_top + crate::num_cast::f64_as_u32(metrics.row_height);
     let (x0, x1) = (margin + 2, pop.width() - margin - 2);
@@ -1013,5 +1012,101 @@ fn destructive_rows_draw_in_error_colour_on_the_plain_popup_path() {
     assert!(
         error_colored > 20,
         "the destructive command's label draws in the theme's error colour on the plain popup path"
+    );
+}
+
+/// A divider row inside a popup menu spans the menu panel horizontally and
+/// paints through `MenuLook::record_separator` rather than collapsing to a
+/// 1x1 leading-edge dot (`water-rs/waterui#4890`).
+#[test]
+fn popup_menu_divider_draws_through_menu_look_record_separator() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use cherenkov_record::{Draw as _, WorkingColor};
+    use kurbo::Rect;
+
+    use crate::num_cast::f64_as_u32;
+    use crate::renderer::input::popup_menu_divider_height;
+    use crate::theme::{Custom, MenuLook};
+
+    let recorded: Rc<RefCell<Vec<Rect>>> = Rc::new(RefCell::new(Vec::new()));
+    let recorded_for_draw = Rc::clone(&recorded);
+    let base = MinimalTestTheme::menu_look();
+    let metrics = base.layout();
+    let separator_color = WorkingColor::new([0.05, 0.85, 0.20, 1.0]);
+    let look = MenuLook::new(
+        metrics,
+        base.panel().clone(),
+        Custom::new((), move |recorder, frame, ()| {
+            recorded_for_draw.borrow_mut().push(frame);
+            recorder.fill(frame, separator_color);
+        }),
+    );
+
+    let mut runtime = HeadlessRuntime::new_for_tests(
+        test_environment(),
+        host_view_with_spacer(20.0, || {
+            ContextMenu::new(vec![
+                MenuItem::from("Copy".action(|| {})),
+                MenuItem::Divider,
+                MenuItem::from("Paste".action(|| {})),
+            ])
+        }),
+        320,
+        560,
+        MinimalTestTheme::default().with_menu_look(look),
+    );
+    let _ = secondary_click_label(&mut runtime, "host");
+    let pop = runtime.popup_frame(0).expect("the popup mounts");
+
+    let margin = MinimalTestTheme::panel_margin();
+    let panel_width = margin.mul_add(-2.0, f64::from(pop.width()));
+    let expected_width = metrics
+        .separator_horizontal_inset
+        .mul_add(-2.0, panel_width);
+    let draws = recorded.borrow();
+    assert!(
+        !draws.is_empty(),
+        "popup menu divider must invoke MenuLook::record_separator"
+    );
+    let first = draws[0];
+    assert!(
+        (first.width() - expected_width).abs() < 1.5,
+        "separator must span panel width minus horizontal insets ({expected_width}), got {first:?}"
+    );
+    assert!(
+        (first.height() - metrics.separator_thickness).abs() < 0.1,
+        "separator must use separator_thickness ({}), got {first:?}",
+        metrics.separator_thickness
+    );
+
+    // Inspect the rendered popup framebuffer along the first divider's vertical
+    // centre: green ink spans from leading inset to trailing inset, while the
+    // leading inset margin itself remains the panel surface colour.
+    let divider_y = f64_as_u32(
+        margin
+            + metrics.vertical_padding
+            + metrics.row_height
+            + popup_menu_divider_height(metrics) / 2.0,
+    );
+    let margin_u32 = f64_as_u32(margin);
+    let inset_u32 = f64_as_u32(metrics.separator_horizontal_inset);
+    let sample_xs = [
+        margin_u32 + inset_u32 + 4,
+        pop.width() / 2,
+        pop.width() - margin_u32 - inset_u32 - 4,
+    ];
+    for x in sample_xs {
+        let px = pixel(&pop, x, divider_y);
+        assert!(
+            px[1] > px[0] + 40 && px[1] > px[2] + 40,
+            "separator ink must span horizontally at x={x}, y={divider_y}, got {px:?}"
+        );
+    }
+    let inset_px = pixel(&pop, margin_u32 + 4, divider_y);
+    assert!(
+        inset_px[0] > 220 && inset_px[1] > 220 && inset_px[2] > 220,
+        "horizontal separator inset must remain panel surface colour, got {inset_px:?}"
     );
 }

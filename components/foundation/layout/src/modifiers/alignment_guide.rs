@@ -161,10 +161,6 @@ where
             (self.content,),
         )
     }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        self.content.stretch_axis()
-    }
 }
 
 #[derive(Clone)]
@@ -311,28 +307,14 @@ where
             (self.content,),
         )
     }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        self.content.stretch_axis()
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use crate::{LayoutError, Rect, ResolvedExtent};
-    use waterui_core::{AnyView, Environment, View, layout::Point};
+    use waterui_core::{AnyView, Environment, View, layout::Point, view::ViewSequence};
 
     use super::*;
-
-    struct StretchingView;
-
-    impl View for StretchingView {
-        fn body(self, _env: &Environment) -> impl View {}
-
-        fn stretch_axis(&self) -> StretchAxis {
-            StretchAxis::Horizontal
-        }
-    }
 
     struct GuidedSubview {
         size: Size,
@@ -363,19 +345,21 @@ mod tests {
     fn horizontal_alignment_guide_preserves_content_stretch_axis() {
         let env = Environment::default();
         let body = HorizontalAlignmentGuide::new(
-            StretchingView,
+            (),
             HorizontalAlignment::Leading,
             |_dimensions: &ViewDimensions| 12.0,
         )
         .body(&env);
         let container = AnyView::new(body)
-            .downcast::<FixedContainer>()
+            .downcast::<FixedContainer<((),)>>()
             .expect("alignment guide body should be a FixedContainer");
         let (layout, children) = container.as_parts();
 
-        assert_eq!(children.len(), 1);
-        let child_axes: Vec<StretchAxis> = children.iter().map(View::stretch_axis).collect();
-        assert_eq!(layout.stretch_axis(&child_axes), StretchAxis::Horizontal);
+        assert_eq!(ViewSequence::len(children), 1);
+        assert_eq!(
+            layout.stretch_axis(&[StretchAxis::Horizontal]),
+            StretchAxis::Horizontal
+        );
     }
 
     #[test]
@@ -388,13 +372,12 @@ mod tests {
         )
         .body(&env);
         let container = AnyView::new(body)
-            .downcast::<FixedContainer>()
+            .downcast::<FixedContainer<((),)>>()
             .expect("alignment guide body should be a FixedContainer");
         let (layout, children) = container.as_parts();
 
-        assert_eq!(children.len(), 1);
-        let child_axes: Vec<StretchAxis> = children.iter().map(View::stretch_axis).collect();
-        assert_eq!(layout.stretch_axis(&child_axes), StretchAxis::None);
+        assert_eq!(ViewSequence::len(children), 1);
+        assert_eq!(layout.stretch_axis(&[StretchAxis::None]), StretchAxis::None);
         assert_eq!(
             layout.explicit_horizontal_alignments(),
             vec![HorizontalAlignment::Leading]
@@ -472,13 +455,12 @@ mod tests {
         )
         .body(&env);
         let container = AnyView::new(body)
-            .downcast::<FixedContainer>()
+            .downcast::<FixedContainer<((),)>>()
             .expect("alignment guide body should be a FixedContainer");
         let (layout, children) = container.as_parts();
 
-        assert_eq!(children.len(), 1);
-        let child_axes: Vec<StretchAxis> = children.iter().map(View::stretch_axis).collect();
-        assert_eq!(layout.stretch_axis(&child_axes), StretchAxis::None);
+        assert_eq!(ViewSequence::len(children), 1);
+        assert_eq!(layout.stretch_axis(&[StretchAxis::None]), StretchAxis::None);
         assert_eq!(
             layout.explicit_vertical_alignments(),
             vec![VerticalAlignment::Top]

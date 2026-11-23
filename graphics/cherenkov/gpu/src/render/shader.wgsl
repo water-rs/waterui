@@ -771,6 +771,46 @@ fn backdrop_effect(px: BackdropPixel, params: array<vec4<f32>, 16>) -> vec4<f32>
 }
 // backdrop-effect-stub
 
+// content-effect-only
+struct ContentPixel {
+    p: vec2<f32>,
+    sdf: f32,
+    normal: vec2<f32>,
+    size: vec2<f32>,
+    scale: f32,
+    local: vec2<f32>,
+}
+
+fn content_texel(c: vec2<i32>, size: vec2<i32>) -> vec4<f32> {
+    if c.x < 0 || c.y < 0 || c.x >= size.x || c.y >= size.y {
+        return vec4<f32>(0.0);
+    }
+    return textureLoad(source, c, 0);
+}
+
+// Bilinear read of the layer's isolated content at device point `q`,
+// returning premultiplied extended linear Display P3 and transparent
+// outside the isolated content bounds.
+fn content_sample(q: vec2<f32>) -> vec4<f32> {
+    let f = q - backdrop_origin - vec2<f32>(0.5);
+    let lo = vec2<i32>(floor(f));
+    let t = f - vec2<f32>(lo);
+    let hi = lo + vec2<i32>(1);
+    let size = vec2<i32>(backdrop_size);
+    let c00 = content_texel(lo, size);
+    let c10 = content_texel(vec2<i32>(hi.x, lo.y), size);
+    let c01 = content_texel(vec2<i32>(lo.x, hi.y), size);
+    let c11 = content_texel(hi, size);
+    return backdrop_read(mix(mix(c00, c10, t.x), mix(c01, c11, t.x), t.y));
+}
+
+// content-effect-stub
+fn content_effect(px: ContentPixel, params: array<vec4<f32>, 16>) -> vec4<f32> {
+    return content_sample(px.p);
+}
+// content-effect-stub
+// content-effect-only
+
 // The member composite for a PAINT_BACKDROP instance: the effect in
 // meta_.w's low bits (`kind | stop count << 8`) evaluated at the device
 // pixel centre `pixel`. grad.xy is the capture origin, grad.z the capture
@@ -862,7 +902,21 @@ fn paint_backdrop(i: u32, pixel: vec2<f32>) -> vec4<f32> {
     for (var j = 0u; j < count; j = j + 1u) {
         params[j] = stops[first + j].color;
     }
+    // content-effect-branch
+    // content-effect-guard
+    if kind == EFFECT_CONTENT {
+    // content-effect-guard
+        return content_effect(
+            ContentPixel(px.p, px.own_sdf, px.normal, px.size, px.scale, px.local),
+            params,
+        );
+    // content-effect-guard
+    }
+    // content-effect-guard
+    // content-effect-branch
+    // backdrop-effect-branch
     return backdrop_effect(px, params);
+    // backdrop-effect-branch
 }
 
 // The tile build profile replaces these two interfaces with attachment

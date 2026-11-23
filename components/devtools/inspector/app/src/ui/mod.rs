@@ -25,37 +25,32 @@ pub(crate) mod parts;
 pub fn inspector(model: Model, subscriptions: SubscriptionSender) -> impl View {
     let selected = model.section.clone();
 
-    NavigationSplitView::new(
-        &selected,
-        sidebar(model.clone()),
-        detail_builder(model, subscriptions),
-    )
+    NavigationSplitView::new(&selected, sidebar(model.clone()), move |section| {
+        detail(section, model.clone(), subscriptions.clone())
+    })
 }
 
 /// Builds one section's pane, without the surrounding split view.
 ///
 /// Exposed so each pane can be mounted and reviewed on its own.
-pub fn pane(section: Section, model: Model, subscriptions: SubscriptionSender) -> AnyView {
+pub fn pane(section: Section, model: Model, subscriptions: SubscriptionSender) -> impl View {
     match section {
-        Section::Overview => overview::view(model, subscriptions).anyview(),
-        Section::Frames => frames::view(model).anyview(),
-        Section::Tree => tree::view(model).anyview(),
-        Section::Tasks => tasks::view(model).anyview(),
-        Section::Logs => logs::view(model).anyview(),
-        Section::Signals => signals::view(model).anyview(),
+        Section::Overview => OneOf6::A(overview::view(model, subscriptions)),
+        Section::Frames => OneOf6::B(frames::view(model)),
+        Section::Tree => OneOf6::C(tree::view(model)),
+        Section::Tasks => OneOf6::D(tasks::view(model)),
+        Section::Logs => OneOf6::E(logs::view(model)),
+        Section::Signals => OneOf6::F(signals::view(model)),
     }
 }
 
-/// Builds the detail column for whichever section is selected.
-fn detail_builder(
+/// The detail column for the selected `section`.
+fn detail(
+    section: Section,
     model: Model,
     subscriptions: SubscriptionSender,
-) -> impl Fn(Section) -> NavigationView + 'static {
-    move |section| {
-        let model = model.clone();
-        let subscriptions = subscriptions.clone();
-        NavigationView::new(section.title(), pane(section, model, subscriptions))
-    }
+) -> NavigationView<impl View> {
+    NavigationView::new(section.title(), pane(section, model, subscriptions))
 }
 
 /// The section list, with a live connection indicator pinned above it.
@@ -99,11 +94,11 @@ fn sidebar_row(section: Section, model: &Model) -> impl View + use<> {
     // A channel the target cannot produce is shown, dimmed, rather than hidden:
     // knowing a capability is absent is itself diagnostic information.
     match unavailable {
-        Some(unavailable) => row
-            .opacity(unavailable.clone().select(0.45, 1.0))
-            .disabled(unavailable)
-            .anyview(),
-        None => row.anyview(),
+        Some(unavailable) => OneOf2::A(
+            row.opacity(unavailable.clone().select(0.45, 1.0))
+                .disabled(unavailable),
+        ),
+        None => OneOf2::B(row),
     }
 }
 

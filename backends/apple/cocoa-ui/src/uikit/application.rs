@@ -26,6 +26,7 @@ use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{
     ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send,
 };
+use objc2_core_foundation::CGSize;
 use objc2_foundation::{NSDictionary, NSObjectProtocol, NSSet, NSString};
 use objc2_ui_kit::{
     UIApplication, UIApplicationDelegate, UIApplicationLaunchOptionsKey, UICommand,
@@ -39,6 +40,7 @@ use super::catalyst_tracking::MenuTracking;
 use super::key_commands::{KeyCommandRegistry, KeyCommands};
 use super::window::Window;
 use crate::callback::guarded;
+use crate::geometry::Size;
 
 type LaunchHandler = Box<dyn FnOnce(MainThreadMarker)>;
 type SceneHandler = Rc<dyn Fn(&WindowScene) -> Window>;
@@ -206,6 +208,14 @@ pub fn request_main_menu_rebuild(mtm: MainThreadMarker) {
     unsafe { UIMainMenuSystem::mainSystem(mtm) }.setNeedsRebuild();
 }
 
+/// Installs `handler` as the main menu system's build handler and requests
+/// a rebuild once `UIApplication` has started.
+pub fn set_main_menu_builder(mtm: MainThreadMarker, handler: impl Fn(&MenuBuilder<'_>) + 'static) {
+    let delegate = AppDelegate::current(mtm);
+    install_main_menu_builder(&delegate, Box::new(handler));
+    request_main_menu_rebuild(mtm);
+}
+
 impl fmt::Debug for ApplicationHandlers {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ApplicationHandlers")
@@ -252,6 +262,48 @@ impl WindowScene {
     #[must_use]
     pub fn session_id(&self) -> String {
         self.scene.session().persistentIdentifier().to_string()
+    }
+
+    /// The highest rate, in frames per second, the scene's screen can
+    /// display.
+    ///
+    /// # Panics
+    ///
+    /// If `UIKit` reports a negative rate.
+    #[must_use]
+    pub fn max_frames_per_second(&self) -> u32 {
+        u32::try_from(self.scene.screen().maximumFramesPerSecond())
+            .expect("a screen's maximum refresh rate is not negative")
+    }
+
+    /// Sets the title the system shows for the scene in the App Switcher and
+    /// Stage Manager.
+    pub fn set_title(&self, title: &str) {
+        self.scene.setTitle(Some(&NSString::from_str(title)));
+    }
+
+    /// Whether the system lets the user resize the scene's window, which is
+    /// when [`Self::set_size_restrictions`] has an effect. `UIKit` reports
+    /// no restrictions object for a scene that always fills the screen.
+    #[must_use]
+    pub fn supports_size_restrictions(&self) -> bool {
+        self.scene.sizeRestrictions().is_some()
+    }
+
+    /// Bounds the size, in points, the user can resize the scene's window
+    /// to.
+    ///
+    /// # Panics
+    ///
+    /// If the scene has no size restrictions; check
+    /// [`Self::supports_size_restrictions`] first.
+    pub fn set_size_restrictions(&self, minimum: Size, maximum: Size) {
+        let restrictions = self
+            .scene
+            .sizeRestrictions()
+            .expect("the scene's window is not resizable");
+        restrictions.setMinimumSize(CGSize::new(minimum.width, minimum.height));
+        restrictions.setMaximumSize(CGSize::new(maximum.width, maximum.height));
     }
 
     pub(super) fn native(&self) -> &UIWindowScene {

@@ -3,7 +3,7 @@ name = "cherenkov"
 version = "0.0.0"
 description = "GPU 2D rendering engine for modern hardware"
 edition.workspace = true
-rust-version = "1.95"
+rust-version = "1.100"
 license.workspace = true
 repository.workspace = true
 readme = "README.md"
@@ -30,6 +30,7 @@ smallvec = { workspace = true, features = ["union"] }
 thiserror = "2"
 tracing = "0.1"
 waterui-contract.workspace = true
+waterui-frame-rate.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 async-channel = { workspace = true, default-features = false, features = ["std"] }

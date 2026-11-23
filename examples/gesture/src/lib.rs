@@ -9,7 +9,7 @@
 //! - Non-primary pointer buttons (middle-click closes a tab)
 
 use waterui::Identifiable;
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::gesture::{DragGesture, LongPressGesture, PointerButtons, TapGesture};
 use waterui::graphics::color::Srgb;
 use waterui::prelude::*;
@@ -25,7 +25,7 @@ const CHAINED_COLOR: Srgb = Srgb::from_hex("#F44336");
 const ON_TAP_COLOR: Srgb = Srgb::from_hex("#00BCD4");
 
 /// Section displaying tap gesture demos
-fn tap_section(tap_count: &Binding<i32>) -> impl View {
+fn tap_section(tap_count: &Binding<i32>) -> impl View + use<> {
     vstack((
         text("Tap Gesture").headline(),
         "Tap the box below to increment the counter",
@@ -42,7 +42,7 @@ fn tap_section(tap_count: &Binding<i32>) -> impl View {
 }
 
 /// Section displaying double-tap gesture demo
-fn double_tap_section(double_tap_count: &Binding<i32>) -> impl View {
+fn double_tap_section(double_tap_count: &Binding<i32>) -> impl View + use<> {
     vstack((
         text("Double Tap Gesture").headline(),
         "Double-tap the box to increment",
@@ -62,7 +62,7 @@ fn double_tap_section(double_tap_count: &Binding<i32>) -> impl View {
 }
 
 /// Section displaying long press gesture demo
-fn long_press_section(long_press_count: &Binding<i32>) -> impl View {
+fn long_press_section(long_press_count: &Binding<i32>) -> impl View + use<> {
     vstack((
         text("Long Press Gesture").headline(),
         "Press and hold for 500ms",
@@ -83,7 +83,7 @@ fn long_press_section(long_press_count: &Binding<i32>) -> impl View {
 }
 
 /// Section displaying drag gesture demo
-fn drag_section(drag_count: &Binding<i32>) -> impl View {
+fn drag_section(drag_count: &Binding<i32>) -> impl View + use<> {
     vstack((
         text("Drag Gesture").headline(),
         "Drag within the box (min 5pt)",
@@ -102,7 +102,7 @@ fn drag_section(drag_count: &Binding<i32>) -> impl View {
 }
 
 /// Section displaying chained gesture demo
-fn chained_section(chained_status: &Binding<&'static str>) -> impl View {
+fn chained_section(chained_status: &Binding<&'static str>) -> impl View + use<> {
     let chained_status_display = chained_status.clone();
     vstack((
         text("Chained Gesture").headline(),
@@ -131,7 +131,10 @@ struct TabChip {
 /// A tab strip where a middle click closes a tab: each chip's
 /// `MIDDLE`-only tap runs alongside its primary selection tap without
 /// competing for the same press.
-fn middle_click_tab_section(tabs: &ReactiveList<TabChip>, open_tabs: &Binding<i32>) -> impl View {
+fn middle_click_tab_section(
+    tabs: &ReactiveList<TabChip>,
+    open_tabs: &Binding<i32>,
+) -> impl View + use<> {
     let tabs_for_rows = tabs.clone();
     let open_tabs_for_handler = open_tabs.clone();
     vstack((
@@ -166,7 +169,7 @@ fn middle_click_tab_section(tabs: &ReactiveList<TabChip>, open_tabs: &Binding<i3
 }
 
 /// Section demonstrating `on_tap` shorthand
-fn on_tap_section(tap_count: &Binding<i32>) -> impl View {
+fn on_tap_section(tap_count: &Binding<i32>) -> impl View + use<> {
     vstack((
         text("on_tap Shorthand").headline(),
         "Convenient method for simple tap handlers",
@@ -233,6 +236,6 @@ pub fn demo() -> impl View {
 }
 
 /// Builds the gesture example app.
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows> {
     App::new(demo, env)
 }

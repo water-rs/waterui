@@ -1,4 +1,6 @@
+use super::ViewBuilder;
 use super::headless::HeadlessPlatformWindow;
+use super::window::root_window;
 use super::{
     FrameMode, FrameReader, RenderDiagnosticsConfig, RuntimeWindow, advance_runtime,
     axes_whose_limits_changed, clamp_window_size, handle_input_events, pump_window_semantics,
@@ -1152,14 +1154,14 @@ fn a_behind_window_material_asks_the_platform_to_blur_behind() {
 }
 
 fn runtime_window_for(
-    window: Window,
+    window: Window<impl ViewBuilder>,
     env: &Environment,
 ) -> RuntimeWindow<HeadlessPlatformWindow, crate::text::ParleyEngine> {
     runtime_window_sized(window, 16, 16, env)
 }
 
 fn runtime_window_sized(
-    window: Window,
+    window: Window<impl ViewBuilder>,
     width: u32,
     height: u32,
     env: &Environment,
@@ -1170,7 +1172,7 @@ fn runtime_window_sized(
 }
 
 fn runtime_window_with_platform(
-    window: Window,
+    window: Window<impl ViewBuilder>,
     mut platform: HeadlessPlatformWindow,
     env: &Environment,
 ) -> RuntimeWindow<HeadlessPlatformWindow, crate::text::ParleyEngine> {
@@ -1180,7 +1182,7 @@ fn runtime_window_with_platform(
         ParleyEngine::system(FontFamilyResolution::Strict),
     );
     RuntimeWindow::new_painted(
-        window,
+        root_window(window),
         platform,
         renderer,
         RenderDiagnosticsConfig {
@@ -1198,13 +1200,13 @@ fn runtime_window_with_platform(
 #[test]
 fn host_window_pipeline_requires_no_gpu_surface_trait() {
     fn construct<P: crate::platform::PlatformWindow, E: crate::text::TextEngine>(
-        window: Window,
+        window: Window<impl ViewBuilder>,
         platform: P,
         renderer: HydrolysisRenderer<E>,
         env: &Environment,
     ) -> RuntimeWindow<P, E> {
         RuntimeWindow::new(
-            window,
+            root_window(window),
             platform,
             renderer,
             RenderDiagnosticsConfig {
@@ -1365,7 +1367,9 @@ fn an_open_context_menu_presentation_builds_once_through_the_build_path() {
     let mut runtime = sized_test_runtime_window(320, 240, &env);
     env.insert(crate::renderer::HydrolysisWindowOrigin { x: 0.0, y: 0.0 });
     let items = vec![ResolvedMenuItem::Command(
-        "Copy".action(|| {}).resolve(&env),
+        "Copy"
+            .action(|| {})
+            .resolve::<waterui_controls::NoopSlot>(&env),
     )];
     let nodes = crate::renderer::popup_menu_nodes(&items, &env, runtime.renderer.window_closable());
     assert!(runtime.renderer.show_context_menu(
@@ -1435,7 +1439,7 @@ fn sized_test_runtime_window(
         ParleyEngine::system(FontFamilyResolution::Strict),
     );
     RuntimeWindow::new_painted(
-        window,
+        root_window(window),
         platform,
         renderer,
         RenderDiagnosticsConfig {
@@ -1627,12 +1631,13 @@ fn a_binding_set_outside_a_frame_fires_the_installed_wake_once() {
 fn frame_transaction_serves_running_animation_on_vsync() {
     use super::window::FrameTransaction;
     use crate::renderer::Next;
+    use waterui_frame_rate::FrameRate;
 
     let now = Instant::now();
     let due = now + Duration::from_millis(8);
     let next = Next::At {
         time: due,
-        rate: 60..=120,
+        rate: FrameRate::FAST,
     };
     assert!(!FrameTransaction::engine_frame_due(&next, now, None));
     assert!(
@@ -1935,9 +1940,13 @@ fn pump_frame_transaction(
 /// log instead of being dropped (water-rs/waterui#2513). The headless
 /// one-shot `run` is the only `hydrolysis::run` that returns — the winit
 /// `run` never does, so this test exists only under that cfg — and only
-/// where the headless one-shot `run` itself exists: not on Android, whose
-/// host mounts `runner::android` instead.
-#[cfg(all(not(hydrolysis_winit), not(target_os = "android")))]
+/// where the headless one-shot `run` itself exists: not on Android or iOS,
+/// whose hosts mount `runner::android` / `runner::apple` instead.
+#[cfg(all(
+    not(hydrolysis_winit),
+    not(hydrolysis_uikit),
+    not(target_os = "android")
+))]
 #[test]
 fn a_run_installs_tracing_before_the_app_factory_runs() {
     // SAFETY: nextest gives each test its own process, so mutating the
@@ -1953,7 +1962,7 @@ fn a_run_installs_tracing_before_the_app_factory_runs() {
                 tracing::subscriber::NoSubscriber::default(),
             )
             .is_err();
-            waterui::app::App::new_with_windows(Vec::new(), env)
+            waterui::app::App::new_with_windows((), env)
         },
         Environment::new(),
         crate::testing::TestStyle::new(),
@@ -1962,4 +1971,58 @@ fn a_run_installs_tracing_before_the_app_factory_runs() {
         factory_saw_subscriber,
         "the app factory ran before the tracing subscriber was installed"
     );
+}
+
+#[test]
+fn self_pace_interval_only_caps_votes_below_display_peak() {
+    use super::window::self_pace_interval;
+    use waterui_frame_rate::FrameRate;
+
+    assert_eq!(self_pace_interval(None, 120.0), None);
+    assert_eq!(self_pace_interval(Some(FrameRate::FAST), 120.0), None);
+    assert_eq!(self_pace_interval(Some(FrameRate::SLOW), 60.0), None);
+
+    let slow_on_120 = self_pace_interval(Some(FrameRate::SLOW), 120.0)
+        .expect("SLOW (60Hz cap) self-paces on a 120Hz display");
+    assert!((slow_on_120.as_secs_f64() - 1.0 / 60.0).abs() < 0.0005);
+
+    let cinema = self_pace_interval(Some(FrameRate::fixed(24.0)), 60.0)
+        .expect("24Hz fixed vote self-paces below 60Hz display");
+    assert!((cinema.as_secs_f64() - 1.0 / 24.0).abs() < 0.0005);
+}
+
+#[test]
+fn windows_compositor_boost_only_activates_above_60hz() {
+    use super::window::should_boost_windows_clock;
+    use waterui_frame_rate::FrameRate;
+
+    assert!(!should_boost_windows_clock(None, 120.0));
+    assert!(!should_boost_windows_clock(Some(FrameRate::SLOW), 120.0));
+    assert!(!should_boost_windows_clock(Some(FrameRate::FAST), 60.0));
+    assert!(should_boost_windows_clock(Some(FrameRate::FAST), 120.0));
+}
+
+#[test]
+fn hidden_runtime_window_drops_effective_frame_rate_vote() {
+    use crate::HeadlessRuntime;
+    use crate::testing::TestStyle;
+    use waterui::prelude::text;
+    use waterui_core::handler::AnyViewBuilder;
+    use waterui_frame_rate::FrameRate;
+
+    let mut runtime = HeadlessRuntime::new_for_tests(
+        test_environment(),
+        AnyViewBuilder::new(|| AnyView::new(text("Voted").frame_rate(Some(FrameRate::FAST)))),
+        64,
+        64,
+        TestStyle::new(),
+    );
+    let _ = runtime.pump(false);
+    assert_eq!(runtime.effective_frame_rate_vote(), Some(FrameRate::FAST));
+
+    runtime.set_hidden_for_tests(true);
+    assert_eq!(runtime.effective_frame_rate_vote(), None);
+
+    runtime.set_hidden_for_tests(false);
+    assert_eq!(runtime.effective_frame_rate_vote(), Some(FrameRate::FAST));
 }

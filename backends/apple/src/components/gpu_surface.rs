@@ -1,4 +1,4 @@
-//! The `gpu_surface` leaf: `Native<GpuContentView>` and
+//! The `gpu_surface` leaf: `Native<GpuView>` and
 //! `Native<ExternalFrameView>` and `Native<SceneView>` as a kit surface view
 //! presenting through a `CAMetalLayer` driven by a `CAMetalDisplayLink` —
 //! the platform's own presentation primitive.
@@ -19,6 +19,7 @@ use core::cell::{Cell, RefCell};
 use core::fmt;
 use core::num::NonZeroU32;
 
+use cocoa_ui::PlatformView;
 use cocoa_ui::Retained;
 use cocoa_ui::metal_presenter::{DrawableFrame, MetalPresenter};
 use objc2::MainThreadMarker;
@@ -27,20 +28,21 @@ use waterui_core::NativeView;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
 };
+use waterui_frame_rate::{FrameRate, combine};
 use waterui_graphics::backend::cherenkov::Next;
 use waterui_graphics::gpu::{
-    Display, ExternalFrameRenderer, ExternalFrameStream, ExternalFrameView, FrameTime,
-    GpuContentRenderer, GpuContentView, GpuRuntime, HostedFrame, HostedLayerError, RedrawHandle,
+    Display, ExternalFrameRenderer, ExternalFrameStream, ExternalFrameView, FrameTime, GpuContent,
+    GpuContentRenderer, GpuRuntime, GpuView, HostedFrame, HostedLayerError, RedrawHandle,
     RenderedFrame, SharedGpuContext, wgpu,
 };
 use waterui_graphics::input::SurfaceInputEvent;
 use waterui_graphics::offscreen::OffscreenSize;
 
 use crate::contract::NativeLeaf;
-use crate::dispatch::Dispatcher;
-use crate::gpu_runtime::EngineGeneration;
+use crate::frame_rate::{VoteListener, WindowFrameRateVotes};
 #[cfg(all(feature = "native-test", target_os = "macos"))]
 use crate::gpu_runtime::SceneEngine;
+use crate::gpu_runtime::{EngineGeneration, display_rate};
 use crate::presentation_time::PresentationTime;
 use crate::publication_park::PublicationPark;
 
@@ -62,6 +64,7 @@ mod scene;
 #[path = "gpu_frame_pipeline.rs"]
 mod pipeline;
 
+use crate::contract::RenderContext;
 use pipeline::{FramePipeline, FrameRequest, RendererCreation, Step};
 
 /// The semantic half of a mounted GPU surface: what is drawn, measured and
@@ -176,6 +179,11 @@ trait HostedRenderer {
     fn submission_evidence(&self) -> Option<Rc<EngineGeneration>> {
         None
     }
+
+    /// The surface's latest combined refresh-rate vote, if available.
+    fn rate_vote(&self) -> Option<FrameRate> {
+        None
+    }
 }
 
 /// What a resolved frame left for the host's target.
@@ -202,6 +210,8 @@ trait LayerRenderer {
     ) -> Result<HostedFrame, HostedLayerError>;
 
     fn composite(&mut self, frame: &RenderedFrame, target: &wgpu::Texture, display: Display);
+
+    fn rate_vote(&self) -> Option<FrameRate>;
 }
 
 impl LayerRenderer for GpuContentRenderer {
@@ -217,6 +227,10 @@ impl LayerRenderer for GpuContentRenderer {
     fn composite(&mut self, frame: &RenderedFrame, target: &wgpu::Texture, display: Display) {
         Self::composite(self, frame, target, display);
     }
+
+    fn rate_vote(&self) -> Option<FrameRate> {
+        Self::rate_vote(self)
+    }
 }
 
 impl LayerRenderer for ExternalFrameRenderer {
@@ -231,6 +245,10 @@ impl LayerRenderer for ExternalFrameRenderer {
 
     fn composite(&mut self, frame: &RenderedFrame, target: &wgpu::Texture, display: Display) {
         Self::composite(self, frame, target, display);
+    }
+
+    fn rate_vote(&self) -> Option<FrameRate> {
+        Self::rate_vote(self)
     }
 }
 
@@ -291,6 +309,10 @@ impl<R: LayerRenderer> HostedRenderer for Layered<R> {
         self.pending = None;
         self.rendered = None;
     }
+
+    fn rate_vote(&self) -> Option<FrameRate> {
+        self.layer.rate_vote()
+    }
 }
 
 /// What building or presenting a hosted renderer's frame can fail with —
@@ -330,7 +352,7 @@ impl From<HostedLayerError> for HostedError {
     }
 }
 
-impl HostedView for GpuContentView {
+impl<T: GpuContent> HostedView for GpuView<T> {
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         Self::measure(self, proposal)
     }
@@ -582,6 +604,10 @@ struct SurfaceState {
     /// frozen copy for a transition's retirement hand-off (§2.1). `None`
     /// for an unarmed surface — its drawables stay framebuffer-only.
     armed: Option<crate::frozen_frame::SharedFrozenFrameSlot>,
+    /// Window-scoped `.frame_rate(...)` votes active on the owning window.
+    window_votes: Option<WindowFrameRateVotes>,
+    /// Latest refresh-rate vote reported by this surface's content or engine.
+    content_rate: Cell<Option<FrameRate>>,
 }
 
 /// The presentation lifecycle: the drawable-path epoch and the open
@@ -622,6 +648,8 @@ struct Attached {
     context: Arc<SharedGpuContext>,
     /// What the link's next update must answer this epoch.
     demand: Demand,
+    /// Subscription keeping the presenter aligned with window `.frame_rate(...)` votes.
+    _vote_listener: Option<VoteListener>,
 }
 
 /// The demand bits an attach epoch owns — everything the link's next
@@ -834,6 +862,8 @@ impl SurfaceState {
             armed: env
                 .get::<crate::transition::SnapshotDemand>()
                 .map(|_| Rc::new(crate::frozen_frame::FrozenFrameSlot::new())),
+            window_votes: env.get::<WindowFrameRateVotes>().cloned(),
+            content_rate: Cell::new(None),
         }
     }
 
@@ -911,6 +941,15 @@ impl SurfaceState {
                     // mutable owner flag alone.
                     let (next, scene_generation) = pipeline.composite(texture, display);
                     let needs_redraw = next != Next::Idle || self.dirty.get();
+                    let next_rate = match &next {
+                        Next::At { rate, .. } => Some(*rate),
+                        Next::Idle => None,
+                    };
+                    let vote = combine(
+                        combine(pipeline.rate_vote(), next_rate),
+                        self.dirty.get().then_some(FrameRate::FAST),
+                    );
+                    self.content_rate.set(vote);
                     if needs_redraw && matches!(pipelining, Pipelining::Continuous) {
                         pipeline.submit(&mut cx, request, || self.begin_frame())?;
                     }
@@ -1460,6 +1499,20 @@ fn prepare_presentation(
     true
 }
 
+fn apply_presenter_rate(state: &SurfaceState, view: &PlatformView) {
+    let Some(maximum) = display_rate(view) else {
+        return;
+    };
+    let window_vote = state
+        .window_votes
+        .as_ref()
+        .and_then(WindowFrameRateVotes::combined);
+    let vote = combine(state.content_rate.get(), window_vote).unwrap_or(FrameRate::FAST);
+    if let Some(attached) = state.presentation.borrow().attached() {
+        attached.presenter.set_frame_rate(vote, maximum);
+    }
+}
+
 /// Builds the `CAMetalLayer` presenter on the current context and owes the
 /// first frame — the link's next update answers it.
 fn attach(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>) {
@@ -1496,9 +1549,15 @@ fn attach(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>) {
         state.current_width.get(),
         state.current_height.get(),
     ));
-    if let Some(maximum) = crate::gpu_runtime::display_rate(view.as_platform_view()) {
-        presenter.set_display_rate(maximum);
-    }
+    let vote_listener = state.window_votes.as_ref().map(|votes| {
+        let state = Rc::downgrade(state);
+        let view = objc2::rc::Weak::new(&**view);
+        votes.subscribe(move || {
+            if let (Some(state), Some(view)) = (state.upgrade(), view.load()) {
+                apply_presenter_rate(&state, view.as_platform_view());
+            }
+        })
+    });
     // The first update answers the owed first frame — the window's reveal
     // waits on it. The owed first paint draws through the visibility gate
     // exactly once so an alpha-0 reveal window still gets its frame; only
@@ -1509,7 +1568,9 @@ fn attach(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>) {
         presenter,
         context,
         demand: Demand::new(first_paint),
+        _vote_listener: vote_listener,
     });
+    apply_presenter_rate(state, view.as_platform_view());
     update_presentation_demand(state, view);
 }
 
@@ -1754,6 +1815,7 @@ fn render_drawable(
     if let Some(attached) = state.presentation.borrow_mut().attached_mut() {
         attached.demand.keep_redrawing.set(needs_redraw);
     }
+    apply_presenter_rate(state, view.as_platform_view());
     publish_content_accessibility(state, view);
     update_presentation_demand(state, view);
 
@@ -2219,12 +2281,14 @@ fn install_input(
     // handler → host` would pin the whole graph past teardown. Both
     // captures stay weak.
     let host = objc2::rc::Weak::new(&**view);
-    input.set_event_handler(move |event| {
+    let translator = crate::gpu_input::Translator::default();
+    let deliver: Rc<dyn Fn(cocoa_ui::input::SurfaceEvent)> = Rc::new(move |event| {
         let (Some(state), Some(host)) = (weak.upgrade(), host.load()) else {
             return;
         };
-        let event = crate::gpu_input::translate(&event);
-        state.view.borrow().input(&event);
+        for event in translator.translate(&event) {
+            state.view.borrow().input(&event);
+        }
         // The event's frame request rides the same coalescing as a redraw
         // request.
         let external_redraw = state.presentation.borrow().external().map(External::redraw);
@@ -2237,7 +2301,11 @@ fn install_input(
             update_presentation_demand(&state, &host);
         }
     });
-    input.set_caret_provider({
+    input.set_event_handler({
+        let deliver = deliver.clone();
+        move |event| deliver(event)
+    });
+    let caret = {
         let weak = Rc::downgrade(state);
         move || {
             weak.upgrade().and_then(|state| {
@@ -2251,7 +2319,15 @@ fn install_input(
                 })
             })
         }
-    });
+    };
+    #[cfg(target_os = "macos")]
+    input.set_caret_provider(caret);
+    #[cfg(target_os = "ios")]
+    input.set_text_input_client(Rc::new(crate::gpu_text::GpuSurfaceTextClient::new(
+        deliver,
+        caret,
+        objc2::rc::Weak::new(&*input),
+    )));
     // The responder fills the surface and sits on top of it.
     cocoa_ui::view::add_subview(view.as_platform_view(), input.as_ref());
     Some(Retained::into_super(input))
@@ -2879,24 +2955,28 @@ impl SubView for SurfaceSubView {
 
 // MARK: - Install
 
-/// Installs the `gpu_surface` handlers — `Native<GpuContentView>` and
+/// The `gpu_surface` realizations — `Native<GpuView>` and
 /// `Native<ExternalFrameView>` and `Native<SceneView>` share presentation.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher
-        .register_native::<GpuContentView>(|view, ctx| build_surface(view, "GPU content", ctx));
-    dispatcher.register_native::<ExternalFrameView>(|view, ctx| {
-        build_surface(view, "external frame", ctx)
-    });
-    dispatcher.register_native::<waterui_graphics::backend::SceneView>(|view, ctx| {
-        let Some(engines) = crate::gpu_runtime::scene_engine(ctx.env()) else {
-            return crate::gpu_runtime::unavailable_leaf(ctx.mtm(), "scene");
-        };
-        build_surface(scene::Scene::new(view, engines), "scene", ctx)
-    });
+pub fn realize_gpu_view<T: GpuContent>(view: GpuView<T>, ctx: &RenderContext<'_>) -> NativeLeaf {
+    build_surface(view, "GPU content", ctx)
 }
 
-/// The leaf construction the dispatcher's GPU-surface claims share —
-/// `GpuContentView`, `ExternalFrameView`, and `SceneView`. Without a GPU
+pub fn realize_external_frame_view(view: ExternalFrameView, ctx: &RenderContext<'_>) -> NativeLeaf {
+    build_surface(view, "external frame", ctx)
+}
+
+pub fn realize_scene_view(
+    view: waterui_graphics::backend::SceneView,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    let Some(engines) = crate::gpu_runtime::scene_engine(ctx.env()) else {
+        return crate::gpu_runtime::unavailable_leaf(ctx.mtm(), "scene");
+    };
+    build_surface(scene::Scene::new(view, engines), "scene", ctx)
+}
+
+/// The leaf construction the GPU-surface realizations share —
+/// `GpuView`, `ExternalFrameView`, and `SceneView`. Without a GPU
 /// runtime the view (named `kind` in the report) mounts empty instead.
 fn build_surface<V: HostedView + 'static>(
     view: V,
@@ -3065,7 +3145,7 @@ pub mod native_test {
     use waterui_graphics::gpu::runtime::HostedLayerError;
 
     use super::{
-        Capturable, Dispatcher, DrawableFrame, DrawableUse, FrameTime, GpuRuntime, HostedError,
+        Capturable, DrawableFrame, DrawableUse, FrameTime, GpuRuntime, HostedError,
         MainThreadMarker, NativeLeaf, Pipelining, PresentationTime, Produced, Rc, RefCell,
         Retained, SceneEngine, SurfaceState, SurfaceView, build_surface_parts,
         defer_unwritten_external_frame, fmt, park_for_publication, render_drawable, scene,
@@ -3170,7 +3250,7 @@ pub mod native_test {
     /// A `SceneView` carrying [`FixtureContent`].
     ///
     /// The same GPU child the fixture mounts, as a value a
-    /// `ViewRenderer::render` trial passes straight in, so the leaf mounts
+    /// `ViewRenderer::render_to_rgba` trial passes straight in, so the leaf mounts
     /// through the production `Native<SceneView>` path itself.
     #[must_use]
     pub fn fixture_scene_view() -> SceneView {
@@ -3334,7 +3414,7 @@ pub mod native_test {
                 crate::gpu_runtime::runtime(env).ok_or("the environment carries no GpuRuntime")?;
             let engines = crate::gpu_runtime::scene_engine(env)
                 .ok_or("the environment carries no SceneEngine")?;
-            let ctx = RenderContext::new(env, Rc::new(Dispatcher::new()), mtm);
+            let ctx = RenderContext::new(env, mtm);
             let (leaf, capturable) =
                 build_surface_parts(scene::Scene::new(view, engines), runtime.clone(), &ctx);
             Ok(Self {

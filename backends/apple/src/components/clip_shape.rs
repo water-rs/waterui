@@ -21,14 +21,14 @@ use waterui_core::layout::{
     ViewDimensions,
 };
 
-use crate::contract::{Mounted, NativeLeaf};
-use crate::dispatch::Dispatcher;
+use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;
 
 use objc2_core_foundation::CFRetained;
 use objc2_core_graphics::CGPath;
 use objc2_quartz_core::CAShapeLayer;
 
+use crate::contract::RenderContext;
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::HostView;
 #[cfg(target_os = "ios")]
@@ -242,79 +242,80 @@ impl SubView for ClipShapeSubView {
     }
 }
 
-/// Installs the `clip_shape` handler on the dispatcher:
+/// The `clip_shape` realization:
 /// `Metadata<ClipShape>` maps to a transparent container whose backing
 /// layer masks its bounds to the shape.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_view::<Metadata<ClipShape>>(|metadata, ctx| {
-        let mtm = ctx.mtm();
-        let host = HostView::new(mtm, Rect::ZERO);
-        let host_view: &PlatformView = &host;
+pub fn realize_clip_shape_metadata(
+    metadata: Metadata<ClipShape, Held>,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    let mtm = ctx.mtm();
+    let host = HostView::new(mtm, Rect::ZERO);
+    let host_view: &PlatformView = &host;
 
-        let mounted = ctx.render(metadata.content).mount(host_view);
-        crate::primary_content::forward(&host, mounted.view());
-        view::set_translates_autoresizing(mounted.view(), true);
+    let mounted = ctx.realize(metadata.content).mount(host_view);
+    crate::primary_content::forward(&host, mounted.view());
+    view::set_translates_autoresizing(mounted.view(), true);
 
-        // `UIKit` clips through the view; `AppKit` through the backing
-        // layer `setWantsLayer` installs.
-        #[cfg(target_os = "ios")]
-        host_view.setClipsToBounds(true);
-        #[cfg(target_os = "macos")]
-        if let Some(layer) = shape::layer(host_view) {
-            layer.setMasksToBounds(true);
-        }
+    // `UIKit` clips through the view; `AppKit` through the backing
+    // layer `setWantsLayer` installs.
+    #[cfg(target_os = "ios")]
+    host_view.setClipsToBounds(true);
+    #[cfg(target_os = "macos")]
+    if let Some(layer) = shape::layer(host_view) {
+        layer.setMasksToBounds(true);
+    }
 
-        let state = Rc::new(ClipShapeState {
-            child: mounted,
-            mask: RefCell::new(None),
-            kind: metadata.value.kind(),
-            commands: metadata.value.commands().to_vec(),
-        });
-
-        // Each layout pass stretches the content over the bounds and
-        // rebuilds the mask at the new size, as `WuiClipShape.updateMask`.
-        host.set_layout_handler({
-            let state = Rc::clone(&state);
-            move |host| {
-                let bounds = view::bounds(host);
-                view::set_frame(state.child.view(), bounds);
-                if bounds.size.width <= 0.0 || bounds.size.height <= 0.0 {
-                    return;
-                }
-                {
-                    let mut mask = state.mask.borrow_mut();
-                    if mask.is_none() {
-                        let layer = shape::shape_layer();
-                        shape::set_mask(host, Some(&layer));
-                        *mask = Some(layer);
-                    }
-                    if let Some(mask) = mask.as_ref() {
-                        let path = shape_path(state.kind, &state.commands, bounds);
-                        shape::set_path(mask, &path);
-                    }
-                }
-            }
-        });
-
-        // `setPlacementProposal`: the proposal selected for this wrapper is
-        // the proposal its content was negotiated with.
-        let sink_guard = proposal::register_sink(host_view, {
-            let state = Rc::clone(&state);
-            move |selected| {
-                proposal::deliver(state.child.view(), selected);
-            }
-        });
-
-        let mut leaf = NativeLeaf::new(
-            host_view,
-            ClipShapeSubView {
-                state: Rc::clone(&state),
-            },
-        );
-        leaf.keep(sink_guard);
-        leaf.keep(state);
-        leaf
+    let state = Rc::new(ClipShapeState {
+        child: mounted,
+        mask: RefCell::new(None),
+        kind: metadata.value.kind(),
+        commands: metadata.value.commands().to_vec(),
     });
+
+    // Each layout pass stretches the content over the bounds and
+    // rebuilds the mask at the new size, as `WuiClipShape.updateMask`.
+    host.set_layout_handler({
+        let state = Rc::clone(&state);
+        move |host| {
+            let bounds = view::bounds(host);
+            view::set_frame(state.child.view(), bounds);
+            if bounds.size.width <= 0.0 || bounds.size.height <= 0.0 {
+                return;
+            }
+            {
+                let mut mask = state.mask.borrow_mut();
+                if mask.is_none() {
+                    let layer = shape::shape_layer();
+                    shape::set_mask(host, Some(&layer));
+                    *mask = Some(layer);
+                }
+                if let Some(mask) = mask.as_ref() {
+                    let path = shape_path(state.kind, &state.commands, bounds);
+                    shape::set_path(mask, &path);
+                }
+            }
+        }
+    });
+
+    // `setPlacementProposal`: the proposal selected for this wrapper is
+    // the proposal its content was negotiated with.
+    let sink_guard = proposal::register_sink(host_view, {
+        let state = Rc::clone(&state);
+        move |selected| {
+            proposal::deliver(state.child.view(), selected);
+        }
+    });
+
+    let mut leaf = NativeLeaf::new(
+        host_view,
+        ClipShapeSubView {
+            state: Rc::clone(&state),
+        },
+    );
+    leaf.keep(sink_guard);
+    leaf.keep(state);
+    leaf
 }
 
 #[cfg(test)]

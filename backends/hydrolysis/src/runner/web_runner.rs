@@ -8,6 +8,7 @@ use std::{
     collections::VecDeque,
     future::Future,
     rc::Rc,
+    time::Duration,
 };
 
 use accesskit::ActionRequest as AccessibilityActionRequest;
@@ -22,8 +23,8 @@ use nami::Signal;
 use serde::Deserialize;
 use wasm_bindgen::{JsCast, closure::Closure};
 use wasm_bindgen_futures::JsFuture;
-use waterui::app::{App, AppParts};
-use waterui::window::{Window, WindowState};
+use waterui::app::{App, AppMenuBar, AppParts, Windows};
+use waterui::window::WindowState;
 use waterui_core::{Environment, contract_violation};
 use web_sys::Response;
 
@@ -34,8 +35,9 @@ use crate::platform::{BrowserWindow, PlatformWindow};
 use crate::renderer::HydrolysisTextContextMenuMode;
 #[cfg(feature = "menu")]
 use crate::renderer::MenuShortcutRegistry;
-use crate::renderer::{FontFamilyResolution, HydrolysisRenderer};
+use crate::renderer::{FontFamilyResolution, HydrolysisRenderer, Next};
 use crate::runner::web_accessibility::WebAccessibilityBridge;
+use crate::runner::window::{FrameMode, RootWindow, RootWindows, self_pace_interval};
 use crate::runner::{
     RenderDiagnosticsConfig, RuntimeWindow, WindowFrame, advance_runtime, handle_input_events,
     render_window,
@@ -252,6 +254,9 @@ struct BrowserRunner {
     /// Held for its lifetime: the media-query listener keeps writing the
     /// colour-scheme binding only while the runner holds the observation.
     _appearance: crate::platform::web_appearance::SystemAppearance,
+    /// Earliest `Instant` for the next self-paced continuous
+    /// frame when an active vote caps below 60Hz.
+    next_paced_due: Option<Instant>,
 }
 
 impl BrowserRunner {
@@ -320,10 +325,27 @@ impl BrowserRunner {
         // A hidden window produces no frame — a tick already posted when
         // the occluding listener landed must not present either — and a
         // wake that carried no armed work answers without one. Only armed
-        // work on a visible window encodes a frame.
-        if !self.runtime.is_hidden()
-            && (self.runtime.mode.is_pending() || self.runtime.renderer.take_redraw_request())
+        // work on a visible window encodes a frame; continuous votes below
+        // 60Hz self-pace across rAF callbacks while keeping reactive refreshes
+        // immediate.
+        let redraw_requested = self.runtime.renderer.take_redraw_request();
+        let vote = self.runtime.effective_frame_rate_vote();
+        let self_paced = self_pace_interval(vote, 60.0);
+        let should_render = if self.runtime.is_hidden() {
+            false
+        } else if matches!(self.runtime.mode, FrameMode::Refresh) || redraw_requested {
+            true
+        } else if self.runtime.mode.is_pending()
+            || matches!(self.runtime.engine_next, Next::At { .. })
         {
+            self_paced.is_none()
+                || self
+                    .next_paced_due
+                    .is_none_or(|due| Instant::now() + Duration::from_micros(500) >= due)
+        } else {
+            false
+        };
+        if should_render {
             let frame = render_window(&mut self.runtime, &self.env, &mut || {
                 Self::drain_runnable_queue(&self.runnable_queue)
             })
@@ -337,6 +359,9 @@ impl BrowserRunner {
                 self.stopped = true;
                 return false;
             }
+            let next_vote = self.runtime.effective_frame_rate_vote();
+            self.next_paced_due =
+                self_pace_interval(next_vote, 60.0).map(|interval| Instant::now() + interval);
             if frame.presented() && !self.first_frame_announced {
                 self.first_frame_announced = true;
                 self.runtime.platform.announce_first_frame();
@@ -347,6 +372,8 @@ impl BrowserRunner {
                     &self.wake,
                 );
             }
+        } else if self.runtime.is_hidden() || self_paced.is_none() {
+            self.next_paced_due = None;
         }
         if let Some(update) = self.runtime.renderer.take_accessibility_tree_update()
             && let Some(bridge) = self.accessibility_bridge.as_mut()
@@ -362,6 +389,8 @@ impl BrowserRunner {
         // into a parked pump.
         !self.runtime.is_hidden()
             && (self.runtime.platform.take_redraw_request()
+                || self.runtime.mode.is_pending()
+                || matches!(self.runtime.engine_next, Next::At { .. })
                 || !self.runnable_queue.borrow().is_empty())
     }
 }
@@ -444,7 +473,7 @@ impl BrowserRunnerHandle {
     clippy::too_many_lines,
     reason = "the runner wires every browser subsystem once at startup; the length is the enumeration, not logic"
 )]
-pub fn run(app: App, style: impl crate::Style) {
+pub fn run<W: Windows, M: AppMenuBar>(app: App<W, M>, style: impl crate::Style) {
     wasm_bindgen_futures::spawn_local(async move {
         let schedule_frame_ref: ScheduleFrameSlot = Rc::new(RefCell::new(None));
         let browser_schedule = {
@@ -500,12 +529,25 @@ pub fn run(app: App, style: impl crate::Style) {
             windows,
             #[cfg(feature = "menu")]
             menu_bar,
+            #[cfg(not(feature = "menu"))]
+                menu_bar: _,
             env,
             last_window: _,
             termination: _,
         } = app.into_parts();
+        let RootWindows {
+            initial: windows,
+            channels,
+        } = RootWindows::<crate::text::ParleyEngine>::collect(windows);
+        let unsupported_opener: Rc<dyn Fn(RootWindow<crate::text::ParleyEngine>)> = Rc::new(|_| {
+            contract_violation!(
+                "hydrolysis web runner: secondary windows are unsupported — a browser \
+                 page is the application's only window; the window is not shown"
+            );
+        });
+        RootWindows::connect_channels(channels, &unsupported_opener);
         let window_count = windows.len();
-        let Ok([window]) = <[Window; 1]>::try_from(windows) else {
+        let Ok([window]) = <[RootWindow<crate::text::ParleyEngine>; 1]>::try_from(windows) else {
             let message = format!(
                 "hydrolysis web runner requires exactly one window, got {window_count}: a browser \
                  page is the application's only window and has no windowless state"
@@ -515,21 +557,10 @@ pub fn run(app: App, style: impl crate::Style) {
             return;
         };
 
-        let mut env = env.extending(waterui_graphics::backend::SceneViewMergeToParent);
+        let mut env = env;
         let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
-        #[cfg(any(
-            test,
-            feature = "text-field",
-            feature = "secure-field",
-            feature = "color-picker",
-            feature = "date-picker",
-            feature = "list",
-            feature = "navigation",
-            feature = "table",
-            hydrolysis_system_webview,
-            all(target_arch = "wasm32", feature = "web", feature = "video")
-        ))]
-        super::install_native_component_hooks(&mut env);
+        #[cfg(any(test, hydrolysis_platform_services))]
+        super::install_platform_services(&mut env);
         // Every runner seeds the chord table so mounted menus resolve
         // shortcuts through the same path (water-rs/hydrolysis#247).
         let _ = env.get_or_insert_with::<crate::renderer::WindowIdentities, _>(
@@ -542,7 +573,11 @@ pub fn run(app: App, style: impl crate::Style) {
         // A browser page cannot own the browser's menu bar, so the app menus
         // contribute their chords only — nothing renders.
         #[cfg(feature = "menu")]
-        super::menu_bar::register_menu_bar::<crate::text::ParleyEngine>(&menu_bar, &env);
+        if M::HAS_DECLARED
+            && let Some(menu_bar) = menu_bar.declared()
+        {
+            super::menu_bar::register_menu_bar::<crate::text::ParleyEngine>(menu_bar, &env);
+        }
         #[cfg(any(feature = "text-field", feature = "secure-field"))]
         env.insert(HydrolysisTextContextMenuMode::Overlay);
         // The page's `prefers-color-scheme` media query is the host's
@@ -596,17 +631,6 @@ pub fn run(app: App, style: impl crate::Style) {
         // backgrounds reach under the browser and system chrome around it.
         env.insert(crate::platform::WindowSafeArea(platform.safe_area()));
         fonts.collection().clone().install(&mut env);
-        // The capture service mounts its subtree under a snapshot of the
-        // assembled environment — the theme tokens, hooks and font
-        // collection a window's subtree resolves — so it must be installed
-        // last (water-rs/waterui#2703).
-        env.insert(waterui_core::ViewRenderer::new(
-            crate::view_renderer::HydrolysisViewRenderer::new(
-                Rc::clone(&theme),
-                env.clone(),
-                FontFamilyResolution::Lenient,
-            ),
-        ));
         let mut renderer = HydrolysisRenderer::with_engine(
             theme,
             ParleyEngine::from_collection(fonts.collection(), FontFamilyResolution::Lenient),
@@ -617,6 +641,7 @@ pub fn run(app: App, style: impl crate::Style) {
                 .mint_window_id(),
         );
         renderer.set_window_closable(window.closable);
+        super::install_core_window_openers(&mut renderer, unsupported_opener);
         let runtime =
             RuntimeWindow::new_painted(window, platform, renderer, render_diagnostics_config, &env);
         let accessibility_actions = Rc::new(RefCell::new(VecDeque::new()));
@@ -637,6 +662,7 @@ pub fn run(app: App, style: impl crate::Style) {
             fonts_arrived: Rc::new(Cell::new(false)),
             wake: browser_schedule,
             _appearance: system_appearance,
+            next_paced_due: None,
         };
 
         let handle = Rc::new(BrowserRunnerHandle {

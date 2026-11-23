@@ -130,21 +130,6 @@ pub const fn f64_as_usize(v: f64) -> usize {
     v as usize
 }
 
-/// Converts a `f32` extent to `i32` with `as` saturating truncation; extents
-/// are within `i32` range.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "the values are pixel extents within i32 range; saturating truncation is the intended conversion"
-)]
-#[cfg(any(test, not(target_arch = "wasm32")))]
-#[cfg_attr(
-    hydrolysis_hwui,
-    expect(dead_code, reason = "a GPU-painter-only cast under pure HWUI")
-)]
-pub const fn f32_as_i32(v: f32) -> i32 {
-    v as i32
-}
-
 /// Converts a `f64` extent to `i32` with `as` saturating truncation; extents
 /// are within `i32` range.
 #[expect(
@@ -154,6 +139,7 @@ pub const fn f32_as_i32(v: f32) -> i32 {
 #[cfg(any(
     test,
     hydrolysis_winit,
+    all(not(target_arch = "wasm32"), hydrolysis_cherenkov),
     all(
         feature = "accessibility",
         any(feature = "stepper", target_os = "android")
@@ -292,8 +278,9 @@ pub const fn usize_as_i64(v: usize) -> i64 {
     reason = "callers clamp the JNI value with max(0) before converting"
 )]
 #[cfg(any(
+    hydrolysis_range_editing,
     all(
-        any(target_os = "android", all(test, not(target_arch = "wasm32"))),
+        all(test, not(target_arch = "wasm32")),
         any(feature = "text-field", feature = "secure-field")
     ),
     all(target_os = "linux", hydrolysis_winit)

@@ -1,4 +1,4 @@
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::prelude::*;
 use waterui::preview;
 
@@ -66,6 +66,6 @@ fn main() -> impl View {
     )
 }
 
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows> {
     App::new(main, env)
 }

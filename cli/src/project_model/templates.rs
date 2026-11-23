@@ -188,6 +188,9 @@ pub struct BrowserAnswers {
     /// video player is linked, and Android's backend realizes its decoder
     /// plane.
     pub video_gpu: bool,
+    /// The application's graph links `waterui-map-gpu` — Hydrolysis
+    /// realizes `Map` with the GPU map.
+    pub map_gpu: bool,
 }
 
 /// The Hydrolysis Android preview host scaffold's parameters: the managed
@@ -246,6 +249,9 @@ pub struct WebAnswers {
     /// Whether the application enables the standard `WebView`: an `<iframe>`
     /// realizes it (the `webview-system` Hydrolysis feature).
     pub webview: bool,
+    /// Whether the application links `waterui-map-gpu`: the GPU map
+    /// realizes `Map` (the `map-gpu` Hydrolysis feature).
+    pub map_gpu: bool,
 }
 
 impl WebAnswers {
@@ -257,6 +263,9 @@ impl WebAnswers {
         }
         if self.webview {
             features.push("webview-system");
+        }
+        if self.map_gpu {
+            features.push("map-gpu");
         }
         features
     }
@@ -290,22 +299,31 @@ impl DesktopBrowserContext {
         }
     }
 
-    /// The backend feature that bridges `os`'s own web engine.
-    ///
-    /// An application that linked an engine of its own draws through that
-    /// instead, and the bridge would take the component by type before the
-    /// application's realization was ever consulted — so the backend compiles
-    /// no web engine at all.
+    /// The `hydrolysis` webview engine feature `os` selects.
     const fn webview_backend_feature(&self, os: crate::platform::NativeOs) -> Option<&'static str> {
         webview_backend_feature(self.for_os(os))
     }
 }
 
-/// The backend feature `answers`'s section selects — `webview-system`
-/// when the application enables `WebView` without an engine crate of its
-/// own.
+/// The `hydrolysis` backend feature `answers`'s section selects — `webview-cef`,
+/// `webview-wpe`, or `webview-system`.
 const fn webview_backend_feature(answers: BrowserAnswers) -> Option<&'static str> {
-    if answers.webview_enabled && answers.engine.is_none() {
+    if !answers.webview_enabled {
+        return None;
+    }
+    match answers.engine {
+        None | Some(ResolvedWebViewBackend::System) => Some("webview-system"),
+        Some(ResolvedWebViewBackend::Cef) => Some("webview-cef"),
+        Some(ResolvedWebViewBackend::Wpe) => Some("webview-wpe"),
+    }
+}
+
+/// The `waterui-gtk` backend feature `answers` selects — `webview-system` when
+/// the application enables `WebView` without an engine crate of its own.
+const fn system_webview_backend_feature(answers: BrowserAnswers) -> Option<&'static str> {
+    if answers.webview_enabled
+        && matches!(answers.engine, None | Some(ResolvedWebViewBackend::System))
+    {
         Some("webview-system")
     } else {
         None
@@ -844,6 +862,12 @@ impl TemplateContext {
             .android_answers()?
             .video_gpu
             .then_some("video-gpu"))
+    }
+
+    /// The backend feature the launcher's Android section selects for the
+    /// GPU map — `map-gpu` when the application's graph links it.
+    pub(crate) fn map_gpu_backend_feature(&self) -> io::Result<Option<&'static str>> {
+        Ok(self.browser.android_answers()?.map_gpu.then_some("map-gpu"))
     }
 
     /// The `cfg` predicate matching the OSes whose tables link the CEF
@@ -1670,6 +1694,7 @@ mod tests {
             webview_enabled,
             engine,
             video_gpu: false,
+            map_gpu: false,
         };
         ctx.with_browser(BrowserTemplateContext::desktop(
             answers, answers, answers, answers,
@@ -1799,8 +1824,8 @@ mod tests {
         // Preview runtimes reach `configure_environment!` through the
         // generated bindings: `app_environment()` hands the configured
         // environment to the application's `app(env)` composition root, which
-        // is what installs application-owned realizations such as
-        // `waterui_map_gpu::install` (#93). A runtime that built a bare
+        // is what installs application-owned values such as
+        // `waterui_map_gpu::MapGpuOptions` (#93). A runtime that built a bare
         // `Environment` would render components the app never could.
         for relative in [
             "src/preview_runtime.rs.tpl",
@@ -2551,7 +2576,7 @@ mod tests {
         let manifest = cargo_toml
             .parse::<toml::Table>()
             .expect("hydrolysis Cargo.toml should parse");
-        let native_dependencies = &manifest["target"]["cfg(all(not(target_arch = \"wasm32\"), not(target_os = \"android\")))"]
+        let native_dependencies = &manifest["target"]["cfg(all(not(target_arch = \"wasm32\"), not(target_os = \"android\"), not(target_os = \"ios\")))"]
             ["dependencies"];
         // The generated crate must not carry `waterui-preview` — the
         // preview runtime module no longer uses the support-app crate.
@@ -2642,16 +2667,19 @@ mod tests {
                 webview_enabled: true,
                 engine: Some(ResolvedWebViewBackend::Cef),
                 video_gpu: false,
+                map_gpu: false,
             },
             super::BrowserAnswers {
                 webview_enabled: true,
                 engine: Some(ResolvedWebViewBackend::Wpe),
                 video_gpu: false,
+                map_gpu: false,
             },
             super::BrowserAnswers {
                 webview_enabled: true,
                 engine: None,
                 video_gpu: false,
+                map_gpu: false,
             },
             super::BrowserAnswers::default(),
         ));
@@ -2687,27 +2715,33 @@ mod tests {
         };
         // Shared native table: `winit` only — the engine pieces moved out.
         assert_eq!(
-            features_of("cfg(all(not(target_arch = \"wasm32\"), not(target_os = \"android\")))"),
+            features_of(
+                "cfg(all(not(target_arch = \"wasm32\"), not(target_os = \"android\"), not(target_os = \"ios\")))"
+            ),
             ["winit"],
         );
-        // macOS answers CEF: the bridge is suppressed for an application
-        // that linked its own engine, and the helper's crate rides the
-        // macOS section.
-        assert!(!features_of("cfg(target_os = \"macos\")").contains(&"webview-system".to_string()),);
-        assert!(
-            target["cfg(target_os = \"macos\")"]
-                .get("dependencies")
-                .and_then(|deps| deps.get("waterui-browser-cef"))
-                .is_some(),
-            "the macOS section carries the CEF engine crate",
+        // iOS runs the cocoa-ui UIKit host: no winit.
+        assert_eq!(features_of("cfg(target_os = \"ios\")"), ["accessibility"]);
+        // macOS answers CEF: Hydrolysis selects `webview-cef`, and the helper's
+        // crate rides the macOS section with `cef-runtime`.
+        assert_eq!(features_of("cfg(target_os = \"macos\")"), ["webview-cef"],);
+        let macos_cef = target["cfg(target_os = \"macos\")"]
+            .get("dependencies")
+            .and_then(|deps| deps.get("waterui-browser-cef"))
+            .expect("the macOS section carries the CEF engine crate");
+        assert_eq!(macos_cef["default-features"].as_bool(), Some(false));
+        assert_eq!(
+            macos_cef["features"]
+                .as_array()
+                .expect("CEF features should be an array")
+                .iter()
+                .filter_map(toml::Value::as_str)
+                .collect::<Vec<_>>(),
+            ["cef-runtime"],
         );
-        // Linux answers `wpe`: no bridge, no CEF — and no other content, so
-        // its section is not written at all.
-        assert!(
-            target.get("cfg(target_os = \"linux\")").is_none(),
-            "an OS section with nothing engine-dependent is not written: {cargo_toml}"
-        );
-        // Windows answers no engine: the bridge renders.
+        // Linux answers `wpe`: Hydrolysis selects `webview-wpe`.
+        assert_eq!(features_of("cfg(target_os = \"linux\")"), ["webview-wpe"]);
+        // Windows answers no engine: the system bridge renders.
         assert_eq!(features_of("cfg(windows)"), ["webview-system"],);
         // The subprocess helper bin is declared once for the manifest, and
         // its source gates the Chromium dispatch on the macOS section that
@@ -2727,6 +2761,80 @@ mod tests {
             helper.contains("any(target_os = \"macos\")"),
             "the helper compiles its dispatch where the CEF dep exists: {helper}"
         );
+    }
+
+    #[test]
+    fn the_hydrolysis_manifest_gates_optional_glass_theme_feature() {
+        use std::fs;
+        use std::path::Path;
+
+        use tempfile::tempdir;
+        use toml::{Table, Value};
+
+        use crate::templates::hydrolysis::rendered_outputs_with_painters;
+
+        let base_ctx = project_ctx();
+        let without_glass = rendered_outputs_with_painters(&base_ctx, "waterui-test-hydrolysis")
+            .expect("hydrolysis outputs render without glass");
+        let base_cargo = without_glass
+            .into_iter()
+            .find_map(|(path, content)| {
+                (path == Path::new("Cargo.toml"))
+                    .then(|| String::from_utf8(content).expect("Cargo.toml UTF-8"))
+            })
+            .expect("Cargo.toml exists");
+        let base_manifest = base_cargo.parse::<Table>().expect("manifest parses");
+        assert!(
+            base_manifest["features"]
+                .get("waterui-preview-glass")
+                .is_none(),
+            "older frameworks without hydrolysis-glass must omit waterui-preview-glass"
+        );
+
+        let temp = tempdir().expect("tempdir");
+        let glass_crate = temp.path().join("glass-crate");
+        fs::create_dir_all(&glass_crate).expect("create glass crate dir");
+        fs::write(
+            glass_crate.join("Cargo.toml"),
+            "[package]\nname = \"hydrolysis-glass\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .expect("write local glass manifest");
+        let glass_ctx = base_ctx.with_project_root_path(glass_crate);
+        let with_glass = rendered_outputs_with_painters(&glass_ctx, "waterui-test-hydrolysis")
+            .expect("hydrolysis outputs render with local glass");
+        let glass_cargo = with_glass
+            .iter()
+            .find_map(|(path, content)| {
+                (path == Path::new("Cargo.toml"))
+                    .then(|| String::from_utf8(content.clone()).expect("Cargo.toml UTF-8"))
+            })
+            .expect("Cargo.toml exists");
+        let glass_manifest = glass_cargo.parse::<Table>().expect("manifest parses");
+        let feature_list = glass_manifest["features"]["waterui-preview-glass"]
+            .as_array()
+            .expect("waterui-preview-glass feature must be declared");
+        assert_eq!(
+            feature_list
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>(),
+            ["dep:hydrolysis-glass"]
+        );
+        let native_glass = &glass_manifest["target"]["cfg(all(not(target_arch = \"wasm32\"), not(target_os = \"android\"), not(target_os = \"ios\")))"]
+            ["dependencies"]["hydrolysis-glass"];
+        assert_eq!(native_glass["optional"].as_bool(), Some(true));
+        assert_eq!(native_glass["default-features"].as_bool(), Some(false));
+        assert!(native_glass["path"].as_str().is_some());
+
+        let preview_runtime = with_glass
+            .iter()
+            .find_map(|(path, content)| {
+                (path == Path::new("src/preview_runtime.rs"))
+                    .then(|| String::from_utf8(content.clone()).expect("preview_runtime UTF-8"))
+            })
+            .expect("preview_runtime.rs exists");
+        assert!(preview_runtime.contains("config.color_scheme()"));
+        assert!(preview_runtime.contains("config.scale()"));
     }
 
     /// The wasm32 table bridges the browser's `<video>` element and the
@@ -2761,23 +2869,34 @@ mod tests {
         assert_eq!(
             wasm_features(super::WebAnswers {
                 video: false,
-                webview: false
+                webview: false,
+                map_gpu: false,
             }),
             ["web"]
         );
         assert_eq!(
             wasm_features(super::WebAnswers {
                 video: true,
-                webview: false
+                webview: false,
+                map_gpu: false,
             }),
             ["web", "video"]
         );
         assert_eq!(
             wasm_features(super::WebAnswers {
                 video: true,
-                webview: true
+                webview: true,
+                map_gpu: false,
             }),
             ["web", "video", "webview-system"]
+        );
+        assert_eq!(
+            wasm_features(super::WebAnswers {
+                video: false,
+                webview: false,
+                map_gpu: true,
+            }),
+            ["web", "map-gpu"]
         );
     }
 
@@ -2923,6 +3042,7 @@ mod tests {
                 webview_enabled,
                 engine: None,
                 video_gpu,
+                map_gpu: false,
             };
             let ctx = project_ctx()
                 .with_browser(BrowserTemplateContext::desktop(
@@ -3051,7 +3171,8 @@ mod tests {
             .expect("hydrolysis Cargo.toml should parse");
 
         for cfg in [
-            "cfg(all(not(target_arch = \"wasm32\"), not(target_os = \"android\")))",
+            "cfg(all(not(target_arch = \"wasm32\"), not(target_os = \"android\"), not(target_os = \"ios\")))",
+            "cfg(target_os = \"ios\")",
             "cfg(target_os = \"android\")",
             "cfg(target_arch = \"wasm32\")",
         ] {
@@ -3075,7 +3196,7 @@ mod tests {
         }
 
         // In-tree crates still resolve by path into the checkout.
-        let native_dependencies = &manifest["target"]["cfg(all(not(target_arch = \"wasm32\"), not(target_os = \"android\")))"]
+        let native_dependencies = &manifest["target"]["cfg(all(not(target_arch = \"wasm32\"), not(target_os = \"android\"), not(target_os = \"ios\")))"]
             ["dependencies"];
         assert_eq!(
             native_dependencies["waterui-core"]["path"].as_str(),
@@ -3344,10 +3465,15 @@ mod tests {
         assert!(older.get("gpu").is_none(), "{older:?}");
         assert!(older.get("cpu").is_none(), "{older:?}");
         assert!(older.get("hwui").is_none(), "{older:?}");
+        assert!(older.get("erased-dispatch").is_none(), "{older:?}");
         assert!(older.contains_key("waterui-preview-mode"), "{older:?}");
 
         let mut current = super::FeatureTables::new();
-        declare("waterui", &["gpu", "cpu", "video"], &mut current);
+        declare(
+            "waterui",
+            &["gpu", "cpu", "video", "erased-dispatch"],
+            &mut current,
+        );
         declare(
             "hydrolysis",
             &["gpu", "cpu", "hwui", "inspector", "inspector-signals"],
@@ -3372,6 +3498,7 @@ mod tests {
             forwards("inspector-signals"),
             ["hydrolysis/inspector-signals"]
         );
+        assert_eq!(forwards("erased-dispatch"), ["waterui/erased-dispatch"]);
 
         // A facade without `gpu` keeps only the `hydrolysis` half.
         let mut partial = super::FeatureTables::new();
@@ -4304,12 +4431,12 @@ mod tests {
                 )
                 && matches!(
                     output.as_ref(),
-                    syn::Type::Path(path) if path.path.is_ident("App")
+                    syn::Type::Path(path) if path.path.segments.last().is_some_and(|segment| segment.ident == "App")
                 )
         });
         assert!(
             app_shim,
-            "the app(env) -> App shim the export_app!() expansion calls must exist"
+            "the app(env) -> App<impl Windows> shim the export_app!() expansion calls must exist"
         );
     }
 
@@ -5985,7 +6112,7 @@ pub mod gtk4 {
         package_name: &str,
     ) -> io::Result<Vec<(std::path::PathBuf, Vec<u8>)>> {
         let mut outputs = super::render_dir_outputs(TemplateNamespace::Gtk4, &embedded::GTK4, ctx)?;
-        let features = super::webview_backend_feature(ctx.browser.linux_answers()?)
+        let features = super::system_webview_backend_feature(ctx.browser.linux_answers()?)
             .into_iter()
             .collect::<Vec<_>>();
         let dependencies = gtk4_dependencies(&features);
@@ -6003,7 +6130,7 @@ pub mod gtk4 {
         ctx: &TemplateContext,
         package_name: &str,
     ) -> io::Result<()> {
-        let features = super::webview_backend_feature(ctx.browser.linux_answers()?)
+        let features = super::system_webview_backend_feature(ctx.browser.linux_answers()?)
             .into_iter()
             .collect::<Vec<_>>();
         let dependencies = gtk4_dependencies(&features);
@@ -6241,7 +6368,7 @@ pub mod hydrolysis {
     use super::{
         FeatureTables, GeneratedBinSection, GeneratedCargoManifest, GeneratedDependencyDetail,
         GeneratedDependencyValue, GeneratedTargetSection, GeneratedWorkspaceSection, HYDROLYSIS,
-        NativeBackendDependencySource, NativeBackendDependencySpec, Path, TemplateContext,
+        NativeBackendDependencySource, NativeBackendDependencySpec, Path, PathBuf, TemplateContext,
         TemplateNamespace, embedded, io, scaffold_dir, write_generated_cargo_toml,
     };
     use std::collections::BTreeMap;
@@ -6414,6 +6541,12 @@ pub mod hydrolysis {
                 ],
             ),
         ]);
+        if has_hydrolysis_glass_support(ctx)? {
+            features.insert(
+                "waterui-preview-glass".to_string(),
+                vec!["dep:hydrolysis-glass".to_string()],
+            );
+        }
         // The painters: an Android build enables the resolved painter's
         // feature on the launcher, mirroring the test-app's wiring — `gpu`
         // links the Cherenkov GPU attachment and the GPU-capable `waterui`,
@@ -6427,6 +6560,12 @@ pub mod hydrolysis {
             if !forwards.is_empty() {
                 features.insert((*capability).to_string(), forwards);
             }
+        }
+        if super::declares(painter_tables, "waterui", "erased-dispatch") {
+            features.insert(
+                "erased-dispatch".to_string(),
+                vec!["waterui/erased-dispatch".to_string()],
+            );
         }
         Ok(GeneratedCargoManifest {
             package,
@@ -6541,9 +6680,15 @@ pub mod hydrolysis {
     ) -> io::Result<BTreeMap<String, GeneratedTargetSection<GeneratedDependencyValue>>> {
         let mut target = BTreeMap::from([
             (
-                "cfg(all(not(target_arch = \"wasm32\"), not(target_os = \"android\")))".to_string(),
+                "cfg(all(not(target_arch = \"wasm32\"), not(target_os = \"android\"), not(target_os = \"ios\")))".to_string(),
                 GeneratedTargetSection {
-                    dependencies: native_target_dependencies(ctx)?,
+                    dependencies: native_target_dependencies(ctx, &["winit"])?,
+                },
+            ),
+            (
+                "cfg(target_os = \"ios\")".to_string(),
+                GeneratedTargetSection {
+                    dependencies: native_target_dependencies(ctx, &["accessibility"])?,
                 },
             ),
             (
@@ -6564,7 +6709,7 @@ pub mod hydrolysis {
     }
 
     /// The engine-dependent pieces the shared native table cannot hold:
-    /// the `webview-system` Hydrolysis feature and the
+    /// the `webview-system` and `video-gpu` Hydrolysis features and the
     /// `waterui-browser-cef` dependency legitimately differ per OS —
     /// `waterui-browser-wpe` enters the application's graph on Linux only —
     /// so each OS's section renders from that OS's own answers while
@@ -6576,7 +6721,15 @@ pub mod hydrolysis {
         let mut tables = BTreeMap::new();
         for os in crate::platform::NativeOs::ALL {
             let mut dependencies = BTreeMap::new();
-            if let Some(feature) = browser.webview_backend_feature(os) {
+            // Hydrolysis bridges no native player, so an application linking
+            // the GPU video player has Hydrolysis realize `Video` with it.
+            let hydrolysis_features: Vec<&str> = browser
+                .webview_backend_feature(os)
+                .into_iter()
+                .chain(browser.for_os(os).video_gpu.then_some("video-gpu"))
+                .chain(browser.for_os(os).map_gpu.then_some("map-gpu"))
+                .collect();
+            if !hydrolysis_features.is_empty() {
                 dependencies.insert(
                     "hydrolysis".to_string(),
                     GeneratedDependencyValue::detailed(
@@ -6584,7 +6737,7 @@ pub mod hydrolysis {
                             ctx,
                             NativeBackendDependencySpec::new(
                                 "hydrolysis",
-                                &[feature],
+                                &hydrolysis_features,
                                 NativeBackendDependencySource::FrameworkMember(HYDROLYSIS),
                             ),
                         )?
@@ -6601,14 +6754,17 @@ pub mod hydrolysis {
             if crate::project_model::project_types::declares_cef_helper(browser.for_os(os).engine) {
                 dependencies.insert(
                     "waterui-browser-cef".to_string(),
-                    GeneratedDependencyValue::detailed(super::generated_dependency_from_spec(
-                        ctx,
-                        NativeBackendDependencySpec::new(
-                            "waterui-browser-cef",
-                            &[],
-                            NativeBackendDependencySource::WorkspaceDependency,
-                        ),
-                    )?),
+                    GeneratedDependencyValue::detailed(
+                        super::generated_dependency_from_spec(
+                            ctx,
+                            NativeBackendDependencySpec::new(
+                                "waterui-browser-cef",
+                                &["cef-runtime"],
+                                NativeBackendDependencySource::WorkspaceDependency,
+                            ),
+                        )?
+                        .with_default_features(false),
+                    ),
                 );
             }
             if !dependencies.is_empty() {
@@ -6637,7 +6793,8 @@ pub mod hydrolysis {
         // through `hydrolysis_android_has_system_webview`.
         hydrolysis_features.extend(ctx.webview_backend_feature()?);
         hydrolysis_features.extend(ctx.video_gpu_backend_feature()?);
-        Ok(BTreeMap::from([
+        hydrolysis_features.extend(ctx.map_gpu_backend_feature()?);
+        let mut dependencies = BTreeMap::from([
             (
                 "hydrolysis".to_string(),
                 GeneratedDependencyValue::detailed(
@@ -6701,11 +6858,24 @@ pub mod hydrolysis {
                 "jni".to_string(),
                 GeneratedDependencyValue::simple("0.21.1"),
             ),
-        ]))
+        ]);
+        if let Some(glass) = optional_hydrolysis_glass_dependency(ctx)? {
+            dependencies.insert(
+                "hydrolysis-glass".to_string(),
+                GeneratedDependencyValue::detailed(
+                    glass.with_default_features(false).with_optional(),
+                ),
+            );
+        }
+        Ok(dependencies)
     }
 
+    /// The dependencies of the native (non-Android, non-web) launcher.
+    /// `hydrolysis_features` is the host the OS runs: winit on the desktop,
+    /// the `cocoa_ui` `UIKit` host on iOS.
     fn native_target_dependencies(
         ctx: &TemplateContext,
+        hydrolysis_features: &[&str],
     ) -> io::Result<BTreeMap<String, GeneratedDependencyValue>> {
         let dependencies: BTreeMap<String, GeneratedDependencyValue> = BTreeMap::from([
             (
@@ -6715,7 +6885,7 @@ pub mod hydrolysis {
                         ctx,
                         NativeBackendDependencySpec::new(
                             "hydrolysis",
-                            &["winit"],
+                            hydrolysis_features,
                             NativeBackendDependencySource::FrameworkMember(HYDROLYSIS),
                         ),
                     )?
@@ -6792,7 +6962,73 @@ pub mod hydrolysis {
                 ),
             ),
         ]);
+        let mut dependencies = dependencies;
+        if let Some(glass) = optional_hydrolysis_glass_dependency(ctx)? {
+            dependencies.insert(
+                "hydrolysis-glass".to_string(),
+                GeneratedDependencyValue::detailed(
+                    glass.with_default_features(false).with_optional(),
+                ),
+            );
+        }
         Ok(dependencies)
+    }
+
+    fn has_hydrolysis_glass_support(ctx: &TemplateContext) -> io::Result<bool> {
+        Ok(optional_hydrolysis_glass_dependency(ctx)?.is_some())
+    }
+
+    fn optional_hydrolysis_glass_dependency(
+        ctx: &TemplateContext,
+    ) -> io::Result<Option<GeneratedDependencyDetail>> {
+        if let Some(project_root) = ctx.project_root_path.as_deref()
+            && let Some(local_path) = local_project_glass_path(project_root)?
+        {
+            return Ok(Some(GeneratedDependencyDetail::path(&local_path)));
+        }
+        if !ctx.framework.has_scaffold("hydrolysis-glass")
+            || ctx
+                .framework
+                .require_distributable("hydrolysis-glass")
+                .is_err()
+        {
+            return Ok(None);
+        }
+        super::generated_dependency_from_spec(
+            ctx,
+            NativeBackendDependencySpec::new(
+                "hydrolysis-glass",
+                &[],
+                NativeBackendDependencySource::WorkspaceDependency,
+            ),
+        )
+        .map(Some)
+    }
+
+    fn local_project_glass_path(project_root: &Path) -> io::Result<Option<PathBuf>> {
+        use cargo_toml::Dependency;
+
+        use super::parse_cargo_manifest;
+
+        let manifest_path = project_root.join("Cargo.toml");
+        if !manifest_path.is_file() {
+            return Ok(None);
+        }
+        let manifest = parse_cargo_manifest(&manifest_path)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        if manifest
+            .package
+            .as_ref()
+            .is_some_and(|package| package.name == "hydrolysis-glass")
+        {
+            return Ok(Some(project_root.to_path_buf()));
+        }
+        if let Some(Dependency::Detailed(detail)) = manifest.dependencies.get("hydrolysis-glass")
+            && let Some(path) = detail.path.as_deref()
+        {
+            return Ok(Some(project_root.join(path)));
+        }
+        Ok(None)
     }
 
     fn wasm_target_dependencies(
@@ -7850,8 +8086,10 @@ fn find_workspace_manifest(
 /// keeps every one of them inside the locked graph.
 const FORWARDED_FEATURES: &[&str] = &[
     "chromium",
+    "erased-dispatch",
     "gpu",
     "inspector",
+    "inspector-signals",
     "map",
     "media",
     "video",
@@ -7876,18 +8114,21 @@ const BACKEND_FEATURE_FORWARDS: &[(&str, &str, &str)] = &[
     ("hwui", "hydrolysis", "hwui"),
     ("inspector", "hydrolysis", "inspector"),
     ("inspector-signals", "hydrolysis", "inspector-signals"),
+    ("inspector", "waterui-apple", "inspector"),
     ("map", "waterui-apple", "map"),
     ("media", "waterui-apple", "media"),
     ("webview", "waterui-apple", "webview"),
     ("chromium", "waterui-browser-cef", "chromium"),
     ("webview-cef", "waterui-browser-cef", "webview"),
+    ("webview-cef", "waterui-apple", "webview-cef"),
 ];
 
 /// The selectable features that also reach the `waterui` facade crate — the
 /// gpu/media/video/webview capability surface the native Apple entry
 /// compiles; the Hydrolysis launcher's `gpu` and `cpu` painter features
 /// reach the facade through the same entry.
-const APPLE_RUNTIME_FEATURE_FORWARDS: &[&str] = &["gpu", "cpu", "media", "video", "webview"];
+const APPLE_RUNTIME_FEATURE_FORWARDS: &[&str] =
+    &["erased-dispatch", "gpu", "cpu", "media", "video", "webview"];
 
 /// The declaration `name` carries in `manifest`, wherever it lives:
 /// `[dependencies]` or a `[target.*.dependencies]` table. A generated

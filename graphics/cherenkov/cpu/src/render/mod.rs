@@ -87,7 +87,7 @@ struct SurfaceState {
     /// Where finished pixels land; only `Offscreen` targets retain a
     /// full-frame buffer, in the format the host asked for.
     output: Output,
-    refresh: cherenkov::RefreshRange,
+    refresh: cherenkov::FrameRate,
     /// Per-layer content caches; the sampled layer state lives in the
     /// front end's [`cherenkov::SurfaceTree`].
     layers: FxHashMap<LayerId, ContentData>,
@@ -126,14 +126,21 @@ impl SurfaceState {
         self.animated_shaders = used.animated;
     }
 
-    fn rendered_bands(&self) -> u32 {
-        let count = match &self.output {
-            Output::Stream { .. } => (self.size.1 as usize).div_ceil(raster::BAND_H),
-            Output::F32(_) | Output::F16(_) => {
-                usize::try_from(self.damage.bands().pixel_area()).expect("band count fits usize")
-            }
+    fn record_raster_stats(&self, stats: &mut FrameStats) {
+        let surface_pixels = u64::from(self.size.0) * u64::from(self.size.1);
+        let (count, pixels) = match &self.output {
+            Output::Stream { .. } => (
+                (self.size.1 as usize).div_ceil(raster::BAND_H),
+                surface_pixels,
+            ),
+            Output::F32(_) | Output::F16(_) => (
+                usize::try_from(self.damage.bands().pixel_area()).expect("band count fits usize"),
+                self.damage.pixels(self.size),
+            ),
         };
-        u32::try_from(count).expect("surface band count fits u32")
+        stats.passes += u32::try_from(count).expect("surface band count fits u32");
+        stats.surface_pixels += surface_pixels;
+        stats.damaged_surface_pixels += pixels;
     }
 
     /// Heap bytes of the output storage (`Stream` keeps none).
@@ -404,7 +411,7 @@ impl Renderer for RasterRenderer {
                         cherenkov::OffscreenFormat::LinearF32 => Vec::new(),
                     },
                 };
-                (size, output, false, cherenkov::DEFAULT_REFRESH)
+                (size, output, false, cherenkov::FrameRate::FAST)
             }
         };
         if size.0 > MAX_SURFACE || size.1 > MAX_SURFACE {
@@ -869,7 +876,7 @@ impl RasterRenderer {
                     .iter()
                     .any(|gid| self.filters.wants_redraw_group(*id, BackdropId::new(*gid)))
             {
-                redraw.request(*id, surface.refresh.clone());
+                redraw.request(*id, surface.refresh);
             }
         }
         Ok(redraw)
@@ -1044,7 +1051,7 @@ impl RasterRenderer {
             "raster phases");
         stats.draws += draws;
         stats.instances += edges;
-        stats.passes += surf.rendered_bands();
+        surf.record_raster_stats(stats);
         Ok(())
     }
 

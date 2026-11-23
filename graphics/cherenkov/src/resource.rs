@@ -11,13 +11,16 @@ use std::sync::Arc;
 
 use waterui_contract::contract_violation;
 
+use crate::FrameRate;
 use crate::ImageLimits;
 use crate::ShaderId;
 use crate::error::ResourceError;
 use crate::glyph::FontId;
 use crate::image::{Format, ImageData, ImageUpload};
+use crate::message::{Message, ResOp};
 use cherenkov_record::{
-    BackdropEffect, BackdropId, BackdropSample, BackdropShaderId, LayerContent, TextLayoutId,
+    BackdropEffect, BackdropId, BackdropSample, BackdropShaderId, ContentShaderEffect,
+    ContentShaderId, LayerContent, TextLayoutId,
 };
 
 use crate::paint::ImageId;
@@ -482,6 +485,48 @@ impl BackdropShader {
     }
 }
 
+/// A content effect shader registered with an engine.
+///
+/// Made by [`Engine::content_shader`](crate::Engine::content_shader).
+/// Dropping the last clone unregisters it once no layer references it.
+#[derive(Debug)]
+pub struct ContentShader {
+    inner: Rc<Inner<ContentShaderId>>,
+    reach: f32,
+}
+
+impl Clone for ContentShader {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Rc::clone(&self.inner),
+            reach: self.reach,
+        }
+    }
+}
+
+impl ContentShader {
+    pub(crate) fn new(id: ContentShaderId, reach: f32, on_drop: impl FnOnce() + 'static) -> Self {
+        Self {
+            inner: handle(id, on_drop),
+            reach,
+        }
+    }
+
+    /// The identifier [`ContentShaderEffect`] references.
+    #[must_use]
+    pub fn id(&self) -> ContentShaderId {
+        self.inner.id
+    }
+
+    /// A [`ContentShaderEffect`] for [`LayerEdit::content_effect`](crate::LayerEdit::content_effect),
+    /// with `uniforms` in the shader's declared order (at most 64 finite
+    /// values, packed four per `vec4`).
+    #[must_use]
+    pub fn effect(&self, uniforms: Vec<f32>) -> ContentShaderEffect {
+        ContentShaderEffect::new(self.id(), uniforms, self.reach)
+    }
+}
+
 /// The channel a [`FrameSink`] submits through — the engine's bounded
 /// transaction stream, so a decoder thread's submits keep backpressure.
 #[cfg(not(target_arch = "wasm32"))]
@@ -711,5 +756,13 @@ impl<B: crate::GpuContent> FrameSink<B> {
             opaque,
             apply: Box::new(move |r| B::submit_frame(r, id, frame)),
         });
+    }
+
+    /// Declares or clears a non-redrawing source cadence vote (e.g. a video
+    /// decoder's frame rate) on this producer without submitting a frame.
+    pub fn set_source_rate(&self, rate: Option<FrameRate>) {
+        let id = self.id;
+        let op: ResOp<B> = Box::new(move |r| B::set_source_rate(r, id, rate));
+        let _ = self.tx.send(Message::Resource(op));
     }
 }

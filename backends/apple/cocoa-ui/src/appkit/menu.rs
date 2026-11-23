@@ -239,6 +239,13 @@ impl MenuItem {
         self.item.setImage(image.as_deref());
         self
     }
+
+    /// The same item, shown with `image`.
+    #[must_use]
+    pub fn with_image(self, image: &NSImage) -> Self {
+        self.item.setImage(Some(image));
+        self
+    }
 }
 
 /// A pull-down button that opens its menu: the trigger view a `Menu`
@@ -521,6 +528,8 @@ impl MenuItem {
             )
         {
             item.setImage(Some(&image));
+        } else if let Some(image) = &command.image {
+            item.setImage(Some(image));
         }
         if let Some(subtitle) = &command.subtitle {
             item.setSubtitle(Some(&NSString::from_str(subtitle)));

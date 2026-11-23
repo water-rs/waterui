@@ -11,6 +11,7 @@ use alloc::string::{String, ToString};
 use nami::{Binding, SignalExt};
 #[cfg(feature = "regex-validation")]
 use regex::Regex;
+use waterui_controls::LabelKind;
 use waterui_controls::text_field::TextField;
 use waterui_core::{Str, View};
 use waterui_layout::stack::vstack;
@@ -118,12 +119,6 @@ where
                 }
             })),
         ))
-    }
-
-    /// Resolves to a `vstack` over `[view, error-label]`; the label is
-    /// content-sized text, so the stack's axis is the validated view's own.
-    fn stretch_axis(&self) -> waterui_core::layout::StretchAxis {
-        self.view.stretch_axis()
     }
 }
 
@@ -385,7 +380,7 @@ where
     }
 }
 
-impl Validatable for TextField {
+impl<L: LabelKind> Validatable for TextField<L> {
     type Value = StyledStr;
 
     fn validable(&mut self) -> &mut Binding<Self::Value> {
@@ -394,7 +389,7 @@ impl Validatable for TextField {
 }
 
 #[cfg(feature = "stepper")]
-impl Validatable for waterui_controls::Stepper {
+impl<L: LabelKind> Validatable for waterui_controls::Stepper<L> {
     type Value = i32;
 
     fn validable(&mut self) -> &mut Binding<Self::Value> {
@@ -403,7 +398,7 @@ impl Validatable for waterui_controls::Stepper {
 }
 
 #[cfg(feature = "slider")]
-impl Validatable for waterui_controls::Slider {
+impl<L: LabelKind, Min: View, Max: View> Validatable for waterui_controls::Slider<L, Min, Max> {
     type Value = f64;
 
     fn validable(&mut self) -> &mut Binding<Self::Value> {

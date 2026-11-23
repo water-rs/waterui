@@ -169,6 +169,45 @@ impl<V> SharedAnyViews<V> {
     }
 }
 
+impl<V: 'static> SharedAnyViews<V> {
+    /// The number of items, as a signal.
+    #[must_use]
+    pub fn len(&self) -> Computed<usize> {
+        self.0.len()
+    }
+
+    /// An immutable snapshot of the current items.
+    #[must_use]
+    pub fn snapshot(&self) -> AnyViewsSnapshot<V> {
+        self.0.snapshot()
+    }
+
+    /// Watches the items in `range`: `watcher` receives a snapshot and the
+    /// change report on every change.
+    pub fn watch(
+        &self,
+        range: impl RangeBounds<usize>,
+        watcher: impl Fn(Context<AnyViewsSnapshot<V>>, &CollectionChange) + 'static,
+    ) -> BoxWatcherGuard {
+        self.0.watch(
+            (range.start_bound().cloned(), range.end_bound().cloned()),
+            Box::new(watcher),
+        )
+    }
+
+    /// Maps each item the collection produces through `f`, keeping its ids,
+    /// as [`AnyViews::map_views`] does; the mapped collection shares this
+    /// one's source.
+    #[must_use]
+    pub fn map_views<S, F>(self, f: F) -> SharedAnyViews<S>
+    where
+        S: 'static,
+        F: Fn(V) -> S + Clone + 'static,
+    {
+        SharedAnyViews(Rc::new(MapAnyViews { inner: self.0, f }))
+    }
+}
+
 impl<V> From<AnyViews<V>> for SharedAnyViews<V> {
     fn from(value: AnyViews<V>) -> Self {
         Self(Rc::from(value.0))
@@ -188,11 +227,11 @@ impl<V: View> Views for SharedAnyViews<V> {
     type Snapshot = AnyViewsSnapshot<V>;
 
     fn len(&self) -> Computed<usize> {
-        self.0.len()
+        Self::len(self)
     }
 
     fn snapshot(&self) -> Self::Snapshot {
-        self.0.snapshot()
+        Self::snapshot(self)
     }
 
     fn watch(
@@ -200,10 +239,7 @@ impl<V: View> Views for SharedAnyViews<V> {
         range: impl RangeBounds<usize>,
         watcher: impl Fn(Context<Self::Snapshot>, &CollectionChange) + 'static,
     ) -> Self::Guard {
-        self.0.watch(
-            (range.start_bound().cloned(), range.end_bound().cloned()),
-            Box::new(watcher),
-        )
+        Self::watch(self, range, watcher)
     }
 }
 
@@ -224,6 +260,38 @@ impl<V> Clone for AnyViewsSnapshot<V> {
 impl<V> Debug for AnyViewsSnapshot<V> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(type_name::<Self>())
+    }
+}
+
+impl<V> AnyViewsSnapshot<V> {
+    /// The index range the snapshot covers.
+    #[must_use]
+    pub fn range(&self) -> Range<usize> {
+        self.0.range()
+    }
+
+    /// The number of items in the snapshot.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.0.range().len()
+    }
+
+    /// Whether the snapshot holds no items.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// The id of the item at `index`.
+    #[must_use]
+    pub fn get_id(&self, index: usize) -> Option<RawId> {
+        self.0.get_id(index)
+    }
+
+    /// The item at `index`.
+    #[must_use]
+    pub fn get_view(&self, index: usize) -> Option<V> {
+        self.0.get_view(index)
     }
 }
 
@@ -249,7 +317,7 @@ impl<V: View> ViewSnapshot for AnyViewsSnapshot<V> {
 type BoxAnyViewsWatcher<V> = Box<dyn Fn(Context<AnyViewsSnapshot<V>>, &CollectionChange) + 'static>;
 
 trait AnyViewsImpl {
-    type View: View;
+    type View;
 
     fn len(&self) -> Computed<usize>;
     fn snapshot(&self) -> AnyViewsSnapshot<Self::View>;
@@ -261,7 +329,7 @@ trait AnyViewsImpl {
 }
 
 trait AnyViewSnapshotImpl {
-    type View: View;
+    type View;
 
     fn range(&self) -> Range<usize>;
     fn get_id(&self, index: usize) -> Option<RawId>;
@@ -400,6 +468,189 @@ where
     {
         let (contents, ids) = IntoAnyViews::new_with_ids(contents);
         (Self(Box::new(contents)), ids)
+    }
+}
+
+impl<V: 'static> AnyViews<V> {
+    /// The number of items, as a signal.
+    #[must_use]
+    pub fn len(&self) -> Computed<usize> {
+        self.0.len()
+    }
+
+    /// An immutable snapshot of the current items.
+    #[must_use]
+    pub fn snapshot(&self) -> AnyViewsSnapshot<V> {
+        self.0.snapshot()
+    }
+
+    /// Watches the items in `range`: `watcher` receives a snapshot and the
+    /// change report on every change.
+    pub fn watch(
+        &self,
+        range: impl RangeBounds<usize>,
+        watcher: impl Fn(Context<AnyViewsSnapshot<V>>, &CollectionChange) + 'static,
+    ) -> BoxWatcherGuard {
+        self.0.watch(
+            (range.start_bound().cloned(), range.end_bound().cloned()),
+            Box::new(watcher),
+        )
+    }
+
+    /// Maps each item the collection produces through `f`, keeping its ids:
+    /// a backend turns an erased collection's views into its child slot
+    /// without erasing them a second time.
+    #[must_use]
+    pub fn map_views<S, F>(self, f: F) -> AnyViews<S>
+    where
+        S: 'static,
+        F: Fn(V) -> S + Clone + 'static,
+    {
+        AnyViews(Box::new(MapAnyViews {
+            inner: Rc::from(self.0),
+            f,
+        }))
+    }
+}
+
+impl<V: Clone + 'static> AnyViews<V> {
+    /// A fixed collection of `items`, identified by index, together with the
+    /// mapping of those indices into the ids `get_id` returns: the erased form
+    /// of a `Vec` whose items need not be views, such as a payload's children
+    /// already in a backend's child slot.
+    #[must_use]
+    pub fn from_items(items: Vec<V>) -> (Self, Mapping<usize>) {
+        let ids = Mapping::new();
+        (
+            Self(Box::new(FixedItems {
+                items: Rc::from(items),
+                ids: ids.clone(),
+            })),
+            ids,
+        )
+    }
+}
+
+/// [`AnyViews::from_items`]: a fixed list keyed by index.
+struct FixedItems<V> {
+    items: Rc<[V]>,
+    ids: Mapping<usize>,
+}
+
+impl<V: Clone + 'static> AnyViewsImpl for FixedItems<V> {
+    type View = V;
+
+    fn len(&self) -> Computed<usize> {
+        Computed::constant(self.items.len())
+    }
+
+    fn snapshot(&self) -> AnyViewsSnapshot<V> {
+        AnyViewsSnapshot(Rc::new(Self {
+            items: Rc::clone(&self.items),
+            ids: self.ids.clone(),
+        }))
+    }
+
+    fn watch(
+        &self,
+        _range: (Bound<usize>, Bound<usize>),
+        _watcher: BoxAnyViewsWatcher<V>,
+    ) -> BoxWatcherGuard {
+        // A fixed list never changes.
+        Box::new(())
+    }
+}
+
+impl<V: Clone> AnyViewSnapshotImpl for FixedItems<V> {
+    type View = V;
+
+    fn range(&self) -> Range<usize> {
+        0..self.items.len()
+    }
+
+    fn get_id(&self, index: usize) -> Option<RawId> {
+        (index < self.items.len()).then(|| self.ids.to_id(index))
+    }
+
+    fn get_view(&self, index: usize) -> Option<V> {
+        self.items.get(index).cloned()
+    }
+}
+
+/// [`AnyViews::map_views`] and [`SharedAnyViews::map_views`]: the erased
+/// collection with its items mapped.
+struct MapAnyViews<V, F> {
+    inner: Rc<dyn AnyViewsImpl<View = V>>,
+    f: F,
+}
+
+impl<V, S, F> AnyViewsImpl for MapAnyViews<V, F>
+where
+    V: 'static,
+    S: 'static,
+    F: Fn(V) -> S + Clone + 'static,
+{
+    type View = S;
+
+    fn len(&self) -> Computed<usize> {
+        self.inner.len()
+    }
+
+    fn snapshot(&self) -> AnyViewsSnapshot<S> {
+        MapAnyViewsSnapshot::erase(self.inner.snapshot(), self.f.clone())
+    }
+
+    fn watch(
+        &self,
+        range: (Bound<usize>, Bound<usize>),
+        watcher: BoxAnyViewsWatcher<S>,
+    ) -> BoxWatcherGuard {
+        let f = self.f.clone();
+        self.inner.watch(
+            range,
+            Box::new(move |context, change| {
+                watcher(
+                    context.map(|source| MapAnyViewsSnapshot::erase(source, f.clone())),
+                    change,
+                );
+            }),
+        )
+    }
+}
+
+/// The snapshot counterpart of [`MapAnyViews`].
+struct MapAnyViewsSnapshot<V, F> {
+    source: AnyViewsSnapshot<V>,
+    f: F,
+}
+
+impl<V, S, F> MapAnyViewsSnapshot<V, F>
+where
+    V: 'static,
+    S: 'static,
+    F: Fn(V) -> S + 'static,
+{
+    fn erase(source: AnyViewsSnapshot<V>, f: F) -> AnyViewsSnapshot<S> {
+        AnyViewsSnapshot(Rc::new(Self { source, f }))
+    }
+}
+
+impl<V, S, F> AnyViewSnapshotImpl for MapAnyViewsSnapshot<V, F>
+where
+    F: Fn(V) -> S,
+{
+    type View = S;
+
+    fn range(&self) -> Range<usize> {
+        self.source.0.range()
+    }
+
+    fn get_id(&self, index: usize) -> Option<RawId> {
+        self.source.0.get_id(index)
+    }
+
+    fn get_view(&self, index: usize) -> Option<S> {
+        self.source.0.get_view(index).map(&self.f)
     }
 }
 

@@ -10,11 +10,13 @@
 use core::num::NonZeroUsize;
 
 use waterui::Identifiable;
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::component::list::{List, ListItem};
 use waterui::layout::ContentMode;
 use waterui::media::Photo;
-use waterui::navigation::{NavigationSplitView, NavigationStack, NavigationView};
+use waterui::navigation::{
+    NavigationSplitView, NavigationStack, NavigationToolbarItems, NavigationView,
+};
 use waterui::prelude::*;
 use waterui::reactive::collection::SignalCollection;
 use waterui::widget::avatar;
@@ -173,7 +175,7 @@ fn star() -> impl View {
         .label_style(LabelDisplayMode::IconOnly)
 }
 
-fn thread_row(thread: Thread) -> ListItem {
+fn thread_row(thread: Thread) -> ListItem<impl View> {
     ListItem::new(Label::new(thread.subject, move || {
         vstack((
             hstack((
@@ -206,7 +208,10 @@ fn thread_row(thread: Thread) -> ListItem {
 
 /// The inbox column: the thread list under a titled bar that carries the
 /// search field, the compose action and the account avatar.
-fn inbox(selected: &Binding<Option<u64>>, query: &Binding<Str>) -> NavigationView {
+fn inbox(
+    selected: &Binding<Option<u64>>,
+    query: &Binding<Str>,
+) -> NavigationView<impl View + use<>, impl NavigationToolbarItems + use<>> {
     let visible = SignalCollection::new(
         query
             .clone()
@@ -262,7 +267,7 @@ fn message_card(message: &'static Message) -> impl View {
 
 /// The reading pane: the subject as the navigation title, the message count
 /// as its subtitle, and the thread's overflow actions in the bar.
-fn detail(thread: &'static Thread) -> NavigationView {
+fn detail(thread: &'static Thread) -> NavigationView<impl View, impl NavigationToolbarItems> {
     scroll(vstack(thread.messages.iter().map(message_card).collect::<Vec<_>>()).leading())
         .title(thread.subject)
         .navigation_subtitle(text!("{#count} Messages", count = thread.messages.len()))
@@ -301,7 +306,7 @@ fn empty_destination(name: &'static str) -> impl View {
 fn reply(selected: Binding<Option<u64>>, destination: &Binding<usize>) -> impl View + use<> {
     Tabs::new(
         destination,
-        vec![
+        (
             Tab::container(label("Mail").icon(email_outline()), move || {
                 mail(selected.clone())
             })
@@ -315,7 +320,7 @@ fn reply(selected: Binding<Option<u64>>, destination: &Binding<usize>) -> impl V
             Tab::container(label("Meet").icon(video_outline()), || {
                 empty_destination("Meet")
             }),
-        ],
+        ),
     )
     .style(tab_style::automatic())
 }
@@ -328,7 +333,7 @@ pub fn demo() -> impl View {
 
 /// Builds the Reply example app around the inbox and the tab container.
 #[must_use]
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows> {
     let selected = binding(Some(2u64));
     let destination = binding(0usize);
     App::new(move || reply(selected.clone(), &destination), env)

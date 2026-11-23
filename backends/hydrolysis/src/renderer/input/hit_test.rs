@@ -13,8 +13,8 @@ use waterui_backend_core::gesture::GesturePlacement;
 #[cfg(feature = "menu")]
 use waterui_backend_core::gesture::LONG_PRESS_SLOP;
 use waterui_core::contract_violation;
-use waterui_core::interaction::{InteractionReport, InteractionState, Selected};
 use waterui_graphics::input::{Code, GesturePhase, ScrollPhase, ScrollUnit};
+use waterui_interaction::interaction::{InteractionReport, InteractionState, Selected};
 use waterui_layout::scroll::Axis as ScrollAxis;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -105,6 +105,7 @@ pub struct PointerTarget<E: crate::text::TextEngine> {
     /// widget's own space.
     pub(crate) to_local: kurbo::Affine,
     pub(crate) captures_drag: bool,
+    pub(crate) action_dirty: Dirty,
     pub(crate) depth: usize,
     pub(crate) order: usize,
     pub(crate) press_slot: Option<PressSlot>,
@@ -497,6 +498,7 @@ pub struct HitTestState<E: crate::text::TextEngine> {
     /// The node cell that registered `active_pointer_drag_target` —
     /// attribution for move-time marks.
     pub(crate) active_pointer_drag_owner: std::rc::Weak<crate::renderer::NodeCell<E>>,
+    pub(crate) active_pointer_drag_dirty: Option<Dirty>,
     pub(crate) active_pointer_drag_signature: Option<(usize, usize)>,
     /// System-back targets registered this frame, in paint order. The last
     /// entry is the frontmost stack. Cleared with the other per-frame target
@@ -549,6 +551,7 @@ pub struct HitTestState<E: crate::text::TextEngine> {
     pub(crate) trackpad_scroll_contact: bool,
     /// The paste queue of every surface that has one, by receiver identity.
     /// An entry lives while a sink or a pending paste holds its queue.
+    #[cfg(any(hydrolysis_scene_view, hydrolysis_gpu))]
     pub(crate) paste_queues: std::collections::HashMap<*const (), Weak<RefCell<PasteQueue>>>,
     /// The physical keys whose press was the paste shortcut of a focused
     /// surface, so the matching releases are consumed with them.
@@ -2009,12 +2012,14 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         {
             self.hit_test.active_pointer_drag_target = Some(Rc::clone(&target.action));
             self.hit_test.active_pointer_drag_owner = target.owner.clone();
+            self.hit_test.active_pointer_drag_dirty = Some(target.action_dirty);
             return;
         }
         let Some(point) = pointer else {
             self.hit_test.active_pointer_drag_target = None;
             self.hit_test.active_pointer_drag_signature = None;
             self.hit_test.active_pointer_drag_owner = Weak::new();
+            self.hit_test.active_pointer_drag_dirty = None;
             self.clear_scrollbar_drag();
             return;
         };
@@ -2038,10 +2043,12 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             self.hit_test.active_pointer_drag_target = Some(Rc::clone(&target.action));
             self.hit_test.active_pointer_drag_signature = Some((target.depth, target.order));
             self.hit_test.active_pointer_drag_owner = target.owner.clone();
+            self.hit_test.active_pointer_drag_dirty = Some(target.action_dirty);
         } else {
             self.hit_test.active_pointer_drag_target = None;
             self.hit_test.active_pointer_drag_signature = None;
             self.hit_test.active_pointer_drag_owner = Weak::new();
+            self.hit_test.active_pointer_drag_dirty = None;
             self.clear_scrollbar_drag();
         }
     }
@@ -2117,6 +2124,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         let mut visual_changed = false;
         self.hit_test.active_pointer_drag_target = None;
         self.hit_test.active_pointer_drag_owner = Weak::new();
+        self.hit_test.active_pointer_drag_dirty = None;
         self.hit_test.active_pointer_drag_signature = None;
         self.clear_scrollbar_drag();
         self.hit_test.active_pointer_target = None;
@@ -2336,7 +2344,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 if let Some(menu_target) =
                     self.topmost_context_menu_target_enclosing(point, surface_bounds)
                 {
-                    let items = popup_menu_nodes(
+                    let mut items = popup_menu_nodes(
                         &menu_target.items.snapshot(),
                         &menu_target.env,
                         self.window_closable,
@@ -2345,21 +2353,13 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                         // The debug inspect entry extends a menu, it does not
                         // create one — an empty `.context_menu` must behave
                         // the same in every build (water-rs/hydrolysis#188).
-                        #[cfg(all(
-                            feature = "inspector",
-                            feature = "accessibility",
-                            not(target_arch = "wasm32")
-                        ))]
-                        let items = {
-                            let mut items = items;
-                            self.append_inspect_element_item(&mut items, point);
-                            items
-                        };
+                        self.append_inspect_element_item(&mut items, point);
                         // The menu opens in the declaring view's environment
                         // layered over this dispatch's, so `.state(&value)`
                         // overlays reach the item actions.
                         let menu_env = menu_target.env.layered_on(env);
-                        self.show_context_menu(
+                        (menu_target.present)(
+                            self,
                             items,
                             Some(&menu_target),
                             LayoutPoint::new(
@@ -2441,7 +2441,9 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                         if !keep_selection {
                             changed |= self.update_text_selection_from_pointer(index, point, false);
                         }
-                        changed |= self.show_text_context_menu(index, point, env);
+                        let show_context_menu =
+                            self.text_editing.text_input_targets[index].show_context_menu;
+                        changed |= show_context_menu(self, index, point, env);
                     }
                     _ => {}
                 }
@@ -2451,25 +2453,20 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
 
         if button != PointerButton::Primary {
             #[cfg(feature = "menu")]
-            if button == PointerButton::Secondary && !in_context_menu_presentation {
-                let menu_target = self.topmost_context_menu_target_at_point(point);
-                let items = menu_target.as_ref().map_or_default(|target| {
-                    popup_menu_nodes(&target.items.snapshot(), &target.env, self.window_closable)
-                });
+            if button == PointerButton::Secondary
+                && !in_context_menu_presentation
+                && let Some(menu_target) = self.topmost_context_menu_target_at_point(point)
+            {
+                let mut items = popup_menu_nodes(
+                    &menu_target.items.snapshot(),
+                    &menu_target.env,
+                    self.window_closable,
+                );
                 if !items.is_empty() {
                     // The debug inspect entry extends a menu, it does not
                     // create one — an empty `.context_menu` must behave the
                     // same in every build (water-rs/hydrolysis#188).
-                    #[cfg(all(
-                        feature = "inspector",
-                        feature = "accessibility",
-                        not(target_arch = "wasm32")
-                    ))]
-                    let items = {
-                        let mut items = items;
-                        self.append_inspect_element_item(&mut items, point);
-                        items
-                    };
+                    self.append_inspect_element_item(&mut items, point);
                     #[cfg(any(feature = "text-field", feature = "secure-field"))]
                     if self.set_focused_text_input(focused) {
                         refresh_requested = true;
@@ -2477,12 +2474,11 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                     // Same inheritance as the embedded-surface arm: the
                     // declaring view's environment layers over this
                     // dispatch's.
-                    let menu_env = menu_target
-                        .as_ref()
-                        .map_or_else(|| env.clone(), |target| target.env.layered_on(env));
-                    let changed = self.show_context_menu(
+                    let menu_env = menu_target.env.layered_on(env);
+                    let changed = (menu_target.present)(
+                        self,
                         items,
-                        menu_target.as_ref(),
+                        Some(&menu_target),
                         LayoutPoint::new(
                             crate::num_cast::f64_as_f32(point.x),
                             crate::num_cast::f64_as_f32(point.y),
@@ -2620,12 +2616,13 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             if target.captures_drag {
                 let changed = (target.action.borrow_mut())(self, point, env);
                 if changed {
-                    SemanticCore::mark_owner(&target.owner, Dirty::LAYOUT);
+                    SemanticCore::mark_owner(&target.owner, target.action_dirty);
                     refresh_requested = true;
                 }
                 self.hit_test.active_pointer_drag_target = Some(Rc::clone(&target.action));
                 self.hit_test.active_pointer_drag_signature = Some((target.depth, target.order));
                 self.hit_test.active_pointer_drag_owner = target.owner;
+                self.hit_test.active_pointer_drag_dirty = Some(target.action_dirty);
                 return refresh_requested || visual_changed || changed;
             }
             if target.press_slot.is_some() {
@@ -2641,7 +2638,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             }
             let changed = (target.action.borrow_mut())(self, point, env);
             if changed {
-                SemanticCore::mark_owner(&target.owner, Dirty::LAYOUT);
+                SemanticCore::mark_owner(&target.owner, target.action_dirty);
                 refresh_requested = true;
             }
             // Slot-less utility targets stay transparent when unhandled,
@@ -2813,6 +2810,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         }
         self.hit_test.active_pointer_drag_target = None;
         self.hit_test.active_pointer_drag_owner = Weak::new();
+        self.hit_test.active_pointer_drag_dirty = None;
         self.hit_test.active_pointer_drag_signature = None;
         self.clear_scrollbar_drag();
         self.hit_test.active_pointer_target = None;
@@ -2965,7 +2963,11 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             let pointer_drag_changed = (action.borrow_mut())(self, point, env);
             if pointer_drag_changed {
                 let owner = self.hit_test.active_pointer_drag_owner.clone();
-                SemanticCore::mark_owner(&owner, Dirty::LAYOUT);
+                let bits = self
+                    .hit_test
+                    .active_pointer_drag_dirty
+                    .unwrap_or(Dirty::LAYOUT);
+                SemanticCore::mark_owner(&owner, bits);
             }
             drag_changed |= pointer_drag_changed;
             refresh_requested |= pointer_drag_changed;
@@ -3883,6 +3885,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         // whatever control holds focus — Space still activates the focused
         // one — as an alert's default button does. A dialog without a
         // primary action leaves Return to the focused control.
+        #[cfg(waterui_feature = "dialog")]
         if matches!(key, KeyCode::Named(value) if value == "Enter")
             && let Some(dialog) = self.popup_menu.dialog_stack.front().cloned()
             && let Some(primary) = dialog.primary_action().cloned()
@@ -4229,6 +4232,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         self.hit_test.active_pointer_target = None;
         self.hit_test.active_pointer_drag_target = None;
         self.hit_test.active_pointer_drag_owner = Weak::new();
+        self.hit_test.active_pointer_drag_dirty = None;
         self.hit_test.active_pointer_drag_signature = None;
         self.clear_scrollbar_drag();
         #[cfg(any(feature = "text-field", feature = "secure-field"))]
@@ -4280,30 +4284,46 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         } else {
             self.topmost_context_menu_target_at_point(point)
         };
-        let items = menu_target.as_ref().map_or_default(|target| {
-            popup_menu_nodes(&target.items.snapshot(), &target.env, self.window_closable)
-        });
-        #[cfg(all(
-            feature = "inspector",
-            feature = "accessibility",
-            not(target_arch = "wasm32")
-        ))]
-        let items = {
-            let mut items = items;
-            self.append_inspect_element_item(&mut items, point);
-            items
+        let Some(menu_target) = menu_target else {
+            #[cfg(debug_assertions)]
+            {
+                let mut items = Vec::new();
+                self.append_inspect_element_item(&mut items, point);
+                if items.is_empty() {
+                    return false;
+                }
+                return self.show_context_menu(
+                    items,
+                    None,
+                    LayoutPoint::new(
+                        crate::num_cast::f64_as_f32(point.x),
+                        crate::num_cast::f64_as_f32(point.y),
+                    ),
+                    env,
+                    true,
+                );
+            }
+            #[cfg(not(debug_assertions))]
+            {
+                return false;
+            }
         };
+        let mut items = popup_menu_nodes(
+            &menu_target.items.snapshot(),
+            &menu_target.env,
+            self.window_closable,
+        );
+        self.append_inspect_element_item(&mut items, point);
         if items.is_empty() {
             return false;
         }
         // Same inheritance the secondary-press arms apply: the declaring
         // view's environment layers over this dispatch's.
-        let menu_env = menu_target
-            .as_ref()
-            .map_or_else(|| env.clone(), |target| target.env.layered_on(env));
-        self.show_context_menu(
+        let menu_env = menu_target.env.layered_on(env);
+        (menu_target.present)(
+            self,
             items,
-            menu_target.as_ref(),
+            Some(&menu_target),
             LayoutPoint::new(
                 crate::num_cast::f64_as_f32(point.x),
                 crate::num_cast::f64_as_f32(point.y),
@@ -4347,6 +4367,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         }
         self.hit_test.active_pointer_drag_target = None;
         self.hit_test.active_pointer_drag_owner = Weak::new();
+        self.hit_test.active_pointer_drag_dirty = None;
         self.hit_test.active_pointer_drag_signature = None;
         self.clear_scrollbar_drag();
         #[cfg(any(feature = "toggle", feature = "picker"))]
@@ -4478,7 +4499,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             // lands on the target's owner; a dead owner retired with
             // its record, so there is nothing left to wake.
             if let Some(cell) = target.owner.upgrade() {
-                cell.mark(Dirty::LAYOUT);
+                cell.mark(Dirty::PAINT);
             }
             #[cfg(any(feature = "text-field", feature = "secure-field"))]
             self.dismiss_active_text_context_menu();
@@ -4619,7 +4640,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     fn apply_touch_release(&mut self, key: usize, release: TouchRelease) -> bool {
         let TouchRelease { motion, clamped } = release;
         if clamped && let Some(owner) = self.try_scroll_target_owner(key) {
-            SemanticCore::mark_owner(&owner, Dirty::LAYOUT);
+            SemanticCore::mark_owner(&owner, Dirty::PAINT);
         }
         let Some(motion) = motion else {
             return clamped;
@@ -4699,7 +4720,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 let owner = drag.owner.clone();
                 self.hit_test.touch_scroll = TouchScrollGesture::Dragging(drag);
                 if changed {
-                    SemanticCore::mark_owner(&owner, Dirty::LAYOUT);
+                    SemanticCore::mark_owner(&owner, Dirty::PAINT);
                 }
                 true
             }
@@ -4787,7 +4808,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 let changed = drag.scroll_by(anchor.x - point.x, anchor.y - point.y, at);
                 self.hit_test.touch_scroll = TouchScrollGesture::Dragging(drag);
                 if changed {
-                    SemanticCore::mark_owner(&owner, Dirty::LAYOUT);
+                    SemanticCore::mark_owner(&owner, Dirty::PAINT);
                 }
                 true
             }
@@ -4950,6 +4971,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 owner: Weak::new(),
                 bounds,
                 captures_drag,
+                action_dirty: Dirty::LAYOUT,
                 depth,
                 order: 0,
                 press_slot,
@@ -5003,6 +5025,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 owner: Weak::new(),
                 bounds,
                 captures_drag: false,
+                action_dirty: Dirty::PAINT,
                 depth: self.render_depth,
                 order: 0,
                 press_slot: None,
@@ -5115,6 +5138,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 owner: Weak::new(),
                 bounds,
                 captures_drag: true,
+                action_dirty: Dirty::PAINT,
                 depth: self.render_depth,
                 order: 0,
                 press_slot: None,
@@ -5295,6 +5319,18 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             chrome.get_hit(),
             Some(InteractionFocus::visible(focused)),
         )
+    }
+
+    /// Binds a non-chrome tap target that reports interaction state through
+    /// [`InteractionReport`](waterui_interaction::interaction::InteractionReport).
+    pub(crate) fn bind_reported_tap_target(
+        &mut self,
+        key: InteractionKey,
+        bounds: kurbo::Rect,
+        env: &Environment,
+        disabled: bool,
+    ) -> (InteractionState, PressSlot, Rc<InteractionLayerHandles>) {
+        self.bind_interaction_target_with_focus(key, bounds, env, None, disabled, None)
     }
 
     /// Binds the interaction target of a toggle whose parts are
@@ -5659,6 +5695,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 owner: Weak::new(),
                 bounds,
                 captures_drag: false,
+                action_dirty: Dirty::LAYOUT,
                 depth: self.render_depth,
                 order: 0,
                 press_slot: Some(press_slot),
@@ -5699,6 +5736,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 owner: Weak::new(),
                 bounds,
                 captures_drag: true,
+                action_dirty: Dirty::PAINT,
                 depth: self.render_depth,
                 order: 0,
                 press_slot: Some(press_slot),
@@ -5742,11 +5780,13 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         {
             self.hit_test.active_pointer_drag_target = Some(Rc::clone(&target.action));
             self.hit_test.active_pointer_drag_owner = target.owner.clone();
+            self.hit_test.active_pointer_drag_dirty = Some(target.action_dirty);
             return;
         }
         self.hit_test.active_pointer_drag_target = None;
         self.hit_test.active_pointer_drag_signature = None;
         self.hit_test.active_pointer_drag_owner = Weak::new();
+        self.hit_test.active_pointer_drag_dirty = None;
         self.clear_scrollbar_drag();
     }
 
@@ -5754,7 +5794,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// dragged, so ending one schedules a re-encode to restore it.
     fn clear_scrollbar_drag(&mut self) {
         if let Some(drag) = self.hit_test.active_scrollbar_drag.take() {
-            Self::mark_owner(&drag.owner, Dirty::LAYOUT);
+            Self::mark_owner(&drag.owner, Dirty::PAINT);
         }
     }
 
@@ -6009,7 +6049,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             };
             let tick = motion.tick(now);
             if tick.changed {
-                Self::mark_owner(&owner, Dirty::LAYOUT);
+                Self::mark_owner(&owner, Dirty::PAINT);
             }
             if tick.running {
                 self.hit_test.scroll_motions.push(motion);
@@ -6053,6 +6093,7 @@ impl<E: crate::text::TextEngine> Default for HitTestState<E> {
             modal_interaction: Option::default(),
             active_pointer_drag_target: Option::default(),
             active_pointer_drag_owner: Weak::default(),
+            active_pointer_drag_dirty: Option::default(),
             active_pointer_drag_signature: Option::default(),
             #[cfg(feature = "navigation")]
             back_targets: Vec::default(),
@@ -6080,6 +6121,7 @@ impl<E: crate::text::TextEngine> Default for HitTestState<E> {
             multi_click: MultiClickTracker::default(),
             clipboard_read: system_clipboard_read(),
             trackpad_scroll_contact: false,
+            #[cfg(any(hydrolysis_scene_view, hydrolysis_gpu))]
             paste_queues: std::collections::HashMap::default(),
             paste_shortcut_keys: Vec::default(),
             touch_scroll: TouchScrollGesture::default(),
@@ -6148,6 +6190,7 @@ impl<E: crate::text::TextEngine> Clone for PointerTarget<E> {
             bounds: self.bounds,
             to_local: self.to_local,
             captures_drag: self.captures_drag,
+            action_dirty: self.action_dirty,
             depth: self.depth,
             order: self.order,
             press_slot: self.press_slot.clone(),

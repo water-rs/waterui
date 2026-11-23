@@ -1,0 +1,30 @@
+[package]
+name = "waterui-inspector-runtime"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+license.workspace = true
+readme = "../../../../README.md"
+repository.workspace = true
+description = "Runtime Inspector server and telemetry bridge for WaterUI"
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+# Reactive-graph tracing for the Inspector's `signals` channel. Development
+# only: it attributes every state-owning signal node and reports every
+# notification. Off by default so release builds pay nothing.
+signals = ["dep:nami", "nami/observability"]
+
+[dependencies]
+async-channel.workspace = true
+getrandom.workspace = true
+nami = { workspace = true, optional = true }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+waterui-core.workspace = true
+waterui-inspector-protocol.workspace = true
+
+[lints]
+workspace = true

@@ -9,23 +9,28 @@
 //! through their `CapturableSurface` contract, so a GPU surface or a
 //! nested filter contributes real pixels rather than a blank.
 
-use std::cell::{Cell, RefCell};
+#[cfg(any(waterui_feature = "capture", preview_entry, feature = "native-test"))]
+use std::cell::Cell;
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
-#[cfg(all(target_os = "macos", feature = "draggable"))]
+#[cfg(target_os = "macos")]
 use cocoa_ui::objc2::AnyThread;
 use cocoa_ui::objc2::MainThreadOnly;
 use cocoa_ui::objc2::rc::Retained;
 use cocoa_ui::objc2::runtime::ProtocolObject;
-#[cfg(all(target_os = "macos", feature = "draggable"))]
+#[cfg(target_os = "macos")]
 use cocoa_ui::objc2_core_foundation::CGSize;
 use cocoa_ui::objc2_metal::{
     MTLDevice, MTLOrigin, MTLPixelFormat, MTLRegion, MTLSize, MTLStorageMode, MTLTexture,
     MTLTextureDescriptor, MTLTextureUsage,
 };
 use waterui_backend_core::Environment;
+
+#[cfg(render_server_capture)]
+use crate::capture::CaptureError as NativeCaptureError;
 
 /// The platform's native image object — `NSImage` on macOS, `UIImage` on
 /// iOS — the type icon and drag endpoints publish.
@@ -80,6 +85,10 @@ pub enum CaptureFailure {
         /// The requested target height in pixels.
         height: u32,
     },
+    /// The pure-native offscreen capture path (`capture::capture_presented`)
+    /// failed to produce a bitmap.
+    #[cfg(render_server_capture)]
+    NativeCapture(NativeCaptureError),
 }
 
 impl core::fmt::Display for CaptureFailure {
@@ -108,6 +117,8 @@ impl core::fmt::Display for CaptureFailure {
                 f,
                 "the device could not allocate a {width}x{height} capture target"
             ),
+            #[cfg(render_server_capture)]
+            Self::NativeCapture(error) => write!(f, "{error}"),
         }
     }
 }
@@ -121,6 +132,8 @@ impl std::error::Error for CaptureFailure {
             #[cfg(target_os = "ios")]
             Self::NoWindowScene => None,
             Self::TargetAllocation { .. } => None,
+            #[cfg(render_server_capture)]
+            Self::NativeCapture(cause) => Some(cause),
         }
     }
 }
@@ -209,10 +222,10 @@ impl WindowHost {
     /// [`CaptureFailure::NoWindowScene`] on iOS when no connected
     /// `UIWindowScene` can host the offscreen window.
     #[cfg_attr(
-        target_os = "macos",
+        any(target_os = "macos", all(render_server_capture, catalyst)),
         expect(
             clippy::unnecessary_wraps,
-            reason = "only UIKit's window-scene lookup can fail; AppKit's offscreen window always attaches"
+            reason = "non-Catalyst UIKit can fail with NoWindowScene; AppKit and render-server Catalyst always attach"
         )
     )]
     pub fn attach_if_windowless(
@@ -258,13 +271,29 @@ impl WindowHost {
         };
         #[cfg(target_os = "ios")]
         let window = {
-            let scene =
-                cocoa_ui::bitmap::any_window_scene().ok_or(CaptureFailure::NoWindowScene)?;
-            let window = cocoa_ui::bitmap::make_offscreen_window(mtm, &scene, size);
+            #[cfg(all(render_server_capture, catalyst))]
+            use cocoa_ui::bitmap::scene_less_capture_window;
+            use cocoa_ui::bitmap::{any_window_scene, make_offscreen_window, show_capture_window};
+            #[cfg(all(render_server_capture, catalyst))]
+            use cocoa_ui::uikit::catalyst::BackgroundApplication;
+
+            #[cfg(all(render_server_capture, catalyst))]
+            let window = any_window_scene().map_or_else(
+                || {
+                    let application = BackgroundApplication::bring_up(mtm);
+                    scene_less_capture_window(mtm, &application, size)
+                },
+                |scene| make_offscreen_window(mtm, &scene, size),
+            );
+            #[cfg(not(all(render_server_capture, catalyst)))]
+            let window = {
+                let scene = any_window_scene().ok_or(CaptureFailure::NoWindowScene)?;
+                make_offscreen_window(mtm, &scene, size)
+            };
             // The `UIViewController` containment + unhide + layout is the
             // only correct UIKit mount — a bare `addSubview` leaves the
             // window without a root controller.
-            cocoa_ui::bitmap::show_capture_window(&window, view, size);
+            show_capture_window(&window, view, size);
             window
         };
         Ok(Some(Self {
@@ -516,6 +545,7 @@ fn read_target(target: &ProtocolObject<dyn MTLTexture>, width: u32, height: u32)
 /// replacing it: a surface binds the hook when it joins, so a replacement
 /// would leave every surface the pump already joined waking the pump
 /// while the retry loop waits on a redraw that never comes.
+#[cfg(any(waterui_feature = "capture", preview_entry, feature = "native-test"))]
 pub struct CaptureDrive {
     /// The open capture the pump passes and the terminal capture share.
     capture: Rc<cocoa_ui::capture::ViewCapture>,
@@ -539,6 +569,7 @@ pub struct CaptureDrive {
     terminal: RefCell<Option<Rc<RefCell<Signal>>>>,
 }
 
+#[cfg(any(waterui_feature = "capture", preview_entry, feature = "native-test"))]
 impl CaptureDrive {
     /// Opens the capture over `root` — already inside its windowless
     /// capture host — and starts the pump: the first pass runs on the
@@ -550,10 +581,13 @@ impl CaptureDrive {
         env: &Environment,
         mtm: cocoa_ui::MainThreadMarker,
     ) -> Rc<Self> {
+        use cocoa_ui::capture::ViewCapture;
+
         let root = cocoa_ui::view::retain_base(root);
         let scale = cocoa_ui::view::backing_scale_factor(root.as_ref());
+        let capture = Rc::new(ViewCapture::new(mtm, root.clone()));
         let drive = Rc::new(Self {
-            capture: Rc::new(cocoa_ui::capture::ViewCapture::new(mtm, root.clone())),
+            capture,
             root,
             runtime: crate::gpu_runtime::runtime(env),
             scale,
@@ -689,6 +723,11 @@ impl CaptureDrive {
         let Some(runtime) = &self.runtime else {
             return Err(CaptureFailure::GpuRuntimeUnavailable);
         };
+        // Only the terminal readback pass needs render-server compositing:
+        // earlier scratch `pump` passes exist solely to advance GPU scenes
+        // and discard their pixels.
+        #[cfg(render_server_capture)]
+        self.capture.set_use_render_server(true);
         let (width, height) = pixel_extent(bounds.size, self.scale);
         // The redraw contract the retry loop waits on — surface requests
         // now wake a recapture instead of queueing a pump pass.
@@ -706,6 +745,7 @@ impl CaptureDrive {
     }
 }
 
+#[cfg(any(waterui_feature = "capture", preview_entry, feature = "native-test"))]
 impl Drop for CaptureDrive {
     /// The capture's own `shutdown` ends every external-rendering scope —
     /// the same contract `CaptureGuard` keeps for `capture_rgba`'s own
@@ -718,6 +758,7 @@ impl Drop for CaptureDrive {
 /// A pump pass's render destination: `RenderTarget` usage in private
 /// storage — the pass exists to record scenes and settle registrations,
 /// so its pixels are never sampled or read back.
+#[cfg(any(waterui_feature = "capture", preview_entry, feature = "native-test"))]
 fn scratch_target(
     device: &ProtocolObject<dyn MTLDevice>,
     width: u32,
@@ -840,7 +881,7 @@ async fn capture_attempts(
 
 /// Where a capture failure meets a caller with no error channel.
 ///
-/// `render_to_rgba` returns its typed [`RenderError`](waterui_core::view_renderer::RenderError)
+/// `render_to_rgba` returns its typed [`RenderError`](waterui_capture::view_renderer::RenderError)
 /// instead; [`template_image`] and [`drag_image`] remain here because
 /// `AppKit` and `UIKit` give their icon/drag paths no error channel at all —
 /// so the failure is logged with its whole `source()` chain and the caller
@@ -903,7 +944,7 @@ pub async fn template_image(
 /// Reuses [`capture_rgba`] at the window's backing scale; the `CGImage`
 /// wraps the top-down raster unflipped, preserving the capture
 /// orientation.
-#[cfg(all(target_os = "macos", feature = "draggable"))]
+#[cfg(target_os = "macos")]
 #[expect(
     clippy::future_not_send,
     reason = "the drag capture awaits the main-thread capture of a main-thread view"

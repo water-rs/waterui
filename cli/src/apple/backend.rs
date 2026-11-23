@@ -1,7 +1,6 @@
 use std::path::{Path, PathBuf};
 
 use eyre::WrapErr as _;
-use waterui_assets_planner::ColorScheme;
 
 use crate::{
     apple::platform::{build_rust_lib, clean_apple, is_apple_platform, package_apple},
@@ -132,11 +131,7 @@ impl AppleBackend {
             .collect();
         // The generated project names the launch assets the catalog will
         // hold, so the two are decided from the same resolution.
-        let launch = crate::assets::project_launch_plan(project)?;
-        let launch_entry = templates::LaunchTemplateEntry {
-            has_background: launch.background(ColorScheme::Light).is_some(),
-            has_image: launch.image().is_some(),
-        };
+        let launch_entry = crate::apple::app_bundle::launch_template_entry(project)?;
         let framework = project.resolved_framework().await?;
         // The generated crates name the in-tree `waterui-apple` member — a
         // framework whose manifest declares no `apple-backend-path` ships the
@@ -478,6 +473,55 @@ mod tests {
             "a freshly scaffolded backend is not stale"
         );
     }
+    /// Both hosts launch through `cocoa_ui`'s `SceneDelegate`; the
+    /// single-scene Hydrolysis host differs only in not supporting multiple
+    /// scenes.
+    fn assert_scene_manifests(
+        ctx: &crate::templates::TemplateContext,
+        project: &Project,
+        bundle_id: &crate::project_types::AppleBundleIdentifier,
+    ) {
+        for (multiple_scenes, host) in [(true, "apple"), (false, "hydrolysis")] {
+            let dict = crate::apple::app_bundle::apple_info_plist(
+                &crate::apple::app_bundle::PlistApp {
+                    multiple_scenes,
+                    ..crate::apple::app_bundle::PlistApp::apple_backend(ctx)
+                },
+                project,
+                crate::platform::TargetPlatform::IOS,
+                "17.0",
+                "Water Example",
+                bundle_id,
+            );
+            let manifest = dict
+                .get("UIApplicationSceneManifest")
+                .and_then(plist::Value::as_dictionary)
+                .unwrap_or_else(|| panic!("the {host} host declares a scene manifest"));
+            assert_eq!(
+                manifest.get("UIApplicationSupportsMultipleScenes"),
+                Some(&plist::Value::Boolean(multiple_scenes)),
+                "{host} host scene support"
+            );
+            let delegate = manifest
+                .get("UISceneConfigurations")
+                .and_then(plist::Value::as_dictionary)
+                .and_then(|configurations| {
+                    configurations.get("UIWindowSceneSessionRoleApplication")
+                })
+                .and_then(plist::Value::as_array)
+                .and_then(|roles| roles.first())
+                .and_then(plist::Value::as_dictionary)
+                .and_then(|role| role.get("UISceneDelegateClassName"));
+            assert_eq!(
+                delegate,
+                Some(&plist::Value::String("SceneDelegate".to_string())),
+                "{host} host delegate class"
+            );
+            assert!(dict.contains_key("UILaunchScreen"));
+            assert!(dict.contains_key("UISupportedInterfaceOrientations"));
+        }
+    }
+
     /// The generated iOS `Info.plist` declares
     /// `CADisableMinimumFrameDurationOnPhone`: iOS caps `CADisplayLink` and
     /// `CAMetalLayer` presentation at 60 Hz on `ProMotion` iPhones without it
@@ -523,7 +567,7 @@ mod tests {
             crate::platform::TargetPlatform::IOSSimulator,
         ] {
             let dict = crate::apple::app_bundle::apple_info_plist(
-                &ctx,
+                &crate::apple::app_bundle::PlistApp::apple_backend(&ctx),
                 &project,
                 platform,
                 "17.0",
@@ -535,10 +579,16 @@ mod tests {
                 Some(&plist::Value::Boolean(true)),
                 "generated {platform:?} apps opt out of the ProMotion 60 Hz cap"
             );
+            assert!(
+                dict.contains_key("UIApplicationSceneManifest"),
+                "the Apple backend drives {platform:?} through its scene delegate"
+            );
         }
 
+        assert_scene_manifests(&ctx, &project, &bundle_id);
+
         let macos = crate::apple::app_bundle::apple_info_plist(
-            &ctx,
+            &crate::apple::app_bundle::PlistApp::apple_backend(&ctx),
             &project,
             crate::platform::TargetPlatform::MacOS,
             "14.0",

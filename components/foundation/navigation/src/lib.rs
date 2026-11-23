@@ -16,24 +16,25 @@ pub mod split;
 pub mod tab;
 mod transition;
 
-use alloc::{collections::BTreeMap, rc::Rc, vec, vec::Vec};
+use alloc::{boxed::Box, collections::BTreeMap, rc::Rc, vec, vec::Vec};
 use core::{
-    any::TypeId,
+    any::{Any, TypeId},
     cell::{Cell, RefCell},
-    fmt::Debug,
+    fmt::{self, Debug},
+    marker::PhantomData,
 };
 
 use nami::{Binding, Computed, Signal as _, SignalExt as _};
-use waterui_controls::{ButtonStyle, IntoLabel, button};
-use waterui_core::handler::{AnyViewBuilder, BoxedAction, Handler, ReportExtraction, boxed_action};
+use waterui_controls::{Button, ButtonStyle, IconSlot, IntoLabel, LabelKind, button};
+use waterui_core::backend::{Backend, ChildSlot, MapSlots};
+use waterui_core::handler::{BoxedAction, Handler, ReportExtraction, boxed_action};
+use waterui_core::metadata::MetadataKey;
 use waterui_core::{
-    AnyView, Environment, Error, IgnorableMetadata, IntoSignal, Metadata, Native, NativeView,
-    Retain, SerialDispatch, Str, View, contract_violation, env::use_env, extract::ExtractionState,
-    extract::Extractor, extract::State, flatten_signal, handler::ViewBuilder, impl_extractor,
-    layout::StretchAxis, metadata::MetadataKey, raw_view,
+    AnyView, Environment, Error, IntoSignal, Metadata, Native, NativeView, OneOf3, Retain,
+    SerialDispatch, Str, View, contract_violation, extract::ExtractionState, extract::Extractor,
+    extract::State, flatten_signal, handler::ViewBuilder, impl_extractor, layout::StretchAxis,
 };
 use waterui_graphics::color::{Color, WorkingColor};
-use waterui_icon::SystemIcon;
 use waterui_text::IntoText;
 use waterui_text::Text;
 
@@ -53,17 +54,24 @@ pub use transition::{
     NavigationTransitionLayer, NavigationTransitionSource, NavigationTransitionViewExt,
     RetainedNavigationTransition, navigation_transition,
 };
+pub use waterui_controls::{IconSlot as NavigationIconSlot, SlotBuilder};
+
+/// A navigation view whose content and toolbar items have been lowered into
+/// a backend's child slot `S`.
+pub type ResolvedNavigationView<S> = NavigationView<S, ResolvedNavigationToolbar<S>>;
 
 /// A view that combines a navigation bar with content.
 ///
 /// The `NavigationView` contains a navigation bar with a title and other
-/// configuration options, along with the actual content to display.
+/// configuration options, along with the actual content to display. It
+/// keeps its content's type `C` and toolbar's type `T`; a backend receives
+/// [`ResolvedNavigationView<S>`] with both in its child slot.
 #[must_use]
-pub struct NavigationView {
+pub struct NavigationView<C, T = ()> {
     /// The navigation bar for this view
-    pub bar: Bar,
+    pub bar: Bar<T>,
     /// The content to display in this view
-    pub content: AnyView,
+    pub content: C,
     /// Reactive and callback state associated with this destination.
     #[doc(hidden)]
     pub state: NavigationDestinationState,
@@ -78,15 +86,72 @@ pub struct NavigationView {
     pub transition: Option<AnyNavigationTransition>,
 }
 
-impl Debug for NavigationView {
+impl<C, T: Debug> Debug for NavigationView<C, T> {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         formatter
             .debug_struct("NavigationView")
             .field("bar", &self.bar)
-            .field("content", &self.content)
+            .field("content", &core::any::type_name::<C>())
             .field("state", &self.state)
             .field("transition", &self.transition)
             .finish()
+    }
+}
+
+impl<C, T> NavigationView<C, T> {
+    /// Takes the content out, leaving the bar, state and transition.
+    pub fn split_content(self) -> (C, NavigationView<(), T>) {
+        let Self {
+            bar,
+            content,
+            state,
+            transition,
+        } = self;
+        (
+            content,
+            NavigationView {
+                bar,
+                content: (),
+                state,
+                transition,
+            },
+        )
+    }
+
+    /// The same view with its content mapped through `f`.
+    pub fn map_content<D>(self, f: impl FnOnce(C) -> D) -> NavigationView<D, T> {
+        let Self {
+            bar,
+            content,
+            state,
+            transition,
+        } = self;
+        NavigationView {
+            bar,
+            content: f(content),
+            state,
+            transition,
+        }
+    }
+}
+
+impl<C: View, T: NavigationToolbarItems> NavigationView<C, T> {
+    /// Lowers this view's content and toolbar items into child slot `S`
+    /// without erasing through `AnyView`.
+    #[doc(hidden)]
+    pub fn into_resolved<S: ChildSlot>(self) -> ResolvedNavigationView<S> {
+        let Self {
+            bar,
+            content,
+            state,
+            transition,
+        } = self;
+        NavigationView {
+            bar: bar.map_toolbar(NavigationToolbarItems::into_resolved::<S>),
+            content: S::from_view(content),
+            state,
+            transition,
+        }
     }
 }
 
@@ -203,12 +268,99 @@ pub type NavigationTransactionId = u64;
 
 type PathPopHandler = Rc<dyn Fn(usize)>;
 
+/// A page a navigation stack shows, built when its backend inserts it: a
+/// [`NavigationView`] whose content is in the child slot `S`.
+///
+/// A page keeps the environment of the stack that holds it, when the stack
+/// scoped one; building the page scopes its content to it.
+pub struct NavigationPage<S> {
+    build: PageBuild<S>,
+    env: Option<Environment>,
+}
+
+/// Builds a page, scoped to its stack's environment when there is one.
+type PageBuild<S> = Box<dyn FnOnce(Option<&Environment>) -> ResolvedNavigationView<S>>;
+
+impl<S> Debug for NavigationPage<S> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("NavigationPage").finish_non_exhaustive()
+    }
+}
+
+impl<S: ChildSlot> NavigationPage<S> {
+    /// A page built by `build`, its content and toolbar converted into the slot `S`.
+    pub fn new<V: View, T: NavigationToolbarItems>(
+        build: impl FnOnce() -> NavigationView<V, T> + 'static,
+    ) -> Self {
+        Self {
+            build: Box::new(move |env| {
+                let view = build();
+                match env {
+                    Some(env) => scoped_navigation_view::<S, _, _>(view, env),
+                    None => view.into_resolved::<S>(),
+                }
+            }),
+            env: None,
+        }
+    }
+}
+
+impl<S: 'static> NavigationPage<S> {
+    /// The same page with its content and toolbar mapped through `f`: a backend holds
+    /// them in its own slot.
+    #[must_use]
+    pub fn map_slot<T: 'static>(self, f: impl Fn(S) -> T + Clone + 'static) -> NavigationPage<T> {
+        let Self { build, env } = self;
+        NavigationPage {
+            build: Box::new(move |scope| MapSlots::map_slots(build(scope), f)),
+            env,
+        }
+    }
+}
+
+impl<S> NavigationPage<S> {
+    /// The page scoped to `env`, which its content and bar build under.
+    fn in_environment(mut self, env: Option<Environment>) -> Self {
+        if env.is_some() {
+            self.env = env;
+        }
+        self
+    }
+
+    /// Builds the page.
+    pub fn build(self) -> ResolvedNavigationView<S> {
+        (self.build)(self.env.as_ref())
+    }
+}
+
+/// A page on its way to a receiver: a [`NavigationPage`] in the slot of
+/// whatever pushed it, which the receiver takes in its own slot.
+struct PendingPage(Box<dyn Any>);
+
+impl PendingPage {
+    fn new<S: ChildSlot>(page: NavigationPage<S>) -> Self {
+        Self(Box::new(page))
+    }
+
+    /// The page in the receiver's slot `S`. A pushed page arrives in that slot
+    /// or erased; [`NavigationController::push`] refuses any other.
+    fn into_slot<S: ChildSlot>(self) -> NavigationPage<S> {
+        match self.0.downcast::<NavigationPage<S>>() {
+            Ok(page) => *page,
+            Err(page) => page
+                .downcast::<NavigationPage<AnyView>>()
+                .expect("a navigation page reaches its receiver in the receiver's slot or erased")
+                .map_slot(S::from_view),
+        }
+    }
+}
+
 /// One atomic change projected from navigation state into a backend stack.
 ///
 /// A transaction always replaces a suffix: the first [`Self::retained_prefix`]
 /// entries stay untouched, the [`Self::removed`] entries above them are
 /// discarded, and [`Self::inserted`] is appended in their place.
-pub struct NavigationTransaction {
+pub struct NavigationTransaction<S> {
     /// Stack-scoped identifier acknowledged by
     /// [`NavigationController::transition_completed`] or
     /// [`NavigationController::transition_cancelled`].
@@ -217,11 +369,11 @@ pub struct NavigationTransaction {
     pub retained_prefix: usize,
     /// Number of entries removed after the retained prefix.
     pub removed: usize,
-    /// Destination builders inserted after the retained prefix.
-    pub inserted: Vec<AnyViewBuilder<NavigationView>>,
+    /// Pages inserted after the retained prefix.
+    pub inserted: Vec<NavigationPage<S>>,
 }
 
-impl Debug for NavigationTransaction {
+impl<S> Debug for NavigationTransaction<S> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("NavigationTransaction")
             .field("id", &self.id)
@@ -235,8 +387,47 @@ impl Debug for NavigationTransaction {
 /// A trait for handling custom navigation actions.
 /// For renderers to implement navigation handling.
 pub trait CustomNavigationController: 'static {
+    /// The child slot the receiver takes pages' content in: its backend's.
+    type Slot: ChildSlot;
+
     /// Applies one complete stack mutation.
-    fn apply(&mut self, transaction: NavigationTransaction);
+    fn apply(&mut self, transaction: NavigationTransaction<Self::Slot>);
+}
+
+/// A transaction before its pages are taken in the receiver's slot.
+struct PendingTransaction {
+    id: NavigationTransactionId,
+    retained_prefix: usize,
+    removed: usize,
+    inserted: Vec<PendingPage>,
+}
+
+/// [`CustomNavigationController`] behind the controller's shared state.
+trait Receiver {
+    fn apply(&mut self, transaction: PendingTransaction);
+}
+
+impl<R: CustomNavigationController> Receiver for R {
+    fn apply(&mut self, transaction: PendingTransaction) {
+        let PendingTransaction {
+            id,
+            retained_prefix,
+            removed,
+            inserted,
+        } = transaction;
+        CustomNavigationController::apply(
+            self,
+            NavigationTransaction {
+                id,
+                retained_prefix,
+                removed,
+                inserted: inserted
+                    .into_iter()
+                    .map(PendingPage::into_slot::<R::Slot>)
+                    .collect(),
+            },
+        );
+    }
 }
 
 /// Shared interior state of one [`NavigationController`].
@@ -247,7 +438,10 @@ pub trait CustomNavigationController: 'static {
 /// [`NavigationLink`] and are owned by the controller alone. Keeping the split
 /// explicit is what lets both link kinds coexist in one stack.
 struct NavigationControllerState {
-    receiver: RefCell<alloc::boxed::Box<dyn CustomNavigationController>>,
+    receiver: RefCell<Box<dyn Receiver>>,
+    /// The receiver's child slot, which a pushed page must arrive in unless
+    /// it arrives erased.
+    slot: TypeId,
     retained: RefCell<Option<Retain>>,
     retained_environment: RefCell<Option<Environment>>,
     depth: Cell<usize>,
@@ -258,7 +452,7 @@ struct NavigationControllerState {
     native_applied_pops: Cell<usize>,
     /// Transactions issued while the receiver's `apply` is still running; they
     /// are delivered after it returns, in order, rather than re-entering it.
-    outbox: SerialDispatch<NavigationTransaction>,
+    outbox: SerialDispatch<PendingTransaction>,
 }
 
 /// A receiver that handles navigation actions.
@@ -282,10 +476,11 @@ impl NavigationController {
     /// # Arguments
     ///
     /// * `receiver` - An implementation of `CustomNavigationController`
-    pub fn new(receiver: impl CustomNavigationController) -> Self {
+    pub fn new<R: CustomNavigationController>(receiver: R) -> Self {
         Self {
             state: Rc::new(NavigationControllerState {
-                receiver: RefCell::new(alloc::boxed::Box::new(receiver)),
+                receiver: RefCell::new(Box::new(receiver)),
+                slot: TypeId::of::<R::Slot>(),
                 retained: RefCell::new(None),
                 retained_environment: RefCell::new(None),
                 depth: Cell::new(0),
@@ -308,16 +503,41 @@ impl NavigationController {
             .expect("navigation path depth cannot exceed the projected stack depth")
     }
 
-    /// Pushes a destination builder onto the stack.
+    /// Whether a page in the slot `S` reaches this controller's receiver: one
+    /// in the receiver's own slot, or an erased one.
+    fn takes<S: ChildSlot>(&self) -> bool {
+        let slot = TypeId::of::<S>();
+        slot == self.state.slot || slot == TypeId::of::<AnyView>()
+    }
+
+    /// The page as it travels to the receiver, in the controller's scope.
+    fn pending<S: ChildSlot>(&self, page: NavigationPage<S>) -> PendingPage {
+        PendingPage::new(page.in_environment(self.retained_environment()))
+    }
+
+    /// Pushes a page onto the stack.
     ///
     /// The entry is owned by the controller rather than by any explicit path, so
     /// it pops without disturbing route state and is discarded when the path
     /// underneath it changes.
-    pub fn push_builder(&self, content: AnyViewBuilder<NavigationView>) {
-        let content = self.with_retained_environment_builder(content);
+    ///
+    /// # Contract violation
+    ///
+    /// A page arrives in the child slot of the backend that realizes the
+    /// stack, or erased. A page in another backend's slot is reported: a debug
+    /// build panics; a release build logs it and pushes nothing.
+    pub fn push<S: ChildSlot>(&self, page: NavigationPage<S>) {
+        if !self.takes::<S>() {
+            contract_violation!(
+                "a navigation page in the slot `{}` was pushed onto a stack realized by another backend; nothing is pushed",
+                core::any::type_name::<S>()
+            );
+            return;
+        }
+        let page = self.pending(page);
         let depth = self.state.depth.get();
         self.state.depth.set(depth + 1);
-        self.commit(depth, 0, vec![content]);
+        self.commit(depth, 0, vec![page]);
     }
 
     /// Pops the top navigation view off the stack.
@@ -337,7 +557,18 @@ impl NavigationController {
     ///
     /// Panics if `retained_prefix` exceeds the current path depth, or if the
     /// transaction identifier overflows.
-    fn apply_path(&self, retained_prefix: usize, inserted: Vec<AnyViewBuilder<NavigationView>>) {
+    fn apply_path<S: ChildSlot>(&self, retained_prefix: usize, inserted: Vec<NavigationPage<S>>) {
+        if !self.takes::<S>() {
+            contract_violation!(
+                "navigation path pages in the slot `{}` were projected onto a stack realized by another backend; the path is not shown",
+                core::any::type_name::<S>()
+            );
+            return;
+        }
+        // A path's pages build in the stack's own environment, where the
+        // backend realizes them; only a link-pushed page carries the
+        // controller's scope.
+        let inserted: Vec<PendingPage> = inserted.into_iter().map(PendingPage::new).collect();
         let path_depth = self.state.path_depth.get();
         assert!(
             retained_prefix <= path_depth,
@@ -357,12 +588,7 @@ impl NavigationController {
 
     /// Emits one suffix-replacing transaction, skipping work the native
     /// container already performed for an interactive pop.
-    fn commit(
-        &self,
-        retained_prefix: usize,
-        removed: usize,
-        inserted: Vec<AnyViewBuilder<NavigationView>>,
-    ) {
+    fn commit(&self, retained_prefix: usize, removed: usize, inserted: Vec<PendingPage>) {
         // An interactive native pop already removed entries from the platform
         // stack; this transaction only has to cover what is left.
         let native_applied = self.state.native_applied_pops.get();
@@ -383,7 +609,7 @@ impl NavigationController {
         // delivery in flight drains it once `apply` returns, so the receiver is
         // never called re-entrantly.
         self.state.outbox.deliver(
-            NavigationTransaction {
+            PendingTransaction {
                 id,
                 retained_prefix,
                 removed,
@@ -539,70 +765,22 @@ impl NavigationController {
     pub fn retained_environment(&self) -> Option<Environment> {
         self.state.retained_environment.borrow().clone()
     }
-
-    fn with_retained_environment_builder(
-        &self,
-        content: AnyViewBuilder<NavigationView>,
-    ) -> AnyViewBuilder<NavigationView> {
-        if let Some(env) = self.retained_environment() {
-            AnyViewBuilder::new(move || navigation_view_with_environment(content.build(), &env))
-        } else {
-            content
-        }
-    }
 }
 
-fn navigation_slot_with_environment(content: AnyView, env: &Environment) -> AnyView {
-    AnyView::new(Metadata::new(content, env.clone()))
-}
-
-fn navigation_view_with_environment(
-    mut content: NavigationView,
+/// `view` with its bar and content scoped to `env`, its environment-dependent
+/// fields resolved against it.
+fn scoped_navigation_view<S: ChildSlot, V: View, T: NavigationToolbarItems>(
+    view: NavigationView<V, T>,
     env: &Environment,
-) -> NavigationView {
-    content.resolve_native_fields(env);
-    content.bar.title = navigation_slot_with_environment(content.bar.title, env);
-    content.bar.subtitle = navigation_slot_with_environment(content.bar.subtitle, env);
-    for item in &mut content.bar.toolbar.items {
-        item.content = navigation_slot_with_environment(core::mem::take(&mut item.content), env);
+) -> ResolvedNavigationView<S> {
+    let mut resolved = view
+        .map_content(|content| Metadata::new(content, env.clone()))
+        .into_resolved::<S>();
+    resolved.resolve_native_fields(env);
+    for item in resolved.bar.toolbar.items_mut() {
+        item.env = Some(env.clone());
     }
-    content.content = navigation_slot_with_environment(content.content, env);
-    content
-}
-
-/// Resolves a stack's deferred root after its backend controller is installed.
-///
-/// Path-backed stacks defer their root so the `Navigator` and retained path
-/// subscription can be installed in the controller-scoped environment. Backend
-/// implementations must use this function before projecting the root into their
-/// native navigation container.
-#[doc(hidden)]
-pub fn resolve_navigation_root(mut root: AnyView, env: &Environment) -> NavigationView {
-    let mut resolved_env = env.clone();
-    loop {
-        if root.is::<NavigationView>() {
-            let root = *root
-                .downcast::<NavigationView>()
-                .expect("navigation root type must remain stable during downcast");
-            return navigation_view_with_environment(root, &resolved_env);
-        }
-        if root.is::<Native<NavigationView>>() {
-            let root = root
-                .downcast::<Native<NavigationView>>()
-                .expect("native navigation root type must remain stable during downcast")
-                .into_inner();
-            return navigation_view_with_environment(root, &resolved_env);
-        }
-        if root.is::<Metadata<Environment>>() {
-            let metadata = *root
-                .downcast::<Metadata<Environment>>()
-                .expect("navigation environment metadata type must remain stable during downcast");
-            resolved_env = metadata.value;
-            root = metadata.content;
-            continue;
-        }
-        root = AnyView::new(View::body(root, &resolved_env));
-    }
+    resolved
 }
 
 /// Programmatic controller for the nearest typed navigation stack.
@@ -704,20 +882,57 @@ impl Navigator<ErasedNavigationRoute> {
     }
 }
 
-impl NativeView for NavigationView {
+/// A resolved navigation view reaches its backend with its content and toolbar
+/// items in the backend's child slot.
+impl<S: 'static> MapSlots<S> for ResolvedNavigationView<S> {
+    type With<T: 'static> = ResolvedNavigationView<T>;
+
+    fn map_slots<T: 'static>(
+        self,
+        f: impl Fn(S) -> T + Clone + 'static,
+    ) -> ResolvedNavigationView<T> {
+        let Self {
+            bar,
+            content,
+            state,
+            transition,
+        } = self;
+        NavigationView {
+            bar: bar.map_toolbar(|tb| tb.map_slots(f.clone())),
+            content: f(content),
+            state,
+            transition,
+        }
+    }
+}
+
+impl<S: 'static> MapSlots<S> for NavigationStackLayout<S> {
+    type With<T: 'static> = NavigationStackLayout<T>;
+
+    fn map_slots<T: 'static>(
+        self,
+        f: impl Fn(S) -> T + Clone + 'static,
+    ) -> NavigationStackLayout<T> {
+        self.map_slot(f)
+    }
+}
+
+impl<S: 'static> NativeView for ResolvedNavigationView<S> {
     fn stretch_axis(&self) -> StretchAxis {
         StretchAxis::Both
     }
 }
 
-impl View for NavigationView {
-    fn body(mut self, env: &Environment) -> impl View {
-        self.resolve_native_fields(env);
-        Native::new(self)
+impl<V: View, T: NavigationToolbarItems> View for NavigationView<V, T> {
+    /// The erased form, for code that expands views by hand.
+    fn body(self, _env: &Environment) -> impl View {
+        Native::new(self.into_resolved::<AnyView>())
     }
 
-    fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::Both
+    /// Reaches the backend with the content and toolbar items in the backend's
+    /// child slot.
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        backend.native(self.into_resolved::<B::Slot>(), env, cx)
     }
 }
 
@@ -774,39 +989,203 @@ pub enum NavigationToolbarPlacement {
     TopBarTrailing = 8,
 }
 
-/// One semantic native toolbar item.
+/// Marker for a custom-view [`NavigationToolbarItem`].
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CustomToolbarItem;
+
+/// Marker for a custom-view [`NavigationToolbarItem`] carrying a typed icon.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CustomIconToolbarItem;
+
+/// Marker for a semantic-action [`NavigationToolbarItem`].
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ActionToolbarItem;
+
+/// One semantic native toolbar item before lowering into a backend's child slot.
 #[must_use]
 #[non_exhaustive]
-pub struct NavigationToolbarItem {
-    /// Semantic placement resolved by each platform backend.
+pub struct NavigationToolbarItem<C, Kind = CustomToolbarItem> {
     placement: NavigationToolbarPlacement,
-    /// Item content.
-    content: AnyView,
-    /// The item's name, when it was declared as a semantic label.
-    ///
-    /// Kept beside the content rather than only inside it, because the
-    /// platforms disagree about how much of a toolbar action to draw: a Mac
-    /// shows the icon alone and keeps the name for the overflow menu, its
-    /// tooltip and assistive technology, while a phone's navigation bar
-    /// commonly shows the text. Once the label is erased into a view, no
-    /// backend can tell the name from the icon, so both travel separately and
-    /// each platform draws what its own chrome calls for.
-    title: Option<Text>,
-    /// The item's icon, when it was declared as a semantic label.
-    icon: Option<ToolbarItemIcon>,
+    content: C,
+    kind: PhantomData<Kind>,
 }
 
-impl NavigationToolbarItem {
+impl<C, Kind> Debug for NavigationToolbarItem<C, Kind> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("NavigationToolbarItem")
+            .field("placement", &self.placement)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<C, Kind> NavigationToolbarItem<C, Kind> {
+    /// Semantic placement resolved by each platform backend.
+    #[must_use]
+    pub const fn placement(&self) -> NavigationToolbarPlacement {
+        self.placement
+    }
+}
+
+impl NavigationToolbarItem<(), CustomToolbarItem> {
+    /// Creates a toolbar item with arbitrary content.
+    ///
+    /// Arbitrary content carries no name or icon of its own, so a backend can
+    /// only place the view as given. [`Self::action`] is what lets each platform
+    /// draw the item its own way.
+    pub const fn new<V: View>(
+        placement: NavigationToolbarPlacement,
+        content: V,
+    ) -> NavigationToolbarItem<V, CustomToolbarItem> {
+        NavigationToolbarItem {
+            placement,
+            content,
+            kind: PhantomData,
+        }
+    }
+
+    /// Creates a semantic toolbar action.
+    ///
+    /// The label's name and icon stay typed until the backend lowers the
+    /// destination into its child slot, so every backend can draw the item
+    /// the way its own chrome does without `AnyView` erasure.
+    pub fn action<I: IntoLabel, Args: 'static>(
+        placement: NavigationToolbarPlacement,
+        label: I,
+        handler: impl Handler<Args>,
+    ) -> NavigationToolbarItem<Button<I::Kind, BoxedAction<()>>, ActionToolbarItem> {
+        let content = button(label.into_label())
+            .style(ButtonStyle::Plain)
+            .action_boxed(boxed_action(handler));
+        NavigationToolbarItem {
+            placement,
+            content,
+            kind: PhantomData,
+        }
+    }
+}
+
+impl<C: View> NavigationToolbarItem<C, CustomToolbarItem> {
+    /// Attaches a typed icon view to this custom toolbar item without erasing
+    /// through `AnyView`.
+    pub fn icon<I: View + Clone + 'static>(
+        self,
+        icon: I,
+    ) -> NavigationToolbarItem<(C, I), CustomIconToolbarItem> {
+        NavigationToolbarItem {
+            placement: self.placement,
+            content: (self.content, icon),
+            kind: PhantomData,
+        }
+    }
+}
+
+/// A single authored toolbar item lowered into child slot `S`.
+#[doc(hidden)]
+pub trait NavigationToolbarItemSource: 'static {
+    /// Lowers this item into child slot `S`.
+    fn into_resolved<S: ChildSlot>(self) -> ResolvedNavigationToolbarItem<S>;
+}
+
+impl<V: View> NavigationToolbarItemSource for NavigationToolbarItem<V, CustomToolbarItem> {
+    fn into_resolved<S: ChildSlot>(self) -> ResolvedNavigationToolbarItem<S> {
+        ResolvedNavigationToolbarItem {
+            placement: self.placement,
+            content: S::from_view(self.content),
+            title: None,
+            icon: None,
+            env: None,
+        }
+    }
+}
+
+impl<V: View, I: View + Clone + 'static> NavigationToolbarItemSource
+    for NavigationToolbarItem<(V, I), CustomIconToolbarItem>
+{
+    fn into_resolved<S: ChildSlot>(self) -> ResolvedNavigationToolbarItem<S> {
+        let (content, icon) = self.content;
+        ResolvedNavigationToolbarItem {
+            placement: self.placement,
+            content: S::from_view(content),
+            title: None,
+            icon: Some(IconSlot::from_view(icon)),
+            env: None,
+        }
+    }
+}
+
+impl<L: LabelKind> NavigationToolbarItemSource
+    for NavigationToolbarItem<Button<L, BoxedAction<()>>, ActionToolbarItem>
+{
+    fn into_resolved<S: ChildSlot>(self) -> ResolvedNavigationToolbarItem<S> {
+        let title = Some(self.content.label().semantic_text().clone());
+        let icon = self.content.label().icon_slot::<S>();
+        ResolvedNavigationToolbarItem {
+            placement: self.placement,
+            content: S::from_view(self.content),
+            title,
+            icon,
+            env: None,
+        }
+    }
+}
+
+/// One resolved native toolbar item carrying its view and optional icon in the
+/// backend's child slot `S`.
+#[doc(hidden)]
+#[must_use]
+#[non_exhaustive]
+pub struct ResolvedNavigationToolbarItem<S> {
+    /// Semantic placement resolved by each platform backend.
+    placement: NavigationToolbarPlacement,
+    /// Item content in the backend's child slot.
+    content: S,
+    /// The item's name, when it was declared as a semantic label.
+    title: Option<Text>,
+    /// The item's icon, when it was declared as a semantic label.
+    icon: Option<IconSlot<S>>,
+    /// Scoped navigation environment attached by a pushed page.
+    env: Option<Environment>,
+}
+
+impl<S: 'static> ResolvedNavigationToolbarItem<S> {
+    /// Maps the item's content and icon slots through `f`.
+    pub fn map_slots<T: 'static>(
+        self,
+        f: impl Fn(S) -> T + Clone + 'static,
+    ) -> ResolvedNavigationToolbarItem<T> {
+        ResolvedNavigationToolbarItem {
+            placement: self.placement,
+            content: f(self.content),
+            title: self.title,
+            icon: self.icon.map(|icon| icon.map_slot(f)),
+            env: self.env,
+        }
+    }
+}
+
+impl<S> ResolvedNavigationToolbarItem<S> {
     /// Takes the value apart into its fields, in declaration order.
+    #[must_use]
     pub fn into_parts(
         self,
     ) -> (
         NavigationToolbarPlacement,
-        AnyView,
+        S,
         Option<Text>,
-        Option<ToolbarItemIcon>,
+        Option<IconSlot<S>>,
+        Option<Environment>,
     ) {
-        (self.placement, self.content, self.title, self.icon)
+        (
+            self.placement,
+            self.content,
+            self.title,
+            self.icon,
+            self.env,
+        )
     }
 
     /// Semantic placement resolved by each platform backend.
@@ -817,34 +1196,11 @@ impl NavigationToolbarItem {
 
     /// Item content.
     #[must_use]
-    pub const fn content(&self) -> &AnyView {
+    pub const fn content(&self) -> &S {
         &self.content
     }
 
-    /// Takes the item content out, leaving an empty view behind.
-    pub fn take_content(&mut self) -> AnyView {
-        core::mem::take(&mut self.content)
-    }
-
-    /// Sets the item content.
-    pub fn set_content(&mut self, content: AnyView) {
-        self.content = content;
-    }
-
-    /// Sets the item's icon.
-    pub fn set_icon(&mut self, icon: Option<ToolbarItemIcon>) {
-        self.icon = icon;
-    }
-
     /// The item's name, when it was declared as a semantic label.
-    ///
-    /// Kept beside the content rather than only inside it, because the
-    /// platforms disagree about how much of a toolbar action to draw: a Mac
-    /// shows the icon alone and keeps the name for the overflow menu, its
-    /// tooltip and assistive technology, while a phone's navigation bar
-    /// commonly shows the text. Once the label is erased into a view, no
-    /// backend can tell the name from the icon, so both travel separately and
-    /// each platform draws what its own chrome calls for.
     #[must_use]
     pub const fn title(&self) -> Option<&Text> {
         self.title.as_ref()
@@ -852,126 +1208,215 @@ impl NavigationToolbarItem {
 
     /// The item's icon, when it was declared as a semantic label.
     #[must_use]
-    pub const fn icon(&self) -> Option<&ToolbarItemIcon> {
+    pub const fn icon(&self) -> Option<&IconSlot<S>> {
         self.icon.as_ref()
     }
-}
 
-/// A toolbar item's icon, kept apart from its name.
-///
-/// The two forms are not interchangeable: a platform that recognizes the symbol
-/// draws it at whatever size and weight its chrome calls for, while a view has
-/// to be rendered into an image at a chosen size.
-#[expect(
-    clippy::exhaustive_enums,
-    reason = "backends realize each toolbar icon source variant by variant; a new toolbar icon source must fail their build instead of falling into a wildcard arm"
-)]
-pub enum ToolbarItemIcon {
-    /// A symbol the platform knows by name.
-    System(SystemIcon),
-    /// A view the backend renders itself.
-    View(AnyViewBuilder<AnyView>),
-}
-
-impl Debug for ToolbarItemIcon {
-    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::System(icon) => formatter.debug_tuple("System").field(icon).finish(),
-            Self::View(_) => formatter.write_str("View"),
-        }
+    /// Scoped navigation environment attached by a pushed destination, if any.
+    #[must_use]
+    pub const fn env(&self) -> Option<&Environment> {
+        self.env.as_ref()
     }
 }
 
-impl Debug for NavigationToolbarItem {
+impl<S> Debug for ResolvedNavigationToolbarItem<S> {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         formatter
-            .debug_struct("NavigationToolbarItem")
+            .debug_struct("ResolvedNavigationToolbarItem")
             .field("placement", &self.placement)
-            .field("content", &self.content)
             .field("title", &self.title)
             .field("icon", &self.icon)
-            .finish()
+            .field("env", &self.env)
+            .finish_non_exhaustive()
     }
 }
 
-impl NavigationToolbarItem {
-    /// Creates a toolbar item with arbitrary content.
-    ///
-    /// Arbitrary content carries no name or icon of its own, so a backend can
-    /// only place the view as given. [`Self::action`] is what lets each platform
-    /// draw the item its own way.
-    pub fn new(placement: NavigationToolbarPlacement, content: impl View) -> Self {
-        Self {
-            placement,
-            content: AnyView::new(content),
-            title: None,
-            icon: None,
-        }
-    }
+/// A sequence of authored navigation toolbar items lowered into child slot `S`.
+pub trait NavigationToolbarItems: 'static {
+    /// Appends every resolved item in declaration order into `out`.
+    #[doc(hidden)]
+    fn push_into<S: ChildSlot>(self, out: &mut Vec<ResolvedNavigationToolbarItem<S>>);
 
-    /// Creates a semantic toolbar action.
-    ///
-    /// The label's name and icon are lifted out before the content is erased, so
-    /// every backend can draw the item the way its own chrome does — see
-    /// [`NavigationToolbarItem::title`].
-    pub fn action<Args: 'static>(
-        placement: NavigationToolbarPlacement,
-        label: impl IntoLabel + 'static,
-        handler: impl Handler<Args>,
-    ) -> Self {
-        let label = label.into_label();
-        let title = Some(label.semantic_text().clone());
-        let icon = label.semantic_icon().map_or_else(
-            || label.icon_view().map(ToolbarItemIcon::View),
-            |icon| Some(ToolbarItemIcon::System(icon)),
-        );
-        Self {
-            placement,
-            content: AnyView::new(button(label).style(ButtonStyle::Plain).action(handler)),
-            title,
-            icon,
+    /// Lowers all items into a [`ResolvedNavigationToolbar<S>`].
+    #[doc(hidden)]
+    fn into_resolved<S: ChildSlot>(self) -> ResolvedNavigationToolbar<S>
+    where
+        Self: Sized,
+    {
+        let mut items = Vec::new();
+        self.push_into(&mut items);
+        ResolvedNavigationToolbar { items }
+    }
+}
+
+impl NavigationToolbarItems for () {
+    fn push_into<S: ChildSlot>(self, _out: &mut Vec<ResolvedNavigationToolbarItem<S>>) {}
+}
+
+impl<Head, Tail> NavigationToolbarItems for (Head, Tail)
+where
+    Head: NavigationToolbarItems,
+    Tail: NavigationToolbarItemSource,
+{
+    fn push_into<S: ChildSlot>(self, out: &mut Vec<ResolvedNavigationToolbarItem<S>>) {
+        self.0.push_into(out);
+        out.push(self.1.into_resolved::<S>());
+    }
+}
+
+impl<Item: NavigationToolbarItemSource> NavigationToolbarItems for Vec<Item> {
+    fn push_into<S: ChildSlot>(self, out: &mut Vec<ResolvedNavigationToolbarItem<S>>) {
+        out.reserve(self.len());
+        for item in self {
+            out.push(item.into_resolved::<S>());
         }
     }
 }
+
+impl<Item: NavigationToolbarItemSource, const N: usize> NavigationToolbarItems for [Item; N] {
+    fn push_into<S: ChildSlot>(self, out: &mut Vec<ResolvedNavigationToolbarItem<S>>) {
+        out.reserve(N);
+        for item in self {
+            out.push(item.into_resolved::<S>());
+        }
+    }
+}
+
+impl<Items: NavigationToolbarItems> NavigationToolbarItems for NavigationToolbar<Items> {
+    fn push_into<S: ChildSlot>(self, out: &mut Vec<ResolvedNavigationToolbarItem<S>>) {
+        self.items.push_into(out);
+    }
+}
+
+impl<Items: NavigationToolbarItems> NavigationToolbarItems for Option<Items> {
+    fn push_into<S: ChildSlot>(self, out: &mut Vec<ResolvedNavigationToolbarItem<S>>) {
+        if let Some(items) = self {
+            items.push_into(out);
+        }
+    }
+}
+
+macro_rules! impl_one_of_toolbar_items {
+    ($name:ident { $($variant:ident),+ }) => {
+        impl<$($variant: NavigationToolbarItems),+> NavigationToolbarItems
+            for waterui_core::$name<$($variant),+>
+        {
+            fn push_into<S: ChildSlot>(self, out: &mut Vec<ResolvedNavigationToolbarItem<S>>) {
+                match self {
+                    $(Self::$variant(items) => items.push_into(out),)+
+                }
+            }
+        }
+    };
+}
+
+impl_one_of_toolbar_items!(OneOf2 { A, B });
+impl_one_of_toolbar_items!(OneOf3 { A, B, C });
+impl_one_of_toolbar_items!(OneOf4 { A, B, C, D });
+impl_one_of_toolbar_items!(OneOf5 { A, B, C, D, E });
+impl_one_of_toolbar_items!(OneOf6 { A, B, C, D, E, F });
+impl_one_of_toolbar_items!(OneOf7 {
+    A,
+    B,
+    C,
+    D,
+    E,
+    F,
+    G
+});
+impl_one_of_toolbar_items!(OneOf8 {
+    A,
+    B,
+    C,
+    D,
+    E,
+    F,
+    G,
+    H
+});
 
 /// Native toolbar contents attached to one navigation destination.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 #[non_exhaustive]
-pub struct NavigationToolbar {
-    /// Semantic toolbar items in declaration order.
-    items: Vec<NavigationToolbarItem>,
+pub struct NavigationToolbar<Items = ()> {
+    /// Authored semantic toolbar items in declaration order.
+    items: Items,
 }
 
-impl NavigationToolbar {
+impl Default for NavigationToolbar<()> {
+    fn default() -> Self {
+        Self { items: () }
+    }
+}
+
+impl NavigationToolbar<()> {
+    /// Creates a toolbar from semantic items (for example a `Vec` or array of
+    /// [`NavigationToolbarItem`] values).
+    #[must_use]
+    pub const fn new<Items: NavigationToolbarItems>(items: Items) -> NavigationToolbar<Items> {
+        NavigationToolbar { items }
+    }
+}
+
+impl<Items: NavigationToolbarItems> NavigationToolbar<Items> {
+    /// Appends one semantic toolbar item.
+    #[must_use]
+    pub fn item<Item: NavigationToolbarItemSource>(
+        self,
+        item: Item,
+    ) -> NavigationToolbar<(Items, Item)> {
+        NavigationToolbar {
+            items: (self.items, item),
+        }
+    }
+}
+
+/// Resolved native toolbar items carried on [`ResolvedNavigationView<S>`].
+#[doc(hidden)]
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct ResolvedNavigationToolbar<S> {
+    items: Vec<ResolvedNavigationToolbarItem<S>>,
+}
+
+impl<S> Default for ResolvedNavigationToolbar<S> {
+    fn default() -> Self {
+        Self { items: Vec::new() }
+    }
+}
+
+impl<S> ResolvedNavigationToolbar<S> {
     /// Semantic toolbar items in declaration order.
     #[must_use]
-    pub const fn items(&self) -> &[NavigationToolbarItem] {
+    pub const fn items(&self) -> &[ResolvedNavigationToolbarItem<S>] {
         self.items.as_slice()
     }
 
     /// The items, for in-place edits.
-    pub const fn items_mut(&mut self) -> &mut [NavigationToolbarItem] {
+    pub const fn items_mut(&mut self) -> &mut [ResolvedNavigationToolbarItem<S>] {
         self.items.as_mut_slice()
     }
 
     /// Takes the items out of the toolbar, leaving it empty.
-    pub fn take_items(&mut self) -> Vec<NavigationToolbarItem> {
+    pub fn take_items(&mut self) -> Vec<ResolvedNavigationToolbarItem<S>> {
         core::mem::take(&mut self.items)
     }
 }
 
-impl NavigationToolbar {
-    /// Creates a toolbar from semantic items.
+impl<S: 'static> ResolvedNavigationToolbar<S> {
+    /// Maps every toolbar item's content and icon slots through `f`.
     #[must_use]
-    pub const fn new(items: Vec<NavigationToolbarItem>) -> Self {
-        Self { items }
-    }
-
-    /// Appends one semantic toolbar item.
-    #[must_use]
-    pub fn item(mut self, item: NavigationToolbarItem) -> Self {
-        self.items.push(item);
-        self
+    pub fn map_slots<T: 'static>(
+        self,
+        f: impl Fn(S) -> T + Clone + 'static,
+    ) -> ResolvedNavigationToolbar<T> {
+        ResolvedNavigationToolbar {
+            items: self
+                .items
+                .into_iter()
+                .map(|item| item.map_slots(f.clone()))
+                .collect(),
+        }
     }
 }
 
@@ -980,13 +1425,13 @@ impl NavigationToolbar {
 /// Represents the appearance and behavior of a navigation bar, including
 /// its title, color, and visibility.
 #[derive(Debug)]
-pub struct Bar {
-    /// The title view displayed in the navigation bar
-    pub title: AnyView,
+pub struct Bar<T = ()> {
+    /// The title text displayed in the navigation bar.
+    pub title: Option<Text>,
     /// Optional semantic subtitle rendered by native chrome.
-    pub subtitle: AnyView,
+    pub subtitle: Option<Text>,
     /// Semantic native toolbar content.
-    pub toolbar: NavigationToolbar,
+    pub toolbar: T,
     /// Optional search field configuration displayed in navigation chrome.
     pub search: Option<NavigationSearch>,
     /// Background color of the navigation bar, or `None` for the surrounding
@@ -998,16 +1443,31 @@ pub struct Bar {
     pub display_mode: NavigationTitleDisplayMode,
 }
 
-impl Default for Bar {
+impl<T: Default> Default for Bar<T> {
     fn default() -> Self {
         Self {
-            title: AnyView::default(),
-            subtitle: AnyView::default(),
-            toolbar: NavigationToolbar::default(),
+            title: None,
+            subtitle: None,
+            toolbar: T::default(),
             search: None,
             color: None,
-            hidden: Computed::constant(false),
-            display_mode: NavigationTitleDisplayMode::Automatic,
+            hidden: Computed::default(),
+            display_mode: NavigationTitleDisplayMode::default(),
+        }
+    }
+}
+
+impl<T> Bar<T> {
+    /// Maps the toolbar payload carried by this bar.
+    pub fn map_toolbar<U>(self, f: impl FnOnce(T) -> U) -> Bar<U> {
+        Bar {
+            title: self.title,
+            subtitle: self.subtitle,
+            toolbar: f(self.toolbar),
+            search: self.search,
+            color: self.color,
+            hidden: self.hidden,
+            display_mode: self.display_mode,
         }
     }
 }
@@ -1018,8 +1478,8 @@ impl Default for Bar {
 /// The link itself renders and behaves as a plain button; this marker is how
 /// a platform that draws a destination-following affordance around the row a
 /// link sits in — the iOS disclosure chevron — recognizes one. It carries no
-/// behavior, and a renderer with no such affordance (a Mac list, say) ignores
-/// it, which is why it wraps as [`IgnorableMetadata`].
+/// behavior, and a backend with no such affordance (a Mac list, say) ignores
+/// it explicitly.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NavigationLinkHint;
 
@@ -1118,10 +1578,12 @@ impl<Label, T> NavigationValueLink<Label, T> {
     }
 }
 
-impl<Label, Content> NavigationLink<Label, Content>
+impl<Label, Content, V, Tb> NavigationLink<Label, Content>
 where
     Label: IntoLabel + 'static,
-    Content: ViewBuilder<Output = NavigationView>,
+    Content: ViewBuilder<Output = NavigationView<V, Tb>>,
+    V: View,
+    Tb: NavigationToolbarItems,
 {
     /// Creates a new navigation link.
     ///
@@ -1146,115 +1608,197 @@ impl NavigationLink<(), ()> {
 }
 
 /// A stack of navigation views.
+///
+/// `V` is the root's content type, `P` the path whose routes the pages above
+/// the root show (`()` for a stack only links push onto), `F` the
+/// destinations that build those pages, and `Tb` the root's toolbar type.
 #[must_use]
-#[derive(Debug)]
-pub struct NavigationStack<T, F> {
-    root: AnyView, // Renderer requires to inject `NavigationController` to the root view's environment
-    path: T,
+pub struct NavigationStack<V, P, F, Tb = ()> {
+    root: NavigationView<V, Tb>,
+    path: P,
     destination: F,
     transition: AnyNavigationTransition,
 }
 
-struct HeterogeneousDestination {
-    build: Rc<dyn Fn(&ErasedNavigationRoute) -> NavigationView>,
-}
-
-#[doc(hidden)]
-pub struct HeterogeneousDestinations {
-    entries: BTreeMap<TypeId, HeterogeneousDestination>,
-    #[cfg(feature = "serde")]
-    path: NavigationPath<ErasedNavigationRoute>,
-}
-
-impl Debug for HeterogeneousDestinations {
+impl<V, P, F, Tb: Debug> Debug for NavigationStack<V, P, F, Tb> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("HeterogeneousDestinations")
-            .field("len", &self.entries.len())
+        f.debug_struct("NavigationStack")
+            .field("root", &self.root)
+            .field("transition", &self.transition)
             .finish_non_exhaustive()
     }
 }
 
-impl HeterogeneousDestinations {
-    fn new<R, F>(path: NavigationPath<ErasedNavigationRoute>, destination: F) -> Self
-    where
-        R: RestorableNavigationRoute,
-        F: 'static + Fn(R) -> NavigationView,
-    {
-        let mut destinations = Self {
-            entries: BTreeMap::new(),
-            #[cfg(feature = "serde")]
-            path,
-        };
-        #[cfg(not(feature = "serde"))]
-        drop(path);
-        destinations.insert(destination);
-        destinations
-    }
+/// The destinations of a stack whose path holds routes of several types, one
+/// per route type, registered by [`NavigationStack::destination`].
+#[doc(hidden)]
+pub struct RouteDestinations<Prev, R, F> {
+    prev: Prev,
+    destination: Rc<F>,
+    route: PhantomData<fn(R)>,
+}
 
-    fn insert<R, F>(&mut self, destination: F)
-    where
-        R: RestorableNavigationRoute,
-        F: 'static + Fn(R) -> NavigationView,
-    {
-        #[cfg(feature = "serde")]
-        self.path.register_restoration::<R>();
-        let type_id = TypeId::of::<R>();
-        let type_name = core::any::type_name::<R>();
-        let previous = self.entries.insert(
-            type_id,
-            HeterogeneousDestination {
-                build: Rc::new(move |route| {
-                    let route = route
-                        .downcast_ref::<R>()
-                        .expect("registered navigation destination type must match route type");
-                    destination(route.clone())
-                }),
-            },
-        );
-        if previous.is_some() {
-            contract_violation!(
-                "navigation destination for `{type_name}` was registered more than once; the later registration replaces the earlier one"
-            );
-        }
-    }
-
-    fn build(&self, route: &ErasedNavigationRoute) -> NavigationView {
-        let Some(destination) = self.entries.get(&route.type_id()) else {
-            contract_violation!(
-                "heterogeneous navigation route `{}` has no registered destination; an empty page is shown",
-                route.type_name()
-            );
-            return NavigationView::new("", ());
-        };
-        (destination.build)(route)
+impl<Prev, R, F> Debug for RouteDestinations<Prev, R, F> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("RouteDestinations")
+            .field("route", &core::any::type_name::<R>())
+            .finish_non_exhaustive()
     }
 }
 
-impl NavigationStack<(), ()> {
+/// Builds the page for one route of a heterogeneous path, in the child slot
+/// `S`.
+type RouteBuilder<S> = Box<dyn Fn(&ErasedNavigationRoute) -> NavigationPage<S>>;
+
+/// A chain of [`RouteDestinations`], turned into its lookup table once the
+/// stack's backend, and so the pages' slot, is known.
+#[doc(hidden)]
+pub trait RouteTable: 'static {
+    /// Registers each destination in `table`, earliest first.
+    fn register<S: ChildSlot>(self, table: &mut BTreeMap<TypeId, RouteBuilder<S>>);
+}
+
+impl RouteTable for () {
+    fn register<S: ChildSlot>(self, _table: &mut BTreeMap<TypeId, RouteBuilder<S>>) {}
+}
+
+impl<Prev, R, F, D, Tb> RouteTable for RouteDestinations<Prev, R, F>
+where
+    Prev: RouteTable,
+    R: RestorableNavigationRoute,
+    F: 'static + Fn(R) -> NavigationView<D, Tb>,
+    D: View,
+    Tb: NavigationToolbarItems,
+{
+    fn register<S: ChildSlot>(self, table: &mut BTreeMap<TypeId, RouteBuilder<S>>) {
+        self.prev.register(table);
+        let destination = self.destination;
+        let previous = table.insert(
+            TypeId::of::<R>(),
+            Box::new(move |route| {
+                let route = route
+                    .downcast_ref::<R>()
+                    .expect("registered navigation destination type must match route type")
+                    .clone();
+                let destination = Rc::clone(&destination);
+                NavigationPage::new(move || destination(route))
+            }),
+        );
+        if previous.is_some() {
+            contract_violation!(
+                "navigation destination for `{}` was registered more than once; the later registration replaces the earlier one",
+                core::any::type_name::<R>()
+            );
+        }
+    }
+}
+
+/// The page a heterogeneous path's `route` shows.
+fn route_page<S: ChildSlot>(
+    table: &BTreeMap<TypeId, RouteBuilder<S>>,
+    route: &ErasedNavigationRoute,
+) -> NavigationPage<S> {
+    let Some(build) = table.get(&route.type_id()) else {
+        contract_violation!(
+            "heterogeneous navigation route `{}` has no registered destination; an empty page is shown",
+            route.type_name()
+        );
+        return NavigationPage::new(|| NavigationView::new("", ()));
+    };
+    build(route)
+}
+
+/// What a stack does once its backend placed the controller that realizes
+/// it: drive the controller from its path and scope its pages.
+type StackAttach = Box<dyn FnOnce(&NavigationController, &mut Environment)>;
+
+/// A navigation stack as its backend receives it: the root page with its
+/// content in the backend's child slot `S`, and how the stack attaches to the
+/// [`NavigationController`] the backend realizes it with.
+pub struct NavigationStackLayout<S> {
+    root: NavigationPage<S>,
+    attach: Option<StackAttach>,
+    transition: AnyNavigationTransition,
+}
+
+impl<S> Debug for NavigationStackLayout<S> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("NavigationStackLayout")
+            .field("transition", &self.transition)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<S: 'static> NativeView for NavigationStackLayout<S> {
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::Both
+    }
+}
+
+impl<S: 'static> NavigationStackLayout<S> {
+    /// The same stack with its root page's content and toolbar mapped through `f`: a
+    /// backend holds them in its own slot.
+    #[must_use]
+    pub fn map_slot<T: 'static>(
+        self,
+        f: impl Fn(S) -> T + Clone + 'static,
+    ) -> NavigationStackLayout<T> {
+        let Self {
+            root,
+            attach,
+            transition,
+        } = self;
+        NavigationStackLayout {
+            root: root.map_slot(f),
+            attach,
+            transition,
+        }
+    }
+}
+
+impl<S> NavigationStackLayout<S> {
+    /// Returns the configured transition style.
+    #[must_use]
+    pub const fn transition_style(&self) -> &AnyNavigationTransition {
+        &self.transition
+    }
+
+    /// Attaches the stack to the [`NavigationController`] its backend
+    /// inserted into `env`, and builds the root page in the environment the
+    /// stack's pages share.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a path-backed stack is resolved in an environment without
+    /// a [`NavigationController`]: its backend inserts one first.
+    pub fn resolve(self, env: &Environment) -> ResolvedNavigationView<S> {
+        let mut env = env.clone();
+        if let Some(attach) = self.attach {
+            let controller = env.get::<NavigationController>().cloned().expect(
+                "a navigation stack's backend inserts its NavigationController before resolving the stack",
+            );
+            attach(&controller, &mut env);
+        }
+        self.root.in_environment(Some(env)).build()
+    }
+}
+
+impl<V: View, Tb: NavigationToolbarItems> NavigationStack<V, (), (), Tb> {
     /// Creates a new navigation stack with the specified root view.
     ///
     /// # Arguments
     /// * `root` - The semantic root destination of the navigation stack
-    pub fn new(root: NavigationView) -> Self {
-        Self::new_deferred(root)
-    }
-
-    fn new_deferred(root: impl View) -> Self {
+    pub fn new(root: NavigationView<V, Tb>) -> Self {
         Self {
-            root: AnyView::new(root),
+            root,
             path: (),
             destination: (),
             transition: AnyNavigationTransition::new(navigation_transition::automatic()),
         }
     }
-
-    /// Consumes the navigation stack and returns its root view.
-    pub fn into_inner(self) -> AnyView {
-        self.root
-    }
 }
 
-impl<T, F> NavigationStack<T, F> {
+impl<V, P, F, Tb> NavigationStack<V, P, F, Tb> {
     /// Returns the configured transition style.
     #[must_use]
     pub const fn transition_style(&self) -> &AnyNavigationTransition {
@@ -1280,15 +1824,17 @@ impl<T, F> NavigationStack<T, F> {
     }
 }
 
-impl<T: 'static + PartialEq> NavigationStack<NavigationPath<T>, ()> {
+impl<V: View, T: 'static + PartialEq, Tb: NavigationToolbarItems>
+    NavigationStack<V, NavigationPath<T>, (), Tb>
+{
     /// Creates a new navigation stack with the specified navigation path and root view.
     ///
     /// # Arguments
     /// * `path` - The navigation path representing the current stack
     /// * `root` - The root view of the navigation stack
-    pub fn with_path(path: NavigationPath<T>, root: NavigationView) -> Self {
+    pub fn with_path(path: NavigationPath<T>, root: NavigationView<V, Tb>) -> Self {
         Self {
-            root: AnyView::new(root),
+            root,
             path,
             destination: (),
             transition: AnyNavigationTransition::new(navigation_transition::automatic()),
@@ -1299,9 +1845,14 @@ impl<T: 'static + PartialEq> NavigationStack<NavigationPath<T>, ()> {
     ///
     /// # Arguments
     /// * `destination` - A function that creates a `NavigationView` from a path component
-    pub fn destination<F>(self, destination: F) -> NavigationStack<NavigationPath<T>, F>
+    pub fn destination<F, D, DTb>(
+        self,
+        destination: F,
+    ) -> NavigationStack<V, NavigationPath<T>, F, Tb>
     where
-        F: 'static + Fn(T) -> NavigationView,
+        F: 'static + Fn(T) -> NavigationView<D, DTb>,
+        D: View,
+        DTb: NavigationToolbarItems,
     {
         NavigationStack {
             root: self.root,
@@ -1312,51 +1863,131 @@ impl<T: 'static + PartialEq> NavigationStack<NavigationPath<T>, ()> {
     }
 }
 
-impl NavigationStack<NavigationPath<ErasedNavigationRoute>, ()> {
-    /// Registers the first concrete destination type for a heterogeneous path.
-    pub fn destination<R, F>(
+impl<V: View, Prev: RouteTable, Tb: NavigationToolbarItems>
+    NavigationStack<V, NavigationPath<ErasedNavigationRoute>, Prev, Tb>
+{
+    /// Registers the destination for one concrete route type of a
+    /// heterogeneous path.
+    pub fn destination<R, F, D, DTb>(
         self,
         destination: F,
-    ) -> NavigationStack<NavigationPath<ErasedNavigationRoute>, HeterogeneousDestinations>
+    ) -> NavigationStack<V, NavigationPath<ErasedNavigationRoute>, RouteDestinations<Prev, R, F>, Tb>
     where
         R: RestorableNavigationRoute,
-        F: 'static + Fn(R) -> NavigationView,
+        F: 'static + Fn(R) -> NavigationView<D, DTb>,
+        D: View,
+        DTb: NavigationToolbarItems,
     {
-        let path = self.path;
+        #[cfg(feature = "serde")]
+        self.path.register_restoration::<R>();
         NavigationStack {
             root: self.root,
-            destination: HeterogeneousDestinations::new(path.clone(), destination),
-            path,
+            path: self.path,
+            destination: RouteDestinations {
+                prev: self.destination,
+                destination: Rc::new(destination),
+                route: PhantomData,
+            },
             transition: self.transition,
         }
     }
 }
 
-impl NavigationStack<NavigationPath<ErasedNavigationRoute>, HeterogeneousDestinations> {
-    /// Registers another concrete destination type for a heterogeneous path.
-    pub fn destination<R, F>(mut self, destination: F) -> Self
-    where
-        R: RestorableNavigationRoute,
-        F: 'static + Fn(R) -> NavigationView,
-    {
-        self.destination.insert(destination);
-        self
+/// A [`NavigationStack`] that reaches its backend: it becomes the
+/// [`NavigationStackLayout`] of the backend's child slot.
+#[doc(hidden)]
+pub trait IntoNavigationStackLayout: 'static {
+    /// The stack with its pages built in the child slot `S`.
+    fn into_layout<S: ChildSlot>(self) -> NavigationStackLayout<S>;
+}
+
+impl<V: View, Tb: NavigationToolbarItems> IntoNavigationStackLayout
+    for NavigationStack<V, (), (), Tb>
+{
+    fn into_layout<S: ChildSlot>(self) -> NavigationStackLayout<S> {
+        let Self {
+            root, transition, ..
+        } = self;
+        NavigationStackLayout {
+            root: NavigationPage::new(move || root),
+            attach: None,
+            transition,
+        }
     }
 }
 
-raw_view!(NavigationStack<(),()>, StretchAxis::Both);
+impl<V, Tb, T, F, D, DTb> IntoNavigationStackLayout for NavigationStack<V, NavigationPath<T>, F, Tb>
+where
+    V: View,
+    Tb: NavigationToolbarItems,
+    T: 'static + Clone + PartialEq,
+    F: 'static + Fn(T) -> NavigationView<D, DTb>,
+    D: View,
+    DTb: NavigationToolbarItems,
+{
+    fn into_layout<S: ChildSlot>(self) -> NavigationStackLayout<S> {
+        let destination = Rc::new(self.destination);
+        path_stack_layout(
+            self.root,
+            self.path,
+            self.transition,
+            |left, right| left == right,
+            move |route: &T| {
+                let destination = Rc::clone(&destination);
+                let route = route.clone();
+                NavigationPage::new(move || destination(route))
+            },
+        )
+    }
+}
+
+impl<V, Tb, Prev, R, F> IntoNavigationStackLayout
+    for NavigationStack<V, NavigationPath<ErasedNavigationRoute>, RouteDestinations<Prev, R, F>, Tb>
+where
+    V: View,
+    Tb: NavigationToolbarItems,
+    RouteDestinations<Prev, R, F>: RouteTable,
+{
+    fn into_layout<S: ChildSlot>(self) -> NavigationStackLayout<S> {
+        let mut table = BTreeMap::new();
+        self.destination.register(&mut table);
+        path_stack_layout(
+            self.root,
+            self.path,
+            self.transition,
+            ErasedNavigationRoute::same_route,
+            move |route| route_page(&table, route),
+        )
+    }
+}
+
+impl<V, P, F, Tb> View for NavigationStack<V, P, F, Tb>
+where
+    Self: IntoNavigationStackLayout,
+{
+    /// The erased form, for code that expands views by hand.
+    fn body(self, _env: &Environment) -> impl View {
+        Native::new(self.into_layout::<AnyView>())
+    }
+
+    /// Reaches the backend with every page built in the backend's child
+    /// slot.
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        backend.native(self.into_layout::<B::Slot>(), env, cx)
+    }
+}
 
 /// Projects a new path snapshot onto the backend stack as one transaction.
 ///
 /// `same` decides route identity — plain equality for a typed path, type-and-value
 /// equality for a heterogeneous one — and `build` turns a surviving route into its
-/// destination builder.
-fn reconcile_navigation_path<R: Clone + 'static>(
+/// page.
+fn reconcile_navigation_path<R: Clone + 'static, S: ChildSlot>(
     receiver: &NavigationController,
     current_path: &mut Vec<R>,
     next_path: Vec<R>,
     same: &impl Fn(&R, &R) -> bool,
-    build: &impl Fn(&R) -> AnyViewBuilder<NavigationView>,
+    build: &impl Fn(&R) -> NavigationPage<S>,
 ) {
     let shared_prefix = shared_prefix_len(current_path, &next_path, same);
     let inserted = next_path.iter().skip(shared_prefix).map(build).collect();
@@ -1367,11 +1998,11 @@ fn reconcile_navigation_path<R: Clone + 'static>(
 
 /// Subscribes a controller to a path, reconciling every snapshot into one
 /// transaction.
-fn subscribe_navigation_path<R: Clone + 'static>(
+fn subscribe_navigation_path<R: Clone + 'static, S: ChildSlot>(
     path: &NavigationPath<R>,
     receiver: &NavigationController,
     same: impl Fn(&R, &R) -> bool + 'static,
-    build: impl Fn(&R) -> AnyViewBuilder<NavigationView> + 'static,
+    build: impl Fn(&R) -> NavigationPage<S> + 'static,
 ) -> impl nami::watcher::WatcherGuard {
     let current_path = RefCell::new(Vec::new());
     // A path write issued while a reconcile still runs lands here
@@ -1396,97 +2027,75 @@ fn subscribe_navigation_path<R: Clone + 'static>(
     path.watch(move |next_path| reconcile(next_path))
 }
 
-/// Shared body of every path-backed stack: publish the `Navigator`, install the
-/// pop handler, and keep the path subscription alive on the controller so it
-/// outlives the root view.
-fn path_stack_body<R: Clone + 'static>(
+/// The layout of every path-backed stack: once attached, it publishes the
+/// `Navigator`, installs the pop handler, and keeps the path subscription
+/// alive on the controller so it outlives the root page.
+fn path_stack_layout<V, Tb, R, S>(
+    root: NavigationView<V, Tb>,
     path: NavigationPath<R>,
-    root: AnyView,
     transition: AnyNavigationTransition,
     same: impl Fn(&R, &R) -> bool + 'static,
-    build: impl Fn(&R) -> AnyViewBuilder<NavigationView> + 'static,
-) -> NavigationStack<(), ()> {
+    build: impl Fn(&R) -> NavigationPage<S> + 'static,
+) -> NavigationStackLayout<S>
+where
+    V: View,
+    Tb: NavigationToolbarItems,
+    R: Clone + 'static,
+    S: ChildSlot,
+{
     let navigator = Navigator(path.clone());
-    NavigationStack::new_deferred(use_env(
-        move |(receiver, mut local_env): (NavigationController, Environment)| {
-            local_env.insert(State(navigator.clone()));
-            receiver.retain_environment(local_env.clone());
+    NavigationStackLayout {
+        root: NavigationPage::new(move || root),
+        attach: Some(Box::new(move |receiver, env| {
+            env.insert(State(navigator));
+            receiver.retain_environment(env.clone());
             receiver.install_path_pop_handler({
                 let path = path.clone();
                 move |count| path.pop_n(count)
             });
-            let guard = subscribe_navigation_path(&path, &receiver, same, build);
-
+            let guard = subscribe_navigation_path(&path, receiver, same, build);
             receiver.retain(Retain::new(guard));
-            Metadata::new(root, local_env)
-        },
-    ))
-    .transition(transition)
-}
-
-impl<T, F> View for NavigationStack<NavigationPath<T>, F>
-where
-    T: 'static + Clone + PartialEq,
-    F: 'static + Fn(T) -> NavigationView,
-{
-    fn body(self, _env: &Environment) -> impl View {
-        let destination = Rc::new(self.destination);
-        path_stack_body(
-            self.path,
-            self.root,
-            self.transition,
-            |left, right| left == right,
-            move |route| {
-                let destination = Rc::clone(&destination);
-                let route = route.clone();
-                AnyViewBuilder::new(move || destination(route.clone()))
-            },
-        )
-    }
-
-    /// Resolves through `path_stack_body` to a `NavigationStack<(), ()>` leaf,
-    /// which fills both axes.
-    fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::Both
+        })),
+        transition,
     }
 }
 
-impl View for NavigationStack<NavigationPath<ErasedNavigationRoute>, HeterogeneousDestinations> {
-    fn body(self, _env: &Environment) -> impl View {
-        let destinations = Rc::new(self.destination);
-        path_stack_body(
-            self.path,
-            self.root,
-            self.transition,
-            ErasedNavigationRoute::same_route,
-            move |route| {
-                let destinations = Rc::clone(&destinations);
-                let route = route.clone();
-                AnyViewBuilder::new(move || destinations.build(&route))
-            },
-        )
-    }
-
-    /// Resolves through `path_stack_body` to a `NavigationStack<(), ()>` leaf,
-    /// which fills both axes.
-    fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::Both
-    }
-}
-
-impl<Label, Content> View for NavigationLink<Label, Content>
+impl<Label, Content, V, Tb> View for NavigationLink<Label, Content>
 where
     Label: IntoLabel + 'static,
-    Content: ViewBuilder<Output = NavigationView>,
+    Content: ViewBuilder<Output = NavigationView<V, Tb>>,
+    V: View,
+    Tb: NavigationToolbarItems,
 {
-    fn body(self, env: &waterui_core::Environment) -> impl View {
+    /// The erased form, for code that expands views by hand: the link pushes
+    /// its destination erased.
+    fn body(self, env: &Environment) -> impl View {
+        self.link::<AnyView>(env)
+    }
+
+    /// Reaches the backend as a link pushing its destination in the
+    /// backend's child slot.
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        self.link::<B::Slot>(env).dispatch(backend, env, cx)
+    }
+}
+
+impl<Label, Content, V, Tb> NavigationLink<Label, Content>
+where
+    Label: IntoLabel + 'static,
+    Content: ViewBuilder<Output = NavigationView<V, Tb>>,
+    V: View,
+    Tb: NavigationToolbarItems,
+{
+    /// The link as a button pushing its destination built in the slot `S`.
+    fn link<S: ChildSlot>(self, env: &Environment) -> impl View + use<Label, Content, V, Tb, S> {
         debug_assert!(
             env.get::<NavigationController>().is_some(),
             "NavigationLink used outside of a navigation context"
         );
 
-        let destination = AnyViewBuilder::new(self.content);
-        IgnorableMetadata::new(
+        let destination = Rc::new(self.content);
+        Metadata::new(
             button(self.label)
                 // A navigation link carries no chrome of its own. It is a button
                 // semantically — it is activated, and reads as one to assistive
@@ -1497,7 +2106,8 @@ where
                 // have.
                 .style(ButtonStyle::Plain)
                 .action(move |receiver: NavigationController| {
-                    receiver.push_builder(destination.clone());
+                    let destination = Rc::clone(&destination);
+                    receiver.push(NavigationPage::<S>::new(move || destination.build()));
                 }),
             NavigationLinkHint,
         )
@@ -1514,13 +2124,13 @@ where
         // Plain for the same reason as `NavigationLink` above: the link is a
         // button in behaviour, not in chrome.
         let link = if let Ok(navigator) = Navigator::<T>::extract(env) {
-            AnyView::new(
+            OneOf3::A(
                 button(self.label)
                     .style(ButtonStyle::Plain)
                     .action(move || navigator.push(value.clone())),
             )
         } else if let Ok(navigator) = Navigator::<ErasedNavigationRoute>::extract(env) {
-            AnyView::new(
+            OneOf3::B(
                 button(self.label)
                     .style(ButtonStyle::Plain)
                     .action(move || navigator.push(value.clone())),
@@ -1529,16 +2139,28 @@ where
             contract_violation!(
                 "NavigationLink::value used outside of a compatible path-backed stack; the link does nothing when activated"
             );
-            AnyView::new(button(self.label).style(ButtonStyle::Plain).action(|| {}))
+            OneOf3::C(button(self.label).style(ButtonStyle::Plain).action(|| {}))
         };
-        IgnorableMetadata::new(link, NavigationLinkHint)
+        Metadata::new(link, NavigationLinkHint)
     }
 }
 
-impl NavigationView {
+impl<S> ResolvedNavigationView<S> {
     /// Resolves environment-dependent native fields without snapshotting signals.
+    ///
+    /// A backend resolves a navigation view against the environment it
+    /// realizes it in before reading its bar, whether the view arrived as a
+    /// view or as a page a stack built. Resolving again is harmless.
     #[doc(hidden)]
     pub fn resolve_native_fields(&mut self, env: &Environment) {
+        if let Some(title) = self.bar.title.take() {
+            self.bar.title = Some(Text::from(title.resolve(env)));
+        }
+
+        if let Some(subtitle) = self.bar.subtitle.take() {
+            self.bar.subtitle = Some(Text::from(subtitle.resolve(env)));
+        }
+
         if let Some(search) = &mut self.bar.search {
             search.set_prompt(waterui_text::Text::computed(
                 search.prompt().resolve(env).into_content(),
@@ -1547,8 +2169,7 @@ impl NavigationView {
 
         // A toolbar item's name crosses the boundary as resolved content, so it
         // has to stop depending on the environment here — `Text::content` panics
-        // on an environment-dependent text, and the FFI layer has no environment
-        // to resolve one against.
+        // on an environment-dependent text.
         for item in &mut self.bar.toolbar.items {
             if let Some(title) = item.title.take() {
                 item.title = Some(Text::computed(title.resolve(env).into_content()));
@@ -1562,27 +2183,34 @@ impl NavigationView {
             )));
         }
     }
+}
 
+impl<C> NavigationView<C, ()> {
     /// Creates a new navigation view.
     ///
     /// # Arguments
     ///
     /// * `title` - The semantic title to display in the navigation bar
     /// * `content` - The content view to display
-    pub fn new(title: impl IntoText, content: impl View) -> Self {
+    pub fn new(title: impl IntoText, content: C) -> Self
+    where
+        C: View,
+    {
         let bar = Bar {
-            title: AnyView::new(title.into_text()),
+            title: Some(title.into_text()),
             ..Default::default()
         };
 
         Self {
             bar,
-            content: AnyView::new(content),
+            content,
             state: NavigationDestinationState::default(),
             transition: Option::None,
         }
     }
+}
 
+impl<C, T> NavigationView<C, T> {
     /// Sets how this destination arrives, overriding its stack's transition.
     ///
     /// A `.transition(...)` on the content root is the other way a destination
@@ -1600,7 +2228,7 @@ impl NavigationView {
     /// use waterui_core::id::Id;
     ///
     /// # fn photo_id(index: i32) -> Id { Id::try_from(index + 1).expect("non-zero") }
-    /// fn photo_page(index: i32) -> NavigationView {
+    /// fn photo_page(index: i32) -> NavigationView<impl View> {
     ///     NavigationView::new("Photo", text!("photo {index}"))
     ///         .transition(navigation_transition::zoom(photo_id(index)))
     /// }
@@ -1640,14 +2268,21 @@ impl NavigationView {
 
     /// Sets the semantic navigation subtitle.
     pub fn navigation_subtitle(mut self, subtitle: impl IntoText) -> Self {
-        self.bar.subtitle = AnyView::new(subtitle.into_text());
+        self.bar.subtitle = Some(subtitle.into_text());
         self
     }
 
     /// Installs semantic native toolbar content.
-    pub fn navigation_toolbar(mut self, toolbar: NavigationToolbar) -> Self {
-        self.bar.toolbar = toolbar;
-        self
+    pub fn navigation_toolbar<Items: NavigationToolbarItems>(
+        self,
+        toolbar: NavigationToolbar<Items>,
+    ) -> NavigationView<C, Items> {
+        NavigationView {
+            bar: self.bar.map_toolbar(|_| toolbar.items),
+            content: self.content,
+            state: self.state,
+            transition: self.transition,
+        }
     }
 
     /// Controls native navigation bar visibility (`true` means visible).
@@ -1700,6 +2335,25 @@ impl NavigationView {
         self.state.pop = Some(boxed_action(handler));
         self
     }
+
+    /// Maps the destination's toolbar type, preserving its bar chrome, content,
+    /// and lifecycle state.
+    pub fn map_toolbar<U>(self, f: impl FnOnce(T) -> U) -> NavigationView<C, U> {
+        NavigationView {
+            bar: Bar {
+                title: self.bar.title,
+                subtitle: self.bar.subtitle,
+                toolbar: f(self.bar.toolbar),
+                search: self.bar.search,
+                color: self.bar.color,
+                hidden: self.bar.hidden,
+                display_mode: self.bar.display_mode,
+            },
+            content: self.content,
+            state: self.state,
+            transition: self.transition,
+        }
+    }
 }
 
 /// Translation key for the back affordance every navigation backend draws.
@@ -1710,7 +2364,8 @@ pub const NAVIGATION_BACK_LABEL_KEY: &str = "waterui.navigation.back";
 /// Backends must render and speak this rather than a string of their own, so a
 /// single catalog entry translates the back button on every platform at once.
 #[must_use]
-pub fn navigation_back_label() -> waterui_controls::label::Label {
+pub fn navigation_back_label() -> waterui_controls::label::Label<waterui_controls::label::TitleLabel>
+{
     waterui_text::Text::localized_or(NAVIGATION_BACK_LABEL_KEY, "Back").into_label()
 }
 
@@ -1720,7 +2375,7 @@ pub fn navigation_back_label() -> waterui_controls::label::Label {
 ///
 /// * `title` - The semantic title to display in the navigation bar
 /// * `view` - The content view to display
-pub fn navigation(title: impl IntoText, view: impl View) -> NavigationView {
+pub fn navigation<V: View>(title: impl IntoText, view: V) -> NavigationView<V> {
     NavigationView::new(title, view)
 }
 
@@ -1738,26 +2393,105 @@ mod tests {
     use core::cell::{Cell, RefCell};
 
     use super::{
-        CustomNavigationController, NavigationController, NavigationLink, NavigationPath,
-        NavigationTransaction, NavigationView, Navigator, shared_prefix_len,
+        CustomNavigationController, IntoNavigationStackLayout, NavigationController,
+        NavigationLink, NavigationPage, NavigationPath, NavigationStack, NavigationTransaction,
+        NavigationValueLink, NavigationView, Navigator, ResolvedNavigationView, shared_prefix_len,
         subscribe_navigation_path,
     };
     use waterui_core::{
-        Environment, Metadata,
+        AnyView, Environment, Metadata, View,
+        backend::ChildSlot,
         extract::{Extractor, State},
-        handler::AnyViewBuilder,
     };
 
     #[expect(
         clippy::trivially_copy_pass_by_ref,
         reason = "the signature is fixed by the destination-builder closure the reconciler takes"
     )]
-    fn route_destination(_route: &u8) -> AnyViewBuilder<NavigationView> {
-        AnyViewBuilder::new(|| NavigationView::new("Route", ()))
+    fn route_destination(_route: &u8) -> NavigationPage<AnyView> {
+        NavigationPage::new(|| NavigationView::new("Route", ()))
+    }
+
+    /// A page of `title`, erased.
+    fn page(title: &'static str) -> NavigationPage<AnyView> {
+        NavigationPage::new(move || NavigationView::new(title, ()))
     }
 
     fn equal<T: PartialEq>(left: &T, right: &T) -> bool {
         left == right
+    }
+
+    /// A stack's root page builds in the environment it resolves in.
+    #[test]
+    fn a_stack_root_resolves_in_its_environment() {
+        let mut env = Environment::new();
+        env.insert(BaseMarker);
+        let root = NavigationStack::new(NavigationView::new("Root", ()))
+            .into_layout::<AnyView>()
+            .resolve(&env);
+        let content = root
+            .content
+            .downcast::<Metadata<Environment, ()>>()
+            .expect("the root's content keeps its type, scoped to the stack's environment");
+        assert!(content.value.get::<BaseMarker>().is_some());
+    }
+
+    /// A child slot of a backend other than the receiver's.
+    struct OtherSlot;
+
+    impl ChildSlot for OtherSlot {
+        fn from_view<V: View>(_view: V) -> Self {
+            Self
+        }
+    }
+
+    /// Takes pages in [`OtherSlot`] and counts them.
+    struct OtherSlotController {
+        pushes: Rc<Cell<usize>>,
+    }
+
+    impl CustomNavigationController for OtherSlotController {
+        type Slot = OtherSlot;
+
+        fn apply(&mut self, transaction: NavigationTransaction<OtherSlot>) {
+            for page in transaction.inserted {
+                let _: OtherSlot = page.build().content;
+                self.pushes.set(self.pushes.get() + 1);
+            }
+        }
+    }
+
+    /// A receiver takes pages in its own slot, and erased ones converted
+    /// into it.
+    #[test]
+    fn a_receiver_takes_its_own_slot_and_erased_pages() {
+        let pushes = Rc::new(Cell::new(0));
+        let controller = NavigationController::new(OtherSlotController {
+            pushes: Rc::clone(&pushes),
+        });
+        controller.push(NavigationPage::<OtherSlot>::new(|| {
+            NavigationView::new("Typed", ())
+        }));
+        controller.push(page("Erased"));
+        assert_eq!(pushes.get(), 2);
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "was pushed onto a stack realized by another backend")
+    )]
+    fn a_page_in_another_backends_slot_is_not_pushed() {
+        let pushes = Rc::new(Cell::new(0));
+        let controller = NavigationController::new(CountingNavigationController {
+            pushes: Rc::clone(&pushes),
+            pops: Rc::new(Cell::new(0)),
+        });
+        controller.push(NavigationPage::<OtherSlot>::new(|| {
+            NavigationView::new("Foreign", ())
+        }));
+        // Release outcome: nothing is pushed.
+        assert_eq!(pushes.get(), 0);
     }
 
     #[test]
@@ -1787,7 +2521,9 @@ mod tests {
     }
 
     impl CustomNavigationController for CountingNavigationController {
-        fn apply(&mut self, transaction: NavigationTransaction) {
+        type Slot = AnyView;
+
+        fn apply(&mut self, transaction: NavigationTransaction<AnyView>) {
             self.pushes
                 .set(self.pushes.get() + transaction.inserted.len());
             self.pops.set(self.pops.get() + transaction.removed);
@@ -1806,7 +2542,7 @@ mod tests {
             pushes: Rc::clone(&pushes),
             pops: Rc::clone(&pops),
         });
-        controller.push_builder(AnyViewBuilder::new(|| NavigationView::new("One", ())));
+        controller.push(page("One"));
 
         // Release outcome: the request is ignored.
         controller.request_pop(0);
@@ -1875,7 +2611,7 @@ mod tests {
         });
         let _guard = subscribe_navigation_path(&path, &controller, equal, route_destination);
 
-        controller.push_builder(AnyViewBuilder::new(|| NavigationView::new("Link", ())));
+        controller.push(page("Link"));
         controller.request_pop(1);
         assert_eq!(
             path.snapshot(),
@@ -1902,7 +2638,7 @@ mod tests {
         });
         let _guard = subscribe_navigation_path(&path, &controller, equal, route_destination);
 
-        controller.push_builder(AnyViewBuilder::new(|| NavigationView::new("Link", ())));
+        controller.push(page("Link"));
         pops.set(0);
         path.replace([2_u8]);
 
@@ -1922,7 +2658,9 @@ mod tests {
     }
 
     impl CustomNavigationController for PathWritingNavigationController {
-        fn apply(&mut self, transaction: NavigationTransaction) {
+        type Slot = AnyView;
+
+        fn apply(&mut self, transaction: NavigationTransaction<AnyView>) {
             assert!(
                 !self.inside.replace(true),
                 "the receiver must not run re-entrantly"
@@ -1982,7 +2720,9 @@ mod tests {
     }
 
     impl CustomNavigationController for CommittingNavigationController {
-        fn apply(&mut self, transaction: NavigationTransaction) {
+        type Slot = AnyView;
+
+        fn apply(&mut self, transaction: NavigationTransaction<AnyView>) {
             assert!(
                 !self.inside.replace(true),
                 "the receiver must not run re-entrantly"
@@ -1993,7 +2733,7 @@ mod tests {
                     .borrow()
                     .as_ref()
                     .expect("the test installs the controller")
-                    .push_builder(AnyViewBuilder::new(|| NavigationView::new("Nested", ())));
+                    .push(page("Nested"));
             }
             self.inside.set(false);
         }
@@ -2013,7 +2753,7 @@ mod tests {
         });
         *slot.borrow_mut() = Some(controller.clone());
 
-        controller.push_builder(AnyViewBuilder::new(|| NavigationView::new("Outer", ())));
+        controller.push(page("Outer"));
 
         assert_eq!(&*ids.borrow(), &[1, 2]);
     }
@@ -2053,8 +2793,8 @@ mod tests {
             pops: Rc::new(Cell::new(0)),
         });
 
-        controller.push_builder(AnyViewBuilder::new(|| NavigationView::new("One", ())));
-        controller.push_builder(AnyViewBuilder::new(|| NavigationView::new("Two", ())));
+        controller.push(page("One"));
+        controller.push(page("Two"));
 
         assert!(!controller.transition_completed(1));
         assert!(controller.transition_cancelled(2));
@@ -2069,11 +2809,13 @@ mod tests {
     struct BaseMarker;
 
     struct RecordingNavigationController {
-        pushed: Rc<RefCell<Option<NavigationView>>>,
+        pushed: Rc<RefCell<Option<ResolvedNavigationView<AnyView>>>>,
     }
 
     impl CustomNavigationController for RecordingNavigationController {
-        fn apply(&mut self, transaction: NavigationTransaction) {
+        type Slot = AnyView;
+
+        fn apply(&mut self, transaction: NavigationTransaction<AnyView>) {
             let mut inserted = transaction.inserted;
             if let Some(content) = inserted.pop() {
                 *self.pushed.borrow_mut() = Some(content.build());
@@ -2094,7 +2836,7 @@ mod tests {
         retained_env.insert(State(Navigator(NavigationPath::<TestRoute>::new())));
         controller.retain_environment(retained_env);
 
-        controller.push_builder(AnyViewBuilder::new(|| {
+        controller.push(NavigationPage::<AnyView>::new(|| {
             NavigationView::new(
                 "First",
                 NavigationLink::value("Open Second", TestRoute::Second),
@@ -2107,7 +2849,7 @@ mod tests {
             .expect("pushed navigation view should be recorded");
         let metadata = nav_view
             .content
-            .downcast::<Metadata<Environment>>()
+            .downcast::<Metadata<Environment, NavigationValueLink<&'static str, TestRoute>>>()
             .expect("pushed content should carry retained navigation environment");
 
         assert!(metadata.value.get::<BaseMarker>().is_some());

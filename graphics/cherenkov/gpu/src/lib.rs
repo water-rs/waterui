@@ -36,12 +36,14 @@ mod render;
 /// The composition-attribution diagnostic: what each epoch keeps on chip
 /// and why the rest is materialized (issue #2547).
 pub use render::composition;
+/// Per-surface damage reports and drawable diagnostic overlays.
+pub use render::damage_debug;
 /// The allocation-event diagnostic sink (issue #169).
 pub use render::diag;
 /// The registered-effect module text the renderer compiles; exposed for
 /// `tests/shader.rs`, which translates it through every naga backend.
 #[doc(hidden)]
-pub use render::shaders::backdrop_effect_text;
+pub use render::shaders::{backdrop_effect_text, content_effect_text};
 
 use std::path::PathBuf;
 
@@ -311,6 +313,11 @@ pub struct GpuConfig {
     /// this sink. Diagnostics only; the per-event allocator snapshot is
     /// deliberately expensive, so keep it out of timed runs.
     pub alloc_diag: Option<diag::Sink>,
+    /// Sends a report for each prepared surface. The receiver owns draining
+    /// reports; use their overlays on a separate diagnostic surface. No
+    /// report is allocated when disabled. A disconnected receiver disables
+    /// collection and emits a warning.
+    pub damage_diag: Option<std::sync::mpsc::Sender<damage_debug::Report>>,
     /// When set, each encoded surface records one
     /// [`composition::FrameReport`]: the frame's tile epochs, every
     /// materialized logical image with the reason the planner decided,
@@ -343,6 +350,7 @@ impl Default for GpuConfig {
             pipeline_cache: None,
             scratch_format: ScratchFormat::default(),
             alloc_diag: None,
+            damage_diag: None,
             composition_diag: None,
             creation_probe: None,
         }
@@ -392,7 +400,7 @@ pub struct WindowTarget {
     #[cfg(target_vendor = "apple")]
     parent: Result<render::planes::apple::Parent, cherenkov::SurfaceError>,
     size: (u32, u32),
-    refresh: cherenkov::RefreshRange,
+    refresh: cherenkov::FrameRate,
     output: render::present::OutputRequest,
     probe: Option<std::sync::mpsc::Sender<interop::DisplayProbe>>,
 }
@@ -418,7 +426,7 @@ impl WindowTarget {
                 );
             }),
             size,
-            refresh: cherenkov::DEFAULT_REFRESH,
+            refresh: cherenkov::FrameRate::FAST,
             output: render::present::OutputRequest {
                 transparent: false,
                 color_space: render::present::ColorSpaceRequest::Content,
@@ -485,16 +493,9 @@ impl WindowTarget {
         receiver
     }
 
-    /// Sets the refresh range for backend animation and presentation retries.
-    ///
-    /// # Panics
-    /// When the range is empty or includes zero.
+    /// Sets the refresh vote for backend animation and presentation retries.
     #[must_use]
-    pub fn rate(mut self, rate: cherenkov::RefreshRange) -> Self {
-        assert!(
-            *rate.start() > 0 && !rate.is_empty(),
-            "refresh range must be positive and ordered"
-        );
+    pub const fn rate(mut self, rate: cherenkov::FrameRate) -> Self {
         self.refresh = rate;
         self
     }
@@ -663,6 +664,14 @@ impl cherenkov::GpuContent for Gpu {
         r.submit_frame(id, frame)
     }
 
+    fn set_source_rate(
+        r: &mut Self::Renderer,
+        id: cherenkov::ProducerId,
+        rate: Option<cherenkov::FrameRate>,
+    ) {
+        r.set_producer_source_rate(id, rate);
+    }
+
     fn retire_gpu_producer(r: &mut Self::Renderer, id: cherenkov::ProducerId) {
         r.retire_gpu_producer(id);
     }
@@ -790,5 +799,39 @@ impl cherenkov::BackdropShaders for Gpu {
     }
     fn remove_backdrop_shader(r: &mut Self::Renderer, id: cherenkov::BackdropShaderId) {
         r.remove_backdrop_shader(id);
+    }
+}
+
+impl cherenkov::ContentShaders for Gpu {
+    fn validate_content_shader(
+        source: &cherenkov::ContentShaderSource,
+    ) -> Result<(), cherenkov::ResourceError> {
+        render::GpuRenderer::validate_content_shader(source)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn add_content_shader(
+        r: &mut Self::Renderer,
+        id: cherenkov::ContentShaderId,
+        source: cherenkov::ContentShaderSource,
+    ) -> Result<(), cherenkov::ResourceError> {
+        r.add_content_shader(id, &source)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[expect(
+        clippy::future_not_send,
+        reason = "the browser engine is single-threaded and its futures run on the page's event loop"
+    )]
+    async fn add_content_shader(
+        r: &mut Self::Renderer,
+        id: cherenkov::ContentShaderId,
+        source: cherenkov::ContentShaderSource,
+    ) -> Result<(), cherenkov::ResourceError> {
+        r.add_content_shader(id, &source).await
+    }
+
+    fn remove_content_shader(r: &mut Self::Renderer, id: cherenkov::ContentShaderId) {
+        r.remove_content_shader(id);
     }
 }

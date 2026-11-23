@@ -58,7 +58,7 @@ pub fn styling_token_as_value_prose() {
 // styling.md § "## Installing a theme (dark mode, custom fonts)" — rust block 2/19
 // ---------------------------------------------------------------------------
 pub mod styling_block_02 {
-    use waterui::app::App;
+    use waterui::app::{App, Windows};
     use waterui::prelude::*;
     use waterui::text::font::{FontWeight, ResolvedFont};
 
@@ -66,7 +66,7 @@ pub mod styling_block_02 {
         text("root")
     }
 
-    pub fn app(mut env: Environment) -> App {
+    pub fn app(mut env: Environment) -> App<impl Windows> {
         let dark = Binding::bool(true);
         env.install(
             Theme::new()
@@ -523,10 +523,10 @@ pub fn styling_block_14() {
 // styling.md § "## Icons" — rust block 15/19
 //
 //     #[cfg(target_vendor = "apple")]
-//     use waterui_icons_sf_symbol as sf;
+//     use waterui_apple::SfSymbol;
 //
 // NOT COMPILABLE BY DESIGN here: proving it would mean adding the
-// target-scoped `waterui-icons-sf-symbol` dependency the snippet's companion
+// target-scoped `waterui-apple` dependency the snippet's companion
 // TOML fence declares, and this crate is not built for Apple targets only.
 // Recorded rather than transcribed.
 // ---------------------------------------------------------------------------
@@ -540,8 +540,8 @@ pub fn styling_block_14() {
 mod material3 {
     use waterui::prelude::*;
 
-    /// Glue: the `app(env) -> App` every example library exposes.
-    fn app(env: Environment) -> waterui::app::App {
+    /// Glue: the `app(env) -> App<impl Windows>` every example library exposes.
+    fn app(env: Environment) -> waterui::app::App<impl waterui::app::Windows> {
         waterui::app::App::new(move || vstack((text("demo"),)), env)
     }
 

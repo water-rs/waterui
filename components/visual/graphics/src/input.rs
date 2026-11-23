@@ -4,7 +4,7 @@
 //! terminal, a text editor, a game — needs the keyboard, IME, pointer and
 //! scroll events that reach it, not just the pointer state a frame exposes.
 //!
-//! Two kinds of view receive them: a `GpuContentView` (with the `gpu`
+//! Two kinds of view receive them: a `GpuView` (with the `gpu`
 //! feature), whose engine-hosted GPU content gets them through its
 //! `on_input` handler, and a
 //! [`SceneContent`](crate::backend::SceneContent), which records into a
@@ -124,7 +124,7 @@ pub enum ScrollPhase {
 
 /// One input event delivered to a view that asked for input.
 ///
-/// The receiver is a `GpuContentView`'s `on_input` handler or a
+/// The receiver is a `GpuView`'s `on_input` handler or a
 /// [`SceneContent`](crate::backend::SceneContent) returning `true` from its
 /// `wants_input_events`.
 ///

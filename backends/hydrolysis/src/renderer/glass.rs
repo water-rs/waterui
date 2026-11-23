@@ -19,8 +19,8 @@ use std::rc::Rc;
 use kurbo::RoundedRectRadii;
 use waterui::background::Glass;
 use waterui_core::Environment;
-use waterui_core::interaction::InteractionState;
 use waterui_graphics::color::Color;
+use waterui_interaction::interaction::InteractionState;
 use waterui_shape::{ClipShape, ShapeKind};
 
 use crate::renderer::chrome::LiveChromeParts;
@@ -98,6 +98,9 @@ fn chrome_of(look: &GlassLook, shape: CornerShape) -> Chrome {
     if let Some(border) = look.get_border() {
         surface = surface.border(border.clone());
     }
+    if let Some(content_effect) = look.get_content_effect() {
+        surface = surface.content_effect(content_effect.clone());
+    }
     Chrome::new(
         surface,
         StateLayer::new(Color::transparent()),
@@ -117,39 +120,48 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         render_content: impl FnOnce(&mut Self),
     ) {
         let theme = renderer.theme();
-        if let Some(chrome) = effect.chrome.get_or_init(|| effect.resolve(&*theme, env)) {
-            let bounds = ctx.bounds();
-            let (state, handles) = if effect.glass.is_interactive() {
-                // The bind sees no ambient scopes: a glass is not the
-                // outermost interactive control a `.interaction_state`
-                // report or a `Selected` scope belongs to, and joins no
-                // modal or focus scope — it never takes focus.
-                let (state, slot, handles) = renderer.bind_live_chrome_target(
-                    InteractionKey::for_rc(&effect.identity, 0),
-                    bounds,
-                    &Environment::new(),
-                    false,
+        let parts = effect
+            .chrome
+            .get_or_init(|| effect.resolve(&*theme, env))
+            .as_ref()
+            .map(|chrome| {
+                let bounds = ctx.bounds();
+                let (state, handles) = if effect.glass.is_interactive() {
+                    // The bind sees no ambient scopes: a glass is not the
+                    // outermost interactive control a `.interaction_state`
+                    // report or a `Selected` scope belongs to, and joins no
+                    // modal or focus scope — it never takes focus.
+                    let (state, slot, handles) = renderer.bind_live_chrome_target(
+                        InteractionKey::for_rc(&effect.identity, 0),
+                        bounds,
+                        &Environment::new(),
+                        false,
+                        chrome,
+                    );
+                    renderer.register_pointer_observer(bounds, slot, Rc::clone(&handles));
+                    (state, Some(handles))
+                } else {
+                    (InteractionState::empty(), None)
+                };
+                let parts = LiveChromeParts::ensure_following(
+                    &mut effect.parts.borrow_mut(),
                     chrome,
-                );
-                renderer.register_pointer_observer(bounds, slot, Rc::clone(&handles));
-                (state, Some(handles))
-            } else {
-                (InteractionState::empty(), None)
-            };
-            let parts = LiveChromeParts::ensure_following(
-                &mut effect.parts.borrow_mut(),
-                chrome,
-                bounds,
-                state,
-                env,
-                &effect.state,
-            )
-            .clone();
-            if let Some(handles) = handles {
-                handles.attach_live(Rc::clone(parts.chrome()));
-            }
-            parts.push_below(renderer, ctx);
+                    bounds,
+                    state,
+                    env,
+                    &effect.state,
+                )
+                .clone();
+                if let Some(handles) = handles {
+                    handles.attach_live(Rc::clone(parts.chrome()));
+                }
+                parts.push_below(renderer, ctx);
+                parts
+            });
+        if let Some(parts) = parts {
+            parts.wrap_content(renderer, ctx, render_content);
+        } else {
+            render_content(renderer);
         }
-        render_content(renderer);
     }
 }

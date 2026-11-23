@@ -3,12 +3,11 @@
 use super::*;
 use crate::renderer::mount::RetainedScopes;
 use crate::renderer::transformed_rect;
+use std::borrow::Cow;
 use waterui_core::contract_violation;
 
 #[cfg(feature = "accessibility")]
 use crate::theme::InteractionFocusBinding;
-#[cfg(feature = "accessibility")]
-use std::borrow::Cow;
 #[cfg(feature = "accessibility")]
 use std::collections::BTreeSet;
 #[cfg(feature = "accessibility")]
@@ -317,13 +316,10 @@ pub enum AccessibilityActionTarget<E: crate::text::TextEngine> {
         value: nami::Binding<DateTime>,
         range: RangeInclusive<DateTime>,
         ty: DatePickerType,
-        /// The popup's window anchor when the node was emitted by a rendered
-        /// frame; `None` in the semantic tree, where activation mounts the
-        /// same window with no placement at all.
-        origin: Option<LayoutPoint>,
-        /// The node's own environment — its popup opens inside it
-        /// (water-rs/hydrolysis#140).
-        env: Environment,
+        /// Widget-registered popup opener invoked on `Click`, so
+        /// `date_picker_window_base` (`Calendar`/`Stepper`) is only reachable
+        /// when a `DatePicker` is constructed.
+        open_popup: AccessibilityActivation<E>,
     },
     #[cfg(feature = "text-field")]
     TextField {
@@ -371,7 +367,7 @@ pub enum AccessibilityActionTarget<E: crate::text::TextEngine> {
         /// then writes the binding like a pointer click on the row, and
         /// arrow-key navigation moves the selection along with the focus
         /// (water-rs/waterui#1226).
-        selection: Option<Rc<crate::widgets::layout::list::ListRowSelection>>,
+        selection: Option<Rc<crate::widgets::layout::list::ListRowSelection<E>>>,
     },
 }
 
@@ -663,14 +659,12 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
 
     /// The most specific node covering `point`, in window coordinates.
     ///
-    /// Only "inspect this element" asks, and a browser page hosts no inspector
-    /// endpoint to reveal the answer in. The press path's focus lookup goes
-    /// through `node_at_point_where` instead, which compiles everywhere the
-    /// accessibility feature does.
-    #[cfg(any(
-        test,
-        all(feature = "menu", feature = "inspector", not(target_arch = "wasm32"))
-    ))]
+    /// Only "inspect this element" asks, which compiles only when the
+    /// inspector endpoint is enabled (or in tests). The press path's focus
+    /// lookup goes through `node_at_point_where` instead, which compiles
+    /// everywhere the accessibility feature does.
+    #[cfg(any(hydrolysis_inspector, test))]
+    #[cfg(feature = "menu")]
     pub(crate) fn node_at_point(&self, point: kurbo::Point) -> Option<AccessibilityNodeId> {
         self.node_at_point_where(point, |_| true)
     }
@@ -1673,15 +1667,13 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 value,
                 range,
                 ty,
-                origin,
-                env: picker_env,
+                open_popup,
             } => handle_accessibility_date_picker_action(
                 self,
                 &value,
                 &range,
                 ty,
-                origin,
-                &picker_env,
+                &open_popup,
                 action,
                 action_data,
                 env,
@@ -2044,7 +2036,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             return true;
         };
         if handle.user_scroll_to(metrics.offset_x, target) {
-            self.mark_scroll_owner_of_node(handle, node, Dirty::LAYOUT);
+            self.mark_scroll_owner_of_node(handle, node, Dirty::PAINT);
         }
         true
     }
@@ -2202,6 +2194,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         // A presented dialog's card: the window's modal alert. Publication
         // keeps a modal node alone under the window, so the content beneath
         // the modal layer is inert for assistive technology.
+        #[cfg(waterui_feature = "dialog")]
         if node.role() == AccessibilityNodeRole::Dialog
             && env
                 .get::<crate::renderer::input::DialogLayerScope>()
@@ -2271,6 +2264,23 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     #[cfg(feature = "accessibility")]
     pub(crate) fn accessibility_scope_is_claimed(&self, env: &Environment) -> bool {
         self.accessibility.semantics_scope_is_claimed(env)
+    }
+
+    /// The environment an `Env` node's subtree walks in. A scope an ancestor
+    /// already claimed this flush has spoken its naming, so the subtree walks
+    /// under the child environment the claim boundary hands its children,
+    /// as below a naming container: a leaf cannot repeat the claim's role
+    /// and label as a second node.
+    pub(crate) fn accessibility_scope_walk_env<'env>(
+        &self,
+        env: &'env Environment,
+    ) -> Cow<'env, Environment> {
+        if self.accessibility.semantics_scope_is_claimed(env)
+            && let Some(child_env) = accessibility_container_child_environment(env)
+        {
+            return Cow::Owned(child_env);
+        }
+        Cow::Borrowed(env)
     }
 
     /// Consume `text` into the enclosing name-from-contents claim, if `env`
@@ -2634,189 +2644,24 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         }
     }
 
-    #[cfg(feature = "accessibility")]
-    pub(crate) fn accessibility_label_from_view(
-        &mut self,
-        view: &AnyView,
-        env: &Environment,
-    ) -> Option<String> {
-        self.accessibility_label_from_view_with_budget(view, env, 32)
-    }
-
     /// Resolves the spoken accessibility text directly from a typed
-    /// [`Label`](waterui_controls::label::Label) without any view-tree
+    /// [`ControlLabel`](waterui_controls::label::ControlLabel) without any view-tree
     /// traversal. Backends should prefer this over `accessibility_label_from_view`
     /// when the source is already a known label, so that `LabelDisplayMode::Hidden`
     /// labels still surface their semantic text in the accessibility tree.
     #[cfg(feature = "accessibility")]
-    pub(crate) fn accessibility_label_from_label(
-        label: &waterui_controls::label::Label,
-        env: &Environment,
+    pub(crate) fn accessibility_label_from_label<S>(
+        label: &waterui_controls::label::ControlLabel<S>,
+        _env: &Environment,
     ) -> Option<String> {
         use waterui_core::Signal;
-        let plain = label
-            .clone()
-            .resolve(env)
-            .accessibility_label()
-            .snapshot()
-            .to_semantic();
+        let plain = label.accessibility_label().snapshot().to_semantic();
         let trimmed = plain.as_str().trim();
         if trimmed.is_empty() {
             None
         } else {
             Some(String::from(trimmed))
         }
-    }
-
-    #[cfg(feature = "accessibility")]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
-    )]
-    fn accessibility_label_from_view_with_budget(
-        &mut self,
-        view: &AnyView,
-        env: &Environment,
-        remaining: usize,
-    ) -> Option<String> {
-        if remaining == 0 {
-            contract_violation!(
-                "hydrolysis accessibility label extraction exceeded recursion budget for {}; the node has no extracted label",
-                view.name()
-            );
-            return None;
-        }
-        let (view, scoped_env) = flatten_environment_metadata_ref(view, env);
-        if let Some(content) = passthrough_content(view) {
-            return self.accessibility_label_from_view_with_budget(
-                content,
-                &scoped_env,
-                remaining - 1,
-            );
-        }
-        if let Some(label) = view.downcast_ref::<SemanticLabel>() {
-            let styled = self.read_signal(&label.semantic_text().resolve(&scoped_env).content());
-            return Some(styled.to_semantic().to_string());
-        }
-        if let Some(text) = view.downcast_ref::<waterui_text::Text>() {
-            let styled = self.read_signal(&text.resolve(&scoped_env).content());
-            return Some(styled.to_semantic().to_string());
-        }
-        if let Some(label) = view.downcast_ref::<Str>() {
-            return Some(label.as_str().to_owned());
-        }
-        if let Some(label) = view.downcast_ref::<&'static str>() {
-            let body = AnyView::new((*label).body(&scoped_env));
-            return self.accessibility_label_from_view_with_budget(
-                &body,
-                &scoped_env,
-                remaining - 1,
-            );
-        }
-        if let Some(label) = view.downcast_ref::<String>() {
-            let body = AnyView::new(label.clone().body(&scoped_env));
-            return self.accessibility_label_from_view_with_budget(
-                &body,
-                &scoped_env,
-                remaining - 1,
-            );
-        }
-        if let Some(label) = view.downcast_ref::<Cow<'static, str>>() {
-            let body = AnyView::new(label.clone().body(&scoped_env));
-            return self.accessibility_label_from_view_with_budget(
-                &body,
-                &scoped_env,
-                remaining - 1,
-            );
-        }
-        if let Some(text) = view.downcast_ref::<Native<TextConfig>>() {
-            let styled = self.read_signal(&text.as_inner().content());
-            return Some(styled.to_semantic().to_string());
-        }
-        if let Some(icon) = view.downcast_ref::<Native<SystemIcon>>() {
-            return Some(icon.as_inner().name().as_str().to_owned());
-        }
-        // A control's `label` is the same `Label` a composite button's name
-        // derives from, so a container holding a bare control derives the
-        // control's own name rather than dropping it — e.g. a `List` row of a
-        // single `toggle("Wi-Fi")` announces "Wi-Fi".
-        macro_rules! label_from_native_config {
-            ($($(#[$attr:meta])* $config:ty),+ $(,)?) => {$(
-                $(#[$attr])*
-                if let Some(native) = view.downcast_ref::<Native<$config>>() {
-                    return Self::accessibility_label_from_label(
-                        native.as_inner().label(),
-                        &scoped_env,
-                    );
-                }
-            )+};
-        }
-        label_from_native_config!(
-            #[cfg(feature = "toggle")]
-            waterui_controls::toggle::ToggleConfig,
-            #[cfg(feature = "slider")]
-            waterui_controls::slider::SliderConfig,
-            #[cfg(feature = "stepper")]
-            waterui_controls::stepper::StepperConfig,
-            waterui_controls::button::ButtonConfig,
-            #[cfg(feature = "text-field")]
-            waterui_controls::text_field::ResolvedTextFieldConfig,
-            #[cfg(feature = "secure-field")]
-            waterui_form::secure::SecureFieldConfig,
-            #[cfg(feature = "picker")]
-            waterui_form::picker::PickerConfig,
-            #[cfg(feature = "date-picker")]
-            waterui_form::picker::date::DatePickerConfig,
-            #[cfg(feature = "color-picker")]
-            waterui_form::picker::color::ColorPickerConfig,
-        );
-        #[cfg(feature = "menu")]
-        if let Some(menu) = view.downcast_ref::<Native<waterui_controls::menu::ResolvedMenu>>() {
-            let styled = self.read_signal(&menu.as_inner().accessibility_label);
-            return Some(styled.to_semantic().to_string());
-        }
-        if let Some(progress) =
-            view.downcast_ref::<Native<waterui::component::progress::ProgressConfig>>()
-        {
-            return self
-                .accessibility_label_from_view_with_budget(
-                    progress.as_inner().label(),
-                    &scoped_env,
-                    remaining - 1,
-                )
-                .or_else(|| {
-                    self.accessibility_label_from_view_with_budget(
-                        progress.as_inner().value_label(),
-                        &scoped_env,
-                        remaining - 1,
-                    )
-                });
-        }
-        // Normalization keeps a `FixedContainer` plain (its `body` runs at
-        // build), so both the modifier-time and the body-produced (Native)
-        // forms reach here.
-        if let Some(container) = view.downcast_ref::<FixedContainer>().or_else(|| {
-            view.downcast_ref::<Native<FixedContainer>>()
-                .map(Native::as_inner)
-        }) {
-            let (_, children) = container.as_parts();
-            let labels = children
-                .iter()
-                .filter_map(|child| {
-                    self.accessibility_label_from_view_with_budget(
-                        child,
-                        &scoped_env,
-                        remaining - 1,
-                    )
-                    .map(|label| label.trim().to_owned())
-                    .filter(|label| !label.is_empty())
-                })
-                .collect::<Vec<_>>();
-            if !labels.is_empty() {
-                return Some(labels.join(" "));
-            }
-        }
-        None
     }
 
     #[cfg(feature = "accessibility")]
@@ -2884,7 +2729,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
 }
 
 #[cfg(feature = "accessibility")]
-fn accessibility_role_to_accesskit_role(role: AccessibilityRole) -> AccessibilityNodeRole {
+pub fn accessibility_role_to_accesskit_role(role: AccessibilityRole) -> AccessibilityNodeRole {
     match role {
         AccessibilityRole::Button => AccessibilityNodeRole::Button,
         AccessibilityRole::Link => AccessibilityNodeRole::Link,
@@ -3001,7 +2846,7 @@ fn handle_accessibility_scroll_action<E: crate::text::TextEngine>(
     match delta {
         Some((dx, dy)) => {
             if handle.apply_scroll_delta(dx, dy, false) {
-                renderer.mark_scroll_owner_of_node(handle, node, Dirty::LAYOUT);
+                renderer.mark_scroll_owner_of_node(handle, node, Dirty::PAINT);
             }
             true
         }
@@ -3126,29 +2971,13 @@ fn handle_accessibility_date_picker_action<E: crate::text::TextEngine>(
     value: &nami::Binding<DateTime>,
     range: &RangeInclusive<DateTime>,
     ty: DatePickerType,
-    origin: Option<LayoutPoint>,
-    picker_env: &Environment,
+    open_popup: &AccessibilityActivation<E>,
     action: AccessibilityAction,
     data: Option<AccessibilityActionData>,
     env: &Environment,
 ) -> bool {
     match action {
-        // A rendered node carries its trigger anchor; a semantic node carries
-        // none and mounts the same window with no placement at all.
-        AccessibilityAction::Click => {
-            // The picker's own environment layers over the dispatch's
-            // (water-rs/hydrolysis#140).
-            let env = picker_env.layered_on(env);
-            match origin {
-                Some(origin) => {
-                    renderer.show_date_picker(value.clone(), range.clone(), ty, origin, &env);
-                }
-                None => {
-                    renderer.activate_date_picker(value.clone(), range.clone(), ty, &env);
-                }
-            }
-            true
-        }
+        AccessibilityAction::Click => (open_popup.borrow_mut())(renderer, env),
         AccessibilityAction::Focus => true,
         AccessibilityAction::SetValue => {
             let Some(AccessibilityActionData::Value(text)) = data else {
@@ -3374,14 +3203,12 @@ impl<E: crate::text::TextEngine> Clone for AccessibilityActionTarget<E> {
                 value,
                 range,
                 ty,
-                origin,
-                env,
+                open_popup,
             } => Self::DatePicker {
                 value: value.clone(),
                 range: range.clone(),
                 ty: *ty,
-                origin: *origin,
-                env: env.clone(),
+                open_popup: Rc::clone(open_popup),
             },
             #[cfg(feature = "text-field")]
             Self::TextField { value, line_limit } => Self::TextField {

@@ -1,5 +1,10 @@
+use std::{error::Error, sync::mpsc::Receiver};
+
 use crate::{Gpu, GpuConfig, interop::TextureTarget};
-use cherenkov::{Draw, Engine, FrameTime, WorkingColor, kurbo::Rect};
+use cherenkov::{
+    BackdropGroup, CaptureScale, Draw, Engine, FrameTime, Layer, Recorder, Surface, WorkingColor,
+    kurbo::Rect,
+};
 
 struct LiveSigma(std::sync::mpsc::Sender<filtrate_core::AnimatedCallback>);
 
@@ -285,6 +290,153 @@ fn partial_clear_preserves_srgb_encoded_background() -> Result<(), Box<dyn std::
             pixels: expected.pixels,
         };
         cherenkov_oracle::metrics::assert_images_match(&expected, &actual);
+    }
+    Ok(())
+}
+
+fn paint_backdrop_bars_top(r: &mut Recorder, button_color: WorkingColor) {
+    r.fill(
+        Rect::new(120.0, 16.0, 232.0, 44.0),
+        WorkingColor::new([0.95, 0.95, 0.98, 1.0]),
+    );
+    r.fill(Rect::new(8.0, 12.0, 48.0, 52.0), button_color);
+}
+
+struct BackdropBarsSurface {
+    surface: Surface<Gpu>,
+    _textures: Receiver<wgpu::Texture>,
+    _backdrops: [BackdropGroup; 2],
+    top: Layer,
+}
+
+fn setup_backdrop_bars_surface(
+    engine: &Engine<Gpu>,
+    size: (u32, u32),
+    background: WorkingColor,
+    scale: CaptureScale,
+    button_color: WorkingColor,
+) -> Result<BackdropBarsSurface, Box<dyn Error>> {
+    use cherenkov::Group;
+    use filtrate::filters::GaussianBlur;
+
+    let (target, textures) = TextureTarget::new(size);
+    let surface = engine.surface(target, || {})?;
+    surface.clear_color(background);
+    let top_backdrop = surface.backdrop_group(GaussianBlur::new(4.0_f32), scale);
+    let bottom_backdrop = surface.backdrop_group(GaussianBlur::new(4.0_f32), scale);
+    let bg = surface.layer();
+    let top = surface.layer();
+    let bottom = surface.layer();
+    surface.update(|tx| {
+        tx[&bg].content(surface.record(|r| {
+            r.fill(
+                Rect::new(0.0, 0.0, 256.0, 192.0),
+                WorkingColor::new([0.12, 0.24, 0.42, 1.0]),
+            );
+            r.fill(
+                Rect::new(20.0, 16.0, 236.0, 48.0),
+                WorkingColor::new([0.9, 0.4, 0.2, 1.0]),
+            );
+            r.fill(
+                Rect::new(24.0, 146.0, 232.0, 178.0),
+                WorkingColor::new([0.2, 0.75, 0.85, 1.0]),
+            );
+        }));
+        tx[&top]
+            .clip(Rect::new(0.0, 0.0, 256.0, 64.0))
+            .backdrop(top_backdrop.sample())
+            .content(surface.record(|r| paint_backdrop_bars_top(r, button_color)));
+        tx[&bottom]
+            .clip(Rect::new(0.0, 136.0, 256.0, 192.0))
+            .backdrop(bottom_backdrop.sample())
+            .content(surface.record(|r| {
+                r.group(Group::new().opacity(0.95), |r| {
+                    r.fill(
+                        Rect::new(16.0, 140.0, 240.0, 184.0),
+                        WorkingColor::new([0.2, 0.65, 0.35, 1.0]),
+                    );
+                    r.fill(
+                        Rect::new(92.0, 148.0, 164.0, 176.0),
+                        WorkingColor::new([0.95, 0.85, 0.2, 1.0]),
+                    );
+                });
+            }));
+        tx[surface.root()].push(&bg).push(&top).push(&bottom);
+    });
+    Ok(BackdropBarsSurface {
+        surface,
+        _textures: textures,
+        _backdrops: [top_backdrop, bottom_backdrop],
+        top,
+    })
+}
+
+#[test]
+fn partial_repaint_preserves_siblings_when_backdrop_filter_expands_earlier_pass()
+-> Result<(), Box<dyn Error>> {
+    use cherenkov_oracle::{F32Image, metrics::assert_images_match};
+
+    use super::super::composition::Sink;
+
+    let diagnostics = Sink::new();
+    let engine = Engine::<Gpu>::new(GpuConfig {
+        composition_diag: Some(diagnostics.clone()),
+        ..GpuConfig::default()
+    })?;
+    let size = (256, 192);
+    let background = WorkingColor::new([0.05, 0.08, 0.14, 1.0]);
+    let idle = WorkingColor::new([0.2, 0.5, 0.9, 1.0]);
+    let pressed = WorkingColor::new([0.95, 0.25, 0.55, 1.0]);
+
+    for (scale, expect_partial) in [(CaptureScale::FULL, true), (CaptureScale::new(0.5)?, false)] {
+        let retained = setup_backdrop_bars_surface(&engine, size, background, scale, idle)?;
+        engine.render(FrameTime::now())?;
+        let _ = diagnostics.take();
+
+        // Frame 1: change ONLY the small top-left button inside `top`.
+        retained.surface.update(|tx| {
+            tx[&retained.top].content(
+                retained
+                    .surface
+                    .record(|r| paint_backdrop_bars_top(r, pressed)),
+            );
+        });
+        engine.render(FrameTime::now())?;
+
+        if expect_partial {
+            let reports = diagnostics.take();
+            let report = reports
+                .iter()
+                .find(|r| r.surface == retained.surface.id().raw())
+                .expect("partial repaint report");
+            assert!(
+                report.repaint_pixels > 0
+                    && report.repaint_pixels < u64::from(size.0) * u64::from(size.1),
+                "expected partial repaint for full-scale clipped backdrop, got {} pixels",
+                report.repaint_pixels
+            );
+        } else {
+            let _ = diagnostics.take();
+        }
+
+        let reference = setup_backdrop_bars_surface(&engine, size, background, scale, pressed)?;
+        engine.render(FrameTime::now())?;
+        let _ = diagnostics.take();
+
+        let actual = retained.surface.readback()?;
+        let expected = reference.surface.readback()?;
+        assert_images_match(
+            &F32Image {
+                width: expected.width,
+                height: expected.height,
+                pixels: expected.pixels,
+            },
+            &F32Image {
+                width: actual.width,
+                height: actual.height,
+                pixels: actual.pixels,
+            },
+        );
     }
     Ok(())
 }

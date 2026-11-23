@@ -44,8 +44,8 @@ use crate::android::adb::{Adb, AdbCommandError, recent_crash_log};
 use crate::android::device::{AndroidAbiProvider as _, AndroidTarget};
 use crate::hydrolysis::android::{self as hydrolysis_android, PREVIEW_HOST_PACKAGE};
 use crate::preview::hydrolysis::{
-    HydrolysisPreviewRequest, HydrolysisPreviewScenario, scenario_frame_path,
-    write_preview_bindings,
+    HydrolysisPreviewRequest, HydrolysisPreviewScenario, HydrolysisPreviewTheme,
+    ensure_glass_theme_available, scenario_frame_path, write_preview_bindings,
 };
 use crate::preview::run::{RUN_CONFIG_FILE_NAME, run_config_json};
 use crate::project_model::water_dir;
@@ -125,6 +125,9 @@ pub async fn render_preview_with_hydrolysis_android(
 ) -> Result<()> {
     let host = request.host;
     let project = crate::hydrolysis::backend::open_ready(host, request.project_path).await?;
+    if request.theme == HydrolysisPreviewTheme::Glass {
+        ensure_glass_theme_available(&project).await?;
+    }
 
     // Every run of this project writes its preview bindings and stages its
     // payload into one fixed directory, so a second run of the same project
@@ -164,12 +167,16 @@ pub async fn render_preview_with_hydrolysis_android(
             events: scenario.events().to_vec(),
         },
     );
-    let run_config = run_config_json(&PreviewRunConfig::new(
-        request.width,
-        request.height,
-        mode,
-        request.content_deadline,
-    ))?;
+    let run_config = run_config_json(
+        &PreviewRunConfig::new(
+            request.width,
+            request.height,
+            mode,
+            request.content_deadline,
+        )
+        .with_optional_color_scheme(request.color_scheme)
+        .with_scale(request.scale),
+    )?;
 
     render_on_device(
         host,

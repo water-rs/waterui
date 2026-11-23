@@ -35,10 +35,10 @@ use waterui_core::layout::{
 use crate::components::menu_items;
 #[cfg(target_os = "ios")]
 use crate::contract::measure_callback;
-use crate::contract::{Mounted, NativeLeaf};
-use crate::dispatch::Dispatcher;
+use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;
 
+use crate::contract::RenderContext;
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::{self as appkit, HostView};
 #[cfg(target_os = "ios")]
@@ -51,7 +51,7 @@ struct ContextMenuState {
     /// The environment command actions run against.
     env: Environment,
     /// The resolved items, snapshotted per menu presentation.
-    items: Computed<Vec<ResolvedMenuItem>>,
+    items: Computed<Vec<ResolvedMenuItem<Held>>>,
     /// The rendered `preview` and its one view controller (`UIKit` only —
     /// `AppKit` has no preview slot and drops it unresolved).
     #[cfg(target_os = "ios")]
@@ -395,230 +395,224 @@ fn set_accessory_item(state: &Rc<RefCell<ContextMenuState>>, menu: &appkit::Cont
     menu.set_accessory(&accessory_view, ideal_size(accessory));
 }
 
-/// Installs the `context_menu` handler on the dispatcher.
+/// The `context_menu` realization.
 #[expect(
     clippy::too_many_lines,
-    reason = "the handler's wiring is sequential; splitting it would obscure the mount order"
+    reason = "one component's whole realization, as the handler it replaces"
 )]
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_view::<Metadata<ResolvedContextMenu>>(|metadata, ctx| {
-        let mtm = ctx.mtm();
-        let host = HostView::new(mtm, Rect::ZERO);
-        let mounted = ctx.render(metadata.content).mount(&host);
-        crate::primary_content::forward(&host, mounted.view());
-        view::set_translates_autoresizing(mounted.view(), true);
+pub fn realize_resolved_context_menu_metadata(
+    metadata: Metadata<ResolvedContextMenu<Held>, Held>,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    let mtm = ctx.mtm();
+    let host = HostView::new(mtm, Rect::ZERO);
+    let mounted = ctx.realize(metadata.content).mount(&host);
+    crate::primary_content::forward(&host, mounted.view());
+    view::set_translates_autoresizing(mounted.view(), true);
 
-        // `preview` is a `UIKit` primitive; on `AppKit` the `AnyView`
-        // drops unresolved.
-        let accessory = metadata.value.accessory.map(|view| ctx.render(view));
-        #[cfg(target_os = "ios")]
-        let preview = metadata.value.preview.map(|view| {
-            let leaf = ctx.render(view);
-            // An accessory-bearing menu mounts the leaf into its own
-            // panel; the canonical interaction alone takes a controller,
-            // and only one controller may own the view at a time.
-            let controller = if accessory.is_some() {
-                None
-            } else {
-                Some(uikit::preview_controller(
-                    mtm,
-                    view::retain_base(leaf.view()),
-                    ideal_size(&leaf),
-                ))
-            };
-            IosPreview { leaf, controller }
-        });
-        #[cfg(target_os = "macos")]
-        drop(metadata.value.preview);
-
-        let state = Rc::new(RefCell::new(ContextMenuState {
-            child: mounted,
-            env: ctx.env().clone(),
-            items: metadata.value.items.clone(),
-            #[cfg(target_os = "ios")]
-            preview,
-            accessory,
-            #[cfg(target_os = "macos")]
-            open_menu: RefCell::new(None),
-            #[cfg(target_os = "ios")]
-            presented: RefCell::new(None),
-            #[cfg(target_os = "ios")]
-            interaction: RefCell::new(None),
-            #[cfg(target_os = "ios")]
-            key_commands: RefCell::new(None),
-            #[cfg(target_os = "ios")]
-            triggers: RefCell::new(Vec::new()),
-            mtm,
-        }));
-
-        // The content always fills the wrapper.
-        host.set_layout_handler({
-            let state = Rc::clone(&state);
-            move |host| {
-                let state = state.borrow();
-                view::set_frame(state.child.view(), view::bounds(host));
-            }
-        });
-
-        // `setPlacementProposal` forwards to the content.
-        let sink_guard = proposal::register_sink(&host, {
-            let state = Rc::clone(&state);
-            move |selected| {
-                let state = state.borrow();
-                proposal::deliver(state.child.view(), selected);
-            }
-        });
-
-        #[cfg(target_os = "ios")]
-        {
-            view::set_user_interaction_enabled(&host, true);
-            let has_accessory = state.borrow().accessory.is_some();
-            if has_accessory {
-                // An accessory-bearing menu presents the popover panel: a
-                // long press — or a secondary click on pointer devices —
-                // opens it, like the canonical interaction. The closures
-                // reach state and host weakly: the recognizer targets are
-                // owned by `state.triggers`, so a strong capture would be
-                // the state retaining itself.
-                let present = {
-                    let state = Rc::downgrade(&state);
-                    let host = objc2::rc::Weak::new(&*host);
-                    Rc::new(move || {
-                        if let (Some(state), Some(host)) = (state.upgrade(), host.load()) {
-                            present_panel(&state, &host);
-                        }
-                    })
-                };
-                state.borrow_mut().triggers.borrow_mut().extend([
-                    uikit::gesture::long_press(
-                        &host,
-                        0.5,
-                        cocoa_ui::gesture::ButtonMask::PRIMARY,
-                        {
-                            let present = Rc::clone(&present);
-                            move |gesture, _recognizer| {
-                                if matches!(gesture, cocoa_ui::gesture::GestureState::Began) {
-                                    present();
-                                }
-                            }
-                        },
-                    ),
-                    uikit::gesture::tap(
-                        &host,
-                        1,
-                        cocoa_ui::gesture::ButtonMask::SECONDARY,
-                        move |gesture, _recognizer| {
-                            if matches!(gesture, cocoa_ui::gesture::GestureState::Ended) {
-                                present();
-                            }
-                        },
-                    ),
-                ]);
-            } else {
-                *state.borrow_mut().interaction.borrow_mut() = Some(uikit::ContextMenu::install(
-                    &host,
-                    uikit::ContextMenuHandlers {
-                        configuration: Rc::new({
-                            let state = Rc::downgrade(&state);
-                            move |view| {
-                                let state = state
-                                    .upgrade()
-                                    .expect("the owner outlives its configuration callback");
-                                let state = state.borrow();
-                                let host = view.downcast_ref::<HostView>().expect(
-                                    "a context-menu interaction is installed on its HostView",
-                                );
-                                let nodes =
-                                    menu_items::tree_nodes(&state.items.snapshot(), &state.env);
-                                if nodes.is_empty() {
-                                    host.set_menu_commands(None);
-                                    state.key_commands.replace(None);
-                                    return None;
-                                }
-                                let key_commands = host.menu_commands();
-                                let menu = uikit::menu(
-                                    state.mtm,
-                                    &key_commands,
-                                    &cocoa_ui::menu::Command::default(),
-                                    &nodes,
-                                );
-                                host.set_menu_commands(Some(&menu));
-                                // `UIKit` asks for a configuration per
-                                // presentation: the previous menu is gone,
-                                // and its commands retire with its scope.
-                                state.key_commands.replace(Some(key_commands));
-                                let preview = state.preview.as_ref().and_then(|preview| {
-                                    preview.controller.as_ref().map(|controller| {
-                                        controller.setPreferredContentSize(
-                                            ideal_size(&preview.leaf).into(),
-                                        );
-                                        controller.clone()
-                                    })
-                                });
-                                Some(uikit::ContextMenuConfiguration { menu, preview })
-                            }
-                        }),
-                        preview: Rc::new({
-                            let host = cocoa_ui::objc2::rc::Weak::new(&*host);
-                            move |_| {
-                                // `UITargetedPreview` requires its view to
-                                // be in a window, so the highlight always
-                                // lifts the source; a custom preview's
-                                // card is the preview controller's
-                                // content, not this view. Gone host, no
-                                // preview.
-                                let host = host.load()?;
-                                Some(uikit::targeted_preview(&host))
-                            }
-                        }),
-                    },
-                ));
-            }
-        }
-
-        #[cfg(target_os = "macos")]
-        host.set_right_mouse_handler({
-            let state = Rc::clone(&state);
-            move |host_view, event| {
-                let menu = {
-                    let mtm = state.borrow().mtm;
-                    let nodes = {
-                        let state = state.borrow();
-                        menu_items::tree_nodes(&state.items.snapshot(), &state.env)
-                    };
-                    Rc::new(appkit::ContextMenu::new(mtm, &nodes, || {}, {
-                        let state = Rc::clone(&state);
-                        move || {
-                            state.borrow().open_menu.borrow_mut().take();
-                        }
-                    }))
-                };
-                set_accessory_item(&state, &menu);
-                state
-                    .borrow()
-                    .open_menu
-                    .borrow_mut()
-                    .replace(Rc::clone(&menu));
-                // `popUpContextMenu` runs the tracking loop; `menuDidClose`
-                // fires before it returns.
-                menu.pop_up(host_view, event);
-            }
-        });
-
-        let mut leaf = NativeLeaf::new(
-            &*host,
-            ContextMenuSubView {
-                state: Rc::clone(&state),
-            },
-        );
-        leaf.keep(sink_guard);
-        leaf.watch(&metadata.value.dismiss_requests, {
-            let state = Rc::clone(&state);
-            move |_| dismiss_presented(&state)
-        });
-        #[cfg(target_os = "ios")]
-        bind_panel_palette(&mut leaf, &ctx.env().clone(), &state);
-        leaf.keep(state);
-        leaf
+    // `preview` is a `UIKit` primitive; on `AppKit` the child drops
+    // unrealized.
+    let accessory = metadata.value.accessory.map(|child| ctx.realize(child));
+    #[cfg(target_os = "ios")]
+    let preview = metadata.value.preview.map(|child| {
+        let leaf = ctx.realize(child);
+        // An accessory-bearing menu mounts the leaf into its own
+        // panel; the canonical interaction alone takes a controller,
+        // and only one controller may own the view at a time.
+        let controller = if accessory.is_some() {
+            None
+        } else {
+            Some(uikit::preview_controller(
+                mtm,
+                view::retain_base(leaf.view()),
+                ideal_size(&leaf),
+            ))
+        };
+        IosPreview { leaf, controller }
     });
+    #[cfg(target_os = "macos")]
+    drop(metadata.value.preview);
+
+    let state = Rc::new(RefCell::new(ContextMenuState {
+        child: mounted,
+        env: ctx.env().clone(),
+        items: metadata.value.items.clone(),
+        #[cfg(target_os = "ios")]
+        preview,
+        accessory,
+        #[cfg(target_os = "macos")]
+        open_menu: RefCell::new(None),
+        #[cfg(target_os = "ios")]
+        presented: RefCell::new(None),
+        #[cfg(target_os = "ios")]
+        interaction: RefCell::new(None),
+        #[cfg(target_os = "ios")]
+        key_commands: RefCell::new(None),
+        #[cfg(target_os = "ios")]
+        triggers: RefCell::new(Vec::new()),
+        mtm,
+    }));
+
+    // The content always fills the wrapper.
+    host.set_layout_handler({
+        let state = Rc::clone(&state);
+        move |host| {
+            let state = state.borrow();
+            view::set_frame(state.child.view(), view::bounds(host));
+        }
+    });
+
+    // `setPlacementProposal` forwards to the content.
+    let sink_guard = proposal::register_sink(&host, {
+        let state = Rc::clone(&state);
+        move |selected| {
+            let state = state.borrow();
+            proposal::deliver(state.child.view(), selected);
+        }
+    });
+
+    #[cfg(target_os = "ios")]
+    {
+        view::set_user_interaction_enabled(&host, true);
+        let has_accessory = state.borrow().accessory.is_some();
+        if has_accessory {
+            // An accessory-bearing menu presents the popover panel: a
+            // long press — or a secondary click on pointer devices —
+            // opens it, like the canonical interaction. The closures
+            // reach state and host weakly: the recognizer targets are
+            // owned by `state.triggers`, so a strong capture would be
+            // the state retaining itself.
+            let present = {
+                let state = Rc::downgrade(&state);
+                let host = objc2::rc::Weak::new(&*host);
+                Rc::new(move || {
+                    if let (Some(state), Some(host)) = (state.upgrade(), host.load()) {
+                        present_panel(&state, &host);
+                    }
+                })
+            };
+            state.borrow_mut().triggers.borrow_mut().extend([
+                uikit::gesture::long_press(&host, 0.5, cocoa_ui::gesture::ButtonMask::PRIMARY, {
+                    let present = Rc::clone(&present);
+                    move |gesture, _recognizer| {
+                        if matches!(gesture, cocoa_ui::gesture::GestureState::Began) {
+                            present();
+                        }
+                    }
+                }),
+                uikit::gesture::tap(
+                    &host,
+                    1,
+                    cocoa_ui::gesture::ButtonMask::SECONDARY,
+                    move |gesture, _recognizer| {
+                        if matches!(gesture, cocoa_ui::gesture::GestureState::Ended) {
+                            present();
+                        }
+                    },
+                ),
+            ]);
+        } else {
+            *state.borrow_mut().interaction.borrow_mut() = Some(uikit::ContextMenu::install(
+                &host,
+                uikit::ContextMenuHandlers {
+                    configuration: Rc::new({
+                        let state = Rc::downgrade(&state);
+                        move |view| {
+                            let state = state
+                                .upgrade()
+                                .expect("the owner outlives its configuration callback");
+                            let state = state.borrow();
+                            let host = view
+                                .downcast_ref::<HostView>()
+                                .expect("a context-menu interaction is installed on its HostView");
+                            let nodes = menu_items::tree_nodes(&state.items.snapshot(), &state.env);
+                            if nodes.is_empty() {
+                                host.set_menu_commands(None);
+                                state.key_commands.replace(None);
+                                return None;
+                            }
+                            let key_commands = host.menu_commands();
+                            let menu = uikit::menu(
+                                state.mtm,
+                                &key_commands,
+                                &cocoa_ui::menu::Command::default(),
+                                &nodes,
+                            );
+                            host.set_menu_commands(Some(&menu));
+                            // `UIKit` asks for a configuration per
+                            // presentation: the previous menu is gone,
+                            // and its commands retire with its scope.
+                            state.key_commands.replace(Some(key_commands));
+                            let preview = state.preview.as_ref().and_then(|preview| {
+                                preview.controller.as_ref().map(|controller| {
+                                    controller
+                                        .setPreferredContentSize(ideal_size(&preview.leaf).into());
+                                    controller.clone()
+                                })
+                            });
+                            Some(uikit::ContextMenuConfiguration { menu, preview })
+                        }
+                    }),
+                    preview: Rc::new({
+                        let host = cocoa_ui::objc2::rc::Weak::new(&*host);
+                        move |_| {
+                            // `UITargetedPreview` requires its view to
+                            // be in a window, so the highlight always
+                            // lifts the source; a custom preview's
+                            // card is the preview controller's
+                            // content, not this view. Gone host, no
+                            // preview.
+                            let host = host.load()?;
+                            Some(uikit::targeted_preview(&host))
+                        }
+                    }),
+                },
+            ));
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    host.set_right_mouse_handler({
+        let state = Rc::clone(&state);
+        move |host_view, event| {
+            let menu = {
+                let mtm = state.borrow().mtm;
+                let nodes = {
+                    let state = state.borrow();
+                    menu_items::tree_nodes(&state.items.snapshot(), &state.env)
+                };
+                Rc::new(appkit::ContextMenu::new(mtm, &nodes, || {}, {
+                    let state = Rc::clone(&state);
+                    move || {
+                        state.borrow().open_menu.borrow_mut().take();
+                    }
+                }))
+            };
+            set_accessory_item(&state, &menu);
+            state
+                .borrow()
+                .open_menu
+                .borrow_mut()
+                .replace(Rc::clone(&menu));
+            // `popUpContextMenu` runs the tracking loop; `menuDidClose`
+            // fires before it returns.
+            menu.pop_up(host_view, event);
+        }
+    });
+
+    let mut leaf = NativeLeaf::new(
+        &*host,
+        ContextMenuSubView {
+            state: Rc::clone(&state),
+        },
+    );
+    leaf.keep(sink_guard);
+    leaf.watch(&metadata.value.dismiss_requests, {
+        let state = Rc::clone(&state);
+        move |_| dismiss_presented(&state)
+    });
+    #[cfg(target_os = "ios")]
+    bind_panel_palette(&mut leaf, &ctx.env().clone(), &state);
+    leaf.keep(state);
+    leaf
 }

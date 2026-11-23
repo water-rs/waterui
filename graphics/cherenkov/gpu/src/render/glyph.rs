@@ -4001,7 +4001,7 @@ mod tests {
             None,
             None,
             None,
-            cherenkov::DEFAULT_REFRESH,
+            cherenkov::FrameRate::FAST,
             (target, view),
             cherenkov::testing::unhosted_waker(),
             false,

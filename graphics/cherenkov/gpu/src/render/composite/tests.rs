@@ -720,8 +720,8 @@ fn demand_follows_frozen_writes_and_severs_cleared_generations() {
         for index in [3, 5, 6] {
             assert!(demand.pass(index).is_empty(), "unneeded pass {index}");
         }
-        // The gap is rasterized too, so its frozen inputs must be demanded
-        // before traversing the prior writers, including a capture.
+        // Disjoint updates stay disjoint across prior writers and captures so
+        // the clean gap between them is neither demanded nor rasterized.
         demand.update(&frame, &plan, |_, target, _, region| {
             if target == Target::Part(0) {
                 region.add(2, 3, 2, 2);
@@ -729,8 +729,8 @@ fn demand_follows_frozen_writes_and_severs_cleared_generations() {
             }
         });
         for index in [0, 1, 2, 4] {
-            assert_eq!(demand.pass(index).rectangles().len(), 1);
-            assert_eq!(demand.pass(index).pixel_area(), 100, "pass {index}");
+            assert_eq!(demand.pass(index).rectangles().len(), 2);
+            assert_eq!(demand.pass(index).pixel_area(), 8, "pass {index}");
         }
         for index in [3, 5, 6] {
             assert!(demand.pass(index).is_empty(), "unneeded pass {index}");
@@ -742,10 +742,30 @@ fn demand_follows_frozen_writes_and_severs_cleared_generations() {
         });
         assert_eq!(demand.pass(5).pixel_area(), 6);
         assert_eq!(demand.pass(6).pixel_area(), 6);
+        assert_eq!(demand.surface_pixels(&frame, (16, 16)), 6);
         for index in 0..5 {
             assert!(demand.pass(index).is_empty(), "old generation {index}");
         }
     }
+}
+
+#[test]
+fn surface_damage_unions_root_outputs_without_intermediates() {
+    let frame = frame(vec![
+        pass(Target::Scratch(0), true, None, 0),
+        pass(Target::Part(0), true, Some(Source::Scratch(0)), 1),
+        pass(Target::Part(1), true, None, 2),
+    ]);
+    let plan = ExecutionPlan::build(
+        &frame,
+        formats(wgpu::TextureFormat::Rgba16Float),
+        Err(Materialization::NoExecutor),
+    );
+    let mut demand = crate::render::composite::demand::Demand::default();
+    demand.update(&frame, &plan, |_, _, _, region| region.add(2, 3, 4, 5));
+    assert_eq!(demand.surface_pixels(&frame, (16, 16)), 20);
+    demand.update(&frame, &plan, |_, _, _, _| {});
+    assert_eq!(demand.surface_pixels(&frame, (16, 16)), 0);
 }
 
 #[test]
@@ -949,4 +969,92 @@ fn blend_composite_inputs_keep_float_storage() {
     frame.passes[4].ranges[0].pipeline = PipelineKind::SrcOver;
     assert!(cache.update(&mut plan, &frame, formats, executor));
     assert_eq!(format(&plan, 3), wgpu::TextureFormat::Rgba8UnormSrgb);
+}
+
+#[test]
+fn demand_propagates_persistent_overwrites_forward_to_later_passes() {
+    use cherenkov::BlendSpace;
+
+    use crate::render::composite::demand::Demand;
+    use crate::render::filter::FilterKey;
+    use crate::render::lower::{Capture, Resolve};
+
+    let build = |resolve: Option<Resolve>| {
+        let backdrop = Target::Backdrop {
+            group: 0,
+            region: 0,
+        };
+        let mut passes = vec![
+            pass(Target::Part(0), true, None, 0),
+            pass(backdrop, false, None, 1),
+            pass(
+                Target::Part(0),
+                false,
+                Some(Source::Backdrop {
+                    group: 0,
+                    region: 0,
+                }),
+                2,
+            ),
+            pass(Target::Scratch(0), true, None, 3),
+            pass(Target::Part(0), false, Some(Source::Scratch(0)), 4),
+        ];
+        passes[1].region = [0, 0, 16, 6];
+        passes[1].capture = Some(Capture {
+            group: 0,
+            region: 0,
+            copy_from: Target::Part(0),
+            resolve,
+            levels: 1,
+        });
+        passes[3].region = [0, 10, 16, 6];
+        let mut frame = frame(passes);
+        frame.filters.push((1, FilterKey::Layer(0)));
+        // Bound the composite quads to their source regions so `corresponds`
+        // keeps pass 4's read of Scratch(0) local rather than whole-image.
+        frame.instances[2].bounds = [0.0, 0.0, 16.0, 6.0];
+        frame.instances[4].bounds = [0.0, 10.0, 16.0, 16.0];
+        frame.instances[4].grad[0] = 0.0;
+        frame.instances[4].grad[1] = 10.0;
+        frame
+    };
+
+    // Unscaled clipped backdrop filter: pass 1 expands pass 0 to [0, 0, 16, 6]
+    // (96 px). Later writers of Part(0) (passes 2 and 4) must also cover that
+    // 96 px overwrite, while the disjoint bottom scratch (pass 3) stays empty.
+    let frame = build(None);
+    let plan = ExecutionPlan::build(
+        &frame,
+        formats(wgpu::TextureFormat::Rgba16Float),
+        Err(Materialization::NoExecutor),
+    );
+    let mut demand = Demand::default();
+    demand.update(&frame, &plan, |_, _, _, region| region.add(1, 1, 3, 3));
+    assert_eq!(demand.pass(0).pixel_area(), 96);
+    assert_eq!(demand.pass(1).pixel_area(), 96);
+    assert_eq!(demand.pass(2).pixel_area(), 96);
+    assert!(demand.pass(3).is_empty());
+    assert_eq!(demand.pass(4).pixel_area(), 96);
+
+    // Scaled capture: pass 1 demands the entire Part(0) (256 px) from pass 0.
+    // Forward overwrite propagation grows passes 2 and 4 to 256 px, and the
+    // next backward iteration pulls pass 3 (96 px) in so pass 4's scratch
+    // input is populated before compositing.
+    let frame = build(Some(Resolve {
+        scale: 0.5,
+        space: BlendSpace::Linear,
+        device: [0, 0, 16, 6],
+        extent: [16, 16],
+    }));
+    let plan = ExecutionPlan::build(
+        &frame,
+        formats(wgpu::TextureFormat::Rgba16Float),
+        Err(Materialization::NoExecutor),
+    );
+    demand.update(&frame, &plan, |_, _, _, region| region.add(1, 1, 3, 3));
+    assert_eq!(demand.pass(0).pixel_area(), 256);
+    assert_eq!(demand.pass(1).pixel_area(), 96);
+    assert_eq!(demand.pass(2).pixel_area(), 256);
+    assert_eq!(demand.pass(3).pixel_area(), 96);
+    assert_eq!(demand.pass(4).pixel_area(), 256);
 }

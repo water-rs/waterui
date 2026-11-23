@@ -226,12 +226,13 @@ impl DevicePayload {
         if let Some(progress) = request.progress.clone() {
             options = options.with_progress(progress);
         }
+        let features = request.theme.preview_features("waterui-preview-mode");
         let build = hydrolysis_android::build_with_features(
             project,
             abi,
             hydrolysis_android::resolve_painter(project, None),
             options,
-            &["waterui-preview-mode"],
+            &features,
             kotlin,
         )
         .await?;

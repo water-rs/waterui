@@ -8,6 +8,7 @@ mod hwui;
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    facade_features();
     #[cfg(feature = "hwui")]
     {
         for input in [
@@ -49,22 +50,38 @@ fn main() {
     // `--cfg trybuild -A dead_code`, so a `dead_code` expectation cannot be
     // fulfilled there.
     println!("cargo:rustc-check-cfg=cfg(trybuild)");
+    configure_cfg_aliases();
+    configure_standalone_aliases();
+}
 
+fn configure_cfg_aliases() {
     cfg_aliases! {
         // Where hosted content exists: the targets on which `cherenkov-gpu`
         // implements `HostedLayers`, whose plane shows a platform object.
         hydrolysis_hosted: { any(target_vendor = "apple", target_os = "android", target_arch = "wasm32") },
         apple: { any(target_os = "ios", target_os = "macos") },
         android_platform: { target_os = "android" },
+        // The UIKit host: iOS runs on `cocoa-ui`'s scene delegate and view,
+        // never on winit, and presents through the GPU painter.
+        hydrolysis_uikit: { all(target_os = "ios", feature = "gpu") },
+        // The hosts that drive frames through the shared frame transaction
+        // (`runner::window::run_frame_transaction`): the platform schedules
+        // each frame itself — Choreographer, `CADisplayLink` — instead of
+        // winit's event loop.
+        hydrolysis_frame_transaction: { any(android_platform, hydrolysis_uikit) },
         free_unix: { all(unix, not(apple), not(android_platform), not(target_os = "emscripten")) },
-        // The winit runner exists on every target except Android: there the
-        // Activity belongs to the Kotlin host, and winit's `android-activity`
-        // can only build once an application selects a backend — nothing in
-        // this library may. Every winit-scoped item gates on this alias, so
-        // `--features winit` compiles on Android and simply means nothing.
-        // It presents through the GPU painter; `lib.rs` names the missing
-        // `gpu` feature when `winit` is asked for without it.
-        hydrolysis_winit: { all(feature = "winit", not(android_platform), feature = "gpu") },
+        // The winit runner exists on every target except Android and iOS:
+        // there the Activity belongs to the Kotlin host, and winit's
+        // `android-activity` can only build once an application selects a
+        // backend — nothing in this library may — and on iOS the UIKit host
+        // owns the application. Every winit-scoped item gates on this alias,
+        // so `--features winit` compiles on both and simply means nothing.
+        // It presents through the GPU painter or, via `softbuffer`, the CPU
+        // painter; `lib.rs` names the missing painter feature when `winit` is
+        // asked for with neither.
+        hydrolysis_winit: {
+            all(feature = "winit", not(android_platform), not(target_os = "ios"), hydrolysis_cherenkov)
+        },
         // Where `hydrolysis::run` exists: every target but Android, whose
         // entry point is the Kotlin host, and bare wasm32, which reaches no
         // windowing model until the browser runner is compiled in. The
@@ -78,6 +95,25 @@ fn main() {
                     all(not(target_arch = "wasm32"), not(android_platform)),
                     all(target_arch = "wasm32", feature = "web")
                 )
+            )
+        },
+        // Where the engine presents a window itself, through a
+        // `cherenkov_gpu::WindowTarget` over a view the host hands it. Today
+        // that is the macOS winit window and every UIKit scene; it is the one
+        // gate the engine window path keys on, so a host that presents the
+        // same way joins by widening this alias.
+        hydrolysis_apple_engine_window: {
+            any(all(hydrolysis_winit, hydrolysis_gpu_painter, target_os = "macos"), hydrolysis_uikit)
+        },
+        // The platform range-editing protocol (`runner::editing`): a host
+        // whose input method edits the focused field through UTF-16 ranges,
+        // in a build that has a text field to edit. Test builds compile it
+        // too, but a build script cannot see `test`, so that arm sits at the
+        // gate, beside this alias.
+        hydrolysis_range_editing: {
+            all(
+                any(android_platform, hydrolysis_uikit),
+                any(feature = "text-field", feature = "secure-field")
             )
         },
         hydrolysis_wayland_platform: { all(hydrolysis_winit, free_unix, not(target_os = "redox")) },
@@ -119,10 +155,34 @@ fn main() {
         hydrolysis_system_webview: {
             any(hydrolysis_macos_system_webview, hydrolysis_web_system_webview)
         },
-        // The persistent pipeline cache serialises through `std::fs` into a
-        // platform cache directory; targets without that filesystem contract
-        // (wasm, redox) compile the renderer without it.
-        hydrolysis_pipeline_cache: { any(unix, windows) },
+        // Bundled CEF engine realizing `WebView` on desktop targets.
+        hydrolysis_cef_webview: {
+            all(feature = "webview-cef", any(target_os = "macos", target_os = "linux", target_os = "windows"))
+        },
+        // Bundled WPE WebKit engine realizing `WebView` on Linux.
+        hydrolysis_wpe_webview: {
+            all(feature = "webview-wpe", target_os = "linux")
+        },
+        // Any non-Android web engine wired into `install_platform_services` and
+        // `NativeBackend::web_view`.
+        hydrolysis_webview_engine: {
+            any(hydrolysis_system_webview, hydrolysis_cef_webview, hydrolysis_wpe_webview)
+        },
+        // The built-in localized strings: the controls that draw them, and the
+        // list and navigation chrome that name accessibility nodes with them.
+        hydrolysis_localization: {
+            any(
+                feature = "text-field",
+                feature = "secure-field",
+                feature = "color-picker",
+                feature = "date-picker",
+                feature = "navigation",
+                all(feature = "list", feature = "accessibility")
+            )
+        },
+        hydrolysis_platform_services: {
+            any(hydrolysis_localization, hydrolysis_webview_engine)
+        },
         // The Android HWUI render target: the retained layer tree recorded
         // into `RenderNode` display lists, on Android only.
         hydrolysis_hwui: { all(feature = "hwui", android_platform) },
@@ -155,11 +215,93 @@ fn main() {
         hydrolysis_cpu_painter: {
             all(feature = "cpu", not(hydrolysis_hwui), not(target_arch = "wasm32"))
         },
+        // Desktop software window presentation (`softbuffer`) for the CPU
+        // painter: matches the exact target set declaring `softbuffer` in
+        // `Cargo.toml` so `cargo::unused_dependencies` holds with or without
+        // `winit`.
+        hydrolysis_software_surface: {
+            all(
+                hydrolysis_cpu_painter,
+                any(target_os = "macos", target_os = "linux", target_os = "windows", free_unix)
+            )
+        },
         // Either Cherenkov painter: the engine-generic mount targets, the
         // window frame commit and the parley text engine.
         hydrolysis_cherenkov: { any(hydrolysis_gpu_painter, hydrolysis_cpu_painter) },
         // Both Cherenkov painters: the offscreen runtime selects one at
         // construction from the host's adapters.
         hydrolysis_both_painters: { all(hydrolysis_gpu_painter, hydrolysis_cpu_painter) },
+    }
+}
+
+fn configure_standalone_aliases() {
+    cfg_aliases! {
+        // The page's `<video>` element realizes `Video` on the web.
+        hydrolysis_web_video: {
+            all(target_arch = "wasm32", feature = "web", feature = "video")
+        },
+        // The GPU player realizes `Video` everywhere but the web: this
+        // backend bridges no platform player.
+        hydrolysis_gpu_video: {
+            all(feature = "video-gpu", not(target_arch = "wasm32"))
+        },
+        // The persistent pipeline cache serialises through `std::fs` into a
+        // platform cache directory; targets without that filesystem contract
+        // (wasm, redox) compile the renderer without it.
+        hydrolysis_pipeline_cache: { any(unix, windows) },
+        // Development inspector endpoint: opt-in and unavailable on wasm32.
+        hydrolysis_inspector: { all(feature = "inspector", not(target_arch = "wasm32")) },
+    }
+}
+
+/// Turns the facade's enabled features into `waterui_feature` cfgs, and
+/// fails the build when a facade component this crate realizes itself is on
+/// without the feature that realizes it: `NativeBackend` then requires a
+/// method this crate would not compile. Components drawn by a realization
+/// the application links (`map`, `video`, a browser engine's `webview`)
+/// are not listed: their methods report a missing realization at run time.
+fn facade_features() {
+    // Each facade feature, and the feature of this crate that realizes it.
+    const REALIZED_BY: &[(&str, &str)] = &[
+        ("calendar", "calendar"),
+        ("color-picker", "color-picker"),
+        ("date-picker", "date-picker"),
+        ("multi-date-picker", "multi-date-picker"),
+        ("picker", "picker"),
+        ("secure-field", "secure-field"),
+        ("slider", "slider"),
+        ("stepper", "stepper"),
+        ("text-field", "text-field"),
+        ("toggle", "toggle"),
+        ("menu", "menu"),
+        ("list", "list"),
+        ("table", "table"),
+        ("navigation", "navigation"),
+    ];
+
+    println!("cargo::rustc-check-cfg=cfg(waterui_feature, values(any()))");
+    println!("cargo::rustc-check-cfg=cfg(hydrolysis_scene_view)");
+    let features = std::env::var("DEP_WATERUI_FEATURES")
+        .expect("the `waterui` facade's build script exports DEP_WATERUI_FEATURES");
+    let mut has_scene_view = false;
+    for feature in features.split(',').filter(|feature| !feature.is_empty()) {
+        println!("cargo::rustc-cfg=waterui_feature=\"{feature}\"");
+        if matches!(feature, "canvas" | "gpu") {
+            has_scene_view = true;
+        }
+        if let Some((_, own)) = REALIZED_BY.iter().find(|(name, _)| *name == feature) {
+            let enabled = std::env::var_os(format!(
+                "CARGO_FEATURE_{}",
+                own.to_ascii_uppercase().replace('-', "_")
+            ))
+            .is_some();
+            assert!(
+                enabled,
+                "the application enables the `waterui` feature `{feature}`; enable hydrolysis's `{own}` to realize it"
+            );
+        }
+    }
+    if has_scene_view {
+        println!("cargo::rustc-cfg=hydrolysis_scene_view");
     }
 }

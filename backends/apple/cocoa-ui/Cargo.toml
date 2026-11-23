@@ -2,7 +2,7 @@
 name = "cocoa-ui"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.95"
+rust-version = "1.100"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/water-rs/waterui"
 readme = "README.md"
@@ -49,6 +49,14 @@ webview = ["dep:objc2-web-kit", "dep:objc2-security"]
 # The alert surfaces (`appkit::alert` `NSAlert`, `uikit::alert`
 # `UIAlertController`) — the `dialog` leaf's platform objects.
 dialog = ["objc2-app-kit/NSAlert", "objc2-ui-kit/UIAlertController"]
+# In-process Core Animation render-server layer capture (`CARenderServer*` /
+# `CAContext`) for windowless glass and backdrop rendering on macOS and Mac
+# Catalyst. Strictly opt-in and forwarded only by `cocoa-ui/native-test` and
+# `waterui-apple/preview` — never in default or production features.
+render-server-capture = [
+    "objc2-io-surface/IOSurfaceTypes",
+    "objc2-io-surface/libc",
+]
 # Harness-only reach for `tests/native`: compiles the doc(hidden)
 # test-support entry points that touch implementation-private surfaces
 # (`accessory_overlay_window_for_test`), the harnesses' shared
@@ -56,12 +64,23 @@ dialog = ["objc2-app-kit/NSAlert", "objc2-ui-kit/UIAlertController"]
 # power assertion's `IOKit` edge on macOS and, on iOS, the
 # `uikit::native_test` application the `native_app` harnesses run their
 # cases in — never part of a production build.
-native-test = ["dep:libtest-mimic", "dep:objc2-io-kit"]
+native-test = [
+    "dep:libtest-mimic",
+    "dep:objc2-io-kit",
+    "render-server-capture",
+]
+
+# The `NativeLog` `tracing` writer (`log` module): `tracing` records into the
+# unified log under the caller's subsystem. Opt-in so a consumer without a
+# `tracing` subscriber links no `tracing-subscriber`.
+tracing = ["dep:tracing-subscriber"]
 
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 # The spring and curve definition `core_animation::Timing` plays, the one
 # WaterUI core and the Cherenkov engine evaluate.
 waterui-easing.workspace = true
+# Frame-rate votes and display clamping shared with core and Cherenkov.
+waterui-frame-rate.workspace = true
 # Reports a broken contract: a panic in a debug build, an error log in a
 # release build.
 waterui-contract.workspace = true
@@ -292,6 +311,7 @@ wgpu-hal = { version = "30.0.1", default-features = false, features = [
 # that forwards a preformatted `%{public}s` message through them.
 oslog = { version = "0.2", default-features = false }
 tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"], optional = true }
 
 [dev-dependencies]
 libtest-mimic = "0.8"
@@ -493,6 +513,7 @@ objc2-ui-kit = { version = "0.3", default-features = false, features = [
     "UIInterface",
     "UIResponder",
     "UIScene",
+    "UISceneSizeRestrictions",
     "UISceneDefinitions",
     "UIScrollView",
     "UISceneOptions",

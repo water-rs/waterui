@@ -13,20 +13,24 @@ categories = ["gui"]
 
 [features]
 default = ["gestures"]
-# Gesture recognition state machines; pulls the `waterui` facade where the
-# gesture event types are defined.
-gestures = ["dep:waterui"]
-# Anchored-overlay window-space placement shared by every backend; pulls the
-# `waterui` facade where `AnchorPlacement` and the overlay metadata are defined.
-overlay = ["dep:waterui"]
+# Gesture recognition state machines.
+gestures = []
+# Anchored-overlay window-space placement shared by every backend.
+overlay = []
 # The `WATERUI_LOG` / `RUST_LOG` filter every backend's subscriber shares;
 # pulls `tracing-subscriber`.
 log = ["dep:tracing-subscriber"]
+# Build strategy propagated from `waterui/erased-dispatch`.
+erased-dispatch = ["waterui-core/erased-dispatch", "waterui/erased-dispatch"]
 
 [dependencies]
-waterui = { version = "0.5.2", path = "../..", default-features = false, optional = true }
+waterui = { version = "0.5.2", path = "../..", default-features = false }
+waterui-structural-transition.workspace = true
+waterui-accessibility.workspace = true
+waterui-interaction.workspace = true
 waterui-core.workspace = true
 waterui-layout.workspace = true
+waterui-meta.workspace = true
 nami.workspace = true
 num-traits = { version = "0.2", default-features = false }
 tracing.workspace = true

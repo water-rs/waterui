@@ -1485,7 +1485,7 @@ fn a_tab_page_background_stops_at_the_tab_bar() {
         move || {
             Tabs::new(
                 &selection,
-                vec![
+                (
                     Tab::new("Messages", move || {
                         NavigationView::new(
                             "Messages",
@@ -1497,7 +1497,7 @@ fn a_tab_page_background_stops_at_the_tab_bar() {
                     Tab::new("Settings", move || {
                         NavigationView::new("Settings", text("settings"))
                     }),
-                ],
+                ),
             )
         },
         390,
@@ -1536,7 +1536,7 @@ fn a_tab_bar_stays_docked_under_the_keyboard() {
         move || {
             Tabs::new(
                 &selection,
-                vec![
+                (
                     Tab::new("Messages", {
                         let value = value.clone();
                         move || {
@@ -1564,7 +1564,7 @@ fn a_tab_bar_stays_docked_under_the_keyboard() {
                     Tab::new("Settings", move || {
                         NavigationView::new("Settings", text("settings"))
                     }),
-                ],
+                ),
             )
         },
         390,
@@ -1699,7 +1699,7 @@ fn a_stack_page_toolbar_inside_a_tab_stacks_on_the_docked_tab_bar() {
         move || {
             Tabs::new(
                 &selection,
-                vec![
+                (
                     Tab::container("Messages", move || {
                         NavigationStack::new(
                             NavigationView::new("Root", vstack((card("content"), spacer())))
@@ -1715,7 +1715,7 @@ fn a_stack_page_toolbar_inside_a_tab_stacks_on_the_docked_tab_bar() {
                     Tab::container("Settings", move || {
                         NavigationStack::new(NavigationView::new("Settings", text("settings")))
                     }),
-                ],
+                ),
             )
         },
         390,
@@ -1767,7 +1767,7 @@ fn a_fixed_height_tabs_inside_tab_content_docks_its_own_bar() {
         move || {
             Tabs::new(
                 &selection,
-                vec![
+                (
                     Tab::new("Outer", {
                         let inner = inner.clone();
                         move || {
@@ -1776,14 +1776,14 @@ fn a_fixed_height_tabs_inside_tab_content_docks_its_own_bar() {
                                 vstack((
                                     Tabs::new(
                                         &inner,
-                                        vec![
+                                        (
                                             Tab::new("Inner A", move || {
                                                 NavigationView::new("A", text("a"))
                                             }),
                                             Tab::new("Inner B", move || {
                                                 NavigationView::new("B", text("b"))
                                             }),
-                                        ],
+                                        ),
                                     )
                                     .size(370.0, 200.0),
                                     card("below").a11y_label("below-inner"),
@@ -1804,7 +1804,7 @@ fn a_fixed_height_tabs_inside_tab_content_docks_its_own_bar() {
                         }
                     }),
                     Tab::new("Other", move || NavigationView::new("Other", text("other"))),
-                ],
+                ),
             )
         },
         390,
@@ -2086,7 +2086,7 @@ fn chrome_surface_extension_captures() {
         move || {
             Tabs::new(
                 &selection,
-                vec![
+                (
                     Tab::new("Messages", move || {
                         NavigationView::new(
                             "Messages",
@@ -2098,7 +2098,7 @@ fn chrome_surface_extension_captures() {
                     Tab::new("Settings", move || {
                         NavigationView::new("Settings", text("settings"))
                     }),
-                ],
+                ),
             )
         },
         390,

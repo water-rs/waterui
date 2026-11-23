@@ -47,7 +47,7 @@ use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::SelfId;
 use waterui_graphics::backend::{NextFrame, RecordingResources, SceneContent};
 use waterui_graphics::gpu::{Context as GpuContext, Frame as GpuFrame};
-use waterui_graphics::{GpuContent, GpuContentView};
+use waterui_graphics::{GpuContent, GpuView};
 use waterui_layout::frame::Frame;
 use waterui_layout::scroll::scroll;
 use waterui_layout::stack::{VStack, vstack};
@@ -620,7 +620,7 @@ fn gpu_content_under_clips_and_effects() {
     let probe = FillProbe {
         renders: std::sync::Arc::clone(&renders),
     };
-    let view = Frame::new(GpuContentView::new(probe))
+    let view = Frame::new(GpuView::new(probe))
         .width(120.0)
         .height(120.0)
         .clip(RoundedRectangle::new(12.0))
@@ -773,4 +773,160 @@ fn short_text_signal_repaints_only_its_changed_region() {
         super::structural_transitions::save(&after, "text-damage", &number.to_string());
         before = after;
     }
+}
+
+#[test]
+fn paint_and_scroll_flushes_skip_unchanged_window_layout() {
+    use kurbo::{Affine, Rect};
+    use waterui_controls::toggle::toggle;
+    use waterui_core::dynamic::watch;
+
+    let env = pumped_test_environment();
+    let toggled = Binding::container(false);
+    let show_extra = Binding::container(false);
+    let row_tall = Binding::container(false);
+    let tapped = std::rc::Rc::new(std::cell::Cell::new(None));
+    let tapped_for_rows = std::rc::Rc::clone(&tapped);
+    let data = (0..40).map(SelfId::new).collect::<Vec<_>>();
+    let row_tall_for_rows = row_tall.clone();
+    let view = vstack((
+        toggle("Switch", &toggled),
+        watch(show_extra.clone(), |extra| {
+            if extra {
+                AnyView::new(text("Inserted banner"))
+            } else {
+                AnyView::new(())
+            }
+        }),
+        scroll(VStack::for_each(data, move |row| {
+            let idx = row.into_inner();
+            let row_tall = row_tall_for_rows.clone();
+            let tapped = std::rc::Rc::clone(&tapped_for_rows);
+            watch(row_tall, move |tall| {
+                let height = if idx == 0 && tall { 88.0 } else { 44.0 };
+                let tapped = std::rc::Rc::clone(&tapped);
+                Frame::new(button(format!("row {idx}")).action(move || tapped.set(Some(idx))))
+                    .size(260.0, height)
+            })
+        })),
+    ));
+
+    let mut renderer = super::test_renderer();
+    let bounds = Rect::new(0.0, 0.0, 320.0, 320.0);
+    renderer.begin_rebuild_frame();
+    renderer.capture_window_tree(view, &env, bounds, Affine::IDENTITY, Affine::IDENTITY);
+    renderer.finish_rebuild_frame();
+    let initial_layout_calls = renderer.frame_work_counters_mut().layout_calls;
+    assert!(initial_layout_calls > 0);
+    #[cfg(feature = "accessibility")]
+    let _ = renderer.take_accessibility_tree_update();
+
+    toggled.set(true);
+    renderer.frame_work_counters_mut().reset_frame();
+    assert!(renderer.flush_window_tree(&env, bounds, Affine::IDENTITY, Affine::IDENTITY));
+    assert_eq!(renderer.frame_work_counters_mut().layout_calls, 0);
+
+    assert!(renderer.handle_scroll(160.0, 220.0, 0.0, -132.0, false));
+    renderer.frame_work_counters_mut().reset_frame();
+    assert!(renderer.flush_window_tree(&env, bounds, Affine::IDENTITY, Affine::IDENTITY));
+    let scroll_layout_calls = renderer.frame_work_counters_mut().layout_calls;
+    assert!(
+        scroll_layout_calls < initial_layout_calls,
+        "scroll must skip outer window layout ({scroll_layout_calls} vs initial {initial_layout_calls})"
+    );
+    #[cfg(feature = "accessibility")]
+    assert!(renderer.take_accessibility_tree_update().is_some());
+
+    assert!(renderer.handle_scroll(160.0, 220.0, 0.0, -10.0, false));
+    renderer.frame_work_counters_mut().reset_frame();
+    assert!(renderer.flush_window_tree(&env, bounds, Affine::IDENTITY, Affine::IDENTITY));
+    assert_eq!(renderer.frame_work_counters_mut().layout_calls, 0);
+    #[cfg(feature = "accessibility")]
+    let a11y = renderer
+        .take_accessibility_tree_update()
+        .expect("scrolled flush must still publish accessibility updates");
+    #[cfg(feature = "accessibility")]
+    let row5_bounds = super::popup_windows::find_by_label(&a11y, accesskit::Role::Button, "row 5")
+        .and_then(|(_, node)| node.bounds())
+        .expect("visible scrolled row 5 must carry updated accessibility bounds");
+    #[cfg(feature = "accessibility")]
+    {
+        let center_x = crate::num_cast::f64_as_f32(f64::midpoint(row5_bounds.x0, row5_bounds.x1));
+        let center_y = crate::num_cast::f64_as_f32(f64::midpoint(row5_bounds.y0, row5_bounds.y1));
+        let _ = renderer.handle_pointer_down(
+            center_x,
+            center_y,
+            crate::platform::PointerButton::Primary,
+            &env,
+        );
+        let _ = renderer.handle_pointer_up(
+            center_x,
+            center_y,
+            crate::platform::PointerButton::Primary,
+            &env,
+        );
+        assert_eq!(tapped.get(), Some(5));
+    }
+
+    row_tall.set(true);
+    renderer.frame_work_counters_mut().reset_frame();
+    assert!(renderer.flush_window_tree(&env, bounds, Affine::IDENTITY, Affine::IDENTITY));
+    assert!(renderer.frame_work_counters_mut().layout_calls > 0);
+
+    show_extra.set(true);
+    renderer.frame_work_counters_mut().reset_frame();
+    assert!(renderer.flush_window_tree(&env, bounds, Affine::IDENTITY, Affine::IDENTITY));
+    assert!(renderer.frame_work_counters_mut().layout_calls > 0);
+}
+
+#[test]
+fn window_geometry_and_environment_changes_rerun_layout() {
+    use kurbo::{Affine, Rect};
+    use waterui_core::layout::LayoutDirection;
+    use waterui_layout::padding::EdgeInsets;
+
+    let safe_area = Binding::container(EdgeInsets::default());
+    let keyboard_area = Binding::container(EdgeInsets::default());
+    let direction = Binding::container(LayoutDirection::LeftToRight);
+    let direction_signal: nami::Computed<LayoutDirection> = direction.clone().into();
+    let env = pumped_test_environment()
+        .extending(crate::platform::WindowSafeArea(safe_area.clone()))
+        .extending(crate::platform::WindowKeyboardArea(keyboard_area.clone()))
+        .extending(direction_signal);
+
+    let mut renderer = super::test_renderer();
+    let bounds = Rect::new(0.0, 0.0, 320.0, 320.0);
+    renderer.begin_rebuild_frame();
+    renderer.capture_window_tree(
+        vstack((text("Header"), button("Action").action(|| {}))),
+        &env,
+        bounds,
+        Affine::IDENTITY,
+        Affine::IDENTITY,
+    );
+    renderer.finish_rebuild_frame();
+
+    let resized = Rect::new(0.0, 0.0, 360.0, 320.0);
+    renderer.frame_work_counters_mut().reset_frame();
+    assert!(renderer.flush_window_tree(&env, resized, Affine::IDENTITY, Affine::IDENTITY));
+    assert!(renderer.frame_work_counters_mut().layout_calls > 0);
+
+    safe_area.set(EdgeInsets::new(24.0, 0.0, 0.0, 0.0));
+    renderer.frame_work_counters_mut().reset_frame();
+    assert!(renderer.flush_window_tree(&env, resized, Affine::IDENTITY, Affine::IDENTITY));
+    assert!(renderer.frame_work_counters_mut().layout_calls > 0);
+
+    keyboard_area.set(EdgeInsets::new(0.0, 120.0, 0.0, 0.0));
+    renderer.frame_work_counters_mut().reset_frame();
+    assert!(renderer.flush_window_tree(&env, resized, Affine::IDENTITY, Affine::IDENTITY));
+    assert!(renderer.frame_work_counters_mut().layout_calls > 0);
+
+    renderer.frame_work_counters_mut().reset_frame();
+    assert!(renderer.flush_window_tree(&env, resized, Affine::scale(2.0), Affine::IDENTITY));
+    assert!(renderer.frame_work_counters_mut().layout_calls > 0);
+
+    direction.set(LayoutDirection::RightToLeft);
+    renderer.frame_work_counters_mut().reset_frame();
+    assert!(renderer.flush_window_tree(&env, resized, Affine::scale(2.0), Affine::IDENTITY));
+    assert!(renderer.frame_work_counters_mut().layout_calls > 0);
 }

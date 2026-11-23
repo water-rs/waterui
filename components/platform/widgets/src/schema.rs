@@ -242,10 +242,9 @@ impl Image {
 )]
 #[non_exhaustive]
 pub enum ImageSource {
-    /// An SF Symbol by name — an Apple-only primitive (repository principle:
-    /// asymmetric primitives are documented, not faked).
-    System {
-        /// The symbol name, e.g. `figure.walk`.
+    /// An Apple SF Symbol by catalog name (mirroring `waterui_apple::SfSymbol`).
+    SfSymbol {
+        /// The SF Symbol name, e.g. `figure.walk`.
         name: String,
     },
     /// Inline encoded image bytes (PNG), decoded inside the extension.
@@ -721,10 +720,11 @@ impl Text {
 }
 
 impl Image {
-    /// An SF Symbol — an Apple-native primitive, supported on Apple widgets.
-    pub fn system(name: impl Into<String>) -> Self {
+    /// An SF Symbol (`waterui_apple::SfSymbol`) — an Apple-native primitive,
+    /// supported on Apple widgets.
+    pub fn sf_symbol(name: impl Into<String>) -> Self {
         Self {
-            source: ImageSource::System { name: name.into() },
+            source: ImageSource::SfSymbol { name: name.into() },
             color: None,
         }
     }

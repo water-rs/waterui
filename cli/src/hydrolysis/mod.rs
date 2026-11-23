@@ -1,9 +1,38 @@
 //! `Hydrolysis` backend support for `WaterUI` CLI.
 
+use crate::toolchain::{Host, ToolchainError, windows_arm64_llvm::WindowsArm64LlvmToolchain};
+
 pub mod android;
 pub mod backend;
+mod ios;
 pub mod platform;
 mod web_launch;
+
+async fn windows_arm64_llvm_envs(host: &Host) -> eyre::Result<Vec<(String, std::ffi::OsString)>> {
+    WindowsArm64LlvmToolchain
+        .cargo_envs(host)
+        .await
+        .map_err(|error| match error {
+            ToolchainError::Fixable(_) => eyre::eyre!(
+                "Windows ARM64 LLVM toolchain is missing. Run `water doctor --fix` to install it automatically."
+            ),
+            ToolchainError::Unfixable(unfixable) => {
+                eyre::eyre!("Windows ARM64 LLVM toolchain check failed: {unfixable}")
+            }
+        })
+}
+
+/// Enables `erased-dispatch` when requested and declared by the launcher manifest.
+fn erased_dispatch(
+    manifest: &std::path::Path,
+    enabled: bool,
+) -> std::io::Result<Option<&'static str>> {
+    if enabled && crate::templates::generated_manifest_declares(manifest, "erased-dispatch")? {
+        Ok(Some("erased-dispatch"))
+    } else {
+        Ok(None)
+    }
+}
 
 /// Development builds enable inspection when the resolved framework exposes it.
 fn development_inspector(

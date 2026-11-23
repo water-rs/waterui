@@ -138,8 +138,4 @@ impl View for CanvasView {
     fn body(self, _env: &Environment) -> impl View {
         Native::new(self)
     }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        scene_stretch_axis(self.intrinsic_size())
-    }
 }

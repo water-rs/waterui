@@ -235,6 +235,7 @@ pub(crate) async fn apple_dependency_features(
         features.push("chromium".to_string());
     }
     if browser_runtime.cef_webview() {
+        features.retain(|feature| feature != "webview");
         features.push("webview-cef".to_string());
     }
     Ok(features)
@@ -243,23 +244,26 @@ pub(crate) async fn apple_dependency_features(
 async fn apple_build_features(
     project: &Project,
     browser_runtime: &BrowserRuntimePlan,
-    linkage: RustLinkage,
+    options: &BuildOptions,
     target: &Triple,
 ) -> eyre::Result<Vec<String>> {
     let mut features = apple_dependency_features(project, browser_runtime, target).await?;
-    if linkage == RustLinkage::SharedRuntime {
+    let apple_manifest = project.apple_crate_path().join("Cargo.toml");
+    if options.linkage() == RustLinkage::SharedRuntime {
         features.push("dev".to_string());
         // The inspector is devtooling: development sessions get it through the
         // shared-runtime linkage while a packaged build leaves its server
         // stack out. The generated manifest forwards `inspector` only when
         // the resolved `waterui-apple` declares it, so the build can only
         // name it when the scaffold declared it.
-        if crate::templates::generated_manifest_declares(
-            &project.apple_crate_path().join("Cargo.toml"),
-            "inspector",
-        )? {
+        if crate::templates::generated_manifest_declares(&apple_manifest, "inspector")? {
             features.push("inspector".to_string());
         }
+    }
+    if options.uses_erased_dispatch()
+        && crate::templates::generated_manifest_declares(&apple_manifest, "erased-dispatch")?
+    {
+        features.push("erased-dispatch".to_string());
     }
     Ok(features)
 }
@@ -291,8 +295,7 @@ pub(crate) async fn apple_rust_build(
     let browser_runtime_plan = project
         .browser_runtime_plan(platform, TargetBackend::Apple, &triple)
         .await?;
-    let features =
-        apple_build_features(project, &browser_runtime_plan, options.linkage(), &triple).await?;
+    let features = apple_build_features(project, &browser_runtime_plan, options, &triple).await?;
     let target = triple.to_string();
     let target_underscore = target.replace('-', "_");
     let mut build = RustBuild::for_project(project, crate_path, triple)
@@ -890,6 +893,7 @@ pub async fn package_apple(
         project,
         platform,
         &staging_dir,
+        &project.apple_crate_path().join("Cargo.toml"),
         &built.app_symbols().await?,
         options.uses_dev_server(),
         &built.features,
@@ -934,7 +938,7 @@ pub async fn package_apple(
         })?
         .artifact;
     let mut info_plist = app_bundle::apple_info_plist(
-        &ctx,
+        &app_bundle::PlistApp::apple_backend(&ctx),
         project,
         platform,
         &deployment_target,
@@ -1035,12 +1039,17 @@ pub async fn package_apple(
     )
     .await?;
 
+    let project_entitlements =
+        app_bundle::apple_project_entitlements_path(backend.scheme(), &project_path);
     app_bundle::sign_apple_app(
         &layout,
         platform,
         &options,
-        backend,
-        project_path.as_path(),
+        &app_bundle::SigningFiles {
+            project_entitlements: Some(&project_entitlements),
+            scratch_root: &project_path,
+            name: backend.scheme(),
+        },
         project,
         &deployment_target,
         &apple_declarations,
@@ -1055,12 +1064,15 @@ pub async fn package_apple(
 // ============================================================================
 
 /// Copy project assets and dependency fonts to the app resources directory.
-/// `symbols` is the app library artifact the target build produced, whose
-/// `waterui_meta_bundle_*` statics declare the asset mounts.
-async fn copy_assets_and_fonts(
+/// `build_manifest` is the generated crate the bundle's executable builds
+/// from, whose graph declares the fonts. `symbols` is the app library
+/// artifact the target build produced, whose `waterui_meta_bundle_*`
+/// statics declare the asset mounts.
+pub(crate) async fn copy_assets_and_fonts(
     project: &Project,
     platform: TargetPlatform,
     dest_dir: &Path,
+    build_manifest: &Path,
     symbols: &crate::artifact_symbols::ArtifactSymbols,
     dev_server: bool,
     features: &[String],
@@ -1072,7 +1084,7 @@ async fn copy_assets_and_fonts(
     // Scan and resolve dependency fonts
     let font_declarations = assets::scan_fonts_with_features(
         project,
-        &project.apple_crate_path().join("Cargo.toml"),
+        build_manifest,
         &[platform.font_platform()],
         features,
     )

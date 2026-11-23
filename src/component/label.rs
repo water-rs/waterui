@@ -1,3 +1,6 @@
-//! Semantic labels re-exported from `waterui-controls`.
+//! Semantic label re-exports for `waterui::component::label` and the prelude.
 
-pub use waterui_controls::{IconPosition, IntoLabel, Label, LabelDisplayMode, label};
+pub use waterui_controls::{
+    Built, ControlLabel, CustomLabel, ErasedLabel, IconLabel, IconPosition, IntoLabel, Label,
+    LabelDisplayMode, LabelKind, SemanticLabel, TitleLabel, label,
+};

@@ -5,6 +5,7 @@
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::engine::EngineSurface;
 use std::rc::Rc;
 #[cfg(hydrolysis_gpu_painter)]
 use std::sync::Arc;
@@ -250,6 +251,7 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
         let rendered = crate::engine::engine_await!(window.surface.render(self.frame_time()));
         self.take_applied_filter_metrics();
         self.engine_tracks = crate::engine::EngineSurface::running_tracks(&window.surface);
+        self.engine_rate_vote = EngineSurface::rate_vote(&window.surface);
         self.cherenkov_window = Some(window);
         self.engine_next = Some(rendered?.into());
         let content_range = self.cherenkov_window.as_ref().expect("rendered window").surface.content_range();
@@ -257,7 +259,7 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
     }
     }
 
-    /// Commits the window's pending node programs through the macOS winit
+    /// Commits the window's pending node programs through the engine
     /// window's mount and renders the engine frame (§A), which the engine
     /// presents through the window's `WindowTarget`. The engine window
     /// lives in `engine_target`'s slot per device-creation chain and
@@ -268,7 +270,7 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
     ///
     /// [`FrameError`] when the engine cannot create the window's surface or
     /// the frame fails to render.
-    #[cfg(all(target_os = "macos", hydrolysis_winit))]
+    #[cfg(hydrolysis_apple_engine_window)]
     pub(crate) fn render_window_frame(
         &mut self,
         target: &FrameRenderTarget<'_>,
@@ -290,7 +292,7 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
             *window_slot = None;
             let surface = crate::engine::WindowCherenkovSurface::new(
                 Rc::clone(&target.engine.engine),
-                Arc::clone(native_window),
+                native_window.window_target((target.width, target.height)),
                 (target.width, target.height),
                 crate::platform::hydrolysis_output_request(transparent),
                 self.host_wake(),
@@ -420,12 +422,13 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
         #[cfg(not(feature = "frame-profile"))]
         let _ = context;
         self.engine_tracks = crate::engine::EngineSurface::running_tracks(&window.surface);
+        self.engine_rate_vote = EngineSurface::rate_vote(&window.surface);
         self.engine_next = Some(next.into());
         Ok(())
     }
 
     /// The common completion path for engine-presented native windows.
-    #[cfg(all(target_os = "macos", hydrolysis_winit))]
+    #[cfg(hydrolysis_apple_engine_window)]
     fn render_presented_window<S: crate::engine::EngineSurface>(
         &mut self,
         window: &mut CherenkovWindow<S, crate::text::ParleyEngine>,
@@ -444,6 +447,7 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
         #[cfg(not(feature = "frame-profile"))]
         let _ = target;
         self.engine_tracks = crate::engine::EngineSurface::running_tracks(&window.surface);
+        self.engine_rate_vote = EngineSurface::rate_vote(&window.surface);
         self.engine_next = Some(rendered?.into());
         Ok(())
     }
@@ -505,6 +509,7 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
         let rendered = window.surface.render(self.frame_time()).await;
         self.take_applied_filter_metrics();
         self.engine_tracks = crate::engine::EngineSurface::running_tracks(&window.surface);
+        self.engine_rate_vote = EngineSurface::rate_vote(&window.surface);
         *window_slot = Some(window);
         self.engine_next = Some(rendered?.into());
         Ok(())
@@ -630,6 +635,37 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
         frame: FrameGeometry,
         capture: Option<cherenkov::OutputAlpha>,
     ) -> Result<Option<Vec<u8>>, FrameError> {
+        self.render_raster_with(state, frame, |surface, headroom| {
+            capture
+                .map(|alpha| surface.readback_rgba8(headroom, alpha))
+                .transpose()
+        })
+    }
+
+    /// Commits and renders the frame on `state`'s CPU engine, writing the
+    /// presented sRGB `0x00RRGGBB` pixels into `out` for a desktop software
+    /// surface.
+    #[cfg(hydrolysis_software_surface)]
+    pub(crate) fn render_raster_0rgb_into(
+        &mut self,
+        state: &Rc<crate::engine::RasterEngineState>,
+        frame: FrameGeometry,
+        out: &mut [u32],
+    ) -> Result<(), FrameError> {
+        self.render_raster_with(state, frame, |surface, headroom| {
+            surface.present_0rgb_into(headroom, out)
+        })
+    }
+
+    fn render_raster_with<R>(
+        &mut self,
+        state: &Rc<crate::engine::RasterEngineState>,
+        frame: FrameGeometry,
+        finish: impl FnOnce(
+            &crate::engine::RasterCherenkovSurface,
+            f32,
+        ) -> Result<R, cherenkov::RenderError>,
+    ) -> Result<R, FrameError> {
         let _render_span = tracing::debug_span!("hydrolysis_render_scene").entered();
         if !self
             .raster_window
@@ -675,17 +711,16 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
         self.frame_applied_filter_count = state.engine.stats().filters_applied;
         self.frame_applied_filter_effect = std::time::Duration::ZERO;
         self.engine_tracks = crate::engine::EngineSurface::running_tracks(&window.surface);
-        let pixels = match rendered {
+        self.engine_rate_vote = EngineSurface::rate_vote(&window.surface);
+        let output = match rendered {
             Ok(next) => {
                 self.engine_next = Some(next.into());
-                capture
-                    .map(|alpha| window.surface.readback_rgba8(headroom, alpha))
-                    .transpose()
+                finish(&window.surface, headroom)
             }
             Err(error) => Err(error),
         };
         self.raster_window = Some(window);
-        Ok(pixels?)
+        Ok(output?)
     }
 }
 

@@ -33,6 +33,8 @@ use core::pin::Pin;
 use executor_core::AnyLocalExecutorTask;
 #[cfg(feature = "menu")]
 use waterui_controls::menu::{CommandExt as _, ResolvedCommand, Shortcut};
+#[cfg(feature = "menu")]
+use waterui_core::backend::ChildSlot;
 use waterui_core::{Environment, impl_extractor};
 
 use crate::app::QuitReply;
@@ -388,7 +390,7 @@ impl Quit {
     #[doc(hidden)]
     #[must_use]
     #[cfg(feature = "menu")]
-    pub fn command(&self, env: &Environment) -> ResolvedCommand {
+    pub fn command<S: ChildSlot>(&self, env: &Environment) -> ResolvedCommand<S> {
         let quit = self.clone();
         // "Exit" is the Windows menu convention; "Quit" is macOS's and what
         // Linux desktops (GTK/Qt) use.
@@ -400,7 +402,7 @@ impl Quit {
         label
             .action(move || quit.request())
             .shortcut(Shortcut::new('q').command())
-            .resolve(env)
+            .resolve::<S>(env)
     }
 }
 
@@ -415,7 +417,7 @@ mod tests {
 
     use super::super::parked_executor::{drain, install as install_executor};
     use super::*;
-    use crate::app::{App, QuitReply};
+    use crate::app::{App, AppMenuBar, QuitReply, Windows};
 
     #[test]
     #[cfg_attr(debug_assertions, should_panic(expected = "termination machine ended"))]
@@ -447,7 +449,10 @@ mod tests {
     /// The app's end of the test: a `Termination` built through the real
     /// `App` hooks, started against `log`, and the environment it installed
     /// its `Quit` into.
-    fn start(app: App, log: &Log) -> (TerminationHandle, Environment) {
+    fn start<W: Windows, M: AppMenuBar>(
+        app: App<W, M>,
+        log: &Log,
+    ) -> (TerminationHandle, Environment) {
         let mut env = Environment::new();
         let handle = app.into_parts().termination.start(&mut env, log.clone());
         (handle, env)
@@ -457,7 +462,7 @@ mod tests {
     fn a_cancel_refuses_and_rearms_the_question() {
         install_executor();
         let log = Log::default();
-        let app = App::new_with_windows(Vec::new(), Environment::new())
+        let app = App::new_with_windows((), Environment::new())
             .on_quit_request(|| async { QuitReply::Cancel });
         let (handle, env) = start(app, &log);
 
@@ -477,19 +482,20 @@ mod tests {
     #[test]
     #[cfg(feature = "menu")]
     fn the_quit_command_files_a_cancellable_request() {
+        use waterui_controls::NoopSlot;
+
         install_executor();
         let log = Log::default();
         let asked = log.clone();
-        let app =
-            App::new_with_windows(Vec::new(), Environment::new()).on_quit_request(move || {
-                asked.calls.borrow_mut().push("asked".into());
-                async { QuitReply::Cancel }
-            });
+        let app = App::new_with_windows((), Environment::new()).on_quit_request(move || {
+            asked.calls.borrow_mut().push("asked".into());
+            async { QuitReply::Cancel }
+        });
         let (_handle, env) = start(app, &log);
         let command = env
             .get::<Quit>()
             .expect("start installs Quit into the runner's environment")
-            .command(&env);
+            .command::<NoopSlot>(&env);
 
         let label = if cfg!(target_os = "windows") {
             "Exit"
@@ -514,7 +520,7 @@ mod tests {
         install_executor();
         let log = Log::default();
         let hook_log = log.clone();
-        let app = App::new_with_windows(Vec::new(), Environment::new())
+        let app = App::new_with_windows((), Environment::new())
             .on_quit_request(|| async { QuitReply::Quit })
             .on_terminate(move || {
                 let hook_log = hook_log.clone();
@@ -535,7 +541,7 @@ mod tests {
         let log = Log::default();
         let asked = log.clone();
         let shutdown = log.clone();
-        let app = App::new_with_windows(Vec::new(), Environment::new())
+        let app = App::new_with_windows((), Environment::new())
             .on_quit_request(move || {
                 asked.calls.borrow_mut().push("asked".into());
                 async { QuitReply::Cancel }
@@ -559,7 +565,7 @@ mod tests {
         let log = Log::default();
         let asked = log.clone();
         let shutdown = log.clone();
-        let app = App::new_with_windows(Vec::new(), Environment::new())
+        let app = App::new_with_windows((), Environment::new())
             .on_quit_request(move || {
                 asked.calls.borrow_mut().push("asked".into());
                 // The question stays open — its future never answers.
@@ -588,11 +594,10 @@ mod tests {
         install_executor();
         let log = Log::default();
         let asked = log.clone();
-        let app =
-            App::new_with_windows(Vec::new(), Environment::new()).on_quit_request(move || {
-                asked.calls.borrow_mut().push("asked".into());
-                core::future::pending::<QuitReply>()
-            });
+        let app = App::new_with_windows((), Environment::new()).on_quit_request(move || {
+            asked.calls.borrow_mut().push("asked".into());
+            core::future::pending::<QuitReply>()
+        });
         let (handle, _) = start(app, &log);
 
         handle.request(TerminationKind::Cancellable);
@@ -613,7 +618,7 @@ mod tests {
     fn a_request_without_hooks_terminates_immediately() {
         install_executor();
         let log = Log::default();
-        let app = App::new_with_windows(Vec::new(), Environment::new());
+        let app = App::new_with_windows((), Environment::new());
         let (handle, _) = start(app, &log);
 
         handle.request(TerminationKind::Cancellable);

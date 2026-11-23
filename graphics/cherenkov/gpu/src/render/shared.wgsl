@@ -45,6 +45,7 @@ const EFFECT_SHADER: u32 = 3u;
 const EFFECT_RIM: u32 = 4u;
 const EFFECT_SAMPLE: u32 = 5u;
 const EFFECT_LEVEL: u32 = 6u;
+const EFFECT_CONTENT: u32 = 7u;
 
 const EXTEND_PAD: u32 = 0u;
 const EXTEND_REPEAT: u32 = 1u;
@@ -59,6 +60,7 @@ const FLAG_HAS_INNER: u32 = 2u;
 const FLAG_HAS_MASK: u32 = 4u;      // clip coverage x atlas mask cell
 const FLAG_MASK_TEXTURE: u32 = 8u;  // mask sampled from `mask_tex`, not the atlas
 const FLAG_TEX_SRGB: u32 = 16u;     // PAINT_TEXTURE source stores encoded pixels
+const FLAG_PICTURE_TILE: u32 = 128u; // projective inverse maps to shared picture texels
 const FLAG_BLEND_SRC: u32 = 32u;    // the composite blends in the source's space
 const FLAG_UNION: u32 = 64u;        // PAINT_BACKDROP member reads the union field
 

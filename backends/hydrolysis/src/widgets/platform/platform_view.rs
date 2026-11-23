@@ -11,19 +11,23 @@
 //! cannot embed native children — a contract violation reported at node build
 //! naming the missing piece; the leaf is then built empty.
 
+#[cfg(hydrolysis_android_system_webview)]
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use waterui_core::Environment;
 use waterui_core::contract_violation;
-use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
-use waterui_core::{Environment, Native};
+use waterui_core::layout::{ProposalSize, ViewDimensions};
 
 use crate::platform_view::{
     PlatformView, PlatformViewPlacement, PlatformViewSink, PlatformViewSource,
 };
 use crate::renderer::{
-    HydroNativeView, HydroState, WidgetRenderContext, graphics_dimensions_from_proposal,
+    HydroProvidedBehavior, HydroProvidedRenderHost, RenderContext,
+    graphics_dimensions_from_proposal,
 };
+#[cfg(hydrolysis_android_system_webview)]
+use crate::renderer::{HydroState, WidgetRenderContext};
 
 /// Where a leaf's mounted view comes from — and, for an instance, the
 /// object whose lifetime keeps it alive: the invariant lives in the type.
@@ -109,29 +113,28 @@ impl PlatformViewRenderState {
     }
 }
 
-impl<E: crate::text::TextEngine> HydroNativeView<E> for Native<PlatformView> {
-    fn intrinsic(
-        _state: &mut HydroState<E>,
-        _view: &Self,
-        _env: &Environment,
-        _theme: &Rc<dyn crate::theme::WidgetTheme>,
-    ) -> LayoutSize {
-        LayoutSize::zero()
+impl HydroProvidedBehavior for PlatformViewRenderState {
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+        graphics_dimensions_from_proposal(proposal)
     }
 
-    fn dimensions(
-        _state: &mut HydroState<E>,
-        _view: &Self,
+    fn render(
+        self: Rc<Self>,
+        host: &mut dyn HydroProvidedRenderHost,
+        ctx: RenderContext,
         _env: &Environment,
-        _theme: &Rc<dyn crate::theme::WidgetTheme>,
-        proposal: ProposalSize,
-    ) -> ViewDimensions {
-        graphics_dimensions_from_proposal(proposal)
+    ) {
+        host.register_platform_view_placement(
+            ctx.bounds(),
+            Rc::clone(&self.sink.table),
+            PlatformViewPlacement::new(self.id, self.source.wire()),
+        );
     }
 }
 
 /// Measures a platform-view leaf: it fills the proposal — the mounted child
 /// takes whatever the layout assigned.
+#[cfg(hydrolysis_android_system_webview)]
 pub fn measure_platform_view_node<E: crate::text::TextEngine>(
     state: &PlatformViewRenderState,
     proposal: ProposalSize,
@@ -148,6 +151,7 @@ pub fn measure_platform_view_node<E: crate::text::TextEngine>(
 /// paint order the host stacks embedded children by. The sink republishes the
 /// set once the frame's encode completes, so a frame that never re-flushes
 /// keeps the previous placements.
+#[cfg(hydrolysis_android_system_webview)]
 pub fn render_platform_view_node<E: crate::text::TextEngine>(
     ctx: &mut WidgetRenderContext<'_, E>,
     state: &Rc<RefCell<PlatformViewRenderState>>,
@@ -187,5 +191,36 @@ mod tests {
         let mut env = Environment::new();
         env.insert(PlatformViewSink::new());
         assert!(PlatformViewRenderState::from_config(&PlatformView::new("map"), &env).is_some());
+    }
+
+    #[test]
+    fn platform_view_realizes_through_hydro_provided_slot_on_static_and_erased_paths() {
+        use waterui_core::NativeView;
+        use waterui_core::backend::ErasedPayload;
+
+        let mut env = Environment::new();
+        env.insert(PlatformViewSink::new());
+
+        let mut foreign = 0_u8;
+        assert!(
+            PlatformView::new("map")
+                .realize_provided(&mut foreign, &env)
+                .is_err()
+        );
+
+        let mut slot = crate::renderer::HydroProvidedSlot::default();
+        assert!(
+            PlatformView::new("map")
+                .realize_provided(&mut slot, &env)
+                .is_ok()
+        );
+        assert!(slot.realized.is_some());
+
+        let mut erased_slot = crate::renderer::HydroProvidedSlot::default();
+        let mut value = Some(PlatformView::new("map"));
+        let mut payload = ErasedPayload::new_native(&mut value);
+        assert!(!payload.realize_provided(&mut foreign, &env));
+        assert!(payload.realize_provided(&mut erased_slot, &env));
+        assert!(erased_slot.realized.is_some());
     }
 }

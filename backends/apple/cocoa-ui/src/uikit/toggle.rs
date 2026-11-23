@@ -25,9 +25,9 @@ use objc2_core_foundation::CGRect;
 use objc2_foundation::{NSArray, NSObject, NSObjectProtocol, ns_string};
 use objc2_ui_kit::{
     NSLayoutConstraint, UIAccessibilityContentSizeCategoryImageAdjusting, UIButton, UIButtonType,
-    UIColor, UIControl, UIControlState, UIFontTextStyleBody, UIImage, UIImageSymbolConfiguration,
-    UILayoutGuide, UILayoutPriorityDefaultHigh, UILayoutPriorityRequired, UIResponder, UISwitch,
-    UIView,
+    UIColor, UIControl, UIControlState, UIFontTextStyleBody, UIImage, UIImageRenderingMode,
+    UIImageSymbolConfiguration, UILayoutGuide, UILayoutPriorityDefaultHigh,
+    UILayoutPriorityRequired, UIResponder, UISwitch, UIView,
 };
 
 use crate::action::{ActionTarget, ControlEvents};
@@ -36,6 +36,7 @@ use crate::core_animation;
 use crate::geometry::{Rect, Size};
 use crate::response::{ReportsResponse, ResponseGeometry};
 use crate::slider::ControlSize;
+use crate::uikit::button::CocoaUiButton;
 
 /// The gap between the label and the control, in points.
 pub const LABEL_SPACING: f64 = 8.0;
@@ -255,16 +256,19 @@ impl Toggle {
                 Control::Switch(switch)
             }
             Kind::Checkbox => {
-                let unchecked = UIImage::systemImageNamed(ns_string!("square"));
-                let checked = UIImage::systemImageNamed(ns_string!("checkmark.square.fill"));
+                let unchecked = UIImage::systemImageNamed(ns_string!("square"))
+                    .map(|img| img.imageWithRenderingMode(UIImageRenderingMode::AlwaysTemplate));
+                let checked = UIImage::systemImageNamed(ns_string!("checkmark.square.fill"))
+                    .map(|img| img.imageWithRenderingMode(UIImageRenderingMode::AlwaysTemplate));
                 let (Some(unchecked), Some(checked)) = (unchecked, checked) else {
                     panic!(
                         "SF Symbols ships `square` and `checkmark.square.fill` on every supported iOS"
                     );
                 };
-                let button =
-                    crate::uikit::button::CocoaUiButton::with_type(mtm, UIButtonType::System)
-                        .into_super();
+                // Use `UIButtonType::Custom` rather than `System`: a non-configured
+                // `System` button draws a legacy selection background plate and
+                // inverts the template image to white whenever `isSelected == true`.
+                let button = CocoaUiButton::with_type(mtm, UIButtonType::Custom).into_super();
                 // SAFETY: `UIFontTextStyleBody` is a documented, immutable
                 // shared text style.
                 let configuration = unsafe {
@@ -273,6 +277,10 @@ impl Toggle {
                 button.setPreferredSymbolConfiguration_forImageInState(
                     Some(&configuration),
                     UIControlState::Normal,
+                );
+                button.setPreferredSymbolConfiguration_forImageInState(
+                    Some(&configuration),
+                    UIControlState::Selected,
                 );
                 button.setImage_forState(Some(&unchecked), UIControlState::Normal);
                 button.setImage_forState(Some(&checked), UIControlState::Selected);

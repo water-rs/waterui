@@ -125,6 +125,18 @@ pub fn trials() -> Vec<Trial> {
         ),
         case!("capture", a_hidden_capture_renders_without_revealing),
         case!(
+            "capture",
+            capture_window_draws_controls_with_active_key_appearance
+        ),
+        case!(
+            "capture",
+            capture_preserves_background_behind_prominent_glass_button
+        ),
+        case!(
+            "capture",
+            render_server_captures_glass_and_orientation_without_windows
+        ),
+        case!(
             "appkit::text_field",
             a_fields_edit_path_carries_selection_undo_and_change
         ),
@@ -1431,6 +1443,283 @@ fn a_hidden_capture_renders_without_revealing() {
     drop(capture);
     crate::harness::pump_main_turn();
     label.removeFromSuperview();
+}
+
+/// A view hosted in `cocoa_ui::bitmap::capture_window` is never ordered on
+/// screen (`!window.isVisible()`), yet `AppKit` controls inside it (`Button`,
+/// `Toggle`, `Slider`, `Progress`) must draw their active key-window accent
+/// appearance rather than inactive gray.
+fn capture_window_draws_controls_with_active_key_appearance() {
+    use crate::harness::{await_fence, capture_target, count_pixels, fence_flag, readback};
+    use cocoa_ui::appkit::toggle::{Kind, Toggle};
+    use cocoa_ui::appkit::{Button, Progress, Slider};
+    use cocoa_ui::bitmap::capture_window;
+    use cocoa_ui::capture::ViewCapture;
+    use cocoa_ui::objc2_app_kit::{
+        NSAppearance, NSAppearanceCustomization as _, NSAppearanceNameAqua, NSBezelStyle, NSColor,
+    };
+    use cocoa_ui::progress::ProgressVariant;
+    use cocoa_ui::view::{add_subview, prepare_for_capture, retain_base, set_frame};
+
+    let mtm = marker();
+    let window = capture_window(mtm, Size::new(200.0, 200.0));
+    assert!(
+        !window.isVisible(),
+        "capture_window must never order onto the screen"
+    );
+    assert!(
+        window.isKeyWindow() && window.isMainWindow(),
+        "capture_window reports key and main state for offscreen control rendering"
+    );
+    // SAFETY: `NSAppearanceNameAqua` is an AppKit string constant.
+    let aqua = NSAppearance::appearanceNamed(unsafe { NSAppearanceNameAqua })
+        .expect("system Aqua appearance exists");
+    window.setAppearance(Some(&aqua));
+
+    let content = window
+        .contentView()
+        .expect("capture_window has a content view");
+    content.setWantsLayer(true);
+
+    let button = Button::new(mtm);
+    button.set_bordered(true);
+    button.set_bezel_style(NSBezelStyle::FlexiblePush);
+    button.set_bezel_color(Some(&NSColor::systemBlueColor()));
+    button.set_title("Action");
+    set_frame(&button, Rect::new(10.0, 10.0, 100.0, 28.0));
+    add_subview(&content, &button);
+
+    let toggle = Toggle::new(mtm, Kind::Switch, true);
+    set_frame(toggle.control(), Rect::new(10.0, 50.0, 60.0, 24.0));
+    add_subview(&content, toggle.control());
+
+    let slider = Slider::new(mtm);
+    slider.set_range(0.0, 1.0);
+    slider.set_value(0.65, None);
+    set_frame(&slider, Rect::new(10.0, 90.0, 140.0, 24.0));
+    add_subview(&content, &slider);
+
+    let progress = Progress::new(mtm);
+    progress.set_variant(ProgressVariant::Linear);
+    progress.set_indeterminate(false);
+    progress.set_range(0.0, 1.0);
+    progress.set_value(0.65);
+    set_frame(&progress, Rect::new(10.0, 130.0, 140.0, 16.0));
+    add_subview(&content, &progress);
+
+    prepare_for_capture(&content);
+
+    for (name, control_view) in [
+        ("button", &*button as &NSView),
+        ("switch", toggle.control()),
+        ("slider", &*slider as &NSView),
+        ("progress", &*progress as &NSView),
+    ] {
+        let target = capture_target();
+        let capture = Rc::new(ViewCapture::new(mtm, retain_base(control_view)));
+        capture.set_on_redraw(|| {});
+        let (flag, complete) = fence_flag();
+        capture.capture(&target, 0, complete);
+        await_fence(&flag, name);
+        let texels = readback(&target);
+        // `capture_target` is BGRA8Unorm: active accent blue has B >= 180 and R <= 100.
+        let active_blue = count_pixels(&texels, [180, 80, 0, 200], [255, 220, 100, 255]);
+        assert!(
+            active_blue > 50,
+            "{name} inside capture_window must render with active accent blue pixels, got {active_blue}"
+        );
+        capture.shutdown();
+    }
+}
+
+/// A prominent `NSBezelStyle::Glass` button (`bezelColor != nil`) in an active
+/// capture window mounts a `CASDFLayer` with `compositingFilter = "destIn"`
+/// that outputs zero alpha in `CALayer.renderInContext:` / `cacheDisplayInRect:`.
+/// In-process capture must suppress `CASDFLayer` descendants during the raster
+/// so the ancestor white background remains `(255, 255, 255, 255)` rather than
+/// being zeroed to `(0, 0, 0, 0)`.
+fn capture_preserves_background_behind_prominent_glass_button() {
+    use std::slice::from_raw_parts;
+
+    use cocoa_ui::appkit::Button;
+    use cocoa_ui::bitmap::capture_window;
+    use cocoa_ui::capture::ViewCapture;
+    use cocoa_ui::objc2_app_kit::{
+        NSAppearance, NSAppearanceCustomization as _, NSAppearanceNameAqua, NSBezelStyle, NSColor,
+    };
+    use cocoa_ui::view::{
+        add_subview, bitmap_rep_for_caching_display, cache_display, prepare_for_capture, set_frame,
+    };
+
+    use crate::harness::{await_fence, capture_target, count_pixels, fence_flag, readback};
+
+    let mtm = marker();
+    let window = capture_window(mtm, Size::new(220.0, 80.0));
+    // SAFETY: `NSAppearanceNameAqua` is an AppKit string constant.
+    let aqua = NSAppearance::appearanceNamed(unsafe { NSAppearanceNameAqua })
+        .expect("system Aqua appearance exists");
+    window.setAppearance(Some(&aqua));
+
+    let content = window
+        .contentView()
+        .expect("capture_window has a content view");
+    content.setWantsLayer(true);
+    content
+        .layer()
+        .expect("content view is layer-backed")
+        .setBackgroundColor(Some(&NSColor::whiteColor().CGColor()));
+
+    let button = Button::new(mtm);
+    button.set_bordered(true);
+    button.set_bezel_style(NSBezelStyle::Glass);
+    button.set_bezel_color(Some(&NSColor::systemBlueColor()));
+    button.set_title("Continue");
+    set_frame(&button, Rect::new(50.0, 24.0, 120.0, 32.0));
+    add_subview(&content, &button);
+
+    prepare_for_capture(&content);
+
+    // 1. Verify `ViewCapture` (`CALayer.renderInContext:` path) preserves the white background.
+    let target = capture_target();
+    let capture = Rc::new(ViewCapture::new(mtm, content.clone()));
+    capture.set_on_redraw(|| {});
+    let (flag, complete) = fence_flag();
+    capture.capture(&target, 0, complete);
+    await_fence(&flag, "prominent_glass_button");
+    let texels = readback(&target);
+    let white_bg = count_pixels(&texels, [250, 250, 250, 250], [255, 255, 255, 255]);
+    assert!(
+        white_bg > 100_000,
+        "ViewCapture must preserve the white ancestor background behind a prominent glass button, got {white_bg} white texels"
+    );
+    capture.shutdown();
+
+    // 2. Verify `cache_display` (`cacheDisplayInRect:toBitmapImageRep:` path) also preserves the white background.
+    let rep = bitmap_rep_for_caching_display(&content).expect("a bitmap rep");
+    cache_display(&content, &rep);
+    // SAFETY: `bitmapData` points to at least 4 readable RGBA8 bytes at `(0, 0)`.
+    let top_left = unsafe { from_raw_parts(rep.bitmapData(), 4) };
+    assert_eq!(
+        top_left,
+        [255, 255, 255, 255],
+        "cache_display must preserve the white ancestor background at (0, 0), got {top_left:?}"
+    );
+}
+
+/// The test-only in-process `Core Animation` render server captures real
+/// `CASDFLayer`/`CABackdropLayer` glass pixels (`NSBezelStyle::Glass` with
+/// `bezelColor`) and preserves top-down layout and right-side-up text without
+/// ordering any window on screen (`!window.isVisible()`, `!NSApp.isActive()`).
+fn render_server_captures_glass_and_orientation_without_windows() {
+    use cocoa_ui::ColorScheme;
+    use cocoa_ui::appkit::{Button, HostView};
+    use cocoa_ui::bitmap::{
+        capture_window, render_layer_via_render_server, set_window_color_scheme,
+    };
+    use cocoa_ui::objc2_app_kit::{NSApplication, NSBezelStyle, NSColor, NSView};
+    use cocoa_ui::view::{add_subview, layer, prepare_for_capture, set_frame};
+
+    let mtm = marker();
+    let app = NSApplication::sharedApplication(mtm);
+    assert!(
+        !app.isActive(),
+        "headless render-server test must never activate the application"
+    );
+
+    let size = Size::new(260.0, 140.0);
+    let window = capture_window(mtm, size);
+    assert!(
+        !window.isVisible(),
+        "capture_window must never order onto the screen"
+    );
+    set_window_color_scheme(&window, ColorScheme::Light);
+
+    let content = window
+        .contentView()
+        .expect("capture_window has a content view");
+    content.setWantsLayer(true);
+
+    // Flipped host view: top half (y = 0..70) is red with a prominent glass button,
+    // bottom half (y = 70..140) is green.
+    let host = HostView::new(mtm, Rect::new(0.0, 0.0, 260.0, 140.0));
+    add_subview(&content, &host);
+
+    let add_band = |y: f64, color: &NSColor| {
+        let band = NSView::new(mtm);
+        band.setWantsLayer(true);
+        set_frame(&band, Rect::new(0.0, y, 260.0, 70.0));
+        band.layer()
+            .expect("band is layer-backed")
+            .setBackgroundColor(Some(&color.CGColor()));
+        add_subview(&host, &band);
+    };
+    add_band(0.0, &NSColor::systemRedColor());
+    add_band(70.0, &NSColor::systemGreenColor());
+
+    let button = Button::new(mtm);
+    button.set_bordered(true);
+    button.set_bezel_style(NSBezelStyle::Glass);
+    button.set_bezel_color(Some(&NSColor::systemBlueColor()));
+    button.set_title("Prominent");
+    set_frame(&button, Rect::new(40.0, 18.0, 180.0, 34.0));
+    add_subview(&host, &button);
+
+    prepare_for_capture(&host);
+    let host_layer = layer(&host).expect("host view is layer-backed");
+
+    // Run twice to prove repeated captures on the same hierarchy stay clean.
+    let mut pixels = Vec::new();
+    for _ in 0..2 {
+        pixels = render_layer_via_render_server(&host_layer, 2.0, 520, 280)
+            .expect("in-process CARenderServer capture must succeed");
+    }
+    assert!(
+        !window.isVisible() && !app.isActive(),
+        "render-server capture must keep the window offscreen and the app inactive"
+    );
+
+    let pixel_at = |x: usize, y: usize| -> [u8; 4] {
+        let offset = (y * 520 + x) * 4;
+        [
+            pixels[offset],
+            pixels[offset + 1],
+            pixels[offset + 2],
+            pixels[offset + 3],
+        ]
+    };
+    let top_px = pixel_at(4, 4);
+    assert!(
+        top_px[0] > 200 && top_px[1] < 110 && top_px[2] < 110 && top_px[3] == 255,
+        "top-left pixel must be red (top-down orientation), got {top_px:?}"
+    );
+    let bottom_px = pixel_at(4, 275);
+    assert!(
+        bottom_px[1] > 150 && bottom_px[0] < 110 && bottom_px[2] < 120 && bottom_px[3] == 255,
+        "bottom-left pixel must be green (top-down orientation), got {bottom_px:?}"
+    );
+
+    // Count active blue glass fill and bright white glyph pixels inside the button rect.
+    let mut glass_blue = 0usize;
+    let mut white_glyph = 0usize;
+    for y in 36..104 {
+        for x in 80..440 {
+            let [r, g, b, a] = pixel_at(x, y);
+            if a >= 200 && b >= 180 && g >= 70 && r <= 100 {
+                glass_blue += 1;
+            }
+            if a >= 200 && r >= 220 && g >= 220 && b >= 220 {
+                white_glyph += 1;
+            }
+        }
+    }
+    assert!(
+        glass_blue > 5_000,
+        "prominent glass button must render real compositor blue glass fill, got {glass_blue}"
+    );
+    assert!(
+        white_glyph > 100,
+        "prominent glass button must render crisp white title glyphs, got {white_glyph}"
+    );
 }
 
 /// A text field in a never-ordered window: `begin_editing` brings up the

@@ -10,7 +10,10 @@
 
 use std::sync::Arc;
 
-use cherenkov::{BackdropShaderSource, RenderError, ResourceError, ShaderSource};
+use cherenkov::wgsl::{CONTENT_ENTRY, content_module};
+use cherenkov::{
+    BackdropShaderSource, ContentShaderSource, RenderError, ResourceError, ShaderSource,
+};
 use cherenkov_shader::lanes::{Host, ImageOp, Interface, LANES, Lanes, Mask, Program, Reg};
 use cherenkov_shader::naga;
 use rayon::prelude::*;
@@ -106,6 +109,66 @@ impl BackdropProgram {
             scale: global("backdrop_scale")[0],
             levels: global("backdrop_levels")[0],
             program,
+        })
+    }
+}
+
+/// `content_sample(q)`'s index in [`CONTENT`]'s host functions.
+pub const CONTENT_SAMPLE: usize = 0;
+
+/// What the raster pass supplies a content effect shader.
+const CONTENT: Interface<'static> = Interface {
+    functions: &["content_sample"],
+    inputs: &[],
+};
+
+/// `ContentPixel`'s slots: `p`, `sdf`, `normal`, `size`, `scale`, `local`.
+pub const CONTENT_PIXEL_SLOTS: usize = 10;
+
+/// A compiled content effect shader and the registers its inputs live in.
+#[derive(Debug)]
+pub struct ContentProgram {
+    pub program: Program,
+    /// `px`'s registers, in [`CONTENT_PIXEL_SLOTS`] order.
+    pub pixel: Box<[Reg]>,
+    /// `params`' registers.
+    pub params: Box<[Reg]>,
+}
+
+impl ContentProgram {
+    /// Compiles `source` against the content-effect prelude.
+    ///
+    /// # Errors
+    /// [`ResourceError::Shader`] when the module fails to parse or validate,
+    /// its `content_effect` does not have the contract's signature, or it
+    /// uses a construct the lane executor does not model.
+    pub fn compile(source: &ContentShaderSource) -> Result<Self, ResourceError> {
+        let text = content_module(&source.source);
+        let program = Program::wgsl(&text, CONTENT_ENTRY, &CONTENT)
+            .map_err(|error| ResourceError::Shader(error.to_string()))?;
+        let signature = || {
+            ResourceError::Shader(
+                "`content_effect` must be `fn(ContentPixel, array<vec4<f32>, 16>) -> vec4<f32>`"
+                    .into(),
+            )
+        };
+        if program.result().len() != 4 || program.arity() != 2 {
+            return Err(signature());
+        }
+        let argument = |index: usize, slots: usize| -> Result<Box<[Reg]>, ResourceError> {
+            let regs = program.argument(index);
+            if regs.len() == slots {
+                Ok(regs.into())
+            } else {
+                Err(signature())
+            }
+        };
+        let pixel = argument(0, CONTENT_PIXEL_SLOTS)?;
+        let params = argument(1, PARAM_SLOTS)?;
+        Ok(Self {
+            program,
+            pixel,
+            params,
         })
     }
 }

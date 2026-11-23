@@ -103,7 +103,7 @@ pub enum CoverageRoute {
 pub const GPU_ROUTE_MIN_ELEMENTS: usize = 4096;
 
 /// Source element count used before device-space preparation.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Complexity {
     elements: Option<usize>,
 }

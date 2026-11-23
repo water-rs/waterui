@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title }}</title>
+  <style>{{ stylesheet|safe }}</style>
+</head>
+<body>
+  <header class="header">
+    <div class="header-top">
+      <h1>{{ title }}</h1>
+      <span class="pill">Schema v{{ report.schema_version }}</span>
+    </div>
+    <div class="summary">
+      <span class="pill">Suites: {{ report.summary.total_suites }}</span>
+      <span class="pill">Cases: {{ report.summary.total_cases }}</span>
+      <span class="pill">Stages: {{ report.summary.total_stages }}</span>
+      <span class="pill pass">Passed: {{ report.summary.passed_stages }}</span>
+      <span class="pill fail">Failed: {{ report.summary.failed_stages }}</span>
+      {% if report.summary.blank_stages > 0 %}
+      <span class="pill fail">Blank: {{ report.summary.blank_stages }}</span>
+      {% endif %}
+      {% if let Some(worst_flip) = report.summary.worst_flip_mean %}
+      <span class="pill">Max FLIP Mean: {{ "{:.4}"|format(worst_flip) }}</span>
+      {% endif %}
+      {% if let Some(worst_block) = report.summary.worst_block_flip_mean %}
+      <span class="pill">Max Block FLIP: {{ "{:.4}"|format(worst_block) }}</span>
+      {% endif %}
+    </div>
+    <div class="controls">
+      <label class="control-group">
+        Suite
+        <select id="filter-suite">
+          <option value="all">All suites</option>
+          {% for suite in report.suites %}
+          <option value="{{ suite.name }}">{{ suite.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="control-group">
+        Status
+        <select id="filter-status">
+          <option value="all">All</option>
+          <option value="passed">Passed</option>
+          <option value="failed">Failed</option>
+        </select>
+      </label>
+      <label class="control-group">
+        Min FLIP mean
+        <input id="filter-flip" type="number" min="0" max="1" step="0.005" value="0">
+      </label>
+      <label class="control-group">
+        View
+        <select id="view-mode">
+          <option value="side-by-side">Side-by-side</option>
+          <option value="toggle">Toggle candidate / reference</option>
+          <option value="heatmap">Heatmap only</option>
+        </select>
+      </label>
+      <label class="control-group">
+        Search
+        <input id="filter-search" type="search" placeholder="case or stage...">
+      </label>
+    </div>
+  </header>
+
+  <main class="main">
+    {% for suite in report.suites %}
+    <section class="suite-section" data-suite="{{ suite.name }}">
+      <h2 class="suite-title">
+        <span>{{ suite.name }}</span>
+        <span class="pill">{{ suite.cases.len() }} cases</span>
+      </h2>
+      <div class="stage-grid">
+        {% for case in suite.cases %}
+          {% for stage in case.stages %}
+          <article
+            class="stage-card{% if !stage.passed %} failed{% endif %}"
+            data-suite="{{ suite.name }}"
+            data-status="{% if stage.passed %}passed{% else %}failed{% endif %}"
+            data-search="{{ suite.name }} {{ case.name }} {{ stage.name }} {{ case.appearance }}"
+            data-has-comparison="{% if stage.comparison.is_some() %}true{% else %}false{% endif %}"
+            data-flip-mean="{% if let Some(cmp) = stage.comparison %}{{ cmp.metrics.flip_mean }}{% else %}0{% endif %}"
+            data-view-mode="side-by-side"
+            data-toggle-side="candidate"
+          >
+            <div class="card-head">
+              <div>
+                <div class="card-title">{{ case.name }} / {{ stage.name }}</div>
+                <div class="card-meta">
+                  <span>{{ case.appearance }}</span>
+                  <span>{{ stage.width }}×{{ stage.height }}px</span>
+                  <span>@{{ "{:.1}"|format(case.scale_factor) }}x</span>
+                </div>
+              </div>
+              <span class="badge {% if stage.passed %}pass{% else %}fail{% endif %}">
+                {% if stage.passed %}Pass{% else %}Fail{% endif %}
+              </span>
+            </div>
+
+            <div class="images">
+              <figure class="image-slot slot-candidate">
+                <figcaption>
+                  <span>{% if let Some(label) = stage.candidate_label %}{{ label }}{% else %}Rendered{% endif %}</span>
+                </figcaption>
+                <div class="image-frame">
+                  <img src="{{ stage.image_path }}" alt="{{ suite.name }} / {{ case.name }} / {{ stage.name }}" loading="lazy">
+                </div>
+              </figure>
+
+              {% if let Some(cmp) = stage.comparison %}
+              <figure class="image-slot slot-reference">
+                <figcaption>
+                  <span>{% if let Some(label) = cmp.reference_label %}{{ label }}{% else %}Reference{% endif %}</span>
+                </figcaption>
+                <div class="image-frame">
+                  <img src="{{ cmp.reference_path }}" alt="Reference: {{ suite.name }} / {{ case.name }} / {{ stage.name }}" loading="lazy">
+                </div>
+              </figure>
+
+              {% if let Some(heatmap) = cmp.heatmap_path %}
+              <figure class="image-slot slot-heatmap">
+                <figcaption>
+                  <span>FLIP Heatmap</span>
+                </figcaption>
+                <div class="image-frame">
+                  <img src="{{ heatmap }}" alt="FLIP heatmap: {{ suite.name }} / {{ case.name }} / {{ stage.name }}" loading="lazy">
+                </div>
+              </figure>
+              {% endif %}
+              {% endif %}
+            </div>
+
+            <div class="card-foot">
+              {% if let Some(cmp) = stage.comparison %}
+              <div class="metrics-row">
+                <span class="metric">mean {{ "{:.4}"|format(cmp.metrics.flip_mean) }}</span>
+                <span class="metric">p95 {{ "{:.4}"|format(cmp.metrics.flip_p95) }}</span>
+                <span class="metric">max {{ "{:.4}"|format(cmp.metrics.flip_max) }}</span>
+                <span class="metric">block {{ "{:.4}"|format(cmp.metrics.max_block_flip_mean) }}</span>
+                <span class="metric">local {{ "{:.4}"|format(cmp.metrics.max_local_error) }}</span>
+              </div>
+              <button type="button" class="toggle-btn">Showing Candidate (Switch)</button>
+              {% endif %}
+
+              {% if !stage.failures.is_empty() %}
+              <ul class="failures">
+                {% for failure in stage.failures %}
+                <li>{{ failure }}</li>
+                {% endfor %}
+              </ul>
+              {% endif %}
+            </div>
+          </article>
+          {% endfor %}
+        {% endfor %}
+      </div>
+    </section>
+    {% endfor %}
+
+    <div id="empty-state" class="empty-state">No stages match the active filters.</div>
+  </main>
+
+  <div id="lightbox" class="lightbox" role="dialog" aria-label="Image preview">
+    <img id="lightbox-img" src="" alt="">
+    <div id="lightbox-caption" class="lightbox-caption"></div>
+  </div>
+
+  <script id="gallery-report" type="application/json">{{ report_json|safe }}</script>
+  <script>{{ script|safe }}</script>
+</body>
+</html>

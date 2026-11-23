@@ -171,6 +171,13 @@ impl RasterEngineState {
     }
 }
 
+#[cfg(all(hydrolysis_cpu_painter, not(target_arch = "wasm32")))]
+impl Drop for RasterEngineState {
+    fn drop(&mut self) {
+        self.engine.shutdown_and_join();
+    }
+}
+
 #[cfg(hydrolysis_cpu_painter)]
 impl std::fmt::Debug for RasterEngineState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -388,6 +395,12 @@ pub trait EngineSurface {
     /// surface.
     fn running_tracks(&self) -> cherenkov_record::RunningTracks {
         self.core().engine_surface().running_tracks()
+    }
+
+    /// Combined refresh-rate vote reported by the surface after its latest
+    /// render, including non-redrawing source cadence votes.
+    fn rate_vote(&self) -> Option<waterui_frame_rate::FrameRate> {
+        self.core().engine_surface().rate_vote()
     }
 }
 
@@ -803,13 +816,40 @@ impl RasterCherenkovSurface {
             &readback.pixels,
         ))
     }
+
+    /// Presents the last rendered frame as opaque `0x00RRGGBB` sRGB pixels
+    /// into `out`, the channel order `softbuffer` desktop surfaces expect.
+    ///
+    /// # Errors
+    ///
+    /// Returns the engine's [`cherenkov::RenderError`] when the readback
+    /// fails.
+    #[cfg(hydrolysis_software_surface)]
+    pub(crate) fn present_0rgb_into(
+        &self,
+        headroom: f32,
+        out: &mut [u32],
+    ) -> Result<(), cherenkov::RenderError> {
+        let rgba = self.readback_rgba8(headroom, cherenkov::OutputAlpha::Opaque)?;
+        pack_rgba8_to_0rgb(&rgba, out);
+        Ok(())
+    }
 }
 
-/// The macOS winit window's engine output: the engine presents through
+/// Packs sRGB RGBA8 bytes (`[R, G, B, _]`) into `softbuffer`'s `0x00RRGGBB`
+/// `u32` words.
+#[cfg(any(hydrolysis_software_surface, test))]
+fn pack_rgba8_to_0rgb(rgba: &[u8], out: &mut [u32]) {
+    for (dst, &[r, g, b, _]) in out.iter_mut().zip(rgba.as_chunks::<4>().0) {
+        *dst = (u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b);
+    }
+}
+
+/// The engine-presented Apple window's output: the engine presents through
 /// `cherenkov_gpu::WindowTarget` inside `Engine::render`, so this kind has
 /// no texture to convert and nothing for the host to acquire or present.
 /// The host keeps the target's `DisplayProbe` and re-samples its headroom.
-#[cfg(all(target_os = "macos", hydrolysis_winit))]
+#[cfg(hydrolysis_apple_engine_window)]
 pub struct WindowCherenkovSurface {
     core: SurfaceCore<cherenkov_gpu::Gpu>,
     /// Whether the target was created transparent; the composite alpha is
@@ -830,7 +870,7 @@ pub struct WindowCherenkovSurface {
     wake: std::sync::Arc<dyn Fn() + Send + Sync>,
 }
 
-#[cfg(all(target_os = "macos", hydrolysis_winit))]
+#[cfg(hydrolysis_apple_engine_window)]
 impl core::fmt::Debug for WindowCherenkovSurface {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("WindowCherenkovSurface")
@@ -840,7 +880,7 @@ impl core::fmt::Debug for WindowCherenkovSurface {
     }
 }
 
-#[cfg(all(target_os = "macos", hydrolysis_winit))]
+#[cfg(hydrolysis_apple_engine_window)]
 impl EngineSurface for WindowCherenkovSurface {
     type Backend = cherenkov_gpu::Gpu;
 
@@ -853,25 +893,26 @@ impl EngineSurface for WindowCherenkovSurface {
     }
 }
 
-#[cfg(all(target_os = "macos", hydrolysis_winit))]
+#[cfg(hydrolysis_apple_engine_window)]
 impl WindowCherenkovSurface {
-    /// Creates the engine surface presenting on `window` at `size`
-    /// (physical pixels), configured by the host's `output` request —
-    /// transparency, colour space and display sync through the same
-    /// `OutputRequest` every Hydrolysis host negotiates by (#2445).
-    /// `wake` is the host's display-link wake, as for the texture kind.
+    /// Creates the engine surface presenting on `target` — built by the
+    /// caller from the window's view handle at `size` (physical pixels) —
+    /// configured by the host's `output` request: transparency, colour
+    /// space and display sync through the same `OutputRequest` every
+    /// Hydrolysis host negotiates by (#2445). `wake` is the host's
+    /// display-link wake, as for the texture kind.
     ///
     /// # Errors
     /// The engine's [`cherenkov::SurfaceError`] when it cannot create the
     /// window's surface.
     pub fn new(
         engine: Rc<GpuEngine>,
-        window: std::sync::Arc<winit::window::Window>,
+        target: cherenkov_gpu::WindowTarget,
         size: (u32, u32),
         output: cherenkov_gpu::interop::OutputRequest,
         wake: impl Fn() + Send + Sync + 'static,
     ) -> Result<Self, cherenkov::SurfaceError> {
-        let mut target = cherenkov_gpu::WindowTarget::new(window, size)
+        let mut target = target
             .transparent(output.transparent)
             .color_space(output.color_space)
             .display_sync(output.sync);
@@ -1052,7 +1093,7 @@ impl DomCherenkovSurface {
 /// flag reports a new probe or a changed value. Generic so a test can drive
 /// the state machine with a fake probe — a real `DisplayProbe` holds a live
 /// `wgpu::Surface`.
-#[cfg(all(target_os = "macos", hydrolysis_winit))]
+#[cfg(hydrolysis_apple_engine_window)]
 fn drain_and_sample<P>(
     receiver: &mpsc::Receiver<P>,
     slot: &mut Option<P>,
@@ -1071,7 +1112,7 @@ fn drain_and_sample<P>(
     (*last, arrived || previous.to_bits() != last.to_bits())
 }
 
-#[cfg(all(test, target_os = "macos", hydrolysis_winit))]
+#[cfg(all(test, hydrolysis_apple_engine_window))]
 mod tests {
     use std::cell::Cell;
 
@@ -1188,5 +1229,39 @@ mod tests {
             drain_and_sample(&receiver, &mut probe, &mut last, FakeProbe::headroom),
             (2.0, true)
         );
+    }
+}
+
+#[cfg(all(test, hydrolysis_cpu_painter, not(target_arch = "wasm32")))]
+mod raster_teardown_tests {
+    use std::rc::Rc;
+
+    use cherenkov::RenderError;
+
+    use super::RasterEngineState;
+
+    #[test]
+    fn raster_engine_state_drop_joins_render_thread() {
+        let state = RasterEngineState::new().expect("CPU raster engine starts");
+        let engine = Rc::clone(&state.engine);
+        assert!(engine.memory().is_ok());
+
+        drop(state);
+
+        assert!(
+            matches!(engine.memory(), Err(RenderError::Thread)),
+            "CPU offscreen teardown must join the Cherenkov render thread before returning"
+        );
+    }
+}
+
+#[cfg(test)]
+mod softbuffer_pixel_tests {
+    #[test]
+    fn pack_rgba8_to_0rgb_preserves_channels_and_clears_top_byte() {
+        let rgba = [0x12, 0x34, 0x56, 0xFF, 0xAB, 0xCD, 0xEF, 0x80];
+        let mut out = [u32::MAX; 2];
+        super::pack_rgba8_to_0rgb(&rgba, &mut out);
+        assert_eq!(out, [0x0012_3456, 0x00AB_CDEF]);
     }
 }

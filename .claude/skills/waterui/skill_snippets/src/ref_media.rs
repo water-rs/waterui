@@ -296,17 +296,14 @@ pub fn media_web_bundled_prose() -> impl View {
 }
 
 // ---------------------------------------------------------------------------
-// media.md § "## Web content" (prose): a `WebView` handle from
-// `WebViewController::open()` and `webview.proxy_scope(|| controls)`. Not counted
-// as a rust block.
+// media.md § "## Web content" (prose): opening a web view with `.with_proxy`
+// and driving a `WebViewProxy` action. Not counted as a rust block.
 // ---------------------------------------------------------------------------
-pub fn media_web_handle_prose(controller: waterui::webview::WebViewController) -> impl View {
+pub fn media_web_handle_prose() -> impl View {
     use waterui::webview::{WebView, WebViewProxy};
 
-    let webview: WebView = controller.open();
-    let controls =
-        webview.proxy_scope(|| button("Back").action(|proxy: WebViewProxy| proxy.go_back()));
-    vstack((controls, webview))
+    WebView::open("https://waterui.dev")
+        .with_proxy(|| button("Back").action(|proxy: WebViewProxy| proxy.go_back()))
 }
 
 // ---------------------------------------------------------------------------
@@ -613,7 +610,7 @@ pub fn media_shader_prose() -> impl View {
 // Glue: a `GpuContent` for `terminal`, and the bindings the handler writes.
 // ---------------------------------------------------------------------------
 pub fn media_block_10() -> impl View {
-    use waterui::graphics::{Context, Frame, GpuContent, GpuContentView};
+    use waterui::graphics::{Context, Frame, GpuContent, GpuView};
 
     struct Terminal;
     impl GpuContent for Terminal {
@@ -628,7 +625,7 @@ pub fn media_block_10() -> impl View {
 
     use waterui::graphics::input::{Code, Key, Modifiers, NamedKey, SurfaceInputEvent};
 
-    GpuContentView::new(terminal).on_input(move |event| match event {
+    GpuView::new(terminal).on_input(move |event| match event {
         // IME and injected insertions arrive as text events, never as `Key`
         SurfaceInputEvent::TextInput(text) | SurfaceInputEvent::CompositionCommit(text) => {
             typed.set(text.clone())
@@ -657,10 +654,10 @@ pub fn media_block_10() -> impl View {
 // block.
 // ---------------------------------------------------------------------------
 pub fn media_gpu_input_prose<C: waterui::graphics::GpuContent>(content: C) -> impl View {
-    use waterui::graphics::GpuContentView;
+    use waterui::graphics::GpuView;
     use waterui::graphics::gpu::Rect;
 
-    GpuContentView::new(content)
+    GpuView::new(content)
         .labeled("Terminal")
         .described("Shell session")
         .on_ime_caret(|| Option::<Rect>::None)
@@ -873,9 +870,6 @@ pub fn media_block_15(mut env: Environment) {
     env.insert(MapGpuOptions::new(waterui_url::Url::new(
         "https://tiles.openfreemap.org/styles/positron",
     )));
-    #[cfg(not(target_vendor = "apple"))]
-    // Apple bridges MapKit; keeps the GPU map out of Apple builds
-    waterui_map_gpu::install(&mut env);
 }
 
 // ---------------------------------------------------------------------------

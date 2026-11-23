@@ -86,13 +86,7 @@ impl Default for Environment {
 }
 
 use crate::{
-    View,
-    components::Metadata,
-    extract::Extractor,
-    layout::StretchAxis,
-    metadata::MetadataKey,
-    plugin::Plugin,
-    view::{Hook, ViewConfiguration},
+    View, components::Metadata, extract::Extractor, metadata::MetadataKey, plugin::Plugin,
 };
 
 /// A type-indexed storage container for values in an environment.
@@ -263,16 +257,6 @@ impl Environment {
         let key = TypeId::of::<T>();
         let value = Rc::new(value) as Rc<dyn Any>;
         self.insert_any(key, value);
-    }
-
-    /// Inserts a view configuration hook into the environment.
-    ///
-    /// Hooks allow you to intercept and modify view configurations globally.
-    pub fn insert_hook<T: ViewConfiguration, V: View>(
-        &mut self,
-        hook: impl Fn(&Self, T) -> V + 'static,
-    ) {
-        self.insert(Hook::new(hook));
     }
 
     /// Removes a value from the environment by its type.
@@ -499,10 +483,6 @@ impl<V: View, T: 'static> View for With<V, T> {
         let env = env.extending(self.value);
         Metadata::new(self.content, env)
     }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        self.content.stretch_axis()
-    }
 }
 
 /// A view that installs a [`Plugin`] into the environment of its content.
@@ -529,10 +509,6 @@ impl<V: View, P: Plugin> View for Installed<V, P> {
         let mut env = env.clone();
         self.plugin.install(&mut env);
         Metadata::new(self.content, env)
-    }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        self.content.stretch_axis()
     }
 }
 

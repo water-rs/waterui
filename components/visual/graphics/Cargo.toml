@@ -12,6 +12,12 @@ categories = ["gui"]
 
 [features]
 default = ["gpu"]
+# Canvas styled text and backend `TextBackend` registration (`waterui-text`).
+text = ["dep:waterui-text"]
+# Interactive surface keyboard, pointer, scroll and IME events (`keyboard-types`).
+input = ["dep:keyboard-types"]
+# Raster image decoding (`image_decode`) and offscreen PNG encoding (`image`, `mp4parse`).
+image-decode = ["dep:image", "dep:mp4parse"]
 # Filters on views (`.filter(F)`, `.blur(..)`, …) and the portable description
 # a backend reads from them: the filter's stages with their WGSL snippets, its
 # parameters and their reactive bindings, and its auxiliary images. It needs no
@@ -25,20 +31,19 @@ effects = ["dep:filtrate", "dep:arc-swap"]
 # filters and the `SceneResources` registration contract — for a render target
 # that is not a Cherenkov backend.
 cherenkov = ["dep:cherenkov"]
-# GPU-only surfaces: user GPU content, running filters through `filtrate`'s
-# executor, arbitrary GPU effects on views, offscreen rendering through
-# `Engine<Gpu>`, and image decoding. Everything else — colours, gradients,
-# scenes, pictures and shader paints — records Cherenkov `Content` and needs no
-# device here.
+# GPU-only surfaces: user GPU content, interactive surface input, running
+# filters through `filtrate`'s executor, arbitrary GPU effects on views, and
+# offscreen rendering through `Engine<Gpu>`. Everything else — colours,
+# gradients, scenes, pictures and shader paints — records Cherenkov `Content`
+# and needs no device here.
 gpu = [
     "cherenkov",
     "effects",
+    "input",
     "filtrate/gpu",
     "dep:cherenkov-gpu",
     "dep:wgpu",
     "dep:bytemuck",
-    "dep:image",
-    "dep:mp4parse",
     "dep:pollster",
     "dep:shaderloom",
     "dep:event-listener",
@@ -47,11 +52,12 @@ gpu = [
 # Offscreen rendering through `Engine<Raster>`: pictures rasterised for hosts
 # whose image views take bitmaps, shader paints included. With `effects`,
 # filtered views run on the raster too (`AnyEffect::into_cpu`).
-cpu = ["cherenkov", "dep:cherenkov-cpu", "cherenkov-cpu/shaders", "filtrate?/lanes", "dep:image"]
+cpu = ["cherenkov", "dep:cherenkov-cpu", "cherenkov-cpu/shaders", "filtrate?/lanes"]
 
 [dependencies]
 arc-swap = { workspace = true, optional = true }
 waterui-core.workspace = true
+waterui-frame-rate.workspace = true
 nami.workspace = true
 # The render-target-neutral recorder: always on — `draw`, `SceneContent`,
 # `Picture` and the `SceneResources` contract are all spelled in its types.
@@ -65,14 +71,14 @@ cherenkov-cpu = { workspace = true, optional = true }
 # re-exported as `color`.
 waterui-color.workspace = true
 # `StyledStr`, the text `Cx::text` draws.
-waterui-text.workspace = true
+waterui-text = { workspace = true, optional = true }
 # The working-space ↔ sRGB matrices and transfer, the engine's one
 # definition (`filtrate_core::space`).
 filtrate-core.workspace = true
 filtrate = { workspace = true, optional = true }
 wgpu = { workspace = true, optional = true }
 bytemuck = { version = "1", optional = true, features = ["derive"] }
-keyboard-types.workspace = true
+keyboard-types = { workspace = true, optional = true }
 # An image's status watchers are UI-thread closures kept inside the `Send`
 # image they observe; each is only ever called and dropped on the thread
 # that registered it.
@@ -141,3 +147,11 @@ objc2-metal = { version = "0.3", features = ["objc2-io-surface"] }
 
 [lints]
 workspace = true
+
+[[test]]
+name = "external_frame"
+required-features = ["image-decode"]
+
+[[test]]
+name = "render_drawing"
+required-features = ["image-decode"]

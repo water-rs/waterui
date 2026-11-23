@@ -19,7 +19,9 @@ use crate::preview::protocol::function_path_to_symbol;
 use crate::preview::{HydrolysisPreviewTheme, PreviewSource};
 use crate::project::{Manifest, resolve_backend};
 use crate::toolchain_checks;
-pub use waterui_preview_protocol::run::DEFAULT_CONTENT_DEADLINE;
+pub use waterui_preview_protocol::run::{
+    DEFAULT_CONTENT_DEADLINE, DEFAULT_PREVIEW_SCALE, PreviewColorScheme,
+};
 
 /// Default frame size shared by `water preview --frame` and the MCP `preview`
 /// tool's `frame` argument.
@@ -99,12 +101,35 @@ pub enum ResolvedPreviewBackend {
 pub enum CliHydrolysisPreviewTheme {
     /// Material Design 3 theme package.
     Material3,
+    /// Translucent glass theme package.
+    Glass,
 }
 
 impl From<CliHydrolysisPreviewTheme> for HydrolysisPreviewTheme {
     fn from(value: CliHydrolysisPreviewTheme) -> Self {
         match value {
             CliHydrolysisPreviewTheme::Material3 => Self::Material3,
+            CliHydrolysisPreviewTheme::Glass => Self::Glass,
+        }
+    }
+}
+
+/// Appearance override for preview rendering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+#[non_exhaustive]
+pub enum CliPreviewColorScheme {
+    /// Light appearance.
+    Light,
+    /// Dark appearance.
+    Dark,
+}
+
+impl From<CliPreviewColorScheme> for PreviewColorScheme {
+    fn from(value: CliPreviewColorScheme) -> Self {
+        match value {
+            CliPreviewColorScheme::Light => Self::Light,
+            CliPreviewColorScheme::Dark => Self::Dark,
         }
     }
 }
@@ -168,10 +193,18 @@ pub struct PreviewRequest {
     /// How long a capture waits for the content its views owe — a decoding
     /// image, a `Suspense` future — before the preview fails naming them.
     content_deadline: Duration,
+    /// Optional color scheme override (`None` follows the host default).
+    color_scheme: Option<PreviewColorScheme>,
+    /// Display scale factor applied to the preview render.
+    scale: f32,
 }
 impl PreviewRequest {
     /// A `PreviewRequest` carrying each of its fields.
     #[must_use]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "constructs the resolved preview request from every validated field"
+    )]
     pub const fn new(
         platform: CliPreviewPlatform,
         backend: ResolvedPreviewBackend,
@@ -180,6 +213,8 @@ impl PreviewRequest {
         width: f32,
         height: f32,
         content_deadline: Duration,
+        color_scheme: Option<PreviewColorScheme>,
+        scale: f32,
     ) -> Self {
         Self {
             platform,
@@ -189,6 +224,8 @@ impl PreviewRequest {
             width,
             height,
             content_deadline,
+            color_scheme,
+            scale,
         }
     }
 
@@ -235,6 +272,33 @@ impl PreviewRequest {
     pub const fn content_deadline(&self) -> Duration {
         self.content_deadline
     }
+
+    /// Optional color scheme override (`None` follows the host default).
+    #[must_use]
+    pub const fn color_scheme(&self) -> Option<PreviewColorScheme> {
+        self.color_scheme
+    }
+
+    /// Display scale factor applied to the preview render.
+    #[must_use]
+    pub const fn scale(&self) -> f32 {
+        self.scale
+    }
+}
+
+/// Parse a display scale factor for preview captures (`DEFAULT_PREVIEW_SCALE`
+/// when `None`).
+///
+/// # Errors
+/// Returns an error if the scale is not a positive finite number.
+pub fn parse_scale(scale: Option<f32>) -> Result<f32> {
+    let Some(scale) = scale else {
+        return Ok(DEFAULT_PREVIEW_SCALE);
+    };
+    if !scale.is_finite() || scale <= 0.0 {
+        bail!("Invalid scale: must be a positive finite number");
+    }
+    Ok(scale)
 }
 
 /// Parse a content timeout given in seconds — how long a capture waits for
@@ -788,6 +852,14 @@ mod tests {
             .unwrap(),
             Some(HydrolysisPreviewTheme::Material3)
         );
+        assert_eq!(
+            resolve_hydrolysis_preview_theme(
+                ResolvedPreviewBackend::Hydrolysis(TargetPlatform::Android),
+                Some(CliHydrolysisPreviewTheme::Glass)
+            )
+            .unwrap(),
+            Some(HydrolysisPreviewTheme::Glass)
+        );
         assert!(
             resolve_hydrolysis_preview_theme(
                 ResolvedPreviewBackend::Apple(TargetPlatform::MacCatalyst),
@@ -795,5 +867,14 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn parse_scale_defaults_and_rejects_invalid_values() {
+        assert!((parse_scale(None).unwrap() - DEFAULT_PREVIEW_SCALE).abs() < f32::EPSILON);
+        assert!((parse_scale(Some(3.0)).unwrap() - 3.0).abs() < f32::EPSILON);
+        assert!(parse_scale(Some(0.0)).is_err());
+        assert!(parse_scale(Some(-1.0)).is_err());
+        assert!(parse_scale(Some(f32::NAN)).is_err());
     }
 }

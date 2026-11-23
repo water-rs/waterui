@@ -25,7 +25,6 @@ use crate::{
     hydrolysis::backend::HydrolysisBackend,
     platform::{PackageOptions, TargetPlatform},
     project::Project,
-    toolchain::{ToolchainError, windows_arm64_llvm::WindowsArm64LlvmToolchain},
     utils::command,
 };
 #[cfg(target_os = "macos")]
@@ -59,6 +58,8 @@ const fn hydrolysis_loader_search_paths(platform: TargetPlatform) -> &'static [&
     match platform {
         TargetPlatform::MacOS => &["@executable_path", "@executable_path/../Frameworks"],
         TargetPlatform::Linux => &["$ORIGIN"],
+        // The flat iOS bundle keeps its frameworks beside the executable.
+        TargetPlatform::IOS | TargetPlatform::IOSSimulator => &["@executable_path/Frameworks"],
         _ => &[],
     }
 }
@@ -163,8 +164,8 @@ pub async fn build_hydrolysis_with_envs_and_features(
     extra_features: &[&str],
     offscreen: bool,
 ) -> eyre::Result<BuiltTarget> {
-    if !is_hydrolysis_native_platform(platform) {
-        bail!("Hydrolysis backend is only supported on macOS, Linux, and Windows");
+    if !is_hydrolysis_binary_platform(platform) {
+        bail!("Hydrolysis backend is only supported on macOS, iOS, Linux, and Windows");
     }
 
     let backend_path = project.backend_path::<HydrolysisBackend>();
@@ -177,7 +178,6 @@ pub async fn build_hydrolysis_with_envs_and_features(
         );
     }
     let render_features = render_features(project, &cargo_toml, platform, offscreen)?;
-    let inspector_feature = super::development_inspector(&cargo_toml, options.is_release())?;
 
     // The managed crate is its own workspace root, so its `Cargo.lock` is
     // re-seeded from the application's lockfile before every resolution —
@@ -209,17 +209,7 @@ pub async fn build_hydrolysis_with_envs_and_features(
         .await?;
     }
 
-    let llvm_envs = WindowsArm64LlvmToolchain
-        .cargo_envs(project.host())
-        .await
-        .map_err(|error| match error {
-            ToolchainError::Fixable(_) => eyre::eyre!(
-                "Windows ARM64 LLVM toolchain is missing. Run `water doctor --fix` to install it automatically."
-            ),
-            ToolchainError::Unfixable(unfixable) => {
-                eyre::eyre!("Windows ARM64 LLVM toolchain check failed: {unfixable}")
-            }
-        })?;
+    let llvm_envs = super::windows_arm64_llvm_envs(project.host()).await?;
 
     let mut build = RustBuild::for_project(project, &backend_path, platform.triple())
         .with_target_dir(project.water_target_dir(options.linkage()).await?)
@@ -227,7 +217,14 @@ pub async fn build_hydrolysis_with_envs_and_features(
             render_features
                 .into_iter()
                 .chain(extra_features.iter().copied())
-                .chain(inspector_feature),
+                .chain(super::erased_dispatch(
+                    &cargo_toml,
+                    options.uses_erased_dispatch(),
+                )?)
+                .chain(super::development_inspector(
+                    &cargo_toml,
+                    options.is_release(),
+                )?),
         )
         .with_linkage(
             options.linkage(),
@@ -243,7 +240,7 @@ pub async fn build_hydrolysis_with_envs_and_features(
         &backend_path.join("Cargo.toml"),
         &platform.triple(),
         build.features(),
-        &["hydrolysis", "hydrolysis-m3"],
+        &["hydrolysis", "hydrolysis-m3", "hydrolysis-glass"],
     )
     .await?;
     build = build.with_features(backend_features);
@@ -287,15 +284,19 @@ pub async fn build_hydrolysis_with_envs_and_features(
         built_target.cef_helper = Some(Box::new(helper));
     }
 
-    copy_assets_and_fonts(
-        project,
-        platform,
-        &backend_path,
-        &built_target.app_symbols().await?,
-        options.uses_dev_server(),
-        &built_target.features,
-    )
-    .await?;
+    // An iOS bundle stages its assets through the Apple asset catalog while
+    // it is packaged, from the same app library artifact.
+    if !is_ios(platform) {
+        copy_assets_and_fonts(
+            project,
+            platform,
+            &backend_path,
+            &built_target.app_symbols().await?,
+            options.uses_dev_server(),
+            &built_target.features,
+        )
+        .await?;
+    }
 
     Ok(built_target)
 }
@@ -402,7 +403,7 @@ pub async fn clean_hydrolysis(project: &Project) -> eyre::Result<()> {
 /// Package a hydrolysis app.
 ///
 /// Linux/Windows return a binary artifact path.
-/// macOS returns a `.app` bundle path.
+/// macOS and iOS return a `.app` bundle path.
 ///
 /// # Errors
 /// Returns an error if packaging prerequisites are missing, assets cannot be staged, or output artifacts cannot be produced.
@@ -428,10 +429,14 @@ pub async fn package_hydrolysis(
         )
     })?;
 
-    if !is_hydrolysis_native_platform(platform) {
+    if !is_hydrolysis_binary_platform(platform) {
         bail!(
-            "Hydrolysis backend is only supported on macOS, Linux, and Windows for binary packaging"
+            "Hydrolysis backend is only supported on macOS, iOS, Linux, and Windows for binary packaging"
         );
+    }
+
+    if is_ios(platform) {
+        return super::ios::package_hydrolysis_ios(project, platform, &options, built).await;
     }
 
     let profile = if options.is_debug() {
@@ -663,7 +668,7 @@ async fn package_hydrolysis_macos(
     Ok(Artifact::new(project.bundle_identifier(), app_path))
 }
 
-async fn synchronize_shared_runtime(
+pub(super) async fn synchronize_shared_runtime(
     host: &crate::toolchain::Host,
     destination: &Path,
     libraries: Option<&RustDynamicLibraries>,
@@ -692,6 +697,8 @@ pub const fn is_hydrolysis_platform(platform: TargetPlatform) -> bool {
         platform,
         TargetPlatform::Linux
             | TargetPlatform::MacOS
+            | TargetPlatform::IOS
+            | TargetPlatform::IOSSimulator
             | TargetPlatform::Windows
             | TargetPlatform::Web
     )
@@ -702,6 +709,17 @@ const fn is_hydrolysis_native_platform(platform: TargetPlatform) -> bool {
         platform,
         TargetPlatform::Linux | TargetPlatform::MacOS | TargetPlatform::Windows
     )
+}
+
+/// Whether the launcher binary builds for `platform`: the desktops and iOS.
+const fn is_hydrolysis_binary_platform(platform: TargetPlatform) -> bool {
+    is_hydrolysis_native_platform(platform) || is_ios(platform)
+}
+
+/// Whether `platform` is an iOS device or simulator, whose packaged form is a
+/// flat `.app` assembled by the Apple bundle path.
+const fn is_ios(platform: TargetPlatform) -> bool {
+    matches!(platform, TargetPlatform::IOS | TargetPlatform::IOSSimulator)
 }
 
 /// Stage the project's assets and fonts under the backend's `resources`
@@ -1171,6 +1189,7 @@ mod tests {
                 webview_enabled: true,
                 engine: Some(ResolvedWebViewBackend::Cef),
                 video_gpu: false,
+                map_gpu: false,
             },
         );
         let package_name = "demo-hydrolysis-deadbeef";
@@ -1315,6 +1334,7 @@ mod tests {
                 webview_enabled: false,
                 engine: Some(ResolvedWebViewBackend::Wpe),
                 video_gpu: false,
+                map_gpu: false,
             },
         );
         assert_eq!(rendered_bin_names(&ctx, package_name), [package_name]);

@@ -65,22 +65,26 @@ pub mod image;
 pub mod input_view;
 mod key_commands;
 pub mod keyboard;
+mod keyboard_band;
+pub use keyboard_band::KeyboardBand;
 mod menu;
 mod navigation;
-pub use pointer::PointerInteraction;
+pub use pointer::{CursorInteraction, PointerCursor, PointerInteraction};
 mod search_bar;
 mod split;
 pub mod surface_view;
 mod tabs;
+pub mod text_input;
 mod trait_change;
 pub mod view_controller;
 mod window;
 
 #[cfg(feature = "dialog")]
 pub use alert::AlertController;
-pub use appearance::{ColorSchemeObservation, current_scheme};
+pub use appearance::{ColorSchemeObservation, DisplayScaleObservation, current_scheme};
 pub use application::{
     ApplicationHandlers, MenuBuilder, WindowScene, request_main_menu_rebuild, run,
+    set_main_menu_builder,
 };
 pub use badge::BadgeView;
 pub use button::{Button, CocoaUiButton};

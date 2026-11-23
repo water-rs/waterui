@@ -12,12 +12,11 @@ use waterui_core::{Str, contract_violation};
 
 use crate::canvas::positive_extent;
 use waterui_core::reactive::signal::IntoComputed;
-use waterui_core::{AnyView, Environment, Native, NativeView, View};
+use waterui_core::{Environment, Native, NativeView, View};
 
 use crate::scene::resources::{HeldResources, RecordingResources, SceneResources};
 use crate::scene_view::{
-    NextFrame, SceneContent, SceneInvalidator, SceneView, SceneViewMergeToParent,
-    invalidate_on_change,
+    NextFrame, SceneContent, SceneInvalidator, SceneView, invalidate_on_change,
 };
 
 /// Source-owned recording instructions for a resource-bearing [`Picture`].
@@ -291,21 +290,24 @@ impl Picture {
             f64::from(height / self.size.height),
         )
     }
+    /// Wraps this picture as a [`SceneView`] for backends that draw pictures
+    /// directly in their own scene graph.
+    #[must_use]
+    pub fn into_scene_view(self) -> SceneView {
+        SceneView::new(RecordedScene {
+            picture: self,
+            watcher: None,
+            current: None,
+            rebuild_recording: false,
+        })
+    }
 }
 
 impl NativeView for Picture {}
 
 impl View for Picture {
-    fn body(self, env: &Environment) -> impl View {
-        if env.get::<SceneViewMergeToParent>().is_some() {
-            return AnyView::new(SceneView::new(RecordedScene {
-                picture: self,
-                watcher: None,
-                current: None,
-                rebuild_recording: false,
-            }));
-        }
-        AnyView::new(Native::new(self))
+    fn body(self, _env: &Environment) -> impl View {
+        Native::new(self)
     }
 }
 
@@ -389,6 +391,7 @@ mod tests {
     use cherenkov::testing::Event;
     use core::cell::Cell;
     use nami::{SignalExt, binding, constant};
+    use waterui_core::backend::peel_native;
     use waterui_core::layout::StretchAxis;
 
     struct OnePixelSource {
@@ -450,13 +453,12 @@ mod tests {
     }
 
     #[test]
-    fn a_backend_that_draws_its_own_scene_gets_a_scene_view_and_the_rest_a_raw_picture() {
+    fn a_picture_dispatches_as_a_native_picture_and_converts_into_a_scene_view() {
         let picture = || Picture::new(Size::new(10.0, 10.0), constant(square(WorkingColor::BLACK)));
-        let merged =
-            AnyView::new(picture().body(&Environment::new().extending(SceneViewMergeToParent)));
-        assert!(merged.downcast::<SceneView>().is_ok());
-        let raw = AnyView::new(picture().body(&Environment::new()));
-        assert!(raw.downcast::<Native<Picture>>().is_ok());
+        let env = Environment::new();
+        assert!(peel_native::<Picture>(picture().body(&env), &env).is_some());
+        let scene_view = picture().into_scene_view();
+        assert_eq!(scene_view.intrinsic_size(), Some(Size::new(10.0, 10.0)));
     }
 
     #[test]

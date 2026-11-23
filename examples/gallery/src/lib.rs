@@ -33,7 +33,7 @@ use waterui::PropertyTransition;
 use waterui::Signal;
 use waterui::accessibility::{AccessibilityRole, AccessibilityState};
 use waterui::animation::Animation;
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::form::picker::{PickerStyle, picker};
 use waterui::layout::stack::VStack;
 use waterui::navigation::{NavigationSplitView, NavigationView};
@@ -461,7 +461,7 @@ fn item_row(index: usize, selected: &Binding<Option<usize>>) -> impl View + use<
 
 /// The detail pane for the selected control: its title (in the navigation bar)
 /// and its live demo, bound to the shared [`DemoState`].
-fn control_detail(index: usize, state: &DemoState) -> NavigationView {
+fn control_detail(index: usize, state: &DemoState) -> NavigationView<impl View + use<>> {
     let all = controls();
     let control = &all[index];
     NavigationView::new(control.title, (control.demo)(state).padding_with(20.0))
@@ -653,7 +653,7 @@ pub fn demo() -> impl View {
 
 /// Builds the gallery app, owning its selection and drawer state at window scope.
 #[must_use]
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows> {
     // Own all mutable state at the window scope so it persists across rebuilds.
     let (selected, groups_open, rows, state) = new_state();
     App::new(
@@ -664,11 +664,12 @@ pub fn app(env: Environment) -> App {
 
 #[cfg(test)]
 mod tests {
-    use super::{catalog, new_state};
+    use super::{catalog, demo, new_state};
     use core::time::Duration;
+    use hydrolysis_m3::Material3;
     use waterui::Signal;
     use waterui::Str;
-    use waterui_testing::{Role, Styled, UiBuilder};
+    use waterui_testing::{OffscreenApp, Role, Styled, UiBuilder};
 
     /// Selecting each control in turn shows its demo — a smoke test that every
     /// catalog entry resolves and renders (the per-component MD3 visual review was
@@ -1060,5 +1061,23 @@ mod tests {
             "the Stepper demo should render before it is captured"
         );
         let _ = app.capture_snapshot("material3-preview", "gallery", "stepper-selected");
+    }
+
+    #[waterui::test(
+        demo,
+        theme = Material3::defaults(),
+        viewport = (900, 600),
+        offscreen
+    )]
+    fn catalog_buttons_demo_renders_non_blank_offscreen(app: &mut OffscreenApp) {
+        app.query().label("Buttons").assert_exists();
+        let snapshot = app.snapshot();
+        assert_eq!(snapshot.width(), 900);
+        assert_eq!(snapshot.height(), 600);
+        let blank = snapshot.analyze_blank();
+        assert!(
+            !blank.is_blank(),
+            "offscreen Buttons demo capture should not be blank: {blank:?}"
+        );
     }
 }

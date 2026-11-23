@@ -172,7 +172,10 @@ pub fn platform_color(color: &WorkingColor) -> Retained<cocoa_ui::objc2_app_kit:
 /// An `env` with no Apple theme installed is a contract violation: a debug
 /// build panics, a release build reports it and draws the signal's current
 /// value.
-#[cfg(target_os = "macos")]
+#[cfg(all(
+    target_os = "macos",
+    any(test, feature = "calendar", feature = "multi_date_picker")
+))]
 #[must_use]
 pub fn token_color(
     env: &Environment,

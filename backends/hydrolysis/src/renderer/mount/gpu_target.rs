@@ -5,10 +5,11 @@
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
 
-use cherenkov_record::{FilterId, Layer, Transaction};
+use cherenkov_record::{ContentShader, FilterId, Layer, MaterialEffect, Transaction};
+use waterui_core::contract_violation;
 use waterui_graphics::backend::Reactive;
 use waterui_graphics::backend::filtrate::filters::OverscrollStretch;
-use waterui_graphics::gpu::PresentedSize;
+use waterui_graphics::gpu::{FrameReceiver, PresentedSize, RedrawHandle, SourceRateUpdate};
 
 use crate::gpu_view::{ExternalFrameRuntime, GpuContentRuntime};
 use crate::renderer::ProducerWake;
@@ -19,9 +20,11 @@ use crate::renderer::mount::backdrop::{
 };
 use crate::renderer::recording::SceneResources;
 use crate::text::TextService;
+use crate::theme::live::Operand;
 
 use super::engine_target::{
-    install_engine_text, mount_chrome_group, mount_material_group, settle_chrome_groups,
+    install_engine_text, mount_chrome_group, mount_content_effect, mount_material_group,
+    settle_chrome_groups,
 };
 use super::{FilterHandle, LayerTarget, MaterialTerms};
 
@@ -35,7 +38,7 @@ pub struct CherenkovHost {
     pub surface: Weak<cherenkov::Surface<cherenkov_gpu::Gpu>>,
     /// The theme's material terms resolved on this engine at attach
     /// (water-rs/waterui#1788).
-    pub materials: MaterialTerms<cherenkov::BackdropShader>,
+    pub materials: MaterialTerms<cherenkov::BackdropShader, cherenkov::ContentShader>,
     /// The window's device-creation chain, which external-frame sources
     /// import their planes onto.
     pub shared_device: cherenkov_gpu::interop::SharedDevice,
@@ -51,6 +54,7 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for cherenkov_gpu::Gpu {
     type Host = CherenkovHost;
     type Group = cherenkov::BackdropGroup;
     type Shader = cherenkov::BackdropShader;
+    type ContentShader = cherenkov::ContentShader;
     const BACKDROP_SHADER_REFUSAL: Option<&'static str> = None;
 
     #[cfg(hydrolysis_hosted)]
@@ -106,21 +110,29 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for cherenkov_gpu::Gpu {
         wake: ProducerWake,
     ) -> Option<(u32, u32)> {
         let receiver = runtime.receiver.get_or_insert_with(|| {
-            let redraw = waterui_graphics::gpu::RedrawHandle::new(move || wake.request_redraw());
+            let redraw = RedrawHandle::new(move || wake.request_redraw());
             let (producer, sink) = host.engine.frame_producer();
             runtime.producer = Some(producer);
             runtime.sink = Some(sink);
             runtime.view.stream().start(&host.shared_device, redraw)
         });
         receiver.report_presented(presented);
+        if let Some(update) = receiver.take_source_rate()
+            && let Some(sink) = &runtime.sink
+        {
+            match update {
+                SourceRateUpdate::Unchanged => {}
+                SourceRateUpdate::Clear => sink.set_source_rate(None),
+                SourceRateUpdate::Set(rate) => sink.set_source_rate(Some(rate)),
+                _ => contract_violation!(
+                    "hydrolysis gpu target: unexpected SourceRateUpdate variant"
+                ),
+            }
+        }
         // The UI-side pump runs before the drain, so a frame it hands the
         // source this pass is installed this pass.
         runtime.view.frame();
-        if let Some(frame) = runtime
-            .receiver
-            .as_ref()
-            .and_then(waterui_graphics::gpu::FrameReceiver::take)
-        {
+        if let Some(frame) = runtime.receiver.as_ref().and_then(FrameReceiver::take) {
             runtime.frame_pixels = Some(external_frame_plane_size(&frame));
             if let Some(sink) = &runtime.sink {
                 sink.submit(frame);
@@ -178,8 +190,23 @@ impl<E: crate::text::TextEngine> LayerTarget<E> for cherenkov_gpu::Gpu {
         tx[layer].clear_backdrop();
     }
 
-    fn material_terms(host: &CherenkovHost) -> &MaterialTerms<Self::Shader> {
+    fn material_terms(host: &CherenkovHost) -> &MaterialTerms<Self::Shader, Self::ContentShader> {
         &host.materials
+    }
+
+    fn mount_content_effect(
+        host: &CherenkovHost,
+        tx: &mut Transaction<'_, Self>,
+        layer: &Layer,
+        shader: ContentShader,
+        effect: &Operand<MaterialEffect>,
+        display_scale: f64,
+    ) {
+        mount_content_effect(&host.materials, tx, layer, shader, effect, display_scale);
+    }
+
+    fn clear_content_effect(tx: &mut Transaction<'_, Self>, layer: &Layer) {
+        tx[layer].clear_content_effect();
     }
 
     fn mount_chrome(

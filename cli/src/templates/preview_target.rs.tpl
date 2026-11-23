@@ -13,7 +13,7 @@ pub(crate) fn load_preview_view() -> waterui::AnyView {
 }
 {% else %}
 fn ensure_preview_crate_is_linked() {
-    let _ = {{ crate_name_ident }}::app as fn(waterui::env::Environment) -> waterui::app::App;
+    let _: fn(waterui::env::Environment) -> _ = {{ crate_name_ident }}::app;
 }
 
 unsafe extern "C" {
@@ -31,7 +31,9 @@ pub(crate) fn load_preview_view() -> waterui::AnyView {
 {% if let Some(style) = preview_theme_style %}
 /// The style the preview runtimes are constructed with — the value `main`
 /// hands to `hydrolysis::run(app, env, style)`.
-pub(crate) fn preview_style() -> impl hydrolysis::Style {
+pub(crate) fn preview_style(
+    color_scheme: Option<waterui::theme::ColorScheme>,
+) -> impl hydrolysis::Style {
     {{ style }}
 }
 

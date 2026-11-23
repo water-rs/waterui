@@ -8,15 +8,12 @@ use nami::Signal;
 use nami::watcher::BoxWatcherGuard;
 
 use waterui_core::layout::{ProposalSize, Size, StretchAxis};
-use waterui_core::{AnyView, Environment, Native, NativeView, View, contract_violation};
+use waterui_core::{Environment, Native, NativeView, View, contract_violation};
 
 use crate::draw::Instant;
+#[cfg(feature = "input")]
 use crate::input::SurfaceInputEvent;
 use crate::scene::resources::{RecordingResources, SceneResources};
-
-/// Environment marker: render `SceneView` directly in the backend scene.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct SceneViewMergeToParent;
 
 /// Callback used by scene content to request another frame.
 pub type SceneInvalidator = Rc<dyn Fn()>;
@@ -293,13 +290,14 @@ pub trait SceneContent: 'static {
     /// game board — returns `true`, and whichever realization draws it then
     /// routes the events landing on it to [`SceneContent::input`]: a backend
     /// that merges the scene into its own tree registers the content as an
-    /// input target, and the `GpuContentView` realization forwards its surface's
+    /// input target, and the `GpuView` realization forwards its surface's
     /// events. Content that only draws — the common case — leaves this
     /// `false`, claims no focus, and every event keeps going to the widgets
     /// around it.
     ///
     /// Read when the content is placed, so the answer is a property of the
     /// content rather than of its current state.
+    #[cfg(feature = "input")]
     fn wants_input_events(&self) -> bool {
         false
     }
@@ -314,6 +312,7 @@ pub trait SceneContent: 'static {
     /// An event that changes what the content draws is followed by a call to
     /// the invalidator from [`SceneContent::set_invalidator`]: delivering an
     /// event does not itself schedule a frame.
+    #[cfg(feature = "input")]
     fn input(&mut self, event: &SurfaceInputEvent) {
         let _ = event;
     }
@@ -324,6 +323,7 @@ pub trait SceneContent: 'static {
     /// Backends place the input-method candidate window against it, so
     /// content that accepts composed text reports its caret. `None` — the
     /// default — means there is no caret to place the panel against.
+    #[cfg(feature = "input")]
     fn ime_caret(&self) -> Option<crate::draw::kurbo::Rect> {
         None
     }
@@ -332,7 +332,7 @@ pub trait SceneContent: 'static {
 /// Fills in the axes a proposal left open from scene content's intrinsic size.
 ///
 /// This is the one rule every realization of a [`SceneView`] measures by — the
-/// `GpuContentView` one, hydrolysis' retained tree, dew's display list — so a scene
+/// `GpuView` one, hydrolysis' retained tree, dew's display list — so a scene
 /// cannot be sized differently depending on which backend drew it.
 ///
 /// - Content with no intrinsic size is returned unchanged, so a scene that takes
@@ -495,11 +495,7 @@ impl View for SceneView {
         // A scene draws on the engine its backend already owns: the native
         // leaf carries the content and the backend mounts it in its layer
         // tree. There is no second renderer to fall back on.
-        AnyView::new(Native::new(self))
-    }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        scene_stretch_axis(self.intrinsic_size())
+        Native::new(self)
     }
 }
 

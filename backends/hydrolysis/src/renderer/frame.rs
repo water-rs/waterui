@@ -33,16 +33,6 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         &mut self.state
     }
 
-    /// Drop cached `Dynamic` measurements whose node has left the retained tree.
-    ///
-    /// Shared by the two frames that can remove nodes: the one-time build and any
-    /// refresh that applied a structural patch.
-    pub(crate) fn prune_dynamic_measurements(&mut self, live: &FxHashSet<usize>) {
-        self.state
-            .measurement
-            .retain_dynamic_identities(|identity| live.contains(&identity));
-    }
-
     /// Drop text-input focus / the selection drag when the target they name is
     /// no longer emitted. Targets are pure-emission (rebuilt in flush order every
     /// frame), so after any flush — rebuild or refresh — a previously focused
@@ -347,17 +337,6 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             self.program.is_empty(),
             "hydrolysis renderer: a node program is still open at the end of a rebuild"
         );
-        // Prune the measure-path `Dynamic` dimension cache down to the identities
-        // still present in the retained render tree. The cache is read by
-        // `measure_dynamic` when a `Dynamic` leaf is measured after its content was
-        // handed to a `DynamicHostNode`; the live `DynamicHostNode`s in `render_tree`
-        // are exactly the alive identities now that the dispatch path is gone.
-        let live_dynamics = self
-            .render_tree
-            .as_ref()
-            .map_or_default(RenderNode::collect_dynamic_identities);
-        self.prune_dynamic_measurements(&live_dynamics);
-
         // The frame's window-level record closes before materialization:
         // the leave retires every subtree the root record left unplaced,
         // so the flat lists rebuild against the post-retire registries.
@@ -740,6 +719,43 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         self.close_scope();
     }
 
+    /// Opens a content-effect isolation scope in `ctx`'s record space: its
+    /// layer clips to the live `clip` silhouette and shades its isolated
+    /// subtree through `shader` driven by `effect`. Close with
+    /// [`Self::close_scope`].
+    pub(crate) fn open_content_effect_scope(
+        &mut self,
+        key: mount::ScopeKey,
+        clip: Operand<cherenkov_record::ShapeData>,
+        shader: cherenkov_record::ContentShader,
+        effect: Operand<cherenkov_record::MaterialEffect>,
+        ctx: RenderContext,
+    ) {
+        let delta = self.program().origin().inverse() * ctx.local();
+        let scope = ScopeDelta {
+            transform: delta,
+            hit_alpha: 1.0,
+        };
+        self.push_placement_scope(scope, None);
+        let placement = self.current_placement();
+        self.program().open_scope(
+            key,
+            mount::ScopeProps {
+                transform: delta,
+                clip: None,
+                alpha: 1.0,
+                blend_space: None,
+                live: mount::ScopeLive {
+                    opacity: None,
+                    transform: None,
+                    clip: Some(mount::LiveClip::new(clip)),
+                    content_effect: Some(mount::LiveContentEffect::new(shader, effect)),
+                },
+            },
+            placement,
+        );
+    }
+
     fn open_scope_layer(
         &mut self,
         key: mount::ScopeKey,
@@ -761,6 +777,8 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             transform: operands.transform.map(|transform| {
                 mount::LiveTransform::new(transform, space.inverse() * clip_space)
             }),
+            clip: None,
+            content_effect: None,
         };
         let shape = clip.map(|clip| clip.in_space(space.inverse() * clip_space));
         self.push_placement_scope(scope, clip.map(ScopeClip::hit_bounds));

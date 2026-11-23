@@ -63,6 +63,7 @@ pub struct Engine<B: Backend> {
     next_shader: Cell<u64>,
     next_filter: Cell<u64>,
     next_backdrop_shader: Cell<u64>,
+    next_content_shader: Cell<u64>,
     next_producer: Cell<u64>,
     /// The type-erased sender resource drops use; an executor that is
     /// gone has nothing left to release.
@@ -85,27 +86,9 @@ impl<B: Backend> std::fmt::Debug for Engine<B> {
 /// Constructed before the request is enqueued, so dropping the
 /// [`Engine::surface`] future — before the backend processed it, after it
 /// committed, or after the reply — still destroys what was committed.
-/// `disarm` hands the surface to its handle, or is the rejected path,
-/// where nothing exists to destroy.
-struct Registration {
-    release: Option<Box<dyn FnOnce()>>,
-}
-
-impl Registration {
-    /// The surface handle owns the destruction now, or nothing was
-    /// committed: no destruction is enqueued.
-    fn disarm(&mut self) {
-        self.release = None;
-    }
-}
-
-impl Drop for Registration {
-    fn drop(&mut self) {
-        if let Some(release) = self.release.take() {
-            release();
-        }
-    }
-}
+/// `DropGuard::dismiss` hands the surface to its handle, or is the rejected
+/// path, where nothing exists to destroy.
+type Registration = core::mem::DropGuard<Box<dyn FnOnce()>, fn(Box<dyn FnOnce()>)>;
 
 impl<B: Backend> Engine<B> {
     /// Initializes the backend and its serial executor on the current JS thread.
@@ -140,6 +123,7 @@ impl<B: Backend> Engine<B> {
             next_shader: Cell::new(1),
             next_filter: Cell::new(1),
             next_backdrop_shader: Cell::new(1),
+            next_content_shader: Cell::new(1),
             next_producer: Cell::new(1),
             post: Rc::new(move |message| {
                 let _ = post_tx.send(message);
@@ -366,11 +350,11 @@ impl<B: Backend> Engine<B> {
         // The guard owns the surface id from the enqueue on: dropping the
         // future still destroys what `create_surface` committed (#150).
         let tx = self.tx.clone();
-        let mut registration = Registration {
-            release: Some(Box::new(move || {
-                let _ = tx.send(Message::DestroySurface { id });
-            })),
-        };
+        let release: Box<dyn FnOnce()> = Box::new(move || {
+            let _ = tx.send(Message::DestroySurface { id });
+        });
+        let registration: Registration =
+            core::mem::DropGuard::new(release, (|release| release()) as fn(Box<dyn FnOnce()>));
         self.tx
             .send(Message::CreateSurface {
                 id,
@@ -381,18 +365,19 @@ impl<B: Backend> Engine<B> {
             .map_err(|_| SurfaceError::Lost)?;
         match rx.recv().await {
             Ok(Ok(info)) => {
-                registration.disarm();
+                let _ = core::mem::DropGuard::dismiss(registration);
                 let surface = Surface::new(id, info, self.tx.clone(), waker);
                 self.surfaces.borrow_mut().push(super::SurfaceEntry {
                     shared: Rc::downgrade(&surface.shared),
                     waker: Arc::clone(&surface.waker),
                     next_frame: Rc::downgrade(&surface.next_frame),
+                    rate_vote: Rc::downgrade(&surface.rate_vote),
                     running_tracks: Rc::downgrade(&surface.running_tracks),
                 });
                 Ok(surface)
             }
             Ok(Err(error)) => {
-                registration.disarm();
+                let _ = core::mem::DropGuard::dismiss(registration);
                 Err(error)
             }
             Err(_) => Err(SurfaceError::Lost),
@@ -559,6 +544,40 @@ impl<B: crate::BackdropShaders> Engine<B> {
             id,
             reach,
             self.on_release(resource, move |r| B::remove_backdrop_shader(r, id)),
+        ))
+    }
+}
+
+impl<B: crate::ContentShaders> Engine<B> {
+    /// Registers a content effect shader. The source is validated here,
+    /// before anything is queued; pipeline creation is queued in order with
+    /// every render and does not wait for the browser.
+    ///
+    /// # Errors
+    /// [`ResourceError::Shader`] when the source fails validation or its
+    /// `reach` is not a finite non-negative number;
+    /// [`ResourceError::Lost`] when the executor is gone.
+    pub fn content_shader(
+        &self,
+        source: crate::ContentShaderSource,
+    ) -> Result<crate::ContentShader, ResourceError> {
+        if !(source.reach.is_finite() && source.reach >= 0.0) {
+            return Err(ResourceError::Shader(
+                "content shader reach must be a finite non-negative number".into(),
+            ));
+        }
+        B::validate_content_shader(&source)?;
+        let id = crate::ContentShaderId::new(Self::alloc(&self.next_content_shader));
+        let reach = source.reach;
+        let resource = ResourceId::ContentShader(id);
+        self.register(
+            resource,
+            Box::new(move |r: &mut B::Renderer| Box::pin(B::add_content_shader(r, id, source))),
+        )?;
+        Ok(crate::ContentShader::new(
+            id,
+            reach,
+            self.on_release(resource, move |r| B::remove_content_shader(r, id)),
         ))
     }
 }

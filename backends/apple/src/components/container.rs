@@ -25,8 +25,8 @@ use waterui::layout::container::LazyContainer;
 use waterui::layout::stack::{Axis, LazyStackAxis, lazy_stack_axis};
 use waterui::reactive::Signal;
 use waterui::reactive::watcher::{BoxWatcherGuard, Metadata};
-use waterui::views::{AnyViewsSnapshot, ViewSnapshot, Views};
-use waterui_backend_core::AnyView;
+use waterui::views::AnyViewsSnapshot;
+use waterui_backend_core::{Child, ChildView};
 use waterui_core::Computed;
 use waterui_core::layout::{
     HorizontalAlignment, Layout, LayoutDirection, LayoutError, PlacedGeometry, PlacementInput,
@@ -35,13 +35,14 @@ use waterui_core::layout::{
 };
 use waterui_core::views::AnyViews;
 
+use crate::backend::AppleBackend;
 use crate::contract::{NativeLeaf, Renderer};
-use crate::dispatch::Dispatcher;
 use crate::proposal::{self, CommittedGeometry, Placement, to_proposal};
 use crate::transition::ghost::Ghost;
 use crate::transition::live::{LiveChild, Removal};
 use crate::transition::slots::{FrozenPlacement, GhostKey, Slot, SlotSequence};
 
+use crate::contract::RenderContext;
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::{HitTest, HostView};
 #[cfg(target_os = "ios")]
@@ -164,11 +165,11 @@ struct ContainerState {
     /// The lazily materialized collection — watches register here and
     /// `snapshot()` captures state; membership and row answers never
     /// read it live.
-    contents: AnyViews<AnyView>,
+    contents: AnyViews<Child<AppleBackend>>,
     /// The retained child-data snapshot aligned with `item_ids` — every
     /// `get_id`/`get_view` answer comes from it, never the live
     /// collection.
-    snapshot: AnyViewsSnapshot<AnyView>,
+    snapshot: AnyViewsSnapshot<Child<AppleBackend>>,
     /// The render capability `get_view` results are realized through.
     renderer: Renderer,
     /// The host view — the leaf's platform object.
@@ -282,7 +283,7 @@ fn render_at(state: &ContainerState, index: usize) -> NativeLeaf {
         .snapshot
         .get_view(index)
         .expect("lazy container index is in bounds");
-    state.renderer.render(item)
+    state.renderer.realize(item)
 }
 
 /// Renders and mounts the item at `index`, recorded under its id.
@@ -312,7 +313,7 @@ fn retire_member(
     state_rc: &Rc<RefCell<ContainerState>>,
     key: GhostKey,
     child: LiveChild,
-    slot: waterui_core::transition::GhostSlot,
+    slot: waterui_structural_transition::GhostSlot,
 ) {
     let weak = Rc::downgrade(state_rc);
     let Some(ghost) = child.remove(Removal {
@@ -368,7 +369,10 @@ fn depart_members(
 }
 
 /// A ghost slot's frozen size read on the lazy stack's axes.
-fn ghost_main_cross(slot: &waterui_core::transition::GhostSlot, lazy: &LazyConfig) -> (f64, f64) {
+fn ghost_main_cross(
+    slot: &waterui_structural_transition::GhostSlot,
+    lazy: &LazyConfig,
+) -> (f64, f64) {
     let size = slot.size();
     main_cross(
         cocoa_ui::Size::new(f64::from(size.width), f64::from(size.height)),
@@ -714,14 +718,14 @@ struct PendingChildren {
     /// delivers.
     depth: usize,
     /// The newest unapplied (snapshot, ids, metadata) triple.
-    emission: Option<(AnyViewsSnapshot<AnyView>, Vec<ItemId>, Metadata)>,
+    emission: Option<(AnyViewsSnapshot<Child<AppleBackend>>, Vec<ItemId>, Metadata)>,
 }
 
 impl PendingChildren {
     /// The newest emission is authoritative.
     fn record(
         &mut self,
-        snapshot: AnyViewsSnapshot<AnyView>,
+        snapshot: AnyViewsSnapshot<Child<AppleBackend>>,
         ids: Vec<ItemId>,
         metadata: Metadata,
     ) {
@@ -729,7 +733,9 @@ impl PendingChildren {
     }
 
     /// Drains the pending emission; the apply owns delivery from here.
-    const fn take(&mut self) -> Option<(AnyViewsSnapshot<AnyView>, Vec<ItemId>, Metadata)> {
+    const fn take(
+        &mut self,
+    ) -> Option<(AnyViewsSnapshot<Child<AppleBackend>>, Vec<ItemId>, Metadata)> {
         self.emission.take()
     }
 }
@@ -1368,180 +1374,182 @@ impl SubView for ContainerSubView {
     }
 }
 
-/// Installs the `container` handler on the dispatcher.
+/// The `container` realization.
 #[expect(
     clippy::too_many_lines,
-    reason = "the handler mirrors the baseline's single render entry"
+    reason = "one component's whole realization, as the handler it replaces"
 )]
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<LazyContainer>(|container, ctx| {
-        let mtm = ctx.mtm();
-        let direction = container.direction();
-        let (layout, contents) = container.into_inner();
-        let host = HostView::new(mtm, Rect::ZERO);
+pub fn realize_lazy_container<C: ChildView<AppleBackend>>(
+    container: LazyContainer<C>,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    let mtm = ctx.mtm();
+    let direction = container.direction();
+    let (layout, contents) = container.into_inner();
+    let contents = contents.map_views(C::into_child);
+    let host = HostView::new(mtm, Rect::ZERO);
 
-        let lazy = LazyConfig::new(&*layout);
-        let state = Rc::new(RefCell::new(ContainerState {
-            layout,
-            snapshot: contents.snapshot(),
-            contents,
-            renderer: ctx.renderer(),
-            host: host.clone(),
-            lazy,
-            direction,
-            item_ids: Vec::new(),
-            rendered: HashMap::new(),
-            slots: SlotSequence::new(Vec::new()),
-            ghosts: HashMap::new(),
-            placed: HashMap::new(),
-            order: Vec::new(),
-            pending_inserts: HashSet::new(),
-            built: false,
-            measured_main: HashMap::new(),
-            measured_cross: HashMap::new(),
-            last_cross: -1.0,
-            placement: Cell::new(Placement::UNPLACED),
-            scroll: None,
-            layout_guards: Vec::new(),
-            geometry: None,
-        }));
+    let lazy = LazyConfig::new(&*layout);
+    let state = Rc::new(RefCell::new(ContainerState {
+        layout,
+        snapshot: contents.snapshot(),
+        contents,
+        renderer: ctx.renderer(),
+        host: host.clone(),
+        lazy,
+        direction,
+        item_ids: Vec::new(),
+        rendered: HashMap::new(),
+        slots: SlotSequence::new(Vec::new()),
+        ghosts: HashMap::new(),
+        placed: HashMap::new(),
+        order: Vec::new(),
+        pending_inserts: HashSet::new(),
+        built: false,
+        measured_main: HashMap::new(),
+        measured_cross: HashMap::new(),
+        last_cross: -1.0,
+        placement: Cell::new(Placement::UNPLACED),
+        scroll: None,
+        layout_guards: Vec::new(),
+        geometry: None,
+    }));
 
-        host.set_hit_test_handler(|_host, _point| HitTest::PassIfSelf);
-        host.set_intrinsic_auto_layout(true);
-        // The scroll-surface search descends through this container's
-        // children, in stacking order.
-        host.set_scroll_surface_handler({
-            let state = Rc::clone(&state);
-            move |_host| {
-                let state = state.borrow();
-                state
-                    .order
-                    .iter()
-                    .map(|id| view::retain_base(state.rendered[id].view()))
-                    .collect()
-            }
-        });
-        let pending = Rc::new(RefCell::new(PendingChildren::default()));
-        host.set_measure_handler({
-            let state = Rc::clone(&state);
-            let pending = Rc::clone(&pending);
-            move |_host, proposal| {
-                let measured = measure(&state, &pending, to_proposal(proposal));
-                cocoa_ui::Size::new(
-                    f64::from(measured.size.width),
-                    f64::from(measured.size.height),
-                )
-            }
-        });
-        host.set_layout_handler({
-            let state = Rc::clone(&state);
-            let pending = Rc::clone(&pending);
-            move |_host| {
-                perform_layout(&state, &pending);
-            }
-        });
-        // Moving superviews can change the enclosing scroll view.
-        host.set_superview_handler({
-            let state = Rc::clone(&state);
-            move |_host| {
-                let mut borrowed = state.borrow_mut();
-                teardown_scroll_observation(&mut borrowed);
-                install_scroll_observation(&mut borrowed);
-            }
-        });
-
-        let sink_guard = proposal::register_sink(&host, {
-            let state = Rc::clone(&state);
-            let host = host.clone();
-            move |placement| {
-                let state = state.borrow();
-                if state.placement.get() != placement {
-                    state.placement.set(placement);
-                    host.set_needs_layout();
-                }
-            }
-        });
-
-        // `watchAnyViewsIds` — the collection's membership watch. An
-        // event only records into `pending` while a transaction is
-        // active; otherwise it delivers immediately, so an emission
-        // inside a child's own materialization can never collide with
-        // the borrow that materialization holds. Subscribing delivers
-        // nothing: the initial population below reads the snapshot.
-        let watcher = state.borrow().contents.watch(.., {
-            let state = Rc::clone(&state);
-            let pending = Rc::clone(&pending);
-            move |ctx, _change| {
-                let snapshot = ctx.value().clone();
-                let metadata = ctx.metadata().clone();
-                let ids: Vec<ItemId> = snapshot
-                    .range()
-                    .filter_map(|index| snapshot.get_id(index))
-                    .collect();
-                let in_transaction = {
-                    let mut pending = pending.borrow_mut();
-                    pending.record(snapshot, ids, metadata);
-                    pending.depth > 0
-                };
-                if !in_transaction {
-                    deliver_children(&state, &pending);
-                }
-            }
-        });
-
-        // The layout's own invalidation signal — `wuiLayout.setOwner` +
-        // `WuiLayoutInvalidationTarget.invalidate`: rebuild by re-laying
-        // out, since stretch axes and priorities bake into the child set.
-        let layout_guards = state.borrow().layout.watch_invalidation(Rc::new({
-            // The guards are stored inside the very state a strong capture
-            // would keep alive — a self-cycle with no outside participant
-            // (WaterUI #1575). Both captures stay weak; a dead owner no-ops.
-            let state = Rc::downgrade(&state);
-            let host = objc2::rc::Weak::new(&*host);
-            move || {
-                let (Some(_state), Some(host)) = (state.upgrade(), host.load()) else {
-                    return;
-                };
-                crate::invalidation::invalidate_layout_hierarchy(&host);
-            }
-        }));
-        state.borrow_mut().layout_guards = layout_guards;
-
-        // `reloadChildrenFromRust` — the initial population, a
-        // transaction since materializing children may emit back.
-        with_children_tx(&state, &pending, || {
-            let ids: Vec<ItemId> = {
-                let state_ref = state.borrow();
-                state_ref
-                    .snapshot
-                    .range()
-                    .filter_map(|index| state_ref.snapshot.get_id(index))
-                    .collect()
-            };
-            if !has_unique_ids(&ids) {
-                return;
-            }
-            let mut state_ref = state.borrow_mut();
-            if state_ref.lazy.is_some() {
-                update_virtual_ids(&mut state_ref, &state, ids);
-            } else {
-                sync_children(&mut state_ref, &state, ids);
-            }
-        });
-
-        let mut leaf = NativeLeaf::new(
-            &*host,
-            ContainerSubView {
-                state: Rc::clone(&state),
-                pending: Rc::clone(&pending),
-            },
-        );
-        state.borrow_mut().geometry = Some(leaf.drive_geometry());
-        leaf.keep(sink_guard);
-        leaf.keep(watcher);
-        leaf.keep(state);
-        leaf
+    host.set_hit_test_handler(|_host, _point| HitTest::PassIfSelf);
+    host.set_intrinsic_auto_layout(true);
+    // The scroll-surface search descends through this container's
+    // children, in stacking order.
+    host.set_scroll_surface_handler({
+        let state = Rc::clone(&state);
+        move |_host| {
+            let state = state.borrow();
+            state
+                .order
+                .iter()
+                .map(|id| view::retain_base(state.rendered[id].view()))
+                .collect()
+        }
     });
+    let pending = Rc::new(RefCell::new(PendingChildren::default()));
+    host.set_measure_handler({
+        let state = Rc::clone(&state);
+        let pending = Rc::clone(&pending);
+        move |_host, proposal| {
+            let measured = measure(&state, &pending, to_proposal(proposal));
+            cocoa_ui::Size::new(
+                f64::from(measured.size.width),
+                f64::from(measured.size.height),
+            )
+        }
+    });
+    host.set_layout_handler({
+        let state = Rc::clone(&state);
+        let pending = Rc::clone(&pending);
+        move |_host| {
+            perform_layout(&state, &pending);
+        }
+    });
+    // Moving superviews can change the enclosing scroll view.
+    host.set_superview_handler({
+        let state = Rc::clone(&state);
+        move |_host| {
+            let mut borrowed = state.borrow_mut();
+            teardown_scroll_observation(&mut borrowed);
+            install_scroll_observation(&mut borrowed);
+        }
+    });
+
+    let sink_guard = proposal::register_sink(&host, {
+        let state = Rc::clone(&state);
+        let host = host.clone();
+        move |placement| {
+            let state = state.borrow();
+            if state.placement.get() != placement {
+                state.placement.set(placement);
+                host.set_needs_layout();
+            }
+        }
+    });
+
+    // `watchAnyViewsIds` — the collection's membership watch. An
+    // event only records into `pending` while a transaction is
+    // active; otherwise it delivers immediately, so an emission
+    // inside a child's own materialization can never collide with
+    // the borrow that materialization holds. Subscribing delivers
+    // nothing: the initial population below reads the snapshot.
+    let watcher = state.borrow().contents.watch(.., {
+        let state = Rc::clone(&state);
+        let pending = Rc::clone(&pending);
+        move |ctx, _change| {
+            let snapshot = ctx.value().clone();
+            let metadata = ctx.metadata().clone();
+            let ids: Vec<ItemId> = snapshot
+                .range()
+                .filter_map(|index| snapshot.get_id(index))
+                .collect();
+            let in_transaction = {
+                let mut pending = pending.borrow_mut();
+                pending.record(snapshot, ids, metadata);
+                pending.depth > 0
+            };
+            if !in_transaction {
+                deliver_children(&state, &pending);
+            }
+        }
+    });
+
+    // The layout's own invalidation signal — `wuiLayout.setOwner` +
+    // `WuiLayoutInvalidationTarget.invalidate`: rebuild by re-laying
+    // out, since stretch axes and priorities bake into the child set.
+    let layout_guards = state.borrow().layout.watch_invalidation(Rc::new({
+        // The guards are stored inside the very state a strong capture
+        // would keep alive — a self-cycle with no outside participant
+        // (WaterUI #1575). Both captures stay weak; a dead owner no-ops.
+        let state = Rc::downgrade(&state);
+        let host = objc2::rc::Weak::new(&*host);
+        move || {
+            let (Some(_state), Some(host)) = (state.upgrade(), host.load()) else {
+                return;
+            };
+            crate::invalidation::invalidate_layout_hierarchy(&host);
+        }
+    }));
+    state.borrow_mut().layout_guards = layout_guards;
+
+    // `reloadChildrenFromRust` — the initial population, a
+    // transaction since materializing children may emit back.
+    with_children_tx(&state, &pending, || {
+        let ids: Vec<ItemId> = {
+            let state_ref = state.borrow();
+            state_ref
+                .snapshot
+                .range()
+                .filter_map(|index| state_ref.snapshot.get_id(index))
+                .collect()
+        };
+        if !has_unique_ids(&ids) {
+            return;
+        }
+        let mut state_ref = state.borrow_mut();
+        if state_ref.lazy.is_some() {
+            update_virtual_ids(&mut state_ref, &state, ids);
+        } else {
+            sync_children(&mut state_ref, &state, ids);
+        }
+    });
+
+    let mut leaf = NativeLeaf::new(
+        &*host,
+        ContainerSubView {
+            state: Rc::clone(&state),
+            pending: Rc::clone(&pending),
+        },
+    );
+    state.borrow_mut().geometry = Some(leaf.drive_geometry());
+    leaf.keep(sink_guard);
+    leaf.keep(watcher);
+    leaf.keep(state);
+    leaf
 }
 
 #[cfg(test)]

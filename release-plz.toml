@@ -74,7 +74,23 @@ name = "waterui-contract"
 version_group = "waterui"
 
 [[package]]
+name = "apple-availability"
+version_group = "waterui"
+
+[[package]]
 name = "waterui-easing"
+version_group = "waterui"
+
+[[package]]
+name = "waterui-frame-rate"
+version_group = "waterui"
+
+[[package]]
+name = "waterui-resources"
+version_group = "waterui"
+
+[[package]]
+name = "waterui-capture"
 version_group = "waterui"
 
 [[package]]
@@ -86,6 +102,14 @@ name = "waterui-dylib"
 version_group = "waterui"
 
 # Foundation components
+
+[[package]]
+name = "waterui-accessibility"
+version_group = "waterui"
+
+[[package]]
+name = "waterui-interaction"
+version_group = "waterui"
 
 [[package]]
 name = "waterui-text"
@@ -122,6 +146,10 @@ name = "waterui-shape"
 version_group = "waterui"
 
 [[package]]
+name = "waterui-structural-transition"
+version_group = "waterui"
+
+[[package]]
 name = "waterui-navigation"
 version_group = "waterui"
 git_tag_name = "navigation-v{{ version }}"
@@ -132,6 +160,10 @@ git_tag_name = "navigation-v{{ version }}"
 name = "waterui-graphics"
 version_group = "waterui"
 git_tag_name = "graphics-v{{ version }}"
+
+[[package]]
+name = "waterui-markdown"
+version_group = "waterui"
 
 # Multimedia components
 
@@ -153,6 +185,10 @@ version_group = "waterui"
 
 [[package]]
 name = "waterui-chromium"
+version_group = "waterui"
+
+[[package]]
+name = "waterui-widgets"
 version_group = "waterui"
 
 # Data components
@@ -190,6 +226,10 @@ version_group = "waterui"
 git_tag_name = "inspector-protocol-v{{ version }}"
 
 [[package]]
+name = "waterui-inspector-runtime"
+version_group = "waterui"
+
+[[package]]
 name = "waterui-inspector-app"
 version_group = "waterui"
 
@@ -215,10 +255,6 @@ name = "waterui-icons-codegen"
 version_group = "waterui"
 
 [[package]]
-name = "waterui-icons-sf-symbol"
-version_group = "waterui"
-
-[[package]]
 name = "waterui-icons-material-icon"
 version_group = "waterui"
 
@@ -230,14 +266,18 @@ version_group = "waterui"
 name = "waterui-icons-lucide"
 version_group = "waterui"
 
-[[package]]
-name = "waterui-icons-native"
-version_group = "waterui"
-
 # Backends
 
 [[package]]
 name = "waterui-backend-core"
+version_group = "waterui"
+
+[[package]]
+name = "hydrolysis-style"
+version_group = "waterui"
+
+[[package]]
+name = "waterui-apple-menu"
 version_group = "waterui"
 
 # Hydrolysis is in the waterui version group for the reason the CLI is
@@ -289,6 +329,9 @@ name = "cherenkov-cpu"
 
 [[package]]
 name = "cherenkov-stroke"
+
+[[package]]
+name = "cherenkov-simd"
 
 # TypeScript runtime (#2687): the facade's `ts`/`ts-ota` features reach
 # `waterui-ts` as an optional dependency, so the family is part of the

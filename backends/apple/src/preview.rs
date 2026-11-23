@@ -6,7 +6,7 @@
 //! does — startup, the GPU runtime, native services — under the main run
 //! loop rather than the platform's application run loop, mounts the view
 //! on a root `HostView` inside a capture window under a fresh
-//! [`ContentLedger`](waterui_core::ContentLedger), waits for the content
+//! [`ContentLedger`](waterui_capture::ContentLedger), waits for the content
 //! its views owe — bounded by the run's content deadline — and for GPU
 //! surfaces to present, captures the whole subtree and writes the PNG. The
 //! process answers only through `main`'s return — no Dock icon, no focus,
@@ -30,13 +30,23 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Instant;
 
-use cocoa_ui::MainThreadMarker;
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::{ActivationPolicy, Application};
+use cocoa_ui::bitmap::set_window_color_scheme;
+#[cfg(feature = "gpu_surface")]
+use cocoa_ui::capture::collect_capturables;
 use cocoa_ui::objc2_core_foundation::CFRunLoop;
+#[cfg(catalyst)]
+use cocoa_ui::uikit::catalyst::{BackgroundApplication, runs_under_pad_idiom};
+#[cfg(catalyst)]
+use cocoa_ui::uikit::current_scheme;
+use cocoa_ui::{ColorScheme, MainThreadMarker};
 use waterui_backend_core::Environment;
-use waterui_core::ResourceContext;
-use waterui_preview_protocol::run::{Alpha, PreviewRunConfig, PreviewRunMode};
+use waterui_capture::view_renderer::RenderResult;
+use waterui_preview_protocol::run::{Alpha, PreviewColorScheme, PreviewRunConfig, PreviewRunMode};
+use waterui_resources::ResourceContext;
+
+use crate::{capture, theme};
 
 /// The capture failure a preview run reports — `ViewCapture`'s with
 /// `gpu_surface`, the bitmap readback's without it.
@@ -91,7 +101,7 @@ pub enum PreviewError {
     /// A view still owed content when the run's content deadline passed, or
     /// its content failed to load.
     #[error(transparent)]
-    Content(#[from] waterui_core::content_ledger::ContentError),
+    Content(#[from] waterui_capture::content_ledger::ContentError),
     /// Encoding or writing the capture PNG failed.
     #[error(transparent)]
     Write(#[from] waterui_preview_protocol::run::PngError),
@@ -181,9 +191,16 @@ fn drive(
     // Startup before anything else can panic or error — the panic hook and
     // the unconditional stderr layer are what the contract guarantees
     // everything else through.
+    #[cfg(feature = "inspector")]
     let inspector = crate::startup::initialize_for_preview();
+    #[cfg(not(feature = "inspector"))]
+    crate::startup::initialize_for_preview();
 
     let content_deadline = config.content_deadline();
+    let color_scheme = config.color_scheme().map(|scheme| match scheme {
+        PreviewColorScheme::Light => ColorScheme::Light,
+        PreviewColorScheme::Dark => ColorScheme::Dark,
+    });
     let size = cocoa_ui::Size::new(f64::from(config.width()), f64::from(config.height()));
     let output = match config.into_mode() {
         PreviewRunMode::Image { output } => output,
@@ -198,59 +215,63 @@ fn drive(
     // locale and font registrations `prepare` requires to outlive `env` —
     // drops last.
     let mut keepers = crate::contract::KeepAlive::default();
-    let (mut env, host) = prepare(mtm, resources, &mut keepers, inspector)?;
+    let (mut env, host) = prepare(
+        mtm,
+        resources,
+        color_scheme,
+        &mut keepers,
+        #[cfg(feature = "inspector")]
+        inspector,
+    )?;
 
     let env_ptr = &raw mut env;
     let outcome = Rc::new(RefCell::new(None::<Result<(), PreviewError>>));
+    let launch = {
+        let outcome = Rc::clone(&outcome);
+        move || {
+            // `drive` lent `env` for its frame; this closure is the
+            // only consumer and runs once, on the main thread.
+            // SAFETY: `env_ptr` stays live until `render_and_write` completes.
+            let env = unsafe { &mut *env_ptr };
+            let env = compose(env.clone());
+            tracing::info!(
+                phase = "load",
+                elapsed_ms = load_started.elapsed().as_millis(),
+                "Apple preview phase"
+            );
+            executor_core::spawn_local(async move {
+                *outcome.borrow_mut() = Some(
+                    render_and_write(
+                        &env,
+                        mtm,
+                        &host,
+                        view,
+                        Capture {
+                            size,
+                            color_scheme,
+                            content_deadline,
+                            output: &output,
+                        },
+                    )
+                    .await,
+                );
+                CFRunLoop::current()
+                    .expect("the main executor drives this task from the main thread's run loop")
+                    .stop();
+            })
+            .detach();
+        }
+    };
+    #[cfg(feature = "gpu_surface")]
     // SAFETY: `env` is lent to `drive`'s frame — the completion below
     // renders, deposits the run's result in `outcome` and stops the run
     // loop `drive` blocks in, so the borrow ends before the frame returns;
     // nothing else drains the main queue after a `RunLoopExited` return.
     unsafe {
-        crate::gpu_runtime::prepare(env_ptr, {
-            let outcome = Rc::clone(&outcome);
-            move || {
-                // `drive` lent `env` for its frame; this closure is the
-                // only consumer and runs once, on the main thread.
-                let env = &mut *env_ptr;
-                crate::embedding::install_services(env);
-                let env = compose(env.clone());
-                #[cfg(feature = "webview")]
-                let env = {
-                    let mut env = env;
-                    crate::components::webview::install_service(&mut env);
-                    env
-                };
-                tracing::info!(
-                    phase = "load",
-                    elapsed_ms = load_started.elapsed().as_millis(),
-                    "Apple preview phase"
-                );
-                executor_core::spawn_local(async move {
-                    *outcome.borrow_mut() = Some(
-                        render_and_write(
-                            &env,
-                            mtm,
-                            &host,
-                            view,
-                            Capture {
-                                size,
-                                content_deadline,
-                                output: &output,
-                            },
-                        )
-                        .await,
-                    );
-                    CFRunLoop::current()
-                        .expect(
-                            "the main executor drives this task from the main thread's run loop",
-                        )
-                        .stop();
-                })
-                .detach();
-            }
-        });
+        crate::gpu_runtime::prepare(env_ptr, launch);
     }
+    #[cfg(not(feature = "gpu_surface"))]
+    launch();
     // `prepare`'s completion and `render` both land on the main executor,
     // which this run loop drives; the task's `stop` is the only way out,
     // so a bare return can only come from the loop itself.
@@ -294,10 +315,12 @@ pub(crate) struct Host {
 pub(crate) fn prepare(
     mtm: MainThreadMarker,
     resources: ResourceContext,
+    color_scheme: Option<ColorScheme>,
     keepers: &mut crate::contract::KeepAlive,
-    inspector: Option<waterui::inspector::InspectorRuntime>,
+    #[cfg(feature = "inspector")] inspector: Option<waterui::inspector::InspectorRuntime>,
 ) -> Result<(Environment, Host), PreviewError> {
     let mut env = Environment::new();
+    #[cfg(feature = "inspector")]
     waterui::inspector::install(&mut env, inspector);
     waterui::text::install_system_font_collection(&mut env);
     let mut fonts = crate::fonts::FontRegistrations::default();
@@ -319,28 +342,32 @@ pub(crate) fn prepare(
         {
             return Err(PreviewError::ActivationPolicyRefused);
         }
-        let theme = Rc::new(crate::theme::install(&mut env, application.color_scheme()));
-        let appearance = application.observe_color_scheme({
-            let theme = Rc::clone(&theme);
-            move |scheme| crate::theme::refresh(&theme, scheme)
-        });
-        keepers.keep(theme);
-        keepers.keep(appearance);
+        let initial = color_scheme.unwrap_or_else(|| application.color_scheme());
+        let installed_theme = Rc::new(theme::install(&mut env, initial));
+        if color_scheme.is_none() {
+            let appearance = application.observe_color_scheme({
+                let installed_theme = Rc::clone(&installed_theme);
+                move |scheme| theme::refresh(&installed_theme, scheme)
+            });
+            keepers.keep(appearance);
+        }
+        keepers.keep(installed_theme);
         Host {}
     };
     #[cfg(catalyst)]
     let host = {
-        let application = cocoa_ui::uikit::catalyst::BackgroundApplication::bring_up(mtm);
-        if !cocoa_ui::uikit::catalyst::runs_under_pad_idiom(mtm) {
+        let application = BackgroundApplication::bring_up(mtm);
+        if !runs_under_pad_idiom(mtm) {
             return Err(PreviewError::MissingPadIdiom);
         }
-        // No controller exists yet to answer the scheme; the capture window
-        // refreshes the theme from its own traits once the view mounts.
-        let theme = Rc::new(crate::theme::install(
-            &mut env,
-            cocoa_ui::uikit::current_scheme(),
-        ));
-        Host { application, theme }
+        // No controller exists yet when `color_scheme` is `None`; the capture
+        // window refreshes the theme from its own traits once the view mounts.
+        let initial = color_scheme.unwrap_or_else(current_scheme);
+        let installed_theme = Rc::new(theme::install(&mut env, initial));
+        Host {
+            application,
+            theme: installed_theme,
+        }
     };
     let locale = crate::locale::install(&mut env, mtm);
     keepers.keep(locale);
@@ -353,6 +380,8 @@ pub(crate) fn prepare(
 struct Capture<'a> {
     /// The capture window's size.
     size: cocoa_ui::Size,
+    /// Optional color scheme override for the capture window.
+    color_scheme: Option<ColorScheme>,
     /// How long the capture waits for content its views owe.
     content_deadline: core::time::Duration,
     /// The PNG destination.
@@ -363,7 +392,7 @@ struct Capture<'a> {
 /// its views owe, captures the presented subtree and writes its PNG — the
 /// one tail [`run`] runs and every capture the entry performs ends in.
 ///
-/// The view mounts under a fresh [`ContentLedger`](waterui_core::ContentLedger):
+/// The view mounts under a fresh [`ContentLedger`](waterui_capture::ContentLedger):
 /// the capture rasterizes only once a full drain leaves nothing owed.
 /// Apple's bitmap context reads premultiplied RGBA8 — the convention the
 /// writer declares for the capture.
@@ -386,9 +415,16 @@ async fn render_and_write(
     capture: Capture<'_>,
 ) -> Result<(), PreviewError> {
     let render_started = Instant::now();
-    let ledger = waterui_core::ContentLedger::new();
+    let ledger = waterui_capture::ContentLedger::new();
     let content_env = env.extending(ledger.clone());
-    let stage = Stage::mount(&content_env, mtm, host, view, capture.size);
+    let stage = Stage::mount(
+        &content_env,
+        mtm,
+        host,
+        view,
+        capture.size,
+        capture.color_scheme,
+    );
     crate::content::await_content(&ledger, &stage.root, capture.content_deadline).await?;
     let result = stage.capture().await?;
     drop(stage);
@@ -431,7 +467,7 @@ struct Stage {
     _keepalive: crate::contract::KeepAlive,
     /// The capture window's appearance, feeding the theme.
     #[cfg(catalyst)]
-    _appearance: cocoa_ui::uikit::ColorSchemeObservation,
+    _appearance: Option<cocoa_ui::uikit::ColorSchemeObservation>,
     /// The root the content mounts on and the capture reads.
     root: cocoa_ui::Retained<HostView>,
     /// The window's root controller, owning `root`.
@@ -475,10 +511,14 @@ impl Stage {
         _host: &Host,
         view: impl FnOnce() -> waterui::AnyView,
         size: cocoa_ui::Size,
+        color_scheme: Option<ColorScheme>,
     ) -> Self {
         // `cocoa_ui::bitmap::capture_window` builds the one never-ordered
         // construction every `AppKit` capture shares.
         let window = cocoa_ui::bitmap::capture_window(mtm, size);
+        if let Some(scheme) = color_scheme {
+            set_window_color_scheme(&window, scheme);
+        }
         let root = HostView::new(mtm, cocoa_ui::Rect::new(0.0, 0.0, size.width, size.height));
         window.setContentView(Some(&*root));
         let mut keepalive = crate::contract::KeepAlive::default();
@@ -510,10 +550,14 @@ impl Stage {
         host: &Host,
         view: impl FnOnce() -> waterui::AnyView,
         size: cocoa_ui::Size,
+        color_scheme: Option<ColorScheme>,
     ) -> Self {
         use cocoa_ui::objc2::Message;
 
         let window = cocoa_ui::bitmap::scene_less_capture_window(mtm, &host.application, size);
+        if let Some(scheme) = color_scheme {
+            set_window_color_scheme(&window, scheme);
+        }
         let controller =
             cocoa_ui::uikit::ViewController::new(mtm, cocoa_ui::uikit::window_root(mtm));
         window.setRootViewController(Some(&**controller));
@@ -528,11 +572,15 @@ impl Stage {
         );
         window.setHidden(false);
         // The window carries the traits the bring-up had no controller to
-        // read: refresh the theme from them before the content resolves it.
-        crate::theme::refresh(&host.theme, controller.color_scheme());
-        let appearance = controller.observe_color_scheme({
-            let theme = Rc::clone(&host.theme);
-            move |scheme| crate::theme::refresh(&theme, scheme)
+        // read: refresh the theme from them (or the requested scheme) before
+        // the content resolves it.
+        let initial_scheme = color_scheme.unwrap_or_else(|| controller.color_scheme());
+        theme::refresh(&host.theme, initial_scheme);
+        let appearance = color_scheme.is_none().then(|| {
+            controller.observe_color_scheme({
+                let installed_theme = Rc::clone(&host.theme);
+                move |scheme| theme::refresh(&installed_theme, scheme)
+            })
         });
         let mut keepalive = crate::contract::KeepAlive::default();
         let content = crate::embedding::mount_content(&root, view(), env, &mut keepalive, mtm);
@@ -556,39 +604,47 @@ impl Stage {
         }
     }
 
-    /// Captures the presented subtree: `ViewCapture` composites the native
-    /// raster with every GPU surface inside it. The owed content has
-    /// settled by now, so a zero-size subtree is genuinely empty, not still
-    /// loading.
+    /// Captures the presented subtree: pure-native trees render directly
+    /// through `capture::capture_presented` (using the opt-in in-process
+    /// `Core Animation` render server so Liquid Glass and backdrop materials
+    /// composite without any visible window), while trees carrying GPU
+    /// surfaces composite their render-server native raster with every GPU
+    /// surface through `ViewCapture`.
     #[cfg(feature = "gpu_surface")]
     #[expect(
         clippy::future_not_send,
         reason = "the capture runs on the main thread; the Retained native objects it holds across the wait are not Send"
     )]
-    async fn capture(&self) -> Result<waterui_core::view_renderer::RenderResult, CaptureFailure> {
+    async fn capture(&self) -> Result<RenderResult, CaptureFailure> {
         // The window is never ordered in, so its display pass never runs on
-        // its own: run it explicitly — it draws the backing stores and
-        // attaches every subview's backing layer into the root layer tree
-        // `ViewCapture`'s `renderInContext` reads.
+        // its own: run it explicitly so backing stores and subview layers are
+        // current before either capture path reads them.
         #[cfg(target_os = "macos")]
         self.window.displayIfNeeded();
+        let mut has_capturable = false;
+        collect_capturables(&self.root, &mut |_| has_capturable = true);
+        if !has_capturable {
+            return capture::capture_presented(&self.root)
+                .await
+                .map_err(CaptureFailure::NativeCapture);
+        }
         let result = self.drive.capture_rgba().await?;
-        Ok(waterui_core::view_renderer::RenderResult::new(
+        Ok(RenderResult::new(
             result.pixels,
             result.width,
             result.height,
         ))
     }
 
-    /// The `gpu_surface`-free capture: every leaf rasterizes through the
-    /// platform's own display path, so the plain bitmap readback covers the
-    /// whole subtree.
+    /// The `gpu_surface`-free capture: every leaf rasterizes through
+    /// `capture::capture_presented` (using the in-process `Core Animation`
+    /// render server so glass and backdrop materials composite cleanly).
     #[cfg(not(feature = "gpu_surface"))]
     #[expect(
         clippy::future_not_send,
         reason = "the capture runs on the main thread; the Retained native objects it holds across the wait are not Send"
     )]
-    async fn capture(&self) -> Result<waterui_core::view_renderer::RenderResult, CaptureFailure> {
-        crate::capture::capture_presented(&self.root).await
+    async fn capture(&self) -> Result<RenderResult, CaptureFailure> {
+        capture::capture_presented(&self.root).await
     }
 }

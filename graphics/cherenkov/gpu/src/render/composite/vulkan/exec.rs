@@ -31,6 +31,7 @@ use cherenkov::FrameStats;
 use rustc_hash::FxHashMap;
 
 use super::mirror::{LOCAL_READ, Mirror, MirrorError, PipeKey, Stamp};
+use crate::render::composite::demand::is_persistent;
 use crate::render::composition as report;
 use crate::render::lower::{PipelineKind, ShaderVariant, Target};
 use crate::render::{SurfaceState, split_encoder};
@@ -151,7 +152,10 @@ pub fn encode(
         .iter()
         .find(|op| op.target == 0)
         .expect("epoch writes its output");
-    let clear = surf.frame.passes[first_output.pass].clear;
+    let persistent = is_persistent(output.target);
+    let clear = surf.frame.passes[first_output.pass]
+        .clear
+        .filter(|_| !persistent || !surf.draw_demand.pass(first_output.pass).is_empty());
 
     let stamp = Stamp {
         bind_gen: surf.bind_gen,

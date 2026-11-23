@@ -24,11 +24,10 @@ use core::mem::size_of_val;
 use arc_swap::{ArcSwap, ArcSwapOption};
 use nami::watcher::BoxWatcherGuard;
 use nami::{Computed, Signal, SignalExt};
-use waterui_core::layout::StretchAxis;
 use waterui_core::reactive::signal::IntoComputed;
 use waterui_core::{Environment, View, contract_violation};
 
-use crate::gpu::{Context, Frame, GpuContent, GpuContentView, RedrawHandle};
+use crate::gpu::{Context, Frame, GpuContent, GpuView, RedrawHandle};
 
 /// The most `f32` uniforms a shader reads: `params` is sixteen `vec4`s.
 const UNIFORM_CAPACITY: usize = 64;
@@ -86,17 +85,13 @@ impl View for ShaderPaintView {
     fn body(self, _env: &Environment) -> impl View {
         let shared = Arc::new(Shared::default());
         let posting = Posting::new(self.animated, self.uniforms, Arc::clone(&shared));
-        GpuContentView::new(ShaderContent {
+        GpuView::new(ShaderContent {
             fragment: self.fragment,
             shared,
             gpu: None,
         })
         // The hook also keeps the posting's watchers alive with the view.
         .on_frame(move || posting.post())
-    }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::Both
     }
 }
 
@@ -353,11 +348,15 @@ mod tests {
     const FRAGMENT: &str = "@fragment fn main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> { return vec4<f32>(uv, 0.0, 1.0); }";
 
     #[test]
-    fn a_shader_view_is_a_stretching_gpu_content_view() {
+    fn a_shader_view_is_a_stretching_gpu_view() {
         let view = ShaderPaintView::new(FRAGMENT);
-        assert_eq!(view.stretch_axis(), StretchAxis::Both);
-        let body = AnyView::new(view.body(&Environment::new()));
-        assert!(body.downcast::<GpuContentView>().is_ok());
+        let body = AnyView::new(view.body(&Environment::new()))
+            .downcast::<GpuView<ShaderContent>>()
+            .expect("a shader view's body is a GpuView<ShaderContent>");
+        assert_eq!(
+            waterui_core::NativeView::stretch_axis(&*body),
+            waterui_core::layout::StretchAxis::Both
+        );
     }
 
     /// The mailbox follows the signals, and a change wakes an idle host.

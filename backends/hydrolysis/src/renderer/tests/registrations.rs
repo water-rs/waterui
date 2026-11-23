@@ -21,19 +21,18 @@ use waterui::component::text;
 use waterui::graphics::Color;
 use waterui::prelude::ContextMenu;
 use waterui::{AnyView, ViewExt as _};
-use waterui_backend_core::View;
 use waterui_controls::button::button;
 use waterui_controls::menu::CommandExt as _;
 use waterui_core::Native;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::SelfId;
-use waterui_core::transition::PropertyTransition;
 use waterui_layout::frame::Frame;
 use waterui_layout::padding::EdgeInsets;
 use waterui_layout::scroll::scroll;
 use waterui_layout::stack::{VStack, vstack, zstack};
-use waterui_navigation::tab::{Tab, TabsLayout};
+use waterui_navigation::tab::{Tab, Tabs};
 use waterui_navigation::{NavigationLink, NavigationStack, NavigationView};
+use waterui_structural_transition::PropertyTransition;
 
 use super::popup_windows::find_by_label;
 use super::{MinimalTestTheme, test_environment};
@@ -150,35 +149,28 @@ fn hits_at(runtime: &HeadlessRuntime, x: f32, y: f32) -> (usize, usize) {
 fn a_hidden_tabs_button_is_not_hittable_after_the_switch() {
     let fired1 = Rc::new(Cell::new(false));
     let fired2 = Rc::new(Cell::new(false));
-    let tab_items = waterui_core::views::SharedAnyViews::new(
-        (1_i32..=2)
-            .map(|i| {
-                let fired = if i == 1 {
-                    fired1.clone()
-                } else {
-                    fired2.clone()
-                };
-                Tab::new(format!("Tab {i}"), move || {
-                    let fired = fired.clone();
-                    NavigationView::new(
-                        format!("Pane {i}"),
-                        button(format!("Fire {i}")).action(move || fired.set(true)),
-                    )
-                })
+    let tab_items = (1_i32..=2)
+        .map(|i| {
+            let fired = if i == 1 {
+                fired1.clone()
+            } else {
+                fired2.clone()
+            };
+            Tab::new(format!("Tab {i}"), move || {
+                let fired = fired.clone();
+                NavigationView::new(
+                    format!("Pane {i}"),
+                    button(format!("Fire {i}")).action(move || fired.set(true)),
+                )
             })
-            .collect::<Vec<_>>(),
-    );
-    let tab_ids = waterui_core::views::Views::snapshot(&tab_items);
-    let selection = Binding::container(
-        waterui_core::views::ViewSnapshot::get_id(&tab_ids, 0)
-            .expect("a non-empty tab set reports an id"),
-    );
-    let second = waterui_core::views::ViewSnapshot::get_id(&tab_ids, 1)
-        .expect("a non-empty tab set reports an id");
+        })
+        .collect::<Vec<_>>();
+    let selection = Binding::container(0usize);
+    let second = 1;
     let builder = {
         let selection = selection.clone();
         AnyViewBuilder::<AnyView>::new(move || {
-            AnyView::new(TabsLayout::new(selection.clone(), tab_items.clone()))
+            AnyView::new(Tabs::new(&selection, tab_items.clone()))
         })
     };
     let mut runtime = runtime(builder);

@@ -7,7 +7,7 @@
 //! - Filter options for different media types
 
 use waterui::AnyView;
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::component::Dynamic;
 use waterui::media::live::LivePhotoSource;
 use waterui::media::media_picker::{MediaFilter, MediaPicker, Selected};
@@ -72,7 +72,7 @@ pub fn demo() -> impl View {
 }
 
 /// Builds the media picker example app.
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows> {
     App::new(demo, env)
 }
 
@@ -82,7 +82,7 @@ fn picker_button(
     filter: MediaFilter,
     selection: &Binding<Option<Selected>>,
     display_state: &Binding<DisplayState>,
-) -> impl View {
+) -> impl View + use<> {
     // The picker owns the selection; the display state it drives is injected
     // with `.state(..)` and reaches the change handler as a `State` extractor.
     MediaPicker::new(selection)

@@ -2,10 +2,10 @@
 //!
 //! An embedded surface is a rectangle of the window that draws its own
 //! interactive content and therefore owns the input landing on it: a browser
-//! engine, any [`GpuContentView`](waterui_graphics::GpuContentView) or
+//! engine, any [`GpuView`](waterui_graphics::GpuView) or
 //! [`ExternalFrameView`](waterui_graphics::ExternalFrameView) whose view asks
 //! for input with
-//! [`wants_input_events`](waterui_graphics::GpuContentView::wants_input_events),
+//! [`wants_input_events`](waterui_graphics::GpuView::wants_input_events),
 //! or any [`SceneView`](waterui_graphics::backend::SceneView) whose content asks the same
 //! through
 //! [`SceneContent::wants_input_events`](waterui_graphics::backend::SceneContent::wants_input_events).
@@ -26,11 +26,13 @@ use crate::gpu_view::{ExternalFrameRuntime, GpuContentRuntime};
 use core::future::Future;
 use core::num::NonZeroU32;
 use core::pin::Pin;
+#[cfg(any(hydrolysis_scene_view, hydrolysis_gpu))]
 use std::collections::VecDeque;
+#[cfg(hydrolysis_scene_view)]
 use waterui_graphics::backend::SceneContent;
-use waterui_graphics::input::{
-    Code, Key, NamedKey, ScrollPhase, ScrollUnit, SurfaceInputEvent, SurfacePointerButton,
-};
+use waterui_graphics::input::{Code, Key, NamedKey, ScrollPhase, ScrollUnit};
+#[cfg(any(hydrolysis_scene_view, hydrolysis_gpu))]
+use waterui_graphics::input::{SurfaceInputEvent, SurfacePointerButton};
 
 #[cfg_attr(
     target_arch = "wasm32",
@@ -80,6 +82,13 @@ pub struct KeyDelivery<'a> {
     pub(crate) pressed: bool,
     pub(crate) logical: &'a Key,
     pub(crate) code: Code,
+    #[cfg_attr(
+        not(any(trybuild, hydrolysis_scene_view, hydrolysis_gpu)),
+        expect(
+            dead_code,
+            reason = "only SurfaceInputSink forwards key repeat to embedded surfaces"
+        )
+    )]
     pub(crate) repeat: bool,
     pub modifiers: Modifiers,
 }
@@ -202,8 +211,9 @@ pub struct BubbledKeySink {
 }
 
 /// Something that consumes the neutral [`SurfaceInputEvent`] vocabulary: the
-/// runtime of an embedded [`GpuContentView`](waterui_graphics::GpuContentView),
+/// runtime of an embedded [`GpuView`](waterui_graphics::GpuView),
 /// or the content of a self-drawn [`SceneView`](waterui_graphics::backend::SceneView).
+#[cfg(any(hydrolysis_scene_view, hydrolysis_gpu))]
 pub trait SurfaceInputReceiver {
     fn input(&mut self, event: &SurfaceInputEvent);
     /// The receiver's text caret, in logical surface-local coordinates.
@@ -235,6 +245,7 @@ impl SurfaceInputReceiver for ExternalFrameRuntime {
 /// Scene content redraws through the invalidator it was handed at build time,
 /// so delivering an event requests no frame here: content whose drawing the
 /// event changed calls that invalidator itself.
+#[cfg(hydrolysis_scene_view)]
 impl SurfaceInputReceiver for Box<dyn SceneContent> {
     fn input(&mut self, event: &SurfaceInputEvent) {
         SceneContent::input(&mut **self, event);
@@ -249,6 +260,7 @@ impl SurfaceInputReceiver for Box<dyn SceneContent> {
 ///
 /// Constructed fresh on every registration; [`Self::identity`] reports the
 /// receiver it drives, which outlives the frame.
+#[cfg(any(hydrolysis_scene_view, hydrolysis_gpu))]
 pub struct SurfaceInputSink<R> {
     receiver: Rc<RefCell<R>>,
     /// The receiver's paste queue — shared by every sink registered for it,
@@ -263,12 +275,14 @@ pub struct SurfaceInputSink<R> {
 ///
 /// The queue is the surface's input in platform order. An empty queue means
 /// nothing waits, and events are delivered at once.
+#[cfg(any(hydrolysis_scene_view, hydrolysis_gpu))]
 #[derive(Debug, Default)]
 pub struct PasteQueue {
     slots: VecDeque<PasteSlot>,
     next_ticket: u64,
 }
 
+#[cfg(any(hydrolysis_scene_view, hydrolysis_gpu))]
 #[derive(Debug)]
 enum PasteSlot {
     /// A paste whose clipboard read has not finished, by ticket.
@@ -277,6 +291,7 @@ enum PasteSlot {
     Ready(SurfaceInputEvent),
 }
 
+#[cfg(any(hydrolysis_scene_view, hydrolysis_gpu))]
 impl PasteQueue {
     /// Whether an event must wait rather than be delivered at once.
     fn is_holding(&self) -> bool {
@@ -322,6 +337,7 @@ impl PasteQueue {
     }
 }
 
+#[cfg(any(hydrolysis_scene_view, hydrolysis_gpu))]
 impl<R: SurfaceInputReceiver> SurfaceInputSink<R> {
     pub(crate) const fn new(receiver: Rc<RefCell<R>>, pastes: Rc<RefCell<PasteQueue>>) -> Self {
         Self { receiver, pastes }
@@ -356,6 +372,7 @@ impl<R: SurfaceInputReceiver> SurfaceInputSink<R> {
 /// The W3C UI Events button vocabulary has no room for a platform's extra
 /// buttons, so an unmapped button is dropped rather than reported as one the
 /// view would act on.
+#[cfg(any(hydrolysis_scene_view, hydrolysis_gpu))]
 const fn surface_pointer_button(button: PointerButton) -> Option<SurfacePointerButton> {
     match button {
         PointerButton::Primary => Some(SurfacePointerButton::Primary),
@@ -367,6 +384,7 @@ const fn surface_pointer_button(button: PointerButton) -> Option<SurfacePointerB
     }
 }
 
+#[cfg(any(hydrolysis_scene_view, hydrolysis_gpu))]
 impl<R: SurfaceInputReceiver + 'static> EmbeddedInputSink for SurfaceInputSink<R> {
     fn identity(&self) -> *const () {
         Rc::as_ptr(&self.receiver).cast()
@@ -494,6 +512,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// keyboard focus and a `.focused(binding)` write address the surface by.
     /// `accessibility_node_id` is the surface's semantic node, when the
     /// semantic tree exists.
+    #[cfg(any(hydrolysis_scene_view, hydrolysis_gpu))]
     pub(crate) fn register_embedded_input_target(
         &mut self,
         local_bounds: kurbo::Rect,
@@ -523,11 +542,12 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     }
 
     /// Registers a surface whose drawing asked for input: an embedded
-    /// [`GpuContentView`](waterui_graphics::GpuContentView) runtime or a
+    /// [`GpuView`](waterui_graphics::GpuView) runtime or a
     /// [`SceneView`](waterui_graphics::backend::SceneView)'s content.
     ///
     /// `focus_node` is the surface's semantic node, when the semantic tree
     /// exists.
+    #[cfg(any(hydrolysis_scene_view, hydrolysis_gpu))]
     pub(crate) fn register_surface_input_target<R: SurfaceInputReceiver + 'static>(
         &mut self,
         local_bounds: kurbo::Rect,
@@ -878,6 +898,7 @@ impl<E: crate::text::TextEngine> Clone for EmbeddedInputTarget<E> {
     }
 }
 
+#[cfg(any(hydrolysis_scene_view, hydrolysis_gpu))]
 impl<E: crate::text::TextEngine> HitTestState<E> {
     /// The paste queue of the surface whose receiver is `identity`, created
     /// on first use. Queues of surfaces no sink or pending paste holds any
@@ -895,6 +916,36 @@ impl<E: crate::text::TextEngine> HitTestState<E> {
 }
 
 impl<E: crate::text::TextEngine> SemanticCore<E> {
+    /// Delivers the platform's paste command, carrying `text`, to the
+    /// content holding keyboard focus: the focused surface hears it as
+    /// [`SurfaceInputEvent::Paste`], in order with the pastes its shortcut
+    /// started, and a focused text input has its selection replaced.
+    ///
+    /// Returns whether focused content took the paste.
+    #[cfg_attr(
+        not(any(feature = "text-field", feature = "secure-field")),
+        expect(
+            clippy::needless_pass_by_ref_mut,
+            reason = "the text-input leg, which writes the focused selection, needs the mutable core"
+        )
+    )]
+    pub(crate) fn paste_text(&mut self, text: &str) -> bool {
+        if let Some(sink) = self.hit_test.focused_embedded_sink.clone() {
+            let text = text.to_owned();
+            let carried: ClipboardRead = Rc::new(move || {
+                let text = text.clone();
+                Box::pin(async move { Some(text) })
+            });
+            sink.paste(&carried);
+            return true;
+        }
+        #[cfg(any(feature = "text-field", feature = "secure-field"))]
+        let pasted = self.paste_text_into_focused_target(text);
+        #[cfg(not(any(feature = "text-field", feature = "secure-field")))]
+        let pasted = false;
+        pasted
+    }
+
     /// Handles the platform's paste shortcut for the surface holding
     /// keyboard focus: the press starts a paste of the clipboard's text, the
     /// matching release is consumed with it, and neither reaches the surface
@@ -943,11 +994,13 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
 /// Remembers the size and scale a surface was last told about, so its
 /// [`SurfaceInputEvent::Resize`] is delivered once per change rather than
 /// once per frame.
+#[cfg(any(hydrolysis_gpu, hydrolysis_scene_view))]
 #[derive(Debug)]
 pub struct ResizeTracker {
     last: Option<(kurbo::Size, f32)>,
 }
 
+#[cfg(any(hydrolysis_gpu, hydrolysis_scene_view))]
 impl ResizeTracker {
     /// A tracker that has told its surface nothing yet.
     pub(crate) const fn new() -> Self {

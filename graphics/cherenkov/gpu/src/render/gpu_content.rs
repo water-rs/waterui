@@ -13,11 +13,12 @@
 
 use crate::interop::{
     ExternalFrame, FrameColor, FramePlanes, GpuContentBox, RgbAlpha,
-    wgpu::{Context, Frame},
+    wgpu::{Context, Frame, SourceRateUpdate},
 };
-use cherenkov::{CompletionWaker, FrameTime, Instant, ProducerId, RenderError};
+use cherenkov::{CompletionWaker, FrameRate, FrameTime, Instant, ProducerId, RenderError};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
+use waterui_frame_rate::combine;
 
 use super::planes::Compositor;
 
@@ -58,7 +59,8 @@ pub struct Producer {
     origin: Option<Instant>,
     last_frame: Option<Instant>,
     last_scale: Option<f32>,
-    again: bool,
+    again_rate: Option<cherenkov::FrameRate>,
+    source_rate: Option<cherenkov::FrameRate>,
 }
 
 impl Drop for Producer {
@@ -109,7 +111,8 @@ impl Producer {
             origin: None,
             last_frame: None,
             last_scale: None,
-            again: false,
+            again_rate: None,
+            source_rate: None,
         }
     }
 
@@ -130,7 +133,8 @@ impl Producer {
             origin: None,
             last_frame: None,
             last_scale: None,
-            again: false,
+            again_rate: None,
+            source_rate: None,
         }
     }
 
@@ -178,13 +182,27 @@ impl Producer {
     }
 
     pub fn wants_redraw(&self) -> bool {
-        // A rendered producer without a current frame has never drawn;
-        // a frame producer's frames mark the surfaces they land on
-        // changed, so it is never stale.
-        self.again
-            || self.content.as_ref().is_some_and(|content| {
-                self.current.is_none() || content.redraw.dirty.load(Ordering::Acquire)
-            })
+        self.redraw_rate().is_some()
+    }
+
+    /// The refresh-rate vote for this producer's next redraw pass, if any.
+    pub fn redraw_rate(&self) -> Option<cherenkov::FrameRate> {
+        // A rendered producer without a current frame or with a dirty external
+        // wake defaults to FAST unless an explicit `again_rate` narrows/widen it.
+        let external_dirty = self.content.as_ref().is_some_and(|content| {
+            self.current.is_none() || content.redraw.dirty.load(Ordering::Acquire)
+        });
+        combine(self.again_rate, external_dirty.then_some(FrameRate::FAST))
+    }
+
+    /// The producer's latched non-redrawing source cadence vote, if set.
+    pub const fn source_rate(&self) -> Option<FrameRate> {
+        self.source_rate
+    }
+
+    /// Sets or clears the producer's latched non-redrawing source cadence vote.
+    pub const fn set_source_rate(&mut self, rate: Option<FrameRate>) {
+        self.source_rate = rate;
     }
 
     /// A submission's frame becomes the producer's current frame — the
@@ -322,7 +340,7 @@ impl Producer {
         let Some(buffer) = next else {
             // Every ring buffer is held by a compositor: skip to the next
             // frame with the redraw flag kept — the CPU never blocks.
-            self.again = true;
+            self.again_rate.get_or_insert(cherenkov::FrameRate::FAST);
             return Ok(());
         };
         let time = frame_time.instant();
@@ -340,14 +358,20 @@ impl Producer {
                 .last_frame
                 .map_or(Duration::ZERO, |last| time.saturating_duration_since(last)),
             presentation_time: frame_time.presentation_time(),
-            redraw: false,
+            redraw_rate: None,
+            source_rate_update: SourceRateUpdate::Unchanged,
         };
         self.content
             .as_mut()
             .expect("checked above")
             .content
             .render(&mut frame);
-        self.again = frame.redraw;
+        self.again_rate = frame.redraw_rate;
+        match frame.source_rate_update {
+            SourceRateUpdate::Unchanged => {}
+            SourceRateUpdate::Clear => self.source_rate = None,
+            SourceRateUpdate::Set(rate) => self.source_rate = Some(rate),
+        }
         self.last_frame = Some(time);
         self.last_scale = Some(scale);
         let texture = buffer.texture.clone();
@@ -416,7 +440,7 @@ impl Producer {
         #[cfg(not(target_vendor = "apple"))]
         let next = Some(next);
         let Some(buffer) = next else {
-            self.again = true;
+            self.again_rate.get_or_insert(FrameRate::FAST);
             return Ok(());
         };
         let time = frame_time.instant();
@@ -434,14 +458,20 @@ impl Producer {
                 .last_frame
                 .map_or(Duration::ZERO, |last| time.saturating_duration_since(last)),
             presentation_time: frame_time.presentation_time(),
-            redraw: false,
+            redraw_rate: None,
+            source_rate_update: SourceRateUpdate::Unchanged,
         };
         self.content
             .as_mut()
             .expect("checked above")
             .content
             .render(&mut frame);
-        self.again = frame.redraw;
+        self.again_rate = frame.redraw_rate;
+        match frame.source_rate_update {
+            SourceRateUpdate::Unchanged => {}
+            SourceRateUpdate::Clear => self.source_rate = None,
+            SourceRateUpdate::Set(rate) => self.source_rate = Some(rate),
+        }
         self.last_frame = Some(time);
         self.last_scale = Some(scale);
         let texture = buffer.texture.clone();

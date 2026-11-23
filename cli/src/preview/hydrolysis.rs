@@ -1,8 +1,10 @@
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use askama::Template;
-use eyre::{Context as _, Result};
+use cargo_toml::Manifest as CargoManifest;
+use eyre::{Context as _, Result, bail};
 
 use crate::artifact_symbols::ArtifactSymbols;
 use crate::build::{BuildOptions, BuildProgress, BuiltTarget};
@@ -20,7 +22,10 @@ use waterui_assets_planner::{FontDeclaration, FontSource};
 const HYDROLYSIS_PREVIEW_FEATURE: &str = "waterui-preview-mode";
 const HYDROLYSIS_PREVIEW_TEST_FEATURE: &str = "waterui-preview-test-mode";
 
-use waterui_preview_protocol::run::{DEFAULT_CONTENT_DEADLINE, PreviewRunConfig, PreviewRunMode};
+use waterui_preview_protocol::run::{
+    DEFAULT_CONTENT_DEADLINE, DEFAULT_PREVIEW_SCALE, PreviewColorScheme, PreviewRunConfig,
+    PreviewRunMode,
+};
 pub use waterui_preview_protocol::run::{
     ScenarioEvent as HydrolysisPreviewScenarioEvent,
     ScenarioEventKind as HydrolysisPreviewEventKind,
@@ -33,6 +38,8 @@ pub use waterui_preview_protocol::run::{
 pub enum HydrolysisPreviewTheme {
     /// Material Design 3 package.
     Material3,
+    /// Translucent glass theme package (`hydrolysis-glass`).
+    Glass,
 }
 
 impl HydrolysisPreviewTheme {
@@ -40,7 +47,18 @@ impl HydrolysisPreviewTheme {
     /// preview runtimes are constructed with.
     const fn style(self) -> &'static str {
         match self {
-            Self::Material3 => "hydrolysis_m3::Material3::defaults()",
+            Self::Material3 => "{ let _ = color_scheme; hydrolysis_m3::Material3::defaults() }",
+            Self::Glass => {
+                "hydrolysis_glass::Glass::for_scheme(color_scheme.unwrap_or(waterui::theme::ColorScheme::Light))"
+            }
+        }
+    }
+
+    /// Cargo features passed to the generated Hydrolysis launcher crate.
+    pub(crate) fn preview_features(self, mode_feature: &'static str) -> Vec<&'static str> {
+        match self {
+            Self::Material3 => vec![mode_feature],
+            Self::Glass => vec![mode_feature, "waterui-preview-glass"],
         }
     }
 
@@ -52,6 +70,7 @@ impl HydrolysisPreviewTheme {
                 "hydrolysis-m3".to_string(),
                 None,
             )],
+            Self::Glass => Vec::new(),
         }
     }
 }
@@ -125,6 +144,10 @@ pub struct HydrolysisPreviewRequest<'a> {
     /// How long a capture waits for the content its views owe — a decoding
     /// image, a `Suspense` future — before the preview fails naming them.
     pub content_deadline: Duration,
+    /// Optional color scheme override (`None` follows the host default).
+    pub color_scheme: Option<PreviewColorScheme>,
+    /// Display scale factor applied to the captured image.
+    pub scale: f32,
     /// `sccache` binary used for compilation caching, when available.
     pub sccache_path: Option<PathBuf>,
     /// Sink compile progress is reported to while the preview build runs cargo.
@@ -208,6 +231,33 @@ pub async fn test_preview_with_hydrolysis(
     run_preview_test_binary(&project, built.executable()?, &request).await
 }
 
+/// Ensures the generated Hydrolysis backend declares `waterui-preview-glass`
+/// before previewing with [`HydrolysisPreviewTheme::Glass`], allowing projects
+/// that depend on `hydrolysis-glass` locally while failing fast otherwise on
+/// channels or older frameworks that do not distribute it.
+pub async fn ensure_glass_theme_available(project: &Project) -> Result<()> {
+    let backend_manifest = project
+        .backend_path::<HydrolysisBackend>()
+        .join("Cargo.toml");
+    let has_glass_feature = fs::read(&backend_manifest)
+        .ok()
+        .and_then(|bytes| CargoManifest::from_slice(&bytes).ok())
+        .is_some_and(|manifest| manifest.features.contains_key("waterui-preview-glass"));
+    if has_glass_feature {
+        return Ok(());
+    }
+
+    let framework = project.resolved_framework().await?;
+    framework.require_distributable("hydrolysis-glass")?;
+    if !framework.has_scaffold("hydrolysis-glass") {
+        bail!(
+            "the selected framework does not declare `hydrolysis-glass` scaffold metadata; \
+             use `--channel dev`, `--channel nightly`, or a local WaterUI checkout"
+        );
+    }
+    bail!("the generated Hydrolysis backend manifest does not declare `waterui-preview-glass`")
+}
+
 /// Build the managed hydrolysis binary for a preview request: write the
 /// generated bindings, compile in preview mode — or preview-test mode when
 /// `automation_body` is `Some` — and return the build result. The app
@@ -219,6 +269,9 @@ async fn build_preview_session(
 ) -> Result<(Project, BuiltTarget)> {
     let project =
         crate::hydrolysis::backend::open_ready(request.host, request.project_path).await?;
+    if request.theme == HydrolysisPreviewTheme::Glass {
+        ensure_glass_theme_available(&project).await?;
+    }
     write_preview_bindings(&project, request.source, request.theme, automation_body).await?;
 
     let mut build_options = BuildOptions::default_development(TargetBackend::Hydrolysis);
@@ -233,12 +286,13 @@ async fn build_preview_session(
     } else {
         HYDROLYSIS_PREVIEW_FEATURE
     };
+    let features = request.theme.preview_features(feature);
     let built = build_hydrolysis_with_envs_and_features(
         &project,
         request.platform,
         build_options,
         &[],
-        &[feature],
+        &features,
         true,
     )
     .await?;
@@ -272,6 +326,8 @@ pub async fn discover_hydrolysis_preview_exports(
         width: 0.0,
         height: 0.0,
         content_deadline: DEFAULT_CONTENT_DEADLINE,
+        color_scheme: None,
+        scale: DEFAULT_PREVIEW_SCALE,
         sccache_path,
         progress,
     };
@@ -373,7 +429,9 @@ async fn run_preview_binary(
         request.height,
         mode,
         request.content_deadline,
-    );
+    )
+    .with_optional_color_scheme(request.color_scheme)
+    .with_scale(request.scale);
     let backend_path = project.backend_path::<HydrolysisBackend>();
     let config_path = write_run_config(&backend_path, &config).await?;
     run::run_preview_binary(
@@ -417,7 +475,9 @@ async fn run_preview_test_binary(
         request.height,
         PreviewRunMode::Semantic,
         request.content_deadline,
-    );
+    )
+    .with_optional_color_scheme(request.color_scheme)
+    .with_scale(request.scale);
     let backend_path = project.backend_path::<HydrolysisBackend>();
     let config_path = write_run_config(&backend_path, &config).await?;
     let output = run::run_preview_binary(
@@ -434,4 +494,65 @@ async fn run_preview_test_binary(
 
 pub fn scenario_frame_path(output_dir: &Path, capture_ms: u64) -> PathBuf {
     output_dir.join(format!("frame-{capture_ms:04}ms.png"))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use tempfile::tempdir;
+
+    use super::ensure_glass_theme_available;
+    use crate::hydrolysis::backend::HydrolysisBackend;
+    use crate::project::{ManagedBackends, Project};
+    use crate::toolchain::Host;
+
+    #[test]
+    fn glass_theme_available_when_generated_manifest_declares_feature() {
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path();
+        fs::create_dir_all(root.join("src")).expect("create src dir");
+        fs::write(root.join("src/lib.rs"), "").expect("write lib.rs");
+        fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .expect("write Cargo.toml");
+        fs::write(
+            root.join("Water.toml"),
+            "[package]\nname = \"Demo\"\nbundle_identifier = \"dev.example.demo\"\n",
+        )
+        .expect("write Water.toml");
+
+        let host = Host::current();
+        smol::block_on(async {
+            let project = Project::open(&host, root, ManagedBackends::NONE)
+                .await
+                .expect("open project");
+            let backend_manifest = project
+                .backend_path::<HydrolysisBackend>()
+                .join("Cargo.toml");
+            fs::create_dir_all(backend_manifest.parent().expect("backend dir"))
+                .expect("create backend dir");
+            fs::write(
+                &backend_manifest,
+                "[package]\nname = \"demo-hydrolysis\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[features]\nwaterui-preview-glass = [\"dep:hydrolysis-glass\"]\n\n[dependencies]\nhydrolysis-glass = { path = \"..\", optional = true }\n",
+            )
+            .expect("write backend Cargo.toml");
+
+            ensure_glass_theme_available(&project)
+                .await
+                .expect("local glass feature must allow glass preview");
+
+            fs::write(
+                &backend_manifest,
+                "[package]\nname = \"demo-hydrolysis\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+            )
+            .expect("write backend Cargo.toml without glass");
+            assert!(
+                ensure_glass_theme_available(&project).await.is_err(),
+                "missing waterui-preview-glass without scaffolded framework must fail fast"
+            );
+        });
+    }
 }

@@ -28,7 +28,7 @@ use crate::project::Project;
 use crate::project_model::assets;
 use cargo_toml::Manifest as CargoManifest;
 
-use waterui_preview_protocol::run::{PreviewRunConfig, PreviewRunMode};
+use waterui_preview_protocol::run::{PreviewColorScheme, PreviewRunConfig, PreviewRunMode};
 
 /// Request for Apple in-process preview rendering.
 #[derive(Debug, Clone)]
@@ -49,6 +49,10 @@ pub struct ApplePreviewRequest<'a> {
     /// How long a capture waits for the content its views owe — a decoding
     /// image, a `Suspense` future — before the preview fails naming them.
     pub content_deadline: Duration,
+    /// Optional color scheme override (`None` follows the host default).
+    pub color_scheme: Option<PreviewColorScheme>,
+    /// Display scale factor applied to the captured image.
+    pub scale: f32,
     /// Optional sccache binary path.
     pub sccache_path: Option<PathBuf>,
     /// Optional build progress sink.
@@ -158,6 +162,8 @@ impl ApplePreviewBinary {
         width: f32,
         height: f32,
         content_deadline: Duration,
+        color_scheme: Option<PreviewColorScheme>,
+        scale: f32,
         output_path: &Path,
     ) -> Result<()> {
         let output_path = absolute_output_path(self.project.host(), output_path);
@@ -169,7 +175,9 @@ impl ApplePreviewBinary {
                 output: output_path.clone(),
             },
             content_deadline,
-        );
+        )
+        .with_optional_color_scheme(color_scheme)
+        .with_scale(scale);
         let run_config_path = write_run_config(&crate_dir, &run_config).await?;
         let process_started = Instant::now();
         let output = run::run_preview_binary(
@@ -281,10 +289,22 @@ pub async fn render_preview_with_apple(
     request: ApplePreviewRequest<'_>,
     output_path: &Path,
 ) -> Result<()> {
-    let (width, height, content_deadline) =
-        (request.width, request.height, request.content_deadline);
+    let (width, height, content_deadline, color_scheme, scale) = (
+        request.width,
+        request.height,
+        request.content_deadline,
+        request.color_scheme,
+        request.scale,
+    );
     build_preview_with_apple(request)
         .await?
-        .render(width, height, content_deadline, output_path)
+        .render(
+            width,
+            height,
+            content_deadline,
+            color_scheme,
+            scale,
+            output_path,
+        )
         .await
 }

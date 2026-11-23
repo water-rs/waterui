@@ -21,7 +21,8 @@ use executor_core::{
 };
 use nami::Signal;
 use waterui::app::{
-    App, AppParts, LastWindowPolicy, TerminationHandle, TerminationHost, TerminationKind,
+    App, AppMenuBar, AppParts, LastWindowPolicy, TerminationHandle, TerminationHost,
+    TerminationKind, Windows,
 };
 use waterui::window::{Monitor, MonitorSelector, Window, WindowState};
 use waterui_core::Environment;
@@ -29,9 +30,16 @@ use waterui_core::Environment;
 use waterui_core::Str;
 #[cfg(target_os = "windows")]
 use waterui_core::contract_violation;
-use waterui_graphics::gpu::RedrawHandle;
 use waterui_text::FontCollection;
 
+#[cfg(target_os = "windows")]
+use super::window::should_boost_windows_clock;
+#[cfg(target_os = "windows")]
+use crate::num_cast::f64_as_f32;
+#[cfg(target_os = "windows")]
+use windows::Win32::Graphics::{
+    DirectComposition::DCompositionBoostCompositorClock, Dxgi::DXGIDisableVBlankVirtualization,
+};
 use winit::application::ApplicationHandler;
 use winit::event::{DeviceEvent, DeviceId, ElementState, TouchPhase, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, DeviceEvents, EventLoop};
@@ -41,7 +49,9 @@ use winit::window::{Window as NativeWindow, WindowId};
 
 #[cfg(any(feature = "menu", feature = "color-picker"))]
 use super::window::runtime_window_origin;
-use crate::platform::{PlatformWindow, WinitGpuContext, WinitWindow};
+use super::window::{RootWindow, RootWindows};
+use crate::platform::{PlatformWindow, WinitPainter, WinitWindow};
+use crate::renderer::HostRedraw;
 #[cfg(any(feature = "text-field", feature = "secure-field"))]
 use crate::renderer::HydrolysisTextContextMenuMode;
 #[cfg(any(feature = "menu", feature = "color-picker"))]
@@ -600,12 +610,12 @@ fn install_console_close_handler(event_proxy: &winit::event_loop::EventLoopProxy
 }
 
 struct PendingWindow {
-    window: Window,
+    window: RootWindow<crate::text::ParleyEngine>,
     activates: bool,
 }
 
 impl PendingWindow {
-    const fn application(window: Window) -> Self {
+    fn application(window: RootWindow<crate::text::ParleyEngine>) -> Self {
         Self {
             window,
             activates: true,
@@ -613,7 +623,7 @@ impl PendingWindow {
     }
 
     #[cfg(any(feature = "menu", feature = "color-picker"))]
-    const fn popup(window: Window) -> Self {
+    fn popup(window: RootWindow<crate::text::ParleyEngine>) -> Self {
         Self {
             window,
             activates: false,
@@ -674,19 +684,25 @@ impl LocalExecutor for WinitMainThreadExecutor {
     clippy::too_many_lines,
     reason = "startup wires the event loop, the first windows and the executor in one ordered sequence; splitting it would obscure the setup order"
 )]
-pub fn run(
-    app: App,
+pub fn run<W: Windows, M: AppMenuBar>(
+    app: App<W, M>,
     style: impl crate::Style,
-    #[cfg(feature = "inspector")] inspector: Option<waterui::inspector::InspectorRuntime>,
+    #[cfg(hydrolysis_inspector)] inspector: Option<waterui::inspector::InspectorRuntime>,
 ) {
     let AppParts {
         windows,
         #[cfg(feature = "menu")]
         menu_bar,
+        #[cfg(not(feature = "menu"))]
+            menu_bar: _,
         env,
         last_window,
         termination,
     } = app.into_parts();
+    let RootWindows {
+        initial: windows,
+        channels,
+    } = RootWindows::<crate::text::ParleyEngine>::collect(windows);
     // No early return for a windowless `Quit` launch: its required
     // termination goes through the machine like every other path, and its
     // hook future needs the loop running — the first `resumed` files it.
@@ -734,37 +750,26 @@ pub fn run(
 
     // The reactive graph is thread-confined, so its observer is installed here,
     // on the thread that owns the event loop, and lives as long as the loop.
-    #[cfg(feature = "inspector-signals")]
+    #[cfg(all(hydrolysis_inspector, feature = "inspector-signals"))]
     let _signal_scope = inspector
         .as_ref()
         .map(waterui::inspector::InspectorRuntime::observe_signals);
 
-    let mut env = env.extending(waterui_graphics::backend::SceneViewMergeToParent);
-    waterui_core::install_application_resources(&mut env);
-    #[cfg(feature = "inspector")]
+    let mut env = env;
+    waterui::install_application_resources(&mut env);
+    #[cfg(hydrolysis_inspector)]
     waterui::inspector::install(&mut env, inspector);
     let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
     let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
-    #[cfg(any(
-        test,
-        feature = "text-field",
-        feature = "secure-field",
-        feature = "color-picker",
-        feature = "date-picker",
-        feature = "list",
-        feature = "navigation",
-        feature = "table",
-        hydrolysis_system_webview,
-        all(target_arch = "wasm32", feature = "web", feature = "video")
-    ))]
-    super::install_native_component_hooks(&mut env);
+    #[cfg(any(test, hydrolysis_platform_services))]
+    super::install_platform_services(&mut env);
     #[cfg(unix)]
     let _termination_signals = install_termination_handler(&event_proxy);
     #[cfg(windows)]
     install_termination_handler(&event_proxy);
     #[cfg(any(feature = "text-field", feature = "secure-field"))]
     env.insert(HydrolysisTextContextMenuMode::Overlay);
-    env.insert(waterui::window::WindowManager::new({
+    let app_window_opener: Rc<dyn Fn(RootWindow<crate::text::ParleyEngine>)> = Rc::new({
         let pending_window_queue = Rc::clone(&pending_window_queue);
         let event_proxy = event_proxy.clone();
         move |window| {
@@ -773,9 +778,10 @@ pub fn run(
                 .push(PendingWindow::application(window));
             let _ = event_proxy.send_event(RunnerEvent::MountPendingWindows);
         }
-    }));
+    });
+    RootWindows::connect_channels(channels, &app_window_opener);
     #[cfg(any(feature = "menu", feature = "color-picker"))]
-    env.insert(PopupWindowManager::new({
+    let popup_window_manager = PopupWindowManager::new({
         let pending_window_queue = Rc::clone(&pending_window_queue);
         let event_proxy = event_proxy.clone();
         move |window| {
@@ -784,7 +790,7 @@ pub fn run(
                 .push(PendingWindow::popup(window));
             let _ = event_proxy.send_event(RunnerEvent::MountPendingWindows);
         }
-    }));
+    });
     // Every window of the app resolves menu chords through the shared
     // registry: a compositor that hands a popup window keyboard focus routes
     // the menu's chords to that window's dispatch, which must resolve them
@@ -836,7 +842,7 @@ pub fn run(
     // `native_collection` above reports an environment without a
     // `ResourceContext`; with none there is no bundle to stage an icon in.
     let window_icon =
-        waterui_core::ResourceContext::from_environment(&env).and_then(load_staged_window_icon);
+        waterui::ResourceContext::from_environment(&env).and_then(load_staged_window_icon);
     // The machine installs `Quit` into the composition-root environment and
     // hands its hooks that environment as it stands now; their futures run
     // on the local executor the first `resumed` installs.
@@ -876,24 +882,26 @@ pub fn run(
     // `MainThreadMarker` contract needs.
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[cfg(feature = "menu")]
-    let native_menu_bar = crate::platform::native_menu_bar::NativeMenuBar::install(
-        &super::menu_bar::register_menu_bar::<crate::text::ParleyEngine>(&menu_bar, &env),
-        &env,
-    );
+    let native_menu_bar = {
+        let items = if M::HAS_DECLARED {
+            menu_bar.declared().map_or_else(
+                || nami::Computed::constant(Vec::new()),
+                |menu_bar| {
+                    super::menu_bar::register_menu_bar::<crate::text::ParleyEngine>(menu_bar, &env)
+                },
+            )
+        } else {
+            nami::Computed::constant(Vec::new())
+        };
+        crate::platform::native_menu_bar::NativeMenuBar::install(&items, &env)
+    };
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     #[cfg(feature = "menu")]
-    super::menu_bar::register_menu_bar::<crate::text::ParleyEngine>(&menu_bar, &env);
-    // The capture service mounts its subtree under a snapshot of the
-    // assembled environment — the theme tokens, hooks and font collection a
-    // window's subtree resolves — so it must be installed last
-    // (water-rs/waterui#2703).
-    env.insert(waterui_core::ViewRenderer::new(
-        crate::view_renderer::HydrolysisViewRenderer::new(
-            Rc::clone(&theme),
-            env.clone(),
-            FontFamilyResolution::Lenient,
-        ),
-    ));
+    if M::HAS_DECLARED
+        && let Some(menu_bar) = menu_bar.declared()
+    {
+        super::menu_bar::register_menu_bar::<crate::text::ParleyEngine>(menu_bar, &env);
+    }
     let mut runner = WinitRunner {
         env,
         theme,
@@ -908,9 +916,12 @@ pub fn run(
             .collect(),
         last_window,
         pending_window_queue,
+        app_window_opener,
+        #[cfg(any(feature = "menu", feature = "color-picker"))]
+        popup_window_manager,
         windows: HashMap::new(),
         popup_window_ids: std::collections::HashSet::new(),
-        gpu_context: None,
+        painter: None,
         accesskit_adapters: HashMap::new(),
         last_accessibility_updates: HashMap::new(),
         local_executor: Some(local_executor),
@@ -927,9 +938,17 @@ pub fn run(
         termination,
         #[cfg(target_os = "windows")]
         session_end,
+        #[cfg(target_os = "windows")]
+        windows_boosted: false,
         #[cfg(hydrolysis_wayland_platform)]
         x11_state_watch: None,
     };
+
+    #[cfg(target_os = "windows")]
+    // SAFETY: process-wide DXGI opt-out so VRR/high-refresh swaps are not virtualized to 60Hz.
+    if let Err(error) = unsafe { DXGIDisableVBlankVirtualization() } {
+        tracing::warn!("hydrolysis runner: DXGIDisableVBlankVirtualization failed: {error}");
+    }
 
     event_loop.set_control_flow(ControlFlow::Wait);
     // Raw pointer presses are reported for every device on the seat, not just
@@ -938,6 +957,12 @@ pub fn run(
     // windows when the pointer goes down outside them.
     event_loop.listen_device_events(DeviceEvents::Always);
     let run_result = event_loop.run_app(&mut runner);
+    #[cfg(target_os = "windows")]
+    if runner.windows_boosted {
+        // SAFETY: restore DirectComposition compositor clock boost on loop exit.
+        let _ = unsafe { DCompositionBoostCompositorClock(false) };
+        runner.windows_boosted = false;
+    }
     waterui_locale::shutdown_current_thread_runtime_locale_state();
     let _ = runner.drain_local_executor_queue();
     if let Err(error) = run_result {
@@ -968,11 +993,14 @@ struct WinitRunner {
     /// What the application does once it has no window left.
     last_window: LastWindowPolicy,
     pending_window_queue: Rc<RefCell<Vec<PendingWindow>>>,
+    app_window_opener: Rc<dyn Fn(RootWindow<crate::text::ParleyEngine>)>,
+    #[cfg(any(feature = "menu", feature = "color-picker"))]
+    popup_window_manager: PopupWindowManager<crate::text::ParleyEngine>,
     windows: HashMap<WindowId, RuntimeWindow<WinitWindow, crate::text::ParleyEngine>>,
     /// Transient popup windows (mounted through `PopupWindowManager`): a
     /// pointer press that lands outside every app window dismisses them.
     popup_window_ids: std::collections::HashSet<WindowId>,
-    gpu_context: Option<WinitGpuContext>,
+    painter: Option<WinitPainter>,
     accesskit_adapters: HashMap<WindowId, AccessKitAdapter>,
     last_accessibility_updates: HashMap<WindowId, accesskit::TreeUpdate>,
     /// The executor is installed the first time the active event loop is
@@ -1020,6 +1048,10 @@ struct WinitRunner {
     /// console control handler — share with the `TerminationHost`.
     #[cfg(target_os = "windows")]
     session_end: Rc<SessionEnd>,
+    /// Whether `DirectComposition` compositor clock boost is currently enabled
+    /// for at least one window voting above 60Hz on Windows.
+    #[cfg(target_os = "windows")]
+    windows_boosted: bool,
     /// The second-connection `_NET_WM_STATE`/unmap watch that delivers the
     /// X11 transitions winit drops. `None` on Wayland, and stays `None` if
     /// no connection could be opened — the coverage is then what winit
@@ -1032,9 +1064,7 @@ struct WinitRunner {
 ///
 /// Absence is a legitimate state (bare `cargo run`, tests, previews without
 /// staging); a present-but-undecodable icon is reported and skipped.
-fn load_staged_window_icon(
-    resources: &waterui_core::ResourceContext,
-) -> Option<winit::window::Icon> {
+fn load_staged_window_icon(resources: &waterui::ResourceContext) -> Option<winit::window::Icon> {
     let root = waterui_assets::bundle_root(resources);
     let path = root.join(waterui_assets::WINDOW_ICON_FILE);
     let file = std::fs::File::open(&path).ok()?;
@@ -1084,7 +1114,7 @@ fn load_staged_window_icon(
 /// activation-token request, as the handle's docs say. The hook holds the
 /// native window weakly, so a request filed through a handle that outlived
 /// the window's teardown is a no-op.
-fn arm_window_focus_requests(window: &Window, native_window: &Arc<NativeWindow>) {
+fn arm_window_focus_requests<C, T>(window: &Window<C, T>, native_window: &Arc<NativeWindow>) {
     let native = Arc::downgrade(native_window);
     window.arm_focus_requests(move || {
         if let Some(native) = native.upgrade() {
@@ -1093,8 +1123,8 @@ fn arm_window_focus_requests(window: &Window, native_window: &Arc<NativeWindow>)
     });
 }
 
-fn native_window_attributes(
-    window: &Window,
+fn native_window_attributes<C, T>(
+    window: &Window<C, T>,
     env: &Environment,
     activates: bool,
     icon: Option<winit::window::Icon>,
@@ -1197,7 +1227,7 @@ fn native_window_attributes(
 /// when the window and the application both leave the identity unset, so
 /// winit's default (the executable name) applies.
 #[cfg(hydrolysis_wayland_platform)]
-fn window_desktop_identity(window: &Window) -> Option<(Str, Str)> {
+fn window_desktop_identity<C, T>(window: &Window<C, T>) -> Option<(Str, Str)> {
     let class = window.display_app_id();
     (!class.is_empty()).then(|| (class, window.display_instance_name()))
 }
@@ -1290,29 +1320,29 @@ impl WinitRunner {
     /// a context yet — the host has no GPU Hydrolysis can render on — the
     /// app cannot show anything: the error is logged and the process exits
     /// with a failure status.
-    fn create_platform_window(
+    fn create_platform_window<C, T>(
         &mut self,
         native_window: Arc<NativeWindow>,
-        window: &Window,
+        window: &Window<C, T>,
     ) -> Option<WinitWindow> {
         let wake = {
             let event_proxy = self.event_proxy.clone();
             let window_id = native_window.id();
-            RedrawHandle::new(move || {
+            HostRedraw::new(move || {
                 // A loop that already exited has no window left to redraw.
                 let _ = event_proxy.send_event(RunnerEvent::RedrawWindow(window_id));
             })
         };
-        let created = pollster::block_on(WinitWindow::new_with_shared_gpu(
+        let created = WinitWindow::open_with_painter(
             native_window,
             wake,
-            self.gpu_context.as_ref(),
+            self.painter.as_ref(),
             super::window_requires_transparency(window, &self.env),
             self.window_icon.clone(),
-        ));
-        let (platform, gpu_context) = match created {
+        );
+        let (platform, painter) = match created {
             Ok(created) => created,
-            Err(error) if self.gpu_context.is_some() => {
+            Err(error) if self.painter.is_some() => {
                 tracing::error!(
                     "{:#}; the window is not mounted",
                     waterui_core::Error::from(error)
@@ -1321,10 +1351,19 @@ impl WinitRunner {
             }
             Err(error) => super::exit_without_gpu(error),
         };
-        if self.gpu_context.is_none() {
-            self.gpu_context = Some(gpu_context);
+        if self.painter.is_none() {
+            self.painter = Some(painter);
         }
         Some(platform)
+    }
+
+    fn create_window_renderer(&self) -> HydrolysisRenderer<crate::text::ParleyEngine> {
+        let text = ParleyEngine::from_collection(&self.fonts, FontFamilyResolution::Lenient);
+        let mut renderer = HydrolysisRenderer::with_engine(Rc::clone(&self.theme), text);
+        renderer.set_window_opener(Rc::clone(&self.app_window_opener));
+        #[cfg(any(feature = "menu", feature = "color-picker"))]
+        renderer.set_popup_window_manager(self.popup_window_manager.clone());
+        renderer
     }
 
     fn create_runtime_window(
@@ -1387,8 +1426,7 @@ impl WinitRunner {
         }
         let mut platform = self.create_platform_window(native_window, &window)?;
         platform.apply_properties(&window);
-        let text = ParleyEngine::from_collection(&self.fonts, FontFamilyResolution::Lenient);
-        let renderer = HydrolysisRenderer::with_engine(Rc::clone(&self.theme), text);
+        let renderer = self.create_window_renderer();
         let closable = window.closable;
         window.arm_close_requests(&self.env);
         let mut runtime = RuntimeWindow::new_painted(
@@ -1480,13 +1518,13 @@ impl WinitRunner {
                 },
                 waterui::task::RefreshRate::from_millihertz,
             );
-        #[cfg(feature = "inspector")]
+        #[cfg(hydrolysis_inspector)]
         let inspector_probe = self
             .env
             .get::<waterui::inspector::InspectorRuntime>()
-            .map(waterui::inspector::InspectorRuntime::runtime_probe);
-        #[cfg(not(feature = "inspector"))]
-        let inspector_probe = None;
+            .map(|inspector| inspector.task_probe() as Arc<dyn waterui::task::RuntimeProbe>);
+        #[cfg(not(hydrolysis_inspector))]
+        let inspector_probe: Option<Arc<dyn waterui::task::RuntimeProbe>> = None;
         let _ = try_init_local_executor(waterui::task::monitored_local_executor_with_probes(
             local_executor,
             refresh_rate,
@@ -1673,7 +1711,32 @@ impl WinitRunner {
         self.popup_window_ids.remove(&window_id);
         self.accesskit_adapters.remove(&window_id);
         self.last_accessibility_updates.remove(&window_id);
+        #[cfg(target_os = "windows")]
+        self.sync_windows_compositor_boost();
         self.exit_if_last_window_closed();
+    }
+
+    #[cfg(target_os = "windows")]
+    fn sync_windows_compositor_boost(&mut self) {
+        let want_boost = self.windows.values().any(|runtime| {
+            let peak = runtime.refresh_rate_hz.map_or(60.0, f64_as_f32);
+            should_boost_windows_clock(runtime.effective_frame_rate_vote(), peak)
+        });
+        if want_boost == self.windows_boosted {
+            return;
+        }
+        // SAFETY: main-thread DirectComposition compositor clock boost toggle.
+        match unsafe { DCompositionBoostCompositorClock(want_boost) } {
+            Ok(()) => {
+                self.windows_boosted = want_boost;
+            }
+            Err(error) => {
+                tracing::warn!(
+                    want_boost,
+                    "hydrolysis runner: DCompositionBoostCompositorClock failed: {error}"
+                );
+            }
+        }
     }
 
     /// An accesskit adapter's request for one of the runner's windows: the
@@ -1856,8 +1919,12 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
             });
             if let WindowFrame::Failed(error) = frame {
                 self.end_failed_window(window_id, error);
+                #[cfg(target_os = "windows")]
+                self.sync_windows_compositor_boost();
                 return;
             }
+            #[cfg(target_os = "windows")]
+            self.sync_windows_compositor_boost();
             let Some(runtime) = self.windows.get_mut(&window_id) else {
                 return;
             };
@@ -1905,6 +1972,8 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
                     Some(next_gesture_deadline.map_or(deadline, |existing| existing.min(deadline)));
             }
         }
+        #[cfg(target_os = "windows")]
+        self.sync_windows_compositor_boost();
         if let Some(deadline) = next_gesture_deadline {
             event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
         } else {

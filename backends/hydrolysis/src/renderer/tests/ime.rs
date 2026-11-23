@@ -36,7 +36,7 @@ use waterui_graphics::gpu::{
     Context as GpuContext, ExternalFrameSource, ExternalFrameView, Frame as GpuFrame, FrameOutput,
 };
 use waterui_graphics::input::{Code, Key, NamedKey, SurfaceInputEvent};
-use waterui_graphics::{GpuContent, GpuContentView};
+use waterui_graphics::{GpuContent, GpuView};
 use waterui_layout::stack::vstack;
 
 use super::{MinimalTestTheme, test_environment};
@@ -688,7 +688,7 @@ impl ExternalFrameSource for SourceProbe {
 /// surface-input path.
 #[derive(Clone, Copy, Debug)]
 enum Surface {
-    /// A `GpuContentView` with an input handler.
+    /// A `GpuView` with an input handler.
     Gpu,
     /// An `ExternalFrameView` with an input handler.
     External,
@@ -700,7 +700,7 @@ fn surface_view(surface: Surface, log: ProbeLog) -> AnyView {
     let surface = match surface {
         Surface::Scene => AnyView::new(SceneView::new(SceneProbe { log })),
         Surface::Gpu => AnyView::new(
-            GpuContentView::new(InputProbe)
+            GpuView::new(InputProbe)
                 .on_input(move |event| log.0.borrow_mut().push(event.clone()))
                 .on_ime_caret(probe_caret),
         ),

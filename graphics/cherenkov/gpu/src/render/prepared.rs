@@ -121,7 +121,7 @@ const fn fill_tag(rule: FillRule) -> u64 {
 }
 
 /// The paint data shared by every instance kind.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, PartialEq)]
 pub struct PaintData {
     /// `PAINT_*`.
     pub kind: u32,
@@ -143,7 +143,7 @@ pub struct PaintData {
 
 /// Resolved solid paint stays inline. Gradient and image fields are only
 /// allocated for paints that use them, keeping every prepared op compact.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub enum ResolvedPaint {
     /// Working-space solid color.
     Solid([f32; 4]),
@@ -154,7 +154,7 @@ pub enum ResolvedPaint {
 }
 
 /// A shader use and the independent shape-local sampling transform.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct ResolvedShader {
     pub source: cherenkov::ShaderPaint,
     pub sampling: Affine,
@@ -494,6 +494,7 @@ fn resolve_transformed(
 }
 
 /// A clip shape, resolved at lowering.
+#[derive(Clone, PartialEq)]
 pub enum ClipShape {
     /// A shape with no area (`Line`): the scope draws nothing.
     Empty,
@@ -517,6 +518,7 @@ pub enum ClipShape {
 }
 
 /// The outline a `Path` op rasterizes on a cache miss.
+#[derive(Clone, PartialEq)]
 pub enum Outline {
     /// Geometry borrowed from this content's retained source list.
     Source {
@@ -640,6 +642,7 @@ impl OutlineRef<'_> {
 }
 
 /// A prepared glyph run either indexes retained source or owns expanded glyphs.
+#[derive(Clone, PartialEq)]
 pub enum GlyphSource {
     /// A partial run produced by nested pictures or COLR expansion.
     Run(GlyphRun),
@@ -669,6 +672,7 @@ impl GlyphSource {
 }
 
 /// A stage-1 draw or scope op: device-independent.
+#[derive(Clone, PartialEq)]
 pub enum Op {
     /// A shaped SDF instance (fill/stroke box paths, stroked lines, image
     /// draws).

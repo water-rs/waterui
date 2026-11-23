@@ -26,13 +26,13 @@ use super::*;
 use std::rc::Rc;
 
 use waterui_core::contract_violation;
+use waterui_graphics::backend::{AnyEffect, ParamGuards};
 #[cfg(feature = "navigation")]
-use waterui_core::transition::{AnyTransition, Transition};
-use waterui_core::transition::{
+use waterui_structural_transition::{AnyTransition, Transition};
+use waterui_structural_transition::{
     Ghost, GhostSlot, TransitionGeometry, TransitionPhase, TransitionProperties, TransitionSpec,
     TransitionState,
 };
-use waterui_graphics::backend::{AnyEffect, ParamGuards};
 
 use crate::renderer::effects::FilteredRuntime;
 
@@ -512,7 +512,7 @@ pub fn record_blurred<E: crate::text::TextEngine>(
 mod tests {
     use super::*;
     use std::time::Duration;
-    use waterui_core::transition::PropertyTransition;
+    use waterui_structural_transition::PropertyTransition;
 
     fn removal_spec(milliseconds: u64) -> TransitionSpec {
         TransitionSpec::new(PropertyTransition::opacity())

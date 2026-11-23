@@ -6,6 +6,7 @@ use cherenkov::FrameStats;
 use objc2_metal::{MTLResource, MTLStorageMode};
 use rustc_hash::FxHashMap;
 
+use super::demand::is_persistent;
 use crate::render::composition as report;
 use crate::render::lower::{PipelineKind, ShaderVariant, Target};
 use crate::render::{Bind1Key, ScratchTarget, SurfaceState, create_target, make_bind1};
@@ -424,9 +425,13 @@ pub fn encode(
         stats.draws += u32::try_from(surf.draw_demand.pass(first_output.pass).rectangles().len())
             .expect("damage rectangle count");
     }
+    let persistent = is_persistent(output.target);
     let load = surf.frame.passes[first_output.pass]
         .clear
-        .filter(|_| partial_clear.is_none())
+        .filter(|_| {
+            partial_clear.is_none()
+                && (!persistent || !surf.draw_demand.pass(first_output.pass).is_empty())
+        })
         .map_or(wgpu::LoadOp::Load, |c| {
             wgpu::LoadOp::Clear(wgpu::Color {
                 r: f64::from(c[0]),

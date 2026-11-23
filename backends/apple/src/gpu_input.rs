@@ -2,27 +2,122 @@
 //! `waterui-graphics`' `SurfaceInputEvent` — what `WuiGpuSurfaceInput.swift`
 //! did for the Swift surface.
 
-use cocoa_ui::input::{GesturePhase, ScrollPhase};
+use std::cell::Cell;
+use std::num::NonZeroU32;
+
+use cocoa_ui::input::{
+    GesturePhase, PointerButton, PointerButtons, ScrollPhase, SurfaceEvent, TouchPhase,
+};
 use waterui_graphics::input::{self, SurfaceInputEvent};
 
-/// Converts a [`cocoa_ui::input::SurfaceEvent`] into the event a
-/// [`GpuContentView`](waterui_graphics::gpu::GpuContentView) consumes.
+/// Converts cocoa-ui's platform input vocabulary into the events a
+/// [`GpuView`](waterui_graphics::gpu::GpuView) consumes.
 ///
-/// The kit vocabulary mirrors the platform events it translates; the mapping
-/// is one-to-one except pointer buttons with no W3C meaning, which the kit
-/// already declined to deliver. The kit has no resize event: the surface's
-/// logical size and scale are the backend's to report, from where it learns
-/// them.
-#[allow(clippy::too_many_lines)]
-pub fn translate(event: &cocoa_ui::input::SurfaceEvent) -> SurfaceInputEvent {
-    use cocoa_ui::input::SurfaceEvent as E;
-    match event {
-        E::Focus(focused) => SurfaceInputEvent::Focus(*focused),
-        E::Modifiers(modifiers) => SurfaceInputEvent::Modifiers(*modifiers),
-        E::PointerMove { position } => SurfaceInputEvent::PointerMove {
-            position: kurbo::Point::new(position.x, position.y),
+/// The content vocabulary is a single pointer, so the translator follows the
+/// first touch of a gesture as that pointer — the press it starts, the moves
+/// it makes and the release that ends it — and drops the other fingers
+/// until it is up. The vocabulary has no cancellation, so a cancelled touch
+/// ends the press the only way it can, as a release.
+#[derive(Debug, Default)]
+pub struct Translator {
+    /// The followed touch, the button its press reported and the tap count
+    /// of that press.
+    primary: Cell<Option<(u64, PointerButton, NonZeroU32)>>,
+}
+
+impl Translator {
+    /// The content events `event` becomes — none, one, or a move followed
+    /// by a press.
+    pub fn translate(
+        &self,
+        event: &SurfaceEvent,
+    ) -> impl Iterator<Item = SurfaceInputEvent> + use<> {
+        let (first, second) = match event {
+            SurfaceEvent::Touch {
+                id,
+                phase,
+                position,
+                buttons,
+                tap_count,
+                ..
+            } => self.touch(*id, *phase, *position, *buttons, *tap_count),
+            other => (one_to_one(other), None),
+        };
+        first.into_iter().chain(second)
+    }
+
+    /// The pointer events one touch's phase becomes for the followed touch;
+    /// every other finger is dropped.
+    fn touch(
+        &self,
+        id: u64,
+        phase: TouchPhase,
+        position: kurbo::Point,
+        buttons: PointerButtons,
+        tap_count: NonZeroU32,
+    ) -> (Option<SurfaceInputEvent>, Option<SurfaceInputEvent>) {
+        match (phase, self.primary.get()) {
+            (TouchPhase::Began, None) => {
+                let button = if buttons.contains(PointerButtons::SECONDARY)
+                    && !buttons.contains(PointerButtons::PRIMARY)
+                {
+                    PointerButton::Secondary
+                } else {
+                    PointerButton::Primary
+                };
+                self.primary.set(Some((id, button, tap_count)));
+                (
+                    Some(SurfaceInputEvent::PointerMove { position }),
+                    Some(SurfaceInputEvent::PointerButton {
+                        pressed: true,
+                        button: pointer_button(button),
+                        position,
+                        click_count: tap_count,
+                    }),
+                )
+            }
+            (TouchPhase::Moved, Some((primary, _, _))) if primary == id => {
+                (Some(SurfaceInputEvent::PointerMove { position }), None)
+            }
+            (TouchPhase::Ended | TouchPhase::Cancelled, Some((primary, button, count)))
+                if primary == id =>
+            {
+                self.primary.set(None);
+                (
+                    Some(SurfaceInputEvent::PointerButton {
+                        pressed: false,
+                        button: pointer_button(button),
+                        position,
+                        click_count: count,
+                    }),
+                    None,
+                )
+            }
+            _ => (None, None),
+        }
+    }
+}
+
+/// The content event a kit event maps onto, or `None` for the events the
+/// content vocabulary has no word for — a hover exit, a pinch, a rotation —
+/// and the touches [`Translator::translate`] follows itself.
+fn one_to_one(event: &SurfaceEvent) -> Option<SurfaceInputEvent> {
+    Some(match event {
+        SurfaceEvent::Focus(focused) => SurfaceInputEvent::Focus(*focused),
+        SurfaceEvent::Modifiers(modifiers) => SurfaceInputEvent::Modifiers(*modifiers),
+        // The content vocabulary cannot name which keys were lost; the
+        // modifier chord is the one key state it can reset.
+        SurfaceEvent::KeyboardCancel => {
+            SurfaceInputEvent::Modifiers(cocoa_ui::input::Modifiers::empty())
+        }
+        SurfaceEvent::PointerMove { position }
+        | SurfaceEvent::Hover {
+            position: Some(position),
+            ..
+        } => SurfaceInputEvent::PointerMove {
+            position: *position,
         },
-        E::PointerButton {
+        SurfaceEvent::PointerButton {
             pressed,
             button,
             position,
@@ -30,17 +125,17 @@ pub fn translate(event: &cocoa_ui::input::SurfaceEvent) -> SurfaceInputEvent {
         } => SurfaceInputEvent::PointerButton {
             pressed: *pressed,
             button: pointer_button(*button),
-            position: kurbo::Point::new(position.x, position.y),
+            position: *position,
             click_count: *click_count,
         },
-        E::Scroll {
+        SurfaceEvent::Scroll {
             position,
             delta_x,
             delta_y,
             unit,
             phase,
         } => SurfaceInputEvent::Scroll {
-            position: kurbo::Point::new(position.x, position.y),
+            position: *position,
             delta_x: *delta_x,
             delta_y: *delta_y,
             unit: match unit {
@@ -49,7 +144,7 @@ pub fn translate(event: &cocoa_ui::input::SurfaceEvent) -> SurfaceInputEvent {
             },
             phase: scroll_phase(*phase),
         },
-        E::Key {
+        SurfaceEvent::Key {
             pressed,
             key,
             code,
@@ -62,16 +157,22 @@ pub fn translate(event: &cocoa_ui::input::SurfaceEvent) -> SurfaceInputEvent {
             modifiers: *modifiers,
             repeat: *repeat,
         },
-        E::TextInput(text) => SurfaceInputEvent::TextInput(text.clone().into()),
-        E::Paste(text) => SurfaceInputEvent::Paste(text.clone().into()),
-        E::CompositionStart => SurfaceInputEvent::CompositionStart,
-        E::CompositionUpdate { text, caret } => SurfaceInputEvent::CompositionUpdate {
+        SurfaceEvent::TextInput(text) => SurfaceInputEvent::TextInput(text.clone().into()),
+        SurfaceEvent::Paste(text) => SurfaceInputEvent::Paste(text.clone().into()),
+        SurfaceEvent::CompositionStart => SurfaceInputEvent::CompositionStart,
+        SurfaceEvent::CompositionUpdate { text, caret } => SurfaceInputEvent::CompositionUpdate {
             text: text.clone().into(),
             caret: *caret,
         },
-        E::CompositionCommit(text) => SurfaceInputEvent::CompositionCommit(text.clone().into()),
-        E::CompositionCancel => SurfaceInputEvent::CompositionCancel,
-    }
+        SurfaceEvent::CompositionCommit(text) => {
+            SurfaceInputEvent::CompositionCommit(text.clone().into())
+        }
+        SurfaceEvent::CompositionCancel => SurfaceInputEvent::CompositionCancel,
+        SurfaceEvent::Touch { .. }
+        | SurfaceEvent::Hover { position: None, .. }
+        | SurfaceEvent::Magnification { .. }
+        | SurfaceEvent::Rotation { .. } => return None,
+    })
 }
 
 const fn pointer_button(button: cocoa_ui::input::PointerButton) -> input::SurfacePointerButton {
@@ -106,10 +207,20 @@ const fn gesture_phase(phase: GesturePhase) -> input::GesturePhase {
 mod tests {
     use core::num::NonZeroU32;
 
-    use cocoa_ui::input::{GesturePhase, ScrollPhase, ScrollUnit, SurfaceEvent};
+    use cocoa_ui::input::{
+        GesturePhase, PointerButtons, ScrollPhase, ScrollUnit, SurfaceEvent, TouchKind, TouchPhase,
+    };
     use waterui_graphics::input::{self, SurfaceInputEvent};
 
-    use super::translate;
+    use super::Translator;
+
+    /// The one event `event` translates to.
+    fn translate(event: &SurfaceEvent) -> SurfaceInputEvent {
+        let mut events = Translator::default().translate(event);
+        let first = events.next().expect("the event translates to one event");
+        assert!(events.next().is_none(), "the event translates to one event");
+        first
+    }
 
     #[test]
     fn a_pointer_button_keeps_its_click_count_on_press_and_release() {
@@ -131,6 +242,32 @@ mod tests {
             assert_eq!(translated, pressed);
             assert_eq!(click_count.get(), count);
         }
+    }
+
+    #[test]
+    fn a_touch_press_and_release_carry_its_tap_count() {
+        let translator = Translator::default();
+        let touch = |phase| SurfaceEvent::Touch {
+            id: 7,
+            phase,
+            position: kurbo::Point::new(1.0, 2.0),
+            kind: TouchKind::Direct,
+            buttons: PointerButtons::empty(),
+            tap_count: NonZeroU32::new(2).expect("non-zero"),
+        };
+        let counts: Vec<_> = [TouchPhase::Began, TouchPhase::Ended]
+            .into_iter()
+            .flat_map(|phase| translator.translate(&touch(phase)).collect::<Vec<_>>())
+            .filter_map(|event| match event {
+                SurfaceInputEvent::PointerButton {
+                    pressed,
+                    click_count,
+                    ..
+                } => Some((pressed, click_count.get())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(counts, [(true, 2), (false, 2)]);
     }
 
     #[test]

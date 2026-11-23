@@ -7,12 +7,15 @@
 //! [`Item::Scope`]. The finished [`Program`] waits on the node until the
 //! commit lowers it.
 
+use core::fmt::{Debug, Formatter, Result as FmtResult};
 use std::cell::RefCell;
 use std::num::NonZeroU64;
 use std::rc::Rc;
 
 use cherenkov_record::BlendSpace;
+use cherenkov_record::ContentShader;
 use cherenkov_record::Live;
+use cherenkov_record::MaterialEffect;
 use cherenkov_record::ShapeData;
 use nami::Signal as _;
 use rustc_hash::FxHashSet;
@@ -93,6 +96,10 @@ pub struct ScopeLive {
     pub opacity: Option<LiveOpacity>,
     /// The layer transform over its at-rest one.
     pub transform: Option<LiveTransform>,
+    /// The layer clip silhouette following a live operand.
+    pub clip: Option<LiveClip>,
+    /// The content-effect shader applied to this isolated scope's subtree.
+    pub content_effect: Option<LiveContentEffect>,
 }
 
 impl ScopeLive {
@@ -100,7 +107,72 @@ impl ScopeLive {
     pub const NONE: Self = Self {
         opacity: None,
         transform: None,
+        clip: None,
+        content_effect: None,
     };
+}
+
+/// A layer clip silhouette following a live operand.
+#[derive(Clone)]
+pub struct LiveClip(Operand<ShapeData>);
+
+impl LiveClip {
+    pub(crate) const fn new(operand: Operand<ShapeData>) -> Self {
+        Self(operand)
+    }
+
+    /// The clip shape, live.
+    pub(crate) fn live(&self) -> Live<ShapeData> {
+        self.0.live()
+    }
+}
+
+impl PartialEq for LiveClip {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.same(&other.0)
+    }
+}
+
+impl Debug for LiveClip {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        f.debug_tuple("LiveClip").field(&self.0.snapshot()).finish()
+    }
+}
+
+/// A layer content-effect shader following a live [`MaterialEffect`] operand.
+#[derive(Clone)]
+pub struct LiveContentEffect {
+    shader: ContentShader,
+    effect: Operand<MaterialEffect>,
+}
+
+impl LiveContentEffect {
+    pub(crate) const fn new(shader: ContentShader, effect: Operand<MaterialEffect>) -> Self {
+        Self { shader, effect }
+    }
+
+    pub(crate) const fn shader(&self) -> ContentShader {
+        self.shader
+    }
+
+    pub(crate) const fn effect(&self) -> &Operand<MaterialEffect> {
+        &self.effect
+    }
+}
+
+impl PartialEq for LiveContentEffect {
+    fn eq(&self, other: &Self) -> bool {
+        self.shader == other.shader && self.effect.same(&other.effect)
+    }
+}
+
+impl Debug for LiveContentEffect {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        f.debug_struct("LiveContentEffect")
+            .field("shader", &self.shader)
+            .field("effect", &self.effect.snapshot())
+            .finish()
+    }
 }
 
 /// A layer opacity following an operand.
@@ -266,6 +338,7 @@ pub enum ProducerContent {
         runtime: Rc<crate::hosted::HostedRuntime>,
         bounds: kurbo::Rect,
     },
+    #[cfg(hydrolysis_scene_view)]
     Scene(SceneContentSource),
     #[cfg(hydrolysis_gpu)]
     Gpu {
@@ -283,6 +356,7 @@ pub enum ProducerContent {
 
 /// A `SceneView`'s content: it records at commit against the target's
 /// resources (§C).
+#[cfg(hydrolysis_scene_view)]
 pub struct SceneContentSource {
     pub content: Rc<RefCell<Box<dyn waterui_graphics::backend::SceneContent>>>,
     pub invalidator: waterui_graphics::backend::SceneInvalidator,

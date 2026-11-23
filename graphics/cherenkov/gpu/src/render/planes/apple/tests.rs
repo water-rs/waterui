@@ -440,10 +440,8 @@ mod ordering {
             reconcile_view_order(previous, &desired, |a, b| a == b, |_| false, |_, _| {});
         };
         reconcile(&mut previous);
-        crate::render::planes::tests::start_tracking();
-        reconcile(&mut previous);
-        let allocations = crate::render::planes::tests::stop_tracking();
-        assert_eq!(allocations, (0, 0));
+        let ((), counts) = cherenkov::testing::allocations::count(|| reconcile(&mut previous));
+        assert_eq!((counts.allocations, counts.reallocations), (0, 0));
     }
 
     #[test]

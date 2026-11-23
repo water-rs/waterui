@@ -14,12 +14,14 @@ use cocoa_ui::menu::MenuTreeNode;
     any(feature = "menu", feature = "context_menu", feature = "text_field")
 ))]
 use waterui::component::menu::CloseWindowChord;
-use waterui::component::menu::{CommandRole, ResolvedCommand, ResolvedMenuItem, Shortcut};
+use waterui::component::menu::{CommandRole, ResolvedCommand, ResolvedMenuItem};
 use waterui::reactive::Signal;
 #[cfg(feature = "menu")]
 use waterui::reactive::watcher::{BoxWatcherGuard, Metadata};
 use waterui::text::StyledStr;
 use waterui_backend_core::Environment;
+
+use crate::contract::Held;
 
 #[cfg(all(target_os = "macos", feature = "menu"))]
 mod platform {
@@ -43,7 +45,7 @@ pub(super) fn item_title(styled: &StyledStr) -> String {
 /// with the watcher's metadata.
 #[cfg(feature = "menu")]
 pub(super) fn collect_item_watchers(
-    items: &[ResolvedMenuItem],
+    items: &[ResolvedMenuItem<Held>],
     resync: &Rc<dyn Fn(&Metadata)>,
     watchers: &mut Vec<BoxWatcherGuard>,
 ) {
@@ -82,36 +84,19 @@ pub(super) fn collect_item_watchers(
     }
 }
 
-/// The key equivalent and modifier set a `Shortcut` describes; no shortcut
-/// is the empty pair.
-fn shortcut_parts(shortcut: &Shortcut) -> (String, cocoa_ui::menu::KeyModifiers) {
-    use cocoa_ui::menu::KeyModifiers;
-    let modifiers = [
-        (shortcut.modifiers().command(), KeyModifiers::COMMAND),
-        (shortcut.modifiers().option(), KeyModifiers::OPTION),
-        (shortcut.modifiers().shift(), KeyModifiers::SHIFT),
-        (shortcut.modifiers().control(), KeyModifiers::CONTROL),
-    ]
-    .into_iter()
-    .filter(|(held, _)| *held)
-    .fold(KeyModifiers::empty(), |flags, (_, native)| flags | native);
-    (crate::menus::key_equivalent_for(shortcut.key()), modifiers)
-}
-
 /// A `ResolvedCommand` as a kit `Command` — every presentation field
 /// snapshotted; the shortcut's key equivalent travels cross-platform.
-fn kit_command(command: &ResolvedCommand) -> KitCommand {
+fn kit_command(command: &ResolvedCommand<Held>, env: &Environment) -> KitCommand {
     let (key_equivalent, modifiers) = command.shortcut.as_ref().map_or_else(
         || (String::new(), cocoa_ui::menu::KeyModifiers::empty()),
-        shortcut_parts,
+        waterui_apple_menu::shortcut_parts,
     );
+    let (symbol, image) = crate::menus::resolve_menu_icon(command.icon.as_ref(), env);
     KitCommand {
         label: item_title(&command.label.content().snapshot()),
         subtitle: command.subtitle.as_ref().map(ToString::to_string),
-        symbol: command
-            .icon
-            .as_ref()
-            .map(|icon| String::from(icon.name().as_str())),
+        symbol,
+        image,
         destructive: matches!(command.role, CommandRole::Destructive),
         enabled: !command.disabled.snapshot(),
         selected: command.selected.snapshot(),
@@ -125,7 +110,7 @@ fn kit_command(command: &ResolvedCommand) -> KitCommand {
 /// Quit or Close Window is the standard item on macOS and is omitted on iOS,
 /// which has no application quit and whose windows the system owns.
 #[cfg(any(feature = "context_menu", feature = "text_field"))]
-pub(super) fn tree_nodes(items: &[ResolvedMenuItem], env: &Environment) -> Vec<MenuTreeNode> {
+pub(super) fn tree_nodes(items: &[ResolvedMenuItem<Held>], env: &Environment) -> Vec<MenuTreeNode> {
     let mut nodes = Vec::with_capacity(items.len());
     for item in items {
         match item {
@@ -134,7 +119,7 @@ pub(super) fn tree_nodes(items: &[ResolvedMenuItem], env: &Environment) -> Vec<M
                 let action = command.action.clone();
                 let env = env.clone();
                 nodes.push(MenuTreeNode::Command(
-                    kit_command(command),
+                    kit_command(command, &env),
                     Rc::new(move || {
                         action.run(&env);
                     }),
@@ -146,24 +131,25 @@ pub(super) fn tree_nodes(items: &[ResolvedMenuItem], env: &Environment) -> Vec<M
             }
             ResolvedMenuItem::CloseWindow => {
                 #[cfg(target_os = "macos")]
-                nodes.push(crate::menus::standard_close_window_node(
+                nodes.push(waterui_apple_menu::standard_close_window_node(
                     CloseWindowChord::of(env).as_ref(),
                 ));
             }
-            ResolvedMenuItem::Menu(submenu) => nodes.push(MenuTreeNode::Submenu(
-                KitCommand {
-                    label: item_title(&submenu.label.content().snapshot()),
-                    symbol: submenu
-                        .icon
-                        .as_ref()
-                        .map(|icon| String::from(icon.name().as_str())),
-                    // A submenu is a container: always activatable, like
-                    // the `NSMenuItem`/`UIMenu` the canonical paths build.
-                    enabled: true,
-                    ..KitCommand::default()
-                },
-                tree_nodes(&submenu.items.snapshot(), env),
-            )),
+            ResolvedMenuItem::Menu(submenu) => {
+                let (symbol, image) = crate::menus::resolve_menu_icon(submenu.icon.as_ref(), env);
+                nodes.push(MenuTreeNode::Submenu(
+                    KitCommand {
+                        label: item_title(&submenu.label.content().snapshot()),
+                        symbol,
+                        image,
+                        // A submenu is a container: always activatable, like
+                        // the `NSMenuItem`/`UIMenu` the canonical paths build.
+                        enabled: true,
+                        ..KitCommand::default()
+                    },
+                    tree_nodes(&submenu.items.snapshot(), env),
+                ));
+            }
         }
     }
     nodes
@@ -174,10 +160,10 @@ pub(super) fn tree_nodes(items: &[ResolvedMenuItem], env: &Environment) -> Vec<M
 #[cfg(all(target_os = "macos", feature = "menu"))]
 fn command_item(
     mtm: cocoa_ui::MainThreadMarker,
-    command: &ResolvedCommand,
+    command: &ResolvedCommand<Held>,
     env: &Environment,
 ) -> platform::MenuItem {
-    let kit = kit_command(command);
+    let kit = kit_command(command, env);
     let mut item = platform::MenuItem::new(mtm, &kit.label, None, &kit.key_equivalent)
         .with_key_modifiers(kit.modifiers)
         .with_enabled(kit.enabled)
@@ -192,6 +178,8 @@ fn command_item(
     }
     if let Some(symbol) = &kit.symbol {
         item = item.with_icon(symbol.as_str());
+    } else if let Some(image) = &kit.image {
+        item = item.with_image(image);
     }
     let action = command.action.clone();
     let env = env.clone();
@@ -206,7 +194,7 @@ fn command_item(
 pub(super) fn append_items(
     mtm: cocoa_ui::MainThreadMarker,
     menu: &platform::Menu,
-    items: &[ResolvedMenuItem],
+    items: &[ResolvedMenuItem<Held>],
     env: &Environment,
 ) {
     for item in items {
@@ -227,8 +215,11 @@ pub(super) fn append_items(
                 let nested = platform::Menu::new(mtm, &title);
                 append_items(mtm, &nested, &submenu.items.snapshot(), env);
                 let mut item = platform::MenuItem::new(mtm, &title, None, "");
-                if let Some(icon) = &submenu.icon {
-                    item = item.with_icon(icon.name().as_str());
+                let (symbol, image) = crate::menus::resolve_menu_icon(submenu.icon.as_ref(), env);
+                if let Some(symbol) = &symbol {
+                    item = item.with_icon(symbol.as_str());
+                } else if let Some(image) = &image {
+                    item = item.with_image(image);
                 }
                 menu.add_item(item.with_submenu(&nested));
             }
@@ -245,10 +236,11 @@ pub(super) fn build_menu(
     key_commands: &cocoa_ui::uikit::KeyCommands,
     title: &str,
     icon: Option<&str>,
-    items: &[ResolvedMenuItem],
+    image: Option<&cocoa_ui::objc2_ui_kit::UIImage>,
+    items: &[ResolvedMenuItem<Held>],
     env: &Environment,
 ) -> platform::Menu {
-    let mut groups: Vec<&[ResolvedMenuItem]> = items
+    let mut groups: Vec<&[ResolvedMenuItem<Held>]> = items
         .split(|item| matches!(item, ResolvedMenuItem::Divider))
         .filter(|group| !group.is_empty())
         .collect();
@@ -266,13 +258,14 @@ pub(super) fn build_menu(
                     mtm,
                     "",
                     None,
+                    None,
                     true,
                     &menu_elements(group, env, mtm, key_commands),
                 ))
             })
             .collect()
     };
-    platform::Menu::new(mtm, title, icon, false, &children)
+    platform::Menu::new(mtm, title, icon, image, false, &children)
 }
 
 /// `buildUIKitMenuElements`: one element per item — `UIAction`s, or
@@ -281,7 +274,7 @@ pub(super) fn build_menu(
 /// nested menus recurse.
 #[cfg(all(target_os = "ios", feature = "menu"))]
 fn menu_elements(
-    items: &[ResolvedMenuItem],
+    items: &[ResolvedMenuItem<Held>],
     env: &Environment,
     mtm: cocoa_ui::MainThreadMarker,
     key_commands: &cocoa_ui::uikit::KeyCommands,
@@ -295,7 +288,7 @@ fn menu_elements(
                 None
             }
             ResolvedMenuItem::Command(command) => {
-                let kit = kit_command(command);
+                let kit = kit_command(command, env);
                 let action = command.action.clone();
                 let env = env.clone();
                 Some(platform::MenuElement::Action(
@@ -306,11 +299,13 @@ fn menu_elements(
             }
             ResolvedMenuItem::Menu(submenu) => {
                 let title = item_title(&submenu.label.content().snapshot());
+                let (symbol, image) = crate::menus::resolve_menu_icon(submenu.icon.as_ref(), env);
                 Some(platform::MenuElement::Submenu(build_menu(
                     mtm,
                     key_commands,
                     &title,
-                    submenu.icon.as_ref().map(|icon| icon.name().as_str()),
+                    symbol.as_deref(),
+                    image.as_deref(),
                     &submenu.items.snapshot(),
                     env,
                 )))
@@ -336,12 +331,15 @@ mod tests {
     /// ⌘W command.
     #[test]
     fn a_command_binding_command_w_moves_the_close_window_item_to_shift_command_w() {
-        let menu_bar = Computed::constant(vec![Menu::new(
-            "File",
-            (Command::builder("Close Tab")
-                .action(|| {})
-                .shortcut(Shortcut::new('w').command()),),
-        )]);
+        let menu_bar = Computed::constant(vec![
+            Menu::new(
+                "File",
+                (Command::builder("Close Tab")
+                    .action(|| {})
+                    .shortcut(Shortcut::new('w').command()),),
+            )
+            .into_semantic(),
+        ]);
         let mut env = Environment::new();
         env.insert(CloseWindowChord::new(&menu_bar, &env));
         let nodes = tree_nodes(&[ResolvedMenuItem::CloseWindow], &env);

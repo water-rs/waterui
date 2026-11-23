@@ -1,59 +1,70 @@
-//! The `view_renderer` service: the environment's `ViewRenderer` —
-//! `WuiViewRenderer.swift`'s `renderViewToRGBA`, ported.
+//! Offscreen capture through [`AppleOffscreenRenderer`] — `WuiViewRenderer.swift`'s
+//! `renderViewToRGBA`, ported onto [`ViewRenderer`].
 //!
 //! The rendered leaf mounts under a fresh [`ContentLedger`], joins its
 //! capture window and is laid out under the request's proposal; the
 //! capture then awaits the content the leaf's views owe, lays the leaf out
 //! again at the size that content gives it and captures it once into
 //! premultiplied RGBA8 — through the central native+GPU capture under
-//! `gpu_surface`, the plain offscreen bitmap path in a native-only build —
-//! the `CustomViewRenderer` contract.
+//! `gpu_surface` (with pure-native `native-test` trees on macOS and Mac
+//! Catalyst routed through `crate::capture`'s in-process `Core Animation`
+//! render server), or through `crate::capture` directly in a native-only
+//! build.
 
-use waterui_backend_core::Environment;
+#[cfg(target_os = "ios")]
+use alloc::vec::Vec;
+
+use cocoa_ui::PlatformView;
+#[cfg(target_os = "ios")]
+use cocoa_ui::Retained;
+use cocoa_ui::bitmap::set_window_color_scheme;
+#[cfg(all(feature = "gpu_surface", render_server_capture))]
+use cocoa_ui::capture::collect_capturables;
+#[cfg(target_os = "ios")]
+use cocoa_ui::objc2_ui_kit::UIViewController;
+use cocoa_ui::view::window as view_window;
+use waterui_backend_core::{Environment, View};
+use waterui_capture::ContentLedger;
+use waterui_capture::view_renderer::{RenderError, RenderRequest, RenderResult, ViewRenderer};
 use waterui_core::env::With;
 use waterui_core::layout::{ProposalSize, Size};
-use waterui_core::view_renderer::{
-    CustomViewRenderer, RenderError, RenderRequest, RenderResult, ViewRenderer,
-};
-use waterui_core::{AnyView, ContentLedger};
 
-use crate::contract::{NativeLeaf, Renderer};
+#[cfg(any(not(feature = "gpu_surface"), render_server_capture))]
+use crate::capture;
+use crate::contract::NativeLeaf;
+#[cfg(target_os = "ios")]
+use crate::contract::adopt_controllers;
 
-/// The backend's `CustomViewRenderer`: a `'static` `Renderer` carrying the
-/// dispatcher, an environment clone and the main-thread proof.
-struct AppleViewRenderer {
-    renderer: Renderer,
+/// The Apple backend's [`ViewRenderer`]: renders a typed view under a
+/// fresh [`ContentLedger`] into premultiplied RGBA8 on the main thread.
+#[derive(Debug, Clone)]
+pub struct AppleOffscreenRenderer {
     mtm: cocoa_ui::MainThreadMarker,
 }
 
-impl core::fmt::Debug for AppleViewRenderer {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("AppleViewRenderer").finish_non_exhaustive()
+impl AppleOffscreenRenderer {
+    /// Creates an offscreen renderer on the main thread `mtm` proves.
+    #[must_use]
+    pub const fn new(mtm: cocoa_ui::MainThreadMarker) -> Self {
+        Self { mtm }
     }
 }
 
-impl CustomViewRenderer for AppleViewRenderer {
+impl ViewRenderer for AppleOffscreenRenderer {
     #[expect(
         clippy::future_not_send,
         reason = "view rendering runs on the main thread; the future borrows the non-Send native leaf and `MainThreadMarker` across the capture await"
     )]
-    async fn render_to_rgba(
+    async fn render_to_rgba<V: View>(
         &self,
-        view: AnyView,
+        view: V,
+        env: &Environment,
         request: RenderRequest,
     ) -> Result<RenderResult, RenderError> {
         let ledger = ContentLedger::new();
-        let leaf = self
-            .renderer
-            .render(AnyView::new(With::new(view, ledger.clone())));
-        let (pixels, width, height) = capture_leaf_to_rgba(
-            &leaf,
-            self.renderer.context().env(),
-            &ledger,
-            request,
-            self.mtm,
-        )
-        .await?;
+        let leaf = crate::dispatch::render(With::new(view, ledger.clone()), env, self.mtm);
+        let (pixels, width, height) =
+            capture_leaf_to_rgba(&leaf, env, &ledger, request, self.mtm).await?;
         Ok(RenderResult::new(pixels, width, height))
     }
 }
@@ -75,23 +86,9 @@ fn render_error(failure: crate::capture_image::CaptureFailure) -> RenderError {
         | CaptureFailure::TargetAllocation { .. } => RenderError::Gpu(Box::new(failure)),
         #[cfg(target_os = "ios")]
         CaptureFailure::NoWindowScene => RenderError::Capture(Box::new(failure)),
+        #[cfg(render_server_capture)]
+        CaptureFailure::NativeCapture(_) => RenderError::Capture(Box::new(failure)),
     }
-}
-
-/// The environment's `ViewRenderer`, replacing
-/// `waterui_env_install_view_renderer`.
-///
-/// Installs the native snapshot renderer into this environment.
-///
-/// # Panics
-///
-/// Off the main thread: the backend installs its services while starting on it.
-pub fn install_service(env: &mut Environment) {
-    let mtm = cocoa_ui::MainThreadMarker::new()
-        .expect("the backend installs its services on the main thread");
-    let renderer =
-        crate::contract::RenderContext::new(env, crate::dispatch::dispatcher(env), mtm).renderer();
-    env.insert(ViewRenderer::new(AppleViewRenderer { renderer, mtm }));
 }
 
 /// Captures `leaf` into premultiplied RGBA8 under `request`'s proposal once
@@ -108,13 +105,6 @@ pub fn install_service(env: &mut Environment) {
 )]
 async fn capture_leaf_to_rgba(
     leaf: &NativeLeaf,
-    #[cfg_attr(
-        not(feature = "gpu_surface"),
-        expect(
-            unused_variables,
-            reason = "only the central GPU capture reads the environment"
-        )
-    )]
     env: &Environment,
     ledger: &ContentLedger,
     request: RenderRequest,
@@ -130,6 +120,13 @@ async fn capture_leaf_to_rgba(
         cocoa_ui::Rect::new(0.0, 0.0, proposed.width, proposed.height),
     );
     let host = host::CaptureHost::attach(view, proposed, mtm)?;
+    // Establish UIKit view-controller containment for any embedded controllers
+    // (`UITabBarController`, `UINavigationController`, `UISearchController`)
+    // now that `view` lives under the capture window's root controller; unwind
+    // in reverse before detaching `host`.
+    #[cfg(target_os = "ios")]
+    let adopted_controllers = AdoptedControllers::adopt(view);
+    apply_env_color_scheme(view, env);
     lay_out(view, request.size());
     // The capture window cannot present, so the surfaces inside never
     // attach: the drive keeps their frames — and the content their scenes
@@ -140,7 +137,25 @@ async fn capture_leaf_to_rgba(
     crate::content::await_content(ledger, view, request.content_deadline()).await?;
     lay_out(view, request.size());
 
-    #[cfg(feature = "gpu_surface")]
+    #[cfg(all(feature = "gpu_surface", render_server_capture))]
+    let captured = {
+        let mut has_capturable = false;
+        collect_capturables(view, &mut |_| has_capturable = true);
+        if has_capturable {
+            drive
+                .capture_rgba()
+                .await
+                .map(|captured| (captured.pixels, captured.width, captured.height))
+                .map_err(render_error)
+        } else {
+            drop(drive);
+            capture::capture_presented(view)
+                .await
+                .map(RenderResult::into_parts)
+                .map_err(|error| RenderError::Capture(Box::new(error)))
+        }
+    };
+    #[cfg(all(feature = "gpu_surface", not(render_server_capture)))]
     let captured = {
         // The central capture owns the native+GPU composite and its
         // lifecycle — a first-frame wait here could deadlock under
@@ -152,12 +167,67 @@ async fn capture_leaf_to_rgba(
             .map_err(render_error)
     };
     #[cfg(not(feature = "gpu_surface"))]
-    let captured = crate::capture::capture_presented(view)
+    let captured = capture::capture_presented(view)
         .await
         .map(RenderResult::into_parts)
         .map_err(|error| RenderError::Capture(Box::new(error)));
+    #[cfg(target_os = "ios")]
+    drop(adopted_controllers);
     drop(host);
     captured
+}
+
+/// RAII guard adopting any parentless `UIViewController`s inside the captured
+/// subtree under the capture window's root controller, unwinding in reverse on
+/// drop before the capture host detaches the view.
+#[cfg(target_os = "ios")]
+struct AdoptedControllers(Vec<Retained<UIViewController>>);
+
+#[cfg(target_os = "ios")]
+impl AdoptedControllers {
+    fn adopt(root: &PlatformView) -> Self {
+        use cocoa_ui::uikit::view_controller::did_move_to_parent;
+
+        let controllers = adopt_controllers(root);
+        for controller in &controllers {
+            did_move_to_parent(controller);
+        }
+        Self(controllers)
+    }
+}
+
+#[cfg(target_os = "ios")]
+impl Drop for AdoptedControllers {
+    fn drop(&mut self) {
+        use cocoa_ui::uikit::view_controller::{remove_from_parent, will_move_to_parent};
+
+        for controller in &self.0 {
+            will_move_to_parent(controller);
+        }
+        for controller in self.0.iter().rev() {
+            remove_from_parent(controller);
+        }
+    }
+}
+
+/// Applies the `ColorScheme` installed in `env`, if any, onto `view`'s capture
+/// window so native controls and glass materials resolve against light or dark
+/// mode before layout and rasterization.
+fn apply_env_color_scheme(view: &PlatformView, env: &Environment) {
+    use cocoa_ui::ColorScheme as CocoaColorScheme;
+    use waterui::theme::{ColorScheme, installed_color_scheme};
+    use waterui_core::Signal as _;
+
+    let Some(scheme_signal) = installed_color_scheme(env) else {
+        return;
+    };
+    let scheme = match scheme_signal.snapshot() {
+        ColorScheme::Light => CocoaColorScheme::Light,
+        ColorScheme::Dark => CocoaColorScheme::Dark,
+    };
+    if let Some(window) = view_window(view) {
+        set_window_color_scheme(&window, scheme);
+    }
 }
 
 /// Measures `view` under the proposal `size` and lays it out at the size it
@@ -205,7 +275,7 @@ fn lay_out(view: &cocoa_ui::PlatformView, size: Size) {
 /// The capture window the leaf joins before it is measured.
 #[cfg(feature = "gpu_surface")]
 mod host {
-    use waterui_core::view_renderer::RenderError;
+    use waterui_capture::view_renderer::RenderError;
 
     /// The central capture's re-host: the leaf moves into a never-ordered
     /// (`AppKit`) or offscreen (`UIKit`) window and returns to its parent
@@ -236,7 +306,7 @@ mod host {
 /// The capture window the leaf joins before it is measured.
 #[cfg(all(target_os = "macos", not(feature = "gpu_surface")))]
 mod host {
-    use waterui_core::view_renderer::RenderError;
+    use waterui_capture::view_renderer::RenderError;
 
     /// `AppKit`: a window that never orders in hosts the leaf for
     /// `crate::capture`'s bitmap readback — the `AppKit` half of
@@ -270,33 +340,61 @@ mod host {
 /// The capture window the leaf joins before it is measured.
 #[cfg(all(target_os = "ios", not(feature = "gpu_surface")))]
 mod host {
-    use waterui_core::view_renderer::RenderError;
+    #[cfg(all(render_server_capture, catalyst))]
+    use cocoa_ui::bitmap::scene_less_capture_window;
+    use cocoa_ui::bitmap::{
+        CaptureWindow, any_window_scene, close_capture_window, make_offscreen_window,
+        show_capture_window,
+    };
+    #[cfg(all(render_server_capture, catalyst))]
+    use cocoa_ui::uikit::catalyst::BackgroundApplication;
+    use cocoa_ui::{MainThreadMarker, PlatformView, Retained, Size};
+    use waterui_capture::view_renderer::RenderError;
 
+    #[cfg(not(all(render_server_capture, catalyst)))]
     use crate::capture::CaptureError;
 
     /// `UIKit`: an offscreen `UIWindow` in a connected scene hosts the
     /// leaf while `crate::capture` renders its layer — the `UIKit` half of
     /// `captureViewToRGBA`. Hidden again on drop.
-    pub struct CaptureHost(cocoa_ui::Retained<cocoa_ui::bitmap::CaptureWindow>);
+    pub struct CaptureHost(Retained<CaptureWindow>);
 
     impl CaptureHost {
         /// Attaches `view` to an offscreen window sized `proposed`.
+        #[cfg_attr(
+            all(render_server_capture, catalyst),
+            expect(
+                clippy::unnecessary_wraps,
+                reason = "non-Catalyst UIKit can fail with NoWindowScene; render-server Catalyst always attaches"
+            )
+        )]
         pub fn attach(
-            view: &cocoa_ui::PlatformView,
-            proposed: cocoa_ui::Size,
-            mtm: cocoa_ui::MainThreadMarker,
+            view: &PlatformView,
+            proposed: Size,
+            mtm: MainThreadMarker,
         ) -> Result<Self, RenderError> {
-            let scene = cocoa_ui::bitmap::any_window_scene()
-                .ok_or_else(|| RenderError::Capture(Box::new(CaptureError::NoWindowScene)))?;
-            let window = cocoa_ui::bitmap::make_offscreen_window(mtm, &scene, proposed);
-            cocoa_ui::bitmap::show_capture_window(&window, view, proposed);
+            #[cfg(all(render_server_capture, catalyst))]
+            let window = any_window_scene().map_or_else(
+                || {
+                    let application = BackgroundApplication::bring_up(mtm);
+                    scene_less_capture_window(mtm, &application, proposed)
+                },
+                |scene| make_offscreen_window(mtm, &scene, proposed),
+            );
+            #[cfg(not(all(render_server_capture, catalyst)))]
+            let window = {
+                let scene = any_window_scene()
+                    .ok_or_else(|| RenderError::Capture(Box::new(CaptureError::NoWindowScene)))?;
+                make_offscreen_window(mtm, &scene, proposed)
+            };
+            show_capture_window(&window, view, proposed);
             Ok(Self(window))
         }
     }
 
     impl Drop for CaptureHost {
         fn drop(&mut self) {
-            cocoa_ui::bitmap::close_capture_window(&self.0);
+            close_capture_window(&self.0);
         }
     }
 }

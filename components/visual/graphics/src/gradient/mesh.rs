@@ -9,7 +9,6 @@ use crate::draw::kurbo::Rect;
 use crate::draw::{Draw as _, Paint, Recorder, WorkingColor};
 use nami::map::map;
 use nami::{Computed, Signal, SignalExt};
-use waterui_core::layout::StretchAxis;
 use waterui_core::reactive::signal::IntoComputed;
 use waterui_core::{Environment, View, contract_violation};
 
@@ -154,10 +153,6 @@ impl View for MeshGradient {
         SceneView::new(MeshContent {
             paint: self.into_paint(),
         })
-    }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::Both
     }
 }
 

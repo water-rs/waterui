@@ -18,7 +18,7 @@ use waterui_graphics::color::Color;
 #[cfg(feature = "calendar")]
 pub mod calendar;
 #[cfg(feature = "calendar")]
-pub use calendar::{Calendar, CalendarConfig};
+pub use calendar::{Calendar, CalendarConfig, CalendarGrid};
 /// Native picker controls for colors, dates, files, and multiple dates.
 pub mod picker;
 #[cfg(feature = "picker")]
@@ -27,11 +27,11 @@ pub use picker::{Picker, PickerItem, PickerStyle};
 #[cfg(feature = "validation")]
 pub mod valid;
 
-use waterui_controls::IntoLabel;
 #[cfg(feature = "slider")]
 use waterui_controls::slider::slider;
 #[cfg(feature = "stepper")]
 use waterui_controls::stepper::stepper;
+use waterui_controls::{IntoLabel, LabelKind, TitleLabel};
 use waterui_core::{Binding, Str, View};
 
 /// Trait for types that can be automatically converted to form UI components.
@@ -90,7 +90,7 @@ pub trait FormBuilder: Sized {
     /// This associated type determines what UI component will be rendered
     /// for this form. For derived implementations, this is typically a
     /// layout containing multiple form fields.
-    type View: View;
+    type View<L: LabelKind>: View;
 
     /// Creates a view representation of this form field bound to the given binding.
     ///
@@ -104,7 +104,11 @@ pub trait FormBuilder: Sized {
     /// # Returns
     ///
     /// A view that renders the form's UI components, automatically bound to the data
-    fn view<L: IntoLabel>(binding: &Binding<Self>, label: L, placeholder: Str) -> Self::View;
+    fn view<L: IntoLabel>(
+        binding: &Binding<Self>,
+        label: L,
+        placeholder: Str,
+    ) -> Self::View<L::Kind>;
 
     /// Creates a new binding with the default value for this form.
     ///
@@ -131,10 +135,10 @@ pub trait FormBuilder: Sized {
 }
 
 #[cfg(feature = "text-field")]
-fn with_optional_prompt(
-    mut field: waterui_controls::TextField,
+fn with_optional_prompt<L: LabelKind>(
+    mut field: waterui_controls::TextField<L>,
     placeholder: Str,
-) -> waterui_controls::TextField {
+) -> waterui_controls::TextField<L> {
     if !placeholder.is_empty() {
         field = field.prompt(placeholder);
     }
@@ -150,9 +154,13 @@ fn map_string_binding(binding: &Binding<String>) -> Binding<Str> {
 
 #[cfg(feature = "text-field")]
 impl FormBuilder for Str {
-    type View = waterui_controls::TextField;
+    type View<L: LabelKind> = waterui_controls::TextField<L>;
 
-    fn view<L: IntoLabel>(binding: &Binding<Self>, label: L, placeholder: Str) -> Self::View {
+    fn view<L: IntoLabel>(
+        binding: &Binding<Self>,
+        label: L,
+        placeholder: Str,
+    ) -> Self::View<L::Kind> {
         with_optional_prompt(
             waterui_controls::TextField::new(label, binding),
             placeholder,
@@ -162,9 +170,13 @@ impl FormBuilder for Str {
 
 #[cfg(feature = "text-field")]
 impl FormBuilder for String {
-    type View = waterui_controls::TextField;
+    type View<L: LabelKind> = waterui_controls::TextField<L>;
 
-    fn view<L: IntoLabel>(binding: &Binding<Self>, label: L, placeholder: Str) -> Self::View {
+    fn view<L: IntoLabel>(
+        binding: &Binding<Self>,
+        label: L,
+        placeholder: Str,
+    ) -> Self::View<L::Kind> {
         let str_binding = map_string_binding(binding);
         with_optional_prompt(
             waterui_controls::TextField::new(label, &str_binding),
@@ -176,40 +188,60 @@ impl FormBuilder for String {
 // Other components don't have prompt
 #[cfg(feature = "stepper")]
 impl FormBuilder for i32 {
-    type View = waterui_controls::Stepper;
-    fn view<L: IntoLabel>(binding: &Binding<Self>, label: L, _placeholder: Str) -> Self::View {
+    type View<L: LabelKind> = waterui_controls::Stepper<L>;
+    fn view<L: IntoLabel>(
+        binding: &Binding<Self>,
+        label: L,
+        _placeholder: Str,
+    ) -> Self::View<L::Kind> {
         stepper(label, binding).range(Self::MIN..=Self::MAX)
     }
 }
 
 #[cfg(feature = "toggle")]
 impl FormBuilder for bool {
-    type View = waterui_controls::Toggle;
-    fn view<L: IntoLabel>(binding: &Binding<Self>, label: L, _placeholder: Str) -> Self::View {
+    type View<L: LabelKind> = waterui_controls::Toggle<L>;
+    fn view<L: IntoLabel>(
+        binding: &Binding<Self>,
+        label: L,
+        _placeholder: Str,
+    ) -> Self::View<L::Kind> {
         waterui_controls::Toggle::new(label, binding)
     }
 }
 
 #[cfg(feature = "color-picker")]
 impl FormBuilder for Color {
-    type View = picker::ColorPicker;
-    fn view<L: IntoLabel>(binding: &Binding<Self>, label: L, _placeholder: Str) -> Self::View {
+    type View<L: LabelKind> = picker::ColorPicker<L>;
+    fn view<L: IntoLabel>(
+        binding: &Binding<Self>,
+        label: L,
+        _placeholder: Str,
+    ) -> Self::View<L::Kind> {
         picker::ColorPicker::new(label, binding)
     }
 }
 
 #[cfg(feature = "slider")]
 impl FormBuilder for f64 {
-    type View = waterui_controls::Slider;
-    fn view<L: IntoLabel>(binding: &Binding<Self>, label: L, _placeholder: Str) -> Self::View {
+    type View<L: LabelKind> = waterui_controls::Slider<L, (), ()>;
+    fn view<L: IntoLabel>(
+        binding: &Binding<Self>,
+        label: L,
+        _placeholder: Str,
+    ) -> Self::View<L::Kind> {
         slider(label, binding)
     }
 }
 
 #[cfg(feature = "slider")]
 impl FormBuilder for f32 {
-    type View = waterui_controls::Slider;
-    fn view<L: IntoLabel>(binding: &Binding<Self>, label: L, _placeholder: Str) -> Self::View {
+    type View<L: LabelKind> = waterui_controls::Slider<L, (), ()>;
+    fn view<L: IntoLabel>(
+        binding: &Binding<Self>,
+        label: L,
+        _placeholder: Str,
+    ) -> Self::View<L::Kind> {
         slider(
             label,
             #[allow(clippy::cast_possible_truncation)]
@@ -298,7 +330,7 @@ pub use secure::{SecureField, secure};
 ///
 /// A view that renders interactive form controls for all fields in the bound data structure
 #[must_use = "this builds the form's view; dropping it renders no controls"]
-pub fn form<T: FormBuilder>(binding: &Binding<T>) -> T::View {
+pub fn form<T: FormBuilder>(binding: &Binding<T>) -> T::View<TitleLabel> {
     T::view(binding, Str::default(), Str::default())
 }
 

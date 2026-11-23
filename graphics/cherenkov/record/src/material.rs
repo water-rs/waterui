@@ -51,6 +51,7 @@ use rustc_hash::FxHashMap;
 use waterui_contract::contract_violation;
 
 use crate::backdrop::{BackdropShaderSource, CaptureLevels, CapturePyramid, CaptureScale};
+use crate::content_effect::ContentShaderSource;
 use crate::record::{Content, SharedLive};
 use crate::shape::ShapeData;
 use crate::style::BlendSpace;
@@ -66,6 +67,29 @@ use crate::style::BlendSpace;
 pub struct MaterialShader(u32);
 
 impl MaterialShader {
+    /// The key with raw value `raw`.
+    #[must_use]
+    pub const fn new(raw: u32) -> Self {
+        Self(raw)
+    }
+
+    /// The key's raw value.
+    #[must_use]
+    pub const fn raw(self) -> u32 {
+        self.0
+    }
+}
+
+/// The key a widget theme chooses for one of its content effect shaders.
+///
+/// The theme registers the shader's source under it in a
+/// [`MaterialRegistry`]; a surface's content effect names it there. It is
+/// engine-independent: the realizing host registers the source with every
+/// engine it attaches and maps the key to that engine's handle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ContentShader(u32);
+
+impl ContentShader {
     /// The key with raw value `raw`.
     #[must_use]
     pub const fn new(raw: u32) -> Self {
@@ -517,6 +541,7 @@ pub trait ContainerRecipe: core::fmt::Debug {
 #[derive(Clone, Debug, Default)]
 pub struct MaterialRegistry {
     shaders: FxHashMap<MaterialShader, BackdropShaderSource>,
+    content_shaders: FxHashMap<ContentShader, ContentShaderSource>,
     captures: FxHashMap<CaptureClass, MaterialCapture>,
     containers: FxHashMap<MaterialShader, Rc<dyn ContainerRecipe>>,
 }
@@ -545,6 +570,27 @@ impl MaterialRegistry {
             Entry::Occupied(_) => contract_violation!(
                 "backdrop material shader {key:?} is registered twice; the first registration \
                  stays"
+            ),
+        }
+        self
+    }
+
+    /// Registers the content effect shader `source` under `key`.
+    ///
+    /// # Contract
+    /// A `key` registered twice is a contract violation; the first
+    /// registration stays and `source` is dropped.
+    pub fn register_content_shader(
+        &mut self,
+        key: ContentShader,
+        source: ContentShaderSource,
+    ) -> &mut Self {
+        match self.content_shaders.entry(key) {
+            Entry::Vacant(slot) => {
+                slot.insert(source);
+            }
+            Entry::Occupied(_) => contract_violation!(
+                "content effect shader {key:?} is registered twice; the first registration stays"
             ),
         }
         self
@@ -607,6 +653,12 @@ impl MaterialRegistry {
         self.shaders.get(&key)
     }
 
+    /// The content effect shader source registered under `key`.
+    #[must_use]
+    pub fn content_shader(&self, key: ContentShader) -> Option<&ContentShaderSource> {
+        self.content_shaders.get(&key)
+    }
+
     /// The capture parameters registered under `key`.
     #[must_use]
     pub fn capture_class(&self, key: CaptureClass) -> Option<&MaterialCapture> {
@@ -618,6 +670,13 @@ impl MaterialRegistry {
         self.shaders.iter().map(|(key, source)| (*key, source))
     }
 
+    /// Every registered content effect shader, in no particular order.
+    pub fn content_shaders(&self) -> impl Iterator<Item = (ContentShader, &ContentShaderSource)> {
+        self.content_shaders
+            .iter()
+            .map(|(key, source)| (*key, source))
+    }
+
     /// Every registered capture class, in no particular order.
     pub fn capture_classes(&self) -> impl Iterator<Item = (CaptureClass, &MaterialCapture)> {
         self.captures.iter().map(|(key, capture)| (*key, capture))
@@ -626,7 +685,10 @@ impl MaterialRegistry {
     /// Whether nothing is registered.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.shaders.is_empty() && self.captures.is_empty() && self.containers.is_empty()
+        self.shaders.is_empty()
+            && self.content_shaders.is_empty()
+            && self.captures.is_empty()
+            && self.containers.is_empty()
     }
 }
 

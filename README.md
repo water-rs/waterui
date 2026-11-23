@@ -43,7 +43,7 @@ newest release without installing it.
 A `WaterUI` project is a plain Rust crate; the CLI keeps native projects out of your source tree and manages them on demand. `src/lib.rs` looks like this:
 
 ```rust,ignore
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::prelude::*;
 use waterui::preview;
 
@@ -59,7 +59,7 @@ fn main() -> impl View {
     .padding()
 }
 
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows> {
     App::new(main, env)
 }
 ```

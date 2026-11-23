@@ -3,8 +3,7 @@
 //!
 //! [`Engine::render`]: crate::Engine::render
 
-use cherenkov_record::RefreshRange;
-use waterui_contract::contract_violation;
+use cherenkov_record::FrameRate;
 
 use crate::Instant;
 
@@ -67,22 +66,18 @@ impl FrameTime {
     }
 }
 
-/// The refresh range a surface requests when its host does not set one: up
-/// to 120 Hz, the performance target on current high-refresh displays.
-pub const DEFAULT_REFRESH: RefreshRange = 60..=120;
-
 /// What the engine needs next, returned by
 /// [`Engine::render`](crate::Engine::render).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Next {
     /// No animation is running; the display link may sleep.
     Idle,
-    /// The next frame is needed at `time`, at a refresh rate in `rate`.
+    /// The next frame is needed at `time`, with refresh vote `rate`.
     At {
         /// When the next frame is due.
         time: Instant,
-        /// The acceptable refresh rates.
-        rate: RefreshRange,
+        /// The requested refresh-rate vote.
+        rate: FrameRate,
     },
 }
 
@@ -179,8 +174,18 @@ pub struct FrameStats {
     pub frame: Option<FrameId>,
     /// CPU time spent in each render phase.
     pub phases: Phases,
+    /// Total pixel area of the surfaces prepared for drawing this frame.
+    /// Retained picture images and other intermediate targets are excluded.
+    pub surface_pixels: u64,
+    /// Union of the pixels rasterized into each prepared surface's root
+    /// outputs. Overlapping passes and compositor parts count each surface
+    /// pixel once; offscreen images are excluded. Zero on an unchanged frame.
+    pub damaged_surface_pixels: u64,
     /// Render passes recorded (`render_to_texture` and effect passes).
     pub passes: u32,
+    /// Planned raster passes skipped because their composition epoch has
+    /// no pixel demand. Excludes filter and mip-generation passes.
+    pub passes_culled: u32,
     /// Scene commands encoded this frame.
     pub draws: u32,
     /// Pipeline state changes issued while encoding draw ranges.
@@ -204,6 +209,13 @@ pub struct FrameStats {
     pub projective_realized: u32,
     /// Projective layers composed this frame, cached or fresh.
     pub projective_composed: u32,
+    /// Retained picture tiles whose source, resources or raster storage
+    /// required preparation. Damage tracking may still cull unchanged pixels.
+    /// Zero for backends without a retained picture tile cache.
+    pub picture_tiles_invalidated: u32,
+    /// Retained picture tiles composed this frame, cached or newly prepared.
+    /// Zero for backends without a retained picture tile cache.
+    pub picture_tiles_composed: u32,
     /// Layer filters applied this frame: one per filter each rendered
     /// surface ran over its filtered subtree.
     pub filters_applied: u32,
@@ -256,25 +268,14 @@ pub struct Offscreen {
     pub size: (u32, u32),
     /// The target storage format.
     pub format: OffscreenFormat,
-    /// Refresh range used by animated backend content.
-    pub refresh: RefreshRange,
+    /// Refresh vote used by animated backend content.
+    pub refresh: FrameRate,
 }
 
 impl Offscreen {
-    /// Configure the refresh range of this target.
-    ///
-    /// # Contract
-    /// An empty range or one containing zero hertz is a contract
-    /// violation; the refresh range stays as it was.
+    /// Configure the refresh vote of this target.
     #[must_use]
-    pub fn rate(mut self, rate: RefreshRange) -> Self {
-        if *rate.start() == 0 || rate.is_empty() {
-            contract_violation!(
-                "refresh range must be positive and ordered, not {rate:?}; the range stays {:?}",
-                self.refresh
-            );
-            return self;
-        }
+    pub const fn rate(mut self, rate: FrameRate) -> Self {
         self.refresh = rate;
         self
     }
@@ -285,7 +286,7 @@ impl Offscreen {
         Self {
             size,
             format,
-            refresh: DEFAULT_REFRESH,
+            refresh: FrameRate::FAST,
         }
     }
 }

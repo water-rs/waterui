@@ -8,13 +8,17 @@
 //! this workspace member like a framework example and launches it on the
 //! iOS simulator the UDID names — a device the caller created and owns.
 
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::component::list::{List, ListItem};
 use waterui::prelude::theme_color::{Accent, Foreground};
 use waterui::prelude::*;
 use waterui::shape::Circle;
 
-fn message_row(sender: &'static str, subject: &'static str, preview: &'static str) -> ListItem {
+fn message_row(
+    sender: &'static str,
+    subject: &'static str,
+    preview: &'static str,
+) -> ListItem<impl View> {
     ListItem::new(Label::new(
         Str::from(format!("{sender}: {subject}")),
         move || {
@@ -81,6 +85,6 @@ fn inbox() -> impl View {
 }
 
 /// Builds the test host app around [`inbox`].
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows> {
     App::new(inbox, env)
 }

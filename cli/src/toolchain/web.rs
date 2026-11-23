@@ -42,9 +42,15 @@ impl Installation for WasmPackInstallation {
     type Error = CommandError;
 
     async fn install(&self, host: &Host) -> Result<(), Self::Error> {
-        host.run("cargo", ["install", "--locked", "wasm-pack"])
-            .await
-            .map(|_| ())
+        if host.which("cargo-binstall").await.is_ok() {
+            host.run("cargo", ["binstall", "--no-confirm", "wasm-pack"])
+                .await
+                .map(|_| ())
+        } else {
+            host.run("cargo", ["install", "--locked", "wasm-pack"])
+                .await
+                .map(|_| ())
+        }
     }
 }
 
@@ -246,6 +252,24 @@ mod tests {
         assert!(
             matches!(result, Err(ToolchainError::Unfixable(_))),
             "missing wasm-pack without cargo must be manual: {result:?}"
+        );
+    }
+
+    #[test]
+    fn wasm_pack_install_uses_binstall_when_present() {
+        use crate::toolchain::Installation as _;
+
+        let machine = TestMachine::new();
+        machine.install("cargo");
+        machine.install("cargo-binstall");
+        let log = machine.file("cargo.log", "");
+        let host = machine.host([("WATERUI_FAKE_LOG", log.as_os_str())]);
+        smol::block_on(super::WasmPackInstallation.install(&host))
+            .expect("wasm-pack install succeeds");
+        let logged = std::fs::read_to_string(&log).expect("read invocation log");
+        assert!(
+            logged.contains("cargo binstall --no-confirm wasm-pack"),
+            "binstall must be preferred when on PATH: {logged}"
         );
     }
 }

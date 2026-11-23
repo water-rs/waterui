@@ -1,15 +1,17 @@
-//! Accessibility-first test utilities for `WaterUI`, on Hydrolysis's two
-//! headless pipelines.
+//! Accessibility-first test utilities, NVIDIA LDR-FLIP perceptual visual
+//! diffing, blank-frame detection, and static HTML gallery reporting for
+//! `WaterUI`.
 //!
-//! `waterui-testing` runs inside ordinary `cargo test` targets. [`ui`] builds
-//! a test session on the *semantic* runtime — a GPU-free pipeline whose
-//! accessibility tree is a product of the view tree and the widgets'
-//! semantics, so it carries no style package and answers no geometry:
-//! [`UiBuilder::mount`] is all a `UiBuilder<NoStyle>` offers. Tests that need
-//! pixels, bounds, pointer gestures or frame timing carry a
-//! [`hydrolysis::Style`] through [`UiBuilder::theme`] and mount the *rendered*
-//! runtime through `mount_offscreen` — the distinction is in the type, not a
-//! runtime check, so a semantic query has no `bounds()` method.
+//! `waterui-testing` runs inside ordinary `cargo test` targets. With the
+//! default `harness` feature enabled, `ui()` builds a test session on the
+//! *semantic* runtime — a GPU-free pipeline whose accessibility tree is a
+//! product of the view tree and the widgets' semantics, so it carries no style
+//! package and answers no geometry (`UiBuilder::mount` is all a
+//! `UiBuilder<NoStyle>` offers). Tests that need pixels, bounds, pointer
+//! gestures or frame timing carry a `hydrolysis::Style` through
+//! `UiBuilder::theme` and mount the *rendered* runtime through
+//! `mount_offscreen` — the distinction is in the type, not a runtime check, so
+//! a semantic query has no `bounds()` method.
 //!
 //! # `cargo test` Integration
 //!
@@ -28,7 +30,7 @@
 //! ```
 //!
 //! For tests that own `Binding`s the view closes over, omit the view path and
-//! take the configured [`UiBuilder`] by value (the manual-mount form):
+//! take the configured `UiBuilder` by value (the manual-mount form):
 //!
 //! ```ignore
 //! #[waterui::test]
@@ -41,15 +43,16 @@
 //! }
 //! ```
 //!
-//! A rendered test names its style with `theme =`, and a whole [`App`]
-//! mounts through [`mount_app`] — or `ui().theme(style).mount_app(app)` when
-//! the session needs its own viewport or scale factor:
+//! A rendered test names its style with `theme =`, and a whole `App` mounts
+//! through `mount_app` — or `ui().theme(style).mount_app(app)` when the session
+//! needs its own viewport or scale factor:
 //!
 //! ```ignore
 //! #[waterui::test(login_view, theme = hydrolysis_m3::Material3::defaults(), offscreen)]
 //! fn login_rendered(app: &mut waterui_testing::OffscreenApp) {
 //!     let snapshot = app.snapshot();
-//!     assert_eq!(snapshot.width, 390);
+//!     assert_eq!(snapshot.width(), 390);
+//!     assert!(!snapshot.analyze_blank().is_blank());
 //! }
 //! ```
 //!
@@ -65,14 +68,27 @@
 //! quiescence (no queued input, no spawned work, no scheduled animations or
 //! patches) instead of sleeping. The animation clock is virtual: each pump
 //! advances it exactly one frame, so transition sampling is deterministic;
-//! [`OffscreenApp::pump_for`] lands on an exact phase of a transition, and
+//! `OffscreenApp::pump_for` lands on an exact phase of a transition, and
 //! waits (`wait_for_existence`, `SemanticApp::wait_for`) pump hot while work
 //! is scheduled and only touch wall-clock time for work outside the runtime.
 //!
-//! Use semantic queries to resolve an [`ElementRef`], then drive interactions
-//! through that handle or use it to scope later queries with [`Query::within`].
+//! Use semantic queries to resolve an `ElementRef`, then drive interactions
+//! through that handle or use it to scope later queries with `Query::within`.
 //! Views tagged with `.a11y_id("login.submit")` resolve via
 //! `Selector::identifier` / `Query::identifier`.
+//!
+//! # Perceptual Diffing and HTML Galleries
+//!
+//! [`Snapshot`] and [`RgbaImage`] expose blank-frame detection
+//! ([`Snapshot::analyze_blank`], [`analyze_blank_frame`]) and, with the `flip`
+//! feature (enabled by default), pure-Rust NVIDIA LDR-FLIP comparison
+//! ([`Snapshot::compare_flip`], `compare_flip`, `magma_heatmap`,
+//! `FlipThresholds`). Enabling the optional `gallery` feature adds
+//! `GalleryReport` and `write_gallery_artifacts` to emit machine-readable
+//! `report.json` and self-contained `index.html` galleries. Consumers such as
+//! `water preview test` can depend on `waterui-testing` with
+//! `default-features = false, features = ["gallery"]` to use FLIP diffing and
+//! HTML gallery generation without pulling `hydrolysis`, `waterui`, or `wgpu`.
 //!
 //! # Snapshot Artifacts
 //!
@@ -107,58 +123,99 @@
 //! # TypeScript views
 //!
 //! With the `ts` feature on, a session mounts a view that reaches a `tsx!`
-//! mount: [`ui`] installs the runtime loaded from the bundle
-//! `WATERUI_TS_BUNDLE` names — `water test` builds the crate's bundle and
-//! sets the variable before it runs `cargo nextest` — into the environment
-//! the view is mounted in. An absolute path is used as written; a relative
-//! one is resolved against `CARGO_MANIFEST_DIR`, which cargo and nextest set
-//! for every test binary. When the variable is unset no runtime is installed
-//! and a test that mounts no TypeScript is unaffected; a view that does reach
-//! a mount then fails with the message naming the variable and `water test`.
-//! [`UiBuilder::mount_app`] runs the application's own environment, where the
-//! application's bundle loader installs the runtime, and does not read the
-//! variable.
+//! mount: `ui()` installs the runtime loaded from the bundle
+//! `WATERUI_TS_BUNDLE` names into the environment the view is mounted in. An
+//! absolute path is used as written; a relative one is resolved against
+//! `CARGO_MANIFEST_DIR`, which cargo and nextest set for every test binary.
+//! When the variable is unset no runtime is installed and a test that mounts
+//! no TypeScript is unaffected; a view that does reach a mount then fails
+//! naming `WATERUI_TS_BUNDLE`. `mount_app` runs the application's own
+//! environment, where the application's bundle loader installs the runtime,
+//! and does not read the variable.
 
+#[cfg(feature = "harness")]
 mod app;
 mod artifacts;
+#[cfg(feature = "harness")]
 pub mod bench;
+#[cfg(feature = "harness")]
 mod declared_fonts;
+#[cfg(feature = "harness")]
 pub(crate) mod driver;
+pub mod error;
+#[cfg(feature = "harness")]
 mod executor;
+#[cfg(feature = "flip")]
+pub mod flip;
+pub mod image;
+#[cfg(feature = "harness")]
 mod perf;
+#[cfg(feature = "harness")]
 pub mod protocol;
+#[cfg(feature = "harness")]
 mod query;
+#[cfg(feature = "gallery")]
+pub mod report;
+#[cfg(feature = "harness")]
 mod selector;
+#[cfg(feature = "harness")]
 mod semantics;
 mod snapshot;
 #[cfg(feature = "ts")]
 mod ts;
+#[cfg(feature = "harness")]
 pub(crate) mod wait;
 
+#[cfg(feature = "harness")]
 pub use accesskit::Role as AccessKitRole;
+#[cfg(feature = "harness")]
 pub use app::{DragOptions, NoStyle, OffscreenApp, SemanticApp, Styled, UiBuilder, mount_app, ui};
 pub use artifacts::{CapturedSnapshot, TestArtifacts, artifact_root};
+#[cfg(feature = "harness")]
 pub use driver::{FrameTiming, RuntimeDriver, VIRTUAL_FRAME};
+pub use error::VisualDiffError;
+#[cfg(feature = "harness")]
 pub use executor::drain_parked_local_work;
+#[cfg(feature = "harness")]
 pub use executor::{TestLocalExecutor, install_test_executor};
+#[cfg(feature = "flip")]
+pub use flip::{
+    ColorGamut, DEFAULT_BLOCK_SIZE, DEFAULT_PPD, FlipConfig, FlipMetrics, FlipResult,
+    FlipThresholds, compare_flip, compare_flip_with, magma_heatmap,
+};
+#[cfg(feature = "harness")]
 pub use hydrolysis::testing::TestStyle;
+#[cfg(feature = "harness")]
 pub use hydrolysis::{
     AccessibilityActivationPointError, HeadlessRuntime, KeyCode, Modifiers, PointerKind,
     SemanticRuntime, Style,
 };
+pub use image::{BlankFrameAnalysis, BlankFrameReason, RgbaImage, analyze_blank_frame};
+#[cfg(feature = "harness")]
 pub use perf::{PerfApp, PerfConfig, PerfMeasurement, PerfReport, PerfRun, PerfStats};
+#[cfg(feature = "harness")]
 pub use query::Query;
+#[cfg(feature = "gallery")]
+pub use report::{
+    CaseReport, GalleryArtifactPaths, GalleryReport, GallerySummary, REPORT_SCHEMA_VERSION,
+    StageComparison, StageReport, SuiteReport, sanitize_artifact_segment, write_gallery_artifacts,
+};
+#[cfg(feature = "harness")]
 pub use selector::{ElementAnchor, ElementRef, ElementSet, Selector};
+#[cfg(feature = "harness")]
 pub use semantics::{CheckedState, NodeBounds, NodeId, NodeSnapshot, Role, TreeSnapshot};
 pub use snapshot::Snapshot;
 #[cfg(feature = "gpu")]
 pub use snapshot::TestHost;
+#[cfg(feature = "harness")]
 pub use wait::{Expectation, WaitOptions, WaitResult};
-/// The content-type vocabulary [`NodeSnapshot::content_type`],
-/// [`Selector::content_type`] and [`Query::content_type`] speak.
+/// The content-type vocabulary `NodeSnapshot::content_type`,
+/// `Selector::content_type` and `Query::content_type` speak.
+#[cfg(feature = "harness")]
 pub use waterui::component::input::ContentType;
 
 /// Internal async bridge used by `#[waterui::test(...)]` expansion.
+#[cfg(feature = "harness")]
 pub fn block_on<F>(future: F) -> F::Output
 where
     F: core::future::Future,
@@ -166,5 +223,8 @@ where
     pollster::block_on(future)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "harness"))]
 mod tests;
+
+#[cfg(test)]
+mod visual_diff_tests;

@@ -2,7 +2,7 @@
 
 use alloc::{vec, vec::Vec};
 use nami::collection::Collection;
-use waterui_core::{AnyView, View, id::Identifiable, view::TupleViews, views::ForEach};
+use waterui_core::{View, id::Identifiable, view::ViewSequence, views::ForEach};
 
 use crate::{
     Layout, LayoutError, LazyContainer, PlacedSubview, PlacementInput, Point, ProposalSize, Rect,
@@ -66,7 +66,7 @@ pub struct ZStackLayout {
 
 impl Layout for ZStackLayout {
     /// A `ZStack` is content-sized only while every child is — a child that
-    /// stretches (a `Color`, a `GpuContentView`) makes the stack stretch on the
+    /// stretches (a `Color`, a `GpuView`) makes the stack stretch on the
     /// same axes, since `place` hands such children the full bounds.
     ///
     /// Axis-relative answers have no direction to resolve against here:
@@ -301,7 +301,7 @@ impl<C> ZStack<C> {
 
 crate::stack::impl_stack_for_each!(ZStack, ZStackLayout);
 
-impl<C: TupleViews> ZStack<(C,)> {
+impl<C: ViewSequence> ZStack<(C,)> {
     /// Creates a new `ZStack` with the specified alignment and contents.
     ///
     /// # Arguments
@@ -315,12 +315,12 @@ impl<C: TupleViews> ZStack<(C,)> {
     }
 }
 
-impl<V> FromIterator<V> for ZStack<(Vec<AnyView>,)>
+impl<V> FromIterator<V> for ZStack<(Vec<V>,)>
 where
     V: View,
 {
     fn from_iter<T: IntoIterator<Item = V>>(iter: T) -> Self {
-        let contents = iter.into_iter().map(AnyView::new).collect::<Vec<_>>();
+        let contents = iter.into_iter().collect::<Vec<_>>();
         Self::new(Alignment::default(), contents)
     }
 }
@@ -328,23 +328,16 @@ where
 /// Creates a new `ZStack` with center alignment and the specified contents.
 ///
 /// This is a convenience function that creates a `ZStack` with `Alignment::Center`.
-pub const fn zstack<C: TupleViews>(contents: C) -> ZStack<(C,)> {
+pub const fn zstack<C: ViewSequence>(contents: C) -> ZStack<(C,)> {
     ZStack::new(Alignment::Center, contents)
 }
 
 impl<C> View for ZStack<(C,)>
 where
-    C: TupleViews + 'static,
+    C: ViewSequence + 'static,
 {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         FixedContainer::new(self.layout, self.contents.0)
-    }
-
-    /// Resolves to `FixedContainer` over the same layout and children;
-    /// reports what that container would — matching `FixedContainer`'s
-    /// `View::stretch_axis`.
-    fn stretch_axis(&self) -> StretchAxis {
-        self.layout.stretch_axis(&self.contents.0.stretch_axes())
     }
 }
 
@@ -357,13 +350,6 @@ where
 {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         LazyContainer::new(self.layout, self.contents)
-    }
-
-    /// Resolves to `LazyContainer`, which cannot enumerate children without
-    /// materializing them and answers its layout's axis over an empty child
-    /// set — matching `LazyContainer::stretch_axis`.
-    fn stretch_axis(&self) -> StretchAxis {
-        self.layout.stretch_axis(&[])
     }
 }
 
@@ -437,7 +423,7 @@ mod tests {
             ViewDimensions::new(Size::zero())
         }
         fn stretch_axis(&self) -> StretchAxis {
-            crate::spacer::spacer().stretch_axis()
+            waterui_core::NativeView::stretch_axis(&crate::spacer::spacer())
         }
         fn priority(&self) -> i32 {
             crate::spacer::Spacer::DEFAULT_LAYOUT_PRIORITY

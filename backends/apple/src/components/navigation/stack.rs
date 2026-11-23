@@ -22,29 +22,31 @@ use core::cell::RefCell;
 
 use cocoa_ui::{Retained, view};
 use waterui::Environment;
+#[cfg(target_os = "ios")]
+use waterui::navigation::ResolvedNavigationView;
 use waterui::navigation::{
     AnyNavigationTransition, CustomNavigationController, NativeNavigationTransition,
-    NavigationController, NavigationStack, NavigationTransaction, resolve_navigation_root,
-};
-use waterui_core::layout::{
-    LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
+    NavigationController, NavigationStackLayout, NavigationTransaction,
 };
 
-use crate::contract::{NativeLeaf, RenderContext};
-use crate::dispatch::Dispatcher;
+use super::Fill;
+use crate::contract::{Held, NativeLeaf, RenderContext};
 use crate::transition::ghost::Ghost;
 use crate::transition::live::{LiveChild, Removal};
 
-/// Installs the stack's claim on the dispatcher.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<NavigationStack<(), ()>>(stack_leaf);
+/// The navigation stack realization.
+pub fn realize_navigation_stack(
+    value: NavigationStackLayout<Held>,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    stack_leaf(value, ctx)
 }
 
 /// The stack's leaf: a `NavigationController` is inserted into the child
 /// environment so `NavigationLink`/path bindings reach this driver, the
 /// deferred root resolves against that environment, and the platform
 /// driver is retained by the leaf's keep-alive.
-fn stack_leaf(stack: NavigationStack<(), ()>, ctx: &RenderContext<'_>) -> NativeLeaf {
+fn stack_leaf(stack: NavigationStackLayout<Held>, ctx: &RenderContext<'_>) -> NativeLeaf {
     let driver = Rc::new(platform::Stack::new(stack.transition_style().clone()));
     let erased: Rc<dyn Sink> = driver.clone();
     let mut env = ctx.env().clone();
@@ -53,23 +55,10 @@ fn stack_leaf(stack: NavigationStack<(), ()>, ctx: &RenderContext<'_>) -> Native
     });
     env.insert(controller);
     driver.prepare(ctx, env.clone());
-    let root = resolve_navigation_root(stack.into_inner(), &env);
+    let root = stack.resolve(&env);
     let mut leaf = driver.build(root);
     leaf.keep(driver);
     leaf
-}
-
-/// What roots a split column's `UINavigationController`: always a
-/// `NavigationView`, either already built or still to be resolved from a
-/// selected destination. A plain view (the empty-selection placeholder)
-/// cannot be expressed, so it can never reach [`resolve_navigation_root`].
-#[cfg(target_os = "ios")]
-pub(super) enum ColumnRoot {
-    /// A navigation page the caller built.
-    Resolved(Box<waterui::navigation::NavigationView>),
-    /// A selected destination, resolved once the column's controller is
-    /// installed in its environment.
-    Destination(waterui_backend_core::AnyView),
 }
 
 /// The split-column leaf: `content` renders as the root page of a fresh
@@ -80,7 +69,7 @@ pub(super) enum ColumnRoot {
 /// toolbar items — applies instead of drawing in-content.
 #[cfg(target_os = "ios")]
 pub(super) fn column_leaf(
-    content: ColumnRoot,
+    root: ResolvedNavigationView<Held>,
     ctx: &RenderContext<'_>,
 ) -> (
     NativeLeaf,
@@ -93,11 +82,7 @@ pub(super) fn column_leaf(
         driver: Rc::downgrade(&erased),
     });
     env.insert(controller);
-    driver.prepare(ctx, env.clone());
-    let root = match content {
-        ColumnRoot::Resolved(root) => *root,
-        ColumnRoot::Destination(destination) => resolve_navigation_root(destination, &env),
-    };
+    driver.prepare(ctx, env);
     let mut leaf = driver.build(root);
     let nav = driver.nav();
     leaf.keep(driver);
@@ -107,7 +92,7 @@ pub(super) fn column_leaf(
 /// What each platform driver answers to transactions.
 pub(super) trait Sink {
     /// Applies one suffix-replacing transaction.
-    fn apply(&self, transaction: NavigationTransaction);
+    fn apply(&self, transaction: NavigationTransaction<Held>);
 }
 
 /// The controller side of the model-to-native handoff: transactions land
@@ -120,7 +105,9 @@ struct Receiver {
 }
 
 impl CustomNavigationController for Receiver {
-    fn apply(&mut self, transaction: NavigationTransaction) {
+    type Slot = Held;
+
+    fn apply(&mut self, transaction: NavigationTransaction<Held>) {
         if let Some(driver) = self.driver.upgrade() {
             driver.apply(transaction);
         }
@@ -183,30 +170,6 @@ fn retire_page(leaf: LiveChild, env: &Environment, ghosts: &Ghosts) {
     }
 }
 
-/// The stack's layout: fills its parent — a navigation container claims
-/// the whole space it is offered.
-#[derive(Debug)]
-struct Fill;
-
-impl SubView for Fill {
-    fn resolve_extent(
-        &self,
-        bounds: Rect,
-        proposal: ProposalSize,
-    ) -> Result<ResolvedExtent, LayoutError> {
-        ResolvedExtent::centred(bounds, self.measure(proposal).size)
-    }
-    fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
-        ViewDimensions::new(Size::new(0.0, 0.0))
-    }
-    fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::Both
-    }
-    fn priority(&self) -> i32 {
-        0
-    }
-}
-
 #[cfg(target_os = "ios")]
 mod platform {
     use alloc::rc::Rc;
@@ -228,13 +191,13 @@ mod platform {
     use waterui::navigation::{
         AnyNavigationTransition, NativeNavigationTransition, NavigationController,
         NavigationDestinationState, NavigationSearch, NavigationTitleDisplayMode,
-        NavigationTransaction, NavigationTransactionId, NavigationView,
+        NavigationTransaction, NavigationTransactionId, ResolvedNavigationView,
     };
     use waterui::reactive::Signal;
     use waterui::resolve::Resolvable;
     use waterui::theme::color::Foreground;
 
-    use crate::contract::{KeepAlive, NativeLeaf, RenderContext, Renderer};
+    use crate::contract::{Held, KeepAlive, NativeLeaf, RenderContext, Renderer};
     use crate::theme::platform_color;
     use crate::transition::live::LiveChild;
 
@@ -311,6 +274,9 @@ mod platform {
         /// Removal transitions in flight — the stack owns the ghosts of
         /// claimed pages a pop replaced, held until `on_complete` fires.
         ghosts: Ghosts,
+        /// Transactions emitted while `stack.resolve` attaches the path
+        /// subscription before `build` mounts the root page at index 0.
+        initial: RefCell<Option<Vec<NavigationTransaction<Held>>>>,
         /// The outstanding transaction, when any.
         pending: RefCell<Option<Pending>>,
         /// The main-thread proof.
@@ -342,6 +308,7 @@ mod platform {
                 transition,
                 pages: RefCell::new(Vec::new()),
                 ghosts: Ghosts::default(),
+                initial: RefCell::new(Some(Vec::new())),
                 pending: RefCell::new(None),
                 mtm: MainThreadMarker::new().expect("views resolve on the main thread"),
                 column: false,
@@ -388,7 +355,7 @@ mod platform {
 
         /// Renders the root page, installs the native controller's handlers
         /// and returns the stack's leaf.
-        pub(super) fn build(self: &Rc<Self>, root: NavigationView) -> NativeLeaf {
+        pub(super) fn build(self: &Rc<Self>, root: ResolvedNavigationView<Held>) -> NativeLeaf {
             let root = self.make_entry(root, Mount::Root);
             let nav = cocoa_ui::uikit::NavigationController::new(self.mtm, &root.controller);
             nav.set_prefers_large_titles(true);
@@ -412,6 +379,10 @@ mod platform {
             });
             self.pages.borrow_mut().push(Rc::new(root));
             let _ = self.nav.set(nav);
+            let initial = self.initial.borrow_mut().take().unwrap_or_default();
+            for transaction in initial {
+                self.apply_transaction(transaction, true);
+            }
             // A `UINavigationController` owns the bar and the scroll insets of
             // the content it hosts — `WuiSafeAreaManaging` in the baseline —
             // so the leaf reports it through a kit host and the window root
@@ -446,13 +417,14 @@ mod platform {
         /// `controller.view` — through `LiveChild`, so a page-root
         /// `.transition(...)` is claimed by the stack (§5.5); `Bar`
         /// chrome applies on `navigationItem` as before.
-        fn make_entry(&self, mut view: NavigationView, mount: Mount) -> Entry {
+        fn make_entry(&self, view: ResolvedNavigationView<Held>, mount: Mount) -> Entry {
             let renderer = self
                 .renderer
                 .get()
                 .expect("`prepare` runs before any callback that reads the stack");
             let ctx = renderer.context();
-            let leaf = ctx.render(core::mem::take(&mut view.content));
+            let (body, mut view) = view.split_content();
+            let leaf = ctx.realize(body);
             let bar = BarState::new(&mut view.bar, &ctx);
             let host = HostView::new(self.mtm, KitRect::ZERO);
             host.set_layout_handler(|host| {
@@ -739,10 +711,7 @@ mod platform {
                 .last()
                 .is_none_or(|entry| entry.state.borrow_mut().attempt_pop(&env))
         }
-    }
-
-    impl Sink for Stack {
-        fn apply(&self, transaction: NavigationTransaction) {
+        fn apply_transaction(&self, transaction: NavigationTransaction<Held>, initial_mount: bool) {
             // A superseded transaction is cancelled; its removed states
             // still hear `popped` — they are off the stack either way.
             if let Some(pending) = self.pending.borrow_mut().take() {
@@ -767,7 +736,7 @@ mod platform {
             let inserted_count = transaction.inserted.len();
             let mut inserted = Vec::new();
             for (index, builder) in transaction.inserted.into_iter().enumerate() {
-                let mount = if index + 1 == inserted_count {
+                let mount = if !initial_mount && index + 1 == inserted_count {
                     Mount::Top
                 } else {
                     Mount::Below
@@ -803,7 +772,8 @@ mod platform {
                 view::set_frame(leaf.view(), frame);
                 retire_page(leaf, self.env(), &self.ghosts);
             }
-            let animated = !claimed
+            let animated = !initial_mount
+                && !claimed
                 && inserted
                     .last()
                     .or_else(|| pages.last())
@@ -815,11 +785,29 @@ mod platform {
                 .get()
                 .expect("the stack is built before any callback that reads it")
                 .set_pages(&controllers, animated);
-            *self.pending.borrow_mut() = Some(Pending {
-                id: transaction.id,
-                expected: pages.len(),
-                removed: removed_states,
-            });
+            if initial_mount {
+                let _ = self
+                    .model
+                    .get()
+                    .expect("`prepare` runs before any callback that reads the stack")
+                    .transition_completed(transaction.id);
+            } else {
+                *self.pending.borrow_mut() = Some(Pending {
+                    id: transaction.id,
+                    expected: pages.len(),
+                    removed: removed_states,
+                });
+            }
+        }
+    }
+
+    impl Sink for Stack {
+        fn apply(&self, transaction: NavigationTransaction<Held>) {
+            if let Some(initial) = self.initial.borrow_mut().as_mut() {
+                initial.push(transaction);
+                return;
+            }
+            self.apply_transaction(transaction, false);
         }
     }
 
@@ -880,12 +868,12 @@ mod platform {
     use waterui::Str;
     use waterui::navigation::{
         AnyNavigationTransition, NativeNavigationTransition, NavigationController,
-        NavigationDestinationState, NavigationTransaction, NavigationView,
+        NavigationDestinationState, NavigationTransaction, ResolvedNavigationView,
     };
     use waterui::reactive::Signal;
     use waterui_core::layout::ProposalSize;
 
-    use crate::contract::{KeepAlive, NativeLeaf, RenderContext, Renderer};
+    use crate::contract::{Held, KeepAlive, NativeLeaf, RenderContext, Renderer};
     use crate::transition::live::LiveChild;
 
     use super::super::bar::{BarItem, BarItemIcon, BarState, search_prompt};
@@ -941,6 +929,9 @@ mod platform {
         /// Removal transitions in flight — the stack owns the ghosts of
         /// claimed pages a pop replaced, held until `on_complete` fires.
         ghosts: Ghosts,
+        /// Transactions emitted while `stack.resolve` attaches the path
+        /// subscription before `build` mounts the root page at index 0.
+        initial: RefCell<Option<Vec<NavigationTransaction<Held>>>>,
         /// The window's toolbar coordinator, while a titled window hosts us.
         toolbar: RefCell<Option<Retained<WindowToolbar>>>,
         /// The search field published for the current top page.
@@ -978,6 +969,7 @@ mod platform {
                 transition,
                 entries: RefCell::new(Vec::new()),
                 ghosts: Ghosts::default(),
+                initial: RefCell::new(Some(Vec::new())),
                 toolbar: RefCell::new(None),
                 search_field: RefCell::new(None),
                 chrome_active: Cell::new(true),
@@ -988,7 +980,8 @@ mod platform {
         }
 
         /// Captures the environment and render capability.
-        pub(super) fn prepare(&self, ctx: &RenderContext<'_>, env: Environment) {
+        pub(super) fn prepare(self: &Rc<Self>, ctx: &RenderContext<'_>, env: Environment) {
+            let _ = self.self_weak.set(Rc::downgrade(self));
             let _ = self.renderer.set(ctx.with_env(&env).renderer());
             let _ = self.model.set(
                 env.get::<NavigationController>()
@@ -1007,7 +1000,7 @@ mod platform {
 
         /// Builds the leaf: root entry pushed, layout/window/hidden
         /// handlers wired.
-        pub(super) fn build(self: &Rc<Self>, root: NavigationView) -> NativeLeaf {
+        pub(super) fn build(self: &Rc<Self>, root: ResolvedNavigationView<Held>) -> NativeLeaf {
             let _ = self.self_weak.set(Rc::downgrade(self));
             // The stack owns its pages' safe-area answer —
             // `WuiSafeAreaManaging` in the baseline — so the window root
@@ -1029,7 +1022,14 @@ mod platform {
             });
             let entry = self.make_entry(root, Mount::Root);
             self.entries.borrow_mut().push(Rc::new(entry));
-            self.place_entries();
+            let initial = self.initial.borrow_mut().take().unwrap_or_default();
+            if initial.is_empty() {
+                self.place_entries();
+            } else {
+                for transaction in initial {
+                    self.apply_transaction(transaction, true);
+                }
+            }
             NativeLeaf::new(&*self.host, Fill)
         }
 
@@ -1037,13 +1037,14 @@ mod platform {
         /// view through `LiveChild`, so a page-root `.transition(...)`
         /// is claimed by the stack (§5.5); bar state and the hidden
         /// watcher republish chrome — `refreshChromeIfTop`.
-        fn make_entry(&self, mut view: NavigationView, mount: Mount) -> Entry {
+        fn make_entry(&self, view: ResolvedNavigationView<Held>, mount: Mount) -> Entry {
             let renderer = self
                 .renderer
                 .get()
                 .expect("`prepare` runs before any callback that reads the stack");
             let ctx = renderer.context();
-            let leaf = ctx.render(core::mem::take(&mut view.content));
+            let (body, mut view) = view.split_content();
+            let leaf = ctx.realize(body);
             let bar = BarState::new(&mut view.bar, &ctx);
             let host = HostView::new(self.mtm, cocoa_ui::geometry::Rect::ZERO);
             let leaf = match mount {
@@ -1128,7 +1129,8 @@ mod platform {
             // A claimed top entry carries its own insertion — the stack's
             // fade is skipped for it (§5.5).
             let claimed_top = top.as_ref().is_some_and(|entry| is_claimed(&entry.leaf));
-            let fade = !claimed_top
+            let fade = previous_top.is_some()
+                && !claimed_top
                 && top
                     .as_ref()
                     .is_some_and(|entry| entry.transition == NativeNavigationTransition::Fade);
@@ -1387,10 +1389,7 @@ mod platform {
                 jobs
             })
         }
-    }
-
-    impl Sink for Stack {
-        fn apply(&self, transaction: NavigationTransaction) {
+        fn apply_transaction(&self, transaction: NavigationTransaction<Held>, initial_mount: bool) {
             let prefix = transaction.retained_prefix.saturating_add(1);
             let mut entries = self.entries.borrow_mut();
             let cut = prefix.min(entries.len());
@@ -1416,7 +1415,7 @@ mod platform {
             }
             let inserted_count = transaction.inserted.len();
             for (index, builder) in transaction.inserted.into_iter().enumerate() {
-                let mount = if index + 1 == inserted_count {
+                let mount = if !initial_mount && index + 1 == inserted_count {
                     Mount::Top
                 } else {
                     Mount::Below
@@ -1435,6 +1434,16 @@ mod platform {
         }
     }
 
+    impl Sink for Stack {
+        fn apply(&self, transaction: NavigationTransaction<Held>) {
+            if let Some(initial) = self.initial.borrow_mut().as_mut() {
+                initial.push(transaction);
+                return;
+            }
+            self.apply_transaction(transaction, false);
+        }
+    }
+
     /// A `BarTitle`/`BarItem` leaf measured at the unspecified proposal —
     /// `sizeThatFits(WuiProposalSize())`.
     fn measure(leaf: &NativeLeaf) -> KitSize {
@@ -1446,5 +1455,102 @@ mod platform {
             })
             .size;
         KitSize::new(f64::from(size.width), f64::from(size.height))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::format;
+    use alloc::rc::Rc;
+    use alloc::vec::Vec;
+    use core::cell::RefCell;
+
+    use waterui::Environment;
+    use waterui::navigation::{
+        IntoNavigationStackLayout as _, NavigationController, NavigationPath, NavigationStack,
+        NavigationTransaction, NavigationView,
+    };
+    use waterui::prelude::text;
+
+    use super::{Held, Receiver, Sink};
+
+    struct TestSink {
+        initial: RefCell<Option<Vec<NavigationTransaction<Held>>>>,
+        applied: RefCell<Vec<(bool, usize, usize)>>,
+    }
+
+    impl TestSink {
+        const fn new() -> Self {
+            Self {
+                initial: RefCell::new(Some(Vec::new())),
+                applied: RefCell::new(Vec::new()),
+            }
+        }
+
+        fn finish_root_mount(&self) {
+            let queued = self.initial.borrow_mut().take().unwrap_or_default();
+            for transaction in queued {
+                self.record(&transaction, true);
+            }
+        }
+
+        fn record(&self, transaction: &NavigationTransaction<Held>, initial_mount: bool) {
+            self.applied.borrow_mut().push((
+                initial_mount,
+                transaction.retained_prefix,
+                transaction.inserted.len(),
+            ));
+        }
+    }
+
+    impl Sink for TestSink {
+        fn apply(&self, transaction: NavigationTransaction<Held>) {
+            if let Some(initial) = self.initial.borrow_mut().as_mut() {
+                initial.push(transaction);
+                return;
+            }
+            self.record(&transaction, false);
+        }
+    }
+
+    #[test]
+    fn prepopulated_navigation_path_defers_initial_transaction_until_root_mounts() {
+        let sink = Rc::new(TestSink::new());
+        let erased: Rc<dyn Sink> = sink.clone();
+        let mut env = Environment::new();
+        env.insert(NavigationController::new(Receiver {
+            driver: Rc::downgrade(&erased),
+        }));
+
+        let path = NavigationPath::<i32>::new();
+        path.push(1_i32);
+        path.push(2_i32);
+
+        let stack =
+            NavigationStack::with_path(path.clone(), NavigationView::new("Root", text("Root")))
+                .destination(|route: i32| {
+                    NavigationView::new(format!("Page {route}"), text(format!("Page {route}")))
+                })
+                .into_layout::<Held>();
+
+        let _root = stack.resolve(&env);
+        assert!(
+            sink.applied.borrow().is_empty(),
+            "initial path transaction stays buffered until the root entry mounts"
+        );
+
+        sink.finish_root_mount();
+        assert_eq!(
+            *sink.applied.borrow(),
+            alloc::vec![(true, 0, 2)],
+            "draining after root mount applies the two pre-populated pages as an initial mount"
+        );
+
+        path.push(3_i32);
+        assert_eq!(
+            *sink.applied.borrow(),
+            alloc::vec![(true, 0, 2), (false, 2, 1)],
+            "subsequent path mutations apply immediately against the mounted stack"
+        );
     }
 }

@@ -29,6 +29,7 @@ on:
   # the whole gate twice for one commit.
   push:
     branches: [main]
+  merge_group:
   pull_request:
     branches: [main]
     # No `edited`: a run on the same commit replaces the one before it in
@@ -36,13 +37,13 @@ on:
     # edit would hide the source run's results and block the merge (#3825).
     types: [opened, reopened, synchronize]
 
-# A pull request cancels its superseded run. A `main` push queues instead:
-# its lint job is the cache writer for that ref, and a writer cancelled
-# mid-sweep or mid-save leaves no archive for the runs after it (#2338).
-# The group still drops a queued run that a newer push supersedes.
+# A pull request or merge group cancels its superseded run. A `main` push
+# queues instead: its lint job is the cache writer for that ref, and a writer
+# cancelled mid-sweep or mid-save leaves no archive for the runs after it
+# (#2338). The group still drops a queued run that a newer push supersedes.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -86,8 +87,8 @@ jobs:
       - run: echo "checking code changes"
 
   # Which checks this change can reach. `code` is any changed file that is
-  # not prose or repository metadata; `deps` is what the audit, license and
-  # unused-dependency checks read; `android` is the CLI's Android paths and
+  # not prose or repository metadata; `deps` is what the audit and license
+  # checks read; `android` is the CLI's Android paths and
   # the Hydrolysis Android host, the only changes that can break the
   # create/build/package cycle the `android-package` job runs. A workflow
   # change runs the whole gate, because a
@@ -119,7 +120,7 @@ jobs:
       - uses: dorny/paths-filter@v3
         id: filter
         with:
-          base: ${{ github.ref_name }}
+          base: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.ref_name }}
           filters: |
             deps:
               - "**/Cargo.toml"
@@ -160,7 +161,7 @@ jobs:
         id: android-metadata
         if: steps.filter.outputs.android_metadata == 'true'
         env:
-          BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
+          BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.before }}
           EVENT: ${{ github.event_name }}
         run: |
           if [ "$EVENT" = pull_request ]; then
@@ -170,7 +171,7 @@ jobs:
       - uses: dorny/paths-filter@v3
         id: prose
         with:
-          base: ${{ github.ref_name }}
+          base: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.ref_name }}
           predicate-quantifier: every
           filters: |
             code:
@@ -202,7 +203,7 @@ jobs:
     if: needs.bump.result == 'success'
     uses: ./.github/workflows/affected.yml
     with:
-      base: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
+      base: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.before }}
 
   # The release scripts derive the certified `framework.json` from the root
   # manifest; their tests pin that derivation to the tree, so they run whenever
@@ -262,11 +263,11 @@ jobs:
         with:
           name: ci-scripts
 
-  # Security audit, license check and unused-dependency check are each a cheap
-  # metadata pass over the dependency graph, but were previously three separate
-  # jobs that each paid full runner startup, checkout and cache-restore cost.
-  # They share nothing that isolates them from each other, so one job running
-  # them sequentially pays that fixed cost once instead of three times.
+  # Security audit and license check are each a cheap metadata pass over the
+  # dependency graph, but separate jobs would each pay full runner startup,
+  # checkout and cache-restore cost. They share nothing that isolates them
+  # from each other, so one job running them sequentially pays that fixed
+  # cost once.
   hygiene:
     name: Hygiene
     needs: [bump, changes]
@@ -418,10 +419,6 @@ jobs:
           cache: "false"
       - name: Restore Cargo sources
         uses: ./.github/actions/cargo-sources
-      # The CLI links libudev (serialport) on the host.
-      - uses: ./.github/actions/setup-linux-deps
-        with:
-          runtime-fonts: "false"
       - uses: ./.github/actions/install-tool
         with:
           tool: cargo-nextest@0.9.145
@@ -466,16 +463,22 @@ jobs:
       contents: read
       actions: read
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         include:
-          - profile: debug
+          - profile: build
             build_app: true
+            package_app: false
+            package_flags: ""
+          - profile: debug
+            build_app: false
+            package_app: true
             package_flags: --debug
           - profile: release
             build_app: false
+            package_app: true
             package_flags: --release --unsigned
     steps:
       - uses: actions/checkout@v4
@@ -484,7 +487,7 @@ jobs:
       # evict their tarballs.
       - uses: ./.github/actions/setup-rust
         with:
-          targets: aarch64-linux-android
+          targets: aarch64-linux-android,wasm32-unknown-unknown
           cache: "false"
       # Reads the shared `cargo-sources` archive owned by this OS's single
       # writer job; read-only lanes never save, so they cannot evict caches.
@@ -497,13 +500,34 @@ jobs:
         with:
           distribution: temurin
           java-version: "21"
+      - uses: gradle/actions/setup-gradle@v4
+        if: matrix.package_app
+        with:
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
       - uses: ./.github/actions/setup-android-ndk
+        with:
+          spirv-tools: "true"
       # `sdkmanager` is the tool doctor's own remedy text names.
       - uses: ./.github/actions/install-android-platform
-      # The CLI links libudev (serialport) on the host (needed when falling back to building CLI).
+      # Only the packages `LinuxSystemToolchain` probes inside `water doctor`
+      # on Ubuntu — host CLI and Android builds do not use nasm, libva,
+      # PipeWire, EGL, or libudev, and matching doctor's dpkg-query list avoids
+      # a second uncached `apt-get` pass inside `doctor --fix`.
       - uses: ./.github/actions/setup-linux-deps
         with:
+          packages: build-essential pkg-config libgtk-4-dev libpango1.0-dev libwayland-dev wayland-protocols libasound2-dev libgbm-dev libxcb1-dev libclang-dev libfontconfig-dev ca-certificates
           runtime-fonts: "false"
+      # Prebuilt helper binaries so `water doctor --fix` verifies their
+      # presence without compiling host tools from source on every matrix leg;
+      # cold helper repair is exercised by nightly `cli-e2e`.
+      - uses: ./.github/actions/install-tool
+        with:
+          tool: cargo-nextest@0.9.145
+          path: ~/.cargo/bin/cargo-nextest*
+      - uses: ./.github/actions/install-tool
+        with:
+          tool: wasm-pack@0.15.1
+          path: ~/.cargo/bin/wasm-pack*
       - name: Download water CLI artifact from this run
         id: run-cli
         if: needs.cli.result == 'success'
@@ -540,6 +564,7 @@ jobs:
         env:
           WATER_CARGO_TIMINGS: "1"
           BUILD_APP: ${{ matrix.build_app }}
+          PACKAGE_APP: ${{ matrix.package_app }}
           PACKAGE_FLAGS: ${{ matrix.package_flags }}
         run: |
           set -euo pipefail
@@ -558,12 +583,15 @@ jobs:
           if [ "${BUILD_APP}" = "true" ]; then
             water build --platform android --yes 2>&1 | tee ../e2e-logs/build.log
           fi
-          read -ra flags <<< "${PACKAGE_FLAGS}"
-          water package --platform android --arch arm64 "${flags[@]}" --yes 2>&1 | tee ../e2e-logs/package.log
-          grep -q 'Packaged at' ../e2e-logs/package.log
+          if [ "${PACKAGE_APP}" = "true" ]; then
+            read -ra flags <<< "${PACKAGE_FLAGS}"
+            water package --platform android --arch arm64 "${flags[@]}" --yes 2>&1 | tee ../e2e-logs/package.log
+            grep -q 'Packaged at' ../e2e-logs/package.log
+          fi
       # The APK path comes from the `Packaged at <path>` line (anstream
       # strips the colour codes off a piped stderr).
       - name: Collect the APK
+        if: matrix.package_app
         env:
           PROFILE: ${{ matrix.profile }}
         run: |
@@ -573,6 +601,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/apk-${PROFILE}"
           cp "$apk" "$RUNNER_TEMP/apk-${PROFILE}/"
       - uses: actions/upload-artifact@v4
+        if: matrix.package_app
         with:
           name: android-package-apk-${{ matrix.profile }}
           path: ${{ runner.temp }}/apk-${{ matrix.profile }}
@@ -674,7 +703,7 @@ jobs:
   # certified `nightly-*` prerelease on `main`.
   nightly-healthy:
     name: Nightly healthy
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

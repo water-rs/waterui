@@ -1,6 +1,6 @@
 //! Typography and bidirectional-layout showcase for `WaterUI`.
 
-use waterui::app::App;
+use waterui::app::{App, Windows};
 use waterui::env::with;
 use waterui::locale::{Locale, locales};
 use waterui::prelude::theme_color::SurfaceVariant;
@@ -121,7 +121,7 @@ pub fn typography_and_rtl() -> impl View {
 }
 
 /// Builds the example app, showing the typography and bidirectional layout demo.
-pub fn app(env: Environment) -> App {
+pub fn app(env: Environment) -> App<impl Windows> {
     App::new(typography_and_rtl, env)
 }
 

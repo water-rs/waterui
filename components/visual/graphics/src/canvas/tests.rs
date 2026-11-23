@@ -554,6 +554,7 @@ fn size_follows_the_box() {
     assert_eq!(seen.get(), Size::new(100.0, 50.0));
 }
 
+#[cfg(feature = "text")]
 mod text {
     use alloc::rc::Rc;
     use core::cell::{Cell, RefCell};

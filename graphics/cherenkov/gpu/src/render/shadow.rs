@@ -5,7 +5,7 @@ use kurbo::Affine;
 use wgpu::util::DeviceExt;
 
 /// The local-to-device covariance and spread of a captured silhouette.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub struct Parameters {
     pub transform: Affine,
     pub sigma: f64,

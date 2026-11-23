@@ -7,14 +7,17 @@
 //! owned `FnOnce(&mut B::Renderer) + Send` op that travels in the commit
 //! with the layer ops, in order.
 
+#[cfg(target_arch = "wasm32")]
+use core::future::Future;
 use std::borrow::Cow;
 
-use crate::ShaderId;
 use crate::backend::Backend;
 use crate::error::ResourceError;
 use crate::image::Format;
+use crate::{ContentShaderSource, ShaderId};
 use cherenkov_record::{
-    BackdropId, BackdropSampling, BackdropShaderId, GpuInstalls, LayerId, SurfaceId,
+    BackdropId, BackdropSampling, BackdropShaderId, ContentShaderId, GpuInstalls, LayerId,
+    SurfaceId,
 };
 
 use crate::message::ProducerId;
@@ -136,6 +139,13 @@ pub trait GpuContent: Backend + GpuInstalls {
         producer: ProducerId,
         frame: Self::Frame,
     ) -> Vec<(SurfaceId, LayerId)>;
+    /// Updates or clears a producer's non-redrawing source cadence vote
+    /// (`FrameOutput::set_source_rate` / `FrameSink::set_source_rate`).
+    fn set_source_rate(
+        r: &mut Self::Renderer,
+        producer: ProducerId,
+        rate: Option<crate::FrameRate>,
+    );
     /// Retires `producer`, the last `GpuProducer` handle having dropped:
     /// every binding releases it and its device resources — current frame
     /// and frame ring — are freed.
@@ -275,6 +285,45 @@ pub trait BackdropShaders: Backdrop {
 
     /// Unregisters a backdrop effect shader no layer samples any more.
     fn remove_backdrop_shader(r: &mut Self::Renderer, id: BackdropShaderId);
+}
+
+/// The backend compiles per-layer content effect shaders
+/// (`Engine::content_shader`).
+pub trait ContentShaders: Backend {
+    /// Validates the source on the caller thread, before anything is queued.
+    ///
+    /// # Errors
+    /// [`ResourceError::Shader`] when the source fails validation.
+    fn validate_content_shader(source: &ContentShaderSource) -> Result<(), ResourceError>;
+
+    /// Registers a content effect shader
+    /// [`ContentShaders::validate_content_shader`] accepted, on the render
+    /// thread.
+    ///
+    /// # Errors
+    /// [`ResourceError::Shader`] when pipeline creation fails.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn add_content_shader(
+        r: &mut Self::Renderer,
+        id: ContentShaderId,
+        source: ContentShaderSource,
+    ) -> Result<(), ResourceError>;
+
+    /// Registers a content effect shader
+    /// [`ContentShaders::validate_content_shader`] accepted, on the owning JS
+    /// thread.
+    ///
+    /// # Errors
+    /// [`ResourceError::Shader`] when pipeline creation fails.
+    #[cfg(target_arch = "wasm32")]
+    fn add_content_shader(
+        r: &mut Self::Renderer,
+        id: ContentShaderId,
+        source: ContentShaderSource,
+    ) -> impl Future<Output = Result<(), ResourceError>>;
+
+    /// Unregisters a content effect shader no layer references any more.
+    fn remove_content_shader(r: &mut Self::Renderer, id: ContentShaderId);
 }
 
 /// The backend produces HDR output.

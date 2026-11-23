@@ -35,7 +35,7 @@ use crate::size::LayoutSize;
 use crate::style::{BlendMode, BlendSpace, FilterId};
 use crate::target::{BackdropSampling, GpuInstalls, ProjectiveLayers, Queue, Target};
 use crate::tree::RunningTracks;
-use crate::{BackdropSample, Picture, WorkingColor};
+use crate::{BackdropSample, ContentShaderEffect, Picture, WorkingColor};
 
 /// Declares [`PropKind`] and its `ALL` list from one variant list, so
 /// the list a layer removal walks can never miss a kind.
@@ -72,6 +72,7 @@ prop_kinds![
     Opacity,
     ScrollOffset,
     Clip,
+    ContentEffect,
     Backdrop,
     LayoutSize,
 ];
@@ -1940,6 +1941,40 @@ impl<T: Target> LayerEdit<T> {
         self
     }
 
+    /// Sets the content effect shader applied to this layer's isolated
+    /// subtree.
+    ///
+    /// The effect is a constant or a signal. A bound signal keeps updating
+    /// the layer with no further transactions; a change carrying an
+    /// `Animation` moves the shader's uniforms lane by lane.
+    pub fn content_effect(&mut self, effect: impl Into<Live<ContentShaderEffect>>) -> &mut Self {
+        let target = Shared::bind(
+            &self.shared,
+            self.layer,
+            PropKind::ContentEffect,
+            effect.into(),
+            |layer, effect, animation, metadata| {
+                LayerOp::ContentEffect(layer, Some(Retarget::of(effect, animation, metadata)))
+            },
+        );
+        self.queue(Op::Layer(LayerOp::ContentEffect(
+            self.layer,
+            Some(Retarget {
+                target,
+                animation: self.default_animation,
+                start: self.default_start,
+            }),
+        )));
+        self
+    }
+
+    /// Clears the layer's content effect shader and any bound subscription.
+    pub fn clear_content_effect(&mut self) -> &mut Self {
+        Shared::unbind(&self.shared, self.layer, PropKind::ContentEffect);
+        self.queue(Op::Layer(LayerOp::ContentEffect(self.layer, None)));
+        self
+    }
+
     /// Sets the content.
     pub fn content(&mut self, content: impl Into<LayerContent<T>>) -> &mut Self {
         self.queue_content(content.into());
@@ -2831,8 +2866,7 @@ mod tests {
         let ops = shared
             .borrow_mut()
             .take_changes(crate::Instant::now())
-            .map(|changes| changes.ops)
-            .unwrap_or_default();
+            .map_or_default(|changes| changes.ops);
         assert!(
             matches!(
                 ops.as_slice(),
@@ -3216,8 +3250,7 @@ mod tests {
         let ops = shared
             .borrow_mut()
             .take_changes(crate::Instant::now())
-            .map(|changes| changes.ops)
-            .unwrap_or_default();
+            .map_or_default(|changes| changes.ops);
         assert!(
             ops.iter().any(|op| matches!(
                 op,
@@ -3239,14 +3272,14 @@ mod tests {
         struct PanicGuardSignal;
         impl Signal for PanicGuardSignal {
             type Output = Rect;
-            type Guard = nami_core::watcher::OnDrop<fn()>;
+            type Guard = core::mem::DropGuard<(), fn(())>;
 
             fn snapshot(&self) -> Rect {
                 Rect::new(0.0, 0.0, 1.0, 1.0)
             }
 
             fn watch(&self, _: impl Fn(Context<Rect>) + 'static) -> Self::Guard {
-                nami_core::watcher::OnDrop::new(guard_panics)
+                core::mem::DropGuard::new((), (|()| guard_panics()) as fn(()))
             }
         }
 
@@ -3408,8 +3441,7 @@ mod tests {
         let ops = shared
             .borrow_mut()
             .take_changes(crate::Instant::now())
-            .map(|changes| changes.ops)
-            .unwrap_or_default();
+            .map_or_default(|changes| changes.ops);
         assert!(
             ops.iter().any(|op| matches!(
                 op,

@@ -590,7 +590,15 @@ pub fn bitmap_rep_for_caching_display(
 /// Draws `view`'s tree into its cached bitmap rep.
 #[cfg(target_os = "macos")]
 pub fn cache_display(view: &PlatformView, rep: &objc2_app_kit::NSBitmapImageRep) {
-    view.cacheDisplayInRect_toBitmapImageRep(view.bounds(), rep);
+    use crate::bitmap::without_sdf_layers;
+    let bounds = view.bounds();
+    if let Some(layer) = view.layer() {
+        without_sdf_layers(&layer, || {
+            view.cacheDisplayInRect_toBitmapImageRep(bounds, rep);
+        });
+    } else {
+        view.cacheDisplayInRect_toBitmapImageRep(bounds, rep);
+    }
 }
 
 /// The display-scale factor `view`'s window renders at, `1.0` detached.

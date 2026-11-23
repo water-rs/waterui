@@ -37,8 +37,7 @@ use waterui_core::layout::{
 };
 
 use crate::components::button_chrome;
-use crate::contract::{Mounted, NativeLeaf};
-use crate::dispatch::Dispatcher;
+use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;
 
 #[cfg(target_os = "macos")]
@@ -59,6 +58,7 @@ mod platform {
     pub(super) type SharedProgress = Progress;
 }
 
+use crate::contract::RenderContext;
 use cocoa_ui::progress::ProgressVariant;
 use platform::{HostView, Progress, SharedProgress};
 
@@ -506,89 +506,86 @@ fn tint_tick(state: &Weak<RefCell<ProgressState>>, host: &PlatformView) {
     schedule_tint_tick(Rc::downgrade(&state), cocoa_ui::view::retain_base(host));
 }
 
-/// Installs the `progress` handler on the dispatcher: `Native<ProgressConfig>`
+/// The `progress` realization: `Native<ProgressConfig>`
 /// maps to a container view with the platform indicator and the label pair
 /// `WuiProgress` stacks around it.
-pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<ProgressConfig>(|config, ctx| {
-        let mtm = ctx.mtm();
-        let host = HostView::new(mtm, Rect::ZERO);
-        let host_view: &PlatformView = &host;
+pub fn realize_progress_config(
+    config: ProgressConfig<Held>,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    let mtm = ctx.mtm();
+    let host = HostView::new(mtm, Rect::ZERO);
+    let host_view: &PlatformView = &host;
 
-        let variant = if is_round(config.style()) {
-            ProgressVariant::Circular
-        } else {
-            ProgressVariant::Linear
-        };
-        let progress = Progress::new(mtm);
-        progress.set_variant(variant);
-        // `SwiftUI` draws a circular indicator at the small control size on
-        // macOS; the kit leaves the size to the backend.
-        #[cfg(target_os = "macos")]
-        if variant == ProgressVariant::Circular {
-            progress.set_control_size(cocoa_ui::slider::ControlSize::Small);
-        }
-        cocoa_ui::view::add_subview(host_view, as_view(&progress));
+    let variant = if is_round(config.style()) {
+        ProgressVariant::Circular
+    } else {
+        ProgressVariant::Linear
+    };
+    let progress = Progress::new(mtm);
+    progress.set_variant(variant);
+    // `SwiftUI` draws a circular indicator at the small control size on
+    // macOS; the kit leaves the size to the backend.
+    #[cfg(target_os = "macos")]
+    if variant == ProgressVariant::Circular {
+        progress.set_control_size(cocoa_ui::slider::ControlSize::Small);
+    }
+    cocoa_ui::view::add_subview(host_view, as_view(&progress));
 
-        let value = config.value().snapshot();
-        let (label, value_label, value_signal, _, four_color) = config.into_parts();
-        let children = Children {
-            label: ctx
-                .render(waterui_backend_core::AnyView::new(label))
-                .mount(host_view),
-            value_label: ctx
-                .render(waterui_backend_core::AnyView::new(value_label))
-                .mount(host_view),
-        };
+    let value = config.value().snapshot();
+    let (label, value_label, value_signal, _, four_color) = config.into_parts();
+    let children = Children {
+        label: ctx.realize(label).mount(host_view),
+        value_label: ctx.realize(value_label).mount(host_view),
+    };
 
-        let state = Rc::new(RefCell::new(ProgressState {
-            progress,
-            variant,
-            children: Some(children),
-            value,
-            palette: Vec::new(),
-            tint_index: 0,
-            #[cfg(target_os = "ios")]
-            cycling: false,
-            track: None,
-            #[cfg(target_os = "ios")]
-            four_color,
-        }));
+    let state = Rc::new(RefCell::new(ProgressState {
+        progress,
+        variant,
+        children: Some(children),
+        value,
+        palette: Vec::new(),
+        tint_index: 0,
+        #[cfg(target_os = "ios")]
+        cycling: false,
+        track: None,
+        #[cfg(target_os = "ios")]
+        four_color,
+    }));
 
-        host.set_layout_handler({
-            let state = Rc::clone(&state);
-            move |view| layout_children(proposal::response(view), &state.borrow())
-        });
-
-        let mut leaf = NativeLeaf::new(
-            host_view,
-            ProgressSubView {
-                state: Rc::clone(&state),
-            },
-        );
-
-        // Signal → indicator: a value change selects determinate or
-        // indeterminate drawing and refreshes the value label's visibility.
-        leaf.watch(&value_signal, {
-            let state = Rc::clone(&state);
-            let host = cocoa_ui::view::retain_base(host_view);
-            move |change| {
-                let animated = should_animate(change.metadata());
-                apply_value(&state, &host, *change.value(), animated);
-            }
-        });
-
-        // Theme → tint: the accent is the indicator's color; the border is
-        // the bar's track. `four_color` widens the palette with the
-        // container and tertiary slots the cycle steps through.
-        install_tint(&mut leaf, &state, ctx.env(), four_color);
-
-        // The initial value applies without animation.
-        apply_value(&state, host_view, value, false);
-
-        leaf.keep(state);
-        leaf
+    host.set_layout_handler({
+        let state = Rc::clone(&state);
+        move |view| layout_children(proposal::response(view), &state.borrow())
     });
+
+    let mut leaf = NativeLeaf::new(
+        host_view,
+        ProgressSubView {
+            state: Rc::clone(&state),
+        },
+    );
+
+    // Signal → indicator: a value change selects determinate or
+    // indeterminate drawing and refreshes the value label's visibility.
+    leaf.watch(&value_signal, {
+        let state = Rc::clone(&state);
+        let host = cocoa_ui::view::retain_base(host_view);
+        move |change| {
+            let animated = should_animate(change.metadata());
+            apply_value(&state, &host, *change.value(), animated);
+        }
+    });
+
+    // Theme → tint: the accent is the indicator's color; the border is
+    // the bar's track. `four_color` widens the palette with the
+    // container and tertiary slots the cycle steps through.
+    install_tint(&mut leaf, &state, ctx.env(), four_color);
+
+    // The initial value applies without animation.
+    apply_value(&state, host_view, value, false);
+
+    leaf.keep(state);
+    leaf
 }
 
 /// Subscribes the theme signals the tint and track follow.

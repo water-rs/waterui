@@ -492,6 +492,7 @@ mod scroll_animation {
     use super::{mtm, scene_window};
     use waterui::animation::Animation;
     use waterui::component::list::ListItem;
+    use waterui::component::text::Text;
     use waterui::layout::scroll::ScrollController;
     use waterui::reactive::binding;
     use waterui_apple::native_test_support::{
@@ -592,7 +593,7 @@ mod scroll_animation {
     fn a_default_list_request_lands_after_a_native_animation() {
         let mtm = mtm();
         let controller = ScrollController::new(0usize);
-        let (leaf, table) = row_list(vec![row_item as fn() -> ListItem; ROWS], &controller);
+        let (leaf, table) = row_list(vec![row_item as fn() -> ListItem<Text>; ROWS], &controller);
         let window = scene_window(mtm, leaf.view());
         table.layout_if_needed();
         let offset = || Point::from(table.contentOffset());
@@ -616,7 +617,7 @@ mod scroll_animation {
         let mtm = mtm();
         let controller = ScrollController::new(0usize);
         let (leaf, table) = row_list(
-            vec![row_item as fn() -> ListItem; APPROACH_LIST_ROWS],
+            vec![row_item as fn() -> ListItem<Text>; APPROACH_LIST_ROWS],
             &controller,
         );
         let window = scene_window(mtm, leaf.view());
@@ -891,7 +892,7 @@ mod key_commands {
                     fired.set(label);
                 });
             (
-                Menu::new(mtm, "", None, false, &[MenuElement::Action(action)]),
+                Menu::new(mtm, "", None, None, false, &[MenuElement::Action(action)]),
                 key_commands,
             )
         };
@@ -1498,14 +1499,14 @@ mod navigation {
     use cocoa_ui::{PlatformView, Rect, Retained, view};
     use waterui::background::Material;
     use waterui::component::{ButtonStyle, button, label};
-    use waterui::icon::SystemIcon;
     use waterui::navigation::{
         NavigationSplitView, NavigationToolbar, NavigationToolbarItem, NavigationToolbarPlacement,
-        NavigationView, ToolbarItemIcon,
+        NavigationView,
     };
     use waterui::prelude::text;
     use waterui::reactive::binding;
     use waterui::{Str, ViewExt as _};
+    use waterui_apple::SfSymbol;
     use waterui_apple::native_test_support::{
         MAIN_QUEUE_DEADLINE, content_frame, pump_main_until, realize_into_shown_scene, render,
         render_environment,
@@ -1561,25 +1562,26 @@ mod navigation {
             &selection,
             || text("sidebar"),
             move |_id: i32| {
-                let mut item = NavigationToolbarItem::new(
+                let item = NavigationToolbarItem::new(
                     NavigationToolbarPlacement::PrimaryAction,
                     button("").style(ButtonStyle::Plain),
-                );
-                item.set_icon(Some(ToolbarItemIcon::System(SystemIcon::new("plus"))));
+                )
+                .icon(SfSymbol::PLUS);
                 NavigationView::new("Today", text("detail").background(Material::Regular))
                     .searchable(&query, "Search reminders")
-                    .navigation_toolbar(NavigationToolbar::new(vec![
-                        item,
-                        NavigationToolbarItem::new(
-                            NavigationToolbarPlacement::PrimaryAction,
-                            button(label("").icon(waterui::svg::Svg::from_path(
-                                "M19,13H13V19H11V13H5V11H11V5H13V11H19V13Z",
-                                24.0,
-                                24.0,
-                            )))
-                            .style(ButtonStyle::Borderless),
-                        ),
-                    ]))
+                    .navigation_toolbar(
+                        NavigationToolbar::default()
+                            .item(item)
+                            .item(NavigationToolbarItem::new(
+                                NavigationToolbarPlacement::PrimaryAction,
+                                button(label("").icon(waterui::svg::Svg::from_path(
+                                    "M19,13H13V19H11V13H5V11H11V5H13V11H19V13Z",
+                                    24.0,
+                                    24.0,
+                                )))
+                                .style(ButtonStyle::Borderless),
+                            )),
+                    )
             },
         )
     }
@@ -1823,7 +1825,7 @@ mod navigation {
             waterui::color::Color::srgb(255, 255, 255),
         ));
         let scene =
-            realize_into_shown_scene(mtm, &declaration, &render_environment(), window.clone());
+            realize_into_shown_scene(mtm, declaration, &render_environment(), window.clone());
 
         // The invariant itself: before any run-loop turn, the leaf already
         // holds the frame the root host resolves for it.
