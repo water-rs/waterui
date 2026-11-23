@@ -2765,20 +2765,25 @@ mod tests {
 
     #[test]
     fn the_hydrolysis_manifest_gates_optional_glass_theme_feature() {
+        use std::fs;
+        use std::path::Path;
+
+        use tempfile::tempdir;
+        use toml::{Table, Value};
+
+        use crate::templates::hydrolysis::rendered_outputs_with_painters;
+
         let base_ctx = project_ctx();
-        let without_glass = crate::templates::hydrolysis::rendered_outputs_with_painters(
-            &base_ctx,
-            "waterui-test-hydrolysis",
-        )
-        .expect("hydrolysis outputs render without glass");
+        let without_glass = rendered_outputs_with_painters(&base_ctx, "waterui-test-hydrolysis")
+            .expect("hydrolysis outputs render without glass");
         let base_cargo = without_glass
             .into_iter()
             .find_map(|(path, content)| {
-                (path == std::path::Path::new("Cargo.toml"))
+                (path == Path::new("Cargo.toml"))
                     .then(|| String::from_utf8(content).expect("Cargo.toml UTF-8"))
             })
             .expect("Cargo.toml exists");
-        let base_manifest = base_cargo.parse::<toml::Table>().expect("manifest parses");
+        let base_manifest = base_cargo.parse::<Table>().expect("manifest parses");
         assert!(
             base_manifest["features"]
                 .get("waterui-preview-glass")
@@ -2786,35 +2791,32 @@ mod tests {
             "older frameworks without hydrolysis-glass must omit waterui-preview-glass"
         );
 
-        let temp = tempfile::tempdir().expect("tempdir");
+        let temp = tempdir().expect("tempdir");
         let glass_crate = temp.path().join("glass-crate");
-        std::fs::create_dir_all(&glass_crate).expect("create glass crate dir");
-        std::fs::write(
+        fs::create_dir_all(&glass_crate).expect("create glass crate dir");
+        fs::write(
             glass_crate.join("Cargo.toml"),
             "[package]\nname = \"hydrolysis-glass\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
         )
         .expect("write local glass manifest");
         let glass_ctx = base_ctx.with_project_root_path(glass_crate);
-        let with_glass = crate::templates::hydrolysis::rendered_outputs_with_painters(
-            &glass_ctx,
-            "waterui-test-hydrolysis",
-        )
-        .expect("hydrolysis outputs render with local glass");
+        let with_glass = rendered_outputs_with_painters(&glass_ctx, "waterui-test-hydrolysis")
+            .expect("hydrolysis outputs render with local glass");
         let glass_cargo = with_glass
             .iter()
             .find_map(|(path, content)| {
-                (path == std::path::Path::new("Cargo.toml"))
+                (path == Path::new("Cargo.toml"))
                     .then(|| String::from_utf8(content.clone()).expect("Cargo.toml UTF-8"))
             })
             .expect("Cargo.toml exists");
-        let glass_manifest = glass_cargo.parse::<toml::Table>().expect("manifest parses");
+        let glass_manifest = glass_cargo.parse::<Table>().expect("manifest parses");
         let feature_list = glass_manifest["features"]["waterui-preview-glass"]
             .as_array()
             .expect("waterui-preview-glass feature must be declared");
         assert_eq!(
             feature_list
                 .iter()
-                .filter_map(toml::Value::as_str)
+                .filter_map(Value::as_str)
                 .collect::<Vec<_>>(),
             ["dep:hydrolysis-glass"]
         );
@@ -2827,7 +2829,7 @@ mod tests {
         let preview_runtime = with_glass
             .iter()
             .find_map(|(path, content)| {
-                (path == std::path::Path::new("src/preview_runtime.rs"))
+                (path == Path::new("src/preview_runtime.rs"))
                     .then(|| String::from_utf8(content.clone()).expect("preview_runtime UTF-8"))
             })
             .expect("preview_runtime.rs exists");
@@ -7004,11 +7006,15 @@ pub mod hydrolysis {
     }
 
     fn local_project_glass_path(project_root: &Path) -> io::Result<Option<PathBuf>> {
+        use cargo_toml::Dependency;
+
+        use super::parse_cargo_manifest;
+
         let manifest_path = project_root.join("Cargo.toml");
         if !manifest_path.is_file() {
             return Ok(None);
         }
-        let manifest = super::parse_cargo_manifest(&manifest_path)
+        let manifest = parse_cargo_manifest(&manifest_path)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         if manifest
             .package
@@ -7017,8 +7023,7 @@ pub mod hydrolysis {
         {
             return Ok(Some(project_root.to_path_buf()));
         }
-        if let Some(cargo_toml::Dependency::Detailed(detail)) =
-            manifest.dependencies.get("hydrolysis-glass")
+        if let Some(Dependency::Detailed(detail)) = manifest.dependencies.get("hydrolysis-glass")
             && let Some(path) = detail.path.as_deref()
         {
             return Ok(Some(project_root.join(path)));

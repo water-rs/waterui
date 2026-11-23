@@ -44,8 +44,8 @@ use crate::android::adb::{Adb, AdbCommandError, recent_crash_log};
 use crate::android::device::{AndroidAbiProvider as _, AndroidTarget};
 use crate::hydrolysis::android::{self as hydrolysis_android, PREVIEW_HOST_PACKAGE};
 use crate::preview::hydrolysis::{
-    HydrolysisPreviewRequest, HydrolysisPreviewScenario, scenario_frame_path,
-    write_preview_bindings,
+    HydrolysisPreviewRequest, HydrolysisPreviewScenario, HydrolysisPreviewTheme,
+    ensure_glass_theme_available, scenario_frame_path, write_preview_bindings,
 };
 use crate::preview::run::{RUN_CONFIG_FILE_NAME, run_config_json};
 use crate::project_model::water_dir;
@@ -125,15 +125,8 @@ pub async fn render_preview_with_hydrolysis_android(
 ) -> Result<()> {
     let host = request.host;
     let project = crate::hydrolysis::backend::open_ready(host, request.project_path).await?;
-    if request.theme == crate::preview::HydrolysisPreviewTheme::Glass {
-        let framework = project.resolved_framework().await?;
-        framework.require_distributable("hydrolysis-glass")?;
-        if !framework.has_scaffold("hydrolysis-glass") {
-            eyre::bail!(
-                "the selected framework does not declare `hydrolysis-glass` scaffold metadata; \
-                 use `--channel dev`, `--channel nightly`, or a local WaterUI checkout"
-            );
-        }
+    if request.theme == HydrolysisPreviewTheme::Glass {
+        ensure_glass_theme_available(&project).await?;
     }
 
     // Every run of this project writes its preview bindings and stages its

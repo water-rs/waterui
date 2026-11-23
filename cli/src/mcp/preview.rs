@@ -358,6 +358,8 @@ mod tests {
 
     #[test]
     fn resolves_to_the_same_request_as_water_preview() {
+        use crate::preview::request::DEFAULT_PREVIEW_SCALE;
+
         // `water preview --expr --frame 800x600 --backend hydrolysis --theme
         // material3 --platform <host> 'text("hi")'` — the platform must name
         // the host OS, so derive it.
@@ -405,7 +407,7 @@ mod tests {
                 600.0,
                 std::time::Duration::from_millis(2500),
                 None,
-                crate::preview::request::DEFAULT_PREVIEW_SCALE,
+                DEFAULT_PREVIEW_SCALE,
             )
         );
     }

@@ -34,10 +34,16 @@ use std::time::Instant;
 use cocoa_ui::appkit::{ActivationPolicy, Application};
 use cocoa_ui::bitmap::set_window_color_scheme;
 use cocoa_ui::objc2_core_foundation::CFRunLoop;
+#[cfg(catalyst)]
+use cocoa_ui::uikit::catalyst::{BackgroundApplication, runs_under_pad_idiom};
+#[cfg(catalyst)]
+use cocoa_ui::uikit::current_scheme;
 use cocoa_ui::{ColorScheme, MainThreadMarker};
 use waterui_backend_core::Environment;
 use waterui_preview_protocol::run::{Alpha, PreviewColorScheme, PreviewRunConfig, PreviewRunMode};
 use waterui_resources::ResourceContext;
+
+use crate::theme;
 
 /// The capture failure a preview run reports — `ViewCapture`'s with
 /// `gpu_surface`, the bitmap readback's without it.
@@ -334,28 +340,31 @@ pub(crate) fn prepare(
             return Err(PreviewError::ActivationPolicyRefused);
         }
         let initial = color_scheme.unwrap_or_else(|| application.color_scheme());
-        let theme = Rc::new(crate::theme::install(&mut env, initial));
+        let installed_theme = Rc::new(theme::install(&mut env, initial));
         if color_scheme.is_none() {
             let appearance = application.observe_color_scheme({
-                let theme = Rc::clone(&theme);
-                move |scheme| crate::theme::refresh(&theme, scheme)
+                let installed_theme = Rc::clone(&installed_theme);
+                move |scheme| theme::refresh(&installed_theme, scheme)
             });
             keepers.keep(appearance);
         }
-        keepers.keep(theme);
+        keepers.keep(installed_theme);
         Host {}
     };
     #[cfg(catalyst)]
     let host = {
-        let application = cocoa_ui::uikit::catalyst::BackgroundApplication::bring_up(mtm);
-        if !cocoa_ui::uikit::catalyst::runs_under_pad_idiom(mtm) {
+        let application = BackgroundApplication::bring_up(mtm);
+        if !runs_under_pad_idiom(mtm) {
             return Err(PreviewError::MissingPadIdiom);
         }
         // No controller exists yet when `color_scheme` is `None`; the capture
         // window refreshes the theme from its own traits once the view mounts.
-        let initial = color_scheme.unwrap_or_else(cocoa_ui::uikit::current_scheme);
-        let theme = Rc::new(crate::theme::install(&mut env, initial));
-        Host { application, theme }
+        let initial = color_scheme.unwrap_or_else(current_scheme);
+        let installed_theme = Rc::new(theme::install(&mut env, initial));
+        Host {
+            application,
+            theme: installed_theme,
+        }
     };
     let locale = crate::locale::install(&mut env, mtm);
     keepers.keep(locale);
@@ -563,11 +572,11 @@ impl Stage {
         // read: refresh the theme from them (or the requested scheme) before
         // the content resolves it.
         let initial_scheme = color_scheme.unwrap_or_else(|| controller.color_scheme());
-        crate::theme::refresh(&host.theme, initial_scheme);
+        theme::refresh(&host.theme, initial_scheme);
         let appearance = color_scheme.is_none().then(|| {
             controller.observe_color_scheme({
-                let theme = Rc::clone(&host.theme);
-                move |scheme| crate::theme::refresh(&theme, scheme)
+                let installed_theme = Rc::clone(&host.theme);
+                move |scheme| theme::refresh(&installed_theme, scheme)
             })
         });
         let mut keepalive = crate::contract::KeepAlive::default();
