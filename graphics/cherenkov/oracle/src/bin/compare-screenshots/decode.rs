@@ -323,4 +323,47 @@ mod tests {
         );
         assert!(load_png(&bytes).is_err());
     }
+
+    #[test]
+    fn srgb_chunk_and_display_p3_iccp_match_in_linear_p3() {
+        let mut srgb_info = png::Info::with_size(1, 1);
+        srgb_info.bit_depth = png::BitDepth::Eight;
+        srgb_info.color_type = png::ColorType::Rgba;
+        srgb_info.srgb = Some(png::SrgbRenderingIntent::Perceptual);
+        let mut srgb_bytes = Vec::new();
+        {
+            let mut writer = png::Encoder::with_info(&mut srgb_bytes, srgb_info)
+                .unwrap()
+                .write_header()
+                .unwrap();
+            writer.write_image_data(&[229, 57, 53, 255]).unwrap();
+            writer.finish().unwrap();
+        }
+
+        // SAFETY: The system color-space constant is immutable.
+        let p3_space = CGColorSpace::with_name(Some(unsafe { kCGColorSpaceDisplayP3 })).unwrap();
+        let p3_profile = CGColorSpace::icc_data(Some(&p3_space)).unwrap().to_vec();
+        let mut p3_info = png::Info::with_size(1, 1);
+        p3_info.bit_depth = png::BitDepth::Eight;
+        p3_info.color_type = png::ColorType::Rgba;
+        p3_info.icc_profile = Some(Cow::Owned(p3_profile));
+        let mut p3_bytes = Vec::new();
+        {
+            let mut writer = png::Encoder::with_info(&mut p3_bytes, p3_info)
+                .unwrap()
+                .write_header()
+                .unwrap();
+            writer.write_image_data(&[211, 72, 62, 255]).unwrap();
+            writer.finish().unwrap();
+        }
+
+        let srgb_decoded = decode_png(&srgb_bytes).pixels[0];
+        let p3_decoded = decode_png(&p3_bytes).pixels[0];
+        for (a, b) in srgb_decoded.iter().zip(p3_decoded) {
+            assert!(
+                (a - b).abs() < 2e-3,
+                "sRGB chunk and Display P3 iCCP diverged: {srgb_decoded:?} vs {p3_decoded:?}"
+            );
+        }
+    }
 }

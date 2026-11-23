@@ -22,9 +22,11 @@ Subcommands:
 """
 
 import argparse
+import functools
 import json
 import os
 import re
+import struct
 import subprocess
 import sys
 import time
@@ -121,32 +123,159 @@ def is_nonblank(png: bytes) -> bool:
     return ImageStat.Stat(image).stddev[0] >= BLANK_STDDEV
 
 
+@functools.lru_cache(maxsize=1)
+def _srgb_linear_lut() -> list[float]:
+    return [
+        u / 12.92 if u <= 0.04045 else ((u + 0.055) / 1.055) ** 2.4
+        for u in (i / 255.0 for i in range(256))
+    ]
+
+
+@functools.lru_cache(maxsize=1)
+def _display_p3_icc_bytes() -> bytes:
+    """Minimal ICC v4.3 Display P3 matrix/TRC profile (D65 -> D50 Bradford)."""
+    def s15f16(x: float) -> int:
+        return int(round(x * 65536.0))
+
+    def xyz_tag(x: float, y: float, z: float) -> bytes:
+        return struct.pack(">4sIiii", b"XYZ ", 0, s15f16(x), s15f16(y), s15f16(z))
+
+    para = struct.pack(
+        ">4sIH2x5i",
+        b"para", 0, 3,
+        s15f16(2.4),
+        s15f16(1.0 / 1.055),
+        s15f16(0.055 / 1.055),
+        s15f16(1.0 / 12.92),
+        s15f16(0.04045),
+    )
+    chad = struct.pack(
+        ">4sI9i", b"sf32", 0,
+        *[s15f16(v) for v in (
+            1.047882, 0.022919, -0.050201,
+            0.029587, 0.990479, -0.017059,
+            -0.009232, 0.015076, 0.751678,
+        )],
+    )
+    text = "Display P3".encode("utf-16-be")
+    mluc = struct.pack(">4sIIII2s2sII", b"mluc", 0, 1, 12, 0, b"en", b"US", len(text), 28) + text
+    tags = [
+        (b"desc", mluc),
+        (b"cprt", mluc),
+        (b"wtpt", xyz_tag(0.964188, 1.0, 0.82489)),
+        (b"rXYZ", xyz_tag(0.515121, 0.241196, -0.001053)),
+        (b"gXYZ", xyz_tag(0.291977, 0.692245, 0.041885)),
+        (b"bXYZ", xyz_tag(0.157104, 0.066574, 0.784073)),
+        (b"rTRC", para),
+        (b"gTRC", para),
+        (b"bTRC", para),
+        (b"chad", chad),
+    ]
+    table_size = 4 + 12 * len(tags)
+    offset = 128 + table_size
+    body = bytearray()
+    entries = []
+    for sig, payload in tags:
+        entries.append((sig, offset + len(body), len(payload)))
+        body.extend(payload)
+        while len(body) % 4:
+            body.append(0)
+    total_size = 128 + table_size + len(body)
+    header = bytearray(128)
+    struct.pack_into(">II4s", header, 0, total_size, 0, bytes.fromhex("04300000"))
+    struct.pack_into(">4s4s4s", header, 12, b"mntr", b"RGB ", b"XYZ ")
+    struct.pack_into(">6H", header, 24, 2026, 1, 1, 0, 0, 0)
+    struct.pack_into(">4sI", header, 36, b"acsp", 0)
+    struct.pack_into(">3i", header, 68, s15f16(0.9642), s15f16(1.0), s15f16(0.8249))
+    table = bytearray(struct.pack(">I", len(entries)))
+    for sig, off, sz in entries:
+        table.extend(struct.pack(">4sII", sig, off, sz))
+    return bytes(header) + bytes(table) + bytes(body)
+
+
+def _decode_linear_display_p3_bands(
+    image,
+    box: tuple[int, int, int, int],
+):
+    """Convert a PNG image (respecting iCCP / sRGB metadata) into linear Display P3 float bands."""
+    from PIL import ImageCms, ImageMath
+
+    icc_profile = image.info.get("icc_profile")
+    cropped = image.crop(box).convert("RGB")
+    lut = _srgb_linear_lut()
+    if icc_profile is not None:
+        src_profile = ImageCms.ImageCmsProfile(BytesIO(icc_profile))
+        dst_profile = ImageCms.ImageCmsProfile(BytesIO(_display_p3_icc_bytes()))
+        p3_rgb = ImageCms.profileToProfile(
+            cropped,
+            src_profile,
+            dst_profile,
+            renderingIntent=ImageCms.Intent.RELATIVE_COLORIMETRIC,
+            outputMode="RGB",
+        )
+        return tuple(band.point(lut, mode="F") for band in p3_rgb.split())
+
+    # No embedded iCCP profile (explicit sRGB chunk or Android default sRGB):
+    # decode sRGB transfer curve and map linear sRGB -> linear Display P3.
+    sr, sg, sb = (band.point(lut, mode="F") for band in cropped.split())
+    pr = ImageMath.lambda_eval(
+        lambda a: 0.8224619687239154 * a["r"] + 0.1775380312760846 * a["g"],
+        r=sr,
+        g=sg,
+    )
+    pg = ImageMath.lambda_eval(
+        lambda a: 0.0331941988565726 * a["r"] + 0.9668058011434274 * a["g"],
+        r=sr,
+        g=sg,
+    )
+    pb = ImageMath.lambda_eval(
+        lambda a: (
+            0.0170826307246200 * a["r"]
+            + 0.0723974406623800 * a["g"]
+            + 0.9105199286130000 * a["b"]
+        ),
+        r=sr,
+        g=sg,
+        b=sb,
+    )
+    return (pr, pg, pb)
+
+
 def compare_images(
     golden_path: Path, actual_path: Path, tolerance: int, max_fraction: float, diff_out: Path
 ) -> int:
-    from PIL import Image, ImageChops
+    from PIL import Image, ImageChops, ImageMath
 
-    golden = Image.open(golden_path).convert("RGB")
-    actual = Image.open(actual_path).convert("RGB")
-    if golden.size != actual.size:
+    golden_raw = Image.open(golden_path)
+    actual_raw = Image.open(actual_path)
+    if golden_raw.size != actual_raw.size:
         print(
-            f"compare: size mismatch golden={golden.size} actual={actual.size}",
+            f"compare: size mismatch golden={golden_raw.size} actual={actual_raw.size}",
             file=sys.stderr,
         )
         return 2
-    w, h = golden.size
+    w, h = golden_raw.size
     box = (0, int(h * CROP_TOP), w, h - int(h * CROP_BOTTOM))
-    golden = golden.crop(box)
-    actual = actual.crop(box)
+    golden_bands = _decode_linear_display_p3_bands(golden_raw, box)
+    actual_bands = _decode_linear_display_p3_bands(actual_raw, box)
 
-    diff = ImageChops.difference(golden, actual)
-    masks = [band.point(lambda v: 255 if v > tolerance else 0) for band in diff.split()]
+    threshold = tolerance / 255.0
+    diff_bands = [
+        ImageMath.lambda_eval(lambda a: abs(a["g"] - a["a"]), g=gb, a=ab)
+        for gb, ab in zip(golden_bands, actual_bands)
+    ]
+    masks = [
+        ImageMath.lambda_eval(lambda a, t=threshold: (a["d"] > t) * 255, d=db).convert("L")
+        for db in diff_bands
+    ]
     mask = masks[0]
     for other in masks[1:]:
         mask = ImageChops.lighter(mask, other)
 
     differing = mask.histogram()[255]
-    total = golden.size[0] * golden.size[1]
+    crop_w = box[2] - box[0]
+    crop_h = box[3] - box[1]
+    total = crop_w * crop_h
     fraction = differing / total
     print(
         f"compare: {differing}/{total} pixels differ beyond tolerance {tolerance} "
@@ -154,7 +283,11 @@ def compare_images(
     )
 
     if fraction > max_fraction:
-        diff.point(lambda v: min(255, v * 8)).save(diff_out)
+        amplified = [
+            ImageMath.lambda_eval(lambda a: a["d"] * (255.0 * 8.0), d=db).convert("L")
+            for db in diff_bands
+        ]
+        Image.merge("RGB", amplified).save(diff_out)
         return 1
     return 0
 
