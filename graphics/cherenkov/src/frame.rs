@@ -18,6 +18,8 @@ use crate::Instant;
 pub struct FrameTime {
     instant: Instant,
     reported: bool,
+    #[cfg(target_os = "android")]
+    vsync_id: Option<i64>,
 }
 
 impl FrameTime {
@@ -28,6 +30,8 @@ impl FrameTime {
         Self {
             instant: target,
             reported: true,
+            #[cfg(target_os = "android")]
+            vsync_id: None,
         }
     }
 
@@ -45,7 +49,26 @@ impl FrameTime {
         Self {
             instant,
             reported: false,
+            #[cfg(target_os = "android")]
+            vsync_id: None,
         }
+    }
+
+    /// Attaches Android Choreographer's active frame timeline vsync ID
+    /// (`AVsyncId`) so `SurfaceFlinger` targets this frame's timeline.
+    #[cfg(target_os = "android")]
+    #[must_use]
+    pub const fn with_vsync_id(mut self, vsync_id: i64) -> Self {
+        self.vsync_id = Some(vsync_id);
+        self
+    }
+
+    /// Android Choreographer's active frame timeline vsync ID (`AVsyncId`), if
+    /// this frame was driven from a vsync callback carrying one.
+    #[cfg(target_os = "android")]
+    #[must_use]
+    pub const fn vsync_id(&self) -> Option<i64> {
+        self.vsync_id
     }
 
     /// The instant the engine animates and schedules against.
@@ -288,5 +311,29 @@ impl Offscreen {
             format,
             refresh: FrameRate::FAST,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FrameTime;
+    use crate::Instant;
+
+    #[test]
+    fn frame_time_preserves_reported_target() {
+        let now = Instant::now();
+        assert_eq!(FrameTime::presented_at(now).presentation_time(), Some(now));
+        assert_eq!(FrameTime::unpresented_at(now).presentation_time(), None);
+    }
+
+    #[cfg(target_os = "android")]
+    #[test]
+    fn frame_time_carries_optional_vsync_id() {
+        let now = Instant::now();
+        let unattached = FrameTime::presented_at(now);
+        assert_eq!(unattached.vsync_id(), None);
+        let attached = unattached.with_vsync_id(9_123_456);
+        assert_eq!(attached.vsync_id(), Some(9_123_456));
+        assert_eq!(attached.presentation_time(), Some(now));
     }
 }

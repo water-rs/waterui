@@ -35,7 +35,7 @@ use rustc_hash::FxHashMap;
 use wasm_bindgen::JsCast as _;
 use web_sys::{Element, HtmlCanvasElement, HtmlElement};
 
-use cherenkov::{FillRule, LayerId, RenderError, ShapeData, SurfaceError};
+use cherenkov::{FillRule, FrameTime, LayerId, RenderError, ShapeData, SurfaceError};
 
 use super::{
     Candidate, Composition, Compositor, Level, Placement, PlaneContent, Presentation, SystemPlanes,
@@ -742,6 +742,7 @@ impl SystemPlanes for DomPlanes {
     fn refresh<'a>(
         &mut self,
         frames: impl Iterator<Item = super::Plane<'a>>,
+        _: FrameTime,
     ) -> Result<(), RenderError> {
         let mut scale = None;
         for plane in frames {

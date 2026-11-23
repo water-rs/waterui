@@ -114,6 +114,24 @@ class SessionTeardownTest {
     }
 
     @Test
+    fun vsyncFramesPropagateTimelineVsyncIdAndNonVsyncFramesOmitIt() {
+        val session = HydrolysisSession(context, onCloseRequested = {})
+        val scheduler = FrameScheduler(session)
+        scheduler.pumpNow("immediate")
+        scheduler.doFrame(1_000_000L)
+        scheduler.requestFrame("vsync")
+        shadowOf(Looper.getMainLooper()).idleFor(FRAME_WINDOW)
+
+        assertEquals(3, ShadowNativeBridge.frameTimelines.size)
+        assertEquals(false to null, ShadowNativeBridge.frameTimelines[0])
+        assertEquals(false to null, ShadowNativeBridge.frameTimelines[1])
+        assertTrue(ShadowNativeBridge.frameTimelines[2].first)
+        assertTrue(ShadowNativeBridge.frameTimelines[2].second != null)
+        scheduler.stop()
+        session.destroy()
+    }
+
+    @Test
     fun aFrameRequestedDuringTeardownNeverReachesNative() {
         val session = HydrolysisSession(context, onCloseRequested = {})
         HydrolysisHostView(context, session)
@@ -742,6 +760,9 @@ class ShadowNativeBridge {
         /** Every `nativeSetColorScheme` push, in order. */
         val colorSchemes = mutableListOf<Boolean>()
 
+        /** For each `nativeOnFrame`: `(hasPresentation, vsyncIdOrNull)`. */
+        val frameTimelines = mutableListOf<Pair<Boolean, Long?>>()
+
         /** Every `nativeBackEvent` phase, in order. */
         val backEvents = mutableListOf<Int>()
 
@@ -776,6 +797,7 @@ class ShadowNativeBridge {
             resumptions.clear()
             createNightModes.clear()
             colorSchemes.clear()
+            frameTimelines.clear()
             backEvents.clear()
             onDestroy = {}
             onFrame = { 0L }
@@ -844,11 +866,14 @@ class ShadowNativeBridge {
         @Implementation
         fun nativeOnFrame(
             sessionPtr: Long,
-            @Suppress("UNUSED_PARAMETER") hasPresentation: Boolean,
+            hasPresentation: Boolean,
             @Suppress("UNUSED_PARAMETER") presentationNanos: Long,
+            hasVsyncId: Boolean,
+            vsyncId: Long,
         ): Long {
             assertLive(sessionPtr)
             frames += 1
+            frameTimelines += hasPresentation to (if (hasVsyncId) vsyncId else null)
             return onFrame()
         }
 

@@ -97,7 +97,9 @@ use super::host::{AndroidSession, MetricsSnapshot, UiThreadServices};
 /// 30 adds asynchronous GPU initialization and frame-completion delivery.
 /// 31 adds `nativeSetResumed` for `AndroidContent` lifecycle forwarding and
 /// passes painted device-pixel rects through `onNativeBandShow` for viewability.
-pub const JNI_SCHEMA: jint = 31;
+/// 32 passes the active Choreographer frame timeline vsync ID (`has_vsync_id`,
+/// `vsync_id`) through `nativeOnFrame`.
+pub const JNI_SCHEMA: jint = 32;
 
 /// A failure crossing the JNI boundary as an exception.
 #[derive(Debug)]
@@ -709,7 +711,8 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeCompleteFr
 ///
 /// `has_presentation` says the frame came from a vsync callback, and
 /// `presentation_nanos` is then its expected presentation time on the
-/// `CLOCK_MONOTONIC` clock; a delayed deadline frame has none.
+/// `CLOCK_MONOTONIC` clock; `has_vsync_id` and `vsync_id` carry the preferred
+/// frame timeline's `AVsyncId`. A delayed deadline frame has neither.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeOnFrame<'local>(
     mut env: EnvUnowned<'local>,
@@ -717,6 +720,8 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeOnFrame<'l
     session_ptr: jlong,
     has_presentation: jboolean,
     presentation_nanos: jlong,
+    has_vsync_id: jboolean,
+    vsync_id: jlong,
 ) -> jlong {
     guard_val(&mut env, 0, |env| {
         #[cfg(hydrolysis_hwui)]
@@ -751,7 +756,8 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeOnFrame<'l
         let presentation = has_presentation
             .then(|| monotonic_nanos_to_instant(presentation_nanos))
             .transpose()?;
-        let outcome = session!(session_ptr).on_frame(presentation);
+        let vsync_id = has_vsync_id.then_some(vsync_id);
+        let outcome = session!(session_ptr).on_frame(presentation, vsync_id);
         let mut bits: jlong = 0;
         if outcome.wants_next_frame {
             bits |= 1;

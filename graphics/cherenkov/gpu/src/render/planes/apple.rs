@@ -116,7 +116,7 @@ use objc2_quartz_core::{
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use cherenkov::{ContinuousRect, LayerId, RenderError, ShapeData, SurfaceError};
+use cherenkov::{ContinuousRect, FrameTime, LayerId, RenderError, ShapeData, SurfaceError};
 
 use super::{Composition, Compositor, Level, Placement, Plane, PlaneContent, Source, SystemPlanes};
 use crate::interop::{
@@ -3042,7 +3042,11 @@ impl SystemPlanes for LayerPlanes {
         ready.extend(self.static_candidates.iter().copied());
     }
 
-    fn refresh<'a>(&mut self, frames: impl Iterator<Item = Plane<'a>>) -> Result<(), RenderError> {
+    fn refresh<'a>(
+        &mut self,
+        frames: impl Iterator<Item = Plane<'a>>,
+        _: FrameTime,
+    ) -> Result<(), RenderError> {
         let mut changed = Vec::new();
         for plane in frames {
             let previous = self

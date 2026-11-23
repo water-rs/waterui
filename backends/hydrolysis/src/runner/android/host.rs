@@ -2077,9 +2077,19 @@ impl AndroidSession {
     /// `presentation` is when `Choreographer` expects this frame to reach
     /// the display; the engine renders against it. A frame woken by a
     /// deadline timer has none and renders at the instant it starts.
-    pub(crate) fn on_frame(&mut self, presentation: Option<Instant>) -> FrameOutcome {
+    pub(crate) fn on_frame(
+        &mut self,
+        presentation: Option<Instant>,
+        vsync_id: Option<i64>,
+    ) -> FrameOutcome {
         tracing::debug!(target: "waterui::hydrolysis::android", "frame wake");
+        #[cfg(not(hydrolysis_hwui))]
+        self.runtime.renderer.set_frame_timeline(vsync_id);
+        #[cfg(hydrolysis_hwui)]
+        let _ = vsync_id;
         let outcome = run_frame_transaction(self, presentation);
+        #[cfg(not(hydrolysis_hwui))]
+        self.runtime.renderer.set_frame_timeline(None);
         let deadline_in_nanos = outcome.deadline.map(|at| {
             i64::try_from(
                 at.checked_duration_since(Instant::now())

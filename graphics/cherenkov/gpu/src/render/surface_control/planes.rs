@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 
 use ash::vk;
 use cherenkov::kurbo::Affine;
-use cherenkov::{LayerId, RenderError, ShapeData, SurfaceError};
+use cherenkov::{FrameTime, LayerId, RenderError, ShapeData, SurfaceError};
 use rustc_hash::FxHashMap;
 use waterui_contract::contract_violation;
 
@@ -918,6 +918,9 @@ impl Planes {
                     );
             }
             if !pending.bands.is_empty() {
+                if let Some(vsync_id) = composition.vsync_id {
+                    pending.transaction.set_frame_timeline(vsync_id);
+                }
                 // Every band image of the frame is complete: the host
                 // latches them and applies the base transaction together.
                 let applied = Arc::new(AtomicBool::new(false));
@@ -940,6 +943,9 @@ impl Planes {
                     display: pending.display,
                 });
                 return Ok(Presentation::Pending);
+            }
+            if let Some(vsync_id) = composition.vsync_id {
+                pending.transaction.set_frame_timeline(vsync_id);
             }
             Self::apply(pending.transaction, &self.release, pending.replaced);
             if pending.generation == composition.generation
@@ -968,6 +974,7 @@ impl Planes {
             ));
         }
         let Composition {
+            vsync_id,
             device,
             queue,
             presenter,
@@ -1142,7 +1149,7 @@ impl Planes {
         }
         // Parts the plan no longer splits off leave in this frame's
         // transaction.
-        let mut transaction = Transaction::new();
+        let mut transaction = Transaction::for_frame(vsync_id);
         let mut pending: Vec<Pending> = Vec::new();
         while self.parts.len() > engine_parts {
             let part = self.parts.pop().expect("more parts than the stack uses");
@@ -1655,6 +1662,7 @@ impl Planes {
     fn refresh<'a>(
         &mut self,
         frames: impl Iterator<Item = crate::render::planes::Plane<'a>>,
+        time: FrameTime,
     ) -> Result<(), RenderError> {
         self.collect_releases();
         // Validate every update and build the transaction before any
@@ -1664,7 +1672,7 @@ impl Planes {
         self.updates.clear();
         self.raster_updates.clear();
         self.hosted_updates.clear();
-        let mut transaction = Transaction::new();
+        let mut transaction = Transaction::for_frame(time.vsync_id());
         for update in frames {
             let layer = update.placement.layer;
             let (frame, generation) = match &update.content {
@@ -1916,8 +1924,9 @@ impl SystemPlanes for Planes {
     fn refresh<'a>(
         &mut self,
         frames: impl Iterator<Item = crate::render::planes::Plane<'a>>,
+        time: FrameTime,
     ) -> Result<(), RenderError> {
-        Self::refresh(self, frames)
+        Self::refresh(self, frames, time)
     }
 
     fn resize(&mut self, size: (u32, u32)) {

@@ -129,6 +129,7 @@ unsafe extern "C" {
         context: *mut c_void,
         func: OnComplete,
     );
+    fn ASurfaceTransaction_setFrameTimeline(transaction: *mut ASurfaceTransaction, vsync_id: i64);
     fn ASurfaceTransaction_reparent(
         transaction: *mut ASurfaceTransaction,
         surface_control: *mut ASurfaceControl,
@@ -438,6 +439,24 @@ impl Transaction {
                 Op::Hdr(hdr) => set_hdr(t, sc, hdr),
             }
         }
+    }
+
+    /// Associates the transaction with Choreographer's frame timeline
+    /// `vsync_id` (`AVsyncId`, API 33+). `SurfaceFlinger` targets that
+    /// timeline's expected presentation time and ignores stale or invalid values.
+    pub fn set_frame_timeline(&mut self, vsync_id: i64) {
+        // SAFETY: `self.0` owns a live `ASurfaceTransaction`.
+        unsafe { ASurfaceTransaction_setFrameTimeline(self.0.as_ptr(), vsync_id) };
+    }
+
+    /// Creates an empty transaction and binds `vsync_id` when driven from a
+    /// Choreographer vsync callback.
+    pub fn for_frame(vsync_id: Option<i64>) -> Self {
+        let mut transaction = Self::new();
+        if let Some(vsync_id) = vsync_id {
+            transaction.set_frame_timeline(vsync_id);
+        }
+        transaction
     }
 
     /// Applies the transaction. `on_complete` runs once, on a system

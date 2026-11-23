@@ -107,7 +107,7 @@ internal class FrameScheduler(private val session: HydrolysisSession) :
      */
     fun pumpNow(cause: String) {
         if (stopped) return
-        pump(cause, null)
+        pump(cause, null, null)
     }
 
     /** The delayed deadline frame: there is no vsync to read a presentation time from. */
@@ -116,33 +116,40 @@ internal class FrameScheduler(private val session: HydrolysisSession) :
         deadlinePosted = false
         val cause = wakeCause ?: "external"
         wakeCause = null
-        pump(cause, null)
+        pump(cause, null, null)
     }
 
     /**
-     * The vsync frame. The preferred frame timeline's expected presentation
-     * time — on the `System.nanoTime` clock — is the instant the engine
-     * renders the frame against.
+     * The vsync frame. The preferred frame timeline carries both the expected
+     * presentation time on the `System.nanoTime` clock and its `vsyncId`
+     * (`AVsyncId`) for SurfaceFlinger commits.
      */
     override fun onVsync(data: Choreographer.FrameData) {
         posted = false
         deadlinePosted = false
         val cause = wakeCause ?: "external"
         wakeCause = null
-        pump(cause, data.preferredFrameTimeline.expectedPresentationTimeNanos)
+        val timeline = data.preferredFrameTimeline
+        pump(cause, timeline.expectedPresentationTimeNanos, timeline.vsyncId)
     }
 
     /**
      * One frame transaction and its outcome handling — the path the vsync
      * callback ([onVsync]), the deadline frame ([doFrame]) and an
-     * in-traversal pump ([pumpNow]) share. `presentationNanos` is the
-     * frame's expected presentation time, null for a frame no vsync
+     * in-traversal pump ([pumpNow]) share. `presentationNanos` and `vsyncId`
+     * come from the active frame timeline, both null for a frame no vsync
      * started.
      */
-    private fun pump(cause: String, presentationNanos: Long?) {
+    private fun pump(cause: String, presentationNanos: Long?, vsyncId: Long?) {
         val outcome =
             session.withNativePtr(NativeBridge::nativeOnFrame.name) { ptr ->
-                NativeBridge.nativeOnFrame(ptr, presentationNanos != null, presentationNanos ?: 0L)
+                NativeBridge.nativeOnFrame(
+                    ptr,
+                    presentationNanos != null,
+                    presentationNanos ?: 0L,
+                    vsyncId != null,
+                    vsyncId ?: 0L,
+                )
             }
         // The frame can end the session: a teardown requested inside it ran
         // as the frame returned and stopped this scheduler.
