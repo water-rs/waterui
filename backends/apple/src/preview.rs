@@ -27,25 +27,44 @@
 //!   show the iOS look.
 
 use std::cell::RefCell;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::{ActivationPolicy, Application};
 use cocoa_ui::bitmap::set_window_color_scheme;
 #[cfg(feature = "gpu_surface")]
 use cocoa_ui::capture::collect_capturables;
-use cocoa_ui::objc2_core_foundation::CFRunLoop;
+use cocoa_ui::core_animation::flush_transaction;
+#[cfg(target_os = "macos")]
+use cocoa_ui::objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType, NSView};
+use cocoa_ui::objc2_core_foundation::{CFRunLoop, CGPoint};
+#[cfg(catalyst)]
+use cocoa_ui::objc2_ui_kit::UIControl;
 #[cfg(catalyst)]
 use cocoa_ui::uikit::catalyst::{BackgroundApplication, runs_under_pad_idiom};
 #[cfg(catalyst)]
 use cocoa_ui::uikit::current_scheme;
-use cocoa_ui::{ColorScheme, MainThreadMarker};
+#[cfg(catalyst)]
+use cocoa_ui::view::retain_base;
+use cocoa_ui::view::{display_immediately, layout_immediately};
+use cocoa_ui::{ColorScheme, MainThreadMarker, Retained, Size};
+use waterui::AnyView;
+use waterui::task::{sleep, yield_now};
 use waterui_backend_core::Environment;
+use waterui_capture::ContentLedger;
 use waterui_capture::view_renderer::RenderResult;
-use waterui_preview_protocol::run::{Alpha, PreviewColorScheme, PreviewRunConfig, PreviewRunMode};
+#[cfg(target_os = "macos")]
+use waterui_preview_protocol::run::ScenarioPointerButton;
+use waterui_preview_protocol::run::{
+    Alpha, PreviewColorScheme, PreviewRunConfig, PreviewRunMode, RawFrameError,
+    RawFrameStreamWriter, ScenarioEvent, ScenarioEventKind, VideoCaptureConfig,
+    plan_scenario_timeline, write_png,
+};
 use waterui_resources::ResourceContext;
 
+use crate::content::await_content;
 use crate::{capture, theme};
 
 /// The capture failure a preview run reports — `ViewCapture`'s with
@@ -93,7 +112,7 @@ macro_rules! preview_info_plist {
 #[non_exhaustive]
 pub enum PreviewError {
     /// The run mode is not implemented by the Apple preview.
-    #[error("apple preview supports image captures only; {0} runs are not implemented")]
+    #[error("apple preview does not support {0} runs")]
     UnsupportedMode(&'static str),
     /// Mounting, presenting or rasterizing the view failed.
     #[error(transparent)]
@@ -105,6 +124,9 @@ pub enum PreviewError {
     /// Encoding or writing the capture PNG failed.
     #[error(transparent)]
     Write(#[from] waterui_preview_protocol::run::PngError),
+    /// Recording raw video frames or planning the scenario timeline failed.
+    #[error(transparent)]
+    RawFrame(#[from] RawFrameError),
     /// The run loop returned without the capture handing its result back.
     #[error("the main run loop returned before the capture settled")]
     RunLoopExited,
@@ -148,12 +170,13 @@ pub enum PreviewError {
 ///
 /// # Errors
 ///
-/// [`PreviewError::UnsupportedMode`] for `Scenario` and `Semantic` runs —
-/// the Apple preview captures images only. [`PreviewError::Content`] when a
-/// view still owes content at the run's content deadline or its load
+/// [`PreviewError::UnsupportedMode`] for `Semantic` runs — the Apple preview
+/// captures single images and scenario timelines. [`PreviewError::Content`]
+/// when a view still owes content at the run's content deadline or its load
 /// fails. [`PreviewError::Capture`] when the view cannot be mounted or
-/// rasterized. [`PreviewError::Write`] when the PNG cannot be encoded or
-/// written. [`PreviewError::RunLoopExited`] when the main run
+/// rasterized. [`PreviewError::Write`] when a PNG cannot be encoded or
+/// written. [`PreviewError::RawFrame`] when a scenario timeline or raw video
+/// stream cannot be written. [`PreviewError::RunLoopExited`] when the main run
 /// loop returns without the capture's result — a return is never success
 /// on its own. [`PreviewError::NotMainThread`] off the main thread.
 /// [`PreviewError::ActivationPolicyRefused`] when `AppKit` refuses the
@@ -179,10 +202,23 @@ pub fn run(
     result
 }
 
+/// What a preview run executes once bring-up succeeds.
+enum RunTask {
+    Image {
+        output: PathBuf,
+    },
+    Scenario {
+        output_dir: Option<PathBuf>,
+        captures_ms: Vec<u64>,
+        events: Vec<ScenarioEvent>,
+        video: Option<VideoCaptureConfig>,
+    },
+}
+
 /// `run`'s body — the single `Result` boundary [`run`] reports through.
 fn drive(
     compose: impl FnOnce(Environment) -> Environment + 'static,
-    view: impl FnOnce() -> waterui::AnyView + 'static,
+    view: impl FnOnce() -> AnyView + 'static,
     resources: ResourceContext,
     config: PreviewRunConfig,
 ) -> Result<(), PreviewError> {
@@ -201,13 +237,21 @@ fn drive(
         PreviewColorScheme::Light => ColorScheme::Light,
         PreviewColorScheme::Dark => ColorScheme::Dark,
     });
-    let size = cocoa_ui::Size::new(f64::from(config.width()), f64::from(config.height()));
-    let output = match config.into_mode() {
-        PreviewRunMode::Image { output } => output,
-        PreviewRunMode::Scenario { .. } => {
-            return Err(PreviewError::UnsupportedMode("scenario"));
-        }
-        PreviewRunMode::Semantic => return Err(PreviewError::UnsupportedMode("semantic")),
+    let size = Size::new(f64::from(config.width()), f64::from(config.height()));
+    let task = match config.into_mode() {
+        PreviewRunMode::Image { output } => RunTask::Image { output },
+        PreviewRunMode::Scenario {
+            output_dir,
+            captures_ms,
+            events,
+            video,
+        } => RunTask::Scenario {
+            output_dir,
+            captures_ms,
+            events,
+            video,
+        },
+        PreviewRunMode::Semantic { .. } => return Err(PreviewError::UnsupportedMode("semantic")),
     };
 
     // The keepers live on `drive`'s frame and are declared before `env`, so
@@ -231,7 +275,7 @@ fn drive(
         move || {
             // `drive` lent `env` for its frame; this closure is the
             // only consumer and runs once, on the main thread.
-            // SAFETY: `env_ptr` stays live until `render_and_write` completes.
+            // SAFETY: `env_ptr` stays live until the capture completes.
             let env = unsafe { &mut *env_ptr };
             let env = compose(env.clone());
             tracing::info!(
@@ -241,17 +285,15 @@ fn drive(
             );
             executor_core::spawn_local(async move {
                 *outcome.borrow_mut() = Some(
-                    render_and_write(
+                    execute_run_task(
                         &env,
                         mtm,
                         &host,
                         view,
-                        Capture {
-                            size,
-                            color_scheme,
-                            content_deadline,
-                            output: &output,
-                        },
+                        size,
+                        color_scheme,
+                        content_deadline,
+                        task,
                     )
                     .await,
                 );
@@ -435,7 +477,7 @@ async fn render_and_write(
     );
     let encode_started = Instant::now();
     let (rgba_data, width, height) = result.into_parts();
-    waterui_preview_protocol::run::write_png(
+    write_png(
         capture.output,
         width,
         height,
@@ -448,6 +490,477 @@ async fn render_and_write(
         "Apple preview phase"
     );
     Ok(())
+}
+
+/// Inputs for a scenario timeline capture on Apple (`AppKit` or Mac Catalyst).
+struct ScenarioRun<'a> {
+    size: cocoa_ui::Size,
+    color_scheme: Option<ColorScheme>,
+    content_deadline: Duration,
+    output_dir: Option<&'a Path>,
+    captures_ms: &'a [u64],
+    events: &'a [ScenarioEvent],
+    video: Option<&'a VideoCaptureConfig>,
+}
+
+/// Dispatches a parsed preview run task to single-frame or scenario rendering.
+#[expect(
+    clippy::future_not_send,
+    reason = "the capture runs on the main thread; the Retained native objects it holds across awaits are not Send"
+)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "internal helper bundling drive's locals before dispatch"
+)]
+async fn execute_run_task(
+    env: &Environment,
+    mtm: MainThreadMarker,
+    host: &Host,
+    view: impl FnOnce() -> AnyView,
+    size: Size,
+    color_scheme: Option<ColorScheme>,
+    content_deadline: Duration,
+    task: RunTask,
+) -> Result<(), PreviewError> {
+    match task {
+        RunTask::Image { output } => {
+            render_and_write(
+                env,
+                mtm,
+                host,
+                view,
+                Capture {
+                    size,
+                    color_scheme,
+                    content_deadline,
+                    output: &output,
+                },
+            )
+            .await
+        }
+        RunTask::Scenario {
+            output_dir,
+            captures_ms,
+            events,
+            video,
+        } => {
+            render_scenario(
+                env,
+                mtm,
+                host,
+                view,
+                ScenarioRun {
+                    size,
+                    color_scheme,
+                    content_deadline,
+                    output_dir: output_dir.as_deref(),
+                    captures_ms: &captures_ms,
+                    events: &events,
+                    video: video.as_ref(),
+                },
+            )
+            .await
+        }
+    }
+}
+
+/// Runs a timeline capture: replays `scenario.events` at their timestamps and
+/// captures PNGs and/or fixed-FPS raw RGBA8 frames through the same
+/// windowless `Stage::capture` path as single-image previews.
+#[expect(
+    clippy::future_not_send,
+    reason = "the capture runs on the main thread; the Retained native objects it holds across awaits are not Send"
+)]
+async fn render_scenario(
+    env: &Environment,
+    mtm: MainThreadMarker,
+    host: &Host,
+    view: impl FnOnce() -> AnyView,
+    scenario: ScenarioRun<'_>,
+) -> Result<(), PreviewError> {
+    let samples = plan_scenario_timeline(scenario.captures_ms, scenario.video, scenario.events)?;
+    let mut video_writer = match scenario.video {
+        Some(video) => Some(RawFrameStreamWriter::create(video.output(), video.fps())?),
+        None => None,
+    };
+
+    let ledger = ContentLedger::new();
+    let content_env = env.extending(ledger.clone());
+    let stage = Stage::mount(
+        &content_env,
+        mtm,
+        host,
+        view,
+        scenario.size,
+        scenario.color_scheme,
+    );
+    await_content(&ledger, &stage.root, scenario.content_deadline).await?;
+
+    let mut input_state = ScenarioInputState::default();
+    let mut event_index = 0usize;
+    let started_at = Instant::now();
+
+    for sample in samples {
+        while event_index < scenario.events.len() {
+            let event = scenario.events[event_index];
+            let event_offset = Duration::from_millis(event.at_ms());
+            if event_offset > sample.offset() {
+                break;
+            }
+            if let Some(wait) = event_offset.checked_sub(started_at.elapsed())
+                && !wait.is_zero()
+            {
+                sleep(wait).await;
+            }
+            dispatch_scenario_event(&stage, &mut input_state, event);
+            flush_stage(&stage);
+            yield_now().await;
+            event_index += 1;
+        }
+
+        if let Some(wait) = sample.offset().checked_sub(started_at.elapsed())
+            && !wait.is_zero()
+        {
+            sleep(wait).await;
+        }
+        await_content(&ledger, &stage.root, scenario.content_deadline).await?;
+        let result = stage.capture().await?;
+        let (rgba_data, width, height) = result.into_parts();
+
+        match (sample.png_capture_ms(), sample.record_video()) {
+            (Some(capture_ms), true) => {
+                if let Some(output_dir) = scenario.output_dir {
+                    write_png(
+                        &output_dir.join(format!("frame-{capture_ms:04}ms.png")),
+                        width,
+                        height,
+                        rgba_data.clone(),
+                        Alpha::Premultiplied,
+                    )?;
+                }
+                if let Some(writer) = &mut video_writer {
+                    writer.write_frame(
+                        width,
+                        height,
+                        rgba_data,
+                        Alpha::Premultiplied,
+                        sample.offset(),
+                    )?;
+                }
+            }
+            (Some(capture_ms), false) => {
+                if let Some(output_dir) = scenario.output_dir {
+                    write_png(
+                        &output_dir.join(format!("frame-{capture_ms:04}ms.png")),
+                        width,
+                        height,
+                        rgba_data,
+                        Alpha::Premultiplied,
+                    )?;
+                }
+            }
+            (None, true) => {
+                if let Some(writer) = &mut video_writer {
+                    writer.write_frame(
+                        width,
+                        height,
+                        rgba_data,
+                        Alpha::Premultiplied,
+                        sample.offset(),
+                    )?;
+                }
+            }
+            (None, false) => {}
+        }
+    }
+
+    drop(stage);
+    if let Some(writer) = video_writer {
+        let _ = writer.finish()?;
+    }
+    Ok(())
+}
+
+fn flush_stage(stage: &Stage) {
+    layout_immediately(&stage.root);
+    display_immediately(&stage.root);
+    flush_transaction();
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Default)]
+struct ScenarioInputState {
+    pressed_button: Option<ScenarioPointerButton>,
+    pressed_view: Option<Retained<NSView>>,
+}
+
+#[cfg(catalyst)]
+#[derive(Default)]
+struct ScenarioInputState {
+    pressed_control: Option<Retained<UIControl>>,
+}
+
+#[cfg(target_os = "macos")]
+fn make_mouse_event(
+    event_type: NSEventType,
+    window_point: CGPoint,
+    timestamp: f64,
+    window_number: isize,
+    click_count: isize,
+) -> Option<Retained<NSEvent>> {
+    NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
+        event_type,
+        window_point,
+        NSEventModifierFlags::empty(),
+        timestamp,
+        window_number,
+        None,
+        0,
+        click_count,
+        if click_count > 0 { 1.0 } else { 0.0 },
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn dispatch_mouse_button_event(
+    target: &NSView,
+    button: ScenarioPointerButton,
+    phase: MouseButtonPhase,
+    window_point: CGPoint,
+    timestamp: f64,
+    window_number: isize,
+) {
+    let event_type = match (phase, button) {
+        (MouseButtonPhase::Down, ScenarioPointerButton::Secondary) => NSEventType::RightMouseDown,
+        (MouseButtonPhase::Down, ScenarioPointerButton::Middle) => NSEventType::OtherMouseDown,
+        (MouseButtonPhase::Down, _) => NSEventType::LeftMouseDown,
+        (MouseButtonPhase::Dragged, ScenarioPointerButton::Secondary) => {
+            NSEventType::RightMouseDragged
+        }
+        (MouseButtonPhase::Dragged, ScenarioPointerButton::Middle) => {
+            NSEventType::OtherMouseDragged
+        }
+        (MouseButtonPhase::Dragged, _) => NSEventType::LeftMouseDragged,
+        (MouseButtonPhase::Up, ScenarioPointerButton::Secondary) => NSEventType::RightMouseUp,
+        (MouseButtonPhase::Up, ScenarioPointerButton::Middle) => NSEventType::OtherMouseUp,
+        (MouseButtonPhase::Up, _) => NSEventType::LeftMouseUp,
+    };
+    let Some(ns_event) = make_mouse_event(event_type, window_point, timestamp, window_number, 1)
+    else {
+        return;
+    };
+    match (phase, button) {
+        (MouseButtonPhase::Down, ScenarioPointerButton::Secondary) => {
+            target.rightMouseDown(&ns_event);
+        }
+        (MouseButtonPhase::Down, ScenarioPointerButton::Middle) => target.otherMouseDown(&ns_event),
+        (MouseButtonPhase::Down, _) => target.mouseDown(&ns_event),
+        (MouseButtonPhase::Dragged, ScenarioPointerButton::Secondary) => {
+            target.rightMouseDragged(&ns_event);
+        }
+        (MouseButtonPhase::Dragged, ScenarioPointerButton::Middle) => {
+            target.otherMouseDragged(&ns_event);
+        }
+        (MouseButtonPhase::Dragged, _) => target.mouseDragged(&ns_event),
+        (MouseButtonPhase::Up, ScenarioPointerButton::Secondary) => target.rightMouseUp(&ns_event),
+        (MouseButtonPhase::Up, ScenarioPointerButton::Middle) => target.otherMouseUp(&ns_event),
+        (MouseButtonPhase::Up, _) => target.mouseUp(&ns_event),
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy)]
+enum MouseButtonPhase {
+    Down,
+    Dragged,
+    Up,
+}
+
+#[cfg(target_os = "macos")]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "CGEvent scroll wheel deltas are integer pixels or lines"
+)]
+fn dispatch_scenario_event(stage: &Stage, input: &mut ScenarioInputState, event: ScenarioEvent) {
+    use objc2_core_graphics::{CGEvent, CGScrollEventUnit};
+
+    let root: &NSView = &stage.root;
+    let local_point = CGPoint::new(f64::from(event.x()), f64::from(event.y()));
+    let window_point = root.convertPoint_toView(local_point, None);
+    // SAFETY: `root` is owned by the live capture window on the main thread;
+    // reading its superview only retains the parent view for coordinate conversion.
+    let superview = unsafe { root.superview() };
+    let superview_point = root.convertPoint_toView(local_point, superview.as_deref());
+    let window_number = stage.window.windowNumber();
+    let timestamp = Duration::from_millis(event.at_ms()).as_secs_f64();
+
+    match event.kind() {
+        ScenarioEventKind::PointerDown => {
+            let hit = root.hitTest(superview_point);
+            let target = hit.as_deref().unwrap_or(root);
+            dispatch_mouse_button_event(
+                target,
+                event.button(),
+                MouseButtonPhase::Down,
+                window_point,
+                timestamp,
+                window_number,
+            );
+            input.pressed_button = Some(event.button());
+            input.pressed_view = hit;
+        }
+        ScenarioEventKind::PointerMove => {
+            if let Some(button) = input.pressed_button {
+                let target = input.pressed_view.as_deref().unwrap_or(root);
+                dispatch_mouse_button_event(
+                    target,
+                    button,
+                    MouseButtonPhase::Dragged,
+                    window_point,
+                    timestamp,
+                    window_number,
+                );
+            } else {
+                let hit = root.hitTest(superview_point);
+                let target = hit.as_deref().unwrap_or(root);
+                if let Some(ns_event) = make_mouse_event(
+                    NSEventType::MouseMoved,
+                    window_point,
+                    timestamp,
+                    window_number,
+                    0,
+                ) {
+                    target.mouseMoved(&ns_event);
+                }
+            }
+        }
+        ScenarioEventKind::PointerUp => {
+            let button = input
+                .pressed_button
+                .take()
+                .unwrap_or_else(|| event.button());
+            let target = input
+                .pressed_view
+                .take()
+                .or_else(|| root.hitTest(superview_point));
+            let target_ref = target.as_deref().unwrap_or(root);
+            dispatch_mouse_button_event(
+                target_ref,
+                button,
+                MouseButtonPhase::Up,
+                window_point,
+                timestamp,
+                window_number,
+            );
+        }
+        ScenarioEventKind::PointerCancel => {
+            input.pressed_button = None;
+            input.pressed_view = None;
+        }
+        ScenarioEventKind::Scroll => {
+            let unit = if event.is_line_delta() {
+                CGScrollEventUnit::Line
+            } else {
+                CGScrollEventUnit::Pixel
+            };
+            let wheel_y = event.dy().round() as i32;
+            let wheel_x = event.dx().round() as i32;
+            if let Some(cg_event) =
+                CGEvent::new_scroll_wheel_event2(None, unit, 2, wheel_y, wheel_x, 0)
+                && let Some(ns_event) = NSEvent::eventWithCGEvent(&cg_event)
+            {
+                let hit = root.hitTest(superview_point);
+                let target = hit.as_deref().unwrap_or(root);
+                target.scrollWheel(&ns_event);
+            }
+        }
+        _ => {}
+    }
+}
+
+#[cfg(catalyst)]
+fn dispatch_scenario_event(stage: &Stage, input: &mut ScenarioInputState, event: ScenarioEvent) {
+    use cocoa_ui::objc2_ui_kit::{UIControlEvents, UIScrollView, UIView};
+
+    let root: &UIView = &stage.root;
+    let point = CGPoint::new(f64::from(event.x()), f64::from(event.y()));
+
+    let find_control = |start: &UIView| -> Option<Retained<UIControl>> {
+        let mut cursor: Option<Retained<UIView>> = Some(retain_base(start));
+        while let Some(view) = cursor {
+            if let Ok(control) = view.clone().downcast::<UIControl>() {
+                return Some(control);
+            }
+            cursor = view.superview();
+        }
+        None
+    };
+
+    let find_scroll_view = |start: &UIView| -> Option<Retained<UIScrollView>> {
+        let mut cursor: Option<Retained<UIView>> = Some(retain_base(start));
+        while let Some(view) = cursor {
+            if let Ok(scroll_view) = view.clone().downcast::<UIScrollView>() {
+                return Some(scroll_view);
+            }
+            cursor = view.superview();
+        }
+        None
+    };
+
+    match event.kind() {
+        ScenarioEventKind::PointerDown => {
+            if let Some(hit) = root.hitTest_withEvent(point, None)
+                && let Some(control) = find_control(&hit)
+            {
+                control.setHighlighted(true);
+                control.sendActionsForControlEvents(UIControlEvents::TouchDown);
+                input.pressed_control = Some(control);
+            }
+        }
+        ScenarioEventKind::PointerMove => {
+            if let Some(control) = &input.pressed_control {
+                let local = control.convertPoint_fromView(point, Some(root));
+                let inside = control.pointInside_withEvent(local, None);
+                control.setHighlighted(inside);
+            }
+        }
+        ScenarioEventKind::PointerUp => {
+            if let Some(control) = input.pressed_control.take() {
+                let local = control.convertPoint_fromView(point, Some(root));
+                let inside = control.pointInside_withEvent(local, None);
+                control.setHighlighted(false);
+                control.sendActionsForControlEvents(if inside {
+                    UIControlEvents::TouchUpInside
+                } else {
+                    UIControlEvents::TouchUpOutside
+                });
+            }
+        }
+        ScenarioEventKind::PointerCancel => {
+            if let Some(control) = input.pressed_control.take() {
+                control.setHighlighted(false);
+                control.sendActionsForControlEvents(UIControlEvents::TouchCancel);
+            }
+        }
+        ScenarioEventKind::Scroll => {
+            if let Some(hit) = root.hitTest_withEvent(point, None)
+                && let Some(scroll_view) = find_scroll_view(&hit)
+            {
+                let scale = if event.is_line_delta() { 20.0 } else { 1.0 };
+                let current = scroll_view.contentOffset();
+                let content = scroll_view.contentSize();
+                let bounds = scroll_view.bounds().size;
+                let max_x = (content.width - bounds.width).max(0.0);
+                let max_y = (content.height - bounds.height).max(0.0);
+                let next_x =
+                    f64::mul_add(f64::from(event.dx()), -scale, current.x).clamp(0.0, max_x);
+                let next_y =
+                    f64::mul_add(f64::from(event.dy()), -scale, current.y).clamp(0.0, max_y);
+                scroll_view.setContentOffset_animated(CGPoint::new(next_x, next_y), false);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// The mounted preview: the view on a root `HostView` inside its capture
@@ -474,10 +987,9 @@ struct Stage {
     #[cfg(catalyst)]
     _controller: cocoa_ui::Retained<cocoa_ui::uikit::ViewController>,
     /// The capture window — never ordered in on `AppKit`, scene-less on
-    /// Mac Catalyst. Only the `AppKit` `ViewCapture` path reads it, to run
-    /// the display pass; everywhere else its role is to stay alive.
+    /// Mac Catalyst.
     #[cfg_attr(
-        not(all(target_os = "macos", feature = "gpu_surface")),
+        catalyst,
         expect(
             dead_code,
             reason = "the capture window's role is to stay alive for the capture"

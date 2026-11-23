@@ -18,23 +18,133 @@ pub(crate) mod hydrolysis_android;
 pub mod protocol;
 pub mod request;
 pub(crate) mod run;
+pub mod video;
+
+use std::path::{Path, PathBuf};
 
 use askama::Template;
+use eyre::{Result, bail};
 
 pub use apple::{
-    ApplePreviewBinary, ApplePreviewRequest, build_preview_with_apple, render_preview_with_apple,
+    ApplePreviewBinary, ApplePreviewRenderOptions, ApplePreviewRequest, build_preview_with_apple,
+    render_preview_with_apple,
 };
 pub use hydrolysis::{
-    HydrolysisPreviewEventKind, HydrolysisPreviewPointerButton, HydrolysisPreviewRequest,
-    HydrolysisPreviewScenario, HydrolysisPreviewScenarioEvent, HydrolysisPreviewTheme,
-    discover_hydrolysis_preview_exports, render_preview_with_hydrolysis,
-    test_preview_with_hydrolysis,
+    HydrolysisPreviewRequest, HydrolysisPreviewTheme, discover_hydrolysis_preview_exports,
+    render_preview_with_hydrolysis, test_preview_with_hydrolysis,
 };
 
 pub use request::{
     CliHydrolysisPreviewTheme, CliPreviewBackend, CliPreviewColorScheme, CliPreviewPlatform,
     PreviewColorScheme, PreviewRequest, PreviewTarget,
 };
+pub use video::{DEFAULT_VIDEO_FPS, HardwareVideoEncoder, encode_raw_frame_stream_to_mp4};
+pub use waterui_preview_protocol::run::{
+    ScenarioEvent as PreviewScenarioEvent, ScenarioEventKind as PreviewEventKind,
+    ScenarioPointerButton as PreviewPointerButton,
+};
+
+/// Video recording output options (`--video` and `--fps`) shared by
+/// `water preview --scenario` and `water preview test`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreviewVideoOptions {
+    /// Destination `.mp4` path.
+    output_path: PathBuf,
+    /// Fixed sampling frame rate in frames per second (strictly positive).
+    fps: u32,
+}
+
+impl PreviewVideoOptions {
+    /// Validates and constructs video output options (`fps` defaults to [`DEFAULT_VIDEO_FPS`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `fps` is zero.
+    pub fn new(output_path: PathBuf, fps: u32) -> Result<Self> {
+        if fps == 0 {
+            bail!("`--fps` must be greater than zero.");
+        }
+        Ok(Self { output_path, fps })
+    }
+
+    /// Destination `.mp4` path.
+    #[must_use]
+    pub fn output_path(&self) -> &Path {
+        &self.output_path
+    }
+
+    /// Fixed sampling frame rate in frames per second.
+    #[must_use]
+    pub const fn fps(&self) -> u32 {
+        self.fps
+    }
+}
+
+/// Interactive capture scenario shared by Hydrolysis and Apple previews.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PreviewScenario {
+    /// Capture timestamps in milliseconds from scenario start for PNG frames.
+    captures_ms: Vec<u64>,
+    /// Input events sorted by timestamp.
+    events: Vec<PreviewScenarioEvent>,
+    /// Directory receiving `frame-XXXXms.png` captures, when PNG output is requested.
+    output_dir: Option<PathBuf>,
+    /// Optional explicit timeline duration in milliseconds for video recording.
+    duration_ms: Option<u64>,
+    /// Optional hardware-encoded MP4 output configuration.
+    video: Option<PreviewVideoOptions>,
+}
+
+impl PreviewScenario {
+    /// Constructs a scenario replaying `events` and producing PNG frames in
+    /// `output_dir` and/or a hardware-encoded MP4 video via `video`.
+    #[must_use]
+    pub const fn new(
+        captures_ms: Vec<u64>,
+        events: Vec<PreviewScenarioEvent>,
+        output_dir: Option<PathBuf>,
+        duration_ms: Option<u64>,
+        video: Option<PreviewVideoOptions>,
+    ) -> Self {
+        Self {
+            captures_ms,
+            events,
+            output_dir,
+            duration_ms,
+            video,
+        }
+    }
+
+    /// Capture timestamps in milliseconds from scenario start.
+    #[must_use]
+    pub fn captures_ms(&self) -> &[u64] {
+        &self.captures_ms
+    }
+
+    /// Input events sorted by timestamp.
+    #[must_use]
+    pub fn events(&self) -> &[PreviewScenarioEvent] {
+        &self.events
+    }
+
+    /// Directory where PNG frames are written, if requested.
+    #[must_use]
+    pub fn output_dir(&self) -> Option<&Path> {
+        self.output_dir.as_deref()
+    }
+
+    /// Explicit scenario duration in milliseconds for video recording, if set.
+    #[must_use]
+    pub const fn duration_ms(&self) -> Option<u64> {
+        self.duration_ms
+    }
+
+    /// Hardware-encoded MP4 output options, if video recording is requested.
+    #[must_use]
+    pub const fn video(&self) -> Option<&PreviewVideoOptions> {
+        self.video.as_ref()
+    }
+}
 
 /// Source used to produce a preview view — an existing `#[preview]` export
 /// or an inline `WaterUI` expression. Shared by every preview backend.
@@ -64,6 +174,7 @@ pub(crate) struct PreviewTargetTemplate<'a> {
     crate_name_ident: &'a str,
     preview_theme_style: Option<&'a str>,
     semantic_automation_body: Option<&'a str>,
+    offscreen_semantic_test: bool,
 }
 
 impl<'a> PreviewTargetTemplate<'a> {
@@ -76,6 +187,7 @@ impl<'a> PreviewTargetTemplate<'a> {
             crate_name_ident,
             None,
             None,
+            false,
         )
     }
 
@@ -86,6 +198,7 @@ impl<'a> PreviewTargetTemplate<'a> {
         crate_name_ident: &'a str,
         theme_style: &'a str,
         automation_body: Option<&'a str>,
+        offscreen_semantic_test: bool,
     ) -> Self {
         Self::new(
             "Hydrolysis",
@@ -94,6 +207,7 @@ impl<'a> PreviewTargetTemplate<'a> {
             crate_name_ident,
             Some(theme_style),
             automation_body,
+            offscreen_semantic_test,
         )
     }
 
@@ -104,6 +218,7 @@ impl<'a> PreviewTargetTemplate<'a> {
         crate_name_ident: &'a str,
         preview_theme_style: Option<&'a str>,
         semantic_automation_body: Option<&'a str>,
+        offscreen_semantic_test: bool,
     ) -> Self {
         let (expression_mode, preview_symbol, preview_expression) = match source {
             PreviewSource::Symbol(symbol) => (false, symbol, ""),
@@ -118,6 +233,7 @@ impl<'a> PreviewTargetTemplate<'a> {
             crate_name_ident,
             preview_theme_style,
             semantic_automation_body,
+            offscreen_semantic_test,
         }
     }
 }

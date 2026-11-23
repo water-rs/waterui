@@ -49,6 +49,86 @@ pub(crate) fn app_environment() -> waterui::env::Environment {
 }
 {% endif -%}
 {% if let Some(body) = semantic_automation_body %}
+{% if offscreen_semantic_test %}
+pub(crate) fn run_preview_test(
+    width: u32,
+    height: u32,
+    scale: f64,
+    color_scheme: Option<waterui::theme::ColorScheme>,
+    video: Option<&waterui_preview_protocol::run::VideoCaptureConfig>,
+) {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use waterui_preview_protocol::run::{Alpha, RawFrameStreamWriter};
+    use waterui_testing::ui;
+
+    let video = video.expect("offscreen preview test requires video capture configuration");
+    let mut env = app_environment();
+    if let Some(scheme) = color_scheme {
+        waterui::theme::install_color_scheme(&mut env, waterui::Computed::constant(scheme));
+    }
+    env.insert(hydrolysis::DeclaredFonts::default());
+    let mut app = ui()
+        .environment(env)
+        .theme(preview_style(color_scheme))
+        .viewport(width, height)
+        .scale_factor(scale)
+        .mount_offscreen(load_preview_view);
+    let writer = Rc::new(RefCell::new(Some(
+        RawFrameStreamWriter::create(video.output(), video.fps())
+            .unwrap_or_else(|error| panic!("hydrolysis preview test: {error}")),
+    )));
+    let sink_writer = Rc::clone(&writer);
+    app.start_frame_recording(video.fps(), move |snapshot, timestamp| {
+        let (frame_w, frame_h, rgba8) = snapshot.into_parts();
+        if let Some(writer) = sink_writer.borrow_mut().as_mut() {
+            writer
+                .write_frame(frame_w, frame_h, rgba8, Alpha::Straight, timestamp)
+                .unwrap_or_else(|error| panic!("hydrolysis preview test: {error}"));
+        }
+    });
+    run_semantic_automation(&mut app);
+    app.finish_frame_recording();
+    if let Some(writer) = writer.borrow_mut().take() {
+        let _ = writer
+            .finish()
+            .unwrap_or_else(|error| panic!("hydrolysis preview test: {error}"));
+    }
+}
+
+pub(crate) fn run_semantic_automation(app: &mut waterui_testing::OffscreenApp) {
+    use waterui::prelude::*;
+    use waterui_testing::*;
+
+    {{ body }}
+}
+{% else %}
+pub(crate) fn run_preview_test(
+    width: u32,
+    height: u32,
+    _scale: f64,
+    color_scheme: Option<waterui::theme::ColorScheme>,
+    video: Option<&waterui_preview_protocol::run::VideoCaptureConfig>,
+) {
+    use waterui_testing::ui;
+
+    assert!(
+        video.is_none(),
+        "hydrolysis preview test: video capture requires offscreen semantic test bindings"
+    );
+    let mut env = app_environment();
+    if let Some(scheme) = color_scheme {
+        waterui::theme::install_color_scheme(&mut env, waterui::Computed::constant(scheme));
+    }
+    env.insert(hydrolysis::DeclaredFonts::default());
+    let mut app = ui()
+        .environment(env)
+        .theme(preview_style(color_scheme))
+        .viewport(width, height)
+        .mount(load_preview_view);
+    run_semantic_automation(&mut app);
+}
 
 pub(crate) fn run_semantic_automation(app: &mut waterui_testing::SemanticApp) {
     use waterui::prelude::*;
@@ -56,4 +136,5 @@ pub(crate) fn run_semantic_automation(app: &mut waterui_testing::SemanticApp) {
 
     {{ body }}
 }
+{% endif %}
 {% endif %}

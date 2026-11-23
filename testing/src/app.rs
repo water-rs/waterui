@@ -20,6 +20,7 @@ use crate::artifacts::{CapturedSnapshot, TestArtifacts};
 use crate::driver::{
     self, DriverPumpResult, FrameTiming, ResourceSampler, RuntimeDriver, VIRTUAL_FRAME,
 };
+use crate::executor::drain_parked_local_work;
 use crate::perf::{PerfApp, PerfConfig, PerfReport};
 use crate::query::Query;
 use crate::selector::{ElementAnchor, ElementRef, ElementSet, Selector};
@@ -708,15 +709,50 @@ impl OffscreenApp {
     /// The clock is virtual: each pump advances it by a fixed frame step (with
     /// an exact remainder step at the end), so `pump_for(60ms)` always lands
     /// on the 60ms point of a transition regardless of host scheduling. No
-    /// wall-clock time is slept and no snapshot readback happens; call
-    /// [`Self::snapshot`] to capture the phase the clock landed on.
+    /// wall-clock time is slept and no snapshot readback happens unless frame
+    /// recording is active; call [`Self::snapshot`] to capture the phase the
+    /// clock landed on.
     pub fn pump_for(&mut self, duration: Duration) {
+        let step_cap = self.app.recording_step_cap();
         let mut remaining = duration;
         while !remaining.is_zero() {
-            let step = VIRTUAL_FRAME.min(remaining);
+            let step = step_cap.min(remaining);
             remaining -= step;
             self.app.pump_step(step);
         }
+    }
+
+    /// Starts recording rendered snapshots at a fixed `fps` across subsequent
+    /// virtual-clock pumps, emitting the initial settled frame immediately at
+    /// `Duration::ZERO`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `fps` is zero.
+    pub fn start_frame_recording(
+        &mut self,
+        fps: u32,
+        mut sink: impl FnMut(Snapshot, Duration) + 'static,
+    ) {
+        assert!(
+            fps > 0,
+            "waterui-testing frame recording fps must be greater than zero"
+        );
+        let origin = self.app.clock.unwrap_or_else(Instant::now);
+        self.app.clock = Some(origin);
+        let initial = self.app.capture_frame_at(origin);
+        sink(initial, Duration::ZERO);
+        self.app.frame_recorder = Some(FrameRecorder {
+            fps,
+            origin,
+            next_frame_index: 1,
+            sink: Box::new(sink),
+        });
+    }
+
+    /// Stops active fixed-FPS frame recording and drops the frame sink.
+    pub fn finish_frame_recording(&mut self) {
+        self.app.frame_recorder = None;
     }
 
     /// Pumps frames, running work `spawn_local` parked, until `ready`
@@ -812,6 +848,49 @@ impl core::ops::DerefMut for OffscreenApp {
     }
 }
 
+pub struct FrameRecorder {
+    fps: u32,
+    origin: Instant,
+    next_frame_index: u64,
+    sink: Box<dyn FnMut(Snapshot, Duration)>,
+}
+
+impl FrameRecorder {
+    fn slot_nanos(&self, frame_index: u64) -> u128 {
+        (u128::from(frame_index) * 1_000_000_000) / u128::from(self.fps)
+    }
+
+    fn needs_capture(&self, at: Instant) -> bool {
+        let elapsed_ns = at.saturating_duration_since(self.origin).as_nanos();
+        elapsed_ns >= self.slot_nanos(self.next_frame_index)
+    }
+
+    fn record(&mut self, at: Instant, snapshot: Snapshot) {
+        let elapsed_ns = at.saturating_duration_since(self.origin).as_nanos();
+        let mut last_index = self.next_frame_index;
+        while self.slot_nanos(last_index + 1) <= elapsed_ns {
+            last_index += 1;
+        }
+        for index in self.next_frame_index..last_index {
+            let ts = Duration::from_nanos(
+                u64::try_from(self.slot_nanos(index))
+                    .expect("recorded frame timestamp fits u64 nanoseconds"),
+            );
+            (self.sink)(snapshot.clone(), ts);
+        }
+        let ts = Duration::from_nanos(
+            u64::try_from(self.slot_nanos(last_index))
+                .expect("recorded frame timestamp fits u64 nanoseconds"),
+        );
+        (self.sink)(snapshot, ts);
+        self.next_frame_index = last_index + 1;
+    }
+
+    fn frame_interval(&self) -> Duration {
+        Duration::from_nanos((1_000_000_000 / u64::from(self.fps)).max(1))
+    }
+}
+
 /// Mounted semantic app session used in `#[waterui::test(...)]`.
 ///
 /// `R` is the mounted runtime: [`SemanticRuntime`] for the style-free
@@ -834,6 +913,8 @@ pub struct SemanticApp<R = SemanticRuntime> {
     pub(crate) resources: ResourceSampler,
     /// The content the mounted views owe: settling waits on it.
     pub(crate) ledger: ContentLedger,
+    /// Optional fixed-FPS frame recorder attached by `OffscreenApp::start_frame_recording`.
+    pub(crate) frame_recorder: Option<FrameRecorder>,
 }
 
 impl<R> core::fmt::Debug for SemanticApp<R> {
@@ -895,6 +976,7 @@ impl<R: RuntimeDriver> SemanticApp<R> {
             clock: None,
             resources: ResourceSampler::new(),
             ledger,
+            frame_recorder: None,
         };
         let rebuilt = app.pump_once();
         assert!(
@@ -1608,8 +1690,16 @@ impl<R: RuntimeDriver> SemanticApp<R> {
         next
     }
 
+    fn recording_step_cap(&self) -> Duration {
+        self.frame_recorder
+            .as_ref()
+            .map_or(VIRTUAL_FRAME, |recorder| {
+                VIRTUAL_FRAME.min(recorder.frame_interval())
+            })
+    }
+
     fn pump_once(&mut self) -> bool {
-        self.pump_step(VIRTUAL_FRAME)
+        self.pump_step(self.recording_step_cap())
     }
 
     /// Advances the virtual clock by `step`, pumps one frame at the landed
@@ -1618,9 +1708,20 @@ impl<R: RuntimeDriver> SemanticApp<R> {
     fn pump_step(&mut self, step: Duration) -> bool {
         let _ = crate::executor::drain_parked_local_work();
         let at = self.tick(step);
-        let outcome = self.runtime.pump_at(at, false);
-        let rebuilt = outcome.rebuilt;
-        let _ = self.apply_pump_result(outcome);
+        let should_capture = self
+            .frame_recorder
+            .as_ref()
+            .is_some_and(|recorder| recorder.needs_capture(at));
+        if !should_capture {
+            let outcome = self.runtime.pump_at(at, false);
+            let rebuilt = outcome.rebuilt;
+            let _ = self.apply_pump_result(outcome);
+            return rebuilt;
+        }
+        let (rebuilt, snapshot) = self.pump_capture_at(at);
+        if let Some(recorder) = &mut self.frame_recorder {
+            recorder.record(at, snapshot);
+        }
         rebuilt
     }
 
@@ -1639,12 +1740,30 @@ impl<R: RuntimeDriver> SemanticApp<R> {
     /// skipped it.
     pub(crate) fn capture_frame(&mut self) -> Snapshot {
         let _ = crate::executor::drain_parked_local_work();
-        let at = self.tick(VIRTUAL_FRAME);
+        let at = self.tick(self.recording_step_cap());
+        let (_rebuilt, snapshot) = self.pump_capture_at(at);
+        if let Some(recorder) = &mut self.frame_recorder
+            && recorder.needs_capture(at)
+        {
+            recorder.record(at, snapshot.clone());
+        }
+        snapshot
+    }
+
+    pub(crate) fn capture_frame_at(&mut self, at: Instant) -> Snapshot {
+        let _ = drain_parked_local_work();
+        let (_rebuilt, snapshot) = self.pump_capture_at(at);
+        snapshot
+    }
+
+    fn pump_capture_at(&mut self, at: Instant) -> (bool, Snapshot) {
+        let mut any_rebuilt = false;
         loop {
             let outcome = self.runtime.pump_at(at, true);
+            any_rebuilt |= outcome.rebuilt;
             let device_lost = outcome.device_lost;
             if let Some(snapshot) = self.apply_pump_result(outcome) {
-                return snapshot;
+                return (any_rebuilt, snapshot);
             }
             assert!(
                 device_lost,

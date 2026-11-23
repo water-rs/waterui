@@ -877,3 +877,42 @@ fn flipping_a_toggle_keeps_the_runtime_unsettled_until_the_knob_spring_finishes(
         "the spring takes several frames, not the one that applied the flip"
     );
 }
+
+#[test]
+fn offscreen_frame_recording_samples_fixed_fps_across_pump_for() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let mut app = ui()
+        .theme(Material3::defaults())
+        .viewport(120, 80)
+        .mount_offscreen(|| text("Recording").body());
+
+    let recorded = Rc::new(RefCell::new(Vec::<(u32, u32, Duration)>::new()));
+    let recorded_for_sink = Rc::clone(&recorded);
+    app.start_frame_recording(30, move |snapshot, timestamp| {
+        recorded_for_sink
+            .borrow_mut()
+            .push((snapshot.width(), snapshot.height(), timestamp));
+    });
+    app.pump_for(Duration::from_millis(100));
+    app.finish_frame_recording();
+    let count_after_finish = recorded.borrow().len();
+    app.pump_for(Duration::from_millis(100));
+
+    let frames = recorded.borrow();
+    assert_eq!(
+        frames.len(),
+        count_after_finish,
+        "pumps after finish_frame_recording must not emit extra frames"
+    );
+    assert_eq!(
+        frames.len(),
+        4,
+        "30fps over 100ms must emit frames at 0, 33, 66, and 100ms, got {frames:?}"
+    );
+    assert_eq!(frames[0].2, Duration::ZERO);
+    for &(w, h, _) in frames.iter() {
+        assert_eq!((w, h), (120, 80));
+    }
+}

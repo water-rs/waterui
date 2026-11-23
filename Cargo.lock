@@ -13255,6 +13255,9 @@ dependencies = [
  "url",
  "uuid",
  "walkdir",
+ "waterkit-codec",
+ "waterkit-video-container",
+ "waterkit-video-core",
  "waterui-assets-core",
  "waterui-assets-planner",
  "waterui-git-head",
@@ -13267,6 +13270,7 @@ dependencies = [
  "whoami",
  "windows-sys 0.61.2",
  "x509-parser",
+ "yuv",
  "zenwave 0.7.1",
  "zip",
 ]

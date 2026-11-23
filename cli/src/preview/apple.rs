@@ -22,13 +22,18 @@ use crate::apple::platform::apple_rust_build;
 use crate::artifact_symbols::ArtifactSymbols;
 use crate::build::{BuildOptions, BuildProgress};
 use crate::platform::{TargetBackend, TargetPlatform};
+use crate::preview::hydrolysis::scenario_frame_path;
 use crate::preview::run::{self, absolute_output_path, expect_nonempty_output, write_run_config};
-use crate::preview::{PreviewSource, PreviewTargetTemplate};
+use crate::preview::{
+    PreviewScenario, PreviewSource, PreviewTargetTemplate, encode_raw_frame_stream_to_mp4,
+};
 use crate::project::Project;
 use crate::project_model::assets;
 use cargo_toml::Manifest as CargoManifest;
 
-use waterui_preview_protocol::run::{PreviewColorScheme, PreviewRunConfig, PreviewRunMode};
+use waterui_preview_protocol::run::{
+    PreviewColorScheme, PreviewRunConfig, PreviewRunMode, VideoCaptureConfig,
+};
 
 /// Request for Apple in-process preview rendering.
 #[derive(Debug, Clone)]
@@ -142,6 +147,25 @@ pub struct ApplePreviewBinary {
     executable: PathBuf,
 }
 
+/// Options for executing a built [`ApplePreviewBinary`].
+#[derive(Debug, Clone)]
+pub struct ApplePreviewRenderOptions<'a> {
+    /// Preview width in logical pixels.
+    pub width: f32,
+    /// Preview height in logical pixels.
+    pub height: f32,
+    /// How long a capture waits for owed content.
+    pub content_deadline: Duration,
+    /// Optional color-scheme override.
+    pub color_scheme: Option<PreviewColorScheme>,
+    /// Capture scale factor.
+    pub scale: f32,
+    /// Destination PNG path for single-image captures.
+    pub output_path: &'a Path,
+    /// Optional scenario timeline (PNG frames and/or hardware-encoded MP4 video).
+    pub scenario: Option<&'a PreviewScenario>,
+}
+
 impl ApplePreviewBinary {
     /// The built executable.
     #[must_use]
@@ -151,37 +175,57 @@ impl ApplePreviewBinary {
 
     /// Execute the binary in the preview package's directory with the run
     /// configuration it reads from `WATERUI_PREVIEW_RUN_CONFIG`, and check
-    /// it wrote the PNG to `output_path`.
+    /// it wrote the PNG (or scenario frames / hardware-encoded MP4 video).
     ///
     /// # Errors
     ///
     /// Returns an error when the run configuration cannot be written, the
-    /// binary fails, or the image was not produced.
-    pub async fn render(
-        &self,
-        width: f32,
-        height: f32,
-        content_deadline: Duration,
-        color_scheme: Option<PreviewColorScheme>,
-        scale: f32,
-        output_path: &Path,
-    ) -> Result<()> {
-        let output_path = absolute_output_path(self.project.host(), output_path);
-        let crate_dir = self.project.apple_preview_crate_path();
-        let run_config = PreviewRunConfig::new(
+    /// binary fails, an expected output was not produced, or video encoding fails.
+    pub async fn render(&self, options: ApplePreviewRenderOptions<'_>) -> Result<()> {
+        let ApplePreviewRenderOptions {
             width,
             height,
-            PreviewRunMode::Image {
-                output: output_path.clone(),
-            },
             content_deadline,
-        )
-        .with_optional_color_scheme(color_scheme)
-        .with_scale(scale);
+            color_scheme,
+            scale,
+            output_path,
+            scenario,
+        } = options;
+        let host = self.project.host();
+        let crate_dir = self.project.apple_preview_crate_path();
+        let video_target = scenario
+            .and_then(PreviewScenario::video)
+            .map(|video| -> Result<_> {
+                let raw_dir = tempfile::tempdir()
+                    .wrap_err("Failed to create temp dir for preview video frames")?;
+                let raw_path = raw_dir.path().join("frames.wuirf");
+                let output = absolute_output_path(host, video.output_path());
+                Ok((raw_dir, raw_path, output, video.fps()))
+            })
+            .transpose()?;
+        let mode = scenario.map_or_else(
+            || PreviewRunMode::Image {
+                output: absolute_output_path(host, output_path),
+            },
+            |scenario| PreviewRunMode::Scenario {
+                output_dir: scenario
+                    .output_dir()
+                    .map(|dir| absolute_output_path(host, dir)),
+                captures_ms: scenario.captures_ms().to_vec(),
+                events: scenario.events().to_vec(),
+                video: video_target.as_ref().map(|(_, raw_path, _, fps)| {
+                    VideoCaptureConfig::new(raw_path.clone(), *fps)
+                        .with_duration_ms(scenario.duration_ms())
+                }),
+            },
+        );
+        let run_config = PreviewRunConfig::new(width, height, mode, content_deadline)
+            .with_optional_color_scheme(color_scheme)
+            .with_scale(scale);
         let run_config_path = write_run_config(&crate_dir, &run_config).await?;
         let process_started = Instant::now();
         let output = run::run_preview_binary(
-            self.project.host(),
+            host,
             &crate_dir,
             &self.executable,
             &run_config_path,
@@ -196,7 +240,35 @@ impl ApplePreviewBinary {
         for line in String::from_utf8_lossy(&output.stderr).lines() {
             tracing::info!("{line}");
         }
-        expect_nonempty_output(&output_path, "the Apple preview binary's PNG").await
+        match run_config.mode() {
+            PreviewRunMode::Image { output } => {
+                expect_nonempty_output(output, "the Apple preview binary's PNG").await?;
+            }
+            PreviewRunMode::Scenario {
+                output_dir,
+                captures_ms,
+                ..
+            } => {
+                if let Some(output_dir) = output_dir {
+                    for capture_ms in captures_ms {
+                        let frame_path = scenario_frame_path(output_dir, *capture_ms);
+                        expect_nonempty_output(&frame_path, "scenario frame").await?;
+                    }
+                }
+            }
+            PreviewRunMode::Semantic { .. } => {
+                unreachable!("Apple preview only runs image or scenario modes")
+            }
+        }
+        if let Some((_raw_dir, raw_path, video_output, _)) = video_target {
+            let video_output_for_encode = video_output.clone();
+            let _ = smol::unblock(move || {
+                encode_raw_frame_stream_to_mp4(&raw_path, &video_output_for_encode)
+            })
+            .await?;
+            expect_nonempty_output(&video_output, "preview video").await?;
+        }
+        Ok(())
     }
 }
 
@@ -288,6 +360,7 @@ pub async fn build_preview_with_apple(
 pub async fn render_preview_with_apple(
     request: ApplePreviewRequest<'_>,
     output_path: &Path,
+    scenario: Option<&PreviewScenario>,
 ) -> Result<()> {
     let (width, height, content_deadline, color_scheme, scale) = (
         request.width,
@@ -298,13 +371,14 @@ pub async fn render_preview_with_apple(
     );
     build_preview_with_apple(request)
         .await?
-        .render(
+        .render(ApplePreviewRenderOptions {
             width,
             height,
             content_deadline,
             color_scheme,
             scale,
             output_path,
-        )
+            scenario,
+        })
         .await
 }

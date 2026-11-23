@@ -46,7 +46,7 @@ mod suite {
     use waterui_apple::preview::PreviewError;
     use waterui_preview_protocol::run::{
         DEFAULT_CONTENT_DEADLINE, PREVIEW_RUN_CONFIG_ENV, PreviewRunConfig, PreviewRunMode,
-        RunConfigError,
+        RawFrameStreamReader, RunConfigError, VideoCaptureConfig,
     };
 
     /// The argument that turns a spawned copy of this binary into a
@@ -172,15 +172,38 @@ mod suite {
                 "offscreen_tabs_nav_checkbox",
                 None,
             ),
-            failure_trial(
-                "preview::rejects_a_scenario_run",
-                "scenario",
-                "apple preview supports image captures only",
-            ),
+            Trial::test("preview::captures_a_scenario_windowless", || {
+                run_trial("scenario", Expect::Success);
+                let dir = output_dir().join("scenario");
+                let png = dir.join("frame-0000ms.png");
+                assert!(
+                    fs::metadata(&png).is_ok_and(|meta| meta.len() > 0),
+                    "scenario PNG frame must exist at {}",
+                    png.display()
+                );
+                let stream_path = dir.join("frames.wuirf");
+                let mut reader = RawFrameStreamReader::open(&stream_path)
+                    .expect("scenario raw frame stream must open");
+                assert_eq!(reader.fps(), 20);
+                assert!(reader.width() > 0 && reader.height() > 0);
+                let expected_bytes = (reader.width() * reader.height() * 4) as usize;
+                let mut buf = Vec::new();
+                let mut count = 0usize;
+                while reader
+                    .next_frame(&mut buf)
+                    .expect("read raw frame")
+                    .is_some()
+                {
+                    assert_eq!(buf.len(), expected_bytes);
+                    count += 1;
+                }
+                assert_eq!(count, 3, "20fps over 100ms must record 3 frames");
+                Ok(())
+            }),
             failure_trial(
                 "preview::rejects_a_semantic_run",
                 "semantic",
-                "apple preview supports image captures only",
+                "apple preview does not support semantic runs",
             ),
             failure_trial(
                 "preview::errors_when_the_run_config_is_missing",
@@ -201,6 +224,8 @@ mod suite {
         /// Exit status 0 and `target/preview-captures/<slug>.png` written
         /// non-empty.
         Png,
+        /// Exit status 0; trial inspects its own outputs.
+        Success,
         /// A non-zero exit status and this error text on the child's
         /// stderr — the contract a generated preview binary keeps.
         Failure(&'static str),
@@ -287,6 +312,12 @@ mod suite {
                     output.display()
                 );
             }
+            Expect::Success => {
+                assert!(
+                    status.success(),
+                    "the {slug} child exits 0, got {status:?}; stderr:\n{stderr}"
+                );
+            }
             Expect::Failure(text) => {
                 assert!(
                     !status.success(),
@@ -343,15 +374,11 @@ mod suite {
             }
             #[cfg(feature = "gpu_surface")]
             "offscreen_tabs_nav_checkbox" => offscreen_tabs_nav_checkbox_run(),
-            "scenario" => error_run("scenario", |dir| PreviewRunMode::Scenario {
-                output_dir: dir.clone(),
-                captures_ms: vec![0],
-                events: vec![],
-            })
-            .map_err(Into::into),
-            "semantic" => {
-                error_run("semantic", |_dir| PreviewRunMode::Semantic).map_err(Into::into)
+            "scenario" => {
+                scenario_run("scenario", 200.0, 120.0, liquid_glass_view).map_err(Into::into)
             }
+            "semantic" => error_run("semantic", |_dir| PreviewRunMode::Semantic { video: None })
+                .map_err(Into::into),
             "missing_config" => missing_config_run().map_err(Into::into),
             "malformed_config" => malformed_config_run().map_err(Into::into),
             other => panic!("unknown preview child trial {other}"),
@@ -387,6 +414,36 @@ mod suite {
         );
         if result.is_ok() {
             tracing::info!("preview capture written to {}", output.display());
+            assert_background_application();
+        }
+        result
+    }
+
+    /// One scenario run, end to end: captures a PNG at `t = 0ms` and a 20fps
+    /// raw RGBA8 video stream across 100ms (3 frames) with zero on-screen windows.
+    fn scenario_run<V: View>(
+        slug: &str,
+        width: f32,
+        height: f32,
+        view: impl FnOnce() -> V + 'static,
+    ) -> Result<(), PreviewError> {
+        let dir = output_dir().join(slug);
+        let result = run_with_config(
+            slug,
+            PreviewRunMode::Scenario {
+                output_dir: Some(dir.clone()),
+                captures_ms: vec![0],
+                events: Vec::new(),
+                video: Some(
+                    VideoCaptureConfig::new(dir.join("frames.wuirf"), 20)
+                        .with_duration_ms(Some(100)),
+                ),
+            },
+            width,
+            height,
+            view,
+        );
+        if result.is_ok() {
             assert_background_application();
         }
         result

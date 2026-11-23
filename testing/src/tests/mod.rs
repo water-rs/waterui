@@ -175,6 +175,7 @@ fn mounted_on<R: RuntimeDriver>(runtime: R, tree: TreeSnapshot) -> SemanticApp<R
         clock: None,
         resources: ResourceSampler::new(),
         ledger: ContentLedger::new(),
+        frame_recorder: None,
     }
 }
 

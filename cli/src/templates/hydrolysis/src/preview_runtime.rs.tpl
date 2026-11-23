@@ -15,8 +15,9 @@ use waterui::ContentLedger;
 use waterui::content_ledger::{ContentError, ContentFailure};
 use waterui_core::handler::AnyViewBuilder;
 use waterui_preview_protocol::run::{
-    Alpha, PreviewColorScheme, PreviewRunConfig, PreviewRunMode, ScenarioEvent, ScenarioEventKind,
-    ScenarioPointerButton, write_png,
+    Alpha, PreviewColorScheme, PreviewRunConfig, PreviewRunMode, RawFrameStreamWriter,
+    ScenarioEvent, ScenarioEventKind, ScenarioPointerButton, VideoCaptureConfig,
+    plan_scenario_timeline, write_png,
 };
 
 pub(crate) fn run() {
@@ -35,8 +36,15 @@ pub(crate) fn run() {
             output_dir,
             captures_ms,
             events,
-        } => run_scenario(output_dir, captures_ms, events, &config),
-        PreviewRunMode::Semantic => panic!(
+            video,
+        } => run_scenario(
+            output_dir.as_deref(),
+            captures_ms,
+            events,
+            video.as_ref(),
+            &config,
+        ),
+        PreviewRunMode::Semantic { .. } => panic!(
             "hydrolysis preview: semantic runs require the preview test binary (waterui-preview-test-mode)"
         ),
     }
@@ -189,27 +197,36 @@ fn run_image(output_path: &Path, config: &PreviewRunConfig) {
 }
 
 fn run_scenario(
-    output_dir: &Path,
+    output_dir: Option<&Path>,
     captures_ms: &[u64],
     events: &[ScenarioEvent],
+    video: Option<&VideoCaptureConfig>,
     config: &PreviewRunConfig,
 ) {
-    assert!(
-        !captures_ms.is_empty(),
-        "hydrolysis preview scenario requires at least one capture"
-    );
-    fs::create_dir_all(output_dir).unwrap_or_else(|error| {
-        panic!(
-            "hydrolysis preview: failed to create scenario output dir `{}`: {error}",
-            output_dir.display()
-        )
+    let samples = plan_scenario_timeline(captures_ms, video, events)
+        .unwrap_or_else(|error| panic!("hydrolysis preview: {error}"));
+    if let Some(output_dir) = output_dir
+        && !captures_ms.is_empty()
+    {
+        fs::create_dir_all(output_dir).unwrap_or_else(|error| {
+            panic!(
+                "hydrolysis preview: failed to create scenario output dir `{}`: {error}",
+                output_dir.display()
+            )
+        });
+    }
+    let mut video_writer = video.map(|video| {
+        RawFrameStreamWriter::create(video.output(), video.fps())
+            .unwrap_or_else(|error| panic!("hydrolysis preview: {error}"))
     });
     let mut preview = mount(config);
     let started_at = Instant::now();
     let _ = preview.runtime.pump_at(false, started_at);
     let mut event_index = 0usize;
-    for capture_ms in captures_ms {
-        while event_index < events.len() && events[event_index].at_ms() <= *capture_ms {
+    for sample in samples {
+        while event_index < events.len()
+            && Duration::from_millis(events[event_index].at_ms()) <= sample.offset()
+        {
             let event_at = started_at + Duration::from_millis(events[event_index].at_ms());
             preview
                 .runtime
@@ -217,19 +234,67 @@ fn run_scenario(
             let _ = preview.runtime.pump_at(false, event_at);
             event_index += 1;
         }
-        let capture_at = started_at + Duration::from_millis(*capture_ms);
+        let capture_at = started_at + sample.offset();
         // Content an interaction made a view owe — a tap that kicks off a
         // fetch — is owed to the same ledger mount-time content is, so a
         // capture settles by the same rule: the tree quiet *and* nothing owed.
         settle(&mut preview, capture_at);
         let result = preview.runtime.pump_at(true, capture_at);
         let Some(snapshot) = result.into_snapshot() else {
-            panic!("hydrolysis preview: scenario capture at {capture_ms}ms produced no snapshot");
+            panic!(
+                "hydrolysis preview: scenario capture at {}ms produced no snapshot",
+                sample.offset().as_millis()
+            );
         };
-        write_snapshot_png(
-            snapshot,
-            &output_dir.join(format!("frame-{capture_ms:04}ms.png")),
-        );
+        let (width, height, rgba8, output_alpha) = snapshot.into_parts();
+        let alpha = match output_alpha {
+            hydrolysis::OutputAlpha::Premultiplied => Alpha::Premultiplied,
+            hydrolysis::OutputAlpha::Opaque | hydrolysis::OutputAlpha::Straight => Alpha::Straight,
+        };
+        match (sample.png_capture_ms(), sample.record_video()) {
+            (Some(capture_ms), true) => {
+                if let Some(output_dir) = output_dir {
+                    write_png(
+                        &output_dir.join(format!("frame-{capture_ms:04}ms.png")),
+                        width,
+                        height,
+                        rgba8.clone(),
+                        alpha,
+                    )
+                    .unwrap_or_else(|error| panic!("hydrolysis preview: {error}"));
+                }
+                if let Some(writer) = &mut video_writer {
+                    writer
+                        .write_frame(width, height, rgba8, alpha, sample.offset())
+                        .unwrap_or_else(|error| panic!("hydrolysis preview: {error}"));
+                }
+            }
+            (Some(capture_ms), false) => {
+                if let Some(output_dir) = output_dir {
+                    write_png(
+                        &output_dir.join(format!("frame-{capture_ms:04}ms.png")),
+                        width,
+                        height,
+                        rgba8,
+                        alpha,
+                    )
+                    .unwrap_or_else(|error| panic!("hydrolysis preview: {error}"));
+                }
+            }
+            (None, true) => {
+                if let Some(writer) = &mut video_writer {
+                    writer
+                        .write_frame(width, height, rgba8, alpha, sample.offset())
+                        .unwrap_or_else(|error| panic!("hydrolysis preview: {error}"));
+                }
+            }
+            (None, false) => {}
+        }
+    }
+    if let Some(writer) = video_writer {
+        let _ = writer
+            .finish()
+            .unwrap_or_else(|error| panic!("hydrolysis preview: {error}"));
     }
 }
 
