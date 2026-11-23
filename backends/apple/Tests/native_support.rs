@@ -7,10 +7,17 @@
 //! takes the harness's real `MainThreadMarker` — the cases build real
 //! `NSWindow`s, which only the process's true main thread may.
 
+#[cfg(any(target_os = "macos", catalyst))]
+use cocoa_ui::ColorScheme;
 use cocoa_ui::MainThreadMarker;
+#[cfg(target_os = "macos")]
+use cocoa_ui::appkit::Application;
 use waterui::window::WindowManager;
 use waterui_backend_core::Environment;
 use waterui_backend_core::scroll::ANIMATED_ROW_SCROLL_APPROACH;
+
+#[cfg(any(target_os = "macos", catalyst))]
+use crate::theme::{ThemeSignals, install as install_theme, refresh as refresh_theme_signals};
 
 /// `pump_main_until` for the `AppKit` harnesses.
 #[cfg(target_os = "macos")]
@@ -532,31 +539,43 @@ pub fn channel_connects_typed_declarations(_mtm: MainThreadMarker) {
     );
 }
 
-/// The environment `embedding` prepares for a window's mount on macOS.
+/// The environment `embedding` prepares for a window's mount on macOS or
+/// Mac Catalyst.
 ///
 /// `create_root` installs the dispatcher and the embedding services and
-/// then the platform theme, resolved from the shared application's
-/// current scheme — a window background resolves the theme's
+/// then the platform theme — a window background resolves the theme's
 /// `Background` token through the environment, so a bare
 /// `Environment::new()` cannot drive a window binding. Answers the
 /// environment plus the theme signals: keep them alive for the window's
 /// lifetime, the way a real mount's keepalive does.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", catalyst))]
 #[must_use]
-pub fn window_environment(mtm: MainThreadMarker) -> (Environment, crate::theme::ThemeSignals) {
+pub fn window_environment(
+    #[cfg_attr(
+        catalyst,
+        expect(
+            unused_variables,
+            reason = "Catalyst initializes theme with Light without NSApplication"
+        )
+    )]
+    mtm: MainThreadMarker,
+) -> (Environment, ThemeSignals) {
+    use crate::dispatch::install as install_dispatch;
+
     let mut env = Environment::new();
-    crate::dispatch::install(&mut env);
-    let theme = crate::theme::install(
-        &mut env,
-        cocoa_ui::appkit::Application::shared(mtm).color_scheme(),
-    );
+    install_dispatch(&mut env);
+    #[cfg(target_os = "macos")]
+    let initial = Application::shared(mtm).color_scheme();
+    #[cfg(catalyst)]
+    let initial = ColorScheme::Light;
+    let theme = install_theme(&mut env, initial);
     (env, theme)
 }
 
 /// Re-reads every theme slot for `scheme`, as an appearance change does.
-#[cfg(target_os = "macos")]
-pub fn refresh_theme(theme: &crate::theme::ThemeSignals, scheme: cocoa_ui::ColorScheme) {
-    crate::theme::refresh(theme, scheme);
+#[cfg(any(target_os = "macos", catalyst))]
+pub fn refresh_theme(theme: &ThemeSignals, scheme: ColorScheme) {
+    refresh_theme_signals(theme, scheme);
 }
 
 /// A real fixture window, already presentable when `content` joins it.
@@ -1156,13 +1175,20 @@ pub mod transition {
 /// The Apple backend/offscreen renderer, the shared-runtime handles a sealed
 /// generation is reached through, and the failure carriers the cause chain
 /// asserts on.
-#[cfg(all(target_os = "macos", feature = "gpu_surface"))]
+#[cfg(all(any(target_os = "macos", catalyst), feature = "gpu_surface"))]
 pub mod view_renderer {
     pub use crate::backend::AppleBackend;
     pub use crate::components::view_renderer::AppleOffscreenRenderer;
     pub use crate::gpu_runtime::{EngineGeneration, SceneEngine, scene_engine};
     pub use waterui_graphics::gpu::GpuRuntime;
     pub use waterui_graphics::gpu::runtime::HostedLayerError;
+
+    /// Performs the once-per-process `startup::initialize` on the main thread.
+    pub fn initialize_process() {
+        use crate::startup::initialize;
+
+        let _ = initialize();
+    }
 }
 
 /// Re-exports the filtered mounted-surface fixtures.

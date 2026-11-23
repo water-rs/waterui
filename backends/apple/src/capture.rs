@@ -1,18 +1,33 @@
 //! The offscreen subtree capture `preview` and `view_renderer` share when
-//! `gpu_surface` is off. On macOS a window that is created but never
-//! ordered in hosts the view, and `AppKit`'s `cacheDisplayInRect:`
-//! rasterizes the whole subtree into one premultiplied RGBA8 bitmap. On
-//! `UIKit` the view sits inside an offscreen `UIWindow` and its layer
-//! renders into the bitmap. `Metal` layer contents never reach that
-//! bitmap, so with `gpu_surface` the readback is `capture_image`'s
-//! `ViewCapture` instead.
+//! `gpu_surface` is off, and the pure-native readback `view_renderer` uses
+//! under `feature = "native-test"` on macOS and Mac Catalyst.
+//!
+//! In production builds (without `native-test`), macOS hosts the view in a
+//! never-ordered window and rasterizes it through `AppKit`'s
+//! `cacheDisplayInRect:`, while `UIKit` renders its layer into a bitmap inside
+//! an offscreen `UIWindow`. Under `feature = "native-test"` on macOS and Mac
+//! Catalyst, `capture_presented` routes through `cocoa_ui`'s test-only
+//! in-process `Core Animation` render server so glass and backdrop layers
+//! render without ordering any window on screen. `Metal` layer contents never
+//! reach that bitmap, so GPU-bearing trees stay on `capture_image`'s
+//! `ViewCapture`.
 
+#[cfg(all(feature = "native-test", any(target_os = "macos", catalyst)))]
+use cocoa_ui::bitmap::render_layer_via_render_server;
+use cocoa_ui::view::backing_scale_factor;
+#[cfg(all(feature = "native-test", target_os = "macos"))]
+use cocoa_ui::view::is_flipped;
+#[cfg(any(target_os = "ios", all(target_os = "macos", feature = "native-test")))]
+use cocoa_ui::view::layer;
+#[cfg(all(feature = "native-test", catalyst))]
+use cocoa_ui::view::prepare_for_capture;
 use waterui_capture::view_renderer::RenderResult;
 
 /// Why the platform capture produced no bitmap.
 #[derive(Debug, thiserror::Error)]
 pub enum CaptureError {
     /// `Core Graphics` refused the destination bitmap context.
+    #[cfg(not(all(feature = "native-test", any(target_os = "macos", catalyst))))]
     #[error("could not create a {width}x{height} RGBA bitmap context")]
     BitmapContext {
         /// Bitmap width in pixels.
@@ -26,7 +41,7 @@ pub enum CaptureError {
     #[error("the capture host is not inside a window with a content view")]
     NoWindow,
     /// `AppKit` gave the view no bitmap to cache its display into.
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", not(feature = "native-test")))]
     #[error("the view provided no bitmap representation to cache its display into")]
     NoBitmapRep,
     /// The cached display bitmap could not be read as an image.
@@ -42,21 +57,36 @@ pub enum CaptureError {
         height: f64,
     },
     /// No connected window scene can host the offscreen capture window.
-    #[cfg(target_os = "ios")]
+    #[cfg(all(
+        target_os = "ios",
+        not(feature = "gpu_surface"),
+        not(all(feature = "native-test", catalyst))
+    ))]
     #[error("no UIWindowScene is connected to host the capture window")]
     NoWindowScene,
+    /// The test-only in-process `Core Animation` render server refused to
+    /// render the offscreen layer subtree.
+    #[cfg(all(feature = "native-test", any(target_os = "macos", catalyst)))]
+    #[error("in-process Core Animation render server failed to render {width}x{height} raster")]
+    RenderServer {
+        /// Raster width in pixels.
+        width: usize,
+        /// Raster height in pixels.
+        height: usize,
+    },
 }
 
 /// The shared tail of every `AppKit` capture: `host` is already inside its
-/// never-ordered window and laid out under its proposal; `AppKit`'s
-/// `cacheDisplayInRect:` rasterizes the whole subtree into premultiplied
-/// RGBA8. This path exists only without `gpu_surface`: with it, `Metal`
-/// layer contents never reach the bitmap and `capture_image`'s
-/// `ViewCapture` is the readback.
+/// never-ordered window and laid out under its proposal. Production builds
+/// rasterize the subtree through `AppKit`'s `cacheDisplayInRect:`; under
+/// `feature = "native-test"` the subtree renders through `cocoa_ui`'s
+/// test-only in-process `Core Animation` render server so glass and backdrop
+/// layers composite without ordering a window.
 ///
 /// # Errors
 ///
-/// Returns [`CaptureError`] when `AppKit` cannot produce the bitmap.
+/// Returns [`CaptureError`] when `AppKit` or the render server cannot produce
+/// the bitmap.
 #[cfg(target_os = "macos")]
 #[expect(
     clippy::future_not_send,
@@ -89,7 +119,7 @@ pub async fn capture_presented(
         &ancestor,
     );
 
-    let scale = cocoa_ui::view::backing_scale_factor(host);
+    let scale = backing_scale_factor(host);
     cocoa_ui::view::prepare_for_capture(host);
     cocoa_ui::bitmap::force_text_fields_display(host);
 
@@ -102,47 +132,66 @@ pub async fn capture_presented(
     }
     let pixel_width = (bounds.size.width * scale).ceil() as usize;
     let pixel_height = (bounds.size.height * scale).ceil() as usize;
-    let mut pixels = alloc::vec![0u8; pixel_width * pixel_height * 4];
-    let context = cocoa_ui::bitmap::bitmap_context(&mut pixels, pixel_width, pixel_height).ok_or(
-        CaptureError::BitmapContext {
+    #[cfg(feature = "native-test")]
+    {
+        let target_layer = layer(host).ok_or(CaptureError::NoImage)?;
+        let flipped = is_flipped(host);
+        let pixels = render_layer_via_render_server(
+            &target_layer,
+            scale,
+            pixel_width,
+            pixel_height,
+            flipped,
+        )
+        .ok_or(CaptureError::RenderServer {
             width: pixel_width,
             height: pixel_height,
-        },
-    )?;
-    cocoa_ui::bitmap::scale_to_pixels(&context, scale);
+        })?;
+        Ok(RenderResult::new(
+            pixels,
+            pixel_width as u32,
+            pixel_height as u32,
+        ))
+    }
+    #[cfg(not(feature = "native-test"))]
+    {
+        let mut pixels = alloc::vec![0u8; pixel_width * pixel_height * 4];
+        let context = cocoa_ui::bitmap::bitmap_context(&mut pixels, pixel_width, pixel_height)
+            .ok_or(CaptureError::BitmapContext {
+                width: pixel_width,
+                height: pixel_height,
+            })?;
+        cocoa_ui::bitmap::scale_to_pixels(&context, scale);
 
-    let rep =
-        cocoa_ui::view::bitmap_rep_for_caching_display(host).ok_or(CaptureError::NoBitmapRep)?;
-    cocoa_ui::view::cache_display(host, &rep);
-    let image = rep.CGImage().ok_or(CaptureError::NoImage)?;
-    cocoa_ui::bitmap::draw_image(&context, &image, bounds);
-    Ok(RenderResult::new(
-        pixels,
-        pixel_width as u32,
-        pixel_height as u32,
-    ))
+        let rep = cocoa_ui::view::bitmap_rep_for_caching_display(host)
+            .ok_or(CaptureError::NoBitmapRep)?;
+        cocoa_ui::view::cache_display(host, &rep);
+        let image = rep.CGImage().ok_or(CaptureError::NoImage)?;
+        cocoa_ui::bitmap::draw_image(&context, &image, bounds);
+        Ok(RenderResult::new(
+            pixels,
+            pixel_width as u32,
+            pixel_height as u32,
+        ))
+    }
 }
 
 /// The `UIKit` tail of every capture: `host` is already inside its
 /// offscreen `UIWindow` and laid out under its proposal; its layer renders
 /// the whole subtree into premultiplied RGBA8 at the view's display scale.
-/// This path exists only without `gpu_surface`: with it, `Metal` layer
-/// contents never reach the bitmap and `capture_image`'s `ViewCapture` is
-/// the readback.
 ///
-/// `renderInContext` replays the layer model through `Core Graphics`, not the
-/// `Core Animation` compositor, so backdrop filters are not evaluated: a
-/// `UIVisualEffectView` material draws its tint without blurring what lies
-/// behind it. No public capture primitive closes that without a window —
-/// `CARenderer` evaluates the filters but presents Catalyst's layer contents
-/// in the opposite vertical orientation to their geometry, and GPU surfaces
-/// are composited outside the layer tree — so this is a documented
-/// limitation of windowless capture (water-rs/waterui#2660).
+/// In production builds (without `native-test`), `renderInContext` replays the
+/// layer model through `Core Graphics`, not the `Core Animation` compositor,
+/// so backdrop filters are not evaluated: a `UIVisualEffectView` material
+/// draws its tint without blurring what lies behind it (water-rs/waterui#2660).
+/// Under `feature = "native-test"` on Mac Catalyst, the subtree renders
+/// through `cocoa_ui`'s test-only in-process `Core Animation` render server,
+/// evaluating backdrop and glass materials without ordering any window.
 ///
 /// # Errors
 ///
-/// Returns [`CaptureError`] when the view is zero-sized or `Core Graphics`
-/// refuses the bitmap context.
+/// Returns [`CaptureError`] when the view is zero-sized, `Core Graphics`
+/// refuses the bitmap context, or the test-only render server fails.
 #[cfg(target_os = "ios")]
 #[expect(
     clippy::future_not_send,
@@ -170,27 +219,45 @@ pub async fn capture_presented(
             height: bounds.size.height,
         });
     }
-    let scale = cocoa_ui::view::backing_scale_factor(host);
+    let scale = backing_scale_factor(host).max(1.0);
     let pixel_width = (bounds.size.width * scale).ceil() as usize;
     let pixel_height = (bounds.size.height * scale).ceil() as usize;
-    let mut pixels = alloc::vec![0u8; pixel_width * pixel_height * 4];
-    let context = cocoa_ui::bitmap::bitmap_context(&mut pixels, pixel_width, pixel_height).ok_or(
-        CaptureError::BitmapContext {
-            width: pixel_width,
-            height: pixel_height,
-        },
-    )?;
-    cocoa_ui::bitmap::scale_to_pixels(&context, scale);
-    cocoa_ui::bitmap::begin_layer_flip(&context, bounds.size.height);
-    let layer = cocoa_ui::view::layer(host).expect("every `UIView` owns a backing layer");
-    cocoa_ui::bitmap::with_uikit_context(&context, || {
-        cocoa_ui::bitmap::render_layer(&layer, &context);
-    });
-    cocoa_ui::bitmap::end_layer_flip(&context);
-    drop(context);
-    Ok(RenderResult::new(
-        pixels,
-        pixel_width as u32,
-        pixel_height as u32,
-    ))
+    #[cfg(all(feature = "native-test", catalyst))]
+    {
+        prepare_for_capture(host);
+        let target_layer = layer(host).expect("every `UIView` owns a backing layer");
+        let pixels =
+            render_layer_via_render_server(&target_layer, scale, pixel_width, pixel_height, true)
+                .ok_or(CaptureError::RenderServer {
+                width: pixel_width,
+                height: pixel_height,
+            })?;
+        Ok(RenderResult::new(
+            pixels,
+            pixel_width as u32,
+            pixel_height as u32,
+        ))
+    }
+    #[cfg(not(all(feature = "native-test", catalyst)))]
+    {
+        let mut pixels = alloc::vec![0u8; pixel_width * pixel_height * 4];
+        let context = cocoa_ui::bitmap::bitmap_context(&mut pixels, pixel_width, pixel_height)
+            .ok_or(CaptureError::BitmapContext {
+                width: pixel_width,
+                height: pixel_height,
+            })?;
+        cocoa_ui::bitmap::scale_to_pixels(&context, scale);
+        cocoa_ui::bitmap::begin_layer_flip(&context, bounds.size.height);
+        let target_layer = layer(host).expect("every `UIView` owns a backing layer");
+        cocoa_ui::bitmap::with_uikit_context(&context, || {
+            cocoa_ui::bitmap::render_layer(&target_layer, &context);
+        });
+        cocoa_ui::bitmap::end_layer_flip(&context);
+        drop(context);
+        Ok(RenderResult::new(
+            pixels,
+            pixel_width as u32,
+            pixel_height as u32,
+        ))
+    }
 }

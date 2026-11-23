@@ -211,10 +211,10 @@ impl WindowHost {
     /// [`CaptureFailure::NoWindowScene`] on iOS when no connected
     /// `UIWindowScene` can host the offscreen window.
     #[cfg_attr(
-        target_os = "macos",
+        any(target_os = "macos", all(feature = "native-test", catalyst)),
         expect(
             clippy::unnecessary_wraps,
-            reason = "only UIKit's window-scene lookup can fail; AppKit's offscreen window always attaches"
+            reason = "non-Catalyst UIKit can fail with NoWindowScene; AppKit and native-test Catalyst always attach"
         )
     )]
     pub fn attach_if_windowless(
@@ -260,13 +260,29 @@ impl WindowHost {
         };
         #[cfg(target_os = "ios")]
         let window = {
-            let scene =
-                cocoa_ui::bitmap::any_window_scene().ok_or(CaptureFailure::NoWindowScene)?;
-            let window = cocoa_ui::bitmap::make_offscreen_window(mtm, &scene, size);
+            #[cfg(all(feature = "native-test", catalyst))]
+            use cocoa_ui::bitmap::scene_less_capture_window;
+            use cocoa_ui::bitmap::{any_window_scene, make_offscreen_window, show_capture_window};
+            #[cfg(all(feature = "native-test", catalyst))]
+            use cocoa_ui::uikit::catalyst::BackgroundApplication;
+
+            #[cfg(all(feature = "native-test", catalyst))]
+            let window = any_window_scene().map_or_else(
+                || {
+                    let application = BackgroundApplication::bring_up(mtm);
+                    scene_less_capture_window(mtm, &application, size)
+                },
+                |scene| make_offscreen_window(mtm, &scene, size),
+            );
+            #[cfg(not(all(feature = "native-test", catalyst)))]
+            let window = {
+                let scene = any_window_scene().ok_or(CaptureFailure::NoWindowScene)?;
+                make_offscreen_window(mtm, &scene, size)
+            };
             // The `UIViewController` containment + unhide + layout is the
             // only correct UIKit mount — a bare `addSubview` leaves the
             // window without a root controller.
-            cocoa_ui::bitmap::show_capture_window(&window, view, size);
+            show_capture_window(&window, view, size);
             window
         };
         Ok(Some(Self {

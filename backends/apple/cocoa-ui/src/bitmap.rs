@@ -30,8 +30,11 @@ use objc2_quartz_core::CALayer;
 #[cfg(target_os = "macos")]
 use objc2_quartz_core::CATransaction;
 
+#[cfg(target_os = "ios")]
+use objc2_ui_kit::UIWindow;
 use waterui_contract::contract_violation;
 
+use crate::ColorScheme;
 use crate::geometry::{Rect, Size};
 
 unsafe extern "C" {
@@ -599,3 +602,306 @@ pub fn any_window_scene() -> Option<Retained<objc2_ui_kit::UIWindowScene>> {
     }
     None
 }
+
+/// Applies `scheme` to `window` so offscreen controls and dynamic system colors
+/// resolve against the requested light or dark appearance.
+#[cfg(target_os = "macos")]
+pub fn set_window_color_scheme(window: &NSWindow, scheme: ColorScheme) {
+    use objc2_app_kit::{
+        NSAppearance, NSAppearanceCustomization as _, NSAppearanceNameAqua,
+        NSAppearanceNameDarkAqua,
+    };
+
+    // SAFETY: `NSAppearanceNameAqua` and `NSAppearanceNameDarkAqua` are
+    // immutable `AppKit` string constants.
+    let name = unsafe {
+        match scheme {
+            ColorScheme::Light => NSAppearanceNameAqua,
+            ColorScheme::Dark => NSAppearanceNameDarkAqua,
+        }
+    };
+    if let Some(appearance) = NSAppearance::appearanceNamed(name) {
+        window.setAppearance(Some(&appearance));
+    }
+}
+
+/// Applies `scheme` to `window` through `overrideUserInterfaceStyle` so
+/// offscreen `UIKit` controls and materials resolve against the requested
+/// light or dark interface style.
+#[cfg(target_os = "ios")]
+pub fn set_window_color_scheme(window: &UIWindow, scheme: ColorScheme) {
+    use objc2_ui_kit::UIUserInterfaceStyle;
+
+    let style = match scheme {
+        ColorScheme::Light => UIUserInterfaceStyle::Light,
+        ColorScheme::Dark => UIUserInterfaceStyle::Dark,
+    };
+    window.setOverrideUserInterfaceStyle(style);
+}
+
+/// Test-only in-process `Core Animation` render-server capture.
+///
+/// Strictly compiled under `feature = "native-test"` on `macOS` and Mac
+/// Catalyst so production builds link and reference zero private
+/// `QuartzCore` symbols.
+#[cfg(all(
+    feature = "native-test",
+    any(target_os = "macos", all(target_os = "ios", target_abi = "macabi"))
+))]
+mod render_server {
+    use core::ptr::{from_ref, null_mut};
+    use core::slice::from_raw_parts;
+
+    use objc2::rc::Retained;
+    use objc2::runtime::{AnyClass, AnyObject};
+    use objc2::{Message as _, msg_send};
+    use objc2_core_foundation::{CFDictionary, CFNumber, CFRetained, CFString};
+    use objc2_core_graphics::{CGColorSpace, kCGColorSpaceSRGB};
+    use objc2_foundation::{NSDictionary, NSString};
+    use objc2_io_surface::{
+        IOSurfaceLockOptions, IOSurfaceRef, kIOSurfaceBytesPerElement, kIOSurfaceColorSpace,
+        kIOSurfaceHeight, kIOSurfacePixelFormat, kIOSurfaceWidth,
+    };
+    use objc2_quartz_core::{CALayer, CATransaction, CATransform3D};
+
+    /// `BGRA8` four-character code (`'BGRA'`).
+    const SURFACE_PIXEL_FORMAT_BGRA8: i64 = u32::from_be_bytes(*b"BGRA") as i64;
+    const SURFACE_BYTES_PER_ELEMENT: i64 = 4;
+
+    #[link(name = "QuartzCore", kind = "framework")]
+    unsafe extern "C" {
+        fn CARenderServerStart() -> bool;
+        fn CARenderServerGetPort() -> u32;
+        fn CARenderServerRenderLayerWithTransform(
+            server_port: u32,
+            client_id: u32,
+            layer: *const CALayer,
+            surface: *const IOSurfaceRef,
+            ox: i32,
+            oy: i32,
+            transform: *const CATransform3D,
+        ) -> bool;
+    }
+
+    struct LocalContextGuard {
+        context: Retained<AnyObject>,
+        layer: Retained<CALayer>,
+        orig_geometry_flipped: bool,
+        restore_geometry_flipped: bool,
+    }
+
+    impl Drop for LocalContextGuard {
+        fn drop(&mut self) {
+            if self.restore_geometry_flipped {
+                CATransaction::begin();
+                CATransaction::setDisableActions(true);
+                self.layer.setGeometryFlipped(self.orig_geometry_flipped);
+                CATransaction::commit();
+            }
+            // SAFETY: `CAContext` exposes `-setLayer:` (accepting `nil`) and
+            // `-invalidate` on the main thread.
+            unsafe {
+                let _: () = msg_send![&*self.context, setLayer: Option::<&CALayer>::None];
+                let _: () = msg_send![&*self.context, invalidate];
+            }
+        }
+    }
+
+    fn allocate_bgra_surface(width: usize, height: usize) -> Option<CFRetained<IOSurfaceRef>> {
+        let width = i64::try_from(width).ok()?;
+        let height = i64::try_from(height).ok()?;
+        // SAFETY: these statics are `IOSurface` framework `CFString` constants.
+        let keys: [&CFString; 4] = unsafe {
+            [
+                kIOSurfaceWidth,
+                kIOSurfaceHeight,
+                kIOSurfaceBytesPerElement,
+                kIOSurfacePixelFormat,
+            ]
+        };
+        let values = [
+            CFNumber::new_i64(width),
+            CFNumber::new_i64(height),
+            CFNumber::new_i64(SURFACE_BYTES_PER_ELEMENT),
+            CFNumber::new_i64(SURFACE_PIXEL_FORMAT_BGRA8),
+        ];
+        let value_refs: [&CFNumber; 4] = values.each_ref().map(|value| &**value);
+        let properties = CFDictionary::from_slices(&keys, &value_refs);
+        // SAFETY: every key in `properties` is a valid `IOSurface` property
+        // paired with a `CFNumber`.
+        let surface = unsafe { IOSurfaceRef::new(properties.as_opaque()) }?;
+        // SAFETY: `kCGColorSpaceSRGB` is a `Core Graphics` string constant.
+        if let Some(space) = CGColorSpace::with_name(Some(unsafe { kCGColorSpaceSRGB }))
+            && let Some(plist) = space.property_list()
+        {
+            // SAFETY: `kIOSurfaceColorSpace` accepts a color-space property list.
+            unsafe { surface.set_value(kIOSurfaceColorSpace, &plist) };
+        }
+        Some(surface)
+    }
+
+    fn read_surface_rgba8(
+        surface: &IOSurfaceRef,
+        pixel_width: usize,
+        pixel_height: usize,
+        is_flipped: bool,
+    ) -> Option<Vec<u8>> {
+        // SAFETY: read-only lock on a live `IOSurface` owned by the caller.
+        let lock_status = unsafe { surface.lock(IOSurfaceLockOptions::ReadOnly, null_mut()) };
+        if lock_status != 0 {
+            return None;
+        }
+        let bytes_per_row = surface.bytes_per_row();
+        let base = surface.base_address().as_ptr().cast::<u8>();
+        let pixels = if !base.is_null() && bytes_per_row >= pixel_width * 4 {
+            let mut pixels = vec![0u8; pixel_width * pixel_height * 4];
+            // SAFETY: `surface` is locked read-only and has `pixel_height` rows
+            // of at least `bytes_per_row` bytes each.
+            let raw = unsafe { from_raw_parts(base, bytes_per_row * pixel_height) };
+            for y in 0..pixel_height {
+                let src_y = if is_flipped { y } else { pixel_height - 1 - y };
+                let src_row = &raw[src_y * bytes_per_row..src_y * bytes_per_row + pixel_width * 4];
+                let dst_row = &mut pixels[y * pixel_width * 4..(y + 1) * pixel_width * 4];
+                for (src_px, dst_px) in src_row
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .zip(dst_row.as_chunks_mut::<4>().0.iter_mut())
+                {
+                    dst_px[0] = src_px[2];
+                    dst_px[1] = src_px[1];
+                    dst_px[2] = src_px[0];
+                    dst_px[3] = src_px[3];
+                }
+            }
+            Some(pixels)
+        } else {
+            None
+        };
+        // SAFETY: pairs the successful read-only lock above.
+        unsafe { surface.unlock(IOSurfaceLockOptions::ReadOnly, null_mut()) };
+        pixels
+    }
+
+    /// Renders `layer`'s committed subtree through an in-process
+    /// `Core Animation` render server into premultiplied top-down RGBA8 pixels
+    /// (`pixel_width * pixel_height * 4` bytes).
+    ///
+    /// Unlike `CALayer.renderInContext:`, the in-process render server runs
+    /// `Core Animation`'s real compositor passes — evaluating `CABackdropLayer`
+    /// and `CASDFLayer` glass materials (`UIGlassEffect`, `UIVisualEffectView`,
+    /// `UIButtonConfiguration.{glass,prominentGlass}`, `NSGlassEffectView`,
+    /// `NSBezelStyle::Glass`) without ordering any window on screen or crossing
+    /// IPC to `WindowServer`.
+    #[must_use]
+    pub fn render_layer_via_render_server(
+        layer: &CALayer,
+        scale: f64,
+        pixel_width: usize,
+        pixel_height: usize,
+        is_flipped: bool,
+    ) -> Option<Vec<u8>> {
+        if pixel_width == 0 || pixel_height == 0 || !scale.is_finite() || scale <= 0.0 {
+            return None;
+        }
+        // SAFETY: `CARenderServerStart` is idempotent (guarded internally by
+        // `CA::Render::Server::_mutex`) and must precede `CARenderServerGetPort`,
+        // which otherwise lazily allocates an unserviced Mach port.
+        let server_port = unsafe {
+            if !CARenderServerStart() {
+                return None;
+            }
+            CARenderServerGetPort()
+        };
+        if server_port == 0 {
+            return None;
+        }
+
+        let context_class = AnyClass::get(c"CAContext")?;
+        let options = NSDictionary::<NSString, AnyObject>::new();
+        // SAFETY: `+[CAContext localContextWithOptions:]` returns an
+        // autoreleased local `CAContext` (or nil).
+        let context: Option<Retained<AnyObject>> =
+            unsafe { msg_send![context_class, localContextWithOptions: &*options] };
+        let context = context?;
+        // SAFETY: `-[CAContext contextId]` returns `u32`.
+        let context_id: u32 = unsafe { msg_send![&*context, contextId] };
+
+        // Walk up to the root-most layer so binding `context.layer` never
+        // detaches `layer` from its `superlayer`.
+        let mut top_root = layer.retain();
+        while let Some(parent) = top_root.superlayer() {
+            top_root = parent;
+        }
+
+        // Flush any pending layout/display transaction before switching the
+        // layer tree onto the local render-server context.
+        CATransaction::flush();
+
+        let orig_geometry_flipped = layer.isGeometryFlipped();
+        let target_geometry_flipped = !is_flipped;
+        let restore_geometry_flipped = orig_geometry_flipped != target_geometry_flipped;
+        if restore_geometry_flipped {
+            CATransaction::begin();
+            CATransaction::setDisableActions(true);
+            layer.setGeometryFlipped(target_geometry_flipped);
+            CATransaction::commit();
+        }
+        // SAFETY: `-[CAContext setLayer:]` binds the root layer on the main thread.
+        unsafe {
+            let _: () = msg_send![&*context, setLayer: &*top_root];
+        }
+        let guard = LocalContextGuard {
+            context,
+            layer: layer.retain(),
+            orig_geometry_flipped,
+            restore_geometry_flipped,
+        };
+        CATransaction::flush();
+
+        let surface = allocate_bgra_surface(pixel_width, pixel_height)?;
+        let bounds = layer.bounds();
+        let transform = CATransform3D {
+            m11: scale,
+            m12: 0.0,
+            m13: 0.0,
+            m14: 0.0,
+            m21: 0.0,
+            m22: scale,
+            m23: 0.0,
+            m24: 0.0,
+            m31: 0.0,
+            m32: 0.0,
+            m33: 1.0,
+            m34: 0.0,
+            m41: -bounds.origin.x * scale,
+            m42: -bounds.origin.y * scale,
+            m43: 0.0,
+            m44: 1.0,
+        };
+        // SAFETY: `server_port`, `context_id`, `layer`, `surface`, and
+        // `transform` are live on the main thread for the duration of the call.
+        let rendered = unsafe {
+            CARenderServerRenderLayerWithTransform(
+                server_port,
+                context_id,
+                from_ref(layer),
+                from_ref(&*surface),
+                0,
+                0,
+                &raw const transform,
+            )
+        };
+        drop(guard);
+        if !rendered {
+            return None;
+        }
+        read_surface_rgba8(&surface, pixel_width, pixel_height, is_flipped)
+    }
+}
+
+#[cfg(all(
+    feature = "native-test",
+    any(target_os = "macos", all(target_os = "ios", target_abi = "macabi"))
+))]
+pub use render_server::render_layer_via_render_server;
