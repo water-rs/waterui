@@ -3889,9 +3889,126 @@ pub enum PainterUnavailable {
     #[error("the Cherenkov CPU engine could not start")]
     Cpu(#[source] cherenkov::EngineError),
     /// The window's software presentation surface could not be created.
-    #[cfg(all(hydrolysis_winit, hydrolysis_cpu_painter))]
+    #[cfg(hydrolysis_software_surface)]
     #[error("failed to create the window's software presentation surface: {0}")]
     SoftwareSurface(String),
+}
+
+/// Desktop software presentation surface backed by `softbuffer`, presenting
+/// `cherenkov-cpu` frames to any window implementing
+/// `raw-window-handle`'s display and window handle traits.
+#[cfg(hydrolysis_software_surface)]
+pub struct SoftwareWindowSurface<
+    D: raw_window_handle::HasDisplayHandle,
+    W: raw_window_handle::HasWindowHandle,
+> {
+    pub(crate) state: std::rc::Rc<crate::engine::RasterEngineState>,
+    surface: softbuffer::Surface<D, W>,
+    _context: softbuffer::Context<D>,
+    size: (u32, u32),
+}
+
+#[cfg(hydrolysis_software_surface)]
+impl<D: raw_window_handle::HasDisplayHandle, W: raw_window_handle::HasWindowHandle> core::fmt::Debug
+    for SoftwareWindowSurface<D, W>
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("SoftwareWindowSurface")
+            .field("size", &self.size)
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(hydrolysis_software_surface)]
+impl<D: raw_window_handle::HasDisplayHandle, W: raw_window_handle::HasWindowHandle>
+    SoftwareWindowSurface<D, W>
+{
+    /// Opens a `softbuffer` presentation surface for `(display, window)` on
+    /// `state`'s `cherenkov-cpu` engine.
+    ///
+    /// # Errors
+    /// [`PainterUnavailable::SoftwareSurface`] when the platform software
+    /// context or window surface cannot be created.
+    pub fn new(
+        display: D,
+        window: W,
+        state: std::rc::Rc<crate::engine::RasterEngineState>,
+        initial_size: (u32, u32),
+    ) -> Result<Self, PainterUnavailable> {
+        let context = softbuffer::Context::new(display)
+            .map_err(|error| PainterUnavailable::SoftwareSurface(error.to_string()))?;
+        let surface = softbuffer::Surface::new(&context, window)
+            .map_err(|error| PainterUnavailable::SoftwareSurface(error.to_string()))?;
+        Ok(Self {
+            state,
+            surface,
+            _context: context,
+            size: (initial_size.0.max(1), initial_size.1.max(1)),
+        })
+    }
+
+    /// Updates the physical pixel size `(width, height)` for the next
+    /// presented frame.
+    pub const fn resize(&mut self, width: u32, height: u32) {
+        self.size = (
+            if width == 0 { 1 } else { width },
+            if height == 0 { 1 } else { height },
+        );
+    }
+
+    /// Renders the current `renderer` scene on `cherenkov-cpu` and presents
+    /// the resulting `0x00RRGGBB` sRGB buffer, invoking `before_present`
+    /// right before presenting to the window system.
+    ///
+    /// # Errors
+    /// Returns [`crate::runner::window::FrameFailure`] when buffer resize,
+    /// acquisition, rendering, or presentation fails.
+    pub(crate) fn present_frame(
+        &mut self,
+        renderer: &mut crate::renderer::HydrolysisRenderer<crate::text::ParleyEngine>,
+        clear_color: peniko::Color,
+        display_scale: f64,
+        before_present: impl FnOnce(),
+    ) -> Result<crate::runner::window::SurfaceRenderResult, crate::runner::window::FrameFailure>
+    {
+        let (width, height) = self.size;
+        let nz_width = std::num::NonZeroU32::new(width.max(1)).expect("clamped width is non-zero");
+        let nz_height =
+            std::num::NonZeroU32::new(height.max(1)).expect("clamped height is non-zero");
+        let acquire_started_at = std::time::Instant::now();
+        self.surface.resize(nz_width, nz_height).map_err(|error| {
+            tracing::warn!(%error, "hydrolysis software window surface resize failed");
+            crate::runner::window::FrameFailure::Skipped(SurfaceError::Outdated)
+        })?;
+        let mut buffer = self.surface.buffer_mut().map_err(|error| {
+            tracing::warn!(%error, "hydrolysis software window buffer acquire failed");
+            crate::runner::window::FrameFailure::Skipped(SurfaceError::Outdated)
+        })?;
+        let acquire = acquire_started_at.elapsed();
+
+        let render_started_at = std::time::Instant::now();
+        renderer.render_raster_0rgb_into(
+            &self.state,
+            crate::renderer::FrameGeometry {
+                display_scale,
+                width: nz_width.get(),
+                height: nz_height.get(),
+                base_color: crate::renderer::working_color(clear_color),
+            },
+            &mut buffer,
+        )?;
+        let render = render_started_at.elapsed();
+
+        let present_started_at = std::time::Instant::now();
+        before_present();
+        buffer.present().map_err(|error| {
+            tracing::warn!(%error, "hydrolysis software window buffer present failed");
+            crate::runner::window::FrameFailure::Skipped(SurfaceError::Outdated)
+        })?;
+        let present = present_started_at.elapsed();
+
+        Ok(crate::runner::window::SurfaceRenderResult::window_presented(acquire, render, present))
+    }
 }
 
 #[cfg(all(hydrolysis_cherenkov, not(target_arch = "wasm32")))]
@@ -4375,13 +4492,9 @@ mod winit_impl {
     #[cfg(hydrolysis_gpu_painter)]
     use super::EngineGpuContext;
     use super::FrameRate;
-    #[cfg(hydrolysis_cpu_painter)]
-    use std::num::NonZeroU32;
     use std::rc::Rc;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
-    #[cfg(hydrolysis_cpu_painter)]
-    use std::time::Instant;
 
     use nami::Signal;
     use waterui::window::{UserAttention, WindowLevel, WindowState};
@@ -4403,13 +4516,13 @@ mod winit_impl {
     use super::{
         CursorStyle, InputConventions, InputEvent, KeyCode, KeyState, Modifiers, MultiClickConfig,
         PaintedWindow, PainterUnavailable, PlatformWindow, PointerButton, PointerKind,
-        SurfaceError, TextInputPurpose, TextInputState, TouchPhase, TouchScrollConfig,
-        enabled_window_buttons, validated_window_frame,
+        TextInputPurpose, TextInputState, TouchPhase, TouchScrollConfig, enabled_window_buttons,
+        validated_window_frame,
     };
     #[cfg(hydrolysis_gpu_painter)]
     use super::{DeviceLostError, GpuGeneration, GpuUnavailable};
     #[cfg(all(hydrolysis_gpu_painter, not(target_os = "macos")))]
-    use super::{SurfaceFrame, SurfaceProvider, reclaim_device};
+    use super::{SurfaceError, SurfaceFrame, SurfaceProvider, reclaim_device};
     use crate::renderer::HostRedraw;
     #[cfg(hydrolysis_gpu_painter)]
     use waterui_graphics::gpu::RedrawHandle;
@@ -5210,23 +5323,12 @@ mod winit_impl {
     type MonitorRect = (LogicalPosition<f64>, LogicalSize<f64>);
 
     /// Software presentation surface for a winit window rendered on
-    /// `cherenkov-cpu` through `softbuffer`.
+    /// `cherenkov-cpu` through [`SoftwareWindowSurface`].
     #[cfg(hydrolysis_cpu_painter)]
+    #[derive(Debug)]
     pub struct WinitRasterSurface {
-        pub(crate) state: Rc<crate::engine::RasterEngineState>,
-        surface: softbuffer::Surface<Arc<NativeWindow>, Arc<NativeWindow>>,
-        _context: softbuffer::Context<Arc<NativeWindow>>,
+        inner: super::SoftwareWindowSurface<Arc<NativeWindow>, Arc<NativeWindow>>,
         window: Arc<NativeWindow>,
-        size: (u32, u32),
-    }
-
-    #[cfg(hydrolysis_cpu_painter)]
-    impl core::fmt::Debug for WinitRasterSurface {
-        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-            f.debug_struct("WinitRasterSurface")
-                .field("size", &self.size)
-                .finish_non_exhaustive()
-        }
     }
 
     #[cfg(hydrolysis_cpu_painter)]
@@ -5235,25 +5337,18 @@ mod winit_impl {
             window: Arc<NativeWindow>,
             state: Rc<crate::engine::RasterEngineState>,
         ) -> Result<Self, PainterUnavailable> {
-            let context = softbuffer::Context::new(Arc::clone(&window))
-                .map_err(|error| PainterUnavailable::SoftwareSurface(error.to_string()))?;
-            let surface = softbuffer::Surface::new(&context, Arc::clone(&window))
-                .map_err(|error| PainterUnavailable::SoftwareSurface(error.to_string()))?;
-            let inner = window.inner_size();
-            Ok(Self {
+            let size = window.inner_size();
+            let inner = super::SoftwareWindowSurface::new(
+                Arc::clone(&window),
+                Arc::clone(&window),
                 state,
-                surface,
-                _context: context,
-                window,
-                size: (inner.width.max(1), inner.height.max(1)),
-            })
+                (size.width, size.height),
+            )?;
+            Ok(Self { inner, window })
         }
 
         const fn resize(&mut self, width: u32, height: u32) {
-            self.size = (
-                if width == 0 { 1 } else { width },
-                if height == 0 { 1 } else { height },
-            );
+            self.inner.resize(width, height);
         }
 
         pub(crate) fn present_frame(
@@ -5263,46 +5358,11 @@ mod winit_impl {
             display_scale: f64,
         ) -> Result<crate::runner::window::SurfaceRenderResult, crate::runner::window::FrameFailure>
         {
-            let (width, height) = self.size;
-            let nz_width = NonZeroU32::new(width.max(1)).expect("clamped width is non-zero");
-            let nz_height = NonZeroU32::new(height.max(1)).expect("clamped height is non-zero");
-            let acquire_started_at = Instant::now();
-            self.surface.resize(nz_width, nz_height).map_err(|error| {
-                tracing::warn!(%error, "hydrolysis software window surface resize failed");
-                crate::runner::window::FrameFailure::Skipped(SurfaceError::Outdated)
-            })?;
-            let mut buffer = self.surface.buffer_mut().map_err(|error| {
-                tracing::warn!(%error, "hydrolysis software window buffer acquire failed");
-                crate::runner::window::FrameFailure::Skipped(SurfaceError::Outdated)
-            })?;
-            let acquire = acquire_started_at.elapsed();
-
-            let render_started_at = Instant::now();
-            renderer.render_raster_0rgb_into(
-                &self.state,
-                crate::renderer::FrameGeometry {
-                    display_scale,
-                    width: nz_width.get(),
-                    height: nz_height.get(),
-                    base_color: crate::renderer::working_color(clear_color),
-                },
-                &mut buffer,
-            )?;
-            let render = render_started_at.elapsed();
-
-            let present_started_at = Instant::now();
-            self.window.pre_present_notify();
-            buffer.present().map_err(|error| {
-                tracing::warn!(%error, "hydrolysis software window buffer present failed");
-                crate::runner::window::FrameFailure::Skipped(SurfaceError::Outdated)
-            })?;
-            let present = present_started_at.elapsed();
-
-            Ok(
-                crate::runner::window::SurfaceRenderResult::window_presented(
-                    acquire, render, present,
-                ),
-            )
+            let window = &self.window;
+            self.inner
+                .present_frame(renderer, clear_color, display_scale, || {
+                    window.pre_present_notify();
+                })
         }
     }
 

@@ -3,9 +3,9 @@
 //! swapchains and the HWUI painter's hosted GPU-content surfaces.
 
 use ndk::native_window::NativeWindow;
-use raw_window_handle::{
-    AndroidDisplayHandle, AndroidNdkWindowHandle, DisplayHandle, HasDisplayHandle, HasWindowHandle,
-    RawDisplayHandle, RawWindowHandle, WindowHandle,
+use wgpu::rwh::{
+    AndroidDisplayHandle, AndroidNdkWindowHandle, DisplayHandle, HandleError, HasDisplayHandle,
+    HasWindowHandle, RawDisplayHandle, RawWindowHandle, WindowHandle,
 };
 
 /// The Android display's raw handle: the platform has one implicit default
@@ -14,7 +14,7 @@ use raw_window_handle::{
 pub(super) struct AndroidDisplay;
 
 impl HasDisplayHandle for AndroidDisplay {
-    fn display_handle(&self) -> Result<DisplayHandle<'_>, raw_window_handle::HandleError> {
+    fn display_handle(&self) -> Result<DisplayHandle<'_>, HandleError> {
         // SAFETY: Android's display handle is a static system resource —
         // borrowing it raw is always sound for the process lifetime.
         Ok(unsafe {
@@ -27,7 +27,7 @@ impl HasDisplayHandle for AndroidDisplay {
 pub(super) struct AndroidWindow(pub(super) NativeWindow);
 
 impl HasWindowHandle for AndroidWindow {
-    fn window_handle(&self) -> Result<WindowHandle<'_>, raw_window_handle::HandleError> {
+    fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
         let handle = RawWindowHandle::AndroidNdk(AndroidNdkWindowHandle::new(self.0.ptr().cast()));
         // SAFETY: the wrapper holds its own reference to the native
         // window, so the pointer stays valid for the borrow.
@@ -36,7 +36,7 @@ impl HasWindowHandle for AndroidWindow {
 }
 
 impl HasDisplayHandle for AndroidWindow {
-    fn display_handle(&self) -> Result<DisplayHandle<'_>, raw_window_handle::HandleError> {
+    fn display_handle(&self) -> Result<DisplayHandle<'_>, HandleError> {
         AndroidDisplay.display_handle()
     }
 }

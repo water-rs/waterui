@@ -51,6 +51,7 @@ fn main() {
     // fulfilled there.
     println!("cargo:rustc-check-cfg=cfg(trybuild)");
     configure_cfg_aliases();
+    configure_standalone_aliases();
 }
 
 fn configure_cfg_aliases() {
@@ -179,24 +180,9 @@ fn configure_cfg_aliases() {
                 all(feature = "list", feature = "accessibility")
             )
         },
-        // The renderer installs the environment its platform services need:
-        // its localizations and the platform web view's controller.
-        // The page's `<video>` element realizes `Video` on the web.
-        hydrolysis_web_video: {
-            all(target_arch = "wasm32", feature = "web", feature = "video")
-        },
-        // The GPU player realizes `Video` everywhere but the web: this
-        // backend bridges no platform player.
-        hydrolysis_gpu_video: {
-            all(feature = "video-gpu", not(target_arch = "wasm32"))
-        },
         hydrolysis_platform_services: {
             any(hydrolysis_localization, hydrolysis_webview_engine)
         },
-        // The persistent pipeline cache serialises through `std::fs` into a
-        // platform cache directory; targets without that filesystem contract
-        // (wasm, redox) compile the renderer without it.
-        hydrolysis_pipeline_cache: { any(unix, windows) },
         // The Android HWUI render target: the retained layer tree recorded
         // into `RenderNode` display lists, on Android only.
         hydrolysis_hwui: { all(feature = "hwui", android_platform) },
@@ -210,8 +196,6 @@ fn configure_cfg_aliases() {
         hydrolysis_video_plane: { all(android_platform, feature = "video-gpu") },
         // Runtime implementation exists only when a painter is selected.
         hydrolysis_runtime: { any(hydrolysis_cherenkov, hydrolysis_hwui) },
-        // Development inspector endpoint: opt-in and unavailable on wasm32.
-        hydrolysis_inspector: { all(feature = "inspector", not(target_arch = "wasm32")) },
         // The Cherenkov GPU engine and its wgpu device stack are linkable:
         // the `gpu` feature on every target. The GPU *painter* machinery is
         // the narrower `hydrolysis_gpu_painter` gate this alias is not: under
@@ -231,12 +215,42 @@ fn configure_cfg_aliases() {
         hydrolysis_cpu_painter: {
             all(feature = "cpu", not(hydrolysis_hwui), not(target_arch = "wasm32"))
         },
+        // Desktop software window presentation (`softbuffer`) for the CPU
+        // painter: matches the exact target set declaring `softbuffer` in
+        // `Cargo.toml` so `cargo::unused_dependencies` holds with or without
+        // `winit`.
+        hydrolysis_software_surface: {
+            all(
+                hydrolysis_cpu_painter,
+                any(target_os = "macos", target_os = "linux", target_os = "windows", free_unix)
+            )
+        },
         // Either Cherenkov painter: the engine-generic mount targets, the
         // window frame commit and the parley text engine.
         hydrolysis_cherenkov: { any(hydrolysis_gpu_painter, hydrolysis_cpu_painter) },
         // Both Cherenkov painters: the offscreen runtime selects one at
         // construction from the host's adapters.
         hydrolysis_both_painters: { all(hydrolysis_gpu_painter, hydrolysis_cpu_painter) },
+    }
+}
+
+fn configure_standalone_aliases() {
+    cfg_aliases! {
+        // The page's `<video>` element realizes `Video` on the web.
+        hydrolysis_web_video: {
+            all(target_arch = "wasm32", feature = "web", feature = "video")
+        },
+        // The GPU player realizes `Video` everywhere but the web: this
+        // backend bridges no platform player.
+        hydrolysis_gpu_video: {
+            all(feature = "video-gpu", not(target_arch = "wasm32"))
+        },
+        // The persistent pipeline cache serialises through `std::fs` into a
+        // platform cache directory; targets without that filesystem contract
+        // (wasm, redox) compile the renderer without it.
+        hydrolysis_pipeline_cache: { any(unix, windows) },
+        // Development inspector endpoint: opt-in and unavailable on wasm32.
+        hydrolysis_inspector: { all(feature = "inspector", not(target_arch = "wasm32")) },
     }
 }
 

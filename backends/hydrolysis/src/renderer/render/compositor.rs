@@ -645,7 +645,7 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
     /// Commits and renders the frame on `state`'s CPU engine, writing the
     /// presented sRGB `0x00RRGGBB` pixels into `out` for a desktop software
     /// surface.
-    #[cfg(hydrolysis_winit)]
+    #[cfg(hydrolysis_software_surface)]
     pub(crate) fn render_raster_0rgb_into(
         &mut self,
         state: &Rc<crate::engine::RasterEngineState>,

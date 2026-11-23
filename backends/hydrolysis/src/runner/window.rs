@@ -1959,7 +1959,7 @@ impl SurfaceRenderResult {
         }
     }
 
-    #[cfg(all(hydrolysis_winit, hydrolysis_cpu_painter))]
+    #[cfg(hydrolysis_software_surface)]
     pub(crate) const fn window_presented(
         acquire: Duration,
         render: Duration,
@@ -2217,6 +2217,22 @@ impl PaintedFrame for crate::platform::WinitSurface {
         display_scale: f64,
     ) -> Result<SurfaceRenderResult, FrameFailure> {
         render_engine_presented_frame(self, renderer, clear_color, display_scale)
+    }
+}
+
+#[cfg(hydrolysis_software_surface)]
+impl<D, W> PaintedFrame for crate::platform::SoftwareWindowSurface<D, W>
+where
+    D: raw_window_handle::HasDisplayHandle,
+    W: raw_window_handle::HasWindowHandle,
+{
+    fn render_frame(
+        &mut self,
+        renderer: &mut HydrolysisRenderer<crate::text::ParleyEngine>,
+        clear_color: peniko::Color,
+        display_scale: f64,
+    ) -> Result<SurfaceRenderResult, FrameFailure> {
+        self.present_frame(renderer, clear_color, display_scale, || {})
     }
 }
 

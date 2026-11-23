@@ -824,7 +824,7 @@ impl RasterCherenkovSurface {
     ///
     /// Returns the engine's [`cherenkov::RenderError`] when the readback
     /// fails.
-    #[cfg(hydrolysis_winit)]
+    #[cfg(hydrolysis_software_surface)]
     pub(crate) fn present_0rgb_into(
         &self,
         headroom: f32,
@@ -838,7 +838,7 @@ impl RasterCherenkovSurface {
 
 /// Packs sRGB RGBA8 bytes (`[R, G, B, _]`) into `softbuffer`'s `0x00RRGGBB`
 /// `u32` words.
-#[cfg(any(all(hydrolysis_cpu_painter, hydrolysis_winit), test))]
+#[cfg(any(hydrolysis_software_surface, test))]
 fn pack_rgba8_to_0rgb(rgba: &[u8], out: &mut [u32]) {
     for (dst, &[r, g, b, _]) in out.iter_mut().zip(rgba.as_chunks::<4>().0) {
         *dst = (u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b);

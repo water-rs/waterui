@@ -102,6 +102,8 @@ pub use hydrolysis_style::{Style, draw, theme};
 pub use keyboard_types;
 #[cfg(hydrolysis_cpu_painter)]
 pub use platform::RasterOffscreen;
+#[cfg(hydrolysis_software_surface)]
+pub use platform::SoftwareWindowSurface;
 #[cfg(all(hydrolysis_winit, hydrolysis_cpu_painter))]
 pub use platform::WinitRasterSurface;
 #[cfg(hydrolysis_runtime)]

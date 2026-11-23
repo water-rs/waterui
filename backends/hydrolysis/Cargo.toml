@@ -125,10 +125,11 @@ accesskit_winit = { version = "0.34.1", optional = true }
 png = { version = "0.18", optional = true }
 waterui-assets = { workspace = true, optional = true }
 
-[target.'cfg(not(any(target_os = "android", target_os = "ios", target_arch = "wasm32")))'.dependencies]
-# Software presentation buffer for desktop windows when rendering through
-# `cherenkov-cpu` (`winit` + `cpu`).
+[target.'cfg(any(target_os = "macos", target_os = "linux", target_os = "windows", target_os = "freebsd", target_os = "dragonfly", target_os = "netbsd", target_os = "openbsd"))'.dependencies]
+# Software presentation buffer for desktop windows rendered through
+# `cherenkov-cpu` (`SoftwareWindowSurface` and `WinitRasterSurface`).
 softbuffer = { version = "0.4.8", default-features = false, features = ["x11", "x11-dlopen", "wayland", "wayland-dlopen"], optional = true }
+raw-window-handle = { version = "0.6", default-features = false, optional = true }
 
 # The iOS host, under the GPU painter it presents through: `cocoa-ui` owns
 # `UIApplicationMain`, the scene delegate, the input view, the frame clock
@@ -357,8 +358,6 @@ libc = "0.2"
 # water-rs/waterui#1811) selects the platform painter and links none of the
 # Cherenkov engine dependencies above; with `gpu` it composes (the painter is
 # HWUI, the GPU crates stand by for hosted GPU content).
-# `raw-window-handle` is only the GPU attachment's `AndroidDisplay` impl.
-raw-window-handle = { version = "0.6", optional = true }
 android_logger = { version = "0.15", optional = true }
 waterui-assets-core = { workspace = true, optional = true }
 tracing-log = { version = "0.2", optional = true }
@@ -546,7 +545,6 @@ gpu = [
     "dep:unicode-segmentation",
     "dep:wgpu",
     "dep:pollster",
-    "dep:raw-window-handle",
     "dep:waterkit-clipboard",
     "dep:waterui-assets-core",
     "waterui-backend-core/gestures",
@@ -588,7 +586,9 @@ cpu = [
     "waterui-backend-core/log",
     "waterui-graphics/cpu",
     "dep:parley",
+    "dep:raw-window-handle",
     "dep:skrifa",
+    "dep:softbuffer",
     "dep:icu_properties",
     "dep:icu_locale",
     "waterui-text/engine",
@@ -666,7 +666,6 @@ winit = [
     "dep:accesskit_winit",
     "dep:ctrlc",
     "dep:png",
-    "dep:softbuffer",
     "dep:waterui-assets",
     "dep:signal-hook",
     "dep:libc",

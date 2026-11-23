@@ -33,7 +33,7 @@ mod context_menu_occlusion;
 mod context_menu_presentation;
 #[cfg(hydrolysis_cpu_painter)]
 mod cpu_refusals;
-#[cfg(all(hydrolysis_cpu_painter, hydrolysis_winit))]
+#[cfg(hydrolysis_software_surface)]
 mod cpu_window_present;
 mod drag_drop;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
