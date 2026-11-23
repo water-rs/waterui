@@ -7,7 +7,8 @@
 use cherenkov::kurbo::{Affine, Point, Rect, RoundedRect};
 use cherenkov::{
     BackdropEffect, BackdropOuter, BackdropShaderSource, BackdropSpec, BackdropUnion,
-    CaptureLevels, CaptureScale, Draw, Engine, FrameTime, Offscreen, OffscreenFormat, WorkingColor,
+    CaptureLevels, CaptureScale, Draw, Engine, FrameTime, Offscreen, OffscreenFormat, Readback,
+    WorkingColor,
 };
 use cherenkov_cpu::{Raster, RasterConfig};
 use cherenkov_oracle::F32Image;
@@ -307,7 +308,7 @@ fn backdrop_sibling_reads_adjacent_emitting_member_sdf_normal_and_emission() {
         surface.readback().expect("readback")
     };
     let sdf_readback = set_mode(0.0);
-    let px = |rb: &cherenkov::Readback, x: usize, y: usize| rb.pixels[y * rb.width as usize + x];
+    let px = |rb: &Readback, x: usize, y: usize| rb.pixels[y * rb.width as usize + x];
     let pa = px(&sdf_readback, 16, 16);
     assert!(pa[0].mul_add(20.0, -9.5).abs() <= 0.01);
     assert!((pa[1].mul_add(2.0, -1.0) + 1.0).abs() <= 0.01);

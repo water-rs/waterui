@@ -1991,13 +1991,15 @@ impl crate::shader::BackdropReads for MemberReads<'_> {
     }
 
     fn sibling(&self, index: u32, q: [f64; 2]) -> (f64, [f64; 2], [f64; 4]) {
+        use crate::sdf::distance_and_normal;
+
         let Some((members, _, _)) = self.union else {
             return (0.0, [0.0, 0.0], [0.0; 4]);
         };
         let Some((shape, clip_tf)) = members.get(index as usize) else {
             return (0.0, [0.0, 0.0], [0.0; 4]);
         };
-        let (d, n) = crate::sdf::distance_and_normal(shape, clip_tf, q);
+        let (d, n) = distance_and_normal(shape, clip_tf, q);
         (d, n, [0.0; 4])
     }
 }
