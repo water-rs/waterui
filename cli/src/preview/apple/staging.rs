@@ -31,6 +31,23 @@ pub(super) async fn prepare_runtime(
         let staged_runtime = libraries.stage_apple_canonical(profile_dir).await?;
         dynamic_runtime::retarget_module(project.host(), executable, &staged_runtime).await?;
         dynamic_runtime::prepare_host_runtime(project.host(), &staged_runtime).await?;
+        if cfg!(target_os = "macos") {
+            use std::ffi::OsStr;
+            for binary in [executable, staged_runtime.as_path()] {
+                project
+                    .host()
+                    .run(
+                        "codesign",
+                        [
+                            OsStr::new("-s"),
+                            OsStr::new("-"),
+                            OsStr::new("-f"),
+                            binary.as_os_str(),
+                        ],
+                    )
+                    .await?;
+            }
+        }
         let mut paths = vec![
             executable.to_path_buf(),
             built.shared_runtime()?.to_path_buf(),

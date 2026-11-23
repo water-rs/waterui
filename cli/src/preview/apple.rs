@@ -3,14 +3,16 @@
 //!
 //! Builds the managed Apple preview package — the generated binary that
 //! calls `waterui_apple::preview::run` — with one cargo invocation in the
-//! shared runtime's target directory, then execs it with the run
+//! shared runtime's target directory, then runs it with the run
 //! configuration. The render happens inside the generated process: no
 //! TCP, no support app. The package is the same for both platforms; only
 //! the target differs: `aarch64-apple-darwin` renders the `AppKit`
-//! realization, `aarch64-apple-ios-macabi` the `UIKit` one through Mac
-//! Catalyst, exec'd on this Mac with no simulator.
+//! realization directly on macOS, and `aarch64-apple-ios-sim` renders the
+//! `UIKit` realization headlessly against the installed Xcode iOS Simulator
+//! runtime without booting `CoreSimulator` or creating any macOS window.
 
 use std::path::{Path, PathBuf};
+use std::process::Output;
 use std::time::{Duration, Instant};
 
 mod staging;
@@ -23,12 +25,14 @@ use crate::artifact_symbols::ArtifactSymbols;
 use crate::build::{BuildOptions, BuildProgress};
 use crate::platform::{TargetBackend, TargetPlatform};
 use crate::preview::hydrolysis::scenario_frame_path;
+use crate::preview::ios_sim::{IosSimPreviewLaunch, run_ios_sim_preview};
 use crate::preview::run::{self, absolute_output_path, expect_nonempty_output, write_run_config};
 use crate::preview::{
     PreviewScenario, PreviewSource, PreviewTargetTemplate, encode_raw_frame_stream_to_mp4,
 };
 use crate::project::Project;
 use crate::project_model::assets;
+use crate::toolchain::Host;
 use cargo_toml::Manifest as CargoManifest;
 
 use waterui_preview_protocol::run::{
@@ -43,7 +47,7 @@ pub struct ApplePreviewRequest<'a> {
     /// Path to the project to preview.
     pub project_path: &'a Path,
     /// The Apple target the preview binary builds for:
-    /// `TargetPlatform::MacOS` or `TargetPlatform::MacCatalyst`.
+    /// `TargetPlatform::MacOS` or `TargetPlatform::IOSSimulator`.
     pub platform: TargetPlatform,
     /// Source used to produce the preview view.
     pub source: PreviewSource<'a>,
@@ -146,6 +150,7 @@ async fn ensure_project_dev_feature_for_preview(project: &Project) -> Result<()>
 #[derive(Debug)]
 pub struct ApplePreviewBinary {
     project: Project,
+    platform: TargetPlatform,
     executable: PathBuf,
 }
 
@@ -230,14 +235,18 @@ impl ApplePreviewBinary {
             .with_hdr(hdr);
         let run_config_path = write_run_config(&crate_dir, &run_config).await?;
         let process_started = Instant::now();
-        let output = run::run_preview_binary(
-            host,
-            &crate_dir,
-            &self.executable,
-            &run_config_path,
-            "Apple preview",
-        )
-        .await?;
+        let fps = video_target.as_ref().map(|(_, _, _, fps)| *fps);
+        let output = self
+            .execute_preview_binary(
+                host,
+                &crate_dir,
+                &run_config_path,
+                width,
+                height,
+                scale,
+                fps,
+            )
+            .await?;
         tracing::info!(
             phase = "process",
             elapsed_ms = process_started.elapsed().as_millis(),
@@ -275,6 +284,49 @@ impl ApplePreviewBinary {
             expect_nonempty_output(&video_output, "preview video").await?;
         }
         Ok(())
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "forwards launch geometry and run config to the platform runner"
+    )]
+    async fn execute_preview_binary(
+        &self,
+        host: &Host,
+        crate_dir: &Path,
+        run_config_path: &Path,
+        width: f32,
+        height: f32,
+        scale: f32,
+        fps: Option<u32>,
+    ) -> Result<Output> {
+        match self.platform {
+            TargetPlatform::IOSSimulator => {
+                run_ios_sim_preview(
+                    host,
+                    IosSimPreviewLaunch {
+                        working_dir: crate_dir,
+                        binary_path: &self.executable,
+                        run_config_path,
+                        width,
+                        height,
+                        scale,
+                        fps,
+                    },
+                )
+                .await
+            }
+            _ => {
+                run::run_preview_binary(
+                    host,
+                    crate_dir,
+                    &self.executable,
+                    run_config_path,
+                    "Apple preview",
+                )
+                .await
+            }
+        }
     }
 }
 
@@ -352,6 +404,7 @@ pub async fn build_preview_with_apple(
     );
     Ok(ApplePreviewBinary {
         project,
+        platform: request.platform,
         executable,
     })
 }

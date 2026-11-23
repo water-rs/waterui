@@ -87,9 +87,11 @@ video_player = ["dep:waterui-video", "dep:waterkit-audio", "cocoa-ui/avkit", "wa
 # The `preview::run` entry `water preview` links — the generated preview
 # package enables it; `water run` never does, so every other Apple app
 # builds without `waterui-preview-protocol`'s dependency closure or
-# `cocoa-ui/render-server-capture`. It exists on macOS (`AppKit`) and Mac
-# Catalyst (`UIKit`).
+# `cocoa-ui/render-server-capture`. It exists on macOS (`AppKit`) and iOS
+# Simulator (`aarch64-apple-ios-sim` `UIKit`).
 preview = [
+    "dep:cc",
+    "dep:half",
     "dep:waterui-preview-protocol",
     "cocoa-ui/render-server-capture",
     "objc2-core-graphics/CGEvent",
@@ -226,6 +228,7 @@ objc2-quartz-core = { version = "0.3", default-features = false, features = [
 ] }
 
 [build-dependencies]
+cc = { version = "1.2", default-features = false, optional = true }
 cfg_aliases = "0.2.2"
 waterkit-build = { workspace = true, default-features = false, optional = true }
 
@@ -271,9 +274,9 @@ cherenkov-oracle = { path = "../../graphics/cherenkov/oracle" }
 cherenkov = { workspace = true, features = ["testing"] }
 
 # `preview`'s protocol types arrive only where the preview entry exists —
-# macOS for the AppKit realization, Mac Catalyst for the UIKit one — and an
-# iOS device or simulator build of the crate keeps no trace of it.
-[target.'cfg(any(target_os = "macos", all(target_os = "ios", target_abi = "macabi")))'.dependencies]
+# macOS for the AppKit realization, iOS Simulator for the headless UIKit one —
+# and an iOS device build of the crate keeps no trace of it.
+[target.'cfg(any(target_os = "macos", all(target_os = "ios", target_abi = "sim")))'.dependencies]
 waterui-preview-protocol = { workspace = true, optional = true }
 
 # The scroll takeover cases synthesize a real wheel event through

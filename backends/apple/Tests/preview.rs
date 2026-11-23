@@ -1,6 +1,5 @@
 //! The preview entry's own suite — `preview::run` end to end, one run per
-//! child process, for the `AppKit` realization on macOS and the `UIKit`
-//! realization on Mac Catalyst.
+//! child process, for the `AppKit` realization on macOS.
 //!
 //! `run` initializes the process exactly once — startup installs the panic
 //! hook, the tracing subscriber and the executors, and a second call fails
@@ -12,17 +11,10 @@
 //! application before and after, and checks the child's exit status, its
 //! stderr and the PNG it wrote.
 
-// On Mac Catalyst the executable is exec'd without a bundle: its embedded
-// `Info.plist` puts `UIKit` under the iPad idiom, the contract a generated
-// preview binary keeps the same way.
-#[cfg(catalyst)]
-waterui_apple::preview_info_plist!();
-
-// The suite only exists where the preview entry does — `AppKit` and Mac
-// Catalyst. A target must still own a `main` on every other OS, so the
-// whole suite sits behind the gate and the entry point stays
-// unconditional.
-#[cfg(any(target_os = "macos", catalyst))]
+// The suite runs the in-process macOS `AppKit` preview entry. A target must
+// still own a `main` on every other OS, so the whole suite sits behind the
+// gate and the entry point stays unconditional.
+#[cfg(target_os = "macos")]
 mod suite {
 
     use std::error::Error as StdError;
@@ -1704,10 +1696,10 @@ mod suite {
     }
 }
 
-#[cfg(any(target_os = "macos", catalyst))]
+#[cfg(target_os = "macos")]
 fn main() {
     suite::run();
 }
 
-#[cfg(not(any(target_os = "macos", catalyst)))]
+#[cfg(not(target_os = "macos"))]
 fn main() {}

@@ -46,6 +46,6 @@ Framework channels are not Rust toolchain channels. The CLI supports:
 
 `#[preview]` marks a view function for rendering without running the app; its exported symbol is `waterui_preview_{crate_name}_{fn_name}`, the crate name avoiding conflicts. `water preview` builds and runs a generated preview binary in-process and the platform's backend renders the view to PNG:
 
-- `--platform macos` / `--platform ios`: a generated Apple preview binary (`waterui-apple/preview`) — AppKit on macOS, UIKit through Mac Catalyst for iOS, no simulator.
+- `--platform macos` / `--platform ios`: a generated Apple preview binary (`waterui-apple/preview`) — AppKit on macOS, headless `UIKit` on `aarch64-apple-ios-sim` against the installed Xcode iOS Simulator runtime for iOS (without booting CoreSimulator or opening any macOS window).
 - `--platform android`: the Hydrolysis preview host's instrumentation on a connected device, over `adb`.
 - `--platform linux` / `--platform windows`: a generated Hydrolysis preview binary.

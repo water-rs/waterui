@@ -20,17 +20,50 @@ fn main() {
     #[cfg(feature = "swiftui")]
     compile_waterui_bridge();
 
+    // The narrow ObjC shim for headless `aarch64-apple-ios-sim` previews is
+    // compiled ONLY when `preview` is enabled on the iOS Simulator target;
+    // default/production builds of `waterui-apple` never compile or link it.
+    #[cfg(feature = "preview")]
+    compile_ios_sim_preview_shim();
+
     cfg_aliases! {
         // Mac Catalyst: the UIKit realization compiled for macOS.
         catalyst: { all(target_os = "ios", target_abi = "macabi") },
+        // Headless iOS Simulator preview entry (`water preview --platform ios`).
+        ios_sim_preview: { all(feature = "preview", target_os = "ios", target_abi = "sim") },
         // The in-process preview entry: the AppKit realization on macOS,
-        // the UIKit realization through Mac Catalyst.
-        preview_entry: { all(feature = "preview", any(target_os = "macos", catalyst)) },
+        // the headless UIKit realization on iOS Simulator.
+        preview_entry: { all(feature = "preview", any(target_os = "macos", ios_sim_preview)) },
         // Opt-in in-process Core Animation render-server capture for windowless
         // previews and native tests on macOS and Mac Catalyst — never active in
         // production builds.
         render_server_capture: { all(any(feature = "preview", feature = "native-test"), any(target_os = "macos", catalyst)) },
     }
+}
+
+/// Compiles `src/preview/ios_sim_shim.m` strictly for `aarch64-apple-ios-sim`
+/// under `feature = "preview"`. Links only public iOS Simulator SDK frameworks;
+/// all runtime hooks resolve via `dlsym` at preview launch.
+#[cfg(feature = "preview")]
+fn compile_ios_sim_preview_shim() {
+    use std::env;
+
+    use cc::Build;
+
+    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let target_abi = env::var("CARGO_CFG_TARGET_ABI").unwrap_or_default();
+    if target_os != "ios" || target_abi != "sim" {
+        return;
+    }
+    println!("cargo::rerun-if-changed=src/preview/ios_sim_shim.m");
+    Build::new()
+        .file("src/preview/ios_sim_shim.m")
+        .flag("-fobjc-arc")
+        .compile("waterui_ios_sim_preview_shim");
+    println!("cargo::rustc-link-lib=framework=Foundation");
+    println!("cargo::rustc-link-lib=framework=UIKit");
+    println!("cargo::rustc-link-lib=framework=QuartzCore");
+    println!("cargo::rustc-link-lib=framework=CoreGraphics");
 }
 
 /// Compiles `Sources/WaterUI/Embedding.swift` into `WaterUIBridge` —

@@ -9,18 +9,22 @@
 //! through their `CapturableSurface` contract, so a GPU surface or a
 //! nested filter contributes real pixels rather than a blank.
 
-#[cfg(any(waterui_feature = "capture", preview_entry, feature = "native-test"))]
+#[cfg(any(
+    waterui_feature = "capture",
+    all(preview_entry, target_os = "macos"),
+    feature = "native-test"
+))]
 use std::cell::Cell;
 use std::cell::RefCell;
-#[cfg(preview_entry)]
+#[cfg(all(preview_entry, target_os = "macos"))]
 use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
-#[cfg(preview_entry)]
+#[cfg(all(preview_entry, target_os = "macos"))]
 use cocoa_ui::bitmap::HdrRaster;
-#[cfg(preview_entry)]
+#[cfg(all(preview_entry, target_os = "macos"))]
 use cocoa_ui::dynamic_range::{DynamicRange, apply_to_view};
 #[cfg(target_os = "macos")]
 use cocoa_ui::objc2::AnyThread;
@@ -33,11 +37,11 @@ use cocoa_ui::objc2_metal::{
     MTLDevice, MTLOrigin, MTLPixelFormat, MTLRegion, MTLSize, MTLStorageMode, MTLTexture,
     MTLTextureDescriptor, MTLTextureUsage,
 };
-#[cfg(preview_entry)]
+#[cfg(all(preview_entry, target_os = "macos"))]
 use cocoa_ui::view::bounds as view_bounds;
-#[cfg(preview_entry)]
+#[cfg(all(preview_entry, target_os = "macos"))]
 use half::f16;
-#[cfg(preview_entry)]
+#[cfg(all(preview_entry, target_os = "macos"))]
 use waterui::contract_violation;
 use waterui_backend_core::Environment;
 
@@ -548,7 +552,7 @@ fn read_target(target: &ProtocolObject<dyn MTLTexture>, width: u32, height: u32)
 /// Reads `width` × `height` premultiplied extended linear Display P3 half-float
 /// texels out of a `.shared` `MTLPixelFormat::RGBA16Float` capture target and
 /// decodes them to unclamped `f32` channels.
-#[cfg(preview_entry)]
+#[cfg(all(preview_entry, target_os = "macos"))]
 fn read_hdr_target(target: &ProtocolObject<dyn MTLTexture>, width: u32, height: u32) -> HdrRaster {
     let row_bytes = width as usize * 8;
     let mut raw = vec![0u8; row_bytes * height as usize];
@@ -604,7 +608,11 @@ fn read_hdr_target(target: &ProtocolObject<dyn MTLTexture>, width: u32, height: 
 /// replacing it: a surface binds the hook when it joins, so a replacement
 /// would leave every surface the pump already joined waking the pump
 /// while the retry loop waits on a redraw that never comes.
-#[cfg(any(waterui_feature = "capture", preview_entry, feature = "native-test"))]
+#[cfg(any(
+    waterui_feature = "capture",
+    all(preview_entry, target_os = "macos"),
+    feature = "native-test"
+))]
 pub struct CaptureDrive {
     /// The open capture the pump passes and the terminal capture share.
     capture: Rc<cocoa_ui::capture::ViewCapture>,
@@ -628,7 +636,11 @@ pub struct CaptureDrive {
     terminal: RefCell<Option<Rc<RefCell<Signal>>>>,
 }
 
-#[cfg(any(waterui_feature = "capture", preview_entry, feature = "native-test"))]
+#[cfg(any(
+    waterui_feature = "capture",
+    all(preview_entry, target_os = "macos"),
+    feature = "native-test"
+))]
 impl CaptureDrive {
     /// Opens the capture over `root` — already inside its windowless
     /// capture host — and starts the pump: the first pass runs on the
@@ -816,7 +828,7 @@ impl CaptureDrive {
     /// Display P3 `f32` RGBA raster (`MTLPixelFormat::RGBA16Float`) under the
     /// requested `dynamic_range`, routing native layers through the opt-in
     /// half-float `Core Animation` render-server surface when enabled.
-    #[cfg(preview_entry)]
+    #[cfg(all(preview_entry, target_os = "macos"))]
     #[expect(
         clippy::future_not_send,
         reason = "the terminal capture awaits main-thread signals shared through `Rc`"
@@ -870,7 +882,7 @@ impl CaptureDrive {
     /// # Errors
     ///
     /// Same failure modes as [`Self::capture_rgba`].
-    #[cfg(preview_entry)]
+    #[cfg(all(preview_entry, target_os = "macos"))]
     #[expect(
         clippy::future_not_send,
         reason = "the terminal capture awaits main-thread signals shared through `Rc`"
@@ -892,7 +904,7 @@ impl CaptureDrive {
     /// # Errors
     ///
     /// Same failure modes as [`Self::capture_rgba`].
-    #[cfg(preview_entry)]
+    #[cfg(all(preview_entry, target_os = "macos"))]
     #[expect(
         clippy::future_not_send,
         reason = "the terminal capture awaits main-thread signals shared through `Rc`"
@@ -902,7 +914,11 @@ impl CaptureDrive {
     }
 }
 
-#[cfg(any(waterui_feature = "capture", preview_entry, feature = "native-test"))]
+#[cfg(any(
+    waterui_feature = "capture",
+    all(preview_entry, target_os = "macos"),
+    feature = "native-test"
+))]
 impl Drop for CaptureDrive {
     /// The capture's own `shutdown` ends every external-rendering scope —
     /// the same contract `CaptureGuard` keeps for `capture_rgba`'s own
@@ -915,7 +931,11 @@ impl Drop for CaptureDrive {
 /// A pump pass's render destination: `RenderTarget` usage in private
 /// storage — the pass exists to record scenes and settle registrations,
 /// so its pixels are never sampled or read back.
-#[cfg(any(waterui_feature = "capture", preview_entry, feature = "native-test"))]
+#[cfg(any(
+    waterui_feature = "capture",
+    all(preview_entry, target_os = "macos"),
+    feature = "native-test"
+))]
 fn scratch_target(
     device: &ProtocolObject<dyn MTLDevice>,
     width: u32,
