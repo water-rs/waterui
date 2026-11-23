@@ -19,8 +19,9 @@ use core::f64::consts::{FRAC_1_SQRT_2, PI};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::error::ConformanceError;
-use crate::image::RgbaImage;
+use crate::error::VisualDiffError;
+use crate::image::{RgbaImage, validate_rgba8_len};
+use crate::snapshot::Snapshot;
 
 /// Default pixels per degree from NVIDIA FLIP (`0.7 m` viewing distance,
 /// `3840 px` display across `0.7 m` width → `≈ 67.02`).
@@ -294,18 +295,24 @@ impl FlipResult {
     pub fn magma_heatmap(&self) -> RgbaImage {
         magma_heatmap(&self.error_map, self.width, self.height)
     }
+
+    /// Encodes the per-pixel error map into an opaque RGBA8 Magma heatmap [`Snapshot`].
+    #[must_use]
+    pub fn magma_heatmap_snapshot(&self) -> Snapshot {
+        self.magma_heatmap().into()
+    }
 }
 
 /// Compares two RGBA8 images with NVIDIA LDR-FLIP using [`FlipConfig::default`].
 ///
 /// # Errors
 ///
-/// Returns [`ConformanceError::DimensionMismatch`] when the images differ in
-/// size or [`ConformanceError::EmptyImage`] when either dimension is zero.
+/// Returns [`VisualDiffError::DimensionMismatch`] when the images differ in
+/// size or [`VisualDiffError::EmptyImage`] when either dimension is zero.
 pub fn compare_flip(
     reference: &RgbaImage,
     candidate: &RgbaImage,
-) -> Result<FlipResult, ConformanceError> {
+) -> Result<FlipResult, VisualDiffError> {
     compare_flip_with(reference, candidate, FlipConfig::default())
 }
 
@@ -314,47 +321,69 @@ pub fn compare_flip(
 ///
 /// # Errors
 ///
-/// Returns [`ConformanceError::InvalidConfig`] for invalid parameters,
-/// [`ConformanceError::DimensionMismatch`] when the images differ in size, or
-/// [`ConformanceError::EmptyImage`] when either dimension is zero.
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "pixel counts are far below 2^53"
-)]
+/// Returns [`VisualDiffError::InvalidConfig`] for invalid parameters,
+/// [`VisualDiffError::DimensionMismatch`] when the images differ in size, or
+/// [`VisualDiffError::EmptyImage`] when either dimension is zero.
 pub fn compare_flip_with(
     reference: &RgbaImage,
     candidate: &RgbaImage,
     config: FlipConfig,
-) -> Result<FlipResult, ConformanceError> {
+) -> Result<FlipResult, VisualDiffError> {
+    compare_flip_rgba8(
+        reference.width(),
+        reference.height(),
+        reference.rgba8(),
+        candidate.width(),
+        candidate.height(),
+        candidate.rgba8(),
+        config,
+    )
+}
+
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "pixel counts are far below 2^53"
+)]
+pub(crate) fn compare_flip_rgba8(
+    ref_width: u32,
+    ref_height: u32,
+    ref_rgba8: &[u8],
+    test_width: u32,
+    test_height: u32,
+    test_rgba8: &[u8],
+    config: FlipConfig,
+) -> Result<FlipResult, VisualDiffError> {
     if !config.ppd.is_finite() || config.ppd <= 0.0 {
-        return Err(ConformanceError::InvalidConfig(
+        return Err(VisualDiffError::InvalidConfig(
             "ppd must be finite and greater than zero",
         ));
     }
     if config.block_size == 0 {
-        return Err(ConformanceError::InvalidConfig(
+        return Err(VisualDiffError::InvalidConfig(
             "block_size must be at least 1",
         ));
     }
-    if reference.width() != candidate.width() || reference.height() != candidate.height() {
-        return Err(ConformanceError::DimensionMismatch {
-            ref_width: reference.width(),
-            ref_height: reference.height(),
-            test_width: candidate.width(),
-            test_height: candidate.height(),
+    validate_rgba8_len(ref_width, ref_height, ref_rgba8.len())?;
+    validate_rgba8_len(test_width, test_height, test_rgba8.len())?;
+    if ref_width != test_width || ref_height != test_height {
+        return Err(VisualDiffError::DimensionMismatch {
+            ref_width,
+            ref_height,
+            test_width,
+            test_height,
         });
     }
-    if reference.width() == 0 || reference.height() == 0 {
-        return Err(ConformanceError::EmptyImage {
-            width: reference.width(),
-            height: reference.height(),
+    if ref_width == 0 || ref_height == 0 {
+        return Err(VisualDiffError::EmptyImage {
+            width: ref_width,
+            height: ref_height,
         });
     }
 
-    let width = reference.width() as usize;
-    let height = reference.height() as usize;
-    let ref_linear = decode_premultiplied_linear(reference.rgba8());
-    let cand_linear = decode_premultiplied_linear(candidate.rgba8());
+    let width = ref_width as usize;
+    let height = ref_height as usize;
+    let ref_linear = decode_premultiplied_linear(ref_rgba8);
+    let cand_linear = decode_premultiplied_linear(test_rgba8);
 
     let filters = Filters::new(config.ppd, config.gamut);
     let ref_features = Features::new(&ref_linear, width, height, &filters);
@@ -376,8 +405,8 @@ pub fn compare_flip_with(
     );
 
     Ok(FlipResult {
-        width: reference.width(),
-        height: reference.height(),
+        width: ref_width,
+        height: ref_height,
         metrics: FlipMetrics {
             flip_mean,
             flip_p95,

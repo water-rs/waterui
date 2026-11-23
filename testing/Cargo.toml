@@ -7,57 +7,121 @@ rust-version.workspace = true
 license.workspace = true
 readme = "README.md"
 repository.workspace = true
-description = "Headless testing helpers for WaterUI"
+description = "Headless testing, perceptual diffing, and HTML gallery helpers for WaterUI"
 keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-hydrolysis = { workspace = true, features = ["accessibility", "testing", "all-controls"] }
-waterui-core.workspace = true
-waterui = { workspace = true, features = ["assets", "canvas", "dialog", "effects", "snackbar", "highlight", "locale-datetime", "locale-list"] }
-# `TestHost`'s offscreen texture format; the `gpu` feature.
-wgpu = { workspace = true, optional = true }
-kurbo.workspace = true
-accesskit = "0.25"
-pollster.workspace = true
+# Core RGBA8/PNG image I/O, blank-frame analysis, and report schema types.
 image = { version = "0.25", default-features = false, features = ["png"] }
-executor-core.workspace = true
-sysinfo.workspace = true
-waterui-preview-protocol.workspace = true
 serde_json.workspace = true
 serde = { workspace = true, features = ["derive", "std"] }
+thiserror.workspace = true
+
+# Optional: parallel NVIDIA LDR-FLIP perceptual diffing (`flip` feature).
+rayon = { version = "1.12.0", default-features = false, optional = true }
+
+# Optional: self-contained static HTML gallery rendering (`gallery` feature).
+askama = { version = "0.16", default-features = false, features = ["derive", "std"], optional = true }
+
+# Optional: headless Hydrolysis UI testing harness (`harness` feature).
+hydrolysis = { workspace = true, features = ["accessibility", "testing", "all-controls"], optional = true }
+waterui-core = { workspace = true, optional = true }
+waterui = { workspace = true, features = ["assets", "canvas", "dialog", "effects", "snackbar", "highlight", "locale-datetime", "locale-list"], optional = true }
+# `TestHost`'s offscreen texture format; the `gpu` feature.
+wgpu = { workspace = true, optional = true }
+kurbo = { workspace = true, optional = true }
+accesskit = { version = "0.25", optional = true }
+pollster = { workspace = true, optional = true }
+executor-core = { workspace = true, optional = true }
+sysinfo = { workspace = true, optional = true }
+waterui-preview-protocol = { workspace = true, optional = true }
 # The package under test's declared crate-local font files, read from its
 # Cargo metadata the way the `water` CLI reads them for an application.
-cargo_metadata.workspace = true
-waterui-assets-planner = { workspace = true, features = ["font-declarations"] }
+cargo_metadata = { workspace = true, optional = true }
+waterui-assets-planner = { workspace = true, features = ["font-declarations"], optional = true }
 
 [features]
-default = ["gpu", "cpu"]
+default = ["harness", "gpu", "cpu", "flip"]
+# Headless Hydrolysis UI test harness (`ui`, `SemanticApp`, `OffscreenApp`, queries, perf).
+harness = [
+    "dep:hydrolysis",
+    "dep:waterui-core",
+    "dep:waterui",
+    "dep:kurbo",
+    "dep:accesskit",
+    "dep:pollster",
+    "dep:executor-core",
+    "dep:sysinfo",
+    "dep:waterui-preview-protocol",
+    "dep:cargo_metadata",
+    "dep:waterui-assets-planner",
+]
+# Pure-Rust NVIDIA LDR-FLIP perceptual diff and Magma heatmap generation.
+flip = ["dep:rayon"]
+# Self-contained static HTML gallery (`index.html`) and `report.json` emission.
+gallery = ["flip", "dep:askama"]
 # Hydrolysis's GPU painter, and `TestHost`, which renders through it.
-gpu = ["hydrolysis/gpu", "waterui/gpu", "dep:wgpu"]
+gpu = ["harness", "hydrolysis/gpu", "waterui/gpu", "dep:wgpu"]
 # Hydrolysis's CPU painter. With `gpu` as well, an offscreen runtime renders
 # on the GPU when the host has a usable hardware adapter and on the CPU
 # otherwise.
-cpu = ["hydrolysis/cpu", "waterui/cpu"]
+cpu = ["harness", "hydrolysis/cpu", "waterui/cpu"]
 # TypeScript views in a test: `ui()` installs the runtime loaded from the
 # bundle `WATERUI_TS_BUNDLE` names into the test environment, so a view that
 # reaches a `tsx!` mount renders. A test that mounts no TypeScript never
 # needs the variable.
-ts = ["waterui/ts"]
+ts = ["harness", "waterui/ts"]
 # The GPU video player as Hydrolysis's realization of `Video`, as an
 # application selecting `waterui/video-gpu` gets it.
-video-gpu = ["hydrolysis/video-gpu", "waterui/video-gpu"]
+video-gpu = ["harness", "hydrolysis/video-gpu", "waterui/video-gpu"]
 # The GPU map as Hydrolysis's realization of `Map`, as an application linking
 # `waterui-map-gpu` gets it.
-map-gpu = ["hydrolysis/map-gpu", "waterui/map"]
+map-gpu = ["harness", "hydrolysis/map-gpu", "waterui/map"]
 # Build strategy: run tests through the erased-dispatch path.
-erased-dispatch = ["waterui/erased-dispatch", "waterui-core/erased-dispatch"]
+erased-dispatch = ["harness", "waterui/erased-dispatch", "waterui-core/erased-dispatch"]
 
 [dev-dependencies]
 approx = "0.5"
 async-io = "2.6"
 bitflags.workspace = true
 hydrolysis-m3.workspace = true
+
+[[test]]
+name = "async_local_work"
+required-features = ["harness"]
+
+[[test]]
+name = "cargo_integration"
+required-features = ["harness"]
+
+[[test]]
+name = "clipped_taps"
+required-features = ["harness"]
+
+[[test]]
+name = "file_drop"
+required-features = ["harness"]
+
+[[test]]
+name = "list_content_selection"
+required-features = ["harness"]
+
+[[test]]
+name = "list_sections"
+required-features = ["harness"]
+
+[[test]]
+name = "list_selection"
+required-features = ["harness"]
+
+[[test]]
+name = "local_work_drain"
+required-features = ["harness"]
+
+[[test]]
+name = "shape_semantics"
+required-features = ["harness"]
 
 [lints]
 workspace = true

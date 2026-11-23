@@ -1,16 +1,17 @@
-//! Error types for `waterui-conformance`.
+//! Error types for visual diffing, RGBA8 PNG image I/O, and gallery reporting.
 
 use std::io;
 use std::path::PathBuf;
 
+use image::ImageError;
 use thiserror::Error;
 
-/// Errors returned by conformance image I/O, perceptual diffing, gallery
-/// emission, and offscreen capture runs.
+/// Errors returned by RGBA8/PNG image I/O, FLIP perceptual diffing, and HTML
+/// gallery report generation.
 #[derive(Debug, Error)]
 #[non_exhaustive]
-pub enum ConformanceError {
-    /// Reading or writing an artifact file failed.
+pub enum VisualDiffError {
+    /// Reading or writing an image or gallery artifact file failed.
     #[error("I/O error at {path}: {source}")]
     Io {
         /// Path that could not be read or written.
@@ -27,7 +28,7 @@ pub enum ConformanceError {
         path: PathBuf,
         /// Underlying decoder or encoder error.
         #[source]
-        source: image::ImageError,
+        source: ImageError,
     },
 
     /// An RGBA8 pixel buffer's length did not match `width * height * 4`.
@@ -74,32 +75,11 @@ pub enum ConformanceError {
     InvalidConfig(&'static str),
 
     /// Serializing `report.json` failed.
-    #[error("failed to serialize conformance report: {0}")]
+    #[error("failed to serialize gallery report: {0}")]
     SerializeReport(#[from] serde_json::Error),
 
     /// Rendering the static HTML gallery template failed.
+    #[cfg(feature = "gallery")]
     #[error("failed to render HTML gallery template: {0}")]
     RenderTemplate(#[from] askama::Error),
-
-    /// An offscreen `ViewRenderer` failed to capture a view.
-    #[cfg(feature = "capture")]
-    #[error("backend `{backend}` failed to render `{case}`: {source}")]
-    BackendRender {
-        /// Name of the backend that failed.
-        backend: String,
-        /// Case name that was being rendered.
-        case: String,
-        /// Underlying `ViewRenderer` error.
-        #[source]
-        source: waterui_capture::RenderError,
-    },
-
-    /// One or more stages failed conformance checks.
-    #[error("conformance check failed: {failed_stages} of {total_stages} stage(s) failed")]
-    ConformanceFailed {
-        /// Number of stages that failed.
-        failed_stages: usize,
-        /// Total number of stages evaluated.
-        total_stages: usize,
-    },
 }

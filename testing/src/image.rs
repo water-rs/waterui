@@ -3,10 +3,41 @@
 use std::fs;
 use std::path::Path;
 
-use image::{ColorType, ImageReader, RgbaImage as RawRgbaImage};
+use image::{
+    ColorType, ImageFormat, ImageReader, RgbaImage as RawRgbaImage, save_buffer_with_format,
+};
 use serde::{Deserialize, Serialize};
 
-use crate::error::ConformanceError;
+use crate::error::VisualDiffError;
+#[cfg(feature = "flip")]
+use crate::flip::{FlipConfig, FlipResult, compare_flip, compare_flip_with};
+use crate::snapshot::Snapshot;
+
+/// Validates that `actual` equals `width * height * 4` without overflow.
+pub(crate) fn validate_rgba8_len(
+    width: u32,
+    height: u32,
+    actual: usize,
+) -> Result<usize, VisualDiffError> {
+    let expected = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or(VisualDiffError::InvalidImageBuffer {
+            width,
+            height,
+            expected: usize::MAX,
+            actual,
+        })?;
+    if actual != expected {
+        return Err(VisualDiffError::InvalidImageBuffer {
+            width,
+            height,
+            expected,
+            actual,
+        });
+    }
+    Ok(expected)
+}
 
 /// An owned RGBA8 image in row-major order (`4 * width * height` bytes).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,26 +52,10 @@ impl RgbaImage {
     ///
     /// # Errors
     ///
-    /// Returns [`ConformanceError::InvalidImageBuffer`] when `rgba8.len()` does
+    /// Returns [`VisualDiffError::InvalidImageBuffer`] when `rgba8.len()` does
     /// not equal `width * height * 4`.
-    pub fn new(width: u32, height: u32, rgba8: Vec<u8>) -> Result<Self, ConformanceError> {
-        let expected = (width as usize)
-            .checked_mul(height as usize)
-            .and_then(|pixels| pixels.checked_mul(4))
-            .ok_or(ConformanceError::InvalidImageBuffer {
-                width,
-                height,
-                expected: usize::MAX,
-                actual: rgba8.len(),
-            })?;
-        if rgba8.len() != expected {
-            return Err(ConformanceError::InvalidImageBuffer {
-                width,
-                height,
-                expected,
-                actual: rgba8.len(),
-            });
-        }
+    pub fn new(width: u32, height: u32, rgba8: Vec<u8>) -> Result<Self, VisualDiffError> {
+        validate_rgba8_len(width, height, rgba8.len())?;
         Ok(Self {
             width,
             height,
@@ -52,17 +67,17 @@ impl RgbaImage {
     ///
     /// # Errors
     ///
-    /// Returns [`ConformanceError::Io`] or [`ConformanceError::Image`] if the
+    /// Returns [`VisualDiffError::Io`] or [`VisualDiffError::Image`] if the
     /// file cannot be read or decoded as an image.
-    pub fn load_png(path: impl AsRef<Path>) -> Result<Self, ConformanceError> {
+    pub fn load_png(path: impl AsRef<Path>) -> Result<Self, VisualDiffError> {
         let path = path.as_ref();
-        let reader = ImageReader::open(path).map_err(|source| ConformanceError::Io {
+        let reader = ImageReader::open(path).map_err(|source| VisualDiffError::Io {
             path: path.to_path_buf(),
             source,
         })?;
         let decoded = reader
             .decode()
-            .map_err(|source| ConformanceError::Image {
+            .map_err(|source| VisualDiffError::Image {
                 path: path.to_path_buf(),
                 source,
             })?
@@ -80,27 +95,27 @@ impl RgbaImage {
     ///
     /// # Errors
     ///
-    /// Returns [`ConformanceError::Io`] or [`ConformanceError::Image`] if the
+    /// Returns [`VisualDiffError::Io`] or [`VisualDiffError::Image`] if the
     /// directory cannot be created or PNG encoding fails.
-    pub fn save_png(&self, path: impl AsRef<Path>) -> Result<(), ConformanceError> {
+    pub fn save_png(&self, path: impl AsRef<Path>) -> Result<(), VisualDiffError> {
         let path = path.as_ref();
         if let Some(parent) = path.parent()
             && !parent.as_os_str().is_empty()
         {
-            fs::create_dir_all(parent).map_err(|source| ConformanceError::Io {
+            fs::create_dir_all(parent).map_err(|source| VisualDiffError::Io {
                 path: parent.to_path_buf(),
                 source,
             })?;
         }
-        image::save_buffer_with_format(
+        save_buffer_with_format(
             path,
             &self.rgba8,
             self.width,
             self.height,
             ColorType::Rgba8,
-            image::ImageFormat::Png,
+            ImageFormat::Png,
         )
-        .map_err(|source| ConformanceError::Image {
+        .map_err(|source| VisualDiffError::Image {
             path: path.to_path_buf(),
             source,
         })
@@ -136,31 +151,73 @@ impl RgbaImage {
         self.rgba8.as_slice()
     }
 
+    /// Consumes this image and returns `(width, height, rgba8)`.
+    #[must_use]
+    pub fn into_parts(self) -> (u32, u32, Vec<u8>) {
+        (self.width, self.height, self.rgba8)
+    }
+
     /// Analyzes the frame to detect blank (empty, fully transparent, or
     /// uniform single-color) captures.
     #[must_use]
     pub fn analyze_blank(&self) -> BlankFrameAnalysis {
         analyze_blank_frame(self)
     }
-}
 
-#[cfg(feature = "testing")]
-impl From<waterui_testing::Snapshot> for RgbaImage {
-    fn from(snapshot: waterui_testing::Snapshot) -> Self {
-        let width = snapshot.width();
-        let height = snapshot.height();
-        let rgba8 = snapshot.rgba8().to_vec();
-        Self::new(width, height, rgba8)
-            .expect("waterui_testing::Snapshot buffer always matches dimensions")
+    /// Compares this reference image against `candidate` using NVIDIA LDR-FLIP
+    /// with [`FlipConfig::default`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VisualDiffError::DimensionMismatch`] when the images differ in
+    /// size or [`VisualDiffError::EmptyImage`] when either dimension is zero.
+    #[cfg(feature = "flip")]
+    pub fn compare_flip(&self, candidate: &Self) -> Result<FlipResult, VisualDiffError> {
+        compare_flip(self, candidate)
+    }
+
+    /// Compares this reference image against `candidate` using NVIDIA LDR-FLIP
+    /// with an explicit [`FlipConfig`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VisualDiffError::InvalidConfig`] for invalid parameters,
+    /// [`VisualDiffError::DimensionMismatch`] when the images differ in size, or
+    /// [`VisualDiffError::EmptyImage`] when either dimension is zero.
+    #[cfg(feature = "flip")]
+    pub fn compare_flip_with(
+        &self,
+        candidate: &Self,
+        config: FlipConfig,
+    ) -> Result<FlipResult, VisualDiffError> {
+        compare_flip_with(self, candidate, config)
     }
 }
 
-#[cfg(feature = "capture")]
-impl From<waterui_capture::RenderResult> for RgbaImage {
-    fn from(result: waterui_capture::RenderResult) -> Self {
-        let (rgba8, width, height) = result.into_parts();
+impl From<RgbaImage> for Snapshot {
+    fn from(image: RgbaImage) -> Self {
+        Self::new(image.width, image.height, image.rgba8)
+    }
+}
+
+impl TryFrom<Snapshot> for RgbaImage {
+    type Error = VisualDiffError;
+
+    fn try_from(snapshot: Snapshot) -> Result<Self, Self::Error> {
+        let (width, height, rgba8) = snapshot.into_parts();
         Self::new(width, height, rgba8)
-            .expect("waterui_capture::RenderResult buffer always matches dimensions")
+    }
+}
+
+impl TryFrom<&Snapshot> for RgbaImage {
+    type Error = VisualDiffError;
+
+    fn try_from(snapshot: &Snapshot) -> Result<Self, Self::Error> {
+        Self::new(
+            snapshot.width(),
+            snapshot.height(),
+            snapshot.rgba8().to_vec(),
+        )
     }
 }
 
@@ -200,15 +257,15 @@ impl BlankFrameAnalysis {
     }
 }
 
-/// Analyzes an [`RgbaImage`] for empty dimensions, full transparency, or a
+/// Analyzes raw RGBA8 pixel data for empty dimensions, full transparency, or a
 /// uniform single-color fill.
 #[must_use]
 #[expect(
     clippy::cast_precision_loss,
     reason = "pixel counts are far below 2^53"
 )]
-pub fn analyze_blank_frame(image: &RgbaImage) -> BlankFrameAnalysis {
-    if image.width == 0 || image.height == 0 || image.rgba8.is_empty() {
+pub(crate) fn analyze_blank_rgba8(width: u32, height: u32, rgba8: &[u8]) -> BlankFrameAnalysis {
+    if width == 0 || height == 0 || rgba8.len() < 4 {
         return BlankFrameAnalysis {
             reason: Some(BlankFrameReason::EmptyDimensions),
             non_transparent_ratio: 0.0,
@@ -216,18 +273,13 @@ pub fn analyze_blank_frame(image: &RgbaImage) -> BlankFrameAnalysis {
         };
     }
 
-    let first = [
-        image.rgba8[0],
-        image.rgba8[1],
-        image.rgba8[2],
-        image.rgba8[3],
-    ];
+    let first = [rgba8[0], rgba8[1], rgba8[2], rgba8[3]];
     let mut min_ch = first;
     let mut max_ch = first;
     let mut non_transparent: usize = 0;
     let mut total_pixels: usize = 0;
 
-    for px in image.rgba8.as_chunks::<4>().0 {
+    for px in rgba8.as_chunks::<4>().0 {
         total_pixels += 1;
         if px[3] > 0 {
             non_transparent += 1;
@@ -254,4 +306,11 @@ pub fn analyze_blank_frame(image: &RgbaImage) -> BlankFrameAnalysis {
         non_transparent_ratio,
         max_channel_spread,
     }
+}
+
+/// Analyzes an [`RgbaImage`] for empty dimensions, full transparency, or a
+/// uniform single-color fill.
+#[must_use]
+pub fn analyze_blank_frame(image: &RgbaImage) -> BlankFrameAnalysis {
+    analyze_blank_rgba8(image.width, image.height, &image.rgba8)
 }
