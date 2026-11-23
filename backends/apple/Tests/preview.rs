@@ -28,6 +28,7 @@ mod suite {
     use std::error::Error as StdError;
     use std::ffi::c_void;
     use std::fs;
+    use std::io::Cursor;
     use std::path::{Path, PathBuf};
     use std::time::{Duration, Instant};
 
@@ -40,13 +41,15 @@ mod suite {
         CGWindowListCopyWindowInfo, CGWindowListOption, kCGNullWindowID, kCGWindowIsOnscreen,
         kCGWindowNumber, kCGWindowOwnerPID,
     };
+    use half::f16;
     use libtest_mimic::{Arguments, Trial};
+    use png::{BitDepth, ColorType, Decoder};
     use waterui::prelude::*;
     use waterui::{AnyView, ResourceContext};
     use waterui_apple::preview::{PreviewError, capture_hdr};
     use waterui_preview_protocol::run::{
         DEFAULT_CONTENT_DEADLINE, PREVIEW_RUN_CONFIG_ENV, PreviewRunConfig, PreviewRunMode,
-        RawFrameStreamReader, RunConfigError, VideoCaptureConfig,
+        RawFrameStreamReader, RawPixelFormat, RunConfigError, VideoCaptureConfig,
     };
 
     /// The argument that turns a spawned copy of this binary into a
@@ -184,6 +187,16 @@ mod suite {
                     Ok(())
                 },
             ),
+            png_trial(
+                "preview::captures_hdr_pq_png_windowless",
+                "hdr_image",
+                Some(assert_hdr_pq_png),
+            ),
+            Trial::test("preview::captures_hdr_scenario_windowless", || {
+                run_trial("hdr_scenario", Expect::Success);
+                assert_hdr_scenario_output(&output_dir().join("hdr_scenario"));
+                Ok(())
+            }),
             Trial::test("preview::captures_a_scenario_windowless", || {
                 run_trial("scenario", Expect::Success);
                 assert_scenario_output(&output_dir().join("scenario"));
@@ -231,6 +244,92 @@ mod suite {
             count += 1;
         }
         assert_eq!(count, 3, "20fps over 100ms must record 3 frames");
+    }
+
+    fn assert_hdr_pq_png(path: &Path) {
+        let bytes = fs::read(path).expect("captured HDR PNG is readable");
+        let decoder = Decoder::new(Cursor::new(&bytes));
+        let mut reader = decoder.read_info().expect("HDR PNG header decodes");
+        let info = reader.info();
+        assert_eq!(info.bit_depth, BitDepth::Sixteen);
+        assert_eq!(info.color_type, ColorType::Rgba);
+        let cicp = info
+            .coding_independent_code_points
+            .expect("HDR PNG must carry a cICP chunk");
+        assert_eq!(
+            (
+                cicp.color_primaries,
+                cicp.transfer_function,
+                cicp.matrix_coefficients,
+                cicp.is_video_full_range_image,
+            ),
+            (12, 16, 0, true),
+            "HDR PNG must carry Display P3 SMPTE ST 2084 PQ full-range cICP"
+        );
+        let mut pixels = vec![0_u8; reader.output_buffer_size().expect("PNG buffer size")];
+        let output = reader.next_frame(&mut pixels).expect("HDR PNG decodes");
+        assert!(output.width >= 160 && output.height >= 120);
+        // ITU-R BT.2408 SDR reference white (203 nits) maps to PQ code ~38,055
+        // in 16-bit full range; `headroom = 1.0` (~406 nits) exceeds 41,000.
+        let max_pq = pixels[..output.buffer_size()]
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .flat_map(|px| {
+                [
+                    u16::from_be_bytes([px[0], px[1]]),
+                    u16::from_be_bytes([px[2], px[3]]),
+                    u16::from_be_bytes([px[4], px[5]]),
+                ]
+            })
+            .max()
+            .unwrap_or(0);
+        assert!(
+            max_pq > 40_000,
+            "16-bit PQ HDR PNG must preserve >1.0 EDR highlights above SDR white (~38055), got max_pq={max_pq}"
+        );
+    }
+
+    fn assert_hdr_scenario_output(dir: &Path) {
+        let png = dir.join("frame-0000ms.png");
+        assert_hdr_pq_png(&png);
+        let stream_path = dir.join("frames.wuirf");
+        let mut reader = RawFrameStreamReader::open(&stream_path)
+            .expect("HDR scenario raw frame stream must open");
+        assert_eq!(reader.fps(), 20);
+        assert_eq!(
+            reader.pixel_format(),
+            RawPixelFormat::Rgba16FloatLinearDisplayP3
+        );
+        assert!(reader.width() >= 160 && reader.height() >= 120);
+        let expected_bytes = (reader.width() * reader.height() * 8) as usize;
+        let mut buf = Vec::new();
+        let mut count = 0_usize;
+        let mut max_channel = 0.0_f32;
+        while reader
+            .next_frame(&mut buf)
+            .expect("read HDR raw frame")
+            .is_some()
+        {
+            assert_eq!(buf.len(), expected_bytes);
+            for px in buf.as_chunks::<8>().0 {
+                for ch in [
+                    f16::from_le_bytes([px[0], px[1]]).to_f32(),
+                    f16::from_le_bytes([px[2], px[3]]).to_f32(),
+                    f16::from_le_bytes([px[4], px[5]]).to_f32(),
+                ] {
+                    if ch.is_finite() {
+                        max_channel = max_channel.max(ch);
+                    }
+                }
+            }
+            count += 1;
+        }
+        assert_eq!(count, 3, "20fps over 100ms must record 3 HDR frames");
+        assert!(
+            max_channel > 1.2,
+            "WUIRF002 HDR stream must preserve unclamped >1.0 linear Display P3 highlights, got max_channel={max_channel}"
+        );
     }
 
     /// What the parent checks after the child exits.
@@ -392,6 +491,12 @@ mod suite {
             "hdr_edr" => hdr_edr_run(),
             #[cfg(feature = "gpu_surface")]
             "hdr_glass_gpu" => hdr_glass_gpu_run(),
+            "hdr_image" => {
+                hdr_image_run("hdr_image", 160.0, 120.0, hdr_edr_view).map_err(Into::into)
+            }
+            "hdr_scenario" => {
+                hdr_scenario_run("hdr_scenario", 160.0, 120.0, hdr_edr_view).map_err(Into::into)
+            }
             "scenario" => {
                 scenario_run("scenario", 200.0, 120.0, liquid_glass_view).map_err(Into::into)
             }
@@ -543,6 +648,61 @@ mod suite {
         PreviewRunConfig::load_from_env().map(|_| ())
     }
 
+    fn hdr_image_run<V: View>(
+        slug: &str,
+        width: f32,
+        height: f32,
+        view: impl FnOnce() -> V + 'static,
+    ) -> Result<(), PreviewError> {
+        let output = output_dir().join(format!("{slug}.png"));
+        let result = run_with_options(
+            slug,
+            PreviewRunMode::Image {
+                output: output.clone(),
+            },
+            width,
+            height,
+            DEFAULT_CONTENT_DEADLINE,
+            true,
+            view,
+        );
+        if result.is_ok() {
+            tracing::info!("HDR preview capture written to {}", output.display());
+            assert_background_application();
+        }
+        result
+    }
+
+    fn hdr_scenario_run<V: View>(
+        slug: &str,
+        width: f32,
+        height: f32,
+        view: impl FnOnce() -> V + 'static,
+    ) -> Result<(), PreviewError> {
+        let dir = output_dir().join(slug);
+        let result = run_with_options(
+            slug,
+            PreviewRunMode::Scenario {
+                output_dir: Some(dir.clone()),
+                captures_ms: vec![0],
+                events: Vec::new(),
+                video: Some(
+                    VideoCaptureConfig::new(dir.join("frames.wuirf"), 20)
+                        .with_duration_ms(Some(100)),
+                ),
+            },
+            width,
+            height,
+            DEFAULT_CONTENT_DEADLINE,
+            true,
+            view,
+        );
+        if result.is_ok() {
+            assert_background_application();
+        }
+        result
+    }
+
     /// Drives `preview::run` once against a `mode`/`size` configuration,
     /// written to a real run-configuration file and reloaded through
     /// `PREVIEW_RUN_CONFIG_ENV` — the path a generated preview binary
@@ -556,7 +716,15 @@ mod suite {
         height: f32,
         view: impl FnOnce() -> V + 'static,
     ) -> Result<(), PreviewError> {
-        run_with_deadline(slug, mode, width, height, DEFAULT_CONTENT_DEADLINE, view)
+        run_with_options(
+            slug,
+            mode,
+            width,
+            height,
+            DEFAULT_CONTENT_DEADLINE,
+            false,
+            view,
+        )
     }
 
     /// [`run_with_config`] with an explicit content deadline.
@@ -568,17 +736,26 @@ mod suite {
         content_deadline: Duration,
         view: impl FnOnce() -> V + 'static,
     ) -> Result<(), PreviewError> {
+        run_with_options(slug, mode, width, height, content_deadline, false, view)
+    }
+
+    fn run_with_options<V: View>(
+        slug: &str,
+        mode: PreviewRunMode,
+        width: f32,
+        height: f32,
+        content_deadline: Duration,
+        hdr: bool,
+        view: impl FnOnce() -> V + 'static,
+    ) -> Result<(), PreviewError> {
         let dir = output_dir();
         fs::create_dir_all(&dir).expect("the preview capture directory is creatable");
         let config_path = dir.join(format!("{slug}.run-config.json"));
         fs::write(
             &config_path,
-            serde_json::to_string_pretty(&PreviewRunConfig::new(
-                width,
-                height,
-                mode,
-                content_deadline,
-            ))
+            serde_json::to_string_pretty(
+                &PreviewRunConfig::new(width, height, mode, content_deadline).with_hdr(hdr),
+            )
             .expect("a run configuration serializes"),
         )
         .expect("the run configuration writes");

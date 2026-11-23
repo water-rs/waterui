@@ -10,14 +10,17 @@ use std::{
 };
 
 use crate::preview_symbol;
-use hydrolysis::{FontFamilyResolution, HeadlessRuntime, InputEvent, PointerButton, PointerKind};
+use hydrolysis::{
+    FontFamilyResolution, HeadlessColorFormat, HeadlessHdrSnapshot, HeadlessRuntime,
+    HeadlessSnapshot, InputEvent, OutputAlpha, PointerButton, PointerKind,
+};
 use waterui::ContentLedger;
 use waterui::content_ledger::{ContentError, ContentFailure};
 use waterui_core::handler::AnyViewBuilder;
 use waterui_preview_protocol::run::{
     Alpha, PreviewColorScheme, PreviewRunConfig, PreviewRunMode, RawFrameStreamWriter,
     ScenarioEvent, ScenarioEventKind, ScenarioPointerButton, VideoCaptureConfig,
-    plan_scenario_timeline, write_png,
+    plan_scenario_timeline, write_hdr_png, write_png,
 };
 
 pub(crate) fn run() {
@@ -28,10 +31,6 @@ pub(crate) fn run() {
     hydrolysis::init_tracing();
     let config = PreviewRunConfig::load_from_env()
         .unwrap_or_else(|error| panic!("hydrolysis preview: {error}"));
-    assert!(
-        !config.hdr(),
-        "hydrolysis preview: --hdr capture requires linear Display P3 float readback from HeadlessRuntime"
-    );
     match config.mode() {
         PreviewRunMode::Image { output } => {
             run_image(output, &config);
@@ -93,7 +92,13 @@ fn new_runtime(config: &PreviewRunConfig, ledger: &ContentLedger) -> HeadlessRun
     let content = AnyViewBuilder::new(preview_symbol::load_preview_view);
     let scale_factor = f64::from(config.scale());
 
-    HeadlessRuntime::new(
+    let color_format = if config.hdr() {
+        HeadlessColorFormat::HdrLinearDisplayP3
+    } else {
+        HeadlessColorFormat::SdrDisplayP3
+    };
+
+    HeadlessRuntime::new_with_format(
         env,
         content,
         dimension_to_u32(config.width()),
@@ -102,6 +107,7 @@ fn new_runtime(config: &PreviewRunConfig, ledger: &ContentLedger) -> HeadlessRun
         // A preview host is an application: an uninstalled named family
         // resolves the way it does under `water run`.
         FontFamilyResolution::Lenient,
+        color_format,
     )
     .unwrap_or_else(|error| match std::error::Error::source(&error) {
         Some(source) => panic!("hydrolysis preview: {error}: {source}"),
@@ -194,10 +200,17 @@ fn run_image(output_path: &Path, config: &PreviewRunConfig) {
     let _ = preview.runtime.pump_at(false, frame_at);
     settle(&mut preview, frame_at);
     let result = preview.runtime.pump_at(true, frame_at);
-    let snapshot = result
-        .into_snapshot()
-        .unwrap_or_else(|| panic!("hydrolysis preview: static capture produced no snapshot"));
-    write_snapshot_png(snapshot, output_path);
+    if config.hdr() {
+        let snapshot = result
+            .into_hdr_snapshot()
+            .unwrap_or_else(|| panic!("hydrolysis preview: HDR capture produced no snapshot"));
+        write_hdr_snapshot_png(snapshot, output_path);
+    } else {
+        let snapshot = result
+            .into_snapshot()
+            .unwrap_or_else(|| panic!("hydrolysis preview: static capture produced no snapshot"));
+        write_snapshot_png(snapshot, output_path);
+    }
 }
 
 fn run_scenario(
@@ -219,9 +232,14 @@ fn run_scenario(
             )
         });
     }
+    let hdr = config.hdr();
     let mut video_writer = video.map(|video| {
-        RawFrameStreamWriter::create(video.output(), video.fps())
-            .unwrap_or_else(|error| panic!("hydrolysis preview: {error}"))
+        let writer = if hdr {
+            RawFrameStreamWriter::create_hdr(video.output(), video.fps())
+        } else {
+            RawFrameStreamWriter::create(video.output(), video.fps())
+        };
+        writer.unwrap_or_else(|error| panic!("hydrolysis preview: {error}"))
     });
     let mut preview = mount(config);
     let started_at = Instant::now();
@@ -244,55 +262,80 @@ fn run_scenario(
         // capture settles by the same rule: the tree quiet *and* nothing owed.
         settle(&mut preview, capture_at);
         let result = preview.runtime.pump_at(true, capture_at);
-        let Some(snapshot) = result.into_snapshot() else {
-            panic!(
-                "hydrolysis preview: scenario capture at {}ms produced no snapshot",
-                sample.offset().as_millis()
-            );
-        };
-        let (width, height, rgba8, output_alpha) = snapshot.into_parts();
-        let alpha = match output_alpha {
-            hydrolysis::OutputAlpha::Premultiplied => Alpha::Premultiplied,
-            hydrolysis::OutputAlpha::Opaque | hydrolysis::OutputAlpha::Straight => Alpha::Straight,
-        };
-        match (sample.png_capture_ms(), sample.record_video()) {
-            (Some(capture_ms), true) => {
-                if let Some(output_dir) = output_dir {
-                    write_png(
-                        &output_dir.join(format!("frame-{capture_ms:04}ms.png")),
-                        width,
-                        height,
-                        rgba8.clone(),
-                        alpha,
-                    )
+        if hdr {
+            let Some(snapshot) = result.into_hdr_snapshot() else {
+                panic!(
+                    "hydrolysis preview: HDR scenario capture at {}ms produced no snapshot",
+                    sample.offset().as_millis()
+                );
+            };
+            let (width, height, rgba_f32, _headroom, output_alpha) = snapshot.into_parts();
+            let alpha = snapshot_alpha(output_alpha);
+            if sample.record_video()
+                && let Some(writer) = &mut video_writer
+            {
+                writer
+                    .write_hdr_frame_f32(width, height, &rgba_f32, alpha, sample.offset())
                     .unwrap_or_else(|error| panic!("hydrolysis preview: {error}"));
-                }
-                if let Some(writer) = &mut video_writer {
-                    writer
-                        .write_frame(width, height, rgba8, alpha, sample.offset())
+            }
+            if let (Some(capture_ms), Some(output_dir)) = (sample.png_capture_ms(), output_dir) {
+                write_hdr_png(
+                    &output_dir.join(format!("frame-{capture_ms:04}ms.png")),
+                    width,
+                    height,
+                    rgba_f32,
+                    alpha,
+                )
+                .unwrap_or_else(|error| panic!("hydrolysis preview: {error}"));
+            }
+        } else {
+            let Some(snapshot) = result.into_snapshot() else {
+                panic!(
+                    "hydrolysis preview: scenario capture at {}ms produced no snapshot",
+                    sample.offset().as_millis()
+                );
+            };
+            let (width, height, rgba8, output_alpha) = snapshot.into_parts();
+            let alpha = snapshot_alpha(output_alpha);
+            match (sample.png_capture_ms(), sample.record_video()) {
+                (Some(capture_ms), true) => {
+                    if let Some(output_dir) = output_dir {
+                        write_png(
+                            &output_dir.join(format!("frame-{capture_ms:04}ms.png")),
+                            width,
+                            height,
+                            rgba8.clone(),
+                            alpha,
+                        )
                         .unwrap_or_else(|error| panic!("hydrolysis preview: {error}"));
+                    }
+                    if let Some(writer) = &mut video_writer {
+                        writer
+                            .write_frame(width, height, rgba8, alpha, sample.offset())
+                            .unwrap_or_else(|error| panic!("hydrolysis preview: {error}"));
+                    }
                 }
-            }
-            (Some(capture_ms), false) => {
-                if let Some(output_dir) = output_dir {
-                    write_png(
-                        &output_dir.join(format!("frame-{capture_ms:04}ms.png")),
-                        width,
-                        height,
-                        rgba8,
-                        alpha,
-                    )
-                    .unwrap_or_else(|error| panic!("hydrolysis preview: {error}"));
-                }
-            }
-            (None, true) => {
-                if let Some(writer) = &mut video_writer {
-                    writer
-                        .write_frame(width, height, rgba8, alpha, sample.offset())
+                (Some(capture_ms), false) => {
+                    if let Some(output_dir) = output_dir {
+                        write_png(
+                            &output_dir.join(format!("frame-{capture_ms:04}ms.png")),
+                            width,
+                            height,
+                            rgba8,
+                            alpha,
+                        )
                         .unwrap_or_else(|error| panic!("hydrolysis preview: {error}"));
+                    }
                 }
+                (None, true) => {
+                    if let Some(writer) = &mut video_writer {
+                        writer
+                            .write_frame(width, height, rgba8, alpha, sample.offset())
+                            .unwrap_or_else(|error| panic!("hydrolysis preview: {error}"));
+                    }
+                }
+                (None, false) => {}
             }
-            (None, false) => {}
         }
     }
     if let Some(writer) = video_writer {
@@ -302,16 +345,25 @@ fn run_scenario(
     }
 }
 
-fn write_snapshot_png(snapshot: hydrolysis::HeadlessSnapshot, path: &Path) {
+const fn snapshot_alpha(output_alpha: OutputAlpha) -> Alpha {
+    match output_alpha {
+        OutputAlpha::Premultiplied => Alpha::Premultiplied,
+        OutputAlpha::Opaque | OutputAlpha::Straight => Alpha::Straight,
+    }
+}
+
+fn write_snapshot_png(snapshot: HeadlessSnapshot, path: &Path) {
     // The alpha convention comes from the surface that presented the
     // capture — `Opaque` reads like `Straight` to the flattener, and
     // nothing else is produced.
     let (width, height, rgba8, output_alpha) = snapshot.into_parts();
-    let alpha = match output_alpha {
-        hydrolysis::OutputAlpha::Premultiplied => Alpha::Premultiplied,
-        hydrolysis::OutputAlpha::Opaque | hydrolysis::OutputAlpha::Straight => Alpha::Straight,
-    };
-    write_png(path, width, height, rgba8, alpha)
+    write_png(path, width, height, rgba8, snapshot_alpha(output_alpha))
+        .unwrap_or_else(|error| panic!("hydrolysis preview: {error}"));
+}
+
+fn write_hdr_snapshot_png(snapshot: HeadlessHdrSnapshot, path: &Path) {
+    let (width, height, rgba_f32, _headroom, output_alpha) = snapshot.into_parts();
+    write_hdr_png(path, width, height, rgba_f32, snapshot_alpha(output_alpha))
         .unwrap_or_else(|error| panic!("hydrolysis preview: {error}"));
 }
 

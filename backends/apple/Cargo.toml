@@ -248,6 +248,8 @@ objc2-core-image = { version = "0.3", default-features = false, features = [
 block2 = { workspace = true }
 divan = "0.1"
 futures = { workspace = true }
+half = { version = "2.7", default-features = false }
+png = { version = "0.18", default-features = false }
 pollster = { workspace = true }
 libtest-mimic = "0.8"
 serde_json = { workspace = true }

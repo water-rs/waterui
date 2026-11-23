@@ -22,6 +22,10 @@ use std::rc::{Rc, Weak};
 #[cfg(hydrolysis_gpu_painter)]
 use std::sync::mpsc;
 
+#[cfg(hydrolysis_cpu_painter)]
+use cherenkov::{OutputAlpha, RenderError};
+#[cfg(hydrolysis_cpu_painter)]
+use cherenkov_cpu::present_linear_p3;
 #[cfg(hydrolysis_gpu_painter)]
 use waterui_core::contract_violation;
 
@@ -817,6 +821,77 @@ impl RasterCherenkovSurface {
         ))
     }
 
+    /// The last rendered frame as Display P3 RGBA8 rows in `alpha`, tone-mapped
+    /// to SDR ceiling (`headroom.min(1.0)`).
+    ///
+    /// # Errors
+    ///
+    /// Returns the engine's [`cherenkov::RenderError`] when the readback fails.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "Display P3 OETF output is clamped to [0.0, 1.0] before scaling to 0..=255"
+    )]
+    pub(crate) fn readback_display_p3_rgba8(
+        &self,
+        headroom: f32,
+        alpha: OutputAlpha,
+    ) -> Result<Vec<u8>, RenderError> {
+        let readback = self.core.surface.readback()?;
+        let presented = present_linear_p3(self.level, headroom.min(1.0), &readback.pixels);
+        let mut out = Vec::with_capacity(presented.len() * 4);
+        for [r, g, b, a] in presented {
+            let (color, out_a) = match alpha {
+                OutputAlpha::Opaque => ([r, g, b], 1.0),
+                OutputAlpha::Premultiplied | OutputAlpha::Straight if a > 0.0 => {
+                    ([r / a, g / a, b / a], a)
+                }
+                OutputAlpha::Premultiplied | OutputAlpha::Straight => ([0.0; 3], a),
+            };
+            let scale = if alpha == OutputAlpha::Premultiplied {
+                out_a
+            } else {
+                1.0
+            };
+            for c in color {
+                let encoded = encode_srgb_oetf(c.clamp(0.0, 1.0));
+                out.push(((encoded * scale).clamp(0.0, 1.0) * 255.0).round() as u8);
+            }
+            out.push((out_a.clamp(0.0, 1.0) * 255.0).round() as u8);
+        }
+        Ok(out)
+    }
+
+    /// The last rendered frame as extended linear Display P3 `f32` RGBA rows
+    /// in `alpha`, tone-mapped only above `headroom`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the engine's [`RenderError`] when the readback fails.
+    pub(crate) fn readback_linear_p3_f32(
+        &self,
+        headroom: f32,
+        alpha: OutputAlpha,
+    ) -> Result<Vec<f32>, RenderError> {
+        let readback = self.core.surface.readback()?;
+        let presented = present_linear_p3(self.level, headroom, &readback.pixels);
+        let mut out = Vec::with_capacity(presented.len() * 4);
+        for [r, g, b, a] in presented {
+            match alpha {
+                OutputAlpha::Opaque => out.extend_from_slice(&[r, g, b, 1.0]),
+                OutputAlpha::Premultiplied => out.extend_from_slice(&[r, g, b, a]),
+                OutputAlpha::Straight => {
+                    if a > 0.0 {
+                        out.extend_from_slice(&[r / a, g / a, b / a, a]);
+                    } else {
+                        out.extend_from_slice(&[0.0, 0.0, 0.0, a]);
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// Presents the last rendered frame as opaque `0x00RRGGBB` sRGB pixels
     /// into `out`, the channel order `softbuffer` desktop surfaces expect.
     ///
@@ -833,6 +908,16 @@ impl RasterCherenkovSurface {
         let rgba = self.readback_rgba8(headroom, cherenkov::OutputAlpha::Opaque)?;
         pack_rgba8_to_0rgb(&rgba, out);
         Ok(())
+    }
+}
+
+/// IEC 61966-2-1 sRGB / Display P3 OETF transfer function on `[0.0, 1.0]`.
+#[cfg(hydrolysis_cpu_painter)]
+fn encode_srgb_oetf(linear: f32) -> f32 {
+    if linear <= 0.003_130_8 {
+        12.92 * linear
+    } else {
+        1.055_f32.mul_add(linear.powf(1.0 / 2.4), -0.055)
     }
 }
 

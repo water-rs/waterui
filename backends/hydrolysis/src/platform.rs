@@ -2762,8 +2762,23 @@ impl OffscreenGpuContext {
 ///
 /// Computed as `10_000.0 / 203.0` (10,000 nits divided by the ITU-R BT.2408
 /// 203-nit SDR reference white), matching Cherenkov's PQ ceiling.
-#[cfg(hydrolysis_gpu_painter)]
+#[cfg(hydrolysis_cherenkov)]
 pub const DEFAULT_HDR_CAPTURE_HEADROOM: f32 = 10_000.0 / 203.0;
+
+/// Color encoding and dynamic range captured by a [`crate::HeadlessRuntime`].
+#[cfg(hydrolysis_cherenkov)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum HeadlessColorFormat {
+    /// Standard dynamic range 8-bit sRGB (`Rgba8Unorm`).
+    #[default]
+    SdrSrgb,
+    /// Standard dynamic range 8-bit Display P3 (`Rgba8Unorm` with Display P3 output color).
+    SdrDisplayP3,
+    /// Extended dynamic range 16-bit float linear Display P3 (`Rgba16Float` with
+    /// [`DEFAULT_HDR_CAPTURE_HEADROOM`]), preserving unclamped `> 1.0` highlights.
+    HdrLinearDisplayP3,
+}
 
 /// Headless offscreen rendering surface.
 ///
@@ -3902,21 +3917,28 @@ pub struct RasterOffscreen {
     pub(crate) state: Rc<crate::engine::RasterEngineState>,
     width: u32,
     height: u32,
+    color_format: HeadlessColorFormat,
 }
 
 #[cfg(hydrolysis_cpu_painter)]
 impl RasterOffscreen {
     /// A `width` x `height` target on `state`'s engine.
-    pub(crate) fn new(
+    pub(crate) fn with_color_format(
         state: Rc<crate::engine::RasterEngineState>,
         width: u32,
         height: u32,
+        color_format: HeadlessColorFormat,
     ) -> Self {
         Self {
             state,
             width: width.max(1),
             height: height.max(1),
+            color_format,
         }
+    }
+
+    pub(crate) const fn color_format(&self) -> HeadlessColorFormat {
+        self.color_format
     }
 }
 

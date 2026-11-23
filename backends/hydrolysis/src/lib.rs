@@ -118,15 +118,17 @@ pub use platform::{
 };
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
 pub use platform::{BrowserWindow, BrowserWindowError};
+#[cfg(hydrolysis_cherenkov)]
+pub use platform::{
+    DEFAULT_HDR_CAPTURE_HEADROOM, HeadlessColorFormat, OffscreenTarget, OffscreenWindow,
+};
 #[cfg(hydrolysis_gpu_painter)]
 pub use platform::{
-    DEFAULT_HDR_CAPTURE_HEADROOM, DeviceLoss, DeviceLostError, GpuUnavailable, OffscreenGpuContext,
-    OffscreenSceneSurface, OffscreenSurface, OpenDeviceError, SurfaceFrame,
+    DeviceLoss, DeviceLostError, GpuUnavailable, OffscreenGpuContext, OffscreenSceneSurface,
+    OffscreenSurface, OpenDeviceError, SurfaceFrame,
 };
 #[cfg(all(not(target_arch = "wasm32"), hydrolysis_cherenkov))]
 pub use platform::{OffscreenPainter, PainterUnavailable};
-#[cfg(hydrolysis_cherenkov)]
-pub use platform::{OffscreenTarget, OffscreenWindow};
 #[cfg(hydrolysis_winit)]
 pub use platform::{WinitPainter, WinitPresentation, WinitWindow};
 #[cfg(hydrolysis_runtime)]
@@ -160,7 +162,7 @@ pub use runner::run;
 #[cfg(hydrolysis_runtime)]
 pub use runner::{FrameCounters, FramePhases, FrameProfile};
 #[cfg(all(not(target_arch = "wasm32"), hydrolysis_cherenkov))]
-pub use runner::{HeadlessPumpResult, HeadlessRuntime, HeadlessSnapshot};
+pub use runner::{HeadlessHdrSnapshot, HeadlessPumpResult, HeadlessRuntime, HeadlessSnapshot};
 #[cfg(hydrolysis_cherenkov)]
 pub use runner::{SemanticPumpResult, SemanticRuntime};
 #[cfg(any(test, hydrolysis_hwui))]

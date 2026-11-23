@@ -1,6 +1,6 @@
 use super::ViewBuilder;
 use super::headless::HeadlessPlatformWindow;
-use super::window::root_window;
+use super::window::{CapturedSnapshot, root_window};
 use super::{
     FrameMode, FrameReader, RenderDiagnosticsConfig, RuntimeWindow, advance_runtime,
     axes_whose_limits_changed, clamp_window_size, handle_input_events, pump_window_semantics,
@@ -976,6 +976,7 @@ fn an_idle_window_repaints_when_its_background_changes() {
     let snapshot =
         render_window_with_capture(&mut runtime, &env, FrameReader::Snapshot, &mut || false)
             .snapshot
+            .and_then(CapturedSnapshot::into_sdr)
             .expect("the refresh frame captures a snapshot");
     let pixel = &snapshot.rgba8()[0..4];
     assert!(
@@ -1041,6 +1042,7 @@ fn a_scheme_change_repaints_the_clear_colour_of_an_idle_window() {
     let snapshot =
         render_window_with_capture(&mut runtime, &env, FrameReader::Snapshot, &mut || false)
             .snapshot
+            .and_then(CapturedSnapshot::into_sdr)
             .expect("the refresh frame captures a snapshot");
     let srgb =
         waterui_graphics::color::working::to_srgb(Color::new(Background).resolve(&env).snapshot());

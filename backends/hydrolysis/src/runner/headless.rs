@@ -1,11 +1,22 @@
 //! Pump-based headless runtime for tests, snapshots and offscreen rendering.
 
-use super::window::{RootWindow, root_window};
+use super::window::{CapturedSnapshot, RootWindow, root_window};
 use super::*;
+use crate::Style;
 use crate::animation::PerpetualAnimation;
+use crate::num_cast::f64_as_i32;
+#[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
+use crate::platform::OffscreenSurface;
+#[cfg(all(not(target_arch = "wasm32"), hydrolysis_cpu_painter))]
+use crate::platform::RasterOffscreen;
 #[cfg(not(target_arch = "wasm32"))]
-use crate::platform::PainterUnavailable;
-use waterui::window::WindowContent;
+use crate::platform::{HeadlessColorFormat, PainterUnavailable};
+#[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
+use cherenkov_gpu::interop::OutputColor;
+use waterui::window::{WindowContent, WindowToolbar};
+use waterui_core::layout::Rect;
+#[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
+use wgpu::TextureFormat;
 
 #[cfg(feature = "accessibility")]
 use crate::renderer::accessibility::{
@@ -35,21 +46,42 @@ pub(super) enum HeadlessSurface {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl HeadlessSurface {
-    /// A `width` x `height` RGBA8 target on `painter`.
-    pub(super) fn on_painter(painter: &OffscreenPainter, width: u32, height: u32) -> Self {
+    /// A `width` x `height` target on `painter` configured for `color_format`.
+    pub(super) fn on_painter_with_format(
+        painter: &OffscreenPainter,
+        width: u32,
+        height: u32,
+        color_format: HeadlessColorFormat,
+    ) -> Self {
         match painter {
             #[cfg(hydrolysis_gpu_painter)]
-            OffscreenPainter::Gpu(gpu) => Self::Gpu(crate::platform::OffscreenSurface::on_context(
-                gpu.clone(),
-                width,
-                height,
-                wgpu::TextureFormat::Rgba8Unorm,
-            )),
+            OffscreenPainter::Gpu(gpu) => Self::Gpu(match color_format {
+                HeadlessColorFormat::SdrSrgb => OffscreenSurface::on_context(
+                    gpu.clone(),
+                    width,
+                    height,
+                    TextureFormat::Rgba8Unorm,
+                ),
+                HeadlessColorFormat::SdrDisplayP3 => OffscreenSurface::on_context(
+                    gpu.clone(),
+                    width,
+                    height,
+                    TextureFormat::Rgba8Unorm,
+                )
+                .with_output_color(OutputColor::DisplayP3),
+                HeadlessColorFormat::HdrLinearDisplayP3 => OffscreenSurface::on_context(
+                    gpu.clone(),
+                    width,
+                    height,
+                    TextureFormat::Rgba16Float,
+                ),
+            }),
             #[cfg(hydrolysis_cpu_painter)]
-            OffscreenPainter::Cpu(state) => Self::Cpu(crate::platform::RasterOffscreen::new(
+            OffscreenPainter::Cpu(state) => Self::Cpu(RasterOffscreen::with_color_format(
                 Rc::clone(state),
                 width,
                 height,
+                color_format,
             )),
         }
     }
@@ -181,10 +213,26 @@ pub(super) struct HeadlessPlatformWindow {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl HeadlessPlatformWindow {
-    /// A `width` x `height` window on `painter`.
+    /// A `width` x `height` sRGB window on `painter`.
+    #[cfg(test)]
     pub(super) fn on_painter(painter: &OffscreenPainter, width: u32, height: u32) -> Self {
+        Self::on_painter_with_format(painter, width, height, HeadlessColorFormat::SdrSrgb)
+    }
+
+    /// A `width` x `height` window on `painter` configured for `color_format`.
+    pub(super) fn on_painter_with_format(
+        painter: &OffscreenPainter,
+        width: u32,
+        height: u32,
+        color_format: HeadlessColorFormat,
+    ) -> Self {
         Self {
-            inner: OffscreenWindow::new(HeadlessSurface::on_painter(painter, width, height)),
+            inner: OffscreenWindow::new(HeadlessSurface::on_painter_with_format(
+                painter,
+                width,
+                height,
+                color_format,
+            )),
             pending_events: VecDeque::new(),
             redraw_requested: Arc::new(AtomicBool::new(false)),
             #[cfg(test)]
@@ -382,8 +430,10 @@ pub struct HeadlessPumpResult {
     /// The content types the emitted tree's text fields declared — the map
     /// the update publishes beside it.
     content_types: AccessibilityContentTypes,
-    /// The captured frame snapshot, when capture was requested.
+    /// The captured SDR frame snapshot, when capture was requested on an SDR runtime.
     snapshot: Option<HeadlessSnapshot>,
+    /// The captured HDR frame snapshot, when capture was requested on an HDR runtime.
+    hdr_snapshot: Option<HeadlessHdrSnapshot>,
     /// The terminal failure that ended a window's rendering in this pump.
     failure: Option<crate::renderer::FrameError>,
     /// Whether a window this pump rendered lost its device during it.
@@ -454,6 +504,23 @@ impl HeadlessPumpResult {
         self.snapshot.take()
     }
 
+    /// The captured HDR frame snapshot, when capture was requested on an HDR runtime.
+    #[must_use]
+    pub const fn hdr_snapshot(&self) -> Option<&HeadlessHdrSnapshot> {
+        self.hdr_snapshot.as_ref()
+    }
+
+    /// Consumes the result and returns the captured HDR frame snapshot.
+    #[must_use]
+    pub fn into_hdr_snapshot(self) -> Option<HeadlessHdrSnapshot> {
+        self.hdr_snapshot
+    }
+
+    /// Takes the captured HDR frame snapshot out of the result, leaving none.
+    pub const fn take_hdr_snapshot(&mut self) -> Option<HeadlessHdrSnapshot> {
+        self.hdr_snapshot.take()
+    }
+
     /// The terminal failure that ended a window's rendering in this pump —
     /// the reason a requested snapshot is missing. A window that failed
     /// this way never renders again.
@@ -512,6 +579,9 @@ pub struct HeadlessRuntime {
     /// later vends. Requesting a device per window made a runtime that opens
     /// a popup pay for two.
     painter: OffscreenPainter,
+    /// The colour format every window of this runtime captures in — shared by
+    /// the main window and any popup windows it vends.
+    color_format: HeadlessColorFormat,
     /// The application's font collection, the same one the environment carries.
     /// Popup windows get their own renderer, which is seeded from this so it
     /// shapes with the same faces as the main one.
@@ -585,6 +655,31 @@ impl HeadlessRuntime {
         style: impl crate::Style,
         family_resolution: FontFamilyResolution,
     ) -> Result<Self, PainterUnavailable> {
+        Self::new_with_format(
+            env,
+            content,
+            width,
+            height,
+            style,
+            family_resolution,
+            HeadlessColorFormat::SdrSrgb,
+        )
+    }
+
+    /// Same as [`Self::new`] with an explicit [`HeadlessColorFormat`] — for
+    /// Display P3 SDR or extended linear Display P3 HDR (`Rgba16Float`) capture.
+    ///
+    /// # Errors
+    /// [`PainterUnavailable`], as [`Self::new`].
+    pub fn new_with_format(
+        env: Environment,
+        content: impl ViewBuilder,
+        width: u32,
+        height: u32,
+        style: impl Style,
+        family_resolution: FontFamilyResolution,
+        color_format: HeadlessColorFormat,
+    ) -> Result<Self, PainterUnavailable> {
         Ok(Self::on_painter(
             OffscreenPainter::select()?,
             env,
@@ -593,6 +688,7 @@ impl HeadlessRuntime {
             height,
             style,
             family_resolution,
+            color_format,
         ))
     }
 
@@ -609,13 +705,37 @@ impl HeadlessRuntime {
     ///
     /// # Errors
     /// [`PainterUnavailable`], as [`Self::new`].
-    pub fn new_with_window<C: ViewBuilder, T: waterui::window::WindowToolbar>(
+    pub fn new_with_window<C: ViewBuilder, T: WindowToolbar>(
         env: Environment,
         window: Window<C, T>,
         width: u32,
         height: u32,
-        style: impl crate::Style,
+        style: impl Style,
         family_resolution: FontFamilyResolution,
+    ) -> Result<Self, PainterUnavailable> {
+        Self::new_with_window_and_format(
+            env,
+            window,
+            width,
+            height,
+            style,
+            family_resolution,
+            HeadlessColorFormat::SdrSrgb,
+        )
+    }
+
+    /// Same as [`Self::new_with_window`] with an explicit [`HeadlessColorFormat`].
+    ///
+    /// # Errors
+    /// [`PainterUnavailable`], as [`Self::new`].
+    pub fn new_with_window_and_format<C: ViewBuilder, T: WindowToolbar>(
+        env: Environment,
+        window: Window<C, T>,
+        width: u32,
+        height: u32,
+        style: impl Style,
+        family_resolution: FontFamilyResolution,
+        color_format: HeadlessColorFormat,
     ) -> Result<Self, PainterUnavailable> {
         Ok(Self::on_painter(
             OffscreenPainter::select()?,
@@ -625,6 +745,7 @@ impl HeadlessRuntime {
             height,
             style,
             family_resolution,
+            color_format,
         ))
     }
 
@@ -691,6 +812,30 @@ impl HeadlessRuntime {
         height: u32,
         style: impl crate::Style,
     ) -> Self {
+        Self::new_for_tests_with_format(
+            env,
+            content,
+            width,
+            height,
+            style,
+            HeadlessColorFormat::SdrSrgb,
+        )
+    }
+
+    /// Same as [`Self::new_for_tests`] with an explicit [`HeadlessColorFormat`].
+    ///
+    /// # Panics
+    /// Panics when the selected painter cannot render on this host.
+    #[cfg(any(test, feature = "testing"))]
+    #[must_use]
+    pub fn new_for_tests_with_format(
+        env: Environment,
+        content: impl ViewBuilder,
+        width: u32,
+        height: u32,
+        style: impl Style,
+        color_format: HeadlessColorFormat,
+    ) -> Self {
         Self::on_painter(
             OffscreenPainter::for_tests(),
             env,
@@ -699,6 +844,7 @@ impl HeadlessRuntime {
             height,
             style,
             FontFamilyResolution::Strict,
+            color_format,
         )
     }
 
@@ -726,6 +872,7 @@ impl HeadlessRuntime {
             height,
             style,
             FontFamilyResolution::Strict,
+            HeadlessColorFormat::SdrSrgb,
         )
     }
 
@@ -759,9 +906,14 @@ impl HeadlessRuntime {
             height,
             style,
             FontFamilyResolution::Strict,
+            HeadlessColorFormat::SdrSrgb,
         )
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "internal constructor forwarding the runtime's window, painter, style, font, and capture format configuration"
+    )]
     fn on_painter(
         painter: OffscreenPainter,
         mut env: Environment,
@@ -770,6 +922,7 @@ impl HeadlessRuntime {
         height: u32,
         style: impl crate::Style,
         family_resolution: FontFamilyResolution,
+        color_format: HeadlessColorFormat,
     ) -> Self {
         #[cfg(hydrolysis_inspector)]
         let inspector = init_main_thread_executors();
@@ -834,8 +987,12 @@ impl HeadlessRuntime {
 
         window.arm_close_requests(&env);
 
-        let mut platform =
-            HeadlessPlatformWindow::on_painter(&painter, width.max(1), height.max(1));
+        let mut platform = HeadlessPlatformWindow::on_painter_with_format(
+            &painter,
+            width.max(1),
+            height.max(1),
+            color_format,
+        );
         platform.apply_properties(&window);
         let mut renderer = HydrolysisRenderer::with_engine(
             Rc::clone(&theme),
@@ -873,6 +1030,7 @@ impl HeadlessRuntime {
             _executor_teardown: DrainExecutorOnDrop::new(local_executor.clone()),
             _gpu_reclaim: ReclaimGpuOnDrop(painter.clone()),
             painter,
+            color_format,
             local_executor,
         }
     }
@@ -884,7 +1042,12 @@ impl HeadlessRuntime {
         let frame = crate::platform::validated_window_frame(window.frame.snapshot());
         let width = crate::num_cast::f32_as_u32(frame.width().max(1.0));
         let height = crate::num_cast::f32_as_u32(frame.height().max(1.0));
-        let mut platform = HeadlessPlatformWindow::on_painter(&self.painter, width, height);
+        let mut platform = HeadlessPlatformWindow::on_painter_with_format(
+            &self.painter,
+            width,
+            height,
+            self.color_format,
+        );
         // The vended window's host reports the same touch-gesture
         // parameters the main window's does: a `set_touch_scroll_config`
         // call applies to every window the runtime owns.
@@ -1315,6 +1478,7 @@ impl HeadlessRuntime {
             self.local_executor.drain()
         })
         .snapshot
+        .and_then(CapturedSnapshot::into_sdr)
     }
 
     /// The mounted popup windows' logical frames — where each transient
@@ -1512,7 +1676,17 @@ impl HeadlessRuntime {
         {
             let scale_factor = self.runtime.platform.scale_factor();
             for (_, frame, popup_snapshot) in popup_snapshots {
-                composite_popup_snapshot(snapshot, &popup_snapshot, frame, scale_factor);
+                match (&mut *snapshot, &popup_snapshot) {
+                    (CapturedSnapshot::Sdr(target), CapturedSnapshot::Sdr(source)) => {
+                        composite_popup_snapshot(target, source, frame, scale_factor);
+                    }
+                    (CapturedSnapshot::Hdr(target), CapturedSnapshot::Hdr(source)) => {
+                        composite_popup_hdr_snapshot(target, source, frame, scale_factor);
+                    }
+                    _ => {
+                        unreachable!("main window and popup windows share one HeadlessColorFormat")
+                    }
+                }
             }
         }
         let executor_after_started_at = Instant::now();
@@ -1551,6 +1725,15 @@ impl HeadlessRuntime {
                 (Some(merged.tree_update), merged.content_types)
             });
 
+        let (snapshot, hdr_snapshot) = match render_result
+            .as_mut()
+            .and_then(|result| result.snapshot.take())
+        {
+            Some(CapturedSnapshot::Sdr(snapshot)) => (Some(snapshot), None),
+            Some(CapturedSnapshot::Hdr(hdr_snapshot)) => (None, Some(hdr_snapshot)),
+            None => (None, None),
+        };
+
         HeadlessPumpResult {
             rebuilt: rebuilt
                 || render_result.as_ref().is_some_and(|result| result.rebuilt)
@@ -1567,7 +1750,8 @@ impl HeadlessRuntime {
             tree_update,
             #[cfg(feature = "accessibility")]
             content_types,
-            snapshot: render_result.and_then(|result| result.snapshot),
+            snapshot,
+            hdr_snapshot,
             failure,
             device_lost,
             #[cfg(feature = "accessibility")]
@@ -1632,6 +1816,61 @@ fn composite_pixel(target: &mut [u8], source: &[u8]) {
         target[channel] = crate::num_cast::f32_as_u8((out * 255.0).round().clamp(0.0, 255.0));
     }
     target[3] = crate::num_cast::f32_as_u8((out_alpha * 255.0).round().clamp(0.0, 255.0));
+}
+
+fn composite_popup_hdr_snapshot(
+    target: &mut HeadlessHdrSnapshot,
+    source: &HeadlessHdrSnapshot,
+    frame: Rect,
+    scale_factor: f64,
+) {
+    let offset_x = f64_as_i32((f64::from(frame.x()) * scale_factor).round());
+    let offset_y = f64_as_i32((f64::from(frame.y()) * scale_factor).round());
+    for source_y in 0..source.height() {
+        let target_y = offset_y + i32::try_from(source_y).expect("source y should fit i32");
+        if target_y < 0
+            || target_y >= i32::try_from(target.height()).expect("height should fit i32")
+        {
+            continue;
+        }
+        for source_x in 0..source.width() {
+            let target_x = offset_x + i32::try_from(source_x).expect("source x should fit i32");
+            if target_x < 0
+                || target_x >= i32::try_from(target.width()).expect("width should fit i32")
+            {
+                continue;
+            }
+            let source_index = ((source_y * source.width() + source_x) * 4) as usize;
+            let target_index = ((u32::try_from(target_y).expect("target y should be non-negative")
+                * target.width()
+                + u32::try_from(target_x).expect("target x should be non-negative"))
+                * 4) as usize;
+            composite_hdr_pixel(
+                &mut target.rgba_f32_mut()[target_index..target_index + 4],
+                &source.rgba_f32()[source_index..source_index + 4],
+            );
+        }
+    }
+}
+
+fn composite_hdr_pixel(target: &mut [f32], source: &[f32]) {
+    let source_alpha = source[3].clamp(0.0, 1.0);
+    if source_alpha <= 0.0 {
+        return;
+    }
+    let target_alpha = target[3].clamp(0.0, 1.0);
+    let out_alpha = target_alpha.mul_add(1.0 - source_alpha, source_alpha);
+    if out_alpha <= 0.0 {
+        target.copy_from_slice(&[0.0, 0.0, 0.0, 0.0]);
+        return;
+    }
+    for channel in 0..3 {
+        let out = (target[channel] * target_alpha)
+            .mul_add(1.0 - source_alpha, source[channel] * source_alpha)
+            / out_alpha;
+        target[channel] = out;
+    }
+    target[3] = out_alpha;
 }
 
 /// The window-local point a positional event carries, if it is one.
@@ -2140,5 +2379,94 @@ mod painter_selection_tests {
         assert_eq!((snapshot.width(), snapshot.height()), (64, 32));
         assert_eq!(snapshot.output_alpha(), cherenkov::OutputAlpha::Straight);
         assert_eq!(snapshot.rgba8().len(), 64 * 32 * 4);
+    }
+}
+
+#[cfg(test)]
+mod hdr_capture_tests {
+    use super::*;
+    use crate::renderer::tests::{MinimalTestTheme, test_environment};
+    use cherenkov::OutputAlpha;
+    use waterui::{Color, ViewExt as _};
+    use waterui_core::AnyView;
+    use waterui_core::handler::AnyViewBuilder;
+
+    fn hdr_white_view() -> AnyViewBuilder<AnyView> {
+        AnyViewBuilder::new(|| {
+            AnyView::new(
+                Color::srgb(255, 255, 255)
+                    .with_headroom(1.0)
+                    .size(32.0, 32.0),
+            )
+        })
+    }
+
+    #[test]
+    fn headless_hdr_linear_display_p3_preserves_edr_highlights() {
+        let mut runtime = HeadlessRuntime::new_for_tests_with_format(
+            test_environment(),
+            hdr_white_view(),
+            32,
+            32,
+            MinimalTestTheme::default(),
+            HeadlessColorFormat::HdrLinearDisplayP3,
+        );
+        let result = runtime.pump_snapshot();
+        assert!(
+            result.snapshot().is_none(),
+            "HDR runtime yields hdr_snapshot, not sdr snapshot"
+        );
+        let hdr = result
+            .into_hdr_snapshot()
+            .expect("HDR runtime capture must produce HeadlessHdrSnapshot");
+        assert_eq!((hdr.width(), hdr.height()), (32, 32));
+        assert_eq!(hdr.output_alpha(), OutputAlpha::Straight);
+        assert_eq!(hdr.rgba_f32().len(), 32 * 32 * 4);
+        assert!(hdr.headroom() > 1.0);
+        let max_channel = hdr
+            .rgba_f32()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .flat_map(|px| [px[0], px[1], px[2]])
+            .filter(|v| v.is_finite())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_channel > 1.5,
+            "HeadlessColorFormat::HdrLinearDisplayP3 must preserve >1.0 EDR highlights, got max_channel={max_channel}"
+        );
+    }
+
+    #[cfg(hydrolysis_both_painters)]
+    #[test]
+    fn cpu_painter_hdr_linear_display_p3_preserves_edr_highlights() {
+        let painter = OffscreenPainter::select_with(true)
+            .unwrap_or_else(|error| panic!("the CPU painter must open: {error}"));
+        let mut runtime = HeadlessRuntime::on_painter(
+            painter,
+            test_environment(),
+            root_window(default_window(hdr_white_view())),
+            32,
+            32,
+            MinimalTestTheme::default(),
+            FontFamilyResolution::Strict,
+            HeadlessColorFormat::HdrLinearDisplayP3,
+        );
+        let hdr = runtime
+            .pump_snapshot()
+            .into_hdr_snapshot()
+            .expect("CPU HDR runtime capture must produce HeadlessHdrSnapshot");
+        let max_channel = hdr
+            .rgba_f32()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .flat_map(|px| [px[0], px[1], px[2]])
+            .filter(|v| v.is_finite())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_channel > 1.5,
+            "CPU painter HDR capture must preserve >1.0 EDR highlights, got max_channel={max_channel}"
+        );
     }
 }

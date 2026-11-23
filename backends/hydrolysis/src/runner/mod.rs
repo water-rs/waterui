@@ -194,11 +194,11 @@ use window::{acquire_surface_frame, surface_error_requires_reconfigure};
 #[cfg(all(hydrolysis_inspector, hydrolysis_cherenkov))]
 mod inspector;
 
-#[cfg(all(not(target_arch = "wasm32"), hydrolysis_cherenkov))]
-pub use window::HeadlessSnapshot;
 #[cfg(hydrolysis_winit)]
 pub use window::window_requires_transparency;
 pub use window::{FrameCounters, FramePhases, FrameProfile};
+#[cfg(all(not(target_arch = "wasm32"), hydrolysis_cherenkov))]
+pub use window::{HeadlessHdrSnapshot, HeadlessSnapshot};
 
 #[cfg(all(
     not(target_arch = "wasm32"),
@@ -431,6 +431,9 @@ pub fn run<W: Windows, M: AppMenuBar>(
     env: Environment,
     style: impl crate::Style,
 ) {
+    use crate::platform::HeadlessColorFormat;
+    use headless::HeadlessSurface;
+
     init_tracing();
     #[cfg(hydrolysis_inspector)]
     let inspector = init_main_thread_executors();
@@ -520,8 +523,11 @@ pub fn run<W: Windows, M: AppMenuBar>(
         let frame = crate::platform::validated_window_frame(window.frame.snapshot());
         let width = crate::num_cast::f32_as_u32(frame.width().max(1.0));
         let height = crate::num_cast::f32_as_u32(frame.height().max(1.0));
-        let mut platform = OffscreenWindow::new(headless::HeadlessSurface::on_painter(
-            &painter, width, height,
+        let mut platform = OffscreenWindow::new(HeadlessSurface::on_painter_with_format(
+            &painter,
+            width,
+            height,
+            HeadlessColorFormat::SdrSrgb,
         ))
         .with_scale_factor(offscreen_scale_factor());
         platform.apply_properties(&window);

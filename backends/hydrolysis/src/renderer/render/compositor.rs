@@ -6,12 +6,16 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::engine::EngineSurface;
+#[cfg(hydrolysis_cpu_painter)]
+use crate::engine::RasterEngineState;
 #[cfg(hydrolysis_gpu_painter)]
 use crate::engine::{cfg_async_fn, engine_await, format_output_color};
 #[cfg(hydrolysis_gpu_painter)]
 use crate::platform::{GpuGeneration, SurfaceProvider};
+#[cfg(any(hydrolysis_gpu_painter, hydrolysis_cpu_painter))]
+use cherenkov::OutputAlpha;
 #[cfg(hydrolysis_gpu_painter)]
-use cherenkov_gpu::interop::{OutputAlpha, OutputColor};
+use cherenkov_gpu::interop::OutputColor;
 #[cfg(hydrolysis_gpu_painter)]
 use cherenkov_record::WorkingColor;
 use std::rc::Rc;
@@ -668,13 +672,55 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
     /// surface, or the frame fails to render or to read back.
     pub(crate) fn render_raster_frame(
         &mut self,
-        state: &Rc<crate::engine::RasterEngineState>,
+        state: &Rc<RasterEngineState>,
         frame: FrameGeometry,
-        capture: Option<cherenkov::OutputAlpha>,
+        capture: Option<OutputAlpha>,
     ) -> Result<Option<Vec<u8>>, FrameError> {
-        self.render_raster_with(state, frame, |surface, headroom| {
+        self.render_raster_with(state, frame, 1.0, |surface, headroom| {
             capture
                 .map(|alpha| surface.readback_rgba8(headroom, alpha))
+                .transpose()
+        })
+    }
+
+    /// Commits and renders the frame on `state`'s CPU engine; with `capture`,
+    /// reads the frame back as Display P3 RGBA8 rows in that alpha convention.
+    ///
+    /// # Errors
+    ///
+    /// [`FrameError`] when the engine cannot create the window's framebuffer
+    /// surface, or the frame fails to render or to read back.
+    pub(crate) fn render_raster_frame_display_p3(
+        &mut self,
+        state: &Rc<RasterEngineState>,
+        frame: FrameGeometry,
+        capture: Option<OutputAlpha>,
+    ) -> Result<Option<Vec<u8>>, FrameError> {
+        self.render_raster_with(state, frame, 1.0, |surface, headroom| {
+            capture
+                .map(|alpha| surface.readback_display_p3_rgba8(headroom, alpha))
+                .transpose()
+        })
+    }
+
+    /// Commits and renders the frame on `state`'s CPU engine at `headroom`;
+    /// with `capture`, reads the frame back as unclamped extended linear
+    /// Display P3 `f32` RGBA rows in that alpha convention.
+    ///
+    /// # Errors
+    ///
+    /// [`FrameError`] when the engine cannot create the window's framebuffer
+    /// surface, or the frame fails to render or to read back.
+    pub(crate) fn render_raster_frame_hdr(
+        &mut self,
+        state: &Rc<RasterEngineState>,
+        frame: FrameGeometry,
+        headroom: f32,
+        capture: Option<OutputAlpha>,
+    ) -> Result<Option<Vec<f32>>, FrameError> {
+        self.render_raster_with(state, frame, headroom, |surface, active_headroom| {
+            capture
+                .map(|alpha| surface.readback_linear_p3_f32(active_headroom, alpha))
                 .transpose()
         })
     }
@@ -689,7 +735,7 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
         frame: FrameGeometry,
         out: &mut [u32],
     ) -> Result<(), FrameError> {
-        self.render_raster_with(state, frame, |surface, headroom| {
+        self.render_raster_with(state, frame, 1.0, |surface, headroom| {
             surface.present_0rgb_into(headroom, out)
         })
     }
@@ -698,6 +744,7 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
         &mut self,
         state: &Rc<crate::engine::RasterEngineState>,
         frame: FrameGeometry,
+        headroom: f32,
         finish: impl FnOnce(
             &crate::engine::RasterCherenkovSurface,
             f32,
@@ -731,9 +778,6 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
             .take()
             .expect("hydrolysis renderer: the CPU window was just ensured");
         let scope = crate::engine::EngineSurface::core(&window.surface).begin_frame();
-        // An SDR destination: the presentation pass tone-maps to its
-        // ceiling, as the GPU offscreen target's sRGB texture does.
-        let headroom = 1.0;
         self.commit_engine_frame(
             &mut window.surface,
             &mut window.mount,

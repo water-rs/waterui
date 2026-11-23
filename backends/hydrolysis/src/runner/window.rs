@@ -17,7 +17,17 @@ use waterui_frame_rate::{DisplayCapabilities, FrameRate, combine, resolve};
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
 #[cfg(hydrolysis_cherenkov)]
 use crate::platform::PresentationSurface as _;
+#[cfg(hydrolysis_cpu_painter)]
+use crate::platform::{DEFAULT_HDR_CAPTURE_HEADROOM, HeadlessColorFormat};
+#[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
+use crate::platform::{SurfaceError, SurfaceProvider};
+#[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
+use crate::readback::{ReadbackError, readback_surface_texture_rgba16f};
 use crate::renderer::material::{BehindWindowLevel, Blending, WithinWindowLevel};
+#[cfg(hydrolysis_cpu_painter)]
+use crate::renderer::{FrameGeometry, working_color};
+#[cfg(hydrolysis_cherenkov)]
+use cherenkov::OutputAlpha;
 #[cfg(any(hydrolysis_frame_transaction, test))]
 use std::sync::{
     Arc,
@@ -25,8 +35,12 @@ use std::sync::{
 };
 use waterui::theme::color::Background;
 use waterui::window::ResolvedWindowBackground;
+#[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
+use waterui_core::Error;
 use waterui_core::contract_violation;
 use waterui_graphics::{Color, color::WorkingColor};
+#[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
+use wgpu::{Texture, TextureFormat};
 
 /// The work scheduled for the next pump of a window.
 ///
@@ -1112,8 +1126,103 @@ impl HeadlessSnapshot {
 
     /// Takes the value apart into its fields, in declaration order.
     #[must_use]
-    pub fn into_parts(self) -> (u32, u32, Vec<u8>, cherenkov::OutputAlpha) {
+    pub fn into_parts(self) -> (u32, u32, Vec<u8>, OutputAlpha) {
         (self.width, self.height, self.rgba8, self.output_alpha)
+    }
+}
+
+/// A captured extended dynamic range headless frame: unclamped linear Display
+/// P3 `f32` RGBA pixels, headroom ceiling, alpha convention, and dimensions.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg(hydrolysis_cherenkov)]
+#[non_exhaustive]
+pub struct HeadlessHdrSnapshot {
+    /// Snapshot width in pixels.
+    width: u32,
+    /// Snapshot height in pixels.
+    height: u32,
+    /// Raw linear Display P3 `f32` RGBA pixel data, `width * height * 4` floats,
+    /// top-left origin, in the alpha convention [`Self::output_alpha`] reports.
+    rgba_f32: Vec<f32>,
+    /// Capture headroom ceiling (`>= 1.0`) configured on the surface.
+    headroom: f32,
+    /// The alpha convention the producing surface presented with.
+    output_alpha: OutputAlpha,
+}
+
+#[cfg(all(not(target_arch = "wasm32"), hydrolysis_cherenkov))]
+impl HeadlessHdrSnapshot {
+    /// Snapshot width in pixels.
+    #[must_use]
+    pub const fn width(&self) -> u32 {
+        self.width
+    }
+
+    /// Snapshot height in pixels.
+    #[must_use]
+    pub const fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// Raw extended linear Display P3 `f32` RGBA pixels (`width * height * 4` floats).
+    #[must_use]
+    pub const fn rgba_f32(&self) -> &[f32] {
+        self.rgba_f32.as_slice()
+    }
+
+    /// Mutable extended linear Display P3 `f32` RGBA pixels, for compositing into.
+    pub const fn rgba_f32_mut(&mut self) -> &mut [f32] {
+        self.rgba_f32.as_mut_slice()
+    }
+
+    /// Capture headroom ceiling (`>= 1.0`) configured on the surface.
+    #[must_use]
+    pub const fn headroom(&self) -> f32 {
+        self.headroom
+    }
+
+    /// The alpha convention the producing surface presented with.
+    #[must_use]
+    pub const fn output_alpha(&self) -> OutputAlpha {
+        self.output_alpha
+    }
+
+    /// Takes the value apart into `(width, height, rgba_f32, headroom, output_alpha)`.
+    #[must_use]
+    pub fn into_parts(self) -> (u32, u32, Vec<f32>, f32, OutputAlpha) {
+        (
+            self.width,
+            self.height,
+            self.rgba_f32,
+            self.headroom,
+            self.output_alpha,
+        )
+    }
+}
+
+/// Captured headless pixels produced by one window render pass: SDR RGBA8 or
+/// HDR extended linear Display P3 `f32` RGBA.
+#[derive(Debug)]
+#[cfg(hydrolysis_cherenkov)]
+#[cfg_attr(
+    target_arch = "wasm32",
+    expect(
+        dead_code,
+        reason = "browser surfaces never read back headless snapshots"
+    )
+)]
+pub(super) enum CapturedSnapshot {
+    Sdr(HeadlessSnapshot),
+    Hdr(HeadlessHdrSnapshot),
+}
+
+#[cfg(all(test, not(target_arch = "wasm32"), hydrolysis_cherenkov))]
+impl CapturedSnapshot {
+    pub(super) fn into_sdr(self) -> Option<HeadlessSnapshot> {
+        match self {
+            Self::Sdr(snapshot) => Some(snapshot),
+            Self::Hdr(_) => None,
+        }
     }
 }
 
@@ -1121,7 +1230,7 @@ impl HeadlessSnapshot {
 #[cfg(hydrolysis_cherenkov)]
 pub(super) struct RenderWindowResult {
     pub(super) rebuilt: bool,
-    pub(super) snapshot: Option<HeadlessSnapshot>,
+    pub(super) snapshot: Option<CapturedSnapshot>,
     pub(super) profile: FrameProfile,
     /// The frame's CPU/GPU stage split under `frame-profile`.
     #[cfg(feature = "frame-profile")]
@@ -1989,7 +2098,7 @@ pub struct SurfaceRenderResult {
     acquire: Duration,
     render: Duration,
     present: Duration,
-    snapshot: Option<HeadlessSnapshot>,
+    snapshot: Option<CapturedSnapshot>,
 }
 
 #[cfg(hydrolysis_cherenkov)]
@@ -2159,32 +2268,15 @@ crate::engine::cfg_async_fn! {
         let readback_started_at = Instant::now();
         let snapshot = if capture_snapshot {
             renderer.frame_work_counters_mut().gpu_submissions += 1;
-            match readback_surface_texture_rgba8(&*surface, frame.texture(), width, height) {
-                Ok(rgba8) => Some(HeadlessSnapshot {
-                    width,
-                    height,
-                    rgba8,
-                    output_alpha,
-                }),
-                // The device died under the frame: its texture holds no
-                // rendered pixels. The frame is skipped, unpresented, like
-                // every frame a lost device ends, so the next one recovers
-                // the device under the recovery budget and captures again.
-                Err(crate::readback::ReadbackError::DeviceLost(error)) => {
-                    tracing::error!(
-                        "hydrolysis headless snapshot readback failed: {:#}; the frame is skipped",
-                        waterui_core::Error::from(error)
-                    );
-                    return Err(FrameFailure::Skipped(crate::platform::SurfaceError::Lost));
-                }
-                Err(error) => {
-                    tracing::error!(
-                        "hydrolysis headless snapshot readback failed: {:#}; the frame carries no snapshot",
-                        waterui_core::Error::from(error)
-                    );
-                    None
-                }
-            }
+            readback_host_snapshot(
+                &*surface,
+                frame.texture(),
+                width,
+                height,
+                format,
+                headroom,
+                output_alpha,
+            )?
         } else {
             None
         };
@@ -2217,6 +2309,61 @@ crate::engine::cfg_async_fn! {
         present,
         snapshot,
     })
+    }
+}
+
+/// Reads back a presented offscreen texture into an SDR RGBA8 or HDR linear
+/// Display P3 `f32` snapshot according to `format`.
+#[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
+fn readback_host_snapshot(
+    surface: &dyn SurfaceProvider,
+    texture: &Texture,
+    width: u32,
+    height: u32,
+    format: TextureFormat,
+    headroom: f32,
+    output_alpha: OutputAlpha,
+) -> Result<Option<CapturedSnapshot>, FrameFailure> {
+    let readback = if format == TextureFormat::Rgba16Float {
+        readback_surface_texture_rgba16f(surface, texture, width, height).map(|rgba_f32| {
+            CapturedSnapshot::Hdr(HeadlessHdrSnapshot {
+                width,
+                height,
+                rgba_f32,
+                headroom,
+                output_alpha,
+            })
+        })
+    } else {
+        readback_surface_texture_rgba8(surface, texture, width, height).map(|rgba8| {
+            CapturedSnapshot::Sdr(HeadlessSnapshot {
+                width,
+                height,
+                rgba8,
+                output_alpha,
+            })
+        })
+    };
+    match readback {
+        Ok(captured) => Ok(Some(captured)),
+        // The device died under the frame: its texture holds no rendered
+        // pixels. The frame is skipped, unpresented, like every frame a lost
+        // device ends, so the next one recovers the device under the recovery
+        // budget and captures again.
+        Err(ReadbackError::DeviceLost(error)) => {
+            tracing::error!(
+                "hydrolysis headless snapshot readback failed: {:#}; the frame is skipped",
+                Error::from(error)
+            );
+            Err(FrameFailure::Skipped(SurfaceError::Lost))
+        }
+        Err(error) => {
+            tracing::error!(
+                "hydrolysis headless snapshot readback failed: {:#}; the frame carries no snapshot",
+                Error::from(error)
+            );
+            Ok(None)
+        }
     }
 }
 
@@ -2443,29 +2590,59 @@ impl CapturedFrame for crate::platform::RasterOffscreen {
     ) -> Result<SurfaceRenderResult, FrameFailure> {
         let (width, height) = crate::platform::OffscreenTarget::size(self);
         let render_started_at = Instant::now();
+        let geometry = FrameGeometry {
+            display_scale,
+            width,
+            height,
+            base_color: working_color(clear_color),
+        };
+        let capture_alpha = capture.then_some(OutputAlpha::Straight);
         // A surface the engine cannot create ends the window; a failed
         // render or readback skips the frame and the next one retries.
-        let pixels = renderer.render_raster_frame(
-            &self.state,
-            crate::renderer::FrameGeometry {
-                display_scale,
-                width,
-                height,
-                base_color: crate::renderer::working_color(clear_color),
-            },
-            capture.then_some(cherenkov::OutputAlpha::Straight),
-        )?;
+        let snapshot = match self.color_format() {
+            HeadlessColorFormat::SdrSrgb => renderer
+                .render_raster_frame(&self.state, geometry, capture_alpha)?
+                .map(|rgba8| {
+                    CapturedSnapshot::Sdr(HeadlessSnapshot {
+                        width,
+                        height,
+                        rgba8,
+                        output_alpha: OutputAlpha::Straight,
+                    })
+                }),
+            HeadlessColorFormat::SdrDisplayP3 => renderer
+                .render_raster_frame_display_p3(&self.state, geometry, capture_alpha)?
+                .map(|rgba8| {
+                    CapturedSnapshot::Sdr(HeadlessSnapshot {
+                        width,
+                        height,
+                        rgba8,
+                        output_alpha: OutputAlpha::Straight,
+                    })
+                }),
+            HeadlessColorFormat::HdrLinearDisplayP3 => renderer
+                .render_raster_frame_hdr(
+                    &self.state,
+                    geometry,
+                    DEFAULT_HDR_CAPTURE_HEADROOM,
+                    capture_alpha,
+                )?
+                .map(|rgba_f32| {
+                    CapturedSnapshot::Hdr(HeadlessHdrSnapshot {
+                        width,
+                        height,
+                        rgba_f32,
+                        headroom: DEFAULT_HDR_CAPTURE_HEADROOM,
+                        output_alpha: OutputAlpha::Straight,
+                    })
+                }),
+        };
         Ok(SurfaceRenderResult {
             presented: true,
             acquire: Duration::ZERO,
             render: render_started_at.elapsed(),
             present: Duration::ZERO,
-            snapshot: pixels.map(|rgba8| HeadlessSnapshot {
-                width,
-                height,
-                rgba8,
-                output_alpha: cherenkov::OutputAlpha::Straight,
-            }),
+            snapshot,
         })
     }
 }

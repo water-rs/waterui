@@ -62,7 +62,7 @@ use waterui_preview_protocol::run::ScenarioPointerButton;
 use waterui_preview_protocol::run::{
     Alpha, PreviewColorScheme, PreviewRunConfig, PreviewRunMode, RawFrameError,
     RawFrameStreamWriter, ScenarioEvent, ScenarioEventKind, VideoCaptureConfig,
-    plan_scenario_timeline, write_png,
+    plan_scenario_timeline, write_hdr_png, write_png,
 };
 use waterui_resources::ResourceContext;
 
@@ -374,6 +374,7 @@ fn drive(
     crate::startup::initialize_for_preview();
 
     let content_deadline = config.content_deadline();
+    let hdr = config.hdr();
     let color_scheme = config.color_scheme().map(|scheme| match scheme {
         PreviewColorScheme::Light => ColorScheme::Light,
         PreviewColorScheme::Dark => ColorScheme::Dark,
@@ -434,6 +435,7 @@ fn drive(
                         size,
                         color_scheme,
                         content_deadline,
+                        hdr,
                         task,
                     )
                     .await,
@@ -559,16 +561,18 @@ pub(crate) fn prepare(
 }
 
 /// What one capture produces: the viewport, how long it waits for owed
-/// content, and where the PNG goes.
+/// content, whether to capture HDR, and where the PNG goes.
 struct Capture<'a> {
     /// The capture window's size.
-    size: cocoa_ui::Size,
+    size: Size,
     /// Optional color scheme override for the capture window.
     color_scheme: Option<ColorScheme>,
     /// How long the capture waits for content its views owe.
-    content_deadline: core::time::Duration,
+    content_deadline: Duration,
+    /// Whether to capture unclamped linear Display P3 HDR and encode 16-bit PQ PNG.
+    hdr: bool,
     /// The PNG destination.
-    output: &'a std::path::Path,
+    output: &'a Path,
 }
 
 /// Renders `view` under `env` inside a capture window, awaits the content
@@ -577,8 +581,9 @@ struct Capture<'a> {
 ///
 /// The view mounts under a fresh [`ContentLedger`](waterui_capture::ContentLedger):
 /// the capture rasterizes only once a full drain leaves nothing owed.
-/// Apple's bitmap context reads premultiplied RGBA8 — the convention the
-/// writer declares for the capture.
+/// Apple's bitmap context reads premultiplied RGBA8 (SDR) or premultiplied
+/// extended linear Display P3 `f32` RGBA (HDR) — the convention the writer
+/// declares for the capture.
 ///
 /// # Errors
 ///
@@ -594,12 +599,17 @@ async fn render_and_write(
     env: &Environment,
     mtm: MainThreadMarker,
     host: &Host,
-    view: impl FnOnce() -> waterui::AnyView,
+    view: impl FnOnce() -> AnyView,
     capture: Capture<'_>,
 ) -> Result<(), PreviewError> {
     let render_started = Instant::now();
-    let ledger = waterui_capture::ContentLedger::new();
+    let ledger = ContentLedger::new();
     let content_env = env.extending(ledger.clone());
+    let dynamic_range = if capture.hdr {
+        DynamicRange::High
+    } else {
+        DynamicRange::Standard
+    };
     let stage = Stage::mount(
         &content_env,
         mtm,
@@ -607,30 +617,53 @@ async fn render_and_write(
         view,
         capture.size,
         capture.color_scheme,
-        DynamicRange::Standard,
+        dynamic_range,
     );
-    crate::content::await_content(&ledger, &stage.root, capture.content_deadline).await?;
-    let result = stage.capture().await?;
-    drop(stage);
-    tracing::info!(
-        phase = "render",
-        elapsed_ms = render_started.elapsed().as_millis(),
-        "Apple preview phase"
-    );
-    let encode_started = Instant::now();
-    let (rgba_data, width, height) = result.into_parts();
-    write_png(
-        capture.output,
-        width,
-        height,
-        rgba_data,
-        Alpha::Premultiplied,
-    )?;
-    tracing::info!(
-        phase = "encode",
-        elapsed_ms = encode_started.elapsed().as_millis(),
-        "Apple preview phase"
-    );
+    await_content(&ledger, &stage.root, capture.content_deadline).await?;
+    if capture.hdr {
+        let raster = stage.capture_hdr().await?;
+        drop(stage);
+        tracing::info!(
+            phase = "render",
+            elapsed_ms = render_started.elapsed().as_millis(),
+            "Apple preview phase"
+        );
+        let encode_started = Instant::now();
+        write_hdr_png(
+            capture.output,
+            raster.width,
+            raster.height,
+            raster.pixels,
+            Alpha::Premultiplied,
+        )?;
+        tracing::info!(
+            phase = "encode",
+            elapsed_ms = encode_started.elapsed().as_millis(),
+            "Apple preview phase"
+        );
+    } else {
+        let result = stage.capture().await?;
+        drop(stage);
+        tracing::info!(
+            phase = "render",
+            elapsed_ms = render_started.elapsed().as_millis(),
+            "Apple preview phase"
+        );
+        let encode_started = Instant::now();
+        let (rgba_data, width, height) = result.into_parts();
+        write_png(
+            capture.output,
+            width,
+            height,
+            rgba_data,
+            Alpha::Premultiplied,
+        )?;
+        tracing::info!(
+            phase = "encode",
+            elapsed_ms = encode_started.elapsed().as_millis(),
+            "Apple preview phase"
+        );
+    }
     Ok(())
 }
 
@@ -639,6 +672,7 @@ struct ScenarioRun<'a> {
     size: Size,
     color_scheme: Option<ColorScheme>,
     content_deadline: Duration,
+    hdr: bool,
     output_dir: Option<&'a Path>,
     captures_ms: &'a [u64],
     events: &'a [ScenarioEvent],
@@ -662,6 +696,7 @@ async fn execute_run_task(
     size: Size,
     color_scheme: Option<ColorScheme>,
     content_deadline: Duration,
+    hdr: bool,
     task: RunTask,
 ) -> Result<(), PreviewError> {
     match task {
@@ -675,6 +710,7 @@ async fn execute_run_task(
                     size,
                     color_scheme,
                     content_deadline,
+                    hdr,
                     output: &output,
                 },
             )
@@ -695,6 +731,7 @@ async fn execute_run_task(
                     size,
                     color_scheme,
                     content_deadline,
+                    hdr,
                     output_dir: output_dir.as_deref(),
                     captures_ms: &captures_ms,
                     events: &events,
@@ -707,8 +744,9 @@ async fn execute_run_task(
 }
 
 /// Runs a timeline capture: replays `scenario.events` at their timestamps and
-/// captures PNGs and/or fixed-FPS raw RGBA8 frames through the same
-/// windowless `Stage::capture` path as single-image previews.
+/// captures PNGs and/or fixed-FPS raw frames (SDR RGBA8 or HDR RGBA16F linear
+/// Display P3) through the same windowless `Stage` capture path as single-image
+/// previews.
 #[expect(
     clippy::future_not_send,
     reason = "the capture runs on the main thread; the Retained native objects it holds across awaits are not Send"
@@ -722,12 +760,21 @@ async fn render_scenario(
 ) -> Result<(), PreviewError> {
     let samples = plan_scenario_timeline(scenario.captures_ms, scenario.video, scenario.events)?;
     let mut video_writer = match scenario.video {
+        Some(video) if scenario.hdr => Some(RawFrameStreamWriter::create_hdr(
+            video.output(),
+            video.fps(),
+        )?),
         Some(video) => Some(RawFrameStreamWriter::create(video.output(), video.fps())?),
         None => None,
     };
 
     let ledger = ContentLedger::new();
     let content_env = env.extending(ledger.clone());
+    let dynamic_range = if scenario.hdr {
+        DynamicRange::High
+    } else {
+        DynamicRange::Standard
+    };
     let stage = Stage::mount(
         &content_env,
         mtm,
@@ -735,7 +782,7 @@ async fn render_scenario(
         view,
         scenario.size,
         scenario.color_scheme,
-        DynamicRange::Standard,
+        dynamic_range,
     );
     await_content(&ledger, &stage.root, scenario.content_deadline).await?;
 
@@ -767,59 +814,108 @@ async fn render_scenario(
             sleep(wait).await;
         }
         await_content(&ledger, &stage.root, scenario.content_deadline).await?;
-        let result = stage.capture().await?;
-        let (rgba_data, width, height) = result.into_parts();
-
-        match (sample.png_capture_ms(), sample.record_video()) {
-            (Some(capture_ms), true) => {
-                if let Some(output_dir) = scenario.output_dir {
-                    write_png(
-                        &output_dir.join(format!("frame-{capture_ms:04}ms.png")),
-                        width,
-                        height,
-                        rgba_data.clone(),
-                        Alpha::Premultiplied,
-                    )?;
-                }
-                if let Some(writer) = &mut video_writer {
-                    writer.write_frame(
-                        width,
-                        height,
-                        rgba_data,
-                        Alpha::Premultiplied,
-                        sample.offset(),
-                    )?;
-                }
-            }
-            (Some(capture_ms), false) => {
-                if let Some(output_dir) = scenario.output_dir {
-                    write_png(
-                        &output_dir.join(format!("frame-{capture_ms:04}ms.png")),
-                        width,
-                        height,
-                        rgba_data,
-                        Alpha::Premultiplied,
-                    )?;
-                }
-            }
-            (None, true) => {
-                if let Some(writer) = &mut video_writer {
-                    writer.write_frame(
-                        width,
-                        height,
-                        rgba_data,
-                        Alpha::Premultiplied,
-                        sample.offset(),
-                    )?;
-                }
-            }
-            (None, false) => {}
+        if scenario.hdr {
+            let raster = stage.capture_hdr().await?;
+            write_scenario_hdr_sample(
+                raster,
+                sample.png_capture_ms(),
+                sample.record_video(),
+                sample.offset(),
+                scenario.output_dir,
+                video_writer.as_mut(),
+            )?;
+        } else {
+            let result = stage.capture().await?;
+            write_scenario_sdr_sample(
+                result,
+                sample.png_capture_ms(),
+                sample.record_video(),
+                sample.offset(),
+                scenario.output_dir,
+                video_writer.as_mut(),
+            )?;
         }
     }
 
     drop(stage);
     if let Some(writer) = video_writer {
         let _ = writer.finish()?;
+    }
+    Ok(())
+}
+
+fn write_scenario_sdr_sample(
+    result: RenderResult,
+    png_capture_ms: Option<u64>,
+    record_video: bool,
+    offset: Duration,
+    output_dir: Option<&Path>,
+    video_writer: Option<&mut RawFrameStreamWriter>,
+) -> Result<(), PreviewError> {
+    let (rgba_data, width, height) = result.into_parts();
+    match (png_capture_ms, record_video) {
+        (Some(capture_ms), true) => {
+            if let Some(output_dir) = output_dir {
+                write_png(
+                    &output_dir.join(format!("frame-{capture_ms:04}ms.png")),
+                    width,
+                    height,
+                    rgba_data.clone(),
+                    Alpha::Premultiplied,
+                )?;
+            }
+            if let Some(writer) = video_writer {
+                writer.write_frame(width, height, rgba_data, Alpha::Premultiplied, offset)?;
+            }
+        }
+        (Some(capture_ms), false) => {
+            if let Some(output_dir) = output_dir {
+                write_png(
+                    &output_dir.join(format!("frame-{capture_ms:04}ms.png")),
+                    width,
+                    height,
+                    rgba_data,
+                    Alpha::Premultiplied,
+                )?;
+            }
+        }
+        (None, true) => {
+            if let Some(writer) = video_writer {
+                writer.write_frame(width, height, rgba_data, Alpha::Premultiplied, offset)?;
+            }
+        }
+        (None, false) => {}
+    }
+    Ok(())
+}
+
+fn write_scenario_hdr_sample(
+    raster: HdrRaster,
+    png_capture_ms: Option<u64>,
+    record_video: bool,
+    offset: Duration,
+    output_dir: Option<&Path>,
+    video_writer: Option<&mut RawFrameStreamWriter>,
+) -> Result<(), PreviewError> {
+    // Write video first from a slice borrow so the PNG writer can take
+    // ownership of `raster.pixels` without cloning the frame buffer.
+    if record_video && let Some(writer) = video_writer {
+        writer.write_hdr_frame_f32(
+            raster.width,
+            raster.height,
+            &raster.pixels,
+            Alpha::Premultiplied,
+            offset,
+        )?;
+    }
+    if let (Some(capture_ms), Some(output_dir)) = (png_capture_ms, output_dir) {
+        write_hdr_png(
+            &output_dir.join(format!("frame-{capture_ms:04}ms.png")),
+            raster.width,
+            raster.height,
+            raster.pixels,
+            Alpha::Premultiplied,
+        )?;
     }
     Ok(())
 }

@@ -11,7 +11,7 @@ use hydrolysis::{
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, get_current_pid};
 
 use crate::semantics::NodeId;
-use crate::snapshot::Snapshot;
+use crate::snapshot::{HdrSnapshot, Snapshot};
 
 const TEST_POINTER_ID: u64 = 0;
 
@@ -80,6 +80,7 @@ pub struct DriverPumpResult {
     pub(crate) tree_update: Option<AccessibilityTreeUpdate>,
     pub(crate) content_types: AccessibilityContentTypes,
     pub(crate) snapshot: Option<Snapshot>,
+    pub(crate) hdr_snapshot: Option<HdrSnapshot>,
     /// A recoverable loss: the next pump recreates the device, and a device
     /// that keeps dying ends in the terminal failure the driver panics with.
     pub(crate) device_lost: bool,
@@ -99,6 +100,7 @@ impl RuntimeDriver for SemanticRuntime {
             tree_update: result.take_tree_update(),
             content_types: result.take_content_types(),
             snapshot: None,
+            hdr_snapshot: None,
             device_lost: false,
             ui_focus: result.ui_focus().map(NodeId::from),
         }
@@ -156,6 +158,11 @@ impl RuntimeDriver for HeadlessRuntime {
             snapshot: result.take_snapshot().map(|snapshot| {
                 let (width, height, rgba8, _) = snapshot.into_parts();
                 Snapshot::new(width, height, rgba8)
+            }),
+            hdr_snapshot: result.take_hdr_snapshot().map(|snapshot| {
+                let (width, height, rgba_f32, headroom, _) = snapshot.into_parts();
+                HdrSnapshot::with_headroom(width, height, rgba_f32, headroom)
+                    .expect("hydrolysis HDR snapshot buffer length matches its dimensions")
             }),
             device_lost: result.device_lost(),
             ui_focus: result.ui_focus().map(NodeId::from),

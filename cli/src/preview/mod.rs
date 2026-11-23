@@ -237,3 +237,28 @@ impl<'a> PreviewTargetTemplate<'a> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use askama::Template as _;
+
+    use super::{PreviewSource, PreviewTargetTemplate};
+
+    #[test]
+    fn offscreen_preview_target_template_wires_hdr_recording() {
+        let rendered = PreviewTargetTemplate::hydrolysis(
+            PreviewSource::Symbol("waterui_preview_demo"),
+            "demo_app",
+            "hydrolysis_m3::Material3::defaults()",
+            Some("let _ = app.snapshot();"),
+            true,
+        )
+        .render()
+        .expect("render offscreen preview target template");
+        assert!(rendered.contains("hdr: bool"));
+        assert!(rendered.contains(".hdr(hdr)"));
+        assert!(rendered.contains("RawFrameStreamWriter::create_hdr"));
+        assert!(rendered.contains("start_hdr_frame_recording"));
+        assert!(rendered.contains("write_hdr_frame_f32"));
+    }
+}

@@ -57,6 +57,7 @@ pub(crate) fn run_preview_test(
     scale: f64,
     color_scheme: Option<waterui::theme::ColorScheme>,
     video: Option<&waterui_preview_protocol::run::VideoCaptureConfig>,
+    hdr: bool,
 ) {
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -70,20 +71,36 @@ pub(crate) fn run_preview_test(
         .theme(preview_style(color_scheme))
         .viewport(width, height)
         .scale_factor(scale)
+        .hdr(hdr)
         .mount_offscreen(load_preview_view);
     let writer = Rc::new(RefCell::new(Some(
-        RawFrameStreamWriter::create(video.output(), video.fps())
-            .unwrap_or_else(|error| panic!("hydrolysis preview test: {error}")),
+        if hdr {
+            RawFrameStreamWriter::create_hdr(video.output(), video.fps())
+        } else {
+            RawFrameStreamWriter::create(video.output(), video.fps())
+        }
+        .unwrap_or_else(|error| panic!("hydrolysis preview test: {error}")),
     )));
     let sink_writer = Rc::clone(&writer);
-    app.start_frame_recording(video.fps(), move |snapshot, timestamp| {
-        let (frame_w, frame_h, rgba8) = snapshot.into_parts();
-        if let Some(writer) = sink_writer.borrow_mut().as_mut() {
-            writer
-                .write_frame(frame_w, frame_h, rgba8, Alpha::Straight, timestamp)
-                .unwrap_or_else(|error| panic!("hydrolysis preview test: {error}"));
-        }
-    });
+    if hdr {
+        app.start_hdr_frame_recording(video.fps(), move |snapshot, timestamp| {
+            let (frame_w, frame_h, rgba_f32) = snapshot.into_parts();
+            if let Some(writer) = sink_writer.borrow_mut().as_mut() {
+                writer
+                    .write_hdr_frame_f32(frame_w, frame_h, &rgba_f32, Alpha::Straight, timestamp)
+                    .unwrap_or_else(|error| panic!("hydrolysis preview test: {error}"));
+            }
+        });
+    } else {
+        app.start_frame_recording(video.fps(), move |snapshot, timestamp| {
+            let (frame_w, frame_h, rgba8) = snapshot.into_parts();
+            if let Some(writer) = sink_writer.borrow_mut().as_mut() {
+                writer
+                    .write_frame(frame_w, frame_h, rgba8, Alpha::Straight, timestamp)
+                    .unwrap_or_else(|error| panic!("hydrolysis preview test: {error}"));
+            }
+        });
+    }
     run_semantic_automation(&mut app);
     app.finish_frame_recording();
     if let Some(writer) = writer.borrow_mut().take() {
@@ -107,6 +124,7 @@ pub(crate) fn run_preview_test(
     _scale: f64,
     color_scheme: Option<waterui::theme::ColorScheme>,
     video: Option<&waterui_preview_protocol::run::VideoCaptureConfig>,
+    _hdr: bool,
 ) {
     use waterui_testing::ui;
 
