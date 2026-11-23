@@ -32,7 +32,7 @@ cargo_metadata.workspace = true
 waterui-assets-planner = { workspace = true, features = ["font-declarations"] }
 
 [features]
-default = ["gpu"]
+default = ["gpu", "cpu"]
 # Hydrolysis's GPU painter, and `TestHost`, which renders through it.
 gpu = ["hydrolysis/gpu", "waterui/gpu", "dep:wgpu"]
 # Hydrolysis's CPU painter. With `gpu` as well, an offscreen runtime renders
