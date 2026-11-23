@@ -74,6 +74,13 @@ impl TextScenes {
     }
 }
 
+const fn normalize_max_width(max_width: Option<f32>) -> Option<f32> {
+    match max_width {
+        Some(width) if width.is_finite() => Some(width),
+        _ => None,
+    }
+}
+
 impl<E: TextEngine> TextService<E> {
     pub(crate) fn new(engine: E) -> Self {
         Self {
@@ -108,7 +115,7 @@ impl<E: TextEngine> TextService<E> {
         if input.is_empty() {
             return self.engine.empty_layout();
         }
-        self.shape_cached(input, max_width)
+        self.shape_cached(input, normalize_max_width(max_width))
     }
 
     /// Shape `input` as an editable field's content. Unlike [`Self::shape`],
@@ -123,7 +130,7 @@ impl<E: TextEngine> TextService<E> {
     ) -> E::Layout {
         // `shape` answers an empty input without the cache, so an empty
         // input's key only ever holds its editable line.
-        self.shape_cached(input, max_width)
+        self.shape_cached(input, normalize_max_width(max_width))
     }
 
     fn shape_cached(&self, input: &ResolvedTextLayoutInput, max_width: Option<f32>) -> E::Layout {
@@ -161,6 +168,7 @@ impl<E: TextEngine> TextService<E> {
         if input.is_empty() {
             return self.engine.empty_layout();
         }
+        let max_width = normalize_max_width(max_width);
         let Some(limit) = max_lines.filter(|limit| *limit > 0) else {
             return self.shape(input, max_width);
         };
