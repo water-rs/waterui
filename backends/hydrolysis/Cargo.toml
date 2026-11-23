@@ -563,10 +563,10 @@ gpu = [
 ]
 # The Cherenkov CPU painter: `cherenkov-cpu`'s multi-core SIMD rasterizer and
 # the same parley text stack, with no `wgpu` in the graph. Views that need a
-# GPU device (`GpuView`, which `ShaderPaintView`, `FlowingGradient` and
-# the GPU video player render through, and `ExternalFrameView`) panic at mount
-# on it. A theme's backdrop shaders and a filtered view's filter run on the CPU
-# backend's lane executor. With `gpu` as well, both the offscreen runtime and
+# GPU device (`GpuView`, which the GPU video player renders through, and
+# `ExternalFrameView`) panic at mount on it. Shader paints (`ShaderPaintView`
+# and `FlowingGradient`), a theme's backdrop shaders and a filtered view's
+# filter run on the CPU backend's lane executor. With `gpu` as well, both the offscreen runtime and
 # the desktop `winit` runner render on the GPU when adapter selection finds a
 # usable hardware adapter and fall back to the CPU otherwise (`winit` presents
 # CPU frames through `softbuffer`).
@@ -584,6 +584,7 @@ cpu = [
     "waterui-backend-core/gestures",
     "waterui-backend-core/overlay",
     "waterui-backend-core/log",
+    "waterui/cpu",
     "waterui-graphics/cpu",
     "dep:parley",
     "dep:raw-window-handle",

@@ -576,6 +576,8 @@ mod tests {
             divider: waterui::layout::Divider,
             shape: waterui::shape::ResolvedShape,
             gradient: waterui::graphics::Gradient,
+            #[cfg(any(waterui_feature = "gpu", waterui_feature = "cpu"))]
+            shader_paint: waterui::graphics::ShaderPaintView,
             #[cfg(waterui_feature = "table")]
             table: waterui::component::table::TableConfig,
             #[cfg(waterui_feature = "canvas")]

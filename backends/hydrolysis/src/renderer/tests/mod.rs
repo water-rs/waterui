@@ -123,6 +123,8 @@ mod scroll_hit_clip;
 mod segmented_look;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod semantic_runtime;
+#[cfg(hydrolysis_cherenkov)]
+mod shader_paint;
 mod shadow;
 mod stepper_look;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]

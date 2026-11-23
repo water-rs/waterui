@@ -139,7 +139,7 @@ pub mod prelude {
     };
 
     // Gradient views
-    #[cfg(feature = "gpu")]
+    #[cfg(any(feature = "gpu", feature = "cpu"))]
     pub use super::gradient::FlowingGradient;
     pub use super::gradient::{AnimatedMeshGradient, AnimatedMeshGradientConfig};
     pub use super::gradient::{Gradient, MeshGradient};
@@ -179,6 +179,8 @@ pub use waterui_barcode as barcode;
 pub use waterui_chart as chart;
 #[cfg(feature = "form")]
 pub use waterui_form as form;
+#[cfg(any(feature = "gpu", feature = "cpu"))]
+pub use waterui_graphics::ShaderPaintView;
 #[cfg(feature = "canvas")]
 pub use waterui_graphics::canvas;
 pub use waterui_graphics::color;
@@ -186,7 +188,7 @@ pub use waterui_graphics::gradient;
 #[cfg(feature = "media")]
 pub use waterui_graphics::image_decode;
 #[cfg(feature = "gpu")]
-pub use waterui_graphics::{GpuContent, GpuView, RedrawHandle, ShaderPaintView};
+pub use waterui_graphics::{GpuContent, GpuView, RedrawHandle};
 pub use waterui_icon as icon;
 #[cfg(feature = "particle")]
 pub use waterui_particle as particle;

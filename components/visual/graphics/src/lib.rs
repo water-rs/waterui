@@ -18,7 +18,7 @@ pub mod input;
 #[cfg(any(feature = "gpu", feature = "cpu"))]
 pub mod offscreen;
 mod scene;
-#[cfg(feature = "gpu")]
+#[cfg(any(feature = "gpu", feature = "cpu"))]
 pub mod shader_paint;
 
 // Crate-internal short paths: the recorder vocabulary this crate records
@@ -53,7 +53,7 @@ pub use gpu::{
     Frame, FrameHook, FrameOutput, GpuContent, GpuContentHandle, GpuRuntime, GpuView, InputHandler,
     RedrawHandle, SharedGpuContext,
 };
-#[cfg(feature = "gpu")]
+#[cfg(any(feature = "gpu", feature = "cpu"))]
 pub use gradient::FlowingGradient;
 pub use gradient::{ANIMATED_MESH_PALETTE_LEN, AnimatedMeshGradient, AnimatedMeshGradientConfig};
 pub use gradient::{Gradient, GradientType, MeshGradient};
@@ -66,7 +66,7 @@ pub use input::{
 };
 #[cfg(any(feature = "gpu", feature = "cpu"))]
 pub use offscreen::{OffscreenError, OffscreenImage, OffscreenRenderer, OffscreenSize};
-#[cfg(feature = "gpu")]
+#[cfg(any(feature = "gpu", feature = "cpu"))]
 pub use shader_paint::ShaderPaintView;
 /// Color types and conversion utilities.
 pub use waterui_color as color;

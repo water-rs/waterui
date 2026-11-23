@@ -20,13 +20,8 @@ use waterui::layout::Size;
 use waterui::reactive::constant;
 use waterui::shape::{Circle, ShapeExt as _};
 use waterui_core::Environment;
-use waterui_graphics::Gradient;
 use waterui_graphics::backend::Picture;
-// `FlowingGradient` and `ShaderPaintView` render through `GpuView`,
-// user GPU content only the GPU painter realizes; the CPU painter refuses it
-// by name.
-#[cfg(hydrolysis_gpu_painter)]
-use waterui_graphics::{FlowingGradient, ShaderPaintView};
+use waterui_graphics::{FlowingGradient, Gradient, ShaderPaintView};
 
 fn linear_gradient_view() -> impl waterui::View {
     Gradient::linear(
@@ -42,7 +37,6 @@ fn linear_gradient_view() -> impl waterui::View {
     .a11y_label("Linear gradient")
 }
 
-#[cfg(hydrolysis_gpu_painter)]
 fn animated_mesh_gradient_view() -> impl waterui::View {
     FlowingGradient::new()
         .size(180.0, 120.0)
@@ -50,7 +44,6 @@ fn animated_mesh_gradient_view() -> impl waterui::View {
         .a11y_label("Animated mesh gradient")
 }
 
-#[cfg(hydrolysis_gpu_painter)]
 fn shader_surface_view() -> impl waterui::View {
     ShaderPaintView::new(include_str!("fixtures/two_tone.wgsl"))
         .size(180.0, 120.0)
@@ -96,17 +89,31 @@ fn linear_gradient_exposes_accessibility_image() {
     );
 }
 
-#[cfg(hydrolysis_gpu_painter)]
 #[test]
 fn animated_mesh_gradient_exposes_accessibility_image() {
-    assert_image_node(
-        animated_mesh_gradient_view,
-        "animated-mesh-gradient-exposes-accessibility-image",
-        "Animated mesh gradient",
+    let mut app = mount_rendered(Environment::new(), animated_mesh_gradient_view, 320, 240);
+    for _ in 0..30 {
+        app.pump();
+        if app.runtime_mut().is_settled_except_perpetual() {
+            break;
+        }
+    }
+    assert!(
+        !app.runtime_mut().is_settled() && app.runtime_mut().is_settled_except_perpetual(),
+        "animated-mesh-gradient-exposes-accessibility-image: FlowingGradient is perpetual work"
+    );
+    let bounds =
+        node_bounds_with_role(app.tree(), accesskit::Role::Image, "Animated mesh gradient");
+    assert!(
+        bounds.width() > 0.0,
+        "animated-mesh-gradient: width must be positive"
+    );
+    assert!(
+        bounds.height() > 0.0,
+        "animated-mesh-gradient: height must be positive"
     );
 }
 
-#[cfg(hydrolysis_gpu_painter)]
 #[test]
 fn shader_surface_exposes_accessibility_image() {
     assert_image_node(

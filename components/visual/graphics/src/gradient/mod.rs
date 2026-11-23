@@ -12,11 +12,11 @@
 //!   follow signals; a change updates the recorded paint in place.
 //! - `AnimatedMeshGradient` — a 4×4 mesh whose vertices and colours flow
 //!   with the canvas clock, drawn through [`Canvas`](crate::canvas::Canvas).
-//! - `FlowingGradient` — drifting noise-driven colour bands on the GPU
-//!   (`gpu` feature).
+//! - `FlowingGradient` — drifting noise-driven colour bands painted by a
+//!   [`ShaderPaintView`](crate::ShaderPaintView).
 
 mod animated_mesh;
-#[cfg(feature = "gpu")]
+#[cfg(any(feature = "gpu", feature = "cpu"))]
 mod flowing;
 mod mesh;
 mod paint;
@@ -24,7 +24,7 @@ mod paint;
 pub use animated_mesh::{
     ANIMATED_MESH_PALETTE_LEN, AnimatedMeshGradient, AnimatedMeshGradientConfig,
 };
-#[cfg(feature = "gpu")]
+#[cfg(any(feature = "gpu", feature = "cpu"))]
 pub use flowing::FlowingGradient;
 pub use mesh::MeshGradient;
 pub use paint::{Gradient, GradientType};
