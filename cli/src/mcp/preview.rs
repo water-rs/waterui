@@ -16,8 +16,8 @@ use serde::Deserialize;
 use tracing::info;
 
 use crate::preview::request::{
-    self, CliHydrolysisPreviewTheme, CliPreviewBackend, CliPreviewPlatform, DEFAULT_FRAME,
-    PreviewRequest, ResolvedPreviewBackend,
+    self, CliHydrolysisPreviewTheme, CliPreviewBackend, CliPreviewColorScheme, CliPreviewPlatform,
+    DEFAULT_FRAME, PreviewRequest, ResolvedPreviewBackend,
 };
 use crate::preview::{
     ApplePreviewRequest, HydrolysisPreviewRequest, render_preview_with_apple,
@@ -55,10 +55,18 @@ pub struct PreviewArgs {
     #[serde(default)]
     pub backend: Option<CliPreviewBackend>,
 
-    /// Theme package for the `hydrolysis` backend (`material3`, the default);
-    /// rejected for other backends.
+    /// Theme package for the `hydrolysis` backend (`material3` or `glass`;
+    /// defaults to `material3`); rejected for other backends.
     #[serde(default)]
     pub theme: Option<CliHydrolysisPreviewTheme>,
+
+    /// Color scheme override (`light` or `dark`); defaults to host appearance.
+    #[serde(default)]
+    pub color_scheme: Option<CliPreviewColorScheme>,
+
+    /// Display scale factor applied to the captured image (default `2.0`).
+    #[serde(default)]
+    pub scale: Option<f32>,
 
     /// Target platform: `ios`, `macos`, `android`, `linux`, or `windows`.
     /// Defaults to this host's native preview platform.
@@ -89,6 +97,7 @@ impl PreviewArgs {
         let frame = self.frame.as_deref().unwrap_or(DEFAULT_FRAME);
         let (width, height) = request::parse_frame(frame)?;
         let content_deadline = request::parse_content_timeout(self.content_timeout)?;
+        let scale = request::parse_scale(self.scale)?;
         let platform = request::resolve_preview_platform(self.platform)?;
         let backend = request::resolve_preview_backend(project, platform, self.backend)?;
         let hydrolysis_theme = request::resolve_hydrolysis_preview_theme(backend, self.theme)?;
@@ -101,6 +110,8 @@ impl PreviewArgs {
             width,
             height,
             content_deadline,
+            self.color_scheme.map(Into::into),
+            scale,
         ))
     }
 }
@@ -216,6 +227,8 @@ impl PreviewTool {
                         width: request.width(),
                         height: request.height(),
                         content_deadline: request.content_deadline(),
+                        color_scheme: request.color_scheme(),
+                        scale: request.scale(),
                         sccache_path: self.sccache_path.clone(),
                         // MCP serves JSON-RPC over stdio — there is no
                         // terminal sink to render compile progress into.
@@ -238,6 +251,8 @@ impl PreviewTool {
                         width: request.width(),
                         height: request.height(),
                         content_deadline: request.content_deadline(),
+                        color_scheme: request.color_scheme(),
+                        scale: request.scale(),
                         sccache_path: self.sccache_path.clone(),
                         // MCP serves JSON-RPC over stdio — there is no
                         // terminal sink to render compile progress into.
@@ -389,6 +404,8 @@ mod tests {
                 800.0,
                 600.0,
                 std::time::Duration::from_millis(2500),
+                None,
+                crate::preview::request::DEFAULT_PREVIEW_SCALE,
             )
         );
     }

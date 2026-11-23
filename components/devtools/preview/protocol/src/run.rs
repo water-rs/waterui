@@ -22,6 +22,27 @@ pub const PREVIEW_RUN_CONFIG_ENV: &str = "WATERUI_PREVIEW_RUN_CONFIG";
 /// fails the run instead of hanging it.
 pub const DEFAULT_CONTENT_DEADLINE: Duration = Duration::from_secs(10);
 
+/// Default display scale factor shared across preview backends.
+pub const DEFAULT_PREVIEW_SCALE: f32 = 2.0;
+
+const fn default_scale() -> f32 {
+    DEFAULT_PREVIEW_SCALE
+}
+
+/// Appearance override for an offscreen preview invocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "every preview host realizes light and dark explicitly"
+)]
+pub enum PreviewColorScheme {
+    /// Light appearance.
+    Light,
+    /// Dark appearance.
+    Dark,
+}
+
 /// One offscreen preview invocation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
@@ -35,6 +56,12 @@ pub struct PreviewRunConfig {
     /// How long, in milliseconds, an image or scenario capture waits for
     /// content its views owe after mount before the run fails naming them.
     content_deadline_ms: u64,
+    /// Optional color scheme override (`None` follows the host default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    color_scheme: Option<PreviewColorScheme>,
+    /// Display scale factor applied to the captured image.
+    #[serde(default = "default_scale")]
+    scale: f32,
 }
 
 impl PreviewRunConfig {
@@ -67,6 +94,18 @@ impl PreviewRunConfig {
     #[must_use]
     pub const fn content_deadline_ms(&self) -> u64 {
         self.content_deadline_ms
+    }
+
+    /// Optional color scheme override for the preview render.
+    #[must_use]
+    pub const fn color_scheme(&self) -> Option<PreviewColorScheme> {
+        self.color_scheme
+    }
+
+    /// Display scale factor applied to the preview render.
+    #[must_use]
+    pub const fn scale(&self) -> f32 {
+        self.scale
     }
 }
 
@@ -247,7 +286,33 @@ impl PreviewRunConfig {
             mode,
             content_deadline_ms: u64::try_from(content_deadline.as_millis())
                 .expect("a preview content deadline fits u64 milliseconds"),
+            color_scheme: None,
+            scale: DEFAULT_PREVIEW_SCALE,
         }
+    }
+
+    /// Sets the appearance override for this preview run.
+    #[must_use]
+    pub const fn with_color_scheme(mut self, color_scheme: PreviewColorScheme) -> Self {
+        self.color_scheme = Some(color_scheme);
+        self
+    }
+
+    /// Sets or clears the appearance override for this preview run.
+    #[must_use]
+    pub const fn with_optional_color_scheme(
+        mut self,
+        color_scheme: Option<PreviewColorScheme>,
+    ) -> Self {
+        self.color_scheme = color_scheme;
+        self
+    }
+
+    /// Sets the display scale factor for this preview run.
+    #[must_use]
+    pub const fn with_scale(mut self, scale: f32) -> Self {
+        self.scale = scale;
+        self
     }
 
     /// How long a capture waits for owed content.
@@ -506,5 +571,35 @@ mod tests {
     #[should_panic(expected = "a premultiplied channel never exceeds its alpha")]
     fn premultiplied_rejects_a_channel_above_alpha() {
         flatten_alpha_over_white(&mut [200, 0, 0, 128], Alpha::Premultiplied);
+    }
+
+    #[test]
+    fn run_config_defaults_and_round_trips_color_scheme_and_scale() {
+        use core::time::Duration;
+        use std::path::PathBuf;
+
+        use super::{DEFAULT_PREVIEW_SCALE, PreviewColorScheme, PreviewRunConfig, PreviewRunMode};
+
+        let legacy_json = r#"{"width":375.0,"height":667.0,"mode":{"Image":{"output":"out.png"}},"content_deadline_ms":10000}"#;
+        let legacy: PreviewRunConfig =
+            serde_json::from_str(legacy_json).expect("legacy run config parses");
+        assert_eq!(legacy.color_scheme(), None);
+        assert!((legacy.scale() - DEFAULT_PREVIEW_SCALE).abs() < f32::EPSILON);
+
+        let config = PreviewRunConfig::new(
+            220.0,
+            80.0,
+            PreviewRunMode::Image {
+                output: PathBuf::from("dark.png"),
+            },
+            Duration::from_secs(5),
+        )
+        .with_color_scheme(PreviewColorScheme::Dark)
+        .with_scale(3.0);
+        let serialized = serde_json::to_string(&config).expect("run config serializes");
+        let parsed: PreviewRunConfig =
+            serde_json::from_str(&serialized).expect("run config deserializes");
+        assert_eq!(parsed.color_scheme(), Some(PreviewColorScheme::Dark));
+        assert!((parsed.scale() - 3.0).abs() < f32::EPSILON);
     }
 }

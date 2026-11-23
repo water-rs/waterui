@@ -15,7 +15,7 @@ use waterui::ContentLedger;
 use waterui::content_ledger::{ContentError, ContentFailure};
 use waterui_core::handler::AnyViewBuilder;
 use waterui_preview_protocol::run::{
-    Alpha, PreviewRunConfig, PreviewRunMode, ScenarioEvent, ScenarioEventKind,
+    Alpha, PreviewColorScheme, PreviewRunConfig, PreviewRunMode, ScenarioEvent, ScenarioEventKind,
     ScenarioPointerButton, write_png,
 };
 
@@ -53,13 +53,20 @@ struct Preview {
 fn mount(config: &PreviewRunConfig) -> Preview {
     let ledger = ContentLedger::new();
     Preview {
-        runtime: new_runtime(config.width(), config.height(), &ledger),
+        runtime: new_runtime(config, &ledger),
         ledger,
         content_deadline: config.content_deadline(),
     }
 }
 
-fn new_runtime(width: f32, height: f32, ledger: &ContentLedger) -> HeadlessRuntime {
+fn resolve_color_scheme(config: &PreviewRunConfig) -> Option<waterui::theme::ColorScheme> {
+    config.color_scheme().map(|scheme| match scheme {
+        PreviewColorScheme::Light => waterui::theme::ColorScheme::Light,
+        PreviewColorScheme::Dark => waterui::theme::ColorScheme::Dark,
+    })
+}
+
+fn new_runtime(config: &PreviewRunConfig, ledger: &ContentLedger) -> HeadlessRuntime {
     // The environment is the application's own composition root: `app(env)`
     // installs the realizations and options the application configures
     // (`waterui_map_gpu::install`, provider options, fonts), and the preview
@@ -71,18 +78,20 @@ fn new_runtime(width: f32, height: f32, ledger: &ContentLedger) -> HeadlessRunti
     // preview mounts owes its content to this capture.
     let mut env = preview_symbol::app_environment();
     waterui::realization::install_video(&mut env);
+    let color_scheme = resolve_color_scheme(config);
+    if let Some(scheme) = color_scheme {
+        waterui::theme::install_color_scheme(&mut env, waterui::Computed::constant(scheme));
+    }
     let env = env.extending(ledger.clone());
     let content = AnyViewBuilder::new(preview_symbol::load_preview_view);
-    // Previews are read on HiDPI displays, so render at 2x: the layout stays in
-    // logical units and only the captured image gets sharper.
-    const PREVIEW_SCALE_FACTOR: f64 = 2.0;
+    let scale_factor = f64::from(config.scale());
 
     HeadlessRuntime::new(
         env,
         content,
-        dimension_to_u32(width),
-        dimension_to_u32(height),
-        preview_symbol::preview_style(),
+        dimension_to_u32(config.width()),
+        dimension_to_u32(config.height()),
+        preview_symbol::preview_style(color_scheme),
         // A preview host is an application: an uninstalled named family
         // resolves the way it does under `water run`.
         FontFamilyResolution::Lenient,
@@ -91,7 +100,7 @@ fn new_runtime(width: f32, height: f32, ledger: &ContentLedger) -> HeadlessRunti
         Some(source) => panic!("hydrolysis preview: {error}: {source}"),
         None => panic!("hydrolysis preview: {error}"),
     })
-    .with_scale_factor(PREVIEW_SCALE_FACTOR)
+    .with_scale_factor(scale_factor)
 }
 
 /// Pumps until the frame stops changing and the views owe the capture no

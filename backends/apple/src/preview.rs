@@ -30,12 +30,13 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Instant;
 
-use cocoa_ui::MainThreadMarker;
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::{ActivationPolicy, Application};
+use cocoa_ui::bitmap::set_window_color_scheme;
 use cocoa_ui::objc2_core_foundation::CFRunLoop;
+use cocoa_ui::{ColorScheme, MainThreadMarker};
 use waterui_backend_core::Environment;
-use waterui_preview_protocol::run::{Alpha, PreviewRunConfig, PreviewRunMode};
+use waterui_preview_protocol::run::{Alpha, PreviewColorScheme, PreviewRunConfig, PreviewRunMode};
 use waterui_resources::ResourceContext;
 
 /// The capture failure a preview run reports — `ViewCapture`'s with
@@ -187,6 +188,10 @@ fn drive(
     crate::startup::initialize_for_preview();
 
     let content_deadline = config.content_deadline();
+    let color_scheme = config.color_scheme().map(|scheme| match scheme {
+        PreviewColorScheme::Light => ColorScheme::Light,
+        PreviewColorScheme::Dark => ColorScheme::Dark,
+    });
     let size = cocoa_ui::Size::new(f64::from(config.width()), f64::from(config.height()));
     let output = match config.into_mode() {
         PreviewRunMode::Image { output } => output,
@@ -204,6 +209,7 @@ fn drive(
     let (mut env, host) = prepare(
         mtm,
         resources,
+        color_scheme,
         &mut keepers,
         #[cfg(feature = "inspector")]
         inspector,
@@ -233,6 +239,7 @@ fn drive(
                         view,
                         Capture {
                             size,
+                            color_scheme,
                             content_deadline,
                             output: &output,
                         },
@@ -299,6 +306,7 @@ pub(crate) struct Host {
 pub(crate) fn prepare(
     mtm: MainThreadMarker,
     resources: ResourceContext,
+    color_scheme: Option<ColorScheme>,
     keepers: &mut crate::contract::KeepAlive,
     #[cfg(feature = "inspector")] inspector: Option<waterui::inspector::InspectorRuntime>,
 ) -> Result<(Environment, Host), PreviewError> {
@@ -325,13 +333,16 @@ pub(crate) fn prepare(
         {
             return Err(PreviewError::ActivationPolicyRefused);
         }
-        let theme = Rc::new(crate::theme::install(&mut env, application.color_scheme()));
-        let appearance = application.observe_color_scheme({
-            let theme = Rc::clone(&theme);
-            move |scheme| crate::theme::refresh(&theme, scheme)
-        });
+        let initial = color_scheme.unwrap_or_else(|| application.color_scheme());
+        let theme = Rc::new(crate::theme::install(&mut env, initial));
+        if color_scheme.is_none() {
+            let appearance = application.observe_color_scheme({
+                let theme = Rc::clone(&theme);
+                move |scheme| crate::theme::refresh(&theme, scheme)
+            });
+            keepers.keep(appearance);
+        }
         keepers.keep(theme);
-        keepers.keep(appearance);
         Host {}
     };
     #[cfg(catalyst)]
@@ -340,12 +351,10 @@ pub(crate) fn prepare(
         if !cocoa_ui::uikit::catalyst::runs_under_pad_idiom(mtm) {
             return Err(PreviewError::MissingPadIdiom);
         }
-        // No controller exists yet to answer the scheme; the capture window
-        // refreshes the theme from its own traits once the view mounts.
-        let theme = Rc::new(crate::theme::install(
-            &mut env,
-            cocoa_ui::uikit::current_scheme(),
-        ));
+        // No controller exists yet when `color_scheme` is `None`; the capture
+        // window refreshes the theme from its own traits once the view mounts.
+        let initial = color_scheme.unwrap_or_else(cocoa_ui::uikit::current_scheme);
+        let theme = Rc::new(crate::theme::install(&mut env, initial));
         Host { application, theme }
     };
     let locale = crate::locale::install(&mut env, mtm);
@@ -359,6 +368,8 @@ pub(crate) fn prepare(
 struct Capture<'a> {
     /// The capture window's size.
     size: cocoa_ui::Size,
+    /// Optional color scheme override for the capture window.
+    color_scheme: Option<ColorScheme>,
     /// How long the capture waits for content its views owe.
     content_deadline: core::time::Duration,
     /// The PNG destination.
@@ -394,7 +405,14 @@ async fn render_and_write(
     let render_started = Instant::now();
     let ledger = waterui_capture::ContentLedger::new();
     let content_env = env.extending(ledger.clone());
-    let stage = Stage::mount(&content_env, mtm, host, view, capture.size);
+    let stage = Stage::mount(
+        &content_env,
+        mtm,
+        host,
+        view,
+        capture.size,
+        capture.color_scheme,
+    );
     crate::content::await_content(&ledger, &stage.root, capture.content_deadline).await?;
     let result = stage.capture().await?;
     drop(stage);
@@ -437,7 +455,7 @@ struct Stage {
     _keepalive: crate::contract::KeepAlive,
     /// The capture window's appearance, feeding the theme.
     #[cfg(catalyst)]
-    _appearance: cocoa_ui::uikit::ColorSchemeObservation,
+    _appearance: Option<cocoa_ui::uikit::ColorSchemeObservation>,
     /// The root the content mounts on and the capture reads.
     root: cocoa_ui::Retained<HostView>,
     /// The window's root controller, owning `root`.
@@ -481,10 +499,14 @@ impl Stage {
         _host: &Host,
         view: impl FnOnce() -> waterui::AnyView,
         size: cocoa_ui::Size,
+        color_scheme: Option<ColorScheme>,
     ) -> Self {
         // `cocoa_ui::bitmap::capture_window` builds the one never-ordered
         // construction every `AppKit` capture shares.
         let window = cocoa_ui::bitmap::capture_window(mtm, size);
+        if let Some(scheme) = color_scheme {
+            set_window_color_scheme(&window, scheme);
+        }
         let root = HostView::new(mtm, cocoa_ui::Rect::new(0.0, 0.0, size.width, size.height));
         window.setContentView(Some(&*root));
         let mut keepalive = crate::contract::KeepAlive::default();
@@ -516,10 +538,14 @@ impl Stage {
         host: &Host,
         view: impl FnOnce() -> waterui::AnyView,
         size: cocoa_ui::Size,
+        color_scheme: Option<ColorScheme>,
     ) -> Self {
         use cocoa_ui::objc2::Message;
 
         let window = cocoa_ui::bitmap::scene_less_capture_window(mtm, &host.application, size);
+        if let Some(scheme) = color_scheme {
+            set_window_color_scheme(&window, scheme);
+        }
         let controller =
             cocoa_ui::uikit::ViewController::new(mtm, cocoa_ui::uikit::window_root(mtm));
         window.setRootViewController(Some(&**controller));
@@ -534,11 +560,15 @@ impl Stage {
         );
         window.setHidden(false);
         // The window carries the traits the bring-up had no controller to
-        // read: refresh the theme from them before the content resolves it.
-        crate::theme::refresh(&host.theme, controller.color_scheme());
-        let appearance = controller.observe_color_scheme({
-            let theme = Rc::clone(&host.theme);
-            move |scheme| crate::theme::refresh(&theme, scheme)
+        // read: refresh the theme from them (or the requested scheme) before
+        // the content resolves it.
+        let initial_scheme = color_scheme.unwrap_or_else(|| controller.color_scheme());
+        crate::theme::refresh(&host.theme, initial_scheme);
+        let appearance = color_scheme.is_none().then(|| {
+            controller.observe_color_scheme({
+                let theme = Rc::clone(&host.theme);
+                move |scheme| crate::theme::refresh(&theme, scheme)
+            })
         });
         let mut keepalive = crate::contract::KeepAlive::default();
         let content = crate::embedding::mount_content(&root, view(), env, &mut keepalive, mtm);

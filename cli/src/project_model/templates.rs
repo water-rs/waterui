@@ -2763,6 +2763,78 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_hydrolysis_manifest_gates_optional_glass_theme_feature() {
+        let base_ctx = project_ctx();
+        let without_glass = crate::templates::hydrolysis::rendered_outputs_with_painters(
+            &base_ctx,
+            "waterui-test-hydrolysis",
+        )
+        .expect("hydrolysis outputs render without glass");
+        let base_cargo = without_glass
+            .into_iter()
+            .find_map(|(path, content)| {
+                (path == std::path::Path::new("Cargo.toml"))
+                    .then(|| String::from_utf8(content).expect("Cargo.toml UTF-8"))
+            })
+            .expect("Cargo.toml exists");
+        let base_manifest = base_cargo.parse::<toml::Table>().expect("manifest parses");
+        assert!(
+            base_manifest["features"]
+                .get("waterui-preview-glass")
+                .is_none(),
+            "older frameworks without hydrolysis-glass must omit waterui-preview-glass"
+        );
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let glass_crate = temp.path().join("glass-crate");
+        std::fs::create_dir_all(&glass_crate).expect("create glass crate dir");
+        std::fs::write(
+            glass_crate.join("Cargo.toml"),
+            "[package]\nname = \"hydrolysis-glass\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .expect("write local glass manifest");
+        let glass_ctx = base_ctx.with_project_root_path(glass_crate);
+        let with_glass = crate::templates::hydrolysis::rendered_outputs_with_painters(
+            &glass_ctx,
+            "waterui-test-hydrolysis",
+        )
+        .expect("hydrolysis outputs render with local glass");
+        let glass_cargo = with_glass
+            .iter()
+            .find_map(|(path, content)| {
+                (path == std::path::Path::new("Cargo.toml"))
+                    .then(|| String::from_utf8(content.clone()).expect("Cargo.toml UTF-8"))
+            })
+            .expect("Cargo.toml exists");
+        let glass_manifest = glass_cargo.parse::<toml::Table>().expect("manifest parses");
+        let feature_list = glass_manifest["features"]["waterui-preview-glass"]
+            .as_array()
+            .expect("waterui-preview-glass feature must be declared");
+        assert_eq!(
+            feature_list
+                .iter()
+                .filter_map(toml::Value::as_str)
+                .collect::<Vec<_>>(),
+            ["dep:hydrolysis-glass"]
+        );
+        let native_glass = &glass_manifest["target"]["cfg(all(not(target_arch = \"wasm32\"), not(target_os = \"android\"), not(target_os = \"ios\")))"]
+            ["dependencies"]["hydrolysis-glass"];
+        assert_eq!(native_glass["optional"].as_bool(), Some(true));
+        assert_eq!(native_glass["default-features"].as_bool(), Some(false));
+        assert!(native_glass["path"].as_str().is_some());
+
+        let preview_runtime = with_glass
+            .iter()
+            .find_map(|(path, content)| {
+                (path == std::path::Path::new("src/preview_runtime.rs"))
+                    .then(|| String::from_utf8(content.clone()).expect("preview_runtime UTF-8"))
+            })
+            .expect("preview_runtime.rs exists");
+        assert!(preview_runtime.contains("config.color_scheme()"));
+        assert!(preview_runtime.contains("config.scale()"));
+    }
+
     /// The wasm32 table bridges the browser's `<video>` element and the
     /// `<iframe>` web view exactly when the application uses them: an
     /// application without them compiles neither bridge (principle 5).
@@ -6294,7 +6366,7 @@ pub mod hydrolysis {
     use super::{
         FeatureTables, GeneratedBinSection, GeneratedCargoManifest, GeneratedDependencyDetail,
         GeneratedDependencyValue, GeneratedTargetSection, GeneratedWorkspaceSection, HYDROLYSIS,
-        NativeBackendDependencySource, NativeBackendDependencySpec, Path, TemplateContext,
+        NativeBackendDependencySource, NativeBackendDependencySpec, Path, PathBuf, TemplateContext,
         TemplateNamespace, embedded, io, scaffold_dir, write_generated_cargo_toml,
     };
     use std::collections::BTreeMap;
@@ -6467,6 +6539,12 @@ pub mod hydrolysis {
                 ],
             ),
         ]);
+        if has_hydrolysis_glass_support(ctx)? {
+            features.insert(
+                "waterui-preview-glass".to_string(),
+                vec!["dep:hydrolysis-glass".to_string()],
+            );
+        }
         // The painters: an Android build enables the resolved painter's
         // feature on the launcher, mirroring the test-app's wiring — `gpu`
         // links the Cherenkov GPU attachment and the GPU-capable `waterui`,
@@ -6714,7 +6792,7 @@ pub mod hydrolysis {
         hydrolysis_features.extend(ctx.webview_backend_feature()?);
         hydrolysis_features.extend(ctx.video_gpu_backend_feature()?);
         hydrolysis_features.extend(ctx.map_gpu_backend_feature()?);
-        Ok(BTreeMap::from([
+        let mut dependencies = BTreeMap::from([
             (
                 "hydrolysis".to_string(),
                 GeneratedDependencyValue::detailed(
@@ -6778,7 +6856,16 @@ pub mod hydrolysis {
                 "jni".to_string(),
                 GeneratedDependencyValue::simple("0.21.1"),
             ),
-        ]))
+        ]);
+        if let Some(glass) = optional_hydrolysis_glass_dependency(ctx)? {
+            dependencies.insert(
+                "hydrolysis-glass".to_string(),
+                GeneratedDependencyValue::detailed(
+                    glass.with_default_features(false).with_optional(),
+                ),
+            );
+        }
+        Ok(dependencies)
     }
 
     /// The dependencies of the native (non-Android, non-web) launcher.
@@ -6873,7 +6960,70 @@ pub mod hydrolysis {
                 ),
             ),
         ]);
+        let mut dependencies = dependencies;
+        if let Some(glass) = optional_hydrolysis_glass_dependency(ctx)? {
+            dependencies.insert(
+                "hydrolysis-glass".to_string(),
+                GeneratedDependencyValue::detailed(
+                    glass.with_default_features(false).with_optional(),
+                ),
+            );
+        }
         Ok(dependencies)
+    }
+
+    fn has_hydrolysis_glass_support(ctx: &TemplateContext) -> io::Result<bool> {
+        Ok(optional_hydrolysis_glass_dependency(ctx)?.is_some())
+    }
+
+    fn optional_hydrolysis_glass_dependency(
+        ctx: &TemplateContext,
+    ) -> io::Result<Option<GeneratedDependencyDetail>> {
+        if let Some(project_root) = ctx.project_root_path.as_deref()
+            && let Some(local_path) = local_project_glass_path(project_root)?
+        {
+            return Ok(Some(GeneratedDependencyDetail::path(&local_path)));
+        }
+        if !ctx.framework.has_scaffold("hydrolysis-glass")
+            || ctx
+                .framework
+                .require_distributable("hydrolysis-glass")
+                .is_err()
+        {
+            return Ok(None);
+        }
+        super::generated_dependency_from_spec(
+            ctx,
+            NativeBackendDependencySpec::new(
+                "hydrolysis-glass",
+                &[],
+                NativeBackendDependencySource::WorkspaceDependency,
+            ),
+        )
+        .map(Some)
+    }
+
+    fn local_project_glass_path(project_root: &Path) -> io::Result<Option<PathBuf>> {
+        let manifest_path = project_root.join("Cargo.toml");
+        if !manifest_path.is_file() {
+            return Ok(None);
+        }
+        let manifest = super::parse_cargo_manifest(&manifest_path)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        if manifest
+            .package
+            .as_ref()
+            .is_some_and(|package| package.name == "hydrolysis-glass")
+        {
+            return Ok(Some(project_root.to_path_buf()));
+        }
+        if let Some(cargo_toml::Dependency::Detailed(detail)) =
+            manifest.dependencies.get("hydrolysis-glass")
+            && let Some(path) = detail.path.as_deref()
+        {
+            return Ok(Some(project_root.join(path)));
+        }
+        Ok(None)
     }
 
     fn wasm_target_dependencies(

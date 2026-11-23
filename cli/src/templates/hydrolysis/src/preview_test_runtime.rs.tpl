@@ -3,7 +3,7 @@
 use std::io::Write as _;
 
 use crate::preview_test;
-use waterui_preview_protocol::run::{PreviewRunConfig, PreviewRunMode};
+use waterui_preview_protocol::run::{PreviewColorScheme, PreviewRunConfig, PreviewRunMode};
 use waterui_testing::ui;
 
 pub(crate) fn run() {
@@ -14,15 +14,19 @@ pub(crate) fn run() {
     hydrolysis::init_tracing();
     let config = PreviewRunConfig::load_from_env()
         .unwrap_or_else(|error| panic!("hydrolysis preview test: {error}"));
+    let color_scheme = config.color_scheme().map(|scheme| match scheme {
+        PreviewColorScheme::Light => waterui::theme::ColorScheme::Light,
+        PreviewColorScheme::Dark => waterui::theme::ColorScheme::Dark,
+    });
     match config.mode() {
-        PreviewRunMode::Semantic => run_semantic(config.width(), config.height()),
+        PreviewRunMode::Semantic => run_semantic(config.width(), config.height(), color_scheme),
         PreviewRunMode::Image { .. } | PreviewRunMode::Scenario { .. } => panic!(
             "hydrolysis preview test: render runs require the preview binary (waterui-preview-mode)"
         ),
     }
 }
 
-fn run_semantic(width: f32, height: f32) {
+fn run_semantic(width: f32, height: f32, color_scheme: Option<waterui::theme::ColorScheme>) {
     // The environment is the application's own composition root: `app(env)`
     // installs the realizations and options the application configures, and
     // the styled mount applies the preview style's tokens exactly as `main`'s
@@ -31,9 +35,12 @@ fn run_semantic(width: f32, height: f32) {
     let mut env = preview_test::app_environment();
     // The CLI staged the graph's declared fonts into the resource directory.
     env.insert(hydrolysis::DeclaredFonts::default());
+    if let Some(scheme) = color_scheme {
+        waterui::theme::install_color_scheme(&mut env, waterui::Computed::constant(scheme));
+    }
     let mut app = ui()
         .environment(env)
-        .theme(preview_test::preview_style())
+        .theme(preview_test::preview_style(color_scheme))
         .viewport(dimension_to_u32(width), dimension_to_u32(height))
         .mount(preview_test::load_preview_view);
     preview_test::run_semantic_automation(&mut app);

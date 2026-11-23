@@ -20,7 +20,10 @@ use waterui_assets_planner::{FontDeclaration, FontSource};
 const HYDROLYSIS_PREVIEW_FEATURE: &str = "waterui-preview-mode";
 const HYDROLYSIS_PREVIEW_TEST_FEATURE: &str = "waterui-preview-test-mode";
 
-use waterui_preview_protocol::run::{DEFAULT_CONTENT_DEADLINE, PreviewRunConfig, PreviewRunMode};
+use waterui_preview_protocol::run::{
+    DEFAULT_CONTENT_DEADLINE, DEFAULT_PREVIEW_SCALE, PreviewColorScheme, PreviewRunConfig,
+    PreviewRunMode,
+};
 pub use waterui_preview_protocol::run::{
     ScenarioEvent as HydrolysisPreviewScenarioEvent,
     ScenarioEventKind as HydrolysisPreviewEventKind,
@@ -33,6 +36,8 @@ pub use waterui_preview_protocol::run::{
 pub enum HydrolysisPreviewTheme {
     /// Material Design 3 package.
     Material3,
+    /// Translucent glass theme package (`hydrolysis-glass`).
+    Glass,
 }
 
 impl HydrolysisPreviewTheme {
@@ -40,7 +45,18 @@ impl HydrolysisPreviewTheme {
     /// preview runtimes are constructed with.
     const fn style(self) -> &'static str {
         match self {
-            Self::Material3 => "hydrolysis_m3::Material3::defaults()",
+            Self::Material3 => "{ let _ = color_scheme; hydrolysis_m3::Material3::defaults() }",
+            Self::Glass => {
+                "hydrolysis_glass::Glass::for_scheme(color_scheme.unwrap_or(waterui::theme::ColorScheme::Light))"
+            }
+        }
+    }
+
+    /// Cargo features passed to the generated Hydrolysis launcher crate.
+    pub(crate) fn preview_features(self, mode_feature: &'static str) -> Vec<&'static str> {
+        match self {
+            Self::Material3 => vec![mode_feature],
+            Self::Glass => vec![mode_feature, "waterui-preview-glass"],
         }
     }
 
@@ -52,6 +68,7 @@ impl HydrolysisPreviewTheme {
                 "hydrolysis-m3".to_string(),
                 None,
             )],
+            Self::Glass => Vec::new(),
         }
     }
 }
@@ -125,6 +142,10 @@ pub struct HydrolysisPreviewRequest<'a> {
     /// How long a capture waits for the content its views owe — a decoding
     /// image, a `Suspense` future — before the preview fails naming them.
     pub content_deadline: Duration,
+    /// Optional color scheme override (`None` follows the host default).
+    pub color_scheme: Option<PreviewColorScheme>,
+    /// Display scale factor applied to the captured image.
+    pub scale: f32,
     /// `sccache` binary used for compilation caching, when available.
     pub sccache_path: Option<PathBuf>,
     /// Sink compile progress is reported to while the preview build runs cargo.
@@ -219,6 +240,21 @@ async fn build_preview_session(
 ) -> Result<(Project, BuiltTarget)> {
     let project =
         crate::hydrolysis::backend::open_ready(request.host, request.project_path).await?;
+    if request.theme == HydrolysisPreviewTheme::Glass {
+        let framework = project.resolved_framework().await?;
+        framework.require_distributable("hydrolysis-glass")?;
+        let backend_manifest = project
+            .backend_path::<crate::hydrolysis::backend::HydrolysisBackend>()
+            .join("Cargo.toml");
+        let manifest_has_glass = std::fs::read_to_string(&backend_manifest)
+            .is_ok_and(|text| text.contains("hydrolysis-glass"));
+        if !framework.has_scaffold("hydrolysis-glass") && !manifest_has_glass {
+            eyre::bail!(
+                "the selected framework does not declare `hydrolysis-glass` scaffold metadata; \
+                 use `--channel dev`, `--channel nightly`, or a local WaterUI checkout"
+            );
+        }
+    }
     write_preview_bindings(&project, request.source, request.theme, automation_body).await?;
 
     let mut build_options = BuildOptions::default_development(TargetBackend::Hydrolysis);
@@ -233,12 +269,13 @@ async fn build_preview_session(
     } else {
         HYDROLYSIS_PREVIEW_FEATURE
     };
+    let features = request.theme.preview_features(feature);
     let built = build_hydrolysis_with_envs_and_features(
         &project,
         request.platform,
         build_options,
         &[],
-        &[feature],
+        &features,
         true,
     )
     .await?;
@@ -272,6 +309,8 @@ pub async fn discover_hydrolysis_preview_exports(
         width: 0.0,
         height: 0.0,
         content_deadline: DEFAULT_CONTENT_DEADLINE,
+        color_scheme: None,
+        scale: DEFAULT_PREVIEW_SCALE,
         sccache_path,
         progress,
     };
@@ -373,7 +412,9 @@ async fn run_preview_binary(
         request.height,
         mode,
         request.content_deadline,
-    );
+    )
+    .with_optional_color_scheme(request.color_scheme)
+    .with_scale(request.scale);
     let backend_path = project.backend_path::<HydrolysisBackend>();
     let config_path = write_run_config(&backend_path, &config).await?;
     run::run_preview_binary(
@@ -417,7 +458,9 @@ async fn run_preview_test_binary(
         request.height,
         PreviewRunMode::Semantic,
         request.content_deadline,
-    );
+    )
+    .with_optional_color_scheme(request.color_scheme)
+    .with_scale(request.scale);
     let backend_path = project.backend_path::<HydrolysisBackend>();
     let config_path = write_run_config(&backend_path, &config).await?;
     let output = run::run_preview_binary(

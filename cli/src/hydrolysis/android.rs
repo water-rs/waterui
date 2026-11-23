@@ -930,7 +930,7 @@ pub(crate) async fn build_prepared(
         &launcher_manifest,
         &triple,
         rust_build.features(),
-        &["hydrolysis", "hydrolysis-m3"],
+        &["hydrolysis", "hydrolysis-m3", "hydrolysis-glass"],
     )
     .await?;
     let rust_build = rust_build.with_features(backend_features);

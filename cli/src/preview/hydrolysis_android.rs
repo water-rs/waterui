@@ -125,6 +125,16 @@ pub async fn render_preview_with_hydrolysis_android(
 ) -> Result<()> {
     let host = request.host;
     let project = crate::hydrolysis::backend::open_ready(host, request.project_path).await?;
+    if request.theme == crate::preview::HydrolysisPreviewTheme::Glass {
+        let framework = project.resolved_framework().await?;
+        framework.require_distributable("hydrolysis-glass")?;
+        if !framework.has_scaffold("hydrolysis-glass") {
+            eyre::bail!(
+                "the selected framework does not declare `hydrolysis-glass` scaffold metadata; \
+                 use `--channel dev`, `--channel nightly`, or a local WaterUI checkout"
+            );
+        }
+    }
 
     // Every run of this project writes its preview bindings and stages its
     // payload into one fixed directory, so a second run of the same project
@@ -164,12 +174,16 @@ pub async fn render_preview_with_hydrolysis_android(
             events: scenario.events().to_vec(),
         },
     );
-    let run_config = run_config_json(&PreviewRunConfig::new(
-        request.width,
-        request.height,
-        mode,
-        request.content_deadline,
-    ))?;
+    let run_config = run_config_json(
+        &PreviewRunConfig::new(
+            request.width,
+            request.height,
+            mode,
+            request.content_deadline,
+        )
+        .with_optional_color_scheme(request.color_scheme)
+        .with_scale(request.scale),
+    )?;
 
     render_on_device(
         host,
