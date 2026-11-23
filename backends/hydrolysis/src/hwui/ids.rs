@@ -48,7 +48,7 @@ impl IdPool {
     }
 
     /// Live ids.
-    #[cfg(test)]
+    #[cfg(any(test, target_os = "android"))]
     pub const fn live(&self) -> usize {
         self.next as usize - self.free.len()
     }

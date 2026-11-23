@@ -35,6 +35,7 @@ use super::lower::{
     Caches, GroupNodes, Lower, Owned, Pools, Scratch, blend_code, bounds, clear_color, content_ink,
     extent, set_position, set_transform,
 };
+use super::profile::FrameStats;
 use super::protocol::{Op, clip as clip_kind, host};
 use super::resources::Kind;
 use super::resources::SharedRegistry;
@@ -416,6 +417,8 @@ pub struct Encoder {
     clear: Option<WorkingColor>,
     content_animating: bool,
     effects: Effects,
+    /// The `frame-profile` counters this surface's clients share.
+    stats: FrameStats,
 }
 
 impl Encoder {
@@ -429,6 +432,7 @@ impl Encoder {
         let root = tree.root();
         let registry = SharedRegistry::new();
         let effects = Effects::new(registry.clone());
+        let stats = FrameStats::new();
         let mut encoder = Self {
             tree,
             buffer: CommandBuffer::new(),
@@ -436,7 +440,7 @@ impl Encoder {
             pools: Pools::new(),
             caches: Caches::default(),
             registry,
-            text_layouts: TextLayoutIds::new(),
+            text_layouts: TextLayoutIds::counting(stats.clone()),
             scratch: Scratch::default(),
             layers: BTreeMap::new(),
             pending: Pending::default(),
@@ -448,6 +452,7 @@ impl Encoder {
             clear: None,
             content_animating: false,
             effects,
+            stats,
         };
         encoder.create_layer(root)?;
         Ok(encoder)
@@ -478,6 +483,26 @@ impl Encoder {
     #[must_use]
     pub const fn text_layouts(&self) -> &TextLayoutIds {
         &self.text_layouts
+    }
+
+    /// The `frame-profile` counters, shared with the surface's JNI clients
+    /// and the text layout ids.
+    #[must_use]
+    pub const fn stats(&self) -> &FrameStats {
+        &self.stats
+    }
+
+    /// Reports frame work and the retained nodes owned by this encoder.
+    #[cfg(target_os = "android")]
+    #[cfg_attr(
+        not(feature = "frame-profile"),
+        expect(
+            clippy::missing_const_for_fn,
+            reason = "FrameStats::report logs tracing events when frame-profile is enabled"
+        )
+    )]
+    pub(crate) fn report_stats(&self) {
+        self.stats.report(self.pools.nodes.live());
     }
 
     /// The last clear colour committed, as a `ColorLong`.
@@ -754,6 +779,7 @@ impl Encoder {
         let clear = self.clear.map(clear_color);
         let words = self.buffer.finish()?;
         tracing::trace!(bytes = words.len() * 4, "HWUI frame encoded");
+        self.stats.command_bytes(std::mem::size_of_val(words));
         Ok(Frame {
             words,
             sampling,
@@ -785,6 +811,7 @@ impl Encoder {
                 .is_some_and(|state| state.record_dirty)
             {
                 self.record(raw)?;
+                self.stats.node_rerecorded();
             }
         }
         self.emit_platform_views()?;

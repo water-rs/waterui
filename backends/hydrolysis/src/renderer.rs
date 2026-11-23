@@ -31,9 +31,11 @@ mod bindings;
 pub mod chrome;
 mod effects;
 mod frame;
+#[cfg(feature = "frame-profile")]
+mod frame_stage_times;
 mod frame_work;
 mod glass;
-#[cfg(feature = "frame-profile")]
+#[cfg(all(feature = "frame-profile", hydrolysis_gpu_painter))]
 mod gpu_profile;
 mod identity;
 mod input;
@@ -67,11 +69,11 @@ mod views;
 #[cfg(waterui_feature = "effects")]
 pub use effects::FilteredRuntime;
 pub use frame::*;
+#[cfg(feature = "frame-profile")]
+pub use frame_stage_times::FrameStageTimes;
 pub use frame_work::FrameWorkCounters;
-#[cfg(feature = "frame-profile")]
-pub use gpu_profile::GpuFrameProfiler;
-#[cfg(feature = "frame-profile")]
-pub use gpu_profile::{FrameStageTimes, GpuIdentity};
+#[cfg(all(feature = "frame-profile", hydrolysis_gpu_painter))]
+pub use gpu_profile::{GpuFrameProfiler, GpuIdentity};
 pub use identity::*;
 pub use mount::{Dirty, NodeCell, NodeCore, Placement, PlacementClock, ProducerKey};
 use mount::{HitClasses, HitGate, ScopeDelta};

@@ -37,10 +37,30 @@ GFXINFO_PATTERNS = {
 
 
 def parse_gfxinfo(text: str) -> dict:
-    return {
+    metrics = {
         key: int(m.group(1))
         for key, pattern in GFXINFO_PATTERNS.items()
         if (m := re.search(pattern, text))
+    }
+    metrics.update(parse_render_nodes(text))
+    return metrics
+
+
+# `dumpsys gfxinfo <pkg>` closes each window's view-hierarchy section with
+# "<n> views, <x> kB of render nodes": the View hierarchy size and its RenderNode memory, not a count of all
+# retained RenderNodes. Summed over the package's
+# windows.
+_RENDER_NODES = re.compile(r"(\d+) views,\s*([\d.]+) kB of render nodes")
+
+
+def parse_render_nodes(text: str) -> dict:
+    """View count and RenderNode memory from `dumpsys gfxinfo`."""
+    windows = _RENDER_NODES.findall(text)
+    if not windows:
+        return {}
+    return {
+        "android_view_count": sum(int(views) for views, _ in windows),
+        "display_list_kb": round(sum(float(kb) for _, kb in windows), 2),
     }
 
 

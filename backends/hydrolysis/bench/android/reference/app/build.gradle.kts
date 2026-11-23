@@ -26,8 +26,8 @@ val fixtureFlavors = listOf(
     "suite",
     "anchored_overlay", "animation", "drag_drop", "edge_layout", "edge_list",
     "edge_text", "filter", "flow_markdown", "form", "gallery", "gesture",
-    "gradient", "hover", "icons", "list", "locale", "map", "markdown",
-    "media_picker", "menu", "multi_window", "navigation", "picker",
+    "gradient", "hover", "icons", "keyboard_panel", "list", "locale", "map", "markdown",
+    "media_picker", "menu", "multi_scene", "multi_window", "navigation", "picker",
     "reminders", "reply", "shape", "snackbar", "starfield", "stress",
     "typography_rtl", "video_player", "waterkit_camera_filters", "webview",
 )
@@ -298,4 +298,14 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.profileinstaller:profileinstaller:1.4.1")
+
+    // Only the List twin and the suite that hosts it use these controls.
+    for (variant in listOf("list", "suite")) {
+        add("${variant}Implementation", "sh.calvin.reorderable:reorderable:3.1.0")
+        add("${variant}Implementation", "com.github.nanihadesuka.LazyColumnScrollbar:lazycolumnscrollbar:3.0.0")
+    }
+
+    // The producer module whose journeys generate each variant's profile
+    // (run.py generate-profile).
+    baselineProfile(project(":baselineprofile"))
 }

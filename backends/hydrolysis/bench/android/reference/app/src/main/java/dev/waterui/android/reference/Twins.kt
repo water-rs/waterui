@@ -35,9 +35,9 @@ import androidx.compose.ui.unit.dp
 // role (divergences from the backend's own mapping are findings, not things
 // to paper over):
 //
-//   .title()       -> headlineMedium  (SwiftUI 28pt ≈ 28sp)
-//   .headline()    -> titleMedium     (semibold ≈ medium 16sp)
-//   .subheadline() -> titleSmall      (SwiftUI 15pt ≈ 14sp medium)
+//   .title()       -> headlineSmall   (Material 24/32)
+//   .headline()    -> titleLarge      (Material 22/28)
+//   .subheadline() -> titleMedium     (Material 16/24 medium)
 //   body           -> bodyLarge       (SwiftUI 17pt ≈ 16sp)
 //   .footnote()    -> bodySmall       (SwiftUI 13pt ≈ 12sp)
 //   .caption()     -> labelSmall      (SwiftUI 12pt ≈ 11sp)
@@ -78,17 +78,17 @@ fun HStack(
 
 @Composable
 fun TitleText(text: String, modifier: Modifier = Modifier, color: Color = Color.Unspecified) {
-    Text(text, style = MaterialTheme.typography.headlineMedium, modifier = modifier, color = color)
+    Text(text, style = MaterialTheme.typography.headlineSmall, modifier = modifier, color = color)
 }
 
 @Composable
 fun HeadlineText(text: String, modifier: Modifier = Modifier, color: Color = Color.Unspecified) {
-    Text(text, style = MaterialTheme.typography.titleMedium, modifier = modifier, color = color)
+    Text(text, style = MaterialTheme.typography.titleLarge, modifier = modifier, color = color)
 }
 
 @Composable
 fun SubheadlineText(text: String, modifier: Modifier = Modifier, color: Color = Color.Unspecified) {
-    Text(text, style = MaterialTheme.typography.titleSmall, modifier = modifier, color = color)
+    Text(text, style = MaterialTheme.typography.titleMedium, modifier = modifier, color = color)
 }
 
 @Composable

@@ -747,33 +747,12 @@ pub(super) fn run_frame_transaction<H: FrameHost>(
         }
         deadline
     };
-    let mut flushed = false;
-    if !host.rendering_ended() && !host.frame_in_flight() {
-        let surface_attached = host.presentation_attached();
-        // A redraw request raised before this frame renders is served by
-        // that render — it drains into the render demand here, so only a
-        // request raised from this point on, an animation asking for its
-        // next frame, still counts toward the transaction's continuation.
-        if host.has_pending_scene_changes() {
-            // Queued scene changes the host's callback posted no wake for —
-            // the transaction counts them into its continuation; no frame
-            // post runs inside the open transaction.
-            host.parts().0.platform.request_redraw();
-        }
-        if FrameTransaction::take_render_request(
-            host.parts().0,
-            surface_attached,
-            H::take_redraw_pending,
-        ) {
-            let presented = host.render();
-            flushed = true;
-            host.after_render(presented);
-        }
-    }
-    if should_close {
-        host.notify_close();
-    }
-    host.publish(flushed);
+    render_and_publish_frame(
+        host,
+        #[cfg(all(target_os = "android", hydrolysis_hwui, feature = "frame-profile"))]
+        now,
+        should_close,
+    );
 
     // The redraw latch now holds only requests raised after this
     // frame's render — an animation asking for its next frame; the
@@ -822,6 +801,73 @@ pub(super) fn run_frame_transaction<H: FrameHost>(
         deadline,
         should_close,
         frame_rate_vote,
+    }
+}
+
+/// Renders the frame when ready, delivers any close signal, publishes the
+/// frame, and logs stage timings when HWUI frame profiling is enabled.
+#[cfg(hydrolysis_frame_transaction)]
+fn render_and_publish_frame<H: FrameHost>(
+    host: &mut H,
+    #[cfg(all(target_os = "android", hydrolysis_hwui, feature = "frame-profile"))] now: Instant,
+    should_close: bool,
+) {
+    let mut flushed = false;
+    #[cfg(all(target_os = "android", hydrolysis_hwui, feature = "frame-profile"))]
+    let mut render_started = now;
+    #[cfg(all(target_os = "android", hydrolysis_hwui, feature = "frame-profile"))]
+    let mut render_time = Duration::ZERO;
+    if !host.rendering_ended() && !host.frame_in_flight() {
+        let surface_attached = host.presentation_attached();
+        // A redraw request raised before this frame renders is served by
+        // that render — it drains into the render demand here, so only a
+        // request raised from this point on, an animation asking for its
+        // next frame, still counts toward the transaction's continuation.
+        if host.has_pending_scene_changes() {
+            // Queued scene changes the host's callback posted no wake for —
+            // the transaction counts them into its continuation; no frame
+            // post runs inside the open transaction.
+            host.parts().0.platform.request_redraw();
+        }
+        if FrameTransaction::take_render_request(
+            host.parts().0,
+            surface_attached,
+            H::take_redraw_pending,
+        ) {
+            #[cfg(all(target_os = "android", hydrolysis_hwui, feature = "frame-profile"))]
+            {
+                render_started = Instant::now();
+            }
+            let presented = host.render();
+            #[cfg(all(target_os = "android", hydrolysis_hwui, feature = "frame-profile"))]
+            {
+                render_time = render_started.elapsed();
+            }
+            flushed = true;
+            host.after_render(presented);
+        }
+    }
+    if should_close {
+        host.notify_close();
+    }
+    #[cfg(all(target_os = "android", hydrolysis_hwui, feature = "frame-profile"))]
+    let publication_started = Instant::now();
+    host.publish(flushed);
+    #[cfg(all(target_os = "android", hydrolysis_hwui, feature = "frame-profile"))]
+    if flushed {
+        let publication_time = publication_started.elapsed();
+        let stages = host.parts().0.renderer.take_frame_stage_times();
+        tracing::info!(
+            target: "hydrolysis::frame_profile",
+            total_ms = now.elapsed().as_secs_f64() * 1000.0,
+            input_ms = render_started.duration_since(now).as_secs_f64() * 1000.0,
+            render_ms = render_time.as_secs_f64() * 1000.0,
+            publication_ms = publication_time.as_secs_f64() * 1000.0,
+            update_ms = stages.update().as_secs_f64() * 1000.0,
+            layout_ms = stages.layout().as_secs_f64() * 1000.0,
+            encode_ms = stages.encode().as_secs_f64() * 1000.0,
+            "hwui stages"
+        );
     }
 }
 
