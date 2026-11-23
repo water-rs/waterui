@@ -845,6 +845,9 @@ native_backend! {
         shape: waterui::shape::ResolvedShape,
         /// A gradient fill.
         gradient: waterui::graphics::Gradient,
+        #[cfg(any(waterui_feature = "gpu", waterui_feature = "cpu"))]
+        /// A WGSL fragment shader fill.
+        shader_paint: waterui::graphics::ShaderPaintView,
         #[cfg(waterui_feature = "table")]
         /// A table.
         table: waterui::component::table::TableConfig,

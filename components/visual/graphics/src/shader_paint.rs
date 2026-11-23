@@ -1,12 +1,11 @@
-//! A user shader as a view: a fragment shader drawn as [`GpuContent`] over
-//! the whole view.
+//! A user shader as a view: a WGSL fragment shader filling the view's frame.
 //!
 //! The fragment is WGSL against a prelude — `uniforms.time`,
 //! `uniforms.resolution`, a `uv` in `[0, 1]` (top-left origin) and
 //! `@fragment fn main` — with user uniforms passed as a flat `f32` list that
-//! follows a signal. Like every [`GpuContent`] it writes premultiplied linear
-//! Display P3; the engine's colour helpers (`cherenkov_linear_srgb`,
-//! `cherenkov_srgb`, ...) are available to convert from sRGB.
+//! follows a signal. It writes premultiplied linear Display P3; the engine's
+//! colour helpers (`cherenkov_linear_srgb`, `cherenkov_srgb`, ...) are
+//! available to convert from sRGB.
 //!
 //! Whether the shader animates follows a signal too: while it is `true` the
 //! content asks for a frame after every frame so `uniforms.time` advances,
@@ -16,23 +15,37 @@
 extern crate alloc;
 
 use alloc::borrow::Cow;
+#[cfg(feature = "gpu")]
+use alloc::boxed::Box;
+#[cfg(feature = "gpu")]
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::fmt;
+#[cfg(feature = "gpu")]
 use core::mem::size_of_val;
 
+#[cfg(feature = "gpu")]
 use arc_swap::{ArcSwap, ArcSwapOption};
 use nami::watcher::BoxWatcherGuard;
 use nami::{Computed, Signal, SignalExt};
+use waterui_core::layout::StretchAxis;
 use waterui_core::reactive::signal::IntoComputed;
-use waterui_core::{Environment, View, contract_violation};
+use waterui_core::{Environment, Native, NativeView, View, contract_violation};
 
+use crate::draw::{Draw as _, Paint, Recorder, ShaderId, ShaderPaint, kurbo::Rect};
+#[cfg(feature = "gpu")]
 use crate::gpu::{Context, Frame, GpuContent, GpuView, RedrawHandle};
+use crate::scene::resources::{RecordingResources, Registered, SceneResources};
+use crate::scene_view::{
+    NextFrame, SceneContent, SceneFrame, SceneInvalidator, SceneUpdate, invalidate_on_change,
+};
+use crate::source::ShaderSource;
 
 /// The most `f32` uniforms a shader reads: `params` is sixteen `vec4`s.
 const UNIFORM_CAPACITY: usize = 64;
 
 /// The fragment's prelude: uniforms, `params` and the full-screen vertex stage.
+#[cfg(feature = "gpu")]
 const PRELUDE: &str = include_str!("shader_paint.wgsl");
 
 /// A view painted by a WGSL fragment shader.
@@ -73,16 +86,35 @@ impl ShaderPaintView {
 
     /// The user uniforms the fragment reads as `params`, following a signal.
     ///
-    /// At most 64 floats; a longer list panics when it is read.
+    /// At most 64 floats; a longer list is a contract violation and the extra
+    /// floats are dropped.
     #[must_use]
     pub fn uniforms(mut self, uniforms: impl IntoComputed<Vec<f32>>) -> Self {
         self.uniforms = uniforms.into_computed();
         self
     }
-}
 
-impl View for ShaderPaintView {
-    fn body(self, _env: &Environment) -> impl View {
+    /// Lowers this view into [`SceneContent`] that fills its box with
+    /// [`Paint::Shader`] — the realization self-drawn backends run on both the
+    /// GPU and CPU painters.
+    #[must_use]
+    pub fn into_scene_content(self) -> impl SceneContent {
+        ShaderPaintScene {
+            fragment: self.fragment,
+            animated: self.animated,
+            uniforms: self.uniforms,
+            watchers: None,
+            registered: None,
+            recorded: None,
+        }
+    }
+
+    /// Lowers this view into a [`GpuView`] running its fragment on the
+    /// engine's `wgpu` device — the realization native backends without
+    /// scene-level `Paint::Shader` run.
+    #[cfg(feature = "gpu")]
+    #[must_use]
+    pub fn into_gpu_view(self) -> GpuView<Box<dyn GpuContent>> {
         let shared = Arc::new(Shared::default());
         let posting = Posting::new(self.animated, self.uniforms, Arc::clone(&shared));
         GpuView::new(ShaderContent {
@@ -92,22 +124,172 @@ impl View for ShaderPaintView {
         })
         // The hook also keeps the posting's watchers alive with the view.
         .on_frame(move || posting.post())
+        .into_boxed()
+    }
+}
+
+impl NativeView for ShaderPaintView {
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::Both
+    }
+}
+
+impl View for ShaderPaintView {
+    fn body(self, _env: &Environment) -> impl View {
+        Native::new(self)
+    }
+}
+
+fn clamp_uniforms(raw: &[f32]) -> &[f32] {
+    if raw.len() > UNIFORM_CAPACITY {
+        contract_violation!(
+            "shader paint accepts at most {UNIFORM_CAPACITY} uniform floats, got {}; the extra floats are dropped",
+            raw.len()
+        );
+    }
+    &raw[..raw.len().min(UNIFORM_CAPACITY)]
+}
+
+struct RecordedState {
+    animated: bool,
+    uniforms_bits: Vec<u32>,
+    width_bits: u32,
+    height_bits: u32,
+}
+
+impl RecordedState {
+    fn matches(&self, animated: bool, uniforms: &[f32], width: f32, height: f32) -> bool {
+        self.animated == animated
+            && self.width_bits == width.to_bits()
+            && self.height_bits == height.to_bits()
+            && self.uniforms_bits.len() == uniforms.len()
+            && self
+                .uniforms_bits
+                .iter()
+                .zip(uniforms)
+                .all(|(&recorded, current)| recorded == current.to_bits())
+    }
+}
+
+struct ShaderPaintScene {
+    fragment: Cow<'static, str>,
+    animated: Computed<bool>,
+    uniforms: Computed<Vec<f32>>,
+    watchers: Option<[BoxWatcherGuard; 2]>,
+    registered: Option<(bool, Registered<ShaderId>)>,
+    recorded: Option<RecordedState>,
+}
+
+impl SceneContent for ShaderPaintScene {
+    fn build_scene(
+        &mut self,
+        recorder: &mut Recorder,
+        resources: &mut RecordingResources<'_>,
+        width: f32,
+        height: f32,
+    ) -> NextFrame {
+        let animated = self.animated.snapshot();
+        let raw_uniforms = self.uniforms.snapshot();
+        let kept = clamp_uniforms(&raw_uniforms);
+        let uniforms_bits: Vec<u32> = kept.iter().map(|v| v.to_bits()).collect();
+        let next = if animated {
+            NextFrame::Perpetual
+        } else {
+            NextFrame::Idle
+        };
+
+        if self
+            .registered
+            .as_ref()
+            .is_none_or(|(was_animated, _)| *was_animated != animated)
+        {
+            let source = ShaderSource::wgsl(self.fragment.clone());
+            let source = if animated { source.animated() } else { source };
+            match resources.shader(source) {
+                Ok(handle) => self.registered = Some((animated, handle)),
+                Err(error) => {
+                    self.registered = None;
+                    contract_violation!("shader paint failed to register: {error}");
+                }
+            }
+        }
+
+        if width > 0.0
+            && height > 0.0
+            && let Some((_, handle)) = &self.registered
+            && let Some(shader) = resources.name(handle)
+        {
+            recorder.fill(
+                Rect::new(0.0, 0.0, f64::from(width), f64::from(height)),
+                Paint::Shader(ShaderPaint {
+                    shader,
+                    uniforms: kept.to_vec(),
+                }),
+            );
+        }
+
+        self.recorded = Some(RecordedState {
+            animated,
+            uniforms_bits,
+            width_bits: width.to_bits(),
+            height_bits: height.to_bits(),
+        });
+        next
+    }
+
+    fn rebuild_for_engine(&mut self) {
+        self.registered = None;
+        self.recorded = None;
+    }
+
+    fn update_scene(&mut self, _resources: &SceneResources, frame: SceneFrame) -> SceneUpdate {
+        let Some(recorded) = &self.recorded else {
+            return SceneUpdate::Record;
+        };
+        let animated = self.animated.snapshot();
+        let raw_uniforms = self.uniforms.snapshot();
+        let kept = &raw_uniforms[..raw_uniforms.len().min(UNIFORM_CAPACITY)];
+        if recorded.matches(animated, kept, frame.width, frame.height)
+            && raw_uniforms.len() <= UNIFORM_CAPACITY
+        {
+            SceneUpdate::Retained {
+                next: if animated {
+                    NextFrame::Perpetual
+                } else {
+                    NextFrame::Idle
+                },
+            }
+        } else {
+            SceneUpdate::Record
+        }
+    }
+
+    fn set_invalidator(&mut self, invalidator: Option<SceneInvalidator>) {
+        self.watchers = invalidator.map(|inv| {
+            [
+                invalidate_on_change(&inv, &self.animated),
+                invalidate_on_change(&inv, &self.uniforms),
+            ]
+        });
     }
 }
 
 /// What the UI side last read from the signals.
+#[cfg(feature = "gpu")]
 struct Posted {
     animated: bool,
     params: [f32; UNIFORM_CAPACITY],
 }
 
 /// The UI side's mailbox to the render thread.
+#[cfg(feature = "gpu")]
 struct Shared {
     posted: ArcSwap<Posted>,
     /// The host's wake, known once the content is set up.
     redraw: ArcSwapOption<RedrawHandle>,
 }
 
+#[cfg(feature = "gpu")]
 impl Default for Shared {
     fn default() -> Self {
         Self {
@@ -120,6 +302,7 @@ impl Default for Shared {
     }
 }
 
+#[cfg(feature = "gpu")]
 impl Shared {
     fn wake(&self) {
         if let Some(redraw) = &*self.redraw.load() {
@@ -130,6 +313,7 @@ impl Shared {
 
 /// The UI-thread half: reads the signals into the mailbox before each frame
 /// and wakes an idle host when one changes.
+#[cfg(feature = "gpu")]
 struct Posting {
     animated: Computed<bool>,
     uniforms: Computed<Vec<f32>>,
@@ -137,13 +321,14 @@ struct Posting {
     _watchers: [BoxWatcherGuard; 2],
 }
 
+#[cfg(feature = "gpu")]
 impl Posting {
     fn new(animated: Computed<bool>, uniforms: Computed<Vec<f32>>, shared: Arc<Shared>) -> Self {
         let wake_on = |signal: &dyn Fn(Arc<Shared>) -> BoxWatcherGuard| signal(Arc::clone(&shared));
         let posting = Self {
             _watchers: [
-                wake_on(&|shared| Box::new(animated.watch(move |_| shared.wake()))),
-                wake_on(&|shared| Box::new(uniforms.watch(move |_| shared.wake()))),
+                wake_on(&|shared| alloc::boxed::Box::new(animated.watch(move |_| shared.wake()))),
+                wake_on(&|shared| alloc::boxed::Box::new(uniforms.watch(move |_| shared.wake()))),
             ],
             animated,
             uniforms,
@@ -155,15 +340,9 @@ impl Posting {
 
     fn post(&self) {
         let uniforms = self.uniforms.snapshot();
-        if uniforms.len() > UNIFORM_CAPACITY {
-            contract_violation!(
-                "shader paint accepts at most {UNIFORM_CAPACITY} uniform floats, got {}; the extra floats are dropped",
-                uniforms.len()
-            );
-        }
-        let kept = uniforms.len().min(UNIFORM_CAPACITY);
+        let kept = clamp_uniforms(&uniforms);
         let mut params = [0.0; UNIFORM_CAPACITY];
-        params[..kept].copy_from_slice(&uniforms[..kept]);
+        params[..kept.len()].copy_from_slice(kept);
         self.shared.posted.store(Arc::new(Posted {
             animated: self.animated.snapshot(),
             params,
@@ -172,12 +351,14 @@ impl Posting {
 }
 
 /// The render-thread half: the fragment's pipeline on the engine's device.
+#[cfg(feature = "gpu")]
 struct ShaderContent {
     fragment: Cow<'static, str>,
     shared: Arc<Shared>,
     gpu: Option<Program>,
 }
 
+#[cfg(feature = "gpu")]
 struct Program {
     pipeline: wgpu::RenderPipeline,
     bind_group: wgpu::BindGroup,
@@ -185,6 +366,7 @@ struct Program {
     params: wgpu::Buffer,
 }
 
+#[cfg(feature = "gpu")]
 const fn uniform_entry(binding: u32, size: u64) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
@@ -198,6 +380,7 @@ const fn uniform_entry(binding: u32, size: u64) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
+#[cfg(feature = "gpu")]
 fn uniform_buffer(device: &wgpu::Device, label: &str, size: u64) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some(label),
@@ -207,6 +390,7 @@ fn uniform_buffer(device: &wgpu::Device, label: &str, size: u64) -> wgpu::Buffer
     })
 }
 
+#[cfg(feature = "gpu")]
 impl GpuContent for ShaderContent {
     fn setup(&mut self, gpu: &Context<'_>) {
         self.shared
@@ -218,7 +402,7 @@ impl GpuContent for ShaderContent {
         let module = cherenkov_gpu::interop::shader_module(
             device,
             "shader paint",
-            &format!("{PRELUDE}\n{}", self.fragment),
+            &alloc::format!("{PRELUDE}\n{}", self.fragment),
         );
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("shader paint"),
@@ -340,28 +524,171 @@ macro_rules! shader {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core::sync::atomic::{AtomicUsize, Ordering};
+    use alloc::rc::Rc;
+    use core::cell::Cell;
 
     use nami::Binding;
     use waterui_core::AnyView;
 
+    use crate::draw::{
+        FontId, ImageData, ImageId, ImageLimits, ImageStorage, Instant, LayoutSize, ResourceError,
+        Rgba8, Rgba16F,
+    };
+    use crate::scene::resources::{Handle, ResourceHandle, SceneBackend, ShaderBackend};
+    use crate::source::FontSource;
+
     const FRAGMENT: &str = "@fragment fn main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> { return vec4<f32>(uv, 0.0, 1.0); }";
 
+    struct DummyShaderHandle(ShaderId);
+
+    impl ResourceHandle for DummyShaderHandle {
+        type Id = ShaderId;
+
+        fn id(&self) -> ShaderId {
+            self.0
+        }
+    }
+
+    struct DummyShaders {
+        next: Cell<u64>,
+    }
+
+    impl SceneBackend for DummyShaders {
+        fn register_font(&self, _source: FontSource) -> Result<Handle<FontId>, ResourceError> {
+            Err(ResourceError::Unsupported("font"))
+        }
+
+        fn register_rgba8(
+            &self,
+            _data: ImageData<Rgba8>,
+        ) -> Result<Handle<ImageId>, ResourceError> {
+            Err(ResourceError::Unsupported("rgba8"))
+        }
+
+        fn register_rgba16f(
+            &self,
+            _data: ImageData<Rgba16F>,
+        ) -> Result<Handle<ImageId>, ResourceError> {
+            Err(ResourceError::Unsupported("rgba16f"))
+        }
+
+        fn image_limits(&self) -> ImageLimits {
+            ImageLimits {
+                max_dimension: 1024,
+                max_bytes: 1024 * 1024,
+                storage: ImageStorage::CPU,
+            }
+        }
+    }
+
+    impl ShaderBackend for DummyShaders {
+        fn register_shader(
+            &self,
+            _source: ShaderSource,
+        ) -> Result<Handle<ShaderId>, ResourceError> {
+            let id = self.next.get() + 1;
+            self.next.set(id);
+            Ok(Handle::new(DummyShaderHandle(ShaderId::new(id))))
+        }
+    }
+
     #[test]
-    fn a_shader_view_is_a_stretching_gpu_view() {
+    fn a_shader_view_is_a_stretching_native_view() {
         let view = ShaderPaintView::new(FRAGMENT);
-        let body = AnyView::new(view.body(&Environment::new()))
-            .downcast::<GpuView<ShaderContent>>()
-            .expect("a shader view's body is a GpuView<ShaderContent>");
         assert_eq!(
-            waterui_core::NativeView::stretch_axis(&*body),
-            waterui_core::layout::StretchAxis::Both
+            waterui_core::NativeView::stretch_axis(&view),
+            StretchAxis::Both
+        );
+        let body = AnyView::new(view.body(&Environment::new()))
+            .downcast::<Native<ShaderPaintView>>()
+            .expect("a shader view's body is Native<ShaderPaintView>");
+        assert_eq!(
+            waterui_core::NativeView::stretch_axis(body.as_inner()),
+            StretchAxis::Both
         );
     }
 
-    /// The mailbox follows the signals, and a change wakes an idle host.
+    #[test]
+    fn scene_content_retains_static_recordings_and_invalidates_on_signal_changes() {
+        let animated = Binding::container(false);
+        let uniforms = Binding::container(vec![1.0_f32, 2.0]);
+        let mut scene = ShaderPaintView::new(FRAGMENT)
+            .animated(animated.clone())
+            .uniforms(uniforms.clone())
+            .into_scene_content();
+
+        let wakes = Rc::new(Cell::new(0_usize));
+        let wakes_ref = Rc::clone(&wakes);
+        scene.set_invalidator(Some(Rc::new(move || wakes_ref.set(wakes_ref.get() + 1))));
+
+        let size = LayoutSize::new();
+        let backend = Rc::new(DummyShaders { next: Cell::new(0) });
+        let table = SceneResources::with_shaders(Rc::clone(&backend), backend);
+        let mut recording = table.recording();
+        let content = crate::draw::Content::record(&size, |recorder| {
+            let next = scene.build_scene(recorder, &mut recording, 40.0, 20.0);
+            assert_eq!(next, NextFrame::Idle);
+        });
+        let _held = recording.finish();
+        assert!(!content.is_empty());
+
+        let retained = scene.update_scene(
+            &table,
+            SceneFrame {
+                width: 40.0,
+                height: 20.0,
+                time: Instant::now(),
+            },
+        );
+        assert_eq!(
+            retained,
+            SceneUpdate::Retained {
+                next: NextFrame::Idle
+            }
+        );
+
+        uniforms.set(vec![3.0]);
+        assert_eq!(wakes.get(), 1);
+        assert_eq!(
+            scene.update_scene(
+                &table,
+                SceneFrame {
+                    width: 40.0,
+                    height: 20.0,
+                    time: Instant::now(),
+                },
+            ),
+            SceneUpdate::Record
+        );
+
+        animated.set(true);
+        assert_eq!(wakes.get(), 2);
+        let mut recording = table.recording();
+        let _ = crate::draw::Content::record(&size, |recorder| {
+            let next = scene.build_scene(recorder, &mut recording, 40.0, 20.0);
+            assert_eq!(next, NextFrame::Perpetual);
+        });
+        let _held = recording.finish();
+        assert_eq!(
+            scene.update_scene(
+                &table,
+                SceneFrame {
+                    width: 40.0,
+                    height: 20.0,
+                    time: Instant::now(),
+                },
+            ),
+            SceneUpdate::Retained {
+                next: NextFrame::Perpetual
+            }
+        );
+    }
+
+    #[cfg(feature = "gpu")]
     #[test]
     fn signals_reach_the_render_side_and_wake_the_host() {
+        use core::sync::atomic::{AtomicUsize, Ordering};
+
         let animated = Binding::container(false);
         let uniforms = Binding::container(vec![1.0_f32, 2.0]);
         let shared = Arc::new(Shared::default());
@@ -392,19 +719,12 @@ mod tests {
     #[test]
     #[cfg_attr(debug_assertions, should_panic(expected = "at most 64 uniform floats"))]
     fn too_many_uniforms_are_cut_to_the_capacity() {
-        let shared = Arc::new(Shared::default());
         let mut uniforms = vec![1.0_f32; 65];
         uniforms[64] = 9.0;
-        let _posting = Posting::new(
-            nami::constant(false).computed(),
-            nami::constant(uniforms).computed(),
-            Arc::clone(&shared),
-        );
-        let posted = shared.posted.load();
+        let kept = clamp_uniforms(&uniforms);
+        assert_eq!(kept.len(), UNIFORM_CAPACITY);
         assert!(
-            posted
-                .params
-                .iter()
+            kept.iter()
                 .all(|param| param.to_bits() == 1.0_f32.to_bits())
         );
     }

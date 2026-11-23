@@ -223,6 +223,30 @@ impl NativeBackend for AppleBackend {
         crate::components::resolved_gradient::realize_gradient(native, &self.entry(env))
     }
 
+    #[cfg(any(waterui_feature = "gpu", waterui_feature = "cpu"))]
+    fn shader_paint(
+        &mut self,
+        native: waterui::graphics::ShaderPaintView,
+        env: &Environment,
+        (): (),
+    ) -> NativeLeaf {
+        mark_reached!("shader_paint");
+        #[cfg(feature = "gpu_surface")]
+        return crate::components::gpu_surface::realize_gpu_view(
+            native.into_gpu_view(),
+            &self.entry(env),
+        );
+        #[cfg(not(feature = "gpu_surface"))]
+        {
+            drop(native);
+            report_unprovided(
+                "waterui-apple without its `gpu_surface` feature",
+                "waterui_graphics::ShaderPaintView",
+            );
+            self.empty((), env, ())
+        }
+    }
+
     fn button<C: ChildView<Self>>(
         &mut self,
         native: waterui::component::button::ButtonConfig<C>,

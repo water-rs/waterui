@@ -286,7 +286,7 @@ fn facade_features() {
     let mut has_scene_view = false;
     for feature in features.split(',').filter(|feature| !feature.is_empty()) {
         println!("cargo::rustc-cfg=waterui_feature=\"{feature}\"");
-        if matches!(feature, "canvas" | "gpu") {
+        if matches!(feature, "canvas" | "gpu" | "cpu") {
             has_scene_view = true;
         }
         if let Some((_, own)) = REALIZED_BY.iter().find(|(name, _)| *name == feature) {

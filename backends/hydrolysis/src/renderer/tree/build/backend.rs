@@ -1214,6 +1214,17 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         RenderNode::build_scene_view_node(Box::new(native), self.renderer)
     }
 
+    #[cfg(any(waterui_feature = "gpu", waterui_feature = "cpu"))]
+    fn shader_paint(
+        &mut self,
+        native: waterui::graphics::ShaderPaintView,
+        _env: &Environment,
+        (): (),
+    ) -> RenderNode<E> {
+        mark_reached!("shader_paint");
+        RenderNode::build_scene_view_node(Box::new(native.into_scene_content()), self.renderer)
+    }
+
     #[cfg(waterui_feature = "effects")]
     fn filtered<C: ChildView<Self>>(
         &mut self,

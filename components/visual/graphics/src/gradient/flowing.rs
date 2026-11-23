@@ -1,11 +1,11 @@
-//! A gradient of drifting, noise-driven colour bands, animated on the GPU.
+//! A gradient of drifting, noise-driven colour bands, animated as a shader paint.
 
 use waterui_core::{Environment, View};
 
 use crate::shader_paint::ShaderPaintView;
 
-/// A GPU-animated, smooth flowing gradient: noise-driven colour bands that
-/// drift with the engine's frame clock, with no per-frame CPU work.
+/// An animated, smooth flowing gradient: noise-driven colour bands that
+/// drift with the engine's frame clock.
 ///
 /// # Layout Behavior
 ///
