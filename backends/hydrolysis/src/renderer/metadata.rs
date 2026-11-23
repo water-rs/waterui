@@ -4,7 +4,19 @@
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
+#[cfg(feature = "menu")]
+use crate::num_cast::f64_as_f32;
+#[cfg(feature = "menu")]
+use crate::renderer::chrome::record_surface_at_rest;
 use crate::renderer::frame::ScopeClip;
+#[cfg(feature = "menu")]
+use crate::renderer::input::{anchored_overlay_scope, menu_look, presentation_content_transform};
+#[cfg(feature = "menu")]
+use crate::renderer::mount::ScopeKey;
+#[cfg(feature = "menu")]
+use crate::theme::MenuPresentationSample;
+#[cfg(feature = "menu")]
+use kurbo::{Affine, Rect, Vec2};
 use waterui_core::contract_violation;
 use waterui_core::handler::ReportExtraction as _;
 
@@ -258,27 +270,94 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         renderer: &mut Self,
         ctx: RenderContext,
         env: &Environment,
-        selected_row: Option<kurbo::Rect>,
+        selected_row: Option<Rect>,
         render_content: impl FnOnce(&mut Self),
     ) {
-        {
-            let look = crate::renderer::input::menu_look(&renderer.theme(), env);
-            renderer.scene_mut().record_picture(ctx.local(), |draw| {
-                crate::renderer::chrome::record_surface_at_rest(
-                    look.panel(),
-                    &mut *draw,
-                    ctx.bounds(),
-                );
+        let look = menu_look(&renderer.theme(), env);
+        let active = renderer.popup_menu.active_menu_presentation.take();
+        let Some(active) = active else {
+            let rest = MenuPresentationSample::at_rest(ctx.bounds(), ctx.bounds());
+            renderer.draw_context(ctx, |draw| {
+                if !look.record_presentation_panel(draw, &rest) {
+                    record_surface_at_rest(look.panel(), draw, ctx.bounds());
+                }
                 if let Some(row) = selected_row {
                     let bounds = ctx.bounds();
                     look.record_selected_row(
-                        &mut *draw,
+                        draw,
                         row.with_origin((bounds.x0 + row.x0, bounds.y0 + row.y0)),
                     );
                 }
             });
+            render_content(renderer);
+            return;
+        };
+
+        let panel_window = renderer.resolve_window_rect(ctx.bounds());
+        let offset = Vec2::new(
+            ctx.bounds().x0 - panel_window.x0,
+            ctx.bounds().y0 - panel_window.y0,
+        );
+        let local_sample = active.sample.translated(offset);
+        renderer.draw_context(ctx, |draw| {
+            if !look.record_presentation_panel(draw, &local_sample) {
+                record_surface_at_rest(look.panel(), draw, local_sample.surface);
+            }
+        });
+
+        let at_rest = (local_sample.progress - 1.0).abs() <= 1e-4
+            && (local_sample.content_opacity - 1.0).abs() <= 1e-4
+            && (local_sample.content_scale - 1.0).abs() <= 1e-4;
+        if at_rest {
+            if let Some(row) = selected_row {
+                let bounds = ctx.bounds();
+                renderer.draw_context(ctx, |draw| {
+                    look.record_selected_row(
+                        draw,
+                        row.with_origin((bounds.x0 + row.x0, bounds.y0 + row.y0)),
+                    );
+                });
+            }
+            render_content(renderer);
+            return;
+        }
+
+        let content_transform = presentation_content_transform(
+            local_sample.panel,
+            local_sample.surface,
+            local_sample.content_scale,
+        );
+        let paint_space = ctx.local() * content_transform;
+        let layer = renderer.program().origin().inverse() * paint_space;
+        let opacity = f64_as_f32(local_sample.content_opacity);
+        let clip = ScopeClip::Rect(local_sample.surface);
+        let key = ScopeKey {
+            role: "menu_presentation_content",
+            item: active.scope,
+        };
+        renderer.open_scope_with(
+            key,
+            layer,
+            opacity,
+            Some(&clip),
+            ctx.local(),
+            ScopeDelta {
+                transform: content_transform,
+                hit_alpha: opacity,
+            },
+            true,
+        );
+        if let Some(row) = selected_row {
+            let bounds = ctx.bounds();
+            renderer.draw_context(ctx.child(content_transform, bounds), |draw| {
+                look.record_selected_row(
+                    draw,
+                    row.with_origin((bounds.x0 + row.x0, bounds.y0 + row.y0)),
+                );
+            });
         }
         render_content(renderer);
+        renderer.close_scope();
     }
 
     /// Render the wrapped content, then bind the single focusable target — a
@@ -931,6 +1010,11 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     ) {
         let bounds = renderer.resolve_window_rect(ctx.bounds());
         let presented = renderer.read_signal(&value.is_presented);
+        #[cfg(feature = "menu")]
+        let trigger_opacity = value
+            .presentations
+            .borrow()
+            .trigger_opacity_at(renderer.frame_instant);
         renderer
             .popup_menu
             .anchored_overlays
@@ -946,6 +1030,25 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 presentations: Rc::clone(&value.presentations),
                 marker: Rc::clone(&value.marker),
             });
+        #[cfg(feature = "menu")]
+        if trigger_opacity < 1.0 - 1e-4 {
+            let key = ScopeKey {
+                role: "anchored_trigger",
+                item: anchored_overlay_scope(&value.marker),
+            };
+            renderer.open_scope_with(
+                key,
+                Affine::IDENTITY,
+                f64_as_f32(trigger_opacity),
+                None,
+                Affine::IDENTITY,
+                ScopeDelta::RECORD_SPACE,
+                true,
+            );
+            render_content(renderer);
+            renderer.close_scope();
+            return;
+        }
         render_content(renderer);
     }
 

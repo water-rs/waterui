@@ -898,3 +898,413 @@ fn placed_edge_reports_the_logical_edge_after_a_flip() {
         "under RTL, Leading sits to the anchor's right, got {frame:?} for anchor {anchor:?}"
     );
 }
+
+#[cfg(feature = "menu")]
+mod menu_presentation_motion_tests {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::time::{Duration, Instant};
+
+    use accesskit::{Rect as AccessRect, Role};
+    #[cfg(hydrolysis_gpu_painter)]
+    use cherenkov_record::MaterialEffect;
+    use cherenkov_record::{Draw as _, WorkingColor};
+    use kurbo::{Rect, RoundedRect};
+    use nami::Binding;
+    use nami::Signal as _;
+    use waterui::ViewExt as _;
+    use waterui::animation::Animation;
+    use waterui::metadata::anchored_overlay::{AnchorEdge, AnchoredOverlay};
+    use waterui_controls::button::button;
+    use waterui_core::AnyView;
+    use waterui_core::handler::AnyViewBuilder;
+    use waterui_core::metadata::Metadata;
+    use waterui_layout::frame::Frame;
+    use waterui_layout::stack::vstack;
+    use waterui_structural_transition::ReduceMotion;
+
+    use super::{
+        GAP, MinimalTestTheme, WINDOW, bounds_of, find_by_label, near, presented_frame,
+        primary_click, pump_until_settled, test_environment,
+    };
+    use crate::HeadlessRuntime;
+    use crate::num_cast::f64_as_f32;
+    use crate::renderer::input::PopupMenuSurface;
+    use crate::theme::{MenuPresentationMotion, MenuPresentationSample};
+
+    fn test_motion() -> MenuPresentationMotion {
+        MenuPresentationMotion::new(
+            Animation::spring(304.6, 33.1),
+            Animation::spring(503.5, 42.6),
+        )
+        .content_opacity_window(0.25, 0.75)
+        .content_scale_from(0.92)
+        .content_scale_window(0.15, 0.85)
+        .trigger_opacity_window(0.0, 0.25)
+    }
+
+    fn recording_theme(
+        motion: MenuPresentationMotion,
+        samples: &Rc<RefCell<Vec<MenuPresentationSample>>>,
+    ) -> MinimalTestTheme {
+        let recorded = Rc::clone(samples);
+        let panel_fill = WorkingColor::new([0.16, 0.42, 0.86, 1.0]);
+        let look = MinimalTestTheme::menu_look()
+            .presentation_motion(motion)
+            .presentation_panel(move |recorder, sample| {
+                recorded.borrow_mut().push(*sample);
+                recorder.fill(RoundedRect::from_rect(sample.surface, 12.0), panel_fill);
+            });
+        MinimalTestTheme::default().with_menu_look(look)
+    }
+
+    fn menu_overlay_view(
+        open: Binding<bool>,
+        under_pressed: Option<Binding<bool>>,
+    ) -> AnyViewBuilder<AnyView> {
+        AnyViewBuilder::new(move || {
+            let open = open.clone();
+            let under_pressed = under_pressed.clone();
+            AnyView::new(vstack((
+                ().size(0.0, 24.0),
+                button("host").action(|| {}).anchored_overlay(
+                    AnchoredOverlay::new(&open, || {
+                        AnyView::new(Metadata::new(
+                            Frame::new(button("Item").action(|| {}))
+                                .width(120.0)
+                                .height(48.0),
+                            PopupMenuSurface { selected_row: None },
+                        ))
+                    })
+                    .edge(AnchorEdge::Bottom)
+                    .gap(GAP),
+                ),
+                ().size(0.0, 8.0),
+                button("under").action(move || {
+                    if let Some(pressed) = &under_pressed {
+                        pressed.set(true);
+                    }
+                }),
+            )))
+        })
+    }
+
+    fn has_menu_item(runtime: &mut HeadlessRuntime) -> bool {
+        runtime
+            .accessibility_tree()
+            .as_ref()
+            .and_then(|update| find_by_label(update, Role::Button, "Item"))
+            .is_some()
+    }
+
+    fn assert_present_morph(
+        runtime: &mut HeadlessRuntime,
+        open: &Binding<bool>,
+        samples: &Rc<RefCell<Vec<MenuPresentationSample>>>,
+        anchor: AccessRect,
+        start: Instant,
+    ) -> (Rect, Vec<u8>) {
+        samples.borrow_mut().clear();
+        open.set(true);
+        let _ = runtime.pump_at(false, start + Duration::from_millis(16));
+        let panel_frame = presented_frame(runtime);
+        let first = *samples
+            .borrow()
+            .last()
+            .expect("presentation_panel must be invoked on present");
+        assert!(
+            near(first.progress, 0.0),
+            "first present frame starts at progress 0, got {}",
+            first.progress
+        );
+        assert!(
+            near(first.origin.width(), anchor.width())
+                && near(first.origin.height(), anchor.height())
+                && near(first.origin.x0, anchor.x0 - panel_frame.x0)
+                && near(first.origin.y0, anchor.y0 - panel_frame.y0),
+            "sample.origin must carry the trigger anchor bounds in panel space: \
+             origin={:?}, anchor={anchor:?}, panel_frame={panel_frame:?}",
+            first.origin
+        );
+        assert!(
+            near(first.panel.width(), 120.0) && near(first.panel.height(), 48.0),
+            "sample.panel must match the placed panel bounds, got {:?}",
+            first.panel
+        );
+        assert!(
+            !runtime.is_settled(),
+            "a running present spring must keep the runtime unsettled"
+        );
+        assert!(
+            has_menu_item(runtime),
+            "presented menu items enter the accessibility tree immediately"
+        );
+
+        let mid_present = runtime
+            .pump_at(true, start + Duration::from_millis(96))
+            .into_snapshot()
+            .expect("mid-present frame must capture");
+        let mid_sample = *samples
+            .borrow()
+            .last()
+            .expect("mid-present frame records panel");
+        assert!(
+            mid_sample.progress > 0.1 && mid_sample.progress < 0.99,
+            "mid-present sample must be in flight, got {}",
+            mid_sample.progress
+        );
+
+        let settled = runtime
+            .pump_at(true, start + Duration::from_millis(1_600))
+            .into_snapshot()
+            .expect("settled frame must capture");
+        assert!(
+            runtime.is_settled(),
+            "once the present spring settles the runtime must report settled"
+        );
+        let settled_sample = *samples
+            .borrow()
+            .last()
+            .expect("settled frame records panel");
+        assert!(
+            near(settled_sample.progress, 1.0)
+                && near(settled_sample.content_opacity, 1.0)
+                && near(settled_sample.content_scale, 1.0)
+                && near(settled_sample.trigger_opacity, 0.0),
+            "settled sample must reach rest with faded trigger: {settled_sample:?}"
+        );
+        assert_ne!(
+            mid_present.rgba8(),
+            settled.rgba8(),
+            "mid-present pixels must differ from settled pixels"
+        );
+        (panel_frame, settled.rgba8().to_vec())
+    }
+
+    /// A theme with `MenuPresentationMotion` and `presentation_panel` receives
+    /// the trigger anchor's `origin`, the target `panel`, and spring-driven
+    /// `progress` from `0.0 -> 1.0` on present, then retains an inert,
+    /// accessibility-suppressed dismissal ghost while animating back toward
+    /// `0.0` on dismiss.
+    #[test]
+    fn menu_presentation_morphs_from_anchor_and_retains_dismiss_ghost() {
+        let open = Binding::container(false);
+        let under_pressed = Binding::container(false);
+        let samples = Rc::new(RefCell::new(Vec::new()));
+        let mut runtime = HeadlessRuntime::new_for_tests(
+            test_environment(),
+            menu_overlay_view(open.clone(), Some(under_pressed.clone())),
+            WINDOW.0,
+            WINDOW.1,
+            recording_theme(test_motion(), &samples),
+        );
+        let anchor = bounds_of(&mut runtime, "host");
+        let under = bounds_of(&mut runtime, "under");
+
+        let start = Instant::now();
+        let closed_snapshot = runtime
+            .pump_at(true, start)
+            .into_snapshot()
+            .expect("closed frame must capture");
+        let (panel_frame, settled_rgba) =
+            assert_present_morph(&mut runtime, &open, &samples, anchor, start);
+
+        // Dismiss: accessibility drops at once, ghost stays painted but inert,
+        // and progress contracts back toward 0.0 until settled.
+        open.set(false);
+        let _ = runtime.pump_at(false, start + Duration::from_millis(1_616));
+        assert!(
+            !has_menu_item(&mut runtime),
+            "dismissed menu leaves the accessibility tree immediately"
+        );
+        assert_eq!(
+            runtime.anchored_overlay_frames().as_slice(),
+            &[panel_frame],
+            "dismissal ghost stays drawn while the dismiss spring runs"
+        );
+        let mid_dismiss = runtime
+            .pump_at(true, start + Duration::from_millis(1_696))
+            .into_snapshot()
+            .expect("mid-dismiss frame must capture");
+        let dismiss_sample = *samples
+            .borrow()
+            .last()
+            .expect("mid-dismiss ghost records panel");
+        assert!(
+            dismiss_sample.progress > 0.01 && dismiss_sample.progress < 0.95,
+            "mid-dismiss ghost must be contracting back toward 0, got {}",
+            dismiss_sample.progress
+        );
+        assert_ne!(
+            mid_dismiss.rgba8(),
+            settled_rgba.as_slice(),
+            "mid-dismiss ghost pixels must differ from settled pixels"
+        );
+
+        // A click aimed at the button underneath passes through the inert ghost.
+        let click_x = f64_as_f32(f64::midpoint(under.x0, under.x1));
+        let click_y = f64_as_f32(f64::midpoint(under.y0, under.y1));
+        for event in primary_click(click_x, click_y) {
+            runtime.push_input_event(event);
+        }
+        let _ = runtime.pump_at(false, start + Duration::from_millis(1_712));
+        assert!(
+            under_pressed.snapshot(),
+            "the exiting dismissal ghost must not intercept input"
+        );
+
+        // Once the dismiss spring settles, the ghost unmounts cleanly and the
+        // trigger returns to its original closed appearance.
+        let _ = runtime.pump_at(false, start + Duration::from_millis(3_000));
+        let final_snapshot = runtime
+            .pump_at(true, start + Duration::from_millis(3_016))
+            .into_snapshot()
+            .expect("post-dismiss frame must capture");
+        assert!(
+            runtime.anchored_overlay_frames().is_empty(),
+            "settled dismissal ghost must unmount"
+        );
+        assert!(
+            runtime.is_settled(),
+            "runtime must settle once the dismissal ghost unmounts"
+        );
+        assert_eq!(
+            final_snapshot.rgba8(),
+            closed_snapshot.rgba8(),
+            "trigger opacity and canvas must restore cleanly after dismiss settles"
+        );
+    }
+
+    /// Dismissing mid-presentation preserves the in-flight progress rather than
+    /// jumping to `1.0` or snapping to `0.0`.
+    #[test]
+    fn interrupting_menu_presentation_mid_flight_dismisses_continuously() {
+        let open = Binding::container(false);
+        let samples = Rc::new(RefCell::new(Vec::new()));
+        let mut runtime = HeadlessRuntime::new_for_tests(
+            test_environment(),
+            menu_overlay_view(open.clone(), None),
+            WINDOW.0,
+            WINDOW.1,
+            recording_theme(test_motion(), &samples),
+        );
+        pump_until_settled(&mut runtime);
+
+        let start = Instant::now();
+        let _ = runtime.pump_at(false, start);
+        open.set(true);
+        let _ = runtime.pump_at(false, start + Duration::from_millis(16));
+        let _ = runtime.pump_at(false, start + Duration::from_millis(76));
+        let before_interrupt = *samples.borrow().last().expect("mid-flight sample");
+        assert!(
+            before_interrupt.progress > 0.05 && before_interrupt.progress < 0.9,
+            "must interrupt while mid-flight, got {}",
+            before_interrupt.progress
+        );
+
+        open.set(false);
+        let _ = runtime.pump_at(false, start + Duration::from_millis(92));
+        let at_interrupt = *samples.borrow().last().expect("interrupt sample");
+        assert!(
+            (at_interrupt.progress - before_interrupt.progress).abs() < 0.25,
+            "mid-flight dismissal must continue from current progress: before={}, after={}",
+            before_interrupt.progress,
+            at_interrupt.progress
+        );
+        assert_eq!(
+            runtime.anchored_overlay_frames().len(),
+            1,
+            "interrupted presentation stays drawn as an exiting ghost"
+        );
+
+        let _ = runtime.pump_at(false, start + Duration::from_millis(2_000));
+        assert!(
+            runtime.anchored_overlay_frames().is_empty(),
+            "interrupted dismissal ghost must unmount once settled"
+        );
+    }
+
+    /// Under `ReduceMotion(true)`, `MenuPresentationMotion` snaps immediately to
+    /// settled on present and removes immediately with no dismissal ghost.
+    #[test]
+    fn menu_presentation_motion_snaps_without_ghost_under_reduce_motion() {
+        let open = Binding::container(false);
+        let samples = Rc::new(RefCell::new(Vec::new()));
+        let mut env = test_environment();
+        env.insert(ReduceMotion(true));
+        let mut runtime = HeadlessRuntime::new_for_tests(
+            env,
+            menu_overlay_view(open.clone(), None),
+            WINDOW.0,
+            WINDOW.1,
+            recording_theme(test_motion(), &samples),
+        );
+        pump_until_settled(&mut runtime);
+
+        let start = Instant::now();
+        let _ = runtime.pump_at(false, start);
+        open.set(true);
+        let _ = runtime.pump_at(false, start + Duration::from_millis(16));
+        let sample = *samples.borrow().last().expect("present sample");
+        assert!(
+            near(sample.progress, 1.0),
+            "ReduceMotion must snap present progress to 1.0, got {}",
+            sample.progress
+        );
+        assert!(
+            runtime.is_settled(),
+            "ReduceMotion present must settle immediately"
+        );
+
+        open.set(false);
+        let _ = runtime.pump_at(false, start + Duration::from_millis(32));
+        assert!(
+            runtime.anchored_overlay_frames().is_empty(),
+            "ReduceMotion dismiss must remove immediately without a ghost"
+        );
+    }
+
+    /// `PopupMenuSurface` records through `draw_context` (layered recording),
+    /// so a theme's `presentation_panel` can emit `backdrop_material` commands
+    /// for glass or refractive surfaces without violating the layered contract.
+    #[cfg(hydrolysis_gpu_painter)]
+    #[test]
+    fn menu_presentation_panel_supports_backdrop_material_recording() {
+        use super::super::material_chrome::{GLASS, GLASS_SHADER, glass_plan};
+
+        let open = Binding::container(true);
+        let look = MinimalTestTheme::menu_look()
+            .presentation_motion(test_motion())
+            .presentation_panel(|recorder, sample| {
+                recorder.backdrop_material(
+                    RoundedRect::from_rect(sample.surface, 14.0),
+                    GLASS_SHADER,
+                    GLASS,
+                    MaterialEffect::default(),
+                );
+            });
+        let theme = MinimalTestTheme {
+            chrome: glass_plan(Vec::new()),
+            ..MinimalTestTheme::default()
+        }
+        .with_menu_look(look);
+        let mut runtime = HeadlessRuntime::new_for_tests(
+            test_environment(),
+            menu_overlay_view(open, None),
+            WINDOW.0,
+            WINDOW.1,
+            theme,
+        );
+        let start = Instant::now();
+        let snapshot = runtime
+            .pump_at(true, start)
+            .into_snapshot()
+            .expect("backdrop_material presentation panel must render without panicking");
+        assert_eq!(snapshot.width(), WINDOW.0);
+        assert_eq!(snapshot.height(), WINDOW.1);
+        assert_eq!(
+            presented_frame(&runtime).size(),
+            Rect::new(0.0, 0.0, 120.0, 48.0).size()
+        );
+    }
+}

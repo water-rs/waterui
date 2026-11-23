@@ -96,7 +96,7 @@ pub use look::{
 #[doc(hidden)]
 pub use look::{Change, CustomPart, LayerRotation, LiveDriven, RealizedCustom, Retarget};
 #[cfg(waterui_feature = "menu")]
-pub use menu::{MenuLayout, MenuLook, MenuSpec};
+pub use menu::{MenuLayout, MenuLook, MenuPresentationMotion, MenuPresentationSample, MenuSpec};
 #[cfg(waterui_feature = "navigation")]
 pub use navigation::{
     BarSurface, NavigationBarLook, NavigationMetrics, NavigationMotion, NavigationSpec,

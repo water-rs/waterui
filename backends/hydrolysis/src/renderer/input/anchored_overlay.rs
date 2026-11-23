@@ -22,15 +22,33 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+#[cfg(feature = "menu")]
+use cherenkov_record::Animation as EngineAnimation;
+#[cfg(feature = "menu")]
+use kurbo::{Affine, Rect, Vec2};
 use nami::Binding;
 use waterui::metadata::anchored_overlay::{AnchorEdge, AnchorPlacement, Clamp, Dismissal};
 use waterui_core::Environment;
 use waterui_core::layout::layout_direction;
+#[cfg(feature = "menu")]
+use waterui_graphics::animation::engine_animation;
 use waterui_structural_transition::TransitionSpec;
 
+#[cfg(feature = "menu")]
+use crate::num_cast::f64_as_f32;
+#[cfg(feature = "menu")]
+use crate::renderer::mount::ScopeKey;
 use crate::renderer::tree::transition::{
     TransitionPaint, TransitionRun, claim_transition, flush_transitioned,
 };
+#[cfg(feature = "menu")]
+use crate::renderer::{RenderNode, SafeAreaLayout, ScopeDelta};
+#[cfg(feature = "menu")]
+use crate::text::TextEngine;
+#[cfg(feature = "menu")]
+use crate::theme::{MenuPresentationMotion, MenuPresentationSample};
+#[cfg(feature = "menu")]
+use crate::time::Instant;
 
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
@@ -68,6 +86,124 @@ pub struct RegisteredAnchoredOverlay<E: crate::text::TextEngine> {
     pub(crate) marker: Rc<()>,
 }
 
+/// Live presentation sample handed to [`PopupMenuSurface`] while an animated
+/// anchored overlay is recording its subtree.
+#[cfg(feature = "menu")]
+#[derive(Clone, Copy)]
+pub struct ActiveMenuPresentation {
+    /// Sampled bounds, progress, and reveal factors in window coordinates.
+    pub(crate) sample: MenuPresentationSample,
+    /// Scope identity of the presentation owning this menu surface.
+    pub(crate) scope: u64,
+}
+
+/// Content transform placing a menu panel's content at the centre of the
+/// morphing `surface` scaled uniformly by `scale`.
+#[cfg(feature = "menu")]
+pub fn presentation_content_transform(panel: Rect, surface: Rect, scale: f64) -> Affine {
+    let panel_center = panel.center();
+    let surface_center = surface.center();
+    Affine::translate((surface_center.x, surface_center.y))
+        * Affine::scale(scale)
+        * Affine::translate((-panel_center.x, -panel_center.y))
+}
+
+/// Theme-driven presentation morph progress (`0.0` at trigger -> `1.0` settled)
+/// evaluated through the shared engine timing sampler so springs preserve both
+/// position and velocity across mid-flight dismissal.
+#[cfg(feature = "menu")]
+struct PresentationMorph {
+    motion: MenuPresentationMotion,
+    from: f64,
+    velocity: f64,
+    target: f64,
+    animation: EngineAnimation,
+    start: Instant,
+    settled: bool,
+}
+
+#[cfg(feature = "menu")]
+impl PresentationMorph {
+    fn present(motion: MenuPresentationMotion, now: Instant, reduce_motion: bool) -> Self {
+        let animation = engine_animation(&motion.present);
+        if reduce_motion {
+            Self {
+                motion,
+                from: 1.0,
+                velocity: 0.0,
+                target: 1.0,
+                animation,
+                start: now,
+                settled: true,
+            }
+        } else {
+            Self {
+                motion,
+                from: 0.0,
+                velocity: 0.0,
+                target: 1.0,
+                animation,
+                start: now,
+                settled: false,
+            }
+        }
+    }
+
+    fn eval_at(&self, at: Instant) -> (f64, f64, bool) {
+        if self.settled {
+            return (self.target, 0.0, true);
+        }
+        let dt = at.saturating_duration_since(self.start).as_secs_f64();
+        let mut position = [0.0_f64];
+        let mut velocity = [0.0_f64];
+        let done = self
+            .animation
+            .timing()
+            .expect("hydrolysis menu presentation animation is a curve or a spring")
+            .sample_lanes(
+                &[self.from],
+                &[self.velocity],
+                &[self.target],
+                dt,
+                &mut position,
+                &mut velocity,
+            );
+        (position[0], velocity[0], done)
+    }
+
+    fn advance(&mut self, now: Instant) -> (f64, bool) {
+        let (progress, _, done) = self.eval_at(now);
+        if done {
+            self.settled = true;
+            self.from = self.target;
+            self.velocity = 0.0;
+            (self.target, true)
+        } else {
+            (progress, false)
+        }
+    }
+
+    fn dismiss(&mut self, now: Instant) {
+        let (progress, velocity, _) = self.eval_at(now);
+        self.from = progress;
+        self.velocity = velocity;
+        self.target = 0.0;
+        self.animation = engine_animation(&self.motion.dismiss);
+        self.start = now;
+        self.settled = false;
+    }
+
+    fn sample_at(&self, origin: Rect, panel: Rect, now: Instant) -> MenuPresentationSample {
+        let (progress, _, _) = self.eval_at(now);
+        self.motion.sample(origin, panel, progress)
+    }
+
+    fn trigger_opacity_at(&self, now: Instant) -> f64 {
+        let (progress, _, _) = self.eval_at(now);
+        self.motion.trigger_opacity(progress)
+    }
+}
+
 /// The presentations of one anchored overlay: the one presented now and the
 /// dismissed ones still leaving. Each presentation is an independent
 /// instance — a re-present while an exit is in flight builds a new one and
@@ -77,8 +213,23 @@ pub struct AnchoredPresentations<E: crate::text::TextEngine> {
     exiting: Vec<AnchoredPresentation<E>>,
 }
 
+#[cfg(feature = "menu")]
+impl<E: TextEngine> AnchoredPresentations<E> {
+    /// Minimum trigger opacity across all active and exiting morphing
+    /// presentations at `now`, or `1.0` when no presentation fades the trigger.
+    pub(crate) fn trigger_opacity_at(&self, now: Instant) -> f64 {
+        self.current
+            .iter()
+            .chain(&self.exiting)
+            .filter_map(|presentation| presentation.morph.as_ref())
+            .map(|morph| morph.trigger_opacity_at(now))
+            .fold(1.0_f64, f64::min)
+    }
+}
+
 /// One presentation of an anchored overlay: its content instance and the
-/// transition the content's root declares (layout-spec.md §4.5).
+/// transition the content's root declares (layout-spec.md §4.5), or the
+/// theme's [`MenuPresentationMotion`] when no explicit transition was declared.
 pub struct AnchoredPresentation<E: crate::text::TextEngine> {
     content: RetainedSubview<E>,
     /// The identity of this presentation's animation and paint scopes.
@@ -87,6 +238,10 @@ pub struct AnchoredPresentation<E: crate::text::TextEngine> {
     spec: Option<TransitionSpec>,
     /// The insertion (presented) or removal (exiting) running now.
     run: Option<TransitionRun<E>>,
+    /// Theme-driven presentation morph progress when `spec` is `None` and the
+    /// theme's `MenuLook` declares [`MenuPresentationMotion`].
+    #[cfg(feature = "menu")]
+    morph: Option<PresentationMorph>,
     /// The frame and proposal the presentation was last placed at — the
     /// slot an exiting presentation keeps.
     placed: Option<(kurbo::Rect, ProposalSize)>,
@@ -115,11 +270,24 @@ impl<E: crate::text::TextEngine> AnchoredPresentation<E> {
         let run = spec
             .as_ref()
             .map(|spec| TransitionRun::insertion(spec, reduce_motion, renderer.frame_instant));
+        #[cfg(feature = "menu")]
+        let morph = if spec.is_none() {
+            menu_look(&renderer.theme(), &entry.env)
+                .get_presentation_motion()
+                .cloned()
+                .map(|motion| {
+                    PresentationMorph::present(motion, renderer.frame_instant, reduce_motion)
+                })
+        } else {
+            None
+        };
         Self {
             content,
             marker,
             spec,
             run,
+            #[cfg(feature = "menu")]
+            morph,
             placed: None,
         }
     }
@@ -128,6 +296,12 @@ impl<E: crate::text::TextEngine> AnchoredPresentation<E> {
     fn scope(&self) -> u64 {
         scope_of(&self.marker)
     }
+}
+
+/// The animation-controller scope a presentation marker identifies.
+#[cfg(feature = "menu")]
+pub fn anchored_overlay_scope(marker: &Rc<()>) -> u64 {
+    scope_of(marker)
 }
 
 /// The animation-controller scope a presentation marker identifies.
@@ -251,13 +425,37 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 }
             } else if let Some(mut current) = state.current.take() {
                 // Dismissed: a presentation that drew starts leaving — under
-                // its removal transition when its content declares one,
-                // otherwise for as long as the animations its content runs.
+                // its removal transition when its content declares one, under
+                // the theme's dismiss animation when `MenuPresentationMotion`
+                // drives it, or for as long as the animations its content runs.
                 if current.placed.is_some() {
                     current.run = current.spec.as_ref().map(|spec| {
                         TransitionRun::removal(spec, reduce_motion, self.frame_instant)
                     });
-                    state.exiting.push(current);
+                    #[cfg(feature = "menu")]
+                    let keep_exiting = if current.run.is_none()
+                        && let Some(morph) = &mut current.morph
+                    {
+                        if reduce_motion {
+                            false
+                        } else {
+                            morph.dismiss(self.frame_instant);
+                            true
+                        }
+                    } else {
+                        true
+                    };
+                    #[cfg(not(feature = "menu"))]
+                    let keep_exiting = true;
+                    if keep_exiting {
+                        state.exiting.push(current);
+                    } else {
+                        self.animation_controller
+                            .drop_animation_scope(current.scope());
+                        if let Some(node) = current.content.node() {
+                            self.retire_subtrees(vec![Rc::clone(&node.core().cell)]);
+                        }
+                    }
                 } else {
                     self.animation_controller
                         .drop_animation_scope(current.scope());
@@ -334,6 +532,13 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         {
             presentation.run = None;
         }
+        #[cfg(feature = "menu")]
+        let morph_active = presentation
+            .morph
+            .as_mut()
+            .is_some_and(|morph| !morph.advance(self.frame_instant).1);
+        #[cfg(not(feature = "menu"))]
+        let morph_active = false;
         let overlay_size = waterui_core::layout::Size::new(
             ideal.width.min(crate::num_cast::f64_as_f32(window.width())),
             ideal
@@ -364,7 +569,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         self.register_hit_test_occluder(frame);
         presentation.placed = Some((frame, bounded_proposal(frame)));
         self.record_presentation(entry, presentation, ctx, safe_area, true);
-        if presentation.run.is_some() {
+        if presentation.run.is_some() || morph_active {
             self.context_mark_layout();
         }
         frame
@@ -389,6 +594,22 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             // A removal transition: the presentation already left the
             // semantic tree and paints until its own clock completes.
             if !run.advance(self.frame_instant) {
+                self.animation_controller.drop_animation_scope(scope);
+                if let Some(node) = presentation.content.node() {
+                    self.retire_subtrees(vec![Rc::clone(&node.core().cell)]);
+                }
+                return None;
+            }
+            self.record_presentation(entry, presentation, ctx, safe_area, false);
+            self.context_mark_layout();
+            return Some(frame);
+        }
+        #[cfg(feature = "menu")]
+        if let Some(morph) = &mut presentation.morph {
+            // A theme-driven dismiss morph: the presentation stays drawn as an
+            // inert, accessibility-suppressed ghost until the dismiss spring
+            // or curve settles at `0.0`.
+            if morph.advance(self.frame_instant).1 {
                 self.animation_controller.drop_animation_scope(scope);
                 if let Some(node) = presentation.content.node() {
                     self.retire_subtrees(vec![Rc::clone(&node.core().cell)]);
@@ -466,7 +687,13 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         // inherits the window's boundaries, so it can only touch and release
         // where its frame really sits on one.
         let area = safe_area.with_frame(frame);
-        let AnchoredPresentation { content, run, .. } = presentation;
+        let AnchoredPresentation {
+            content,
+            run,
+            #[cfg(feature = "menu")]
+            morph,
+            ..
+        } = presentation;
         match run {
             Some(run) => {
                 let delta = kurbo::Affine::translate((frame.x0, frame.y0));
@@ -508,10 +735,114 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                     self.with_suppressed_accessibility(record);
                 }
             }
-            None => content.place_detached(self, ctx, &entry.env, proposal, frame, Some(area)),
+            None => {
+                #[cfg(feature = "menu")]
+                if let Some(morph) = morph {
+                    let sample = morph.sample_at(entry.anchor, frame, self.frame_instant);
+                    self.record_morphed_presentation(
+                        entry, content, sample, scope, ctx, proposal, frame, area, hit,
+                    );
+                } else {
+                    content.place_detached(self, ctx, &entry.env, proposal, frame, Some(area));
+                }
+                #[cfg(not(feature = "menu"))]
+                content.place_detached(self, ctx, &entry.env, proposal, frame, Some(area));
+            }
         }
         self.animation_controller.end_animation_scope();
         self.close_scope();
+    }
+
+    /// Records a presentation driven by `MenuPresentationMotion`: when the
+    /// subtree owns a [`PopupMenuSurface`], hands `sample` to
+    /// `apply_popup_menu_surface` so the theme draws the morphing surface and
+    /// reveals its rows inside it; otherwise applies the content scale and
+    /// opacity morph directly around the placed overlay subtree.
+    #[cfg(feature = "menu")]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "forwards the presentation's layout, sample, scope, and hit-test context directly"
+    )]
+    fn record_morphed_presentation(
+        &mut self,
+        entry: &RegisteredAnchoredOverlay<E>,
+        content: &mut RetainedSubview<E>,
+        sample: MenuPresentationSample,
+        scope: u64,
+        ctx: RenderContext,
+        proposal: ProposalSize,
+        frame: Rect,
+        area: SafeAreaLayout,
+        hit: bool,
+    ) {
+        let uses_menu_surface = content
+            .node()
+            .is_some_and(RenderNode::has_popup_menu_surface);
+        if uses_menu_surface {
+            let previous = self
+                .popup_menu
+                .active_menu_presentation
+                .replace(ActiveMenuPresentation { sample, scope });
+            let record = |renderer: &mut Self| {
+                content.place_detached(renderer, ctx, &entry.env, proposal, frame, Some(area));
+            };
+            if hit {
+                record(self);
+            } else {
+                self.with_suppressed_accessibility(record);
+            }
+            self.popup_menu.active_menu_presentation = previous;
+            return;
+        }
+
+        let at_rest = (sample.progress - 1.0).abs() <= 1e-4
+            && (sample.content_opacity - 1.0).abs() <= 1e-4
+            && (sample.content_scale - 1.0).abs() <= 1e-4;
+        if at_rest {
+            let record = |renderer: &mut Self| {
+                content.place_detached(renderer, ctx, &entry.env, proposal, frame, Some(area));
+            };
+            if hit {
+                record(self);
+            } else {
+                self.with_suppressed_accessibility(record);
+            }
+            return;
+        }
+
+        let delta = Affine::translate((frame.x0, frame.y0));
+        let slot = Rect::new(0.0, 0.0, frame.width(), frame.height());
+        let local_surface = sample.surface + Vec2::new(-frame.x0, -frame.y0);
+        let local = presentation_content_transform(slot, local_surface, sample.content_scale);
+        let child_ctx = ctx.child(delta, slot);
+        let paint_space = child_ctx.local() * local;
+        let layer = self.program().origin().inverse() * paint_space;
+        let opacity = f64_as_f32(sample.content_opacity);
+        let key = ScopeKey {
+            role: "menu_presentation",
+            item: scope,
+        };
+        let record = |renderer: &mut Self| {
+            renderer.open_scope_with(
+                key,
+                layer,
+                opacity,
+                None,
+                paint_space,
+                ScopeDelta {
+                    transform: delta * local,
+                    hit_alpha: opacity,
+                },
+                hit,
+            );
+            content.place_detached(renderer, child_ctx, &entry.env, proposal, slot, Some(area));
+            renderer.close_scope();
+        };
+        if hit {
+            record(self);
+        } else {
+            self.with_suppressed_accessibility(record);
+        }
     }
 }
 
