@@ -11,6 +11,8 @@ use waterui::window::WindowContent;
 use crate::renderer::accessibility::{
     AccessibilityActivationPointError, AccessibilityContentTypes, WINDOW_ID_STRIDE,
 };
+#[cfg(test)]
+use crate::renderer::mount::MountStats;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -1388,6 +1390,11 @@ impl HeadlessRuntime {
     #[cfg(test)]
     pub(crate) fn set_hidden_for_tests(&mut self, hidden: bool) {
         self.runtime.set_hidden(hidden);
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn mount_stats(&self) -> MountStats {
+        self.runtime.renderer.mount_stats()
     }
 
     #[expect(

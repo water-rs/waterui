@@ -12,9 +12,11 @@ use core::time::Duration;
 use std::time::Instant;
 
 use accesskit::Role;
-use nami::Binding;
+use cherenkov_record::{Draw as _, Paint, WorkingColor};
 use nami::collection::SignalCollection;
+use nami::{Binding, Computed, SignalExt as _};
 use waterui::ViewExt as _;
+use waterui::animation::Animation;
 use waterui::component::list::{List, ListItem};
 use waterui::component::table::{Table, col};
 use waterui::component::text;
@@ -27,6 +29,8 @@ use waterui_layout::stack::vstack;
 use super::{MinimalTestTheme, test_environment};
 use crate::HeadlessRuntime;
 use crate::platform::{InputEvent, TouchPhase};
+use crate::testing::plain_chrome;
+use crate::theme::{Custom, ListControls, ListGestures, ListLook, ListMetrics};
 
 const WINDOW_WIDTH: u32 = 400;
 const WINDOW_HEIGHT: u32 = 640;
@@ -204,13 +208,10 @@ fn a_list_scroll_frame_records_only_newly_revealed_rows() {
     );
     assert_eq!(work.structural_patches, 0);
     assert_eq!(work.layer_removals, 0);
-    // Row extents are re-resolved for the visible window every frame (that is
-    // the list's extent bookkeeping, not scroll work), so the misses bound to
-    // the window — they must not scale with how far the pan travelled.
-    assert!(
-        nudged.profile().counters().measurement_cache_misses() <= MAX_VISIBLE_WINDOW,
-        "a scroll frame missed the measurement cache {} times — more than one viewport",
-        nudged.profile().counters().measurement_cache_misses()
+    assert_eq!(
+        nudged.profile().counters().measurement_cache_misses(),
+        0,
+        "a pan revealing no rows must reuse every visible row's cached measurement"
     );
     assert_eq!(nudged.profile().counters().rebuild_iterations(), 0);
 
@@ -390,4 +391,148 @@ fn a_list_below_a_header_scrolls_against_the_intersecting_window() {
             "Row {index} emitted at {rect:?} — outside the list's viewport band"
         );
     }
+}
+
+fn decorated_list_look() -> ListLook {
+    let row_bg = WorkingColor::new([0.95, 0.95, 0.97, 1.0]);
+    let divider = WorkingColor::new([0.82, 0.82, 0.85, 1.0]);
+    ListLook::new(
+        ListMetrics {
+            one_line_row_height: 56.0,
+            horizontal_inset: 16.0,
+            vertical_inset: 10.0,
+            divider_leading_inset: 16.0,
+            divider_trailing_inset: 16.0,
+            move_control_width: 20.0,
+            delete_control_width: 26.0,
+            trailing_control_spacing: 6.0,
+            trailing_control_vertical_inset: 6.0,
+            section_header_height: 48.0,
+            section_footer_height: 40.0,
+        },
+        ListGestures {
+            swipe_threshold: 0.5,
+            reorder_threshold: 0.5,
+            slop: 8.0,
+            settle: Animation::linear(Duration::from_millis(15)),
+        },
+        Custom::new((), move |recorder, frame, ()| {
+            recorder.fill(frame, Paint::Solid(row_bg));
+        }),
+        Custom::new((), move |recorder, frame, ()| {
+            recorder.fill(frame, Paint::Solid(divider));
+        }),
+        ListControls {
+            move_up: plain_chrome(),
+            move_down: plain_chrome(),
+            delete: plain_chrome(),
+        },
+    )
+}
+
+#[test]
+fn a_decorated_list_scroll_frame_reuses_row_measurements_and_run_layers() {
+    let rows = Binding::container(
+        (0..ROWS)
+            .map(|i| SelfId::new(u64::try_from(i).expect("row index fits in u64")))
+            .collect::<Vec<_>>(),
+    );
+    let selection = Binding::container(None::<u64>);
+    let grow_row_zero = Binding::bool(false);
+    let selection_for_list = selection.clone();
+    let grow_for_rows = grow_row_zero.clone();
+    let builder = AnyViewBuilder::<AnyView>::new(move || {
+        let grow_for_rows = grow_for_rows.clone();
+        AnyView::new(
+            List::for_each(SignalCollection::new(rows.clone()), move |id| {
+                let index = id.into_inner();
+                let height = if index == 0 {
+                    grow_for_rows
+                        .clone()
+                        .map(|tall| if tall { 140.0 } else { 20.0 })
+                        .computed()
+                } else {
+                    Computed::constant(20.0)
+                };
+                ListItem::new(text(format!("Row {index}")).size(height))
+            })
+            .selection(&selection_for_list),
+        )
+    });
+    let mut runtime = HeadlessRuntime::new_for_tests(
+        test_environment(),
+        builder,
+        WINDOW_WIDTH,
+        WINDOW_HEIGHT,
+        MinimalTestTheme::default().with_list_look(decorated_list_look()),
+    );
+    let start = Instant::now();
+    let first = runtime.pump_at(false, start);
+    let resting = scroll_y(&first);
+    let initial_mount = runtime.mount_stats();
+    assert!(
+        initial_mount.installs >= 24,
+        "initial decorated list frame must install row backgrounds and separators (got {})",
+        initial_mount.installs
+    );
+
+    // Steady vertical scroll revealing no new rows: every visible row reuses
+    // its cached measurement and its compact static background/separator runs.
+    pan(&mut runtime, -10.0);
+    let nudged = runtime.pump_at(false, start + Duration::from_millis(16));
+    assert!(
+        scroll_y(&nudged) > resting,
+        "the pan must advance the scroll offset"
+    );
+    let work = nudged.profile().counters().frame_work();
+    let scroll_mount = runtime.mount_stats();
+    assert_eq!(
+        nudged.profile().counters().measurement_cache_misses(),
+        0,
+        "steady vertical scroll must not re-measure unchanged visible rows"
+    );
+    assert_eq!(
+        scroll_mount.installs, 0,
+        "steady vertical scroll must not re-record unchanged compact static list-row RunLayers"
+    );
+    assert_eq!(
+        scroll_mount.live_records, 0,
+        "steady vertical scroll must not re-record live text layers for unchanged rows"
+    );
+    assert_eq!(work.semantic_builds, 0);
+    assert_eq!(work.layer_creations, 0);
+    assert_eq!(work.layer_removals, 0);
+
+    // Changing selection on a visible row must invalidate only that row's
+    // background RunLayer while the remaining visible rows stay cached.
+    selection.set(Some(0));
+    let selected = runtime.pump_at(false, start + Duration::from_millis(32));
+    assert_eq!(
+        runtime.mount_stats().installs,
+        1,
+        "selecting Row 0 must re-record only Row 0's background RunLayer"
+    );
+
+    // Changing a visible row's reactive content size must invalidate its cached
+    // measurement and grow its published bounds (the first frame measures the
+    // new extent and marks layout so the follow-up frame publishes it in a11y).
+    let before_height = row_items(&selected)
+        .into_iter()
+        .find(|(index, _)| *index == 0)
+        .expect("Row 0 must be visible")
+        .1
+        .height();
+    grow_row_zero.set(true);
+    let _ = runtime.pump_at(false, start + Duration::from_millis(48));
+    let grown = runtime.pump_at(false, start + Duration::from_millis(64));
+    let after_height = row_items(&grown)
+        .into_iter()
+        .find(|(index, _)| *index == 0)
+        .expect("Row 0 must stay visible after growing")
+        .1
+        .height();
+    assert!(
+        after_height > before_height + 40.0,
+        "reactive content growth must re-measure Row 0 (before={before_height:.1}, after={after_height:.1})"
+    );
 }

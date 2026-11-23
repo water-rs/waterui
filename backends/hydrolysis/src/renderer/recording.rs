@@ -14,22 +14,27 @@
 use core::cell::RefCell;
 use core::fmt;
 use core::hash::Hash;
-use kurbo::{Affine, Rect, Shape, Vec2};
+use kurbo::{
+    Affine, Circle, Ellipse, Line, PathEl, Point, Rect, RoundedRect, RoundedRectRadii, Shape,
+    Stroke, Vec2,
+};
 use nami::{Computed, Signal as _};
 #[cfg(any(feature = "menu", test))]
 use peniko::BlendMode;
+#[cfg(any(test, hydrolysis_cherenkov, feature = "menu"))]
+use peniko::Brush;
 use peniko::{Fill, FontData};
 use rustc_hash::FxHashMap;
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
 
 use cherenkov_record::{
-    ColorStop, Draw, EvenOdd, Extend, FontId, Glyph as EngineGlyph, GlyphStyle, ImageId,
-    ImagePattern, Interpolation, LinearGradient, Paint, RadialGradient, Recorder, Sampling, Shadow,
-    ShapeData, SweepGradient, WorkingColor,
+    ColorStop, Command, ContinuousRect, Draw, EvenOdd, Extend, FontId, Glyph as EngineGlyph,
+    GlyphStyle, Group, ImageId, ImagePattern, Interpolation, LinearGradient, Paint, Picture,
+    RadialGradient, Recorder, Sampling, Shadow, ShapeData, SweepGradient, WorkingColor,
 };
 #[cfg(any(feature = "menu", test))]
-use cherenkov_record::{Content, Group, LayoutSize};
+use cherenkov_record::{Content, LayoutSize};
 use waterui_core::contract_violation;
 use waterui_graphics::backend::{
     FontSource, HeldResources, ImageColorSpace, ImageData, PlainId, RecordingResources, Registered,
@@ -1590,9 +1595,571 @@ fn alpha_scaled_paint(paint: Paint, alpha: f32) -> Paint {
     }
 }
 
+/// Maximum draw commands retained on a cached compact static [`Recording`].
+/// Covers chrome and list-row decorations (fills, strokes, shadows, separators,
+/// small vector paths) without retaining large scene recordings in memory.
+const MAX_COMPACT_STATIC_COMMANDS: usize = 16;
+
+/// Maximum path elements retained inside a cached static [`ShapeData::Path`].
+const MAX_COMPACT_STATIC_PATH_ELEMENTS: usize = 32;
+
+/// Maximum gradient stops or stroke dashes retained inside a cached static op.
+const MAX_COMPACT_STATIC_ARRAY_LEN: usize = 8;
+
+const fn f32_bits_eq(a: f32, b: f32) -> bool {
+    a.to_bits() == b.to_bits()
+}
+
+const fn f64_bits_eq(a: f64, b: f64) -> bool {
+    a.to_bits() == b.to_bits()
+}
+
+const fn point_bits_eq(a: Point, b: Point) -> bool {
+    f64_bits_eq(a.x, b.x) && f64_bits_eq(a.y, b.y)
+}
+
+const fn vec2_bits_eq(a: Vec2, b: Vec2) -> bool {
+    f64_bits_eq(a.x, b.x) && f64_bits_eq(a.y, b.y)
+}
+
+const fn rect_bits_eq(a: Rect, b: Rect) -> bool {
+    f64_bits_eq(a.x0, b.x0)
+        && f64_bits_eq(a.y0, b.y0)
+        && f64_bits_eq(a.x1, b.x1)
+        && f64_bits_eq(a.y1, b.y1)
+}
+
+const fn affine_bits_eq(a: Affine, b: Affine) -> bool {
+    let ac = a.as_coeffs();
+    let bc = b.as_coeffs();
+    f64_bits_eq(ac[0], bc[0])
+        && f64_bits_eq(ac[1], bc[1])
+        && f64_bits_eq(ac[2], bc[2])
+        && f64_bits_eq(ac[3], bc[3])
+        && f64_bits_eq(ac[4], bc[4])
+        && f64_bits_eq(ac[5], bc[5])
+}
+
+#[cfg(any(test, hydrolysis_cherenkov, feature = "menu"))]
+const fn opt_affine_bits_eq(a: Option<Affine>, b: Option<Affine>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => affine_bits_eq(a, b),
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+const fn working_color_bits_eq(a: WorkingColor, b: WorkingColor) -> bool {
+    let ac = a.components;
+    let bc = b.components;
+    f32_bits_eq(ac[0], bc[0])
+        && f32_bits_eq(ac[1], bc[1])
+        && f32_bits_eq(ac[2], bc[2])
+        && f32_bits_eq(ac[3], bc[3])
+}
+
+const fn radii_bits_eq(a: RoundedRectRadii, b: RoundedRectRadii) -> bool {
+    f64_bits_eq(a.top_left, b.top_left)
+        && f64_bits_eq(a.top_right, b.top_right)
+        && f64_bits_eq(a.bottom_right, b.bottom_right)
+        && f64_bits_eq(a.bottom_left, b.bottom_left)
+}
+
+const fn rounded_rect_bits_eq(a: RoundedRect, b: RoundedRect) -> bool {
+    rect_bits_eq(a.rect(), b.rect()) && radii_bits_eq(a.radii(), b.radii())
+}
+
+const fn continuous_rect_bits_eq(a: ContinuousRect, b: ContinuousRect) -> bool {
+    rect_bits_eq(a.rect, b.rect)
+        && radii_bits_eq(a.radii, b.radii)
+        && f64_bits_eq(a.smoothing, b.smoothing)
+}
+
+const fn circle_bits_eq(a: Circle, b: Circle) -> bool {
+    point_bits_eq(a.center, b.center) && f64_bits_eq(a.radius, b.radius)
+}
+
+fn ellipse_bits_eq(a: Ellipse, b: Ellipse) -> bool {
+    point_bits_eq(a.center(), b.center())
+        && vec2_bits_eq(a.radii(), b.radii())
+        && f64_bits_eq(a.rotation(), b.rotation())
+}
+
+const fn line_bits_eq(a: Line, b: Line) -> bool {
+    point_bits_eq(a.p0, b.p0) && point_bits_eq(a.p1, b.p1)
+}
+
+const fn path_el_bits_eq(a: &PathEl, b: &PathEl) -> bool {
+    match (a, b) {
+        (PathEl::MoveTo(pa), PathEl::MoveTo(pb)) | (PathEl::LineTo(pa), PathEl::LineTo(pb)) => {
+            point_bits_eq(*pa, *pb)
+        }
+        (PathEl::QuadTo(a0, a1), PathEl::QuadTo(b0, b1)) => {
+            point_bits_eq(*a0, *b0) && point_bits_eq(*a1, *b1)
+        }
+        (PathEl::CurveTo(a0, a1, a2), PathEl::CurveTo(b0, b1, b2)) => {
+            point_bits_eq(*a0, *b0) && point_bits_eq(*a1, *b1) && point_bits_eq(*a2, *b2)
+        }
+        (PathEl::ClosePath, PathEl::ClosePath) => true,
+        _ => false,
+    }
+}
+
+fn is_compact_static_shape(shape: &ShapeData) -> bool {
+    match shape {
+        ShapeData::Rect(_)
+        | ShapeData::RoundedRect(_)
+        | ShapeData::Continuous(_)
+        | ShapeData::Circle(_)
+        | ShapeData::Ellipse(_)
+        | ShapeData::Line(_) => true,
+        ShapeData::Path { elements, .. } => elements.len() <= MAX_COMPACT_STATIC_PATH_ELEMENTS,
+    }
+}
+
+fn shape_static_eq(a: &ShapeData, b: &ShapeData) -> bool {
+    match (a, b) {
+        (ShapeData::Rect(ra), ShapeData::Rect(rb)) => rect_bits_eq(*ra, *rb),
+        (ShapeData::RoundedRect(ra), ShapeData::RoundedRect(rb)) => rounded_rect_bits_eq(*ra, *rb),
+        (ShapeData::Continuous(ca), ShapeData::Continuous(cb)) => continuous_rect_bits_eq(*ca, *cb),
+        (ShapeData::Circle(ca), ShapeData::Circle(cb)) => circle_bits_eq(*ca, *cb),
+        (ShapeData::Ellipse(ea), ShapeData::Ellipse(eb)) => ellipse_bits_eq(*ea, *eb),
+        (ShapeData::Line(la), ShapeData::Line(lb)) => line_bits_eq(*la, *lb),
+        (
+            ShapeData::Path {
+                elements: ea,
+                rule: ra,
+            },
+            ShapeData::Path {
+                elements: eb,
+                rule: rb,
+            },
+        ) => {
+            ra == rb
+                && ea.len() == eb.len()
+                && ea.len() <= MAX_COMPACT_STATIC_PATH_ELEMENTS
+                && ea.iter().zip(eb.iter()).all(|(x, y)| path_el_bits_eq(x, y))
+        }
+        _ => false,
+    }
+}
+
+fn is_compact_static_stroke(stroke: &Stroke) -> bool {
+    stroke.dash_pattern.len() <= MAX_COMPACT_STATIC_ARRAY_LEN
+}
+
+fn stroke_static_eq(a: &Stroke, b: &Stroke) -> bool {
+    f64_bits_eq(a.width, b.width)
+        && a.join == b.join
+        && f64_bits_eq(a.miter_limit, b.miter_limit)
+        && a.start_cap == b.start_cap
+        && a.end_cap == b.end_cap
+        && f64_bits_eq(a.dash_offset, b.dash_offset)
+        && a.dash_pattern.len() == b.dash_pattern.len()
+        && a.dash_pattern.len() <= MAX_COMPACT_STATIC_ARRAY_LEN
+        && a.dash_pattern
+            .iter()
+            .zip(b.dash_pattern.iter())
+            .all(|(&x, &y)| f64_bits_eq(x, y))
+}
+
+fn stops_static_eq(a: &[ColorStop], b: &[ColorStop]) -> bool {
+    a.len() == b.len()
+        && a.len() <= MAX_COMPACT_STATIC_ARRAY_LEN
+        && a.iter().zip(b.iter()).all(|(sa, sb)| {
+            f32_bits_eq(sa.offset, sb.offset) && working_color_bits_eq(sa.color, sb.color)
+        })
+}
+
+const fn is_compact_static_paint(paint: &Paint) -> bool {
+    match paint {
+        Paint::Solid(_) => true,
+        Paint::Linear(gradient) => gradient.stops.len() <= MAX_COMPACT_STATIC_ARRAY_LEN,
+        Paint::Radial(gradient) => gradient.stops.len() <= MAX_COMPACT_STATIC_ARRAY_LEN,
+        Paint::Sweep(gradient) => gradient.stops.len() <= MAX_COMPACT_STATIC_ARRAY_LEN,
+        Paint::Mesh(_) | Paint::Image(_) | Paint::Shader(_) | Paint::Transformed(_) => false,
+    }
+}
+
+fn paint_static_eq(a: &Paint, b: &Paint) -> bool {
+    match (a, b) {
+        (Paint::Solid(ca), Paint::Solid(cb)) => working_color_bits_eq(*ca, *cb),
+        (Paint::Linear(ga), Paint::Linear(gb)) => {
+            point_bits_eq(ga.start, gb.start)
+                && point_bits_eq(ga.end, gb.end)
+                && ga.extend == gb.extend
+                && ga.interpolation == gb.interpolation
+                && stops_static_eq(&ga.stops, &gb.stops)
+        }
+        (Paint::Radial(ga), Paint::Radial(gb)) => {
+            point_bits_eq(ga.start_center, gb.start_center)
+                && f64_bits_eq(ga.start_radius, gb.start_radius)
+                && point_bits_eq(ga.end_center, gb.end_center)
+                && f64_bits_eq(ga.end_radius, gb.end_radius)
+                && ga.extend == gb.extend
+                && ga.interpolation == gb.interpolation
+                && stops_static_eq(&ga.stops, &gb.stops)
+        }
+        (Paint::Sweep(ga), Paint::Sweep(gb)) => {
+            point_bits_eq(ga.center, gb.center)
+                && f64_bits_eq(ga.start_angle, gb.start_angle)
+                && f64_bits_eq(ga.end_angle, gb.end_angle)
+                && ga.extend == gb.extend
+                && ga.interpolation == gb.interpolation
+                && stops_static_eq(&ga.stops, &gb.stops)
+        }
+        _ => false,
+    }
+}
+
+const fn shadow_bits_eq(a: Shadow, b: Shadow) -> bool {
+    f64_bits_eq(a.sigma, b.sigma)
+        && vec2_bits_eq(a.offset, b.offset)
+        && f64_bits_eq(a.spread, b.spread)
+        && working_color_bits_eq(a.color, b.color)
+}
+
+fn group_static_eq(a: Group, b: Group) -> bool {
+    a.filter.is_none()
+        && b.filter.is_none()
+        && f32_bits_eq(a.opacity, b.opacity)
+        && a.blend == b.blend
+        && a.blend_space == b.blend_space
+}
+
+fn is_compact_static_command(command: &Command) -> bool {
+    match command {
+        Command::Fill { shape, paint } => {
+            is_compact_static_shape(shape) && is_compact_static_paint(paint)
+        }
+        Command::Stroke {
+            shape,
+            stroke,
+            paint,
+        } => {
+            is_compact_static_shape(shape)
+                && is_compact_static_stroke(stroke)
+                && is_compact_static_paint(paint)
+        }
+        Command::Shadow { shape, .. } | Command::BeginClip { shape, .. } => {
+            is_compact_static_shape(shape)
+        }
+        Command::BeginTransform { .. } | Command::End => true,
+        Command::BeginGroup { group, .. } => group.filter.is_none(),
+        Command::Glyphs { .. }
+        | Command::Image { .. }
+        | Command::Picture { .. }
+        | Command::Text { .. } => false,
+    }
+}
+
+fn command_static_eq(a: &Command, b: &Command) -> bool {
+    match (a, b) {
+        (
+            Command::Fill {
+                shape: sa,
+                paint: pa,
+            },
+            Command::Fill {
+                shape: sb,
+                paint: pb,
+            },
+        ) => shape_static_eq(sa, sb) && paint_static_eq(pa, pb),
+        (
+            Command::Stroke {
+                shape: sa,
+                stroke: sta,
+                paint: pa,
+            },
+            Command::Stroke {
+                shape: sb,
+                stroke: stb,
+                paint: pb,
+            },
+        ) => shape_static_eq(sa, sb) && stroke_static_eq(sta, stb) && paint_static_eq(pa, pb),
+        (
+            Command::Shadow {
+                shape: sa,
+                shadow: sha,
+            },
+            Command::Shadow {
+                shape: sb,
+                shadow: shb,
+            },
+        ) => shape_static_eq(sa, sb) && shadow_bits_eq(*sha, *shb),
+        (Command::BeginClip { shape: sa, end: ea }, Command::BeginClip { shape: sb, end: eb }) => {
+            ea == eb && shape_static_eq(sa, sb)
+        }
+        (
+            Command::BeginTransform {
+                transform: ta,
+                end: ea,
+            },
+            Command::BeginTransform {
+                transform: tb,
+                end: eb,
+            },
+        ) => ea == eb && affine_bits_eq(*ta, *tb),
+        (
+            Command::BeginGroup { group: ga, end: ea },
+            Command::BeginGroup { group: gb, end: eb },
+        ) => ea == eb && group_static_eq(*ga, *gb),
+        (Command::End, Command::End) => true,
+        _ => false,
+    }
+}
+
+fn picture_compact_static_cost(picture: &Picture) -> Option<usize> {
+    let commands = picture.display_list().commands();
+    if commands.len() > MAX_COMPACT_STATIC_COMMANDS {
+        return None;
+    }
+    commands
+        .iter()
+        .all(is_compact_static_command)
+        .then(|| commands.len().max(1))
+}
+
+fn picture_static_eq_cost(a: &Picture, b: &Picture) -> Option<usize> {
+    let ca = a.display_list().commands();
+    let cb = b.display_list().commands();
+    if ca.len() != cb.len() || ca.len() > MAX_COMPACT_STATIC_COMMANDS {
+        return None;
+    }
+    ca.iter()
+        .zip(cb.iter())
+        .all(|(x, y)| command_static_eq(x, y))
+        .then(|| ca.len().max(1))
+}
+
+fn op_compact_static_cost(op: &Op) -> Option<usize> {
+    match op {
+        Op::LiveRect { .. } | Op::Glyphs { .. } => None,
+        #[cfg(any(test, hydrolysis_hwui))]
+        Op::Text { .. } => None,
+        #[cfg(any(test, hydrolysis_cherenkov, feature = "menu"))]
+        Op::Fill { brush, shape, .. } => {
+            (matches!(brush, Brush::Solid(_)) && is_compact_static_shape(shape)).then_some(1)
+        }
+        Op::FillPaint { paint, shape, .. } => {
+            (is_compact_static_paint(paint) && is_compact_static_shape(shape)).then_some(1)
+        }
+        Op::StrokePaint {
+            stroke,
+            paint,
+            shape,
+            ..
+        } => (is_compact_static_stroke(stroke)
+            && is_compact_static_paint(paint)
+            && is_compact_static_shape(shape))
+        .then_some(1),
+        Op::BlurredRoundedRect { .. } => Some(1),
+        Op::Shadow { shape, .. } => is_compact_static_shape(shape).then_some(1),
+        #[cfg(any(feature = "menu", test))]
+        Op::PushGroup { clip, .. } => is_compact_static_shape(clip).then_some(1),
+        #[cfg(any(feature = "menu", test))]
+        Op::PopLayer => Some(1),
+        Op::Picture { picture, .. } => picture_compact_static_cost(picture),
+    }
+}
+
+#[cfg(any(test, hydrolysis_cherenkov, feature = "menu"))]
+const fn solid_brush_bits_eq(left: &Brush, right: &Brush) -> bool {
+    let (Brush::Solid(left_color), Brush::Solid(right_color)) = (left, right) else {
+        return false;
+    };
+    let lc = left_color.components;
+    let rc = right_color.components;
+    f32_bits_eq(lc[0], rc[0])
+        && f32_bits_eq(lc[1], rc[1])
+        && f32_bits_eq(lc[2], rc[2])
+        && f32_bits_eq(lc[3], rc[3])
+}
+
+fn effect_op_static_eq(left: &Op, right: &Op) -> bool {
+    match (left, right) {
+        (
+            Op::BlurredRoundedRect {
+                transform: left_tf,
+                rect: left_rect,
+                color: left_color,
+                radius: left_radius,
+                sigma: left_sigma,
+            },
+            Op::BlurredRoundedRect {
+                transform: right_tf,
+                rect: right_rect,
+                color: right_color,
+                radius: right_radius,
+                sigma: right_sigma,
+            },
+        ) => {
+            affine_bits_eq(*left_tf, *right_tf)
+                && rect_bits_eq(*left_rect, *right_rect)
+                && working_color_bits_eq(*left_color, *right_color)
+                && f64_bits_eq(*left_radius, *right_radius)
+                && f64_bits_eq(*left_sigma, *right_sigma)
+        }
+        (
+            Op::Shadow {
+                transform: left_tf,
+                shape: left_shape,
+                color: left_color,
+                sigma: left_sigma,
+            },
+            Op::Shadow {
+                transform: right_tf,
+                shape: right_shape,
+                color: right_color,
+                sigma: right_sigma,
+            },
+        ) => {
+            affine_bits_eq(*left_tf, *right_tf)
+                && shape_static_eq(left_shape, right_shape)
+                && working_color_bits_eq(*left_color, *right_color)
+                && f64_bits_eq(*left_sigma, *right_sigma)
+        }
+        #[cfg(any(feature = "menu", test))]
+        (
+            Op::PushGroup {
+                blend: left_blend,
+                opacity: left_opacity,
+                transform: left_tf,
+                clip: left_clip,
+            },
+            Op::PushGroup {
+                blend: right_blend,
+                opacity: right_opacity,
+                transform: right_tf,
+                clip: right_clip,
+            },
+        ) => {
+            left_blend == right_blend
+                && f32_bits_eq(*left_opacity, *right_opacity)
+                && affine_bits_eq(*left_tf, *right_tf)
+                && shape_static_eq(left_clip, right_clip)
+        }
+        #[cfg(any(feature = "menu", test))]
+        (Op::PopLayer, Op::PopLayer) => true,
+        _ => false,
+    }
+}
+
+fn op_static_eq_cost(left: &Op, right: &Op) -> Option<usize> {
+    match (left, right) {
+        #[cfg(any(test, hydrolysis_cherenkov, feature = "menu"))]
+        (
+            Op::Fill {
+                transform: left_tf,
+                brush: left_brush,
+                brush_transform: left_brush_tf,
+                shape: left_shape,
+            },
+            Op::Fill {
+                transform: right_tf,
+                brush: right_brush,
+                brush_transform: right_brush_tf,
+                shape: right_shape,
+            },
+        ) => (affine_bits_eq(*left_tf, *right_tf)
+            && opt_affine_bits_eq(*left_brush_tf, *right_brush_tf)
+            && solid_brush_bits_eq(left_brush, right_brush)
+            && shape_static_eq(left_shape, right_shape))
+        .then_some(1),
+        (
+            Op::FillPaint {
+                transform: left_tf,
+                paint: left_paint,
+                shape: left_shape,
+            },
+            Op::FillPaint {
+                transform: right_tf,
+                paint: right_paint,
+                shape: right_shape,
+            },
+        ) => (affine_bits_eq(*left_tf, *right_tf)
+            && paint_static_eq(left_paint, right_paint)
+            && shape_static_eq(left_shape, right_shape))
+        .then_some(1),
+        (
+            Op::StrokePaint {
+                stroke: left_stroke,
+                transform: left_tf,
+                paint: left_paint,
+                shape: left_shape,
+            },
+            Op::StrokePaint {
+                stroke: right_stroke,
+                transform: right_tf,
+                paint: right_paint,
+                shape: right_shape,
+            },
+        ) => (stroke_static_eq(left_stroke, right_stroke)
+            && affine_bits_eq(*left_tf, *right_tf)
+            && paint_static_eq(left_paint, right_paint)
+            && shape_static_eq(left_shape, right_shape))
+        .then_some(1),
+        (
+            Op::Picture {
+                transform: left_tf,
+                picture: left_pic,
+            },
+            Op::Picture {
+                transform: right_tf,
+                picture: right_pic,
+            },
+        ) => affine_bits_eq(*left_tf, *right_tf)
+            .then(|| picture_static_eq_cost(left_pic, right_pic))
+            .flatten(),
+        _ => effect_op_static_eq(left, right).then_some(1),
+    }
+}
+
 /// The drawing facade widget chrome records through.
 ///
 impl Recording {
+    /// Whether this recording holds only compact, purely static draw operations
+    /// (no live `Computed` operands, no font/image/filter/text-layout
+    /// resources, bounded command and path size), so a mounted `RunLayer` can
+    /// retain a copy and skip re-recording when the next frame emits an
+    /// identical run.
+    pub(crate) fn is_compact_static(&self) -> bool {
+        if self.open_layers != 0 {
+            return false;
+        }
+        let mut total_commands = 0usize;
+        for op in &self.ops {
+            let Some(cost) = op_compact_static_cost(op) else {
+                return false;
+            };
+            total_commands = total_commands.saturating_add(cost);
+            if total_commands > MAX_COMPACT_STATIC_COMMANDS {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Exact bitwise equivalence between two compact static recordings. Returns
+    /// `false` if either recording is not compact static or any operand differs
+    /// in value or bit representation.
+    pub(crate) fn static_eq(&self, other: &Self) -> bool {
+        if self.open_layers != 0 || other.open_layers != 0 || self.ops.len() != other.ops.len() {
+            return false;
+        }
+        let mut total_commands = 0usize;
+        for (a, b) in self.ops.iter().zip(&other.ops) {
+            let Some(cost) = op_static_eq_cost(a, b) else {
+                return false;
+            };
+            total_commands = total_commands.saturating_add(cost);
+            if total_commands > MAX_COMPACT_STATIC_COMMANDS {
+                return false;
+            }
+        }
+        true
+    }
+
     /// Records `body` into a picture drawn under `transform` — how detached
     /// chrome (context menus, caret overlays, navigation bars) splices a
     /// sealed subtree into the scene. A [`Recorder`] exists only inside a
@@ -1965,5 +2532,83 @@ mod tests {
             Err(ResourceError::Image(_))
         ));
         assert_eq!(&*bytes, &[255u8; 16 * 4 * 4][..]);
+    }
+
+    #[test]
+    fn compact_static_recording_equality_and_rejection() {
+        use peniko::{Blob, ImageAlphaType, ImageBrush, ImageData, ImageFormat};
+
+        let row_rect = Rect::new(0.0, 0.0, 320.0, 44.0);
+        let bg = WorkingColor::new([0.1, 0.2, 0.3, 1.0]);
+        let mut a = Recording::new();
+        a.record_picture(Affine::IDENTITY, |rec| {
+            rec.fill(row_rect, Paint::Solid(bg));
+        });
+        let mut b = Recording::new();
+        b.record_picture(Affine::IDENTITY, |rec| {
+            rec.fill(row_rect, Paint::Solid(bg));
+        });
+        assert!(a.is_compact_static());
+        assert!(a.static_eq(&b));
+
+        // Signed-zero difference is distinguished bitwise.
+        let mut neg_zero = Recording::new();
+        neg_zero.record_picture(Affine::IDENTITY, |rec| {
+            rec.fill(Rect::new(-0.0, 0.0, 320.0, 44.0), Paint::Solid(bg));
+        });
+        assert!(!a.static_eq(&neg_zero));
+
+        // Geometry or colour delta invalidates static equivalence.
+        let mut shifted = Recording::new();
+        shifted.record_picture(Affine::translate((0.0, 1.0)), |rec| {
+            rec.fill(row_rect, Paint::Solid(bg));
+        });
+        assert!(!a.static_eq(&shifted));
+
+        let mut recolored = Recording::new();
+        recolored.record_picture(Affine::IDENTITY, |rec| {
+            rec.fill(
+                row_rect,
+                Paint::Solid(WorkingColor::new([0.2, 0.2, 0.3, 1.0])),
+            );
+        });
+        assert!(!a.static_eq(&recolored));
+
+        // LiveRect is never compact static.
+        let mut live = Recording::new();
+        live.live_rect(
+            Affine::IDENTITY,
+            Computed::constant(row_rect),
+            Computed::constant(bg),
+        );
+        assert!(!live.is_compact_static());
+        assert!(!live.static_eq(&live));
+
+        // Image brushes are rejected so pixel blobs are never retained.
+        let photo = ImageData {
+            data: Blob::from(vec![255u8; 4 * 4 * 4]),
+            format: ImageFormat::Rgba8,
+            alpha_type: ImageAlphaType::Alpha,
+            width: 4,
+            height: 4,
+        };
+        let mut imaged = Recording::new();
+        imaged.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            &Brush::Image(ImageBrush::new(photo)),
+            None,
+            &row_rect,
+        );
+        assert!(!imaged.is_compact_static());
+        assert!(!imaged.static_eq(&imaged));
+
+        // Exceeding MAX_COMPACT_STATIC_COMMANDS is rejected.
+        let mut large = Recording::new();
+        for _ in 0..=MAX_COMPACT_STATIC_COMMANDS {
+            large.fill_paint(Fill::NonZero, Affine::IDENTITY, Paint::Solid(bg), &row_rect);
+        }
+        assert!(!large.is_compact_static());
+        assert!(!large.static_eq(&large));
     }
 }

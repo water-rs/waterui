@@ -176,6 +176,8 @@ use waterui_navigation::NavigationView;
 #[cfg(feature = "accessibility")]
 use waterui_navigation::tab::{NativeTabStyle, Tab, Tabs};
 
+#[cfg(feature = "list")]
+use crate::testing::plain_list_look;
 use crate::theme::WidgetTheme;
 use crate::theme::{
     BadgeLook, ButtonLook, ButtonSpec, Chrome, CornerShape, Custom, DragMapping, Driven, Elevation,
@@ -2834,6 +2836,9 @@ pub struct MinimalTestTheme {
     /// Optional override for the menu look returned by `WidgetTheme::menu`.
     #[cfg(feature = "menu")]
     menu_look: Option<MenuLook>,
+    /// Optional override for the list look returned by `WidgetTheme::list`.
+    #[cfg(feature = "list")]
+    list_look: Option<ListLook>,
 }
 
 /// The caret blink the test themes' text field looks carry.
@@ -2998,6 +3003,14 @@ impl MinimalTestTheme {
     #[must_use]
     pub fn with_menu_look(mut self, look: MenuLook) -> Self {
         self.menu_look = Some(look);
+        self
+    }
+
+    /// Hands out `look` for every list.
+    #[cfg(feature = "list")]
+    #[must_use]
+    pub fn with_list_look(mut self, look: ListLook) -> Self {
+        self.list_look = Some(look);
         self
     }
 }
@@ -3498,7 +3511,7 @@ impl WidgetTheme for MinimalTestTheme {
 
     #[cfg(feature = "list")]
     fn list(&self, _spec: &ListSpec, _env: &Environment) -> ListLook {
-        crate::testing::plain_list_look()
+        self.list_look.clone().unwrap_or_else(plain_list_look)
     }
 
     #[cfg(feature = "table")]

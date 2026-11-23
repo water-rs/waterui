@@ -5,6 +5,7 @@ use std::rc::Rc;
 
 use super::list_motion::RowMotion;
 use crate::gesture::GestureTarget;
+use crate::num_cast::f64_as_f32;
 use crate::renderer::chrome::{ChromeContent, LiveChromeParts};
 #[cfg(feature = "accessibility")]
 use crate::renderer::{
@@ -12,12 +13,12 @@ use crate::renderer::{
     accessibility_container_child_environment,
 };
 use crate::renderer::{
-    HydroState, RenderContext, ScopeOperands, VisibleSubviewCache, WidgetRenderContext,
-    list_intrinsic_for_first_row, list_row_height_for_content, list_row_horizontal_insets,
-    list_spec, materialize_list_item,
+    HydroState, HydrolysisRenderer, RenderContext, ScopeOperands, VisibleSubviewCache,
+    WidgetRenderContext, list_intrinsic_for_first_row, list_row_height_for_content,
+    list_row_horizontal_insets, list_spec, materialize_list_item,
 };
 use crate::scroll::{ScrollHandle, ScrollRun, ScrollRunOutcome};
-use crate::theme::{Chrome, ListGestures, ListLook, ListSpec};
+use crate::theme::{Chrome, ListGestures, ListLook, ListMetrics, ListSpec, WidgetTheme};
 #[cfg(feature = "accessibility")]
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, NodeId as AccessibilityNodeId,
@@ -40,6 +41,7 @@ use waterui_core::layout::{
 };
 use waterui_core::views::AnyViewsSnapshot;
 use waterui_interaction::interaction::{InteractionState, Selected};
+use waterui_layout::padding::EdgeInsets;
 use waterui_layout::scroll::Axis as ScrollAxis;
 use waterui_text::Text;
 
@@ -802,6 +804,18 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
         row_env
     }
 
+    fn row_content_proposal(
+        row_width: Option<f64>,
+        insets: Option<&EdgeInsets>,
+        metrics: ListMetrics,
+        row_env: &Environment,
+    ) -> ProposalSize {
+        row_width.map_or(ProposalSize::UNSPECIFIED, |row_width| {
+            let (left, right) = list_row_horizontal_insets(insets, metrics, row_env);
+            ProposalSize::new(Some(f64_as_f32((row_width - left - right).max(0.0))), None)
+        })
+    }
+
     /// Measures realized row `row_id`'s content at the width the row lays it
     /// out at: `row_width` less the row's horizontal insets, the height open.
     /// A row's height comes from this answer, so content that wraps is held
@@ -811,8 +825,8 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
         row_id: ListItemId,
         row_width: Option<f64>,
         state: &mut HydroState<E>,
-        theme: &Rc<dyn crate::theme::WidgetTheme>,
-        metrics: crate::theme::ListMetrics,
+        theme: &Rc<dyn WidgetTheme>,
+        metrics: ListMetrics,
     ) -> LayoutSize {
         let rows = self.realized_rows.borrow();
         let cache = self.item_cache.borrow();
@@ -822,16 +836,44 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
             );
             return LayoutSize::zero();
         };
-        let proposal = row_width.map_or(ProposalSize::UNSPECIFIED, |row_width| {
-            let (left, right) = list_row_horizontal_insets(row.insets.as_ref(), metrics, &row.env);
-            ProposalSize::new(
-                Some(crate::num_cast::f64_as_f32(
-                    (row_width - left - right).max(0.0),
-                )),
-                None,
-            )
-        });
+        let proposal =
+            Self::row_content_proposal(row_width, row.insets.as_ref(), metrics, &row.env);
         subview.measure_built_with_proposal(state, &row.subtree_env, theme, proposal)
+    }
+
+    /// Patches and measures realized row `row_id`'s content through
+    /// [`RetainedSubview::patch_and_measure`], reusing its cached proposal
+    /// measurement when the row took no structural patch, no layout mark, and
+    /// no dirty layout dependency.
+    fn patch_and_measure_row_content(
+        &self,
+        row_id: ListItemId,
+        row_width: Option<f64>,
+        renderer: &mut HydrolysisRenderer<E>,
+        metrics: ListMetrics,
+    ) -> LayoutSize {
+        let (proposal, subtree_env) = {
+            let rows = self.realized_rows.borrow();
+            let Some(row) = rows.get(&row_id) else {
+                contract_violation!(
+                    "hydrolysis List measured row {row_id:?} before realizing it; the row content measures as empty"
+                );
+                return LayoutSize::zero();
+            };
+            let proposal =
+                Self::row_content_proposal(row_width, row.insets.as_ref(), metrics, &row.env);
+            (proposal, row.subtree_env.clone())
+        };
+        let mut cache = self.item_cache.borrow_mut();
+        let Some(subview) = cache.get_mut(&row_id) else {
+            contract_violation!(
+                "hydrolysis List measured row {row_id:?} before realizing it; the row content measures as empty"
+            );
+            return LayoutSize::zero();
+        };
+        subview
+            .patch_and_measure(renderer, &subtree_env, proposal)
+            .0
     }
 
     /// Evicts the realized rows the frame did not touch, with their
@@ -2180,7 +2222,6 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
     // `set_measured` writes the identical extent back for unchanged rows and
     // rows outside the window are never touched (water-rs/hydrolysis#199).
     let mut extents_changed = false;
-    let theme = ctx.theme();
     let min_row_height = state.borrow().config.min_row_height();
     // Removal ghosts in the window, with the content-space top of each slot.
     let mut ghosts = Vec::new();
@@ -2214,11 +2255,10 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
             let chrome = state.borrow().section_chrome(index);
             // A row's extent covers the section chrome it owns, so scroll offsets,
             // hit testing, and the visible window all account for it.
-            let content_size = state.borrow().measure_row_content(
+            let content_size = state.borrow().patch_and_measure_row_content(
                 row_id,
                 Some(viewport.width()),
-                ctx.state_mut(),
-                &theme,
+                ctx.renderer_mut(),
                 list_metrics,
             );
             let row_insets = state.borrow().realized_rows.borrow()[&row_id]
