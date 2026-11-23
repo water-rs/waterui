@@ -3,7 +3,8 @@
 //! This module provides infrastructure for the `water preview` command:
 //!
 //! - `apple`: the in-process Apple preview binary (`AppKit` on macOS,
-//!   `UIKit` through Mac Catalyst for `--platform ios`)
+//!   headless `UIKit` on `aarch64-apple-ios-sim` for `--platform ios`)
+//! - `ios_sim`: headless iOS Simulator preview host and helper cache
 //! - `hydrolysis`: the desktop Hydrolysis preview binary, and
 //!   `hydrolysis_android`: the Android preview host's instrumentation
 //! - [`protocol`]: the `waterui_preview_*` export symbol naming
@@ -15,6 +16,7 @@
 pub(crate) mod apple;
 pub(crate) mod hydrolysis;
 pub(crate) mod hydrolysis_android;
+pub(crate) mod ios_sim;
 pub mod protocol;
 pub mod request;
 pub(crate) mod run;

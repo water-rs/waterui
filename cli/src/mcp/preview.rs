@@ -349,9 +349,9 @@ mod tests {
     }
 
     /// The MCP tool follows `water preview`'s resolution: `platform: "ios"`
-    /// renders through the in-process Mac Catalyst preview binary.
+    /// renders through the headless `aarch64-apple-ios-sim` preview binary.
     #[test]
-    fn ios_resolves_to_the_catalyst_preview_binary() {
+    fn ios_resolves_to_the_ios_simulator_preview_binary() {
         let args: PreviewArgs =
             serde_json::from_value(serde_json::json!({"target": "home", "platform": "ios"}))
                 .expect("args parse");
@@ -360,7 +360,7 @@ mod tests {
             .expect("resolve");
         assert_eq!(
             request.backend(),
-            ResolvedPreviewBackend::Apple(crate::platform::TargetPlatform::MacCatalyst)
+            ResolvedPreviewBackend::Apple(crate::platform::TargetPlatform::IOSSimulator)
         );
         assert_eq!(request.hydrolysis_theme(), None);
     }

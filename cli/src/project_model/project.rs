@@ -2038,7 +2038,7 @@ impl Project {
                 self.apple_preview_crate_path(),
                 &[
                     TargetPlatform::MacOS.triple(),
-                    TargetPlatform::MacCatalyst.triple(),
+                    TargetPlatform::IOSSimulator.triple(),
                 ],
             )
             .await?;

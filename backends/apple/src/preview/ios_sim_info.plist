@@ -6,11 +6,18 @@
 	<string>dev.waterui.preview</string>
 	<key>CFBundleName</key>
 	<string>WaterUI Preview</string>
-	<key>LSUIElement</key>
-	<true/>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
 	<key>UIDeviceFamily</key>
 	<array>
-		<integer>2</integer>
+		<integer>1</integer>
 	</array>
+	<key>UIApplicationSceneManifest</key>
+	<dict>
+		<key>UIApplicationSupportsMultipleScenes</key>
+		<false/>
+	</dict>
 </dict>
 </plist>

@@ -12905,6 +12905,7 @@ dependencies = [
  "async-channel",
  "block2 0.6.2",
  "blocking",
+ "cc",
  "cfg_aliases",
  "cherenkov",
  "cherenkov-oracle",

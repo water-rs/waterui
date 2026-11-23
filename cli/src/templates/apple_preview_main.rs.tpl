@@ -2,8 +2,8 @@
 
 mod preview_target;
 
-// The Mac Catalyst build's `Info.plist`: `UIKit` draws the iOS look only
-// under the iPad idiom it declares. Expands to nothing on macOS.
+// Embeds the preview `Info.plist` on iOS Simulator (`UIDeviceFamily` 1 so
+// `UIKit` runs under the iPhone idiom). Expands to nothing on macOS.
 waterui_apple::preview_info_plist!();
 
 fn main() -> Result<(), waterui_apple::preview::PreviewError> {

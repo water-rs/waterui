@@ -32,8 +32,9 @@ pub const DEFAULT_FRAME: &str = "375x667";
 #[serde(rename_all = "lowercase")]
 #[non_exhaustive]
 pub enum CliPreviewPlatform {
-    /// iOS — with the Apple backend, the `UIKit` realization rendered on
-    /// this Mac through Mac Catalyst.
+    /// iOS — with the Apple backend, the `UIKit` realization rendered
+    /// headlessly on `aarch64-apple-ios-sim` using the installed Xcode iOS
+    /// Simulator runtime.
     Ios,
     /// macOS.
     Macos,
@@ -63,8 +64,8 @@ impl CliPreviewPlatform {
 #[serde(rename_all = "lowercase")]
 #[non_exhaustive]
 pub enum CliPreviewBackend {
-    /// Apple native backend — `AppKit` on macOS, `UIKit` through Mac
-    /// Catalyst on iOS.
+    /// Apple native backend — `AppKit` on macOS, headless `UIKit` on
+    /// `aarch64-apple-ios-sim` for iOS.
     Apple,
     /// Hydrolysis direct renderer — the desktop binary for desktop
     /// platforms, the preview host instrumentation for Android.
@@ -88,9 +89,10 @@ pub enum ResolvedPreviewBackend {
     /// Android preview host's instrumentation for `TargetPlatform::Android`.
     Hydrolysis(TargetPlatform),
     /// The in-process Apple preview binary, built for the given target and
-    /// exec'd on this Mac: `TargetPlatform::MacOS` renders the `AppKit`
-    /// realization, `TargetPlatform::MacCatalyst` the `UIKit` one under the
-    /// iPad idiom — `water preview --platform ios`, with no simulator.
+    /// run on this Mac: `TargetPlatform::MacOS` renders the `AppKit`
+    /// realization, `TargetPlatform::IOSSimulator` renders the `UIKit` one
+    /// headlessly against the installed iOS Simulator runtime without booting
+    /// `CoreSimulator` or opening any macOS window.
     Apple(TargetPlatform),
 }
 
@@ -434,7 +436,7 @@ pub fn resolve_preview_backend(
 
     Ok(match (platform, backend) {
         (CliPreviewPlatform::Ios, TargetBackend::Apple) => {
-            ResolvedPreviewBackend::Apple(TargetPlatform::MacCatalyst)
+            ResolvedPreviewBackend::Apple(TargetPlatform::IOSSimulator)
         }
         (CliPreviewPlatform::Macos, TargetBackend::Apple) => {
             ResolvedPreviewBackend::Apple(TargetPlatform::MacOS)
@@ -657,13 +659,13 @@ mod tests {
             resolve_preview_backend(&project_manifest(), CliPreviewPlatform::Macos, None).unwrap(),
             ResolvedPreviewBackend::Apple(TargetPlatform::MacOS)
         );
-        // `--platform ios` renders the UIKit realization on this Mac through
-        // Mac Catalyst — the default backend, an explicit `apple`, and an
-        // `[platforms.ios]` declaration all resolve there.
-        let catalyst = ResolvedPreviewBackend::Apple(TargetPlatform::MacCatalyst);
+        // `--platform ios` renders the UIKit realization headlessly on
+        // `aarch64-apple-ios-sim` — the default backend, an explicit `apple`,
+        // and an `[platforms.ios]` declaration all resolve there.
+        let ios_sim = ResolvedPreviewBackend::Apple(TargetPlatform::IOSSimulator);
         assert_eq!(
             resolve_preview_backend(&project_manifest(), CliPreviewPlatform::Ios, None).unwrap(),
-            catalyst
+            ios_sim
         );
         assert_eq!(
             resolve_preview_backend(
@@ -672,7 +674,7 @@ mod tests {
                 Some(CliPreviewBackend::Apple)
             )
             .unwrap(),
-            catalyst
+            ios_sim
         );
         let declared = Manifest::parse(
             "[package]\nname = 'Demo'\nbundle_identifier = 'dev.example.demo'\n[platforms.ios]\nbackend = 'apple'",
@@ -680,7 +682,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             resolve_preview_backend(&declared, CliPreviewPlatform::Ios, None).unwrap(),
-            catalyst
+            ios_sim
         );
         assert!(
             resolve_preview_backend(
@@ -878,7 +880,7 @@ mod tests {
         );
         assert!(
             resolve_hydrolysis_preview_theme(
-                ResolvedPreviewBackend::Apple(TargetPlatform::MacCatalyst),
+                ResolvedPreviewBackend::Apple(TargetPlatform::IOSSimulator),
                 Some(CliHydrolysisPreviewTheme::Material3)
             )
             .is_err()

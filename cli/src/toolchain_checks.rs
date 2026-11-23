@@ -153,16 +153,18 @@ pub async fn check_apple(host: &Host, sdk: AppleSdk) -> Result<()> {
 /// Verify the toolchain the in-process Apple preview binary for `platform`
 /// needs on this Mac.
 ///
-/// The binary is built and exec'd here whatever its target, so Xcode and
-/// the macOS SDK are required — Mac Catalyst links the iOS frameworks the
-/// macOS SDK ships under `System/iOSSupport`. A target other than the
-/// host's (`aarch64-apple-ios-macabi`) also needs its rustup target, which
-/// the doctor's Apple Rust targets item installs.
+/// Xcode and the macOS SDK are always required (`water preview --platform ios`
+/// compiles its macOS helper host alongside the simulator shims), and
+/// `TargetPlatform::IOSSimulator` additionally requires the iOS Simulator SDK
+/// and the `aarch64-apple-ios-sim` rustup target.
 ///
 /// # Errors
 /// Returns an error describing any missing toolchain component and the `water doctor --fix` remedy.
 pub async fn check_apple_preview(host: &Host, platform: TargetPlatform) -> Result<()> {
     check_apple(host, AppleSdk::Macos).await?;
+    if platform == TargetPlatform::IOSSimulator {
+        check_apple(host, AppleSdk::IosSimulator).await?;
+    }
     let triple = platform.triple();
     if triple == Triple::host() {
         return Ok(());
@@ -477,22 +479,22 @@ mod tests {
         assert!(project.contains("dependency graph"), "{project}");
     }
 
-    /// `water preview --platform ios` builds for Mac Catalyst: a missing
-    /// `aarch64-apple-ios-macabi` target fails before the build and names
-    /// the `water doctor --fix` remedy.
+    /// `water preview --platform ios` builds for `aarch64-apple-ios-sim`: a
+    /// missing simulator target fails before the build and names the
+    /// `water doctor --fix` remedy.
     #[test]
-    fn catalyst_preview_requires_the_macabi_target() {
+    fn ios_sim_preview_requires_the_ios_sim_target() {
         let machine = apple_machine(&["aarch64-apple-darwin", "aarch64-apple-ios"]);
         let host = machine.host(Vec::<(String, String)>::new());
-        let error = smol::block_on(check_apple_preview(&host, TargetPlatform::MacCatalyst))
-            .expect_err("a missing macabi target must fail the check");
+        let error = smol::block_on(check_apple_preview(&host, TargetPlatform::IOSSimulator))
+            .expect_err("a missing ios-sim target must fail the check");
         let message = error.to_string();
-        assert!(message.contains("aarch64-apple-ios-macabi"), "{message}");
+        assert!(message.contains("aarch64-apple-ios-sim"), "{message}");
         assert!(message.contains("water doctor --fix"), "{message}");
 
-        let machine = apple_machine(&["aarch64-apple-darwin", "aarch64-apple-ios-macabi"]);
+        let machine = apple_machine(&["aarch64-apple-darwin", "aarch64-apple-ios-sim"]);
         let host = machine.host(Vec::<(String, String)>::new());
-        smol::block_on(check_apple_preview(&host, TargetPlatform::MacCatalyst))
-            .expect("an installed macabi target satisfies the check");
+        smol::block_on(check_apple_preview(&host, TargetPlatform::IOSSimulator))
+            .expect("an installed ios-sim target satisfies the check");
     }
 }
