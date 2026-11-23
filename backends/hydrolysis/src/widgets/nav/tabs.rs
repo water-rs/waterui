@@ -5,15 +5,17 @@ use std::rc::Rc;
 #[cfg(feature = "accessibility")]
 use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::HeldChild;
-use crate::renderer::live_tabs::{LiveTabsParts, TabsFrames};
+use crate::renderer::live_tabs::{LiveTabs, LiveTabsParts, TabsFrames};
 use crate::renderer::{
-    Edge, HydroState, RetainedSubview, WidgetRenderContext, tabs_button_rect, tabs_content_proposal,
+    Edge, HydroState, RetainedSubview, Track, TrackAction, WidgetRenderContext, tabs_button_rect,
+    tabs_content_proposal,
 };
 use crate::theme::{TabItemGeometry, TabItemLayout, TabsLook, TabsSpec, WidgetTheme};
 #[cfg(feature = "accessibility")]
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
 };
+use kurbo::{Point, Vec2};
 use nami::watcher::BoxWatcherGuard;
 use nami::{Binding, Signal};
 use waterui::navigation::tab::{NativeTabStyle, TabItem, TabsLayout};
@@ -781,16 +783,39 @@ fn render_tabs_parts<E: crate::text::TextEngine>(
                 ctx.renderer_mut().read_signal(&st.tabs[index].enabled)
             };
             if enabled {
-                ctx.renderer_mut().register_interactive_pointer_target(
-                    target,
-                    press_slot,
-                    move |_renderer, _point, _env| {
-                        if selection_binding.snapshot() != tab_id {
-                            selection_binding.set(tab_id);
-                        }
-                        true
-                    },
-                );
+                if live.drags() {
+                    let slop = press_slot.slop;
+                    let track = tab_track(
+                        Rc::clone(&live),
+                        index,
+                        tab_id,
+                        style,
+                        selection_binding.clone(),
+                        slop,
+                    );
+                    ctx.renderer_mut().register_tracked_pointer_target(
+                        target,
+                        press_slot,
+                        track,
+                        move |_renderer, _point, _env| {
+                            if selection_binding.snapshot() != tab_id {
+                                selection_binding.set(tab_id);
+                            }
+                            true
+                        },
+                    );
+                } else {
+                    ctx.renderer_mut().register_interactive_pointer_target(
+                        target,
+                        press_slot,
+                        move |_renderer, _point, _env| {
+                            if selection_binding.snapshot() != tab_id {
+                                selection_binding.set(tab_id);
+                            }
+                            true
+                        },
+                    );
+                }
             }
         }
         let has_label = label_rect.width() > 0.0 && label_rect.height() > 0.0;
@@ -854,6 +879,7 @@ fn render_tabs_parts<E: crate::text::TextEngine>(
             ctx.renderer_mut().pop_accessibility_suppression();
         }
     }
+    parts.push_over_labels(ctx.renderer_mut(), render_ctx);
 
     if let Some(selected_index) = selected_index
         && content_rect.width() > 0.0
@@ -874,6 +900,60 @@ fn render_tabs_parts<E: crate::text::TextEngine>(
             content_area,
         );
     }
+}
+
+/// The handler of a draggable tab's press: a press on the selected tab that
+/// moves farther than `slop` along the bar's axis drags the selection
+/// indicator and settles on the nearest tab on release; any other tap within
+/// reach selects the tab.
+fn tab_track(
+    tabs: Rc<LiveTabs>,
+    index: usize,
+    tag: Id,
+    style: NativeTabStyle,
+    selection: Binding<Id>,
+    slop: f64,
+) -> TrackAction {
+    let start = Cell::new(None::<Point>);
+    let dragging = Cell::new(false);
+    let vertical = matches!(style, NativeTabStyle::Sidebar);
+    Rc::new(RefCell::new(move |step: Track| match step {
+        Track::Begin(point) => {
+            start.set(Some(point));
+            dragging.set(false);
+        }
+        Track::Move(point, at) => {
+            if !tabs.drags() || tabs.selected() != Some(index) {
+                return;
+            }
+            let Some(from) = start.get() else {
+                return;
+            };
+            let offset = Vec2::new(point.x - from.x, point.y - from.y);
+            let along = if vertical { offset.y } else { offset.x };
+            if !dragging.get() && along.abs() > slop {
+                dragging.set(true);
+                tabs.begin_drag(at);
+            }
+            if dragging.get() {
+                tabs.drag_to(offset, at);
+            }
+        }
+        Track::Release { within_reach, .. } => {
+            start.set(None);
+            if dragging.replace(false) {
+                tabs.end_drag(&selection);
+            } else if within_reach && selection.snapshot() != tag {
+                selection.set(tag);
+            }
+        }
+        Track::Cancel => {
+            start.set(None);
+            if dragging.replace(false) {
+                tabs.cancel_drag();
+            }
+        }
+    }))
 }
 
 /// The environment a tab's label builds under: the bar owns the icon's

@@ -11,7 +11,7 @@
 
 use std::rc::Rc;
 
-use kurbo::Rect;
+use kurbo::{Rect, Vec2};
 use nami::Computed;
 use waterui::navigation::tab::NativeTabStyle;
 
@@ -125,6 +125,140 @@ pub struct TabItem {
     pub geometry: TabItemGeometry,
 }
 
+/// The whole tab bar's live selection value: what a bar-level selection
+/// indicator follows.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TabsValue {
+    /// The index of the selected item, counted from the leading one; `None`
+    /// while the selection names no item.
+    pub selected: Option<usize>,
+    /// Where the selection indicator sits in item indices from the leading
+    /// one: `Some(selected as f64)` at rest, between two items while a drag
+    /// moves it, and `None` when no item is selected.
+    pub position: Option<f64>,
+    /// Each item's geometry, leading first.
+    pub items: Rc<[TabItemGeometry]>,
+}
+
+impl TabsValue {
+    /// Interpolated item bounds at [`Self::position`], linearly interpolating
+    /// between adjacent items' [`TabItemGeometry::bounds`] while `position`
+    /// is fractional, or `None` when no item is selected or the bar is empty.
+    #[must_use]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
+        reason = "tab indices are small non-negative integers far below 2^53"
+    )]
+    pub fn indicator_bounds(&self) -> Option<Rect> {
+        let pos = self.position?;
+        if self.items.is_empty() || !pos.is_finite() {
+            return None;
+        }
+        let last = self.items.len() - 1;
+        let clamped = pos.clamp(0.0, last as f64);
+        let lo = clamped.floor() as usize;
+        let hi = (lo + 1).min(last);
+        let t = clamped - (lo as f64);
+        let a = self.items[lo].bounds;
+        let b = self.items[hi].bounds;
+        Some(Rect::new(
+            (b.x0 - a.x0).mul_add(t, a.x0),
+            (b.y0 - a.y0).mul_add(t, a.y0),
+            (b.x1 - a.x1).mul_add(t, a.x1),
+            (b.y1 - a.y1).mul_add(t, a.y1),
+        ))
+    }
+}
+
+/// How a bar-level tab selection indicator follows a drag along the bar's
+/// axis, and where a release settles it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TabsDrag;
+
+impl TabsDrag {
+    /// A drag along the bar's axis (horizontal for a tab bar, vertical for a
+    /// sidebar strip).
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+
+    /// The indicator's continuous position in item indices for `items` with
+    /// `selected` active under `drag`.
+    #[must_use]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "tab item counts and indices are far below 2^53"
+    )]
+    pub fn position(&self, selected: usize, drag: Option<Vec2>, items: &[TabItemGeometry]) -> f64 {
+        if items.is_empty() {
+            return 0.0;
+        }
+        let selected = selected.min(items.len() - 1);
+        let rest = selected as f64;
+        let Some(drag) = drag else {
+            return rest;
+        };
+        if items.len() == 1 {
+            return 0.0;
+        }
+        let vertical = matches!(items[0].placement, NativeTabStyle::Sidebar);
+        let axis = |rect: Rect| {
+            if vertical {
+                rect.center().y
+            } else {
+                rect.center().x
+            }
+        };
+        let delta = if vertical { drag.y } else { drag.x };
+        let target = axis(items[selected].bounds) + delta;
+
+        // Project `target` onto the piecewise-linear chain of item centers
+        // (supporting both increasing LTR/top-to-bottom and decreasing RTL order).
+        let first = axis(items[0].bounds);
+        let last = axis(items[items.len() - 1].bounds);
+        let ascending = last >= first;
+        if (ascending && target <= first) || (!ascending && target >= first) {
+            return 0.0;
+        }
+        if (ascending && target >= last) || (!ascending && target <= last) {
+            return (items.len() - 1) as f64;
+        }
+        for i in 0..(items.len() - 1) {
+            let a = axis(items[i].bounds);
+            let b = axis(items[i + 1].bounds);
+            let span = b - a;
+            if span.abs() <= 1e-9 {
+                continue;
+            }
+            let between = if ascending {
+                target >= a && target <= b
+            } else {
+                target <= a && target >= b
+            };
+            if between {
+                return (i as f64) + ((target - a) / span).clamp(0.0, 1.0);
+            }
+        }
+        rest
+    }
+
+    /// The item index a release settles on with the indicator at `position`
+    /// across `count` items: the nearest one.
+    #[must_use]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the rounded index is a small non-negative integer far below usize::MAX"
+    )]
+    pub fn settles_on(&self, position: f64, count: usize) -> usize {
+        let last = count.saturating_sub(1);
+        (position.round().max(0.0) as usize).min(last)
+    }
+}
+
 /// What gives an item its chrome, from the item and its live selected flag.
 type ItemChrome = dyn Fn(&TabItem, Computed<bool>) -> Chrome;
 
@@ -132,16 +266,21 @@ type ItemChrome = dyn Fn(&TabItem, Computed<bool>) -> Chrome;
 type ItemHighlight = dyn Fn(&TabItem) -> Rc<dyn CustomPart<TabItem>>;
 
 /// How a tab container looks and responds: the measures it is laid out by,
-/// its surface and divider, its items' chrome and the highlight of the
-/// selected item.
+/// its surface and divider, its items' chrome, an optional bar-level
+/// selection indicator, and optional per-item highlights.
 ///
-/// The parts record in this order: the surface, the divider, then for each
-/// item its highlight and its chrome's layers. The items' icons and labels
-/// draw above all of it.
+/// The parts record in this order: the surface, the divider, the bar-level
+/// selection indicator (when set with [`Self::selection_indicator`]), then
+/// for each item its highlight and its chrome's layers, then the items'
+/// icons and labels, and finally any bar-level indicator set with
+/// [`Self::selection_indicator_over_labels`].
 ///
 /// An item's chrome and highlight are evaluated once per item while the
 /// items lie where they do; the highlight is a [`Custom`] part over the
-/// item's [`TabItem`], recorded on [`TabItemGeometry::bounds`].
+/// item's [`TabItem`], recorded on [`TabItemGeometry::bounds`]. A bar-level
+/// selection indicator is a single [`Custom`] part over [`TabsValue`],
+/// recorded once on the bar's surface frame so it glides smoothly across
+/// items on selection changes and drags.
 #[derive(Clone)]
 pub struct TabsLook {
     vertical: TabsMetrics,
@@ -151,6 +290,9 @@ pub struct TabsLook {
     divider: Rc<dyn CustomPart<()>>,
     item_chrome: Rc<ItemChrome>,
     highlight: Option<Rc<ItemHighlight>>,
+    selection_indicator: Option<Rc<dyn CustomPart<TabsValue>>>,
+    selection_indicator_over_labels: Option<Rc<dyn CustomPart<TabsValue>>>,
+    drag: Option<TabsDrag>,
 }
 
 impl core::fmt::Debug for TabsLook {
@@ -160,6 +302,12 @@ impl core::fmt::Debug for TabsLook {
             .field("horizontal", &self.horizontal)
             .field("motion", &self.motion)
             .field("highlight", &self.highlight.is_some())
+            .field("selection_indicator", &self.selection_indicator.is_some())
+            .field(
+                "selection_indicator_over_labels",
+                &self.selection_indicator_over_labels.is_some(),
+            )
+            .field("drag", &self.drag)
             .finish_non_exhaustive()
     }
 }
@@ -192,6 +340,9 @@ impl TabsLook {
             divider: Rc::new(divider),
             item_chrome: Rc::new(item_chrome),
             highlight: None,
+            selection_indicator: None,
+            selection_indicator_over_labels: None,
+            drag: None,
         }
     }
 
@@ -222,6 +373,45 @@ impl TabsLook {
         self
     }
 
+    /// Draws a single bar-level selection indicator below the items' icons
+    /// and labels, recorded once over the bar's surface frame.
+    ///
+    /// Its [`Driven`](super::Driven) values follow [`TabsValue`] — the
+    /// selected tab index, continuous indicator position, and every item's
+    /// geometry — so selection changes glide the indicator across item
+    /// frames under [`Self::motion`]'s value motion with zero re-recording.
+    #[must_use]
+    pub fn selection_indicator<D>(mut self, indicator: Custom<TabsValue, D>) -> Self
+    where
+        D: DrivenSet<TabsValue> + 'static,
+        D::Live: 'static,
+    {
+        self.selection_indicator = Some(Rc::new(indicator));
+        self
+    }
+
+    /// Draws a single bar-level selection indicator over the items' icons
+    /// and labels, recorded once over the bar's surface frame. A backdrop
+    /// material recorded here captures the tab labels underneath.
+    #[must_use]
+    pub fn selection_indicator_over_labels<D>(mut self, indicator: Custom<TabsValue, D>) -> Self
+    where
+        D: DrivenSet<TabsValue> + 'static,
+        D::Live: 'static,
+    {
+        self.selection_indicator_over_labels = Some(Rc::new(indicator));
+        self
+    }
+
+    /// Lets the bar-level selection indicator follow a pointer drag that
+    /// starts on the selected tab, settling on the nearest tab at release.
+    /// A look with no drag takes taps only.
+    #[must_use]
+    pub const fn drag(mut self, drag: TabsDrag) -> Self {
+        self.drag = Some(drag);
+        self
+    }
+
     /// How a bar `extent` wide lays its items out.
     #[must_use]
     pub fn item_layout(&self, extent: f64) -> TabItemLayout {
@@ -246,6 +436,12 @@ impl TabsLook {
         &self.motion
     }
 
+    /// The drag configuration, when the selection indicator follows a drag.
+    #[must_use]
+    pub const fn get_drag(&self) -> Option<TabsDrag> {
+        self.drag
+    }
+
     /// The chrome of `item`, given its live selected flag.
     #[doc(hidden)]
     #[must_use]
@@ -260,6 +456,20 @@ impl TabsLook {
         self.highlight.as_ref().map(|highlight| highlight(item))
     }
 
+    /// The bar-level selection indicator beneath the items' labels, if set.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn get_selection_indicator(&self) -> Option<&Rc<dyn CustomPart<TabsValue>>> {
+        self.selection_indicator.as_ref()
+    }
+
+    /// The bar-level selection indicator over the items' labels, if set.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn get_selection_indicator_over_labels(&self) -> Option<&Rc<dyn CustomPart<TabsValue>>> {
+        self.selection_indicator_over_labels.as_ref()
+    }
+
     /// The bar's surface part.
     #[doc(hidden)]
     #[must_use]
@@ -272,5 +482,83 @@ impl TabsLook {
     #[must_use]
     pub fn divider(&self) -> &Rc<dyn CustomPart<()>> {
         &self.divider
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::rc::Rc;
+
+    use approx::assert_relative_eq;
+    use kurbo::{Rect, Vec2};
+    use waterui::navigation::tab::NativeTabStyle;
+
+    use super::{TabItemGeometry, TabItemLayout, TabsDrag, TabsValue};
+
+    fn item(bounds: Rect, placement: NativeTabStyle) -> TabItemGeometry {
+        TabItemGeometry {
+            bounds,
+            icon: None,
+            title: bounds,
+            layout: TabItemLayout::Vertical,
+            placement,
+        }
+    }
+
+    #[test]
+    fn tabs_value_interpolates_indicator_bounds_across_items() {
+        let items: Rc<[TabItemGeometry]> = Rc::from([
+            item(Rect::new(0.0, 0.0, 80.0, 48.0), NativeTabStyle::TabBar),
+            item(Rect::new(80.0, 0.0, 180.0, 48.0), NativeTabStyle::TabBar),
+            item(Rect::new(180.0, 0.0, 240.0, 48.0), NativeTabStyle::TabBar),
+        ]);
+        let rest = TabsValue {
+            selected: Some(1),
+            position: Some(1.0),
+            items: Rc::clone(&items),
+        };
+        assert_eq!(rest.indicator_bounds(), Some(items[1].bounds));
+
+        let mid = TabsValue {
+            selected: Some(0),
+            position: Some(0.5),
+            items,
+        };
+        let bounds = mid.indicator_bounds().expect("fractional bounds exist");
+        assert_relative_eq!(bounds.x0, 40.0, epsilon = 1e-12);
+        assert_relative_eq!(bounds.x1, 130.0, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn tabs_drag_tracks_horizontal_rtl_and_sidebar_axes() {
+        let drag = TabsDrag::new();
+        let horizontal = [
+            item(Rect::new(0.0, 0.0, 100.0, 48.0), NativeTabStyle::TabBar),
+            item(Rect::new(100.0, 0.0, 200.0, 48.0), NativeTabStyle::TabBar),
+            item(Rect::new(200.0, 0.0, 300.0, 48.0), NativeTabStyle::TabBar),
+        ];
+        assert_relative_eq!(
+            drag.position(0, Some(Vec2::new(50.0, 12.0)), &horizontal),
+            0.5
+        );
+        assert_relative_eq!(
+            drag.position(1, Some(Vec2::new(500.0, 0.0)), &horizontal),
+            2.0
+        );
+        assert_eq!(drag.settles_on(1.4, 3), 1);
+        assert_eq!(drag.settles_on(1.6, 3), 2);
+
+        let rtl = [
+            item(Rect::new(200.0, 0.0, 300.0, 48.0), NativeTabStyle::TabBar),
+            item(Rect::new(100.0, 0.0, 200.0, 48.0), NativeTabStyle::TabBar),
+            item(Rect::new(0.0, 0.0, 100.0, 48.0), NativeTabStyle::TabBar),
+        ];
+        assert_relative_eq!(drag.position(0, Some(Vec2::new(-50.0, 0.0)), &rtl), 0.5);
+
+        let sidebar = [
+            item(Rect::new(0.0, 0.0, 80.0, 60.0), NativeTabStyle::Sidebar),
+            item(Rect::new(0.0, 60.0, 80.0, 120.0), NativeTabStyle::Sidebar),
+        ];
+        assert_relative_eq!(drag.position(0, Some(Vec2::new(0.0, 30.0)), &sidebar), 0.5);
     }
 }

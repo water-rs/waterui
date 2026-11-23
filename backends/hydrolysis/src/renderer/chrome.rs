@@ -24,7 +24,7 @@ use cherenkov_record::{
     MaterialEffect, MaterialScope, Paint, RadialGradient, Recorder, Shadow, ShapeData, Stroke,
     WorkingColor,
 };
-use kurbo::{Affine, Point, Rect, Vec2};
+use kurbo::{Affine, Point, Rect, RoundedRectRadii, Vec2};
 use nami::{Computed, Signal};
 use waterui_core::Environment;
 use waterui_core::animation::{Animation, ChangeAnimation};
@@ -37,10 +37,11 @@ use crate::renderer::{HydrolysisRenderer, RenderContext};
 use crate::text::TextEngine;
 use crate::theme::live::Operand;
 use crate::theme::{
-    Change, Chrome, Corners, CustomPart, Driven, Elevation, Fill, FocusIndicator, Inputs,
-    InteractionMotion, LayerRotation, LiveDriven, Motion, RealizedCustom, Retarget, Ripple,
-    Surface, Wash,
+    Change, Chrome, Corners, CustomPart, DragDeformation, Driven, Elevation, Fill, FocusIndicator,
+    Inputs, InteractionMotion, LayerRotation, LiveDriven, Motion, RealizedCustom, Retarget, Ripple,
+    Surface, Wash, windowed_keyframes,
 };
+use crate::time::Instant;
 use waterui_graphics::color::Color;
 
 /// Content a node's program lists as a live item: recorded once into its
@@ -571,6 +572,64 @@ enum Retargeting<'a> {
     Animated(Option<&'a Animation>),
 }
 
+/// Exponentially smoothed pointer drag velocity tracker (in logical points per
+/// second) using a frame-rate-independent time constant (`tau = 40 ms`).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct DragVelocity {
+    last: Option<(Vec2, Instant)>,
+    velocity: Option<Vec2>,
+}
+
+impl DragVelocity {
+    /// Smoothing time constant in seconds (40 ms).
+    const TAU_SECS: f64 = 0.04;
+
+    pub(crate) const fn new() -> Self {
+        Self {
+            last: None,
+            velocity: None,
+        }
+    }
+
+    /// Seeds the tracker at drag start with zero initial velocity.
+    pub(crate) const fn start(&mut self, offset: Vec2, at: Instant) {
+        self.last = Some((offset, at));
+        self.velocity = Some(Vec2::ZERO);
+    }
+
+    /// Samples a new drag `offset` at timestamp `at` and returns the smoothed
+    /// velocity in logical points per second.
+    pub(crate) fn sample(&mut self, offset: Vec2, at: Instant) -> Vec2 {
+        let Some((prev_offset, prev_at)) = self.last else {
+            self.start(offset, at);
+            return Vec2::ZERO;
+        };
+        let dt = at.saturating_duration_since(prev_at).as_secs_f64();
+        if dt <= 1e-6 {
+            return self.velocity.unwrap_or(Vec2::ZERO);
+        }
+        let instant = (offset - prev_offset) / dt;
+        let alpha = 1.0 - (-dt / Self::TAU_SECS).exp();
+        let next = self
+            .velocity
+            .map_or(instant, |prev| prev + (instant - prev) * alpha);
+        self.last = Some((offset, at));
+        self.velocity = Some(next);
+        next
+    }
+
+    /// The current smoothed velocity, or `None` when not dragging.
+    pub(crate) const fn current(&self) -> Option<Vec2> {
+        self.velocity
+    }
+
+    /// Clears the tracked drag history and velocity.
+    pub(crate) const fn reset(&mut self) {
+        self.last = None;
+        self.velocity = None;
+    }
+}
+
 /// One widget part's chrome, recorded once with live operands.
 ///
 /// The widget keeps it across renders while its [`Chrome`] and bounds stay
@@ -586,7 +645,10 @@ pub struct LiveChrome {
     /// The chrome's frame in the widget's record space.
     frame: Cell<Rect>,
     state: Cell<InteractionState>,
+    press_origin: Cell<Option<Point>>,
     press_point: Cell<Option<Point>>,
+    drag: Cell<Option<Vec2>>,
+    velocity: RefCell<DragVelocity>,
     /// The widget's own reported-state binding, kept current between
     /// renders so content resolving per-state values follows the chrome;
     /// `None` for a chrome whose owner reports its state itself.
@@ -702,6 +764,9 @@ struct LiveSlider {
     press_value: Cell<f64>,
     /// The offset of an active drag from where it was pressed.
     drag: Cell<Option<Vec2>>,
+    /// Exponentially smoothed pointer drag velocity in logical points per
+    /// second.
+    velocity: RefCell<DragVelocity>,
     parts: Vec<RealizedCustom<f64>>,
     indicator: Option<LiveIndicator>,
 }
@@ -723,6 +788,7 @@ impl LiveSlider {
             value: &value,
             drag: None,
             press_point: None,
+            velocity: None,
         };
         let parts = content
             .parts
@@ -742,6 +808,7 @@ impl LiveSlider {
             value: Cell::new(value),
             press_value: Cell::new(value),
             drag: Cell::new(None),
+            velocity: RefCell::new(DragVelocity::new()),
             parts,
             indicator,
         }
@@ -803,11 +870,11 @@ const LIVE_STATES: InteractionState = InteractionState::HOVERED
 struct LiveContent {
     /// The look's values this realizes.
     source: ChromeContent,
-    /// The label colour in the chrome's colour space.
-    resolved_color: Option<Driven<WorkingColor>>,
+    /// The label paint in the chrome's colour space.
+    resolved_color: Option<Driven<Paint>>,
     frame: Rect,
     group_opacity: Option<Rc<LiveDriven<f32, ()>>>,
-    label_color: Option<Rc<LiveDriven<WorkingColor, ()>>>,
+    label_color: Option<Rc<LiveDriven<Paint, ()>>>,
 }
 
 /// Whether `driven` varies between renders over `state`'s disabled and
@@ -843,7 +910,7 @@ impl LiveContent {
         let inputs = Inputs::at_rest(frame, state, &());
         let resolved_color = content.label_color.as_ref().map(|color| {
             let env = env.clone();
-            color.map(move |color| color.resolve(&env).snapshot())
+            color.map(move |color| Paint::from(color.resolve(&env).snapshot()))
         });
         let group_opacity = content
             .group_opacity
@@ -907,6 +974,27 @@ impl LiveContent {
             .map(|live| live as Rc<dyn Retarget<()>>);
         opacity.into_iter().chain(color)
     }
+}
+
+fn set_windowed_operand<T: Clone + PartialEq + 'static>(
+    operand: &Operand<T>,
+    target: T,
+    animation: Option<&Animation>,
+    window: Option<(f64, f64)>,
+    reverse: bool,
+) {
+    if let (Some(animation), Some(window)) = (animation, window) {
+        let current = operand.snapshot();
+        if current == target {
+            return;
+        }
+        if let Some(track) = windowed_keyframes(current, target.clone(), animation, window, reverse)
+        {
+            operand.set_keyframed(target, track);
+            return;
+        }
+    }
+    operand.set(target, animation);
 }
 
 fn with_alpha(color: WorkingColor, opacity: f32) -> Paint {
@@ -1003,14 +1091,17 @@ impl LiveChrome {
             waves,
             wash,
             ring,
-            content_scale: Operand::new(Self::scale_about(frame, Self::scale_of(&spec, state))),
+            content_scale: Operand::new(Self::content_transform(&spec, &inputs)),
             customs,
             slider,
             content,
             layer_color,
             guards: RefCell::new(Vec::new()),
             state: Cell::new(state),
+            press_origin: Cell::new(None),
             press_point: Cell::new(None),
+            drag: Cell::new(None),
+            velocity: RefCell::new(DragVelocity::new()),
             report,
             spec,
             bounds: Cell::new(bounds),
@@ -1103,21 +1194,24 @@ impl LiveChrome {
         *this.guards.borrow_mut() = guards;
     }
 
-    const fn inputs(&self) -> Inputs<'static, ()> {
+    fn inputs(&self) -> Inputs<'static, ()> {
         Inputs {
             frame: self.frame.get(),
             state: self.state.get(),
             value: &(),
-            drag: None,
+            drag: self.drag.get(),
             press_point: self.press_point.get(),
+            velocity: self.velocity.borrow().current(),
         }
     }
 
-    /// The press scale factor in `state`.
-    fn scale_of(spec: &Chrome, state: InteractionState) -> f64 {
-        match spec.press().get_scale() {
-            Some(amount) if state.contains(InteractionState::PRESSED) => 1.0 + amount,
-            _ => 1.0,
+    /// The effective uniform press scale factor in `state` on `frame`,
+    /// honoring [`PressFeedback::max_growth`](crate::theme::PressFeedback::max_growth).
+    fn scale_of(spec: &Chrome, frame: Rect, state: InteractionState) -> f64 {
+        if state.contains(InteractionState::PRESSED) {
+            spec.press().effective_scale(frame.size())
+        } else {
+            1.0
         }
     }
 
@@ -1127,22 +1221,56 @@ impl LiveChrome {
         Affine::translate(center) * Affine::scale(scale) * Affine::translate(-center)
     }
 
+    /// Combined content transform for `inputs`: capped press scale about the
+    /// frame's centre composed with any active [`DragDeformation`] rubber-band
+    /// lag and 2D area-preserving stretch.
+    fn content_transform(spec: &Chrome, inputs: &Inputs<'_, ()>) -> Affine {
+        let scale = Self::scale_of(spec, inputs.frame, inputs.state);
+        let base = Self::scale_about(inputs.frame, scale);
+        if let Some(deform) = spec.press().get_drag_deformation()
+            && inputs.state.contains(InteractionState::PRESSED)
+            && (inputs.drag.is_some() || inputs.velocity.is_some())
+        {
+            let drag = inputs.drag.unwrap_or(Vec2::ZERO);
+            let velocity = inputs.velocity.unwrap_or(Vec2::ZERO);
+            deform.transform(inputs.frame.center(), drag, velocity) * base
+        } else {
+            base
+        }
+    }
+
     /// The silhouette's rect and corners at `inputs`: the corners the
-    /// shape drives, scaled with the frame by the press scale.
+    /// shape drives, scaled with the frame by the capped press scale and
+    /// deformed by any active [`DragDeformation`].
     fn silhouette_of(spec: &Chrome, inputs: &Inputs<'_, ()>) -> (Rect, Corners) {
         let corners = spec.surface().shape().corners().target(inputs);
-        let scale = Self::scale_of(spec, inputs.state);
-        if (scale - 1.0).abs() < f64::EPSILON {
-            return (inputs.frame, corners);
-        }
+        let scale = Self::scale_of(spec, inputs.frame, inputs.state);
         let frame = inputs.frame;
+        let mut rect = if (scale - 1.0).abs() < f64::EPSILON {
+            frame
+        } else {
+            Rect::from_center_size(frame.center(), frame.size() * scale)
+        };
+        let mut radii_scale = scale;
+        if let Some(deform) = spec.press().get_drag_deformation()
+            && inputs.state.contains(InteractionState::PRESSED)
+            && (inputs.drag.is_some() || inputs.velocity.is_some())
+        {
+            let drag = inputs.drag.unwrap_or(Vec2::ZERO);
+            let velocity = inputs.velocity.unwrap_or(Vec2::ZERO);
+            let (sx, sy) = deform.axis_scales(drag, velocity);
+            rect = deform.deformed_rect(rect, drag, velocity);
+            radii_scale *= sx.min(sy);
+        }
+        if (radii_scale - 1.0).abs() < f64::EPSILON && rect == frame {
+            return (frame, corners);
+        }
         let radii = corners.radii_on(frame);
-        let rect = Rect::from_center_size(frame.center(), frame.size() * scale);
-        let radii = kurbo::RoundedRectRadii::new(
-            radii.top_left * scale,
-            radii.top_right * scale,
-            radii.bottom_right * scale,
-            radii.bottom_left * scale,
+        let radii = RoundedRectRadii::new(
+            radii.top_left * radii_scale,
+            radii.top_right * radii_scale,
+            radii.bottom_right * radii_scale,
+            radii.bottom_left * radii_scale,
         );
         (rect, Corners::Radii(radii))
     }
@@ -1228,74 +1356,86 @@ impl LiveChrome {
         }
     }
 
-    fn driven_animation<'a, T: 'static>(
-        &'a self,
-        driven: &'a Driven<T>,
-        retargeting: Retargeting<'a>,
-    ) -> Option<&'a Animation> {
-        self.animation(driven.get_motion(), retargeting)
-    }
-
     /// Moves every operand to the chrome's current inputs.
     fn retarget(&self, retargeting: Retargeting<'_>) {
         let inputs = self.inputs();
         let state = inputs.state;
+        let change = self.change(retargeting);
         let surface = self.spec.surface();
         let shape = surface.shape();
         let (silhouette, corners) = Self::silhouette_of(&self.spec, &inputs);
-        let shape_animation = self.driven_animation(shape.corners(), retargeting);
+        let (raw_shape_anim, shape_reverse) = shape.corners().resolve_change(&inputs, change);
+        let shape_animation = shape
+            .corners()
+            .shape_animation(raw_shape_anim.as_ref(), shape_reverse);
         self.surface
             .shape
-            .set(shape.shape(silhouette, corners), shape_animation);
+            .set(shape.shape(silhouette, corners), shape_animation.as_ref());
         self.content_scale.set(
-            Self::scale_about(self.frame.get(), Self::scale_of(&self.spec, state)),
+            Self::content_transform(&self.spec, &inputs),
             self.animation(None, retargeting),
         );
         match (&self.surface.fill, surface.fill()) {
             (FillOperands::Paint(operand), Fill::Paint(paint)) => {
-                operand.set(
-                    paint.target(&inputs),
-                    self.driven_animation(paint, retargeting),
-                );
+                paint.apply_to(operand, &inputs, change);
             }
             (FillOperands::Backdrop(operand), Fill::Backdrop(backdrop)) => {
-                operand.set(
-                    backdrop.effect().target(&inputs),
-                    self.driven_animation(backdrop.effect(), retargeting),
-                );
+                let (anim, reverse) = backdrop.effect().resolve_change(&inputs, change);
+                let shaped = backdrop.effect().shape_animation(anim.as_ref(), reverse);
+                operand.set(backdrop.effect().target(&inputs), shaped.as_ref());
             }
             _ => unreachable!("a live chrome's fill operands follow its surface's fill"),
         }
         if let (Some(operand), Some(content_effect)) =
             (&self.surface.content_effect, surface.get_content_effect())
         {
-            operand.set(
-                content_effect.effect().target(&inputs),
-                self.driven_animation(content_effect.effect(), retargeting),
-            );
+            let (anim, reverse) = content_effect.effect().resolve_change(&inputs, change);
+            let shaped = content_effect
+                .effect()
+                .shape_animation(anim.as_ref(), reverse);
+            operand.set(content_effect.effect().target(&inputs), shaped.as_ref());
         }
         if let (Some(operands), Some(border)) = (&self.surface.border, surface.get_border()) {
             let resolved = border.target(&inputs);
-            let animation = self.driven_animation(border, retargeting);
+            let (anim, reverse) = border.resolve_change(&inputs, change);
+            let window = border.get_smoothstep_window();
             operands.shape.set(
                 shape.outset(silhouette, corners, -resolved.width / 2.0),
-                shape_animation,
+                shape_animation.as_ref(),
             );
-            operands.stroke.set(Stroke::new(resolved.width), animation);
-            operands.paint.set(resolved.paint, animation);
+            set_windowed_operand(
+                &operands.stroke,
+                Stroke::new(resolved.width),
+                anim.as_ref(),
+                window,
+                reverse,
+            );
+            set_windowed_operand(
+                &operands.paint,
+                resolved.paint,
+                anim.as_ref(),
+                window,
+                reverse,
+            );
         }
         if let Some((key, ambient)) = &self.surface.elevation {
             let elevation = surface.get_elevation();
-            let animation = self.driven_animation(elevation, retargeting);
+            let (anim, reverse) = elevation.resolve_change(&inputs, change);
+            let window = elevation.get_smoothstep_window();
             let Elevation {
                 key: key_shadow,
                 ambient: ambient_shadow,
             } = elevation.target(&inputs);
-            key.set(key_shadow, animation);
-            ambient.set(ambient_shadow, animation);
+            set_windowed_operand(key, key_shadow, anim.as_ref(), window, reverse);
+            set_windowed_operand(ambient, ambient_shadow, anim.as_ref(), window, reverse);
         }
-        self.retarget_layers(state, silhouette, corners, shape_animation, retargeting);
-        let change = self.change(retargeting);
+        self.retarget_layers(
+            state,
+            silhouette,
+            corners,
+            shape_animation.as_ref(),
+            retargeting,
+        );
         for driven in self.drivens() {
             driven.retarget(&inputs, change);
         }
@@ -1352,6 +1492,7 @@ impl LiveChrome {
                 value: &value,
                 drag: slider.drag.get(),
                 press_point: self.press_point.get(),
+                velocity: slider.velocity.borrow().current(),
             },
             change,
         );
@@ -1396,11 +1537,20 @@ impl LiveChrome {
     /// The offset of an active drag from where it was pressed, `None`
     /// between drags.
     #[cfg(feature = "slider")]
-    pub(crate) fn set_drag(&self, drag: Option<Vec2>) {
+    pub(crate) fn set_drag(&self, drag: Option<Vec2>, at: Instant) {
         let Some(slider) = &self.slider else {
             return;
         };
-        if slider.drag.replace(drag) != drag {
+        let prev = slider.drag.replace(drag);
+        match drag {
+            Some(offset) => {
+                slider.velocity.borrow_mut().sample(offset, at);
+            }
+            None => {
+                slider.velocity.borrow_mut().reset();
+            }
+        }
+        if prev != drag {
             for (driven, in_indicator) in slider.drivens() {
                 self.retarget_slider_driven(&*driven, in_indicator, Change::Animated(None));
             }
@@ -1447,7 +1597,7 @@ impl LiveChrome {
         self.content
             .label_color
             .as_ref()
-            .map(|live| Computed::new(nami::SignalExt::map(live.operand(), Paint::from)))
+            .map(|live| Computed::new(live.operand().clone()))
     }
 
     /// The operands that show a slider's value indicator while it is held
@@ -1467,9 +1617,11 @@ impl LiveChrome {
         self.content_scale.clone()
     }
 
-    /// Whether a press scales the chrome and the content that follows it.
+    /// Whether a press scales or deforms the chrome and the content that
+    /// follows it.
     pub(crate) fn scales_content(&self) -> bool {
         self.spec.press().get_scale().is_some()
+            || self.spec.press().get_drag_deformation().is_some()
     }
 
     /// The content-effect shader, uniform operand and live silhouette operand
@@ -1546,9 +1698,13 @@ impl LiveChrome {
             return;
         }
         if !state.contains(InteractionState::PRESSED) {
+            self.press_origin.set(None);
             self.press_point.set(None);
+            self.drag.set(None);
+            self.velocity.borrow_mut().reset();
             if let Some(slider) = &self.slider {
                 slider.drag.set(None);
+                slider.velocity.borrow_mut().reset();
             }
         }
         if let Some(report) = &self.report
@@ -1573,10 +1729,22 @@ impl LiveChrome {
     /// presses at the frame's centre): the press point moves there, ripple
     /// wave `index` snaps to its starting circle and grows under the
     /// ripple's motion while it fades in, and the wash snaps to it.
-    pub(crate) fn begin_wave(&self, index: usize, origin: Option<Point>) {
+    pub(crate) fn begin_wave(&self, index: usize, origin: Option<Point>, at: Instant) {
+        self.press_origin.set(origin);
         self.press_point.set(origin);
+        self.drag.set(None);
+        if origin.is_some() {
+            self.velocity.borrow_mut().start(Vec2::ZERO, at);
+        } else {
+            self.velocity.borrow_mut().reset();
+        }
         if let Some(slider) = &self.slider {
             slider.press_value.set(slider.value.get());
+            if origin.is_some() {
+                slider.velocity.borrow_mut().start(Vec2::ZERO, at);
+            } else {
+                slider.velocity.borrow_mut().reset();
+            }
         }
         if let Some(wash) = &self.wash {
             let center = origin.unwrap_or_else(|| self.frame.get().center());
@@ -1602,11 +1770,21 @@ impl LiveChrome {
     }
 
     /// Moves the active press point to `point`, in the widget's record
-    /// space: the look's values that read it follow the pointer with no
-    /// animation.
-    pub(crate) fn move_press(&self, point: Point) {
+    /// space: the look's values that read it (and any active
+    /// [`DragDeformation`]) follow the pointer.
+    pub(crate) fn move_press(&self, point: Point, at: Instant) {
         if self.press_point.replace(Some(point)) != Some(point) {
-            self.retarget(Retargeting::Animated(None));
+            if let Some(origin) = self.press_origin.get() {
+                let offset = point - origin;
+                self.drag.set(Some(offset));
+                self.velocity.borrow_mut().sample(offset, at);
+            }
+            let active_motion = self
+                .spec
+                .press()
+                .get_drag_deformation()
+                .and_then(DragDeformation::get_active_motion);
+            self.retarget(Retargeting::Animated(active_motion));
         }
     }
 
@@ -1664,11 +1842,11 @@ impl LiveChrome {
         }
     }
 
-    /// How far the chrome draws beyond its frame: the press scale, the
-    /// elevation's shadows and the focus ring.
+    /// How far the chrome draws beyond its frame: the press scale, any drag
+    /// deformation, the elevation's shadows and the focus ring.
     pub(crate) fn visual_bounds(&self) -> Rect {
-        let scale = Self::scale_of(&self.spec, InteractionState::PRESSED);
         let frame = self.frame.get();
+        let scale = Self::scale_of(&self.spec, frame, InteractionState::PRESSED);
         let scaled = Rect::from_center_size(frame.center(), frame.size() * scale);
         let shadow = every_state()
             .map(|state| {
@@ -1683,7 +1861,12 @@ impl LiveChrome {
             FocusIndicator::Ring { width, offset, .. } => offset + width,
             FocusIndicator::Tint => 0.0,
         };
-        let reach = shadow.max(ring);
+        let drag = self
+            .spec
+            .press()
+            .get_drag_deformation()
+            .map_or(0.0, |deform| deform.extent(frame.size()));
+        let reach = shadow.max(ring) + drag;
         scaled
             .inflate(reach, reach)
             .union(self.spec.target(self.bounds.get()))

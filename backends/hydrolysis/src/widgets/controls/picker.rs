@@ -1869,7 +1869,7 @@ fn segment_track(
             start.set(Some(point));
             dragging.set(false);
         }
-        Track::Move(point) => {
+        Track::Move(point, at) => {
             if !picker.drags() || picker.selected() != index {
                 return;
             }
@@ -1879,10 +1879,10 @@ fn segment_track(
             let offset = Vec2::new(point.x - from.x, 0.0);
             if !dragging.get() && offset.x.abs() > slop {
                 dragging.set(true);
-                picker.begin_drag();
+                picker.begin_drag(at);
             }
             if dragging.get() {
-                picker.drag_to(offset);
+                picker.drag_to(offset, at);
             }
         }
         Track::Release { within_reach, .. } => {
