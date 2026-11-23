@@ -13,6 +13,8 @@
 //! contents never reach that bitmap, so GPU-bearing trees stay on
 //! `capture_image`'s `ViewCapture`.
 
+#[cfg(render_server_capture)]
+use cocoa_ui::PlatformView;
 #[cfg(all(target_os = "macos", render_server_capture))]
 use cocoa_ui::bitmap::force_text_fields_display;
 #[cfg(render_server_capture)]
@@ -202,9 +204,7 @@ pub async fn capture_presented(
     clippy::unused_async,
     reason = "the signature stays `async` to mirror `capture_presented`"
 )]
-pub async fn capture_presented_hdr(
-    host: &cocoa_ui::PlatformView,
-) -> Result<HdrRaster, CaptureError> {
+pub async fn capture_presented_hdr(host: &PlatformView) -> Result<HdrRaster, CaptureError> {
     let ancestor = view_window(host)
         .and_then(|window| window.contentView())
         .ok_or(CaptureError::NoWindow)?;
@@ -353,9 +353,7 @@ pub async fn capture_presented(
     clippy::unused_async,
     reason = "the signature stays `async` to mirror `capture_presented`"
 )]
-pub async fn capture_presented_hdr(
-    host: &cocoa_ui::PlatformView,
-) -> Result<HdrRaster, CaptureError> {
+pub async fn capture_presented_hdr(host: &PlatformView) -> Result<HdrRaster, CaptureError> {
     let bounds = view_bounds(host);
     if bounds.size.width <= 0.0 || bounds.size.height <= 0.0 {
         return Err(CaptureError::ZeroSize {

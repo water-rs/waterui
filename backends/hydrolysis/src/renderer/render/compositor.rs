@@ -12,6 +12,8 @@ use crate::engine::{cfg_async_fn, engine_await, format_output_color};
 use crate::platform::{GpuGeneration, SurfaceProvider};
 #[cfg(hydrolysis_gpu_painter)]
 use cherenkov_gpu::interop::{OutputAlpha, OutputColor};
+#[cfg(hydrolysis_gpu_painter)]
+use cherenkov_record::WorkingColor;
 use std::rc::Rc;
 #[cfg(hydrolysis_gpu_painter)]
 use std::sync::Arc;
@@ -163,7 +165,7 @@ impl HydrolysisRenderer<crate::text::ParleyEngine> {
             texture: &wgpu::Texture,
             format: wgpu::TextureFormat,
             size: (u32, u32),
-            base_color: cherenkov_record::WorkingColor,
+            base_color: WorkingColor,
             headroom: f32,
             output_color: OutputColor,
         ) -> Result<(), FrameError> {

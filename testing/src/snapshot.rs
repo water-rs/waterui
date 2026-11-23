@@ -13,6 +13,8 @@ use hydrolysis::{
 };
 use image::{ImageError, ImageResult};
 #[cfg(feature = "gpu")]
+use kurbo::{Affine, Rect};
+#[cfg(feature = "gpu")]
 use waterui::graphics::WorkingColor;
 #[cfg(feature = "gpu")]
 use waterui::text::FontCollection;
@@ -541,7 +543,7 @@ impl TestHost {
             &self.fonts,
             FontFamilyResolution::Strict,
         );
-        let bounds = kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
+        let bounds = Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
 
         let surface = platform.surface();
         renderer.reset_scene();
@@ -550,8 +552,8 @@ impl TestHost {
             AnyView::new(view),
             &self.env,
             bounds,
-            kurbo::Affine::IDENTITY,
-            kurbo::Affine::IDENTITY,
+            Affine::IDENTITY,
+            Affine::IDENTITY,
         );
         renderer.finish_rebuild_frame();
 

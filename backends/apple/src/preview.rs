@@ -218,7 +218,7 @@ pub fn run(
 /// Same failure modes as [`run`].
 pub fn capture_hdr(
     compose: impl FnOnce(Environment) -> Environment + 'static,
-    view: impl FnOnce() -> waterui::AnyView + 'static,
+    view: impl FnOnce() -> AnyView + 'static,
     resources: ResourceContext,
     width: u32,
     height: u32,
