@@ -249,13 +249,17 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         renderer: &mut SemanticCore<E>,
     ) -> Self {
         use crate::widgets::nav::tabs::TabsRenderState;
-        let stretch = waterui_core::NativeView::stretch_axis(&tabs);
+        use waterui_core::NativeView as _;
+        let stretch = tabs.stretch_axis();
         let mut state = TabsRenderState::from_tabs(tabs, renderer);
-        // See build_controls: the prebuild runs under this widget's
-        // cell as the record reader, so its subviews attach to it.
+        // Tab labels and icons depend on `TabsLook` foreground overrides, so
+        // `prepare_tabs` builds them once `HydrolysisRenderer` supplies the
+        // theme (or `emit_tabs_accessibility` builds them in semantic-only
+        // mode). Prebuild each tab's content here under the widget's record
+        // reader; content does not read `TabsLook`.
         let core = renderer.new_core();
         renderer.with_probe_reader(&core, ReaderPhase::Record, |renderer| {
-            state.prebuild_labels(renderer, env);
+            state.prebuild_contents(renderer, env);
         });
         let state = Rc::new(RefCell::new(state));
         Self::build_widget_with_core(state, stretch, env, core)

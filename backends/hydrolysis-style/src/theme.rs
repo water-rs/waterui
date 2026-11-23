@@ -118,7 +118,8 @@ pub use stepper::{StepperLook, StepperSpec};
 pub use table::TableLook;
 #[cfg(waterui_feature = "navigation")]
 pub use tabs::{
-    TabItem, TabItemGeometry, TabItemLayout, TabsDrag, TabsLook, TabsMetrics, TabsSpec, TabsValue,
+    TabBarWidth, TabItem, TabItemGeometry, TabItemLayout, TabsDrag, TabsLook, TabsMetrics,
+    TabsSpec, TabsValue,
 };
 pub use text_field::{Caret, FloatingLabel, TextFieldLook, TextFieldSpec};
 #[cfg(waterui_feature = "toggle")]

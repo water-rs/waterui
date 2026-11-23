@@ -194,6 +194,7 @@ use cherenkov_record::{
     SharedLive, WorkingColor,
 };
 use waterui_core::handler::SharedAction;
+use waterui_text::font::Font;
 
 /// A view realized into a retained node and measured through it — the path
 /// layout measures every child on.
@@ -2763,6 +2764,8 @@ pub struct MinimalTestTheme {
     horizontal_from_width: Option<f64>,
     /// Optional explicit [`TabsLook`] override for tests.
     tabs_look: Option<TabsLook>,
+    /// Optional explicit inline title font override for [`NavigationBarLook`].
+    navigation_title_font: Option<Font>,
     /// Every frame the slider's value-indicator bubble records on.
     slider_indicator_draws: Rc<RefCell<Vec<Rect>>>,
     /// Every spec the theme was asked for a slider look.
@@ -3412,7 +3415,7 @@ impl WidgetTheme for MinimalTestTheme {
     fn navigation_bar(&self, _spec: &NavigationSpec, _env: &Environment) -> NavigationBarLook {
         let bar_draws = Rc::clone(&self.navigation_bar_draws);
         let separator_draws = Rc::clone(&self.navigation_bar_separator_draws);
-        NavigationBarLook::new(
+        let mut look = NavigationBarLook::new(
             crate::testing::plain_navigation_metrics(),
             crate::testing::plain_navigation_motion(),
             invisible_chrome(),
@@ -3422,7 +3425,11 @@ impl WidgetTheme for MinimalTestTheme {
         )
         .separator(Custom::new((), move |_recorder, frame, ()| {
             separator_draws.borrow_mut().push(frame);
-        }))
+        }));
+        if let Some(font) = &self.navigation_title_font {
+            look = look.title_font(font.clone());
+        }
+        look
     }
 
     #[cfg(feature = "navigation")]

@@ -7,10 +7,9 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use accesskit::{Action, ActionRequest, Role, TreeId};
-use waterui_core::AnyView;
-use waterui_core::Environment;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::layout::LayoutDirection;
+use waterui_core::{AnyView, Environment, View};
 use waterui_interaction::interaction::InteractionState;
 use waterui_layout::stack::vstack;
 use waterui_navigation::tab::{Tab, Tabs};
@@ -25,6 +24,12 @@ use super::{MinimalTestTheme, test_environment};
 use crate::HeadlessRuntime;
 use crate::platform::{InputEvent, PointerButton, PointerKind};
 use crate::renderer::live_tabs::LiveTabs;
+use crate::renderer::mount::layers::{LayerVisitor, visit};
+use crate::renderer::recording::Recording;
+use crate::testing::{plain_tabs_metrics, plain_tabs_motion};
+use crate::text::TextEngine;
+use crate::theme::TabsLook;
+use kurbo::{Affine, Rect};
 
 const WINDOW_WIDTH: u32 = 400;
 const WINDOW_HEIGHT: u32 = 300;
@@ -311,4 +316,435 @@ fn rtl_navigation_bar_mirrors_back_button_and_slots() {
         find_by_label(&after_pop, Role::Button, "Open Detail").is_some(),
         "tapping the RTL back button on the right edge pops back to Root"
     );
+}
+
+#[derive(Default)]
+struct GlyphColours(Vec<(f64, f64, Vec<[u8; 4]>)>);
+
+impl<E: TextEngine> LayerVisitor<E> for GlyphColours {
+    fn run(&mut self, world: Affine, recording: &Recording) {
+        if let Some((transform, _)) = recording.glyph_runs().next() {
+            let point = (world * transform).translation();
+            self.0
+                .push((point.x, point.y, recording.glyph_brush_colours()));
+        }
+    }
+}
+
+#[derive(Default)]
+struct FillColours(Vec<(f64, f64, Vec<[f32; 4]>)>);
+
+impl<E: TextEngine> LayerVisitor<E> for FillColours {
+    fn run(&mut self, world: Affine, recording: &Recording) {
+        let fills: Vec<[f32; 4]> = recording
+            .solid_rects()
+            .iter()
+            .map(|rect| rect.current().1.components)
+            .collect();
+        if !fills.is_empty() {
+            let point = world.translation();
+            self.0.push((point.x, point.y, fills));
+        }
+    }
+}
+
+#[derive(Default)]
+struct GlyphSpans(Vec<(f64, f64)>);
+
+impl<E: TextEngine> LayerVisitor<E> for GlyphSpans {
+    fn run(&mut self, world: Affine, recording: &Recording) {
+        for (transform, glyphs) in recording.glyph_runs() {
+            let y = (world * transform).translation().y;
+            let span = match (glyphs.first(), glyphs.last()) {
+                (Some(first), Some(last)) => f64::from(last.x - first.x),
+                _ => 0.0,
+            };
+            self.0.push((y, span));
+        }
+    }
+}
+
+#[test]
+fn navigation_bar_title_font_applies_to_inline_titles_and_keeps_large_titles() {
+    use super::test_renderer_with_theme;
+    use crate::renderer::RetainedSubview;
+    use waterui_core::layout::ProposalSize;
+    use waterui_navigation::NavigationTitleDisplayMode;
+    use waterui_text::font::{Body, Font, FontWeight};
+
+    let env = test_environment();
+    let max_bar_glyph_span = |theme: MinimalTestTheme, mode: NavigationTitleDisplayMode| -> f64 {
+        let builder = AnyViewBuilder::<AnyView>::new(move || {
+            AnyView::new(
+                NavigationView::new("Dashboard", text::text("body"))
+                    .navigation_title_display_mode(mode),
+            )
+        });
+        let mut rig = Rig {
+            runtime: HeadlessRuntime::new_for_tests(
+                test_environment(),
+                builder,
+                WINDOW_WIDTH,
+                WINDOW_HEIGHT,
+                theme,
+            ),
+            now: Instant::now(),
+        };
+        rig.settle();
+        let mut spans = GlyphSpans::default();
+        visit(&rig.runtime.renderer().mount_roots(), &mut spans);
+        spans
+            .0
+            .into_iter()
+            .filter(|(y, _)| *y < 52.0)
+            .map(|(_, span)| span)
+            .fold(0.0, f64::max)
+    };
+
+    let custom_font = Font::new(Body).size(28.0).weight(FontWeight::SemiBold);
+    let default_inline_span = max_bar_glyph_span(
+        MinimalTestTheme::default(),
+        NavigationTitleDisplayMode::Inline,
+    );
+    let themed_inline_span = max_bar_glyph_span(
+        MinimalTestTheme {
+            navigation_title_font: Some(custom_font.clone()),
+            ..Default::default()
+        },
+        NavigationTitleDisplayMode::Inline,
+    );
+    assert!(
+        themed_inline_span > default_inline_span * 1.4,
+        "title_font must scale inline title glyphs (default {default_inline_span}, themed {themed_inline_span})"
+    );
+
+    let default_large_span = max_bar_glyph_span(
+        MinimalTestTheme::default(),
+        NavigationTitleDisplayMode::Large,
+    );
+    let themed_large_span = max_bar_glyph_span(
+        MinimalTestTheme {
+            navigation_title_font: Some(custom_font.clone()),
+            ..Default::default()
+        },
+        NavigationTitleDisplayMode::Large,
+    );
+    approx::assert_relative_eq!(themed_large_span, default_large_span, epsilon = 1e-3);
+
+    // Intrinsic measurement also reflects the title font override.
+    let mut default_renderer = test_renderer_with_theme(MinimalTestTheme::default());
+    let default_dims = RetainedSubview::new(
+        NavigationView::new("Dashboard", text::text("body"))
+            .navigation_title_display_mode(NavigationTitleDisplayMode::Inline),
+    )
+    .measure(&mut default_renderer, &env, ProposalSize::UNSPECIFIED);
+    let mut themed_renderer = test_renderer_with_theme(MinimalTestTheme {
+        navigation_title_font: Some(custom_font),
+        ..Default::default()
+    });
+    let themed_dims = RetainedSubview::new(
+        NavigationView::new("Dashboard", text::text("body"))
+            .navigation_title_display_mode(NavigationTitleDisplayMode::Inline),
+    )
+    .measure(&mut themed_renderer, &env, ProposalSize::UNSPECIFIED);
+    assert!(
+        themed_dims.width > default_dims.width,
+        "measured inline navigation width must reflect title_font ({} vs {})",
+        themed_dims.width,
+        default_dims.width
+    );
+}
+
+fn compact_floating_tabs_look(
+    bar_draws: &Rc<RefCell<Vec<Rect>>>,
+    divider_draws: &Rc<RefCell<Vec<Rect>>>,
+) -> TabsLook {
+    use super::invisible_chrome;
+    use crate::theme::{Custom, TabBarWidth};
+
+    let bar_draws = Rc::clone(bar_draws);
+    let divider_draws = Rc::clone(divider_draws);
+    TabsLook::new(
+        plain_tabs_metrics(),
+        Custom::new((), move |_recorder, frame, ()| {
+            bar_draws.borrow_mut().push(frame);
+        }),
+        Custom::new((), move |_recorder, frame, ()| {
+            divider_draws.borrow_mut().push(frame);
+        }),
+        plain_tabs_motion(),
+        |_item, _selected| invisible_chrome(),
+    )
+    .bar_width(TabBarWidth::Compact {
+        item_min_width: 80.0,
+        max_width: Some(320.0),
+        horizontal_padding: 8.0,
+    })
+    .floating_margin(12.0)
+}
+
+#[test]
+fn tabs_compact_floating_bar_centers_pill_and_reserves_bottom_margin() {
+    use super::{capture_root_window, test_renderer_with_theme};
+    use waterui_core::Binding;
+
+    let env = test_environment();
+    let window = Rect::new(0.0, 0.0, 400.0, 300.0);
+    let metrics = plain_tabs_metrics();
+    let bar_draws = Rc::new(RefCell::new(Vec::new()));
+    let divider_draws = Rc::new(RefCell::new(Vec::new()));
+    let theme = MinimalTestTheme {
+        tabs_look: Some(compact_floating_tabs_look(&bar_draws, &divider_draws)),
+        ..Default::default()
+    };
+    let mut renderer = test_renderer_with_theme(theme);
+
+    let tabs = Tabs::new(
+        &Binding::container(0usize),
+        ["Home", "Work"]
+            .into_iter()
+            .map(|name| Tab::new(name, move || NavigationView::new(name, text::text("pane"))))
+            .collect::<Vec<_>>(),
+    );
+    capture_root_window(&mut renderer, tabs, &env, window);
+
+    let bar_frame = {
+        let bar_draws_ref = bar_draws.borrow();
+        let [frame] = bar_draws_ref.as_slice() else {
+            panic!("expected one bar draw, got {:?}", *bar_draws_ref);
+        };
+        *frame
+    };
+    // Bottom edge is inset by floating_margin (12.0) and height is bar_height (48.0).
+    approx::assert_relative_eq!(bar_frame.y1, 288.0, epsilon = 1e-6);
+    approx::assert_relative_eq!(bar_frame.height(), metrics.bar_height, epsilon = 1e-6);
+    assert!(
+        bar_frame.width() >= 176.0 && bar_frame.width() <= 320.0,
+        "compact pill width out of range: {bar_frame:?}"
+    );
+    approx::assert_relative_eq!(bar_frame.center().x, 200.0, epsilon = 1e-6);
+
+    let divider_frame = {
+        let divider_draws_ref = divider_draws.borrow();
+        let [frame] = divider_draws_ref.as_slice() else {
+            panic!("expected one divider draw, got {:?}", *divider_draws_ref);
+        };
+        *frame
+    };
+    approx::assert_relative_eq!(divider_frame.x0, bar_frame.x0, epsilon = 1e-6);
+    approx::assert_relative_eq!(divider_frame.x1, bar_frame.x1, epsilon = 1e-6);
+
+    let update = renderer
+        .take_accessibility_tree_update()
+        .expect("accessibility update");
+    let (_, tab_list) = update
+        .nodes
+        .iter()
+        .find(|(_, node)| node.role() == Role::TabList)
+        .expect("tab list node");
+    let list_bounds = tab_list.bounds().expect("tab list bounds");
+    approx::assert_relative_eq!(list_bounds.x0, bar_frame.x0, epsilon = 1e-6);
+    approx::assert_relative_eq!(list_bounds.x1, bar_frame.x1, epsilon = 1e-6);
+    approx::assert_relative_eq!(list_bounds.y0, bar_frame.y0, epsilon = 1e-6);
+    approx::assert_relative_eq!(list_bounds.y1, bar_frame.y1, epsilon = 1e-6);
+
+    let (_, home) = find_by_label(&update, Role::Tab, "Home").expect("Home tab");
+    let (_, work) = find_by_label(&update, Role::Tab, "Work").expect("Work tab");
+    let home_bounds = home.bounds().expect("Home bounds");
+    let work_bounds = work.bounds().expect("Work bounds");
+    approx::assert_relative_eq!(home_bounds.x0, bar_frame.x0 + 8.0, epsilon = 1e-6);
+    approx::assert_relative_eq!(work_bounds.x1, bar_frame.x1 - 8.0, epsilon = 1e-6);
+}
+
+#[test]
+fn tabs_sidebar_ignores_compact_and_floating_margin() {
+    use super::{capture_root_window, test_renderer_with_theme};
+    use waterui_core::Binding;
+    use waterui_navigation::tab::tab_style;
+
+    let env = test_environment();
+    let window = Rect::new(0.0, 0.0, 400.0, 300.0);
+    let bar_draws = Rc::new(RefCell::new(Vec::new()));
+    let divider_draws = Rc::new(RefCell::new(Vec::new()));
+    let mut renderer = test_renderer_with_theme(MinimalTestTheme {
+        tabs_look: Some(compact_floating_tabs_look(&bar_draws, &divider_draws)),
+        ..Default::default()
+    });
+    let sidebar = Tabs::new(
+        &Binding::container(0usize),
+        ["Home", "Work"]
+            .into_iter()
+            .map(|name| Tab::new(name, move || NavigationView::new(name, text::text("pane"))))
+            .collect::<Vec<_>>(),
+    )
+    .style(tab_style::Sidebar);
+    capture_root_window(&mut renderer, sidebar, &env, window);
+    let sidebar_draws = bar_draws.borrow();
+    let [sidebar_frame] = sidebar_draws.as_slice() else {
+        panic!("expected one sidebar draw, got {:?}", *sidebar_draws);
+    };
+    approx::assert_relative_eq!(sidebar_frame.x0, 0.0, epsilon = 1e-6);
+    approx::assert_relative_eq!(sidebar_frame.y0, 0.0, epsilon = 1e-6);
+    approx::assert_relative_eq!(sidebar_frame.y1, 300.0, epsilon = 1e-6);
+}
+
+fn split_tab_bar_samples<T>(samples: Vec<(f64, f64, Vec<T>)>) -> (Vec<T>, Vec<T>) {
+    let mut left = Vec::new();
+    let mut right = Vec::new();
+    for (x, y, items) in samples {
+        if items.is_empty() || y < 250.0 {
+            continue;
+        }
+        if x < 200.0 {
+            left.extend(items);
+        } else {
+            right.extend(items);
+        }
+    }
+    (left, right)
+}
+
+struct TabBarPaint {
+    left_glyphs: Vec<[u8; 4]>,
+    right_glyphs: Vec<[u8; 4]>,
+    left_fills: Vec<[f32; 4]>,
+    right_fills: Vec<[f32; 4]>,
+}
+
+fn tab_bar_paint(runtime: &HeadlessRuntime) -> TabBarPaint {
+    let mut glyphs = GlyphColours::default();
+    visit(&runtime.renderer().mount_roots(), &mut glyphs);
+    let mut fills = FillColours::default();
+    visit(&runtime.renderer().mount_roots(), &mut fills);
+    let (left_glyphs, right_glyphs) = split_tab_bar_samples(glyphs.0);
+    let (left_fills, right_fills) = split_tab_bar_samples(fills.0);
+    TabBarPaint {
+        left_glyphs,
+        right_glyphs,
+        left_fills,
+        right_fills,
+    }
+}
+
+#[derive(Clone)]
+struct FixedForegroundIcon;
+
+impl View for FixedForegroundIcon {
+    fn body(self, _env: &Environment) -> impl View {
+        use waterui::theme::color::Foreground;
+        use waterui::{Color, ViewExt as _};
+        Color::new(Foreground).size(10.0, 10.0)
+    }
+}
+
+fn assert_tab_bar_paint(runtime: &HeadlessRuntime, selected_is_left: bool) {
+    let paint = tab_bar_paint(runtime);
+    assert!(
+        !paint.left_glyphs.is_empty() && !paint.right_glyphs.is_empty(),
+        "both tabs must draw glyphs: left={:?}, right={:?}",
+        paint.left_glyphs,
+        paint.right_glyphs
+    );
+    let (sel_glyphs, unsel_glyphs, sel_fills, unsel_fills) = if selected_is_left {
+        (
+            paint.left_glyphs,
+            paint.right_glyphs,
+            paint.left_fills,
+            paint.right_fills,
+        )
+    } else {
+        (
+            paint.right_glyphs,
+            paint.left_glyphs,
+            paint.right_fills,
+            paint.left_fills,
+        )
+    };
+    assert!(
+        sel_glyphs.iter().all(|c| c[0] > 200 && c[2] < 50),
+        "selected tab must use red foreground, got {sel_glyphs:?}"
+    );
+    assert!(
+        unsel_glyphs.iter().all(|c| c[2] > 200 && c[0] < 50),
+        "unselected tab must use blue foreground, got {unsel_glyphs:?}"
+    );
+    assert!(
+        !sel_fills.is_empty() && !unsel_fills.is_empty(),
+        "both tabs must draw foreground-coloured icons: selected={sel_fills:?}, unselected={unsel_fills:?}"
+    );
+    assert!(
+        sel_fills
+            .iter()
+            .all(|c| c[0] > 0.7 && c[1] < 0.1 && c[2] < 0.1),
+        "selected icon fill must use red foreground, got {sel_fills:?}"
+    );
+    assert!(
+        unsel_fills
+            .iter()
+            .all(|c| c[2] > 0.7 && c[0] < 0.1 && c[1] < 0.1),
+        "unselected icon fill must use blue foreground, got {unsel_fills:?}"
+    );
+}
+
+#[test]
+fn tabs_foreground_overrides_paint_selected_and_unselected_items_on_selection() {
+    use super::invisible_chrome;
+    use crate::theme::Custom;
+    use waterui::color::Srgb;
+    use waterui_controls::label::label;
+    use waterui_core::Binding;
+
+    let look = TabsLook::new(
+        plain_tabs_metrics(),
+        Custom::new((), |_recorder, _frame, ()| {}),
+        Custom::new((), |_recorder, _frame, ()| {}),
+        plain_tabs_motion(),
+        |_item, _selected| invisible_chrome(),
+    )
+    .selected_foreground(Srgb::from_hex("#FF0000"))
+    .unselected_foreground(Srgb::from_hex("#0000FF"));
+
+    let selection = Binding::container(0usize);
+    let builder = AnyViewBuilder::<AnyView>::new(move || {
+        AnyView::new(Tabs::new(
+            &selection,
+            [("Home", "H"), ("Work", "W")]
+                .into_iter()
+                .map(|(title, _)| {
+                    Tab::new(label(title).icon(FixedForegroundIcon), move || {
+                        NavigationView::new(title, text::text("pane"))
+                    })
+                })
+                .collect::<Vec<_>>(),
+        ))
+    });
+    let mut rig = Rig {
+        runtime: HeadlessRuntime::new_for_tests(
+            test_environment(),
+            builder,
+            WINDOW_WIDTH,
+            WINDOW_HEIGHT,
+            MinimalTestTheme {
+                tabs_look: Some(look),
+                ..Default::default()
+            },
+        ),
+        now: Instant::now(),
+    };
+    rig.settle();
+
+    assert_tab_bar_paint(&rig.runtime, true);
+
+    // Click the second tab and verify foreground overrides follow selection.
+    let tree = rig.runtime.accessibility_tree().expect("tree");
+    let (work_id, _) = find_by_label(&tree, Role::Tab, "Work").expect("Work tab");
+    assert!(rig.runtime.perform_accessibility_action(ActionRequest {
+        action: Action::Click,
+        target_node: work_id,
+        target_tree: TreeId::ROOT,
+        data: None,
+    }));
+    rig.settle();
+
+    assert_tab_bar_paint(&rig.runtime, false);
 }

@@ -14,6 +14,7 @@ use std::rc::Rc;
 use kurbo::{Rect, Vec2};
 use nami::Computed;
 use waterui::navigation::tab::NativeTabStyle;
+use waterui_graphics::color::Color;
 
 use super::Chrome;
 use super::look::{Custom, CustomPart, DrivenSet, Motion};
@@ -55,6 +56,28 @@ pub enum TabItemLayout {
     /// The icon beside the label, the indicator behind both: the bar of a
     /// medium-width window, where items have room to spread.
     Horizontal,
+}
+
+/// How a bottom tab bar sizes its width inside the container.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "bottom tab bar sizing is either edge-to-edge full width or content-fitted compact pill"
+)]
+pub enum TabBarWidth {
+    /// Spans the full container width (edge-to-edge docked bar).
+    Full,
+    /// Sizes the bar to fit its tab items, centered horizontally inside the
+    /// container and bounded by `max_width` and available container width.
+    Compact {
+        /// Minimum width reserved for each tab item slot.
+        item_min_width: f64,
+        /// Optional maximum width of the bar in logical points.
+        max_width: Option<f64>,
+        /// Outer horizontal padding inside the bar before the first item and
+        /// after the last item.
+        horizontal_padding: f64,
+    },
 }
 
 /// The geometry of one tab item, in the coordinate space of the bar that
@@ -293,6 +316,10 @@ pub struct TabsLook {
     selection_indicator: Option<Rc<dyn CustomPart<TabsValue>>>,
     selection_indicator_over_labels: Option<Rc<dyn CustomPart<TabsValue>>>,
     drag: Option<TabsDrag>,
+    bar_width: TabBarWidth,
+    floating_margin: f64,
+    selected_foreground: Option<Color>,
+    unselected_foreground: Option<Color>,
 }
 
 impl core::fmt::Debug for TabsLook {
@@ -308,6 +335,13 @@ impl core::fmt::Debug for TabsLook {
                 &self.selection_indicator_over_labels.is_some(),
             )
             .field("drag", &self.drag)
+            .field("bar_width", &self.bar_width)
+            .field("floating_margin", &self.floating_margin)
+            .field("selected_foreground", &self.selected_foreground.is_some())
+            .field(
+                "unselected_foreground",
+                &self.unselected_foreground.is_some(),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -343,6 +377,10 @@ impl TabsLook {
             selection_indicator: None,
             selection_indicator_over_labels: None,
             drag: None,
+            bar_width: TabBarWidth::Full,
+            floating_margin: 0.0,
+            selected_foreground: None,
+            unselected_foreground: None,
         }
     }
 
@@ -412,6 +450,41 @@ impl TabsLook {
         self
     }
 
+    /// Configures how a bottom tab bar sizes its width (`Full` edge-to-edge
+    /// by default, or centered `Compact` fitted to its items). Sidebar strips
+    /// keep their fixed thickness.
+    #[must_use]
+    pub const fn bar_width(mut self, width: TabBarWidth) -> Self {
+        self.bar_width = width;
+        self
+    }
+
+    /// Sets an outer margin around a floating bottom tab bar in logical
+    /// points (reserving bottom clearance and inset from horizontal container
+    /// edges). Defaults to `0.0` (flush docked bar). Sidebar strips ignore
+    /// this margin.
+    #[must_use]
+    pub const fn floating_margin(mut self, margin: f64) -> Self {
+        self.floating_margin = margin;
+        self
+    }
+
+    /// Overrides the `Foreground` token used by the selected tab item's icon
+    /// and label. `None` keeps the surrounding `Foreground`.
+    #[must_use]
+    pub fn selected_foreground(mut self, color: impl Into<Color>) -> Self {
+        self.selected_foreground = Some(color.into());
+        self
+    }
+
+    /// Overrides the `Foreground` token used by unselected tab items' icons
+    /// and labels. `None` keeps the surrounding `Foreground`.
+    #[must_use]
+    pub fn unselected_foreground(mut self, color: impl Into<Color>) -> Self {
+        self.unselected_foreground = Some(color.into());
+        self
+    }
+
     /// How a bar `extent` wide lays its items out.
     #[must_use]
     pub fn item_layout(&self, extent: f64) -> TabItemLayout {
@@ -440,6 +513,30 @@ impl TabsLook {
     #[must_use]
     pub const fn get_drag(&self) -> Option<TabsDrag> {
         self.drag
+    }
+
+    /// How a bottom tab bar sizes its width.
+    #[must_use]
+    pub const fn get_bar_width(&self) -> TabBarWidth {
+        self.bar_width
+    }
+
+    /// Outer margin around a floating bottom tab bar in logical points.
+    #[must_use]
+    pub const fn get_floating_margin(&self) -> f64 {
+        self.floating_margin
+    }
+
+    /// Selected tab item foreground override, if configured.
+    #[must_use]
+    pub const fn get_selected_foreground(&self) -> Option<&Color> {
+        self.selected_foreground.as_ref()
+    }
+
+    /// Unselected tab item foreground override, if configured.
+    #[must_use]
+    pub const fn get_unselected_foreground(&self) -> Option<&Color> {
+        self.unselected_foreground.as_ref()
     }
 
     /// The chrome of `item`, given its live selected flag.
