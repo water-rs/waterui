@@ -747,6 +747,71 @@ pub(super) fn run_frame_transaction<H: FrameHost>(
         }
         deadline
     };
+    render_and_publish_frame(
+        host,
+        #[cfg(all(target_os = "android", hydrolysis_hwui, feature = "frame-profile"))]
+        now,
+        should_close,
+    );
+
+    // The redraw latch now holds only requests raised after this
+    // frame's render — an animation asking for its next frame; the
+    // requests before it were drained into the render demand above and
+    // served. A hidden session reports no continuation either way: the
+    // armed mode stays armed for the restore frame, but the scheduler
+    // must not keep posting wakes into a parked pump.
+    let frame_in_flight = host.frame_in_flight();
+    let redraw_pending = host.closing_redraw_pending();
+    // The signals' pending count covers a frame request raised inside
+    // this transaction after the pump drained the flags: its wake was
+    // suppressed by the gate, so this is its only path to the frame it
+    // needs. One raised while hidden stays armed for the restore frame.
+    let (occluded, demand, engine_next, hidden) = {
+        let runtime = host.parts().0;
+        (
+            runtime.platform.is_occluded(),
+            FrameDemand {
+                mode: runtime.mode,
+                redraw_pending,
+                signals_pending: runtime.renderer.has_pending_frame_request(),
+            },
+            runtime.engine_next.clone(),
+            runtime.is_hidden(),
+        )
+    };
+    // A window whose rendering ended draws nothing again, and a frame in
+    // flight wakes the host on its completion: neither owes a frame.
+    let wants_next_frame = host.frame_transaction().finish(occluded, demand)
+        && !host.rendering_ended()
+        && !frame_in_flight;
+    host.finished(wants_next_frame || frame_in_flight);
+    // A deadline already elapsed wakes the frame once: its tick then
+    // runs at or after the deadline, which is when the recognizer that
+    // armed it clears itself.
+    if !hidden
+        && !frame_in_flight
+        && let Next::At { time, .. } = engine_next
+    {
+        deadline = Some(deadline.map_or(time, |other| other.min(time)));
+    }
+    let frame_rate_vote = host.parts().0.effective_frame_rate_vote();
+    host.parts().0.platform.set_frame_rate_vote(frame_rate_vote);
+    FrameOutcome {
+        wants_next_frame,
+        deadline,
+        should_close,
+        frame_rate_vote,
+    }
+}
+
+/// Renders the frame when ready, delivers any close signal, publishes the
+/// frame, and logs stage timings when HWUI frame profiling is enabled.
+#[cfg(hydrolysis_frame_transaction)]
+fn render_and_publish_frame<H: FrameHost>(
+    host: &mut H,
+    #[cfg(all(target_os = "android", hydrolysis_hwui, feature = "frame-profile"))] now: Instant,
+    should_close: bool,
+) {
     let mut flushed = false;
     #[cfg(all(target_os = "android", hydrolysis_hwui, feature = "frame-profile"))]
     let mut render_started = now;
@@ -803,55 +868,6 @@ pub(super) fn run_frame_transaction<H: FrameHost>(
             encode_ms = stages.encode().as_secs_f64() * 1000.0,
             "hwui stages"
         );
-    }
-
-    // The redraw latch now holds only requests raised after this
-    // frame's render — an animation asking for its next frame; the
-    // requests before it were drained into the render demand above and
-    // served. A hidden session reports no continuation either way: the
-    // armed mode stays armed for the restore frame, but the scheduler
-    // must not keep posting wakes into a parked pump.
-    let frame_in_flight = host.frame_in_flight();
-    let redraw_pending = host.closing_redraw_pending();
-    // The signals' pending count covers a frame request raised inside
-    // this transaction after the pump drained the flags: its wake was
-    // suppressed by the gate, so this is its only path to the frame it
-    // needs. One raised while hidden stays armed for the restore frame.
-    let (occluded, demand, engine_next, hidden) = {
-        let runtime = host.parts().0;
-        (
-            runtime.platform.is_occluded(),
-            FrameDemand {
-                mode: runtime.mode,
-                redraw_pending,
-                signals_pending: runtime.renderer.has_pending_frame_request(),
-            },
-            runtime.engine_next.clone(),
-            runtime.is_hidden(),
-        )
-    };
-    // A window whose rendering ended draws nothing again, and a frame in
-    // flight wakes the host on its completion: neither owes a frame.
-    let wants_next_frame = host.frame_transaction().finish(occluded, demand)
-        && !host.rendering_ended()
-        && !frame_in_flight;
-    host.finished(wants_next_frame || frame_in_flight);
-    // A deadline already elapsed wakes the frame once: its tick then
-    // runs at or after the deadline, which is when the recognizer that
-    // armed it clears itself.
-    if !hidden
-        && !frame_in_flight
-        && let Next::At { time, .. } = engine_next
-    {
-        deadline = Some(deadline.map_or(time, |other| other.min(time)));
-    }
-    let frame_rate_vote = host.parts().0.effective_frame_rate_vote();
-    host.parts().0.platform.set_frame_rate_vote(frame_rate_vote);
-    FrameOutcome {
-        wants_next_frame,
-        deadline,
-        should_close,
-        frame_rate_vote,
     }
 }
 

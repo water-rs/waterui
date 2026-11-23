@@ -135,12 +135,12 @@ pub use platform_view::{
 pub use readback::{ReadbackError, readback_texture_rgba8};
 #[cfg(hydrolysis_cherenkov)]
 pub use renderer::FrameError;
-#[cfg(all(feature = "accessibility", hydrolysis_runtime))]
-pub use renderer::accessibility::{AccessibilityActivationPointError, AccessibilityContentTypes};
 #[cfg(all(feature = "frame-profile", hydrolysis_runtime))]
 pub use renderer::FrameStageTimes;
 #[cfg(all(feature = "frame-profile", hydrolysis_gpu_painter))]
 pub use renderer::GpuIdentity;
+#[cfg(all(feature = "accessibility", hydrolysis_runtime))]
+pub use renderer::accessibility::{AccessibilityActivationPointError, AccessibilityContentTypes};
 #[cfg(hydrolysis_runtime)]
 pub use renderer::{HydroState, HydrolysisRenderer, RenderContext};
 #[cfg(all(target_os = "android", any(hydrolysis_gpu_painter, hydrolysis_hwui)))]

@@ -494,6 +494,13 @@ impl Encoder {
 
     /// Reports frame work and the retained nodes owned by this encoder.
     #[cfg(target_os = "android")]
+    #[cfg_attr(
+        not(feature = "frame-profile"),
+        expect(
+            clippy::missing_const_for_fn,
+            reason = "FrameStats::report logs tracing events when frame-profile is enabled"
+        )
+    )]
     pub(crate) fn report_stats(&self) {
         self.stats.report(self.pools.nodes.live());
     }

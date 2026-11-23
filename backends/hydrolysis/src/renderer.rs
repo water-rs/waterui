@@ -31,10 +31,10 @@ mod bindings;
 pub mod chrome;
 mod effects;
 mod frame;
-mod frame_work;
-mod glass;
 #[cfg(feature = "frame-profile")]
 mod frame_stage_times;
+mod frame_work;
+mod glass;
 #[cfg(all(feature = "frame-profile", hydrolysis_gpu_painter))]
 mod gpu_profile;
 mod identity;
@@ -69,9 +69,9 @@ mod views;
 #[cfg(waterui_feature = "effects")]
 pub use effects::FilteredRuntime;
 pub use frame::*;
-pub use frame_work::FrameWorkCounters;
 #[cfg(feature = "frame-profile")]
 pub use frame_stage_times::FrameStageTimes;
+pub use frame_work::FrameWorkCounters;
 #[cfg(all(feature = "frame-profile", hydrolysis_gpu_painter))]
 pub use gpu_profile::{GpuFrameProfiler, GpuIdentity};
 pub use identity::*;
