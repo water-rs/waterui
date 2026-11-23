@@ -281,6 +281,24 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         }
     }
 
+    /// Whether this subtree contains a [`WrapperEffect::PopupMenuSurface`]
+    /// node that owns drawing its morphing menu panel and content reveal.
+    #[cfg(feature = "menu")]
+    pub(crate) fn has_popup_menu_surface(&self) -> bool {
+        match self {
+            Self::Wrapper(wrapper) => {
+                matches!(wrapper.effect, WrapperEffect::PopupMenuSurface(_))
+                    || wrapper.child.has_popup_menu_surface()
+            }
+            Self::Env(env) => env.child.has_popup_menu_surface(),
+            Self::Retain(retain) => retain.child.has_popup_menu_surface(),
+            Self::Container(container) => {
+                container.children.iter().any(Self::has_popup_menu_surface)
+            }
+            _ => false,
+        }
+    }
+
     /// Visits this node's direct structural children in paint order: the
     /// subview nodes it owns inside the render tree (not widget-owned
     /// `RetainedSubview`s, which attach to their owner's cell at

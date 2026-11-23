@@ -2,7 +2,9 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 #[cfg(feature = "menu")]
-use crate::theme::{MenuLayout, MenuLook, MenuSpec};
+use crate::num_cast::f64_as_f32;
+#[cfg(feature = "menu")]
+use crate::theme::{MenuLayout, MenuLook, MenuPresentationMotion, MenuSpec};
 #[cfg(feature = "menu")]
 use crate::widgets::controls::button::{ListRowChrome, MenuRowChrome, menu_row_font};
 #[cfg(feature = "date-picker")]
@@ -207,6 +209,10 @@ pub struct PopupMenuState<E: crate::text::TextEngine> {
     /// binding — for the pointer-down outside-interaction dismissal and the
     /// anchor-left-the-tree close.
     pub(crate) presented_anchored_overlays: Vec<PresentedAnchoredOverlay<E>>,
+    /// Live presentation sample for an anchored menu currently recording its
+    /// [`PopupMenuSurface`]; `None` outside an animated anchored presentation.
+    #[cfg(feature = "menu")]
+    pub(crate) active_menu_presentation: Option<ActiveMenuPresentation>,
     /// The window's open `.dialog` presentations in presentation order —
     /// which one is on screen, which wait, and which closed with their node.
     #[cfg(waterui_feature = "dialog")]
@@ -313,10 +319,25 @@ const fn popup_enter_animation() -> Animation {
 }
 
 #[cfg(any(feature = "menu", feature = "color-picker"))]
-fn animated_popup_panel(content: impl View, group: PopupMenuStateGroup) -> impl View {
+fn animated_popup_panel<V: View>(
+    content: V,
+    group: PopupMenuStateGroup,
+    #[cfg(feature = "menu")] motion: Option<&MenuPresentationMotion>,
+) -> impl View + use<V> {
     let opacity = Binding::f32(0.0);
-    let scale = Binding::f32(0.96);
-    let enter_animation = popup_enter_animation();
+    #[cfg(feature = "menu")]
+    let (initial_scale, enter_animation) = motion.map_or_else(
+        || (0.96, popup_enter_animation()),
+        |motion| {
+            (
+                f64_as_f32(motion.content_scale_from),
+                motion.present.clone(),
+            )
+        },
+    );
+    #[cfg(not(feature = "menu"))]
+    let (initial_scale, enter_animation) = (0.96, popup_enter_animation());
+    let scale = Binding::f32(initial_scale);
     content
         .opacity(opacity.with(enter_animation.clone()))
         .scale(
@@ -812,6 +833,7 @@ pub fn popup_menu_window<E: crate::text::TextEngine>(
             )
             .padding_with(crate::num_cast::f64_as_f32(margin)),
             group_for_content.clone(),
+            look.get_presentation_motion(),
         )
     };
     let mut popup = Window::new(
@@ -1022,6 +1044,7 @@ pub fn picker_menu_window(
     let state_for_content = state.clone();
     let group_for_content = group;
     let entries_for_content = entries;
+    let presentation_motion = look.get_presentation_motion().cloned();
     let popup_content = move || {
         let mut rows = Vec::with_capacity(entries_for_content.len());
         for entry in entries_for_content.clone() {
@@ -1058,7 +1081,11 @@ pub fn picker_menu_window(
             .with(MenuRowChrome);
         let panel = Metadata::new(rows, PopupMenuSurface { selected_row })
             .padding_with(crate::num_cast::f64_as_f32(margin));
-        animated_popup_panel(panel, group_for_content.clone())
+        animated_popup_panel(
+            panel,
+            group_for_content.clone(),
+            presentation_motion.as_ref(),
+        )
     };
     let mut popup = Window::new("WaterUI Picker Menu", state_for_content, popup_content)
         .style(WindowStyle::Borderless)
@@ -1225,7 +1252,12 @@ fn color_picker_window_base(
             .spacing(gap)
             .padding_with(EdgeInsets::all(16.0))
             .background(RoundedRectangle::new(0.05).fill(Color::new(Surface).with_opacity(0.96)));
-        animated_popup_panel(panel, group_for_content.clone())
+        animated_popup_panel(
+            panel,
+            group_for_content.clone(),
+            #[cfg(feature = "menu")]
+            None,
+        )
     };
     let mut popup = Window::new("WaterUI Color Picker", state_for_content, popup_content)
         .style(WindowStyle::Borderless)
@@ -1436,7 +1468,12 @@ fn date_picker_window_base(
             .spacing(16.0)
             .padding_with(EdgeInsets::all(24.0))
             .background(RoundedRectangle::new(0.04).fill(Color::new(Surface).with_opacity(0.96)));
-        animated_popup_panel(panel, group_for_content.clone())
+        animated_popup_panel(
+            panel,
+            group_for_content.clone(),
+            #[cfg(feature = "menu")]
+            None,
+        )
     };
     let mut popup = Window::new("WaterUI Date Picker", state_for_content, popup_content)
         .style(WindowStyle::Borderless)
@@ -1992,6 +2029,8 @@ impl<E: crate::text::TextEngine> Default for PopupMenuState<E> {
             node_picker_menus: Vec::default(),
             anchored_overlays: Vec::default(),
             presented_anchored_overlays: Vec::default(),
+            #[cfg(feature = "menu")]
+            active_menu_presentation: None,
             #[cfg(waterui_feature = "dialog")]
             dialog_stack: DialogStack::default(),
             #[cfg(waterui_feature = "dialog")]

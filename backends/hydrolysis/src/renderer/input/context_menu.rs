@@ -13,6 +13,8 @@
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::renderer::chrome::record_surface_at_rest;
+use crate::theme::MenuPresentationSample;
 
 /// Gap between the lifted preview and its accessory, in logical points.
 pub const CONTEXT_MENU_ACCESSORY_GAP: f64 = 8.0;
@@ -649,18 +651,22 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         // container colour, radius and elevation — the same Material surface
         // the drawn text context menu gets.
         {
-            self.scene_mut().record_picture(transform, |draw| {
-                crate::renderer::chrome::record_surface_at_rest(
-                    menu.panel(),
-                    &mut *draw,
-                    presentation.menu_frame,
-                );
+            let panel_sample = MenuPresentationSample::at_rest(
+                presentation.source_bounds,
+                presentation.menu_frame,
+            );
+            self.draw_context(RenderContext::new(transform, window), |draw| {
+                if !menu.record_presentation_panel(draw, &panel_sample) {
+                    record_surface_at_rest(menu.panel(), draw, presentation.menu_frame);
+                }
                 if let Some(accessory_frame) = presentation.accessory_frame {
-                    crate::renderer::chrome::record_surface_at_rest(
-                        menu.panel(),
-                        &mut *draw,
+                    let accessory_sample = MenuPresentationSample::at_rest(
+                        presentation.source_bounds,
                         accessory_frame,
                     );
+                    if !menu.record_presentation_panel(draw, &accessory_sample) {
+                        record_surface_at_rest(menu.panel(), draw, accessory_frame);
+                    }
                 }
             });
         }
