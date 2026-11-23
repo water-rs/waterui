@@ -156,6 +156,7 @@ mod tests {
     use objc2_core_graphics::{
         CGBitmapContextCreateImage, kCGColorSpaceDisplayP3, kCGColorSpaceSRGB,
     };
+    use png::{BitDepth, ColorType, Encoder, Info, SrgbRenderingIntent};
 
     use super::*;
 
@@ -326,13 +327,13 @@ mod tests {
 
     #[test]
     fn srgb_chunk_and_display_p3_iccp_match_in_linear_p3() {
-        let mut srgb_info = png::Info::with_size(1, 1);
-        srgb_info.bit_depth = png::BitDepth::Eight;
-        srgb_info.color_type = png::ColorType::Rgba;
-        srgb_info.srgb = Some(png::SrgbRenderingIntent::Perceptual);
+        let mut srgb_info = Info::with_size(1, 1);
+        srgb_info.bit_depth = BitDepth::Eight;
+        srgb_info.color_type = ColorType::Rgba;
+        srgb_info.srgb = Some(SrgbRenderingIntent::Perceptual);
         let mut srgb_bytes = Vec::new();
         {
-            let mut writer = png::Encoder::with_info(&mut srgb_bytes, srgb_info)
+            let mut writer = Encoder::with_info(&mut srgb_bytes, srgb_info)
                 .unwrap()
                 .write_header()
                 .unwrap();
@@ -343,13 +344,13 @@ mod tests {
         // SAFETY: The system color-space constant is immutable.
         let p3_space = CGColorSpace::with_name(Some(unsafe { kCGColorSpaceDisplayP3 })).unwrap();
         let p3_profile = CGColorSpace::icc_data(Some(&p3_space)).unwrap().to_vec();
-        let mut p3_info = png::Info::with_size(1, 1);
-        p3_info.bit_depth = png::BitDepth::Eight;
-        p3_info.color_type = png::ColorType::Rgba;
+        let mut p3_info = Info::with_size(1, 1);
+        p3_info.bit_depth = BitDepth::Eight;
+        p3_info.color_type = ColorType::Rgba;
         p3_info.icc_profile = Some(Cow::Owned(p3_profile));
         let mut p3_bytes = Vec::new();
         {
-            let mut writer = png::Encoder::with_info(&mut p3_bytes, p3_info)
+            let mut writer = Encoder::with_info(&mut p3_bytes, p3_info)
                 .unwrap()
                 .write_header()
                 .unwrap();
