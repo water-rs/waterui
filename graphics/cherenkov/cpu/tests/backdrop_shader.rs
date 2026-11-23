@@ -6,8 +6,8 @@
 
 use cherenkov::kurbo::{Affine, Point, Rect, RoundedRect};
 use cherenkov::{
-    BackdropEffect, BackdropShaderSource, BackdropSpec, BackdropUnion, CaptureLevels, CaptureScale,
-    Draw, Engine, FrameTime, Offscreen, OffscreenFormat, WorkingColor,
+    BackdropEffect, BackdropOuter, BackdropShaderSource, BackdropSpec, BackdropUnion,
+    CaptureLevels, CaptureScale, Draw, Engine, FrameTime, Offscreen, OffscreenFormat, WorkingColor,
 };
 use cherenkov_cpu::{Raster, RasterConfig};
 use cherenkov_oracle::F32Image;
@@ -240,4 +240,164 @@ fn an_invalid_shader_is_rejected_at_registration() {
         matches!(error, cherenkov::ResourceError::Shader(_)),
         "{error}"
     );
+}
+
+#[test]
+fn backdrop_sibling_reads_adjacent_emitting_member_sdf_normal_and_emission() {
+    let engine = engine();
+    let shader = engine
+        .backdrop_shader(BackdropShaderSource::wgsl(
+            "fn backdrop_effect(px: BackdropPixel, params: array<vec4<f32>, 16>) -> vec4<f32> {
+                let n = backdrop_sibling_count();
+                let self_idx = backdrop_sibling_index();
+                let oob = backdrop_sibling(n, px.p);
+                if n != 2u || oob.sdf != 0.0 || oob.normal.x != 0.0 || oob.normal.y != 0.0
+                    || any(oob.emission != vec4<f32>(0.0)) {
+                    return vec4<f32>(1.0, 0.0, 0.0, 1.0);
+                }
+                for (var i = 0u; i < n; i = i + 1u) {
+                    if i == self_idx {
+                        continue;
+                    }
+                    let sib = backdrop_sibling(i, px.p);
+                    if params[0].x > 0.5 {
+                        return vec4<f32>(sib.emission.rgb, max(sib.emission.a, 1.0));
+                    }
+                    if abs(sib.emission.a - select(1.0, 0.0, self_idx == 1u)) > 0.001 {
+                        return vec4<f32>(1.0, 0.0, 0.0, 1.0);
+                    }
+                    return vec4<f32>(
+                        sib.sdf / 20.0,
+                        sib.normal.x * 0.5 + 0.5,
+                        sib.normal.y * 0.5 + 0.5,
+                        1.0,
+                    );
+                }
+                return vec4<f32>(1.0, 0.0, 0.0, 1.0);
+            }",
+        ))
+        .expect("shader");
+    let surface = engine
+        .surface(Offscreen::new((48, 32), OffscreenFormat::LinearF32), || {})
+        .expect("surface");
+    let group = surface.backdrop_group_unfiltered(
+        BackdropSpec::FULL.union(BackdropUnion::new(20.0).expect("union")),
+    );
+    let a = surface.layer();
+    let b = surface.layer();
+    let emit = [0.25, 0.5, 0.75, 1.0];
+    let set_mode = |mode: f32| {
+        surface.update(|tx| {
+            tx[surface.root()].content(surface.record(|r| {
+                r.fill(
+                    Rect::new(0.0, 0.0, 48.0, 32.0),
+                    WorkingColor::new([0.0, 0.0, 0.0, 0.0]),
+                );
+            }));
+            tx[surface.root()].push(&a);
+            tx[&a]
+                .clip(Rect::new(4.0, 8.0, 20.0, 24.0))
+                .backdrop(group.sample_with(shader.effect(vec![mode])));
+            tx[surface.root()].push(&b);
+            tx[&b]
+                .clip(Rect::new(26.0, 8.0, 42.0, 24.0))
+                .backdrop(group.sample_with(shader.effect(vec![mode])).emission(emit));
+        });
+        engine.render(FrameTime::now()).expect("render");
+        surface.readback().expect("readback")
+    };
+    let sdf_readback = set_mode(0.0);
+    let px = |rb: &cherenkov::Readback, x: usize, y: usize| rb.pixels[y * rb.width as usize + x];
+    let pa = px(&sdf_readback, 16, 16);
+    assert!(pa[0].mul_add(20.0, -9.5).abs() <= 0.01);
+    assert!((pa[1].mul_add(2.0, -1.0) + 1.0).abs() <= 0.01);
+    assert!(pa[2].mul_add(2.0, -1.0).abs() <= 0.01);
+    let pb = px(&sdf_readback, 34, 16);
+    assert!(pb[0].mul_add(20.0, -14.5).abs() <= 0.01);
+    assert!((pb[1].mul_add(2.0, -1.0) - 1.0).abs() <= 0.01);
+    assert!(pb[2].mul_add(2.0, -1.0).abs() <= 0.01);
+
+    let emit_readback = set_mode(1.0);
+    for (c, (actual, expected)) in px(&emit_readback, 16, 16)[..3]
+        .iter()
+        .zip(&emit[..3])
+        .enumerate()
+    {
+        assert!(
+            (actual - expected).abs() <= 0.002,
+            "channel {c}: {actual} vs {expected}"
+        );
+    }
+    for (c, actual) in px(&emit_readback, 34, 16)[..3].iter().enumerate() {
+        assert!(actual.abs() <= 0.002, "channel {c}: {actual}");
+    }
+}
+
+#[test]
+fn backdrop_sibling_non_union_and_non_emitting_union_return_zero() {
+    let engine = engine();
+    let non_union_shader = engine
+        .backdrop_shader(BackdropShaderSource::wgsl(
+            "fn backdrop_effect(px: BackdropPixel, params: array<vec4<f32>, 16>) -> vec4<f32> {
+                let s = backdrop_sibling(0u, px.p);
+                if backdrop_sibling_count() == 0u && backdrop_sibling_index() == 0u
+                    && s.sdf == 0.0 && all(s.normal == vec2<f32>(0.0))
+                    && all(s.emission == vec4<f32>(0.0)) {
+                    return vec4<f32>(0.0, 1.0, 0.0, 1.0);
+                }
+                return vec4<f32>(1.0, 0.0, 0.0, 1.0);
+            }",
+        ))
+        .expect("shader");
+    let union_shader = engine
+        .backdrop_shader(BackdropShaderSource::wgsl(
+            "fn backdrop_effect(px: BackdropPixel, params: array<vec4<f32>, 16>) -> vec4<f32> {
+                if backdrop_sibling_count() != 2u || backdrop_sibling_index() != 0u {
+                    return vec4<f32>(1.0, 0.0, 0.0, 1.0);
+                }
+                let sib = backdrop_sibling(1u, px.p);
+                if sib.sdf > 0.0 && all(sib.emission == vec4<f32>(0.0)) {
+                    return vec4<f32>(0.0, 1.0, 0.0, 1.0);
+                }
+                return vec4<f32>(1.0, 0.0, 0.0, 1.0);
+            }",
+        ))
+        .expect("shader");
+    let surface = engine
+        .surface(Offscreen::new((48, 32), OffscreenFormat::LinearF32), || {})
+        .expect("surface");
+    let solo_group = surface.backdrop_group_unfiltered(BackdropSpec::FULL);
+    let union_group = surface.backdrop_group_unfiltered(
+        BackdropSpec::FULL.union(BackdropUnion::new(20.0).expect("union")),
+    );
+    let solo = surface.layer();
+    let u0 = surface.layer();
+    let u1 = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.fill(
+                Rect::new(0.0, 0.0, 48.0, 32.0),
+                WorkingColor::new([0.0, 0.0, 0.0, 0.0]),
+            );
+        }));
+        tx[surface.root()].push(&solo);
+        tx[&solo].clip(Rect::new(4.0, 4.0, 16.0, 16.0)).backdrop(
+            solo_group
+                .sample_with(non_union_shader.effect(Vec::new()))
+                .outer(BackdropOuter::new(2.0).expect("outer")),
+        );
+        tx[surface.root()].push(&u0);
+        tx[&u0]
+            .clip(Rect::new(4.0, 20.0, 20.0, 30.0))
+            .backdrop(union_group.sample_with(union_shader.effect(Vec::new())));
+        tx[surface.root()].push(&u1);
+        tx[&u1]
+            .clip(Rect::new(26.0, 20.0, 42.0, 30.0))
+            .backdrop(union_group.sample());
+    });
+    engine.render(FrameTime::now()).expect("render");
+    let readback = surface.readback().expect("readback");
+    let px = |x: usize, y: usize| readback.pixels[y * readback.width as usize + x];
+    assert!((px(10, 10)[1] - 1.0).abs() <= 0.002 && px(10, 10)[0].abs() <= 0.002);
+    assert!((px(12, 25)[1] - 1.0).abs() <= 0.002 && px(12, 25)[0].abs() <= 0.002);
 }

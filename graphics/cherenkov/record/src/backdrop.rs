@@ -14,6 +14,7 @@
 
 use crate::union_cap;
 
+use std::array::from_fn;
 use std::borrow::Cow;
 
 use crate::BackdropShaderId;
@@ -496,9 +497,7 @@ impl AnimLanes for BackdropSample {
         let (effect, emission_offset) = match self.effect.as_ref() {
             None => (None, 1),
             Some(BackdropEffect::Color(_)) => (
-                Some(BackdropEffect::Color(ColorMatrix(std::array::from_fn(
-                    |i| lane(1 + i),
-                )))),
+                Some(BackdropEffect::Color(ColorMatrix(from_fn(|i| lane(1 + i))))),
                 1 + 12,
             ),
             Some(BackdropEffect::Refraction(_)) => (
@@ -511,7 +510,7 @@ impl AnimLanes for BackdropSample {
             Some(BackdropEffect::Rim(_)) => (
                 Some(BackdropEffect::Rim(Rim {
                     width: positive(1),
-                    color: std::array::from_fn(|i| lane(2 + i)),
+                    color: from_fn(|i| lane(2 + i)),
                     gain: lane(6),
                 })),
                 1 + 6,
@@ -538,7 +537,7 @@ impl AnimLanes for BackdropSample {
             effect,
             outer: BackdropOuter(lane(0).max(0.0)),
             recording_scale: self.recording_scale,
-            emission: std::array::from_fn(|i| lane(emission_offset + i)),
+            emission: from_fn(|i| lane(emission_offset + i)),
         }
     }
 }

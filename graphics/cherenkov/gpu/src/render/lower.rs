@@ -2687,6 +2687,12 @@ impl<'a> Lowering<'a> {
         );
         let spec = groups[&g].spec;
         let outer = sample.outer_extent().get();
+        let emission = sample.member_emission();
+        if !emission.into_iter().all(f32::is_finite) {
+            return Err(RenderError::Render(
+                "backdrop emission has a non-finite entry".into(),
+            ));
+        }
         // A union-field member's own clip is a group datum the
         // composite reads back through the union records in `stops`:
         // its analytic shape and inverse must exist — a path clip has
@@ -2738,7 +2744,7 @@ impl<'a> Lowering<'a> {
                 record,
                 outer,
                 reach: reach.unwrap_or(0.0),
-                emission: sample.member_emission(),
+                emission,
             },
         );
         let anchored = spec.anchor_layer().is_some();
@@ -7517,7 +7523,7 @@ fn plan_union(plan: &mut BackdropPlan, stops: &mut Vec<Stop>) -> Result<(), Rend
         let has_emission = plan
             .members
             .values()
-            .any(|m| m.emission.into_iter().any(|v| v.abs() > 0.0 || v.is_nan()));
+            .any(|m| m.emission.into_iter().any(|v| v.abs() > 0.0));
         let base = stops.len() as u32;
         stops.push(Stop {
             color: [k, n as f32, f32::from(u8::from(has_emission)), 1.0],

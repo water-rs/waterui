@@ -1977,6 +1977,29 @@ impl crate::shader::BackdropReads for MemberReads<'_> {
             },
         )
     }
+
+    fn sibling_count(&self) -> u32 {
+        self.union.map_or(0, |(members, _, _)| {
+            u32::try_from(members.len()).expect("union member count fits in u32")
+        })
+    }
+
+    fn sibling_index(&self) -> u32 {
+        self.union.map_or(0, |(_, _, ord)| {
+            u32::try_from(ord).expect("union member index fits in u32")
+        })
+    }
+
+    fn sibling(&self, index: u32, q: [f64; 2]) -> (f64, [f64; 2], [f64; 4]) {
+        let Some((members, _, _)) = self.union else {
+            return (0.0, [0.0, 0.0], [0.0; 4]);
+        };
+        let Some((shape, clip_tf)) = members.get(index as usize) else {
+            return (0.0, [0.0, 0.0], [0.0; 4]);
+        };
+        let (d, n) = crate::sdf::distance_and_normal(shape, clip_tf, q);
+        (d, n, [0.0; 4])
+    }
 }
 
 /// `backdrop_sample(q)`: the capture's bilinear read at device point `q`,

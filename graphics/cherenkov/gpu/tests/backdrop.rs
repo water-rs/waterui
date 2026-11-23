@@ -1,10 +1,12 @@
 //! Backdrop groups: bounded f16 captures sampled by member layers.
 
+use std::error::Error;
+
 use cherenkov::kurbo::{Affine, Circle, Ellipse, Rect, RoundedRect};
 use cherenkov::{__engine_fn as split_fn, __engine_test as split_test, __engine_wait as wait};
 use cherenkov::{
-    BackdropOuter, Bytes, Draw, Engine, FrameTime, Offscreen, OffscreenFormat, Pressure,
-    WorkingColor,
+    BackdropOuter, BackdropShaderSource, BackdropSpec, BackdropUnion, Bytes, Draw, Engine,
+    FrameTime, Offscreen, OffscreenFormat, Pressure, RenderError, WorkingColor,
 };
 use cherenkov_gpu::{Gpu, GpuConfig};
 use cherenkov_oracle::metrics::{assert_f16_close, assert_images_match};
@@ -4441,9 +4443,9 @@ split_test! {
 /// Union members query adjacent siblings' SDF, outward unit normal, and
 /// optional emission via `backdrop_sibling_count`, `backdrop_sibling_index`,
 /// and `backdrop_sibling`, skipping `self_idx` and guarding out-of-bounds.
-fn backdrop_sibling_reads_adjacent_emitting_member_sdf_normal_and_emission() -> Result<(), Box<dyn std::error::Error>> {
+fn backdrop_sibling_reads_adjacent_emitting_member_sdf_normal_and_emission() -> Result<(), Box<dyn Error>> {
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
-    let shader = engine.backdrop_shader(cherenkov::BackdropShaderSource::wgsl(
+    let shader = engine.backdrop_shader(BackdropShaderSource::wgsl(
         "fn backdrop_effect(px: BackdropPixel, params: array<vec4<f32>, 16>) -> vec4<f32> {
             let n = backdrop_sibling_count();
             let self_idx = backdrop_sibling_index();
@@ -4475,8 +4477,8 @@ fn backdrop_sibling_reads_adjacent_emitting_member_sdf_normal_and_emission() -> 
     ))?;
     let surface = wait!(engine.surface(Offscreen::new((48, 32), OffscreenFormat::LinearF32), || {}))?;
     let group = surface.backdrop_group_unfiltered(
-        cherenkov::BackdropSpec::FULL
-            .union(cherenkov::BackdropUnion::new(20.0).expect("union")),
+        BackdropSpec::FULL
+            .union(BackdropUnion::new(20.0).expect("union")),
     );
     let a = surface.layer();
     let b = surface.layer();
@@ -4532,9 +4534,9 @@ split_test! {
 /// Without a union (including a lone `outer` member) `backdrop_sibling_count`
 /// returns `0u` and `backdrop_sibling` returns zero; in a union with no
 /// emission set, every sibling reports zero emission.
-fn backdrop_sibling_non_union_and_non_emitting_union_return_zero() -> Result<(), Box<dyn std::error::Error>> {
+fn backdrop_sibling_non_union_and_non_emitting_union_return_zero() -> Result<(), Box<dyn Error>> {
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
-    let non_union_shader = engine.backdrop_shader(cherenkov::BackdropShaderSource::wgsl(
+    let non_union_shader = engine.backdrop_shader(BackdropShaderSource::wgsl(
         "fn backdrop_effect(px: BackdropPixel, params: array<vec4<f32>, 16>) -> vec4<f32> {
             let s = backdrop_sibling(0u, px.p);
             if backdrop_sibling_count() == 0u && backdrop_sibling_index() == 0u
@@ -4545,7 +4547,7 @@ fn backdrop_sibling_non_union_and_non_emitting_union_return_zero() -> Result<(),
             return vec4<f32>(1.0, 0.0, 0.0, 1.0);
         }",
     ))?;
-    let union_shader = engine.backdrop_shader(cherenkov::BackdropShaderSource::wgsl(
+    let union_shader = engine.backdrop_shader(BackdropShaderSource::wgsl(
         "fn backdrop_effect(px: BackdropPixel, params: array<vec4<f32>, 16>) -> vec4<f32> {
             if backdrop_sibling_count() != 2u || backdrop_sibling_index() != 0u {
                 return vec4<f32>(1.0, 0.0, 0.0, 1.0);
@@ -4558,10 +4560,10 @@ fn backdrop_sibling_non_union_and_non_emitting_union_return_zero() -> Result<(),
         }",
     ))?;
     let surface = wait!(engine.surface(Offscreen::new((48, 32), OffscreenFormat::LinearF32), || {}))?;
-    let solo_group = surface.backdrop_group_unfiltered(cherenkov::BackdropSpec::FULL);
+    let solo_group = surface.backdrop_group_unfiltered(BackdropSpec::FULL);
     let union_group = surface.backdrop_group_unfiltered(
-        cherenkov::BackdropSpec::FULL
-            .union(cherenkov::BackdropUnion::new(20.0).expect("union")),
+        BackdropSpec::FULL
+            .union(BackdropUnion::new(20.0).expect("union")),
     );
     let solo = surface.layer();
     let u0 = surface.layer();
@@ -4579,7 +4581,7 @@ fn backdrop_sibling_non_union_and_non_emitting_union_return_zero() -> Result<(),
             .backdrop(
                 solo_group
                     .sample_with(non_union_shader.effect(Vec::new()))
-                    .outer(cherenkov::BackdropOuter::new(2.0).expect("outer")),
+                    .outer(BackdropOuter::new(2.0).expect("outer")),
             );
         tx[surface.root()].push(&u0);
         tx[&u0]
@@ -4603,9 +4605,9 @@ fn backdrop_sibling_non_union_and_non_emitting_union_return_zero() -> Result<(),
 split_test! {
 /// Changing a sibling's `emission` marks the sibling run dirty so adjacent
 /// members re-render without any edit to their own layer.
-fn backdrop_sibling_emission_change_rerenders_sibling() -> Result<(), Box<dyn std::error::Error>> {
+fn backdrop_sibling_emission_change_rerenders_sibling() -> Result<(), Box<dyn Error>> {
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
-    let shader = engine.backdrop_shader(cherenkov::BackdropShaderSource::wgsl(
+    let shader = engine.backdrop_shader(BackdropShaderSource::wgsl(
         "fn backdrop_effect(px: BackdropPixel, params: array<vec4<f32>, 16>) -> vec4<f32> {
             let sib = backdrop_sibling(1u, px.p);
             return vec4<f32>(sib.emission.rgb, 1.0);
@@ -4613,8 +4615,8 @@ fn backdrop_sibling_emission_change_rerenders_sibling() -> Result<(), Box<dyn st
     ))?;
     let surface = wait!(engine.surface(Offscreen::new((48, 32), OffscreenFormat::LinearF32), || {}))?;
     let group = surface.backdrop_group_unfiltered(
-        cherenkov::BackdropSpec::FULL
-            .union(cherenkov::BackdropUnion::new(20.0).expect("union")),
+        BackdropSpec::FULL
+            .union(BackdropUnion::new(20.0).expect("union")),
     );
     let a = surface.layer();
     let b = surface.layer();
@@ -4647,6 +4649,34 @@ fn backdrop_sibling_emission_change_rerenders_sibling() -> Result<(), Box<dyn st
     let px = pixel(&second, 12, 16);
     for (c, (actual, expected)) in px[..3].iter().zip(&next_emit[..3]).enumerate() {
         assert!((actual - expected).abs() <= 0.002, "channel {c}: {actual} vs {expected}");
+    }
+    Ok(())
+}
+}
+
+split_test! {
+/// Non-finite `BackdropSample::emission` values fail the frame at lowering
+/// time rather than reaching the union stop buffer.
+fn non_finite_backdrop_emission_fails_the_frame() -> Result<(), Box<dyn Error>> {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    for bad in [[f32::NAN, 0.0, 0.0, 1.0], [0.0, 0.0, f32::INFINITY, 1.0]] {
+        let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF32), || {}))?;
+        let group = surface.backdrop_group_unfiltered(
+            BackdropSpec::FULL
+                .union(BackdropUnion::new(20.0).expect("union")),
+        );
+        let member = surface.layer();
+        surface.update(|tx| {
+            tx[surface.root()].push(&member);
+            tx[&member]
+                .clip(Rect::new(4.0, 4.0, 28.0, 28.0))
+                .backdrop(group.sample().emission(bad));
+        });
+        let result = wait!(engine.render(FrameTime::now()));
+        assert!(
+            matches!(result, Err(RenderError::Render(_))),
+            "expected RenderError::Render for {bad:?}, got {result:?}",
+        );
     }
     Ok(())
 }

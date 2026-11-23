@@ -1130,34 +1130,72 @@ impl<S: Simd> cherenkov_shader::lanes::Host for BackdropHost<'_, S> {
         out: &mut [cherenkov_shader::lanes::Lanes],
         active: &cherenkov_shader::lanes::Mask,
     ) {
-        use crate::render::shader::{FIELD, SAMPLE, SAMPLE_LEVEL};
+        use crate::render::shader::{
+            FIELD, SAMPLE, SAMPLE_LEVEL, SIBLING, SIBLING_COUNT, SIBLING_INDEX,
+        };
+        let real_union = self.union.filter(|u| u.k > 0.0);
         for (l, &live) in active.iter().enumerate() {
             if !live {
                 continue;
             }
-            let values = match function {
-                SAMPLE => self.capture.read(
-                    self.simd,
-                    capture_sample(self.capture, args[0][l], args[1][l]),
-                ),
-                SAMPLE_LEVEL => self.capture.read(
-                    self.simd,
-                    capture_sample_level(self.capture, args[0][l], args[1][l], args[2][l]),
-                ),
+            match function {
+                SAMPLE => {
+                    let v = self.capture.read(
+                        self.simd,
+                        capture_sample(self.capture, args[0][l], args[1][l]),
+                    );
+                    for (slot, value) in out.iter_mut().zip(v) {
+                        slot[l] = value;
+                    }
+                }
+                SAMPLE_LEVEL => {
+                    let v = self.capture.read(
+                        self.simd,
+                        capture_sample_level(self.capture, args[0][l], args[1][l], args[2][l]),
+                    );
+                    for (slot, value) in out.iter_mut().zip(v) {
+                        slot[l] = value;
+                    }
+                }
                 FIELD => {
                     let (x, y) = (args[0][l], args[1][l]);
-                    if let Some(u) = self.union {
+                    let v = if let Some(u) = self.union {
                         let (d, nx, ny, w_own, _) = union_field_at(u, x, y);
                         [d, nx, ny, w_own]
                     } else {
                         let (d, nx, ny) = box_sdf_at(self.own, x, y);
                         [d, nx, ny, 1.0]
+                    };
+                    for (slot, value) in out.iter_mut().zip(v) {
+                        slot[l] = value;
+                    }
+                }
+                SIBLING_COUNT => {
+                    let count = real_union.map_or(0u32, |u| {
+                        u32::try_from(u.members.len()).expect("union member count fits in u32")
+                    });
+                    out[0][l] = f32::from_bits(count);
+                }
+                SIBLING_INDEX => {
+                    out[0][l] = f32::from_bits(real_union.map_or(0u32, |u| u.ord));
+                }
+                SIBLING => {
+                    let idx = args[0][l].to_bits() as usize;
+                    let (qx, qy) = (args[1][l], args[2][l]);
+                    let v = if let Some(u) = real_union
+                        && let Some(member) = u.members.get(idx)
+                    {
+                        let (d, nx, ny) = box_sdf_at(&member.clip, qx, qy);
+                        let em = member.emission;
+                        [d, nx, ny, em[0], em[1], em[2], em[3]]
+                    } else {
+                        [0.0; 7]
+                    };
+                    for (slot, value) in out.iter_mut().zip(v) {
+                        slot[l] = value;
                     }
                 }
                 other => unreachable!("the backdrop prelude declares no host function {other}"),
-            };
-            for (slot, value) in out.iter_mut().zip(values) {
-                slot[l] = value;
             }
         }
     }
@@ -1418,7 +1456,7 @@ fn union_field_at(
     // primitive for every pixel, including footprint-planning samples.
     let mut fields = ArrayVec::<_, MAX>::new();
     for member in union.members.iter() {
-        fields.push(box_sdf_at(member, x, y));
+        fields.push(box_sdf_at(&member.clip, x, y));
     }
     let count = fields.len();
     let ord = union.ord as usize;

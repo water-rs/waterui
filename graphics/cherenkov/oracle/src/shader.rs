@@ -170,6 +170,12 @@ pub trait BackdropReads {
     fn sample_level(&self, q: [f64; 2], level: f64) -> [f64; 4];
     /// `backdrop_field(q)`: `(sdf, normal, weight)`.
     fn field(&self, q: [f64; 2]) -> (f64, [f64; 2], f64);
+    /// `backdrop_sibling_count()`.
+    fn sibling_count(&self) -> u32;
+    /// `backdrop_sibling_index()`.
+    fn sibling_index(&self) -> u32;
+    /// `backdrop_sibling(i, q)`: `(sdf, normal, emission)`.
+    fn sibling(&self, index: u32, q: [f64; 2]) -> (f64, [f64; 2], [f64; 4]);
 }
 
 #[expect(
@@ -219,6 +225,27 @@ impl BackdropModule {
                 float_value(sdf),
                 vec_value(&normal),
                 float_value(weight),
+            ])
+        });
+        eval.host("backdrop_sibling_count", |_| {
+            Value::Int(i64::from(reads.sibling_count()))
+        });
+        eval.host("backdrop_sibling_index", |_| {
+            Value::Int(i64::from(reads.sibling_index()))
+        });
+        eval.host("backdrop_sibling", |args| {
+            let (sdf, normal, emission) = match args.first() {
+                Some(&Value::Int(index)) => u32::try_from(index)
+                    .ok()
+                    .map_or((0.0, [0.0, 0.0], [0.0; 4]), |i| {
+                        reads.sibling(i, point(&args[1]))
+                    }),
+                _ => (0.0, [0.0, 0.0], [0.0; 4]),
+            };
+            Value::Struct(vec![
+                float_value(sdf),
+                vec_value(&normal),
+                vec_value(&emission),
             ])
         });
         BackdropEval { eval }
