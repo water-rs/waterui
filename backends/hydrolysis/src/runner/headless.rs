@@ -46,19 +46,6 @@ pub(super) enum HeadlessSurface {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl HeadlessSurface {
-    /// A `width` x `height` sRGB RGBA8 target on `painter`.
-    #[cfg(any(
-        test,
-        all(
-            not(hydrolysis_winit),
-            not(hydrolysis_uikit),
-            not(target_os = "android")
-        )
-    ))]
-    pub(super) fn on_painter(painter: &OffscreenPainter, width: u32, height: u32) -> Self {
-        Self::on_painter_with_format(painter, width, height, HeadlessColorFormat::SdrSrgb)
-    }
-
     /// A `width` x `height` target on `painter` configured for `color_format`.
     pub(super) fn on_painter_with_format(
         painter: &OffscreenPainter,

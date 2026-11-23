@@ -1204,6 +1204,13 @@ impl HeadlessHdrSnapshot {
 /// HDR extended linear Display P3 `f32` RGBA.
 #[derive(Debug)]
 #[cfg(hydrolysis_cherenkov)]
+#[cfg_attr(
+    target_arch = "wasm32",
+    expect(
+        dead_code,
+        reason = "browser surfaces never read back headless snapshots"
+    )
+)]
 pub(super) enum CapturedSnapshot {
     Sdr(HeadlessSnapshot),
     Hdr(HeadlessHdrSnapshot),

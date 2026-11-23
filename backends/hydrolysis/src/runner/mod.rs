@@ -427,6 +427,9 @@ pub fn run<W: Windows, M: AppMenuBar>(
     env: Environment,
     style: impl crate::Style,
 ) {
+    use crate::platform::HeadlessColorFormat;
+    use headless::HeadlessSurface;
+
     init_tracing();
     #[cfg(hydrolysis_inspector)]
     let inspector = init_main_thread_executors();
@@ -516,8 +519,11 @@ pub fn run<W: Windows, M: AppMenuBar>(
         let frame = crate::platform::validated_window_frame(window.frame.snapshot());
         let width = crate::num_cast::f32_as_u32(frame.width().max(1.0));
         let height = crate::num_cast::f32_as_u32(frame.height().max(1.0));
-        let mut platform = OffscreenWindow::new(headless::HeadlessSurface::on_painter(
-            &painter, width, height,
+        let mut platform = OffscreenWindow::new(HeadlessSurface::on_painter_with_format(
+            &painter,
+            width,
+            height,
+            HeadlessColorFormat::SdrSrgb,
         ))
         .with_scale_factor(offscreen_scale_factor());
         platform.apply_properties(&window);
