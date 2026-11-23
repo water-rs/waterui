@@ -7,8 +7,8 @@ use accesskit::{
     ActionRequest as AccessibilityActionRequest, TreeId as AccessibilityTreeId,
 };
 use hydrolysis::{
-    AccessibilityActivationPointError, FontFamilyResolution, HeadlessRuntime, KeyCode, Modifiers,
-    PainterUnavailable, PointerKind, SemanticRuntime, Style,
+    AccessibilityActivationPointError, FontFamilyResolution, HeadlessColorFormat, HeadlessRuntime,
+    KeyCode, Modifiers, PainterUnavailable, PointerKind, SemanticRuntime, Style,
 };
 use waterui::app::{App, AppMenuBar, AppParts, WindowSink, Windows};
 use waterui::window::{Window, WindowChannel, WindowToolbar};
@@ -25,7 +25,7 @@ use crate::perf::{PerfApp, PerfConfig, PerfReport};
 use crate::query::Query;
 use crate::selector::{ElementAnchor, ElementRef, ElementSet, Selector};
 use crate::semantics::{NodeId, TreeSnapshot};
-use crate::snapshot::Snapshot;
+use crate::snapshot::{HdrSnapshot, Snapshot};
 use crate::wait::{Expectation, ExpectationKind, WaitOptions, WaitResult};
 
 /// The style state of a [`UiBuilder`] that carries none: `ui()`'s starting
@@ -111,6 +111,7 @@ pub struct UiBuilder<S = NoStyle> {
     style: S,
     perf_config: PerfConfig,
     scale_factor: f64,
+    hdr: bool,
 }
 
 impl<S> core::fmt::Debug for UiBuilder<S> {
@@ -120,6 +121,7 @@ impl<S> core::fmt::Debug for UiBuilder<S> {
             .field("height", &self.height)
             .field("perf_config", &self.perf_config)
             .field("scale_factor", &self.scale_factor)
+            .field("hdr", &self.hdr)
             .finish_non_exhaustive()
     }
 }
@@ -141,6 +143,7 @@ impl UiBuilder<NoStyle> {
             style: NoStyle,
             perf_config: PerfConfig::default(),
             scale_factor: 1.0,
+            hdr: false,
         }
     }
 
@@ -160,6 +163,7 @@ impl UiBuilder<NoStyle> {
             style: Styled { style },
             perf_config: self.perf_config,
             scale_factor: self.scale_factor,
+            hdr: self.hdr,
         }
     }
 
@@ -232,6 +236,18 @@ impl<S> UiBuilder<S> {
     #[must_use]
     pub const fn scale_factor(mut self, scale_factor: f64) -> Self {
         self.scale_factor = scale_factor;
+        self
+    }
+
+    /// Configures whether rendered mounts capture extended linear Display P3
+    /// HDR (`Rgba16Float`) frames instead of 8-bit SDR sRGB.
+    ///
+    /// Defaults to `false`. When enabled, [`OffscreenApp::snapshot_hdr`] and
+    /// [`OffscreenApp::start_hdr_frame_recording`] return unclamped
+    /// [`HdrSnapshot`] frames. Applies only to rendered mounts.
+    #[must_use]
+    pub const fn hdr(mut self, hdr: bool) -> Self {
+        self.hdr = hdr;
         self
     }
 
@@ -354,6 +370,7 @@ impl<S: Style> UiBuilder<Styled<S>> {
             style: Styled { style },
             perf_config,
             scale_factor,
+            hdr,
         } = self;
         (
             UiBuilder {
@@ -363,6 +380,7 @@ impl<S: Style> UiBuilder<Styled<S>> {
                 style: NoStyle,
                 perf_config,
                 scale_factor,
+                hdr,
             },
             style,
         )
@@ -497,17 +515,24 @@ impl<S: Style> UiBuilder<Styled<S>> {
             height,
             style,
             scale_factor,
+            hdr,
             ..
         } = self;
         let ledger = ContentLedger::new();
         env.insert(ledger.clone());
-        let runtime = HeadlessRuntime::new(
+        let color_format = if hdr {
+            HeadlessColorFormat::HdrLinearDisplayP3
+        } else {
+            HeadlessColorFormat::SdrSrgb
+        };
+        let runtime = HeadlessRuntime::new_with_format(
             env,
             content,
             width,
             height,
             style.style,
             FontFamilyResolution::Strict,
+            color_format,
         )
         .unwrap_or_else(|error| no_painter(error));
         Self::wrap_rendered(runtime, width, height, scale_factor, ledger)
@@ -530,17 +555,24 @@ impl<S: Style> UiBuilder<Styled<S>> {
             height,
             style,
             scale_factor,
+            hdr,
             ..
         } = self;
         let ledger = ContentLedger::new();
         env.insert(ledger.clone());
-        let runtime = HeadlessRuntime::new_with_window(
+        let color_format = if hdr {
+            HeadlessColorFormat::HdrLinearDisplayP3
+        } else {
+            HeadlessColorFormat::SdrSrgb
+        };
+        let runtime = HeadlessRuntime::new_with_window_and_format(
             env,
             window,
             width,
             height,
             style.style,
             FontFamilyResolution::Strict,
+            color_format,
         )
         .unwrap_or_else(|error| no_painter(error));
         Self::wrap_rendered(runtime, width, height, scale_factor, ledger)
@@ -746,7 +778,36 @@ impl OffscreenApp {
             fps,
             origin,
             next_frame_index: 1,
-            sink: Box::new(sink),
+            sink: FrameSink::Sdr(Box::new(sink)),
+        });
+    }
+
+    /// Starts recording unclamped extended linear Display P3 HDR snapshots at a
+    /// fixed `fps` across subsequent virtual-clock pumps, emitting the initial
+    /// settled frame immediately at `Duration::ZERO`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `fps` is zero or if this session was not mounted with
+    /// [`UiBuilder::hdr`] enabled.
+    pub fn start_hdr_frame_recording(
+        &mut self,
+        fps: u32,
+        mut sink: impl FnMut(HdrSnapshot, Duration) + 'static,
+    ) {
+        assert!(
+            fps > 0,
+            "waterui-testing frame recording fps must be greater than zero"
+        );
+        let origin = self.app.clock.unwrap_or_else(Instant::now);
+        self.app.clock = Some(origin);
+        let initial = self.app.capture_hdr_frame_at(origin);
+        sink(initial, Duration::ZERO);
+        self.app.frame_recorder = Some(FrameRecorder {
+            fps,
+            origin,
+            next_frame_index: 1,
+            sink: FrameSink::Hdr(Box::new(sink)),
         });
     }
 
@@ -795,6 +856,18 @@ impl OffscreenApp {
     /// skipped it, or the device is lost past the runtime's recovery budget.
     pub fn snapshot(&mut self) -> Snapshot {
         self.app.capture_frame()
+    }
+
+    /// Captures the latest extended linear Display P3 HDR snapshot from the
+    /// offscreen renderer.
+    ///
+    /// # Panics
+    ///
+    /// Panics if this session was not mounted with [`UiBuilder::hdr`] enabled,
+    /// if a capture frame carries no snapshot and no device loss skipped it, or
+    /// if the device is lost past the runtime's recovery budget.
+    pub fn snapshot_hdr(&mut self) -> HdrSnapshot {
+        self.app.capture_hdr_frame()
     }
 
     /// Captures a snapshot and stores it in `WaterUI`'s canonical artifact layout.
@@ -848,41 +921,92 @@ impl core::ops::DerefMut for OffscreenApp {
     }
 }
 
+#[derive(Clone)]
+enum CapturedFrame {
+    Sdr(Snapshot),
+    Hdr(HdrSnapshot),
+}
+
+impl CapturedFrame {
+    fn into_sdr(self) -> Snapshot {
+        match self {
+            Self::Sdr(snapshot) => snapshot,
+            Self::Hdr(hdr) => hdr.to_sdr_snapshot(),
+        }
+    }
+
+    fn into_hdr(self) -> HdrSnapshot {
+        match self {
+            Self::Hdr(hdr) => hdr,
+            Self::Sdr(_) => {
+                panic!("waterui-testing HDR capture requires mounting with `UiBuilder::hdr(true)`")
+            }
+        }
+    }
+}
+
+enum FrameSink {
+    Sdr(Box<dyn FnMut(Snapshot, Duration)>),
+    Hdr(Box<dyn FnMut(HdrSnapshot, Duration)>),
+}
+
 pub struct FrameRecorder {
     fps: u32,
     origin: Instant,
     next_frame_index: u64,
-    sink: Box<dyn FnMut(Snapshot, Duration)>,
+    sink: FrameSink,
 }
 
 impl FrameRecorder {
-    fn slot_nanos(&self, frame_index: u64) -> u128 {
-        (u128::from(frame_index) * 1_000_000_000) / u128::from(self.fps)
+    fn slot_nanos(fps: u32, frame_index: u64) -> u128 {
+        (u128::from(frame_index) * 1_000_000_000) / u128::from(fps)
     }
 
     fn needs_capture(&self, at: Instant) -> bool {
         let elapsed_ns = at.saturating_duration_since(self.origin).as_nanos();
-        elapsed_ns >= self.slot_nanos(self.next_frame_index)
+        elapsed_ns >= Self::slot_nanos(self.fps, self.next_frame_index)
     }
 
-    fn record(&mut self, at: Instant, snapshot: Snapshot) {
+    fn record(&mut self, at: Instant, frame: CapturedFrame) {
+        let fps = self.fps;
         let elapsed_ns = at.saturating_duration_since(self.origin).as_nanos();
         let mut last_index = self.next_frame_index;
-        while self.slot_nanos(last_index + 1) <= elapsed_ns {
+        while Self::slot_nanos(fps, last_index + 1) <= elapsed_ns {
             last_index += 1;
         }
-        for index in self.next_frame_index..last_index {
-            let ts = Duration::from_nanos(
-                u64::try_from(self.slot_nanos(index))
-                    .expect("recorded frame timestamp fits u64 nanoseconds"),
-            );
-            (self.sink)(snapshot.clone(), ts);
+        let range = self.next_frame_index..last_index;
+        match &mut self.sink {
+            FrameSink::Sdr(sink) => {
+                let snapshot = frame.into_sdr();
+                for index in range {
+                    let ts = Duration::from_nanos(
+                        u64::try_from(Self::slot_nanos(fps, index))
+                            .expect("recorded frame timestamp fits u64 nanoseconds"),
+                    );
+                    sink(snapshot.clone(), ts);
+                }
+                let ts = Duration::from_nanos(
+                    u64::try_from(Self::slot_nanos(fps, last_index))
+                        .expect("recorded frame timestamp fits u64 nanoseconds"),
+                );
+                sink(snapshot, ts);
+            }
+            FrameSink::Hdr(sink) => {
+                let snapshot = frame.into_hdr();
+                for index in range {
+                    let ts = Duration::from_nanos(
+                        u64::try_from(Self::slot_nanos(fps, index))
+                            .expect("recorded frame timestamp fits u64 nanoseconds"),
+                    );
+                    sink(snapshot.clone(), ts);
+                }
+                let ts = Duration::from_nanos(
+                    u64::try_from(Self::slot_nanos(fps, last_index))
+                        .expect("recorded frame timestamp fits u64 nanoseconds"),
+                );
+                sink(snapshot, ts);
+            }
         }
-        let ts = Duration::from_nanos(
-            u64::try_from(self.slot_nanos(last_index))
-                .expect("recorded frame timestamp fits u64 nanoseconds"),
-        );
-        (self.sink)(snapshot, ts);
         self.next_frame_index = last_index + 1;
     }
 
@@ -1739,31 +1863,49 @@ impl<R: RuntimeDriver> SemanticApp<R> {
     /// Panics when a capture frame carries no snapshot and no device loss
     /// skipped it.
     pub(crate) fn capture_frame(&mut self) -> Snapshot {
-        let _ = crate::executor::drain_parked_local_work();
+        let _ = drain_parked_local_work();
         let at = self.tick(self.recording_step_cap());
-        let (_rebuilt, snapshot) = self.pump_capture_at(at);
+        let (_rebuilt, frame) = self.pump_capture_at(at);
         if let Some(recorder) = &mut self.frame_recorder
             && recorder.needs_capture(at)
         {
-            recorder.record(at, snapshot.clone());
+            recorder.record(at, frame.clone());
         }
-        snapshot
+        frame.into_sdr()
+    }
+
+    pub(crate) fn capture_hdr_frame(&mut self) -> HdrSnapshot {
+        let _ = drain_parked_local_work();
+        let at = self.tick(self.recording_step_cap());
+        let (_rebuilt, frame) = self.pump_capture_at(at);
+        if let Some(recorder) = &mut self.frame_recorder
+            && recorder.needs_capture(at)
+        {
+            recorder.record(at, frame.clone());
+        }
+        frame.into_hdr()
     }
 
     pub(crate) fn capture_frame_at(&mut self, at: Instant) -> Snapshot {
         let _ = drain_parked_local_work();
-        let (_rebuilt, snapshot) = self.pump_capture_at(at);
-        snapshot
+        let (_rebuilt, frame) = self.pump_capture_at(at);
+        frame.into_sdr()
     }
 
-    fn pump_capture_at(&mut self, at: Instant) -> (bool, Snapshot) {
+    pub(crate) fn capture_hdr_frame_at(&mut self, at: Instant) -> HdrSnapshot {
+        let _ = drain_parked_local_work();
+        let (_rebuilt, frame) = self.pump_capture_at(at);
+        frame.into_hdr()
+    }
+
+    fn pump_capture_at(&mut self, at: Instant) -> (bool, CapturedFrame) {
         let mut any_rebuilt = false;
         loop {
             let outcome = self.runtime.pump_at(at, true);
             any_rebuilt |= outcome.rebuilt;
             let device_lost = outcome.device_lost;
-            if let Some(snapshot) = self.apply_pump_result(outcome) {
-                return (any_rebuilt, snapshot);
+            if let Some(frame) = self.apply_pump_result(outcome) {
+                return (any_rebuilt, frame);
             }
             assert!(
                 device_lost,
@@ -1772,7 +1914,7 @@ impl<R: RuntimeDriver> SemanticApp<R> {
         }
     }
 
-    fn apply_pump_result(&mut self, outcome: DriverPumpResult) -> Option<Snapshot> {
+    fn apply_pump_result(&mut self, outcome: DriverPumpResult) -> Option<CapturedFrame> {
         self.ui_focus = outcome.ui_focus;
         if let Some(update) = outcome.tree_update {
             self.tree = self
@@ -1788,7 +1930,11 @@ impl<R: RuntimeDriver> SemanticApp<R> {
                 "waterui-testing did not receive an accessibility tree update after mount"
             );
         }
-        outcome.snapshot
+        if let Some(hdr) = outcome.hdr_snapshot {
+            Some(CapturedFrame::Hdr(hdr))
+        } else {
+            outcome.snapshot.map(CapturedFrame::Sdr)
+        }
     }
 
     fn matches_ui_focus(&mut self, selector: &Selector) -> bool {

@@ -43,6 +43,7 @@ impl RuntimeDriver for NoopDriver {
             tree_update: None,
             content_types: hydrolysis::AccessibilityContentTypes::new(),
             snapshot: None,
+            hdr_snapshot: None,
             device_lost: false,
             ui_focus: None,
         }
@@ -201,6 +202,7 @@ impl RuntimeDriver for EmitThenSettleDriver {
             tree_update: (self.pumps == self.emit_at).then(|| self.update.clone()),
             content_types: hydrolysis::AccessibilityContentTypes::new(),
             snapshot: None,
+            hdr_snapshot: None,
             device_lost: false,
             ui_focus: None,
         }
@@ -277,6 +279,7 @@ impl RuntimeDriver for CaptureDriver {
             content_types: hydrolysis::AccessibilityContentTypes::new(),
             snapshot: matches!(frame, CaptureFrame::Captured)
                 .then(|| Snapshot::new(1, 1, vec![255, 0, 0, 255])),
+            hdr_snapshot: None,
             device_lost: matches!(frame, CaptureFrame::DeviceLost),
             ui_focus: None,
         }

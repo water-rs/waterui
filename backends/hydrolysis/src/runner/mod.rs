@@ -190,11 +190,11 @@ use window::{acquire_surface_frame, surface_error_requires_reconfigure};
 #[cfg(all(hydrolysis_inspector, hydrolysis_cherenkov))]
 mod inspector;
 
-#[cfg(all(not(target_arch = "wasm32"), hydrolysis_cherenkov))]
-pub use window::HeadlessSnapshot;
 #[cfg(hydrolysis_winit)]
 pub use window::window_requires_transparency;
 pub use window::{FrameCounters, FramePhases, FrameProfile};
+#[cfg(all(not(target_arch = "wasm32"), hydrolysis_cherenkov))]
+pub use window::{HeadlessHdrSnapshot, HeadlessSnapshot};
 
 #[cfg(all(
     not(target_arch = "wasm32"),

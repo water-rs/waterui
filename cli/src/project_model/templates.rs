@@ -2835,6 +2835,21 @@ mod tests {
             .expect("preview_runtime.rs exists");
         assert!(preview_runtime.contains("config.color_scheme()"));
         assert!(preview_runtime.contains("config.scale()"));
+        assert!(preview_runtime.contains("HeadlessColorFormat::HdrLinearDisplayP3"));
+        assert!(preview_runtime.contains("write_hdr_png"));
+        assert!(preview_runtime.contains("RawFrameStreamWriter::create_hdr"));
+        assert!(!preview_runtime.contains("assert!(\n        !config.hdr()"));
+
+        let preview_test_runtime = with_glass
+            .iter()
+            .find_map(|(path, content)| {
+                (path == Path::new("src/preview_test_runtime.rs")).then(|| {
+                    String::from_utf8(content.clone()).expect("preview_test_runtime UTF-8")
+                })
+            })
+            .expect("preview_test_runtime.rs exists");
+        assert!(preview_test_runtime.contains("config.hdr()"));
+        assert!(!preview_test_runtime.contains("!config.hdr()"));
     }
 
     /// The wasm32 table bridges the browser's `<video>` element and the

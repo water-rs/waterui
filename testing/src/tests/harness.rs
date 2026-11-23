@@ -961,3 +961,49 @@ fn test_host_render_hdr_preserves_unclamped_linear_display_p3_headroom() {
         CICP_DISPLAY_P3_PQ
     );
 }
+
+#[test]
+fn offscreen_app_hdr_snapshot_and_recording_preserve_edr_headroom() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use waterui::graphics::color::Color;
+
+    let mut app = ui()
+        .theme(Material3::defaults())
+        .viewport(48, 48)
+        .hdr(true)
+        .mount_offscreen(|| Color::srgb(255, 255, 255).with_headroom(1.0));
+
+    let hdr = app.snapshot_hdr();
+    assert_eq!((hdr.width(), hdr.height()), (48, 48));
+    assert!(
+        hdr.max_channel() > 1.5,
+        "OffscreenApp::snapshot_hdr must preserve unclamped >1.0 HDR values, got max_channel={}",
+        hdr.max_channel()
+    );
+
+    let recorded = Rc::new(RefCell::new(Vec::new()));
+    app.start_hdr_frame_recording(20, {
+        let recorded = Rc::clone(&recorded);
+        move |frame, ts| {
+            recorded.borrow_mut().push((frame.max_channel(), ts));
+        }
+    });
+    app.pump_for(Duration::from_millis(100));
+    app.finish_frame_recording();
+
+    let frames = recorded.borrow();
+    assert!(
+        frames.len() >= 3,
+        "20fps over 100ms must record at least 3 HDR frames, got {}",
+        frames.len()
+    );
+    assert_eq!(frames[0].1, Duration::ZERO);
+    for (index, &(peak, _)) in frames.iter().enumerate() {
+        assert!(
+            peak > 1.5,
+            "recorded HDR frame {index} must preserve >1.0 EDR highlights, got peak={peak}"
+        );
+    }
+}
