@@ -546,6 +546,11 @@ impl ResolvedFramework {
         Ok(())
     }
 
+    pub(crate) fn has_scaffold(&self, name: &str) -> bool {
+        self.scaffold.contains_key(&format!("{name}-version"))
+            || self.experimental_packages.contains_key(name)
+    }
+
     pub(crate) fn scaffold_value(&self, key: &str) -> &str {
         self.scaffold
             .get(key)

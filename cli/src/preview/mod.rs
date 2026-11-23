@@ -32,7 +32,8 @@ pub use hydrolysis::{
 };
 
 pub use request::{
-    CliHydrolysisPreviewTheme, CliPreviewBackend, CliPreviewPlatform, PreviewRequest, PreviewTarget,
+    CliHydrolysisPreviewTheme, CliPreviewBackend, CliPreviewColorScheme, CliPreviewPlatform,
+    PreviewColorScheme, PreviewRequest, PreviewTarget,
 };
 
 /// Source used to produce a preview view — an existing `#[preview]` export

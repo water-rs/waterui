@@ -240,7 +240,7 @@ pub async fn build_hydrolysis_with_envs_and_features(
         &backend_path.join("Cargo.toml"),
         &platform.triple(),
         build.features(),
-        &["hydrolysis", "hydrolysis-m3"],
+        &["hydrolysis", "hydrolysis-m3", "hydrolysis-glass"],
     )
     .await?;
     build = build.with_features(backend_features);

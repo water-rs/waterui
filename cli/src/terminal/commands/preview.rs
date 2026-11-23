@@ -13,8 +13,8 @@ use crate::{header, note, success};
 use waterui_cli::build::BuildProgress;
 use waterui_cli::mcp::preview::PreviewArgs;
 use waterui_cli::preview::request::{
-    self, CliHydrolysisPreviewTheme, CliPreviewBackend, CliPreviewPlatform, PreviewTarget,
-    ResolvedPreviewBackend,
+    self, CliHydrolysisPreviewTheme, CliPreviewBackend, CliPreviewColorScheme, CliPreviewPlatform,
+    PreviewTarget, ResolvedPreviewBackend,
 };
 use waterui_cli::preview::{
     ApplePreviewRequest, HydrolysisPreviewEventKind, HydrolysisPreviewPointerButton,
@@ -37,6 +37,8 @@ async fn run_preview_test(shell: &Shell, args: PreviewTestArgs) -> Result<()> {
     )
     .await?;
     let (width, height) = request::parse_frame(&args.frame)?;
+    let scale = request::parse_scale(args.scale)?;
+    let color_scheme = args.color_scheme.map(Into::into);
     let crate_name = read_project_crate_name(&project_path).await?;
     let sccache_path = super::detect_sccache_path(shell, &host).await;
     let targets = resolve_test_targets(
@@ -69,6 +71,8 @@ async fn run_preview_test(shell: &Shell, args: PreviewTestArgs) -> Result<()> {
                 width,
                 height,
                 content_deadline: request::DEFAULT_CONTENT_DEADLINE,
+                color_scheme,
+                scale,
                 sccache_path: sccache_path.clone(),
                 progress: Some(shell.build_progress()),
             },
@@ -115,6 +119,14 @@ pub struct Args {
     /// Theme package for Hydrolysis preview.
     #[arg(long, value_enum)]
     theme: Option<CliHydrolysisPreviewTheme>,
+
+    /// Color scheme override (`light` or `dark`).
+    #[arg(long, value_enum)]
+    color_scheme: Option<CliPreviewColorScheme>,
+
+    /// Display scale factor applied to the captured image (default: `2.0`).
+    #[arg(long)]
+    scale: Option<f32>,
 
     /// Frame size `WIDTHxHEIGHT` (default: `375x667`).
     #[arg(short, long, default_value = request::DEFAULT_FRAME)]
@@ -179,6 +191,8 @@ impl Args {
             frame: Some(self.frame.clone()),
             backend: self.backend,
             theme: self.theme,
+            color_scheme: self.color_scheme,
+            scale: self.scale,
             platform: self.platform,
             device: self.device.clone(),
             content_timeout: Some(self.content_timeout),
@@ -212,6 +226,14 @@ struct PreviewTestArgs {
     /// Theme package for Hydrolysis preview testing.
     #[arg(long, value_enum, default_value = "material3")]
     theme: CliHydrolysisPreviewTheme,
+
+    /// Color scheme override (`light` or `dark`).
+    #[arg(long, value_enum)]
+    color_scheme: Option<CliPreviewColorScheme>,
+
+    /// Display scale factor applied to the preview test runtime (default: `2.0`).
+    #[arg(long)]
+    scale: Option<f32>,
 
     /// Frame size `WIDTHxHEIGHT` (default: `375x667`).
     #[arg(short, long, default_value = "375x667")]
@@ -318,6 +340,8 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
                 width: request.width(),
                 height: request.height(),
                 content_deadline: request.content_deadline(),
+                color_scheme: request.color_scheme(),
+                scale: request.scale(),
                 sccache_path,
                 progress: Some(shell.build_progress()),
             },
@@ -357,6 +381,8 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
                 width: request.width(),
                 height: request.height(),
                 content_deadline: request.content_deadline(),
+                color_scheme: request.color_scheme(),
+                scale: request.scale(),
                 sccache_path,
                 progress: Some(shell.build_progress()),
             },
@@ -745,5 +771,54 @@ mod tests {
             Some(CliHydrolysisPreviewTheme::Material3),
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn cli_and_mcp_glass_dark_args_resolve_to_the_same_request() {
+        use waterui_cli::preview::PreviewColorScheme;
+
+        let platform = host_platform_name();
+        let cli_args = parse(&[
+            "preview",
+            "views::button_glass",
+            "--frame",
+            "220x80",
+            "--backend",
+            "hydrolysis",
+            "--theme",
+            "glass",
+            "--color-scheme",
+            "dark",
+            "--scale",
+            "2.0",
+            "--platform",
+            platform,
+        ]);
+        let cli_request = cli_args
+            .preview_args(cli_args.target.as_deref().expect("target"))
+            .resolve(&project_manifest(), "demo_app")
+            .expect("cli resolve");
+
+        let mcp_args: PreviewArgs = serde_json::from_value(serde_json::json!({
+            "target": "views::button_glass",
+            "frame": "220x80",
+            "backend": "hydrolysis",
+            "theme": "glass",
+            "color_scheme": "dark",
+            "scale": 2.0,
+            "platform": platform,
+        }))
+        .expect("mcp args parse");
+        let mcp_request = mcp_args
+            .resolve(&project_manifest(), "demo_app")
+            .expect("mcp resolve");
+
+        assert_eq!(cli_request, mcp_request);
+        assert_eq!(
+            cli_request.hydrolysis_theme(),
+            Some(HydrolysisPreviewTheme::Glass)
+        );
+        assert_eq!(cli_request.color_scheme(), Some(PreviewColorScheme::Dark));
+        assert!((cli_request.scale() - 2.0).abs() < f32::EPSILON);
     }
 }
