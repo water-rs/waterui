@@ -1617,7 +1617,7 @@ fn render_server_captures_glass_and_orientation_without_windows() {
         capture_window, render_layer_via_render_server, set_window_color_scheme,
     };
     use cocoa_ui::objc2_app_kit::{NSApplication, NSBezelStyle, NSColor, NSView};
-    use cocoa_ui::view::{add_subview, is_flipped, layer, prepare_for_capture, set_frame};
+    use cocoa_ui::view::{add_subview, layer, prepare_for_capture, set_frame};
 
     let mtm = marker();
     let app = NSApplication::sharedApplication(mtm);
@@ -1666,12 +1666,11 @@ fn render_server_captures_glass_and_orientation_without_windows() {
 
     prepare_for_capture(&host);
     let host_layer = layer(&host).expect("host view is layer-backed");
-    let flipped = is_flipped(&host);
 
     // Run twice to prove repeated captures on the same hierarchy stay clean.
     let mut pixels = Vec::new();
     for _ in 0..2 {
-        pixels = render_layer_via_render_server(&host_layer, 2.0, 520, 280, flipped)
+        pixels = render_layer_via_render_server(&host_layer, 2.0, 520, 280)
             .expect("in-process CARenderServer capture must succeed");
     }
     assert!(

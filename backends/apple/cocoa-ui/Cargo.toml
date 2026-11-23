@@ -49,6 +49,14 @@ webview = ["dep:objc2-web-kit", "dep:objc2-security"]
 # The alert surfaces (`appkit::alert` `NSAlert`, `uikit::alert`
 # `UIAlertController`) — the `dialog` leaf's platform objects.
 dialog = ["objc2-app-kit/NSAlert", "objc2-ui-kit/UIAlertController"]
+# In-process Core Animation render-server layer capture (`CARenderServer*` /
+# `CAContext`) for windowless glass and backdrop rendering on macOS and Mac
+# Catalyst. Strictly opt-in and forwarded only by `cocoa-ui/native-test` and
+# `waterui-apple/preview` — never in default or production features.
+render-server-capture = [
+    "objc2-io-surface/IOSurfaceTypes",
+    "objc2-io-surface/libc",
+]
 # Harness-only reach for `tests/native`: compiles the doc(hidden)
 # test-support entry points that touch implementation-private surfaces
 # (`accessory_overlay_window_for_test`), the harnesses' shared
@@ -59,8 +67,7 @@ dialog = ["objc2-app-kit/NSAlert", "objc2-ui-kit/UIAlertController"]
 native-test = [
     "dep:libtest-mimic",
     "dep:objc2-io-kit",
-    "objc2-io-surface/IOSurfaceTypes",
-    "objc2-io-surface/libc",
+    "render-server-capture",
 ]
 
 # The `NativeLog` `tracing` writer (`log` module): `tracing` records into the

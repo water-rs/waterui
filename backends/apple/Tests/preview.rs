@@ -133,6 +133,20 @@ mod suite {
                 run_trial("gpu_set", Expect::Png);
                 Ok(())
             }),
+            Trial::test("preview::captures_liquid_glass_windowless", || {
+                run_trial("liquid_glass", Expect::Png);
+                assert_liquid_glass_png(&output_dir().join("liquid_glass.png"));
+                Ok(())
+            }),
+            #[cfg(feature = "gpu_surface")]
+            Trial::test(
+                "preview::captures_liquid_glass_with_gpu_surface_windowless",
+                || {
+                    run_trial("liquid_glass_gpu", Expect::Png);
+                    assert_liquid_glass_gpu_png(&output_dir().join("liquid_glass_gpu.png"));
+                    Ok(())
+                },
+            ),
             Trial::test("preview::rejects_a_scenario_run", || {
                 run_trial(
                     "scenario",
@@ -295,6 +309,14 @@ mod suite {
             .map_err(Into::into),
             #[cfg(feature = "gpu_surface")]
             "gpu_set" => image_run("gpu_set", 390.0, 760.0, gpu_set).map_err(Into::into),
+            "liquid_glass" => {
+                image_run("liquid_glass", 280.0, 160.0, liquid_glass_view).map_err(Into::into)
+            }
+            #[cfg(feature = "gpu_surface")]
+            "liquid_glass_gpu" => {
+                image_run("liquid_glass_gpu", 280.0, 200.0, liquid_glass_gpu_view)
+                    .map_err(Into::into)
+            }
             "scenario" => error_run("scenario", |dir| PreviewRunMode::Scenario {
                 output_dir: dir.clone(),
                 captures_ms: vec![0],
@@ -728,6 +750,172 @@ mod suite {
             text("filtered: hue rotation").hue_rotation(120.0_f32),
         ))
         .padding()
+    }
+
+    /// Decodes a written PNG file into top-down premultiplied RGBA8 pixels via
+    /// `Core Graphics` (zero extra test dependencies on macOS and Mac Catalyst).
+    fn decode_png_rgba(path: &Path) -> (Vec<u8>, usize, usize) {
+        use core::ptr::null;
+
+        use cocoa_ui::Rect;
+        use cocoa_ui::bitmap::{bitmap_context, draw_image};
+        use cocoa_ui::objc2_core_foundation::CFData;
+        use cocoa_ui::objc2_core_graphics::{CGColorRenderingIntent, CGDataProvider, CGImage};
+
+        let bytes = fs::read(path).expect("captured PNG is readable");
+        let data = CFData::from_bytes(&bytes);
+        let provider =
+            CGDataProvider::with_cf_data(Some(&data)).expect("PNG data provider constructs");
+        // SAFETY: `decode` is null and `provider` is a live `CGDataProvider` over the PNG bytes.
+        let image = unsafe {
+            CGImage::with_png_data_provider(
+                Some(&provider),
+                null(),
+                false,
+                CGColorRenderingIntent::RenderingIntentDefault,
+            )
+        }
+        .expect("captured PNG decodes cleanly");
+        let width = CGImage::width(Some(&image));
+        let height = CGImage::height(Some(&image));
+        let mut pixels = vec![0_u8; width * height * 4];
+        let context =
+            bitmap_context(&mut pixels, width, height).expect("RGBA8 bitmap context constructs");
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "preview capture dimensions are a few hundred pixels"
+        )]
+        draw_image(
+            &context,
+            &image,
+            Rect::new(0.0, 0.0, width as f64, height as f64),
+        );
+        (pixels, width, height)
+    }
+
+    /// Pure-native Liquid Glass scene: red/green split backdrop behind a
+    /// prominent glass button and a regular material badge, driven with zero
+    /// special API.
+    fn liquid_glass_view() -> impl View {
+        use waterui::color::Color;
+        use waterui::shape::{Rectangle, ShapeExt};
+
+        zstack((
+            vstack((
+                Rectangle.fill(Color::srgb_hex("#FF3B30")).height(80.0),
+                Rectangle.fill(Color::srgb_hex("#34C759")).height(80.0),
+            ))
+            .spacing(0.0),
+            vstack((
+                button("Continue").style(ButtonStyle::BorderedProminent),
+                text("Glass").padding().background(Material::Regular),
+            ))
+            .spacing(16.0),
+        ))
+    }
+
+    fn assert_liquid_glass_png(path: &Path) {
+        let (pixels, width, height) = decode_png_rgba(path);
+        assert!(
+            width >= 280 && height >= 160,
+            "unexpected size {width}x{height}"
+        );
+        let pixel_at = |x: usize, y: usize| -> [u8; 4] {
+            let offset = (y * width + x) * 4;
+            [
+                pixels[offset],
+                pixels[offset + 1],
+                pixels[offset + 2],
+                pixels[offset + 3],
+            ]
+        };
+        let top = pixel_at(4, 4);
+        assert!(
+            top[0] > 200 && top[1] < 110 && top[2] < 110 && top[3] == 255,
+            "top-left must be red (top-down orientation), got {top:?}"
+        );
+        let bottom = pixel_at(4, height - 5);
+        assert!(
+            bottom[1] > 150 && bottom[0] < 110 && bottom[2] < 120 && bottom[3] == 255,
+            "bottom-left must be green (top-down orientation), got {bottom:?}"
+        );
+        let (mut glass_blue, mut white_glyph) = (0_usize, 0_usize);
+        for y in 0..height / 2 {
+            for x in 0..width {
+                let [r, g, b, a] = pixel_at(x, y);
+                glass_blue += usize::from(a >= 200 && b >= 180 && g >= 70 && r <= 100);
+                white_glyph += usize::from(a >= 200 && r >= 220 && g >= 220 && b >= 220);
+            }
+        }
+        assert!(
+            glass_blue > 500,
+            "prominent glass button in pure-native preview must render real blue glass fill, got {glass_blue}"
+        );
+        assert!(
+            white_glyph > 40,
+            "prominent glass button in pure-native preview must render crisp white title glyphs, got {white_glyph}"
+        );
+    }
+
+    /// Mixed native Liquid Glass + Metal `ShaderPaintView` scene: proves
+    /// `ViewCapture`'s render-server path composites real native glass alongside
+    /// GPU surfaces in one preview capture.
+    #[cfg(feature = "gpu_surface")]
+    fn liquid_glass_gpu_view() -> impl View {
+        use waterui::graphics::ShaderPaintView;
+
+        const SHADER: &str = include_str!("gpu_set.wgsl");
+        vstack((
+            button("Continue").style(ButtonStyle::BorderedProminent),
+            ShaderPaintView::new(SHADER).size(240.0, 96.0),
+        ))
+        .spacing(16.0)
+        .padding()
+    }
+
+    #[cfg(feature = "gpu_surface")]
+    fn assert_liquid_glass_gpu_png(path: &Path) {
+        let (pixels, width, height) = decode_png_rgba(path);
+        assert!(
+            width >= 280 && height >= 200,
+            "unexpected size {width}x{height}"
+        );
+        let pixel_at = |x: usize, y: usize| -> [u8; 4] {
+            let offset = (y * width + x) * 4;
+            [
+                pixels[offset],
+                pixels[offset + 1],
+                pixels[offset + 2],
+                pixels[offset + 3],
+            ]
+        };
+        let mut glass_blue = 0_usize;
+        for y in 0..height / 2 {
+            for x in 0..width {
+                let [r, g, b, a] = pixel_at(x, y);
+                glass_blue += usize::from(a >= 200 && b >= 180 && g >= 70 && r <= 100);
+            }
+        }
+        assert!(
+            glass_blue > 500,
+            "prominent glass button alongside GPU surface must render real blue glass fill, got {glass_blue}"
+        );
+        // `gpu_set.wgsl` paints pink (top) -> blue (bottom) vertical bars
+        // alternating at 0.6x and 1.0x brightness.
+        let (mut pink_top, mut blue_bottom) = (0_usize, 0_usize);
+        for y in (height / 3)..(height - 16) {
+            for x in 20..(width - 20) {
+                let [r, _, b, a] = pixel_at(x, y);
+                if a == 255 {
+                    pink_top += usize::from(r > 180 && b < 180 && r > b + 40);
+                    blue_bottom += usize::from(b > 180 && r < 150 && b > r + 40);
+                }
+            }
+        }
+        assert!(
+            pink_top > 500 && blue_bottom > 500,
+            "ShaderPaintView gradient bars must composite alongside glass (pink_top={pink_top}, blue_bottom={blue_bottom})"
+        );
     }
 }
 

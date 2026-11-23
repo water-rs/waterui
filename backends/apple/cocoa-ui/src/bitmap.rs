@@ -639,39 +639,80 @@ pub fn set_window_color_scheme(window: &UIWindow, scheme: ColorScheme) {
     window.setOverrideUserInterfaceStyle(style);
 }
 
-/// Test-only in-process `Core Animation` render-server capture.
+/// Opt-in in-process `Core Animation` render-server capture.
 ///
-/// Strictly compiled under `feature = "native-test"` on `macOS` and Mac
-/// Catalyst so production builds link and reference zero private
-/// `QuartzCore` symbols.
+/// Strictly compiled under `feature = "render-server-capture"` (forwarded only
+/// by `cocoa-ui/native-test` and `waterui-apple/preview`) on `macOS` and Mac
+/// Catalyst so production builds link and reference zero private `QuartzCore`
+/// symbols.
 #[cfg(all(
-    feature = "native-test",
+    feature = "render-server-capture",
     any(target_os = "macos", all(target_os = "ios", target_abi = "macabi"))
 ))]
 mod render_server {
-    use core::ptr::{from_ref, null_mut};
+    use core::ptr::{from_ref, null, null_mut};
     use core::slice::from_raw_parts;
 
     use objc2::rc::Retained;
     use objc2::runtime::{AnyClass, AnyObject};
-    use objc2::{Message as _, msg_send};
-    use objc2_core_foundation::{CFDictionary, CFNumber, CFRetained, CFString};
-    use objc2_core_graphics::{CGColorSpace, kCGColorSpaceSRGB};
-    use objc2_foundation::{NSDictionary, NSString};
+    use objc2::{Message as _, msg_send, sel};
+    use objc2_core_foundation::{CFData, CFDictionary, CFNumber, CFRetained, CFString};
+    use objc2_core_graphics::{
+        CGBitmapInfo, CGColorRenderingIntent, CGColorSpace, CGDataProvider, CGImage,
+        CGImageAlphaInfo, kCGColorSpaceSRGB,
+    };
+    use objc2_foundation::{NSDictionary, NSObjectProtocol as _, NSString};
     use objc2_io_surface::{
         IOSurfaceLockOptions, IOSurfaceRef, kIOSurfaceBytesPerElement, kIOSurfaceColorSpace,
         kIOSurfaceHeight, kIOSurfacePixelFormat, kIOSurfaceWidth,
     };
     use objc2_quartz_core::{CALayer, CATransaction, CATransform3D};
 
+    use super::{BITS_PER_COMPONENT, BITS_PER_PIXEL, BYTES_PER_PIXEL};
+
+    /// Scale and translation mapping layer coordinates into the render-server
+    /// surface.
+    #[derive(Clone, Copy, Debug)]
+    pub struct RenderServerTransform {
+        /// Horizontal point-to-pixel scale.
+        pub scale_x: f64,
+        /// Vertical point-to-pixel scale.
+        pub scale_y: f64,
+        /// Horizontal pixel translation.
+        pub translate_x: f64,
+        /// Vertical pixel translation.
+        pub translate_y: f64,
+    }
+
     /// `BGRA8` four-character code (`'BGRA'`).
     const SURFACE_PIXEL_FORMAT_BGRA8: i64 = u32::from_be_bytes(*b"BGRA") as i64;
     const SURFACE_BYTES_PER_ELEMENT: i64 = 4;
+    /// `QuartzCore` render-server flag (`0x80`) that leaves `CA::Render::Update`
+    /// in macOS's native bottom-up coordinate space so `AppKit` `CABackingStore`
+    /// bitmaps (`NSViewBackingLayerContents`, `CGDrawingLayer`) share the same
+    /// vertical orientation as `CAShapeLayer` and layer geometry, while
+    /// post-multiplying `transform` by `Translate(0, surface_height) * Scale(1, -1)`.
+    #[cfg(target_os = "macos")]
+    const RENDER_SERVER_FLAG_UNFLIPPED_COORDINATES: u32 = 0x80;
 
     #[link(name = "QuartzCore", kind = "framework")]
     unsafe extern "C" {
         fn CARenderServerStart() -> bool;
         fn CARenderServerGetPort() -> u32;
+        #[cfg(target_os = "macos")]
+        fn CARenderServerRenderDisplayLayerWithTransformTimeOffsetAndFlags(
+            server_port: u32,
+            display_name: *const CFString,
+            client_id: u32,
+            layer: *const CALayer,
+            surface: *const IOSurfaceRef,
+            ox: i32,
+            oy: i32,
+            transform: *const CATransform3D,
+            time_offset: f64,
+            flags: u32,
+        ) -> bool;
+        #[cfg(not(target_os = "macos"))]
         fn CARenderServerRenderLayerWithTransform(
             server_port: u32,
             client_id: u32,
@@ -685,24 +726,34 @@ mod render_server {
 
     struct LocalContextGuard {
         context: Retained<AnyObject>,
-        layer: Retained<CALayer>,
-        orig_geometry_flipped: bool,
-        restore_geometry_flipped: bool,
+        previous_context: Option<Retained<AnyObject>>,
+        previous_root: Retained<CALayer>,
+        #[cfg(target_os = "macos")]
+        unwrapped_layer: Option<Retained<CALayer>>,
     }
 
     impl Drop for LocalContextGuard {
         fn drop(&mut self) {
-            if self.restore_geometry_flipped {
-                CATransaction::begin();
-                CATransaction::setDisableActions(true);
-                self.layer.setGeometryFlipped(self.orig_geometry_flipped);
-                CATransaction::commit();
-            }
             // SAFETY: `CAContext` exposes `-setLayer:` (accepting `nil`) and
             // `-invalidate` on the main thread.
             unsafe {
                 let _: () = msg_send![&*self.context, setLayer: Option::<&CALayer>::None];
                 let _: () = msg_send![&*self.context, invalidate];
+            }
+            #[cfg(target_os = "macos")]
+            if let Some(layer) = &self.unwrapped_layer {
+                CATransaction::begin();
+                CATransaction::setDisableActions(true);
+                layer.removeFromSuperlayer();
+                CATransaction::commit();
+            }
+            if let Some(previous_context) = &self.previous_context {
+                // SAFETY: `previous_context` was `previous_root`'s own
+                // `CAContext` before the temporary local context took over.
+                unsafe {
+                    let _: () = msg_send![&**previous_context, setLayer: &*self.previous_root];
+                }
+                CATransaction::flush();
             }
         }
     }
@@ -744,7 +795,6 @@ mod render_server {
         surface: &IOSurfaceRef,
         pixel_width: usize,
         pixel_height: usize,
-        is_flipped: bool,
     ) -> Option<Vec<u8>> {
         // SAFETY: read-only lock on a live `IOSurface` owned by the caller.
         let lock_status = unsafe { surface.lock(IOSurfaceLockOptions::ReadOnly, null_mut()) };
@@ -759,8 +809,7 @@ mod render_server {
             // of at least `bytes_per_row` bytes each.
             let raw = unsafe { from_raw_parts(base, bytes_per_row * pixel_height) };
             for y in 0..pixel_height {
-                let src_y = if is_flipped { y } else { pixel_height - 1 - y };
-                let src_row = &raw[src_y * bytes_per_row..src_y * bytes_per_row + pixel_width * 4];
+                let src_row = &raw[y * bytes_per_row..y * bytes_per_row + pixel_width * 4];
                 let dst_row = &mut pixels[y * pixel_width * 4..(y + 1) * pixel_width * 4];
                 for (src_px, dst_px) in src_row
                     .as_chunks::<4>()
@@ -783,6 +832,40 @@ mod render_server {
         pixels
     }
 
+    /// Wraps premultiplied sRGB RGBA8 pixels into a `CGImage` tagged with
+    /// `kCGColorSpaceSRGB` so drawing into a `CGContext` converts into that
+    /// context's destination color space without device-RGB drift.
+    pub fn image_from_srgb_rgba(
+        pixels: &[u8],
+        width: usize,
+        height: usize,
+    ) -> Option<CFRetained<CGImage>> {
+        if pixels.len() != width * height * BYTES_PER_PIXEL {
+            return None;
+        }
+        let data = CFData::from_bytes(pixels);
+        let provider = CGDataProvider::with_cf_data(Some(&data))?;
+        // SAFETY: `kCGColorSpaceSRGB` is a `Core Graphics` string constant.
+        let space = CGColorSpace::with_name(Some(unsafe { kCGColorSpaceSRGB }))?;
+        // SAFETY: `decode` is null; every other argument matches `pixels`'
+        // premultiplied RGBA8 layout.
+        unsafe {
+            CGImage::new(
+                width,
+                height,
+                BITS_PER_COMPONENT,
+                BITS_PER_PIXEL,
+                width * BYTES_PER_PIXEL,
+                Some(&space),
+                CGBitmapInfo(CGImageAlphaInfo::PremultipliedLast.0),
+                Some(&provider),
+                null(),
+                true,
+                CGColorRenderingIntent::RenderingIntentDefault,
+            )
+        }
+    }
+
     /// Renders `layer`'s committed subtree through an in-process
     /// `Core Animation` render server into premultiplied top-down RGBA8 pixels
     /// (`pixel_width * pixel_height * 4` bytes).
@@ -799,9 +882,155 @@ mod render_server {
         scale: f64,
         pixel_width: usize,
         pixel_height: usize,
-        is_flipped: bool,
     ) -> Option<Vec<u8>> {
-        if pixel_width == 0 || pixel_height == 0 || !scale.is_finite() || scale <= 0.0 {
+        let bounds = layer.bounds();
+        render_layer_via_render_server_transformed(
+            layer,
+            RenderServerTransform {
+                scale_x: scale,
+                scale_y: scale,
+                translate_x: -bounds.origin.x * scale,
+                translate_y: -bounds.origin.y * scale,
+            },
+            pixel_width,
+            pixel_height,
+        )
+    }
+
+    struct RenderTarget {
+        layer: Retained<CALayer>,
+        root: Retained<CALayer>,
+        #[cfg(target_os = "macos")]
+        unwrapped_layer: Option<Retained<CALayer>>,
+        offset_x: f64,
+        offset_y: f64,
+    }
+
+    fn resolve_render_target(
+        layer: &CALayer,
+        top_root: Retained<CALayer>,
+        transform: RenderServerTransform,
+    ) -> RenderTarget {
+        // On AppKit, `CARenderServer` skips the target layer's own
+        // `geometryFlipped` transform on direct sublayer positions while still
+        // honoring `contentsAreFlipped` on child backing stores. Rendering
+        // through an unflipped ancestor (the window's root layer, or a
+        // temporary unflipped wrapper when `layer` is detached) lets Core
+        // Animation traverse the `unflipped -> flipped` edge so sublayer
+        // positions, glyphs, controls, and glass all share one orientation.
+        #[cfg(target_os = "macos")]
+        if layer.isGeometryFlipped() {
+            if let Some(parent) = layer.superlayer()
+                && !parent.isGeometryFlipped()
+            {
+                let frame = layer.frame();
+                return RenderTarget {
+                    layer: parent,
+                    root: top_root,
+                    unwrapped_layer: None,
+                    offset_x: -frame.origin.x * transform.scale_x,
+                    offset_y: -frame.origin.y * transform.scale_y,
+                };
+            }
+            if layer.superlayer().is_none() {
+                let wrapper = CALayer::new();
+                CATransaction::begin();
+                CATransaction::setDisableActions(true);
+                wrapper.setBounds(layer.bounds());
+                wrapper.addSublayer(layer);
+                CATransaction::commit();
+                return RenderTarget {
+                    layer: wrapper.clone(),
+                    root: wrapper,
+                    unwrapped_layer: Some(layer.retain()),
+                    offset_x: 0.0,
+                    offset_y: 0.0,
+                };
+            }
+        }
+        let _ = transform;
+        RenderTarget {
+            layer: layer.retain(),
+            root: top_root,
+            #[cfg(target_os = "macos")]
+            unwrapped_layer: None,
+            offset_x: 0.0,
+            offset_y: 0.0,
+        }
+    }
+
+    fn build_ca_transform(
+        transform: RenderServerTransform,
+        offset_x: f64,
+        offset_y: f64,
+        pixel_height: usize,
+    ) -> CATransform3D {
+        #[cfg(target_os = "macos")]
+        let m42 = {
+            // `RENDER_SERVER_FLAG_UNFLIPPED_COORDINATES` post-multiplies
+            // `ca_transform` by `Translate(0, surface_height) * Scale(1, -1)`,
+            // so `y_out = scale_y * (H - y) + m42`. Setting
+            // `m42 = H - scale_y * H - (translate_y + offset_y)` yields
+            // `y_out = H - (scale_y * y + translate_y + offset_y)`, mapping
+            // bottom-up AppKit layer coordinates directly into top-down
+            // `IOSurface` rows.
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "capture pixel height fits well within f64's exact integer range"
+            )]
+            let surface_height = pixel_height as f64;
+            transform.scale_y.mul_add(-surface_height, surface_height)
+                - (transform.translate_y + offset_y)
+        };
+        #[cfg(not(target_os = "macos"))]
+        let m42 = {
+            let _ = pixel_height;
+            transform.translate_y + offset_y
+        };
+        CATransform3D {
+            m11: transform.scale_x,
+            m12: 0.0,
+            m13: 0.0,
+            m14: 0.0,
+            m21: 0.0,
+            m22: transform.scale_y,
+            m23: 0.0,
+            m24: 0.0,
+            m31: 0.0,
+            m32: 0.0,
+            m33: 1.0,
+            m34: 0.0,
+            m41: transform.translate_x + offset_x,
+            m42,
+            m43: 0.0,
+            m44: 1.0,
+        }
+    }
+
+    /// Renders `layer`'s committed subtree through an in-process
+    /// `Core Animation` render server with an explicit scale and pixel
+    /// translation, returning premultiplied top-down sRGB RGBA8 pixels.
+    ///
+    /// On `macOS`, `CARenderServerRenderDisplayLayerWithTransformTimeOffsetAndFlags`
+    /// is invoked with `RENDER_SERVER_FLAG_UNFLIPPED_COORDINATES` (`0x80`) so
+    /// `AppKit` `CABackingStore` bitmaps and `CAShapeLayer` vectors render with
+    /// matching orientation directly into top-down `IOSurface` rows. On Mac
+    /// Catalyst (`UIKit`), `CARenderServerRenderLayerWithTransform` already
+    /// renders top-down directly.
+    #[must_use]
+    pub fn render_layer_via_render_server_transformed(
+        layer: &CALayer,
+        transform: RenderServerTransform,
+        pixel_width: usize,
+        pixel_height: usize,
+    ) -> Option<Vec<u8>> {
+        if pixel_width == 0
+            || pixel_height == 0
+            || !transform.scale_x.is_finite()
+            || transform.scale_x <= 0.0
+            || !transform.scale_y.is_finite()
+            || transform.scale_y <= 0.0
+        {
             return None;
         }
         // SAFETY: `CARenderServerStart` is idempotent (guarded internally by
@@ -833,75 +1062,91 @@ mod render_server {
         while let Some(parent) = top_root.superlayer() {
             top_root = parent;
         }
+        let previous_root = top_root.clone();
+        let previous_context: Option<Retained<AnyObject>> =
+            if top_root.respondsToSelector(sel!(context)) {
+                // SAFETY: `-[CALayer context]` returns the owning `CAContext`
+                // (or nil) on the main thread when the selector is available.
+                unsafe { msg_send![&*top_root, context] }
+            } else {
+                None
+            };
 
         // Flush any pending layout/display transaction before switching the
         // layer tree onto the local render-server context.
         CATransaction::flush();
 
-        let orig_geometry_flipped = layer.isGeometryFlipped();
-        let target_geometry_flipped = !is_flipped;
-        let restore_geometry_flipped = orig_geometry_flipped != target_geometry_flipped;
-        if restore_geometry_flipped {
-            CATransaction::begin();
-            CATransaction::setDisableActions(true);
-            layer.setGeometryFlipped(target_geometry_flipped);
-            CATransaction::commit();
-        }
+        let target = resolve_render_target(layer, top_root, transform);
+
         // SAFETY: `-[CAContext setLayer:]` binds the root layer on the main thread.
         unsafe {
-            let _: () = msg_send![&*context, setLayer: &*top_root];
+            let _: () = msg_send![&*context, setLayer: &*target.root];
         }
         let guard = LocalContextGuard {
             context,
-            layer: layer.retain(),
-            orig_geometry_flipped,
-            restore_geometry_flipped,
+            previous_context,
+            previous_root,
+            #[cfg(target_os = "macos")]
+            unwrapped_layer: target.unwrapped_layer,
         };
         CATransaction::flush();
 
         let surface = allocate_bgra_surface(pixel_width, pixel_height)?;
-        let bounds = layer.bounds();
-        let transform = CATransform3D {
-            m11: scale,
-            m12: 0.0,
-            m13: 0.0,
-            m14: 0.0,
-            m21: 0.0,
-            m22: scale,
-            m23: 0.0,
-            m24: 0.0,
-            m31: 0.0,
-            m32: 0.0,
-            m33: 1.0,
-            m34: 0.0,
-            m41: -bounds.origin.x * scale,
-            m42: -bounds.origin.y * scale,
-            m43: 0.0,
-            m44: 1.0,
+        let ca_transform =
+            build_ca_transform(transform, target.offset_x, target.offset_y, pixel_height);
+        #[cfg(target_os = "macos")]
+        let rendered = {
+            let display = CFString::from_str("defaultDisplay");
+            // SAFETY: `server_port`, `display`, `context_id`, `target.layer`,
+            // `surface`, and `ca_transform` are live on the main thread for the
+            // duration of the call.
+            unsafe {
+                CARenderServerRenderDisplayLayerWithTransformTimeOffsetAndFlags(
+                    server_port,
+                    from_ref(&*display),
+                    context_id,
+                    from_ref(&*target.layer),
+                    from_ref(&*surface),
+                    0,
+                    0,
+                    &raw const ca_transform,
+                    0.0,
+                    RENDER_SERVER_FLAG_UNFLIPPED_COORDINATES,
+                )
+            }
         };
-        // SAFETY: `server_port`, `context_id`, `layer`, `surface`, and
-        // `transform` are live on the main thread for the duration of the call.
+        #[cfg(not(target_os = "macos"))]
+        // SAFETY: `server_port`, `context_id`, `target.layer`, `surface`, and
+        // `ca_transform` are live on the main thread for the duration of the call.
         let rendered = unsafe {
             CARenderServerRenderLayerWithTransform(
                 server_port,
                 context_id,
-                from_ref(layer),
+                from_ref(&*target.layer),
                 from_ref(&*surface),
                 0,
                 0,
-                &raw const transform,
+                &raw const ca_transform,
             )
         };
         drop(guard);
         if !rendered {
             return None;
         }
-        read_surface_rgba8(&surface, pixel_width, pixel_height, is_flipped)
+        read_surface_rgba8(&surface, pixel_width, pixel_height)
     }
 }
 
 #[cfg(all(
-    feature = "native-test",
+    feature = "render-server-capture",
     any(target_os = "macos", all(target_os = "ios", target_abi = "macabi"))
 ))]
-pub use render_server::render_layer_via_render_server;
+pub(crate) use render_server::image_from_srgb_rgba;
+#[cfg(all(
+    feature = "render-server-capture",
+    any(target_os = "macos", all(target_os = "ios", target_abi = "macabi"))
+))]
+pub use render_server::{
+    RenderServerTransform, render_layer_via_render_server,
+    render_layer_via_render_server_transformed,
+};
