@@ -181,7 +181,8 @@ pub async fn capture_presented(
 
 /// Captures `host` on macOS into an unclamped extended linear Display P3 `f32`
 /// RGBA raster via the opt-in in-process `Core Animation` render server
-/// (`kCVPixelFormatType_64RGBAHalf` + `kCGColorSpaceExtendedLinearDisplayP3`).
+/// (`kCVPixelFormatType_64RGBAHalf` converted from `CARenderServer`'s extended
+/// sRGB output into `ExtendedLinearDisplayP3`).
 ///
 /// # Errors
 ///
@@ -329,8 +330,8 @@ pub async fn capture_presented(
 
 /// Captures `host` on Mac Catalyst (`UIKit`) into an unclamped extended linear
 /// Display P3 `f32` RGBA raster via the opt-in in-process `Core Animation`
-/// render server (`kCVPixelFormatType_64RGBAHalf` +
-/// `kCGColorSpaceExtendedLinearDisplayP3`).
+/// render server (`kCVPixelFormatType_64RGBAHalf` converted from
+/// `CARenderServer`'s extended sRGB output into `ExtendedLinearDisplayP3`).
 ///
 /// # Errors
 ///

@@ -7,6 +7,7 @@
 //! declaration lives here, discharged next to the call. Everything else is
 //! safe `objc2` API on the caller's own objects, all main-thread.
 
+use filtrate_core::space::srgb_encode;
 use objc2::rc::Retained;
 #[cfg(target_os = "macos")]
 use objc2::runtime::AnyClass;
@@ -89,6 +90,52 @@ impl HdrRaster {
     pub fn max_edr_headroom(&self) -> f32 {
         self.max_channel().max(1.0)
     }
+
+    /// Encodes this premultiplied extended linear Display P3 raster into
+    /// premultiplied Display P3 RGBA8 bytes (`width * height * 4`), clamping
+    /// extended channels to the SDR Display P3 gamut `[0.0, 1.0]` before
+    /// applying the Display P3 transfer curve.
+    #[must_use]
+    pub fn to_display_p3_rgba8(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(self.pixels.len());
+        for pixel in self.pixels.as_chunks::<4>().0 {
+            out.extend_from_slice(&linear_p3_to_display_p3_u8(*pixel));
+        }
+        out
+    }
+}
+
+/// Encodes one premultiplied extended linear Display P3 `f32` pixel into
+/// premultiplied Display P3 RGBA8, clamping straight channels to `[0.0, 1.0]`.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "channels are clamped to [0.0, 1.0] before scaling by 255.0 and rounding"
+)]
+fn linear_p3_to_display_p3_u8(pixel: [f32; 4]) -> [u8; 4] {
+    let alpha = if pixel[3].is_finite() {
+        pixel[3].clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    if alpha == 0.0 {
+        return [0, 0, 0, 0];
+    }
+    let encode = |channel: f32| -> u8 {
+        let straight = if channel.is_finite() {
+            (channel / alpha).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let encoded = srgb_encode(straight) * alpha;
+        (encoded.clamp(0.0, 1.0) * 255.0).round() as u8
+    };
+    [
+        encode(pixel[0]),
+        encode(pixel[1]),
+        encode(pixel[2]),
+        (alpha * 255.0).round() as u8,
+    ]
 }
 
 /// A `CGContext` drawing premultiplied RGBA8 into `pixels`' storage.
@@ -690,6 +737,7 @@ mod render_server {
     use core::ptr::{from_ref, null, null_mut};
     use core::slice::from_raw_parts;
 
+    use filtrate_core::space::from_srgb;
     use half::f16;
     use objc2::rc::Retained;
     use objc2::runtime::{AnyClass, AnyObject};
@@ -698,6 +746,7 @@ mod render_server {
     use objc2_core_graphics::{
         CGBitmapInfo, CGColorRenderingIntent, CGColorSpace, CGDataProvider, CGImage,
         CGImageAlphaInfo, kCGColorSpaceDisplayP3, kCGColorSpaceExtendedLinearDisplayP3,
+        kCGColorSpaceExtendedSRGB,
     };
     use objc2_foundation::{NSDictionary, NSObjectProtocol as _, NSString};
     use objc2_io_surface::{
@@ -708,7 +757,7 @@ mod render_server {
         CADynamicRange, CADynamicRangeHigh, CALayer, CATransaction, CATransform3D,
     };
 
-    use super::{BITS_PER_COMPONENT, BITS_PER_PIXEL, BYTES_PER_PIXEL};
+    use super::{BITS_PER_COMPONENT, BITS_PER_PIXEL, BYTES_PER_PIXEL, linear_p3_to_display_p3_u8};
 
     /// Scale and translation mapping layer coordinates into the render-server
     /// surface.
@@ -724,11 +773,15 @@ mod render_server {
         pub translate_y: f64,
     }
 
-    /// `BGRA8` four-character code (`'BGRA'`).
-    const SURFACE_PIXEL_FORMAT_BGRA8: i64 = u32::from_be_bytes(*b"BGRA") as i64;
-    const SURFACE_BYTES_PER_ELEMENT_BGRA8: i64 = 4;
     /// `kCVPixelFormatType_64RGBAHalf` four-character code (`'RGhA'`), four
     /// IEEE 754 binary16 channels per pixel (8 bytes/element).
+    ///
+    /// `CARenderServer` composites into sRGB primaries with the sRGB transfer
+    /// curve regardless of `kIOSurfaceColorSpace` or `CAContext.colorSpace`:
+    /// an 8-bit `BGRA8` surface clips to `[0, 1]` sRGB, whereas `'RGhA'`
+    /// writes premultiplied `kCGColorSpaceExtendedSRGB` half-floats that
+    /// preserve both wide-gamut Display P3 (via negative and `> 1.0` channels)
+    /// and HDR headroom.
     const SURFACE_PIXEL_FORMAT_RGBA16F: i64 = u32::from_be_bytes(*b"RGhA") as i64;
     const SURFACE_BYTES_PER_ELEMENT_RGBA16F: i64 = 8;
     /// EDR headroom requested on the temporary local `CAContext` during HDR
@@ -854,22 +907,11 @@ mod render_server {
         Some(surface)
     }
 
-    fn allocate_bgra_surface(width: usize, height: usize) -> Option<CFRetained<IOSurfaceRef>> {
-        // SAFETY: `kCGColorSpaceDisplayP3` is a `Core Graphics` string constant.
-        let color_space = unsafe { kCGColorSpaceDisplayP3 };
-        allocate_iosurface(
-            width,
-            height,
-            SURFACE_BYTES_PER_ELEMENT_BGRA8,
-            SURFACE_PIXEL_FORMAT_BGRA8,
-            color_space,
-        )
-    }
-
     fn allocate_rgba16f_surface(width: usize, height: usize) -> Option<CFRetained<IOSurfaceRef>> {
-        // SAFETY: `kCGColorSpaceExtendedLinearDisplayP3` is a `Core Graphics`
-        // string constant.
-        let color_space = unsafe { kCGColorSpaceExtendedLinearDisplayP3 };
+        // SAFETY: `kCGColorSpaceExtendedSRGB` is a `Core Graphics` string
+        // constant matching the premultiplied extended sRGB encoding
+        // `CARenderServer` writes into `'RGhA'` surfaces.
+        let color_space = unsafe { kCGColorSpaceExtendedSRGB };
         allocate_iosurface(
             width,
             height,
@@ -879,11 +921,14 @@ mod render_server {
         )
     }
 
-    fn read_surface_rgba8(
+    /// Reads premultiplied `kCGColorSpaceExtendedSRGB` half-float pixels from
+    /// `surface` and converts them to premultiplied Display P3 RGBA8.
+    fn read_surface_rgba16f_display_p3_u8(
         surface: &IOSurfaceRef,
         pixel_width: usize,
         pixel_height: usize,
     ) -> Option<Vec<u8>> {
+        let row_bytes = pixel_width.checked_mul(8)?;
         // SAFETY: read-only lock on a live `IOSurface` owned by the caller.
         let lock_status = unsafe { surface.lock(IOSurfaceLockOptions::ReadOnly, null_mut()) };
         if lock_status != 0 {
@@ -891,24 +936,26 @@ mod render_server {
         }
         let bytes_per_row = surface.bytes_per_row();
         let base = surface.base_address().as_ptr().cast::<u8>();
-        let pixels = if !base.is_null() && bytes_per_row >= pixel_width * 4 {
+        let pixels = if !base.is_null() && bytes_per_row >= row_bytes {
             let mut pixels = vec![0u8; pixel_width * pixel_height * 4];
+            let mut row_buf = vec![[0.0_f32; 4]; pixel_width];
             // SAFETY: `surface` is locked read-only and has `pixel_height` rows
             // of at least `bytes_per_row` bytes each.
             let raw = unsafe { from_raw_parts(base, bytes_per_row * pixel_height) };
             for y in 0..pixel_height {
-                let src_row = &raw[y * bytes_per_row..y * bytes_per_row + pixel_width * 4];
+                let src_row = &raw[y * bytes_per_row..y * bytes_per_row + row_bytes];
+                for (src_px, dst_px) in src_row.as_chunks::<8>().0.iter().zip(row_buf.iter_mut()) {
+                    *dst_px = [
+                        f16::from_le_bytes([src_px[0], src_px[1]]).to_f32(),
+                        f16::from_le_bytes([src_px[2], src_px[3]]).to_f32(),
+                        f16::from_le_bytes([src_px[4], src_px[5]]).to_f32(),
+                        f16::from_le_bytes([src_px[6], src_px[7]]).to_f32(),
+                    ];
+                }
+                from_srgb(&mut row_buf);
                 let dst_row = &mut pixels[y * pixel_width * 4..(y + 1) * pixel_width * 4];
-                for (src_px, dst_px) in src_row
-                    .as_chunks::<4>()
-                    .0
-                    .iter()
-                    .zip(dst_row.as_chunks_mut::<4>().0.iter_mut())
-                {
-                    dst_px[0] = src_px[2];
-                    dst_px[1] = src_px[1];
-                    dst_px[2] = src_px[0];
-                    dst_px[3] = src_px[3];
+                for (linear_p3, dst_px) in row_buf.iter().zip(dst_row.as_chunks_mut::<4>().0) {
+                    *dst_px = linear_p3_to_display_p3_u8(*linear_p3);
                 }
             }
             Some(pixels)
@@ -920,7 +967,10 @@ mod render_server {
         pixels
     }
 
-    fn read_surface_rgba16f_f32(
+    /// Reads premultiplied `kCGColorSpaceExtendedSRGB` half-float pixels from
+    /// `surface` and converts them to premultiplied extended linear Display P3
+    /// `f32` RGBA pixels.
+    fn read_surface_rgba16f_linear_p3(
         surface: &IOSurfaceRef,
         pixel_width: usize,
         pixel_height: usize,
@@ -944,6 +994,7 @@ mod render_server {
                 for (src_ch, dst_ch) in src_row.as_chunks::<2>().0.iter().zip(dst_row.iter_mut()) {
                     *dst_ch = f16::from_le_bytes(*src_ch).to_f32();
                 }
+                from_srgb(dst_row.as_chunks_mut::<4>().0);
             }
             Some(pixels)
         } else {
@@ -1061,13 +1112,14 @@ mod render_server {
         )
     }
 
-    /// Renders `layer`'s committed subtree into unclamped linear Display P3
-    /// `f32` RGBA pixels (`pixel_width * pixel_height * 4` floats).
+    /// Renders `layer`'s committed subtree into unclamped extended linear
+    /// Display P3 `f32` RGBA pixels (`pixel_width * pixel_height * 4` floats).
     ///
     /// Uses an in-process `Core Animation` render server targeting a
-    /// `kCVPixelFormatType_64RGBAHalf` (`kCGColorSpaceExtendedLinearDisplayP3`)
-    /// surface so HDR (`> 1.0`) highlights from Liquid Glass and extended-range
-    /// layers are preserved without clipping.
+    /// `kCVPixelFormatType_64RGBAHalf` (`'RGhA'`) surface and converts its
+    /// premultiplied `kCGColorSpaceExtendedSRGB` output into extended linear
+    /// Display P3 so both wide-gamut colors and HDR (`> 1.0`) highlights from
+    /// Liquid Glass and extended-range layers are preserved without clipping.
     #[must_use]
     pub fn render_layer_via_render_server_hdr(
         layer: &CALayer,
@@ -1379,8 +1431,11 @@ mod render_server {
     /// `Core Animation` render server with an explicit scale and pixel
     /// translation, returning premultiplied top-down Display P3 RGBA8 pixels.
     ///
-    /// On `macOS`, `CARenderServerRenderDisplayLayerWithTransformTimeOffsetAndFlags`
-    /// is invoked with `RENDER_SERVER_FLAG_UNFLIPPED_COORDINATES` (`0x80`) so
+    /// Renders into an `RGBA16F` (`'RGhA'`) surface so `CARenderServer`'s
+    /// extended sRGB output keeps the full Display P3 gamut unclipped before
+    /// color-matching into Display P3 RGBA8. On `macOS`,
+    /// `CARenderServerRenderDisplayLayerWithTransformTimeOffsetAndFlags` is
+    /// invoked with `RENDER_SERVER_FLAG_UNFLIPPED_COORDINATES` (`0x80`) so
     /// `AppKit` `CABackingStore` bitmaps and `CAShapeLayer` vectors render with
     /// matching orientation directly into top-down `IOSurface` rows. On Mac
     /// Catalyst (`UIKit`), `CARenderServerRenderLayerWithTransform` already
@@ -1392,20 +1447,20 @@ mod render_server {
         pixel_width: usize,
         pixel_height: usize,
     ) -> Option<Vec<u8>> {
-        let surface = allocate_bgra_surface(pixel_width, pixel_height)?;
+        let surface = allocate_rgba16f_surface(pixel_width, pixel_height)?;
         if !render_layer_into_surface(layer, transform, pixel_width, pixel_height, &surface, false)
         {
             return None;
         }
-        read_surface_rgba8(&surface, pixel_width, pixel_height)
+        read_surface_rgba16f_display_p3_u8(&surface, pixel_width, pixel_height)
     }
 
     /// Renders `layer`'s committed subtree with an explicit transform into
-    /// unclamped linear Display P3 `f32` RGBA pixels.
+    /// unclamped extended linear Display P3 `f32` RGBA pixels.
     ///
-    /// Allocates an `RGBA16F` (`kCVPixelFormatType_64RGBAHalf`) `IOSurface`
-    /// tagged with `kCGColorSpaceExtendedLinearDisplayP3` and decodes each
-    /// little-endian half-float channel to `f32`.
+    /// Allocates an `RGBA16F` (`kCVPixelFormatType_64RGBAHalf`) `IOSurface`,
+    /// decodes `CARenderServer`'s premultiplied `kCGColorSpaceExtendedSRGB`
+    /// half-float pixels, and transforms them into extended linear Display P3.
     #[must_use]
     pub fn render_layer_via_render_server_hdr_transformed(
         layer: &CALayer,
@@ -1417,23 +1472,26 @@ mod render_server {
         if !render_layer_into_surface(layer, transform, pixel_width, pixel_height, &surface, true) {
             return None;
         }
-        read_surface_rgba16f_f32(&surface, pixel_width, pixel_height)
+        read_surface_rgba16f_linear_p3(&surface, pixel_width, pixel_height)
     }
 
-    /// Renders `layer`'s committed subtree into `dst` as `RGBA16F` linear
-    /// Display P3 rows using `dst_row_bytes` stride.
-    pub fn render_layer_via_render_server_hdr_into_buffer(
+    /// Renders `layer`'s committed subtree into `dst` as premultiplied
+    /// `kCGColorSpaceExtendedSRGB` `RGBA16F` rows (`BLEND_COLOR`) using
+    /// `dst_row_bytes` stride for direct consumption by `ViewCapture`'s Metal
+    /// compositor.
+    pub fn render_layer_via_render_server_extended_srgb_into_buffer(
         layer: &CALayer,
         transform: RenderServerTransform,
         pixel_width: usize,
         pixel_height: usize,
         dst: &mut [u8],
         dst_row_bytes: usize,
+        hdr: bool,
     ) -> bool {
         let Some(surface) = allocate_rgba16f_surface(pixel_width, pixel_height) else {
             return false;
         };
-        if !render_layer_into_surface(layer, transform, pixel_width, pixel_height, &surface, true) {
+        if !render_layer_into_surface(layer, transform, pixel_width, pixel_height, &surface, hdr) {
             return false;
         }
         read_surface_rgba16f_into_buffer(&surface, pixel_width, pixel_height, dst, dst_row_bytes)
@@ -1453,5 +1511,5 @@ pub use render_server::{
     any(target_os = "macos", all(target_os = "ios", target_abi = "macabi"))
 ))]
 pub(crate) use render_server::{
-    image_from_display_p3_rgba, render_layer_via_render_server_hdr_into_buffer,
+    image_from_display_p3_rgba, render_layer_via_render_server_extended_srgb_into_buffer,
 };

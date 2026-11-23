@@ -766,6 +766,7 @@ impl CaptureDrive {
     /// runtime — or
     /// [`CaptureFailure::CompositionFailed`] when the native-view
     /// composition command buffer did not complete.
+    #[cfg(any(waterui_feature = "capture", feature = "native-test"))]
     #[expect(
         clippy::future_not_send,
         reason = "the terminal capture awaits main-thread signals shared through `Rc`"
@@ -812,19 +813,18 @@ impl CaptureDrive {
     }
 
     /// Captures the drive's mounted view tree into an unclamped extended linear
-    /// Display P3 `f32` RGBA raster (`MTLPixelFormat::RGBA16Float`), enabling
-    /// `DynamicRange::High` on the capture root and routing native layers
-    /// through the opt-in half-float `Core Animation` render-server surface.
-    ///
-    /// # Errors
-    ///
-    /// Same failure modes as [`Self::capture_rgba`].
+    /// Display P3 `f32` RGBA raster (`MTLPixelFormat::RGBA16Float`) under the
+    /// requested `dynamic_range`, routing native layers through the opt-in
+    /// half-float `Core Animation` render-server surface when enabled.
     #[cfg(preview_entry)]
     #[expect(
         clippy::future_not_send,
         reason = "the terminal capture awaits main-thread signals shared through `Rc`"
     )]
-    pub async fn capture_hdr(self: &Rc<Self>) -> Result<HdrRaster, CaptureFailure> {
+    async fn capture_rgba16f(
+        self: &Rc<Self>,
+        dynamic_range: DynamicRange,
+    ) -> Result<HdrRaster, CaptureFailure> {
         let bounds = view_bounds(&self.root);
         if bounds.size.width <= 0.0 || bounds.size.height <= 0.0 {
             return Ok(HdrRaster {
@@ -836,7 +836,7 @@ impl CaptureDrive {
         let Some(runtime) = &self.runtime else {
             return Err(CaptureFailure::GpuRuntimeUnavailable);
         };
-        apply_to_view(DynamicRange::High, &self.root);
+        apply_to_view(dynamic_range, &self.root);
         #[cfg(render_server_capture)]
         self.capture.set_use_render_server(true);
         let (width, height) = pixel_extent(bounds.size, self.scale);
@@ -859,6 +859,46 @@ impl CaptureDrive {
         )
         .await?;
         Ok(read_hdr_target(&target, width, height))
+    }
+
+    /// Captures the drive's mounted view tree into a premultiplied Display P3
+    /// RGBA8 raster (`DynamicRange::Standard`), compositing through
+    /// `MTLPixelFormat::RGBA16Float` (`ExtendedLinearDisplayP3`) so wide-gamut
+    /// Display P3 colors survive without sRGB clipping before encoding to 8-bit
+    /// Display P3 for preview output.
+    ///
+    /// # Errors
+    ///
+    /// Same failure modes as [`Self::capture_rgba`].
+    #[cfg(preview_entry)]
+    #[expect(
+        clippy::future_not_send,
+        reason = "the terminal capture awaits main-thread signals shared through `Rc`"
+    )]
+    pub async fn capture_display_p3_rgba(self: &Rc<Self>) -> Result<CapturedRgba, CaptureFailure> {
+        let raster = self.capture_rgba16f(DynamicRange::Standard).await?;
+        Ok(CapturedRgba {
+            pixels: raster.to_display_p3_rgba8(),
+            width: raster.width,
+            height: raster.height,
+        })
+    }
+
+    /// Captures the drive's mounted view tree into an unclamped extended linear
+    /// Display P3 `f32` RGBA raster (`MTLPixelFormat::RGBA16Float`), enabling
+    /// `DynamicRange::High` on the capture root and routing native layers
+    /// through the opt-in half-float `Core Animation` render-server surface.
+    ///
+    /// # Errors
+    ///
+    /// Same failure modes as [`Self::capture_rgba`].
+    #[cfg(preview_entry)]
+    #[expect(
+        clippy::future_not_send,
+        reason = "the terminal capture awaits main-thread signals shared through `Rc`"
+    )]
+    pub async fn capture_hdr(self: &Rc<Self>) -> Result<HdrRaster, CaptureFailure> {
+        self.capture_rgba16f(DynamicRange::High).await
     }
 }
 

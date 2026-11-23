@@ -1354,12 +1354,13 @@ impl Stage {
         }
     }
 
-    /// Captures the presented subtree: pure-native trees render directly
-    /// through `capture::capture_presented` (using the opt-in in-process
-    /// `Core Animation` render server so Liquid Glass and backdrop materials
-    /// composite without any visible window), while trees carrying GPU
-    /// surfaces composite their render-server native raster with every GPU
-    /// surface through `ViewCapture`.
+    /// Captures the presented subtree into premultiplied Display P3 RGBA8:
+    /// pure-native trees render directly through `capture::capture_presented`
+    /// (using the opt-in in-process `Core Animation` render server so Liquid
+    /// Glass and backdrop materials composite without any visible window),
+    /// while trees carrying GPU surfaces composite their render-server native
+    /// raster with every GPU surface through `ViewCapture` in linear Display P3
+    /// and encode to Display P3 RGBA8.
     #[cfg(feature = "gpu_surface")]
     #[expect(
         clippy::future_not_send,
@@ -1378,7 +1379,7 @@ impl Stage {
                 .await
                 .map_err(CaptureFailure::NativeCapture);
         }
-        let result = self.drive.capture_rgba().await?;
+        let result = self.drive.capture_display_p3_rgba().await?;
         Ok(RenderResult::new(
             result.pixels,
             result.width,
