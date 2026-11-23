@@ -9,7 +9,6 @@
 
 use crate::contract::{Held, NativeLeaf, RenderContext};
 use waterui::navigation::ResolvedNavigationView;
-use waterui_core::layout::{LayoutError, ProposalSize, Rect, ResolvedExtent};
 
 /// The `NavigationView` realization, its fields resolved against the
 /// environment it is realized in.
@@ -21,32 +20,7 @@ pub fn realize_navigation_view(
     platform::nav_view_leaf(value, ctx)
 }
 
-struct Fill;
-
-impl waterui_core::layout::SubView for Fill {
-    fn resolve_extent(
-        &self,
-        bounds: Rect,
-        proposal: ProposalSize,
-    ) -> Result<ResolvedExtent, LayoutError> {
-        ResolvedExtent::centred(bounds, self.measure(proposal).size)
-    }
-
-    fn measure(
-        &self,
-        _proposal: waterui_core::layout::ProposalSize,
-    ) -> waterui_core::layout::ViewDimensions {
-        waterui_core::layout::ViewDimensions::new(waterui_core::layout::Size::new(0.0, 0.0))
-    }
-
-    fn stretch_axis(&self) -> waterui_core::layout::StretchAxis {
-        waterui_core::layout::StretchAxis::Both
-    }
-
-    fn priority(&self) -> i32 {
-        0
-    }
-}
+use super::Fill;
 
 #[cfg(target_os = "ios")]
 mod platform {

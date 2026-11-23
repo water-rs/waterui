@@ -28,10 +28,8 @@ use waterui::navigation::{
     AnyNavigationTransition, CustomNavigationController, NativeNavigationTransition,
     NavigationController, NavigationStackLayout, NavigationTransaction,
 };
-use waterui_core::layout::{
-    LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
-};
 
+use super::Fill;
 use crate::contract::{Held, NativeLeaf, RenderContext};
 use crate::transition::ghost::Ghost;
 use crate::transition::live::{LiveChild, Removal};
@@ -169,30 +167,6 @@ fn retire_page(leaf: LiveChild, env: &Environment, ghosts: &Ghosts) {
     };
     if let Some(ghost) = leaf.remove(removal) {
         ghosts.borrow_mut().push(ghost);
-    }
-}
-
-/// The stack's layout: fills its parent — a navigation container claims
-/// the whole space it is offered.
-#[derive(Debug)]
-struct Fill;
-
-impl SubView for Fill {
-    fn resolve_extent(
-        &self,
-        bounds: Rect,
-        proposal: ProposalSize,
-    ) -> Result<ResolvedExtent, LayoutError> {
-        ResolvedExtent::centred(bounds, self.measure(proposal).size)
-    }
-    fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
-        ViewDimensions::new(Size::new(0.0, 0.0))
-    }
-    fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::Both
-    }
-    fn priority(&self) -> i32 {
-        0
     }
 }
 

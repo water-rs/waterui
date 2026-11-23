@@ -15,41 +15,14 @@ use waterui::navigation::{
     tab::{TabItem, TabRole},
 };
 use waterui_core::id::Id;
-use waterui_core::layout::{
-    LayoutError, ProposalSize, Rect, ResolvedExtent, StretchAxis, SubView, ViewDimensions,
-};
 
-use super::extract_title_text;
+use super::{Fill, extract_title_text};
 use crate::contract::RenderContext;
 use crate::sf_symbol::SfSymbolProbe;
 
 /// The `TabsLayout` realization.
 pub fn realize_tabs_layout(value: TabsLayout<Held>, ctx: &RenderContext<'_>) -> NativeLeaf {
     platform::tabs_leaf(value, ctx)
-}
-
-struct Fill;
-
-impl SubView for Fill {
-    fn resolve_extent(
-        &self,
-        bounds: Rect,
-        proposal: ProposalSize,
-    ) -> Result<ResolvedExtent, LayoutError> {
-        ResolvedExtent::centred(bounds, self.measure(proposal).size)
-    }
-
-    fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
-        ViewDimensions::new(waterui_core::layout::Size::new(0.0, 0.0))
-    }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::Both
-    }
-
-    fn priority(&self) -> i32 {
-        0
-    }
 }
 
 /// A tab rendered once: its pane's leaf, its label's extracted text and the
@@ -523,10 +496,11 @@ mod platform {
 
 #[cfg(target_os = "macos")]
 mod platform {
-    use super::{Fill, Mounted, ProposalSize, reconcile_tabs};
+    use super::{Fill, Mounted, reconcile_tabs};
     use alloc::rc::Rc;
     use alloc::vec::Vec;
     use core::cell::RefCell;
+    use waterui_core::layout::ProposalSize;
 
     use crate::contract::{Held, NativeLeaf, RenderContext};
     use crate::native_layout::LayoutContext;

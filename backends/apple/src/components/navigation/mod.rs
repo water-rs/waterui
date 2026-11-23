@@ -13,6 +13,9 @@
 use alloc::string::String;
 
 use cocoa_ui::PlatformView;
+use waterui_core::layout::{
+    LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
+};
 
 pub mod bar;
 pub mod metadata;
@@ -20,6 +23,37 @@ pub mod nav_view;
 pub mod split;
 pub mod stack;
 pub mod tabs;
+
+/// Layout face for navigation containers (`Tabs`, `NavigationStack`,
+/// `NavigationView`, `NavigationSplitView`): stretches along both axes to fill
+/// its proposed extent, answering `0` on any unspecified axis.
+#[derive(Debug)]
+pub(super) struct Fill;
+
+impl SubView for Fill {
+    fn resolve_extent(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+    ) -> Result<ResolvedExtent, LayoutError> {
+        ResolvedExtent::centred(bounds, self.measure(proposal).size)
+    }
+
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+        ViewDimensions::new(Size::new(
+            proposal.width.unwrap_or(0.0),
+            proposal.height.unwrap_or(0.0),
+        ))
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::Both
+    }
+
+    fn priority(&self) -> i32 {
+        0
+    }
+}
 
 /// The first plain-text string a rendered subtree's text views carry —
 /// `extractNavigationTitleText`'s walk: labels on `UIKit`, text fields on
