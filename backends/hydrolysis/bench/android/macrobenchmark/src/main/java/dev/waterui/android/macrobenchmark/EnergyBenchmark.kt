@@ -5,6 +5,7 @@ import androidx.benchmark.macro.PowerCategory
 import androidx.benchmark.macro.PowerCategoryDisplayLevel
 import androidx.benchmark.macro.PowerMetric
 import androidx.benchmark.macro.StartupMode
+import androidx.benchmark.macro.TraceSectionMetric
 import androidx.benchmark.macro.junit4.MacrobenchmarkRule
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.UiDevice
@@ -35,15 +36,19 @@ class EnergyBenchmark {
 
     @Test
     fun energy() =
-        measurePower(PowerMetric(PowerMetric.Energy(railCategories()))) { replay, scriptSeconds, _
-            ->
+        measurePower(
+            listOf(
+                PowerMetric(PowerMetric.Energy(railCategories())),
+                TraceSectionMetric("journeyAction", targetPackageOnly = false),
+            )
+        ) { replay, scriptSeconds, _ ->
             replay.measure(scriptSeconds)
         }
 
     @Test
     fun idle() =
         measurePower(
-            PowerMetric(PowerMetric.Power(railCategories())),
+            listOf(PowerMetric(PowerMetric.Power(railCategories()))),
             prepare = { replay, scriptSeconds ->
                 replay.measure(scriptSeconds)
                 replay.finish()
@@ -57,7 +62,7 @@ class EnergyBenchmark {
         PowerCategory.entries.associateWith { PowerCategoryDisplayLevel.BREAKDOWN }
 
     private fun measurePower(
-        metric: PowerMetric,
+        metrics: List<androidx.benchmark.macro.Metric>,
         prepare: (Journey.TimedRun, Int) -> Unit = { _, _ -> },
         measure: (Journey.TimedRun, Int, Int) -> Unit,
     ) {
@@ -73,7 +78,7 @@ class EnergyBenchmark {
             Journey.TimedRun(device, spec, fixture, completionTimeout).use { replay ->
                 benchmarkRule.measureRepeated(
                     packageName = target.packageName,
-                    metrics = listOf(metric),
+                    metrics = metrics,
                     compilationMode = target.compilationMode,
                     iterations = iterations,
                     startupMode = StartupMode.WARM,

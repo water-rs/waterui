@@ -126,7 +126,9 @@ FLING_MS = 120
 def prepare_display(serial: str) -> None:
     """Wakes the display and clears the lock screen and notification shade, so
     the app under test owns the focused window the settle check demands."""
+    metrics.adb(serial, "shell", "svc", "power", "stayon", "true")
     metrics.adb(serial, "shell", "input", "keyevent", "KEYCODE_WAKEUP")
+    metrics.adb(serial, "shell", "input", "keyevent", "82")
     metrics.adb(serial, "shell", "wm", "dismiss-keyguard")
     metrics.adb(serial, "shell", "cmd", "statusbar", "collapse")
 
@@ -214,6 +216,67 @@ def capture_first_frame(serial: str, package: str, output: Path, timeout_s: floa
     raise TimeoutError(f"{package}: no focused application frame within {timeout_s}s")
 
 
+def collect_memory_sample(
+    serial: str, package: str, point: str, out: Path
+) -> dict:
+    sample = memory_metrics.collect_at(serial, package, point, out, "memory")
+    sample.update(memory_metrics.collect_proc_tree_pss(serial, package))
+    return sample
+
+
+def collect_four_point_memory(
+    serial: str,
+    package: str,
+    env: dict,
+    compose: bool,
+    journey: list[dict],
+    out: Path,
+    timeout_s: float,
+) -> dict:
+    """Separate section-6 memory replay so `dumpsys meminfo` never perturbs frames."""
+    points: dict[str, dict] = {}
+    with e2e.launch_environment(serial, package, env, compose=compose) as environment_args:
+        start_launcher(serial, package, environment_args)
+        try:
+            capture_first_frame(serial, package, out / "memory_first_frame.png", timeout_s)
+            points["first_content_peak"] = collect_memory_sample(
+                serial, package, "first_content_peak", out
+            )
+            time.sleep(1.5)
+            points["settled_idle"] = collect_memory_sample(
+                serial, package, "settled_idle", out
+            )
+            midpoint = max(1, len(journey) // 2) if journey else 0
+            size = display_size(serial)
+            if journey:
+                replay_journey(serial, journey[:midpoint], size)
+            points["steady_interaction"] = collect_memory_sample(
+                serial, package, "steady_interaction", out
+            )
+            if journey[midpoint:]:
+                replay_journey(serial, journey[midpoint:], size)
+            end_sample = collect_memory_sample(serial, package, "script_peak", out)
+            peak = dict(end_sample)
+            for key in ("total_pss_kb", "total_rss_kb", "native_heap_pss_kb", "graphics_pss_kb", "process_tree_pss_kb"):
+                candidates = [
+                    s[key]
+                    for s in (points["steady_interaction"], end_sample)
+                    if key in s
+                ]
+                if candidates:
+                    peak[key] = max(candidates)
+            points["script_peak"] = peak
+        finally:
+            e2e.force_stop(serial, package)
+
+    flat: dict = {"memory_points": points}
+    for point_name, sample in points.items():
+        for metric_key, value in sample.items():
+            if isinstance(value, int):
+                flat[f"{point_name}_{metric_key}"] = value
+    return flat
+
+
 def launch_and_capture(
     serial: str,
     name: str,
@@ -268,13 +331,17 @@ def launch_and_capture(
                 raise ValueError(f"{name}: incomplete journey, unsupported operations {unsupported}")
             result["replay"] = "complete"
             result.update(frame_metrics.collect(serial, package, out, "frames"))
-            result.update(memory_metrics.collect_at(serial, package, "post_journey", out, "memory"))
             result.update(latency_metrics.collect(serial, out, "input"))
             e2e.dump_logcat(serial, out / "logcat.txt")
         finally:
             e2e.force_stop(serial, package)
     if painter is not None:
         result.update(frame_profile.collect(painter, profile_log))
+    result.update(
+        collect_four_point_memory(
+            serial, package, env, painter is None, journey or [], out, timeout_s
+        )
+    )
 
     checked = subprocess.run(
         [comparison_tool, "check", str(out / "capture.png")],

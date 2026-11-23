@@ -26,8 +26,8 @@ val fixtureFlavors = listOf(
     "suite",
     "anchored_overlay", "animation", "drag_drop", "edge_layout", "edge_list",
     "edge_text", "filter", "flow_markdown", "form", "gallery", "gesture",
-    "gradient", "hover", "icons", "list", "locale", "map", "markdown",
-    "media_picker", "menu", "multi_window", "navigation", "picker",
+    "gradient", "hover", "icons", "keyboard_panel", "list", "locale", "map", "markdown",
+    "media_picker", "menu", "multi_scene", "multi_window", "navigation", "picker",
     "reminders", "reply", "shape", "snackbar", "starfield", "stress",
     "typography_rtl", "video_player", "waterkit_camera_filters", "webview",
 )

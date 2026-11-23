@@ -363,6 +363,24 @@ compose_twin = "registered"
 parity_budget = 0.02
 parity_budget_source = "default"
 
+[fixtures.keyboard_panel]
+source = "examples/keyboard_panel"
+package = "com.waterui.keyboardpanelexample"
+mode = "verify"
+golden = "reference/goldens/keyboard_panel.png"
+compose_twin = "registered"
+parity_budget = 0.02
+parity_budget_source = "default"
+
+[fixtures.multi_scene]
+source = "examples/multi_scene"
+package = "com.waterui.multisceneexample"
+mode = "verify"
+golden = "reference/goldens/multi_scene.png"
+compose_twin = "registered"
+parity_budget = 0.02
+parity_budget_source = "default"
+
 [fixtures.typography-rtl]
 source = "examples/typography-rtl"
 package = "dev.waterui.typography_rtl"

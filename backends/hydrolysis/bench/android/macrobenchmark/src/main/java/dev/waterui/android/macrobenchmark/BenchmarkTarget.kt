@@ -4,6 +4,7 @@ import android.content.Intent
 import android.os.Bundle
 import androidx.benchmark.macro.BaselineProfileMode
 import androidx.benchmark.macro.CompilationMode
+import androidx.benchmark.macro.ExperimentalMacrobenchmarkApi
 import androidx.test.shell.Shell
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.UiDevice
@@ -19,13 +20,15 @@ class BenchmarkTarget(args: Bundle, private val fixture: String) : Closeable {
     val packageName: String = externalPackage ?: SuiteRegistry.packageForFixture(fixture)
     private val readyText = args.getString("ready_text")
     private var environmentId: String? = null
+    @OptIn(ExperimentalMacrobenchmarkApi::class)
     val compilationMode: CompilationMode =
         when (val mode = args.getString("compilation")) {
             "baseline-profile" -> CompilationMode.Partial(BaselineProfileMode.Require)
+            "precompiled" -> CompilationMode.Ignore()
             "none" -> CompilationMode.None()
             null -> {
                 require(externalPackage == null) {
-                    "An explicit target requires compilation=baseline-profile or none"
+                    "An explicit target requires compilation=baseline-profile, precompiled, or none"
                 }
                 CompilationMode.Partial(BaselineProfileMode.Require)
             }

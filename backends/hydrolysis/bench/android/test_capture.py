@@ -29,7 +29,12 @@ class CaptureOrderingTests(unittest.TestCase):
             stack.enter_context(patch.object(run.frame_profile, "record", return_value=nullcontext()))
             stack.enter_context(patch.object(run.frame_profile, "collect", return_value={}))
             stack.enter_context(patch.object(run.frame_metrics, "collect", return_value={}))
-            stack.enter_context(patch.object(run.memory_metrics, "collect_at", return_value={}))
+            def sample_mem(_, package, point, *a):
+                events.append(("meminfo", point))
+                return {"total_pss_kb": 1024, "sample_point": point}
+            stack.enter_context(patch.object(run.memory_metrics, "collect_at", side_effect=sample_mem))
+            stack.enter_context(patch.object(run.memory_metrics, "collect_proc_tree_pss", return_value={"process_tree_pss_kb": 1024, "process_count": 1}))
+            stack.enter_context(patch.object(run.time, "sleep"))
             stack.enter_context(patch.object(run.latency_metrics, "collect", return_value={}))
             stack.enter_context(patch.object(run, "display_size", return_value=(960, 2142)))
             def replay(*args):
@@ -47,9 +52,18 @@ class CaptureOrderingTests(unittest.TestCase):
             )
             self.assertLess(events.index(("stop", "reference")), events.index(("start", "target")))
             self.assertLess(events.index(("start", "target")), events.index(("journey", "target")))
+            first_target_stop = events.index(("stop", "target"))
+            first_meminfo = events.index(("meminfo", "first_content_peak"))
+            self.assertLess(first_target_stop, first_meminfo)
+            self.assertEqual(
+                [p for kind, p in events if kind == "meminfo"],
+                ["first_content_peak", "settled_idle", "steady_interaction", "script_peak"],
+            )
             last_stop = max(i for i, event in enumerate(events) if event == ("stop", "target"))
             self.assertLess(last_stop, events.index(("compare", "image")))
             self.assertEqual(result["verify"], "review_required")
+            self.assertEqual(result["settled_idle_total_pss_kb"], 1024)
+            self.assertEqual(result["script_peak_process_tree_pss_kb"], 1024)
 
 
 if __name__ == "__main__":

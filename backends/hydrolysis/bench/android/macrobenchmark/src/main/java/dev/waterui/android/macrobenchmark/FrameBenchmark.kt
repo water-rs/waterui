@@ -51,6 +51,7 @@ class FrameBenchmark {
                             FrameTimingMetric(),
                             FrameTimingGfxInfoMetric(),
                             TraceSectionMetric("measureBlock", targetPackageOnly = false),
+                            TraceSectionMetric("journeyAction", targetPackageOnly = false),
                         ),
                     compilationMode = target.compilationMode,
                     iterations = iterations,
