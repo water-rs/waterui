@@ -149,55 +149,70 @@ const ENGINE_WGSL9: &str = include_str!(concat!(env!("OUT_DIR"), "/engine9.wgsl"
 const ENGINE_WGSL10: &str = include_str!(concat!(env!("OUT_DIR"), "/engine10.wgsl"));
 const ENGINE_WGSL11: &str = include_str!(concat!(env!("OUT_DIR"), "/engine11.wgsl"));
 
+/// Removes every span bracketed by two `// {marker}` lines from `source`.
+///
+/// # Panics
+///
+/// If a marker is missing or unpaired (a build bug in `shader.wgsl`).
+fn drop_marked(source: &str, marker: &str) -> String {
+    let tag = format!("// {marker}");
+    let mut out = String::with_capacity(source.len());
+    let mut dropping = false;
+    let mut seen = false;
+    for line in source.split_inclusive('\n') {
+        if line.trim() == tag {
+            dropping = !dropping;
+            seen = true;
+        } else if !dropping {
+            out.push_str(line);
+        }
+    }
+    assert!(seen, "missing `{tag}` marker in shader.wgsl");
+    assert!(!dropping, "unpaired `{tag}` marker in shader.wgsl");
+    out
+}
+
 /// The effect-module text for a user `backdrop_effect` source.
 ///
 /// The full engine module — `ENGINE_WGSL5`, which keeps the cell-buffer
 /// reads and the source image conversion, or `ENGINE_WGSL3` when `union`
 /// marks a member of a union group, since one effect pipeline serves
 /// whatever route and paint its draws carry — with the stub
-/// `backdrop_effect` removed and the user source appended. The stub sits
-/// between two `// backdrop-effect-stub` marker lines, so removal is a
-/// plain string split.
+/// `backdrop_effect` and the content-effect helpers and branch stripped,
+/// and the user source appended.
 ///
 /// # Panics
 ///
 /// If the stub markers are missing from `shader.wgsl` (a build bug).
 #[must_use]
 pub fn backdrop_effect_text(user: &str, union: bool) -> Cow<'static, str> {
-    const MARK: &str = "// backdrop-effect-stub";
     let module = if union {
         ENGINE_F32[3].wgsl
     } else {
         ENGINE_F32[5].wgsl
     };
-    let (head, rest) = module
-        .split_once(MARK)
-        .expect("the backdrop-effect stub marker is part of shader.wgsl");
-    let (_, tail) = rest
-        .split_once(MARK)
-        .expect("the backdrop-effect stub has a closing marker");
-    format!("{head}{tail}\n{user}").into()
+    let stripped = drop_marked(module, "backdrop-effect-stub");
+    let stripped = drop_marked(&stripped, "content-effect-only");
+    let stripped = drop_marked(&stripped, "content-effect-branch");
+    format!("{stripped}\n{user}").into()
 }
 
 /// The effect-module text for a user `content_effect` source.
 ///
 /// The full non-union engine module (`ENGINE_F32[5]`) with the stub
-/// `content_effect` removed and the user source appended.
+/// `content_effect`, the unused `backdrop_effect` stub and branch, and the
+/// `EFFECT_CONTENT` guard stripped, and the user source appended.
 ///
 /// # Panics
 ///
 /// If the stub markers are missing from `shader.wgsl` (a build bug).
 #[must_use]
 pub fn content_effect_text(user: &str) -> Cow<'static, str> {
-    const MARK: &str = "// content-effect-stub";
-    let (head, rest) = ENGINE_F32[5]
-        .wgsl
-        .split_once(MARK)
-        .expect("the content-effect stub marker is part of shader.wgsl");
-    let (_, tail) = rest
-        .split_once(MARK)
-        .expect("the content-effect stub has a closing marker");
-    format!("{head}{tail}\n{user}").into()
+    let stripped = drop_marked(ENGINE_F32[5].wgsl, "content-effect-stub");
+    let stripped = drop_marked(&stripped, "backdrop-effect-stub");
+    let stripped = drop_marked(&stripped, "backdrop-effect-branch");
+    let stripped = drop_marked(&stripped, "content-effect-guard");
+    format!("{stripped}\n{user}").into()
 }
 
 /// Whether the validated effect module's entry points reach the

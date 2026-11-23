@@ -771,6 +771,7 @@ fn backdrop_effect(px: BackdropPixel, params: array<vec4<f32>, 16>) -> vec4<f32>
 }
 // backdrop-effect-stub
 
+// content-effect-only
 struct ContentPixel {
     p: vec2<f32>,
     sdf: f32,
@@ -808,6 +809,7 @@ fn content_effect(px: ContentPixel, params: array<vec4<f32>, 16>) -> vec4<f32> {
     return content_sample(px.p);
 }
 // content-effect-stub
+// content-effect-only
 
 // The member composite for a PAINT_BACKDROP instance: the effect in
 // meta_.w's low bits (`kind | stop count << 8`) evaluated at the device
@@ -900,13 +902,21 @@ fn paint_backdrop(i: u32, pixel: vec2<f32>) -> vec4<f32> {
     for (var j = 0u; j < count; j = j + 1u) {
         params[j] = stops[first + j].color;
     }
+    // content-effect-branch
+    // content-effect-guard
     if kind == EFFECT_CONTENT {
+    // content-effect-guard
         return content_effect(
             ContentPixel(px.p, px.own_sdf, px.normal, px.size, px.scale, px.local),
             params,
         );
+    // content-effect-guard
     }
+    // content-effect-guard
+    // content-effect-branch
+    // backdrop-effect-branch
     return backdrop_effect(px, params);
+    // backdrop-effect-branch
 }
 
 // The tile build profile replaces these two interfaces with attachment
