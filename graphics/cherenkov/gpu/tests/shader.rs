@@ -257,18 +257,38 @@ split_test! {
 /// Specialized backdrop and content effect modules strip each other's unused
 /// stubs and dispatch branches, and translate through every naga backend.
 fn specialized_effect_modules_strip_unused_stubs_and_emit() {
+    let common_forbidden = [
+        "paint_mesh",
+        "paint_image",
+        "eval_stops",
+        "composite_space",
+        "plain_composite",
+        "glyph_coverage",
+        "vs_opaque",
+        "fs_opaque",
+        "vs_partial",
+        "fs_partial",
+        "if kind == EFFECT_SAMPLE",
+        "if kind == EFFECT_COLOR",
+        "if kind == EFFECT_REFRACTION",
+        "if kind == EFFECT_RIM",
+        "if kind == EFFECT_LEVEL",
+        "image_tex",
+        "image_decode",
+        "coverage_arena",
+    ];
     let backdrop_user = "fn backdrop_effect(px: BackdropPixel, params: array<vec4<f32>, 16>) -> vec4<f32> {
         return backdrop_sample(px.p) + params[0];
     }";
     for union in [false, true] {
         let source = backdrop_effect_text(backdrop_user, union);
-        for forbidden in [
+        for forbidden in common_forbidden.into_iter().chain([
             "ContentPixel",
             "content_texel",
             "content_sample",
             "content_effect",
             "if kind == EFFECT_CONTENT",
-        ] {
+        ]) {
             assert!(
                 !source.contains(forbidden),
                 "backdrop_effect_text(union={union}) retained `{forbidden}`"
@@ -290,7 +310,19 @@ fn specialized_effect_modules_strip_unused_stubs_and_emit() {
         return content_sample(px.p - px.normal * params[0].x * t * t);
     }";
     let source = content_effect_text(content_user);
-    for forbidden in ["backdrop_effect", "if kind == EFFECT_CONTENT"] {
+    for forbidden in common_forbidden.into_iter().chain([
+        "BackdropPixel",
+        "BackdropField",
+        "backdrop_sampler",
+        "backdrop_sample",
+        "backdrop_sample_level",
+        "backdrop_sample_blur",
+        "backdrop_field",
+        "backdrop_effect",
+        "erf_tail",
+        "union_field",
+        "if kind == EFFECT_CONTENT",
+    ]) {
         assert!(
             !source.contains(forbidden),
             "content_effect_text retained `{forbidden}`"

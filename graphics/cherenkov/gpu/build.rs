@@ -60,6 +60,7 @@ mod union_cap;
 
 use std::env;
 use std::fmt::Write as _;
+use std::fs;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 
@@ -126,6 +127,48 @@ const UNION_NAMES: &[&str] = &["union_field", "member_field"];
 const IMAGE_SOURCE_NAMES: &[&str] = &["image_decode", "image_source_texel"];
 /// What the `// cell-buffer` spans carry: the GPU coverage arena reads.
 const CELL_NAMES: &[&str] = &["coverage_arena"];
+/// Dead non-effect paths that specialized effect templates must not carry.
+const NON_EFFECT_NAMES: &[&str] = &[
+    "paint_mesh",
+    "paint_image",
+    "eval_stops",
+    "composite_space",
+    "plain_composite",
+    "glyph_coverage",
+    "vs_opaque",
+    "fs_opaque",
+    "vs_partial",
+    "fs_partial",
+    "if kind == EFFECT_SAMPLE",
+    "if kind == EFFECT_COLOR",
+    "if kind == EFFECT_REFRACTION",
+    "if kind == EFFECT_RIM",
+    "if kind == EFFECT_LEVEL",
+    "image_tex",
+    "image_decode",
+    "coverage_arena",
+];
+/// Backdrop-only helpers that `effect_content.wgsl` must not carry.
+const BACKDROP_ONLY_NAMES: &[&str] = &[
+    "BackdropPixel",
+    "BackdropField",
+    "backdrop_sampler",
+    "backdrop_sample",
+    "backdrop_sample_level",
+    "backdrop_sample_blur",
+    "backdrop_field",
+    "backdrop_effect",
+    "erf_tail",
+    "if kind == EFFECT_CONTENT",
+];
+/// Content-only helpers that `effect_backdrop*.wgsl` must not carry.
+const CONTENT_ONLY_NAMES: &[&str] = &[
+    "ContentPixel",
+    "content_texel",
+    "content_sample",
+    "content_effect",
+    "if kind == EFFECT_CONTENT",
+];
 
 /// The invariant of every stripped product: none of `names` survives — a
 /// marker span that drifted fails loudly here rather than leaving dead code
@@ -289,11 +332,8 @@ fn main() {
     // runtime and the tests compose with their own sources, lands there too,
     // so nothing can drift from what this script compiles.
     let space = filtrate_core::space::WGSL;
-    let shared = format!("{space}\n{shared}");
-    let present = format!("{space}\n{present}");
-    let resolve = format!("{space}\n{resolve}");
-    let headroom = format!("{space}\n{headroom}");
-    let space_convert = format!("{space}\n{space_convert}");
+    let [shared, present, resolve, headroom, space_convert] =
+        [shared, present, resolve, headroom, space_convert].map(|s| format!("{space}\n{s}"));
     std::fs::write(out_dir.join("shared.wgsl"), &shared).unwrap();
 
     // The union member cap the WGSL fold is compiled against:
@@ -318,7 +358,7 @@ fn main() {
     let cell_specialized = drop_marked(&stripped.shader_cell_plain, "full-fragment");
     let cell_glyph = format!("{cell_specialized}\n{}", read("shader_glyph"));
     let composite = format!("{specialized}\n{}", read("shader_composite"));
-    let specs = module_specs(&Modules {
+    let modules = Modules {
         simple_entry: &read("entry_simple"),
         shadow_entry: &read("entry_shadow"),
         full_entry: &read("entry_full"),
@@ -348,9 +388,101 @@ fn main() {
         space_convert: &space_convert,
         coverage: &coverage,
         tile: &tile,
-    });
+    };
+    write_effect_templates(&out_dir, &manifest, &modules);
+    compile_specs(&out_dir, &module_specs(&modules));
+}
 
-    compile_specs(&out_dir, &specs);
+/// Writes the three specialized WGSL templates for runtime user effect
+/// shaders (`backdrop_effect_text` and `content_effect_text`): plain
+/// backdrop, union backdrop, and content effect. Each strips every
+/// unreachable non-effect primitive, paint, coverage-pass, blend-mode and
+/// built-in-effect path so user pipelines compile only the `KIND_SPAN` +
+/// `PAINT_BACKDROP` shader surface.
+fn write_effect_templates(out_dir: &Path, manifest: &Path, m: &Modules<'_>) {
+    let shader_effect = read_shader(manifest, "shader_effect");
+    let strip_markers = |mut text: String, markers: &[&str]| {
+        for marker in markers {
+            text = drop_marked(&text, marker);
+        }
+        text
+    };
+    let effect_plain_fs = drop_marked(&shader_effect, "union-stub");
+
+    let backdrop_body = strip_markers(
+        m.shader_plain.to_owned(),
+        &[
+            "non-effect",
+            "builtin-effects",
+            "full-fragment",
+            "backdrop-effect-stub",
+            "content-effect-only",
+            "content-effect-branch",
+        ],
+    );
+    let effect_backdrop = format!(
+        "{}\n{backdrop_body}\n{effect_plain_fs}\n{}",
+        m.shared_plain, m.full_entry,
+    );
+    assert_absent(&effect_backdrop, "effect_backdrop", UNION_NAMES);
+    assert_absent(&effect_backdrop, "effect_backdrop", NON_EFFECT_NAMES);
+    assert_absent(&effect_backdrop, "effect_backdrop", CONTENT_ONLY_NAMES);
+    fs::write(out_dir.join("effect_backdrop.wgsl"), &effect_backdrop).unwrap();
+
+    let backdrop_union_body = strip_markers(
+        m.shader_no_long.to_owned(),
+        &[
+            "cell-buffer",
+            "image-source",
+            "non-effect",
+            "builtin-effects",
+            "full-fragment",
+            "backdrop-effect-stub",
+            "content-effect-only",
+            "content-effect-branch",
+        ],
+    );
+    let effect_backdrop_union = format!(
+        "{}{}\n{backdrop_union_body}\n{}\n{shader_effect}\n{}",
+        m.union_max, m.shared_plain, m.union, m.full_entry,
+    );
+    assert_absent(
+        &effect_backdrop_union,
+        "effect_backdrop_union",
+        NON_EFFECT_NAMES,
+    );
+    assert_absent(
+        &effect_backdrop_union,
+        "effect_backdrop_union",
+        CONTENT_ONLY_NAMES,
+    );
+    fs::write(
+        out_dir.join("effect_backdrop_union.wgsl"),
+        &effect_backdrop_union,
+    )
+    .unwrap();
+
+    let content_body = strip_markers(
+        m.shader_plain.to_owned(),
+        &[
+            "non-effect",
+            "builtin-effects",
+            "full-fragment",
+            "backdrop-only",
+            "backdrop-effect-stub",
+            "backdrop-effect-branch",
+            "content-effect-stub",
+            "content-effect-guard",
+        ],
+    );
+    let effect_content = format!(
+        "{}\n{content_body}\n{effect_plain_fs}\n{}",
+        m.shared_plain, m.full_entry,
+    );
+    assert_absent(&effect_content, "effect_content", UNION_NAMES);
+    assert_absent(&effect_content, "effect_content", NON_EFFECT_NAMES);
+    assert_absent(&effect_content, "effect_content", BACKDROP_ONLY_NAMES);
+    fs::write(out_dir.join("effect_content.wgsl"), &effect_content).unwrap();
 }
 
 /// The stroke ABI as WGSL: every `stroke_abi` constant as a `u32` `const`,
