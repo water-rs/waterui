@@ -30,8 +30,11 @@ use objc2_quartz_core::CALayer;
 #[cfg(target_os = "macos")]
 use objc2_quartz_core::CATransaction;
 
+#[cfg(target_os = "ios")]
+use objc2_ui_kit::UIWindow;
 use waterui_contract::contract_violation;
 
+use crate::ColorScheme;
 use crate::geometry::{Rect, Size};
 
 unsafe extern "C" {
@@ -603,7 +606,7 @@ pub fn any_window_scene() -> Option<Retained<objc2_ui_kit::UIWindowScene>> {
 /// Applies `scheme` to `window` so offscreen controls and dynamic system colors
 /// resolve against the requested light or dark appearance.
 #[cfg(target_os = "macos")]
-pub fn set_window_color_scheme(window: &NSWindow, scheme: crate::ColorScheme) {
+pub fn set_window_color_scheme(window: &NSWindow, scheme: ColorScheme) {
     use objc2_app_kit::{
         NSAppearance, NSAppearanceCustomization as _, NSAppearanceNameAqua,
         NSAppearanceNameDarkAqua,
@@ -613,8 +616,8 @@ pub fn set_window_color_scheme(window: &NSWindow, scheme: crate::ColorScheme) {
     // immutable `AppKit` string constants.
     let name = unsafe {
         match scheme {
-            crate::ColorScheme::Light => NSAppearanceNameAqua,
-            crate::ColorScheme::Dark => NSAppearanceNameDarkAqua,
+            ColorScheme::Light => NSAppearanceNameAqua,
+            ColorScheme::Dark => NSAppearanceNameDarkAqua,
         }
     };
     if let Some(appearance) = NSAppearance::appearanceNamed(name) {
@@ -626,12 +629,12 @@ pub fn set_window_color_scheme(window: &NSWindow, scheme: crate::ColorScheme) {
 /// offscreen `UIKit` controls and materials resolve against the requested
 /// light or dark interface style.
 #[cfg(target_os = "ios")]
-pub fn set_window_color_scheme(window: &objc2_ui_kit::UIWindow, scheme: crate::ColorScheme) {
+pub fn set_window_color_scheme(window: &UIWindow, scheme: ColorScheme) {
     use objc2_ui_kit::UIUserInterfaceStyle;
 
     let style = match scheme {
-        crate::ColorScheme::Light => UIUserInterfaceStyle::Light,
-        crate::ColorScheme::Dark => UIUserInterfaceStyle::Dark,
+        ColorScheme::Light => UIUserInterfaceStyle::Light,
+        ColorScheme::Dark => UIUserInterfaceStyle::Dark,
     };
     window.setOverrideUserInterfaceStyle(style);
 }

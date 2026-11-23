@@ -12,6 +12,15 @@
 //! reach that bitmap, so GPU-bearing trees stay on `capture_image`'s
 //! `ViewCapture`.
 
+#[cfg(all(feature = "native-test", any(target_os = "macos", catalyst)))]
+use cocoa_ui::bitmap::render_layer_via_render_server;
+use cocoa_ui::view::backing_scale_factor;
+#[cfg(all(feature = "native-test", target_os = "macos"))]
+use cocoa_ui::view::is_flipped;
+#[cfg(any(target_os = "ios", all(target_os = "macos", feature = "native-test")))]
+use cocoa_ui::view::layer;
+#[cfg(all(feature = "native-test", catalyst))]
+use cocoa_ui::view::prepare_for_capture;
 use waterui_capture::view_renderer::RenderResult;
 
 /// Why the platform capture produced no bitmap.
@@ -110,7 +119,7 @@ pub async fn capture_presented(
         &ancestor,
     );
 
-    let scale = cocoa_ui::view::backing_scale_factor(host);
+    let scale = backing_scale_factor(host);
     cocoa_ui::view::prepare_for_capture(host);
     cocoa_ui::bitmap::force_text_fields_display(host);
 
@@ -125,14 +134,14 @@ pub async fn capture_presented(
     let pixel_height = (bounds.size.height * scale).ceil() as usize;
     #[cfg(feature = "native-test")]
     {
-        let layer = cocoa_ui::view::layer(host).ok_or(CaptureError::NoImage)?;
-        let is_flipped = cocoa_ui::view::is_flipped(host);
-        let pixels = cocoa_ui::bitmap::render_layer_via_render_server(
-            &layer,
+        let target_layer = layer(host).ok_or(CaptureError::NoImage)?;
+        let flipped = is_flipped(host);
+        let pixels = render_layer_via_render_server(
+            &target_layer,
             scale,
             pixel_width,
             pixel_height,
-            is_flipped,
+            flipped,
         )
         .ok_or(CaptureError::RenderServer {
             width: pixel_width,
@@ -210,24 +219,19 @@ pub async fn capture_presented(
             height: bounds.size.height,
         });
     }
-    let scale = cocoa_ui::view::backing_scale_factor(host).max(1.0);
+    let scale = backing_scale_factor(host).max(1.0);
     let pixel_width = (bounds.size.width * scale).ceil() as usize;
     let pixel_height = (bounds.size.height * scale).ceil() as usize;
     #[cfg(all(feature = "native-test", catalyst))]
     {
-        cocoa_ui::view::prepare_for_capture(host);
-        let layer = cocoa_ui::view::layer(host).expect("every `UIView` owns a backing layer");
-        let pixels = cocoa_ui::bitmap::render_layer_via_render_server(
-            &layer,
-            scale,
-            pixel_width,
-            pixel_height,
-            true,
-        )
-        .ok_or(CaptureError::RenderServer {
-            width: pixel_width,
-            height: pixel_height,
-        })?;
+        prepare_for_capture(host);
+        let target_layer = layer(host).expect("every `UIView` owns a backing layer");
+        let pixels =
+            render_layer_via_render_server(&target_layer, scale, pixel_width, pixel_height, true)
+                .ok_or(CaptureError::RenderServer {
+                width: pixel_width,
+                height: pixel_height,
+            })?;
         Ok(RenderResult::new(
             pixels,
             pixel_width as u32,
@@ -244,9 +248,9 @@ pub async fn capture_presented(
             })?;
         cocoa_ui::bitmap::scale_to_pixels(&context, scale);
         cocoa_ui::bitmap::begin_layer_flip(&context, bounds.size.height);
-        let layer = cocoa_ui::view::layer(host).expect("every `UIView` owns a backing layer");
+        let target_layer = layer(host).expect("every `UIView` owns a backing layer");
         cocoa_ui::bitmap::with_uikit_context(&context, || {
-            cocoa_ui::bitmap::render_layer(&layer, &context);
+            cocoa_ui::bitmap::render_layer(&target_layer, &context);
         });
         cocoa_ui::bitmap::end_layer_flip(&context);
         drop(context);

@@ -261,24 +261,28 @@ impl WindowHost {
         #[cfg(target_os = "ios")]
         let window = {
             #[cfg(all(feature = "native-test", catalyst))]
-            let window = cocoa_ui::bitmap::any_window_scene().map_or_else(
+            use cocoa_ui::bitmap::scene_less_capture_window;
+            use cocoa_ui::bitmap::{any_window_scene, make_offscreen_window, show_capture_window};
+            #[cfg(all(feature = "native-test", catalyst))]
+            use cocoa_ui::uikit::catalyst::BackgroundApplication;
+
+            #[cfg(all(feature = "native-test", catalyst))]
+            let window = any_window_scene().map_or_else(
                 || {
-                    let application =
-                        cocoa_ui::uikit::catalyst::BackgroundApplication::bring_up(mtm);
-                    cocoa_ui::bitmap::scene_less_capture_window(mtm, &application, size)
+                    let application = BackgroundApplication::bring_up(mtm);
+                    scene_less_capture_window(mtm, &application, size)
                 },
-                |scene| cocoa_ui::bitmap::make_offscreen_window(mtm, &scene, size),
+                |scene| make_offscreen_window(mtm, &scene, size),
             );
             #[cfg(not(all(feature = "native-test", catalyst)))]
             let window = {
-                let scene =
-                    cocoa_ui::bitmap::any_window_scene().ok_or(CaptureFailure::NoWindowScene)?;
-                cocoa_ui::bitmap::make_offscreen_window(mtm, &scene, size)
+                let scene = any_window_scene().ok_or(CaptureFailure::NoWindowScene)?;
+                make_offscreen_window(mtm, &scene, size)
             };
             // The `UIViewController` containment + unhide + layout is the
             // only correct UIKit mount — a bare `addSubview` leaves the
             // window without a root controller.
-            cocoa_ui::bitmap::show_capture_window(&window, view, size);
+            show_capture_window(&window, view, size);
             window
         };
         Ok(Some(Self {

@@ -7,10 +7,17 @@
 //! takes the harness's real `MainThreadMarker` — the cases build real
 //! `NSWindow`s, which only the process's true main thread may.
 
+#[cfg(any(target_os = "macos", catalyst))]
+use cocoa_ui::ColorScheme;
 use cocoa_ui::MainThreadMarker;
+#[cfg(target_os = "macos")]
+use cocoa_ui::appkit::Application;
 use waterui::window::WindowManager;
 use waterui_backend_core::Environment;
 use waterui_backend_core::scroll::ANIMATED_ROW_SCROLL_APPROACH;
+
+#[cfg(any(target_os = "macos", catalyst))]
+use crate::theme::{ThemeSignals, install as install_theme, refresh as refresh_theme_signals};
 
 /// `pump_main_until` for the `AppKit` harnesses.
 #[cfg(target_os = "macos")]
@@ -552,21 +559,23 @@ pub fn window_environment(
         )
     )]
     mtm: MainThreadMarker,
-) -> (Environment, crate::theme::ThemeSignals) {
+) -> (Environment, ThemeSignals) {
+    use crate::dispatch::install as install_dispatch;
+
     let mut env = Environment::new();
-    crate::dispatch::install(&mut env);
+    install_dispatch(&mut env);
     #[cfg(target_os = "macos")]
-    let initial = cocoa_ui::appkit::Application::shared(mtm).color_scheme();
+    let initial = Application::shared(mtm).color_scheme();
     #[cfg(catalyst)]
-    let initial = cocoa_ui::ColorScheme::Light;
-    let theme = crate::theme::install(&mut env, initial);
+    let initial = ColorScheme::Light;
+    let theme = install_theme(&mut env, initial);
     (env, theme)
 }
 
 /// Re-reads every theme slot for `scheme`, as an appearance change does.
 #[cfg(any(target_os = "macos", catalyst))]
-pub fn refresh_theme(theme: &crate::theme::ThemeSignals, scheme: cocoa_ui::ColorScheme) {
-    crate::theme::refresh(theme, scheme);
+pub fn refresh_theme(theme: &ThemeSignals, scheme: ColorScheme) {
+    refresh_theme_signals(theme, scheme);
 }
 
 /// A real fixture window, already presentable when `content` joins it.
@@ -1176,7 +1185,9 @@ pub mod view_renderer {
 
     /// Performs the once-per-process `startup::initialize` on the main thread.
     pub fn initialize_process() {
-        let _ = crate::startup::initialize();
+        use crate::startup::initialize;
+
+        let _ = initialize();
     }
 }
 

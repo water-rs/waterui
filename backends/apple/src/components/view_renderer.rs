@@ -11,12 +11,26 @@
 //! render server), or through `crate::capture` directly in a native-only
 //! build.
 
+use cocoa_ui::PlatformView;
+use cocoa_ui::bitmap::set_window_color_scheme;
+#[cfg(all(
+    feature = "gpu_surface",
+    feature = "native-test",
+    any(target_os = "macos", catalyst)
+))]
+use cocoa_ui::capture::collect_capturables;
+use cocoa_ui::view::window as view_window;
 use waterui_backend_core::{Environment, View};
 use waterui_capture::ContentLedger;
 use waterui_capture::view_renderer::{RenderError, RenderRequest, RenderResult, ViewRenderer};
 use waterui_core::env::With;
 use waterui_core::layout::{ProposalSize, Size};
 
+#[cfg(any(
+    not(feature = "gpu_surface"),
+    all(feature = "native-test", any(target_os = "macos", catalyst))
+))]
+use crate::capture;
 use crate::contract::NativeLeaf;
 
 /// The Apple backend's [`ViewRenderer`]: renders a typed view under a
@@ -120,7 +134,7 @@ async fn capture_leaf_to_rgba(
     ))]
     let captured = {
         let mut has_capturable = false;
-        cocoa_ui::capture::collect_capturables(view, &mut |_| has_capturable = true);
+        collect_capturables(view, &mut |_| has_capturable = true);
         if has_capturable {
             drive
                 .capture_rgba()
@@ -129,7 +143,7 @@ async fn capture_leaf_to_rgba(
                 .map_err(render_error)
         } else {
             drop(drive);
-            crate::capture::capture_presented(view)
+            capture::capture_presented(view)
                 .await
                 .map(RenderResult::into_parts)
                 .map_err(|error| RenderError::Capture(Box::new(error)))
@@ -150,7 +164,7 @@ async fn capture_leaf_to_rgba(
             .map_err(render_error)
     };
     #[cfg(not(feature = "gpu_surface"))]
-    let captured = crate::capture::capture_presented(view)
+    let captured = capture::capture_presented(view)
         .await
         .map(RenderResult::into_parts)
         .map_err(|error| RenderError::Capture(Box::new(error)));
@@ -161,7 +175,7 @@ async fn capture_leaf_to_rgba(
 /// Applies the `ColorScheme` installed in `env`, if any, onto `view`'s capture
 /// window so native controls and glass materials resolve against light or dark
 /// mode before layout and rasterization.
-fn apply_env_color_scheme(view: &cocoa_ui::PlatformView, env: &Environment) {
+fn apply_env_color_scheme(view: &PlatformView, env: &Environment) {
     use cocoa_ui::ColorScheme as CocoaColorScheme;
     use waterui::theme::{ColorScheme, installed_color_scheme};
     use waterui_core::Signal as _;
@@ -173,8 +187,8 @@ fn apply_env_color_scheme(view: &cocoa_ui::PlatformView, env: &Environment) {
         ColorScheme::Light => CocoaColorScheme::Light,
         ColorScheme::Dark => CocoaColorScheme::Dark,
     };
-    if let Some(window) = cocoa_ui::view::window(view) {
-        cocoa_ui::bitmap::set_window_color_scheme(&window, scheme);
+    if let Some(window) = view_window(view) {
+        set_window_color_scheme(&window, scheme);
     }
 }
 
@@ -288,6 +302,15 @@ mod host {
 /// The capture window the leaf joins before it is measured.
 #[cfg(all(target_os = "ios", not(feature = "gpu_surface")))]
 mod host {
+    #[cfg(all(feature = "native-test", catalyst))]
+    use cocoa_ui::bitmap::scene_less_capture_window;
+    use cocoa_ui::bitmap::{
+        CaptureWindow, any_window_scene, close_capture_window, make_offscreen_window,
+        show_capture_window,
+    };
+    #[cfg(all(feature = "native-test", catalyst))]
+    use cocoa_ui::uikit::catalyst::BackgroundApplication;
+    use cocoa_ui::{MainThreadMarker, PlatformView, Retained, Size};
     use waterui_capture::view_renderer::RenderError;
 
     #[cfg(not(all(feature = "native-test", catalyst)))]
@@ -296,7 +319,7 @@ mod host {
     /// `UIKit`: an offscreen `UIWindow` in a connected scene hosts the
     /// leaf while `crate::capture` renders its layer — the `UIKit` half of
     /// `captureViewToRGBA`. Hidden again on drop.
-    pub struct CaptureHost(cocoa_ui::Retained<cocoa_ui::bitmap::CaptureWindow>);
+    pub struct CaptureHost(Retained<CaptureWindow>);
 
     impl CaptureHost {
         /// Attaches `view` to an offscreen window sized `proposed`.
@@ -308,33 +331,32 @@ mod host {
             )
         )]
         pub fn attach(
-            view: &cocoa_ui::PlatformView,
-            proposed: cocoa_ui::Size,
-            mtm: cocoa_ui::MainThreadMarker,
+            view: &PlatformView,
+            proposed: Size,
+            mtm: MainThreadMarker,
         ) -> Result<Self, RenderError> {
             #[cfg(all(feature = "native-test", catalyst))]
-            let window = cocoa_ui::bitmap::any_window_scene().map_or_else(
+            let window = any_window_scene().map_or_else(
                 || {
-                    let application =
-                        cocoa_ui::uikit::catalyst::BackgroundApplication::bring_up(mtm);
-                    cocoa_ui::bitmap::scene_less_capture_window(mtm, &application, proposed)
+                    let application = BackgroundApplication::bring_up(mtm);
+                    scene_less_capture_window(mtm, &application, proposed)
                 },
-                |scene| cocoa_ui::bitmap::make_offscreen_window(mtm, &scene, proposed),
+                |scene| make_offscreen_window(mtm, &scene, proposed),
             );
             #[cfg(not(all(feature = "native-test", catalyst)))]
             let window = {
-                let scene = cocoa_ui::bitmap::any_window_scene()
+                let scene = any_window_scene()
                     .ok_or_else(|| RenderError::Capture(Box::new(CaptureError::NoWindowScene)))?;
-                cocoa_ui::bitmap::make_offscreen_window(mtm, &scene, proposed)
+                make_offscreen_window(mtm, &scene, proposed)
             };
-            cocoa_ui::bitmap::show_capture_window(&window, view, proposed);
+            show_capture_window(&window, view, proposed);
             Ok(Self(window))
         }
     }
 
     impl Drop for CaptureHost {
         fn drop(&mut self) {
-            cocoa_ui::bitmap::close_capture_window(&self.0);
+            close_capture_window(&self.0);
         }
     }
 }
