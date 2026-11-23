@@ -8912,9 +8912,11 @@ impl GpuRenderer {
         // surface is borrowed for the frame's attachment planning.
         let tile_limits = self.tile_limits();
         // Apply this surface's frame and plan materialized image storage.
+        let filters = &self.filters;
         let Some(surf) = self.surfaces.get_mut(&id) else {
             return Ok(());
         };
+        surf.frame.resolve_filter_outputs(filters)?;
         for (&layer, entry) in &mut surf.static_layers {
             if !surf.plan.planes.iter().any(|plane| plane.layer == layer) {
                 entry.capture = None;
