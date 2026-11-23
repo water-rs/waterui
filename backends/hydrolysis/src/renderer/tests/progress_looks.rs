@@ -13,7 +13,7 @@ use std::time::Instant;
 use cherenkov_record::{Curve, Draw as _, Keyframes, Paint, Repeat, ShapeData, WorkingColor};
 use kurbo::{Rect, Size};
 use nami::Signal as _;
-use waterui::component::progress::{Progress, progress};
+use waterui::component::progress::{Progress, loading, progress};
 use waterui::theme::ColorScheme;
 use waterui::{AnyView, Binding, Color, Environment, View, ViewExt as _};
 use waterui_core::handler::AnyViewBuilder;
@@ -556,8 +556,7 @@ mod measured_equals_drawn {
 
     #[test]
     fn a_loading_indicator_with_label_reserves_no_visible_label_bands() {
-        let (bounds, indicator) =
-            laid_out(waterui::component::progress::loading().label("Loading"));
+        let (bounds, indicator) = laid_out(loading().label("Loading"));
         assert!(
             indicator.y0.abs() < 1e-3 && (bounds.height() - indicator.y1).abs() < 1e-3,
             "loading indicator keeps its label accessibility-only: indicator {indicator:?} in {bounds:?}"
