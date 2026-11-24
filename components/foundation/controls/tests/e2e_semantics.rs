@@ -3,6 +3,7 @@
 mod support;
 
 use core::num::NonZeroUsize;
+use core::time::Duration;
 
 use nami::{Signal, SignalExt as _};
 use waterui::ViewExt as _;
@@ -399,9 +400,7 @@ fn multi_line_text_field_accepts_newlines_up_to_its_limit(ui: UiBuilder) {
     let observed = value.clone();
 
     let mut app = ui.mount(move || {
-        control_shell(
-            TextField::new("Notes", &value).line_limit(NonZeroUsize::new(2).expect("two lines")),
-        )
+        control_shell(TextField::new("Notes", &value).line_limit(NonZeroUsize::new(2)))
     });
 
     // A multi-line field reports accesskit's multi-line text-input role; the
@@ -432,6 +431,48 @@ fn multi_line_text_field_accepts_newlines_up_to_its_limit(ui: UiBuilder) {
 }
 
 #[waterui::test(viewport = (320, 240))]
+fn text_field_line_limit_signal_toggles_multiline_in_place(ui: UiBuilder) {
+    let value = Binding::container(Str::from(""));
+    let observed = value.clone();
+    let limit = Binding::container(NonZeroUsize::new(1));
+    let limit_for_view = limit.clone();
+
+    let mut app = ui.mount(move || {
+        control_shell(TextField::new("Notes", &value).line_limit(limit_for_view.clone()))
+    });
+
+    app.query().role(Role::TEXT_INPUT).label("Notes").focus();
+    app.press_character_key("a");
+    app.press_named_key("Enter");
+    app.press_character_key("b");
+    assert_eq!(
+        observed.snapshot().as_str(),
+        "ab",
+        "single-line mode must reject newline insertion"
+    );
+
+    limit.set(None);
+    assert!(
+        app.query()
+            .role(Role::MULTILINE_TEXT_INPUT)
+            .label("Notes")
+            .wait_for_existence(Duration::from_secs(2)),
+        "clearing the line_limit signal must switch the field to multiline in place"
+    );
+    app.query()
+        .role(Role::MULTILINE_TEXT_INPUT)
+        .label("Notes")
+        .focus();
+    app.press_named_key("Enter");
+    app.press_character_key("c");
+    assert_eq!(
+        observed.snapshot().as_str(),
+        "ab\nc",
+        "switching line_limit to None must allow newline insertion in place"
+    );
+}
+
+#[waterui::test(viewport = (320, 240))]
 fn accessibility_label_follows_a_signal_without_rebuilding(ui: UiBuilder) {
     // An accessibility label derived from app state must stay current the way
     // accessibility *state* already does, instead of freezing at the value it
@@ -452,7 +493,7 @@ fn accessibility_label_follows_a_signal_without_rebuilding(ui: UiBuilder) {
         app.query()
             .role(Role::BUTTON)
             .label("7 unread messages")
-            .wait_for_existence(core::time::Duration::from_secs(2)),
+            .wait_for_existence(Duration::from_secs(2)),
         "the accessibility label must follow its signal"
     );
 }
@@ -555,7 +596,7 @@ fn disabled_scope_cascades_and_reenables_reactively(ui: UiBuilder) {
             .role(DEFAULT_TOGGLE)
             .label("Notifications")
             .enabled(true)
-            .wait_for_existence(core::time::Duration::from_secs(2)),
+            .wait_for_existence(Duration::from_secs(2)),
         "disabled-scope: re-enabling the container must re-enable the toggle"
     );
     app.query()

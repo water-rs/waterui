@@ -28,7 +28,7 @@ use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_clas
 use objc2_app_kit::{
     NSControlTextEditingDelegate, NSEvent, NSMenu, NSSecureTextField, NSTextAlignment,
     NSTextContent, NSTextDelegate, NSTextField, NSTextFieldBezelStyle, NSTextFieldDelegate,
-    NSTextInputClient, NSTextView, NSTextViewDelegate,
+    NSTextInputClient, NSTextView, NSTextViewDelegate, NSView,
 };
 use objc2_core_foundation::CGRect;
 use objc2_foundation::{
@@ -293,6 +293,9 @@ impl TextField {
             cell.setWraps(!single);
             cell.setScrollable(single);
         }
+        self.invalidateIntrinsicContentSize();
+        self.setNeedsLayout(true);
+        NSView::setNeedsDisplay(self, true);
     }
 
     /// The text the field currently holds — during editing, the field
