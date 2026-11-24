@@ -384,7 +384,6 @@ struct State {
     controller: PlayerController,
     bindings: Bindings,
     playback_policy: PlaybackPolicy,
-    loops: bool,
     emit: Option<Rc<BoundVideoEventHandler>>,
     buffering: bool,
     ducked: bool,
@@ -412,7 +411,6 @@ impl core::fmt::Debug for State {
         f.debug_struct("State")
             .field("media", &self.media)
             .field("source_key", &self.source_key)
-            .field("loops", &self.loops)
             .field("buffering", &self.buffering)
             .field("ducked", &self.ducked)
             .finish_non_exhaustive()
@@ -1090,7 +1088,7 @@ impl State {
         self.ended = true;
         self.emit(Event::Ended);
         let repeat = self.bindings.repeat.snapshot();
-        if self.loops || repeat == RepeatMode::One {
+        if repeat == RepeatMode::One {
             self.player.seek_to_seconds(0.0);
             self.start_playing();
             self.ended = false;
@@ -1464,12 +1462,10 @@ impl Drop for Coordinator {
 }
 
 /// Builds the coordinator: shared player, player-level observations, media
-/// session. `loops` is the leaf's own loop flag — `VideoPlayer` hardcodes it
-/// `false`, matching the Swift leaf.
+/// session.
 fn coordinator(
     mtm: MainThreadMarker,
     playback: waterui_video::video::PlaybackConfiguration<Option<BoundVideoEventHandler>>,
-    loops: bool,
 ) -> (Coordinator, Rc<Player>) {
     let player = Rc::new(Player::new(mtm));
     let state = Rc::new(RefCell::new(State {
@@ -1506,7 +1502,6 @@ fn coordinator(
             _shuffle: playback.shuffle.clone(),
         },
         playback_policy: playback.playback_policy,
-        loops,
         emit: playback.on_event.map(Rc::new),
         deferred: Vec::new(),
         buffering: false,
@@ -1730,7 +1725,7 @@ fn render_video(config: NativeVideoConfig, ctx: &RenderContext<'_>) -> NativeLea
     let content_mode = supported_mode(config.content_mode);
     let mtm = ctx.mtm();
     let surface = PlayerLayerView::new(mtm, gravity(content_mode));
-    let (coordinator, player) = coordinator(mtm, config.playback, config.loops);
+    let (coordinator, player) = coordinator(mtm, config.playback);
     surface.set_player(Some(&player));
     update(&coordinator.state, |state| {
         state.emit(Event::PlaybackOutputPathChanged {
@@ -1766,7 +1761,7 @@ fn render_video_player(config: NativeVideoPlayerConfig, ctx: &RenderContext<'_>)
     let view = Rc::new(PlayerView::new(mtm, gravity(content_mode)));
     view.set_shows_controls(config.show_controls);
     view.set_allows_picture_in_picture(true);
-    let (coordinator, player) = coordinator(mtm, config.playback, false);
+    let (coordinator, player) = coordinator(mtm, config.playback);
     view.set_player(Some(&player));
     update(&coordinator.state, |state| {
         state.emit(Event::PlaybackOutputPathChanged {

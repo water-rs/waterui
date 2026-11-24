@@ -50,9 +50,8 @@ pub fn video(config: NativeVideoConfig) -> impl View {
         playback,
         content_mode,
         projection,
-        loops,
     } = config;
-    leaf(playback, content_mode, &projection, false, loops)
+    leaf(playback, content_mode, &projection, false)
 }
 
 /// The `VideoPlayer` realization.
@@ -63,7 +62,7 @@ pub fn video_player(config: NativeVideoPlayerConfig) -> impl View {
         projection,
         show_controls,
     } = config;
-    leaf(playback, content_mode, &projection, show_controls, false)
+    leaf(playback, content_mode, &projection, show_controls)
 }
 
 /// One leaf: the element, the coordinator mirroring the playback contract
@@ -73,7 +72,6 @@ fn leaf(
     content_mode: ContentMode,
     projection: &VideoProjection,
     controls: bool,
-    loops: bool,
 ) -> impl View + use<> {
     // A configuration this realization cannot honour is a contract violation
     // by the app: it is reported and the video is not drawn.
@@ -114,7 +112,7 @@ fn leaf(
     let Some(element) = video_element(object_fit, controls) else {
         return OneOf3::A(());
     };
-    let player = Player::new(element, playback, loops);
+    let player = Player::new(element, playback);
     let aspect = player.aspect.clone().into();
     let natural_width = player.natural_width.clone().into();
     let hosted = Native::new(HostedView::new(VideoContent { player }));
@@ -210,7 +208,6 @@ struct Player {
     bindings: Bindings,
     controller: PlayerController,
     emit: Option<Rc<dyn Fn(Event)>>,
-    loops: bool,
     /// The `(url, delivery)` of the loaded source; a repeated source is not
     /// reloaded.
     source_key: RefCell<Option<(String, Delivery)>>,
@@ -242,7 +239,7 @@ struct Player {
 }
 
 impl Player {
-    fn new(element: HtmlVideoElement, playback: BoundPlayback, loops: bool) -> Rc<Self> {
+    fn new(element: HtmlVideoElement, playback: BoundPlayback) -> Rc<Self> {
         let bindings = Bindings {
             source: playback.source,
             subtitle_selection: playback.subtitle_selection,
@@ -275,7 +272,6 @@ impl Player {
             emit: playback
                 .on_event
                 .map(|handler| -> Rc<dyn Fn(Event)> { Rc::new(move |event| handler.call(event)) }),
-            loops,
             source_key: RefCell::new(None),
             ready: Cell::new(false),
             ended: Cell::new(false),
@@ -718,7 +714,7 @@ impl Player {
         }
         self.emit(Event::Ended);
         let repeat = self.bindings.repeat.snapshot();
-        if self.loops || repeat == RepeatMode::One {
+        if repeat == RepeatMode::One {
             self.element.set_current_time(0.0);
             self.ended.set(false);
             self.start_playing();
