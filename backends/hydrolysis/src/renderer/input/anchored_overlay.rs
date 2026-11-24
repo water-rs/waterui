@@ -29,6 +29,7 @@ use kurbo::Rect;
 use kurbo::{Affine, Vec2};
 use nami::Binding;
 use waterui::metadata::anchored_overlay::{AnchorEdge, AnchorPlacement, Clamp, Dismissal};
+use waterui_backend_core::overlay::{logical_edge, place_anchored_overlay};
 use waterui_core::Environment;
 use waterui_core::layout::{Size as LayoutSize, layout_direction};
 #[cfg(feature = "menu")]
@@ -628,7 +629,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             };
             place_covering_trigger(entry.anchor, window, overlay_size, clamp_margin)
         } else {
-            let placement = waterui_backend_core::overlay::place_anchored_overlay(
+            let placement = place_anchored_overlay(
                 kurbo_to_rect(entry.anchor),
                 kurbo_to_rect(window),
                 overlay_size,
@@ -637,7 +638,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             );
             (
                 rect_to_kurbo(placement.frame()),
-                waterui_backend_core::overlay::logical_edge(placement.edge(), direction),
+                logical_edge(placement.edge(), direction),
             )
         };
 

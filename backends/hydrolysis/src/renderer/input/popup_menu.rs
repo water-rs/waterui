@@ -11,6 +11,8 @@ use crate::theme::{MenuLayout, MenuLook, MenuPresentationMotion, MenuSpec, Widge
 use crate::time::Instant;
 #[cfg(feature = "menu")]
 use crate::widgets::controls::button::{ListRowChrome, MenuRowChrome, menu_row_font};
+#[cfg(any(feature = "menu", feature = "color-picker"))]
+use core::mem::take;
 #[cfg(feature = "date-picker")]
 use core::ops::RangeInclusive;
 #[cfg(any(feature = "menu", feature = "color-picker"))]
@@ -309,7 +311,7 @@ impl PopupMenuStateGroup {
 
     pub(crate) fn close_all(&self) {
         self.truncate(0);
-        let anchored = core::mem::take(&mut self.0.borrow_mut().anchored);
+        let anchored = take(&mut self.0.borrow_mut().anchored);
         for open in anchored {
             open.set(false);
         }
