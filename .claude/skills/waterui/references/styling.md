@@ -155,16 +155,16 @@ drive each layer's `.opacity`.
 
 ## Reactive colors
 
-APIs that take a concrete `Color` (`.fill(..)`, `.background(..)`, `.foreground(..)`) do
-not accept a signal directly — wrap the signal with `signal_color` (in the prelude), which
-produces a `Color` that updates in place:
+Colour-taking modifiers (`.fill(..)`, `.background(..)`, `.foreground(..)`, `.tint(..)`,
+`.border(..)`, `Badge::color(..)`, `Avatar::ring(..)`, `IconGlyph::color(..)`) accept any
+colour signal, palette struct, or theme token directly (`impl IntoSignal<Color>`):
 
 ```rust
-let fill = signal_color(selected.select(indicator, clear).computed());
+let fill = selected.select(indicator, clear);
 Rectangle.fill(fill).size(64.0, 32.0)
 ```
 
-Without it, `.fill(binding)` fails to type-check and `.fill(binding.snapshot())` freezes —
+Passing a signal updates the native colour in place; passing `binding.snapshot()` freezes —
 the rule-1 bug in a hat.
 
 ## HDR

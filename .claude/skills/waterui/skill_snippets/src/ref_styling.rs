@@ -198,7 +198,7 @@ pub fn styling_block_06() -> impl View {
     let indicator: Color = SurfaceVariant.into();
     let clear = Color::transparent();
 
-    let fill = signal_color(selected.select(indicator, clear).computed());
+    let fill = selected.select(indicator, clear);
     Rectangle.fill(fill).size(64.0, 32.0)
 }
 

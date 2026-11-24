@@ -387,7 +387,7 @@ impl CustomButtonStyle for PillButtonStyle {
         configuration
             .into_label()
             .padding_with((8.0, 16.0))
-            .background(signal_color(bg))
+            .background(bg)
             .clip(Capsule)
     }
 }
@@ -417,8 +417,8 @@ impl CustomToggleStyle for PillToggleStyle {
         hstack((
             configuration.into_label(),
             spacer(),
-            signal_color(bg)
-                .size(44.0, 26.0)
+            ().size(44.0, 26.0)
+                .background(bg)
                 .clip(Capsule),
         ))
     }

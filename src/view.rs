@@ -14,7 +14,10 @@ use crate::fullscreen::FullScreenOverlayHost;
 #[cfg(feature = "snackbar")]
 use crate::snackbar::SnackbarHost;
 use core::future::Future;
-use nami::{Binding, Computed, Signal, SignalExt as _, signal::IntoComputed};
+use nami::{
+    Binding, Computed, Signal, SignalExt as _,
+    signal::{IntoComputed, IntoSignal},
+};
 use waterui_core::IntoSignalF32;
 pub use waterui_core::view::*;
 use waterui_core::{
@@ -346,7 +349,7 @@ pub trait ViewExt: View + Sized {
     /// let my_gradient_view = stack::hstack((Color::red(), Color::blue()));
     /// text!("Hello").background(my_gradient_view);
     /// ```
-    fn background<B: IntoBackground>(self, background: B) -> B::Output<Self> {
+    fn background<B: IntoBackground<M>, M>(self, background: B) -> B::Output<Self> {
         background.apply_background(self)
     }
 
@@ -392,7 +395,7 @@ pub trait ViewExt: View + Sized {
     ///     text!("World"),
     /// )).foreground(Color::red());
     /// ```
-    fn foreground(self, color: impl Into<Color>) -> impl View {
+    fn foreground(self, color: impl IntoSignal<Color> + 'static) -> impl View {
         self.install(theme::ForegroundOverride::new(color))
     }
 
@@ -434,7 +437,7 @@ pub trait ViewExt: View + Sized {
     ///     button("Save").action(|| {}),
     /// ));
     /// ```
-    fn tint(self, color: impl Into<Color>) -> impl View {
+    fn tint(self, color: impl IntoSignal<Color> + 'static) -> impl View {
         self.with(theme::Tint::new(color))
     }
 
@@ -1023,7 +1026,7 @@ pub trait ViewExt: View + Sized {
     /// // Simple border on all edges
     /// text!("Hello").border(Color::red(), 2.0);
     /// ```
-    fn border(self, color: impl Into<Color>, width: f32) -> Metadata<Border, Self> {
+    fn border(self, color: impl IntoSignal<Color> + 'static, width: f32) -> Metadata<Border, Self> {
         Metadata::new(self, Border::new(color, width))
     }
 

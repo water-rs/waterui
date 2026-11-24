@@ -343,7 +343,7 @@ fn destination_tile(
     .spacing(4.0)
     .padding_with(10.0)
     .min_height(56.0)
-    .background(signal_color(bg))
+    .background(bg)
     // ~10pt on the tile's shorter side, matching the official app's tiles.
     .clip(RoundedRectangle::new(CornerRadius::fraction(0.15)))
     .on_tap(

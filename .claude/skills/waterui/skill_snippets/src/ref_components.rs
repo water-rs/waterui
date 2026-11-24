@@ -565,7 +565,7 @@ pub fn components_custom_control_styles() {
             configuration
                 .into_label()
                 .padding_with((8.0, 16.0))
-                .background(signal_color(bg))
+                .background(bg)
                 .clip(Capsule)
         }
     }
@@ -596,8 +596,8 @@ pub fn components_custom_control_styles() {
             hstack((
                 label,
                 spacer(),
-                signal_color(is_on.select(Color::new(Accent), Color::new(SurfaceVariant)))
-                    .size(44.0, 26.0)
+                ().size(44.0, 26.0)
+                    .background(is_on.select(Color::new(Accent), Color::new(SurfaceVariant)))
                     .clip(Capsule),
             ))
         }

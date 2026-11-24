@@ -296,12 +296,9 @@ fn retained_label_color(
     }
     let color = look.label().get_color()?.clone();
     let frame = Rc::clone(&chrome.frame);
-    Some(waterui_graphics::color::signal_color(
-        chrome
-            .label_state
-            .clone()
-            .map(move |state| color.target(&Inputs::at_rest(frame.get(), state, &()))),
-    ))
+    Some(Color::from_signal(chrome.label_state.clone().map(
+        move |state| color.target(&Inputs::at_rest(frame.get(), state, &())),
+    )))
 }
 
 /// The retained render state of a button. A `TitleOnly` label is rendered as
@@ -1694,9 +1691,9 @@ mod tests {
     #[test]
     fn a_tint_signal_change_reaches_the_look_without_requesting_it_again() {
         let source = nami::Binding::container(WorkingColor::new([1.0, 0.0, 0.0, 1.0]));
-        let tint = waterui::theme::Tint::new(waterui_graphics::color::signal_color(
+        let tint = waterui::theme::Tint::new(
             source.map(|color| Color::new(waterui_graphics::color::Working(color))),
-        ));
+        );
         let env = Environment::new().extending(tint);
         let spec = super::button_spec(ButtonStyle::Automatic, ControlSize::Small, false, &env);
         let color = spec.tint().resolve(&env);

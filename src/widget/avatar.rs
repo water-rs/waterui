@@ -11,7 +11,7 @@ use alloc::vec::Vec;
 use crate::metadata::secure::DynamicRange;
 use crate::prelude::*;
 use crate::theme::color::{MutedForeground, SurfaceVariant};
-use nami::signal::IntoComputed;
+use nami::signal::{IntoComputed, IntoSignal};
 use unicode_segmentation::UnicodeSegmentation as _;
 use waterui_accessibility::{AccessibilityChildren, AccessibilityRole};
 use waterui_controls::{IntoLabel, Label, SemanticLabel};
@@ -268,9 +268,9 @@ impl<F> Avatar<F> {
     /// The ring is drawn inside the avatar's own side length, so a ring never
     /// changes how much room the avatar takes in a row.
     #[must_use]
-    pub fn ring(mut self, color: impl Into<Color>, width: f32) -> Self {
+    pub fn ring(mut self, color: impl IntoSignal<Color> + 'static, width: f32) -> Self {
         self.ring = Some(Ring {
-            color: color.into(),
+            color: Color::from_signal(color),
             width,
         });
         self

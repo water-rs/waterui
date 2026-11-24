@@ -31,7 +31,7 @@ use waterui_controls::label::ControlLabel;
 #[cfg(any(feature = "text-field", feature = "secure-field"))]
 use waterui_core::animation::{Animation, ChangeAnimation};
 #[cfg(any(feature = "text-field", feature = "secure-field"))]
-use waterui_graphics::color::{Color, signal_color};
+use waterui_graphics::color::Color;
 #[cfg(any(feature = "text-field", feature = "secure-field"))]
 use waterui_text::styled::StyledStr;
 
@@ -251,7 +251,7 @@ impl FieldChrome {
         label: HeldChild<E>,
     ) -> HeldChild<E> {
         let color = Rc::clone(&self.label_color);
-        let color = signal_color(self.report.clone().map(move |state| {
+        let color = Color::from_signal(self.report.clone().map(move |state| {
             color.borrow().as_ref().map_or_else(
                 || Color::new(waterui::theme::color::Foreground),
                 |color| color.target(&Inputs::at_rest(Rect::ZERO, state, &())),

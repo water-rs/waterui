@@ -32,7 +32,6 @@ use waterui_core::layout::{
     Layout, LayoutError, PlacementInput, ProposalSize, Rect, Size, SubView, SubviewPlacement,
 };
 use waterui_core::views::ForEach;
-use waterui_graphics::color::signal_color;
 use waterui_layout::AbsoluteLayout;
 use waterui_layout::container::LazyContainer;
 use waterui_layout::frame::Frame;
@@ -677,7 +676,7 @@ fn reactive_bg_collection(selected: &Binding<u32>) -> AnyView {
             .select(Color::srgb(200, 90, 160), Color::srgb(228, 224, 236))
             .computed();
         ().size(120.0, 40.0)
-            .background(signal_color(background))
+            .background(background)
             .transition(PropertyTransition::opacity())
             .animation(Animation::linear(Duration::from_millis(1)))
     });

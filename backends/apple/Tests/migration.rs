@@ -1426,7 +1426,7 @@ mod uikit_surface {
 
 mod colors {
     use objc2_core_graphics::{CGColor, CGColorSpace, kCGColorSpaceExtendedLinearDisplayP3};
-    use waterui::graphics::color::{Color, Working, WorkingColor, signal_color, srgb_to_linear};
+    use waterui::graphics::color::{Color, Working, WorkingColor, srgb_to_linear};
     use waterui::reactive::binding;
     use waterui_backend_core::AnyView;
 
@@ -1498,7 +1498,7 @@ mod colors {
         let initial = [1.4, -0.2, 0.3, 0.4];
         let source = binding(Color::new(Working(WorkingColor::new(initial))));
         let leaf = waterui_apple::dispatch::render(
-            AnyView::new(signal_color(source.clone())),
+            AnyView::new(Color::from_signal(source.clone())),
             &env,
             mtm(),
         );
