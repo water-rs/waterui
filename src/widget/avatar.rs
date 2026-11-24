@@ -213,7 +213,7 @@ impl<F: ViewBuilder> Avatar<F> {
     /// use waterui::widget::avatar::Avatar;
     ///
     /// # fn team() -> impl View {
-    /// Avatar::new("Katherine Johnson", || text("KJ").bold())
+    /// Avatar::new("Katherine Johnson", || text("KJ").bold(true))
     /// # }
     /// ```
     #[must_use]

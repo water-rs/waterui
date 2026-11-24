@@ -461,7 +461,7 @@ pub fn render_text_field_parts<E: crate::text::TextEngine>(
         // either side of the splice stays plain.
         let mut styled = StyledStr::empty();
         styled.push_str(value[..selection_start].to_string());
-        styled.push(preedit.clone(), Style::new().underline());
+        styled.push(preedit.clone(), Style::new().underline(true));
         styled.push_str(value[selection_end..].to_string());
         value_text(&look, styled, field_rect, field_flags)
     };

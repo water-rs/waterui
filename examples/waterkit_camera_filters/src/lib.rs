@@ -93,7 +93,9 @@ fn camera_filter_lab<V: View>(preview: V, state: &CameraLabState) -> impl View +
     let camera_inventory = state.camera_inventory.clone();
 
     let header = vstack((
-        text("WaterUI + Waterkit Camera Filter Lab").title().bold(),
+        text("WaterUI + Waterkit Camera Filter Lab")
+            .title()
+            .bold(true),
         text(
             "Live camera preview via waterkit-camera, rendered and filtered with WaterUI GpuView.",
         )

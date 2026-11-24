@@ -569,11 +569,11 @@ Both carry the full font API:
 
 ```rust
 .title() .headline() .subheadline() .body() .caption() .footnote()
-.size(18.0) .bold() .italic(true) .font(font::Caption) .foreground(color)
-.weight(font::FontWeight::SemiBold) .monospaced() .underline(true) .color(color)
+.size(18.0) .bold(true) .italic(true) .font(font::Caption) .foreground(color)
+.weight(font::FontWeight::SemiBold) .monospaced(true) .underline(true) .strikethrough(true) .color(color)
 ```
 
-`.bold()` takes no argument; `.italic(..)` takes a bool — a signal of one works too.
+`.bold(..)`, `.monospaced(..)`, `.italic(..)`, `.underline(..)`, and `.strikethrough(..)` all take `impl IntoSignal<bool>` — a `bool` literal or a reactive signal of one.
 `.line_limit(impl IntoComputed<Option<NonZeroUsize>>)` truncates past that many lines (pass `None` or a signal to expand/collapse). `.text_align(HorizontalAlignment::Center)`
 sets the paragraph alignment of multiline text (a signal works too) and
 `.background_color(color)` paints behind the text run.

@@ -47,7 +47,7 @@ pub fn demo() -> impl View {
         scroll(
             vstack((
                 // Header
-                text("Multi-Window Gallery").title().bold(),
+                text("Multi-Window Gallery").title().bold(true),
                 text("Explore different window styles and backgrounds").body(),
                 spacer().height(20.0),
                 Divider,
@@ -122,7 +122,7 @@ fn window_section(
     state: &Binding<WindowState>,
 ) -> impl View + use<> {
     vstack((
-        text(title).headline().bold(),
+        text(title).headline().bold(true),
         text(description).body(),
         spacer().height(8.0),
         hstack((
@@ -232,7 +232,7 @@ fn controls_window_content(
     always_on_top: &Binding<bool>,
 ) -> impl View + use<> {
     vstack((
-        text("Window Controls").title().bold(),
+        text("Window Controls").title().bold(true),
         spacer().height(16.0),
         text("Drive this window through its `WindowHandle`. The attention request fires three seconds after the button is pressed, and resizing snaps to 80x24 steps.")
             .body(),
@@ -276,7 +276,7 @@ fn controls_window_content(
 /// Helper function to create window content
 fn window_content(title: &'static str, description: &'static str) -> impl View + use<> {
     vstack((
-        text(title).title().bold(),
+        text(title).title().bold(true),
         spacer().height(16.0),
         text(description).body(),
         spacer().height(24.0),
@@ -290,7 +290,7 @@ fn window_content(title: &'static str, description: &'static str) -> impl View +
 /// Content for transparent window with colored boxes
 fn transparent_window_content() -> impl View {
     vstack((
-        text("Transparent Overlay").title().bold(),
+        text("Transparent Overlay").title().bold(true),
         spacer().height(16.0),
         text("This window has a fully transparent background with FullSizeContentView style.")
             .body(),
@@ -310,7 +310,7 @@ fn transparent_window_content() -> impl View {
 
 /// Helper to create a colored box
 fn colored_box(color: Color, label: &'static str) -> impl View + use<> {
-    vstack((spacer(), text(label).bold().body(), spacer()))
+    vstack((spacer(), text(label).bold(true).body(), spacer()))
         .padding_with(32.0)
         .background(color)
 }
@@ -318,7 +318,7 @@ fn colored_box(color: Color, label: &'static str) -> impl View + use<> {
 /// Showcase all material types
 fn material_showcase() -> impl View {
     vstack((
-        text("Material Types").subheadline().bold(),
+        text("Material Types").subheadline().bold(true),
         spacer().height(12.0),
         material_item("UltraThin", "Most transparent, subtle blur"),
         material_item("Thin", "Light transparency with slight blur"),
@@ -331,7 +331,7 @@ fn material_showcase() -> impl View {
 /// Helper to display a material type description
 fn material_item(name: &'static str, description: &'static str) -> impl View + use<> {
     hstack((
-        text(name).bold().body().width(100.0),
+        text(name).bold(true).body().width(100.0),
         text(description).caption(),
     ))
     .padding_vertical(4.0)
