@@ -851,8 +851,8 @@ A `Binding<BTreeSet<Date>>` needs the turbofish: `binding(BTreeSet::<Date>::new(
 Attach `.snackbar_host()` to a root view to install a plain `SnackbarManager` (and
 `CodeCopyFeedback` when `flow-markdown` is enabled) into its subtree; it is a `#[state]`-marked
 framework type, so descendant handlers take it bare. For snackbars with icons of view type `V`,
-attach `.snackbar_host_with_icons::<V>()` (or construct `SnackbarManager::with_icons::<V>()`
-manually with `.overlay(overlay).state(&snackbars)`) and extract `m: SnackbarManager<V>`.
+attach `.snackbar_host_with_icons::<V>()` (or wrap the subtree in `SnackbarManager::host(|m| ...)`)
+and extract `m: SnackbarManager<V>`.
 
 ```rust
 use core::time::Duration;
@@ -897,8 +897,8 @@ accordion(header, || body())                           // disclosure; Accordion:
 view.floating()                                        // themed elevated surface (FloatingStyle-aware)
 ```
 
-Attach `.full_screen_overlay_host::<V>()` to a root view (or construct
-`FullScreenOverlayManager::<V>::new()` manually with `.overlay(overlay_view).state(&overlay)`)
+Attach `.full_screen_overlay_host::<V>()` to a root view (or wrap the subtree in
+`FullScreenOverlayManager::host(|overlay| ...)`)
 so descendant handlers can take `overlay: FullScreenOverlayManager<V>` bare to present modal,
 window-filling content: `overlay.show(view)` and `overlay.hide()`.
 
