@@ -21,6 +21,7 @@ pub mod context_menu {
         AnyView, Environment, Metadata, View,
         backend::{Backend, ChildSlot, MapSlots},
         env::with,
+        extract::State,
         metadata::MetadataKey,
     };
 
@@ -61,7 +62,7 @@ pub mod context_menu {
     ///             "Delete".command().action(|| {}).destructive(),
     ///         ))
     ///         .accessory(
-    ///             button("Like").action(|Use(dismiss): Use<DismissContextMenu>| dismiss.dismiss()),
+    ///             button("Like").action(|dismiss: DismissContextMenu| dismiss.dismiss()),
     ///         ),
     ///     );
     /// ```
@@ -175,7 +176,7 @@ pub mod context_menu {
             ResolvedContextMenu {
                 items: resolve_menu_items(&items, env),
                 preview: preview.map(S::from_view),
-                accessory: accessory.map(|accessory| S::from_view(with(accessory, dismiss))),
+                accessory: accessory.map(|accessory| S::from_view(with(accessory, State(dismiss)))),
                 dismiss_requests: requests.computed(),
             }
         }
@@ -215,8 +216,9 @@ pub mod context_menu {
     /// Closes the context menu whose accessory is being acted on.
     ///
     /// Present in the environment of a context menu's
-    /// [`accessory`](ContextMenu::accessory). Extract it in a handler with
-    /// `Use<DismissContextMenu>`.
+    /// [`accessory`](ContextMenu::accessory). Extract it in a handler directly
+    /// as `dismiss: DismissContextMenu`.
+    #[waterui_macros::state]
     #[derive(Debug, Clone)]
     pub struct DismissContextMenu {
         requests: Binding<i32>,
@@ -354,6 +356,7 @@ pub mod context_menu {
             AnyView, Environment, Metadata, View,
             backend::{Backend, ChildSlot, peel_metadata},
             env::With,
+            extract::State,
             metadata::MetadataKey,
             view::hook::{HookList, HookableView},
         };
@@ -386,7 +389,7 @@ pub mod context_menu {
             .value;
 
             let dismiss = accessory_env
-                .get::<DismissContextMenu>()
+                .extract::<DismissContextMenu>()
                 .expect("the accessory environment carries DismissContextMenu");
 
             let before = resolved.dismiss_requests.snapshot();
@@ -474,7 +477,10 @@ pub mod context_menu {
             );
             let accessory_id = resolved.accessory.expect("accessory present").0;
             assert_ne!(accessory_id, TypeId::of::<AnyView>());
-            assert_eq!(accessory_id, TypeId::of::<With<(), DismissContextMenu>>());
+            assert_eq!(
+                accessory_id,
+                TypeId::of::<With<(), State<DismissContextMenu>>>()
+            );
         }
     }
 }
@@ -975,6 +981,7 @@ pub mod anchored_overlay {
 
 /// Secure metadata module.
 pub mod secure {
+    use nami::{Computed, signal::IntoComputed};
     use waterui_core::metadata::MetadataKey;
 
     /// Secure metadata for secure fields.
@@ -999,69 +1006,51 @@ pub mod secure {
         }
     }
 
-    /// Selects the color space for a subtree.
+    /// Selects the dynamic range for a subtree.
     ///
-    /// This is the friendlier API surface for what would otherwise be
-    /// [`StandardDynamicRange`] / [`HighDynamicRange`] metadata. Use
-    /// [`crate::view::ViewExt::color_space`] to apply it.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    /// Use [`crate::view::ViewExt::dynamic_range`] (or
+    /// [`Avatar::dynamic_range`](crate::widget::Avatar::dynamic_range) on an
+    /// avatar) to apply it.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
     #[non_exhaustive]
-    pub enum ColorSpace {
+    pub enum DynamicRange {
         /// Standard dynamic range. Use for content that should not exceed
         /// `1.0` per channel — avatars, screenshots, UI chrome.
-        Sdr,
+        Standard,
         /// High dynamic range. Honors per-color `headroom` so highlights can
         /// extend beyond the display's nominal white point.
         #[default]
-        Hdr,
+        High,
     }
 
-    nami::impl_constant!(ColorSpace);
+    nami::impl_constant!(DynamicRange);
 
-    /// Apply standard dynamic range color for this views.
+    /// Dynamic-range metadata attached by [`crate::view::ViewExt::dynamic_range`].
     ///
-    /// By default, `WaterUI` enables high dynamic range color for all views.
-    ///
-    /// However, in some cases, you may want to apply standard dynamic range color for certain views,
-    /// for instance, user avatar.
+    /// By default, `WaterUI` renders subtrees at [`DynamicRange::High`]. Attach
+    /// this metadata to pin a subtree (such as an avatar) to
+    /// [`DynamicRange::Standard`] or switch it dynamically through a signal.
     #[derive(Debug)]
-    pub struct StandardDynamicRange;
-    impl MetadataKey for StandardDynamicRange {}
+    #[non_exhaustive]
+    pub struct DynamicRangeMetadata {
+        range: Computed<DynamicRange>,
+    }
 
-    impl StandardDynamicRange {
-        /// Creates a new `StandardDynamicRange` metadata.
+    impl MetadataKey for DynamicRangeMetadata {}
+
+    impl DynamicRangeMetadata {
+        /// Creates dynamic-range metadata from a constant or reactive value.
         #[must_use]
-        pub const fn new() -> Self {
-            Self
+        pub fn new(range: impl IntoComputed<DynamicRange>) -> Self {
+            Self {
+                range: range.into_computed(),
+            }
         }
-    }
 
-    impl Default for StandardDynamicRange {
-        fn default() -> Self {
-            Self::new()
-        }
-    }
-
-    /// Apply high dynamic range color for this views.
-    ///
-    /// By default, `WaterUI` already applies high dynamic range color for all views.
-    ///
-    /// But if your parent view applied `StandardDynamicRange` metadata, you would use this metadata to override it.
-    #[derive(Debug)]
-    pub struct HighDynamicRange;
-    impl MetadataKey for HighDynamicRange {}
-
-    impl HighDynamicRange {
-        /// Creates a new `HighDynamicRange` metadata.
+        /// Returns the requested dynamic range signal for this subtree.
         #[must_use]
-        pub const fn new() -> Self {
-            Self
-        }
-    }
-
-    impl Default for HighDynamicRange {
-        fn default() -> Self {
-            Self::new()
+        pub const fn range(&self) -> &Computed<DynamicRange> {
+            &self.range
         }
     }
 }

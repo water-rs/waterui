@@ -12588,7 +12588,7 @@ mod embedding {
 /// The shared gesture contract end to end on `AppKit`: a completed
 /// gesture inserts the observed `Gesture` and its typed event —
 /// `TapEvent`, `RotationEvent`, `MagnificationEvent` — into the action's
-/// environment, so a `Use<T>` handler extracts the same value Hydrolysis
+/// environment, so a handler extracts the same value Hydrolysis
 /// reports for the same input. These cases cover the observer's
 /// state/getter mapping, not the OS's gesture recognition: they drive
 /// the installed `CocoaUiGestureTarget` with seeded recognizer subclasses
@@ -12608,7 +12608,6 @@ mod gesture_events {
     };
     use cocoa_ui::objc2_foundation::NSPoint;
     use waterui::ViewExt as _;
-    use waterui::extract::Use;
     use waterui::gesture::{Gesture, GesturePhase};
     use waterui::gesture::{
         MagnificationEvent, MagnificationGesture, PointerButton, RotationEvent, RotationGesture,
@@ -12632,7 +12631,7 @@ mod gesture_events {
             let gestures = Rc::clone(&gestures);
             text("tap").gesture(
                 TapGesture::new(),
-                move |Use(event): Use<TapEvent>, Use(gesture): Use<Gesture>| {
+                move |event: TapEvent, gesture: Gesture| {
                     taps.borrow_mut().push(event);
                     gestures.borrow_mut().push(gesture);
                 },
@@ -12886,12 +12885,9 @@ mod gesture_events {
         let rotations = Rc::new(RefCell::new(Vec::new()));
         let leaf = resolve::render({
             let rotations = Rc::clone(&rotations);
-            text("rotate").gesture(
-                RotationGesture::new(0.0),
-                move |Use(e): Use<RotationEvent>| {
-                    rotations.borrow_mut().push(e);
-                },
-            )
+            text("rotate").gesture(RotationGesture::new(0.0), move |e: RotationEvent| {
+                rotations.borrow_mut().push(e);
+            })
         });
         let host = leaf.view();
         let _window = super::mount_and_order_front(host);
@@ -12951,7 +12947,7 @@ mod gesture_events {
             let events = Rc::clone(&events);
             text("pinch").gesture(
                 MagnificationGesture::new(2.0),
-                move |Use(e): Use<MagnificationEvent>| {
+                move |e: MagnificationEvent| {
                     events.borrow_mut().push(e);
                 },
             )
@@ -13027,7 +13023,7 @@ mod gesture_events {
             let gestures = Rc::clone(&gestures);
             text("then").gesture(
                 Gesture::Tap(TapGesture::new()).then(RotationGesture::new(0.0)),
-                move |Use(event): Use<RotationEvent>, Use(gesture): Use<Gesture>| {
+                move |event: RotationEvent, gesture: Gesture| {
                     events.borrow_mut().push(event);
                     gestures.borrow_mut().push(gesture);
                 },

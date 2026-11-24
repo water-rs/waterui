@@ -13,6 +13,7 @@ use cocoa_ui::Rect;
 use cocoa_ui::view;
 use waterui_backend_core::Environment;
 use waterui_core::Metadata;
+use waterui_core::extract::State;
 use waterui_core::layout::{
     LayoutError, Point, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
     ViewDimensions,
@@ -94,7 +95,7 @@ fn fire(state: &OnEventState, event: Event, location: Option<Point>) {
     }
     let env = location.map_or_else(
         || state.env.clone(),
-        |point| state.env.extending(HoverEvent::new(point)),
+        |point| state.env.extending(State(HoverEvent::new(point))),
     );
     state.handler.borrow_mut().handle(&env);
 }

@@ -8,15 +8,15 @@ use nami::Computed;
 use waterui_controls::menu::{MenuItem, MenuView};
 use waterui_core::layout::StretchAxis;
 use waterui_core::{Environment, View, raw_view};
-use waterui_graphics::color::{BorderColor, Color};
+use waterui_graphics::color::Color;
 use waterui_layout::{frame::Frame, stack};
 
 /// A thin line that separates content.
 ///
 /// Divider adapts to its parent container: in `VStack` it spans horizontally,
 /// in `HStack` it spans vertically. The line is drawn in the theme's separator
-/// colour — the [`BorderColor`] slot — so it follows the active theme and
-/// colour scheme on every backend.
+/// colour — the [`Border`](crate::theme::color::Border) slot — so it follows
+/// the active theme and colour scheme on every backend.
 #[derive(Debug, Clone, Copy)]
 #[must_use]
 pub struct Divider;
@@ -34,9 +34,9 @@ impl Divider {
         let vertical_divider = matches!(env.get::<stack::Axis>(), Some(stack::Axis::Horizontal));
 
         if vertical_divider {
-            Frame::new(Color::new(BorderColor)).width(1.0)
+            Frame::new(Color::border()).width(1.0)
         } else {
-            Frame::new(Color::new(BorderColor)).height(1.0)
+            Frame::new(Color::border()).height(1.0)
         }
     }
 }

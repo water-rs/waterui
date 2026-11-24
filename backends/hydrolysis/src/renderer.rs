@@ -229,10 +229,10 @@ use waterui_controls::toggle::ToggleConfig;
 use waterui_core::AnyView;
 use waterui_core::dynamic::DynamicInitialContent;
 #[cfg(any(feature = "menu", feature = "color-picker"))]
+use waterui_core::extract::State;
+#[cfg(any(feature = "menu", feature = "color-picker"))]
 use waterui_core::handler::ViewBuilder;
 use waterui_core::handler::{BoxedAction, SharedAction};
-#[cfg(any(feature = "menu", feature = "color-picker"))]
-use waterui_core::impl_extractor;
 #[cfg(any(feature = "menu", feature = "color-picker"))]
 use waterui_core::layout::Point as LayoutPoint;
 use waterui_core::layout::{

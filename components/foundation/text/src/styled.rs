@@ -11,7 +11,7 @@ use nami::signal::IntoComputed;
 use nami::{Signal, impl_constant};
 #[cfg(feature = "markdown")]
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag};
-use waterui_color::{Color, SurfaceVariantColor};
+use waterui_color::Color;
 use waterui_core::{
     Environment, Str, View,
     handler::{EventHandler, ReportExtraction, SharedAction},
@@ -731,9 +731,7 @@ pub fn heading_style(level: HeadingLevel) -> Style {
 }
 
 fn inline_code_style(style: Style) -> Style {
-    style
-        .monospaced(true)
-        .background(Color::new(SurfaceVariantColor))
+    style.monospaced(true).background(Color::surface_variant())
 }
 
 impl View for StyledStr {

@@ -519,7 +519,7 @@ mod tests {
     use alloc::string::String;
 
     use super::*;
-    use crate::extract::Use;
+    use crate::extract::State;
 
     #[test]
     fn extending_reuses_parent_state_via_overlay() {
@@ -570,10 +570,10 @@ mod tests {
         let seen = alloc::rc::Rc::new(core::cell::Cell::new(0_u8));
         let view = use_env({
             let seen = alloc::rc::Rc::clone(&seen);
-            move |Use(value): Use<u8>| seen.set(value)
+            move |State(value): State<u8>| seen.set(value)
         });
         let mut env = Environment::new();
-        env.insert(5_u8);
+        env.insert(State(5_u8));
 
         let _ = View::body(view, &env);
 
@@ -584,7 +584,7 @@ mod tests {
     #[cfg(debug_assertions)]
     #[should_panic(expected = "failed to extract")]
     fn use_env_reports_a_missing_value_in_debug() {
-        let _ = View::body(use_env(|Use(_): Use<u8>| ()), &Environment::new());
+        let _ = View::body(use_env(|State(_): State<u8>| ()), &Environment::new());
     }
 
     #[test]
@@ -593,7 +593,7 @@ mod tests {
         let ran = alloc::rc::Rc::new(core::cell::Cell::new(false));
         let view = use_env({
             let ran = alloc::rc::Rc::clone(&ran);
-            move |Use(_): Use<u8>| ran.set(true)
+            move |State(_): State<u8>| ran.set(true)
         });
 
         let _ = View::body(view, &Environment::new());

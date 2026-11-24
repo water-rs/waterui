@@ -538,14 +538,14 @@ pub(crate) async fn build_rust_lib_with_links(
         .with_final_rustc_arg("-Clink-arg=-Wl,-rpath,@executable_path/Frameworks")
         .with_final_rustc_arg("-Clink-arg=-lc++");
 
-    // VideoToolbox serves the media codec chain (`waterkit-codec`'s hardware
-    // decode); an app without the media capability never loads it, so it
+    // VideoToolbox serves the video codec chain (`waterkit-codec`'s hardware
+    // decode); an app without the video capability never loads it, so it
     // joins the link line only when the resolved graph says so — the same
-    // predicate that selects the `media` capability surface.
+    // predicate that selects the `video` capability surface.
     if crate::project_model::assets::capability_enabled(
         project,
         &project.apple_crate_path().join("Cargo.toml"),
-        "media",
+        "video",
         &triple,
     )
     .await?

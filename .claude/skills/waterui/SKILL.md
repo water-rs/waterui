@@ -220,8 +220,8 @@ Components behind cargo features are also absent until you enable them. `waterui
 defaults are `canvas`, `gpu`, `assets`, `dialog`, `snackbar`, `highlight` (the `Code` widget),
 `avatar`, `cpu-time`, `link`, `list`, `table`, `navigation`, `menu`, the standard form/control
 features, and the `locale-datetime` / `locale-list` formatters. Everything else is opt-in in
-`Cargo.toml`: `media` (`Photo`, `MediaPicker`; the generated project's own `media`
-feature forwards to it), `video`, `video-gpu`, `remote` (web URLs for `Photo`,
+`Cargo.toml`: `image` (`Photo`, `MediaPicker`), `video` (`Video`, `VideoPlayer`; the
+generated project's own `video` feature forwards to it), `video-gpu`, `remote` (web URLs for `Photo`,
 `Url::fetch`), `webview`, `capture`, `flow-markdown`, `markdown-math`, `inspector`,
 `inspector-signals`, `widgets` (home-screen widgets, `#[waterui::widget]`), `ts` / `ts-ota`
 (TypeScript views and their over-the-air update client `waterui::ts::Ota`),
@@ -453,16 +453,15 @@ shared configuration without every intermediate function taking it as a paramete
 
 ```rust
 use waterui::env::{use_env, with};
-use waterui::impl_extractor;
 
+#[state]
 #[derive(Clone)]
 struct ApiClient { base_url: Str }
-impl_extractor!(ApiClient);                   // makes it a handler/`use_env` parameter
 
-// Seeding, usually in `app(env)`:
-env.insert(client);                            // in place
-let env = env.with(client);                    // consuming builder, chains
-let scoped = env.extending(client);            // non-mutating overlay
+// Seeding, usually in `app(env)` or `.state(&client)` on a container:
+env.insert(State(client));                     // in place
+let env = env.with(State(client));             // consuming builder, chains
+let scoped = env.extending(State(client));     // non-mutating overlay
 with(subtree_view, LayoutDirection::RightToLeft)   // free fn: scope a value to one subtree
 
 // Reading, from a view:
@@ -654,8 +653,9 @@ let view = tsx!(
 - Component tags import from `"waterui"` and resolve against the catalog
   (`<VStack>` `<HStack>` `<Text>` `<Button>` `<Toggle>` `<Slider>` `<List>` `<Tabs>` …),
   with `<Show>` `<For by>` `<Box>` for control flow and `createSignal`,
-  `createMemo`, `createContext`/`useContext`, `useTheme`, `useLocale` from the same
-  module. `<Text>` children localize through the same `TranslationCatalog` as `text(…)`.
+  `createMemo`, `createContext`/`useContext`, `useTheme`, `useLocale`, `t` from the same
+  module. Runtime JS strings and `<Avatar name>` are verbatim; only JSX literal/interpolated
+  text (`{ key }` / `{ key, args }`) and `t` calls look up `TranslationCatalog`.
 - Tests are ordinary `#[waterui::test]`s over the mounted tree. The test host loads its
   bundle from the path in the `WATERUI_TS_BUNDLE` environment variable; `water` has no
   `test` subcommand and `water preview` does not set it, so a `tsx!` mount fails naming

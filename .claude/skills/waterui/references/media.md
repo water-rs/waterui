@@ -15,11 +15,11 @@ conventions in [components.md](components.md): lowercase ergonomic constructors,
 ## Media
 
 `waterui::media` (`Photo`, `Image`, `MediaPicker`, and the image kind of `asset!`) is
-behind the `media` feature, which is not on by default: add `features = ["media"]` to the
-`waterui` dependency. Four features sit beside it, none implied by `media`:
+behind the `image` feature, which is not on by default: add `features = ["image"]` to the
+`waterui` dependency. Four features sit beside it, none implied by `image`:
 
 - `video` — `Video`, `VideoPlayer`, `LivePhoto`, video picks, the video kind of `asset!`;
-  also `waterui::video`. Enable `["media", "video"]` for photo and video together.
+  also `waterui::video`. Enable `["image", "video"]` for photo and video together.
 - `video-gpu` — WaterUI's own GPU player (implies `video` and `gpu`). Apple and the web
   bridge a native player; Hydrolysis platforms (Android, Windows, Linux) draw video only
   when the app's own `waterui` dependency declares `video-gpu`.

@@ -17,7 +17,7 @@ dev = ["waterui/dynamic_linking"]
 workspace = true
 
 [dependencies]
-waterui = { workspace = true, features = ["media", "remote", "gpu", "assets", "snackbar", "highlight", "locale-datetime", "locale-list", "navigation", "list"] }
+waterui = { workspace = true, features = ["image", "remote", "gpu", "assets", "snackbar", "highlight", "locale-datetime", "locale-list", "navigation", "list"] }
 waterui-icons-material-icon.workspace = true
 
 [dev-dependencies]

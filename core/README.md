@@ -94,15 +94,15 @@ struct AppConfig {
 }
 
 let env = Environment::new()
-    .with(AppConfig {
+    .with(State(AppConfig {
         api_url: "https://waterui.dev".to_string(),
-    });
+    }));
 
 // Later, in a view:
 use waterui_core::env::use_env;
-use waterui_core::extract::Use;
+use waterui_core::extract::State;
 
-let config_view = use_env(|Use(config): Use<AppConfig>| {
+let config_view = use_env(|State(config): State<AppConfig>| {
     format!("API: {}", config.api_url)
 });
 ```
@@ -213,7 +213,7 @@ impl View for Toggle {
 ### Environment-based Configuration
 
 ```rust
-use waterui_core::{View, Environment, env::use_env, extract::Use};
+use waterui_core::{View, Environment, env::use_env, extract::State};
 
 #[derive(Clone, Debug)]
 struct Theme {
@@ -221,15 +221,15 @@ struct Theme {
 }
 
 fn themed_view() -> impl View {
-    use_env(|Use(theme): Use<Theme>| {
+    use_env(|State(theme): State<Theme>| {
         format!("Using theme color: {}", theme.primary_color)
     })
 }
 
 fn init() -> Environment {
-    Environment::new().with(Theme {
+    Environment::new().with(State(Theme {
         primary_color: "#007AFF".to_string(),
-    })
+    }))
 }
 ```
 
@@ -379,11 +379,12 @@ Custom View → body() → ... → body() → Raw View → Native Backend → Pl
 The handler system supports automatic parameter extraction from environments:
 
 ```rust
-use waterui_core::{handler::into_handler, extract::Use};
+use waterui_core::{handler::into_handler, extract::State};
 
+#[derive(Clone)]
 struct Config { value: i32 }
 
-let handler = into_handler(|Use(config): Use<Config>| {
+let handler = into_handler(|State(config): State<Config>| {
     println!("Config value: {}", config.value);
 });
 ```

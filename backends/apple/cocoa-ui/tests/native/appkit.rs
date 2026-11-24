@@ -152,6 +152,10 @@ pub fn trials() -> Vec<Trial> {
             "appkit::text_field",
             a_fields_history_observation_retires_when_editing_moves
         ),
+        case!(
+            "appkit::dynamic_range",
+            reactive_parent_update_propagates_to_untagged_sublayers_and_preserves_nested_override
+        ),
     ])
 }
 
@@ -1997,4 +2001,64 @@ fn a_labels_hit_test_geometry_follows_its_layout() {
         Vec::new(),
         "the visible part of 'alpha' still covers a rectangle"
     );
+}
+
+fn reactive_parent_update_propagates_to_untagged_sublayers_and_preserves_nested_override() {
+    use cocoa_ui::dynamic_range::{self, DynamicRange};
+    use cocoa_ui::objc2_quartz_core::{CADynamicRangeHigh, CADynamicRangeStandard, CALayer};
+
+    let mtm = marker();
+    let parent = HostView::new(mtm, Rect::new(0.0, 0.0, 120.0, 120.0));
+    parent.setWantsLayer(true);
+    let untagged_child = HostView::new(mtm, Rect::new(0.0, 0.0, 60.0, 60.0));
+    untagged_child.setWantsLayer(true);
+    let nested_override = HostView::new(mtm, Rect::new(60.0, 0.0, 60.0, 60.0));
+    nested_override.setWantsLayer(true);
+    parent.add_subview(&untagged_child);
+    parent.add_subview(&nested_override);
+
+    let parent_layer = parent
+        .layer()
+        .expect("layer-backed parent view has a CALayer");
+    let untagged_layer = CALayer::layer();
+    untagged_child.setLayer(Some(&untagged_layer));
+    untagged_child.setWantsLayer(true);
+    parent_layer.addSublayer(&untagged_layer);
+    let extra_untagged = CALayer::layer();
+    untagged_layer.addSublayer(&extra_untagged);
+
+    let nested_layer = CALayer::layer();
+    nested_override.setLayer(Some(&nested_layer));
+    nested_override.setWantsLayer(true);
+    parent_layer.addSublayer(&nested_layer);
+    let nested_sublayer = CALayer::layer();
+    nested_layer.addSublayer(&nested_sublayer);
+
+    // Initial mount stamps `Standard` on `parent` and propagates without tagging
+    // untagged descendants, while `nested_override` gets its own explicit tag.
+    dynamic_range::apply_to_view(DynamicRange::Standard, &parent);
+    dynamic_range::apply_to_view(DynamicRange::Standard, &nested_override);
+
+    // Reactive parent update (`Standard -> High`) must reach untagged children
+    // and sublayers while leaving the explicitly overridden nested subtree at `Standard`.
+    dynamic_range::apply_to_view(DynamicRange::High, &parent);
+
+    // SAFETY: `CADynamicRange*` are immutable Core Animation string constants.
+    let (high, standard) = unsafe { (CADynamicRangeHigh, CADynamicRangeStandard) };
+    assert_eq!(&*parent_layer.preferredDynamicRange(), high);
+    assert_eq!(&*untagged_layer.preferredDynamicRange(), high);
+    assert_eq!(&*extra_untagged.preferredDynamicRange(), high);
+    assert_eq!(&*nested_layer.preferredDynamicRange(), standard);
+    assert_eq!(&*nested_sublayer.preferredDynamicRange(), standard);
+
+    // Subsequent parent toggle (`High -> Standard`) must also update untagged sublayers.
+    dynamic_range::apply_to_view(DynamicRange::Standard, &parent);
+    assert_eq!(&*parent_layer.preferredDynamicRange(), standard);
+    assert_eq!(&*untagged_layer.preferredDynamicRange(), standard);
+    assert_eq!(&*extra_untagged.preferredDynamicRange(), standard);
+
+    // Toggling the nested override directly updates only that subtree.
+    dynamic_range::apply_to_view(DynamicRange::High, &nested_override);
+    assert_eq!(&*nested_layer.preferredDynamicRange(), high);
+    assert_eq!(&*nested_sublayer.preferredDynamicRange(), high);
 }

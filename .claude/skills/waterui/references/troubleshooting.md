@@ -146,9 +146,6 @@ failure from an extraction outside a handler, such as `use_env`). Add `.state(&v
 container if several handlers need it, or `App::state(&value)` for an application-scoped
 handler such as a menu-bar command.
 
-**"Environment value `T` not found".** Same, but for `Use<T>` — the value must be installed
-in the environment (typically in `app(env)`), not passed via `.state()`.
-
 **"Local executor not set".** `spawn_local` ran before the backend installed the
 thread-local executor — before it mounted the app's view, while `main` or a
 `Store::new` was still running. Move the call into `.task(..)`, `.on_appear`, or

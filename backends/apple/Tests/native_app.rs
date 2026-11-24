@@ -1225,8 +1225,8 @@ mod key_commands {
 /// The shared gesture contract end to end inside the real `UIApplication`
 /// scene: a completed gesture inserts the observed `Gesture` and its
 /// typed event — `TapEvent`, `DragEvent`, `RotationEvent`,
-/// `MagnificationEvent` — into the action's environment, so a `Use<T>`
-/// handler extracts the same value Hydrolysis reports for the same input.
+/// `MagnificationEvent` — into the action's environment, so a handler
+/// extracts the same value Hydrolysis reports for the same input.
 /// These cases cover the observer's state/getter mapping, not the OS's
 /// gesture recognition: they drive the installed recognizer's documented
 /// `setState:`/getter-seeding transitions, which dispatch the target
@@ -1243,7 +1243,6 @@ mod gesture_events {
         UIRotationGestureRecognizer, UITapGestureRecognizer,
     };
     use waterui::ViewExt as _;
-    use waterui::extract::Use;
     use waterui::gesture::{DragEvent, DragGesture, GesturePhase};
     use waterui::gesture::{MagnificationEvent, MagnificationGesture};
     use waterui::gesture::{PointerButton, RotationEvent, RotationGesture, TapEvent, TapGesture};
@@ -1304,7 +1303,7 @@ mod gesture_events {
         let leaf = dispatch::render(
             waterui::AnyView::new({
                 let taps = Rc::clone(&taps);
-                text("tap").gesture(TapGesture::new(), move |Use(event): Use<TapEvent>| {
+                text("tap").gesture(TapGesture::new(), move |event: TapEvent| {
                     taps.borrow_mut().push(event);
                 })
             }),
@@ -1332,7 +1331,7 @@ mod gesture_events {
         let leaf = dispatch::render(
             waterui::AnyView::new({
                 let drags = Rc::clone(&drags);
-                text("drag").gesture(DragGesture::new(0.0), move |Use(e): Use<DragEvent>| {
+                text("drag").gesture(DragGesture::new(0.0), move |e: DragEvent| {
                     drags.borrow_mut().push(e);
                 })
             }),
@@ -1383,12 +1382,9 @@ mod gesture_events {
         let leaf = dispatch::render(
             waterui::AnyView::new({
                 let rotations = Rc::clone(&rotations);
-                text("rotate").gesture(
-                    RotationGesture::new(0.0),
-                    move |Use(e): Use<RotationEvent>| {
-                        rotations.borrow_mut().push(e);
-                    },
-                )
+                text("rotate").gesture(RotationGesture::new(0.0), move |e: RotationEvent| {
+                    rotations.borrow_mut().push(e);
+                })
             }),
             &render_environment(),
             mtm(),
@@ -1439,7 +1435,7 @@ mod gesture_events {
                 let events = Rc::clone(&events);
                 text("pinch").gesture(
                     MagnificationGesture::new(0.001),
-                    move |Use(e): Use<MagnificationEvent>| {
+                    move |e: MagnificationEvent| {
                         events.borrow_mut().push(e);
                     },
                 )

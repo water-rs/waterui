@@ -12,7 +12,6 @@
 
 use core::f32::consts::{FRAC_PI_2, PI};
 use waterui::app::{App, Windows};
-use waterui::metadata::secure::ColorSpace;
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
@@ -236,10 +235,10 @@ fn hdr_shape_demo(show_hdr: &Binding<bool>) -> impl View + use<> {
         Toggle::new("Show HDR", &show_hdr),
         zstack((
             hdr_shapes()
-                .color_space(ColorSpace::Sdr)
+                .dynamic_range(DynamicRange::Standard)
                 .opacity(sdr_opacity),
             hdr_shapes()
-                .color_space(ColorSpace::Hdr)
+                .dynamic_range(DynamicRange::High)
                 .opacity(hdr_opacity),
         ))
         .size(HDR_SHAPES_WIDTH, HDR_SHAPES_HEIGHT),

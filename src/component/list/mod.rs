@@ -20,13 +20,13 @@ use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 use waterui_core::id::Mapping;
 use waterui_core::{
     AnyView, Environment, Metadata, Native, NativeView, OneOf2, View,
+    extract::State,
     handler::{Handler, shared_action},
-    impl_extractor,
     layout::StretchAxis,
 };
 use waterui_layout::padding::EdgeInsets;
 use waterui_layout::scroll::ScrollController;
-use waterui_text::{IntoText, Text};
+use waterui_text::Text;
 
 mod content;
 mod rows;
@@ -53,15 +53,14 @@ pub struct Move {
 }
 
 /// Per-row delete payload injected into list delete handlers.
+#[waterui_macros::state]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ListDelete(pub usize);
 
 /// Per-row move payload injected into list move handlers.
+#[waterui_macros::state]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ListMove(pub Move);
-
-impl_extractor!(ListDelete);
-impl_extractor!(ListMove);
 
 impl Move {
     /// Creates a new move operation.
@@ -829,7 +828,7 @@ where
     H: Handler<Args, ()>,
 {
     let action = shared_action(handler);
-    Box::new(move |env, index| action.run(&env.extending(ListDelete(index))))
+    Box::new(move |env, index| action.run(&env.extending(State(ListDelete(index)))))
 }
 
 fn list_move_action<H, Args>(handler: H) -> OnMove
@@ -837,7 +836,7 @@ where
     H: Handler<Args, ()>,
 {
     let action = shared_action(handler);
-    Box::new(move |env, movement| action.run(&env.extending(ListMove(movement))))
+    Box::new(move |env, movement| action.run(&env.extending(State(ListMove(movement)))))
 }
 
 // ============================================================================
@@ -860,7 +859,7 @@ where
 /// signal in place rather than rebuilding the section. The chrome's
 /// typography belongs to the platform, so a header takes the list's own
 /// section style regardless of any styling applied to the text.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct ListSection {
     /// Title shown above the section.
@@ -870,6 +869,13 @@ pub struct ListSection {
 }
 
 impl ListSection {
+    /// Creates a section descriptor from resolved/semantic optional header and
+    /// footer text. App code constructs sections through [`Section`].
+    #[must_use]
+    pub(crate) const fn new(label: Option<Text>, footer: Option<Text>) -> Self {
+        Self { label, footer }
+    }
+
     /// Title shown above the section.
     #[must_use]
     pub const fn label(&self) -> Option<&Text> {
@@ -882,47 +888,10 @@ impl ListSection {
         self.footer.as_ref()
     }
 
-    /// Sets the title shown above the section.
-    pub fn set_label(&mut self, label: Option<Text>) {
-        self.label = label;
-    }
-
-    /// Sets the footer text shown below the section.
-    pub fn set_footer(&mut self, footer: Option<Text>) {
-        self.footer = footer;
-    }
-
     /// Takes the value apart into its fields, in declaration order.
     #[must_use]
     pub fn into_parts(self) -> (Option<Text>, Option<Text>) {
         (self.label, self.footer)
-    }
-}
-
-impl ListSection {
-    /// Creates a new section descriptor with just a header label.
-    #[must_use]
-    pub fn new(label: impl IntoText) -> Self {
-        Self {
-            label: Some(label.into_text()),
-            footer: None,
-        }
-    }
-
-    /// Creates an unlabeled section break (visual divider only, no header).
-    #[must_use]
-    pub const fn unlabeled() -> Self {
-        Self {
-            label: None,
-            footer: None,
-        }
-    }
-
-    /// Adds a footer note shown below the section.
-    #[must_use]
-    pub fn with_footer(mut self, footer: impl IntoText) -> Self {
-        self.footer = Some(footer.into_text());
-        self
     }
 
     /// Resolves the semantic header and footer against `env`, turning

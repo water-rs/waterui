@@ -10,7 +10,8 @@ use core::{cell::RefCell, fmt};
 use nami::Signal;
 use nami::watcher::BoxWatcherGuard;
 use waterui_core::{
-    Environment, LatestDispatch, Metadata, Retain, View,
+    Environment, Error, LatestDispatch, Metadata, Retain, View,
+    extract::{ExtractionState, Extractor, State},
     handler::{
         BoxedAction, BoxedActionOnce, EventHandler, Handler, HandlerOnce, ReportExtraction,
         boxed_action, boxed_action_once, boxed_event_handler,
@@ -103,6 +104,16 @@ impl HoverEvent {
     #[must_use]
     pub const fn new(location: Point) -> Self {
         Self { location }
+    }
+}
+
+impl Extractor for HoverEvent {
+    fn extract(env: &Environment) -> Result<Self, Error> {
+        State::<Self>::extract(env).map(|State(event)| event)
+    }
+
+    fn extract_from_action(env: &Environment, state: &mut ExtractionState) -> Result<Self, Error> {
+        State::<Self>::extract_from_action(env, state).map(|State(event)| event)
     }
 }
 

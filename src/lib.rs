@@ -68,7 +68,7 @@ pub mod prelude {
     pub use super::haptic::{Feedback, Haptic, Intensity};
     #[cfg(feature = "locale-datetime")]
     pub use super::locale::LocalizedDateTimeExt;
-    #[cfg(feature = "media")]
+    #[cfg(feature = "image")]
     pub use super::media;
     #[cfg(feature = "video")]
     pub use super::video;
@@ -77,7 +77,7 @@ pub mod prelude {
     pub use super::window::{Window, WindowState};
     pub use super::{
         AnimationExt, AnyView, Binding, Color, Computed, Identifiable, OneOf2, OneOf3, OneOf4,
-        OneOf5, OneOf6, OneOf7, OneOf8, Signal, SignalExt, State, Str, Use, View, ViewExt,
+        OneOf5, OneOf6, OneOf7, OneOf8, Signal, SignalExt, State, Str, View, ViewExt,
         accessibility, animation, app, binding, color, component, cursor, drag_drop, env, error,
         filter, fullscreen, gesture, gradient, id, layout, locale, metadata, reactive, regional,
         shape, signal, style, task, text, widget, window,
@@ -121,15 +121,16 @@ pub mod prelude {
     pub use super::component::link::{Link, LinkTarget, link};
     #[cfg(feature = "list")]
     pub use super::component::list::{
-        List, ListContent, ListMinRowHeight, ListSection, Row, Section, detail_row, row,
+        List, ListContent, ListMinRowHeight, Row, Section, detail_row, row,
     };
     #[cfg(feature = "menu")]
     pub use super::component::menu::{
         Command, CommandExt, CommandRole, Menu, MenuItem, NamedKey, Shortcut, ShortcutKey,
-        ShortcutModifiers,
+        ShortcutModifiers, ShortcutNamedKey,
     };
     #[cfg(feature = "menu")]
     pub use super::metadata::context_menu::{ContextMenu, DismissContextMenu};
+    pub use super::metadata::secure::DynamicRange;
 
     // Drag and drop extension traits
     pub use super::drag_drop::DropDestinationExt;
@@ -156,7 +157,7 @@ pub mod prelude {
     pub use super::background::{Background, Glass, GlassStyle, Material};
 
     // Asset types
-    #[cfg(all(feature = "assets", feature = "media", not(target_arch = "wasm32")))]
+    #[cfg(all(feature = "assets", feature = "image", not(target_arch = "wasm32")))]
     pub use super::ImageAsset;
     #[cfg(all(feature = "assets", feature = "video", not(target_arch = "wasm32")))]
     pub use super::VideoAsset;
@@ -203,7 +204,7 @@ pub use waterui_graphics::ShaderPaintView;
 pub use waterui_graphics::canvas;
 pub use waterui_graphics::color;
 pub use waterui_graphics::gradient;
-#[cfg(feature = "media")]
+#[cfg(feature = "image")]
 pub use waterui_graphics::image_decode;
 #[cfg(feature = "gpu")]
 pub use waterui_graphics::{GpuContent, GpuView, RedrawHandle};
@@ -245,7 +246,7 @@ pub use waterui_macros::{eval, exec, exec_file, js_api, js_file};
 #[cfg(feature = "widgets")]
 #[doc(inline)]
 pub use waterui_macros::{widget, widget_intent};
-#[cfg(feature = "media")]
+#[cfg(feature = "image")]
 pub use waterui_media as media;
 #[cfg(feature = "navigation")]
 pub use waterui_navigation as navigation;
@@ -278,7 +279,7 @@ pub use waterui_webview::ts_schema as __ts_schema;
 pub use waterui_widgets as widgets;
 
 // Asset types re-exported for convenience
-#[cfg(all(feature = "assets", feature = "media", not(target_arch = "wasm32")))]
+#[cfg(all(feature = "assets", feature = "image", not(target_arch = "wasm32")))]
 pub use waterui_assets::ImageAsset;
 #[cfg(all(feature = "assets", feature = "video", not(target_arch = "wasm32")))]
 pub use waterui_assets::VideoAsset;
@@ -316,10 +317,10 @@ pub use waterui_core::{
     contract_violation,
     easing::{self, EasingCurve, Interpolatable},
     env::{self, Environment},
-    extract::{self, Extractor, State, Use},
+    extract::{self, Extractor, State},
     handler::{self, Handler, HandlerOnce},
     id::{self, Identifiable},
-    impl_extractor, raw_view,
+    raw_view,
     resolve::{self, AnyResolvable, Resolvable},
     views,
 };
@@ -417,11 +418,11 @@ pub fn install_application_resources(env: &mut Environment) {
         });
         env.insert(context);
     }
-    #[cfg(feature = "media")]
+    #[cfg(feature = "image")]
     if env.get::<waterui_media::PhotoCache>().is_none() {
         env.insert(waterui_media::PhotoCache::default());
     }
-    #[cfg(all(target_arch = "wasm32", not(feature = "media")))]
+    #[cfg(all(target_arch = "wasm32", not(feature = "image")))]
     let _ = env;
 }
 

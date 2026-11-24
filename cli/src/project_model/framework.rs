@@ -3909,7 +3909,7 @@ pub(crate) mod test_fixtures {
         let mut manifest: toml_edit::DocumentMut = std::fs::read_to_string(&manifest_path)?
             .parse()
             .expect("checkout manifest parses");
-        for feature in ["dynamic_linking", "media"] {
+        for feature in ["dynamic_linking", "image", "video"] {
             if manifest
                 .get("features")
                 .and_then(toml_edit::Item::as_table)
@@ -3925,7 +3925,7 @@ pub(crate) mod test_fixtures {
         write_vendor_stub(
             &root.join("backends/apple"),
             "waterui-apple",
-            &["map", "media", "webview"],
+            &["map", "video", "webview"],
         );
         write_vendor_stub(&root.join("backends/hydrolysis"), "hydrolysis", &[]);
         git_commit_all(root, "stage member crates")?;

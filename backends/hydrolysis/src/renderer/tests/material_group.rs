@@ -30,7 +30,7 @@ use waterui::widget::condition::when;
 use waterui_controls::button::button;
 use waterui_core::AnyView;
 use waterui_core::env::Store;
-use waterui_core::extract::Use;
+use waterui_core::extract::State;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::SelfId;
 use waterui_layout::scroll;
@@ -839,9 +839,9 @@ fn a_handler_through_the_group_wrapper_captures_the_env() {
         AnyView::new(
             Color::srgb(63, 63, 70)
                 .width(20.0)
-                .with(42_u32)
+                .state(&42_u32)
                 .material_group()
-                .on_tap(move |value: Use<u32>| fired.borrow_mut().push(value.0)),
+                .on_tap(move |State(value): State<u32>| fired.borrow_mut().push(value)),
         )
     });
     runtime.push_input_event(InputEvent::PointerDown {

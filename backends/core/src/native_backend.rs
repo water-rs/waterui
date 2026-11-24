@@ -1021,10 +1021,8 @@ native_backend! {
         focused: waterui::component::focus::Focused,
         /// Secure content.
         secure: waterui::metadata::secure::Secure,
-        /// Standard dynamic range.
-        standard_dynamic_range: waterui::metadata::secure::StandardDynamicRange,
-        /// High dynamic range.
-        high_dynamic_range: waterui::metadata::secure::HighDynamicRange,
+        /// Dynamic range.
+        dynamic_range: waterui::metadata::secure::DynamicRangeMetadata,
         /// An anchored overlay.
         anchored_overlay: waterui::metadata::anchored_overlay::AnchoredOverlay,
         #[cfg(waterui_feature = "dialog")]

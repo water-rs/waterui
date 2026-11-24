@@ -4,11 +4,7 @@ use core::str::FromStr;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
-#[cfg(not(target_arch = "wasm32"))]
-use std::thread;
-use std::time::Duration;
 
 use nami::{Binding, Signal};
 use waterui_core::Environment;
@@ -20,7 +16,6 @@ type Listener = Arc<dyn Fn(RegionalContext) + Send + Sync + 'static>;
 
 struct Runtime {
     state: Mutex<State>,
-    auto_refresh_started: AtomicBool,
 }
 
 struct State {
@@ -39,7 +34,6 @@ impl Runtime {
                 listeners: HashMap::new(),
                 next_listener_id: 1,
             }),
-            auto_refresh_started: AtomicBool::new(false),
         }
     }
 
@@ -257,83 +251,47 @@ pub fn register_listener(
     ListenerHandle { id: Some(id) }
 }
 
-/// Initializes automatic locale refresh from host defaults.
-pub fn start_auto_refresh_default() {
-    start_auto_refresh(Duration::from_secs(2));
-}
-
-fn start_auto_refresh(interval: Duration) {
-    if runtime().auto_refresh_started.swap(true, Ordering::SeqCst) {
-        return;
-    }
-
-    let interval = if interval.is_zero() {
-        Duration::from_secs(2)
-    } else {
-        interval
-    };
-
-    schedule_auto_refresh(interval);
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn schedule_auto_refresh(interval: Duration) {
-    let spawned = thread::Builder::new()
-        .name("waterui-locale-regional-refresh".to_string())
-        .spawn(move || {
-            loop {
-                thread::sleep(interval);
-                let _ = refresh();
-            }
-        });
-    if let Err(error) = spawned {
-        tracing::error!(
-            %error,
-            "failed to spawn the waterui-locale regional refresh thread; the system locale is not refreshed automatically"
-        );
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-fn schedule_auto_refresh(interval: Duration) {
-    use wasm_bindgen::{JsCast, closure::Closure};
-
-    let Some(window) = web_sys::window() else {
-        tracing::error!(
-            "browser locale refresh requires a Window; the system locale is not refreshed automatically"
-        );
-        return;
-    };
-    let callback = Closure::<dyn FnMut()>::new(|| {
-        let _ = refresh();
-    });
-    if let Err(error) =
-        window.add_event_listener_with_callback("languagechange", callback.as_ref().unchecked_ref())
-    {
-        tracing::error!(
-            ?error,
-            "failed to subscribe to browser locale changes; the system locale is refreshed only on the interval"
-        );
-    }
-    let interval_millis = i32::try_from(interval.as_millis())
-        .expect("the refresh interval is the 2 second default, which fits i32 milliseconds");
-    if let Err(error) = window.set_interval_with_callback_and_timeout_and_arguments_0(
-        callback.as_ref().unchecked_ref(),
-        interval_millis,
-    ) {
-        tracing::error!(
-            ?error,
-            "failed to schedule browser locale refresh; the system locale is refreshed only on a languagechange event"
-        );
-    }
-    callback.forget();
-}
-
-fn refresh() -> RegionalContext {
+/// Re-reads the host system locale and timezone and notifies registered
+/// listeners when the effective regional context changed.
+///
+/// Platform backends call this from their OS locale-change notification hooks
+/// (such as Apple's `NSCurrentLocaleDidChangeNotification`, Windows'
+/// `WM_SETTINGCHANGE`, Linux's settings portal, or the browser's
+/// `languagechange` event). An explicit override installed through
+/// [`set_locale_tag`] stays authoritative.
+#[must_use]
+pub fn refresh_system_locale() -> RegionalContext {
     let override_context = runtime().lock().override_context.clone();
     let next = override_context.unwrap_or_else(detect_system_context);
 
     publish_if_changed(next)
+}
+
+/// Publishes a system-reported BCP 47 locale tag from a platform backend.
+///
+/// Used by configuration-change hooks (such as Android
+/// `onConfigurationChanged` or a Linux desktop portal setting) without
+/// installing an application override. An explicit override installed through
+/// [`set_locale_tag`] stays authoritative.
+///
+/// # Errors
+///
+/// Returns [`InvalidLocaleTag`] when `tag` cannot be parsed as a valid BCP 47
+/// locale identifier.
+pub fn update_system_locale_tag(tag: impl AsRef<str>) -> Result<(), InvalidLocaleTag> {
+    let locale_tag = tag.as_ref();
+    let locale = Locale::from_str(locale_tag).map_err(|_| InvalidLocaleTag {
+        tag: locale_tag.to_string(),
+    })?;
+    let next = {
+        let state = runtime().lock();
+        if state.override_context.is_some() {
+            return Ok(());
+        }
+        state.current.with_locale(&locale)
+    };
+    let _ = publish_if_changed(next);
+    Ok(())
 }
 
 fn set_settings(context: RegionalContext) -> RegionalContext {
@@ -483,9 +441,12 @@ impl Extractor for RegionalContext {
 
 #[cfg(test)]
 mod tests {
-    use super::{current_settings, extract_region, normalize_locale_tag, register_listener};
+    use super::{
+        current_settings, extract_region, normalize_locale_tag, register_listener,
+        update_system_locale_tag,
+    };
     use std::sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     };
 
@@ -551,5 +512,31 @@ mod tests {
         handle.unregister();
 
         assert!(dropped.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn update_system_locale_tag_notifies_listeners_and_rejects_invalid_tags() {
+        assert!(update_system_locale_tag("not a locale!").is_err());
+
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&observed);
+        let _listener = register_listener(move |ctx| {
+            sink.lock()
+                .expect("test mutex cannot poison")
+                .push(ctx.locale_tag().to_string());
+        });
+
+        let target = if current_settings().locale_tag() == "ja-JP" {
+            "de-DE"
+        } else {
+            "ja-JP"
+        };
+        update_system_locale_tag(target).expect("valid BCP 47 tag must succeed");
+
+        let seen = observed.lock().expect("test mutex cannot poison").clone();
+        assert!(
+            seen.iter().any(|tag| tag == target),
+            "expected listener to observe {target}, saw {seen:?}"
+        );
     }
 }

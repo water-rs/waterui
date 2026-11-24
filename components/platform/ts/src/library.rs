@@ -27,10 +27,11 @@ use waterui_ts_schema::{
 /// from the same set, and a file the bundler reaches that this list does not
 /// is a mistake a code review has to catch — there is no directory walk in a
 /// `const` context.
-const FILES: [(&str, &[u8]); 8] = [
+const FILES: [(&str, &[u8]); 9] = [
     ("components.js", include_bytes!("js/components.js")),
     ("contexts.js", include_bytes!("js/contexts.js")),
     ("host.js", include_bytes!("js/host.js")),
+    ("i18n.js", include_bytes!("js/i18n.js")),
     ("index.js", include_bytes!("js/index.js")),
     ("jsx-runtime.js", include_bytes!("js/jsx-runtime.js")),
     ("runtime-global.js", include_bytes!("js/runtime-global.js")),

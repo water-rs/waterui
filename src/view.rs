@@ -18,7 +18,7 @@ use nami::{Binding, Computed, Signal, SignalExt as _, signal::IntoComputed};
 use waterui_core::IntoSignalF32;
 pub use waterui_core::view::*;
 use waterui_core::{
-    Environment, Metadata, OneOf2, Retain,
+    Environment, Metadata, Retain,
     env::{Installed, With, with},
     extract::State,
     handler::{EventHandler, Handler, HandlerOnce},
@@ -64,7 +64,7 @@ use crate::{
     filter::Opacity,
     gesture::{Gesture, GestureObserver, LongPressGesture, TapGesture},
     interaction::Hittable,
-    metadata::secure::{HighDynamicRange, Secure, StandardDynamicRange},
+    metadata::secure::{DynamicRange, DynamicRangeMetadata, Secure},
     theme,
 };
 use crate::{
@@ -100,30 +100,21 @@ pub trait ViewExt: View + Sized {
         Metadata::new(self, metadata)
     }
 
-    /// Selects the [`ColorSpace`](crate::metadata::secure::ColorSpace) for this subtree.
-    ///
-    /// Friendly wrapper over the underlying [`StandardDynamicRange`] /
-    /// [`HighDynamicRange`] metadata. Prefer this over
-    /// `metadata(HighDynamicRange::new())` for new code.
+    /// Selects the [`DynamicRange`] for this subtree.
     ///
     /// # Examples
     ///
     /// ```rust
     /// use waterui::prelude::*;
-    /// use waterui::metadata::secure::ColorSpace;
     ///
-    /// let wide_gamut = text!("Sunset").color_space(ColorSpace::Hdr);
-    /// let thumbnail = text!("Avatar").color_space(ColorSpace::Sdr);
+    /// let wide_gamut = text!("Sunset").dynamic_range(DynamicRange::High);
+    /// let thumbnail = text!("Avatar").dynamic_range(DynamicRange::Standard);
     /// ```
-    fn color_space(
+    fn dynamic_range(
         self,
-        space: crate::metadata::secure::ColorSpace,
-    ) -> OneOf2<Metadata<StandardDynamicRange, Self>, Metadata<HighDynamicRange, Self>> {
-        use crate::metadata::secure::ColorSpace;
-        match space {
-            ColorSpace::Sdr => OneOf2::A(self.metadata(StandardDynamicRange::new())),
-            ColorSpace::Hdr => OneOf2::B(self.metadata(HighDynamicRange::new())),
-        }
+        range: impl IntoComputed<DynamicRange>,
+    ) -> Metadata<DynamicRangeMetadata, Self> {
+        Metadata::new(self, DynamicRangeMetadata::new(range))
     }
 
     /// Animates structural insertion and removal of this view.
@@ -569,7 +560,7 @@ pub trait ViewExt: View + Sized {
     /// Escape, or an arrow in a single-line text field — bubbles to its
     /// ancestors, nearest first, until a handler returns
     /// [`KeyHandling::Handled`]. The handler
-    /// reads the key with `Use<KeyPress>`.
+    /// reads the key directly as `press: KeyPress`.
     ///
     /// ```rust
     /// use waterui::prelude::*;
@@ -578,7 +569,7 @@ pub trait ViewExt: View + Sized {
     /// let open = binding::<bool>(true);
     /// let query = binding::<Str>(Str::default());
     /// field("Search", &query).on_key_press(
-    ///     |Use(press): Use<KeyPress>, State(open): State<Binding<bool>>| {
+    ///     |press: KeyPress, State(open): State<Binding<bool>>| {
     ///         if press.key() == &Key::Named(NamedKey::Escape) {
     ///             open.set(false);
     ///             KeyHandling::Handled
@@ -1796,5 +1787,24 @@ mod tests {
         assert!((anchored_xy.value.x().snapshot() - 1.25).abs() < f32::EPSILON);
         assert!((anchored_xy.value.y().snapshot() - 0.25).abs() < f32::EPSILON);
         assert_eq!(anchored_xy.value.anchor(), Anchor::BOTTOM_RIGHT);
+    }
+
+    #[test]
+    fn dynamic_range_returns_concrete_metadata_and_tracks_signal() {
+        use nami::Signal as _;
+        use waterui_core::Metadata;
+
+        use crate::metadata::secure::{DynamicRange, DynamicRangeMetadata};
+
+        let constant: Metadata<DynamicRangeMetadata, AnyView> =
+            AnyView::new(()).dynamic_range(DynamicRange::Standard);
+        assert_eq!(constant.value.range().snapshot(), DynamicRange::Standard);
+
+        let range = Binding::container(DynamicRange::Standard);
+        let reactive: Metadata<DynamicRangeMetadata, AnyView> =
+            AnyView::new(()).dynamic_range(range.clone());
+        assert_eq!(reactive.value.range().snapshot(), DynamicRange::Standard);
+        range.set(DynamicRange::High);
+        assert_eq!(reactive.value.range().snapshot(), DynamicRange::High);
     }
 }
