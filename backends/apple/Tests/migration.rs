@@ -430,7 +430,7 @@ mod uikit_surface {
                     hstack((Accent.size(8.0, 8.0).clip(Circle),)).size(8.0, 8.0),
                     vstack((
                         hstack((
-                            text(sender).sub_headline().foreground(Foreground),
+                            text(sender).subheadline().foreground(Foreground),
                             spacer(),
                             text("flag").caption().muted(),
                         ))

@@ -110,7 +110,7 @@ fn row_view(row: SignalRow) -> ListItem<impl View> {
     ListItem::new(
         hstack((
             vstack((
-                text(type_name).sub_headline(),
+                text(type_name).subheadline(),
                 // The creation site is the whole point: it turns "something is
                 // firing 4000 times a second" into a file and a line.
                 text(origin).caption().foreground(MutedForeground),

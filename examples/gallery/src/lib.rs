@@ -357,7 +357,7 @@ where
     ))
     .width(DRAWER_ICON_SIZE)
     .height(DRAWER_ICON_SIZE);
-    hstack((text(title).sub_headline(), spacer(), chevron))
+    hstack((text(title).subheadline(), spacer(), chevron))
         .foreground(muted)
         .a11y_hidden(true)
         .height(DRAWER_HEADLINE_HEIGHT)
@@ -409,7 +409,7 @@ fn sidebar(
     scroll(
         vstack((
             text("WaterUI Controls")
-                .sub_headline()
+                .subheadline()
                 .bold()
                 .foreground(Foreground)
                 .padding_with([20.0, 28.0, 12.0, 16.0]),
@@ -579,11 +579,11 @@ fn size_items() -> Vec<PickerItem<&'static str>> {
 fn picker_demo(size: &Binding<&'static str>) -> impl View {
     vstack((
         note("PickerStyle renders the same selection as segmented, menu, or radio."),
-        text("Segmented").sub_headline(),
+        text("Segmented").subheadline(),
         picker("Size", size_items(), size).style(PickerStyle::Segmented),
-        text("Menu").sub_headline(),
+        text("Menu").subheadline(),
         picker("Size", size_items(), size).style(PickerStyle::Menu),
-        text("Radio").sub_headline(),
+        text("Radio").subheadline(),
         picker("Size", size_items(), size).style(PickerStyle::Radio),
         text!("Selected: {size}").body(),
     ))

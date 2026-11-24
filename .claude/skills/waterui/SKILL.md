@@ -317,7 +317,7 @@ bare identifiers aliased with `name = expr` when the local has a different name
 ([references/i18n.md](references/i18n.md)).
 
 ```rust
-text("Settings").title()                        // title/headline/sub_headline/body/caption/footnote
+text("Settings").title()                        // title/headline/subheadline/body/caption/footnote
 text!("Count: {count}")                         // updates automatically
 text!("{unread} unread", unread = mail.count()) // aliasing an expression into a slot
 text!("Blur: {blur:.1}")                        // format specs work

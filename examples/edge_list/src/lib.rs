@@ -36,7 +36,7 @@ fn record_row(index: u64) -> ListItem<impl View> {
     let lines = index % 3 + 1;
     let header = hstack((
         Circle.fill(chip_color(index)).size(10.0, 10.0),
-        text(text!("Row #{index} - {#lines} detail line(s)")).sub_headline(),
+        text(text!("Row #{index} - {#lines} detail line(s)")).subheadline(),
     ))
     .spacing(8.0)
     .centered();
@@ -75,7 +75,7 @@ pub fn demo() -> impl View {
         vstack((
             text("200,000 variable-height rows").title(),
             text("Rows cycle 1-3 detail lines; only viewport rows materialize.")
-                .sub_headline()
+                .subheadline()
                 .muted(),
         ))
         .leading()

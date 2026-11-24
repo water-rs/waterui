@@ -128,7 +128,7 @@ fn connection_badge(model: &Model) -> impl View + use<> {
     hstack((
         parts::status_dot(live.computed()),
         vstack((
-            text!("{detail}").sub_headline(),
+            text!("{detail}").subheadline(),
             text!("{endpoint}", endpoint = model.endpoint)
                 .caption()
                 .foreground(MutedForeground),

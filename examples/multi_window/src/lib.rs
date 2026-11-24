@@ -318,7 +318,7 @@ fn colored_box(color: Color, label: &'static str) -> impl View + use<> {
 /// Showcase all material types
 fn material_showcase() -> impl View {
     vstack((
-        text("Material Types").sub_headline().bold(),
+        text("Material Types").subheadline().bold(),
         spacer().height(12.0),
         material_item("UltraThin", "Most transparent, subtle blur"),
         material_item("Thin", "Light transparency with slight blur"),

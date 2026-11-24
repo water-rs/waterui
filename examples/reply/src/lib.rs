@@ -183,7 +183,7 @@ fn thread_row(thread: Thread) -> ListItem<impl View> {
                     .image(asset(thread.avatar_asset))
                     .size(AVATAR),
                 vstack((
-                    text(thread.sender).sub_headline(),
+                    text(thread.sender).subheadline(),
                     text(thread.time).caption().muted(),
                 ))
                 .leading(),
@@ -246,7 +246,7 @@ fn message_card(message: &'static Message) -> impl View {
                     .image(asset(message.avatar_asset))
                     .size(AVATAR),
                 vstack((
-                    text(message.sender).sub_headline(),
+                    text(message.sender).subheadline(),
                     text(message.time).caption().muted(),
                 ))
                 .leading(),

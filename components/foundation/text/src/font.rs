@@ -4,7 +4,7 @@
 //! kept on purpose because they speak to different concerns. Pick the
 //! highest-level one that fits the use case:
 //!
-//! 1. **Semantic categories** — `.title()`, `.headline()`, `.sub_headline()`,
+//! 1. **Semantic categories** — `.title()`, `.headline()`, `.subheadline()`,
 //!    `.body()`, `.caption()`. These resolve through the active `Theme` and
 //!    pick up accessibility text-size scaling automatically. **Prefer these
 //!    for product UI.** They guarantee that a "Settings → Larger Text" user
