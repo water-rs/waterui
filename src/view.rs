@@ -14,8 +14,6 @@ use crate::fullscreen::FullScreenOverlayHost;
 #[cfg(feature = "snackbar")]
 use crate::snackbar::SnackbarHost;
 use core::future::Future;
-#[cfg(feature = "std")]
-use executor_core::spawn_local;
 use nami::{Binding, Computed, Signal, SignalExt as _, signal::IntoComputed};
 use waterui_core::IntoSignalF32;
 pub use waterui_core::view::*;
