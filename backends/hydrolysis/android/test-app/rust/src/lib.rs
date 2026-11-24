@@ -20,8 +20,9 @@ use waterui::form::secure::Secure;
 #[cfg(not(feature = "probe"))]
 use waterui::graphics::color::Srgb;
 use waterui::prelude::*;
+#[cfg(not(feature = "probe"))]
 use waterui::reactive::binding;
-use waterui::window::{Window, WindowState};
+use waterui::window::Window;
 #[cfg(not(feature = "probe"))]
 use waterui_core::Native;
 

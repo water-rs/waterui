@@ -2136,7 +2136,7 @@ mod tests {
     #[cfg(windows)]
     use super::{TerminationAction, TerminationRequests};
     use super::{ends_event_loop, native_window_attributes};
-    use waterui::window::{Window, WindowState};
+    use waterui::window::Window;
     use waterui_core::{Binding, binding};
 
     #[cfg(windows)]
