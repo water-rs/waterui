@@ -1,14 +1,16 @@
+use core::mem::replace;
+use std::env::var;
+
 use proc_macro::TokenStream;
 use proc_macro_crate::{FoundCrate, crate_name};
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::quote;
 use syn::parse::{Nothing, Parse, ParseStream};
-use syn::token::Brace;
+use syn::token::{Brace, Else};
 use syn::visit_mut::{self, VisitMut};
 use syn::{
-    Block, Expr, ExprGroup, ExprIf, ExprLet, ExprMacro, ExprMatch, ExprParen, ExprReturn, Ident,
-    ImplItemFn, ItemFn, ItemImpl, ReturnType, Signature, Stmt, StmtMacro, TraitItemFn, Type,
-    parse_quote,
+    Block, Expr, ExprGroup, ExprIf, ExprMacro, ExprMatch, ExprParen, ExprReturn, Ident, ImplItemFn,
+    ItemFn, ItemImpl, ReturnType, Signature, Stmt, StmtMacro, TraitItemFn, Type, parse_quote,
 };
 
 pub fn expand_attribute(args: TokenStream, input: &TokenStream) -> TokenStream {
@@ -73,11 +75,9 @@ pub fn expand_macro(input: TokenStream) -> TokenStream {
     quote!(#block).into()
 }
 
-/// The paths the lowered code names, in the crate that defines them.
+/// The crate root exporting `OneOf2`..`OneOf8` that lowered branches name.
 #[derive(Clone)]
 struct Runtime {
-    /// `watch`, which rebuilds a branch when its condition changes.
-    watch: TokenStream2,
     /// The crate root exporting `OneOf2`..`OneOf8`.
     root: TokenStream2,
 }
@@ -88,23 +88,16 @@ fn runtime_paths() -> Result<Runtime, TokenStream2> {
         Some("waterui" | "waterui-internal")
     ) {
         return Ok(Runtime {
-            watch: quote!(::waterui::component::dynamic::watch),
             root: quote!(::waterui),
         });
     }
 
-    if let Some(path) = dependency_path("waterui-core") {
-        return Ok(Runtime {
-            watch: quote!(#path::dynamic::watch),
-            root: path,
-        });
+    if let Some(root) = dependency_path("waterui-core") {
+        return Ok(Runtime { root });
     }
 
-    if let Some(path) = dependency_path("waterui") {
-        return Ok(Runtime {
-            watch: quote!(#path::component::dynamic::watch),
-            root: path,
-        });
+    if let Some(root) = dependency_path("waterui") {
+        return Ok(Runtime { root });
     }
 
     Err(quote! {
@@ -133,7 +126,7 @@ pub fn dependency_path(package: &str) -> Option<TokenStream2> {
 }
 
 fn current_package_name() -> Option<String> {
-    std::env::var("CARGO_PKG_NAME").ok()
+    var("CARGO_PKG_NAME").ok()
 }
 
 fn validate_signature(signature: &Signature) -> syn::Result<()> {
@@ -256,7 +249,7 @@ fn lower_stmt(stmt: &mut Stmt, runtime: &Runtime, is_last: bool, wraps: &[FinalW
         Stmt::Item(_) => {}
         Stmt::Expr(expr, semicolon) => {
             if is_last && semicolon.is_none() {
-                let original = core::mem::replace(expr, parse_quote!(()));
+                let original = replace(expr, parse_quote!(()));
                 *expr = lower_wrapped_expr(original, runtime, wraps);
             } else {
                 lower_returns_in_expr(expr, runtime);
@@ -277,8 +270,8 @@ fn lower_stmt(stmt: &mut Stmt, runtime: &Runtime, is_last: bool, wraps: &[FinalW
 /// Lowers `expr` and applies `wraps` (innermost first) to its value.
 ///
 /// A plain block takes the wrappers on its own tail value instead of being
-/// passed whole as their argument: `Ok({ view })` would carry the braces the
-/// user wrote, at their span, into `unused_braces`.
+/// passed whole as their argument: `OneOf2::A({ view })` would carry the
+/// braces the user wrote, at their span, into `unused_braces`.
 fn lower_wrapped_expr(expr: Expr, runtime: &Runtime, wraps: &[FinalWrap]) -> Expr {
     match expr {
         Expr::Block(mut expr_block)
@@ -328,11 +321,6 @@ fn lower_result_expr(mut expr: Expr, runtime: &Runtime) -> Expr {
 }
 
 fn lower_if_expr(mut expr_if: ExprIf, runtime: &Runtime) -> Expr {
-    let attrs = expr_if.attrs.clone();
-    let watch = &runtime.watch;
-    let condition_ident = Ident::new("__waterui_condition", Span::call_site());
-    let signal_ident = Ident::new("__waterui_condition_signal", Span::call_site());
-
     let else_expr = if let Some((_, else_branch)) = expr_if.else_branch.take() {
         lower_block_with(&mut expr_if.then_branch, runtime, &one_of_wraps(0, 2));
         lower_wrapped_expr(*else_branch, runtime, &one_of_wraps(1, 2))
@@ -340,58 +328,25 @@ fn lower_if_expr(mut expr_if: ExprIf, runtime: &Runtime) -> Expr {
         lower_block_with(&mut expr_if.then_branch, runtime, &[FinalWrap::Some]);
         parse_quote!(::core::option::Option::None)
     };
-    let then_branch = expr_if.then_branch;
     // A lowered `else` block is already the branch's block; bracing it again
     // would nest the user's braces in ours.
     let else_branch = match else_expr {
-        Expr::Block(else_block) => quote!(#else_block),
-        else_expr => quote!({ #else_expr }),
+        Expr::Block(_) => else_expr,
+        other => parse_quote!({ #other }),
     };
-
-    match *expr_if.cond {
-        Expr::Let(ExprLet { pat, expr, .. }) => syn::parse2(quote! {{
-            let #signal_ident = #expr;
-            #watch(#signal_ident.clone(), move |#condition_ident| {
-                #(#attrs)*
-                if let #pat = #condition_ident #then_branch else #else_branch
-            })
-        }})
-        .expect("view_builder lowered if-let expression must stay valid Rust"),
-        condition => syn::parse2(quote! {{
-            let #signal_ident = #condition;
-            #watch(#signal_ident.clone(), move |#condition_ident| {
-                #(#attrs)*
-                if #condition_ident #then_branch else #else_branch
-            })
-        }})
-        .expect("view_builder lowered if expression must stay valid Rust"),
-    }
+    expr_if.else_branch = Some((Else::default(), Box::new(else_branch)));
+    Expr::If(expr_if)
 }
 
 fn lower_match_expr(mut expr_match: ExprMatch, runtime: &Runtime) -> Expr {
-    let attrs = expr_match.attrs.clone();
-    let scrutinee = *expr_match.expr;
-    let watch = &runtime.watch;
-    let scrutinee_ident = Ident::new("__waterui_match_value", Span::call_site());
-    let signal_ident = Ident::new("__waterui_match_signal", Span::call_site());
     let arm_count = expr_match.arms.len();
 
     for (index, arm) in expr_match.arms.iter_mut().enumerate() {
-        let original = (*arm.body).clone();
+        let original = replace(arm.body.as_mut(), parse_quote!(()));
         *arm.body = wrap_match_arm_body(original, runtime, index, arm_count);
     }
 
-    let arms = expr_match.arms;
-    syn::parse2(quote! {{
-        let #signal_ident = #scrutinee;
-        #watch(#signal_ident.clone(), move |#scrutinee_ident| {
-            #(#attrs)*
-            match #scrutinee_ident {
-                #(#arms)*
-            }
-        })
-    }})
-    .expect("view_builder lowered match expression must stay valid Rust")
+    Expr::Match(expr_match)
 }
 
 fn wrap_match_arm_body(expr: Expr, runtime: &Runtime, index: usize, arm_count: usize) -> Expr {
@@ -424,25 +379,22 @@ fn wrap_plain_expr(expr: Expr, runtime: &Runtime, wraps: &[FinalWrap]) -> Expr {
 }
 
 fn lower_returns_in_expr(expr: &mut Expr, runtime: &Runtime) {
-    ReturnLowerer {
-        runtime: runtime.clone(),
-    }
-    .visit_expr_mut(expr);
+    ReturnLowerer { runtime }.visit_expr_mut(expr);
 }
 
-struct ReturnLowerer {
-    runtime: Runtime,
+struct ReturnLowerer<'a> {
+    runtime: &'a Runtime,
 }
 
-impl VisitMut for ReturnLowerer {
+impl VisitMut for ReturnLowerer<'_> {
     fn visit_expr_mut(&mut self, expr: &mut Expr) {
         match expr {
             Expr::Closure(_) | Expr::Async(_) => {}
             Expr::Return(ExprReturn {
                 expr: Some(inner), ..
             }) => {
-                let original = core::mem::replace(inner.as_mut(), parse_quote!(()));
-                *inner.as_mut() = lower_result_expr(original, &self.runtime);
+                let original = replace(inner.as_mut(), parse_quote!(()));
+                *inner.as_mut() = lower_result_expr(original, self.runtime);
             }
             _ => visit_mut::visit_expr_mut(self, expr),
         }

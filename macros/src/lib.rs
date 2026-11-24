@@ -277,15 +277,20 @@ pub fn catalog(input: TokenStream) -> TokenStream {
 }
 
 #[proc_macro]
-/// Expands a builder block that unifies `if`/`match` branch view types while
-/// preserving normal Rust block and semicolon semantics.
+/// Expands a builder block that statically unifies `if`/`match` branch view types.
+///
+/// Tail-position branches unify through `Option`/`OneOfN` while preserving
+/// normal Rust control flow, block, and semicolon semantics without emitting
+/// `watch` or `Dynamic`.
 pub fn view(input: TokenStream) -> TokenStream {
     view_builder::expand_macro(input)
 }
 
 #[proc_macro_attribute]
-/// Rewrites a function or method body so tail-position `if`/`match` branches
-/// can return different concrete `View` types under a shared `impl View`.
+/// Rewrites a function or method body to unify branch view types statically.
+///
+/// Tail-position `if`/`match` branches unify through `Option`/`OneOfN` under a
+/// shared `impl View` without introducing `watch` or `Dynamic`.
 pub fn view_builder(args: TokenStream, input: TokenStream) -> TokenStream {
     view_builder::expand_attribute(args, &input)
 }

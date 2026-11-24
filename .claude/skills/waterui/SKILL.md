@@ -377,14 +377,14 @@ new_marker().visible(is_new.clone())        // keep the view, drive its visibili
 when(loaded.clone(), move || summary(items.clone()))
     .otherwise(|| empty())
 
-// Branches of different view types: #[view_builder] (or a view! { .. } block)
+// Static branches of different view types: #[view_builder] (or a view! { .. } block)
 #[waterui::view_builder]
-fn gate(logged_in: Binding<bool>) -> impl View {
+fn gate(logged_in: bool) -> impl View {
     if logged_in { dashboard() } else { login() }
 }
 
 #[waterui::view_builder]
-fn page(tab: Binding<i32>) -> impl View {
+fn page(tab: i32) -> impl View {
     match tab {
         0 => loading(),
         1 => ready(),
@@ -408,20 +408,14 @@ For many branches over a plain (non-reactive) value, a `match` whose arms return
 variants of one `OneOfN` is clearer than a long `when` chain.
 
 `#[view_builder]` (a non-async function or method returning `-> impl View`) and
-`view! { .. }` (a block expression) let branches return different view types without
-naming a `OneOfN`. They rewrite only tail-position `if`, `if let` and `match` expressions
-(and `return` values): the condition or scrutinee is evaluated once and bound as the
-signal, and the expression becomes `watch(signal.clone(), move |value| ..)`, the `if`
-or `match` running on each value; branches are wrapped in `OneOfN`/`Option` so the
-types unify (an `if` without `else` renders nothing when false). So the condition must
-itself be a `Clone` signal: `if flag` on a `Binding<bool>` or `match tab` on a
-`Binding<i32>` is reactive, a plain `bool` or integer is a constant signal read once,
-and a comparison is a derived signal (`if count.gt(3)`), never `count > 3`. That
-closure is a `'static` `Fn`: the branches move what they capture into it, so clone a
-captured value inside a branch rather than move it out, and borrow nothing. Like any
-`watch`, every change of the signal replaces the subtree and discards its state, even
-when the same branch stays active, so the scrutinee should change only when the
-structure does (rule 2).
+`view! { .. }` (a block expression) let static branches return different view types
+without naming a `OneOfN`. They rewrite only tail-position `if`, `if let` and `match`
+expressions (and `return` values), keeping the condition or scrutinee as plain Rust
+control flow and wrapping each arm in `OneOfN`/`Option` so the types unify (an `if`
+without `else` renders nothing when false). Neither emits `watch` or `Dynamic`, so
+branches work on plain `bool`s, non-`Signal` enums and `if let` chains without cloning
+or capturing into closures; for reactive branching on a `Binding` or `Computed`, use
+`when(..)`, `.visible(..)` or `watch(..)`.
 
 ### Modifiers
 
