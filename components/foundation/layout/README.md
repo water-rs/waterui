@@ -97,7 +97,7 @@ pub fn login_form() -> impl View {
     let password = binding(Secure::default());
 
     stack::vstack((
-        text("Login").size(24.0).bold(),
+        text("Login").size(24.0).bold(true),
         TextField::new("Username", &username).prompt("Enter username"),
         SecureField::new("Password", &password),
     ))
@@ -119,7 +119,7 @@ pub fn app_toolbar() -> impl View {
     stack::hstack((
         button("Menu", || { /* action */ }),
         spacer(),
-        text("My App").bold(),
+        text("My App").bold(true),
         spacer(),
         button("Settings", || { /* action */ }),
     ))

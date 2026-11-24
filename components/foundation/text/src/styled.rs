@@ -11,7 +11,7 @@ use nami::signal::IntoComputed;
 use nami::{Signal, impl_constant};
 #[cfg(feature = "markdown")]
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag};
-use waterui_color::{Color, SurfaceVariantColor};
+use waterui_color::Color;
 use waterui_core::{
     Environment, Str, View,
     handler::{EventHandler, ReportExtraction, SharedAction},
@@ -114,17 +114,17 @@ impl Style {
         self
     }
 
-    /// Asks for the platform's fixed-pitch face, keeping size and weight.
+    /// Sets whether the platform's fixed-pitch face is used, keeping size and weight.
     #[must_use]
-    pub fn monospaced(mut self) -> Self {
-        self.font = self.font.monospaced();
+    pub fn monospaced(mut self, monospaced: bool) -> Self {
+        self.font = self.font.monospaced(monospaced);
         self
     }
 
-    /// Asks for the platform's bold face of the font; see [`Font::bold`].
+    /// Sets whether the platform's bold face is used; see [`Font::bold`].
     #[must_use]
-    pub fn bold(mut self) -> Self {
-        self.font = self.font.bold();
+    pub fn bold(mut self, bold: bool) -> Self {
+        self.font = self.font.bold(bold);
         self
     }
 
@@ -137,43 +137,22 @@ impl Style {
 
     /// Sets the italic style.
     #[must_use]
-    pub const fn italic(mut self) -> Self {
-        self.italic = true;
-        self
-    }
-
-    /// Disables the italic style.
-    #[must_use]
-    pub const fn not_italic(mut self) -> Self {
-        self.italic = false;
+    pub const fn italic(mut self, italic: bool) -> Self {
+        self.italic = italic;
         self
     }
 
     /// Sets the underline style.
     #[must_use]
-    pub const fn underline(mut self) -> Self {
-        self.underline = true;
-        self
-    }
-
-    /// Disables the underline style.
-    #[must_use]
-    pub const fn not_underline(mut self) -> Self {
-        self.underline = false;
+    pub const fn underline(mut self, underline: bool) -> Self {
+        self.underline = underline;
         self
     }
 
     /// Sets the strikethrough style.
     #[must_use]
-    pub const fn strikethrough(mut self) -> Self {
-        self.strikethrough = true;
-        self
-    }
-
-    /// Disables the strikethrough style.
-    #[must_use]
-    pub const fn not_strikethrough(mut self) -> Self {
-        self.strikethrough = false;
+    pub const fn strikethrough(mut self, strikethrough: bool) -> Self {
+        self.strikethrough = strikethrough;
         self
     }
 
@@ -544,19 +523,19 @@ impl StyledStr {
         })
     }
 
-    /// Asks for the platform's bold face for all chunks; see [`Font::bold`].
+    /// Sets whether the platform's bold face is used for all chunks; see [`Font::bold`].
     #[must_use]
-    pub fn bold(self) -> Self {
+    pub fn bold(self, bold: bool) -> Self {
         self.apply_style(|s| {
-            *s = take(s).bold();
+            *s = take(s).bold(bold);
         })
     }
 
-    /// Asks for the platform's fixed-pitch face for all chunks.
+    /// Sets whether the platform's fixed-pitch face is used for all chunks.
     #[must_use]
-    pub fn monospaced(self) -> Self {
+    pub fn monospaced(self, monospaced: bool) -> Self {
         self.apply_style(|s| {
-            *s = take(s).monospaced();
+            *s = take(s).monospaced(monospaced);
         })
     }
 
@@ -661,17 +640,17 @@ impl MarkdownInlineBuilder {
 
     /// Enters an italic styled span.
     pub fn enter_emphasis(&mut self) {
-        self.enter_with(Style::italic);
+        self.enter_with(|style| style.italic(true));
     }
 
     /// Enters a strong span, set in the platform's bold face.
     pub fn enter_strong(&mut self) {
-        self.enter_with(Style::bold);
+        self.enter_with(|style| style.bold(true));
     }
 
     /// Enters a strikethrough styled span.
     pub fn enter_strikethrough(&mut self) {
-        self.enter_with(Style::strikethrough);
+        self.enter_with(|style| style.strikethrough(true));
     }
 
     /// Enters an inline code styled span.
@@ -748,13 +727,11 @@ pub fn heading_style(level: HeadingLevel) -> Style {
         HeadingLevel::H6 => Caption.into(),
     };
 
-    Style::default().font(font).bold()
+    Style::default().font(font).bold(true)
 }
 
 fn inline_code_style(style: Style) -> Style {
-    style
-        .monospaced()
-        .background(Color::new(SurfaceVariantColor))
+    style.monospaced(true).background(Color::surface_variant())
 }
 
 impl View for StyledStr {
@@ -920,7 +897,7 @@ mod tests {
             })
             .foreground(waterui_color::Srgb::new(1.0, 0.0, 0.0))
             .underline(true)
-            .set_style(&Style::new().italic());
+            .set_style(&Style::new().italic(true));
         assert_eq!(text.tap_spans()[0].range(), 0..6);
         text.tap_spans()[0].activate(&env());
         assert_eq!(calls.borrow().as_slice(), [3]);

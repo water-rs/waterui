@@ -81,7 +81,7 @@ locale-relative-time = ["waterui-internal/locale-relative-time"]
 inspector = ["waterui-internal/inspector"]
 inspector-signals = ["inspector", "waterui-internal/inspector-signals"]
 assets = ["waterui-internal/assets"]
-media = ["waterui-internal/media"]
+image = ["waterui-internal/image"]
 video = ["waterui-internal/video"]
 remote = ["waterui-internal/remote"]
 video-gpu = ["waterui-internal/video-gpu"]
@@ -95,6 +95,7 @@ snackbar = ["waterui-internal/snackbar"]
 dialog = ["waterui-internal/dialog"]
 flow-markdown = ["waterui-internal/flow-markdown"]
 markdown-math = ["waterui-internal/markdown-math"]
+haptics = ["waterui-internal/haptics"]
 std = ["waterui-internal/std"]
 erased-dispatch = ["waterui-internal/erased-dispatch"]
 capture = ["waterui-internal/capture"]
@@ -128,6 +129,7 @@ all = [
     "locale-datetime",
     "locale-list",
     "locale-relative-time",
+    "haptics",
 ]
 
 [lints]

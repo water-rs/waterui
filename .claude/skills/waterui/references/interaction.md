@@ -22,8 +22,8 @@ The compiled examples for this file are `examples/gesture`, `examples/hover`, an
 
 Every interaction callback in WaterUI is a *handler* — the same extractor machinery as
 `Button::action` (SKILL.md rule 3). Parameters are extractors (`State<T>` for foreign
-values, a bare `#[state]` type for owned ones, `Environment`, `impl_extractor!` types
-installed as environment values), state is injected with `.state(&binding)`, and repeated
+values, a bare `#[state]` type for owned ones, `Environment`, or framework
+extractors), state is injected with `.state(&binding)`, and repeated
 parameters of the same state type bind positionally to the `.state()` call order.
 `.state()` wraps the view it is applied to, so it may come *after* the handler-bearing
 modifier and the handler still sees it.
@@ -50,13 +50,14 @@ text("Simple Tap")
 ```
 
 Siblings: `.on_tap_gesture(handler)` (alias of `.on_tap`), `.on_tap_gesture_count(2,
-handler)` for a fixed tap count, `.on_long_press_gesture(milliseconds, handler)`, and —
-behind the `std` cargo feature, which is not among the defaults — `.on_tap_haptic(intensity,
-handler)` / `.on_tap_haptic_default(handler)` and `.on_long_press_haptic(..)` /
-`.on_long_press_haptic_default(..)` to pair the gesture with haptic feedback. Use
-`.on_tap` for tappable *content*; use `button(..)` when the
-thing is semantically a button — the button brings platform chrome and the `BUTTON`
-accessibility role.
+handler)` for a fixed tap count, and `.on_long_press_gesture(milliseconds, handler)`. Behind
+the opt-in `haptics` cargo feature, attach `.sensory_feedback(Feedback::Success, &trigger)`
+to play feedback whenever a `PartialEq + Clone` signal changes, or call
+`waterui::haptic::Haptic::impact(Intensity::LOW)` inside a gesture handler for an
+imperative trigger (`Haptic`, `Feedback`, and `Intensity` are also re-exported at the facade
+root and in `prelude`). Use `.on_tap` for tappable *content*; use `button(..)` when the thing
+is semantically a button — the button brings platform chrome and the `BUTTON` accessibility
+role.
 
 ## Gesture recognizers
 
@@ -82,13 +83,13 @@ Two argument types are traps:
 complete the set. All gesture structs are `#[non_exhaustive]` — construct them only
 through these constructors.
 
-A recognized gesture's payload is read in the handler with `Use<TapEvent>`,
-`Use<LongPressEvent>`, `Use<DragEvent>` (`location()`, `translation()`, `velocity()`,
-`phase()`), `Use<MagnificationEvent>` or `Use<RotationEvent>`, all from
+A recognized gesture's payload is read in the handler directly as `TapEvent`,
+`LongPressEvent`, `DragEvent` (`location()`, `translation()`, `velocity()`,
+`phase()`), `MagnificationEvent` or `RotationEvent`, all from
 `waterui::gesture`. Pointer motion inside a view is `.event(Event::HoverMove, handler)`,
-whose handler reads the local pointer `location()` with `Use<HoverEvent>` (both from
+whose handler reads the local pointer `location()` as `HoverEvent` (both from
 `waterui::event`); `.on_hover_enter` / `.on_hover_exit` carry no `HoverEvent`, so
-`Use<HoverEvent>` fails to extract there.
+`HoverEvent` fails to extract there.
 
 `.gesture(g, handler)` is shorthand for `.gesture_observer(GestureObserver::new(g,
 handler))` (`GestureObserver` from `waterui::gesture`). Use `.gesture_observer(..)` when
@@ -228,7 +229,7 @@ The parts an agent cannot guess:
 `.on_key_press(handler)` attaches a key handler to a view. The focused view sees each
 key first; a key it does not consume bubbles to the nearest ancestor with an
 `OnKeyPress` handler, then the next, stopping at the first `KeyHandling::Handled`. The
-handler runs with `KeyPress` in its environment — read it with `Use<KeyPress>` — and
+handler runs with `KeyPress` in its environment — read it as `press: KeyPress` — and
 returns `Handled` or `Ignored`. The backend is what decides "consumed": a single-line
 `field` eats text-editing keys and submits Return through `.on_submit(..)` when one is
 set; Escape, Up/Down, PageUp/PageDown and a Return with no `on_submit` bubble out.
@@ -237,7 +238,7 @@ set; Escape, Up/Down, PageUp/PageDown and a Return with no `on_submit` bubble ou
 use waterui::key::{Key, KeyHandling, KeyPress, NamedKey};
 
 search_panel()
-    .on_key_press(|Use(press): Use<KeyPress>, State(open): State<Binding<bool>>| {
+    .on_key_press(|press: KeyPress, State(open): State<Binding<bool>>| {
         if *press.key() == Key::Named(NamedKey::Escape) {
             open.set(false);
             KeyHandling::Handled

@@ -84,7 +84,7 @@ mod platform {
             }
         });
 
-        if env.get::<NavigationController>().is_some() {
+        if env.extract::<NavigationController>().is_ok() {
             host.set_layout_handler(|host| {
                 let bounds = view::bounds(host);
                 if let Some(content) = view::subviews(host).first() {
@@ -364,7 +364,7 @@ mod platform {
         keep.keep(state);
         keep.keep(env.clone());
 
-        if env.get::<NavigationController>().is_some() {
+        if env.extract::<NavigationController>().is_ok() {
             // A hosted page draws no chrome — the stack owns it — so the
             // host is a transparent wrapper: the safe-area question
             // descends into the content, and a scroll surface in it keeps

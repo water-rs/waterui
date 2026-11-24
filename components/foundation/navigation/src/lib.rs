@@ -34,7 +34,7 @@ use waterui_core::metadata::MetadataKey;
 use waterui_core::{
     AnyView, Environment, Error, IntoSignal, Metadata, Native, NativeView, OneOf3, Retain,
     SerialDispatch, Str, View, contract_violation, extract::ExtractionState, extract::Extractor,
-    extract::State, flatten_signal, handler::ViewBuilder, impl_extractor, layout::StretchAxis,
+    extract::State, flatten_signal, handler::ViewBuilder, layout::StretchAxis,
 };
 use waterui_graphics::color::{Color, WorkingColor};
 use waterui_text::IntoText;
@@ -464,7 +464,15 @@ pub struct NavigationController {
     state: Rc<NavigationControllerState>,
 }
 
-impl_extractor!(NavigationController);
+impl Extractor for NavigationController {
+    fn extract(env: &Environment) -> Result<Self, Error> {
+        State::<Self>::extract(env).map(|State(controller)| controller)
+    }
+
+    fn extract_from_action(env: &Environment, state: &mut ExtractionState) -> Result<Self, Error> {
+        State::<Self>::extract_from_action(env, state).map(|State(controller)| controller)
+    }
+}
 
 impl Debug for NavigationController {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -1778,7 +1786,7 @@ impl<S> NavigationStackLayout<S> {
     pub fn resolve(self, env: &Environment) -> ResolvedNavigationView<S> {
         let mut env = TransitionKeyRegistry::scoped(env);
         if let Some(attach) = self.attach {
-            let controller = env.get::<NavigationController>().cloned().expect(
+            let controller = env.extract::<NavigationController>().expect(
                 "a navigation stack's backend inserts its NavigationController before resolving the stack",
             );
             attach(&controller, &mut env);
@@ -2121,7 +2129,7 @@ where
     /// The link as a button pushing its destination built in the slot `S`.
     fn link<S: ChildSlot>(self, env: &Environment) -> impl View + use<Label, Content, V, Tb, S> {
         debug_assert!(
-            env.get::<NavigationController>().is_some(),
+            env.get::<State<NavigationController>>().is_some(),
             "NavigationLink used outside of a navigation context"
         );
 

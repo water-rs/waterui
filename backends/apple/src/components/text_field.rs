@@ -28,6 +28,7 @@ use core::ops::Range;
 use cocoa_ui::{PlatformView, Rect, Retained, focus, view};
 use objc2::rc::Weak;
 use objc2_foundation::{NSRange, NSString};
+use waterui::State;
 use waterui::Str;
 use waterui::component::input::ContentType;
 #[cfg(target_os = "ios")]
@@ -890,7 +891,7 @@ fn install_selection_menu(
 /// plus the live `TextSelection`, so `Command` extraction and validation
 /// see the selection.
 fn menu_env(env: &Environment, driver: &FieldSelection) -> Environment {
-    env.extending(TextSelection::new(driver.clone()))
+    env.extending(State(TextSelection::new(driver.clone())))
 }
 
 /// `AppKit`: the handler appends the resolved rows to the field editor's

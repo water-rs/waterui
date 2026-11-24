@@ -14,6 +14,13 @@
 
 mod oklch;
 pub use oklch::Oklch;
+mod slot;
+pub use slot::{
+    ColorDerivation, ColorSlot, Tint, current_color_scheme, install_color_derivation,
+    install_color_scheme, install_color_signal, installed_color_scheme, installed_color_signal,
+    resolve_tint,
+};
+pub mod token;
 pub mod working;
 pub use cherenkov_record::WorkingColor;
 mod p3;
@@ -589,16 +596,7 @@ impl Resolvable for CurrentColorScheme {
     type Resolved = ColorScheme;
 
     fn resolve(&self, env: &Environment) -> impl Signal<Output = Self::Resolved> {
-        // A scheme the host did not install is a contract violation; the
-        // light appearance, `ColorScheme`'s default, is used.
-        env.query::<ColorScheme, Computed<ColorScheme>>()
-            .cloned()
-            .unwrap_or_else(|| {
-                contract_violation!(
-                    "ColorScheme is not installed in the environment; the light scheme is used"
-                );
-                Computed::constant(ColorScheme::default())
-            })
+        slot::current_color_scheme(env)
     }
 }
 
@@ -755,6 +753,7 @@ pub(crate) fn oklch_to_linear_srgb(lightness: f32, chroma: f32, hue_degrees: f32
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::token::{Accent, Surface};
 
     const EPSILON: f32 = 1e-5;
     const EPSILON_WIDE: f32 = 1e-3;
@@ -1016,5 +1015,54 @@ mod tests {
         let midpoint = working::lerp(first, second, 0.5);
 
         assert!(approx_eq(midpoint.components[0], 1.0, EPSILON));
+    }
+
+    #[test]
+    fn color_token_constructors_resolve_installed_slots_and_follow_tint() {
+        let light_surface = WorkingColor::new([0.95, 0.95, 0.95, 1.0]);
+        let dark_surface = WorkingColor::new([0.1, 0.1, 0.1, 1.0]);
+        let accent = WorkingColor::new([0.0, 0.4, 1.0, 1.0]);
+        let custom_tint = WorkingColor::new([1.0, 0.2, 0.0, 1.0]);
+
+        let mut env = Environment::new();
+        install_color_scheme(&mut env, Computed::constant(ColorScheme::Light));
+        install_color_derivation::<Surface>(
+            &mut env,
+            ColorDerivation::per_scheme(light_surface, dark_surface),
+        );
+        install_color_signal::<Accent>(&mut env, Computed::constant(accent));
+
+        assert_eq!(
+            Color::surface().resolve(&env).snapshot().components,
+            light_surface.components
+        );
+        assert_eq!(
+            Color::accent().resolve(&env).snapshot().components,
+            accent.components
+        );
+        assert_eq!(
+            installed_color_signal::<Accent>(&env)
+                .expect("accent installed")
+                .snapshot()
+                .components,
+            accent.components
+        );
+        assert_eq!(
+            Color::tint().resolve(&env).snapshot().components,
+            accent.components
+        );
+
+        let mut dark_env = env.clone();
+        install_color_scheme(&mut dark_env, Computed::constant(ColorScheme::Dark));
+        assert_eq!(
+            Color::surface().resolve(&dark_env).snapshot().components,
+            dark_surface.components
+        );
+
+        let tinted_env = env.extending(Tint::new(Color::new(Working(custom_tint))));
+        assert_eq!(
+            Color::tint().resolve(&tinted_env).snapshot().components,
+            custom_tint.components
+        );
     }
 }

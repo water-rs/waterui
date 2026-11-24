@@ -18,6 +18,7 @@ use jni::sys::{jboolean, jdouble, jfloat, jint, jlong};
 use jni::vm::JavaVM;
 use jni::{Env, EnvUnowned, jni_str};
 use waterui_core::contract_violation;
+use waterui_locale::regional::update_system_locale_tag;
 
 use crate::platform::{
     BackEdge, BackNavigation, InputEvent, Modifiers, PointerButton, PointerKind,
@@ -99,7 +100,9 @@ use super::host::{AndroidSession, MetricsSnapshot, UiThreadServices};
 /// passes painted device-pixel rects through `onNativeBandShow` for viewability.
 /// 32 passes the active Choreographer frame timeline vsync ID (`has_vsync_id`,
 /// `vsync_id`) through `nativeOnFrame`.
-pub const JNI_SCHEMA: jint = 32;
+/// 33 adds `nativeSetLocale` to forward Android configuration locale changes
+/// into `waterui_locale::regional`.
+pub const JNI_SCHEMA: jint = 33;
 
 /// A failure crossing the JNI boundary as an exception.
 #[derive(Debug)]
@@ -990,6 +993,28 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetColorSc
             return Ok(());
         });
         session!(session_ptr).set_night_mode(night);
+        Ok(())
+    });
+}
+
+/// The configuration's primary BCP 47 locale tag — pushed by the host at bind
+/// and on every `onConfigurationChanged`, into `waterui_locale::regional`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetLocale<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    _session_ptr: jlong,
+    locale_tag: JString<'local>,
+) {
+    guard(&mut env, |jni_env| {
+        let tag = get_string(jni_env, &locale_tag)?;
+        if let Err(error) = update_system_locale_tag(&tag) {
+            tracing::warn!(
+                tag,
+                %error,
+                "hydrolysis Android host reported an invalid locale tag"
+            );
+        }
         Ok(())
     });
 }

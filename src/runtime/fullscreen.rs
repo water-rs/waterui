@@ -16,7 +16,7 @@ use waterui_macros::state;
 /// This manager uses a `DynamicHandler` to control typed overlay content.
 /// Handlers take it bare (`manager: FullScreenOverlayManager<V>`) once an
 /// ancestor view has attached [`ViewExt::full_screen_overlay_host`] or
-/// installed it through `.overlay(overlay_view).state(&manager)`.
+/// [`FullScreenOverlayManager::host`].
 #[state]
 pub struct FullScreenOverlayManager<V: 'static = ()> {
     handler: DynamicHandler<Option<V>>,
@@ -34,13 +34,7 @@ impl<V: 'static> Plugin for FullScreenOverlayManager<V> {}
 
 impl<V: View> FullScreenOverlayManager<V> {
     /// Creates a new overlay manager and returns the overlay view.
-    ///
-    /// The returned view should be placed in a window overlay above the main content.
-    ///
-    /// # Returns
-    ///
-    /// A tuple containing the manager and the overlay view.
-    pub fn new() -> (Self, impl View + Clone) {
+    pub(crate) fn new() -> (Self, impl View + Clone) {
         let (handler, dynamic) = Dynamic::<Option<V>>::new();
         handler.set(None);
         (Self { handler }, dynamic)

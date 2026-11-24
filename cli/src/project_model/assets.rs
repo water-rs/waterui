@@ -2553,13 +2553,13 @@ const OPTIONAL_CAPABILITIES: &[Capability] = &[
         package: "waterui-map",
         feature: None,
     },
-    // The `Video`/`Media` playback surface and the `waterkit_audio`
+    // The `Video`/`VideoPlayer` playback surface and the `waterkit_audio`
     // keep-alive behind it. `waterui-video` is an optional dependency of the
-    // facade (`media`/`video` features), so linking it *is* the opt-in — an app
-    // that never plays media stops rooting the codec/streaming graph through
+    // facade (`video` feature), so linking it *is* the opt-in — an app that
+    // never plays video stops rooting the codec/streaming graph through
     // `waterui_video_*` exports.
     Capability {
-        name: "media",
+        name: "video",
         package: "waterui-video",
         feature: None,
     },

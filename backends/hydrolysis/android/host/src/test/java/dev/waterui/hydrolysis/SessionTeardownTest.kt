@@ -760,6 +760,9 @@ class ShadowNativeBridge {
         /** Every `nativeSetColorScheme` push, in order. */
         val colorSchemes = mutableListOf<Boolean>()
 
+        /** Every `nativeSetLocale` push, in order. */
+        val locales = mutableListOf<String>()
+
         /** For each `nativeOnFrame`: `(hasPresentation, vsyncIdOrNull)`. */
         val frameTimelines = mutableListOf<Pair<Boolean, Long?>>()
 
@@ -797,6 +800,7 @@ class ShadowNativeBridge {
             resumptions.clear()
             createNightModes.clear()
             colorSchemes.clear()
+            locales.clear()
             frameTimelines.clear()
             backEvents.clear()
             onDestroy = {}
@@ -843,6 +847,13 @@ class ShadowNativeBridge {
         fun nativeSetColorScheme(sessionPtr: Long, nightMode: Boolean) {
             assertLive(sessionPtr)
             colorSchemes += nightMode
+        }
+
+        @JvmStatic
+        @Implementation
+        fun nativeSetLocale(sessionPtr: Long, localeTag: String) {
+            assertLive(sessionPtr)
+            locales += localeTag
         }
 
         @JvmStatic

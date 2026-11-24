@@ -1816,7 +1816,7 @@ mod render {
         let mut env = waterui::Environment::new();
         let _theme = crate::theme::install(&mut env, cocoa_ui::ColorScheme::Dark);
         let text = StyledStr::from("plain ")
-            + StyledStr::from("bold").bold()
+            + StyledStr::from("bold").bold(true)
             + " "
             + StyledStr::from("italic")
                 .italic(true)

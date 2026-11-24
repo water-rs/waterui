@@ -311,6 +311,7 @@ class HydrolysisSession internal constructor(
         // view under the new configuration — the recreate path delivers no
         // `onConfigurationChanged`, so the bind itself reports the scheme.
         setNightMode(view.resources.configuration.isNightMode)
+        setLocale(view.resources.configuration.primaryLocaleTag)
         // The new binding owns the Activity the instances draw on: each
         // `AndroidContent` context wrapper and `HostRebindAware` retargets its
         // base context and re-observes what the old binding's context owned.
@@ -403,6 +404,18 @@ class HydrolysisSession internal constructor(
         if (destroyRequested) return
         withNativePtr(NativeBridge::nativeSetColorScheme.name) { ptr ->
             NativeBridge.nativeSetColorScheme(ptr, nightMode)
+        }
+    }
+
+    /**
+     * The configuration's primary BCP 47 locale tag, pushed at bind and on
+     * every `onConfigurationChanged`; an unchanged value notifies nothing
+     * native-side.
+     */
+    internal fun setLocale(localeTag: String?) {
+        if (destroyRequested || localeTag.isNullOrEmpty()) return
+        withNativePtr(NativeBridge::nativeSetLocale.name) { ptr ->
+            NativeBridge.nativeSetLocale(ptr, localeTag)
         }
     }
 
@@ -675,3 +688,10 @@ class HydrolysisSession internal constructor(
  */
 internal val Configuration.isNightMode: Boolean
     get() = uiMode and Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES
+
+/**
+ * The configuration's primary locale formatted as a BCP 47 tag, or `null`
+ * when the configuration carries no locale entries.
+ */
+internal val Configuration.primaryLocaleTag: String?
+    get() = locales.takeIf { !it.isEmpty }?.get(0)?.toLanguageTag()?.takeIf { it.isNotEmpty() }

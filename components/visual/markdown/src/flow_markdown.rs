@@ -1856,7 +1856,7 @@ mod tests {
     fn truncate_styled_honors_char_budget() {
         let mut styled = StyledStr::empty();
         styled.push("hello ", Style::default());
-        styled.push("world", Style::default().bold());
+        styled.push("world", Style::default().bold(true));
 
         let truncated = truncate_styled(&styled, 7);
         assert_eq!(truncated.to_plain().as_str(), "hello w");

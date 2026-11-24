@@ -33,7 +33,7 @@ fn toolbar_action(
     message: &'static str,
     status: &Binding<String>,
 ) -> impl View + use<> {
-    button(label(title).icon(text(icon_tag).caption().bold()))
+    button(label(title).icon(text(icon_tag).caption().bold(true)))
         .borderless()
         .action(move |State(status): State<Binding<String>>| status.set(message.to_string()))
         .state(status)
@@ -127,7 +127,7 @@ fn styled_menu_section(action_log: &Binding<String>) -> impl View + use<> {
             .muted(),
         spacer().height(12.0),
         Menu::new(
-            text("Actions").bold(),
+            text("Actions").bold(true),
             (
                 "Edit"
                     .action(|State(log): State<Binding<String>>| {
@@ -261,8 +261,7 @@ fn context_menu_accessory_section(
                                 label_set.set(waterui::Str::from("Liked!"));
                             })
                             .state(context_action),
-                        button("Dismiss")
-                            .action(|Use(dismiss): Use<DismissContextMenu>| dismiss.dismiss()),
+                        button("Dismiss").action(|dismiss: DismissContextMenu| dismiss.dismiss()),
                     ))
                     .padding()
                 }),

@@ -31,6 +31,10 @@ use waterui_controls::button::ButtonStyle;
 use waterui_controls::menu::Shortcut;
 #[cfg(feature = "date-picker")]
 use waterui_controls::{Stepper, stepper::stepper};
+#[cfg(any(feature = "menu", feature = "color-picker"))]
+use waterui_core::Error;
+#[cfg(any(feature = "menu", feature = "color-picker"))]
+use waterui_core::extract::{ExtractionState, Extractor};
 #[cfg(feature = "picker")]
 use waterui_core::id::Id;
 #[cfg(any(feature = "menu", feature = "color-picker"))]
@@ -343,7 +347,15 @@ impl PopupMenuStateGroup {
 }
 
 #[cfg(any(feature = "menu", feature = "color-picker"))]
-impl_extractor!(PopupMenuStateGroup);
+impl Extractor for PopupMenuStateGroup {
+    fn extract(env: &Environment) -> Result<Self, Error> {
+        State::<Self>::extract(env).map(|State(group)| group)
+    }
+
+    fn extract_from_action(env: &Environment, state: &mut ExtractionState) -> Result<Self, Error> {
+        State::<Self>::extract_from_action(env, state).map(|State(group)| group)
+    }
+}
 
 /// `origin` shifted by the window's own origin, or `None` after a contract
 /// violation when the runner seeded no [`HydrolysisWindowOrigin`]: the popup
@@ -394,7 +406,7 @@ fn animated_popup_panel<V: View>(
             opacity.set(1.0);
             scale.set(1.0);
         })
-        .with(group)
+        .with(State(group))
 }
 
 /// Marker on the wrapped menu rows: a `PopupWindowManager` menu's panel is
@@ -859,7 +871,7 @@ pub fn anchored_popup_menu_view<E: TextEngine>(
         .height(f64_as_f32(height)),
         PopupMenuSurface { selected_row: None },
     )
-    .with(group)
+    .with(State(group))
 }
 
 #[expect(
@@ -996,7 +1008,7 @@ impl<E: crate::text::TextEngine> View for SemanticPopupMenuContent<E> {
         menu_content
             .alignment(HorizontalAlignment::Leading)
             .spacing(0.0)
-            .with(group)
+            .with(State(group))
     }
 }
 
@@ -1074,7 +1086,7 @@ pub fn semantic_picker_menu_window(
         menu_content
             .alignment(HorizontalAlignment::Leading)
             .spacing(0.0)
-            .with(group_for_content.clone())
+            .with(State(group_for_content.clone()))
     };
     let mut popup = Window::new("WaterUI Picker Menu", state_for_content, popup_content)
         .style(WindowStyle::Borderless)
@@ -1843,7 +1855,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         }
         // The menu's rows carry this window's identity, so a Close Window
         // row they fire targets its owner window, not the popup.
-        let env = &env.extending(self.window_id);
+        let env = &env.extending(State(self.window_id));
         let Some(manager) = self.popup_window_manager("popup menus") else {
             return false;
         };
@@ -1887,7 +1899,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         }
         // The menu's rows carry this window's identity, so a Close Window
         // row they fire targets its owner window, not the popup.
-        let env = &env.extending(self.window_id);
+        let env = &env.extending(State(self.window_id));
         let Some(manager) = self.popup_window_manager("popup menus") else {
             return false;
         };

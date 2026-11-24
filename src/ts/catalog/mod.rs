@@ -21,14 +21,14 @@
 //! Two structural boundaries remain, and both are about what a build actually
 //! contains rather than about effort:
 //!
-//! * `<Image>` exists only when the facade's `media` feature is on. The entry
+//! * `<Image>` exists only when the facade's `image` feature is on. The entry
 //!   and the arm that builds it carry the same `#[cfg]`, so a build without
 //!   that feature declares no `<Image>` and a JSX tag naming one is refused by
 //!   the same error any unknown tag gets. The alternative — declaring it
 //!   always and failing at build time — would put a component in the `.d.ts`
 //!   that the linked application cannot render. That gate is Principle 5: a
 //!   TypeScript application that never shows a picture must not link the
-//!   media graph, so the vocabulary follows the feature rather than the
+//!   image graph, so the vocabulary follows the feature rather than the
 //!   feature following the vocabulary.
 //! * A component whose content is a *builder* — a navigation destination, a
 //!   tab's root — takes a JavaScript render function rather than a view,
@@ -50,7 +50,7 @@ use waterui_ts::schema::{
     payload, runtime_half_encoded_len,
 };
 
-#[cfg(feature = "media")]
+#[cfg(feature = "image")]
 pub use attributes::ImageAttributes;
 pub use attributes::{
     AccordionAttributes, AvatarAttributes, BadgeAttributes, ButtonAttributes, CardAttributes,
@@ -60,11 +60,13 @@ pub use attributes::{
     StepperAttributes, TabAttributes, TableAttributes, TabsAttributes, TextAttributes,
     TextFieldAttributes, ToggleAttributes, VStackAttributes, ZStackAttributes,
 };
+pub(crate) use values::ResolvedTextPart;
 pub use values::color_of;
 pub use values::{
     ActionArguments, BackgroundValue, BorderValue, ColorValue, EdgeValues, HorizontalAlign,
-    JsAction, PaddingValue, PickerOption, ProgressStyleValue, RoundedShape, ScrollAxis,
-    ShadowValue, ShapeName, ShapeValue, StackAlign, TextContent, UrlValue, VerticalAlign,
+    JsAction, LocalizedArgs, PaddingValue, PickerOption, ProgressStyleValue, RoundedShape,
+    ScrollAxis, ShadowValue, ShapeName, ShapeValue, StackAlign, TextContent, UrlValue,
+    VerticalAlign,
 };
 
 /// The whole vocabulary.
@@ -207,13 +209,12 @@ const CORE: [ComponentSchema; 27] = [
 
 /// The components a feature adds.
 ///
-/// `<Image>` exists only with the facade's `media` feature, because the image
-/// it shows is fetched and decoded by `waterui-media`: an HTTP client, the GPU
-/// image decoder and the video stack behind it. An application that shows no
-/// pictures pays for none of that, which is the proportional-size rule the
-/// framework holds every native bridge to, and the catalog says so rather than
-/// declaring a component the build cannot make.
-#[cfg(feature = "media")]
+/// `<Image>` exists only with the facade's `image` feature, because the image
+/// it shows is fetched and decoded by `waterui-media` and the GPU image decoder.
+/// An application that shows no pictures pays for none of that, which is the
+/// proportional-size rule the framework holds every native bridge to, and the
+/// catalog says so rather than declaring a component the build cannot make.
+#[cfg(feature = "image")]
 const COMPONENTS: [ComponentSchema; CORE.len() + 1] = with(component::<ImageAttributes>(
     "Image",
     "A picture fetched from a URL.",
@@ -221,11 +222,11 @@ const COMPONENTS: [ComponentSchema; CORE.len() + 1] = with(component::<ImageAttr
 ));
 
 /// The components, with nothing added.
-#[cfg(not(feature = "media"))]
+#[cfg(not(feature = "image"))]
 const COMPONENTS: [ComponentSchema; CORE.len()] = CORE;
 
 /// [`CORE`] with one more entry after it.
-#[cfg(feature = "media")]
+#[cfg(feature = "image")]
 const fn with(extra: ComponentSchema) -> [ComponentSchema; CORE.len() + 1] {
     // The array starts filled with `extra`, so the last slot is already what
     // it should be and the loop only copies the core entries over the rest.

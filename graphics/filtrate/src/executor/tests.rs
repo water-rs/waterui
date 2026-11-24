@@ -2978,7 +2978,7 @@ fn gpu_shader_effect_reads_input_time_and_params() {
         }",
     )
     .expect("the test shader is valid WGSL")
-    .animated()
+    .continuous()
     .watch_param(&strength);
     setup_shader_effect(&gpu, &mut effect, FORMAT);
 

@@ -38,7 +38,7 @@ fn f(tag: &'static str) -> impl View {
 fn t(tag: &'static str) -> impl View {
     text("mmmmmmmmmm mmmmmmmmmm")
         .size(16.7)
-        .monospaced()
+        .monospaced(true)
         .a11y_label(tag)
 }
 
@@ -46,7 +46,7 @@ fn t(tag: &'static str) -> impl View {
 fn lt(tag: &'static str, limit: usize) -> impl View {
     text("mmmmmmmmmm mmmmmmmmmm")
         .size(16.7)
-        .monospaced()
+        .monospaced(true)
         .line_limit(NonZeroUsize::new(limit).unwrap_or(NonZeroUsize::MIN))
         .a11y_label(tag)
 }
@@ -55,13 +55,16 @@ fn lt(tag: &'static str, limit: usize) -> impl View {
 fn tshort(tag: &'static str) -> impl View {
     text("mm mm mm mm mm mm mm m")
         .size(16.7)
-        .monospaced()
+        .monospaced(true)
         .a11y_label(tag)
 }
 
 /// Small monospaced text for the A13 sub-10pt line-height probe.
 fn ttiny(tag: &'static str) -> impl View {
-    text("aaaaaaaaaa").size(8.4).monospaced().a11y_label(tag)
+    text("aaaaaaaaaa")
+        .size(8.4)
+        .monospaced(true)
+        .a11y_label(tag)
 }
 
 // ---------------------------------------------------------------------------

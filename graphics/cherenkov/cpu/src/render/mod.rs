@@ -222,9 +222,17 @@ impl std::fmt::Debug for RasterRenderer {
 /// # Errors
 /// [`EngineError::Backend`] when the pool cannot be built.
 pub fn init(config: &RasterConfig) -> Result<(RasterRenderer, RasterInfo), EngineError> {
-    let builder = rayon::ThreadPoolBuilder::new()
+    let mut builder = rayon::ThreadPoolBuilder::new()
         .num_threads(cherenkov::workers::count(config.threads)?.get())
         .thread_name(|i| format!("cherenkov-raster-{i}"));
+    #[cfg(debug_assertions)]
+    {
+        // Unoptimized SIMD kernels leave disjoint locals uncoalesced (~100-300 KiB per
+        // kernel), so Windows' 1 MiB default worker stack is tight even without deep filter
+        // recursion.
+        const DEBUG_WORKER_STACK_BYTES: usize = 4 * 1024 * 1024;
+        builder = builder.stack_size(DEBUG_WORKER_STACK_BYTES);
+    }
     builder
         .build()
         .map(|pool| {

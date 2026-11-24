@@ -413,7 +413,7 @@ pub mod reactivity_block_12 {
     pub fn body() {
         use waterui::env::use_env;
 
-        let _ = { use_env(|Use(client): Use<ApiClient>| text(client.name())) };
+        let _ = { use_env(|State(client): State<ApiClient>| text(client.name())) };
     }
 }
 

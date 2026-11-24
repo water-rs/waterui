@@ -13042,7 +13042,7 @@ dependencies = [
 [[package]]
 name = "waterui-chart"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/chart?branch=main#2e99e1fb708f2f5808a83fb6a2943ba29bcb86a0"
+source = "git+https://github.com/water-rs/chart?branch=main#f357c852c7584823279ef4ec4208791447ad2b54"
 dependencies = [
  "bytemuck",
  "nami",
@@ -13554,12 +13554,10 @@ dependencies = [
  "suiteki",
  "sys-locale",
  "tracing",
- "wasm-bindgen",
  "waterui",
  "waterui-core",
  "waterui-locale",
  "waterui-locale-parser",
- "web-sys",
 ]
 
 [[package]]
@@ -14044,6 +14042,7 @@ dependencies = [
  "waterui",
  "waterui-core",
  "waterui-testing",
+ "waterui-ts-schema",
  "waterui-url",
  "waterui-watcher-set",
 ]

@@ -13,7 +13,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use hydrolysis_m3::Material3;
-use waterui::Computed;
 use waterui::Signal as _;
 use waterui::SignalExt as _;
 use waterui::ViewExt as _;
@@ -24,6 +23,7 @@ use waterui::graphics::canvas::Canvas;
 use waterui::graphics::color::Srgb;
 use waterui::layout::scroll::ScrollView;
 use waterui::theme;
+use waterui::{Computed, Plugin, View};
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::layout::{Point, Rect, Size};
 use waterui_core::{AnyView, Environment};
@@ -224,6 +224,50 @@ fn ui_test_environment_builder_preserves_custom_theme() {
     assert_eq!(snapshot.width(), 240);
     assert_eq!(snapshot.height(), 120);
     assert_eq!(snapshot.rgba8().len(), 240 * 120 * 4);
+}
+
+#[test]
+fn ui_builder_with_and_install_compose_additively() {
+    struct ServiceA(&'static str);
+    struct ServiceB(&'static str);
+    struct PluginC(&'static str);
+    struct PluginValue(&'static str);
+
+    impl Plugin for PluginC {
+        fn install(self, env: &mut Environment) {
+            env.insert(PluginValue(self.0));
+        }
+    }
+
+    struct ProbeView;
+
+    impl View for ProbeView {
+        fn body(self, env: &Environment) -> impl View {
+            let a = env
+                .get::<ServiceA>()
+                .expect("ServiceA must stay installed")
+                .0;
+            let b = env
+                .get::<ServiceB>()
+                .expect("ServiceB must stay installed")
+                .0;
+            let c = env
+                .get::<PluginValue>()
+                .expect("PluginC value must stay installed")
+                .0;
+            text(format!("{a}:{b}:{c}")).body()
+        }
+    }
+
+    let mut app = ui()
+        .with(ServiceA("alpha"))
+        .with(ServiceB("beta"))
+        .install(PluginC("gamma"))
+        .mount(|| ProbeView);
+    app.query()
+        .role(Role::LABEL)
+        .label("alpha:beta:gamma")
+        .assert_exists();
 }
 
 // Origin: waterui `testing/src/tests.rs`.
@@ -447,7 +491,6 @@ fn ui_test_hover_drag_and_magnify_update_semantic_bounds() {
     };
     use waterui::prelude::text;
     use waterui::{Binding, SignalExt as _, ViewExt as _, state};
-    use waterui_core::extract::Use;
 
     #[state]
     #[derive(Clone)]
@@ -488,14 +531,14 @@ fn ui_test_hover_drag_and_magnify_update_semantic_bounds() {
                 surface
                     .gesture_observer(GestureObserver::new(
                         DragGesture::new(0.0),
-                        |DragOffset(offset): DragOffset, drag: Use<DragEvent>| {
+                        |DragOffset(offset): DragOffset, drag: DragEvent| {
                             offset.set(drag.translation().x);
                         },
                     ))
                     .state(&drag_offset_state)
                     .gesture_observer(GestureObserver::new(
                         MagnificationGesture::new(1.0),
-                        |ZoomScale(scale): ZoomScale, magnification: Use<MagnificationEvent>| {
+                        |ZoomScale(scale): ZoomScale, magnification: MagnificationEvent| {
                             scale.set(magnification.scale());
                         },
                     ))

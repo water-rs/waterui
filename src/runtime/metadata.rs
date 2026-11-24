@@ -21,6 +21,7 @@ pub mod context_menu {
         AnyView, Environment, Metadata, View,
         backend::{Backend, ChildSlot, MapSlots},
         env::with,
+        extract::State,
         metadata::MetadataKey,
     };
 
@@ -61,7 +62,7 @@ pub mod context_menu {
     ///             "Delete".command().action(|| {}).destructive(),
     ///         ))
     ///         .accessory(
-    ///             button("Like").action(|Use(dismiss): Use<DismissContextMenu>| dismiss.dismiss()),
+    ///             button("Like").action(|dismiss: DismissContextMenu| dismiss.dismiss()),
     ///         ),
     ///     );
     /// ```
@@ -175,7 +176,7 @@ pub mod context_menu {
             ResolvedContextMenu {
                 items: resolve_menu_items(&items, env),
                 preview: preview.map(S::from_view),
-                accessory: accessory.map(|accessory| S::from_view(with(accessory, dismiss))),
+                accessory: accessory.map(|accessory| S::from_view(with(accessory, State(dismiss)))),
                 dismiss_requests: requests.computed(),
             }
         }
@@ -215,8 +216,9 @@ pub mod context_menu {
     /// Closes the context menu whose accessory is being acted on.
     ///
     /// Present in the environment of a context menu's
-    /// [`accessory`](ContextMenu::accessory). Extract it in a handler with
-    /// `Use<DismissContextMenu>`.
+    /// [`accessory`](ContextMenu::accessory). Extract it in a handler directly
+    /// as `dismiss: DismissContextMenu`.
+    #[waterui_macros::state]
     #[derive(Debug, Clone)]
     pub struct DismissContextMenu {
         requests: Binding<i32>,
@@ -354,6 +356,7 @@ pub mod context_menu {
             AnyView, Environment, Metadata, View,
             backend::{Backend, ChildSlot, peel_metadata},
             env::With,
+            extract::State,
             metadata::MetadataKey,
             view::hook::{HookList, HookableView},
         };
@@ -386,7 +389,7 @@ pub mod context_menu {
             .value;
 
             let dismiss = accessory_env
-                .get::<DismissContextMenu>()
+                .extract::<DismissContextMenu>()
                 .expect("the accessory environment carries DismissContextMenu");
 
             let before = resolved.dismiss_requests.snapshot();
@@ -474,7 +477,10 @@ pub mod context_menu {
             );
             let accessory_id = resolved.accessory.expect("accessory present").0;
             assert_ne!(accessory_id, TypeId::of::<AnyView>());
-            assert_eq!(accessory_id, TypeId::of::<With<(), DismissContextMenu>>());
+            assert_eq!(
+                accessory_id,
+                TypeId::of::<With<(), State<DismissContextMenu>>>()
+            );
         }
     }
 }

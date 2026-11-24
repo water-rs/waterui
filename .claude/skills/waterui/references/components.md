@@ -4,9 +4,9 @@ Signatures verified against the WaterUI source and compiled. Everything here is 
 from `use waterui::prelude::*;` unless an explicit import is shown.
 
 **Feature gates.** `waterui`'s default features are `gpu`, `assets`, `dialog`, `snackbar`,
-`highlight`, `locale-datetime` and `locale-list`. Everything else is opt-in, chiefly `media`,
+`highlight`, `locale-datetime` and `locale-list`. Everything else is opt-in, chiefly `image`,
 `video`, `video-gpu`, `webview`, `flow-markdown` (also gates `RichText` and
-`include_markdown!`), `markdown-math`, `navigation-restoration`, `inspector`, `remote`, `ts`,
+`include_markdown!`), `markdown-math`, `navigation-restoration`, `haptics`, `inspector`, `remote`, `ts`,
 `widgets`, and the component features `canvas`, `chart`, `barcode` and `particle`. `all`
 turns on the full set except `ts`, `markdown-math` and `widgets`. A missing module here is
 usually a missing feature in `Cargo.toml`, not a wrong path:
@@ -490,11 +490,11 @@ a toolbar, a menu, and a keyboard shortcut. `Command` has its own builder chain:
     .subtitle("Copy the selection")            // secondary line under the label
     .shortcut(Shortcut::new('c').command())
 "Delete".action(delete_handler).destructive()  // red in every menu; == .role(CommandRole::Destructive)
-"Delete".action(delete_handler).shortcut(Shortcut::new(NamedKey::Delete))
+"Delete".action(delete_handler).shortcut(Shortcut::new(ShortcutNamedKey::Delete))
 Shortcut::new('s').command().shift()           // ⇧⌘S; also .option() and .control()
 ```
 
-A shortcut key is a `char` or a W3C `NamedKey`. `.command()` is the platform's primary
+A shortcut key is a `char` or a `ShortcutNamedKey` (or `ShortcutKey::try_from(NamedKey)`). `.command()` is the platform's primary
 modifier: ⌘ on Apple, Ctrl elsewhere. When a chord is live depends on where the command
 sits: a mounted `Menu` arms its chords whether or not its popup is open, a `.context_menu`
 arms them only while it is open, and `App::menu_bar` arms them app-wide. A chord without
@@ -549,7 +549,7 @@ text("Hello").context_menu(
         "Reply".action(|| {}),
         "Delete".command().action(|| {}).destructive(),
     ))
-    .accessory(button("Like").action(|Use(dismiss): Use<DismissContextMenu>| dismiss.dismiss())),
+    .accessory(button("Like").action(|dismiss: DismissContextMenu| dismiss.dismiss())),
 )
 ```
 
@@ -569,11 +569,11 @@ Both carry the full font API:
 
 ```rust
 .title() .headline() .subheadline() .body() .caption() .footnote()
-.size(18.0) .bold() .italic(true) .font(font::Caption) .foreground(color)
-.weight(font::FontWeight::SemiBold) .monospaced() .underline(true) .color(color)
+.size(18.0) .bold(true) .italic(true) .font(font::Caption) .foreground(color)
+.weight(font::FontWeight::SemiBold) .monospaced(true) .underline(true) .strikethrough(true) .color(color)
 ```
 
-`.bold()` takes no argument; `.italic(..)` takes a bool — a signal of one works too.
+`.bold(..)`, `.monospaced(..)`, `.italic(..)`, `.underline(..)`, and `.strikethrough(..)` all take `impl IntoSignal<bool>` — a `bool` literal or a reactive signal of one.
 `.line_limit(impl IntoComputed<Option<NonZeroUsize>>)` truncates past that many lines (pass `None` or a signal to expand/collapse). `.text_align(HorizontalAlignment::Center)`
 sets the paragraph alignment of multiline text (a signal works too) and
 `.background_color(color)` paints behind the text run.
@@ -851,8 +851,8 @@ A `Binding<BTreeSet<Date>>` needs the turbofish: `binding(BTreeSet::<Date>::new(
 Attach `.snackbar_host()` to a root view to install a plain `SnackbarManager` (and
 `CodeCopyFeedback` when `flow-markdown` is enabled) into its subtree; it is a `#[state]`-marked
 framework type, so descendant handlers take it bare. For snackbars with icons of view type `V`,
-attach `.snackbar_host_with_icons::<V>()` (or construct `SnackbarManager::with_icons::<V>()`
-manually with `.overlay(overlay).state(&snackbars)`) and extract `m: SnackbarManager<V>`.
+attach `.snackbar_host_with_icons::<V>()` (or wrap the subtree in `SnackbarManager::host(|m| ...)`)
+and extract `m: SnackbarManager<V>`.
 
 ```rust
 use core::time::Duration;
@@ -897,8 +897,8 @@ accordion(header, || body())                           // disclosure; Accordion:
 view.floating()                                        // themed elevated surface (FloatingStyle-aware)
 ```
 
-Attach `.full_screen_overlay_host::<V>()` to a root view (or construct
-`FullScreenOverlayManager::<V>::new()` manually with `.overlay(overlay_view).state(&overlay)`)
+Attach `.full_screen_overlay_host::<V>()` to a root view (or wrap the subtree in
+`FullScreenOverlayManager::host(|overlay| ...)`)
 so descendant handlers can take `overlay: FullScreenOverlayManager<V>` bare to present modal,
 window-filling content: `overlay.show(view)` and `overlay.hide()`.
 

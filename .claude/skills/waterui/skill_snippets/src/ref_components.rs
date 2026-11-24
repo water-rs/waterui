@@ -703,7 +703,7 @@ pub fn components_block_17() {
     let _ = {
         "Delete"
             .action(delete_handler)
-            .shortcut(Shortcut::new(NamedKey::Delete))
+            .shortcut(Shortcut::new(ShortcutNamedKey::Delete))
     };
     let _ = {
         Shortcut::new('s').command().shift() // ⇧⌘S; also .option() and .control()
@@ -768,9 +768,7 @@ pub fn components_block_20() -> impl View {
             "Reply".action(|| {}),
             "Delete".command().action(|| {}).destructive(),
         ))
-        .accessory(
-            button("Like").action(|Use(dismiss): Use<DismissContextMenu>| dismiss.dismiss()),
-        ),
+        .accessory(button("Like").action(|dismiss: DismissContextMenu| dismiss.dismiss())),
     )
 }
 
@@ -802,15 +800,16 @@ pub fn components_block_22() {
     let _ = { text("t").footnote() };
 
     let _ = { text("t").size(18.0) };
-    let _ = { text("t").bold() };
+    let _ = { text("t").bold(true) };
     let _ = { text("t").italic(true) };
     let _ = { text("t").font(font::Caption) };
     let _ = { text("t").foreground(color) };
 
     let color = Color::srgb_hex("#3B82F6");
     let _ = { text("t").weight(font::FontWeight::SemiBold) };
-    let _ = { text("t").monospaced() };
+    let _ = { text("t").monospaced(true) };
     let _ = { text("t").underline(true) };
+    let _ = { text("t").strikethrough(true) };
     let _ = { text("t").color(color) };
 
     // The other font slots named in the prose.
@@ -1359,13 +1358,19 @@ pub fn components_snackbar_prose() {
         });
     let _ = text("host").snackbar_host();
     let _ = text("host").snackbar_host_with_icons::<mdi::Svg>();
-    let _ = SnackbarManager::with_icons::<mdi::Svg>();
+    let _ = SnackbarManager::host(|m| {
+        m.show(Snackbar::new("x").icon(mdi::delete()));
+        text("host")
+    });
     let _ = button("x").action(|m: SnackbarManager<mdi::Svg>| {
         m.show(Snackbar::new("x").icon(mdi::delete()));
     });
     let _ = button("x").action(|manager: SnackbarManager| manager.dismiss());
     let _ = text("host").full_screen_overlay_host::<Text>();
-    let (_overlay_mgr, _overlay_view) = FullScreenOverlayManager::<Text>::new();
+    let _ = FullScreenOverlayManager::host(|overlay| {
+        overlay.show(text("modal"));
+        text("host")
+    });
     let _ = button("x").action(|overlay: FullScreenOverlayManager<Text>| {
         overlay.show(text("modal"));
         overlay.hide();
@@ -1497,7 +1502,7 @@ pub fn components_block_37(photo_url: waterui::Url) {
 pub fn components_avatar_prose() {
     use waterui::widget::Avatar;
 
-    let _ = Avatar::new("Katherine Johnson", || text("KJ").bold());
+    let _ = Avatar::new("Katherine Johnson", || text("KJ").bold(true));
 
     // Prose (not counted): `.dynamic_range(ColorSpace::Hdr)`.
     use waterui::metadata::secure::ColorSpace;

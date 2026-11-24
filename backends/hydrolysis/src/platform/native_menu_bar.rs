@@ -52,9 +52,9 @@ use waterkit_menu::StandardItem;
 use waterkit_menu::{
     Command, CommandId, Entry, Key, MenuBar, Modifiers, Shortcut as MenuShortcut, Submenu,
 };
-use waterui::Environment;
 #[cfg(not(target_os = "macos"))]
 use waterui::app::Quit;
+use waterui::{Environment, State};
 #[cfg(target_os = "macos")]
 use waterui_controls::menu::CloseWindowPlacement;
 use waterui_controls::menu::{ResolvedCommand, ResolvedMenuItem, ResolvedNestedMenu, Shortcut};
@@ -308,7 +308,12 @@ fn extend_submenu(mut submenu: Submenu, items: &[ResolvedMenuItem], ctx: &mut Bu
                 // alone: the command's label is also a self-drawn popup
                 // row, which would print the `&`.
                 #[cfg(not(target_os = "macos"))]
-                if let Some(command) = ctx.env.get::<Quit>().map(|quit| quit.command(ctx.env)) {
+                if let Some(command) = ctx
+                    .env
+                    .extract::<Quit>()
+                    .ok()
+                    .map(|quit| quit.command(ctx.env))
+                {
                     submenu = submenu.entry(declared_command(
                         &format!("&{}", command_title(&command)),
                         &command,
@@ -809,7 +814,9 @@ impl NativeMenuBar {
     /// which the shared close path resolves to no window.
     #[cfg(target_os = "macos")]
     pub(crate) fn pump_menu_events(&self, focused: Option<WindowId>) {
-        let env = self.env.extending(focused.unwrap_or(WindowId::Orphan));
+        let env = self
+            .env
+            .extending(State(focused.unwrap_or(WindowId::Orphan)));
         loop {
             // The action may mutate menu state (which rebuilds the bar and
             // borrows this cell again) — clone it under the borrow, then
@@ -862,7 +869,7 @@ impl NativeMenuBar {
                 break;
             };
             if let Some((action, window)) = dispatched {
-                call_action_discarding_result(&action, &self.env.extending(window));
+                call_action_discarding_result(&action, &self.env.extending(State(window)));
             }
         }
     }

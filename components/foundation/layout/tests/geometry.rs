@@ -9,6 +9,8 @@
 //! ideal width) or read rendered ink (the ellipsis run detector) went to
 //! hydrolysis-m3 (water-rs/hydrolysis-m3#113).
 
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::time::Duration;
 
 use waterui::View;
@@ -182,18 +184,24 @@ const MAX_WIDTH: f32 = 600.0;
 
 /// Mounts an app whose window shows `snackbar`, and returns it settled.
 fn show(ui: UiBuilder<Styled<TestStyle>>, snackbar: Snackbar) -> (OffscreenApp, SnackbarManager) {
-    let (manager, overlay) = SnackbarManager::new();
     let theme = SnackbarTheme {
         min_width: MIN_WIDTH,
         max_width: MAX_WIDTH,
         ..SnackbarTheme::default()
     };
-    let mut env = Environment::new();
-    env.insert(manager.clone());
-    env.insert(theme);
-    let mut app = ui
-        .environment(env)
-        .mount_offscreen(move || zstack((text("app content"), overlay.clone())));
+    let captured = Rc::new(RefCell::new(None));
+    let captured_mount = Rc::clone(&captured);
+    let mut app = ui.with(theme).mount_offscreen(move || {
+        let captured = Rc::clone(&captured_mount);
+        SnackbarManager::host(move |manager: SnackbarManager| {
+            *captured.borrow_mut() = Some(manager);
+            text("app content")
+        })
+    });
+    let manager = captured
+        .borrow_mut()
+        .take()
+        .expect("SnackbarManager::host installs the manager on mount");
     manager.show(snackbar);
     app.settle();
     (app, manager)
