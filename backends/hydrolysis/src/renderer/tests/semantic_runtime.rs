@@ -1743,11 +1743,11 @@ fn gpu_surface_emits_an_image_leaf_with_its_label_and_value() {
     use nami::{SignalExt as _, binding};
 
     let reading = binding(42);
-    let value = reading.map(|percent| waterui_core::Str::from(format!("{percent}%")));
+    let value = reading.map(|percent| Str::from(format!("{percent}%")));
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
         AnyView::new(
             GpuView::new(GpuChart)
-                .offered_label(waterui_core::Str::from("Battery"))
+                .offered_label(Str::from("Battery"))
                 .offered_value(value.clone()),
         )
     }));

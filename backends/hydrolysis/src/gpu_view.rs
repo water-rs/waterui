@@ -22,10 +22,11 @@ use waterui_core::Str;
 use waterui_graphics::gpu::{ExternalFrameView, FrameReceiver, GpuContent, GpuView};
 
 use crate::renderer::mount::{Dirty, NodeCell};
+use crate::text::TextEngine;
 
 /// Watches an accessibility label/value signal pair and marks `cell` dirty on
 /// change so the next semantic flush re-emits the leaf's updated attributes.
-fn watch_a11y<E: crate::text::TextEngine>(
+fn watch_a11y<E: TextEngine>(
     label: &Computed<Option<Str>>,
     value: &Computed<Option<Str>>,
     cell: &Rc<NodeCell<E>>,
@@ -139,7 +140,7 @@ impl HostedGpuView for ExternalFrameRuntime {
 }
 
 impl GpuContentRuntime {
-    pub(crate) fn new<T: GpuContent, E: crate::text::TextEngine>(
+    pub(crate) fn new<T: GpuContent, E: TextEngine>(
         view: GpuView<T>,
         cell: &Rc<NodeCell<E>>,
         #[cfg(hydrolysis_hwui_gpu)] hosted: crate::runner::android::hosted_gpu::HostedLayer,
@@ -201,7 +202,7 @@ impl std::fmt::Debug for ExternalFrameRuntime {
 }
 
 impl ExternalFrameRuntime {
-    pub(crate) fn new<E: crate::text::TextEngine>(
+    pub(crate) fn new<E: TextEngine>(
         view: ExternalFrameView,
         cell: &Rc<NodeCell<E>>,
         #[cfg(hydrolysis_hwui_gpu)] hosted: crate::runner::android::hosted_gpu::HostedLayer,

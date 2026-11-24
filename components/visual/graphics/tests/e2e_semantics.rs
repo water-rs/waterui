@@ -1,6 +1,7 @@
 //! Accessibility semantics coverage for graphics views.
 
 use waterui::Binding;
+use waterui::Str;
 use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityRole;
 use waterui::graphics::color::{Srgb, WorkingColor};
@@ -64,7 +65,7 @@ fn labeled_picture_view() -> impl waterui::View {
         );
     });
     Picture::new(Size::new(24.0, 24.0), constant(recording))
-        .offered_label(waterui::Str::from("Warning sign"))
+        .offered_label(Str::from("Warning sign"))
 }
 
 /// The same drawing, named by the application instead.
