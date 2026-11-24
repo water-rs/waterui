@@ -35,7 +35,7 @@ fn accessible_bounds_follow_a_scale_binding() {
                 .width(100.0)
                 .height(40.0)
                 .a11y_label("Target")
-                .scale(view_factor.clone(), view_factor.clone())
+                .scale(view_factor)
         },
         WIDTH,
         HEIGHT,

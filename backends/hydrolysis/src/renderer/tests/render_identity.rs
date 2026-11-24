@@ -75,7 +75,7 @@ fn scalar_update_preserves_node_cells() {
             let animated = value.with(Animation::linear(Duration::from_millis(1_000)));
             AnyView::new(vstack((
                 text("kept sibling"),
-                ().size(80.0, 80.0).scale(animated.clone(), animated),
+                ().size(80.0, 80.0).scale(animated),
             )))
         })
     };
