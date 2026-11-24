@@ -130,6 +130,7 @@ pub mod prelude {
     };
     #[cfg(feature = "menu")]
     pub use super::metadata::context_menu::{ContextMenu, DismissContextMenu};
+    pub use super::metadata::secure::DynamicRange;
 
     // Drag and drop extension traits
     pub use super::drag_drop::DropDestinationExt;

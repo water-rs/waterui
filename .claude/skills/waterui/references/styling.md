@@ -170,10 +170,9 @@ the rule-1 bug in a hat.
 ## HDR
 
 `color.with_headroom(1.5)` marks a color as extended-range (up to 2.5× SDR white), and
-the *view* must additionally opt in: `.color_space(ColorSpace::Hdr)` (import
-`waterui::metadata::secure::ColorSpace`). `.color_space(..)` takes a plain enum, not a
-signal, so the choice is fixed when the view is built. Compare SDR/HDR variants by stacking both
-and cross-fading opacity — not by swapping subtrees.
+the *view* must additionally opt in: `.dynamic_range(DynamicRange::High)` (`DynamicRange` is
+in the prelude; `DynamicRange::Standard` pins a subtree to SDR). `.dynamic_range(..)` accepts
+`impl IntoComputed<DynamicRange>`, so the choice can be either a constant or a reactive signal.
 
 ## Backgrounds, materials, gradients
 

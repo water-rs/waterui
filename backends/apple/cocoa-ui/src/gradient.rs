@@ -355,9 +355,9 @@ impl GradientLayer {
             // HDR stops flatten to SDR white before the compositor ever sees
             // them. A half-float backing preserves the values, and the High
             // preference asks the display for EDR headroom; on an SDR display
-            // both are inert. An explicit `Metadata<StandardDynamicRange>`
-            // ancestor still overrides the preference — this is the paint's
-            // own range, not a subtree pin.
+            // both are inert. An explicit `Metadata<DynamicRangeMetadata>`
+            // ancestor requesting `DynamicRange::Standard` still overrides the
+            // preference — this is the paint's own range, not a subtree pin.
             // SAFETY: the extern statics are immutable framework constants.
             unsafe {
                 layer.setContentsFormat(kCAContentsFormatRGBA16Float);

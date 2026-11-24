@@ -931,7 +931,7 @@ field("Email", &email).focused(&focus, Field::Email)    // focused while `focus`
 
 `avatar(name)` shows the initials; `Avatar::new(name, || view)` takes a fallback view
 instead. An avatar renders SDR by default, unlike the framework's HDR default;
-`.dynamic_range(ColorSpace::Hdr)` (`waterui::metadata::secure::ColorSpace`) opts one back
+`.dynamic_range(DynamicRange::High)` (in the prelude) opts one back
 in when the picture is the subject, such as a full-width profile header. `.focused(&Binding<Option<T>>, value)` ties a control to a shared focus binding
 (`T: Eq + Clone`): setting the binding moves focus, and focusing a control writes its value.
 `table(columns)` takes a signal of `Vec<TableColumn>` built with `col(label, rows)`, each
