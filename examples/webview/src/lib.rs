@@ -83,7 +83,6 @@ impl PageApi {
 fn handle_webview_event(
     event: WebViewEvent,
     status: &Binding<Str>,
-    progress_value: &Binding<f64>,
     address: &Binding<Str>,
     allow_redirects: &Binding<bool>,
 ) {
@@ -91,22 +90,18 @@ fn handle_webview_event(
         WebViewEvent::WillNavigate { url } => {
             address.set(Str::from(url.to_string()));
             status.set(Str::from(format!("Navigating to {url}")));
-            progress_value.set(0.0);
         }
         WebViewEvent::Loading { progress } => {
-            progress_value.set(f64::from(progress));
             status.set(Str::from(format!("Loading {:.0}%", progress * 100.0)));
         }
         WebViewEvent::Loaded => {
             status.set(Str::from_static("Loaded"));
-            progress_value.set(1.0);
         }
         WebViewEvent::Redirect { from, to } => {
             if allow_redirects.snapshot() {
                 address.set(Str::from(to.to_string()));
                 status.set(Str::from(format!("Redirect: {from} -> {to}")));
             } else {
-                progress_value.set(0.0);
                 status.set(Str::from(format!("Redirect blocked: {from} -> {to}")));
             }
         }
@@ -126,18 +121,21 @@ struct NavigateState {
 }
 
 /// The controls beside the page. Every action takes a [`WebViewProxy`], which the
-/// surrounding `with_proxy` scope supplies. `bridge` holds the controls that
-/// need more of the page than navigation.
+/// surrounding `proxy_scope` supplies alongside live page state. `bridge` holds
+/// the controls that need more of the page than navigation.
 fn toolbar<B: View>(
     status: &Binding<Str>,
-    progress_value: Binding<f64>,
     address: &Binding<Str>,
+    web: &WebViewProxy,
     bridge: B,
 ) -> impl View + use<B> {
     vstack((
         text("WebView Playground")
             .title()
             .foreground(theme_color::Foreground),
+        text(web.title())
+            .caption()
+            .foreground(theme_color::MutedForeground),
         hstack((
             TextField::new("Address", address).hide_label(),
             button("Go")
@@ -164,7 +162,7 @@ fn toolbar<B: View>(
             text!("{status}").body().foreground(theme_color::Foreground),
         ))
         .spacing(8.0),
-        progress(progress_value).label(text("Load progress").caption()),
+        progress(web.progress()).label(text("Load progress").caption()),
     ))
     .spacing(5.0)
     .max_width(420.0)
@@ -173,12 +171,16 @@ fn toolbar<B: View>(
 /// History, the redirect policy and JavaScript evaluation: what a native web
 /// view offers beyond navigation.
 #[cfg(not(target_arch = "wasm32"))]
-fn bridge_controls(allow_redirects: &Binding<bool>) -> impl View + use<> {
+fn bridge_controls(allow_redirects: &Binding<bool>, web: &WebViewProxy) -> impl View + use<> {
     let js_result: Binding<Str> = binding("");
     vstack((
         hstack((
-            button("Back").action(|proxy: WebViewProxy| proxy.go_back()),
-            button("Forward").action(|proxy: WebViewProxy| proxy.go_forward()),
+            button("Back")
+                .action(|proxy: WebViewProxy| proxy.go_back())
+                .disabled(web.can_go_back().map(|can| !can)),
+            button("Forward")
+                .action(|proxy: WebViewProxy| proxy.go_forward())
+                .disabled(web.can_go_forward().map(|can| !can)),
             button("Reload").action(|proxy: WebViewProxy| proxy.refresh()),
             button("Stop").action(|proxy: WebViewProxy| proxy.stop()),
         ))
@@ -215,7 +217,6 @@ fn bridge_controls(allow_redirects: &Binding<bool>) -> impl View + use<> {
 
 fn webview_playground() -> impl View {
     let status: Binding<Str> = binding("Idle");
-    let progress_value = Binding::f64(0.0);
     let address: Binding<Str> = binding("https://waterui.dev");
     let allow_redirects = Binding::bool(false);
 
@@ -240,19 +241,20 @@ fn webview_playground() -> impl View {
         });
     let open = open.on_event({
         let status = status.clone();
-        let progress_value = progress_value.clone();
         let address = address.clone();
         let allow_redirects = allow_redirects.clone();
         move |event| {
-            handle_webview_event(event, &status, &progress_value, &address, &allow_redirects);
+            handle_webview_event(event, &status, &address, &allow_redirects);
         }
     });
 
-    #[cfg(not(target_arch = "wasm32"))]
-    let bridge = bridge_controls(&allow_redirects);
-    #[cfg(target_arch = "wasm32")]
-    let bridge = ();
-    open.with_proxy(move || toolbar(&status, progress_value, &address, bridge))
+    open.proxy_scope(move |page, web| {
+        #[cfg(not(target_arch = "wasm32"))]
+        let bridge = bridge_controls(&allow_redirects, &web);
+        #[cfg(target_arch = "wasm32")]
+        let bridge = ();
+        vstack((toolbar(&status, &address, &web, bridge), page))
+    })
 }
 
 /// The web view demo: a playground page with navigation, history and JavaScript controls.

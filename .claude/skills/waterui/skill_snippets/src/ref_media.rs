@@ -305,14 +305,20 @@ pub fn media_web_bundled_prose() -> impl View {
 }
 
 // ---------------------------------------------------------------------------
-// media.md § "## Web content" (prose): opening a web view with `.with_proxy`
+// media.md § "## Web content" (prose): opening a web view with `.proxy_scope`
 // and driving a `WebViewProxy` action. Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn media_web_handle_prose() -> impl View {
     use waterui::webview::{WebView, WebViewProxy};
 
-    WebView::open("https://waterui.dev")
-        .with_proxy(|| button("Back").action(|proxy: WebViewProxy| proxy.go_back()))
+    WebView::open("https://waterui.dev").proxy_scope(|page, web| {
+        vstack((
+            button("Back")
+                .action(|proxy: WebViewProxy| proxy.go_back())
+                .disabled(web.can_go_back().map(|can| !can)),
+            page,
+        ))
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -346,17 +352,24 @@ pub fn media_block_06() -> impl View {
     let open = WebView::open("https://waterui.dev");
     let address = Binding::container(Str::from("waterui.dev"));
 
-    open.with_proxy(move || {
-        hstack((
-            button("Back").action(|proxy: WebViewProxy| proxy.go_back()),
-            button("Go")
-                .action(|proxy: WebViewProxy, State(addr): State<Binding<Str>>| {
-                    // parse_user_input tolerates human input (missing scheme); returns Option.
-                    if let Some(url) = Url::parse_user_input(addr.snapshot().as_str()) {
-                        proxy.go_to(url);
-                    }
-                })
-                .state(&address),
+    open.proxy_scope(move |page, web| {
+        vstack((
+            hstack((
+                button("Back")
+                    .action(|proxy: WebViewProxy| proxy.go_back())
+                    .disabled(web.can_go_back().map(|can| !can)),
+                button("Go")
+                    .action(|proxy: WebViewProxy, State(addr): State<Binding<Str>>| {
+                        // parse_user_input tolerates human input (missing scheme); returns Option.
+                        if let Some(url) = Url::parse_user_input(addr.snapshot().as_str()) {
+                            proxy.go_to(url);
+                        }
+                    })
+                    .state(&address),
+                text(web.title()),
+                progress(web.progress()),
+            )),
+            page,
         ))
     })
 }

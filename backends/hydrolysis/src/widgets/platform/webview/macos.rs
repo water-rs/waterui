@@ -19,9 +19,11 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::ptr::NonNull;
+use std::ffi::c_void;
+use std::ptr::{NonNull, null_mut};
 use std::rc::Rc;
 
+use crate::num_cast::f64_as_f32;
 use block2::RcBlock;
 use futures::channel::oneshot;
 use nami::Signal;
@@ -29,15 +31,15 @@ use objc2::rc::{Retained, Weak};
 use objc2::runtime::{AnyObject, NSObjectProtocol, ProtocolObject};
 use objc2::{AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_foundation::{
-    NSArray, NSData, NSDictionary, NSError, NSHTTPCookie, NSHTTPURLResponse, NSInteger, NSObject,
-    NSRect, NSString, NSURL, NSURLErrorAppTransportSecurityRequiresSecureConnection,
-    NSURLErrorCancelled, NSURLErrorCannotConnectToHost, NSURLErrorCannotFindHost,
-    NSURLErrorClientCertificateRejected, NSURLErrorClientCertificateRequired,
-    NSURLErrorDNSLookupFailed, NSURLErrorDomain, NSURLErrorNetworkConnectionLost,
-    NSURLErrorNotConnectedToInternet, NSURLErrorSecureConnectionFailed,
-    NSURLErrorServerCertificateHasBadDate, NSURLErrorServerCertificateHasUnknownRoot,
-    NSURLErrorServerCertificateNotYetValid, NSURLErrorServerCertificateUntrusted,
-    NSURLErrorTimedOut, NSURLRequest,
+    NSArray, NSData, NSDictionary, NSError, NSHTTPCookie, NSHTTPURLResponse, NSInteger,
+    NSKeyValueObservingOptions, NSObject, NSObjectNSKeyValueObserverRegistration, NSRect, NSString,
+    NSURL, NSURLErrorAppTransportSecurityRequiresSecureConnection, NSURLErrorCancelled,
+    NSURLErrorCannotConnectToHost, NSURLErrorCannotFindHost, NSURLErrorClientCertificateRejected,
+    NSURLErrorClientCertificateRequired, NSURLErrorDNSLookupFailed, NSURLErrorDomain,
+    NSURLErrorNetworkConnectionLost, NSURLErrorNotConnectedToInternet,
+    NSURLErrorSecureConnectionFailed, NSURLErrorServerCertificateHasBadDate,
+    NSURLErrorServerCertificateHasUnknownRoot, NSURLErrorServerCertificateNotYetValid,
+    NSURLErrorServerCertificateUntrusted, NSURLErrorTimedOut, NSURLRequest,
 };
 use objc2_web_kit::{
     WKContentWorld, WKNavigation, WKNavigationAction, WKNavigationActionPolicy,
@@ -561,6 +563,16 @@ define_class!(
             web_view: &WKWebView,
             _navigation: Option<&WKNavigation>,
         ) {
+            // SAFETY: main-thread message sends to an object WebKit retains for
+            // this callback; see the module safety note.
+            let title = unsafe { web_view.title() }
+                .map_or_else(Str::new, |title| Str::from(title.to_string()));
+            self.ivars().shared.emit(BackendEvent::TitleChanged(title));
+            if let Some(url) =
+                SharedState::current_url(web_view).and_then(|raw| SharedState::parse_url(&raw))
+            {
+                self.ivars().shared.emit(BackendEvent::UrlChanged(url));
+            }
             self.ivars()
                 .shared
                 .emit(WebViewEvent::Loading { progress: 1.0 });
@@ -932,9 +944,121 @@ fn answer_scheme_task(
     }
 }
 
+const OBSERVED_WEBVIEW_KEYS: [&str; 3] = ["estimatedProgress", "title", "URL"];
+
+struct StateObserverIvars {
+    shared: Rc<SharedState>,
+}
+
+define_class!(
+    // SAFETY: `NSObject` has no subclassing requirements.
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "HydrolysisWebViewStateObserver"]
+    #[ivars = StateObserverIvars]
+    struct WebViewStateObserver;
+
+    unsafe impl NSObjectProtocol for WebViewStateObserver {}
+
+    impl WebViewStateObserver {
+        // SAFETY: overrides `NSObject`'s `observeValueForKeyPath:ofObject:change:context:`.
+        #[unsafe(method(observeValueForKeyPath:ofObject:change:context:))]
+        #[allow(non_snake_case)]
+        unsafe fn observeValueForKeyPath_ofObject_change_context(
+            &self,
+            key_path: Option<&NSString>,
+            object: Option<&AnyObject>,
+            _change: Option<&NSDictionary>,
+            _context: *mut c_void,
+        ) {
+            let Some(key_path) = key_path else {
+                return;
+            };
+            let Some(web_view) = object.and_then(AnyObject::downcast_ref::<WKWebView>) else {
+                return;
+            };
+            let shared = &self.ivars().shared;
+            match key_path.to_string().as_str() {
+                "estimatedProgress" => {
+                    // SAFETY: main-thread message send to the observed `WKWebView`.
+                    let progress = f64_as_f32(unsafe { web_view.estimatedProgress() });
+                    shared.emit(WebViewEvent::Loading { progress });
+                }
+                "title" => {
+                    // SAFETY: main-thread message send to the observed `WKWebView`.
+                    let title = unsafe { web_view.title() }
+                        .map_or_else(Str::new, |title| Str::from(title.to_string()));
+                    shared.emit(BackendEvent::TitleChanged(title));
+                }
+                "URL" => {
+                    if let Some(url) = SharedState::current_url(web_view)
+                        .and_then(|raw| SharedState::parse_url(&raw))
+                    {
+                        shared.emit(BackendEvent::UrlChanged(url));
+                    }
+                    shared.emit_navigation_state(web_view);
+                }
+                _ => {}
+            }
+        }
+    }
+);
+
+impl WebViewStateObserver {
+    fn new(mtm: MainThreadMarker, shared: Rc<SharedState>) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(StateObserverIvars { shared });
+        // SAFETY: `this` is a freshly allocated `NSObject` subclass.
+        unsafe { msg_send![super(this), init] }
+    }
+}
+
+struct StateObserverToken {
+    web_view: Retained<WKWebView>,
+    observer: Retained<WebViewStateObserver>,
+}
+
+impl StateObserverToken {
+    fn register(
+        mtm: MainThreadMarker,
+        web_view: &Retained<WKWebView>,
+        shared: Rc<SharedState>,
+    ) -> Self {
+        let observer = WebViewStateObserver::new(mtm, shared);
+        for key in OBSERVED_WEBVIEW_KEYS {
+            // SAFETY: `observer` implements `observeValueForKeyPath:ofObject:change:context:`;
+            // `Drop` removes every registration while both objects stay retained.
+            unsafe {
+                web_view.addObserver_forKeyPath_options_context(
+                    &observer,
+                    &NSString::from_str(key),
+                    NSKeyValueObservingOptions::New,
+                    null_mut(),
+                );
+            }
+        }
+        Self {
+            web_view: web_view.clone(),
+            observer,
+        }
+    }
+}
+
+impl Drop for StateObserverToken {
+    fn drop(&mut self) {
+        for key in OBSERVED_WEBVIEW_KEYS {
+            // SAFETY: paired with `addObserver_forKeyPath_options_context` in `register`.
+            unsafe {
+                self.web_view
+                    .removeObserver_forKeyPath(&self.observer, &NSString::from_str(key));
+            }
+        }
+    }
+}
+
 struct MacSystemWebViewInner {
     port: RefCell<Option<Retained<hosted::WebPort>>>,
     focused: nami::Binding<bool>,
+    _state_observer: StateObserverToken,
     web_view: Retained<WKWebView>,
     delegate: Retained<WebViewDelegate>,
     shared: Rc<SharedState>,
@@ -1045,10 +1169,12 @@ impl MacSystemWebViewHandle {
         unsafe {
             web_view.setNavigationDelegate(Some(ProtocolObject::from_ref(&*delegate)));
         }
+        let state_observer = StateObserverToken::register(mtm, &web_view, Rc::clone(&shared));
         let handle = Self {
             inner: Rc::new(MacSystemWebViewInner {
                 port: RefCell::new(None),
                 focused: nami::Binding::bool(false),
+                _state_observer: state_observer,
                 web_view,
                 delegate,
                 shared,

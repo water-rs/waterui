@@ -20,6 +20,7 @@ use waterui::webview::{
     BackendEvent, Url, WatcherGuard, WatcherSet, WebViewConfig, WebViewController, WebViewEvent,
     WebViewHandle, WebViewOpenError,
 };
+use waterui_core::Str;
 use web_sys::{HtmlElement, HtmlIFrameElement};
 
 use crate::{HostedContent, HostedObject, HostedOcclusion};
@@ -98,6 +99,16 @@ impl WebIframeHandle {
         let weak = Rc::downgrade(&self.inner);
         let handlers: [(&str, Handler); 3] = [
             ("load", |inner| {
+                if let Some(document) = inner.iframe.content_document() {
+                    inner
+                        .watchers
+                        .emit(&BackendEvent::TitleChanged(Str::from(document.title())));
+                    if let Ok(raw) = document.url()
+                        && let Ok(url) = raw.parse()
+                    {
+                        inner.watchers.emit(&BackendEvent::UrlChanged(url));
+                    }
+                }
                 inner
                     .watchers
                     .emit(&BackendEvent::Event(WebViewEvent::Loaded));
