@@ -13,12 +13,27 @@ export interface ShowProps<T> {
 
 export declare function Show<T>(props: ShowProps<T>): Element;
 
-export interface ForProps<T> {
+/** A primitive value that identifies one row of `<For>` across the native boundary. */
+export type Key = string | number | bigint | boolean;
+
+export type ForProps<T> = {
   each: MaybeReactive<readonly T[]>;
-  /** Item identity; defaults to referential identity, as in Solid. */
-  by?: (item: T) => unknown;
   children: (item: T, index: Accessor<number>) => Element;
-}
+} & ([T] extends [Key]
+  ? {
+      /**
+       * Item identity; optional when items are already keys (`string`,
+       * `number`, `bigint`, `boolean`).
+       */
+      by?: (item: T) => Key;
+    }
+  : {
+      /**
+       * Item identity; required because non-key items cross the native
+       * boundary as data without referential identity.
+       */
+      by: (item: T) => Key;
+    });
 
 export declare function For<T>(props: ForProps<T>): Element;
 
