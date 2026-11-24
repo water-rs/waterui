@@ -25,7 +25,7 @@ use waterui_core::views::ForEach;
 use waterui_core::{AnyView, Environment, Metadata, Retain, View};
 use waterui_layout::stack::{HStack, VStack, ZStack};
 
-use crate::component::list::{List, ListDelete, ListItem, ListMove};
+use crate::component::list::{List, ListDelete, ListMove};
 use crate::ts::catalog::ListAttributes;
 use waterui_ts::engine::{JsError, JsFunction, JsValue};
 
@@ -310,10 +310,7 @@ pub fn into_vstack(
 /// insertions and removals rather than as a rebuilt list — which is what
 /// `List::new(ForEach…)` gives a Rust author.
 pub fn into_list(collection: &Collection, attributes: ListAttributes) -> AnyView {
-    let items = collection.items();
-    let list = List::new(ForEach::new(collection.keys(), move |key| {
-        ListItem::new(items(key))
-    }));
+    let list = List::new(ForEach::new(collection.keys(), collection.items()));
     let (editing, on_delete, on_move) = attributes.into_parts();
     if editing.is_none() && on_delete.is_none() && on_move.is_none() {
         return AnyView::new(Metadata::new(list, collection.retain()));

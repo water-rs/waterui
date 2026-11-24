@@ -706,7 +706,7 @@ fn a_navigation_page_root_transition_replaces_the_stack_transition() {
 #[test]
 fn a_list_row_removal_holds_its_slot_while_it_fades() {
     use nami::collection::List as Membership;
-    use waterui::component::list::{List, ListItem};
+    use waterui::component::list::List;
     use waterui_core::id::SelfId;
 
     let mut rows: Membership<SelfId<u64>> =
@@ -719,7 +719,7 @@ fn a_list_row_removal_holds_its_slot_while_it_fades() {
                 2 => ("row 2", GREEN),
                 _ => ("row 3", BLUE),
             };
-            ListItem::new(transitioned(label, color, PropertyTransition::opacity()))
+            transitioned(label, color, PropertyTransition::opacity())
         }))
     });
     let mut at = Instant::now();

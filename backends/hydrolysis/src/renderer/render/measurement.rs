@@ -11,6 +11,8 @@ use crate::widgets::controls::field_look::value_text;
 #[cfg(feature = "picker")]
 use crate::widgets::controls::picker::segmented_intrinsic;
 #[cfg(feature = "list")]
+use waterui_core::backend::ChildSlot;
+#[cfg(feature = "list")]
 use waterui_core::views::AnyViewsSnapshot;
 #[cfg(any(feature = "text-field", feature = "secure-field"))]
 use waterui_interaction::interaction::InteractionState;
@@ -451,11 +453,11 @@ pub fn list_spec(env: &Environment) -> crate::theme::ListSpec {
 }
 
 /// The list's own size from its first row's measured content, which every
-/// row is estimated at: `insets` are that row's `ListItem::insets`.
+/// row is estimated at: `insets` are that row's [`ViewExt::list_row_insets`].
 #[cfg(feature = "list")]
 pub fn list_intrinsic_for_first_row<E: crate::text::TextEngine, C>(
     list: &ListConfig<C>,
-    contents: &AnyViewsSnapshot<ListItem<C>>,
+    contents: &AnyViewsSnapshot<C>,
     content_size: LayoutSize,
     insets: Option<&EdgeInsets>,
     state: &mut HydroState<E>,
@@ -514,16 +516,14 @@ pub fn list_intrinsic_for_first_row<E: crate::text::TextEngine, C>(
 /// accessibility emit, or draw loop) reads one coherent membership.
 #[cfg(feature = "list")]
 pub fn materialize_list_item<E: crate::text::TextEngine>(
-    contents: &AnyViewsSnapshot<ListItem<crate::renderer::HeldChild<E>>>,
+    contents: &AnyViewsSnapshot<HeldChild<E>>,
     index: usize,
-) -> ListItem<crate::renderer::HeldChild<E>> {
+) -> HeldChild<E> {
     contents.get_view(index).unwrap_or_else(|| {
         contract_violation!(
             "ListConfig failed to materialize item at index {index}; the row is empty"
         );
-        ListItem::new(()).map_content(
-            <crate::renderer::HeldChild<E> as waterui_core::backend::ChildSlot>::from_view,
-        )
+        HeldChild::from_view(())
     })
 }
 

@@ -15,7 +15,7 @@
 use std::time::Duration;
 
 use waterui::accessibility::AccessibilityGeometry;
-use waterui::component::list::{List, ListItem};
+use waterui::component::list::List;
 use waterui::graphics::color::Srgb;
 use waterui::id::SelfId;
 use waterui::layout::LayoutDirection;
@@ -806,9 +806,9 @@ fn a_list_row_field_scrolls_clear_of_the_keyboard() {
                 let value = value.clone();
                 move |item| {
                     if *item == field_row {
-                        ListItem::new(AnyView::new(field("Message", &value)))
+                        AnyView::new(field("Message", &value))
                     } else {
-                        ListItem::new(AnyView::new(text(format!("row-{}", *item))))
+                        AnyView::new(text(format!("row-{}", *item)))
                     }
                 }
             })
@@ -1292,7 +1292,7 @@ fn a_split_detail_background_does_not_cross_the_sidebar() {
                 &selection,
                 || {
                     List::for_each((0..8).map(SelfId::new).collect::<Vec<_>>(), |item| {
-                        ListItem::new(text(format!("side {}", *item)))
+                        text(format!("side {}", *item))
                     })
                 },
                 |id| {

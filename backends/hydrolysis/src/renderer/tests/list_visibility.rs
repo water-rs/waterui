@@ -16,7 +16,7 @@ use std::time::Instant;
 use accesskit::{NodeId, Role, TreeUpdate};
 use nami::Binding;
 use nami::collection::SignalCollection;
-use waterui::component::list::{List, ListItem, Section};
+use waterui::component::list::{List, Section};
 use waterui::component::text;
 use waterui::{AnyView, Environment, ViewExt as _};
 use waterui_core::handler::AnyViewBuilder;
@@ -107,7 +107,7 @@ fn sectioned_list(
         AnyView::new(
             List::content(Section::new("Section").content(ForEach::new(
                 SignalCollection::new(rows),
-                |row: SelfId<u64>| ListItem::new(text(format!("Row {}", row.into_inner()))),
+                |row: SelfId<u64>| text(format!("Row {}", row.into_inner())),
             )))
             .selection(&selection)
             .visible(shown),

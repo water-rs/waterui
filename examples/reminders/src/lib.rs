@@ -12,7 +12,7 @@ use mdi::plus;
 use waterui::Identifiable;
 use waterui::app::{App, Windows};
 use waterui::background::Material;
-use waterui::component::list::{List, ListItem, Section};
+use waterui::component::list::{List, Section};
 use waterui::navigation::NavigationToolbarItems;
 use waterui::prelude::theme_color::Foreground;
 use waterui::prelude::*;
@@ -443,25 +443,23 @@ fn matching_rows(
 // `row.flagged` is immutable fixture data: the `&'static [ReminderRow]` rows
 // never change, so reading the field in the row builder cannot go stale.
 #[allow(unknown_lints, collection_item_snapshot)]
-fn reminder_item(row: &ReminderRow) -> ListItem<impl View + use<>> {
-    ListItem::new(
-        hstack((
-            circle_outline().size(16.0, 16.0).muted(),
-            vstack((
-                text(row.title).body().foreground(Foreground),
-                row.subtitle
-                    .map(|subtitle| text(subtitle).caption().muted()),
-            ))
-            .spacing(2.0)
-            .leading(),
-            spacer(),
-            when(row.flagged, || {
-                flag().tint(Srgb::from_hex("#F28A34")).size(12.0, 12.0)
-            })
-            .otherwise(|| spacer().width(12.0)),
+fn reminder_item(row: &ReminderRow) -> impl View + use<> {
+    hstack((
+        circle_outline().size(16.0, 16.0).muted(),
+        vstack((
+            text(row.title).body().foreground(Foreground),
+            row.subtitle
+                .map(|subtitle| text(subtitle).caption().muted()),
         ))
-        .padding_with((10.0, 18.0)),
-    )
+        .spacing(2.0)
+        .leading(),
+        spacer(),
+        when(row.flagged, || {
+            flag().tint(Srgb::from_hex("#F28A34")).size(12.0, 12.0)
+        })
+        .otherwise(|| spacer().width(12.0)),
+    ))
+    .padding_with((10.0, 18.0))
 }
 
 fn reminder_list(

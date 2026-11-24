@@ -33,7 +33,7 @@ use waterui::Identifiable;
 use waterui::app::{App, Windows};
 use waterui::component::label::LabelKind;
 use waterui::component::list::{
-    List, ListContent, ListDelete, ListItem, ListMove, Section, SectionScope, TaggedBy, row,
+    List, ListContent, ListDelete, ListMove, Section, SectionScope, TaggedBy, row,
 };
 use waterui::handler::ViewBuilder;
 use waterui::id::SelfId;
@@ -407,7 +407,7 @@ fn message_list(mail: Mail) -> impl View {
     .on_move(|list_move: ListMove, mail: Mail| move_message(list_move, &mail))
 }
 
-fn message_row(mail: &Mail, message: Message) -> ListItem<impl View + use<>> {
+fn message_row(mail: &Mail, message: Message) -> impl View + use<> {
     let id = message.id;
     // The dot has to *derive* from the state that owns it. `List::for_each`
     // diffs membership by id, so marking every message read changes no ids and
@@ -427,7 +427,7 @@ fn message_row(mail: &Mail, message: Message) -> ListItem<impl View + use<>> {
         .computed();
     let announced = Str::from(format!("{}: {}", message.sender, message.subject));
 
-    ListItem::new(NavigationLink::value(
+    NavigationLink::value(
         // A row that reads as one thing to assistive technology and shows
         // three lines on screen: `Label::new` keeps both, and requires the
         // spoken text rather than guessing it from the layout.
@@ -460,7 +460,7 @@ fn message_row(mail: &Mail, message: Message) -> ListItem<impl View + use<>> {
             .padding_vertical(8.0)
         }),
         MailRoute::Message(id),
-    ))
+    )
 }
 
 fn delete_message(ListDelete(index): ListDelete, mail: &Mail) {
@@ -667,16 +667,14 @@ fn album_row(album: Album) -> impl ListContent<SectionScope> + TaggedBy<Album> {
     let count = album.count();
 
     (move || {
-        ListItem::new(
-            hstack((
-                album_icon().size(20.0, 20.0).foreground(Accent),
-                text(album.title()).body().foreground(Foreground),
-                spacer(),
-                text!("{count}").caption().muted(),
-            ))
-            .spacing(10.0)
-            .padding_with((10.0, 12.0)),
-        )
+        hstack((
+            album_icon().size(20.0, 20.0).foreground(Accent),
+            text(album.title()).body().foreground(Foreground),
+            spacer(),
+            text!("{count}").caption().muted(),
+        ))
+        .spacing(10.0)
+        .padding_with((10.0, 12.0))
     })
     .tag(album)
 }
@@ -795,8 +793,8 @@ fn settings_root(
 
     List::content((
         Section::new("General").content((
-            move || ListItem::new(Toggle::new("Notifications", &notifications)),
-            move || ListItem::new(Toggle::new("Compact rows", &compact)),
+            move || Toggle::new("Notifications", &notifications),
+            move || Toggle::new("Compact rows", &compact),
         )),
         Section::new("More")
             .footer("Sub-pages push onto this tab's own stack.")
@@ -809,11 +807,11 @@ fn settings_root(
     .large_title()
 }
 
-fn settings_link(title: &'static str, route: SettingsRoute) -> ListItem<impl View> {
+fn settings_link(title: &'static str, route: SettingsRoute) -> impl View {
     // No disclosure indicator here: whether a row that pushes shows one is the
     // platform's own convention — iOS draws a chevron, a Mac does not — so the
     // link decides, not the application.
-    ListItem::new(NavigationLink::value(title, route))
+    NavigationLink::value(title, route)
 }
 
 fn appearance_page(compact: Binding<bool>) -> NavigationView<impl View + use<>> {
@@ -822,7 +820,7 @@ fn appearance_page(compact: Binding<bool>) -> NavigationView<impl View + use<>> 
     List::content((Section::new("Density")
         .footer("The row height the message list uses.")
         .content((
-            move || ListItem::new(Toggle::new("Compact rows", &compact)),
+            move || Toggle::new("Compact rows", &compact),
             row("Current", text!("{density}")),
         )),))
     .navigation_title("Appearance")

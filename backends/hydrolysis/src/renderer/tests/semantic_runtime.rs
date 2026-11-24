@@ -16,7 +16,7 @@ use nami::Binding;
 use nami::Signal as _;
 use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityState;
-use waterui::component::list::{List, ListItem};
+use waterui::component::list::List;
 use waterui::component::progress::progress;
 use waterui::component::table::{col, table};
 use waterui::theme::color::Error;
@@ -786,10 +786,10 @@ fn a_clean_pump_publishes_no_tree_update() {
 fn list_emits_all_rows_and_scrolls() {
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
         AnyView::new(List::content((
-            || ListItem::new(text("Row 1")),
-            || ListItem::new(text("Row 2")),
-            || ListItem::new(text("Row 3")),
-            || ListItem::new(text("Row 4")),
+            || text("Row 1"),
+            || text("Row 2"),
+            || text("Row 3"),
+            || text("Row 4"),
         )))
     }));
 
@@ -851,8 +851,8 @@ fn list_emits_all_rows_and_scrolls() {
 fn list_rows_emit_content_subtree_and_derived_label() {
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
         AnyView::new(List::content((
-            || ListItem::new(hstack((text("Name"), spacer(), text("Value")))),
-            || ListItem::new(text("Plain")),
+            || hstack((text("Name"), spacer(), text("Value"))),
+            || text("Plain"),
         )))
     }));
 
@@ -908,7 +908,7 @@ fn list_toggle_row_emits_actionable_switch() {
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
         let on_for_row = on_for_view.clone();
         AnyView::new(List::content((move || {
-            ListItem::new(toggle("Wi-Fi", &on_for_row).switch())
+            toggle("Wi-Fi", &on_for_row).switch()
         },)))
     }));
 
@@ -947,7 +947,7 @@ fn list_toggle_row_emits_actionable_switch() {
 fn list_row_explicit_label_names_the_row() {
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
         AnyView::new(List::content((|| {
-            ListItem::new(text("content text").a11y_label("Row name"))
+            text("content text").a11y_label("Row name")
         },)))
     }));
 
@@ -976,7 +976,7 @@ fn list_row_state_signal_hidden_removes_row_next_frame() {
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
         let state_for_row = state_for_view.clone();
         AnyView::new(List::content((move || {
-            ListItem::new(text("Hide me").a11y_state_signal(state_for_row.clone()))
+            text("Hide me").a11y_state_signal(state_for_row.clone())
         },)))
     }));
 

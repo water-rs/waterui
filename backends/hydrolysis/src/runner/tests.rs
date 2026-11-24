@@ -24,7 +24,7 @@ use core::time::Duration;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Instant;
-use waterui::component::list::{List, ListItem};
+use waterui::component::list::List;
 use waterui::window::{Window, WindowState};
 use waterui::{Binding, Signal, ViewExt as _};
 use waterui_core::animation::Animation;
@@ -1270,10 +1270,8 @@ fn an_animated_list_scroll_keeps_the_window_awake_until_it_settles() {
     let window = Window::new("", binding(WindowState::Normal), move || {
         let rows = (0..ROWS).map(SelfId::new).collect::<Vec<_>>();
         AnyView::new(
-            List::for_each(rows, |_row| {
-                ListItem::new(().size(160.0, ROW_HEIGHT_FOR_JUMP_TEST))
-            })
-            .scroll_controller(&controller_for_view),
+            List::for_each(rows, |_row| ().size(160.0, ROW_HEIGHT_FOR_JUMP_TEST))
+                .scroll_controller(&controller_for_view),
         )
     });
     let env = test_environment();

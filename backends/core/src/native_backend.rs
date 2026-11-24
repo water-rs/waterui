@@ -1225,7 +1225,6 @@ mod tests {
             snapshot
                 .range()
                 .filter_map(|index| snapshot.get_view(index))
-                .map(waterui::component::list::ListItem::into_content)
                 .collect()
         }
     }
