@@ -1202,7 +1202,8 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nat
             return Ok(());
         };
         let url = parse_url(&get_string(env, &url)?, "a history entry for")?;
-        shared.navigation.borrow_mut().history_updated(url);
+        shared.navigation.borrow_mut().history_updated(url.clone());
+        shared.emit(&BackendEvent::UrlChanged(url));
         Ok(())
     });
 }
@@ -1224,6 +1225,27 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nat
         };
         let progress = percent(progress)?;
         shared.navigate(|tracker| (tracker.progress(progress), ()));
+        Ok(())
+    });
+}
+
+/// `onReceivedTitle` — the page title reported by `WebChromeClient`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nativeTitleChanged<
+    'local,
+>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    handle: jlong,
+    title: JString<'local>,
+) {
+    guard(&mut env, |env| {
+        let Some(shared) = shared_from_handle(handle) else {
+            tracing::debug!("android webview: an event on a released view dropped");
+            return Ok(());
+        };
+        let title = get_string(env, &title)?;
+        shared.emit(&BackendEvent::TitleChanged(Str::from(title)));
         Ok(())
     });
 }

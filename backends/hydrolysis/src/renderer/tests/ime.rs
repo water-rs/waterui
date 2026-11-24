@@ -15,6 +15,7 @@
 //! pre-edit caret (#25) and that keys/text the platform already consumed for
 //! the composition never reach ordinary key handling or the surface.
 
+use core::num::NonZeroUsize;
 use core::time::Duration;
 use std::cell::RefCell;
 use std::path::Path;
@@ -503,7 +504,7 @@ fn replay_against_text_field(loaded: &LoadedFixture, multiline: bool) {
         let submitted_for_action = submitted.clone();
         let field_view = field("Name", &value_for_view);
         let field_view = if multiline {
-            field_view.disable_line_limit()
+            field_view.line_limit(None::<NonZeroUsize>)
         } else {
             field_view
         };
@@ -1132,7 +1133,7 @@ fn keys_after_a_composition_commit_in_one_batch_are_ordinary_input() {
         let view = {
             let field_view = field("Name", &value);
             let field_view = if multiline {
-                field_view.disable_line_limit()
+                field_view.line_limit(None::<NonZeroUsize>)
             } else {
                 field_view
             };
@@ -1210,7 +1211,7 @@ fn a_key_between_direct_commits_stays_ordinary_input() {
         let view = {
             let field_view = field("Name", &value);
             let field_view = if multiline {
-                field_view.disable_line_limit()
+                field_view.line_limit(None::<NonZeroUsize>)
             } else {
                 field_view
             };

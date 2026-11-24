@@ -5,7 +5,7 @@
 use waterui::prelude::*;
 
 fn broken(maybe_title: Option<&'static str>) -> impl View {
-    button(maybe_title)
+    button(maybe_title).action(|| {})
 }
 
 fn main() {}

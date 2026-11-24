@@ -56,7 +56,6 @@ export { isAccessor, isMemo, isSignal };
  * @property {(content: unknown) => Handle} text
  * @property {(when: unknown, render: (item: () => unknown) => Branch, fallback?: () => Branch) => Handle} show
  * @property {(each: unknown, render: (item: unknown, index: () => number) => Branch, by?: (item: unknown) => unknown) => Handle} each
- * @property {(children: () => Branch, fallback?: () => Branch) => Handle} suspense
  * @property {() => HostEnvironment} environment
  * @property {(id: number, ...args: unknown[]) => unknown} invoke - Dispatches
  *   one Rust closure held in the bridge's registry. It travels with the table
@@ -94,7 +93,6 @@ export function installHost(host) {
     "text",
     "show",
     "each",
-    "suspense",
     "environment",
     "invoke",
   ]) {

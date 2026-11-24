@@ -1,7 +1,7 @@
 //! Date picker component.
 
 use alloc::string::{String, ToString};
-use core::ops::RangeInclusive;
+use core::{marker::PhantomData, ops::RangeInclusive};
 
 pub use jiff::civil::{Date, DateTime, Time};
 use nami::Binding;
@@ -125,12 +125,52 @@ impl DatePickerType {
     }
 }
 
+/// Presentation components supported by [`DatePicker`] when bound to [`Date`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum DatePickerComponents {
+    /// Year, month, and day.
+    #[default]
+    Date,
+}
+
+/// Presentation components supported by [`DatePicker`] when bound to [`Time`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum TimePickerComponents {
+    /// Hour and minute.
+    #[default]
+    HourAndMinute,
+    /// Hour, minute, and second.
+    HourMinuteAndSecond,
+}
+
+/// Presentation components supported by [`DatePicker`] when bound to [`DateTime`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum DateTimePickerComponents {
+    /// Date only.
+    Date,
+    /// Hour and minute.
+    HourAndMinute,
+    /// Hour, minute, and second.
+    HourMinuteAndSecond,
+    /// Date, hour, and minute.
+    #[default]
+    DateHourAndMinute,
+    /// Date, hour, minute, and second.
+    DateHourMinuteAndSecond,
+}
+
 /// Types that can drive a [`DatePicker`].
 ///
 /// Implemented for `Date`, `Time`, and `DateTime`. A single
 /// [`DatePicker::new`] constructor dispatches on this trait, so callers do not
 /// have to remember separate constructor names per binding type.
 pub trait DatePickable: Clone + 'static {
+    /// Typed component selection valid for values of `Self`.
+    type Components: Copy + Eq + Default + 'static;
+
     /// Maps a `Binding<Self>` into the canonical `Binding<DateTime>` that
     /// `DatePicker` stores internally, preserving round-trip semantics.
     fn into_datetime_binding(binding: &Binding<Self>) -> Binding<DateTime>;
@@ -139,31 +179,70 @@ pub trait DatePickable: Clone + 'static {
     /// `RangeInclusive<DateTime>` used by the picker.
     fn into_picker_range(range: RangeInclusive<Self>) -> RangeInclusive<DateTime>;
 
+    /// Resolves a typed component selection for `Self` into the backend [`DatePickerType`].
+    fn resolve_picker_type(components: Self::Components) -> DatePickerType;
+
     /// Returns the default [`DatePickerType`] when the user has not specified
     /// one explicitly.
-    fn default_picker_type() -> DatePickerType;
+    #[must_use]
+    fn default_picker_type() -> DatePickerType {
+        Self::resolve_picker_type(Self::Components::default())
+    }
 
     /// Returns the canonical full range used when the user has not constrained
     /// the picker.
     fn full_range() -> RangeInclusive<DateTime>;
 }
 
+/// Bound types whose [`DatePicker`] presentation supports seconds (`Time` and `DateTime`).
+pub trait TimePickable: DatePickable {
+    /// Returns the [`DatePickerType`] corresponding to `ty` with seconds shown.
+    fn with_seconds(ty: DatePickerType) -> DatePickerType;
+}
+
 /// A control for selecting dates and times.
 ///
-/// `DatePicker` stores a full date-time internally so backends can round-trip
-/// hidden components without loss. Use [`DatePicker::new`] with any binding
-/// whose value type implements [`DatePickable`] (`Date`, `Time`, or
-/// `DateTime`).
+/// `DatePicker` is generic over the bound value type `T` (`Date`, `Time`, or
+/// `DateTime`) so invalid ranges and unrepresentable time/date components fail
+/// to compile. Internally it maps onto a [`DateTime`] binding so backends can
+/// round-trip hidden components without loss.
+///
+/// ```compile_fail
+/// use waterui_core::binding;
+/// use waterui_form::picker::date::{Date, DatePicker, Time};
+///
+/// let date = binding(Date::constant(2026, 3, 20));
+/// let start = Time::constant(8, 0, 0, 0);
+/// let end = Time::constant(17, 0, 0, 0);
+/// let _ = DatePicker::new("Due", &date).range(start..=end);
+/// ```
+///
+/// ```compile_fail
+/// use waterui_core::binding;
+/// use waterui_form::picker::date::{Date, DatePicker};
+///
+/// let date = binding(Date::constant(2026, 3, 20));
+/// let _ = DatePicker::new("Due", &date).seconds();
+/// ```
+///
+/// ```compile_fail
+/// use waterui_core::binding;
+/// use waterui_form::picker::date::{Date, DatePicker, TimePickerComponents};
+///
+/// let date = binding(Date::constant(2026, 3, 20));
+/// let _ = DatePicker::new("Due", &date).components(TimePickerComponents::HourAndMinute);
+/// ```
 #[derive(Debug, Clone)]
 #[must_use]
-pub struct DatePicker<L> {
+pub struct DatePicker<L, T = DateTime> {
     label: Label<L>,
     value: Binding<DateTime>,
     range: RangeInclusive<DateTime>,
     ty: DatePickerType,
+    _bound: PhantomData<fn() -> T>,
 }
 
-impl<L: LabelKind> DatePicker<L> {
+impl<L: LabelKind, T> DatePicker<L, T> {
     /// Returns the configuration for this date picker.
     #[must_use]
     pub fn config(self) -> DatePickerConfig<Label<L>> {
@@ -176,7 +255,7 @@ impl<L: LabelKind> DatePicker<L> {
     }
 }
 
-impl<S: View> From<DatePickerConfig<S>> for DatePicker<ControlLabel<S>> {
+impl<S: View> From<DatePickerConfig<S>> for DatePicker<ControlLabel<S>, DateTime> {
     fn from(value: DatePickerConfig<S>) -> Self {
         let mode = value.label.display_mode_preference();
         Self {
@@ -184,6 +263,7 @@ impl<S: View> From<DatePickerConfig<S>> for DatePicker<ControlLabel<S>> {
             value: value.value,
             range: value.range,
             ty: value.ty,
+            _bound: PhantomData,
         }
     }
 }
@@ -207,7 +287,7 @@ impl<S: 'static> MapSlots<S> for DatePickerConfig<S> {
     }
 }
 
-impl<L: LabelKind> DatePicker<L> {
+impl<L: LabelKind, T> DatePicker<L, T> {
     fn into_config<S: ChildSlot>(self, env: &Environment) -> DatePickerConfig<S> {
         DatePickerConfig {
             label: self.label.into_control_label::<S>(env),
@@ -218,7 +298,7 @@ impl<L: LabelKind> DatePicker<L> {
     }
 }
 
-impl<L: LabelKind> View for DatePicker<L> {
+impl<L: LabelKind, T: 'static> View for DatePicker<L, T> {
     fn body(self, env: &Environment) -> impl View {
         Native::new(self.into_config::<AnyView>(env))
     }
@@ -228,7 +308,13 @@ impl<L: LabelKind> View for DatePicker<L> {
     }
 }
 
-impl<L> DatePicker<L> {
+impl<L, T> DatePicker<L, T> {
+    pub(crate) const fn label_mut(&mut self) -> &mut Label<L> {
+        &mut self.label
+    }
+}
+
+impl<L, T: DatePickable> DatePicker<L, T> {
     /// Creates a picker bound to `value` with the given semantic label,
     /// dispatching on the binding's type (`Date`, `Time`, or `DateTime`) via
     /// [`DatePickable`].
@@ -236,37 +322,65 @@ impl<L> DatePicker<L> {
     /// The label is required so screen readers always have meaningful text to
     /// announce. Use [`hide_label`](Self::hide_label) to omit it visually
     /// while keeping it in the accessibility tree.
-    pub fn new<T: DatePickable, I: IntoLabel<Kind = L>>(label: I, value: &Binding<T>) -> Self {
+    pub fn new<I: IntoLabel<Kind = L>>(label: I, value: &Binding<T>) -> Self {
         Self {
             label: label.into_label(),
             value: T::into_datetime_binding(value),
             range: T::full_range(),
             ty: T::default_picker_type(),
+            _bound: PhantomData,
         }
     }
 
-    pub(crate) const fn label_mut(&mut self) -> &mut Label<L> {
-        &mut self.label
-    }
-
-    /// Sets the valid range for the picker.
-    pub fn range<T: DatePickable>(mut self, range: RangeInclusive<T>) -> Self {
+    /// Sets the valid range for the picker, constrained to the bound value type `T`.
+    pub fn range(mut self, range: RangeInclusive<T>) -> Self {
         let mapped = T::into_picker_range(range);
         self.value = self.value.clamp(mapped.clone());
         self.range = mapped;
         self
     }
 
-    /// Sets the type of date picker.
-    pub const fn ty(mut self, ty: DatePickerType) -> Self {
-        self.ty = ty;
+    /// Sets which components of `T` are presented by the picker.
+    pub fn components(mut self, components: T::Components) -> Self {
+        self.ty = T::resolve_picker_type(components);
         self
     }
 }
 
-impl_label_style_methods!(DatePicker<L>);
+impl<L, T: TimePickable> DatePicker<L, T> {
+    /// Displays seconds in the time portion of the picker.
+    pub fn seconds(mut self) -> Self {
+        self.ty = T::with_seconds(self.ty);
+        self
+    }
+}
+
+impl<L> DatePicker<L, DateTime> {
+    /// Presents only the date components while preserving the time on round-trip.
+    pub const fn date_only(mut self) -> Self {
+        self.ty = DatePickerType::Date;
+        self
+    }
+
+    /// Presents only the time components while preserving the date on round-trip.
+    pub const fn time_only(mut self) -> Self {
+        self.ty = match self.ty {
+            DatePickerType::HourMinuteAndSecond | DatePickerType::DateHourMinuteAndSecond => {
+                DatePickerType::HourMinuteAndSecond
+            }
+            DatePickerType::Date
+            | DatePickerType::HourAndMinute
+            | DatePickerType::DateHourAndMinute => DatePickerType::HourAndMinute,
+        };
+        self
+    }
+}
+
+impl_label_style_methods!(DatePicker<L, T>);
 
 impl DatePickable for Date {
+    type Components = DatePickerComponents;
+
     fn into_datetime_binding(binding: &Binding<Self>) -> Binding<DateTime> {
         map_date_binding(binding)
     }
@@ -275,8 +389,10 @@ impl DatePickable for Date {
         start_of_day(*range.start())..=end_of_day(*range.end())
     }
 
-    fn default_picker_type() -> DatePickerType {
-        DatePickerType::Date
+    fn resolve_picker_type(components: Self::Components) -> DatePickerType {
+        match components {
+            DatePickerComponents::Date => DatePickerType::Date,
+        }
     }
 
     fn full_range() -> RangeInclusive<DateTime> {
@@ -285,6 +401,8 @@ impl DatePickable for Date {
 }
 
 impl DatePickable for Time {
+    type Components = TimePickerComponents;
+
     fn into_datetime_binding(binding: &Binding<Self>) -> Binding<DateTime> {
         map_time_binding(binding)
     }
@@ -293,8 +411,11 @@ impl DatePickable for Time {
         anchor_time(*range.start())..=anchor_time(*range.end())
     }
 
-    fn default_picker_type() -> DatePickerType {
-        DatePickerType::HourAndMinute
+    fn resolve_picker_type(components: Self::Components) -> DatePickerType {
+        match components {
+            TimePickerComponents::HourAndMinute => DatePickerType::HourAndMinute,
+            TimePickerComponents::HourMinuteAndSecond => DatePickerType::HourMinuteAndSecond,
+        }
     }
 
     fn full_range() -> RangeInclusive<DateTime> {
@@ -302,7 +423,15 @@ impl DatePickable for Time {
     }
 }
 
+impl TimePickable for Time {
+    fn with_seconds(_ty: DatePickerType) -> DatePickerType {
+        DatePickerType::HourMinuteAndSecond
+    }
+}
+
 impl DatePickable for DateTime {
+    type Components = DateTimePickerComponents;
+
     fn into_datetime_binding(binding: &Binding<Self>) -> Binding<DateTime> {
         binding.clone()
     }
@@ -311,12 +440,33 @@ impl DatePickable for DateTime {
         range
     }
 
-    fn default_picker_type() -> DatePickerType {
-        DatePickerType::DateHourAndMinute
+    fn resolve_picker_type(components: Self::Components) -> DatePickerType {
+        match components {
+            DateTimePickerComponents::Date => DatePickerType::Date,
+            DateTimePickerComponents::HourAndMinute => DatePickerType::HourAndMinute,
+            DateTimePickerComponents::HourMinuteAndSecond => DatePickerType::HourMinuteAndSecond,
+            DateTimePickerComponents::DateHourAndMinute => DatePickerType::DateHourAndMinute,
+            DateTimePickerComponents::DateHourMinuteAndSecond => {
+                DatePickerType::DateHourMinuteAndSecond
+            }
+        }
     }
 
     fn full_range() -> RangeInclusive<DateTime> {
         full_picker_range()
+    }
+}
+
+impl TimePickable for DateTime {
+    fn with_seconds(ty: DatePickerType) -> DatePickerType {
+        match ty {
+            DatePickerType::HourAndMinute | DatePickerType::HourMinuteAndSecond => {
+                DatePickerType::HourMinuteAndSecond
+            }
+            DatePickerType::Date
+            | DatePickerType::DateHourAndMinute
+            | DatePickerType::DateHourMinuteAndSecond => DatePickerType::DateHourMinuteAndSecond,
+        }
     }
 }
 
@@ -359,7 +509,7 @@ fn end_of_day_time() -> Time {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nami::Signal;
+    use nami::{Signal, binding};
 
     #[test]
     fn date_range_maps_full_days() {
@@ -418,5 +568,51 @@ mod tests {
             let parsed = picker_type.parse_value(&formatted).unwrap();
             assert_eq!(parsed, expected, "round trip failed for {picker_type:?}");
         }
+    }
+
+    #[test]
+    fn date_picker_config_defaults_and_builders_match_bound_type() {
+        let date = Binding::container(Date::constant(2025, 6, 15));
+        let date_cfg = DatePicker::new("Date", &date)
+            .range(Date::constant(2025, 1, 1)..=Date::constant(2025, 12, 31))
+            .config();
+        assert_eq!(date_cfg.ty(), DatePickerType::Date);
+
+        let time = Binding::container(Time::constant(8, 30, 0, 0));
+        assert_eq!(
+            DatePicker::new("Time", &time).config().ty(),
+            DatePickerType::HourAndMinute
+        );
+        assert_eq!(
+            DatePicker::new("Time", &time).seconds().config().ty(),
+            DatePickerType::HourMinuteAndSecond
+        );
+
+        let inferred_time: Binding<Time> = binding(Time::constant(8, 30, 0, 0));
+        assert_eq!(
+            DatePicker::new("Inferred", &inferred_time)
+                .seconds()
+                .config()
+                .ty(),
+            DatePickerType::HourMinuteAndSecond
+        );
+
+        let dt = Binding::container(Date::constant(2025, 6, 15).at(8, 30, 0, 0));
+        assert_eq!(
+            DatePicker::new("DT", &dt).seconds().config().ty(),
+            DatePickerType::DateHourMinuteAndSecond
+        );
+        assert_eq!(
+            DatePicker::new("DT", &dt).date_only().config().ty(),
+            DatePickerType::Date
+        );
+        assert_eq!(
+            DatePicker::new("DT", &dt)
+                .time_only()
+                .seconds()
+                .config()
+                .ty(),
+            DatePickerType::HourMinuteAndSecond
+        );
     }
 }

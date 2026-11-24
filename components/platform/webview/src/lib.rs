@@ -54,11 +54,7 @@ pub use controller::*;
 pub use cookie::Cookie;
 #[cfg(not(target_arch = "wasm32"))]
 pub use cookies::cookie_expiry;
-use std::{
-    cell::{Cell, OnceCell},
-    fmt,
-    rc::Rc,
-};
+use std::{cell::Cell, fmt, rc::Rc};
 #[macro_use]
 mod handle_layers;
 mod handler;
@@ -72,6 +68,7 @@ pub use unavailable::{UnavailableWebViewController, UnavailableWebViewHandle, We
 pub mod conformance;
 mod proxy;
 pub use proxy::WebViewProxy;
+use proxy::{DeferredProxySlot, WebViewPageState};
 
 // Re-export waterui-internal types for FFI layer
 pub use waterui_url::{IntoUrl, Url};
@@ -239,10 +236,9 @@ pub use state::{FieldEntry, JsField, StateDeclarations, StateWriteError};
 
 use suiteki::Str;
 use waterui_core::{
-    Binding, Computed, Environment, Native, Signal, View, binding, layout::StretchAxis,
+    Binding, Computed, Environment, Native, Signal, View, binding, env::with, layout::StretchAxis,
     reactive::signal::IntoComputed,
 };
-use waterui_layout::stack::vstack;
 
 /// Something that happened in a `WebView`.
 ///
@@ -302,6 +298,10 @@ pub enum BackendEvent {
         /// Whether the web view can navigate forward.
         can_go_forward: bool,
     },
+    /// The current page title changed.
+    TitleChanged(Str),
+    /// The current page URL changed.
+    UrlChanged(Url),
 }
 
 /// Errors that can occur in the `WebView` component.
@@ -334,16 +334,13 @@ pub enum WebViewError {
 pub struct WebView {
     event: Binding<Option<WebViewEvent>>,
     handle: AnyWebViewHandle,
-    #[cfg(not(target_arch = "wasm32"))]
-    can_go_back: Binding<bool>,
-    #[cfg(not(target_arch = "wasm32"))]
-    can_go_forward: Binding<bool>,
+    state: WebViewPageState,
     /// Signal subscriptions that must outlive this view: the URL and user-agent
     /// bindings. Erased because their value types differ; only their lifetime
     /// matters here.
     retained: Vec<Rc<dyn core::any::Any>>,
-    /// Keeps the internal watcher that drives `can_go_back` / `can_go_forward`
-    /// and the public event signal subscribed for as long as any clone lives.
+    /// Keeps the internal watcher that drives page state and the public event
+    /// signal subscribed for as long as any clone lives.
     state_watcher: Rc<WatcherGuard>,
 }
 
@@ -352,10 +349,7 @@ impl Clone for WebView {
         Self {
             event: self.event.clone(),
             handle: self.handle.clone(),
-            #[cfg(not(target_arch = "wasm32"))]
-            can_go_back: self.can_go_back.clone(),
-            #[cfg(not(target_arch = "wasm32"))]
-            can_go_forward: self.can_go_forward.clone(),
+            state: self.state.clone(),
             retained: self.retained.clone(),
             state_watcher: Rc::clone(&self.state_watcher),
         }
@@ -364,15 +358,10 @@ impl Clone for WebView {
 
 impl fmt::Debug for WebView {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut debug = f.debug_struct("WebView");
-        debug
+        f.debug_struct("WebView")
             .field("event", &self.event)
-            .field("handle", &self.handle);
-        #[cfg(not(target_arch = "wasm32"))]
-        debug
-            .field("can_go_back", &self.can_go_back)
-            .field("can_go_forward", &self.can_go_forward);
-        debug
+            .field("handle", &self.handle)
+            .field("state", &self.state)
             .field("retained_subscriptions", &self.retained.len())
             .finish_non_exhaustive()
     }
@@ -382,39 +371,30 @@ impl WebView {
     /// Creates a new `WebView` component with the given handle.
     #[must_use]
     pub(crate) fn from_handle(handle: AnyWebViewHandle) -> Self {
+        Self::from_handle_with_state(handle, WebViewPageState::new())
+    }
+
+    #[must_use]
+    fn from_handle_with_state(handle: AnyWebViewHandle, state: WebViewPageState) -> Self {
         let event: Binding<Option<WebViewEvent>> = binding(None);
         #[cfg(not(target_arch = "wasm32"))]
-        let can_go_back = binding(handle.can_go_back());
-        #[cfg(not(target_arch = "wasm32"))]
-        let can_go_forward = binding(handle.can_go_forward());
+        state.seed_navigation_state(&handle);
 
-        // Set up event handler to update reactive state
         let state_watcher = handle.watch({
             let event = event.clone();
-            #[cfg(not(target_arch = "wasm32"))]
-            let can_go_back = can_go_back.clone();
-            #[cfg(not(target_arch = "wasm32"))]
-            let can_go_forward = can_go_forward.clone();
-            move |backend_event| match backend_event {
-                #[cfg(not(target_arch = "wasm32"))]
-                BackendEvent::NavigationState {
-                    can_go_back: back,
-                    can_go_forward: forward,
-                } => {
-                    can_go_back.set(back);
-                    can_go_forward.set(forward);
+            let state = state.clone();
+            move |backend_event| {
+                state.apply(&backend_event);
+                if let BackendEvent::Event(webview_event) = backend_event {
+                    event.set(Some(webview_event));
                 }
-                BackendEvent::Event(e) => event.set(Some(e)),
             }
         });
 
         Self {
             handle,
             event,
-            #[cfg(not(target_arch = "wasm32"))]
-            can_go_back,
-            #[cfg(not(target_arch = "wasm32"))]
-            can_go_forward,
+            state,
             retained: Vec::new(),
             state_watcher: Rc::new(state_watcher),
         }
@@ -443,9 +423,8 @@ impl WebView {
     /// This is the L1 fire-and-forget entry point. Native creation and the
     /// initial navigation are deferred until the view is rendered in an
     /// environment containing a [`WebViewController`]. Use
-    /// [`WebViewOpen::with_proxy`] to attach an imperative
-    /// [`WebViewProxy`] when you need refresh / history navigation /
-    /// `run_javascript` from a child handler.
+    /// [`WebViewOpen::proxy_scope`] to obtain a [`WebViewProxy`] with live
+    /// page state and imperative commands while choosing your own layout.
     ///
     /// `url` is reactive: writing a new [`Url`] into a bound `Binding<Url>`
     /// navigates the existing native web view without rebuilding it.
@@ -518,16 +497,27 @@ impl WebView {
         }
     }
 
-    /// Injects this web view's [`WebViewProxy`] into `content`'s environment.
+    /// Returns a [`WebViewProxy`] sharing this web view's handle and reactive
+    /// page state.
+    #[must_use]
+    pub fn proxy(&self) -> WebViewProxy {
+        WebViewProxy::from_parts(
+            self.handle.clone(),
+            self.state.clone(),
+            Rc::clone(&self.state_watcher),
+        )
+    }
+
+    /// Injects this web view's [`WebViewProxy`] into `content`'s environment
+    /// and passes it directly to `content`.
     ///
-    /// Any handler inside `content` can then take a `WebViewProxy` parameter and
-    /// drive the web view, through the same `Extractor` machinery that powers
-    /// `Button::action`.
+    /// Controls built inside `content` can read live page state
+    /// (`can_go_back`, `can_go_forward`, `url`, `title`, `progress`) from the
+    /// proxy argument, and handlers inside `content` can extract `WebViewProxy`
+    /// through the same `Extractor` machinery that powers `Button::action`.
     ///
     /// This returns `content` with the proxy attached and nothing else: it does
-    /// not place the web view, so the layout is yours. An earlier version wrapped
-    /// both in a `vstack`, which silently decided that controls go above the page
-    /// and made an overlay or a side panel impossible to express.
+    /// not place the web view, so the layout is yours.
     ///
     /// # Example
     ///
@@ -535,11 +525,16 @@ impl WebView {
     /// use waterui::prelude::*;
     /// use waterui_webview::{WebView, WebViewProxy};
     ///
-    /// let toolbar = webview.proxy_scope(|| {
+    /// let toolbar = webview.proxy_scope(|web| {
     ///     hstack((
-    ///         button("←").action(|p: WebViewProxy| p.go_back()),
-    ///         button("→").action(|p: WebViewProxy| p.go_forward()),
-    ///         button("⟳").action(|p: WebViewProxy| p.refresh()),
+    ///         button("←")
+    ///             .action(|p: WebViewProxy| p.go_back())
+    ///             .disabled(web.can_go_back().map(|can| !can)),
+    ///         button("→")
+    ///             .action(|p: WebViewProxy| p.go_forward())
+    ///             .disabled(web.can_go_forward().map(|can| !can)),
+    ///         text(web.title()),
+    ///         progress(web.progress()),
     ///     ))
     /// });
     /// vstack((toolbar, backend_surface))   // or hstack, or zstack — your choice
@@ -547,10 +542,10 @@ impl WebView {
     pub fn proxy_scope<V, F>(&self, content: F) -> impl View + use<V, F>
     where
         V: View,
-        F: FnOnce() -> V + 'static,
+        F: FnOnce(WebViewProxy) -> V,
     {
-        use waterui_core::env::with;
-        with(content(), WebViewProxy::new(self.handle.clone()))
+        let proxy = self.proxy();
+        with(content(proxy.clone()), proxy)
     }
 
     /// The most recent event, or `None` before anything has happened.
@@ -623,14 +618,33 @@ impl WebView {
     /// Returns a reactive signal for whether the web view can navigate back.
     #[must_use]
     pub fn can_go_back(&self) -> Computed<bool> {
-        Computed::from(self.can_go_back.clone())
+        self.state.can_go_back()
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     /// Returns a reactive signal for whether the web view can navigate forward.
     #[must_use]
     pub fn can_go_forward(&self) -> Computed<bool> {
-        Computed::from(self.can_go_forward.clone())
+        self.state.can_go_forward()
+    }
+
+    /// Returns a reactive signal for the current page URL, or `None` before
+    /// any navigation has started.
+    #[must_use]
+    pub fn url(&self) -> Computed<Option<Url>> {
+        self.state.url()
+    }
+
+    /// Returns a reactive signal for the current page title.
+    #[must_use]
+    pub fn title(&self) -> Computed<Str> {
+        self.state.title()
+    }
+
+    /// Returns a reactive signal for the current load progress (`0.0` to `1.0`).
+    #[must_use]
+    pub fn progress(&self) -> Computed<f64> {
+        self.state.progress()
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -880,7 +894,7 @@ pub struct WebViewOpen {
     bridge_origins: BridgeOrigins,
     #[cfg(not(target_arch = "wasm32"))]
     navigation_policy: Option<NavigationPolicy>,
-    proxy_slot: Option<Rc<OnceCell<AnyWebViewHandle>>>,
+    proxy_slot: Option<DeferredProxySlot>,
 }
 
 /// The result of realizing a [`WebViewOpen`] with a concrete
@@ -1123,24 +1137,44 @@ impl WebViewOpen {
         self
     }
 
-    /// Injects a proxy for the same deferred web view into `content`.
+    /// Provides a [`WebViewProxy`] bound to this deferred web view while
+    /// letting `content` place the view itself in any layout.
     ///
-    /// The content and web view are created together at render time, so every
-    /// extracted [`WebViewProxy`] targets the handle displayed by this view.
+    /// `content` receives both this [`WebViewOpen`] (with all configured
+    /// scripts, handlers, state bindings, navigation policy, and event
+    /// watchers intact) and its [`WebViewProxy`]. The proxy is also injected
+    /// into the returned view's environment so action handlers inside can
+    /// extract `WebViewProxy`.
     ///
-    /// The web view is placed below `content`. When you need any other
-    /// arrangement, open the web view yourself with
-    /// [`WebViewOpen::open_with`] or [`open_webview`] and
-    /// use [`WebView::proxy_scope`], which attaches the proxy without placing
-    /// anything.
-    pub fn with_proxy<V, F>(mut self, content: F) -> impl View
+    /// # Example
+    ///
+    /// ```ignore
+    /// use waterui::prelude::*;
+    /// use waterui_webview::{WebView, WebViewProxy};
+    ///
+    /// WebView::open("https://waterui.dev")
+    ///     .handler("greet", greet)
+    ///     .proxy_scope(|page, web| {
+    ///         vstack((
+    ///             page,
+    ///             hstack((
+    ///                 button("←")
+    ///                     .action(|p: WebViewProxy| p.go_back())
+    ///                     .disabled(web.can_go_back().map(|can| !can)),
+    ///                 text(web.title()),
+    ///                 progress(web.progress()),
+    ///             )),
+    ///         ))
+    ///     })
+    /// ```
+    pub fn proxy_scope<V, F>(mut self, content: F) -> impl View
     where
         V: View,
-        F: FnOnce() -> V + 'static,
+        F: FnOnce(Self, WebViewProxy) -> V,
     {
         let (proxy, slot) = WebViewProxy::deferred();
         self.proxy_slot = Some(slot);
-        vstack((waterui_core::env::with(content(), proxy), self))
+        with(content(self, proxy.clone()), proxy)
     }
 
     /// Opens this deferred web view with `controller`, wiring its initial URL,
@@ -1191,7 +1225,7 @@ impl WebViewOpen {
                 // layer guesses: it differs across engines by design.
                 let Some(entry_url) = asset_entry_url(controller, &entry) else {
                     if let Some(slot) = proxy_slot {
-                        let _ = slot.set(AnyWebViewHandle::unavailable());
+                        slot.bind_unavailable(AnyWebViewHandle::unavailable());
                     }
                     return None;
                 };
@@ -1219,15 +1253,13 @@ impl WebViewOpen {
                 Ok(opened) => opened,
                 Err(unavailable) => {
                     if let Some(slot) = proxy_slot {
-                        let _ = slot.set(unavailable);
+                        slot.bind_unavailable(unavailable);
                     }
                     return None;
                 }
             };
-        if let Some(slot) = proxy_slot {
-            let _ = slot.set(handle.clone());
-        }
-        let webview = WebView::from_handle(handle);
+        let state = proxy_slot.map_or_else(WebViewPageState::new, |slot| slot.bind(handle.clone()));
+        let webview = WebView::from_handle_with_state(handle, state);
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(enabled) = redirects_enabled {
             webview.set_redirects_enabled(enabled);
@@ -1245,10 +1277,10 @@ impl WebViewOpen {
             // case `WatcherGuard::forget` documents.
             webview
                 .handle()
-                .watch(move |backend_event| match backend_event {
-                    BackendEvent::Event(event) => watcher(event),
-                    #[cfg(not(target_arch = "wasm32"))]
-                    BackendEvent::NavigationState { .. } => {}
+                .watch(move |backend_event| {
+                    if let BackendEvent::Event(event) = backend_event {
+                        watcher(event);
+                    }
                 })
                 .forget();
         }
@@ -1326,7 +1358,7 @@ impl View for WebViewOpen {
 mod tests {
     use std::{cell::RefCell, rc::Rc};
 
-    use super::{WebView, subscribe_navigation};
+    use super::{WebView, WebViewProxy, subscribe_navigation};
     use waterui_core::{AnyView, Binding, Signal, View, reactive::watcher::Context};
     use waterui_url::Url;
 
@@ -1354,7 +1386,7 @@ mod tests {
     fn proxy_scope_does_not_borrow_the_web_view() {
         fn controls_outlive_the_web_view<V: View>(
             webview: WebView,
-            content: fn() -> V,
+            content: fn(WebViewProxy) -> V,
         ) -> impl View {
             let controls = webview.proxy_scope(content);
             drop(webview);
@@ -1434,6 +1466,233 @@ mod tests {
         source.set(next.clone());
 
         assert_eq!(*navigations.borrow(), vec![replacement, next]);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    mod proxy_scope_tests {
+        use std::{
+            cell::{Cell, RefCell},
+            future::ready,
+            rc::Rc,
+        };
+
+        use suiteki::Str;
+        use waterui_core::{
+            AnyView, Computed, Environment, Error, Metadata, Signal, View as _,
+            extract::Extractor as _,
+        };
+        use waterui_url::Url;
+
+        use crate::{
+            BackendEvent, Cookie, ScriptInjectionTime, ScriptMessageHandler, WatcherGuard,
+            WatcherSet, WebView, WebViewConfig, WebViewController, WebViewEvent, WebViewHandle,
+            WebViewOpen, WebViewOpenError, WebViewProxy,
+        };
+
+        #[derive(Clone, Default)]
+        struct FakeHandle {
+            watchers: Rc<WatcherSet<BackendEvent>>,
+            handlers: Rc<RefCell<Vec<String>>>,
+            navigated: Rc<RefCell<Vec<Url>>>,
+            went_back: Rc<Cell<bool>>,
+            can_go_back: Rc<Cell<bool>>,
+            can_go_forward: Rc<Cell<bool>>,
+        }
+
+        impl FakeHandle {
+            fn emit(&self, event: &BackendEvent) {
+                self.watchers.emit(event);
+            }
+        }
+
+        impl WebViewHandle for FakeHandle {
+            fn go_back(&self) {
+                self.went_back.set(true);
+            }
+
+            fn go_forward(&self) {}
+
+            fn go_to(&self, url: &Url) {
+                self.navigated.borrow_mut().push(url.clone());
+                self.emit(&BackendEvent::Event(WebViewEvent::WillNavigate {
+                    url: url.clone(),
+                }));
+            }
+
+            fn stop(&self) {}
+
+            fn refresh(&self) {}
+
+            fn set_user_agent(&self, _user_agent: &str) {}
+
+            fn can_go_back(&self) -> bool {
+                self.can_go_back.get()
+            }
+
+            fn can_go_forward(&self) -> bool {
+                self.can_go_forward.get()
+            }
+
+            fn add_handler(&self, name: &str, _handler: Box<ScriptMessageHandler>) {
+                self.handlers.borrow_mut().push(name.to_owned());
+            }
+
+            fn remove_handler(&self, _name: &str) {}
+
+            fn set_cookie(&self, _cookie: Cookie<'static>) {}
+
+            fn inject_script(&self, _key: &str, _script: &str, _time: ScriptInjectionTime) {}
+
+            fn set_redirects_enabled(&self, _enabled: impl Signal<Output = bool>) {}
+
+            fn watch(&self, f: impl Fn(BackendEvent) + 'static) -> WatcherGuard {
+                self.watchers.insert(f)
+            }
+
+            fn get_cookies(&self) -> impl Future<Output = Result<Vec<Cookie<'static>>, Error>> {
+                ready(Ok(Vec::new()))
+            }
+
+            #[expect(
+                clippy::future_not_send,
+                reason = "a web view and its handle are main-thread-affine"
+            )]
+            fn run_javascript(&self, _script: &str) -> impl Future<Output = Result<Str, Str>> {
+                ready(Ok(Str::from_static("null")))
+            }
+
+            #[expect(
+                clippy::future_not_send,
+                reason = "a web view and its handle are main-thread-affine"
+            )]
+            fn call_async_javascript(&self, _body: &str) -> impl Future<Output = Result<Str, Str>> {
+                ready(Ok(Str::from_static("null")))
+            }
+        }
+
+        struct FakeController;
+
+        impl WebViewController for FakeController {
+            type Handle = FakeHandle;
+
+            fn open(&self, _config: WebViewConfig) -> Result<Self::Handle, WebViewOpenError> {
+                Ok(FakeHandle::default())
+            }
+
+            fn asset_origin(&self) -> Option<Url> {
+                None
+            }
+        }
+
+        #[test]
+        fn proxy_scope_preserves_handlers_and_updates_page_state() {
+            let captured_page: Rc<RefCell<Option<WebViewOpen>>> = Rc::new(RefCell::new(None));
+            let captured_proxy: Rc<RefCell<Option<WebViewProxy>>> = Rc::new(RefCell::new(None));
+
+            let scoped = WebView::open("https://waterui.dev")
+                .handler("greet", || async { String::from("hi") })
+                .proxy_scope({
+                    let captured_page = Rc::clone(&captured_page);
+                    let captured_proxy = Rc::clone(&captured_proxy);
+                    move |page, web| {
+                        *captured_page.borrow_mut() = Some(page);
+                        *captured_proxy.borrow_mut() = Some(web);
+                    }
+                });
+
+            let env_view = AnyView::new(scoped.body(&Environment::new()))
+                .downcast::<Metadata<Environment, ()>>()
+                .expect("proxy_scope injects WebViewProxy into the environment");
+            let extracted =
+                WebViewProxy::extract(&env_view.value).expect("WebViewProxy must be extractable");
+
+            let web = captured_proxy
+                .borrow_mut()
+                .take()
+                .expect("proxy_scope must pass WebViewProxy to its closure");
+            let can_back: Computed<bool> = web.can_go_back();
+            let can_forward: Computed<bool> = web.can_go_forward();
+            let url = web.url();
+            let title = web.title();
+            let progress = web.progress();
+
+            assert!(!can_back.snapshot());
+            assert!(!can_forward.snapshot());
+            assert_eq!(url.snapshot(), None);
+            assert_eq!(title.snapshot().as_str(), "");
+            assert!((progress.snapshot() - 0.0).abs() < f64::EPSILON);
+
+            let page = captured_page
+                .borrow_mut()
+                .take()
+                .expect("proxy_scope must pass WebViewOpen to its closure");
+            let opened = page
+                .open_with(&FakeController, &Environment::new())
+                .expect("fake controller must open the web view");
+            let handle = opened.handle();
+
+            assert_eq!(handle.handlers.borrow().as_slice(), &["greet"]);
+            assert_eq!(
+                url.snapshot().as_ref().map(Url::as_str),
+                Some("https://waterui.dev")
+            );
+
+            handle.emit(&BackendEvent::Event(WebViewEvent::Loading {
+                progress: 0.4,
+            }));
+            assert!((progress.snapshot() - f64::from(0.4_f32)).abs() < 1e-6);
+
+            handle.emit(&BackendEvent::TitleChanged(Str::from_static(
+                "WaterUI Docs",
+            )));
+            assert_eq!(title.snapshot().as_str(), "WaterUI Docs");
+            assert_eq!(opened.webview().title().snapshot().as_str(), "WaterUI Docs");
+
+            let docs_url = Url::new("https://waterui.dev/docs");
+            handle.emit(&BackendEvent::UrlChanged(docs_url.clone()));
+            assert_eq!(url.snapshot(), Some(docs_url.clone()));
+            assert_eq!(opened.webview().url().snapshot(), Some(docs_url));
+
+            handle.emit(&BackendEvent::NavigationState {
+                can_go_back: true,
+                can_go_forward: false,
+            });
+            assert!(can_back.snapshot());
+            assert!(!can_forward.snapshot());
+            assert!(extracted.can_go_back().snapshot());
+
+            handle.emit(&BackendEvent::Event(WebViewEvent::Loaded));
+            assert!((progress.snapshot() - 1.0).abs() < f64::EPSILON);
+
+            extracted.go_back();
+            assert!(handle.went_back.get());
+        }
+
+        #[test]
+        fn proxy_keeps_page_state_live_after_webview_is_dropped() {
+            let opened = WebView::open("https://waterui.dev")
+                .open_with(&FakeController, &Environment::new())
+                .expect("fake controller must open the web view");
+            let handle = opened.handle().clone();
+            let webview = opened.into_webview();
+            let proxy = webview.proxy();
+            drop(webview);
+
+            let title = proxy.title();
+            let url = proxy.url();
+            let progress = proxy.progress();
+
+            handle.emit(&BackendEvent::TitleChanged(Str::from_static("After Drop")));
+            let next_url = Url::new("https://waterui.dev/after-drop");
+            handle.emit(&BackendEvent::UrlChanged(next_url.clone()));
+            handle.emit(&BackendEvent::Event(WebViewEvent::Loading {
+                progress: 0.75,
+            }));
+
+            assert_eq!(title.snapshot().as_str(), "After Drop");
+            assert_eq!(url.snapshot(), Some(next_url));
+            assert!((progress.snapshot() - f64::from(0.75_f32)).abs() < 1e-6);
+        }
     }
 
     /// The framework metadata `water create` reads to scaffold a web frontend

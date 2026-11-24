@@ -158,24 +158,22 @@ impl<S: 'static> MapSlots<S> for CalendarConfig<S> {
 }
 
 impl<L> Calendar<L> {
-    /// Creates a new `Calendar` with the given semantic label, selected date
-    /// binding, and visible month binding.
+    /// Creates a new `Calendar` with the given semantic label and selected date
+    /// binding.
     ///
     /// The label is required so screen readers always have meaningful text to
     /// announce. Use [`hide_label`](Self::hide_label) to omit it visually
     /// while keeping it in the accessibility tree.
-    pub fn new<I: IntoLabel<Kind = L>>(
-        label: I,
-        date: &Binding<Date>,
-        visible_month: &Binding<Date>,
-    ) -> Self {
+    pub fn new<I: IntoLabel<Kind = L>>(label: I, date: &Binding<Date>) -> Self {
         let range = Date::MIN..=Date::MAX;
+        let visible_month =
+            Binding::container(initial_visible_month(Some(date.snapshot()), &range).first_day());
         Self {
             label: label.into_label(),
             value: date.clone(),
             range,
             decorated: Computed::constant(BTreeSet::new()),
-            visible_month: visible_month.clone(),
+            visible_month,
         }
     }
 
@@ -185,12 +183,16 @@ impl<L> Calendar<L> {
 
     /// Sets the valid date range.
     pub fn range(mut self, range: RangeInclusive<Date>) -> Self {
-        let visible = VisibleMonth::from_date(self.visible_month.snapshot());
-        if !visible_month_in_range(visible, &range) {
-            self.visible_month
-                .set(initial_visible_month(Some(self.value.snapshot()), &range).first_day());
-        }
+        ensure_visible_month_in_range(&self.visible_month, Some(self.value.snapshot()), &range);
         self.range = range;
+        self
+    }
+
+    /// Binds external control over the currently displayed month.
+    pub fn visible_month(mut self, month: &Binding<Date>) -> Self {
+        let visible_month = month.clone();
+        ensure_visible_month_in_range(&visible_month, Some(self.value.snapshot()), &self.range);
+        self.visible_month = visible_month;
         self
     }
 
@@ -438,6 +440,17 @@ pub(crate) fn initial_visible_month(
 pub(crate) fn visible_month_in_range(month: VisibleMonth, range: &RangeInclusive<Date>) -> bool {
     let first_day = month.first_day();
     first_day >= month_start(*range.start()) && first_day <= month_start(*range.end())
+}
+
+pub(crate) fn ensure_visible_month_in_range(
+    visible_month: &Binding<Date>,
+    selected: Option<Date>,
+    range: &RangeInclusive<Date>,
+) {
+    let visible = VisibleMonth::from_date(visible_month.snapshot());
+    if !visible_month_in_range(visible, range) {
+        visible_month.set(initial_visible_month(selected, range).first_day());
+    }
 }
 
 pub(crate) fn map_visible_month_binding(month: &Binding<Date>) -> Binding<VisibleMonth> {
@@ -728,5 +741,26 @@ mod tests {
         assert_eq!(december.year, 2024);
         assert_eq!(december.month, 12);
         assert_eq!(next, january);
+    }
+
+    #[test]
+    fn owned_visible_month_defaults_to_selection_and_opt_in_replaces_it() {
+        let selected = Binding::container(Date::new(2025, 6, 15).unwrap());
+        let default_cfg = Calendar::new("Trip", &selected).config();
+        assert_eq!(
+            default_cfg.visible_month().snapshot(),
+            Date::new(2025, 6, 1).unwrap()
+        );
+
+        let shown = Binding::container(Date::new(2025, 10, 12).unwrap());
+        let opt_in_cfg = Calendar::new("Trip", &selected)
+            .range(Date::new(2025, 1, 1).unwrap()..=Date::new(2025, 8, 31).unwrap())
+            .visible_month(&shown)
+            .config();
+        assert_eq!(
+            opt_in_cfg.visible_month().snapshot(),
+            Date::new(2025, 6, 1).unwrap()
+        );
+        assert_eq!(shown.snapshot(), Date::new(2025, 6, 1).unwrap());
     }
 }

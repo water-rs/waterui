@@ -23,7 +23,7 @@ impl DemoState {
 }
 
 fn content(_state: DemoState) -> impl View {
-    vstack((text("demo"), button("Login")))
+    vstack((text("demo"), button("Login").action(|| {})))
 }
 
 // ---------------------------------------------------------------------------
@@ -44,7 +44,7 @@ pub mod gated {
 
     /// Glue: the view testing.md's mounting-form example names.
     fn login_view() -> impl View {
-        vstack((button("Login"), text("Welcome")))
+        vstack((button("Login").action(|| {}), text("Welcome")))
     }
 
     /// Glue: the view testing.md's bench examples name.
@@ -349,7 +349,7 @@ pub mod gated {
             run.pointer_move(10.0, 10.0);
             run.pointer_down(10.0, 10.0);
             run.pointer_up(10.0, 10.0);
-            let _ = run.app();
+            let _ = run.app().is_settled();
         });
     }
 
@@ -413,7 +413,7 @@ pub mod gated {
                 move || stepper("Count", &for_view),
                 |perf| {
                     perf.measure("increment", |run| {
-                        run.app().query().label("Count").increment();
+                        run.query().label("Count").increment();
                     });
                 },
             )

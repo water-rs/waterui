@@ -560,7 +560,7 @@ impl ElementRef<HeadlessRuntime> {
     /// when no reachable point exists — a fully clipped element reports
     /// itself as not visible instead of touching whatever lies under the
     /// clip.
-    fn pointer_point(
+    pub(crate) fn pointer_point(
         &self,
         app: &SemanticApp<HeadlessRuntime>,
         op: &str,

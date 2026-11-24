@@ -177,20 +177,29 @@ Bundled and controlled content:
   (every page the view ever loads can then call every handler — only for content you
   control end to end).
 
-Driving a live page: `.with_proxy(|| controls)` consumes the builder, installs a
-`WebViewProxy` into the closure's environment, and returns `vstack((controls, page))` —
-controls above, page below. Inside any handler in that scope the proxy is a bare
-parameter, and navigation is fire-and-forget:
+Driving a live page: `.proxy_scope(|page, web| layout)` consumes the builder, passes
+the page view and its `WebViewProxy` into the closure, and injects the proxy into the
+returned view's environment so you choose the layout (`vstack`, `hstack`, `zstack`). The
+proxy carries live page-state signals (`can_go_back`, `can_go_forward`, `url`, `title`,
+`progress`), and inside any handler in that scope the proxy is also extractable as a bare
+parameter:
 
 ```rust
-open.with_proxy(move || hstack((
-    button("Back").action(|proxy: WebViewProxy| proxy.go_back()),
-    button("Go").action(|proxy: WebViewProxy, State(addr): State<Binding<Str>>| {
-        // parse_user_input tolerates human input (missing scheme); returns Option.
-        if let Some(url) = Url::parse_user_input(addr.snapshot().as_str()) {
-            proxy.go_to(url);
-        }
-    }).state(&address),
+open.proxy_scope(move |page, web| vstack((
+    hstack((
+        button("Back")
+            .action(|proxy: WebViewProxy| proxy.go_back())
+            .disabled(web.can_go_back().map(|can| !can)),
+        button("Go").action(|proxy: WebViewProxy, State(addr): State<Binding<Str>>| {
+            // parse_user_input tolerates human input (missing scheme); returns Option.
+            if let Some(url) = Url::parse_user_input(addr.snapshot().as_str()) {
+                proxy.go_to(url);
+            }
+        }).state(&address),
+        text(web.title()),
+        progress(web.progress()),
+    )),
+    page,
 )))
 ```
 
@@ -201,9 +210,9 @@ an opened `WebView` handle (not the proxy),
 `eval!(webview, "expr @{value}").await` decodes the result into a Rust type and
 `exec!(webview, "program").await` runs for effect (`exec_file!(webview, "scripts/setup.js")`
 is the fused `webview.exec(&js_file!(..))`, awaited the same way); `@{..}` holes are passed as bound
-arguments, never spliced into the source. Application views use `WebView::open(url).with_proxy(|| controls)`
-(placing the page below the content); backend realizations with an opened handle can also use
-`webview.proxy_scope(|| controls)` to attach the proxy alongside a custom surface.
+arguments, never spliced into the source. Application views use `WebView::open(url).proxy_scope(|page, web| ...)`
+(placing `page` wherever the layout calls for); backend realizations with an opened handle can also use
+`webview.proxy_scope(|web| controls)` to attach the proxy alongside a custom surface.
 
 The Rust↔page bridge is declared with `#[js_api]` on an impl block and served on the
 builder; the method's *asyncness* is the discriminator:

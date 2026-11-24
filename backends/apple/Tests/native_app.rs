@@ -1564,7 +1564,7 @@ mod navigation {
             move |_id: i32| {
                 let item = NavigationToolbarItem::new(
                     NavigationToolbarPlacement::PrimaryAction,
-                    button("").style(ButtonStyle::Plain),
+                    button("").style(ButtonStyle::Plain).action(|| {}),
                 )
                 .icon(SfSymbol::PLUS);
                 NavigationView::new("Today", text("detail").background(Material::Regular))
@@ -1579,7 +1579,8 @@ mod navigation {
                                     24.0,
                                     24.0,
                                 )))
-                                .style(ButtonStyle::Borderless),
+                                .style(ButtonStyle::Borderless)
+                                .action(|| {}),
                             )),
                     )
             },

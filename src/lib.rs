@@ -62,6 +62,8 @@ pub mod prelude {
     pub use super::env::Environment;
     #[cfg(feature = "form")]
     pub use super::form;
+    #[cfg(feature = "locale-datetime")]
+    pub use super::locale::LocalizedDateTimeExt;
     #[cfg(feature = "media")]
     pub use super::media;
     #[cfg(feature = "video")]

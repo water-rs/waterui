@@ -111,7 +111,7 @@ fn scene(
                 // Multi-line text field
                 TextField::new("Bio", custom_bio)
                     .prompt("Tell us about yourself")
-                    .line_limit(NonZeroUsize::new(3).unwrap()),
+                    .line_limit(NonZeroUsize::new(3)),
                 // Toggle with label
                 Toggle::new("Enable Feature", custom_enabled),
                 // Stepper with custom range

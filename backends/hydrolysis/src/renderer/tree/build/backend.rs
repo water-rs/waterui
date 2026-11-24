@@ -451,7 +451,11 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
                 let invalidate = Rc::clone(&invalidate);
                 move |_| invalidate()
             }),
-            alignment.watch(move |_| invalidate()),
+            alignment.watch({
+                let invalidate = Rc::clone(&invalidate);
+                move |_| invalidate()
+            }),
+            line_limit.watch(move |_| invalidate()),
         ];
         RenderNode::Text(Box::new(TextNode {
             memo_gate: Cell::default(),
@@ -460,7 +464,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
             core,
             content,
             alignment,
-            line_limit: line_limit.map(core::num::NonZeroUsize::get),
+            line_limit,
             layout_dirty,
             geometry: None,
             _guards: guards,

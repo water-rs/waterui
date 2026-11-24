@@ -1034,8 +1034,6 @@ async fn stage_classpath_files(
     module_dir: &Path,
     scope: AndroidDependencyScope,
 ) -> eyre::Result<()> {
-    let mut keep_packages = BTreeSet::new();
-
     let java_dir = module_dir.join("src/main/java/waterui");
     let mut staged = HashSet::new();
     if classpath.kotlin_sources.is_empty() {
@@ -1053,22 +1051,10 @@ async fn stage_classpath_files(
                 "two crates declare a Kotlin source named `{}`",
                 name.to_string_lossy()
             );
-            let package = fs::read_to_string(source)
-                .await?
-                .lines()
-                .find_map(|line| line.strip_prefix("package "))
-                .map(|rest| rest.trim().trim_end_matches(';').to_owned())
-                .ok_or_else(|| {
-                    eyre::eyre!(
-                        "Kotlin source {} has no `package` declaration; the staged-class keep rule cannot name it",
-                        source.display()
-                    )
-                })?;
-            keep_packages.insert(package);
             crate::utils::copy_file_if_changed(source, &java_dir.join(name)).await?;
         }
         // Files an earlier classpath staged that no source still declares
-        // would keep a stale `keep` rule — drop them. The rest write only
+        // would keep a stale class — drop them. The rest write only
         // on change, so an unchanged build leaves Gradle's inputs alone.
         let mut entries = fs::read_dir(&java_dir).await?;
         while let Some(entry) = entries.next().await {
@@ -1098,7 +1084,7 @@ async fn stage_classpath_files(
     }
 
     write_android_dependencies(module_dir, &classpath.maven, scope).await?;
-    write_android_keeps(module_dir, &keep_packages, &classpath.keep).await?;
+    write_android_keeps(module_dir, &classpath.keep).await?;
     Ok(())
 }
 
@@ -1200,14 +1186,13 @@ async fn write_android_dependencies(
         .map_err(Into::into)
 }
 
-/// Rewrites the managed keep block in `module_dir/proguard-rules.pro`: one
-/// `-keep class <pkg>.** { *; }` per package the staged classpath carries, so
-/// R8's release shrink cannot remove or rename classes JNI loads by name.
+/// Rewrites the managed keep block in `module_dir/proguard-rules.pro` with the
+/// declared classes and members JNI reaches by name, so R8's release shrink
+/// cannot remove or rename them without falling back to package-wide keeps.
 /// An empty set removes a block an earlier stage left; the file itself is
 /// only written when its contents change.
 async fn write_android_keeps(
     module_dir: &Path,
-    packages: &BTreeSet<String>,
     declared: &keep_rules::KeepRules,
 ) -> eyre::Result<()> {
     let rules_path = module_dir.join("proguard-rules.pro");
@@ -1233,9 +1218,9 @@ async fn write_android_keeps(
         body.pop();
     }
 
-    if !packages.is_empty() || !declared.is_empty() {
+    if !declared.is_empty() {
         let block = declared
-            .block(ANDROID_KEEPS_BEGIN, ANDROID_KEEPS_END, packages)
+            .block(ANDROID_KEEPS_BEGIN, ANDROID_KEEPS_END)
             .wrap_err("failed to render the managed keep block")?;
         body.push_str(&block);
         body.push('\n');
@@ -4352,7 +4337,7 @@ mod permission_audit_tests {
         let block = declarations
             .classpath
             .keep
-            .block("# begin", "# end", &BTreeSet::new())
+            .block("# begin", "# end")
             .expect("render");
         assert_eq!(
             block,
@@ -4645,11 +4630,20 @@ mod permission_audit_tests {
         .expect("kotlin source");
         let module_dir = module_dir_with_deps_block(root.path());
 
+        let mut keep = keep_rules::KeepRules::default();
+        keep.merge(vec![
+            toml::from_str(
+                "class = \"waterkit.dialog.DialogHelper\"\n\
+                 members = [\"public static void showDialog(android.content.Context)\"]\n",
+            )
+            .expect("declared keep rule"),
+        ]);
+
         smol::block_on(stage_classpath_files(
             &AndroidClasspath {
                 kotlin_sources: vec![source],
                 maven: BTreeSet::from(["androidx.health.connect:connect-client:1.1.0".to_string()]),
-                keep: keep_rules::KeepRules::default(),
+                keep,
             },
             &module_dir,
             AndroidDependencyScope::Implementation,
@@ -4669,8 +4663,12 @@ mod permission_audit_tests {
         );
         let rules =
             std::fs::read_to_string(module_dir.join("proguard-rules.pro")).expect("keep rules");
+        assert!(!rules.contains(".**"), "{rules}");
         assert!(
-            rules.contains("-keep class waterkit.dialog.** { *; }"),
+            rules.contains(
+                "-keep class waterkit.dialog.DialogHelper {\n    \
+                 public static void showDialog(android.content.Context);\n}"
+            ),
             "{rules}"
         );
     }
@@ -4713,11 +4711,20 @@ mod permission_audit_tests {
         std::fs::write(&source, "package waterkit.permission\n").expect("kotlin source");
         let module_dir = module_dir_with_deps_block(root.path());
 
+        let mut keep = keep_rules::KeepRules::default();
+        keep.merge(vec![
+            toml::from_str(
+                "class = \"waterkit.permission.PermissionHelper\"\n\
+                 members = [\"public static int checkPermission(android.app.Activity, int)\"]\n",
+            )
+            .expect("declared keep rule"),
+        ]);
+
         smol::block_on(stage_classpath_files(
             &AndroidClasspath {
                 kotlin_sources: vec![source],
                 maven: BTreeSet::from(["androidx.health.connect:connect-client:1.1.0".to_string()]),
-                keep: keep_rules::KeepRules::default(),
+                keep,
             },
             &module_dir,
             AndroidDependencyScope::Implementation,
@@ -4742,29 +4749,6 @@ mod permission_audit_tests {
             std::fs::read_to_string(module_dir.join("build.gradle.kts")).expect("build script");
         assert!(!build.contains("connect-client"), "{build}");
         assert!(build.contains(ANDROID_DEPS_BEGIN), "{build}");
-    }
-
-    /// A declared Kotlin source without a `package` directive cannot be kept
-    /// by R8 — it fails the stage rather than silently shipping an
-    /// unresolvable class.
-    #[test]
-    fn a_kotlin_source_without_a_package_declaration_fails() {
-        let root = tempdir().expect("temp root");
-        let source = root.path().join("NoPackage.kt");
-        std::fs::write(&source, "object NoPackage {}\n").expect("kotlin source");
-        let module_dir = module_dir_with_deps_block(root.path());
-
-        let error = smol::block_on(stage_classpath_files(
-            &AndroidClasspath {
-                kotlin_sources: vec![source],
-                maven: BTreeSet::new(),
-                keep: keep_rules::KeepRules::default(),
-            },
-            &module_dir,
-            AndroidDependencyScope::Implementation,
-        ))
-        .expect_err("a package-less Kotlin source must fail the stage");
-        assert!(error.to_string().contains("package"), "{error}");
     }
 
     /// A module build script without the managed markers was hand-edited or

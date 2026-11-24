@@ -128,13 +128,15 @@ default = [
     "highlight",
     "locale-datetime",
     "locale-list",
+    "locale-relative-time",
 ]
 # `waterui::locale` is this crate's re-export of `waterui-locale`, so the
-# formatters an application can reach through it are selected here. Both are
-# default-on to keep that surface whole; a lean build already starts from
+# formatters an application can reach through it are selected here. All three
+# are default-on to keep that surface whole; a lean build already starts from
 # `default-features = false` and names what it wants.
 locale-datetime = ["waterui-locale/datetime"]
 locale-list = ["waterui-locale/list"]
+locale-relative-time = ["waterui-locale/relative-time"]
 # The `Code` widget and the bundled syntect highlighter behind it. Default-on,
 # because `code(…)` is a plain authoring API; an application that shows no code
 # drops syntect, two-face, and their syntax and theme tables by opting out.
@@ -285,6 +287,7 @@ all = [
     "highlight",
     "locale-datetime",
     "locale-list",
+    "locale-relative-time",
     "inspector",
     "inspector-signals",
     "assets",

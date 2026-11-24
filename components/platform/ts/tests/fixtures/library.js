@@ -45,7 +45,6 @@
     createEffect: () => createEffect,
     createContext: () => createContext,
     batch: () => batch,
-    Suspense: () => Suspense,
     Show: () => Show,
     Fragment: () => Fragment,
     For: () => For,
@@ -653,7 +652,6 @@
       "text",
       "show",
       "each",
-      "suspense",
       "environment",
       "invoke"
     ]) {
@@ -858,11 +856,6 @@
       throw new TypeError("<For> requires a function child: <For each={items}>{(item, index) => …}</For>");
     }
     return host.each(reactiveInput(props, "each"), branch((item, index) => renderFn(item, index)), propValue(props, "by"));
-  }
-  function Suspense(props) {
-    const host = getHost();
-    const fallback = propValue(props, "fallback") === undefined ? undefined : branch(() => resolveElement(lazyProp(props, "fallback")()));
-    return host.suspense(branch(() => resolveElement(lazyProp(props, "children")())), fallback);
   }
   function Box(props) {
     const host = getHost();

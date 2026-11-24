@@ -604,6 +604,16 @@ impl Shared {
                     progress: progress as f32,
                 });
             }
+            web_kit::Event::TitleChanged(title) => {
+                self.watchers
+                    .emit(&BackendEvent::TitleChanged(Str::from(title)));
+            }
+            web_kit::Event::UrlChanged(url) => {
+                if let Some(url) = parse_url(&url) {
+                    self.watchers.emit(&BackendEvent::UrlChanged(url));
+                }
+                self.emit_state_changed();
+            }
             web_kit::Event::OpenRequest(request) => {
                 // The in-place reroute of an action `decide_action` already
                 // answered — the policy is not consulted twice.
