@@ -14,14 +14,30 @@ export interface Color {
   opacity: number;
 }
 
+/**
+ * The ambient theme's colour scheme and colour tokens. A token the environment
+ * does not install is absent (`undefined`) rather than defaulted.
+ */
 export interface Theme {
   colorScheme: "light" | "dark";
-  /**
-   * The theme's color tokens, keyed by slot name (`foreground`,
-   * `background`, `surface`, `accent`, …). A slot the environment does not
-   * install is absent rather than defaulted.
-   */
-  [token: string]: unknown;
+  foreground?: Color;
+  background?: Color;
+  surface?: Color;
+  surfaceVariant?: Color;
+  border?: Color;
+  accent?: Color;
+  mutedForeground?: Color;
+  tertiaryForeground?: Color;
+  disabledForeground?: Color;
+  accentForeground?: Color;
+  accentContainer?: Color;
+  tertiary?: Color;
+  tertiaryContainer?: Color;
+  selectionContainer?: Color;
+  selectionForeground?: Color;
+  unemphasizedSelection?: Color;
+  error?: Color;
+  errorForeground?: Color;
 }
 
 export interface Locale {

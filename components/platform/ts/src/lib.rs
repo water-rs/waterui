@@ -92,7 +92,7 @@ pub use bundle::{
     RequiredModule, Requirement, configured_runtime,
 };
 pub use convert::{FromJs, IntoJs, expected, support};
-pub use environment::{HostLocale, Theme, locale, theme};
+pub use environment::{HostLocale, THEME_TOKEN_NAMES, Theme, locale, theme, theme_interface_dts};
 pub use error::{TsError, kind_of};
 pub use host::HostTable;
 pub use library::{LIBRARY_HALF_ENCODED, LIBRARY_HASH};
