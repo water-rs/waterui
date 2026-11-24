@@ -75,13 +75,12 @@ webview-cef = [
     "waterui/webview",
     "waterui-browser-cef?/webview",
 ]
-# `media` is the name the `water` CLI's capability mechanism (`waterui-video`
-# in the app's resolved graph) forwards to this crate; it turns on both
-# leaves the media semantic needs.
-media = ["video", "video_player"]
+# `video` is the name the `water` CLI's capability mechanism (`waterui-video`
+# in the app's resolved graph) forwards to this crate; it enables both
+# leaves the video semantic needs (`video` and `video_player`).
 # `cocoa-ui/avkit` brings the `AVFoundation`/`AVKit` framework links; an app
-# without media compiles and links none of it.
-video = ["dep:waterui-video", "dep:waterkit-audio", "cocoa-ui/avkit", "waterui/video"]
+# without video compiles and links none of it.
+video = ["video_player", "dep:waterui-video", "dep:waterkit-audio", "cocoa-ui/avkit", "waterui/video"]
 video_player = ["dep:waterui-video", "dep:waterkit-audio", "cocoa-ui/avkit", "waterui/video"]
 
 # The `preview::run` entry `water preview` links — the generated preview
@@ -256,10 +255,10 @@ png = { version = "0.18", default-features = false }
 pollster = { workspace = true }
 libtest-mimic = "0.8"
 serde_json = { workspace = true }
-# The preview suite renders an `ImageAsset`, which sits behind `assets` + `media`
+# The preview suite renders an `ImageAsset`, which sits behind `assets` + `image`
 # on the facade, and the native suite tests `NativeBackend::offscreen` behind
 # `capture` — the crate's own `waterui` edge enables none of them.
-waterui = { workspace = true, features = ["assets", "capture", "media"] }
+waterui = { workspace = true, features = ["assets", "capture", "image"] }
 # The termination tests park the hook futures on an `async-task` executor.
 executor-core = { workspace = true, features = ["async-task"] }
 # The webview trials drive the shared conformance cases; the crate's own

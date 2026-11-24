@@ -220,8 +220,8 @@ Components behind cargo features are also absent until you enable them. `waterui
 defaults are `canvas`, `gpu`, `assets`, `dialog`, `snackbar`, `highlight` (the `Code` widget),
 `avatar`, `cpu-time`, `link`, `list`, `table`, `navigation`, `menu`, the standard form/control
 features, and the `locale-datetime` / `locale-list` formatters. Everything else is opt-in in
-`Cargo.toml`: `media` (`Photo`, `MediaPicker`; the generated project's own `media`
-feature forwards to it), `video`, `video-gpu`, `remote` (web URLs for `Photo`,
+`Cargo.toml`: `image` (`Photo`, `MediaPicker`), `video` (`Video`, `VideoPlayer`; the
+generated project's own `video` feature forwards to it), `video-gpu`, `remote` (web URLs for `Photo`,
 `Url::fetch`), `webview`, `capture`, `flow-markdown`, `markdown-math`, `inspector`,
 `inspector-signals`, `widgets` (home-screen widgets, `#[waterui::widget]`), `ts` / `ts-ota`
 (TypeScript views and their over-the-air update client `waterui::ts::Ota`),

@@ -60,7 +60,7 @@ pub mod prelude {
     pub use super::FilterViewExt;
     pub use super::app::{App, AppMenuBar, Windows};
     pub use super::env::Environment;
-    #[cfg(feature = "media")]
+    #[cfg(feature = "image")]
     pub use super::media;
     #[cfg(feature = "video")]
     pub use super::video;
@@ -148,7 +148,7 @@ pub mod prelude {
     pub use super::background::{Background, Glass, GlassStyle, Material};
 
     // Asset types
-    #[cfg(all(feature = "assets", feature = "media", not(target_arch = "wasm32")))]
+    #[cfg(all(feature = "assets", feature = "image", not(target_arch = "wasm32")))]
     pub use super::ImageAsset;
     #[cfg(all(feature = "assets", feature = "video", not(target_arch = "wasm32")))]
     pub use super::VideoAsset;
@@ -185,7 +185,7 @@ pub use waterui_graphics::ShaderPaintView;
 pub use waterui_graphics::canvas;
 pub use waterui_graphics::color;
 pub use waterui_graphics::gradient;
-#[cfg(feature = "media")]
+#[cfg(feature = "image")]
 pub use waterui_graphics::image_decode;
 #[cfg(feature = "gpu")]
 pub use waterui_graphics::{GpuContent, GpuView, RedrawHandle};
@@ -210,7 +210,7 @@ pub use waterui_locale::regional;
 pub use waterui_macros::ui_test as test;
 #[doc(inline)]
 pub use waterui_macros::*;
-#[cfg(feature = "media")]
+#[cfg(feature = "image")]
 pub use waterui_media as media;
 #[cfg(feature = "navigation")]
 pub use waterui_navigation as navigation;
@@ -237,7 +237,7 @@ pub use waterui_webview as webview;
 pub use waterui_widgets as widgets;
 
 // Asset types re-exported for convenience
-#[cfg(all(feature = "assets", feature = "media", not(target_arch = "wasm32")))]
+#[cfg(all(feature = "assets", feature = "image", not(target_arch = "wasm32")))]
 pub use waterui_assets::ImageAsset;
 #[cfg(all(feature = "assets", feature = "video", not(target_arch = "wasm32")))]
 pub use waterui_assets::VideoAsset;
@@ -356,11 +356,11 @@ pub fn install_application_resources(env: &mut Environment) {
         });
         env.insert(context);
     }
-    #[cfg(feature = "media")]
+    #[cfg(feature = "image")]
     if env.get::<waterui_media::PhotoCache>().is_none() {
         env.insert(waterui_media::PhotoCache::default());
     }
-    #[cfg(all(target_arch = "wasm32", not(feature = "media")))]
+    #[cfg(all(target_arch = "wasm32", not(feature = "image")))]
     let _ = env;
 }
 

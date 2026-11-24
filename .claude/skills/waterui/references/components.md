@@ -4,7 +4,7 @@ Signatures verified against the WaterUI source and compiled. Everything here is 
 from `use waterui::prelude::*;` unless an explicit import is shown.
 
 **Feature gates.** `waterui`'s default features are `gpu`, `assets`, `dialog`, `snackbar`,
-`highlight`, `locale-datetime` and `locale-list`. Everything else is opt-in, chiefly `media`,
+`highlight`, `locale-datetime` and `locale-list`. Everything else is opt-in, chiefly `image`,
 `video`, `video-gpu`, `webview`, `flow-markdown` (also gates `RichText` and
 `include_markdown!`), `markdown-math`, `navigation-restoration`, `inspector`, `remote`, `ts`,
 `widgets`, and the component features `canvas`, `chart`, `barcode` and `particle`. `all`
