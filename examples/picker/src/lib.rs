@@ -138,13 +138,12 @@ fn date_pickers() -> impl View {
 /// Single-date month-grid calendar with passive decorations.
 fn calendar_section() -> impl View {
     let calendar_date: Binding<Date> = binding(fixed_date(2025, 6, 15));
-    let calendar_visible_month: Binding<Date> = binding(fixed_date(2025, 6, 1));
 
     vstack((
         text("Calendar").headline(),
         text("Month-grid calendar with single-date selection and passive decorations").body(),
         spacer(),
-        Calendar::new("Trip Date", &calendar_date, &calendar_visible_month)
+        Calendar::new("Trip Date", &calendar_date)
             .range(fixed_date(2025, 1, 1)..=fixed_date(2025, 12, 31))
             .decorated(decorated_dates()),
         text!("Selected calendar date: {calendar_date}"),
@@ -155,7 +154,6 @@ fn calendar_section() -> impl View {
 /// Multi-date month-grid selection with passive decorations.
 fn multi_date_section() -> impl View {
     let available_dates = binding(BTreeSet::<Date>::new());
-    let available_visible_month: Binding<Date> = binding(fixed_date(2025, 1, 1));
     let available_date_count = available_dates
         .map(|dates: BTreeSet<Date>| dates.len())
         .computed();
@@ -164,13 +162,9 @@ fn multi_date_section() -> impl View {
         text("Multi-Date Picker").headline(),
         text("Month-grid calendar for selecting multiple dates").body(),
         spacer(),
-        MultiDatePicker::new(
-            "Available Dates",
-            &available_dates,
-            &available_visible_month,
-        )
-        .range(fixed_date(2025, 1, 1)..=fixed_date(2025, 12, 31))
-        .decorated(decorated_dates()),
+        MultiDatePicker::new("Available Dates", &available_dates)
+            .range(fixed_date(2025, 1, 1)..=fixed_date(2025, 12, 31))
+            .decorated(decorated_dates()),
         text!("Selected dates: {available_date_count}"),
     ))
     .padding_with(12.0)

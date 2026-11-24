@@ -1273,14 +1273,14 @@ pub fn components_block_33() {
     };
 
     let _ = {
-        Calendar::new("Trip Date", &date, &visible_month) // TWO bindings: selection + shown month
+        Calendar::new("Trip Date", &date) // month owned by config; `.visible_month(&shown)` optional
             .range(start..=end)
             .decorated(marked_days.clone()) // impl IntoComputed<BTreeSet<Date>> — passive dots
     };
 
     let _ = {
-        // Binding<BTreeSet<Date>>
-        MultiDatePicker::new("Available", &date_set, &visible_month)
+        // Binding<BTreeSet<Date>>; `.visible_month(&shown)` optional
+        MultiDatePicker::new("Available", &date_set).visible_month(&visible_month)
     };
 
     let _ = {

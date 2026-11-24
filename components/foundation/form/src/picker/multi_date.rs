@@ -12,8 +12,8 @@ use waterui_core::{AnyView, Environment, Native, NativeView, View};
 use waterui_locale::locale_binding;
 
 use crate::calendar::{
-    CalendarBody, VisibleMonth, calendar_rows, initial_visible_month, map_visible_month_binding,
-    multi_day_cell_content, visible_month_in_range,
+    CalendarBody, calendar_rows, ensure_visible_month_in_range, initial_visible_month,
+    map_visible_month_binding, multi_day_cell_content,
 };
 
 /// Configuration for the `MultiDatePicker` component.
@@ -137,24 +137,23 @@ impl<S: 'static> MapSlots<S> for MultiDatePickerConfig<S> {
 }
 
 impl<L> MultiDatePicker<L> {
-    /// Creates a new `MultiDatePicker` with the given semantic label, selected
-    /// dates binding, and visible month binding.
+    /// Creates a new `MultiDatePicker` with the given semantic label and
+    /// selected dates binding.
     ///
     /// The label is required so screen readers always have meaningful text to
     /// announce. Use [`hide_label`](Self::hide_label) to omit it visually
     /// while keeping it in the accessibility tree.
-    pub fn new<I: IntoLabel<Kind = L>>(
-        label: I,
-        date: &Binding<BTreeSet<Date>>,
-        visible_month: &Binding<Date>,
-    ) -> Self {
+    pub fn new<I: IntoLabel<Kind = L>>(label: I, date: &Binding<BTreeSet<Date>>) -> Self {
         let range = Date::MIN..=Date::MAX;
+        let visible_month = Binding::container(
+            initial_visible_month(date.snapshot().into_iter().next(), &range).first_day(),
+        );
         Self {
             label: label.into_label(),
             value: date.clone(),
             range,
             decorated: Computed::constant(BTreeSet::new()),
-            visible_month: visible_month.clone(),
+            visible_month,
         }
     }
 
@@ -164,13 +163,24 @@ impl<L> MultiDatePicker<L> {
 
     /// Sets the valid date range for the picker.
     pub fn range(mut self, range: RangeInclusive<Date>) -> Self {
-        let visible = VisibleMonth::from_date(self.visible_month.snapshot());
-        if !visible_month_in_range(visible, &range) {
-            self.visible_month.set(
-                initial_visible_month(self.value.snapshot().into_iter().next(), &range).first_day(),
-            );
-        }
+        ensure_visible_month_in_range(
+            &self.visible_month,
+            self.value.snapshot().into_iter().next(),
+            &range,
+        );
         self.range = range;
+        self
+    }
+
+    /// Binds external control over the currently displayed month.
+    pub fn visible_month(mut self, month: &Binding<Date>) -> Self {
+        let visible_month = month.clone();
+        ensure_visible_month_in_range(
+            &visible_month,
+            self.value.snapshot().into_iter().next(),
+            &self.range,
+        );
+        self.visible_month = visible_month;
         self
     }
 
@@ -244,5 +254,35 @@ impl<S: View> View for MultiDatePickerGrid<S> {
     fn body(self, env: &Environment) -> impl View {
         let (label, calendar) = self.into_parts(env);
         waterui_layout::stack::vstack((label, calendar)).spacing(10.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nami::Signal;
+
+    #[test]
+    fn owned_visible_month_defaults_to_first_selected_and_supports_opt_in() {
+        let mut selected = BTreeSet::new();
+        selected.insert(Date::new(2025, 4, 20).unwrap());
+        let dates = Binding::container(selected);
+
+        let default_cfg = MultiDatePicker::new("Available", &dates).config();
+        assert_eq!(
+            default_cfg.visible_month().snapshot(),
+            Date::new(2025, 4, 1).unwrap()
+        );
+
+        let shown = Binding::container(Date::new(2025, 7, 1).unwrap());
+        let opt_in_cfg = MultiDatePicker::new("Available", &dates)
+            .visible_month(&shown)
+            .range(Date::new(2025, 1, 1).unwrap()..=Date::new(2025, 6, 30).unwrap())
+            .config();
+        assert_eq!(
+            opt_in_cfg.visible_month().snapshot(),
+            Date::new(2025, 4, 1).unwrap()
+        );
+        assert_eq!(shown.snapshot(), Date::new(2025, 4, 1).unwrap());
     }
 }

@@ -1468,13 +1468,10 @@ fn date_picker_window_base(
         if uses_date {
             let visible_month = staged_visible_month.clone();
             sections.push(waterui_core::OneOf4::B(
-                Calendar::new(
-                    crate::localization::text(&popup_env, "date"),
-                    &staged_date,
-                    &visible_month,
-                )
-                .range(range_start.date()..=range_end.date())
-                .hide_label(),
+                Calendar::new(crate::localization::text(&popup_env, "date"), &staged_date)
+                    .visible_month(&visible_month)
+                    .range(range_start.date()..=range_end.date())
+                    .hide_label(),
             ));
         }
         if uses_time {
