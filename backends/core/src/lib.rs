@@ -9,6 +9,7 @@
 //!
 //! This crate provides shared infrastructure used by `WaterUI` backends:
 //!
+//! - [`dynamic`]: backend receiver protocol ([`DynamicNode`]) for `Dynamic` views
 //! - [`frame_signals`]: the frame-economy trigger handle shared by self-drawn
 //!   render loops (redraw / patch / structural rebuild requests)
 //! - [`gesture`]: platform-agnostic gesture recognition state machines
@@ -54,6 +55,7 @@ use waterui::accessibility::AccessibilityRole;
 use waterui_core::{Computed, Str};
 
 pub mod child;
+pub mod dynamic;
 pub mod frame_signals;
 #[cfg(feature = "gestures")]
 pub mod gesture;
@@ -68,6 +70,7 @@ pub mod scroll;
 pub mod time;
 
 pub use child::{Child, ChildView, IntoChild, NativeBackendFamily};
+pub use dynamic::DynamicNode;
 pub use hooked::{Hooked, HookedFamily};
 pub use native_backend::{NativeBackend, Realize, report_unprovided};
 pub use waterui_meta::mark_reached;

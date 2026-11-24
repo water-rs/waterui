@@ -14,7 +14,7 @@ mod runtime;
 pub use runtime::dialog;
 #[cfg(feature = "snackbar")]
 pub use runtime::snackbar;
-pub use runtime::{app, entry, fullscreen, metadata, task, window};
+pub use runtime::{app, fullscreen, metadata, task, window};
 pub use widget::error;
 // Inspection is a TCP endpoint that also launches the inspector application on
 // the developer's machine; a browser page can do neither, so on wasm the
@@ -70,8 +70,8 @@ pub mod prelude {
     pub use super::{
         AnimationExt, AnyView, Binding, Color, Computed, Identifiable, OneOf2, OneOf3, OneOf4,
         OneOf5, OneOf6, OneOf7, OneOf8, Signal, SignalExt, State, Str, Use, View, ViewExt,
-        accessibility, animation, app, binding, color, component, cursor, drag_drop, entry, env,
-        error, filter, form, fullscreen, gesture, gradient, id, layout, locale, metadata, reactive,
+        accessibility, animation, app, binding, color, component, cursor, drag_drop, env, error,
+        filter, form, fullscreen, gesture, gradient, id, layout, locale, metadata, reactive,
         regional, shape, signal, style, task, text, widget, window,
     };
 

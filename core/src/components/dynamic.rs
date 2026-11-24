@@ -39,6 +39,16 @@ use waterui_macros::state;
 ///
 /// You should avoid using this component if possible,
 /// most of components in `WaterUI` already provide a way to update their content reactively.
+///
+/// The renderer connection protocol is backend-only (via
+/// `waterui_backend_core::DynamicNode`) and is not callable on a `Dynamic`:
+///
+/// ```compile_fail
+/// use waterui_core::dynamic::Dynamic;
+///
+/// let (_handle, view) = Dynamic::<()>::new();
+/// view.connect(|_| {});
+/// ```
 pub struct Dynamic<V: 'static>(DynamicHandler<V>);
 
 impl<V> Clone for Dynamic<V> {
@@ -151,15 +161,13 @@ impl<V> Dynamic<V> {
 
     /// Connects the Dynamic view to a receiver function.
     ///
-    /// For backends.
+    /// Called internally for slot forwarding and through
+    /// `waterui_core::backend::connect_dynamic` by `waterui-backend-core`'s
+    /// `DynamicNode` trait.
     ///
     /// The receiver function is called whenever the view content is updated.
     /// A view set before the connection is delivered to the receiver at once.
-    ///
-    /// # Arguments
-    ///
-    /// * `receiver` - A function that receives view updates
-    pub fn connect(self, receiver: impl Fn(Context<V>) + 'static) {
+    pub(crate) fn connect(self, receiver: impl Fn(Context<V>) + 'static) {
         let initial = {
             let mut inner = self.0.0.state.borrow_mut();
 

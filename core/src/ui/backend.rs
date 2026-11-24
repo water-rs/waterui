@@ -19,9 +19,11 @@ use alloc::boxed::Box;
 use core::any::Any;
 use core::marker::PhantomData;
 
+use nami::watcher::Context;
+
 #[cfg(test)]
 use crate::components::Native;
-use crate::components::{Metadata, NativeView};
+use crate::components::{Dynamic, Metadata, NativeView};
 use crate::metadata::MetadataKey;
 use crate::view::hook::{ComposeErased, ErasedHooks, HookList, HookableView, compose_erased};
 use crate::{AnyView, Environment, View};
@@ -482,6 +484,16 @@ impl<T: 'static> DynBackend for Peel<T> {
     ) -> Box<dyn Any> {
         Box::new(view.take::<T>())
     }
+}
+
+/// Connects `dynamic` to a backend receiver.
+///
+/// Backends should implement `waterui_backend_core::DynamicNode` rather than
+/// calling this hook directly; application code cannot name
+/// `waterui_core::backend` from the `waterui` facade or prelude.
+#[doc(hidden)]
+pub fn connect_dynamic<V: 'static>(dynamic: Dynamic<V>, receiver: impl Fn(Context<V>) + 'static) {
+    dynamic.connect(receiver);
 }
 
 #[cfg(test)]
