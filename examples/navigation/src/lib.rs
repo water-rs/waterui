@@ -198,12 +198,12 @@ impl Mail {
         )
     }
 
-    fn unread_count(&self) -> Computed<i32> {
+    fn unread_count(&self) -> Computed<u32> {
         self.messages
             .clone()
             .map(|messages| {
                 let unread = messages.iter().filter(|message| message.unread).count();
-                i32::try_from(unread).expect("a mailbox holds fewer than 2^31 unread messages")
+                u32::try_from(unread).expect("a mailbox holds fewer than 2^32 unread messages")
             })
             .computed()
     }

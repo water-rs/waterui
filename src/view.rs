@@ -66,7 +66,10 @@ use crate::{
     theme,
 };
 use crate::{
-    component::{badge::Badge, focus::Focused},
+    component::{
+        badge::{Badge, BadgeValue},
+        focus::Focused,
+    },
     floating::Floating,
     prelude::Shadow,
     shape::{ClipShape, Shape},
@@ -616,8 +619,8 @@ pub trait ViewExt: View + Sized {
     /// Adds a badge to this view.
     ///
     /// # Arguments
-    /// * `value` - The numeric value to display in the badge
-    fn badge(self, value: impl IntoComputed<i32>) -> Badge<Self> {
+    /// * `value` - The badge indicator to display (`u32`, [`BadgeValue`](crate::component::badge::BadgeValue), or reactive signal; `0` hides)
+    fn badge(self, value: impl IntoComputed<BadgeValue>) -> Badge<Self> {
         Badge::new(value, self)
     }
 

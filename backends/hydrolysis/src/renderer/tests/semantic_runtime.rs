@@ -1210,7 +1210,7 @@ fn scroll_view_emits_and_scroll_actions_move_offset() {
 #[test]
 fn badge_emits_count_beside_content() {
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
-        AnyView::new(waterui::component::badge::Badge::new(3, text("Inbox")))
+        AnyView::new(waterui::component::badge::Badge::new(3_u32, text("Inbox")))
     }));
 
     let update = pumped(&mut runtime);

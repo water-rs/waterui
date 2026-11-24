@@ -99,6 +99,7 @@ pub mod prelude {
     pub use super::gesture::GestureObserver;
 
     pub use super::border::Border;
+    pub use super::component::badge::BadgeValue;
     pub use super::component::*;
     #[cfg(feature = "form")]
     pub use super::form::*;
@@ -185,6 +186,7 @@ pub mod prelude {
     pub use waterui_macros::{eval, exec, exec_file, js_api, js_file};
 }
 pub use color::Color;
+pub use component::badge::BadgeValue;
 #[cfg(feature = "form")]
 pub use form::FormBuilder;
 #[cfg(feature = "effects")]

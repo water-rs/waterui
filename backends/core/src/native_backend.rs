@@ -1722,7 +1722,7 @@ mod tests {
 
         let authored = || {
             Badge::new(
-                1,
+                1_u32,
                 button(Label::new("Save", Spacer::flexible)).action(|| {}),
             )
         };
@@ -1883,7 +1883,7 @@ mod tests {
         assert_eq!(
             reached(Hooks::new(
                 Badge::new(
-                    1,
+                    1_u32,
                     button(Label::new("Save", Spacer::flexible)).action(|| {})
                 ),
                 DecliningButtonStyleHook,

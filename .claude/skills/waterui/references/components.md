@@ -920,7 +920,7 @@ body can return `Result<impl View, ErrorView<_>>` or `Result<impl View, impl Vie
 ```rust
 use waterui::shape::RoundedRectangle;
 
-text("Inbox").badge(3)                          // a count badge on any Clone view; badge::Badge::new(n, view).color(..)
+text("Inbox").badge(3_u32)                      // 0 hides; BadgeValue::{Hidden, Dot, Count(u32), Text(Text)}; badge::Badge::new(v, view).color(..)
 avatar("Grace Hopper")                          // initials when there is no image; the name is always spoken
     .image(photo_url)                           // a signal of Url: the fallback shows until it decodes
     .shape(RoundedRectangle::new(16.0))

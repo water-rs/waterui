@@ -44,8 +44,8 @@ pub struct Segment {
     pub image: Option<Retained<NSImage>>,
     /// Whether the segment is enabled.
     pub enabled: bool,
-    /// The segment's badge text, shown after the label.
-    pub badge: Option<String>,
+    /// The segment's badge indicator, shown after the label in sidebar rows.
+    pub badge: Option<crate::badge::BadgeDisplay>,
     /// Whether the segment is the search tab — `SwiftUI`'s toolbar tab
     /// picker draws it icon-only.
     pub is_search: bool,
