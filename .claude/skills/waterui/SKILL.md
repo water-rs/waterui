@@ -653,8 +653,9 @@ let view = tsx!(
 - Component tags import from `"waterui"` and resolve against the catalog
   (`<VStack>` `<HStack>` `<Text>` `<Button>` `<Toggle>` `<Slider>` `<List>` `<Tabs>` …),
   with `<Show>` `<For by>` `<Box>` for control flow and `createSignal`,
-  `createMemo`, `createContext`/`useContext`, `useTheme`, `useLocale` from the same
-  module. `<Text>` children localize through the same `TranslationCatalog` as `text(…)`.
+  `createMemo`, `createContext`/`useContext`, `useTheme`, `useLocale`, `t` from the same
+  module. Runtime JS strings and `<Avatar name>` are verbatim; only JSX literal/interpolated
+  text (`{ key }` / `{ key, args }`) and `t` calls look up `TranslationCatalog`.
 - Tests are ordinary `#[waterui::test]`s over the mounted tree. The test host loads its
   bundle from the path in the `WATERUI_TS_BUNDLE` environment variable; `water` has no
   `test` subcommand and `water preview` does not set it, so a `tsx!` mount fails naming

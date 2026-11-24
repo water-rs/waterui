@@ -42,6 +42,7 @@ use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::SelfId;
 use waterui_core::layout::{Alignment, HorizontalAlignment, VerticalAlignment};
 use waterui_core::views::ForEach;
+use waterui_locale::{Locale, TranslationCatalog, locales};
 use waterui_testing::{OffscreenApp, Role};
 use waterui_ts::engine::JsValue;
 
@@ -1929,5 +1930,170 @@ fn ts_a_button_without_on_tap_is_refused() {
     assert!(
         error.contains("onTap"),
         "the error names the missing required action attribute: {error}"
+    );
+}
+
+#[test]
+fn ts_runtime_strings_and_avatar_names_are_verbatim_never_looked_up() {
+    let catalog = TranslationCatalog::new()
+        .add_toml(
+            locales::EN,
+            r#"
+"secret_key" = "WRONG_TRANSLATION"
+"ada_key" = "WRONG_AVATAR_NAME"
+"#,
+        )
+        .expect("en catalog parses");
+
+    let mounted = Module::mount(
+        r#"
+        const [title, setTitle] = waterui.createSignal("secret_key");
+        const [person, setPerson] = waterui.createSignal("ada_key");
+        globalThis.__setTitle = setTitle;
+        globalThis.__setPerson = setPerson;
+        wateruiRuntime.installRuntimeGlobal({
+          main: () => waterui.jsx("VStack", {
+            children: [
+              waterui.jsx("Text", { children: "secret_key" }),
+              waterui.jsx("Text", { get children() { return title(); } }),
+              waterui.jsx("Avatar", { get name() { return person(); } }),
+            ],
+          }),
+        });
+        "#,
+    );
+    let mut app = mounted.app_with_locale(catalog, Binding::container(locales::EN));
+    app.query().label("WRONG_TRANSLATION").assert_not_exists();
+    app.query().label("WRONG_AVATAR_NAME").assert_not_exists();
+    app.query().label("secret_key").assert_exists();
+    app.query().label("ada_key").assert_exists();
+
+    mounted.eval(r#"globalThis.__setTitle("Order #9")"#);
+    mounted.eval(r#"globalThis.__setPerson("Grace Hopper")"#);
+    app.settle();
+    app.query().label("Order #9").assert_exists();
+    app.query().label("Grace Hopper").assert_exists();
+}
+
+#[test]
+fn ts_localized_literals_and_interpolated_args_resolve_reactively_across_locales() {
+    let catalog = TranslationCatalog::new()
+        .add_toml(
+            locales::EN,
+            r#"
+"Settings" = "Preferences"
+"Hello, {name}" = "Hello, {name}!"
+"Order {id}" = "Order #{id}"
+"Order {0}" = "Tagged #{0}"
+"#,
+        )
+        .expect("en catalog parses")
+        .add_toml(
+            locales::ZH_CN,
+            r#"
+"Settings" = "设置"
+"Hello, {name}" = "你好，{name}"
+"Order {id}" = "订单 #{id}"
+"Order {0}" = "标签 #{0}"
+"#,
+        )
+        .expect("zh-CN catalog parses")
+        .add_toml(
+            locales::JA,
+            r#"
+"Settings" = "設定"
+"Hello, {name}" = "こんにちは、{name}"
+"Order {id}" = "注文 #{id}"
+"Order {0}" = "タグ #{0}"
+"#,
+        )
+        .expect("ja catalog parses")
+        .add_toml(
+            locales::KO,
+            r#"
+"Settings" = "설정"
+"Hello, {name}" = "안녕하세요, {name}"
+"Order {id}" = "주문 #{id}"
+"Order {0}" = "태그 #{0}"
+"#,
+        )
+        .expect("ko catalog parses");
+
+    let locale: Binding<Locale> = Binding::container(locales::EN);
+
+    let mounted = Module::mount(
+        r#"
+        const [name, setName] = waterui.createSignal("Ada");
+        const [orderId, setOrderId] = waterui.createSignal(42);
+        globalThis.__setName = setName;
+        globalThis.__setOrderId = setOrderId;
+        wateruiRuntime.installRuntimeGlobal({
+          main: () => waterui.jsx("VStack", {
+            children: [
+              waterui.jsx("Text", { children: { key: "Settings" } }),
+              waterui.jsx("Text", { children: { key: "Hello, {name}", args: { name } } }),
+              waterui.jsx("Card", {
+                title: waterui.t("Order {id}", { id: orderId }),
+                children: waterui.jsx("Text", { children: waterui.t`Order ${orderId}` }),
+              }),
+            ],
+          }),
+        });
+        "#,
+    );
+
+    let mut app = mounted.app_with_locale(catalog, locale.clone());
+    app.query().label("Preferences").assert_exists();
+    app.query().label("Hello, Ada!").assert_exists();
+    app.query().label("Order #42").assert_exists();
+    app.query().label("Tagged #42").assert_exists();
+
+    // Updating reactive arguments re-interpolates in place.
+    mounted.eval(r#"globalThis.__setName("Grace")"#);
+    mounted.eval("globalThis.__setOrderId(99)");
+    app.settle();
+    app.query().label("Hello, Grace!").assert_exists();
+    app.query().label("Order #99").assert_exists();
+    app.query().label("Tagged #99").assert_exists();
+
+    // Switching across CJK locales re-resolves catalog keys and preserves live arguments.
+    locale.set(locales::ZH_CN);
+    app.settle();
+    app.query().label("设置").assert_exists();
+    app.query().label("你好，Grace").assert_exists();
+    app.query().label("订单 #99").assert_exists();
+    app.query().label("标签 #99").assert_exists();
+
+    locale.set(locales::JA);
+    app.settle();
+    app.query().label("設定").assert_exists();
+    app.query().label("こんにちは、Grace").assert_exists();
+    app.query().label("注文 #99").assert_exists();
+    app.query().label("タグ #99").assert_exists();
+
+    locale.set(locales::KO);
+    app.settle();
+    app.query().label("설정").assert_exists();
+    app.query().label("안녕하세요, Grace").assert_exists();
+    app.query().label("주문 #99").assert_exists();
+    app.query().label("태그 #99").assert_exists();
+}
+
+#[test]
+fn ts_malformed_localized_text_object_is_refused() {
+    let unknown_prop = mount_error(&module(
+        r#"waterui.jsx("Text", { children: { key: "ok", extra: 1 } })"#,
+    ));
+    assert!(
+        unknown_prop.contains("extra"),
+        "unknown localized text property must be named: {unknown_prop}"
+    );
+
+    let bad_args = mount_error(&module(
+        r#"waterui.jsx("Text", { children: { key: "ok", args: 123 } })"#,
+    ));
+    assert!(
+        bad_args.contains("args"),
+        "non-object args must be rejected: {bad_args}"
     );
 }

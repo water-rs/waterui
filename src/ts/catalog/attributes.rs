@@ -644,8 +644,9 @@ impl AccordionAttributes {
 #[derive(Debug, TsType)]
 #[non_exhaustive]
 pub struct AvatarAttributes {
-    /// Who the avatar is of, which is also its accessibility label.
-    name: TextContent,
+    /// Who the avatar is of, which is also its accessibility label. Always
+    /// verbatim: a person's name never goes through the translation catalog.
+    name: Computed<Str>,
     /// The picture's URL. Without one the avatar shows the monogram.
     #[cfg(feature = "media")]
     image: Option<Computed<UrlValue>>,
@@ -654,7 +655,7 @@ pub struct AvatarAttributes {
 impl AvatarAttributes {
     /// Who the avatar is of, which is also its accessibility label.
     #[must_use]
-    pub const fn name(&self) -> &TextContent {
+    pub const fn name(&self) -> &Computed<Str> {
         &self.name
     }
 
@@ -667,14 +668,14 @@ impl AvatarAttributes {
 
     /// Takes the `name` out of the value.
     #[must_use]
-    pub fn into_name(self) -> TextContent {
+    pub fn into_name(self) -> Computed<Str> {
         self.name
     }
 
     /// Takes the value apart into its fields, in declaration order.
     #[cfg(feature = "media")]
     #[must_use]
-    pub fn into_parts(self) -> (TextContent, Option<Computed<UrlValue>>) {
+    pub fn into_parts(self) -> (Computed<Str>, Option<Computed<UrlValue>>) {
         (self.name, self.image)
     }
 }
