@@ -487,11 +487,7 @@ jobs:
       - name: Select iOS simulator
         run: |
           set -euo pipefail
-          simulator_udid="$(xcrun simctl list devices available | awk -F '[()]' '/iPhone 17 \(/ {print $2; exit}')"
-          if [[ -z "${simulator_udid}" ]]; then
-            echo "::error::No available iPhone 17 simulator found."
-            exit 1
-          fi
+          simulator_udid="$(./.github/scripts/select-ios-simulator.sh --model-regex '^iPhone 17$')"
           echo "SIMULATOR_UDID=${simulator_udid}" >> "${GITHUB_ENV}"
 
       # The .github/scripts e2e scripts require bash >= 4.2 (#2683).
@@ -778,18 +774,8 @@ jobs:
       - name: Create and boot the iOS simulator
         run: |
           set -euo pipefail
-          runtimes="$(xcrun simctl list runtimes --json)"
           device_type="com.apple.CoreSimulator.SimDeviceType.iPhone-17"
-          runtime_identifier="$(jq -r --arg device_type "${device_type}" '
-            [.runtimes[]
-              | select(.platform == "iOS" and (.isAvailable // false))
-              | select(any(.supportedDeviceTypes[]; .identifier == $device_type))]
-            | sort_by(.version | [split(".")[] | tonumber])
-            | if length == 0 then empty else .[length - 1].identifier end' <<<"${runtimes}")"
-          if [[ -z "${runtime_identifier}" ]]; then
-            echo "::error::No available iOS simulator runtime on this runner image supports ${device_type}."
-            exit 1
-          fi
+          runtime_identifier="$(./.github/scripts/select-ios-simulator.sh --runtime-for-device "${device_type}")"
           simulator_udid="$(xcrun simctl create waterui-ios-device-tests "${device_type}" "${runtime_identifier}")"
           echo "SIMULATOR_UDID=${simulator_udid}" >> "${GITHUB_ENV}"
           xcrun simctl bootstatus "${simulator_udid}" -b
@@ -1016,11 +1002,7 @@ jobs:
         if: matrix.platform == 'ios-simulator'
         run: |
           set -euo pipefail
-          simulator_udid="$(xcrun simctl list devices available | awk -F '[()]' '/iPhone 17 \(/ {print $2; exit}')"
-          if [[ -z "${simulator_udid}" ]]; then
-            echo "::error::No available iPhone 17 simulator found."
-            exit 1
-          fi
+          simulator_udid="$(./.github/scripts/select-ios-simulator.sh --model-regex '^iPhone 17$')"
           echo "SIMULATOR_UDID=${simulator_udid}" >> "${GITHUB_ENV}"
           xcrun simctl boot "${simulator_udid}" || true
           xcrun simctl bootstatus "${simulator_udid}" -b
