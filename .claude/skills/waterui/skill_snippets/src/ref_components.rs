@@ -789,7 +789,7 @@ pub fn components_block_22() {
 
     let _ = { text("t").title() };
     let _ = { text("t").headline() };
-    let _ = { text("t").sub_headline() };
+    let _ = { text("t").subheadline() };
     let _ = { text("t").body() };
     let _ = { text("t").caption() };
     let _ = { text("t").footnote() };

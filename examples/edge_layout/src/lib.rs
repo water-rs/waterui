@@ -119,16 +119,16 @@ pub fn demo() -> impl View {
         vstack((
             text("Edge Layout").title(),
             text("Deep nesting, dense children, constraint edges")
-                .sub_headline()
+                .subheadline()
                 .muted(),
             Divider,
-            text("Deep nesting (8 levels)").sub_headline(),
+            text("Deep nesting (8 levels)").subheadline(),
             deep_nest(8),
             Divider,
-            text("Dense grid (160 eager children)").sub_headline(),
+            text("Dense grid (160 eager children)").subheadline(),
             dense_grid(),
             Divider,
-            text("Frame constraints").sub_headline(),
+            text("Frame constraints").subheadline(),
             constraint_edges(),
             spacer().min_height(16.0),
         ))

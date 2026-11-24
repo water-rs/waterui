@@ -678,7 +678,7 @@ impl_text_font!(
     (body, crate::font::Body),
     (title, crate::font::Title),
     (headline, crate::font::Headline),
-    (sub_headline, crate::font::Subheadline),
+    (subheadline, crate::font::Subheadline),
     (caption, crate::font::Caption),
     (footnote, crate::font::Footnote)
 );

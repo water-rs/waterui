@@ -9,7 +9,7 @@ use waterui::prelude::*;
 use waterui::preview;
 
 fn section(title: &'static str, content: impl View) -> impl View {
-    vstack((text(title).sub_headline().muted(), content))
+    vstack((text(title).subheadline().muted(), content))
         .leading()
         .spacing(6.0)
         .padding_with(12.0)
@@ -92,7 +92,7 @@ pub fn demo() -> impl View {
         vstack((
             text("Edge Text").title(),
             text("Extreme text measurement and line breaking")
-                .sub_headline()
+                .subheadline()
                 .muted(),
             Divider,
             vstack((

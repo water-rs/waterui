@@ -288,7 +288,7 @@ pub fn skill_block_12() {
     };
 
     let _ = {
-        text("Settings").title() // title/headline/sub_headline/body/caption/footnote
+        text("Settings").title() // title/headline/subheadline/body/caption/footnote
     };
     let _ = {
         text!("Count: {count}") // updates automatically

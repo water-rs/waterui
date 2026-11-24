@@ -568,7 +568,7 @@ still need). See [i18n.md](i18n.md).
 Both carry the full font API:
 
 ```rust
-.title() .headline() .sub_headline() .body() .caption() .footnote()
+.title() .headline() .subheadline() .body() .caption() .footnote()
 .size(18.0) .bold() .italic(true) .font(font::Caption) .foreground(color)
 .weight(font::FontWeight::SemiBold) .monospaced() .underline(true) .color(color)
 ```
@@ -585,7 +585,7 @@ read at tap time, so a `Binding` reports its latest value); a second `.on_tap` r
 first: `text(StyledStr::plain("Terms").on_tap("terms", |page: &'static str| open(page)))`.
 
 `.font(..)` takes a slot struct from the prelude's `font` module — `font::Title`,
-`Headline`, `Subheadline` (note the spelling; the method is `.sub_headline()`), `Body`,
+`Headline`, `Subheadline` (note the spelling; the method is `.subheadline()`), `Body`,
 `Caption`, `Footnote` — the form to use when the style is chosen dynamically. On `Text`,
 `.size(..)` is the *font* size, is reactive (`impl IntoSignal<f64>`), and **shadows** the
 two-argument frame `.size(w, h)` — to give a text a frame, use `.width(..)`/`.height(..)`

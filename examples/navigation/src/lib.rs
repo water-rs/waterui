@@ -442,7 +442,7 @@ fn message_row(mail: &Mail, message: Message) -> ListItem<impl View + use<>> {
                 hstack((Accent.size(8.0, 8.0).clip(Circle).visible(unread),)).size(8.0, 8.0),
                 vstack((
                     hstack((
-                        text(message.sender).sub_headline().foreground(Foreground),
+                        text(message.sender).subheadline().foreground(Foreground),
                         spacer(),
                         message
                             .flagged
@@ -511,7 +511,7 @@ fn message_detail(
 
     scroll(
         vstack((
-            text!("{sender}").sub_headline().muted(),
+            text!("{sender}").subheadline().muted(),
             text!("{body}").body().foreground(Foreground),
         ))
         .leading()
@@ -640,7 +640,7 @@ fn library_split() -> impl View {
 fn placeholder() -> impl View {
     vstack((
         text("No album selected")
-            .sub_headline()
+            .subheadline()
             .foreground(Foreground),
         text("Pick one from the sidebar.").caption().muted(),
     ))
@@ -734,7 +734,7 @@ fn photo_tile(index: usize) -> impl View {
         Label::new(text!("Photo {index}"), move || {
             zstack((
                 photo_color(index).size(160.0, 120.0),
-                text!("Photo {index}").sub_headline().foreground(Foreground),
+                text!("Photo {index}").subheadline().foreground(Foreground),
             ))
             .clip(RoundedRectangle::new(0.1))
         }),
@@ -843,7 +843,7 @@ fn appearance_page(compact: Binding<bool>) -> NavigationView<impl View + use<>> 
 fn about_page() -> NavigationView<impl View + use<>> {
     vstack((
         text("Navigation chrome tour")
-            .sub_headline()
+            .subheadline()
             .foreground(Foreground),
         text(
             "Every bar, tab strip, sidebar, search field, and transition in \

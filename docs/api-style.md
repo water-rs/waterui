@@ -66,7 +66,7 @@ See [`waterui-text::font`](../components/text/src/font.rs) for the full
 discussion. In short:
 
 - Prefer **semantic categories**: `.title()`, `.headline()`,
-  `.sub_headline()`, `.body()`, `.caption()`. These cascade through `Theme`
+  `.subheadline()`, `.body()`, `.caption()`. These cascade through `Theme`
   and respect accessibility text-size scaling.
 - Use **font slots** when you need to pass the choice around as a value:
   `.font(Title)`, `.font(font::Caption)`.
