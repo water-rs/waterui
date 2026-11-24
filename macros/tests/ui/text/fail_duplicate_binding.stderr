@@ -1,0 +1,5 @@
+error: duplicate binding `count` in `text!`
+ --> tests/ui/text/fail_duplicate_binding.rs:2:56
+  |
+2 |     let _ = waterui::text!("{count} items", count = 1, count = 2);
+  |                                                        ^^^^^

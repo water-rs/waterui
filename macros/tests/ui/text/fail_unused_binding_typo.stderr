@@ -1,0 +1,5 @@
+error: `cnt` is not a placeholder in "{count} items"
+ --> tests/ui/text/fail_unused_binding_typo.rs:3:45
+  |
+3 |     let _ = waterui::text!("{count} items", cnt = files.len());
+  |                                             ^^^
