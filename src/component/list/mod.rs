@@ -20,8 +20,8 @@ use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 use waterui_core::id::Mapping;
 use waterui_core::{
     AnyView, Environment, Metadata, Native, NativeView, OneOf2, View,
+    extract::State,
     handler::{Handler, shared_action},
-    impl_extractor,
     layout::StretchAxis,
 };
 use waterui_layout::padding::EdgeInsets;
@@ -53,15 +53,14 @@ pub struct Move {
 }
 
 /// Per-row delete payload injected into list delete handlers.
+#[waterui_macros::state]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ListDelete(pub usize);
 
 /// Per-row move payload injected into list move handlers.
+#[waterui_macros::state]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ListMove(pub Move);
-
-impl_extractor!(ListDelete);
-impl_extractor!(ListMove);
 
 impl Move {
     /// Creates a new move operation.
@@ -822,7 +821,7 @@ where
     H: Handler<Args, ()>,
 {
     let action = shared_action(handler);
-    Box::new(move |env, index| action.run(&env.extending(ListDelete(index))))
+    Box::new(move |env, index| action.run(&env.extending(State(ListDelete(index)))))
 }
 
 fn list_move_action<H, Args>(handler: H) -> OnMove
@@ -830,7 +829,7 @@ where
     H: Handler<Args, ()>,
 {
     let action = shared_action(handler);
-    Box::new(move |env, movement| action.run(&env.extending(ListMove(movement))))
+    Box::new(move |env, movement| action.run(&env.extending(State(ListMove(movement)))))
 }
 
 // ============================================================================

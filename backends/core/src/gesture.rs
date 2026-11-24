@@ -24,6 +24,7 @@ use waterui::gesture::{
     PointerButton, PointerButtons, RotationEvent, TapEvent,
 };
 use waterui_core::Environment;
+use waterui_core::extract::State;
 use waterui_core::handler::{BoxedAction, ReportExtraction};
 
 use crate::input::TouchPhase;
@@ -208,13 +209,13 @@ impl GestureBinding {
             return false;
         };
         let mut local_env = env.clone();
-        local_env.insert(self.gesture.clone());
+        local_env.insert(State(self.gesture.clone()));
         match localize_gesture_payload(payload, to_local) {
-            GesturePayload::Tap(event) => local_env.insert(event),
-            GesturePayload::LongPress(event) => local_env.insert(event),
-            GesturePayload::Drag(event) => local_env.insert(event),
-            GesturePayload::Magnification(event) => local_env.insert(event),
-            GesturePayload::Rotation(event) => local_env.insert(event),
+            GesturePayload::Tap(event) => local_env.insert(State(event)),
+            GesturePayload::LongPress(event) => local_env.insert(State(event)),
+            GesturePayload::Drag(event) => local_env.insert(State(event)),
+            GesturePayload::Magnification(event) => local_env.insert(State(event)),
+            GesturePayload::Rotation(event) => local_env.insert(State(event)),
         }
         // A gesture action whose parameters cannot be extracted does not run;
         // the failure is reported and the gesture is still consumed.
@@ -1598,7 +1599,7 @@ mod tests {
         let second = detector.input(GestureInput::Tick {
             at: start + Duration::from_millis(120),
         });
-        // The completing child's event is forwarded so `Use<LongPressEvent>`
+        // The completing child's event is forwarded so `LongPressEvent`
         // handlers on a composed gesture find their payload.
         assert!(matches!(
             second.recognized,
@@ -1752,7 +1753,7 @@ mod tests {
                 identity_placement(bounds),
                 Gesture::Tap(TapGesture::new()),
                 boxed_action(move |env: Environment| {
-                    env.get::<TapEvent>()
+                    env.extract::<TapEvent>()
                         .expect("tap action missing TapEvent in environment");
                     tap_hits.set(tap_hits.get() + 1);
                 }),
@@ -1767,7 +1768,7 @@ mod tests {
                 identity_placement(bounds),
                 Gesture::Drag(DragGesture::new(8.0)),
                 boxed_action(move |env: Environment| {
-                    env.get::<DragEvent>()
+                    env.extract::<DragEvent>()
                         .expect("drag action missing DragEvent in environment");
                     drag_hits.set(drag_hits.get() + 1);
                 }),
@@ -1815,7 +1816,7 @@ mod tests {
                 identity_placement(bounds),
                 Gesture::Drag(DragGesture::new(0.0)),
                 boxed_action(move |env: Environment| {
-                    env.get::<DragEvent>()
+                    env.extract::<DragEvent>()
                         .expect("drag action missing DragEvent in environment");
                     drag_hits.set(drag_hits.get() + 1);
                 }),
@@ -1830,7 +1831,7 @@ mod tests {
                 identity_placement(bounds),
                 Gesture::Magnification(MagnificationGesture::new(1.0)),
                 boxed_action(move |env: Environment| {
-                    env.get::<MagnificationEvent>()
+                    env.extract::<MagnificationEvent>()
                         .expect("magnification action missing MagnificationEvent in environment");
                     magnify_hits.set(magnify_hits.get() + 1);
                 }),
@@ -1880,7 +1881,7 @@ mod tests {
                 identity_placement(bounds),
                 Gesture::Tap(TapGesture::new()),
                 boxed_action(move |env: Environment| {
-                    env.get::<TapEvent>()
+                    env.extract::<TapEvent>()
                         .expect("tap action missing TapEvent in environment");
                     default_hits.set(default_hits.get() + 1);
                 }),
@@ -1897,7 +1898,7 @@ mod tests {
                 Gesture::Tap(TapGesture::new().buttons(PointerButtons::MIDDLE)),
                 boxed_action(move |env: Environment| {
                     let event = env
-                        .get::<TapEvent>()
+                        .extract::<TapEvent>()
                         .expect("tap action missing TapEvent in environment");
                     middle_button.set(Some(event.button()));
                     middle_hits.set(middle_hits.get() + 1);
@@ -1939,7 +1940,7 @@ mod tests {
                 identity_placement(bounds),
                 Gesture::Tap(TapGesture::new().buttons(PointerButtons::MIDDLE)),
                 boxed_action(move |env: Environment| {
-                    env.get::<TapEvent>()
+                    env.extract::<TapEvent>()
                         .expect("tap action missing TapEvent in environment");
                     middle_hits.set(middle_hits.get() + 1);
                 }),
@@ -1978,7 +1979,7 @@ mod tests {
                 identity_placement(bounds),
                 Gesture::Tap(TapGesture::new()),
                 boxed_action(move |env: Environment| {
-                    env.get::<TapEvent>()
+                    env.extract::<TapEvent>()
                         .expect("tap action missing TapEvent in environment");
                     hits.set(hits.get() + 1);
                 }),
@@ -2030,7 +2031,7 @@ mod tests {
                 identity_placement(kurbo::Rect::new(0.0, 0.0, 200.0, 40.0)),
                 Gesture::Tap(TapGesture::new()),
                 boxed_action(move |env: Environment| {
-                    env.get::<TapEvent>()
+                    env.extract::<TapEvent>()
                         .expect("tap action missing TapEvent in environment");
                     parent_hits.set(parent_hits.get() + 1);
                 }),
@@ -2045,7 +2046,7 @@ mod tests {
                 identity_placement(kurbo::Rect::new(0.0, 0.0, 120.0, 40.0)),
                 Gesture::Tap(TapGesture::new().buttons(PointerButtons::MIDDLE)),
                 boxed_action(move |env: Environment| {
-                    env.get::<TapEvent>()
+                    env.extract::<TapEvent>()
                         .expect("tap action missing TapEvent in environment");
                     child_hits.set(child_hits.get() + 1);
                 }),
@@ -2103,7 +2104,7 @@ mod tests {
                 ),
                 boxed_action(move |env: Environment| {
                     let event = env
-                        .get::<DragEvent>()
+                        .extract::<DragEvent>()
                         .expect("drag action missing DragEvent in environment");
                     last_button.set(Some(event.button()));
                 }),
@@ -2155,7 +2156,7 @@ mod tests {
                 identity_placement(bounds),
                 Gesture::Tap(TapGesture::new()),
                 boxed_action(move |env: Environment| {
-                    env.get::<TapEvent>()
+                    env.extract::<TapEvent>()
                         .expect("tap action missing TapEvent in environment");
                     tap_hits.set(tap_hits.get() + 1);
                 }),
@@ -2232,7 +2233,9 @@ mod tests {
                 placement,
                 Gesture::Tap(TapGesture::new()),
                 boxed_action(move |env: Environment| {
-                    let event = env.get::<TapEvent>().expect("tap action missing TapEvent");
+                    let event = env
+                        .extract::<TapEvent>()
+                        .expect("tap action missing TapEvent");
                     tap.set(Some(event.location()));
                 }),
                 0,
@@ -2258,7 +2261,7 @@ mod tests {
                 Gesture::Drag(DragGesture::new(0.0)),
                 boxed_action(move |env: Environment| {
                     let event = env
-                        .get::<DragEvent>()
+                        .extract::<DragEvent>()
                         .expect("drag action missing DragEvent");
                     *drag.borrow_mut() = Some(event.clone());
                 }),

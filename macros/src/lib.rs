@@ -330,9 +330,7 @@ pub fn view_builder(args: TokenStream, input: TokenStream) -> TokenStream {
 ///
 /// The type must be `Clone + 'static`; the requirement is enforced at the
 /// attribute so a missing `Clone` reports here rather than inside the
-/// expansion. For an owned type that should read a value installed directly in
-/// the environment instead of through `.state()`, use
-/// `waterui::impl_extractor!`.
+/// expansion.
 #[proc_macro_attribute]
 pub fn state(args: TokenStream, input: TokenStream) -> TokenStream {
     state::expand(args, input)

@@ -18,8 +18,8 @@ use waterui::navigation::{
 // at the controls root.
 use waterui::component::{button, field, label, slider, stepper, toggle};
 
-// Custom extractors no longer require `impl_extractor!` as the only route.
-use waterui::extract::{Extractor, State, Use};
+// Custom extractors reach the single `State` environment channel through `Extractor` and `State`.
+use waterui::extract::{Extractor, State};
 
 // Implementing a custom resolvable theme token.
 use waterui::resolve::{AnyResolvable, Resolvable};

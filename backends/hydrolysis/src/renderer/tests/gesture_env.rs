@@ -36,7 +36,7 @@ use waterui::gesture::{DragEvent, DragGesture, GesturePoint, TapEvent, TapGestur
 use waterui::style::Anchor;
 use waterui::{AnyView, Binding, Color, ViewExt as _};
 use waterui_core::Environment;
-use waterui_core::extract::{State, Use};
+use waterui_core::extract::State;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_interaction::event::{Event, HoverEvent};
 use waterui_layout::stack::hstack;
@@ -148,8 +148,8 @@ fn split(handle: AnyView) -> AnyView {
 /// The drag action body both orders share: extract `State` optionally so the
 /// action still runs when the environment cannot satisfy the extractor —
 /// which is what a regression to the old contract produces.
-fn drag_action(fired: Fired) -> impl Fn(Use<DragEvent>, OptState<Vec<f32>>, OptState<f32>) {
-    move |_drag: Use<DragEvent>, sizes: OptState<Vec<f32>>, grab: OptState<f32>| {
+fn drag_action(fired: Fired) -> impl Fn(DragEvent, OptState<Vec<f32>>, OptState<f32>) {
+    move |_drag: DragEvent, sizes: OptState<Vec<f32>>, grab: OptState<f32>| {
         fired.borrow_mut().push((
             sizes.map(|State(s)| s.get_mut()[0]),
             grab.map(|State(g)| *g.get_mut()),
@@ -514,7 +514,7 @@ fn repeated_state_binding_order_is_identical_in_both_placements() {
 #[test]
 fn hover_move_location_is_view_local() {
     let record = |sink: Rc<RefCell<Vec<(f32, f32)>>>| {
-        move |Use(event): Use<HoverEvent>| {
+        move |event: HoverEvent| {
             sink.borrow_mut()
                 .push((event.location().x, event.location().y));
         }
@@ -556,7 +556,7 @@ fn gesture_event_locations_are_view_local_under_scale() {
     let tapped = handle()
         .gesture(TapGesture::new(), {
             let taps = Rc::clone(&taps);
-            move |Use(event): Use<TapEvent>| taps.borrow_mut().push(event.location())
+            move |event: TapEvent| taps.borrow_mut().push(event.location())
         })
         .scale_from(2.0, 2.0, Anchor::TOP_LEFT);
     let mut runtime = runtime_with(split(AnyView::new(tapped)));
@@ -572,7 +572,7 @@ fn gesture_event_locations_are_view_local_under_scale() {
     let dragged = handle()
         .gesture(DragGesture::new(0.0), {
             let drags = Rc::clone(&drags);
-            move |Use(event): Use<DragEvent>| {
+            move |event: DragEvent| {
                 drags
                     .borrow_mut()
                     .push((event.location(), event.translation()));

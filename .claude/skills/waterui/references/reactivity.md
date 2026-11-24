@@ -225,14 +225,12 @@ button("Reset")
 Handler parameters are extractors. Besides `State<T>`:
 
 - `Environment` — the whole environment.
-- `Use<T>` — any `Clone` value installed in the environment (as opposed to `.state()`).
 - `Option<E>` — makes any extractor optional instead of failing.
 - A `Clone` type the app owns, once marked `#[state]`, is itself an extractor — write the
-  parameter bare (`state: Editor`) and it reads what `.state(&value)` injected.
-- `impl_extractor!(ApiClient)` instead marks a `Clone` type installed as an *environment*
-  value (`env.insert`/`env.with`), a different channel from `.state()`.
-- Context extractors supplied by components, e.g. `Navigator<Route>`, `ListDelete`,
-  `ListMove`, `SnackbarManager`, `WebViewProxy`.
+  parameter bare (`state: Editor`) and it reads what `.state(&value)` / `App::state(&value)`
+  injected.
+- Context extractors supplied by components on the same channel, e.g. `Navigator<Route>`,
+  `ListDelete`, `ListMove`, `SnackbarManager`, `WebViewProxy`.
 
 Repeated parameters of one state type bind positionally: the first `.state()` call feeds
 the first parameter of that type. A parameter that cannot be extracted means the handler
@@ -256,7 +254,7 @@ nothing.
 ```rust
 use waterui::env::use_env;
 
-use_env(|Use(client): Use<ApiClient>| text(client.name()))
+use_env(|State(client): State<ApiClient>| text(client.name()))
 ```
 
 To accept a caller-supplied action in your *own* reusable view function, take the handler

@@ -1183,7 +1183,7 @@ mod tests {
 
     use crate::platform::{KeyCode, Modifiers};
     use keyboard_types::Code;
-    use waterui_core::extract::Use;
+    use waterui_core::handler::Handler;
     use waterui_interaction::key::{Key, KeyHandling, KeyPress, NamedKey};
 
     /// A synthetic press of a named key, carrying both the legacy `KeyCode`
@@ -1249,8 +1249,8 @@ mod tests {
     fn counting_handler(
         hits: Binding<Vec<String>>,
         disposition: KeyHandling,
-    ) -> impl waterui_core::handler::Handler<(Use<KeyPress>,), KeyHandling> {
-        move |Use(press): Use<KeyPress>| {
+    ) -> impl Handler<(KeyPress,), KeyHandling> {
+        move |press: KeyPress| {
             let mut seen = hits.snapshot();
             seen.push(format!("{:?}", press.key()));
             hits.set(seen);
@@ -1471,7 +1471,7 @@ mod tests {
             let hits = hits_for_view.clone();
             AnyView::new(
                 vstack((waterui_controls::text_field::field("Search", &value),)).on_key_press(
-                    move |Use(press): Use<KeyPress>| {
+                    move |press: KeyPress| {
                         let mut seen = hits.snapshot();
                         seen.push(format!("{:?}", press.key()));
                         hits.set(seen);

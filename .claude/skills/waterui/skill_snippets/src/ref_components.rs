@@ -766,9 +766,7 @@ pub fn components_block_20() -> impl View {
             "Reply".action(|| {}),
             "Delete".command().action(|| {}).destructive(),
         ))
-        .accessory(
-            button("Like").action(|Use(dismiss): Use<DismissContextMenu>| dismiss.dismiss()),
-        ),
+        .accessory(button("Like").action(|dismiss: DismissContextMenu| dismiss.dismiss())),
     )
 }
 

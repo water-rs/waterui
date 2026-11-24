@@ -50,7 +50,8 @@ fn popup_menu_node<S: 'static>(
     match item {
         ResolvedMenuItem::Command(command) => Some(command_node(command)),
         ResolvedMenuItem::Quit => env
-            .get::<Quit>()
+            .extract::<Quit>()
+            .ok()
             .map(|quit| command_node(quit.command::<waterui_controls::NoopSlot>(env))),
         ResolvedMenuItem::CloseWindow => {
             close_window_command(env, owner_closable).map(command_node)

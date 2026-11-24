@@ -447,7 +447,6 @@ fn ui_test_hover_drag_and_magnify_update_semantic_bounds() {
     };
     use waterui::prelude::text;
     use waterui::{Binding, SignalExt as _, ViewExt as _, state};
-    use waterui_core::extract::Use;
 
     #[state]
     #[derive(Clone)]
@@ -488,14 +487,14 @@ fn ui_test_hover_drag_and_magnify_update_semantic_bounds() {
                 surface
                     .gesture_observer(GestureObserver::new(
                         DragGesture::new(0.0),
-                        |DragOffset(offset): DragOffset, drag: Use<DragEvent>| {
+                        |DragOffset(offset): DragOffset, drag: DragEvent| {
                             offset.set(drag.translation().x);
                         },
                     ))
                     .state(&drag_offset_state)
                     .gesture_observer(GestureObserver::new(
                         MagnificationGesture::new(1.0),
-                        |ZoomScale(scale): ZoomScale, magnification: Use<MagnificationEvent>| {
+                        |ZoomScale(scale): ZoomScale, magnification: MagnificationEvent| {
                             scale.set(magnification.scale());
                         },
                     ))

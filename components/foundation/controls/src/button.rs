@@ -83,37 +83,12 @@
 //! # }
 //! ```
 //!
-//! [`impl_extractor!`](waterui_core::impl_extractor) is the other channel: it
-//! marks a `Clone` type read straight from the environment — a value installed
-//! with `env.insert(..)` or `.with(..)`, typically by `app(env)` or a backend —
-//! not one injected through `.state()`:
-//!
-//! ```rust
-//! use waterui::impl_extractor;
-//! use waterui::prelude::*;
-//!
-//! #[derive(Clone)]
-//! struct DatabaseConnection;
-//! impl_extractor!(DatabaseConnection);
-//! # impl DatabaseConnection {
-//! #     fn save_user_preferences(&self) {}
-//! # }
-//!
-//! # fn extracted(db: &DatabaseConnection) {
-//! button("Save")
-//!     .action(|db: DatabaseConnection| {
-//!         db.save_user_preferences();
-//!     })
-//!     .with(db.clone());
-//! # }
-//! ```
-//!
 //! ## Combined State and Extraction
 //!
-//! State and custom extractors compose in a single handler:
+//! `State<T>` and `#[state]` extractors compose in a single handler over the
+//! same `.state(&value)` channel:
 //!
 //! ```rust
-//! use waterui::impl_extractor;
 //! use waterui::prelude::*;
 //!
 //! # use waterui::reactive::binding;
@@ -121,19 +96,21 @@
 //! # struct FormData {
 //! #     email: Str,
 //! # }
+//! # #[state]
 //! # #[derive(Clone)]
 //! # struct ApiClient;
-//! # impl_extractor!(ApiClient);
 //! # impl ApiClient {
 //! #     fn submit(&self, _form: FormData) {}
 //! # }
 //! # fn combined() {
 //! # let form_data: Binding<FormData> = binding(FormData::default());
+//! # let client = ApiClient;
 //! button("Submit")
 //!     .action(|State(data): State<Binding<FormData>>, client: ApiClient| {
 //!         client.submit(data.snapshot());
 //!     })
-//!     .state(&form_data);
+//!     .state(&form_data)
+//!     .state(&client);
 //! # }
 //! ```
 //!
