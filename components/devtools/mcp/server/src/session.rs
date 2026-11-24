@@ -8,8 +8,8 @@ use accesskit::{Action, ActionData, NodeId as AccessibilityNodeId};
 use aither_core::llm::tool::ToolResult;
 use async_channel::Sender;
 use waterui_testing::{
-    DragOptions, KeyCode, NodeId, OffscreenApp, Role, RuntimeDriver, Selector, SemanticApp,
-    VIRTUAL_FRAME, WaitOptions, WaitResult,
+    DragOptions, Expectation, KeyCode, NodeId, OffscreenApp, Role, RuntimeDriver, Selector,
+    SemanticApp, VIRTUAL_FRAME, WaitOptions, WaitResult,
 };
 
 use waterui_mcp_protocol::{
@@ -341,7 +341,7 @@ fn selector_from<R: RuntimeDriver>(
     if args.within().is_some() && args.children_of().is_some() {
         return Err("`within` and `children_of` are mutually exclusive".to_owned());
     }
-    let mut selector = Selector::default();
+    let mut selector = Selector::new();
     if let Some(role) = &args.role() {
         selector = selector.role(resolve_role(role)?);
     }
@@ -695,17 +695,19 @@ impl<'a> Session<'a> {
         let mut expectations = Vec::new();
         if let Some(expect) = &args.exists() {
             match selector_from(&mut self.app, expect.selector()) {
-                Ok(selector) => expectations.push(apply_inverted(
-                    self.app.expect_exists(selector),
-                    expect.inverted(),
-                )),
+                Ok(selector) => {
+                    expectations.push(apply_inverted(
+                        Expectation::exists(selector),
+                        expect.inverted(),
+                    ));
+                }
                 Err(error) => return ToolResult::error(error),
             }
         }
         if let Some(expect) = &args.not_exists() {
             match selector_from(&mut self.app, expect.selector()) {
                 Ok(selector) => expectations.push(apply_inverted(
-                    self.app.expect_not_exists(selector),
+                    Expectation::not_exists(selector),
                     expect.inverted(),
                 )),
                 Err(error) => return ToolResult::error(error),
@@ -714,8 +716,7 @@ impl<'a> Session<'a> {
         if let Some(value_eq) = &args.value_eq() {
             match selector_from(&mut self.app, value_eq.selector()) {
                 Ok(selector) => expectations.push(apply_inverted(
-                    self.app
-                        .expect_value_eq(selector, value_eq.value().to_owned()),
+                    Expectation::value_eq(selector, value_eq.value().to_owned()),
                     value_eq.inverted(),
                 )),
                 Err(error) => return ToolResult::error(error),
@@ -724,7 +725,7 @@ impl<'a> Session<'a> {
         if let Some(expect) = &args.focus() {
             match selector_from(&mut self.app, expect.selector()) {
                 Ok(selector) => expectations.push(apply_inverted(
-                    self.app.expect_ui_focus(selector),
+                    Expectation::ui_focus(selector),
                     expect.inverted(),
                 )),
                 Err(error) => return ToolResult::error(error),
@@ -743,7 +744,6 @@ impl<'a> Session<'a> {
             WaitResult::TimedOut => "timed out",
             WaitResult::IncorrectOrder => "incorrect_order",
             WaitResult::InvertedFulfillment => "inverted_fulfillment",
-            WaitResult::Interrupted => "interrupted",
         };
         ToolResult::text(format!("{status}\n\n{}", tree::render_text(&self.app)))
     }

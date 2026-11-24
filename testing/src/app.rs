@@ -1268,46 +1268,6 @@ impl<R: RuntimeDriver> SemanticApp<R> {
         );
     }
 
-    /// Creates an existence expectation.
-    #[must_use]
-    pub const fn expect_exists(&self, selector: Selector) -> Expectation {
-        Expectation {
-            kind: ExpectationKind::Exists(selector),
-            inverted: false,
-        }
-    }
-
-    /// Creates a non-existence expectation.
-    #[must_use]
-    pub const fn expect_not_exists(&self, selector: Selector) -> Expectation {
-        Expectation {
-            kind: ExpectationKind::NotExists(selector),
-            inverted: false,
-        }
-    }
-
-    /// Creates a value-equality expectation.
-    #[must_use]
-    pub fn expect_value_eq(&self, selector: Selector, value: impl Into<String>) -> Expectation {
-        Expectation {
-            kind: ExpectationKind::ValueEquals {
-                selector,
-                value: value.into(),
-            },
-            inverted: false,
-        }
-    }
-
-    /// Creates a UI-focus expectation: fulfilled once the selector resolves to
-    /// the element holding Hydrolysis UI focus.
-    #[must_use]
-    pub const fn expect_ui_focus(&self, selector: Selector) -> Expectation {
-        Expectation {
-            kind: ExpectationKind::UiFocus(selector),
-            inverted: false,
-        }
-    }
-
     /// Resolves a node id to an [`ElementRef`] bound to the current tree, or
     /// `None` when the id is absent.
     ///
@@ -1486,14 +1446,18 @@ impl<R: RuntimeDriver> SemanticApp<R> {
 
     /// Convenience API mirroring `XCTest` `waitForExistence`.
     pub fn wait_for_existence(&mut self, selector: &Selector, timeout: Duration) -> bool {
-        let expectation = self.expect_exists(selector.clone());
-        self.wait_for(&[expectation], WaitOptions::new(timeout)) == WaitResult::Completed
+        self.wait_for(
+            &[Expectation::exists(selector.clone())],
+            WaitOptions::new(timeout),
+        ) == WaitResult::Completed
     }
 
     /// Convenience API mirroring `XCTest` `waitForNonexistence`.
     pub fn wait_for_nonexistence(&mut self, selector: &Selector, timeout: Duration) -> bool {
-        let expectation = self.expect_not_exists(selector.clone());
-        self.wait_for(&[expectation], WaitOptions::new(timeout)) == WaitResult::Completed
+        self.wait_for(
+            &[Expectation::not_exists(selector.clone())],
+            WaitOptions::new(timeout),
+        ) == WaitResult::Completed
     }
 
     /// Waits for one node's value to equal the expected value.
@@ -1503,42 +1467,18 @@ impl<R: RuntimeDriver> SemanticApp<R> {
         value: impl Into<String>,
         timeout: Duration,
     ) -> bool {
-        let expectation = self.expect_value_eq(selector.clone(), value);
-        self.wait_for(&[expectation], WaitOptions::new(timeout)) == WaitResult::Completed
+        self.wait_for(
+            &[Expectation::value_eq(selector.clone(), value)],
+            WaitOptions::new(timeout),
+        ) == WaitResult::Completed
     }
 
     /// Waits until the selector resolves to the current UI-focused element.
     pub fn wait_for_ui_focus(&mut self, selector: &Selector, timeout: Duration) -> bool {
-        const MIN_IDLE_BACKOFF: Duration = Duration::from_millis(1);
-        const MAX_IDLE_BACKOFF: Duration = Duration::from_millis(16);
-
-        let deadline = Instant::now() + timeout;
-        let mut idle_backoff = Duration::ZERO;
-        loop {
-            if self.matches_ui_focus(selector) {
-                return true;
-            }
-
-            if Instant::now() >= deadline {
-                return false;
-            }
-
-            let _ = self.pump_once();
-            if !self.runtime.is_settled() {
-                idle_backoff = Duration::ZERO;
-                continue;
-            }
-
-            let next_backoff = if idle_backoff.is_zero() {
-                MIN_IDLE_BACKOFF
-            } else {
-                idle_backoff.saturating_mul(2).min(MAX_IDLE_BACKOFF)
-            };
-            idle_backoff = next_backoff;
-            std::thread::sleep(
-                next_backoff.min(deadline.saturating_duration_since(Instant::now())),
-            );
-        }
+        self.wait_for(
+            &[Expectation::ui_focus(selector.clone())],
+            WaitOptions::new(timeout),
+        ) == WaitResult::Completed
     }
 
     fn evaluate_expectation(&mut self, expectation: &Expectation) -> bool {

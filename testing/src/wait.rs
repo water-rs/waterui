@@ -10,6 +10,45 @@ pub struct Expectation {
 }
 
 impl Expectation {
+    /// Creates an existence expectation for `selector`.
+    #[must_use]
+    pub const fn exists(selector: Selector) -> Self {
+        Self {
+            kind: ExpectationKind::Exists(selector),
+            inverted: false,
+        }
+    }
+
+    /// Creates a non-existence expectation for `selector`.
+    #[must_use]
+    pub const fn not_exists(selector: Selector) -> Self {
+        Self {
+            kind: ExpectationKind::NotExists(selector),
+            inverted: false,
+        }
+    }
+
+    /// Creates a value-equality expectation for `selector`.
+    #[must_use]
+    pub fn value_eq(selector: Selector, value: impl Into<String>) -> Self {
+        Self {
+            kind: ExpectationKind::ValueEquals {
+                selector,
+                value: value.into(),
+            },
+            inverted: false,
+        }
+    }
+
+    /// Creates a UI-focus expectation for `selector`.
+    #[must_use]
+    pub const fn ui_focus(selector: Selector) -> Self {
+        Self {
+            kind: ExpectationKind::UiFocus(selector),
+            inverted: false,
+        }
+    }
+
     /// Marks this expectation as inverted.
     #[must_use]
     pub const fn inverted(mut self) -> Self {
@@ -93,6 +132,4 @@ pub enum WaitResult {
     IncorrectOrder,
     /// An inverted expectation became true.
     InvertedFulfillment,
-    /// The wait was interrupted.
-    Interrupted,
 }

@@ -39,7 +39,7 @@ use waterui_media::{
     LivePhoto, Url,
     live::{Event as LivePhotoEvent, LivePhotoSource},
 };
-use waterui_testing::{Role, Selector, TestStyle, UiBuilder, WaitOptions, WaitResult};
+use waterui_testing::{Role, TestStyle, UiBuilder};
 
 fn sample_image_path() -> String {
     let unique = std::time::SystemTime::now()
@@ -95,12 +95,9 @@ fn live_photo_long_press_plays_motion_once_and_recovers(ui: UiBuilder) {
             .size(120.0, 80.0)
     });
 
-    let initial_still = app.expect_exists(Selector::default().role(Role::IMAGE));
-    assert_eq!(
-        app.wait_for_frames(&[initial_still], MOUNT_FRAME_BUDGET),
-        WaitResult::Completed,
-        "the live photo must expose its initial still image"
-    );
+    app.query()
+        .role(Role::IMAGE)
+        .assert_exists_within_frames(MOUNT_FRAME_BUDGET);
     let bounds = app.query().role(Role::IMAGE).single().bounds();
     assert!(
         (bounds.width() - 120.0).abs() < 0.5 && (bounds.height() - 80.0).abs() < 0.5,
@@ -117,41 +114,31 @@ fn live_photo_long_press_plays_motion_once_and_recovers(ui: UiBuilder) {
     // The motion is a transient: settling after the press would wait for the
     // playback it starts, so queue the press and observe the tree instead.
     app.queue_pointer_down_at(center_x, center_y);
-    let motion = app.expect_exists(Selector::default().role(Role::IMAGE).label("Video content"));
-    assert_eq!(
-        app.wait_for_frames(&[motion], MOUNT_FRAME_BUDGET),
-        WaitResult::Completed,
-        "holding past the activation duration must mount live photo motion"
-    );
+    app.query()
+        .role(Role::IMAGE)
+        .label("Video content")
+        .assert_exists_within_frames(MOUNT_FRAME_BUDGET);
     app.queue_pointer_up_at(center_x, center_y);
 
-    let motion_gone =
-        app.expect_not_exists(Selector::default().role(Role::IMAGE).label("Video content"));
-    assert_eq!(
-        app.wait_for(&[motion_gone], WaitOptions::new(MOTION_PLAYBACK_BUDGET)),
-        WaitResult::Completed,
-        "completed motion playback must return to the still photo"
-    );
+    app.query()
+        .role(Role::IMAGE)
+        .label("Video content")
+        .assert_not_exists_within(MOTION_PLAYBACK_BUDGET);
     app.query().role(Role::IMAGE).assert_exists();
     assert_motion_played(&motion_outcomes, 1);
 
     let bounds = app.query().role(Role::IMAGE).single().bounds();
     let (center_x, center_y) = bounds.center();
     app.queue_pointer_down_at(center_x, center_y);
-    let motion = app.expect_exists(Selector::default().role(Role::IMAGE).label("Video content"));
-    assert_eq!(
-        app.wait_for_frames(&[motion], MOUNT_FRAME_BUDGET),
-        WaitResult::Completed,
-        "live photo must support replay after returning to its still image"
-    );
+    app.query()
+        .role(Role::IMAGE)
+        .label("Video content")
+        .assert_exists_within_frames(MOUNT_FRAME_BUDGET);
     app.queue_pointer_up_at(center_x, center_y);
-    let motion_gone =
-        app.expect_not_exists(Selector::default().role(Role::IMAGE).label("Video content"));
-    assert_eq!(
-        app.wait_for(&[motion_gone], WaitOptions::new(MOTION_PLAYBACK_BUDGET)),
-        WaitResult::Completed,
-        "replayed motion must also stop after one pass"
-    );
+    app.query()
+        .role(Role::IMAGE)
+        .label("Video content")
+        .assert_not_exists_within(MOTION_PLAYBACK_BUDGET);
     app.query().role(Role::IMAGE).assert_exists();
     assert_motion_played(&motion_outcomes, 2);
 }
