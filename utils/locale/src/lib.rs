@@ -66,6 +66,7 @@ pub use format::number::{Currency, format_currency, format_number, format_percen
 #[cfg(feature = "number")]
 pub use format::unit::{Feet, Kilometer, Length, LengthUnit, Meter, Mile};
 pub use locale::{Locale, locales};
+pub use parser::TranslationParseError;
 pub use plural::{PluralCategory, select_plural, valid_categories};
 
 /// Returns the Unicode layout direction for a locale.
@@ -465,6 +466,18 @@ mod tests {
             }
             _ => panic!("Expected plural translation"),
         }
+    }
+
+    #[test]
+    fn test_display_name_formats_autonyms_and_localized_names() {
+        assert_eq!(locales::EN_US.display_name(&locales::EN_US), "English (US)");
+        assert_eq!(locales::EN_GB.display_name(&locales::EN_GB), "English (UK)");
+        assert_eq!(locales::DE.display_name(&locales::DE), "Deutsch");
+        assert_eq!(locales::JA.display_name(&locales::JA), "日本語");
+        assert_eq!(locales::KO.display_name(&locales::KO), "한국어");
+        assert_eq!(locales::DE.display_name(&locales::EN), "German");
+        assert_ne!(locales::ZH_TW.display_name(&locales::ZH_TW), "");
+        assert_ne!(locales::ZH_HK.display_name(&locales::ZH_HK), "");
     }
 
     #[test]

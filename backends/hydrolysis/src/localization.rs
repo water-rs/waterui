@@ -1,6 +1,6 @@
 use nami::Signal;
 use waterui_core::{Environment, contract_violation};
-use waterui_locale::{TranslationCatalog, locale_binding};
+use waterui_locale::{Locale, TranslationCatalog, locale_binding};
 
 const CATALOGS: &[(&str, &str)] = &[
     ("en", include_str!("../i18n/en.toml")),
@@ -25,12 +25,15 @@ pub struct HydrolysisLocalizations(TranslationCatalog);
 impl HydrolysisLocalizations {
     fn new() -> Self {
         let mut catalog = TranslationCatalog::new();
-        for &(locale, source) in CATALOGS {
+        for &(locale_tag, source) in CATALOGS {
+            let locale = locale_tag.parse::<Locale>().unwrap_or_else(|error| {
+                panic!("Hydrolysis built-in locale tag {locale_tag} must be valid BCP-47: {error}")
+            });
             // The catalogs are `include_str!` data, and the
             // `every_builtin_catalog_defines_every_builtin_key` test parses
             // each of them, so a parse failure is a build defect.
             catalog = catalog.add_toml(locale, source).unwrap_or_else(|error| {
-                panic!("Hydrolysis built-in {locale} catalog must be valid TOML: {error}")
+                panic!("Hydrolysis built-in {locale_tag} catalog must be valid TOML: {error}")
             });
         }
         Self(catalog)
@@ -143,7 +146,7 @@ mod tests {
     fn every_builtin_catalog_defines_every_builtin_key() {
         for &(locale_name, source) in CATALOGS {
             let catalog = TranslationCatalog::new()
-                .add_toml("en", source)
+                .add_toml(locales::EN, source)
                 .unwrap_or_else(|error| {
                     panic!("built-in locale {locale_name} is invalid: {error}")
                 });
