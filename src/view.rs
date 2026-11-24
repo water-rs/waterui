@@ -13,7 +13,7 @@ use crate::animation::{FrameRate, FrameRateVote};
 use crate::fullscreen::FullScreenOverlayHost;
 #[cfg(feature = "snackbar")]
 use crate::snackbar::SnackbarHost;
-use executor_core::spawn_local;
+use core::future::Future;
 use nami::{Binding, Computed, Signal, SignalExt as _, signal::IntoComputed};
 use waterui_core::IntoSignalF32;
 pub use waterui_core::view::*;
@@ -78,7 +78,7 @@ use waterui_controls::button::{ButtonStyleHook, IntoButtonStyle};
 #[cfg(feature = "toggle")]
 use waterui_controls::toggle::{IntoToggleStyle, ToggleStyleHook};
 use waterui_core::id::TaggedView;
-use waterui_interaction::event::{Event, LifeCycle, LifeCycleHook, OnChange, OnEvent};
+use waterui_interaction::event::{Event, LifeCycle, LifeCycleHook, OnChange, OnEvent, TaskHook};
 use waterui_interaction::interaction::{Disabled, InteractionReport, InteractionState, Selected};
 use waterui_interaction::key::{KeyHandling, OnKeyPress};
 use waterui_structural_transition::{Transition, Transitioned};
@@ -304,18 +304,21 @@ pub trait ViewExt: View + Sized {
         OnChange::new(self, source, handler)
     }
 
-    /// Spawns an asynchronous task tied to the lifecycle of this view.
+    /// Attaches an asynchronous task tied to the mounted lifecycle of this view.
     ///
-    /// The task will be cancelled when the view is dropped.
+    /// The handler runs once when the view appears, extracting any parameters
+    /// from the view's environment (such as `State<T>` or `#[state]` types),
+    /// and the returned future is cancelled when the view disappears. A view
+    /// constructed and dropped without ever mounting never invokes `task`.
     ///
     /// # Arguments
-    /// * `task` - The asynchronous task to run
-    fn task<Fut>(self, task: Fut) -> Metadata<Retain, Self>
+    /// * `task` - A one-shot handler returning the future to run while mounted
+    fn task<H, Args, Fut>(self, task: H) -> Metadata<TaskHook, Self>
     where
-        Fut: std::future::Future<Output = ()> + 'static,
+        H: HandlerOnce<Args, Fut>,
+        Fut: Future<Output = ()> + 'static,
     {
-        let local_task = spawn_local(task);
-        self.retain(local_task)
+        Metadata::new(self, TaskHook::new(task))
     }
 
     /// Sets the background of this view.

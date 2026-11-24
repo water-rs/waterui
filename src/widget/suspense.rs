@@ -207,7 +207,7 @@ where
         let new_env = env.clone();
         // The view retains the loading task, so unmounting it cancels the
         // future instead of leaving it polled until it completes.
-        view.task(async move {
+        view.task(move || async move {
             let content = SuspendedView::body(self.content, new_env).await;
             handler.set(OneOf2::B(content));
             if let Some(owed) = owed {

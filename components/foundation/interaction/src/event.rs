@@ -6,7 +6,7 @@
 //! - [`OnChange`] - Repeatable handlers for a signal's value changes
 
 use alloc::{boxed::Box, rc::Rc};
-use core::{cell::RefCell, fmt};
+use core::{cell::RefCell, fmt, future::Future, pin::Pin};
 use nami::Signal;
 use nami::watcher::BoxWatcherGuard;
 use waterui_core::{
@@ -80,6 +80,56 @@ impl fmt::Debug for LifeCycleHook {
         f.debug_struct("LifeCycleHook")
             .field("lifecycle", &self.lifecycle)
             .finish_non_exhaustive()
+    }
+}
+
+/// A boxed local future produced by a [`TaskHook`] when its view appears.
+pub type BoxedTaskFuture = Pin<Box<dyn Future<Output = ()> + 'static>>;
+
+/// A view-scoped asynchronous task descriptor started when the view appears
+/// and cancelled when it disappears.
+pub struct TaskHook {
+    factory: BoxedActionOnce<BoxedTaskFuture>,
+}
+
+impl MetadataKey for TaskHook {}
+
+impl TaskHook {
+    /// Creates a task hook from a one-shot handler that extracts arguments from
+    /// the view's environment and returns the future to run while mounted.
+    #[must_use]
+    pub fn new<H, Args, Fut>(task: H) -> Self
+    where
+        H: HandlerOnce<Args, Fut>,
+        Fut: Future<Output = ()> + 'static,
+    {
+        Self {
+            factory: Box::new(move |env| {
+                task.call_once(env)
+                    .map(|future| Box::pin(future) as BoxedTaskFuture)
+            }),
+        }
+    }
+
+    /// Invokes the handler against `env` to build the task future.
+    ///
+    /// Extraction failures are reported through the standard contract violation
+    /// path and yield `None` so no task is spawned.
+    #[must_use]
+    pub fn build_future(self, env: &Environment) -> Option<BoxedTaskFuture> {
+        match (self.factory)(env) {
+            Ok(future) => Some(future),
+            Err(error) => {
+                Err::<(), _>(error).report_extraction();
+                None
+            }
+        }
+    }
+}
+
+impl fmt::Debug for TaskHook {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TaskHook").finish_non_exhaustive()
     }
 }
 

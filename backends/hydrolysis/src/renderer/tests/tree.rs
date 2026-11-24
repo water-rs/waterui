@@ -1135,6 +1135,110 @@ fn lifecycle_hooks_fire_after_first_flush_and_on_drop() {
     );
 }
 
+#[test]
+fn task_dropped_without_mounting_never_runs() {
+    use core::cell::Cell;
+    use std::rc::Rc;
+    use waterui_text::text;
+
+    let invoked = Rc::new(Cell::new(false));
+    let view = text("Unmounted").task({
+        let invoked = Rc::clone(&invoked);
+        move || {
+            invoked.set(true);
+            async {}
+        }
+    });
+    drop(view);
+    assert!(
+        !invoked.get(),
+        "constructing and dropping a view with .task(..) without mounting must never invoke it"
+    );
+}
+
+#[test]
+fn task_starts_on_appear_extracts_state_and_cancels_on_disappear() {
+    use core::cell::Cell;
+    use core::future::pending;
+    use nami::Binding;
+    use std::rc::Rc;
+    use waterui_core::extract::State;
+    use waterui_text::text;
+
+    use super::ParkedRunnables;
+
+    struct CancelFlag(Rc<Cell<bool>>);
+    impl Drop for CancelFlag {
+        fn drop(&mut self) {
+            self.0.set(true);
+        }
+    }
+
+    let started = Rc::new(Cell::new(false));
+    let cancelled = Rc::new(Cell::new(false));
+    let counter = Binding::i32(0);
+
+    let view = AnyView::new(
+        text("Tasked")
+            .task({
+                let started = Rc::clone(&started);
+                let cancelled = Rc::clone(&cancelled);
+                move |State(counter): State<Binding<i32>>| async move {
+                    let _cancel = CancelFlag(cancelled);
+                    started.set(true);
+                    counter.set(42);
+                    pending::<()>().await;
+                }
+            })
+            .state(&counter),
+    );
+
+    let env = test_environment();
+    let mut renderer = test_renderer();
+    let bounds = Rect::new(0.0, 0.0, 200.0, 120.0);
+
+    renderer.prepare_window_tree(view, &env);
+    env.get::<ParkedRunnables>()
+        .expect("test_environment installs ParkedRunnables")
+        .drain();
+    assert!(
+        !started.get() && counter.snapshot() == 0,
+        ".task(..) must not start before the view appears"
+    );
+
+    renderer.reset_scene();
+    renderer.begin_rebuild_frame();
+    renderer.capture_window_tree(
+        AnyView::new(()),
+        &env,
+        bounds,
+        Affine::IDENTITY,
+        Affine::IDENTITY,
+    );
+    renderer.finish_rebuild_frame();
+    env.get::<ParkedRunnables>()
+        .expect("test_environment installs ParkedRunnables")
+        .drain();
+
+    assert!(
+        started.get() && counter.snapshot() == 42,
+        ".task(..) must start on appear and extract State<T>"
+    );
+    assert!(
+        !cancelled.get(),
+        "a pending .task(..) must remain alive while the view is mounted"
+    );
+
+    drop(renderer);
+    env.get::<ParkedRunnables>()
+        .expect("test_environment installs ParkedRunnables")
+        .drain();
+    assert!(
+        cancelled.get(),
+        "dropping/unmounting the view must cancel its running .task(..) future"
+    );
+}
+
 /// A Snackbar-style entrance keeps its hidden target through the first animated
 /// signal sample, then changes that target from `on_appear`. This must create an
 /// active animation instead of binding the already-settled value on the first

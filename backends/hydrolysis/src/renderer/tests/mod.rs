@@ -325,12 +325,16 @@ struct TestLocalExecutor {
 /// its teardown race — the runnable cannot be dropped on the waker's thread
 /// (async-task's `spawn_local` thread check) and must not wait for
 /// thread-local teardown.
-struct ParkedRunnables {
-    #[expect(
-        dead_code,
-        reason = "held for its Drop — empties the parked queue while thread-locals are alive"
-    )]
+pub(super) struct ParkedRunnables {
     rx: mpsc::Receiver<Runnable>,
+}
+
+impl ParkedRunnables {
+    pub(super) fn drain(&self) {
+        while let Ok(runnable) = self.rx.try_recv() {
+            runnable.run();
+        }
+    }
 }
 
 impl LocalExecutor for TestLocalExecutor {
