@@ -241,7 +241,7 @@ Use the constructor that matches your binding type:
 
 ```rust
 use waterui::prelude::*;
-use waterui_form::picker::date::{Date, DatePicker, DateTime, Time};
+use waterui_form::picker::date::{Date, DateTime, Time};
 
 fn event_form() -> impl View {
     let event_date: Binding<Date> = binding(Date::new(2025, 6, 15).unwrap());
@@ -269,7 +269,6 @@ Use `Calendar` for a month-grid calendar with single-date selection:
 
 ```rust
 use waterui::prelude::*;
-use waterui_form::Calendar;
 use jiff::civil::Date;
 
 fn trip_calendar() -> impl View {
@@ -290,7 +289,6 @@ Use `ColorPicker` for platform-native color selection:
 
 ```rust
 use waterui::prelude::*;
-use waterui_form::picker::ColorPicker;
 use waterui::color::Color;
 
 fn theme_editor() -> impl View {
@@ -310,7 +308,6 @@ Use `MultiDatePicker` for selecting multiple dates:
 
 ```rust
 use waterui::prelude::*;
-use waterui_form::picker::multi_date::MultiDatePicker;
 use std::collections::BTreeSet;
 use jiff::civil::Date;
 
