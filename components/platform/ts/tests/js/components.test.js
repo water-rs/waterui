@@ -3,7 +3,7 @@
 
 import { beforeEach, describe, expect, test } from "bun:test";
 import { installHost, uninstallHost } from "../../src/js/host.js";
-import { Box, For, Show, Suspense } from "../../src/js/components.js";
+import { Box, For, Show } from "../../src/js/components.js";
 import { jsx, spreadProps } from "../../src/js/jsx-runtime.js";
 import { createRoot, createSignal, onCleanup } from "../../src/js/signals.js";
 import { createFakeHost } from "./fake-host.js";
@@ -235,35 +235,6 @@ describe("For", () => {
     expect(() =>
       createRoot(() => jsx(For, { each: [], children: "nope" })),
     ).toThrow(/function child/);
-  });
-});
-
-describe("Suspense", () => {
-  test("mounts its children branch", () => {
-    createRoot((dispose) => {
-      const slot = jsx(Suspense, {
-        fallback: () => jsx("Text", { children: "loading" }),
-        children: () => jsx("Text", { children: "ready" }),
-      });
-      expect(slot.branch.handle.children).toEqual(["ready"]);
-      dispose();
-    });
-  });
-
-  test("never builds the fallback, because nothing built from JSX is pending", () => {
-    const log = [];
-    createRoot((dispose) => {
-      const slot = jsx(Suspense, {
-        fallback: () => {
-          log.push("fallback built");
-          return jsx("Text", { children: "loading" });
-        },
-        children: () => jsx("Text", { children: "ready" }),
-      });
-      expect(slot.branch.handle.children).toEqual(["ready"]);
-      expect(log).toEqual([]);
-      dispose();
-    });
   });
 });
 

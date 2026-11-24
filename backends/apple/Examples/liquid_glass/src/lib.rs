@@ -158,22 +158,30 @@ fn controls_root() -> NavigationView<impl View> {
             vstack((
                 caption("Glass: the capsule is the emphasis, the label keeps the primary color."),
                 hstack((
-                    button("Glass").style(ButtonStyle::Glass),
-                    button("Bordered").style(ButtonStyle::Bordered),
+                    button("Glass").style(ButtonStyle::Glass).action(|| {}),
+                    button("Bordered")
+                        .style(ButtonStyle::Bordered)
+                        .action(|| {}),
                 ))
                 .spacing(12.0),
                 caption("Prominent glass: the accent fills the capsule, for the primary action."),
                 hstack((
-                    button("Glass Prominent").style(ButtonStyle::GlassProminent),
-                    button("Bordered Prominent").style(ButtonStyle::BorderedProminent),
+                    button("Glass Prominent")
+                        .style(ButtonStyle::GlassProminent)
+                        .action(|| {}),
+                    button("Bordered Prominent")
+                        .style(ButtonStyle::BorderedProminent)
+                        .action(|| {}),
                 ))
                 .spacing(12.0),
                 caption("Labels with symbols get the same capsule."),
                 hstack((
                     button(label("Share").icon(SfSymbol::SQUARE_AND_ARROW_UP))
-                        .style(ButtonStyle::Glass),
+                        .style(ButtonStyle::Glass)
+                        .action(|| {}),
                     button(label("Play").icon(SfSymbol::PLAY_FILL))
-                        .style(ButtonStyle::GlassProminent),
+                        .style(ButtonStyle::GlassProminent)
+                        .action(|| {}),
                 ))
                 .spacing(12.0),
             ))

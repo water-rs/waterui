@@ -275,13 +275,15 @@ macro_rules! impl_style_methods {
 ///
 /// # fn styles() {
 /// // Primary action with prominent styling
-/// button("Submit").style(ButtonStyle::BorderedProminent);
+/// let _ = button("Submit")
+///     .style(ButtonStyle::BorderedProminent)
+///     .action(|| {});
 ///
 /// // Secondary action with subtle styling
-/// button("Cancel").style(ButtonStyle::Plain);
+/// let _ = button("Cancel").style(ButtonStyle::Plain).action(|| {});
 ///
 /// // Navigation link
-/// button("Learn More").style(ButtonStyle::Link);
+/// let _ = button("Learn More").style(ButtonStyle::Link).action(|| {});
 /// # }
 /// ```
 #[non_exhaustive]
@@ -1246,10 +1248,24 @@ where
     }
 }
 
+/// Action configured on a [`Button`].
+///
+/// Any `FnMut(&Environment) -> Result<(), ExtractionError> + 'static` implements
+/// this trait; [`NoAction`] intentionally does not so a button without an action
+/// cannot be rendered as a [`View`].
+#[diagnostic::on_unimplemented(
+    message = "a `Button` requires an action before it can be used as a `View`",
+    label = "this button has no action configured",
+    note = "call `.action(...)`, `.action_async(...)`, or `.action_boxed(...)` on the button"
+)]
+pub trait ButtonAction: FnMut(&Environment) -> Result<(), ExtractionError> + 'static {}
+
+impl<F> ButtonAction for F where F: FnMut(&Environment) -> Result<(), ExtractionError> + 'static {}
+
 impl<L, Action, Style> View for Button<L, Action, Style>
 where
     L: LabelKind,
-    Action: FnMut(&Environment) -> Result<(), ExtractionError> + 'static,
+    Action: ButtonAction,
     Style: SealedButtonStyle,
 {
     fn body(self, env: &Environment) -> impl View {
@@ -1278,7 +1294,7 @@ impl<S: View> From<ButtonConfig<S>> for Button<ControlLabel<S>, BoxedAction<()>>
 impl<L, Action> Button<L, Action>
 where
     L: LabelKind,
-    Action: FnMut(&Environment) -> Result<(), ExtractionError> + 'static,
+    Action: ButtonAction,
 {
     /// Returns the configuration for this button.
     #[must_use]
@@ -1392,15 +1408,27 @@ impl<L: Clone, Action: Clone, Style: Clone> Clone for Button<L, Action, Style> {
     }
 }
 
-/// The action of a button that has none configured yet.
-pub type NoAction = fn(&Environment) -> Result<(), ExtractionError>;
+/// Marker type for a [`Button`] that does not yet have an action configured.
+///
+/// `Button<L, NoAction, Style>` does not implement [`View`], so forgetting
+/// `.action(...)` or `.action_async(...)` is a compile error:
+///
+/// ```compile_fail,E0277
+/// use waterui::prelude::*;
+///
+/// fn missing_action() -> impl View {
+///     button("Save")
+/// }
+/// ```
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoAction;
 
 impl<L> Button<L, NoAction, ButtonStyle> {
     /// Creates a new button with the specified semantic label.
     ///
-    /// The button has no action by default. Use [`action`](Self::action) or
-    /// [`action_async`](Self::action_async) to configure what happens when the
-    /// button is clicked.
+    /// The button has no action until [`action`](Self::action),
+    /// [`action_async`](Self::action_async), or [`action_boxed`](Self::action_boxed)
+    /// is called, and does not implement [`View`] before then.
     ///
     /// # Arguments
     ///
@@ -1419,7 +1447,7 @@ impl<L> Button<L, NoAction, ButtonStyle> {
     pub fn new<I: IntoLabel<Kind = L>>(label: I) -> Self {
         Self {
             label: label.into_label(),
-            action: noop,
+            action: NoAction,
             style: ButtonStyle::Automatic,
             explicit_style: false,
             role: None,
@@ -1588,19 +1616,10 @@ impl<L, Action, Style> Button<L, Action, Style> {
     }
 }
 
-/// No-op action for buttons without a configured action.
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "the signature is the button action's"
-)]
-const fn noop(_env: &Environment) -> Result<(), ExtractionError> {
-    Ok(())
-}
-
 #[cfg(feature = "menu")]
 impl<L: LabelKind, Action, Style> From<Button<L, Action, Style>> for crate::menu::Command
 where
-    Action: FnMut(&Environment) -> Result<(), ExtractionError> + 'static,
+    Action: ButtonAction,
 {
     fn from(value: Button<L, Action, Style>) -> Self {
         let Button {
@@ -1620,7 +1639,7 @@ where
 #[cfg(feature = "menu")]
 impl<L: LabelKind, Action, Style> From<Button<L, Action, Style>> for crate::menu::MenuItem
 where
-    Action: FnMut(&Environment) -> Result<(), ExtractionError> + 'static,
+    Action: ButtonAction,
 {
     fn from(value: Button<L, Action, Style>) -> Self {
         Self::Command(value.into())

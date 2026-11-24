@@ -133,15 +133,6 @@ impl HostTable for Components {
     ) -> Result<AnyView, Error> {
         Ok(collection::each(bridge, items, render, by)?)
     }
-
-    fn suspense(
-        &self,
-        bridge: &Bridge,
-        children: &JsFunction,
-        fallback: Option<&JsFunction>,
-    ) -> Result<AnyView, Error> {
-        Ok(control_flow::suspense(bridge, children, fallback)?)
-    }
 }
 
 /// One element, built from its configuration and its children.
@@ -473,11 +464,9 @@ fn controls(
         "Button" => {
             let (on_tap, label) = ButtonAttributes::from_js(config, bridge)?.into_parts();
             let label = children::label(bridge, component, label, children)?;
-            let button = Button::new(label);
-            Ok(match on_tap {
-                Some(action) => AnyView::new(button.action(move || action.call(()))),
-                None => AnyView::new(button),
-            })
+            Ok(AnyView::new(
+                Button::new(label).action(move || on_tap.call(())),
+            ))
         }
         "Toggle" => {
             let mut attributes = ToggleAttributes::from_js(config, bridge)?;

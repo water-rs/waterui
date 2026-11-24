@@ -76,7 +76,10 @@ pub fn components_block_03() {
     }
     let tabs = [Tab, Tab];
 
-    let row: HStack<_> = tabs.iter().map(|t| button(t.label())).collect();
+    let row: HStack<_> = tabs
+        .iter()
+        .map(|t| button(t.label()).action(|| {}))
+        .collect();
     let tiles: VStack<_> = (0..6).map(photo_tile).collect(); // photo_tile: fn(usize) -> impl View
 
     let _ = (row, tiles);
@@ -365,7 +368,7 @@ pub fn components_block_12() {
 pub fn components_block_13() {
     fn toolbar_row() -> impl View {
         hstack((
-            button(label("Locate").icon(lucide::locate_fixed())),
+            button(label("Locate").icon(lucide::locate_fixed())).action(|| {}),
             Divider,
         ))
     }
@@ -376,7 +379,9 @@ pub fn components_block_13() {
         slider("Sensitivity", &level).range(0.5..=3.0).hide_label()
     };
     let _ = {
-        button(label("Locate").icon(lucide::locate_fixed())).label_style(LabelDisplayMode::IconOnly)
+        button(label("Locate").icon(lucide::locate_fixed()))
+            .label_style(LabelDisplayMode::IconOnly)
+            .action(|| {})
     };
     let _ = {
         toolbar_row().install(LabelDisplayMode::IconOnly) // scope a mode to a whole subtree
@@ -415,7 +420,7 @@ pub fn components_block_14() {
 
     let _ = {
         // a text! satisfies IntoLabel: reactive button titles need no watch
-        button(text!("{edit_label}"))
+        button(text!("{edit_label}")).action(|| {})
     };
 
     let _ = {
@@ -463,8 +468,9 @@ pub fn components_block_14() {
         TextField::new("Username", &name).prompt("Enter your username")
     };
     let _ = {
+        use core::num::NonZeroUsize;
         // multi-line: Return inserts a line break
-        TextField::new("Notes", &notes).disable_line_limit()
+        TextField::new("Notes", &notes).line_limit(None::<NonZeroUsize>)
     };
     use waterui::component::text_field::{ContentType, KeyboardType}; // NOT in the prelude
     let _ = {
@@ -528,9 +534,8 @@ pub fn components_button_style_shorthands() {
 
     let text_value = Binding::container(Str::from(""));
     let styled_value = Binding::container(StyledStr::default());
-    if let Some(lines) = NonZeroUsize::new(3) {
-        let _ = TextField::new("a", &text_value).line_limit(lines);
-    }
+    let _ = TextField::new("a", &text_value).line_limit(NonZeroUsize::new(3));
+    let _ = TextField::new("a", &text_value).line_limit(None::<NonZeroUsize>);
     let _ = TextField::styled("a", &styled_value);
 }
 
@@ -815,10 +820,11 @@ pub fn components_block_22() {
     let _ = text("t").font(font::Body);
     let _ = text("t").font(font::Footnote);
 
-    // `.line_limit(NonZeroUsize)` named in the prose.
-    if let Some(lines) = core::num::NonZeroUsize::new(2) {
-        let _ = text("t").line_limit(lines);
-    }
+    // `.line_limit(impl IntoComputed<Option<NonZeroUsize>>)` named in the prose.
+    use core::num::NonZeroUsize;
+    let expanded = Binding::bool(false);
+    let _ = text("t").line_limit(NonZeroUsize::new(2));
+    let _ = text("t").line_limit(expanded.select(None, NonZeroUsize::new(2)));
 
     // Prose (not counted): `.text_align(HorizontalAlignment::Center)` and
     // `.background_color(color)`.

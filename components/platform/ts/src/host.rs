@@ -106,18 +106,6 @@ pub trait HostTable: 'static {
         render: &JsFunction,
         by: Option<&JsFunction>,
     ) -> Result<AnyView, Error>;
-
-    /// `<Suspense>`: presents the fallback while the children are pending.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error`] when a branch cannot be rendered.
-    fn suspense(
-        &self,
-        bridge: &Bridge,
-        children: &JsFunction,
-        fallback: Option<&JsFunction>,
-    ) -> Result<AnyView, Error>;
 }
 
 /// The property of `__waterui_host` one host function is registered under,
@@ -148,10 +136,6 @@ const EACH: HostEntry = HostEntry {
     name: "each",
     source: "globalThis.__waterui_host.each",
 };
-const SUSPENSE: HostEntry = HostEntry {
-    name: "suspense",
-    source: "globalThis.__waterui_host.suspense",
-};
 const ENVIRONMENT: HostEntry = HostEntry {
     name: "environment",
     source: "globalThis.__waterui_host.environment",
@@ -168,16 +152,7 @@ const INVOKE: HostEntry = HostEntry {
 };
 
 /// Every entry the table object carries, in the order it is built.
-const ENTRIES: [HostEntry; 8] = [
-    INVOKE,
-    CREATE,
-    MODIFY,
-    TEXT,
-    SHOW,
-    EACH,
-    SUSPENSE,
-    ENVIRONMENT,
-];
+const ENTRIES: [HostEntry; 7] = [INVOKE, CREATE, MODIFY, TEXT, SHOW, EACH, ENVIRONMENT];
 
 /// The script name the host reads are attributed to in a stack trace.
 const SOURCE_NAME: &str = "waterui:host";
@@ -267,15 +242,6 @@ pub fn register(bridge: &Bridge, table: &Rc<dyn HostTable>) -> Result<HostFuncti
             let render = function_argument(args, 1, "each(each, render, by?)")?;
             let by = optional_function_argument(args, 2, "each(each, render, by?)")?;
             table.each(bridge, items, render, by)
-        }),
-    )?;
-
-    engine.register(
-        SUSPENSE.name,
-        host_call(bridge, table, |table, bridge, args| {
-            let children = function_argument(args, 0, "suspense(children, fallback?)")?;
-            let fallback = optional_function_argument(args, 1, "suspense(children, fallback?)")?;
-            table.suspense(bridge, children, fallback)
         }),
     )?;
 

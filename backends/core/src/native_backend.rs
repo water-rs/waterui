@@ -1720,7 +1720,12 @@ mod tests {
         use waterui::component::label::Label;
         use waterui::component::progress::Progress;
 
-        let authored = || Badge::new(1, button(Label::new("Save", Spacer::flexible)));
+        let authored = || {
+            Badge::new(
+                1,
+                button(Label::new("Save", Spacer::flexible)).action(|| {}),
+            )
+        };
 
         assert_eq!(
             reached(authored()),
@@ -1877,7 +1882,10 @@ mod tests {
         // A declining button-style hook preserves the typed child slot ("typed child").
         assert_eq!(
             reached(Hooks::new(
-                Badge::new(1, button(Label::new("Save", Spacer::flexible))),
+                Badge::new(
+                    1,
+                    button(Label::new("Save", Spacer::flexible)).action(|| {})
+                ),
                 DecliningButtonStyleHook,
             )),
             ["badge", "typed child", "button", "typed child", "spacer"]
@@ -1887,7 +1895,9 @@ mod tests {
         // and inner hooks like `SpacerAsDivider` still re-enter the button's label.
         let roles = Rc::new(RefCell::new(Vec::new()));
         let tree = scroll(AnyView::new(
-            button(Label::new("Delete", Spacer::flexible)).role(ButtonRole::Destructive),
+            button(Label::new("Delete", Spacer::flexible))
+                .role(ButtonRole::Destructive)
+                .action(|| {}),
         ))
         .button_style(TaggedButtonStyle {
             seen_roles: Rc::clone(&roles),
@@ -1909,7 +1919,11 @@ mod tests {
         assert_eq!(*roles.borrow(), alloc::vec![Some(ButtonRole::Destructive)]);
 
         // Primitive style also installs cleanly via `.button_style(...)`.
-        let primitive_tree = AnyView::new(button("Go").button_style(TaggedPrimitiveStyle));
+        let primitive_tree = AnyView::new(
+            button("Go")
+                .action(|| {})
+                .button_style(TaggedPrimitiveStyle),
+        );
         assert_eq!(
             reached(primitive_tree),
             [
@@ -1949,6 +1963,7 @@ mod tests {
         let seen_explicit = Rc::new(RefCell::new(0));
         let explicit = button(Label::new("Save", Spacer::flexible))
             .style(ButtonStyle::Bordered)
+            .action(|| {})
             .button_style(TaggedButtonStyle {
                 seen: Rc::clone(&seen_explicit),
             });
@@ -1958,6 +1973,7 @@ mod tests {
         // Inner `.button_style(ButtonStyle::Bordered)` overrides outer `.button_style(Custom)`.
         let seen_override = Rc::new(RefCell::new(0));
         let overridden = button(Label::new("Save", Spacer::flexible))
+            .action(|| {})
             .button_style(ButtonStyle::Bordered)
             .button_style(TaggedButtonStyle {
                 seen: Rc::clone(&seen_override),

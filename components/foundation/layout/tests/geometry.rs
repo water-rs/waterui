@@ -275,6 +275,42 @@ fn a_line_limit_caps_the_reserved_height(ui: UiBuilder<Styled<TestStyle>>) {
     );
 }
 
+/// Toggling a reactive `line_limit` signal re-limits the same `Text` leaf in
+/// place without rebuilding it.
+#[waterui::test(theme = TestStyle::new(), viewport = (600, 600))]
+fn a_reactive_line_limit_resizes_text_in_place(ui: UiBuilder<Styled<TestStyle>>) {
+    use core::num::NonZeroUsize;
+    use waterui::SignalExt as _;
+
+    let expanded = Binding::bool(false);
+    let expanded_for_view = expanded.clone();
+    let mut app = ui.mount_offscreen(move || {
+        text(LONG)
+            .line_limit(expanded_for_view.select(None, NonZeroUsize::new(1)))
+            .a11y_label("target")
+            .width(150.0)
+    });
+
+    let collapsed = app.query().label("target").single().bounds();
+    expanded.set(true);
+    let expanded_bounds = app.query().label("target").single().bounds();
+    assert!(
+        expanded_bounds.height() > collapsed.height() * 2.0,
+        "expanding line_limit from Some(1) to None must re-measure to full height ({} vs {})",
+        expanded_bounds.height(),
+        collapsed.height(),
+    );
+
+    expanded.set(false);
+    let recollapsed = app.query().label("target").single().bounds();
+    assert!(
+        (recollapsed.height() - collapsed.height()).abs() < 1.0,
+        "collapsing line_limit back to Some(1) must return to single-line height ({} vs {})",
+        recollapsed.height(),
+        collapsed.height(),
+    );
+}
+
 /// A text whose string changes after mount is measured again inside a
 /// retained sub-view, so the box layout gives it, and the place of the view
 /// beside it, follow the new string. Before waterui#1872 the sub-view kept the

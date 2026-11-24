@@ -2239,7 +2239,7 @@ fn validate_bench_fn(input_fn: &ItemFn, mounts_view: bool) -> Result<&syn::PatTy
 ///     let value_for_view = value.clone();
 ///     ui.perf_with(move || counter(&value_for_view), |perf| {
 ///         perf.measure("increment", |run| {
-///             run.app().query().label("Increment").tap();
+///             run.query().label("Increment").tap();
 ///             let _ = run;
 ///         });
 ///     })

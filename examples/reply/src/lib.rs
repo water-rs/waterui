@@ -173,6 +173,7 @@ fn star() -> impl View {
     button(label("Star").icon(star_outline()))
         .borderless()
         .label_style(LabelDisplayMode::IconOnly)
+        .action(|| {})
 }
 
 fn thread_row(thread: Thread) -> ListItem<impl View> {
@@ -193,7 +194,7 @@ fn thread_row(thread: Thread) -> ListItem<impl View> {
             text(thread.subject).body(),
             text(thread.snippet)
                 .caption()
-                .line_limit(NonZeroUsize::new(2).expect("2 is non-zero"))
+                .line_limit(NonZeroUsize::new(2))
                 .muted(),
             thread.photo_asset.map(|name| {
                 Photo::new(asset(name))

@@ -781,14 +781,14 @@ fn a_group_blend_space_fades_the_control_in_that_space() {
             .into()
     };
     let encoded = white_over_black(
-        button("Faded").disabled(true),
+        button("Faded").action(|| {}).disabled(true),
         disabled(),
         BlendSpace::SrgbEncoded,
         false,
         ("group_blend_space", "disabled-encoded"),
     );
     let linear = white_over_black(
-        button("Faded").disabled(true),
+        button("Faded").action(|| {}).disabled(true),
         disabled(),
         BlendSpace::Linear,
         false,

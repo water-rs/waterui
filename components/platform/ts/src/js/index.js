@@ -24,6 +24,6 @@ export {
   useContext,
 } from "./signals.js";
 
-export { Box, For, Show, Suspense } from "./components.js";
+export { Box, For, Show } from "./components.js";
 export { useLocale, useTheme } from "./contexts.js";
 export { Fragment, jsx, jsxDEV, jsxs, spreadProps } from "./jsx-runtime.js";
