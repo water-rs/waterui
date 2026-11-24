@@ -25,7 +25,9 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use cocoa_ui::MainThreadMarker;
+use cocoa_ui::locale::observe_changes as observe_locale_changes;
 use cocoa_ui::main_queue::MainQueueWake;
+use cocoa_ui::notification::NotificationObserver;
 use cocoa_ui::uikit::{self, ApplicationHandlers, Window, WindowScene};
 use executor_core::{LocalExecutor as _, Task as _};
 use waterui::app::{App, AppMenuBar, Windows};
@@ -37,6 +39,7 @@ use waterui_controls::label::SemanticLabel;
 #[cfg(feature = "menu")]
 use waterui_controls::menu::Menu;
 use waterui_core::Environment;
+use waterui_locale::regional::refresh_system_locale;
 
 use super::session::AppleExecutor;
 use crate::platform::EngineGpuContext;
@@ -113,6 +116,9 @@ struct UiKitApplication {
     launch: RefCell<Option<Launch>>,
     /// The process-wide appearance, fed by the scene's trait observation.
     color_scheme: nami::Binding<ColorScheme>,
+    /// Keeps the `NSCurrentLocaleDidChangeNotification` observer registered
+    /// for the lifetime of the `UIKit` application.
+    locale_observer: RefCell<Option<NotificationObserver>>,
     process: OnceCell<Rc<Process>>,
     scenes: RefCell<BTreeMap<String, Rc<UiKitScene>>>,
     #[cfg(feature = "menu")]
@@ -129,6 +135,10 @@ impl UiKitApplication {
     /// context; scenes that connected first mount when it resolves.
     fn did_finish_launching(self: &Rc<Self>) {
         waterui_locale::start_system_locale_listener();
+        let mtm = MainThreadMarker::new().expect("UIKit finishes launching on the main thread");
+        *self.locale_observer.borrow_mut() = Some(observe_locale_changes(mtm, || {
+            let _ = refresh_system_locale();
+        }));
         let Launch {
             app,
             env,
@@ -338,6 +348,7 @@ pub(in crate::runner) fn run<W: Windows, M: AppMenuBar>(
             services,
         })),
         color_scheme: nami::binding(framework_scheme(uikit::current_scheme())),
+        locale_observer: RefCell::new(None),
         process: OnceCell::new(),
         scenes: RefCell::new(BTreeMap::new()),
         #[cfg(feature = "menu")]

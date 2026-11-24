@@ -4431,6 +4431,9 @@ mod web_impl;
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
 pub mod web_appearance;
 
+#[cfg(all(target_arch = "wasm32", feature = "web"))]
+pub mod web_locale;
+
 #[cfg(hydrolysis_wayland_platform)]
 mod wayland_blur;
 
@@ -4446,10 +4449,18 @@ mod macos_blur_behind;
 #[cfg(all(hydrolysis_winit, target_os = "macos"))]
 pub mod macos_appearance;
 
+#[cfg(all(hydrolysis_winit, target_os = "macos"))]
+pub mod macos_locale;
+
 // Compiled under `test` on every host: the module's pure mapping seam is
 // covered off-device, while the zbus client inside stays Linux-gated.
 #[cfg(any(all(hydrolysis_winit, target_os = "linux"), test))]
 pub mod linux_appearance;
+
+// Compiled under `test` on every host: the portal locale parser is covered
+// off-device, while the zbus client inside stays Linux-gated.
+#[cfg(any(all(hydrolysis_winit, target_os = "linux"), test))]
+pub mod linux_locale;
 
 #[cfg(all(hydrolysis_winit, any(target_os = "macos", target_os = "windows")))]
 #[cfg(feature = "menu")]

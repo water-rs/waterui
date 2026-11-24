@@ -84,8 +84,10 @@ object NativeBridge {
      * tracks only painted regions.
      * 32 = [nativeOnFrame] carries the active Choreographer frame timeline
      * vsync ID (`hasVsyncId`, `vsyncId`) alongside `presentationNanos`.
+     * 33 = [nativeSetLocale] forwards the primary BCP 47 locale tag from
+     * `Configuration` at bind and on every `onConfigurationChanged`.
      */
-    private const val SCHEMA: Int = 32
+    private const val SCHEMA: Int = 33
 
     /** Applies the pending GPU result on the UI thread. */
     @JvmStatic external fun nativeCompleteFrame(session: Long)
@@ -185,6 +187,13 @@ object NativeBridge {
      * the colour-scheme signal only when the value moved.
      */
     @JvmStatic external fun nativeSetColorScheme(sessionPtr: Long, nightMode: Boolean)
+
+    /**
+     * The configuration's primary BCP 47 locale tag — pushed when a host view
+     * binds and on every `onConfigurationChanged`; the native side updates
+     * `waterui_locale::regional` only when the locale moved.
+     */
+    @JvmStatic external fun nativeSetLocale(sessionPtr: Long, localeTag: String)
 
     /**
      * The host bound (`true`) or unbound (`false`) its view — the session's

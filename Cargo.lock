@@ -13554,12 +13554,10 @@ dependencies = [
  "suiteki",
  "sys-locale",
  "tracing",
- "wasm-bindgen",
  "waterui",
  "waterui-core",
  "waterui-locale",
  "waterui-locale-parser",
- "web-sys",
 ]
 
 [[package]]
