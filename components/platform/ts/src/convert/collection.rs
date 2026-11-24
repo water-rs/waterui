@@ -1,7 +1,7 @@
 //! `Option`, sequences, and string-keyed maps.
 
-use std::collections::{BTreeMap, HashMap};
-use std::hash::BuildHasher;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::hash::{BuildHasher, Hash};
 
 use suiteki::Str;
 use waterui_ts_engine::{JsError, JsValue};
@@ -39,6 +39,69 @@ impl<T: IntoJs> IntoJs for Vec<T> {
 }
 
 impl<T: FromJs> FromJs for Vec<T> {
+    fn from_js(value: &JsValue, bridge: &Bridge) -> Result<Self, JsError> {
+        value
+            .as_array()
+            .ok_or_else(|| expected("an array", value))?
+            .iter()
+            .map(|item| T::from_js(item, bridge))
+            .collect()
+    }
+}
+
+impl<T: IntoJs> IntoJs for VecDeque<T> {
+    fn into_js(self, bridge: &Bridge) -> Result<JsValue, JsError> {
+        let items = self
+            .into_iter()
+            .map(|item| item.into_js(bridge))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(JsValue::Array(items))
+    }
+}
+
+impl<T: FromJs> FromJs for VecDeque<T> {
+    fn from_js(value: &JsValue, bridge: &Bridge) -> Result<Self, JsError> {
+        value
+            .as_array()
+            .ok_or_else(|| expected("an array", value))?
+            .iter()
+            .map(|item| T::from_js(item, bridge))
+            .collect()
+    }
+}
+
+impl<T: IntoJs> IntoJs for BTreeSet<T> {
+    fn into_js(self, bridge: &Bridge) -> Result<JsValue, JsError> {
+        let items = self
+            .into_iter()
+            .map(|item| item.into_js(bridge))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(JsValue::Array(items))
+    }
+}
+
+impl<T: FromJs + Ord> FromJs for BTreeSet<T> {
+    fn from_js(value: &JsValue, bridge: &Bridge) -> Result<Self, JsError> {
+        value
+            .as_array()
+            .ok_or_else(|| expected("an array", value))?
+            .iter()
+            .map(|item| T::from_js(item, bridge))
+            .collect()
+    }
+}
+
+impl<T: IntoJs, S> IntoJs for HashSet<T, S> {
+    fn into_js(self, bridge: &Bridge) -> Result<JsValue, JsError> {
+        let items = self
+            .into_iter()
+            .map(|item| item.into_js(bridge))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(JsValue::Array(items))
+    }
+}
+
+impl<T: FromJs + Eq + Hash, S: BuildHasher + Default> FromJs for HashSet<T, S> {
     fn from_js(value: &JsValue, bridge: &Bridge) -> Result<Self, JsError> {
         value
             .as_array()

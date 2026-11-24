@@ -381,7 +381,7 @@ pub mod media_block_07 {
     use waterui::prelude::*;
 
     /// Glue: the payload type the `greet` method returns.
-    #[derive(serde::Serialize)]
+    #[derive(serde::Serialize, TsType)]
     pub struct Greeting {
         message: String,
     }
@@ -394,7 +394,7 @@ pub mod media_block_07 {
     }
 
     use waterui::js_api;
-    use waterui::webview::Json;
+    use waterui::webview::{Json, TsType};
 
     pub struct PageApi {
         address: Binding<Str>,
@@ -435,9 +435,9 @@ pub mod media_block_07 {
 pub mod media_js_api_prose {
     use waterui::js_api;
     use waterui::prelude::*;
-    use waterui::webview::{Json, WebView};
+    use waterui::webview::{Json, TsType, WebView};
 
-    #[derive(serde::Serialize)]
+    #[derive(serde::Serialize, TsType)]
     pub struct Greeting {
         message: String,
     }

@@ -5,7 +5,8 @@
 //! tree is still one constant and the compiler has already resolved every
 //! alias and generic parameter by the time it is encoded.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -57,11 +58,35 @@ impl TsType for &'static str {
 
 impl TsMapKey for &'static str {}
 
+impl TsType for char {
+    const SCHEMA: TypeSchema = TypeSchema::String;
+}
+
+impl TsType for PathBuf {
+    const SCHEMA: TypeSchema = TypeSchema::String;
+}
+
+impl TsType for &'static Path {
+    const SCHEMA: TypeSchema = TypeSchema::String;
+}
+
 impl<T: TsType> TsType for Option<T> {
     const SCHEMA: TypeSchema = TypeSchema::Option(&T::SCHEMA);
 }
 
 impl<T: TsType> TsType for Vec<T> {
+    const SCHEMA: TypeSchema = TypeSchema::List(&T::SCHEMA);
+}
+
+impl<T: TsType> TsType for VecDeque<T> {
+    const SCHEMA: TypeSchema = TypeSchema::List(&T::SCHEMA);
+}
+
+impl<T: TsType> TsType for BTreeSet<T> {
+    const SCHEMA: TypeSchema = TypeSchema::List(&T::SCHEMA);
+}
+
+impl<T: TsType, S> TsType for HashSet<T, S> {
     const SCHEMA: TypeSchema = TypeSchema::List(&T::SCHEMA);
 }
 

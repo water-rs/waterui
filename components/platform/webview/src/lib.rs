@@ -101,116 +101,13 @@ mod origins;
 pub use origins::{BridgeOrigins, IntoBridgeOrigins, OriginPolicy, OriginRule};
 
 #[cfg(not(target_arch = "wasm32"))]
-/// An object whose methods and state are exposed to the page.
-///
-/// Implemented by `#[js_api]`; there is no reason to write one by hand, and
-/// nothing stops you calling [`WebViewOpen::handler`] and
-/// [`WebViewOpen::expose`] directly instead — the macro emits exactly those
-/// calls, so the two paths stay interchangeable.
-///
-/// How a method is exposed follows from its shape:
-///
-/// | Shape | Exposed as | Page writes it back? |
-/// | --- | --- | --- |
-/// | `async fn(&self, ..) -> R` | a handler the page awaits | — |
-/// | `fn(&self) -> Binding<T>` | mirrored state | yes |
-/// | `fn(&self) -> Computed<T>` | mirrored state | no |
-/// | `#[js(skip)]` anything | not exposed | — |
-///
-/// ```
-/// use waterui::webview::WebView;
-/// use waterui::{Binding, js_api};
-///
-/// struct Counter {
-///     count: Binding<u32>,
-/// }
-///
-/// #[js_api(namespace = "counter")]
-/// impl Counter {
-///     /// The page reads and assigns `counter.count`.
-///     fn count(&self) -> Binding<u32> {
-///         self.count.clone()
-///     }
-///
-///     /// The page calls `await counter.add({ by: 2 })`.
-///     async fn add(&self, by: u32) {
-///         *self.count.get_mut() += by;
-///     }
-/// }
-///
-/// let view = WebView::open("https://app.waterui.dev").serve(Counter {
-///     count: Binding::container(0),
-/// });
-/// ```
-///
-/// A synchronous method that takes arguments is neither of those things — it
-/// cannot be state, and a handler must be able to await a reply — so it is
-/// rejected rather than silently ignored:
-///
-/// ```compile_fail
-/// use waterui::js_api;
-///
-/// struct Api;
-///
-/// #[js_api]
-/// impl Api {
-///     fn add(&self, by: u32) -> u32 {
-///         by + 1
-///     }
-/// }
-/// ```
-pub trait JsApi: Sized + 'static {
-    /// Registers everything this object exposes.
-    fn register(api: std::rc::Rc<Self>, builder: WebViewOpen) -> WebViewOpen;
-
-    /// The members of this surface, as TypeScript.
-    ///
-    /// One line per exposed method or field, indented to sit inside an
-    /// interface. [`typescript_declarations`] wraps these into a file a page's
-    /// tooling can consume; this is the part `#[js_api]` knows.
-    fn typescript() -> &'static str;
-}
-
+mod js_api;
 #[cfg(not(target_arch = "wasm32"))]
-/// A `.d.ts` describing what `A` exposes, for a page's TypeScript to consume.
-///
-/// Write it next to the page's sources from a test, the way `ts-rs` does, so a
-/// surface that changes without the declarations being regenerated fails on the
-/// page rather than in production:
-///
-/// ```ignore
-/// #[test]
-/// fn declarations_are_current() {
-///     let generated = waterui::webview::typescript_declarations::<PageApi>();
-///     let checked_in = std::fs::read_to_string("web/waterui.d.ts").unwrap();
-///     assert_eq!(generated, checked_in, "run with UPDATE=1 to refresh");
-/// }
-/// ```
-///
-/// # What the types are worth
-///
-/// Names, arity and the shape of each argument object are exact: the macro reads
-/// them from the signature. Payload *types* are named only for the ones this
-/// boundary deals in directly — strings, numbers, booleans, arrays, options,
-/// maps, bytes. An application's own struct becomes `unknown`, because a
-/// declaration TypeScript believes is worse than one that admits it does not
-/// know. Catching `invoke("gret", ...)` and a misspelled argument is most of the
-/// value, and both work without knowing what a `Greeting` is.
-#[must_use]
-pub fn typescript_declarations<A: JsApi>() -> String {
-    format!(
-        "// Generated from a #[js_api] surface. Do not edit.\n\
-         \n\
-         interface WaterUiApi {{\n\
-         {}\n\
-         \x20 readonly ready: Promise<void>;\n\
-         \x20 watch(key: string, callback: (value: unknown) => void): () => void;\n\
-         }}\n\
-         \n\
-         declare const waterui: WaterUiApi;\n",
-        A::typescript()
-    )
-}
+pub use js_api::{
+    JsApi, JsApiMethod, JsApiParam, JsApiReturn, JsApiSchema, JsApiStateField, JsReplySchema,
+    typescript_declarations,
+};
+pub use waterui_ts_schema::{self as ts_schema, TsType};
 
 #[cfg(not(target_arch = "wasm32"))]
 /// Re-exported so `#[js_api]` can derive `Deserialize` for its argument structs

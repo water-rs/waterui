@@ -12,6 +12,7 @@ categories = ["gui"]
 
 [dependencies]
 waterui-core.workspace = true
+waterui-ts-schema.workspace = true
 waterui-url.workspace = true
 apple-availability.workspace = true
 suiteki = { workspace = true, features = ["serde"] }
