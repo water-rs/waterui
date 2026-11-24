@@ -60,6 +60,8 @@ pub mod prelude {
     pub use super::FilterViewExt;
     pub use super::app::{App, AppMenuBar, Windows};
     pub use super::env::Environment;
+    #[cfg(feature = "form")]
+    pub use super::form;
     #[cfg(feature = "media")]
     pub use super::media;
     #[cfg(feature = "video")]
@@ -71,8 +73,8 @@ pub mod prelude {
         AnimationExt, AnyView, Binding, Color, Computed, Identifiable, OneOf2, OneOf3, OneOf4,
         OneOf5, OneOf6, OneOf7, OneOf8, Signal, SignalExt, State, Str, Use, View, ViewExt,
         accessibility, animation, app, binding, color, component, cursor, drag_drop, env, error,
-        filter, form, fullscreen, gesture, gradient, id, layout, locale, metadata, reactive,
-        regional, shape, signal, style, task, text, widget, window,
+        filter, fullscreen, gesture, gradient, id, layout, locale, metadata, reactive, regional,
+        shape, signal, style, task, text, widget, window,
     };
 
     #[cfg(feature = "flow-markdown")]
@@ -163,7 +165,15 @@ pub mod prelude {
     // `test`: glob-importing a macro named `test` shadows the built-in `#[test]`
     // in every file that writes `use waterui::prelude::*`, and the resulting
     // error names neither the prelude nor the collision.
-    pub use waterui_macros::*;
+    #[cfg(feature = "form")]
+    pub use waterui_macros::FormBuilder;
+    pub use waterui_macros::{
+        Project, bench, catalog, preview, state, ui_test, view, view_builder,
+    };
+    #[cfg(feature = "ts")]
+    pub use waterui_macros::{TsProps, TsType, tsx};
+    #[cfg(feature = "webview")]
+    pub use waterui_macros::{eval, exec, exec_file, js_api, js_file};
 }
 pub use color::Color;
 #[cfg(feature = "form")]
@@ -208,8 +218,22 @@ pub use waterui_locale::regional;
 /// not shadow the built-in `#[test]`; this alias keeps the short spelling at the
 /// path where it is actually written.
 pub use waterui_macros::ui_test as test;
+#[cfg(feature = "form")]
 #[doc(inline)]
-pub use waterui_macros::*;
+pub use waterui_macros::{FormBuilder, form};
+#[doc(inline)]
+pub use waterui_macros::{
+    Identifiable, Project, bench, catalog, preview, state, text, view, view_builder,
+};
+#[cfg(feature = "ts")]
+#[doc(inline)]
+pub use waterui_macros::{TsProps, TsType, tsx};
+#[cfg(feature = "webview")]
+#[doc(inline)]
+pub use waterui_macros::{eval, exec, exec_file, js_api, js_file};
+#[cfg(feature = "widgets")]
+#[doc(inline)]
+pub use waterui_macros::{widget, widget_intent};
 #[cfg(feature = "media")]
 pub use waterui_media as media;
 #[cfg(feature = "navigation")]
