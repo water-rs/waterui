@@ -850,21 +850,17 @@ pub fn components_block_24(token: &'static str, fence_text: &'static str) {
     use waterui::widget::{Code, code};
 
     let _ = {
-        code(Language::Rust, "fn main() {}") // typed: cannot fail
+        code(Language::Rust, "fn main() {}") // typed language
     };
     let _ = {
-        code("rust", "fn main() {}") // a literal token: panics if unknown
+        code("rust", "fn main() {}") // recognized token -> Rust header
     };
     let _ = {
-        code(
-            token.parse::<Language>().unwrap_or(Language::Plaintext),
-            fence_text,
-        )
-        .info(token) // keep the token as written
-        .on_copied({
-            let copied = copied.clone();
-            move |_| copied.set(true)
-        })
+        code(token, fence_text) // any token: unknown renders as plaintext with `token` header
+            .on_copied({
+                let copied = copied.clone();
+                move |_| copied.set(true)
+            })
     };
 
     let _: Option<Code> = None;

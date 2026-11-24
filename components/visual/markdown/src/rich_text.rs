@@ -1,4 +1,4 @@
-use std::{mem, num::NonZeroUsize, ops::Range, str::FromStr};
+use std::{mem, num::NonZeroUsize, ops::Range};
 
 use executor_core::spawn_local;
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, Options, Parser, Tag};
@@ -20,7 +20,7 @@ use waterui_layout::{
 use waterui_media::{Url, photo::photo as media_photo};
 use waterui_text::{
     Text,
-    code::{OnCopied, code as code_widget},
+    code::{CodeLanguage, OnCopied, code as code_widget},
     highlight::Language,
     styled::{MarkdownInlineBuilder, Style, StyledStr, heading_style},
     text,
@@ -1025,21 +1025,14 @@ fn parse_markdown(markdown: &str) -> Vec<RichTextElement> {
 /// told apart only by this token.
 fn info_from_kind(kind: &CodeBlockKind) -> Option<Str> {
     match kind {
-        CodeBlockKind::Fenced(info) => info
-            .split_whitespace()
-            .next()
-            .map(|token| Str::from(token.to_owned())),
+        CodeBlockKind::Fenced(info) => CodeLanguage::parse(info.as_ref()).info().cloned(),
         CodeBlockKind::Indented => None,
     }
 }
 
 fn language_from_kind(kind: &CodeBlockKind) -> Language {
     match kind {
-        CodeBlockKind::Fenced(info) => info
-            .split_whitespace()
-            .next()
-            .and_then(|token| Language::from_str(token).ok())
-            .unwrap_or(Language::Plaintext),
+        CodeBlockKind::Fenced(info) => CodeLanguage::parse(info.as_ref()).language().clone(),
         CodeBlockKind::Indented => Language::Plaintext,
     }
 }

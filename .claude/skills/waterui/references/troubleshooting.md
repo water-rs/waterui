@@ -162,12 +162,6 @@ install more narrowly or give every label an icon.
 `width * height * 4` (RGBA8) and the image must have an area. This is fast-fail working as
 designed — fix the buffer.
 
-**A `Code` view panics with "Invalid language".** `code(language, content)` and `Code::new`
-panic when the language does not convert, so a token from runtime data (a fence info
-string, a server-supplied tag) crashes on the first unknown value. Parse it first with
-`Language::try_from(tok)` (`waterui::text::highlight::Language`), fall back to
-`Language::Plaintext`, and keep the original token with `.info(tok)`.
-
 **`Id::try_from(0)` fails.** `Id` is non-zero; offset 0-based indices by `+ 1`.
 
 **A panic during a test interaction.** Interactions panic when the runtime rejects the

@@ -25,7 +25,7 @@ pub mod styled;
 /// Core text component.
 pub mod text;
 #[cfg(feature = "highlight")]
-pub use code::{Code, CodeConfig, OnCopied, code};
+pub use code::{Code, CodeConfig, CodeLanguage, OnCopied, code};
 #[cfg(feature = "font-collection")]
 pub use collection::{FontBytes, FontCollection, FontFace};
 pub use styled::{StyledStr, TapSpan};
