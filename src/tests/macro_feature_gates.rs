@@ -1,12 +1,11 @@
 //! Compile-level coverage verifying macro re-exports at `waterui` and
 //! `waterui::prelude` resolve under their expected feature gates.
 
-#![expect(
-    unused_imports,
-    reason = "verifies compile-time macro re-export visibility across feature combinations"
-)]
-
 #[test]
+#[expect(
+    unused_imports,
+    reason = "verifies compile-time macro re-export visibility without invoking each macro"
+)]
 fn core_macros_resolve_from_root_and_prelude() {
     use waterui::prelude::{
         Identifiable as _, Project as _, bench as _, catalog as _, preview as _, state as _,
@@ -20,6 +19,10 @@ fn core_macros_resolve_from_root_and_prelude() {
 
 #[cfg(feature = "form")]
 #[test]
+#[expect(
+    unused_imports,
+    reason = "verifies compile-time macro re-export visibility when form is enabled"
+)]
 fn form_macros_resolve_when_form_enabled() {
     use waterui::prelude::{FormBuilder as _, form as _};
     use waterui::{FormBuilder as _, form as _};
@@ -27,6 +30,10 @@ fn form_macros_resolve_when_form_enabled() {
 
 #[cfg(feature = "webview")]
 #[test]
+#[expect(
+    unused_imports,
+    reason = "verifies compile-time macro re-export visibility when webview is enabled"
+)]
 fn webview_macros_resolve_when_webview_enabled() {
     use waterui::prelude::{eval as _, exec as _, exec_file as _, js_api as _, js_file as _};
     use waterui::{eval as _, exec as _, exec_file as _, js_api as _, js_file as _};
@@ -34,6 +41,10 @@ fn webview_macros_resolve_when_webview_enabled() {
 
 #[cfg(feature = "ts")]
 #[test]
+#[expect(
+    unused_imports,
+    reason = "verifies compile-time macro re-export visibility when ts is enabled"
+)]
 fn ts_macros_resolve_when_ts_enabled() {
     use waterui::prelude::{TsProps as _, TsType as _, tsx as _};
     use waterui::{TsProps as _, TsType as _, tsx as _};
@@ -41,6 +52,10 @@ fn ts_macros_resolve_when_ts_enabled() {
 
 #[cfg(feature = "widgets")]
 #[test]
+#[expect(
+    unused_imports,
+    reason = "verifies compile-time macro re-export visibility when widgets is enabled"
+)]
 fn widget_macros_resolve_when_widgets_enabled() {
     use waterui::{widget as _, widget_intent as _};
 }
