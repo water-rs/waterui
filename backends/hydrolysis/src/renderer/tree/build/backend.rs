@@ -1484,7 +1484,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     ) -> RenderNode<E> {
         mark_reached!("gradient");
         let renderer = &mut *self.renderer;
-        RenderNode::build_gradient(renderer, native, env)
+        RenderNode::build_gradient(renderer, &native, env)
     }
 
     fn shape(

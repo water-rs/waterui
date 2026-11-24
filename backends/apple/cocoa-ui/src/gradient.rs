@@ -1,5 +1,6 @@
 //! A `CALayer` delegate that draws a `CGGradient` in its contents space.
 
+use core::cell::{Cell, RefCell};
 use core::fmt;
 
 use objc2::rc::Retained;
@@ -12,7 +13,8 @@ use objc2_core_graphics::{
 };
 use objc2_foundation::{NSNull, NSObjectProtocol, NSString};
 use objc2_quartz_core::{
-    CAAction, CADynamicRangeHigh, CALayer, CALayerDelegate, kCAContentsFormatRGBA16Float,
+    CAAction, CADynamicRangeAutomatic, CADynamicRangeHigh, CALayer, CALayerDelegate,
+    kCAContentsFormatAutomatic, kCAContentsFormatRGBA16Float,
 };
 use waterui_contract::contract_violation;
 
@@ -207,14 +209,18 @@ fn shape_in_points(shape: &GradientShape, bounds: Rect) -> ShapeInPoints {
     }
 }
 
-struct PainterIvars {
+struct PainterState {
     gradient: CFRetained<CGGradient>,
     shape: GradientShape,
 }
 
+struct PainterIvars {
+    state: RefCell<PainterState>,
+}
+
 define_class!(
-    // SAFETY: the NSObject subclass retains immutable gradient drawing data
-    // and Quartz invokes its delegate only on the main thread.
+    // SAFETY: the NSObject subclass is MainThreadOnly and Quartz invokes its
+    // delegate only on the main thread.
     #[unsafe(super(NSObject))]
     #[name = "CocoaUiGradientPainter"]
     #[thread_kind = MainThreadOnly]
@@ -247,13 +253,15 @@ define_class!(
                 if bounds.size.width <= 0.0 || bounds.size.height <= 0.0 {
                     return;
                 }
-                let shape = shape_in_points(&self.ivars().shape, bounds);
-                let gradient = &self.ivars().gradient;
+                let (shape, gradient) = {
+                    let state = self.ivars().state.borrow();
+                    (shape_in_points(&state.shape, bounds), state.gradient.clone())
+                };
                 match shape {
                     ShapeInPoints::Linear { start, end } => {
                         CGContext::draw_linear_gradient(
                             Some(context),
-                            Some(gradient),
+                            Some(&gradient),
                             start.into(),
                             end.into(),
                             gradient_drawing_options(),
@@ -267,7 +275,7 @@ define_class!(
                     } => {
                         CGContext::draw_radial_gradient(
                             Some(context),
-                            Some(gradient),
+                            Some(&gradient),
                             start_center.into(),
                             start_radius,
                             end_center.into(),
@@ -276,7 +284,7 @@ define_class!(
                         );
                     }
                     ShapeInPoints::Conic { center, angle } => {
-                        context.draw_conic_gradient(Some(gradient), center.into(), angle);
+                        context.draw_conic_gradient(Some(&gradient), center.into(), angle);
                     }
                 }
             });
@@ -289,15 +297,71 @@ fn gradient_drawing_options() -> CGGradientDrawingOptions {
         | CGGradientDrawingOptions::DrawsAfterEndLocation
 }
 
+fn build_cg_gradient(paint: &GradientPaint) -> CFRetained<CGGradient> {
+    let (components, locations) = validate_stops(&paint.stops);
+    let color_space = match paint.space {
+        GradientSpace::ExtendedLinearDisplayP3 => {
+            // SAFETY: this is the Core Graphics colour-space constant.
+            CGColorSpace::with_name(Some(unsafe { kCGColorSpaceExtendedLinearDisplayP3 }))
+        }
+        GradientSpace::ExtendedSrgb => {
+            // SAFETY: this is the Core Graphics colour-space constant.
+            CGColorSpace::with_name(Some(unsafe { kCGColorSpaceExtendedSRGB }))
+        }
+    }
+    .expect("Core Graphics names both extended colour spaces: the names are its own constants");
+    // SAFETY: both slices are valid for the call; there are four
+    // components per stop and one location per stop.
+    unsafe {
+        CGGradient::with_color_components(
+            Some(&color_space),
+            components.as_ptr(),
+            locations.as_ptr(),
+            locations.len(),
+        )
+    }
+    .expect("Core Graphics creates a gradient from finite, ascending stops: `validate_stops` made them so")
+}
+
+fn apply_dynamic_range(layer: &CALayer, extended: bool) {
+    if extended {
+        // A delegate-drawn layer rasters into its backing store, and the
+        // default `RGBA8Uint` format clamps every channel to [0, 1] —
+        // HDR stops flatten to SDR white before the compositor ever sees
+        // them. A half-float backing preserves the values, and the High
+        // preference asks the display for EDR headroom; on an SDR display
+        // both are inert. An explicit `Metadata<DynamicRangeMetadata>`
+        // ancestor requesting `DynamicRange::Standard` still overrides the
+        // preference — this is the paint's own range, not a subtree pin.
+        // SAFETY: the extern statics are immutable framework constants.
+        unsafe {
+            layer.setContentsFormat(kCAContentsFormatRGBA16Float);
+            layer.setPreferredDynamicRange(CADynamicRangeHigh);
+        }
+    } else {
+        // SAFETY: the extern statics are immutable framework constants.
+        unsafe {
+            layer.setContentsFormat(kCAContentsFormatAutomatic);
+            layer.setPreferredDynamicRange(CADynamicRangeAutomatic);
+        }
+    }
+}
+
 impl Painter {
     fn new(
         mtm: MainThreadMarker,
         gradient: CFRetained<CGGradient>,
         shape: GradientShape,
     ) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(PainterIvars { gradient, shape });
+        let this = Self::alloc(mtm).set_ivars(PainterIvars {
+            state: RefCell::new(PainterState { gradient, shape }),
+        });
         // SAFETY: `init` is NSObject's designated initializer.
         unsafe { msg_send![super(this), init] }
+    }
+
+    fn set_state(&self, gradient: CFRetained<CGGradient>, shape: GradientShape) {
+        *self.ivars().state.borrow_mut() = PainterState { gradient, shape };
     }
 }
 
@@ -312,7 +376,8 @@ impl fmt::Debug for Painter {
 pub struct GradientLayer {
     layer: Retained<CALayer>,
     /// Owns the layer's delegate, which `CALayer` holds weakly.
-    _painter: Retained<Painter>,
+    painter: Retained<Painter>,
+    extended_range: Cell<bool>,
 }
 
 impl GradientLayer {
@@ -324,53 +389,32 @@ impl GradientLayer {
     /// requested gradient or colour space.
     #[must_use]
     pub fn new(mtm: MainThreadMarker, paint: GradientPaint) -> Self {
-        let (components, locations) = validate_stops(&paint.stops);
-        let color_space = match paint.space {
-            GradientSpace::ExtendedLinearDisplayP3 => {
-                // SAFETY: this is the Core Graphics colour-space constant.
-                CGColorSpace::with_name(Some(unsafe { kCGColorSpaceExtendedLinearDisplayP3 }))
-            }
-            GradientSpace::ExtendedSrgb => {
-                // SAFETY: this is the Core Graphics colour-space constant.
-                CGColorSpace::with_name(Some(unsafe { kCGColorSpaceExtendedSRGB }))
-            }
-        }
-        .expect("Core Graphics names both extended colour spaces: the names are its own constants");
-        // SAFETY: both slices are valid for the call; there are four
-        // components per stop and one location per stop.
-        let gradient = unsafe {
-            CGGradient::with_color_components(
-                Some(&color_space),
-                components.as_ptr(),
-                locations.as_ptr(),
-                locations.len(),
-            )
-        }
-        .expect("Core Graphics creates a gradient from finite, ascending stops: `validate_stops` made them so");
+        let extended = needs_extended_range(&paint.stops);
+        let gradient = build_cg_gradient(&paint);
         let painter = Painter::new(mtm, gradient, paint.shape);
         let layer = CALayer::new();
-        if needs_extended_range(&paint.stops) {
-            // A delegate-drawn layer rasters into its backing store, and the
-            // default `RGBA8Uint` format clamps every channel to [0, 1] —
-            // HDR stops flatten to SDR white before the compositor ever sees
-            // them. A half-float backing preserves the values, and the High
-            // preference asks the display for EDR headroom; on an SDR display
-            // both are inert. An explicit `Metadata<DynamicRangeMetadata>`
-            // ancestor requesting `DynamicRange::Standard` still overrides the
-            // preference — this is the paint's own range, not a subtree pin.
-            // SAFETY: the extern statics are immutable framework constants.
-            unsafe {
-                layer.setContentsFormat(kCAContentsFormatRGBA16Float);
-                layer.setPreferredDynamicRange(CADynamicRangeHigh);
-            }
+        if extended {
+            apply_dynamic_range(&layer, true);
         }
         layer.setDelegate(Some(ProtocolObject::from_ref(&*painter)));
         layer.setNeedsDisplayOnBoundsChange(true);
         layer.setNeedsDisplay();
         Self {
             layer,
-            _painter: painter,
+            painter,
+            extended_range: Cell::new(extended),
         }
+    }
+
+    /// Replaces the layer's gradient paint in place and schedules a redraw.
+    pub fn set_paint(&self, paint: GradientPaint) {
+        let extended = needs_extended_range(&paint.stops);
+        let gradient = build_cg_gradient(&paint);
+        self.painter.set_state(gradient, paint.shape);
+        if self.extended_range.replace(extended) != extended {
+            apply_dynamic_range(&self.layer, extended);
+        }
+        self.layer.setNeedsDisplay();
     }
 
     /// The backing layer, for `addSublayer` and related operations.

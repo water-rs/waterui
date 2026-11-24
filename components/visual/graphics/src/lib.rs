@@ -56,7 +56,7 @@ pub use gpu::{
 #[cfg(any(feature = "gpu", feature = "cpu"))]
 pub use gradient::FlowingGradient;
 pub use gradient::{ANIMATED_MESH_PALETTE_LEN, AnimatedMeshGradient, AnimatedMeshGradientConfig};
-pub use gradient::{Gradient, GradientType, MeshGradient};
+pub use gradient::{Gradient, GradientStops, GradientType, MeshGradient};
 #[cfg(feature = "image-decode")]
 pub use image::image_decode;
 #[cfg(feature = "input")]
