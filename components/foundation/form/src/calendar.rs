@@ -25,7 +25,7 @@ use waterui_core::layout::StretchAxis;
 use waterui_core::{
     AnyView, Environment, Metadata, Native, NativeView, OneOf2, View, env::use_env, views::ForEach,
 };
-use waterui_graphics::color::{AccentColor, AccentForegroundColor, Color, ForegroundColor};
+use waterui_graphics::color::Color;
 use waterui_interaction::interaction::Disabled;
 use waterui_layout::frame::Frame;
 use waterui_layout::padding::{EdgeInsets, Padding};
@@ -631,6 +631,10 @@ pub(crate) fn multi_day_cell_content(
     }
 }
 
+fn selection_fill_color(selected: &Computed<bool>) -> Color {
+    Color::tint().with_opacity(selected.map(|selected| if selected { 1.0 } else { 0.0 }))
+}
+
 fn selectable_day_cell<F: FnMut() + 'static>(
     date: Date,
     decorated: &Computed<bool>,
@@ -639,9 +643,9 @@ fn selectable_day_cell<F: FnMut() + 'static>(
 ) -> impl View + use<F> {
     let foreground = selected.map(|selected| {
         if selected {
-            Color::new(AccentForegroundColor)
+            Color::accent_foreground()
         } else {
-            Color::new(ForegroundColor)
+            Color::foreground()
         }
     });
     let button = button(day_cell_label(date, decorated).color(foreground))
@@ -652,14 +656,9 @@ fn selectable_day_cell<F: FnMut() + 'static>(
 
     BackgroundView::new(
         content,
-        Frame::new(
-            Circle.fill(
-                Color::new(AccentColor)
-                    .with_opacity(selected.map(|selected| if selected { 1.0 } else { 0.0 })),
-            ),
-        )
-        .width(CALENDAR_SELECTED_DAY_SIZE)
-        .height(CALENDAR_SELECTED_DAY_SIZE),
+        Frame::new(Circle.fill(selection_fill_color(selected)))
+            .width(CALENDAR_SELECTED_DAY_SIZE)
+            .height(CALENDAR_SELECTED_DAY_SIZE),
     )
 }
 
@@ -710,6 +709,11 @@ fn month_start(date: Date) -> Date {
 
 #[cfg(test)]
 mod tests {
+    use waterui_core::Environment;
+    use waterui_graphics::color::{
+        Tint, Working, WorkingColor, install_color_signal, token::Accent,
+    };
+
     use super::*;
 
     #[test]
@@ -762,5 +766,24 @@ mod tests {
             Date::new(2025, 6, 1).unwrap()
         );
         assert_eq!(shown.snapshot(), Date::new(2025, 6, 1).unwrap());
+    }
+
+    #[test]
+    fn selection_fill_follows_tint_and_falls_back_to_accent() {
+        let accent = WorkingColor::new([0.0, 0.2, 1.0, 1.0]);
+        let tint = WorkingColor::new([1.0, 0.1, 0.1, 1.0]);
+        let mut env = Environment::new();
+        install_color_signal::<Accent>(&mut env, Computed::constant(accent));
+
+        let selected = Binding::bool(true).computed();
+        let fill = selection_fill_color(&selected);
+
+        assert_eq!(fill.resolve(&env).snapshot().components, accent.components);
+
+        let tinted_env = env.extending(Tint::new(Color::new(Working(tint))));
+        assert_eq!(
+            fill.resolve(&tinted_env).snapshot().components,
+            tint.components
+        );
     }
 }

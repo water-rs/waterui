@@ -20,7 +20,7 @@ use nami::{Binding, Computed, Signal, SignalExt};
 use waterui_core::Environment;
 use waterui_core::layout::LayoutDirection;
 use waterui_graphics::WorkingColor;
-use waterui_graphics::color::ColorScheme;
+use waterui_graphics::color::{ColorScheme, installed_color_signal, token};
 use waterui_locale::{Locale, layout_direction, locale_binding};
 use waterui_ts_engine::{JsError, JsValue};
 
@@ -184,10 +184,8 @@ macro_rules! theme_tokens {
         fn token_sources(environment: &Environment) -> Vec<(&'static str, Computed<WorkingColor>)> {
             let mut sources = Vec::new();
             $(
-                if let Some(color) = environment
-                    .query::<waterui_graphics::color::$key, Computed<WorkingColor>>()
-                {
-                    sources.push(($name, color.clone()));
+                if let Some(color) = installed_color_signal::<token::$key>(environment) {
+                    sources.push(($name, color));
                 }
             )*
             sources
@@ -196,24 +194,24 @@ macro_rules! theme_tokens {
 }
 
 theme_tokens!(
-    ForegroundColor => "foreground",
-    BackgroundColor => "background",
-    SurfaceColor => "surface",
-    SurfaceVariantColor => "surfaceVariant",
-    BorderColor => "border",
-    AccentColor => "accent",
-    MutedForegroundColor => "mutedForeground",
-    TertiaryForegroundColor => "tertiaryForeground",
-    DisabledForegroundColor => "disabledForeground",
-    AccentForegroundColor => "accentForeground",
-    AccentContainerColor => "accentContainer",
-    TertiaryColor => "tertiary",
-    TertiaryContainerColor => "tertiaryContainer",
-    SelectionContainerColor => "selectionContainer",
-    SelectionForegroundColor => "selectionForeground",
-    UnemphasizedSelectionColor => "unemphasizedSelection",
-    ErrorColor => "error",
-    ErrorForegroundColor => "errorForeground",
+    Foreground => "foreground",
+    Background => "background",
+    Surface => "surface",
+    SurfaceVariant => "surfaceVariant",
+    Border => "border",
+    Accent => "accent",
+    MutedForeground => "mutedForeground",
+    TertiaryForeground => "tertiaryForeground",
+    DisabledForeground => "disabledForeground",
+    AccentForeground => "accentForeground",
+    AccentContainer => "accentContainer",
+    Tertiary => "tertiary",
+    TertiaryContainer => "tertiaryContainer",
+    SelectionContainer => "selectionContainer",
+    SelectionForeground => "selectionForeground",
+    UnemphasizedSelection => "unemphasizedSelection",
+    Error => "error",
+    ErrorForeground => "errorForeground",
 );
 
 /// Renders the TypeScript `Theme` interface declaration from [`THEME_TOKEN_NAMES`].
