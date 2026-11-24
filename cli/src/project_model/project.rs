@@ -1885,7 +1885,9 @@ impl CreateOptions {
             return ResolvedFramework::resolve_manifest(host, path).await;
         }
         if let Some(framework) = &self.framework {
-            return Ok((framework.clone(), self.framework_lock.take()));
+            let framework = framework.clone().validated()?;
+            framework.validate_cli(host)?;
+            return Ok((framework, self.framework_lock.take()));
         }
         ResolvedFramework::resolve(host, self.channel.unwrap_or_default(), None).await
     }
@@ -2843,7 +2845,7 @@ fn cargo_layout_from(
     metadata: &cargo_metadata::Metadata,
     water_lock: Option<&[u8]>,
 ) -> eyre::Result<CargoLayout> {
-    validate_resolved_cli(host, metadata)?;
+    validate_resolved_cli(host, metadata, framework)?;
     if let Some(framework) = framework {
         framework.validate_public_api_dependencies(metadata)?;
         if let Some(lockfile) = water_lock {
@@ -4922,6 +4924,7 @@ mod channel_tests {
             let mut metadata = toml::toml! {
                 [package.metadata.waterui]
                 minimum-cli-version = "0.1.4"
+                backend-contract = 1
                 android-min-api-level = 33
                 android-gradle-version = "9.7.1"
             };
@@ -4974,6 +4977,82 @@ mod channel_tests {
                     .unwrap_err()
                     .to_string();
             assert!(error.contains(&format!("requires waterui-cli >= {minimum}")));
+            assert!(!project_root.join("Cargo.lock").exists());
+        });
+    }
+
+    #[test]
+    fn backend_contract_gate_rejects_old_frameworks_before_generating() {
+        use crate::framework::BACKEND_CONTRACT;
+        use crate::toolchain::testing::TestMachine;
+
+        smol::block_on(async {
+            let directory = tempfile::tempdir().unwrap();
+            let framework_root = directory.path().join("framework");
+            let project_root = directory.path().join("consumer");
+            smol::fs::create_dir(&framework_root).await.unwrap();
+            let checkout = toml::toml! {
+                [package]
+                name = "waterui"
+                version = "0.5.9"
+                edition = "2024"
+
+                [package.metadata.waterui]
+                minimum-cli-version = "0.1.0"
+                android-min-api-level = 33
+                android-gradle-version = "9.7.1"
+                apple-backend-path = "backends/apple"
+                hydrolysis-path = "backends/hydrolysis"
+            };
+            smol::fs::write(
+                framework_root.join("Cargo.toml"),
+                toml::to_string(&checkout).unwrap(),
+            )
+            .await
+            .unwrap();
+            let bundle_identifier =
+                BundleIdentifier::try_from("dev.waterui.backendContract").unwrap();
+            let options = CreateOptions {
+                name: "BackendContract".into(),
+                bundle_identifier: bundle_identifier.clone(),
+                waterui_path: Some(framework_root.clone()),
+                channel: None,
+                framework_manifest: None,
+                framework: None,
+                framework_lock: None,
+                author: String::new(),
+                web: None,
+            };
+            let machine = TestMachine::new();
+            let error = Project::create(&real_toolchain_host(&machine), &project_root, options)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("none (older than contract 1)"), "{error}");
+            assert!(
+                error.contains(&format!("backend-contract {BACKEND_CONTRACT}")),
+                "{error}"
+            );
+            assert!(!project_root.exists());
+
+            smol::fs::create_dir(&project_root).await.unwrap();
+            let mut manifest = Manifest::new(Package {
+                name: "BackendContract".into(),
+                bundle_identifier,
+                assets_path: default_assets_path(),
+                accessory: false,
+                embedded: false,
+            });
+            manifest.waterui_path = Some("../framework".into());
+            manifest.save(&project_root).await.unwrap();
+            let preview_error = Project::open_for_preview_build(&Host::current(), &project_root)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(
+                preview_error.contains("none (older than contract 1)"),
+                "{preview_error}"
+            );
             assert!(!project_root.join("Cargo.lock").exists());
         });
     }
@@ -6056,7 +6135,7 @@ mod target_graph_tests {
 
 #[cfg(test)]
 mod scaffold_tests {
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
 
     use super::{BundleIdentifier, CreateOptions, ManagedBackends, Project, real_toolchain_host};
 
@@ -6098,6 +6177,9 @@ mod scaffold_tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let root = dir.path().join("water-example");
 
+        let checkout = dir.path().join("waterui");
+        crate::framework::test_fixtures::write_local_checkout_workspace(&checkout)
+            .expect("local checkout");
         let project = smol::block_on(Project::create(
             &real_toolchain_host(&machine),
             &root,
@@ -6105,12 +6187,10 @@ mod scaffold_tests {
                 name: "Water Example".to_string(),
                 bundle_identifier: BundleIdentifier::try_from("dev.waterui.waterexample")
                     .expect("bundle identifier"),
-                waterui_path: None,
+                waterui_path: Some(checkout),
                 channel: None,
                 framework_manifest: None,
-                // A channel resolution would fetch the newest release from
-                // GitHub; a unit test resolves a fixture in place instead.
-                framework: Some(crate::framework::test_fixtures::stable_framework()),
+                framework: None,
                 framework_lock: None,
                 author: "Lexo Liu".to_string(),
                 web: None,
@@ -6144,6 +6224,9 @@ mod scaffold_tests {
         let machine = crate::toolchain::testing::TestMachine::new();
         let dir = tempfile::tempdir().expect("temp dir");
         let root = dir.path().join("water-example");
+        let checkout = dir.path().join("waterui");
+        crate::framework::test_fixtures::write_local_checkout_workspace(&checkout)
+            .expect("local checkout");
         let project = smol::block_on(Project::create(
             &real_toolchain_host(&machine),
             &root,
@@ -6151,10 +6234,10 @@ mod scaffold_tests {
                 name: "Water Example".to_string(),
                 bundle_identifier: BundleIdentifier::try_from("dev.waterui.waterexample")
                     .expect("bundle identifier"),
-                waterui_path: None,
+                waterui_path: Some(checkout),
                 channel: None,
                 framework_manifest: None,
-                framework: Some(crate::framework::test_fixtures::stable_framework()),
+                framework: None,
                 framework_lock: None,
                 author: "Lexo Liu".to_string(),
                 web: None,
@@ -6185,106 +6268,30 @@ mod scaffold_tests {
         }
     }
 
-    /// Stage the canonical framework checkout the `apple_backend` arm of
-    /// [`create_project`] names in `Water.toml`: the `waterui` facade as root
-    /// package and `waterui-apple` at `backends/apple`.
-    fn stage_waterui_checkout(root: &Path, vendor_dir: &Path) {
-        let mut waterui_manifest = toml_edit::DocumentMut::new();
-        waterui_manifest["package"]["name"] = toml_edit::value("waterui");
-        waterui_manifest["package"]["version"] = toml_edit::value("0.4.1");
-        waterui_manifest["package"]["edition"] = toml_edit::value("2021");
-        for feature in ["dynamic_linking", "media"] {
-            waterui_manifest["features"][feature] = toml_edit::value(toml_edit::Array::new());
-        }
-        waterui_manifest["workspace"]["members"] =
-            toml_edit::value(toml_edit::Array::from_iter(["backends/apple"]));
-        std::fs::create_dir_all(vendor_dir.join("src")).expect("waterui stub dir");
-        std::fs::write(vendor_dir.join("Cargo.toml"), waterui_manifest.to_string())
-            .expect("waterui checkout manifest");
-        std::fs::write(vendor_dir.join("src/lib.rs"), "").expect("waterui lib");
-        crate::framework::test_fixtures::write_vendor_stub(
-            &vendor_dir.join("backends/apple"),
-            "waterui-apple",
-            &["map", "media", "webview"],
-        );
-        let water_toml = root.join("Water.toml");
-        let mut water_document: toml_edit::DocumentMut = std::fs::read_to_string(&water_toml)
-            .expect("Water.toml exists")
-            .parse()
-            .expect("Water.toml parses");
-        water_document["waterui_path"] = toml_edit::value(vendor_dir.to_string_lossy().as_ref());
-        std::fs::write(&water_toml, water_document.to_string())
-            .expect("name the vendored framework checkout");
-    }
-
-    /// A remote-channel project whose framework pins resolve without a
-    /// network: `waterui` rides `[patch.crates-io]` onto a vendor stub (the
-    /// only source `[patch]` can redirect offline), and `waterui-apple`
-    /// rides the canonical `backends/apple` slot of the vendored checkout
-    /// `waterui_path` names — a path dependency — so the Apple companion's
-    /// feature-table probe resolves entirely locally. `apple_backend` stages
-    /// that checkout and names it in `Water.toml` for the opens that select
-    /// the Apple backend.
-    fn create_project(
-        host: &crate::toolchain::Host,
-        root: &Path,
-        vendor_dir: &Path,
-        apple_backend: bool,
-    ) -> Project {
-        let project = smol::block_on(Project::create(
+    /// Creates a scaffold project backed by a local checkout workspace so
+    /// tests run offline against the current `backend-contract` without
+    /// fetching from GitHub or crates.io.
+    fn create_project(host: &crate::toolchain::Host, root: &Path, vendor_dir: &Path) -> Project {
+        let checkout = vendor_dir.join("waterui-checkout");
+        crate::framework::test_fixtures::write_local_checkout_workspace(&checkout)
+            .expect("local checkout");
+        smol::block_on(Project::create(
             host,
             root,
             CreateOptions {
                 name: "Water Example".to_string(),
                 bundle_identifier: BundleIdentifier::try_from("dev.waterui.waterexample")
                     .expect("bundle identifier"),
-                waterui_path: None,
+                waterui_path: Some(checkout),
                 channel: None,
                 framework_manifest: None,
-                framework: Some(crate::framework::test_fixtures::stable_framework()),
+                framework: None,
                 framework_lock: None,
                 author: "Lexo Liu".to_string(),
                 web: None,
             },
         ))
-        .expect("project creation must succeed");
-
-        if apple_backend {
-            stage_waterui_checkout(root, vendor_dir);
-        } else {
-            crate::framework::test_fixtures::write_vendor_stub(
-                &vendor_dir.join("waterui"),
-                "waterui",
-                &["dynamic_linking", "media"],
-            );
-        }
-        let manifest_path = root.join("Cargo.toml");
-        let mut document: toml_edit::DocumentMut = std::fs::read_to_string(&manifest_path)
-            .expect("project Cargo.toml exists")
-            .parse()
-            .expect("project Cargo.toml parses");
-        let patch_targets: [(String, PathBuf); 1] = if apple_backend {
-            [("waterui".to_string(), vendor_dir.to_path_buf())]
-        } else {
-            [("waterui".to_string(), vendor_dir.join("waterui"))]
-        };
-        for (name, dir) in patch_targets {
-            document["patch"]["crates-io"][name]["path"] =
-                toml_edit::value(dir.to_string_lossy().as_ref());
-        }
-        std::fs::write(&manifest_path, document.to_string()).expect("write the patch table");
-
-        // `Project::open` resolves the project's layout with `cargo metadata
-        // --locked`; a plain offline resolve records the patched sources in
-        // the lock first.
-        let mut command = cargo_metadata::MetadataCommand::new();
-        command
-            .manifest_path(&manifest_path)
-            .other_options(vec!["--offline".to_string()]);
-        smol::block_on(host.cargo_metadata(&command))
-            .expect("offline metadata resolves the patched project");
-
-        project
+        .expect("project creation must succeed")
     }
 
     /// Opening a project for a platform the CLI manages a native backend
@@ -6304,12 +6311,7 @@ mod scaffold_tests {
         ] {
             let dir = tempfile::tempdir().expect("temp dir");
             let root = dir.path().join("water-example");
-            create_project(
-                &real_toolchain_host(&machine),
-                &root,
-                dir.path(),
-                apple_expected,
-            );
+            create_project(&real_toolchain_host(&machine), &root, dir.path());
 
             let project = smol::block_on(Project::open(
                 &real_toolchain_host(&machine),
@@ -6345,34 +6347,14 @@ mod scaffold_tests {
 
         let machine = crate::toolchain::testing::TestMachine::new();
         let dir = tempfile::tempdir().expect("temp dir");
-        let root = dir.path().join("water-example");
-        create_project(&real_toolchain_host(&machine), &root, dir.path(), false);
+        let base = dunce::canonicalize(dir.path()).expect("canonical temp dir");
+        let root = base.join("water-example");
+        create_project(&real_toolchain_host(&machine), &root, &base);
 
         // A `waterui_path` checkout carrying the pieces the render
         // resolves: `waterui` at the root and the `backends/apple` member
         // slot `waterui-apple` resolves through.
-        let waterui_root = dir.path().join("waterui");
-        let mut waterui_manifest = toml_edit::DocumentMut::new();
-        waterui_manifest["package"]["name"] = toml_edit::value("waterui");
-        waterui_manifest["package"]["version"] = toml_edit::value("0.4.1");
-        waterui_manifest["package"]["edition"] = toml_edit::value("2021");
-        for feature in ["dynamic_linking", "media"] {
-            waterui_manifest["features"][feature] = toml_edit::value(toml_edit::Array::new());
-        }
-        waterui_manifest["workspace"]["members"] =
-            toml_edit::value(toml_edit::Array::from_iter(["backends/apple"]));
-        std::fs::create_dir_all(waterui_root.join("src")).expect("waterui root dir");
-        std::fs::write(
-            waterui_root.join("Cargo.toml"),
-            waterui_manifest.to_string(),
-        )
-        .expect("waterui root manifest");
-        std::fs::write(waterui_root.join("src/lib.rs"), "").expect("waterui lib");
-        crate::framework::test_fixtures::write_vendor_stub(
-            &waterui_root.join("backends/apple"),
-            "waterui-apple",
-            &["map", "media", "webview"],
-        );
+        let waterui_root = base.join("waterui-checkout");
         // The stale companion's `waterui-apple` dependency names a slot that
         // does not exist — nothing may resolve the stale manifest at all.
         let missing_apple = waterui_root.join("backends/old-apple");
@@ -6473,7 +6455,7 @@ mod scaffold_tests {
         let machine = crate::toolchain::testing::TestMachine::new();
         let dir = tempfile::tempdir().expect("temp dir");
         let root = dir.path().join("water-example");
-        let project = create_project(&real_toolchain_host(&machine), &root, dir.path(), true);
+        let project = create_project(&real_toolchain_host(&machine), &root, dir.path());
 
         smol::block_on(project.scaffold_apple_companion())
             .expect("a scaffold off macOS must succeed");
@@ -6500,6 +6482,9 @@ mod scaffold_tests {
         let machine = crate::toolchain::testing::TestMachine::new();
         let host = real_toolchain_host(&machine);
         let dir = tempfile::tempdir().expect("temp dir");
+        let checkout = dir.path().join("waterui");
+        crate::framework::test_fixtures::write_local_checkout_workspace(&checkout)
+            .expect("local checkout");
         let create = |root: &Path| {
             smol::block_on(Project::create(
                 &host,
@@ -6508,10 +6493,10 @@ mod scaffold_tests {
                     name: "Water Example".to_string(),
                     bundle_identifier: BundleIdentifier::try_from("dev.waterui.waterexample")
                         .expect("bundle identifier"),
-                    waterui_path: None,
+                    waterui_path: Some(checkout.clone()),
                     channel: None,
                     framework_manifest: None,
-                    framework: Some(crate::framework::test_fixtures::stable_framework()),
+                    framework: None,
                     framework_lock: None,
                     author: "Lexo Liu".to_string(),
                     web: None,

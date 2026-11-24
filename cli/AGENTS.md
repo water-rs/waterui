@@ -2,7 +2,7 @@
 
 The `water` CLI (crate `waterui-cli`) orchestrates creating, building, previewing, running and packaging WaterUI apps across platforms. The rules in the root [`AGENTS.md`](../AGENTS.md) apply to every file here too.
 
-It is a workspace member with its own release line: `cli/v*` tags and the `cli-dist`/`cli-release-assets` legs of `release.yml`. It resolves its framework crates as workspace path dependencies in the one lockfile and learns everything else about the framework at run time, so a change to a CLI↔framework contract lands in one commit. This repository owns both sides of that contract: `[package.metadata.waterui]` in the root manifest (`minimum-cli-version`, backend coordinates, the Android API floor, `scaffold-packages`), the `framework.json` the release attaches, the `waterui_meta_*` records the macros emit, and `cli/` itself. A fact the CLI cannot obtain from the framework is a framework issue; a CLI defect is a CLI issue; both live here.
+It is a workspace member with its own release line: `cli/v*` tags and the `cli-dist`/`cli-release-assets` legs of `release.yml`. It resolves its framework crates as workspace path dependencies in the one lockfile and learns everything else about the framework at run time, so a change to a CLI↔framework contract lands in one commit. This repository owns both sides of that contract: `[package.metadata.waterui]` in the root manifest (`minimum-cli-version`, `backend-contract`, backend coordinates, the Android API floor, `scaffold-packages`), the `framework.json` the release attaches, the `waterui_meta_*` records the macros emit, and `cli/` itself. A fact the CLI cannot obtain from the framework is a framework issue; a CLI defect is a CLI issue; both live here.
 
 ## Commands
 

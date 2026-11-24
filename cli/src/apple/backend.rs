@@ -258,72 +258,30 @@ mod tests {
         toolchain::Host,
     };
 
-    /// The channel's pins resolve without a network: `waterui` rides
-    /// `[patch.crates-io]` onto a vendor stub (the only source `[patch]`
-    /// can redirect offline), and `waterui-apple` is the canonical
-    /// `backends/apple` slot in the stub checkout `waterui_path` names — a
-    /// path dependency — so the Apple companion's feature-table probe
-    /// resolves entirely locally.
-    fn vendor_offline_resolution(host: &Host, root: &Path, vendor_dir: &Path) {
-        // The vendored checkout mirrors the real framework layout: the
-        // `waterui` facade is the root package and the Apple backend is the
-        // canonical `backends/apple` slot the generated manifest resolves as
-        // a path dependency.
-        let stubs = [
-            (
-                "waterui",
-                vendor_dir.to_path_buf(),
-                &["dynamic_linking", "media"][..],
-            ),
-            (
-                "waterui-apple",
-                vendor_dir.join("backends/apple"),
-                &["map", "media", "webview"][..],
-            ),
-        ];
-        for (name, stub, features) in stubs {
-            std::fs::create_dir_all(stub.join("src")).expect("stub crate dir");
-            let mut stub_manifest = toml_edit::DocumentMut::new();
-            stub_manifest["package"]["name"] = toml_edit::value(name);
-            stub_manifest["package"]["version"] = toml_edit::value("0.4.1");
-            stub_manifest["package"]["edition"] = toml_edit::value("2021");
-            for feature in features {
-                stub_manifest["features"][feature] = toml_edit::value(toml_edit::Array::new());
-            }
-            if name == "waterui" {
-                stub_manifest["workspace"]["members"] =
-                    toml_edit::value(toml_edit::Array::from_iter(["backends/apple"]));
-            }
-            std::fs::write(stub.join("Cargo.toml"), stub_manifest.to_string())
-                .expect("stub manifest");
-            std::fs::write(stub.join("src/lib.rs"), "").expect("stub lib");
-        }
-        let manifest_path = root.join("Cargo.toml");
-        let mut document: toml_edit::DocumentMut = std::fs::read_to_string(&manifest_path)
-            .expect("project Cargo.toml exists")
-            .parse()
-            .expect("project Cargo.toml parses");
-        document["patch"]["crates-io"]["waterui"]["path"] =
-            toml_edit::value(vendor_dir.to_string_lossy().as_ref());
-        std::fs::write(&manifest_path, document.to_string()).expect("write the patch table");
-        let water_toml = root.join("Water.toml");
-        let mut water_document: toml_edit::DocumentMut = std::fs::read_to_string(&water_toml)
-            .expect("Water.toml exists")
-            .parse()
-            .expect("Water.toml parses");
-        water_document["waterui_path"] = toml_edit::value(vendor_dir.to_string_lossy().as_ref());
-        std::fs::write(&water_toml, water_document.to_string())
-            .expect("name the vendored framework checkout");
-
-        // `Project::open` resolves the project's layout with `cargo metadata
-        // --locked`; a plain offline resolve records the patched sources in
-        // the lock first.
-        let mut command = cargo_metadata::MetadataCommand::new();
-        command
-            .manifest_path(&manifest_path)
-            .other_options(vec!["--offline".to_string()]);
-        smol::block_on(host.cargo_metadata(&command))
-            .expect("offline metadata resolves the patched project");
+    /// Stage a local framework checkout workspace and create a project pinned
+    /// to it so tests create and open offline without resolving crates.io.
+    fn create_local_project(
+        host: &Host,
+        dir: &Path,
+        project_dir: &str,
+        name: &str,
+        bundle_id: &str,
+    ) -> Project {
+        let checkout = dir.join("waterui");
+        crate::framework::test_fixtures::write_local_checkout_workspace(&checkout)
+            .expect("local checkout");
+        let root = dir.join(project_dir);
+        smol::block_on(Project::create(
+            host,
+            &root,
+            CreateOptions::new(
+                name.to_string(),
+                BundleIdentifier::try_from(bundle_id).expect("bundle identifier"),
+                "Lexo Liu".to_string(),
+            )
+            .with_waterui_path(Some(checkout)),
+        ))
+        .expect("project creation must succeed")
     }
 
     /// The scaffold emits only the entitlements file — no Xcode project
@@ -333,28 +291,17 @@ mod tests {
     fn scaffold_without_xcode_project_still_detects_staleness() {
         let dir = tempfile::tempdir().expect("temp dir");
         let host = crate::toolchain::testing::real_toolchain_host(dir.path());
-        let root = dir.path().join("water-example");
-        smol::block_on(Project::create(
+        let project = create_local_project(
             &host,
-            &root,
-            CreateOptions::new(
-                "Water Example".to_string(),
-                BundleIdentifier::try_from("dev.waterui.waterexample").expect("bundle identifier"),
-                "Lexo Liu".to_string(),
-            )
-            .with_framework(Some(crate::framework::test_fixtures::stable_framework())),
-        ))
-        .expect("project creation must succeed");
-
-        vendor_offline_resolution(
-            &crate::toolchain::Host::current(),
-            &root,
-            &dir.path().join("vendor"),
+            dir.path(),
+            "water-example",
+            "Water Example",
+            "dev.waterui.waterexample",
         );
 
         let project = smol::block_on(Project::open(
             &host,
-            &root,
+            project.root(),
             ManagedBackends::for_backend(TargetBackend::Apple),
         ))
         .expect("opening the project scaffolds the Apple backend");
@@ -403,19 +350,13 @@ mod tests {
     fn template_context_rejects_an_apple_invalid_bundle_identifier() {
         let dir = tempfile::tempdir().expect("temp dir");
         let host = crate::toolchain::testing::real_toolchain_host(dir.path());
-        let root = dir.path().join("menu-example");
-        let project = smol::block_on(Project::create(
+        let project = create_local_project(
             &host,
-            &root,
-            CreateOptions::new(
-                "Menu Example".to_string(),
-                BundleIdentifier::try_from("com.waterui.menu_example")
-                    .expect("the shared identifier grammar accepts underscores"),
-                "Lexo Liu".to_string(),
-            )
-            .with_framework(Some(crate::framework::test_fixtures::stable_framework())),
-        ))
-        .expect("project creation must succeed");
+            dir.path(),
+            "menu-example",
+            "Menu Example",
+            "com.waterui.menu_example",
+        );
 
         let error = smol::block_on(AppleBackend::template_context(&project))
             .expect_err("an underscored identifier is not a CFBundleIdentifier");
@@ -432,29 +373,17 @@ mod tests {
     fn apple_backend_accepts_and_preserves_a_hyphenated_bundle_identifier() {
         let dir = tempfile::tempdir().expect("temp dir");
         let host = crate::toolchain::testing::real_toolchain_host(dir.path());
-        let root = dir.path().join("liquid-glass");
-        smol::block_on(Project::create(
+        let project = create_local_project(
             &host,
-            &root,
-            CreateOptions::new(
-                "Liquid Glass".to_string(),
-                BundleIdentifier::try_from("dev.waterui.liquid-glass")
-                    .expect("the shared identifier grammar accepts hyphens"),
-                "Lexo Liu".to_string(),
-            )
-            .with_framework(Some(crate::framework::test_fixtures::stable_framework())),
-        ))
-        .expect("project creation must succeed");
-
-        vendor_offline_resolution(
-            &crate::toolchain::Host::current(),
-            &root,
-            &dir.path().join("vendor"),
+            dir.path(),
+            "liquid-glass",
+            "Liquid Glass",
+            "dev.waterui.liquid-glass",
         );
 
         let project = smol::block_on(Project::open(
             &host,
-            &root,
+            project.root(),
             ManagedBackends::for_backend(TargetBackend::Apple),
         ))
         .expect("the Apple backend scaffolds a hyphenated identifier");
@@ -530,28 +459,17 @@ mod tests {
     fn ios_info_plist_opts_out_of_the_promotion_frame_cap() {
         let dir = tempfile::tempdir().expect("temp dir");
         let host = crate::toolchain::testing::real_toolchain_host(dir.path());
-        let root = dir.path().join("water-example");
-        smol::block_on(Project::create(
+        let project = create_local_project(
             &host,
-            &root,
-            CreateOptions::new(
-                "Water Example".to_string(),
-                BundleIdentifier::try_from("dev.waterui.waterexample").expect("bundle identifier"),
-                "Lexo Liu".to_string(),
-            )
-            .with_framework(Some(crate::framework::test_fixtures::stable_framework())),
-        ))
-        .expect("project creation must succeed");
-
-        vendor_offline_resolution(
-            &crate::toolchain::Host::current(),
-            &root,
-            &dir.path().join("vendor"),
+            dir.path(),
+            "water-example",
+            "Water Example",
+            "dev.waterui.waterexample",
         );
 
         let project = smol::block_on(Project::open(
             &host,
-            &root,
+            project.root(),
             ManagedBackends::for_backend(TargetBackend::Apple),
         ))
         .expect("the Apple backend scaffolds");
