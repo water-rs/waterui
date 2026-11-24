@@ -71,9 +71,8 @@ Media picking — the picker itself is the tappable control:
 use waterui::media::media_picker::{MediaFilter, MediaPicker, Selected};
 
 let selection: Binding<Option<Selected>> = Binding::default();
-MediaPicker::new(&selection)
+MediaPicker::new("Pick a photo", &selection)
     .filter(MediaFilter::Image)          // Image | Video | LivePhoto (the last two need `video`); takes a signal
-    .label(text("Pick a photo"))         // type-changing builder — call before storing
 
 // In a handler: Selected::load() is synchronous and consumes the selection.
 let media = selected.load();             // Media::Image(Url) | Video(Url) | LivePhoto(source)

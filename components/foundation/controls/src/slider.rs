@@ -279,9 +279,9 @@ impl<L> Slider<L, (), ()> {
     /// The label is required so screen readers always have meaningful text to
     /// announce. Use [`hide_label`](Self::hide_label) to omit it visually
     /// while keeping it in the accessibility tree.
-    pub fn new(label: Label<L>, value: &Binding<f64>) -> Self {
+    pub fn new<I: IntoLabel<Kind = L>>(label: I, value: &Binding<f64>) -> Self {
         Self {
-            label,
+            label: label.into_label(),
             min_value_label: (),
             max_value_label: (),
             range: 0.0..=1.0,
@@ -425,7 +425,7 @@ impl_label_style_methods!(Slider<L, Min, Max>);
 /// Convenience constructor for a [`Slider`] with the given label and value
 /// binding, defaulting to the normalized range `0.0..=1.0`.
 pub fn slider<L: IntoLabel>(label: L, value: &Binding<f64>) -> Slider<L::Kind, (), ()> {
-    Slider::new(label.into_label(), value)
+    Slider::new(label, value)
 }
 
 #[cfg(test)]

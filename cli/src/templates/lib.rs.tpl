@@ -54,7 +54,7 @@ fn main() -> impl View {
             // Interactive controls
             vstack((
                 text("Controls").size(18.0f32),
-                Slider::new("Progress".into_label(), &progress_value),
+                Slider::new("Progress", &progress_value),
                 progress(progress_value),
                 loading(),
             )),
