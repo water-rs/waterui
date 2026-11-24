@@ -56,7 +56,7 @@ const PRELUDE: &str = include_str!("shader_paint.wgsl");
 /// Stretches on both axes; constrain it with `.frame()`.
 pub struct ShaderPaintView {
     fragment: Cow<'static, str>,
-    animated: Computed<bool>,
+    continuous: Computed<bool>,
     uniforms: Computed<Vec<f32>>,
     label: Computed<Option<Str>>,
     value: Computed<Option<Str>>,
@@ -74,7 +74,7 @@ impl ShaderPaintView {
     pub fn new(fragment: impl Into<Cow<'static, str>>) -> Self {
         Self {
             fragment: fragment.into(),
-            animated: nami::constant(false).computed(),
+            continuous: nami::constant(false).computed(),
             uniforms: nami::constant(Vec::new()).computed(),
             label: Computed::constant(None),
             value: Computed::constant(None),
@@ -84,8 +84,8 @@ impl ShaderPaintView {
     /// Whether the shader re-renders every frame so `uniforms.time` advances,
     /// following a signal.
     #[must_use]
-    pub fn animated(mut self, animated: impl IntoComputed<bool>) -> Self {
-        self.animated = animated.into_computed();
+    pub fn continuous(mut self, continuous: impl IntoComputed<bool>) -> Self {
+        self.continuous = continuous.into_computed();
         self
     }
 
@@ -122,7 +122,7 @@ impl ShaderPaintView {
     pub fn into_scene_content(self) -> impl SceneContent {
         ShaderPaintScene {
             fragment: self.fragment,
-            animated: self.animated,
+            continuous: self.continuous,
             uniforms: self.uniforms,
             label: self.label,
             value: self.value,
@@ -139,7 +139,7 @@ impl ShaderPaintView {
     #[must_use]
     pub fn into_gpu_view(self) -> GpuView<Box<dyn GpuContent>> {
         let shared = Arc::new(Shared::default());
-        let posting = Posting::new(self.animated, self.uniforms, Arc::clone(&shared));
+        let posting = Posting::new(self.continuous, self.uniforms, Arc::clone(&shared));
         GpuView::new(ShaderContent {
             fragment: self.fragment,
             shared,
@@ -176,15 +176,15 @@ fn clamp_uniforms(raw: &[f32]) -> &[f32] {
 }
 
 struct RecordedState {
-    animated: bool,
+    continuous: bool,
     uniforms_bits: Vec<u32>,
     width_bits: u32,
     height_bits: u32,
 }
 
 impl RecordedState {
-    fn matches(&self, animated: bool, uniforms: &[f32], width: f32, height: f32) -> bool {
-        self.animated == animated
+    fn matches(&self, continuous: bool, uniforms: &[f32], width: f32, height: f32) -> bool {
+        self.continuous == continuous
             && self.width_bits == width.to_bits()
             && self.height_bits == height.to_bits()
             && self.uniforms_bits.len() == uniforms.len()
@@ -198,7 +198,7 @@ impl RecordedState {
 
 struct ShaderPaintScene {
     fragment: Cow<'static, str>,
-    animated: Computed<bool>,
+    continuous: Computed<bool>,
     uniforms: Computed<Vec<f32>>,
     label: Computed<Option<Str>>,
     value: Computed<Option<Str>>,
@@ -215,11 +215,11 @@ impl SceneContent for ShaderPaintScene {
         width: f32,
         height: f32,
     ) -> NextFrame {
-        let animated = self.animated.snapshot();
+        let continuous = self.continuous.snapshot();
         let raw_uniforms = self.uniforms.snapshot();
         let kept = clamp_uniforms(&raw_uniforms);
         let uniforms_bits: Vec<u32> = kept.iter().map(|v| v.to_bits()).collect();
-        let next = if animated {
+        let next = if continuous {
             NextFrame::Perpetual
         } else {
             NextFrame::Idle
@@ -228,12 +228,16 @@ impl SceneContent for ShaderPaintScene {
         if self
             .registered
             .as_ref()
-            .is_none_or(|(was_animated, _)| *was_animated != animated)
+            .is_none_or(|(was_continuous, _)| *was_continuous != continuous)
         {
             let source = ShaderSource::wgsl(self.fragment.clone());
-            let source = if animated { source.animated() } else { source };
+            let source = if continuous {
+                source.time_dependent()
+            } else {
+                source
+            };
             match resources.shader(source) {
-                Ok(handle) => self.registered = Some((animated, handle)),
+                Ok(handle) => self.registered = Some((continuous, handle)),
                 Err(error) => {
                     self.registered = None;
                     contract_violation!("shader paint failed to register: {error}");
@@ -256,7 +260,7 @@ impl SceneContent for ShaderPaintScene {
         }
 
         self.recorded = Some(RecordedState {
-            animated,
+            continuous,
             uniforms_bits,
             width_bits: width.to_bits(),
             height_bits: height.to_bits(),
@@ -273,14 +277,14 @@ impl SceneContent for ShaderPaintScene {
         let Some(recorded) = &self.recorded else {
             return SceneUpdate::Record;
         };
-        let animated = self.animated.snapshot();
+        let continuous = self.continuous.snapshot();
         let raw_uniforms = self.uniforms.snapshot();
         let kept = &raw_uniforms[..raw_uniforms.len().min(UNIFORM_CAPACITY)];
-        if recorded.matches(animated, kept, frame.width, frame.height)
+        if recorded.matches(continuous, kept, frame.width, frame.height)
             && raw_uniforms.len() <= UNIFORM_CAPACITY
         {
             SceneUpdate::Retained {
-                next: if animated {
+                next: if continuous {
                     NextFrame::Perpetual
                 } else {
                     NextFrame::Idle
@@ -294,7 +298,7 @@ impl SceneContent for ShaderPaintScene {
     fn set_invalidator(&mut self, invalidator: Option<SceneInvalidator>) {
         self.watchers = invalidator.map(|inv| {
             [
-                invalidate_on_change(&inv, &self.animated),
+                invalidate_on_change(&inv, &self.continuous),
                 invalidate_on_change(&inv, &self.uniforms),
                 invalidate_on_change(&inv, &self.label),
                 invalidate_on_change(&inv, &self.value),
@@ -314,7 +318,7 @@ impl SceneContent for ShaderPaintScene {
 /// What the UI side last read from the signals.
 #[cfg(feature = "gpu")]
 struct Posted {
-    animated: bool,
+    continuous: bool,
     params: [f32; UNIFORM_CAPACITY],
 }
 
@@ -331,7 +335,7 @@ impl Default for Shared {
     fn default() -> Self {
         Self {
             posted: ArcSwap::from_pointee(Posted {
-                animated: false,
+                continuous: false,
                 params: [0.0; UNIFORM_CAPACITY],
             }),
             redraw: ArcSwapOption::empty(),
@@ -352,7 +356,7 @@ impl Shared {
 /// and wakes an idle host when one changes.
 #[cfg(feature = "gpu")]
 struct Posting {
-    animated: Computed<bool>,
+    continuous: Computed<bool>,
     uniforms: Computed<Vec<f32>>,
     shared: Arc<Shared>,
     _watchers: [BoxWatcherGuard; 2],
@@ -360,14 +364,14 @@ struct Posting {
 
 #[cfg(feature = "gpu")]
 impl Posting {
-    fn new(animated: Computed<bool>, uniforms: Computed<Vec<f32>>, shared: Arc<Shared>) -> Self {
+    fn new(continuous: Computed<bool>, uniforms: Computed<Vec<f32>>, shared: Arc<Shared>) -> Self {
         let wake_on = |signal: &dyn Fn(Arc<Shared>) -> BoxWatcherGuard| signal(Arc::clone(&shared));
         let posting = Self {
             _watchers: [
-                wake_on(&|shared| alloc::boxed::Box::new(animated.watch(move |_| shared.wake()))),
+                wake_on(&|shared| alloc::boxed::Box::new(continuous.watch(move |_| shared.wake()))),
                 wake_on(&|shared| alloc::boxed::Box::new(uniforms.watch(move |_| shared.wake()))),
             ],
-            animated,
+            continuous,
             uniforms,
             shared,
         };
@@ -381,7 +385,7 @@ impl Posting {
         let mut params = [0.0; UNIFORM_CAPACITY];
         params[..kept.len()].copy_from_slice(kept);
         self.shared.posted.store(Arc::new(Posted {
-            animated: self.animated.snapshot(),
+            continuous: self.continuous.snapshot(),
             params,
         }));
     }
@@ -544,7 +548,7 @@ impl GpuContent for ShaderContent {
             pass.draw(0..3, 0..1);
         }
         frame.queue.submit([encoder.finish()]);
-        if posted.animated {
+        if posted.continuous {
             frame.request_redraw();
         }
     }
@@ -647,10 +651,10 @@ mod tests {
 
     #[test]
     fn scene_content_retains_static_recordings_and_invalidates_on_signal_changes() {
-        let animated = Binding::container(false);
+        let continuous = Binding::container(false);
         let uniforms = Binding::container(vec![1.0_f32, 2.0]);
         let mut scene = ShaderPaintView::new(FRAGMENT)
-            .animated(animated.clone())
+            .continuous(continuous.clone())
             .uniforms(uniforms.clone())
             .into_scene_content();
 
@@ -698,7 +702,7 @@ mod tests {
             SceneUpdate::Record
         );
 
-        animated.set(true);
+        continuous.set(true);
         assert_eq!(wakes.get(), 2);
         let mut recording = table.recording();
         let _ = crate::draw::Content::record(&size, |recorder| {
@@ -726,7 +730,7 @@ mod tests {
     fn signals_reach_the_render_side_and_wake_the_host() {
         use core::sync::atomic::{AtomicUsize, Ordering};
 
-        let animated = Binding::container(false);
+        let continuous = Binding::container(false);
         let uniforms = Binding::container(vec![1.0_f32, 2.0]);
         let shared = Arc::new(Shared::default());
         let wakes = Arc::new(AtomicUsize::new(0));
@@ -737,20 +741,20 @@ mod tests {
                 count.fetch_add(1, Ordering::Relaxed);
             }))));
         let posting = Posting::new(
-            animated.computed(),
+            continuous.computed(),
             uniforms.computed(),
             Arc::clone(&shared),
         );
         assert_eq!(&shared.posted.load().params[..3], &[1.0, 2.0, 0.0]);
-        assert!(!shared.posted.load().animated);
+        assert!(!shared.posted.load().continuous);
 
         uniforms.set(vec![3.0]);
         assert_eq!(wakes.load(Ordering::Relaxed), 1);
-        animated.set(true);
+        continuous.set(true);
         assert_eq!(wakes.load(Ordering::Relaxed), 2);
         posting.post();
         assert_eq!(&shared.posted.load().params[..2], &[3.0, 0.0]);
-        assert!(shared.posted.load().animated);
+        assert!(shared.posted.load().continuous);
     }
 
     #[test]

@@ -18,7 +18,7 @@ pub struct Key {
 struct Entry {
     pipeline: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
-    animated: bool,
+    time_dependent: bool,
 }
 
 impl Entry {
@@ -66,7 +66,7 @@ impl Entry {
         Self {
             pipeline,
             layout,
-            animated: source.animated,
+            time_dependent: source.time_dependent,
         }
     }
 }
@@ -168,10 +168,10 @@ impl Registry {
         self.entries.remove(&id);
     }
 
-    pub fn animated(&self, key: &Key) -> bool {
+    pub fn is_time_dependent(&self, key: &Key) -> bool {
         self.entries
             .get(&key.shader)
-            .is_some_and(|pipeline| pipeline.animated)
+            .is_some_and(|pipeline| pipeline.time_dependent)
     }
 
     pub fn render(
@@ -244,7 +244,7 @@ impl Registry {
                 rendered: false,
             }
         });
-        if texture.rendered && !pipeline.animated {
+        if texture.rendered && !pipeline.time_dependent {
             return Ok(());
         }
         #[expect(clippy::cast_precision_loss, reason = "GPU texture dimensions fit f32")]

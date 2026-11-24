@@ -14,24 +14,56 @@
               state, whether or not a particular body has something to await"
 )]
 
-use waterui::webview::{Json, serde};
+use std::collections::{BTreeSet, VecDeque};
+use std::fmt::{Display, Formatter, Result as FmtResult};
+use std::path::PathBuf;
+
+use waterui::webview::{Bytes, Json, TsType, serde};
 use waterui::{Binding, Computed, Signal, js_api};
 
-#[derive(serde::Serialize, serde::Deserialize, PartialEq, Debug)]
+type Id = u64;
+type ThemeSignal = Binding<String>;
+
+#[derive(serde::Serialize, serde::Deserialize, TsType, PartialEq, Debug)]
+#[serde(crate = "waterui::webview::serde")]
+enum Role {
+    Admin,
+    Guest,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, TsType, PartialEq, Debug)]
+#[serde(crate = "waterui::webview::serde")]
+enum Notice {
+    Empty,
+    Message { body: String },
+}
+
+#[derive(serde::Serialize, serde::Deserialize, TsType, PartialEq, Debug)]
 #[serde(crate = "waterui::webview::serde")]
 struct Greeting {
     text: String,
+    role: Role,
+}
+
+#[derive(Debug)]
+struct ApiError;
+
+impl Display for ApiError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        f.write_str("api error")
+    }
 }
 
 struct App {
-    theme: Binding<String>,
+    theme: ThemeSignal,
     count: Binding<u32>,
+    last_id: Binding<Id>,
 }
 
 #[js_api(namespace = "app")]
 impl App {
-    /// Mirrored state: a binding is writable from the page.
-    fn theme(&self) -> Binding<String> {
+    /// Mirrored state through a type alias: `TypeSchema::Signal` marks it writable.
+    fn theme(&self) -> ThemeSignal {
         self.theme.clone()
     }
 
@@ -41,11 +73,40 @@ impl App {
         self.count.clone().map(|count| count * 2).computed()
     }
 
+    /// Aliased 64-bit integer mirrored state.
+    fn last_id(&self) -> Computed<Id> {
+        use waterui::SignalExt as _;
+        self.last_id.clone().computed()
+    }
+
     /// A handler the page calls as `await app.greet({ name: "Lexo" })`.
     async fn greet(&self, name: String) -> Json<Greeting> {
         Json(Greeting {
             text: format!("Hi {name}"),
+            role: Role::Guest,
         })
+    }
+
+    /// Aliased parameter and return type resolve through `TsType::SCHEMA`.
+    async fn echo_id(
+        &self,
+        id: Id,
+        tags: BTreeSet<String>,
+        queue: VecDeque<Id>,
+        path: PathBuf,
+    ) -> Result<Json<Id>, ApiError> {
+        let _ = (tags, queue, path);
+        Ok(Json(id))
+    }
+
+    /// Tagged enum payload renders with its real discriminant shape.
+    async fn latest_notice(&self) -> Json<Notice> {
+        Json(Notice::Empty)
+    }
+
+    /// Raw binary return projects as `Uint8Array`.
+    async fn download(&self) -> Bytes {
+        Bytes(Vec::new())
     }
 
     /// Renaming changes only what the page sees.
@@ -61,18 +122,44 @@ impl App {
     }
 }
 
-/// The declarations are what a page's TypeScript compiles against, so the
-/// names, the argument shapes and the read-only marks have to be exact. The
-/// application's own `Greeting` is `unknown`: this boundary does not know what
-/// is in it, and a declaration TypeScript believes is worse than one that says
-/// so.
+/// The declarations come straight from `TsType::SCHEMA`, so type aliases,
+/// writability and user-defined structs and enums all project with their real
+/// TypeScript shapes.
 #[test]
 fn the_surface_describes_itself_in_typescript() {
     let declarations = waterui::webview::typescript_declarations::<App>();
 
     assert!(
+        declarations.contains("interface Greeting {\n  text: string;\n  role: Role;\n}"),
+        "{declarations}"
+    );
+    assert!(
+        declarations.contains(r#"type Role = "admin" | "guest";"#),
+        "{declarations}"
+    );
+    assert!(
+        declarations.contains(
+            r#"type Notice = { type: "Empty" } | { type: "Message"; value: { body: string } };"#
+        ),
+        "{declarations}"
+    );
+    assert!(
         declarations
-            .contains(r#"invoke(name: "app.greet", args: { name: string }): Promise<unknown>;"#),
+            .contains(r#"invoke(name: "app.greet", args: { name: string }): Promise<Greeting>;"#),
+        "{declarations}"
+    );
+    assert!(
+        declarations.contains(
+            r#"invoke(name: "app.echo_id", args: { id: number | bigint; tags: string[]; queue: (number | bigint)[]; path: string }): Promise<number | bigint>;"#
+        ),
+        "{declarations}"
+    );
+    assert!(
+        declarations.contains(r#"invoke(name: "app.latest_notice"): Promise<Notice>;"#),
+        "{declarations}"
+    );
+    assert!(
+        declarations.contains(r#"invoke(name: "app.download"): Promise<Uint8Array>;"#),
         "{declarations}"
     );
     // Renamed, and with no arguments there is no argument object to send.
@@ -80,14 +167,17 @@ fn the_surface_describes_itself_in_typescript() {
         declarations.contains(r#"invoke(name: "app.reset"): Promise<void>;"#),
         "{declarations}"
     );
-    // A binding is assignable; a computed is not, and `readonly` is how
-    // TypeScript refuses the assignment the page would otherwise be told throws.
+    // A binding (even behind a type alias) is assignable; a computed is not.
     assert!(
-        declarations.contains(r#""app.theme": string;"#),
+        declarations.contains(r#"    "app.theme": string;"#),
         "{declarations}"
     );
     assert!(
-        declarations.contains(r#"readonly "app.doubled": number;"#),
+        declarations.contains(r#"    readonly "app.doubled": number;"#),
+        "{declarations}"
+    );
+    assert!(
+        declarations.contains(r#"    readonly "app.last_id": number | bigint;"#),
         "{declarations}"
     );
     assert!(
@@ -109,6 +199,7 @@ fn a_skipped_method_stays_an_ordinary_rust_method() {
     let app = App {
         theme: Binding::container(String::from("light")),
         count: Binding::container(2),
+        last_id: Binding::container(7),
     };
 
     assert_eq!(app.internal(3), 6);

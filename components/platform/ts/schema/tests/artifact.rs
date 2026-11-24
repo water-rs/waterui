@@ -18,7 +18,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use object::{Object as _, ObjectSection as _};
 use waterui_core::{AnyView, Binding, Computed};
 use waterui_ts_schema::{
-    DIR_SECTION, TsProps, TsType, TypeSchema, contract_hash, decode, dir_records, owned, payload,
+    DIR_SECTION, TsProps, TsType, TypeSchema, VariantSchema, contract_hash, decode, dir_records,
+    owned, payload,
 };
 
 /// A unit-only enum: a union of string literals.
@@ -176,10 +177,22 @@ fn the_nested_tree_is_resolved_through_four_levels() {
     let TypeSchema::Enum(tier) = profile.fields()[1].ty() else {
         panic!("`Tier` is an enum")
     };
+    assert!(
+        root.fields()
+            .iter()
+            .any(|field| field.name() == "onDismiss"),
+        "snake_case props fields project to camelCase by default"
+    );
     assert_eq!(
         tier.representation(),
         waterui_ts_schema::EnumRepresentation::StringUnion,
         "an enum whose variants are all unit variants is a string union"
+    );
+    let tier_names: Vec<&str> = tier.variants().iter().map(VariantSchema::name).collect();
+    assert_eq!(
+        tier_names,
+        ["free", "pro", "team"],
+        "unit-only enum variants project to camelCase string literals by default"
     );
 }
 
