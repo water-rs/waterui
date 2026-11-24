@@ -3279,7 +3279,7 @@ fn reorder_destination(index: usize, step: f64, total_rows: usize) -> usize {
 /// An action without its [`DragEvent`] is a contract violation by the gesture
 /// engine, reported; the action is then ignored (`None`).
 fn drag_event(env: &Environment) -> Option<DragEvent> {
-    let event = env.get::<DragEvent>().cloned();
+    let event = env.extract::<DragEvent>().ok();
     if event.is_none() {
         contract_violation!(
             "hydrolysis list drag action is missing its DragEvent; the drag is ignored"

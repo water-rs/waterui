@@ -567,7 +567,7 @@ pub trait ViewExt: View + Sized {
     /// Escape, or an arrow in a single-line text field — bubbles to its
     /// ancestors, nearest first, until a handler returns
     /// [`KeyHandling::Handled`]. The handler
-    /// reads the key with `Use<KeyPress>`.
+    /// reads the key directly as `press: KeyPress`.
     ///
     /// ```rust
     /// use waterui::prelude::*;
@@ -576,7 +576,7 @@ pub trait ViewExt: View + Sized {
     /// let open = binding::<bool>(true);
     /// let query = binding::<Str>(Str::default());
     /// field("Search", &query).on_key_press(
-    ///     |Use(press): Use<KeyPress>, State(open): State<Binding<bool>>| {
+    ///     |press: KeyPress, State(open): State<Binding<bool>>| {
     ///         if press.key() == &Key::Named(NamedKey::Escape) {
     ///             open.set(false);
     ///             KeyHandling::Handled

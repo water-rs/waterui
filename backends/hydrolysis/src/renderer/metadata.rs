@@ -1010,7 +1010,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                         crate::num_cast::f64_as_f32(point.y)
                             - crate::num_cast::f64_as_f32(bounds.y0),
                     ));
-                    let hover_env = captured_env.layered_on(&env.extending(hover_event));
+                    let hover_env = captured_env.layered_on(&env.extending(State(hover_event)));
                     handler.borrow_mut().handle(&hover_env);
                     true
                 });

@@ -14,6 +14,7 @@ use cocoa_ui::keys::KeyEvent;
 use cocoa_ui::view;
 use waterui_backend_core::Environment;
 use waterui_core::Metadata;
+use waterui_core::extract::State;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
     ViewDimensions,
@@ -109,12 +110,12 @@ pub fn realize_on_key_press_metadata(
         let state = Rc::clone(&state);
         move |_, event: &KeyEvent| {
             let state = state.borrow();
-            let env = state.env.extending(KeyPress::new(
+            let env = state.env.extending(State(KeyPress::new(
                 event.key.clone(),
                 event.code,
                 event.modifiers,
                 event.repeat,
-            ));
+            )));
             matches!(
                 state.handler.borrow_mut().handle(&env),
                 KeyHandling::Handled

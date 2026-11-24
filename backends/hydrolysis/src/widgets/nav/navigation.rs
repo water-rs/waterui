@@ -34,6 +34,7 @@ use waterui::theme::install_font_signal;
 use waterui_controls::label::LabelDisplayMode;
 use waterui_controls::text_field::TextField;
 use waterui_core::contract_violation;
+use waterui_core::extract::State;
 use waterui_core::id::Id;
 use waterui_core::layout::{
     LayoutDirection, ProposalSize, Size as LayoutSize, ViewDimensions, layout_direction,
@@ -2839,7 +2840,7 @@ pub fn render_navigation_stack_parts<E: crate::text::TextEngine>(
         // and for path-backed and plain stacks alike.
         stack_env = retained_env.layered_on(env);
     }
-    stack_env.insert(controller);
+    stack_env.insert(State(controller));
 
     if let Some(root_state) = state.borrow_mut().resolve_root(&stack_env) {
         ctx.renderer_mut()
@@ -3451,7 +3452,7 @@ pub fn emit_navigation_stack_accessibility<E: crate::text::TextEngine>(
         // the gaps.
         local_env = retained_env.layered_on(&local_env);
     }
-    local_env.insert(controller);
+    local_env.insert(State(controller));
     if let Some(root_state) = state.borrow_mut().resolve_root(&local_env) {
         renderer.install_navigation_root_state(&slot_key, root_state);
     }

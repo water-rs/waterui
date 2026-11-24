@@ -30,7 +30,7 @@ pub enum KeyPressOutcome {
 /// the whole chain even after the frame that produced it is gone.
 pub struct KeyHandlerScope {
     /// The environment the `.on_key_press` view was built under — the handler
-    /// resolves `State`/`Use` extractors against it, extended with the press.
+    /// resolves `State` extractors against it, extended with the press.
     pub(crate) env: Environment,
     pub(crate) handler: Rc<RefCell<OnKeyPress>>,
 }
@@ -204,7 +204,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         #[allow(clippy::assigning_clones)]
         while let Some(link) = node {
             let handler = Rc::clone(&link.scope.handler);
-            let env = link.scope.env.extending(press.clone());
+            let env = link.scope.env.extending(State(press.clone()));
             let result = handler.borrow_mut().handle(&env);
             if result == KeyHandling::Handled {
                 tracing::trace!(

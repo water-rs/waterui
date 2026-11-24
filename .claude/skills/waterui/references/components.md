@@ -549,7 +549,7 @@ text("Hello").context_menu(
         "Reply".action(|| {}),
         "Delete".command().action(|| {}).destructive(),
     ))
-    .accessory(button("Like").action(|Use(dismiss): Use<DismissContextMenu>| dismiss.dismiss())),
+    .accessory(button("Like").action(|dismiss: DismissContextMenu| dismiss.dismiss())),
 )
 ```
 

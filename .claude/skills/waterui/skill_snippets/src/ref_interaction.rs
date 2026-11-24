@@ -88,7 +88,7 @@ pub fn interaction_remaining_gestures_prose() {
 
 // ---------------------------------------------------------------------------
 // interaction.md § "## Gesture recognizers" (prose): the gesture payloads read
-// with `Use<..>`, and `Use<HoverEvent>` in an `.event(Event::HoverMove, ..)`
+// directly, and `HoverEvent` in an `.event(Event::HoverMove, ..)`
 // handler. Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn interaction_event_payloads_prose() {
@@ -98,11 +98,11 @@ pub fn interaction_event_payloads_prose() {
         RotationGesture, TapEvent,
     };
 
-    let _ = Divider.on_tap(|Use(tap): Use<TapEvent>| {
+    let _ = Divider.on_tap(|tap: TapEvent| {
         let _ = tap.location();
     });
-    let _ = Divider.gesture(LongPressGesture::new(500), |Use(_): Use<LongPressEvent>| ());
-    let _ = Divider.gesture(DragGesture::new(5.0), |Use(drag): Use<DragEvent>| {
+    let _ = Divider.gesture(LongPressGesture::new(500), |_: LongPressEvent| ());
+    let _ = Divider.gesture(DragGesture::new(5.0), |drag: DragEvent| {
         let _ = (
             drag.location(),
             drag.translation(),
@@ -110,12 +110,9 @@ pub fn interaction_event_payloads_prose() {
             drag.phase(),
         );
     });
-    let _ = Divider.gesture(
-        MagnificationGesture::new(1.0),
-        |Use(_): Use<MagnificationEvent>| (),
-    );
-    let _ = Divider.gesture(RotationGesture::new(0.0), |Use(_): Use<RotationEvent>| ());
-    let _ = Divider.event(Event::HoverMove, |Use(hover): Use<HoverEvent>| {
+    let _ = Divider.gesture(MagnificationGesture::new(1.0), |_: MagnificationEvent| ());
+    let _ = Divider.gesture(RotationGesture::new(0.0), |_: RotationEvent| ());
+    let _ = Divider.event(Event::HoverMove, |hover: HoverEvent| {
         let _ = hover.location();
     });
 }
@@ -317,16 +314,14 @@ pub fn interaction_block_09() -> impl View {
     let search_panel = || text("Search panel");
 
     search_panel()
-        .on_key_press(
-            |Use(press): Use<KeyPress>, State(open): State<Binding<bool>>| {
-                if *press.key() == Key::Named(NamedKey::Escape) {
-                    open.set(false);
-                    KeyHandling::Handled
-                } else {
-                    KeyHandling::Ignored
-                }
-            },
-        )
+        .on_key_press(|press: KeyPress, State(open): State<Binding<bool>>| {
+            if *press.key() == Key::Named(NamedKey::Escape) {
+                open.set(false);
+                KeyHandling::Handled
+            } else {
+                KeyHandling::Ignored
+            }
+        })
         .state(&open)
 }
 
