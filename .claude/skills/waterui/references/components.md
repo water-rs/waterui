@@ -607,19 +607,18 @@ resolves to. Changing the signal re-resolves the font in place; the text is not 
 
 Code blocks (feature `highlight`, on by default) are a syntax-highlighted block with a
 header naming the language and a copy button. `code(language, content)` and `Code::new`
-take a typed `Language`, or a token such as `"rust"` — and **panic** when a token names no
-language, so a token from runtime data (a fence info string, a server-supplied tag) must be
-parsed first, falling back to `Language::Plaintext`, with the original token kept through
-`.info(..)`. `Code` owns the copy; `.on_copied(..)` is where the caller tells the user:
+accept any `impl Into<CodeLanguage>` — a typed `Language` or any string token such as
+`"rust"` or `"mermaid"`. Unrecognized tokens render as `Language::Plaintext` without
+panicking, keep the original token as `CodeConfig::info`, and display it in the header.
+`Code` owns the copy; `.on_copied(..)` is where the caller tells the user:
 
 ```rust
 use waterui::prelude::highlight::Language;
 use waterui::widget::{Code, code};
 
-code(Language::Rust, "fn main() {}")                   // typed: cannot fail
-code("rust", "fn main() {}")                           // a literal token: panics if unknown
-code(token.parse::<Language>().unwrap_or(Language::Plaintext), fence_text)
-    .info(token)                                       // keep the token as written
+code(Language::Rust, "fn main() {}")                   // typed language
+code("rust", "fn main() {}")                           // recognized token -> Rust header
+code(token, fence_text)                                // any token: unknown renders as plaintext with `token` header
     .on_copied({ let copied = copied.clone(); move |_| copied.set(true) })
 ```
 

@@ -97,19 +97,6 @@ pub fn troubleshooting_imports() {
 }
 
 // ---------------------------------------------------------------------------
-// troubleshooting.md § "## Runtime panics" (prose): the `Code` "Invalid
-// language" entry — `Language::try_from(tok)`, `Language::Plaintext`, and
-// `.info(tok)` keeping the original token.
-// ---------------------------------------------------------------------------
-pub fn troubleshooting_code_language(tok: &'static str) -> impl View {
-    use waterui::text::highlight::Language;
-    use waterui::widget::Code;
-
-    let language = Language::try_from(tok).unwrap_or(Language::Plaintext);
-    Code::new(language, "fn main() {}").info(tok)
-}
-
-// ---------------------------------------------------------------------------
 // troubleshooting.md § "## Compile errors" (prose): the `shader!` import.
 // ---------------------------------------------------------------------------
 pub fn troubleshooting_shader_import() -> impl View {

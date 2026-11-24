@@ -7,10 +7,10 @@
 //! [`CodeConfig`] — without depending on the aggregator.
 
 use alloc::{
+    borrow::ToOwned,
     rc::Rc,
     string::{String, ToString},
 };
-use core::error::Error;
 use core::fmt;
 
 use nami::SignalExt;
@@ -22,7 +22,7 @@ use waterui_color::{
 use waterui_core::backend::Backend;
 use waterui_core::resolve::Resolvable;
 use waterui_core::view::hook::HookableView;
-use waterui_core::{Environment, Metadata, NativeView, View, contract_violation};
+use waterui_core::{Environment, Metadata, NativeView, View};
 use waterui_interaction::gesture::{GestureObserver, TapGesture};
 use waterui_layout::{
     background::background,
@@ -102,6 +102,105 @@ impl fmt::Debug for OnCopied {
     }
 }
 
+/// A language specification accepted by [`Code::new`] and [`code`].
+///
+/// Converts infallibly from a typed [`Language`] or any string token (`&str`,
+/// `String`, `Str`). Unknown tokens resolve to [`Language::Plaintext`], keep
+/// the raw token as [`CodeConfig::info`], and display it in the block header.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CodeLanguage {
+    language: Language,
+    info: Option<Str>,
+}
+
+impl CodeLanguage {
+    /// Creates a `CodeLanguage` from a typed [`Language`].
+    #[must_use]
+    pub const fn new(language: Language) -> Self {
+        Self {
+            language,
+            info: None,
+        }
+    }
+
+    /// Parses a fence or language token into a `CodeLanguage` without failing.
+    ///
+    /// Extracts the first whitespace-delimited token (matching markdown code
+    /// fence info strings). An empty or whitespace-only string resolves to
+    /// [`Language::Plaintext`] with no info token; an unrecognized token
+    /// resolves to [`Language::Plaintext`] while keeping the original token as
+    /// [`info`](Self::info).
+    #[must_use]
+    pub fn parse(token: &str) -> Self {
+        let Some(first) = token.split_whitespace().next() else {
+            return Self::new(Language::Plaintext);
+        };
+        let language = first.parse::<Language>().unwrap_or(Language::Plaintext);
+        Self {
+            language,
+            info: Some(Str::from(first.to_owned())),
+        }
+    }
+
+    fn parse_owned(raw: Str) -> Self {
+        let Some(first) = raw.split_whitespace().next() else {
+            return Self::new(Language::Plaintext);
+        };
+        let language = first.parse::<Language>().unwrap_or(Language::Plaintext);
+        let info = if first.len() == raw.len() {
+            raw
+        } else {
+            Str::from(first.to_owned())
+        };
+        Self {
+            language,
+            info: Some(info),
+        }
+    }
+
+    /// The resolved highlighting [`Language`].
+    #[must_use]
+    pub const fn language(&self) -> &Language {
+        &self.language
+    }
+
+    /// The original token preserved from string input, if any.
+    #[must_use]
+    pub const fn info(&self) -> Option<&Str> {
+        self.info.as_ref()
+    }
+}
+
+impl From<Language> for CodeLanguage {
+    fn from(language: Language) -> Self {
+        Self::new(language)
+    }
+}
+
+impl From<&str> for CodeLanguage {
+    fn from(token: &str) -> Self {
+        Self::parse(token)
+    }
+}
+
+impl From<String> for CodeLanguage {
+    fn from(token: String) -> Self {
+        Self::parse_owned(Str::from(token))
+    }
+}
+
+impl From<Str> for CodeLanguage {
+    fn from(token: Str) -> Self {
+        Self::parse_owned(token)
+    }
+}
+
+impl From<&Str> for CodeLanguage {
+    fn from(token: &Str) -> Self {
+        Self::parse_owned(token.clone())
+    }
+}
+
 /// View that renders syntax-highlighted code snippets.
 #[derive(Debug, Clone)]
 pub struct Code {
@@ -114,15 +213,13 @@ pub struct Code {
 impl Code {
     /// Creates a new `Code` view for the provided language and content.
     ///
-    /// A language that cannot be converted into a supported [`Language`] is a
-    /// contract violation: the code is shown as [`Language::Plaintext`].
-    pub fn new(language: impl TryInto<Language, Error: Error>, content: impl Into<Str>) -> Self {
-        let language = language.try_into().unwrap_or_else(|error| {
-            contract_violation!("Invalid language: {error}; the code is shown as plain text");
-            Language::Plaintext
-        });
+    /// Accepts a typed [`Language`] or any string token via [`CodeLanguage`].
+    /// Unrecognized tokens render as [`Language::Plaintext`], preserve the
+    /// original token as [`CodeConfig::info`], and display it in the header.
+    pub fn new(language: impl Into<CodeLanguage>, content: impl Into<Str>) -> Self {
+        let CodeLanguage { language, info } = language.into();
         Self {
-            info: None,
+            info,
             language,
             content: content.into(),
             on_copied: None,
@@ -252,14 +349,25 @@ impl View for Code {
 /// one exception a token cannot express — syntect ships a light and a dark
 /// set — so it follows the installed colour scheme and re-highlights when
 /// that flips, without the block itself being rebuilt.
+fn header_label(language: &Language, info: Option<&str>) -> String {
+    match (language, info) {
+        (Language::Plaintext, Some(token))
+            if !token.is_empty() && token.parse::<Language>().is_err() =>
+        {
+            token.to_owned()
+        }
+        _ => language.to_string(),
+    }
+}
+
 fn default_rendering(env: &Environment, config: CodeConfig) -> impl View {
     let CodeConfig {
-        info: _,
+        info,
         language,
         content,
         on_copied,
     } = config;
-    let lang_name = language.to_string();
+    let lang_name = header_label(&language, info.as_deref());
     let content_for_copy = content.to_string();
 
     let highlighted = CurrentColorScheme
@@ -314,7 +422,7 @@ fn copy_button(content: String, on_copied: Option<OnCopied>) -> impl View {
 }
 
 /// Convenience constructor for creating a [`Code`] view inline.
-pub fn code(language: impl TryInto<Language, Error: Error>, content: impl Into<Str>) -> Code {
+pub fn code(language: impl Into<CodeLanguage>, content: impl Into<Str>) -> Code {
     Code::new(language, content)
 }
 
@@ -323,14 +431,56 @@ mod tests {
     use super::*;
 
     #[test]
-    #[cfg_attr(debug_assertions, should_panic(expected = "Invalid language"))]
-    fn an_unknown_language_shows_the_code_as_plain_text() {
-        let code = Code::new("no-such-language", "fn main() {}");
-        assert_eq!(code.language, Language::Plaintext);
+    fn unknown_language_renders_as_plaintext_and_preserves_token_for_header() {
+        let block = Code::new("tsx", "export const A = () => <div />;");
+        let config = block.config();
+        assert_eq!(config.language(), &Language::Plaintext);
+        assert_eq!(config.info().map(Str::as_str), Some("tsx"));
+        assert_eq!(
+            header_label(config.language(), config.info().map(Str::as_str)),
+            "tsx"
+        );
     }
 
     #[test]
-    fn a_known_language_is_kept() {
-        assert_eq!(Code::new("rust", "").language, Language::Rust);
+    fn known_language_token_resolves_and_uses_canonical_header() {
+        let block = Code::new("rust", "fn main() {}");
+        let config = block.config();
+        assert_eq!(config.language(), &Language::Rust);
+        assert_eq!(config.info().map(Str::as_str), Some("rust"));
+        assert_eq!(
+            header_label(config.language(), config.info().map(Str::as_str)),
+            "Rust"
+        );
+    }
+
+    #[test]
+    fn typed_language_and_empty_token_work_without_info() {
+        let typed = Code::new(Language::Python, "pass").config();
+        assert_eq!(typed.language(), &Language::Python);
+        assert_eq!(typed.info(), None);
+        assert_eq!(
+            header_label(typed.language(), typed.info().map(Str::as_str)),
+            "Python"
+        );
+
+        let empty = Code::new("   ", "plain").config();
+        assert_eq!(empty.language(), &Language::Plaintext);
+        assert_eq!(empty.info(), None);
+        assert_eq!(
+            header_label(empty.language(), empty.info().map(Str::as_str)),
+            "Plaintext"
+        );
+    }
+
+    #[test]
+    fn fence_metadata_extracts_first_token_matching_markdown() {
+        let mermaid = Code::new(Str::from("mermaid title=flow"), "graph TD; A-->B").config();
+        assert_eq!(mermaid.language(), &Language::Plaintext);
+        assert_eq!(mermaid.info().map(Str::as_str), Some("mermaid"));
+        assert_eq!(
+            header_label(mermaid.language(), mermaid.info().map(Str::as_str)),
+            "mermaid"
+        );
     }
 }

@@ -77,3 +77,13 @@ fn activating_the_copy_button_copies(ui: UiBuilder) {
     app.query().role(Role::BUTTON).label("Copy").tap();
     assert!(copied.get(), "activating Copy must run on_copied");
 }
+
+#[waterui::test()]
+fn unknown_language_code_block_shows_original_token_in_header(ui: UiBuilder) {
+    let mut app = ui.mount(|| code("mermaid", "graph TD; A-->B").padding_with(16.0));
+    app.query()
+        .role(Role::LABEL)
+        .label("mermaid")
+        .assert_exists();
+    app.query().role(Role::BUTTON).label("Copy").assert_exists();
+}
