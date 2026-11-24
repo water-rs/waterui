@@ -51,7 +51,7 @@ use waterui_graphics::{GpuContent, GpuView};
 use waterui_layout::frame::Frame;
 use waterui_layout::scroll::scroll;
 use waterui_layout::stack::{VStack, vstack};
-use waterui_shape::{Ellipse, FixedRoundedRectangle, ShapeExt as _};
+use waterui_shape::{Ellipse, ShapeExt as _};
 use waterui_text::font::{Body, Font};
 
 use super::{MinimalTestTheme, pumped_test_environment, test_environment};
@@ -377,7 +377,7 @@ fn shadow_silhouettes_count() {
 
     fn caster(shape: impl waterui::shape::Shape + Clone + 'static) -> impl View {
         ().size(80.0, 80.0)
-            .background(FixedRoundedRectangle::new(12.0).fill(Color::srgb(60, 120, 200)))
+            .background(RoundedRectangle::new(12.0).fill(Color::srgb(60, 120, 200)))
             .shadow(Shadow::new(
                 Color::srgb(0, 0, 0),
                 Vector::new(2.0, 3.0),
@@ -387,7 +387,7 @@ fn shadow_silhouettes_count() {
     }
 
     let mut runtime = runtime_with(vstack((
-        caster(FixedRoundedRectangle::new(12.0)),
+        caster(RoundedRectangle::new(12.0)),
         caster(Ellipse),
     )));
     let mut frames = Frames::new();

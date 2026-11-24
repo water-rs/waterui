@@ -15,9 +15,11 @@ use crate::renderer::ContextMenuPresenter;
 use crate::renderer::mount::motion::{LayerMotion, Motion};
 use crate::text::{TextEngine, TextLayout as _};
 use crate::theme::WidgetTheme;
+use executor_core::{AnyLocalExecutorTask, spawn_local};
 use waterui::gesture::TapGesture;
 use waterui_backend_core::Child;
 use waterui_core::animation::FrameRateVote;
+use waterui_interaction::event::TaskHook;
 use waterui_layout::safe_area::IgnoreSafeArea;
 use waterui_structural_transition::TransitionSpec;
 use waterui_text::styled::TapSpan;
@@ -1156,6 +1158,9 @@ pub(super) enum WrapperEffect<E: crate::text::TextEngine> {
     /// layout-transparent. The structural site that swaps the content claims
     /// it from the built instance; one nobody owns fails when reached.
     Transition(super::transition::TransitionDeclaration),
+    /// A `.task(...)` hook: starts the async task once on appear (first flush
+    /// or semantic walk) and drops its handle on unmount to cancel it.
+    Task(TaskEffect),
 }
 
 impl<E: crate::text::TextEngine> WrapperEffect<E> {
@@ -1181,6 +1186,7 @@ impl<E: crate::text::TextEngine> WrapperEffect<E> {
                 | Self::DropDestination(_)
                 | Self::AnchoredOverlay(_)
                 | Self::LifeCycle(_)
+                | Self::Task(_)
         )
     }
 }
@@ -1275,6 +1281,24 @@ impl Drop for LifeCycleEffect {
     fn drop(&mut self) {
         if let Some(hook) = self.disappear.take() {
             hook.call();
+        }
+    }
+}
+
+/// The node-owned state of a view-scoped task hook (see [`WrapperEffect::Task`]).
+/// The pending hook starts once after the child's first flush or semantic walk,
+/// and dropping the node drops the spawned task handle to cancel it.
+pub struct TaskEffect {
+    pub(super) pending: Cell<Option<(TaskHook, Environment)>>,
+    pub(super) running: RefCell<Option<AnyLocalExecutorTask<()>>>,
+}
+
+impl TaskEffect {
+    pub(super) fn start_if_pending(&self) {
+        if let Some((hook, env)) = self.pending.take()
+            && let Some(future) = hook.build_future(&env)
+        {
+            *self.running.borrow_mut() = Some(spawn_local(future));
         }
     }
 }

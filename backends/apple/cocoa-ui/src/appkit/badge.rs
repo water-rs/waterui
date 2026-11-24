@@ -1,11 +1,11 @@
-//! The `AppKit` badge indicator: a count capsule (or a bare dot when the
-//! count is zero) drawn on a layer-free `NSView`.
+//! The `AppKit` badge indicator: hidden, a bare dot, or a capsule carrying
+//! text or a count, drawn on a layer-free `NSView`.
 //!
 //! The view draws and measures itself — dot, capsule and the 11pt medium
-//! count label — and reports the placement offsets a container uses to pin
+//! count/text label — and reports the placement offsets a container uses to pin
 //! it to a content view's top-trailing corner. It never takes hits: the
-//! indicator announces itself through accessibility but stays transparent
-//! to input.
+//! indicator announces itself through accessibility when carrying text or a
+//! count, and stays transparent to input.
 //!
 //! # Safety
 //!
@@ -16,7 +16,7 @@
 //! `MainThreadOnly` thread kind and [`MainThreadMarker`] constructor
 //! guarantee.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::fmt;
 
 use objc2::rc::Retained;
@@ -35,25 +35,26 @@ use objc2_foundation::{
 /// The attribute dictionary `sizeWithAttributes:`/`drawInRect:` take.
 type TextAttributes = NSDictionary<NSAttributedStringKey, AnyObject>;
 
+use crate::badge::{BadgeDisplay, BadgeMetrics};
 use crate::font;
 use crate::geometry::Size;
 
-/// A [`BadgeView`]'s state: the count and the two paints it draws with.
+/// A [`BadgeView`]'s state: the presentation display and the two paints it draws with.
 pub struct BadgeViewIvars {
-    /// The count; `0` draws the bare dot.
-    value: Cell<i32>,
+    /// Current indicator display (`Hidden`, `Dot`, or `Text`).
+    display: RefCell<BadgeDisplay>,
     /// The capsule/dot fill.
     fill_color: RefCell<Retained<NSColor>>,
-    /// The count label's color.
+    /// The label's color.
     label_color: RefCell<Retained<NSColor>>,
     /// The geometry the indicator draws at.
-    metrics: crate::badge::BadgeMetrics,
+    metrics: BadgeMetrics,
 }
 
 impl fmt::Debug for BadgeViewIvars {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("BadgeViewIvars")
-            .field("value", &self.value.get())
+            .field("display", &*self.display.borrow())
             .field("fill_color", &self.fill_color.borrow())
             .field("label_color", &self.label_color.borrow())
             .field("metrics", &self.metrics)
@@ -61,7 +62,7 @@ impl fmt::Debug for BadgeViewIvars {
     }
 }
 
-/// The attributes the count label measures and draws with — the medium
+/// The attributes the label measures and draws with — the medium
 /// system face at the badge size, in the label color.
 fn text_attributes(label_color: &NSColor, font: &NSFont) -> Retained<TextAttributes> {
     // SAFETY: both attribute names are statics the platform exports; the
@@ -83,19 +84,11 @@ impl BadgeViewIvars {
         )
     }
 
-    /// The count rendered as the label text.
-    fn value_text(&self) -> Retained<NSString> {
-        NSString::from_str(&self.value.get().to_string())
-    }
-
-    /// The width the count text measures under the current attributes.
-    fn text_size(&self, mtm: MainThreadMarker) -> NSSize {
+    /// The width `text` measures under the current attributes.
+    fn text_size(&self, text: &str, mtm: MainThreadMarker) -> NSSize {
         // SAFETY: `sizeWithAttributes:` is `NSStringDrawing`'s documented
         // measure; the dictionary carries the documented value types.
-        unsafe {
-            self.value_text()
-                .sizeWithAttributes(Some(&self.text_attributes(mtm)))
-        }
+        unsafe { NSString::from_str(text).sizeWithAttributes(Some(&self.text_attributes(mtm))) }
     }
 }
 
@@ -107,8 +100,8 @@ define_class!(
     #[thread_kind = MainThreadOnly]
     #[ivars = BadgeViewIvars]
     #[derive(Debug)]
-    /// An `NSView` drawing a badge indicator: a dot for a zero count, a
-    /// capsule carrying the count otherwise.
+    /// An `NSView` drawing a badge indicator: hidden, a dot, or a capsule
+    /// carrying a count or short text.
     ///
     /// Its coordinates are flipped: the origin is the top-left corner and
     /// `y` grows downward, matching the rest of the kit.
@@ -145,12 +138,19 @@ define_class!(
                 return;
             };
             let context = context.CGContext();
+            let display = self.ivars().display.borrow().clone();
+            let label = match display {
+                BadgeDisplay::Hidden => return,
+                BadgeDisplay::Dot => {
+                    let fill = self.ivars().fill_color.borrow();
+                    CGContext::set_fill_color_with_color(Some(&context), Some(&fill.CGColor()));
+                    CGContext::fill_ellipse_in_rect(Some(&context), rect);
+                    return;
+                }
+                BadgeDisplay::Text(label) => label,
+            };
             let fill = self.ivars().fill_color.borrow();
             CGContext::set_fill_color_with_color(Some(&context), Some(&fill.CGColor()));
-            if self.ivars().value.get() == 0 {
-                CGContext::fill_ellipse_in_rect(Some(&context), rect);
-                return;
-            }
             // SAFETY: `rect` is live bounds data and a null transform is
             // valid; the returned path is a rounded rect with a
             // `height/2` corner — the capsule.
@@ -164,7 +164,7 @@ define_class!(
             };
             CGContext::add_path(Some(&context), Some(&capsule));
             CGContext::fill_path(Some(&context));
-            let text = self.ivars().value_text();
+            let text = NSString::from_str(&label);
             let attributes = self.ivars().text_attributes(mtm);
             // SAFETY: `sizeWithAttributes:` is `NSStringDrawing`'s
             // documented measure under the same attributes the draw uses.
@@ -185,36 +185,39 @@ define_class!(
 );
 
 impl BadgeView {
-    /// A badge indicator painting `systemRed` under a white count, drawing
-    /// at `metrics`.
+    /// A badge indicator painting `systemRed` under white text, drawing
+    /// at `metrics` (initially hidden).
     #[must_use]
-    pub fn new(mtm: MainThreadMarker, metrics: crate::badge::BadgeMetrics) -> Retained<Self> {
+    pub fn new(mtm: MainThreadMarker, metrics: BadgeMetrics) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(BadgeViewIvars {
-            value: Cell::new(0),
+            display: RefCell::new(BadgeDisplay::Hidden),
             fill_color: RefCell::new(NSColor::systemRedColor()),
             label_color: RefCell::new(NSColor::whiteColor()),
             metrics,
         });
         // SAFETY: `initWithFrame:` is `NSView`'s designated initializer.
         let view: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: CGRect::ZERO] };
+        view.setHidden(true);
         view.update_accessibility();
         view
     }
 
-    /// The count the indicator carries; `0` draws the bare dot.
-    pub fn set_value(&self, value: i32) {
-        if value == self.ivars().value.get() {
+    /// Sets the presentation carried by this badge indicator.
+    pub fn set_display(&self, display: BadgeDisplay) {
+        if display == *self.ivars().display.borrow() {
             return;
         }
-        self.ivars().value.set(value);
+        let hidden = matches!(display, BadgeDisplay::Hidden);
+        *self.ivars().display.borrow_mut() = display;
+        self.setHidden(hidden);
         self.update_accessibility();
         self.setNeedsDisplay(true);
     }
 
-    /// The current count.
+    /// The current presentation.
     #[must_use]
-    pub fn value(&self) -> i32 {
-        self.ivars().value.get()
+    pub fn display(&self) -> BadgeDisplay {
+        self.ivars().display.borrow().clone()
     }
 
     /// The capsule/dot fill color.
@@ -223,25 +226,29 @@ impl BadgeView {
         self.setNeedsDisplay(true);
     }
 
-    /// The count label's color.
+    /// The badge label's color.
     pub fn set_label_color(&self, color: &NSColor) {
         *self.ivars().label_color.borrow_mut() = color.into();
         self.setNeedsDisplay(true);
     }
 
-    /// The indicator's drawn extent: the dot, or the capsule sized to the
-    /// count text plus padding (never narrower than it is tall).
+    /// The indicator's drawn extent: zero when hidden, the dot, or the
+    /// capsule sized to the label text plus padding (never narrower than it
+    /// is tall).
     #[must_use]
     pub fn intrinsic_size(&self) -> Size {
         let metrics = self.ivars().metrics;
-        if self.ivars().value.get() == 0 {
-            return Size::new(metrics.dot_size, metrics.dot_size);
+        match &*self.ivars().display.borrow() {
+            BadgeDisplay::Hidden => Size::ZERO,
+            BadgeDisplay::Dot => Size::new(metrics.dot_size, metrics.dot_size),
+            BadgeDisplay::Text(label) => {
+                let text = self.ivars().text_size(label, MainThreadMarker::from(self));
+                let width = metrics
+                    .capsule_horizontal_padding
+                    .mul_add(2.0, text.width.ceil());
+                Size::new(width.max(metrics.capsule_height), metrics.capsule_height)
+            }
         }
-        let text = self.ivars().text_size(MainThreadMarker::from(self));
-        let width = metrics
-            .capsule_horizontal_padding
-            .mul_add(2.0, text.width.ceil());
-        Size::new(width.max(metrics.capsule_height), metrics.capsule_height)
     }
 
     /// The inset from the content's trailing edge to the indicator's
@@ -249,10 +256,11 @@ impl BadgeView {
     /// the offset).
     #[must_use]
     pub fn horizontal_offset(&self) -> f64 {
-        if self.ivars().value.get() == 0 {
-            self.ivars().metrics.dot_size
-        } else {
-            self.ivars().metrics.count_horizontal_offset
+        match *self.ivars().display.borrow() {
+            BadgeDisplay::Dot => self.ivars().metrics.dot_size,
+            BadgeDisplay::Hidden | BadgeDisplay::Text(_) => {
+                self.ivars().metrics.count_horizontal_offset
+            }
         }
     }
 
@@ -260,19 +268,22 @@ impl BadgeView {
     /// the capsule overhangs upward.
     #[must_use]
     pub fn vertical_offset(&self) -> f64 {
-        if self.ivars().value.get() == 0 {
-            self.ivars().metrics.dot_size
-        } else {
-            self.ivars().metrics.count_vertical_offset
+        match *self.ivars().display.borrow() {
+            BadgeDisplay::Dot => self.ivars().metrics.dot_size,
+            BadgeDisplay::Hidden | BadgeDisplay::Text(_) => {
+                self.ivars().metrics.count_vertical_offset
+            }
         }
     }
 
-    /// Announces the count when there is one; the bare dot stays out of the
+    /// Announces text/count badges; hidden and dot badges stay out of the
     /// accessibility tree.
     fn update_accessibility(&self) {
-        let value = self.ivars().value.get();
-        self.setAccessibilityElement(value != 0);
-        let label = (value != 0).then(|| NSString::from_str(&value.to_string()));
+        let label = match &*self.ivars().display.borrow() {
+            BadgeDisplay::Hidden | BadgeDisplay::Dot => None,
+            BadgeDisplay::Text(text) => Some(NSString::from_str(text)),
+        };
+        self.setAccessibilityElement(label.is_some());
         self.setAccessibilityLabel(label.as_deref());
     }
 }

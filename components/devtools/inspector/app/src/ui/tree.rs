@@ -90,7 +90,7 @@ fn rows(model: &Model, filter: &Binding<Str>) -> SignalCollection<Computed<Vec<T
 /// A node the application asked to inspect is marked, so that opening the
 /// inspector on an element lands the eye on that element rather than on the
 /// top of a long tree.
-fn row_view(row: TreeRow, revealed: Computed<bool>) -> ListItem<impl View> {
+fn row_view(row: TreeRow, revealed: Computed<bool>) -> impl View {
     let (_, depth, role, label, value, bounds, hidden, enabled) = row.into_parts();
     #[expect(
         clippy::cast_precision_loss,
@@ -98,7 +98,7 @@ fn row_view(row: TreeRow, revealed: Computed<bool>) -> ListItem<impl View> {
     )]
     let indent = (depth as f32) * 14.0;
 
-    let content = hstack((
+    hstack((
         spacer().width(indent),
         vstack((
             hstack((
@@ -114,9 +114,7 @@ fn row_view(row: TreeRow, revealed: Computed<bool>) -> ListItem<impl View> {
         .spacing(2.0),
     ))
     .padding_with(EdgeInsets::new(6.0, 12.0, 6.0, 12.0))
-    .opacity(if enabled { 1.0 } else { 0.55 });
-
-    ListItem::new(content)
+    .opacity(if enabled { 1.0 } else { 0.55 })
 }
 
 /// A node without a label is called out rather than rendered as blank space —

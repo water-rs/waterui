@@ -27,7 +27,7 @@ pub const VIRTUAL_FRAME: Duration = Duration::from_millis(16);
 /// Implemented by Hydrolysis's two headless runtimes: [`SemanticRuntime`], the
 /// semantic pipeline a [`crate::UiBuilder`] mounts with [`crate::UiBuilder::mount`],
 /// and [`HeadlessRuntime`], the rendered pipeline a styled builder mounts with
-/// `UiBuilder<Styled<S>>::mount_offscreen`. The trait is closed to this crate's
+/// [`crate::UiBuilder::mount_offscreen`]. The trait is closed to this crate's
 /// use: every method is a pass-through to the runtime's inherent API, so a
 /// downstream crate never needs to name it — [`crate::SemanticApp`] is
 /// parameterized by the runtime itself.

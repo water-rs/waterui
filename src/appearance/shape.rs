@@ -12,7 +12,7 @@
 //! let avatar = Color::blue().clip(Circle);
 //!
 //! // Clip to rounded rectangle
-//! let card = text!("Card").clip(RoundedRectangle::new(0.1));
+//! let card = text!("Card").clip(RoundedRectangle::new(8.0));
 //!
 //! // Fill a shape with color
 //! let dot = Circle.fill(Color::red());

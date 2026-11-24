@@ -21,7 +21,7 @@ use waterui::ViewExt as _;
 use waterui::animation::Animation;
 use waterui::background::Material;
 #[cfg(feature = "accessibility")]
-use waterui::component::list::{List, ListItem};
+use waterui::component::list::List;
 use waterui::graphics::Color;
 use waterui::metadata::anchored_overlay::{AnchorEdge, AnchoredOverlay};
 use waterui::prelude::text;
@@ -879,11 +879,11 @@ fn a_grouped_list_row_hoists_its_accessibility_label() {
                 let rows = Binding::container(vec![SelfId::new(1_u64)]);
                 AnyView::new(List::for_each(SignalCollection::new(rows), move |_| {
                     let content = text("inside").a11y_label("row label");
-                    ListItem::new(if grouped {
+                    if grouped {
                         AnyView::new(content.material_group())
                     } else {
                         AnyView::new(content)
-                    })
+                    }
                 }))
             });
             HeadlessRuntime::new_for_tests(

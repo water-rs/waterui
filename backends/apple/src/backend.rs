@@ -683,6 +683,17 @@ impl NativeBackend for AppleBackend {
         )
     }
 
+    fn task_hook<C: ChildView<Self>>(
+        &mut self,
+        metadata: Metadata<waterui_interaction::event::TaskHook, C>,
+        env: &Environment,
+        (): (),
+    ) -> NativeLeaf {
+        mark_reached!("task_hook");
+        let metadata = metadata.map_content(C::into_child);
+        crate::components::lifecycle_hook::realize_task_hook_metadata(metadata, &self.entry(env))
+    }
+
     fn on_event<C: ChildView<Self>>(
         &mut self,
         metadata: Metadata<waterui_interaction::event::OnEvent, C>,
@@ -1069,18 +1080,15 @@ impl NativeBackend for AppleBackend {
         crate::components::secure::realize_secure_metadata(metadata, &self.entry(env))
     }
 
-    fn standard_dynamic_range<C: ChildView<Self>>(
+    fn dynamic_range<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::metadata::secure::StandardDynamicRange, C>,
+        metadata: Metadata<waterui::metadata::secure::DynamicRangeMetadata, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
-        mark_reached!("standard_dynamic_range");
+        mark_reached!("dynamic_range");
         let metadata = metadata.map_content(C::into_child);
-        crate::components::dynamic_range::realize_standard_dynamic_range_metadata(
-            metadata,
-            &self.entry(env),
-        )
+        crate::components::dynamic_range::realize_dynamic_range_metadata(metadata, &self.entry(env))
     }
 
     fn frame_rate<C: ChildView<Self>>(
@@ -1092,20 +1100,6 @@ impl NativeBackend for AppleBackend {
         mark_reached!("frame_rate");
         let metadata = metadata.map_content(C::into_child);
         realize_frame_rate_metadata(metadata, &self.entry(env))
-    }
-
-    fn high_dynamic_range<C: ChildView<Self>>(
-        &mut self,
-        metadata: Metadata<waterui::metadata::secure::HighDynamicRange, C>,
-        env: &Environment,
-        (): (),
-    ) -> NativeLeaf {
-        mark_reached!("high_dynamic_range");
-        let metadata = metadata.map_content(C::into_child);
-        crate::components::dynamic_range::realize_high_dynamic_range_metadata(
-            metadata,
-            &self.entry(env),
-        )
     }
 
     fn anchored_overlay<C: ChildView<Self>>(

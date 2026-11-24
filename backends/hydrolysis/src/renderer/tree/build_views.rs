@@ -84,7 +84,7 @@ impl_widget_behavior!(
     ; a11y: crate::widgets::nav::tabs::emit_tabs_accessibility
 );
 impl_widget_behavior!(
-    waterui_graphics::Gradient,
+    crate::renderer::views::ResolvedGradient,
     crate::renderer::render_gradient_node,
     crate::renderer::measure_gradient_node
     ; a11y: crate::renderer::views::emit_graphics_leaf_accessibility
@@ -265,21 +265,23 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         Self::build_widget_with_core(state, stretch, env, core)
     }
 
-    /// Build a persistent gradient node: retain the view — its `Paint` is
-    /// already a resolved engine paint in unit space — and re-fill it every
-    /// flush at the current bounds. The payload carries no signal, so nothing
-    /// is watched; the gradient stretches to fill the proposal
-    /// (`StretchAxis::Both`, read from the payload). A gradient paints a
-    /// fill — `fill_leaf` marks it so a background slot can give it §7.1's
-    /// band extension.
+    /// Build a persistent gradient node: resolve the gradient's paint signal in
+    /// `env` and re-fill it every flush at the current bounds. The resolved
+    /// paint signal is observed by the render path so colour-scheme and stop
+    /// signal changes repaint this leaf in place without rebuilding. The
+    /// gradient stretches to fill the proposal (`StretchAxis::Both`, read from
+    /// the payload). A gradient paints a fill — `fill_leaf` marks it so a
+    /// background slot can give it §7.1's band extension.
     pub(super) fn build_gradient(
         renderer: &SemanticCore<E>,
-        gradient: waterui_graphics::Gradient,
+        gradient: &waterui_graphics::Gradient,
         env: &Environment,
     ) -> Self {
-        let stretch = waterui_core::NativeView::stretch_axis(&gradient);
-        let gradient = Rc::new(RefCell::new(gradient));
-        let mut node = Self::build_widget(renderer, gradient, stretch, env);
+        let stretch = waterui_core::NativeView::stretch_axis(gradient);
+        let resolved = Rc::new(RefCell::new(
+            crate::renderer::views::ResolvedGradient::resolve(gradient, env),
+        ));
+        let mut node = Self::build_widget(renderer, resolved, stretch, env);
         if let Self::Widget(widget) = &mut node {
             widget.fill_leaf = true;
         }

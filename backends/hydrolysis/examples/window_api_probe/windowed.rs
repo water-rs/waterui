@@ -24,7 +24,7 @@ pub fn main() {
     let window = window.content(move || {
         text("window API probe").padding().task({
             let handle = handle.clone();
-            async move {
+            move || async move {
                 sleep(Duration::from_secs(4)).await;
                 handle.maximize();
                 sleep(Duration::from_secs(1)).await;

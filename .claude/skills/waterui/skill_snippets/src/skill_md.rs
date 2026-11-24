@@ -33,8 +33,8 @@ pub struct GlueRow {
 }
 
 /// Glue: the `row_view` free function rules 2 and 3 hand to a container.
-fn glue_row_view(row: GlueRow) -> ListItem<impl View> {
-    ListItem::new(text(row.title))
+fn glue_row_view(row: GlueRow) -> impl View {
+    text(row.title)
 }
 
 // ---------------------------------------------------------------------------
@@ -181,7 +181,7 @@ pub fn skill_block_06() {
     };
     let _ = {
         // platform list: lazy, editable
-        List::for_each(rows.clone(), |row| ListItem::new(text(row.title))) // [ellipsis filled]
+        List::for_each(rows.clone(), |row| text(row.title)) // [ellipsis filled]
     };
 }
 

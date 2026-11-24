@@ -8,7 +8,7 @@ use waterui::app::{App, LastWindowPolicy};
 use waterui::layout::{Point, Rect, Size};
 use waterui::prelude::*;
 use waterui::reactive::binding;
-use waterui::shape::{RoundedRectangle, ShapeExt};
+use waterui::shape::{CornerRadius, RoundedRectangle, ShapeExt};
 use waterui::window::{
     Activation, MonitorSelector, Window, WindowPresentation, WindowState, conditional_window,
 };
@@ -32,7 +32,7 @@ fn main_view(policy: Activation, echoed: Binding<Str>) -> impl View {
         text(label).size(14.0),
         text("keys typed here echo below:").size(12.0),
         TextField::new("type something", &echoed),
-        RoundedRectangle::new(0.2)
+        RoundedRectangle::new(CornerRadius::fraction(0.2))
             .fill(Color::srgb_hex("#7C3AED"))
             .size(320.0, 120.0),
     ))

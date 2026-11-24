@@ -185,7 +185,7 @@ use waterui::border::Border;
 use waterui::component::badge::BadgeConfig;
 use waterui::component::focus::Focused;
 #[cfg(feature = "list")]
-use waterui::component::list::{ListConfig, ListItem};
+use waterui::component::list::ListConfig;
 use waterui::component::progress::ProgressConfig;
 #[cfg(feature = "table")]
 use waterui::component::table::TableConfig;

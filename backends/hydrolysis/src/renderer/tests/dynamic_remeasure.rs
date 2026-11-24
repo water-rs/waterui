@@ -16,7 +16,7 @@ use nami::Binding;
 use nami::collection::SignalCollection;
 use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityRole;
-use waterui::component::list::{List, ListItem};
+use waterui::component::list::List;
 use waterui::component::text;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::SelfId;
@@ -104,7 +104,10 @@ fn photo_row_list() -> (ReactiveImageHandle, AnyViewBuilder<AnyView>) {
         let dynamic = dynamic.clone();
         let rows = Binding::container(vec![SelfId::new(1_u64)]);
         AnyView::new(List::for_each(SignalCollection::new(rows), move |_| {
-            ListItem::new(dynamic.clone().a11y_label("photo row")).insets(ROW_INSETS)
+            dynamic
+                .clone()
+                .a11y_label("photo row")
+                .list_row_insets(ROW_INSETS)
         }))
     });
     (decode, builder)

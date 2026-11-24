@@ -81,7 +81,7 @@ Tabs::new(&pane, ForEach::new(List::from(panes.to_vec()), move |pane: SelfId<Pan
 ```
 
 A `Tab` is `Tab::container(label, content)` (`label` is `impl IntoLabel`, `content` any
-`Fn() -> impl View`) with `.badge(count)` and `.enabled(bool)` signals and `.role(..)`.
+`Fn() -> impl View`) with `.badge(value)` (`u32`, `BadgeValue::{Hidden, Dot, Count, Text}`, or signal; `0` hides) and `.enabled(bool)` signals and `.role(..)`.
 Other styles: `tab_style::tab_bar()` and `tab_style::sidebar()` force one presentation;
 `TabBarMinimizeBehavior` is `Automatic | Never | OnScrollDown | OnScrollUp`.
 

@@ -8,7 +8,7 @@ use waterui::Environment;
 use waterui::app::{App, Windows};
 use waterui::prelude::*;
 use waterui::reactive::binding;
-use waterui::shape::{RoundedRectangle, ShapeExt};
+use waterui::shape::{CornerRadius, RoundedRectangle, ShapeExt};
 use waterui::window::Window;
 use waterui_controls::{slider::slider, stepper::stepper};
 
@@ -21,7 +21,7 @@ fn main_view() -> impl View {
         vstack((
             text("Hydrolysis Wayland Smoke").size(28.0),
             text("Direct self-drawn window via winit + Cherenkov").size(16.0),
-            RoundedRectangle::new(0.2)
+            RoundedRectangle::new(CornerRadius::fraction(0.2))
                 .fill(Color::srgb_hex("#2563EB"))
                 .size(560.0, 180.0),
             hstack((

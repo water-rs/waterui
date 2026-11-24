@@ -268,16 +268,12 @@ the closure receives an owned clone for use inside the rendered Window.
 
 ---
 
-## 11. Color space → `.color_space(ColorSpace)`
+## 11. Dynamic range → `.dynamic_range(DynamicRange)`
 
-For HDR/SDR control on a subtree, prefer the new
-`ViewExt::color_space(ColorSpace)` modifier over the underlying
-`metadata(HighDynamicRange::new())` / `metadata(StandardDynamicRange::new())`
-calls. The `ColorSpace { Sdr, Hdr }` enum is `impl_constant!`-registered
-and is a more direct surface than the metadata-key types.
-
-The metadata types remain public for code that needs the lower-level
-mechanism, but new code should use `.color_space(...)`.
+For HDR/SDR control on a subtree, use `ViewExt::dynamic_range(impl IntoComputed<DynamicRange>)`
+(or `Avatar::dynamic_range` on an avatar), attaching `DynamicRangeMetadata`.
+`DynamicRange { Standard, High }` is `impl_constant!`-registered and accepts both
+plain constants and reactive signals.
 
 ---
 

@@ -881,7 +881,7 @@ pub enum ShapeValue {
     Capsule,
     /// `clip="ellipse"`.
     Ellipse,
-    /// `clip={{ cornerRadius: 0.25 }}`.
+    /// `clip={{ cornerRadius: 12 }}`.
     Rounded(f32),
 }
 

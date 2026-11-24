@@ -6,7 +6,7 @@
 use waterui::Identifiable;
 use waterui::animation::Animation;
 use waterui::app::{App, Windows};
-use waterui::component::list::{List, ListDelete, ListItem, ListMove};
+use waterui::component::list::{List, ListDelete, ListMove};
 use waterui::prelude::theme_color::Foreground;
 use waterui::prelude::*;
 use waterui::preview;
@@ -46,19 +46,17 @@ impl DemoState {
     }
 }
 
-fn record_row(record: Record) -> ListItem<impl View> {
-    ListItem::new(
-        vstack((
-            text(text!("Record #{id:06}", id = record.id))
-                .subheadline()
-                .foreground(Foreground),
-            text("Materialized only while this row is visible")
-                .caption()
-                .muted(),
-        ))
-        .leading()
-        .padding_with((10.0, 16.0)),
-    )
+fn record_row(record: Record) -> impl View {
+    vstack((
+        text(text!("Record #{id:06}", id = record.id))
+            .subheadline()
+            .foreground(Foreground),
+        text("Materialized only while this row is visible")
+            .caption()
+            .muted(),
+    ))
+    .leading()
+    .padding_with((10.0, 16.0))
 }
 
 fn delete_record(ListDelete(index): ListDelete, mut state: DemoState) {

@@ -658,6 +658,11 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                             hook.call();
                         }
                     }
+                    WrapperEffect::Task(effect) => {
+                        node.child
+                            .flush(renderer, ctx, child_env, kurbo::Affine::IDENTITY);
+                        effect.start_if_pending();
+                    }
                 }
                 renderer.pop_render_owner();
             }
@@ -1095,6 +1100,10 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                         if let Some(hook) = effect.appear.take() {
                             hook.call();
                         }
+                    }
+                    WrapperEffect::Task(effect) => {
+                        node.child.emit_accessibility(renderer, child_env);
+                        effect.start_if_pending();
                     }
                     #[cfg(waterui_feature = "dialog")]
                     WrapperEffect::Dialog(effect) => {

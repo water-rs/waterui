@@ -46,7 +46,7 @@ use waterui_layout::padding::EdgeInsets;
 use waterui_layout::stack::{HorizontalAlignment, hstack, vstack, zstack};
 use waterui_text::text::{IntoText, Text, text};
 
-use crate::shape::{FixedRoundedRectangle, ShapeExt};
+use crate::shape::{RoundedRectangle, ShapeExt};
 use crate::theme::color::{Accent, Error, Foreground, MutedForeground, Scrim, Surface};
 use crate::{Computed, SignalExt as _, Str, ViewExt};
 use waterui_graphics::color::Color;
@@ -463,7 +463,7 @@ fn dialog_card(dialog: &Dialog, label: Computed<Str>) -> impl View + use<> {
     Frame::new(
         contents
             .padding_with(EdgeInsets::all(CARD_PADDING))
-            .background(FixedRoundedRectangle::new(CARD_CORNER_RADIUS).fill(Color::new(Surface)))
+            .background(RoundedRectangle::new(CARD_CORNER_RADIUS).fill(Color::new(Surface)))
             .a11y_label(label)
             .a11y_role(AccessibilityRole::Dialog),
     )

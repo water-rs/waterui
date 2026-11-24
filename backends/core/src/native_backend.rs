@@ -959,6 +959,8 @@ native_backend! {
         frame_rate: FrameRateVote,
         /// A lifecycle hook.
         lifecycle_hook: waterui_interaction::event::LifeCycleHook,
+        /// A view-scoped asynchronous task hook.
+        task_hook: waterui_interaction::event::TaskHook,
         /// An event handler.
         on_event: waterui_interaction::event::OnEvent,
         /// A key-press handler.
@@ -1021,10 +1023,8 @@ native_backend! {
         focused: waterui::component::focus::Focused,
         /// Secure content.
         secure: waterui::metadata::secure::Secure,
-        /// Standard dynamic range.
-        standard_dynamic_range: waterui::metadata::secure::StandardDynamicRange,
-        /// High dynamic range.
-        high_dynamic_range: waterui::metadata::secure::HighDynamicRange,
+        /// Dynamic range.
+        dynamic_range: waterui::metadata::secure::DynamicRangeMetadata,
         /// An anchored overlay.
         anchored_overlay: waterui::metadata::anchored_overlay::AnchoredOverlay,
         #[cfg(waterui_feature = "dialog")]
@@ -1225,7 +1225,6 @@ mod tests {
             snapshot
                 .range()
                 .filter_map(|index| snapshot.get_view(index))
-                .map(waterui::component::list::ListItem::into_content)
                 .collect()
         }
     }
@@ -1716,7 +1715,7 @@ mod tests {
 
         let authored = || {
             Badge::new(
-                1,
+                1_u32,
                 button(Label::new("Save", Spacer::flexible)).action(|| {}),
             )
         };
@@ -1877,7 +1876,7 @@ mod tests {
         assert_eq!(
             reached(Hooks::new(
                 Badge::new(
-                    1,
+                    1_u32,
                     button(Label::new("Save", Spacer::flexible)).action(|| {})
                 ),
                 DecliningButtonStyleHook,

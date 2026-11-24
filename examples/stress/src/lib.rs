@@ -25,7 +25,7 @@ use waterui::app::{App, Windows};
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::Binding;
-use waterui::shape::{Circle, RoundedRectangle, ShapeExt};
+use waterui::shape::{Circle, CornerRadius, RoundedRectangle, ShapeExt};
 use waterui::task::{sleep, spawn_local};
 
 fn env_usize(name: &str, default: usize) -> usize {
@@ -68,7 +68,7 @@ fn system_tile(toggle: &Binding<bool>, index: usize) -> impl View + use<> {
         .select(amp, -amp)
         .with(Animation::spring(260.0, 20.0));
 
-    RoundedRectangle::new(0.22)
+    RoundedRectangle::new(CornerRadius::fraction(0.22))
         .fill(stress_card_background(index))
         .size(24.0, 24.0)
         .scale(scale)
@@ -79,7 +79,10 @@ fn system_tile(toggle: &Binding<bool>, index: usize) -> impl View + use<> {
 fn custom_tile(index: usize) -> impl View {
     let duration = 520 + (index % 7) as u64 * 110;
     Circle
-        .morph_to(RoundedRectangle::new(0.26), stress_card_background(index))
+        .morph_to(
+            RoundedRectangle::new(CornerRadius::fraction(0.26)),
+            stress_card_background(index),
+        )
         .duration(Duration::from_millis(duration))
         .size(42.0, 42.0)
 }

@@ -5,7 +5,7 @@ use core::fmt::Debug;
 
 use nami::collection::Collection;
 use nami::{Binding, Computed, SignalExt as _};
-pub use waterui_controls::SlotBuilder;
+pub use waterui_controls::{BadgeValue, SlotBuilder};
 use waterui_controls::{IconSlot, IntoLabel, LabelKind, TitleLabel, label::Label};
 use waterui_core::backend::MapSlots;
 use waterui_core::{
@@ -146,8 +146,8 @@ pub struct Tab<C, L = TitleLabel> {
     label: Label<L>,
     /// Stable lazily built tab root.
     content: Rc<C>,
-    /// Optional reactive badge count.
-    badge: Option<Computed<i32>>,
+    /// Optional reactive badge value.
+    badge: Option<Computed<BadgeValue>>,
     /// Whether the native tab item is enabled.
     enabled: Computed<bool>,
     /// The part the tab plays in the container's chrome.
@@ -267,9 +267,9 @@ impl<C, L> Tab<C, L> {
         &self.content
     }
 
-    /// Optional reactive badge count.
+    /// Optional reactive badge value.
     #[must_use]
-    pub const fn tab_badge(&self) -> Option<&Computed<i32>> {
+    pub const fn tab_badge(&self) -> Option<&Computed<BadgeValue>> {
         self.badge.as_ref()
     }
 
@@ -285,10 +285,10 @@ impl<C, L> Tab<C, L> {
         self.role
     }
 
-    /// Sets a reactive badge count.
+    /// Sets a reactive badge value (`u32`, [`BadgeValue`], or signal; `0` hides).
     #[must_use]
-    pub fn badge(mut self, count: impl IntoSignal<i32> + 'static) -> Self {
-        self.badge = Some(count.into_signal().computed());
+    pub fn badge(mut self, value: impl IntoSignal<BadgeValue> + 'static) -> Self {
+        self.badge = Some(value.into_signal().computed());
         self
     }
 
@@ -327,8 +327,8 @@ pub struct TabItem<S> {
     icon: Option<IconSlot<S>>,
     /// Stable lazily built tab root.
     content: SlotBuilder<ResolvedNavigationView<S>>,
-    /// Optional reactive badge count.
-    badge: Option<Computed<i32>>,
+    /// Optional reactive badge value.
+    badge: Option<Computed<BadgeValue>>,
     /// Whether the native tab item is enabled.
     enabled: Computed<bool>,
     /// The part the tab plays in the container's chrome.
@@ -403,9 +403,9 @@ impl<S> TabItem<S> {
         &self.content
     }
 
-    /// Optional reactive badge count.
+    /// Optional reactive badge value.
     #[must_use]
-    pub const fn badge(&self) -> Option<&Computed<i32>> {
+    pub const fn badge(&self) -> Option<&Computed<BadgeValue>> {
         self.badge.as_ref()
     }
 
@@ -433,7 +433,7 @@ impl<S> TabItem<S> {
         SlotBuilder<S>,
         Option<IconSlot<S>>,
         SlotBuilder<ResolvedNavigationView<S>>,
-        Option<Computed<i32>>,
+        Option<Computed<BadgeValue>>,
         Computed<bool>,
         TabRole,
     ) {

@@ -73,7 +73,7 @@ pub fn navigation_block_01() -> impl View {
     fn inbox_stack() -> impl View {
         text("inbox stack")
     }
-    let unread_count = Binding::i32(3);
+    let unread_count: Binding<u32> = binding(3_u32);
 
     use waterui::{id::SelfId, reactive::collection::List, views::ForEach};
 

@@ -11,7 +11,7 @@ use core::time::Duration;
 use std::cell::Cell;
 use std::time::Instant;
 
-use waterui::component::list::{List, ListDelete, ListItem, ListMove};
+use waterui::component::list::{List, ListDelete, ListMove};
 use waterui::component::text;
 use waterui_core::AnyView;
 use waterui_core::handler::AnyViewBuilder;
@@ -35,7 +35,7 @@ fn list_runtime(editing: bool) -> HeadlessRuntime {
     let builder = AnyViewBuilder::<AnyView>::new(move || {
         AnyView::new(
             List::for_each([0, 1, 2, 3, 4, 5], |index: i32| {
-                ListItem::new(text(format!("Row {index}")))
+                text(format!("Row {index}"))
             })
             .editing(editing)
             .on_delete(|_: ListDelete| {})

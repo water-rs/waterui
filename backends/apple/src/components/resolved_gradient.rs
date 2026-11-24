@@ -11,6 +11,7 @@ use std::rc::Rc;
 use cocoa_ui::gradient::{
     GradientLayer, GradientPaint, GradientShape, GradientSpace, GradientStop,
 };
+use waterui::Signal as _;
 use waterui::graphics::Gradient;
 use waterui::graphics::backend::draw::{
     ColorSpace, ColorStop, Extend, Interpolation, LinearDisplayP3, LinearGradient, Paint,
@@ -263,17 +264,9 @@ pub fn realize_gradient(gradient: Gradient, ctx: &RenderContext<'_>) -> NativeLe
     // extends it into the touched edge's regions when a background
     // slot holds it.
     view.set_is_fill(true);
-    if !matches!(
-        gradient.paint(),
-        Paint::Linear(_) | Paint::Radial(_) | Paint::Sweep(_)
-    ) {
-        waterui::contract_violation!(
-            "a native gradient must carry a linear, radial or sweep paint; \
-                 a mesh gradient is rendered by the scene engine; the gradient is not drawn"
-        );
-        return NativeLeaf::new(&*view, GradientSubView);
-    }
-    let layer = Rc::new(GradientLayer::new(mtm, layer_paint(gradient.paint())));
+    let resolved = gradient.resolve(ctx.env());
+    let initial = resolved.snapshot();
+    let layer = Rc::new(GradientLayer::new(mtm, layer_paint(&initial)));
     cocoa_ui::view::layer(&view)
         .expect("host view is layer-backed")
         .addSublayer(&layer.layer());
@@ -293,22 +286,42 @@ pub fn realize_gradient(gradient: Gradient, ctx: &RenderContext<'_>) -> NativeLe
         update_contents_scale(view, &backing_layer);
     });
 
-    NativeLeaf::new(&*view, GradientSubView)
+    let mut leaf = NativeLeaf::new(&*view, GradientSubView);
+    let paint_layer = Rc::clone(&layer);
+    leaf.watch(&resolved, move |change| {
+        paint_layer.set_paint(layer_paint(&change.into_value()));
+    });
+    leaf
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use kurbo::Point;
+    use waterui::Environment;
+    use waterui::color::{Color, Working};
+    use waterui_core::layout::UnitPoint;
 
     const RED: WorkingColor = WorkingColor::new([1.0, 0.0, 0.0, 1.0]);
     const GREEN: WorkingColor = WorkingColor::new([0.0, 1.0, 0.0, 1.0]);
     const BLUE: WorkingColor = WorkingColor::new([0.0, 0.0, 1.0, 1.0]);
 
+    fn working(color: WorkingColor) -> Color {
+        Color::new(Working(color))
+    }
+
+    fn resolve_paint(gradient: &Gradient) -> Paint {
+        gradient.resolve(&Environment::new()).snapshot()
+    }
+
     fn three_stop_radial(start_radius: f32, end_radius: f32) -> Gradient {
         Gradient::radial(
-            vec![(0.0, RED), (0.5, GREEN), (1.0, BLUE)],
-            [0.5, 0.5],
+            vec![
+                (0.0, working(RED)),
+                (0.5, working(GREEN)),
+                (1.0, working(BLUE)),
+            ],
+            UnitPoint::CENTER,
             start_radius,
             end_radius,
         )
@@ -318,13 +331,13 @@ mod tests {
     fn working_gradient_preserves_unclamped_components() {
         let gradient = Gradient::linear(
             vec![
-                (0.0, WorkingColor::new([2.0, -0.25, 0.5, 1.0])),
-                (1.0, BLUE),
+                (0.0, working(WorkingColor::new([2.0, -0.25, 0.5, 1.0]))),
+                (1.0, working(BLUE)),
             ],
-            [0.0, 0.0],
-            [1.0, 1.0],
+            UnitPoint::TOP_LEADING,
+            UnitPoint::BOTTOM_TRAILING,
         );
-        let paint = layer_paint(gradient.paint());
+        let paint = layer_paint(&resolve_paint(&gradient));
 
         assert_eq!(paint.space, GradientSpace::ExtendedLinearDisplayP3);
         assert_eq!(
@@ -375,7 +388,7 @@ mod tests {
 
     #[test]
     fn forward_radial_gradient_preserves_both_circles_and_stops() {
-        let paint = layer_paint(three_stop_radial(0.25, 0.5).paint());
+        let paint = layer_paint(&resolve_paint(&three_stop_radial(0.25, 0.5)));
 
         assert_eq!(
             paint.shape,
@@ -410,7 +423,7 @@ mod tests {
 
     #[test]
     fn reversed_radial_gradient_preserves_both_circles_and_stop_order() {
-        let paint = layer_paint(three_stop_radial(0.5, 0.25).paint());
+        let paint = layer_paint(&resolve_paint(&three_stop_radial(0.5, 0.25)));
 
         assert_eq!(
             paint.shape,
@@ -445,7 +458,7 @@ mod tests {
 
     #[test]
     fn equal_radius_radial_gradient_has_an_explicit_hard_edge() {
-        let paint = layer_paint(three_stop_radial(0.25, 0.25).paint());
+        let paint = layer_paint(&resolve_paint(&three_stop_radial(0.25, 0.25)));
 
         assert_eq!(
             paint.shape,
@@ -474,12 +487,16 @@ mod tests {
     #[test]
     fn angular_gradient_maps_a_partial_sweep() {
         let gradient = Gradient::angular(
-            vec![(0.0, RED), (0.5, GREEN), (1.0, BLUE)],
-            [0.5, 0.5],
+            vec![
+                (0.0, working(RED)),
+                (0.5, working(GREEN)),
+                (1.0, working(BLUE)),
+            ],
+            UnitPoint::CENTER,
             core::f32::consts::FRAC_PI_2,
             core::f32::consts::FRAC_PI_2 + core::f32::consts::PI,
         );
-        let paint = layer_paint(gradient.paint());
+        let paint = layer_paint(&resolve_paint(&gradient));
 
         assert_eq!(
             paint.shape,
@@ -503,12 +520,12 @@ mod tests {
     #[test]
     fn angular_gradient_with_a_full_turn_sweep_ends_at_location_one() {
         let gradient = Gradient::angular(
-            vec![(0.0, RED), (1.0, BLUE)],
-            [0.5, 0.5],
+            vec![(0.0, working(RED)), (1.0, working(BLUE))],
+            UnitPoint::CENTER,
             0.0,
             core::f32::consts::TAU,
         );
-        let paint = layer_paint(gradient.paint());
+        let paint = layer_paint(&resolve_paint(&gradient));
 
         assert_eq!(paint.stops.last().map(|stop| stop.location), Some(1.0));
     }

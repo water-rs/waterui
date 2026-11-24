@@ -17,7 +17,7 @@ use nami::collection::SignalCollection;
 use nami::{Binding, Computed, SignalExt as _};
 use waterui::ViewExt as _;
 use waterui::animation::Animation;
-use waterui::component::list::{List, ListItem};
+use waterui::component::list::List;
 use waterui::component::table::{Table, col};
 use waterui::component::text;
 use waterui_core::AnyView;
@@ -42,7 +42,7 @@ fn list_runtime() -> HeadlessRuntime {
     let builder = AnyViewBuilder::<AnyView>::new(move || {
         AnyView::new(List::for_each(SignalCollection::new(rows.clone()), |id| {
             let index = id.into_inner();
-            ListItem::new(text(format!("Row {index}")))
+            text(format!("Row {index}"))
         }))
     });
     HeadlessRuntime::new_for_tests(
@@ -161,7 +161,7 @@ fn headered_list_runtime() -> HeadlessRuntime {
             ().size(0.0, crate::num_cast::f64_as_f32(HEADER_HEIGHT)),
             List::for_each(SignalCollection::new(rows.clone()), |id| {
                 let index = id.into_inner();
-                ListItem::new(text(format!("Row {index}")))
+                text(format!("Row {index}"))
             }),
         )))
     });
@@ -454,7 +454,7 @@ fn a_decorated_list_scroll_frame_reuses_row_measurements_and_run_layers() {
                 } else {
                     Computed::constant(20.0)
                 };
-                ListItem::new(text(format!("Row {index}")).size(height))
+                text(format!("Row {index}")).size(height)
             })
             .selection(&selection_for_list),
         )

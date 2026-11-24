@@ -99,6 +99,7 @@ pub mod prelude {
     pub use super::gesture::GestureObserver;
 
     pub use super::border::Border;
+    pub use super::component::badge::BadgeValue;
     pub use super::component::*;
     #[cfg(feature = "form")]
     pub use super::form::*;
@@ -121,7 +122,7 @@ pub mod prelude {
     pub use super::component::link::{Link, LinkTarget, link};
     #[cfg(feature = "list")]
     pub use super::component::list::{
-        List, ListContent, ListItem, ListMinRowHeight, Row, Section, detail_row, row,
+        List, ListContent, ListMinRowHeight, Row, Section, detail_row, row,
     };
     #[cfg(feature = "menu")]
     pub use super::component::menu::{
@@ -130,6 +131,7 @@ pub mod prelude {
     };
     #[cfg(feature = "menu")]
     pub use super::metadata::context_menu::{ContextMenu, DismissContextMenu};
+    pub use super::metadata::secure::DynamicRange;
 
     // Drag and drop extension traits
     pub use super::drag_drop::DropDestinationExt;
@@ -150,7 +152,7 @@ pub mod prelude {
     #[cfg(any(feature = "gpu", feature = "cpu"))]
     pub use super::gradient::FlowingGradient;
     pub use super::gradient::{AnimatedMeshGradient, AnimatedMeshGradientConfig};
-    pub use super::gradient::{Gradient, MeshGradient};
+    pub use super::gradient::{Gradient, GradientStops, MeshGradient};
 
     // Background types (explicit to avoid module name conflict with layout::background)
     pub use super::background::{Background, Glass, GlassStyle, Material};
@@ -184,6 +186,7 @@ pub mod prelude {
     pub use waterui_macros::{eval, exec, exec_file, js_api, js_file};
 }
 pub use color::Color;
+pub use component::badge::BadgeValue;
 #[cfg(feature = "form")]
 pub use form::FormBuilder;
 #[cfg(feature = "effects")]

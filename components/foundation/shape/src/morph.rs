@@ -48,8 +48,6 @@ impl Silhouette {
         let (width, height) = (size.width.max(0.0), size.height.max(0.0));
         let shorter_edge = width.min(height);
         let half = shorter_edge / 2.0;
-        let normalized = |radius: f32| radius.clamp(0.0, 0.5) * shorter_edge;
-        let fixed = |radius: f32| radius.clamp(0.0, half);
         let round = |radii: [f32; 4]| radii.map(|radius| (radius, radius));
         let bounds = |corners| Self {
             left: 0.0,
@@ -74,34 +72,9 @@ impl Silhouette {
             }
             ShapeKind::Ellipse => bounds([(width / 2.0, height / 2.0); 4]),
             ShapeKind::Capsule => bounds(round([half; 4])),
-            ShapeKind::RoundedRect { corner_radius } => {
-                bounds(round([normalized(corner_radius); 4]))
+            ShapeKind::RoundedRect { radii } => {
+                bounds(round(radii.resolve_clockwise(shorter_edge)))
             }
-            ShapeKind::UnevenRoundedRect {
-                top_left,
-                top_right,
-                bottom_left,
-                bottom_right,
-            } => bounds(round([
-                normalized(top_left),
-                normalized(top_right),
-                normalized(bottom_right),
-                normalized(bottom_left),
-            ])),
-            ShapeKind::FixedRoundedRect { corner_radius } => {
-                bounds(round([fixed(corner_radius); 4]))
-            }
-            ShapeKind::FixedUnevenRoundedRect {
-                top_left,
-                top_right,
-                bottom_left,
-                bottom_right,
-            } => bounds(round([
-                fixed(top_left),
-                fixed(top_right),
-                fixed(bottom_right),
-                fixed(bottom_left),
-            ])),
             ShapeKind::CustomPath => {
                 unreachable!("`MorphShape::new` replaces a custom path, which has no parameters")
             }

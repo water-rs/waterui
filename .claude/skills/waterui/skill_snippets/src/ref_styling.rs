@@ -229,7 +229,7 @@ pub fn styling_block_07() {
     let view = Divider;
     let _ = {
         // any view is a valid background
-        view.background(RoundedRectangle::new(0.18).fill(Surface))
+        view.background(RoundedRectangle::new(12.0).fill(Surface))
     };
 }
 
@@ -272,20 +272,20 @@ pub fn styling_block_08() {
         view.background(
             Glass::regular()
                 .tint(Accent)
-                .shape(RoundedRectangle::new(0.2)),
+                .shape(RoundedRectangle::new(16.0)),
         )
     };
 }
 
 // ---------------------------------------------------------------------------
 // styling.md § "## Backgrounds, materials, gradients" (prose): the prelude
-// carries `Gradient` and `MeshGradient`, and the colour type gradients take.
+// carries `Gradient`, `GradientStops` and `MeshGradient`.
 // Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn styling_prelude_gradients_prose() {
     let _: Option<Gradient> = None;
+    let _: Option<GradientStops> = None;
     let _: Option<MeshGradient> = None;
-    let _: Option<waterui::color::WorkingColor> = None;
 }
 
 // ---------------------------------------------------------------------------
@@ -293,26 +293,42 @@ pub fn styling_prelude_gradients_prose() {
 // ---------------------------------------------------------------------------
 pub fn styling_block_09() {
     let view = Divider;
-    let vertices: Vec<([f32; 2], waterui::color::WorkingColor)> = Vec::new();
 
+    use waterui::color::Working;
     use waterui::color::working::from_linear_srgb;
     use waterui::gradient::{
         AnimatedMeshGradient, AnimatedMeshGradientConfig, FlowingGradient, Gradient, MeshGradient,
     };
+    use waterui::layout::UnitPoint;
+    use waterui::theme::color::{Accent, Surface};
 
-    let rose = Srgb::from_hex("#FF4D80").resolve();
-    let sky = from_linear_srgb([0.3, 0.5, 1.0], 1.0);
+    let rose = Color::srgb_hex("#FF4D80");
+    let sky = Color::new(Working(from_linear_srgb([0.3, 0.5, 1.0], 1.0)));
 
-    let colors = Binding::container(vec![rose; 9]);
+    let progress = Binding::f32(0.5);
+    let stops_signal = progress.map({
+        let rose = rose.clone();
+        let sky = sky.clone();
+        move |p| vec![(0.0, rose.clone()), (p, sky.clone())]
+    });
+    let colors = Binding::container(vec![rose.clone(); 9]);
 
     let _ = {
-        // fixed colours
-        Gradient::linear(vec![(0.0, rose), (1.0, sky)], [0.0, 0.0], [1.0, 1.0])
+        // theme tokens, evenly spaced
+        Gradient::linear(
+            [Accent.into(), Surface.into()],
+            UnitPoint::TOP,
+            UnitPoint::BOTTOM,
+        )
+    };
+    let _ = {
+        // reactive (offset, Color) stops
+        Gradient::linear(stops_signal, UnitPoint::LEADING, UnitPoint::TRAILING)
     };
     let _ = {
         view.background(Gradient::radial(
-            vec![(0.0, rose), (1.0, sky)],
-            [0.5, 0.5],
+            [rose.clone(), sky.clone()],
+            UnitPoint::CENTER,
             0.0,
             0.7,
         ))
@@ -321,17 +337,13 @@ pub fn styling_block_09() {
         // radians
         Gradient::angular(
             vec![(0.0, rose), (1.0, sky)],
-            [0.5, 0.5],
+            UnitPoint::CENTER,
             0.0,
             core::f32::consts::TAU,
         )
     };
     let _ = {
-        // vertices: Vec<([f32; 2], WorkingColor)>, row-major
-        Gradient::mesh(2, 2, vertices, true)
-    };
-    let _ = {
-        // colors: any signal of WorkingColors
+        // colors: any signal of Colors
         MeshGradient::new(3, 3, colors.clone()).size(300.0, 200.0)
     };
     let _ = {
@@ -351,8 +363,8 @@ pub fn styling_block_10() {
     let photo = Divider;
 
     use waterui::shape::{
-        Capsule, Circle, Ellipse, FixedRoundedRectangle, FixedUnevenRoundedRectangle, Path,
-        Rectangle, RoundedRectangle, ShapeExt, UnevenRoundedRectangle,
+        Capsule, Circle, CornerRadii, CornerRadius, Ellipse, Path, Rectangle, RoundedRectangle,
+        ShapeExt,
     };
 
     let _ = {
@@ -363,16 +375,28 @@ pub fn styling_block_10() {
     };
     let photo = Divider;
     let _ = {
-        photo.clip(FixedRoundedRectangle::new(12.0)) // absolute points
+        photo.clip(RoundedRectangle::new(12.0)) // radius in logical points
     };
-    let _ = FixedUnevenRoundedRectangle::new(12.0, 12.0, 0.0, 0.0);
+    let photo = Divider;
+    let _ = { photo.clip(RoundedRectangle::new(CornerRadius::fraction(0.1))) };
+    let photo = Divider;
+    let _ = {
+        photo.clip(RoundedRectangle::new(CornerRadii::new(
+            12.0, 12.0, 0.0, 0.0,
+        )))
+    };
 
     let _: Option<Capsule> = None;
     let _: Option<Ellipse> = None;
     let _: Option<Path> = None;
     let _: Option<Rectangle> = None;
     let _: Option<RoundedRectangle> = None;
-    let _ = UnevenRoundedRectangle::new(0.1, 0.1, 0.2, 0.2);
+    let _ = CornerRadii::new(
+        CornerRadius::fraction(0.1),
+        CornerRadius::fraction(0.1),
+        0.2,
+        0.2,
+    );
     fn needs_shape_ext<S: ShapeExt>(_s: S) {}
     needs_shape_ext(Circle);
 }
@@ -422,7 +446,7 @@ pub fn styling_block_12() {
 
     let _ = {
         Circle
-            .morph_to(RoundedRectangle::new(0.22), Color::srgb_hex("#3B82F6"))
+            .morph_to(RoundedRectangle::new(20.0), Color::srgb_hex("#3B82F6"))
             .duration(Duration::from_millis(600))
             .autoreverse(true) // also .repeat(bool)
             .size(90.0, 90.0)
@@ -477,7 +501,7 @@ pub fn styling_block_13() {
             Color::srgb(0, 0, 0).with_opacity(0.2), // color, with alpha
             Vector::new(0.0, 2.0),                  // offset
             8.0,                                    // blur radius
-            RoundedRectangle::new(0.1),             // the caster's own shape
+            RoundedRectangle::new(8.0),             // the caster's own shape
         ))
     };
     let _ = Shadow::splat(4.0);

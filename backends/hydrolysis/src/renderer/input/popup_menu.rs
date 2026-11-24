@@ -56,6 +56,8 @@ use waterui_layout::{
     spacer::spacer,
     stack::{hstack, vstack},
 };
+#[cfg(any(feature = "color-picker", feature = "date-picker"))]
+use waterui_shape::CornerRadius;
 #[cfg(feature = "menu")]
 use waterui_text::{font::Font, text as text_view};
 
@@ -1280,7 +1282,10 @@ fn color_picker_window_base(
                                 group.close_all();
                             })
                             .install(LabelDisplayMode::Hidden)
-                            .background(RoundedRectangle::new(0.2).fill(swatch_color)),
+                            .background(
+                                RoundedRectangle::new(CornerRadius::fraction(0.2))
+                                    .fill(swatch_color),
+                            ),
                     )
                     .width(crate::num_cast::f64_as_f32(swatch))
                     .height(crate::num_cast::f64_as_f32(swatch)),
@@ -1331,7 +1336,10 @@ fn color_picker_window_base(
             .alignment(HorizontalAlignment::Leading)
             .spacing(gap)
             .padding_with(EdgeInsets::all(16.0))
-            .background(RoundedRectangle::new(0.05).fill(Color::new(Surface).with_opacity(0.96)));
+            .background(
+                RoundedRectangle::new(CornerRadius::fraction(0.05))
+                    .fill(Color::new(Surface).with_opacity(0.96)),
+            );
         animated_popup_panel(
             panel,
             group_for_content.clone(),
@@ -1545,7 +1553,10 @@ fn date_picker_window_base(
             .alignment(HorizontalAlignment::Leading)
             .spacing(16.0)
             .padding_with(EdgeInsets::all(24.0))
-            .background(RoundedRectangle::new(0.04).fill(Color::new(Surface).with_opacity(0.96)));
+            .background(
+                RoundedRectangle::new(CornerRadius::fraction(0.04))
+                    .fill(Color::new(Surface).with_opacity(0.96)),
+            );
         animated_popup_panel(
             panel,
             group_for_content.clone(),

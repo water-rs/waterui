@@ -6,13 +6,15 @@ use alloc::vec::Vec;
 use core::fmt;
 
 use crate::draw::kurbo::Rect;
-use crate::draw::{Draw as _, Paint, Recorder, WorkingColor};
+use crate::draw::{Draw as _, Paint, Recorder};
 use nami::map::map;
 use nami::{Computed, Signal, SignalExt};
+use waterui_color::Color;
+use waterui_core::layout::UnitPoint;
 use waterui_core::reactive::signal::IntoComputed;
 use waterui_core::{Environment, View, contract_violation};
 
-use super::paint::{Gradient, mesh_paint};
+use super::paint::{Gradient, mesh_paint, resolve_colors};
 use crate::scene::resources::RecordingResources;
 use crate::scene_view::{NextFrame, SceneContent, SceneView};
 
@@ -23,24 +25,19 @@ use crate::scene_view::{NextFrame, SceneContent, SceneView};
 /// [`points`](Self::points) says otherwise they sit on an even grid, the
 /// first at the top-left corner and the last at the bottom-right.
 ///
-/// A change to any input replaces the gradient's paint in the recorded scene;
-/// the view is not rebuilt, so the gradient can animate at frame rate from a
-/// signal.
+/// Vertex colours resolve in the view's [`Environment`], and any change to
+/// the colour scheme or to a signal replaces the gradient's paint in the
+/// recorded scene in place without rebuilding the view.
 ///
 /// # Layout Behavior
 ///
 /// A mesh gradient is a greedy view: it expands to fill all available space
 /// on both axes. Constrain it with `.frame()` or use it as a background.
-///
-/// # Panics
-///
-/// When the signals deliver a number of colours or control points other than
-/// `columns * rows`, or a control point that is not finite.
 pub struct MeshGradient {
     columns: u32,
     rows: u32,
-    colors: Computed<Vec<WorkingColor>>,
-    points: Computed<Vec<[f32; 2]>>,
+    colors: Computed<Vec<Color>>,
+    points: Computed<Vec<UnitPoint>>,
     smooths_colors: Computed<bool>,
 }
 
@@ -66,7 +63,7 @@ impl MeshGradient {
     pub fn new<C>(columns: u32, rows: u32, colors: C) -> Self
     where
         C: Signal + 'static,
-        C::Output: IntoIterator<Item = WorkingColor>,
+        C::Output: IntoIterator<Item = Color>,
     {
         let (columns, rows) = if columns >= 2 && rows >= 2 {
             (columns, rows)
@@ -93,7 +90,7 @@ impl MeshGradient {
     pub fn points<P>(mut self, points: P) -> Self
     where
         P: Signal + 'static,
-        P::Output: IntoIterator<Item = [f32; 2]>,
+        P::Output: IntoIterator<Item = UnitPoint>,
     {
         self.points = Computed::new(map(points, |points: P::Output| {
             points.into_iter().collect::<Vec<_>>()
@@ -110,18 +107,16 @@ impl MeshGradient {
         self
     }
 
-    /// The mesh paint, in unit space, following every input.
-    fn into_paint(self) -> Computed<Paint> {
-        let Self {
-            columns,
-            rows,
-            colors,
-            points,
-            smooths_colors,
-        } = self;
+    /// Resolves this mesh's vertex colours and control points in `env` into a
+    /// live [`Paint`] in unit space.
+    #[must_use]
+    pub fn resolve(&self, env: &Environment) -> Computed<Paint> {
+        let columns = self.columns;
+        let rows = self.rows;
+        let colors = resolve_colors(&self.colors, env);
         colors
-            .zip(&points)
-            .zip(&smooths_colors)
+            .zip(&self.points)
+            .zip(&self.smooths_colors)
             .map(move |((colors, points), smooths_colors)| {
                 Paint::Mesh(mesh_paint(columns, rows, points, colors, smooths_colors))
             })
@@ -139,19 +134,20 @@ fn grid_fraction(index: u32, count: u32) -> f32 {
 }
 
 /// Row-major unit-space points of an even `columns` × `rows` grid.
-fn even_grid(columns: u32, rows: u32) -> Vec<[f32; 2]> {
+fn even_grid(columns: u32, rows: u32) -> Vec<UnitPoint> {
     (0..rows)
         .flat_map(|row| {
-            (0..columns)
-                .map(move |column| [grid_fraction(column, columns), grid_fraction(row, rows)])
+            (0..columns).map(move |column| {
+                UnitPoint::new(grid_fraction(column, columns), grid_fraction(row, rows))
+            })
         })
         .collect()
 }
 
 impl View for MeshGradient {
-    fn body(self, _env: &Environment) -> impl View {
+    fn body(self, env: &Environment) -> impl View {
         SceneView::new(MeshContent {
-            paint: self.into_paint(),
+            paint: self.resolve(env),
         })
     }
 }
@@ -159,17 +155,6 @@ impl View for MeshGradient {
 /// Fills the view with the live mesh paint, authored in unit space.
 struct MeshContent {
     paint: Computed<Paint>,
-}
-
-/// The self-drawn realization of a mesh gradient whose paint never changes.
-///
-/// There is no native mesh primitive to bridge on every platform — Android
-/// has none — so a [`Gradient`] carrying a mesh resolves to engine content
-/// here rather than to a `Native<Gradient>` payload a backend would draw.
-pub fn static_mesh_view(paint: Paint) -> SceneView {
-    SceneView::new(MeshContent {
-        paint: nami::constant(paint).computed(),
-    })
 }
 
 impl SceneContent for MeshContent {
@@ -193,8 +178,13 @@ impl SceneContent for MeshContent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::draw::MeshColorInterpolation;
+    use crate::draw::{MeshColorInterpolation, WorkingColor};
     use nami::Binding;
+    use waterui_color::{ColorScheme, Working};
+
+    fn working(color: WorkingColor) -> Color {
+        Color::new(Working(color))
+    }
 
     fn mesh(paint: &Computed<Paint>) -> crate::draw::MeshGradient {
         let Paint::Mesh(mesh) = paint.snapshot() else {
@@ -208,32 +198,37 @@ mod tests {
         assert_eq!(
             even_grid(3, 2),
             vec![
-                [0.0, 0.0],
-                [0.5, 0.0],
-                [1.0, 0.0],
-                [0.0, 1.0],
-                [0.5, 1.0],
-                [1.0, 1.0]
+                UnitPoint::new(0.0, 0.0),
+                UnitPoint::new(0.5, 0.0),
+                UnitPoint::new(1.0, 0.0),
+                UnitPoint::new(0.0, 1.0),
+                UnitPoint::new(0.5, 1.0),
+                UnitPoint::new(1.0, 1.0),
             ]
         );
     }
 
     #[test]
     fn the_paint_follows_its_signals() {
-        let colors = Binding::container(vec![WorkingColor::BLACK; 4]);
+        let colors = Binding::container(vec![working(WorkingColor::BLACK); 4]);
         let points = Binding::container(even_grid(2, 2));
         let smooths = Binding::container(true);
         let paint = MeshGradient::new(2, 2, colors.clone())
             .points(points.clone())
             .smooths_colors(smooths.clone())
-            .into_paint();
+            .resolve(&Environment::new());
         assert_eq!(
             mesh(&paint).interpolation_mode(),
             MeshColorInterpolation::Smoothstep
         );
 
-        colors.set(vec![WorkingColor::WHITE; 4]);
-        points.set(vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [0.5, 0.5]]);
+        colors.set(vec![working(WorkingColor::WHITE); 4]);
+        points.set(vec![
+            UnitPoint::TOP_LEADING,
+            UnitPoint::TOP_TRAILING,
+            UnitPoint::BOTTOM_LEADING,
+            UnitPoint::CENTER,
+        ]);
         smooths.set(false);
         let mesh = mesh(&paint);
         assert!(
@@ -246,12 +241,54 @@ mod tests {
     }
 
     #[test]
+    fn theme_token_mesh_recolours_on_scheme_change() {
+        use waterui::theme::color::{Accent, Surface};
+
+        let scheme = Binding::container(ColorScheme::Light);
+        let mut env = Environment::new();
+        waterui::theme::install_color_scheme(&mut env, scheme.computed());
+        waterui::theme::install_color_signal::<Accent>(
+            &mut env,
+            scheme
+                .map(|mode| match mode {
+                    ColorScheme::Light => WorkingColor::WHITE,
+                    ColorScheme::Dark => WorkingColor::BLACK,
+                })
+                .computed(),
+        );
+        waterui::theme::install_color_signal::<Surface>(
+            &mut env,
+            scheme
+                .map(|mode| match mode {
+                    ColorScheme::Light => WorkingColor::BLACK,
+                    ColorScheme::Dark => WorkingColor::WHITE,
+                })
+                .computed(),
+        );
+
+        let paint = MeshGradient::new(
+            2,
+            2,
+            [Accent.into(), Surface.into(), Surface.into(), Accent.into()],
+        )
+        .resolve(&env);
+        assert_eq!(mesh(&paint).colors()[0], WorkingColor::WHITE);
+        assert_eq!(mesh(&paint).colors()[1], WorkingColor::BLACK);
+
+        scheme.set(ColorScheme::Dark);
+
+        assert_eq!(mesh(&paint).colors()[0], WorkingColor::BLACK);
+        assert_eq!(mesh(&paint).colors()[1], WorkingColor::WHITE);
+    }
+
+    #[test]
     #[cfg_attr(
         debug_assertions,
         should_panic(expected = "exactly columns*rows colours")
     )]
     fn a_short_colour_list_is_a_transparent_patch() {
-        let paint = MeshGradient::new(2, 2, vec![WorkingColor::BLACK; 3]).into_paint();
+        let paint = MeshGradient::new(2, 2, vec![working(WorkingColor::BLACK); 3])
+            .resolve(&Environment::new());
         let mesh = mesh(&paint);
         assert_eq!((mesh.columns(), mesh.rows()), (1, 1));
         assert!(
@@ -264,7 +301,8 @@ mod tests {
     #[test]
     #[cfg_attr(debug_assertions, should_panic(expected = "at least a 2x2 grid"))]
     fn a_one_column_grid_has_two_columns() {
-        let paint = MeshGradient::new(1, 2, vec![WorkingColor::BLACK; 4]).into_paint();
+        let paint = MeshGradient::new(1, 2, vec![working(WorkingColor::BLACK); 4])
+            .resolve(&Environment::new());
         assert_eq!(mesh(&paint).points().len(), 4);
     }
 }

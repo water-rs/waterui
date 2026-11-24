@@ -7,7 +7,7 @@ use std::time::Duration;
 use hydrolysis::run;
 use waterui::Environment;
 use waterui::app::{App, Windows};
-use waterui::component::list::{List, ListItem};
+use waterui::component::list::List;
 use waterui::component::progress::loading;
 use waterui::component::table::{col, table};
 use waterui::form::picker::{Picker, PickerStyle};
@@ -69,11 +69,11 @@ fn main_view() -> impl View {
             Toggle::new("List editing", &list_editing),
             List::for_each(diagnostics_rows, |row| {
                 let (name, value, color) = row.into_inner();
-                ListItem::new(hstack((
+                hstack((
                     text(name),
                     spacer(),
                     text(value).foreground(Color::srgb_hex(color)),
-                )))
+                ))
             })
             .editing(list_editing.clone()),
             table(vec![

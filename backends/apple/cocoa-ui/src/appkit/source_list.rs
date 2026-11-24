@@ -29,7 +29,9 @@ use objc2_app_kit::{
 use objc2_core_foundation::CGRect;
 use objc2_foundation::{NSArray, NSIndexSet, NSNotification, NSObjectProtocol, NSString};
 
+use crate::appkit::BadgeView;
 use crate::appkit::segmented::Segment;
+use crate::badge::{BadgeDisplay, BadgeMetrics};
 
 /// Called with the selected row's index.
 type SelectHandler = Rc<dyn Fn(usize)>;
@@ -111,20 +113,46 @@ define_class!(
                 if let Some(field) = unsafe { cell.textField() } {
                     field.setStringValue(&NSString::from_str(&segment.label));
                 }
-                // `SwiftUI` draws a sidebar badge as a trailing count in
-                // the row — a secondary-colored label pinned to the
-                // trailing edge (water-rs/waterui#3591).
-                if let Some(badge) = &segment.badge {
-                    let field = NSTextField::labelWithString(&NSString::from_str(badge), self.mtm());
-                    field.setTextColor(Some(&NSColor::secondaryLabelColor()));
-                    field.setTranslatesAutoresizingMaskIntoConstraints(false);
-                    cell.addSubview(&field);
-                    NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
-                        field
-                            .trailingAnchor()
-                            .constraintEqualToAnchor_constant(&cell.trailingAnchor(), -10.0),
-                        field.centerYAnchor().constraintEqualToAnchor(&cell.centerYAnchor()),
-                    ]));
+                // `SwiftUI` draws a sidebar badge as a trailing indicator in
+                // the row (water-rs/waterui#3591).
+                match &segment.badge {
+                    None | Some(BadgeDisplay::Hidden) => {}
+                    Some(BadgeDisplay::Dot) => {
+                        let dot = BadgeView::new(
+                            self.mtm(),
+                            BadgeMetrics {
+                                dot_size: 6.0,
+                                capsule_height: 16.0,
+                                capsule_horizontal_padding: 4.0,
+                                capsule_font_size: 11.0,
+                                count_horizontal_offset: 12.0,
+                                count_vertical_offset: 14.0,
+                            },
+                        );
+                        dot.set_display(BadgeDisplay::Dot);
+                        dot.setTranslatesAutoresizingMaskIntoConstraints(false);
+                        cell.addSubview(&dot);
+                        NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
+                            dot.trailingAnchor()
+                                .constraintEqualToAnchor_constant(&cell.trailingAnchor(), -10.0),
+                            dot.centerYAnchor().constraintEqualToAnchor(&cell.centerYAnchor()),
+                            dot.widthAnchor().constraintEqualToConstant(6.0),
+                            dot.heightAnchor().constraintEqualToConstant(6.0),
+                        ]));
+                    }
+                    Some(BadgeDisplay::Text(badge)) => {
+                        let field =
+                            NSTextField::labelWithString(&NSString::from_str(badge), self.mtm());
+                        field.setTextColor(Some(&NSColor::secondaryLabelColor()));
+                        field.setTranslatesAutoresizingMaskIntoConstraints(false);
+                        cell.addSubview(&field);
+                        NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
+                            field
+                                .trailingAnchor()
+                                .constraintEqualToAnchor_constant(&cell.trailingAnchor(), -10.0),
+                            field.centerYAnchor().constraintEqualToAnchor(&cell.centerYAnchor()),
+                        ]));
+                    }
                 }
                 let image = segment
                     .symbol

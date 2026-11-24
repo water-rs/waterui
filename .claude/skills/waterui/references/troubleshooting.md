@@ -69,12 +69,11 @@ parameter, but a callback that is not a WaterUI handler (a `GpuView::on_input`, 
 closure handed to another component) has none. Read it while building the view with
 `use_env(|manager: SnackbarManager| ..)` and move it into the callback.
 
-**Rounded corners come out as a capsule.** `RoundedRectangle::new(r)` takes a fraction of
-the shorter side, not points — `new(12.0)` saturates at fully-rounded. Use `new(0.1)`-scale
-values, `Capsule` when fully-rounded is the intent, or `FixedRoundedRectangle::new(points)`
-(and `FixedUnevenRoundedRectangle`) for an absolute radius. `UnevenRoundedRectangle`'s four
-radii are in reading order (top_leading, top_trailing, bottom_leading, bottom_trailing),
-not clockwise.
+**Rounded corners look wrong on non-square boxes.** `RoundedRectangle::new(points)` takes logical
+points and clamps to half the shorter side (`Capsule` when fully-rounded at any size is the
+intent). Pass `CornerRadius::fraction(r)` when a corner should scale with the shorter side
+(`0.1` is subtle, `0.5` is capsule), and `CornerRadii::new(top_leading, top_trailing,
+bottom_leading, bottom_trailing)` in reading order — *not* clockwise — for per-corner radii.
 
 **Padding lands on the wrong edges.** `EdgeInsets::new(top, leading, bottom, trailing)` —
 SwiftUI's order, not CSS — and `EdgeInsets::symmetric(vertical, horizontal)`.

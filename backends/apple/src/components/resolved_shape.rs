@@ -44,17 +44,14 @@ fn cg_color(
     )
 }
 
-/// A normalized radius as a logical-point corner radius: `radius` times the
-/// shorter side, capped at half that side — `shapePath`'s normalized arm.
-fn normalized_radius(radius: f64, width: f64, height: f64) -> f64 {
-    let shorter = width.min(height);
-    (radius * shorter).min(shorter / 2.0)
-}
-
-/// A logical-point radius capped at half the shorter side — the fixed arm.
-fn fixed_radius(radius: f64, width: f64, height: f64) -> f64 {
-    let shorter = width.min(height);
-    radius.min(shorter / 2.0)
+/// Resolves a `CornerRadius` into logical points capped at half the shorter side.
+pub fn resolve_corner(radius: waterui::shape::CornerRadius, shorter: f64) -> f64 {
+    let limit = shorter / 2.0;
+    match (radius.as_points(), radius.as_fraction()) {
+        (Some(points), None) => f64::from(points).min(limit),
+        (None, Some(fraction)) => (f64::from(fraction) * shorter).min(limit),
+        _ => unreachable!("CornerRadius is either points or fraction"),
+    }
 }
 
 /// The shape's `CGPath` for `bounds` — `WuiShapePath.path(in:)` mirrored
@@ -64,49 +61,27 @@ fn shape_path(shape: &ResolvedShape, bounds: cocoa_ui::Rect) -> Option<PathBuild
         return None;
     }
     let (w, h) = (bounds.size.width, bounds.size.height);
+    let shorter = w.min(h);
     let mut builder = PathBuilder::new();
     match shape.kind() {
         ShapeKind::Rect => builder.rect(bounds),
         ShapeKind::Circle | ShapeKind::Ellipse => builder.ellipse_in_rect(bounds),
-        ShapeKind::RoundedRect { corner_radius } => {
-            builder.rounded_rect(bounds, normalized_radius(f64::from(corner_radius), w, h));
+        ShapeKind::RoundedRect { radii } => {
+            if let Some(uniform) = radii.as_uniform() {
+                builder.rounded_rect(bounds, resolve_corner(uniform, shorter));
+            } else {
+                builder.uneven_rounded_rect(
+                    bounds,
+                    (
+                        resolve_corner(radii.top_leading(), shorter),
+                        resolve_corner(radii.top_trailing(), shorter),
+                        resolve_corner(radii.bottom_leading(), shorter),
+                        resolve_corner(radii.bottom_trailing(), shorter),
+                    ),
+                );
+            }
         }
-        ShapeKind::FixedRoundedRect { corner_radius } => {
-            builder.rounded_rect(bounds, fixed_radius(f64::from(corner_radius), w, h));
-        }
-        ShapeKind::UnevenRoundedRect {
-            top_left,
-            top_right,
-            bottom_left,
-            bottom_right,
-        } => {
-            builder.uneven_rounded_rect(
-                bounds,
-                (
-                    normalized_radius(f64::from(top_left), w, h),
-                    normalized_radius(f64::from(top_right), w, h),
-                    normalized_radius(f64::from(bottom_left), w, h),
-                    normalized_radius(f64::from(bottom_right), w, h),
-                ),
-            );
-        }
-        ShapeKind::FixedUnevenRoundedRect {
-            top_left,
-            top_right,
-            bottom_left,
-            bottom_right,
-        } => {
-            builder.uneven_rounded_rect(
-                bounds,
-                (
-                    fixed_radius(f64::from(top_left), w, h),
-                    fixed_radius(f64::from(top_right), w, h),
-                    fixed_radius(f64::from(bottom_left), w, h),
-                    fixed_radius(f64::from(bottom_right), w, h),
-                ),
-            );
-        }
-        ShapeKind::Capsule => builder.rounded_rect(bounds, w.min(h) / 2.0),
+        ShapeKind::Capsule => builder.rounded_rect(bounds, shorter / 2.0),
         ShapeKind::CustomPath => {
             for command in shape.commands() {
                 apply_command(&mut builder, command, w, h, bounds);
@@ -248,17 +223,18 @@ pub fn realize_resolved_shape(shape: ResolvedShape, ctx: &RenderContext<'_>) -> 
 #[cfg(test)]
 #[allow(clippy::float_cmp)]
 mod tests {
-    use super::*;
+    use super::resolve_corner;
+    use waterui::shape::CornerRadius;
 
     #[test]
-    fn normalized_radius_scales_by_shorter_side_and_clamps() {
-        assert_eq!(normalized_radius(0.25, 200.0, 100.0), 25.0);
-        assert_eq!(normalized_radius(0.9, 200.0, 100.0), 50.0);
+    fn fraction_radius_scales_by_shorter_side_and_clamps() {
+        assert_eq!(resolve_corner(CornerRadius::fraction(0.25), 100.0), 25.0);
+        assert_eq!(resolve_corner(CornerRadius::fraction(0.9), 100.0), 50.0);
     }
 
     #[test]
-    fn fixed_radius_is_absolute_and_clamps() {
-        assert_eq!(fixed_radius(28.0, 280.0, 140.0), 28.0);
-        assert_eq!(fixed_radius(200.0, 280.0, 140.0), 70.0);
+    fn point_radius_is_absolute_and_clamps() {
+        assert_eq!(resolve_corner(CornerRadius::points(28.0), 140.0), 28.0);
+        assert_eq!(resolve_corner(CornerRadius::points(200.0), 140.0), 70.0);
     }
 }

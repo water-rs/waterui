@@ -491,7 +491,6 @@ mod scroll_animation {
 
     use super::{mtm, scene_window};
     use waterui::animation::Animation;
-    use waterui::component::list::ListItem;
     use waterui::component::text::Text;
     use waterui::layout::scroll::ScrollController;
     use waterui::reactive::binding;
@@ -593,7 +592,7 @@ mod scroll_animation {
     fn a_default_list_request_lands_after_a_native_animation() {
         let mtm = mtm();
         let controller = ScrollController::new(0usize);
-        let (leaf, table) = row_list(vec![row_item as fn() -> ListItem<Text>; ROWS], &controller);
+        let (leaf, table) = row_list(vec![row_item as fn() -> Text; ROWS], &controller);
         let window = scene_window(mtm, leaf.view());
         table.layout_if_needed();
         let offset = || Point::from(table.contentOffset());
@@ -617,7 +616,7 @@ mod scroll_animation {
         let mtm = mtm();
         let controller = ScrollController::new(0usize);
         let (leaf, table) = row_list(
-            vec![row_item as fn() -> ListItem<Text>; APPROACH_LIST_ROWS],
+            vec![row_item as fn() -> Text; APPROACH_LIST_ROWS],
             &controller,
         );
         let window = scene_window(mtm, leaf.view());
@@ -2370,7 +2369,7 @@ mod list_spacing {
     use super::mtm;
     use cocoa_ui::Retained;
     use cocoa_ui::objc2_ui_kit::{NSIndexPathUIKitAdditions, UITableView};
-    use waterui::component::list::{List, ListItem};
+    use waterui::component::list::List;
     use waterui::id::SelfId;
     use waterui::prelude::*;
     use waterui::reactive::binding;
@@ -2409,7 +2408,7 @@ mod list_spacing {
     }
 
     fn check_spacing(searchable: bool) {
-        let list = || List::for_each(vec![SelfId::new(0_u32)], |_| ListItem::new(text("Row")));
+        let list = || List::for_each(vec![SelfId::new(0_u32)], |_| text("Row"));
         let query = binding(Str::default());
         let page = NavigationView::new(
             "Lists",

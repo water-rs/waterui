@@ -329,8 +329,8 @@ pub fn components_block_12() {
     use waterui::animation::Animation;
     use waterui::layout::scroll::ScrollController;
 
-    fn row_view(r: Record) -> ListItem<impl View> {
-        ListItem::new(text(r.title))
+    fn row_view(r: Record) -> impl View {
+        text(r.title)
     }
     let records = vec![Record {
         id: 1,
@@ -1005,7 +1005,7 @@ pub mod components_block_27 {
         };
 
         let _ = {
-            List::for_each(records.clone(), |r| ListItem::new(text(r.title)))
+            List::for_each(records.clone(), |r| text(r.title))
                 .editing(is_editing.clone()) // impl IntoComputed<bool>
                 .on_delete(|ListDelete(i), mut s: AppState| {
                     let _ = s.rows.remove(i);
@@ -1020,9 +1020,7 @@ pub mod components_block_27 {
         // Prose: `Lazy` spaced stacks and `List::new` over pre-built rows.
         let _ = Lazy::vstack_spaced(8.0, ForEach::new(records.clone(), record_card));
         let _ = Lazy::hstack_spaced(8.0, ForEach::new(records.clone(), record_card));
-        let _ = List::new(ForEach::new(records, |r: Record| {
-            ListItem::new(text(r.title))
-        }));
+        let _ = List::new(ForEach::new(records, |r: Record| text(r.title)));
     }
 }
 
@@ -1058,11 +1056,11 @@ pub fn components_block_29() -> impl View {
         Section::new("Recent")
             .footer("Sub-pages push onto this tab's own stack.")
             .content((
-                || ListItem::new(text("Today")),
+                || text("Today"),
                 row("Streak", "14 days"), // Row is valid content directly
                 detail_row("Last entry", "Yesterday"),
             )),
-        || ListItem::new(text("Footer")),
+        || text("Footer"),
     ))
 }
 
@@ -1083,14 +1081,12 @@ pub fn components_reactive_section_prose(
         .deletable(true);
 
     List::content(
-        Section::new("Today").content(ForEach::new(today, |item: Record| {
-            ListItem::new(text(item.title))
-        })),
+        Section::new("Today").content(ForEach::new(today, |item: Record| text(item.title))),
     )
 }
 
 // ---------------------------------------------------------------------------
-// components.md § "## Lists and collections" (prose): the `ListItem` modifiers
+// components.md § "## Lists and collections" (prose): the list row modifiers
 // and `list_min_row_height`. Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn components_list_item_prose(records: waterui::reactive::collection::List<Record>) {
@@ -1108,13 +1104,12 @@ pub fn components_list_item_prose(records: waterui::reactive::collection::List<R
     let multi = Binding::container(alloc::collections::BTreeSet::<Mailbox>::new());
     let record_selection = Binding::container(None::<u64>);
 
-    let _ = ListItem::new(text("a")).deletable(signal.clone());
-    let _ = ListItem::new(text("a")).insets(EdgeInsets::all(4.0));
+    let _ = text("a").list_row_deletable(signal.clone());
+    let _ = text("a").list_row_insets(EdgeInsets::all(4.0));
     let _ = text("a").list_min_row_height(0.0);
-    let _ = List::for_each(records.clone(), |r: Record| ListItem::new(text(r.title)))
-        .selection(&record_selection);
+    let _ = List::for_each(records.clone(), |r: Record| text(r.title)).selection(&record_selection);
     let _ = List::content((
-        (|| ListItem::new(text("Inbox"))).tag(Mailbox::Inbox),
+        (|| text("Inbox")).tag(Mailbox::Inbox),
         row("Archive", "12").tag(Mailbox::Archive),
     ))
     .selection(&selection);
@@ -1124,14 +1119,12 @@ pub fn components_list_item_prose(records: waterui::reactive::collection::List<R
     ))
     .multi_selection(&multi);
     let _ = List::content(
-        Section::new("Records").content(ForEach::new(records, |r: Record| {
-            ListItem::new(text(r.title))
-        })),
+        Section::new("Records").content(ForEach::new(records, |r: Record| text(r.title))),
     )
     .selection(&record_selection);
     // A row under `.disabled(true)` is inert to selection; there is no
     // per-item selectable flag — selection follows the content's disabled state.
-    let _ = ListItem::new(text("a").disabled(true));
+    let _ = text("a").disabled(true);
 }
 
 // ---------------------------------------------------------------------------
@@ -1483,12 +1476,12 @@ pub fn components_block_37(photo_url: waterui::Url) {
     let focus = Binding::container(None::<Field>);
 
     let _ = {
-        text("Inbox").badge(3) // a count badge on any Clone view; badge::Badge::new(n, view).color(..)
+        text("Inbox").badge(3_u32) // 0 hides; BadgeValue::{Hidden, Dot, Count(u32), Text(Text)}; badge::Badge::new(v, view).color(..)
     };
     let _ = {
         avatar("Grace Hopper") // initials when there is no image; the name is always spoken
             .image(photo_url) // a signal of Url: the fallback shows until it decodes
-            .shape(RoundedRectangle::new(0.25))
+            .shape(RoundedRectangle::new(16.0))
             .size(64.0)
             .ring(Color::new(theme_color::Accent), 2.0)
     };
@@ -1506,9 +1499,8 @@ pub fn components_avatar_prose() {
 
     let _ = Avatar::new("Katherine Johnson", || text("KJ").bold(true));
 
-    // Prose (not counted): `.dynamic_range(ColorSpace::Hdr)`.
-    use waterui::metadata::secure::ColorSpace;
-    let _ = avatar("Grace Hopper").dynamic_range(ColorSpace::Hdr);
+    // Prose (not counted): `.dynamic_range(DynamicRange::High)`.
+    let _ = avatar("Grace Hopper").dynamic_range(DynamicRange::High);
 }
 
 // ---------------------------------------------------------------------------

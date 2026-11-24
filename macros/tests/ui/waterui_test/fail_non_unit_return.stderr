@@ -1,5 +1,12 @@
-error: `#[waterui::test(...)]` test functions must not return a value
- --> tests/ui/waterui_test/fail_non_unit_return.rs:6:58
+error[E0277]: the trait bound `bool: std::process::Termination` is not satisfied
+ --> tests/ui/waterui_test/fail_non_unit_return.rs:6:61
   |
 6 | fn wrong_return(_app: &mut waterui_testing::SemanticApp) -> bool {
-  |                                                          ^^^^^^^
+  |                                                             ^^^^ the trait `std::process::Termination` is not implemented for `bool`
+  |
+note: required by a bound in `assert_termination`
+ --> tests/ui/waterui_test/fail_non_unit_return.rs:5:1
+  |
+5 | #[waterui::test(sample_view)]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `assert_termination`
+  = note: this error originates in the attribute macro `waterui::test` (in Nightly builds, run with -Z macro-backtrace for more info)

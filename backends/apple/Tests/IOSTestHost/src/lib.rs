@@ -9,39 +9,32 @@
 //! iOS simulator the UDID names — a device the caller created and owns.
 
 use waterui::app::{App, Windows};
-use waterui::component::list::{List, ListItem};
+use waterui::component::list::List;
 use waterui::prelude::theme_color::{Accent, Foreground};
 use waterui::prelude::*;
 use waterui::shape::Circle;
 
-fn message_row(
-    sender: &'static str,
-    subject: &'static str,
-    preview: &'static str,
-) -> ListItem<impl View> {
-    ListItem::new(Label::new(
-        Str::from(format!("{sender}: {subject}")),
-        move || {
-            hstack((
-                hstack((Accent.size(8.0, 8.0).clip(Circle),)).size(8.0, 8.0),
-                vstack((
-                    hstack((
-                        text(sender).subheadline().foreground(Foreground),
-                        spacer(),
-                        text("flag").caption().muted(),
-                    ))
-                    .spacing(6.0),
-                    text(subject).body().foreground(Foreground),
-                    text(preview).caption().muted(),
+fn message_row(sender: &'static str, subject: &'static str, preview: &'static str) -> impl View {
+    Label::new(Str::from(format!("{sender}: {subject}")), move || {
+        hstack((
+            hstack((Accent.size(8.0, 8.0).clip(Circle),)).size(8.0, 8.0),
+            vstack((
+                hstack((
+                    text(sender).subheadline().foreground(Foreground),
+                    spacer(),
+                    text("flag").caption().muted(),
                 ))
-                .leading()
-                .spacing(2.0),
+                .spacing(6.0),
+                text(subject).body().foreground(Foreground),
+                text(preview).caption().muted(),
             ))
-            .top()
-            .spacing(6.0)
-            .padding_vertical(8.0)
-        },
-    ))
+            .leading()
+            .spacing(2.0),
+        ))
+        .top()
+        .spacing(6.0)
+        .padding_vertical(8.0)
+    })
 }
 
 fn inbox() -> impl View {

@@ -27,7 +27,8 @@ use accesskit::{
 #[cfg(feature = "accessibility")]
 use waterui::accessibility::{AccessibilityHidden, AccessibilityStateSignal};
 use waterui::component::list::{
-    ListConfig, ListItem, ListRowTags, ListSectionSpan, ListSelection, ListTagId, Move,
+    ListConfig, ListRowDeletable, ListRowInsets, ListRowTags, ListSectionSpan, ListSelection,
+    ListTagId, Move,
 };
 use waterui::gesture::{DragEvent, DragGesture, Gesture, GesturePhase};
 use waterui_backend_core::scroll::{ScrollPositionReport, animated_row_scroll_approach};
@@ -59,7 +60,7 @@ use waterui_core::resolve::Resolvable as _;
 pub type ListItemId = RawId;
 
 /// A row as this backend holds it: its content a child the renderer builds.
-pub type Row<E> = ListItem<HeldChild<E>>;
+pub type Row<E> = HeldChild<E>;
 
 #[derive(Clone, Copy)]
 struct ListViewportAnchor {
@@ -501,6 +502,8 @@ fn adopt_content_naming<E: crate::text::TextEngine>(
 /// keep it.
 fn list_row_environment(env: &Environment) -> Environment {
     let mut row_env = env.clone();
+    row_env.remove::<ListRowDeletable>();
+    row_env.remove::<ListRowInsets>();
     row_env.insert(waterui_controls::button::ButtonStyle::Plain);
     row_env.insert(crate::widgets::controls::button::ListRowChrome);
     row_env
@@ -735,7 +738,7 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
             return;
         }
         let row_env = list_row_environment(env);
-        let (content, deletable, insets) = materialize_list_item(contents, index).into_parts();
+        let content = materialize_list_item(contents, index);
         let subtree_env = self.row_subtree_environment(row_id, &row_env);
         let subview = cache.entry(row_id, move || {
             crate::renderer::RetainedSubview::held(content)
@@ -746,6 +749,15 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
         let scope_env = subview
             .node()
             .and_then(crate::renderer::RenderNode::leading_scope_env);
+        let resolved_env = subview.node().map_or(&row_env, |node| {
+            crate::renderer::RenderNode::resolved_handler_env(node, &row_env)
+        });
+        let deletable = resolved_env
+            .get::<ListRowDeletable>()
+            .map_or_else(|| Computed::new(true), |entry| entry.0.clone());
+        let insets = resolved_env
+            .get::<ListRowInsets>()
+            .map(|entry| entry.0.clone());
         let disabled = crate::widgets::util::widget_disabled(scope_env.unwrap_or(&row_env));
         // The row's `ListItem` node claims the naming scope its content
         // opens with, or the first leaf inside the subtree would claim the

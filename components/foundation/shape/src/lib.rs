@@ -112,7 +112,7 @@ pub enum PathCommand {
 }
 
 #[inline]
-const fn clamp_radius(value: f32) -> f32 {
+const fn sanitize_fraction(value: f32) -> f32 {
     if value.is_finite() {
         value.clamp(0.0, 0.5)
     } else {
@@ -120,42 +120,254 @@ const fn clamp_radius(value: f32) -> f32 {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-struct CornerRadii {
-    top_left: f32,
-    top_right: f32,
-    bottom_right: f32,
-    bottom_left: f32,
+#[inline]
+const fn sanitize_points(value: f32) -> f32 {
+    if value.is_finite() {
+        value.max(0.0)
+    } else {
+        0.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum CornerRadiusKind {
+    Points(f32),
+    Fraction(f32),
+}
+
+/// A corner radius for a [`RoundedRectangle`].
+///
+/// An `f32` converts to [`CornerRadius::points`]; use [`CornerRadius::fraction`]
+/// when the radius should scale as a fraction of the shape's shorter side.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CornerRadius {
+    kind: CornerRadiusKind,
+}
+
+impl CornerRadius {
+    /// Creates a corner radius in logical points.
+    ///
+    /// Negative or non-finite values sanitize to `0.0`. When resolved against
+    /// bounds, the radius clamps to half the shape's shorter side.
+    #[must_use]
+    pub const fn points(points: f32) -> Self {
+        Self {
+            kind: CornerRadiusKind::Points(sanitize_points(points)),
+        }
+    }
+
+    /// Creates a normalized corner radius as a fraction of the shorter side.
+    ///
+    /// Clamped to `0.0..=0.5`, where `0.5` is fully rounded (capsule caps);
+    /// non-finite values sanitize to `0.0`.
+    #[must_use]
+    pub const fn fraction(fraction: f32) -> Self {
+        Self {
+            kind: CornerRadiusKind::Fraction(sanitize_fraction(fraction)),
+        }
+    }
+
+    /// Resolves this radius to logical points against a shape's `shorter_side`.
+    ///
+    /// Both point and fraction radii clamp to `shorter_side / 2.0`.
+    #[must_use]
+    pub const fn resolve(self, shorter_side: f32) -> f32 {
+        let side = sanitize_points(shorter_side);
+        let limit = side / 2.0;
+        match self.kind {
+            CornerRadiusKind::Points(points) => points.min(limit),
+            CornerRadiusKind::Fraction(fraction) => (fraction * side).min(limit),
+        }
+    }
+
+    /// Returns the radius in logical points if this corner uses point units.
+    #[must_use]
+    pub const fn as_points(self) -> Option<f32> {
+        match self.kind {
+            CornerRadiusKind::Points(points) => Some(points),
+            CornerRadiusKind::Fraction(_) => None,
+        }
+    }
+
+    /// Returns the normalized fraction if this corner uses fractional units.
+    #[must_use]
+    pub const fn as_fraction(self) -> Option<f32> {
+        match self.kind {
+            CornerRadiusKind::Points(_) => None,
+            CornerRadiusKind::Fraction(fraction) => Some(fraction),
+        }
+    }
+
+    #[inline]
+    const fn equals(self, other: Self) -> bool {
+        match (self.kind, other.kind) {
+            (CornerRadiusKind::Points(a), CornerRadiusKind::Points(b))
+            | (CornerRadiusKind::Fraction(a), CornerRadiusKind::Fraction(b)) => {
+                a.to_bits() == b.to_bits()
+            }
+            _ => false,
+        }
+    }
+
+    #[inline]
+    const fn unit_space(self) -> f32 {
+        match self.kind {
+            CornerRadiusKind::Points(points) => sanitize_fraction(points),
+            CornerRadiusKind::Fraction(fraction) => fraction,
+        }
+    }
+}
+
+impl Default for CornerRadius {
+    fn default() -> Self {
+        Self::points(0.0)
+    }
+}
+
+impl From<f32> for CornerRadius {
+    fn from(points: f32) -> Self {
+        Self::points(points)
+    }
+}
+
+/// Per-corner radii for a [`RoundedRectangle`].
+///
+/// Corners are ordered `(top_leading, top_trailing, bottom_leading, bottom_trailing)`.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct CornerRadii {
+    top_leading: CornerRadius,
+    top_trailing: CornerRadius,
+    bottom_leading: CornerRadius,
+    bottom_trailing: CornerRadius,
 }
 
 impl CornerRadii {
+    /// Creates per-corner radii from values convertible to [`CornerRadius`].
+    #[must_use]
+    pub fn new(
+        top_leading: impl Into<CornerRadius>,
+        top_trailing: impl Into<CornerRadius>,
+        bottom_leading: impl Into<CornerRadius>,
+        bottom_trailing: impl Into<CornerRadius>,
+    ) -> Self {
+        Self {
+            top_leading: top_leading.into(),
+            top_trailing: top_trailing.into(),
+            bottom_leading: bottom_leading.into(),
+            bottom_trailing: bottom_trailing.into(),
+        }
+    }
+
+    /// `const` constructor from explicit [`CornerRadius`] values.
+    #[must_use]
+    pub const fn from_corners(
+        top_leading: CornerRadius,
+        top_trailing: CornerRadius,
+        bottom_leading: CornerRadius,
+        bottom_trailing: CornerRadius,
+    ) -> Self {
+        Self {
+            top_leading,
+            top_trailing,
+            bottom_leading,
+            bottom_trailing,
+        }
+    }
+
+    /// Creates uniform radii across all four corners.
+    #[must_use]
+    pub const fn uniform(radius: CornerRadius) -> Self {
+        Self {
+            top_leading: radius,
+            top_trailing: radius,
+            bottom_leading: radius,
+            bottom_trailing: radius,
+        }
+    }
+
+    /// Top-leading corner radius.
+    #[must_use]
+    pub const fn top_leading(&self) -> CornerRadius {
+        self.top_leading
+    }
+
+    /// Top-trailing corner radius.
+    #[must_use]
+    pub const fn top_trailing(&self) -> CornerRadius {
+        self.top_trailing
+    }
+
+    /// Bottom-leading corner radius.
+    #[must_use]
+    pub const fn bottom_leading(&self) -> CornerRadius {
+        self.bottom_leading
+    }
+
+    /// Bottom-trailing corner radius.
+    #[must_use]
+    pub const fn bottom_trailing(&self) -> CornerRadius {
+        self.bottom_trailing
+    }
+
+    /// Returns the single radius if all four corners have identical values and units.
+    #[must_use]
+    pub const fn as_uniform(&self) -> Option<CornerRadius> {
+        if self.top_leading.equals(self.top_trailing)
+            && self.top_leading.equals(self.bottom_leading)
+            && self.top_leading.equals(self.bottom_trailing)
+        {
+            Some(self.top_leading)
+        } else {
+            None
+        }
+    }
+
+    /// Resolves all four corners to logical points in clockwise order:
+    /// `[top_leading, top_trailing, bottom_trailing, bottom_leading]`.
+    #[must_use]
+    pub const fn resolve_clockwise(self, shorter_side: f32) -> [f32; 4] {
+        [
+            self.top_leading.resolve(shorter_side),
+            self.top_trailing.resolve(shorter_side),
+            self.bottom_trailing.resolve(shorter_side),
+            self.bottom_leading.resolve(shorter_side),
+        ]
+    }
+
+    /// Unit-space `[tl, tr, br, bl]` radii normalized against overlap.
     #[inline]
-    fn sanitized(mut self) -> Self {
-        self.top_left = clamp_radius(self.top_left);
-        self.top_right = clamp_radius(self.top_right);
-        self.bottom_right = clamp_radius(self.bottom_right);
-        self.bottom_left = clamp_radius(self.bottom_left);
+    fn unit_space_clockwise(self) -> [f32; 4] {
+        let mut tl = self.top_leading.unit_space();
+        let mut tr = self.top_trailing.unit_space();
+        let mut br = self.bottom_trailing.unit_space();
+        let mut bl = self.bottom_leading.unit_space();
 
         // Prevent overlapping corner arcs (same behavior as CSS border-radius normalization).
         let mut scale = 1.0f32;
-        let pairs = [
-            self.top_left + self.top_right,
-            self.bottom_left + self.bottom_right,
-            self.top_left + self.bottom_left,
-            self.top_right + self.bottom_right,
-        ];
-        for sum in pairs {
+        for sum in [tl + tr, bl + br, tl + bl, tr + br] {
             if sum > 1.0 {
                 scale = scale.min(1.0 / sum);
             }
         }
         if scale < 1.0 {
-            self.top_left *= scale;
-            self.top_right *= scale;
-            self.bottom_right *= scale;
-            self.bottom_left *= scale;
+            tl *= scale;
+            tr *= scale;
+            br *= scale;
+            bl *= scale;
         }
-        self
+        [tl, tr, br, bl]
+    }
+}
+
+impl From<CornerRadius> for CornerRadii {
+    fn from(radius: CornerRadius) -> Self {
+        Self::uniform(radius)
+    }
+}
+
+impl From<f32> for CornerRadii {
+    fn from(points: f32) -> Self {
+        Self::uniform(CornerRadius::points(points))
     }
 }
 
@@ -277,179 +489,51 @@ impl Shape for Capsule {
     }
 }
 
-/// A rectangle with uniform corner radius.
-#[derive(Debug, Clone, Copy)]
+/// A rectangle with rounded corners.
+///
+/// Accepts a radius in logical points (`RoundedRectangle::new(12.0)`), a
+/// [`CornerRadius`] (`CornerRadius::fraction(0.1)`), or per-corner
+/// [`CornerRadii`]. Reach for [`Capsule`] when the intent is "fully rounded
+/// at whatever size this ends up".
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 #[non_exhaustive]
 pub struct RoundedRectangle {
-    /// Corner radius (normalized, 0.0-0.5 range).
-    corner_radius: f32,
+    radii: CornerRadii,
 }
 
 impl RoundedRectangle {
-    /// Corner radius (normalized, 0.0-0.5 range).
+    /// Creates a rounded rectangle from a uniform radius in points (`f32`), a
+    /// [`CornerRadius`], or per-corner [`CornerRadii`].
     #[must_use]
-    pub const fn corner_radius(&self) -> f32 {
-        self.corner_radius
+    pub fn new(radii: impl Into<CornerRadii>) -> Self {
+        Self {
+            radii: radii.into(),
+        }
     }
-}
 
-impl RoundedRectangle {
-    /// Creates a new rounded rectangle with the given corner radius.
-    ///
-    /// The radius is **normalized**, not a length: it is a fraction of the
-    /// shape's shorter side, so `0.5` is fully rounded and anything above that
-    /// saturates there. Passing a point value (`28.0` for a 56pt-tall row)
-    /// therefore lands on `0.5` rather than failing, which is only what was
-    /// intended when the shape happens to be that tall.
-    ///
-    /// Reach for [`Capsule`] when the intent is "fully rounded at whatever size
-    /// this ends up": it says so directly and cannot drift as the shape resizes.
+    /// `const` constructor from explicit [`CornerRadii`].
     #[must_use]
-    pub const fn new(corner_radius: f32) -> Self {
-        Self { corner_radius }
+    pub const fn from_radii(radii: CornerRadii) -> Self {
+        Self { radii }
+    }
+
+    /// Returns the corner radii configuration.
+    #[must_use]
+    pub const fn radii(&self) -> CornerRadii {
+        self.radii
     }
 }
 
 impl Shape for RoundedRectangle {
     type Iter = [PathCommand; 10];
 
+    /// Unit-space path commands.
+    ///
+    /// Point radii cannot be expressed exactly in normalized coordinates without
+    /// knowing the bounds; backends must render this shape from
+    /// [`ShapeKind::RoundedRect`], not from these commands.
     fn path(&self) -> Self::Iter {
-        let r = CornerRadii {
-            top_left: self.corner_radius,
-            top_right: self.corner_radius,
-            bottom_right: self.corner_radius,
-            bottom_left: self.corner_radius,
-        }
-        .sanitized()
-        .top_left;
-        [
-            PathCommand::MoveTo { x: r, y: 0.0 },
-            PathCommand::LineTo { x: 1.0 - r, y: 0.0 },
-            PathCommand::Arc {
-                cx: 1.0 - r,
-                cy: r,
-                rx: r,
-                ry: r,
-                start: -FRAC_PI_2,
-                sweep: FRAC_PI_2,
-            },
-            PathCommand::LineTo { x: 1.0, y: 1.0 - r },
-            PathCommand::Arc {
-                cx: 1.0 - r,
-                cy: 1.0 - r,
-                rx: r,
-                ry: r,
-                start: 0.0,
-                sweep: FRAC_PI_2,
-            },
-            PathCommand::LineTo { x: r, y: 1.0 },
-            PathCommand::Arc {
-                cx: r,
-                cy: 1.0 - r,
-                rx: r,
-                ry: r,
-                start: FRAC_PI_2,
-                sweep: FRAC_PI_2,
-            },
-            PathCommand::LineTo { x: 0.0, y: r },
-            PathCommand::Arc {
-                cx: r,
-                cy: r,
-                rx: r,
-                ry: r,
-                start: PI,
-                sweep: FRAC_PI_2,
-            },
-            PathCommand::Close,
-        ]
-    }
-
-    fn shape_kind(&self) -> ShapeKind {
-        let r = CornerRadii {
-            top_left: self.corner_radius,
-            top_right: self.corner_radius,
-            bottom_right: self.corner_radius,
-            bottom_left: self.corner_radius,
-        }
-        .sanitized()
-        .top_left;
-        ShapeKind::RoundedRect { corner_radius: r }
-    }
-}
-
-/// A rectangle with independent corner radii.
-#[derive(Debug, Clone, Copy)]
-#[non_exhaustive]
-pub struct UnevenRoundedRectangle {
-    /// Top-leading corner radius (normalized).
-    top_leading: f32,
-    /// Top-trailing corner radius (normalized).
-    top_trailing: f32,
-    /// Bottom-leading corner radius (normalized).
-    bottom_leading: f32,
-    /// Bottom-trailing corner radius (normalized).
-    bottom_trailing: f32,
-}
-
-impl UnevenRoundedRectangle {
-    /// Top-leading corner radius (normalized).
-    #[must_use]
-    pub const fn top_leading(&self) -> f32 {
-        self.top_leading
-    }
-
-    /// Top-trailing corner radius (normalized).
-    #[must_use]
-    pub const fn top_trailing(&self) -> f32 {
-        self.top_trailing
-    }
-
-    /// Bottom-leading corner radius (normalized).
-    #[must_use]
-    pub const fn bottom_leading(&self) -> f32 {
-        self.bottom_leading
-    }
-
-    /// Bottom-trailing corner radius (normalized).
-    #[must_use]
-    pub const fn bottom_trailing(&self) -> f32 {
-        self.bottom_trailing
-    }
-}
-
-impl UnevenRoundedRectangle {
-    /// Creates a new uneven rounded rectangle with independent corner radii.
-    #[must_use]
-    pub const fn new(
-        top_leading: f32,
-        top_trailing: f32,
-        bottom_leading: f32,
-        bottom_trailing: f32,
-    ) -> Self {
-        Self {
-            top_leading,
-            top_trailing,
-            bottom_leading,
-            bottom_trailing,
-        }
-    }
-}
-
-impl Shape for UnevenRoundedRectangle {
-    type Iter = [PathCommand; 10];
-
-    fn path(&self) -> Self::Iter {
-        let corners = CornerRadii {
-            top_left: self.top_leading,
-            top_right: self.top_trailing,
-            bottom_right: self.bottom_trailing,
-            bottom_left: self.bottom_leading,
-        }
-        .sanitized();
-        let tl = corners.top_left;
-        let tr = corners.top_right;
-        let bl = corners.bottom_left;
-        let br = corners.bottom_right;
+        let [tl, tr, br, bl] = self.radii.unit_space_clockwise();
         [
             PathCommand::MoveTo { x: tl, y: 0.0 },
             PathCommand::LineTo {
@@ -499,176 +583,7 @@ impl Shape for UnevenRoundedRectangle {
     }
 
     fn shape_kind(&self) -> ShapeKind {
-        let corners = CornerRadii {
-            top_left: self.top_leading,
-            top_right: self.top_trailing,
-            bottom_right: self.bottom_trailing,
-            bottom_left: self.bottom_leading,
-        }
-        .sanitized();
-        ShapeKind::UnevenRoundedRect {
-            top_left: corners.top_left,
-            top_right: corners.top_right,
-            bottom_left: corners.bottom_left,
-            bottom_right: corners.bottom_right,
-        }
-    }
-}
-
-/// A rectangle with a uniform corner radius in logical points.
-///
-/// [`RoundedRectangle`] expresses the corner as a fraction of the shorter side;
-/// this type expresses it as an absolute length — the shape specs give for a
-/// dialog (28dp) or a card (12dp). The rendered radius does not change as the
-/// shape resizes, which is the whole point: spec radii stay constant however
-/// tall or wide the surface ends up.
-#[derive(Debug, Clone, Copy)]
-#[non_exhaustive]
-pub struct FixedRoundedRectangle {
-    /// Corner radius in logical points.
-    corner_radius: f32,
-}
-
-impl FixedRoundedRectangle {
-    /// Corner radius in logical points.
-    #[must_use]
-    pub const fn corner_radius(&self) -> f32 {
-        self.corner_radius
-    }
-}
-
-impl FixedRoundedRectangle {
-    /// Creates a rounded rectangle whose corners are `corner_radius` points.
-    ///
-    /// The radius is clamped to half the shorter side when the shape resolves
-    /// against its bounds — a radius wider than the surface degenerates to the
-    /// capsule, the same way a normalized `0.5` does.
-    #[must_use]
-    pub const fn new(corner_radius: f32) -> Self {
-        Self {
-            corner_radius: if corner_radius.is_finite() {
-                corner_radius.max(0.0)
-            } else {
-                0.0
-            },
-        }
-    }
-}
-
-impl Shape for FixedRoundedRectangle {
-    type Iter = [PathCommand; 10];
-
-    /// Unit-space approximation only — maximally rounded, like a stadium.
-    ///
-    /// An absolute radius cannot be expressed in normalized commands without
-    /// knowing the bounds. Backends must render this shape from
-    /// [`ShapeKind::FixedRoundedRect`], not from these commands.
-    fn path(&self) -> Self::Iter {
-        RoundedRectangle::new(0.5).path()
-    }
-
-    fn shape_kind(&self) -> ShapeKind {
-        ShapeKind::FixedRoundedRect {
-            corner_radius: self.corner_radius,
-        }
-    }
-}
-
-/// A rectangle with independent corner radii in logical points.
-///
-/// The absolute-radius counterpart of [`UnevenRoundedRectangle`]: each corner
-/// is a length in points, used where a spec names per-corner values — a modal
-/// panel's trailing corners, say.
-#[derive(Debug, Clone, Copy)]
-#[non_exhaustive]
-pub struct FixedUnevenRoundedRectangle {
-    /// Top-leading corner radius in logical points.
-    top_leading: f32,
-    /// Top-trailing corner radius in logical points.
-    top_trailing: f32,
-    /// Bottom-leading corner radius in logical points.
-    bottom_leading: f32,
-    /// Bottom-trailing corner radius in logical points.
-    bottom_trailing: f32,
-}
-
-impl FixedUnevenRoundedRectangle {
-    /// Top-leading corner radius in logical points.
-    #[must_use]
-    pub const fn top_leading(&self) -> f32 {
-        self.top_leading
-    }
-
-    /// Top-trailing corner radius in logical points.
-    #[must_use]
-    pub const fn top_trailing(&self) -> f32 {
-        self.top_trailing
-    }
-
-    /// Bottom-leading corner radius in logical points.
-    #[must_use]
-    pub const fn bottom_leading(&self) -> f32 {
-        self.bottom_leading
-    }
-
-    /// Bottom-trailing corner radius in logical points.
-    #[must_use]
-    pub const fn bottom_trailing(&self) -> f32 {
-        self.bottom_trailing
-    }
-}
-
-impl FixedUnevenRoundedRectangle {
-    /// Creates an uneven rounded rectangle with per-corner radii in points.
-    #[must_use]
-    pub const fn new(
-        top_leading: f32,
-        top_trailing: f32,
-        bottom_leading: f32,
-        bottom_trailing: f32,
-    ) -> Self {
-        const fn point_radius(radius: f32) -> f32 {
-            if radius.is_finite() {
-                radius.max(0.0)
-            } else {
-                0.0
-            }
-        }
-        Self {
-            top_leading: point_radius(top_leading),
-            top_trailing: point_radius(top_trailing),
-            bottom_leading: point_radius(bottom_leading),
-            bottom_trailing: point_radius(bottom_trailing),
-        }
-    }
-}
-
-impl Shape for FixedUnevenRoundedRectangle {
-    type Iter = [PathCommand; 10];
-
-    /// Unit-space approximation only — each corner saturates independently,
-    /// like [`UnevenRoundedRectangle`] at its maximum.
-    ///
-    /// Absolute radii cannot be expressed in normalized commands without
-    /// knowing the bounds. Backends must render this shape from
-    /// [`ShapeKind::FixedUnevenRoundedRect`], not from these commands.
-    fn path(&self) -> Self::Iter {
-        UnevenRoundedRectangle::new(
-            clamp_radius(self.top_leading),
-            clamp_radius(self.top_trailing),
-            clamp_radius(self.bottom_leading),
-            clamp_radius(self.bottom_trailing),
-        )
-        .path()
-    }
-
-    fn shape_kind(&self) -> ShapeKind {
-        ShapeKind::FixedUnevenRoundedRect {
-            top_left: self.top_leading,
-            top_right: self.top_trailing,
-            bottom_left: self.bottom_leading,
-            bottom_right: self.bottom_trailing,
-        }
+        ShapeKind::RoundedRect { radii: self.radii }
     }
 }
 
@@ -843,48 +758,13 @@ pub enum ShapeKind {
     Circle,
     /// Ellipse filling bounds.
     Ellipse,
-    /// Rectangle with uniform corner radius.
+    /// Rectangle with rounded corners.
     RoundedRect {
-        /// Corner radius (normalized 0.0-0.5).
-        corner_radius: f32,
-    },
-    /// Rectangle with per-corner radii.
-    UnevenRoundedRect {
-        /// Top-left corner radius.
-        top_left: f32,
-        /// Top-right corner radius.
-        top_right: f32,
-        /// Bottom-left corner radius.
-        bottom_left: f32,
-        /// Bottom-right corner radius.
-        bottom_right: f32,
+        /// Per-corner radii configuration.
+        radii: CornerRadii,
     },
     /// Capsule (pill) shape.
     Capsule,
-    /// Rectangle with a uniform corner radius in logical points.
-    ///
-    /// Unlike [`ShapeKind::RoundedRect`], the radius is an absolute length, not
-    /// a fraction of the shorter side: a `corner_radius` of `28.0` is 28 points
-    /// whether the bounds are 280x140 or 560x300. Backends clamp it to half the
-    /// shorter side at resolve time.
-    FixedRoundedRect {
-        /// Corner radius in logical points.
-        corner_radius: f32,
-    },
-    /// Rectangle with per-corner radii in logical points.
-    ///
-    /// Same absolute semantics as [`ShapeKind::FixedRoundedRect`], with each
-    /// corner named independently.
-    FixedUnevenRoundedRect {
-        /// Top-left corner radius in logical points.
-        top_left: f32,
-        /// Top-right corner radius in logical points.
-        top_right: f32,
-        /// Bottom-left corner radius in logical points.
-        bottom_left: f32,
-        /// Bottom-right corner radius in logical points.
-        bottom_right: f32,
-    },
     /// Custom path.
     CustomPath,
 }
@@ -1006,9 +886,8 @@ mod sealed {
 
 /// Built-in parameterized shapes whose geometry can interpolate in [`MorphShape`].
 ///
-/// Only the built-in shapes (`Circle`, `Ellipse`, `Capsule`, `Rectangle`,
-/// `RoundedRectangle`, `UnevenRoundedRectangle`, `FixedRoundedRectangle`, and
-/// `FixedUnevenRoundedRectangle`) implement this trait. Custom [`Path`] values
+/// Only the built-in shapes (`Circle`, `Ellipse`, `Capsule`, `Rectangle`, and
+/// `RoundedRectangle`) implement this trait. Custom [`Path`] values
 /// have no shared corner/box parameters and therefore cannot morph.
 ///
 /// ```compile_fail
@@ -1069,16 +948,7 @@ macro_rules! impl_morphable_shape {
     };
 }
 
-impl_morphable_shape!(
-    Circle,
-    Ellipse,
-    Capsule,
-    Rectangle,
-    RoundedRectangle,
-    UnevenRoundedRectangle,
-    FixedRoundedRectangle,
-    FixedUnevenRoundedRectangle,
-);
+impl_morphable_shape!(Circle, Ellipse, Capsule, Rectangle, RoundedRectangle);
 
 impl ShapeExt for Path {}
 
@@ -1099,80 +969,49 @@ mod tests {
     }
 
     #[test]
-    fn rounded_rectangle_radius_is_clamped() {
-        let kind = RoundedRectangle::new(9.0).shape_kind();
+    fn rounded_rectangle_new_defaults_to_points() {
+        let kind = RoundedRectangle::new(28.0).shape_kind();
         match kind {
-            ShapeKind::RoundedRect { corner_radius } => {
-                assert!((corner_radius - 0.5).abs() < 1e-6);
+            ShapeKind::RoundedRect { radii } => {
+                assert_eq!(radii, CornerRadii::uniform(CornerRadius::points(28.0)));
+                assert!((radii.resolve_clockwise(100.0)[0] - 28.0).abs() < 1e-6);
+                assert!((radii.resolve_clockwise(40.0)[0] - 20.0).abs() < 1e-6);
             }
             _ => panic!("unexpected kind"),
         }
     }
 
     #[test]
-    fn fixed_rounded_rectangle_carries_its_radius_in_points() {
-        let kind = FixedRoundedRectangle::new(28.0).shape_kind();
+    fn rounded_rectangle_fraction_scales_with_shorter_side_and_clamps() {
+        let kind = RoundedRectangle::new(CornerRadius::fraction(9.0)).shape_kind();
         match kind {
-            ShapeKind::FixedRoundedRect { corner_radius } => {
-                assert!((corner_radius - 28.0).abs() < 1e-6);
+            ShapeKind::RoundedRect { radii } => {
+                assert_eq!(radii, CornerRadii::uniform(CornerRadius::fraction(0.5)));
+                assert!((radii.resolve_clockwise(100.0)[0] - 50.0).abs() < 1e-6);
             }
             _ => panic!("unexpected kind"),
         }
     }
 
     #[test]
-    fn fixed_uneven_rounded_rectangle_carries_each_corner_in_points() {
-        let kind = FixedUnevenRoundedRectangle::new(0.0, 16.0, 0.0, 16.0).shape_kind();
+    fn rounded_rectangle_carries_per_corner_radii() {
+        let kind = RoundedRectangle::new(CornerRadii::new(0.0, 16.0, 0.0, 16.0)).shape_kind();
         match kind {
-            ShapeKind::FixedUnevenRoundedRect {
-                top_left,
-                top_right,
-                bottom_left,
-                bottom_right,
-            } => {
-                assert!((top_left - 0.0).abs() < 1e-6);
-                assert!((top_right - 16.0).abs() < 1e-6);
-                assert!((bottom_left - 0.0).abs() < 1e-6);
-                assert!((bottom_right - 16.0).abs() < 1e-6);
+            ShapeKind::RoundedRect { radii } => {
+                assert_eq!(radii.resolve_clockwise(100.0), [0.0, 16.0, 16.0, 0.0]);
             }
             _ => panic!("unexpected kind"),
         }
     }
 
     #[test]
-    fn fixed_radii_reject_negative_and_non_finite_values() {
-        let kind = FixedRoundedRectangle::new(f32::NAN).shape_kind();
-        match kind {
-            ShapeKind::FixedRoundedRect { corner_radius } => {
-                assert!((corner_radius - 0.0).abs() < 1e-6);
-            }
-            _ => panic!("unexpected kind"),
-        }
-        let kind = FixedRoundedRectangle::new(-4.0).shape_kind();
-        match kind {
-            ShapeKind::FixedRoundedRect { corner_radius } => {
-                assert!((corner_radius - 0.0).abs() < 1e-6);
-            }
-            _ => panic!("unexpected kind"),
-        }
-    }
-
-    #[test]
-    fn uneven_radii_are_normalized_when_edges_overlap() {
-        let kind = UnevenRoundedRectangle::new(0.8, 0.8, 0.8, 0.8).shape_kind();
-        match kind {
-            ShapeKind::UnevenRoundedRect {
-                top_left,
-                top_right,
-                bottom_left,
-                bottom_right,
-            } => {
-                assert!((top_left - 0.5).abs() < 1e-6);
-                assert!((top_right - 0.5).abs() < 1e-6);
-                assert!((bottom_left - 0.5).abs() < 1e-6);
-                assert!((bottom_right - 0.5).abs() < 1e-6);
-            }
-            _ => panic!("unexpected kind"),
-        }
+    fn point_radii_reject_negative_and_non_finite_values() {
+        assert_eq!(CornerRadius::points(f32::NAN), CornerRadius::points(0.0));
+        assert_eq!(CornerRadius::points(-4.0), CornerRadius::points(0.0));
+        assert_eq!(
+            CornerRadius::fraction(f32::NAN),
+            CornerRadius::fraction(0.0)
+        );
+        assert_eq!(CornerRadius::fraction(-1.0), CornerRadius::fraction(0.0));
     }
 }
