@@ -9,6 +9,8 @@ pub use appearance::{background, border, filter, floating, shape, style};
 pub mod component;
 mod interaction_support;
 pub use interaction_support::{cursor, drag_drop, gesture, interaction};
+#[cfg(feature = "haptics")]
+pub mod haptic;
 mod runtime;
 #[cfg(feature = "dialog")]
 pub use runtime::dialog;
@@ -62,6 +64,8 @@ pub mod prelude {
     pub use super::env::Environment;
     #[cfg(feature = "form")]
     pub use super::form;
+    #[cfg(feature = "haptics")]
+    pub use super::haptic::{Feedback, Haptic, Intensity};
     #[cfg(feature = "locale-datetime")]
     pub use super::locale::LocalizedDateTimeExt;
     #[cfg(feature = "media")]
@@ -329,10 +333,10 @@ pub use waterui_structural_transition::{
     TransitionFrame, TransitionGeometry, TransitionPhase, TransitionProperties, Transitioned,
 };
 
-/// Haptic feedback intensity for the `on_*_haptic` modifiers.
-#[cfg(feature = "std")]
+/// Declarative and imperative haptic feedback primitives.
+#[cfg(feature = "haptics")]
 #[doc(inline)]
-pub use waterkit_haptic::Intensity;
+pub use haptic::{Feedback, Haptic, Intensity};
 
 pub use nami as reactive;
 pub use nami::SignalExt;

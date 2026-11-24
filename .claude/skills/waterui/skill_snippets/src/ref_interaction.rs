@@ -26,23 +26,27 @@ pub fn interaction_block_02() -> impl View {
 }
 
 // ---------------------------------------------------------------------------
-// interaction.md § "## Tap shortcuts" (prose): `.on_tap_gesture_count(2, h)`
-// plus the haptic siblings. The prose names the gate on the haptic pair: they
-// and the `Intensity` they take live behind the `std` cargo feature, "which is
-// not among the defaults", so they are deliberately not compiled here.
+// interaction.md § "## Tap shortcuts" (prose): `.on_tap_gesture_count(2, h)`,
+// `.sensory_feedback(Feedback::Success, &trigger)`, and imperative
+// `waterui::haptic::Haptic::impact(Intensity::LOW)`.
 // Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn interaction_tap_siblings_prose() {
+    use waterui::haptic::Haptic as HapticEngine;
+    use waterui::task::spawn_local;
+
     let handler = || ();
+    let saved_count = Binding::i32(0);
     let _ = Divider.on_tap_gesture_count(2, handler);
     let _ = Divider.on_tap_gesture(handler);
     let _ = Divider.on_long_press_gesture(500, handler);
-
-    // Behind `feature = "std"`, which this crate does not enable:
-    //   let _ = Divider.on_tap_haptic(intensity, handler);
-    //   let _ = Divider.on_tap_haptic_default(handler);
-    //   let _ = Divider.on_long_press_haptic(500, intensity, handler);
-    //   let _ = Divider.on_long_press_haptic_default(500, handler);
+    let _ = Divider.sensory_feedback(Feedback::Success, &saved_count);
+    let _ = Divider.on_tap(|| {
+        spawn_local(async {
+            let _ = HapticEngine::impact(Intensity::LOW).await;
+        })
+        .detach();
+    });
 }
 
 // ---------------------------------------------------------------------------
