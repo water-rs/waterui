@@ -129,10 +129,6 @@ mod portal {
         }
     }
 
-    #[expect(
-        clippy::future_not_send,
-        reason = "spawned with spawn_local on the event-loop thread"
-    )]
     async fn watch() {
         let connection = match Connection::session().await {
             Ok(connection) => connection,

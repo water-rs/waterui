@@ -512,6 +512,8 @@ unsafe fn is_locale_setting_change(lparam: LPARAM) -> bool {
     let mut ptr = lparam as *const u16;
     let mut buf = [0u16; 5];
     for slot in &mut buf {
+        // SAFETY: `ptr` points into the NUL-terminated UTF-16 string passed in
+        // `WM_SETTINGCHANGE`'s `lParam`, and the loop stops on the NUL terminator.
         let ch = unsafe { *ptr };
         if ch == 0 {
             break;

@@ -9,7 +9,7 @@
 use core::fmt;
 
 use objc2::rc::Retained;
-use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
+use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_foundation::{
     NSCurrentLocaleDidChangeNotification, NSNotification, NSNotificationCenter, NSObject,
     NSObjectProtocol,

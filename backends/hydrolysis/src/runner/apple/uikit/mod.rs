@@ -24,10 +24,11 @@ use std::cell::{OnceCell, RefCell};
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
+use cocoa_ui::MainThreadMarker;
 use cocoa_ui::locale::observe_changes as observe_locale_changes;
 use cocoa_ui::main_queue::MainQueueWake;
+use cocoa_ui::notification::NotificationObserver;
 use cocoa_ui::uikit::{self, ApplicationHandlers, Window, WindowScene};
-use cocoa_ui::{MainThreadMarker, NotificationObserver};
 use executor_core::{LocalExecutor as _, Task as _};
 use waterui::app::{App, AppMenuBar, Windows};
 use waterui::theme::ColorScheme;
