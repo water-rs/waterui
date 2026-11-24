@@ -331,10 +331,13 @@ fn destination_tile(
         hstack((
             dest.icon().tint(Srgb::WHITE).size(20.0, 20.0),
             spacer(),
-            text!("{count}").headline().bold().foreground(Srgb::WHITE),
+            text!("{count}")
+                .headline()
+                .bold(true)
+                .foreground(Srgb::WHITE),
         )),
         spacer(),
-        text(dest.title()).body().bold().foreground(Srgb::WHITE),
+        text(dest.title()).body().bold(true).foreground(Srgb::WHITE),
     ))
     .leading()
     .spacing(4.0)
@@ -406,7 +409,7 @@ fn content_header(dest: SidebarDestination) -> impl View {
     // list's accent color, leading-aligned — no date line underneath.
     text(dest.title())
         .size(32.0)
-        .bold()
+        .bold(true)
         .foreground(dest.color())
         .max_width(f32::INFINITY)
         .leading()

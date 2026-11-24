@@ -4778,9 +4778,9 @@ dependencies = [
 [[package]]
 name = "hydrolysis-m3"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis-m3?branch=main#d17673a23ee22743029e003963cfeffa199b6644"
+source = "git+https://github.com/water-rs/hydrolysis-m3?branch=main#0e8dbddb49c1c80921320cdd6d3b2e6781f38a04"
 dependencies = [
- "hydrolysis",
+ "hydrolysis-style",
  "material-color-utils",
  "num-traits",
  "waterui",
@@ -6175,6 +6175,7 @@ checksum = "4744e383959f0db86ede514b809b1c53251889093803c05267acc7d4e7030d70"
 name = "locale-example"
 version = "0.1.0"
 dependencies = [
+ "jiff",
  "waterui",
  "waterui-locale",
 ]
@@ -6856,7 +6857,7 @@ dependencies = [
 [[package]]
 name = "nami"
 version = "0.13.0"
-source = "git+https://github.com/water-rs/nami?branch=main#a549338055efa3e4f907055b90f18bf14a86a337"
+source = "git+https://github.com/water-rs/nami?branch=main#67c46548d4bda2a87720c6aa30c70ecd7faaf631"
 dependencies = [
  "async-channel",
  "async-io",
@@ -6873,7 +6874,7 @@ dependencies = [
 [[package]]
 name = "nami-core"
 version = "0.5.0"
-source = "git+https://github.com/water-rs/nami?branch=main#a549338055efa3e4f907055b90f18bf14a86a337"
+source = "git+https://github.com/water-rs/nami?branch=main#67c46548d4bda2a87720c6aa30c70ecd7faaf631"
 dependencies = [
  "kurbo",
 ]
@@ -6881,7 +6882,7 @@ dependencies = [
 [[package]]
 name = "nami-derive"
 version = "0.5.0"
-source = "git+https://github.com/water-rs/nami?branch=main#a549338055efa3e4f907055b90f18bf14a86a337"
+source = "git+https://github.com/water-rs/nami?branch=main#67c46548d4bda2a87720c6aa30c70ecd7faaf631"
 dependencies = [
  "proc-macro2 1.0.107",
  "quote 1.0.47",
@@ -8835,7 +8836,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "proc-macro2 1.0.107",
  "quote 1.0.47",
  "syn 2.0.119",
@@ -13041,7 +13042,7 @@ dependencies = [
 [[package]]
 name = "waterui-chart"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/chart?branch=main#2e99e1fb708f2f5808a83fb6a2943ba29bcb86a0"
+source = "git+https://github.com/water-rs/chart?branch=main#f357c852c7584823279ef4ec4208791447ad2b54"
 dependencies = [
  "bytemuck",
  "nami",
@@ -13541,6 +13542,7 @@ dependencies = [
  "icu_calendar",
  "icu_datetime",
  "icu_decimal",
+ "icu_experimental",
  "icu_list",
  "icu_locale",
  "icu_plurals",
@@ -13571,6 +13573,7 @@ dependencies = [
 name = "waterui-macros"
 version = "0.5.1"
 dependencies = [
+ "heck",
  "icu_locale_core",
  "proc-macro-crate",
  "proc-macro2 1.0.107",
@@ -14041,6 +14044,7 @@ dependencies = [
  "waterui",
  "waterui-core",
  "waterui-testing",
+ "waterui-ts-schema",
  "waterui-url",
  "waterui-watcher-set",
 ]

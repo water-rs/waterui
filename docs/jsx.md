@@ -141,9 +141,6 @@ Keys must be unique and stable — a `by` that answers the same key for two
 rows, or a key outside the domain the host can hold, is an error at mount
 and a panic on a later update, never a silent mis-render.
 
-`<Suspense fallback={…}>…</Suspense>` is the host-driven pending state:
-the fallback shows while the children are pending.
-
 ## `<Box>`: a modifier scope
 
 `<Box>` creates no node. It takes exactly one host element child and
@@ -175,7 +172,6 @@ use waterui::Binding;
 struct PromoProps {
     headline: String,
     unread: Binding<u32>,
-    #[ts(rename = "onDismiss")]
     on_dismiss: Box<dyn Fn()>,
 }
 
@@ -201,8 +197,11 @@ mount site. `#[derive(TsProps)]` makes it a contract: the TypeScript
 interface and the Rust struct are checked against each other by hash —
 mounting a bundle built against a different contract is a typed error
 naming both hashes. `String` projects to `string`, `Binding<T>` to
-`Signal<T>`, `Box<dyn Fn()>` to `() => void`; `#[ts(rename = "…")]` maps a
-snake_case field to its camelCase prop. A module that takes no props is
+`Signal<T>`, `Box<dyn Fn()>` to `() => void`. Fields and unit-only enum
+variants project to `camelCase` by default (`on_dismiss` → `onDismiss`,
+`BottomTrailing` → `"bottomTrailing"`); container-level
+`#[ts(rename_all = "…")]` selects another convention and `#[ts(rename = "…")]`
+overrides a single field or variant. A module that takes no props is
 mounted with `tsx!("./about.tsx")` and typed against `NoProps` — the empty
 contract, checked like any other.
 
@@ -257,18 +256,24 @@ mounted tree.
 
 ## Localization
 
-`<Text>` localizes through the same `TranslationCatalog` lookup as Rust's
-`text("…")`, so one catalog serves both languages of a codebase:
+Text slots match Rust's verbatim-vs-localized boundary: a runtime JS string or
+number is always verbatim so user data never reaches `TranslationCatalog`, while
+literal JSX text (which the transform emits as `{ key }` or `{ key, args }`)
+and explicit `t` calls from `"waterui"` resolve through the active catalog:
 
 ```tsx
-<Text>Settings</Text>          // looked up in the catalog for the current locale
-<Text>{count()}</Text>         // a number is the value itself, never a key
+import { t } from "waterui";
+
+<Text>Settings</Text>                 // JSX literal -> { key: "Settings" }
+<Text>Hello, {name()}</Text>          // interpolated -> { key: "Hello, {name}", args: { name } }
+<Text>{() => order().title}</Text>    // runtime string -> verbatim, never looked up
+<Avatar name={user().displayName} />  // always verbatim, never looked up
+<Card title={t("Order {id}", { id })} />
+<Card title={t`Settings`} />
 ```
 
-A string child is a translation key, and a key the catalog does not carry
-renders as the key itself — exactly what `Text::localized` does. A number
-child is verbatim — `Text::verbatim` of the value as formatted, never a
-lookup — and it follows the signal like any other dynamic position.
+A catalog miss falls back to the key template before placeholder interpolation,
+and reactive accessors in `args` update in place alongside locale changes.
 
 ## Engines and platform support
 

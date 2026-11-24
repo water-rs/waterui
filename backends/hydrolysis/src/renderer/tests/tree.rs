@@ -27,15 +27,20 @@ use waterui_text::styled::StyledStr;
 fn text_node<E: crate::text::TextEngine>(content: &'static str) -> RenderNode<E> {
     let content = Computed::constant(StyledStr::plain(content));
     let alignment = Computed::constant(HorizontalAlignment::Leading);
+    let line_limit = Computed::constant(None);
     RenderNode::Text(Box::new(TextNode {
         memo_gate: Cell::default(),
         memo_slots: RefCell::default(),
         accessibility_identity: Rc::new(()),
         core: NodeCore::detached(),
-        _guards: [content.watch(|_| {}), alignment.watch(|_| {})],
+        _guards: [
+            content.watch(|_| {}),
+            alignment.watch(|_| {}),
+            line_limit.watch(|_| {}),
+        ],
         content,
         alignment,
-        line_limit: None,
+        line_limit,
         layout_dirty: Rc::new(Cell::new(false)),
         geometry: None,
         tap_span_targets: RefCell::default(),
@@ -1036,7 +1041,7 @@ fn render_tree_grid_snapshot() {
         use waterui::layout::grid::{grid, row};
         use waterui::prelude::*;
         fn cell(label: &str) -> impl View {
-            button(label.to_owned()).width(92.0)
+            button(label.to_owned()).action(|| {}).width(92.0)
         }
         let controls = grid(
             3,

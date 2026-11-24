@@ -21,11 +21,14 @@ use alloc::rc::Rc;
 use alloc::vec::Vec;
 use core::any::Any;
 use core::cell::RefCell;
+#[cfg(target_os = "macos")]
+use core::num::NonZeroUsize;
 use core::ops::Range;
 
 use cocoa_ui::{PlatformView, Rect, Retained, focus, view};
 use objc2::rc::Weak;
 use objc2_foundation::{NSRange, NSString};
+use waterui::State;
 use waterui::Str;
 use waterui::component::input::ContentType;
 #[cfg(target_os = "ios")]
@@ -605,7 +608,7 @@ pub fn realize_text_field_config(
         field
     };
     #[cfg(target_os = "macos")]
-    let field = TextField::new(mtm, config.line_limit().map(core::num::NonZero::get));
+    let field = TextField::new(mtm, config.line_limit().snapshot().map(NonZeroUsize::get));
 
     // The declared content type is the whole one-time-code feature on
     // both kits — `UITextContentType`/`NSTextContentType` is what the
@@ -620,7 +623,9 @@ pub fn realize_text_field_config(
     // The label renders above the field; its semantic text names the
     // control while the visual label leaves the accessibility tree —
     // `WuiControlAccessibility`'s split.
-    let (label, value, prompt, _, _, selection_menu, _, on_submit) = config.into_parts();
+    let (label, value, prompt, _, _, selection_menu, line_limit, on_submit) = config.into_parts();
+    #[cfg(not(target_os = "macos"))]
+    let _ = line_limit;
     let accessibility_label = label.accessibility_label();
     let host_view: &PlatformView = &host;
     let mounted = ctx.realize(label.build()).mount(host_view);
@@ -664,6 +669,15 @@ pub fn realize_text_field_config(
     );
 
     wire_value(&mut leaf, &value, ctx, &field, &value_state);
+
+    #[cfg(target_os = "macos")]
+    leaf.watch(&line_limit, {
+        let field = field.clone();
+        move |ctx| {
+            field.set_line_limit(ctx.value().map(NonZeroUsize::get));
+            crate::measure_memo::invalidate();
+        }
+    });
 
     // Return submits through the configured action.
     if let Some(on_submit) = on_submit {
@@ -877,7 +891,7 @@ fn install_selection_menu(
 /// plus the live `TextSelection`, so `Command` extraction and validation
 /// see the selection.
 fn menu_env(env: &Environment, driver: &FieldSelection) -> Environment {
-    env.extending(TextSelection::new(driver.clone()))
+    env.extending(State(TextSelection::new(driver.clone())))
 }
 
 /// `AppKit`: the handler appends the resolved rows to the field editor's

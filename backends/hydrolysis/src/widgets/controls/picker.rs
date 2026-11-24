@@ -118,10 +118,10 @@ impl<E: crate::text::TextEngine> PickerRenderState<E> {
     #[cfg(feature = "accessibility")]
     pub(crate) fn contributed_label(
         &self,
-        _renderer: &mut crate::renderer::SemanticCore<E>,
+        renderer: &mut crate::renderer::SemanticCore<E>,
         env: &Environment,
     ) -> Option<String> {
-        crate::renderer::SemanticCore::<E>::accessibility_label_from_label(self.config.label(), env)
+        renderer.accessibility_label_from_label(self.config.label(), env)
     }
 
     pub(crate) fn from_config(config: PickerConfig<HeldChild<E>>) -> Self {
@@ -319,11 +319,7 @@ pub fn picker_accessibility<E: crate::text::TextEngine>(
                         AccessibilityNodeRole::ComboBox,
                     ),
                 );
-                let default_label =
-                    crate::renderer::SemanticCore::<E>::accessibility_label_from_label(
-                        picker.label(),
-                        env,
-                    );
+                let default_label = renderer.accessibility_label_from_label(picker.label(), env);
                 let label = renderer.resolve_accessibility_label(env, default_label);
                 if let Some(label) = label {
                     node.set_label(label);
@@ -684,8 +680,7 @@ fn option_group<E: crate::text::TextEngine, S>(
             AccessibilityNodeRole::Group,
         ),
     );
-    let default_label =
-        crate::renderer::SemanticCore::<E>::accessibility_label_from_label(picker.label(), env);
+    let default_label = renderer.accessibility_label_from_label(picker.label(), env);
     if let Some(label) = renderer.resolve_accessibility_label(env, default_label) {
         group.set_label(label);
     }

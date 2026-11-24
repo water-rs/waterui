@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use waterui_accessibility::{AccessibilityRole, default_role};
 use waterui_core::env::use_env;
-use waterui_core::extract::{ExtractionState, Extractor};
+use waterui_core::extract::{ExtractionState, Extractor, State};
 use waterui_core::{Environment, Error, Metadata, Retain, View, impl_debug};
 use waterui_graphics::gpu::ExternalFrameView;
 use waterui_macros::state;
@@ -399,17 +399,27 @@ impl ChromiumProxy {
 
 impl Extractor for ChromiumProxy {
     fn extract(env: &Environment) -> Result<Self, Error> {
-        env.get::<Self>().cloned().ok_or_else(|| {
-            Error::msg(format!(
-                "{} not found in environment — wrap the visible page with \
-                 `ChromiumView::with_proxy(|| ...)` to inject it",
-                type_name::<Self>()
-            ))
-        })
+        State::<Self>::extract(env)
+            .map(|State(proxy)| proxy)
+            .map_err(|_| {
+                Error::msg(format!(
+                    "{} not found in environment — wrap the visible page with \
+                     `ChromiumView::with_proxy(|| ...)` to inject it",
+                    type_name::<Self>()
+                ))
+            })
     }
 
-    fn extract_from_action(env: &Environment, _state: &mut ExtractionState) -> Result<Self, Error> {
-        Self::extract(env)
+    fn extract_from_action(env: &Environment, state: &mut ExtractionState) -> Result<Self, Error> {
+        State::<Self>::extract_from_action(env, state)
+            .map(|State(proxy)| proxy)
+            .map_err(|_| {
+                Error::msg(format!(
+                    "{} not found in environment — wrap the visible page with \
+                     `ChromiumView::with_proxy(|| ...)` to inject it",
+                    type_name::<Self>()
+                ))
+            })
     }
 }
 
@@ -441,7 +451,7 @@ impl ChromiumView {
         use waterui_core::env::with;
         use waterui_layout::stack::vstack;
         let proxy = ChromiumProxy(self.page.clone());
-        vstack((with(content(), proxy), self))
+        vstack((with(content(), State(proxy)), self))
     }
 }
 

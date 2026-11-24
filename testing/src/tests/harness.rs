@@ -13,7 +13,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use hydrolysis_m3::Material3;
-use waterui::Computed;
 use waterui::Signal as _;
 use waterui::SignalExt as _;
 use waterui::ViewExt as _;
@@ -24,6 +23,7 @@ use waterui::graphics::canvas::Canvas;
 use waterui::graphics::color::Srgb;
 use waterui::layout::scroll::ScrollView;
 use waterui::theme;
+use waterui::{Computed, Plugin, View};
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::layout::{Point, Rect, Size};
 use waterui_core::{AnyView, Environment};
@@ -98,7 +98,7 @@ fn default_theme_renders_hydrolysis_widgets() {
         .theme(Material3::defaults())
         .mount_offscreen(|| {
             ScrollView::vertical(vstack((
-                waterui::component::button("Submit"),
+                waterui::component::button("Submit").action(|| {}),
                 text("Scrolled content").body(),
             )))
         });
@@ -226,6 +226,50 @@ fn ui_test_environment_builder_preserves_custom_theme() {
     assert_eq!(snapshot.rgba8().len(), 240 * 120 * 4);
 }
 
+#[test]
+fn ui_builder_with_and_install_compose_additively() {
+    struct ServiceA(&'static str);
+    struct ServiceB(&'static str);
+    struct PluginC(&'static str);
+    struct PluginValue(&'static str);
+
+    impl Plugin for PluginC {
+        fn install(self, env: &mut Environment) {
+            env.insert(PluginValue(self.0));
+        }
+    }
+
+    struct ProbeView;
+
+    impl View for ProbeView {
+        fn body(self, env: &Environment) -> impl View {
+            let a = env
+                .get::<ServiceA>()
+                .expect("ServiceA must stay installed")
+                .0;
+            let b = env
+                .get::<ServiceB>()
+                .expect("ServiceB must stay installed")
+                .0;
+            let c = env
+                .get::<PluginValue>()
+                .expect("PluginC value must stay installed")
+                .0;
+            text(format!("{a}:{b}:{c}")).body()
+        }
+    }
+
+    let mut app = ui()
+        .with(ServiceA("alpha"))
+        .with(ServiceB("beta"))
+        .install(PluginC("gamma"))
+        .mount(|| ProbeView);
+    app.query()
+        .role(Role::LABEL)
+        .label("alpha:beta:gamma")
+        .assert_exists();
+}
+
 // Origin: waterui `testing/src/tests.rs`.
 #[test]
 fn smoke_text_color_snapshot_preserves_semantic_labels() {
@@ -349,12 +393,7 @@ fn themed_builder_exposes_offscreen_perf_closure_api() {
             || text("Measured").body(),
             |perf| {
                 perf.measure("steady", |run| {
-                    let _ = run
-                        .app()
-                        .query()
-                        .role(Role::LABEL)
-                        .label("Measured")
-                        .single();
+                    let _ = run.query().role(Role::LABEL).label("Measured").single();
                 });
             },
         );
@@ -364,6 +403,63 @@ fn themed_builder_exposes_offscreen_perf_closure_api() {
     assert_eq!(measurements[0].name(), "steady");
     let stats = measurements[0].stats();
     assert_eq!(stats.samples(), 3);
+}
+
+#[test]
+fn perf_run_query_dispatches_in_measured_frame_and_can_fail_budget() {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use waterui::Binding;
+    use waterui::prelude::stepper;
+    use waterui_preview_protocol::bench::BenchBudgets;
+
+    use crate::bench::enforce_budgets;
+
+    let count = Binding::i32(0);
+    let for_view = count.clone();
+    let report = ui()
+        .viewport(240, 120)
+        .theme(Material3::defaults())
+        .perf_config(PerfConfig::new(0, 3, 1))
+        .perf_with(
+            move || stepper("Count", &for_view),
+            |perf| {
+                perf.measure("increment", |run| {
+                    run.query().label("Count").increment();
+                });
+            },
+        );
+
+    assert_eq!(count.snapshot(), 3);
+    let stats = report.measurements()[0].stats();
+    assert_eq!(stats.samples(), 3);
+    assert_eq!(
+        stats.rendered_frames(),
+        3,
+        "PerfRun::query().increment() should render inside every measured frame, got {stats:?}"
+    );
+    assert_eq!(
+        stats.idle_frames(),
+        0,
+        "PerfRun::query().increment() must not leave idle frames, got {stats:?}"
+    );
+    assert!(
+        stats.phases().rebuild.max > Duration::ZERO
+            && stats.phases().scene_dispatch.max > Duration::ZERO,
+        "PerfRun::query().increment() should execute scene dispatch/rebuild in the measured frame, got {stats:?}"
+    );
+    assert!(
+        stats.scene_layers() > 1,
+        "rendered stepper frames should record scene layers, got {stats:?}"
+    );
+
+    let tight = BenchBudgets::default().with_max_scene_layers(Some(1));
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        enforce_budgets("waterui-testing", "counter_updates", tight, &report);
+    }));
+    assert!(
+        result.is_err(),
+        "a frame budget tighter than the measured frame's layers must fail"
+    );
 }
 
 // Origin: waterui `testing/src/tests.rs`.
@@ -395,7 +491,6 @@ fn ui_test_hover_drag_and_magnify_update_semantic_bounds() {
     };
     use waterui::prelude::text;
     use waterui::{Binding, SignalExt as _, ViewExt as _, state};
-    use waterui_core::extract::Use;
 
     #[state]
     #[derive(Clone)]
@@ -431,19 +526,19 @@ fn ui_test_hover_drag_and_magnify_update_semantic_bounds() {
                     .padding()
                     .size(120.0, 120.0)
                     .offset(offset.clone(), 0.0)
-                    .scale(scale.clone(), scale.clone())
+                    .scale(scale.clone())
                     .opacity(hovered_opacity);
                 surface
                     .gesture_observer(GestureObserver::new(
                         DragGesture::new(0.0),
-                        |DragOffset(offset): DragOffset, drag: Use<DragEvent>| {
+                        |DragOffset(offset): DragOffset, drag: DragEvent| {
                             offset.set(drag.translation().x);
                         },
                     ))
                     .state(&drag_offset_state)
                     .gesture_observer(GestureObserver::new(
                         MagnificationGesture::new(1.0),
-                        |ZoomScale(scale): ZoomScale, magnification: Use<MagnificationEvent>| {
+                        |ZoomScale(scale): ZoomScale, magnification: MagnificationEvent| {
                             scale.set(magnification.scale());
                         },
                     ))

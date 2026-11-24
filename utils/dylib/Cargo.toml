@@ -69,6 +69,7 @@ default = [
     "highlight",
     "locale-datetime",
     "locale-list",
+    "locale-relative-time",
 ]
 gpu = ["effects", "waterui-internal/gpu"]
 cpu = ["effects", "waterui-internal/cpu"]
@@ -76,6 +77,7 @@ effects = ["waterui-internal/effects"]
 highlight = ["waterui-internal/highlight"]
 locale-datetime = ["waterui-internal/locale-datetime"]
 locale-list = ["waterui-internal/locale-list"]
+locale-relative-time = ["waterui-internal/locale-relative-time"]
 inspector = ["waterui-internal/inspector"]
 inspector-signals = ["inspector", "waterui-internal/inspector-signals"]
 assets = ["waterui-internal/assets"]
@@ -93,6 +95,7 @@ snackbar = ["waterui-internal/snackbar"]
 dialog = ["waterui-internal/dialog"]
 flow-markdown = ["waterui-internal/flow-markdown"]
 markdown-math = ["waterui-internal/markdown-math"]
+haptics = ["waterui-internal/haptics"]
 std = ["waterui-internal/std"]
 erased-dispatch = ["waterui-internal/erased-dispatch"]
 capture = ["waterui-internal/capture"]
@@ -125,6 +128,8 @@ all = [
     "highlight",
     "locale-datetime",
     "locale-list",
+    "locale-relative-time",
+    "haptics",
 ]
 
 [lints]

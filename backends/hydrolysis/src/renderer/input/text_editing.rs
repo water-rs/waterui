@@ -2090,13 +2090,13 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         let menu_env = target.env.layered_on(env);
         // The menu's rows carry this window's identity, so a Close Window
         // row they fire targets the window the menu belongs to.
-        let menu_env = menu_env.extending(self.window_id);
+        let menu_env = menu_env.extending(State(self.window_id));
         // The field's live selection rides the menu's environment, so a
         // custom `selection_menu` command extracts it as a `TextSelection`
         // (water-rs/waterui#1260).
         #[cfg(feature = "text-field")]
         let menu_env = match text_selection_for_env(&target) {
-            Some(selection) => menu_env.extending(selection),
+            Some(selection) => menu_env.extending(State(selection)),
             None => menu_env,
         };
         let nodes =

@@ -27,6 +27,7 @@
     useLocale: () => useLocale,
     useContext: () => useContext,
     untrack: () => untrack,
+    t: () => t,
     spreadProps: () => spreadProps,
     runWithOwner: () => runWithOwner,
     onCleanup: () => onCleanup,
@@ -45,7 +46,6 @@
     createEffect: () => createEffect,
     createContext: () => createContext,
     batch: () => batch,
-    Suspense: () => Suspense,
     Show: () => Show,
     Fragment: () => Fragment,
     For: () => For,
@@ -653,7 +653,6 @@
       "text",
       "show",
       "each",
-      "suspense",
       "environment",
       "invoke"
     ]) {
@@ -859,11 +858,6 @@
     }
     return host.each(reactiveInput(props, "each"), branch((item, index) => renderFn(item, index)), propValue(props, "by"));
   }
-  function Suspense(props) {
-    const host = getHost();
-    const fallback = propValue(props, "fallback") === undefined ? undefined : branch(() => resolveElement(lazyProp(props, "fallback")()));
-    return host.suspense(branch(() => resolveElement(lazyProp(props, "children")())), fallback);
-  }
   function Box(props) {
     const host = getHost();
     const child = resolveElement(propValue(props, "children"));
@@ -919,6 +913,43 @@
       owner.contexts = contexts;
       return { handle: render(), dispose };
     });
+  }
+  // src/js/i18n.js
+  function t(stringsOrKey, ...values) {
+    if (typeof stringsOrKey === "string") {
+      if (values.length > 1) {
+        throw new TypeError("t(key, args?) takes at most two arguments");
+      }
+      const args2 = values[0];
+      if (args2 === undefined) {
+        return { key: stringsOrKey };
+      }
+      if (args2 === null || typeof args2 !== "object" || Array.isArray(args2)) {
+        throw new TypeError("t(key, args) expects an arguments object");
+      }
+      return { key: stringsOrKey, args: args2 };
+    }
+    if (!Array.isArray(stringsOrKey) || stringsOrKey.length === 0) {
+      throw new TypeError("t must be called as a tagged template or with a key string");
+    }
+    if (typeof stringsOrKey[0] !== "string") {
+      throw new TypeError("t template segments must be strings");
+    }
+    if (values.length === 0) {
+      return { key: stringsOrKey[0] };
+    }
+    let key = stringsOrKey[0];
+    const args = {};
+    for (let i = 0;i < values.length; i += 1) {
+      const slot = String(i);
+      const segment = stringsOrKey[i + 1];
+      if (typeof segment !== "string") {
+        throw new TypeError("t template segments must be strings");
+      }
+      key += `{${slot}}${segment}`;
+      args[slot] = values[i];
+    }
+    return { key, args };
   }
   // src/js/runtime.js
   var exports_runtime = {};

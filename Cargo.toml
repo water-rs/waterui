@@ -159,7 +159,7 @@ scaffold-packages = [
 # matching, and cargo reports the split as hundreds of type errors that
 # never name a version. The `water` CLI fails on that divergence before it
 # reaches the compiler.
-reexported-dependencies = { anyhow = "waterui::Error", bytemuck = "waterui::graphics::gpu::bytemuck", cherenkov = "waterui::graphics::backend::cherenkov", cherenkov-cpu = "waterui::graphics::backend::cherenkov_cpu", cherenkov-gpu = "waterui::graphics::backend::cherenkov_gpu", cherenkov-record = "waterui::graphics::backend::draw", color = "waterui::graphics::Color", executor-core = "waterui::task", filtrate = "waterui::graphics::backend::filtrate", filtrate-core = "waterui::media::Filter", keyboard-types = "waterui::graphics::input", nami = "waterui::reactive", nami-core = "waterui::reactive", native-executor = "waterui::task", pastey = "waterui::pastey", serde = "waterui::webview::serde", serde_json = "waterui::webview::serde_json", suiteki = "waterui::Str", tracing = "waterui::log", url = "waterui::media::Url", waterkit-haptic = "waterui::Intensity", wgpu = "waterui::graphics::gpu::wgpu" }
+reexported-dependencies = { anyhow = "waterui::Error", bytemuck = "waterui::graphics::gpu::bytemuck", cherenkov = "waterui::graphics::backend::cherenkov", cherenkov-cpu = "waterui::graphics::backend::cherenkov_cpu", cherenkov-gpu = "waterui::graphics::backend::cherenkov_gpu", cherenkov-record = "waterui::graphics::backend::draw", color = "waterui::graphics::Color", executor-core = "waterui::task", filtrate = "waterui::graphics::backend::filtrate", filtrate-core = "waterui::media::Filter", keyboard-types = "waterui::graphics::input", nami = "waterui::reactive", nami-core = "waterui::reactive", native-executor = "waterui::task", pastey = "waterui::pastey", serde = "waterui::webview::serde", serde_json = "waterui::webview::serde_json", suiteki = "waterui::Str", tracing = "waterui::log", url = "waterui::media::Url", waterkit-haptic = "waterui::haptic", wgpu = "waterui::graphics::gpu::wgpu" }
 
 # Nothing in this workspace links the GTK or WinUI backends: the `water`
 # CLI reads these pins to scaffold a launcher crate. Each pins the
@@ -477,12 +477,14 @@ default = [
     "highlight",
     "locale-datetime",
     "locale-list",
+    "locale-relative-time",
 ]
 # The locale formatters reachable through `waterui::locale`. Default-on so the
 # module keeps its full surface; a lean build starts from
 # `default-features = false` and names what it needs.
 locale-datetime = ["waterui-internal/locale-datetime", "waterui-dylib?/locale-datetime"]
 locale-list = ["waterui-internal/locale-list", "waterui-dylib?/locale-list"]
+locale-relative-time = ["waterui-internal/locale-relative-time", "waterui-dylib?/locale-relative-time"]
 # GPU rendering stack (wgpu via waterui-graphics' Cherenkov engine +
 # waterui-svg). Default-on so every existing consumer is unaffected. Disable
 # it to cross-compile a lean WaterUI app for embedded targets without the GPU
@@ -543,6 +545,9 @@ markdown-math = [
     "waterui-internal/markdown-math",
     "waterui-dylib?/markdown-math",
 ]
+# Haptic and sensory feedback (`waterui::haptic`, `Feedback`, `Haptic`, `Intensity`,
+# `ViewExt::sensory_feedback`). Opt-in so applications without haptics pay none of it.
+haptics = ["waterui-internal/haptics", "waterui-dylib?/haptics"]
 std = ["waterui-internal/std", "waterui-dylib?/std"]
 dynamic_linking = ["dep:waterui-dylib"]
 erased-dispatch = ["waterui-internal/erased-dispatch", "waterui-dylib?/erased-dispatch"]
@@ -588,11 +593,13 @@ all = [
     "chart",
     "barcode",
     "particle",
+    "haptics",
     "std",
     "gpu",
     "highlight",
     "locale-datetime",
     "locale-list",
+    "locale-relative-time",
     "inspector",
     "inspector-signals",
     "assets",

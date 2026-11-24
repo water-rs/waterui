@@ -173,9 +173,11 @@ fn interactive_buttons_section() -> impl View {
         text("Interactive Buttons").headline(),
         "Buttons naturally have cursor changes",
         hstack((
-            button("Bordered").style(ButtonStyle::Bordered),
-            button("Plain").style(ButtonStyle::Plain),
-            button("Link Style").style(ButtonStyle::Link),
+            button("Bordered")
+                .style(ButtonStyle::Bordered)
+                .action(|| {}),
+            button("Plain").style(ButtonStyle::Plain).action(|| {}),
+            button("Link Style").style(ButtonStyle::Link).action(|| {}),
         )),
         "Link buttons show pointer cursor by default",
     ))

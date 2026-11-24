@@ -59,10 +59,10 @@ impl<E: crate::text::TextEngine> DatePickerRenderState<E> {
     #[cfg(feature = "accessibility")]
     pub(crate) fn contributed_label(
         &self,
-        _renderer: &mut crate::renderer::SemanticCore<E>,
+        renderer: &mut crate::renderer::SemanticCore<E>,
         env: &Environment,
     ) -> Option<String> {
-        crate::renderer::SemanticCore::<E>::accessibility_label_from_label(self.config.label(), env)
+        renderer.accessibility_label_from_label(self.config.label(), env)
     }
 
     pub(crate) fn from_config(config: DatePickerConfig<HeldChild<E>>) -> Self {

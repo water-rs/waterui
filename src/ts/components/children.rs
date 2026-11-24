@@ -8,14 +8,17 @@
 //! the list into the Rust value that slot takes: content views, a label, or
 //! text.
 
+use core::iter::once;
+
 use nami::{Computed, Signal, SignalExt as _};
 use suiteki::Str;
-use waterui_controls::label::{ErasedLabel, IntoLabel as _, Label, TitleLabel};
+use waterui_controls::label::{ErasedLabel, IntoLabel, Label, TitleLabel};
 use waterui_core::{AnyView, Dynamic, Metadata, Retain};
-use waterui_text::Text;
+use waterui_text::StyledStr;
+use waterui_text::text::{IntoText, Text, TextConfig};
 use waterui_ts::engine::{JsError, JsValue};
 
-use crate::ts::catalog::TextContent;
+use crate::ts::catalog::{ResolvedTextPart, TextContent};
 use waterui_ts::Bridge;
 use waterui_ts::FromJs as _;
 use waterui_ts::ViewSlot;
@@ -37,6 +40,10 @@ fn view_of(bridge: &Bridge, child: &JsValue) -> Result<AnyView, JsError> {
     match child {
         JsValue::Opaque(_) => ViewSlot::from_js_value(child)?.take(),
         JsValue::String(_) | JsValue::Number(_) | JsValue::BigInt(_) => {
+            let content = TextContent::from_js(child, bridge)?;
+            Ok(AnyView::new(Text::new(content)))
+        }
+        JsValue::Object(_) if TextContent::is_localized_object(child) => {
             let content = TextContent::from_js(child, bridge)?;
             Ok(AnyView::new(Text::new(content)))
         }
@@ -118,7 +125,7 @@ pub fn label(
              so give it children — <{component}>Save</{component}> — or a label attribute"
         )));
     };
-    Ok(Text::new(content).into_label().erase())
+    Ok(content.into_label().erase())
 }
 
 /// The label of a control that may go without one.
@@ -134,7 +141,7 @@ pub fn label_or_none(
     bridge: &Bridge,
     children: &[JsValue],
 ) -> Result<Option<Label<TitleLabel>>, JsError> {
-    Ok(text(bridge, children)?.map(|content| Text::new(content).into_label()))
+    Ok(text(bridge, children)?.map(IntoLabel::into_label))
 }
 
 /// The children of an element whose children are each their own text.
@@ -150,43 +157,60 @@ pub fn texts(bridge: &Bridge, children: &[JsValue]) -> Result<Vec<Text>, JsError
         .iter()
         .map(|child| {
             let content: Computed<TextContent> = bridge.materialize_computed(child)?;
-            Ok(Text::new(content))
+            Ok(Text::new(TextContent::flatten_computed(&content)))
         })
         .collect()
 }
 
-/// The text of an element whose children are text, lifted into one value.
+/// Several resolved text parts joined into one `Text`, preserving per-part
+/// catalog localization and interpolation alongside verbatim runtime strings.
+#[derive(Debug, Clone)]
+struct JoinedText(Vec<ResolvedTextPart>);
+
+impl IntoText for JoinedText {
+    fn into_text(self) -> Text {
+        let parts = self.0;
+        Text::localized_with(move |env, locale| {
+            let mut combined = String::new();
+            for part in &parts {
+                combined.push_str(part.render(env, locale).as_str());
+            }
+            TextConfig::new(StyledStr::plain(Str::from(combined)))
+        })
+    }
+}
+
+/// The text of an element whose children are text, lifted into one [`Text`].
 ///
-/// A single string child is a translation key, like Rust's `text("…")`. Text
-/// assembled from several parts is the assembled value, like `text!("…{}")`:
-/// what is looked up is what an author wrote as one piece.
-pub fn text(
-    bridge: &Bridge,
-    children: &[JsValue],
-) -> Result<Option<Computed<TextContent>>, JsError> {
+/// A single `{ key }` / `{ key, args }` child (as the JSX transform emits for
+/// literal or interpolated text, or `t` constructs) is resolved through the
+/// translation catalog with its named arguments; runtime strings and numbers
+/// stay verbatim. Multiple children each keep their own verbatim or localized
+/// semantics and concatenate after resolution.
+pub fn text(bridge: &Bridge, children: &[JsValue]) -> Result<Option<Text>, JsError> {
     let mut parts = children.iter();
     let Some(first) = parts.next() else {
         return Ok(None);
     };
     let first: Computed<TextContent> = bridge.materialize_computed(first)?;
+    let first = TextContent::flatten_computed(&first);
     let Some(second) = parts.next() else {
-        return Ok(Some(first));
+        return Ok(Some(Text::new(first)));
     };
 
-    let mut joined = strings(&first);
-    for part in core::iter::once(second).chain(parts) {
+    let mut joined: Computed<Vec<ResolvedTextPart>> = first.map(|part| vec![part]).computed();
+    for part in once(second).chain(parts) {
         let part: Computed<TextContent> = bridge.materialize_computed(part)?;
+        let part = TextContent::flatten_computed(&part);
         joined = joined
-            .zip(&strings(&part))
-            .map(|(left, right)| Str::from(format!("{left}{right}")))
+            .zip(&part)
+            .map(|(mut acc, next)| {
+                acc.push(next);
+                acc
+            })
             .computed();
     }
-    Ok(Some(joined.map(TextContent::Verbatim).computed()))
-}
-
-/// The text one part carries, before any lookup.
-fn strings(content: &Computed<TextContent>) -> Computed<Str> {
-    content.map(|content| content.as_str().clone()).computed()
+    Ok(Some(Text::new(joined.map(JoinedText).computed())))
 }
 
 /// Refuses children for a component that takes none.

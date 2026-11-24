@@ -1272,7 +1272,7 @@ fn tab_traverses_the_semantic_tree_and_activation_dispatches_click() {
             button("First").action(move || tapped.set(true)),
             toggle("Mode", &on_for_view).switch(),
             field("Name", &value_for_view),
-            button("Last"),
+            button("Last").action(|| {}),
         )))
     }));
 
@@ -1740,19 +1740,30 @@ impl GpuContent for GpuChart {
 #[cfg(hydrolysis_gpu)]
 #[test]
 fn gpu_surface_emits_an_image_leaf_with_its_label_and_value() {
+    use nami::{SignalExt as _, binding};
+
+    let reading = binding(42);
+    let value = reading.map(|percent| Str::from(format!("{percent}%")));
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
         AnyView::new(
             GpuView::new(GpuChart)
-                .labeled("weekly chart")
-                .described("up 12% week over week"),
+                .offered_label(Str::from("Battery"))
+                .offered_value(value.clone()),
         )
     }));
 
     let update = pumped(&mut runtime);
     let (_, image_node) =
         find_only(&update, Role::Image).expect("the gpu surface must emit an Image leaf");
-    assert_eq!(image_node.label(), Some("weekly chart"));
-    assert_eq!(image_node.value(), Some("up 12% week over week"));
+    assert_eq!(image_node.label(), Some("Battery"));
+    assert_eq!(image_node.value(), Some("42%"));
+
+    reading.set(85);
+    let updated = pumped(&mut runtime);
+    let (_, updated_image) =
+        find_only(&updated, Role::Image).expect("the gpu surface must update its Image leaf");
+    assert_eq!(updated_image.label(), Some("Battery"));
+    assert_eq!(updated_image.value(), Some("85%"));
 }
 
 #[test]
@@ -1805,7 +1816,7 @@ fn focused_binding_moves_ui_focus_and_tree_focus() {
         AnyView::new(vstack((
             field("Name", &name_for_view).focused(&focus, Field::Name),
             field("Email", &email_for_view).focused(&focus, Field::Email),
-            button("Done"),
+            button("Done").action(|| {}),
         )))
     }));
 

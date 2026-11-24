@@ -6,7 +6,7 @@ from `use waterui::prelude::*;` unless an explicit import is shown.
 **Feature gates.** `waterui`'s default features are `gpu`, `assets`, `dialog`, `snackbar`,
 `highlight`, `locale-datetime` and `locale-list`. Everything else is opt-in, chiefly `media`,
 `video`, `video-gpu`, `webview`, `flow-markdown` (also gates `RichText` and
-`include_markdown!`), `markdown-math`, `navigation-restoration`, `inspector`, `remote`, `ts`,
+`include_markdown!`), `markdown-math`, `navigation-restoration`, `haptics`, `inspector`, `remote`, `ts`,
 `widgets`, and the component features `canvas`, `chart`, `barcode` and `particle`. `all`
 turns on the full set except `ts`, `markdown-math` and `widgets`. A missing module here is
 usually a missing feature in `Cargo.toml`, not a wrong path:
@@ -109,7 +109,7 @@ iterator item must be a single concrete type, so a helper whose branches differ 
 a `OneOfN`:
 
 ```rust
-let row: HStack<_> = tabs.iter().map(|t| button(t.label())).collect();
+let row: HStack<_> = tabs.iter().map(|t| button(t.label()).action(|| {})).collect();
 let tiles: VStack<_> = (0..6).map(photo_tile).collect();   // photo_tile: fn(usize) -> impl View
 ```
 
@@ -162,8 +162,8 @@ chrome) and `keyboard` (the software keyboard) — and `.ignore_safe_area` takes
 the keyboard but above the container inset, `SafeAreaRegions::CONTAINER` / `ALL` name the
 other combinations, and a bare `EdgeSet` ignores every region.
 
-Visual transforms never affect layout. `.scale(x, y)` and `.rotation(degrees)` pivot on the
-centre; `.scale_from(x, y, Anchor::TOP_LEFT)` and `.rotation_from(45.0, Anchor::TOP_LEFT)`
+Visual transforms never affect layout. `.scale(factor)` / `.scale_xy(x, y)` and `.rotation(degrees)` pivot on the
+centre; `.scale_from(factor, Anchor::TOP_LEFT)` / `.scale_xy_from(x, y, Anchor::TOP_LEFT)` and `.rotation_from(45.0, Anchor::TOP_LEFT)`
 pivot on an `Anchor` (in the prelude; normalized, `(0, 0)` top-left: `CENTER`, `TOP_LEFT`,
 `TOP_RIGHT`, `BOTTOM_LEFT`, `BOTTOM_RIGHT`, or `Anchor::new(x, y)`). Factors and angles take
 signals; the anchor is a plain value.
@@ -288,7 +288,7 @@ for `waterui-testing` queries, use the display-mode API — never drop the label
 
 ```rust
 slider("Sensitivity", &level).range(0.5..=3.0).hide_label()   // exists on every labeled control
-button(label("Locate").icon(lucide::locate_fixed())).label_style(LabelDisplayMode::IconOnly)
+button(label("Locate").icon(lucide::locate_fixed())).label_style(LabelDisplayMode::IconOnly).action(|| {})
 toolbar_row().install(LabelDisplayMode::IconOnly)             // scope a mode to a whole subtree
 ```
 
@@ -298,8 +298,8 @@ renders its title instead, so install it freely on a toolbar and give each label
 `.icon(..)`. The label text remains the test-query key even when hidden.
 
 ```rust
-button("Save")                              // Button<NoAction>
-    .action(handler)                        // -> Button<impl FnMut(&Environment)>
+button("Save")                              // Button<_, NoAction>: not a View until .action / .action_async is set
+    .action(handler)                        // -> Button<_, impl FnMut(&Environment)>
     .action_async(|| async { … })
     .style(ButtonStyle::Plain)              // Automatic | Plain | Link | Borderless | Bordered | BorderedProminent
                                             // | Glass | GlassProminent (Liquid Glass capsules on Apple;
@@ -307,7 +307,7 @@ button("Save")                              // Button<NoAction>
     .size(ControlSize::Large)               // ExtraSmall..=ExtraLarge; buttons default to Small
     .state(&value)                          // inject handler state (repeatable)
 
-button(text!("{edit_label}"))               // a text! satisfies IntoLabel: reactive button titles need no watch
+button(text!("{edit_label}")).action(|| {}) // a text! satisfies IntoLabel: reactive button titles need no watch
 
 toggle("Wi-Fi", &enabled)                   // &Binding<bool>
 Toggle::new("Wi-Fi", &enabled).style(ToggleStyle::Switch)     // Automatic | Switch | Checkbox; .switch() / .checkbox()
@@ -321,7 +321,7 @@ stepper("Items", &count).value_formatter(|n| format!("{n} items"))   // inline v
 field("Email", &address)                    // &Binding<Str>
 field("Search", &query).on_submit(handler)  // Return in a line-limited field runs it
 TextField::new("Username", &name).prompt("Enter your username")   // placeholder ≠ label
-TextField::new("Notes", &notes).disable_line_limit()   // multi-line: Return inserts a line break
+TextField::new("Notes", &notes).line_limit(None::<NonZeroUsize>) // multi-line: Return inserts a line break
 use waterui::component::text_field::{ContentType, KeyboardType};   // NOT in the prelude
 // .content_type declares what the field means, for autofill — it is what
 // makes Apple offer the received SMS code; pair it with .keyboard(..)
@@ -346,8 +346,8 @@ link("Docs", "https://waterui.dev")         // a Link-style button that opens th
 Style shorthands on `Button` — `.plain()`, `.link()`, `.borderless()`, `.bordered()`,
 `.bordered_prominent()` — equal `.style(..)` and work before or after `.action(..)`.
 `.borderless()` is the idiomatic toolbar-button style; `Link` shows the
-pointing-hand cursor on pointer platforms. `TextField::line_limit(NonZeroUsize)` caps the
-lines; `TextField::styled(label, &Binding<StyledStr>)` binds styled text. `Switch` and `checkbox` map to different accessibility roles (`SWITCH` vs `CHECKBOX`), which matters to
+pointing-hand cursor on pointer platforms. `TextField::line_limit(impl IntoComputed<Option<NonZeroUsize>>)` caps the
+lines (pass `None` for unlimited multi-line input, or a signal to toggle it); `TextField::styled(label, &Binding<StyledStr>)` binds styled text. `Switch` and `checkbox` map to different accessibility roles (`SWITCH` vs `CHECKBOX`), which matters to
 tests. `ToggleStyle::Automatic` is the platform's style — a switch on iOS and Android, a
 checkbox on macOS — so a test that must pass on every host queries a default toggle
 with `Role::toggle(ToggleStyle::Automatic)`. A switch with a visible label fills the
@@ -549,7 +549,7 @@ text("Hello").context_menu(
         "Reply".action(|| {}),
         "Delete".command().action(|| {}).destructive(),
     ))
-    .accessory(button("Like").action(|Use(dismiss): Use<DismissContextMenu>| dismiss.dismiss())),
+    .accessory(button("Like").action(|dismiss: DismissContextMenu| dismiss.dismiss())),
 )
 ```
 
@@ -569,12 +569,12 @@ Both carry the full font API:
 
 ```rust
 .title() .headline() .subheadline() .body() .caption() .footnote()
-.size(18.0) .bold() .italic(true) .font(font::Caption) .foreground(color)
-.weight(font::FontWeight::SemiBold) .monospaced() .underline(true) .color(color)
+.size(18.0) .bold(true) .italic(true) .font(font::Caption) .foreground(color)
+.weight(font::FontWeight::SemiBold) .monospaced(true) .underline(true) .strikethrough(true) .color(color)
 ```
 
-`.bold()` takes no argument; `.italic(..)` takes a bool — a signal of one works too.
-`.line_limit(NonZeroUsize)` truncates past that many lines. `.text_align(HorizontalAlignment::Center)`
+`.bold(..)`, `.monospaced(..)`, `.italic(..)`, `.underline(..)`, and `.strikethrough(..)` all take `impl IntoSignal<bool>` — a `bool` literal or a reactive signal of one.
+`.line_limit(impl IntoComputed<Option<NonZeroUsize>>)` truncates past that many lines (pass `None` or a signal to expand/collapse). `.text_align(HorizontalAlignment::Center)`
 sets the paragraph alignment of multiline text (a signal works too) and
 `.background_color(color)` paints behind the text run.
 
@@ -806,13 +806,6 @@ ValidatableView::new(field("Name", &name), Plain(Required))
 Pickers:
 
 ```rust
-use waterui::form::picker::{Picker, PickerItem, PickerStyle, picker};
-use waterui::form::picker::color::ColorPicker;
-use waterui::form::picker::date::{DatePicker, DateTimePickerComponents};
-use waterui::form::picker::file::FilePicker;
-use waterui::form::picker::multi_date::MultiDatePicker;
-use waterui::form::Calendar;
-
 // Options are views carrying their value via .tag(..). The tag type is T: Ord + Clone.
 // PickerItem<T> is the nameable item type — an array of them works without collect().
 fn sizes() -> [PickerItem<&'static str>; 3] {
@@ -834,7 +827,7 @@ from `waterui::form::picker::date::{Date, DateTime, Time}` — no `jiff` depende
 own is needed to name them or call their constructors, which are fallible:
 
 ```rust
-use waterui::form::picker::date::{Date, DatePicker, DateTimePickerComponents};
+use waterui::form::picker::date::Date;
 
 DatePicker::new("Date", &date)                   // generic over T: DatePickable (Date, Time, DateTime)
     .range(min..=max)                            // RangeInclusive<T> of the bound type; clamps immediately

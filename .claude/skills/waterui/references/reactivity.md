@@ -79,7 +79,7 @@ flag.toggle();                  // bool convenience
 These are methods on any signal (from `SignalExt`, which the prelude re-exports). They
 take `&self` and clone the source handle themselves — `count.not()` and
 `hovered.select(..)` read naturally with no `.clone()` first. Clone only when a finished
-signal is *moved* into two places (e.g. passed to `.scale(x, y)` twice).
+signal is *moved* into two places (e.g. passed to `.scale_xy(x, y)` twice).
 
 ```rust
 // core
@@ -203,7 +203,7 @@ The whole point of the framework: hand the signal to the API, do not resolve it.
 view.opacity(fade.clone())
 view.visible(has_items.clone())
 view.disabled(is_loading.clone())
-view.scale(zoom.clone(), zoom.clone())
+view.scale(zoom.clone())
 Photo::new(url).blur(radius.clone()).saturation(sat.clone())
 text!("{status}")
 ```
@@ -225,14 +225,12 @@ button("Reset")
 Handler parameters are extractors. Besides `State<T>`:
 
 - `Environment` — the whole environment.
-- `Use<T>` — any `Clone` value installed in the environment (as opposed to `.state()`).
 - `Option<E>` — makes any extractor optional instead of failing.
 - A `Clone` type the app owns, once marked `#[state]`, is itself an extractor — write the
-  parameter bare (`state: Editor`) and it reads what `.state(&value)` injected.
-- `impl_extractor!(ApiClient)` instead marks a `Clone` type installed as an *environment*
-  value (`env.insert`/`env.with`), a different channel from `.state()`.
-- Context extractors supplied by components, e.g. `Navigator<Route>`, `ListDelete`,
-  `ListMove`, `SnackbarManager`, `WebViewProxy`.
+  parameter bare (`state: Editor`) and it reads what `.state(&value)` / `App::state(&value)`
+  injected.
+- Context extractors supplied by components on the same channel, e.g. `Navigator<Route>`,
+  `ListDelete`, `ListMove`, `SnackbarManager`, `WebViewProxy`.
 
 Repeated parameters of one state type bind positionally: the first `.state()` call feeds
 the first parameter of that type. A parameter that cannot be extracted means the handler
@@ -256,7 +254,7 @@ nothing.
 ```rust
 use waterui::env::use_env;
 
-use_env(|Use(client): Use<ApiClient>| text(client.name()))
+use_env(|State(client): State<ApiClient>| text(client.name()))
 ```
 
 To accept a caller-supplied action in your *own* reusable view function, take the handler
@@ -286,7 +284,7 @@ use waterui::animation::Animation;   // not in the prelude
 let scale = Binding::f32(1.0);
 let animated = scale.with(Animation::spring(300.0, 15.0));
 
-view.scale(animated.clone(), animated.clone())
+view.scale(animated)
 ```
 
 Curves: `Animation::linear(d)`, `ease_in(d)`, `ease_out(d)`, `ease_in_out(d)`,

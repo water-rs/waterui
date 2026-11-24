@@ -32,11 +32,13 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use cherenkov_gpu::interop::{ExternalFrame, SharedDevice};
+use nami::{Computed, Signal};
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, ViewDimensions};
+use waterui_core::reactive::signal::IntoComputed;
 use waterui_frame_rate::FrameRate;
 
 use super::SourceRateUpdate;
-use waterui_core::{Environment, Native, NativeView, View};
+use waterui_core::{Environment, Native, NativeView, Str, View};
 use wgpu::{Device, Queue};
 
 use super::{RedrawHandle, Shared, SurfaceHooks, measure_by_intrinsic_size};
@@ -390,8 +392,8 @@ pub struct ExternalFrameView {
     opaque: bool,
     surface_prefers_hdr: Option<bool>,
     hooks: SurfaceHooks,
-    label: Option<String>,
-    value: Option<String>,
+    label: Computed<Option<Str>>,
+    value: Computed<Option<Str>>,
 }
 
 impl fmt::Debug for ExternalFrameView {
@@ -399,7 +401,6 @@ impl fmt::Debug for ExternalFrameView {
         f.debug_struct("ExternalFrameView")
             .field("intrinsic_size", &self.intrinsic_size)
             .field("opaque", &self.opaque)
-            .field("label", &self.label)
             .finish_non_exhaustive()
     }
 }
@@ -414,8 +415,8 @@ impl ExternalFrameView {
             stream: ExternalFrameStream(Rc::new(RefCell::new(Box::new(source)))),
             surface_prefers_hdr: None,
             hooks: SurfaceHooks::default(),
-            label: None,
-            value: None,
+            label: Computed::constant(None),
+            value: Computed::constant(None),
         }
     }
 
@@ -464,18 +465,32 @@ impl ExternalFrameView {
         self.hooks.frame();
     }
 
-    /// The accessibility name of the frames.
+    /// The accessible name the frames offer. An app's own `.a11y_label(…)`
+    /// overrides it.
     #[must_use]
-    pub fn labeled(mut self, label: impl Into<String>) -> Self {
-        self.label = Some(label.into());
+    pub fn offered_label(mut self, label: impl IntoComputed<Option<Str>>) -> Self {
+        self.label = label.into_computed();
         self
     }
 
-    /// The accessibility value of the frames.
+    /// The accessible value the frames offer. An app's own `.a11y_value(…)`
+    /// overrides it.
     #[must_use]
-    pub fn described(mut self, value: impl Into<String>) -> Self {
-        self.value = Some(value.into());
+    pub fn offered_value(mut self, value: impl IntoComputed<Option<Str>>) -> Self {
+        self.value = value.into_computed();
         self
+    }
+
+    /// The reactive accessibility label signal.
+    #[must_use]
+    pub const fn label(&self) -> &Computed<Option<Str>> {
+        &self.label
+    }
+
+    /// The reactive accessibility value signal.
+    #[must_use]
+    pub const fn value(&self) -> &Computed<Option<Str>> {
+        &self.value
     }
 
     /// Prefer an HDR presentation target for this view even when the
@@ -523,14 +538,14 @@ impl ExternalFrameView {
 
     /// The accessibility name.
     #[must_use]
-    pub fn accessibility_label(&self) -> Option<&str> {
-        self.label.as_deref()
+    pub fn accessibility_label(&self) -> Option<String> {
+        self.label.snapshot().map(|label| label.as_str().to_owned())
     }
 
     /// The accessibility value.
     #[must_use]
-    pub fn accessibility_value(&self) -> Option<&str> {
-        self.value.as_deref()
+    pub fn accessibility_value(&self) -> Option<String> {
+        self.value.snapshot().map(|value| value.as_str().to_owned())
     }
 
     /// The host's handle to the source.

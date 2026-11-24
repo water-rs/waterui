@@ -567,7 +567,9 @@ pub fn measure_text_field_size_with_label_size<E: crate::text::TextEngine, S>(
     proposal: ProposalSize,
 ) -> LayoutSize {
     let metrics = look.metrics();
-    let line_limit = text_field.line_limit().map(NonZeroUsize::get);
+    let line_limit = state
+        .measure_signal(text_field.line_limit())
+        .map(NonZeroUsize::get);
     let prompt = placeholder_text(
         look,
         state

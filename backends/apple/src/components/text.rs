@@ -680,20 +680,27 @@ pub fn realize_text_config(config: TextConfig, ctx: &RenderContext<'_>) -> Nativ
     let content = config.content();
     let (mut leaf, state, label) = label_leaf(
         ctx,
-        config.line_limit(),
+        config.line_limit().snapshot(),
         &content.snapshot(),
         config.paragraph_alignment().snapshot(),
     );
 
-    // Content changes re-resolve every chunk signal; paragraph
-    // alignment pushes straight to the label inside the leaf.
+    // Content changes re-resolve every chunk signal; paragraph alignment and
+    // line limit push straight to the label inside the leaf.
     leaf.watch(&content, move |ctx| {
         let duration = cross_dissolve_duration(ctx.metadata());
         apply_styled(&state, ctx.value());
         rebuild(&state.borrow(), duration);
     });
-    leaf.watch(config.paragraph_alignment(), move |ctx| {
-        apply_alignment(&label, *ctx.value());
+    leaf.watch(config.paragraph_alignment(), {
+        let label = label.clone();
+        move |ctx| {
+            apply_alignment(&label, *ctx.value());
+        }
+    });
+    leaf.watch(config.line_limit(), move |ctx| {
+        label.set_line_limit(ctx.value().map_or(0, NonZero::get));
+        crate::measure_memo::invalidate();
     });
     leaf
 }

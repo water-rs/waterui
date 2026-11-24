@@ -377,7 +377,7 @@ fn render_table(
             headers
                 .get(col_idx)
                 .map_or_else(|| Text::from(""), element_to_text)
-                .bold()
+                .bold(true)
         })
         .collect();
     let mut row_cells = Vec::with_capacity(col_count * rows.len());
@@ -735,7 +735,7 @@ fn parse_markdown(markdown: &str) -> Vec<RichTextElement> {
                         .unwrap_or(false);
 
                     let style = if header_cell {
-                        Style::default().bold()
+                        Style::default().bold(true)
                     } else {
                         Style::default()
                     };
@@ -1040,7 +1040,7 @@ fn language_from_kind(kind: &CodeBlockKind) -> Language {
 fn inline_code_style() -> Style {
     Style::default()
         .font(waterui_text::font::Body)
-        .monospaced()
+        .monospaced(true)
         .background(Srgb::new_u8(236, 239, 241))
 }
 
@@ -1297,7 +1297,7 @@ impl InlineGroup {
     /// heading, so it stays part of the surrounding run of text.
     fn enter_link(&mut self, url: Str) {
         self.builder
-            .enter_with(|style| style.underline().foreground(Color::new(AccentColor)));
+            .enter_with(|style| style.underline(true).foreground(Color::new(AccentColor)));
         self.open_link = Some((self.offset, url));
     }
 

@@ -21,7 +21,7 @@ use waterui::ts::{
 };
 use waterui_core::Environment;
 use waterui_graphics::color::ColorScheme;
-use waterui_locale::locales;
+use waterui_locale::{TranslationCatalog, locales};
 use waterui_testing::{SemanticApp, ui};
 use waterui_ts::engine::{JsRuntime as _, JsValue};
 use waterui_ts::schema::{
@@ -201,13 +201,18 @@ fn session(launched: &Launched) -> SemanticApp {
         .try_mount(launched.environment())
         .unwrap_or_else(|error| panic!("mounting the module: {error}"));
     let view = RefCell::new(Some(view));
-    ui().environment(launched.environment().clone())
-        .viewport(320, 240)
-        .mount(move || {
-            view.borrow_mut()
-                .take()
-                .expect("the test session realizes its root once")
-        })
+    let mut builder = ui()
+        .with(locales::EN)
+        .with(launched.handle().clone())
+        .viewport(320, 240);
+    if let Some(catalog) = launched.environment().get::<TranslationCatalog>() {
+        builder = builder.install(catalog.clone());
+    }
+    builder.mount(move || {
+        view.borrow_mut()
+            .take()
+            .expect("the test session realizes its root once")
+    })
 }
 
 /// Whether anything at all exists under `root`.
@@ -1011,12 +1016,23 @@ fn ts_ota_a_staging_directory_a_write_left_behind_is_reaped_at_launch() {
 // Translations
 // ---------------------------------------------------------------------------
 
+fn localized_bundle(tag: &str, key: &str, contract: u64) -> String {
+    format!(
+        "{LIBRARY}\n(function () {{\n  const {{ jsx, t }} = globalThis.waterui;\n  \
+         const {{ installRuntimeGlobal }} = globalThis.wateruiRuntime;\n  \
+         globalThis.__waterui_test_bundle = \"{tag}\";\n  \
+         function Main() {{ return jsx(\"Text\", {{ children: t(\"{key}\") }}); }}\n  \
+         installRuntimeGlobal({{ \"{MODULE}\": Main }}, {{ \"{MODULE}\": \"{contract:016x}\" }});\n\
+         }})();\n"
+    )
+}
+
 #[test]
 fn ts_ota_a_bundle_carrying_translations_installs_them_for_its_modules() {
     let dir = tempfile::tempdir().expect("a temporary directory");
     let store = BundleStore::new(dir.path().join("store"));
     let key = keypair();
-    let source = bundle("v11", "greeting", NoProps::CONTRACT_HASH);
+    let source = localized_bundle("v11", "greeting", NoProps::CONTRACT_HASH);
     let mut manifest = manifest(11, &source);
     manifest.translations_mut().insert(
         String::from("en"),

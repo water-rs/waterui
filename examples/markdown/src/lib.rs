@@ -88,16 +88,14 @@ pub fn demo() -> impl View {
         ))
         .padding()
         .background(Surface)
-        .on_key_press(
-            |Use(press): Use<KeyPress>, State(open): State<Binding<bool>>| {
-                if *press.key() == Key::Named(NamedKey::Escape) {
-                    open.set(false);
-                    KeyHandling::Handled
-                } else {
-                    KeyHandling::Ignored
-                }
-            },
-        )
+        .on_key_press(|press: KeyPress, State(open): State<Binding<bool>>| {
+            if *press.key() == Key::Named(NamedKey::Escape) {
+                open.set(false);
+                KeyHandling::Handled
+            } else {
+                KeyHandling::Ignored
+            }
+        })
     };
 
     // The Find control sits in the column above the document, so it can

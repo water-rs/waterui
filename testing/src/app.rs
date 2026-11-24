@@ -197,14 +197,26 @@ impl UiBuilder<NoStyle> {
 }
 
 impl<S> UiBuilder<S> {
-    /// Overrides the environment used by the mounted app.
+    /// Adds a value to the builder's environment, preserving earlier values
+    /// and plugins.
     ///
-    /// The runtime still installs its framework tokens on top at mount time
-    /// — and a styled builder's `mount` applies the style's tokens above
-    /// them.
+    /// If a value of the same type was already added, it is replaced. The
+    /// runtime still installs its framework tokens on top at mount time — and a
+    /// styled builder's `mount` applies the style's tokens above them.
     #[must_use]
-    pub fn environment(mut self, env: Environment) -> Self {
-        self.env = env;
+    pub fn with<T: 'static>(mut self, value: T) -> Self {
+        self.env.insert(value);
+        self
+    }
+
+    /// Installs a plugin into the builder's environment, preserving earlier
+    /// values and plugins.
+    ///
+    /// The runtime still installs its framework tokens on top at mount time —
+    /// and a styled builder's `mount` applies the style's tokens above them.
+    #[must_use]
+    pub fn install(mut self, plugin: impl Plugin) -> Self {
+        self.env.install(plugin);
         self
     }
 
@@ -1113,15 +1125,21 @@ impl<R: RuntimeDriver> SemanticApp<R> {
 
     /// Starts a chainable semantic query.
     pub fn query(&mut self) -> Query<'_, R> {
-        Query {
-            app: self,
-            selector: Selector::default(),
-        }
+        Query::settled(self)
     }
 
     /// Convenience existence assertion.
     pub fn assert_exists(&mut self, selector: &Selector) {
         let results = self.resolve_elements(selector);
+        self.assert_exists_results(&results, selector);
+    }
+
+    pub(crate) fn assert_exists_unsynced(&self, selector: &Selector) {
+        let results = self.resolve_elements_unsynced(selector);
+        self.assert_exists_results(&results, selector);
+    }
+
+    fn assert_exists_results(&self, results: &ElementSet<R>, selector: &Selector) {
         let count = results.len();
         assert!(
             (count != 0),
@@ -1134,6 +1152,15 @@ impl<R: RuntimeDriver> SemanticApp<R> {
     /// Convenience non-existence assertion.
     pub fn assert_not_exists(&mut self, selector: &Selector) {
         let results = self.resolve_elements(selector);
+        Self::assert_not_exists_results(&results, selector);
+    }
+
+    pub(crate) fn assert_not_exists_unsynced(&self, selector: &Selector) {
+        let results = self.resolve_elements_unsynced(selector);
+        Self::assert_not_exists_results(&results, selector);
+    }
+
+    fn assert_not_exists_results(results: &ElementSet<R>, selector: &Selector) {
         let count = results.len();
         assert!(
             (count == 0),
@@ -1146,6 +1173,15 @@ impl<R: RuntimeDriver> SemanticApp<R> {
     /// Asserts that the selector resolves to the current UI-focused element.
     pub fn assert_ui_focus(&mut self, selector: &Selector) {
         let element = self.resolve_single(selector);
+        self.assert_ui_focus_element(&element, selector);
+    }
+
+    pub(crate) fn assert_ui_focus_unsynced(&self, selector: &Selector) {
+        let element = self.resolve_single_unsynced(selector);
+        self.assert_ui_focus_element(&element, selector);
+    }
+
+    fn assert_ui_focus_element(&self, element: &ElementRef<R>, selector: &Selector) {
         if self.ui_focus == Some(element.id()) {
             return;
         }
@@ -1502,15 +1538,16 @@ impl<R: RuntimeDriver> SemanticApp<R> {
 
     fn matching_ids(&mut self, selector: &Selector) -> Vec<NodeId> {
         self.sync_tree();
+        self.matching_ids_unsynced(selector)
+    }
+
+    fn matching_ids_unsynced(&self, selector: &Selector) -> Vec<NodeId> {
         self.validate_selector_scope(selector);
         self.tree.matching(selector)
     }
 
-    /// Resolves every element matching `selector` against the current tree.
-    pub fn resolve_elements(&mut self, selector: &Selector) -> ElementSet<R> {
-        let ids = self.matching_ids(selector);
-        // The sync inside `matching_ids` can apply a newer tree; the handles'
-        // revision must be read after it so they are not born stale.
+    fn elements_from_ids(&self, ids: Vec<NodeId>) -> ElementSet<R> {
+        // Callers that synced first get handles with the post-sync revision.
         let revision = self.tree.revision();
         let elements = ids
             .into_iter()
@@ -1519,8 +1556,27 @@ impl<R: RuntimeDriver> SemanticApp<R> {
         ElementSet::new(elements)
     }
 
+    /// Resolves every element matching `selector` against the current tree.
+    pub fn resolve_elements(&mut self, selector: &Selector) -> ElementSet<R> {
+        let ids = self.matching_ids(selector);
+        self.elements_from_ids(ids)
+    }
+
+    pub(crate) fn resolve_elements_unsynced(&self, selector: &Selector) -> ElementSet<R> {
+        self.elements_from_ids(self.matching_ids_unsynced(selector))
+    }
+
     pub(crate) fn resolve_single(&mut self, selector: &Selector) -> ElementRef<R> {
         let results = self.resolve_elements(selector);
+        self.expect_single_result(&results, selector)
+    }
+
+    pub(crate) fn resolve_single_unsynced(&self, selector: &Selector) -> ElementRef<R> {
+        let results = self.resolve_elements_unsynced(selector);
+        self.expect_single_result(&results, selector)
+    }
+
+    fn expect_single_result(&self, results: &ElementSet<R>, selector: &Selector) -> ElementRef<R> {
         match results.len() {
             1 => results[0].clone(),
             0 => panic!(
@@ -1585,8 +1641,24 @@ impl<R: RuntimeDriver> SemanticApp<R> {
         action: AccessibilityAction,
         data: Option<AccessibilityActionData>,
     ) {
-        assert!(
-            self.perform_action(node_id, action, data),
+        if !self.perform_action(node_id, action, data) {
+            self.panic_unhandled_action(node_id, action);
+        }
+    }
+
+    pub(crate) fn queue_action_expect(
+        &mut self,
+        node_id: NodeId,
+        action: AccessibilityAction,
+        data: Option<AccessibilityActionData>,
+    ) {
+        if !self.queue_action(node_id, action, data) {
+            self.panic_unhandled_action(node_id, action);
+        }
+    }
+
+    fn panic_unhandled_action(&self, node_id: NodeId, action: AccessibilityAction) -> ! {
+        panic!(
             "waterui-testing: accessibility action {action:?} on {} was not handled by the runtime — the target does not support this action",
             self.describe_node(node_id),
         );
@@ -1967,44 +2039,6 @@ impl<R: RuntimeDriver> SemanticApp<R> {
             self.assert_current_anchor(scope.handle(), "scoped query");
         }
     }
-
-    pub(crate) fn tap_node(&mut self, node_id: NodeId) {
-        self.perform_action_expect(node_id, AccessibilityAction::Click, None);
-    }
-
-    pub(crate) fn focus_node(&mut self, node_id: NodeId) {
-        self.perform_action_expect(node_id, AccessibilityAction::Focus, None);
-    }
-
-    pub(crate) fn set_text_node(&mut self, node_id: NodeId, value: impl Into<String>) {
-        self.perform_action_expect(
-            node_id,
-            AccessibilityAction::SetValue,
-            Some(AccessibilityActionData::Value(
-                value.into().into_boxed_str(),
-            )),
-        );
-    }
-
-    pub(crate) fn increment_node(&mut self, node_id: NodeId) {
-        self.perform_action_expect(node_id, AccessibilityAction::Increment, None);
-    }
-
-    pub(crate) fn decrement_node(&mut self, node_id: NodeId) {
-        self.perform_action_expect(node_id, AccessibilityAction::Decrement, None);
-    }
-
-    pub(crate) fn scroll_down_node(&mut self, node_id: NodeId) {
-        self.perform_action_expect(node_id, AccessibilityAction::ScrollDown, None);
-    }
-
-    pub(crate) fn expand_node(&mut self, node_id: NodeId) {
-        self.perform_action_expect(node_id, AccessibilityAction::Expand, None);
-    }
-
-    pub(crate) fn collapse_node(&mut self, node_id: NodeId) {
-        self.perform_action_expect(node_id, AccessibilityAction::Collapse, None);
-    }
 }
 
 /// Geometry and pointer surface, available only on the rendered runtime: the
@@ -2068,11 +2102,18 @@ impl SemanticApp<HeadlessRuntime> {
 
     /// Dispatches a pointer tap at viewport coordinates and settles resulting updates.
     pub fn tap_at(&mut self, x: f32, y: f32) {
+        self.queue_tap_at(x, y);
+        self.settle();
+    }
+
+    /// Dispatches a pointer tap at viewport coordinates without the semantic
+    /// settle used by [`Self::tap_at`]. The press and release are processed by
+    /// the next pump.
+    pub fn queue_tap_at(&mut self, x: f32, y: f32) {
         self.runtime
             .push_input_event(driver::pointer_down_event(PointerKind::Mouse, x, y));
         self.runtime
             .push_input_event(driver::pointer_up_event(PointerKind::Mouse, x, y));
-        self.settle();
     }
 
     /// Dispatches a primary pointer-down event at viewport coordinates.

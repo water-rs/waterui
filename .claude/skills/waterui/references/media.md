@@ -239,7 +239,8 @@ A page receives mirrored values with the reply to its own first request, never i
 script injected into it: `waterui.ready` resolves once they have arrived, and reading or
 assigning `waterui.state.<key>` before that throws. Await it before the first read.
 
-A typed `Json<T>` payload requires `T: Serialize`/`Deserialize`, so the app needs `serde`
+A typed `Json<T>` payload in `#[js_api]` requires `T: Serialize`/`Deserialize` and `TsType`
+(re-exported at `waterui::webview::TsType`), so the app needs `serde`
 (with the `derive` feature) as a direct dependency. An `async fn` returning `Result<_, E>`
 rejects the page's promise on `Err`. `#[js_api(namespace = "app")]` prefixes every name
 with `app.` — still on the one `waterui` object: the page calls
@@ -328,7 +329,7 @@ shader!("starfield.wgsl").size(400.0, 500.0)   // static fragment shader from th
 
 `shader!` reads the file next to the calling source file (`include_str!`) and expands to a
 `ShaderPaintView` that fills the space it is given. It renders once per change of its
-inputs; `.animated(signal)` (a `bool`, `.animated(true)` for constant) re-renders every
+inputs; `.continuous(signal)` (a `bool`, `.continuous(true)` for constant) re-renders every
 frame so `uniforms.time` advances, and `.uniforms(signal)` of a `Vec<f32>` (up to 64
 floats) feeds `params`. The WGSL writes `@fragment fn main(@location(0) uv: vec2<f32>) ->
 @location(0) vec4<f32>` (`uv` runs 0..1 from the top-left) against the prelude's
@@ -341,7 +342,7 @@ and lives on the render thread once installed — it must NOT hold `Binding`s or
 state; instead read reactive state in a `.on_frame` hook (UI thread, once per frame) and post
 plain values to the content through shared `Arc<Mutex<..>>` state. `waterui::graphics` re-exports
 `bytemuck`. Verify GPU components with offscreen rendering, never by reasoning about the code.
-Give the surface an accessibility name with `.labeled(..)` and a value with `.described(..)`.
+Give any graphics leaf a reactive accessibility name with `.offered_label(..)` and value with `.offered_value(..)` (`impl IntoComputed<Option<Str>>`).
 
 Input for self-drawn views (a terminal, an editor, a game board) arrives through
 `GpuView::on_input(|event: &SurfaceInputEvent| ..)` — a UI-thread `Fn`, so it may
@@ -390,11 +391,11 @@ row, `guided_smooth`, `depth_aware_blur`, `temporal_denoise` and `displacement_w
 
 | Family | Methods |
 |---|---|
-| Color and tone | `brightness` `contrast` `saturation` `vibrance` `exposure` `gamma` `grayscale` `sepia` `hue_rotation` `invert()` `temperature_tint(t, tint)` `highlights_shadows(h, s)` `white_point(r, g, b)` `tone_curve(shadows, mids, highlights, gamma, amount)` `color_matrix([[f32; 4]; 3])` `lut_color_grade(LutImage, intensity)` |
+| Color and tone | `brightness` `contrast` `saturation` `vibrance` `exposure` `gamma` `grayscale` `sepia` `hue_rotation` `invert()` `temperature_tint(t, tint)` `highlights_shadows(h, s)` `white_point(r, g, b)` `tone_curve(shadows, mids, highlights, gamma, amount)` `color_matrix(matrix)` (`IntoComputed<[[f32; 4]; 3]>`) `lut_color_grade(LutImage, intensity)` |
 | Blur, sharpen, denoise | `blur(radius)` `gaussian_blur(sigma)` `motion_blur(radius, angle)` `zoom_blur(amount, x, y)` `sharpen` `unsharp_mask(..)` `bloom(..)` `gloom(..)` `guided_smooth(..)` `depth_aware_blur(..)` `temporal_denoise(..)` `median3x3()` |
-| Edges, kernels | `sobel()` `prewitt()` `edge_work(..)` `convolution3x3([p; 9])` `convolution5x5([p; 25])` (`p: Copy`, so literals) `morphology_min()` `morphology_max()` `morphology_gradient()` |
+| Edges, kernels | `sobel()` `prewitt()` `edge_work(..)` `convolution3x3([p; 9])` `convolution5x5([p; 25])` `morphology_min()` `morphology_max()` `morphology_gradient()` |
 | Stylize | `pixellate` `crystallize` `vignette(radius, softness)` `dot_halftone(..)` `line_halftone(..)` `kaleidoscope(..)` `mirror_tile(..)` `photo_effect_{mono,noir,chrome,instant,fade,process,tonal,transfer}()` |
-| Geometry | `bump_distortion(..)` `pinch_distortion(..)` `twirl_distortion(..)` `vortex_distortion(..)` `displacement_warp(..)` `perspective_transform([[f32; 2]; 4])` `perspective_correction([[f32; 2]; 4])` |
+| Geometry | `bump_distortion(..)` `pinch_distortion(..)` `twirl_distortion(..)` `vortex_distortion(..)` `displacement_warp(..)` `perspective_transform(quad)` `perspective_correction(quad)` (`IntoComputed<[[f32; 2]; 4]>`) |
 | Composite with an image (`FilterImage`) | `blend_with_image(image, amount, BlendMode)` `masked_blur(mask, ..)` `replace_background(matte, background, softness)` and the `{,swipe_,radial_,zoom_,displacement_}transition_to_image(..)` family |
 
 `.effect(..)` post-processes a view's rendered output with a fragment shader the app writes —
@@ -411,14 +412,14 @@ let crt = ShaderEffect::new(include_str!("crt.wgsl"))?; // invalid WGSL is an Er
 terminal()
     .effect(crt.clone())            // a clone shares the validated module; constant params carry
     .param(strength.clone())        // a signal — the shader reads it as effect_param(0u)
-    .animated(focused.clone())      // a bool signal — a frame after every frame while true
+    .continuous(focused.clone())    // a bool signal — a frame after every frame while true
 ```
 
 `ShaderEffect::new` parses and validates the module on the CPU, so a shader read from a config
 file is a `Result` handled where it is read. Parameters index in call order — a constant
 `.param(0.35)` on the effect counts too, and watched parameters appended by `.param(signal)`
-follow it — at most `SHADER_EFFECT_MAX_PARAMS` (16). `.animated()` on the effect itself is the
-constant form; the view-level `.animated(signal)` drives the flag reactively. `.effect(..)`
+follow it — at most `SHADER_EFFECT_MAX_PARAMS` (16). `.continuous()` on the effect itself is the
+constant form; the view-level `.continuous(signal)` drives the flag reactively. `.effect(..)`
 needs the `gpu` feature and a backend that runs GPU effects.
 
 Frames that already live in GPU memory (a decoder's `CVPixelBuffer`, an `AHardwareBuffer`, a

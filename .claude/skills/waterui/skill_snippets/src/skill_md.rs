@@ -298,7 +298,7 @@ pub fn skill_block_12() {
         text!("Blur: {blur:.1}") // format specs work
     };
     let _ = {
-        text("0x1F60").monospaced() // the platform's fixed-pitch face, same size
+        text("0x1F60").monospaced(true) // the platform's fixed-pitch face, same size
     };
 }
 
@@ -342,7 +342,10 @@ pub fn skill_block_13() {
         spacer().height(16.0) // fixed gap
     };
 
-    let buttons: HStack<_> = items.iter().map(|i| button(i.label)).collect();
+    let buttons: HStack<_> = items
+        .iter()
+        .map(|i| button(i.label).action(|| {}))
+        .collect();
 
     let _ = buttons;
 }
@@ -498,8 +501,11 @@ pub fn skill_block_15() {
         view.max_size(w, h) // [ellipsis filled]
     };
 
+    let factor = 1.5_f32;
     let view = Divider;
-    let _ = { view.scale(x, y) };
+    let _ = { view.scale(factor) };
+    let view = Divider;
+    let _ = { view.scale_xy(x, y) };
     let view = Divider;
     let _ = { view.rotation(degrees) };
     let view = Divider;
@@ -609,13 +615,12 @@ pub mod skill_block_16 {
     use waterui::prelude::*;
 
     use waterui::env::{use_env, with};
-    use waterui::impl_extractor;
 
+    #[state]
     #[derive(Clone)]
     pub struct ApiClient {
         base_url: Str,
     }
-    impl_extractor!(ApiClient); // makes it a handler/`use_env` parameter
 
     fn send(_client: &ApiClient) {}
 
@@ -630,22 +635,22 @@ pub mod skill_block_16 {
     }
 
     pub fn seeding() {
-        // Seeding, usually in `app(env)`:
+        // Seeding, usually in `app(env)` or `.state(&client)` on a container:
         {
             let mut env = Environment::new();
             let client = glue_client();
-            env.insert(client); // in place
+            env.insert(State(client)); // in place
         }
         {
             let env = Environment::new();
             let client = glue_client();
-            let env = env.with(client); // consuming builder, chains
+            let env = env.with(State(client)); // consuming builder, chains
             let _ = env;
         }
         {
             let env = Environment::new();
             let client = glue_client();
-            let scoped = env.extending(client); // non-mutating overlay
+            let scoped = env.extending(State(client)); // non-mutating overlay
             let _ = scoped;
         }
         {

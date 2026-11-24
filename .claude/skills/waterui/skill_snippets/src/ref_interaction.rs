@@ -26,23 +26,27 @@ pub fn interaction_block_02() -> impl View {
 }
 
 // ---------------------------------------------------------------------------
-// interaction.md § "## Tap shortcuts" (prose): `.on_tap_gesture_count(2, h)`
-// plus the haptic siblings. The prose names the gate on the haptic pair: they
-// and the `Intensity` they take live behind the `std` cargo feature, "which is
-// not among the defaults", so they are deliberately not compiled here.
+// interaction.md § "## Tap shortcuts" (prose): `.on_tap_gesture_count(2, h)`,
+// `.sensory_feedback(Feedback::Success, &trigger)`, and imperative
+// `waterui::haptic::Haptic::impact(Intensity::LOW)`.
 // Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn interaction_tap_siblings_prose() {
+    use waterui::haptic::Haptic as HapticEngine;
+    use waterui::task::spawn_local;
+
     let handler = || ();
+    let saved_count = Binding::i32(0);
     let _ = Divider.on_tap_gesture_count(2, handler);
     let _ = Divider.on_tap_gesture(handler);
     let _ = Divider.on_long_press_gesture(500, handler);
-
-    // Behind `feature = "std"`, which this crate does not enable:
-    //   let _ = Divider.on_tap_haptic(intensity, handler);
-    //   let _ = Divider.on_tap_haptic_default(handler);
-    //   let _ = Divider.on_long_press_haptic(500, intensity, handler);
-    //   let _ = Divider.on_long_press_haptic_default(500, handler);
+    let _ = Divider.sensory_feedback(Feedback::Success, &saved_count);
+    let _ = Divider.on_tap(|| {
+        spawn_local(async {
+            let _ = HapticEngine::impact(Intensity::LOW).await;
+        })
+        .detach();
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -84,7 +88,7 @@ pub fn interaction_remaining_gestures_prose() {
 
 // ---------------------------------------------------------------------------
 // interaction.md § "## Gesture recognizers" (prose): the gesture payloads read
-// with `Use<..>`, and `Use<HoverEvent>` in an `.event(Event::HoverMove, ..)`
+// directly, and `HoverEvent` in an `.event(Event::HoverMove, ..)`
 // handler. Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn interaction_event_payloads_prose() {
@@ -94,11 +98,11 @@ pub fn interaction_event_payloads_prose() {
         RotationGesture, TapEvent,
     };
 
-    let _ = Divider.on_tap(|Use(tap): Use<TapEvent>| {
+    let _ = Divider.on_tap(|tap: TapEvent| {
         let _ = tap.location();
     });
-    let _ = Divider.gesture(LongPressGesture::new(500), |Use(_): Use<LongPressEvent>| ());
-    let _ = Divider.gesture(DragGesture::new(5.0), |Use(drag): Use<DragEvent>| {
+    let _ = Divider.gesture(LongPressGesture::new(500), |_: LongPressEvent| ());
+    let _ = Divider.gesture(DragGesture::new(5.0), |drag: DragEvent| {
         let _ = (
             drag.location(),
             drag.translation(),
@@ -106,12 +110,9 @@ pub fn interaction_event_payloads_prose() {
             drag.phase(),
         );
     });
-    let _ = Divider.gesture(
-        MagnificationGesture::new(1.0),
-        |Use(_): Use<MagnificationEvent>| (),
-    );
-    let _ = Divider.gesture(RotationGesture::new(0.0), |Use(_): Use<RotationEvent>| ());
-    let _ = Divider.event(Event::HoverMove, |Use(hover): Use<HoverEvent>| {
+    let _ = Divider.gesture(MagnificationGesture::new(1.0), |_: MagnificationEvent| ());
+    let _ = Divider.gesture(RotationGesture::new(0.0), |_: RotationEvent| ());
+    let _ = Divider.event(Event::HoverMove, |hover: HoverEvent| {
         let _ = hover.location();
     });
 }
@@ -313,16 +314,14 @@ pub fn interaction_block_09() -> impl View {
     let search_panel = || text("Search panel");
 
     search_panel()
-        .on_key_press(
-            |Use(press): Use<KeyPress>, State(open): State<Binding<bool>>| {
-                if *press.key() == Key::Named(NamedKey::Escape) {
-                    open.set(false);
-                    KeyHandling::Handled
-                } else {
-                    KeyHandling::Ignored
-                }
-            },
-        )
+        .on_key_press(|press: KeyPress, State(open): State<Binding<bool>>| {
+            if *press.key() == Key::Named(NamedKey::Escape) {
+                open.set(false);
+                KeyHandling::Handled
+            } else {
+                KeyHandling::Ignored
+            }
+        })
         .state(&open)
 }
 
@@ -362,7 +361,7 @@ pub fn interaction_block_10() -> impl View {
         Blue.with_opacity(0.45).opacity(is_hovered.select(1.0, 0.0)),
         text("Hover me").padding(),
     ))
-    .scale(scale.clone(), scale)
+    .scale(scale)
 }
 
 // ---------------------------------------------------------------------------

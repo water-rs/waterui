@@ -16,20 +16,17 @@
 //! 3. Push locale updates to `waterui::regional`
 //! 4. `text!` automatically reacts to locale changes - no `watch()` needed!
 
+use jiff::civil;
 use waterui::app::{App, Windows};
 use waterui::catalog;
-use waterui::form::picker::{Picker, PickerItem};
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::regional::current_settings;
 use waterui::regional::set_locale_tag;
-use waterui_locale::format::date::{
-    DateStyle, SimpleDate, SimpleTime, TimeStyle, format_date,
-    format_datetime_with_regional_context,
-};
+use waterui_locale::format::date::{DateStyle, TimeStyle, format_datetime_with_regional_context};
 use waterui_locale::format::unit::{Kilometer, Length, Meter};
 use waterui_locale::locale::get_fallback_chain;
-use waterui_locale::{Locale, LocalizedDisplay, TranslationCatalog, locales};
+use waterui_locale::{Locale, LocalizedDisplay, RelativeTime, TranslationCatalog, locales};
 
 /// Builds the locale picker items dynamically from the compiled translation catalog.
 fn available_locales(catalog: &TranslationCatalog) -> Vec<PickerItem<Locale>> {
@@ -66,7 +63,7 @@ fn locale_picker_section(
     detected: String,
 ) -> impl View + use<> {
     vstack((
-        text!("Language Booth").size(16.0).bold(),
+        text!("Language Booth").size(16.0).bold(true),
         hstack((text!("Detected Locale:"), spacer(), text(detected))),
         hstack((
             text!("Chosen Language:"),
@@ -84,7 +81,7 @@ fn locale_picker_section(
 /// Welcome desk section using text! macro
 fn greeting_section() -> impl View {
     vstack((
-        text!("Welcome Desk").size(16.0).bold(),
+        text!("Welcome Desk").size(16.0).bold(true),
         text!("Welcome to the World Fair!").size(24.0),
     ))
 }
@@ -92,7 +89,7 @@ fn greeting_section() -> impl View {
 /// Local flavor section - demonstrates variant differences (US vs UK English)
 fn regional_vocab_section() -> impl View {
     vstack((
-        text!("Local Flavor").size(16.0).bold(),
+        text!("Local Flavor").size(16.0).bold(true),
         hstack((spacer(), text!("Color"), spacer())),
         hstack((spacer(), text!("Favorite"), spacer())),
     ))
@@ -101,32 +98,27 @@ fn regional_vocab_section() -> impl View {
 /// Human rights section - UDHR Article 1
 fn paragraph_section() -> impl View {
     vstack((
-        text!("Human Rights - Article 1").size(16.0).bold(),
+        text!("Human Rights - Article 1").size(16.0).bold(true),
         text!("$udhr_article_1").size(14.0),
     ))
 }
 
 /// Date formatting section
 fn date_section(locale: &Computed<Locale>) -> impl View + use<> {
-    let date_short = locale
-        .clone()
-        .map(|locale| format_date(&locale, &SimpleDate::new(2006, 3, 20), DateStyle::Short))
-        .computed();
-    let date_long = locale
-        .clone()
-        .map(|locale| format_date(&locale, &SimpleDate::new(2006, 3, 20), DateStyle::Long))
-        .computed();
+    let festival = civil::date(2006, 3, 20);
+    let date_short = festival.formatted(DateStyle::Short);
+    let date_long = festival.formatted(DateStyle::Long);
+    let opens_in = RelativeTime::days(3);
     let timezone = locale
         .clone()
         .map(|_| current_settings().timezone().to_string())
         .computed();
     let datetime_with_zone = locale
         .clone()
-        .map(|_| {
+        .map(move |_| {
             format_datetime_with_regional_context(
                 &current_settings(),
-                &SimpleDate::new(2006, 3, 20),
-                &SimpleTime::new(9, 30, 0),
+                festival.at(9, 30, 0, 0),
                 DateStyle::Long,
                 TimeStyle::Long,
             )
@@ -134,9 +126,10 @@ fn date_section(locale: &Computed<Locale>) -> impl View + use<> {
         .computed();
 
     vstack((
-        text!("Festival Date (2006-03-20)").size(16.0).bold(),
+        text!("Festival Date (2006-03-20)").size(16.0).bold(true),
         hstack((text!("Short:"), spacer(), text!("{date_short}"))),
         hstack((text!("Long:"), spacer(), text!("{date_long}"))),
+        hstack((text!("Countdown:"), spacer(), text!("{opens_in}"))),
         hstack((text!("Timezone:"), spacer(), text!("{timezone}"))),
         hstack((
             text!("Kickoff (TZ):"),
@@ -149,7 +142,7 @@ fn date_section(locale: &Computed<Locale>) -> impl View + use<> {
 /// Plural section using text! macro with plural source
 fn plural_section() -> impl View {
     vstack((
-        text!("Passport Stamps").size(16.0).bold(),
+        text!("Passport Stamps").size(16.0).bold(true),
         text!("I have {#count} passport stamp", count = 0),
         text!("I have {#count} passport stamp", count = 1),
         text!("I have {#count} passport stamp", count = 2),
@@ -169,7 +162,7 @@ fn unit_section(locale: &Computed<Locale>) -> impl View + use<> {
         .computed();
 
     vstack((
-        text!("Distance Guide").size(16.0).bold(),
+        text!("Distance Guide").size(16.0).bold(true),
         hstack((text!("City Walk:"), spacer(), text!("{distance}"))),
         hstack((text!("Marathon Route:"), spacer(), text!("{marathon}"))),
     ))
@@ -207,7 +200,7 @@ fn scene(system_locale: &Locale) -> impl View + use<> {
     scroll(
         vstack((
             // Title
-            text!("WaterUI World Fair").size(28.0).bold(),
+            text!("WaterUI World Fair").size(28.0).bold(true),
             text!("Live translations for a tiny world-fair kiosk").size(14.0),
             Divider,
             // Locale picker

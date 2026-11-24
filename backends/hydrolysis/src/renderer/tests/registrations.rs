@@ -469,7 +469,7 @@ fn only_an_interactive_target_above_a_platform_view_takes_its_press() {
         AnyView::new(zstack((
             AnyView::new(Native::new(PlatformView::new("probe"))).size(300.0, 300.0),
             Color::srgb(20, 20, 20).size(300.0, 300.0),
-            button("Above"),
+            button("Above").action(|| {}),
         )))
     });
     let mut runtime = HeadlessRuntime::new_for_tests(
@@ -516,7 +516,7 @@ fn a_host_pixel_touch_reaches_the_platform_view_drawn_under_it() {
     let builder = AnyViewBuilder::<AnyView>::new(|| {
         AnyView::new(zstack((
             AnyView::new(Native::new(PlatformView::new("first"))).size(300.0, 200.0),
-            zstack((Color::srgb(200, 40, 40), button("Card")))
+            zstack((Color::srgb(200, 40, 40), button("Card").action(|| {})))
                 .size(120.0, 120.0)
                 .offset(0.0, 60.0),
             AnyView::new(Native::new(PlatformView::new("second")))
@@ -692,7 +692,7 @@ fn click(runtime: &mut HeadlessRuntime, x: f64, y: f64) {
 fn reference_over_scrolled_target(fired: &Rc<Cell<bool>>) -> AnyView {
     let fired = fired.clone();
     AnyView::new(vstack((
-        button("Reference"),
+        button("Reference").action(|| {}),
         scroll(vstack((
             vstack((text("Spacer"),)).size(f32::INFINITY, 100.0),
             vstack((text("Target"),))
@@ -755,7 +755,7 @@ const OVERFLOWING_ROWS: usize = 30;
 fn reference_over_rows(tapped: &Rc<Cell<Option<usize>>>) -> AnyView {
     let tapped = tapped.clone();
     AnyView::new(vstack((
-        button("Reference"),
+        button("Reference").action(|| {}),
         List::for_each(
             SignalCollection::new((0..OVERFLOWING_ROWS).map(SelfId::new).collect::<Vec<_>>()),
             move |row| {
@@ -942,7 +942,9 @@ fn a_hovered_target_that_turns_unhittable_clears_its_hover() {
     let builder = {
         let enabled = enabled.clone();
         AnyViewBuilder::<AnyView>::new(move || {
-            AnyView::new(vstack((button("Hover me").hittable(enabled.clone()),)))
+            AnyView::new(vstack((button("Hover me")
+                .action(|| {})
+                .hittable(enabled.clone()),)))
         })
     };
     let mut runtime = runtime(builder);

@@ -1,4 +1,4 @@
-//! `<Show>` and `<Suspense>`: one branch presented at a time.
+//! `<Show>`: one branch presented at a time.
 //!
 //! A branch is a JavaScript render callback's `{ handle, dispose }`: the view
 //! it built, and the teardown for the reactive scope it built it under. The
@@ -186,27 +186,6 @@ pub fn show(
         dynamic,
         Retain::new((guard, current, presented, source)),
     )))
-}
-
-/// `<Suspense>`: presents the children.
-///
-/// The boundary is where a pending resource would be awaited, and the
-/// JavaScript runtime has no resource primitive: nothing under a `<Suspense>`
-/// can be pending, so the children branch — which renders synchronously — is
-/// what is presented, and the fallback is never built. A Rust-composed view
-/// slotted into the tree suspends through its own `Suspense`, which the
-/// backend presents as it always has.
-///
-/// # Errors
-///
-/// Returns [`JsError`] when the children branch cannot be rendered.
-pub fn suspense(
-    bridge: &Bridge,
-    children: &JsFunction,
-    _fallback: Option<&JsFunction>,
-) -> Result<AnyView, JsError> {
-    let (view, branch) = Branch::render(bridge, children, &[])?;
-    Ok(AnyView::new(Metadata::new(view, Retain::new(branch))))
 }
 
 /// JavaScript truthiness, which is what `<Show when={…}>` reads.

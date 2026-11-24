@@ -256,11 +256,8 @@ fn photo_in_lazy_list_serves_from_environment_cache_without_refetch(ui: UiBuilde
         }));
     let items_for_view = items.clone();
 
-    let mut env = waterui::configure_environment!(waterui::Environment::new());
-    env.insert(cache.clone());
-
     let mut app = ui
-        .environment(env)
+        .with(cache.clone())
         .viewport(320, 200)
         .theme(TestStyle::default())
         .mount_offscreen(move || {

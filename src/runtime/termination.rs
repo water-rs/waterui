@@ -35,7 +35,7 @@ use executor_core::AnyLocalExecutorTask;
 use waterui_controls::menu::{CommandExt as _, ResolvedCommand, Shortcut};
 #[cfg(feature = "menu")]
 use waterui_core::backend::ChildSlot;
-use waterui_core::{Environment, impl_extractor};
+use waterui_core::{Environment, extract::State as EnvState};
 
 use crate::app::QuitReply;
 use crate::task::spawn_local;
@@ -307,7 +307,7 @@ impl Termination {
     pub fn start(self, env: &mut Environment, host: impl TerminationHost) -> TerminationHandle {
         let has_hooks = self.on_quit_request.is_some() || self.on_terminate.is_some();
         let inner = Rc::new_cyclic(|machine| {
-            env.insert(Quit(machine.clone()));
+            env.insert(EnvState(Quit(machine.clone())));
             RefCell::new(Shared {
                 state: State::Idle,
                 has_hooks,
@@ -347,6 +347,7 @@ impl fmt::Debug for Termination {
 /// still gets its say before `on_terminate` runs. iOS, Android, web and the
 /// headless hosts never install `Quit` — those hosts end the process on
 /// their own terms — so extracting it there fails.
+#[waterui_macros::state]
 #[derive(Clone)]
 pub struct Quit(Weak<RefCell<Shared>>);
 
@@ -384,7 +385,7 @@ impl Quit {
     /// [`App::on_quit_request`](crate::app::App::on_quit_request) still
     /// decides.
     ///
-    /// A backend reaches it through `env.get::<Quit>()`, which is absent when
+    /// A backend reaches it through `env.extract::<Quit>()`, which is absent when
     /// the host has no application quit — only a runner that starts the
     /// termination machine installs one — and the item is then omitted.
     #[doc(hidden)]
@@ -405,8 +406,6 @@ impl Quit {
             .resolve::<S>(env)
     }
 }
-
-impl_extractor!(Quit);
 
 #[cfg(test)]
 mod tests {
@@ -472,7 +471,7 @@ mod tests {
 
         // A refused quit leaves the machine idle: the next request asks
         // again — here filed through the `Quit` the machine installed.
-        env.get::<Quit>()
+        env.extract::<Quit>()
             .expect("start installs Quit into the runner's environment")
             .request();
         drain();
@@ -493,7 +492,7 @@ mod tests {
         });
         let (_handle, env) = start(app, &log);
         let command = env
-            .get::<Quit>()
+            .extract::<Quit>()
             .expect("start installs Quit into the runner's environment")
             .command::<NoopSlot>(&env);
 

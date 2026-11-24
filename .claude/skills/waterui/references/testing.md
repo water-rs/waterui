@@ -308,7 +308,7 @@ mcp` is one — uses the builder form `ui().theme(style).viewport(w,
 h).scale_factor(dpi).mount_app(app)` instead. Either mounts only the app's first window
 and panics when the app declares none: the app's menu bar and further windows are not
 mounted, though popups the app opens at runtime (context menus, pickers) join the tree.
-`ui().environment(env)` supplies the environment a manual mount's view resolves.
+`ui().with(service)` and `ui().install(plugin)` layer services and plugins additively onto a manual mount's environment without discarding defaults or earlier calls.
 
 ## `#[waterui::bench]` and `water bench`
 
@@ -329,8 +329,8 @@ fn dashboard_redraw(perf: &mut PerfApp) {
 ```
 
 The closure runs **before every frame**: queue input (`run.pointer_move/down/up`,
-`run.scroll_at`) or call `run.redraw()`, and the frame that follows is what gets timed.
-`run.app()` exposes the full query and interaction API mid-run.
+`run.scroll_at`, `run.query()`) or call `run.redraw()`, and the frame that follows is
+what gets timed. `run.app()` exposes read-only `&OffscreenApp` state mid-run.
 
 A bench that owns the bindings its view closes over omits the view path, takes the
 builder by value, and returns the report:
@@ -346,7 +346,7 @@ fn counter_updates(
     let for_view = value.clone();
     ui.perf_with(move || stepper("Count", &for_view), |perf| {
         perf.measure("increment", |run| {
-            run.app().query().label("Count").increment();
+            run.query().label("Count").increment();
         });
     })
 }

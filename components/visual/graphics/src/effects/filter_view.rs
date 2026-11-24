@@ -75,7 +75,7 @@ pub use filtrate::{
 pub use filtrate::{Filter, FilterImage, LutImage, Reach};
 #[cfg(feature = "gpu")]
 use nami::SignalExt;
-use nami::{Signal, signal::IntoComputed};
+use nami::{Signal, signal::IntoComputed, watcher::Metadata};
 use waterui_core::animation::ChangeAnimation;
 use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 use waterui_core::{AnyView, Environment, IntoSignalF32, Native, View};
@@ -295,22 +295,36 @@ impl ParamGuards {
         });
         let target = Arc::clone(&slot);
         let guard = signal.watch(move |context| {
-            let animation = ChangeAnimation::of(context.metadata())
-                .animation()
-                .map(|animation| engine_animation(&animation));
-            let value = context.into_value();
-            target.value.store(value.to_bits(), Ordering::Release);
-            target.watchers.for_each(|callback| {
-                callback(AnimatedTarget {
-                    value,
-                    interpolator: animation.map(|animation| {
-                        Box::new(AnimationInterpolator(animation)) as Box<dyn Interpolator>
-                    }),
-                });
-            });
+            let animation = extract_animation(context.metadata());
+            notify_slot(&target, context.into_value(), animation);
         });
         self.0.push(Box::new(guard));
         Reactive(slot)
+    }
+
+    fn bind_slice<T: Clone + 'static, const N: usize>(
+        &mut self,
+        value: impl IntoComputed<T>,
+        flatten: fn(&T) -> [f32; N],
+    ) -> [Reactive; N] {
+        let signal = value.into_computed();
+        let initial = signal.with_ref(flatten);
+        let slots: [Arc<Slot>; N] = core::array::from_fn(|i| {
+            Arc::new(Slot {
+                value: AtomicU32::new(initial[i].to_bits()),
+                watchers: Watchers::new(),
+            })
+        });
+        let targets = slots.each_ref().map(Arc::clone);
+        let guard = signal.watch(move |context| {
+            let animation = extract_animation(context.metadata());
+            let values = flatten(&context.into_value());
+            for (slot, value) in targets.iter().zip(values) {
+                notify_slot(slot, value, animation);
+            }
+        });
+        self.0.push(Box::new(guard));
+        slots.map(Reactive)
     }
 
     /// Retains a UI-side subscription until this filtered view is dropped.
@@ -321,6 +335,48 @@ impl ParamGuards {
     fn extend(&mut self, other: Self) {
         self.0.extend(other.0);
     }
+}
+
+fn extract_animation(metadata: &Metadata) -> Option<crate::draw::Animation> {
+    ChangeAnimation::of(metadata)
+        .animation()
+        .map(|animation| engine_animation(&animation))
+}
+
+fn notify_slot(slot: &Slot, value: f32, animation: Option<crate::draw::Animation>) {
+    slot.value.store(value.to_bits(), Ordering::Release);
+    slot.watchers.for_each(|callback| {
+        callback(AnimatedTarget {
+            value,
+            interpolator: animation.map(|animation| {
+                Box::new(AnimationInterpolator(animation)) as Box<dyn Interpolator>
+            }),
+        });
+    });
+}
+
+const fn flatten_color_matrix(matrix: &[[f32; 4]; 3]) -> [f32; 12] {
+    [
+        matrix[0][0],
+        matrix[0][1],
+        matrix[0][2],
+        matrix[0][3],
+        matrix[1][0],
+        matrix[1][1],
+        matrix[1][2],
+        matrix[1][3],
+        matrix[2][0],
+        matrix[2][1],
+        matrix[2][2],
+        matrix[2][3],
+    ]
+}
+
+const fn flatten_quad(quad: &[[f32; 2]; 4]) -> [f32; 8] {
+    [
+        quad[0][0], quad[0][1], quad[1][0], quad[1][1], quad[2][0], quad[2][1], quad[3][0],
+        quad[3][1],
+    ]
 }
 
 /// A Cherenkov animation driving a scalar filter parameter from rest,
@@ -967,7 +1023,7 @@ impl<C> MapSlots<C> for FilteredView<C> {
 /// backend with the lowered view, exactly as a filter's do.
 ///
 /// For a [`filtrate::ShaderEffect`], [`param`](Self::param) and
-/// [`animated`](Self::animated) bind reactive parameters without rebuilding
+/// [`continuous`](Self::continuous) bind reactive parameters without rebuilding
 /// the view.
 #[cfg(feature = "gpu")]
 #[derive(Debug)]
@@ -1028,13 +1084,13 @@ impl<V: View> WithEffect<V, filtrate::ShaderEffect> {
         self
     }
 
-    /// Drives the effect's animation flag: while `animated` holds `true` the
-    /// effect asks its host for another frame after each one it renders —
-    /// the reactive form of [`filtrate::ShaderEffect::animated`].
+    /// Drives the effect's continuous-redraw flag: while `continuous` holds
+    /// `true` the effect asks its host for another frame after each one it
+    /// renders — the reactive form of [`filtrate::ShaderEffect::continuous`].
     #[must_use]
-    pub fn animated(mut self, animated: impl IntoComputed<bool>) -> Self {
-        let flag = self.guards.bind(animated.into_computed().map(f32::from));
-        let (effect, guard) = self.effect.watch_animated(&flag);
+    pub fn continuous(mut self, continuous: impl IntoComputed<bool>) -> Self {
+        let flag = self.guards.bind(continuous.into_computed().map(f32::from));
+        let (effect, guard) = self.effect.watch_continuous(&flag);
         self.effect = effect;
         self.guards.retain(guard);
         self
@@ -1107,7 +1163,7 @@ pub type Contrast = filtrate::filters::Contrast<Reactive>;
 /// Alias for the `Exposure` filter.
 pub type Exposure = filtrate::filters::Exposure<Reactive>;
 /// Alias for the `ColorMatrix` filter.
-pub type ColorMatrix = filtrate::filters::ColorMatrix<f32>;
+pub type ColorMatrix = filtrate::filters::ColorMatrix<Reactive>;
 /// Alias for the `Gamma` filter.
 pub type Gamma = filtrate::filters::Gamma<Reactive>;
 /// Alias for the `GaussianBlur` filter.
@@ -1171,9 +1227,9 @@ pub type TwirlDistortion = filtrate::filters::TwirlDistortion<Reactive>;
 /// Alias for the `VortexDistortion` filter.
 pub type VortexDistortion = filtrate::filters::VortexDistortion<Reactive>;
 /// Alias for the `PerspectiveTransform` filter.
-pub type PerspectiveTransform = filtrate::filters::PerspectiveTransform<f32>;
+pub type PerspectiveTransform = filtrate::filters::PerspectiveTransform<Reactive>;
 /// Alias for the `PerspectiveCorrection` filter.
-pub type PerspectiveCorrection = filtrate::filters::PerspectiveCorrection<f32>;
+pub type PerspectiveCorrection = filtrate::filters::PerspectiveCorrection<Reactive>;
 /// Alias for the `Sepia` filter.
 pub type Sepia = filtrate::filters::Sepia<Reactive>;
 /// Alias for the `Vibrance` filter.
@@ -1371,23 +1427,17 @@ pub trait FilterViewExt: View + Sized {
 
     /// Apply a 3x3 convolution filter with a caller-supplied kernel
     /// (row-major, top-left to bottom-right).
-    fn convolution3x3<P: IntoSignalF32 + Copy>(
-        self,
-        kernel: [P; 9],
-    ) -> Filtered<Self, Convolution3x3> {
+    fn convolution3x3<P: IntoSignalF32>(self, kernel: [P; 9]) -> Filtered<Self, Convolution3x3> {
         let mut guards = ParamGuards::default();
-        let signals: [Reactive; 9] = core::array::from_fn(|i| guards.bind(kernel[i]));
+        let signals: [Reactive; 9] = kernel.map(|param| guards.bind(param));
         Filtered::bound(self, filtrate::filters::Convolution3x3(signals), guards)
     }
 
     /// Apply a 5x5 convolution filter with a caller-supplied 25-element
     /// kernel (row-major).
-    fn convolution5x5<P: IntoSignalF32 + Copy>(
-        self,
-        kernel: [P; 25],
-    ) -> Filtered<Self, Convolution5x5> {
+    fn convolution5x5<P: IntoSignalF32>(self, kernel: [P; 25]) -> Filtered<Self, Convolution5x5> {
         let mut guards = ParamGuards::default();
-        let signals: [Reactive; 25] = core::array::from_fn(|i| guards.bind(kernel[i]));
+        let signals: [Reactive; 25] = kernel.map(|param| guards.bind(param));
         Filtered::bound(self, filtrate::filters::Convolution5x5(signals), guards)
     }
 
@@ -1567,22 +1617,10 @@ pub trait FilterViewExt: View + Sized {
     }
 
     /// Apply a 3x4 color matrix transform.
-    fn color_matrix(self, matrix: [[f32; 4]; 3]) -> Filtered<Self, ColorMatrix> {
-        let params = [
-            matrix[0][0],
-            matrix[0][1],
-            matrix[0][2],
-            matrix[0][3],
-            matrix[1][0],
-            matrix[1][1],
-            matrix[1][2],
-            matrix[1][3],
-            matrix[2][0],
-            matrix[2][1],
-            matrix[2][2],
-            matrix[2][3],
-        ];
-        Filtered::new(self, filtrate::filters::ColorMatrix(params))
+    fn color_matrix(self, matrix: impl IntoComputed<[[f32; 4]; 3]>) -> Filtered<Self, ColorMatrix> {
+        let mut guards = ParamGuards::default();
+        let params = guards.bind_slice(matrix, flatten_color_matrix);
+        Filtered::bound(self, filtrate::filters::ColorMatrix(params), guards)
     }
 
     /// Apply bloom around bright regions.
@@ -1725,21 +1763,31 @@ pub trait FilterViewExt: View + Sized {
     }
 
     /// Warp a source quadrilateral into the output rectangle.
-    fn perspective_transform(self, quad: [[f32; 2]; 4]) -> Filtered<Self, PerspectiveTransform> {
-        let params = [
-            quad[0][0], quad[0][1], quad[1][0], quad[1][1], quad[2][0], quad[2][1], quad[3][0],
-            quad[3][1],
-        ];
-        Filtered::new(self, filtrate::filters::PerspectiveTransform(params))
+    fn perspective_transform(
+        self,
+        quad: impl IntoComputed<[[f32; 2]; 4]>,
+    ) -> Filtered<Self, PerspectiveTransform> {
+        let mut guards = ParamGuards::default();
+        let params = guards.bind_slice(quad, flatten_quad);
+        Filtered::bound(
+            self,
+            filtrate::filters::PerspectiveTransform(params),
+            guards,
+        )
     }
 
     /// Correct a perspective-skewed quadrilateral back to a rectangle.
-    fn perspective_correction(self, quad: [[f32; 2]; 4]) -> Filtered<Self, PerspectiveCorrection> {
-        let params = [
-            quad[0][0], quad[0][1], quad[1][0], quad[1][1], quad[2][0], quad[2][1], quad[3][0],
-            quad[3][1],
-        ];
-        Filtered::new(self, filtrate::filters::PerspectiveCorrection(params))
+    fn perspective_correction(
+        self,
+        quad: impl IntoComputed<[[f32; 2]; 4]>,
+    ) -> Filtered<Self, PerspectiveCorrection> {
+        let mut guards = ParamGuards::default();
+        let params = guards.bind_slice(quad, flatten_quad);
+        Filtered::bound(
+            self,
+            filtrate::filters::PerspectiveCorrection(params),
+            guards,
+        )
     }
 
     /// Apply a pixellate effect.
@@ -2366,12 +2414,12 @@ mod tests {
         drop(guards);
     }
 
-    /// The reactive animation flag reaches the render side through the built
-    /// effect: toggling it wakes the host and flips the redraw hint.
+    /// The reactive continuous-redraw flag reaches the render side through the
+    /// built effect: toggling it wakes the host and flips the redraw hint.
     #[cfg(feature = "gpu")]
     #[test]
-    fn shader_effect_animated_signal_reaches_the_render_side() {
-        let animated = nami::binding(false);
+    fn shader_effect_continuous_signal_reaches_the_render_side() {
+        let continuous = nami::binding(false);
         let shader = filtrate::ShaderEffect::new(
             "@fragment
             fn main(in: VertexOutput) -> @location(0) vec4<f32> {
@@ -2381,7 +2429,7 @@ mod tests {
         .expect("the test shader is valid WGSL");
         let FilteredView { effect, guards, .. } =
             ().effect(shader)
-                .animated(animated.clone())
+                .continuous(continuous.clone())
                 .into_filtered_view();
         let mut effect = effect.build();
         let redraws = Arc::new(AtomicUsize::new(0));
@@ -2390,7 +2438,7 @@ mod tests {
             count.fetch_add(1, Ordering::Relaxed);
         }));
 
-        animated.set(true);
+        continuous.set(true);
         assert_eq!(
             redraws.load(Ordering::Relaxed),
             1,
@@ -2398,7 +2446,7 @@ mod tests {
         );
         assert!(effect.redraw_hint(), "the flag is set on the render side");
 
-        animated.set(false);
+        continuous.set(false);
         assert_eq!(redraws.load(Ordering::Relaxed), 2);
         drop(guards);
     }
@@ -2683,5 +2731,125 @@ mod tests {
         let (low, high, bounds) = assert_samples_within_bounds(&bezier, 10.0, 0.0);
         assert!(bounds.0 < 0.0 && bounds.1 > 10.0, "{bounds:?}");
         assert!((bounds.0 - low).abs() < 1e-3 && (bounds.1 - high).abs() < 1e-3);
+    }
+
+    #[test]
+    fn color_matrix_accepts_signal_and_updates_in_place() {
+        use nami::binding;
+
+        let matrix = binding([
+            [1.0_f32, 0.0, 0.0, 0.1],
+            [0.0, 1.0, 0.0, 0.2],
+            [0.0, 0.0, 1.0, 0.3],
+        ]);
+        let FilteredView { effect, guards, .. } =
+            ().color_matrix(matrix.clone()).into_filtered_view();
+        let description = effect.description().expect("a filter is portable");
+        assert_eq!(
+            description.params(),
+            [1.0, 0.0, 0.0, 0.1, 0.0, 1.0, 0.0, 0.2, 0.0, 0.0, 1.0, 0.3]
+        );
+
+        let (send, receive) = mpsc::channel();
+        let mut subscriptions = Vec::new();
+        description.visit_signals(|signal: FilterSignal<'_>| {
+            let index = signal.index();
+            let send = send.clone();
+            subscriptions.push(signal.watch_animated(move |target| {
+                send.send((index, target.value)).expect("receiver exists");
+            }));
+        });
+        assert_eq!(subscriptions.len(), 12);
+
+        matrix.set([
+            [0.5, 0.0, 0.0, 0.0],
+            [0.0, 0.5, 0.0, 0.0],
+            [0.0, 0.0, 0.5, 0.4],
+        ]);
+        let updates: Vec<(usize, f32)> = (0..12)
+            .map(|_| receive.try_recv().expect("matrix update"))
+            .collect();
+        assert_eq!(updates[0], (0, 0.5));
+        assert_eq!(updates[11], (11, 0.4));
+        drop(subscriptions);
+        drop(guards);
+    }
+
+    #[test]
+    fn perspective_filters_accept_quad_signals_and_update_in_place() {
+        use nami::binding;
+
+        let quad = binding([[0.0_f32, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]);
+        let FilteredView { effect, guards, .. } =
+            ().perspective_correction(quad.clone()).into_filtered_view();
+        let description = effect.description().expect("a filter is portable");
+        assert_eq!(
+            description.params(),
+            [0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0]
+        );
+
+        let (send, receive) = mpsc::channel();
+        let mut subscriptions = Vec::new();
+        description.visit_signals(|signal: FilterSignal<'_>| {
+            let index = signal.index();
+            let send = send.clone();
+            subscriptions.push(signal.watch_animated(move |target| {
+                send.send((index, target.value)).expect("receiver exists");
+            }));
+        });
+        assert_eq!(subscriptions.len(), 8);
+
+        quad.set([[0.1, 0.2], [0.9, 0.1], [0.8, 0.9], [0.2, 0.8]]);
+        let updates: Vec<(usize, f32)> = (0..8)
+            .map(|_| receive.try_recv().expect("quad update"))
+            .collect();
+        assert_eq!(updates[0], (0, 0.1));
+        assert_eq!(updates[1], (1, 0.2));
+        assert_eq!(updates[7], (7, 0.8));
+        drop(subscriptions);
+        drop(guards);
+
+        let constant =
+            ().perspective_transform([[0.0_f32, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]);
+        let _ = constant.into_filtered_view();
+    }
+
+    #[test]
+    fn convolution_accepts_non_copy_signal_kernels() {
+        use nami::binding;
+
+        let center = binding(5.0_f32);
+        let kernel = [
+            binding(0.0_f32),
+            binding(-1.0_f32),
+            binding(0.0_f32),
+            binding(-1.0_f32),
+            center.clone(),
+            binding(-1.0_f32),
+            binding(0.0_f32),
+            binding(-1.0_f32),
+            binding(0.0_f32),
+        ];
+        let FilteredView { effect, guards, .. } = ().convolution3x3(kernel).into_filtered_view();
+        let description = effect.description().expect("a filter is portable");
+        assert_eq!(
+            description.params(),
+            [0.0, -1.0, 0.0, -1.0, 5.0, -1.0, 0.0, -1.0, 0.0]
+        );
+
+        let (send, receive) = mpsc::channel();
+        let mut subscriptions = Vec::new();
+        description.visit_signals(|signal: FilterSignal<'_>| {
+            if signal.index() == 4 {
+                let send = send.clone();
+                subscriptions.push(signal.watch_animated(move |target| {
+                    send.send(target.value).expect("receiver exists");
+                }));
+            }
+        });
+        center.set(9.0);
+        assert_eq!(receive.try_recv().expect("kernel center update"), 9.0);
+        drop(subscriptions);
+        drop(guards);
     }
 }

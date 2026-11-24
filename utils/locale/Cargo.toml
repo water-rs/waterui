@@ -34,6 +34,7 @@ icu_datetime = { version = "2.3", optional = true }
 icu_time = { version = "2.3", features = ["unstable_jiff_0_2"], optional = true }
 icu_calendar = { version = "2.3", optional = true }
 icu_list = { version = "2.3", optional = true }
+icu_experimental = { version = "0.7", default-features = false, features = ["compiled_data"], optional = true }
 jiff = { workspace = true, optional = true }
 
 # Other dependencies
@@ -58,6 +59,8 @@ datetime = ["dep:icu_datetime", "dep:icu_calendar", "dep:icu_time", "dep:jiff"]
 number = ["dep:icu_decimal"]
 # Locale-aware list conjunction (`LocalizedList`).
 list = ["dep:icu_list"]
+# Locale-aware relative time formatting (`format::relative`).
+relative-time = ["dep:icu_experimental", "dep:jiff"]
 
 [dev-dependencies]
 # `text!` expands against `::waterui`, so the crate-level example needs it.
@@ -65,7 +68,8 @@ waterui = { path = "../.." }
 # Every formatter has tests and doc examples, and none of them is in `default`.
 # A dev-dependency on itself turns them on for this crate's own test targets
 # without turning them on for anything that depends on the crate.
-waterui-locale = { path = ".", features = ["datetime", "number", "list"] }
+waterui-locale = { path = ".", features = ["datetime", "number", "list", "relative-time"] }
+jiff.workspace = true
 
 [lints]
 workspace = true

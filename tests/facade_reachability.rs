@@ -18,8 +18,8 @@ use waterui::navigation::{
 // at the controls root.
 use waterui::component::{button, field, label, slider, stepper, toggle};
 
-// Custom extractors no longer require `impl_extractor!` as the only route.
-use waterui::extract::{Extractor, State, Use};
+// Custom extractors reach the single `State` environment channel through `Extractor` and `State`.
+use waterui::extract::{Extractor, State};
 
 // Implementing a custom resolvable theme token.
 use waterui::resolve::{AnyResolvable, Resolvable};
@@ -31,9 +31,13 @@ use waterui::metadata::{Metadata, MetadataKey, Retain};
 // Implementing `Animatable` for a custom data shape.
 use waterui::easing::{EasingCurve, Interpolatable};
 
-// The explicit-intensity haptic modifiers, not just the `_default` variants.
-#[cfg(feature = "std")]
-use waterui::Intensity;
+// Declarative sensory feedback and imperative haptic triggers.
+#[cfg(feature = "haptics")]
+use waterui::haptic::{
+    Feedback as HapticFeedback, Haptic as HapticEngine, Intensity as HapticIntensity,
+};
+#[cfg(feature = "haptics")]
+use waterui::{Feedback, Haptic, Intensity};
 
 // `.filter(F)` requires `F: Reach + RenderTransfer` (`Reach` covers every
 // `Filter` of a colour or spatial kind) and `.effect(E)` requires

@@ -69,10 +69,10 @@ impl<E: crate::text::TextEngine> TextFieldRenderState<E> {
     #[cfg(feature = "accessibility")]
     pub(crate) fn contributed_label(
         &self,
-        _renderer: &mut crate::renderer::SemanticCore<E>,
+        renderer: &mut crate::renderer::SemanticCore<E>,
         env: &Environment,
     ) -> Option<String> {
-        crate::renderer::SemanticCore::<E>::accessibility_label_from_label(self.config.label(), env)
+        renderer.accessibility_label_from_label(self.config.label(), env)
     }
 
     pub(crate) fn from_config(config: TextFieldConfig<HeldChild<E>>) -> Self {
@@ -135,10 +135,10 @@ impl<E: crate::text::TextEngine> SecureFieldRenderState<E> {
     #[cfg(feature = "accessibility")]
     pub(crate) fn contributed_label(
         &self,
-        _renderer: &mut crate::renderer::SemanticCore<E>,
+        renderer: &mut crate::renderer::SemanticCore<E>,
         env: &Environment,
     ) -> Option<String> {
-        crate::renderer::SemanticCore::<E>::accessibility_label_from_label(self.config.label(), env)
+        renderer.accessibility_label_from_label(self.config.label(), env)
     }
 
     pub(crate) fn from_config(config: SecureFieldConfig<HeldChild<E>>) -> Self {
@@ -234,20 +234,21 @@ pub fn render_text_field_parts<E: crate::text::TextEngine>(
     // `value`/`prompt`/`selection_menu` are cloneable signals (the value is read
     // through `read_signal` below so a binding change schedules a frame). The label
     // is a retained node sub-view flushed under the animated transform each frame.
-    let (label, value_binding, prompt_signal, selection_menu, line_limit_raw, on_submit) = {
+    let (label, value_binding, prompt_signal, selection_menu, line_limit_signal, on_submit) = {
         let text_field = &state.config;
         (
             text_field.label().clone(),
             text_field.value().clone(),
             text_field.prompt().content(),
             state.selection_menu.clone(),
-            text_field.line_limit(),
+            text_field.line_limit().clone(),
             text_field.on_submit().cloned(),
         )
     };
     #[cfg(feature = "accessibility")]
-    let default_accessibility_label =
-        crate::renderer::SemanticCore::<E>::accessibility_label_from_label(&label, env);
+    let default_accessibility_label = ctx
+        .renderer_mut()
+        .accessibility_label_from_label(&label, env);
     #[cfg(not(feature = "accessibility"))]
     let _ = label;
     state.field.apply_label_font(
@@ -258,7 +259,10 @@ pub fn render_text_field_parts<E: crate::text::TextEngine>(
     );
     let label_size = state.label_view.measure_intrinsic(ctx.renderer_mut(), env);
     let label_height = material_input_label_height(label_size, input_metrics.label_height);
-    let line_limit = line_limit_raw.map(NonZeroUsize::get);
+    let line_limit = ctx
+        .renderer_mut()
+        .read_signal(&line_limit_signal)
+        .map(NonZeroUsize::get);
     #[cfg(feature = "accessibility")]
     {
         let prompt = ctx
@@ -457,7 +461,7 @@ pub fn render_text_field_parts<E: crate::text::TextEngine>(
         // either side of the splice stays plain.
         let mut styled = StyledStr::empty();
         styled.push_str(value[..selection_start].to_string());
-        styled.push(preedit.clone(), Style::new().underline());
+        styled.push(preedit.clone(), Style::new().underline(true));
         styled.push_str(value[selection_end..].to_string());
         value_text(&look, styled, field_rect, field_flags)
     };
@@ -646,8 +650,9 @@ pub fn render_secure_field_parts<E: crate::text::TextEngine>(
         (secure_field.label().clone(), secure_field.value().clone())
     };
     #[cfg(feature = "accessibility")]
-    let default_accessibility_label =
-        crate::renderer::SemanticCore::<E>::accessibility_label_from_label(&label, env);
+    let default_accessibility_label = ctx
+        .renderer_mut()
+        .accessibility_label_from_label(&label, env);
     #[cfg(not(feature = "accessibility"))]
     let _ = label;
     state.field.apply_label_font(
@@ -1232,20 +1237,21 @@ pub fn emit_text_field_accessibility<E: crate::text::TextEngine>(
         renderer.read_signal(&signal)
     };
     let mut state = state.borrow_mut();
-    let (label, value_binding, prompt_signal, selection_menu, line_limit_raw, on_submit) = {
+    let (label, value_binding, prompt_signal, selection_menu, line_limit_signal, on_submit) = {
         let text_field = &state.config;
         (
             text_field.label().clone(),
             text_field.value().clone(),
             text_field.prompt().content(),
             state.selection_menu.clone(),
-            text_field.line_limit(),
+            text_field.line_limit().clone(),
             text_field.on_submit().cloned(),
         )
     };
-    let default_accessibility_label =
-        crate::renderer::SemanticCore::<E>::accessibility_label_from_label(&label, env);
-    let line_limit = line_limit_raw.map(NonZeroUsize::get);
+    let default_accessibility_label = renderer.accessibility_label_from_label(&label, env);
+    let line_limit = renderer
+        .read_signal(&line_limit_signal)
+        .map(NonZeroUsize::get);
     {
         let prompt = renderer.read_signal(&prompt_signal).to_plain().to_string();
         let value = renderer.read_signal(&value_binding).to_plain().to_string();
@@ -1362,8 +1368,7 @@ pub fn emit_secure_field_accessibility<E: crate::text::TextEngine>(
         let secure_field = &state.config;
         (secure_field.label().clone(), secure_field.value().clone())
     };
-    let default_accessibility_label =
-        crate::renderer::SemanticCore::<E>::accessibility_label_from_label(&label, env);
+    let default_accessibility_label = renderer.accessibility_label_from_label(&label, env);
     {
         let secure_len = renderer
             .read_signal(&value_binding)

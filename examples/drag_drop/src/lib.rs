@@ -90,7 +90,7 @@ fn fruit_basket(
     .min_width(280.0)
     .min_height(120.0)
     .background(Color::srgb_hex("#10B981").with_opacity(0.2))
-    .scale(combined_scale.clone(), combined_scale)
+    .scale(combined_scale)
     .border(Color::srgb_hex("#10B981"), 3.0)
     .drop_destination(
         |fruit: Fruit,

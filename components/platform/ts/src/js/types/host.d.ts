@@ -35,7 +35,6 @@ export interface Host {
     render: (item: unknown, index: Accessor<number>) => Branch,
     by?: (item: unknown) => unknown,
   ): Handle;
-  suspense(children: () => Branch, fallback?: () => Branch): Handle;
   environment(): HostEnvironment;
   /**
    * Dispatches one Rust closure held in the bridge's registry. `makeCallback`

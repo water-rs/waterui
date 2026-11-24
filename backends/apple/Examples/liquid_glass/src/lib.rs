@@ -86,7 +86,7 @@ fn now_playing() -> impl View {
     hstack((
         label("Play").icon(SfSymbol::PLAY_FILL),
         vstack((
-            text("Now Playing").bold().size(15.0),
+            text("Now Playing").bold(true).size(15.0),
             text("Liquid Glass — Surfaces").size(12.0),
         ))
         .spacing(1.0),
@@ -126,13 +126,13 @@ fn surfaces_root() -> NavigationView<impl View> {
                 card(),
                 caption("The capsule follows the size of what it wraps."),
                 text("Small")
-                    .bold()
+                    .bold(true)
                     .size(13.0)
                     .padding_with(EdgeInsets::all(8.0))
                     .background(Glass::regular()),
                 pill("Medium", Glass::regular()),
                 text("Large")
-                    .bold()
+                    .bold(true)
                     .size(24.0)
                     .padding_with(EdgeInsets::all(20.0))
                     .background(Glass::regular()),
@@ -158,22 +158,30 @@ fn controls_root() -> NavigationView<impl View> {
             vstack((
                 caption("Glass: the capsule is the emphasis, the label keeps the primary color."),
                 hstack((
-                    button("Glass").style(ButtonStyle::Glass),
-                    button("Bordered").style(ButtonStyle::Bordered),
+                    button("Glass").style(ButtonStyle::Glass).action(|| {}),
+                    button("Bordered")
+                        .style(ButtonStyle::Bordered)
+                        .action(|| {}),
                 ))
                 .spacing(12.0),
                 caption("Prominent glass: the accent fills the capsule, for the primary action."),
                 hstack((
-                    button("Glass Prominent").style(ButtonStyle::GlassProminent),
-                    button("Bordered Prominent").style(ButtonStyle::BorderedProminent),
+                    button("Glass Prominent")
+                        .style(ButtonStyle::GlassProminent)
+                        .action(|| {}),
+                    button("Bordered Prominent")
+                        .style(ButtonStyle::BorderedProminent)
+                        .action(|| {}),
                 ))
                 .spacing(12.0),
                 caption("Labels with symbols get the same capsule."),
                 hstack((
                     button(label("Share").icon(SfSymbol::SQUARE_AND_ARROW_UP))
-                        .style(ButtonStyle::Glass),
+                        .style(ButtonStyle::Glass)
+                        .action(|| {}),
                     button(label("Play").icon(SfSymbol::PLAY_FILL))
-                        .style(ButtonStyle::GlassProminent),
+                        .style(ButtonStyle::GlassProminent)
+                        .action(|| {}),
                 ))
                 .spacing(12.0),
             ))
@@ -218,12 +226,12 @@ fn caption(body: &'static str) -> impl View {
 }
 
 fn pill(title: &'static str, glass: Glass) -> impl View {
-    text(title).bold().padding().background(glass)
+    text(title).bold(true).padding().background(glass)
 }
 
 fn card() -> impl View {
     vstack((
-        text("Rounded card").bold(),
+        text("Rounded card").bold(true),
         "Text inside glass keeps its full contrast; the glass adapts to what is behind it.",
     ))
     .spacing(6.0)

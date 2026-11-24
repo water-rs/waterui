@@ -46,7 +46,11 @@ pub struct TextConfig {
     /// machinery provides one. This is `SwiftUI`'s `lineLimit`: a control
     /// label capped at one line stays a label under compression instead of
     /// folding into a paragraph.
-    line_limit: Option<NonZeroUsize>,
+    line_limit: Computed<Option<NonZeroUsize>>,
+    /// Whether the author explicitly set a line limit via [`Text::line_limit`],
+    /// so [`Text::default_line_limit`] never overrides an explicit `None` or
+    /// reactive limit signal.
+    has_explicit_line_limit: bool,
 }
 
 impl TextConfig {
@@ -78,8 +82,8 @@ impl TextConfig {
     /// label capped at one line stays a label under compression instead of
     /// folding into a paragraph.
     #[must_use]
-    pub const fn line_limit(&self) -> Option<NonZeroUsize> {
-        self.line_limit
+    pub const fn line_limit(&self) -> &Computed<Option<NonZeroUsize>> {
+        &self.line_limit
     }
 
     /// Takes the rich text content out of the value, as [`Self::content`]
@@ -97,7 +101,7 @@ impl TextConfig {
     ) -> (
         Computed<StyledStr>,
         Computed<HorizontalAlignment>,
-        Option<NonZeroUsize>,
+        Computed<Option<NonZeroUsize>>,
     ) {
         (self.content(), self.paragraph_alignment, self.line_limit)
     }
@@ -106,13 +110,11 @@ impl TextConfig {
 /// Flattens a config signal into one config whose fields follow it.
 fn flatten_config(config: &Computed<TextConfig>) -> TextConfig {
     TextConfig {
-        // A plain field cannot be flattened through the config signal, so the
-        // resolved snapshot's value is the one that holds; every authoring
-        // path sets it before resolution.
-        line_limit: config.snapshot().line_limit,
         content: flatten_signal(config.map(|config| config.content)),
         font: flatten_signal(config.map(|config| config.font)),
         paragraph_alignment: flatten_signal(config.map(|config| config.paragraph_alignment)),
+        line_limit: flatten_signal(config.map(|config| config.line_limit)),
+        has_explicit_line_limit: config.snapshot().has_explicit_line_limit,
     }
 }
 
@@ -133,7 +135,8 @@ impl TextConfig {
             content: content.into_signal().map(StyledStr::from).computed(),
             font: Computed::constant(Font::default()),
             paragraph_alignment: Computed::constant(HorizontalAlignment::Leading),
-            line_limit: None,
+            line_limit: Computed::constant(None),
+            has_explicit_line_limit: false,
         }
     }
 }
@@ -302,6 +305,7 @@ where
                     font: Computed::constant(Font::default()),
                     paragraph_alignment: lhs.paragraph_alignment,
                     line_limit: lhs.line_limit,
+                    has_explicit_line_limit: lhs.has_explicit_line_limit,
                 })
                 .computed()
         })
@@ -518,8 +522,8 @@ impl Text {
     ///
     /// The font merges instead of replacing: a slot such as [`Self::body`]
     /// replaces the slot and keeps the bold, size and weight already set, on
-    /// the text and on each of its runs, so `.bold().body()` and
-    /// `.body().bold()` are the same text. See
+    /// the text and on each of its runs, so `.bold(true).body()` and
+    /// `.body().bold(true)` are the same text. See
     /// [`Font::inherit`](crate::font::Font::inherit).
     pub fn font(self, font: impl IntoSignal<Font> + 'static) -> Self {
         self.map_font(font.into_signal().computed(), |base, font| {
@@ -540,6 +544,19 @@ impl Text {
     pub fn weight(self, weight: impl IntoSignal<FontWeight> + 'static) -> Self {
         self.map_font(weight.into_signal().computed(), |font, weight| {
             font.weight(weight)
+        })
+    }
+
+    /// Applies a strikethrough to the text.
+    pub fn strikethrough(self, strikethrough: impl IntoSignal<bool> + 'static) -> Self {
+        let strikethrough = strikethrough.into_signal();
+        self.map_config(move |mut config| {
+            config.content = config
+                .content
+                .zip(&strikethrough)
+                .map(|(content, strikethrough)| content.strikethrough(strikethrough))
+                .computed();
+            config
         })
     }
 
@@ -598,21 +615,17 @@ impl Text {
 
     /// Caps the text at `limit` laid-out lines — `SwiftUI`'s `lineLimit`.
     ///
-    /// Text past the limit is truncated at the last visible line, with a
-    /// trailing ellipsis where the backend's native text machinery provides
-    /// one. Control labels use `NonZeroUsize::MIN` (one line) so a compressed
-    /// button stays a button instead of folding its label into a paragraph.
-    pub fn line_limit(self, limit: NonZeroUsize) -> Self {
+    /// Pass `None` to remove the limit, `NonZeroUsize::new(n)` or a
+    /// `NonZeroUsize` for a fixed cap, or a reactive signal producing
+    /// `Option<NonZeroUsize>` to toggle truncation in place without rebuilding
+    /// the view. Text past the limit is truncated at the last visible line,
+    /// with a trailing ellipsis where the backend's native text machinery
+    /// provides one.
+    pub fn line_limit(self, limit: impl IntoComputed<Option<NonZeroUsize>>) -> Self {
+        let limit = limit.into_computed();
         self.map_config(move |mut config| {
-            config.line_limit = Some(limit);
-            config
-        })
-    }
-
-    /// Removes any line limit, letting the text wrap freely again.
-    pub fn disable_line_limit(self) -> Self {
-        self.map_config(|mut config| {
-            config.line_limit = None;
+            config.line_limit = limit.clone();
+            config.has_explicit_line_limit = true;
             config
         })
     }
@@ -625,31 +638,32 @@ impl Text {
     /// [`Self::line_limit`] from the application.
     pub fn default_line_limit(self, limit: NonZeroUsize) -> Self {
         self.map_config(move |mut config| {
-            if config.line_limit.is_none() {
-                config.line_limit = Some(limit);
+            if !config.has_explicit_line_limit {
+                config.line_limit = Computed::constant(Some(limit));
             }
             config
         })
     }
 
-    /// Asks for the platform's bold face of the font, which each backend
-    /// resolves from its platform's definition; [`Self::weight`] with
-    /// [`FontWeight::Bold`] is an exact weight of 700 instead. Text with no
-    /// font or text style takes the platform's plain bold (Bold on macOS),
-    /// while a text style takes its own bold (`.body()` is Semibold on
-    /// macOS). See [`Font::bold`](crate::font::Font::bold).
-    pub fn bold(self) -> Self {
-        self.map_font(Computed::constant(()), |font, ()| font.bold())
+    /// Asks for the platform's bold face of the font when `bold` is `true`,
+    /// which each backend resolves from its platform's definition;
+    /// [`Self::weight`] with [`FontWeight::Bold`] is an exact weight of 700
+    /// instead. Text with no font or text style takes the platform's plain
+    /// bold (Bold on macOS), while a text style takes its own bold (`.body()`
+    /// is Semibold on macOS). See [`Font::bold`](crate::font::Font::bold).
+    pub fn bold(self, bold: impl IntoSignal<bool> + 'static) -> Self {
+        self.map_font(bold.into_signal().computed(), Font::bold)
     }
 
-    /// Asks for the platform's fixed-pitch face, keeping the font's slot,
-    /// size and weight.
-    pub fn monospaced(self) -> Self {
-        self.map_font(Computed::constant(()), |font, ()| font.monospaced())
+    /// Asks for the platform's fixed-pitch face when `monospaced` is `true`,
+    /// keeping the font's slot, size and weight.
+    pub fn monospaced(self, monospaced: impl IntoSignal<bool> + 'static) -> Self {
+        self.map_font(monospaced.into_signal().computed(), Font::monospaced)
     }
 
     /// Sets the italic style.
-    pub fn italic(self, is_italic: impl Signal<Output = bool> + 'static) -> Self {
+    pub fn italic(self, is_italic: impl IntoSignal<bool> + 'static) -> Self {
+        let is_italic = is_italic.into_signal();
         self.map_config(move |mut config| {
             config.content = config
                 .content
@@ -700,6 +714,7 @@ impl View for Text {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::font::FontDesign;
     use waterui_locale::{TranslationCatalog, locales};
 
     #[test]
@@ -810,8 +825,8 @@ mod tests {
     #[test]
     fn preset_after_bold_keeps_bold() {
         let env = type_scale_env();
-        let font = first_resolved_font(&Text::verbatim("x").bold().body(), &env);
-        assert!(font.bold(), "text(..).bold().body() must stay bold");
+        let font = first_resolved_font(&Text::verbatim("x").bold(true).body(), &env);
+        assert!(font.bold(), "text(..).bold(true).body() must stay bold");
         assert!((font.size() - 16.0).abs() < f32::EPSILON);
     }
 
@@ -841,8 +856,8 @@ mod tests {
         let env = type_scale_env();
         let pairs = [
             (
-                Text::verbatim("x").bold().body(),
-                Text::verbatim("x").body().bold(),
+                Text::verbatim("x").bold(true).body(),
+                Text::verbatim("x").body().bold(true),
             ),
             (
                 Text::verbatim("x").weight(FontWeight::Light).title(),
@@ -890,7 +905,7 @@ mod tests {
     #[test]
     fn concatenation_keeps_each_operand_font() {
         let env = type_scale_env();
-        let text = (Text::verbatim("a").bold() + Text::verbatim("b").title()).caption();
+        let text = (Text::verbatim("a").bold(true) + Text::verbatim("b").title()).caption();
         let content = text.resolve(&env).content().snapshot();
         let fonts: alloc::vec::Vec<_> = content
             .chunks()
@@ -901,6 +916,96 @@ mod tests {
         assert!((fonts[0].size() - 12.0).abs() < f32::EPSILON);
         assert!(!fonts[1].bold());
         assert!((fonts[1].size() - 22.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn boolean_trait_modifiers_accept_literals_and_reactive_signals() {
+        let env = type_scale_env();
+        let bold = Binding::bool(false);
+        let monospaced = Binding::bool(false);
+        let italic = Binding::bool(false);
+        let underline = Binding::bool(false);
+        let strikethrough = Binding::bool(false);
+
+        let content = Text::verbatim("todo")
+            .bold(bold.clone())
+            .monospaced(monospaced.clone())
+            .italic(italic.clone())
+            .underline(underline.clone())
+            .strikethrough(strikethrough.clone())
+            .resolve(&env)
+            .content();
+
+        let style = content.snapshot().chunks()[0].1.clone();
+        let font = style.get_font().resolve(&env).snapshot();
+        assert!(!font.bold());
+        assert_eq!(font.design(), FontDesign::Default);
+        assert!(!style.get_italic());
+        assert!(!style.get_underline());
+        assert!(!style.get_strikethrough());
+
+        bold.set(true);
+        monospaced.set(true);
+        italic.set(true);
+        underline.set(true);
+        strikethrough.set(true);
+
+        let style = content.snapshot().chunks()[0].1.clone();
+        let font = style.get_font().resolve(&env).snapshot();
+        assert!(font.bold());
+        assert_eq!(font.design(), FontDesign::Monospaced);
+        assert!(style.get_italic());
+        assert!(style.get_underline());
+        assert!(style.get_strikethrough());
+
+        // Literals compile identically for all five modifiers.
+        let literal = Text::verbatim("done")
+            .bold(true)
+            .monospaced(true)
+            .italic(true)
+            .underline(true)
+            .strikethrough(true)
+            .resolve(&env)
+            .content()
+            .snapshot();
+        let style = &literal.chunks()[0].1;
+        assert!(style.get_font().resolve(&env).snapshot().bold());
+        assert_eq!(
+            style.get_font().resolve(&env).snapshot().design(),
+            FontDesign::Monospaced
+        );
+        assert!(style.get_italic());
+        assert!(style.get_underline());
+        assert!(style.get_strikethrough());
+    }
+
+    #[test]
+    fn line_limit_accepts_reactive_signal() {
+        let env = test_env();
+        let expanded = Binding::bool(false);
+        let text = Text::verbatim("body").line_limit(expanded.select(None, NonZeroUsize::new(3)));
+        let config = text.resolve(&env);
+
+        assert_eq!(config.line_limit().snapshot(), NonZeroUsize::new(3));
+        expanded.set(true);
+        assert_eq!(config.line_limit().snapshot(), None);
+        expanded.set(false);
+        assert_eq!(config.line_limit().snapshot(), NonZeroUsize::new(3));
+    }
+
+    #[test]
+    fn explicit_line_limit_none_is_not_overridden_by_default() {
+        let env = test_env();
+        let explicit = Text::verbatim("body")
+            .line_limit(None::<NonZeroUsize>)
+            .default_line_limit(NonZeroUsize::MIN);
+        assert_eq!(explicit.resolve(&env).line_limit().snapshot(), None);
+
+        let defaulted = Text::verbatim("body").default_line_limit(NonZeroUsize::MIN);
+        assert_eq!(
+            defaulted.resolve(&env).line_limit().snapshot(),
+            Some(NonZeroUsize::MIN)
+        );
     }
 
     fn test_env() -> Environment {

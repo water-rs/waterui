@@ -37,7 +37,6 @@ enum Call {
     Text,
     Show,
     Each,
-    Suspense,
 }
 
 /// A host table that records its calls and hands back empty views.
@@ -106,16 +105,6 @@ impl HostTable for TestHost {
         _by: Option<&JsFunction>,
     ) -> Result<AnyView, Error> {
         self.calls.borrow_mut().push(Call::Each);
-        Ok(AnyView::new(()))
-    }
-
-    fn suspense(
-        &self,
-        _bridge: &Bridge,
-        _children: &JsFunction,
-        _fallback: Option<&JsFunction>,
-    ) -> Result<AnyView, Error> {
-        self.calls.borrow_mut().push(Call::Suspense);
         Ok(AnyView::new(()))
     }
 }
@@ -1126,7 +1115,7 @@ fn a_derived_struct_projects_the_shape_the_schema_declares() {
     assert_eq!(field("title"), JsValue::String(String::from("Promo")));
     assert_eq!(
         field("status"),
-        JsValue::String(String::from("Running")),
+        JsValue::String(String::from("running")),
         "a unit-only enum is a string"
     );
     assert_eq!(
@@ -1348,7 +1337,7 @@ fn props_cross_one_way_with_their_contract_intact() {
 
     let (_, callback) = entries
         .iter()
-        .find(|(key, _)| key == "on_dismiss")
+        .find(|(key, _)| key == "onDismiss")
         .expect("the props carry the callback");
     let JsValue::Function(callback) = callback else {
         panic!("a callback crosses as a function");

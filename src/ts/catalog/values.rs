@@ -13,98 +13,385 @@
 //! [`TsType`] impl directly beside the conversion that reads the same shapes.
 
 use core::marker::PhantomData;
+use std::collections::BTreeMap;
 
-use nami::{Computed, SignalExt as _};
+use nami::{Computed, Signal as _, SignalExt as _};
 use suiteki::Str;
-use waterui_core::AnyView;
 use waterui_core::layout::{Alignment, HorizontalAlignment, VerticalAlignment};
+use waterui_core::{AnyView, Environment, flatten_signal};
 use waterui_graphics::WorkingColor;
 use waterui_graphics::color::{Color, Srgb, Working, working};
 use waterui_layout::padding::EdgeInsets;
 use waterui_locale::{Locale, TranslationCatalog};
+use waterui_text::StyledStr;
 use waterui_text::text::{IntoText, Text, TextConfig};
 use waterui_ts::engine::{JsError, JsFunction, JsValue};
-use waterui_ts::schema::{NumberKind, TsType, TypeSchema};
+use waterui_ts::schema::{FieldSchema, NumberKind, StructSchema, TsType, TypeSchema};
 use waterui_url::Url;
 
 use waterui_ts::Bridge;
 use waterui_ts::{FromJs, IntoJs, expected};
 
-/// Text as JSX wrote it: a string, or a number lifted into one.
+/// Named arguments carried by a localized [`TextContent`], folded into one
+/// reactive map so updates to any signal argument re-interpolate in place.
+#[derive(Debug, Clone)]
+pub struct LocalizedArgs(Computed<BTreeMap<Str, Str>>);
+
+impl LocalizedArgs {
+    fn empty() -> Self {
+        Self(Computed::constant(BTreeMap::new()))
+    }
+
+    fn snapshot(&self) -> BTreeMap<Str, Str> {
+        self.0.snapshot()
+    }
+}
+
+impl PartialEq for LocalizedArgs {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.snapshot() == other.0.snapshot()
+    }
+}
+
+impl Eq for LocalizedArgs {}
+
+/// One interpolation argument value accepted inside `{ key, args }`.
+#[derive(Debug, Clone)]
+struct TextArg(Str);
+
+impl IntoJs for TextArg {
+    fn into_js(self, _bridge: &Bridge) -> Result<JsValue, JsError> {
+        Ok(JsValue::String(self.0.as_str().to_owned()))
+    }
+}
+
+impl FromJs for TextArg {
+    fn from_js(value: &JsValue, _bridge: &Bridge) -> Result<Self, JsError> {
+        match value {
+            JsValue::String(text) => Ok(Self(Str::from(text.clone()))),
+            JsValue::Number(number) => Ok(Self(Str::from(number.to_string()))),
+            JsValue::BigInt(_) => value
+                .as_i64()
+                .map(|integer| Self(Str::from(integer.to_string())))
+                .or_else(|| {
+                    value
+                        .as_u64()
+                        .map(|integer| Self(Str::from(integer.to_string())))
+                })
+                .ok_or_else(|| expected("a string or number argument", value)),
+            other => Err(expected("a string or number argument", other)),
+        }
+    }
+}
+
+/// The schema of `{ key: string, args?: Record<string, string | number> }`.
+const LOCALIZED_TEXT_SCHEMA: TypeSchema = TypeSchema::Struct(StructSchema::new(
+    "LocalizedText",
+    &[
+        FieldSchema::new("key", TypeSchema::String),
+        FieldSchema::new(
+            "args",
+            TypeSchema::Option(&TypeSchema::Map {
+                key: &TypeSchema::String,
+                value: &TypeSchema::Union(&[
+                    TypeSchema::String,
+                    TypeSchema::Number(NumberKind::F64),
+                ]),
+            }),
+        ),
+    ],
+));
+
+/// A resolved snapshot of one [`TextContent`] part, ready for locale lookup
+/// and placeholder interpolation.
+#[derive(Debug, Clone)]
+pub enum ResolvedTextPart {
+    Localized { key: Str, args: BTreeMap<Str, Str> },
+    Verbatim(Str),
+}
+
+impl ResolvedTextPart {
+    pub(crate) fn render(&self, env: &Environment, locale: &Locale) -> Str {
+        match self {
+            Self::Localized { key, args } => lookup_and_interpolate(env, locale, key, args),
+            Self::Verbatim(text) => text.clone(),
+        }
+    }
+}
+
+impl IntoText for ResolvedTextPart {
+    fn into_text(self) -> Text {
+        match self {
+            Self::Localized { key, args } => Text::localized_with(move |env, locale| {
+                TextConfig::new(StyledStr::plain(lookup_and_interpolate(
+                    env, locale, &key, &args,
+                )))
+            }),
+            Self::Verbatim(text) => Text::verbatim(text),
+        }
+    }
+}
+
+/// Text as JSX wrote it: a verbatim runtime string or number, or an explicit
+/// localized catalog entry (`{ key }` / `{ key, args }`).
 ///
-/// A string participates in the same [`TranslationCatalog`] lookup as Rust's
-/// `text("…")`, so a TypeScript view is localized exactly like a Rust view and
-/// one catalog serves both. A number is the value itself — `<Text>{count()}</Text>`
-/// is `text!("{count}")`, a formatted value rather than a key.
+/// Runtime JavaScript strings and numbers are verbatim so user data never
+/// reaches [`TranslationCatalog`]. Only literal JSX text (which the JSX
+/// transform emits as `{ key }` or `{ key, args }`) and explicit `t` calls
+/// perform catalog lookups.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum TextContent {
-    /// A string, looked up in the translation catalog for the current locale.
-    /// A key the catalog does not carry reads as the key itself, which is what
-    /// `Text::localized` does.
-    Key(Str),
+    /// A translation key with optional named arguments, looked up in the
+    /// translation catalog for the current locale. A key the catalog does not
+    /// carry falls back to the key itself before placeholder interpolation.
+    Localized {
+        /// The lookup key (and fallback template when absent from the catalog).
+        key: Str,
+        /// Named arguments interpolated into `{name}` placeholders.
+        args: LocalizedArgs,
+    },
     /// Text that is already the value it displays, and never looked up.
     Verbatim(Str),
 }
 
 impl TextContent {
-    /// The text this value carries, before any lookup.
+    /// Whether `value` is a localized `{ key, args? }` object rather than a
+    /// reactive signal or other JS object.
+    #[must_use]
+    pub fn is_localized_object(value: &JsValue) -> bool {
+        value
+            .as_object()
+            .is_some_and(|entries| entries.iter().any(|(name, _)| name == "key"))
+    }
+
+    /// The raw key or verbatim text this value carries, before catalog lookup
+    /// or argument interpolation.
     #[must_use]
     pub const fn as_str(&self) -> &Str {
         match self {
-            Self::Key(text) | Self::Verbatim(text) => text,
+            Self::Localized { key, .. } | Self::Verbatim(key) => key,
         }
+    }
+
+    pub(crate) fn into_resolved_signal(self) -> Computed<ResolvedTextPart> {
+        match self {
+            Self::Localized { key, args } => args
+                .0
+                .map(move |args| ResolvedTextPart::Localized {
+                    key: key.clone(),
+                    args,
+                })
+                .computed(),
+            Self::Verbatim(text) => Computed::constant(ResolvedTextPart::Verbatim(text)),
+        }
+    }
+
+    pub(crate) fn flatten_computed(source: &Computed<Self>) -> Computed<ResolvedTextPart> {
+        flatten_signal(source.map(Self::into_resolved_signal))
     }
 }
 
 impl TsType for TextContent {
-    const SCHEMA: TypeSchema =
-        TypeSchema::Union(&[TypeSchema::String, TypeSchema::Number(NumberKind::F64)]);
+    const SCHEMA: TypeSchema = TypeSchema::Union(&[
+        TypeSchema::String,
+        TypeSchema::Number(NumberKind::F64),
+        LOCALIZED_TEXT_SCHEMA,
+    ]);
 }
 
 impl FromJs for TextContent {
-    fn from_js(value: &JsValue, _bridge: &Bridge) -> Result<Self, JsError> {
+    fn from_js(value: &JsValue, bridge: &Bridge) -> Result<Self, JsError> {
         match value {
-            JsValue::String(text) => Ok(Self::Key(Str::from(text.clone()))),
+            JsValue::String(text) => Ok(Self::Verbatim(Str::from(text.clone()))),
             JsValue::Number(number) => Ok(Self::Verbatim(Str::from(number.to_string()))),
             JsValue::BigInt(_) => value
                 .as_i64()
                 .map(|value| Self::Verbatim(Str::from(value.to_string())))
-                .ok_or_else(|| expected("text or a number", value)),
-            other => Err(expected("text or a number", other)),
+                .or_else(|| {
+                    value
+                        .as_u64()
+                        .map(|value| Self::Verbatim(Str::from(value.to_string())))
+                })
+                .ok_or_else(|| {
+                    expected("text, a number, or a localized { key, args } object", value)
+                }),
+            JsValue::Object(entries) => parse_localized_object(entries, bridge),
+            other => Err(expected(
+                "text, a number, or a localized { key, args } object",
+                other,
+            )),
         }
     }
 }
 
+fn parse_localized_object(
+    entries: &[(String, JsValue)],
+    bridge: &Bridge,
+) -> Result<TextContent, JsError> {
+    let mut key: Option<Str> = None;
+    let mut args_value: Option<&JsValue> = None;
+    for (name, value) in entries {
+        match name.as_str() {
+            "key" => {
+                let text = value
+                    .as_str()
+                    .ok_or_else(|| expected("a string for `key`", value))?;
+                key = Some(Str::from(text.to_owned()));
+            }
+            "args" => {
+                args_value = Some(value);
+            }
+            unknown => {
+                return Err(JsError::conversion(format!(
+                    "localized text does not recognise property `{unknown}`; expected `key` and optional `args`"
+                )));
+            }
+        }
+    }
+    let Some(key) = key else {
+        return Err(JsError::conversion(
+            "localized text object is missing required string property `key`",
+        ));
+    };
+    let args = match args_value {
+        None | Some(JsValue::Undefined | JsValue::Null) => LocalizedArgs::empty(),
+        Some(JsValue::Object(arg_entries)) => materialize_args(arg_entries, bridge)?,
+        Some(other) => return Err(expected("an arguments object for `args`", other)),
+    };
+    Ok(TextContent::Localized { key, args })
+}
+
+fn materialize_args(
+    entries: &[(String, JsValue)],
+    bridge: &Bridge,
+) -> Result<LocalizedArgs, JsError> {
+    if entries.is_empty() {
+        return Ok(LocalizedArgs::empty());
+    }
+    let mut combined: Computed<BTreeMap<Str, Str>> = Computed::constant(BTreeMap::new());
+    for (name, value) in entries {
+        let arg_name = Str::from(name.clone());
+        let arg_signal: Computed<TextArg> = bridge.materialize_computed(value)?;
+        combined = combined
+            .zip(&arg_signal)
+            .map(move |(mut map, value)| {
+                map.insert(arg_name.clone(), value.0);
+                map
+            })
+            .computed();
+    }
+    Ok(LocalizedArgs(combined))
+}
+
 impl IntoJs for TextContent {
-    /// The projection is `string`, so a value travelling back out is the text
-    /// itself — a key is what JavaScript wrote, and a number was already
-    /// lifted into its digits when it arrived.
     fn into_js(self, _bridge: &Bridge) -> Result<JsValue, JsError> {
-        Ok(JsValue::String(self.as_str().as_str().to_owned()))
+        match self {
+            Self::Verbatim(text) => Ok(JsValue::String(text.as_str().to_owned())),
+            Self::Localized { key, args } => {
+                let mut entries = vec![(
+                    String::from("key"),
+                    JsValue::String(key.as_str().to_owned()),
+                )];
+                let snapshot = args.snapshot();
+                if !snapshot.is_empty() {
+                    let arg_entries = snapshot
+                        .into_iter()
+                        .map(|(name, value)| {
+                            (
+                                name.as_str().to_owned(),
+                                JsValue::String(value.as_str().to_owned()),
+                            )
+                        })
+                        .collect();
+                    entries.push((String::from("args"), JsValue::Object(arg_entries)));
+                }
+                Ok(JsValue::Object(entries))
+            }
+        }
     }
 }
 
 impl IntoText for TextContent {
     fn into_text(self) -> Text {
         match self {
-            Self::Key(key) => Text::localized_with(move |env, locale| translate(env, locale, &key)),
             Self::Verbatim(text) => Text::verbatim(text),
+            Self::Localized { key, args } => Text::new(
+                args.0
+                    .map(move |args| ResolvedTextPart::Localized {
+                        key: key.clone(),
+                        args,
+                    })
+                    .computed(),
+            ),
         }
     }
 }
 
-/// One catalog lookup, with the key as its own fallback.
-///
-/// `Text::localized` takes a `&'static str` because a Rust literal is one. A
-/// string that arrived from JavaScript is owned, so the lookup is spelled out
-/// here over the same catalog and the same locale.
-fn translate(env: &waterui_core::Environment, locale: &Locale, key: &Str) -> TextConfig {
-    let translated = env
+/// One catalog lookup, with the key as its own fallback, followed by named
+/// placeholder interpolation.
+fn lookup_and_interpolate(
+    env: &Environment,
+    locale: &Locale,
+    key: &Str,
+    args: &BTreeMap<Str, Str>,
+) -> Str {
+    let template = env
         .get::<TranslationCatalog>()
         .and_then(|catalog| catalog.lookup_text(locale, key.as_str()))
         .unwrap_or_else(|| key.clone());
-    TextConfig::new(waterui_text::StyledStr::plain(translated))
+    if args.is_empty() && !template.as_str().contains(['{', '}']) {
+        return template;
+    }
+    interpolate(template.as_str(), args)
+}
+
+/// Replaces `{name}` placeholders from `args` and unescapes `{{` / `}}`.
+///
+/// A `{name}` not present in `args`, or an unclosed `{`, is kept verbatim.
+fn interpolate(template: &str, args: &BTreeMap<Str, Str>) -> Str {
+    let mut out = String::with_capacity(template.len());
+    let mut chars = template.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '{' => {
+                if chars.peek() == Some(&'{') {
+                    chars.next();
+                    out.push('{');
+                    continue;
+                }
+                let mut name = String::new();
+                let mut closed = false;
+                for next in chars.by_ref() {
+                    if next == '}' {
+                        closed = true;
+                        break;
+                    }
+                    name.push(next);
+                }
+                if closed {
+                    if let Some(value) = args.get(name.as_str()) {
+                        out.push_str(value.as_str());
+                    } else {
+                        out.push('{');
+                        out.push_str(&name);
+                        out.push('}');
+                    }
+                } else {
+                    out.push('{');
+                    out.push_str(&name);
+                }
+            }
+            '}' => {
+                if chars.peek() == Some(&'}') {
+                    chars.next();
+                }
+                out.push('}');
+            }
+            other => out.push(other),
+        }
+    }
+    Str::from(out)
 }
 
 /// A linear-light colour object, as `useTheme()` hands out and wide-gamut
@@ -473,7 +760,6 @@ pub struct ShadowValue {
     radius: f32,
     /// The corner radius of the view casting the shadow, so the silhouette
     /// follows its shape.
-    #[ts(rename = "cornerRadius")]
     corner_radius: Option<f32>,
 }
 
@@ -522,7 +808,6 @@ pub struct BorderValue {
     /// The stroke width, in points.
     width: f32,
     /// The corner radius, in points; square corners when left out.
-    #[ts(rename = "cornerRadius")]
     corner_radius: Option<f32>,
 }
 
@@ -566,7 +851,6 @@ pub enum ShapeName {
 pub struct RoundedShape {
     /// The corner radius, as a fraction of the shorter side: `0.5` is fully
     /// rounded, which is what [`ShapeName::Capsule`] says directly.
-    #[ts(rename = "cornerRadius")]
     corner_radius: f32,
 }
 
@@ -589,13 +873,13 @@ impl RoundedShape {
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]
 pub enum ShapeValue {
-    /// `clip="Rectangle"`.
+    /// `clip="rectangle"`.
     Rectangle,
-    /// `clip="Circle"`.
+    /// `clip="circle"`.
     Circle,
-    /// `clip="Capsule"`.
+    /// `clip="capsule"`.
     Capsule,
-    /// `clip="Ellipse"`.
+    /// `clip="ellipse"`.
     Ellipse,
     /// `clip={{ cornerRadius: 0.25 }}`.
     Rounded(f32),
@@ -973,11 +1257,48 @@ impl PickerOption {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
+    use suiteki::Str;
     use waterui_graphics::WorkingColor;
     use waterui_graphics::color::Srgb;
     use waterui_ts::schema::{TsType as _, TypeSchema};
 
-    use super::{ColorValue, LinearColor};
+    use super::{
+        ColorValue, LOCALIZED_TEXT_SCHEMA, LinearColor, NumberKind, TextContent, interpolate,
+    };
+
+    #[test]
+    fn text_content_schema_accepts_string_number_or_localized_text() {
+        assert_eq!(
+            TextContent::SCHEMA,
+            TypeSchema::Union(&[
+                TypeSchema::String,
+                TypeSchema::Number(NumberKind::F64),
+                LOCALIZED_TEXT_SCHEMA,
+            ])
+        );
+    }
+
+    #[test]
+    fn interpolate_substitutes_named_arguments_and_unescapes_braces() {
+        let mut args = BTreeMap::new();
+        args.insert(Str::from_static("name"), Str::from_static("Ada"));
+        args.insert(Str::from_static("id"), Str::from_static("42"));
+
+        assert_eq!(
+            interpolate("Hello, {name}!", &args),
+            Str::from_static("Hello, Ada!")
+        );
+        assert_eq!(
+            interpolate("Order #{id} for {{ {name} }}", &args),
+            Str::from_static("Order #42 for { Ada }")
+        );
+        assert_eq!(
+            interpolate("Keep {unknown} and {unclosed", &args),
+            Str::from_static("Keep {unknown} and {unclosed")
+        );
+    }
 
     #[test]
     fn color_value_schema_accepts_hex_string_or_linear_object() {

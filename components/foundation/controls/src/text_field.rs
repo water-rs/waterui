@@ -6,6 +6,7 @@ pub use crate::input::{ContentType, KeyboardType};
 use core::num::NonZeroUsize;
 
 use alloc::vec::Vec;
+use nami::signal::IntoComputed;
 use nami::{Binding, Computed, SignalExt as _};
 use waterui_core::Str;
 use waterui_core::backend::{Backend, ChildSlot, MapSlots};
@@ -34,7 +35,7 @@ pub struct TextFieldConfig<S> {
     /// Optional selected-text menu items resolved for the effective locale.
     selection_menu: Computed<Vec<ResolvedMenuItem<S>>>,
     /// Maximum number of lines the field renders. `None` removes the limit.
-    line_limit: Option<NonZeroUsize>,
+    line_limit: Computed<Option<NonZeroUsize>>,
     /// The action run when the user submits the field with Return or Enter.
     ///
     /// A field without one leaves Return unconsumed, so it bubbles to the
@@ -91,8 +92,8 @@ impl<S> TextFieldConfig<S> {
 
     /// Maximum number of lines the field renders. `None` removes the limit.
     #[must_use]
-    pub const fn line_limit(&self) -> Option<NonZeroUsize> {
-        self.line_limit
+    pub const fn line_limit(&self) -> &Computed<Option<NonZeroUsize>> {
+        &self.line_limit
     }
 
     /// The action run when the user submits the field with Return or Enter.
@@ -119,7 +120,7 @@ impl<S> TextFieldConfig<S> {
         KeyboardType,
         Option<ContentType>,
         Computed<Vec<ResolvedMenuItem<S>>>,
-        Option<NonZeroUsize>,
+        Computed<Option<NonZeroUsize>>,
         Option<SharedAction>,
     ) {
         (
@@ -193,7 +194,7 @@ pub struct TextField<L> {
     /// These actions are shown by native text selection UI.
     selection_menu: Computed<Vec<MenuItem>>,
     /// Maximum number of lines the field renders. `None` removes the limit.
-    line_limit: Option<NonZeroUsize>,
+    line_limit: Computed<Option<NonZeroUsize>>,
     /// The action run when the user submits the field with Return or Enter.
     ///
     /// A field without one leaves Return unconsumed, so it bubbles to the
@@ -224,7 +225,7 @@ impl<L> TextField<L> {
             keyboard: KeyboardType::default(),
             content_type: None,
             selection_menu: Computed::constant(Vec::new()),
-            line_limit: NonZeroUsize::new(1),
+            line_limit: Computed::constant(NonZeroUsize::new(1)),
             on_submit: None,
         }
     }
@@ -235,17 +236,12 @@ impl<L> TextField<L> {
 
     /// Sets the maximum number of lines to show.
     ///
-    /// By default, the line limit is 1. The argument is a [`NonZeroUsize`] so
-    /// that "zero lines" is rejected at the type level rather than at runtime.
-    /// Use [`Self::disable_line_limit`] to remove the limit entirely.
-    pub const fn line_limit(mut self, line_limit: NonZeroUsize) -> Self {
-        self.line_limit = Some(line_limit);
-        self
-    }
-
-    /// Disables the line limit.
-    pub const fn disable_line_limit(mut self) -> Self {
-        self.line_limit = None;
+    /// By default, the line limit is `Some(1)`. Pass `None` to remove the
+    /// limit, `NonZeroUsize::new(n)` or a `NonZeroUsize` for a fixed cap, or a
+    /// reactive signal producing `Option<NonZeroUsize>` to change the limit in
+    /// place.
+    pub fn line_limit(mut self, line_limit: impl IntoComputed<Option<NonZeroUsize>>) -> Self {
+        self.line_limit = line_limit.into_computed();
         self
     }
 
@@ -357,13 +353,23 @@ mod tests {
     #[test]
     fn line_limit_non_one_is_supported() {
         let value = Binding::container(Str::from(""));
-        let _ = TextField::new("Note", &value).line_limit(NonZeroUsize::new(2).unwrap());
+        let _ = TextField::new("Note", &value).line_limit(NonZeroUsize::new(2));
     }
 
     #[test]
-    fn disable_line_limit_does_not_panic() {
+    fn line_limit_none_removes_limit() {
         let value = Binding::container(Str::from(""));
-        let _ = TextField::new("Note", &value).disable_line_limit();
+        let _ = TextField::new("Note", &value).line_limit(None::<NonZeroUsize>);
+    }
+
+    #[test]
+    fn line_limit_accepts_reactive_signal() {
+        let value = Binding::container(Str::from(""));
+        let limit = Binding::container(NonZeroUsize::new(2));
+        let field = TextField::new("Note", &value).line_limit(limit.clone());
+        assert_eq!(field.line_limit.snapshot(), NonZeroUsize::new(2));
+        limit.set(None);
+        assert_eq!(field.line_limit.snapshot(), None);
     }
 
     #[test]

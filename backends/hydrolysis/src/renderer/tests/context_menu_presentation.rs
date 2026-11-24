@@ -13,7 +13,7 @@ use nami::Binding;
 use nami::Signal as _;
 use waterui::ViewExt as _;
 use waterui::metadata::context_menu::IntoContextMenu;
-use waterui::prelude::{ContextMenu, DismissContextMenu, Use};
+use waterui::prelude::{ContextMenu, DismissContextMenu};
 use waterui_controls::button::button;
 use waterui_controls::menu::{CommandExt as _, MenuItem};
 use waterui_core::AnyView;
@@ -276,7 +276,7 @@ fn a_dismiss_request_from_the_accessory_closes_the_menu() {
     let mut runtime = runtime(move || {
         let fired = fired_for_view.clone();
         ContextMenu::new(vec!["Copy".action(|| {})]).accessory(Frame::new(button("Done").action(
-            move |Use(dismiss): Use<DismissContextMenu>| {
+            move |dismiss: DismissContextMenu| {
                 fired.set(true);
                 dismiss.dismiss();
             },

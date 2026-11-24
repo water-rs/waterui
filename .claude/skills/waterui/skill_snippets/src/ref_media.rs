@@ -381,7 +381,7 @@ pub mod media_block_07 {
     use waterui::prelude::*;
 
     /// Glue: the payload type the `greet` method returns.
-    #[derive(serde::Serialize)]
+    #[derive(serde::Serialize, TsType)]
     pub struct Greeting {
         message: String,
     }
@@ -394,7 +394,7 @@ pub mod media_block_07 {
     }
 
     use waterui::js_api;
-    use waterui::webview::Json;
+    use waterui::webview::{Json, TsType};
 
     pub struct PageApi {
         address: Binding<Str>,
@@ -435,9 +435,9 @@ pub mod media_block_07 {
 pub mod media_js_api_prose {
     use waterui::js_api;
     use waterui::prelude::*;
-    use waterui::webview::{Json, WebView};
+    use waterui::webview::{Json, TsType, WebView};
 
-    #[derive(serde::Serialize)]
+    #[derive(serde::Serialize, TsType)]
     pub struct Greeting {
         message: String,
     }
@@ -614,14 +614,14 @@ pub fn media_block_09() -> impl View {
 
 // ---------------------------------------------------------------------------
 // media.md § "## Graphics and codes" (prose): `shader!(..)` is a
-// `ShaderPaintView`; `.animated(signal)` and `.uniforms(signal)`. Not counted as a
+// `ShaderPaintView`; `.continuous(signal)` and `.uniforms(signal)`. Not counted as a
 // rust block.
 // ---------------------------------------------------------------------------
 pub fn media_shader_prose() -> impl View {
     use waterui::graphics::shader;
     let level = Binding::container(vec![0.5_f32]);
     shader!("starfield.wgsl")
-        .animated(true)
+        .continuous(true)
         .uniforms(level)
         .size(400.0, 500.0)
 }
@@ -671,7 +671,7 @@ pub fn media_block_10() -> impl View {
 }
 
 // ---------------------------------------------------------------------------
-// media.md § "## Graphics and codes" (prose): `.labeled(..)` / `.described(..)`,
+// media.md § "## Graphics and codes" (prose): `.offered_label(..)` / `.offered_value(..)`,
 // `.on_ime_caret(..)`, and a `SceneContent` handling input. Not counted as a rust
 // block.
 // ---------------------------------------------------------------------------
@@ -680,8 +680,8 @@ pub fn media_gpu_input_prose<C: waterui::graphics::GpuContent>(content: C) -> im
     use waterui::graphics::gpu::Rect;
 
     GpuView::new(content)
-        .labeled("Terminal")
-        .described("Shell session")
+        .offered_label(Str::from("Terminal"))
+        .offered_value(Str::from("Shell session"))
         .on_ime_caret(|| Option::<Rect>::None)
 }
 
@@ -705,6 +705,7 @@ pub fn media_filter_table_prose(png: &[u8]) -> Result<impl View, waterui::Error>
             BlendMode::Multiply,
         )
         .displacement_warp(decoded, 1.0, 1.0);
+    let quad = Binding::container([[0.0_f32, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]);
     let _ = text("a")
         .tone_curve(0.1, 0.5, 0.9, 1.0, 1.0)
         .color_matrix([[1.0, 0.0, 0.0, 0.0]; 3])
@@ -714,7 +715,8 @@ pub fn media_filter_table_prose(png: &[u8]) -> Result<impl View, waterui::Error>
         .photo_effect_noir()
         .dot_halftone(1.0, 2.0, 3.0, 4.0)
         .twirl_distortion(1.0, 2.0, 3.0, 4.0)
-        .perspective_transform([[0.0, 0.0]; 4]);
+        .perspective_transform([[0.0, 0.0]; 4])
+        .perspective_correction(quad);
 
     Ok(Photo::new("https://waterui.dev/logo.png")
         .sepia(0.8)
@@ -740,7 +742,7 @@ pub fn media_block_11() -> Result<impl View, waterui::graphics::filter_view::Sha
     Ok(terminal()
         .effect(crt.clone()) // a clone shares the validated module; constant params carry
         .param(strength.clone()) // a signal — the shader reads it as effect_param(0u)
-        .animated(focused.clone())) // a bool signal — a frame after every frame while true
+        .continuous(focused.clone())) // a bool signal — a frame after every frame while true
 }
 
 // ---------------------------------------------------------------------------

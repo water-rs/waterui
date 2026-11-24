@@ -34,7 +34,6 @@ use waterui::Signal;
 use waterui::accessibility::{AccessibilityRole, AccessibilityState};
 use waterui::animation::Animation;
 use waterui::app::{App, Windows};
-use waterui::form::picker::{PickerStyle, picker};
 use waterui::layout::stack::VStack;
 use waterui::navigation::{NavigationSplitView, NavigationView};
 use waterui::prelude::slider::slider;
@@ -410,7 +409,7 @@ fn sidebar(
         vstack((
             text("WaterUI Controls")
                 .subheadline()
-                .bold()
+                .bold(true)
                 .foreground(Foreground)
                 .padding_with([20.0, 28.0, 12.0, 16.0]),
             drawer,

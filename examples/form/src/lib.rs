@@ -68,7 +68,7 @@ fn scene(
                 form(registration),
                 Divider,
                 // Live preview of form data
-                text("Live Preview:").bold(),
+                text("Live Preview:").bold(true),
                 text!(
                     "Name: {registration}",
                     registration = registration.project().full_name
@@ -88,7 +88,7 @@ fn scene(
                 "Another form with different field types",
                 form(settings),
                 Divider,
-                text("Current Settings:").bold(),
+                text("Current Settings:").bold(true),
                 hstack((
                     "Dark Mode: ",
                     text!("{dark_mode}", dark_mode = settings.project().dark_mode),
@@ -111,7 +111,7 @@ fn scene(
                 // Multi-line text field
                 TextField::new("Bio", custom_bio)
                     .prompt("Tell us about yourself")
-                    .line_limit(NonZeroUsize::new(3).unwrap()),
+                    .line_limit(NonZeroUsize::new(3)),
                 // Toggle with label
                 Toggle::new("Enable Feature", custom_enabled),
                 // Stepper with custom range
@@ -121,7 +121,7 @@ fn scene(
                 // Progress bar showing slider value
                 progress(custom_slider.clone()),
                 Divider,
-                text("Manual Controls Preview:").bold(),
+                text("Manual Controls Preview:").bold(true),
                 text!("Username: {custom_name}"),
                 text!("Bio: {custom_bio}"),
                 text!("Feature Enabled: {custom_enabled}"),
@@ -186,7 +186,7 @@ fn sample_card() -> impl View {
         text("Sample Card").title(),
         "This is a preview test",
         Divider,
-        hstack((text("Status:").bold(), text("Active"))),
+        hstack((text("Status:").bold(true), text("Active"))),
     ))
     .padding_with(16.0)
 }

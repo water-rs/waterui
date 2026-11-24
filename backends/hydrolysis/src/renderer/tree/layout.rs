@@ -9,6 +9,7 @@ use super::ContainerNode;
 use super::*;
 use crate::text::TextEngine;
 use crate::theme::WidgetTheme;
+use core::num::NonZeroUsize;
 use waterui_core::contract_violation;
 use waterui_core::layout::{
     Layout, LayoutError, LayoutPlacement, PlacedSubview, Rect as LayoutRect, ResolvedExtent,
@@ -987,13 +988,16 @@ fn text_dimensions<E: TextEngine>(
 ) -> ViewDimensions {
     let content = state.measure_signal(&text.content);
     let alignment = state.measure_signal(&text.alignment);
+    let line_limit = state
+        .measure_signal(&text.line_limit)
+        .map(NonZeroUsize::get);
     HydrolysisRenderer::measure_text_dimensions(
         state,
         content,
         alignment,
         env,
         proposal.width,
-        text.line_limit,
+        line_limit,
     )
 }
 

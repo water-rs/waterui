@@ -2908,17 +2908,21 @@ mod navigation {
         const TRAILING: &str = "dev.cocoaui.navigation.trailing";
 
         let icon = || SfSymbol::PLUS;
+        let noop: fn() = || {};
         let leaf = resolve::render(NavigationStack::new(
             NavigationView::new("Inbox", text("root")).navigation_toolbar(NavigationToolbar::new(
                 vec![
                     NavigationToolbarItem::new(
                         NavigationToolbarPlacement::TopBarLeading,
-                        button(label("").icon(icon())).style(ButtonStyle::Borderless),
+                        button(label("").icon(icon()))
+                            .style(ButtonStyle::Borderless)
+                            .action(noop),
                     ),
                     NavigationToolbarItem::new(
                         NavigationToolbarPlacement::TopBarTrailing,
                         button(label("Keep title").icon(icon()).title_and_icon())
-                            .style(ButtonStyle::Borderless),
+                            .style(ButtonStyle::Borderless)
+                            .action(noop),
                     ),
                 ],
             )),
@@ -3266,7 +3270,7 @@ mod material_vibrancy {
         let (env, theme) = window_environment(mtm());
         refresh_theme(&theme, cocoa_ui::ColorScheme::Light);
         let content = vstack((
-            text("Now Playing").bold(),
+            text("Now Playing").bold(true),
             text("muted").muted(),
             text("explicit").foreground(Color::srgb(200, 30, 30)),
         ))
@@ -4497,7 +4501,11 @@ mod gpu_surface {
         for (name, view) in [
             (
                 "prominent_button",
-                AnyView::new(button("Action").style(ButtonStyle::BorderedProminent)),
+                AnyView::new(
+                    button("Action")
+                        .style(ButtonStyle::BorderedProminent)
+                        .action(|| {}),
+                ),
             ),
             (
                 "active_switch",
@@ -5490,7 +5498,7 @@ mod capture_order {
         let column = |child| {
             layered(child)
                 .background(orange())
-                .scale(1.6, 1.6)
+                .scale(1.6)
                 .clip(RoundedRectangle::new(0.2))
         };
         assert_gpu_column_matches_native(column(native_child()), column(gpu_child()), 1);
@@ -9964,6 +9972,7 @@ mod navigation {
         use waterui_core::layout::ProposalSize;
 
         let icon = || SfSymbol::PLUS;
+        let noop: fn() = || {};
         let icon_leaf = resolve::render(icon());
         let icon_width = f64::from(
             icon_leaf
@@ -9977,12 +9986,15 @@ mod navigation {
                 vec![
                     NavigationToolbarItem::new(
                         NavigationToolbarPlacement::TopBarLeading,
-                        button(label("").icon(icon())).style(ButtonStyle::Borderless),
+                        button(label("").icon(icon()))
+                            .style(ButtonStyle::Borderless)
+                            .action(noop),
                     ),
                     NavigationToolbarItem::new(
                         NavigationToolbarPlacement::TopBarTrailing,
                         button(label("Keep title").icon(icon()).title_and_icon())
-                            .style(ButtonStyle::Borderless),
+                            .style(ButtonStyle::Borderless)
+                            .action(noop),
                     ),
                 ],
             )),
@@ -10047,7 +10059,8 @@ mod navigation {
                             let drawn = drawn.clone();
                             move || ForegroundProbe(drawn.clone())
                         }))
-                        .style(ButtonStyle::Borderless),
+                        .style(ButtonStyle::Borderless)
+                        .action(|| {}),
                     )]),
                 ),
             )),
@@ -10078,7 +10091,9 @@ mod navigation {
                 NavigationToolbar::default()
                     .item(NavigationToolbarItem::new(
                         NavigationToolbarPlacement::TopBarLeading,
-                        button(waterui::text!("{title}")).style(ButtonStyle::Plain),
+                        button(waterui::text!("{title}"))
+                            .style(ButtonStyle::Plain)
+                            .action(|| {}),
                     ))
                     .item(NavigationToolbarItem::new(
                         NavigationToolbarPlacement::TopBarTrailing,
@@ -10177,6 +10192,7 @@ mod navigation {
                     NavigationToolbarPlacement::TopBarLeading,
                     button("Save")
                         .style(ButtonStyle::Plain)
+                        .action(|| {})
                         .disabled(disabled.clone()),
                 )],
             )),
@@ -10208,6 +10224,7 @@ mod navigation {
             NavigationToolbarPlacement::TopBarTrailing,
             button("Save")
                 .style(ButtonStyle::Plain)
+                .action(|| {})
                 .disabled(disabled.clone()),
         )
         .icon(SfSymbol::CHECKMARK);
@@ -12575,7 +12592,7 @@ mod embedding {
 /// The shared gesture contract end to end on `AppKit`: a completed
 /// gesture inserts the observed `Gesture` and its typed event —
 /// `TapEvent`, `RotationEvent`, `MagnificationEvent` — into the action's
-/// environment, so a `Use<T>` handler extracts the same value Hydrolysis
+/// environment, so a handler extracts the same value Hydrolysis
 /// reports for the same input. These cases cover the observer's
 /// state/getter mapping, not the OS's gesture recognition: they drive
 /// the installed `CocoaUiGestureTarget` with seeded recognizer subclasses
@@ -12595,7 +12612,6 @@ mod gesture_events {
     };
     use cocoa_ui::objc2_foundation::NSPoint;
     use waterui::ViewExt as _;
-    use waterui::extract::Use;
     use waterui::gesture::{Gesture, GesturePhase};
     use waterui::gesture::{
         MagnificationEvent, MagnificationGesture, PointerButton, RotationEvent, RotationGesture,
@@ -12619,7 +12635,7 @@ mod gesture_events {
             let gestures = Rc::clone(&gestures);
             text("tap").gesture(
                 TapGesture::new(),
-                move |Use(event): Use<TapEvent>, Use(gesture): Use<Gesture>| {
+                move |event: TapEvent, gesture: Gesture| {
                     taps.borrow_mut().push(event);
                     gestures.borrow_mut().push(gesture);
                 },
@@ -12873,12 +12889,9 @@ mod gesture_events {
         let rotations = Rc::new(RefCell::new(Vec::new()));
         let leaf = resolve::render({
             let rotations = Rc::clone(&rotations);
-            text("rotate").gesture(
-                RotationGesture::new(0.0),
-                move |Use(e): Use<RotationEvent>| {
-                    rotations.borrow_mut().push(e);
-                },
-            )
+            text("rotate").gesture(RotationGesture::new(0.0), move |e: RotationEvent| {
+                rotations.borrow_mut().push(e);
+            })
         });
         let host = leaf.view();
         let _window = super::mount_and_order_front(host);
@@ -12938,7 +12951,7 @@ mod gesture_events {
             let events = Rc::clone(&events);
             text("pinch").gesture(
                 MagnificationGesture::new(2.0),
-                move |Use(e): Use<MagnificationEvent>| {
+                move |e: MagnificationEvent| {
                     events.borrow_mut().push(e);
                 },
             )
@@ -13014,7 +13027,7 @@ mod gesture_events {
             let gestures = Rc::clone(&gestures);
             text("then").gesture(
                 Gesture::Tap(TapGesture::new()).then(RotationGesture::new(0.0)),
-                move |Use(event): Use<RotationEvent>, Use(gesture): Use<Gesture>| {
+                move |event: RotationEvent, gesture: Gesture| {
                     events.borrow_mut().push(event);
                     gestures.borrow_mut().push(gesture);
                 },
@@ -14651,7 +14664,7 @@ mod transition {
         let mounted = leaf.mount(&HostView::new(mtm(), cocoa_ui::Rect::ZERO));
         let window = super::mount_and_order_front(mounted.view());
         handler.set(AnyView::new(Metadata::new(
-            label("coming").scale(0.5, 0.5),
+            label("coming").scale(0.5),
             TransitionSpec::new(PropertyTransition::scale(0.5))
                 .with_animation(Animation::linear(Duration::from_millis(60))),
         )));
@@ -17032,11 +17045,11 @@ mod transform_modifiers {
         );
     }
 
-    /// `.scale(0.5, 0.5)` at the default centre anchor (#3504's own
+    /// `.scale(0.5)` at the default centre anchor (#3504's own
     /// reproduction): `m11`/`m22` stay `0.5` after display, and the
     /// anchor's translation term tracks the wrapper's new size.
     fn scale_survives_display_and_resize() {
-        let (_leaf, wrapper, _window) = mount(label("coming").scale(0.5, 0.5));
+        let (_leaf, wrapper, _window) = mount(label("coming").scale(0.5));
         assert_survives_display_and_resize(
             &wrapper,
             CATransform3D::new_scale(0.5, 0.5, 1.0),
@@ -17467,7 +17480,11 @@ mod catalyst_view_renderer {
 
         let renderer = AppleBackend::new(mtm()).offscreen(&env);
         let request = RenderRequest::new(Size::new(160.0, 48.0), Duration::from_secs(10));
-        let view = AnyView::new(button("Action").style(ButtonStyle::BorderedProminent));
+        let view = AnyView::new(
+            button("Action")
+                .style(ButtonStyle::BorderedProminent)
+                .action(|| {}),
+        );
         let result = block_on_main(30.0, renderer.render_to_rgba(view, &env, request))
             .map_err(|error| format!("Catalyst prominent button render_to_rgba failed: {error}"))?;
 

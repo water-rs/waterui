@@ -315,14 +315,14 @@ impl Default for Anchor {
 /// use waterui::prelude::*;
 ///
 /// // Scale from center (default)
-/// let bigger = text!("Hello").scale(1.5, 1.5);
+/// let bigger = text!("Hello").scale(1.5);
 ///
 /// // Scale from top-left corner
-/// let cornered = text!("Hello").scale_from(1.5, 1.5, Anchor::TOP_LEFT);
+/// let cornered = text!("Hello").scale_from(1.5, Anchor::TOP_LEFT);
 ///
 /// // Animate scale
 /// let factor = binding::<f32>(1.0_f32).animated();
-/// let pulsing = text!("Hello").scale(factor, 1.0);
+/// let pulsing = text!("Hello").scale_xy(factor, 1.0);
 /// ```
 #[derive(Debug)]
 #[non_exhaustive]
