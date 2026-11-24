@@ -17,6 +17,7 @@
 //! 4. `text!` automatically reacts to locale changes - no `watch()` needed!
 
 use waterui::app::{App, Windows};
+use waterui::catalog;
 use waterui::form::picker::{Picker, PickerItem};
 use waterui::prelude::*;
 use waterui::preview;
@@ -27,53 +28,55 @@ use waterui_locale::format::date::{
     format_datetime_with_regional_context,
 };
 use waterui_locale::format::unit::{Kilometer, Length, Meter};
-use waterui_locale::{Locale, LocalizedDisplay, locales};
+use waterui_locale::locale::get_fallback_chain;
+use waterui_locale::{Locale, LocalizedDisplay, TranslationCatalog, locales};
 
-/// Available locales for the picker
-fn available_locales() -> [PickerItem<&'static str>; 11] {
-    [
-        text("English (US)").tag("en-US"),
-        text("English (UK)").tag("en-GB"),
-        text("中文 (简体)").tag("zh"),
-        text("中文 (台灣)").tag("zh-TW"),
-        text("中文 (香港)").tag("zh-HK"),
-        text("日本語").tag("ja"),
-        text("한국어").tag("ko"),
-        text("Deutsch").tag("de"),
-        text("Français").tag("fr"),
-        text("Español").tag("es"),
-        text("Русский").tag("ru"),
-    ]
+/// Builds the locale picker items dynamically from the compiled translation catalog.
+fn available_locales(catalog: &TranslationCatalog) -> Vec<PickerItem<Locale>> {
+    catalog
+        .locales()
+        .map(|locale| text(locale.display_name(locale)).tag(locale.clone()))
+        .collect()
 }
 
-/// Convert locale code to Locale
-fn locale_from_code(code: &str) -> Locale {
-    match code {
-        "en" => locales::EN,
-        "en-GB" => locales::EN_GB,
-        "zh" => locales::ZH_CN,
-        "zh-TW" => locales::ZH_TW,
-        "zh-HK" => locales::ZH_HK,
-        "ja" => locales::JA,
-        "ko" => locales::KO,
-        "de" => locales::DE,
-        "fr" => locales::FR,
-        "es" => locales::ES,
-        "ru" => locales::RU,
-        // "en-US" and any unsupported code fall back to US English.
-        _ => locales::EN_US,
-    }
+/// Resolves the best matching catalog locale for the host's system locale.
+fn initial_locale(catalog: &TranslationCatalog, system_locale: &Locale) -> Locale {
+    get_fallback_chain(system_locale)
+        .into_iter()
+        .find_map(|candidate| {
+            catalog
+                .locales()
+                .find(|locale| locale.id() == candidate.id())
+                .cloned()
+        })
+        .or_else(|| {
+            catalog
+                .locales()
+                .find(|locale| locale.id() == locales::EN_US.id())
+                .cloned()
+        })
+        .or_else(|| catalog.locales().next().cloned())
+        .unwrap_or(locales::EN_US)
 }
 
 /// Locale picker section
-fn locale_picker_section(selection: &Binding<&'static str>, detected: String) -> impl View + use<> {
+fn locale_picker_section(
+    catalog: &TranslationCatalog,
+    selection: &Binding<Locale>,
+    detected: String,
+) -> impl View + use<> {
     vstack((
         text!("Language Booth").size(16.0).bold(),
         hstack((text!("Detected Locale:"), spacer(), text(detected))),
         hstack((
             text!("Chosen Language:"),
             spacer(),
-            Picker::new(text!("Chosen Language:"), available_locales(), selection).hide_label(),
+            Picker::new(
+                text!("Chosen Language:"),
+                available_locales(catalog),
+                selection,
+            )
+            .hide_label(),
         )),
     ))
 }
@@ -192,41 +195,14 @@ fn formatted_content(locale: &Computed<Locale>) -> impl View + use<> {
 }
 
 fn scene(system_locale: &Locale) -> impl View + use<> {
-    // Determine initial locale code from system locale
-    let initial_code: &'static str = match system_locale.language.as_str() {
-        "en" => match system_locale
-            .region
-            .as_ref()
-            .map(ToString::to_string)
-            .as_deref()
-        {
-            Some("GB") => "en-GB",
-            _ => "en-US", // Default to US English
-        },
-        "zh" => match system_locale
-            .region
-            .as_ref()
-            .map(ToString::to_string)
-            .as_deref()
-        {
-            Some("TW") => "zh-TW",
-            Some("HK") => "zh-HK",
-            _ => "zh",
-        },
-        "ja" => "ja",
-        "ko" => "ko",
-        "de" => "de",
-        "fr" => "fr",
-        "es" => "es",
-        "ru" => "ru",
-        _ => "en-US",
-    };
+    let catalog = catalog!();
+    let initial = initial_locale(&catalog, system_locale);
 
-    // Create binding for selected locale code
-    let selection = Binding::container(initial_code);
+    // Create binding for the selected locale.
+    let selection = Binding::container(initial.clone());
     // Initialize shared runtime locale from the picker's initial value.
-    set_locale_tag(initial_code).expect("picker locale tag must be valid");
-    let formatted_locale = selection.clone().map(locale_from_code).computed();
+    set_locale_tag(initial.canonical_tag()).expect("picker locale tag must be valid");
+    let formatted_locale = selection.computed();
 
     scroll(
         vstack((
@@ -235,7 +211,7 @@ fn scene(system_locale: &Locale) -> impl View + use<> {
             text!("Live translations for a tiny world-fair kiosk").size(14.0),
             Divider,
             // Locale picker
-            locale_picker_section(&selection, system_locale.to_string()),
+            locale_picker_section(&catalog, &selection, system_locale.to_string()),
             Divider,
             // Localized content - text! macros react to regional locale updates
             // No watch() needed for these!
@@ -247,8 +223,8 @@ fn scene(system_locale: &Locale) -> impl View + use<> {
         ))
         .padding_with(16.0),
     )
-    .on_change(&selection, |code| {
-        set_locale_tag(code).expect("picker locale tag must be valid");
+    .on_change(&selection, |locale: Locale| {
+        set_locale_tag(locale.canonical_tag()).expect("picker locale tag must be valid");
     })
 }
 

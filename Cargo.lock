@@ -5184,12 +5184,16 @@ version = "2.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fe8fa57bcddc15cb921582ee5259c5b77da39f946f188ca5213fad24d9241236"
 dependencies = [
+ "displaydoc",
+ "either",
  "icu_collections",
  "icu_locale_core",
  "icu_locale_data",
  "icu_locale_fallback",
+ "icu_pattern",
  "icu_provider",
  "tinystr",
+ "writeable",
  "zerovec",
 ]
 
@@ -13545,16 +13549,22 @@ dependencies = [
  "jiff",
  "nami",
  "num-traits",
- "serde",
  "suiteki",
  "sys-locale",
- "toml 1.1.8+spec-1.1.0",
  "tracing",
  "wasm-bindgen",
  "waterui",
  "waterui-core",
  "waterui-locale",
+ "waterui-locale-parser",
  "web-sys",
+]
+
+[[package]]
+name = "waterui-locale-parser"
+version = "0.5.1"
+dependencies = [
+ "toml 1.1.8+spec-1.1.0",
 ]
 
 [[package]]
@@ -13568,10 +13578,10 @@ dependencies = [
  "serde_json",
  "sha2",
  "syn 3.0.9",
- "toml 1.1.8+spec-1.1.0",
  "trybuild",
  "unicode-ident",
  "waterui",
+ "waterui-locale-parser",
  "waterui-testing",
 ]
 

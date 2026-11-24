@@ -1,12 +1,23 @@
 //! CLDR plural rules using ICU4X.
 
-use icu_plurals::PluralRules;
+use icu_plurals::{PluralCategory as IcuPluralCategory, PluralRules};
 use num_traits::ToPrimitive;
 
 use crate::locale::Locale;
 
-/// Re-export `PluralCategory` from ICU4X.
-pub use icu_plurals::PluralCategory;
+/// CLDR plural category.
+pub use waterui_locale_parser::PluralCategory;
+
+const fn from_icu_category(cat: IcuPluralCategory) -> PluralCategory {
+    match cat {
+        IcuPluralCategory::Zero => PluralCategory::Zero,
+        IcuPluralCategory::One => PluralCategory::One,
+        IcuPluralCategory::Two => PluralCategory::Two,
+        IcuPluralCategory::Few => PluralCategory::Few,
+        IcuPluralCategory::Many => PluralCategory::Many,
+        IcuPluralCategory::Other => PluralCategory::Other,
+    }
+}
 
 /// Select the plural category for a number using CLDR rules.
 ///
@@ -47,21 +58,22 @@ pub fn select_plural<N: ToPrimitive + ?Sized>(locale: &Locale, n: &N) -> PluralC
     let float_value = n.to_f64().unwrap_or(0.0);
     if float_value.is_finite() && float_value.fract() == 0.0 {
         if let Some(value) = n.to_i64() {
-            return rules.category_for(value);
+            return from_icu_category(rules.category_for(value));
         }
         if let Some(value) = n.to_u64() {
-            return rules.category_for(value);
+            return from_icu_category(rules.category_for(value));
         }
     }
 
-    float_value
+    let category = float_value
         .abs()
         .to_string()
         .parse::<fixed_decimal::Decimal>()
         .map_or_else(
             |_| rules.category_for(0_u8),
             |decimal| rules.category_for(&decimal),
-        )
+        );
+    from_icu_category(category)
 }
 
 /// Get all valid plural categories for a locale.
@@ -95,5 +107,5 @@ pub fn valid_categories(locale: &Locale) -> Vec<PluralCategory> {
             .expect("English plural rules should always be available")
     });
 
-    rules.categories().collect()
+    rules.categories().map(from_icu_category).collect()
 }

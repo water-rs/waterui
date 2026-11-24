@@ -1,10 +1,14 @@
 //! Locale types and constants using ICU4X.
 
+use core::cmp::Ordering;
 use core::ops::Deref;
 use core::str::FromStr;
 use std::collections::BTreeSet;
 
 use icu_locale::fallback::LocaleFallbackConfig;
+use icu_locale::names::{
+    DisplayNamesPreferences, LanguageIdentifierDisplayName, LanguageIdentifierDisplayNameOptions,
+};
 use icu_locale::{LanguageIdentifier, Locale as IcuLocale, LocaleFallbacker};
 use icu_provider::DataLocale;
 use nami::{Binding, Signal, impl_constant};
@@ -19,6 +23,18 @@ use crate::regional;
 /// `u-ca`, `u-hc`, and `u-nu`, enabling full locale preferences.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Locale(pub IcuLocale);
+
+impl Ord for Locale {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.0.total_cmp(&other.0)
+    }
+}
+
+impl PartialOrd for Locale {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
 
 impl_constant!(Locale);
 
@@ -39,6 +55,24 @@ impl Locale {
     #[must_use]
     pub fn canonical_tag(&self) -> String {
         self.0.to_string()
+    }
+
+    /// Formats this locale's localized display name in `display_locale`.
+    ///
+    /// Pass `self` as `display_locale` (`locale.display_name(locale)`) to render
+    /// the locale's autonym (for example, `"English (US)"`, `"Deutsch"`, `"日本語"`).
+    #[must_use]
+    pub fn display_name(&self, display_locale: &Self) -> String {
+        let prefs = DisplayNamesPreferences::from(&display_locale.0);
+        LanguageIdentifierDisplayName::try_new_short_menu_light(
+            prefs,
+            self.0.id.clone(),
+            LanguageIdentifierDisplayNameOptions::default(),
+        )
+        .map_or_else(
+            |_| self.canonical_tag(),
+            |name| name.as_borrowed().to_string(),
+        )
     }
 }
 

@@ -57,6 +57,10 @@ version_group = "waterui"
 git_tag_name = "locale-v{{ version }}"
 
 [[package]]
+name = "waterui-locale-parser"
+version_group = "waterui"
+
+[[package]]
 name = "waterui-watcher-set"
 version_group = "waterui"
 

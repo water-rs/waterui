@@ -301,6 +301,7 @@ waterui-icon = { version = "0.5.1", path = "components/foundation/icon" }
 waterui-icons-material-icon = { version = "0.5.1", path = "components/icon/material" }
 waterui-icons-lucide = { version = "0.5.1", path = "components/icon/lucide" }
 waterui-locale = { version = "0.5.1", path = "utils/locale" }
+waterui-locale-parser = { version = "0.5.1", path = "utils/locale-parser" }
 waterui-map = { version = "0.5.1", path = "components/data/map" }
 waterui-markdown = { version = "0.5.1", path = "components/visual/markdown", default-features = false }
 waterui-meta = { version = "0.5.1", path = "utils/meta" }

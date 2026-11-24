@@ -908,7 +908,7 @@ mod tests {
         env.insert(locales::EN);
         env.insert(
             TranslationCatalog::new()
-                .add_toml("en", "greeting = \"Hello\"\nfarewell = \"Goodbye\"")
+                .add_toml(locales::EN, "greeting = \"Hello\"\nfarewell = \"Goodbye\"")
                 .expect("test catalog must parse"),
         );
         env

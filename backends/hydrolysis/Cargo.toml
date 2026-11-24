@@ -366,7 +366,7 @@ waterui-assets-core = { workspace = true, optional = true }
 tracing-log = { version = "0.2", optional = true }
 # The accessibility tree publish and the platform-view placement set cross JNI
 # as JSON.
-serde = { workspace = true, features = ["derive"] }
+serde = { workspace = true, features = ["derive"], optional = true }
 serde_json = { workspace = true, optional = true }
 # The published payload's `contentTypes` map serializes `ContentType`
 # (camelCase names) — the provider maps each onto `HintConstants`.
@@ -383,7 +383,7 @@ console_error_panic_hook = { version = "0.1", optional = true }
 # `join_all` are the whole of what it needs from futures.
 futures = { workspace = true, optional = true }
 js-sys = "0.3"
-serde = { workspace = true, features = ["derive"] }
+serde = { workspace = true, features = ["derive"], optional = true }
 serde_json = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, optional = true }
 wasm-bindgen = { version = "0.2", optional = true }
@@ -543,6 +543,7 @@ gpu = [
     "dep:lru",
     "dep:ndk-context",
     "dep:peniko",
+    "dep:serde",
     "dep:serde_json",
     "dep:tracing-log",
     "dep:tracing-subscriber",
@@ -580,6 +581,7 @@ cpu = [
     "dep:lru",
     "dep:ndk-context",
     "dep:peniko",
+    "dep:serde",
     "dep:tracing-subscriber",
     "dep:unicode-segmentation",
     "cherenkov-cpu/shaders",
@@ -614,6 +616,7 @@ hwui = [
     "dep:ndk-context",
     "dep:peniko",
     "dep:read-fonts",
+    "dep:serde",
     "dep:serde_json",
     "dep:tracing-log",
     "dep:tracing-subscriber",
@@ -642,6 +645,7 @@ webview-system = [
     "dep:futures",
     "dep:getrandom",
     "dep:objc2-web-kit",
+    "dep:serde",
     "dep:serde_json",
     "web-sys?/HtmlIFrameElement",
     "web-sys?/MouseEvent",
@@ -713,6 +717,7 @@ web = [
     "accessibility",
     "dep:console_error_panic_hook",
     "dep:futures",
+    "dep:serde",
     "dep:serde_json",
     "dep:wasm-bindgen",
     "dep:wasm-bindgen-futures",

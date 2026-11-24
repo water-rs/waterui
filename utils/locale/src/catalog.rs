@@ -1,7 +1,7 @@
 //! Runtime translation catalog loaded from app-provided i18n tables.
 
-use std::collections::HashMap;
-use std::string::String;
+use core::cmp::Ordering;
+use std::collections::BTreeMap;
 
 use icu_locale::LanguageIdentifier;
 use suiteki::Str;
@@ -9,12 +9,27 @@ use waterui_core::contract_violation;
 use waterui_core::plugin::Plugin;
 
 use crate::locale::{Locale, find_in_fallback_chain, locales};
-use crate::parser::{TranslationFile, TranslationValue};
+use crate::parser::{TranslationFile, TranslationParseError, TranslationValue};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LocaleKey(LanguageIdentifier);
+
+impl Ord for LocaleKey {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.0.total_cmp(&other.0)
+    }
+}
+
+impl PartialOrd for LocaleKey {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
 
 /// Runtime translation catalog installed into the environment.
 #[derive(Debug, Clone, Default)]
 pub struct TranslationCatalog {
-    locales: HashMap<LanguageIdentifier, TranslationFile>,
+    locales: BTreeMap<LocaleKey, (Locale, TranslationFile)>,
 }
 
 impl TranslationCatalog {
@@ -28,63 +43,54 @@ impl TranslationCatalog {
     ///
     /// # Errors
     ///
-    /// Returns an error if the TOML content is invalid.
-    pub fn add_toml(
-        mut self,
-        locale: impl Into<String>,
-        content: &str,
-    ) -> Result<Self, toml::de::Error> {
+    /// Returns [`TranslationParseError`] if the TOML content or schema is invalid.
+    pub fn add_toml(self, locale: Locale, content: &str) -> Result<Self, TranslationParseError> {
         let file = TranslationFile::parse(content)?;
-        let locale = locale.into();
-        self.insert_locale(&locale, file);
-        Ok(self)
+        Ok(self.insert_file(locale, file))
     }
 
     /// Inserts a parsed translation file for a locale.
     #[must_use]
-    pub fn insert_file(mut self, locale: impl Into<String>, file: TranslationFile) -> Self {
-        let locale = locale.into();
-        self.insert_locale(&locale, file);
+    pub fn insert_file(mut self, locale: Locale, file: TranslationFile) -> Self {
+        self.locales
+            .insert(LocaleKey(locale.id().clone()), (locale, file));
         self
     }
 
+    /// Iterates over every locale registered in this catalog in deterministic order.
+    pub fn locales(&self) -> impl Iterator<Item = &Locale> {
+        self.locales.values().map(|(locale, _)| locale)
+    }
+
     /// Resolves a simple translation key for a locale.
+    ///
+    /// If the matching entry is a plural or dual-plural table, this reports a
+    /// contract violation (panicking in debug builds, logging in release builds)
+    /// and returns its `other` / `other_other` form.
     #[must_use]
     pub fn lookup_text(&self, locale: &Locale, key: &str) -> Option<Str> {
         find_in_fallback_chain(locale, |fallback| self.lookup_exact(fallback.id(), key))
             .or_else(|| self.lookup_exact(locales::EN.id(), key))
     }
 
-    fn insert_locale(&mut self, locale: &str, file: TranslationFile) {
-        let parsed = match locale.parse::<Locale>() {
-            Ok(parsed) => parsed,
-            Err(error) => {
-                contract_violation!(
-                    "TranslationCatalog locale '{locale}' is invalid: {error}; the translations for it are not added"
-                );
-                return;
-            }
-        };
-        self.locales.insert(parsed.id().clone(), file);
-    }
-
     fn lookup_exact(&self, locale_key: &LanguageIdentifier, key: &str) -> Option<Str> {
-        let file = self.locales.get(locale_key)?;
+        let (_, file) = self.locales.get(&LocaleKey(locale_key.clone()))?;
         let value = file.get(key)?;
         match value {
             TranslationValue::Simple(text) => Some(Str::from(text.clone())),
-            TranslationValue::Plural(_forms) => {
+            TranslationValue::Plural(forms) => {
                 contract_violation!(
-                    "TranslationCatalog::lookup_text cannot resolve pluralized key '{key}' for locale '{locale_key}'; use text! for pluralized strings; the lookup finds no text"
+                    "TranslationCatalog::lookup_text resolved pluralized key '{key}' for locale '{locale_key}'; use text! for pluralized strings; falling back to the 'other' form"
                 );
-                None
+                Some(Str::from(forms.other.clone()))
             }
-            TranslationValue::DualPlural(_) => {
+            TranslationValue::DualPlural(forms) => {
                 contract_violation!(
-                    "TranslationCatalog::lookup_text cannot resolve dual-plural key '{key}' for locale '{locale_key}'; use text! for pluralized strings; the lookup finds no text"
+                    "TranslationCatalog::lookup_text resolved dual-plural key '{key}' for locale '{locale_key}'; use text! for pluralized strings; falling back to the 'other_other' form"
                 );
-                None
+                Some(Str::from(forms.other_other().to_owned()))
             }
+            _ => None,
         }
     }
 }
@@ -98,38 +104,72 @@ mod tests {
     const GREETING: &str = r#"hello = "Hello""#;
 
     #[test]
-    #[cfg_attr(
-        debug_assertions,
-        should_panic(expected = "TranslationCatalog locale 'not a locale!' is invalid")
-    )]
-    fn an_invalid_locale_is_not_added() {
+    fn locales_enumerates_registered_locales_in_deterministic_order() {
         let catalog = TranslationCatalog::new()
-            .add_toml("not a locale!", GREETING)
-            .expect("the table is valid TOML");
+            .add_toml(locales::JA, GREETING)
+            .expect("ja catalog must parse")
+            .add_toml(locales::EN_US, GREETING)
+            .expect("en-US catalog must parse")
+            .add_toml(locales::DE, GREETING)
+            .expect("de catalog must parse");
 
-        assert!(catalog.locales.is_empty());
+        let tags: Vec<String> = catalog.locales().map(Locale::canonical_tag).collect();
+        assert_eq!(tags, vec!["de", "en-US", "ja"]);
+    }
+
+    #[test]
+    fn add_toml_rejects_empty_plural_other() {
+        let err = TranslationCatalog::new()
+            .add_toml(locales::EN, r#"apples = { one = "an apple", other = "" }"#)
+            .expect_err("empty 'other' must fail");
+        assert!(matches!(
+            err,
+            TranslationParseError::MissingPluralOther { .. }
+        ));
     }
 
     #[test]
     #[cfg_attr(
         debug_assertions,
-        should_panic(expected = "cannot resolve pluralized key 'apples'")
+        should_panic(expected = "resolved pluralized key 'apples'")
     )]
-    fn looking_up_a_pluralized_key_finds_no_text() {
+    fn looking_up_a_pluralized_key_falls_back_to_other_form() {
         let catalog = TranslationCatalog::new()
             .add_toml(
-                "en",
+                locales::EN,
                 r#"apples = { one = "an apple", other = "many apples" }"#,
             )
             .expect("the table is valid TOML");
 
-        assert_eq!(catalog.lookup_text(&locales::EN, "apples"), None);
+        assert_eq!(
+            catalog.lookup_text(&locales::EN, "apples").as_deref(),
+            Some("many apples")
+        );
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "resolved dual-plural key 'fruit'")
+    )]
+    fn looking_up_a_dual_plural_key_falls_back_to_other_other_form() {
+        let catalog = TranslationCatalog::new()
+            .add_toml(
+                locales::EN,
+                r#"fruit = { one_one = "1 and 1", other_other = "many fruits" }"#,
+            )
+            .expect("the table is valid TOML");
+
+        assert_eq!(
+            catalog.lookup_text(&locales::EN, "fruit").as_deref(),
+            Some("many fruits")
+        );
     }
 
     #[test]
     fn looking_up_a_simple_key_finds_its_text() {
         let catalog = TranslationCatalog::new()
-            .add_toml("en", GREETING)
+            .add_toml(locales::EN, GREETING)
             .expect("the table is valid TOML");
 
         assert_eq!(

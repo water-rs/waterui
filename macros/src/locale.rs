@@ -4,18 +4,19 @@
 //! The macro loads translation files from the `i18n/` folder at compile time.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fs;
 use std::path::{Path, PathBuf};
-use toml::value::Table;
+use std::result::Result as StdResult;
 
+use icu_locale_core::{LanguageIdentifier, Locale as IcuLocale};
 use proc_macro::TokenStream;
 use proc_macro_crate::{FoundCrate, crate_name};
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::quote;
 use syn::parse::{Parse, ParseStream};
 use syn::{Expr, Ident, LitStr, Result, Token};
+use waterui_locale_parser::{DualPluralForms, PluralForms, TranslationFile, TranslationValue};
 
-const VALID_PLURAL_FIELDS: &[&str] = &["zero", "one", "two", "few", "many", "other"];
-const VALID_DUAL_PLURAL_FIELDS: &[&str] = &["one_one", "one_other", "other_one", "other_other"];
 const PLACEHOLDER_RULE: &str = "placeholders are bare identifiers (`{count}`), optionally with a format spec (`{blur:.1}`) or a plural marker (`{#count}`), and an expression is bound with `name = expr`";
 
 fn waterui_crate_path() -> std::result::Result<TokenStream2, TokenStream2> {
@@ -59,49 +60,11 @@ fn current_package_name() -> Option<String> {
     std::env::var("CARGO_PKG_NAME").ok()
 }
 
-/// Parsed translation value from TOML
-#[derive(Debug, Clone)]
-enum TranslationValue {
-    Simple(String),
-    Plural {
-        zero: Option<String>,
-        one: Option<String>,
-        two: Option<String>,
-        few: Option<String>,
-        many: Option<String>,
-        other: String,
-    },
-    DualPlural {
-        one_one: Option<String>,
-        one_other: Option<String>,
-        other_one: Option<String>,
-        other_other: String,
-    },
-}
-
-#[derive(Clone, Copy)]
-struct PluralFormsRef<'a> {
-    zero: Option<&'a String>,
-    one: Option<&'a String>,
-    two: Option<&'a String>,
-    few: Option<&'a String>,
-    many: Option<&'a String>,
-    other: &'a str,
-}
-
-#[derive(Clone, Copy)]
-struct DualPluralFormsRef<'a> {
-    one_one: Option<&'a String>,
-    one_other: Option<&'a String>,
-    other_one: Option<&'a String>,
-    other_other: &'a str,
-}
-
-/// All translations loaded from i18n folder
+/// All translations loaded from i18n folder.
 #[derive(Debug, Default)]
 struct TranslationBundle {
-    /// Map of locale code -> (key -> value)
-    locales: BTreeMap<String, BTreeMap<String, TranslationValue>>,
+    /// Map of canonical locale tag -> (parsed identifier, parsed translation file).
+    locales: BTreeMap<String, (LanguageIdentifier, TranslationFile)>,
     /// Translation files loaded from disk (used for build invalidation tracking).
     tracked_files: Vec<PathBuf>,
 }
@@ -125,6 +88,10 @@ impl TranslationBundle {
                 PathBuf::from,
             );
 
+        Self::load_from_dir(&i18n_path)
+    }
+
+    fn load_from_dir(i18n_path: &Path) -> StdResult<Self, String> {
         let mut bundle = Self::default();
 
         if !i18n_path.exists() {
@@ -132,7 +99,7 @@ impl TranslationBundle {
         }
 
         // Load all .toml files in i18n/
-        let entries = std::fs::read_dir(&i18n_path).map_err(|err| {
+        let entries = fs::read_dir(i18n_path).map_err(|err| {
             format!(
                 "Failed to read i18n directory '{}': {err}",
                 i18n_path.display()
@@ -149,130 +116,24 @@ impl TranslationBundle {
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .ok_or_else(|| format!("Invalid locale filename '{}'", path.display()))?;
+            let parsed_locale = stem.parse::<IcuLocale>().map_err(|err| {
+                format!(
+                    "Invalid BCP-47 locale tag '{stem}' in '{}': {err}",
+                    path.display()
+                )
+            })?;
             let content = std::fs::read_to_string(&path)
                 .map_err(|err| format!("Failed to read '{}': {err}", path.display()))?;
-            let translations = Self::parse_toml(&content, &path)?;
+            let translations = TranslationFile::parse_named(&content, &path.display().to_string())
+                .map_err(|err| err.to_string())?;
 
-            bundle.locales.insert(stem.to_string(), translations);
+            bundle
+                .locales
+                .insert(stem.to_string(), (parsed_locale.id, translations));
             bundle.tracked_files.push(path);
         }
 
         Ok(bundle)
-    }
-
-    fn parse_plural_field(
-        table: &Table,
-        key: &str,
-        source: &Path,
-        translation_key: &str,
-    ) -> std::result::Result<Option<String>, String> {
-        match table.get(key) {
-            None => Ok(None),
-            Some(toml::Value::String(value)) => Ok(Some(value.clone())),
-            Some(_) => Err(format!(
-                "Plural field '{key}' for key '{translation_key}' in '{}' must be a string",
-                source.display()
-            )),
-        }
-    }
-
-    fn parse_toml(
-        content: &str,
-        source: &Path,
-    ) -> std::result::Result<BTreeMap<String, TranslationValue>, String> {
-        let table: toml::Table = toml::from_str(content)
-            .map_err(|err| format!("Failed to parse '{}': {err}", source.display()))?;
-        let mut translations = BTreeMap::new();
-
-        for (key, value) in table {
-            let tv =
-                match value {
-                    toml::Value::String(s) => TranslationValue::Simple(s),
-                    toml::Value::Table(t) => {
-                        let is_dual_plural = t.keys().any(|field| field.contains('_'));
-                        if is_dual_plural {
-                            for field in t.keys() {
-                                if !VALID_DUAL_PLURAL_FIELDS.contains(&field.as_str()) {
-                                    return Err(format!(
-                                        "Unknown dual plural field '{}' for key '{}' in '{}'",
-                                        field,
-                                        key,
-                                        source.display()
-                                    ));
-                                }
-                            }
-
-                            let one_one = Self::parse_plural_field(&t, "one_one", source, &key)?;
-                            let one_other =
-                                Self::parse_plural_field(&t, "one_other", source, &key)?;
-                            let other_one =
-                                Self::parse_plural_field(&t, "other_one", source, &key)?;
-                            let other_other =
-                            Self::parse_plural_field(&t, "other_other", source, &key)?
-                                .filter(|s| !s.trim().is_empty())
-                                .ok_or_else(|| {
-                                    format!(
-                                "Dual plural key '{}' in '{}' must define non-empty 'other_other'",
-                                key,
-                                source.display()
-                            )
-                                })?;
-
-                            TranslationValue::DualPlural {
-                                one_one,
-                                one_other,
-                                other_one,
-                                other_other,
-                            }
-                        } else {
-                            for field in t.keys() {
-                                if !VALID_PLURAL_FIELDS.contains(&field.as_str()) {
-                                    return Err(format!(
-                                        "Unknown plural field '{}' for key '{}' in '{}'",
-                                        field,
-                                        key,
-                                        source.display()
-                                    ));
-                                }
-                            }
-
-                            let zero = Self::parse_plural_field(&t, "zero", source, &key)?;
-                            let one = Self::parse_plural_field(&t, "one", source, &key)?;
-                            let two = Self::parse_plural_field(&t, "two", source, &key)?;
-                            let few = Self::parse_plural_field(&t, "few", source, &key)?;
-                            let many = Self::parse_plural_field(&t, "many", source, &key)?;
-                            let other = Self::parse_plural_field(&t, "other", source, &key)?
-                                .filter(|s| !s.trim().is_empty())
-                                .ok_or_else(|| {
-                                    format!(
-                                        "Plural key '{}' in '{}' must define non-empty 'other'",
-                                        key,
-                                        source.display()
-                                    )
-                                })?;
-
-                            TranslationValue::Plural {
-                                zero,
-                                one,
-                                two,
-                                few,
-                                many,
-                                other,
-                            }
-                        }
-                    }
-                    _ => {
-                        return Err(format!(
-                            "Invalid translation value type for key '{}' in '{}'",
-                            key,
-                            source.display()
-                        ));
-                    }
-                };
-            translations.insert(key, tv);
-        }
-
-        Ok(translations)
     }
 }
 
@@ -623,10 +484,9 @@ fn build_locale_arms(
     plural_names: &[&str],
 ) -> Vec<TokenStream2> {
     let mut locale_arms = Vec::new();
-    for (locale_code, translations) in &bundle.locales {
+    for (locale_id, translations) in bundle.locales.values() {
         if let Some(value) = translations.get(translation_key) {
-            let arm =
-                generate_translation_arm(waterui, locale_code, value, all_idents, plural_names);
+            let arm = generate_translation_arm(waterui, locale_id, value, all_idents, plural_names);
             locale_arms.push(arm);
         }
     }
@@ -800,63 +660,32 @@ fn expand_text_macro(input: &TextInput) -> TokenStream2 {
 
 fn generate_translation_arm(
     waterui: &TokenStream2,
-    locale_code: &str,
+    locale: &LanguageIdentifier,
     value: &TranslationValue,
     all_idents: &[Ident],
     plural_names: &[&str],
 ) -> TokenStream2 {
     match value {
         TranslationValue::Simple(text) => {
-            generate_simple_translation_arm(waterui, locale_code, text, all_idents)
+            generate_simple_translation_arm(waterui, locale, text, all_idents)
         }
-        TranslationValue::Plural {
-            zero,
-            one,
-            two,
-            few,
-            many,
-            other,
-        } => generate_plural_translation_arm(
-            waterui,
-            locale_code,
-            PluralFormsRef {
-                zero: zero.as_ref(),
-                one: one.as_ref(),
-                two: two.as_ref(),
-                few: few.as_ref(),
-                many: many.as_ref(),
-                other,
-            },
-            all_idents,
-            plural_names,
-        ),
-        TranslationValue::DualPlural {
-            one_one,
-            one_other,
-            other_one,
-            other_other,
-        } => generate_dual_plural_translation_arm(
-            waterui,
-            locale_code,
-            DualPluralFormsRef {
-                one_one: one_one.as_ref(),
-                one_other: one_other.as_ref(),
-                other_one: other_one.as_ref(),
-                other_other,
-            },
-            all_idents,
-            plural_names,
-        ),
+        TranslationValue::Plural(forms) => {
+            generate_plural_translation_arm(waterui, locale, forms, all_idents, plural_names)
+        }
+        TranslationValue::DualPlural(forms) => {
+            generate_dual_plural_translation_arm(waterui, locale, forms, all_idents, plural_names)
+        }
+        _ => TokenStream2::new(),
     }
 }
 
 fn generate_simple_translation_arm(
     waterui: &TokenStream2,
-    locale_code: &str,
+    locale: &LanguageIdentifier,
     text: &str,
     all_idents: &[Ident],
 ) -> TokenStream2 {
-    let condition = locale_match_condition(locale_code);
+    let condition = locale_match_condition(locale);
     let format_lit = translation_format_lit(text);
     let text_config = build_text_config_expr(waterui, &format_lit, all_idents);
     quote! {
@@ -866,10 +695,7 @@ fn generate_simple_translation_arm(
     }
 }
 
-fn locale_match_condition(locale_code: &str) -> TokenStream2 {
-    let locale = locale_code
-        .parse::<icu_locale_core::LanguageIdentifier>()
-        .unwrap_or_else(|error| panic!("invalid translation locale '{locale_code}': {error}"));
+fn locale_match_condition(locale: &LanguageIdentifier) -> TokenStream2 {
     let language = LitStr::new(locale.language.as_str(), Span::call_site());
     let script = locale
         .script
@@ -928,7 +754,7 @@ fn push_plural_category_arm(
     category_arms: &mut Vec<TokenStream2>,
     waterui: &TokenStream2,
     category: &TokenStream2,
-    text: Option<&String>,
+    text: Option<&str>,
 ) {
     if let Some(text) = text {
         let format_lit = translation_format_lit(text);
@@ -942,27 +768,27 @@ fn push_plural_category_arm(
 
 fn generate_plural_translation_arm(
     waterui: &TokenStream2,
-    locale_code: &str,
-    forms: PluralFormsRef<'_>,
+    locale: &LanguageIdentifier,
+    forms: &PluralForms,
     all_idents: &[Ident],
     plural_names: &[&str],
 ) -> TokenStream2 {
-    let condition = locale_match_condition(locale_code);
+    let condition = locale_match_condition(locale);
     let plural_var = plural_names.first().copied().unwrap_or("count");
-    let plural_ident = Ident::new(plural_var, proc_macro2::Span::call_site());
+    let plural_ident = Ident::new(plural_var, Span::call_site());
     let mut category_arms = Vec::new();
     let zero = quote! { #waterui::locale::PluralCategory::Zero };
     let one = quote! { #waterui::locale::PluralCategory::One };
     let two = quote! { #waterui::locale::PluralCategory::Two };
     let few = quote! { #waterui::locale::PluralCategory::Few };
     let many = quote! { #waterui::locale::PluralCategory::Many };
-    push_plural_category_arm(&mut category_arms, waterui, &zero, forms.zero);
-    push_plural_category_arm(&mut category_arms, waterui, &one, forms.one);
-    push_plural_category_arm(&mut category_arms, waterui, &two, forms.two);
-    push_plural_category_arm(&mut category_arms, waterui, &few, forms.few);
-    push_plural_category_arm(&mut category_arms, waterui, &many, forms.many);
+    push_plural_category_arm(&mut category_arms, waterui, &zero, forms.zero.as_deref());
+    push_plural_category_arm(&mut category_arms, waterui, &one, forms.one.as_deref());
+    push_plural_category_arm(&mut category_arms, waterui, &two, forms.two.as_deref());
+    push_plural_category_arm(&mut category_arms, waterui, &few, forms.few.as_deref());
+    push_plural_category_arm(&mut category_arms, waterui, &many, forms.many.as_deref());
 
-    let other_format_lit = translation_format_lit(forms.other);
+    let other_format_lit = translation_format_lit(&forms.other);
     let locale_ident = unique_ident("__waterui_locale_value", all_idents);
     let localized_bindings = localized_argument_bindings(waterui, all_idents, &locale_ident);
     let body = quote! {
@@ -996,21 +822,21 @@ fn optional_format_expr(
 
 fn generate_dual_plural_translation_arm(
     waterui: &TokenStream2,
-    locale_code: &str,
-    forms: DualPluralFormsRef<'_>,
+    locale: &LanguageIdentifier,
+    forms: &DualPluralForms,
     all_idents: &[Ident],
     plural_names: &[&str],
 ) -> TokenStream2 {
-    let condition = locale_match_condition(locale_code);
+    let condition = locale_match_condition(locale);
     let plural_var_1 = plural_names.first().copied().unwrap_or("count");
     let plural_var_2 = plural_names.get(1).copied().unwrap_or(plural_var_1);
-    let plural_ident_1 = Ident::new(plural_var_1, proc_macro2::Span::call_site());
-    let plural_ident_2 = Ident::new(plural_var_2, proc_macro2::Span::call_site());
+    let plural_ident_1 = Ident::new(plural_var_1, Span::call_site());
+    let plural_ident_2 = Ident::new(plural_var_2, Span::call_site());
 
-    let one_one_format = forms.one_one.map(|text| translation_format_lit(text));
-    let one_other_format = forms.one_other.map(|text| translation_format_lit(text));
-    let other_one_format = forms.other_one.map(|text| translation_format_lit(text));
-    let other_other_lit = translation_format_lit(forms.other_other);
+    let one_one_format = forms.one_one().map(translation_format_lit);
+    let one_other_format = forms.one_other().map(translation_format_lit);
+    let other_one_format = forms.other_one().map(translation_format_lit);
+    let other_other_lit = translation_format_lit(forms.other_other());
     let locale_ident = unique_ident("__waterui_locale_value", all_idents);
     let localized_bindings = localized_argument_bindings(waterui, all_idents, &locale_ident);
 
@@ -1045,24 +871,21 @@ fn generate_dual_plural_translation_arm(
     }
 }
 
-/// The path the expanding crate uses to name `TranslationCatalog`.
+/// The path the expanding crate uses to name `waterui-locale` items.
 ///
-/// `TranslationCatalog` is defined in `waterui-locale` and re-exported at
-/// `waterui::locale`. Most callers have the `waterui` facade as a dependency;
-/// generated crates that stay slim and do not depend on the facade go
-/// through the component crate directly instead.
-fn translation_catalog_path() -> std::result::Result<TokenStream2, TokenStream2> {
+/// `TranslationCatalog` and `Locale` are defined in `waterui-locale` and
+/// re-exported at `waterui::locale`. Most callers have the `waterui` facade as
+/// a dependency; generated crates that stay slim and do not depend on the
+/// facade go through the component crate directly instead.
+fn locale_crate_path() -> StdResult<TokenStream2, TokenStream2> {
     if let Ok(waterui) = waterui_crate_path() {
-        return Ok(quote!(#waterui::locale::TranslationCatalog));
+        return Ok(quote!(#waterui::locale));
     }
     match crate_name("waterui-locale") {
-        Ok(FoundCrate::Itself) => {
-            let own = own_crate_path("waterui-locale");
-            Ok(quote!(#own::TranslationCatalog))
-        }
+        Ok(FoundCrate::Itself) => Ok(own_crate_path("waterui-locale")),
         Ok(FoundCrate::Name(name)) => {
             let ident = Ident::new(&name, Span::call_site());
-            Ok(quote!(::#ident::TranslationCatalog))
+            Ok(quote!(::#ident))
         }
         Err(_) => Err(quote! {
             compile_error!("`catalog!` requires the `waterui` or `waterui-locale` crate as a dependency (either may be renamed; Cargo.toml must include one).");
@@ -1077,7 +900,7 @@ pub fn catalog(input: &TokenStream) -> TokenStream {
             .into();
     }
 
-    let catalog_ty = match translation_catalog_path() {
+    let locale_mod = match locale_crate_path() {
         Ok(path) => path,
         Err(err) => return TokenStream::from(err),
     };
@@ -1096,14 +919,19 @@ pub fn catalog(input: &TokenStream) -> TokenStream {
             let path_lit = LitStr::new(path.to_str()?, Span::call_site());
             Some(quote! {
                 __catalog = __catalog
-                    .add_toml(#locale_lit, include_str!(#path_lit))
-                    .expect("catalog! generated invalid translation file");
+                    .add_toml(
+                        #locale_lit
+                            .parse::<#locale_mod::Locale>()
+                            .expect("catalog! validated BCP-47 locale tag"),
+                        include_str!(#path_lit),
+                    )
+                    .expect("catalog! validated translation file");
             })
         })
         .collect();
 
     TokenStream::from(quote! {{
-        let mut __catalog = #catalog_ty::new();
+        let mut __catalog = #locale_mod::TranslationCatalog::new();
         #(#inserts)*
         __catalog
     }})
@@ -1111,10 +939,11 @@ pub fn catalog(input: &TokenStream) -> TokenStream {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::{env, fs, process};
 
     use proc_macro2::Span;
     use syn::{Expr, Ident, parse_quote};
+    use waterui_locale_parser::TranslationFile;
 
     use super::{TranslationBundle, build_binding_map, parse_placeholders};
 
@@ -1178,10 +1007,9 @@ mod tests {
         let content = r#"
 "I have {#count} apple" = { one = "I have {count} apple" }
 "#;
-        let source = PathBuf::from("i18n/en.toml");
-        let err = TranslationBundle::parse_toml(content, &source)
+        let err = TranslationFile::parse_named(content, "i18n/en.toml")
             .expect_err("missing 'other' should fail");
-        assert!(err.contains("must define non-empty 'other'"));
+        assert!(err.to_string().contains("must define non-empty 'other'"));
     }
 
     #[test]
@@ -1189,10 +1017,9 @@ mod tests {
         let content = r#"
 "I have {#count} apple" = { one = "I have {count} apple", manyy = "oops", other = "I have {count} apples" }
 "#;
-        let source = PathBuf::from("i18n/en.toml");
-        let err = TranslationBundle::parse_toml(content, &source)
+        let err = TranslationFile::parse_named(content, "i18n/en.toml")
             .expect_err("unknown plural field should fail");
-        assert!(err.contains("Unknown plural field"));
+        assert!(err.to_string().contains("Unknown plural field"));
     }
 
     #[test]
@@ -1200,8 +1027,7 @@ mod tests {
         let content = r#"
 "I have {#apples} apple and {#oranges} orange" = { one_one = "I have {apples} apple and {oranges} orange", one_other = "I have {apples} apple and {oranges} oranges", other_one = "I have {apples} apples and {oranges} orange", other_other = "I have {apples} apples and {oranges} oranges" }
 "#;
-        let source = PathBuf::from("i18n/en.toml");
-        let parsed = TranslationBundle::parse_toml(content, &source)
+        let parsed = TranslationFile::parse_named(content, "i18n/en.toml")
             .expect("valid dual plural should parse");
         assert!(parsed.contains_key("I have {#apples} apple and {#oranges} orange"));
     }
@@ -1211,10 +1037,23 @@ mod tests {
         let content = r#"
 "I have {#apples} apple and {#oranges} orange" = { one_one = "x", one_other = "x", other_one = "x", other_others = "x" }
 "#;
-        let source = PathBuf::from("i18n/en.toml");
-        let err = TranslationBundle::parse_toml(content, &source)
+        let err = TranslationFile::parse_named(content, "i18n/en.toml")
             .expect_err("unknown dual plural field should fail");
-        assert!(err.contains("Unknown dual plural field"));
+        assert!(err.to_string().contains("Unknown dual plural field"));
+    }
+
+    #[test]
+    fn load_from_dir_rejects_invalid_locale_filename() {
+        let dir = env::temp_dir().join(format!("waterui-locale-invalid-tag-{}", process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("create temp i18n dir");
+        fs::write(dir.join("not a locale!.toml"), r#"hello = "Hello""#)
+            .expect("write invalid locale file");
+
+        let err = TranslationBundle::load_from_dir(&dir)
+            .expect_err("invalid locale filename should produce an error");
+        let _ = fs::remove_dir_all(&dir);
+        assert!(err.contains("Invalid BCP-47 locale tag 'not a locale!'"));
     }
 
     #[test]

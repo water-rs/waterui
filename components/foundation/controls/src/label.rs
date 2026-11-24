@@ -1954,7 +1954,7 @@ mod tests {
         env.insert(locales::EN);
         env.insert(
             TranslationCatalog::new()
-                .add_toml("en", "greeting = \"Hello\"")
+                .add_toml(locales::EN, "greeting = \"Hello\"")
                 .expect("test catalog must parse"),
         );
         env

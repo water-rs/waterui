@@ -13,17 +13,17 @@ categories = ["internationalization", "localization"]
 [dependencies]
 # Core dependencies
 waterui-core.workspace = true
+waterui-locale-parser.workspace = true
 suiteki.workspace = true
 nami.workspace = true
 
 # ICU4X for locale handling.
 #
 # `icu_locale`, `icu_provider`, `icu_plurals` and `fixed_decimal` are
-# unconditional: locale identity and the fallback chain are this crate's whole
-# purpose, and `PluralCategory` is the data model of a translation catalog —
-# `parser.rs` keys every pluralized entry by it — so the plural rules cannot be
-# separated from the catalogs that describe themselves in terms of them.
-icu_locale = "2.3"
+# unconditional: locale identity, display names, and the fallback chain are
+# this crate's core purpose, and CLDR plural rules select the categories that
+# translation catalogs describe themselves in terms of.
+icu_locale = { version = "2.4", features = ["unstable"] }
 icu_plurals = "2.3"
 icu_provider = "2.3"
 fixed_decimal = "0.7"
@@ -38,9 +38,6 @@ jiff = { workspace = true, optional = true }
 
 # Other dependencies
 num-traits = { version = "0.2", default-features = false }
-serde = { workspace = true, features = ["derive"] }
-# Translation catalogs are parsed, never written.
-toml = { version = "1.1.8", default-features = false, features = ["std", "serde", "parse"] }
 tracing.workspace = true
 sys-locale.workspace = true
 iana-time-zone.workspace = true

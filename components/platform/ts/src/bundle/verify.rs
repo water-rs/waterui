@@ -138,23 +138,23 @@ pub fn requirement(
 /// The translation catalog a manifest carries, or `None` when it carries no
 /// entries.
 ///
-/// Every key is parsed as a locale before `add_toml` sees it, because
-/// `TranslationCatalog` treats an invalid locale as a programming error and
-/// panics, and a downloaded document is an input, not a program.
+/// Every key is parsed as a typed [`Locale`] and passed to
+/// [`TranslationCatalog::add_toml`], turning malformed tags or TOML documents
+/// from downloaded bundles into typed [`Rejection`] errors.
 fn translations(manifest: &BundleManifest) -> Result<Option<TranslationCatalog>, Rejection> {
     if manifest.translations().is_empty() {
         return Ok(None);
     }
     let mut catalog = TranslationCatalog::new();
     for (locale, document) in manifest.translations() {
-        locale
+        let parsed = locale
             .parse::<Locale>()
             .map_err(|error| Rejection::Locale {
                 locale: locale.clone(),
                 reason: error.to_string(),
             })?;
         catalog = catalog
-            .add_toml(locale.clone(), document)
+            .add_toml(parsed, document)
             .map_err(|error| Rejection::Translation {
                 locale: locale.clone(),
                 reason: error.to_string(),

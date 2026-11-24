@@ -203,10 +203,9 @@ through `tracing` by whoever decides what to do about it:
 3. **Every mounted module** — each `RequiredModule` is in `manifest.modules`
    with an equal contract hash. A missing module and a mismatched hash are
    distinct rejections, and the mismatch names both hashes.
-4. **Translations** — every key parses as a `Locale` and every document as
-   a translation file. Checked here, before the catalog is built, because
-   `TranslationCatalog::add_toml` treats an invalid locale as a programming
-   error and a downloaded document is an input.
+4. **Translations** — every key parses as a typed `Locale` and every document
+   as a translation file via `TranslationCatalog::add_toml`, rejecting any
+   malformed tag or document from a downloaded bundle.
 5. **Size** — the bundle file is no longer than `bundle.size`. For a
    download, a `Content-Length` above it refuses the response before its
    body is read, and a body that runs past it is refused at the first chunk
