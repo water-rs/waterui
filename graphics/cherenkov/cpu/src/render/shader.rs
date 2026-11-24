@@ -222,8 +222,8 @@ pub struct PaintProgram {
     uniforms: [Reg; 4],
     /// `params`: `array<vec4<f32>, 16>`.
     params: Box<[Reg]>,
-    /// Whether the shader animates: rendered again every frame.
-    pub animated: bool,
+    /// Whether the shader samples `uniforms.time`: rendered again every frame.
+    pub time_dependent: bool,
 }
 
 /// A fragment input the paint's vertex stage supplies.
@@ -296,7 +296,7 @@ impl PaintProgram {
             uv: uv.into(),
             uniforms: [uniforms[0], uniforms[1], uniforms[2], uniforms[3]],
             params: params.into(),
-            animated: source.animated,
+            time_dependent: source.time_dependent,
             program,
         })
     }
@@ -527,9 +527,9 @@ impl ShaderPaints {
             uniforms: uniforms.iter().map(|v| v.to_bits()).collect(),
             size,
         };
-        let animated = program.animated;
+        let time_dependent = program.time_dependent;
         let image = match self.images.get(&key) {
-            Some(rendered) if !animated || rendered.time.to_bits() == self.time.to_bits() => {
+            Some(rendered) if !time_dependent || rendered.time.to_bits() == self.time.to_bits() => {
                 Arc::clone(&rendered.image)
             }
             _ => {
@@ -546,6 +546,6 @@ impl ShaderPaints {
             }
         };
         self.used.insert(key);
-        Ok((image, animated))
+        Ok((image, time_dependent))
     }
 }

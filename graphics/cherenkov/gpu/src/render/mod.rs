@@ -849,7 +849,7 @@ impl SurfaceState {
                         lower::ImageSource::Content(id) => producers
                             .get(id)
                             .is_none_or(gpu_content::Producer::wants_redraw),
-                        lower::ImageSource::Shader(key) => shaders.animated(key),
+                        lower::ImageSource::Shader(key) => shaders.is_time_dependent(key),
                         _ => false,
                     })
             })
@@ -6151,7 +6151,7 @@ impl GpuRenderer {
                 || surface
                     .shader_textures
                     .keys()
-                    .any(|key| self.shaders.animated(key))
+                    .any(|key| self.shaders.is_time_dependent(key))
             {
                 redraw.request(*id, surface.refresh);
             }
@@ -7546,7 +7546,7 @@ impl GpuRenderer {
             || surface
                 .shader_textures
                 .keys()
-                .any(|key| self.shaders.animated(key))
+                .any(|key| self.shaders.is_time_dependent(key))
     }
 
     /// Prepare native-plane content before admission and output classification.
@@ -9009,7 +9009,7 @@ impl GpuRenderer {
         for (index, pass) in surf.frame.passes.iter().enumerate() {
             for range in &pass.ranges {
                 if let Some(lower::ImageSource::Shader(key)) = &range.image
-                    && self.shaders.animated(key)
+                    && self.shaders.is_time_dependent(key)
                 {
                     surf.command_damage
                         .invalidate_range(&surf.frame, index, range);

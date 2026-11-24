@@ -62,10 +62,10 @@ fn assert_shader_paint_and_flowing_gradient_render_and_react(
     open_painter: fn() -> OffscreenPainter,
 ) {
     let uniforms = Binding::container(vec![0.1_f32, 0.0, 0.0, 0.0]);
-    let animated = Binding::container(false);
+    let continuous = Binding::container(false);
     let painter = open_painter();
     let uniforms_for_view = uniforms.clone();
-    let animated_for_view = animated.clone();
+    let continuous_for_view = continuous.clone();
     let mut runtime = HeadlessRuntime::new_for_tests_on_context(
         painter,
         pumped_test_environment(),
@@ -73,7 +73,7 @@ fn assert_shader_paint_and_flowing_gradient_render_and_react(
             AnyView::new(
                 ShaderPaintView::new(TIME_SHADER)
                     .uniforms(uniforms_for_view.clone())
-                    .animated(animated_for_view.clone())
+                    .continuous(continuous_for_view.clone())
                     .size(48.0, 32.0),
             )
         }),
@@ -105,9 +105,9 @@ fn assert_shader_paint_and_flowing_gradient_render_and_react(
         after_uniforms[center + 2]
     );
 
-    // Enabling `animated` advances `uniforms.time` across pumped frames and
+    // Enabling `continuous` advances `uniforms.time` across pumped frames and
     // marks perpetual animation demand.
-    animated.set(true);
+    continuous.set(true);
     let anim_start = capture_at(&mut runtime, t0 + Duration::from_millis(48));
     assert!(
         !runtime.is_settled() && runtime.is_settled_except_perpetual(),

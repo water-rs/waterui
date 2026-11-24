@@ -60,7 +60,7 @@
 //! )
 //! .expect("the scanline shader is valid WGSL")
 //! .param(0.35)
-//! .animated();
+//! .continuous();
 //! assert_eq!(scanlines.param_count(), 1);
 //! ```
 //!
@@ -82,10 +82,10 @@
 //! # Redraw
 //!
 //! A shader that reads `uniforms.time` changes with every frame, and says so
-//! with [`ShaderEffect::animated`]: the effect then asks its host for another
+//! with [`ShaderEffect::continuous`]: the effect then asks its host for another
 //! frame after each one it renders. The flag itself can be reactive through
-//! [`ShaderEffect::watch_animated`], so a host can pause and resume the
-//! animation. A shader that does not animate is rendered
+//! [`ShaderEffect::watch_continuous`], so a host can pause and resume
+//! continuous redraws. A shader that is not continuous is rendered
 //! only when its input or one of its parameters changes. Reactive parameters
 //! ([`ShaderEffect::watch_param`]) wake the host through the effect's redraw
 //! callback and animate along their interpolators exactly like the
@@ -96,8 +96,8 @@
 //! [`ShaderEffect`] is `Clone`: the validated module is shared through an
 //! `Arc`, and a clone starts unset-up with the constant parameters only.
 //! No subscription is cloned — a [`watch_param`](ShaderEffect::watch_param)
-//! or [`watch_animated`](ShaderEffect::watch_animated) binding belongs to the
-//! instance that made it, so reactive parameters are bound per instance.
+//! or [`watch_continuous`](ShaderEffect::watch_continuous) binding belongs to
+//! the instance that made it, so reactive parameters are bound per instance.
 //!
 //! # Threading and encoding
 //!
@@ -281,9 +281,10 @@ pub struct ShaderEffect {
     /// The constant parameters, in push order — what a clone carries. The
     /// values live in `animator` too; `watch_param` parameters are not here.
     const_params: Vec<f32>,
-    /// The animation flag, shared with a [`watch_animated`](Self::watch_animated)
-    /// subscription: the watcher writes, the render side reads.
-    animated: Arc<AtomicBool>,
+    /// The continuous-redraw flag, shared with a
+    /// [`watch_continuous`](Self::watch_continuous) subscription: the watcher
+    /// writes, the render side reads.
+    continuous: Arc<AtomicBool>,
     setup: Setup,
 }
 
@@ -291,7 +292,7 @@ impl fmt::Debug for ShaderEffect {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ShaderEffect")
             .field("params", &self.animator.param_count())
-            .field("animated", &self.is_animated())
+            .field("continuous", &self.is_continuous())
             .field("setup", &self.setup)
             .finish_non_exhaustive()
     }
@@ -332,7 +333,7 @@ impl ShaderEffect {
             samples_input,
             animator,
             const_params: Vec::new(),
-            animated: Arc::new(AtomicBool::new(false)),
+            continuous: Arc::new(AtomicBool::new(false)),
             setup: Setup::Pending,
         })
     }
@@ -380,22 +381,22 @@ impl ShaderEffect {
         (self, guard)
     }
 
-    /// Binds the animation flag to a reactive parameter: while `flag` is
-    /// nonzero the effect asks its host for another frame after each one it
-    /// renders, exactly like [`ShaderEffect::animated`]. The flag starts
+    /// Binds the continuous-redraw flag to a reactive parameter: while `flag`
+    /// is nonzero the effect asks its host for another frame after each one it
+    /// renders, exactly like [`ShaderEffect::continuous`]. The flag starts
     /// from `flag`'s current value.
     ///
     /// The returned guard is the subscription, with the same contract as
     /// [`watch_param`](Self::watch_param)'s: keep it for as long as `flag`
     /// should drive the effect, on the frontend's thread.
     #[must_use]
-    pub fn watch_animated<P: FilterParam + ?Sized>(self, flag: &P) -> (Self, WatchGuard) {
-        self.animated
+    pub fn watch_continuous<P: FilterParam + ?Sized>(self, flag: &P) -> (Self, WatchGuard) {
+        self.continuous
             .store(flag.snapshot() != 0.0, Ordering::Release);
-        let animated = Arc::clone(&self.animated);
+        let continuous = Arc::clone(&self.continuous);
         let sender = self.animator.sender().clone();
         let guard = flag.watch_animated(Box::new(move |target| {
-            animated.store(target.value != 0.0, Ordering::Release);
+            continuous.store(target.value != 0.0, Ordering::Release);
             sender.wake();
         }));
         (self, guard)
@@ -404,8 +405,8 @@ impl ShaderEffect {
     /// Marks the shader as time-driven: after every frame it renders, the
     /// effect asks its host for another one.
     #[must_use]
-    pub fn animated(self) -> Self {
-        self.animated.store(true, Ordering::Release);
+    pub fn continuous(self) -> Self {
+        self.continuous.store(true, Ordering::Release);
         self
     }
 
@@ -415,11 +416,11 @@ impl ShaderEffect {
         self.animator.param_count()
     }
 
-    /// Whether the animation flag is set — by [`animated`](Self::animated)
-    /// or the latest value a [`watch_animated`](Self::watch_animated)
-    /// subscription delivered.
-    fn is_animated(&self) -> bool {
-        self.animated.load(Ordering::Acquire)
+    /// Whether the continuous-redraw flag is set — by
+    /// [`continuous`](Self::continuous) or the latest value a
+    /// [`watch_continuous`](Self::watch_continuous) subscription delivered.
+    fn is_continuous(&self) -> bool {
+        self.continuous.load(Ordering::Acquire)
     }
 
     /// The cached bind groups — for tests asserting reuse across frames.
@@ -453,10 +454,10 @@ impl Clone for ShaderEffect {
     /// A clone shares the validated module through its `Arc` and starts
     /// unset-up with the constant parameters only: no subscription bound
     /// through [`watch_param`](Self::watch_param) or
-    /// [`watch_animated`](Self::watch_animated) is cloned, so reactive
+    /// [`watch_continuous`](Self::watch_continuous) is cloned, so reactive
     /// parameters are bound per instance — `WithEffect::param` and
-    /// `WithEffect::animated` in `waterui-graphics` bind them. The clone's
-    /// animation flag starts from the flag's current value.
+    /// `WithEffect::continuous` in `waterui-graphics` bind them. The clone's
+    /// continuous-redraw flag starts from the flag's current value.
     fn clone(&self) -> Self {
         let (mut animator, _) = ParamAnimator::new(Vec::new(), |_| {});
         for &value in &self.const_params {
@@ -467,7 +468,7 @@ impl Clone for ShaderEffect {
             samples_input: self.samples_input,
             animator,
             const_params: self.const_params.clone(),
-            animated: Arc::new(AtomicBool::new(self.is_animated())),
+            continuous: Arc::new(AtomicBool::new(self.is_continuous())),
             setup: Setup::Pending,
         }
     }
@@ -743,11 +744,11 @@ impl Effect for ShaderEffect {
         }
 
         self.animator.mark_rendered();
-        Ok(self.is_animated() || parameters_animating)
+        Ok(self.is_continuous() || parameters_animating)
     }
 
     fn redraw_hint(&self) -> bool {
-        self.is_animated() || self.animator.redraw_hint()
+        self.is_continuous() || self.animator.redraw_hint()
     }
 
     // One pass from the host's input to its output: nothing of its own.
@@ -1055,16 +1056,16 @@ mod tests {
         assert_eq!(redraws.load(Ordering::Relaxed), 1);
     }
 
-    /// Toggling a watched animation flag reaches the render side: the flag
-    /// `redraw_hint` and `encode_render` read reflects each delivered value,
-    /// and every change wakes the host.
+    /// Toggling a watched continuous-redraw flag reaches the render side: the
+    /// flag `redraw_hint` and `encode_render` read reflects each delivered
+    /// value, and every change wakes the host.
     #[test]
-    fn a_watched_animation_flag_reaches_the_render_side() {
+    fn a_watched_continuous_flag_reaches_the_render_side() {
         let flag = ScriptedParam::constant(0.0);
         let (mut effect, _subscription) = ShaderEffect::new(PASS_THROUGH)
             .expect("valid")
-            .watch_animated(&flag);
-        assert!(!effect.is_animated());
+            .watch_continuous(&flag);
+        assert!(!effect.is_continuous());
         let redraws = Arc::new(AtomicUsize::new(0));
         let count = Arc::clone(&redraws);
         effect.set_redraw_callback(Arc::new(move || {
@@ -1080,10 +1081,10 @@ mod tests {
             1,
             "the toggle wakes the host"
         );
-        assert!(effect.is_animated());
+        assert!(effect.is_continuous());
         assert!(
             effect.redraw_hint(),
-            "an animated effect wants another frame"
+            "a continuous effect wants another frame"
         );
 
         flag.fire(AnimatedTarget {
@@ -1091,6 +1092,6 @@ mod tests {
             interpolator: None,
         });
         assert_eq!(redraws.load(Ordering::Relaxed), 2);
-        assert!(!effect.is_animated());
+        assert!(!effect.is_continuous());
     }
 }

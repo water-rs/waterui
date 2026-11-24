@@ -23,6 +23,6 @@ impl FlowingGradient {
 
 impl View for FlowingGradient {
     fn body(self, _env: &Environment) -> impl View {
-        ShaderPaintView::new(include_str!("flowing.wgsl")).animated(true)
+        ShaderPaintView::new(include_str!("flowing.wgsl")).continuous(true)
     }
 }

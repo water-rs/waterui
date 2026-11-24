@@ -20,7 +20,9 @@ pub fn demo() -> impl View {
         text("GPU-rendered procedural starfield")
             .size(14)
             .foreground(Color::srgb(210, 216, 224)),
-        shader!("starfield.wgsl").animated(true).size(400.0, 500.0),
+        shader!("starfield.wgsl")
+            .continuous(true)
+            .size(400.0, 500.0),
         text("Rendered at 120fps")
             .size(12)
             .foreground(Color::srgb(210, 216, 224)),
