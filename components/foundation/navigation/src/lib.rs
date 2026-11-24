@@ -2269,7 +2269,7 @@ impl<C, T> NavigationView<C, T> {
     ///
     /// ```rust,ignore
     /// some_view
-    ///     .title("Settings")
+    ///     .navigation_title("Settings")
     ///     .navigation_title_display_mode(NavigationTitleDisplayMode::Large)
     /// ```
     pub const fn navigation_title_display_mode(mut self, mode: NavigationTitleDisplayMode) -> Self {

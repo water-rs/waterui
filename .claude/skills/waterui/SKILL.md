@@ -679,7 +679,7 @@ let view = tsx!(
 | Wrong binding arrives in a handler | positional `.state()` extraction | first `.state()` → first parameter of that type |
 | Scrolling or list updates are janky | `watch` over a `Vec` | `List::for_each` / `Lazy::for_each` / `SignalCollection` |
 | `ForEach<..>: View is not satisfied` | `ForEach` is a collection, not a view | `Lazy::for_each(..)`, or hand it to a container |
-| `.title("Inbox")` rejects its argument | `Text::title()` (font size) shadows the navigation title | title the container, or `NavigationView::new(title, content)` |
+| `.title("Inbox")` rejected | navigation titles use `.navigation_title(..)`, `.title()` on `Text` is font style | `.navigation_title("Inbox")` or `NavigationView::new(title, content)` |
 | A test's wait can never fail | query `.wait_for_existence(..)` returns `bool` | wrap it in `assert!` |
 | `use of undeclared crate 'tracing'` | logging is re-exported | `use waterui::log::debug;` then `debug!(..)` |
 | `borrowed data escapes outside of function` | views are `'static` | `&'static str` / `Str` / `impl IntoText`, or `impl View + use<>` |

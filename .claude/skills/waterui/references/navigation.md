@@ -111,7 +111,7 @@ fn inbox_stack(mail: Mail) -> impl View {
 ```
 
 The stack's root and every destination are **`NavigationView`s** — give each page a
-`.title(..)` (which performs that conversion) or build it with
+`.navigation_title(..)` (which performs that conversion) or build it with
 `NavigationView::new(title, content)`; a helper returning plain `impl View` satisfies
 neither the root parameter nor the destination closure. A `NavigationView<V, T = ()>` keeps its
 content and toolbar types, so a helper returns `NavigationView<impl View>` (or
@@ -184,7 +184,7 @@ handlers, like `.action`:
 
 ```rust
 message_body(mail.clone(), id)
-    .title(text!("{subject}"))
+    .navigation_title(text!("{subject}"))
     .on_navigation_appear({
         let mail = mail.clone();
         move || mail.mark_read(id)
@@ -196,14 +196,14 @@ these two are specifically about the navigation transition.)
 
 ## Bar chrome on a destination
 
-Chrome is a set of modifiers on the destination view, and applying `.title(..)` is what
+Chrome is a set of modifiers on the destination view, and applying `.navigation_title(..)` is what
 converts a plain view into the concrete **`NavigationView`** — which is therefore the
 return type of a helper that builds a destination:
 
 ```rust
 fn message_list_page(mail: Mail) -> NavigationView<impl View> {
     message_list(mail)
-        .title("Inbox")                             // or .title(text!("{subject}"))
+        .navigation_title("Inbox")                  // or .navigation_title(text!("{subject}"))
         .large_title()                              // or .inline_title()
         .navigation_subtitle(text!("{unread} unread"))
         .searchable(&query, "Search mail")          // a field inside the bar, not above the content
@@ -224,11 +224,7 @@ hide the page bar their inner stack replaces), `.navigation_bar_color(color)` (a
 signal that overrides the bar surface, which otherwise follows the `Surface` token) and
 `.on_navigation_pop(handler)` (fires only after a completed pop removed this destination).
 
-`NavigationView::new(title, content)` — also the free function `navigation(title, content)` — is the direct constructor for the same thing, and
-the clean way around one sharp edge: `Text` has its own `.title()` (the semantic font
-size), which **shadows** the navigation `.title(impl IntoText)`, so a navigation title
-applied to a bare `text(..)` fails with "this method takes 0 arguments". Put the title on
-the container, where it belongs anyway.
+`NavigationView::new(title, content)` — also the free function `navigation(title, content)` — is the direct constructor for the same thing. (The view-extension modifier is `navigation_title` so `Text`'s zero-argument `.title()` typography preset stays unambiguous.)
 
 `.searchable` binds the query directly, so filtering is an ordinary derived signal over
 that binding — no event plumbing.
@@ -254,7 +250,7 @@ Toolbar items carry a *semantic* placement. Each platform decides where that lan
 
 `NavigationToolbar::new(vec![items…])` is the vector-constructor alternative.
 `.navigation_toolbar(..)`, like `.searchable(..)`, is a `NavigationView` method, so
-`.title(..)` comes first. `NavigationToolbarItem::action(placement, label, handler)` is
+`.navigation_title(..)` comes first. `NavigationToolbarItem::action(placement, label, handler)` is
 the semantic form — its name and icon reach each platform's native item — while
 `NavigationToolbarItem::new(placement, view)` places an arbitrary view as given.
 

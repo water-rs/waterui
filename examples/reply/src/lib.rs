@@ -220,7 +220,7 @@ fn inbox(
     );
     List::for_each(visible, thread_row)
         .selection(selected)
-        .title("Inbox")
+        .navigation_title("Inbox")
         .searchable(query, "Search replies")
         .navigation_toolbar(
             NavigationToolbar::default()
@@ -269,7 +269,7 @@ fn message_card(message: &'static Message) -> impl View {
 /// as its subtitle, and the thread's overflow actions in the bar.
 fn detail(thread: &'static Thread) -> NavigationView<impl View, impl NavigationToolbarItems> {
     scroll(vstack(thread.messages.iter().map(message_card).collect::<Vec<_>>()).leading())
-        .title(thread.subject)
+        .navigation_title(thread.subject)
         .navigation_subtitle(text!("{#count} Messages", count = thread.messages.len()))
         .navigation_toolbar(
             NavigationToolbar::default()

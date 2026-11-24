@@ -273,7 +273,7 @@ pub trait ViewExt: View + Sized {
     /// # Arguments
     /// * `title` - The semantic title for the navigation view
     #[cfg(feature = "navigation")]
-    fn title(self, title: impl crate::text::IntoText) -> NavigationView<Self> {
+    fn navigation_title(self, title: impl crate::text::IntoText) -> NavigationView<Self> {
         NavigationView::new(title, self)
     }
 
@@ -1738,5 +1738,14 @@ mod tests {
         }
 
         let _ = reported;
+    }
+
+    #[cfg(feature = "navigation")]
+    #[test]
+    fn text_supports_navigation_title_without_shadowing() {
+        use crate::{navigation::NavigationView, text::text};
+
+        let page = text("About").navigation_title("About");
+        let _body: NavigationView<_> = page;
     }
 }
