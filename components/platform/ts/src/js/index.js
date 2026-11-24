@@ -26,4 +26,5 @@ export {
 
 export { Box, For, Show } from "./components.js";
 export { useLocale, useTheme } from "./contexts.js";
+export { t } from "./i18n.js";
 export { Fragment, jsx, jsxDEV, jsxs, spreadProps } from "./jsx-runtime.js";

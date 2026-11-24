@@ -12,10 +12,11 @@ use core::cell::RefCell;
 use std::fmt::Write as _;
 
 use hydrolysis_m3::Material3;
-use nami::Computed;
+use nami::{Binding, Computed};
 use waterui::ts::Components;
 use waterui_core::{AnyView, Environment};
 use waterui_graphics::color::ColorScheme;
+use waterui_locale::{Locale, TranslationCatalog};
 use waterui_testing::{NodeId, OffscreenApp, SemanticApp, Snapshot, TreeSnapshot, ui};
 use waterui_ts::engine::{JsRuntime as _, JsValue};
 use waterui_ts::{MountScope, TsRuntime, ViewSlot};
@@ -100,6 +101,33 @@ impl Module {
             .take()
             .expect("a mounted module is realized once");
         mount_view(view)
+    }
+
+    /// Mounts the module's view in a test session with a translation catalog
+    /// and reactive locale binding installed into the environment.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the view has already been mounted.
+    pub fn app_with_locale(
+        &self,
+        catalog: TranslationCatalog,
+        locale: Binding<Locale>,
+    ) -> SemanticApp {
+        let view = self
+            .view
+            .borrow_mut()
+            .take()
+            .expect("a mounted module is realized once");
+        let view = RefCell::new(Some(view));
+        ui().install(catalog)
+            .with(locale)
+            .viewport(320, 240)
+            .mount(move || {
+                view.borrow_mut()
+                    .take()
+                    .expect("the test session realizes its root once")
+            })
     }
 
     /// Mounts the module's view on the rendered runtime under the Material 3
