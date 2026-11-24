@@ -9,12 +9,13 @@ use alloc::vec::Vec;
 use cocoa_ui::menu::Command as KitCommand;
 #[cfg(any(feature = "context_menu", feature = "text_field"))]
 use cocoa_ui::menu::MenuTreeNode;
+use waterui::component::button::ButtonRole;
 #[cfg(all(
     target_os = "macos",
     any(feature = "menu", feature = "context_menu", feature = "text_field")
 ))]
 use waterui::component::menu::CloseWindowChord;
-use waterui::component::menu::{CommandRole, ResolvedCommand, ResolvedMenuItem};
+use waterui::component::menu::{ResolvedCommand, ResolvedMenuItem};
 use waterui::reactive::Signal;
 #[cfg(feature = "menu")]
 use waterui::reactive::watcher::{BoxWatcherGuard, Metadata};
@@ -97,7 +98,7 @@ fn kit_command(command: &ResolvedCommand<Held>, env: &Environment) -> KitCommand
         subtitle: command.subtitle.as_ref().map(ToString::to_string),
         symbol,
         image,
-        destructive: matches!(command.role, CommandRole::Destructive),
+        destructive: matches!(command.role, Some(ButtonRole::Destructive)),
         enabled: !command.disabled.snapshot(),
         selected: command.selected.snapshot(),
         key_equivalent,

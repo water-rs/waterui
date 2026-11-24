@@ -80,7 +80,7 @@ fn command_node<S>(command: ResolvedCommand<S>) -> PopupMenuNode {
     // The destructive role lives in the styled label itself: an explicit
     // span colour survives the button's environment-level foreground,
     // so the theme's error colour wins (water-rs/hydrolysis#200).
-    if command.role == CommandRole::Destructive {
+    if command.role == Some(ButtonRole::Destructive) {
         styled_label = styled_label.foreground(waterui::Color::new(waterui::theme::color::Error));
     }
     let plain_label = styled_label.to_plain().to_string();

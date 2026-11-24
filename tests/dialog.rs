@@ -492,3 +492,74 @@ fn focus_moves_into_the_dialog_and_returns_on_dismissal(ui: UiBuilder<Styled<Tes
     assert!(!shown.snapshot());
     assert_eq!(focused_label(&app).as_deref(), Some("Open"));
 }
+
+#[waterui::test]
+fn button_role_reaches_accessibility_tree_on_buttons_and_dialogs(ui: UiBuilder) {
+    use waterui::component::button::{ButtonRole, button};
+
+    let presented = Binding::bool(true);
+    let mut app = ui.mount(move || {
+        vstack((
+            button("Delete").role(ButtonRole::Destructive).action(|| {}),
+            button("Dismiss").role(ButtonRole::Cancel).action(|| {}),
+            button("Apply").action(|| {}),
+        ))
+        .dialog(
+            Dialog::new(&presented, "Delete item?")
+                .action(DialogAction::cancel("Keep", || {}))
+                .action(DialogAction::destructive("Erase", || {})),
+        )
+    });
+    app.settle();
+
+    assert_eq!(
+        app.query()
+            .role(Role::BUTTON)
+            .label("Keep")
+            .single()
+            .node()
+            .description(),
+        Some("cancel")
+    );
+    assert_eq!(
+        app.query()
+            .role(Role::BUTTON)
+            .label("Erase")
+            .single()
+            .node()
+            .description(),
+        Some("destructive")
+    );
+
+    // Dismiss the dialog so the underlying buttons enter the active tree.
+    app.query().role(Role::BUTTON).label("Keep").tap();
+    app.settle();
+
+    assert_eq!(
+        app.query()
+            .role(Role::BUTTON)
+            .label("Delete")
+            .single()
+            .node()
+            .description(),
+        Some("destructive")
+    );
+    assert_eq!(
+        app.query()
+            .role(Role::BUTTON)
+            .label("Dismiss")
+            .single()
+            .node()
+            .description(),
+        Some("cancel")
+    );
+    assert_eq!(
+        app.query()
+            .role(Role::BUTTON)
+            .label("Apply")
+            .single()
+            .node()
+            .description(),
+        None
+    );
+}

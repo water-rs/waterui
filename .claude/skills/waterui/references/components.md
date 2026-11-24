@@ -489,7 +489,7 @@ a toolbar, a menu, and a keyboard shortcut. `Command` has its own builder chain:
     .selected(checked)                         // signal of bool: a checked / toggled row
     .subtitle("Copy the selection")            // secondary line under the label
     .shortcut(Shortcut::new('c').command())
-"Delete".action(delete_handler).destructive()  // red in every menu; == .role(CommandRole::Destructive)
+"Delete".action(delete_handler).destructive()  // red in every menu; == .role(ButtonRole::Destructive)
 "Delete".action(delete_handler).shortcut(Shortcut::new(ShortcutNamedKey::Delete))
 Shortcut::new('s').command().shift()           // ⇧⌘S; also .option() and .control()
 ```

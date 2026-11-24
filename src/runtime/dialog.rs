@@ -36,8 +36,10 @@
 
 use nami::Binding;
 use waterui_accessibility::AccessibilityRole;
-use waterui_controls::{ButtonStyle, button};
-use waterui_core::handler::{Handler, SharedAction, shared_action};
+use waterui_controls::{Button, ButtonRole, ButtonStyle, LabelKind, button};
+use waterui_core::handler::{
+    ExtractionError, Handler, ReportExtraction as _, SharedAction, shared_action,
+};
 use waterui_core::metadata::MetadataKey;
 use waterui_core::{Environment, OneOf2, View};
 use waterui_layout::alignment;
@@ -74,34 +76,14 @@ const ACTIONS_SPACING: f32 = 8.0;
 /// `NSAlert` button instead, so the platform's wording wins where one exists.
 pub const DIALOG_ACKNOWLEDGE_LABEL_KEY: &str = "waterui.dialog.acknowledge";
 
-/// The role a [`DialogAction`] carries: how it reads and where it sits.
+/// One action button of a [`Dialog`]: a title, an optional [`ButtonRole`],
+/// and the handler that runs when the user chooses it.
 ///
-/// Ordering inside the action row follows the platform convention; declaration
-/// order is kept within each role. At most one `Cancel` action is allowed —
-/// more than one fails at render. The first `Default` action is the primary
-/// one and is bound to `Return` on platforms with a hardware Return key.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[expect(
-    clippy::exhaustive_enums,
-    reason = "backends realize each dialog role variant by variant; a new dialog role must fail their build instead of falling into a wildcard arm"
-)]
-pub enum DialogRole {
-    /// An ordinary confirmation action (`Save`, `Paste`). The first declared
-    /// one is the primary action.
-    Default,
-    /// The dismissive answer. Escape, the Android back gesture and the
-    /// Hydrolysis scrim tap all run the `Cancel` action's handler. A dialog
-    /// with no `Cancel` action must be answered — the cancel path does
-    /// nothing.
-    Cancel,
-    /// A destructive confirmation (`Delete`, `Discard`), drawn with the
-    /// `Error` emphasis on Hydrolysis and `hasDestructiveAction` / `.destructive`
-    /// on Apple.
-    Destructive,
-}
-
-/// One action button of a [`Dialog`]: a title, a role and the handler that
-/// runs when the user chooses it.
+/// Ordering inside the action row follows the platform convention: `Cancel`
+/// first, `Destructive` next, then ordinary (`None`) confirmation actions in
+/// declaration order. At most one `Cancel` action is allowed — more than one
+/// fails at render. The first ordinary (`None`) action is the primary one and
+/// is bound to `Return` on platforms with a hardware Return key.
 ///
 /// Titles are plain text — native alert buttons take a title only, so this
 /// accepts [`IntoText`], not `IntoLabel` (an icon would be silently dropped on
@@ -109,7 +91,7 @@ pub enum DialogRole {
 #[derive(Clone)]
 pub struct DialogAction {
     title: Text,
-    role: DialogRole,
+    role: Option<ButtonRole>,
     action: SharedAction,
 }
 
@@ -124,38 +106,38 @@ impl core::fmt::Debug for DialogAction {
 }
 
 impl DialogAction {
-    /// Creates an action with [`DialogRole::Default`].
+    /// Creates an ordinary confirmation action (`role = None`).
     pub fn new<H, Args>(title: impl IntoText, action: H) -> Self
     where
         H: Handler<Args, ()> + 'static,
     {
-        Self {
-            title: title.into_text(),
-            role: DialogRole::Default,
-            action: shared_action(action),
-        }
+        Self::with_role(title, None, action)
     }
 
-    /// Creates an action with [`DialogRole::Destructive`].
+    /// Creates an action with [`ButtonRole::Destructive`].
     pub fn destructive<H, Args>(title: impl IntoText, action: H) -> Self
     where
         H: Handler<Args, ()> + 'static,
     {
-        Self {
-            title: title.into_text(),
-            role: DialogRole::Destructive,
-            action: shared_action(action),
-        }
+        Self::with_role(title, Some(ButtonRole::Destructive), action)
     }
 
-    /// Creates an action with [`DialogRole::Cancel`].
+    /// Creates an action with [`ButtonRole::Cancel`].
     pub fn cancel<H, Args>(title: impl IntoText, action: H) -> Self
+    where
+        H: Handler<Args, ()> + 'static,
+    {
+        Self::with_role(title, Some(ButtonRole::Cancel), action)
+    }
+
+    /// Creates an action with an explicit optional [`ButtonRole`].
+    pub fn with_role<H, Args>(title: impl IntoText, role: Option<ButtonRole>, action: H) -> Self
     where
         H: Handler<Args, ()> + 'static,
     {
         Self {
             title: title.into_text(),
-            role: DialogRole::Cancel,
+            role,
             action: shared_action(action),
         }
     }
@@ -166,9 +148,9 @@ impl DialogAction {
         &self.title
     }
 
-    /// The role this action carries.
+    /// The semantic role this action carries, if any.
     #[must_use]
-    pub const fn role(&self) -> DialogRole {
+    pub const fn role(&self) -> Option<ButtonRole> {
         self.role
     }
 
@@ -176,6 +158,23 @@ impl DialogAction {
     #[must_use]
     pub const fn action(&self) -> &SharedAction {
         &self.action
+    }
+}
+
+impl<L, Action, Style> From<Button<L, Action, Style>> for DialogAction
+where
+    L: LabelKind,
+    Action: FnMut(&Environment) -> Result<(), ExtractionError> + 'static,
+{
+    fn from(value: Button<L, Action, Style>) -> Self {
+        let (label, mut action, role) = value.into_action_parts();
+        Self {
+            title: label.semantic_text().clone(),
+            role,
+            action: shared_action(move |env: Environment| {
+                action(&env).report_extraction();
+            }),
+        }
     }
 }
 
@@ -251,8 +250,8 @@ impl Dialog {
     /// Appends an action to the dialog. Declaration order is kept within each
     /// role; roles are laid out in platform convention order.
     #[must_use]
-    pub fn action(mut self, action: DialogAction) -> Self {
-        self.actions.push(action);
+    pub fn action(mut self, action: impl Into<DialogAction>) -> Self {
+        self.actions.push(action.into());
         self
     }
 
@@ -288,7 +287,7 @@ impl Dialog {
     pub fn cancel_action(&self) -> Option<&DialogAction> {
         self.actions
             .iter()
-            .find(|action| action.role == DialogRole::Cancel)
+            .find(|action| action.role == Some(ButtonRole::Cancel))
     }
 
     /// The action list as renderers must present it: roles in platform
@@ -309,7 +308,7 @@ impl Dialog {
         if self
             .actions
             .iter()
-            .filter(|action| action.role == DialogRole::Cancel)
+            .filter(|action| action.role == Some(ButtonRole::Cancel))
             .count()
             > 1
         {
@@ -327,33 +326,36 @@ impl Dialog {
         ordered.extend(
             self.actions
                 .iter()
-                .filter(|action| action.role == DialogRole::Cancel)
+                .filter(|action| action.role == Some(ButtonRole::Cancel))
                 .cloned(),
         );
         ordered.extend(
             self.actions
                 .iter()
-                .filter(|action| action.role == DialogRole::Destructive)
+                .filter(|action| action.role == Some(ButtonRole::Destructive))
                 .cloned(),
         );
         ordered.extend(
             self.actions
                 .iter()
-                .filter(|action| action.role == DialogRole::Default)
+                .filter(|action| {
+                    !matches!(
+                        action.role,
+                        Some(ButtonRole::Cancel | ButtonRole::Destructive)
+                    )
+                })
                 .cloned(),
         );
         ordered
     }
 
-    /// The primary action: the first `Default` one, bound to Return.
+    /// The primary action: the first ordinary (`None`) one, bound to Return.
     ///
-    /// `None` when no `Default` action was declared — Return then has no
+    /// `None` when no ordinary action was declared — Return then has no
     /// dialog-level meaning and activates the focused button.
     #[must_use]
     pub fn primary_action(&self) -> Option<&DialogAction> {
-        self.actions
-            .iter()
-            .find(|action| action.role == DialogRole::Default)
+        self.actions.iter().find(|action| action.role.is_none())
     }
 
     /// The shared "chose this action" step: run the handler, then write the
@@ -388,15 +390,20 @@ impl Dialog {
 /// text colour.
 fn action_button(action: DialogAction, dialog: &Dialog, primary: bool) -> impl View + use<> {
     let title = text(action.title().clone());
-    let label = match action.role() {
-        DialogRole::Destructive => title.color(Color::new(Error)),
+    let role = action.role();
+    let label = match role {
+        Some(ButtonRole::Destructive) => title.color(Color::new(Error)),
         _ if primary => title.color(Color::new(Accent)),
         _ => title,
     };
     let dialog = dialog.clone();
-    button(label)
+    let btn = button(label)
         .style(ButtonStyle::Plain)
-        .action(move |env: Environment| dialog.run_action(&action, &env))
+        .action(move |env: Environment| dialog.run_action(&action, &env));
+    match role {
+        Some(role) => btn.role(role),
+        None => btn,
+    }
 }
 
 /// The alert card the Hydrolysis modal layer draws: `Surface` container,
@@ -426,8 +433,8 @@ fn dialog_card(dialog: &Dialog, label: Computed<Str>) -> impl View + use<> {
     let buttons: Vec<_> = actions
         .into_iter()
         .map(|action| {
-            let primary = action.role() == DialogRole::Default && !seen_default;
-            seen_default |= action.role() == DialogRole::Default;
+            let primary = action.role().is_none() && !seen_default;
+            seen_default |= action.role().is_none();
             action_button(action, dialog, primary)
         })
         .collect();
@@ -496,8 +503,9 @@ impl Dialog {
 #[cfg(test)]
 mod tests {
     use nami::Binding;
+    use waterui_controls::{ButtonRole, button};
 
-    use super::{Dialog, DialogAction, DialogRole};
+    use super::{Dialog, DialogAction};
 
     #[test]
     #[cfg_attr(
@@ -513,6 +521,27 @@ mod tests {
             .iter()
             .map(DialogAction::role)
             .collect::<Vec<_>>();
-        assert_eq!(roles, [DialogRole::Cancel, DialogRole::Cancel]);
+        assert_eq!(roles, [Some(ButtonRole::Cancel), Some(ButtonRole::Cancel)]);
+    }
+
+    #[test]
+    fn button_conversion_preserves_role_in_dialog_actions() {
+        let dialog = Dialog::new(&Binding::bool(true), "Title")
+            .action(button("Save").action(|| {}))
+            .action(button("Delete").role(ButtonRole::Destructive).action(|| {}))
+            .action(button("Cancel").role(ButtonRole::Cancel).action(|| {}));
+        let roles = dialog
+            .resolved_actions()
+            .iter()
+            .map(DialogAction::role)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            roles,
+            [
+                Some(ButtonRole::Cancel),
+                Some(ButtonRole::Destructive),
+                None,
+            ]
+        );
     }
 }

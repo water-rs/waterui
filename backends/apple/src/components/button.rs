@@ -15,7 +15,7 @@ use core::cell::RefCell;
 
 use cocoa_ui::action::ActionTarget;
 use cocoa_ui::{PlatformView, Rect as KitRect, Retained, view};
-use waterui::component::button::{ButtonConfig, ButtonStyle};
+use waterui::component::button::{ButtonConfig, ButtonRole, ButtonStyle};
 use waterui::reactive::Computed;
 use waterui::text::StyledStr;
 use waterui_backend_core::Environment;
@@ -162,11 +162,12 @@ impl SubView for ButtonSubView {
 pub fn realize_button_config(config: ButtonConfig<Held>, ctx: &RenderContext<'_>) -> NativeLeaf {
     let mtm = ctx.mtm();
     let style = config.style();
+    let role = config.role();
 
     // The label subtree resolves `Foreground` from the color the style
     // prescribes for its platform, and on `AppKit` its default `Body`
     // from the control size.
-    let label_env = button_chrome::label_environment(style, config.size(), ctx.env());
+    let label_env = button_chrome::label_environment(style, config.size(), role, ctx.env());
 
     let container = HostView::new(mtm, cocoa_ui::Rect::ZERO);
     let button = Button::new(mtm);
@@ -178,6 +179,14 @@ pub fn realize_button_config(config: ButtonConfig<Held>, ctx: &RenderContext<'_>
     let padding = configure_button(&button, style, mtm);
     #[cfg(target_os = "macos")]
     let padding = configure_button(&button, style, button_chrome::control_size(config.size()));
+    #[cfg(target_os = "macos")]
+    button.set_destructive(role == Some(ButtonRole::Destructive));
+    #[cfg(target_os = "ios")]
+    button.set_role(match role {
+        Some(ButtonRole::Cancel) => cocoa_ui::uikit::button::Role::Cancel,
+        Some(ButtonRole::Destructive) => cocoa_ui::uikit::button::Role::Destructive,
+        _ => cocoa_ui::uikit::button::Role::Normal,
+    });
 
     let (label, action, ..) = config.into_parts();
     let accessibility_label = label.accessibility_label();
@@ -244,7 +253,7 @@ pub fn realize_button_config(config: ButtonConfig<Held>, ctx: &RenderContext<'_>
 
     bind_accessibility(&mut leaf, &button, &label_container, &accessibility_label);
     bind_disabled(&mut leaf, &button, &label_container, ctx.env());
-    button_chrome::bind_tint(&mut leaf, styled(&button), style, ctx.env(), mtm);
+    button_chrome::bind_tint(&mut leaf, styled(&button), style, role, ctx.env(), mtm);
     #[cfg(target_os = "macos")]
     if style == ButtonStyle::Link {
         enable_link_chrome(&button, &link_child);

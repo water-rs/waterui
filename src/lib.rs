@@ -88,7 +88,7 @@ pub mod prelude {
 
     pub use super::color::*;
     #[cfg(feature = "dialog")]
-    pub use super::dialog::{Dialog, DialogAction, DialogRole};
+    pub use super::dialog::{Dialog, DialogAction};
     pub use super::fullscreen::*;
     #[cfg(feature = "snackbar")]
     pub use super::snackbar::{
@@ -125,8 +125,8 @@ pub mod prelude {
     };
     #[cfg(feature = "menu")]
     pub use super::component::menu::{
-        Command, CommandExt, CommandRole, Menu, MenuItem, NamedKey, Shortcut, ShortcutKey,
-        ShortcutModifiers, ShortcutNamedKey,
+        Command, CommandExt, Menu, MenuItem, NamedKey, Shortcut, ShortcutKey, ShortcutModifiers,
+        ShortcutNamedKey,
     };
     #[cfg(feature = "menu")]
     pub use super::metadata::context_menu::{ContextMenu, DismissContextMenu};
