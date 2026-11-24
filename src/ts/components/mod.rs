@@ -46,13 +46,13 @@ use crate::widget::accordion::Accordion;
 use crate::widget::avatar::Avatar;
 use crate::widget::card::Card;
 use waterui_core::handler::ViewBuilder as _;
-#[cfg(feature = "media")]
+#[cfg(feature = "image")]
 use waterui_media::Photo;
 use waterui_text::Text;
 use waterui_ts::engine::{JsError, JsFunction, JsValue};
 use waterui_ts::{Bridge, FromJs, HostTable, JsViewBuilder};
 
-#[cfg(feature = "media")]
+#[cfg(feature = "image")]
 use crate::ts::catalog::ImageAttributes;
 use crate::ts::catalog::{
     AccordionAttributes, AvatarAttributes, BadgeAttributes, ButtonAttributes, CardAttributes,
@@ -297,19 +297,19 @@ fn leaves(
         "Avatar" => {
             let attributes = AvatarAttributes::from_js(config, bridge)?;
             children::none(component, children)?;
-            #[cfg(feature = "media")]
+            #[cfg(feature = "image")]
             let (name, image) = attributes.into_parts();
-            #[cfg(not(feature = "media"))]
+            #[cfg(not(feature = "image"))]
             let name = attributes.into_name();
             let avatar = Avatar::new(Text::computed(name), || ());
-            #[cfg(feature = "media")]
+            #[cfg(feature = "image")]
             let avatar = match image {
                 Some(source) => avatar.image(source.map(|url| url.0).computed()),
                 None => avatar,
             };
             AnyView::new(avatar)
         }
-        #[cfg(feature = "media")]
+        #[cfg(feature = "image")]
         "Image" => {
             let attributes = ImageAttributes::from_js(config, bridge)?;
             children::none(component, children)?;

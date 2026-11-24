@@ -421,9 +421,9 @@ waterui-dylib = { workspace = true, optional = true }
 
 [dev-dependencies]
 waterui-testing = { path = "testing" }
-# `media` is opt-in, and the avatar tests exercise `Avatar::image`. A
+# `image` is opt-in, and the avatar tests exercise `Avatar::image`. A
 # dev-dependency on this package turns it on for its own test targets only.
-waterui = { path = ".", features = ["media"] }
+waterui = { path = ".", features = ["image"] }
 # Writes the test portrait the avatar visual acceptance renders. PNG only:
 # the encoder is all these tests need.
 image = { version = "0.25.10", default-features = false, features = ["png"] }
@@ -509,7 +509,7 @@ inspector-signals = ["inspector", "waterui-internal/inspector-signals", "waterui
 dialog = ["waterui-internal/dialog", "waterui-dylib?/dialog"]
 snackbar = ["waterui-internal/snackbar", "waterui-dylib?/snackbar"]
 assets = ["waterui-internal/assets", "waterui-dylib?/assets"]
-media = ["waterui-internal/media", "waterui-dylib?/media"]
+image = ["waterui-internal/image", "waterui-dylib?/image"]
 video = ["waterui-internal/video", "waterui-dylib?/video"]
 # Remote fetching (`Url::fetch`, `Data::from_remote`/`LargeFile::from_remote`,
 # `Photo` pointed at a web URL) links the `zenwave` HTTP client through
@@ -518,7 +518,7 @@ video = ["waterui-internal/video", "waterui-dylib?/video"]
 remote = ["waterui-internal/remote", "waterui-dylib?/remote"]
 # WaterUI's own GPU video player as Hydrolysis's video realization; the CLI
 # enables Hydrolysis's `video-gpu` feature from it. Deliberately not implied by
-# `video`/`media`: a platform that bridges a native player must not link it.
+# `video`: a platform that bridges a native player must not link it.
 video-gpu = ["video", "gpu", "waterui-internal/video-gpu", "waterui-dylib?/video-gpu"]
 webview = ["waterui-internal/webview", "waterui-dylib?/webview"]
 map = ["waterui-internal/map", "waterui-dylib?/map"]
@@ -603,7 +603,7 @@ all = [
     "inspector",
     "inspector-signals",
     "assets",
-    "media",
+    "image",
     "webview",
     "map",
     "flow-markdown",

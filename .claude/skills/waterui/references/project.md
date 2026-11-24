@@ -133,14 +133,14 @@ Take `mut env` when the app installs things (a `Theme`, `MapGpuOptions`, an `Api
 ## `Cargo.toml`: features that matter
 
 Generated projects carry a `dev` feature that forwards to `waterui/dynamic_linking`, and a
-`media` feature that forwards to `waterui/media` and is off by default (video playback links a
-stack that needs VA-API and PipeWire at build time on Linux; add it to `default` when the app
-plays video):
+`video` feature that forwards to `waterui/video` and is off by default (add `video-gpu` for
+Hydrolysis playback on desktop/Android, which needs VA-API and PipeWire at build time on Linux;
+add it to `default` when the app plays video):
 
 ```toml
 [features]
 dev = ["waterui/dynamic_linking"]
-media = ["waterui/media"]
+video = ["waterui/video"]
 ```
 
 Keep the `dev` feature. `dynamic_linking` links the app against a shared framework runtime,
