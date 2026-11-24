@@ -60,7 +60,6 @@ Everything the runtime hands the host is one of four shapes:
  * @property {(content: unknown) => Handle} text
  * @property {(when: unknown, render: (item: () => unknown) => Branch, fallback?: () => Branch) => Handle} show
  * @property {(each: unknown, render: (item: unknown, index: () => number) => Branch, by?: (item: unknown) => unknown) => Handle} each
- * @property {(children: () => Branch, fallback?: () => Branch) => Handle} suspense
  * @property {() => HostEnvironment} environment
  * @property {(id: number, ...args: unknown[]) => unknown} invoke
  * @property {ReadonlySet<string> | readonly string[]} modifiers
@@ -154,18 +153,6 @@ reconciles: a retained key keeps
 its branch (the branch's `index` accessor updates if its position moved), a
 new key calls `render(item, index)` once, and a removed key's branch is
 disposed. `render` receives the item and an accessor of its current index.
-
-## `suspense(children, fallback?) -> Handle`
-
-Maps to WaterUI's `Suspense`. The host presents `fallback?.()` while the
-`children()` branch's resources are pending and the children branch once
-resolved, disposing whichever branch leaves.
-
-The JavaScript runtime has no resource primitive, so nothing a `children()`
-branch builds out of JSX alone can be pending: that branch renders
-synchronously and is what the host presents. A Rust-composed subtree placed
-under the boundary suspends through its own `Suspense`, which the backend
-presents as it always has.
 
 ## `environment() -> HostEnvironment`
 

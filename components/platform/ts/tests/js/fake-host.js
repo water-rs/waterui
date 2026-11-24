@@ -2,15 +2,13 @@
 //
 // It implements the HOST.md contract in plain JS over the real signal
 // library: `show` and `each` do the same branch/identity bookkeeping the Rust
-// host table must do, `suspense` presents the children branch the way the Rust
-// table does, and every entry point records its calls so tests can assert on
-// order, reuse, and disposal. `modifiers` is the fake's own catalog subset —
-// the real set comes from the generated component catalog.
+// host table must do, and every entry point records its calls so tests can
+// assert on order, reuse, and disposal. `modifiers` is the fake's own catalog
+// subset — the real set comes from the generated component catalog.
 //
 // It is a reference host, so where it differs from the Rust table it is wrong:
 // a test that passes here and fails against the real one has proved nothing.
-// That is why `each` demands a `by` for a non-primitive item and `suspense`
-// has no pending state — see both below.
+// That is why `each` demands a `by` for a non-primitive item — see below.
 
 import { createEffect, createRoot, createSignal } from "../../src/js/signals.js";
 import { toSignal } from "../../src/js/host.js";
@@ -211,20 +209,6 @@ export function createFakeHost(environment = {}) {
           }
           slot.entries = next;
         });
-        return dispose;
-      });
-      return slot;
-    },
-
-    // The boundary presents its children. There is no resource primitive in
-    // the JavaScript runtime, so nothing a `children()` branch builds out of
-    // JSX alone can be pending and the fallback is never built — which is
-    // exactly what the Rust table does.
-    suspense(children, _fallback) {
-      const slot = { id: nextId, type: "suspense", branch: null };
-      nextId += 1;
-      slot.dispose = createRoot((dispose) => {
-        slot.branch = children();
         return dispose;
       });
       return slot;
