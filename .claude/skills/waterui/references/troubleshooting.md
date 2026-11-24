@@ -113,7 +113,7 @@ Use `app.pump_for(duration)`.
 | `the trait bound 'MyType: Transferable' is not satisfied` on `.draggable`/`.drop_destination` | a drag value must be marked transferable | `impl Transferable for MyType {}` (plus `impl_constant!(MyType)` to pass a plain value) |
 | `no method named 'is_empty'` on a signal | signal string methods are prefixed | `.str_is_empty()`, `.str_len()`, `.str_contains(..)` |
 | mismatched arms in `.select(TokenA, TokenB)` | both arms must be one concrete type | convert first: `let a: Color = Accent.into();` |
-| `this function takes 2 arguments but 1 was supplied` on `.scale` | transforms are per-axis | `.scale(x, y)`, `.offset(x, y)`, `.size(w, h)` |
+| `this function takes 1 argument but 2 were supplied` on `.scale` | uniform scale takes one factor; per-axis is `scale_xy` | `.scale(factor)` or `.scale_xy(x, y)` |
 | `.size(24)` on a `Text` then `.size(w, h)` fails | `Text::size` (font size) shadows the frame modifier | use `.width(..)`/`.height(..)` on text, or size the container |
 | `this function takes 2 arguments` on `row("Title")` | `row`/`detail_row` take (label, value) | `row("Streak", "14 days")` |
 | wrong `row` / `grid` resolves | list `row` vs grid `row` name collision | `use waterui::layout::grid::{grid as layout_grid, row as grid_row};` |

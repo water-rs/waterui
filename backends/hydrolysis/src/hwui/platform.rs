@@ -275,7 +275,7 @@ impl ShaderBackend for HwuiResources {
                 source.language()
             )));
         }
-        if source.get_animated() {
+        if source.is_time_dependent() {
             return Err(ResourceError::Shader(format!(
                 "AGSL shader {name} samples `uniforms.time`, which the HWUI target does not drive"
             )));

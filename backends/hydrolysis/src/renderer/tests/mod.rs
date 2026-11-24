@@ -877,9 +877,7 @@ fn scale_metadata_is_layout_transparent() {
     let env = test_environment();
     let scale = Binding::f32(1.0);
     let mut realized = Realized::new(
-        ().size(80.0, 80.0)
-            .scale(scale.clone(), scale.clone())
-            .min_height(120.0),
+        ().size(80.0, 80.0).scale(scale.clone()).min_height(120.0),
         &env,
     );
 

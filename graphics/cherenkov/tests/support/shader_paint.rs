@@ -48,7 +48,7 @@ pub fn coverage_and_presentation_time<B: Backend + ShaderPaintCapability>(
     config: B::Config,
 ) -> Outcome {
     let engine = wait!(Engine::<B>::new(config))?;
-    let shader = engine.shader(ShaderSource::wgsl(PAINT).animated())?;
+    let shader = engine.shader(ShaderSource::wgsl(PAINT).time_dependent())?;
     let surface = wait!(engine.surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16), || {}))?;
     let layer = surface.layer();
     surface.update(|tx| {

@@ -123,7 +123,7 @@ fn the_engine_samples_the_tracks_hydrolysis_evaluates() {
     let view = vstack((button("Probe")
         .action(|| {})
         .rotation(driven(0.0, 30.0, &turn))
-        .scale(driven(1.0, 1.5, &stretch), driven(1.0, 0.5, &squash))
+        .scale_xy(driven(1.0, 1.5, &stretch), driven(1.0, 0.5, &squash))
         .offset(driven(0.0, 40.0, &slide), driven(0.0, -20.0, &lift))
         .opacity(driven(1.0, 0.4, &fade)),));
 
@@ -207,7 +207,7 @@ fn hit_testing_places_the_target_where_the_engine_draws_it() {
     };
     let view = vstack((button("Probe")
         .action(|| {})
-        .scale(
+        .scale_xy(
             driven(1.0, 1.25, Animation::linear(Duration::from_millis(200))),
             driven(1.0, 0.75, Animation::spring(300.0, 20.0)),
         )

@@ -21,7 +21,7 @@ use waterui::ts::{
 };
 use waterui_core::Environment;
 use waterui_graphics::color::ColorScheme;
-use waterui_locale::locales;
+use waterui_locale::{TranslationCatalog, locales};
 use waterui_testing::{SemanticApp, ui};
 use waterui_ts::engine::{JsRuntime as _, JsValue};
 use waterui_ts::schema::{
@@ -201,13 +201,18 @@ fn session(launched: &Launched) -> SemanticApp {
         .try_mount(launched.environment())
         .unwrap_or_else(|error| panic!("mounting the module: {error}"));
     let view = RefCell::new(Some(view));
-    ui().environment(launched.environment().clone())
-        .viewport(320, 240)
-        .mount(move || {
-            view.borrow_mut()
-                .take()
-                .expect("the test session realizes its root once")
-        })
+    let mut builder = ui()
+        .with(locales::EN)
+        .with(launched.handle().clone())
+        .viewport(320, 240);
+    if let Some(catalog) = launched.environment().get::<TranslationCatalog>() {
+        builder = builder.install(catalog.clone());
+    }
+    builder.mount(move || {
+        view.borrow_mut()
+            .take()
+            .expect("the test session realizes its root once")
+    })
 }
 
 /// Whether anything at all exists under `root`.

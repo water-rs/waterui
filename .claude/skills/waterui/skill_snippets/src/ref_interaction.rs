@@ -357,7 +357,7 @@ pub fn interaction_block_10() -> impl View {
         Blue.with_opacity(0.45).opacity(is_hovered.select(1.0, 0.0)),
         text("Hover me").padding(),
     ))
-    .scale(scale.clone(), scale)
+    .scale(scale)
 }
 
 // ---------------------------------------------------------------------------

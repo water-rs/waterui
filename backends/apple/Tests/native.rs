@@ -5498,7 +5498,7 @@ mod capture_order {
         let column = |child| {
             layered(child)
                 .background(orange())
-                .scale(1.6, 1.6)
+                .scale(1.6)
                 .clip(RoundedRectangle::new(0.2))
         };
         assert_gpu_column_matches_native(column(native_child()), column(gpu_child()), 1);
@@ -9974,6 +9974,7 @@ mod navigation {
         use waterui_core::layout::ProposalSize;
 
         let icon = || SfSymbol::PLUS;
+        let noop: fn() = || {};
         let icon_leaf = resolve::render(icon());
         let icon_width = f64::from(
             icon_leaf
@@ -9989,13 +9990,13 @@ mod navigation {
                         NavigationToolbarPlacement::TopBarLeading,
                         button(label("").icon(icon()))
                             .style(ButtonStyle::Borderless)
-                            .action(|| {}),
+                            .action(noop),
                     ),
                     NavigationToolbarItem::new(
                         NavigationToolbarPlacement::TopBarTrailing,
                         button(label("Keep title").icon(icon()).title_and_icon())
                             .style(ButtonStyle::Borderless)
-                            .action(|| {}),
+                            .action(noop),
                     ),
                 ],
             )),
@@ -14667,7 +14668,7 @@ mod transition {
         let mounted = leaf.mount(&HostView::new(mtm(), cocoa_ui::Rect::ZERO));
         let window = super::mount_and_order_front(mounted.view());
         handler.set(AnyView::new(Metadata::new(
-            label("coming").scale(0.5, 0.5),
+            label("coming").scale(0.5),
             TransitionSpec::new(PropertyTransition::scale(0.5))
                 .with_animation(Animation::linear(Duration::from_millis(60))),
         )));
@@ -17048,11 +17049,11 @@ mod transform_modifiers {
         );
     }
 
-    /// `.scale(0.5, 0.5)` at the default centre anchor (#3504's own
+    /// `.scale(0.5)` at the default centre anchor (#3504's own
     /// reproduction): `m11`/`m22` stay `0.5` after display, and the
     /// anchor's translation term tracks the wrapper's new size.
     fn scale_survives_display_and_resize() {
-        let (_leaf, wrapper, _window) = mount(label("coming").scale(0.5, 0.5));
+        let (_leaf, wrapper, _window) = mount(label("coming").scale(0.5));
         assert_survives_display_and_resize(
             &wrapper,
             CATransform3D::new_scale(0.5, 0.5, 1.0),

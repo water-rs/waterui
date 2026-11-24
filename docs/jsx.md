@@ -172,7 +172,6 @@ use waterui::Binding;
 struct PromoProps {
     headline: String,
     unread: Binding<u32>,
-    #[ts(rename = "onDismiss")]
     on_dismiss: Box<dyn Fn()>,
 }
 
@@ -198,8 +197,11 @@ mount site. `#[derive(TsProps)]` makes it a contract: the TypeScript
 interface and the Rust struct are checked against each other by hash —
 mounting a bundle built against a different contract is a typed error
 naming both hashes. `String` projects to `string`, `Binding<T>` to
-`Signal<T>`, `Box<dyn Fn()>` to `() => void`; `#[ts(rename = "…")]` maps a
-snake_case field to its camelCase prop. A module that takes no props is
+`Signal<T>`, `Box<dyn Fn()>` to `() => void`. Fields and unit-only enum
+variants project to `camelCase` by default (`on_dismiss` → `onDismiss`,
+`BottomTrailing` → `"bottomTrailing"`); container-level
+`#[ts(rename_all = "…")]` selects another convention and `#[ts(rename = "…")]`
+overrides a single field or variant. A module that takes no props is
 mounted with `tsx!("./about.tsx")` and typed against `NoProps` — the empty
 contract, checked like any other.
 

@@ -1107,7 +1107,7 @@ pub trait ViewExt: View + Sized {
     /// Scales are purely visual and do not affect layout calculations.
     ///
     /// # Arguments
-    /// * `factor` - The scale factor (1.0 = no scale, 0.5 = half size, 2.0 = double size)
+    /// * `factor` - The uniform scale factor (1.0 = no scale, 0.5 = half size, 2.0 = double size)
     ///
     /// # Example
     ///
@@ -1115,21 +1115,56 @@ pub trait ViewExt: View + Sized {
     /// use waterui::prelude::*;
     ///
     /// // Scale uniformly to 150%
-    /// let bigger = text!("Hello").scale(1.5, 1.5);
-    ///
-    /// // Scale X only (stretch horizontally)
-    /// let wider = text!("Hello").scale(2.0, 1.0);
+    /// let bigger = text!("Hello").scale(1.5);
     ///
     /// // Animate scale
-    /// let x = binding::<f32>(1.0_f32).animated();
-    /// let y = binding::<f32>(1.0_f32).animated();
-    /// let animated = text!("Hello").scale(x, y);
+    /// let s = binding::<f32>(1.0_f32).animated();
+    /// let animated = text!("Hello").scale(s);
     /// ```
-    fn scale(self, x: impl IntoSignalF32, y: impl IntoSignalF32) -> Metadata<Scale, Self> {
+    fn scale(self, factor: impl IntoSignalF32) -> Metadata<Scale, Self> {
+        Metadata::new(self, Scale::uniform(factor))
+    }
+
+    /// Applies a per-axis scale transform to this view around its center.
+    ///
+    /// Scales are purely visual and do not affect layout calculations.
+    ///
+    /// # Arguments
+    /// * `x` - The horizontal scale factor (1.0 = original width, can be reactive)
+    /// * `y` - The vertical scale factor (1.0 = original height, can be reactive)
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use waterui::prelude::*;
+    ///
+    /// // Scale X only (stretch horizontally)
+    /// let wider = text!("Hello").scale_xy(2.0, 1.0);
+    /// ```
+    fn scale_xy(self, x: impl IntoSignalF32, y: impl IntoSignalF32) -> Metadata<Scale, Self> {
         Metadata::new(self, Scale::xy(x, y))
     }
 
-    /// Applies a scale transform around a specific anchor point.
+    /// Applies a uniform scale transform around a specific anchor point.
+    ///
+    /// # Arguments
+    /// * `factor` - The uniform scale factor (1.0 = original size, can be reactive)
+    /// * `anchor` - The anchor point for the scale (e.g., `Anchor::TOP_LEFT`)
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use waterui::prelude::*;
+    /// use waterui::style::Anchor;
+    ///
+    /// // Scale from top-left corner
+    /// let shrunk = text!("Hello").scale_from(0.5, Anchor::TOP_LEFT);
+    /// ```
+    fn scale_from(self, factor: impl IntoSignalF32, anchor: Anchor) -> Metadata<Scale, Self> {
+        Metadata::new(self, Scale::uniform_from(factor, anchor))
+    }
+
+    /// Applies a per-axis scale transform around a specific anchor point.
     ///
     /// # Arguments
     /// * `x` - The horizontal scale factor
@@ -1142,10 +1177,10 @@ pub trait ViewExt: View + Sized {
     /// use waterui::prelude::*;
     /// use waterui::style::Anchor;
     ///
-    /// // Scale from top-left corner
-    /// let shrunk = text!("Hello").scale_from(0.5, 0.5, Anchor::TOP_LEFT);
+    /// // Stretch horizontally from top-left corner
+    /// let wider = text!("Hello").scale_xy_from(2.0, 1.0, Anchor::TOP_LEFT);
     /// ```
-    fn scale_from(
+    fn scale_xy_from(
         self,
         x: impl IntoSignalF32,
         y: impl IntoSignalF32,
@@ -1747,5 +1782,32 @@ mod tests {
 
         let page = text("About").navigation_title("About");
         let _body: NavigationView<_> = page;
+    }
+
+    #[test]
+    fn scale_uniform_and_xy_variants() {
+        use nami::Signal as _;
+
+        use crate::style::Anchor;
+
+        let uniform = AnyView::new(()).scale(1.5);
+        assert!((uniform.value.x().snapshot() - 1.5).abs() < f32::EPSILON);
+        assert!((uniform.value.y().snapshot() - 1.5).abs() < f32::EPSILON);
+        assert_eq!(uniform.value.anchor(), Anchor::CENTER);
+
+        let xy = AnyView::new(()).scale_xy(2.0, 0.5);
+        assert!((xy.value.x().snapshot() - 2.0).abs() < f32::EPSILON);
+        assert!((xy.value.y().snapshot() - 0.5).abs() < f32::EPSILON);
+        assert_eq!(xy.value.anchor(), Anchor::CENTER);
+
+        let anchored = AnyView::new(()).scale_from(0.75, Anchor::TOP_LEFT);
+        assert!((anchored.value.x().snapshot() - 0.75).abs() < f32::EPSILON);
+        assert!((anchored.value.y().snapshot() - 0.75).abs() < f32::EPSILON);
+        assert_eq!(anchored.value.anchor(), Anchor::TOP_LEFT);
+
+        let anchored_xy = AnyView::new(()).scale_xy_from(1.25, 0.25, Anchor::BOTTOM_RIGHT);
+        assert!((anchored_xy.value.x().snapshot() - 1.25).abs() < f32::EPSILON);
+        assert!((anchored_xy.value.y().snapshot() - 0.25).abs() < f32::EPSILON);
+        assert_eq!(anchored_xy.value.anchor(), Anchor::BOTTOM_RIGHT);
     }
 }

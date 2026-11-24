@@ -368,9 +368,9 @@ pub trait HostedLayers: Planes + GpuInstalls {
 pub struct ShaderSource {
     /// The fragment source, without the backend's prelude.
     pub source: Cow<'static, str>,
-    /// Whether the shader animates: when true, it is re-rendered every
-    /// frame so its time uniform advances and the engine keeps refreshing.
-    pub animated: bool,
+    /// Whether the shader reads `uniforms.time`: when true, it is re-rendered
+    /// every frame so its time uniform advances and the engine keeps refreshing.
+    pub time_dependent: bool,
 }
 
 impl ShaderSource {
@@ -378,16 +378,16 @@ impl ShaderSource {
     pub fn wgsl(fragment: impl Into<Cow<'static, str>>) -> Self {
         Self {
             source: fragment.into(),
-            animated: false,
+            time_dependent: false,
         }
     }
 
-    /// Marks the shader as animated (re-rendered each frame).
+    /// Marks the shader as sampling `uniforms.time` (re-rendered each frame).
     #[must_use]
-    pub fn animated(self) -> Self {
+    pub fn time_dependent(self) -> Self {
         Self {
             source: self.source,
-            animated: true,
+            time_dependent: true,
         }
     }
 }

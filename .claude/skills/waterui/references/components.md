@@ -162,8 +162,8 @@ chrome) and `keyboard` (the software keyboard) — and `.ignore_safe_area` takes
 the keyboard but above the container inset, `SafeAreaRegions::CONTAINER` / `ALL` name the
 other combinations, and a bare `EdgeSet` ignores every region.
 
-Visual transforms never affect layout. `.scale(x, y)` and `.rotation(degrees)` pivot on the
-centre; `.scale_from(x, y, Anchor::TOP_LEFT)` and `.rotation_from(45.0, Anchor::TOP_LEFT)`
+Visual transforms never affect layout. `.scale(factor)` / `.scale_xy(x, y)` and `.rotation(degrees)` pivot on the
+centre; `.scale_from(factor, Anchor::TOP_LEFT)` / `.scale_xy_from(x, y, Anchor::TOP_LEFT)` and `.rotation_from(45.0, Anchor::TOP_LEFT)`
 pivot on an `Anchor` (in the prelude; normalized, `(0, 0)` top-left: `CENTER`, `TOP_LEFT`,
 `TOP_RIGHT`, `BOTTOM_LEFT`, `BOTTOM_RIGHT`, or `Anchor::new(x, y)`). Factors and angles take
 signals; the anchor is a plain value.
@@ -805,13 +805,6 @@ ValidatableView::new(field("Name", &name), Plain(Required))
 Pickers:
 
 ```rust
-use waterui::form::picker::{Picker, PickerItem, PickerStyle, picker};
-use waterui::form::picker::color::ColorPicker;
-use waterui::form::picker::date::{DatePicker, DateTimePickerComponents};
-use waterui::form::picker::file::FilePicker;
-use waterui::form::picker::multi_date::MultiDatePicker;
-use waterui::form::Calendar;
-
 // Options are views carrying their value via .tag(..). The tag type is T: Ord + Clone.
 // PickerItem<T> is the nameable item type — an array of them works without collect().
 fn sizes() -> [PickerItem<&'static str>; 3] {
@@ -833,7 +826,7 @@ from `waterui::form::picker::date::{Date, DateTime, Time}` — no `jiff` depende
 own is needed to name them or call their constructors, which are fallible:
 
 ```rust
-use waterui::form::picker::date::{Date, DatePicker, DateTimePickerComponents};
+use waterui::form::picker::date::Date;
 
 DatePicker::new("Date", &date)                   // generic over T: DatePickable (Date, Time, DateTime)
     .range(min..=max)                            // RangeInclusive<T> of the bound type; clamps immediately

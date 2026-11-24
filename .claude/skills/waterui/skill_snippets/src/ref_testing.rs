@@ -391,7 +391,7 @@ pub mod gated {
             .theme(hydrolysis_m3::Material3::defaults())
             .viewport(390, 844)
             .scale_factor(2.0)
-            .environment(waterui::Environment::new())
+            .with(0_u8)
             .mount_app(window_app);
     }
 

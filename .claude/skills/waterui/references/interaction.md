@@ -275,13 +275,13 @@ zstack((
     Blue.with_opacity(0.45).opacity(is_hovered.select(1.0, 0.0)),
     text("Hover me").padding(),
 ))
-.scale(scale.clone(), scale)
+.scale(scale)
 ```
 
 Note the two opacities: `Color::with_opacity(0.2)` bakes alpha into the color value,
 while `.opacity(signal)` is the reactive view modifier doing the cross-fade. Signal
 transforms (`.select`, `.map`, `.zip`) take `&self`, so no `.clone()` is needed before
-them — clone only when a finished signal is consumed twice, as `.scale(x, y)` does.
+them — clone only when a finished signal is consumed twice, as `.scale_xy(x, y)` does.
 
 ## Reporting a control's state
 

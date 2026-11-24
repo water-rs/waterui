@@ -138,17 +138,21 @@ pub struct ShaderSource {
     language: ShaderLanguage,
     /// Whether the fragment samples `uniforms.time`, so the engine
     /// re-renders it every frame.
-    animated: bool,
+    time_dependent: bool,
 }
 
 impl ShaderSource {
     /// Creates a `ShaderSource` from its parts.
     #[must_use]
-    pub const fn new(source: Cow<'static, str>, language: ShaderLanguage, animated: bool) -> Self {
+    pub const fn new(
+        source: Cow<'static, str>,
+        language: ShaderLanguage,
+        time_dependent: bool,
+    ) -> Self {
         Self {
             source,
             language,
-            animated,
+            time_dependent,
         }
     }
 
@@ -161,7 +165,7 @@ impl ShaderSource {
     /// Takes the value apart into its fields, in declaration order.
     #[must_use]
     pub fn into_parts(self) -> (Cow<'static, str>, ShaderLanguage, bool) {
-        (self.source, self.language, self.animated)
+        (self.source, self.language, self.time_dependent)
     }
 
     /// The language `source` is written in.
@@ -173,8 +177,8 @@ impl ShaderSource {
     /// Whether the fragment samples `uniforms.time`, so the engine
     /// re-renders it every frame.
     #[must_use]
-    pub const fn get_animated(&self) -> bool {
-        self.animated
+    pub const fn is_time_dependent(&self) -> bool {
+        self.time_dependent
     }
 }
 
@@ -183,7 +187,7 @@ impl std::fmt::Debug for ShaderSource {
         f.debug_struct("ShaderSource")
             .field("len", &self.source.len())
             .field("language", &self.language)
-            .field("animated", &self.animated)
+            .field("time_dependent", &self.time_dependent)
             .finish()
     }
 }
@@ -194,7 +198,7 @@ impl ShaderSource {
         Self {
             source: source.into(),
             language: ShaderLanguage::Wgsl,
-            animated: false,
+            time_dependent: false,
         }
     }
 
@@ -203,15 +207,15 @@ impl ShaderSource {
         Self {
             source: source.into(),
             language: ShaderLanguage::Agsl,
-            animated: false,
+            time_dependent: false,
         }
     }
 
     /// Marks the fragment as sampling `uniforms.time`.
     #[must_use]
-    pub fn animated(self) -> Self {
+    pub fn time_dependent(self) -> Self {
         Self {
-            animated: true,
+            time_dependent: true,
             ..self
         }
     }

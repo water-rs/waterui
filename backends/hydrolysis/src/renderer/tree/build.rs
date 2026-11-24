@@ -529,14 +529,17 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         renderer: &SemanticCore<E>,
         #[cfg_attr(not(hydrolysis_hwui_gpu), expect(unused_variables))] env: &Environment,
     ) -> Self {
+        let core = renderer.new_core();
+        let runtime = Rc::new(RefCell::new(GpuContentRuntime::new(
+            view,
+            &core.cell,
+            #[cfg(hydrolysis_hwui_gpu)]
+            crate::runner::android::hosted_gpu::HostedLayer::in_environment(env),
+        )));
         Self::GpuContent(Box::new(GpuContentNode {
             accessibility_identity: Rc::new(()),
-            core: renderer.new_core(),
-            runtime: Rc::new(RefCell::new(GpuContentRuntime::new(
-                view,
-                #[cfg(hydrolysis_hwui_gpu)]
-                crate::runner::android::hosted_gpu::HostedLayer::in_environment(env),
-            ))),
+            core,
+            runtime,
             measured: Cell::new(None),
         }))
     }
@@ -550,14 +553,17 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         renderer: &SemanticCore<E>,
         #[cfg_attr(not(hydrolysis_hwui_gpu), expect(unused_variables))] env: &Environment,
     ) -> Self {
+        let core = renderer.new_core();
+        let runtime = Rc::new(RefCell::new(ExternalFrameRuntime::new(
+            view,
+            &core.cell,
+            #[cfg(hydrolysis_hwui_gpu)]
+            crate::runner::android::hosted_gpu::HostedLayer::in_environment(env),
+        )));
         Self::ExternalFrame(Box::new(ExternalFrameNode {
             accessibility_identity: Rc::new(()),
-            core: renderer.new_core(),
-            runtime: Rc::new(RefCell::new(ExternalFrameRuntime::new(
-                view,
-                #[cfg(hydrolysis_hwui_gpu)]
-                crate::runner::android::hosted_gpu::HostedLayer::in_environment(env),
-            ))),
+            core,
+            runtime,
             measured: Cell::new(None),
         }))
     }

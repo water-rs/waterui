@@ -308,7 +308,7 @@ mcp` is one — uses the builder form `ui().theme(style).viewport(w,
 h).scale_factor(dpi).mount_app(app)` instead. Either mounts only the app's first window
 and panics when the app declares none: the app's menu bar and further windows are not
 mounted, though popups the app opens at runtime (context menus, pickers) join the tree.
-`ui().environment(env)` supplies the environment a manual mount's view resolves.
+`ui().with(service)` and `ui().install(plugin)` layer services and plugins additively onto a manual mount's environment without discarding defaults or earlier calls.
 
 ## `#[waterui::bench]` and `water bench`
 
