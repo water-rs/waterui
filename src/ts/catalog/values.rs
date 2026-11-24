@@ -996,14 +996,15 @@ mod tests {
             assert!((a - b).abs() < 1e-6, "component mismatch: {a} vs {b}");
         }
 
-        let rgb = ColorValue::from_srgb_hex("#F0A").expect("#RGB must parse");
-        let rgb_full = ColorValue::from_srgb_hex("#FF00AA").expect("#RRGGBB must parse");
-        assert_eq!(rgb, rgb_full);
+        let short_rgb = ColorValue::from_srgb_hex("#F0A").expect("#RGB must parse");
+        let expanded_rgb = ColorValue::from_srgb_hex("#FF00AA").expect("#RRGGBB must parse");
+        assert_eq!(short_rgb, expanded_rgb);
 
-        let rgba = ColorValue::from_srgb_hex("#F0A8").expect("#RGBA must parse");
-        let rgba_full = ColorValue::from_srgb_hex("#FF00AA88").expect("#RRGGBBAA must parse");
-        assert_eq!(rgba, rgba_full);
-        assert!((rgba.opacity().unwrap_or(0.0) - (136.0 / 255.0)).abs() < 1e-6);
+        let short_with_alpha = ColorValue::from_srgb_hex("#F0A8").expect("#RGBA must parse");
+        let expanded_with_alpha =
+            ColorValue::from_srgb_hex("#FF00AA88").expect("#RRGGBBAA must parse");
+        assert_eq!(short_with_alpha, expanded_with_alpha);
+        assert!((short_with_alpha.opacity().unwrap_or(0.0) - (136.0 / 255.0)).abs() < 1e-6);
     }
 
     #[test]
