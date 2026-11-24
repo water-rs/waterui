@@ -349,7 +349,7 @@ pub mod gated {
             run.pointer_move(10.0, 10.0);
             run.pointer_down(10.0, 10.0);
             run.pointer_up(10.0, 10.0);
-            let _ = run.app();
+            let _ = run.app().is_settled();
         });
     }
 
@@ -413,7 +413,7 @@ pub mod gated {
                 move || stepper("Count", &for_view),
                 |perf| {
                     perf.measure("increment", |run| {
-                        run.app().query().label("Count").increment();
+                        run.query().label("Count").increment();
                     });
                 },
             )
