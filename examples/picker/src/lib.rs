@@ -16,7 +16,7 @@ use waterui::app::{App, Windows};
 use waterui::color::Srgb;
 use waterui::form::Calendar;
 use waterui::form::picker::color::ColorPicker;
-use waterui::form::picker::date::{DatePicker, DatePickerType};
+use waterui::form::picker::date::DatePicker;
 use waterui::form::picker::file::FilePicker;
 use waterui::form::picker::multi_date::MultiDatePicker;
 use waterui::form::picker::{Picker, PickerStyle};
@@ -126,10 +126,10 @@ fn date_pickers() -> impl View {
             .range(fixed_date(2025, 1, 1)..=fixed_date(2025, 12, 31)),
         text!("Selected date: {date}"),
         spacer(),
-        DatePicker::new("Time Only", &time_only).ty(DatePickerType::HourMinuteAndSecond),
+        DatePicker::new("Time Only", &time_only).seconds(),
         text!("Selected time: {time_only}"),
         spacer(),
-        DatePicker::new("Date & Time", &datetime).ty(DatePickerType::DateHourMinuteAndSecond),
+        DatePicker::new("Date & Time", &datetime).seconds(),
         text!("Selected datetime: {datetime}"),
     ))
     .padding_with(12.0)

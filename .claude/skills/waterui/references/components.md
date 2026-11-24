@@ -804,7 +804,7 @@ Pickers:
 ```rust
 use waterui::form::picker::{Picker, PickerItem, PickerStyle, picker};
 use waterui::form::picker::color::ColorPicker;
-use waterui::form::picker::date::{DatePicker, DatePickerType};
+use waterui::form::picker::date::{DatePicker, DateTimePickerComponents};
 use waterui::form::picker::file::FilePicker;
 use waterui::form::picker::multi_date::MultiDatePicker;
 use waterui::form::Calendar;
@@ -830,11 +830,12 @@ from `waterui::form::picker::date::{Date, DateTime, Time}` — no `jiff` depende
 own is needed to name them or call their constructors, which are fallible:
 
 ```rust
-use waterui::form::picker::date::Date;
+use waterui::form::picker::date::{Date, DatePicker, DateTimePickerComponents};
 
-DatePicker::new("Date", &date)                   // T: DatePickable (Date, Time, DateTime) picks the presentation
-    .ty(DatePickerType::DateHourMinuteAndSecond) // override; also Date, HourAndMinute, HourMinuteAndSecond, DateHourAndMinute
-    .range(min..=max)                            // clamps the bound value immediately
+DatePicker::new("Date", &date)                   // generic over T: DatePickable (Date, Time, DateTime)
+    .range(min..=max)                            // RangeInclusive<T> of the bound type; clamps immediately
+DatePicker::new("Alarm", &time).seconds()        // .seconds() only exists for Time / DateTime
+DatePicker::new("Due", &dt).components(DateTimePickerComponents::DateHourMinuteAndSecond)
 
 Calendar::new("Trip Date", &date, &visible_month)      // TWO bindings: selection + shown month
     .range(start..=end)
