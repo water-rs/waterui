@@ -28,7 +28,7 @@ use waterui_layout::background::BackgroundView;
 use waterui_layout::frame::Frame;
 use waterui_layout::padding::Padding;
 use waterui_locale::locale_binding;
-use waterui_shape::{Capsule, Circle, Ellipse, FixedRoundedRectangle, Rectangle, RoundedRectangle};
+use waterui_shape::{Capsule, Circle, Ellipse, Rectangle, RoundedRectangle};
 use waterui_ts::engine::{JsError, JsValue};
 use waterui_ts::{Bridge, FromJs as _};
 
@@ -214,7 +214,7 @@ impl From<ShadowValue> for Shadow {
                 y: value.y().unwrap_or_default(),
             },
             value.radius(),
-            FixedRoundedRectangle::new(value.corner_radius().unwrap_or_default()),
+            RoundedRectangle::new(value.corner_radius().unwrap_or_default()),
         )
     }
 }

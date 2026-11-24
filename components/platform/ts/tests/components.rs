@@ -1315,7 +1315,7 @@ fn ts_shadow_is_the_rust_shadow() {
             Color::srgb(0, 0, 0),
             Vector { x: 0.0, y: 2.0 },
             4.0,
-            waterui::shape::FixedRoundedRectangle::new(0.0),
+            waterui::shape::RoundedRectangle::new(0.0),
         ))),
     );
 }

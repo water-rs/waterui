@@ -996,7 +996,7 @@ mod suite {
     fn issue_view_set() -> impl View {
         use waterui::form::picker::picker;
         use waterui::gradient::Gradient;
-        use waterui::shape::{Circle, Rectangle, RoundedRectangle, ShapeExt};
+        use waterui::shape::{Circle, CornerRadius, Rectangle, RoundedRectangle, ShapeExt};
 
         // `image.png` is generated into the run's assets directory by
         // `run_with_config` before `run` mounts this view — the same
@@ -1040,7 +1040,7 @@ mod suite {
             waterui::ImageAsset::new(waterui::Bundle::main(), "image.png").size(48.0, 48.0),
             Circle.fill(Color::srgb_hex("#3B82F6")).size(48.0, 48.0),
             Rectangle.fill(Color::srgb_hex("#10B981")).size(64.0, 48.0),
-            RoundedRectangle::new(0.25)
+            RoundedRectangle::new(CornerRadius::fraction(0.25))
                 .fill(Color::srgb_hex("#F59E0B"))
                 .size(64.0, 48.0),
             Gradient::linear(vec![(0.0, rose), (1.0, sky)], [0.0, 0.0], [1.0, 1.0])

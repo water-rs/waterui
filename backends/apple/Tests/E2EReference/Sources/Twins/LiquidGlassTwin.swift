@@ -7,7 +7,7 @@
 //   Glass::clear()                            -> .glassEffect(.clear)
 //   .interactive(true)                        -> .interactive()
 //   .tint(color)                              -> .tint(color)
-//   .shape(RoundedRectangle::new(0.2))        -> in: .rect(cornerRadius:) at 0.2 of
+//   .shape(RoundedRectangle::new(CornerRadius::fraction(0.2))) -> in: .rect(cornerRadius:) at 0.2 of
 //                                                the card's laid-out shorter side
 //   Circle.fill(c).size(n, n).offset(x, y)    -> Circle().fill(c).frame(n).offset(x, y)
 //   .bottom_accessory(view)                   -> .tabViewBottomAccessory { view }
@@ -180,7 +180,7 @@ struct LiquidGlassTwin: View {
       Text("Text inside glass keeps its full contrast; the glass adapts to what is behind it.")
     }
     .padding(14)
-    // RoundedRectangle::new(0.2) is a fifth of the shorter side, which the
+    // RoundedRectangle::new(CornerRadius::fraction(0.2)) is a fifth of the shorter side, which the
     // Apple backend resolves against the glass's bounds on every layout; the
     // card's height depends on how its text wraps, so it is read back here.
     .onGeometryChange(for: CGFloat.self) { min($0.size.width, $0.size.height) } action: {

@@ -12,7 +12,7 @@ use waterui::app::{App, Windows};
 use waterui::color::working::from_linear_srgb;
 use waterui::prelude::*;
 use waterui::preview;
-use waterui::shape::{Circle, RoundedRectangle};
+use waterui::shape::{Circle, CornerRadius, RoundedRectangle};
 use waterui::task::sleep;
 
 use core::time::Duration;
@@ -171,7 +171,7 @@ fn shape_fill_section() -> impl View {
                     [1.0, 1.0],
                 )
                 .size(100.0, 100.0)
-                .clip(RoundedRectangle::new(0.18)),
+                .clip(RoundedRectangle::new(CornerRadius::fraction(0.18))),
                 "Linear + Rounded",
             )),
             // Radial gradient clipped to circle
@@ -204,7 +204,7 @@ fn shape_fill_section() -> impl View {
                     true,
                 )
                 .size(100.0, 100.0)
-                .clip(RoundedRectangle::new(0.22)),
+                .clip(RoundedRectangle::new(CornerRadius::fraction(0.22))),
                 "Mesh + Rounded",
             )),
         ))

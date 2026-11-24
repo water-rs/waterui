@@ -73,47 +73,28 @@ fn platform_color(color: &WorkingColor) -> Retained<cocoa_ui::objc2_app_kit::NSC
     }
 }
 
+use super::resolved_shape::resolve_corner;
+
 /// The outline as the glass view's corner configuration, rebuilt against
 /// the current bounds — `WuiGlassBackground.cornerConfiguration` on
 /// `UIKit`.
 #[cfg(target_os = "ios")]
 fn apply_outline(glass: &GlassView, shape: ShapeKind, bounds: Rect) {
     let shorter = bounds.size.width.min(bounds.size.height);
-    let limit = shorter / 2.0;
     match shape {
         ShapeKind::Rect => glass.set_corner_radius(0.0),
         ShapeKind::Circle | ShapeKind::Capsule => glass.set_corner_capsule(),
-        ShapeKind::RoundedRect { corner_radius } => {
-            glass.set_corner_radius((f64::from(corner_radius) * shorter).min(limit));
-        }
-        ShapeKind::FixedRoundedRect { corner_radius } => {
-            glass.set_corner_radius(f64::from(corner_radius).min(limit));
-        }
-        ShapeKind::UnevenRoundedRect {
-            top_left,
-            top_right,
-            bottom_left,
-            bottom_right,
-        } => {
-            glass.set_corner_radii(
-                (f64::from(top_left) * shorter).min(limit),
-                (f64::from(top_right) * shorter).min(limit),
-                (f64::from(bottom_left) * shorter).min(limit),
-                (f64::from(bottom_right) * shorter).min(limit),
-            );
-        }
-        ShapeKind::FixedUnevenRoundedRect {
-            top_left,
-            top_right,
-            bottom_left,
-            bottom_right,
-        } => {
-            glass.set_corner_radii(
-                f64::from(top_left).min(limit),
-                f64::from(top_right).min(limit),
-                f64::from(bottom_left).min(limit),
-                f64::from(bottom_right).min(limit),
-            );
+        ShapeKind::RoundedRect { radii } => {
+            if let Some(uniform) = radii.as_uniform() {
+                glass.set_corner_radius(resolve_corner(uniform, shorter));
+            } else {
+                glass.set_corner_radii(
+                    resolve_corner(radii.top_leading(), shorter),
+                    resolve_corner(radii.top_trailing(), shorter),
+                    resolve_corner(radii.bottom_leading(), shorter),
+                    resolve_corner(radii.bottom_trailing(), shorter),
+                );
+            }
         }
         ShapeKind::Ellipse | ShapeKind::CustomPath => {
             waterui::contract_violation!(
@@ -133,18 +114,19 @@ fn apply_outline(glass: &GlassView, shape: ShapeKind, bounds: Rect) {
     match shape {
         ShapeKind::Rect => glass.set_corner_radius(0.0),
         ShapeKind::Circle | ShapeKind::Capsule => glass.set_corner_radius(limit),
-        ShapeKind::RoundedRect { corner_radius } => {
-            glass.set_corner_radius((f64::from(corner_radius) * shorter).min(limit));
+        ShapeKind::RoundedRect { radii } => {
+            let Some(uniform) = radii.as_uniform() else {
+                waterui::contract_violation!(
+                    "WaterUI glass on macOS takes one corner radius; {shape:?} (per-corner radii) cannot be a glass outline; \
+                     the glass keeps its current outline"
+                );
+                return;
+            };
+            glass.set_corner_radius(resolve_corner(uniform, shorter));
         }
-        ShapeKind::FixedRoundedRect { corner_radius } => {
-            glass.set_corner_radius(f64::from(corner_radius).min(limit));
-        }
-        ShapeKind::Ellipse
-        | ShapeKind::UnevenRoundedRect { .. }
-        | ShapeKind::FixedUnevenRoundedRect { .. }
-        | ShapeKind::CustomPath => {
+        ShapeKind::Ellipse | ShapeKind::CustomPath => {
             waterui::contract_violation!(
-                "WaterUI glass on macOS takes one corner radius; {shape:?} (ellipse, per-corner radii, or custom path) cannot be a glass outline; \
+                "WaterUI glass on macOS takes one corner radius; {shape:?} (ellipse or custom path) cannot be a glass outline; \
                  the glass keeps its current outline"
             );
         }

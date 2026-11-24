@@ -17,7 +17,7 @@ use waterui::navigation::NavigationToolbarItems;
 use waterui::prelude::theme_color::Foreground;
 use waterui::prelude::*;
 use waterui::reactive::collection::SignalCollection;
-use waterui::shape::{Circle, RoundedRectangle};
+use waterui::shape::{Circle, CornerRadius, RoundedRectangle};
 use waterui::views::ForEach;
 use waterui::widget::condition::when;
 use waterui_icons_material_icon as mdi;
@@ -345,7 +345,7 @@ fn destination_tile(
     .min_height(56.0)
     .background(signal_color(bg))
     // ~10pt on the tile's shorter side, matching the official app's tiles.
-    .clip(RoundedRectangle::new(0.15))
+    .clip(RoundedRectangle::new(CornerRadius::fraction(0.15)))
     .on_tap(
         move |State(selection): State<Binding<Option<SidebarDestination>>>| {
             selection.set(Some(dest));

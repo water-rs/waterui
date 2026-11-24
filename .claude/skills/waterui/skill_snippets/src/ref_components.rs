@@ -1486,7 +1486,7 @@ pub fn components_block_37(photo_url: waterui::Url) {
     let _ = {
         avatar("Grace Hopper") // initials when there is no image; the name is always spoken
             .image(photo_url) // a signal of Url: the fallback shows until it decodes
-            .shape(RoundedRectangle::new(0.25))
+            .shape(RoundedRectangle::new(16.0))
             .size(64.0)
             .ring(Color::new(theme_color::Accent), 2.0)
     };

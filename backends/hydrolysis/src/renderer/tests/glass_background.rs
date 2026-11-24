@@ -15,7 +15,7 @@ use waterui::animation::Animation;
 use waterui::background::Glass;
 use waterui::graphics::Color;
 use waterui::interaction::InteractionState;
-use waterui::shape::{Ellipse, PathCommand, RoundedRectangle, Shape};
+use waterui::shape::{CornerRadius, Ellipse, PathCommand, RoundedRectangle, Shape};
 use waterui_controls::button::button;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::{AnyView, Environment};
@@ -240,7 +240,7 @@ fn the_outline_follows_the_glasss_shape() {
     );
 
     let ShapeData::RoundedRect(rounded) =
-        outline(Glass::regular().shape(RoundedRectangle::new(0.2)))
+        outline(Glass::regular().shape(RoundedRectangle::new(CornerRadius::fraction(0.2))))
     else {
         panic!("a rounded rectangle is a rounded rectangle")
     };

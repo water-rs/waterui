@@ -329,7 +329,7 @@ where
     .background(pill)
     // `ActiveIndicatorShape` is `CornerFull`, whose caps are half the row
     // height. `Capsule` says that directly and stays correct at any row
-    // height, where a normalized `RoundedRectangle` radius would not.
+    // height, where a fractional `RoundedRectangle` radius would not.
     .clip(Capsule)
     .on_tap(action)
     .a11y_role(AccessibilityRole::Button)
