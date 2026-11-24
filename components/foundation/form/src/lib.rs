@@ -21,8 +21,19 @@ pub mod calendar;
 pub use calendar::{Calendar, CalendarConfig, CalendarGrid};
 /// Native picker controls for colors, dates, files, and multiple dates.
 pub mod picker;
+#[cfg(feature = "color-picker")]
+pub use picker::ColorPicker;
+#[cfg(feature = "multi-date-picker")]
+pub use picker::MultiDatePicker;
+#[cfg(feature = "file-picker")]
+pub use picker::file::FilePicker;
+#[cfg(feature = "date-picker")]
+pub use picker::{
+    DatePickable, DatePicker, DatePickerComponents, DateTimePickerComponents, TimePickable,
+    TimePickerComponents,
+};
 #[cfg(feature = "picker")]
-pub use picker::{Picker, PickerItem, PickerStyle};
+pub use picker::{Picker, PickerItem, PickerStyle, picker};
 /// Validation helpers for form fields.
 #[cfg(feature = "validation")]
 pub mod valid;

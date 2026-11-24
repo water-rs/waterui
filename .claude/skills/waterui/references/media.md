@@ -341,7 +341,7 @@ and lives on the render thread once installed — it must NOT hold `Binding`s or
 state; instead read reactive state in a `.on_frame` hook (UI thread, once per frame) and post
 plain values to the content through shared `Arc<Mutex<..>>` state. `waterui::graphics` re-exports
 `bytemuck`. Verify GPU components with offscreen rendering, never by reasoning about the code.
-Give the surface an accessibility name with `.labeled(..)` and a value with `.described(..)`.
+Give any graphics leaf a reactive accessibility name with `.offered_label(..)` and value with `.offered_value(..)` (`impl IntoComputed<Option<Str>>`).
 
 Input for self-drawn views (a terminal, an editor, a game board) arrives through
 `GpuView::on_input(|event: &SurfaceInputEvent| ..)` — a UI-thread `Fn`, so it may

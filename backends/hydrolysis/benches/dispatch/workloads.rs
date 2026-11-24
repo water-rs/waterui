@@ -91,7 +91,7 @@ pub fn modifier_chain() -> impl View {
         .opacity(0.9)
         .border(Color::srgb(10, 10, 10), 1.0)
         .padding()
-        .scale(1.0, 1.0)
+        .scale(1.0)
         .rotation(0.0)
         .offset(0.0, 0.0)
         .shadow(Shadow::default())
@@ -99,7 +99,7 @@ pub fn modifier_chain() -> impl View {
         .background(Color::srgb(250, 250, 250))
         .opacity(0.95)
         .border(Color::srgb(30, 30, 30), 1.0)
-        .scale(1.0, 1.0)
+        .scale(1.0)
         .padding()
         .rotation(0.0)
         .offset(0.0, 0.0)
@@ -147,7 +147,7 @@ pub fn settings_form() -> impl View {
                     ],
                     &choice,
                 ),
-                button("Reset"),
+                button("Reset").action(|| {}),
             ))
             .padding()
         })
@@ -170,7 +170,7 @@ pub fn gallery_page() -> impl View {
                                 .size(100.0, 80.0),
                             text(format!("Item {index}")),
                             text("Caption under the swatch").foreground(Color::srgb(90, 90, 90)),
-                            button("Open"),
+                            button("Open").action(|| {}),
                         ))
                         .padding()
                         .background(Color::srgb(245, 245, 245))

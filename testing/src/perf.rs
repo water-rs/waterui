@@ -1,11 +1,12 @@
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use hydrolysis::{PointerKind, Style};
+use hydrolysis::{HeadlessRuntime, PointerKind, Style};
 use waterui_core::{AnyView, View};
 
 use crate::app::{OffscreenApp, Styled, UiBuilder};
 use crate::driver::{self, FrameTiming};
+use crate::query::{Query, Queued};
 
 const PERF_FRAME_RATE: u32 = 120;
 
@@ -577,9 +578,27 @@ impl PerfRun<'_> {
         self.app.app.runtime.request_redraw();
     }
 
-    /// Accesses semantic assertions and interactions during a performance run.
+    /// Starts a semantic query whose interactions queue for the next measured
+    /// frame instead of settling before [`Self::frame`].
+    pub fn query(&mut self) -> Query<'_, HeadlessRuntime, Queued> {
+        Query::queued(self.app)
+    }
+
+    /// Read-only access to the offscreen app during a performance run.
+    ///
+    /// Interaction belongs on [`Self::query`], [`Self::pointer_move`],
+    /// [`Self::pointer_down`], [`Self::pointer_up`], or [`Self::scroll_at`] so
+    /// rebuild work lands inside the measured frame.
+    ///
+    /// ```compile_fail
+    /// use waterui_testing::PerfRun;
+    ///
+    /// fn check(run: &mut PerfRun<'_>) {
+    ///     run.app().query().label("Count").increment();
+    /// }
+    /// ```
     #[must_use]
-    pub const fn app(&mut self) -> &mut OffscreenApp {
+    pub const fn app(&self) -> &OffscreenApp {
         self.app
     }
 }

@@ -535,7 +535,7 @@ fn hover_move_location_is_view_local() {
     let scaled_fired = Rc::new(RefCell::new(Vec::new()));
     let scaled = handle()
         .event(Event::HoverMove, record(Rc::clone(&scaled_fired)))
-        .scale_from(2.0, 2.0, Anchor::TOP_LEFT);
+        .scale_from(2.0, Anchor::TOP_LEFT);
     let mut runtime = runtime_with(split(AnyView::new(scaled)));
     pointer_move(&mut runtime, 400.0, 300.0);
     assert_eq!(
@@ -558,7 +558,7 @@ fn gesture_event_locations_are_view_local_under_scale() {
             let taps = Rc::clone(&taps);
             move |Use(event): Use<TapEvent>| taps.borrow_mut().push(event.location())
         })
-        .scale_from(2.0, 2.0, Anchor::TOP_LEFT);
+        .scale_from(2.0, Anchor::TOP_LEFT);
     let mut runtime = runtime_with(split(AnyView::new(tapped)));
     pointer_down(&mut runtime, 410.0, 20.0);
     pointer_up(&mut runtime, 410.0, 20.0);
@@ -578,7 +578,7 @@ fn gesture_event_locations_are_view_local_under_scale() {
                     .push((event.location(), event.translation()));
             }
         })
-        .scale_from(2.0, 2.0, Anchor::TOP_LEFT);
+        .scale_from(2.0, Anchor::TOP_LEFT);
     let mut runtime = runtime_with(split(AnyView::new(dragged)));
     pointer_down(&mut runtime, 410.0, 20.0);
     pointer_move(&mut runtime, 450.0, 20.0);

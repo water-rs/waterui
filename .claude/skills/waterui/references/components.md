@@ -109,7 +109,7 @@ iterator item must be a single concrete type, so a helper whose branches differ 
 a `OneOfN`:
 
 ```rust
-let row: HStack<_> = tabs.iter().map(|t| button(t.label())).collect();
+let row: HStack<_> = tabs.iter().map(|t| button(t.label()).action(|| {})).collect();
 let tiles: VStack<_> = (0..6).map(photo_tile).collect();   // photo_tile: fn(usize) -> impl View
 ```
 
@@ -162,8 +162,8 @@ chrome) and `keyboard` (the software keyboard) — and `.ignore_safe_area` takes
 the keyboard but above the container inset, `SafeAreaRegions::CONTAINER` / `ALL` name the
 other combinations, and a bare `EdgeSet` ignores every region.
 
-Visual transforms never affect layout. `.scale(x, y)` and `.rotation(degrees)` pivot on the
-centre; `.scale_from(x, y, Anchor::TOP_LEFT)` and `.rotation_from(45.0, Anchor::TOP_LEFT)`
+Visual transforms never affect layout. `.scale(factor)` / `.scale_xy(x, y)` and `.rotation(degrees)` pivot on the
+centre; `.scale_from(factor, Anchor::TOP_LEFT)` / `.scale_xy_from(x, y, Anchor::TOP_LEFT)` and `.rotation_from(45.0, Anchor::TOP_LEFT)`
 pivot on an `Anchor` (in the prelude; normalized, `(0, 0)` top-left: `CENTER`, `TOP_LEFT`,
 `TOP_RIGHT`, `BOTTOM_LEFT`, `BOTTOM_RIGHT`, or `Anchor::new(x, y)`). Factors and angles take
 signals; the anchor is a plain value.
@@ -288,7 +288,7 @@ for `waterui-testing` queries, use the display-mode API — never drop the label
 
 ```rust
 slider("Sensitivity", &level).range(0.5..=3.0).hide_label()   // exists on every labeled control
-button(label("Locate").icon(lucide::locate_fixed())).label_style(LabelDisplayMode::IconOnly)
+button(label("Locate").icon(lucide::locate_fixed())).label_style(LabelDisplayMode::IconOnly).action(|| {})
 toolbar_row().install(LabelDisplayMode::IconOnly)             // scope a mode to a whole subtree
 ```
 
@@ -298,8 +298,8 @@ renders its title instead, so install it freely on a toolbar and give each label
 `.icon(..)`. The label text remains the test-query key even when hidden.
 
 ```rust
-button("Save")                              // Button<NoAction>
-    .action(handler)                        // -> Button<impl FnMut(&Environment)>
+button("Save")                              // Button<_, NoAction>: not a View until .action / .action_async is set
+    .action(handler)                        // -> Button<_, impl FnMut(&Environment)>
     .action_async(|| async { … })
     .style(ButtonStyle::Plain)              // Automatic | Plain | Link | Borderless | Bordered | BorderedProminent
                                             // | Glass | GlassProminent (Liquid Glass capsules on Apple;
@@ -307,7 +307,7 @@ button("Save")                              // Button<NoAction>
     .size(ControlSize::Large)               // ExtraSmall..=ExtraLarge; buttons default to Small
     .state(&value)                          // inject handler state (repeatable)
 
-button(text!("{edit_label}"))               // a text! satisfies IntoLabel: reactive button titles need no watch
+button(text!("{edit_label}")).action(|| {}) // a text! satisfies IntoLabel: reactive button titles need no watch
 
 toggle("Wi-Fi", &enabled)                   // &Binding<bool>
 Toggle::new("Wi-Fi", &enabled).style(ToggleStyle::Switch)     // Automatic | Switch | Checkbox; .switch() / .checkbox()
@@ -805,13 +805,6 @@ ValidatableView::new(field("Name", &name), Plain(Required))
 Pickers:
 
 ```rust
-use waterui::form::picker::{Picker, PickerItem, PickerStyle, picker};
-use waterui::form::picker::color::ColorPicker;
-use waterui::form::picker::date::{DatePicker, DateTimePickerComponents};
-use waterui::form::picker::file::FilePicker;
-use waterui::form::picker::multi_date::MultiDatePicker;
-use waterui::form::Calendar;
-
 // Options are views carrying their value via .tag(..). The tag type is T: Ord + Clone.
 // PickerItem<T> is the nameable item type — an array of them works without collect().
 fn sizes() -> [PickerItem<&'static str>; 3] {
@@ -833,7 +826,7 @@ from `waterui::form::picker::date::{Date, DateTime, Time}` — no `jiff` depende
 own is needed to name them or call their constructors, which are fallible:
 
 ```rust
-use waterui::form::picker::date::{Date, DatePicker, DateTimePickerComponents};
+use waterui::form::picker::date::Date;
 
 DatePicker::new("Date", &date)                   // generic over T: DatePickable (Date, Time, DateTime)
     .range(min..=max)                            // RangeInclusive<T> of the bound type; clamps immediately

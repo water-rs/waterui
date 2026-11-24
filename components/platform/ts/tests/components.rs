@@ -83,7 +83,7 @@ fn ts_vstack_is_a_vstack() {
         &module(
             r#"waterui.jsx("VStack", {
                 spacing: 8,
-                alignment: "Leading",
+                alignment: "leading",
                 children: [
                     waterui.jsx("Text", { children: "First" }),
                     waterui.jsx("Text", { children: "Second" }),
@@ -125,7 +125,7 @@ fn ts_hstack_is_an_hstack() {
         &module(
             r#"waterui.jsx("HStack", {
                 spacing: 8,
-                alignment: "Top",
+                alignment: "top",
                 children: [
                     waterui.jsx("Text", { children: "Short" }),
                     waterui.jsx("Text", { height: 60, children: "Tall" }),
@@ -164,7 +164,7 @@ fn ts_zstack_is_a_zstack() {
         "ZStack",
         &module(
             r#"waterui.jsx("ZStack", {
-                alignment: "BottomTrailing",
+                alignment: "bottomTrailing",
                 children: [
                     waterui.jsx("Text", { children: "Back" }),
                     waterui.jsx("Text", { children: "Front" }),
@@ -196,7 +196,7 @@ fn ts_scrollview_is_a_scroll_view() {
         "ScrollView, horizontal",
         &module(
             r#"waterui.jsx("ScrollView", {
-                axis: "Horizontal",
+                axis: "horizontal",
                 children: waterui.jsx("Text", { children: "Scrolled" }),
             })"#,
         ),
@@ -209,7 +209,7 @@ fn ts_scrollview_is_a_scroll_view() {
         "ScrollView, both axes",
         &module(
             r#"waterui.jsx("ScrollView", {
-                axis: "Both",
+                axis: "both",
                 children: waterui.jsx("Text", { children: "Scrolled" }),
             })"#,
         ),
@@ -557,7 +557,7 @@ fn ts_progress_is_progress() {
         &module(
             r#"waterui.jsx("Progress", {
                 value: 0.4,
-                style: "Circular",
+                style: "circular",
                 children: "Uploading",
             })"#,
         ),
@@ -568,7 +568,7 @@ fn ts_progress_is_progress() {
         &module(
             r#"waterui.jsx("Progress", {
                 value: 0.4,
-                style: "Loading",
+                style: "loading",
                 children: "Uploading",
             })"#,
         ),
@@ -1345,7 +1345,7 @@ fn ts_clip_is_the_rust_clip() {
             r#"waterui.jsx("Text", {
                 padding: 12,
                 background: { red: 0, green: 0, blue: 1 },
-                clip: "Capsule",
+                clip: "capsule",
                 children: "Rounded",
             })"#,
         ))
@@ -1906,10 +1906,10 @@ fn ts_an_attribute_value_of_the_wrong_shape_is_refused() {
 #[test]
 fn ts_a_loading_progress_cannot_also_count() {
     let error = mount_error(&module(
-        r#"waterui.jsx("Progress", { value: 1, total: 5, style: "Loading", children: "Files" })"#,
+        r#"waterui.jsx("Progress", { value: 1, total: 5, style: "loading", children: "Files" })"#,
     ));
     assert!(
-        error.contains("Loading") && error.contains("total"),
+        error.contains("loading") && error.contains("total"),
         "the error says an indeterminate bar has nothing to count out of: {error}"
     );
 }
@@ -1920,5 +1920,14 @@ fn ts_a_control_without_a_label_is_refused() {
     assert!(
         error.contains("Button") && error.contains("label"),
         "the error says a control names itself: {error}"
+    );
+}
+
+#[test]
+fn ts_a_button_without_on_tap_is_refused() {
+    let error = mount_error(&module(r#"waterui.jsx("Button", { children: "Save" })"#));
+    assert!(
+        error.contains("onTap"),
+        "the error names the missing required action attribute: {error}"
     );
 }

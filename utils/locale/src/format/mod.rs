@@ -4,6 +4,8 @@
 pub mod date;
 #[cfg(feature = "number")]
 pub mod number;
+#[cfg(feature = "relative-time")]
+pub mod relative;
 #[cfg(feature = "number")]
 pub mod unit;
 

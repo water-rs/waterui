@@ -877,9 +877,7 @@ fn scale_metadata_is_layout_transparent() {
     let env = test_environment();
     let scale = Binding::f32(1.0);
     let mut realized = Realized::new(
-        ().size(80.0, 80.0)
-            .scale(scale.clone(), scale.clone())
-            .min_height(120.0),
+        ().size(80.0, 80.0).scale(scale.clone()).min_height(120.0),
         &env,
     );
 
@@ -1009,6 +1007,7 @@ fn floating_button_measurement_uses_style_tokens() {
         vstack((button(label("Token Sized").icon(()))
             .label_style(LabelDisplayMode::IconOnly)
             .plain()
+            .action(|| {})
             .floating_with(floating_style),)),
         &env,
         Rect::new(0.0, 0.0, 160.0, 160.0),
@@ -1047,7 +1046,8 @@ fn button_outside_a_floating_surface_ignores_ambient_floating_tokens() {
         &mut renderer,
         vstack((button(label("Plain").icon(()))
             .label_style(LabelDisplayMode::IconOnly)
-            .plain(),))
+            .plain()
+            .action(|| {}),))
         .install(ambient_tokens),
         &env,
         Rect::new(0.0, 0.0, 400.0, 400.0),
@@ -4037,7 +4037,7 @@ fn every_view_answers_the_three_point_probe_consistently() {
             "greedy frame",
             AnyView::new(().size(40.0, 20.0).max_width(f32::INFINITY)),
         ),
-        ("button", AnyView::new(button("Tap"))),
+        ("button", AnyView::new(button("Tap").action(|| {}))),
         (
             "hstack",
             AnyView::new(hstack((text("a"), text("bb"), text("ccc")))),
@@ -4219,11 +4219,18 @@ fn tab_badge_draws_only_for_a_nonzero_count() {
 fn a_collapsed_naming_scope_reports_the_containers_resolved_extent() {
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
-    let measured = Realized::with_theme(AnyView::new(button("OK").padding_with(8.0)), &env, &theme)
-        .measure(ProposalSize::new(Some(160.0), Some(160.0)))
-        .size;
+    let measured = Realized::with_theme(
+        AnyView::new(button("OK").action(|| {}).padding_with(8.0)),
+        &env,
+        &theme,
+    )
+    .measure(ProposalSize::new(Some(160.0), Some(160.0)))
+    .size;
     let mut renderer = test_renderer();
-    let view = button("OK").padding_with(8.0).a11y_label("Named");
+    let view = button("OK")
+        .action(|| {})
+        .padding_with(8.0)
+        .a11y_label("Named");
     capture_root_window(&mut renderer, view, &env, Rect::new(0.0, 0.0, 160.0, 160.0));
 
     let update = renderer
@@ -4264,7 +4271,11 @@ fn a_collapsed_naming_scope_centres_the_resolved_extent_on_the_assigned_frame() 
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
     let measured = Realized::with_theme(
-        AnyView::new(button("OK").padding_with([0.0, 20.0, 0.0, 0.0])),
+        AnyView::new(
+            button("OK")
+                .action(|| {})
+                .padding_with([0.0, 20.0, 0.0, 0.0]),
+        ),
         &env,
         &theme,
     )
@@ -4272,6 +4283,7 @@ fn a_collapsed_naming_scope_centres_the_resolved_extent_on_the_assigned_frame() 
     .size;
     let mut renderer = test_renderer();
     let view = button("OK")
+        .action(|| {})
         .padding_with([0.0, 20.0, 0.0, 0.0])
         .a11y_label("Named");
     capture_root_window(&mut renderer, view, &env, Rect::new(0.0, 0.0, 160.0, 160.0));

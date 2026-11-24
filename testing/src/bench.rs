@@ -123,7 +123,12 @@ fn merge_budgets(attribute: BenchBudgets, caps: BenchBudgets) -> BenchBudgets {
 }
 
 /// Panics with a precise message when any measurement exceeds the budgets.
-fn enforce_budgets(crate_name: &str, bench_name: &str, budgets: BenchBudgets, report: &PerfReport) {
+pub(crate) fn enforce_budgets(
+    crate_name: &str,
+    bench_name: &str,
+    budgets: BenchBudgets,
+    report: &PerfReport,
+) {
     for measurement in report.measurements() {
         let stats = measurement.stats();
         let violation = |metric: &str, actual: String, limit: String| -> ! {

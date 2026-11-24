@@ -71,7 +71,7 @@ fn system_tile(toggle: &Binding<bool>, index: usize) -> impl View + use<> {
     RoundedRectangle::new(0.22)
         .fill(stress_card_background(index))
         .size(24.0, 24.0)
-        .scale(scale.clone(), scale)
+        .scale(scale)
         .rotation(rotation)
         .offset(offset_x, 0.0)
 }

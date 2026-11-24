@@ -90,10 +90,10 @@ impl<E: crate::text::TextEngine> SliderRenderState<E> {
     #[cfg(feature = "accessibility")]
     pub(crate) fn contributed_label(
         &self,
-        _renderer: &mut crate::renderer::SemanticCore<E>,
+        renderer: &mut crate::renderer::SemanticCore<E>,
         env: &Environment,
     ) -> Option<String> {
-        crate::renderer::SemanticCore::<E>::accessibility_label_from_label(&self.label, env)
+        renderer.accessibility_label_from_label(&self.label, env)
     }
 
     pub(crate) fn from_config(config: SliderConfig<HeldChild<E>>) -> Self {
@@ -385,8 +385,7 @@ fn slider_accessibility_parts<E: crate::text::TextEngine, S>(
                 AccessibilityNodeRole::Slider,
             ),
         );
-        let default_label =
-            crate::renderer::SemanticCore::<E>::accessibility_label_from_label(label, env);
+        let default_label = renderer.accessibility_label_from_label(label, env);
         let resolved = renderer.resolve_accessibility_label(env, default_label);
         if let Some(resolved) = resolved {
             node.set_label(resolved);

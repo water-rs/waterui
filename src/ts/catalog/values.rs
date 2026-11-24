@@ -473,7 +473,6 @@ pub struct ShadowValue {
     radius: f32,
     /// The corner radius of the view casting the shadow, so the silhouette
     /// follows its shape.
-    #[ts(rename = "cornerRadius")]
     corner_radius: Option<f32>,
 }
 
@@ -522,7 +521,6 @@ pub struct BorderValue {
     /// The stroke width, in points.
     width: f32,
     /// The corner radius, in points; square corners when left out.
-    #[ts(rename = "cornerRadius")]
     corner_radius: Option<f32>,
 }
 
@@ -566,7 +564,6 @@ pub enum ShapeName {
 pub struct RoundedShape {
     /// The corner radius, as a fraction of the shorter side: `0.5` is fully
     /// rounded, which is what [`ShapeName::Capsule`] says directly.
-    #[ts(rename = "cornerRadius")]
     corner_radius: f32,
 }
 
@@ -589,13 +586,13 @@ impl RoundedShape {
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]
 pub enum ShapeValue {
-    /// `clip="Rectangle"`.
+    /// `clip="rectangle"`.
     Rectangle,
-    /// `clip="Circle"`.
+    /// `clip="circle"`.
     Circle,
-    /// `clip="Capsule"`.
+    /// `clip="capsule"`.
     Capsule,
-    /// `clip="Ellipse"`.
+    /// `clip="ellipse"`.
     Ellipse,
     /// `clip={{ cornerRadius: 0.25 }}`.
     Rounded(f32),

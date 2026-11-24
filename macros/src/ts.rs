@@ -26,13 +26,20 @@
 //! decodes schemas out of an artifact and links none of the framework — gets
 //! the schema and nothing else.
 
+use heck::{
+    ToKebabCase as _, ToLowerCamelCase as _, ToShoutyKebabCase as _, ToShoutySnakeCase as _,
+    ToSnakeCase as _, ToUpperCamelCase as _,
+};
 use proc_macro::TokenStream;
 use proc_macro_crate::{FoundCrate, crate_name};
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::{format_ident, quote, quote_spanned};
 use syn::ext::IdentExt as _;
 use syn::spanned::Spanned as _;
-use syn::{Data, DeriveInput, Fields, Ident, Variant, parse_macro_input};
+use syn::{
+    Data, DataEnum, DeriveInput, Field, Fields, FieldsNamed, FieldsUnnamed, Ident, LitStr, Variant,
+    parse_macro_input,
+};
 
 /// Path to the `waterui-ts` items the expansion names, when the runtime crate
 /// is reachable at all.
@@ -118,20 +125,107 @@ fn type_schema(path: &TokenStream2, ty: &syn::Type) -> TokenStream2 {
     quote_spanned!(ty.span()=> <#ty as #path::TsType>::SCHEMA)
 }
 
+/// Case-conversion convention selected by `#[ts(rename_all = "…")]`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RenameRule {
+    CamelCase,
+    PascalCase,
+    SnakeCase,
+    ScreamingSnakeCase,
+    KebabCase,
+    ScreamingKebabCase,
+    LowerCase,
+    UpperCase,
+    Verbatim,
+}
+
+impl RenameRule {
+    fn parse(value: &str, span: Span) -> syn::Result<Self> {
+        match value {
+            "camelCase" => Ok(Self::CamelCase),
+            "PascalCase" => Ok(Self::PascalCase),
+            "snake_case" => Ok(Self::SnakeCase),
+            "SCREAMING_SNAKE_CASE" => Ok(Self::ScreamingSnakeCase),
+            "kebab-case" => Ok(Self::KebabCase),
+            "SCREAMING-KEBAB-CASE" => Ok(Self::ScreamingKebabCase),
+            "lowercase" => Ok(Self::LowerCase),
+            "UPPERCASE" => Ok(Self::UpperCase),
+            "verbatim" => Ok(Self::Verbatim),
+            _ => Err(syn::Error::new(
+                span,
+                format!(
+                    "unknown `#[ts(rename_all = \"{value}\")]` convention; expected one of \
+                     \"camelCase\", \"PascalCase\", \"snake_case\", \"SCREAMING_SNAKE_CASE\", \
+                     \"kebab-case\", \"SCREAMING-KEBAB-CASE\", \"lowercase\", \"UPPERCASE\", \
+                     or \"verbatim\""
+                ),
+            )),
+        }
+    }
+
+    fn apply(self, raw: &str) -> String {
+        match self {
+            Self::CamelCase => raw.to_lower_camel_case(),
+            Self::PascalCase => raw.to_upper_camel_case(),
+            Self::SnakeCase => raw.to_snake_case(),
+            Self::ScreamingSnakeCase => raw.to_shouty_snake_case(),
+            Self::KebabCase => raw.to_kebab_case(),
+            Self::ScreamingKebabCase => raw.to_shouty_kebab_case(),
+            Self::LowerCase => raw.to_lowercase(),
+            Self::UpperCase => raw.to_uppercase(),
+            Self::Verbatim => raw.to_owned(),
+        }
+    }
+}
+
+/// Container-level `#[ts(…)]` attributes on a struct or enum.
+#[derive(Clone, Copy, Debug, Default)]
+struct ContainerAttrs {
+    one_way: bool,
+    rename_all: Option<RenameRule>,
+}
+
+impl ContainerAttrs {
+    fn parse(input: &DeriveInput) -> syn::Result<Self> {
+        let mut attrs = Self::default();
+        for attribute in &input.attrs {
+            if !attribute.path().is_ident("ts") {
+                continue;
+            }
+            attribute.parse_nested_meta(|meta| {
+                if meta.path.is_ident("one_way") {
+                    attrs.one_way = true;
+                    return Ok(());
+                }
+                if meta.path.is_ident("rename_all") {
+                    let value: LitStr = meta.value()?.parse()?;
+                    let rule = RenameRule::parse(&value.value(), value.span())?;
+                    if attrs.rename_all.replace(rule).is_some() {
+                        return Err(meta.error("`rename_all` is specified more than once"));
+                    }
+                    return Ok(());
+                }
+                Err(meta.error(
+                    "the TypeScript derives accept `#[ts(one_way)]` and `#[ts(rename_all = \"…\")]`",
+                ))
+            })?;
+        }
+        Ok(attrs)
+    }
+}
+
 /// The TypeScript property name a field projects to.
 ///
-/// `#[ts(rename = "onTap")]` states it, which is how a Rust `snake_case` field
-/// reaches a property spelled the way TypeScript spells it — the component
-/// catalog's attributes are the case that needs it, because a JSX attribute is
-/// `onTap` and a Rust field cannot be. Without the attribute the field's own
-/// name is the property name, and the rename travels through the schema and
-/// both conversions together, so one declaration still describes one shape.
-fn projected_name(field: &syn::Field) -> syn::Result<String> {
+/// Fields project as `camelCase` by default, or according to the container's
+/// `#[ts(rename_all = "…")]` convention. `#[ts(rename = "…")]` overrides that
+/// for an individual field, and the projected name travels through the schema
+/// and both conversions together so one declaration describes one shape.
+fn projected_name(field: &Field, rule: RenameRule) -> syn::Result<String> {
     let ident = field
         .ident
         .as_ref()
         .expect("a named field has an identifier");
-    let mut renamed: Option<String> = None;
+    let mut renamed: Option<(String, Span)> = None;
     for attribute in &field.attrs {
         if !attribute.path().is_ident("ts") {
             continue;
@@ -142,34 +236,36 @@ fn projected_name(field: &syn::Field) -> syn::Result<String> {
                     meta.error("a field takes one TypeScript attribute: `#[ts(rename = \"…\")]`")
                 );
             }
-            let name: syn::LitStr = meta.value()?.parse()?;
+            let name: LitStr = meta.value()?.parse()?;
             let value = name.value();
-            if !is_js_identifier(&value) {
-                return Err(syn::Error::new(
-                    name.span(),
-                    format!(
-                        "`{value}` is not a property name TypeScript can write as `props.{value}`. \
-                         A rename is an identifier: it starts with a letter, `_` or `$` and \
-                         continues with those or digits"
-                    ),
-                ));
-            }
-            if renamed.replace(value).is_some() {
+            if renamed.replace((value, name.span())).is_some() {
                 return Err(meta.error("this field is renamed twice"));
             }
             Ok(())
         })?;
     }
-    Ok(renamed.unwrap_or_else(|| ident.unraw().to_string()))
+    let (value, span) =
+        renamed.unwrap_or_else(|| (rule.apply(&ident.unraw().to_string()), ident.span()));
+    if !is_js_identifier(&value) {
+        return Err(syn::Error::new(
+            span,
+            format!(
+                "`{value}` is not a property name TypeScript can write as `props.{value}`. \
+                 A property name is an identifier: it starts with a letter, `_` or `$` and \
+                 continues with those or digits"
+            ),
+        ));
+    }
+    Ok(value)
 }
 
 /// Whether `name` is an ECMAScript `IdentifierName`.
 ///
 /// Reserved words are deliberately accepted: `props.class` and `props.default`
-/// are legal property accesses, and a Rust field named `r#type` projecting to
-/// `type` is exactly the case raw identifiers exist for. What is rejected is a
-/// name no property access can reach — a space, a dash, a leading digit — which
-/// would compile here and produce a `.d.ts` TypeScript refuses.
+/// are legal property accesses, and a Rust `r#type` projecting to `type` is
+/// exactly the case raw identifiers exist for. What is rejected is a name no
+/// property access can reach — a space, a dash, a leading digit — which would
+/// compile here and produce a `.d.ts` TypeScript refuses.
 fn is_js_identifier(name: &str) -> bool {
     let mut characters = name.chars();
     let Some(first) = characters.next() else {
@@ -195,14 +291,14 @@ fn is_js_identifier(name: &str) -> bool {
 /// declares the property twice, `IntoJs` writes it twice and the last write
 /// wins, and `FromJs` reads one field's value into both. It is a compile error
 /// here instead, named at the field that collides.
-fn projected_names(fields: &syn::FieldsNamed) -> syn::Result<Vec<(&Ident, String)>> {
+fn projected_names(fields: &FieldsNamed, rule: RenameRule) -> syn::Result<Vec<(&Ident, String)>> {
     let mut projected: Vec<(&Ident, String)> = Vec::with_capacity(fields.named.len());
     for field in &fields.named {
         let ident = field
             .ident
             .as_ref()
             .expect("a named field has an identifier");
-        let name = projected_name(field)?;
+        let name = projected_name(field, rule)?;
         if let Some((earlier, _)) = projected.iter().find(|(_, taken)| *taken == name) {
             return Err(syn::Error::new(
                 field.span(),
@@ -218,9 +314,75 @@ fn projected_names(fields: &syn::FieldsNamed) -> syn::Result<Vec<(&Ident, String
     Ok(projected)
 }
 
+/// The TypeScript variant string literal a variant projects to.
+///
+/// Unit-only enums project their variants as `camelCase` by default;
+/// data-carrying enums keep their Rust spelling unless `#[ts(rename_all = "…")]`
+/// is declared. `#[ts(rename = "…")]` overrides the projected literal for an
+/// individual variant.
+fn projected_variant_name(variant: &Variant, rule: RenameRule) -> syn::Result<String> {
+    let mut renamed: Option<(String, Span)> = None;
+    for attribute in &variant.attrs {
+        if !attribute.path().is_ident("ts") {
+            continue;
+        }
+        attribute.parse_nested_meta(|meta| {
+            if !meta.path.is_ident("rename") {
+                return Err(
+                    meta.error("a variant takes one TypeScript attribute: `#[ts(rename = \"…\")]`")
+                );
+            }
+            let name: LitStr = meta.value()?.parse()?;
+            let value = name.value();
+            if value.is_empty() {
+                return Err(syn::Error::new(
+                    name.span(),
+                    "a variant cannot be renamed to an empty string",
+                ));
+            }
+            if renamed.replace((value, name.span())).is_some() {
+                return Err(meta.error("this variant is renamed twice"));
+            }
+            Ok(())
+        })?;
+    }
+    Ok(renamed.map_or_else(
+        || rule.apply(&variant.ident.unraw().to_string()),
+        |(value, _)| value,
+    ))
+}
+
+/// `(variant, projected string literal)` for every variant of an enum, checked
+/// for collisions.
+fn projected_variant_names(
+    data: &DataEnum,
+    rule: RenameRule,
+) -> syn::Result<Vec<(&Variant, String)>> {
+    let mut projected: Vec<(&Variant, String)> = Vec::with_capacity(data.variants.len());
+    for variant in &data.variants {
+        let name = projected_variant_name(variant, rule)?;
+        if let Some((earlier, _)) = projected.iter().find(|(_, taken)| *taken == name) {
+            return Err(syn::Error::new(
+                variant.span(),
+                format!(
+                    "`{}` projects to the variant `{name}`, which `{}` already projects to. \
+                     One variant name is one arm",
+                    variant.ident, earlier.ident
+                ),
+            ));
+        }
+        projected.push((variant, name));
+    }
+    Ok(projected)
+}
+
 /// `&[FieldSchema::new(..), ..]` for named fields.
-fn named_fields(path: &TokenStream2, fields: &syn::FieldsNamed) -> syn::Result<TokenStream2> {
-    let entries = projected_names(fields)?
+fn named_fields(
+    path: &TokenStream2,
+    fields: &FieldsNamed,
+    rule: RenameRule,
+) -> syn::Result<TokenStream2> {
+    let entries = projected_names(fields, rule)?
         .into_iter()
         .zip(&fields.named)
         .map(|((_, name), field)| {
@@ -232,7 +394,7 @@ fn named_fields(path: &TokenStream2, fields: &syn::FieldsNamed) -> syn::Result<T
 }
 
 /// `&[TypeSchema, ..]` for positional fields.
-fn unnamed_fields(path: &TokenStream2, fields: &syn::FieldsUnnamed) -> TokenStream2 {
+fn unnamed_fields(path: &TokenStream2, fields: &FieldsUnnamed) -> TokenStream2 {
     let entries = fields
         .unnamed
         .iter()
@@ -245,6 +407,7 @@ fn struct_schema(
     path: &TokenStream2,
     name: &Ident,
     data: &syn::DataStruct,
+    attrs: ContainerAttrs,
 ) -> syn::Result<TokenStream2> {
     let Fields::Named(fields) = &data.fields else {
         return Err(syn::Error::new(
@@ -254,7 +417,8 @@ fn struct_schema(
         ));
     };
     let literal = name.unraw().to_string();
-    let fields = named_fields(path, fields)?;
+    let rule = attrs.rename_all.unwrap_or(RenameRule::CamelCase);
+    let fields = named_fields(path, fields, rule)?;
     Ok(quote! {
         #path::TypeSchema::Struct(#path::StructSchema::new(#literal, #fields))
     })
@@ -269,7 +433,7 @@ fn variant_payload(path: &TokenStream2, variant: &Variant) -> syn::Result<TokenS
             quote!(#path::VariantPayload::Tuple(#entries))
         }
         Fields::Named(fields) => {
-            let entries = named_fields(path, fields)?;
+            let entries = named_fields(path, fields, RenameRule::CamelCase)?;
             quote!(#path::VariantPayload::Struct(#entries))
         }
     })
@@ -279,7 +443,8 @@ fn variant_payload(path: &TokenStream2, variant: &Variant) -> syn::Result<TokenS
 fn enum_schema(
     path: &TokenStream2,
     name: &Ident,
-    data: &syn::DataEnum,
+    data: &DataEnum,
+    attrs: ContainerAttrs,
 ) -> syn::Result<TokenStream2> {
     if data.variants.is_empty() {
         return Err(syn::Error::new(
@@ -287,20 +452,23 @@ fn enum_schema(
             "an enum with no variants has no value to project into TypeScript",
         ));
     }
-    let representation = if data
+    let string_union = data
         .variants
         .iter()
-        .all(|variant| matches!(variant.fields, Fields::Unit))
-    {
+        .all(|variant| matches!(variant.fields, Fields::Unit));
+    let representation = if string_union {
         quote!(#path::EnumRepresentation::StringUnion)
     } else {
         quote!(#path::EnumRepresentation::DEFAULT_TAGGED)
     };
-    let variants = data
-        .variants
-        .iter()
-        .map(|variant| {
-            let literal = variant.ident.unraw().to_string();
+    let variant_rule = attrs.rename_all.unwrap_or(if string_union {
+        RenameRule::CamelCase
+    } else {
+        RenameRule::Verbatim
+    });
+    let variants = projected_variant_names(data, variant_rule)?
+        .into_iter()
+        .map(|(variant, literal)| {
             let payload = variant_payload(path, variant)?;
             Ok(quote!(#path::VariantSchema::new(#literal, #payload)))
         })
@@ -316,7 +484,11 @@ fn enum_schema(
 }
 
 /// The `impl TsType` both derives emit.
-fn ts_type_impl(path: &TokenStream2, input: &DeriveInput) -> syn::Result<TokenStream2> {
+fn ts_type_impl(
+    path: &TokenStream2,
+    input: &DeriveInput,
+    attrs: ContainerAttrs,
+) -> syn::Result<TokenStream2> {
     if !input.generics.params.is_empty() || input.generics.where_clause.is_some() {
         return Err(syn::Error::new(
             input.generics.span(),
@@ -326,8 +498,8 @@ fn ts_type_impl(path: &TokenStream2, input: &DeriveInput) -> syn::Result<TokenSt
     }
     let name = &input.ident;
     let schema = match &input.data {
-        Data::Struct(data) => struct_schema(path, name, data)?,
-        Data::Enum(data) => enum_schema(path, name, data)?,
+        Data::Struct(data) => struct_schema(path, name, data, attrs)?,
+        Data::Enum(data) => enum_schema(path, name, data, attrs)?,
         Data::Union(_) => {
             return Err(syn::Error::new(
                 name.span(),
@@ -343,43 +515,14 @@ fn ts_type_impl(path: &TokenStream2, input: &DeriveInput) -> syn::Result<TokenSt
     })
 }
 
-/// Whether the type declared `#[ts(one_way)]`.
-///
-/// A type carrying a value that only travels outwards — a callback, which the
-/// bridge registers rather than reads — cannot be read back out of a
-/// JavaScript value, so it says so and the derive emits `IntoJs` alone.
-fn is_one_way(input: &DeriveInput) -> syn::Result<bool> {
-    let mut one_way = false;
-    for attribute in &input.attrs {
-        if !attribute.path().is_ident("ts") {
-            continue;
-        }
-        attribute.parse_nested_meta(|meta| {
-            if meta.path.is_ident("one_way") {
-                one_way = true;
-                return Ok(());
-            }
-            Err(meta.error(
-                "the TypeScript derives take one attribute: `#[ts(one_way)]`, for a type that \
-                 crosses only into TypeScript",
-            ))
-        })?;
-    }
-    Ok(one_way)
-}
-
-/// `(field access, projected property name)` for every named field.
-fn named_field_names(fields: &syn::FieldsNamed) -> syn::Result<Vec<(&Ident, String)>> {
-    projected_names(fields)
-}
-
 /// `IntoJs` for a struct with named fields, or for a struct-shaped variant.
 fn object_expression(
     ts: &TokenStream2,
-    fields: &syn::FieldsNamed,
+    fields: &FieldsNamed,
+    rule: RenameRule,
     access: impl Fn(&Ident) -> TokenStream2,
 ) -> syn::Result<TokenStream2> {
-    let entries = named_field_names(fields)?
+    let entries = projected_names(fields, rule)?
         .into_iter()
         .map(|(ident, name)| {
             let value = access(ident);
@@ -395,14 +538,18 @@ fn object_expression(
 }
 
 /// The `Self::Variant(f0, f1)` bindings of a tuple variant.
-fn tuple_bindings(fields: &syn::FieldsUnnamed) -> Vec<Ident> {
+fn tuple_bindings(fields: &FieldsUnnamed) -> Vec<Ident> {
     (0..fields.unnamed.len())
         .map(|index| format_ident!("field{index}"))
         .collect()
 }
 
 /// The `impl IntoJs` a derive emits.
-fn into_js_impl(ts: &TokenStream2, input: &DeriveInput) -> syn::Result<TokenStream2> {
+fn into_js_impl(
+    ts: &TokenStream2,
+    input: &DeriveInput,
+    attrs: ContainerAttrs,
+) -> syn::Result<TokenStream2> {
     let name = &input.ident;
     let body = match &input.data {
         Data::Struct(data) => {
@@ -412,19 +559,23 @@ fn into_js_impl(ts: &TokenStream2, input: &DeriveInput) -> syn::Result<TokenStre
                     "a TypeScript object type needs named fields",
                 ));
             };
-            object_expression(ts, fields, |ident| quote!(self.#ident))?
+            let rule = attrs.rename_all.unwrap_or(RenameRule::CamelCase);
+            object_expression(ts, fields, rule, |ident| quote!(self.#ident))?
         }
         Data::Enum(data) => {
             let string_union = data
                 .variants
                 .iter()
                 .all(|variant| matches!(variant.fields, Fields::Unit));
-            let arms = data
-                .variants
-                .iter()
-                .map(|variant| -> syn::Result<TokenStream2> {
+            let variant_rule = attrs.rename_all.unwrap_or(if string_union {
+                RenameRule::CamelCase
+            } else {
+                RenameRule::Verbatim
+            });
+            let arms = projected_variant_names(data, variant_rule)?
+                .into_iter()
+                .map(|(variant, literal)| -> syn::Result<TokenStream2> {
                     let ident = &variant.ident;
-                    let literal = ident.unraw().to_string();
                     if string_union {
                         return Ok(quote! {
                             Self::#ident => #ts::engine::JsValue::String(
@@ -453,11 +604,17 @@ fn into_js_impl(ts: &TokenStream2, input: &DeriveInput) -> syn::Result<TokenStre
                             }
                         }
                         Fields::Named(fields) => {
-                            let bindings: Vec<&Ident> = named_field_names(fields)?
-                                .into_iter()
-                                .map(|(ident, _)| ident)
-                                .collect();
-                            let object = object_expression(ts, fields, |ident| quote!(#ident))?;
+                            let bindings: Vec<&Ident> =
+                                projected_names(fields, RenameRule::CamelCase)?
+                                    .into_iter()
+                                    .map(|(ident, _)| ident)
+                                    .collect();
+                            let object = object_expression(
+                                ts,
+                                fields,
+                                RenameRule::CamelCase,
+                                |ident| quote!(#ident),
+                            )?;
                             quote! {
                                 Self::#ident { #(#bindings),* } => #ts::support::tagged_object(
                                     #literal,
@@ -490,8 +647,91 @@ fn into_js_impl(ts: &TokenStream2, input: &DeriveInput) -> syn::Result<TokenStre
     })
 }
 
+/// The `impl FromJs` body for an enum.
+fn from_js_enum_body(
+    ts: &TokenStream2,
+    type_name: &str,
+    data: &DataEnum,
+    attrs: ContainerAttrs,
+) -> syn::Result<TokenStream2> {
+    let string_union = data
+        .variants
+        .iter()
+        .all(|variant| matches!(variant.fields, Fields::Unit));
+    let variant_rule = attrs.rename_all.unwrap_or(if string_union {
+        RenameRule::CamelCase
+    } else {
+        RenameRule::Verbatim
+    });
+    let arms = projected_variant_names(data, variant_rule)?
+        .into_iter()
+        .map(|(variant, literal)| -> syn::Result<TokenStream2> {
+            let ident = &variant.ident;
+            Ok(match &variant.fields {
+                Fields::Unit => {
+                    quote!(#literal => ::core::result::Result::Ok(Self::#ident),)
+                }
+                Fields::Unnamed(fields) => {
+                    let arity = fields.unnamed.len();
+                    let elements = (0..arity).map(|index| {
+                        quote!(#ts::support::element(items, #type_name, #literal, #index, bridge)?)
+                    });
+                    quote! {
+                        #literal => {
+                            let payload = #ts::support::payload(content, #type_name, #literal)?;
+                            let items = #ts::support::tuple_items(
+                                payload, #type_name, #literal, #arity,
+                            )?;
+                            ::core::result::Result::Ok(Self::#ident(#(#elements),*))
+                        }
+                    }
+                }
+                Fields::Named(fields) => {
+                    let fields = projected_names(fields, RenameRule::CamelCase)?
+                        .into_iter()
+                        .map(|(ident, name)| {
+                            quote!(#ident: #ts::support::field(entries, #type_name, #name, bridge)?)
+                        });
+                    quote! {
+                        #literal => {
+                            let payload = #ts::support::payload(content, #type_name, #literal)?;
+                            let entries = #ts::support::entries(payload, #type_name)?;
+                            ::core::result::Result::Ok(Self::#ident { #(#fields),* })
+                        }
+                    }
+                }
+            })
+        })
+        .collect::<syn::Result<Vec<_>>>()?;
+    if string_union {
+        Ok(quote! {
+            let name = #ts::support::variant_name(value, #type_name)?;
+            match name {
+                #(#arms)*
+                _ => ::core::result::Result::Err(
+                    #ts::support::unknown_variant(#type_name, name),
+                ),
+            }
+        })
+    } else {
+        Ok(quote! {
+            let (name, content) = #ts::support::tagged(value, #type_name)?;
+            match name {
+                #(#arms)*
+                _ => ::core::result::Result::Err(
+                    #ts::support::unknown_variant(#type_name, name),
+                ),
+            }
+        })
+    }
+}
+
 /// The `impl FromJs` `#[derive(TsType)]` emits unless the type is one-way.
-fn from_js_impl(ts: &TokenStream2, input: &DeriveInput) -> syn::Result<TokenStream2> {
+fn from_js_impl(
+    ts: &TokenStream2,
+    input: &DeriveInput,
+    attrs: ContainerAttrs,
+) -> syn::Result<TokenStream2> {
     let name = &input.ident;
     let type_name = name.unraw().to_string();
     let body = match &input.data {
@@ -502,76 +742,18 @@ fn from_js_impl(ts: &TokenStream2, input: &DeriveInput) -> syn::Result<TokenStre
                     "a TypeScript object type needs named fields",
                 ));
             };
-            let fields = named_field_names(fields)?.into_iter().map(|(ident, name)| {
-                quote!(#ident: #ts::support::field(entries, #type_name, #name, bridge)?)
-            });
+            let rule = attrs.rename_all.unwrap_or(RenameRule::CamelCase);
+            let fields = projected_names(fields, rule)?
+                .into_iter()
+                .map(|(ident, name)| {
+                    quote!(#ident: #ts::support::field(entries, #type_name, #name, bridge)?)
+                });
             quote! {
                 let entries = #ts::support::entries(value, #type_name)?;
                 ::core::result::Result::Ok(Self { #(#fields),* })
             }
         }
-        Data::Enum(data) => {
-            let string_union = data
-                .variants
-                .iter()
-                .all(|variant| matches!(variant.fields, Fields::Unit));
-            let arms = data.variants.iter().map(|variant| -> syn::Result<TokenStream2> {
-                let ident = &variant.ident;
-                let literal = ident.unraw().to_string();
-                Ok(match &variant.fields {
-                    Fields::Unit => quote!(#literal => ::core::result::Result::Ok(Self::#ident),),
-                    Fields::Unnamed(fields) => {
-                        let arity = fields.unnamed.len();
-                        let elements = (0..arity).map(|index| {
-                            quote!(#ts::support::element(items, #type_name, #literal, #index, bridge)?)
-                        });
-                        quote! {
-                            #literal => {
-                                let payload = #ts::support::payload(content, #type_name, #literal)?;
-                                let items = #ts::support::tuple_items(
-                                    payload, #type_name, #literal, #arity,
-                                )?;
-                                ::core::result::Result::Ok(Self::#ident(#(#elements),*))
-                            }
-                        }
-                    }
-                    Fields::Named(fields) => {
-                        let fields = named_field_names(fields)?.into_iter().map(|(ident, name)| {
-                            quote!(#ident: #ts::support::field(entries, #type_name, #name, bridge)?)
-                        });
-                        quote! {
-                            #literal => {
-                                let payload = #ts::support::payload(content, #type_name, #literal)?;
-                                let entries = #ts::support::entries(payload, #type_name)?;
-                                ::core::result::Result::Ok(Self::#ident { #(#fields),* })
-                            }
-                        }
-                    }
-                })
-            })
-            .collect::<syn::Result<Vec<_>>>()?;
-            if string_union {
-                quote! {
-                    let name = #ts::support::variant_name(value, #type_name)?;
-                    match name {
-                        #(#arms)*
-                        _ => ::core::result::Result::Err(
-                            #ts::support::unknown_variant(#type_name, name),
-                        ),
-                    }
-                }
-            } else {
-                quote! {
-                    let (name, content) = #ts::support::tagged(value, #type_name)?;
-                    match name {
-                        #(#arms)*
-                        _ => ::core::result::Result::Err(
-                            #ts::support::unknown_variant(#type_name, name),
-                        ),
-                    }
-                }
-            }
-        }
+        Data::Enum(data) => from_js_enum_body(ts, &type_name, data, attrs)?,
         Data::Union(_) => {
             return Err(syn::Error::new(
                 name.span(),
@@ -596,21 +778,19 @@ fn from_js_impl(ts: &TokenStream2, input: &DeriveInput) -> syn::Result<TokenStre
 ///
 /// `both` asks for `FromJs` as well as `IntoJs`: a nested data type crosses
 /// both ways, while props only ever travel into TypeScript.
-fn conversions(input: &DeriveInput, both: bool) -> syn::Result<TokenStream2> {
-    // The attribute is parsed first, and whatever its answer is used for: a
-    // misspelled `#[ts(…)]` is a compile error on `TsProps` and in a crate
-    // that sees only the schema, exactly as it is on `TsType` in the full
-    // graph. A derive that skipped the parse whenever it could not act on the
-    // answer would let `#[ts(oneway)]` compile and mean nothing.
-    let one_way = is_one_way(input)?;
+fn conversions(
+    input: &DeriveInput,
+    attrs: ContainerAttrs,
+    both: bool,
+) -> syn::Result<TokenStream2> {
     let Some(ts) = ts_path() else {
         return Ok(TokenStream2::new());
     };
-    let into_js = into_js_impl(&ts, input)?;
-    if !both || one_way {
+    let into_js = into_js_impl(&ts, input, attrs)?;
+    if !both || attrs.one_way {
         return Ok(into_js);
     }
-    let from_js = from_js_impl(&ts, input)?;
+    let from_js = from_js_impl(&ts, input, attrs)?;
     Ok(quote! {
         #into_js
         #from_js
@@ -624,11 +804,15 @@ pub fn derive_ts_type(input: TokenStream) -> TokenStream {
         Ok(path) => path,
         Err(error) => return error.into_compile_error().into(),
     };
-    let schema = match ts_type_impl(&path, &input) {
+    let attrs = match ContainerAttrs::parse(&input) {
+        Ok(attrs) => attrs,
+        Err(error) => return error.into_compile_error().into(),
+    };
+    let schema = match ts_type_impl(&path, &input, attrs) {
         Ok(tokens) => tokens,
         Err(error) => return error.into_compile_error().into(),
     };
-    let conversions = match conversions(&input, true) {
+    let conversions = match conversions(&input, attrs, true) {
         Ok(tokens) => tokens,
         Err(error) => return error.into_compile_error().into(),
     };
@@ -655,14 +839,18 @@ pub fn derive_ts_props(input: TokenStream) -> TokenStream {
         .into_compile_error()
         .into();
     }
-    let schema = match ts_type_impl(&path, &input) {
+    let attrs = match ContainerAttrs::parse(&input) {
+        Ok(attrs) => attrs,
+        Err(error) => return error.into_compile_error().into(),
+    };
+    let schema = match ts_type_impl(&path, &input, attrs) {
         Ok(tokens) => tokens,
         Err(error) => return error.into_compile_error().into(),
     };
     // Props travel one way: a module receives them, and nothing reads a props
     // struct back out of JavaScript. Requiring it to be readable would rule
     // out the callbacks and views props exist to carry.
-    let conversions = match conversions(&input, false) {
+    let conversions = match conversions(&input, attrs, false) {
         Ok(tokens) => tokens,
         Err(error) => return error.into_compile_error().into(),
     };
@@ -725,31 +913,135 @@ pub fn derive_ts_props(input: TokenStream) -> TokenStream {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_js_identifier, ts_type_impl};
+    use super::{ContainerAttrs, is_js_identifier, ts_type_impl};
     use quote::quote;
+    use syn::{DeriveInput, parse_quote};
 
     /// Expands the schema half of the derive, which is the half that projects
-    /// property names.
-    fn expand(input: &syn::DeriveInput) -> syn::Result<String> {
-        ts_type_impl(&quote!(::schema), input).map(|tokens| tokens.to_string())
+    /// property and variant names.
+    fn expand(input: &DeriveInput) -> syn::Result<String> {
+        let attrs = ContainerAttrs::parse(input)?;
+        ts_type_impl(&quote!(::schema), input, attrs).map(|tokens| tokens.to_string())
+    }
+
+    #[test]
+    fn fields_project_as_camel_case_by_default() {
+        let expansion = expand(&parse_quote! {
+            struct Props {
+                item_count: u32,
+                on_tap: u32,
+                a11y_label: u32,
+            }
+        })
+        .expect("default camelCase fields expand");
+        assert!(expansion.contains(r#""itemCount""#), "{expansion}");
+        assert!(expansion.contains(r#""onTap""#), "{expansion}");
+        assert!(expansion.contains(r#""a11yLabel""#), "{expansion}");
+        assert!(!expansion.contains(r#""item_count""#), "{expansion}");
+    }
+
+    #[test]
+    fn unit_enum_variants_project_as_camel_case_by_default() {
+        let expansion = expand(&parse_quote! {
+            enum Align {
+                Leading,
+                BottomTrailing,
+            }
+        })
+        .expect("unit enum expands");
+        assert!(expansion.contains(r#""leading""#), "{expansion}");
+        assert!(expansion.contains(r#""bottomTrailing""#), "{expansion}");
+        assert!(!expansion.contains(r#""Leading""#), "{expansion}");
+    }
+
+    #[test]
+    fn tagged_enum_keeps_variant_names_and_camel_cases_struct_fields() {
+        let expansion = expand(&parse_quote! {
+            enum Slot {
+                Empty,
+                Note { line_count: u32 },
+            }
+        })
+        .expect("tagged enum expands");
+        assert!(expansion.contains(r#""Empty""#), "{expansion}");
+        assert!(expansion.contains(r#""Note""#), "{expansion}");
+        assert!(expansion.contains(r#""lineCount""#), "{expansion}");
+        assert!(!expansion.contains(r#""line_count""#), "{expansion}");
+    }
+
+    #[test]
+    fn rename_all_selects_container_convention() {
+        let snake = expand(&parse_quote! {
+            #[ts(rename_all = "snake_case")]
+            struct Props {
+                item_count: u32,
+                #[ts(rename = "customName")]
+                overridden_field: u32,
+            }
+        })
+        .expect("snake_case rename_all expands");
+        assert!(snake.contains(r#""item_count""#), "{snake}");
+        assert!(snake.contains(r#""customName""#), "{snake}");
+
+        let kebab = expand(&parse_quote! {
+            #[ts(rename_all = "kebab-case")]
+            enum Status {
+                InProgress,
+                #[ts(rename = "done!")]
+                Completed,
+            }
+        })
+        .expect("kebab-case enum rename_all expands");
+        assert!(kebab.contains(r#""in-progress""#), "{kebab}");
+        assert!(kebab.contains(r#""done!""#), "{kebab}");
+
+        let verbatim = expand(&parse_quote! {
+            #[ts(rename_all = "verbatim")]
+            enum Align {
+                BottomTrailing,
+            }
+        })
+        .expect("verbatim rename_all expands");
+        assert!(verbatim.contains(r#""BottomTrailing""#), "{verbatim}");
+    }
+
+    #[test]
+    fn unknown_rename_all_or_invalid_struct_kebab_is_refused() {
+        let error = expand(&parse_quote! {
+            #[ts(rename_all = "spongebob")]
+            struct Props {
+                item_count: u32,
+            }
+        })
+        .expect_err("unknown rename_all must fail");
+        assert!(error.to_string().contains("spongebob"), "{error}");
+
+        let error = expand(&parse_quote! {
+            #[ts(rename_all = "kebab-case")]
+            struct Props {
+                item_count: u32,
+            }
+        })
+        .expect_err("kebab-case struct field is not a JS identifier");
+        assert!(error.to_string().contains("item-count"), "{error}");
     }
 
     #[test]
     fn a_rename_reaches_the_schema() {
-        let expansion = expand(&syn::parse_quote! {
+        let expansion = expand(&parse_quote! {
             struct ButtonAttributes {
-                #[ts(rename = "onTap")]
+                #[ts(rename = "onPress")]
                 on_tap: u32,
             }
         })
         .expect("a valid rename expands");
-        assert!(expansion.contains(r#""onTap""#), "{expansion}");
-        assert!(!expansion.contains(r#""on_tap""#), "{expansion}");
+        assert!(expansion.contains(r#""onPress""#), "{expansion}");
+        assert!(!expansion.contains(r#""onTap""#), "{expansion}");
     }
 
     #[test]
     fn a_rename_that_is_not_an_identifier_is_refused() {
-        let error = expand(&syn::parse_quote! {
+        let error = expand(&parse_quote! {
             struct Attributes {
                 #[ts(rename = "foo bar")]
                 foo: u32,
@@ -763,7 +1055,7 @@ mod tests {
 
     #[test]
     fn a_rename_that_starts_with_a_digit_is_refused() {
-        expand(&syn::parse_quote! {
+        expand(&parse_quote! {
             struct Attributes {
                 #[ts(rename = "1st")]
                 first: u32,
@@ -774,17 +1066,32 @@ mod tests {
 
     #[test]
     fn two_fields_projecting_to_one_property_are_refused() {
-        let error = expand(&syn::parse_quote! {
+        let error = expand(&parse_quote! {
             struct Attributes {
                 on_tap: u32,
-                #[ts(rename = "on_tap")]
+                #[ts(rename = "onTap")]
                 tapped: u32,
             }
         })
         .expect_err("one property name is one field");
         let message = error.to_string();
-        assert!(message.contains("on_tap"), "{message}");
+        assert!(message.contains("onTap"), "{message}");
         assert!(message.contains("tapped"), "{message}");
+    }
+
+    #[test]
+    fn two_variants_projecting_to_one_literal_are_refused() {
+        let error = expand(&parse_quote! {
+            enum Status {
+                Ready,
+                #[ts(rename = "ready")]
+                Done,
+            }
+        })
+        .expect_err("one variant literal is one arm");
+        let message = error.to_string();
+        assert!(message.contains("ready"), "{message}");
+        assert!(message.contains("Done"), "{message}");
     }
 
     #[test]

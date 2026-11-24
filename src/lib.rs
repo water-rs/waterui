@@ -60,6 +60,8 @@ pub mod prelude {
     pub use super::FilterViewExt;
     pub use super::app::{App, AppMenuBar, Windows};
     pub use super::env::Environment;
+    #[cfg(feature = "locale-datetime")]
+    pub use super::locale::LocalizedDateTimeExt;
     #[cfg(feature = "media")]
     pub use super::media;
     #[cfg(feature = "video")]

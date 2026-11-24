@@ -1041,7 +1041,7 @@ fn render_tree_grid_snapshot() {
         use waterui::layout::grid::{grid, row};
         use waterui::prelude::*;
         fn cell(label: &str) -> impl View {
-            button(label.to_owned()).width(92.0)
+            button(label.to_owned()).action(|| {}).width(92.0)
         }
         let controls = grid(
             3,

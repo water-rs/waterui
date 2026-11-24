@@ -69,10 +69,10 @@ impl<E: crate::text::TextEngine> TextFieldRenderState<E> {
     #[cfg(feature = "accessibility")]
     pub(crate) fn contributed_label(
         &self,
-        _renderer: &mut crate::renderer::SemanticCore<E>,
+        renderer: &mut crate::renderer::SemanticCore<E>,
         env: &Environment,
     ) -> Option<String> {
-        crate::renderer::SemanticCore::<E>::accessibility_label_from_label(self.config.label(), env)
+        renderer.accessibility_label_from_label(self.config.label(), env)
     }
 
     pub(crate) fn from_config(config: TextFieldConfig<HeldChild<E>>) -> Self {
@@ -135,10 +135,10 @@ impl<E: crate::text::TextEngine> SecureFieldRenderState<E> {
     #[cfg(feature = "accessibility")]
     pub(crate) fn contributed_label(
         &self,
-        _renderer: &mut crate::renderer::SemanticCore<E>,
+        renderer: &mut crate::renderer::SemanticCore<E>,
         env: &Environment,
     ) -> Option<String> {
-        crate::renderer::SemanticCore::<E>::accessibility_label_from_label(self.config.label(), env)
+        renderer.accessibility_label_from_label(self.config.label(), env)
     }
 
     pub(crate) fn from_config(config: SecureFieldConfig<HeldChild<E>>) -> Self {
@@ -246,8 +246,9 @@ pub fn render_text_field_parts<E: crate::text::TextEngine>(
         )
     };
     #[cfg(feature = "accessibility")]
-    let default_accessibility_label =
-        crate::renderer::SemanticCore::<E>::accessibility_label_from_label(&label, env);
+    let default_accessibility_label = ctx
+        .renderer_mut()
+        .accessibility_label_from_label(&label, env);
     #[cfg(not(feature = "accessibility"))]
     let _ = label;
     state.field.apply_label_font(
@@ -649,8 +650,9 @@ pub fn render_secure_field_parts<E: crate::text::TextEngine>(
         (secure_field.label().clone(), secure_field.value().clone())
     };
     #[cfg(feature = "accessibility")]
-    let default_accessibility_label =
-        crate::renderer::SemanticCore::<E>::accessibility_label_from_label(&label, env);
+    let default_accessibility_label = ctx
+        .renderer_mut()
+        .accessibility_label_from_label(&label, env);
     #[cfg(not(feature = "accessibility"))]
     let _ = label;
     state.field.apply_label_font(
@@ -1246,8 +1248,7 @@ pub fn emit_text_field_accessibility<E: crate::text::TextEngine>(
             text_field.on_submit().cloned(),
         )
     };
-    let default_accessibility_label =
-        crate::renderer::SemanticCore::<E>::accessibility_label_from_label(&label, env);
+    let default_accessibility_label = renderer.accessibility_label_from_label(&label, env);
     let line_limit = renderer
         .read_signal(&line_limit_signal)
         .map(NonZeroUsize::get);
@@ -1367,8 +1368,7 @@ pub fn emit_secure_field_accessibility<E: crate::text::TextEngine>(
         let secure_field = &state.config;
         (secure_field.label().clone(), secure_field.value().clone())
     };
-    let default_accessibility_label =
-        crate::renderer::SemanticCore::<E>::accessibility_label_from_label(&label, env);
+    let default_accessibility_label = renderer.accessibility_label_from_label(&label, env);
     {
         let secure_len = renderer
             .read_signal(&value_binding)

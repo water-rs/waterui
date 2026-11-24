@@ -2239,7 +2239,7 @@ fn validate_bench_fn(input_fn: &ItemFn, mounts_view: bool) -> Result<&syn::PatTy
 ///     let value_for_view = value.clone();
 ///     ui.perf_with(move || counter(&value_for_view), |perf| {
 ///         perf.measure("increment", |run| {
-///             run.app().query().label("Increment").tap();
+///             run.query().label("Increment").tap();
 ///             let _ = run;
 ///         });
 ///     })
@@ -2374,11 +2374,14 @@ pub fn bench(args: TokenStream, input: TokenStream) -> TokenStream {
 /// declares `#[ts(one_way)]` and gets `IntoJs` alone. A crate that depends on
 /// `waterui-ts-schema` alone gets the schema and nothing else.
 ///
-/// A field whose TypeScript property is spelled differently from its Rust name
-/// says so with `#[ts(rename = "onTap")]`. The rename travels through the
-/// schema and both conversions at once, so a JSX attribute in the case
-/// TypeScript writes — `onTap`, `minLength`, `a11yLabel` — still comes from
-/// one declaration in one place.
+/// Struct fields and unit-only enum variants project as `camelCase` by default
+/// (`on_tap` → `onTap`, `BottomTrailing` → `"bottomTrailing"`). Container-level
+/// `#[ts(rename_all = "…")]` selects another convention (`"camelCase"`,
+/// `"PascalCase"`, `"snake_case"`, `"SCREAMING_SNAKE_CASE"`, `"kebab-case"`,
+/// `"SCREAMING-KEBAB-CASE"`, `"lowercase"`, `"UPPERCASE"`, `"verbatim"`), and
+/// `#[ts(rename = "…")]` overrides an individual field or variant. The
+/// projected name travels through the schema and both conversions at once, so
+/// one declaration describes one shape.
 #[proc_macro_derive(TsType, attributes(ts))]
 pub fn derive_ts_type(input: TokenStream) -> TokenStream {
     ts::derive_ts_type(input)

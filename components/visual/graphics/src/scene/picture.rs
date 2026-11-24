@@ -1,6 +1,7 @@
 //! A recorded drawing shown as a static image.
 
 use alloc::rc::Rc;
+use alloc::string::{String, ToString as _};
 use core::fmt;
 
 use crate::draw::kurbo::Affine;
@@ -125,16 +126,14 @@ impl PictureRecording {
 pub struct Picture {
     recording: Computed<PictureRecording>,
     size: Size,
-    label: Option<Str>,
-    value: Option<Str>,
+    label: Computed<Option<Str>>,
+    value: Computed<Option<Str>>,
 }
 
 impl fmt::Debug for Picture {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Picture")
             .field("size", &self.size)
-            .field("label", &self.label)
-            .field("value", &self.value)
             .finish_non_exhaustive()
     }
 }
@@ -151,8 +150,8 @@ impl Picture {
         Self {
             recording: recording.into_computed(),
             size,
-            label: None,
-            value: None,
+            label: Computed::constant(None),
+            value: Computed::constant(None),
         }
     }
 
@@ -164,15 +163,15 @@ impl Picture {
     /// picture or on any ancestor still wins, because the application knows
     /// what the drawing is for and the drawing only knows what it shows.
     #[must_use]
-    pub fn labeled(mut self, label: impl Into<Str>) -> Self {
-        self.label = Some(label.into());
+    pub fn offered_label(mut self, label: impl IntoComputed<Option<Str>>) -> Self {
+        self.label = label.into_computed();
         self
     }
 
     /// The name the drawing offers a screen reader, if it has one.
     #[must_use]
-    pub const fn label(&self) -> Option<&Str> {
-        self.label.as_ref()
+    pub const fn label(&self) -> &Computed<Option<Str>> {
+        &self.label
     }
 
     /// Describes the drawing's content for a screen reader.
@@ -183,15 +182,15 @@ impl Picture {
     /// stand in for what the drawing says, and an `.a11y_value(…)` the
     /// application sets wins over it wherever both exist.
     #[must_use]
-    pub fn described(mut self, value: impl Into<Str>) -> Self {
-        self.value = Some(value.into());
+    pub fn offered_value(mut self, value: impl IntoComputed<Option<Str>>) -> Self {
+        self.value = value.into_computed();
         self
     }
 
     /// The semantic content the drawing offers a screen reader, if it has any.
     #[must_use]
-    pub const fn value(&self) -> Option<&Str> {
-        self.value.as_ref()
+    pub const fn value(&self) -> &Computed<Option<Str>> {
+        &self.value
     }
 
     /// Records `draw` into a fresh static picture that names no engine
@@ -315,7 +314,7 @@ impl View for Picture {
 /// own their own engine layer tree.
 struct RecordedScene {
     picture: Picture,
-    watcher: Option<BoxWatcherGuard>,
+    watcher: Option<[BoxWatcherGuard; 3]>,
     current: Option<PictureRecording>,
     rebuild_recording: bool,
 }
@@ -353,8 +352,13 @@ impl SceneContent for RecordedScene {
     }
 
     fn set_invalidator(&mut self, invalidator: Option<SceneInvalidator>) {
-        self.watcher = invalidator
-            .map(|invalidator| invalidate_on_change(&invalidator, &self.picture.recording));
+        self.watcher = invalidator.map(|invalidator| {
+            [
+                invalidate_on_change(&invalidator, &self.picture.recording),
+                invalidate_on_change(&invalidator, &self.picture.label),
+                invalidate_on_change(&invalidator, &self.picture.value),
+            ]
+        });
     }
 
     fn rebuild_for_engine(&mut self) {
@@ -368,17 +372,11 @@ impl SceneContent for RecordedScene {
     }
 
     fn accessibility_label(&self) -> Option<String> {
-        self.picture
-            .label
-            .as_ref()
-            .map(|label| label.as_str().to_owned())
+        self.picture.label.snapshot().map(|label| label.to_string())
     }
 
     fn accessibility_value(&self) -> Option<String> {
-        self.picture
-            .value
-            .as_ref()
-            .map(|value| value.as_str().to_owned())
+        self.picture.value.snapshot().map(|value| value.to_string())
     }
 }
 
@@ -464,8 +462,8 @@ mod tests {
     #[test]
     fn a_labeled_picture_offers_its_name_and_an_unlabeled_one_stays_quiet() {
         let picture = Picture::new(Size::new(10.0, 10.0), constant(square(WorkingColor::BLACK)));
-        assert_eq!(picture.label(), None);
-        assert_eq!(picture.value(), None);
+        assert_eq!(picture.label().snapshot(), None);
+        assert_eq!(picture.value().snapshot(), None);
         let quiet = RecordedScene {
             picture,
             watcher: None,
@@ -476,8 +474,11 @@ mod tests {
         assert_eq!(quiet.accessibility_value(), None);
 
         let picture = Picture::new(Size::new(10.0, 10.0), constant(square(WorkingColor::BLACK)))
-            .labeled("Warning");
-        assert_eq!(picture.label().map(Str::as_str), Some("Warning"));
+            .offered_label(Str::from("Warning"));
+        assert_eq!(
+            picture.label().snapshot().as_ref().map(Str::as_str),
+            Some("Warning")
+        );
         let named = RecordedScene {
             picture,
             watcher: None,
@@ -490,10 +491,10 @@ mod tests {
     #[test]
     fn a_described_picture_keeps_its_content_on_the_value_channel() {
         let picture = Picture::new(Size::new(10.0, 10.0), constant(square(WorkingColor::BLACK)))
-            .labeled("Warning")
-            .described("A triangle with an exclamation mark");
+            .offered_label(Str::from("Warning"))
+            .offered_value(Str::from("A triangle with an exclamation mark"));
         assert_eq!(
-            picture.value().map(Str::as_str),
+            picture.value().snapshot().as_ref().map(Str::as_str),
             Some("A triangle with an exclamation mark")
         );
         let described = RecordedScene {

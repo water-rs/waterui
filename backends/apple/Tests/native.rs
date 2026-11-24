@@ -2908,17 +2908,21 @@ mod navigation {
         const TRAILING: &str = "dev.cocoaui.navigation.trailing";
 
         let icon = || SfSymbol::PLUS;
+        let noop: fn() = || {};
         let leaf = resolve::render(NavigationStack::new(
             NavigationView::new("Inbox", text("root")).navigation_toolbar(NavigationToolbar::new(
                 vec![
                     NavigationToolbarItem::new(
                         NavigationToolbarPlacement::TopBarLeading,
-                        button(label("").icon(icon())).style(ButtonStyle::Borderless),
+                        button(label("").icon(icon()))
+                            .style(ButtonStyle::Borderless)
+                            .action(noop),
                     ),
                     NavigationToolbarItem::new(
                         NavigationToolbarPlacement::TopBarTrailing,
                         button(label("Keep title").icon(icon()).title_and_icon())
-                            .style(ButtonStyle::Borderless),
+                            .style(ButtonStyle::Borderless)
+                            .action(noop),
                     ),
                 ],
             )),
@@ -4497,7 +4501,11 @@ mod gpu_surface {
         for (name, view) in [
             (
                 "prominent_button",
-                AnyView::new(button("Action").style(ButtonStyle::BorderedProminent)),
+                AnyView::new(
+                    button("Action")
+                        .style(ButtonStyle::BorderedProminent)
+                        .action(|| {}),
+                ),
             ),
             (
                 "active_switch",
@@ -5490,7 +5498,7 @@ mod capture_order {
         let column = |child| {
             layered(child)
                 .background(orange())
-                .scale(1.6, 1.6)
+                .scale(1.6)
                 .clip(RoundedRectangle::new(0.2))
         };
         assert_gpu_column_matches_native(column(native_child()), column(gpu_child()), 1);
@@ -9979,12 +9987,15 @@ mod navigation {
                 vec![
                     NavigationToolbarItem::new(
                         NavigationToolbarPlacement::TopBarLeading,
-                        button(label("").icon(icon())).style(ButtonStyle::Borderless),
+                        button(label("").icon(icon()))
+                            .style(ButtonStyle::Borderless)
+                            .action(|| {}),
                     ),
                     NavigationToolbarItem::new(
                         NavigationToolbarPlacement::TopBarTrailing,
                         button(label("Keep title").icon(icon()).title_and_icon())
-                            .style(ButtonStyle::Borderless),
+                            .style(ButtonStyle::Borderless)
+                            .action(|| {}),
                     ),
                 ],
             )),
@@ -10049,7 +10060,8 @@ mod navigation {
                             let drawn = drawn.clone();
                             move || ForegroundProbe(drawn.clone())
                         }))
-                        .style(ButtonStyle::Borderless),
+                        .style(ButtonStyle::Borderless)
+                        .action(|| {}),
                     )]),
                 ),
             )),
@@ -10080,7 +10092,9 @@ mod navigation {
                 NavigationToolbar::default()
                     .item(NavigationToolbarItem::new(
                         NavigationToolbarPlacement::TopBarLeading,
-                        button(waterui::text!("{title}")).style(ButtonStyle::Plain),
+                        button(waterui::text!("{title}"))
+                            .style(ButtonStyle::Plain)
+                            .action(|| {}),
                     ))
                     .item(NavigationToolbarItem::new(
                         NavigationToolbarPlacement::TopBarTrailing,
@@ -10179,6 +10193,7 @@ mod navigation {
                     NavigationToolbarPlacement::TopBarLeading,
                     button("Save")
                         .style(ButtonStyle::Plain)
+                        .action(|| {})
                         .disabled(disabled.clone()),
                 )],
             )),
@@ -10210,6 +10225,7 @@ mod navigation {
             NavigationToolbarPlacement::TopBarTrailing,
             button("Save")
                 .style(ButtonStyle::Plain)
+                .action(|| {})
                 .disabled(disabled.clone()),
         )
         .icon(SfSymbol::CHECKMARK);
@@ -14655,7 +14671,7 @@ mod transition {
         let mounted = leaf.mount(&HostView::new(mtm(), cocoa_ui::Rect::ZERO));
         let window = super::mount_and_order_front(mounted.view());
         handler.set(AnyView::new(Metadata::new(
-            label("coming").scale(0.5, 0.5),
+            label("coming").scale(0.5),
             TransitionSpec::new(PropertyTransition::scale(0.5))
                 .with_animation(Animation::linear(Duration::from_millis(60))),
         )));
@@ -17036,11 +17052,11 @@ mod transform_modifiers {
         );
     }
 
-    /// `.scale(0.5, 0.5)` at the default centre anchor (#3504's own
+    /// `.scale(0.5)` at the default centre anchor (#3504's own
     /// reproduction): `m11`/`m22` stay `0.5` after display, and the
     /// anchor's translation term tracks the wrapper's new size.
     fn scale_survives_display_and_resize() {
-        let (_leaf, wrapper, _window) = mount(label("coming").scale(0.5, 0.5));
+        let (_leaf, wrapper, _window) = mount(label("coming").scale(0.5));
         assert_survives_display_and_resize(
             &wrapper,
             CATransform3D::new_scale(0.5, 0.5, 1.0),
@@ -17471,7 +17487,11 @@ mod catalyst_view_renderer {
 
         let renderer = AppleBackend::new(mtm()).offscreen(&env);
         let request = RenderRequest::new(Size::new(160.0, 48.0), Duration::from_secs(10));
-        let view = AnyView::new(button("Action").style(ButtonStyle::BorderedProminent));
+        let view = AnyView::new(
+            button("Action")
+                .style(ButtonStyle::BorderedProminent)
+                .action(|| {}),
+        );
         let result = block_on_main(30.0, renderer.render_to_rgba(view, &env, request))
             .map_err(|error| format!("Catalyst prominent button render_to_rgba failed: {error}"))?;
 

@@ -417,12 +417,8 @@ fn a_closing_overlays_exit_animation_plays_to_completion() {
                 let scale = scale.clone();
                 AnyView::new(
                     Frame::new(
-                        text("tip").scale(
-                            scale
-                                .clone()
-                                .with(Animation::linear(Duration::from_millis(1_000))),
-                            scale.with(Animation::linear(Duration::from_millis(1_000))),
-                        ),
+                        text("tip")
+                            .scale(scale.with(Animation::linear(Duration::from_millis(1_000)))),
                     )
                     .width(OVERLAY.0)
                     .height(OVERLAY.1),
@@ -521,12 +517,8 @@ fn the_exiting_overlay_draws_its_animation_mid_flight() {
                 let scale = scale.clone();
                 AnyView::new(
                     Frame::new(
-                        Color::srgb(30, 120, 220).scale(
-                            scale
-                                .clone()
-                                .with(Animation::linear(Duration::from_millis(1_000))),
-                            scale.with(Animation::linear(Duration::from_millis(1_000))),
-                        ),
+                        Color::srgb(30, 120, 220)
+                            .scale(scale.with(Animation::linear(Duration::from_millis(1_000)))),
                     )
                     .width(OVERLAY.0)
                     .height(OVERLAY.1),
@@ -594,12 +586,7 @@ fn input_during_the_exit_reaches_the_content_underneath() {
                             .action(move || {
                                 inner.set(true);
                             })
-                            .scale(
-                                scale
-                                    .clone()
-                                    .with(Animation::linear(Duration::from_millis(1_000))),
-                                scale.with(Animation::linear(Duration::from_millis(1_000))),
-                            ),
+                            .scale(scale.with(Animation::linear(Duration::from_millis(1_000)))),
                     )
                 })
                 .edge(AnchorEdge::Bottom)
@@ -685,12 +672,8 @@ fn re_presenting_mid_exit_enters_a_new_instance_beside_the_exit() {
                 let scale = scale.clone();
                 AnyView::new(
                     Frame::new(
-                        text("tip").scale(
-                            scale
-                                .clone()
-                                .with(Animation::linear(Duration::from_millis(1_000))),
-                            scale.with(Animation::linear(Duration::from_millis(1_000))),
-                        ),
+                        text("tip")
+                            .scale(scale.with(Animation::linear(Duration::from_millis(1_000)))),
                     )
                     .width(OVERLAY.0)
                     .height(OVERLAY.1),

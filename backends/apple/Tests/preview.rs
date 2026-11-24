@@ -1017,8 +1017,8 @@ mod suite {
         text("monospaced styled text").monospaced(),
         text("A longer paragraph that is meant to wrap across several lines once the column gets narrow, so the capture shows real line breaking rather than a single clipped run."),
         hstack((
-            button("Bordered"),
-            button("Plain").style(ButtonStyle::Plain),
+            button("Bordered").action(|| {}),
+            button("Plain").style(ButtonStyle::Plain).action(|| {}),
         ))
         .spacing(12.0),
         toggle("Wi-Fi", &wifi),
@@ -1191,7 +1191,9 @@ mod suite {
             ))
             .spacing(0.0),
             vstack((
-                button("Continue").style(ButtonStyle::BorderedProminent),
+                button("Continue")
+                    .style(ButtonStyle::BorderedProminent)
+                    .action(|| {}),
                 text("Glass").padding().background(Material::Regular),
             ))
             .spacing(16.0),
@@ -1250,7 +1252,9 @@ mod suite {
 
         const SHADER: &str = include_str!("gpu_set.wgsl");
         vstack((
-            button("Continue").style(ButtonStyle::BorderedProminent),
+            button("Continue")
+                .style(ButtonStyle::BorderedProminent)
+                .action(|| {}),
             ShaderPaintView::new(SHADER).size(240.0, 96.0),
         ))
         .spacing(16.0)

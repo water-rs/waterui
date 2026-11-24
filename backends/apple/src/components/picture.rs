@@ -17,6 +17,7 @@ use cocoa_ui::objc2::AllocAnyThread;
 use waterui::graphics::backend::raster::Rasterizer;
 use waterui::graphics::backend::{Picture, PictureRecording};
 use waterui::reactive::Signal;
+use waterui_core::Str;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
 };
@@ -239,21 +240,6 @@ pub fn realize_picture(picture: Picture, ctx: &RenderContext<'_>) -> NativeLeaf 
     let view = ImageView::new(mtm);
     view.set_scale_mode(cocoa_ui::ScaleMode::Fit);
 
-    // Accessibility: the offered label and value, plus the image trait
-    // while there is an image to describe — `updateAccessibility`.
-    if picture.label().is_some() || picture.value().is_some() {
-        view.set_image_trait();
-        if let Some(label) = picture.label() {
-            view.set_accessibility_label(Some(label.as_str()));
-        }
-        if let Some(value) = picture.value() {
-            #[cfg(target_os = "macos")]
-            view.set_accessibility_value(value.as_str());
-            #[cfg(target_os = "ios")]
-            view.set_accessibility_value(Some(value.as_str()));
-        }
-    }
-
     let state = Rc::new(RefCell::new(RasterState {
         recording: picture.recording().snapshot(),
         pixels: None,
@@ -310,6 +296,29 @@ pub fn realize_picture(picture: Picture, ctx: &RenderContext<'_>) -> NativeLeaf 
             size: picture.size(),
         },
     );
+    leaf.bind(picture.label(), {
+        let view = view.clone();
+        move |label: Option<Str>| {
+            if let Some(label) = label {
+                view.set_image_trait();
+                view.set_accessibility_label(Some(label.as_str()));
+            } else {
+                view.set_accessibility_label(None);
+            }
+        }
+    });
+    leaf.bind(picture.value(), {
+        let view = view.clone();
+        move |value: Option<Str>| {
+            if value.is_some() {
+                view.set_image_trait();
+            }
+            #[cfg(target_os = "macos")]
+            view.set_accessibility_value(value.as_deref().unwrap_or(""));
+            #[cfg(target_os = "ios")]
+            view.set_accessibility_value(value.as_deref());
+        }
+    });
     leaf.watch(picture.recording(), {
         let view = view;
         let picture = picture.clone();
