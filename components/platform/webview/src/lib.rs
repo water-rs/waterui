@@ -501,7 +501,11 @@ impl WebView {
     /// page state.
     #[must_use]
     pub fn proxy(&self) -> WebViewProxy {
-        WebViewProxy::from_parts(self.handle.clone(), self.state.clone())
+        WebViewProxy::from_parts(
+            self.handle.clone(),
+            self.state.clone(),
+            Rc::clone(&self.state_watcher),
+        )
     }
 
     /// Injects this web view's [`WebViewProxy`] into `content`'s environment
@@ -1662,6 +1666,32 @@ mod tests {
 
             extracted.go_back();
             assert!(handle.went_back.get());
+        }
+
+        #[test]
+        fn proxy_keeps_page_state_live_after_webview_is_dropped() {
+            let opened = WebView::open("https://waterui.dev")
+                .open_with(&FakeController, &Environment::new())
+                .expect("fake controller must open the web view");
+            let handle = opened.handle().clone();
+            let webview = opened.into_webview();
+            let proxy = webview.proxy();
+            drop(webview);
+
+            let title = proxy.title();
+            let url = proxy.url();
+            let progress = proxy.progress();
+
+            handle.emit(&BackendEvent::TitleChanged(Str::from_static("After Drop")));
+            let next_url = Url::new("https://waterui.dev/after-drop");
+            handle.emit(&BackendEvent::UrlChanged(next_url.clone()));
+            handle.emit(&BackendEvent::Event(WebViewEvent::Loading {
+                progress: 0.75,
+            }));
+
+            assert_eq!(title.snapshot().as_str(), "After Drop");
+            assert_eq!(url.snapshot(), Some(next_url));
+            assert!((progress.snapshot() - f64::from(0.75_f32)).abs() < 1e-6);
         }
     }
 

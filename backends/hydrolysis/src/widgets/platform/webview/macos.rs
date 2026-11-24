@@ -963,8 +963,7 @@ define_class!(
     impl WebViewStateObserver {
         // SAFETY: overrides `NSObject`'s `observeValueForKeyPath:ofObject:change:context:`.
         #[unsafe(method(observeValueForKeyPath:ofObject:change:context:))]
-        #[allow(non_snake_case)]
-        unsafe fn observeValueForKeyPath_ofObject_change_context(
+        fn observe_value_for_key_path(
             &self,
             key_path: Option<&NSString>,
             object: Option<&AnyObject>,

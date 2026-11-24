@@ -209,11 +209,15 @@ impl WebViewProxy {
         }
     }
 
-    pub(crate) fn from_parts(handle: AnyWebViewHandle, state: WebViewPageState) -> Self {
+    pub(crate) fn from_parts(
+        handle: AnyWebViewHandle,
+        state: WebViewPageState,
+        watcher: Rc<WatcherGuard>,
+    ) -> Self {
         Self {
             handle: Rc::new(OnceCell::from(handle)),
             state,
-            _watcher: None,
+            _watcher: Some(watcher),
         }
     }
 
