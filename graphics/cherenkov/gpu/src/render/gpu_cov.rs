@@ -3898,15 +3898,26 @@ mod tests {
         let started = std::time::Instant::now();
         let cases = stroke_cases();
         // More than 16384 dashed records, so the frame's `dash_blocks`
-        // exceeds 64 and `dash_scan_blocks` carries across chunks. The
-        // bevel join, butt caps and a frame of its own keep the bound under
-        // the 128 MiB binding limit: kurbo's default round caps on each of
-        // its ~13,000 dashes would otherwise dominate the bound.
+        // exceeds 64 and `dash_scan_blocks` carries across chunks. Spread the
+        // serpentine columns across the surface instead of wrapping back over
+        // one 6x128 strip so `integrate_edges` does not spend O(C^3) per cell
+        // across 33 stacked layers under software WARP, while bevel joins,
+        // butt caps, and a frame of its own keep the bound under 128 MiB.
         // Round caps on dashes are covered by the cases above.
         let mut long = kurbo::BezPath::new();
         long.move_to((0.0, 0.0));
         for k in 1..=17_000u32 {
-            long.line_to((f64::from(k % 2) * 6.0, f64::from((k / 2) % 256) * 0.5));
+            let col = k / 500;
+            let step = k % 500;
+            let row = if col.is_multiple_of(2) {
+                step / 2
+            } else {
+                249 - step / 2
+            };
+            long.line_to((
+                f64::mul_add(f64::from(step % 2), 6.0, f64::from(col) * 18.0),
+                f64::from(row) * 2.5,
+            ));
         }
         let singles = [(
             long,
