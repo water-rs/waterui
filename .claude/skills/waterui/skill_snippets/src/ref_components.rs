@@ -1190,13 +1190,6 @@ pub mod components_block_32 {
         Pear,
     }
 
-    use waterui::form::Calendar;
-    use waterui::form::picker::color::ColorPicker;
-    use waterui::form::picker::date::{DatePicker, DateTimePickerComponents};
-    use waterui::form::picker::file::FilePicker;
-    use waterui::form::picker::multi_date::MultiDatePicker;
-    use waterui::form::picker::{Picker, PickerItem, PickerStyle, picker};
-
     // Options are views carrying their value via .tag(..). The tag type is T: Ord + Clone.
     // PickerItem<T> is the nameable item type — an array of them works without collect().
     fn sizes() -> [PickerItem<&'static str>; 3] {
@@ -1247,11 +1240,7 @@ pub mod components_block_32 {
 pub fn components_block_33() {
     use alloc::collections::BTreeSet;
     use waterui::color::Srgb;
-    use waterui::form::Calendar;
-    use waterui::form::picker::color::ColorPicker;
-    use waterui::form::picker::date::{Date, DatePicker, DateTime, DateTimePickerComponents, Time};
-    use waterui::form::picker::file::FilePicker;
-    use waterui::form::picker::multi_date::MultiDatePicker;
+    use waterui::form::picker::date::{Date, DateTime, Time};
     use waterui::media::Url;
     use waterui::reactive::binding;
 

@@ -805,13 +805,6 @@ ValidatableView::new(field("Name", &name), Plain(Required))
 Pickers:
 
 ```rust
-use waterui::form::picker::{Picker, PickerItem, PickerStyle, picker};
-use waterui::form::picker::color::ColorPicker;
-use waterui::form::picker::date::{DatePicker, DateTimePickerComponents};
-use waterui::form::picker::file::FilePicker;
-use waterui::form::picker::multi_date::MultiDatePicker;
-use waterui::form::Calendar;
-
 // Options are views carrying their value via .tag(..). The tag type is T: Ord + Clone.
 // PickerItem<T> is the nameable item type — an array of them works without collect().
 fn sizes() -> [PickerItem<&'static str>; 3] {
@@ -833,7 +826,7 @@ from `waterui::form::picker::date::{Date, DateTime, Time}` — no `jiff` depende
 own is needed to name them or call their constructors, which are fallible:
 
 ```rust
-use waterui::form::picker::date::{Date, DatePicker, DateTimePickerComponents};
+use waterui::form::picker::date::Date;
 
 DatePicker::new("Date", &date)                   // generic over T: DatePickable (Date, Time, DateTime)
     .range(min..=max)                            // RangeInclusive<T> of the bound type; clamps immediately

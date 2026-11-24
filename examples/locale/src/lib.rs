@@ -18,7 +18,6 @@
 
 use waterui::app::{App, Windows};
 use waterui::catalog;
-use waterui::form::picker::{Picker, PickerItem};
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::regional::current_settings;
