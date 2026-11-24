@@ -233,5 +233,5 @@ pub fn demo() -> impl View {
 pub fn app(env: Environment) -> App<impl Windows> {
     let system_locale = env.get::<Locale>().cloned().unwrap_or(locales::EN);
 
-    App::new(move || scene(&system_locale), env)
+    App::new(env).window(Window::new("", move || scene(&system_locale)))
 }

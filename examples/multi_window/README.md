@@ -97,8 +97,8 @@ water run --platform macos
 
 ```rust
 let (windows, channel) = WindowManager::new();
-// Register `channel` with `App::window(channel)` or `App::new_with_windows(channel, env)`.
-Window::new("Window Title", binding(WindowState::Normal), content)
+// Register `channel` with `App::new(env).window(channel)`.
+Window::new("Window Title", content)
     .style(WindowStyle::Titled)
     .resizable(true)
     .show(&windows);
@@ -107,7 +107,7 @@ Window::new("Window Title", binding(WindowState::Normal), content)
 ### Window with Material Blur
 
 ```rust
-Window::new("Frosted Glass", binding(WindowState::Normal), content)
+Window::new("Frosted Glass", content)
     .style(WindowStyle::Titled)
     .background(Material::Regular)
     .show(&windows);
@@ -117,7 +117,7 @@ Window::new("Frosted Glass", binding(WindowState::Normal), content)
 
 ```rust
 let color = Color::srgb_f32(0.2, 0.4, 0.8).with_opacity(0.85);
-Window::new("Colored Window", binding(WindowState::Normal), content)
+Window::new("Colored Window", content)
     .background(color)
     .show(&windows);
 ```
@@ -130,7 +130,7 @@ let presentation = WindowPresentation::new(&state);
 
 // Declarative window in the view tree
 conditional_window(&presentation, |state| {
-    Window::new("My Window", state, content)
+    Window::new("My Window", content).state(&state)
 })
 
 // Open or close reactively

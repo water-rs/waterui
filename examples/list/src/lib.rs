@@ -164,7 +164,7 @@ pub fn demo() -> impl View {
 #[must_use]
 pub fn app(env: Environment) -> App<impl Windows> {
     let state = DemoState::new();
-    App::new(move || content(&state), env)
+    App::new(env).window(Window::new("", move || content(&state)))
 }
 
 #[cfg(test)]

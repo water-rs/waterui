@@ -76,7 +76,7 @@ pub fn demo() -> impl View {
 
 /// Builds the media picker example app.
 pub fn app(env: Environment) -> App<impl Windows> {
-    App::new(demo, env)
+    App::new(env).window(Window::new("", demo))
 }
 
 /// Creates a picker button that opens the media picker with the given filter

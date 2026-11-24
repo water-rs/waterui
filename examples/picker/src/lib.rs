@@ -277,5 +277,5 @@ fn file_list(files: &Binding<Vec<Url>>) -> impl View + use<> {
 
 /// Builds the example app, showing the picker gallery demo.
 pub fn app(env: Environment) -> App<impl Windows> {
-    App::new(demo, env)
+    App::new(env).window(Window::new("", demo))
 }

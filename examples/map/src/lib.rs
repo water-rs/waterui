@@ -195,5 +195,5 @@ fn with_tiles(view: impl View) -> impl View {
 #[must_use]
 pub fn app(env: Environment) -> App<impl Windows> {
     let state = MapExampleState::new();
-    App::new(move || with_tiles(content(state.clone())), env)
+    App::new(env).window(Window::new("", move || with_tiles(content(state.clone()))))
 }

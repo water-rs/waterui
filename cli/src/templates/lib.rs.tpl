@@ -1,6 +1,7 @@
 use waterui::app::{App, Windows};
 use waterui::prelude::*;
 use waterui::preview;
+use waterui::window::Window;
 
 // Demo form data structure
 #[form]
@@ -67,5 +68,5 @@ fn main() -> impl View {
 }
 
 pub fn app(env: Environment) -> App<impl Windows> {
-    App::new(main, env)
+    App::new(env).window(Window::new("{{ ctx.app_display_name }}", main))
 }

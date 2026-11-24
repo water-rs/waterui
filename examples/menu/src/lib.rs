@@ -15,10 +15,9 @@ use waterui::component::MenuBarView;
 use waterui::log::info;
 use waterui::prelude::*;
 use waterui::preview;
-use waterui::reactive::{Binding, binding};
+use waterui::reactive::Binding;
 use waterui::task::sleep;
 use waterui::window::Window;
-use waterui::window::WindowState::Normal;
 
 const BLUE: Srgb = Srgb::from_hex("#2196F3");
 const ORANGE_BG: Srgb = Srgb::from_hex("#FFF3E0");
@@ -447,36 +446,34 @@ pub fn app(env: Environment) -> App<impl Windows, impl AppMenuBar> {
     let quit_answer = Binding::container(String::from("No quit asked yet"));
     let content_quit_answer = quit_answer.clone();
 
-    App::new_with_windows(
-        [
-            Window::new("WaterUI Menu Examples", binding(Normal), move || {
+    App::new(env)
+        .window(
+            Window::new("WaterUI Menu Examples", move || {
                 scene(&content_toolbar_status, &content_quit_answer)
             })
             .toolbar(window_toolbar(&toolbar_status)),
-        ],
-        env,
-    )
-    .menu_bar(quit_menu(&refuse_quit))
-    // The question stays open for two seconds, long enough to send the
-    // process a termination signal or press ⌘Q again before it is answered.
-    .on_quit_request(move || {
-        let refuse_quit = refuse_quit.clone();
-        let quit_answer = quit_answer.clone();
-        info!("menu example: on_quit_request asked");
-        quit_answer.set(String::from("deciding…"));
-        async move {
-            sleep(Duration::from_secs(2)).await;
-            let (reply, shown) = if refuse_quit.snapshot() {
-                (QuitReply::Cancel, "refused")
-            } else {
-                (QuitReply::Quit, "allowed")
-            };
-            info!(?reply, "menu example: on_quit_request answered");
-            quit_answer.set(String::from(shown));
-            reply
-        }
-    })
-    .on_terminate(|| async {
-        info!("menu example: on_terminate ran");
-    })
+        )
+        .menu_bar(quit_menu(&refuse_quit))
+        // The question stays open for two seconds, long enough to send the
+        // process a termination signal or press ⌘Q again before it is answered.
+        .on_quit_request(move || {
+            let refuse_quit = refuse_quit.clone();
+            let quit_answer = quit_answer.clone();
+            info!("menu example: on_quit_request asked");
+            quit_answer.set(String::from("deciding…"));
+            async move {
+                sleep(Duration::from_secs(2)).await;
+                let (reply, shown) = if refuse_quit.snapshot() {
+                    (QuitReply::Cancel, "refused")
+                } else {
+                    (QuitReply::Quit, "allowed")
+                };
+                info!(?reply, "menu example: on_quit_request answered");
+                quit_answer.set(String::from(shown));
+                reply
+            }
+        })
+        .on_terminate(|| async {
+            info!("menu example: on_terminate ran");
+        })
 }

@@ -507,7 +507,9 @@ and headless hosts draw nothing but keep the shortcuts armed:
 ```rust
 use waterui::app::App;
 
-App::new(move || content(), env).menu_bar(Menu::new("File", (
+App::new(env)
+    .window(Window::new("", move || content()))
+    .menu_bar(Menu::new("File", (
     "Save".action(save).shortcut(Shortcut::new('s').command()),
     Divider,
     MenuItem::CloseWindow,

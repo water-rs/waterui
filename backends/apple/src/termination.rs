@@ -378,13 +378,10 @@ mod tests {
         // No hooks: the machine terminates while the request is filed, so
         // the delegate answers directly and sends nothing.
         let (gate, app) = new_gate();
-        let machine = App::new_with_windows((), Environment::new())
-            .into_parts()
-            .termination
-            .start(
-                &mut Environment::new(),
-                AppKitTerminationHost(Rc::clone(&gate)),
-            );
+        let machine = App::new(Environment::new()).into_parts().termination.start(
+            &mut Environment::new(),
+            AppKitTerminationHost(Rc::clone(&gate)),
+        );
         assert_eq!(
             gate.should_terminate(|| machine.request(TerminationKind::Cancellable)),
             TerminateReply::Now
@@ -396,7 +393,7 @@ mod tests {
         let (gate, app) = new_gate();
         let terminated = Rc::new(Cell::new(0_u32));
         let counter = Rc::clone(&terminated);
-        let machine = App::new_with_windows((), Environment::new())
+        let machine = App::new(Environment::new())
             .on_quit_request(core::future::pending::<QuitReply>)
             .on_terminate(move || async move { counter.set(counter.get() + 1) })
             .into_parts()

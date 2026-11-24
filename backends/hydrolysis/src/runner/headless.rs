@@ -628,11 +628,7 @@ impl Drop for ReclaimGpuOnDrop {
 /// frame.
 #[cfg(not(target_arch = "wasm32"))]
 fn default_window<B: ViewBuilder>(content: B) -> Window<WindowContent<B>> {
-    Window::new(
-        "",
-        waterui_core::binding(waterui::window::WindowState::Normal),
-        content,
-    )
+    Window::new("", content)
 }
 
 #[cfg(not(target_arch = "wasm32"))]

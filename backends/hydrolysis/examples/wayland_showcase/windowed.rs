@@ -109,17 +109,13 @@ fn main_view() -> impl View {
 }
 
 fn app(env: Environment) -> App<impl Windows> {
-    let window = Window::new(
-        "Hydrolysis Wayland Showcase",
-        binding(waterui::window::WindowState::Normal),
-        main_view,
-    )
-    .resizable(true)
-    .background(Color::srgb_hex("#EEF2FF"));
+    let window = Window::new("Hydrolysis Wayland Showcase", main_view)
+        .resizable(true)
+        .background(Color::srgb_hex("#EEF2FF"));
     window
         .frame
         .set(Rect::new(Point::zero(), Size::new(1366.0, 900.0)));
-    App::new_with_windows([window], env)
+    App::new(env).window(window)
 }
 
 fn showcase_lifetime() -> Duration {

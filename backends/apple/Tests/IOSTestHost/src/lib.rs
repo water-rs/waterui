@@ -79,5 +79,5 @@ fn inbox() -> impl View {
 
 /// Builds the test host app around [`inbox`].
 pub fn app(env: Environment) -> App<impl Windows> {
-    App::new(inbox, env)
+    App::new(env).window(Window::new("", inbox))
 }

@@ -122,7 +122,7 @@ pub fn typography_and_rtl() -> impl View {
 
 /// Builds the example app, showing the typography and bidirectional layout demo.
 pub fn app(env: Environment) -> App<impl Windows> {
-    App::new(typography_and_rtl, env)
+    App::new(env).window(Window::new("", typography_and_rtl))
 }
 
 #[cfg(test)]

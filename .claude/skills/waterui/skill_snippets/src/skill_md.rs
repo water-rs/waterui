@@ -206,7 +206,7 @@ pub mod skill_block_07 {
     }
 
     pub fn app(env: Environment) -> App<impl Windows> {
-        App::new(counter, env)
+        App::new(env).window(Window::new("Counter", counter))
     }
 }
 

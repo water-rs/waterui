@@ -163,20 +163,17 @@ pub fn app(mut env: Environment) -> App<impl Windows> {
 
     env.install(theme);
 
-    App::new(
-        move || {
-            scene(
-                &settings,
-                &registration,
-                &custom_name,
-                &custom_bio,
-                &custom_enabled,
-                &custom_count,
-                &custom_slider,
-            )
-        },
-        env,
-    )
+    App::new(env).window(Window::new("", move || {
+        scene(
+            &settings,
+            &registration,
+            &custom_name,
+            &custom_bio,
+            &custom_enabled,
+            &custom_count,
+            &custom_slider,
+        )
+    }))
 }
 
 // Preview function for testing the preview system

@@ -5,7 +5,7 @@
 
 use waterui::prelude::*;
 
-/// Glue: the root view `App::new(root_view, env)` refers to.
+/// Glue: the root view `App::new(env).window(Window::new("My App", root_view))` refers to.
 fn root_view() -> impl View {
     text("root")
 }
@@ -34,7 +34,7 @@ pub mod project_block_01 {
     use waterui::prelude::*;
 
     pub fn app(env: Environment) -> App<impl Windows> {
-        App::new(root_view, env)
+        App::new(env).window(Window::new("My App", root_view))
     }
 }
 
@@ -48,7 +48,7 @@ pub mod project_block_02 {
 
     pub fn app(env: Environment) -> App<impl Windows> {
         let state = AppState::new();
-        App::new(move || content(state.clone()), env)
+        App::new(env).window(Window::new("My App", move || content(state.clone())))
     }
 }
 

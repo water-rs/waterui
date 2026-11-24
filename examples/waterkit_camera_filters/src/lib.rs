@@ -846,5 +846,5 @@ const CAMERA_FILTER_SHADER: CompiledShader =
 
 /// Builds the camera filter lab app around [`demo`].
 pub fn app(env: Environment) -> App<impl Windows> {
-    App::new(demo, env)
+    App::new(env).window(Window::new("", demo))
 }

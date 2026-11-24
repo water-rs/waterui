@@ -655,10 +655,9 @@ pub fn demo() -> impl View {
 pub fn app(env: Environment) -> App<impl Windows> {
     // Own all mutable state at the window scope so it persists across rebuilds.
     let (selected, groups_open, rows, state) = new_state();
-    App::new(
-        move || catalog(&selected, groups_open.clone(), rows.clone(), state.clone()),
-        env,
-    )
+    App::new(env).window(Window::new("", move || {
+        catalog(&selected, groups_open.clone(), rows.clone(), state.clone())
+    }))
 }
 
 #[cfg(test)]

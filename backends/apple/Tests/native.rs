@@ -11928,10 +11928,10 @@ mod embedding {
     use waterui::graphics::color::ColorScheme;
     use waterui::handler::ViewBuilder;
     use waterui::layout::container::FixedContainer;
-    use waterui::reactive::{Computed, binding};
+    use waterui::reactive::Computed;
     use waterui::regional;
     use waterui::text::font::ResolvedFont;
-    use waterui::window::{Window, WindowContent, WindowState};
+    use waterui::window::{Window, WindowContent};
     use waterui::{Environment, Signal};
 
     use crate::mtm;
@@ -12044,20 +12044,16 @@ mod embedding {
         let host_mask = native.styleMask();
 
         let embed = Embed::new(&host, |env| {
-            App::new_with_windows(
-                vec![waterui::window::Window::new(
-                    "Declared Title",
-                    binding(WindowState::Normal),
-                    || Text::new("embedded"),
-                )],
-                env,
-            )
-            .menu_bar(Menu::new(
-                "Embed",
-                vec![MenuItem::Command(
-                    Command::builder("DeclaredItem").action(|| {}),
-                )],
-            ))
+            use waterui::window::Window;
+
+            App::new(env)
+                .window(Window::new("Declared Title", || Text::new("embedded")))
+                .menu_bar(Menu::new(
+                    "Embed",
+                    vec![MenuItem::Command(
+                        Command::builder("DeclaredItem").action(|| {}),
+                    )],
+                ))
         });
 
         assert_eq!(native.title().to_string(), "Host Title");
@@ -12080,7 +12076,11 @@ mod embedding {
         // Detach and remount on the same host.
         drop(embed);
         assert_eq!(view::subviews(&host).len(), 0, "drop detaches the root");
-        let _remounted = Embed::new(&host, |env| App::new(|| Text::new("again"), env));
+        let _remounted = Embed::new(&host, |env| {
+            use waterui::window::Window;
+
+            App::new(env).window(Window::new("", || Text::new("again")))
+        });
         assert_eq!(view::subviews(&host).len(), 1);
         application.setMainMenu(saved_menu.as_deref());
     }
@@ -12101,12 +12101,14 @@ mod embedding {
         let capture = |slot: &Rc<RefCell<Option<Computed<ColorScheme>>>>| {
             let slot = Rc::clone(slot);
             move |env: Environment| {
+                use waterui::window::Window;
+
                 *slot.borrow_mut() = Some(
                     env.query::<ColorScheme, Computed<ColorScheme>>()
                         .cloned()
                         .expect("the mount installs a color scheme"),
                 );
-                App::new(|| Text::new("x"), env)
+                App::new(env).window(Window::new("", || Text::new("x")))
             }
         };
         let embed_a = Embed::new(&host_a, capture(&scheme_a));
@@ -12146,7 +12148,11 @@ mod embedding {
     pub fn the_embedded_root_follows_the_host_bounds_and_detaches_on_drop() {
         let mtm = mtm();
         let host = plain_view(mtm);
-        let embed = Embed::new(&host, |env| App::new(|| Text::new("x"), env));
+        let embed = Embed::new(&host, |env| {
+            use waterui::window::Window;
+
+            App::new(env).window(Window::new("", || Text::new("x")))
+        });
 
         let root = view::subviews(&host)
             .into_iter()
@@ -12184,7 +12190,7 @@ mod embedding {
                     c"/tmp/waterui-embed-test-assets".as_ptr(),
                     c"/tmp/waterui-embed-test-fonts".as_ptr(),
                     None,
-                    |env| App::new_with_windows((), env),
+                    App::new,
                 )
             }
         }));
@@ -12342,7 +12348,8 @@ mod embedding {
         fn app(
             &self,
             seen: Rc<RefCell<Vec<ProposalSize>>>,
-        ) -> impl FnOnce(Environment) -> App<Window<WindowContent<ProbeContent>>> + use<> {
+        ) -> impl FnOnce(Environment) -> App<((), Window<WindowContent<ProbeContent>>)> + use<>
+        {
             let (bodies, scheme, fonts, direction, locale) = (
                 Rc::clone(&self.bodies),
                 Rc::clone(&self.scheme),
@@ -12372,7 +12379,7 @@ mod embedding {
                     &binding.snapshot()
                 );
                 *locale.borrow_mut() = Some(binding);
-                App::new(ProbeContent { seen }, env)
+                App::new(env).window(Window::new("", ProbeContent { seen }))
             }
         }
         fn scheme_now(&self) -> ColorScheme {

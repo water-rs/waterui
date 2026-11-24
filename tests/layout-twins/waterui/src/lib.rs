@@ -485,5 +485,5 @@ fn root_case(case: &str) -> impl View + use<> {
 #[must_use]
 pub fn app(env: Environment) -> App<impl Windows> {
     let case = std::env::var("TWINS_CASE").unwrap_or_else(|_| "all".to_string());
-    App::new(move || root_case(&case), env)
+    App::new(env).window(Window::new("", move || root_case(&case)))
 }

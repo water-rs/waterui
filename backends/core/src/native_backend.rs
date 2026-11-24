@@ -1619,11 +1619,9 @@ mod tests {
 
     #[test]
     fn a_window_in_the_tree_reaches_its_backend_with_its_content_typed() {
-        let hits = reached(waterui::window::Window::new(
-            "Test",
-            waterui::binding(waterui::window::WindowState::Normal),
-            Spacer::flexible,
-        ));
+        use waterui::window::Window;
+
+        let hits = reached(Window::new("Test", Spacer::flexible));
         assert_eq!(hits[0], "window");
         assert_eq!(hits[1], UNHOOKED_CHILD);
         #[cfg(not(feature = "erased-dispatch"))]
@@ -1635,14 +1633,10 @@ mod tests {
 
     #[test]
     fn a_window_with_a_toolbar_reaches_its_backend_with_both_typed() {
-        let hits = reached(
-            waterui::window::Window::new(
-                "Test",
-                waterui::binding(waterui::window::WindowState::Normal),
-                Spacer::flexible,
-            )
-            .toolbar(waterui::layout::Divider),
-        );
+        use waterui::layout::Divider;
+        use waterui::window::Window;
+
+        let hits = reached(Window::new("Test", Spacer::flexible).toolbar(Divider));
         #[cfg(not(feature = "erased-dispatch"))]
         assert!(!hits.contains(&"erased child"));
         #[cfg(feature = "erased-dispatch")]

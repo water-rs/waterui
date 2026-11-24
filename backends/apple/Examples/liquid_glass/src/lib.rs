@@ -263,5 +263,5 @@ fn backdrop() -> impl View {
 
 /// Builds the Liquid Glass example app around [`main`].
 pub fn app(env: Environment) -> App<impl Windows> {
-    App::new(main, env)
+    App::new(env).window(Window::new("", main))
 }
