@@ -141,9 +141,6 @@ Keys must be unique and stable — a `by` that answers the same key for two
 rows, or a key outside the domain the host can hold, is an error at mount
 and a panic on a later update, never a silent mis-render.
 
-`<Suspense fallback={…}>…</Suspense>` is the host-driven pending state:
-the fallback shows while the children are pending.
-
 ## `<Box>`: a modifier scope
 
 `<Box>` creates no node. It takes exactly one host element child and
