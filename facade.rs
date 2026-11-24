@@ -9,3 +9,11 @@ use waterui_dylib as _;
 pub use waterui_internal::__export_preview;
 pub use waterui_internal::configure_environment;
 pub use waterui_internal::*;
+#[cfg(feature = "form")]
+pub use waterui_internal::{FormBuilder, form};
+#[cfg(feature = "ts")]
+pub use waterui_internal::{TsProps, TsType, tsx};
+#[cfg(feature = "webview")]
+pub use waterui_internal::{eval, exec, exec_file, js_api, js_file};
+#[cfg(feature = "widgets")]
+pub use waterui_internal::{widget, widget_intent};
