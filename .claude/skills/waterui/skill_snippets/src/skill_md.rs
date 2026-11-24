@@ -416,14 +416,14 @@ pub fn skill_block_14() {
     // Real payloads capture state: the closure is an `Fn` builder, so clone inside it
     let _ = { when(loaded.clone(), move || summary(items.clone())).otherwise(|| empty()) };
 
-    // Branches of different view types: #[view_builder] (or a view! { .. } block)
+    // Static branches of different view types: #[view_builder] (or a view! { .. } block)
     #[waterui::view_builder]
-    fn gate(logged_in: Binding<bool>) -> impl View {
+    fn gate(logged_in: bool) -> impl View {
         if logged_in { dashboard() } else { login() }
     }
 
     #[waterui::view_builder]
-    fn page(tab: Binding<i32>) -> impl View {
+    fn page(tab: i32) -> impl View {
         match tab {
             0 => loading(),
             1 => ready(),
@@ -432,8 +432,8 @@ pub fn skill_block_14() {
     }
 
     // Glue: call both so the nested items are used.
-    let _ = gate(logged_in.clone());
-    let _ = page(state.clone());
+    let _ = gate(true);
+    let _ = page(0);
 }
 
 // ---------------------------------------------------------------------------
