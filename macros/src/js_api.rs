@@ -8,40 +8,106 @@
 //! macro is for.
 //!
 //! What it generates is only what could have been written by hand, so the manual
-//! path stays equivalent and the macro adds no capability of its own.
+//! path stays equivalent and the macro adds no capability of its own. TypeScript
+//! declarations are derived from the compiler-resolved `TsType::SCHEMA` and
+//! `JsReplySchema::SCHEMA` constants rather than from type spellings.
 
 use proc_macro2::TokenStream;
-use quote::ToTokens as _;
 use quote::{format_ident, quote};
-use syn::{FnArg, ImplItem, ImplItemFn, ItemImpl, LitStr, Meta, ReturnType};
+use syn::ext::IdentExt as _;
+use syn::parse::{Parse, ParseStream};
+use syn::{
+    Attribute, Error, Expr, FnArg, Ident, ImplItem, ImplItemFn, ItemImpl, Lit, LitStr, Meta, Pat,
+    ReturnType, Type,
+};
 
 /// Parsed `#[js_api(namespace = "app")]` arguments.
 pub struct Args {
     namespace: Option<LitStr>,
 }
 
-impl syn::parse::Parse for Args {
-    fn parse(input: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
+impl Parse for Args {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
         if input.is_empty() {
             return Ok(Self { namespace: None });
         }
         let meta: Meta = input.parse()?;
         let namespace = match &meta {
             Meta::NameValue(pair) if pair.path.is_ident("namespace") => match &pair.value {
-                syn::Expr::Lit(literal) => match &literal.lit {
-                    syn::Lit::Str(value) => Some(value.clone()),
-                    other => return Err(syn::Error::new_spanned(other, "expected a string")),
+                Expr::Lit(literal) => match &literal.lit {
+                    Lit::Str(value) if value.value().is_empty() => {
+                        return Err(Error::new(value.span(), "`namespace` cannot be empty"));
+                    }
+                    Lit::Str(value) => Some(value.clone()),
+                    other => return Err(Error::new_spanned(other, "expected a string")),
                 },
-                other => return Err(syn::Error::new_spanned(other, "expected a string")),
+                other => return Err(Error::new_spanned(other, "expected a string")),
             },
             other => {
-                return Err(syn::Error::new_spanned(
-                    other,
-                    "expected `namespace = \"...\"`",
-                ));
+                return Err(Error::new_spanned(other, "expected `namespace = \"...\"`"));
             }
         };
         Ok(Self { namespace })
+    }
+}
+
+/// Parsed `#[js(...)]` attributes on one method.
+#[derive(Default)]
+struct MethodAttrs {
+    skip: bool,
+    rename: Option<LitStr>,
+}
+
+impl MethodAttrs {
+    fn parse(attrs: &[Attribute]) -> syn::Result<Self> {
+        let mut parsed = Self::default();
+        for attr in attrs {
+            if !attr.path().is_ident("js") {
+                continue;
+            }
+            let mut saw_item = false;
+            attr.parse_nested_meta(|meta| {
+                saw_item = true;
+                if meta.path.is_ident("skip") {
+                    if parsed.skip {
+                        return Err(meta.error("duplicate `#[js(skip)]` attribute"));
+                    }
+                    parsed.skip = true;
+                    return Ok(());
+                }
+                if meta.path.is_ident("rename") {
+                    if parsed.rename.is_some() {
+                        return Err(meta.error("duplicate `#[js(rename = \"...\")]` attribute"));
+                    }
+                    let value: LitStr = meta.value()?.parse()?;
+                    if value.value().is_empty() {
+                        return Err(Error::new(
+                            value.span(),
+                            "`#[js(rename = \"...\")]` cannot be empty",
+                        ));
+                    }
+                    parsed.rename = Some(value);
+                    return Ok(());
+                }
+                Err(meta
+                    .error("unknown `#[js(...)]` attribute; expected `skip` or `rename = \"...\"`"))
+            })?;
+            if !saw_item {
+                return Err(Error::new_spanned(
+                    attr,
+                    "`#[js(...)]` requires `skip` or `rename = \"...\"`",
+                ));
+            }
+        }
+        if parsed.skip
+            && let Some(rename) = &parsed.rename
+        {
+            return Err(Error::new(
+                rename.span(),
+                "`#[js(skip)]` and `#[js(rename = \"...\")]` cannot be combined",
+            ));
+        }
+        Ok(parsed)
     }
 }
 
@@ -62,16 +128,22 @@ enum Exposure {
 /// matching on the spelling of a return type would break the moment someone used
 /// a type alias or a qualified path. `async` and the parameter list are facts the
 /// tokens actually carry.
-fn classify(method: &ImplItemFn) -> Result<Exposure, syn::Error> {
-    if method.attrs.iter().any(is_skip) {
+fn classify(method: &ImplItemFn, attrs: &MethodAttrs) -> syn::Result<Exposure> {
+    if attrs.skip {
         return Ok(Exposure::Skipped);
     }
     let takes_self = matches!(method.sig.inputs.first(), Some(FnArg::Receiver(_)));
     if !takes_self {
+        if let Some(rename) = &attrs.rename {
+            return Err(Error::new(
+                rename.span(),
+                "`#[js(rename = \"...\")]` cannot be applied to an associated function without `self`",
+            ));
+        }
         return Ok(Exposure::Skipped);
     }
     if !method.sig.generics.params.is_empty() {
-        return Err(syn::Error::new_spanned(
+        return Err(Error::new_spanned(
             &method.sig,
             "a generic method cannot be exposed: the page can only call one concrete signature",
         ));
@@ -83,180 +155,77 @@ fn classify(method: &ImplItemFn) -> Result<Exposure, syn::Error> {
     if extra_arguments == 0 && matches!(method.sig.output, ReturnType::Type(..)) {
         return Ok(Exposure::State);
     }
-    Err(syn::Error::new_spanned(
+    Err(Error::new_spanned(
         &method.sig,
         "a synchronous method with arguments cannot be exposed: make it `async fn`, \
          or add #[js(skip)] if it is internal",
     ))
 }
 
-fn is_skip(attribute: &syn::Attribute) -> bool {
-    attribute.path().is_ident("js")
-        && attribute
-            .parse_args::<syn::Ident>()
-            .is_ok_and(|ident| ident == "skip")
-}
-
-/// The name the page sees, honouring `#[js(rename = "...")]`.
-fn exposed_name(method: &ImplItemFn, namespace: Option<&LitStr>) -> String {
-    let renamed = method.attrs.iter().find_map(|attribute| {
-        if !attribute.path().is_ident("js") {
-            return None;
-        }
-        attribute
-            .parse_args::<syn::MetaNameValue>()
-            .ok()
-            .filter(|pair| pair.path.is_ident("rename"))
-            .and_then(|pair| match pair.value {
-                syn::Expr::Lit(literal) => match literal.lit {
-                    syn::Lit::Str(value) => Some(value.value()),
-                    _ => None,
-                },
-                _ => None,
-            })
-    });
-    let base = renamed.unwrap_or_else(|| method.sig.ident.to_string());
+/// The name the page sees, honouring `#[js(rename = "...")]` and any namespace.
+fn exposed_name(method: &ImplItemFn, attrs: &MethodAttrs, namespace: Option<&LitStr>) -> String {
+    let base = attrs
+        .rename
+        .as_ref()
+        .map_or_else(|| method.sig.ident.unraw().to_string(), LitStr::value);
     match namespace {
         Some(namespace) => format!("{}.{base}", namespace.value()),
         None => base,
     }
 }
 
-/// How a Rust type is spelled in TypeScript.
-///
-/// Only the types this boundary actually deals in are named; anything else
-/// becomes `unknown`, which is honest — a wrong declaration is worse than an
-/// unspecific one, because TypeScript will believe it.
-///
-/// `u64` and `i64` are `number | bigint` rather than `number`: a value past
-/// 2^53 arrives as a `BigInt`, and a declaration saying otherwise would send
-/// page authors looking for a bug in their own arithmetic.
-fn typescript_type(ty: &syn::Type) -> String {
-    let syn::Type::Path(path) = ty else {
-        return match ty {
-            syn::Type::Tuple(tuple) if tuple.elems.is_empty() => "void".to_owned(),
-            syn::Type::Reference(reference) => typescript_type(&reference.elem),
-            _ => "unknown".to_owned(),
-        };
-    };
-    let Some(segment) = path.path.segments.last() else {
-        return "unknown".to_owned();
-    };
-
-    let parameter = |index: usize| {
-        let syn::PathArguments::AngleBracketed(arguments) = &segment.arguments else {
-            return None;
-        };
-        arguments
-            .args
-            .iter()
-            .nth(index)
-            .and_then(|argument| match argument {
-                syn::GenericArgument::Type(inner) => Some(inner),
-                _ => None,
-            })
-    };
-
-    match segment.ident.to_string().as_str() {
-        "String" | "Str" | "str" | "char" | "PathBuf" | "Path" => "string".to_owned(),
-        "bool" => "boolean".to_owned(),
-        "u8" | "u16" | "u32" | "i8" | "i16" | "i32" | "f32" | "f64" | "usize" | "isize" => {
-            "number".to_owned()
-        }
-        "u64" | "i64" | "u128" | "i128" => "number | bigint".to_owned(),
-        // Bytes cross as a `Uint8Array`, whichever wrapper carries them.
-        "Bytes" => "Uint8Array".to_owned(),
-        "Vec" | "VecDeque" | "HashSet" | "BTreeSet" => match parameter(0) {
-            Some(inner) if typescript_type(inner) == "number" && is_u8(inner) => {
-                "Uint8Array".to_owned()
-            }
-            Some(inner) => format!("{}[]", typescript_type(inner)),
-            None => "unknown[]".to_owned(),
-        },
-        "Option" => parameter(0).map_or_else(
-            || "unknown | null".to_owned(),
-            |inner| format!("{} | null", typescript_type(inner)),
-        ),
-        "HashMap" | "BTreeMap" => match (parameter(0), parameter(1)) {
-            (Some(key), Some(value)) => format!(
-                "Record<{}, {}>",
-                typescript_type(key),
-                typescript_type(value)
-            ),
-            _ => "Record<string, unknown>".to_owned(),
-        },
-        // WaterUI's own wrappers are transparent on the wire.
-        "Json" | "Result" | "Binding" | "Computed" => {
-            parameter(0).map_or_else(|| "unknown".to_owned(), typescript_type)
-        }
-        _ => "unknown".to_owned(),
-    }
+/// One typed handler argument extracted from a method signature.
+struct MethodParam {
+    ident: Ident,
+    name: String,
+    ty: Box<Type>,
 }
 
-fn is_u8(ty: &syn::Type) -> bool {
-    matches!(ty, syn::Type::Path(path)
-        if path.path.segments.last().is_some_and(|last| last.ident == "u8"))
-}
-
-/// The TypeScript for one exposed method, and which member it belongs under.
-///
-/// The two groups are not interchangeable: a handler is reached through
-/// `waterui.invoke(name, …)` while mirrored state is a property of
-/// `waterui.state`, so declaring them side by side would describe an object the
-/// page does not have.
-fn declaration(method: &ImplItemFn, name: &str, exposure: &Exposure) -> Option<(bool, String)> {
-    let returns = match &method.sig.output {
-        ReturnType::Default => "void".to_owned(),
-        ReturnType::Type(_, ty) => typescript_type(ty),
-    };
-
-    match exposure {
-        Exposure::Skipped => None,
-        Exposure::State => {
-            // Only a `Binding` is assignable; everything else is derived in Rust
-            // and throws on assignment, which `readonly` is exactly how to say.
-            let writable = method
-                .sig
-                .output
-                .to_token_stream()
-                .to_string()
-                .contains("Binding");
-            let prefix = if writable { "" } else { "readonly " };
-            Some((true, format!("    {prefix}{name:?}: {returns};")))
-        }
-        Exposure::Method => {
-            let arguments: Vec<String> = method
-                .sig
-                .inputs
-                .iter()
-                .skip(1)
-                .filter_map(|argument| match argument {
-                    FnArg::Typed(typed) => Some(format!(
-                        "{}: {}",
-                        typed.pat.to_token_stream(),
-                        typescript_type(&typed.ty)
-                    )),
-                    FnArg::Receiver(_) => None,
+fn method_params(method: &ImplItemFn) -> syn::Result<Vec<MethodParam>> {
+    method
+        .sig
+        .inputs
+        .iter()
+        .skip(1)
+        .map(|argument| match argument {
+            FnArg::Typed(typed) => {
+                let Pat::Ident(pat_ident) = typed.pat.as_ref() else {
+                    return Err(Error::new_spanned(
+                        &typed.pat,
+                        "a `#[js_api]` handler parameter must be a simple identifier",
+                    ));
+                };
+                Ok(MethodParam {
+                    name: pat_ident.ident.unraw().to_string(),
+                    ident: pat_ident.ident.clone(),
+                    ty: typed.ty.clone(),
                 })
-                .collect();
-            let parameters = if arguments.is_empty() {
-                String::new()
-            } else {
-                format!("args: {{ {} }}", arguments.join("; "))
-            };
-            Some((
-                false,
-                format!(
-                    "  invoke(name: {name:?}{}): Promise<{returns}>;",
-                    if parameters.is_empty() {
-                        String::new()
-                    } else {
-                        format!(", {parameters}")
-                    }
-                ),
-            ))
+            }
+            FnArg::Receiver(receiver) => Err(Error::new_spanned(
+                receiver,
+                "a second `self` argument is not valid",
+            )),
+        })
+        .collect()
+}
+
+/// Rejects `#[js(...)]` on non-method impl items where it would otherwise be ignored.
+fn reject_non_method_js_attrs(item: &ImplItem) -> syn::Result<()> {
+    let attrs = match item {
+        ImplItem::Const(item) => &item.attrs,
+        ImplItem::Type(item) => &item.attrs,
+        ImplItem::Macro(item) => &item.attrs,
+        _ => return Ok(()),
+    };
+    for attr in attrs {
+        if attr.path().is_ident("js") {
+            return Err(Error::new_spanned(
+                attr,
+                "`#[js(...)]` is only valid on methods inside `#[js_api]`",
+            ));
         }
     }
+    Ok(())
 }
 
 /// Strips the `#[js(...)]` attributes so the emitted impl block still compiles.
@@ -270,112 +239,128 @@ fn strip_js_attributes(block: &mut ItemImpl) {
     }
 }
 
+fn expand_handler(method: &ImplItemFn, name: &str) -> syn::Result<(TokenStream, TokenStream)> {
+    let ident = &method.sig.ident;
+    let params = method_params(method)?;
+    let return_ty: TokenStream = match &method.sig.output {
+        ReturnType::Default => quote!(()),
+        ReturnType::Type(_, ty) => quote!(#ty),
+    };
+    let param_schemas: Vec<_> = params
+        .iter()
+        .map(|param| {
+            let param_name = &param.name;
+            let param_ty = &param.ty;
+            quote! {
+                ::waterui::webview::JsApiParam::new(
+                    #param_name,
+                    <#param_ty as ::waterui::webview::TsType>::SCHEMA,
+                )
+            }
+        })
+        .collect();
+    let schema_entry = quote! {
+        ::waterui::webview::JsApiMethod::new(
+            #name,
+            &[#(#param_schemas),*],
+            <#return_ty as ::waterui::webview::JsReplySchema>::SCHEMA,
+        )
+    };
+
+    if params.is_empty() {
+        // No arguments means nothing to deserialize, so the page can
+        // call `await app.reset()` without inventing an empty object
+        // to send.
+        let registration = quote! {
+            {
+                let api = ::std::rc::Rc::clone(&api);
+                builder = builder.handler(#name, move || {
+                    let api = ::std::rc::Rc::clone(&api);
+                    async move { api.#ident().await }
+                });
+            }
+        };
+        return Ok((schema_entry, registration));
+    }
+
+    let argument_struct = format_ident!("__WateruiArgs{}", ident);
+    let field_idents: Vec<_> = params.iter().map(|param| &param.ident).collect();
+    let field_types: Vec<_> = params.iter().map(|param| &param.ty).collect();
+    let registration = quote! {
+        {
+            // One struct per method so the page sends a named object
+            // rather than a positional tuple, which reads the same way
+            // the Rust signature does.
+            #[derive(::waterui::webview::serde::Deserialize)]
+            #[serde(crate = "::waterui::webview::serde")]
+            #[allow(non_camel_case_types)]
+            struct #argument_struct {
+                #(#field_idents: #field_types,)*
+            }
+
+            let api = ::std::rc::Rc::clone(&api);
+            builder = builder.handler(
+                #name,
+                move |::waterui::webview::Json(arguments): ::waterui::webview::Json<#argument_struct>| {
+                    let api = ::std::rc::Rc::clone(&api);
+                    async move { api.#ident(#(arguments.#field_idents),*).await }
+                },
+            );
+        }
+    };
+    Ok((schema_entry, registration))
+}
+
 /// Expands `#[js_api]`.
 ///
 /// # Errors
 ///
-/// Returns an error for a method whose shape cannot be exposed.
-pub fn expand(args: &Args, mut block: ItemImpl) -> Result<TokenStream, syn::Error> {
+/// Returns an error for a method whose shape cannot be exposed or an invalid
+/// `#[js(...)]` attribute.
+pub fn expand(args: &Args, mut block: ItemImpl) -> syn::Result<TokenStream> {
     let self_ty = block.self_ty.clone();
     let mut registrations = Vec::new();
-    let mut state_members = Vec::new();
-    let mut call_members = Vec::new();
+    let mut state_entries = Vec::new();
+    let mut method_entries = Vec::new();
 
     for item in &block.items {
         let ImplItem::Fn(method) = item else {
+            reject_non_method_js_attrs(item)?;
             continue;
         };
-        let exposure = classify(method)?;
-        let name = exposed_name(method, args.namespace.as_ref());
+        let attrs = MethodAttrs::parse(&method.attrs)?;
+        let exposure = classify(method, &attrs)?;
+        let name = exposed_name(method, &attrs, args.namespace.as_ref());
         let ident = &method.sig.ident;
-        if let Some((is_state, line)) = declaration(method, &name, &exposure) {
-            if is_state {
-                state_members.push(line);
-            } else {
-                call_members.push(line);
-            }
-        }
 
         match exposure {
             Exposure::Skipped => {}
-            Exposure::State => registrations.push(quote! {
-                builder = builder.expose(#name, ::std::rc::Rc::clone(&api).#ident());
-            }),
-            Exposure::Method => {
-                let arguments: Vec<_> = method
-                    .sig
-                    .inputs
-                    .iter()
-                    .skip(1)
-                    .map(|argument| match argument {
-                        FnArg::Typed(typed) => Ok(typed.clone()),
-                        FnArg::Receiver(receiver) => Err(syn::Error::new_spanned(
-                            receiver,
-                            "a second `self` argument is not valid",
-                        )),
-                    })
-                    .collect::<Result<_, _>>()?;
-                if arguments.is_empty() {
-                    // No arguments means nothing to deserialize, so the page can
-                    // call `await app.reset()` without inventing an empty object
-                    // to send.
-                    registrations.push(quote! {
-                        {
-                            let api = ::std::rc::Rc::clone(&api);
-                            builder = builder.handler(#name, move || {
-                                let api = ::std::rc::Rc::clone(&api);
-                                async move { api.#ident().await }
-                            });
-                        }
-                    });
-                    continue;
-                }
-
-                let argument_struct = format_ident!("__WateruiArgs{}", ident);
-                let names: Vec<_> = arguments
-                    .iter()
-                    .map(|argument| argument.pat.clone())
-                    .collect();
-                let types: Vec<_> = arguments
-                    .iter()
-                    .map(|argument| argument.ty.clone())
-                    .collect();
-
-                registrations.push(quote! {
-                    {
-                        // One struct per method so the page sends a named object
-                        // rather than a positional tuple, which reads the same way
-                        // the Rust signature does.
-                        #[derive(::waterui::webview::serde::Deserialize)]
-                        #[serde(crate = "::waterui::webview::serde")]
-                        #[allow(non_camel_case_types)]
-                        struct #argument_struct {
-                            #(#names: #types,)*
-                        }
-
-                        let api = ::std::rc::Rc::clone(&api);
-                        builder = builder.handler(
-                            #name,
-                            move |::waterui::webview::Json(arguments): ::waterui::webview::Json<#argument_struct>| {
-                                let api = ::std::rc::Rc::clone(&api);
-                                async move { api.#ident(#(arguments.#names),*).await }
-                            },
-                        );
-                    }
+            Exposure::State => {
+                let ReturnType::Type(_, return_ty) = &method.sig.output else {
+                    return Err(Error::new_spanned(
+                        &method.sig,
+                        "mirrored state must declare a return type",
+                    ));
+                };
+                state_entries.push(quote! {
+                    ::waterui::webview::JsApiStateField::new(
+                        #name,
+                        <#return_ty as ::waterui::webview::TsType>::SCHEMA,
+                    )
                 });
+                registrations.push(quote! {
+                    builder = builder.expose(#name, ::std::rc::Rc::clone(&api).#ident());
+                });
+            }
+            Exposure::Method => {
+                let (schema_entry, registration) = expand_handler(method, &name)?;
+                method_entries.push(schema_entry);
+                registrations.push(registration);
             }
         }
     }
 
     strip_js_attributes(&mut block);
-
-    // `state` is always declared, even when empty: the page can still reach it,
-    // and an interface that omits it would make `waterui.state` a type error.
-    let typescript = format!(
-        "  state: {{\n{}\n  }};\n{}",
-        state_members.join("\n"),
-        call_members.join("\n")
-    );
 
     Ok(quote! {
         #block
@@ -389,8 +374,12 @@ pub fn expand(args: &Args, mut block: ItemImpl) -> Result<TokenStream, syn::Erro
                 builder
             }
 
-            fn typescript() -> &'static str {
-                #typescript
+            fn schema() -> &'static ::waterui::webview::JsApiSchema {
+                const SCHEMA: ::waterui::webview::JsApiSchema = ::waterui::webview::JsApiSchema::new(
+                    &[#(#state_entries),*],
+                    &[#(#method_entries),*],
+                );
+                &SCHEMA
             }
         }
     })
@@ -398,8 +387,9 @@ pub fn expand(args: &Args, mut block: ItemImpl) -> Result<TokenStream, syn::Erro
 
 #[cfg(test)]
 mod tests {
-    use super::{Exposure, classify, exposed_name};
-    use syn::{ImplItem, ImplItemFn, ItemImpl, LitStr, parse_quote};
+    use super::{Args, Exposure, MethodAttrs, classify, expand, exposed_name};
+    use proc_macro2::Span;
+    use syn::{ImplItem, ImplItemFn, ItemImpl, LitStr, parse_quote, parse_str};
 
     fn methods(block: ItemImpl) -> Vec<ImplItemFn> {
         block
@@ -425,7 +415,10 @@ mod tests {
         };
         let classified: Vec<_> = methods(block)
             .iter()
-            .map(|method| classify(method).expect("classifies"))
+            .map(|method| {
+                let attrs = MethodAttrs::parse(&method.attrs).expect("valid attrs");
+                classify(method, &attrs).expect("classifies")
+            })
             .collect();
         assert!(matches!(classified[0], Exposure::Method));
         assert!(matches!(classified[1], Exposure::State));
@@ -442,7 +435,9 @@ mod tests {
                 fn add(&self, by: u32) -> u32 { todo!() }
             }
         };
-        let error = classify(&methods(block)[0]).expect_err("cannot be exposed");
+        let method = &methods(block)[0];
+        let attrs = MethodAttrs::parse(&method.attrs).expect("valid attrs");
+        let error = classify(method, &attrs).expect_err("cannot be exposed");
         assert!(
             str::contains(&error.to_string(), "async fn"),
             "the error should say what to do: {error}"
@@ -456,7 +451,9 @@ mod tests {
                 async fn send<T: Serialize>(&self, value: T) {}
             }
         };
-        classify(&methods(block)[0]).expect_err("one concrete signature only");
+        let method = &methods(block)[0];
+        let attrs = MethodAttrs::parse(&method.attrs).expect("valid attrs");
+        classify(method, &attrs).expect_err("one concrete signature only");
     }
 
     #[test]
@@ -468,10 +465,97 @@ mod tests {
                 async fn reset_counter(&self) {}
             }
         };
-        let namespace = LitStr::new("app", proc_macro2::Span::call_site());
+        let namespace = LitStr::new("app", Span::call_site());
         let methods = methods(block);
-        assert_eq!(exposed_name(&methods[0], None), "greet");
-        assert_eq!(exposed_name(&methods[0], Some(&namespace)), "app.greet");
-        assert_eq!(exposed_name(&methods[1], Some(&namespace)), "app.reset");
+        let first_attrs = MethodAttrs::parse(&methods[0].attrs).expect("valid attrs");
+        let second_attrs = MethodAttrs::parse(&methods[1].attrs).expect("valid attrs");
+        assert_eq!(exposed_name(&methods[0], &first_attrs, None), "greet");
+        assert_eq!(
+            exposed_name(&methods[0], &first_attrs, Some(&namespace)),
+            "app.greet"
+        );
+        assert_eq!(
+            exposed_name(&methods[1], &second_attrs, Some(&namespace)),
+            "app.reset"
+        );
+    }
+
+    #[test]
+    fn unknown_and_malformed_js_attributes_are_rejected() {
+        let misspelled: ItemImpl = parse_quote! {
+            impl Api {
+                #[js(rneame = "x")]
+                async fn ping(&self) {}
+            }
+        };
+        let error = expand(&Args { namespace: None }, misspelled)
+            .expect_err("misspelled #[js(...)] must fail");
+        assert!(error.to_string().contains("unknown"), "{error}");
+
+        let empty: ItemImpl = parse_quote! {
+            impl Api {
+                #[js()]
+                async fn ping(&self) {}
+            }
+        };
+        expand(&Args { namespace: None }, empty).expect_err("empty #[js()] must fail");
+
+        let combined: ItemImpl = parse_quote! {
+            impl Api {
+                #[js(skip, rename = "x")]
+                async fn ping(&self) {}
+            }
+        };
+        expand(&Args { namespace: None }, combined)
+            .expect_err("skip + rename combination must fail");
+
+        let duplicate: ItemImpl = parse_quote! {
+            impl Api {
+                #[js(rename = "a")]
+                #[js(rename = "b")]
+                async fn ping(&self) {}
+            }
+        };
+        expand(&Args { namespace: None }, duplicate).expect_err("duplicate rename must fail");
+
+        let empty_rename: ItemImpl = parse_quote! {
+            impl Api {
+                #[js(rename = "")]
+                async fn ping(&self) {}
+            }
+        };
+        expand(&Args { namespace: None }, empty_rename).expect_err("empty rename must fail");
+
+        assert!(
+            parse_str::<Args>(r#"namespace = """#).is_err(),
+            "empty namespace must fail"
+        );
+    }
+
+    #[test]
+    fn expansion_emits_schema_bounds_instead_of_type_spellings() {
+        let block: ItemImpl = parse_quote! {
+            impl Api {
+                fn theme(&self) -> ThemeSignal { todo!() }
+                async fn lookup(&self, id: Id) -> Json<Greeting> { todo!() }
+            }
+        };
+        let expanded = expand(&Args { namespace: None }, block)
+            .expect("valid impl expands")
+            .to_string();
+        assert!(
+            expanded.contains("< ThemeSignal as :: waterui :: webview :: TsType > :: SCHEMA"),
+            "{expanded}"
+        );
+        assert!(
+            expanded.contains("< Id as :: waterui :: webview :: TsType > :: SCHEMA"),
+            "{expanded}"
+        );
+        assert!(
+            expanded.contains(
+                "< Json < Greeting > as :: waterui :: webview :: JsReplySchema > :: SCHEMA"
+            ),
+            "{expanded}"
+        );
     }
 }

@@ -26,6 +26,8 @@
 //! decodes schemas out of an artifact and links none of the framework — gets
 //! the schema and nothing else.
 
+use std::env;
+
 use heck::{
     ToKebabCase as _, ToLowerCamelCase as _, ToShoutyKebabCase as _, ToShoutySnakeCase as _,
     ToSnakeCase as _, ToUpperCamelCase as _,
@@ -41,17 +43,27 @@ use syn::{
     parse_macro_input,
 };
 
-/// Path to the `waterui-ts` items the expansion names, when the runtime crate
-/// is reachable at all.
-///
-/// An application reaches it through the `waterui` facade as `waterui::ts`; a
-/// crate that depends on the runtime directly names it directly, under
-/// whatever name `Cargo.toml` gives it. `waterui-ts` declares
-/// `extern crate self as waterui_ts`, so the `FoundCrate::Itself` arm works in
-/// its own tests and doctests as well as in its library. `None` means the
-/// expansion can see the schema crate only — the `water` CLI is the case — and
-/// the conversions are left out.
-pub fn ts_path() -> Option<TokenStream2> {
+/// How the `waterui-ts` runtime crate is reached from the invoking crate.
+enum TsRuntimePath {
+    /// Direct dependency on `waterui-ts` (runtime conversions always exist).
+    Direct(TokenStream2),
+    /// Reached through the `waterui` facade (`ts` may be disabled when only
+    /// `webview` is enabled, so conversions are gated by `__with_ts_runtime!`).
+    Facade {
+        facade: TokenStream2,
+        ts: TokenStream2,
+    },
+}
+
+impl TsRuntimePath {
+    const fn ts_path(&self) -> &TokenStream2 {
+        match self {
+            Self::Direct(ts) | Self::Facade { ts, .. } => ts,
+        }
+    }
+}
+
+fn ts_runtime_path() -> Option<TsRuntimePath> {
     // Inside `waterui-internal` the facade is this crate: `src/lib.rs`
     // declares `extern crate self as waterui`, so `crate` is the `waterui`
     // the expansion names — the same special case `waterui_crate_path` in
@@ -63,42 +75,89 @@ pub fn ts_path() -> Option<TokenStream2> {
     // `extern crate self as waterui_ts`. The lookup below must not answer with
     // the facade: `waterui` is a dev-dependency here — the equivalence tests
     // author ordinary WaterUI views — and the library build links none of it.
-    if std::env::var("CARGO_PKG_NAME").as_deref() == Ok("waterui-ts") {
-        return Some(quote!(::waterui_ts));
+    if env::var("CARGO_PKG_NAME").as_deref() == Ok("waterui-ts") {
+        return Some(TsRuntimePath::Direct(quote!(::waterui_ts)));
     }
-    if std::env::var("CARGO_PKG_NAME").as_deref() == Ok("waterui-internal")
-        && std::env::var_os("CARGO_TARGET_TMPDIR").is_none()
+    if env::var("CARGO_PKG_NAME").as_deref() == Ok("waterui-internal")
+        && env::var_os("CARGO_TARGET_TMPDIR").is_none()
     {
-        return Some(quote!(crate::ts));
+        return Some(TsRuntimePath::Facade {
+            facade: quote!(crate),
+            ts: quote!(crate::ts),
+        });
+    }
+    if env::var("CARGO_PKG_NAME").as_deref() == Ok("waterui-webview")
+        && env::var_os("CARGO_TARGET_TMPDIR").is_none()
+    {
+        return None;
     }
 
     match crate_name("waterui") {
-        Ok(FoundCrate::Itself) => return Some(quote!(crate::ts)),
+        Ok(FoundCrate::Itself) => {
+            return Some(TsRuntimePath::Facade {
+                facade: quote!(crate),
+                ts: quote!(crate::ts),
+            });
+        }
         Ok(FoundCrate::Name(name)) => {
             let ident = Ident::new(&name, Span::call_site());
-            return Some(quote!(::#ident::ts));
+            return Some(TsRuntimePath::Facade {
+                facade: quote!(::#ident),
+                ts: quote!(::#ident::ts),
+            });
         }
         Err(_) => {}
     }
     match crate_name("waterui-ts") {
-        Ok(FoundCrate::Itself) => Some(quote!(::waterui_ts)),
+        Ok(FoundCrate::Itself) => Some(TsRuntimePath::Direct(quote!(::waterui_ts))),
         Ok(FoundCrate::Name(name)) => {
             let ident = Ident::new(&name, Span::call_site());
-            Some(quote!(::#ident))
+            Some(TsRuntimePath::Direct(quote!(::#ident)))
         }
         Err(_) => None,
     }
 }
 
+/// Path to the `waterui-ts` items the expansion names, when the runtime crate
+/// is reachable at all.
+///
+/// An application reaches it through the `waterui` facade as `waterui::ts`; a
+/// crate that depends on the runtime directly names it directly, under
+/// whatever name `Cargo.toml` gives it. `waterui-ts` declares
+/// `extern crate self as waterui_ts`, so the `FoundCrate::Itself` arm works in
+/// its own tests and doctests as well as in its library. `None` means the
+/// expansion can see the schema crate only — the `water` CLI is the case — and
+/// the conversions are left out.
+pub fn ts_path() -> Option<TokenStream2> {
+    ts_runtime_path().map(|runtime| match runtime {
+        TsRuntimePath::Direct(ts) | TsRuntimePath::Facade { ts, .. } => ts,
+    })
+}
+
 /// Path to the `waterui-ts-schema` items the expansion names.
 ///
-/// The runtime crate re-exports the schema crate as `schema`, so a consumer
-/// that has the runtime names it through there and one copy of the crate
-/// serves both halves of the expansion. A crate that depends on the schema
-/// alone names it directly.
+/// Both `waterui/ts` and `waterui/webview` re-export the schema crate through
+/// `waterui::__ts_schema`, so a consumer that depends on `waterui` with either
+/// feature names it there. Crates depending directly on `waterui-ts`,
+/// `waterui-webview` or `waterui-ts-schema` resolve through those crates.
 pub fn ts_schema_path() -> syn::Result<TokenStream2> {
-    if let Some(ts) = ts_path() {
-        return Ok(quote!(#ts::schema));
+    if env::var("CARGO_PKG_NAME").as_deref() == Ok("waterui-webview")
+        && env::var_os("CARGO_TARGET_TMPDIR").is_none()
+    {
+        return Ok(quote!(crate::ts_schema));
+    }
+    match ts_runtime_path() {
+        Some(TsRuntimePath::Direct(ts)) => return Ok(quote!(#ts::schema)),
+        Some(TsRuntimePath::Facade { facade, .. }) => return Ok(quote!(#facade::__ts_schema)),
+        None => {}
+    }
+    match crate_name("waterui-webview") {
+        Ok(FoundCrate::Itself) => return Ok(quote!(crate::ts_schema)),
+        Ok(FoundCrate::Name(name)) => {
+            let ident = Ident::new(&name, Span::call_site());
+            return Ok(quote!(::#ident::ts_schema));
+        }
+        Err(_) => {}
     }
     match crate_name("waterui-ts-schema") {
         Ok(FoundCrate::Itself) => Ok(quote!(::waterui_ts_schema)),
@@ -109,7 +168,7 @@ pub fn ts_schema_path() -> syn::Result<TokenStream2> {
         Err(error) => Err(syn::Error::new(
             Span::call_site(),
             format!(
-                "the TypeScript schema derives require either the `waterui` crate or \
+                "the TypeScript schema derives require `waterui`, `waterui-webview` or \
                  `waterui-ts-schema` as a dependency: {error}"
             ),
         )),
@@ -783,17 +842,27 @@ fn conversions(
     attrs: ContainerAttrs,
     both: bool,
 ) -> syn::Result<TokenStream2> {
-    let Some(ts) = ts_path() else {
+    let Some(runtime) = ts_runtime_path() else {
         return Ok(TokenStream2::new());
     };
-    let into_js = into_js_impl(&ts, input, attrs)?;
-    if !both || attrs.one_way {
-        return Ok(into_js);
-    }
-    let from_js = from_js_impl(&ts, input, attrs)?;
-    Ok(quote! {
-        #into_js
-        #from_js
+    let ts = runtime.ts_path();
+    let into_js = into_js_impl(ts, input, attrs)?;
+    let impls = if !both || attrs.one_way {
+        into_js
+    } else {
+        let from_js = from_js_impl(ts, input, attrs)?;
+        quote! {
+            #into_js
+            #from_js
+        }
+    };
+    Ok(match runtime {
+        TsRuntimePath::Direct(_) => impls,
+        TsRuntimePath::Facade { facade, .. } => quote! {
+            #facade::__with_ts_runtime! {
+                #impls
+            }
+        },
     })
 }
 

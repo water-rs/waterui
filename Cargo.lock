@@ -14044,6 +14044,7 @@ dependencies = [
  "waterui",
  "waterui-core",
  "waterui-testing",
+ "waterui-ts-schema",
  "waterui-url",
  "waterui-watcher-set",
 ]

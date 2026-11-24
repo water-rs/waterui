@@ -239,7 +239,8 @@ A page receives mirrored values with the reply to its own first request, never i
 script injected into it: `waterui.ready` resolves once they have arrived, and reading or
 assigning `waterui.state.<key>` before that throws. Await it before the first read.
 
-A typed `Json<T>` payload requires `T: Serialize`/`Deserialize`, so the app needs `serde`
+A typed `Json<T>` payload in `#[js_api]` requires `T: Serialize`/`Deserialize` and `TsType`
+(re-exported at `waterui::webview::TsType`), so the app needs `serde`
 (with the `derive` feature) as a direct dependency. An `async fn` returning `Result<_, E>`
 rejects the page's promise on `Err`. `#[js_api(namespace = "app")]` prefixes every name
 with `app.` — still on the one `waterui` object: the page calls

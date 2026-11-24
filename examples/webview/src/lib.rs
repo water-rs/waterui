@@ -21,12 +21,12 @@ use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
 #[cfg(not(target_arch = "wasm32"))]
-use waterui::webview::{Json, ScriptInjectionTime, serde_json};
+use waterui::webview::{Json, ScriptInjectionTime, TsType, serde_json};
 use waterui::webview::{Url, WebView, WebViewEvent, WebViewProxy};
 
 #[cfg(not(target_arch = "wasm32"))]
 /// What the `greet` handler answers with.
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize, TsType)]
 struct Greeting {
     text: String,
 }
