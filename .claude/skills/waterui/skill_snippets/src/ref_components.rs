@@ -845,12 +845,16 @@ pub fn components_block_23() -> impl View {
 // ---------------------------------------------------------------------------
 pub fn components_block_24(token: &'static str, fence_text: &'static str) {
     let copied = Binding::bool(false);
+    let source = Binding::container(Str::from("fn main() {}"));
 
     use waterui::prelude::highlight::Language;
     use waterui::widget::{Code, code};
 
     let _ = {
-        code(Language::Rust, "fn main() {}") // typed language
+        code(Language::Rust, "fn main() {}") // typed language, static text
+    };
+    let _ = {
+        code(Language::Rust, source) // reactive Binding<Str> / Computed<Str>
     };
     let _ = {
         code("rust", "fn main() {}") // recognized token -> Rust header

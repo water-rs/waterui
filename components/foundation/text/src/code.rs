@@ -13,7 +13,7 @@ use alloc::{
 };
 use core::fmt;
 
-use nami::SignalExt;
+use nami::{Computed, Signal, SignalExt, signal::IntoComputed};
 use suiteki::Str;
 use waterui_accessibility::AccessibilityRole;
 use waterui_color::{
@@ -206,7 +206,7 @@ impl From<&Str> for CodeLanguage {
 pub struct Code {
     info: Option<Str>,
     language: Language,
-    content: Str,
+    content: Computed<Str>,
     on_copied: Option<OnCopied>,
 }
 
@@ -216,12 +216,16 @@ impl Code {
     /// Accepts a typed [`Language`] or any string token via [`CodeLanguage`].
     /// Unrecognized tokens render as [`Language::Plaintext`], preserve the
     /// original token as [`CodeConfig::info`], and display it in the header.
-    pub fn new(language: impl Into<CodeLanguage>, content: impl Into<Str>) -> Self {
+    ///
+    /// `content` accepts static strings as well as reactive signals
+    /// (`Binding<Str>`, `Computed<Str>`, etc.) and re-highlights in place when
+    /// the signal updates.
+    pub fn new(language: impl Into<CodeLanguage>, content: impl IntoComputed<Str>) -> Self {
         let CodeLanguage { language, info } = language.into();
         Self {
             info,
             language,
-            content: content.into(),
+            content: content.into_computed(),
             on_copied: None,
         }
     }
@@ -261,8 +265,8 @@ pub struct CodeConfig {
     /// The language that token resolved to; [`Language::Plaintext`] when it
     /// resolved to nothing.
     language: Language,
-    /// The block's text, verbatim.
-    content: Str,
+    /// The block's reactive source text, verbatim.
+    content: Computed<Str>,
     /// The caller's feedback for a copy, if it asked for any. Carried so a hook
     /// that declines the fence and renders the default keeps it.
     on_copied: Option<OnCopied>,
@@ -282,9 +286,9 @@ impl CodeConfig {
         &self.language
     }
 
-    /// The block's text, verbatim.
+    /// The block's reactive source text, verbatim.
     #[must_use]
-    pub const fn content(&self) -> &Str {
+    pub const fn content(&self) -> &Computed<Str> {
         &self.content
     }
 
@@ -368,11 +372,11 @@ fn default_rendering(env: &Environment, config: CodeConfig) -> impl View {
         on_copied,
     } = config;
     let lang_name = header_label(&language, info.as_deref());
-    let content_for_copy = content.to_string();
+    let content_for_copy = content.clone();
 
-    let highlighted = CurrentColorScheme
-        .resolve(env)
-        .map(move |scheme| {
+    let highlighted = content
+        .zip(&CurrentColorScheme.resolve(env))
+        .map(move |(content, scheme)| {
             highlight_text(
                 language.clone(),
                 &content,
@@ -401,7 +405,7 @@ fn default_rendering(env: &Environment, config: CodeConfig) -> impl View {
     )
 }
 
-fn copy_button(content: String, on_copied: Option<OnCopied>) -> impl View {
+fn copy_button(content: Computed<Str>, on_copied: Option<OnCopied>) -> impl View {
     // `waterui-controls` depends on this crate, so the `Button` type is out of
     // reach here; the semantics are attached directly. A tap observer that
     // resolves with `AccessibilityRole` in its environment registers an
@@ -411,7 +415,8 @@ fn copy_button(content: String, on_copied: Option<OnCopied>) -> impl View {
         Metadata::new(
             text("Copy").color(Color::new(AccentColor)),
             GestureObserver::new(TapGesture::new(), move |env: Environment| {
-                copy_to_clipboard(&content);
+                let text = content.snapshot();
+                copy_to_clipboard(&text);
                 if let Some(on_copied) = &on_copied {
                     on_copied.call(&env);
                 }
@@ -422,13 +427,25 @@ fn copy_button(content: String, on_copied: Option<OnCopied>) -> impl View {
 }
 
 /// Convenience constructor for creating a [`Code`] view inline.
-pub fn code(language: impl Into<CodeLanguage>, content: impl Into<Str>) -> Code {
+pub fn code(language: impl Into<CodeLanguage>, content: impl IntoComputed<Str>) -> Code {
     Code::new(language, content)
 }
 
 #[cfg(test)]
 mod tests {
+    use nami::Binding;
+
     use super::*;
+
+    #[test]
+    fn code_content_accepts_reactive_signal_and_tracks_updates() {
+        let source = Binding::container(Str::from("fn alpha() {}"));
+        let config = Code::new(Language::Rust, source.clone()).config();
+        assert_eq!(config.content().snapshot().as_str(), "fn alpha() {}");
+
+        source.set(Str::from("fn beta() {}"));
+        assert_eq!(config.content().snapshot().as_str(), "fn beta() {}");
+    }
 
     #[test]
     fn unknown_language_renders_as_plaintext_and_preserves_token_for_header() {

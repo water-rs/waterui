@@ -3,6 +3,8 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
+use waterui::Binding;
+use waterui::Str;
 use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityRole;
 use waterui::graphics::color::Srgb;
@@ -86,4 +88,30 @@ fn unknown_language_code_block_shows_original_token_in_header(ui: UiBuilder) {
         .label("mermaid")
         .assert_exists();
     app.query().role(Role::BUTTON).label("Copy").assert_exists();
+}
+
+#[waterui::test()]
+fn mutating_bound_code_content_rehighlights_in_place(ui: UiBuilder) {
+    let source = Binding::container(Str::from("fn alpha() {}"));
+    let mut app = ui.mount({
+        let source = source.clone();
+        move || code(Language::Rust, source.clone()).padding_with(16.0)
+    });
+
+    app.query().role(Role::LABEL).label("Rust").assert_exists();
+    app.query()
+        .role(Role::LABEL)
+        .label("fn alpha() {}")
+        .assert_exists();
+
+    source.set(Str::from("fn beta() {}"));
+    app.query()
+        .role(Role::LABEL)
+        .label("fn beta() {}")
+        .assert_exists();
+    app.query()
+        .role(Role::LABEL)
+        .label("fn alpha() {}")
+        .assert_not_exists();
+    app.query().role(Role::LABEL).label("Rust").assert_exists();
 }
