@@ -19,7 +19,7 @@ use suiteki::Str;
 use waterui_core::AnyView;
 use waterui_core::layout::{Alignment, HorizontalAlignment, VerticalAlignment};
 use waterui_graphics::WorkingColor;
-use waterui_graphics::color::{Color, Working, working};
+use waterui_graphics::color::{Color, Srgb, Working, working};
 use waterui_layout::padding::EdgeInsets;
 use waterui_locale::{Locale, TranslationCatalog};
 use waterui_text::text::{IntoText, Text, TextConfig};
@@ -107,12 +107,26 @@ fn translate(env: &waterui_core::Environment, locale: &Locale, key: &Str) -> Tex
     TextConfig::new(waterui_text::StyledStr::plain(translated))
 }
 
-/// A colour as `useTheme()` hands one out: five channels in linear light.
-///
-/// A theme token crossing into TypeScript and back is the same value, which is
-/// what makes `<VStack background={theme().surface}>` the ordinary way to
-/// paint with the theme.
+/// A linear-light colour object, as `useTheme()` hands out and wide-gamut
+/// callers write explicitly.
 #[derive(Debug, Clone, Copy, PartialEq, TsType)]
+struct LinearColor {
+    /// Red, in linear light. Outside 0–1 for a wide-gamut colour.
+    red: f32,
+    /// Green, in linear light.
+    green: f32,
+    /// Blue, in linear light.
+    blue: f32,
+    /// The extended-range headroom; `1` for an ordinary colour.
+    headroom: Option<f32>,
+    /// Alpha; `1` when the colour is opaque.
+    opacity: Option<f32>,
+}
+
+/// A colour value crossing the JSX boundary: either an sRGB hex string
+/// (`#RGB`, `#RGBA`, `#RRGGBB`, `#RRGGBBAA`) or a linear-light object
+/// `{ red, green, blue, headroom?, opacity? }` such as a `useTheme()` token.
+#[derive(Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]
 pub struct ColorValue {
     /// Red, in linear light. Outside 0–1 for a wide-gamut colour.
@@ -128,6 +142,69 @@ pub struct ColorValue {
 }
 
 impl ColorValue {
+    const fn from_linear(color: LinearColor) -> Self {
+        Self {
+            red: color.red,
+            green: color.green,
+            blue: color.blue,
+            headroom: color.headroom,
+            opacity: color.opacity,
+        }
+    }
+
+    const fn into_linear(self) -> LinearColor {
+        LinearColor {
+            red: self.red,
+            green: self.green,
+            blue: self.blue,
+            headroom: self.headroom,
+            opacity: self.opacity,
+        }
+    }
+
+    /// Parses an sRGB hex string (`#RGB`, `#RGBA`, `#RRGGBB`, or `#RRGGBBAA`)
+    /// into a linear working [`ColorValue`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`JsError`] when `hex` does not start with `#`, has an
+    /// unsupported digit count, or contains a non-hexadecimal character.
+    pub fn from_srgb_hex(hex: &str) -> Result<Self, JsError> {
+        let Some(digits) = hex.strip_prefix('#') else {
+            return Err(JsError::conversion(format!(
+                "invalid hex colour `{hex}`: expected #RGB, #RGBA, #RRGGBB, or #RRGGBBAA"
+            )));
+        };
+        let bytes = digits.as_bytes();
+        let nibble = |byte: u8| -> Result<u8, JsError> {
+            match byte {
+                b'0'..=b'9' => Ok(byte - b'0'),
+                b'a'..=b'f' => Ok(byte - b'a' + 10),
+                b'A'..=b'F' => Ok(byte - b'A' + 10),
+                _ => Err(JsError::conversion(format!(
+                    "invalid hex colour `{hex}`: expected hexadecimal digits"
+                ))),
+            }
+        };
+        let pair = |hi: u8, lo: u8| -> Result<u8, JsError> { Ok((nibble(hi)? << 4) | nibble(lo)?) };
+        let (r, g, b, a) = match *bytes {
+            [r, g, b] => (pair(r, r)?, pair(g, g)?, pair(b, b)?, 0xFF),
+            [r, g, b, a] => (pair(r, r)?, pair(g, g)?, pair(b, b)?, pair(a, a)?),
+            [r1, r2, g1, g2, b1, b2] => (pair(r1, r2)?, pair(g1, g2)?, pair(b1, b2)?, 0xFF),
+            [r1, r2, g1, g2, b1, b2, a1, a2] => {
+                (pair(r1, r2)?, pair(g1, g2)?, pair(b1, b2)?, pair(a1, a2)?)
+            }
+            _ => {
+                return Err(JsError::conversion(format!(
+                    "invalid hex colour `{hex}`: expected #RGB, #RGBA, #RRGGBB, or #RRGGBBAA"
+                )));
+            }
+        };
+        let [red, green, blue, _] = Srgb::new_u8(r, g, b).resolve().components;
+        let opacity = f32::from(a) / 255.0;
+        Ok(Self::from(WorkingColor::new([red, green, blue, opacity])))
+    }
+
     /// Red, in linear light. Outside 0–1 for a wide-gamut colour.
     #[must_use]
     pub const fn red(&self) -> f32 {
@@ -156,6 +233,26 @@ impl ColorValue {
     #[must_use]
     pub const fn opacity(&self) -> Option<f32> {
         self.opacity
+    }
+}
+
+impl TsType for ColorValue {
+    const SCHEMA: TypeSchema = TypeSchema::Union(&[TypeSchema::String, LinearColor::SCHEMA]);
+}
+
+impl FromJs for ColorValue {
+    fn from_js(value: &JsValue, bridge: &Bridge) -> Result<Self, JsError> {
+        match value {
+            JsValue::String(hex) => Self::from_srgb_hex(hex),
+            JsValue::Object(_) => LinearColor::from_js(value, bridge).map(Self::from_linear),
+            other => Err(expected("a hex colour string or a colour object", other)),
+        }
+    }
+}
+
+impl IntoJs for ColorValue {
+    fn into_js(self, bridge: &Bridge) -> Result<JsValue, JsError> {
+        self.into_linear().into_js(bridge)
     }
 }
 
@@ -871,5 +968,52 @@ impl PickerOption {
     #[must_use]
     pub fn into_parts(self) -> (Str, TextContent) {
         (self.value, self.label)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use waterui_graphics::WorkingColor;
+    use waterui_graphics::color::Srgb;
+    use waterui_ts::schema::{TsType as _, TypeSchema};
+
+    use super::{ColorValue, LinearColor};
+
+    #[test]
+    fn color_value_schema_accepts_hex_string_or_linear_object() {
+        assert_eq!(
+            ColorValue::SCHEMA,
+            TypeSchema::Union(&[TypeSchema::String, LinearColor::SCHEMA])
+        );
+    }
+
+    #[test]
+    fn srgb_hex_formats_convert_to_working_color() {
+        let rrggbb = ColorValue::from_srgb_hex("#FF3B30").expect("#RRGGBB must parse");
+        let expected = Srgb::new_u8(0xFF, 0x3B, 0x30).resolve();
+        let actual = WorkingColor::from(rrggbb);
+        for (a, b) in actual.components.into_iter().zip(expected.components) {
+            assert!((a - b).abs() < 1e-6, "component mismatch: {a} vs {b}");
+        }
+
+        let short_rgb = ColorValue::from_srgb_hex("#F0A").expect("#RGB must parse");
+        let expanded_rgb = ColorValue::from_srgb_hex("#FF00AA").expect("#RRGGBB must parse");
+        assert_eq!(short_rgb, expanded_rgb);
+
+        let short_with_alpha = ColorValue::from_srgb_hex("#F0A8").expect("#RGBA must parse");
+        let expanded_with_alpha =
+            ColorValue::from_srgb_hex("#FF00AA88").expect("#RRGGBBAA must parse");
+        assert_eq!(short_with_alpha, expanded_with_alpha);
+        assert!((short_with_alpha.opacity().unwrap_or(0.0) - (136.0 / 255.0)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn invalid_srgb_hex_strings_are_rejected() {
+        for bad in ["", "FF3B30", "#12", "#12345", "#1234567", "#GGGGGG"] {
+            assert!(
+                ColorValue::from_srgb_hex(bad).is_err(),
+                "`{bad}` must be rejected as an invalid hex colour"
+            );
+        }
     }
 }

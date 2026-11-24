@@ -13,6 +13,8 @@
 //! accessor that could only answer zeroes would fake a primitive that does not
 //! exist.
 
+use core::fmt::Write as _;
+
 use nami::watcher::BoxWatcherGuard;
 use nami::{Binding, Computed, Signal, SignalExt};
 use waterui_core::Environment;
@@ -174,6 +176,10 @@ impl IntoJs for HostLocale {
 /// The colour tokens a theme installs, and the property each projects to.
 macro_rules! theme_tokens {
     ($($key:ident => $name:literal),* $(,)?) => {
+        /// Every theme colour token name projected onto TypeScript's `Theme`
+        /// interface, in declaration order.
+        pub const THEME_TOKEN_NAMES: &[&str] = &[$($name,)*];
+
         /// Every installed token, in declaration order.
         fn token_sources(environment: &Environment) -> Vec<(&'static str, Computed<WorkingColor>)> {
             let mut sources = Vec::new();
@@ -209,6 +215,18 @@ theme_tokens!(
     ErrorColor => "error",
     ErrorForegroundColor => "errorForeground",
 );
+
+/// Renders the TypeScript `Theme` interface declaration from [`THEME_TOKEN_NAMES`].
+#[must_use]
+pub fn theme_interface_dts() -> String {
+    let mut output =
+        String::from("export interface Theme {\n  colorScheme: \"light\" | \"dark\";\n");
+    for name in THEME_TOKEN_NAMES {
+        let _ = writeln!(output, "  {name}?: Color;");
+    }
+    output.push('}');
+    output
+}
 
 /// The reactive theme of `environment`.
 ///
@@ -288,4 +306,19 @@ pub fn host_environment(bridge: &Bridge) -> Result<JsValue, JsError> {
         (String::from("theme"), theme),
         (String::from("locale"), locale),
     ]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::theme_interface_dts;
+
+    #[test]
+    fn contexts_dts_theme_interface_matches_theme_tokens() {
+        let dts = include_str!("js/types/contexts.d.ts");
+        let expected = theme_interface_dts();
+        assert!(
+            dts.contains(&expected),
+            "contexts.d.ts `Theme` interface is out of sync with `theme_tokens!`:\nexpected:\n{expected}\n\nactual file:\n{dts}"
+        );
+    }
 }
