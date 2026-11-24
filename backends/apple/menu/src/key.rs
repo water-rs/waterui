@@ -1,23 +1,19 @@
 //! The key a shortcut arms, as each kit spells it: the `NSMenuItem` key
 //! equivalent on macOS and the `UIKeyCommand` input on iOS.
 
-use waterui_controls::menu::{NamedKey, ShortcutKey};
+use waterui_controls::menu::{ShortcutKey, ShortcutNamedKey};
 
 /// The `NSMenuItem` key equivalent a shortcut key arms.
 ///
-/// It is the character itself, or for a named key the character `AppKit` reports that key as — the
-/// function-key code points (`NSDeleteFunctionKey` for forward delete ⌦,
-/// `NSF5FunctionKey`, …) and the characters of Tab, Return and Escape. The
-/// ⌫ key, W3C `Backspace`, sends `NSDeleteCharacter` (U+007F), not
-/// `NSBackspaceCharacter`.
-///
-/// A named key `AppKit` has no key equivalent for is a contract violation:
-/// a debug build panics, a release build reports it and answers the empty
-/// key equivalent, which arms no shortcut.
+/// It is the character itself, or for a [`ShortcutNamedKey`] the character
+/// `AppKit` reports that key as — the function-key code points
+/// (`NSDeleteFunctionKey` for forward delete ⌦, `NSF5FunctionKey`, …) and the
+/// characters of Tab, Return and Escape. The ⌫ key, W3C `Backspace`, sends
+/// `NSDeleteCharacter` (U+007F), not `NSBackspaceCharacter`.
 ///
 /// # Panics
 ///
-/// In a debug build, on a named key `AppKit` has no key equivalent for.
+/// Panics if a platform key-equivalent code point is not a valid Unicode scalar value.
 #[must_use]
 #[cfg(target_os = "macos")]
 pub fn key_equivalent_for(key: &ShortcutKey) -> String {
@@ -29,74 +25,52 @@ pub fn key_equivalent_for(key: &ShortcutKey) -> String {
         ShortcutKey::Named(named) => *named,
     };
     let code = match named {
-        NamedKey::Backspace => appkit::NSDeleteCharacter,
-        NamedKey::Tab => appkit::NSTabCharacter,
-        NamedKey::Enter => appkit::NSCarriageReturnCharacter,
+        ShortcutNamedKey::Backspace => appkit::NSDeleteCharacter,
+        ShortcutNamedKey::Tab => appkit::NSTabCharacter,
+        ShortcutNamedKey::Enter => appkit::NSCarriageReturnCharacter,
         // AppKit names no constant for Escape; its key equivalent is ESC.
-        NamedKey::Escape => 0x1B,
-        NamedKey::Delete => appkit::NSDeleteFunctionKey,
-        NamedKey::Insert => appkit::NSInsertFunctionKey,
-        NamedKey::Home => appkit::NSHomeFunctionKey,
-        NamedKey::End => appkit::NSEndFunctionKey,
-        NamedKey::PageUp => appkit::NSPageUpFunctionKey,
-        NamedKey::PageDown => appkit::NSPageDownFunctionKey,
-        NamedKey::ArrowUp => appkit::NSUpArrowFunctionKey,
-        NamedKey::ArrowDown => appkit::NSDownArrowFunctionKey,
-        NamedKey::ArrowLeft => appkit::NSLeftArrowFunctionKey,
-        NamedKey::ArrowRight => appkit::NSRightArrowFunctionKey,
-        NamedKey::PrintScreen => appkit::NSPrintScreenFunctionKey,
-        NamedKey::Pause => appkit::NSPauseFunctionKey,
-        NamedKey::ContextMenu => appkit::NSMenuFunctionKey,
-        NamedKey::Help => appkit::NSHelpFunctionKey,
-        NamedKey::Clear => appkit::NSClearLineFunctionKey,
-        NamedKey::Find => appkit::NSFindFunctionKey,
-        NamedKey::Undo => appkit::NSUndoFunctionKey,
-        NamedKey::Redo => appkit::NSRedoFunctionKey,
-        NamedKey::Select => appkit::NSSelectFunctionKey,
-        NamedKey::Execute => appkit::NSExecuteFunctionKey,
-        NamedKey::Print => appkit::NSPrintFunctionKey,
-        NamedKey::F1 => appkit::NSF1FunctionKey,
-        NamedKey::F2 => appkit::NSF2FunctionKey,
-        NamedKey::F3 => appkit::NSF3FunctionKey,
-        NamedKey::F4 => appkit::NSF4FunctionKey,
-        NamedKey::F5 => appkit::NSF5FunctionKey,
-        NamedKey::F6 => appkit::NSF6FunctionKey,
-        NamedKey::F7 => appkit::NSF7FunctionKey,
-        NamedKey::F8 => appkit::NSF8FunctionKey,
-        NamedKey::F9 => appkit::NSF9FunctionKey,
-        NamedKey::F10 => appkit::NSF10FunctionKey,
-        NamedKey::F11 => appkit::NSF11FunctionKey,
-        NamedKey::F12 => appkit::NSF12FunctionKey,
-        NamedKey::F13 => appkit::NSF13FunctionKey,
-        NamedKey::F14 => appkit::NSF14FunctionKey,
-        NamedKey::F15 => appkit::NSF15FunctionKey,
-        NamedKey::F16 => appkit::NSF16FunctionKey,
-        NamedKey::F17 => appkit::NSF17FunctionKey,
-        NamedKey::F18 => appkit::NSF18FunctionKey,
-        NamedKey::F19 => appkit::NSF19FunctionKey,
-        NamedKey::F20 => appkit::NSF20FunctionKey,
-        NamedKey::F21 => appkit::NSF21FunctionKey,
-        NamedKey::F22 => appkit::NSF22FunctionKey,
-        NamedKey::F23 => appkit::NSF23FunctionKey,
-        NamedKey::F24 => appkit::NSF24FunctionKey,
-        NamedKey::F25 => appkit::NSF25FunctionKey,
-        NamedKey::F26 => appkit::NSF26FunctionKey,
-        NamedKey::F27 => appkit::NSF27FunctionKey,
-        NamedKey::F28 => appkit::NSF28FunctionKey,
-        NamedKey::F29 => appkit::NSF29FunctionKey,
-        NamedKey::F30 => appkit::NSF30FunctionKey,
-        NamedKey::F31 => appkit::NSF31FunctionKey,
-        NamedKey::F32 => appkit::NSF32FunctionKey,
-        NamedKey::F33 => appkit::NSF33FunctionKey,
-        NamedKey::F34 => appkit::NSF34FunctionKey,
-        NamedKey::F35 => appkit::NSF35FunctionKey,
-        _ => {
-            waterui_core::contract_violation!(
-                "the shortcut key `{named}` has no AppKit key equivalent, so a macOS menu item \
-                 cannot arm it; choose a key AppKit menus support; the item has no shortcut"
-            );
-            return String::new();
-        }
+        ShortcutNamedKey::Escape => 0x1B,
+        ShortcutNamedKey::Delete => appkit::NSDeleteFunctionKey,
+        ShortcutNamedKey::Insert => appkit::NSInsertFunctionKey,
+        ShortcutNamedKey::Home => appkit::NSHomeFunctionKey,
+        ShortcutNamedKey::End => appkit::NSEndFunctionKey,
+        ShortcutNamedKey::PageUp => appkit::NSPageUpFunctionKey,
+        ShortcutNamedKey::PageDown => appkit::NSPageDownFunctionKey,
+        ShortcutNamedKey::ArrowUp => appkit::NSUpArrowFunctionKey,
+        ShortcutNamedKey::ArrowDown => appkit::NSDownArrowFunctionKey,
+        ShortcutNamedKey::ArrowLeft => appkit::NSLeftArrowFunctionKey,
+        ShortcutNamedKey::ArrowRight => appkit::NSRightArrowFunctionKey,
+        ShortcutNamedKey::PrintScreen => appkit::NSPrintScreenFunctionKey,
+        ShortcutNamedKey::Pause => appkit::NSPauseFunctionKey,
+        ShortcutNamedKey::ContextMenu => appkit::NSMenuFunctionKey,
+        ShortcutNamedKey::Help => appkit::NSHelpFunctionKey,
+        ShortcutNamedKey::Clear => appkit::NSClearLineFunctionKey,
+        ShortcutNamedKey::Select => appkit::NSSelectFunctionKey,
+        ShortcutNamedKey::Execute => appkit::NSExecuteFunctionKey,
+        ShortcutNamedKey::F1 => appkit::NSF1FunctionKey,
+        ShortcutNamedKey::F2 => appkit::NSF2FunctionKey,
+        ShortcutNamedKey::F3 => appkit::NSF3FunctionKey,
+        ShortcutNamedKey::F4 => appkit::NSF4FunctionKey,
+        ShortcutNamedKey::F5 => appkit::NSF5FunctionKey,
+        ShortcutNamedKey::F6 => appkit::NSF6FunctionKey,
+        ShortcutNamedKey::F7 => appkit::NSF7FunctionKey,
+        ShortcutNamedKey::F8 => appkit::NSF8FunctionKey,
+        ShortcutNamedKey::F9 => appkit::NSF9FunctionKey,
+        ShortcutNamedKey::F10 => appkit::NSF10FunctionKey,
+        ShortcutNamedKey::F11 => appkit::NSF11FunctionKey,
+        ShortcutNamedKey::F12 => appkit::NSF12FunctionKey,
+        ShortcutNamedKey::F13 => appkit::NSF13FunctionKey,
+        ShortcutNamedKey::F14 => appkit::NSF14FunctionKey,
+        ShortcutNamedKey::F15 => appkit::NSF15FunctionKey,
+        ShortcutNamedKey::F16 => appkit::NSF16FunctionKey,
+        ShortcutNamedKey::F17 => appkit::NSF17FunctionKey,
+        ShortcutNamedKey::F18 => appkit::NSF18FunctionKey,
+        ShortcutNamedKey::F19 => appkit::NSF19FunctionKey,
+        ShortcutNamedKey::F20 => appkit::NSF20FunctionKey,
+        ShortcutNamedKey::F21 => appkit::NSF21FunctionKey,
+        ShortcutNamedKey::F22 => appkit::NSF22FunctionKey,
+        ShortcutNamedKey::F23 => appkit::NSF23FunctionKey,
+        ShortcutNamedKey::F24 => appkit::NSF24FunctionKey,
     };
     String::from(
         char::from_u32(code).expect("AppKit key-equivalent constants are Unicode scalar values"),
@@ -138,32 +112,51 @@ pub fn key_equivalent_for(key: &ShortcutKey) -> String {
     // exports for the process's lifetime.
     let input: &NSString = unsafe {
         match named {
-            NamedKey::Backspace => return String::from('\u{8}'),
-            NamedKey::Tab => return String::from('\t'),
-            NamedKey::Enter => return String::from('\r'),
-            NamedKey::Escape => uikit::UIKeyInputEscape,
-            NamedKey::Delete => uikit::UIKeyInputDelete,
-            NamedKey::Home => uikit::UIKeyInputHome,
-            NamedKey::End => uikit::UIKeyInputEnd,
-            NamedKey::PageUp => uikit::UIKeyInputPageUp,
-            NamedKey::PageDown => uikit::UIKeyInputPageDown,
-            NamedKey::ArrowUp => uikit::UIKeyInputUpArrow,
-            NamedKey::ArrowDown => uikit::UIKeyInputDownArrow,
-            NamedKey::ArrowLeft => uikit::UIKeyInputLeftArrow,
-            NamedKey::ArrowRight => uikit::UIKeyInputRightArrow,
-            NamedKey::F1 => UIKeyInputF1,
-            NamedKey::F2 => uikit::UIKeyInputF2,
-            NamedKey::F3 => uikit::UIKeyInputF3,
-            NamedKey::F4 => uikit::UIKeyInputF4,
-            NamedKey::F5 => uikit::UIKeyInputF5,
-            NamedKey::F6 => uikit::UIKeyInputF6,
-            NamedKey::F7 => uikit::UIKeyInputF7,
-            NamedKey::F8 => uikit::UIKeyInputF8,
-            NamedKey::F9 => uikit::UIKeyInputF9,
-            NamedKey::F10 => uikit::UIKeyInputF10,
-            NamedKey::F11 => uikit::UIKeyInputF11,
-            NamedKey::F12 => uikit::UIKeyInputF12,
-            _ => {
+            ShortcutNamedKey::Backspace => return String::from('\u{8}'),
+            ShortcutNamedKey::Tab => return String::from('\t'),
+            ShortcutNamedKey::Enter => return String::from('\r'),
+            ShortcutNamedKey::Escape => uikit::UIKeyInputEscape,
+            ShortcutNamedKey::Delete => uikit::UIKeyInputDelete,
+            ShortcutNamedKey::Home => uikit::UIKeyInputHome,
+            ShortcutNamedKey::End => uikit::UIKeyInputEnd,
+            ShortcutNamedKey::PageUp => uikit::UIKeyInputPageUp,
+            ShortcutNamedKey::PageDown => uikit::UIKeyInputPageDown,
+            ShortcutNamedKey::ArrowUp => uikit::UIKeyInputUpArrow,
+            ShortcutNamedKey::ArrowDown => uikit::UIKeyInputDownArrow,
+            ShortcutNamedKey::ArrowLeft => uikit::UIKeyInputLeftArrow,
+            ShortcutNamedKey::ArrowRight => uikit::UIKeyInputRightArrow,
+            ShortcutNamedKey::F1 => UIKeyInputF1,
+            ShortcutNamedKey::F2 => uikit::UIKeyInputF2,
+            ShortcutNamedKey::F3 => uikit::UIKeyInputF3,
+            ShortcutNamedKey::F4 => uikit::UIKeyInputF4,
+            ShortcutNamedKey::F5 => uikit::UIKeyInputF5,
+            ShortcutNamedKey::F6 => uikit::UIKeyInputF6,
+            ShortcutNamedKey::F7 => uikit::UIKeyInputF7,
+            ShortcutNamedKey::F8 => uikit::UIKeyInputF8,
+            ShortcutNamedKey::F9 => uikit::UIKeyInputF9,
+            ShortcutNamedKey::F10 => uikit::UIKeyInputF10,
+            ShortcutNamedKey::F11 => uikit::UIKeyInputF11,
+            ShortcutNamedKey::F12 => uikit::UIKeyInputF12,
+            ShortcutNamedKey::Clear
+            | ShortcutNamedKey::ContextMenu
+            | ShortcutNamedKey::Execute
+            | ShortcutNamedKey::Help
+            | ShortcutNamedKey::Insert
+            | ShortcutNamedKey::Pause
+            | ShortcutNamedKey::PrintScreen
+            | ShortcutNamedKey::Select
+            | ShortcutNamedKey::F13
+            | ShortcutNamedKey::F14
+            | ShortcutNamedKey::F15
+            | ShortcutNamedKey::F16
+            | ShortcutNamedKey::F17
+            | ShortcutNamedKey::F18
+            | ShortcutNamedKey::F19
+            | ShortcutNamedKey::F20
+            | ShortcutNamedKey::F21
+            | ShortcutNamedKey::F22
+            | ShortcutNamedKey::F23
+            | ShortcutNamedKey::F24 => {
                 waterui_core::contract_violation!(
                     "the shortcut key `{named}` has no UIKeyCommand input, so a UIKit menu \
                      command cannot arm it; choose a key UIKit key commands support; the \

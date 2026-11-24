@@ -23,7 +23,7 @@ pub mod menu;
 #[cfg(feature = "menu")]
 pub use menu::{
     Command, CommandExt, CommandRole, Menu, MenuBarView, MenuItem, MenuView, NamedKey, Shortcut,
-    ShortcutKey, ShortcutModifiers,
+    ShortcutKey, ShortcutModifiers, ShortcutNamedKey,
 };
 pub mod size;
 pub use size::ControlSize;

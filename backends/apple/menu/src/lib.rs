@@ -195,7 +195,7 @@ mod tests {
     use nami::{Computed, Signal};
     use waterui_controls::NoopSlot;
     use waterui_controls::menu::{
-        CloseWindowChord, Menu, MenuItem, NamedKey, ResolvedMenuItem, ShortcutKey,
+        CloseWindowChord, Menu, MenuItem, ResolvedMenuItem, ShortcutKey, ShortcutNamedKey,
         resolve_menu_bar_items,
     };
     use waterui_core::Environment;
@@ -209,11 +209,11 @@ mod tests {
     #[test]
     fn named_keys_map_to_appkit_function_key_equivalents() {
         assert_eq!(
-            key_equivalent_for(&ShortcutKey::from(NamedKey::Delete)),
+            key_equivalent_for(&ShortcutKey::from(ShortcutNamedKey::Delete)),
             function_key(NSDeleteFunctionKey)
         );
         assert_eq!(
-            key_equivalent_for(&ShortcutKey::from(NamedKey::F5)),
+            key_equivalent_for(&ShortcutKey::from(ShortcutNamedKey::F5)),
             function_key(NSF5FunctionKey)
         );
         assert_eq!(key_equivalent_for(&ShortcutKey::from('q')), "q");
@@ -225,15 +225,36 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(
-        debug_assertions,
-        should_panic(expected = "has no AppKit key equivalent")
-    )]
-    fn a_named_key_without_an_appkit_equivalent_arms_no_shortcut() {
-        assert_eq!(
-            key_equivalent_for(&ShortcutKey::from(NamedKey::AudioVolumeUp)),
-            ""
-        );
+    fn every_shortcut_named_key_maps_to_a_non_empty_appkit_key_equivalent() {
+        for key in [
+            ShortcutNamedKey::ArrowUp,
+            ShortcutNamedKey::ArrowDown,
+            ShortcutNamedKey::ArrowLeft,
+            ShortcutNamedKey::ArrowRight,
+            ShortcutNamedKey::Backspace,
+            ShortcutNamedKey::Clear,
+            ShortcutNamedKey::ContextMenu,
+            ShortcutNamedKey::Delete,
+            ShortcutNamedKey::End,
+            ShortcutNamedKey::Enter,
+            ShortcutNamedKey::Escape,
+            ShortcutNamedKey::Execute,
+            ShortcutNamedKey::F1,
+            ShortcutNamedKey::F12,
+            ShortcutNamedKey::F13,
+            ShortcutNamedKey::F24,
+            ShortcutNamedKey::Help,
+            ShortcutNamedKey::Home,
+            ShortcutNamedKey::Insert,
+            ShortcutNamedKey::PageDown,
+            ShortcutNamedKey::PageUp,
+            ShortcutNamedKey::Pause,
+            ShortcutNamedKey::PrintScreen,
+            ShortcutNamedKey::Select,
+            ShortcutNamedKey::Tab,
+        ] {
+            assert_ne!(key_equivalent_for(&ShortcutKey::from(key)), "");
+        }
     }
 
     /// `menus` resolved as the declared menu bar.
