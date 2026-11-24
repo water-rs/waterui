@@ -840,11 +840,11 @@ DatePicker::new("Date", &date)                   // generic over T: DatePickable
 DatePicker::new("Alarm", &time).seconds()        // .seconds() only exists for Time / DateTime
 DatePicker::new("Due", &dt).components(DateTimePickerComponents::DateHourMinuteAndSecond)
 
-Calendar::new("Trip Date", &date, &visible_month)      // TWO bindings: selection + shown month
+Calendar::new("Trip Date", &date)                        // month owned by config; `.visible_month(&shown)` optional
     .range(start..=end)
     .decorated(marked_days.clone())                    // impl IntoComputed<BTreeSet<Date>> — passive dots
 
-MultiDatePicker::new("Available", &date_set, &visible_month)   // Binding<BTreeSet<Date>>
+MultiDatePicker::new("Available", &date_set)             // Binding<BTreeSet<Date>>; `.visible_month(&shown)` optional
 
 ColorPicker::new("Accent", &color).with_alpha().with_hdr()     // Binding<Color>
 FilePicker::open("Select Files", &urls).max_count(5)           // Binding<Vec<Url>>; `import(..)` copies into app storage
