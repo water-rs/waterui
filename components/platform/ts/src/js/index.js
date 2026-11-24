@@ -1,7 +1,9 @@
-// The public `waterui` module surface. The compile-time transform resolves
-// `import … from "waterui"` to this module and `waterui/jsx-runtime` to
-// `jsx-runtime.js`; the engine injects both as virtual modules over the host
-// table installed through `installHost`.
+// The public `waterui` authoring module surface.
+//
+// Application views import only from `waterui` (`index.js`) and
+// `waterui/jsx-runtime` (`jsx-runtime.js`). Host installation, mounting, and
+// bundle prologue plumbing live in the separate `waterui/runtime` entry
+// (`runtime.js`).
 
 export {
   batch,
@@ -22,18 +24,6 @@ export {
   useContext,
 } from "./signals.js";
 
-export {
-  getHost,
-  installHost,
-  read,
-  subscribe,
-  toAccessor,
-  toSignal,
-  uninstallHost,
-  write,
-} from "./host.js";
-
 export { Box, For, Show, Suspense } from "./components.js";
-export { mount, useLocale, useTheme } from "./contexts.js";
-export { installRuntimeGlobal, makeCallback } from "./runtime-global.js";
+export { useLocale, useTheme } from "./contexts.js";
 export { Fragment, jsx, jsxDEV, jsxs, spreadProps } from "./jsx-runtime.js";

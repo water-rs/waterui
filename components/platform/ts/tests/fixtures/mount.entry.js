@@ -15,7 +15,7 @@
 // into the entry it generates.
 
 import { jsx } from "../../src/js/jsx-runtime.js";
-import { installRuntimeGlobal } from "../../src/js/runtime-global.js";
+import { installRuntimeGlobal } from "../../src/js/runtime.js";
 import { onCleanup } from "../../src/js/signals.js";
 
 /** The id `tsx!("fixtures/promo.tsx", …)` in `tests/mount.rs` resolves to. */

@@ -559,7 +559,6 @@
     }
     return handle;
   }
-
   // src/js/contexts.js
   var ThemeContext = createContext();
   var LocaleContext = createContext();
@@ -575,7 +574,6 @@
       return { handle: render(), dispose };
     });
   }
-
   // src/js/runtime-global.js
   var RUNTIME_GLOBAL = "__waterui_runtime";
   function makeCallback(id) {
@@ -612,7 +610,6 @@
     globalThis[RUNTIME_GLOBAL] = runtime;
     return runtime;
   }
-
   // tests/fixtures/mount.entry.js
   var MODULE = "tests/fixtures/promo.tsx";
   function Promo(props) {
