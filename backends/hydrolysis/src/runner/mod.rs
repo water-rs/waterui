@@ -14,7 +14,6 @@ use accesskit::{
 #[cfg(hydrolysis_cherenkov)]
 use executor_core::try_init_local_executor;
 use nami::Signal as _;
-#[cfg(not(target_arch = "wasm32"))]
 use std::cell::Cell;
 #[cfg(hydrolysis_cherenkov)]
 use std::collections::VecDeque;
@@ -31,6 +30,13 @@ use waterui::app::AppParts;
 use waterui::app::{App, AppMenuBar};
 use waterui::app::{WindowSink, Windows};
 use waterui::window::Window;
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    not(hydrolysis_winit),
+    not(hydrolysis_uikit),
+    not(target_os = "android")
+))]
+use waterui::window::WindowState;
 use waterui_core::Environment;
 use waterui_core::Retain;
 use waterui_core::handler::ViewBuilder;
@@ -516,6 +522,9 @@ pub fn run<W: Windows, M: AppMenuBar>(
     window::RootWindows::connect_channels(channels, &opener);
     let mut pending_windows = VecDeque::from(initial);
     while let Some(window) = pending_windows.pop_front() {
+        if window.state.snapshot() == WindowState::Closed {
+            continue;
+        }
         let frame = crate::platform::validated_window_frame(window.frame.snapshot());
         let width = crate::num_cast::f32_as_u32(frame.width().max(1.0));
         let height = crate::num_cast::f32_as_u32(frame.height().max(1.0));

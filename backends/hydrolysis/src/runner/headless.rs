@@ -1460,7 +1460,9 @@ impl HeadlessRuntime {
         &self,
         index: usize,
     ) -> Option<&RootWindow<crate::text::ParleyEngine>> {
-        self.popup_windows.get(index).map(|runtime| &runtime.window)
+        self.popup_windows
+            .get(index)
+            .map(|runtime| runtime.window.as_ref())
     }
 
     /// Captures the `index`th popup's own rendered frame through

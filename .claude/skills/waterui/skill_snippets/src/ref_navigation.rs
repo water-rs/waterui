@@ -663,25 +663,32 @@ pub fn navigation_block_14() -> waterui::window::Window<impl waterui::handler::V
 // ---------------------------------------------------------------------------
 // navigation.md § "## Windows that open and close" — rust block 15/16
 // ---------------------------------------------------------------------------
-pub fn navigation_block_15() -> impl View {
+pub fn navigation_block_15(env: Environment) -> App<impl Windows> {
     fn inspector_content() -> impl View {
         text("inspector")
     }
 
-    use waterui::window::{
-        Window, WindowPresentation, WindowState, WindowStyle, conditional_window,
-    };
+    use waterui::app::{App, Windows};
+    use waterui::window::{Window, WindowState, WindowStyle};
 
-    let state = binding::<WindowState>(WindowState::default());
-    let presentation = WindowPresentation::new(&state); // guards against duplicate opens
+    fn app(env: Environment) -> App<impl Windows> {
+        let inspector_state = binding::<WindowState>(WindowState::default()); // starts Closed
+        let main_state = inspector_state.clone();
+        App::new(env)
+            .window(Window::new("Main", move || {
+                button("Inspector")
+                    .action(|State(s): State<Binding<WindowState>>| s.set(WindowState::Normal))
+                    .state(&main_state)
+            }))
+            .window(
+                Window::new("Inspector", inspector_content)
+                    .state(&inspector_state)
+                    .style(WindowStyle::Titled)
+                    .resizable(true),
+            )
+    }
 
-    // An INVISIBLE view — it must still be placed in the tree (e.g. a later zstack child).
-    conditional_window(&presentation, |state| {
-        Window::new("Inspector", inspector_content)
-            .state(&state)
-            .style(WindowStyle::Titled)
-            .resizable(true)
-    })
+    app(env)
 }
 
 // ---------------------------------------------------------------------------

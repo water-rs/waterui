@@ -18,103 +18,100 @@ use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
 use waterui::task::{sleep, spawn_local};
-use waterui::window::{
-    UserAttention, Window, WindowHandle, WindowLevel, WindowPresentation, WindowState, WindowStyle,
-    conditional_window,
-};
+use waterui::window::{UserAttention, Window, WindowHandle, WindowLevel, WindowState, WindowStyle};
 
-/// The multi-window example page: one window per window style, each with its state.
+#[derive(Clone)]
+struct GalleryStates {
+    standard: Binding<WindowState>,
+    borderless: Binding<WindowState>,
+    frosted: Binding<WindowState>,
+    transparent: Binding<WindowState>,
+    ultra_thin: Binding<WindowState>,
+    controls: Binding<WindowState>,
+}
+
+impl GalleryStates {
+    fn closed() -> Self {
+        Self {
+            standard: binding(WindowState::Closed),
+            borderless: binding(WindowState::Closed),
+            frosted: binding(WindowState::Closed),
+            transparent: binding(WindowState::Closed),
+            ultra_thin: binding(WindowState::Closed),
+            controls: binding(WindowState::Closed),
+        }
+    }
+}
+
+/// The multi-window example page: one section per secondary window, each
+/// driven by its `Binding<WindowState>`.
 #[preview]
 pub fn demo() -> impl View {
-    // Reactive state to track window states. `WindowState::default()` is
-    // `Closed`, so a fresh binding represents a window that has not yet been
-    // shown.
-    let standard_state = binding::<WindowState>(WindowState::default());
-    let borderless_state = binding::<WindowState>(WindowState::default());
-    let frosted_state = binding::<WindowState>(WindowState::default());
-    let transparent_state = binding::<WindowState>(WindowState::default());
-    let ultra_thin_state = binding::<WindowState>(WindowState::default());
-    let controls_state = binding::<WindowState>(WindowState::default());
-    let standard_window = WindowPresentation::new(&standard_state);
-    let borderless_window = WindowPresentation::new(&borderless_state);
-    let frosted_window = WindowPresentation::new(&frosted_state);
-    let transparent_window = WindowPresentation::new(&transparent_state);
-    let ultra_thin_window = WindowPresentation::new(&ultra_thin_state);
-    let controls_window = WindowPresentation::new(&controls_state);
+    gallery(&GalleryStates::closed())
+}
 
-    // Use zstack so the invisible window triggers don't affect scroll layout
-    zstack((
-        scroll(
+fn gallery(states: &GalleryStates) -> impl View + use<> {
+    scroll(
+        vstack((
+            // Header
+            text("Multi-Window Gallery").title().bold(true),
+            text("Explore different window styles and backgrounds").body(),
+            spacer().height(20.0),
+            Divider,
+            spacer().height(20.0),
+            // Main content
             vstack((
-                // Header
-                text("Multi-Window Gallery").title().bold(true),
-                text("Explore different window styles and backgrounds").body(),
-                spacer().height(20.0),
-                Divider,
-                spacer().height(20.0),
-                // Main content
-                vstack((
-                    // Section 1: Standard Window
-                    window_section(
-                        "Standard Titled Window",
-                        "Classic window with title bar and opaque background",
-                        &standard_state,
-                    ),
-                    spacer().height(16.0),
-                    // Section 2: Borderless Window
-                    window_section(
-                        "Borderless Window",
-                        "Frameless window with colored semi-transparent background",
-                        &borderless_state,
-                    ),
-                    spacer().height(16.0),
-                    // Section 3: Frosted Glass Window
-                    window_section(
-                        "Frosted Glass Window",
-                        "Window with material blur effect (Regular thickness)",
-                        &frosted_state,
-                    ),
-                    spacer().height(16.0),
-                    // Section 4: Transparent Window
-                    window_section(
-                        "Transparent Overlay",
-                        "Fully transparent window with FullSizeContentView style",
-                        &transparent_state,
-                    ),
-                    spacer().height(16.0),
-                    // Section 5: Ultra-Thin Material Window
-                    window_section(
-                        "Ultra-Thin Material Window",
-                        "Subtle frosted effect with UltraThin material",
-                        &ultra_thin_state,
-                    ),
-                    spacer().height(16.0),
-                    // Section 6: Window Controls
-                    window_section(
-                        "Window Controls",
-                        "Maximize, always-on-top, attention requests, resize increments",
-                        &controls_state,
-                    ),
-                ))
-                .padding_with(12.0),
-                spacer(),
-                Divider,
-                spacer().height(12.0),
-                text("Built with WaterUI Multi-Window Support").caption(),
-                spacer().height(12.0),
+                // Section 1: Standard Window
+                window_section(
+                    "Standard Titled Window",
+                    "Classic window with title bar and opaque background",
+                    &states.standard,
+                ),
+                spacer().height(16.0),
+                // Section 2: Borderless Window
+                window_section(
+                    "Borderless Window",
+                    "Frameless window with colored semi-transparent background",
+                    &states.borderless,
+                ),
+                spacer().height(16.0),
+                // Section 3: Frosted Glass Window
+                window_section(
+                    "Frosted Glass Window",
+                    "Window with material blur effect (Regular thickness)",
+                    &states.frosted,
+                ),
+                spacer().height(16.0),
+                // Section 4: Transparent Window
+                window_section(
+                    "Transparent Overlay",
+                    "Fully transparent window with FullSizeContentView style",
+                    &states.transparent,
+                ),
+                spacer().height(16.0),
+                // Section 5: Ultra-Thin Material Window
+                window_section(
+                    "Ultra-Thin Material Window",
+                    "Subtle frosted effect with UltraThin material",
+                    &states.ultra_thin,
+                ),
+                spacer().height(16.0),
+                // Section 6: Window Controls
+                window_section(
+                    "Window Controls",
+                    "Maximize, always-on-top, attention requests, resize increments",
+                    &states.controls,
+                ),
             ))
-            .padding_with(20.0),
-        ),
-        // Conditionally render windows based on state (invisible triggers)
-        conditional_window(&standard_window, |state| create_standard_window(&state)),
-        conditional_window(&borderless_window, |state| create_borderless_window(&state)),
-        conditional_window(&frosted_window, |state| create_frosted_window(&state)),
-        conditional_window(&transparent_window, |state| {
-            create_transparent_window(&state)
-        }),
-        conditional_window(&ultra_thin_window, |state| create_ultra_thin_window(&state)),
-        conditional_window(&controls_window, |state| create_controls_window(&state)),
-    ))
+            .padding_with(12.0),
+            spacer(),
+            Divider,
+            spacer().height(12.0),
+            text("Built with WaterUI Multi-Window Support").caption(),
+            spacer().height(12.0),
+        ))
+        .padding_with(20.0),
+    )
 }
 
 /// Helper function to create a window section with open and close buttons
@@ -346,6 +343,18 @@ fn material_item(name: &'static str, description: &'static str) -> impl View + u
 }
 
 /// Builds the multi-window example app.
+#[must_use]
 pub fn app(env: Environment) -> App<impl Windows> {
-    App::new(env).window(Window::new("Multi-Window Gallery", demo))
+    let states = GalleryStates::closed();
+    let gallery_states = states.clone();
+    App::new(env)
+        .window(Window::new("Multi-Window Gallery", move || {
+            gallery(&gallery_states)
+        }))
+        .window(create_standard_window(&states.standard))
+        .window(create_borderless_window(&states.borderless))
+        .window(create_frosted_window(&states.frosted))
+        .window(create_transparent_window(&states.transparent))
+        .window(create_ultra_thin_window(&states.ultra_thin))
+        .window(create_controls_window(&states.controls))
 }
