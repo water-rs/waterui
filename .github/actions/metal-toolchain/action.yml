@@ -26,6 +26,10 @@ runs:
         }
         toolchain_status="$(status || true)"
         if ! installed "${toolchain_status}"; then
+          # Wait for preinstalled simulator cryptex runtimes to attach cleanly so
+          # `xcodebuild -downloadComponent MetalToolchain` does not race with
+          # `simdiskimaged` and leave duplicate/unusable mounts (#4101).
+          "${GITHUB_ACTION_PATH}/../../scripts/wait-simulator-runtimes.sh"
           xcodebuild -downloadComponent MetalToolchain
           toolchain_status="$(status || true)"
           if ! installed "${toolchain_status}"; then

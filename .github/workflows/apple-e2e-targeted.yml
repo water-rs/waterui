@@ -206,11 +206,7 @@ jobs:
       - name: Select iOS simulator
         run: |
           set -euo pipefail
-          simulator_udid="$(xcrun simctl list devices available | awk -F '[()]' '/iPhone/ {print $2; exit}')"
-          if [[ -z "${simulator_udid}" ]]; then
-            echo "::error::No available iPhone simulator found."
-            exit 1
-          fi
+          simulator_udid="$(./.github/scripts/select-ios-simulator.sh --model-regex '^iPhone')"
           echo "SIMULATOR_UDID=${simulator_udid}" >> "${GITHUB_ENV}"
 
       # The .github/scripts e2e scripts require bash >= 4.2 (#2683).
