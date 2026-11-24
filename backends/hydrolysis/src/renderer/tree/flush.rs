@@ -509,8 +509,13 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                             ctx,
                             child_env,
                             *selected_row,
-                            |r| {
-                                node.child.flush(r, ctx, child_env, kurbo::Affine::IDENTITY);
+                            |r, content_ctx| {
+                                node.child.flush(
+                                    r,
+                                    content_ctx,
+                                    child_env,
+                                    kurbo::Affine::IDENTITY,
+                                );
                             },
                         );
                     }

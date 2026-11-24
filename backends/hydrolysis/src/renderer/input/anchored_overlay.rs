@@ -24,12 +24,14 @@ use std::rc::Rc;
 
 #[cfg(feature = "menu")]
 use cherenkov_record::Animation as EngineAnimation;
+use kurbo::Rect;
 #[cfg(feature = "menu")]
-use kurbo::{Affine, Rect, Vec2};
+use kurbo::{Affine, Vec2};
 use nami::Binding;
 use waterui::metadata::anchored_overlay::{AnchorEdge, AnchorPlacement, Clamp, Dismissal};
+use waterui_backend_core::overlay::{logical_edge, place_anchored_overlay};
 use waterui_core::Environment;
-use waterui_core::layout::layout_direction;
+use waterui_core::layout::{Size as LayoutSize, layout_direction};
 #[cfg(feature = "menu")]
 use waterui_graphics::animation::engine_animation;
 use waterui_structural_transition::TransitionSpec;
@@ -39,10 +41,10 @@ use crate::num_cast::f64_as_f32;
 #[cfg(feature = "menu")]
 use crate::renderer::mount::ScopeKey;
 use crate::renderer::tree::transition::{
-    TransitionPaint, TransitionRun, claim_transition, flush_transitioned,
+    TransitionBlur, TransitionPaint, TransitionRun, claim_transition, flush_transitioned,
 };
 #[cfg(feature = "menu")]
-use crate::renderer::{RenderNode, SafeAreaLayout, ScopeDelta};
+use crate::renderer::{NodeCell, RenderNode, SafeAreaLayout, ScopeDelta};
 #[cfg(feature = "menu")]
 use crate::text::TextEngine;
 #[cfg(feature = "menu")]
@@ -84,17 +86,24 @@ pub struct RegisteredAnchoredOverlay<E: crate::text::TextEngine> {
     /// Identity shared between the effect and its registration, so the render
     /// pass can tell a re-registered anchor from a dropped one.
     pub(crate) marker: Rc<()>,
+    /// Whether the placed panel overlays the trigger frame (top-aligned and
+    /// horizontally centered on `anchor`, flipping to bottom-aligned when
+    /// constrained) instead of opening beside an anchor edge.
+    pub(crate) cover_trigger: bool,
 }
 
 /// Live presentation sample handed to [`PopupMenuSurface`] while an animated
 /// anchored overlay is recording its subtree.
 #[cfg(feature = "menu")]
-#[derive(Clone, Copy)]
-pub struct ActiveMenuPresentation {
+pub struct ActiveMenuPresentation<E: TextEngine> {
     /// Sampled bounds, progress, and reveal factors in window coordinates.
     pub(crate) sample: MenuPresentationSample,
     /// Scope identity of the presentation owning this menu surface.
     pub(crate) scope: u64,
+    /// Lazily allocated blur filter host for content reveal blur.
+    pub(crate) blur: Rc<RefCell<Option<TransitionBlur<E>>>>,
+    /// Root cell owning `blur` while the presentation is live.
+    pub(crate) owner: Rc<NodeCell<E>>,
 }
 
 /// Content transform placing a menu panel's content at the centre of the
@@ -109,75 +118,100 @@ pub fn presentation_content_transform(panel: Rect, surface: Rect, scale: f64) ->
 }
 
 /// Theme-driven presentation morph progress (`0.0` at trigger -> `1.0` settled)
-/// evaluated through the shared engine timing sampler so springs preserve both
-/// position and velocity across mid-flight dismissal.
+/// evaluated through the shared engine timing sampler so isotropic or
+/// anisotropic springs preserve both position and velocity across mid-flight
+/// dismissal.
 #[cfg(feature = "menu")]
 struct PresentationMorph {
     motion: MenuPresentationMotion,
-    from: f64,
-    velocity: f64,
+    from: [f64; 2],
+    velocity: [f64; 2],
     target: f64,
-    animation: EngineAnimation,
+    animation_x: EngineAnimation,
+    animation_y: EngineAnimation,
     start: Instant,
+    dismissing: bool,
     settled: bool,
 }
 
 #[cfg(feature = "menu")]
 impl PresentationMorph {
     fn present(motion: MenuPresentationMotion, now: Instant, reduce_motion: bool) -> Self {
-        let animation = engine_animation(&motion.present);
+        let animation_x = engine_animation(&motion.present);
+        let animation_y =
+            engine_animation(motion.present_vertical.as_ref().unwrap_or(&motion.present));
         if reduce_motion {
             Self {
                 motion,
-                from: 1.0,
-                velocity: 0.0,
+                from: [1.0, 1.0],
+                velocity: [0.0, 0.0],
                 target: 1.0,
-                animation,
+                animation_x,
+                animation_y,
                 start: now,
+                dismissing: false,
                 settled: true,
             }
         } else {
             Self {
                 motion,
-                from: 0.0,
-                velocity: 0.0,
+                from: [0.0, 0.0],
+                velocity: [0.0, 0.0],
                 target: 1.0,
-                animation,
+                animation_x,
+                animation_y,
                 start: now,
+                dismissing: false,
                 settled: false,
             }
         }
     }
 
-    fn eval_at(&self, at: Instant) -> (f64, f64, bool) {
-        if self.settled {
-            return (self.target, 0.0, true);
-        }
-        let dt = at.saturating_duration_since(self.start).as_secs_f64();
+    fn eval_axis(
+        animation: &EngineAnimation,
+        from: f64,
+        velocity: f64,
+        target: f64,
+        dt: f64,
+    ) -> (f64, f64, bool) {
         let mut position = [0.0_f64];
-        let mut velocity = [0.0_f64];
-        let done = self
-            .animation
+        let mut vel = [0.0_f64];
+        let done = animation
             .timing()
             .expect("hydrolysis menu presentation animation is a curve or a spring")
-            .sample_lanes(
-                &[self.from],
-                &[self.velocity],
-                &[self.target],
-                dt,
-                &mut position,
-                &mut velocity,
-            );
-        (position[0], velocity[0], done)
+            .sample_lanes(&[from], &[velocity], &[target], dt, &mut position, &mut vel);
+        (position[0], vel[0], done)
     }
 
-    fn advance(&mut self, now: Instant) -> (f64, bool) {
+    fn eval_at(&self, at: Instant) -> ([f64; 2], [f64; 2], bool) {
+        if self.settled {
+            return ([self.target, self.target], [0.0, 0.0], true);
+        }
+        let dt = at.saturating_duration_since(self.start).as_secs_f64();
+        let (px, vx, done_x) = Self::eval_axis(
+            &self.animation_x,
+            self.from[0],
+            self.velocity[0],
+            self.target,
+            dt,
+        );
+        let (py, vy, done_y) = Self::eval_axis(
+            &self.animation_y,
+            self.from[1],
+            self.velocity[1],
+            self.target,
+            dt,
+        );
+        ([px, py], [vx, vy], done_x && done_y)
+    }
+
+    fn advance(&mut self, now: Instant) -> ([f64; 2], bool) {
         let (progress, _, done) = self.eval_at(now);
         if done {
             self.settled = true;
-            self.from = self.target;
-            self.velocity = 0.0;
-            (self.target, true)
+            self.from = [self.target, self.target];
+            self.velocity = [0.0, 0.0];
+            ([self.target, self.target], true)
         } else {
             (progress, false)
         }
@@ -188,19 +222,34 @@ impl PresentationMorph {
         self.from = progress;
         self.velocity = velocity;
         self.target = 0.0;
-        self.animation = engine_animation(&self.motion.dismiss);
+        self.animation_x = engine_animation(&self.motion.dismiss);
+        self.animation_y = engine_animation(
+            self.motion
+                .dismiss_vertical
+                .as_ref()
+                .unwrap_or(&self.motion.dismiss),
+        );
         self.start = now;
+        self.dismissing = true;
         self.settled = false;
     }
 
     fn sample_at(&self, origin: Rect, panel: Rect, now: Instant) -> MenuPresentationSample {
-        let (progress, _, _) = self.eval_at(now);
-        self.motion.sample(origin, panel, progress)
+        let ([px, py], _, _) = self.eval_at(now);
+        self.motion
+            .sample_axes(origin, panel, px, py, self.dismissing)
     }
 
     fn trigger_opacity_at(&self, now: Instant) -> f64 {
-        let (progress, _, _) = self.eval_at(now);
-        self.motion.trigger_opacity(progress)
+        let ([px, py], _, _) = self.eval_at(now);
+        let q = px.clamp(0.0, 1.0).min(py.clamp(0.0, 1.0));
+        self.motion.trigger_opacity_for(q, self.dismissing)
+    }
+
+    fn trigger_chrome_opacity_at(&self, now: Instant) -> f64 {
+        let ([px, py], _, _) = self.eval_at(now);
+        let q = px.clamp(0.0, 1.0).min(py.clamp(0.0, 1.0));
+        self.motion.trigger_chrome_opacity_for(q, self.dismissing)
     }
 }
 
@@ -215,15 +264,37 @@ pub struct AnchoredPresentations<E: crate::text::TextEngine> {
 
 #[cfg(feature = "menu")]
 impl<E: TextEngine> AnchoredPresentations<E> {
+    /// Whether an active (non-exiting) presentation is currently built.
+    pub(crate) const fn has_current(&self) -> bool {
+        self.current.is_some()
+    }
+
+    /// Whether a presentation is currently open or still running its dismiss
+    /// animation.
+    pub(crate) const fn has_presentations(&self) -> bool {
+        self.current.is_some() || !self.exiting.is_empty()
+    }
+
     /// Minimum trigger opacity across all active and exiting morphing
     /// presentations at `now`, or `1.0` when no presentation fades the trigger.
     pub(crate) fn trigger_opacity_at(&self, now: Instant) -> f64 {
+        self.trigger_opacities_at(now).0
+    }
+
+    /// Minimum `(label_opacity, chrome_opacity)` for the triggering anchor
+    /// across all active and exiting morphing presentations at `now`, or
+    /// `(1.0, 1.0)` when no morphing presentation is active.
+    pub(crate) fn trigger_opacities_at(&self, now: Instant) -> (f64, f64) {
         self.current
             .iter()
             .chain(&self.exiting)
             .filter_map(|presentation| presentation.morph.as_ref())
-            .map(|morph| morph.trigger_opacity_at(now))
-            .fold(1.0_f64, f64::min)
+            .fold((1.0_f64, 1.0_f64), |(label, chrome), morph| {
+                (
+                    label.min(morph.trigger_opacity_at(now)),
+                    chrome.min(morph.trigger_chrome_opacity_at(now)),
+                )
+            })
     }
 }
 
@@ -242,6 +313,9 @@ pub struct AnchoredPresentation<E: crate::text::TextEngine> {
     /// theme's `MenuLook` declares [`MenuPresentationMotion`].
     #[cfg(feature = "menu")]
     morph: Option<PresentationMorph>,
+    /// Lazily allocated blur filter host used when `MenuPresentationSample::content_blur > 0`.
+    #[cfg(feature = "menu")]
+    blur: Rc<RefCell<Option<TransitionBlur<E>>>>,
     /// The frame and proposal the presentation was last placed at — the
     /// slot an exiting presentation keeps.
     placed: Option<(kurbo::Rect, ProposalSize)>,
@@ -288,6 +362,8 @@ impl<E: crate::text::TextEngine> AnchoredPresentation<E> {
             run,
             #[cfg(feature = "menu")]
             morph,
+            #[cfg(feature = "menu")]
+            blur: Rc::new(RefCell::new(None)),
             placed: None,
         }
     }
@@ -546,19 +622,29 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 .min(crate::num_cast::f64_as_f32(window.height())),
         );
         let direction = self.read_signal(&layout_direction(&entry.env));
-        let placement = waterui_backend_core::overlay::place_anchored_overlay(
-            kurbo_to_rect(entry.anchor),
-            kurbo_to_rect(window),
-            overlay_size,
-            entry.placement,
-            direction,
-        );
-        let frame = rect_to_kurbo(placement.frame());
+        let (frame, logical) = if entry.cover_trigger {
+            let clamp_margin = match entry.placement.get_clamp() {
+                Clamp::Window { margin } => f64::from(margin),
+                Clamp::Off => 0.0,
+            };
+            place_covering_trigger(entry.anchor, window, overlay_size, clamp_margin)
+        } else {
+            let placement = place_anchored_overlay(
+                kurbo_to_rect(entry.anchor),
+                kurbo_to_rect(window),
+                overlay_size,
+                entry.placement,
+                direction,
+            );
+            (
+                rect_to_kurbo(placement.frame()),
+                logical_edge(placement.edge(), direction),
+            )
+        };
 
         // Every placement writes back the logical edge the overlay was
         // placed against — the physical edge resolved under the layout
         // direction, so `Leading`/`Trailing` read back correctly in RTL.
-        let logical = waterui_backend_core::overlay::logical_edge(placement.edge(), direction);
         if entry.placed_edge.snapshot() != logical {
             entry.placed_edge.set(logical);
         }
@@ -692,6 +778,8 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             run,
             #[cfg(feature = "menu")]
             morph,
+            #[cfg(feature = "menu")]
+            blur,
             ..
         } = presentation;
         match run {
@@ -740,7 +828,16 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 if let Some(morph) = morph {
                     let sample = morph.sample_at(entry.anchor, frame, self.frame_instant);
                     self.record_morphed_presentation(
-                        entry, content, sample, scope, ctx, proposal, frame, area, hit,
+                        entry,
+                        content,
+                        sample,
+                        scope,
+                        Rc::clone(blur),
+                        ctx,
+                        proposal,
+                        frame,
+                        area,
+                        hit,
                     );
                 } else {
                     content.place_detached(self, ctx, &entry.env, proposal, frame, Some(area));
@@ -761,7 +858,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     #[cfg(feature = "menu")]
     #[expect(
         clippy::too_many_arguments,
-        reason = "forwards the presentation's layout, sample, scope, and hit-test context directly"
+        reason = "forwards the presentation's layout, sample, scope, blur host, and hit-test context directly"
     )]
     fn record_morphed_presentation(
         &mut self,
@@ -769,6 +866,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         content: &mut RetainedSubview<E>,
         sample: MenuPresentationSample,
         scope: u64,
+        blur: Rc<RefCell<Option<TransitionBlur<E>>>>,
         ctx: RenderContext,
         proposal: ProposalSize,
         frame: Rect,
@@ -779,10 +877,16 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             .node()
             .is_some_and(RenderNode::has_popup_menu_surface);
         if uses_menu_surface {
-            let previous = self
-                .popup_menu
-                .active_menu_presentation
-                .replace(ActiveMenuPresentation { sample, scope });
+            let owner = Rc::clone(self.root_cell());
+            let previous =
+                self.popup_menu
+                    .active_menu_presentation
+                    .replace(ActiveMenuPresentation {
+                        sample,
+                        scope,
+                        blur,
+                        owner,
+                    });
             let record = |renderer: &mut Self| {
                 content.place_detached(renderer, ctx, &entry.env, proposal, frame, Some(area));
             };
@@ -796,8 +900,10 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         }
 
         let at_rest = (sample.progress - 1.0).abs() <= 1e-4
+            && (sample.vertical_progress - 1.0).abs() <= 1e-4
             && (sample.content_opacity - 1.0).abs() <= 1e-4
-            && (sample.content_scale - 1.0).abs() <= 1e-4;
+            && (sample.content_scale - 1.0).abs() <= 1e-4
+            && sample.content_blur <= 0.01;
         if at_rest {
             let record = |renderer: &mut Self| {
                 content.place_detached(renderer, ctx, &entry.env, proposal, frame, Some(area));
@@ -844,6 +950,34 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             self.with_suppressed_accessibility(record);
         }
     }
+}
+
+/// Places a menu panel overlapping `anchor`: top-aligned with `anchor.y0` and
+/// horizontally centred on `anchor`, flipping to bottom-aligned (`anchor.y1`)
+/// when the panel overflows the bottom margin and fits above, then clamping
+/// inside `window` inset by `margin`.
+fn place_covering_trigger(
+    anchor: Rect,
+    window: Rect,
+    overlay: LayoutSize,
+    margin: f64,
+) -> (Rect, AnchorEdge) {
+    let width = f64::from(overlay.width).min(window.width());
+    let height = f64::from(overlay.height).min(window.height());
+    let min_x = window.x0 + margin;
+    let max_x = (window.x1 - margin - width).max(min_x);
+    let x = width.mul_add(-0.5, anchor.center().x).clamp(min_x, max_x);
+
+    let min_y = window.y0 + margin;
+    let max_y = (window.y1 - margin - height).max(min_y);
+    let (y, edge) = if anchor.y0 + height <= window.y1 - margin {
+        (anchor.y0.clamp(min_y, max_y), AnchorEdge::Bottom)
+    } else if anchor.y1 - height >= min_y {
+        ((anchor.y1 - height).clamp(min_y, max_y), AnchorEdge::Top)
+    } else {
+        (anchor.y0.clamp(min_y, max_y), AnchorEdge::Bottom)
+    };
+    (Rect::new(x, y, x + width, y + height), edge)
 }
 
 const fn kurbo_to_rect(rect: kurbo::Rect) -> waterui_core::layout::Rect {

@@ -22,7 +22,6 @@ use std::rc::{Rc, Weak};
 
 use nami::{Computed, Signal as _};
 use waterui::app::Quit;
-use waterui::window::WindowState;
 use waterui_controls::NoopSlot;
 use waterui_controls::menu::{
     CloseWindowChord, MenuItem, ResolvedCommand, ResolvedMenuItem, Shortcut, ShortcutKey,
@@ -348,11 +347,7 @@ impl<E: crate::text::TextEngine> MenuShortcutSource<E> {
     fn live(&self) -> bool {
         match self {
             Self::Mounted { menu_state, .. } => menu_state.upgrade().is_some(),
-            Self::Popup { group, .. } => group
-                .0
-                .borrow()
-                .iter()
-                .any(|state| state.snapshot() != WindowState::Closed),
+            Self::Popup { group, .. } => group.is_live(),
             // The menu bar lives for the app's duration — the same span the
             // runner owns this registry for.
             Self::AppBar { .. } => true,

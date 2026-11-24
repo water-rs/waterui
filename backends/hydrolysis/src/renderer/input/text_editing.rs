@@ -1306,7 +1306,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                         .popup_menu
                         .active_popup_menu_group
                         .as_ref()
-                        .is_some_and(|group| Rc::ptr_eq(&group.0, &overlay.menu_group.0))
+                        .is_some_and(|group| group.ptr_eq(&overlay.menu_group))
                     {
                         self.popup_menu.active_popup_menu_group = None;
                     }
@@ -1318,7 +1318,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                         .popup_menu
                         .active_popup_menu_group
                         .as_ref()
-                        .is_some_and(|active| Rc::ptr_eq(&active.0, &group.0))
+                        .is_some_and(|active| active.ptr_eq(&group))
                     {
                         self.popup_menu.active_popup_menu_group = None;
                     }
