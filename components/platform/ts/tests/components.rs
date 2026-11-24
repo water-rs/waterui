@@ -599,7 +599,7 @@ fn ts_link_is_a_link() {
     assert_same(
         "Link",
         &module(r#"waterui.jsx("Link", { url: "https://waterui.dev", children: "WaterUI" })"#),
-        Link::new(label("WaterUI"), Str::from("https://waterui.dev")),
+        Link::new(label("WaterUI"), "https://waterui.dev"),
     );
 }
 
@@ -1879,6 +1879,11 @@ fn ts_an_attribute_value_of_the_wrong_shape_is_refused() {
             "a link target that is not a URL string",
             r#"waterui.jsx("Link", { url: 3, children: "WaterUI" })"#,
             "url",
+        ),
+        (
+            "a link target that is not a valid URL",
+            r#"waterui.jsx("Link", { url: "not a url", children: "WaterUI" })"#,
+            "not a url",
         ),
         (
             "a prompt that is not text",

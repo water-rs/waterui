@@ -75,8 +75,6 @@ pub use proxy::WebViewProxy;
 
 // Re-export waterui-internal types for FFI layer
 pub use waterui_url::{IntoUrl, Url};
-mod url_signal;
-pub use url_signal::IntoUrlSignal;
 pub use waterui_watcher_set::{WatcherGuard, WatcherSet};
 #[cfg(not(target_arch = "wasm32"))]
 pub mod bridge;
@@ -458,9 +456,9 @@ impl WebView {
     /// let webview = WebView::open(url.clone());
     /// url.set(Url::new("https://waterui.dev/docs"));
     /// ```
-    pub fn open(url: impl IntoUrlSignal) -> WebViewOpen {
+    pub fn open(url: impl IntoComputed<Url>) -> WebViewOpen {
         WebViewOpen {
-            target: WebViewTarget::Url(url.into_url_signal()),
+            target: WebViewTarget::Url(url.into_computed()),
             #[cfg(not(target_arch = "wasm32"))]
             redirects_enabled: None,
             #[cfg(not(target_arch = "wasm32"))]
