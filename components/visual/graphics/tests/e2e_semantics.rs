@@ -4,8 +4,8 @@ use waterui::Binding;
 use waterui::Str;
 use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityRole;
-use waterui::graphics::color::{Srgb, WorkingColor};
-use waterui::layout::Size;
+use waterui::graphics::color::{Color, Working, WorkingColor};
+use waterui::layout::{Size, UnitPoint};
 use waterui::reactive::constant;
 use waterui_graphics::backend::Picture;
 use waterui_graphics::backend::draw::Draw as _;
@@ -17,12 +17,9 @@ use waterui_testing::{Role, SemanticApp};
 
 fn linear_gradient_view() -> impl waterui::View {
     Gradient::linear(
-        vec![
-            (0.0, Srgb::from_hex("#0F172A").resolve()),
-            (1.0, Srgb::from_hex("#38BDF8").resolve()),
-        ],
-        [0.0, 0.0],
-        [1.0, 1.0],
+        [Color::srgb_hex("#0F172A"), Color::srgb_hex("#38BDF8")],
+        UnitPoint::TOP_LEADING,
+        UnitPoint::BOTTOM_TRAILING,
     )
     .size(180.0, 120.0)
     .a11y_role(AccessibilityRole::Image)
@@ -31,10 +28,10 @@ fn linear_gradient_view() -> impl waterui::View {
 
 fn mesh_gradient_view() -> impl waterui::View {
     let colors = Binding::container(vec![
-        WorkingColor::BLACK,
-        WorkingColor::WHITE,
-        WorkingColor::WHITE,
-        WorkingColor::BLACK,
+        Color::new(Working(WorkingColor::BLACK)),
+        Color::new(Working(WorkingColor::WHITE)),
+        Color::new(Working(WorkingColor::WHITE)),
+        Color::new(Working(WorkingColor::BLACK)),
     ]);
     MeshGradient::new(2, 2, colors)
         .size(180.0, 120.0)

@@ -152,7 +152,7 @@ pub mod prelude {
     #[cfg(any(feature = "gpu", feature = "cpu"))]
     pub use super::gradient::FlowingGradient;
     pub use super::gradient::{AnimatedMeshGradient, AnimatedMeshGradientConfig};
-    pub use super::gradient::{Gradient, MeshGradient};
+    pub use super::gradient::{Gradient, GradientStops, MeshGradient};
 
     // Background types (explicit to avoid module name conflict with layout::background)
     pub use super::background::{Background, Glass, GlassStyle, Material};

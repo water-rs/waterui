@@ -6,10 +6,12 @@
 //! fractions of the box's shorter side, so a radial gradient stays circular
 //! on a non-square box (see [`Gradient::radial`]).
 //!
-//! - [`Gradient`] — a linear, radial, angular or mesh gradient with fixed
-//!   colours, rendered by the backend as a native gradient where it has one.
+//! - [`Gradient`] — a linear, radial or angular gradient whose stops resolve
+//!   in the environment and follow signals, rendered by the backend as a
+//!   native gradient where it has one.
 //! - [`MeshGradient`] — a mesh gradient whose colours and control points
-//!   follow signals; a change updates the recorded paint in place.
+//!   resolve in the environment and follow signals; a change updates the
+//!   recorded paint in place.
 //! - `AnimatedMeshGradient` — a 4×4 mesh whose vertices and colours flow
 //!   with the canvas clock, drawn through [`Canvas`](crate::canvas::Canvas).
 //! - `FlowingGradient` — drifting noise-driven colour bands painted by a
@@ -27,4 +29,4 @@ pub use animated_mesh::{
 #[cfg(any(feature = "gpu", feature = "cpu"))]
 pub use flowing::FlowingGradient;
 pub use mesh::MeshGradient;
-pub use paint::{Gradient, GradientType};
+pub use paint::{Gradient, GradientStops, GradientType};

@@ -5393,7 +5393,11 @@ mod capture_order {
     fn gpu_child() -> AnyView {
         use waterui::graphics::gradient::MeshGradient;
         use waterui::reactive::constant;
-        AnyView::new(MeshGradient::new(2, 2, constant(vec![CHILD; 4])))
+        AnyView::new(MeshGradient::new(
+            2,
+            2,
+            constant(vec![Color::new(Working(CHILD)); 4]),
+        ))
     }
 
     /// The GPU child's native stand-in: a [`CHILD`] colour view.
@@ -15841,7 +15845,7 @@ mod transition {
     /// frozen-frame trials arm.
     #[cfg(feature = "gpu_surface")]
     pub fn gpu_picture() -> impl waterui_backend_core::View {
-        use waterui::graphics::color::WorkingColor;
+        use waterui::graphics::color::{Color, Working, WorkingColor};
         use waterui::graphics::gradient::MeshGradient;
         use waterui::reactive::constant;
         // Four distinct corners, so a review PNG tells the frozen frame
@@ -15850,10 +15854,10 @@ mod transition {
             2,
             2,
             constant(vec![
-                WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
-                WorkingColor::new([0.0, 1.0, 0.0, 1.0]),
-                WorkingColor::new([0.0, 0.0, 1.0, 1.0]),
-                WorkingColor::new([1.0, 1.0, 0.0, 1.0]),
+                Color::new(Working(WorkingColor::new([1.0, 0.0, 0.0, 1.0]))),
+                Color::new(Working(WorkingColor::new([0.0, 1.0, 0.0, 1.0]))),
+                Color::new(Working(WorkingColor::new([0.0, 0.0, 1.0, 1.0]))),
+                Color::new(Working(WorkingColor::new([1.0, 1.0, 0.0, 1.0]))),
             ]),
         )
     }

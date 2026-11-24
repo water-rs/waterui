@@ -1009,8 +1009,8 @@ mod suite {
         let count = Binding::i32(1);
         let email = Binding::container(Str::from_static("user@example.com"));
         let choice = Binding::container("M");
-        let sky = waterui::color::Srgb::from_hex("#38BDF8").resolve();
-        let rose = waterui::color::Srgb::from_hex("#FB7185").resolve();
+        let sky = Color::srgb_hex("#38BDF8");
+        let rose = Color::srgb_hex("#FB7185");
 
         vstack((
         text("Preview Set").title(),
@@ -1043,8 +1043,12 @@ mod suite {
             RoundedRectangle::new(CornerRadius::fraction(0.25))
                 .fill(Color::srgb_hex("#F59E0B"))
                 .size(64.0, 48.0),
-            Gradient::linear(vec![(0.0, rose), (1.0, sky)], [0.0, 0.0], [1.0, 1.0])
-                .size(64.0, 48.0),
+            Gradient::linear(
+                [rose, sky],
+                waterui::layout::UnitPoint::TOP_LEADING,
+                waterui::layout::UnitPoint::BOTTOM_TRAILING,
+            )
+            .size(64.0, 48.0),
         ))
         .spacing(8.0),
         text("material row").padding().background(Material::Regular),

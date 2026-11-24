@@ -5,6 +5,7 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::renderer::recording::transform_paint;
+use nami::Computed;
 #[cfg(feature = "menu")]
 use waterui::app::Quit;
 
@@ -159,9 +160,24 @@ pub fn graphics_dimensions_from_proposal(proposal: ProposalSize) -> ViewDimensio
     ))
 }
 
+/// Retained resolved paint signal for a [`Gradient`] leaf.
+pub struct ResolvedGradient {
+    paint: Computed<Paint>,
+}
+
+impl ResolvedGradient {
+    /// Resolves `gradient` in `env` once for a retained leaf.
+    #[must_use]
+    pub fn resolve(gradient: &waterui_graphics::Gradient, env: &Environment) -> Self {
+        Self {
+            paint: gradient.resolve(env),
+        }
+    }
+}
+
 /// Measures a retained gradient leaf: a gradient fills the proposed bounds.
 pub fn measure_gradient_node<E: crate::text::TextEngine>(
-    _gradient: &waterui_graphics::Gradient,
+    _gradient: &ResolvedGradient,
     proposal: ProposalSize,
     _state: &mut HydroState<E>,
     _env: &Environment,
@@ -170,11 +186,11 @@ pub fn measure_gradient_node<E: crate::text::TextEngine>(
     graphics_dimensions_from_proposal(proposal)
 }
 
-/// Renders a retained gradient leaf every flush: emits a11y (unless hidden) then
-/// fills the gradient. The payload is fully resolved data (no signal), so no watch.
+/// Renders a retained gradient leaf every flush: emits a11y (unless hidden),
+/// tracks the resolved paint signal, then fills the gradient.
 pub fn render_gradient_node<E: crate::text::TextEngine>(
     ctx: &mut WidgetRenderContext<'_, E>,
-    gradient: &Rc<RefCell<waterui_graphics::Gradient>>,
+    gradient: &Rc<RefCell<ResolvedGradient>>,
     env: &Environment,
 ) {
     let hidden = env
@@ -207,16 +223,18 @@ fn gradient_paint_in_bounds(paint: Paint, width: f32, height: f32) -> Paint {
 
 pub fn render_gradient_parts<E: crate::text::TextEngine>(
     ctx: &mut WidgetRenderContext<'_, E>,
-    gradient: &Rc<RefCell<waterui_graphics::Gradient>>,
+    gradient: &Rc<RefCell<ResolvedGradient>>,
     _env: &Environment,
 ) {
     let bounds = ctx.bounds;
+    let paint_signal = gradient.borrow().paint.clone();
+    let unit_paint = ctx.renderer_mut().read_signal(&paint_signal);
     // The view's `Paint` is authored in unit space; map it onto the placed
     // box, scaling radial radii by its shorter side, and fill it under the
     // frame's transform.
     let width = crate::num_cast::f64_as_f32(bounds.width());
     let height = crate::num_cast::f64_as_f32(bounds.height());
-    let paint = gradient_paint_in_bounds(gradient.borrow().paint().clone(), width, height);
+    let paint = gradient_paint_in_bounds(unit_paint, width, height);
     let transform = ctx.local;
     ctx.renderer_mut()
         .scene_mut()
@@ -394,16 +412,25 @@ pub fn emit_graphics_leaf_accessibility<T, E: crate::text::TextEngine>(
 mod tests {
     use super::*;
     use cherenkov_record::WorkingColor;
+    use waterui_core::layout::UnitPoint;
+    use waterui_graphics::color::{Color, Working};
 
     #[test]
     fn radial_gradient_radii_use_the_shorter_side_of_a_200x100_box() {
         let gradient = Gradient::radial(
-            vec![(0.0, WorkingColor::WHITE), (1.0, WorkingColor::BLACK)],
-            [0.5, 0.5],
+            vec![
+                (0.0, Color::new(Working(WorkingColor::WHITE))),
+                (1.0, Color::new(Working(WorkingColor::BLACK))),
+            ],
+            UnitPoint::CENTER,
             0.25,
             0.5,
         );
-        let paint = gradient_paint_in_bounds(gradient.paint().clone(), 200.0, 100.0);
+        let paint = gradient_paint_in_bounds(
+            gradient.resolve(&Environment::new()).snapshot(),
+            200.0,
+            100.0,
+        );
         let Paint::Radial(radial) = paint else {
             panic!("a radial gradient remains a radial paint");
         };

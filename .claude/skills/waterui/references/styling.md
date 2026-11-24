@@ -209,35 +209,39 @@ view.background(Glass::clear().interactive(true))       // over media; reacts to
 view.background(Glass::regular().tint(Accent).shape(RoundedRectangle::new(16.0)))
 ```
 
-Gradients are views in `waterui::gradient` (the prelude carries `Gradient` and
-`MeshGradient`), so they work anywhere a view does — on their own or inside
-`.background(..)`. They are authored in unit space, `(0, 0)` the top-left, and take
-`WorkingColor` (linear Display P3): `Srgb::from_hex(..).resolve()` makes one from a hex
-colour, and `color::working::from_linear_srgb` from linear components, where values
-above `1.0` are HDR.
+Gradients are views in `waterui::gradient` (the prelude carries `Gradient`,
+`GradientStops` and `MeshGradient`), so they work anywhere a view does — on
+their own or inside `.background(..)`. They are authored in unit space with
+`UnitPoint` anchors, `(0, 0)` the top-left, and take unresolved `Color` values
+(theme tokens, sRGB/P3/Oklch colours, or `Color::new(Working(..))` for HDR
+working-space values) that resolve in the view's environment and update in
+place on scheme or signal changes.
 
 ```rust
 use waterui::color::working::from_linear_srgb;
+use waterui::color::Working;
 use waterui::gradient::{
     AnimatedMeshGradient, AnimatedMeshGradientConfig, FlowingGradient, Gradient, MeshGradient,
 };
+use waterui::layout::UnitPoint;
 
-let rose = Srgb::from_hex("#FF4D80").resolve();
-let sky = from_linear_srgb([0.3, 0.5, 1.0], 1.0);
+let rose = Color::srgb_hex("#FF4D80");
+let sky = Color::new(Working(from_linear_srgb([0.3, 0.5, 1.0], 1.0)));
 
-Gradient::linear(vec![(0.0, rose), (1.0, sky)], [0.0, 0.0], [1.0, 1.0])   // fixed colours
-view.background(Gradient::radial(vec![(0.0, rose), (1.0, sky)], [0.5, 0.5], 0.0, 0.7))
-Gradient::angular(vec![(0.0, rose), (1.0, sky)], [0.5, 0.5], 0.0, core::f32::consts::TAU)   // radians
-Gradient::mesh(2, 2, vertices, true)   // vertices: Vec<([f32; 2], WorkingColor)>, row-major
-MeshGradient::new(3, 3, colors.clone()).size(300.0, 200.0)   // colors: any signal of WorkingColors
+Gradient::linear([Accent.into(), Surface.into()], UnitPoint::TOP, UnitPoint::BOTTOM)   // theme tokens, evenly spaced
+Gradient::linear(stops_signal, UnitPoint::LEADING, UnitPoint::TRAILING)   // reactive (offset, Color) stops
+view.background(Gradient::radial([rose.clone(), sky.clone()], UnitPoint::CENTER, 0.0, 0.7))
+Gradient::angular(vec![(0.0, rose), (1.0, sky)], UnitPoint::CENTER, 0.0, core::f32::consts::TAU)   // radians
+MeshGradient::new(3, 3, colors.clone()).size(300.0, 200.0)   // colors: any signal of Colors
 AnimatedMeshGradient::new(AnimatedMeshGradientConfig::aqua_bloom())   // flows with the canvas clock, on every backend
 FlowingGradient::new()   // drifting noise bands, GPU only
 ```
 
 A radial gradient's radii are fractions of the box's *shorter side*, so it stays circular
 on a non-square box (the end radius must be above `0.0`); an angular sweep is above `0` and
-at most `TAU`. The constructors panic on a violated bound. `MeshGradient` follows signals
-for its colours, its control points (`.points(..)`) and its interpolation
+at most `TAU`. Violated bounds report a contract violation (panic in debug builds, safe
+fallback in release). `MeshGradient` is the single mesh gradient type and follows signals
+for its colours, its `UnitPoint` control points (`.points(..)`) and its interpolation
 (`.smooths_colors(..)`), and `AnimatedMeshGradient::new` takes a
 signal of its whole configuration, so an animated gradient is a signal change, not a
 rebuild. An animated mesh with `speed` `0.0` holds still and lets the engine idle.
