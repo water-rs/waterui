@@ -28,6 +28,7 @@ use waterui_controls::menu::{
 };
 use waterui_core::Environment;
 use waterui_core::Str;
+use waterui_core::extract::State;
 
 use crate::renderer::HeldChild;
 use waterui_core::contract_violation;
@@ -243,7 +244,11 @@ fn collect_menu_shortcuts<S: 'static>(
         match item {
             ResolvedMenuItem::Command(command) => collect_command_shortcut(command, out),
             ResolvedMenuItem::Quit => {
-                if let Some(command) = env.get::<Quit>().map(|quit| quit.command::<NoopSlot>(env)) {
+                if let Some(command) = env
+                    .extract::<Quit>()
+                    .ok()
+                    .map(|quit| quit.command::<NoopSlot>(env))
+                {
                     collect_command_shortcut(&command, out);
                 }
             }
@@ -546,7 +551,7 @@ impl<E: crate::text::TextEngine> MenuShortcutRegistry<E> {
         // dispatch on.
         let action_env = menu_env.layered_on(env);
         let action_env = if group.is_none() {
-            action_env.extending(window)
+            action_env.extending(State(window))
         } else {
             action_env
         };

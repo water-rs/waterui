@@ -1,5 +1,7 @@
 //! Numbers, booleans, strings, and `()`.
 
+use std::path::{Path, PathBuf};
+
 use suiteki::Str;
 use waterui_ts_engine::{BigInt, JsError, JsValue};
 
@@ -198,5 +200,50 @@ impl FromJs for Str {
             .as_str()
             .map(|value| Self::from(value.to_owned()))
             .ok_or_else(|| expected("a string", value))
+    }
+}
+
+impl IntoJs for char {
+    fn into_js(self, _bridge: &Bridge) -> Result<JsValue, JsError> {
+        Ok(JsValue::String(self.to_string()))
+    }
+}
+
+impl FromJs for char {
+    fn from_js(value: &JsValue, _bridge: &Bridge) -> Result<Self, JsError> {
+        let text = value
+            .as_str()
+            .ok_or_else(|| expected("a single-character string", value))?;
+        let mut chars = text.chars();
+        match (chars.next(), chars.next()) {
+            (Some(ch), None) => Ok(ch),
+            _ => Err(JsError::conversion(format!(
+                "expected a single-character string, found a string of {} scalar values",
+                text.chars().count()
+            ))),
+        }
+    }
+}
+
+impl IntoJs for PathBuf {
+    fn into_js(self, bridge: &Bridge) -> Result<JsValue, JsError> {
+        self.as_path().into_js(bridge)
+    }
+}
+
+impl FromJs for PathBuf {
+    fn from_js(value: &JsValue, _bridge: &Bridge) -> Result<Self, JsError> {
+        value
+            .as_str()
+            .map(Self::from)
+            .ok_or_else(|| expected("a path string", value))
+    }
+}
+
+impl IntoJs for &Path {
+    fn into_js(self, _bridge: &Bridge) -> Result<JsValue, JsError> {
+        self.to_str()
+            .map(|text| JsValue::String(text.to_owned()))
+            .ok_or_else(|| JsError::conversion("path is not valid UTF-8"))
     }
 }

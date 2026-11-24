@@ -12,7 +12,6 @@ use waterui::component::text::Text;
 use waterui::gesture::{DragEvent, DragGesture, GesturePhase};
 use waterui::{Binding, Str, ViewExt as _};
 use waterui_core::AnyView;
-use waterui_core::extract::Use;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_layout::stack::zstack;
 
@@ -88,7 +87,7 @@ fn gesture_recognizer_survives_repaint_mid_drag() {
             ),
             Text::computed(repaint.clone()),
         ))
-        .gesture(DragGesture::new(0.0), move |drag: Use<DragEvent>| {
+        .gesture(DragGesture::new(0.0), move |drag: DragEvent| {
             phases.borrow_mut().push(drag.phase());
         })
     };

@@ -1,6 +1,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
-use waterui_core::impl_extractor;
+use waterui_core::extract::{ExtractionState, Extractor, State};
+use waterui_core::{Environment, Error};
 
 /// A window's identity: the runner assigns one when it
 /// creates the window and hands it to the window's renderer, so the shared
@@ -32,7 +33,15 @@ impl WindowId {
     }
 }
 
-impl_extractor!(WindowId);
+impl Extractor for WindowId {
+    fn extract(env: &Environment) -> Result<Self, Error> {
+        State::<Self>::extract(env).map(|State(id)| id)
+    }
+
+    fn extract_from_action(env: &Environment, state: &mut ExtractionState) -> Result<Self, Error> {
+        State::<Self>::extract_from_action(env, state).map(|State(id)| id)
+    }
+}
 
 /// Window identities shared by every window belonging to one runner.
 #[derive(Clone, Default)]

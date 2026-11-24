@@ -59,11 +59,6 @@ pub fn runtime_locale_binding() -> Binding<Locale> {
             return existing.binding.clone();
         }
 
-        // macOS polling of locale/timezone currently interacts badly with AppKit/LaunchServices
-        // and can stall UI responsiveness. Keep locale stable until native notifications are wired.
-        #[cfg(not(target_os = "macos"))]
-        regional::start_auto_refresh_default();
-
         let initial = locale_from_tag(regional::current_settings().locale_tag());
         let state = RuntimeLocaleState {
             binding: Binding::custom(Container::new(initial)),
@@ -88,9 +83,6 @@ pub fn start_system_listener() {
     RUNTIME_LOCALE_STATE.with(|slot| {
         let mut slot = slot.borrow_mut();
         let state = slot.get_or_insert_with(|| {
-            #[cfg(not(target_os = "macos"))]
-            regional::start_auto_refresh_default();
-
             let initial = locale_from_tag(regional::current_settings().locale_tag());
             RuntimeLocaleState {
                 binding: Binding::custom(Container::new(initial)),

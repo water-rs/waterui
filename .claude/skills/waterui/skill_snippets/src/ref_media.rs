@@ -381,7 +381,7 @@ pub mod media_block_07 {
     use waterui::prelude::*;
 
     /// Glue: the payload type the `greet` method returns.
-    #[derive(serde::Serialize)]
+    #[derive(serde::Serialize, TsType)]
     pub struct Greeting {
         message: String,
     }
@@ -394,7 +394,7 @@ pub mod media_block_07 {
     }
 
     use waterui::js_api;
-    use waterui::webview::Json;
+    use waterui::webview::{Json, TsType};
 
     pub struct PageApi {
         address: Binding<Str>,
@@ -435,9 +435,9 @@ pub mod media_block_07 {
 pub mod media_js_api_prose {
     use waterui::js_api;
     use waterui::prelude::*;
-    use waterui::webview::{Json, WebView};
+    use waterui::webview::{Json, TsType, WebView};
 
-    #[derive(serde::Serialize)]
+    #[derive(serde::Serialize, TsType)]
     pub struct Greeting {
         message: String,
     }
@@ -705,6 +705,7 @@ pub fn media_filter_table_prose(png: &[u8]) -> Result<impl View, waterui::Error>
             BlendMode::Multiply,
         )
         .displacement_warp(decoded, 1.0, 1.0);
+    let quad = Binding::container([[0.0_f32, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]);
     let _ = text("a")
         .tone_curve(0.1, 0.5, 0.9, 1.0, 1.0)
         .color_matrix([[1.0, 0.0, 0.0, 0.0]; 3])
@@ -714,7 +715,8 @@ pub fn media_filter_table_prose(png: &[u8]) -> Result<impl View, waterui::Error>
         .photo_effect_noir()
         .dot_halftone(1.0, 2.0, 3.0, 4.0)
         .twirl_distortion(1.0, 2.0, 3.0, 4.0)
-        .perspective_transform([[0.0, 0.0]; 4]);
+        .perspective_transform([[0.0, 0.0]; 4])
+        .perspective_correction(quad);
 
     Ok(Photo::new("https://waterui.dev/logo.png")
         .sepia(0.8)

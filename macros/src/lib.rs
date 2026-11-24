@@ -88,9 +88,9 @@ mod tsx;
 /// Exposes an `impl` block to the page.
 ///
 /// ```rust
-/// # use waterui::webview::{Json, WebView, serde};
+/// # use waterui::webview::{Json, TsType, WebView, serde};
 /// # use waterui::{Binding, Str, Url, View, js_api};
-/// # #[derive(serde::Serialize)]
+/// # #[derive(serde::Serialize, TsType)]
 /// # #[serde(crate = "waterui::webview::serde")]
 /// # struct Greeting {
 /// #     text: String,
@@ -330,9 +330,7 @@ pub fn view_builder(args: TokenStream, input: TokenStream) -> TokenStream {
 ///
 /// The type must be `Clone + 'static`; the requirement is enforced at the
 /// attribute so a missing `Clone` reports here rather than inside the
-/// expansion. For an owned type that should read a value installed directly in
-/// the environment instead of through `.state()`, use
-/// `waterui::impl_extractor!`.
+/// expansion.
 #[proc_macro_attribute]
 pub fn state(args: TokenStream, input: TokenStream) -> TokenStream {
     state::expand(args, input)
@@ -1997,9 +1995,8 @@ pub fn ui_test(args: TokenStream, input: TokenStream) -> TokenStream {
     // rather than from inside `waterui-testing`.
     let mut builder = quote! {
         #testing_path::ui()
-            .environment(
-                #waterui_path::configure_environment!(#waterui_path::env::Environment::new())
-            )
+            .install(#waterui_path::ApplicationResources)
+            .install(#waterui_path::catalog!())
     };
     if let Some((width, height)) = &test_args.viewport {
         builder = quote! { #builder.viewport(#width, #height) };
@@ -2288,9 +2285,8 @@ pub fn bench(args: TokenStream, input: TokenStream) -> TokenStream {
 
     let mut builder = quote! {
         #testing_path::ui()
-            .environment(
-                #waterui_path::configure_environment!(#waterui_path::env::Environment::new())
-            )
+            .install(#waterui_path::ApplicationResources)
+            .install(#waterui_path::catalog!())
     };
     if let Some((width, height)) = &bench_args.viewport {
         builder = quote! { #builder.viewport(#width, #height) };

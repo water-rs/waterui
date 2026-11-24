@@ -15,7 +15,7 @@ use waterui::snackbar::{Snackbar, SnackbarManager};
 #[preview]
 pub fn demo() -> impl View {
     vstack((
-        text("Multi-Scene").title().bold(),
+        text("Multi-Scene").title().bold(true),
         text("Every scene builds this content fresh."),
         button("Show snackbar").action(|manager: SnackbarManager| {
             manager.show(Snackbar::new("Only this scene's snackbar").duration(Duration::ZERO));

@@ -46,22 +46,22 @@ use crate::widget::accordion::Accordion;
 use crate::widget::avatar::Avatar;
 use crate::widget::card::Card;
 use waterui_core::handler::ViewBuilder as _;
-#[cfg(feature = "media")]
+#[cfg(feature = "image")]
 use waterui_media::Photo;
 use waterui_text::Text;
 use waterui_ts::engine::{JsError, JsFunction, JsValue};
 use waterui_ts::{Bridge, FromJs, HostTable, JsViewBuilder};
 
-#[cfg(feature = "media")]
+#[cfg(feature = "image")]
 use crate::ts::catalog::ImageAttributes;
 use crate::ts::catalog::{
     AccordionAttributes, AvatarAttributes, BadgeAttributes, ButtonAttributes, CardAttributes,
     ColumnAttributes, HStackAttributes, LinkAttributes, ListAttributes, NavigationLinkAttributes,
     NavigationStackAttributes, PickerAttributes, PickerOption, ProgressAttributes,
     ProgressStyleValue, ScrollAxis, ScrollViewAttributes, SliderAttributes, SpacerAttributes,
-    StepperAttributes, TabAttributes, TableAttributes, TabsAttributes, TextFieldAttributes,
-    ToggleAttributes, VStackAttributes, ZStackAttributes, attribute_names, component_named,
-    component_names, modifier_names,
+    StepperAttributes, TabAttributes, TableAttributes, TabsAttributes, TextContent,
+    TextFieldAttributes, ToggleAttributes, VStackAttributes, ZStackAttributes, attribute_names,
+    component_named, component_names, modifier_names,
 };
 use collection::Spliced;
 
@@ -109,9 +109,10 @@ impl HostTable for Components {
     }
 
     fn text(&self, bridge: &Bridge, content: &JsValue) -> Result<AnyView, Error> {
-        let content: Computed<crate::ts::catalog::TextContent> =
-            bridge.materialize_computed(content)?;
-        Ok(AnyView::new(Text::new(content)))
+        let content: Computed<TextContent> = bridge.materialize_computed(content)?;
+        Ok(AnyView::new(Text::new(TextContent::flatten_computed(
+            &content,
+        ))))
     }
 
     fn show(
@@ -284,7 +285,7 @@ fn leaves(
         }
         "Text" => {
             let content = children::text(bridge, children)?;
-            AnyView::new(content.map_or_else(|| Text::verbatim(""), Text::new))
+            AnyView::new(content.unwrap_or_else(|| Text::verbatim("")))
         }
         "Label" => AnyView::new(children::label(bridge, component, None, children)?),
         "Badge" => {
@@ -296,19 +297,19 @@ fn leaves(
         "Avatar" => {
             let attributes = AvatarAttributes::from_js(config, bridge)?;
             children::none(component, children)?;
-            #[cfg(feature = "media")]
+            #[cfg(feature = "image")]
             let (name, image) = attributes.into_parts();
-            #[cfg(not(feature = "media"))]
+            #[cfg(not(feature = "image"))]
             let name = attributes.into_name();
-            let avatar = Avatar::new(Text::new(name), || ());
-            #[cfg(feature = "media")]
+            let avatar = Avatar::new(Text::computed(name), || ());
+            #[cfg(feature = "image")]
             let avatar = match image {
                 Some(source) => avatar.image(source.map(|url| url.0).computed()),
                 None => avatar,
             };
             AnyView::new(avatar)
         }
-        #[cfg(feature = "media")]
+        #[cfg(feature = "image")]
         "Image" => {
             let attributes = ImageAttributes::from_js(config, bridge)?;
             children::none(component, children)?;
@@ -492,7 +493,7 @@ fn controls(
             let label = children::label(bridge, component, label, children)?;
             let field = TextField::new(label, &value);
             Ok(AnyView::new(match prompt {
-                Some(prompt) => field.prompt(Text::new(prompt)),
+                Some(prompt) => field.prompt(Text::new(TextContent::flatten_computed(&prompt))),
                 None => field,
             }))
         }

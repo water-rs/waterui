@@ -197,14 +197,26 @@ impl UiBuilder<NoStyle> {
 }
 
 impl<S> UiBuilder<S> {
-    /// Overrides the environment used by the mounted app.
+    /// Adds a value to the builder's environment, preserving earlier values
+    /// and plugins.
     ///
-    /// The runtime still installs its framework tokens on top at mount time
-    /// — and a styled builder's `mount` applies the style's tokens above
-    /// them.
+    /// If a value of the same type was already added, it is replaced. The
+    /// runtime still installs its framework tokens on top at mount time — and a
+    /// styled builder's `mount` applies the style's tokens above them.
     #[must_use]
-    pub fn environment(mut self, env: Environment) -> Self {
-        self.env = env;
+    pub fn with<T: 'static>(mut self, value: T) -> Self {
+        self.env.insert(value);
+        self
+    }
+
+    /// Installs a plugin into the builder's environment, preserving earlier
+    /// values and plugins.
+    ///
+    /// The runtime still installs its framework tokens on top at mount time —
+    /// and a styled builder's `mount` applies the style's tokens above them.
+    #[must_use]
+    pub fn install(mut self, plugin: impl Plugin) -> Self {
+        self.env.install(plugin);
         self
     }
 

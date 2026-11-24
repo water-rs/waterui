@@ -420,10 +420,14 @@ impl core::fmt::Debug for ResolvedTextLayoutInput {
 
 #[cfg(test)]
 mod tests {
-    use super::{DESKTOP_BOLD, android_bold, shaped_weight, text_layout_locale};
-    use nami::Signal;
+    use super::{
+        DESKTOP_BOLD, android_bold, resolve_text_layout_input, shaped_weight, text_layout_locale,
+    };
+    use nami::{Binding, Computed, Signal};
     use waterui_core::Environment;
+    use waterui_core::layout::HorizontalAlignment;
     use waterui_locale::locales;
+    use waterui_text::Text;
     use waterui_text::font::{Body, Font, FontWeight, ResolvedFont};
 
     fn resolve(slot: ResolvedFont, font: &Font) -> ResolvedFont {
@@ -456,7 +460,7 @@ mod tests {
 
         let declared = slot.with_bold_weight(FontWeight::SemiBold);
         assert_eq!(
-            shaped_weight(&resolve(declared, &Font::new(Body).bold())),
+            shaped_weight(&resolve(declared, &Font::new(Body).bold(true))),
             600
         );
     }
@@ -466,7 +470,7 @@ mod tests {
     fn undeclared_bold_is_the_platform_bold() {
         let shaped = shaped_weight(&resolve(
             ResolvedFont::new(16.0, FontWeight::Medium),
-            &Font::new(Body).bold(),
+            &Font::new(Body).bold(true),
         ));
         if cfg!(target_os = "android") {
             assert_eq!(shaped, android_bold(500));
@@ -481,5 +485,26 @@ mod tests {
         env.insert(locales::ZH_TW);
 
         assert_eq!(text_layout_locale(&env), "zh-TW");
+    }
+
+    #[test]
+    fn text_strikethrough_signal_flows_into_layout_input() {
+        let env = Environment::new().store::<Body, Computed<ResolvedFont>>(Computed::constant(
+            ResolvedFont::new(16.0, FontWeight::Normal),
+        ));
+        let done = Binding::bool(false);
+        let content = Text::verbatim("done")
+            .strikethrough(done.clone())
+            .resolve(&env)
+            .content();
+
+        let initial =
+            resolve_text_layout_input(&content.snapshot(), HorizontalAlignment::Leading, &env);
+        assert!(!initial.spans[0].1.strikethrough);
+
+        done.set(true);
+        let struck =
+            resolve_text_layout_input(&content.snapshot(), HorizontalAlignment::Leading, &env);
+        assert!(struck.spans[0].1.strikethrough);
     }
 }

@@ -2,9 +2,9 @@
 //!
 //! It defines the `Extractor` trait for types that can be extracted from an
 //! Environment, along with implementations for common types.
-//! The `Use<T>` wrapper provides a convenient way to extract specific types
-//! from the environment, while [`State<T>`] supports cloneable state values
-//! injected into the environment for action handlers.
+//! [`State<T>`] supports cloneable state values injected into the environment
+//! with `.state(&value)` or `App::state(&value)`, while `#[state]` implements
+//! [`Extractor`] directly on owned `Clone` types over the same channel.
 
 use core::any::{TypeId, type_name};
 use core::ops::{Deref, DerefMut};
@@ -20,7 +20,7 @@ use anyhow::Error;
 #[diagnostic::on_unimplemented(
     message = "`{Self}` cannot be extracted from a WaterUI environment",
     label = "expected a type implementing `Extractor`",
-    note = "Handler and `use_env` parameters must be extractors: `#[state]` makes an owned `Clone` type extractable from `.state(&value)` injections, `State<T>` wraps an injected value of a foreign type, `Use<T>` reads an environment value, `Option<E>` tolerates a missing one, tuples combine extractors, and `impl_extractor!` marks a `Clone` type installed as an environment value."
+    note = "Handler and `use_env` parameters must be extractors: `#[state]` makes an owned `Clone` type extractable from `.state(&value)` injections, `State<T>` wraps an injected value of a foreign type, `Option<E>` tolerates a missing one, and tuples combine extractors."
 )]
 pub trait Extractor: 'static + Sized {
     /// Attempts to extract an instance of `Self` from the given environment.
@@ -44,12 +44,6 @@ pub trait Extractor: 'static + Sized {
         Self::extract(env)
     }
 }
-
-/// Wrapper struct for values that need to be used from the Environment.
-///
-/// This wrapper enables extracting values by type from an Environment.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Use<T: 'static>(pub T);
 
 /// Wrapper for cloneable state values injected into the environment.
 ///
@@ -84,20 +78,6 @@ impl Extractor for Environment {
     }
 }
 
-impl<T> Deref for Use<T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl<T> DerefMut for Use<T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
 impl<T> Deref for State<T> {
     type Target = T;
 
@@ -129,24 +109,6 @@ impl<T: Extractor> Extractor for Option<T> {
                 Ok(None)
             },
             |value| Ok(Some(value)),
-        )
-    }
-}
-
-impl<T: 'static + Clone> Extractor for Use<T> {
-    /// Extracts a value of type T from the Environment.
-    ///
-    /// # Errors
-    /// Returns an error if the requested type is not present in the Environment.
-    fn extract(env: &Environment) -> Result<Self, Error> {
-        env.get::<T>().map_or_else(
-            || {
-                Err(Error::msg(format!(
-                    "Environment value `{}` not found",
-                    type_name::<T>()
-                )))
-            },
-            |value| Ok(Self(value.clone())),
         )
     }
 }
@@ -249,5 +211,20 @@ mod tests {
 
         assert_eq!(bare.title, "first");
         assert_eq!(wrapped.0.title, "second");
+    }
+
+    #[test]
+    fn plain_environment_entry_does_not_satisfy_state_extractor() {
+        let mut env = Environment::new();
+        env.insert(Editor { title: "plain" });
+
+        assert!(
+            env.extract::<Editor>().is_err(),
+            "plain Environment::insert must not satisfy #[state] / State<T> extraction"
+        );
+        assert!(
+            env.extract::<State<Editor>>().is_err(),
+            "plain Environment::insert must not satisfy State<T> extraction"
+        );
     }
 }

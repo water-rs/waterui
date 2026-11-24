@@ -26,7 +26,7 @@ pub use waterui_core::{AnyView, Dynamic, anyview, dynamic};
 #[cfg(feature = "link")]
 #[doc(inline)]
 pub use link::{Link, link};
-#[cfg(feature = "media")]
+#[cfg(feature = "image")]
 pub use media::*;
 pub use text::{Text, text::text};
 #[cfg(feature = "form")]
@@ -39,7 +39,7 @@ pub use waterui_layout::{
     stack::{self, HStack, VStack, ZStack, hstack, vstack, zstack},
 };
 #[doc(inline)]
-#[cfg(feature = "media")]
+#[cfg(feature = "image")]
 pub use waterui_media as media;
 #[doc(inline)]
 pub use waterui_text as text;

@@ -17,7 +17,7 @@ use waterui_accessibility::{AccessibilityChildren, AccessibilityRole};
 use waterui_controls::{IntoLabel, Label, SemanticLabel};
 use waterui_core::OneOf2;
 use waterui_core::handler::ViewBuilder;
-#[cfg(feature = "media")]
+#[cfg(feature = "image")]
 use waterui_layout::ContentMode;
 use waterui_layout::stack::zstack;
 use waterui_shape::{Circle, PathCommand, Shape, ShapeExt, ShapeKind};
@@ -187,7 +187,7 @@ impl<F: ViewBuilder> AvatarFallback for F {
 pub struct Avatar<F = Monogram> {
     label: Label<SemanticLabel>,
     fallback: F,
-    #[cfg(feature = "media")]
+    #[cfg(feature = "image")]
     image: Option<Computed<Url>>,
     shape: CapturedShape,
     size: f32,
@@ -212,7 +212,7 @@ impl<F: ViewBuilder> Avatar<F> {
     /// use waterui::widget::avatar::Avatar;
     ///
     /// # fn team() -> impl View {
-    /// Avatar::new("Katherine Johnson", || text("KJ").bold())
+    /// Avatar::new("Katherine Johnson", || text("KJ").bold(true))
     /// # }
     /// ```
     #[must_use]
@@ -227,7 +227,7 @@ impl<F> Avatar<F> {
         Self {
             label: name.into_label().into_semantic(),
             fallback,
-            #[cfg(feature = "media")]
+            #[cfg(feature = "image")]
             image: None,
             shape: CapturedShape::new(&Circle),
             size: DEFAULT_SIZE,
@@ -244,7 +244,7 @@ impl<F> Avatar<F> {
     /// replaces the decoded frame without rebuilding anything around it. The
     /// fallback stays behind the picture and shows through until the first
     /// frame decodes, and again if the load fails.
-    #[cfg(feature = "media")]
+    #[cfg(feature = "image")]
     #[must_use]
     pub fn image(mut self, source: impl IntoComputed<Url>) -> Self {
         self.image = Some(source.into_computed());
@@ -313,7 +313,7 @@ impl<F: AvatarFallback> View for Avatar<F> {
         let Self {
             label,
             fallback,
-            #[cfg(feature = "media")]
+            #[cfg(feature = "image")]
             image,
             shape,
             size,
@@ -332,13 +332,13 @@ impl<F: AvatarFallback> View for Avatar<F> {
 
         let fallback = fallback.build_fallback(spoken.clone(), inner);
 
-        #[cfg(feature = "media")]
+        #[cfg(feature = "image")]
         let picture = image.map(|source| {
             Photo::new(source)
                 .resizable()
                 .content_mode(ContentMode::Fill)
         });
-        #[cfg(not(feature = "media"))]
+        #[cfg(not(feature = "image"))]
         let picture = ();
 
         let content = zstack((fallback, picture))

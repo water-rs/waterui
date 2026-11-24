@@ -220,12 +220,13 @@ Components behind cargo features are also absent until you enable them. `waterui
 defaults are `canvas`, `gpu`, `assets`, `dialog`, `snackbar`, `highlight` (the `Code` widget),
 `avatar`, `cpu-time`, `link`, `list`, `table`, `navigation`, `menu`, the standard form/control
 features, and the `locale-datetime` / `locale-list` formatters. Everything else is opt-in in
-`Cargo.toml`: `media` (`Photo`, `MediaPicker`; the generated project's own `media`
-feature forwards to it), `video`, `video-gpu`, `remote` (web URLs for `Photo`,
+`Cargo.toml`: `image` (`Photo`, `MediaPicker`), `video` (`Video`, `VideoPlayer`; the
+generated project's own `video` feature forwards to it), `video-gpu`, `remote` (web URLs for `Photo`,
 `Url::fetch`), `webview`, `capture`, `flow-markdown`, `markdown-math`, `inspector`,
 `inspector-signals`, `widgets` (home-screen widgets, `#[waterui::widget]`), `ts` / `ts-ota`
 (TypeScript views and their over-the-air update client `waterui::ts::Ota`),
-`navigation-restoration`, and `std`. The `all` feature enables every one of these except `ts`,
+`navigation-restoration`, `haptics` (`Feedback`, `Haptic`, `Intensity`,
+`ViewExt::sensory_feedback`), and `std`. The `all` feature enables every one of these except `ts`,
 `ts-ota`, `widgets`, `markdown-math`, `erased-dispatch`, and `dynamic_linking`. Charts,
 barcodes, and particles have facade features `chart`, `barcode`, and `particle`, exposing the
 independent crates as `waterui::chart`, `waterui::barcode`, and `waterui::particle` (while
@@ -321,7 +322,7 @@ text("Settings").title()                        // title/headline/subheadline/bo
 text!("Count: {count}")                         // updates automatically
 text!("{unread} unread", unread = mail.count()) // aliasing an expression into a slot
 text!("Blur: {blur:.1}")                        // format specs work
-text("0x1F60").monospaced()                     // the platform's fixed-pitch face, same size
+text("0x1F60").monospaced(true)                 // the platform's fixed-pitch face, same size
 ```
 
 Import the macro and write bare `text!` — never `waterui::text!`. The same goes for every
@@ -332,7 +333,7 @@ written `#[waterui::test]`, because the prelude names it `ui_test` so that its g
 cannot shadow the built-in `#[test]`, and a bare `#[test]` is the standard one. By
 convention `#[waterui::bench]`, `#[waterui::widget]`, `#[waterui::widget_intent]` and
 `#[waterui::view_builder]` are written qualified too. On a `Text`, `.size(..)`
-is the *font* size (and shadows the two-argument frame `.size(w, h)`). `.monospaced()` is a
+is the *font* size (and shadows the two-argument frame `.size(w, h)`). `.monospaced(bool)` is a
 design, not a family: it keeps the slot and size and each backend picks its own monospaced
 face, so never spell a font name for code. A reactive string that is not catalog
 content (a derived id, a debug label) is `s!("{name}-{count}")` from
@@ -452,16 +453,15 @@ shared configuration without every intermediate function taking it as a paramete
 
 ```rust
 use waterui::env::{use_env, with};
-use waterui::impl_extractor;
 
+#[state]
 #[derive(Clone)]
 struct ApiClient { base_url: Str }
-impl_extractor!(ApiClient);                   // makes it a handler/`use_env` parameter
 
-// Seeding, usually in `app(env)`:
-env.insert(client);                            // in place
-let env = env.with(client);                    // consuming builder, chains
-let scoped = env.extending(client);            // non-mutating overlay
+// Seeding, usually in `app(env)` or `.state(&client)` on a container:
+env.insert(State(client));                     // in place
+let env = env.with(State(client));             // consuming builder, chains
+let scoped = env.extending(State(client));     // non-mutating overlay
 with(subtree_view, LayoutDirection::RightToLeft)   // free fn: scope a value to one subtree
 
 // Reading, from a view:
@@ -653,8 +653,9 @@ let view = tsx!(
 - Component tags import from `"waterui"` and resolve against the catalog
   (`<VStack>` `<HStack>` `<Text>` `<Button>` `<Toggle>` `<Slider>` `<List>` `<Tabs>` …),
   with `<Show>` `<For by>` `<Box>` for control flow and `createSignal`,
-  `createMemo`, `createContext`/`useContext`, `useTheme`, `useLocale` from the same
-  module. `<Text>` children localize through the same `TranslationCatalog` as `text(…)`.
+  `createMemo`, `createContext`/`useContext`, `useTheme`, `useLocale`, `t` from the same
+  module. Runtime JS strings and `<Avatar name>` are verbatim; only JSX literal/interpolated
+  text (`{ key }` / `{ key, args }`) and `t` calls look up `TranslationCatalog`.
 - Tests are ordinary `#[waterui::test]`s over the mounted tree. The test host loads its
   bundle from the path in the `WATERUI_TS_BUNDLE` environment variable; `water` has no
   `test` subcommand and `water preview` does not set it, so a `tsx!` mount fails naming

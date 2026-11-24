@@ -409,7 +409,7 @@ fn sidebar(
         vstack((
             text("WaterUI Controls")
                 .subheadline()
-                .bold()
+                .bold(true)
                 .foreground(Foreground)
                 .padding_with([20.0, 28.0, 12.0, 16.0]),
             drawer,

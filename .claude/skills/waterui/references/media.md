@@ -15,11 +15,11 @@ conventions in [components.md](components.md): lowercase ergonomic constructors,
 ## Media
 
 `waterui::media` (`Photo`, `Image`, `MediaPicker`, and the image kind of `asset!`) is
-behind the `media` feature, which is not on by default: add `features = ["media"]` to the
-`waterui` dependency. Four features sit beside it, none implied by `media`:
+behind the `image` feature, which is not on by default: add `features = ["image"]` to the
+`waterui` dependency. Four features sit beside it, none implied by `image`:
 
 - `video` — `Video`, `VideoPlayer`, `LivePhoto`, video picks, the video kind of `asset!`;
-  also `waterui::video`. Enable `["media", "video"]` for photo and video together.
+  also `waterui::video`. Enable `["image", "video"]` for photo and video together.
 - `video-gpu` — WaterUI's own GPU player (implies `video` and `gpu`). Apple and the web
   bridge a native player; Hydrolysis platforms (Android, Windows, Linux) draw video only
   when the app's own `waterui` dependency declares `video-gpu`.
@@ -239,7 +239,8 @@ A page receives mirrored values with the reply to its own first request, never i
 script injected into it: `waterui.ready` resolves once they have arrived, and reading or
 assigning `waterui.state.<key>` before that throws. Await it before the first read.
 
-A typed `Json<T>` payload requires `T: Serialize`/`Deserialize`, so the app needs `serde`
+A typed `Json<T>` payload in `#[js_api]` requires `T: Serialize`/`Deserialize` and `TsType`
+(re-exported at `waterui::webview::TsType`), so the app needs `serde`
 (with the `derive` feature) as a direct dependency. An `async fn` returning `Result<_, E>`
 rejects the page's promise on `Err`. `#[js_api(namespace = "app")]` prefixes every name
 with `app.` — still on the one `waterui` object: the page calls
@@ -390,11 +391,11 @@ row, `guided_smooth`, `depth_aware_blur`, `temporal_denoise` and `displacement_w
 
 | Family | Methods |
 |---|---|
-| Color and tone | `brightness` `contrast` `saturation` `vibrance` `exposure` `gamma` `grayscale` `sepia` `hue_rotation` `invert()` `temperature_tint(t, tint)` `highlights_shadows(h, s)` `white_point(r, g, b)` `tone_curve(shadows, mids, highlights, gamma, amount)` `color_matrix([[f32; 4]; 3])` `lut_color_grade(LutImage, intensity)` |
+| Color and tone | `brightness` `contrast` `saturation` `vibrance` `exposure` `gamma` `grayscale` `sepia` `hue_rotation` `invert()` `temperature_tint(t, tint)` `highlights_shadows(h, s)` `white_point(r, g, b)` `tone_curve(shadows, mids, highlights, gamma, amount)` `color_matrix(matrix)` (`IntoComputed<[[f32; 4]; 3]>`) `lut_color_grade(LutImage, intensity)` |
 | Blur, sharpen, denoise | `blur(radius)` `gaussian_blur(sigma)` `motion_blur(radius, angle)` `zoom_blur(amount, x, y)` `sharpen` `unsharp_mask(..)` `bloom(..)` `gloom(..)` `guided_smooth(..)` `depth_aware_blur(..)` `temporal_denoise(..)` `median3x3()` |
-| Edges, kernels | `sobel()` `prewitt()` `edge_work(..)` `convolution3x3([p; 9])` `convolution5x5([p; 25])` (`p: Copy`, so literals) `morphology_min()` `morphology_max()` `morphology_gradient()` |
+| Edges, kernels | `sobel()` `prewitt()` `edge_work(..)` `convolution3x3([p; 9])` `convolution5x5([p; 25])` `morphology_min()` `morphology_max()` `morphology_gradient()` |
 | Stylize | `pixellate` `crystallize` `vignette(radius, softness)` `dot_halftone(..)` `line_halftone(..)` `kaleidoscope(..)` `mirror_tile(..)` `photo_effect_{mono,noir,chrome,instant,fade,process,tonal,transfer}()` |
-| Geometry | `bump_distortion(..)` `pinch_distortion(..)` `twirl_distortion(..)` `vortex_distortion(..)` `displacement_warp(..)` `perspective_transform([[f32; 2]; 4])` `perspective_correction([[f32; 2]; 4])` |
+| Geometry | `bump_distortion(..)` `pinch_distortion(..)` `twirl_distortion(..)` `vortex_distortion(..)` `displacement_warp(..)` `perspective_transform(quad)` `perspective_correction(quad)` (`IntoComputed<[[f32; 2]; 4]>`) |
 | Composite with an image (`FilterImage`) | `blend_with_image(image, amount, BlendMode)` `masked_blur(mask, ..)` `replace_background(matte, background, softness)` and the `{,swipe_,radial_,zoom_,displacement_}transition_to_image(..)` family |
 
 `.effect(..)` post-processes a view's rendered output with a fragment shader the app writes —

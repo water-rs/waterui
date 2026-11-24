@@ -13,7 +13,6 @@ use std::rc::Rc;
 use cherenkov_record::Recorder;
 use waterui::gesture::{DragEvent, DragGesture, GesturePhase};
 use waterui::{AnyView, Color, ViewExt as _};
-use waterui_core::extract::Use;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_graphics::backend::{
     NextFrame, RecordingResources, SceneContent, SceneInvalidator, SceneView,
@@ -112,7 +111,7 @@ fn pointer_up(runtime: &mut HeadlessRuntime, x: f32, y: f32) {
 fn drag_handle(phases: Rc<RefCell<Vec<GesturePhase>>>) -> AnyView {
     AnyView::new(Color::srgb_hex("#3F3F46").width(HANDLE_WIDTH).gesture(
         DragGesture::new(0.0),
-        move |drag: Use<DragEvent>| {
+        move |drag: DragEvent| {
             phases.borrow_mut().push(drag.phase());
         },
     ))

@@ -16,9 +16,7 @@ use core::fmt;
 use nami::{Computed, Signal, SignalExt, signal::IntoComputed};
 use suiteki::Str;
 use waterui_accessibility::AccessibilityRole;
-use waterui_color::{
-    AccentColor, Color, CurrentColorScheme, MutedForegroundColor, SurfaceVariantColor,
-};
+use waterui_color::{Color, CurrentColorScheme};
 use waterui_core::backend::Backend;
 use waterui_core::resolve::Resolvable;
 use waterui_core::view::hook::HookableView;
@@ -390,18 +388,16 @@ fn default_rendering(env: &Environment, config: CodeConfig) -> impl View {
         8.0,
         (
             hstack((
-                text(lang_name)
-                    .bold()
-                    .color(Color::new(MutedForegroundColor)),
+                text(lang_name).bold(true).color(Color::muted_foreground()),
                 spacer(),
                 copy_button(content_for_copy, on_copied),
             )),
-            text(highlighted).font(Font::from(Body).size(14.0).monospaced()),
+            text(highlighted).font(Font::from(Body).size(14.0).monospaced(true)),
         ),
     );
     background(
         Padding::new(EdgeInsets::all(14.0), block),
-        Color::new(SurfaceVariantColor),
+        Color::surface_variant(),
     )
 }
 
@@ -413,7 +409,7 @@ fn copy_button(content: Computed<Str>, on_copied: Option<OnCopied>) -> impl View
     // while the label renders exactly as before.
     Metadata::new(
         Metadata::new(
-            text("Copy").color(Color::new(AccentColor)),
+            text("Copy").color(Color::accent()),
             GestureObserver::new(TapGesture::new(), move |env: Environment| {
                 let text = content.snapshot();
                 copy_to_clipboard(&text);

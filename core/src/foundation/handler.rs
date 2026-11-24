@@ -78,7 +78,7 @@ fn extract<T: Extractor>(
 #[diagnostic::on_unimplemented(
     message = "this handler's parameters cannot be extracted from the environment",
     label = "expected a handler whose parameters implement `Extractor`",
-    note = "A WaterUI handler takes no parameters or parameters implementing `Extractor`: `#[state]` makes an owned `Clone` type extractable from `.state(&value)` injections, `State<T>` wraps an injected value of a foreign type, `Use<T>` reads an environment value, `Option<E>` tolerates a missing one, and `impl_extractor!` marks a `Clone` type installed as an environment value. Repeated parameters of the same state type bind positionally — the first `.state()` call feeds the first parameter of that type."
+    note = "A WaterUI handler takes no parameters or parameters implementing `Extractor`: `#[state]` makes an owned `Clone` type extractable from `.state(&value)` injections, `State<T>` wraps an injected value of a foreign type, and `Option<E>` tolerates a missing one. Repeated parameters of the same state type bind positionally — the first `.state()` call feeds the first parameter of that type."
 )]
 pub trait Handler<Args, T = ()>: 'static {
     /// Invokes the handler using values extracted from `env`.
@@ -204,7 +204,7 @@ pub type BoxedEventAction<E, T = ()> =
 #[diagnostic::on_unimplemented(
     message = "this event handler's parameters cannot be extracted from the environment",
     label = "expected a handler taking the event followed by parameters implementing `Extractor`",
-    note = "A WaterUI event handler takes `(event)` or `(event, ...)` whose trailing parameters implement `Extractor`: `#[state]` makes an owned `Clone` type extractable from `.state(&value)` injections, `State<T>` wraps an injected value of a foreign type, `Use<T>` reads an environment value, `Option<E>` tolerates a missing one, and `impl_extractor!` marks a `Clone` type installed as an environment value. Repeated parameters of the same state type bind positionally — the first `.state()` call feeds the first parameter of that type."
+    note = "A WaterUI event handler takes `(event)` or `(event, ...)` whose trailing parameters implement `Extractor`: `#[state]` makes an owned `Clone` type extractable from `.state(&value)` injections, `State<T>` wraps an injected value of a foreign type, and `Option<E>` tolerates a missing one. Repeated parameters of the same state type bind positionally — the first `.state()` call feeds the first parameter of that type."
 )]
 pub trait EventHandler<E, Args, T = ()>: 'static {
     /// Invokes the handler with the given event payload and the extractor

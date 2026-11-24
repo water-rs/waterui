@@ -1014,7 +1014,7 @@ mod suite {
 
         vstack((
         text("Preview Set").title(),
-        text("monospaced styled text").monospaced(),
+        text("monospaced styled text").monospaced(true),
         text("A longer paragraph that is meant to wrap across several lines once the column gets narrow, so the capture shows real line breaking rather than a single clipped run."),
         hstack((
             button("Bordered").action(|| {}),

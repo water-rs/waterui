@@ -9,6 +9,8 @@ pub use appearance::{background, border, filter, floating, shape, style};
 pub mod component;
 mod interaction_support;
 pub use interaction_support::{cursor, drag_drop, gesture, interaction};
+#[cfg(feature = "haptics")]
+pub mod haptic;
 mod runtime;
 #[cfg(feature = "dialog")]
 pub use runtime::dialog;
@@ -62,9 +64,11 @@ pub mod prelude {
     pub use super::env::Environment;
     #[cfg(feature = "form")]
     pub use super::form;
+    #[cfg(feature = "haptics")]
+    pub use super::haptic::{Feedback, Haptic, Intensity};
     #[cfg(feature = "locale-datetime")]
     pub use super::locale::LocalizedDateTimeExt;
-    #[cfg(feature = "media")]
+    #[cfg(feature = "image")]
     pub use super::media;
     #[cfg(feature = "video")]
     pub use super::video;
@@ -73,7 +77,7 @@ pub mod prelude {
     pub use super::window::{Window, WindowState};
     pub use super::{
         AnimationExt, AnyView, Binding, Color, Computed, Identifiable, OneOf2, OneOf3, OneOf4,
-        OneOf5, OneOf6, OneOf7, OneOf8, Signal, SignalExt, State, Str, Use, View, ViewExt,
+        OneOf5, OneOf6, OneOf7, OneOf8, Signal, SignalExt, State, Str, View, ViewExt,
         accessibility, animation, app, binding, color, component, cursor, drag_drop, env, error,
         filter, fullscreen, gesture, gradient, id, layout, locale, metadata, reactive, regional,
         shape, signal, style, task, text, widget, window,
@@ -117,12 +121,12 @@ pub mod prelude {
     pub use super::component::link::{Link, LinkTarget, link};
     #[cfg(feature = "list")]
     pub use super::component::list::{
-        List, ListContent, ListItem, ListMinRowHeight, ListSection, Row, Section, detail_row, row,
+        List, ListContent, ListItem, ListMinRowHeight, Row, Section, detail_row, row,
     };
     #[cfg(feature = "menu")]
     pub use super::component::menu::{
         Command, CommandExt, CommandRole, Menu, MenuItem, NamedKey, Shortcut, ShortcutKey,
-        ShortcutModifiers,
+        ShortcutModifiers, ShortcutNamedKey,
     };
     #[cfg(feature = "menu")]
     pub use super::metadata::context_menu::{ContextMenu, DismissContextMenu};
@@ -153,7 +157,7 @@ pub mod prelude {
     pub use super::background::{Background, Glass, GlassStyle, Material};
 
     // Asset types
-    #[cfg(all(feature = "assets", feature = "media", not(target_arch = "wasm32")))]
+    #[cfg(all(feature = "assets", feature = "image", not(target_arch = "wasm32")))]
     pub use super::ImageAsset;
     #[cfg(all(feature = "assets", feature = "video", not(target_arch = "wasm32")))]
     pub use super::VideoAsset;
@@ -170,11 +174,13 @@ pub mod prelude {
     // error names neither the prelude nor the collision.
     #[cfg(feature = "form")]
     pub use waterui_macros::FormBuilder;
+    #[cfg(any(feature = "ts", feature = "webview"))]
+    pub use waterui_macros::TsType;
     pub use waterui_macros::{
         Project, bench, catalog, preview, state, ui_test, view, view_builder,
     };
     #[cfg(feature = "ts")]
-    pub use waterui_macros::{TsProps, TsType, tsx};
+    pub use waterui_macros::{TsProps, tsx};
     #[cfg(feature = "webview")]
     pub use waterui_macros::{eval, exec, exec_file, js_api, js_file};
 }
@@ -198,7 +204,7 @@ pub use waterui_graphics::ShaderPaintView;
 pub use waterui_graphics::canvas;
 pub use waterui_graphics::color;
 pub use waterui_graphics::gradient;
-#[cfg(feature = "media")]
+#[cfg(feature = "image")]
 pub use waterui_graphics::image_decode;
 #[cfg(feature = "gpu")]
 pub use waterui_graphics::{GpuContent, GpuView, RedrawHandle};
@@ -215,6 +221,9 @@ pub mod layout {
 }
 pub use waterui_locale as locale;
 pub use waterui_locale::regional;
+#[cfg(any(feature = "ts", feature = "webview"))]
+#[doc(inline)]
+pub use waterui_macros::TsType;
 /// The UI-test attribute, written qualified as `#[waterui::test(...)]`.
 ///
 /// It is `ui_test` inside [`prelude`] so that a glob import of the prelude does
@@ -230,14 +239,14 @@ pub use waterui_macros::{
 };
 #[cfg(feature = "ts")]
 #[doc(inline)]
-pub use waterui_macros::{TsProps, TsType, tsx};
+pub use waterui_macros::{TsProps, tsx};
 #[cfg(feature = "webview")]
 #[doc(inline)]
 pub use waterui_macros::{eval, exec, exec_file, js_api, js_file};
 #[cfg(feature = "widgets")]
 #[doc(inline)]
 pub use waterui_macros::{widget, widget_intent};
-#[cfg(feature = "media")]
+#[cfg(feature = "image")]
 pub use waterui_media as media;
 #[cfg(feature = "navigation")]
 pub use waterui_navigation as navigation;
@@ -253,10 +262,16 @@ pub use waterui_markdown as markdown;
 #[cfg(feature = "flow-markdown")]
 #[doc(inline)]
 pub use waterui_markdown::include_markdown;
+#[cfg(feature = "ts")]
+#[doc(hidden)]
+pub use waterui_ts::schema as __ts_schema;
 #[cfg(feature = "video")]
 pub use waterui_video as video;
 #[cfg(feature = "webview")]
 pub use waterui_webview as webview;
+#[cfg(all(not(feature = "ts"), feature = "webview"))]
+#[doc(hidden)]
+pub use waterui_webview::ts_schema as __ts_schema;
 /// The `WidgetKit` widget authoring surface: the closed snapshot schema a
 /// `#[waterui::widget]` function produces, dated per timeline entry, and the
 /// restricted constructors that build it.
@@ -264,7 +279,7 @@ pub use waterui_webview as webview;
 pub use waterui_widgets as widgets;
 
 // Asset types re-exported for convenience
-#[cfg(all(feature = "assets", feature = "media", not(target_arch = "wasm32")))]
+#[cfg(all(feature = "assets", feature = "image", not(target_arch = "wasm32")))]
 pub use waterui_assets::ImageAsset;
 #[cfg(all(feature = "assets", feature = "video", not(target_arch = "wasm32")))]
 pub use waterui_assets::VideoAsset;
@@ -302,10 +317,10 @@ pub use waterui_core::{
     contract_violation,
     easing::{self, EasingCurve, Interpolatable},
     env::{self, Environment},
-    extract::{self, Extractor, State, Use},
+    extract::{self, Extractor, State},
     handler::{self, Handler, HandlerOnce},
     id::{self, Identifiable},
-    impl_extractor, raw_view,
+    raw_view,
     resolve::{self, AnyResolvable, Resolvable},
     views,
 };
@@ -319,10 +334,10 @@ pub use waterui_structural_transition::{
     TransitionFrame, TransitionGeometry, TransitionPhase, TransitionProperties, Transitioned,
 };
 
-/// Haptic feedback intensity for the `on_*_haptic` modifiers.
-#[cfg(feature = "std")]
+/// Declarative and imperative haptic feedback primitives.
+#[cfg(feature = "haptics")]
 #[doc(inline)]
-pub use waterkit_haptic::Intensity;
+pub use haptic::{Feedback, Haptic, Intensity};
 
 pub use nami as reactive;
 pub use nami::SignalExt;
@@ -364,6 +379,26 @@ macro_rules! __export_preview {
 #[doc(hidden)]
 pub use pastey;
 
+/// Expands `waterui-ts` runtime conversions (`IntoJs` / `FromJs`) only when the
+/// `ts` feature is enabled on `waterui`, so `#[derive(TsType)]` works cleanly
+/// in `webview`-only crates without requiring the JS view runtime.
+#[cfg(feature = "ts")]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __with_ts_runtime {
+    ($($item:tt)*) => {
+        $($item)*
+    };
+}
+
+/// No-op expansion when the `ts` feature is disabled.
+#[cfg(not(feature = "ts"))]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __with_ts_runtime {
+    ($($item:tt)*) => {};
+}
+
 /// Capture standalone resource roots once when creating an application environment.
 ///
 /// # Contract
@@ -383,12 +418,24 @@ pub fn install_application_resources(env: &mut Environment) {
         });
         env.insert(context);
     }
-    #[cfg(feature = "media")]
+    #[cfg(feature = "image")]
     if env.get::<waterui_media::PhotoCache>().is_none() {
         env.insert(waterui_media::PhotoCache::default());
     }
-    #[cfg(all(target_arch = "wasm32", not(feature = "media")))]
+    #[cfg(all(target_arch = "wasm32", not(feature = "image")))]
     let _ = env;
+}
+
+/// Plugin that installs standalone application resources (`ResourceContext` and
+/// default media caches) into an environment without overwriting existing entries.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ApplicationResources;
+
+impl Plugin for ApplicationResources {
+    fn install(self, env: &mut Environment) {
+        install_application_resources(env);
+    }
 }
 
 /// Configures a freshly-created environment with compile-time discovered app plugins.
@@ -401,7 +448,7 @@ pub fn install_application_resources(env: &mut Environment) {
 macro_rules! configure_environment {
     ($env:expr) => {{
         let mut __waterui_env = $env;
-        $crate::install_application_resources(&mut __waterui_env);
+        $crate::Plugin::install($crate::ApplicationResources, &mut __waterui_env);
         $crate::Plugin::install($crate::catalog!(), &mut __waterui_env);
         __waterui_env
     }};

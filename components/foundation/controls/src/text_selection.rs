@@ -15,7 +15,10 @@ use alloc::rc::Rc;
 use core::ops::Range;
 
 use nami::Binding;
-use waterui_core::Str;
+use waterui_core::{
+    Environment, Error, Str,
+    extract::{ExtractionState, Extractor, State},
+};
 use waterui_text::styled::StyledStr;
 
 /// The live selection of the field a `selection_menu` command fired on.
@@ -115,4 +118,12 @@ pub trait CustomTextSelection: 'static {
     }
 }
 
-waterui_core::impl_extractor!(TextSelection);
+impl Extractor for TextSelection {
+    fn extract(env: &Environment) -> Result<Self, Error> {
+        State::<Self>::extract(env).map(|State(selection)| selection)
+    }
+
+    fn extract_from_action(env: &Environment, state: &mut ExtractionState) -> Result<Self, Error> {
+        State::<Self>::extract_from_action(env, state).map(|State(selection)| selection)
+    }
+}

@@ -3,7 +3,7 @@ use std::{mem, num::NonZeroUsize, ops::Range};
 use executor_core::spawn_local;
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, Options, Parser, Tag};
 use suiteki::Str;
-use waterui_color::{AccentColor, Blue, BorderColor, Color, Srgb};
+use waterui_color::{Blue, Color, Srgb};
 use waterui_controls::button::{ButtonStyle, button};
 use waterui_core::{
     Environment, OneOf2, OneOf8, View, backend::ChildSlot, contract_violation, plugin::Plugin,
@@ -255,7 +255,7 @@ fn render_tail(element: RichTextElement) -> impl View {
         } else {
             OneOf2::B(VStack::from_iter(elements))
         }),
-        RichTextElement::Divider => OneOf2::B(Frame::new(Color::new(BorderColor)).height(1.0)),
+        RichTextElement::Divider => OneOf2::B(Frame::new(Color::border()).height(1.0)),
         _ => unreachable!("handled by RichTextElement::body"),
     }
 }
@@ -353,9 +353,7 @@ impl ViewSequence for MarkdownTableCells {
 
     fn push_slots<S: ChildSlot>(self, slots: &mut Vec<S>) {
         slots.extend(self.headers.into_iter().map(S::from_view));
-        slots.push(S::from_view(
-            Frame::new(Color::new(BorderColor)).height(1.0),
-        ));
+        slots.push(S::from_view(Frame::new(Color::border()).height(1.0)));
         slots.extend(self.rows.into_iter().map(S::from_view));
     }
 }
@@ -377,7 +375,7 @@ fn render_table(
             headers
                 .get(col_idx)
                 .map_or_else(|| Text::from(""), element_to_text)
-                .bold()
+                .bold(true)
         })
         .collect();
     let mut row_cells = Vec::with_capacity(col_count * rows.len());
@@ -735,7 +733,7 @@ fn parse_markdown(markdown: &str) -> Vec<RichTextElement> {
                         .unwrap_or(false);
 
                     let style = if header_cell {
-                        Style::default().bold()
+                        Style::default().bold(true)
                     } else {
                         Style::default()
                     };
@@ -1040,7 +1038,7 @@ fn language_from_kind(kind: &CodeBlockKind) -> Language {
 fn inline_code_style() -> Style {
     Style::default()
         .font(waterui_text::font::Body)
-        .monospaced()
+        .monospaced(true)
         .background(Srgb::new_u8(236, 239, 241))
 }
 
@@ -1297,7 +1295,7 @@ impl InlineGroup {
     /// heading, so it stays part of the surrounding run of text.
     fn enter_link(&mut self, url: Str) {
         self.builder
-            .enter_with(|style| style.underline().foreground(Color::new(AccentColor)));
+            .enter_with(|style| style.underline(true).foreground(Color::accent()));
         self.open_link = Some((self.offset, url));
     }
 

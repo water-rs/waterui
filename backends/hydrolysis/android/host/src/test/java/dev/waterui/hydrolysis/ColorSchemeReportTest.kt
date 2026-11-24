@@ -3,6 +3,8 @@ package dev.waterui.hydrolysis
 import android.app.Activity
 import android.content.Context
 import android.content.res.Configuration
+import android.os.LocaleList
+import java.util.Locale
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -104,6 +106,27 @@ class ColorSchemeReportTest {
         second.setContentView(secondView)
 
         assertEquals(listOf(false, true), ShadowNativeBridge.colorSchemes)
+        session.destroy()
+    }
+
+    @Test
+    fun aConfigurationChangeReportsTheNewLocale() {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val session = HydrolysisSession(activity, onCloseRequested = {})
+        val host = HydrolysisHostView(activity, session)
+        activity.setContentView(host)
+        assertTrue(host.isAttachedToWindow)
+        val initialCount = ShadowNativeBridge.locales.size
+        assertTrue(initialCount >= 1)
+
+        val japanese =
+            Configuration(activity.resources.configuration).apply {
+                setLocales(LocaleList(Locale.JAPAN, Locale.US))
+            }
+        host.dispatchConfigurationChanged(japanese)
+
+        assertEquals(initialCount + 1, ShadowNativeBridge.locales.size)
+        assertEquals("ja-JP", ShadowNativeBridge.locales.last())
         session.destroy()
     }
 }

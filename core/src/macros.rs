@@ -263,22 +263,6 @@ macro_rules! tuples {
     };
 }
 
-/// Implements the `Extractor` trait for a type.
-///
-/// This macro generates an implementation that extracts values from the environment
-/// using the `Use<T>` wrapper, commonly used for dependency injection.
-#[macro_export]
-macro_rules! impl_extractor {
-    ($ty:ty) => {
-        impl $crate::extract::Extractor for $ty {
-            fn extract(env: &$crate::Environment) -> core::result::Result<Self, $crate::Error> {
-                $crate::extract::Extractor::extract(env)
-                    .map(|value: $crate::extract::Use<$ty>| value.0)
-            }
-        }
-    };
-}
-
 /// Implements the `Deref` trait for transparent access to an inner type.
 ///
 /// This macro generates a `Deref` implementation that allows transparent
