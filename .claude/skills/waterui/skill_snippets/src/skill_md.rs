@@ -12,7 +12,6 @@ use waterui::prelude::*;
 // ---------------------------------------------------------------------------
 use waterui::Identifiable; // the trait the derive implements
 use waterui::animation::Animation; // animation curves
-use waterui::component::lazy::Lazy; // reactive stacks over a collection
 use waterui::cursor::CursorStyle;
 use waterui::drag_drop::{Files, Transferable};
 use waterui::env::with; // scope a value to a subtree
@@ -85,7 +84,7 @@ pub fn skill_block_02() {
         Photo::new(url).blur(blur.clone()) // reactive value — pass the signal
     };
     let _ = {
-        Lazy::for_each(rows.clone(), row_view) // dynamic set of views — a collection
+        VStack::for_each(rows.clone(), row_view) // dynamic set of views — a collection
     };
 }
 
@@ -159,7 +158,6 @@ pub mod skill_block_05 {
 // ---------------------------------------------------------------------------
 pub fn skill_block_06() {
     use waterui::Identifiable;
-    use waterui::component::lazy::Lazy;
     use waterui::reactive::collection::List as ReactiveList; // the trait the derive implements is NOT in the prelude
 
     #[derive(Clone, Identifiable)]
@@ -177,7 +175,7 @@ pub fn skill_block_06() {
     let rows = ReactiveList::from(seed_rows); // bulk-seed; .push/.insert/.remove (&mut self) diff by id
 
     let _ = {
-        Lazy::for_each(rows.clone(), |row| text(row.title)) // reactive sequence in a stack
+        scroll(VStack::for_each(rows.clone(), |row| text(row.title))) // virtualized inside scroll
     };
     let _ = {
         // platform list: lazy, editable

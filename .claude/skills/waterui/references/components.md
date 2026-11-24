@@ -669,8 +669,8 @@ keeps an unfinished table readable. The config is a move-builder — reassign it
 realization, swipe-to-delete, reordering, sections, selection).
 
 ```rust
-use waterui::component::lazy::Lazy;
 use waterui::component::list::{ListDelete, ListMove};   // NOT in the prelude
+use waterui::layout::scroll::scroll_horizontal;
 use waterui::views::ForEach;
 use waterui::Identifiable;                              // the trait the derive expands to is NOT in the prelude
 
@@ -678,8 +678,8 @@ use waterui::Identifiable;                              // the trait the derive 
 struct Record { #[id] id: u64, title: Str }
 
 // `ForEach` is a `Views` collection, not a `View`: a container consumes it.
-Lazy::for_each(records.clone(), |r| text(r.title))       // == Lazy::vstack(ForEach::new(..))
-Lazy::hstack(ForEach::new(records.clone(), record_card)) // record_card: fn(Record) -> impl View
+scroll(VStack::for_each(records.clone(), |r| text(r.title)))
+scroll_horizontal(HStack::for_each(records.clone(), record_card)) // record_card: fn(Record) -> impl View
 
 List::for_each(records.clone(), |r| ListItem::new(text(r.title)))
     .editing(is_editing.clone())          // impl IntoComputed<bool>
@@ -691,13 +691,14 @@ List::for_each(records.clone(), |r| ListItem::new(text(r.title)))
     .scroll_controller(&controller)
 ```
 
-`Lazy` stacks (`vstack`, `hstack`, `for_each`, and `vstack_spaced(spacing, ..)` /
-`hstack_spaced`) wrap themselves in a scroll view. `ListDelete(index)` destructures to a
-`usize`; `ListMove(m)` exposes `.from()`/`.to()`. `AppState` is an owned `#[state]` type
-(SKILL.md rule 3), so handlers take it bare.
+`VStack::for_each` and `HStack::for_each` automatically virtualize along their stack axis
+when enclosed by a co-axial `ScrollView` (`scroll` / `scroll_horizontal` / `scroll_both`)
+and stay eager outside one; call `.eager()` to opt out inside a scroll view, and chain
+ordinary stack modifiers like `.spacing(8.0)` directly. `ListDelete(index)` destructures
+to a `usize`; `ListMove(m)` exposes `.from()`/`.to()`. `AppState` is an owned `#[state]`
+type (SKILL.md rule 3), so handlers take it bare.
 
-For a reactive collection rendered as an ordinary (non-lazy) stack that still takes stack
-modifiers, `VStack`/`HStack` have `for_each` too; membership animation is declared per row
+Membership animation on a stack's `for_each` is declared per row
 with `.transition(...)` plus `.animation(...)` (a removed row's ghost holds its slot
 while it fades). `.transition(...)` must be the outermost modifier of the row — or of a
 `when`/`watch` branch, or of the conditional itself; one beneath `.padding()`, `.frame()`

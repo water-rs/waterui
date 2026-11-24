@@ -7,7 +7,6 @@ pub use waterui_controls::*;
 
 pub mod badge;
 pub mod focus;
-pub mod lazy;
 #[cfg(feature = "link")]
 pub mod link;
 #[cfg(feature = "list")]

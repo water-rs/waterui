@@ -1,18 +1,16 @@
 error[E0277]: `Row` has no stable identity
-  --> tests/ui/first_contact/identifiable.rs:16:20
+  --> tests/ui/first_contact/identifiable.rs:15:5
    |
-16 |     Lazy::for_each(rows, |row| text(row.name))
-   |     -------------- ^^^^ expected a type implementing `Identifiable`
-   |     |
-   |     required by a bound introduced by this call
+15 |     VStack::for_each(rows, |row| text(row.name))
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected a type implementing `Identifiable`
    |
-help: the trait `Identifiable` is not implemented for `Row`
-  --> tests/ui/first_contact/identifiable.rs:9:1
+help: the trait `waterui::Identifiable` is not implemented for `Row`
+  --> tests/ui/first_contact/identifiable.rs:8:1
    |
- 9 | struct Row {
+ 8 | struct Row {
    | ^^^^^^^^^^
    = note: collections such as `nami::collection::List` diff items by id, so each item needs `Identifiable`: implement it for your type, or, for a type you do not own, wrap the value with `SelfId::new(..)` / `.self_id()` (the value is its own id) or `UseId::new(..)` / `.use_id(..)`
-help: the following other types implement trait `Identifiable`
+help: the following other types implement trait `waterui::Identifiable`
   --> $CARGO/nami-core-$VERSION/src/id.rs
    |
    | / impl<T, F, Id> Identifiable for UseId<T, F>
@@ -29,41 +27,28 @@ help: the following other types implement trait `Identifiable`
    |   impl Identifiable for TableColumn {
    |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `TableColumn`
    = note: required for `Vec<Row>` to implement `waterui::nami::collection::Collection`
-note: required by a bound in `waterui::component::lazy::Lazy::for_each`
-  --> $WORKSPACE/src/component/lazy.rs
-   |
-   |     pub fn for_each<C, F, V>(collection: C, generator: F) -> impl View
-   |            -------- required by a bound in this associated function
-   |     where
-   |         C: Collection + Clone,
-   |            ^^^^^^^^^^ required by this bound in `Lazy::for_each`
 
-error[E0277]: `Row` has no stable identity
-  --> tests/ui/first_contact/identifiable.rs:16:5
+error[E0277]: `waterui::component::VStack<ForEach<Vec<Row>, {closure@$DIR/tests/ui/first_contact/identifiable.rs:15:28: 15:33}, waterui::component::Text>>` is not a WaterUI view
+  --> tests/ui/first_contact/identifiable.rs:13:16
    |
-16 |     Lazy::for_each(rows, |row| text(row.name))
-   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected a type implementing `Identifiable`
+13 | fn broken() -> impl View {
+   |                ^^^^^^^^^ expected a view
+14 |     let rows = vec![Row { id: 1, name: "one" }];
+15 |     VStack::for_each(rows, |row| text(row.name))
+   |     -------------------------------------------- return type was inferred to be `waterui::component::VStack<ForEach<Vec<Row>, {closure@$DIR/tests/ui/first_contact/identifiable.rs:15:28: 15:33}, waterui::component::Text>>` here
    |
-help: the trait `Identifiable` is not implemented for `Row`
-  --> tests/ui/first_contact/identifiable.rs:9:1
+   = help: the trait `waterui::View` is not implemented for `waterui::component::VStack<ForEach<Vec<Row>, {closure@$DIR/tests/ui/first_contact/identifiable.rs:15:28: 15:33}, waterui::component::Text>>`
+   = note: Any `'static` type implementing `View::body` is a view, as is a function returning `impl View` or a bare `&'static str`, `String`, or `Str`. A `ForEach` is a collection of views, not a view — hand it to a container such as `VStack::for_each` or `List::for_each`, and unify differing view types with `OneOf2`..`OneOf8`.
+help: the following other types implement trait `waterui::View`
+  --> $WORKSPACE/components/foundation/layout/src/stack/vstack.rs
    |
- 9 | struct Row {
-   | ^^^^^^^^^^
-   = note: collections such as `nami::collection::List` diff items by id, so each item needs `Identifiable`: implement it for your type, or, for a type you do not own, wrap the value with `SelfId::new(..)` / `.self_id()` (the value is its own id) or `UseId::new(..)` / `.use_id(..)`
-help: the following other types implement trait `Identifiable`
-  --> $CARGO/nami-core-$VERSION/src/id.rs
-   |
-   | / impl<T, F, Id> Identifiable for UseId<T, F>
+   | / impl<C, F, V> View for VStack<ForEach<C, F, V>>
    | | where
-   | |     F: Fn(&T) -> Id,
-   | |     Id: Ord + Clone,
-   | |____________________^ `UseId<T, F>`
+   | |     C: Collection + Clone,
+   | |     C::Item: Clone,
+   | |     F: 'static + Fn(C::Item) -> V,
+   | |     V: View,
+   | |____________^ `waterui::component::VStack<ForEach<C, F, V>>`
 ...
-   |   impl<T: Ord + Clone> Identifiable for SelfId<T> {
-   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `SelfId<T>`
-   |
-  ::: $WORKSPACE/src/component/table.rs
-   |
-   |   impl Identifiable for TableColumn {
-   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `TableColumn`
-   = note: required for `Vec<Row>` to implement `waterui::nami::collection::Collection`
+   |   impl<C: ViewSequence + 'static> View for VStack<(C,)> {
+   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `waterui::component::VStack<(C,)>`

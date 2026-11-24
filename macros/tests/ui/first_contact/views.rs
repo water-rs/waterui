@@ -1,9 +1,9 @@
-//! `Lazy::vstack(rows)`: a reactive data collection is not a `Views`
-//! collection — its items are data rows, not views. `Lazy::for_each` maps
-//! each row to a view instead.
+//! `LazyContainer::new(VStackLayout::default(), rows)`: a reactive data
+//! collection is not a `Views` collection — its items are data rows, not views.
+//! `VStack::for_each` maps each row to a view instead.
 
 use waterui::Identifiable;
-use waterui::component::lazy::Lazy;
+use waterui::layout::stack::VStackLayout;
 use waterui::prelude::*;
 use waterui::reactive::collection::List as ReactiveList;
 
@@ -16,7 +16,7 @@ struct Row {
 
 fn broken() -> impl View {
     let rows = ReactiveList::from(vec![Row { id: 1, name: "one" }]);
-    Lazy::vstack(rows)
+    LazyContainer::new(VStackLayout::default(), rows)
 }
 
 fn main() {}

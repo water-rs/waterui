@@ -8042,11 +8042,9 @@ mod owner_lifetimes {
     use std::rc::Rc;
 
     use waterui::Identifiable;
-    use waterui::component::lazy::Lazy;
     use waterui::prelude::*;
     use waterui::reactive::binding;
     use waterui::reactive::collection::List as ReactiveList;
-    use waterui::views::ForEach;
     use waterui_core::layout::ProposalSize;
 
     use super::{HostView, Label, MainThreadMarker, PlatformView, Retained, leaf, mtm, resolve};
@@ -8105,7 +8103,7 @@ mod owner_lifetimes {
             hstack((text!("{track}"), spacer()))
                 .padding()
                 .size(320.0, 60.0),
-            Lazy::vstack(ForEach::new(items, |row: Row| {
+            scroll(VStack::for_each(items, |row: Row| {
                 text(format!("row {}", row.id))
             })),
         ))
@@ -13363,10 +13361,8 @@ mod transition {
     use waterui::animation::Animation;
     use waterui::component::Dynamic;
     use waterui::component::label::label;
-    use waterui::component::lazy::Lazy;
-    use waterui::prelude::{VStack, hstack, spacer, text, vstack};
+    use waterui::prelude::{VStack, hstack, scroll, spacer, text, vstack};
     use waterui::reactive::collection::List as ReactiveList;
-    use waterui::views::ForEach;
     use waterui_apple::contract::Mounted;
     use waterui_apple::native_test_support::transition::ManualTransitionClock;
     use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, pump_main_until};
@@ -14974,7 +14970,7 @@ mod transition {
     }
 
     /// The host that directly owns the member views: `VStack::for_each`
-    /// wraps its container in an environment host and `Lazy::vstack`
+    /// wraps its container in an environment host and `scroll(VStack::for_each(..))`
     /// nests it in scroll chrome, so in both cases the container is the
     /// first descendant with more than two direct subviews.
     fn member_container(view: &PlatformView) -> Option<Retained<PlatformView>> {
@@ -15209,7 +15205,7 @@ mod transition {
         let _mtm = mtm();
         let rows: Vec<Row> = (0..40).map(|id| Row { id }).collect();
         let mut items = ReactiveList::from(rows);
-        let leaf = super::resolve::render(Lazy::vstack(ForEach::new(items.clone(), |row: Row| {
+        let leaf = super::resolve::render(scroll(VStack::for_each(items.clone(), |row: Row| {
             Metadata::new(
                 hstack((text(format!("row {}", row.id)), spacer())).size(300.0, 30.0),
                 row_spec(),

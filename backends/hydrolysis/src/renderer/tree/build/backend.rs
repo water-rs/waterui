@@ -477,6 +477,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         mark_reached!("lazy_container");
         let renderer = &mut *self.renderer;
         let direction = native.direction();
+        let virtualize_axes = native.virtualize_axes();
         let (layout, children) = native.into_inner();
         // A function pointer, so the mapped collection does not borrow
         // this backend.
@@ -499,9 +500,9 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
             }))
         };
         // A viewport-virtualizable stack layout becomes a virtualized
-        // LazyStack; its rows own their transitions themselves, so a
-        // row's declaration never decides the realization.
-        if let Some(axis) = lazy_stack_axis_config(layout.as_ref(), direction) {
+        // LazyStack only when virtualization is enabled along its axis;
+        // otherwise it becomes an eager retained CollectionNode.
+        if let Some(axis) = lazy_stack_axis_config(layout.as_ref(), virtualize_axes, direction) {
             return RenderNode::build_lazy_stack(
                 axis,
                 &children,

@@ -527,8 +527,6 @@ pub fn reactivity_block_15() {
 // Prefix is a statement sequence; the last two lines are a listing.
 // ---------------------------------------------------------------------------
 pub fn reactivity_block_16() {
-    use waterui::views::ForEach;
-
     let row_view = glue_row_view;
     let seed_vec = vec![Row {
         id: 1,
@@ -539,7 +537,7 @@ pub fn reactivity_block_16() {
         title: Str::from("Second"),
     }];
 
-    use waterui::component::lazy::Lazy;
+    use waterui::layout::scroll::scroll_horizontal;
     use waterui::reactive::collection::List as ReactiveList;
 
     let mut rows = ReactiveList::from(seed_vec); // bulk-seed in one move — not a push loop
@@ -558,10 +556,8 @@ pub fn reactivity_block_16() {
     let snapshot = rows.snapshot(); // Vec<Row>, for read-only work
     let _ = rows.replace(new_vec); // wholesale swap, diffed by id: moves and changed rows
 
-    let _ = {
-        Lazy::for_each(rows.clone(), row_view) // == Lazy::vstack(ForEach::new(..))
-    };
-    let _ = { Lazy::hstack(ForEach::new(rows.clone(), row_view)) };
+    let _ = { scroll(VStack::for_each(rows.clone(), row_view)) };
+    let _ = { scroll_horizontal(HStack::for_each(rows.clone(), row_view)) };
 
     let _ = snapshot;
 }
