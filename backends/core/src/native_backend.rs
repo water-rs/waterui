@@ -959,6 +959,8 @@ native_backend! {
         frame_rate: FrameRateVote,
         /// A lifecycle hook.
         lifecycle_hook: waterui_interaction::event::LifeCycleHook,
+        /// A view-scoped asynchronous task hook.
+        task_hook: waterui_interaction::event::TaskHook,
         /// An event handler.
         on_event: waterui_interaction::event::OnEvent,
         /// A key-press handler.

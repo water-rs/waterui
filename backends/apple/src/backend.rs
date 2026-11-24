@@ -683,6 +683,17 @@ impl NativeBackend for AppleBackend {
         )
     }
 
+    fn task_hook<C: ChildView<Self>>(
+        &mut self,
+        metadata: Metadata<waterui_interaction::event::TaskHook, C>,
+        env: &Environment,
+        (): (),
+    ) -> NativeLeaf {
+        mark_reached!("task_hook");
+        let metadata = metadata.map_content(C::into_child);
+        crate::components::lifecycle_hook::realize_task_hook_metadata(metadata, &self.entry(env))
+    }
+
     fn on_event<C: ChildView<Self>>(
         &mut self,
         metadata: Metadata<waterui_interaction::event::OnEvent, C>,

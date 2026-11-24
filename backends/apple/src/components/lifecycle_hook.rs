@@ -13,16 +13,18 @@
 
 use alloc::rc::Rc;
 use core::cell::RefCell;
+use core::fmt;
 
 use cocoa_ui::view;
 use cocoa_ui::{MainThreadMarker, PlatformView, Rect};
+use executor_core::{AnyLocalExecutorTask, spawn_local};
 use waterui_backend_core::Environment;
 use waterui_core::Metadata;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
     ViewDimensions,
 };
-use waterui_interaction::event::{LifeCycle, LifeCycleHook};
+use waterui_interaction::event::{LifeCycle, LifeCycleHook, TaskHook};
 
 use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;
@@ -201,5 +203,102 @@ pub fn realize_life_cycle_hook_metadata(
     leaf.keep(sink_guard);
     leaf.keep(state);
     leaf.keep(hook);
+    leaf
+}
+
+/// Live state for a view-scoped [`TaskHook`]: starts once after the view enters
+/// a window and cancels on window removal or leaf drop.
+struct TaskState {
+    pending: RefCell<Option<TaskHook>>,
+    running: RefCell<Option<AnyLocalExecutorTask<()>>>,
+    env: Environment,
+}
+
+impl fmt::Debug for TaskState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TaskState").finish_non_exhaustive()
+    }
+}
+
+fn schedule_task_start(mtm: MainThreadMarker, state: &Rc<TaskState>, host: &HostView) {
+    if state.pending.borrow().is_none() {
+        return;
+    }
+    let state = Rc::downgrade(state);
+    let host = view::retain_base(host);
+    cocoa_ui::core_animation::on_commit(mtm, move || {
+        let Some(state) = state.upgrade() else {
+            return;
+        };
+        if !view::has_window(&host) {
+            return;
+        }
+        if let Some(hook) = state.pending.borrow_mut().take()
+            && let Some(future) = hook.build_future(&state.env)
+        {
+            *state.running.borrow_mut() = Some(spawn_local(future));
+        }
+    });
+}
+
+/// The `task_hook` realization: starts the task on appear (after transaction
+/// commit) and drops the task handle on disappear or unmount to cancel it.
+pub fn realize_task_hook_metadata(
+    metadata: Metadata<TaskHook, Held>,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    let mtm = ctx.mtm();
+    let host = HostView::new(mtm, Rect::ZERO);
+    let host_view: &PlatformView = &host;
+
+    let child = ctx.realize(metadata.content);
+    let env = child.handler_env(ctx.env());
+    let mounted = child.mount(host_view);
+
+    let task = Rc::new(TaskState {
+        pending: RefCell::new(Some(metadata.value)),
+        running: RefCell::new(None),
+        env,
+    });
+
+    crate::primary_content::forward(&host, mounted.view());
+    view::set_translates_autoresizing(mounted.view(), true);
+
+    let state = Rc::new(LifecycleState { child: mounted });
+
+    host.set_layout_handler({
+        let state = Rc::clone(&state);
+        move |host| {
+            view::set_frame(state.child.view(), view::bounds(host));
+        }
+    });
+
+    host.set_window_handler({
+        let task = Rc::clone(&task);
+        move |host| {
+            if view::has_window(host) {
+                schedule_task_start(mtm, &task, host);
+            } else {
+                let _ = task.running.borrow_mut().take();
+            }
+        }
+    });
+
+    let sink_guard = proposal::register_sink(host_view, {
+        let state = Rc::clone(&state);
+        move |selected| {
+            proposal::deliver(state.child.view(), selected);
+        }
+    });
+
+    let mut leaf = NativeLeaf::new(
+        host_view,
+        LifecycleSubView {
+            state: Rc::clone(&state),
+        },
+    );
+    leaf.keep(sink_guard);
+    leaf.keep(state);
+    leaf.keep(task);
     leaf
 }

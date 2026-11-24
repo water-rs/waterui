@@ -17,6 +17,7 @@ use waterui::component::form::CalendarGrid;
 use waterui::component::form::picker::MultiDatePickerGrid;
 use waterui_backend_core::{Child, DynamicNode};
 use waterui_core::contract_violation;
+use waterui_interaction::event::TaskHook;
 
 pub mod backend;
 
@@ -283,6 +284,31 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             accessibility_identity: Rc::new(()),
             core: renderer.new_core(),
             effect: WrapperEffect::LifeCycle(effect),
+            env,
+            released_offsets: Cell::default(),
+            child,
+        }))
+    }
+
+    /// Build a view-scoped task wrapper: resolves its environment like a
+    /// lifecycle hook, starts the task on first flush/walk, and cancels it
+    /// when the node drops.
+    fn build_task(
+        hook: TaskHook,
+        content: HeldChild<E>,
+        env: &Environment,
+        renderer: &mut SemanticCore<E>,
+    ) -> Self {
+        let child = Self::build_slot(content, env, renderer);
+        let env = Self::resolved_handler_env(&child, env).clone();
+        let effect = TaskEffect {
+            pending: Cell::new(Some((hook, env.clone()))),
+            running: RefCell::new(None),
+        };
+        Self::Wrapper(Box::new(WrapperNode {
+            accessibility_identity: Rc::new(()),
+            core: renderer.new_core(),
+            effect: WrapperEffect::Task(effect),
             env,
             released_offsets: Cell::default(),
             child,
@@ -673,6 +699,7 @@ fn is_background_fill_leaf<E: crate::text::TextEngine>(node: &RenderNode<E>) -> 
                 node.effect,
                 WrapperEffect::LayoutPriority(_)
                     | WrapperEffect::LifeCycle(_)
+                    | WrapperEffect::Task(_)
                     | WrapperEffect::Focused(_)
                     | WrapperEffect::FrameRate(_)
                     | WrapperEffect::OnKeyPress(_)

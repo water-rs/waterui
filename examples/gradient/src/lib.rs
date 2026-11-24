@@ -104,7 +104,7 @@ fn animated_background_section() -> impl View {
     ))
     .spacing(12.0)
     .padding()
-    .task(animate_mesh_colors(colors))
+    .task(move || animate_mesh_colors(colors))
 }
 
 /// Demo: mesh gradient animated by the canvas clock (no per-frame CPU updates)

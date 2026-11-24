@@ -481,7 +481,7 @@ button("Fetch")
     })
     .state(&result);
 
-view.task(async { warm_cache().await });   // runs while the view is alive; dropped with it
+view.task(|| async { warm_cache().await }); // starts on appear, cancels on disappear; supports extractors
 view.on_appear(|| debug!("shown"));
 view.on_disappear(|| ());
 view.lifecycle(LifeCycle::Appear, || ());   // what on_appear/on_disappear call
