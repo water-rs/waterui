@@ -129,7 +129,6 @@ impl ScrollViewAttributes {
 #[non_exhaustive]
 pub struct SpacerAttributes {
     /// The gap's minimum length, in points.
-    #[ts(rename = "minLength")]
     min_length: Option<f32>,
 }
 
@@ -164,7 +163,6 @@ pub struct ButtonAttributes {
     /// What the button does when it is activated — by a tap, by the keyboard,
     /// or by an assistive technology, which is why this is the button's own
     /// attribute and not the `onTapGesture` modifier.
-    #[ts(rename = "onTap")]
     on_tap: JsAction,
     /// The label, when it is not the children.
     label: Option<AnyView>,
@@ -389,11 +387,9 @@ pub struct ListAttributes {
     /// Runs when a row's delete control is used, with the index of the row
     /// that was deleted. A list with no handler shows no delete control,
     /// because the control would do nothing.
-    #[ts(rename = "onDelete")]
     on_delete: Option<JsAction<(u32,)>>,
     /// Runs when a row is moved, with the index it left and the index it
     /// arrived at. A list with no handler shows no reorder handle.
-    #[ts(rename = "onMove")]
     on_move: Option<JsAction<(u32, u32)>>,
 }
 
@@ -848,36 +844,27 @@ pub struct Modifiers {
     /// Fixes the view's height, in points.
     height: Computed<f32>,
     /// The width the view will not go below.
-    #[ts(rename = "minWidth")]
     min_width: Computed<f32>,
     /// The width the view will not exceed.
-    #[ts(rename = "maxWidth")]
     max_width: Computed<f32>,
     /// The height the view will not go below.
-    #[ts(rename = "minHeight")]
     min_height: Computed<f32>,
     /// The height the view will not exceed.
-    #[ts(rename = "maxHeight")]
     max_height: Computed<f32>,
     /// Disables the view and everything below it.
     disabled: Computed<bool>,
     /// Runs a handler when the view is tapped. A control's own activation is
     /// its own attribute — `<Button onTap>` — because a native control is
     /// activated by more than a tap.
-    #[ts(rename = "onTapGesture")]
     on_tap_gesture: JsAction,
     /// The view's accessibility label, for a view whose own content does not
     /// name it.
-    #[ts(rename = "a11yLabel")]
     a11y_label: Computed<TextContent>,
     /// The view's accessibility value.
-    #[ts(rename = "a11yValue")]
     a11y_value: Computed<TextContent>,
     /// A stable identifier for tests and tooling, never shown to anyone.
-    #[ts(rename = "a11yId")]
     a11y_id: Str,
     /// Hides the view from assistive technology without hiding it visually.
-    #[ts(rename = "a11yHidden")]
     a11y_hidden: bool,
 }
 

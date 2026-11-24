@@ -16,7 +16,8 @@
 //! - `number`: `format_number`, `format_percent`, `format_currency`, the unit
 //!   wrappers (`Length<Meter>`, `Temperature<Celsius>`, …) that render through
 //!   them, and the numeric interpolation `text!` performs
-//! - `datetime`: `format::date`, the locale-aware date and time formatters
+//! - `datetime`: `format::date`, the locale-aware `jiff` date and time formatters
+//! - `relative-time`: `format::relative`, locale-aware relative time formatting (`"in 3 days"`)
 //! - `list`: `LocalizedList`, locale-aware list conjunction
 //!
 //! ## Usage
@@ -61,8 +62,17 @@ pub use format::LocalizedArgument;
 pub use format::LocalizedDisplay;
 #[cfg(feature = "list")]
 pub use format::LocalizedList;
+#[cfg(feature = "datetime")]
+pub use format::date::{
+    DateStyle, FormattedDate, FormattedDateTime, FormattedTime, FormattedZoned,
+    LocalizedDateTimeExt, TimeStyle, format_date, format_datetime, format_time, format_zoned,
+};
 #[cfg(feature = "number")]
 pub use format::number::{Currency, format_currency, format_number, format_percent};
+#[cfg(feature = "relative-time")]
+pub use format::relative::{
+    RelativeTime, RelativeTimeNumeric, RelativeTimeStyle, RelativeTimeUnit, format_relative_time,
+};
 #[cfg(feature = "number")]
 pub use format::unit::{Feet, Kilometer, Length, LengthUnit, Meter, Mile};
 pub use locale::{Locale, locales};
@@ -127,8 +137,9 @@ pub fn locale_binding(env: &waterui_core::Environment) -> nami::Binding<Locale> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use format::date::{DateStyle, SimpleDate, format_date};
+    use format::date::{DateStyle, format_date};
     use format::unit::{Gram, Kilogram, Mass};
+    use jiff::{civil, tz::TimeZone};
     use nami::Signal;
     use waterui_core::Environment;
 
@@ -360,9 +371,9 @@ mod tests {
 
     #[test]
     fn test_date_formatting_english() {
-        let date = SimpleDate::new(2006, 3, 20);
-        let short = format_date(&locales::EN, &date, DateStyle::Short);
-        let long = format_date(&locales::EN, &date, DateStyle::Long);
+        let date = civil::date(2006, 3, 20);
+        let short = format_date(&locales::EN, date, DateStyle::Short);
+        let long = format_date(&locales::EN, date, DateStyle::Long);
         assert!(short.contains('/'));
         assert!(short.contains("20"));
         assert!(long.contains("2006"));
@@ -371,9 +382,9 @@ mod tests {
 
     #[test]
     fn test_date_formatting_german() {
-        let date = SimpleDate::new(2006, 3, 20);
-        let short = format_date(&locales::DE, &date, DateStyle::Short);
-        let long = format_date(&locales::DE, &date, DateStyle::Long);
+        let date = civil::date(2006, 3, 20);
+        let short = format_date(&locales::DE, date, DateStyle::Short);
+        let long = format_date(&locales::DE, date, DateStyle::Long);
         assert!(short.contains('.'));
         assert!(short.contains("20"));
         assert!(long.contains("2006"));
@@ -382,9 +393,9 @@ mod tests {
 
     #[test]
     fn test_date_formatting_french() {
-        let date = SimpleDate::new(2006, 3, 20);
-        let short = format_date(&locales::FR, &date, DateStyle::Short);
-        let long = format_date(&locales::FR, &date, DateStyle::Long);
+        let date = civil::date(2006, 3, 20);
+        let short = format_date(&locales::FR, date, DateStyle::Short);
+        let long = format_date(&locales::FR, date, DateStyle::Long);
         assert!(short.contains("2006"));
         assert!(short.contains('/'));
         assert!(long.contains("2006"));
@@ -393,9 +404,9 @@ mod tests {
 
     #[test]
     fn test_date_formatting_spanish() {
-        let date = SimpleDate::new(2006, 3, 20);
-        let short = format_date(&locales::ES, &date, DateStyle::Short);
-        let long = format_date(&locales::ES, &date, DateStyle::Long);
+        let date = civil::date(2006, 3, 20);
+        let short = format_date(&locales::ES, date, DateStyle::Short);
+        let long = format_date(&locales::ES, date, DateStyle::Long);
         assert!(short.contains('/'));
         assert!(short.contains("20"));
         assert!(long.contains("2006"));
@@ -404,9 +415,9 @@ mod tests {
 
     #[test]
     fn test_date_formatting_japanese() {
-        let date = SimpleDate::new(2006, 3, 20);
-        let short = format_date(&locales::JA, &date, DateStyle::Short);
-        let long = format_date(&locales::JA, &date, DateStyle::Long);
+        let date = civil::date(2006, 3, 20);
+        let short = format_date(&locales::JA, date, DateStyle::Short);
+        let long = format_date(&locales::JA, date, DateStyle::Long);
         assert!(short.contains("2006"));
         assert!(long.contains('年'));
         assert!(long.contains('月'));
@@ -415,9 +426,9 @@ mod tests {
 
     #[test]
     fn test_date_formatting_korean() {
-        let date = SimpleDate::new(2006, 3, 20);
-        let short = format_date(&locales::KO, &date, DateStyle::Short);
-        let long = format_date(&locales::KO, &date, DateStyle::Long);
+        let date = civil::date(2006, 3, 20);
+        let short = format_date(&locales::KO, date, DateStyle::Short);
+        let long = format_date(&locales::KO, date, DateStyle::Long);
         assert!(short.contains("20"));
         assert!(long.contains('년'));
         assert!(long.contains('월'));
@@ -426,13 +437,39 @@ mod tests {
 
     #[test]
     fn test_date_formatting_chinese() {
-        let date = SimpleDate::new(2006, 3, 20);
-        let short = format_date(&locales::ZH_CN, &date, DateStyle::Short);
-        let long = format_date(&locales::ZH_CN, &date, DateStyle::Long);
+        let date = civil::date(2006, 3, 20);
+        let short = format_date(&locales::ZH_CN, date, DateStyle::Short);
+        let long = format_date(&locales::ZH_CN, date, DateStyle::Long);
         assert!(short.contains("2006"));
         assert!(long.contains('年'));
         assert!(long.contains('月'));
         assert!(long.contains('日'));
+    }
+
+    #[test]
+    fn test_formatted_jiff_wrappers_cover_time_datetime_and_zoned() {
+        let time = civil::time(15, 45, 30, 0);
+        assert!(
+            time.formatted(TimeStyle::Short)
+                .to_localized_string(&locales::DE)
+                .contains("15:45")
+        );
+
+        let dt = civil::date(2026, 3, 20).at(9, 30, 0, 0);
+        let formatted_dt = dt
+            .formatted((DateStyle::Long, TimeStyle::Short))
+            .to_localized_string(&locales::JA);
+        assert!(formatted_dt.contains("2026年3月20日"));
+        assert!(formatted_dt.contains("9:30"));
+
+        let zoned = dt
+            .to_zoned(TimeZone::UTC)
+            .expect("UTC conversion must succeed");
+        let formatted_zoned = zoned
+            .formatted((DateStyle::Long, TimeStyle::Long))
+            .to_localized_string(&locales::EN);
+        assert!(formatted_zoned.contains("March 20, 2026"));
+        assert!(formatted_zoned.contains("UTC"));
     }
 
     // =========================================================

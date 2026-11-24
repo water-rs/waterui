@@ -557,7 +557,7 @@ fn progress_of(
             ProgressStyleValue::Circular => progress.circular(),
             ProgressStyleValue::Loading => {
                 return Err(JsError::conversion(
-                    "<Progress style=\"Loading\"> is indeterminate, so it cannot also carry a \
+                    "<Progress style=\"loading\"> is indeterminate, so it cannot also carry a \
                      `total`: drop the total, or name the style the bar should take",
                 ));
             }

@@ -17,6 +17,7 @@ extern crate alloc;
 use alloc::borrow::Cow;
 #[cfg(feature = "gpu")]
 use alloc::boxed::Box;
+use alloc::string::{String, ToString as _};
 #[cfg(feature = "gpu")]
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -30,7 +31,7 @@ use nami::watcher::BoxWatcherGuard;
 use nami::{Computed, Signal, SignalExt};
 use waterui_core::layout::StretchAxis;
 use waterui_core::reactive::signal::IntoComputed;
-use waterui_core::{Environment, Native, NativeView, View, contract_violation};
+use waterui_core::{Environment, Native, NativeView, Str, View, contract_violation};
 
 use crate::draw::{Draw as _, Paint, Recorder, ShaderId, ShaderPaint, kurbo::Rect};
 #[cfg(feature = "gpu")]
@@ -57,6 +58,8 @@ pub struct ShaderPaintView {
     fragment: Cow<'static, str>,
     animated: Computed<bool>,
     uniforms: Computed<Vec<f32>>,
+    label: Computed<Option<Str>>,
+    value: Computed<Option<Str>>,
 }
 
 impl fmt::Debug for ShaderPaintView {
@@ -73,6 +76,8 @@ impl ShaderPaintView {
             fragment: fragment.into(),
             animated: nami::constant(false).computed(),
             uniforms: nami::constant(Vec::new()).computed(),
+            label: Computed::constant(None),
+            value: Computed::constant(None),
         }
     }
 
@@ -94,6 +99,22 @@ impl ShaderPaintView {
         self
     }
 
+    /// The accessible name the shader offers. An app's own `.a11y_label(…)`
+    /// overrides it.
+    #[must_use]
+    pub fn offered_label(mut self, label: impl IntoComputed<Option<Str>>) -> Self {
+        self.label = label.into_computed();
+        self
+    }
+
+    /// The accessible value the shader offers. An app's own `.a11y_value(…)`
+    /// overrides it.
+    #[must_use]
+    pub fn offered_value(mut self, value: impl IntoComputed<Option<Str>>) -> Self {
+        self.value = value.into_computed();
+        self
+    }
+
     /// Lowers this view into [`SceneContent`] that fills its box with
     /// [`Paint::Shader`] — the realization self-drawn backends run on both the
     /// GPU and CPU painters.
@@ -103,6 +124,8 @@ impl ShaderPaintView {
             fragment: self.fragment,
             animated: self.animated,
             uniforms: self.uniforms,
+            label: self.label,
+            value: self.value,
             watchers: None,
             registered: None,
             recorded: None,
@@ -124,6 +147,8 @@ impl ShaderPaintView {
         })
         // The hook also keeps the posting's watchers alive with the view.
         .on_frame(move || posting.post())
+        .offered_label(self.label)
+        .offered_value(self.value)
         .into_boxed()
     }
 }
@@ -175,7 +200,9 @@ struct ShaderPaintScene {
     fragment: Cow<'static, str>,
     animated: Computed<bool>,
     uniforms: Computed<Vec<f32>>,
-    watchers: Option<[BoxWatcherGuard; 2]>,
+    label: Computed<Option<Str>>,
+    value: Computed<Option<Str>>,
+    watchers: Option<[BoxWatcherGuard; 4]>,
     registered: Option<(bool, Registered<ShaderId>)>,
     recorded: Option<RecordedState>,
 }
@@ -269,8 +296,18 @@ impl SceneContent for ShaderPaintScene {
             [
                 invalidate_on_change(&inv, &self.animated),
                 invalidate_on_change(&inv, &self.uniforms),
+                invalidate_on_change(&inv, &self.label),
+                invalidate_on_change(&inv, &self.value),
             ]
         });
+    }
+
+    fn accessibility_label(&self) -> Option<String> {
+        self.label.snapshot().map(|label| label.to_string())
+    }
+
+    fn accessibility_value(&self) -> Option<String> {
+        self.value.snapshot().map(|value| value.to_string())
     }
 }
 

@@ -97,9 +97,7 @@ fn transform_at_root(value: &Binding<f32>) -> AnyView {
         .clone()
         .with(Animation::linear(Duration::from_millis(1_000)));
     AnyView::new(vstack((
-        Color::srgb(30, 90, 210)
-            .size(40.0, 40.0)
-            .scale(animated.clone(), animated),
+        Color::srgb(30, 90, 210).size(40.0, 40.0).scale(animated),
         ().size(360.0, 200.0),
     )))
 }
@@ -112,9 +110,7 @@ fn transform_in_scroll(value: &Binding<f32>) -> AnyView {
     let animated = value
         .clone()
         .with(Animation::linear(Duration::from_millis(1_000)));
-    let header = Color::srgb(30, 90, 210)
-        .size(40.0, 40.0)
-        .scale(animated.clone(), animated);
+    let header = Color::srgb(30, 90, 210).size(40.0, 40.0).scale(animated);
     AnyView::new(scroll(vstack((header, padding_list()))))
 }
 
@@ -571,7 +567,7 @@ fn steady_state_transform_animation_retains_the_tree() {
                     inner: ZStackLayout::default(),
                     place_calls: Rc::clone(&place_calls),
                 },
-                (().size(80.0, 80.0).scale(animated.clone(), animated),),
+                (().size(80.0, 80.0).scale(animated),),
             ))
         })
     };

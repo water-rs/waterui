@@ -79,7 +79,7 @@ flag.toggle();                  // bool convenience
 These are methods on any signal (from `SignalExt`, which the prelude re-exports). They
 take `&self` and clone the source handle themselves — `count.not()` and
 `hovered.select(..)` read naturally with no `.clone()` first. Clone only when a finished
-signal is *moved* into two places (e.g. passed to `.scale(x, y)` twice).
+signal is *moved* into two places (e.g. passed to `.scale_xy(x, y)` twice).
 
 ```rust
 // core
@@ -203,7 +203,7 @@ The whole point of the framework: hand the signal to the API, do not resolve it.
 view.opacity(fade.clone())
 view.visible(has_items.clone())
 view.disabled(is_loading.clone())
-view.scale(zoom.clone(), zoom.clone())
+view.scale(zoom.clone())
 Photo::new(url).blur(radius.clone()).saturation(sat.clone())
 text!("{status}")
 ```
@@ -286,7 +286,7 @@ use waterui::animation::Animation;   // not in the prelude
 let scale = Binding::f32(1.0);
 let animated = scale.with(Animation::spring(300.0, 15.0));
 
-view.scale(animated.clone(), animated.clone())
+view.scale(animated)
 ```
 
 Curves: `Animation::linear(d)`, `ease_in(d)`, `ease_out(d)`, `ease_in_out(d)`,

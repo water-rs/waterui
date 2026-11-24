@@ -12,6 +12,7 @@ mod support;
 use hydrolysis::draw::{Draw, Paint, WorkingColor};
 use kurbo::{Rect, Shape as _};
 use support::{mount_rendered, node_bounds_with_role, nodes};
+use waterui::Str;
 use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityRole;
 use waterui::component::text;
@@ -59,7 +60,8 @@ fn labeled_picture_view() -> impl waterui::View {
             Paint::Solid(WorkingColor::new([0.0, 0.0, 0.0, 1.0])),
         );
     });
-    Picture::new(Size::new(24.0, 24.0), constant(recording)).labeled("Warning sign")
+    Picture::new(Size::new(24.0, 24.0), constant(recording))
+        .offered_label(Str::from("Warning sign"))
 }
 
 /// The same drawing, named by the application instead.

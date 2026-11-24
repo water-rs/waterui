@@ -18,7 +18,6 @@ use waterui::tsx;
 struct PromoProps {
     headline: String,
     unread: Binding<u32>,
-    #[ts(rename = "onDismiss")]
     on_dismiss: Box<dyn Fn()>,
 }
 

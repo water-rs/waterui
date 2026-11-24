@@ -45,7 +45,7 @@ pub fn view() -> impl View {
         text("horizontal"),
         horizontal(),
         text("transformed"),
-        vertical().rotation(10.0).scale(0.9, 0.7),
+        vertical().rotation(10.0).scale_xy(0.9, 0.7),
     ))
     .padding()
 }
