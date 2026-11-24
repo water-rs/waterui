@@ -14,7 +14,7 @@ use nami::{Binding, Computed, Signal};
 use waterui_core::handler::ViewBuilder as _;
 use waterui_core::{AnyView, Environment, Error};
 use waterui_graphics::WorkingColor;
-use waterui_graphics::color::{AccentColor, ColorScheme};
+use waterui_graphics::color::{ColorScheme, install_color_signal, token::Accent};
 use waterui_ts::engine::{JsError, JsFunction, JsRuntime, JsValue};
 use waterui_ts::schema::{TsProps, TsType, TypeSchema};
 use waterui_ts::{Bridge, FromJs, HostTable, IntoJs, JsViewBuilder, TsRuntime};
@@ -1567,11 +1567,12 @@ fn the_host_table_is_installed_and_reached_from_javascript() {
 
 #[test]
 fn the_environment_reaches_javascript_as_theme_and_locale() {
-    let environment = Environment::new()
-        .store::<ColorScheme, Computed<ColorScheme>>(Computed::constant(ColorScheme::Dark))
-        .store::<AccentColor, Computed<WorkingColor>>(Computed::constant(WorkingColor::new([
-            0.25, 0.5, 0.75, 1.0,
-        ])));
+    let mut environment = Environment::new()
+        .store::<ColorScheme, Computed<ColorScheme>>(Computed::constant(ColorScheme::Dark));
+    install_color_signal::<Accent>(
+        &mut environment,
+        Computed::constant(WorkingColor::new([0.25, 0.5, 0.75, 1.0])),
+    );
     let runtime = with_environment(environment);
     // Everything exported into JavaScript belongs to the mount that asked
     // for it; the mount leaf opens this scope, a test opens its own.
