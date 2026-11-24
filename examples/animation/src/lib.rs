@@ -72,7 +72,7 @@ fn scale_animation_section(scale: &Binding<f32>) -> impl View + use<> {
         text("Click buttons to scale the box with spring physics").body(),
         transform_stage(
             Blue.size(SCALE_BOX_SIDE, SCALE_BOX_SIDE)
-                .scale(animated_scale.clone(), animated_scale),
+                .scale(animated_scale),
             SCALE_STAGE_SIDE,
         ),
         hstack((
@@ -181,7 +181,7 @@ fn combined_transform_section(
         transform_stage(
             Orange
                 .size(COMBINED_BOX_SIDE, COMBINED_BOX_SIDE)
-                .scale(animated_scale.clone(), animated_scale)
+                .scale(animated_scale)
                 .rotation(animated_rotation),
             COMBINED_STAGE_SIDE,
         ),
@@ -279,7 +279,7 @@ fn animation_curves_section(bar_scale: &Binding<f32>) -> impl View + use<> {
             hstack((
                 text("Linear").min_width(80.0),
                 Cyan.size(200.0, 24.0)
-                    .scale(linear_scale, 1.0)
+                    .scale_xy(linear_scale, 1.0)
                     .min_width(220.0),
             )),
             // Ease-in - starts slow, ends fast
@@ -287,7 +287,7 @@ fn animation_curves_section(bar_scale: &Binding<f32>) -> impl View + use<> {
                 text("Ease-In").min_width(80.0),
                 Green
                     .size(200.0, 24.0)
-                    .scale(ease_in_scale, 1.0)
+                    .scale_xy(ease_in_scale, 1.0)
                     .min_width(220.0),
             )),
             // Ease-out - starts fast, ends slow
@@ -295,14 +295,14 @@ fn animation_curves_section(bar_scale: &Binding<f32>) -> impl View + use<> {
                 text("Ease-Out").min_width(80.0),
                 Orange
                     .size(200.0, 24.0)
-                    .scale(ease_out_scale, 1.0)
+                    .scale_xy(ease_out_scale, 1.0)
                     .min_width(220.0),
             )),
             // Spring - bouncy overshoot
             hstack((
                 text("Spring").min_width(80.0),
                 Red.size(200.0, 24.0)
-                    .scale(spring_scale, 1.0)
+                    .scale_xy(spring_scale, 1.0)
                     .min_width(220.0),
             )),
         )),
@@ -336,7 +336,7 @@ fn toggle_animation_section(toggle_state: &Binding<bool>) -> impl View + use<> {
             // Visual indicator that animates
             Green
                 .size(60.0, 60.0)
-                .scale(indicator_scale.clone(), indicator_scale)
+                .scale(indicator_scale)
                 .rotation(indicator_rotation)
                 .min_width(80.0)
                 .min_height(80.0),
@@ -367,21 +367,21 @@ fn staggered_section(expanded: &Binding<bool>) -> impl View + use<> {
         hstack((
             Green
                 .size(50.0, 80.0)
-                .scale(1.0, bar1_scale)
+                .scale_xy(1.0, bar1_scale)
                 .min_height(100.0)
                 .min_width(60.0),
             Blue.size(50.0, 80.0)
-                .scale(1.0, bar2_scale)
+                .scale_xy(1.0, bar2_scale)
                 .min_height(100.0)
                 .min_width(60.0),
             Purple
                 .size(50.0, 80.0)
-                .scale(1.0, bar3_scale)
+                .scale_xy(1.0, bar3_scale)
                 .min_height(100.0)
                 .min_width(60.0),
             Orange
                 .size(50.0, 80.0)
-                .scale(1.0, bar4_scale)
+                .scale_xy(1.0, bar4_scale)
                 .min_height(100.0)
                 .min_width(60.0),
         )),
@@ -416,7 +416,7 @@ fn size_indicator_section(size_value: &Binding<f64>) -> impl View + use<> {
         hstack((
             // Vertical bar that scales vertically
             Blue.size(30.0, 100.0)
-                .scale(1.0, animated_y_scale)
+                .scale_xy(1.0, animated_y_scale)
                 .min_height(120.0)
                 .min_width(50.0),
             spacer(),
@@ -429,7 +429,7 @@ fn size_indicator_section(size_value: &Binding<f64>) -> impl View + use<> {
             // Scaling square
             Green
                 .size(60.0, 60.0)
-                .scale(animated_scale.clone(), animated_scale)
+                .scale(animated_scale)
                 .min_height(100.0)
                 .min_width(100.0),
         )),

@@ -389,10 +389,7 @@ fn animated_popup_panel<V: View>(
     let scale = Binding::f32(initial_scale);
     content
         .opacity(opacity.with(enter_animation.clone()))
-        .scale(
-            scale.with(enter_animation.clone()),
-            scale.with(enter_animation),
-        )
+        .scale(scale.with(enter_animation))
         .on_appear(move || {
             opacity.set(1.0);
             scale.set(1.0);

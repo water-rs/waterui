@@ -340,7 +340,7 @@ pub fn reactivity_block_09() {
     let view = Divider;
     let _ = { view.disabled(is_loading.clone()) };
     let view = Divider;
-    let _ = { view.scale(zoom.clone(), zoom.clone()) };
+    let _ = { view.scale(zoom.clone()) };
     let _ = { Photo::new(url).blur(radius.clone()).saturation(sat.clone()) };
     let _ = { text!("{status}") };
 }
@@ -449,7 +449,7 @@ pub fn reactivity_block_14() {
     let animated = scale.with(Animation::spring(300.0, 15.0));
 
     let view = Divider;
-    let _ = { view.scale(animated.clone(), animated.clone()) };
+    let _ = { view.scale(animated) };
 
     let _ = Duration::from_millis(1);
 }

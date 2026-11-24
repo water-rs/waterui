@@ -500,8 +500,11 @@ pub fn skill_block_15() {
         view.max_size(w, h) // [ellipsis filled]
     };
 
+    let factor = 1.5_f32;
     let view = Divider;
-    let _ = { view.scale(x, y) };
+    let _ = { view.scale(factor) };
+    let view = Divider;
+    let _ = { view.scale_xy(x, y) };
     let view = Divider;
     let _ = { view.rotation(degrees) };
     let view = Divider;

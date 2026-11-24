@@ -431,7 +431,7 @@ fn ui_test_hover_drag_and_magnify_update_semantic_bounds() {
                     .padding()
                     .size(120.0, 120.0)
                     .offset(offset.clone(), 0.0)
-                    .scale(scale.clone(), scale.clone())
+                    .scale(scale.clone())
                     .opacity(hovered_opacity);
                 surface
                     .gesture_observer(GestureObserver::new(
