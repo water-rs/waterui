@@ -203,7 +203,7 @@ mod tests {
     /// unstyled text as the body style.
     #[test]
     fn unstyled_bold_is_the_plain_bold_on_macos_and_styles_keep_theirs() {
-        let unstyled = face_weight(&resolve(&Font::default().bold()));
+        let unstyled = face_weight(&resolve(&Font::default().bold(true)));
         if cfg!(target_os = "macos") {
             assert_eq!(
                 unstyled,
@@ -222,14 +222,14 @@ mod tests {
             );
         }
         assert_eq!(
-            face_weight(&resolve(&Font::new(Body).bold())),
+            face_weight(&resolve(&Font::new(Body).bold(true))),
             FaceWeight {
                 weight: FontWeight::SemiBold,
                 bold_trait: false
             }
         );
         assert_eq!(
-            face_weight(&resolve(&Font::new(Headline).bold())),
+            face_weight(&resolve(&Font::new(Headline).bold(true))),
             FaceWeight {
                 weight: FontWeight::UltraBold,
                 bold_trait: false
@@ -249,7 +249,7 @@ mod tests {
     #[test]
     fn bold_on_a_slot_builds_the_declared_weight() {
         assert_eq!(
-            face_weight(&resolve(&Font::new(Body).bold())),
+            face_weight(&resolve(&Font::new(Body).bold(true))),
             FaceWeight {
                 weight: FontWeight::SemiBold,
                 bold_trait: false
@@ -269,7 +269,7 @@ mod tests {
     #[test]
     fn bold_on_a_fixed_face_takes_the_symbolic_trait() {
         assert_eq!(
-            face_weight(&resolve(&Font::new(Body).size(17.0).bold())),
+            face_weight(&resolve(&Font::new(Body).size(17.0).bold(true))),
             FaceWeight {
                 weight: FontWeight::Normal,
                 bold_trait: true

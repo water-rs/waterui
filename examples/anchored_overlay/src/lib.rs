@@ -103,7 +103,7 @@ fn manual_anchor() -> impl View {
 #[preview]
 pub fn demo() -> impl View {
     vstack((
-        text("Anchored Overlay").title().bold(),
+        text("Anchored Overlay").title().bold(true),
         text("Tap an anchor; the overlay tracks it and stays inside the window.")
             .caption()
             .muted(),

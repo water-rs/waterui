@@ -321,7 +321,7 @@ text("Settings").title()                        // title/headline/subheadline/bo
 text!("Count: {count}")                         // updates automatically
 text!("{unread} unread", unread = mail.count()) // aliasing an expression into a slot
 text!("Blur: {blur:.1}")                        // format specs work
-text("0x1F60").monospaced()                     // the platform's fixed-pitch face, same size
+text("0x1F60").monospaced(true)                 // the platform's fixed-pitch face, same size
 ```
 
 Import the macro and write bare `text!` — never `waterui::text!`. The same goes for every
@@ -332,7 +332,7 @@ written `#[waterui::test]`, because the prelude names it `ui_test` so that its g
 cannot shadow the built-in `#[test]`, and a bare `#[test]` is the standard one. By
 convention `#[waterui::bench]`, `#[waterui::widget]`, `#[waterui::widget_intent]` and
 `#[waterui::view_builder]` are written qualified too. On a `Text`, `.size(..)`
-is the *font* size (and shadows the two-argument frame `.size(w, h)`). `.monospaced()` is a
+is the *font* size (and shadows the two-argument frame `.size(w, h)`). `.monospaced(bool)` is a
 design, not a family: it keeps the slot and size and each backend picks its own monospaced
 face, so never spell a font name for code. A reactive string that is not catalog
 content (a derived id, a debug label) is `s!("{name}-{count}")` from

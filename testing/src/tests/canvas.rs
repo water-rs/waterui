@@ -421,7 +421,7 @@ fn canvas_draws_text_anchored_aligned_wrapped_and_live() {
                     // Chunk styles: weight, italics, colour, decorations and
                     // a highlight.
                     let marked = StyledStr::from("plain ")
-                        + StyledStr::from("bold").bold()
+                        + StyledStr::from("bold").bold(true)
                         + " "
                         + StyledStr::from("italic")
                             .italic(true)

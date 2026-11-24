@@ -16,7 +16,7 @@
 //!    needs to be parameterized; the `.title()` family is shorthand for
 //!    these.
 //!
-//! 3. **Direct overrides** — `.size(f32)`, `.weight(..)`, `.italic()`,
+//! 3. **Direct overrides** — `.size(f32)`, `.weight(..)`, `.italic(bool)`,
 //!    [`Font`](crate::font::Font) constructors with explicit size/weight/family. This is the
 //!    escape hatch for fixed layouts (posters, splash screens, hero
 //!    headlines) and for example/demo code that wants to demonstrate a
@@ -27,13 +27,13 @@
 //! Do not collapse them — readability of UI code beats minimalism of API
 //! surface.
 //!
-//! Orthogonal to all three is the [`FontDesign`]: `.monospaced()` keeps a
+//! Orthogonal to all three is the [`FontDesign`]: `.monospaced(bool)` keeps a
 //! font's slot, size and weight and only asks for the platform's monospaced
 //! face, the way a design does in `SwiftUI`. It is not a family name — the
 //! backend picks the face — and not a slot, so `Font::from(Caption)
-//! .monospaced()` is as expressible as the body-sized code block.
+//! .monospaced(true)` is as expressible as the body-sized code block.
 //!
-//! Bold is orthogonal in the same way: `.bold()` asks for the platform's bold
+//! Bold is orthogonal in the same way: `.bold(bool)` asks for the platform's bold
 //! face of the font and each backend resolves it, while `.weight(..)` is an
 //! exact weight. See [`Font::bold`].
 //!
@@ -445,8 +445,8 @@ impl Font {
     /// The result starts from this font's slot, or from `base`'s when this
     /// font names none, and applies `base`'s modifiers and then this font's.
     /// Bold, size, weight and the other modifiers therefore survive a slot
-    /// chosen on either side: `Font::default().bold().inherit(&Body.into())`
-    /// is the body slot, bold, as is `Font::from(Body).bold()`.
+    /// chosen on either side: `Font::default().bold(true).inherit(&Body.into())`
+    /// is the body slot, bold, as is `Font::from(Body).bold(true)`.
     #[must_use]
     pub fn inherit(self, base: &Self) -> Self {
         if self.is_inherited() {
@@ -549,11 +549,19 @@ impl Font {
         })
     }
 
-    /// Asks for the platform's fixed-pitch face.
-    /// Equal to calling `font.design(FontDesign::Monospaced)`.
+    /// Asks for the platform's fixed-pitch face when `monospaced` is `true`,
+    /// or the default proportional face when `false`.
+    ///
+    /// Accepts a `bool` literal or any signal of one.
     #[must_use]
-    pub fn monospaced(self) -> Self {
-        self.design(FontDesign::Monospaced)
+    pub fn monospaced(self, monospaced: impl IntoSignal<bool> + 'static) -> Self {
+        self.design(monospaced.into_signal().map(|enabled| {
+            if enabled {
+                FontDesign::Monospaced
+            } else {
+                FontDesign::Default
+            }
+        }))
     }
 
     /// Sets an absolute line height in logical points.
@@ -591,8 +599,8 @@ impl Font {
     /// The trait is independent of the weight, so it applies to whatever
     /// weight the font has, in either order.
     #[must_use]
-    pub fn bold(self) -> Self {
-        self.modified(Computed::constant(()), |font, ()| font.bold = true)
+    pub fn bold(self, bold: impl IntoSignal<bool> + 'static) -> Self {
+        self.modified(bold.into_signal().computed(), |font, bold| font.bold = bold)
     }
 
     /// Resolves the font in the given environment.
@@ -730,7 +738,7 @@ mod tests {
             ResolvedFont::new(17.0, FontWeight::Normal).with_bold_weight(FontWeight::SemiBold);
         let env = env_with_body(slot);
 
-        let bold = Font::new(Body).bold().resolve(&env).snapshot();
+        let bold = Font::new(Body).bold(true).resolve(&env).snapshot();
         assert!(bold.bold());
         assert_eq!(bold.weight(), FontWeight::Normal);
         assert_eq!(bold.bold_weight(), Some(FontWeight::SemiBold));
@@ -743,6 +751,30 @@ mod tests {
         assert_eq!(weighted.weight(), FontWeight::Bold);
     }
 
+    #[test]
+    fn bold_and_monospaced_follow_signals() {
+        let env = env_with_body(ResolvedFont::new(17.0, FontWeight::Normal));
+        let is_bold = Binding::bool(false);
+        let is_mono = Binding::bool(false);
+        let resolved = Font::new(Body)
+            .bold(is_bold.clone())
+            .monospaced(is_mono.clone())
+            .resolve(&env);
+
+        assert!(!resolved.snapshot().bold());
+        assert_eq!(resolved.snapshot().design(), FontDesign::Default);
+
+        is_bold.set(true);
+        is_mono.set(true);
+        assert!(resolved.snapshot().bold());
+        assert_eq!(resolved.snapshot().design(), FontDesign::Monospaced);
+
+        is_bold.set(false);
+        is_mono.set(false);
+        assert!(!resolved.snapshot().bold());
+        assert_eq!(resolved.snapshot().design(), FontDesign::Default);
+    }
+
     /// Unstyled text lays out exactly as the body slot but stays
     /// distinguishable from text set in the body style, until a modifier
     /// picks another face.
@@ -753,8 +785,8 @@ mod tests {
             .with_bold_weight(FontWeight::SemiBold);
         let env = env_with_body(slot);
 
-        let unstyled = Font::default().bold().resolve(&env).snapshot();
-        let body = Font::new(Body).bold().resolve(&env).snapshot();
+        let unstyled = Font::default().bold(true).resolve(&env).snapshot();
+        let body = Font::new(Body).bold(true).resolve(&env).snapshot();
         assert!(unstyled.unstyled());
         assert!(!body.unstyled());
         for font in [&unstyled, &body] {
@@ -769,7 +801,7 @@ mod tests {
         }
 
         let kept = Font::default()
-            .monospaced()
+            .monospaced(true)
             .line_height(20.0)
             .letter_spacing(0.0)
             .family(FontFamily::Inherited)
@@ -793,11 +825,11 @@ mod tests {
         let env = env_with_body(slot);
 
         for font in [
-            Font::new(Body).bold().size(20.0),
-            Font::new(Body).size(20.0).bold(),
-            Font::new(Body).bold().weight(FontWeight::Light),
-            Font::new(Body).weight(FontWeight::Light).bold(),
-            Font::new(Body).bold().family("Menlo"),
+            Font::new(Body).bold(true).size(20.0),
+            Font::new(Body).size(20.0).bold(true),
+            Font::new(Body).bold(true).weight(FontWeight::Light),
+            Font::new(Body).weight(FontWeight::Light).bold(true),
+            Font::new(Body).bold(true).family("Menlo"),
         ] {
             let resolved = font.resolve(&env).snapshot();
             assert!(resolved.bold());
@@ -805,9 +837,9 @@ mod tests {
         }
 
         let inherited = Font::new(Body)
-            .bold()
+            .bold(true)
             .family(FontFamily::Inherited)
-            .monospaced()
+            .monospaced(true)
             .resolve(&env)
             .snapshot();
         assert_eq!(inherited.bold_weight(), Some(FontWeight::SemiBold));

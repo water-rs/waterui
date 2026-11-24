@@ -522,8 +522,8 @@ impl Text {
     ///
     /// The font merges instead of replacing: a slot such as [`Self::body`]
     /// replaces the slot and keeps the bold, size and weight already set, on
-    /// the text and on each of its runs, so `.bold().body()` and
-    /// `.body().bold()` are the same text. See
+    /// the text and on each of its runs, so `.bold(true).body()` and
+    /// `.body().bold(true)` are the same text. See
     /// [`Font::inherit`](crate::font::Font::inherit).
     pub fn font(self, font: impl IntoSignal<Font> + 'static) -> Self {
         self.map_font(font.into_signal().computed(), |base, font| {
@@ -544,6 +544,19 @@ impl Text {
     pub fn weight(self, weight: impl IntoSignal<FontWeight> + 'static) -> Self {
         self.map_font(weight.into_signal().computed(), |font, weight| {
             font.weight(weight)
+        })
+    }
+
+    /// Applies a strikethrough to the text.
+    pub fn strikethrough(self, strikethrough: impl IntoSignal<bool> + 'static) -> Self {
+        let strikethrough = strikethrough.into_signal();
+        self.map_config(move |mut config| {
+            config.content = config
+                .content
+                .zip(&strikethrough)
+                .map(|(content, strikethrough)| content.strikethrough(strikethrough))
+                .computed();
+            config
         })
     }
 
@@ -632,24 +645,25 @@ impl Text {
         })
     }
 
-    /// Asks for the platform's bold face of the font, which each backend
-    /// resolves from its platform's definition; [`Self::weight`] with
-    /// [`FontWeight::Bold`] is an exact weight of 700 instead. Text with no
-    /// font or text style takes the platform's plain bold (Bold on macOS),
-    /// while a text style takes its own bold (`.body()` is Semibold on
-    /// macOS). See [`Font::bold`](crate::font::Font::bold).
-    pub fn bold(self) -> Self {
-        self.map_font(Computed::constant(()), |font, ()| font.bold())
+    /// Asks for the platform's bold face of the font when `bold` is `true`,
+    /// which each backend resolves from its platform's definition;
+    /// [`Self::weight`] with [`FontWeight::Bold`] is an exact weight of 700
+    /// instead. Text with no font or text style takes the platform's plain
+    /// bold (Bold on macOS), while a text style takes its own bold (`.body()`
+    /// is Semibold on macOS). See [`Font::bold`](crate::font::Font::bold).
+    pub fn bold(self, bold: impl IntoSignal<bool> + 'static) -> Self {
+        self.map_font(bold.into_signal().computed(), Font::bold)
     }
 
-    /// Asks for the platform's fixed-pitch face, keeping the font's slot,
-    /// size and weight.
-    pub fn monospaced(self) -> Self {
-        self.map_font(Computed::constant(()), |font, ()| font.monospaced())
+    /// Asks for the platform's fixed-pitch face when `monospaced` is `true`,
+    /// keeping the font's slot, size and weight.
+    pub fn monospaced(self, monospaced: impl IntoSignal<bool> + 'static) -> Self {
+        self.map_font(monospaced.into_signal().computed(), Font::monospaced)
     }
 
     /// Sets the italic style.
-    pub fn italic(self, is_italic: impl Signal<Output = bool> + 'static) -> Self {
+    pub fn italic(self, is_italic: impl IntoSignal<bool> + 'static) -> Self {
+        let is_italic = is_italic.into_signal();
         self.map_config(move |mut config| {
             config.content = config
                 .content
@@ -700,6 +714,7 @@ impl View for Text {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::font::FontDesign;
     use waterui_locale::{TranslationCatalog, locales};
 
     #[test]
@@ -810,8 +825,8 @@ mod tests {
     #[test]
     fn preset_after_bold_keeps_bold() {
         let env = type_scale_env();
-        let font = first_resolved_font(&Text::verbatim("x").bold().body(), &env);
-        assert!(font.bold(), "text(..).bold().body() must stay bold");
+        let font = first_resolved_font(&Text::verbatim("x").bold(true).body(), &env);
+        assert!(font.bold(), "text(..).bold(true).body() must stay bold");
         assert!((font.size() - 16.0).abs() < f32::EPSILON);
     }
 
@@ -841,8 +856,8 @@ mod tests {
         let env = type_scale_env();
         let pairs = [
             (
-                Text::verbatim("x").bold().body(),
-                Text::verbatim("x").body().bold(),
+                Text::verbatim("x").bold(true).body(),
+                Text::verbatim("x").body().bold(true),
             ),
             (
                 Text::verbatim("x").weight(FontWeight::Light).title(),
@@ -890,7 +905,7 @@ mod tests {
     #[test]
     fn concatenation_keeps_each_operand_font() {
         let env = type_scale_env();
-        let text = (Text::verbatim("a").bold() + Text::verbatim("b").title()).caption();
+        let text = (Text::verbatim("a").bold(true) + Text::verbatim("b").title()).caption();
         let content = text.resolve(&env).content().snapshot();
         let fonts: alloc::vec::Vec<_> = content
             .chunks()
@@ -901,6 +916,67 @@ mod tests {
         assert!((fonts[0].size() - 12.0).abs() < f32::EPSILON);
         assert!(!fonts[1].bold());
         assert!((fonts[1].size() - 22.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn boolean_trait_modifiers_accept_literals_and_reactive_signals() {
+        let env = type_scale_env();
+        let bold = Binding::bool(false);
+        let monospaced = Binding::bool(false);
+        let italic = Binding::bool(false);
+        let underline = Binding::bool(false);
+        let strikethrough = Binding::bool(false);
+
+        let content = Text::verbatim("todo")
+            .bold(bold.clone())
+            .monospaced(monospaced.clone())
+            .italic(italic.clone())
+            .underline(underline.clone())
+            .strikethrough(strikethrough.clone())
+            .resolve(&env)
+            .content();
+
+        let style = content.snapshot().chunks()[0].1.clone();
+        let font = style.get_font().resolve(&env).snapshot();
+        assert!(!font.bold());
+        assert_eq!(font.design(), FontDesign::Default);
+        assert!(!style.get_italic());
+        assert!(!style.get_underline());
+        assert!(!style.get_strikethrough());
+
+        bold.set(true);
+        monospaced.set(true);
+        italic.set(true);
+        underline.set(true);
+        strikethrough.set(true);
+
+        let style = content.snapshot().chunks()[0].1.clone();
+        let font = style.get_font().resolve(&env).snapshot();
+        assert!(font.bold());
+        assert_eq!(font.design(), FontDesign::Monospaced);
+        assert!(style.get_italic());
+        assert!(style.get_underline());
+        assert!(style.get_strikethrough());
+
+        // Literals compile identically for all five modifiers.
+        let literal = Text::verbatim("done")
+            .bold(true)
+            .monospaced(true)
+            .italic(true)
+            .underline(true)
+            .strikethrough(true)
+            .resolve(&env)
+            .content()
+            .snapshot();
+        let style = &literal.chunks()[0].1;
+        assert!(style.get_font().resolve(&env).snapshot().bold());
+        assert_eq!(
+            style.get_font().resolve(&env).snapshot().design(),
+            FontDesign::Monospaced
+        );
+        assert!(style.get_italic());
+        assert!(style.get_underline());
+        assert!(style.get_strikethrough());
     }
 
     #[test]

@@ -35,7 +35,7 @@ use waterui_text::text;
 let greeting = text("Hello, World!");
 
 // Styled text with method chaining
-let title = text("Welcome").bold().title().foreground(Color::blue());
+let title = text("Welcome").bold(true).title().foreground(Color::blue());
 
 // Reactive text that updates automatically
 let count = binding(0);
@@ -80,7 +80,7 @@ text("Plain text")
 
 // Bold text with custom size
 text("Large Title")
-    .bold()
+    .bold(true)
     .size(32.0)
 
 // Custom font and color
@@ -146,7 +146,7 @@ use waterui::color::Color;
 // Build styled text from chunks
 let mut styled = StyledStr::empty();
 styled.push("Normal ", Style::default());
-styled.push("Bold ", Style::default().bold());
+styled.push("Bold ", Style::default().bold(true));
 styled.push("Red", Style::default().foreground(Color::red()));
 
 // Parse markdown
@@ -192,9 +192,11 @@ let highlighted = highlight_text(Language::Rust, &code, &mut highlighter);
 
 ### Text Methods
 
-- `.bold()` - Apply bold weight
+- `.bold(bool)` - Toggle the platform's bold face
+- `.monospaced(bool)` - Toggle the platform's fixed-pitch face
 - `.italic(bool)` - Toggle italic style
 - `.underline(bool)` - Toggle underline decoration
+- `.strikethrough(bool)` - Toggle strikethrough decoration
 - `.size(f64)` - Set font size in points
 - `.weight(FontWeight)` - Set font weight
 - `.font(Font)` - Set complete font configuration
@@ -207,7 +209,7 @@ let highlighted = highlight_text(Language::Rust, &code, &mut highlighter);
 - `StyledStr::plain(text)` - Create plain styled text
 - `StyledStr::from_markdown(md)` - Parse markdown into styled text
 - `.push(text, style)` - Add styled chunk
-- `.bold()`, `.italic(bool)`, `.underline(bool)` - Apply styling to all chunks
+- `.bold(bool)`, `.monospaced(bool)`, `.italic(bool)`, `.underline(bool)`, `.strikethrough(bool)` - Apply styling to all chunks
 - `.foreground(color)`, `.background_color(color)` - Color all chunks
 - `.to_plain()` - Extract plain text without styling
 

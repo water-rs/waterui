@@ -802,15 +802,16 @@ pub fn components_block_22() {
     let _ = { text("t").footnote() };
 
     let _ = { text("t").size(18.0) };
-    let _ = { text("t").bold() };
+    let _ = { text("t").bold(true) };
     let _ = { text("t").italic(true) };
     let _ = { text("t").font(font::Caption) };
     let _ = { text("t").foreground(color) };
 
     let color = Color::srgb_hex("#3B82F6");
     let _ = { text("t").weight(font::FontWeight::SemiBold) };
-    let _ = { text("t").monospaced() };
+    let _ = { text("t").monospaced(true) };
     let _ = { text("t").underline(true) };
+    let _ = { text("t").strikethrough(true) };
     let _ = { text("t").color(color) };
 
     // The other font slots named in the prose.
@@ -1497,7 +1498,7 @@ pub fn components_block_37(photo_url: waterui::Url) {
 pub fn components_avatar_prose() {
     use waterui::widget::Avatar;
 
-    let _ = Avatar::new("Katherine Johnson", || text("KJ").bold());
+    let _ = Avatar::new("Katherine Johnson", || text("KJ").bold(true));
 
     // Prose (not counted): `.dynamic_range(ColorSpace::Hdr)`.
     use waterui::metadata::secure::ColorSpace;

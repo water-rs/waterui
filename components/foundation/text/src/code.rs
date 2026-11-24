@@ -391,12 +391,12 @@ fn default_rendering(env: &Environment, config: CodeConfig) -> impl View {
         (
             hstack((
                 text(lang_name)
-                    .bold()
+                    .bold(true)
                     .color(Color::new(MutedForegroundColor)),
                 spacer(),
                 copy_button(content_for_copy, on_copied),
             )),
-            text(highlighted).font(Font::from(Body).size(14.0).monospaced()),
+            text(highlighted).font(Font::from(Body).size(14.0).monospaced(true)),
         ),
     );
     background(

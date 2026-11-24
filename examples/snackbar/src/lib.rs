@@ -16,7 +16,7 @@ type IconSnackbarManager = SnackbarManager<mdi::Svg>;
 pub fn demo() -> impl View {
     scroll(
         vstack((
-            text("Snackbar Demo").title().bold(),
+            text("Snackbar Demo").title().bold(true),
             spacer(),
             button("Simple Snackbar").action(|m: IconSnackbarManager| {
                 m.show(Snackbar::new("Hello from Snackbar!"));

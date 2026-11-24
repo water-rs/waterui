@@ -3270,7 +3270,7 @@ mod material_vibrancy {
         let (env, theme) = window_environment(mtm());
         refresh_theme(&theme, cocoa_ui::ColorScheme::Light);
         let content = vstack((
-            text("Now Playing").bold(),
+            text("Now Playing").bold(true),
             text("muted").muted(),
             text("explicit").foreground(Color::srgb(200, 30, 30)),
         ))
