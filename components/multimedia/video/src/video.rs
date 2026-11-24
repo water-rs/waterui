@@ -30,7 +30,7 @@ use waterui_core::{
 };
 
 use crate::{
-    session::{PlaybackSession, PlayerController, Playlist},
+    session::{PlaybackSession, PlayerController, Playlist, RepeatMode},
     source::{MediaItem, OfflineDrmKeySet},
 };
 
@@ -1637,8 +1637,6 @@ pub struct VideoConfig<H = Option<VideoEventHandler>> {
     pub content_mode: ContentMode,
     /// Projection used to present decoded frames.
     pub projection: VideoProjection,
-    /// Whether the video should loop when it ends.
-    pub loops: bool,
 }
 
 impl<H> fmt::Debug for VideoConfig<H> {
@@ -1646,7 +1644,6 @@ impl<H> fmt::Debug for VideoConfig<H> {
         f.debug_struct("VideoConfig")
             .field("content_mode", &self.content_mode)
             .field("projection", &self.projection)
-            .field("loops", &self.loops)
             .field("playback_policy", &self.playback.playback_policy)
             .finish_non_exhaustive()
     }
@@ -1663,13 +1660,11 @@ impl<H> VideoConfig<H> {
             playback,
             content_mode,
             projection,
-            loops,
         } = self;
         VideoConfig {
             playback: playback.map_event_handler(map),
             content_mode,
             projection,
-            loops,
         }
     }
 }
@@ -1725,7 +1720,6 @@ impl Video {
             playback: PlaybackConfiguration::from_session(session, None),
             content_mode: ContentMode::default(),
             projection: VideoProjection::default(),
-            loops: true,
         })
     }
 
@@ -1740,13 +1734,6 @@ impl Video {
     #[must_use]
     pub fn projection(mut self, projection: VideoProjection) -> Self {
         self.0.projection = projection;
-        self
-    }
-
-    /// Sets whether the video should loop when it ends.
-    #[must_use]
-    pub const fn loops(mut self, loops: bool) -> Self {
-        self.0.loops = loops;
         self
     }
 
@@ -1783,10 +1770,12 @@ impl Video {
     }
 }
 
-/// Creates an autoplaying raw video session for one media item.
+/// Creates an autoplaying, looping raw video session for one media item.
 #[must_use]
 pub fn video(item: impl Into<MediaItem>) -> Video {
-    Video::new(PlaybackSession::new(Playlist::single(item)).autoplay())
+    let session = PlaybackSession::new(Playlist::single(item)).autoplay();
+    session.controller().set_repeat(RepeatMode::One);
+    Video::new(session)
 }
 
 // =============================================================================
@@ -2211,5 +2200,28 @@ mod tests {
         viewport.pan_by(f32::NAN, 1.0);
         assert!(viewport.yaw_degrees().abs() < f32::EPSILON);
         assert!(viewport.pitch_degrees().abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn video_new_honors_playlist_repeat_mode_off() {
+        let session = PlaybackSession::new(Playlist::new(
+            "https://example.com/intro.mp4",
+            [MediaItem::from("https://example.com/chapter1.mp4")],
+        ));
+        let controller = session.controller();
+        controller.set_repeat(RepeatMode::Off);
+        let config = Video::new(session).config();
+
+        assert_eq!(config.playback.repeat.snapshot(), RepeatMode::Off);
+        assert_eq!(controller.repeat_mode().snapshot(), RepeatMode::Off);
+        assert!(config.playback.has_next.snapshot());
+    }
+
+    #[test]
+    fn single_item_video_helper_loops_via_repeat_mode_one() {
+        let config = video("https://example.com/ambient.mp4").config();
+
+        assert_eq!(config.playback.repeat.snapshot(), RepeatMode::One);
+        assert!(config.playback.desired_playing.snapshot());
     }
 }

@@ -234,7 +234,7 @@ fn live_photo_video(
 ) -> Video {
     let session = PlaybackSession::new(Playlist::single(source.video)).autoplay();
     session.controller().muted().set(true);
-    let mut video = Video::new(session).loops(false);
+    let mut video = Video::new(session);
     if let Some(mode) = content_mode {
         let video_mode = match mode {
             ContentMode::Fit => VideoContentMode::Fit,
