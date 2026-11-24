@@ -14,7 +14,33 @@
 //! producer to its new layer. Transient (capture) windows never install it at
 //! all: a capture cannot consume the one install the producer gets.
 
+use std::rc::{Rc, Weak};
+
+use nami::watcher::BoxWatcherGuard;
+use nami::{Computed, Signal};
+use waterui_core::Str;
 use waterui_graphics::gpu::{ExternalFrameView, FrameReceiver, GpuContent, GpuView};
+
+use crate::renderer::mount::{Dirty, NodeCell};
+use crate::text::TextEngine;
+
+/// Watches an accessibility label/value signal pair and marks `cell` dirty on
+/// change so the next semantic flush re-emits the leaf's updated attributes.
+fn watch_a11y<E: TextEngine>(
+    label: &Computed<Option<Str>>,
+    value: &Computed<Option<Str>>,
+    cell: &Rc<NodeCell<E>>,
+) -> [BoxWatcherGuard; 2] {
+    let watch = |signal: &Computed<Option<Str>>| {
+        let cell: Weak<NodeCell<E>> = Rc::downgrade(cell);
+        signal.watch(move |_| {
+            if let Some(cell) = cell.upgrade() {
+                cell.mark(Dirty::PAINT);
+            }
+        })
+    };
+    [watch(label), watch(value)]
+}
 
 /// The `GpuView` a [`crate::renderer::tree::GpuContentNode`] owns, and
 /// its engine producer once installed.
@@ -32,6 +58,8 @@ pub struct GpuContentRuntime {
     pub(crate) producer: Option<cherenkov::GpuProducer<cherenkov_gpu::Gpu>>,
     /// The engine layer and pixel size the producer is currently bound at.
     pub(crate) binding: Option<(cherenkov::LayerId, (u32, u32))>,
+    /// Keep accessibility signal watchers alive with the runtime.
+    _a11y_watchers: [BoxWatcherGuard; 2],
     /// The HWUI painter's realization: the view's own platform surface and
     /// the pump that renders into it.
     #[cfg(hydrolysis_hwui_gpu)]
@@ -68,8 +96,8 @@ pub trait HostedGpuView {
 impl HostedGpuView for GpuContentRuntime {
     fn semantics(&self) -> (Option<String>, Option<String>, bool) {
         (
-            self.view.accessibility_label().map(str::to_owned),
-            self.view.accessibility_value().map(str::to_owned),
+            self.view.accessibility_label(),
+            self.view.accessibility_value(),
             self.view.wants_input_events(),
         )
     }
@@ -91,8 +119,8 @@ impl HostedGpuView for GpuContentRuntime {
 impl HostedGpuView for ExternalFrameRuntime {
     fn semantics(&self) -> (Option<String>, Option<String>, bool) {
         (
-            self.view.accessibility_label().map(str::to_owned),
-            self.view.accessibility_value().map(str::to_owned),
+            self.view.accessibility_label(),
+            self.view.accessibility_value(),
             self.view.wants_input_events(),
         )
     }
@@ -112,15 +140,19 @@ impl HostedGpuView for ExternalFrameRuntime {
 }
 
 impl GpuContentRuntime {
-    pub(crate) fn new<T: GpuContent>(
+    pub(crate) fn new<T: GpuContent, E: TextEngine>(
         view: GpuView<T>,
+        cell: &Rc<NodeCell<E>>,
         #[cfg(hydrolysis_hwui_gpu)] hosted: crate::runner::android::hosted_gpu::HostedLayer,
     ) -> Self {
+        let view = view.into_boxed();
+        let a11y_watchers = watch_a11y(view.label(), view.value(), cell);
         Self {
-            view: view.into_boxed(),
+            view,
             resize: crate::renderer::ResizeTracker::new(),
             producer: None,
             binding: None,
+            _a11y_watchers: a11y_watchers,
             #[cfg(hydrolysis_hwui_gpu)]
             hosted,
         }
@@ -154,6 +186,8 @@ pub struct ExternalFrameRuntime {
     pub(crate) frame_pixels: Option<(u32, u32)>,
     /// The engine layer and plane size the producer is currently bound at.
     pub(crate) binding: Option<(cherenkov::LayerId, (u32, u32))>,
+    /// Keep accessibility signal watchers alive with the runtime.
+    _a11y_watchers: [BoxWatcherGuard; 2],
     /// The HWUI painter's realization: the view's own platform surface and
     /// the pump that renders into it.
     #[cfg(hydrolysis_hwui_gpu)]
@@ -168,10 +202,12 @@ impl std::fmt::Debug for ExternalFrameRuntime {
 }
 
 impl ExternalFrameRuntime {
-    pub(crate) const fn new(
+    pub(crate) fn new<E: TextEngine>(
         view: ExternalFrameView,
+        cell: &Rc<NodeCell<E>>,
         #[cfg(hydrolysis_hwui_gpu)] hosted: crate::runner::android::hosted_gpu::HostedLayer,
     ) -> Self {
+        let a11y_watchers = watch_a11y(view.label(), view.value(), cell);
         Self {
             view,
             resize: crate::renderer::ResizeTracker::new(),
@@ -180,6 +216,7 @@ impl ExternalFrameRuntime {
             sink: None,
             frame_pixels: None,
             binding: None,
+            _a11y_watchers: a11y_watchers,
             #[cfg(hydrolysis_hwui_gpu)]
             hosted,
         }
