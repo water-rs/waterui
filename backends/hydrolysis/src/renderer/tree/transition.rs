@@ -35,6 +35,7 @@ use waterui_structural_transition::{
 };
 
 use crate::renderer::effects::FilteredRuntime;
+use crate::text::TextEngine;
 
 /// A `.transition(...)` declaration as the retained tree carries it: the
 /// declared spec, whether a structural site took ownership of it, and whether
@@ -217,9 +218,10 @@ impl TransitionClock {
     }
 }
 
-/// The blur realization of one transition instance: a filter layer host
-/// wrapping the instance's node, whose engine `Blur` reads `radius` live.
-struct TransitionBlur<E: crate::text::TextEngine> {
+/// The blur realization of one transition or menu-presentation instance: a
+/// filter layer host wrapping the content node, whose engine `Blur` reads
+/// `radius` live.
+pub struct TransitionBlur<E: TextEngine> {
     core: NodeCore<E>,
     radius: nami::Binding<f32>,
     runtime: Rc<RefCell<FilteredRuntime>>,
@@ -448,36 +450,25 @@ pub fn transition_transform(
         * kurbo::Affine::translate((-centre.0, -centre.1))
 }
 
-/// Records one instance at `ctx` — through a Gaussian blur filter layer
-/// while the sampled radius is nonzero, directly otherwise. The caller has
-/// already opened the scope carrying the instance's other properties.
-pub fn record_blurred<E: crate::text::TextEngine>(
+/// Records `flush` at `ctx`, wrapping it in a lazily allocated Gaussian blur
+/// filter layer while `radius_sample > 0.0` and recording directly otherwise.
+pub fn record_with_blur_radius<E: TextEngine>(
     renderer: &mut HydrolysisRenderer<E>,
     ctx: RenderContext,
-    paint: &TransitionPaint<'_, E>,
+    radius_sample: f32,
+    blur_slot: &RefCell<Option<TransitionBlur<E>>>,
+    owner: &Rc<NodeCell<E>>,
     flush: impl FnOnce(&mut HydrolysisRenderer<E>, RenderContext),
 ) {
-    let properties = paint.properties;
-    let bounds = ctx.bounds();
-    let radius_sample = properties.blur();
-    let radius_sample = if radius_sample.is_finite() && radius_sample >= 0.0 {
-        radius_sample
-    } else {
-        contract_violation!(
-            "Hydrolysis: a transition sampled the blur radius {radius_sample}, which is not a \
-             finite non-negative logical-pixel radius; the instance is drawn without blur"
-        );
-        0.0
-    };
     if radius_sample > 0.0 {
-        let mut slot = paint.runtime.blur.borrow_mut();
+        let mut slot = blur_slot.borrow_mut();
         let blur = slot.get_or_insert_with(|| {
             let radius = nami::Binding::container(radius_sample);
             let mut guards = ParamGuards::default();
             let filter =
                 waterui_graphics::backend::filtrate::filters::Blur(guards.bind(radius.clone()));
             let core = renderer.new_core();
-            core.cell.set_parent(paint.owner);
+            core.cell.set_parent(owner);
             TransitionBlur {
                 core,
                 radius,
@@ -499,13 +490,43 @@ pub fn record_blurred<E: crate::text::TextEngine>(
         // the host's whole program.
         renderer.link_placement(&blur.core, kurbo::Affine::IDENTITY);
         let runtime = Rc::clone(&blur.runtime);
-        renderer.record_layer_node(&blur.core, bounds, |renderer, local| {
+        renderer.record_layer_node(&blur.core, ctx.bounds(), |renderer, local| {
             renderer.program().program_mut().filter = Some(runtime);
             flush(renderer, local);
         });
     } else {
         flush(renderer, ctx);
     }
+}
+
+/// Records one instance at `ctx` — through a Gaussian blur filter layer
+/// while the sampled radius is nonzero, directly otherwise. The caller has
+/// already opened the scope carrying the instance's other properties.
+pub fn record_blurred<E: TextEngine>(
+    renderer: &mut HydrolysisRenderer<E>,
+    ctx: RenderContext,
+    paint: &TransitionPaint<'_, E>,
+    flush: impl FnOnce(&mut HydrolysisRenderer<E>, RenderContext),
+) {
+    let properties = paint.properties;
+    let radius_sample = properties.blur();
+    let radius_sample = if radius_sample.is_finite() && radius_sample >= 0.0 {
+        radius_sample
+    } else {
+        contract_violation!(
+            "Hydrolysis: a transition sampled the blur radius {radius_sample}, which is not a \
+             finite non-negative logical-pixel radius; the instance is drawn without blur"
+        );
+        0.0
+    };
+    record_with_blur_radius(
+        renderer,
+        ctx,
+        radius_sample,
+        &paint.runtime.blur,
+        paint.owner,
+        flush,
+    );
 }
 
 #[cfg(test)]

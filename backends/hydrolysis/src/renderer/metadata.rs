@@ -14,11 +14,28 @@ use crate::renderer::input::{anchored_overlay_scope, menu_look, presentation_con
 #[cfg(feature = "menu")]
 use crate::renderer::mount::ScopeKey;
 #[cfg(feature = "menu")]
-use crate::theme::MenuPresentationSample;
+use crate::renderer::tree::transition::record_with_blur_radius;
 #[cfg(feature = "menu")]
-use kurbo::{Affine, Rect, Vec2};
+use crate::theme::{MenuLook, MenuPresentationSample};
+#[cfg(feature = "menu")]
+use cherenkov_record::PATH_TOLERANCE;
+#[cfg(feature = "menu")]
+use kurbo::{Affine, Rect, RoundedRect, Shape as _, Vec2};
 use waterui_core::contract_violation;
 use waterui_core::handler::ReportExtraction as _;
+
+#[cfg(feature = "menu")]
+fn presentation_surface_clip(sample: &MenuPresentationSample) -> ScopeClip {
+    if sample.surface_corner_radius > 0.0 {
+        ScopeClip::RoundedRect {
+            path: RoundedRect::from_rect(sample.surface, sample.surface_corner_radius)
+                .to_path(PATH_TOLERANCE),
+            rect: sample.surface,
+        }
+    } else {
+        ScopeClip::Rect(sample.surface)
+    }
+}
 
 /// The claim a tap gesture registered for the wrapped view: the node it
 /// stands for, the environment it was registered under — carrying the naming
@@ -271,7 +288,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         ctx: RenderContext,
         env: &Environment,
         selected_row: Option<Rect>,
-        render_content: impl FnOnce(&mut Self),
+        render_content: impl FnOnce(&mut Self, RenderContext),
     ) {
         let look = menu_look(&renderer.theme(), env);
         let active = renderer.popup_menu.active_menu_presentation.take();
@@ -289,7 +306,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                     );
                 }
             });
-            render_content(renderer);
+            render_content(renderer, ctx);
             return;
         };
 
@@ -306,8 +323,10 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         });
 
         let at_rest = (local_sample.progress - 1.0).abs() <= 1e-4
+            && (local_sample.vertical_progress - 1.0).abs() <= 1e-4
             && (local_sample.content_opacity - 1.0).abs() <= 1e-4
-            && (local_sample.content_scale - 1.0).abs() <= 1e-4;
+            && (local_sample.content_scale - 1.0).abs() <= 1e-4
+            && local_sample.content_blur <= 0.01;
         if at_rest {
             if let Some(row) = selected_row {
                 let bounds = ctx.bounds();
@@ -318,19 +337,41 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                     );
                 });
             }
-            render_content(renderer);
+            render_content(renderer, ctx);
             return;
         }
 
+        Self::record_morphed_popup_menu_content(
+            renderer,
+            ctx,
+            &look,
+            &local_sample,
+            &active,
+            selected_row,
+            render_content,
+        );
+    }
+
+    #[cfg(feature = "menu")]
+    fn record_morphed_popup_menu_content(
+        renderer: &mut Self,
+        ctx: RenderContext,
+        look: &MenuLook,
+        local_sample: &MenuPresentationSample,
+        active: &ActiveMenuPresentation<E>,
+        selected_row: Option<Rect>,
+        render_content: impl FnOnce(&mut Self, RenderContext),
+    ) {
         let content_transform = presentation_content_transform(
             local_sample.panel,
             local_sample.surface,
             local_sample.content_scale,
         );
-        let paint_space = ctx.local() * content_transform;
+        let content_ctx = ctx.child(content_transform, ctx.bounds());
+        let paint_space = content_ctx.local();
         let layer = renderer.program().origin().inverse() * paint_space;
         let opacity = f64_as_f32(local_sample.content_opacity);
-        let clip = ScopeClip::Rect(local_sample.surface);
+        let clip = presentation_surface_clip(local_sample);
         let key = ScopeKey {
             role: "menu_presentation_content",
             item: active.scope,
@@ -347,16 +388,30 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             },
             true,
         );
-        if let Some(row) = selected_row {
-            let bounds = ctx.bounds();
-            renderer.draw_context(ctx.child(content_transform, bounds), |draw| {
-                look.record_selected_row(
-                    draw,
-                    row.with_origin((bounds.x0 + row.x0, bounds.y0 + row.y0)),
-                );
-            });
-        }
-        render_content(renderer);
+        let blur_radius = if local_sample.content_blur > 0.01 {
+            f64_as_f32(local_sample.content_blur)
+        } else {
+            0.0
+        };
+        record_with_blur_radius(
+            renderer,
+            content_ctx,
+            blur_radius,
+            &active.blur,
+            &active.owner,
+            |renderer, inner_ctx| {
+                if let Some(row) = selected_row {
+                    let bounds = inner_ctx.bounds();
+                    renderer.draw_context(inner_ctx, |draw| {
+                        look.record_selected_row(
+                            draw,
+                            row.with_origin((bounds.x0 + row.x0, bounds.y0 + row.y0)),
+                        );
+                    });
+                }
+                render_content(renderer, inner_ctx);
+            },
+        );
         renderer.close_scope();
     }
 
@@ -1029,6 +1084,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 builder: Rc::clone(&value.builder),
                 presentations: Rc::clone(&value.presentations),
                 marker: Rc::clone(&value.marker),
+                cover_trigger: false,
             });
         #[cfg(feature = "menu")]
         if trigger_opacity < 1.0 - 1e-4 {

@@ -901,7 +901,7 @@ fn placed_edge_reports_the_logical_edge_after_a_flip() {
 
 #[cfg(feature = "menu")]
 mod menu_presentation_motion_tests {
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
     use std::rc::Rc;
     use std::time::{Duration, Instant};
 
@@ -916,10 +916,12 @@ mod menu_presentation_motion_tests {
     use waterui::animation::Animation;
     use waterui::metadata::anchored_overlay::{AnchorEdge, AnchoredOverlay};
     use waterui_controls::button::button;
+    use waterui_controls::menu::{Command, Menu, MenuItem};
     use waterui_core::AnyView;
     use waterui_core::handler::AnyViewBuilder;
     use waterui_core::metadata::Metadata;
     use waterui_layout::frame::Frame;
+    use waterui_layout::spacer::spacer;
     use waterui_layout::stack::vstack;
     use waterui_structural_transition::ReduceMotion;
 
@@ -1305,6 +1307,142 @@ mod menu_presentation_motion_tests {
         assert_eq!(
             presented_frame(&runtime).size(),
             Rect::new(0.0, 0.0, 120.0, 48.0).size()
+        );
+    }
+
+    fn anisotropic_menu_motion() -> MenuPresentationMotion {
+        MenuPresentationMotion::new(
+            Animation::spring(484.0, 33.44),
+            Animation::spring(101.4, 12.46),
+        )
+        .present_vertical(Animation::spring(408.0, 13.45))
+        .dismiss_vertical(Animation::spring(60.7, 11.77))
+        .content_opacity_window(0.25, 0.80)
+        .dismiss_content_opacity_window(0.50, 0.95)
+        .content_scale_from(0.92)
+        .content_scale_window(0.15, 0.85)
+        .content_blur_from(8.0)
+        .content_blur_window(0.20, 0.80)
+        .dismiss_content_blur_window(0.55, 0.95)
+        .trigger_opacity_window(0.45, 0.90)
+        .trigger_chrome_opacity_window(0.0, 0.0)
+        .surface_corner_radius(26.0)
+        .cover_trigger(true)
+    }
+
+    /// A `Menu` trigger under a theme with `MenuPresentationMotion` presents
+    /// in-window over the trigger (`cover_trigger`), drives anisotropic X/Y
+    /// springs, interpolates `surface_corner_radius` and `content_blur`, hides
+    /// trigger chrome immediately, and contracts back on command activation.
+    #[test]
+    fn menu_trigger_morphs_in_window_with_anisotropic_springs_blur_and_command_dismiss() {
+        let samples = Rc::new(RefCell::new(Vec::new()));
+        let fired = Rc::new(Cell::new(false));
+        let motion = anisotropic_menu_motion();
+
+        let fired_for_cmd = Rc::clone(&fired);
+        let view = AnyViewBuilder::new(move || {
+            let fired_inner = Rc::clone(&fired_for_cmd);
+            AnyView::new(vstack((
+                ().size(0.0, 12.0),
+                Menu::new(
+                    "Actions",
+                    (
+                        Command::builder("Rename").action(|| {}),
+                        MenuItem::Divider,
+                        Command::builder("Duplicate").action(move || {
+                            fired_inner.set(true);
+                        }),
+                    ),
+                ),
+                spacer(),
+            )))
+        });
+
+        let mut runtime = HeadlessRuntime::new_for_tests(
+            test_environment(),
+            view,
+            WINDOW.0,
+            WINDOW.1,
+            recording_theme(motion, &samples),
+        );
+        let start = Instant::now();
+        let _ = runtime.pump_at(false, start);
+        let trigger = bounds_of(&mut runtime, "Actions");
+
+        // Tap the trigger button to open the menu in-window.
+        let click_x = f64_as_f32(f64::midpoint(trigger.x0, trigger.x1));
+        let click_y = f64_as_f32(f64::midpoint(trigger.y0, trigger.y1));
+        for event in primary_click(click_x, click_y) {
+            runtime.push_input_event(event);
+        }
+        let _ = runtime.pump_at(false, start + Duration::from_millis(16));
+        let panel_frame = presented_frame(&runtime);
+        assert!(
+            near(panel_frame.y0, trigger.y0),
+            "cover_trigger must align panel top to trigger top: panel={panel_frame:?}, trigger={trigger:?}"
+        );
+        let first = *samples.borrow().last().expect("open sample");
+        assert!(
+            near(first.trigger_chrome_opacity, 0.0),
+            "trigger_chrome_opacity_window(0, 0) must hide trigger chrome immediately, got {}",
+            first.trigger_chrome_opacity
+        );
+        assert!(
+            first.content_blur > 7.5,
+            "initial content_blur must start near 8.0, got {}",
+            first.content_blur
+        );
+
+        // Mid-open: anisotropic vertical spring overshoots ahead of horizontal.
+        let _ = runtime.pump_at(true, start + Duration::from_millis(116));
+        let mid = *samples.borrow().last().expect("mid-open sample");
+        assert!(
+            (mid.vertical_progress - mid.progress).abs() > 0.01,
+            "anisotropic open springs must diverge between x ({}) and y ({})",
+            mid.progress,
+            mid.vertical_progress
+        );
+        assert!(
+            mid.surface_corner_radius > 0.0 && mid.surface_corner_radius <= 26.0,
+            "interpolated surface_corner_radius must be in (0, 26], got {}",
+            mid.surface_corner_radius
+        );
+
+        // Settled open: Duplicate item is in the accessibility tree and clickable.
+        let _ = runtime.pump_at(true, start + Duration::from_millis(1_600));
+        assert!(runtime.is_settled());
+        let settled = *samples.borrow().last().expect("settled sample");
+        assert!(near(settled.progress, 1.0) && near(settled.vertical_progress, 1.0));
+        assert!(near(settled.content_blur, 0.0));
+        assert!(near(settled.surface_corner_radius, 26.0));
+        let dup_bounds = bounds_of(&mut runtime, "Duplicate");
+        let dup_x = f64_as_f32(f64::midpoint(dup_bounds.x0, dup_bounds.x1));
+        let dup_y = f64_as_f32(f64::midpoint(dup_bounds.y0, dup_bounds.y1));
+        for event in primary_click(dup_x, dup_y) {
+            runtime.push_input_event(event);
+        }
+        let _ = runtime.pump_at(false, start + Duration::from_millis(1_616));
+        assert!(
+            fired.get(),
+            "clicking Duplicate must fire its command action"
+        );
+
+        // Dismiss ghost stays active and contracts with anisotropic springs.
+        let _ = runtime.pump_at(true, start + Duration::from_millis(1_766));
+        let dismissing = *samples.borrow().last().expect("dismissing sample");
+        assert!(dismissing.dismissing);
+        assert!(
+            dismissing.progress < 0.95 && dismissing.progress > 0.0,
+            "dismiss ghost must be contracting, got {}",
+            dismissing.progress
+        );
+
+        // Once dismiss spring settles, overlay is removed completely.
+        let _ = runtime.pump_at(false, start + Duration::from_millis(3_500));
+        assert!(
+            runtime.anchored_overlay_frames().is_empty(),
+            "dismissed menu ghost must clear after settling"
         );
     }
 }

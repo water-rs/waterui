@@ -3,8 +3,12 @@
 use super::*;
 #[cfg(feature = "menu")]
 use crate::num_cast::f64_as_f32;
+use crate::renderer::WindowId;
 #[cfg(feature = "menu")]
-use crate::theme::{MenuLayout, MenuLook, MenuPresentationMotion, MenuSpec};
+use crate::text::TextEngine;
+#[cfg(feature = "menu")]
+use crate::theme::{MenuLayout, MenuLook, MenuPresentationMotion, MenuSpec, WidgetTheme};
+use crate::time::Instant;
 #[cfg(feature = "menu")]
 use crate::widgets::controls::button::{ListRowChrome, MenuRowChrome, menu_row_font};
 #[cfg(feature = "date-picker")]
@@ -181,9 +185,16 @@ pub enum PopupMenuNode {
     },
 }
 
+#[cfg(any(feature = "menu", feature = "color-picker"))]
+#[derive(Default)]
+struct PopupMenuStateGroupInner {
+    windows: Vec<Binding<WindowState>>,
+    anchored: Vec<Binding<bool>>,
+}
+
 #[derive(Clone)]
 #[cfg(any(feature = "menu", feature = "color-picker"))]
-pub struct PopupMenuStateGroup(pub Rc<RefCell<Vec<Binding<WindowState>>>>);
+pub struct PopupMenuStateGroup(Rc<RefCell<PopupMenuStateGroupInner>>);
 
 pub struct PopupMenuState<E: crate::text::TextEngine> {
     #[cfg(any(feature = "menu", feature = "color-picker"))]
@@ -212,7 +223,7 @@ pub struct PopupMenuState<E: crate::text::TextEngine> {
     /// Live presentation sample for an anchored menu currently recording its
     /// [`PopupMenuSurface`]; `None` outside an animated anchored presentation.
     #[cfg(feature = "menu")]
-    pub(crate) active_menu_presentation: Option<ActiveMenuPresentation>,
+    pub(crate) active_menu_presentation: Option<ActiveMenuPresentation<E>>,
     /// The window's open `.dialog` presentations in presentation order —
     /// which one is on screen, which wait, and which closed with their node.
     #[cfg(waterui_feature = "dialog")]
@@ -274,22 +285,49 @@ impl<E: crate::text::TextEngine> PopupMenuState<E> {
 #[cfg(any(feature = "menu", feature = "color-picker"))]
 impl PopupMenuStateGroup {
     pub(crate) fn new() -> Self {
-        Self(Rc::new(RefCell::new(Vec::new())))
+        Self(Rc::new(RefCell::new(PopupMenuStateGroupInner::default())))
+    }
+
+    #[cfg(feature = "menu")]
+    pub(crate) fn for_anchored(open: Binding<bool>) -> Self {
+        Self(Rc::new(RefCell::new(PopupMenuStateGroupInner {
+            windows: Vec::new(),
+            anchored: vec![open],
+        })))
     }
 
     pub(crate) fn push(&self, state: Binding<WindowState>) {
-        self.0.borrow_mut().push(state);
+        self.0.borrow_mut().windows.push(state);
     }
 
     pub(crate) fn truncate(&self, len: usize) {
-        let mut states = self.0.borrow_mut();
-        for state in states.drain(len..) {
+        let mut inner = self.0.borrow_mut();
+        for state in inner.windows.drain(len..) {
             state.set(WindowState::Closed);
         }
     }
 
     pub(crate) fn close_all(&self) {
         self.truncate(0);
+        let anchored = core::mem::take(&mut self.0.borrow_mut().anchored);
+        for open in anchored {
+            open.set(false);
+        }
+    }
+
+    #[cfg(feature = "menu")]
+    pub(crate) fn is_live(&self) -> bool {
+        let inner = self.0.borrow();
+        inner
+            .windows
+            .iter()
+            .any(|state| state.snapshot() != WindowState::Closed)
+            || inner.anchored.iter().any(Signal::snapshot)
+    }
+
+    #[cfg(feature = "menu")]
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
     }
 }
 
@@ -789,6 +827,41 @@ impl<E: crate::text::TextEngine> View for PopupMenuContent<E> {
             // square, containerless surface.
             .with(MenuRowChrome)
     }
+}
+
+/// Builds the in-window menu view for an anchored `Menu` presentation: the
+/// shared [`popup_menu_content`] wrapped in [`PopupMenuSurface`] and sized to
+/// its measured `(width, height)`, carrying `group` so command activation
+/// closes the anchored menu (triggering its dismiss morph).
+#[cfg(feature = "menu")]
+pub fn anchored_popup_menu_view<E: TextEngine>(
+    nodes: Vec<PopupMenuNode>,
+    origin: LayoutPoint,
+    group: PopupMenuStateGroup,
+    look: &MenuLook,
+    text: PopupMenuTextMetrics,
+    theme: &Rc<dyn WidgetTheme>,
+    popup_opener: Option<PopupWindowManager<E>>,
+) -> impl View + use<E> {
+    let (width, height) = popup_menu_size(&nodes, look.layout(), &text);
+    Metadata::new(
+        Frame::new(popup_menu_content::<E>(
+            nodes,
+            PopupMenuPlacement {
+                depth: 0,
+                metrics: look.layout(),
+                text,
+                popup_origin: origin,
+                width,
+            },
+            theme,
+            popup_opener,
+        ))
+        .width(f64_as_f32(width))
+        .height(f64_as_f32(height)),
+        PopupMenuSurface { selected_row: None },
+    )
+    .with(group)
 }
 
 #[expect(
@@ -1723,6 +1796,31 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     #[cfg(any(feature = "menu", feature = "color-picker"))]
     pub(crate) fn set_popup_window_manager(&mut self, manager: PopupWindowManager<E>) {
         self.popup_menu.popup_opener = Some(manager);
+    }
+
+    #[cfg(feature = "menu")]
+    pub(crate) fn popup_opener_clone(&self) -> Option<PopupWindowManager<E>> {
+        self.popup_menu.popup_opener.clone()
+    }
+
+    #[cfg(feature = "menu")]
+    pub(crate) fn set_active_popup_menu_group(&mut self, group: PopupMenuStateGroup) {
+        self.popup_menu.active_popup_menu_group = Some(group);
+    }
+
+    #[cfg(feature = "menu")]
+    pub(crate) fn register_anchored_overlay(&mut self, entry: RegisteredAnchoredOverlay<E>) {
+        self.popup_menu.anchored_overlays.push(entry);
+    }
+
+    #[cfg(feature = "menu")]
+    pub(crate) const fn current_frame_instant(&self) -> Instant {
+        self.frame_instant
+    }
+
+    #[cfg(feature = "menu")]
+    pub(crate) const fn owner_window_id(&self) -> WindowId {
+        self.window_id
     }
 
     #[cfg(any(feature = "menu", feature = "color-picker"))]

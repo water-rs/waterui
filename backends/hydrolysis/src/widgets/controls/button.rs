@@ -1,27 +1,41 @@
+use crate::num_cast::f64_as_f32;
 #[cfg(feature = "accessibility")]
 use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::chrome::{ChromeContent, LiveChromeParts};
+use crate::renderer::mount::ScopeKey;
 #[cfg(feature = "menu")]
-use crate::renderer::popup_menu_nodes;
+use crate::renderer::{
+    AnchoredPresentations, PopupMenuStateGroup, RegisteredAnchoredOverlay,
+    anchored_popup_menu_view, menu_look, popup_menu_nodes,
+};
 use crate::renderer::{
     GroupOpacity, HeldChild, HydroState, HydrolysisRenderer, RenderContext, RetainedSubview,
     WidgetRenderContext,
 };
+use crate::text::TextEngine;
 use crate::theme::{
     ButtonLook, ButtonSpec, Chrome, CornerShape, Corners, Inputs, Label as LookLabel, SpecTint,
     StateLayer, Surface, WidgetTheme,
 };
+#[cfg(feature = "menu")]
+use crate::theme::{MenuLook, MenuPresentationMotion};
+#[cfg(feature = "menu")]
+use crate::widgets::util::popup_anchor;
 #[cfg(feature = "accessibility")]
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
 };
 use kurbo::Rect;
 #[cfg(feature = "menu")]
-use nami::Computed;
+use nami::{Binding, Computed};
 use nami::{Signal, SignalExt};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use waterui::floating::FloatingScope;
+#[cfg(feature = "menu")]
+use waterui::metadata::anchored_overlay::{
+    AnchorEdge, AnchorPlacement, Clamp, Dismissal, EdgeAlignment,
+};
 use waterui::style::FloatingStyle;
 use waterui_controls::ControlSize;
 use waterui_controls::button::{ButtonConfig, ButtonStyle};
@@ -31,7 +45,11 @@ use waterui_controls::menu::ResolvedMenu;
 #[cfg(feature = "menu")]
 use waterui_controls::menu::ResolvedMenuItem;
 use waterui_core::Environment;
+#[cfg(feature = "menu")]
+use waterui_core::backend::ChildSlot as _;
 use waterui_core::handler::ReportExtraction as _;
+#[cfg(feature = "menu")]
+use waterui_core::layout::Point as LayoutPoint;
 use waterui_core::layout::Size as LayoutSize;
 use waterui_core::layout::{ProposalSize, ViewDimensions};
 use waterui_graphics::color::Color;
@@ -545,6 +563,30 @@ pub fn render_button_node<E: crate::text::TextEngine>(
     render_button_parts(ctx, state, env);
 }
 
+/// Per-trigger state for an in-window anchored menu presentation driven by
+/// [`MenuPresentationMotion`].
+#[cfg(feature = "menu")]
+struct MenuAnchoredState<E: TextEngine> {
+    is_presented: Binding<bool>,
+    placed_edge: Binding<AnchorEdge>,
+    presentations: Rc<RefCell<AnchoredPresentations<E>>>,
+    marker: Rc<()>,
+    open_env: Rc<RefCell<Option<Environment>>>,
+}
+
+#[cfg(feature = "menu")]
+impl<E: TextEngine> MenuAnchoredState<E> {
+    fn new() -> Self {
+        Self {
+            is_presented: Binding::container(false),
+            placed_edge: Binding::container(AnchorEdge::Bottom),
+            presentations: Rc::default(),
+            marker: Rc::new(()),
+            open_env: Rc::new(RefCell::new(None)),
+        }
+    }
+}
+
 /// The retained render state of a menu trigger. The persistent `Widget` node
 /// holds `ResolvedMenu::label` as a [`RetainedSubview`] built once and
 /// re-flushed each frame, unless the label is a plain `TitleOnly` title, which
@@ -565,6 +607,7 @@ pub struct MenuRenderState<E: crate::text::TextEngine> {
     #[cfg(feature = "accessibility")]
     accessibility_label: nami::Computed<StyledStr>,
     chrome: ButtonChromeState,
+    anchored: MenuAnchoredState<E>,
 }
 
 /// How a menu trigger renders its label, decided once at build time from the
@@ -632,6 +675,7 @@ impl<E: crate::text::TextEngine> MenuRenderState<E> {
             #[cfg(feature = "accessibility")]
             accessibility_label,
             chrome: ButtonChromeState::new(),
+            anchored: MenuAnchoredState::<E>::new(),
         }
     }
 
@@ -721,6 +765,8 @@ pub fn menu_accessibility<E: crate::text::TextEngine>(
             )
         });
         let items = state.borrow().items.clone();
+        let is_presented = state.borrow().anchored.is_presented.clone();
+        let open_env = Rc::clone(&state.borrow().anchored.open_env);
         // The popup opens in the trigger node's environment layered over the
         // dispatch's, so `.state(&value)` overlays reach the item actions
         // (water-rs/hydrolysis#140).
@@ -733,7 +779,16 @@ pub fn menu_accessibility<E: crate::text::TextEngine>(
                         popup_menu_nodes(&items.snapshot(), &env, renderer.window_closable());
                     match &request {
                         Some((anchor, theme)) => {
-                            renderer.show_popup_menu_nodes(nodes, *anchor, &env, theme);
+                            if menu_look(theme, &env).get_presentation_motion().is_some() {
+                                if nodes.is_empty() {
+                                    return false;
+                                }
+                                renderer.dismiss_active_popup_menu();
+                                *open_env.borrow_mut() = Some(env);
+                                is_presented.set(true);
+                            } else {
+                                renderer.show_popup_menu_nodes(nodes, *anchor, &env, theme);
+                            }
                         }
                         None => {
                             renderer.activate_popup_menu_nodes(nodes, &env);
@@ -902,23 +957,82 @@ fn record_button_chrome<E: crate::text::TextEngine>(
     rendered: &RenderedChrome,
     render_label: impl FnOnce(&mut WidgetRenderContext<'_, E>),
 ) {
+    record_button_chrome_with_opacities(ctx, rendered, 1.0, 1.0, render_label);
+}
+
+/// Lists a button-like control's chrome and label with independent opacity
+/// multipliers (`chrome_opacity` for the background/interaction layers and
+/// `label_opacity` for the label), skipping either layer when faded to zero.
+fn record_button_chrome_with_opacities<E: TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    rendered: &RenderedChrome,
+    chrome_opacity: f64,
+    label_opacity: f64,
+    render_label: impl FnOnce(&mut WidgetRenderContext<'_, E>),
+) {
+    let draw_chrome = chrome_opacity > 1e-4;
+    let draw_label = label_opacity > 1e-4;
+    if !draw_chrome && !draw_label {
+        return;
+    }
     let frame = rendered.parts.chrome().visual_bounds().union(ctx.bounds);
-    let key = crate::renderer::mount::ScopeKey {
+    let key = ScopeKey {
         role: "button-group",
         item: 0,
     };
     let body = |ctx: &mut WidgetRenderContext<'_, E>| {
-        let render_ctx = ctx.render_context();
-        rendered.parts.push_below(ctx.renderer_mut(), render_ctx);
-        let content_scoped = rendered
-            .parts
-            .open_content_effect(ctx.renderer_mut(), render_ctx);
-        render_label(ctx);
-        rendered
-            .parts
-            .close_content_effect(ctx.renderer_mut(), content_scoped);
-        let render_ctx = ctx.render_context();
-        rendered.parts.push_above(ctx.renderer_mut(), render_ctx);
+        if draw_chrome && draw_label && chrome_opacity >= 1.0 - 1e-4 && label_opacity >= 1.0 - 1e-4
+        {
+            let render_ctx = ctx.render_context();
+            rendered.parts.push_below(ctx.renderer_mut(), render_ctx);
+            let content_scoped = rendered
+                .parts
+                .open_content_effect(ctx.renderer_mut(), render_ctx);
+            render_label(ctx);
+            rendered
+                .parts
+                .close_content_effect(ctx.renderer_mut(), content_scoped);
+            let render_ctx = ctx.render_context();
+            rendered.parts.push_above(ctx.renderer_mut(), render_ctx);
+            return;
+        }
+        if draw_chrome {
+            let chrome_alpha = f64_as_f32(chrome_opacity.clamp(0.0, 1.0));
+            let chrome_key = ScopeKey {
+                role: "button-chrome-fade",
+                item: 0,
+            };
+            ctx.with_group_scope(
+                chrome_key,
+                GroupOpacity::Fixed(chrome_alpha),
+                rendered.look.get_group_blend_space(),
+                frame,
+                |ctx| {
+                    let render_ctx = ctx.render_context();
+                    rendered.parts.push_below(ctx.renderer_mut(), render_ctx);
+                    let render_ctx = ctx.render_context();
+                    rendered.parts.push_above(ctx.renderer_mut(), render_ctx);
+                },
+            );
+        }
+        if draw_label {
+            let label_alpha = f64_as_f32(label_opacity.clamp(0.0, 1.0));
+            if label_opacity >= 1.0 - 1e-4 {
+                render_label(ctx);
+            } else {
+                let label_key = ScopeKey {
+                    role: "button-label-fade",
+                    item: 0,
+                };
+                ctx.with_group_scope(
+                    label_key,
+                    GroupOpacity::Fixed(label_alpha),
+                    rendered.look.get_group_blend_space(),
+                    frame,
+                    render_label,
+                );
+            }
+        }
     };
     // An opacity that varies between renders draws the button as one
     // group following the chrome's operand; a fixed one groups it only
@@ -1094,12 +1208,125 @@ pub fn render_button_parts<E: crate::text::TextEngine>(
 }
 
 #[cfg(feature = "menu")]
+type AnchoredMenuClickHandle = (Binding<bool>, Rc<RefCell<Option<Environment>>>);
+
+#[cfg(feature = "menu")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "registers one menu trigger's anchored overlay from its live bounds, items, look, motion, and environment"
+)]
+fn register_anchored_menu_overlay<E: TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<MenuRenderState<E>>>,
+    items: &Computed<Vec<ResolvedMenuItem<HeldChild<E>>>>,
+    look: &MenuLook,
+    motion: &MenuPresentationMotion,
+    window_rect: Rect,
+    anchor: LayoutPoint,
+    menu_theme: &Rc<dyn WidgetTheme>,
+    menu_env: &Environment,
+) -> (f64, f64, AnchoredMenuClickHandle) {
+    let (is_presented, placed_edge, presentations, marker, open_env) = {
+        let state_ref = state.borrow();
+        (
+            state_ref.anchored.is_presented.clone(),
+            state_ref.anchored.placed_edge.clone(),
+            Rc::clone(&state_ref.anchored.presentations),
+            Rc::clone(&state_ref.anchored.marker),
+            Rc::clone(&state_ref.anchored.open_env),
+        )
+    };
+    let presented = ctx.renderer_mut().read_signal(&is_presented);
+    let now = ctx.renderer_mut().current_frame_instant();
+    let (has_current, has_any, opacities) = {
+        let guard = presentations.borrow();
+        (
+            guard.has_current(),
+            guard.has_presentations(),
+            guard.trigger_opacities_at(now),
+        )
+    };
+    let effective_env = open_env
+        .borrow()
+        .clone()
+        .unwrap_or_else(|| menu_env.clone())
+        .extending(ctx.renderer_mut().owner_window_id());
+    let mut presented_now = presented;
+    let builder: Rc<dyn Fn() -> HeldChild<E>> = if presented && !has_current {
+        let nodes = popup_menu_nodes(
+            &items.snapshot(),
+            &effective_env,
+            ctx.renderer_mut().window_closable(),
+        );
+        if nodes.is_empty() {
+            is_presented.set(false);
+            presented_now = false;
+            Rc::new(|| HeldChild::from_view(()))
+        } else {
+            let text = ctx.renderer_mut().popup_menu_text_metrics(
+                &nodes,
+                look.layout(),
+                &effective_env,
+                menu_theme,
+            );
+            let group = PopupMenuStateGroup::for_anchored(is_presented.clone());
+            ctx.renderer_mut()
+                .set_active_popup_menu_group(group.clone());
+            let popup_opener = ctx.renderer_mut().popup_opener_clone();
+            let look_for_builder = look.clone();
+            let theme_for_builder = menu_theme.clone();
+            Rc::new(move || {
+                HeldChild::from_view(anchored_popup_menu_view::<E>(
+                    nodes.clone(),
+                    anchor,
+                    group.clone(),
+                    &look_for_builder,
+                    text,
+                    &theme_for_builder,
+                    popup_opener.clone(),
+                ))
+            })
+        }
+    } else {
+        Rc::new(|| HeldChild::from_view(()))
+    };
+    let opacities = if presented_now && !has_any {
+        (
+            motion.trigger_opacity(0.0),
+            motion.trigger_chrome_opacity(0.0),
+        )
+    } else {
+        opacities
+    };
+    ctx.renderer_mut()
+        .register_anchored_overlay(RegisteredAnchoredOverlay {
+            anchor: window_rect,
+            placement: AnchorPlacement::default()
+                .edge(AnchorEdge::Bottom)
+                .alignment(EdgeAlignment::Center)
+                .gap(4.0)
+                .clamp(Clamp::Window { margin: 8.0 }),
+            dismissal: Dismissal::OutsideInteraction,
+            presented: presented_now,
+            is_presented: is_presented.clone(),
+            placed_edge,
+            env: effective_env,
+            builder,
+            presentations,
+            marker,
+            cover_trigger: motion.cover_trigger,
+        });
+    (opacities.0, opacities.1, (is_presented, open_env))
+}
+
+#[cfg(feature = "menu")]
 pub fn render_menu_parts<E: crate::text::TextEngine>(
     ctx: &mut WidgetRenderContext<'_, E>,
     state: &Rc<RefCell<MenuRenderState<E>>>,
     env: &Environment,
 ) {
     let theme = ctx.theme();
+    let look = menu_look(&theme, env);
     let key = crate::renderer::InteractionKey::for_rc(state, 0);
     let rendered = {
         let mut state_mut = state.borrow_mut();
@@ -1107,17 +1334,6 @@ pub fn render_menu_parts<E: crate::text::TextEngine>(
         let title = matches!(state_mut.label, MenuLabel::Title(_));
         bind_button_chrome(ctx, &mut state_mut.chrome, key, &spec, false, title, env)
     };
-    record_button_chrome(ctx, &rendered, |ctx| {
-        let mut state_mut = state.borrow_mut();
-        match &mut state_mut.label {
-            MenuLabel::Title(label) => {
-                render_title(ctx, &rendered, label, env);
-            }
-            MenuLabel::View { subview, .. } => {
-                place_label_view(ctx, &rendered, subview, env);
-            }
-        }
-    });
 
     let items = state.borrow().items.clone();
     // Watch the items so a change schedules a frame (the popup re-reads live items
@@ -1128,29 +1344,93 @@ pub fn render_menu_parts<E: crate::text::TextEngine>(
     // the registration with it.
     ctx.renderer_mut()
         .register_menu_shortcuts(Rc::downgrade(state), items.clone(), env.clone());
-    // The popup anchors in window space at the trigger's bottom edge.
+
     let bounds = ctx.bounds;
-    let anchor = crate::widgets::util::popup_anchor(ctx.renderer_mut().resolve_window_rect(bounds));
+    let window_rect = ctx.renderer_mut().resolve_window_rect(bounds);
+    let anchor = popup_anchor(window_rect);
     let menu_theme = theme.clone();
     // The popup opens in the trigger node's environment layered over the
     // dispatch's (water-rs/hydrolysis#140).
     let menu_env = env.clone();
     let keyboard_focusable = rendered.look.chrome().keyboard_focusable();
-    ctx.renderer_mut()
-        .register_interactive_pointer_target_with_keyboard(
-            rendered.target,
-            rendered.press_slot,
-            keyboard_focusable,
-            move |renderer, _point, env| {
-                let env = menu_env.layered_on(env);
-                renderer.show_popup_menu_nodes(
-                    popup_menu_nodes(&items.snapshot(), &env, renderer.window_closable()),
+
+    let (trigger_opacity, trigger_chrome_opacity, anchored_click) =
+        look.get_presentation_motion().map_or_else(
+            || (1.0, 1.0, None),
+            |motion| {
+                let (label_op, chrome_op, handle) = register_anchored_menu_overlay(
+                    ctx,
+                    state,
+                    &items,
+                    &look,
+                    motion,
+                    window_rect,
                     anchor,
-                    &env,
                     &menu_theme,
-                )
+                    &menu_env,
+                );
+                (label_op, chrome_op, Some(handle))
             },
         );
+
+    record_button_chrome_with_opacities(
+        ctx,
+        &rendered,
+        trigger_chrome_opacity,
+        trigger_opacity,
+        |ctx| {
+            let mut state_mut = state.borrow_mut();
+            match &mut state_mut.label {
+                MenuLabel::Title(label) => {
+                    render_title(ctx, &rendered, label, env);
+                }
+                MenuLabel::View { subview, .. } => {
+                    place_label_view(ctx, &rendered, subview, env);
+                }
+            }
+        },
+    );
+
+    if let Some((is_presented, open_env)) = anchored_click {
+        ctx.renderer_mut()
+            .register_interactive_pointer_target_with_keyboard(
+                rendered.target,
+                rendered.press_slot,
+                keyboard_focusable,
+                move |renderer, _point, env| {
+                    if is_presented.snapshot() {
+                        is_presented.set(false);
+                        return true;
+                    }
+                    let env = menu_env.layered_on(env);
+                    let nodes =
+                        popup_menu_nodes(&items.snapshot(), &env, renderer.window_closable());
+                    if nodes.is_empty() {
+                        return false;
+                    }
+                    renderer.dismiss_active_popup_menu();
+                    *open_env.borrow_mut() = Some(env);
+                    is_presented.set(true);
+                    true
+                },
+            );
+    } else {
+        ctx.renderer_mut()
+            .register_interactive_pointer_target_with_keyboard(
+                rendered.target,
+                rendered.press_slot,
+                keyboard_focusable,
+                move |renderer, _point, env| {
+                    let env = menu_env.layered_on(env);
+                    renderer.show_popup_menu_nodes(
+                        popup_menu_nodes(&items.snapshot(), &env, renderer.window_closable()),
+                        anchor,
+                        &env,
+                        &menu_theme,
+                    )
+                },
+            );
+    }
 }
 
 fn held_label_view<E: crate::text::TextEngine>(
