@@ -23,6 +23,7 @@
 extern crate alloc;
 
 use core::f32::consts::{FRAC_PI_2, PI, TAU};
+use core::marker::PhantomData;
 
 use nami::{Computed, SignalExt as _};
 use waterui_core::{Environment, View, metadata::MetadataKey};
@@ -932,7 +933,7 @@ pub struct FilledShape<S = ()> {
     kind: ShapeKind,
     commands: Vec<PathCommand>,
     fill: Color,
-    _shape: core::marker::PhantomData<fn() -> S>,
+    _shape: PhantomData<fn() -> S>,
 }
 
 impl<S: Shape> FilledShape<S> {
@@ -943,7 +944,7 @@ impl<S: Shape> FilledShape<S> {
             kind: shape.shape_kind(),
             commands: shape.path().into_iter().collect(),
             fill: fill.into(),
-            _shape: core::marker::PhantomData,
+            _shape: PhantomData,
         }
     }
 }
