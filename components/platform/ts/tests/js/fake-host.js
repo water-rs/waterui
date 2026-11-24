@@ -83,7 +83,7 @@ function itemKey(value, keyed) {
       throw new TypeError(
         keyed
           ? `<For by={…}> answered ${kindOf(value)}, which cannot be a key: return a string, ` +
-            "a number or a boolean"
+            "a number, a bigint or a boolean"
           : `<For each={…}> was given items of ${kindOf(value)}, whose identity cannot cross ` +
             "into the native side: an object crosses as data, so two references Rust sees are " +
             "two values. Give <For> a `by` that answers a stable key",

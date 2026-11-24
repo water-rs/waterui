@@ -287,9 +287,10 @@ clockwise). Because coordinates are unit-space, a path-drawn corner stretches wi
 their kind instead of path commands, and why shape code is tested against a deliberately
 non-square rectangle, never a square.
 
-Morphing is a self-animating view over the **built-in shapes only** (Rectangle,
-Circle, Ellipse, RoundedRectangle, UnevenRoundedRectangle, Capsule and the two `Fixed…`
-rounded rectangles — not `Path`, which panics); the
+Morphing is a self-animating view over the **built-in shapes only** (`MorphableShape`:
+Rectangle, Circle, Ellipse, RoundedRectangle, UnevenRoundedRectangle, Capsule and
+the two `Fixed…` rounded rectangles — `Path` does not implement `MorphableShape`
+so `morph_to` rejects it at compile time); the
 shapes' parameters interpolate and every backend draws the same path:
 
 ```rust

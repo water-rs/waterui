@@ -86,7 +86,7 @@ let stack = NavigationStack::with_path(
 });
 ```
 
-No route key or codec is required. Runtime dispatch uses `TypeId`; serde restoration uses the route's Rust type name plus its serde payload. URL routing remains a separate application-facing concern.
+Runtime dispatch uses `TypeId`; serde restoration uses an explicit stable route key registered with `.restorable_destination(key, ...)` (or `path.register_restoration::<T>(key)`) plus the route's serde payload. URL routing remains a separate application-facing concern.
 
 ## Restoration
 
@@ -103,7 +103,7 @@ let encoded = serde_json::to_string(&path)?;
 let restored: NavigationPath<Route> = serde_json::from_str(&encoded)?;
 ```
 
-For a heterogeneous path, construct the stack and register all destinations before deserializing. Destination registration automatically registers that concrete route type with the path; the value returned by `restoration()` is a serde `DeserializeSeed` that atomically replaces the existing shared path.
+For a heterogeneous path, construct the stack and register every restorable destination with a stable key before deserializing. `.restorable_destination(key, ...)` registers both the route key and the destination view builder on the shared path; the value returned by `restoration()` is a serde `DeserializeSeed` that atomically replaces the existing shared path.
 
 ```rust
 use serde::de::DeserializeSeed as _;
@@ -119,10 +119,12 @@ let stack = NavigationStack::with_path(
     path.clone(),
     NavigationView::new("Root", ()),
 )
-.destination::<RestoredProject, _>(|project| {
+.restorable_destination("project", |project: RestoredProject| {
     NavigationView::new("Project", text!("Project {id}", id = project.0))
 })
-.destination::<RestoredPreferences, _>(|_| NavigationView::new("Preferences", ()));
+.restorable_destination("preferences", |_: RestoredPreferences| {
+    NavigationView::new("Preferences", ())
+});
 
 let mut deserializer = serde_json::Deserializer::from_str(saved_path);
 path.restoration().deserialize(&mut deserializer)?;

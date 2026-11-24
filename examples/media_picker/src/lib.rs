@@ -115,7 +115,7 @@ fn media_display_area(display_state: Binding<DisplayState>) -> impl View {
     Dynamic::watch(display_state, |state| match state {
         DisplayState::Empty => AnyView::new(
             vstack((
-                text("No media selected").sub_headline().muted(),
+                text("No media selected").subheadline().muted(),
                 text("Tap a button above to select media").body().muted(),
             ))
             .spacing(8.0),
@@ -123,7 +123,7 @@ fn media_display_area(display_state: Binding<DisplayState>) -> impl View {
         DisplayState::Loaded(media) => media_view(media),
         DisplayState::Error(message) => AnyView::new(
             vstack((
-                text("Error").sub_headline().bold().foreground(Accent),
+                text("Error").subheadline().bold().foreground(Accent),
                 text(message).body().muted(),
             ))
             .spacing(8.0)

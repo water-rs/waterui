@@ -23,6 +23,7 @@
 extern crate alloc;
 
 use core::f32::consts::{FRAC_PI_2, PI, TAU};
+use core::marker::PhantomData;
 
 use nami::{Computed, SignalExt as _};
 use waterui_core::{Environment, View, metadata::MetadataKey};
@@ -928,23 +929,27 @@ waterui_core::raw_view!(ResolvedShape, waterui_core::layout::StretchAxis::Both);
 
 /// A shape filled with a color, resolved to `ResolvedShape`.
 #[derive(Debug)]
-pub struct FilledShape {
+pub struct FilledShape<S = ()> {
     kind: ShapeKind,
     commands: Vec<PathCommand>,
     fill: Color,
+    _shape: PhantomData<fn() -> S>,
 }
 
-impl FilledShape {
+impl<S: Shape> FilledShape<S> {
     /// Creates a new filled shape from a shape and color.
     #[allow(clippy::needless_pass_by_value)]
-    pub fn new(shape: impl Shape, fill: impl Into<Color>) -> Self {
+    pub fn new(shape: S, fill: impl Into<Color>) -> Self {
         Self {
             kind: shape.shape_kind(),
             commands: shape.path().into_iter().collect(),
             fill: fill.into(),
+            _shape: PhantomData,
         }
     }
+}
 
+impl<S> FilledShape<S> {
     /// Returns the path commands.
     #[must_use]
     pub fn commands(&self) -> &[PathCommand] {
@@ -962,23 +967,30 @@ impl FilledShape {
     pub const fn kind(&self) -> ShapeKind {
         self.kind
     }
+}
 
-    /// Creates a morphing shape animation from this shape to another built-in shape.
+impl<S: MorphableShape> FilledShape<S> {
+    /// Creates a morphing shape animation from this filled shape to another
+    /// [`MorphableShape`].
     ///
-    /// Morphing supports the built-in shapes, each a parameterized rounded
-    /// rectangle; a [`Path`] has no parameters to interpolate.
+    /// Morphing supports only the built-in parameterized shapes; custom paths
+    /// do not implement [`MorphableShape`] and fail to compile.
     ///
-    /// # Panics
+    /// ```compile_fail
+    /// use waterui_graphics::color::Color;
+    /// use waterui_shape::{Circle, Path, ShapeExt};
     ///
-    /// When either shape is a custom [`Path`].
+    /// let custom = Path::new().move_to(0.0, 0.0).line_to(1.0, 1.0).close();
+    /// let _ = custom.fill(Color::srgb(255, 0, 0)).morph_to(Circle);
+    /// ```
     #[must_use]
     #[allow(clippy::needless_pass_by_value)]
-    pub fn morph_to(self, target: impl ShapeExt) -> MorphShape {
+    pub fn morph_to(self, target: impl MorphableShape) -> MorphShape {
         MorphShape::new(self.kind, target.shape_kind(), self.fill)
     }
 }
 
-impl View for FilledShape {
+impl<S: 'static> View for FilledShape<S> {
     fn body(self, env: &Environment) -> impl View {
         ResolvedShape {
             kind: self.kind,
@@ -988,6 +1000,42 @@ impl View for FilledShape {
     }
 }
 
+mod sealed {
+    pub trait Sealed {}
+}
+
+/// Built-in parameterized shapes whose geometry can interpolate in [`MorphShape`].
+///
+/// Only the built-in shapes (`Circle`, `Ellipse`, `Capsule`, `Rectangle`,
+/// `RoundedRectangle`, `UnevenRoundedRectangle`, `FixedRoundedRectangle`, and
+/// `FixedUnevenRoundedRectangle`) implement this trait. Custom [`Path`] values
+/// have no shared corner/box parameters and therefore cannot morph.
+///
+/// ```compile_fail
+/// use waterui_graphics::color::Color;
+/// use waterui_shape::{Circle, Path, ShapeExt};
+///
+/// let tri = Path::new()
+///     .move_to(0.5, 0.0)
+///     .line_to(1.0, 1.0)
+///     .line_to(0.0, 1.0)
+///     .close();
+/// let _ = Circle.morph_to(tri, Color::srgb(255, 0, 0));
+/// ```
+///
+/// ```compile_fail
+/// use waterui_graphics::color::Color;
+/// use waterui_shape::{Circle, Path, ShapeExt};
+///
+/// let tri = Path::new()
+///     .move_to(0.5, 0.0)
+///     .line_to(1.0, 1.0)
+///     .line_to(0.0, 1.0)
+///     .close();
+/// let _ = tri.morph_to(Circle, Color::srgb(255, 0, 0));
+/// ```
+pub trait MorphableShape: ShapeExt + sealed::Sealed {}
+
 // ============================================================================
 // ShapeExt - Extension trait for adding fill to shapes
 // ============================================================================
@@ -995,38 +1043,42 @@ impl View for FilledShape {
 /// Extension trait for filling shapes with color.
 pub trait ShapeExt: Shape + Sized {
     /// Fills the shape with the specified color.
-    fn fill(self, color: impl Into<Color>) -> FilledShape {
+    fn fill(self, color: impl Into<Color>) -> FilledShape<Self> {
         FilledShape::new(self, color)
     }
 
-    /// Creates a morphing filled shape from this shape to another built-in shape.
+    /// Creates a morphing filled shape from this shape to another [`MorphableShape`].
     ///
-    /// Morphing supports the built-in shapes, each a parameterized rounded
-    /// rectangle; a [`Path`] has no parameters to interpolate.
-    ///
-    /// # Panics
-    ///
-    /// When either shape is a custom [`Path`].
-    fn morph_to(self, target: impl ShapeExt, fill: impl Into<Color>) -> MorphShape {
+    /// Morphing supports only the built-in parameterized shapes; custom paths
+    /// do not implement [`MorphableShape`] and fail to compile.
+    fn morph_to(self, target: impl MorphableShape, fill: impl Into<Color>) -> MorphShape
+    where
+        Self: MorphableShape,
+    {
         MorphShape::new(self.shape_kind(), target.shape_kind(), fill.into())
     }
 }
 
-impl ShapeExt for Circle {}
+macro_rules! impl_morphable_shape {
+    ($($ty:ty),* $(,)?) => {
+        $(
+            impl ShapeExt for $ty {}
+            impl sealed::Sealed for $ty {}
+            impl MorphableShape for $ty {}
+        )*
+    };
+}
 
-impl ShapeExt for Ellipse {}
-
-impl ShapeExt for Capsule {}
-
-impl ShapeExt for Rectangle {}
-
-impl ShapeExt for RoundedRectangle {}
-
-impl ShapeExt for UnevenRoundedRectangle {}
-
-impl ShapeExt for FixedRoundedRectangle {}
-
-impl ShapeExt for FixedUnevenRoundedRectangle {}
+impl_morphable_shape!(
+    Circle,
+    Ellipse,
+    Capsule,
+    Rectangle,
+    RoundedRectangle,
+    UnevenRoundedRectangle,
+    FixedRoundedRectangle,
+    FixedUnevenRoundedRectangle,
+);
 
 impl ShapeExt for Path {}
 

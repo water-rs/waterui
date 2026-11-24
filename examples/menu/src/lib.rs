@@ -50,7 +50,7 @@ fn toolbar_actions(status: &Binding<String>) -> impl View + use<> {
 
 fn toolbar_scene_section(status: &Binding<String>) -> impl View + use<> {
     vstack((
-        text("Toolbar Labels").sub_headline(),
+        text("Toolbar Labels").subheadline(),
         text("The same semantic labels can render with text in content and icon-only in compact chrome. Screen readers keep reading the semantic title.")
             .body()
             .muted(),
@@ -74,7 +74,7 @@ fn window_toolbar(status: &Binding<String>) -> impl View + use<> {
 
 fn menu_section(selected: &Binding<String>) -> impl View + use<> {
     vstack((
-        text("Menu Component").sub_headline(),
+        text("Menu Component").subheadline(),
         text("Tap the menu button to see nested buttons, submenus, and separators")
             .body()
             .muted(),
@@ -121,7 +121,7 @@ fn menu_section(selected: &Binding<String>) -> impl View + use<> {
 
 fn styled_menu_section(action_log: &Binding<String>) -> impl View + use<> {
     vstack((
-        text("Styled Menu").sub_headline(),
+        text("Styled Menu").subheadline(),
         text("The popup label stays a normal label, and menu rows can now be plain buttons")
             .body()
             .muted(),
@@ -158,7 +158,7 @@ fn styled_menu_section(action_log: &Binding<String>) -> impl View + use<> {
 
 fn context_menu_section(context_action: &Binding<String>) -> impl View + use<> {
     vstack((
-        text("Context Menu").sub_headline(),
+        text("Context Menu").subheadline(),
         text("Long press the box below to see context menu")
             .body()
             .muted(),
@@ -199,7 +199,7 @@ fn context_menu_accessory_section(
     like_label: &Binding<waterui::Str>,
 ) -> impl View + use<> {
     vstack((
-        text("Context Menu with Accessory").sub_headline(),
+        text("Context Menu with Accessory").subheadline(),
         text("Long press to preview with an inline accessory bar")
             .body()
             .muted(),
@@ -276,7 +276,7 @@ fn context_menu_accessory_section(
 fn selection_menu_section(selection_action: &Binding<String>) -> impl View + use<> {
     let draft = binding(Str::from("Select some of this text, then open the menu"));
     vstack((
-        text("Selection Menu").sub_headline(),
+        text("Selection Menu").subheadline(),
         text("Select text in the field and use its context menu")
             .body()
             .muted(),
@@ -301,7 +301,7 @@ fn selection_menu_section(selection_action: &Binding<String>) -> impl View + use
 
 fn context_menu_views_section(view_action: &Binding<String>) -> impl View + use<> {
     vstack((
-        text("Context Menu on Views").sub_headline(),
+        text("Context Menu on Views").subheadline(),
         text("Long press any colored box").body().muted(),
         spacer().height(12.0),
         hstack((
@@ -364,7 +364,7 @@ fn context_menu_views_section(view_action: &Binding<String>) -> impl View + use<
 
 fn quit_section(quit_answer: &Binding<String>) -> impl View + use<> {
     vstack((
-        text("Quitting").sub_headline(),
+        text("Quitting").subheadline(),
         text("Quit asks the application, which answers after two seconds. Check Quitting > Refuse Quit in the menu bar to make it refuse.")
             .body()
             .muted(),

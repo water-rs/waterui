@@ -381,7 +381,7 @@ fn detail_view(
         reminder_list(today_rows, upcoming_rows, search),
     ))
     .background(Material::Regular)
-    .title(dest.title())
+    .navigation_title(dest.title())
     .searchable(search, "Search reminders")
     .navigation_toolbar(NavigationToolbar::new(vec![NavigationToolbarItem::action(
         NavigationToolbarPlacement::PrimaryAction,

@@ -50,7 +50,7 @@ fn record_row(record: Record) -> ListItem<impl View> {
     ListItem::new(
         vstack((
             text(text!("Record #{id:06}", id = record.id))
-                .sub_headline()
+                .subheadline()
                 .foreground(Foreground),
             text("Materialized only while this row is visible")
                 .caption()
@@ -130,7 +130,7 @@ fn content(state: &DemoState) -> impl View + use<> {
                 "{remaining} active rows",
                 remaining = state.remaining.clone()
             )
-            .sub_headline()
+            .subheadline()
             .muted(),
             hstack((
                 button("Top").bordered().action(scroll_top),

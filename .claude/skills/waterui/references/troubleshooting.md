@@ -123,7 +123,7 @@ Use `app.pump_for(duration)`.
 | `expected 'Binding<T>', found '&Binding<T>'` (or the reverse) | two-way controls borrow, modifiers own | controls take `&binding`; modifiers take `binding.clone()` |
 | `cannot find macro 'text'` | macro not imported | `use waterui::prelude::*;` then bare `text!` — never `waterui::text!` (same rule for `include_markdown!`); `shader!` is not in the prelude: `use waterui::graphics::shader;`, then bare `shader!` |
 | `` `ForEach<..>` is not a WaterUI view `` (or "expected an `FnOnce()` closure") | `ForEach` is a `Views` collection, not a view | `Lazy::for_each(data, f)`, `VStack::for_each(data, f)`, or `List::for_each` |
-| `.title("Inbox")` — "this method takes 0 arguments" | `Text::title()` (font size) shadows the navigation title | put the nav title on the container, or use `NavigationView::new(title, content)` |
+| `.title("Inbox")` — no matching method or wrong arg count | navigation titles use `.navigation_title(..)` (`.title()` on `Text` is font style) | use `.navigation_title("Inbox")` or `NavigationView::new(title, content)` |
 | `borrowed data escapes outside of function` on a view helper | views are `'static` | take `&'static str` / `Str` / `impl IntoText`; a helper that only *reads* a `&T` during construction can return `impl View + use<>` |
 | `no method named 'map'` on a signal (outside the prelude) | `SignalExt` not in scope | `use waterui::reactive::SignalExt;` |
 | `use of undeclared crate 'tracing'` | logging goes through the re-export | `use waterui::log::debug;` then `debug!(..)` — no extra dependency |
@@ -161,12 +161,6 @@ install more narrowly or give every label an icon.
 **`Image::new` panics at construction.** The pixel buffer length must be exactly
 `width * height * 4` (RGBA8) and the image must have an area. This is fast-fail working as
 designed — fix the buffer.
-
-**A `Code` view panics with "Invalid language".** `code(language, content)` and `Code::new`
-panic when the language does not convert, so a token from runtime data (a fence info
-string, a server-supplied tag) crashes on the first unknown value. Parse it first with
-`Language::try_from(tok)` (`waterui::text::highlight::Language`), fall back to
-`Language::Plaintext`, and keep the original token with `.info(tok)`.
 
 **`Id::try_from(0)` fails.** `Id` is non-zero; offset 0-based indices by `+ 1`.
 

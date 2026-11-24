@@ -22,7 +22,7 @@ pub use waterui_text::code;
 // `waterui_text::code` is both the module and the `code(..)` constructor, so
 // the `use` above already brings the function in; only the type is left.
 #[cfg(feature = "highlight")]
-pub use code::Code;
+pub use code::{Code, CodeLanguage};
 /// Markdown and streaming rich-text rendering widgets.
 #[cfg(feature = "flow-markdown")]
 pub use waterui_markdown::{

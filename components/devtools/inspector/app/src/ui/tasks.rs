@@ -102,7 +102,7 @@ fn stall_row(row: StallRow) -> ListItem<impl View> {
 
     ListItem::new(
         vstack((
-            text(summary).sub_headline().foreground(Orange),
+            text(summary).subheadline().foreground(Orange),
             backtrace_view(row.backtrace()),
         ))
         .alignment(HorizontalAlignment::Leading)

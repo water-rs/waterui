@@ -11,7 +11,7 @@ fn type_scale() -> impl View {
     vstack((
         text("Display / 展示 / عرض").headline(),
         text("Title / 标题 / כותרת").title(),
-        text("Headline / 小标题 / عنوان").sub_headline(),
+        text("Headline / 小标题 / عنوان").subheadline(),
         text("Body — WaterUI shapes العربية、中文、日本語、한국어 in one paragraph.").body(),
         text("Footnote — Mixed scripts keep punctuation and numbers stable: الإصدار 2.0 (2026).")
             .footnote(),
@@ -25,7 +25,7 @@ fn type_scale() -> impl View {
 
 fn cjk_specimens() -> impl View {
     vstack((
-        text("CJK locale-aware glyph selection").sub_headline(),
+        text("CJK locale-aware glyph selection").subheadline(),
         with(text("简体中文：骨、直、门、关").body(), locales::ZH_CN),
         with(text("繁體中文：骨、直、門、關").body(), locales::ZH_TW),
         with(text("日本語：骨、直、門、関").body(), locales::JA),
@@ -38,7 +38,7 @@ fn cjk_specimens() -> impl View {
 fn reading_order_panel(title: &'static str, body: &'static str, arrow: &'static str) -> impl View {
     let input = Binding::container(Str::from(""));
     vstack((
-        text(title).sub_headline(),
+        text(title).subheadline(),
         hstack((
             text("①").headline(),
             vstack((

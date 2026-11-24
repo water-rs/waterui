@@ -3,8 +3,7 @@
 //! This crate provides the `text!` macro for internationalized text.
 //! The macro loads translation files from the `i18n/` folder at compile time.
 
-use std::collections::BTreeMap;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use toml::value::Table;
 
@@ -519,11 +518,56 @@ fn collect_plural_names(placeholders: &[Placeholder]) -> Vec<&str> {
         .collect()
 }
 
-fn build_binding_map(bindings: &[(Ident, Expr)]) -> HashMap<String, &Expr> {
-    bindings
+fn push_syn_error(errors: &mut Option<syn::Error>, err: syn::Error) {
+    if let Some(existing) = errors.as_mut() {
+        existing.combine(err);
+    } else {
+        *errors = Some(err);
+    }
+}
+
+fn build_binding_map<'a>(
+    format_string: &str,
+    placeholders: &[Placeholder],
+    bindings: &'a [(Ident, Expr)],
+) -> Result<HashMap<String, &'a Expr>> {
+    let placeholder_names: HashSet<&str> = placeholders
         .iter()
-        .map(|(name, expr)| (name.to_string(), expr))
-        .collect()
+        .map(|placeholder| match placeholder {
+            Placeholder::Regular(name) | Placeholder::Plural(name) => name.as_str(),
+        })
+        .collect();
+
+    let mut seen = HashSet::with_capacity(bindings.len());
+    let mut map = HashMap::with_capacity(bindings.len());
+    let mut errors = None;
+
+    for (name, expr) in bindings {
+        let key = name.to_string();
+        if !seen.insert(key.clone()) {
+            push_syn_error(
+                &mut errors,
+                syn::Error::new(name.span(), format!("duplicate binding `{key}` in `text!`")),
+            );
+            continue;
+        }
+        if !placeholder_names.contains(key.as_str()) {
+            push_syn_error(
+                &mut errors,
+                syn::Error::new(
+                    name.span(),
+                    format!("`{key}` is not a placeholder in {format_string:?}"),
+                ),
+            );
+            continue;
+        }
+        map.insert(key, expr);
+    }
+
+    if let Some(err) = errors {
+        return Err(err);
+    }
+    Ok(map)
 }
 
 fn build_captures_and_idents(
@@ -669,6 +713,14 @@ fn compile_error(message: &str) -> TokenStream2 {
     quote! { compile_error!(#message) }
 }
 
+fn syn_errors_expr(err: syn::Error) -> TokenStream2 {
+    let errors = err.into_iter().map(|error| {
+        let item = error.to_compile_error();
+        quote! { #item; }
+    });
+    quote! { { #(#errors)* } }
+}
+
 fn expand_text_macro(input: &TextInput) -> TokenStream2 {
     let waterui = match waterui_crate_path() {
         Ok(path) => path,
@@ -681,6 +733,10 @@ fn expand_text_macro(input: &TextInput) -> TokenStream2 {
         Ok(placeholders) => placeholders,
         Err(err) => return compile_error(&err),
     };
+    let binding_map = match build_binding_map(&key, &placeholders, &input.bindings) {
+        Ok(map) => map,
+        Err(err) => return syn_errors_expr(err),
+    };
 
     // Load translations at compile time
     let bundle = match TranslationBundle::load_from_manifest_dir() {
@@ -689,7 +745,6 @@ fn expand_text_macro(input: &TextInput) -> TokenStream2 {
     };
 
     let plural_names = collect_plural_names(&placeholders);
-    let binding_map = build_binding_map(&input.bindings);
     let (captures, all_idents) = build_captures_and_idents(&waterui, &placeholders, &binding_map);
     let locale_arms = build_locale_arms(
         &bundle,
@@ -1058,7 +1113,10 @@ pub fn catalog(input: &TokenStream) -> TokenStream {
 mod tests {
     use std::path::PathBuf;
 
-    use super::{TranslationBundle, parse_placeholders};
+    use proc_macro2::Span;
+    use syn::{Expr, Ident, parse_quote};
+
+    use super::{TranslationBundle, build_binding_map, parse_placeholders};
 
     #[test]
     fn parse_placeholders_accepts_named_plural_spec_and_escaped_forms() {
@@ -1157,5 +1215,57 @@ mod tests {
         let err = TranslationBundle::parse_toml(content, &source)
             .expect_err("unknown dual plural field should fail");
         assert!(err.contains("Unknown dual plural field"));
+    }
+
+    #[test]
+    fn build_binding_map_accepts_regular_plural_and_repeated_placeholders() {
+        let format_str = "{#count} items for {name} ({count})";
+        let placeholders = parse_placeholders(format_str).expect("valid placeholders");
+        let bindings: Vec<(Ident, Expr)> = vec![
+            (Ident::new("count", Span::call_site()), parse_quote!(42)),
+            (Ident::new("name", Span::call_site()), parse_quote!("Alice")),
+        ];
+        let map = build_binding_map(format_str, &placeholders, &bindings)
+            .expect("matching bindings should succeed");
+        assert_eq!(map.len(), 2);
+        assert!(map.contains_key("count"));
+        assert!(map.contains_key("name"));
+    }
+
+    #[test]
+    fn build_binding_map_rejects_unused_binding() {
+        let format_str = "{count} items";
+        let placeholders = parse_placeholders(format_str).expect("valid placeholders");
+        let bindings: Vec<(Ident, Expr)> = vec![(
+            Ident::new("cnt", Span::call_site()),
+            parse_quote!(files.len()),
+        )];
+        let err = build_binding_map(format_str, &placeholders, &bindings)
+            .expect_err("unused binding should fail");
+        assert_eq!(
+            err.to_string(),
+            "`cnt` is not a placeholder in \"{count} items\""
+        );
+    }
+
+    #[test]
+    fn build_binding_map_rejects_duplicate_and_unused_bindings_together() {
+        let format_str = "{count} items";
+        let placeholders = parse_placeholders(format_str).expect("valid placeholders");
+        let bindings: Vec<(Ident, Expr)> = vec![
+            (Ident::new("count", Span::call_site()), parse_quote!(1)),
+            (Ident::new("count", Span::call_site()), parse_quote!(2)),
+            (Ident::new("extra", Span::call_site()), parse_quote!(3)),
+        ];
+        let err = build_binding_map(format_str, &placeholders, &bindings)
+            .expect_err("duplicate and unused bindings should fail");
+        let messages: Vec<String> = err.into_iter().map(|e| e.to_string()).collect();
+        assert_eq!(
+            messages,
+            vec![
+                "duplicate binding `count` in `text!`".to_string(),
+                "`extra` is not a placeholder in \"{count} items\"".to_string(),
+            ]
+        );
     }
 }

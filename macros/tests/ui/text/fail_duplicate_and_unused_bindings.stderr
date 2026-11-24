@@ -1,0 +1,11 @@
+error: duplicate binding `count` in `text!`
+ --> tests/ui/text/fail_duplicate_and_unused_bindings.rs:2:56
+  |
+2 |     let _ = waterui::text!("{count} items", count = 1, count = 2, extra = 3);
+  |                                                        ^^^^^
+
+error: `extra` is not a placeholder in "{count} items"
+ --> tests/ui/text/fail_duplicate_and_unused_bindings.rs:2:67
+  |
+2 |     let _ = waterui::text!("{count} items", count = 1, count = 2, extra = 3);
+  |                                                                   ^^^^^

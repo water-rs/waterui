@@ -347,7 +347,7 @@ fn inbox_root(
     let edit_title = mail.editing.select(Str::from("Done"), Str::from("Edit"));
 
     message_list(mail.clone())
-        .title("Inbox")
+        .navigation_title("Inbox")
         // Starts large and collapses as the list scrolls: the iOS large-title
         // bar, Android's large app bar.
         .large_title()
@@ -442,7 +442,7 @@ fn message_row(mail: &Mail, message: Message) -> ListItem<impl View + use<>> {
                 hstack((Accent.size(8.0, 8.0).clip(Circle).visible(unread),)).size(8.0, 8.0),
                 vstack((
                     hstack((
-                        text(message.sender).sub_headline().foreground(Foreground),
+                        text(message.sender).subheadline().foreground(Foreground),
                         spacer(),
                         message
                             .flagged
@@ -511,14 +511,14 @@ fn message_detail(
 
     scroll(
         vstack((
-            text!("{sender}").sub_headline().muted(),
+            text!("{sender}").subheadline().muted(),
             text!("{body}").body().foreground(Foreground),
         ))
         .leading()
         .spacing(12.0)
         .padding_with(16.0),
     )
-    .title(text!("{subject}"))
+    .navigation_title(text!("{subject}"))
     // A pushed page keeps its title inline, the way a platform back stack does.
     .inline_title()
     .navigation_toolbar(
@@ -560,7 +560,7 @@ fn compose_page(
     .leading()
     .spacing(12.0)
     .padding_with(16.0)
-    .title("New Message")
+    .navigation_title("New Message")
     .inline_title()
     .navigation_toolbar(
         NavigationToolbar::default()
@@ -640,7 +640,7 @@ fn library_split() -> impl View {
 fn placeholder() -> impl View {
     vstack((
         text("No album selected")
-            .sub_headline()
+            .subheadline()
             .foreground(Foreground),
         text("Pick one from the sidebar.").caption().muted(),
     ))
@@ -699,7 +699,7 @@ fn album_detail(album: Album) -> NavigationView<impl View + use<>> {
         .spacing(10.0)
         .padding_with(16.0),
     )
-    .title(album.title())
+    .navigation_title(album.title())
 }
 
 // ---------------------------------------------------------------------------
@@ -715,7 +715,7 @@ fn gallery_root() -> NavigationView<impl View + use<>> {
     let tiles: VStack<_> = (0..6).map(photo_tile).collect();
 
     scroll(tiles.spacing(12.0).padding_with(16.0))
-        .title("Gallery")
+        .navigation_title("Gallery")
         .large_title()
 }
 
@@ -724,7 +724,7 @@ fn photo_tile(index: usize) -> impl View {
         Label::new(text!("Photo {index}"), move || {
             zstack((
                 photo_color(index).size(160.0, 120.0),
-                text!("Photo {index}").sub_headline().foreground(Foreground),
+                text!("Photo {index}").subheadline().foreground(Foreground),
             ))
             .clip(RoundedRectangle::new(0.1))
         }),
@@ -747,7 +747,7 @@ fn photo_page(index: usize) -> NavigationView<impl View + use<>> {
     ))
     .spacing(12.0)
     .padding_with(16.0)
-    .title(text!("Photo {index}"))
+    .navigation_title(text!("Photo {index}"))
     .inline_title()
     // The declaration lives on the destination, because the pair it names does.
     .transition(navigation_transition::zoom(PhotoRoute(index)))
@@ -806,7 +806,7 @@ fn settings_root(
                 || settings_link("About", SettingsRoute::About),
             )),
     ))
-    .title("Settings")
+    .navigation_title("Settings")
     .large_title()
 }
 
@@ -826,14 +826,14 @@ fn appearance_page(compact: Binding<bool>) -> NavigationView<impl View + use<>> 
             move || ListItem::new(Toggle::new("Compact rows", &compact)),
             row("Current", text!("{density}")),
         )),))
-    .title("Appearance")
+    .navigation_title("Appearance")
     .inline_title()
 }
 
 fn about_page() -> NavigationView<impl View + use<>> {
     vstack((
         text("Navigation chrome tour")
-            .sub_headline()
+            .subheadline()
             .foreground(Foreground),
         text(
             "Every bar, tab strip, sidebar, search field, and transition in \
@@ -846,7 +846,7 @@ fn about_page() -> NavigationView<impl View + use<>> {
     .spacing(10.0)
     .padding_with(16.0)
     .background(SurfaceVariant)
-    .title("About")
+    .navigation_title("About")
     .inline_title()
 }
 

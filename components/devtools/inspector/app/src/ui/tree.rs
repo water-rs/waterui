@@ -102,7 +102,7 @@ fn row_view(row: TreeRow, revealed: Computed<bool>) -> ListItem<impl View> {
         spacer().width(indent),
         vstack((
             hstack((
-                text(role).sub_headline().foreground(Accent),
+                text(role).subheadline().foreground(Accent),
                 label_view(label),
                 hidden_badge(hidden),
                 revealed_badge(revealed),

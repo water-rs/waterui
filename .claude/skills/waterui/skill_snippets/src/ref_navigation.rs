@@ -38,13 +38,13 @@ pub enum MailRoute {
 // `NavigationView`, so these glue helpers apply a navigation title the way
 // navigation.md's own "Bar chrome on a destination" section prescribes.
 fn inbox_root(_mail: Mail) -> NavigationView<impl View> {
-    vstack((text("inbox"), Divider)).title("Inbox")
+    vstack((text("inbox"), Divider)).navigation_title("Inbox")
 }
 fn message_detail(_mail: Mail, _id: u64) -> NavigationView<impl View> {
-    vstack((text("message"), Divider)).title("Message")
+    vstack((text("message"), Divider)).navigation_title("Message")
 }
 fn compose_page(_mail: Mail) -> NavigationView<impl View> {
-    vstack((text("compose"), Divider)).title("Compose")
+    vstack((text("compose"), Divider)).navigation_title("Compose")
 }
 fn message_list(_mail: Mail) -> impl View {
     vstack((text("a"), text("b")))
@@ -268,7 +268,7 @@ pub fn send_draft(mail: Mail, navigator: Navigator<MailRoute>) {
 // navigation.md § "## Going back, and destination lifecycle" — rust block 6/16
 // ---------------------------------------------------------------------------
 pub fn navigation_block_06() -> impl View {
-    // Glue: the page body before `.title(..)` makes it a `NavigationView`;
+    // Glue: the page body before `.navigation_title(..)` makes it a `NavigationView`;
     // block 2's `message_detail` is the titled destination built from it.
     fn message_body(_mail: Mail, _id: u64) -> impl View {
         vstack((text("message"), Divider))
@@ -278,7 +278,7 @@ pub fn navigation_block_06() -> impl View {
     let subject = Binding::container(Str::from("Re: hello"));
 
     message_body(mail.clone(), id)
-        .title(text!("{subject}"))
+        .navigation_title(text!("{subject}"))
         .on_navigation_appear({
             let mail = mail.clone();
             move || mail.mark_read(id)
@@ -295,7 +295,7 @@ pub fn navigation_block_07() -> NavigationView<impl View> {
         let unread = Binding::i32(2);
 
         message_list(mail)
-            .title("Inbox") // or .title(text!("{subject}"))
+            .navigation_title("Inbox") // or .navigation_title(text!("{subject}"))
             .large_title() // or .inline_title()
             .navigation_subtitle(text!("{unread} unread"))
             .searchable(&query, "Search mail") // a field inside the bar, not above the content
@@ -315,7 +315,9 @@ pub fn navigation_block_07() -> NavigationView<impl View> {
 // ---------------------------------------------------------------------------
 pub fn navigation_view_new_prose() {
     let _ = NavigationView::new("Inbox", vstack((text("a"), Divider)));
-    let _ = vstack((text("a"), Divider)).title("Inbox").inline_title();
+    let _ = vstack((text("a"), Divider))
+        .navigation_title("Inbox")
+        .inline_title();
     let _ = navigation("Inbox", vstack((text("a"), Divider)));
 }
 
@@ -327,7 +329,7 @@ pub fn navigation_bar_chrome_prose() -> NavigationView<impl View> {
     let visible = Binding::bool(true);
 
     message_list(Mail)
-        .title("Inbox")
+        .navigation_title("Inbox")
         .navigation_title_display_mode(NavigationTitleDisplayMode::Medium)
         .navigation_bar_visibility(visible)
         .navigation_bar_color(Color::srgb(0, 0, 0))
@@ -348,20 +350,22 @@ pub fn navigation_block_08() -> NavigationView<impl View, impl NavigationToolbar
     fn toggle_editing() {}
     let edit_title = Binding::container(Str::from("Edit"));
 
-    message_list(Mail).title("Inbox").navigation_toolbar(
-        NavigationToolbar::default()
-            .item(NavigationToolbarItem::new(
-                NavigationToolbarPlacement::TopBarLeading,
-                button(text!("{edit_title}"))
-                    .style(ButtonStyle::Plain)
-                    .action(toggle_editing),
-            ))
-            .item(NavigationToolbarItem::action(
-                NavigationToolbarPlacement::PrimaryAction,
-                label("Compose").icon(mdi::pencil()),
-                |navigator: Navigator<MailRoute>| navigator.push(MailRoute::Compose),
-            )),
-    )
+    message_list(Mail)
+        .navigation_title("Inbox")
+        .navigation_toolbar(
+            NavigationToolbar::default()
+                .item(NavigationToolbarItem::new(
+                    NavigationToolbarPlacement::TopBarLeading,
+                    button(text!("{edit_title}"))
+                        .style(ButtonStyle::Plain)
+                        .action(toggle_editing),
+                ))
+                .item(NavigationToolbarItem::action(
+                    NavigationToolbarPlacement::PrimaryAction,
+                    label("Compose").icon(mdi::pencil()),
+                    |navigator: Navigator<MailRoute>| navigator.push(MailRoute::Compose),
+                )),
+        )
 }
 
 // ---------------------------------------------------------------------------
@@ -403,11 +407,11 @@ pub fn navigation_block_09() {
     #[derive(Clone, Copy, Hash, PartialEq, Eq)]
     struct PhotoRoute(usize);
 
-    let dest = message_list(Mail).title("Inbox");
+    let dest = message_list(Mail).navigation_title("Inbox");
     let _ = { dest.transition(navigation_transition::zoom(PhotoRoute(1))) };
-    let dest = message_list(Mail).title("Inbox");
+    let dest = message_list(Mail).navigation_title("Inbox");
     let _ = { dest.transition(navigation_transition::fade()) };
-    let dest = message_list(Mail).title("Inbox");
+    let dest = message_list(Mail).navigation_title("Inbox");
     let _ = { dest.transition(navigation_transition::none()) };
 }
 
@@ -442,7 +446,7 @@ pub fn navigation_block_11() -> impl View {
         text("sidebar")
     }
     fn album_detail(_album: Album) -> NavigationView<impl View> {
-        vstack((text("detail"), Divider)).title("Detail")
+        vstack((text("detail"), Divider)).navigation_title("Detail")
     }
 
     use waterui::navigation::NavigationSplitView;
@@ -481,7 +485,7 @@ pub fn navigation_split_prose() -> impl View {
     let content_selection: Binding<Option<Item>> = binding(Some(Item::First));
 
     let _ = NavigationSplitView::new(&sidebar_selection, text("sidebar"), |_: Section| {
-        vstack((text("detail"), Divider)).title("Detail")
+        vstack((text("detail"), Divider)).navigation_title("Detail")
     })
     .style(split_style::automatic())
     .style(split_style::balanced());
@@ -490,8 +494,8 @@ pub fn navigation_split_prose() -> impl View {
         &sidebar_selection,
         &content_selection,
         text("sidebar"),
-        |_: Section| vstack((text("content"), Divider)).title("Content"),
-        |_: Item| vstack((text("detail"), Divider)).title("Detail"),
+        |_: Section| vstack((text("content"), Divider)).navigation_title("Content"),
+        |_: Item| vstack((text("detail"), Divider)).navigation_title("Detail"),
     )
     .column_visibility(NavigationSplitColumnVisibility::DoubleColumn)
 }

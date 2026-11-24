@@ -53,6 +53,10 @@ fn macro_contracts() {
     cases.compile_fail("tests/ui/text/fail_positional_format_spec.rs");
     cases.compile_fail("tests/ui/text/fail_positional_plural_marker.rs");
     cases.compile_fail("tests/ui/text/fail_non_identifier_placeholder.rs");
+    cases.compile_fail("tests/ui/text/fail_unused_binding.rs");
+    cases.compile_fail("tests/ui/text/fail_unused_binding_typo.rs");
+    cases.compile_fail("tests/ui/text/fail_duplicate_binding.rs");
+    cases.compile_fail("tests/ui/text/fail_duplicate_and_unused_bindings.rs");
 
     cases.compile_fail("tests/ui/view_builder/fail_async_fn.rs");
     cases.compile_fail("tests/ui/view_builder/fail_impl_attr.rs");

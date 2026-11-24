@@ -102,8 +102,8 @@ impl ItemKey {
             }
             JsValue::String(text) => Ok(Self::Text(Str::from(text.clone()))),
             other if keyed => Err(JsError::conversion(format!(
-                "<For by={{…}}> answered {}, which cannot be a key: return a string, a number or \
-                 a boolean",
+                "<For by={{…}}> answered {}, which cannot be a key: return a string, a number, \
+                 a bigint or a boolean",
                 waterui_ts::kind_of(other)
             ))),
             other => Err(JsError::conversion(format!(

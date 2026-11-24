@@ -63,7 +63,7 @@ fn scene(
             spacer(),
             // Section 1: Auto-generated Registration Form
             vstack((
-                text("Registration Form").sub_headline(),
+                text("Registration Form").subheadline(),
                 "Using #[form] derive macro",
                 form(registration),
                 Divider,
@@ -84,7 +84,7 @@ fn scene(
             spacer(),
             // Section 2: Settings Form
             vstack((
-                text("App Settings").sub_headline(),
+                text("App Settings").subheadline(),
                 "Another form with different field types",
                 form(settings),
                 Divider,
@@ -104,7 +104,7 @@ fn scene(
             spacer(),
             // Section 3: Manual Form Controls
             vstack((
-                text("Manual Form Controls").sub_headline(),
+                text("Manual Form Controls").subheadline(),
                 "Building forms manually with individual controls",
                 // TextField with label and placeholder
                 TextField::new("Username", custom_name).prompt("Enter your username"),

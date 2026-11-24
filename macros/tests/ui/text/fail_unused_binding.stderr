@@ -1,0 +1,5 @@
+error: `name` is not a placeholder in "Saved"
+ --> tests/ui/text/fail_unused_binding.rs:3:37
+  |
+3 |     let _ = waterui::text!("Saved", name = doc_name);
+  |                                     ^^^^

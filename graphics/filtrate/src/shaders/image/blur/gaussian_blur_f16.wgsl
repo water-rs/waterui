@@ -29,17 +29,17 @@ fn apply(input: texture_2d<f32>, input_point_sampler: sampler, uv: vec2<f32>, si
     let k = 1.0 / (sigma * 1.4142135624);
     var e_prev = gaussian_erf(0.5 * k);
 
-    var sum = vec4<f32>(vec4<f16>(load(input, input_point_sampler, size, pixel)) * f16(e_prev));
+    let center = vec4<f16>(load(input, input_point_sampler, size, pixel));
+    var sum = vec4<f32>(center) * e_prev;
     var weight_total = e_prev;
     for (var offset = 1; offset <= radius; offset++) {
         let e = gaussian_erf((f32(offset) + 0.5) * k);
         let weight = 0.5 * (e - e_prev);
         e_prev = e;
         let delta = params.axis * f32(offset);
-        let half_weight = f16(weight);
         let left = vec4<f16>(load(input, input_point_sampler, size, pixel - delta));
         let right = vec4<f16>(load(input, input_point_sampler, size, pixel + delta));
-        sum += vec4<f32>(left * half_weight) + vec4<f32>(right * half_weight);
+        sum += (vec4<f32>(left) + vec4<f32>(right)) * weight;
         weight_total += 2.0 * weight;
     }
     return vec4<f16>(sum / weight_total);

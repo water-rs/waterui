@@ -126,7 +126,6 @@ let video = video::video(Url::new(
     "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
 ))
     .content_mode(ContentMode::Fill)
-    .loops(true)
     .on_event(|event| {
         // Handle buffering, playback errors, etc.
     });

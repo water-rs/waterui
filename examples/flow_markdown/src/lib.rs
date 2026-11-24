@@ -309,7 +309,7 @@ pub fn demo() -> impl View {
             document_number = document_number_text,
             document_total = document_total
         )
-        .sub_headline(),
+        .subheadline(),
         text!(
             "LLM output progress: {char_progress}/{document_char_count} chars",
             char_progress = char_progress_text,
