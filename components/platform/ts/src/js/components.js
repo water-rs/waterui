@@ -58,8 +58,10 @@ export function Show(props) {
 
 /**
  * `<For each={…} by={…}>{(item, index) => …}</For>` — keyed reconciliation.
- * `by` defaults to referential identity. The render function receives the
- * item and an accessor of its current index.
+ * Primitive key items (`string`, `number`, `bigint`, `boolean`) identify
+ * themselves when `by` is omitted; all other items require `by` to return a
+ * key. The render function receives the item and an accessor of its current
+ * index.
  */
 export function For(props) {
   const host = getHost();
