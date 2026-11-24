@@ -20,7 +20,7 @@ use waterui_navigation::{
     NavigationToolbar, NavigationToolbarItem, NavigationToolbarItems, NavigationToolbarPlacement,
     NavigationView,
 };
-use waterui_testing::{Role, RuntimeDriver, SemanticApp, Styled, TestStyle, UiBuilder};
+use waterui_testing::{Role, RuntimeDriver, SemanticApp, TestStyle, UiBuilder};
 
 /// A lazy `List` of `count` text rows.
 fn rows(count: usize, prefix: &'static str) -> impl View {
@@ -62,7 +62,7 @@ fn navigation_subtitle_emits_on_semantic_mount(ui: UiBuilder) {
 }
 
 #[waterui::test(theme = TestStyle::new(), viewport = (390, 844))]
-fn navigation_subtitle_emits_on_offscreen_mount(ui: UiBuilder<Styled<TestStyle>>) {
+fn navigation_subtitle_emits_on_offscreen_mount(ui: UiBuilder) {
     let mut app = ui.mount_offscreen(chat_detail_view);
     app.settle();
     let bar = app.query().role(Role::NAVIGATION).single();
@@ -119,7 +119,7 @@ fn navigation_toolbar_items_emit_on_semantic_mount(ui: UiBuilder) {
 }
 
 #[waterui::test(theme = TestStyle::new(), viewport = (390, 844))]
-fn navigation_toolbar_items_emit_on_offscreen_mount(ui: UiBuilder<Styled<TestStyle>>) {
+fn navigation_toolbar_items_emit_on_offscreen_mount(ui: UiBuilder) {
     let mut app = ui.mount_offscreen(toolbar_view);
     assert_toolbar_items(&mut app);
 }
@@ -141,7 +141,7 @@ fn navigation_search_field_emits_on_semantic_mount(ui: UiBuilder) {
 }
 
 #[waterui::test(theme = TestStyle::new(), viewport = (390, 844))]
-fn navigation_search_field_emits_on_offscreen_mount(ui: UiBuilder<Styled<TestStyle>>) {
+fn navigation_search_field_emits_on_offscreen_mount(ui: UiBuilder) {
     let query = Binding::container(Str::from(""));
     let mut app = ui.mount_offscreen(move || {
         NavigationView::new("Mail", text("mail body")).searchable(&query, "Search mail")
@@ -167,7 +167,7 @@ fn navigation_large_title_emits_on_semantic_mount(ui: UiBuilder) {
 }
 
 #[waterui::test(theme = TestStyle::new(), viewport = (390, 844))]
-fn navigation_large_title_emits_on_offscreen_mount(ui: UiBuilder<Styled<TestStyle>>) {
+fn navigation_large_title_emits_on_offscreen_mount(ui: UiBuilder) {
     let mut app =
         ui.mount_offscreen(|| NavigationView::new("Inbox", text("mail body")).large_title());
     app.settle();
@@ -198,7 +198,7 @@ fn navigation_back_button_emits_on_semantic_mount(ui: UiBuilder) {
 }
 
 #[waterui::test(theme = TestStyle::new(), viewport = (390, 844))]
-fn navigation_back_button_emits_on_offscreen_mount(ui: UiBuilder<Styled<TestStyle>>) {
+fn navigation_back_button_emits_on_offscreen_mount(ui: UiBuilder) {
     let mut app = ui.mount_offscreen(|| {
         NavigationStack::new(NavigationView::new(
             "Root",
@@ -275,7 +275,7 @@ fn collapsed_split_emits_back_button_and_only_the_front_pane(ui: UiBuilder) {
 /// chevron itself, so the emitted node must carry the chevron's real bounds
 /// and its activation must navigate back to the sidebar.
 #[waterui::test(theme = TestStyle::new(), viewport = (390, 844))]
-fn collapsed_split_back_button_navigates_on_offscreen_mount(ui: UiBuilder<Styled<TestStyle>>) {
+fn collapsed_split_back_button_navigates_on_offscreen_mount(ui: UiBuilder) {
     let selection = Binding::container(None::<i32>);
     let mut app = ui.mount_offscreen({
         let selection = selection.clone();

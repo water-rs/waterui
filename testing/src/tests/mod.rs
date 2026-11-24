@@ -640,7 +640,7 @@ fn styled_semantic_mount_installs_style_tokens_over_framework_defaults() {
     assert_ne!(styled_label, unstyled_label);
 }
 
-/// `UiBuilder<Styled<S>>::mount_app` honours the builder's viewport and scale
+/// [`UiBuilder::mount_app`] honours the builder's viewport and scale factor
 /// factor over the window's declared frame: the window content is allocated
 /// `320x240` logical points — not the `800x600` `Window::new` declares — and
 /// the scale factor stays a capture concern, so bounds read back in logical
@@ -676,6 +676,25 @@ fn free_mount_app_mounts_at_the_window_frame() {
     let mut app = mount_app(app, token_probe::TokenProbeStyle);
     let bounds = app.query().role(Role::LABEL).single().bounds();
     assert_eq!(bounds, NodeBounds::new(0.0, 0.0, 800.0, 600.0));
+}
+
+#[test]
+#[should_panic(expected = "requires a style")]
+fn unstyled_mount_offscreen_panics_without_theme() {
+    let _ = ui().mount_offscreen(|| text("unstyled"));
+}
+
+#[test]
+#[should_panic(expected = "requires a style")]
+fn unstyled_mount_app_panics_without_theme() {
+    let app = waterui::app::App::new(|| text("unstyled"), waterui::Environment::new());
+    let _ = ui().mount_app(app);
+}
+
+#[test]
+#[should_panic(expected = "requires a style")]
+fn unstyled_perf_panics_without_theme() {
+    let _ = ui().perf(|| text("unstyled"));
 }
 
 /// Chained frame setters mutate one `FrameLayout`, so `.size(40, 20)` followed

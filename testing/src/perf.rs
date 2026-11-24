@@ -1,10 +1,10 @@
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use hydrolysis::{HeadlessRuntime, PointerKind, Style};
+use hydrolysis::{HeadlessRuntime, PointerKind};
 use waterui_core::{AnyView, View};
 
-use crate::app::{OffscreenApp, Styled, UiBuilder};
+use crate::app::{OffscreenApp, UiBuilder};
 use crate::driver::{self, FrameTiming};
 use crate::query::{Query, Queued};
 
@@ -624,15 +624,10 @@ impl core::fmt::Debug for PerfApp {
 }
 
 impl PerfApp {
-    pub(crate) fn new<F, V, S>(
-        builder: UiBuilder<Styled<S>>,
-        view_fn: F,
-        config: PerfConfig,
-    ) -> Self
+    pub(crate) fn new<F, V>(builder: UiBuilder, view_fn: F, config: PerfConfig) -> Self
     where
         F: Fn() -> V + 'static,
         V: View + 'static,
-        S: Style + Clone,
     {
         let view_fn = Rc::new(move || AnyView::new(view_fn()));
         Self {

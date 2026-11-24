@@ -668,7 +668,7 @@ mod tests {
     use hydrolysis_m3::Material3;
     use waterui::Signal;
     use waterui::Str;
-    use waterui_testing::{OffscreenApp, Role, Styled, UiBuilder};
+    use waterui_testing::{OffscreenApp, Role, UiBuilder};
 
     /// Selecting each control in turn shows its demo — a smoke test that every
     /// catalog entry resolves and renders (the per-component MD3 visual review was
@@ -1047,7 +1047,7 @@ mod tests {
     /// the Stepper demo's controls, both reviewed by eye.
     #[ignore = "writes visual acceptance PNG files for direct image review"]
     #[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (1100, 760))]
-    fn catalog_drawer_and_stepper_render(ui: UiBuilder<Styled<hydrolysis_m3::Material3>>) {
+    fn catalog_drawer_and_stepper_render(ui: UiBuilder) {
         let (selected, groups_open, rows, state) = new_state();
         let mut app: waterui_testing::OffscreenApp = ui.mount_offscreen(move || {
             catalog(&selected, groups_open.clone(), rows.clone(), state.clone())

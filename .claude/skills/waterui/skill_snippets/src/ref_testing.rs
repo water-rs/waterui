@@ -92,7 +92,7 @@ pub mod gated {
     // testing.md § "## `#[waterui::test]`" (prose): a styled manual mount names
     // the style in its parameter type. Not counted as a rust block.
     // -----------------------------------------------------------------------
-    pub fn styled_manual_mount(ui: UiBuilder<waterui_testing::Styled<hydrolysis_m3::Material3>>) {
+    pub fn styled_manual_mount(ui: UiBuilder) {
         let _ = ui;
     }
 
@@ -403,10 +403,10 @@ pub mod gated {
     pub mod bench_manual {
         use waterui::prelude::*;
 
-        use waterui_testing::{PerfReport, Styled, UiBuilder};
+        use waterui_testing::{PerfReport, UiBuilder};
 
         #[waterui::bench(theme = hydrolysis_m3::Material3::defaults(), max_rebuild_ratio = 0.2)]
-        fn counter_updates(ui: UiBuilder<Styled<hydrolysis_m3::Material3>>) -> PerfReport {
+        fn counter_updates(ui: UiBuilder) -> PerfReport {
             let value = Binding::i32(0);
             let for_view = value.clone();
             ui.perf_with(
