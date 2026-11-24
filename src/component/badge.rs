@@ -9,7 +9,7 @@
 //! ```
 //! use waterui::prelude::*;
 //!
-//! let badge = badge::Badge::new(5, button("Messages"));
+//! let badge = badge::Badge::new(5, button("Messages").action(|| {}));
 //! ```
 
 use nami::{Computed, Signal, signal::IntoComputed};

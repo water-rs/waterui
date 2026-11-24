@@ -54,7 +54,7 @@ pub use stepper::{Stepper, stepper};
 /// Button component and related utilities.
 pub mod button;
 pub use button::{
-    Button, ButtonLabel, ButtonRole, ButtonStyle, ButtonStyleConfiguration, ButtonTrigger,
-    CustomButtonStyle, IntoButtonStyle, PrimitiveButtonStyle, PrimitiveButtonStyleConfiguration,
-    button,
+    Button, ButtonAction, ButtonLabel, ButtonRole, ButtonStyle, ButtonStyleConfiguration,
+    ButtonTrigger, CustomButtonStyle, IntoButtonStyle, PrimitiveButtonStyle,
+    PrimitiveButtonStyleConfiguration, button,
 };

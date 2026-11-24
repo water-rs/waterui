@@ -23,7 +23,7 @@ impl DemoState {
 }
 
 fn content(_state: DemoState) -> impl View {
-    vstack((text("demo"), button("Login")))
+    vstack((text("demo"), button("Login").action(|| {})))
 }
 
 // ---------------------------------------------------------------------------
@@ -44,7 +44,7 @@ pub mod gated {
 
     /// Glue: the view testing.md's mounting-form example names.
     fn login_view() -> impl View {
-        vstack((button("Login"), text("Welcome")))
+        vstack((button("Login").action(|| {}), text("Welcome")))
     }
 
     /// Glue: the view testing.md's bench examples name.

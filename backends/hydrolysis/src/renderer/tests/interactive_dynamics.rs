@@ -116,7 +116,7 @@ fn press_feedback_max_growth_caps_wide_button_silhouette_and_content_scale() {
         );
 
     let mut runtime = runtime_with(
-        button(text("Wide button with enough text to cap growth")),
+        button(text("Wide button with enough text to cap growth")).action(|| {}),
         theme,
     );
     let mut frames = Frames {
@@ -190,7 +190,10 @@ fn live_chrome_exposes_smoothed_drag_velocity_and_applies_area_preserving_drag_d
     ));
 
     let theme = MinimalTestTheme::default().with_button_chrome(spec);
-    let mut runtime = runtime_with(button(text("Drag")).width(120.0).height(44.0), theme);
+    let mut runtime = runtime_with(
+        button(text("Drag")).action(|| {}).width(120.0).height(44.0),
+        theme,
+    );
     let mut frames = Frames {
         start: Instant::now(),
         next: 0,
@@ -277,7 +280,13 @@ fn driven_smoothstep_window_runs_on_engine_clock_without_hydrolysis_rerecording(
     );
 
     let theme = MinimalTestTheme::default().with_button_chrome(spec);
-    let mut runtime = runtime_with(button(text("Morph")).width(120.0).height(44.0), theme);
+    let mut runtime = runtime_with(
+        button(text("Morph"))
+            .action(|| {})
+            .width(120.0)
+            .height(44.0),
+        theme,
+    );
     let mut frames = Frames {
         start: Instant::now(),
         next: 0,

@@ -349,7 +349,7 @@ scroll(content)
 spacer()                    // flexible gap
 spacer().height(16.0)       // fixed gap
 
-let buttons: HStack<_> = items.iter().map(|i| button(i.label)).collect();
+let buttons: HStack<_> = items.iter().map(|i| button(i.label).action(|| {})).collect();
 ```
 
 A fixed, known set of children is a tuple — `vstack((a, b, c))`. Reach for `vec!` only

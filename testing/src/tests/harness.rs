@@ -98,7 +98,7 @@ fn default_theme_renders_hydrolysis_widgets() {
         .theme(Material3::defaults())
         .mount_offscreen(|| {
             ScrollView::vertical(vstack((
-                waterui::component::button("Submit"),
+                waterui::component::button("Submit").action(|| {}),
                 text("Scrolled content").body(),
             )))
         });

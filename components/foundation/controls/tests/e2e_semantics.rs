@@ -146,7 +146,7 @@ fn repeated_state_calls_bind_in_argument_order(ui: UiBuilder) {
 }
 
 fn disabled_button_view() -> impl waterui::View {
-    control_shell(button("Disabled").disabled(true))
+    control_shell(button("Disabled").action(|| {}).disabled(true))
 }
 
 #[waterui::test(disabled_button_view, viewport = (320, 240))]
@@ -159,7 +159,7 @@ fn button_disabled_state_is_accessible(app: &mut SemanticApp) {
 }
 
 fn submit_button_view() -> impl waterui::View {
-    control_shell(button("Submit"))
+    control_shell(button("Submit").action(|| {}))
 }
 
 #[waterui::test(submit_button_view, viewport = (320, 240))]
@@ -480,7 +480,8 @@ fn accessibility_label_follows_a_signal_without_rebuilding(ui: UiBuilder) {
     let unread = Binding::i32(3);
     let label = unread.map(|count| Str::from(format!("{count} unread messages")));
 
-    let mut app = ui.mount(move || control_shell(button("Inbox").a11y_label(label.clone())));
+    let mut app =
+        ui.mount(move || control_shell(button("Inbox").a11y_label(label.clone()).action(|| {})));
 
     app.query()
         .role(Role::BUTTON)
@@ -499,7 +500,7 @@ fn accessibility_label_follows_a_signal_without_rebuilding(ui: UiBuilder) {
 }
 
 fn icon_only_search_button_view() -> impl waterui::View {
-    control_shell(button(label("Search").icon(()).icon_only()))
+    control_shell(button(label("Search").icon(()).icon_only()).action(|| {}))
 }
 
 #[waterui::test(icon_only_search_button_view, viewport = (320, 240))]

@@ -76,7 +76,10 @@ pub fn components_block_03() {
     }
     let tabs = [Tab, Tab];
 
-    let row: HStack<_> = tabs.iter().map(|t| button(t.label())).collect();
+    let row: HStack<_> = tabs
+        .iter()
+        .map(|t| button(t.label()).action(|| {}))
+        .collect();
     let tiles: VStack<_> = (0..6).map(photo_tile).collect(); // photo_tile: fn(usize) -> impl View
 
     let _ = (row, tiles);
@@ -363,7 +366,7 @@ pub fn components_block_12() {
 pub fn components_block_13() {
     fn toolbar_row() -> impl View {
         hstack((
-            button(label("Locate").icon(lucide::locate_fixed())),
+            button(label("Locate").icon(lucide::locate_fixed())).action(|| {}),
             Divider,
         ))
     }
@@ -374,7 +377,9 @@ pub fn components_block_13() {
         slider("Sensitivity", &level).range(0.5..=3.0).hide_label()
     };
     let _ = {
-        button(label("Locate").icon(lucide::locate_fixed())).label_style(LabelDisplayMode::IconOnly)
+        button(label("Locate").icon(lucide::locate_fixed()))
+            .label_style(LabelDisplayMode::IconOnly)
+            .action(|| {})
     };
     let _ = {
         toolbar_row().install(LabelDisplayMode::IconOnly) // scope a mode to a whole subtree
@@ -413,7 +418,7 @@ pub fn components_block_14() {
 
     let _ = {
         // a text! satisfies IntoLabel: reactive button titles need no watch
-        button(text!("{edit_label}"))
+        button(text!("{edit_label}")).action(|| {})
     };
 
     let _ = {

@@ -147,7 +147,7 @@ pub fn settings_form() -> impl View {
                     ],
                     &choice,
                 ),
-                button("Reset"),
+                button("Reset").action(|| {}),
             ))
             .padding()
         })
@@ -170,7 +170,7 @@ pub fn gallery_page() -> impl View {
                                 .size(100.0, 80.0),
                             text(format!("Item {index}")),
                             text("Caption under the swatch").foreground(Color::srgb(90, 90, 90)),
-                            button("Open"),
+                            button("Open").action(|| {}),
                         ))
                         .padding()
                         .background(Color::srgb(245, 245, 245))
