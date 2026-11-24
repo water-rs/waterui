@@ -7,7 +7,7 @@
 //! *semantic* runtime — a GPU-free pipeline whose accessibility tree is a
 //! product of the view tree and the widgets' semantics, so it carries no style
 //! package and answers no geometry (`UiBuilder::mount` is all a
-//! `UiBuilder<NoStyle>` offers). Tests that need pixels, bounds, pointer
+//! `UiBuilder` offers before `.theme(...)` is attached). Tests that need pixels, bounds, pointer
 //! gestures or frame timing carry a `hydrolysis::Style` through
 //! `UiBuilder::theme` and mount the *rendered* runtime through
 //! `mount_offscreen` — the distinction is in the type, not a runtime check, so
@@ -169,7 +169,7 @@ pub(crate) mod wait;
 #[cfg(feature = "harness")]
 pub use accesskit::Role as AccessKitRole;
 #[cfg(feature = "harness")]
-pub use app::{DragOptions, NoStyle, OffscreenApp, SemanticApp, Styled, UiBuilder, mount_app, ui};
+pub use app::{DragOptions, OffscreenApp, SemanticApp, UiBuilder, mount_app, ui};
 pub use artifacts::{CapturedSnapshot, TestArtifacts, artifact_root};
 #[cfg(feature = "harness")]
 pub use driver::{FrameTiming, RuntimeDriver, VIRTUAL_FRAME};

@@ -7,11 +7,11 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use waterui::text::{styled::StyledStr, text};
-use waterui_testing::{Role, Styled, TestStyle, UiBuilder};
+use waterui_testing::{Role, TestStyle, UiBuilder};
 
 /// "#waterui" is the only tappable span on the line.
 #[waterui::test(theme = TestStyle::new(), viewport = (390, 200))]
-fn a_tap_span_is_tappable_and_publishes_a_link(ui: UiBuilder<Styled<TestStyle>>) {
+fn a_tap_span_is_tappable_and_publishes_a_link(ui: UiBuilder) {
     let taps = Rc::new(Cell::new(0_u32));
     let payload_seen = Rc::new(Cell::new(false));
     let (taps_in, seen_in) = (Rc::clone(&taps), Rc::clone(&payload_seen));
