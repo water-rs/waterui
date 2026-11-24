@@ -1743,7 +1743,9 @@ mod tests {
     #[cfg(feature = "navigation")]
     #[test]
     fn text_supports_navigation_title_without_shadowing() {
-        let page = crate::text::text("About").navigation_title("About");
-        let _body: crate::navigation::NavigationView<_> = page;
+        use crate::{navigation::NavigationView, text::text};
+
+        let page = text("About").navigation_title("About");
+        let _body: NavigationView<_> = page;
     }
 }
