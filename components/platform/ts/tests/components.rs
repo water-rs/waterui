@@ -1922,3 +1922,12 @@ fn ts_a_control_without_a_label_is_refused() {
         "the error says a control names itself: {error}"
     );
 }
+
+#[test]
+fn ts_a_button_without_on_tap_is_refused() {
+    let error = mount_error(&module(r#"waterui.jsx("Button", { children: "Save" })"#));
+    assert!(
+        error.contains("onTap"),
+        "the error names the missing required action attribute: {error}"
+    );
+}

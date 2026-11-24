@@ -349,7 +349,7 @@ scroll(content)
 spacer()                    // flexible gap
 spacer().height(16.0)       // fixed gap
 
-let buttons: HStack<_> = items.iter().map(|i| button(i.label)).collect();
+let buttons: HStack<_> = items.iter().map(|i| button(i.label).action(|| {})).collect();
 ```
 
 A fixed, known set of children is a tuple — `vstack((a, b, c))`. Reach for `vec!` only
@@ -614,8 +614,9 @@ differ from ordinary Rust views:
 - Props are a struct literal naming a `#[derive(TsProps)]` type; the Rust struct and the
   TypeScript interface are checked against each other by contract hash, so a bundle from
   another build is refused rather than mis-mounted. `String` ⇄ `string`,
-  `Binding<T>` ⇄ `Signal<T>`, `Box<dyn Fn()>` ⇄ `() => void`, and
-  `#[ts(rename = "onDismiss")]` maps a snake_case field to its camelCase prop. A module
+  `Binding<T>` ⇄ `Signal<T>`, `Box<dyn Fn()>` ⇄ `() => void`, and snake_case fields
+  and unit-enum variants project to `camelCase` by default (overridable with
+  `#[ts(rename_all = "...")]` or `#[ts(rename = "...")]`). A module
   that takes no props is `tsx!("./about.tsx")`, typed against `NoProps`. A data type
   nested inside props (a struct, or an enum that becomes a string-literal union or tagged
   object) derives `TsType` from the same `waterui::ts::schema` module; it converts both

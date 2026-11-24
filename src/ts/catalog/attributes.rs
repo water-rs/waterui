@@ -163,7 +163,7 @@ pub struct ButtonAttributes {
     /// What the button does when it is activated — by a tap, by the keyboard,
     /// or by an assistive technology, which is why this is the button's own
     /// attribute and not the `onTapGesture` modifier.
-    on_tap: Option<JsAction>,
+    on_tap: JsAction,
     /// The label, when it is not the children.
     label: Option<AnyView>,
 }
@@ -173,8 +173,8 @@ impl ButtonAttributes {
     /// or by an assistive technology, which is why this is the button's own
     /// attribute and not the `onTapGesture` modifier.
     #[must_use]
-    pub const fn on_tap(&self) -> Option<&JsAction> {
-        self.on_tap.as_ref()
+    pub const fn on_tap(&self) -> &JsAction {
+        &self.on_tap
     }
 
     /// The label, when it is not the children.
@@ -190,7 +190,7 @@ impl ButtonAttributes {
 
     /// Takes the value apart into its fields, in declaration order.
     #[must_use]
-    pub fn into_parts(self) -> (Option<JsAction>, Option<AnyView>) {
+    pub fn into_parts(self) -> (JsAction, Option<AnyView>) {
         (self.on_tap, self.label)
     }
 }

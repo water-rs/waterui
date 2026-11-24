@@ -512,7 +512,7 @@ pub fn navigation_block_12(env: Environment) -> App<impl Windows> {
         text("scene")
     }
     fn window_toolbar(_status: &Binding<Str>) -> impl View + use<> {
-        hstack((button("Refresh"), Divider))
+        hstack((button("Refresh").action(|| {}), Divider))
     }
     let status = Binding::container(Str::from("ready"));
 

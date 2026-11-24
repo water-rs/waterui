@@ -915,17 +915,18 @@ pub fn derive_ts_props(input: TokenStream) -> TokenStream {
 mod tests {
     use super::{ContainerAttrs, is_js_identifier, ts_type_impl};
     use quote::quote;
+    use syn::{DeriveInput, parse_quote};
 
     /// Expands the schema half of the derive, which is the half that projects
     /// property and variant names.
-    fn expand(input: &syn::DeriveInput) -> syn::Result<String> {
+    fn expand(input: &DeriveInput) -> syn::Result<String> {
         let attrs = ContainerAttrs::parse(input)?;
         ts_type_impl(&quote!(::schema), input, attrs).map(|tokens| tokens.to_string())
     }
 
     #[test]
     fn fields_project_as_camel_case_by_default() {
-        let expansion = expand(&syn::parse_quote! {
+        let expansion = expand(&parse_quote! {
             struct Props {
                 item_count: u32,
                 on_tap: u32,
@@ -941,7 +942,7 @@ mod tests {
 
     #[test]
     fn unit_enum_variants_project_as_camel_case_by_default() {
-        let expansion = expand(&syn::parse_quote! {
+        let expansion = expand(&parse_quote! {
             enum Align {
                 Leading,
                 BottomTrailing,
@@ -955,7 +956,7 @@ mod tests {
 
     #[test]
     fn tagged_enum_keeps_variant_names_and_camel_cases_struct_fields() {
-        let expansion = expand(&syn::parse_quote! {
+        let expansion = expand(&parse_quote! {
             enum Slot {
                 Empty,
                 Note { line_count: u32 },
@@ -970,7 +971,7 @@ mod tests {
 
     #[test]
     fn rename_all_selects_container_convention() {
-        let snake = expand(&syn::parse_quote! {
+        let snake = expand(&parse_quote! {
             #[ts(rename_all = "snake_case")]
             struct Props {
                 item_count: u32,
@@ -982,7 +983,7 @@ mod tests {
         assert!(snake.contains(r#""item_count""#), "{snake}");
         assert!(snake.contains(r#""customName""#), "{snake}");
 
-        let kebab = expand(&syn::parse_quote! {
+        let kebab = expand(&parse_quote! {
             #[ts(rename_all = "kebab-case")]
             enum Status {
                 InProgress,
@@ -994,7 +995,7 @@ mod tests {
         assert!(kebab.contains(r#""in-progress""#), "{kebab}");
         assert!(kebab.contains(r#""done!""#), "{kebab}");
 
-        let verbatim = expand(&syn::parse_quote! {
+        let verbatim = expand(&parse_quote! {
             #[ts(rename_all = "verbatim")]
             enum Align {
                 BottomTrailing,
@@ -1006,7 +1007,7 @@ mod tests {
 
     #[test]
     fn unknown_rename_all_or_invalid_struct_kebab_is_refused() {
-        let error = expand(&syn::parse_quote! {
+        let error = expand(&parse_quote! {
             #[ts(rename_all = "spongebob")]
             struct Props {
                 item_count: u32,
@@ -1015,7 +1016,7 @@ mod tests {
         .expect_err("unknown rename_all must fail");
         assert!(error.to_string().contains("spongebob"), "{error}");
 
-        let error = expand(&syn::parse_quote! {
+        let error = expand(&parse_quote! {
             #[ts(rename_all = "kebab-case")]
             struct Props {
                 item_count: u32,
@@ -1027,7 +1028,7 @@ mod tests {
 
     #[test]
     fn a_rename_reaches_the_schema() {
-        let expansion = expand(&syn::parse_quote! {
+        let expansion = expand(&parse_quote! {
             struct ButtonAttributes {
                 #[ts(rename = "onPress")]
                 on_tap: u32,
@@ -1040,7 +1041,7 @@ mod tests {
 
     #[test]
     fn a_rename_that_is_not_an_identifier_is_refused() {
-        let error = expand(&syn::parse_quote! {
+        let error = expand(&parse_quote! {
             struct Attributes {
                 #[ts(rename = "foo bar")]
                 foo: u32,
@@ -1054,7 +1055,7 @@ mod tests {
 
     #[test]
     fn a_rename_that_starts_with_a_digit_is_refused() {
-        expand(&syn::parse_quote! {
+        expand(&parse_quote! {
             struct Attributes {
                 #[ts(rename = "1st")]
                 first: u32,
@@ -1065,7 +1066,7 @@ mod tests {
 
     #[test]
     fn two_fields_projecting_to_one_property_are_refused() {
-        let error = expand(&syn::parse_quote! {
+        let error = expand(&parse_quote! {
             struct Attributes {
                 on_tap: u32,
                 #[ts(rename = "onTap")]
@@ -1080,7 +1081,7 @@ mod tests {
 
     #[test]
     fn two_variants_projecting_to_one_literal_are_refused() {
-        let error = expand(&syn::parse_quote! {
+        let error = expand(&parse_quote! {
             enum Status {
                 Ready,
                 #[ts(rename = "ready")]

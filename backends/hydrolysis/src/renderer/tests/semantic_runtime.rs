@@ -1272,7 +1272,7 @@ fn tab_traverses_the_semantic_tree_and_activation_dispatches_click() {
             button("First").action(move || tapped.set(true)),
             toggle("Mode", &on_for_view).switch(),
             field("Name", &value_for_view),
-            button("Last"),
+            button("Last").action(|| {}),
         )))
     }));
 
@@ -1805,7 +1805,7 @@ fn focused_binding_moves_ui_focus_and_tree_focus() {
         AnyView::new(vstack((
             field("Name", &name_for_view).focused(&focus, Field::Name),
             field("Email", &email_for_view).focused(&focus, Field::Email),
-            button("Done"),
+            button("Done").action(|| {}),
         )))
     }));
 
