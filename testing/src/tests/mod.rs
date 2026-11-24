@@ -18,8 +18,10 @@ use accesskit::{
 use hydrolysis::InputEvent;
 use waterui::Binding;
 use waterui::ContentLedger;
+use waterui::Environment;
 use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityGeometry;
+use waterui::app::App;
 use waterui::component::list::List;
 use waterui::component::{text, vstack};
 use waterui::graphics::WorkingColor;
@@ -29,6 +31,7 @@ use waterui::graphics::canvas::Canvas;
 use waterui::graphics::color::Srgb;
 use waterui::layout::scroll::ScrollView;
 use waterui::text::Text;
+use waterui::window::Window;
 use waterui_core::layout::{Point, Rect, Size};
 use waterui_core::{AnyView, Native, Signal, View};
 
@@ -693,7 +696,7 @@ fn unstyled_mount_offscreen_panics_without_theme() {
 #[test]
 #[should_panic(expected = "requires a style")]
 fn unstyled_mount_app_panics_without_theme() {
-    let app = waterui::app::App::new(|| text("unstyled"), waterui::Environment::new());
+    let app = App::new(Environment::new()).window(Window::new("", || text("unstyled")));
     let _ = ui().mount_app(app);
 }
 
