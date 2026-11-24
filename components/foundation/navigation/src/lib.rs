@@ -25,6 +25,8 @@ use core::{
 };
 
 use nami::{Binding, Computed, Signal as _, SignalExt as _};
+#[cfg(feature = "serde")]
+use serde::{Serialize, de::DeserializeOwned};
 use waterui_controls::{Button, ButtonStyle, IconSlot, IntoLabel, LabelKind, button};
 use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 use waterui_core::handler::{BoxedAction, Handler, ReportExtraction, boxed_action};
@@ -38,9 +40,7 @@ use waterui_graphics::color::{Color, WorkingColor};
 use waterui_text::IntoText;
 use waterui_text::Text;
 
-pub use path::{
-    ErasedNavigationRoute, NavigationPath, NavigationPathReplacement, RestorableNavigationRoute,
-};
+pub use path::{ErasedNavigationRoute, NavigationPath, NavigationPathReplacement};
 pub use router::NavigationRouter;
 pub use search::NavigationSearch;
 pub use split::{
@@ -1665,7 +1665,7 @@ impl RouteTable for () {
 impl<Prev, R, F, D, Tb> RouteTable for RouteDestinations<Prev, R, F>
 where
     Prev: RouteTable,
-    R: RestorableNavigationRoute,
+    R: Clone + PartialEq + 'static,
     F: 'static + Fn(R) -> NavigationView<D, Tb>,
     D: View,
     Tb: NavigationToolbarItems,
@@ -1824,7 +1824,7 @@ impl<V, P, F, Tb> NavigationStack<V, P, F, Tb> {
     }
 }
 
-impl<V: View, T: 'static + PartialEq, Tb: NavigationToolbarItems>
+impl<V: View, T: 'static, Tb: NavigationToolbarItems>
     NavigationStack<V, NavigationPath<T>, (), Tb>
 {
     /// Creates a new navigation stack with the specified navigation path and root view.
@@ -1840,7 +1840,11 @@ impl<V: View, T: 'static + PartialEq, Tb: NavigationToolbarItems>
             transition: AnyNavigationTransition::new(navigation_transition::automatic()),
         }
     }
+}
 
+impl<V: View, T: 'static + PartialEq, Tb: NavigationToolbarItems>
+    NavigationStack<V, NavigationPath<T>, (), Tb>
+{
     /// Sets the destination builder for the navigation stack.
     ///
     /// # Arguments
@@ -1873,13 +1877,11 @@ impl<V: View, Prev: RouteTable, Tb: NavigationToolbarItems>
         destination: F,
     ) -> NavigationStack<V, NavigationPath<ErasedNavigationRoute>, RouteDestinations<Prev, R, F>, Tb>
     where
-        R: RestorableNavigationRoute,
+        R: Clone + PartialEq + 'static,
         F: 'static + Fn(R) -> NavigationView<D, DTb>,
         D: View,
         DTb: NavigationToolbarItems,
     {
-        #[cfg(feature = "serde")]
-        self.path.register_restoration::<R>();
         NavigationStack {
             root: self.root,
             path: self.path,
@@ -1890,6 +1892,25 @@ impl<V: View, Prev: RouteTable, Tb: NavigationToolbarItems>
             },
             transition: self.transition,
         }
+    }
+
+    /// Registers a restorable destination for one concrete route type of a
+    /// heterogeneous path, keying serialized routes by the explicit stable
+    /// `key`.
+    #[cfg(feature = "serde")]
+    pub fn restorable_destination<R, F, D, DTb>(
+        self,
+        key: &'static str,
+        destination: F,
+    ) -> NavigationStack<V, NavigationPath<ErasedNavigationRoute>, RouteDestinations<Prev, R, F>, Tb>
+    where
+        R: Clone + PartialEq + Serialize + DeserializeOwned + 'static,
+        F: 'static + Fn(R) -> NavigationView<D, DTb>,
+        D: View,
+        DTb: NavigationToolbarItems,
+    {
+        self.path.register_restoration::<R>(key);
+        self.destination(destination)
     }
 }
 
@@ -2854,5 +2875,39 @@ mod tests {
 
         assert!(metadata.value.get::<BaseMarker>().is_some());
         assert!(Navigator::<TestRoute>::extract(&metadata.value).is_ok());
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn restorable_destination_registers_explicit_key_for_stack_restoration() {
+        use alloc::format;
+        use serde::de::DeserializeSeed as _;
+        use serde_json::{Deserializer as JsonDeserializer, to_string};
+
+        let path = NavigationPath::heterogeneous();
+        let _stack = NavigationStack::with_path(path.clone(), NavigationView::new("Home", ()))
+            .restorable_destination("project", |id: u32| {
+                NavigationView::new("Project", format!("Project {id}"))
+            });
+
+        path.push(9_u32);
+        let encoded = to_string(&path).expect("restorable destination must serialize");
+        assert_eq!(encoded, r#"[["project",9]]"#);
+
+        let restored = NavigationPath::heterogeneous();
+        let _restored_stack =
+            NavigationStack::with_path(restored.clone(), NavigationView::new("Home", ()))
+                .restorable_destination("project", |id: u32| {
+                    NavigationView::new("Project", format!("Project {id}"))
+                });
+        let mut deserializer = JsonDeserializer::from_str(&encoded);
+        restored
+            .restoration()
+            .deserialize(&mut deserializer)
+            .expect("restorable destination must deserialize");
+
+        let routes = restored.snapshot();
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].downcast_ref::<u32>(), Some(&9));
     }
 }
