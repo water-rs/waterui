@@ -6,7 +6,7 @@ from `use waterui::prelude::*;` unless an explicit import is shown.
 **Feature gates.** `waterui`'s default features are `gpu`, `assets`, `dialog`, `snackbar`,
 `highlight`, `locale-datetime` and `locale-list`. Everything else is opt-in, chiefly `media`,
 `video`, `video-gpu`, `webview`, `flow-markdown` (also gates `RichText` and
-`include_markdown!`), `markdown-math`, `navigation-restoration`, `inspector`, `remote`, `ts`,
+`include_markdown!`), `markdown-math`, `navigation-restoration`, `haptics`, `inspector`, `remote`, `ts`,
 `widgets`, and the component features `canvas`, `chart`, `barcode` and `particle`. `all`
 turns on the full set except `ts`, `markdown-math` and `widgets`. A missing module here is
 usually a missing feature in `Cargo.toml`, not a wrong path:

@@ -16,8 +16,6 @@ use crate::snackbar::SnackbarHost;
 use executor_core::spawn_local;
 use nami::{Binding, Computed, Signal, SignalExt as _, signal::IntoComputed};
 use waterui_core::IntoSignalF32;
-#[cfg(feature = "std")]
-use waterui_core::handler::ReportExtraction;
 pub use waterui_core::view::*;
 use waterui_core::{
     Environment, Metadata, OneOf2, Retain,
@@ -50,6 +48,8 @@ use waterui_layout::{
 #[cfg(feature = "navigation")]
 use waterui_navigation::NavigationView;
 
+#[cfg(feature = "haptics")]
+use crate::haptic::Feedback;
 use crate::{
     accessibility::{
         self, AccessibilityChildren, AccessibilityGeometry, AccessibilityHidden,
@@ -72,8 +72,6 @@ use crate::{
     shape::{ClipShape, Shape},
     style::{Anchor, FloatingStyle, Offset, Rotation, Scale},
 };
-#[cfg(feature = "std")]
-use waterkit_haptic::{Haptic, Intensity};
 use waterui_controls::button::{ButtonStyleHook, IntoButtonStyle};
 #[cfg(feature = "toggle")]
 use waterui_controls::toggle::{IntoToggleStyle, ToggleStyleHook};
@@ -82,18 +80,6 @@ use waterui_interaction::event::{Event, LifeCycle, LifeCycleHook, OnChange, OnEv
 use waterui_interaction::interaction::{Disabled, InteractionReport, InteractionState, Selected};
 use waterui_interaction::key::{KeyHandling, OnKeyPress};
 use waterui_structural_transition::{Transition, Transitioned};
-
-/// Plays an impact haptic. `Haptic::impact` is async; the event that
-/// triggers it does not wait for it.
-#[cfg(feature = "std")]
-fn trigger_impact_haptic(intensity: Intensity) {
-    spawn_local(async move {
-        if let Err(error) = Haptic::impact(intensity).await {
-            tracing::debug!(%error, "failed to trigger impact haptic");
-        }
-    })
-    .detach();
-}
 
 /// The inset a bare [`ViewExt::padding`] applies.
 ///
@@ -976,64 +962,29 @@ pub trait ViewExt: View + Sized {
         self.gesture(LongPressGesture::new(minimum_duration_ms), action)
     }
 
-    /// Adds a tap gesture recognizer and triggers haptic impact feedback.
-    #[cfg(feature = "std")]
-    fn on_tap_haptic<H, Args>(
-        self,
-        intensity: Intensity,
-        action: H,
-    ) -> Metadata<GestureObserver, Self>
+    /// Plays haptic `feedback` whenever `trigger`'s value changes.
+    ///
+    /// Nothing runs on initial mount or when consecutive updates produce an
+    /// equal value. Use [`Haptic`](crate::haptic::Haptic) inside gesture
+    /// handlers when an imperative trigger is needed.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use waterui::prelude::*;
+    ///
+    /// let saved_count = Binding::i32(0);
+    /// text!("Saved").sensory_feedback(Feedback::Success, &saved_count);
+    /// ```
+    #[cfg(feature = "haptics")]
+    fn sensory_feedback<C>(self, feedback: Feedback, trigger: &C) -> OnChange<Self>
     where
-        H: Handler<Args, ()>,
+        C: Signal,
+        C::Output: PartialEq + Clone,
     {
-        let mut action = action;
-        self.gesture(TapGesture::new(), move |env: Environment| {
-            trigger_impact_haptic(intensity);
-            action.call(&env).report_extraction();
+        self.on_change(trigger, move |_value: C::Output| {
+            feedback.trigger();
         })
-    }
-
-    /// Adds a tap gesture recognizer with medium haptic impact feedback.
-    #[cfg(feature = "std")]
-    fn on_tap_haptic_default<H, Args>(self, action: H) -> Metadata<GestureObserver, Self>
-    where
-        H: Handler<Args, ()>,
-    {
-        self.on_tap_haptic(Intensity::MEDIUM, action)
-    }
-
-    /// Adds a long-press gesture recognizer and triggers haptic impact feedback.
-    #[cfg(feature = "std")]
-    fn on_long_press_haptic<H, Args>(
-        self,
-        minimum_duration_ms: u32,
-        intensity: Intensity,
-        action: H,
-    ) -> Metadata<GestureObserver, Self>
-    where
-        H: Handler<Args, ()>,
-    {
-        let mut action = action;
-        self.gesture(
-            LongPressGesture::new(minimum_duration_ms),
-            move |env: Environment| {
-                trigger_impact_haptic(intensity);
-                action.call(&env).report_extraction();
-            },
-        )
-    }
-
-    /// Adds a long-press gesture recognizer with medium haptic impact feedback.
-    #[cfg(feature = "std")]
-    fn on_long_press_haptic_default<H, Args>(
-        self,
-        minimum_duration_ms: u32,
-        action: H,
-    ) -> Metadata<GestureObserver, Self>
-    where
-        H: Handler<Args, ()>,
-    {
-        self.on_long_press_haptic(minimum_duration_ms, Intensity::MEDIUM, action)
     }
 
     /// Applies a shadow effect to this view.
@@ -1773,6 +1724,21 @@ mod tests {
         }
 
         let _ = reported;
+    }
+
+    #[cfg(feature = "haptics")]
+    #[test]
+    fn sensory_feedback_does_not_borrow_trigger() {
+        use nami::Binding;
+
+        use crate::haptic::Feedback;
+
+        fn triggered(content: AnyView) -> impl View {
+            let count = Binding::i32(0);
+            content.sensory_feedback(Feedback::Success, &count)
+        }
+
+        let _ = triggered;
     }
 
     #[cfg(feature = "navigation")]

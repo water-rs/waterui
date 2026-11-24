@@ -225,7 +225,8 @@ feature forwards to it), `video`, `video-gpu`, `remote` (web URLs for `Photo`,
 `Url::fetch`), `webview`, `capture`, `flow-markdown`, `markdown-math`, `inspector`,
 `inspector-signals`, `widgets` (home-screen widgets, `#[waterui::widget]`), `ts` / `ts-ota`
 (TypeScript views and their over-the-air update client `waterui::ts::Ota`),
-`navigation-restoration`, and `std`. The `all` feature enables every one of these except `ts`,
+`navigation-restoration`, `haptics` (`Feedback`, `Haptic`, `Intensity`,
+`ViewExt::sensory_feedback`), and `std`. The `all` feature enables every one of these except `ts`,
 `ts-ota`, `widgets`, `markdown-math`, `erased-dispatch`, and `dynamic_linking`. Charts,
 barcodes, and particles have facade features `chart`, `barcode`, and `particle`, exposing the
 independent crates as `waterui::chart`, `waterui::barcode`, and `waterui::particle` (while

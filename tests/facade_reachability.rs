@@ -31,9 +31,13 @@ use waterui::metadata::{Metadata, MetadataKey, Retain};
 // Implementing `Animatable` for a custom data shape.
 use waterui::easing::{EasingCurve, Interpolatable};
 
-// The explicit-intensity haptic modifiers, not just the `_default` variants.
-#[cfg(feature = "std")]
-use waterui::Intensity;
+// Declarative sensory feedback and imperative haptic triggers.
+#[cfg(feature = "haptics")]
+use waterui::haptic::{
+    Feedback as HapticFeedback, Haptic as HapticEngine, Intensity as HapticIntensity,
+};
+#[cfg(feature = "haptics")]
+use waterui::{Feedback, Haptic, Intensity};
 
 // `.filter(F)` requires `F: Reach + RenderTransfer` (`Reach` covers every
 // `Filter` of a colour or spatial kind) and `.effect(E)` requires

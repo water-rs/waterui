@@ -31,7 +31,7 @@ compile-gate-tests = []
 # `barcode`, `chart` and `particle` back media.md's facade imports
 # (`waterui::barcode`, `waterui::chart`, `waterui::particle`); `widgets` backs
 # project.md's home-screen widget section (`waterui::widgets`, `#[waterui::widget]`).
-waterui = { workspace = true, features = ["webview", "flow-markdown", "media", "video", "gpu", "assets", "snackbar", "highlight", "locale-datetime", "locale-list", "locale-relative-time", "ts", "dialog", "canvas", "barcode", "chart", "particle", "widgets", "list", "navigation", "menu", "slider", "stepper", "toggle", "text-field", "secure-field", "validation", "picker", "calendar", "date-picker", "multi-date-picker", "color-picker", "file-picker"] }
+waterui = { workspace = true, features = ["webview", "flow-markdown", "media", "video", "gpu", "assets", "snackbar", "highlight", "locale-datetime", "locale-list", "locale-relative-time", "ts", "dialog", "canvas", "barcode", "chart", "particle", "widgets", "list", "navigation", "menu", "slider", "stepper", "toggle", "text-field", "secure-field", "validation", "picker", "calendar", "date-picker", "multi-date-picker", "color-picker", "file-picker", "haptics"] }
 waterui-icons-material-icon.workspace = true
 waterui-icons-lucide.workspace = true
 # Direct-crate dependencies the skill's own snippets name.

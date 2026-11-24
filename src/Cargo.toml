@@ -240,7 +240,10 @@ flow-markdown = [
 # With this off the Markdown parser is built without `ENABLE_MATH`, so a dollar
 # sign in prose stays a dollar sign, exactly as it does today.
 markdown-math = ["flow-markdown", "waterui-markdown?/math"]
-std = ["dep:waterkit-haptic", "waterui-core/std"]
+# Haptic and sensory feedback (`waterui::haptic`, `Feedback`, `Haptic`, `Intensity`,
+# `ViewExt::sensory_feedback`). Opt-in so applications without haptics pay none of it.
+haptics = ["dep:waterkit-haptic"]
+std = ["waterui-core/std"]
 # In-tree offscreen view capture (`CaptureHandle`, `CaptureScope`, `ViewExt::capture`)
 # and `NativeBackend::offscreen` wiring. Opt-in so `route_metadata_dyn` does not pull
 # the offscreen renderer into binaries that never capture views from inside the tree.
@@ -282,6 +285,7 @@ all = [
     "chart",
     "barcode",
     "particle",
+    "haptics",
     "std",
     "gpu",
     "highlight",
