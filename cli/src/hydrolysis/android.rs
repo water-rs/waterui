@@ -1509,7 +1509,7 @@ mod tests {
         write_vendor_stub(
             &waterui_root.join("backends/apple"),
             "waterui-apple",
-            &["map", "media", "webview"],
+            &["map", "video", "webview"],
         );
         write_vendor_stub(&waterui_root.join("backends/hydrolysis"), "hydrolysis", &[]);
         let revision = git_commit_all(&waterui_root, "stage member crates")?;
@@ -1577,7 +1577,7 @@ mod tests {
         crate::framework::test_fixtures::write_vendor_stub(
             &vendor_dir.join("waterui"),
             "waterui",
-            &["dynamic_linking", "media", "webview"],
+            &["dynamic_linking", "image", "video", "webview"],
         );
         let manifest_path = root.join("Cargo.toml");
         let mut document: toml_edit::DocumentMut = std::fs::read_to_string(&manifest_path)

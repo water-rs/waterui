@@ -19,7 +19,7 @@ use waterui::prelude::slider::slider;
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::Binding;
-use waterui::shape::{Capsule, Circle, Rectangle, RoundedRectangle, ShapeExt};
+use waterui::shape::{Capsule, Circle, CornerRadius, Rectangle, RoundedRectangle, ShapeExt};
 
 const SCALE_BOX_SIDE: f32 = 80.0;
 const SCALE_STAGE_SIDE: f32 = SCALE_BOX_SIDE * 2.25;
@@ -461,7 +461,10 @@ fn custom_gpu_animation_section() -> impl View {
         text("Shape geometry morphing (renderer-side, not plain Core Animation transform)").body(),
         hstack((
             Circle
-                .morph_to(RoundedRectangle::new(0.22), Color::srgb_hex("#3B82F6"))
+                .morph_to(
+                    RoundedRectangle::new(CornerRadius::fraction(0.22)),
+                    Color::srgb_hex("#3B82F6"),
+                )
                 .duration(Duration::from_millis(1100))
                 .size(90.0, 90.0),
             Rectangle

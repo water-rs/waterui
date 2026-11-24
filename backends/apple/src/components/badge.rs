@@ -11,14 +11,18 @@
 //! follows the `AccentForeground` theme slot.
 
 use alloc::rc::Rc;
+use alloc::string::ToString;
 use core::cell::RefCell;
 
+use cocoa_ui::badge::{BadgeDisplay, BadgeMetrics};
 use cocoa_ui::{PlatformView, Rect, Retained};
-use waterui::component::badge::BadgeConfig;
+use waterui::component::badge::{BadgeConfig, BadgeValue};
 use waterui::graphics::color::WorkingColor;
+use waterui::reactive::watcher::BoxWatcherGuard;
 use waterui::reactive::{Computed, Signal, SignalExt};
 use waterui::resolve::Resolvable;
 use waterui::theme::color::AccentForeground;
+use waterui_core::Environment;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
     ViewDimensions,
@@ -42,10 +46,10 @@ mod platform {
 
 use platform::{BadgeView, HostView};
 
-/// The badge chrome `SwiftUI` draws: a 6pt dot for a zero count, a 16pt
-/// capsule carrying the count in an 11pt medium label, inset 12pt inside
+/// The badge chrome `SwiftUI` draws: a 6pt dot for `BadgeValue::Dot`, a 16pt
+/// capsule carrying text/count in an 11pt medium label, inset 12pt inside
 /// the content's trailing edge and overhanging 14pt above its top.
-const BADGE_METRICS: cocoa_ui::badge::BadgeMetrics = cocoa_ui::badge::BadgeMetrics {
+const BADGE_METRICS: BadgeMetrics = BadgeMetrics {
     dot_size: 6.0,
     capsule_height: 16.0,
     capsule_horizontal_padding: 4.0,
@@ -117,6 +121,50 @@ struct BadgeState {
     /// The watcher observing the currently bound `Color`'s resolved value;
     /// replaced every time the color signal emits a new `Color`.
     color_guard: Option<<Computed<WorkingColor> as Signal>::Guard>,
+    /// Watcher on reactive `BadgeValue::Text` content; cleared for non-text values.
+    text_guard: Option<BoxWatcherGuard>,
+}
+
+fn apply_display(indicator: &BadgeView, host: &HostView, display: BadgeDisplay) {
+    indicator.set_display(display);
+    host.set_needs_layout();
+    crate::measure_memo::invalidate();
+}
+
+fn apply_badge_value(
+    value: BadgeValue,
+    state: &Rc<RefCell<BadgeState>>,
+    host: &Retained<HostView>,
+    env: &Environment,
+) {
+    let indicator = state.borrow().indicator.clone();
+    match value {
+        BadgeValue::Hidden | BadgeValue::Count(0) => {
+            state.borrow_mut().text_guard = None;
+            apply_display(&indicator, host, BadgeDisplay::Hidden);
+        }
+        BadgeValue::Dot => {
+            state.borrow_mut().text_guard = None;
+            apply_display(&indicator, host, BadgeDisplay::Dot);
+        }
+        BadgeValue::Count(count) => {
+            state.borrow_mut().text_guard = None;
+            apply_display(&indicator, host, BadgeDisplay::Text(count.to_string()));
+        }
+        BadgeValue::Text(text) => {
+            let content = text.resolve(env).content();
+            let initial = content.snapshot().to_plain().to_string();
+            apply_display(&indicator, host, BadgeDisplay::Text(initial));
+            let guard = content.watch({
+                let host = Retained::clone(host);
+                move |ctx| {
+                    let plain = ctx.into_value().to_plain().to_string();
+                    apply_display(&indicator, &host, BadgeDisplay::Text(plain));
+                }
+            });
+            state.borrow_mut().text_guard = Some(guard);
+        }
+    }
 }
 
 /// The container's layout face: every query forwards to the content, so
@@ -178,6 +226,7 @@ fn render(config: BadgeConfig<Held>, ctx: &RenderContext<'_>) -> NativeLeaf {
         indicator,
         content,
         color_guard: None,
+        text_guard: None,
     }));
 
     host.set_layout_handler({
@@ -204,15 +253,14 @@ fn render(config: BadgeConfig<Held>, ctx: &RenderContext<'_>) -> NativeLeaf {
         },
     );
 
-    // `value` selects dot vs capsule — a size change, so the host re-lays
-    // out, matching `setNeedsIndicatorLayout`.
+    // `value` selects hidden, dot, or capsule — a size change, so the host
+    // re-lays out, matching `setNeedsIndicatorLayout`.
     leaf.bind(&value, {
         let state = Rc::clone(&state);
         let host = Retained::clone(&host);
+        let env = ctx.env().clone();
         move |value| {
-            state.borrow().indicator.set_value(value);
-            host.set_needs_layout();
-            crate::measure_memo::invalidate();
+            apply_badge_value(value, &state, &host, &env);
         }
     });
 

@@ -68,7 +68,7 @@ pub mod prelude {
     pub use super::haptic::{Feedback, Haptic, Intensity};
     #[cfg(feature = "locale-datetime")]
     pub use super::locale::LocalizedDateTimeExt;
-    #[cfg(feature = "media")]
+    #[cfg(feature = "image")]
     pub use super::media;
     #[cfg(feature = "video")]
     pub use super::video;
@@ -99,6 +99,7 @@ pub mod prelude {
     pub use super::gesture::GestureObserver;
 
     pub use super::border::Border;
+    pub use super::component::badge::BadgeValue;
     pub use super::component::*;
     #[cfg(feature = "form")]
     pub use super::form::*;
@@ -121,15 +122,16 @@ pub mod prelude {
     pub use super::component::link::{Link, LinkTarget, link};
     #[cfg(feature = "list")]
     pub use super::component::list::{
-        List, ListContent, ListItem, ListMinRowHeight, ListSection, Row, Section, detail_row, row,
+        List, ListContent, ListMinRowHeight, Row, Section, detail_row, row,
     };
     #[cfg(feature = "menu")]
     pub use super::component::menu::{
         Command, CommandExt, CommandRole, Menu, MenuItem, NamedKey, Shortcut, ShortcutKey,
-        ShortcutModifiers,
+        ShortcutModifiers, ShortcutNamedKey,
     };
     #[cfg(feature = "menu")]
     pub use super::metadata::context_menu::{ContextMenu, DismissContextMenu};
+    pub use super::metadata::secure::DynamicRange;
 
     // Drag and drop extension traits
     pub use super::drag_drop::DropDestinationExt;
@@ -150,13 +152,13 @@ pub mod prelude {
     #[cfg(any(feature = "gpu", feature = "cpu"))]
     pub use super::gradient::FlowingGradient;
     pub use super::gradient::{AnimatedMeshGradient, AnimatedMeshGradientConfig};
-    pub use super::gradient::{Gradient, MeshGradient};
+    pub use super::gradient::{Gradient, GradientStops, MeshGradient};
 
     // Background types (explicit to avoid module name conflict with layout::background)
     pub use super::background::{Background, Glass, GlassStyle, Material};
 
     // Asset types
-    #[cfg(all(feature = "assets", feature = "media", not(target_arch = "wasm32")))]
+    #[cfg(all(feature = "assets", feature = "image", not(target_arch = "wasm32")))]
     pub use super::ImageAsset;
     #[cfg(all(feature = "assets", feature = "video", not(target_arch = "wasm32")))]
     pub use super::VideoAsset;
@@ -184,6 +186,7 @@ pub mod prelude {
     pub use waterui_macros::{eval, exec, exec_file, js_api, js_file};
 }
 pub use color::Color;
+pub use component::badge::BadgeValue;
 #[cfg(feature = "form")]
 pub use form::FormBuilder;
 #[cfg(feature = "effects")]
@@ -201,7 +204,7 @@ pub use waterui_form as form;
 pub use waterui_graphics::canvas;
 pub use waterui_graphics::color;
 pub use waterui_graphics::gradient;
-#[cfg(feature = "media")]
+#[cfg(feature = "image")]
 pub use waterui_graphics::image_decode;
 #[cfg(feature = "gpu")]
 pub use waterui_graphics::{GpuContent, GpuView, RedrawHandle};
@@ -245,7 +248,7 @@ pub use waterui_macros::{eval, exec, exec_file, js_api, js_file};
 #[cfg(feature = "widgets")]
 #[doc(inline)]
 pub use waterui_macros::{widget, widget_intent};
-#[cfg(feature = "media")]
+#[cfg(feature = "image")]
 pub use waterui_media as media;
 #[cfg(feature = "navigation")]
 pub use waterui_navigation as navigation;
@@ -278,7 +281,7 @@ pub use waterui_webview::ts_schema as __ts_schema;
 pub use waterui_widgets as widgets;
 
 // Asset types re-exported for convenience
-#[cfg(all(feature = "assets", feature = "media", not(target_arch = "wasm32")))]
+#[cfg(all(feature = "assets", feature = "image", not(target_arch = "wasm32")))]
 pub use waterui_assets::ImageAsset;
 #[cfg(all(feature = "assets", feature = "video", not(target_arch = "wasm32")))]
 pub use waterui_assets::VideoAsset;
@@ -417,11 +420,11 @@ pub fn install_application_resources(env: &mut Environment) {
         });
         env.insert(context);
     }
-    #[cfg(feature = "media")]
+    #[cfg(feature = "image")]
     if env.get::<waterui_media::PhotoCache>().is_none() {
         env.insert(waterui_media::PhotoCache::default());
     }
-    #[cfg(all(target_arch = "wasm32", not(feature = "media")))]
+    #[cfg(all(target_arch = "wasm32", not(feature = "image")))]
     let _ = env;
 }
 

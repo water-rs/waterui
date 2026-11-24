@@ -12,7 +12,7 @@ mod support;
 
 use accesskit::Role;
 use support::{mount_rendered, nodes};
-use waterui::component::list::{List, ListItem};
+use waterui::component::list::List;
 use waterui::component::text;
 use waterui::{View, ViewExt};
 use waterui_core::Environment;
@@ -47,7 +47,7 @@ fn uneven_list() -> impl View {
                         .map(|line| format!("row {index} line {line}"))
                         .collect::<Vec<_>>()
                         .join("\n");
-                    ListItem::new(text(lines))
+                    text(lines)
                 }
             })
             .collect::<Vec<_>>(),

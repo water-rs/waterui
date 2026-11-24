@@ -325,12 +325,16 @@ struct TestLocalExecutor {
 /// its teardown race — the runnable cannot be dropped on the waker's thread
 /// (async-task's `spawn_local` thread check) and must not wait for
 /// thread-local teardown.
-struct ParkedRunnables {
-    #[expect(
-        dead_code,
-        reason = "held for its Drop — empties the parked queue while thread-locals are alive"
-    )]
+pub(super) struct ParkedRunnables {
     rx: mpsc::Receiver<Runnable>,
+}
+
+impl ParkedRunnables {
+    pub(super) fn drain(&self) {
+        while let Ok(runnable) = self.rx.try_recv() {
+            runnable.run();
+        }
+    }
 }
 
 impl LocalExecutor for TestLocalExecutor {
@@ -4112,7 +4116,7 @@ fn every_view_answers_the_three_point_probe_consistently() {
 /// matching `BadgedBox` in Compose. They are not center offsets.
 #[test]
 fn badge_indicator_anchors_to_the_content_trailing_edge() {
-    use waterui::component::badge::Badge;
+    use waterui::component::badge::{Badge, BadgeValue};
     use waterui_core::layout::LayoutDirection;
 
     /// `Badge` requires `Clone` content and `Frame` is not `Clone`, so the
@@ -4146,38 +4150,59 @@ fn badge_indicator_anchors_to_the_content_trailing_edge() {
         log.0.borrow().clone()
     };
 
-    // Dot (value 0): leading edge 6 inside the trailing edge, top edge flush —
+    // Zero count (0_u32 / Hidden / Count(0)) draws nothing on either Badge or Tab::badge.
+    assert_eq!(capture(Badge::new(0_u32, anchor.clone()), &env), []);
+    assert_eq!(
+        capture(Badge::new(BadgeValue::Hidden, anchor.clone()), &env),
+        []
+    );
+    assert_eq!(
+        capture(Badge::new(BadgeValue::Count(0), anchor.clone()), &env),
+        []
+    );
+
+    // Dot: leading edge 6 inside the trailing edge, top edge flush —
     // the dot fills the content's top-trailing 6×6 corner.
     assert_eq!(
-        capture(Badge::new(0, anchor.clone()), &env).as_slice(),
+        capture(Badge::new(BadgeValue::Dot, anchor.clone()), &env).as_slice(),
         &[Rect::new(154.0, 0.0, 160.0, 6.0)]
     );
 
-    // Count badge: leading edge 12 inside the trailing edge regardless of its
-    // width, bottom edge 14 below the content's top (its 16-high pill tops out
-    // 2 above the anchor).
-    let draws = capture(Badge::new(5, anchor.clone()), &env);
+    // Count and text badges: leading edge 12 inside the trailing edge regardless
+    // of their width, bottom edge 14 below the content's top (their 16-high pill
+    // tops out 2 above the anchor).
+    let draws = capture(Badge::new(5_u32, anchor.clone()), &env);
     assert_eq!(draws.len(), 1, "one badge indicator draw, got {draws:?}");
     approx::assert_relative_eq!(draws[0].x0, 148.0);
     approx::assert_relative_eq!(draws[0].y0, -2.0);
 
+    let text_draws = capture(Badge::new(BadgeValue::text("New"), anchor.clone()), &env);
+    assert_eq!(
+        text_draws.len(),
+        1,
+        "one text badge draw, got {text_draws:?}"
+    );
+    approx::assert_relative_eq!(text_draws[0].x0, 148.0);
+    approx::assert_relative_eq!(text_draws[0].y0, -2.0);
+
     // RTL mirrors the anchor to the leading edge.
     env.insert(LayoutDirection::RightToLeft);
     assert_eq!(
-        capture(Badge::new(0, anchor.clone()), &env).as_slice(),
+        capture(Badge::new(BadgeValue::Dot, anchor.clone()), &env).as_slice(),
         &[Rect::new(0.0, 0.0, 6.0, 6.0)]
     );
 
-    let draws = capture(Badge::new(5, anchor), &env);
+    let draws = capture(Badge::new(5_u32, anchor), &env);
     assert_eq!(draws.len(), 1, "one badge indicator draw, got {draws:?}");
     approx::assert_relative_eq!(draws[0].x1, 12.0);
     approx::assert_relative_eq!(draws[0].y0, -2.0);
 }
 
-/// A tab's `badge` count draws the theme's count badge on the item; a tab
-/// without one, or with a zero count, draws none (water-rs/waterui#3709).
+/// A tab's `badge` draws dot, count, and text badges on the item; no badge,
+/// `BadgeValue::Hidden`, `Count(0)`, and `0_u32` draw none.
 #[test]
 fn tab_badge_draws_only_for_a_nonzero_count() {
+    use waterui::component::badge::BadgeValue;
     let env = test_environment();
     let log = env
         .get::<BadgeDrawLog>()
@@ -4186,11 +4211,11 @@ fn tab_badge_draws_only_for_a_nonzero_count() {
     let bounds = Rect::new(0.0, 0.0, 480.0, 480.0);
     // The renderer retains tab state by node, so each variant captures on a
     // fresh renderer.
-    let capture = |badge: Option<i32>| {
+    let capture = |badge: Option<BadgeValue>| {
         log.0.borrow_mut().clear();
         let inbox = Tab::new("Inbox", || NavigationView::new("Inbox", text("One")));
         let inbox = match badge {
-            Some(count) => inbox.badge(count),
+            Some(value) => inbox.badge(value),
             None => inbox,
         };
         let tabs = Tabs::new(&Binding::container(0usize), vec![inbox]);
@@ -4203,8 +4228,32 @@ fn tab_badge_draws_only_for_a_nonzero_count() {
     };
 
     assert_eq!(capture(None), 0, "an unbadged tab draws no badge");
-    assert_eq!(capture(Some(0)), 0, "a zero count draws no badge");
-    assert_eq!(capture(Some(3)), 1, "a counted tab draws one count badge");
+    assert_eq!(
+        capture(Some(BadgeValue::from(0_u32))),
+        0,
+        "a zero count draws no badge"
+    );
+    assert_eq!(
+        capture(Some(BadgeValue::Hidden)),
+        0,
+        "an explicitly hidden badge draws nothing"
+    );
+    assert_eq!(
+        capture(Some(BadgeValue::Count(0))),
+        0,
+        "Count(0) draws nothing"
+    );
+    assert_eq!(capture(Some(BadgeValue::Dot)), 1, "Dot draws one dot badge");
+    assert_eq!(
+        capture(Some(BadgeValue::Count(3))),
+        1,
+        "a counted tab draws one count badge"
+    );
+    assert_eq!(
+        capture(Some(BadgeValue::text("New"))),
+        1,
+        "a text tab badge draws one pill badge"
+    );
 }
 
 /// water-rs/hydrolysis#51: after the single-child collapse the surviving

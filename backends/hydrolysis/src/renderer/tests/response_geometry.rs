@@ -13,7 +13,7 @@ use kurbo::Point;
 use nami::collection::SignalCollection;
 use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityGeometry;
-use waterui::component::list::{List, ListItem};
+use waterui::component::list::List;
 use waterui::component::text;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::SelfId;
@@ -157,7 +157,7 @@ fn one_row_list(content: impl Fn() -> AnyView + 'static) -> impl Fn() -> AnyView
         let content = content.clone();
         AnyView::new(List::for_each(
             SignalCollection::new(vec![SelfId::new(0_u64)]),
-            move |_| ListItem::new(content()),
+            move |_| content(),
         ))
     }
 }

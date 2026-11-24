@@ -152,9 +152,8 @@ fn picker_demo() -> impl View {
     let selection = binding::<Option<Selected>>(None);
 
     vstack((
-        MediaPicker::new(&selection)
-            .filter(MediaFilter::Video)
-            .label(text("Choose Video")),
+        MediaPicker::new("Choose Video", &selection)
+            .filter(MediaFilter::Video),
 
         // Display selected media
         selection.snapshot().map(|sel| {

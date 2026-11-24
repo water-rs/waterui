@@ -13,12 +13,12 @@ use crate::animation::{FrameRate, FrameRateVote};
 use crate::fullscreen::FullScreenOverlayHost;
 #[cfg(feature = "snackbar")]
 use crate::snackbar::SnackbarHost;
-use executor_core::spawn_local;
+use core::future::Future;
 use nami::{Binding, Computed, Signal, SignalExt as _, signal::IntoComputed};
 use waterui_core::IntoSignalF32;
 pub use waterui_core::view::*;
 use waterui_core::{
-    Environment, Metadata, OneOf2, Retain,
+    Environment, Metadata, Retain,
     env::{Installed, With},
     extract::State,
     handler::{EventHandler, Handler, HandlerOnce},
@@ -48,6 +48,8 @@ use waterui_layout::{
 #[cfg(feature = "navigation")]
 use waterui_navigation::NavigationView;
 
+#[cfg(feature = "list")]
+use crate::component::list::{ListMinRowHeight, ListRowDeletable, ListRowInsets};
 #[cfg(feature = "haptics")]
 use crate::haptic::Feedback;
 use crate::{
@@ -62,11 +64,14 @@ use crate::{
     filter::Opacity,
     gesture::{Gesture, GestureObserver, LongPressGesture, TapGesture},
     interaction::Hittable,
-    metadata::secure::{HighDynamicRange, Secure, StandardDynamicRange},
+    metadata::secure::{DynamicRange, DynamicRangeMetadata, Secure},
     theme,
 };
 use crate::{
-    component::{badge::Badge, focus::Focused},
+    component::{
+        badge::{Badge, BadgeValue},
+        focus::Focused,
+    },
     floating::Floating,
     prelude::Shadow,
     shape::{ClipShape, Shape},
@@ -76,7 +81,7 @@ use waterui_controls::button::{ButtonStyleHook, IntoButtonStyle};
 #[cfg(feature = "toggle")]
 use waterui_controls::toggle::{IntoToggleStyle, ToggleStyleHook};
 use waterui_core::id::TaggedView;
-use waterui_interaction::event::{Event, LifeCycle, LifeCycleHook, OnChange, OnEvent};
+use waterui_interaction::event::{Event, LifeCycle, LifeCycleHook, OnChange, OnEvent, TaskHook};
 use waterui_interaction::interaction::{Disabled, InteractionReport, InteractionState, Selected};
 use waterui_interaction::key::{KeyHandling, OnKeyPress};
 use waterui_structural_transition::{Transition, Transitioned};
@@ -98,30 +103,21 @@ pub trait ViewExt: View + Sized {
         Metadata::new(self, metadata)
     }
 
-    /// Selects the [`ColorSpace`](crate::metadata::secure::ColorSpace) for this subtree.
-    ///
-    /// Friendly wrapper over the underlying [`StandardDynamicRange`] /
-    /// [`HighDynamicRange`] metadata. Prefer this over
-    /// `metadata(HighDynamicRange::new())` for new code.
+    /// Selects the [`DynamicRange`] for this subtree.
     ///
     /// # Examples
     ///
     /// ```rust
     /// use waterui::prelude::*;
-    /// use waterui::metadata::secure::ColorSpace;
     ///
-    /// let wide_gamut = text!("Sunset").color_space(ColorSpace::Hdr);
-    /// let thumbnail = text!("Avatar").color_space(ColorSpace::Sdr);
+    /// let wide_gamut = text!("Sunset").dynamic_range(DynamicRange::High);
+    /// let thumbnail = text!("Avatar").dynamic_range(DynamicRange::Standard);
     /// ```
-    fn color_space(
+    fn dynamic_range(
         self,
-        space: crate::metadata::secure::ColorSpace,
-    ) -> OneOf2<Metadata<StandardDynamicRange, Self>, Metadata<HighDynamicRange, Self>> {
-        use crate::metadata::secure::ColorSpace;
-        match space {
-            ColorSpace::Sdr => OneOf2::A(self.metadata(StandardDynamicRange::new())),
-            ColorSpace::Hdr => OneOf2::B(self.metadata(HighDynamicRange::new())),
-        }
+        range: impl IntoComputed<DynamicRange>,
+    ) -> Metadata<DynamicRangeMetadata, Self> {
+        Metadata::new(self, DynamicRangeMetadata::new(range))
     }
 
     /// Animates structural insertion and removal of this view.
@@ -311,18 +307,21 @@ pub trait ViewExt: View + Sized {
         OnChange::new(self, source, handler)
     }
 
-    /// Spawns an asynchronous task tied to the lifecycle of this view.
+    /// Attaches an asynchronous task tied to the mounted lifecycle of this view.
     ///
-    /// The task will be cancelled when the view is dropped.
+    /// The handler runs once when the view appears, extracting any parameters
+    /// from the view's environment (such as `State<T>` or `#[state]` types),
+    /// and the returned future is cancelled when the view disappears. A view
+    /// constructed and dropped without ever mounting never invokes `task`.
     ///
     /// # Arguments
-    /// * `task` - The asynchronous task to run
-    fn task<Fut>(self, task: Fut) -> Metadata<Retain, Self>
+    /// * `task` - A one-shot handler returning the future to run while mounted
+    fn task<H, Args, Fut>(self, task: H) -> Metadata<TaskHook, Self>
     where
-        Fut: std::future::Future<Output = ()> + 'static,
+        H: HandlerOnce<Args, Fut>,
+        Fut: Future<Output = ()> + 'static,
     {
-        let local_task = spawn_local(task);
-        self.retain(local_task)
+        Metadata::new(self, TaskHook::new(task))
     }
 
     /// Sets the background of this view.
@@ -622,8 +621,8 @@ pub trait ViewExt: View + Sized {
     /// Adds a badge to this view.
     ///
     /// # Arguments
-    /// * `value` - The numeric value to display in the badge
-    fn badge(self, value: impl IntoComputed<i32>) -> Badge<Self> {
+    /// * `value` - The badge indicator to display (`u32`, [`BadgeValue`](crate::component::badge::BadgeValue), or reactive signal; `0` hides)
+    fn badge(self, value: impl IntoComputed<BadgeValue>) -> Badge<Self> {
         Badge::new(value, self)
     }
 
@@ -1229,7 +1228,7 @@ pub trait ViewExt: View + Sized {
     /// let avatar = Color::red().clip(Circle);
     ///
     /// // Clip to rounded rectangle
-    /// let card = text!("Card").clip(RoundedRectangle::new(0.1));
+    /// let card = text!("Card").clip(RoundedRectangle::new(8.0));
     ///
     /// // Custom triangle shape
     /// let triangle = Path::new()
@@ -1373,8 +1372,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// Replaces the theme's one-line row height as the floor rows are measured
     /// against; `0.0` sizes each row to its content plus its insets. Combine
-    /// with [`ListItem::insets`](crate::component::list::ListItem::insets) to
-    /// make individual rows compact.
+    /// with [`ViewExt::list_row_insets`] to make individual rows compact.
     ///
     /// # Example
     ///
@@ -1383,17 +1381,37 @@ pub trait ViewExt: View + Sized {
     /// use waterui::prelude::*;
     ///
     /// let log = List::content((
-    ///     || ListItem::new(text!("Alice joined the group")).insets(EdgeInsets::all(4.0)),
-    ///     || ListItem::new(text!("Hello")),
+    ///     || text!("Alice joined the group").list_row_insets(EdgeInsets::all(4.0)),
+    ///     || text!("Hello"),
     /// ))
     /// .list_min_row_height(0.0);
     /// ```
     #[cfg(feature = "list")]
-    fn list_min_row_height(
+    fn list_min_row_height(self, height: f32) -> With<Self, ListMinRowHeight> {
+        self.with(ListMinRowHeight(height))
+    }
+
+    /// Sets whether this list row can be deleted using a reactive signal.
+    ///
+    /// When `false`, swipe-to-delete and delete buttons are disabled for this
+    /// row. Rows are deletable by default when the enclosing list provides
+    /// `on_delete`.
+    #[cfg(feature = "list")]
+    fn list_row_deletable(
         self,
-        height: f32,
-    ) -> waterui_core::env::With<Self, crate::component::list::ListMinRowHeight> {
-        waterui_core::env::with(self, crate::component::list::ListMinRowHeight(height))
+        deletable: impl IntoComputed<bool>,
+    ) -> With<Self, ListRowDeletable> {
+        self.with(ListRowDeletable(deletable.into_computed()))
+    }
+
+    /// Replaces the theme's row insets for this list row.
+    ///
+    /// Together with [`ViewExt::list_min_row_height`], this lets one row size
+    /// to its content (a one-line event in a chat log, a compact header) while
+    /// the rest keep the list's row metrics.
+    #[cfg(feature = "list")]
+    fn list_row_insets(self, insets: EdgeInsets) -> With<Self, ListRowInsets> {
+        self.with(ListRowInsets(insets))
     }
 
     /// Extends this view's bounds to ignore safe area insets on the specified
@@ -1775,5 +1793,24 @@ mod tests {
         assert!((anchored_xy.value.x().snapshot() - 1.25).abs() < f32::EPSILON);
         assert!((anchored_xy.value.y().snapshot() - 0.25).abs() < f32::EPSILON);
         assert_eq!(anchored_xy.value.anchor(), Anchor::BOTTOM_RIGHT);
+    }
+
+    #[test]
+    fn dynamic_range_returns_concrete_metadata_and_tracks_signal() {
+        use nami::Signal as _;
+        use waterui_core::Metadata;
+
+        use crate::metadata::secure::{DynamicRange, DynamicRangeMetadata};
+
+        let constant: Metadata<DynamicRangeMetadata, AnyView> =
+            AnyView::new(()).dynamic_range(DynamicRange::Standard);
+        assert_eq!(constant.value.range().snapshot(), DynamicRange::Standard);
+
+        let range = Binding::container(DynamicRange::Standard);
+        let reactive: Metadata<DynamicRangeMetadata, AnyView> =
+            AnyView::new(()).dynamic_range(range.clone());
+        assert_eq!(reactive.value.range().snapshot(), DynamicRange::Standard);
+        range.set(DynamicRange::High);
+        assert_eq!(reactive.value.range().snapshot(), DynamicRange::High);
     }
 }

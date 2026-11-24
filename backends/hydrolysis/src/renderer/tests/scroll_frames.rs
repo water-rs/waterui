@@ -13,7 +13,7 @@ use std::time::Instant;
 use nami::Binding;
 use nami::collection::SignalCollection;
 use waterui::ViewExt as _;
-use waterui::component::list::{List, ListItem};
+use waterui::component::list::List;
 use waterui::component::text;
 use waterui_core::AnyView;
 use waterui_core::handler::AnyViewBuilder;
@@ -577,7 +577,7 @@ fn a_list_inside_a_scroll_consumes_the_delta_until_its_edge() {
                 vstack((
                     List::for_each(SignalCollection::new(rows.clone()), |id| {
                         let index = id.into_inner();
-                        ListItem::new(text(format!("Row {index}")))
+                        text(format!("Row {index}"))
                     })
                     .height(240.0)
                     .a11y_label("inner list"),

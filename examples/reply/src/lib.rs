@@ -11,7 +11,7 @@ use core::num::NonZeroUsize;
 
 use waterui::Identifiable;
 use waterui::app::{App, Windows};
-use waterui::component::list::{List, ListItem};
+use waterui::component::list::List;
 use waterui::layout::ContentMode;
 use waterui::media::Photo;
 use waterui::navigation::{
@@ -37,7 +37,7 @@ const TOOLBAR_AVATAR: f32 = 32.0;
 /// The tallest a thread photo grows inside its list row.
 const PHOTO_HEIGHT: f32 = 160.0;
 /// Unread mail shown on the Mail destination's badge.
-const UNREAD: i32 = 4;
+const UNREAD: u32 = 4;
 
 const ASSETS: &str = "https://raw.githubusercontent.com/android/compose-samples/main/Reply/app/src/main/res/drawable";
 
@@ -176,8 +176,8 @@ fn star() -> impl View {
         .action(|| {})
 }
 
-fn thread_row(thread: Thread) -> ListItem<impl View> {
-    ListItem::new(Label::new(thread.subject, move || {
+fn thread_row(thread: Thread) -> impl View {
+    Label::new(thread.subject, move || {
         vstack((
             hstack((
                 avatar(thread.sender)
@@ -204,7 +204,7 @@ fn thread_row(thread: Thread) -> ListItem<impl View> {
             }),
         ))
         .leading()
-    }))
+    })
 }
 
 /// The inbox column: the thread list under a titled bar that carries the

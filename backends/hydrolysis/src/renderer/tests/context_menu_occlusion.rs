@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use accesskit::Role;
 use nami::collection::SignalCollection;
-use waterui::component::list::{List, ListItem};
+use waterui::component::list::List;
 use waterui::component::text;
 use waterui::metadata::context_menu::IntoContextMenu;
 use waterui::prelude::ContextMenu;
@@ -92,7 +92,7 @@ fn chat_list_with_tail<M: IntoContextMenu + 'static>(
             let tail = tail.clone();
             move |row| {
                 let index = row.into_inner();
-                let content = if index == MENU_ROW {
+                if index == MENU_ROW {
                     AnyView::new(
                         Frame::new(button("Menu row").action(|| {}).context_menu(menu()))
                             .height(ROW_H)
@@ -102,8 +102,7 @@ fn chat_list_with_tail<M: IntoContextMenu + 'static>(
                     tail()
                 } else {
                     AnyView::new(vstack((text(format!("Row {index}")),)).size(f32::INFINITY, ROW_H))
-                };
-                ListItem::new(content)
+                }
             }
         })))
     })

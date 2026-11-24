@@ -65,7 +65,7 @@ fn sidebar(model: Model) -> impl View + Clone {
             Divider,
             List::for_each(ReactiveList::from(Vec::from(Section::ALL)), {
                 let model = model.clone();
-                move |section| ListItem::new(sidebar_row(section, &model))
+                move |section| sidebar_row(section, &model)
             })
             .selection(&model.section),
         ))

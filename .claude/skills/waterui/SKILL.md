@@ -148,7 +148,7 @@ struct Row { #[id] id: u64, title: Str }
 let rows = ReactiveList::from(seed_rows);              // bulk-seed; .push/.insert/.remove (&mut self) diff by id
 
 Lazy::for_each(rows.clone(), |row| text(row.title))        // reactive sequence in a stack
-List::for_each(rows.clone(), |row| ListItem::new(...))     // platform list: lazy, editable
+List::for_each(rows.clone(), |row| text(row.title))        // platform list: lazy, editable
 ```
 
 Note the shape: **`ForEach` is a *collection of views*, not a view.** A container consumes
@@ -220,8 +220,8 @@ Components behind cargo features are also absent until you enable them. `waterui
 defaults are `canvas`, `gpu`, `assets`, `dialog`, `snackbar`, `highlight` (the `Code` widget),
 `avatar`, `cpu-time`, `link`, `list`, `table`, `navigation`, `menu`, the standard form/control
 features, and the `locale-datetime` / `locale-list` formatters. Everything else is opt-in in
-`Cargo.toml`: `media` (`Photo`, `MediaPicker`; the generated project's own `media`
-feature forwards to it), `video`, `video-gpu`, `remote` (web URLs for `Photo`,
+`Cargo.toml`: `image` (`Photo`, `MediaPicker`), `video` (`Video`, `VideoPlayer`; the
+generated project's own `video` feature forwards to it), `video-gpu`, `remote` (web URLs for `Photo`,
 `Url::fetch`), `webview`, `capture`, `flow-markdown`, `markdown-math`, `inspector`,
 `inspector-signals`, `widgets` (home-screen widgets, `#[waterui::widget]`), `ts` / `ts-ota`
 (TypeScript views and their over-the-air update client `waterui::ts::Ota`),
@@ -515,7 +515,7 @@ web, graphics, and data rows live in [references/media.md](references/media.md).
 | Menus | `Menu` `Command` `.context_menu` `Shortcut` |
 | Interaction | `.on_tap` `.gesture` `TapGesture` `LongPressGesture` `DragGesture` `.draggable` `.drop_destination` `.on_hover_enter` `.cursor` |
 | Text | `text` `text!` `StyledStr` `Code` `RichText` `include_markdown!` `FlowMarkdown` |
-| Collections | `List` `ListItem` `ForEach` `Lazy` `SignalCollection` `ScrollController` `table` `col` |
+| Collections | `List` `ForEach` `Lazy` `SignalCollection` `ScrollController` `table` `col` |
 | Content | `Avatar` `Link` `Accordion` `.badge(n)` `loading()` |
 | Navigation | `Tabs` `Tab` `NavigationStack` `NavigationLink` `NavigationSplitView` `Window` |
 | Forms | `#[form]` `form()` `DatePicker` `Calendar` `ColorPicker` `FilePicker` |
@@ -673,7 +673,7 @@ let view = tsx!(
 | State resets on every keystroke | `watch` rebuilding the subtree | `text!` / signal-taking API / `Lazy::for_each` |
 | `no function or associated item named 'new'` on `Binding` | `Binding::new` does not exist | `Binding::i32(v)` / `Binding::container(v)` / `Binding::default()` |
 | `cannot find function 'when'` / `cannot find trait 'Identifiable'` on the derive | not in the prelude (the derive is; the trait it implements is not) | `use waterui::widget::condition::when;` / `use waterui::Identifiable;` |
-| Rounded corners come out fully round | `RoundedRectangle::new(r)` takes a *fraction* of the shorter side, not points | `new(0.1)`-scale values, or `Capsule` |
+| Rounded corners look wrong on non-square sizes | `CornerRadius::fraction(r)` scales with the shorter side | `RoundedRectangle::new(points)` for points, or `Capsule` |
 | A background task dies instantly | the `spawn_local` handle cancels on drop | `.detach()` it |
 | `LongPressGesture::new(Duration…)` rejected | duration is a `u32` in backend time units | `LongPressGesture::new(500)` |
 | `.is_empty()` missing on a string signal | different name | `.str_is_empty()`, `.str_len()`, `.str_contains(..)` |

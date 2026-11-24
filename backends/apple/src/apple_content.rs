@@ -650,6 +650,7 @@ mod tests {
             retain: waterui_core::metadata::Retain,
             layout_priority: waterui_core::layout::LayoutPriority,
             lifecycle_hook: waterui_interaction::event::LifeCycleHook,
+            task_hook: waterui_interaction::event::TaskHook,
             on_event: waterui_interaction::event::OnEvent,
             on_key_press: waterui_interaction::key::OnKeyPress,
             gesture_observer: waterui_interaction::gesture::GestureObserver,
@@ -681,8 +682,7 @@ mod tests {
             hittable: waterui::interaction::Hittable,
             focused: waterui::component::focus::Focused,
             secure: waterui::metadata::secure::Secure,
-            standard_dynamic_range: waterui::metadata::secure::StandardDynamicRange,
-            high_dynamic_range: waterui::metadata::secure::HighDynamicRange,
+            dynamic_range: waterui::metadata::secure::DynamicRangeMetadata,
             frame_rate: waterui::animation::FrameRateVote,
             anchored_overlay: waterui::metadata::anchored_overlay::AnchoredOverlay,
             #[cfg(waterui_feature = "dialog")]

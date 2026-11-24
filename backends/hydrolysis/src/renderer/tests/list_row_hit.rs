@@ -11,7 +11,7 @@ use std::time::Instant;
 use nami::Binding;
 use nami::SignalExt as _;
 use nami::collection::SignalCollection;
-use waterui::component::list::{List, ListItem};
+use waterui::component::list::List;
 use waterui::component::text;
 use waterui::{AnyView, ViewExt as _};
 use waterui_core::handler::AnyViewBuilder;
@@ -78,11 +78,10 @@ fn tap_inside_virtualized_row_during_pending_refresh() {
                 let size = grow
                     .clone()
                     .map(move |grow| if grow && index == GROWN { 60.0 } else { 20.0 });
-                ListItem::new(
-                    text(format!("Row {index}"))
-                        .size(size)
-                        .on_tap(move || taps.borrow_mut().push(index)),
-                )
+
+                text(format!("Row {index}"))
+                    .size(size)
+                    .on_tap(move || taps.borrow_mut().push(index))
             }))
         })
     };

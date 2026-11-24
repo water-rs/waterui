@@ -4,13 +4,13 @@
 use std::collections::BTreeSet;
 
 use waterui::Binding;
-use waterui::component::list::{List, ListItem, row};
+use waterui::component::list::{List, row};
 use waterui::component::text;
 use waterui::prelude::*;
 
 fn broken(selection: &Binding<BTreeSet<&'static str>>) -> impl View + use<> {
     List::content((
-        || ListItem::new(text("Buy milk")),
+        || text("Buy milk"),
         row("牛乳を買う", "today"),
         row("여권 갱신", "next week"),
     ))

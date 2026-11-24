@@ -16,7 +16,7 @@ use nami::Binding;
 use nami::collection::List as Membership;
 use nami::collection::SignalCollection;
 use waterui::animation::Animation;
-use waterui::component::list::{List, ListItem};
+use waterui::component::list::List;
 use waterui::component::text;
 use waterui::graphics::Color;
 use waterui::prelude::ContextMenu;
@@ -228,7 +228,7 @@ fn a_closed_menus_occluder_leaves_the_row_beneath_hittable() {
                 SignalCollection::new(rows),
                 move |row| {
                     let index = row.into_inner();
-                    let content = if index == MENU_ROW {
+                    if index == MENU_ROW {
                         AnyView::new(
                             Frame::new(button("Menu row").action(|| {}).context_menu(menu()))
                                 .height(ROW_H)
@@ -245,8 +245,7 @@ fn a_closed_menus_occluder_leaves_the_row_beneath_hittable() {
                         AnyView::new(
                             vstack((text(format!("Row {index}")),)).size(f32::INFINITY, ROW_H),
                         )
-                    };
-                    ListItem::new(content)
+                    }
                 },
             )))
         })
@@ -575,11 +574,10 @@ fn materialized_paint_order_keeps_devs_ranking() {
         AnyView::new(scroll(
             List::for_each(SignalCollection::new(rows), |row| {
                 let index = row.into_inner();
-                ListItem::new(
-                    vstack((text(format!("Row {index}")),))
-                        .size(360.0, 44.0)
-                        .on_tap(|| {}),
-                )
+
+                vstack((text(format!("Row {index}")),))
+                    .size(360.0, 44.0)
+                    .on_tap(|| {})
             })
             .selection(&selection),
         ))
@@ -761,11 +759,10 @@ fn reference_over_rows(tapped: &Rc<Cell<Option<usize>>>) -> AnyView {
             move |row| {
                 let index = row.into_inner();
                 let tapped = tapped.clone();
-                ListItem::new(
-                    vstack((text(format!("Row {index}")),))
-                        .size(360.0, 44.0)
-                        .on_tap(move || tapped.set(Some(index))),
-                )
+
+                vstack((text(format!("Row {index}")),))
+                    .size(360.0, 44.0)
+                    .on_tap(move || tapped.set(Some(index)))
             },
         ),
     )))

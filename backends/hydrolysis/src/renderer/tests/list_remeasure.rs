@@ -15,7 +15,7 @@ use nami::SignalExt as _;
 use nami::collection::SignalCollection;
 use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityGeometry;
-use waterui::component::list::{List, ListItem};
+use waterui::component::list::List;
 use waterui::component::table::{col, table};
 use waterui::component::text;
 use waterui_core::AnyView;
@@ -95,11 +95,9 @@ fn size_driven_list(tall: &Binding<bool>, label: &'static str) -> AnyViewBuilder
             // The label reports the slot the row allots it, which is what
             // these tests pin; the text's own wrapped box is not the subject.
             move |_| {
-                ListItem::new(
-                    text(label)
-                        .size(size.clone())
-                        .a11y_geometry(AccessibilityGeometry::Allocation),
-                )
+                text(label)
+                    .size(size.clone())
+                    .a11y_geometry(AccessibilityGeometry::Allocation)
             },
         ))
     })
@@ -208,7 +206,7 @@ fn growing_row_above_viewport_keeps_anchor_row_position() {
                             SHORT_SIZE
                         }
                     });
-                    ListItem::new(text(format!("Row {index}")).size(size))
+                    text(format!("Row {index}")).size(size)
                 })
                 .scroll_controller(&controller),
             )
@@ -292,9 +290,7 @@ fn retained_list_measurement_reuses_the_watcher_snapshot() {
     let rows = Binding::container(vec![SelfId::new(0_u64), SelfId::new(1_u64)]);
     let captures = Rc::new(Cell::new(0));
     let list = List::new(Counted {
-        source: ForEach::new(SignalCollection::new(rows.clone()), |_| {
-            ListItem::new(text("row"))
-        }),
+        source: ForEach::new(SignalCollection::new(rows.clone()), |_| text("row")),
         captures: Rc::clone(&captures),
     });
     let env = test_environment();
@@ -337,7 +333,7 @@ fn specified_list_viewport_does_not_materialize_rows() {
     let rows = Binding::container(vec![SelfId::new(0_u64), SelfId::new(1_u64)]);
     let list = List::for_each(SignalCollection::new(rows), move |_| {
         counted.set(counted.get() + 1);
-        ListItem::new(text("row"))
+        text("row")
     });
     let env = test_environment();
     let mut renderer = super::test_renderer();
@@ -392,7 +388,7 @@ fn a_visible_row_is_realized_once_and_names_itself_from_its_current_content() {
             SignalCollection::new(rows.clone()),
             move |_| {
                 counted.set(counted.get() + 1);
-                ListItem::new(text(shown.clone()))
+                text(shown.clone())
             },
         ))
     }));

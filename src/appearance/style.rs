@@ -4,7 +4,7 @@
 //!
 //! ```
 //! use waterui::prelude::*;
-//! use waterui::shape::FixedRoundedRectangle;
+//! use waterui::shape::RoundedRectangle;
 //! use waterui::style;
 //! use waterui_graphics::color::Color;
 //!
@@ -13,7 +13,7 @@
 //!         Color::srgb(0, 0, 0),
 //!         style::Vector { x: 2.0, y: 2.0 },
 //!         4.0,
-//!         FixedRoundedRectangle::new(8.0),
+//!         RoundedRectangle::new(8.0),
 //!     );
 //! }
 //! ```

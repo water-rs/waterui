@@ -549,7 +549,7 @@ impl CardAttributes {
 #[non_exhaustive]
 pub struct BadgeAttributes {
     /// The count the badge shows.
-    value: Computed<i32>,
+    value: Computed<u32>,
     /// What the badge is attached to. A builder rather than a view, because
     /// `Badge` may build its content again.
     content: JsViewBuilder,
@@ -558,7 +558,7 @@ pub struct BadgeAttributes {
 impl BadgeAttributes {
     /// The count the badge shows.
     #[must_use]
-    pub const fn value(&self) -> &Computed<i32> {
+    pub const fn value(&self) -> &Computed<u32> {
         &self.value
     }
 
@@ -571,7 +571,7 @@ impl BadgeAttributes {
 
     /// Takes the value apart into its fields, in declaration order.
     #[must_use]
-    pub fn into_parts(self) -> (Computed<i32>, JsViewBuilder) {
+    pub fn into_parts(self) -> (Computed<u32>, JsViewBuilder) {
         (self.value, self.content)
     }
 }
@@ -638,9 +638,9 @@ impl AccordionAttributes {
 /// `<Avatar>`: a person's picture, or their monogram.
 ///
 /// The picture is fetched and decoded by `waterui-media`, so the attribute
-/// that names it exists only with the facade's `media` feature — the same
+/// that names it exists only with the facade's `image` feature — the same
 /// gate `<Image>` sits behind, for the same reason: a build without the
-/// media graph declares no attribute it cannot honour.
+/// image graph declares no attribute it cannot honour.
 #[derive(Debug, TsType)]
 #[non_exhaustive]
 pub struct AvatarAttributes {
@@ -648,7 +648,7 @@ pub struct AvatarAttributes {
     /// verbatim: a person's name never goes through the translation catalog.
     name: Computed<Str>,
     /// The picture's URL. Without one the avatar shows the monogram.
-    #[cfg(feature = "media")]
+    #[cfg(feature = "image")]
     image: Option<Computed<UrlValue>>,
 }
 
@@ -660,7 +660,7 @@ impl AvatarAttributes {
     }
 
     /// The picture's URL. Without one the avatar shows the monogram.
-    #[cfg(feature = "media")]
+    #[cfg(feature = "image")]
     #[must_use]
     pub const fn image(&self) -> Option<&Computed<UrlValue>> {
         self.image.as_ref()
@@ -673,7 +673,7 @@ impl AvatarAttributes {
     }
 
     /// Takes the value apart into its fields, in declaration order.
-    #[cfg(feature = "media")]
+    #[cfg(feature = "image")]
     #[must_use]
     pub fn into_parts(self) -> (Computed<Str>, Option<Computed<UrlValue>>) {
         (self.name, self.image)
@@ -787,7 +787,7 @@ impl TabAttributes {
 }
 
 /// `<Image>`: a picture fetched from a URL.
-#[cfg(feature = "media")]
+#[cfg(feature = "image")]
 #[derive(Debug, TsType)]
 #[non_exhaustive]
 pub struct ImageAttributes {
@@ -797,7 +797,7 @@ pub struct ImageAttributes {
     resizable: Option<bool>,
 }
 
-#[cfg(feature = "media")]
+#[cfg(feature = "image")]
 impl ImageAttributes {
     /// Where the picture comes from.
     #[must_use]

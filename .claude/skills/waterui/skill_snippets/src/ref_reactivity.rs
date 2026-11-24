@@ -589,8 +589,8 @@ pub fn reactivity_block_17() {
         id: u64,
         subject: Str,
     }
-    fn message_row(m: Message) -> ListItem<impl View> {
-        ListItem::new(text(m.subject))
+    fn message_row(m: Message) -> impl View {
+        text(m.subject)
     }
     let messages = Binding::container(Vec::<Message>::new());
     let query = Binding::container(Str::from(""));
@@ -790,7 +790,7 @@ pub fn reactivity_block_22() {
     // scope rather than being wrapped in `let _ = { … }`.
     {
         let view = Divider;
-        view.task(async { warm_cache().await }); // runs while the view is alive; dropped with it
+        view.task(|| async { warm_cache().await }); // starts on appear, cancels on disappear; supports extractors
     }
     {
         let view = Divider;

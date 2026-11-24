@@ -273,6 +273,7 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
         session?.setNightMode(newConfig.isNightMode)
+        session?.setLocale(newConfig.primaryLocaleTag)
     }
 
     // ------------------------------------------------------------------

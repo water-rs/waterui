@@ -706,26 +706,14 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
 
     // Dynamic-range metadata used to scope a preference read by the retired
     // GPU-surface path; Cherenkov's engine owns headroom per surface, so
-    // both pass through to the content like `Secure` above.
-    fn standard_dynamic_range<C: ChildView<Self>>(
+    // it passes through to the content like `Secure` above.
+    fn dynamic_range<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::metadata::secure::StandardDynamicRange, C>,
+        metadata: Metadata<waterui::metadata::secure::DynamicRangeMetadata, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
-        mark_reached!("standard_dynamic_range");
-        let metadata = metadata.map_content(C::into_child);
-        let renderer = &mut *self.renderer;
-        RenderNode::build_slot(metadata.content, env, renderer)
-    }
-
-    fn high_dynamic_range<C: ChildView<Self>>(
-        &mut self,
-        metadata: Metadata<waterui::metadata::secure::HighDynamicRange, C>,
-        env: &Environment,
-        (): (),
-    ) -> RenderNode<E> {
-        mark_reached!("high_dynamic_range");
+        mark_reached!("dynamic_range");
         let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         RenderNode::build_slot(metadata.content, env, renderer)
@@ -1161,6 +1149,19 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         RenderNode::build_lifecycle(value, content, env, renderer)
     }
 
+    fn task_hook<C: ChildView<Self>>(
+        &mut self,
+        metadata: Metadata<waterui_interaction::event::TaskHook, C>,
+        env: &Environment,
+        (): (),
+    ) -> RenderNode<E> {
+        mark_reached!("task_hook");
+        let metadata = metadata.map_content(C::into_child);
+        let renderer = &mut *self.renderer;
+        let Metadata { content, value } = metadata;
+        RenderNode::build_task(value, content, env, renderer)
+    }
+
     fn scroll<C: ChildView<Self>>(
         &mut self,
         native: waterui::layout::scroll::ScrollView<C>,
@@ -1483,7 +1484,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     ) -> RenderNode<E> {
         mark_reached!("gradient");
         let renderer = &mut *self.renderer;
-        RenderNode::build_gradient(renderer, native, env)
+        RenderNode::build_gradient(renderer, &native, env)
     }
 
     fn shape(

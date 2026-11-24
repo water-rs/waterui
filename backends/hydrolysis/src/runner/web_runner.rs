@@ -30,6 +30,7 @@ use web_sys::Response;
 
 use crate::text::fonts::WebFonts;
 
+use crate::platform::web_locale::SystemLocale;
 use crate::platform::{BrowserWindow, PlatformWindow};
 #[cfg(any(feature = "text-field", feature = "secure-field"))]
 use crate::renderer::HydrolysisTextContextMenuMode;
@@ -254,6 +255,9 @@ struct BrowserRunner {
     /// Held for its lifetime: the media-query listener keeps writing the
     /// colour-scheme binding only while the runner holds the observation.
     _appearance: crate::platform::web_appearance::SystemAppearance,
+    /// Held for its lifetime: the `languagechange` listener pushes browser
+    /// locale changes into `waterui_locale::regional`.
+    _system_locale: SystemLocale,
     /// Earliest `Instant` for the next self-paced continuous
     /// frame when an active vote caps below 60Hz.
     next_paced_due: Option<Instant>,
@@ -585,6 +589,7 @@ pub fn run<W: Windows, M: AppMenuBar>(app: App<W, M>, style: impl crate::Style) 
         // draws in it, and the query's `change` event writes each later
         // one. The runner holds the observation for its lifetime.
         let system_appearance = crate::platform::web_appearance::SystemAppearance::observe();
+        let system_locale = SystemLocale::observe();
         crate::theme::install_theme_tokens(&mut env, Some(&style), system_appearance.scheme());
         let theme: Rc<dyn crate::theme::WidgetTheme> = Rc::new(style);
 
@@ -662,6 +667,7 @@ pub fn run<W: Windows, M: AppMenuBar>(app: App<W, M>, style: impl crate::Style) 
             fonts_arrived: Rc::new(Cell::new(false)),
             wake: browser_schedule,
             _appearance: system_appearance,
+            _system_locale: system_locale,
             next_paced_due: None,
         };
 

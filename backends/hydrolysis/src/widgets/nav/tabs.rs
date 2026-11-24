@@ -22,6 +22,7 @@ use accesskit::{
 use kurbo::{Point, Rect, Vec2};
 use nami::watcher::BoxWatcherGuard;
 use nami::{Binding, Signal, SignalExt as _};
+use waterui::component::badge::BadgeValue;
 use waterui::navigation::tab::{NativeTabStyle, TabItem, TabsLayout};
 use waterui::theme::ForegroundOverride;
 use waterui::theme::color::Foreground;
@@ -49,8 +50,8 @@ struct TabRenderState<E: crate::text::TextEngine> {
     icon: Option<RetainedSubview<E>>,
     content: RetainedSubview<E>,
     enabled: nami::Computed<bool>,
-    /// The reactive badge count drawn on the item; zero draws nothing.
-    badge: Option<nami::Computed<i32>>,
+    /// The reactive badge value drawn on the item.
+    badge: Option<nami::Computed<BadgeValue>>,
 }
 
 impl<E: crate::text::TextEngine> TabRenderState<E> {
@@ -304,16 +305,21 @@ impl<E: crate::text::TextEngine> TabsRenderState<E> {
         index
     }
 
-    /// Each tab's live badge count, read through `renderer` so a change
-    /// schedules a frame. A tab without a badge reads zero.
+    /// Each tab's live accessible badge text, read through `renderer` so a
+    /// change schedules a frame. Hidden and dot badges report `None`.
     #[cfg(feature = "accessibility")]
-    fn badge_counts(&self, renderer: &mut crate::renderer::SemanticCore<E>) -> Vec<i32> {
+    fn badge_values(
+        &self,
+        renderer: &mut crate::renderer::SemanticCore<E>,
+        env: &Environment,
+    ) -> Vec<Option<String>> {
         self.tabs
             .iter()
             .map(|tab| {
-                tab.badge
-                    .as_ref()
-                    .map_or(0, |badge| renderer.read_signal(badge))
+                tab.badge.as_ref().and_then(|badge| {
+                    let value = renderer.read_signal(badge);
+                    crate::widgets::layout::badge::badge_accessibility_text(&value, renderer, env)
+                })
             })
             .collect()
     }
@@ -338,14 +344,14 @@ impl<E: crate::text::TextEngine> TabsRenderState<E> {
 }
 
 /// One tab's accessibility inputs: `(tag, interaction_key, default_label,
-/// is_selected, badge_count)`; a zero badge count is not announced.
+/// is_selected, badge_text)`.
 #[cfg(feature = "accessibility")]
 type TabAccessibilityEntry = (
     Id,
     crate::renderer::InteractionKey,
     Option<String>,
     bool,
-    i32,
+    Option<String>,
 );
 
 /// Emits a tab list's accessibility tree from per-tab [`TabAccessibilityEntry`]
@@ -391,8 +397,8 @@ pub fn tabs_accessibility<E: TextEngine>(
             tab_node.set_label(label);
         }
         tab_node.set_selected(*is_selected);
-        if *badge != 0 {
-            tab_node.set_value(badge.to_string());
+        if let Some(badge) = badge {
+            tab_node.set_value(badge.clone());
         }
         tab_node.add_action(AccessibilityAction::Focus);
         if disabled {
@@ -545,7 +551,7 @@ pub fn render_tabs_node<E: crate::text::TextEngine>(
                 st.reconcile();
                 st.prebuild_labels_for_look(ctx.renderer_mut(), env, Some(&look));
                 let selected_index = st.selected_index(selected_id);
-                let badges = st.badge_counts(ctx.renderer_mut());
+                let badges = st.badge_values(ctx.renderer_mut(), env);
                 let renderer = ctx.renderer_mut();
                 let labels: Vec<TabAccessibilityEntry> = st
                     .tabs
@@ -560,7 +566,7 @@ pub fn render_tabs_node<E: crate::text::TextEngine>(
                             ),
                             tab.label.accessibility_label(renderer),
                             Some(index) == selected_index,
-                            badges[index],
+                            badges[index].clone(),
                         )
                     })
                     .collect();
@@ -822,7 +828,9 @@ fn render_tabs_parts<E: crate::text::TextEngine>(
         let has_label = label_rect.width() > 0.0 && label_rect.height() > 0.0;
         let badge = {
             let badge = state.borrow().tabs[index].badge.clone();
-            badge.map_or(0, |badge| ctx.renderer_mut().read_signal(&badge))
+            badge.map_or(BadgeValue::Hidden, |badge| {
+                ctx.renderer_mut().read_signal(&badge)
+            })
         };
         if icon_rect.is_some() || has_label {
             // The tab item's a11y is emitted by `tabs_accessibility`, so suppress
@@ -869,11 +877,11 @@ fn render_tabs_parts<E: crate::text::TextEngine>(
                         );
                     }
                     drop(st);
-                    // The count anchors on the icon, on the title without one.
-                    if badge != 0 {
+                    // The indicator anchors on the icon, on the title without one.
+                    if !badge.is_hidden() {
                         let anchor = icon_rect.unwrap_or(label_rect);
                         crate::widgets::layout::badge::draw_badge_indicator(
-                            ctx, anchor, badge, env,
+                            ctx, anchor, &badge, env,
                         );
                     }
                 },
@@ -1442,7 +1450,7 @@ pub fn emit_tabs_accessibility<E: crate::text::TextEngine>(
     let selected_id = renderer.read_signal(&state.selection);
     let (selection, style, labels) = {
         let selected_index = state.selected_index(selected_id);
-        let badges = state.badge_counts(renderer);
+        let badges = state.badge_values(renderer, env);
         let labels: Vec<TabAccessibilityEntry> = state
             .tabs
             .iter()
@@ -1456,7 +1464,7 @@ pub fn emit_tabs_accessibility<E: crate::text::TextEngine>(
                     ),
                     tab.label.accessibility_label(renderer),
                     Some(index) == selected_index,
-                    badges[index],
+                    badges[index].clone(),
                 )
             })
             .collect();

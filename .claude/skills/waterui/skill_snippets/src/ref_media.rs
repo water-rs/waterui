@@ -92,9 +92,7 @@ pub fn media_block_03() {
 
     let selection: Binding<Option<Selected>> = Binding::default();
     let _ = {
-        MediaPicker::new(&selection)
-            .filter(MediaFilter::Image) // Image | Video | LivePhoto (the last two need `video`); takes a signal
-            .label(text("Pick a photo")) // type-changing builder — call before storing
+        MediaPicker::new("Pick a photo", &selection).filter(MediaFilter::Image) // Image | Video | LivePhoto (the last two need `video`); takes a signal
     };
 
     // The remaining filter variants named in the trailing comment.

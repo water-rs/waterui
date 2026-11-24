@@ -4,7 +4,7 @@ Signatures verified against the WaterUI source and compiled. Everything here is 
 from `use waterui::prelude::*;` unless an explicit import is shown.
 
 **Feature gates.** `waterui`'s default features are `gpu`, `assets`, `dialog`, `snackbar`,
-`highlight`, `locale-datetime` and `locale-list`. Everything else is opt-in, chiefly `media`,
+`highlight`, `locale-datetime` and `locale-list`. Everything else is opt-in, chiefly `image`,
 `video`, `video-gpu`, `webview`, `flow-markdown` (also gates `RichText` and
 `include_markdown!`), `markdown-math`, `navigation-restoration`, `haptics`, `inspector`, `remote`, `ts`,
 `widgets`, and the component features `canvas`, `chart`, `barcode` and `particle`. `all`
@@ -490,11 +490,11 @@ a toolbar, a menu, and a keyboard shortcut. `Command` has its own builder chain:
     .subtitle("Copy the selection")            // secondary line under the label
     .shortcut(Shortcut::new('c').command())
 "Delete".action(delete_handler).destructive()  // red in every menu; == .role(CommandRole::Destructive)
-"Delete".action(delete_handler).shortcut(Shortcut::new(NamedKey::Delete))
+"Delete".action(delete_handler).shortcut(Shortcut::new(ShortcutNamedKey::Delete))
 Shortcut::new('s').command().shift()           // ⇧⌘S; also .option() and .control()
 ```
 
-A shortcut key is a `char` or a W3C `NamedKey`. `.command()` is the platform's primary
+A shortcut key is a `char` or a `ShortcutNamedKey` (or `ShortcutKey::try_from(NamedKey)`). `.command()` is the platform's primary
 modifier: ⌘ on Apple, Ctrl elsewhere. When a chord is live depends on where the command
 sits: a mounted `Menu` arms its chords whether or not its popup is open, a `.context_menu`
 arms them only while it is open, and `App::menu_bar` arms them app-wide. A chord without
@@ -681,7 +681,7 @@ struct Record { #[id] id: u64, title: Str }
 Lazy::for_each(records.clone(), |r| text(r.title))       // == Lazy::vstack(ForEach::new(..))
 Lazy::hstack(ForEach::new(records.clone(), record_card)) // record_card: fn(Record) -> impl View
 
-List::for_each(records.clone(), |r| ListItem::new(text(r.title)))
+List::for_each(records.clone(), |r| text(r.title))
     .editing(is_editing.clone())          // impl IntoComputed<bool>
     .on_delete(|ListDelete(i), mut s: AppState| { let _ = s.rows.remove(i); })
     .on_move(|ListMove(m), mut s: AppState| {
@@ -722,24 +722,24 @@ List::content((
     Section::new("Recent")
         .footer("Sub-pages push onto this tab's own stack.")
         .content((
-            || ListItem::new(text("Today")),
+            || text("Today"),
             row("Streak", "14 days"),                    // Row is valid content directly
             detail_row("Last entry", "Yesterday"),
         )),
-    || ListItem::new(text("Footer")),
+    || text("Footer"),
 ))
 ```
 
 A `Row` also takes `.value_color(color)`, `.detail()` / `.inline()` (the two-line and
 one-line layouts) and `.deletable(bool)`. A section's content may also be a `ForEach` over
 a reactive collection, next to or instead
-of static rows — `Section::new("Today").content(ForEach::new(today, |item| ListItem::new(text(item.title))))`.
+of static rows — `Section::new("Today").content(ForEach::new(today, |item| text(item.title)))`.
 Its rows are inserted and removed in place as the collection changes, the header sits on
 whichever row currently opens the section, and a section with no rows draws neither header
 nor footer until rows come back. A grouped, filtered list is therefore one `List::content`
 with a `Section` per group, each over its own `SignalCollection`; sections do not nest.
 
-`ListItem` modifiers: `.deletable(signal)`, `.insets(insets)`; `.list_min_row_height(h)` on
+Row modifiers: `.list_row_deletable(signal)`, `.list_row_insets(insets)`; `.list_min_row_height(h)` on
 any ancestor sets the row-height floor for every list inside (`0.0` sizes rows to their
 content). Selection lives on the
 list itself and holds the app's own values — `.selection(&Binding<Option<T>>)` or
@@ -747,14 +747,14 @@ list itself and holds the app's own values — `.selection(&Binding<Option<T>>)`
 A `ForEach` row — every row of `List::for_each`, or a `ForEach` inside `List::content` —
 is selected by its collection id: `Identifiable::Id` for a `List`/`Vec`/`SignalCollection`,
 the index for an array or static slice. A static row of `List::content` is selected by the
-value it is tagged with, like SwiftUI's `.tag(_:)` — `(|| ListItem::new(text("Inbox"))).tag(Mailbox::Inbox)`
+value it is tagged with, like SwiftUI's `.tag(_:)` — `(|| text("Inbox")).tag(Mailbox::Inbox)`
 or `row("Archive", "12").tag(Mailbox::Archive)` — and an untagged static row is not
 selectable. Every selectable row of one list is selected by the same type; a selection
 of another type does not compile, and neither does a selection over a `List::content`
 whose rows are all untagged. Rows carrying the same value are selected together.
 At most one mode per list: a later call replaces an earlier one.
 `List::for_each` takes any collection whose items are `Clone`; `List::content` takes the
-structural tree above; `List::new(views)` takes pre-built `Views<View = ListItem<C>>`. An
+structural tree above; `List::new(views)` takes pre-built `Views`. An
 enum row type implements `Identifiable` by hand (`type Id; fn id(&self)`),
 keeping the id ranges of different variants disjoint.
 
@@ -851,8 +851,8 @@ A `Binding<BTreeSet<Date>>` needs the turbofish: `binding(BTreeSet::<Date>::new(
 Attach `.snackbar_host()` to a root view to install a plain `SnackbarManager` (and
 `CodeCopyFeedback` when `flow-markdown` is enabled) into its subtree; it is a `#[state]`-marked
 framework type, so descendant handlers take it bare. For snackbars with icons of view type `V`,
-attach `.snackbar_host_with_icons::<V>()` (or construct `SnackbarManager::with_icons::<V>()`
-manually with `.overlay(overlay).state(&snackbars)`) and extract `m: SnackbarManager<V>`.
+attach `.snackbar_host_with_icons::<V>()` (or wrap the subtree in `SnackbarManager::host(|m| ...)`)
+and extract `m: SnackbarManager<V>`.
 
 ```rust
 use core::time::Duration;
@@ -897,8 +897,8 @@ accordion(header, || body())                           // disclosure; Accordion:
 view.floating()                                        // themed elevated surface (FloatingStyle-aware)
 ```
 
-Attach `.full_screen_overlay_host::<V>()` to a root view (or construct
-`FullScreenOverlayManager::<V>::new()` manually with `.overlay(overlay_view).state(&overlay)`)
+Attach `.full_screen_overlay_host::<V>()` to a root view (or wrap the subtree in
+`FullScreenOverlayManager::host(|overlay| ...)`)
 so descendant handlers can take `overlay: FullScreenOverlayManager<V>` bare to present modal,
 window-filling content: `overlay.show(view)` and `overlay.hide()`.
 
@@ -920,10 +920,10 @@ body can return `Result<impl View, ErrorView<_>>` or `Result<impl View, impl Vie
 ```rust
 use waterui::shape::RoundedRectangle;
 
-text("Inbox").badge(3)                          // a count badge on any Clone view; badge::Badge::new(n, view).color(..)
+text("Inbox").badge(3_u32)                      // 0 hides; BadgeValue::{Hidden, Dot, Count(u32), Text(Text)}; badge::Badge::new(v, view).color(..)
 avatar("Grace Hopper")                          // initials when there is no image; the name is always spoken
     .image(photo_url)                           // a signal of Url: the fallback shows until it decodes
-    .shape(RoundedRectangle::new(0.25))
+    .shape(RoundedRectangle::new(16.0))
     .size(64.0)
     .ring(Color::new(theme_color::Accent), 2.0)
 field("Email", &email).focused(&focus, Field::Email)    // focused while `focus` holds Some(Field::Email)
@@ -931,7 +931,7 @@ field("Email", &email).focused(&focus, Field::Email)    // focused while `focus`
 
 `avatar(name)` shows the initials; `Avatar::new(name, || view)` takes a fallback view
 instead. An avatar renders SDR by default, unlike the framework's HDR default;
-`.dynamic_range(ColorSpace::Hdr)` (`waterui::metadata::secure::ColorSpace`) opts one back
+`.dynamic_range(DynamicRange::High)` (in the prelude) opts one back
 in when the picture is the subject, such as a full-width profile header. `.focused(&Binding<Option<T>>, value)` ties a control to a shared focus binding
 (`T: Eq + Clone`): setting the binding moves focus, and focusing a control writes its value.
 `table(columns)` takes a signal of `Vec<TableColumn>` built with `col(label, rows)`, each

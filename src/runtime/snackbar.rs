@@ -5,34 +5,39 @@
 //!
 //! # Examples
 //!
-//! Building a manager needs a running local executor, so this compiles rather
-//! than runs.
+//! Attach [`ViewExt::snackbar_host`] to a root view and extract
+//! [`SnackbarManager`] in any descendant handler:
 //!
-//! ```rust,no_run
+//! ```rust
 //! use core::time::Duration;
 //!
 //! use waterui::prelude::*;
 //! use waterui::snackbar::{Snackbar, SnackbarManager, SnackbarPosition};
 //!
-//! // Attach `.snackbar_host()` to a root view to install a manager into the
-//! // environment automatically, or construct one directly:
-//! let (manager, _overlay) = SnackbarManager::new();
-//!
-//! // Show a simple message
-//! manager.show(Snackbar::new("File saved"));
-//!
-//! // With icon and action (use a packaged icon crate for portable apps)
-//! manager.show(
-//!     Snackbar::new("Item deleted")
-//!         .action("Undo", || {})
-//!         .duration(Duration::from_secs(5))
-//! );
-//!
-//! // Custom position
-//! manager.show(
-//!     Snackbar::new("Connection restored")
-//!         .position(SnackbarPosition::TopCenter)
-//! );
+//! fn view() -> impl View {
+//!     vstack((
+//!         // Show a simple message
+//!         button("Save").action(|manager: SnackbarManager| {
+//!             manager.show(Snackbar::new("File saved"));
+//!         }),
+//!         // With action and custom duration
+//!         button("Delete").action(|manager: SnackbarManager| {
+//!             manager.show(
+//!                 Snackbar::new("Item deleted")
+//!                     .action("Undo", || {})
+//!                     .duration(Duration::from_secs(5)),
+//!             );
+//!         }),
+//!         // Custom position
+//!         button("Reconnect").action(|manager: SnackbarManager| {
+//!             manager.show(
+//!                 Snackbar::new("Connection restored")
+//!                     .position(SnackbarPosition::TopCenter),
+//!             );
+//!         }),
+//!     ))
+//!     .snackbar_host()
+//! }
 //! ```
 
 use alloc::rc::Rc;
@@ -71,7 +76,7 @@ use waterui_text::code::OnCopied;
 use waterui_text::{font::Font, text::text};
 
 use crate::ViewExt;
-use crate::shape::{FilledShape, FixedRoundedRectangle, Path, ShapeExt};
+use crate::shape::{FilledShape, Path, RoundedRectangle, ShapeExt};
 use crate::style::{Shadow, Vector};
 use waterui_graphics::color::Color;
 
@@ -524,7 +529,7 @@ impl<I> Snackbar<I> {
     /// Any view works; for portable apps prefer a packaged icon crate such as
     /// `waterui-icons-material-icon` (`waterui_apple::SfSymbol` is only
     /// available on Apple backends). Pair with
-    /// [`SnackbarManager::with_icons`] or [`SnackbarManager::host`] when
+    /// [`ViewExt::snackbar_host_with_icons`] or [`SnackbarManager::host`] when
     /// showing snackbars that carry an icon of type `NewI`.
     #[must_use]
     pub fn icon<NewI: View + Clone + 'static>(self, icon: NewI) -> Snackbar<NewI> {
@@ -699,8 +704,9 @@ struct SnackbarManagerState<I: 'static = NoIcon> {
 
 /// Manages snackbar notifications in a FIFO queue.
 ///
-/// This plugin is automatically installed in every `Window`. Access it from the environment
-/// to show snackbar notifications.
+/// Attach [`ViewExt::snackbar_host`] (or [`ViewExt::snackbar_host_with_icons`]
+/// / [`SnackbarManager::host`]) to an ancestor view to install the manager and
+/// its overlay, then extract `SnackbarManager` in descendant handlers.
 ///
 /// # Examples
 ///
@@ -709,11 +715,11 @@ struct SnackbarManagerState<I: 'static = NoIcon> {
 /// use waterui::snackbar::{Snackbar, SnackbarManager};
 ///
 /// fn my_view() -> impl View {
-///     let (manager, _overlay) = SnackbarManager::new();
-///
-///     button("Save").action(move || {
-///         manager.show(Snackbar::new("File saved successfully"));
-///     })
+///     button("Save")
+///         .action(|manager: SnackbarManager| {
+///             manager.show(Snackbar::new("File saved successfully"));
+///         })
+///         .snackbar_host()
 /// }
 /// ```
 #[state]
@@ -739,28 +745,15 @@ impl<I: 'static> core::fmt::Debug for SnackbarManager<I> {
 
 impl SnackbarManager<NoIcon> {
     /// Creates a new snackbar manager and returns the overlay view.
-    ///
-    /// Place the returned view in an overlay above the content and install the
-    /// manager with `.state(&manager)`, or use [`ViewExt::snackbar_host`] on
-    /// the root view to do both automatically.
-    ///
-    /// # Returns
-    ///
-    /// A tuple containing the manager and the overlay view.
-    pub fn new() -> (Self, impl View + Clone) {
+    #[cfg(test)]
+    pub(crate) fn new() -> (Self, impl View + Clone) {
         Self::typed()
-    }
-
-    /// Creates a new snackbar manager whose snackbars may carry icons of view type `V`,
-    /// alongside plain icon-less snackbars.
-    pub fn with_icons<V: View + Clone + 'static>() -> (SnackbarManager<V>, impl View + Clone) {
-        SnackbarManager::<V>::typed()
     }
 }
 
 impl<I: SnackbarIconSlot> SnackbarManager<I> {
     /// Creates a new typed snackbar manager and returns the overlay view.
-    pub fn typed() -> (Self, impl View + Clone) {
+    pub(crate) fn typed() -> (Self, impl View + Clone) {
         let active = List::new();
         let state = Rc::new(RefCell::new(SnackbarManagerState {
             active: active.clone(),
@@ -1196,7 +1189,7 @@ impl<I: SnackbarIconSlot> View for StackedSnackbarView<I> {
         let content = Self::build_content(item.snackbar.clone(), manager, item.id, &theme);
 
         let enter_animation = theme.enter_animation.clone();
-        let shape = FixedRoundedRectangle::new(theme.corner_radius);
+        let shape = RoundedRectangle::new(theme.corner_radius);
         let shadow = Shadow::new(
             theme.shadow_color.clone(),
             Vector::new(0.0, theme.shadow_offset_y),
@@ -1286,12 +1279,6 @@ impl<V: View, I: SnackbarIconSlot> View for SnackbarHost<V, I> {
             }
         })));
         content
-    }
-}
-
-impl Default for SnackbarManager<NoIcon> {
-    fn default() -> Self {
-        Self::new().0
     }
 }
 

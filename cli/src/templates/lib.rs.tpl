@@ -46,7 +46,7 @@ fn main() -> impl View {
                 vstack((
                     text("User Profile").size(18.0f32),
                     form(&profile),
-                    text!("Name: {name}", name = proj.name).bold(),
+                    text!("Name: {name}", name = proj.name).bold(true),
                     text!("Email: {email}", email = proj.email),
                 ))
             },
@@ -54,7 +54,7 @@ fn main() -> impl View {
             // Interactive controls
             vstack((
                 text("Controls").size(18.0f32),
-                Slider::new("Progress".into_label(), &progress_value),
+                Slider::new("Progress", &progress_value),
                 progress(progress_value),
                 loading(),
             )),

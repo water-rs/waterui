@@ -192,11 +192,11 @@ impl<L> Stepper<L> {
     /// The label is required so screen readers always have meaningful text to
     /// announce. Use [`hide_label`](Self::hide_label) to omit it visually
     /// while keeping it in the accessibility tree.
-    pub fn new(label: Label<L>, value: &Binding<i32>) -> Self {
+    pub fn new<I: IntoLabel<Kind = L>>(label: I, value: &Binding<i32>) -> Self {
         Self {
             value: value.clone(),
             step: 1i32.into_computed(),
-            label,
+            label: label.into_label(),
             value_formatter: None,
             range: i32::MIN..=i32::MAX,
         }
@@ -308,7 +308,7 @@ impl_label_style_methods!(Stepper<L>);
 ///
 /// See [`Stepper`] for more details.
 pub fn stepper<L: IntoLabel>(label: L, value: &Binding<i32>) -> Stepper<L::Kind> {
-    Stepper::new(label.into_label(), value)
+    Stepper::new(label, value)
 }
 
 #[cfg(test)]

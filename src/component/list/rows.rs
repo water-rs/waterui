@@ -263,7 +263,7 @@ pub struct ListRowId {
 /// [`TaggedBy`](super::TaggedBy) it. `R` is the content type every row
 /// carries, the content's [`ListContent::Row`](super::ListContent::Row).
 pub struct ContentRows<C, R> {
-    parts: Rc<[SharedAnyViews<ListItem<R>>]>,
+    parts: Rc<[SharedAnyViews<R>]>,
     tags: Rc<[PartTags]>,
     _content: PhantomData<fn() -> C>,
 }
@@ -388,7 +388,7 @@ impl<C, R> fmt::Debug for ContentRows<C, R> {
 /// An immutable snapshot of [`ContentRows`]: one snapshot per part, plus
 /// where each part starts.
 pub struct ContentRowsSnapshot<R> {
-    parts: Rc<[AnyViewsSnapshot<ListItem<R>>]>,
+    parts: Rc<[AnyViewsSnapshot<R>]>,
     starts: Rc<[usize]>,
     len: usize,
 }
@@ -412,7 +412,7 @@ impl<R> fmt::Debug for ContentRowsSnapshot<R> {
 }
 
 impl<R> ContentRowsSnapshot<R> {
-    fn new(parts: Rc<[AnyViewsSnapshot<ListItem<R>>]>) -> Self {
+    fn new(parts: Rc<[AnyViewsSnapshot<R>]>) -> Self {
         let mut len = 0;
         let starts = parts
             .iter()
@@ -439,7 +439,7 @@ impl<R> ContentRowsSnapshot<R> {
 
 impl<R: View> ViewSnapshot for ContentRowsSnapshot<R> {
     type Id = ListRowId;
-    type View = ListItem<R>;
+    type View = R;
 
     fn range(&self) -> Range<usize> {
         0..self.len
@@ -487,7 +487,7 @@ fn shifted(edit: &Edit, offset: usize) -> Edit {
 impl<C, R: View> Views for ContentRows<C, R> {
     type Id = ListRowId;
     type Guard = ContentRowsGuard;
-    type View = ListItem<R>;
+    type View = R;
     type Snapshot = ContentRowsSnapshot<R>;
 
     fn len(&self) -> Computed<usize> {
@@ -515,7 +515,7 @@ impl<C, R: View> Views for ContentRows<C, R> {
         _range: impl RangeBounds<usize>,
         watcher: impl Fn(Context<Self::Snapshot>, &CollectionChange) + 'static,
     ) -> Self::Guard {
-        let delivered: Rc<RefCell<Vec<AnyViewsSnapshot<ListItem<R>>>>> = Rc::new(RefCell::new(
+        let delivered: Rc<RefCell<Vec<AnyViewsSnapshot<R>>>> = Rc::new(RefCell::new(
             self.parts.iter().map(Views::snapshot).collect(),
         ));
         let watcher = Rc::new(watcher);
@@ -554,12 +554,12 @@ impl<C, R: View> Views for ContentRows<C, R> {
 
 /// A run of static rows: builders identified by their position.
 struct StaticRows<R> {
-    builders: Rc<[AnyViewBuilder<ListItem<R>>]>,
+    builders: Rc<[AnyViewBuilder<R>]>,
 }
 
 /// The snapshot of [`StaticRows`] — the same builders, which never change.
 struct StaticRowsSnapshot<R> {
-    builders: Rc<[AnyViewBuilder<ListItem<R>>]>,
+    builders: Rc<[AnyViewBuilder<R>]>,
 }
 
 impl<R> Clone for StaticRowsSnapshot<R> {
@@ -572,7 +572,7 @@ impl<R> Clone for StaticRowsSnapshot<R> {
 
 impl<R: View> ViewSnapshot for StaticRowsSnapshot<R> {
     type Id = usize;
-    type View = ListItem<R>;
+    type View = R;
 
     fn range(&self) -> Range<usize> {
         0..self.builders.len()
@@ -590,7 +590,7 @@ impl<R: View> ViewSnapshot for StaticRowsSnapshot<R> {
 impl<R: View> Views for StaticRows<R> {
     type Id = usize;
     type Guard = ();
-    type View = ListItem<R>;
+    type View = R;
     type Snapshot = StaticRowsSnapshot<R>;
 
     fn len(&self) -> Computed<usize> {
@@ -617,7 +617,7 @@ impl<R: View> Views for StaticRows<R> {
 
 /// One static row a [`ListItemSink`] collected.
 struct StaticRow<R> {
-    builder: AnyViewBuilder<ListItem<R>>,
+    builder: AnyViewBuilder<R>,
     /// The row's `.tag(…)` value; `None` when the row is not selectable.
     tag: Option<Rc<dyn Any>>,
 }
@@ -629,7 +629,7 @@ enum SinkPart<R> {
     /// One reactive collection and the `Mapping<Id>` its rows were erased
     /// through.
     Rows {
-        rows: SharedAnyViews<ListItem<R>>,
+        rows: SharedAnyViews<R>,
         ids: Rc<dyn Any>,
     },
 }
@@ -684,16 +684,23 @@ impl<R: View> ListItemSink<R> {
 
     /// Pushes one static row built from a cloneable builder. The row carries
     /// no tag, so it is not selectable.
-    pub fn push(&mut self, builder: AnyViewBuilder<ListItem<R>>) {
+    pub fn push_row(&mut self, builder: AnyViewBuilder<R>) {
         self.push_static(builder, None);
     }
 
+    /// Temporary bridge for external `ListContent` implementers migrating off
+    /// `ListItem` (removed in the closing PR for #4300).
+    #[doc(hidden)]
+    pub fn push(&mut self, builder: AnyViewBuilder<ListItem<R>>) {
+        self.push_row(AnyViewBuilder::new(move || builder.build().into_content()));
+    }
+
     /// Pushes one static row selected by `tag`.
-    pub(crate) fn push_tagged<T: 'static>(&mut self, builder: AnyViewBuilder<ListItem<R>>, tag: T) {
+    pub(crate) fn push_tagged<T: 'static>(&mut self, builder: AnyViewBuilder<R>, tag: T) {
         self.push_static(builder, Some(Rc::new(tag)));
     }
 
-    fn push_static(&mut self, builder: AnyViewBuilder<ListItem<R>>, tag: Option<Rc<dyn Any>>) {
+    fn push_static(&mut self, builder: AnyViewBuilder<R>, tag: Option<Rc<dyn Any>>) {
         let section = self.open_section();
         if let (Some(SinkPart::Static(rows)), Some(last)) =
             (self.parts.last_mut(), self.part_sections.last())
@@ -713,7 +720,7 @@ impl<R: View> ListItemSink<R> {
     pub fn push_rows<V, F>(&mut self, rows: V, row: F)
     where
         V: Views + 'static,
-        F: Fn(V::View) -> ListItem<R> + Clone + 'static,
+        F: Fn(V::View) -> R + Clone + 'static,
     {
         let section = self.open_section();
         let (rows, ids) = AnyViews::new_with_ids(rows);

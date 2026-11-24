@@ -8,17 +8,16 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::metadata::secure::ColorSpace;
+use crate::metadata::secure::DynamicRange;
 use crate::prelude::*;
 use crate::theme::color::{MutedForeground, SurfaceVariant};
-#[cfg(feature = "media")]
 use nami::signal::IntoComputed;
 use unicode_segmentation::UnicodeSegmentation as _;
 use waterui_accessibility::{AccessibilityChildren, AccessibilityRole};
 use waterui_controls::{IntoLabel, Label, SemanticLabel};
 use waterui_core::OneOf2;
 use waterui_core::handler::ViewBuilder;
-#[cfg(feature = "media")]
+#[cfg(feature = "image")]
 use waterui_layout::ContentMode;
 use waterui_layout::stack::zstack;
 use waterui_shape::{Circle, PathCommand, Shape, ShapeExt, ShapeKind};
@@ -68,26 +67,11 @@ impl CapturedShape {
         match self.kind {
             ShapeKind::Rect | ShapeKind::CustomPath => 0.0,
             ShapeKind::Circle | ShapeKind::Ellipse | ShapeKind::Capsule => side / 2.0,
-            ShapeKind::RoundedRect { corner_radius } => corner_radius * side,
-            ShapeKind::UnevenRoundedRect {
-                top_left,
-                top_right,
-                bottom_left,
-                bottom_right,
-            } => top_left.max(top_right).max(bottom_left).max(bottom_right) * side,
-            // Fixed radii are already in points; only the box's own ceiling
-            // applies.
-            ShapeKind::FixedRoundedRect { corner_radius } => corner_radius.min(side / 2.0),
-            ShapeKind::FixedUnevenRoundedRect {
-                top_left,
-                top_right,
-                bottom_left,
-                bottom_right,
-            } => top_left
-                .max(top_right)
-                .max(bottom_left)
-                .max(bottom_right)
-                .min(side / 2.0),
+            ShapeKind::RoundedRect { radii } => radii
+                .resolve_clockwise(side)
+                .into_iter()
+                .reduce(f32::max)
+                .unwrap_or(0.0),
         }
     }
 }
@@ -174,12 +158,12 @@ impl<F: ViewBuilder> AvatarFallback for F {
 ///
 /// ```rust
 /// use waterui::prelude::*;
-/// use waterui::shape::RoundedRectangle;
+/// use waterui::shape::{CornerRadius, RoundedRectangle};
 ///
 /// # fn profile(photo: waterui::Url) -> impl View {
 /// avatar("Grace Hopper")
 ///     .image(photo)
-///     .shape(RoundedRectangle::new(0.25))
+///     .shape(RoundedRectangle::new(CornerRadius::fraction(0.25)))
 ///     .size(64.0)
 ///     .ring(Color::new(theme_color::Accent), 2.0)
 /// # }
@@ -188,12 +172,12 @@ impl<F: ViewBuilder> AvatarFallback for F {
 pub struct Avatar<F = Monogram> {
     label: Label<SemanticLabel>,
     fallback: F,
-    #[cfg(feature = "media")]
+    #[cfg(feature = "image")]
     image: Option<Computed<Url>>,
     shape: CapturedShape,
     size: f32,
     ring: Option<Ring>,
-    color_space: ColorSpace,
+    dynamic_range: Computed<DynamicRange>,
 }
 
 impl<F: ViewBuilder> Avatar<F> {
@@ -228,14 +212,14 @@ impl<F> Avatar<F> {
         Self {
             label: name.into_label().into_semantic(),
             fallback,
-            #[cfg(feature = "media")]
+            #[cfg(feature = "image")]
             image: None,
             shape: CapturedShape::new(&Circle),
             size: DEFAULT_SIZE,
             ring: None,
             // The issue this component answers, water-rs/waterui#93, is one
             // line: ban HDR by default.
-            color_space: ColorSpace::Sdr,
+            dynamic_range: DynamicRange::Standard.into_computed(),
         }
     }
 
@@ -245,7 +229,7 @@ impl<F> Avatar<F> {
     /// replaces the decoded frame without rebuilding anything around it. The
     /// fallback stays behind the picture and shows through until the first
     /// frame decodes, and again if the load fails.
-    #[cfg(feature = "media")]
+    #[cfg(feature = "image")]
     #[must_use]
     pub fn image(mut self, source: impl IntoComputed<Url>) -> Self {
         self.image = Some(source.into_computed());
@@ -259,13 +243,13 @@ impl<F> Avatar<F> {
     /// use waterui::shape::RoundedRectangle;
     ///
     /// # fn squircle() -> impl View {
-    /// avatar("Radia Perlman").shape(RoundedRectangle::new(0.25))
+    /// avatar("Radia Perlman").shape(RoundedRectangle::new(16.0))
     /// # }
     /// ```
     #[must_use]
     #[expect(
         clippy::needless_pass_by_value,
-        reason = "a shape is authored inline (`.shape(RoundedRectangle::new(0.25))`); taking a reference would force the caller to bind it first, and `ClipShape::new` takes it by value for the same reason"
+        reason = "a shape is authored inline (`.shape(RoundedRectangle::new(16.0))`); taking a reference would force the caller to bind it first, and `ClipShape::new` takes it by value for the same reason"
     )]
     pub fn shape(mut self, shape: impl Shape) -> Self {
         self.shape = CapturedShape::new(&shape);
@@ -294,17 +278,17 @@ impl<F> Avatar<F> {
 
     /// Chooses the dynamic range the avatar's contents are shown in.
     ///
-    /// An avatar defaults to [`ColorSpace::Sdr`], against the framework-wide
-    /// default of HDR. A portrait is a thumbnail sitting in a row of chrome: an
-    /// HDR source painted at 40 points has its highlights driven past the
-    /// display's white point, so the small bright disc blooms and glares
-    /// against the text beside it, and a row of avatars flickers as each one
-    /// loads. Opt an individual avatar back in with
-    /// `.dynamic_range(ColorSpace::Hdr)` when its picture is the subject rather
-    /// than a marker — a profile header at full width, say.
+    /// An avatar defaults to [`DynamicRange::Standard`], against the framework-wide
+    /// default of [`DynamicRange::High`]. A portrait is a thumbnail sitting in a row
+    /// of chrome: an HDR source painted at 40 points has its highlights driven past
+    /// the display's white point, so the small bright disc blooms and glares against
+    /// the text beside it, and a row of avatars flickers as each one loads. Opt an
+    /// individual avatar back in with `.dynamic_range(DynamicRange::High)` when its
+    /// picture is the subject rather than a marker — a profile header at full width,
+    /// say.
     #[must_use]
-    pub const fn dynamic_range(mut self, space: ColorSpace) -> Self {
-        self.color_space = space;
+    pub fn dynamic_range(mut self, range: impl IntoComputed<DynamicRange>) -> Self {
+        self.dynamic_range = range.into_computed();
         self
     }
 }
@@ -314,12 +298,12 @@ impl<F: AvatarFallback> View for Avatar<F> {
         let Self {
             label,
             fallback,
-            #[cfg(feature = "media")]
+            #[cfg(feature = "image")]
             image,
             shape,
             size,
             ring,
-            color_space,
+            dynamic_range,
         } = self;
 
         // Resolving first is what lets `accessibility_label` read a localized
@@ -333,13 +317,13 @@ impl<F: AvatarFallback> View for Avatar<F> {
 
         let fallback = fallback.build_fallback(spoken.clone(), inner);
 
-        #[cfg(feature = "media")]
+        #[cfg(feature = "image")]
         let picture = image.map(|source| {
             Photo::new(source)
                 .resizable()
                 .content_mode(ContentMode::Fill)
         });
-        #[cfg(not(feature = "media"))]
+        #[cfg(not(feature = "image"))]
         let picture = ();
 
         let content = zstack((fallback, picture))
@@ -361,7 +345,7 @@ impl<F: AvatarFallback> View for Avatar<F> {
             // this the monogram would announce itself a second time, under the
             // node that already carries the person's full name.
             .a11y_children(AccessibilityChildren::ExcludeDescendants)
-            .color_space(color_space)
+            .dynamic_range(dynamic_range)
     }
 }
 
@@ -414,29 +398,40 @@ fn first_grapheme(word: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{CapturedShape, avatar, initials};
-    use crate::metadata::secure::{ColorSpace, HighDynamicRange, StandardDynamicRange};
+    use crate::metadata::secure::{DynamicRange, DynamicRangeMetadata};
+    use nami::{Signal as _, binding};
     use waterui_core::{Environment, backend::peel_metadata};
-    use waterui_shape::{Circle, RoundedRectangle, ShapeKind};
+    use waterui_shape::{Circle, CornerRadius, RoundedRectangle, ShapeKind};
 
     #[test]
     fn an_avatar_is_standard_dynamic_range_unless_asked_otherwise() {
-        assert!(
-            peel_metadata::<StandardDynamicRange>(avatar("Ada Lovelace"), &Environment::new())
-                .is_some(),
-            "water-rs/waterui#93: an avatar opts its contents out of HDR"
-        );
+        let metadata =
+            peel_metadata::<DynamicRangeMetadata>(avatar("Ada Lovelace"), &Environment::new())
+                .expect("water-rs/waterui#93: an avatar opts its contents out of HDR");
+        assert_eq!(metadata.value.range().snapshot(), DynamicRange::Standard);
     }
 
     #[test]
     fn an_avatar_can_be_opted_back_into_high_dynamic_range() {
-        assert!(
-            peel_metadata::<HighDynamicRange>(
-                avatar("Ada Lovelace").dynamic_range(ColorSpace::Hdr),
-                &Environment::new()
-            )
-            .is_some(),
-            "an avatar whose picture is the subject can ask for the framework default back"
-        );
+        let metadata = peel_metadata::<DynamicRangeMetadata>(
+            avatar("Ada Lovelace").dynamic_range(DynamicRange::High),
+            &Environment::new(),
+        )
+        .expect("an avatar whose picture is the subject can ask for the framework default back");
+        assert_eq!(metadata.value.range().snapshot(), DynamicRange::High);
+    }
+
+    #[test]
+    fn an_avatar_dynamic_range_tracks_a_signal() {
+        let range = binding(DynamicRange::Standard);
+        let metadata = peel_metadata::<DynamicRangeMetadata>(
+            avatar("Ada Lovelace").dynamic_range(range.clone()),
+            &Environment::new(),
+        )
+        .expect("avatar attaches dynamic-range metadata");
+        assert_eq!(metadata.value.range().snapshot(), DynamicRange::Standard);
+        range.set(DynamicRange::High);
+        assert_eq!(metadata.value.range().snapshot(), DynamicRange::High);
     }
 
     #[test]
@@ -476,7 +471,14 @@ mod tests {
     fn a_ring_traces_the_shape_it_surrounds() {
         assert!((CapturedShape::new(&Circle).corner_radius(40.0) - 20.0).abs() < f32::EPSILON);
         assert!(
-            (CapturedShape::new(&RoundedRectangle::new(0.25)).corner_radius(40.0) - 10.0).abs()
+            (CapturedShape::new(&RoundedRectangle::new(CornerRadius::fraction(0.25)))
+                .corner_radius(40.0)
+                - 10.0)
+                .abs()
+                < f32::EPSILON
+        );
+        assert!(
+            (CapturedShape::new(&RoundedRectangle::new(12.0)).corner_radius(40.0) - 12.0).abs()
                 < f32::EPSILON
         );
         assert!(matches!(

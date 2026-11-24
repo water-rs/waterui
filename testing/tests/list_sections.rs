@@ -3,7 +3,7 @@
 //! collection row by row, its header opens whichever row currently leads the
 //! section, and an empty section draws no chrome until rows come back.
 
-use waterui::component::list::{List, ListItem, Section, row};
+use waterui::component::list::{List, Section, row};
 use waterui::component::text;
 use waterui::id::SelfId;
 use waterui::reactive::collection::SignalCollection;
@@ -33,8 +33,8 @@ fn filtered(query: &Binding<Str>, all: &'static [&'static str]) -> Rows {
     )
 }
 
-fn reminder(title: SelfId<&'static str>) -> ListItem<impl waterui::View> {
-    ListItem::new(text(title.into_inner()))
+fn reminder(title: SelfId<&'static str>) -> impl waterui::View {
+    text(title.into_inner())
 }
 
 /// A grouped, searchable reminder list: a static row, then two sections

@@ -15,11 +15,11 @@ conventions in [components.md](components.md): lowercase ergonomic constructors,
 ## Media
 
 `waterui::media` (`Photo`, `Image`, `MediaPicker`, and the image kind of `asset!`) is
-behind the `media` feature, which is not on by default: add `features = ["media"]` to the
-`waterui` dependency. Four features sit beside it, none implied by `media`:
+behind the `image` feature, which is not on by default: add `features = ["image"]` to the
+`waterui` dependency. Four features sit beside it, none implied by `image`:
 
 - `video` — `Video`, `VideoPlayer`, `LivePhoto`, video picks, the video kind of `asset!`;
-  also `waterui::video`. Enable `["media", "video"]` for photo and video together.
+  also `waterui::video`. Enable `["image", "video"]` for photo and video together.
 - `video-gpu` — WaterUI's own GPU player (implies `video` and `gpu`). Apple and the web
   bridge a native player; Hydrolysis platforms (Android, Windows, Linux) draw video only
   when the app's own `waterui` dependency declares `video-gpu`.
@@ -71,9 +71,8 @@ Media picking — the picker itself is the tappable control:
 use waterui::media::media_picker::{MediaFilter, MediaPicker, Selected};
 
 let selection: Binding<Option<Selected>> = Binding::default();
-MediaPicker::new(&selection)
+MediaPicker::new("Pick a photo", &selection)
     .filter(MediaFilter::Image)          // Image | Video | LivePhoto (the last two need `video`); takes a signal
-    .label(text("Pick a photo"))         // type-changing builder — call before storing
 
 // In a handler: Selected::load() is synchronous and consumes the selection.
 let media = selected.load();             // Media::Image(Url) | Video(Url) | LivePhoto(source)
@@ -454,8 +453,8 @@ it is not the frame modifier. Also available: `.emit_from_point()` / `.emit_from
 `.collide_with_particles(radius, strength)`, `.bounce(r)`, `.surface_friction(f)`).
 
 Shapes are views that fill the space they are given; `.fill()` and `.clip()` are the two
-ways to use them — the styling reference covers them, including the normalized-radius
-rule for `RoundedRectangle`.
+ways to use them — the styling reference covers them, including point and fractional radii
+for `RoundedRectangle`.
 
 ## Data: charts and maps
 

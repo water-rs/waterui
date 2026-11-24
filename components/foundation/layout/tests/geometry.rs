@@ -9,15 +9,15 @@
 //! ideal width) or read rendered ink (the ellipsis run detector) went to
 //! hydrolysis-m3 (water-rs/hydrolysis-m3#113).
 
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::time::Duration;
 
 use waterui::View;
 use waterui::graphics::color::Srgb;
 use waterui::prelude::*;
 use waterui::snackbar::{Snackbar, SnackbarManager, SnackbarTheme};
-use waterui_testing::{
-    NodeBounds, OffscreenApp, Role, Styled, TestStyle, UiBuilder, ui as test_ui,
-};
+use waterui_testing::{NodeBounds, OffscreenApp, Role, TestStyle, UiBuilder, ui as test_ui};
 
 fn visual_shell<V: View>(content: V) -> impl View {
     content.padding_with(20.0).background(Srgb::BLACK)
@@ -181,17 +181,25 @@ const MIN_WIDTH: f32 = 300.0;
 const MAX_WIDTH: f32 = 600.0;
 
 /// Mounts an app whose window shows `snackbar`, and returns it settled.
-fn show(ui: UiBuilder<Styled<TestStyle>>, snackbar: Snackbar) -> (OffscreenApp, SnackbarManager) {
-    let (manager, overlay) = SnackbarManager::new();
+fn show(ui: UiBuilder, snackbar: Snackbar) -> (OffscreenApp, SnackbarManager) {
     let theme = SnackbarTheme {
         min_width: MIN_WIDTH,
         max_width: MAX_WIDTH,
         ..SnackbarTheme::default()
     };
-    let mut app = ui
-        .with(manager.clone())
-        .with(theme)
-        .mount_offscreen(move || zstack((text("app content"), overlay.clone())));
+    let captured = Rc::new(RefCell::new(None));
+    let captured_mount = Rc::clone(&captured);
+    let mut app = ui.with(theme).mount_offscreen(move || {
+        let captured = Rc::clone(&captured_mount);
+        SnackbarManager::host(move |manager: SnackbarManager| {
+            *captured.borrow_mut() = Some(manager);
+            text("app content")
+        })
+    });
+    let manager = captured
+        .borrow_mut()
+        .take()
+        .expect("SnackbarManager::host installs the manager on mount");
     manager.show(snackbar);
     app.settle();
     (app, manager)
@@ -203,7 +211,7 @@ fn show(ui: UiBuilder<Styled<TestStyle>>, snackbar: Snackbar) -> (OffscreenApp, 
 ///
 /// Origin: waterui `tests/snackbar_layout.rs`.
 #[waterui::test(theme = TestStyle::new(), viewport = (900, 600))]
-fn a_short_closeable_snackbar_hugs_the_min_width_floor(ui: UiBuilder<Styled<TestStyle>>) {
+fn a_short_closeable_snackbar_hugs_the_min_width_floor(ui: UiBuilder) {
     let (mut app, _manager) = show(
         ui,
         Snackbar::new("Saved").duration(Duration::ZERO).closeable(),
@@ -229,7 +237,7 @@ fn a_short_closeable_snackbar_hugs_the_min_width_floor(ui: UiBuilder<Styled<Test
 ///
 /// Origin: waterui `tests/snackbar_layout.rs`.
 #[waterui::test(theme = TestStyle::new(), viewport = (900, 600))]
-fn a_plain_snackbar_hugs_its_message(ui: UiBuilder<Styled<TestStyle>>) {
+fn a_plain_snackbar_hugs_its_message(ui: UiBuilder) {
     let (mut app, _manager) = show(
         ui,
         Snackbar::new("Copied to clipboard").duration(Duration::ZERO),
@@ -252,7 +260,7 @@ const LONG: &str = "A label long enough to wrap into several lines at this width
 ///
 /// Origin: waterui `tests/text_line_limit.rs`.
 #[waterui::test(theme = TestStyle::new(), viewport = (600, 600))]
-fn a_line_limit_caps_the_reserved_height(ui: UiBuilder<Styled<TestStyle>>) {
+fn a_line_limit_caps_the_reserved_height(ui: UiBuilder) {
     let mut app = ui.mount_offscreen(|| {
         vstack((
             text(LONG).a11y_label("unlimited").width(150.0),
@@ -276,7 +284,7 @@ fn a_line_limit_caps_the_reserved_height(ui: UiBuilder<Styled<TestStyle>>) {
 /// Toggling a reactive `line_limit` signal re-limits the same `Text` leaf in
 /// place without rebuilding it.
 #[waterui::test(theme = TestStyle::new(), viewport = (600, 600))]
-fn a_reactive_line_limit_resizes_text_in_place(ui: UiBuilder<Styled<TestStyle>>) {
+fn a_reactive_line_limit_resizes_text_in_place(ui: UiBuilder) {
     use core::num::NonZeroUsize;
     use waterui::SignalExt as _;
 
@@ -318,7 +326,7 @@ fn a_reactive_line_limit_resizes_text_in_place(ui: UiBuilder<Styled<TestStyle>>)
 /// page, which its own flush places after the page's layout at a rect the new
 /// string does not change.
 #[waterui::test(theme = TestStyle::new(), viewport = (900, 600))]
-fn a_changed_text_is_measured_again_inside_a_retained_sub_view(ui: UiBuilder<Styled<TestStyle>>) {
+fn a_changed_text_is_measured_again_inside_a_retained_sub_view(ui: UiBuilder) {
     use waterui::id::SelfId;
     use waterui::navigation::{NavigationSplitView, NavigationStack, NavigationView};
 
@@ -406,7 +414,7 @@ fn a_changed_text_is_measured_again_inside_a_retained_sub_view(ui: UiBuilder<Sty
 ///
 /// Origin: waterui `tests/text_line_limit.rs`.
 #[waterui::test(theme = TestStyle::new(), viewport = (600, 600))]
-fn compressed_button_labels_stay_on_one_line(ui: UiBuilder<Styled<TestStyle>>) {
+fn compressed_button_labels_stay_on_one_line(ui: UiBuilder) {
     let mut app = ui.mount_offscreen(|| {
         hstack((
             button("Back").action(|| {}),

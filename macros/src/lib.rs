@@ -1886,14 +1886,6 @@ fn validate_harness_fn_shape(input_fn: &ItemFn, macro_label: &str) -> Result<(),
 fn validate_test_fn(input_fn: &ItemFn, mounts_view: bool) -> Result<&syn::PatType, TokenStream> {
     const LABEL: &str = "#[waterui::test(...)]";
     validate_harness_fn_shape(input_fn, LABEL)?;
-    if !is_unit_output(&input_fn.sig.output) {
-        return Err(syn::Error::new_spanned(
-            &input_fn.sig.output,
-            "`#[waterui::test(...)]` test functions must not return a value",
-        )
-        .to_compile_error()
-        .into());
-    }
 
     if mounts_view {
         validate_mounted_parameter(input_fn, LABEL, "a `&mut` app session")
@@ -1946,7 +1938,7 @@ fn validate_test_fn(input_fn: &ItemFn, mounts_view: bool) -> Result<&syn::PatTyp
 /// Without a view path the test function receives the configured
 /// [`UiBuilder`](https://docs.rs/waterui-testing) by value and mounts in its
 /// own body — the form for tests that own `Binding`s the view closes over.
-/// A styled manual mount names the style in the parameter type.
+/// Styled tests also take a plain `UiBuilder`.
 ///
 /// ```rust
 /// # use waterui::prelude::*;
@@ -1987,6 +1979,7 @@ pub fn ui_test(args: TokenStream, input: TokenStream) -> TokenStream {
     let attrs = &input_fn.attrs;
     let visibility = &input_fn.vis;
     let fn_name = &input_fn.sig.ident;
+    let output = &input_fn.sig.output;
     let fn_body = &input_fn.block;
     let arg_pattern = &typed_arg.pat;
     let arg_type = &typed_arg.ty;
@@ -2028,7 +2021,7 @@ pub fn ui_test(args: TokenStream, input: TokenStream) -> TokenStream {
             #testing_path::block_on(async {
                 #bind_arg
                 #fn_body
-            });
+            })
         }
     } else {
         quote! {
@@ -2037,10 +2030,25 @@ pub fn ui_test(args: TokenStream, input: TokenStream) -> TokenStream {
         }
     };
 
+    let termination_assert = match output {
+        syn::ReturnType::Default => quote! {},
+        syn::ReturnType::Type(_, ty) => {
+            let cfg_attrs = attrs.iter().filter(|attr| attr.path().is_ident("cfg"));
+            quote! {
+                #(#cfg_attrs)*
+                const _: fn() = || {
+                    fn assert_termination<T: ::std::process::Termination>() {}
+                    assert_termination::<#ty>();
+                };
+            }
+        }
+    };
+
     let expanded = quote! {
+        #termination_assert
         #(#attrs)*
         #[test]
-        #visibility fn #fn_name() {
+        #visibility fn #fn_name() #output {
             #run_body
         }
     };
@@ -2220,9 +2228,8 @@ fn validate_bench_fn(input_fn: &ItemFn, mounts_view: bool) -> Result<&syn::PatTy
 /// # Manual form
 ///
 /// Without a view path the bench function receives the configured `UiBuilder`
-/// — typed `UiBuilder<Styled<S>>` by the `theme =` argument — by value, drives
-/// `perf_with` itself, and returns the `PerfReport` — the form for benches
-/// that own `Binding`s the view closes over.
+/// by value, drives `perf_with` itself, and returns the `PerfReport` — the
+/// form for benches that own `Binding`s the view closes over.
 ///
 /// ```ignore
 /// # use waterui::prelude::*;
@@ -2231,9 +2238,7 @@ fn validate_bench_fn(input_fn: &ItemFn, mounts_view: bool) -> Result<&syn::PatTy
 /// #     button("Increment").action(move || *value.get_mut() += 1)
 /// # }
 /// #[waterui::bench(theme = hydrolysis_m3::Material3::defaults(), max_rebuild_ratio = 0.2)]
-/// fn counter_updates(
-///     ui: waterui_testing::UiBuilder<waterui_testing::Styled<hydrolysis_m3::Material3>>,
-/// ) -> waterui_testing::PerfReport {
+/// fn counter_updates(ui: waterui_testing::UiBuilder) -> waterui_testing::PerfReport {
 ///     let value = Binding::i32(0);
 ///     let value_for_view = value.clone();
 ///     ui.perf_with(move || counter(&value_for_view), |perf| {

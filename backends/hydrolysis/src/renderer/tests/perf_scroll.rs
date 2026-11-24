@@ -25,7 +25,7 @@ use waterui_layout::stack::{VStack, vstack};
 use waterui::Binding;
 use waterui::Str;
 use waterui::ViewExt as _;
-use waterui::component::list::{List, ListItem};
+use waterui::component::list::List;
 use waterui::component::text;
 use waterui::prelude::{FlowAnimationPreset, flow_markdown};
 
@@ -194,7 +194,7 @@ fn assert_indexed_scroll_materializes_only_the_target_window(
                     } else {
                         "Dataset row"
                     };
-                    ListItem::new(vstack((text(label),)).size(360.0, ROW_HEIGHT))
+                    vstack((text(label),)).size(360.0, ROW_HEIGHT)
                 })
                 .scroll_controller(&controller),
             )
