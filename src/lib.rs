@@ -77,7 +77,7 @@ pub mod prelude {
     pub use super::window::{Window, WindowState};
     pub use super::{
         AnimationExt, AnyView, Binding, Color, Computed, Identifiable, OneOf2, OneOf3, OneOf4,
-        OneOf5, OneOf6, OneOf7, OneOf8, Signal, SignalExt, State, Str, Use, View, ViewExt,
+        OneOf5, OneOf6, OneOf7, OneOf8, Signal, SignalExt, State, Str, View, ViewExt,
         accessibility, animation, app, binding, color, component, cursor, drag_drop, env, error,
         filter, fullscreen, gesture, gradient, id, layout, locale, metadata, reactive, regional,
         shape, signal, style, task, text, widget, window,
@@ -316,10 +316,10 @@ pub use waterui_core::{
     contract_violation,
     easing::{self, EasingCurve, Interpolatable},
     env::{self, Environment},
-    extract::{self, Extractor, State, Use},
+    extract::{self, Extractor, State},
     handler::{self, Handler, HandlerOnce},
     id::{self, Identifiable},
-    impl_extractor, raw_view,
+    raw_view,
     resolve::{self, AnyResolvable, Resolvable},
     views,
 };

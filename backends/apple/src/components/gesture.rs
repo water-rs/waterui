@@ -42,6 +42,7 @@ use waterui::gesture::{
     MagnificationEvent, PointerButton, RotationEvent, TapEvent,
 };
 use waterui_core::Metadata;
+use waterui_core::extract::State;
 use waterui_core::handler::ReportExtraction as _;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
@@ -655,13 +656,13 @@ pub fn realize_gesture_observer_metadata(
         // environment, so a handler extracts the same values on every
         // backend.
         let mut action_env = env.clone();
-        action_env.insert(observer_gesture.clone());
+        action_env.insert(State(observer_gesture.clone()));
         match payload {
-            GesturePayload::Tap(event) => action_env.insert(event),
-            GesturePayload::LongPress(event) => action_env.insert(event),
-            GesturePayload::Drag(event) => action_env.insert(event),
-            GesturePayload::Magnification(event) => action_env.insert(event),
-            GesturePayload::Rotation(event) => action_env.insert(event),
+            GesturePayload::Tap(event) => action_env.insert(State(event)),
+            GesturePayload::LongPress(event) => action_env.insert(State(event)),
+            GesturePayload::Drag(event) => action_env.insert(State(event)),
+            GesturePayload::Magnification(event) => action_env.insert(State(event)),
+            GesturePayload::Rotation(event) => action_env.insert(State(event)),
         }
         (action.borrow_mut())(&action_env).report_extraction();
     });

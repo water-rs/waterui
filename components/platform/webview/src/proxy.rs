@@ -18,7 +18,7 @@ use std::{any::type_name, cell::OnceCell, fmt, rc::Rc};
 use std::{future::ready, pin::Pin};
 
 use suiteki::Str;
-use waterui_core::extract::{ExtractionState, Extractor};
+use waterui_core::extract::{ExtractionState, Extractor, State};
 #[cfg(not(target_arch = "wasm32"))]
 use waterui_core::reactive::signal::IntoComputed;
 use waterui_core::{
@@ -396,16 +396,26 @@ impl WebViewProxy {
 
 impl Extractor for WebViewProxy {
     fn extract(env: &Environment) -> Result<Self, Error> {
-        env.get::<Self>().cloned().ok_or_else(|| {
-            Error::msg(format!(
-                "{} not found in environment — wrap the surrounding view in \
-                 `WebView::open(url).proxy_scope(|page, web| ...)` to inject it",
-                type_name::<Self>()
-            ))
-        })
+        State::<Self>::extract(env)
+            .map(|State(proxy)| proxy)
+            .map_err(|_| {
+                Error::msg(format!(
+                    "{} not found in environment — wrap the surrounding view in \
+                     `WebView::open(url).proxy_scope(|page, web| ...)` to inject it",
+                    type_name::<Self>()
+                ))
+            })
     }
 
-    fn extract_from_action(env: &Environment, _state: &mut ExtractionState) -> Result<Self, Error> {
-        Self::extract(env)
+    fn extract_from_action(env: &Environment, state: &mut ExtractionState) -> Result<Self, Error> {
+        State::<Self>::extract_from_action(env, state)
+            .map(|State(proxy)| proxy)
+            .map_err(|_| {
+                Error::msg(format!(
+                    "{} not found in environment — wrap the surrounding view in \
+                     `WebView::open(url).proxy_scope(|page, web| ...)` to inject it",
+                    type_name::<Self>()
+                ))
+            })
     }
 }

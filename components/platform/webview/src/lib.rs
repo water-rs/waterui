@@ -133,8 +133,8 @@ pub use state::{FieldEntry, JsField, StateDeclarations, StateWriteError};
 
 use suiteki::Str;
 use waterui_core::{
-    Binding, Computed, Environment, Native, Signal, View, binding, env::with, layout::StretchAxis,
-    reactive::signal::IntoComputed,
+    Binding, Computed, Environment, Native, Signal, State, View, binding, env::with,
+    layout::StretchAxis, reactive::signal::IntoComputed,
 };
 
 /// Something that happened in a `WebView`.
@@ -442,7 +442,7 @@ impl WebView {
         F: FnOnce(WebViewProxy) -> V,
     {
         let proxy = self.proxy();
-        with(content(proxy.clone()), proxy)
+        with(content(proxy.clone()), State(proxy))
     }
 
     /// The most recent event, or `None` before anything has happened.
@@ -1071,7 +1071,7 @@ impl WebViewOpen {
     {
         let (proxy, slot) = WebViewProxy::deferred();
         self.proxy_slot = Some(slot);
-        with(content(self, proxy.clone()), proxy)
+        with(content(self, proxy.clone()), State(proxy))
     }
 
     /// Opens this deferred web view with `controller`, wiring its initial URL,

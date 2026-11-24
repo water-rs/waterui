@@ -21,13 +21,13 @@ use alloc::vec::Vec;
 use core::cell::RefCell;
 
 use cocoa_ui::{Retained, view};
-use waterui::Environment;
 #[cfg(target_os = "ios")]
 use waterui::navigation::ResolvedNavigationView;
 use waterui::navigation::{
     AnyNavigationTransition, CustomNavigationController, NativeNavigationTransition,
     NavigationController, NavigationStackLayout, NavigationTransaction,
 };
+use waterui::{Environment, State};
 
 use super::Fill;
 use crate::contract::{Held, NativeLeaf, RenderContext};
@@ -53,7 +53,7 @@ fn stack_leaf(stack: NavigationStackLayout<Held>, ctx: &RenderContext<'_>) -> Na
     let controller = NavigationController::new(Receiver {
         driver: Rc::downgrade(&erased),
     });
-    env.insert(controller);
+    env.insert(State(controller));
     driver.prepare(ctx, env.clone());
     let root = stack.resolve(&env);
     let mut leaf = driver.build(root);
@@ -81,7 +81,7 @@ pub(super) fn column_leaf(
     let controller = NavigationController::new(Receiver {
         driver: Rc::downgrade(&erased),
     });
-    env.insert(controller);
+    env.insert(State(controller));
     driver.prepare(ctx, env);
     let mut leaf = driver.build(root);
     let nav = driver.nav();
@@ -339,9 +339,8 @@ mod platform {
         pub(super) fn prepare(&self, ctx: &RenderContext<'_>, env: Environment) {
             let _ = self.renderer.set(ctx.with_env(&env).renderer());
             let _ = self.model.set(
-                env.get::<NavigationController>()
-                    .expect("the NavigationStack installs its NavigationController in the environment before rendering")
-                    .clone(),
+                env.extract::<NavigationController>()
+                    .expect("the NavigationStack installs its NavigationController in the environment before rendering"),
             );
             let _ = self.env.set(env);
         }
@@ -984,9 +983,8 @@ mod platform {
             let _ = self.self_weak.set(Rc::downgrade(self));
             let _ = self.renderer.set(ctx.with_env(&env).renderer());
             let _ = self.model.set(
-                env.get::<NavigationController>()
-                    .expect("the NavigationStack installs its NavigationController in the environment before rendering")
-                    .clone(),
+                env.extract::<NavigationController>()
+                    .expect("the NavigationStack installs its NavigationController in the environment before rendering"),
             );
             let _ = self.env.set(env);
         }
@@ -1465,12 +1463,12 @@ mod tests {
     use alloc::vec::Vec;
     use core::cell::RefCell;
 
-    use waterui::Environment;
     use waterui::navigation::{
         IntoNavigationStackLayout as _, NavigationController, NavigationPath, NavigationStack,
         NavigationTransaction, NavigationView,
     };
     use waterui::prelude::text;
+    use waterui::{Environment, State};
 
     use super::{Held, Receiver, Sink};
 
@@ -1518,9 +1516,9 @@ mod tests {
         let sink = Rc::new(TestSink::new());
         let erased: Rc<dyn Sink> = sink.clone();
         let mut env = Environment::new();
-        env.insert(NavigationController::new(Receiver {
+        env.insert(State(NavigationController::new(Receiver {
             driver: Rc::downgrade(&erased),
-        }));
+        })));
 
         let path = NavigationPath::<i32>::new();
         path.push(1_i32);

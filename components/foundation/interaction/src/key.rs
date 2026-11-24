@@ -17,15 +17,16 @@ use core::fmt;
 pub use keyboard_types::{Code, Key, Modifiers, NamedKey};
 
 use waterui_core::{
-    Environment,
+    Environment, Error,
+    extract::{ExtractionState, Extractor, State},
     handler::{BoxedAction, Handler, ReportExtraction, boxed_action},
     metadata::MetadataKey,
 };
 
 /// A key press delivered to an [`OnKeyPress`] handler.
 ///
-/// Backends place it into the handler's environment, so a handler reads it
-/// with [`Use<KeyPress>`](waterui_core::extract::Use).
+/// Backends install it into the handler's environment via [`State<KeyPress>`],
+/// so a handler reads it directly as `press: KeyPress` or `State(press): State<KeyPress>`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct KeyPress {
@@ -79,6 +80,16 @@ impl KeyPress {
     }
 }
 
+impl Extractor for KeyPress {
+    fn extract(env: &Environment) -> Result<Self, Error> {
+        State::<Self>::extract(env).map(|State(press)| press)
+    }
+
+    fn extract_from_action(env: &Environment, state: &mut ExtractionState) -> Result<Self, Error> {
+        State::<Self>::extract_from_action(env, state).map(|State(press)| press)
+    }
+}
+
 /// Whether a key handler consumed a key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[must_use = "a key handler must say whether it consumed the key"]
@@ -103,8 +114,7 @@ impl MetadataKey for OnKeyPress {}
 
 impl OnKeyPress {
     /// Creates a key handler. It extracts its arguments from the environment,
-    /// [`Use<KeyPress>`](waterui_core::extract::Use) among them, and says whether it
-    /// consumed the key.
+    /// [`KeyPress`] among them, and says whether it consumed the key.
     #[must_use]
     pub fn new<Args>(handler: impl Handler<Args, KeyHandling>) -> Self {
         Self {

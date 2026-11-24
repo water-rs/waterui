@@ -256,18 +256,24 @@ mounted tree.
 
 ## Localization
 
-`<Text>` localizes through the same `TranslationCatalog` lookup as Rust's
-`text("…")`, so one catalog serves both languages of a codebase:
+Text slots match Rust's verbatim-vs-localized boundary: a runtime JS string or
+number is always verbatim so user data never reaches `TranslationCatalog`, while
+literal JSX text (which the transform emits as `{ key }` or `{ key, args }`)
+and explicit `t` calls from `"waterui"` resolve through the active catalog:
 
 ```tsx
-<Text>Settings</Text>          // looked up in the catalog for the current locale
-<Text>{count()}</Text>         // a number is the value itself, never a key
+import { t } from "waterui";
+
+<Text>Settings</Text>                 // JSX literal -> { key: "Settings" }
+<Text>Hello, {name()}</Text>          // interpolated -> { key: "Hello, {name}", args: { name } }
+<Text>{() => order().title}</Text>    // runtime string -> verbatim, never looked up
+<Avatar name={user().displayName} />  // always verbatim, never looked up
+<Card title={t("Order {id}", { id })} />
+<Card title={t`Settings`} />
 ```
 
-A string child is a translation key, and a key the catalog does not carry
-renders as the key itself — exactly what `Text::localized` does. A number
-child is verbatim — `Text::verbatim` of the value as formatted, never a
-lookup — and it follows the signal like any other dynamic position.
+A catalog miss falls back to the key template before placeholder interpolation,
+and reactive accessors in `args` update in place alongside locale changes.
 
 ## Engines and platform support
 

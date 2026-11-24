@@ -52,6 +52,8 @@ use alloc::boxed::Box;
 use core::fmt;
 
 use waterui_core::{
+    Environment, Error,
+    extract::{ExtractionState, Extractor, State},
     handler::{BoxedAction, Handler, boxed_action},
     metadata::MetadataKey,
 };
@@ -159,8 +161,9 @@ impl GesturePoint {
 
 /// Event payload for tap gestures.
 ///
-/// Backends place this structure into the environment when a tap is recognised,
-/// allowing gesture handlers to extract the payload using [`Use<TapEvent>`](waterui_core::extract::Use).
+/// Backends install this structure into the environment via [`State<TapEvent>`]
+/// when a tap is recognised, allowing gesture handlers to extract it directly as
+/// `event: TapEvent` or `State(event): State<TapEvent>`.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct TapEvent {
@@ -938,6 +941,34 @@ impl GestureObserverBuilder {
         GestureObserver::new(self.gesture, action)
     }
 }
+
+macro_rules! impl_state_extractor {
+    ($($ty:ty),+ $(,)?) => {
+        $(
+            impl Extractor for $ty {
+                fn extract(env: &Environment) -> Result<Self, Error> {
+                    State::<Self>::extract(env).map(|State(value)| value)
+                }
+
+                fn extract_from_action(
+                    env: &Environment,
+                    state: &mut ExtractionState,
+                ) -> Result<Self, Error> {
+                    State::<Self>::extract_from_action(env, state).map(|State(value)| value)
+                }
+            }
+        )+
+    };
+}
+
+impl_state_extractor!(
+    TapEvent,
+    LongPressEvent,
+    DragEvent,
+    MagnificationEvent,
+    RotationEvent,
+    Gesture,
+);
 
 #[cfg(test)]
 mod tests {

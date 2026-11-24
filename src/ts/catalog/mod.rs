@@ -60,11 +60,13 @@ pub use attributes::{
     StepperAttributes, TabAttributes, TableAttributes, TabsAttributes, TextAttributes,
     TextFieldAttributes, ToggleAttributes, VStackAttributes, ZStackAttributes,
 };
+pub(crate) use values::ResolvedTextPart;
 pub use values::color_of;
 pub use values::{
     ActionArguments, BackgroundValue, BorderValue, ColorValue, EdgeValues, HorizontalAlign,
-    JsAction, PaddingValue, PickerOption, ProgressStyleValue, RoundedShape, ScrollAxis,
-    ShadowValue, ShapeName, ShapeValue, StackAlign, TextContent, UrlValue, VerticalAlign,
+    JsAction, LocalizedArgs, PaddingValue, PickerOption, ProgressStyleValue, RoundedShape,
+    ScrollAxis, ShadowValue, ShapeName, ShapeValue, StackAlign, TextContent, UrlValue,
+    VerticalAlign,
 };
 
 /// The whole vocabulary.

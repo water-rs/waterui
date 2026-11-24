@@ -21,12 +21,13 @@ use crate::appearance::style::Vector;
 use nami::{Computed, SignalExt as _};
 use suiteki::Str;
 use waterui_accessibility::AccessibilityIdentifier;
-use waterui_core::{AnyView, Metadata};
+use waterui_core::{AnyView, Environment, Metadata, OneOf2, View};
 use waterui_graphics::WorkingColor;
 use waterui_graphics::color::{Color, Working};
 use waterui_layout::background::BackgroundView;
 use waterui_layout::frame::Frame;
 use waterui_layout::padding::Padding;
+use waterui_locale::locale_binding;
 use waterui_shape::{Capsule, Circle, Ellipse, FixedRoundedRectangle, Rectangle, RoundedRectangle};
 use waterui_ts::engine::{JsError, JsValue};
 use waterui_ts::{Bridge, FromJs as _};
@@ -96,14 +97,8 @@ pub fn apply(
             let action = JsAction::from_js(value, bridge)?;
             Ok(AnyView::new(view.on_tap_gesture(move || action.call(()))))
         }
-        "a11yLabel" => {
-            let label = semantic(bridge, value)?;
-            Ok(AnyView::new(view.a11y_label(label)))
-        }
-        "a11yValue" => {
-            let text = semantic(bridge, value)?;
-            Ok(AnyView::new(view.a11y_value(text)))
-        }
+        "a11yLabel" => semantic(bridge, view, value, A11yTextKind::Label),
+        "a11yValue" => semantic(bridge, view, value, A11yTextKind::Value),
         "a11yId" => {
             let identifier = Str::from_js(value, bridge)?;
             Ok(AnyView::new(Metadata::new(
@@ -162,10 +157,49 @@ fn frame(
     Ok(AnyView::new(set(frame, length)))
 }
 
+#[derive(Clone, Copy)]
+enum A11yTextKind {
+    Label,
+    Value,
+}
+
+/// Applies a verbatim or localized accessibility text modifier against the
+/// view's rendering environment, matching [`Text`](waterui_text::Text)'s
+/// catalog and locale resolution.
+struct LocalizedA11y {
+    view: AnyView,
+    content: Computed<TextContent>,
+    kind: A11yTextKind,
+}
+
+impl View for LocalizedA11y {
+    fn body(self, env: &Environment) -> impl View {
+        let env_for_render = env.clone();
+        let locale = locale_binding(env);
+        let text = TextContent::flatten_computed(&self.content)
+            .zip(&locale)
+            .map(move |(part, locale)| part.render(&env_for_render, &locale))
+            .computed();
+        match self.kind {
+            A11yTextKind::Label => OneOf2::A(self.view.a11y_label(text)),
+            A11yTextKind::Value => OneOf2::B(self.view.a11y_value(text)),
+        }
+    }
+}
+
 /// Semantic text for an accessibility attribute, localized like any other.
-fn semantic(bridge: &Bridge, value: &JsValue) -> Result<Computed<Str>, JsError> {
+fn semantic(
+    bridge: &Bridge,
+    view: AnyView,
+    value: &JsValue,
+    kind: A11yTextKind,
+) -> Result<AnyView, JsError> {
     let content: Computed<TextContent> = bridge.materialize_computed(value)?;
-    Ok(content.map(|content| content.as_str().clone()).computed())
+    Ok(AnyView::new(LocalizedA11y {
+        view,
+        content,
+        kind,
+    }))
 }
 
 impl From<ShadowValue> for Shadow {

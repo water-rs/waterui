@@ -261,8 +261,7 @@ fn context_menu_accessory_section(
                                 label_set.set(waterui::Str::from("Liked!"));
                             })
                             .state(context_action),
-                        button("Dismiss")
-                            .action(|Use(dismiss): Use<DismissContextMenu>| dismiss.dismiss()),
+                        button("Dismiss").action(|dismiss: DismissContextMenu| dismiss.dismiss()),
                     ))
                     .padding()
                 }),
