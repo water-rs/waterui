@@ -243,17 +243,14 @@ fn a_material_frame_is_a_backdrop_member_only_while_visible() {
 /// A window of `WIDTH`×`HEIGHT` points with `background`, whose only content
 /// is an opaque 40×40 pt red box, after one rendered frame.
 fn window_with_background(background: Material) -> HeadlessRuntime {
+    use waterui::window::Window;
+
     let content = AnyViewBuilder::<AnyView>::new(|| {
         AnyView::new(vstack((
             ().size(40.0, 40.0).background(Color::srgb(255, 0, 0)),
         )))
     });
-    let window = waterui::window::Window::new(
-        "",
-        waterui_core::binding(waterui::window::WindowState::Normal),
-        move || content.build(),
-    )
-    .background(background);
+    let window = Window::new("", move || content.build()).background(background);
     let mut runtime = HeadlessRuntime::new_for_tests_with_window(
         pumped_test_environment(),
         window,

@@ -83,7 +83,7 @@ fn prelude_exports_app_window_widgets_and_collections_without_shadowing() {
 
     fn sample_app(env: Environment) -> App<impl Windows, impl AppMenuBar> {
         let _ = WindowState::Normal;
-        let _ = Window::new("Title", binding(WindowState::Normal), || {
+        let _ = Window::new("Title", || {
             let items = ReactiveList::from(vec![RowItem { id: 1 }, RowItem { id: 2 }]);
             let _ = items.len();
             let flag = Binding::bool(true);
@@ -100,7 +100,7 @@ fn prelude_exports_app_window_widgets_and_collections_without_shadowing() {
             });
             "Root"
         });
-        App::new(|| text!("Hello"), env)
+        App::new(env).window(Window::new("Hello", || text!("Hello")))
     }
     let _ = sample_app;
 }

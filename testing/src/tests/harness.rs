@@ -116,7 +116,9 @@ fn default_theme_renders_hydrolysis_widgets() {
 /// Origin: waterui `testing/src/tests.rs`.
 #[test]
 fn mount_app_hosts_main_window_with_app_environment() {
-    let app = App::new(|| text("Mounted app").body(), Environment::new());
+    use waterui::window::Window;
+
+    let app = App::new(Environment::new()).window(Window::new("", || text("Mounted app").body()));
     let mut app = ui()
         .theme(Material3::defaults())
         .viewport(200, 100)
@@ -140,18 +142,18 @@ fn mount_app_hosts_main_window_with_app_environment() {
 #[test]
 fn max_width_derived_from_the_mounted_window_frame_wraps_text() {
     use waterui::layout::frame::Frame;
-    use waterui::window::{Window, WindowState};
+    use waterui::window::Window;
 
     const LONG: &str = "the quick brown fox jumps over the lazy dog, again and \
         again and again, until the sentence refuses to fit on one line";
 
     let frame = waterui::binding(Rect::new(Point::zero(), Size::new(800.0, 600.0)));
     let cap = frame.map(|f: Rect| f.size().width / 4.0);
-    let mut window = Window::new("app", waterui::binding(WindowState::Normal), move || {
+    let mut window = Window::new("app", move || {
         Frame::new(text(LONG).body()).max_width(cap.clone())
     });
     window.frame = frame;
-    let app = App::new_with_windows([window], Environment::new());
+    let app = App::new(Environment::new()).window(window);
     let mut app = ui()
         .theme(Material3::defaults())
         .viewport(320, 900)
@@ -177,16 +179,16 @@ fn max_width_derived_from_the_mounted_window_frame_wraps_text() {
 #[test]
 fn mount_app_drives_the_app_window_frame_from_the_viewport() {
     use waterui::accessibility::AccessibilityGeometry;
-    use waterui::window::{Window, WindowState};
+    use waterui::window::Window;
 
     let frame = waterui::binding(Rect::new(Point::zero(), Size::new(800.0, 600.0)));
     // The label names its allocation (`docs/layout-spec.md` §7.2): a text
     // root otherwise reports its centred response, not the window's width.
-    let mut window = Window::new("app", waterui::binding(WindowState::Normal), || {
+    let mut window = Window::new("app", || {
         text("app content").a11y_geometry(AccessibilityGeometry::Allocation)
     });
     window.frame = frame.clone();
-    let app = App::new_with_windows([window], Environment::new());
+    let app = App::new(Environment::new()).window(window);
     let mut app = ui()
         .theme(Material3::defaults())
         .viewport(320, 240)

@@ -516,7 +516,7 @@ impl TerminationHost for TerminateCount {
 fn a_declared_quit_chord_requests_termination() {
     let mut env = test_environment();
     let terminated = TerminateCount::default();
-    let _machine = App::new_with_windows((), Environment::new())
+    let _machine = App::new(Environment::new())
         .into_parts()
         .termination
         .start(&mut env, terminated.clone());

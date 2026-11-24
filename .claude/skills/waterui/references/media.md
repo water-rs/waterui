@@ -258,7 +258,7 @@ WaterUI's bundled engines instead, add `waterui-browser-cef` (with its `webview`
 or `waterui-browser-wpe` (with its `webview` feature) as a dependency; the backend
 enables `webview-cef` or `webview-wpe` at compile time, uses its `WebViewController`
 through `NativeBackend`, and realizes every `WebView` through that engine with plain
-`App::new(root, env)`. The `WebView` code above is unchanged either way. Linux outside GTK bridges no system engine,
+`App::new(env).window(Window::new("Browser", root))`. The `WebView` code above is unchanged either way. Linux outside GTK bridges no system engine,
 so a `WebView` there needs one of these crates.
 
 `waterui-chromium` is the separate, heavier component for a full Chromium surface,

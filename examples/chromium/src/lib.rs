@@ -406,7 +406,7 @@ pub fn app(mut env: Environment) -> App<impl Windows> {
     let runtime = CefRuntime::packaged();
     env.insert(runtime.chromium_controller());
     env.insert(runtime);
-    App::new(demo, env)
+    App::new(env).window(Window::new("", demo))
 }
 
 #[cfg(test)]

@@ -433,5 +433,5 @@ pub fn demo() -> impl View {
 
 /// Builds the example app, showing the shape demo.
 pub fn app(env: Environment) -> App<impl Windows> {
-    App::new(demo, env)
+    App::new(env).window(Window::new("", demo))
 }

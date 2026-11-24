@@ -106,12 +106,14 @@ pub fn demo() -> impl View {
             .padding_with(20.0),
         ),
         // Conditionally render windows based on state (invisible triggers)
-        conditional_window(&standard_window, create_standard_window),
-        conditional_window(&borderless_window, create_borderless_window),
-        conditional_window(&frosted_window, create_frosted_window),
-        conditional_window(&transparent_window, create_transparent_window),
-        conditional_window(&ultra_thin_window, create_ultra_thin_window),
-        conditional_window(&controls_window, create_controls_window),
+        conditional_window(&standard_window, |state| create_standard_window(&state)),
+        conditional_window(&borderless_window, |state| create_borderless_window(&state)),
+        conditional_window(&frosted_window, |state| create_frosted_window(&state)),
+        conditional_window(&transparent_window, |state| {
+            create_transparent_window(&state)
+        }),
+        conditional_window(&ultra_thin_window, |state| create_ultra_thin_window(&state)),
+        conditional_window(&controls_window, |state| create_controls_window(&state)),
     ))
 }
 
@@ -140,65 +142,70 @@ fn window_section(
 }
 
 /// Create a standard titled window with opaque background
-fn create_standard_window(state: Binding<WindowState>) -> Window<impl ViewBuilder> {
-    Window::new("Standard Window", state, move || {
+fn create_standard_window(state: &Binding<WindowState>) -> Window<impl ViewBuilder + use<>> {
+    Window::new("Standard Window", move || {
         window_content(
             "Standard Titled Window",
             "This window uses the default Titled style with an Opaque background.\n\nFeatures:\n• Title bar with controls\n• Opaque system background\n• Resizable and closable",
         )
     })
+    .state(state)
     .style(WindowStyle::Titled)
     // Default is opaque, no need to set background
     .resizable(true)
 }
 
 /// Create a borderless window with colored background
-fn create_borderless_window(state: Binding<WindowState>) -> Window<impl ViewBuilder> {
+fn create_borderless_window(state: &Binding<WindowState>) -> Window<impl ViewBuilder + use<>> {
     let tinted_color = Color::srgb_f32(0.2, 0.4, 0.8).with_opacity(0.85);
 
-    Window::new("Borderless Window", state, move || {
+    Window::new("Borderless Window", move || {
         window_content(
             "Borderless Window",
             "This window has no title bar and uses a semi-transparent blue background.\n\nFeatures:\n• No title bar\n• Custom colored background\n• Semi-transparent (85% opacity)",
         )
     })
+    .state(state)
     .style(WindowStyle::Borderless)
     .background(tinted_color)
     .resizable(true)
 }
 
 /// Create a frosted glass window with material blur
-fn create_frosted_window(state: Binding<WindowState>) -> Window<impl ViewBuilder> {
-    Window::new("Frosted Glass", state, move || {
+fn create_frosted_window(state: &Binding<WindowState>) -> Window<impl ViewBuilder + use<>> {
+    Window::new("Frosted Glass", move || {
         window_content(
             "Frosted Glass Window",
             "This window's background is the Regular material, blended within the window.\n\nFeatures:\n• Titled style\n• Within-window material background\n• Frosted over the window's own background",
         )
     })
+    .state(state)
     .style(WindowStyle::Titled)
     .background(Material::Regular)
     .resizable(true)
 }
 
 /// Create a transparent overlay window
-fn create_transparent_window(state: Binding<WindowState>) -> Window<impl ViewBuilder> {
+fn create_transparent_window(state: &Binding<WindowState>) -> Window<impl ViewBuilder + use<>> {
     // Use a semi-transparent color for the overlay effect
     let overlay_color = Color::srgb_f32(0.1, 0.1, 0.1).with_opacity(0.3);
 
-    Window::new("Transparent Overlay", state, transparent_window_content)
+    Window::new("Transparent Overlay", transparent_window_content)
+        .state(state)
         .style(WindowStyle::FullSizeContentView)
         .background(overlay_color)
         .resizable(true)
 }
 
 /// Create an ultra-thin material window
-fn create_ultra_thin_window(state: Binding<WindowState>) -> Window<impl ViewBuilder> {
-    Window::new("Ultra-Thin Material", state, move || {
+fn create_ultra_thin_window(state: &Binding<WindowState>) -> Window<impl ViewBuilder + use<>> {
+    Window::new("Ultra-Thin Material", move || {
         window_content(
             "Ultra-Thin Material Window",
             "This window's background is the UltraThin material, blended behind the window.\n\nFeatures:\n• Borderless style\n• The desktop shows through the window\n• Most transparent material",
         )
     })
+    .state(state)
     .style(WindowStyle::Borderless)
     .background(Material::UltraThin)
     .resizable(true)
@@ -207,9 +214,10 @@ fn create_ultra_thin_window(state: Binding<WindowState>) -> Window<impl ViewBuil
 /// Create a window showcasing the window-control API: maximizing, an
 /// always-on-top toggle, an attention request after a delay, and resize
 /// increments.
-fn create_controls_window(state: Binding<WindowState>) -> Window<impl ViewBuilder> {
+fn create_controls_window(state: &Binding<WindowState>) -> Window<impl ViewBuilder + use<>> {
     let always_on_top = binding(false);
-    let window = Window::new("Window Controls", state, || ())
+    let window = Window::new("Window Controls", || ())
+        .state(state)
         .style(WindowStyle::Titled)
         .resizable(true)
         .level(always_on_top.map(|on| {
@@ -339,5 +347,5 @@ fn material_item(name: &'static str, description: &'static str) -> impl View + u
 
 /// Builds the multi-window example app.
 pub fn app(env: Environment) -> App<impl Windows> {
-    App::new(demo, env)
+    App::new(env).window(Window::new("Multi-Window Gallery", demo))
 }

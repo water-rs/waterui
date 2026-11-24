@@ -92,7 +92,7 @@ pub fn app(mut env: Environment) -> App<impl Windows> {
             .colors(ColorSettings::new().accent(Srgb::from_hex("#0066CC")))   // per-token setters
             .fonts(FontSettings::new().body(ResolvedFont::with_family(16.0, FontWeight::Normal, "Inter"))),
     );
-    App::new(move || root(dark.clone()), env)
+    App::new(env).window(Window::new("Themed", move || root(dark.clone())))
 }
 ```
 

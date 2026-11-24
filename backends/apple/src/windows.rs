@@ -1426,18 +1426,15 @@ fn into_kit_size(size: WSize) -> Size {
 #[cfg(test)]
 mod tests {
     use super::root_window;
-    use waterui::reactive::binding;
-    use waterui::window::{Window, WindowState};
+    use waterui::layout::Divider;
+    use waterui::window::Window;
 
     #[test]
     fn root_window_preserves_absent_and_present_toolbars() {
-        let plain = root_window(Window::new("Plain", binding(WindowState::Closed), || ()));
+        let plain = root_window(Window::new("Plain", || ()));
         assert!(plain.toolbar.is_none());
 
-        let with_toolbar = root_window(
-            Window::new("Toolbar", binding(WindowState::Closed), || ())
-                .toolbar(waterui::layout::Divider),
-        );
+        let with_toolbar = root_window(Window::new("Toolbar", || ()).toolbar(Divider));
         assert!(with_toolbar.toolbar.is_some());
     }
 }

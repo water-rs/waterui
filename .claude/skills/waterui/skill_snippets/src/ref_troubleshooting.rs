@@ -114,7 +114,8 @@ pub fn troubleshooting_resident_and_snackbar() -> impl View {
     use waterui::env::use_env;
     use waterui::snackbar::{Snackbar, SnackbarManager};
 
-    let _ = App::new(|| Divider, Environment::new())
+    let _ = App::new(Environment::new())
+        .window(Window::new("", || Divider))
         .on_last_window_closed(LastWindowPolicy::StayResident);
     use_env(|manager: SnackbarManager| {
         let _callback = move || manager.show(Snackbar::new("Saved"));

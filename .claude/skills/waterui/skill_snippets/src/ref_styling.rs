@@ -78,7 +78,7 @@ pub mod styling_block_02 {
                     "Inter",
                 ))),
         );
-        App::new(move || root(dark.clone()), env)
+        App::new(env).window(Window::new("Themed", move || root(dark.clone())))
     }
 }
 
@@ -541,8 +541,8 @@ mod material3 {
     use waterui::prelude::*;
 
     /// Glue: the `app(env) -> App<impl Windows>` every example library exposes.
-    fn app(env: Environment) -> waterui::app::App<impl waterui::app::Windows> {
-        waterui::app::App::new(move || vstack((text("demo"),)), env)
+    fn app(env: Environment) -> App<impl Windows> {
+        App::new(env).window(Window::new("", move || vstack((text("demo"),))))
     }
 
     // -----------------------------------------------------------------------

@@ -108,7 +108,7 @@ use waterui::app::{App, Windows};
 use waterui::prelude::*;
 
 pub fn app(env: Environment) -> App<impl Windows> {
-    App::new(root_view, env)
+    App::new(env).window(Window::new("My App", root_view))
 }
 ```
 
@@ -118,7 +118,7 @@ builder:
 ```rust
 pub fn app(env: Environment) -> App<impl Windows> {
     let state = AppState::new();
-    App::new(move || content(state.clone()), env)
+    App::new(env).window(Window::new("My App", move || content(state.clone())))
 }
 ```
 

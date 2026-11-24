@@ -649,10 +649,13 @@ fn styled_semantic_mount_installs_style_tokens_over_framework_defaults() {
 /// report the frame the mount assigned.
 #[test]
 fn styled_builder_mount_app_mounts_at_the_builder_viewport() {
-    let app = waterui::app::App::new(
-        || text("app content").a11y_geometry(AccessibilityGeometry::Allocation),
-        waterui::Environment::new(),
-    );
+    use waterui::Environment;
+    use waterui::app::App;
+    use waterui::window::Window;
+
+    let app = App::new(Environment::new()).window(Window::new("", || {
+        text("app content").a11y_geometry(AccessibilityGeometry::Allocation)
+    }));
     let mut app = ui()
         .theme(token_probe::TokenProbeStyle)
         .viewport(320, 240)
@@ -669,10 +672,13 @@ fn styled_builder_mount_app_mounts_at_the_builder_viewport() {
 /// than the text's centred response.
 #[test]
 fn free_mount_app_mounts_at_the_window_frame() {
-    let app = waterui::app::App::new(
-        || text("app content").a11y_geometry(AccessibilityGeometry::Allocation),
-        waterui::Environment::new(),
-    );
+    use waterui::Environment;
+    use waterui::app::App;
+    use waterui::window::Window;
+
+    let app = App::new(Environment::new()).window(Window::new("", || {
+        text("app content").a11y_geometry(AccessibilityGeometry::Allocation)
+    }));
     let mut app = mount_app(app, token_probe::TokenProbeStyle);
     let bounds = app.query().role(Role::LABEL).single().bounds();
     assert_eq!(bounds, NodeBounds::new(0.0, 0.0, 800.0, 600.0));

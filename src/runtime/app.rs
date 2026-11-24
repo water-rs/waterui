@@ -3,19 +3,21 @@
 use core::future::Future;
 use core::pin::Pin;
 
-use nami::Computed;
+use nami::{Binding, Computed};
 use suiteki::Str;
 use waterui_core::{
     Environment, State,
     handler::{Handler, HandlerOnce, ViewBuilder, boxed_action, boxed_action_once},
+    layout::{AutomaticLayoutDirection, LayoutDirection},
 };
+use waterui_locale::layout_direction_computed;
 
 #[cfg(feature = "menu")]
 use crate::component::{
     label::SemanticLabel,
     menu::{CloseWindowChord, Menu, MenuBarView},
 };
-use crate::window::{AnyWindow, Window, WindowChannel, WindowContent, WindowToolbar};
+use crate::window::{AnyWindow, Window, WindowChannel, WindowToolbar};
 
 pub use crate::runtime::termination::{
     Quit, Termination, TerminationHandle, TerminationHost, TerminationKind,
@@ -379,47 +381,25 @@ pub fn application_identifier() -> Str {
     Str::from(option_env!("WATERUI_APP_ID").unwrap_or_default())
 }
 
-impl<B: ViewBuilder> App<Window<WindowContent<B>>> {
-    /// Create an application with a single window showing `content`.
+impl App<(), NoMenuBar> {
+    /// Create an application with the given environment and no windows yet.
     ///
-    /// The window opens immediately (state is initialized to
-    /// [`WindowState::Normal`](crate::window::WindowState::Normal) rather than
-    /// the type's `default()`, which is `Closed`).
-    ///
-    /// The window is given no title of its own, which is what an empty title
-    /// means: it is shown under the application's own name, which the platform
-    /// knows and this does not. To title it, declare the window yourself with
-    /// [`Window::title`] and pass it to [`App::new_with_windows`].
+    /// Declare windows with [`App::window`], for example
+    /// `App::new(env).window(Window::new("Notes", notes))`. An application
+    /// with no windows opens its windows on demand, or lives in a status item,
+    /// and pairs this with [`LastWindowPolicy::StayResident`] so its runner
+    /// keeps it alive (see [`App::on_last_window_closed`]).
     #[inline]
-    pub fn new(content: B, env: Environment) -> Self {
-        let state = nami::binding(crate::window::WindowState::Normal);
-        Self::new_with_windows(Window::new("", state, content), env)
-    }
-}
-
-impl<W: Windows> App<W, NoMenuBar> {
-    /// Create an application with the given windows and environment.
-    ///
-    /// Any number of windows is valid, none included: an application with no
-    /// window opens its windows on demand, or lives in a status item, and
-    /// pairs this with [`LastWindowPolicy::StayResident`] so its runner keeps
-    /// it alive (see [`App::on_last_window_closed`]).
-    #[inline]
-    pub fn new_with_windows(windows: W, mut env: Environment) -> Self {
-        if env
-            .get::<Computed<waterui_core::layout::LayoutDirection>>()
-            .is_none()
-            && env
-                .get::<nami::Binding<waterui_core::layout::LayoutDirection>>()
-                .is_none()
-            && env.get::<waterui_core::layout::LayoutDirection>().is_none()
+    #[must_use]
+    pub fn new(mut env: Environment) -> Self {
+        if env.get::<Computed<LayoutDirection>>().is_none()
+            && env.get::<Binding<LayoutDirection>>().is_none()
+            && env.get::<LayoutDirection>().is_none()
         {
-            env.insert(waterui_core::layout::AutomaticLayoutDirection(
-                waterui_locale::layout_direction_computed(&env),
-            ));
+            env.insert(AutomaticLayoutDirection(layout_direction_computed(&env)));
         }
         Self {
-            windows,
+            windows: (),
             last_window: LastWindowPolicy::default(),
             menu_bar: NoMenuBar,
             env,
@@ -523,12 +503,14 @@ impl<W: Windows, M: AppMenuBar> App<W, M> {
     /// ```
     /// # use waterui::prelude::*;
     /// # use waterui::app::{App, AppMenuBar, Windows};
+    /// # use waterui::window::Window;
     /// #[waterui::state]
     /// #[derive(Clone)]
     /// struct Store;
     ///
     /// fn app(env: Environment) -> App<impl Windows, impl AppMenuBar> {
-    ///     App::new(|| text!("Counter"), env)
+    ///     App::new(env)
+    ///         .window(Window::new("Counter", || text!("Counter")))
     ///         .state(&Store)
     ///         .menu_bar(Menu::new("App", "Quit".action(|_store: Store| {})))
     /// }
@@ -694,7 +676,7 @@ mod tests {
         let locale = Binding::container(locales::AR);
         let mut env = Environment::new();
         env.insert(locale.clone());
-        let app = App::new(|| (), env);
+        let app = App::new(env).window(Window::new("", || ()));
         let direction = layout_direction(&app.env);
 
         assert_eq!(direction.snapshot(), LayoutDirection::RightToLeft);
@@ -707,7 +689,7 @@ mod tests {
         let mut env = Environment::new();
         env.insert(locales::AR);
         env.insert(LayoutDirection::LeftToRight);
-        let app = App::new(|| (), env);
+        let app = App::new(env).window(Window::new("", || ()));
 
         assert_eq!(
             layout_direction(&app.env).snapshot(),
@@ -717,8 +699,8 @@ mod tests {
 
     #[test]
     fn an_application_may_declare_no_window() {
-        let app = App::new_with_windows((), Environment::new())
-            .on_last_window_closed(LastWindowPolicy::StayResident);
+        let app =
+            App::new(Environment::new()).on_last_window_closed(LastWindowPolicy::StayResident);
 
         assert_eq!(app.last_window_policy(), LastWindowPolicy::StayResident);
         let parts = app.into_parts();
@@ -727,7 +709,7 @@ mod tests {
 
     #[test]
     fn an_application_quits_after_its_last_window_by_default() {
-        let app = App::new(|| (), Environment::new());
+        let app = App::new(Environment::new()).window(Window::new("Notes", || ()));
 
         assert_eq!(app.windows().len(), 1);
         assert_eq!(app.last_window_policy(), LastWindowPolicy::Quit);
@@ -767,7 +749,8 @@ mod tests {
     #[test]
     #[cfg(feature = "menu")]
     fn the_menu_bar_decides_the_close_window_chord() {
-        let parts = App::new(|| (), Environment::new())
+        let parts = App::new(Environment::new())
+            .window(Window::new("", || ()))
             .menu_bar(Menu::new(
                 "File",
                 "Close Tab"
@@ -802,7 +785,8 @@ mod tests {
             hits: Rc::clone(&hits),
         };
         run_first_menu_bar_command(
-            App::new(|| (), Environment::new())
+            App::new(Environment::new())
+                .window(Window::new("", || ()))
                 .state(&tally)
                 .menu_bar(Menu::new("App", "Bump".action(|tally: Tally| tally.bump()))),
         );
@@ -816,7 +800,8 @@ mod tests {
         let seen = Rc::new(RefCell::new(Vec::new()));
         let record = Rc::clone(&seen);
         run_first_menu_bar_command(
-            App::new(|| (), Environment::new())
+            App::new(Environment::new())
+                .window(Window::new("", || ()))
                 .state(&"first")
                 .state(&"second")
                 .menu_bar(Menu::new(

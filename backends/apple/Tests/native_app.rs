@@ -1809,18 +1809,15 @@ mod navigation {
     /// the page must end with the safe area the same fixture gets when it
     /// is mounted before the window shows.
     fn a_split_realized_into_a_shown_scene_collapses_at_window_size() {
+        use waterui::color::Color;
+        use waterui::window::{Window, WindowBackground};
+
         let reference = reference_page_insets();
 
         let mtm = mtm();
         let window = native_test::window(mtm, Rect::new(0.0, 0.0, 390.0, 844.0));
-        let declaration = waterui::window::Window::new(
-            "Shown scene",
-            binding(waterui::window::WindowState::Normal),
-            navigation_fixture_view,
-        )
-        .background(waterui::window::WindowBackground::Color(
-            waterui::color::Color::srgb(255, 255, 255),
-        ));
+        let declaration = Window::new("Shown scene", navigation_fixture_view)
+            .background(WindowBackground::Color(Color::srgb(255, 255, 255)));
         let scene =
             realize_into_shown_scene(mtm, declaration, &render_environment(), window.clone());
 

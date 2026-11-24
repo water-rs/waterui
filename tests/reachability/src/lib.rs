@@ -18,5 +18,5 @@ fn main_view() -> impl View {
 
 /// Builds the minimal reachability fixture application.
 pub fn app(env: Environment) -> App<impl Windows> {
-    App::new(main_view, env)
+    App::new(env).window(Window::new("", main_view))
 }

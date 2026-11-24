@@ -1,6 +1,7 @@
 use waterui::app::{App, Windows};
 use waterui::env::use_env;
 use waterui::prelude::*;
+use waterui::window::Window;
 use waterui::{include_web, js_api, preview};
 
 /// Everything the page is allowed to reach: `#[js_api]` exposes each `async`
@@ -28,5 +29,5 @@ fn main() -> impl View {
 }
 
 pub fn app(env: Environment) -> App<impl Windows> {
-    App::new(main, env)
+    App::new(env).window(Window::new("{{ ctx.app_display_name }}", main))
 }

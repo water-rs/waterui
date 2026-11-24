@@ -522,15 +522,12 @@ use waterui_core::layout::{Point, Rect, Size};
 /// # Panics
 /// Panics if the queued window declaration is lost or altered.
 pub fn channel_connects_typed_declarations(_mtm: MainThreadMarker) {
+    use waterui::window::Window;
+
     let mut env = Environment::new();
     crate::dispatch::install(&mut env);
     let (manager, channel) = WindowManager::new();
-    waterui::window::Window::new(
-        "Queued Root",
-        waterui::reactive::binding(waterui::window::WindowState::Closed),
-        || (),
-    )
-    .show(&manager);
+    Window::new("Queued Root", || ()).show(&manager);
     let declarations = crate::windows::connect_windows(channel, &env);
     assert_eq!(declarations.len(), 1);
     assert_eq!(
@@ -654,25 +651,27 @@ pub fn bind_window_background(
 /// Panics if the window cannot be realized or an assertion fails.
 #[cfg(target_os = "macos")]
 pub fn a_declared_window_realizes_its_declaration(mtm: MainThreadMarker) {
+    use waterui::component::text::Text;
+    use waterui::window::Window;
+
     let (mut env, _theme) = window_environment(mtm);
     env.insert(crate::first_paint::FirstPaint::default());
     let state: Binding<WindowState> = binding(WindowState::Normal);
     let closed = alloc::rc::Rc::new(core::cell::RefCell::new(false));
-    let declaration = waterui::window::Window::new("Bind Root", state.clone(), || {
-        waterui::component::text::Text::new("x")
-    })
-    .style(WindowStyle::Titled)
-    .background(WindowBackground::Color(Color::srgb(255, 255, 255)))
-    .on_close_request({
-        let closed = alloc::rc::Rc::clone(&closed);
-        move || {
+    let declaration = Window::new("Bind Root", || Text::new("x"))
+        .state(&state)
+        .style(WindowStyle::Titled)
+        .background(WindowBackground::Color(Color::srgb(255, 255, 255)))
+        .on_close_request({
             let closed = alloc::rc::Rc::clone(&closed);
-            async move {
-                *closed.borrow_mut() = true;
-                waterui::window::CloseReply::Close
+            move || {
+                let closed = alloc::rc::Rc::clone(&closed);
+                async move {
+                    *closed.borrow_mut() = true;
+                    waterui::window::CloseReply::Close
+                }
             }
-        }
-    });
+        });
 
     declaration
         .frame
@@ -740,7 +739,7 @@ pub mod toolbar_reach {
     };
     use waterui::prelude::{scroll, text, vstack, zstack};
     use waterui::reactive::binding;
-    use waterui::window::{WindowState, WindowStyle};
+    use waterui::window::WindowStyle;
     use waterui_core::layout::{Point, Rect, Size};
 
     use super::{
@@ -808,11 +807,11 @@ pub mod toolbar_reach {
         searchable: bool,
         check: impl FnOnce(&NSView, &Edges),
     ) {
+        use waterui::window::Window;
+
         let (mut env, _theme) = window_environment(mtm);
         env.insert(crate::first_paint::FirstPaint::default());
-        let declaration =
-            waterui::window::Window::new("Toolbar Reach", binding(WindowState::Normal), content)
-                .style(WindowStyle::Titled);
+        let declaration = Window::new("Toolbar Reach", content).style(WindowStyle::Titled);
         declaration
             .frame
             .set(Rect::new(Point::new(0.0, 0.0), Size::new(700.0, 520.0)));
@@ -2375,7 +2374,7 @@ pub mod chrome_top {
     use waterui::navigation::{NavigationView, Tab, Tabs, tab_style};
     use waterui::prelude::text;
     use waterui::reactive::binding;
-    use waterui::window::{WindowState, WindowStyle};
+    use waterui::window::WindowStyle;
     use waterui_core::layout::{Point, Rect, Size};
 
     use super::{MAIN_QUEUE_DEADLINE, pump_main_until, window_environment};
@@ -2435,11 +2434,11 @@ pub mod chrome_top {
         content: impl Fn() -> V + 'static,
         check: impl FnOnce(&NSView),
     ) {
+        use waterui::window::Window;
+
         let (mut env, _theme) = window_environment(mtm);
         env.insert(crate::first_paint::FirstPaint::default());
-        let declaration =
-            waterui::window::Window::new("Chrome Top", binding(WindowState::Normal), content)
-                .style(WindowStyle::Borderless);
+        let declaration = Window::new("Chrome Top", content).style(WindowStyle::Borderless);
         declaration
             .frame
             .set(Rect::new(Point::new(0.0, 0.0), Size::new(700.0, 520.0)));

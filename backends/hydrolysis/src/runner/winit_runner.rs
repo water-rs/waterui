@@ -2169,7 +2169,7 @@ mod tests {
 
     #[test]
     fn popup_window_attributes_do_not_activate() {
-        let window = Window::new("", binding(WindowState::Normal), || ());
+        let window = Window::new("", || ());
         let env = crate::renderer::tests::test_environment();
 
         assert!(native_window_attributes(&window, &env, true, None).active);
@@ -2181,7 +2181,7 @@ mod tests {
     fn window_attributes_split_wm_class_from_instance_name() {
         use waterui_core::Str;
 
-        let mut window = Window::new("", binding(WindowState::Normal), || ());
+        let mut window = Window::new("", || ());
         window.app_id = Some(Str::from("myclass"));
         window.instance_name = Some(Str::from("myinstance"));
         assert_eq!(
@@ -2190,7 +2190,7 @@ mod tests {
             "WM_CLASS carries (app_id, instance_name)"
         );
 
-        let mut window = Window::new("", binding(WindowState::Normal), || ());
+        let mut window = Window::new("", || ());
         window.app_id = Some(Str::from("myclass"));
         assert_eq!(
             super::window_desktop_identity(&window),
@@ -2203,7 +2203,7 @@ mod tests {
     fn window_attributes_carry_the_requested_frame() {
         use waterui_core::layout::{Point, Rect, Size};
         let frame = Binding::container(Rect::new(Point::new(12.0, 34.0), Size::new(800.0, 300.0)));
-        let mut window = Window::new("", binding(WindowState::Normal), || ());
+        let mut window = Window::new("", || ());
         window.frame = frame;
         let env = crate::renderer::tests::test_environment();
 
@@ -2227,7 +2227,7 @@ mod tests {
     fn window_attributes_disable_only_the_close_button_on_a_non_closable_window() {
         use winit::window::WindowButtons;
 
-        let mut window = Window::new("", binding(WindowState::Normal), || ());
+        let mut window = Window::new("", || ());
         window.closable = false;
         let env = crate::renderer::tests::test_environment();
 
@@ -2237,7 +2237,7 @@ mod tests {
             "a non-closable window drops only the close button"
         );
 
-        let window = Window::new("", binding(WindowState::Normal), || ());
+        let window = Window::new("", || ());
         assert_eq!(
             native_window_attributes(&window, &env, false, None).enabled_buttons,
             WindowButtons::all(),

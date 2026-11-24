@@ -88,7 +88,7 @@ pub fn main() {
     // macOS — can never activate the app: every launch/show/keystroke
     // result below measures the POLICY window alone, with no default
     // OnShow window activating at startup.
-    let host = Window::new("probe-host", binding(WindowState::Normal), move || {
+    let host = Window::new("probe-host", move || {
         // `Binding` is not Send; its mailbox runs the mutation on the
         // binding's executor thread, the sanctioned cross-thread write
         // path. The mailbox is created here — inside the view builder —
@@ -111,9 +111,10 @@ pub fn main() {
             text("probe-host (never activates)").size(11.0),
             conditional_window(&presentation, move |state| {
                 let echoed = creator_echoed.clone();
-                Window::new("activation-probe", state, move || {
+                Window::new("activation-probe", move || {
                     main_view(policy, echoed.clone())
                 })
+                .state(&state)
                 .placement(selector, |monitor| {
                     // Dock at the top of the resolved monitor's visible
                     // frame: full width, 45% of visible height — the
@@ -131,7 +132,9 @@ pub fn main() {
     .activation(Activation::Never);
     run(
         |env| {
-            App::new_with_windows([host], env).on_last_window_closed(LastWindowPolicy::StayResident)
+            App::new(env)
+                .window(host)
+                .on_last_window_closed(LastWindowPolicy::StayResident)
         },
         Environment::new(),
         hydrolysis::testing::TestStyle::new(),

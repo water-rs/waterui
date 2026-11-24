@@ -733,15 +733,17 @@ pub fn components_block_18(env: Environment) -> App<impl Windows, impl AppMenuBa
 
     use waterui::app::App;
 
-    App::new(move || content(), env).menu_bar(Menu::new(
-        "File",
-        (
-            "Save".action(save).shortcut(Shortcut::new('s').command()),
-            Divider,
-            MenuItem::CloseWindow,
-            MenuItem::Quit,
-        ),
-    ))
+    App::new(env)
+        .window(Window::new("", move || content()))
+        .menu_bar(Menu::new(
+            "File",
+            (
+                "Save".action(save).shortcut(Shortcut::new('s').command()),
+                Divider,
+                MenuItem::CloseWindow,
+                MenuItem::Quit,
+            ),
+        ))
 }
 
 // ---------------------------------------------------------------------------

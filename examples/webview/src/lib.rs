@@ -274,5 +274,5 @@ use waterui_browser_wpe as _;
 /// `waterui-browser-wpe` so the backend selects WPE at compile time.
 #[must_use]
 pub fn app(env: Environment) -> App<impl Windows> {
-    App::new(demo, env)
+    App::new(env).window(Window::new("", demo))
 }

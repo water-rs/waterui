@@ -326,31 +326,32 @@ app should open on the sidebar. At wider widths the columns remain side by side.
 
 ## Windows
 
-A single-window app needs nothing beyond `App::new(view, env)`. For window chrome,
-multiple windows, or a window-level toolbar, describe the windows explicitly:
+Declare an application's windows directly on `App::new(env)` with `.window(...)`:
 
 ```rust
-use waterui::window::{Window, WindowState, WindowStyle};
+use waterui::window::{Window, WindowStyle};
 
-App::new_with_windows(
-    [Window::new("WaterUI Menu Examples", binding(WindowState::Normal), move || scene())
-        .toolbar(window_toolbar(&status))],
-    env,
+App::new(env).window(
+    Window::new("WaterUI Menu Examples", move || scene())
+        .toolbar(window_toolbar(&status)),
 )
 ```
 
 The windows are a window set, and `fn app(env: Environment) -> App<impl Windows>` (with
 `waterui::app::{App, Windows}`) returns it unnamed: one `Window`, a tuple of windows whose
 contents each keep their own type, an array or `Vec` of windows with one content type, or
-`()` for none. `App::new(view, env)` declares one window, and `.window(w)` appends another.
+`()` for none. `App::new(env)` starts empty and `.window(w)` appends each window or
+`WindowChannel`.
 Each window's content and toolbar keep their types up to the backend, so nothing in the tree is erased.
 
 The `Window` builder, precisely:
 
-- `Window::new(title, state, content)` — the title is `impl IntoComputed<Str>` (a
-  reactive window title is free), `state` is a `Binding<WindowState>` **by value**, and
-  `content` is any `Fn() -> impl View`, so a bare function item works. An empty title
-  (`App::new` uses one) is shown as the application's own name; `.title(..)` sets it later.
+- `Window::new(title, content)` — the title is `impl IntoComputed<Str>` (a
+  reactive window title is free), and `content` is any `Fn() -> impl View`, so a bare
+  function item works. The window owns an internal `WindowState::Normal` binding by
+  default; chain `.state(&window_state)` when external code reads or drives its
+  `Binding<WindowState>`. An empty title is shown as the application's own name;
+  `.title(..)` sets it later.
   Windows mount only their own content; attach `.snackbar_host()` or
   `.full_screen_overlay_host::<V>()` to a root view when the window uses those overlays.
 - `.style(..)` — a `WindowStyle` or a `Binding<WindowStyle>`; exactly three variants:
@@ -452,7 +453,9 @@ let unsaved = binding(true);
 let confirm_discard = binding(false);
 let window_state = binding(WindowState::Normal);
 
-Window::new("Editor", window_state.clone(), editor_content).on_close_request(move || {
+Window::new("Editor", editor_content)
+    .state(&window_state)
+    .on_close_request(move || {
     let ask = unsaved.snapshot();
     confirm_discard.set(ask);
     async move {
@@ -478,7 +481,8 @@ let presentation = WindowPresentation::new(&state);    // guards against duplica
 
 // An INVISIBLE view — it must still be placed in the tree (e.g. a later zstack child).
 conditional_window(&presentation, |state| {
-    Window::new("Inspector", state, inspector_content)
+    Window::new("Inspector", inspector_content)
+        .state(&state)
         .style(WindowStyle::Titled)
         .resizable(true)
 })
@@ -493,7 +497,8 @@ edge-anchored children mis-anchor as soon as the window is larger than the conte
 
 ## Resident apps and windows on demand
 
-`App::new_with_windows` accepts any number of windows, none included. What the app does
+`App::new(env)` starts with no windows, and `.window(..)` adds any number of windows or
+channels. What the app does
 once it has no open window is `App::on_last_window_closed(LastWindowPolicy)` from
 `waterui::app`: `Quit` (the default, on every platform, and immediately for an app that
 declares no window) or `StayResident` (macOS Dock convention, a tray or status-item app,
@@ -502,32 +507,32 @@ their runners reject an app that declares no window whatever its policy.
 
 `conditional_window` lives only as long as the window hosting it, so it cannot reopen a
 window after the last one closed. `WindowManager::new()` returns a `(WindowManager<C>, WindowChannel<C>)`
-pair: pass `channel` to `App::new_with_windows` (or `App::window(channel)` alongside initial
-windows) so the runner monomorphizes `C` directly into its root window type, and call
+pair: pass `channel` to `App::window(channel)` so the runner monomorphizes `C` directly
+into its root window type, and call
 `window.show(&windows)` from any handler — including `App::menu_bar` commands, or nested
 handlers when `.state(&windows)` is attached:
 
 ```rust
 use waterui::app::{App, AppMenuBar, LastWindowPolicy, QuitReply, Windows};
-use waterui::window::{Window, WindowManager, WindowState};
+use waterui::window::{Window, WindowManager};
 
 fn app(env: Environment) -> App<impl Windows, impl AppMenuBar> {
     let (windows, channel) = WindowManager::new();
-    App::new_with_windows(channel, env)
+    App::new(env)
+        .window(channel)
         .on_last_window_closed(LastWindowPolicy::StayResident)
         .on_quit_request(|| async { QuitReply::Quit })
         .on_terminate(|| async {})
         .menu_bar(Menu::new(
             "App",
             "New Window".action(move || {
-                Window::new("Scratch", binding(WindowState::Normal), scratch_content)
-                    .show(&windows);
+                Window::new("Scratch", scratch_content).show(&windows);
             }),
         ))
 }
 ```
 
-The window's state binding must start at `Normal` here: `show` opens it as declared. Showing a
+`Window::new` starts in `WindowState::Normal`, so `show` opens it immediately. Showing a
 window after its `WindowChannel` was dropped without being handed to a runner is a contract
 violation (a debug panic, a logged error in release).
 

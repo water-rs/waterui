@@ -96,41 +96,34 @@ fn app_view(
 /// the assets the Kotlin host synced, which is where the font collection
 /// reads the application's staged faces from.
 fn build_app() -> App<impl Windows> {
-    App::new_with_windows(
-        [Window::new(
-            "Hydrolysis Test App",
-            binding(WindowState::Normal),
-            move || {
-                #[cfg(feature = "filter-probe")]
-                {
-                    filter_probe::view()
-                }
-                #[cfg(feature = "stretch-probe")]
-                {
-                    stretch_probe::view()
-                }
-                #[cfg(feature = "gpu-video-probe")]
-                {
-                    gpu_probe::video()
-                }
-                #[cfg(feature = "gpu-map-probe")]
-                {
-                    gpu_probe::map()
-                }
-                #[cfg(not(feature = "probe"))]
-                {
-                    let count = binding(0);
-                    let enabled = binding(false);
-                    let name = binding("");
-                    let code = binding("");
-                    let password = binding(waterui::form::secure::Secure::new(String::new()));
-                    let volume = binding(0.5);
-                    app_view(count, enabled, name, code, password, volume)
-                }
-            },
-        )],
-        environment(),
-    )
+    App::new(environment()).window(Window::new("Hydrolysis Test App", move || {
+        #[cfg(feature = "filter-probe")]
+        {
+            filter_probe::view()
+        }
+        #[cfg(feature = "stretch-probe")]
+        {
+            stretch_probe::view()
+        }
+        #[cfg(feature = "gpu-video-probe")]
+        {
+            gpu_probe::video()
+        }
+        #[cfg(feature = "gpu-map-probe")]
+        {
+            gpu_probe::map()
+        }
+        #[cfg(not(feature = "probe"))]
+        {
+            let count = binding(0);
+            let enabled = binding(false);
+            let name = binding("");
+            let code = binding("");
+            let password = binding(waterui::form::secure::Secure::new(String::new()));
+            let volume = binding(0.5);
+            app_view(count, enabled, name, code, password, volume)
+        }
+    }))
 }
 
 /// The environment the app mounts in: what `configure_environment!` captures,
