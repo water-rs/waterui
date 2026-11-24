@@ -12,12 +12,12 @@ use mdi::plus;
 use waterui::Identifiable;
 use waterui::app::{App, Windows};
 use waterui::background::Material;
-use waterui::component::list::{List, ListItem, Section};
+use waterui::component::list::{List, Section};
 use waterui::navigation::NavigationToolbarItems;
 use waterui::prelude::theme_color::Foreground;
 use waterui::prelude::*;
 use waterui::reactive::collection::SignalCollection;
-use waterui::shape::{Circle, RoundedRectangle};
+use waterui::shape::{Circle, CornerRadius, RoundedRectangle};
 use waterui::views::ForEach;
 use waterui::widget::condition::when;
 use waterui_icons_material_icon as mdi;
@@ -345,7 +345,7 @@ fn destination_tile(
     .min_height(56.0)
     .background(signal_color(bg))
     // ~10pt on the tile's shorter side, matching the official app's tiles.
-    .clip(RoundedRectangle::new(0.15))
+    .clip(RoundedRectangle::new(CornerRadius::fraction(0.15)))
     .on_tap(
         move |State(selection): State<Binding<Option<SidebarDestination>>>| {
             selection.set(Some(dest));
@@ -443,25 +443,23 @@ fn matching_rows(
 // `row.flagged` is immutable fixture data: the `&'static [ReminderRow]` rows
 // never change, so reading the field in the row builder cannot go stale.
 #[allow(unknown_lints, collection_item_snapshot)]
-fn reminder_item(row: &ReminderRow) -> ListItem<impl View + use<>> {
-    ListItem::new(
-        hstack((
-            circle_outline().size(16.0, 16.0).muted(),
-            vstack((
-                text(row.title).body().foreground(Foreground),
-                row.subtitle
-                    .map(|subtitle| text(subtitle).caption().muted()),
-            ))
-            .spacing(2.0)
-            .leading(),
-            spacer(),
-            when(row.flagged, || {
-                flag().tint(Srgb::from_hex("#F28A34")).size(12.0, 12.0)
-            })
-            .otherwise(|| spacer().width(12.0)),
+fn reminder_item(row: &ReminderRow) -> impl View + use<> {
+    hstack((
+        circle_outline().size(16.0, 16.0).muted(),
+        vstack((
+            text(row.title).body().foreground(Foreground),
+            row.subtitle
+                .map(|subtitle| text(subtitle).caption().muted()),
         ))
-        .padding_with((10.0, 18.0)),
-    )
+        .spacing(2.0)
+        .leading(),
+        spacer(),
+        when(row.flagged, || {
+            flag().tint(Srgb::from_hex("#F28A34")).size(12.0, 12.0)
+        })
+        .otherwise(|| spacer().width(12.0)),
+    ))
+    .padding_with((10.0, 18.0))
 }
 
 fn reminder_list(

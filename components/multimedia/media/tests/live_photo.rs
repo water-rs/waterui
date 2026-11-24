@@ -39,7 +39,7 @@ use waterui_media::{
     LivePhoto, Url,
     live::{Event as LivePhotoEvent, LivePhotoSource},
 };
-use waterui_testing::{Role, Selector, Styled, TestStyle, UiBuilder, WaitOptions, WaitResult};
+use waterui_testing::{Role, Selector, TestStyle, UiBuilder, WaitOptions, WaitResult};
 
 fn sample_image_path() -> String {
     let unique = std::time::SystemTime::now()
@@ -78,7 +78,7 @@ fn sample_video_url() -> Url {
 }
 
 #[waterui::test(theme = TestStyle::new(), viewport = (180, 140))]
-fn live_photo_long_press_plays_motion_once_and_recovers(ui: UiBuilder<Styled<TestStyle>>) {
+fn live_photo_long_press_plays_motion_once_and_recovers(ui: UiBuilder) {
     let sample_path = sample_image_path();
     let source = LivePhotoSource::new(Url::from_file_path_str(sample_path), sample_video_url());
     // Without this the test cannot fail for the reason it exists: motion that

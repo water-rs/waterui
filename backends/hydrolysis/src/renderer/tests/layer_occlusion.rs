@@ -17,7 +17,7 @@ use std::time::Instant;
 use accesskit::Role;
 use nami::Binding;
 use nami::collection::SignalCollection;
-use waterui::component::list::{List, ListItem};
+use waterui::component::list::List;
 use waterui::component::text;
 use waterui::widget::condition::when;
 use waterui::{AnyView, ViewExt as _};
@@ -86,12 +86,11 @@ fn list_with_tail(tail: impl Fn() -> AnyView + 'static) -> AnyView {
         SignalCollection::new((0..ROWS).map(SelfId::new).collect::<Vec<_>>()),
         move |row| {
             let index = row.into_inner();
-            let content = if index == ROWS - 1 {
+            if index == ROWS - 1 {
                 tail()
             } else {
                 AnyView::new(vstack((text(format!("Row {index}")),)).size(f32::INFINITY, ROW_H))
-            };
-            ListItem::new(content)
+            }
         },
     )))
 }

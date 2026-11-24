@@ -255,13 +255,13 @@ mod waterui_test {
 mod waterui_bench {
     #![deny(unused_imports)]
 
-    use waterui_testing::{PerfReport, Styled, TestStyle, UiBuilder};
+    use waterui_testing::{PerfReport, TestStyle, UiBuilder};
 
     // The manual form's signature names `PerfReport`; the expansion must use
     // that declaration rather than its own path, or the import is unused.
     #[waterui::bench(theme = TestStyle::new())]
     #[ignore = "compile-only: the expansion's use of the declared return type is what this pins"]
-    fn declared_report(ui: UiBuilder<Styled<TestStyle>>) -> PerfReport {
+    fn declared_report(ui: UiBuilder) -> PerfReport {
         ui.perf_with(
             || "idle",
             |perf| {

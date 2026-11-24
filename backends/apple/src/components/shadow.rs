@@ -72,6 +72,14 @@ fn platform_color(color: &WorkingColor) -> Retained<platform::PlatformColor> {
     }
 }
 
+fn corner_radius(radius: waterui::shape::CornerRadius) -> cocoa_ui::path::CornerRadius {
+    match (radius.as_points(), radius.as_fraction()) {
+        (Some(points), None) => cocoa_ui::path::CornerRadius::Points(f64::from(points)),
+        (None, Some(fraction)) => cocoa_ui::path::CornerRadius::Fraction(f64::from(fraction)),
+        _ => unreachable!("CornerRadius is either points or fraction"),
+    }
+}
+
 /// The silhouette as its kit kind — `ShapeKind` answers what the shape *is*
 /// so a normalized radius resolves against the shorter side.
 fn shape_kind(kind: ShapeKind) -> cocoa_ui::path::ShapeKind {
@@ -79,37 +87,15 @@ fn shape_kind(kind: ShapeKind) -> cocoa_ui::path::ShapeKind {
         ShapeKind::Rect => cocoa_ui::path::ShapeKind::Rect,
         ShapeKind::Circle => cocoa_ui::path::ShapeKind::Circle,
         ShapeKind::Ellipse => cocoa_ui::path::ShapeKind::Ellipse,
-        ShapeKind::RoundedRect { corner_radius } => cocoa_ui::path::ShapeKind::RoundedRect {
-            corner_radius: f64::from(corner_radius),
-        },
-        ShapeKind::UnevenRoundedRect {
-            top_left,
-            top_right,
-            bottom_left,
-            bottom_right,
-        } => cocoa_ui::path::ShapeKind::UnevenRoundedRect {
-            top_left: f64::from(top_left),
-            top_right: f64::from(top_right),
-            bottom_right: f64::from(bottom_right),
-            bottom_left: f64::from(bottom_left),
+        ShapeKind::RoundedRect { radii } => cocoa_ui::path::ShapeKind::RoundedRect {
+            radii: [
+                corner_radius(radii.top_leading()),
+                corner_radius(radii.top_trailing()),
+                corner_radius(radii.bottom_trailing()),
+                corner_radius(radii.bottom_leading()),
+            ],
         },
         ShapeKind::Capsule => cocoa_ui::path::ShapeKind::Capsule,
-        ShapeKind::FixedRoundedRect { corner_radius } => {
-            cocoa_ui::path::ShapeKind::FixedRoundedRect {
-                corner_radius: f64::from(corner_radius),
-            }
-        }
-        ShapeKind::FixedUnevenRoundedRect {
-            top_left,
-            top_right,
-            bottom_left,
-            bottom_right,
-        } => cocoa_ui::path::ShapeKind::FixedUnevenRoundedRect {
-            top_left: f64::from(top_left),
-            top_right: f64::from(top_right),
-            bottom_right: f64::from(bottom_right),
-            bottom_left: f64::from(bottom_left),
-        },
         ShapeKind::CustomPath => cocoa_ui::path::ShapeKind::CustomPath,
     }
 }
@@ -325,23 +311,33 @@ mod tests {
 
     #[test]
     fn kind_conversion_preserves_per_corner_radii() {
+        use waterui::shape::{CornerRadii, CornerRadius};
+
         assert_eq!(
-            shape_kind(WaterShapeKind::UnevenRoundedRect {
-                top_left: 0.25,
-                top_right: 0.5,
-                bottom_left: 0.375,
-                bottom_right: 0.125,
+            shape_kind(WaterShapeKind::RoundedRect {
+                radii: CornerRadii::new(
+                    CornerRadius::fraction(0.25),
+                    CornerRadius::fraction(0.5),
+                    CornerRadius::fraction(0.375),
+                    CornerRadius::fraction(0.125),
+                ),
             }),
-            cocoa_ui::path::ShapeKind::UnevenRoundedRect {
-                top_left: 0.25,
-                top_right: 0.5,
-                bottom_right: 0.125,
-                bottom_left: 0.375,
+            cocoa_ui::path::ShapeKind::RoundedRect {
+                radii: [
+                    cocoa_ui::path::CornerRadius::Fraction(0.25),
+                    cocoa_ui::path::CornerRadius::Fraction(0.5),
+                    cocoa_ui::path::CornerRadius::Fraction(0.125),
+                    cocoa_ui::path::CornerRadius::Fraction(0.375),
+                ],
             }
         );
         assert_eq!(
-            shape_kind(WaterShapeKind::RoundedRect { corner_radius: 0.5 }),
-            cocoa_ui::path::ShapeKind::RoundedRect { corner_radius: 0.5 }
+            shape_kind(WaterShapeKind::RoundedRect {
+                radii: CornerRadii::uniform(CornerRadius::points(12.0)),
+            }),
+            cocoa_ui::path::ShapeKind::RoundedRect {
+                radii: [cocoa_ui::path::CornerRadius::Points(12.0); 4],
+            }
         );
         assert_eq!(
             shape_kind(WaterShapeKind::CustomPath),

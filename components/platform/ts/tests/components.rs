@@ -26,7 +26,7 @@ mod support;
 
 use nami::Binding;
 use nami::collection::SignalCollection;
-use waterui::component::list::{List, ListItem};
+use waterui::component::list::List;
 use waterui::component::table::{col, table};
 use waterui::component::{Link, button, field, label, progress, slider, stepper, toggle};
 use waterui::form::picker::{Picker, PickerItem};
@@ -392,7 +392,7 @@ fn ts_badge_is_a_badge() {
                 content: () => waterui.jsx("Text", { children: "Inbox" }),
             })"#,
         ),
-        text("Inbox").badge(3),
+        text("Inbox").badge(3_u32),
     );
 }
 
@@ -824,7 +824,7 @@ fn ts_list_is_a_list() {
         module.tree(),
         rust_tree(List::new(ForEach::new(
             SignalCollection::new(rows),
-            |row: SelfId<Str>| ListItem::new(text(row.into_inner())),
+            |row: SelfId<Str>| text(row.into_inner()),
         ))),
         "the JSX list and the Rust list differ"
     );
@@ -1315,7 +1315,7 @@ fn ts_shadow_is_the_rust_shadow() {
             Color::srgb(0, 0, 0),
             Vector { x: 0.0, y: 2.0 },
             4.0,
-            waterui::shape::FixedRoundedRectangle::new(0.0),
+            waterui::shape::RoundedRectangle::new(0.0),
         ))),
     );
 }

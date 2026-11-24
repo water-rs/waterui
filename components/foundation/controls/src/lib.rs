@@ -10,6 +10,8 @@ pub(crate) fn init_test_executor() {
     waterui_testing::install_test_executor();
 }
 
+pub mod badge;
+pub use badge::BadgeValue;
 pub mod input;
 pub mod label;
 pub use label::{

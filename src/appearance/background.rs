@@ -17,13 +17,13 @@
 //!
 //! ```rust
 //! use waterui::prelude::*;
-//! use waterui::color::WorkingColor;
+//! use waterui::layout::UnitPoint;
 //!
 //! text!("Hello").background(Color::srgb(20, 40, 80));
 //! text!("Hello").background(Gradient::linear(
-//!     vec![(0.0, WorkingColor::BLACK), (1.0, WorkingColor::WHITE)],
-//!     [0.5, 0.0],
-//!     [0.5, 1.0],
+//!     [Color::srgb(0, 0, 0), Color::srgb(255, 255, 255)],
+//!     UnitPoint::TOP,
+//!     UnitPoint::BOTTOM,
 //! ));
 //! ```
 
@@ -205,7 +205,7 @@ pub enum Background {
 /// let card = text!("Hello")
 ///     .padding()
 ///     .background(Material::Regular)
-///     .clip(RoundedRectangle::new(0.1));
+///     .clip(RoundedRectangle::new(8.0));
 ///
 /// // A heavier frost for an overlay over busy content
 /// let overlay = text!("Overlay").background(Material::Thick);
@@ -280,7 +280,7 @@ pub enum GlassStyle {
 ///         Glass::clear()
 ///             .interactive(true)
 ///             .tint(Color::srgb(20, 120, 255))
-///             .shape(RoundedRectangle::new(0.2)),
+///             .shape(RoundedRectangle::new(12.0)),
 ///     );
 /// ```
 #[derive(Debug, Clone)]

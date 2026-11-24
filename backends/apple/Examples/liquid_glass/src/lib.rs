@@ -19,7 +19,7 @@ use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
 use waterui::reactive::collection::List;
-use waterui::shape::{Circle, RoundedRectangle, ShapeExt};
+use waterui::shape::{Circle, CornerRadius, RoundedRectangle, ShapeExt};
 use waterui::views::ForEach;
 use waterui_apple::SfSymbol;
 
@@ -236,7 +236,7 @@ fn card() -> impl View {
     ))
     .spacing(6.0)
     .padding()
-    .background(Glass::regular().shape(RoundedRectangle::new(0.2)))
+    .background(Glass::regular().shape(RoundedRectangle::new(CornerRadius::fraction(0.2))))
 }
 
 /// Large colored discs, so the lensing at each glass edge has edges to bend.

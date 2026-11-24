@@ -14,7 +14,7 @@ use hydrolysis::testing::TestStyle;
 use hydrolysis::{FontFamilyResolution, HeadlessRuntime, SemanticRuntime};
 use waterui::form::picker::picker;
 use waterui::prelude::*;
-use waterui::shape::{RoundedRectangle, ShapeExt as _};
+use waterui::shape::{CornerRadius, RoundedRectangle, ShapeExt as _};
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::SelfId;
 use waterui_layout::GridRow;
@@ -165,7 +165,7 @@ pub fn gallery_page() -> impl View {
                     .map(|column| {
                         let index = row_index * 3 + column;
                         vstack((
-                            RoundedRectangle::new(0.1)
+                            RoundedRectangle::new(CornerRadius::fraction(0.1))
                                 .fill(Color::srgb(60, 120, 200))
                                 .size(100.0, 80.0),
                             text(format!("Item {index}")),
@@ -320,11 +320,11 @@ impl LazyRows {
                 AnyView::new(
                     List::for_each(rows, |row: SelfId<usize>| {
                         let index = row.into_inner();
-                        ListItem::new(hstack((
+                        hstack((
                             text(format!("Row {index}")),
                             spacer(),
                             text("Detail").foreground(Color::srgb(90, 90, 90)),
-                        )))
+                        ))
                     })
                     .scroll_controller(&controller),
                 )

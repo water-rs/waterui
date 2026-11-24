@@ -67,26 +67,11 @@ impl CapturedShape {
         match self.kind {
             ShapeKind::Rect | ShapeKind::CustomPath => 0.0,
             ShapeKind::Circle | ShapeKind::Ellipse | ShapeKind::Capsule => side / 2.0,
-            ShapeKind::RoundedRect { corner_radius } => corner_radius * side,
-            ShapeKind::UnevenRoundedRect {
-                top_left,
-                top_right,
-                bottom_left,
-                bottom_right,
-            } => top_left.max(top_right).max(bottom_left).max(bottom_right) * side,
-            // Fixed radii are already in points; only the box's own ceiling
-            // applies.
-            ShapeKind::FixedRoundedRect { corner_radius } => corner_radius.min(side / 2.0),
-            ShapeKind::FixedUnevenRoundedRect {
-                top_left,
-                top_right,
-                bottom_left,
-                bottom_right,
-            } => top_left
-                .max(top_right)
-                .max(bottom_left)
-                .max(bottom_right)
-                .min(side / 2.0),
+            ShapeKind::RoundedRect { radii } => radii
+                .resolve_clockwise(side)
+                .into_iter()
+                .reduce(f32::max)
+                .unwrap_or(0.0),
         }
     }
 }
@@ -173,12 +158,12 @@ impl<F: ViewBuilder> AvatarFallback for F {
 ///
 /// ```rust
 /// use waterui::prelude::*;
-/// use waterui::shape::RoundedRectangle;
+/// use waterui::shape::{CornerRadius, RoundedRectangle};
 ///
 /// # fn profile(photo: waterui::Url) -> impl View {
 /// avatar("Grace Hopper")
 ///     .image(photo)
-///     .shape(RoundedRectangle::new(0.25))
+///     .shape(RoundedRectangle::new(CornerRadius::fraction(0.25)))
 ///     .size(64.0)
 ///     .ring(Color::new(theme_color::Accent), 2.0)
 /// # }
@@ -258,13 +243,13 @@ impl<F> Avatar<F> {
     /// use waterui::shape::RoundedRectangle;
     ///
     /// # fn squircle() -> impl View {
-    /// avatar("Radia Perlman").shape(RoundedRectangle::new(0.25))
+    /// avatar("Radia Perlman").shape(RoundedRectangle::new(16.0))
     /// # }
     /// ```
     #[must_use]
     #[expect(
         clippy::needless_pass_by_value,
-        reason = "a shape is authored inline (`.shape(RoundedRectangle::new(0.25))`); taking a reference would force the caller to bind it first, and `ClipShape::new` takes it by value for the same reason"
+        reason = "a shape is authored inline (`.shape(RoundedRectangle::new(16.0))`); taking a reference would force the caller to bind it first, and `ClipShape::new` takes it by value for the same reason"
     )]
     pub fn shape(mut self, shape: impl Shape) -> Self {
         self.shape = CapturedShape::new(&shape);
@@ -416,7 +401,7 @@ mod tests {
     use crate::metadata::secure::{DynamicRange, DynamicRangeMetadata};
     use nami::{Signal as _, binding};
     use waterui_core::{Environment, backend::peel_metadata};
-    use waterui_shape::{Circle, RoundedRectangle, ShapeKind};
+    use waterui_shape::{Circle, CornerRadius, RoundedRectangle, ShapeKind};
 
     #[test]
     fn an_avatar_is_standard_dynamic_range_unless_asked_otherwise() {
@@ -486,7 +471,14 @@ mod tests {
     fn a_ring_traces_the_shape_it_surrounds() {
         assert!((CapturedShape::new(&Circle).corner_radius(40.0) - 20.0).abs() < f32::EPSILON);
         assert!(
-            (CapturedShape::new(&RoundedRectangle::new(0.25)).corner_radius(40.0) - 10.0).abs()
+            (CapturedShape::new(&RoundedRectangle::new(CornerRadius::fraction(0.25)))
+                .corner_radius(40.0)
+                - 10.0)
+                .abs()
+                < f32::EPSILON
+        );
+        assert!(
+            (CapturedShape::new(&RoundedRectangle::new(12.0)).corner_radius(40.0) - 12.0).abs()
                 < f32::EPSILON
         );
         assert!(matches!(

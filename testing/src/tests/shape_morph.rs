@@ -12,7 +12,9 @@ use waterui::View;
 use waterui::ViewExt as _;
 use waterui::component::{hstack, vstack};
 use waterui::graphics::color::Color;
-use waterui::shape::{Capsule, Circle, Ellipse, MorphShape, Rectangle, RoundedRectangle, ShapeExt};
+use waterui::shape::{
+    Capsule, Circle, CornerRadius, Ellipse, MorphShape, Rectangle, RoundedRectangle, ShapeExt,
+};
 
 use crate::ui;
 
@@ -27,7 +29,8 @@ const WIDE: (f32, f32) = (112.0, 64.0);
 const RECT_TO_CIRCLE: Morph = |color| Rectangle.morph_to(Circle, color);
 const CIRCLE_TO_ELLIPSE: Morph = |color| Circle.morph_to(Ellipse, color);
 const CAPSULE_TO_ELLIPSE: Morph = |color| Capsule.morph_to(Ellipse, color);
-const ROUNDED_TO_CAPSULE: Morph = |color| RoundedRectangle::new(0.2).morph_to(Capsule, color);
+const ROUNDED_TO_CAPSULE: Morph =
+    |color| RoundedRectangle::new(CornerRadius::fraction(0.2)).morph_to(Capsule, color);
 
 fn output(name: &str) -> PathBuf {
     let directory = std::env::temp_dir().join("waterui_shape_morph");

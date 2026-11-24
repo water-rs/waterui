@@ -733,7 +733,7 @@ pub mod toolbar_reach {
     use cocoa_ui::{MainThreadMarker, Retained};
     use waterui::Str;
     use waterui::ViewExt as _;
-    use waterui::component::list::{List, ListItem};
+    use waterui::component::list::List;
     use waterui::id::SelfId;
     use waterui::navigation::{
         NavigationLink, NavigationPath, NavigationStack, NavigationView, Tab, Tabs, tab_style,
@@ -954,11 +954,7 @@ pub mod toolbar_reach {
 
     /// The fixtures' list: three plain rows.
     fn rows() -> impl waterui::View {
-        List::content(vec![
-            row_item
-                as fn() -> ListItem<waterui::component::text::Text>;
-            3
-        ])
+        List::content(vec![row_item as fn() -> waterui::component::text::Text; 3])
     }
 
     /// Window → `NavigationStack` → page whose content is a `List`.
@@ -982,11 +978,7 @@ pub mod toolbar_reach {
             || {
                 NavigationStack::new(NavigationView::new(
                     "Inbox",
-                    List::content(vec![
-                        row_item
-                            as fn() -> ListItem<waterui::component::text::Text>;
-                        60
-                    ]),
+                    List::content(vec![row_item as fn() -> waterui::component::text::Text; 60]),
                 ))
             },
             false,
@@ -1120,9 +1112,7 @@ pub mod toolbar_reach {
                 inbox_tabs(|| {
                     List::for_each(
                         vec![SelfId::new(1_u64), SelfId::new(2), SelfId::new(3)],
-                        |id: SelfId<u64>| {
-                            ListItem::new(NavigationLink::value(text("message"), id.into_inner()))
-                        },
+                        |id: SelfId<u64>| NavigationLink::value(text("message"), id.into_inner()),
                     )
                     .editing(binding::<bool>(false))
                 })
@@ -2199,16 +2189,15 @@ pub fn scroll_surface(
 
 /// The list suites' row body — identical one-line rows; the cases assert
 /// positions, not labels.
-#[must_use]
-pub fn row_item() -> waterui::component::list::ListItem<waterui::component::text::Text> {
-    waterui::component::list::ListItem::new(waterui::prelude::text("row"))
+pub fn row_item() -> waterui::component::text::Text {
+    waterui::prelude::text("row")
 }
 
 /// The list suites' table, rendered but not mounted: `rows` in a list
 /// driven by `controller`, with the leaf that owns its wiring.
 #[must_use]
 pub fn row_list<V: waterui::View>(
-    rows: Vec<fn() -> waterui::component::list::ListItem<V>>,
+    rows: Vec<fn() -> V>,
     controller: &waterui::layout::scroll::ScrollController<usize>,
 ) -> (crate::contract::NativeLeaf, cocoa_ui::Retained<ListSurface>) {
     use objc2::Message;

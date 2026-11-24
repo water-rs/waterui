@@ -76,7 +76,7 @@ use waterui_text::code::OnCopied;
 use waterui_text::{font::Font, text::text};
 
 use crate::ViewExt;
-use crate::shape::{FilledShape, FixedRoundedRectangle, Path, ShapeExt};
+use crate::shape::{FilledShape, Path, RoundedRectangle, ShapeExt};
 use crate::style::{Shadow, Vector};
 use waterui_graphics::color::Color;
 
@@ -1189,7 +1189,7 @@ impl<I: SnackbarIconSlot> View for StackedSnackbarView<I> {
         let content = Self::build_content(item.snackbar.clone(), manager, item.id, &theme);
 
         let enter_animation = theme.enter_animation.clone();
-        let shape = FixedRoundedRectangle::new(theme.corner_radius);
+        let shape = RoundedRectangle::new(theme.corner_radius);
         let shadow = Shadow::new(
             theme.shadow_color.clone(),
             Vector::new(0.0, theme.shadow_offset_y),

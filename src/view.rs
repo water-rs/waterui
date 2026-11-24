@@ -48,6 +48,8 @@ use waterui_layout::{
 #[cfg(feature = "navigation")]
 use waterui_navigation::NavigationView;
 
+#[cfg(feature = "list")]
+use crate::component::list::{ListMinRowHeight, ListRowDeletable, ListRowInsets};
 #[cfg(feature = "haptics")]
 use crate::haptic::Feedback;
 use crate::{
@@ -66,7 +68,10 @@ use crate::{
     theme,
 };
 use crate::{
-    component::{badge::Badge, focus::Focused},
+    component::{
+        badge::{Badge, BadgeValue},
+        focus::Focused,
+    },
     floating::Floating,
     prelude::Shadow,
     shape::{ClipShape, Shape},
@@ -616,8 +621,8 @@ pub trait ViewExt: View + Sized {
     /// Adds a badge to this view.
     ///
     /// # Arguments
-    /// * `value` - The numeric value to display in the badge
-    fn badge(self, value: impl IntoComputed<i32>) -> Badge<Self> {
+    /// * `value` - The badge indicator to display (`u32`, [`BadgeValue`](crate::component::badge::BadgeValue), or reactive signal; `0` hides)
+    fn badge(self, value: impl IntoComputed<BadgeValue>) -> Badge<Self> {
         Badge::new(value, self)
     }
 
@@ -1223,7 +1228,7 @@ pub trait ViewExt: View + Sized {
     /// let avatar = Color::red().clip(Circle);
     ///
     /// // Clip to rounded rectangle
-    /// let card = text!("Card").clip(RoundedRectangle::new(0.1));
+    /// let card = text!("Card").clip(RoundedRectangle::new(8.0));
     ///
     /// // Custom triangle shape
     /// let triangle = Path::new()
@@ -1367,8 +1372,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// Replaces the theme's one-line row height as the floor rows are measured
     /// against; `0.0` sizes each row to its content plus its insets. Combine
-    /// with [`ListItem::insets`](crate::component::list::ListItem::insets) to
-    /// make individual rows compact.
+    /// with [`ViewExt::list_row_insets`] to make individual rows compact.
     ///
     /// # Example
     ///
@@ -1377,17 +1381,37 @@ pub trait ViewExt: View + Sized {
     /// use waterui::prelude::*;
     ///
     /// let log = List::content((
-    ///     || ListItem::new(text!("Alice joined the group")).insets(EdgeInsets::all(4.0)),
-    ///     || ListItem::new(text!("Hello")),
+    ///     || text!("Alice joined the group").list_row_insets(EdgeInsets::all(4.0)),
+    ///     || text!("Hello"),
     /// ))
     /// .list_min_row_height(0.0);
     /// ```
     #[cfg(feature = "list")]
-    fn list_min_row_height(
+    fn list_min_row_height(self, height: f32) -> With<Self, ListMinRowHeight> {
+        self.with(ListMinRowHeight(height))
+    }
+
+    /// Sets whether this list row can be deleted using a reactive signal.
+    ///
+    /// When `false`, swipe-to-delete and delete buttons are disabled for this
+    /// row. Rows are deletable by default when the enclosing list provides
+    /// `on_delete`.
+    #[cfg(feature = "list")]
+    fn list_row_deletable(
         self,
-        height: f32,
-    ) -> waterui_core::env::With<Self, crate::component::list::ListMinRowHeight> {
-        waterui_core::env::with(self, crate::component::list::ListMinRowHeight(height))
+        deletable: impl IntoComputed<bool>,
+    ) -> With<Self, ListRowDeletable> {
+        self.with(ListRowDeletable(deletable.into_computed()))
+    }
+
+    /// Replaces the theme's row insets for this list row.
+    ///
+    /// Together with [`ViewExt::list_min_row_height`], this lets one row size
+    /// to its content (a one-line event in a chat log, a compact header) while
+    /// the rest keep the list's row metrics.
+    #[cfg(feature = "list")]
+    fn list_row_insets(self, insets: EdgeInsets) -> With<Self, ListRowInsets> {
+        self.with(ListRowInsets(insets))
     }
 
     /// Extends this view's bounds to ignore safe area insets on the specified

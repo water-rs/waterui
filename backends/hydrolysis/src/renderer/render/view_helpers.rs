@@ -228,12 +228,9 @@ pub fn shape_kind_path(kind: ShapeKind, bounds: kurbo::Rect) -> Option<kurbo::Be
     const PATH_TOLERANCE: f64 = 0.05;
     let min_side = crate::num_cast::f64_as_f32(bounds.width().min(bounds.height()).max(0.0));
     match kind {
-        ShapeKind::Rect
-        | ShapeKind::RoundedRect { .. }
-        | ShapeKind::UnevenRoundedRect { .. }
-        | ShapeKind::FixedRoundedRect { .. }
-        | ShapeKind::FixedUnevenRoundedRect { .. }
-        | ShapeKind::Capsule => Some(rounded_rect_path(bounds, shape_kind_radii(kind, min_side))),
+        ShapeKind::Rect | ShapeKind::RoundedRect { .. } | ShapeKind::Capsule => {
+            Some(rounded_rect_path(bounds, shape_kind_radii(kind, min_side)))
+        }
         ShapeKind::Circle => {
             let radius = bounds.width().min(bounds.height()).max(0.0) / 2.0;
             Some(kurbo::Circle::new(bounds.center(), radius).into_path(PATH_TOLERANCE))
@@ -244,40 +241,14 @@ pub fn shape_kind_path(kind: ShapeKind, bounds: kurbo::Rect) -> Option<kurbo::Be
 }
 
 /// Per-corner radii in points, in top-left/top-right/bottom-right/bottom-left
-/// order. A normalized kind resolves its fraction of the shorter side; a fixed
-/// kind carries its own length. Both clamp to half the shorter side, the
-/// ceiling a normalized `0.5` lands on, so radii stay absolute under `lerp`.
+/// order. Each corner resolves against `min_side` and clamps to half the
+/// shorter side so radii stay absolute under `lerp`.
 pub fn shape_kind_radii(kind: ShapeKind, min_side: f32) -> [f32; 4] {
     let limit = min_side / 2.0;
-    let normalized = |radius: f32| radius.clamp(0.0, 0.5) * min_side;
-    let fixed = |radius: f32| radius.max(0.0).min(limit);
     match kind {
         ShapeKind::Rect => [0.0; 4],
         ShapeKind::Circle | ShapeKind::Ellipse | ShapeKind::Capsule => [limit; 4],
-        ShapeKind::RoundedRect { corner_radius } => [normalized(corner_radius); 4],
-        ShapeKind::UnevenRoundedRect {
-            top_left,
-            top_right,
-            bottom_left,
-            bottom_right,
-        } => [
-            normalized(top_left),
-            normalized(top_right),
-            normalized(bottom_right),
-            normalized(bottom_left),
-        ],
-        ShapeKind::FixedRoundedRect { corner_radius } => [fixed(corner_radius); 4],
-        ShapeKind::FixedUnevenRoundedRect {
-            top_left,
-            top_right,
-            bottom_left,
-            bottom_right,
-        } => [
-            fixed(top_left),
-            fixed(top_right),
-            fixed(bottom_right),
-            fixed(bottom_left),
-        ],
+        ShapeKind::RoundedRect { radii } => radii.resolve_clockwise(min_side),
         ShapeKind::CustomPath => {
             unreachable!("`shape_kind_path` resolves radii only for structured kinds")
         }

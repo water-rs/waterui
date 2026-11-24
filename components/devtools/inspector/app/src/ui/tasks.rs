@@ -62,25 +62,23 @@ fn task_header() -> impl View {
     .spacing(8.0)
 }
 
-fn task_row(row: TaskRow) -> ListItem<impl View> {
+fn task_row(row: TaskRow) -> impl View {
     let (id, polls, mean_us, max_us, over) = row.into_parts();
 
-    ListItem::new(
-        hstack((
-            text(id),
-            spacer(),
-            column(text(Str::from(polls.to_string()))),
-            column(text(parts::format_us(mean_us))),
-            column(text(parts::format_us(u64::from(max_us)))),
-            column(text(Str::from(over.to_string())).foreground(if over > 0 {
-                Color::from(Orange)
-            } else {
-                Color::from(MutedForeground)
-            })),
-        ))
-        .spacing(8.0)
-        .padding_with(EdgeInsets::new(6.0, 0.0, 6.0, 0.0)),
-    )
+    hstack((
+        text(id),
+        spacer(),
+        column(text(Str::from(polls.to_string()))),
+        column(text(parts::format_us(mean_us))),
+        column(text(parts::format_us(u64::from(max_us)))),
+        column(text(Str::from(over.to_string())).foreground(if over > 0 {
+            Color::from(Orange)
+        } else {
+            Color::from(MutedForeground)
+        })),
+    ))
+    .spacing(8.0)
+    .padding_with(EdgeInsets::new(6.0, 0.0, 6.0, 0.0))
 }
 
 /// Fixed-width numeric column, so the table reads as a table.
@@ -92,7 +90,7 @@ fn column(content: impl View) -> impl View {
     clippy::needless_pass_by_value,
     reason = "a list row builder is handed ownership of its item"
 )]
-fn stall_row(row: StallRow) -> ListItem<impl View> {
+fn stall_row(row: StallRow) -> impl View {
     let summary = Str::from(format!(
         "{} · {:.0}% of budget · {}",
         row.task_type(),
@@ -100,15 +98,13 @@ fn stall_row(row: StallRow) -> ListItem<impl View> {
         parts::format_us(row.wall_us())
     ));
 
-    ListItem::new(
-        vstack((
-            text(summary).subheadline().foreground(Orange),
-            backtrace_view(row.backtrace()),
-        ))
-        .alignment(HorizontalAlignment::Leading)
-        .spacing(4.0)
-        .padding_with(EdgeInsets::new(8.0, 0.0, 8.0, 0.0)),
-    )
+    vstack((
+        text(summary).subheadline().foreground(Orange),
+        backtrace_view(row.backtrace()),
+    ))
+    .alignment(HorizontalAlignment::Leading)
+    .spacing(4.0)
+    .padding_with(EdgeInsets::new(8.0, 0.0, 8.0, 0.0))
 }
 
 /// The captured stack, or an explanation of why there isn't one.

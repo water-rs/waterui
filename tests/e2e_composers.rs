@@ -37,7 +37,7 @@ fn card_exposes_title_subtitle_and_content(app: &mut SemanticApp) {
 
 #[waterui::test]
 fn badge_value_tracks_its_signal(ui: UiBuilder) {
-    let unread = Binding::i32(3);
+    let unread = Binding::container(3_u32);
     let unread_for_view = unread.clone();
     let mut app =
         ui.mount(move || Badge::new(unread_for_view.clone(), waterui::component::text("Inbox")));

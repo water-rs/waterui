@@ -2985,7 +2985,7 @@ mod split {
     use cocoa_ui::objc2_app_kit::NSTableViewStyle;
     use cocoa_ui::{PlatformView, view};
     use waterui::ViewExt as _;
-    use waterui::component::list::{List, ListItem};
+    use waterui::component::list::List;
     use waterui::navigation::{NavigationSplitView, NavigationView};
     use waterui::prelude::text;
     use waterui::reactive::binding;
@@ -3011,8 +3011,7 @@ mod split {
         let leaf = resolve::render(NavigationSplitView::new(
             &selection,
             move || {
-                List::content(((|| ListItem::new(text("row"))).tag(0_usize),))
-                    .selection(&binding(Some(0_usize)))
+                List::content(((|| text("row")).tag(0_usize),)).selection(&binding(Some(0_usize)))
             },
             |_id: i32| NavigationView::new("Detail", text("detail")),
         ));
@@ -3031,9 +3030,8 @@ mod split {
     /// The same list outside a split keeps the regular table chrome.
     pub fn a_plain_list_keeps_the_regular_chrome() {
         let selection = binding(Some(0_usize));
-        let leaf = resolve::render(
-            List::content(((|| ListItem::new(text("row"))).tag(0_usize),)).selection(&selection),
-        );
+        let leaf =
+            resolve::render(List::content(((|| text("row")).tag(0_usize),)).selection(&selection));
         let table = sidebar_table(leaf.view()).expect("the list mounts a table");
         assert!(
             !table.is_sidebar(),
@@ -5393,7 +5391,11 @@ mod capture_order {
     fn gpu_child() -> AnyView {
         use waterui::graphics::gradient::MeshGradient;
         use waterui::reactive::constant;
-        AnyView::new(MeshGradient::new(2, 2, constant(vec![CHILD; 4])))
+        AnyView::new(MeshGradient::new(
+            2,
+            2,
+            constant(vec![Color::new(Working(CHILD)); 4]),
+        ))
     }
 
     /// The GPU child's native stand-in: a [`CHILD`] colour view.
@@ -5494,12 +5496,12 @@ mod capture_order {
     /// (4,-12)–(196,148), so the column's top edge and rounded top-left
     /// corner cut it.
     pub fn a_clipped_scaled_gpu_child_keeps_its_place() {
-        use waterui::shape::RoundedRectangle;
+        use waterui::shape::{CornerRadius, RoundedRectangle};
         let column = |child| {
             layered(child)
                 .background(orange())
                 .scale(1.6)
-                .clip(RoundedRectangle::new(0.2))
+                .clip(RoundedRectangle::new(CornerRadius::fraction(0.2)))
         };
         assert_gpu_column_matches_native(column(native_child()), column(gpu_child()), 1);
     }
@@ -5713,7 +5715,7 @@ mod safe_area {
     use cocoa_ui::{PlatformView, Retained, view};
     use objc2::runtime::AnyObject;
     use objc2::{MainThreadOnly, msg_send};
-    use waterui::component::list::{List, ListItem};
+    use waterui::component::list::List;
     use waterui::graphics::color::Srgb;
     use waterui::id::SelfId;
     use waterui::layout::safe_area::{EdgeSet, SafeAreaRegions};
@@ -7634,9 +7636,9 @@ mod safe_area {
             (0..40).map(SelfId::new).collect::<Vec<_>>(),
             move |item| {
                 if *item == field_row {
-                    ListItem::new(waterui::OneOf2::A(field("Notes", &value).size(350.0, 44.0)))
+                    waterui::OneOf2::A(field("Notes", &value).size(350.0, 44.0))
                 } else {
-                    ListItem::new(waterui::OneOf2::B(text(format!("row-{}", *item))))
+                    waterui::OneOf2::B(text(format!("row-{}", *item)))
                 }
             },
         ));
@@ -9217,7 +9219,6 @@ mod list_scroll {
     use waterui::OneOf2;
     use waterui::ViewExt;
     use waterui::animation::Animation;
-    use waterui::component::list::ListItem;
     use waterui::component::text::Text;
     use waterui::layout::padding::Padding;
     use waterui::layout::scroll::ScrollController;
@@ -9307,16 +9308,16 @@ mod list_scroll {
     }
 
     /// A row of a list mixing plain and tall rows.
-    type MixedRow = ListItem<OneOf2<Text, Padding<Text>>>;
+    type MixedRow = OneOf2<Text, Padding<Text>>;
 
     /// A row taller than the rest — mixed heights keep the last row's
     /// offset an honest measure instead of a multiple of the first.
-    fn tall_row_item() -> ListItem<Padding<Text>> {
-        ListItem::new(text("row").padding_with(24.0))
+    fn tall_row_item() -> Padding<Text> {
+        text("row").padding_with(24.0)
     }
 
     /// Mounts `rows` in a list driven by a fresh `usize` controller.
-    fn mounted_with<V: waterui::View>(rows: Vec<fn() -> ListItem<V>>) -> Fixture {
+    fn mounted_with<V: waterui::View>(rows: Vec<fn() -> V>) -> Fixture {
         let controller = ScrollController::new(0usize);
         let (leaf, table) = row_list(rows, &controller);
         let window = mount_and_order_front(leaf.view());
@@ -9338,7 +9339,7 @@ mod list_scroll {
 
     /// Mounts a uniform list.
     fn mounted() -> Fixture {
-        mounted_with(vec![row_item as fn() -> ListItem<Text>; ROWS])
+        mounted_with(vec![row_item as fn() -> Text; ROWS])
     }
 
     /// Mounts a list whose rows differ in height — every fourth row
@@ -9348,9 +9349,9 @@ mod list_scroll {
             (0..ROWS)
                 .map(|index| {
                     if index % 4 == 0 {
-                        (|| tall_row_item().map_content(OneOf2::B)) as fn() -> MixedRow
+                        (|| OneOf2::B(tall_row_item())) as fn() -> MixedRow
                     } else {
-                        (|| row_item().map_content(OneOf2::A)) as fn() -> MixedRow
+                        (|| OneOf2::A(row_item())) as fn() -> MixedRow
                     }
                 })
                 .collect(),
@@ -9420,7 +9421,7 @@ mod list_scroll {
     /// through intermediate offsets from there; `Default` is the
     /// platform's wall-clock animation from the approach row.
     fn a_far_animation_jumps_to_the_approach_row_first(name: &'static str, animation: Animation) {
-        let fixture = mounted_with(vec![row_item as fn() -> ListItem<Text>; APPROACH_LIST_ROWS]);
+        let fixture = mounted_with(vec![row_item as fn() -> Text; APPROACH_LIST_ROWS]);
         let native = matches!(animation, Animation::Default);
         let request = || {
             fixture
@@ -10766,7 +10767,6 @@ mod list_ax {
     use objc2::runtime::AnyObject;
     use objc2_app_kit::{NSAccessibilityChildrenAttribute, NSTableView};
     use objc2_foundation::{NSArray, NSIndexSet};
-    use waterui::component::list::ListItem;
     use waterui::component::text::Text;
     use waterui::layout::scroll::ScrollController;
     use waterui_apple::native_test_support::{row_item, row_list, sectioned_row_list};
@@ -10822,7 +10822,7 @@ mod list_ax {
 
     fn mounted() -> Fixture {
         let controller = ScrollController::new(0usize);
-        let (leaf, surface) = row_list(vec![row_item as fn() -> ListItem<Text>; ROWS], &controller);
+        let (leaf, surface) = row_list(vec![row_item as fn() -> Text; ROWS], &controller);
         let window = leaf::attach(mtm(), leaf.view());
         leaf.view().setNeedsLayout(true);
         leaf.view().layoutSubtreeIfNeeded();
@@ -11061,7 +11061,7 @@ mod a11y_frame {
     use waterui::Color;
     use waterui::ViewExt as _;
     use waterui::accessibility::AccessibilityGeometry;
-    use waterui::component::list::{List, ListItem};
+    use waterui::component::list::List;
     use waterui::component::toggle::Toggle;
     use waterui::graphics::color::Srgb;
     use waterui::layout::container::LazyContainer;
@@ -11502,7 +11502,7 @@ mod a11y_frame {
             "the region-named scroll surface",
         );
         let (list, _list_window) = attached(
-            AnyView::new(List::content((|| ListItem::new(text("Row")),)))
+            AnyView::new(List::content((|| text("Row"),)))
                 .a11y_geometry(AccessibilityGeometry::Region(region)),
         );
         assert_frame(
@@ -11575,10 +11575,8 @@ mod a11y_frame {
     /// the leading edge of the row's content rect — the trailing edge in
     /// right-to-left — centred vertically, and the text draws there.
     fn assert_row_content_anchored(direction: LayoutDirection) {
-        let (leaf, _window) = mounted_list(
-            AnyView::new(List::content((|| ListItem::new(text("Row")),))),
-            direction,
-        );
+        let (leaf, _window) =
+            mounted_list(AnyView::new(List::content((|| text("Row"),))), direction);
         let (host, label) = text_host(leaf.view()).expect("the row mounts its text");
         let own = own_frame(&host);
         let reported = ax_frame(&host);
@@ -11642,12 +11640,12 @@ mod a11y_frame {
                     text(label).padding_with(EdgeInsets::new(4.0, INSET, 4.0, INSET))
                 };
                 if lazy {
-                    ListItem::new(AnyView::new(LazyContainer::new(
+                    AnyView::new(LazyContainer::new(
                         HStackLayout::default(),
                         ForEach::new(["Row"], padded),
-                    )))
+                    ))
                 } else {
-                    ListItem::new(AnyView::new(padded("Row")))
+                    AnyView::new(padded("Row"))
                 }
             },))),
             direction,
@@ -15536,12 +15534,12 @@ mod transition {
     /// A single-selection list whose every row claims the row transition
     /// — fixed-height rows, so the frozen height is a real contract.
     fn row_list(items: &ReactiveList<Row>) -> AnyView {
-        use waterui::component::list::{List, ListItem};
+        use waterui::component::list::List;
         use waterui::reactive::binding;
         AnyView::new(
             List::for_each(items.clone(), |row: Row| {
                 let content = hstack((text(format!("row {}", row.id)), spacer())).size(200.0, 44.0);
-                ListItem::new(Metadata::new(content, row_spec()))
+                Metadata::new(content, row_spec())
             })
             .selection(&binding(Option::<u64>::None)),
         )
@@ -15841,7 +15839,7 @@ mod transition {
     /// frozen-frame trials arm.
     #[cfg(feature = "gpu_surface")]
     pub fn gpu_picture() -> impl waterui_backend_core::View {
-        use waterui::graphics::color::WorkingColor;
+        use waterui::graphics::color::{Color, Working, WorkingColor};
         use waterui::graphics::gradient::MeshGradient;
         use waterui::reactive::constant;
         // Four distinct corners, so a review PNG tells the frozen frame
@@ -15850,10 +15848,10 @@ mod transition {
             2,
             2,
             constant(vec![
-                WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
-                WorkingColor::new([0.0, 1.0, 0.0, 1.0]),
-                WorkingColor::new([0.0, 0.0, 1.0, 1.0]),
-                WorkingColor::new([1.0, 1.0, 0.0, 1.0]),
+                Color::new(Working(WorkingColor::new([1.0, 0.0, 0.0, 1.0]))),
+                Color::new(Working(WorkingColor::new([0.0, 1.0, 0.0, 1.0]))),
+                Color::new(Working(WorkingColor::new([0.0, 0.0, 1.0, 1.0]))),
+                Color::new(Working(WorkingColor::new([1.0, 1.0, 0.0, 1.0]))),
             ]),
         )
     }

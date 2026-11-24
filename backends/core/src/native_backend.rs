@@ -1225,7 +1225,6 @@ mod tests {
             snapshot
                 .range()
                 .filter_map(|index| snapshot.get_view(index))
-                .map(waterui::component::list::ListItem::into_content)
                 .collect()
         }
     }
@@ -1722,7 +1721,7 @@ mod tests {
 
         let authored = || {
             Badge::new(
-                1,
+                1_u32,
                 button(Label::new("Save", Spacer::flexible)).action(|| {}),
             )
         };
@@ -1883,7 +1882,7 @@ mod tests {
         assert_eq!(
             reached(Hooks::new(
                 Badge::new(
-                    1,
+                    1_u32,
                     button(Label::new("Save", Spacer::flexible)).action(|| {})
                 ),
                 DecliningButtonStyleHook,
