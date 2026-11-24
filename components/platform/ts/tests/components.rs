@@ -26,7 +26,7 @@ mod support;
 
 use nami::Binding;
 use nami::collection::SignalCollection;
-use waterui::component::list::{List, ListItem};
+use waterui::component::list::List;
 use waterui::component::table::{col, table};
 use waterui::component::{Link, button, field, label, progress, slider, stepper, toggle};
 use waterui::form::picker::{Picker, PickerItem};
@@ -823,7 +823,7 @@ fn ts_list_is_a_list() {
         module.tree(),
         rust_tree(List::new(ForEach::new(
             SignalCollection::new(rows),
-            |row: SelfId<Str>| ListItem::new(text(row.into_inner())),
+            |row: SelfId<Str>| text(row.into_inner()),
         ))),
         "the JSX list and the Rust list differ"
     );

@@ -320,11 +320,11 @@ impl LazyRows {
                 AnyView::new(
                     List::for_each(rows, |row: SelfId<usize>| {
                         let index = row.into_inner();
-                        ListItem::new(hstack((
+                        hstack((
                             text(format!("Row {index}")),
                             spacer(),
                             text("Detail").foreground(Color::srgb(90, 90, 90)),
-                        )))
+                        ))
                     })
                     .scroll_controller(&controller),
                 )

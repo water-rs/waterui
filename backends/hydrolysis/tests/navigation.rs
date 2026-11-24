@@ -15,7 +15,7 @@ mod support;
 
 use accesskit::Rect;
 use support::{mount_rendered, node_bounds_with_role, node_label_exists};
-use waterui::component::list::{List, ListItem};
+use waterui::component::list::List;
 use waterui::component::{hstack, text, vstack};
 use waterui::id::SelfId;
 use waterui::navigation::{NavigationSplitView, NavigationStack, NavigationView, Tab, Tabs};
@@ -40,9 +40,7 @@ const BAR_HEIGHT: f32 = 48.0;
 /// A lazy `List` of `count` text rows — the chat-log shape from the issue.
 fn rows(count: usize, prefix: &'static str) -> impl View {
     let data: Vec<SelfId<usize>> = (0..count).map(SelfId::new).collect();
-    List::for_each(data, move |item| {
-        ListItem::new(text(format!("{prefix} {}", *item)))
-    })
+    List::for_each(data, move |item| text(format!("{prefix} {}", *item)))
 }
 
 /// The `vstack` content of the detail pane: a lazy 60-row list and a

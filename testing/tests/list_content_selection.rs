@@ -5,7 +5,7 @@
 
 use std::collections::BTreeSet;
 
-use waterui::component::list::{List, ListItem, Section, row};
+use waterui::component::list::{List, Section, row};
 use waterui::component::text;
 use waterui::id::SelfId;
 use waterui::reactive::collection::SignalCollection;
@@ -24,9 +24,9 @@ enum Mailbox {
 fn mailboxes(selection: &Binding<Option<Mailbox>>) -> impl waterui::View + use<> {
     List::content((
         Section::new("Mailboxes").content((
-            (|| ListItem::new(text("Inbox"))).tag(Mailbox::Inbox),
+            (|| text("Inbox")).tag(Mailbox::Inbox),
             row("Archive", "12").tag(Mailbox::Archive),
-            (|| ListItem::new(text("下書き"))).tag(Mailbox::Drafts),
+            (|| text("下書き")).tag(Mailbox::Drafts),
         )),
         row("Storage", "3 GB"),
     ))
@@ -90,8 +90,8 @@ fn multi_selecting_tagged_rows_beside_untagged_ones() {
             List::content((
                 row("Storage", "3 GB"),
                 Section::new("Mailboxes").content((
-                    (|| ListItem::new(text("Inbox"))).tag(Mailbox::Inbox),
-                    || ListItem::new(text("받은 편지함 정리")),
+                    (|| text("Inbox")).tag(Mailbox::Inbox),
+                    || text("받은 편지함 정리"),
                     row("Archive", "12").tag(Mailbox::Archive),
                 )),
             ))
@@ -137,8 +137,8 @@ fn unfiltered(all: &'static [&'static str]) -> Rows {
     ))
 }
 
-fn reminder(title: SelfId<&'static str>) -> ListItem<impl waterui::View> {
-    ListItem::new(text(title.into_inner()))
+fn reminder(title: SelfId<&'static str>) -> impl waterui::View {
+    text(title.into_inner())
 }
 
 /// A reminder list selected by title: an untagged summary row, a Today

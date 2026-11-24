@@ -9,7 +9,7 @@ use waterui::Signal;
 use waterui::ViewExt as _;
 use waterui::component::button;
 use waterui::component::hstack;
-use waterui::component::list::{List, ListItem};
+use waterui::component::list::List;
 use waterui::component::text;
 use waterui::id::SelfId;
 use waterui::reactive::collection::List as ReactiveList;
@@ -50,10 +50,7 @@ fn single_selection_click_selects_and_programmatic_write_shows() {
     let selection = Binding::container(Option::<i32>::None);
     let binding = selection.clone();
     let mut app = ui().mount(move || {
-        List::for_each(row_items(), |item| {
-            ListItem::new(text(row_label(item.into_inner())))
-        })
-        .selection(&binding)
+        List::for_each(row_items(), |item| text(row_label(item.into_inner()))).selection(&binding)
     });
 
     app.query().role(Role::LIST_ITEM).label(row_label(2)).tap();
@@ -90,10 +87,8 @@ fn multi_selection_toggle_modifier_and_shift_range() {
     let selection = Binding::container(BTreeSet::<i32>::new());
     let binding = selection.clone();
     let mut app = ui().mount(move || {
-        List::for_each(row_items(), |item| {
-            ListItem::new(text(row_label(item.into_inner())))
-        })
-        .multi_selection(&binding)
+        List::for_each(row_items(), |item| text(row_label(item.into_inner())))
+            .multi_selection(&binding)
     });
 
     app.query().role(Role::LIST_ITEM).label(row_label(1)).tap();
@@ -141,10 +136,7 @@ fn keyboard_navigation_moves_selection_and_focus() {
     let selection = Binding::container(Option::<i32>::None);
     let binding = selection.clone();
     let mut app = ui().mount(move || {
-        List::for_each(row_items(), |item| {
-            ListItem::new(text(row_label(item.into_inner())))
-        })
-        .selection(&binding)
+        List::for_each(row_items(), |item| text(row_label(item.into_inner()))).selection(&binding)
     });
 
     app.query()
@@ -180,9 +172,9 @@ fn keyboard_without_selection_moves_focus_only_and_enter_activates() {
         let counter = counter.clone();
         List::for_each(row_items(), move |item| {
             let counter = counter.clone();
-            ListItem::new(button(row_label(item.into_inner())).action(move || {
+            button(row_label(item.into_inner())).action(move || {
                 counter.with_mut(|c| *c += 1);
-            }))
+            })
         })
     });
 
@@ -215,7 +207,7 @@ fn disabled_row_is_inert_to_selection() {
         .mount_offscreen(move || {
             List::for_each(row_items(), move |item| {
                 let row = item.into_inner();
-                ListItem::new(text(row_label(row)).disabled(row == 2))
+                text(row_label(row)).disabled(row == 2)
             })
             .selection(&binding)
         });
@@ -291,10 +283,10 @@ fn disabled_child_does_not_disable_row() {
         .mount_offscreen(move || {
             List::for_each(row_items(), move |item| {
                 let row = item.into_inner();
-                ListItem::new(hstack((
+                hstack((
                     text(row_label(row)),
                     button("Go").action(|| {}).disabled(true),
-                )))
+                ))
             })
             .selection(&binding)
         });
@@ -337,9 +329,9 @@ fn pointer_click_selects_and_row_tap_handlers_still_run() {
             let counter = counter.clone();
             List::for_each(row_items(), move |item| {
                 let counter = counter.clone();
-                ListItem::new(text(row_label(item.into_inner())).on_tap(move || {
+                text(row_label(item.into_inner())).on_tap(move || {
                     counter.with_mut(|c| *c += 1);
-                }))
+                })
             })
             .selection(&binding)
         });

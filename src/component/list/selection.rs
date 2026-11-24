@@ -19,8 +19,6 @@ use waterui_core::id::{Id as RawId, Mapping};
 
 use crate::views::{ForEach, Views};
 
-use super::ListItem;
-
 /// A tag the app selects a row by, erased through the list's value
 /// [`Mapping`].
 ///
@@ -163,12 +161,12 @@ pub trait SelectableRows<T>: Views {
     fn row_tags(&self) -> impl Fn(&Self::Id) -> Option<T> + 'static;
 }
 
-impl<C, F, V> SelectableRows<C::Id> for ForEach<C, F, ListItem<V>>
+impl<C, F, V> SelectableRows<C::Id> for ForEach<C, F, V>
 where
     C: Collection + Clone,
     C::Item: Clone,
     C::Id: 'static,
-    F: 'static + Fn(C::Item) -> ListItem<V>,
+    F: 'static + Fn(C::Item) -> V,
     V: waterui_core::View,
 {
     fn row_tags(&self) -> impl Fn(&C::Id) -> Option<C::Id> + 'static {

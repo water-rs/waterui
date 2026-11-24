@@ -97,21 +97,20 @@ fn level_picker(minimum: &Binding<LogLevel>) -> impl View + use<> {
         .spacing(4.0)
 }
 
-fn row_view(row: LogRow) -> ListItem<impl View> {
+fn row_view(row: LogRow) -> impl View {
     let (_, level, target, message, origin) = row.into_parts();
-    ListItem::new(
-        hstack((
-            text(level.name())
-                .caption()
-                .foreground(parts::level_color(level))
-                .width(52.0),
-            vstack((text(message), origin_view(target, origin)))
-                .alignment(HorizontalAlignment::Leading)
-                .spacing(2.0),
-        ))
-        .spacing(10.0)
-        .padding_with(EdgeInsets::new(6.0, 12.0, 6.0, 12.0)),
-    )
+
+    hstack((
+        text(level.name())
+            .caption()
+            .foreground(parts::level_color(level))
+            .width(52.0),
+        vstack((text(message), origin_view(target, origin)))
+            .alignment(HorizontalAlignment::Leading)
+            .spacing(2.0),
+    ))
+    .spacing(10.0)
+    .padding_with(EdgeInsets::new(6.0, 12.0, 6.0, 12.0))
 }
 
 #[expect(

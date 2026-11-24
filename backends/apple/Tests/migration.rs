@@ -318,7 +318,7 @@ mod uikit_surface {
         NSIndexPathUIKitAdditions, UILabel, UITableView, UITextBorderStyle,
     };
     use waterui::Str;
-    use waterui::component::list::{List, ListItem};
+    use waterui::component::list::List;
     use waterui::prelude::theme_color::{Accent, Foreground};
     use waterui::prelude::*;
     use waterui::reactive::binding;
@@ -422,30 +422,27 @@ mod uikit_surface {
         sender: &'static str,
         subject: &'static str,
         preview: &'static str,
-    ) -> ListItem<impl View> {
-        ListItem::new(Label::new(
-            Str::from(format!("{sender}: {subject}")),
-            move || {
-                hstack((
-                    hstack((Accent.size(8.0, 8.0).clip(Circle),)).size(8.0, 8.0),
-                    vstack((
-                        hstack((
-                            text(sender).subheadline().foreground(Foreground),
-                            spacer(),
-                            text("flag").caption().muted(),
-                        ))
-                        .spacing(6.0),
-                        text(subject).body().foreground(Foreground),
-                        text(preview).caption().muted(),
+    ) -> impl View {
+        Label::new(Str::from(format!("{sender}: {subject}")), move || {
+            hstack((
+                hstack((Accent.size(8.0, 8.0).clip(Circle),)).size(8.0, 8.0),
+                vstack((
+                    hstack((
+                        text(sender).subheadline().foreground(Foreground),
+                        spacer(),
+                        text("flag").caption().muted(),
                     ))
-                    .leading()
-                    .spacing(2.0),
+                    .spacing(6.0),
+                    text(subject).body().foreground(Foreground),
+                    text(preview).caption().muted(),
                 ))
-                .top()
-                .spacing(6.0)
-                .padding_vertical(8.0)
-            },
-        ))
+                .leading()
+                .spacing(2.0),
+            ))
+            .top()
+            .spacing(6.0)
+            .padding_vertical(8.0)
+        })
     }
 
     /// The hosted list: five of the nested-stack rows, the same content
@@ -579,7 +576,7 @@ mod uikit_surface {
             let mount = waterui_apple::native_test_support::mount_uikit_in(
                 mtm(),
                 AnyView::new(List::content((move || {
-                    ListItem::new(Color::srgb(255, 0, 0).height(height))
+                    Color::srgb(255, 0, 0).height(height)
                 },))),
                 &env,
                 cocoa_ui::Rect::new(0.0, 0.0, 402.0, 874.0),
@@ -723,12 +720,11 @@ mod uikit_surface {
             ProbeRow { id: 2, tall: false },
         ]);
         let list = List::for_each(items.clone(), |row: ProbeRow| {
-            let content: AnyView = if row.tall {
+            if row.tall {
                 AnyView::new(text("updated tall row").height(60.0))
             } else {
                 AnyView::new(text("row"))
-            };
-            ListItem::new(content)
+            }
         });
         let env = crate::resolve::env();
         let mount = waterui_apple::native_test_support::mount_uikit_in(
@@ -870,12 +866,11 @@ mod uikit_surface {
         ]);
         let list = List::content(waterui::component::list::Section::new("Sectioned").content(
             waterui::views::ForEach::new(sectioned.clone(), |row: ProbeRow| {
-                let content: AnyView = if row.tall {
+                if row.tall {
                     AnyView::new(text("updated tall row").height(60.0))
                 } else {
                     AnyView::new(text("row"))
-                };
-                ListItem::new(content)
+                }
             }),
         ));
         let mount = waterui_apple::native_test_support::mount_uikit_in(
@@ -960,7 +955,7 @@ mod uikit_surface {
             let items = items.clone();
             let fired = Rc::clone(&fired);
             move |row: ProbeRow| {
-                let content: AnyView = if row.tall {
+                if row.tall {
                     AnyView::new(text("updated tall row").height(60.0))
                 } else if row.id == 20 {
                     AnyView::new(ReentrantRow {
@@ -969,8 +964,7 @@ mod uikit_surface {
                     })
                 } else {
                     AnyView::new(text("row"))
-                };
-                ListItem::new(content)
+                }
             }
         });
         let mount = waterui_apple::native_test_support::mount_uikit_in(
@@ -1081,15 +1075,14 @@ mod uikit_surface {
             let rendered = Rc::clone(&rendered);
             move |row: ProbeRow| {
                 rendered.borrow_mut().push((row.id, items.len()));
-                let content: AnyView = if row.id == 30 {
+                if row.id == 30 {
                     AnyView::new(RemovingRow {
                         items: items.clone(),
                         fired: fired.clone(),
                     })
                 } else {
                     AnyView::new(text("row"))
-                };
-                ListItem::new(content)
+                }
             }
         });
         let mount = waterui_apple::native_test_support::mount_uikit_in(

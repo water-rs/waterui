@@ -11,7 +11,7 @@
 //! because every assertion reads the tree, never a style package's chrome.
 
 use waterui::ViewExt as _;
-use waterui::component::list::{List, ListItem};
+use waterui::component::list::List;
 use waterui::component::{button, text, vstack};
 use waterui::id::SelfId;
 use waterui::{Binding, Str, View};
@@ -25,9 +25,7 @@ use waterui_testing::{Role, RuntimeDriver, SemanticApp, Styled, TestStyle, UiBui
 /// A lazy `List` of `count` text rows.
 fn rows(count: usize, prefix: &'static str) -> impl View {
     let data: Vec<SelfId<usize>> = (0..count).map(SelfId::new).collect();
-    List::for_each(data, move |item| {
-        ListItem::new(text(format!("{prefix} {}", *item)))
-    })
+    List::for_each(data, move |item| text(format!("{prefix} {}", *item)))
 }
 
 /// The `vstack` content of a detail pane: a lazy list and a fixed-height

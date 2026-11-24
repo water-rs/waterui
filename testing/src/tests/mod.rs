@@ -20,7 +20,7 @@ use waterui::Binding;
 use waterui::ContentLedger;
 use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityGeometry;
-use waterui::component::list::{List, ListItem};
+use waterui::component::list::List;
 use waterui::component::{text, vstack};
 use waterui::graphics::WorkingColor;
 use waterui::graphics::backend::draw::{self, Draw as _, Recorder};
@@ -1728,7 +1728,7 @@ fn list_arrow_keys_move_row_focus() {
     let mut app = ui().mount(|| {
         List::content(
             (0..4)
-                .map(|index| move || ListItem::new(text(format!("Row {index}"))))
+                .map(|index| move || text(format!("Row {index}")))
                 .collect::<Vec<_>>(),
         )
     });
@@ -1759,10 +1759,10 @@ fn list_arrow_keys_do_not_activate_rows() {
                     .map(|index| {
                         let taps = taps.clone();
                         move || {
-                            ListItem::new(text(format!("Row {index}")).on_tap({
+                            text(format!("Row {index}")).on_tap({
                                 let taps = taps.clone();
                                 move || taps.with_mut(|t| *t += 1)
-                            }))
+                            })
                         }
                     })
                     .collect::<Vec<_>>(),
@@ -1800,12 +1800,12 @@ fn list_enter_activates_focused_row() {
                     .map(|index| {
                         let taps = taps.clone();
                         move || {
-                            ListItem::new(vstack((text(format!("Row {index}"))
+                            vstack((text(format!("Row {index}"))
                                 .on_tap({
                                     let taps = taps.clone();
                                     move || taps.with_mut(|t| *t += 1)
                                 })
-                                .a11y_role(waterui::accessibility::AccessibilityRole::Button),)))
+                                .a11y_role(waterui::accessibility::AccessibilityRole::Button),))
                         }
                     })
                     .collect::<Vec<_>>(),
@@ -1838,7 +1838,7 @@ fn list_arrow_key_scrolls_row_into_view() {
     let mut app = ui().mount(|| {
         List::content(
             (0..20)
-                .map(|index| move || ListItem::new(text(format!("Row {index}"))))
+                .map(|index| move || text(format!("Row {index}")))
                 .collect::<Vec<_>>(),
         )
     });
@@ -1877,7 +1877,7 @@ fn list_home_end_move_row_focus_to_edges() {
     let mut app = ui().mount(|| {
         List::content(
             (0..4)
-                .map(|index| move || ListItem::new(text(format!("Row {index}"))))
+                .map(|index| move || text(format!("Row {index}")))
                 .collect::<Vec<_>>(),
         )
     });
@@ -1897,7 +1897,7 @@ fn list_arrow_keys_stop_at_row_boundaries() {
     let mut app = ui().mount(|| {
         List::content(
             (0..3)
-                .map(|index| move || ListItem::new(text(format!("Row {index}"))))
+                .map(|index| move || text(format!("Row {index}")))
                 .collect::<Vec<_>>(),
         )
     });

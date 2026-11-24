@@ -681,7 +681,7 @@ struct Record { #[id] id: u64, title: Str }
 Lazy::for_each(records.clone(), |r| text(r.title))       // == Lazy::vstack(ForEach::new(..))
 Lazy::hstack(ForEach::new(records.clone(), record_card)) // record_card: fn(Record) -> impl View
 
-List::for_each(records.clone(), |r| ListItem::new(text(r.title)))
+List::for_each(records.clone(), |r| text(r.title))
     .editing(is_editing.clone())          // impl IntoComputed<bool>
     .on_delete(|ListDelete(i), mut s: AppState| { let _ = s.rows.remove(i); })
     .on_move(|ListMove(m), mut s: AppState| {
@@ -722,24 +722,24 @@ List::content((
     Section::new("Recent")
         .footer("Sub-pages push onto this tab's own stack.")
         .content((
-            || ListItem::new(text("Today")),
+            || text("Today"),
             row("Streak", "14 days"),                    // Row is valid content directly
             detail_row("Last entry", "Yesterday"),
         )),
-    || ListItem::new(text("Footer")),
+    || text("Footer"),
 ))
 ```
 
 A `Row` also takes `.value_color(color)`, `.detail()` / `.inline()` (the two-line and
 one-line layouts) and `.deletable(bool)`. A section's content may also be a `ForEach` over
 a reactive collection, next to or instead
-of static rows — `Section::new("Today").content(ForEach::new(today, |item| ListItem::new(text(item.title))))`.
+of static rows — `Section::new("Today").content(ForEach::new(today, |item| text(item.title)))`.
 Its rows are inserted and removed in place as the collection changes, the header sits on
 whichever row currently opens the section, and a section with no rows draws neither header
 nor footer until rows come back. A grouped, filtered list is therefore one `List::content`
 with a `Section` per group, each over its own `SignalCollection`; sections do not nest.
 
-`ListItem` modifiers: `.deletable(signal)`, `.insets(insets)`; `.list_min_row_height(h)` on
+Row modifiers: `.list_row_deletable(signal)`, `.list_row_insets(insets)`; `.list_min_row_height(h)` on
 any ancestor sets the row-height floor for every list inside (`0.0` sizes rows to their
 content). Selection lives on the
 list itself and holds the app's own values — `.selection(&Binding<Option<T>>)` or
@@ -747,14 +747,14 @@ list itself and holds the app's own values — `.selection(&Binding<Option<T>>)`
 A `ForEach` row — every row of `List::for_each`, or a `ForEach` inside `List::content` —
 is selected by its collection id: `Identifiable::Id` for a `List`/`Vec`/`SignalCollection`,
 the index for an array or static slice. A static row of `List::content` is selected by the
-value it is tagged with, like SwiftUI's `.tag(_:)` — `(|| ListItem::new(text("Inbox"))).tag(Mailbox::Inbox)`
+value it is tagged with, like SwiftUI's `.tag(_:)` — `(|| text("Inbox")).tag(Mailbox::Inbox)`
 or `row("Archive", "12").tag(Mailbox::Archive)` — and an untagged static row is not
 selectable. Every selectable row of one list is selected by the same type; a selection
 of another type does not compile, and neither does a selection over a `List::content`
 whose rows are all untagged. Rows carrying the same value are selected together.
 At most one mode per list: a later call replaces an earlier one.
 `List::for_each` takes any collection whose items are `Clone`; `List::content` takes the
-structural tree above; `List::new(views)` takes pre-built `Views<View = ListItem<C>>`. An
+structural tree above; `List::new(views)` takes pre-built `Views`. An
 enum row type implements `Identifiable` by hand (`type Id; fn id(&self)`),
 keeping the id ranges of different variants disjoint.
 

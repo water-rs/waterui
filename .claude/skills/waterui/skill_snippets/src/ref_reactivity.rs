@@ -589,8 +589,8 @@ pub fn reactivity_block_17() {
         id: u64,
         subject: Str,
     }
-    fn message_row(m: Message) -> ListItem<impl View> {
-        ListItem::new(text(m.subject))
+    fn message_row(m: Message) -> impl View {
+        text(m.subject)
     }
     let messages = Binding::container(Vec::<Message>::new());
     let query = Binding::container(Str::from(""));

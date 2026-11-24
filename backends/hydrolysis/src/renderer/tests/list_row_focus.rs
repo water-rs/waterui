@@ -19,7 +19,7 @@ use accesskit::{NodeId, Role, TreeUpdate};
 use nami::Binding;
 use nami::Signal as _;
 use nami::collection::SignalCollection;
-use waterui::component::list::{List, ListItem};
+use waterui::component::list::List;
 use waterui::component::text;
 use waterui::{AnyView, Environment, ViewExt as _};
 use waterui_core::handler::AnyViewBuilder;
@@ -127,12 +127,12 @@ fn tap_gesture_inside_row_focuses_the_row_for_arrows() {
                 List::for_each(SignalCollection::new(rows), move |row| {
                     let index = row.into_inner();
                     let taps = taps.clone();
-                    ListItem::new(vstack((
+                    vstack((
                         text(format!("Row {index}")).size(20.0),
                         text(format!("Open {index}")).size(12.0).on_tap(move || {
                             taps.borrow_mut().push(index);
                         }),
-                    )))
+                    ))
                 })
                 .selection(&selection_for_list),
             )
@@ -206,9 +206,9 @@ fn tap_press_target_inside_row_focuses_the_row_for_arrows() {
                 List::for_each(SignalCollection::new(rows), move |row| {
                     let index = row.into_inner();
                     let taps = taps.clone();
-                    ListItem::new(text(format!("Row {index}")).size(20.0).on_tap(move || {
+                    text(format!("Row {index}")).size(20.0).on_tap(move || {
                         taps.borrow_mut().push(index);
-                    }))
+                    })
                 })
                 .selection(&selection_for_list),
             )

@@ -225,7 +225,10 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// none of them. Resolving on the *built* node means each `With` was
     /// already expanded exactly once into the `Env` node that carries its
     /// scoped env.
-    fn resolved_handler_env<'a>(node: &'a Self, env: &'a Environment) -> &'a Environment {
+    pub(crate) fn resolved_handler_env<'a>(
+        node: &'a Self,
+        env: &'a Environment,
+    ) -> &'a Environment {
         match node {
             Self::Env(node) => Self::resolved_handler_env(&node.child, &node.env),
             // Retention is transparent to handler resolution.
