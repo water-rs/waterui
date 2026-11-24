@@ -54,7 +54,8 @@ const BASELINE_VERSION: u64 = 10;
 /// runtime which bundle it evaluated.
 fn bundle(tag: &str, label: &str, contract: u64) -> String {
     format!(
-        "{LIBRARY}\n(function () {{\n  const {{ jsx, installRuntimeGlobal }} = globalThis.waterui;\n  \
+        "{LIBRARY}\n(function () {{\n  const {{ jsx }} = globalThis.waterui;\n  \
+         const {{ installRuntimeGlobal }} = globalThis.wateruiRuntime;\n  \
          globalThis.__waterui_test_bundle = \"{tag}\";\n  \
          function Main() {{ return jsx(\"Text\", {{ children: \"{label}\" }}); }}\n  \
          installRuntimeGlobal({{ \"{MODULE}\": Main }}, {{ \"{MODULE}\": \"{contract:016x}\" }});\n\

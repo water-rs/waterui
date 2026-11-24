@@ -12,8 +12,31 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
 import { buildLibrary, buildMount } from "../../scripts/build-test-library.mjs";
+import * as authoring from "../../src/js/index.js";
+import * as runtime from "../../src/js/runtime.js";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+
+const RUNTIME_ONLY_EXPORTS = [
+  "getHost",
+  "installHost",
+  "installRuntimeGlobal",
+  "makeCallback",
+  "mount",
+  "read",
+  "subscribe",
+  "toAccessor",
+  "toSignal",
+  "uninstallHost",
+  "write",
+];
+
+test("the waterui module exports only the authoring API", () => {
+  for (const name of RUNTIME_ONLY_EXPORTS) {
+    expect(name in authoring).toBe(false);
+    expect(typeof runtime[name]).toBe("function");
+  }
+});
 
 test("the committed test library is the current src/js", async () => {
   const committed = readFileSync(resolve(root, "tests/fixtures/library.js"), "utf8");

@@ -58,12 +58,12 @@ fn assert_same(case: &str, source: &str, rust: impl waterui_core::View + 'static
 
 /// A module whose only export builds one element.
 fn module(element: &str) -> String {
-    format!("waterui.installRuntimeGlobal({{ main: () => {element} }});")
+    format!("wateruiRuntime.installRuntimeGlobal({{ main: () => {element} }});")
 }
 
 /// A module that sets up state on `globalThis` before building its element.
 fn stateful(setup: &str, element: &str) -> String {
-    format!("{setup}\nwaterui.installRuntimeGlobal({{ main: () => {element} }});")
+    format!("{setup}\nwateruiRuntime.installRuntimeGlobal({{ main: () => {element} }});")
 }
 
 /// A vertical stack with the framework's own default spacing, which is what a

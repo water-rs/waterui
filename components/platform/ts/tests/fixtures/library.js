@@ -23,31 +23,20 @@
   // src/js/index.js
   var exports_js = {};
   __export(exports_js, {
-    write: () => write,
     useTheme: () => useTheme,
     useLocale: () => useLocale,
     useContext: () => useContext,
     untrack: () => untrack,
-    uninstallHost: () => uninstallHost,
-    toSignal: () => toSignal,
-    toAccessor: () => toAccessor,
-    subscribe: () => subscribe,
     spreadProps: () => spreadProps,
     runWithOwner: () => runWithOwner,
-    read: () => read,
     onCleanup: () => onCleanup,
-    mount: () => mount,
-    makeCallback: () => makeCallback,
     jsxs: () => jsxs,
     jsxDEV: () => jsxDEV,
     jsx: () => jsx,
     isSignal: () => isSignal,
     isMemo: () => isMemo,
     isAccessor: () => isAccessor,
-    installRuntimeGlobal: () => installRuntimeGlobal,
-    installHost: () => installHost,
     getOwner: () => getOwner,
-    getHost: () => getHost,
     createStore: () => createStore,
     createSignal: () => createSignal,
     createScope: () => createScope,
@@ -762,6 +751,7 @@
     }
     return createSignal(source);
   }
+
   // src/js/jsx-runtime.js
   var CONTAINS_SPREAD = Symbol("waterui.contains-spread");
   function spreadProps(props) {
@@ -930,6 +920,22 @@
       return { handle: render(), dispose };
     });
   }
+  // src/js/runtime.js
+  var exports_runtime = {};
+  __export(exports_runtime, {
+    write: () => write,
+    uninstallHost: () => uninstallHost,
+    toSignal: () => toSignal,
+    toAccessor: () => toAccessor,
+    subscribe: () => subscribe,
+    read: () => read,
+    mount: () => mount,
+    makeCallback: () => makeCallback,
+    installRuntimeGlobal: () => installRuntimeGlobal,
+    installHost: () => installHost,
+    getHost: () => getHost
+  });
+
   // src/js/runtime-global.js
   var RUNTIME_GLOBAL = "__waterui_runtime";
   function makeCallback(id) {
@@ -968,4 +974,5 @@
   }
   // tests/fixtures/library.entry.js
   globalThis.waterui = exports_js;
+  globalThis.wateruiRuntime = exports_runtime;
 })();
