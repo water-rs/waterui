@@ -91,16 +91,6 @@ jobs:
       - uses: ./.github/actions/spirv-tools-windows
       - name: Install DirectX Shader Compiler
         uses: ./.github/actions/install-dxc
-      # #3093: before the first test binary is built, so `target/debug/deps`
-      # already holds the pinned WARP when nextest's executables land there,
-      # and `target/debug` holds it for the binaries tests spawn through
-      # `CARGO_BIN_EXE_*` (#3163).
-      - name: Install current WARP
-        uses: ./.github/actions/install-warp
-        with:
-          into: |
-            target/debug/deps
-            target/debug
       - uses: ./.github/actions/install-tool
         with:
           tool: cargo-nextest@0.9.145
@@ -146,6 +136,17 @@ jobs:
       # the upload-staging timeout it used to hit is fixed in-tree in
       # `graphics/cherenkov`, so the leg is expected to run green.
       #
+      # Build both test sets first so Cargo 1.100+'s per-unit `out/`
+      # directories exist, then stage WARP 1.0.21 beside every built test
+      # executable and `target/debug` `CARGO_BIN_EXE_*` binary (#3093, #4580).
+      - name: Build workspace tests
+        run: cargo nextest run --no-run --timings --locked --workspace --exclude waterui-apple --exclude cocoa-ui --exclude waterui-dylib --exclude '*-example' --profile ci
+      - name: Build example tests
+        run: cargo nextest run --no-run --timings --locked --profile ci -p gallery-example -p list-example -p reply-example -p stress-example -p typography-rtl-example
+      - name: Install current WARP
+        uses: ./.github/actions/install-warp
+        with:
+          profile-dirs: target/debug
       # One full-workspace pass under default features.
       - run: cargo nextest run --timings --locked --workspace --exclude waterui-apple --exclude cocoa-ui --exclude waterui-dylib --exclude '*-example' --profile ci
       # The cli's `#[ignore]`d suite (#1446) and hydrolysis's named JS round
@@ -254,12 +255,6 @@ jobs:
       - uses: ./.github/actions/spirv-tools-windows
       - name: Install DirectX Shader Compiler
         uses: ./.github/actions/install-dxc
-      - name: Install current WARP
-        uses: ./.github/actions/install-warp
-        with:
-          into: |
-            target/debug/deps
-            target/debug
       - uses: ./.github/actions/install-tool
         with:
           tool: cargo-nextest@0.9.145
@@ -276,6 +271,36 @@ jobs:
         uses: ./.github/actions/generate-scene-assets
         with:
           mode: full
+      # Compile all feature-matrix test passes first so Cargo 1.100+'s per-unit
+      # `out/` directories exist for every feature combination, then stage WARP
+      # 1.0.21 beside all of them before running (#4580).
+      - name: Build tests (root crate, every feature but dynamic_linking)
+        run: cargo nextest run --no-run --timings --locked --features all --profile ci
+      - name: Build tests (all features, workspace)
+        run: |
+          cargo nextest run --no-run --timings --locked --workspace --all-features --profile ci `
+            --exclude waterui `
+            --exclude waterui-apple `
+            --exclude cocoa-ui `
+            --exclude waterui-dylib `
+            --exclude '*-example' `
+            --exclude waterui-core `
+            --exclude skill_snippets `
+            --exclude layout-twins `
+            --exclude ios-test-host `
+            --exclude filtrate `
+            --exclude hydrolysis `
+            -E 'not binary(/^trybuild_/)'
+      - name: Build tests (hydrolysis, every non-webview feature + webview-system)
+        run: cargo nextest run --no-run --timings --locked -p hydrolysis --features all-controls,accessibility,testing,frame-profile,gpu,cpu,inspector-signals,hwui,video-gpu,map-gpu,winit,video,web,webview-system --profile ci
+      - name: Build tests (hydrolysis, webview-cef)
+        run: cargo nextest run --no-run --timings --locked -p hydrolysis --features all-controls,accessibility,testing,gpu,winit,webview-cef --profile ci
+      - name: Build tests (waterui-core, every stable feature)
+        run: cargo nextest run --no-run --timings --locked -p waterui-core --features std,serde --profile ci
+      - name: Install current WARP
+        uses: ./.github/actions/install-warp
+        with:
+          profile-dirs: target/debug
       - name: Test (root crate, every feature but dynamic_linking)
         run: cargo nextest run --timings --locked --features all --profile ci
       # The `trybuild_*` binaries each drive a cold fixture build that is
