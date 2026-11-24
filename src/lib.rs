@@ -197,8 +197,6 @@ pub use waterui_barcode as barcode;
 pub use waterui_chart as chart;
 #[cfg(feature = "form")]
 pub use waterui_form as form;
-#[cfg(any(feature = "gpu", feature = "cpu"))]
-pub use waterui_graphics::ShaderPaintView;
 #[cfg(feature = "canvas")]
 pub use waterui_graphics::canvas;
 pub use waterui_graphics::color;
@@ -207,6 +205,8 @@ pub use waterui_graphics::gradient;
 pub use waterui_graphics::image_decode;
 #[cfg(feature = "gpu")]
 pub use waterui_graphics::{GpuContent, GpuView, RedrawHandle};
+#[cfg(any(feature = "gpu", feature = "cpu"))]
+pub use waterui_graphics::{SHADER_MAX_PARAMS, ShaderError, ShaderPaintView};
 pub use waterui_icon as icon;
 #[cfg(feature = "particle")]
 pub use waterui_particle as particle;

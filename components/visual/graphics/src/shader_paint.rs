@@ -1,16 +1,20 @@
 //! A user shader as a view: a WGSL fragment shader filling the view's frame.
 //!
 //! The fragment is WGSL against a prelude — `uniforms.time`,
-//! `uniforms.resolution`, a `uv` in `[0, 1]` (top-left origin) and
-//! `@fragment fn main` — with user uniforms passed as a flat `f32` list that
-//! follows a signal. It writes premultiplied linear Display P3; the engine's
-//! colour helpers (`cherenkov_linear_srgb`, `cherenkov_srgb`, ...) are
-//! available to convert from sRGB.
+//! `uniforms.resolution`, `shader_param(index)` / `params` (`array<vec4<f32>, 16>`),
+//! a `uv` in `[0, 1]` (top-left origin) and `@fragment fn main` — with user
+//! parameters bound as reactive `f32` signals. It writes premultiplied linear
+//! Display P3; the engine's colour helpers (`cherenkov_linear_srgb`,
+//! `cherenkov_srgb`, ...) convert from sRGB.
+//!
+//! WGSL syntax, core WebGPU validation, the `@fragment fn main` entry point,
+//! and the 64-parameter limit are checked at construction (or at compile time
+//! via [`shader!`](crate::shader)).
 //!
 //! Whether the shader animates follows a signal too: while it is `true` the
 //! content asks for a frame after every frame so `uniforms.time` advances,
 //! and while it is `false` the shader renders once per change of its
-//! uniforms or size and the host stays idle.
+//! parameters or size and the host stays idle.
 
 extern crate alloc;
 
@@ -27,11 +31,12 @@ use core::mem::size_of_val;
 
 #[cfg(feature = "gpu")]
 use arc_swap::{ArcSwap, ArcSwapOption};
+pub use cherenkov_record::wgsl::{PAINT_MAX_PARAMS as SHADER_MAX_PARAMS, ShaderError};
 use nami::watcher::BoxWatcherGuard;
 use nami::{Computed, Signal, SignalExt};
 use waterui_core::layout::StretchAxis;
 use waterui_core::reactive::signal::IntoComputed;
-use waterui_core::{Environment, Native, NativeView, Str, View, contract_violation};
+use waterui_core::{Environment, IntoSignalF32, Native, NativeView, Str, View, contract_violation};
 
 use crate::draw::{Draw as _, Paint, Recorder, ShaderId, ShaderPaint, kurbo::Rect};
 #[cfg(feature = "gpu")]
@@ -42,13 +47,6 @@ use crate::scene_view::{
 };
 use crate::source::ShaderSource;
 
-/// The most `f32` uniforms a shader reads: `params` is sixteen `vec4`s.
-const UNIFORM_CAPACITY: usize = 64;
-
-/// The fragment's prelude: uniforms, `params` and the full-screen vertex stage.
-#[cfg(feature = "gpu")]
-const PRELUDE: &str = include_str!("shader_paint.wgsl");
-
 /// A view painted by a WGSL fragment shader.
 ///
 /// # Layout Behavior
@@ -57,25 +55,48 @@ const PRELUDE: &str = include_str!("shader_paint.wgsl");
 pub struct ShaderPaintView {
     fragment: Cow<'static, str>,
     continuous: Computed<bool>,
-    uniforms: Computed<Vec<f32>>,
+    params: Vec<Computed<f32>>,
     label: Computed<Option<Str>>,
     value: Computed<Option<Str>>,
 }
 
 impl fmt::Debug for ShaderPaintView {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ShaderPaintView").finish_non_exhaustive()
+        f.debug_struct("ShaderPaintView")
+            .field("param_count", &self.params.len())
+            .finish_non_exhaustive()
     }
 }
 
 impl ShaderPaintView {
-    /// A static shader from its fragment body.
+    /// Builds and validates a shader paint from its WGSL fragment body.
+    ///
+    /// Line and column numbers in returned [`ShaderError`] diagnostics count
+    /// in `fragment` itself.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShaderError`] when `fragment` fails WGSL parsing, fails `naga`
+    /// validation, or does not define `@fragment fn main`.
+    pub fn new(fragment: impl Into<Cow<'static, str>>) -> Result<Self, ShaderError> {
+        let fragment = fragment.into();
+        cherenkov_record::wgsl::validate_paint_wgsl(&fragment)?;
+        Ok(Self::from_validated(fragment))
+    }
+
+    /// Internal constructor used by [`shader!`](crate::shader) after
+    /// compile-time WGSL validation succeeds.
+    #[doc(hidden)]
     #[must_use]
-    pub fn new(fragment: impl Into<Cow<'static, str>>) -> Self {
+    pub fn __from_validated_wgsl(fragment: &'static str) -> Self {
+        Self::from_validated(Cow::Borrowed(fragment))
+    }
+
+    fn from_validated(fragment: Cow<'static, str>) -> Self {
         Self {
-            fragment: fragment.into(),
+            fragment,
             continuous: nami::constant(false).computed(),
-            uniforms: nami::constant(Vec::new()).computed(),
+            params: Vec::new(),
             label: Computed::constant(None),
             value: Computed::constant(None),
         }
@@ -89,14 +110,61 @@ impl ShaderPaintView {
         self
     }
 
-    /// The user uniforms the fragment reads as `params`, following a signal.
+    /// Adds a scalar parameter, readable in WGSL via `shader_param(index)` or
+    /// `params[index / 4u][index % 4u]`.
     ///
-    /// At most 64 floats; a longer list is a contract violation and the extra
-    /// floats are dropped.
+    /// # Errors
+    ///
+    /// Returns [`ShaderError::TooManyParams`] if the shader already carries
+    /// [`SHADER_MAX_PARAMS`] parameters.
+    pub fn param(mut self, value: impl IntoSignalF32) -> Result<Self, ShaderError> {
+        if self.params.len() >= SHADER_MAX_PARAMS {
+            return Err(ShaderError::TooManyParams {
+                count: self.params.len() + 1,
+                max: SHADER_MAX_PARAMS,
+            });
+        }
+        self.params.push(value.into_signal_f32().computed());
+        Ok(self)
+    }
+
+    /// Appends a sequence of scalar parameters in order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShaderError::TooManyParams`] without modifying the shader if
+    /// appending `values` would exceed [`SHADER_MAX_PARAMS`].
+    pub fn params<P: IntoSignalF32>(
+        mut self,
+        values: impl IntoIterator<Item = P>,
+    ) -> Result<Self, ShaderError> {
+        let iter = values.into_iter();
+        let remaining = SHADER_MAX_PARAMS - self.params.len();
+        let (lower, _) = iter.size_hint();
+        if lower > remaining {
+            return Err(ShaderError::TooManyParams {
+                count: self.params.len() + lower,
+                max: SHADER_MAX_PARAMS,
+            });
+        }
+        let mut collected = Vec::with_capacity(lower.min(remaining));
+        for value in iter {
+            if collected.len() >= remaining {
+                return Err(ShaderError::TooManyParams {
+                    count: self.params.len() + collected.len() + 1,
+                    max: SHADER_MAX_PARAMS,
+                });
+            }
+            collected.push(value.into_signal_f32().computed());
+        }
+        self.params.extend(collected);
+        Ok(self)
+    }
+
+    /// The number of parameters currently bound to this shader.
     #[must_use]
-    pub fn uniforms(mut self, uniforms: impl IntoComputed<Vec<f32>>) -> Self {
-        self.uniforms = uniforms.into_computed();
-        self
+    pub const fn param_count(&self) -> usize {
+        self.params.len()
     }
 
     /// The accessible name the shader offers. An app's own `.a11y_label(…)`
@@ -123,7 +191,7 @@ impl ShaderPaintView {
         ShaderPaintScene {
             fragment: self.fragment,
             continuous: self.continuous,
-            uniforms: self.uniforms,
+            params: self.params,
             label: self.label,
             value: self.value,
             watchers: None,
@@ -139,7 +207,7 @@ impl ShaderPaintView {
     #[must_use]
     pub fn into_gpu_view(self) -> GpuView<Box<dyn GpuContent>> {
         let shared = Arc::new(Shared::default());
-        let posting = Posting::new(self.continuous, self.uniforms, Arc::clone(&shared));
+        let posting = Posting::new(self.continuous, self.params, Arc::clone(&shared));
         GpuView::new(ShaderContent {
             fragment: self.fragment,
             shared,
@@ -165,33 +233,23 @@ impl View for ShaderPaintView {
     }
 }
 
-fn clamp_uniforms(raw: &[f32]) -> &[f32] {
-    if raw.len() > UNIFORM_CAPACITY {
-        contract_violation!(
-            "shader paint accepts at most {UNIFORM_CAPACITY} uniform floats, got {}; the extra floats are dropped",
-            raw.len()
-        );
-    }
-    &raw[..raw.len().min(UNIFORM_CAPACITY)]
-}
-
 struct RecordedState {
     continuous: bool,
-    uniforms_bits: Vec<u32>,
+    params_bits: Vec<u32>,
     width_bits: u32,
     height_bits: u32,
 }
 
 impl RecordedState {
-    fn matches(&self, continuous: bool, uniforms: &[f32], width: f32, height: f32) -> bool {
+    fn matches(&self, continuous: bool, params: &[f32], width: f32, height: f32) -> bool {
         self.continuous == continuous
             && self.width_bits == width.to_bits()
             && self.height_bits == height.to_bits()
-            && self.uniforms_bits.len() == uniforms.len()
+            && self.params_bits.len() == params.len()
             && self
-                .uniforms_bits
+                .params_bits
                 .iter()
-                .zip(uniforms)
+                .zip(params)
                 .all(|(&recorded, current)| recorded == current.to_bits())
     }
 }
@@ -199,12 +257,18 @@ impl RecordedState {
 struct ShaderPaintScene {
     fragment: Cow<'static, str>,
     continuous: Computed<bool>,
-    uniforms: Computed<Vec<f32>>,
+    params: Vec<Computed<f32>>,
     label: Computed<Option<Str>>,
     value: Computed<Option<Str>>,
-    watchers: Option<[BoxWatcherGuard; 4]>,
+    watchers: Option<Vec<BoxWatcherGuard>>,
     registered: Option<(bool, Registered<ShaderId>)>,
     recorded: Option<RecordedState>,
+}
+
+impl ShaderPaintScene {
+    fn snapshot_params(&self) -> Vec<f32> {
+        self.params.iter().map(Signal::snapshot).collect()
+    }
 }
 
 impl SceneContent for ShaderPaintScene {
@@ -216,9 +280,8 @@ impl SceneContent for ShaderPaintScene {
         height: f32,
     ) -> NextFrame {
         let continuous = self.continuous.snapshot();
-        let raw_uniforms = self.uniforms.snapshot();
-        let kept = clamp_uniforms(&raw_uniforms);
-        let uniforms_bits: Vec<u32> = kept.iter().map(|v| v.to_bits()).collect();
+        let params = self.snapshot_params();
+        let params_bits: Vec<u32> = params.iter().map(|v| v.to_bits()).collect();
         let next = if continuous {
             NextFrame::Perpetual
         } else {
@@ -254,14 +317,14 @@ impl SceneContent for ShaderPaintScene {
                 Rect::new(0.0, 0.0, f64::from(width), f64::from(height)),
                 Paint::Shader(ShaderPaint {
                     shader,
-                    uniforms: kept.to_vec(),
+                    uniforms: params,
                 }),
             );
         }
 
         self.recorded = Some(RecordedState {
             continuous,
-            uniforms_bits,
+            params_bits,
             width_bits: width.to_bits(),
             height_bits: height.to_bits(),
         });
@@ -278,11 +341,8 @@ impl SceneContent for ShaderPaintScene {
             return SceneUpdate::Record;
         };
         let continuous = self.continuous.snapshot();
-        let raw_uniforms = self.uniforms.snapshot();
-        let kept = &raw_uniforms[..raw_uniforms.len().min(UNIFORM_CAPACITY)];
-        if recorded.matches(continuous, kept, frame.width, frame.height)
-            && raw_uniforms.len() <= UNIFORM_CAPACITY
-        {
+        let params = self.snapshot_params();
+        if recorded.matches(continuous, &params, frame.width, frame.height) {
             SceneUpdate::Retained {
                 next: if continuous {
                     NextFrame::Perpetual
@@ -297,12 +357,14 @@ impl SceneContent for ShaderPaintScene {
 
     fn set_invalidator(&mut self, invalidator: Option<SceneInvalidator>) {
         self.watchers = invalidator.map(|inv| {
-            [
-                invalidate_on_change(&inv, &self.continuous),
-                invalidate_on_change(&inv, &self.uniforms),
-                invalidate_on_change(&inv, &self.label),
-                invalidate_on_change(&inv, &self.value),
-            ]
+            let mut watchers = Vec::with_capacity(3 + self.params.len());
+            watchers.push(invalidate_on_change(&inv, &self.continuous));
+            watchers.push(invalidate_on_change(&inv, &self.label));
+            watchers.push(invalidate_on_change(&inv, &self.value));
+            for param in &self.params {
+                watchers.push(invalidate_on_change(&inv, param));
+            }
+            watchers
         });
     }
 
@@ -319,7 +381,7 @@ impl SceneContent for ShaderPaintScene {
 #[cfg(feature = "gpu")]
 struct Posted {
     continuous: bool,
-    params: [f32; UNIFORM_CAPACITY],
+    params: [f32; SHADER_MAX_PARAMS],
 }
 
 /// The UI side's mailbox to the render thread.
@@ -336,7 +398,7 @@ impl Default for Shared {
         Self {
             posted: ArcSwap::from_pointee(Posted {
                 continuous: false,
-                params: [0.0; UNIFORM_CAPACITY],
+                params: [0.0; SHADER_MAX_PARAMS],
             }),
             redraw: ArcSwapOption::empty(),
         }
@@ -357,36 +419,40 @@ impl Shared {
 #[cfg(feature = "gpu")]
 struct Posting {
     continuous: Computed<bool>,
-    uniforms: Computed<Vec<f32>>,
+    params: Vec<Computed<f32>>,
     shared: Arc<Shared>,
-    _watchers: [BoxWatcherGuard; 2],
+    _watchers: Vec<BoxWatcherGuard>,
 }
 
 #[cfg(feature = "gpu")]
 impl Posting {
-    fn new(continuous: Computed<bool>, uniforms: Computed<Vec<f32>>, shared: Arc<Shared>) -> Self {
-        let wake_on = |signal: &dyn Fn(Arc<Shared>) -> BoxWatcherGuard| signal(Arc::clone(&shared));
+    fn new(continuous: Computed<bool>, params: Vec<Computed<f32>>, shared: Arc<Shared>) -> Self {
+        let mut watchers = Vec::with_capacity(1 + params.len());
+        let continuous_shared = Arc::clone(&shared);
+        watchers
+            .push(Box::new(continuous.watch(move |_| continuous_shared.wake())) as BoxWatcherGuard);
+        for param in &params {
+            let param_shared = Arc::clone(&shared);
+            watchers.push(Box::new(param.watch(move |_| param_shared.wake())) as BoxWatcherGuard);
+        }
         let posting = Self {
-            _watchers: [
-                wake_on(&|shared| alloc::boxed::Box::new(continuous.watch(move |_| shared.wake()))),
-                wake_on(&|shared| alloc::boxed::Box::new(uniforms.watch(move |_| shared.wake()))),
-            ],
             continuous,
-            uniforms,
+            params,
             shared,
+            _watchers: watchers,
         };
         posting.post();
         posting
     }
 
     fn post(&self) {
-        let uniforms = self.uniforms.snapshot();
-        let kept = clamp_uniforms(&uniforms);
-        let mut params = [0.0; UNIFORM_CAPACITY];
-        params[..kept.len()].copy_from_slice(kept);
+        let mut packed = [0.0; SHADER_MAX_PARAMS];
+        for (dst, signal) in packed.iter_mut().zip(&self.params) {
+            *dst = signal.snapshot();
+        }
         self.shared.posted.store(Arc::new(Posted {
             continuous: self.continuous.snapshot(),
-            params,
+            params: packed,
         }));
     }
 }
@@ -432,84 +498,107 @@ fn uniform_buffer(device: &wgpu::Device, label: &str, size: u64) -> wgpu::Buffer
 }
 
 #[cfg(feature = "gpu")]
+fn compile_program(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    fragment: &str,
+) -> Result<Program, String> {
+    let globals_size = size_of_val(&[0.0_f32; 4]) as u64;
+    let params_size = size_of_val(&[0.0_f32; SHADER_MAX_PARAMS]) as u64;
+    let module_source = cherenkov_record::wgsl::paint_module(fragment);
+
+    // Defence-in-depth for shaders that passed CPU-side naga validation
+    // yet fail the backend driver's own compiler or pipeline limits.
+    #[cfg(not(target_arch = "wasm32"))]
+    let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("shader paint"),
+        source: wgpu::ShaderSource::Wgsl(Cow::Owned(module_source)),
+    });
+    let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("shader paint"),
+        entries: &[
+            uniform_entry(0, globals_size),
+            uniform_entry(1, params_size),
+        ],
+    });
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("shader paint"),
+        bind_group_layouts: &[Some(&layout)],
+        immediate_size: 0,
+    });
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("shader paint"),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &module,
+            entry_point: Some("vs_main"),
+            buffers: &[],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &module,
+            entry_point: Some(cherenkov_record::wgsl::PAINT_ENTRY),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(wgpu::BlendState::REPLACE),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        }),
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview_mask: None,
+        cache: None,
+    });
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(error) = pollster::block_on(scope.pop()) {
+        return Err(error.to_string());
+    }
+    let globals = uniform_buffer(device, "shader paint globals", globals_size);
+    let params = uniform_buffer(device, "shader paint params", params_size);
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("shader paint"),
+        layout: &layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: globals.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: params.as_entire_binding(),
+            },
+        ],
+    });
+    Ok(Program {
+        pipeline,
+        bind_group,
+        globals,
+        params,
+    })
+}
+
+#[cfg(feature = "gpu")]
 impl GpuContent for ShaderContent {
     fn setup(&mut self, gpu: &Context<'_>) {
         self.shared
             .redraw
             .store(Some(Arc::new(gpu.redraw().clone())));
-        let device = gpu.device();
-        let globals_size = size_of_val(&[0.0_f32; 4]) as u64;
-        let params_size = size_of_val(&[0.0_f32; UNIFORM_CAPACITY]) as u64;
-        let module = cherenkov_gpu::interop::shader_module(
-            device,
-            "shader paint",
-            &alloc::format!("{PRELUDE}\n{}", self.fragment),
-        );
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("shader paint"),
-            entries: &[
-                uniform_entry(0, globals_size),
-                uniform_entry(1, params_size),
-            ],
-        });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("shader paint"),
-            bind_group_layouts: &[Some(&layout)],
-            immediate_size: 0,
-        });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("shader paint"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &module,
-                entry_point: Some("vs_main"),
-                buffers: &[],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &module,
-                entry_point: Some("main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: gpu.format(),
-                    blend: Some(wgpu::BlendState::REPLACE),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
-        let globals = uniform_buffer(device, "shader paint globals", globals_size);
-        let params = uniform_buffer(device, "shader paint params", params_size);
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("shader paint"),
-            layout: &layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: globals.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: params.as_entire_binding(),
-                },
-            ],
-        });
-        self.gpu = Some(Program {
-            pipeline,
-            bind_group,
-            globals,
-            params,
-        });
+        match compile_program(gpu.device(), gpu.format(), &self.fragment) {
+            Ok(program) => self.gpu = Some(program),
+            Err(error) => {
+                tracing::error!("shader paint device compilation failed: {error}");
+                self.gpu = None;
+            }
+        }
     }
 
     fn render(&mut self, frame: &mut Frame<'_>) {
-        let gpu = self.gpu.as_ref().expect(
-            "the engine runs `GpuContent::setup`, which installs `gpu`, before every render",
-        );
+        let Some(gpu) = self.gpu.as_ref() else {
+            return;
+        };
         let posted = self.shared.posted.load();
         #[expect(clippy::cast_precision_loss, reason = "texture sides fit f32 exactly")]
         let globals = [
@@ -554,31 +643,32 @@ impl GpuContent for ShaderContent {
     }
 }
 
-/// A [`ShaderPaintView`] from a `.wgsl` file beside the calling source file.
-#[macro_export]
-macro_rules! shader {
-    ($path:literal) => {
-        $crate::shader_paint::ShaderPaintView::new(include_str!($path))
-    };
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
     use alloc::rc::Rc;
     use core::cell::Cell;
 
     use nami::Binding;
-    use waterui_core::AnyView;
+    use waterui_core::{AnyView, Environment, Native, View};
 
     use crate::draw::{
         FontId, ImageData, ImageId, ImageLimits, ImageStorage, Instant, LayoutSize, ResourceError,
         Rgba8, Rgba16F,
     };
-    use crate::scene::resources::{Handle, ResourceHandle, SceneBackend, ShaderBackend};
+    use crate::scene::resources::{
+        Handle, ResourceHandle, SceneBackend, SceneResources, ShaderBackend,
+    };
+    use crate::scene_view::{NextFrame, SceneContent, SceneFrame, SceneUpdate};
     use crate::source::FontSource;
 
-    const FRAGMENT: &str = "@fragment fn main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> { return vec4<f32>(uv, 0.0, 1.0); }";
+    use super::*;
+
+    const FRAGMENT: &str = "
+@fragment
+fn main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
+    return cherenkov_linear_srgb(vec3<f32>(uv.x, shader_param(0u), shader_param(1u))).xyzz;
+}
+";
 
     struct DummyShaderHandle(ShaderId);
 
@@ -635,7 +725,7 @@ mod tests {
 
     #[test]
     fn a_shader_view_is_a_stretching_native_view() {
-        let view = ShaderPaintView::new(FRAGMENT);
+        let view = ShaderPaintView::new(FRAGMENT).expect("valid fragment shader");
         assert_eq!(
             waterui_core::NativeView::stretch_axis(&view),
             StretchAxis::Both
@@ -650,12 +740,77 @@ mod tests {
     }
 
     #[test]
+    fn new_rejects_invalid_wgsl_with_source_line() {
+        let err = ShaderPaintView::new(
+            "\n@fragment\nfn main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {\n    return vec4<f32>(uv, 0.0;\n}\n",
+        )
+        .expect_err("syntax error must fail construction");
+        match err {
+            ShaderError::Parse(diagnostic) => {
+                assert!(
+                    diagnostic.contains(":4:"),
+                    "parse diagnostic should name user source line 4, got:\n{diagnostic}"
+                );
+            }
+            other => panic!("expected ShaderError::Parse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn new_rejects_type_error_with_validation_error() {
+        let err = ShaderPaintView::new(
+            "@fragment\nfn main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {\n    return uv;\n}\n",
+        )
+        .expect_err("mismatched return type must fail validation");
+        assert!(
+            matches!(err, ShaderError::Validation(_)),
+            "expected ShaderError::Validation, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn new_rejects_missing_fragment_entry_point() {
+        let err = ShaderPaintView::new(
+            "fn helper(uv: vec2<f32>) -> vec4<f32> { return vec4<f32>(uv, 0.0, 1.0); }",
+        )
+        .expect_err("missing @fragment fn main must be rejected");
+        assert_eq!(err, ShaderError::MissingEntryPoint);
+    }
+
+    #[test]
+    fn param_and_params_reject_overflow_above_capacity() {
+        let mut view = ShaderPaintView::new(FRAGMENT).expect("valid shader");
+        view = view
+            .params([0.0_f32; SHADER_MAX_PARAMS])
+            .expect("exact capacity is accepted");
+        assert_eq!(view.param_count(), SHADER_MAX_PARAMS);
+        assert_eq!(
+            view.param(1.0_f32).unwrap_err(),
+            ShaderError::TooManyParams {
+                count: SHADER_MAX_PARAMS + 1,
+                max: SHADER_MAX_PARAMS,
+            }
+        );
+
+        let view = ShaderPaintView::new(FRAGMENT).expect("valid shader");
+        assert_eq!(
+            view.params([0.0_f32; SHADER_MAX_PARAMS + 1]).unwrap_err(),
+            ShaderError::TooManyParams {
+                count: SHADER_MAX_PARAMS + 1,
+                max: SHADER_MAX_PARAMS,
+            }
+        );
+    }
+
+    #[test]
     fn scene_content_retains_static_recordings_and_invalidates_on_signal_changes() {
         let continuous = Binding::container(false);
-        let uniforms = Binding::container(vec![1.0_f32, 2.0]);
+        let param0 = Binding::container(1.0_f32);
         let mut scene = ShaderPaintView::new(FRAGMENT)
+            .expect("valid fragment shader")
             .continuous(continuous.clone())
-            .uniforms(uniforms.clone())
+            .params([param0.computed(), nami::constant(2.0_f32).computed()])
+            .expect("within param limit")
             .into_scene_content();
 
         let wakes = Rc::new(Cell::new(0_usize));
@@ -688,7 +843,7 @@ mod tests {
             }
         );
 
-        uniforms.set(vec![3.0]);
+        param0.set(3.0);
         assert_eq!(wakes.get(), 1);
         assert_eq!(
             scene.update_scene(
@@ -731,7 +886,8 @@ mod tests {
         use core::sync::atomic::{AtomicUsize, Ordering};
 
         let continuous = Binding::container(false);
-        let uniforms = Binding::container(vec![1.0_f32, 2.0]);
+        let param0 = Binding::container(1.0_f32);
+        let param1 = Binding::container(2.0_f32);
         let shared = Arc::new(Shared::default());
         let wakes = Arc::new(AtomicUsize::new(0));
         let count = Arc::clone(&wakes);
@@ -742,31 +898,52 @@ mod tests {
             }))));
         let posting = Posting::new(
             continuous.computed(),
-            uniforms.computed(),
+            vec![param0.computed(), param1.computed()],
             Arc::clone(&shared),
         );
         assert_eq!(&shared.posted.load().params[..3], &[1.0, 2.0, 0.0]);
         assert!(!shared.posted.load().continuous);
 
-        uniforms.set(vec![3.0]);
+        param0.set(3.0);
         assert_eq!(wakes.load(Ordering::Relaxed), 1);
         continuous.set(true);
         assert_eq!(wakes.load(Ordering::Relaxed), 2);
         posting.post();
-        assert_eq!(&shared.posted.load().params[..2], &[3.0, 0.0]);
+        assert_eq!(&shared.posted.load().params[..3], &[3.0, 2.0, 0.0]);
         assert!(shared.posted.load().continuous);
     }
 
+    #[cfg(all(feature = "gpu", not(target_arch = "wasm32")))]
     #[test]
-    #[cfg_attr(debug_assertions, should_panic(expected = "at most 64 uniform floats"))]
-    fn too_many_uniforms_are_cut_to_the_capacity() {
-        let mut uniforms = vec![1.0_f32; 65];
-        uniforms[64] = 9.0;
-        let kept = clamp_uniforms(&uniforms);
-        assert_eq!(kept.len(), UNIFORM_CAPACITY);
+    fn gpu_error_scope_catches_invalid_pipeline_without_uncaptured_error() {
+        let instance = wgpu::Instance::default();
+        let Some(adapter) =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::LowPower,
+                force_fallback_adapter: false,
+                compatible_surface: None,
+                apply_limit_buckets: false,
+            }))
+            .ok()
+        else {
+            return;
+        };
+        let Ok((device, _queue)) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
+        else {
+            return;
+        };
+        device.on_uncaptured_error(Arc::new(|err| {
+            panic!("validation error escaped error scope: {err}");
+        }));
+
         assert!(
-            kept.iter()
-                .all(|param| param.to_bits() == 1.0_f32.to_bits())
+            compile_program(&device, wgpu::TextureFormat::Rgba8UnormSrgb, FRAGMENT).is_ok(),
+            "valid fragment must compile inside device scope"
+        );
+        assert!(
+            compile_program(&device, wgpu::TextureFormat::Rgba8UnormSrgb, "invalid wgsl").is_err(),
+            "invalid module must fail inside validation scope without triggering on_uncaptured_error"
         );
     }
 }

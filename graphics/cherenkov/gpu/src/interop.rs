@@ -389,21 +389,49 @@ impl TextureTarget {
     }
 }
 
-/// Compiles producer WGSL with color conversion helpers.
+/// Compiles producer WGSL with color conversion helpers, validating via `naga`
+/// and (on native targets) a `wgpu` validation error scope before returning.
 ///
-/// `cherenkov_srgb`
-/// accepts straight-alpha encoded sRGB; `cherenkov_premultiplied_srgb` accepts
-/// encoded-domain premultiplied sRGB. Both return premultiplied linear Display P3.
-/// Extended signed components are preserved.
+/// `cherenkov_srgb` accepts straight-alpha encoded sRGB;
+/// `cherenkov_premultiplied_srgb` accepts encoded-domain premultiplied sRGB.
+/// Both return premultiplied linear Display P3. Extended signed components are
+/// preserved.
+///
+/// # Errors
+/// Returns [`cherenkov::ResourceError::Shader`] when `source` fails CPU-side
+/// WGSL validation or (on native targets) fails the device's validation error
+/// scope during shader module creation.
+pub fn try_shader_module(
+    device: &wgpu::Device,
+    label: &str,
+    source: &str,
+) -> Result<wgpu::ShaderModule, cherenkov::ResourceError> {
+    let composed = [source, filtrate_core::space::WGSL, cherenkov::wgsl::COLOR].join("\n");
+    let _ = crate::render::shaders::validate_wgsl(&composed)?;
+    let wgsl = cherenkov::wgsl::producer_module(source);
+    #[cfg(not(target_arch = "wasm32"))]
+    let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some(label),
+        source: wgpu::ShaderSource::Wgsl(wgsl.into()),
+    });
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(error) = pollster::block_on(scope.pop()) {
+        return Err(cherenkov::ResourceError::Shader(error.to_string()));
+    }
+    Ok(module)
+}
+
+/// Compiles static producer WGSL with color conversion helpers.
+///
+/// Prefer [`try_shader_module`] when `source` is fallible or untrusted.
 ///
 /// # Panics
-/// Invalid WGSL is reported through wgpu's configured error handler.
+/// Panics if `source` fails [`try_shader_module`] validation.
 #[must_use]
 pub fn shader_module(device: &wgpu::Device, label: &str, source: &str) -> wgpu::ShaderModule {
-    device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some(label),
-        source: wgpu::ShaderSource::Wgsl(cherenkov::wgsl::producer_module(source).into()),
-    })
+    try_shader_module(device, label, source)
+        .unwrap_or_else(|error| panic!("invalid shader module `{label}`: {error}"))
 }
 
 /// A retained external frame the engine composites in place.

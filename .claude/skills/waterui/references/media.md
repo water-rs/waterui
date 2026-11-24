@@ -327,11 +327,13 @@ use waterui::graphics::shader;
 shader!("starfield.wgsl").size(400.0, 500.0)   // static fragment shader from the .wgsl file beside this source file, no build.rs, no wgpu dep
 ```
 
-`shader!` reads the file next to the calling source file (`include_str!`) and expands to a
-`ShaderPaintView` that fills the space it is given. It renders once per change of its
-inputs; `.continuous(signal)` (a `bool`, `.continuous(true)` for constant) re-renders every
-frame so `uniforms.time` advances, and `.uniforms(signal)` of a `Vec<f32>` (up to 64
-floats) feeds `params`. The WGSL writes `@fragment fn main(@location(0) uv: vec2<f32>) ->
+`shader!` validates the `.wgsl` file next to the calling source file (`include_str!`) at compile
+time and expands to a `ShaderPaintView` that fills the space it is given; `ShaderPaintView::new(src)`
+validates runtime strings and returns `Result<ShaderPaintView, ShaderError>`. It renders once
+per change of its inputs; `.continuous(signal)` (a `bool`, `.continuous(true)` for constant)
+re-renders every frame so `uniforms.time` advances, and `.param(signal)` / `.params([...])`
+(up to 64 scalar `f32` signals, returning `Result<_, ShaderError>`) feeds `shader_param(index)`
+/ `params` (`array<vec4<f32>, 16>`). The WGSL writes `@fragment fn main(@location(0) uv: vec2<f32>) ->
 @location(0) vec4<f32>` (`uv` runs 0..1 from the top-left) against the prelude's
 `uniforms.time`, `uniforms.resolution` and `params` (`array<vec4<f32>, 16>`), returning
 premultiplied linear Display P3; `cherenkov_linear_srgb` converts an sRGB colour. For

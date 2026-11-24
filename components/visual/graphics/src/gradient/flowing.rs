@@ -45,6 +45,7 @@ impl FlowingGradient {
 impl View for FlowingGradient {
     fn body(self, _env: &Environment) -> impl View {
         ShaderPaintView::new(include_str!("flowing.wgsl"))
+            .expect("built-in flowing gradient WGSL is valid")
             .continuous(true)
             .offered_label(self.label)
             .offered_value(self.value)
