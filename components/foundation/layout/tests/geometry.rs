@@ -188,11 +188,9 @@ fn show(ui: UiBuilder<Styled<TestStyle>>, snackbar: Snackbar) -> (OffscreenApp, 
         max_width: MAX_WIDTH,
         ..SnackbarTheme::default()
     };
-    let mut env = Environment::new();
-    env.insert(manager.clone());
-    env.insert(theme);
     let mut app = ui
-        .environment(env)
+        .with(manager.clone())
+        .with(theme)
         .mount_offscreen(move || zstack((text("app content"), overlay.clone())));
     manager.show(snackbar);
     app.settle();

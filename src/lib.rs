@@ -364,6 +364,18 @@ pub fn install_application_resources(env: &mut Environment) {
     let _ = env;
 }
 
+/// Plugin that installs standalone application resources (`ResourceContext` and
+/// default media caches) into an environment without overwriting existing entries.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ApplicationResources;
+
+impl Plugin for ApplicationResources {
+    fn install(self, env: &mut Environment) {
+        install_application_resources(env);
+    }
+}
+
 /// Configures a freshly-created environment with compile-time discovered app plugins.
 ///
 /// This currently installs the runtime translation catalog generated from the caller's
@@ -374,7 +386,7 @@ pub fn install_application_resources(env: &mut Environment) {
 macro_rules! configure_environment {
     ($env:expr) => {{
         let mut __waterui_env = $env;
-        $crate::install_application_resources(&mut __waterui_env);
+        $crate::Plugin::install($crate::ApplicationResources, &mut __waterui_env);
         $crate::Plugin::install($crate::catalog!(), &mut __waterui_env);
         __waterui_env
     }};
