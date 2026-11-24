@@ -46,7 +46,7 @@ fn main() -> impl View {
                 vstack((
                     text("User Profile").size(18.0f32),
                     form(&profile),
-                    text!("Name: {name}", name = proj.name).bold(),
+                    text!("Name: {name}", name = proj.name).bold(true),
                     text!("Email: {email}", email = proj.email),
                 ))
             },
