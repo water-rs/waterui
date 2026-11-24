@@ -16,13 +16,14 @@ use cocoa_ui::view;
 use cocoa_ui::{PlatformView, Rect};
 use waterui::Signal;
 use waterui::metadata::secure::{DynamicRange as WaterDynamicRange, DynamicRangeMetadata};
-use waterui_core::Metadata;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
     ViewDimensions,
 };
+use waterui_core::{Metadata, contract_violation};
 
 use crate::contract::{Held, Mounted, NativeLeaf, RenderContext};
+use crate::proposal;
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::HostView;
 #[cfg(target_os = "ios")]
@@ -86,7 +87,7 @@ fn to_cocoa(range: WaterDynamicRange) -> DynamicRange {
         WaterDynamicRange::Standard => DynamicRange::Standard,
         WaterDynamicRange::High => DynamicRange::High,
         other => {
-            tracing::error!("unknown DynamicRange variant: {other:?}; falling back to High");
+            contract_violation!("unknown DynamicRange variant: {other:?}; falling back to High");
             DynamicRange::High
         }
     }
@@ -129,10 +130,10 @@ pub fn realize_dynamic_range_metadata(
 
     // `setPlacementProposal`: the proposal selected for this wrapper is the
     // proposal its content was negotiated with.
-    let sink_guard = crate::proposal::register_sink(host_view, {
+    let sink_guard = proposal::register_sink(host_view, {
         let state = Rc::clone(&state);
         move |selected| {
-            crate::proposal::deliver(state.child.view(), selected);
+            proposal::deliver(state.child.view(), selected);
         }
     });
 

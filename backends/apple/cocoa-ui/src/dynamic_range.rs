@@ -118,11 +118,12 @@ fn sublayers(layer: &CALayer) -> Vec<Retained<CALayer>> {
 
 /// Applies `mode` to `layer` and recursively to its sublayers.
 ///
-/// A sublayer carrying its own tag keeps that local mode and propagates it
-/// to its children; this preserves explicit nested overrides.
+/// A sublayer carrying its own explicit tag (from [`apply_to_view`]) keeps
+/// that local mode and propagates it to its children; untagged sublayers
+/// inherit `mode` without being tagged, so later parent updates propagate
+/// through them.
 pub fn apply_to_layer(mode: DynamicRange, layer: &CALayer) {
     let local_mode = layer_tag(layer).unwrap_or(mode);
-    set_layer_tag(layer, local_mode);
     set_preferred(layer, local_mode);
     for sublayer in sublayers(layer) {
         apply_to_layer(local_mode, &sublayer);
