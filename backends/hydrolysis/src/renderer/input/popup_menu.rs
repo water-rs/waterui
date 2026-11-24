@@ -21,6 +21,8 @@ use core::time::Duration;
 use nami::Signal;
 #[cfg(feature = "date-picker")]
 use waterui::form::Calendar;
+#[cfg(feature = "menu")]
+use waterui::theme::color::DisabledForeground;
 #[cfg(any(feature = "picker", feature = "color-picker", feature = "date-picker"))]
 use waterui_controls::button;
 #[cfg(any(feature = "menu", feature = "color-picker"))]
@@ -35,16 +37,23 @@ use waterui_core::id::Id;
 use waterui_core::metadata::Metadata;
 #[cfg(feature = "menu")]
 use waterui_core::metadata::MetadataKey;
+#[cfg(feature = "menu")]
+use waterui_core::{OneOf2, OneOf3};
 #[cfg(any(feature = "menu", feature = "color-picker"))]
 use waterui_core::{SignalExt as _, contract_violation};
 #[cfg(feature = "date-picker")]
 use waterui_form::picker::date::{Date, DatePickerType, DateTime};
+#[cfg(feature = "menu")]
+use waterui_layout::alignment::Leading;
 #[cfg(any(feature = "menu", feature = "color-picker"))]
 use waterui_layout::{frame::Frame, padding::EdgeInsets};
 #[cfg(feature = "menu")]
-use waterui_layout::{spacer::spacer, stack::hstack};
+use waterui_layout::{
+    spacer::spacer,
+    stack::{hstack, vstack},
+};
 #[cfg(feature = "menu")]
-use waterui_text::font::Font;
+use waterui_text::{font::Font, text as text_view};
 
 /// The theme's [`MenuLook`] for a menu laid out in `env`'s direction: the one
 /// look every menu presentation — the picker popup, the text context menu
@@ -508,10 +517,10 @@ pub fn popup_menu_size(
     (width, height)
 }
 
-/// Typed visual label for a popup-menu command row: `Label::new` keeps
+/// Typed visual label for a popup-menu command row: `SemanticLabel::new` keeps
 /// `semantic_text` for accessibility while the custom content fills the row's
-/// label slot and aligns it leading so plain and subtitled rows share one
-/// leading edge, without erasing to `ErasedLabel` / `AnyView`.
+/// full inner width, aligning the label leading and pinning any trailing
+/// shortcut hint to the trailing inset inside the same button hit/hover region.
 #[expect(
     clippy::option_if_let_else,
     reason = "match mirrors the OneOf2 branches more clearly than map_or_else"
@@ -521,22 +530,39 @@ fn popup_menu_command_label(
     semantic_text: Text,
     styled_label: StyledStr,
     subtitle: Option<Str>,
+    shortcut: Option<(Shortcut, bool, Rc<dyn WidgetTheme>)>,
 ) -> SemanticLabel<impl waterui_controls::label::LabelKind> {
     SemanticLabel::new(semantic_text, move || {
         let leading = match subtitle.clone() {
-            Some(subtitle) => waterui_core::OneOf2::A(
-                waterui_layout::stack::vstack((
+            Some(subtitle) => OneOf2::A(
+                vstack((
                     Text::new(styled_label.clone()),
-                    waterui_text::text(subtitle).caption().muted(),
+                    text_view(subtitle).caption().muted(),
                 ))
                 .alignment(HorizontalAlignment::Leading)
                 .spacing(0.0),
             ),
-            None => waterui_core::OneOf2::B(Text::new(styled_label.clone())),
+            None => OneOf2::B(Text::new(styled_label.clone())),
         };
-        Frame::new(leading)
-            .alignment(waterui_layout::alignment::Leading)
-            .max_width(f32::INFINITY)
+        match shortcut.clone() {
+            Some((shortcut, disabled, theme)) => OneOf2::A(
+                hstack((
+                    leading,
+                    spacer(),
+                    ShortcutHint {
+                        shortcut,
+                        disabled,
+                        theme,
+                    },
+                ))
+                .spacing(0.0),
+            ),
+            None => OneOf2::B(
+                Frame::new(leading)
+                    .alignment(Leading)
+                    .max_width(f32::INFINITY),
+            ),
+        }
     })
 }
 
@@ -548,7 +574,7 @@ fn popup_menu_submenu_label(
 ) -> SemanticLabel<impl waterui_controls::label::LabelKind> {
     SemanticLabel::new(semantic_text, move || {
         Frame::new(Text::new(styled_label.clone()))
-            .alignment(waterui_layout::alignment::Leading)
+            .alignment(Leading)
             .max_width(f32::INFINITY)
     })
 }
@@ -562,10 +588,11 @@ fn popup_menu_command_row(
     semantic_text: Text,
     styled_label: StyledStr,
     subtitle: Option<Str>,
+    shortcut: Option<(Shortcut, bool, Rc<dyn WidgetTheme>)>,
     action: SharedAction<()>,
     disabled: bool,
 ) -> impl View + use<> {
-    let label = popup_menu_command_label(semantic_text, styled_label, subtitle);
+    let label = popup_menu_command_label(semantic_text, styled_label, subtitle, shortcut);
     let button = Button::new(label).style(ButtonStyle::Borderless).action(
         move |group: PopupMenuStateGroup, env: Environment| {
             if disabled {
@@ -576,11 +603,9 @@ fn popup_menu_command_row(
         },
     );
     if disabled {
-        waterui_core::OneOf2::A(
-            button.foreground(Color::new(waterui::theme::color::DisabledForeground)),
-        )
+        OneOf2::A(button.foreground(Color::new(DisabledForeground)))
     } else {
-        waterui_core::OneOf2::B(button)
+        OneOf2::B(button)
     }
 }
 
@@ -715,41 +740,15 @@ impl<E: crate::text::TextEngine> View for PopupMenuContent<E> {
                         semantic_text,
                         styled_label,
                         subtitle,
+                        shortcut.map(|shortcut| (shortcut, disabled, Rc::clone(&theme))),
                         action,
                         disabled,
                     );
-                    // The chord's trailing hint is a sibling pinned to the row's
-                    // trailing inset by a spacer, styled by the shared builder
-                    // (water-rs/hydrolysis#247).
-                    let row_content = match shortcut {
-                        Some(shortcut) => waterui_core::OneOf2::A(
-                            hstack((
-                                button,
-                                spacer(),
-                                ShortcutHint {
-                                    shortcut,
-                                    disabled,
-                                    theme: theme.clone(),
-                                }
-                                .padding_with(EdgeInsets::new(
-                                    0.0,
-                                    0.0,
-                                    0.0,
-                                    crate::num_cast::f64_as_f32(metrics.horizontal_padding),
-                                )),
-                            ))
-                            .spacing(0.0),
-                        ),
-                        None => waterui_core::OneOf2::B(button),
-                    };
-                    // A leading-aligned frame puts the content-width row at the
-                    // menu's leading edge, so every row's label shares one leading
-                    // x regardless of kind.
-                    rows.push(waterui_core::OneOf3::A(
-                        Frame::new(row_content)
-                            .height(crate::num_cast::f64_as_f32(row_height))
+                    rows.push(OneOf3::A(
+                        Frame::new(button)
+                            .height(f64_as_f32(row_height))
                             .max_width(f32::INFINITY)
-                            .alignment(waterui_layout::alignment::Leading),
+                            .alignment(Leading),
                     ));
                 }
                 PopupMenuNode::Divider => rows.push(waterui_core::OneOf3::B(
@@ -960,6 +959,7 @@ impl<E: crate::text::TextEngine> View for SemanticPopupMenuContent<E> {
                         semantic_text,
                         styled_label,
                         subtitle,
+                        None,
                         action,
                         disabled.snapshot(),
                     );
