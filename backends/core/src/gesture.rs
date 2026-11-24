@@ -2263,7 +2263,7 @@ mod tests {
                     let event = env
                         .extract::<DragEvent>()
                         .expect("drag action missing DragEvent");
-                    *drag.borrow_mut() = Some(event.clone());
+                    *drag.borrow_mut() = Some(event);
                 }),
                 0,
                 0,
