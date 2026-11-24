@@ -11,26 +11,44 @@ description: >
 inputs:
   into:
     description: >-
-      Directories that receive a copy of `d3d10warp.dll`, one per line,
-      created when missing. D3D12 resolves `d3d10warp.dll` through the
+      Explicit directories that receive a copy of `d3d10warp.dll`, one per
+      line, created when missing. D3D12 resolves `d3d10warp.dll` through the
       standard DLL search, where the executable's own directory wins over
       System32 — so the DLL must sit beside each executable that creates
-      a wgpu device. For nextest test binaries that is `deps/` of the
-      cargo profile the job builds (`target/debug/deps` unless the job
-      passes `--release` or `--cargo-profile`); cargo never deletes
-      unknown files there, so one copy placed before the build covers
-      every test binary written afterwards. Run this action after any step
-      that restores or cleans the target directory: a `Swatinem/rust-cache`
-      restore that is not a full match deletes every file directly in
-      `target/debug` and every file in `deps` last written over a week
-      ago, which the staged DLL is, since it keeps the package's timestamp.
-    required: true
+      a wgpu device. Useful for standalone binary directories (`target/debug`
+      for `CARGO_BIN_EXE_*`) or custom directory lists; for Cargo 1.100+
+      test binaries (`<profile>/build/<pkg>/<hash>/out/`), compile with
+      `--no-run` first and pass `profile-dirs` instead. Run this action
+      after any step that restores or cleans the target directory: a
+      `Swatinem/rust-cache` restore that is not a full match deletes every
+      file directly in `target/debug` and every file in `deps` last written
+      over a week ago, which the staged DLL is, since it keeps the
+      package's timestamp.
+    required: false
+    default: ""
+  profile-dirs:
+    description: >-
+      Cargo profile directories (for example `target/debug`), one per line,
+      whose test binaries have already been compiled (`cargo nextest run
+      --no-run` or `cargo test --no-run`). Stages `d3d10warp.dll` into each
+      profile directory itself (for `CARGO_BIN_EXE_*` binaries), its `deps`
+      subdirectory when present, and every `build/<pkg>/<hash>/out`
+      subdirectory holding a compiled executable other than a Cargo build
+      script. Fails if a profile directory is missing or holds no compiled
+      test/binary executables.
+    required: false
+    default: ""
   cache:
     description: >-
       Whether the extracted DLL is restored from and saves to an Actions
       cache. "false" for e2e lanes, which keep no Actions cache.
     required: false
     default: "true"
+
+outputs:
+  dll-path:
+    description: Full path to the staged NuGet `d3d10warp.dll` binary.
+    value: ${{ steps.stage.outputs.dll-path }}
 
 runs:
   using: composite
@@ -70,14 +88,73 @@ runs:
     # file version records in the log which WARP the tests actually ran
     # on.
     - name: Stage d3d10warp.dll next to the executables
+      id: stage
       shell: pwsh
       env:
         INTO: ${{ inputs.into }}
+        PROFILE_DIRS: ${{ inputs.profile-dirs }}
       run: |
         $ErrorActionPreference = 'Stop'
-        foreach ($dir in ($env:INTO -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ })) {
+        $sourceDll = (Resolve-Path 'warp\d3d10warp.dll').Path
+        Add-Content -Path $env:GITHUB_OUTPUT -Value "dll-path=$sourceDll"
+
+        $targets = New-Object 'System.Collections.Generic.List[string]'
+        $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+        $addTarget = {
+          param([string]$path)
+          $full = [System.IO.Path]::GetFullPath($path)
+          if ($seen.Add($full)) {
+            $targets.Add($full)
+          }
+        }
+
+        foreach ($raw in ($env:INTO -split "`n")) {
+          $dir = $raw.Trim()
+          if (-not $dir) { continue }
           New-Item -ItemType Directory -Force $dir | Out-Null
+          & $addTarget $dir
+        }
+
+        foreach ($raw in ($env:PROFILE_DIRS -split "`n")) {
+          $profileDir = $raw.Trim()
+          if (-not $profileDir) { continue }
+          if (-not (Test-Path -LiteralPath $profileDir -PathType Container)) {
+            throw "Cargo profile directory '$profileDir' does not exist; build tests with --no-run before calling install-warp."
+          }
+
+          & $addTarget $profileDir
+          $depsDir = Join-Path $profileDir 'deps'
+          $depsExes = @()
+          if (Test-Path -LiteralPath $depsDir -PathType Container) {
+            & $addTarget $depsDir
+            $depsExes = @(Get-ChildItem -Path (Join-Path $depsDir '*.exe') -File -ErrorAction SilentlyContinue)
+          }
+
+          $buildRoot = Join-Path $profileDir 'build'
+          $testOutDirs = @()
+          if (Test-Path -LiteralPath $buildRoot -PathType Container) {
+            $testOutDirs = @(
+              Get-ChildItem -Path (Join-Path $buildRoot '*\*\out\*.exe') -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -notin @('build_script_build.exe', 'build-script-build.exe') } |
+                Select-Object -ExpandProperty DirectoryName -Unique
+            )
+          }
+
+          if ($testOutDirs.Count -eq 0 -and $depsExes.Count -eq 0) {
+            throw "No built test or binary executables found under '$buildRoot\*\*\out' or '$depsDir'; build tests with --no-run before calling install-warp."
+          }
+
+          foreach ($outDir in $testOutDirs) {
+            & $addTarget $outDir
+          }
+        }
+
+        if ($targets.Count -eq 0) {
+          throw 'install-warp requires at least one directory in `into` or `profile-dirs`.'
+        }
+
+        foreach ($dir in $targets) {
           $dest = Join-Path $dir 'd3d10warp.dll'
-          Copy-Item warp\d3d10warp.dll $dest -Force
+          Copy-Item $sourceDll $dest -Force
           '{0}: {1}' -f $dest, (Get-Item $dest).VersionInfo.FileVersion
         }
