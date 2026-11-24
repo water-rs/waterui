@@ -2651,11 +2651,11 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// labels still surface their semantic text in the accessibility tree.
     #[cfg(feature = "accessibility")]
     pub(crate) fn accessibility_label_from_label<S>(
+        &mut self,
         label: &waterui_controls::label::ControlLabel<S>,
         _env: &Environment,
     ) -> Option<String> {
-        use waterui_core::Signal;
-        let plain = label.accessibility_label().snapshot().to_semantic();
+        let plain = self.read_signal(&label.accessibility_label()).to_semantic();
         let trimmed = plain.as_str().trim();
         if trimmed.is_empty() {
             None
