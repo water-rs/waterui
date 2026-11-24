@@ -1,7 +1,4 @@
 {{ begin }}
-{%- for package in packages %}
--keep class {{ package }}.** { *; }
-{%- endfor %}
 {%- for (class, members) in classes %}
 {%- if members.is_empty() %}
 -keep class {{ class }}

@@ -189,26 +189,17 @@ impl KeepRules {
 struct KeepBlockTemplate<'a> {
     begin: &'a str,
     end: &'a str,
-    /// Packages of staged Kotlin sources, each kept whole.
-    packages: &'a BTreeSet<String>,
     /// Declared classes and the members each keeps.
     classes: &'a BTreeMap<JavaClass, BTreeSet<KeepMember>>,
 }
 
 impl KeepRules {
-    /// The managed keep block between `begin` and `end`: the packages of
-    /// staged Kotlin sources, kept whole, then the declared classes and
-    /// members.
-    pub(super) fn block(
-        &self,
-        begin: &str,
-        end: &str,
-        packages: &BTreeSet<String>,
-    ) -> askama::Result<String> {
+    /// The managed keep block between `begin` and `end` containing the declared
+    /// classes and members.
+    pub(super) fn block(&self, begin: &str, end: &str) -> askama::Result<String> {
         KeepBlockTemplate {
             begin,
             end,
-            packages,
             classes: &self.classes,
         }
         .render()
@@ -300,7 +291,7 @@ mod tests {
     }
 
     #[test]
-    fn the_block_renders_package_and_member_keeps() {
+    fn the_block_renders_declared_keeps() {
         let mut rules = KeepRules::default();
         rules.merge(vec![
             KeepRule {
@@ -314,12 +305,10 @@ mod tests {
                 members: Vec::new(),
             },
         ]);
-        let packages = BTreeSet::from(["waterkit.haptic".to_owned()]);
-        let rendered = rules.block("# begin", "# end", &packages).expect("render");
+        let rendered = rules.block("# begin", "# end").expect("render");
         assert_eq!(
             rendered,
             "# begin\n\
-             -keep class waterkit.haptic.** { *; }\n\
              -keep class com.example.Entry {\n    public static void start(android.content.Context);\n}\n\
              -keep class com.example.Marker\n\
              # end"
