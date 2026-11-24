@@ -1997,9 +1997,8 @@ pub fn ui_test(args: TokenStream, input: TokenStream) -> TokenStream {
     // rather than from inside `waterui-testing`.
     let mut builder = quote! {
         #testing_path::ui()
-            .environment(
-                #waterui_path::configure_environment!(#waterui_path::env::Environment::new())
-            )
+            .install(#waterui_path::ApplicationResources)
+            .install(#waterui_path::catalog!())
     };
     if let Some((width, height)) = &test_args.viewport {
         builder = quote! { #builder.viewport(#width, #height) };
@@ -2288,9 +2287,8 @@ pub fn bench(args: TokenStream, input: TokenStream) -> TokenStream {
 
     let mut builder = quote! {
         #testing_path::ui()
-            .environment(
-                #waterui_path::configure_environment!(#waterui_path::env::Environment::new())
-            )
+            .install(#waterui_path::ApplicationResources)
+            .install(#waterui_path::catalog!())
     };
     if let Some((width, height)) = &bench_args.viewport {
         builder = quote! { #builder.viewport(#width, #height) };
