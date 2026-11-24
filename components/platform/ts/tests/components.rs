@@ -2097,3 +2097,109 @@ fn ts_malformed_localized_text_object_is_refused() {
         "non-object args must be rejected: {bad_args}"
     );
 }
+
+#[test]
+fn ts_a11y_label_and_value_respect_verbatim_and_localized_interpolation() {
+    let catalog = TranslationCatalog::new()
+        .add_toml(
+            locales::EN,
+            r#"
+"secret_key" = "WRONG_LABEL"
+"secret_val" = "WRONG_VALUE"
+"Hello, {name}" = "Hello, {name}!"
+"Order {id}" = "Order #{id}"
+"#,
+        )
+        .expect("en catalog parses")
+        .add_toml(
+            locales::ZH_CN,
+            r#"
+"Hello, {name}" = "你好，{name}"
+"Order {id}" = "订单 #{id}"
+"#,
+        )
+        .expect("zh-CN catalog parses")
+        .add_toml(
+            locales::JA,
+            r#"
+"Hello, {name}" = "こんにちは、{name}"
+"Order {id}" = "注文 #{id}"
+"#,
+        )
+        .expect("ja catalog parses")
+        .add_toml(
+            locales::KO,
+            r#"
+"Hello, {name}" = "안녕하세요, {name}"
+"Order {id}" = "주문 #{id}"
+"#,
+        )
+        .expect("ko catalog parses");
+
+    let locale: Binding<Locale> = Binding::container(locales::EN);
+    let mounted = Module::mount(
+        r#"
+        const [name, setName] = waterui.createSignal("Ada");
+        const [orderId, setOrderId] = waterui.createSignal(7);
+        globalThis.__setName = setName;
+        globalThis.__setOrderId = setOrderId;
+        wateruiRuntime.installRuntimeGlobal({
+          main: () => waterui.jsx("VStack", {
+            children: [
+              waterui.jsx("Text", {
+                a11yLabel: "secret_key",
+                a11yValue: "secret_val",
+                children: "verbatim",
+              }),
+              waterui.jsx("Text", {
+                a11yLabel: waterui.t("Hello, {name}", { name }),
+                a11yValue: waterui.t("Order {id}", { id: orderId }),
+                children: "localized",
+              }),
+            ],
+          }),
+        });
+        "#,
+    );
+
+    let mut app = mounted.app_with_locale(catalog, locale.clone());
+    app.query().label("WRONG_LABEL").assert_not_exists();
+    app.query().value("WRONG_VALUE").assert_not_exists();
+    app.query()
+        .label("secret_key")
+        .value("secret_val")
+        .assert_exists();
+    app.query()
+        .label("Hello, Ada!")
+        .value("Order #7")
+        .assert_exists();
+
+    mounted.eval(r#"globalThis.__setName("Grace")"#);
+    mounted.eval("globalThis.__setOrderId(42)");
+    app.settle();
+    app.query()
+        .label("Hello, Grace!")
+        .value("Order #42")
+        .assert_exists();
+
+    locale.set(locales::ZH_CN);
+    app.settle();
+    app.query()
+        .label("你好，Grace")
+        .value("订单 #42")
+        .assert_exists();
+
+    locale.set(locales::JA);
+    app.settle();
+    app.query()
+        .label("こんにちは、Grace")
+        .value("注文 #42")
+        .assert_exists();
+
+    locale.set(locales::KO);
+    app.settle();
+    app.query()
+        .label("안녕하세요, Grace")
+        .value("주문 #42")
+        .assert_exists();
+}
