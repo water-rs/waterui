@@ -1018,7 +1018,7 @@ async fn fetch_and_decode_streaming(
             .and_then(|value| value.to_str().ok())
             .map(ToOwned::to_owned);
 
-        let mut body = response.into_body();
+        let mut body = response.into_body().into_data_stream();
         let mut decoder = Image::stream_decoder(content_type.as_deref());
 
         while let Some(chunk) = body.next().await {
