@@ -639,9 +639,10 @@ pub mod skill_block_16 {
             env.insert(client); // in place
         }
         {
-            let mut env = Environment::new();
+            let env = Environment::new();
             let client = glue_client();
-            env.with(client); // in place, chains
+            let env = env.with(client); // consuming builder, chains
+            let _ = env;
         }
         {
             let env = Environment::new();

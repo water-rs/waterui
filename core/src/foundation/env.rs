@@ -279,8 +279,10 @@ impl Environment {
 
     /// Adds a value to the environment and returns the modified environment.
     ///
-    /// This is a fluent interface for chaining multiple additions.
-    pub fn with<T: 'static>(&mut self, value: T) -> &mut Self {
+    /// This is a consuming builder for chaining multiple additions. Use
+    /// [`insert`](Self::insert) to mutate an environment in place.
+    #[must_use]
+    pub fn with<T: 'static>(mut self, value: T) -> Self {
         self.insert(value);
         self
     }
@@ -609,5 +611,13 @@ mod tests {
         assert_eq!(env.get::<i32>(), Some(&3_i32));
         assert_eq!(env.get::<bool>(), Some(&true));
         assert_eq!(env.get::<u8>(), Some(&9_u8));
+    }
+
+    #[test]
+    fn with_consumes_and_chains_on_a_temporary() {
+        let env = Environment::new().with(String::from("hello")).with(42_u32);
+
+        assert_eq!(env.get::<String>(), Some(&String::from("hello")));
+        assert_eq!(env.get::<u32>(), Some(&42_u32));
     }
 }

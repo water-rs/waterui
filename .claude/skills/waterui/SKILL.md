@@ -460,7 +460,7 @@ impl_extractor!(ApiClient);                   // makes it a handler/`use_env` pa
 
 // Seeding, usually in `app(env)`:
 env.insert(client);                            // in place
-env.with(client);                              // in place, chains
+let env = env.with(client);                    // consuming builder, chains
 let scoped = env.extending(client);            // non-mutating overlay
 with(subtree_view, LayoutDirection::RightToLeft)   // free fn: scope a value to one subtree
 
