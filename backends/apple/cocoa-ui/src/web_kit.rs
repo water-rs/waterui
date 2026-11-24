@@ -25,6 +25,9 @@
 //! boundary.
 
 use std::cell::RefCell;
+use std::ffi::c_void;
+use std::fmt;
+use std::ptr::null_mut;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -169,6 +172,11 @@ impl WebView {
         #[unsafe(method(URL))]
         #[unsafe(method_family = none)]
         fn url(&self) -> Option<Retained<NSURL>>;
+
+        /// The current page title.
+        #[unsafe(method(title))]
+        #[unsafe(method_family = none)]
+        fn title(&self) -> Option<Retained<NSString>>;
 
         /// The navigation delegate; weakly held by `WebKit`, so the owner
         /// retains the object it installs.
@@ -356,6 +364,10 @@ pub enum Event {
     ProvisionalFailed(String),
     /// `estimatedProgress` changed.
     Progress(f64),
+    /// `title` changed.
+    TitleChanged(String),
+    /// `URL` changed.
+    UrlChanged(String),
     /// `createWebViewWith` arrived with no target frame: the caller loads
     /// the request itself.
     OpenRequest(Retained<NSURLRequest>),
@@ -608,19 +620,20 @@ impl core::fmt::Display for CookieError {
 
 impl std::error::Error for CookieError {}
 
-/// The `WebView`'s `estimatedProgress` key path.
-fn estimated_progress_key() -> Retained<NSString> {
-    NSString::from_str("estimatedProgress")
+/// The `WebView` key paths observed for reactive page state.
+const OBSERVED_STATE_KEYS: [&str; 3] = ["estimatedProgress", "title", "URL"];
+
+/// Callback invoked when KVO observes a reactive page-state property change.
+type StateHandler = Rc<dyn Fn(&WebView, Event)>;
+
+/// Ivars for the `StateObserver` class.
+struct StateObserverIvars {
+    handler: StateHandler,
 }
 
-/// Ivars for the `ProgressObserver` class.
-struct ProgressIvars {
-    handler: Rc<dyn Fn(f64)>,
-}
-
-impl std::fmt::Debug for ProgressIvars {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ProgressIvars").finish()
+impl fmt::Debug for StateObserverIvars {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StateObserverIvars").finish()
     }
 }
 
@@ -628,16 +641,16 @@ define_class!(
     // SAFETY: NSObject has no subclassing requirements.
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
-    #[name = "CocoaUIWebViewProgressObserver"]
-    #[ivars = ProgressIvars]
+    #[name = "CocoaUIWebViewStateObserver"]
+    #[ivars = StateObserverIvars]
     #[derive(Debug)]
-    /// KVO target for `estimatedProgress`.
-    struct ProgressObserver;
+    /// KVO target for `estimatedProgress`, `title`, and `URL`.
+    struct StateObserver;
 
     // SAFETY: `NSObjectProtocol` asks nothing of an `NSObject` subclass.
-    unsafe impl NSObjectProtocol for ProgressObserver {}
+    unsafe impl NSObjectProtocol for StateObserver {}
 
-    impl ProgressObserver {
+    impl StateObserver {
         // SAFETY: overrides `NSObject`'s `observeValueForKeyPath`, whose
         // signature the KVO contract fixes.
         #[unsafe(method(observeValueForKeyPath:ofObject:change:context:))]
@@ -646,54 +659,71 @@ define_class!(
             key_path: Option<&NSString>,
             object: Option<&AnyObject>,
             _change: Option<&NSDictionary>,
-            _context: *mut std::ffi::c_void,
+            _context: *mut c_void,
         ) {
-            if !key_path.is_some_and(|key| key.isEqualToString(&estimated_progress_key())) {
+            let Some(key_path) = key_path else {
                 return;
-            }
+            };
             let Some(view) = object.and_then(AnyObject::downcast_ref::<WebView>) else {
                 return;
             };
-            let progress = view.estimated_progress();
+            let event = match key_path.to_string().as_str() {
+                "estimatedProgress" => Event::Progress(view.estimated_progress()),
+                "title" => Event::TitleChanged(
+                    view.title().map_or_default(|title| title.to_string()),
+                ),
+                "URL" => {
+                    let Some(url) = view
+                        .url()
+                        .and_then(|url| url.absoluteString())
+                        .map(|text| text.to_string())
+                    else {
+                        return;
+                    };
+                    Event::UrlChanged(url)
+                }
+                _ => return,
+            };
             let handler = self.ivars().handler.clone();
-            guarded("web view progress observer", || handler(progress));
+            guarded("web view state observer", || handler(view, event));
         }
     }
 );
 
-impl ProgressObserver {
-    fn new(mtm: MainThreadMarker, handler: Rc<dyn Fn(f64)>) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(ProgressIvars { handler });
+impl StateObserver {
+    fn new(mtm: MainThreadMarker, handler: StateHandler) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(StateObserverIvars { handler });
         // SAFETY: `this` is a live, allocated `NSObject` subclass.
         unsafe { msg_send![super(this), init] }
     }
 }
 
-/// A progress observer registration; dropping it removes the KVO pair.
+/// KVO registrations for reactive page state; dropping removes all key paths.
 #[derive(Debug)]
-struct ProgressToken {
+struct StateToken {
     view: Retained<WebView>,
-    observer: Retained<ProgressObserver>,
+    observer: Retained<StateObserver>,
 }
 
-impl ProgressToken {
-    /// Registers `handler` for the view's `estimatedProgress`.
-    fn register(view: &Retained<WebView>, handler: Rc<dyn Fn(f64)>) -> Self {
+impl StateToken {
+    /// Registers `handler` for `estimatedProgress`, `title`, and `URL`.
+    fn register(view: &Retained<WebView>, handler: StateHandler) -> Self {
         use objc2_foundation::{
             NSKeyValueObservingOptions, NSObjectNSKeyValueObserverRegistration,
         };
         let mtm = MainThreadMarker::from(&**view);
-        let observer = ProgressObserver::new(mtm, handler);
-        // SAFETY: `observer` answers `observeValueForKeyPath`; the token
-        // removes the registration on drop while both parties are retained.
-        // SAFETY: see the module safety note.
-        unsafe {
-            view.addObserver_forKeyPath_options_context(
-                &observer,
-                &estimated_progress_key(),
-                NSKeyValueObservingOptions::New,
-                std::ptr::null_mut(),
-            );
+        let observer = StateObserver::new(mtm, handler);
+        for key in OBSERVED_STATE_KEYS {
+            // SAFETY: `observer` answers `observeValueForKeyPath`; the token
+            // removes every registration on drop while both parties are retained.
+            unsafe {
+                view.addObserver_forKeyPath_options_context(
+                    &observer,
+                    &NSString::from_str(key),
+                    NSKeyValueObservingOptions::New,
+                    null_mut(),
+                );
+            }
         }
         Self {
             view: view.clone(),
@@ -702,15 +732,16 @@ impl ProgressToken {
     }
 }
 
-impl Drop for ProgressToken {
+impl Drop for StateToken {
     fn drop(&mut self) {
         use objc2_foundation::NSObjectNSKeyValueObserverRegistration;
-        // SAFETY: paired with the `addObserver` in `register`; both parties
-        // are still retained here.
-        // SAFETY: see the module safety note.
-        unsafe {
-            self.view
-                .removeObserver_forKeyPath(&self.observer, &estimated_progress_key());
+        for key in OBSERVED_STATE_KEYS {
+            // SAFETY: paired with the `addObserver` calls in `register`; both
+            // parties are still retained here.
+            unsafe {
+                self.view
+                    .removeObserver_forKeyPath(&self.observer, &NSString::from_str(key));
+            }
         }
     }
 }
@@ -1215,7 +1246,7 @@ pub struct WebViewController {
     #[allow(dead_code)]
     delegate: Retained<Delegate>,
     #[allow(dead_code)]
-    progress: ProgressToken,
+    state_observer: StateToken,
     #[allow(dead_code)]
     scheme: Option<Retained<SchemeTaskHandler>>,
     script_handlers: RefCell<Vec<(String, Retained<ScriptMessageHandler>)>>,
@@ -1276,16 +1307,12 @@ impl WebViewController {
             view.set_ui_delegate(Some(ProtocolObject::from_ref(&*delegate)));
         }
 
-        let weak_view = Weak::from_retained(&view);
-        let progress = ProgressToken::register(
+        let state_observer = StateToken::register(
             &view,
-            Rc::new(move |progress| {
-                let Some(view) = weak_view.load() else {
-                    return;
-                };
+            Rc::new(move |view, observed| {
                 if let Some(event) = handlers.event.as_ref() {
-                    crate::callback::guarded("web view progress", || {
-                        event(&view, Event::Progress(progress));
+                    guarded("web view state", || {
+                        event(view, observed);
                     });
                 }
             }),
@@ -1294,7 +1321,7 @@ impl WebViewController {
         Self {
             view,
             delegate,
-            progress,
+            state_observer,
             scheme: scheme_handler,
             script_handlers: RefCell::new(Vec::new()),
         }
@@ -1336,6 +1363,12 @@ impl WebViewController {
             .url()
             .and_then(|url| url.absoluteString())
             .map(|text| text.to_string())
+    }
+
+    /// The current page title.
+    #[must_use]
+    pub fn title_string(&self) -> String {
+        self.view.title().map_or_default(|title| title.to_string())
     }
 
     /// Whether the back-forward list has a previous entry.

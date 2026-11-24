@@ -174,6 +174,12 @@ private constructor(
                         nativeProgressChanged(nativeHandle, newProgress)
                     }
                 }
+
+                override fun onReceivedTitle(view: WebView, title: String?) {
+                    if (nativeHandle != 0L) {
+                        nativeTitleChanged(nativeHandle, title ?: "")
+                    }
+                }
             }
         webViewClient = HydrolysisClient()
     }
@@ -260,6 +266,8 @@ private constructor(
         @JvmStatic private external fun nativeHistoryUpdated(handle: Long, url: String)
 
         @JvmStatic private external fun nativeProgressChanged(handle: Long, progress: Int)
+
+        @JvmStatic private external fun nativeTitleChanged(handle: Long, title: String)
 
         @JvmStatic
         private external fun nativeReceivedError(
