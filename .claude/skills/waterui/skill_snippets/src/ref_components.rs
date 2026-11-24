@@ -1499,9 +1499,8 @@ pub fn components_avatar_prose() {
 
     let _ = Avatar::new("Katherine Johnson", || text("KJ").bold());
 
-    // Prose (not counted): `.dynamic_range(ColorSpace::Hdr)`.
-    use waterui::metadata::secure::ColorSpace;
-    let _ = avatar("Grace Hopper").dynamic_range(ColorSpace::Hdr);
+    // Prose (not counted): `.dynamic_range(DynamicRange::High)`.
+    let _ = avatar("Grace Hopper").dynamic_range(DynamicRange::High);
 }
 
 // ---------------------------------------------------------------------------

@@ -975,6 +975,7 @@ pub mod anchored_overlay {
 
 /// Secure metadata module.
 pub mod secure {
+    use nami::{Computed, signal::IntoComputed};
     use waterui_core::metadata::MetadataKey;
 
     /// Secure metadata for secure fields.
@@ -999,69 +1000,51 @@ pub mod secure {
         }
     }
 
-    /// Selects the color space for a subtree.
+    /// Selects the dynamic range for a subtree.
     ///
-    /// This is the friendlier API surface for what would otherwise be
-    /// [`StandardDynamicRange`] / [`HighDynamicRange`] metadata. Use
-    /// [`crate::view::ViewExt::color_space`] to apply it.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    /// Use [`crate::view::ViewExt::dynamic_range`] (or
+    /// [`Avatar::dynamic_range`](crate::widget::Avatar::dynamic_range) on an
+    /// avatar) to apply it.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
     #[non_exhaustive]
-    pub enum ColorSpace {
+    pub enum DynamicRange {
         /// Standard dynamic range. Use for content that should not exceed
         /// `1.0` per channel — avatars, screenshots, UI chrome.
-        Sdr,
+        Standard,
         /// High dynamic range. Honors per-color `headroom` so highlights can
         /// extend beyond the display's nominal white point.
         #[default]
-        Hdr,
+        High,
     }
 
-    nami::impl_constant!(ColorSpace);
+    nami::impl_constant!(DynamicRange);
 
-    /// Apply standard dynamic range color for this views.
+    /// Dynamic-range metadata attached by [`crate::view::ViewExt::dynamic_range`].
     ///
-    /// By default, `WaterUI` enables high dynamic range color for all views.
-    ///
-    /// However, in some cases, you may want to apply standard dynamic range color for certain views,
-    /// for instance, user avatar.
+    /// By default, `WaterUI` renders subtrees at [`DynamicRange::High`]. Attach
+    /// this metadata to pin a subtree (such as an avatar) to
+    /// [`DynamicRange::Standard`] or switch it dynamically through a signal.
     #[derive(Debug)]
-    pub struct StandardDynamicRange;
-    impl MetadataKey for StandardDynamicRange {}
+    #[non_exhaustive]
+    pub struct DynamicRangeMetadata {
+        range: Computed<DynamicRange>,
+    }
 
-    impl StandardDynamicRange {
-        /// Creates a new `StandardDynamicRange` metadata.
+    impl MetadataKey for DynamicRangeMetadata {}
+
+    impl DynamicRangeMetadata {
+        /// Creates dynamic-range metadata from a constant or reactive value.
         #[must_use]
-        pub const fn new() -> Self {
-            Self
+        pub fn new(range: impl IntoComputed<DynamicRange>) -> Self {
+            Self {
+                range: range.into_computed(),
+            }
         }
-    }
 
-    impl Default for StandardDynamicRange {
-        fn default() -> Self {
-            Self::new()
-        }
-    }
-
-    /// Apply high dynamic range color for this views.
-    ///
-    /// By default, `WaterUI` already applies high dynamic range color for all views.
-    ///
-    /// But if your parent view applied `StandardDynamicRange` metadata, you would use this metadata to override it.
-    #[derive(Debug)]
-    pub struct HighDynamicRange;
-    impl MetadataKey for HighDynamicRange {}
-
-    impl HighDynamicRange {
-        /// Creates a new `HighDynamicRange` metadata.
+        /// Returns the requested dynamic range signal for this subtree.
         #[must_use]
-        pub const fn new() -> Self {
-            Self
-        }
-    }
-
-    impl Default for HighDynamicRange {
-        fn default() -> Self {
-            Self::new()
+        pub const fn range(&self) -> &Computed<DynamicRange> {
+            &self.range
         }
     }
 }
