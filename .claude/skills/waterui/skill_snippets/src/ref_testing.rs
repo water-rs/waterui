@@ -89,8 +89,8 @@ pub mod gated {
     }
 
     // -----------------------------------------------------------------------
-    // testing.md § "## `#[waterui::test]`" (prose): a styled manual mount names
-    // the style in its parameter type. Not counted as a rust block.
+    // testing.md § "## `#[waterui::test]`" (prose): a styled manual mount also
+    // takes a plain `UiBuilder`. Not counted as a rust block.
     // -----------------------------------------------------------------------
     pub fn styled_manual_mount(ui: UiBuilder) {
         let _ = ui;

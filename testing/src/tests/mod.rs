@@ -641,7 +641,7 @@ fn styled_semantic_mount_installs_style_tokens_over_framework_defaults() {
 }
 
 /// [`UiBuilder::mount_app`] honours the builder's viewport and scale factor
-/// factor over the window's declared frame: the window content is allocated
+/// over the window's declared frame: the window content is allocated
 /// `320x240` logical points — not the `800x600` `Window::new` declares — and
 /// the scale factor stays a capture concern, so bounds read back in logical
 /// points. A text root reports its centred response by default

@@ -138,7 +138,8 @@ itself.
 `ui().theme(style).mount(..)` is still semantic; it adds the style's tokens for
 components whose bodies read them.
 The macro expands to a plain `#[test]`, so do not also write `#[test]`, and the
-function must take exactly one parameter and return `()`. `waterui::test` is an alias of
+function must take exactly one parameter and return `()` or `Result<(), E>`
+(any `std::process::Termination`, matching `#[test]`). `waterui::test` is an alias of
 the macro `ui_test`, which is the name `waterui::prelude` exports, so a glob import of the
 prelude leaves the built-in `#[test]` unshadowed; write `#[waterui::test]` qualified.
 A styled manual mount also takes a plain `UiBuilder`.
