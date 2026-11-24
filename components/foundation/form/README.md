@@ -241,8 +241,7 @@ Use the constructor that matches your binding type:
 
 ```rust
 use waterui::prelude::*;
-use waterui_form::picker::{DatePicker, DatePickerType};
-use jiff::civil::{Date, DateTime, Time};
+use waterui_form::picker::date::{Date, DatePicker, DateTime, Time};
 
 fn event_form() -> impl View {
     let event_date: Binding<Date> = binding(Date::new(2025, 6, 15).unwrap());
@@ -253,20 +252,16 @@ fn event_form() -> impl View {
         DatePicker::new("Date Only", &event_date).range(
             Date::new(2025, 1, 1).unwrap()..=Date::new(2025, 12, 31).unwrap(),
         ),
-        DatePicker::new("Time Only", &event_time)
-            .ty(DatePickerType::HourMinuteAndSecond),
-        DatePicker::new("Date & Time", &event_datetime)
-            .ty(DatePickerType::DateHourMinuteAndSecond),
+        DatePicker::new("Time Only", &event_time).seconds(),
+        DatePicker::new("Date & Time", &event_datetime).seconds(),
     ))
 }
 ```
 
-Available picker types:
-- `DatePickerType::Date` - Date only
-- `DatePickerType::HourAndMinute` - Time only (hour:minute)
-- `DatePickerType::HourMinuteAndSecond` - Time with seconds
-- `DatePickerType::DateHourAndMinute` - Date and time (default)
-- `DatePickerType::DateHourMinuteAndSecond` - Date and time with seconds
+Available presentation configurations follow the bound type:
+- `Date`: date only (`.range(RangeInclusive<Date>)`)
+- `Time`: hour/minute by default, or `.seconds()` / `.components(TimePickerComponents::HourMinuteAndSecond)`
+- `DateTime`: date + hour/minute by default, with `.seconds()`, `.date_only()`, `.time_only()`, or `.components(DateTimePickerComponents::*)`
 
 ### Calendar
 

@@ -5,7 +5,10 @@ pub use color::ColorPicker;
 #[cfg(feature = "date-picker")]
 pub mod date;
 #[cfg(feature = "date-picker")]
-pub use date::{DatePicker, DatePickerType};
+pub use date::{
+    DatePickable, DatePicker, DatePickerComponents, DatePickerType, DateTimePickerComponents,
+    TimePickable, TimePickerComponents,
+};
 #[cfg(feature = "file-picker")]
 pub mod file;
 #[cfg(feature = "multi-date-picker")]

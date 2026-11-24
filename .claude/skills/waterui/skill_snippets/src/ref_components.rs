@@ -1192,7 +1192,7 @@ pub mod components_block_32 {
 
     use waterui::form::Calendar;
     use waterui::form::picker::color::ColorPicker;
-    use waterui::form::picker::date::{DatePicker, DatePickerType};
+    use waterui::form::picker::date::{DatePicker, DateTimePickerComponents};
     use waterui::form::picker::file::FilePicker;
     use waterui::form::picker::multi_date::MultiDatePicker;
     use waterui::form::picker::{Picker, PickerItem, PickerStyle, picker};
@@ -1231,7 +1231,7 @@ pub mod components_block_32 {
         // Keep the other picker imports live so they are proven to resolve.
         use waterui::component::label::TitleLabel;
         let _: Option<ColorPicker<TitleLabel>> = None;
-        let _: Option<DatePickerType> = None;
+        let _: Option<DateTimePickerComponents> = None;
         let _: Option<FilePicker<TitleLabel>> = None;
         let _ = (
             core::marker::PhantomData::<DatePicker<TitleLabel>>,
@@ -1249,15 +1249,15 @@ pub fn components_block_33() {
     use waterui::color::Srgb;
     use waterui::form::Calendar;
     use waterui::form::picker::color::ColorPicker;
-    use waterui::form::picker::date::{DatePicker, DatePickerType};
+    use waterui::form::picker::date::{Date, DatePicker, DateTime, DateTimePickerComponents, Time};
     use waterui::form::picker::file::FilePicker;
     use waterui::form::picker::multi_date::MultiDatePicker;
     use waterui::media::Url;
     use waterui::reactive::binding;
 
-    use waterui::form::picker::date::Date;
-
     let date = binding(Date::constant(2026, 3, 20));
+    let time: Binding<Time> = binding(Time::constant(8, 30, 0, 0));
+    let dt: Binding<DateTime> = binding(Date::constant(2026, 3, 20).at(8, 30, 0, 0));
     let (min, max) = (Date::constant(2026, 1, 1), Date::constant(2026, 12, 31));
     let (start, end) = (min, max);
     let visible_month = binding(Date::constant(2026, 3, 1));
@@ -1267,10 +1267,12 @@ pub fn components_block_33() {
     let urls: Binding<Vec<Url>> = binding(Vec::<Url>::new());
 
     let _ = {
-        DatePicker::new("Date", &date) // T: DatePickable (Date, Time, DateTime) picks the presentation
-            .ty(DatePickerType::DateHourMinuteAndSecond) // override; also Date, HourAndMinute, HourMinuteAndSecond, DateHourAndMinute
-            .range(min..=max) // clamps the bound value immediately
+        DatePicker::new("Date", &date) // generic over T: DatePickable (Date, Time, DateTime)
+            .range(min..=max) // RangeInclusive<T> of the bound type; clamps immediately
     };
+    let _ = DatePicker::new("Alarm", &time).seconds();
+    let _ =
+        DatePicker::new("Due", &dt).components(DateTimePickerComponents::DateHourMinuteAndSecond);
 
     let _ = {
         Calendar::new("Trip Date", &date, &visible_month) // TWO bindings: selection + shown month
@@ -1291,10 +1293,10 @@ pub fn components_block_33() {
         FilePicker::open("Select Files", &urls).max_count(5)
     };
 
-    let _ = DatePickerType::Date;
-    let _ = DatePickerType::HourAndMinute;
-    let _ = DatePickerType::HourMinuteAndSecond;
-    let _ = DatePickerType::DateHourAndMinute;
+    let _ = DateTimePickerComponents::Date;
+    let _ = DateTimePickerComponents::HourAndMinute;
+    let _ = DateTimePickerComponents::HourMinuteAndSecond;
+    let _ = DateTimePickerComponents::DateHourAndMinute;
     let _ = FilePicker::import("Import Files", &urls);
 }
 
