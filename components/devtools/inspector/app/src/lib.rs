@@ -28,11 +28,8 @@ pub fn main() -> impl View {
     let view = ui::inspector(model.clone(), sender);
 
     match connection::Target::from_env() {
-        Ok(target) => OneOf2::A(view.task({
-            let model = model;
-            async move {
-                connection::run(model, target, receiver).await;
-            }
+        Ok(target) => OneOf2::A(view.task(move || async move {
+            connection::run(model, target, receiver).await;
         })),
         Err(error) => {
             model

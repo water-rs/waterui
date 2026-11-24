@@ -790,7 +790,7 @@ pub fn reactivity_block_22() {
     // scope rather than being wrapped in `let _ = { … }`.
     {
         let view = Divider;
-        view.task(async { warm_cache().await }); // runs while the view is alive; dropped with it
+        view.task(|| async { warm_cache().await }); // starts on appear, cancels on disappear; supports extractors
     }
     {
         let view = Divider;

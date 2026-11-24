@@ -650,6 +650,7 @@ mod tests {
             retain: waterui_core::metadata::Retain,
             layout_priority: waterui_core::layout::LayoutPriority,
             lifecycle_hook: waterui_interaction::event::LifeCycleHook,
+            task_hook: waterui_interaction::event::TaskHook,
             on_event: waterui_interaction::event::OnEvent,
             on_key_press: waterui_interaction::key::OnKeyPress,
             gesture_observer: waterui_interaction::gesture::GestureObserver,

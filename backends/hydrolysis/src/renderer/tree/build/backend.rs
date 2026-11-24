@@ -1149,6 +1149,19 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         RenderNode::build_lifecycle(value, content, env, renderer)
     }
 
+    fn task_hook<C: ChildView<Self>>(
+        &mut self,
+        metadata: Metadata<waterui_interaction::event::TaskHook, C>,
+        env: &Environment,
+        (): (),
+    ) -> RenderNode<E> {
+        mark_reached!("task_hook");
+        let metadata = metadata.map_content(C::into_child);
+        let renderer = &mut *self.renderer;
+        let Metadata { content, value } = metadata;
+        RenderNode::build_task(value, content, env, renderer)
+    }
+
     fn scroll<C: ChildView<Self>>(
         &mut self,
         native: waterui::layout::scroll::ScrollView<C>,
