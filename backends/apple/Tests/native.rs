@@ -9974,6 +9974,7 @@ mod navigation {
         use waterui_core::layout::ProposalSize;
 
         let icon = || SfSymbol::PLUS;
+        let noop: fn() = || {};
         let icon_leaf = resolve::render(icon());
         let icon_width = f64::from(
             icon_leaf
@@ -9989,13 +9990,13 @@ mod navigation {
                         NavigationToolbarPlacement::TopBarLeading,
                         button(label("").icon(icon()))
                             .style(ButtonStyle::Borderless)
-                            .action(|| {}),
+                            .action(noop),
                     ),
                     NavigationToolbarItem::new(
                         NavigationToolbarPlacement::TopBarTrailing,
                         button(label("Keep title").icon(icon()).title_and_icon())
                             .style(ButtonStyle::Borderless)
-                            .action(|| {}),
+                            .action(noop),
                     ),
                 ],
             )),
