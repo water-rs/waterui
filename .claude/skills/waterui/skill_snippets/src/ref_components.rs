@@ -1481,7 +1481,7 @@ pub fn components_block_37(photo_url: waterui::Url) {
     let focus = Binding::container(None::<Field>);
 
     let _ = {
-        text("Inbox").badge(3) // a count badge on any Clone view; badge::Badge::new(n, view).color(..)
+        text("Inbox").badge(3_u32) // 0 hides; BadgeValue::{Hidden, Dot, Count(u32), Text(Text)}; badge::Badge::new(v, view).color(..)
     };
     let _ = {
         avatar("Grace Hopper") // initials when there is no image; the name is always spoken

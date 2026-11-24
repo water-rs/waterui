@@ -392,7 +392,7 @@ fn ts_badge_is_a_badge() {
                 content: () => waterui.jsx("Text", { children: "Inbox" }),
             })"#,
         ),
-        text("Inbox").badge(3),
+        text("Inbox").badge(3_u32),
     );
 }
 

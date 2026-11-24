@@ -549,7 +549,7 @@ impl CardAttributes {
 #[non_exhaustive]
 pub struct BadgeAttributes {
     /// The count the badge shows.
-    value: Computed<i32>,
+    value: Computed<u32>,
     /// What the badge is attached to. A builder rather than a view, because
     /// `Badge` may build its content again.
     content: JsViewBuilder,
@@ -558,7 +558,7 @@ pub struct BadgeAttributes {
 impl BadgeAttributes {
     /// The count the badge shows.
     #[must_use]
-    pub const fn value(&self) -> &Computed<i32> {
+    pub const fn value(&self) -> &Computed<u32> {
         &self.value
     }
 
@@ -571,7 +571,7 @@ impl BadgeAttributes {
 
     /// Takes the value apart into its fields, in declaration order.
     #[must_use]
-    pub fn into_parts(self) -> (Computed<i32>, JsViewBuilder) {
+    pub fn into_parts(self) -> (Computed<u32>, JsViewBuilder) {
         (self.value, self.content)
     }
 }

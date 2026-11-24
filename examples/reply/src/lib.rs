@@ -37,7 +37,7 @@ const TOOLBAR_AVATAR: f32 = 32.0;
 /// The tallest a thread photo grows inside its list row.
 const PHOTO_HEIGHT: f32 = 160.0;
 /// Unread mail shown on the Mail destination's badge.
-const UNREAD: i32 = 4;
+const UNREAD: u32 = 4;
 
 const ASSETS: &str = "https://raw.githubusercontent.com/android/compose-samples/main/Reply/app/src/main/res/drawable";
 
