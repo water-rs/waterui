@@ -390,11 +390,11 @@ row, `guided_smooth`, `depth_aware_blur`, `temporal_denoise` and `displacement_w
 
 | Family | Methods |
 |---|---|
-| Color and tone | `brightness` `contrast` `saturation` `vibrance` `exposure` `gamma` `grayscale` `sepia` `hue_rotation` `invert()` `temperature_tint(t, tint)` `highlights_shadows(h, s)` `white_point(r, g, b)` `tone_curve(shadows, mids, highlights, gamma, amount)` `color_matrix([[f32; 4]; 3])` `lut_color_grade(LutImage, intensity)` |
+| Color and tone | `brightness` `contrast` `saturation` `vibrance` `exposure` `gamma` `grayscale` `sepia` `hue_rotation` `invert()` `temperature_tint(t, tint)` `highlights_shadows(h, s)` `white_point(r, g, b)` `tone_curve(shadows, mids, highlights, gamma, amount)` `color_matrix(matrix)` (`IntoComputed<[[f32; 4]; 3]>`) `lut_color_grade(LutImage, intensity)` |
 | Blur, sharpen, denoise | `blur(radius)` `gaussian_blur(sigma)` `motion_blur(radius, angle)` `zoom_blur(amount, x, y)` `sharpen` `unsharp_mask(..)` `bloom(..)` `gloom(..)` `guided_smooth(..)` `depth_aware_blur(..)` `temporal_denoise(..)` `median3x3()` |
-| Edges, kernels | `sobel()` `prewitt()` `edge_work(..)` `convolution3x3([p; 9])` `convolution5x5([p; 25])` (`p: Copy`, so literals) `morphology_min()` `morphology_max()` `morphology_gradient()` |
+| Edges, kernels | `sobel()` `prewitt()` `edge_work(..)` `convolution3x3([p; 9])` `convolution5x5([p; 25])` `morphology_min()` `morphology_max()` `morphology_gradient()` |
 | Stylize | `pixellate` `crystallize` `vignette(radius, softness)` `dot_halftone(..)` `line_halftone(..)` `kaleidoscope(..)` `mirror_tile(..)` `photo_effect_{mono,noir,chrome,instant,fade,process,tonal,transfer}()` |
-| Geometry | `bump_distortion(..)` `pinch_distortion(..)` `twirl_distortion(..)` `vortex_distortion(..)` `displacement_warp(..)` `perspective_transform([[f32; 2]; 4])` `perspective_correction([[f32; 2]; 4])` |
+| Geometry | `bump_distortion(..)` `pinch_distortion(..)` `twirl_distortion(..)` `vortex_distortion(..)` `displacement_warp(..)` `perspective_transform(quad)` `perspective_correction(quad)` (`IntoComputed<[[f32; 2]; 4]>`) |
 | Composite with an image (`FilterImage`) | `blend_with_image(image, amount, BlendMode)` `masked_blur(mask, ..)` `replace_background(matte, background, softness)` and the `{,swipe_,radial_,zoom_,displacement_}transition_to_image(..)` family |
 
 `.effect(..)` post-processes a view's rendered output with a fragment shader the app writes —
