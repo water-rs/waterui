@@ -16,6 +16,7 @@
 //! 3. Push locale updates to `waterui::regional`
 //! 4. `text!` automatically reacts to locale changes - no `watch()` needed!
 
+use jiff::civil;
 use waterui::app::{App, Windows};
 use waterui::catalog;
 use waterui::form::picker::{Picker, PickerItem};
@@ -23,13 +24,10 @@ use waterui::prelude::*;
 use waterui::preview;
 use waterui::regional::current_settings;
 use waterui::regional::set_locale_tag;
-use waterui_locale::format::date::{
-    DateStyle, SimpleDate, SimpleTime, TimeStyle, format_date,
-    format_datetime_with_regional_context,
-};
+use waterui_locale::format::date::{DateStyle, TimeStyle, format_datetime_with_regional_context};
 use waterui_locale::format::unit::{Kilometer, Length, Meter};
 use waterui_locale::locale::get_fallback_chain;
-use waterui_locale::{Locale, LocalizedDisplay, TranslationCatalog, locales};
+use waterui_locale::{Locale, LocalizedDisplay, RelativeTime, TranslationCatalog, locales};
 
 /// Builds the locale picker items dynamically from the compiled translation catalog.
 fn available_locales(catalog: &TranslationCatalog) -> Vec<PickerItem<Locale>> {
@@ -108,25 +106,20 @@ fn paragraph_section() -> impl View {
 
 /// Date formatting section
 fn date_section(locale: &Computed<Locale>) -> impl View + use<> {
-    let date_short = locale
-        .clone()
-        .map(|locale| format_date(&locale, &SimpleDate::new(2006, 3, 20), DateStyle::Short))
-        .computed();
-    let date_long = locale
-        .clone()
-        .map(|locale| format_date(&locale, &SimpleDate::new(2006, 3, 20), DateStyle::Long))
-        .computed();
+    let festival = civil::date(2006, 3, 20);
+    let date_short = festival.formatted(DateStyle::Short);
+    let date_long = festival.formatted(DateStyle::Long);
+    let opens_in = RelativeTime::days(3);
     let timezone = locale
         .clone()
         .map(|_| current_settings().timezone().to_string())
         .computed();
     let datetime_with_zone = locale
         .clone()
-        .map(|_| {
+        .map(move |_| {
             format_datetime_with_regional_context(
                 &current_settings(),
-                &SimpleDate::new(2006, 3, 20),
-                &SimpleTime::new(9, 30, 0),
+                festival.at(9, 30, 0, 0),
                 DateStyle::Long,
                 TimeStyle::Long,
             )
@@ -137,6 +130,7 @@ fn date_section(locale: &Computed<Locale>) -> impl View + use<> {
         text!("Festival Date (2006-03-20)").size(16.0).bold(),
         hstack((text!("Short:"), spacer(), text!("{date_short}"))),
         hstack((text!("Long:"), spacer(), text!("{date_long}"))),
+        hstack((text!("Countdown:"), spacer(), text!("{opens_in}"))),
         hstack((text!("Timezone:"), spacer(), text!("{timezone}"))),
         hstack((
             text!("Kickoff (TZ):"),

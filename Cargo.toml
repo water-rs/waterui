@@ -477,12 +477,14 @@ default = [
     "highlight",
     "locale-datetime",
     "locale-list",
+    "locale-relative-time",
 ]
 # The locale formatters reachable through `waterui::locale`. Default-on so the
 # module keeps its full surface; a lean build starts from
 # `default-features = false` and names what it needs.
 locale-datetime = ["waterui-internal/locale-datetime", "waterui-dylib?/locale-datetime"]
 locale-list = ["waterui-internal/locale-list", "waterui-dylib?/locale-list"]
+locale-relative-time = ["waterui-internal/locale-relative-time", "waterui-dylib?/locale-relative-time"]
 # GPU rendering stack (wgpu via waterui-graphics' Cherenkov engine +
 # waterui-svg). Default-on so every existing consumer is unaffected. Disable
 # it to cross-compile a lean WaterUI app for embedded targets without the GPU
@@ -593,6 +595,7 @@ all = [
     "highlight",
     "locale-datetime",
     "locale-list",
+    "locale-relative-time",
     "inspector",
     "inspector-signals",
     "assets",
