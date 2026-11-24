@@ -503,7 +503,12 @@ pub fn button_activation<E: crate::text::TextEngine>(
 /// the size it proposed instead of chrome and hit bounds overflowing the
 /// assigned slot. Padded label content keeps its intrinsic footprint — the
 /// parent decides how any remaining overflow is aligned.
-fn button_size(label_size: LayoutSize, look: &ButtonLook, proposal: ProposalSize) -> LayoutSize {
+fn button_size(
+    label_size: LayoutSize,
+    look: &ButtonLook,
+    proposal: ProposalSize,
+    env: &Environment,
+) -> LayoutSize {
     let padding = look.get_padding();
     let minimum = look.get_minimum_size();
     let content_width = padding.x.mul_add(2.0, f64::from(label_size.width));
@@ -514,10 +519,31 @@ fn button_size(label_size: LayoutSize, look: &ButtonLook, proposal: ProposalSize
     let min_height = proposal.height.map_or(minimum.height, |height| {
         minimum.height.min(f64::from(height))
     });
-    LayoutSize::new(
-        crate::num_cast::f64_as_f32(content_width.max(min_width)),
-        crate::num_cast::f64_as_f32(content_height.max(min_height)),
-    )
+    let mut size = LayoutSize::new(
+        f64_as_f32(content_width.max(min_width)),
+        f64_as_f32(content_height.max(min_height)),
+    );
+    #[cfg(feature = "menu")]
+    if env.get::<MenuRowChrome>().is_some() {
+        // Popup menu rows span the full menu panel width and row slot height so
+        // pointer hit-testing, hover state layers, and accessibility bounds
+        // cover the entire row rather than only the label glyphs.
+        if let Some(width) = proposal.width
+            && width.is_finite()
+            && width > 0.0
+        {
+            size.width = width;
+        }
+        if let Some(height) = proposal.height
+            && height.is_finite()
+            && height > 0.0
+        {
+            size.height = size.height.max(height);
+        }
+    }
+    #[cfg(not(feature = "menu"))]
+    let _ = env;
+    size
 }
 
 /// Measures a retained button leaf from its [`ButtonRenderState`]: a general label
@@ -543,7 +569,7 @@ pub fn measure_button_node<E: crate::text::TextEngine>(
         let styled = styled_button_title(state, font, render_state.config.label(), env);
         HydrolysisRenderer::measure_text_intrinsic_size(state, styled, env)
     };
-    ViewDimensions::new(button_size(label_size, &look, proposal))
+    ViewDimensions::new(button_size(label_size, &look, proposal, env))
 }
 
 /// Renders a retained button leaf every flush: emits a11y (unless hidden) then the
@@ -841,7 +867,7 @@ pub fn measure_menu_node<E: crate::text::TextEngine>(
         }
         MenuLabel::View { subview, .. } => subview.measure_built(hydro, env, theme),
     };
-    ViewDimensions::new(button_size(label_size, &look, proposal))
+    ViewDimensions::new(button_size(label_size, &look, proposal, env))
 }
 
 /// Renders a retained menu leaf every flush: emits a11y (unless hidden) then the
@@ -1698,14 +1724,34 @@ mod tests {
             .padding(3.0, 5.0)
             .minimum_size(kurbo::Size::new(37.0, 41.0));
 
+        let env = Environment::new();
         assert_eq!(
-            button_size(label, &look, ProposalSize::UNSPECIFIED),
+            button_size(label, &look, ProposalSize::UNSPECIFIED, &env),
             Size::new(37.0, 41.0)
         );
         assert_eq!(
-            button_size(label, &look, ProposalSize::new(Some(31.0), Some(29.0))),
+            button_size(
+                label,
+                &look,
+                ProposalSize::new(Some(31.0), Some(29.0)),
+                &env
+            ),
             Size::new(31.0, 29.0)
         );
+        #[cfg(feature = "menu")]
+        {
+            use super::MenuRowChrome;
+            let menu_env = env.extending(MenuRowChrome);
+            assert_eq!(
+                button_size(
+                    label,
+                    &look,
+                    ProposalSize::new(Some(250.0), Some(45.0)),
+                    &menu_env
+                ),
+                Size::new(250.0, 45.0)
+            );
+        }
     }
 
     fn rgb(color: WorkingColor) -> (u8, u8, u8) {

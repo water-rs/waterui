@@ -914,9 +914,11 @@ mod menu_presentation_motion_tests {
     use nami::Signal as _;
     use waterui::ViewExt as _;
     use waterui::animation::Animation;
+    use waterui::graphics::Color;
     use waterui::metadata::anchored_overlay::{AnchorEdge, AnchoredOverlay};
+    use waterui::theme::color::Foreground;
     use waterui_controls::button::button;
-    use waterui_controls::menu::{Command, Menu, MenuItem};
+    use waterui_controls::menu::{Command, Menu, MenuItem, Shortcut};
     use waterui_core::AnyView;
     use waterui_core::handler::AnyViewBuilder;
     use waterui_core::metadata::Metadata;
@@ -929,10 +931,14 @@ mod menu_presentation_motion_tests {
         GAP, MinimalTestTheme, WINDOW, bounds_of, find_by_label, near, presented_frame,
         primary_click, pump_until_settled, test_environment,
     };
-    use crate::HeadlessRuntime;
-    use crate::num_cast::f64_as_f32;
+    use crate::num_cast::{f64_as_f32, f64_as_u32};
+    use crate::platform::{InputEvent, PointerKind};
     use crate::renderer::input::PopupMenuSurface;
-    use crate::theme::{MenuPresentationMotion, MenuPresentationSample};
+    use crate::theme::{
+        Chrome, CornerShape, Custom, FocusIndicator, MenuLayout, MenuLook, MenuPresentationMotion,
+        MenuPresentationSample, Motion, PressFeedback, StateLayer, Surface,
+    };
+    use crate::{HeadlessRuntime, HeadlessSnapshot};
 
     fn test_motion() -> MenuPresentationMotion {
         MenuPresentationMotion::new(
@@ -1443,6 +1449,191 @@ mod menu_presentation_motion_tests {
         assert!(
             runtime.anchored_overlay_frames().is_empty(),
             "dismissed menu ghost must clear after settling"
+        );
+    }
+
+    fn pixel_at(snapshot: &HeadlessSnapshot, x: u32, y: u32) -> [u8; 4] {
+        let offset = ((y * snapshot.width() + x) * 4) as usize;
+        let bytes = snapshot.rgba8();
+        [
+            bytes[offset],
+            bytes[offset + 1],
+            bytes[offset + 2],
+            bytes[offset + 3],
+        ]
+    }
+
+    fn wide_menu_runtime(
+        dup_fired: &Rc<Cell<bool>>,
+        archive_fired: &Rc<Cell<bool>>,
+    ) -> HeadlessRuntime {
+        let dup_for_cmd = Rc::clone(dup_fired);
+        let archive_for_cmd = Rc::clone(archive_fired);
+        let view = AnyViewBuilder::new(move || {
+            let dup = Rc::clone(&dup_for_cmd);
+            let archive = Rc::clone(&archive_for_cmd);
+            AnyView::new(vstack((
+                ().size(0.0, 12.0),
+                Menu::new(
+                    "Actions",
+                    (
+                        Command::builder("Rename").action(|| {}),
+                        MenuItem::Divider,
+                        Command::builder("Duplicate").action(move || {
+                            dup.set(true);
+                        }),
+                        Command::builder("Archive")
+                            .action(move || {
+                                archive.set(true);
+                            })
+                            .shortcut(Shortcut::new('a').control()),
+                    ),
+                ),
+                spacer(),
+            )))
+        });
+        let layout = MenuLayout {
+            min_width: 250.0,
+            max_width: 280.0,
+            row_height: 45.0,
+            vertical_padding: 8.0,
+            horizontal_padding: 20.0,
+            ..MinimalTestTheme::menu_layout()
+        };
+        let panel_fill = WorkingColor::new([0.92, 0.92, 0.94, 1.0]);
+        let look = MenuLook::new(
+            layout,
+            MinimalTestTheme::menu_look().panel().clone(),
+            Custom::new((), |_, _, ()| {}),
+        )
+        .presentation_motion(anisotropic_menu_motion())
+        .presentation_panel(move |recorder, sample| {
+            recorder.fill(RoundedRect::from_rect(sample.surface, 12.0), panel_fill);
+        });
+        let hover_chrome = Chrome::new(
+            Surface::clear(CornerShape::radius(0.0)),
+            StateLayer::new(Color::new(Foreground)).opacities(0.25, 0.25, 0.35, 0.25),
+            PressFeedback::new(),
+            FocusIndicator::Tint,
+            Motion::uniform(Animation::linear(Duration::from_millis(15))),
+        );
+        HeadlessRuntime::new_for_tests(
+            test_environment(),
+            view,
+            WINDOW.0,
+            WINDOW.1,
+            MinimalTestTheme::default()
+                .with_menu_look(look)
+                .with_button_chrome(hover_chrome),
+        )
+    }
+
+    /// Popup menu command rows — both plain and shortcut-bearing — must span
+    /// the full panel width for accessibility bounds, hover state layers, and
+    /// pointer hit-testing (water-rs/waterui#4968).
+    #[test]
+    fn menu_command_rows_hit_test_and_hover_across_full_panel_width() {
+        let dup_fired = Rc::new(Cell::new(false));
+        let archive_fired = Rc::new(Cell::new(false));
+        let mut runtime = wide_menu_runtime(&dup_fired, &archive_fired);
+
+        let mut now = Instant::now();
+        let _ = runtime.pump_at(false, now);
+        let trigger = bounds_of(&mut runtime, "Actions");
+        let trigger_x = f64_as_f32(f64::midpoint(trigger.x0, trigger.x1));
+        let trigger_y = f64_as_f32(f64::midpoint(trigger.y0, trigger.y1));
+
+        // Open the menu and wait for the present spring to settle.
+        for event in primary_click(trigger_x, trigger_y) {
+            runtime.push_input_event(event);
+        }
+        now += Duration::from_millis(16);
+        let _ = runtime.pump_at(false, now);
+        now += Duration::from_millis(1_600);
+        let baseline = runtime
+            .pump_at(true, now)
+            .into_snapshot()
+            .expect("settled open menu must render");
+        let panel_frame = presented_frame(&runtime);
+        assert!(
+            panel_frame.width() >= 249.0,
+            "menu panel must honor min_width 250.0, got {panel_frame:?}"
+        );
+
+        let dup_bounds = bounds_of(&mut runtime, "Duplicate");
+        let archive_bounds = bounds_of(&mut runtime, "Archive");
+        for (name, bounds) in [("Duplicate", dup_bounds), ("Archive", archive_bounds)] {
+            assert!(
+                (bounds.x0 - panel_frame.x0).abs() <= 1.0
+                    && (bounds.x1 - panel_frame.x1).abs() <= 1.0,
+                "{name} row bounds must span full panel width: row={bounds:?}, panel={panel_frame:?}"
+            );
+        }
+
+        // Hover over the trailing empty region of the "Duplicate" row (well to
+        // the right of its label glyphs) and confirm the hover state layer
+        // changes pixels there.
+        let trailing_x = panel_frame.x1 - 24.0;
+        let dup_y = f64::midpoint(dup_bounds.y0, dup_bounds.y1);
+        runtime.push_input_event(InputEvent::PointerMove {
+            id: 1,
+            kind: PointerKind::Mouse,
+            x: f64_as_f32(trailing_x),
+            y: f64_as_f32(dup_y),
+        });
+        now += Duration::from_millis(16);
+        let _ = runtime.pump_at(false, now);
+        now += Duration::from_millis(100);
+        let hovered = runtime
+            .pump_at(true, now)
+            .into_snapshot()
+            .expect("hovered open menu must render");
+        let px = f64_as_u32(trailing_x);
+        let py = f64_as_u32(dup_y);
+        assert_ne!(
+            pixel_at(&baseline, px, py),
+            pixel_at(&hovered, px, py),
+            "hovering the trailing empty region of a menu row must paint the hover state layer at ({px}, {py})"
+        );
+
+        // Click the trailing empty region of "Duplicate" — must fire and close.
+        for event in primary_click(f64_as_f32(trailing_x), f64_as_f32(dup_y)) {
+            runtime.push_input_event(event);
+        }
+        now += Duration::from_millis(16);
+        let _ = runtime.pump_at(false, now);
+        assert!(
+            dup_fired.get(),
+            "clicking the trailing empty region of Duplicate must fire its command"
+        );
+
+        // Wait for dismiss to settle, re-open, and click over Archive's trailing
+        // shortcut region.
+        now += Duration::from_millis(2_000);
+        let _ = runtime.pump_at(false, now);
+        assert_eq!(
+            runtime.anchored_overlay_frames(),
+            Vec::<Rect>::new(),
+            "dismissed menu ghost must clear before reopening"
+        );
+
+        for event in primary_click(trigger_x, trigger_y) {
+            runtime.push_input_event(event);
+        }
+        now += Duration::from_millis(16);
+        let _ = runtime.pump_at(false, now);
+        now += Duration::from_millis(1_600);
+        let _ = runtime.pump_at(false, now);
+        let archive_bounds = bounds_of(&mut runtime, "Archive");
+        let archive_y = f64::midpoint(archive_bounds.y0, archive_bounds.y1);
+        for event in primary_click(f64_as_f32(trailing_x), f64_as_f32(archive_y)) {
+            runtime.push_input_event(event);
+        }
+        now += Duration::from_millis(16);
+        let _ = runtime.pump_at(false, now);
+        assert!(
+            archive_fired.get(),
+            "clicking the trailing shortcut region of Archive must fire its command"
         );
     }
 }
