@@ -187,6 +187,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 // has no surrounding widget to watch it, so the node must do so itself.)
                 let styled = renderer.read_signal(&text.content);
                 let alignment = renderer.read_signal(&text.alignment);
+                let line_limit = renderer.read_signal(&text.line_limit);
                 #[cfg(feature = "accessibility")]
                 let text_node_id = TextNode::emit_accessibility(
                     renderer,
@@ -200,7 +201,8 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 #[cfg(not(feature = "accessibility"))]
                 TextNode::emit_accessibility(renderer, Some(ctx), &styled, env);
                 renderer.pop_render_owner();
-                let tail = text.line_limit.map_or(TailMark::None, TailMark::Ellipsis);
+                let tail =
+                    line_limit.map_or(TailMark::None, |limit| TailMark::Ellipsis(limit.get()));
                 // A widget label placed under a live label paint draws its
                 // default-coloured runs in it.
                 let paint = env

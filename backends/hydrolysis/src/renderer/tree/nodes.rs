@@ -4,6 +4,7 @@
 use super::layout::resolved_or_collapsed;
 #[cfg(feature = "frame-profile")]
 use super::layout::{SignatureHasher, hash_size};
+use core::num::NonZeroUsize;
 use waterui_core::backend::ChildSlot;
 use waterui_core::layout::{LayoutError, ResolvedExtent};
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
@@ -1325,21 +1326,22 @@ pub struct TextNode<E: crate::text::TextEngine> {
     pub(crate) content: Computed<StyledStr>,
     pub(crate) alignment: Computed<HorizontalAlignment>,
     /// Maximum laid-out lines, from `TextConfig::line_limit`.
-    pub(crate) line_limit: Option<usize>,
-    /// Set by the `content`/`alignment` subscriptions when a measurement input
-    /// changes. The text's size is a function of what it says, so an outer
-    /// `RetainedSubview` consumes this through [`RenderNode::take_layout_dirty`]
-    /// and re-places its tree: otherwise the leaf keeps the box it measured at
-    /// mount while the flush paints the new string wrapped inside it.
+    pub(crate) line_limit: Computed<Option<NonZeroUsize>>,
+    /// Set by the `content`/`alignment`/`line_limit` subscriptions when a
+    /// measurement input changes. The text's size is a function of what it
+    /// says and how many lines it may occupy, so an outer `RetainedSubview`
+    /// consumes this through [`RenderNode::take_layout_dirty`] and re-places
+    /// its tree: otherwise the leaf keeps the box it measured at mount while
+    /// the flush paints the new string wrapped inside it.
     pub(crate) layout_dirty: Rc<Cell<bool>>,
     /// The geometry this text was committed with at its last
     /// [`RenderNode::layout`], its response placed by the foundation leaf
     /// rule. The glyphs draw and the accessibility node reports in the
     /// response rectangle, not the allocation. `None` until the first layout.
     pub(crate) geometry: Option<PlacedGeometry>,
-    /// The `content` and `alignment` subscriptions that arm `layout_dirty`,
-    /// owned by this retained leaf.
-    pub(crate) _guards: [BoxWatcherGuard; 2],
+    /// The `content`, `alignment`, and `line_limit` subscriptions that arm
+    /// `layout_dirty`, owned by this retained leaf.
+    pub(crate) _guards: [BoxWatcherGuard; 3],
     /// The tap targets the last flush registered for the content's
     /// [`TapSpan`]s — one entry per laid-out span rectangle, reused in order
     /// each flush like [`GestureObserverEffect::gesture_target`] so a tap

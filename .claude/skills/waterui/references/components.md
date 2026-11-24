@@ -321,7 +321,7 @@ stepper("Items", &count).value_formatter(|n| format!("{n} items"))   // inline v
 field("Email", &address)                    // &Binding<Str>
 field("Search", &query).on_submit(handler)  // Return in a line-limited field runs it
 TextField::new("Username", &name).prompt("Enter your username")   // placeholder ≠ label
-TextField::new("Notes", &notes).disable_line_limit()   // multi-line: Return inserts a line break
+TextField::new("Notes", &notes).line_limit(None::<NonZeroUsize>) // multi-line: Return inserts a line break
 use waterui::component::text_field::{ContentType, KeyboardType};   // NOT in the prelude
 // .content_type declares what the field means, for autofill — it is what
 // makes Apple offer the received SMS code; pair it with .keyboard(..)
@@ -346,8 +346,8 @@ link("Docs", "https://waterui.dev")         // a Link-style button that opens th
 Style shorthands on `Button` — `.plain()`, `.link()`, `.borderless()`, `.bordered()`,
 `.bordered_prominent()` — equal `.style(..)` and work before or after `.action(..)`.
 `.borderless()` is the idiomatic toolbar-button style; `Link` shows the
-pointing-hand cursor on pointer platforms. `TextField::line_limit(NonZeroUsize)` caps the
-lines; `TextField::styled(label, &Binding<StyledStr>)` binds styled text. `Switch` and `checkbox` map to different accessibility roles (`SWITCH` vs `CHECKBOX`), which matters to
+pointing-hand cursor on pointer platforms. `TextField::line_limit(impl IntoComputed<Option<NonZeroUsize>>)` caps the
+lines (pass `None` for unlimited multi-line input, or a signal to toggle it); `TextField::styled(label, &Binding<StyledStr>)` binds styled text. `Switch` and `checkbox` map to different accessibility roles (`SWITCH` vs `CHECKBOX`), which matters to
 tests. `ToggleStyle::Automatic` is the platform's style — a switch on iOS and Android, a
 checkbox on macOS — so a test that must pass on every host queries a default toggle
 with `Role::toggle(ToggleStyle::Automatic)`. A switch with a visible label fills the
@@ -574,7 +574,7 @@ Both carry the full font API:
 ```
 
 `.bold()` takes no argument; `.italic(..)` takes a bool — a signal of one works too.
-`.line_limit(NonZeroUsize)` truncates past that many lines. `.text_align(HorizontalAlignment::Center)`
+`.line_limit(impl IntoComputed<Option<NonZeroUsize>>)` truncates past that many lines (pass `None` or a signal to expand/collapse). `.text_align(HorizontalAlignment::Center)`
 sets the paragraph alignment of multiline text (a signal works too) and
 `.background_color(color)` paints behind the text run.
 

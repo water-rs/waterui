@@ -262,13 +262,14 @@ fn email(value: &Binding<Str>) -> impl View {
 }
 
 fn notes(value: &Binding<Str>) -> impl View {
-    // Fields are single-line by default; the limit is a NonZeroUsize, so
-    // "zero lines" cannot be expressed. `disable_line_limit()` removes it.
-    field("Notes", value).line_limit(NonZeroUsize::new(4).expect("four lines"))
+    // Fields are single-line by default; `line_limit` takes any signal of
+    // `Option<NonZeroUsize>`, so `None` removes the limit and `NonZeroUsize`
+    // values cannot express zero lines.
+    field("Notes", value).line_limit(NonZeroUsize::new(4))
 }
 
 fn body(value: &Binding<styled::StyledStr>) -> impl View {
-    TextField::styled("Body", value).disable_line_limit()
+    TextField::styled("Body", value).line_limit(None::<NonZeroUsize>)
 }
 ```
 
