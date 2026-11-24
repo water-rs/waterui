@@ -608,15 +608,18 @@ resolves to. Changing the signal re-resolves the font in place; the text is not 
 Code blocks (feature `highlight`, on by default) are a syntax-highlighted block with a
 header naming the language and a copy button. `code(language, content)` and `Code::new`
 accept any `impl Into<CodeLanguage>` — a typed `Language` or any string token such as
-`"rust"` or `"mermaid"`. Unrecognized tokens render as `Language::Plaintext` without
-panicking, keep the original token as `CodeConfig::info`, and display it in the header.
-`Code` owns the copy; `.on_copied(..)` is where the caller tells the user:
+`"rust"` or `"mermaid"` — and any `impl IntoComputed<Str>` for `content` (static text or a
+reactive `Binding<Str>` / `Computed<Str>` that re-highlights in place without `watch`).
+Unrecognized language tokens render as `Language::Plaintext` without panicking, keep the
+original token as `CodeConfig::info`, and display it in the header. `Code` owns the copy;
+`.on_copied(..)` is where the caller tells the user:
 
 ```rust
 use waterui::prelude::highlight::Language;
 use waterui::widget::{Code, code};
 
-code(Language::Rust, "fn main() {}")                   // typed language
+code(Language::Rust, "fn main() {}")                   // typed language, static text
+code(Language::Rust, source)                           // reactive Binding<Str> / Computed<Str>
 code("rust", "fn main() {}")                           // recognized token -> Rust header
 code(token, fence_text)                                // any token: unknown renders as plaintext with `token` header
     .on_copied({ let copied = copied.clone(); move |_| copied.set(true) })
