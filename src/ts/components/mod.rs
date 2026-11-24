@@ -524,7 +524,10 @@ fn controls(
         "Link" => {
             let attributes = LinkAttributes::from_js(config, bridge)?;
             let label = children::label(bridge, component, None, children)?;
-            Ok(AnyView::new(Link::new(label, attributes.into_url())))
+            Ok(AnyView::new(Link::new(
+                label,
+                attributes.into_url().map(|url| url.0).computed(),
+            )))
         }
         // `create` checked the catalog before dispatching, so a name reaching
         // here is one the catalog declares and this match does not build.

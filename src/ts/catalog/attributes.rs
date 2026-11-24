@@ -26,12 +26,10 @@ use waterui_ts::schema::TsType;
 
 use waterui_ts::JsViewBuilder;
 
-#[cfg(feature = "media")]
-use super::values::UrlValue;
 use super::values::{
     BackgroundValue, BorderValue, ColorValue, HorizontalAlign, JsAction, PaddingValue,
     PickerOption, ProgressStyleValue, ScrollAxis, ShadowValue, ShapeValue, StackAlign, TextContent,
-    VerticalAlign,
+    UrlValue, VerticalAlign,
 };
 
 /// `<VStack>`: children stacked top to bottom.
@@ -503,19 +501,19 @@ impl ProgressAttributes {
 #[non_exhaustive]
 pub struct LinkAttributes {
     /// The URL the link opens.
-    url: Computed<Str>,
+    url: Computed<UrlValue>,
 }
 
 impl LinkAttributes {
     /// The URL the link opens.
     #[must_use]
-    pub const fn url(&self) -> &Computed<Str> {
+    pub const fn url(&self) -> &Computed<UrlValue> {
         &self.url
     }
 
     /// Takes the `url` out of the value.
     #[must_use]
-    pub fn into_url(self) -> Computed<Str> {
+    pub fn into_url(self) -> Computed<UrlValue> {
         self.url
     }
 }
