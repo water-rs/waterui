@@ -113,10 +113,7 @@ impl<C: ListContent<SectionScope>> ListContent<ListScope> for Section<C> {
         R: View,
         W: Fn(Self::Row) -> R + Clone + 'static,
     {
-        let mut chrome = ListSection::default();
-        chrome.set_label(self.label);
-        chrome.set_footer(self.footer);
-        sink.begin_section(chrome);
+        sink.begin_section(ListSection::new(self.label, self.footer));
         self.content.collect_items(sink, wrap);
         sink.end_section();
     }
