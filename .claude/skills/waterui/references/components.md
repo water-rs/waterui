@@ -490,11 +490,11 @@ a toolbar, a menu, and a keyboard shortcut. `Command` has its own builder chain:
     .subtitle("Copy the selection")            // secondary line under the label
     .shortcut(Shortcut::new('c').command())
 "Delete".action(delete_handler).destructive()  // red in every menu; == .role(CommandRole::Destructive)
-"Delete".action(delete_handler).shortcut(Shortcut::new(NamedKey::Delete))
+"Delete".action(delete_handler).shortcut(Shortcut::new(ShortcutNamedKey::Delete))
 Shortcut::new('s').command().shift()           // ⇧⌘S; also .option() and .control()
 ```
 
-A shortcut key is a `char` or a W3C `NamedKey`. `.command()` is the platform's primary
+A shortcut key is a `char` or a `ShortcutNamedKey` (or `ShortcutKey::try_from(NamedKey)`). `.command()` is the platform's primary
 modifier: ⌘ on Apple, Ctrl elsewhere. When a chord is live depends on where the command
 sits: a mounted `Menu` arms its chords whether or not its popup is open, a `.context_menu`
 arms them only while it is open, and `App::menu_bar` arms them app-wide. A chord without

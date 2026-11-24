@@ -126,7 +126,7 @@ pub mod prelude {
     #[cfg(feature = "menu")]
     pub use super::component::menu::{
         Command, CommandExt, CommandRole, Menu, MenuItem, NamedKey, Shortcut, ShortcutKey,
-        ShortcutModifiers,
+        ShortcutModifiers, ShortcutNamedKey,
     };
     #[cfg(feature = "menu")]
     pub use super::metadata::context_menu::{ContextMenu, DismissContextMenu};

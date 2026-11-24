@@ -703,7 +703,7 @@ pub fn components_block_17() {
     let _ = {
         "Delete"
             .action(delete_handler)
-            .shortcut(Shortcut::new(NamedKey::Delete))
+            .shortcut(Shortcut::new(ShortcutNamedKey::Delete))
     };
     let _ = {
         Shortcut::new('s').command().shift() // ⇧⌘S; also .option() and .control()
