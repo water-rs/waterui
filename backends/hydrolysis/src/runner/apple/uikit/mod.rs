@@ -117,8 +117,8 @@ struct UiKitApplication {
     /// The process-wide appearance, fed by the scene's trait observation.
     color_scheme: nami::Binding<ColorScheme>,
     /// Keeps the `NSCurrentLocaleDidChangeNotification` observer registered
-    /// for the lifetime of the UIKit application.
-    _locale_observer: RefCell<Option<NotificationObserver>>,
+    /// for the lifetime of the `UIKit` application.
+    locale_observer: RefCell<Option<NotificationObserver>>,
     process: OnceCell<Rc<Process>>,
     scenes: RefCell<BTreeMap<String, Rc<UiKitScene>>>,
     #[cfg(feature = "menu")]
@@ -136,7 +136,7 @@ impl UiKitApplication {
     fn did_finish_launching(self: &Rc<Self>) {
         waterui_locale::start_system_locale_listener();
         let mtm = MainThreadMarker::new().expect("UIKit finishes launching on the main thread");
-        *self._locale_observer.borrow_mut() = Some(observe_locale_changes(mtm, || {
+        *self.locale_observer.borrow_mut() = Some(observe_locale_changes(mtm, || {
             let _ = refresh_system_locale();
         }));
         let Launch {
@@ -348,7 +348,7 @@ pub(in crate::runner) fn run<W: Windows, M: AppMenuBar>(
             services,
         })),
         color_scheme: nami::binding(framework_scheme(uikit::current_scheme())),
-        _locale_observer: RefCell::new(None),
+        locale_observer: RefCell::new(None),
         process: OnceCell::new(),
         scenes: RefCell::new(BTreeMap::new()),
         #[cfg(feature = "menu")]
