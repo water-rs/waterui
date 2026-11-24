@@ -13,6 +13,7 @@ use waterui_core::{
 };
 
 pub use crate::tab::SlotBuilder;
+use crate::transition::TransitionKeyRegistry;
 use crate::{NavigationToolbarItems, NavigationView, ResolvedNavigationView};
 
 /// Width constraints for a resizable navigation split column.
@@ -674,7 +675,8 @@ where
 
     /// Reaches the backend with every column built in the backend's child slot.
     fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
-        backend.native(self.into_layout::<B::Slot>(), env, cx)
+        let split_env = TransitionKeyRegistry::scoped(env);
+        backend.native(self.into_layout::<B::Slot>(), &split_env, cx)
     }
 }
 

@@ -1,8 +1,163 @@
 //! Extensible navigation transitions.
 
-use core::fmt::Debug;
+use alloc::{boxed::Box, collections::BTreeMap, rc::Rc, vec::Vec};
+use core::{
+    any::{Any, TypeId},
+    cell::RefCell,
+    fmt::{Debug, Formatter, Result as FmtResult},
+    hash::{Hash, Hasher},
+};
 
-use waterui_core::{Metadata, View, contract_violation, id::Id, metadata::MetadataKey};
+use waterui_core::{
+    Environment, Metadata, View, contract_violation, id::Id, metadata::MetadataKey,
+};
+
+trait KeyTable: Any {
+    fn as_any_mut(&mut self) -> &mut dyn Any;
+}
+
+struct TypedKeyTable<K: Hash + Eq + 'static> {
+    buckets: BTreeMap<u64, Vec<(K, Id)>>,
+}
+
+impl<K: Hash + Eq + 'static> Default for TypedKeyTable<K> {
+    fn default() -> Self {
+        Self {
+            buckets: BTreeMap::new(),
+        }
+    }
+}
+
+impl<K: Hash + Eq + 'static> KeyTable for TypedKeyTable<K> {
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+}
+
+struct Fnv1a64(u64);
+
+impl Default for Fnv1a64 {
+    fn default() -> Self {
+        // 64-bit FNV-1a offset basis.
+        Self(0xcbf2_9ce4_8422_2325)
+    }
+}
+
+impl Hasher for Fnv1a64 {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        // 64-bit FNV-1a prime.
+        const PRIME: u64 = 0x0100_0000_01b3;
+        for &byte in bytes {
+            self.0 ^= u64::from(byte);
+            self.0 = self.0.wrapping_mul(PRIME);
+        }
+    }
+}
+
+fn hash_key<K: Hash>(key: &K) -> u64 {
+    let mut hasher = Fnv1a64::default();
+    key.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn fallback_id<K: Hash>(key: &K) -> Id {
+    let raw = (hash_key(key) & 0x7fff_fffe) as i32 + 1;
+    Id::try_from(raw).unwrap_or_else(|_| Id::try_from(1).expect("1 is a valid non-zero Id"))
+}
+
+struct TransitionKeyRegistryInner {
+    tables: BTreeMap<TypeId, Box<dyn KeyTable>>,
+    next_id: i32,
+}
+
+impl Default for TransitionKeyRegistryInner {
+    fn default() -> Self {
+        Self {
+            tables: BTreeMap::new(),
+            next_id: 1,
+        }
+    }
+}
+
+impl TransitionKeyRegistryInner {
+    fn intern<K: Hash + Eq + 'static>(&mut self, key: K) -> Id {
+        let hash = hash_key(&key);
+        let type_id = TypeId::of::<K>();
+        let table = self
+            .tables
+            .entry(type_id)
+            .or_insert_with(|| Box::new(TypedKeyTable::<K>::default()));
+        let typed = table
+            .as_any_mut()
+            .downcast_mut::<TypedKeyTable<K>>()
+            .expect("TypeId key guarantees exact TypedKeyTable<K>");
+
+        let bucket = typed.buckets.entry(hash).or_default();
+        if let Some((_, id)) = bucket.iter().find(|(existing, _)| existing == &key) {
+            return *id;
+        }
+
+        let raw = self.next_id;
+        self.next_id = self.next_id.checked_add(1).unwrap_or_else(|| {
+            contract_violation!(
+                "matched navigation transition key capacity exhausted; reusing fallback id"
+            );
+            1
+        });
+        let id = Id::try_from(raw).unwrap_or_else(|_| fallback_id(&key));
+        bucket.push((key, id));
+        id
+    }
+}
+
+/// Per-navigation-container registry erasing typed transition keys into [`Id`]s.
+#[derive(Clone, Default)]
+pub struct TransitionKeyRegistry(Rc<RefCell<TransitionKeyRegistryInner>>);
+
+impl Debug for TransitionKeyRegistry {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> FmtResult {
+        formatter
+            .debug_struct("TransitionKeyRegistry")
+            .finish_non_exhaustive()
+    }
+}
+
+impl TransitionKeyRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn ensure_in(env: &mut Environment) {
+        if env.get::<Self>().is_none() {
+            env.insert(Self::new());
+        }
+    }
+
+    pub fn scoped(env: &Environment) -> Environment {
+        let mut scoped = env.clone();
+        Self::ensure_in(&mut scoped);
+        scoped
+    }
+
+    pub fn intern<K: Hash + Eq + 'static>(&self, key: K) -> Id {
+        self.0.borrow_mut().intern(key)
+    }
+}
+
+pub fn resolve_transition_key<K: Hash + Eq + 'static>(env: &Environment, key: K) -> Id {
+    if let Some(registry) = env.get::<TransitionKeyRegistry>() {
+        registry.intern(key)
+    } else {
+        contract_violation!(
+            "matched navigation transition keys must be resolved inside a NavigationStack or NavigationSplitView"
+        );
+        fallback_id(&key)
+    }
+}
 
 /// Marks the source geometry for a matched navigation transition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -16,19 +171,50 @@ pub struct NavigationTransitionDestination(pub(crate) Id);
 
 impl MetadataKey for NavigationTransitionDestination {}
 
+/// A view marked as the source geometry for a matched navigation transition keyed by `K`.
+#[derive(Debug)]
+pub struct KeyedNavigationTransitionSource<V, K> {
+    content: V,
+    key: K,
+}
+
+impl<V: View, K: Hash + Eq + 'static> View for KeyedNavigationTransitionSource<V, K> {
+    fn body(self, env: &Environment) -> impl View {
+        let id = resolve_transition_key(env, self.key);
+        Metadata::new(self.content, NavigationTransitionSource(id))
+    }
+}
+
+/// A view marked as the destination geometry for a matched navigation transition keyed by `K`.
+#[derive(Debug)]
+pub struct KeyedNavigationTransitionDestination<V, K> {
+    content: V,
+    key: K,
+}
+
+impl<V: View, K: Hash + Eq + 'static> View for KeyedNavigationTransitionDestination<V, K> {
+    fn body(self, env: &Environment) -> impl View {
+        let id = resolve_transition_key(env, self.key);
+        Metadata::new(self.content, NavigationTransitionDestination(id))
+    }
+}
+
 /// Navigation transition metadata available on every view.
 pub trait NavigationTransitionViewExt: View + Sized {
     /// Marks this view as the source geometry for a matched transition.
-    fn navigation_transition_source(self, id: Id) -> Metadata<NavigationTransitionSource, Self> {
-        Metadata::new(self, NavigationTransitionSource(id))
+    fn navigation_transition_source<K: Hash + Eq + 'static>(
+        self,
+        key: K,
+    ) -> KeyedNavigationTransitionSource<Self, K> {
+        KeyedNavigationTransitionSource { content: self, key }
     }
 
     /// Marks this view as the destination geometry for a matched transition.
-    fn navigation_transition_destination(
+    fn navigation_transition_destination<K: Hash + Eq + 'static>(
         self,
-        id: Id,
-    ) -> Metadata<NavigationTransitionDestination, Self> {
-        Metadata::new(self, NavigationTransitionDestination(id))
+        key: K,
+    ) -> KeyedNavigationTransitionDestination<Self, K> {
+        KeyedNavigationTransitionDestination { content: self, key }
     }
 }
 
@@ -222,6 +408,12 @@ pub trait NavigationTransition: Debug + 'static {
     fn retained(&self) -> RetainedNavigationTransition {
         RetainedNavigationTransition::Frames
     }
+
+    /// Resolves any container-scoped transition keys against `env`.
+    #[doc(hidden)]
+    fn resolve(&self, _env: &Environment) -> Option<AnyNavigationTransition> {
+        None
+    }
 }
 
 /// Type-erased navigation transition retained by a stack.
@@ -284,6 +476,13 @@ impl AnyNavigationTransition {
     pub fn retained(&self) -> RetainedNavigationTransition {
         self.0.retained()
     }
+
+    /// Resolves any container-scoped transition keys against `env`.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn resolve(self, env: &Environment) -> Self {
+        self.0.resolve(env).unwrap_or(self)
+    }
 }
 
 impl NavigationTransition for AnyNavigationTransition {
@@ -323,11 +522,20 @@ pub enum NativeNavigationTransition {
 
 /// Built-in navigation transition constructors.
 pub mod navigation_transition {
-    use super::{
-        NativeNavigationTransition, NavigationTransition, NavigationTransitionDirection,
-        NavigationTransitionFrame, NavigationTransitionLayer, RetainedNavigationTransition,
+    use alloc::rc::Rc;
+    use core::{
+        any::type_name,
+        cell::RefCell,
+        fmt::{Debug, Formatter, Result as FmtResult},
+        hash::Hash,
     };
-    use waterui_core::id::Id;
+
+    use super::{
+        AnyNavigationTransition, NativeNavigationTransition, NavigationTransition,
+        NavigationTransitionDirection, NavigationTransitionFrame, NavigationTransitionLayer,
+        RetainedNavigationTransition, resolve_transition_key,
+    };
+    use waterui_core::{Environment, contract_violation, id::Id};
 
     /// Platform-default navigation motion.
     #[derive(Debug, Clone, Copy, Default)]
@@ -337,11 +545,36 @@ pub mod navigation_transition {
     #[derive(Debug, Clone, Copy, Default)]
     pub struct Fade;
 
-    /// Platform-native zoom/shared-element navigation motion.
-    #[derive(Debug, Clone, Copy)]
-    pub struct Zoom {
-        source: Id,
+    enum ZoomState<K> {
+        Unresolved(Option<K>),
+        Resolved(Id),
     }
+
+    /// Platform-native zoom/shared-element navigation motion keyed by `K`.
+    pub struct Zoom<K>(Rc<RefCell<ZoomState<K>>>);
+
+    impl<K> Clone for Zoom<K> {
+        fn clone(&self) -> Self {
+            Self(Rc::clone(&self.0))
+        }
+    }
+
+    impl<K> Debug for Zoom<K> {
+        fn fmt(&self, formatter: &mut Formatter<'_>) -> FmtResult {
+            let id = match &*self.0.borrow() {
+                ZoomState::Unresolved(_) => Option::None,
+                ZoomState::Resolved(id) => Some(*id),
+            };
+            formatter
+                .debug_struct("Zoom")
+                .field("key_type", &type_name::<K>())
+                .field("resolved_id", &id)
+                .finish()
+        }
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    struct ResolvedZoom(Id);
 
     /// Navigation with animation disabled.
     #[derive(Debug, Clone, Copy, Default)]
@@ -359,10 +592,10 @@ pub mod navigation_transition {
         Fade
     }
 
-    /// Uses a platform-native zoom/shared-element transition.
+    /// Uses a platform-native zoom/shared-element transition matching `source`.
     #[must_use]
-    pub const fn zoom(source: Id) -> Zoom {
-        Zoom { source }
+    pub fn zoom<K: Hash + Eq + 'static>(source: K) -> Zoom<K> {
+        Zoom(Rc::new(RefCell::new(ZoomState::Unresolved(Some(source)))))
     }
 
     /// Disables navigation animation.
@@ -407,32 +640,95 @@ pub mod navigation_transition {
         }
     }
 
-    impl NavigationTransition for Zoom {
+    fn zoom_frame(progress: f32) -> NavigationTransitionFrame {
+        NavigationTransitionFrame {
+            outgoing: NavigationTransitionLayer {
+                scale: 1.0 + 0.05 * progress,
+                opacity: 1.0 - progress,
+                ..NavigationTransitionLayer::IDENTITY
+            },
+            incoming: NavigationTransitionLayer {
+                scale: 0.85 + 0.15 * progress,
+                opacity: progress,
+                ..NavigationTransitionLayer::IDENTITY
+            },
+        }
+    }
+
+    impl<K: Hash + Eq + 'static> Zoom<K> {
+        fn resolved_id(&self) -> Option<Id> {
+            match &*self.0.borrow() {
+                ZoomState::Resolved(id) => Some(*id),
+                ZoomState::Unresolved(_) => Option::None,
+            }
+        }
+    }
+
+    impl<K: Hash + Eq + 'static> NavigationTransition for Zoom<K> {
         fn frame(
             &self,
             progress: f32,
             _direction: NavigationTransitionDirection,
         ) -> NavigationTransitionFrame {
-            NavigationTransitionFrame {
-                outgoing: NavigationTransitionLayer {
-                    scale: 1.0 + 0.05 * progress,
-                    opacity: 1.0 - progress,
-                    ..NavigationTransitionLayer::IDENTITY
-                },
-                incoming: NavigationTransitionLayer {
-                    scale: 0.85 + 0.15 * progress,
-                    opacity: progress,
-                    ..NavigationTransitionLayer::IDENTITY
-                },
-            }
+            zoom_frame(progress)
         }
 
         fn native(&self) -> Option<NativeNavigationTransition> {
-            Some(NativeNavigationTransition::Zoom(self.source))
+            self.resolved_id().map_or_else(
+                || {
+                    contract_violation!(
+                        "matched zoom transition must be resolved against a NavigationStack environment before querying native projection"
+                    );
+                    Some(NativeNavigationTransition::Automatic)
+                },
+                |id| Some(NativeNavigationTransition::Zoom(id)),
+            )
         }
 
         fn retained(&self) -> RetainedNavigationTransition {
-            RetainedNavigationTransition::MatchedGeometry(self.source)
+            self.resolved_id().map_or_else(
+                || {
+                    contract_violation!(
+                        "matched zoom transition must be resolved against a NavigationStack environment before querying retained execution"
+                    );
+                    RetainedNavigationTransition::PlatformDefault
+                },
+                RetainedNavigationTransition::MatchedGeometry,
+            )
+        }
+
+        fn resolve(&self, env: &Environment) -> Option<AnyNavigationTransition> {
+            let mut state = self.0.borrow_mut();
+            let id = match &mut *state {
+                ZoomState::Resolved(id) => *id,
+                ZoomState::Unresolved(key) => {
+                    let key = key
+                        .take()
+                        .expect("unresolved zoom transition must hold a key");
+                    let id = resolve_transition_key(env, key);
+                    *state = ZoomState::Resolved(id);
+                    id
+                }
+            };
+            Some(AnyNavigationTransition::new(ResolvedZoom(id)))
+        }
+    }
+
+    impl NavigationTransition for ResolvedZoom {
+        fn frame(
+            &self,
+            progress: f32,
+            _direction: NavigationTransitionDirection,
+        ) -> NavigationTransitionFrame {
+            zoom_frame(progress)
+        }
+
+        fn native(&self) -> Option<NativeNavigationTransition> {
+            Some(NativeNavigationTransition::Zoom(self.0))
+        }
+
+        fn retained(&self) -> RetainedNavigationTransition {
+            RetainedNavigationTransition::MatchedGeometry(self.0)
         }
     }
 
@@ -460,8 +756,11 @@ mod tests {
     use super::{
         AnyNavigationTransition, NativeNavigationTransition, NavigationTransition,
         NavigationTransitionDirection, NavigationTransitionFrame, NavigationTransitionLayer,
-        RetainedNavigationTransition, navigation_transition,
+        NavigationTransitionViewExt as _, RetainedNavigationTransition, TransitionKeyRegistry,
+        navigation_transition, resolve_transition_key,
     };
+    use crate::{IntoNavigationStackLayout as _, NavigationStack, NavigationView};
+    use waterui_core::{AnyView, Environment};
 
     #[test]
     #[cfg_attr(
@@ -531,6 +830,9 @@ mod tests {
     /// none of them depend on being recognised by native identity.
     #[test]
     fn built_in_styles_declare_their_retained_execution() {
+        #[derive(Hash, PartialEq, Eq)]
+        struct PhotoKey(&'static str);
+
         assert_eq!(
             AnyNavigationTransition::new(navigation_transition::automatic()).retained(),
             RetainedNavigationTransition::PlatformDefault
@@ -543,10 +845,74 @@ mod tests {
             AnyNavigationTransition::new(navigation_transition::none()).retained(),
             RetainedNavigationTransition::None
         );
-        let id = waterui_core::id::Id::try_from(3).expect("test id must be non-zero");
+
+        let registry = TransitionKeyRegistry::new();
+        let mut env = Environment::new();
+        env.insert(registry);
+
+        let expected = resolve_transition_key(&env, PhotoKey("hero"));
+        let zoom = AnyNavigationTransition::new(navigation_transition::zoom(PhotoKey("hero")))
+            .resolve(&env);
         assert_eq!(
-            AnyNavigationTransition::new(navigation_transition::zoom(id)).retained(),
-            RetainedNavigationTransition::MatchedGeometry(id)
+            zoom.retained(),
+            RetainedNavigationTransition::MatchedGeometry(expected)
         );
+        assert_eq!(zoom.native(), NativeNavigationTransition::Zoom(expected));
+    }
+
+    #[test]
+    fn distinct_key_types_with_same_value_do_not_collide() {
+        let mut env = Environment::new();
+        env.insert(TransitionKeyRegistry::new());
+
+        let u32_id = resolve_transition_key(&env, 0_u32);
+        let usize_id = resolve_transition_key(&env, 0_usize);
+        let zero_again = resolve_transition_key(&env, 0_u32);
+
+        assert_ne!(u32_id, usize_id);
+        assert_eq!(u32_id, zero_again);
+    }
+
+    #[test]
+    fn navigation_stack_and_view_resolve_matching_transition_keys() {
+        #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+        struct PhotoRoute(usize);
+
+        let stack_env = TransitionKeyRegistry::scoped(&Environment::new());
+        let mut stack_layout = NavigationStack::new(NavigationView::new(
+            "Gallery",
+            ().navigation_transition_source(PhotoRoute(3)),
+        ))
+        .transition(navigation_transition::zoom(PhotoRoute(3)))
+        .into_layout::<AnyView>();
+        stack_layout.transition = stack_layout.transition.resolve(&stack_env);
+
+        let stack_zoom_id = match stack_layout.transition.native() {
+            NativeNavigationTransition::Zoom(id) => id,
+            other => panic!("expected native zoom transition, got {other:?}"),
+        };
+        let root = stack_layout.resolve(&stack_env);
+        assert!(root.transition.is_none());
+
+        let mut resolved_page =
+            NavigationView::new("Photo", ().navigation_transition_destination(PhotoRoute(3)))
+                .transition(navigation_transition::zoom(PhotoRoute(3)))
+                .into_resolved::<AnyView>();
+        resolved_page.resolve_native_fields(&stack_env);
+        let page_zoom_id = match resolved_page
+            .transition
+            .expect("page transition should stay present")
+            .native()
+        {
+            NativeNavigationTransition::Zoom(id) => id,
+            other => panic!("expected page native zoom transition, got {other:?}"),
+        };
+
+        let resolved_key_id = resolve_transition_key(&stack_env, PhotoRoute(3));
+        let other_key_id = resolve_transition_key(&stack_env, PhotoRoute(4));
+
+        assert_eq!(stack_zoom_id, page_zoom_id);
+        assert_eq!(stack_zoom_id, resolved_key_id);
+        assert_ne!(other_key_id, resolved_key_id);
     }
 }

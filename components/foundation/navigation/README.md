@@ -195,21 +195,23 @@ NavigationStack::with_path(path, root)
     .transition(navigation_transition::fade())
 ```
 
-Matched zoom uses one stable `Id` on the source and destination:
+Matched zoom uses one shared key type on the source, destination, and transition:
 
 ```rust
-let transition_id = Id::try_from(7).expect("transition id must be non-zero");
+#[derive(Clone, Copy, Hash, PartialEq, Eq)]
+struct PhotoKey(u64);
 
-let source = thumbnail.navigation_transition_source(transition_id);
+let key = PhotoKey(7);
+let source = thumbnail.navigation_transition_source(key);
 
 NavigationStack::with_path(path, root)
     .destination(move |_| {
         NavigationView::new(
             "Photo",
-            hero().navigation_transition_destination(transition_id),
+            hero().navigation_transition_destination(key),
         )
     })
-    .transition(navigation_transition::zoom(transition_id))
+    .transition(navigation_transition::zoom(key))
 ```
 
 Apple executes supported transitions through native transition systems. Hydrolysis executes the same built-ins, interactive edge-pop motion, matched geometry, and custom `NavigationTransition` implementations on the retained GPU scene. A custom transition without a native projection is intentionally applied without animation on native backends and logged as unsupported there.

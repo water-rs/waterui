@@ -36,7 +36,7 @@ use waterui::component::list::{
     List, ListContent, ListDelete, ListItem, ListMove, Section, SectionScope, TaggedBy, row,
 };
 use waterui::handler::ViewBuilder;
-use waterui::id::{Id, SelfId};
+use waterui::id::SelfId;
 use waterui::navigation::{NavigationSplitView, NavigationToolbarItems, NavigationView, Navigator};
 use waterui::prelude::theme_color::{Accent, Foreground, SurfaceVariant};
 use waterui::prelude::*;
@@ -68,7 +68,7 @@ enum MailRoute {
     Compose,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct PhotoRoute(usize);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -706,16 +706,6 @@ fn album_detail(album: Album) -> NavigationView<impl View + use<>> {
 // Gallery: a matched zoom transition between the grid and the photo
 // ---------------------------------------------------------------------------
 
-/// One stable id per photo ties a tapped tile to the page it opens.
-///
-/// A matched pair belongs to one destination, not to the stack: tile 3 and the
-/// page it opens share an identity that tile 4 does not. So every photo gets its
-/// own id, and each page names the one it arrives by.
-fn photo_transition(index: usize) -> Id {
-    Id::try_from(i32::try_from(index).expect("photo index must fit an id") + 1)
-        .expect("transition id must be non-zero")
-}
-
 fn gallery_stack() -> impl View {
     NavigationStack::with_path(NavigationPath::<PhotoRoute>::new(), gallery_root())
         .destination(|PhotoRoute(index)| photo_page(index))
@@ -740,7 +730,7 @@ fn photo_tile(index: usize) -> impl View {
         }),
         PhotoRoute(index),
     )
-    .navigation_transition_source(photo_transition(index))
+    .navigation_transition_source(PhotoRoute(index))
 }
 
 fn photo_page(index: usize) -> NavigationView<impl View + use<>> {
@@ -750,7 +740,7 @@ fn photo_page(index: usize) -> NavigationView<impl View + use<>> {
             // A `RoundedRectangle` radius is a fraction of the shorter side,
             // not a point value.
             .clip(RoundedRectangle::new(0.06))
-            .navigation_transition_destination(photo_transition(index)),
+            .navigation_transition_destination(PhotoRoute(index)),
         text(include_str!("gallery_transition_description.txt"))
             .caption()
             .muted(),
@@ -760,7 +750,7 @@ fn photo_page(index: usize) -> NavigationView<impl View + use<>> {
     .navigation_title(text!("Photo {index}"))
     .inline_title()
     // The declaration lives on the destination, because the pair it names does.
-    .transition(navigation_transition::zoom(photo_transition(index)))
+    .transition(navigation_transition::zoom(PhotoRoute(index)))
 }
 
 /// Six flat swatches standing in for photographs.
