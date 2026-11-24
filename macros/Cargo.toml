@@ -25,6 +25,9 @@ serde_json = { version = "1.0", default-features = false, features = ["alloc"], 
 sha2 = { version = "0.11", default-features = false, optional = true }
 waterui-locale-parser.workspace = true
 proc-macro-crate = "3"
+# Default camelCase projection and container-level `#[ts(rename_all = "...")]`
+# case conversions; already present in the workspace lockfile.
+heck = { version = "0.5", default-features = false }
 # A TypeScript property name is an ECMAScript IdentifierName, whose character
 # classes are the Unicode ID_Start/ID_Continue sets; syn already links this.
 unicode-ident = "1"

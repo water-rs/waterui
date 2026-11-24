@@ -13571,6 +13571,7 @@ dependencies = [
 name = "waterui-macros"
 version = "0.5.1"
 dependencies = [
+ "heck",
  "icu_locale_core",
  "proc-macro-crate",
  "proc-macro2 1.0.107",
