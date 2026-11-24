@@ -11,6 +11,7 @@ use std::{
 use crate::project::Project;
 use crate::project_model::apple_targets::{APPLE_PLATFORMS, AppleDeploymentTargets, AppleVersion};
 use crate::project_model::facts::{Disk, Fact, Facts, InputFiles, Scope};
+use crate::self_update::cli_update_command;
 use crate::toolchain::{Host, git};
 use cargo_lock::{Dependency as LockedDependency, Lockfile};
 use cargo_toml::{Dependency, DependencyDetail, PatchSet};
@@ -3106,7 +3107,7 @@ fn validate_backend_contract_version(
             );
         }
         Ordering::Greater => {
-            let update = crate::self_update::cli_update_command(host, cli_update);
+            let update = cli_update_command(host, cli_update);
             bail!(
                 "This WaterUI framework declares backend-contract {contract}, which is newer than the backend templates waterui-cli {} generates (backend-contract {BACKEND_CONTRACT}).\nUpdate the CLI: {update}\nThen verify the installed version with `water --version`.",
                 env!("CARGO_PKG_VERSION"),

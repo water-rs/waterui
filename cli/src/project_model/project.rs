@@ -6271,17 +6271,8 @@ mod scaffold_tests {
     /// Creates a scaffold project backed by a local checkout workspace so
     /// tests run offline against the current `backend-contract` without
     /// fetching from GitHub or crates.io.
-    fn create_project(
-        host: &crate::toolchain::Host,
-        root: &Path,
-        vendor_dir: &Path,
-        apple_backend: bool,
-    ) -> Project {
-        let checkout = vendor_dir.join(if apple_backend {
-            "waterui-apple-checkout"
-        } else {
-            "waterui-checkout"
-        });
+    fn create_project(host: &crate::toolchain::Host, root: &Path, vendor_dir: &Path) -> Project {
+        let checkout = vendor_dir.join("waterui-checkout");
         crate::framework::test_fixtures::write_local_checkout_workspace(&checkout)
             .expect("local checkout");
         smol::block_on(Project::create(
@@ -6320,12 +6311,7 @@ mod scaffold_tests {
         ] {
             let dir = tempfile::tempdir().expect("temp dir");
             let root = dir.path().join("water-example");
-            create_project(
-                &real_toolchain_host(&machine),
-                &root,
-                dir.path(),
-                apple_expected,
-            );
+            create_project(&real_toolchain_host(&machine), &root, dir.path());
 
             let project = smol::block_on(Project::open(
                 &real_toolchain_host(&machine),
@@ -6363,7 +6349,7 @@ mod scaffold_tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let base = dunce::canonicalize(dir.path()).expect("canonical temp dir");
         let root = base.join("water-example");
-        create_project(&real_toolchain_host(&machine), &root, &base, false);
+        create_project(&real_toolchain_host(&machine), &root, &base);
 
         // A `waterui_path` checkout carrying the pieces the render
         // resolves: `waterui` at the root and the `backends/apple` member
@@ -6469,7 +6455,7 @@ mod scaffold_tests {
         let machine = crate::toolchain::testing::TestMachine::new();
         let dir = tempfile::tempdir().expect("temp dir");
         let root = dir.path().join("water-example");
-        let project = create_project(&real_toolchain_host(&machine), &root, dir.path(), true);
+        let project = create_project(&real_toolchain_host(&machine), &root, dir.path());
 
         smol::block_on(project.scaffold_apple_companion())
             .expect("a scaffold off macOS must succeed");
