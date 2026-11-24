@@ -386,7 +386,7 @@ kurbo = "0.13"
 skrifa = "0.48.0"
 toml = "1.1.8"
 wgpu-hal = { version = "30.0.1", default-features = false, features = ["metal"] }
-zenwave = { version = "0.7.1", default-features = false, features = ["hyper-backend"] }
+zenwave = { version = "0.12.0", default-features = false, features = ["hyper-backend"] }
 pastey = "0.2.3"
 tracing-panic = "0.1.3"
 pollster = "1.0"

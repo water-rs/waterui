@@ -185,7 +185,7 @@ default = ["svg-icons"]
 svg-icons = ["dep:resvg"]
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
-zenwave = { version = "0.7.1", default-features = false, features = ["hyper-backend", "native-tls"] }
+zenwave = { workspace = true, features = ["native-tls"] }
 core-graphics = "0.25"
 core-foundation = "0.10"
 # `confstr(_CS_DARWIN_USER_TEMP_DIR)`: the per-user temp directory `std` falls
@@ -237,7 +237,7 @@ windows-sys = { version = "0.61", features = [
 ] }
 
 [target.'cfg(not(target_vendor = "apple"))'.dependencies]
-zenwave = { version = "0.7.1", default-features = false, features = ["hyper-backend", "rustls"] }
+zenwave = { workspace = true, features = ["rustls"] }
 
 [build-dependencies]
 toml = "1.1.8"

@@ -389,7 +389,7 @@ async fn fetch_bounded(url: &Url, size: u64) -> Result<Vec<u8>, FetchError> {
         return Err(exceeded(0));
     }
     let network = network(url);
-    let mut body = response.into_body();
+    let mut body = response.into_body().into_data_stream();
     let mut bytes = Vec::with_capacity(declared.and_then(|n| usize::try_from(n).ok()).unwrap_or(0));
     let mut received: u64 = 0;
     while let Some(chunk) = body.next().await {
