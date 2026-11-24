@@ -1094,7 +1094,7 @@ pub mod toolbar_reach {
                     NavigationStack::with_path(
                         NavigationPath::<u64>::new(),
                         content()
-                            .title("Inbox")
+                            .navigation_title("Inbox")
                             .large_title()
                             .navigation_subtitle("3 unread")
                             .searchable(&binding(Str::from("")), "Search mail"),

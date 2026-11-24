@@ -347,7 +347,7 @@ fn inbox_root(
     let edit_title = mail.editing.select(Str::from("Done"), Str::from("Edit"));
 
     message_list(mail.clone())
-        .title("Inbox")
+        .navigation_title("Inbox")
         // Starts large and collapses as the list scrolls: the iOS large-title
         // bar, Android's large app bar.
         .large_title()
@@ -518,7 +518,7 @@ fn message_detail(
         .spacing(12.0)
         .padding_with(16.0),
     )
-    .title(text!("{subject}"))
+    .navigation_title(text!("{subject}"))
     // A pushed page keeps its title inline, the way a platform back stack does.
     .inline_title()
     .navigation_toolbar(
@@ -560,7 +560,7 @@ fn compose_page(
     .leading()
     .spacing(12.0)
     .padding_with(16.0)
-    .title("New Message")
+    .navigation_title("New Message")
     .inline_title()
     .navigation_toolbar(
         NavigationToolbar::default()
@@ -699,7 +699,7 @@ fn album_detail(album: Album) -> NavigationView<impl View + use<>> {
         .spacing(10.0)
         .padding_with(16.0),
     )
-    .title(album.title())
+    .navigation_title(album.title())
 }
 
 // ---------------------------------------------------------------------------
@@ -725,7 +725,7 @@ fn gallery_root() -> NavigationView<impl View + use<>> {
     let tiles: VStack<_> = (0..6).map(photo_tile).collect();
 
     scroll(tiles.spacing(12.0).padding_with(16.0))
-        .title("Gallery")
+        .navigation_title("Gallery")
         .large_title()
 }
 
@@ -757,7 +757,7 @@ fn photo_page(index: usize) -> NavigationView<impl View + use<>> {
     ))
     .spacing(12.0)
     .padding_with(16.0)
-    .title(text!("Photo {index}"))
+    .navigation_title(text!("Photo {index}"))
     .inline_title()
     // The declaration lives on the destination, because the pair it names does.
     .transition(navigation_transition::zoom(photo_transition(index)))
@@ -816,7 +816,7 @@ fn settings_root(
                 || settings_link("About", SettingsRoute::About),
             )),
     ))
-    .title("Settings")
+    .navigation_title("Settings")
     .large_title()
 }
 
@@ -836,7 +836,7 @@ fn appearance_page(compact: Binding<bool>) -> NavigationView<impl View + use<>> 
             move || ListItem::new(Toggle::new("Compact rows", &compact)),
             row("Current", text!("{density}")),
         )),))
-    .title("Appearance")
+    .navigation_title("Appearance")
     .inline_title()
 }
 
@@ -856,7 +856,7 @@ fn about_page() -> NavigationView<impl View + use<>> {
     .spacing(10.0)
     .padding_with(16.0)
     .background(SurfaceVariant)
-    .title("About")
+    .navigation_title("About")
     .inline_title()
 }
 

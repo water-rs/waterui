@@ -141,7 +141,7 @@ fn surfaces_root() -> NavigationView<impl View> {
             .padding(),
         ),
     ))
-    .title("Surfaces")
+    .navigation_title("Surfaces")
     .large_title()
 }
 
@@ -181,7 +181,7 @@ fn controls_root() -> NavigationView<impl View> {
             .padding(),
         ),
     ))
-    .title("Controls")
+    .navigation_title("Controls")
     .large_title()
 }
 
@@ -193,7 +193,7 @@ fn about_page() -> impl View {
         ))
         .spacing(12.0)
         .padding()
-        .title("About"),
+        .navigation_title("About"),
     )
 }
 
@@ -208,7 +208,7 @@ fn search_page() -> impl View {
         ))
         .spacing(12.0)
         .padding()
-        .title("Search")
+        .navigation_title("Search")
         .searchable(&query, "Search glass"),
     )
 }
