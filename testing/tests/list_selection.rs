@@ -291,7 +291,10 @@ fn disabled_child_does_not_disable_row() {
         .mount_offscreen(move || {
             List::for_each(row_items(), move |item| {
                 let row = item.into_inner();
-                ListItem::new(hstack((text(row_label(row)), button("Go").disabled(true))))
+                ListItem::new(hstack((
+                    text(row_label(row)),
+                    button("Go").action(|| {}).disabled(true),
+                )))
             })
             .selection(&binding)
         });

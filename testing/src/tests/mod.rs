@@ -393,7 +393,7 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 fn scroll_view_and_button_structure_mounts_without_a_style() {
     let mut app = ui().viewport(240, 160).mount(|| {
         ScrollView::vertical(vstack((
-            waterui::component::button("Submit"),
+            waterui::component::button("Submit").action(|| {}),
             text("Scrolled content").body(),
         )))
     });
@@ -719,8 +719,10 @@ fn a_size_then_min_height_and_min_width_chain_resolves_to_the_minimum() {
 fn a11y_identifier_flows_from_modifier_to_selector() {
     let mut app = ui().mount(|| {
         vstack((
-            waterui::component::button("Submit").a11y_id("login.submit"),
-            waterui::component::button("Submit"),
+            waterui::component::button("Submit")
+                .action(|| {})
+                .a11y_id("login.submit"),
+            waterui::component::button("Submit").action(|| {}),
         ))
     });
     let element = app.query().identifier("login.submit").single();
@@ -1375,7 +1377,7 @@ fn ui_focus_is_separate_from_accessibility_focus() {
         vstack((
             TextField::new(text("Username"), &username).focused(&focus_for_view, Field::Username),
             SecureField::new(text("Password"), &password).focused(&focus_for_view, Field::Password),
-            button("Submit"),
+            button("Submit").action(|| {}),
         ))
     });
 
@@ -1502,7 +1504,7 @@ fn focused_modifier_without_a_text_anchor_panics() {
     use waterui::prelude::*;
 
     let focus = Binding::container(None::<i32>);
-    let _app = ui().mount(move || button("No anchor").focused(&focus, 0));
+    let _app = ui().mount(move || button("No anchor").action(|| {}).focused(&focus, 0));
 }
 
 #[test]

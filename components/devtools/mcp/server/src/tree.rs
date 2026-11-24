@@ -240,7 +240,7 @@ mod tests {
         let enabled = waterui::Binding::bool(false);
         let app = ui()
             .viewport(200, 100)
-            .mount(move || vstack((button("Save"), toggle("Enable", &enabled))));
+            .mount(move || vstack((button("Save").action(|| {}), toggle("Enable", &enabled))));
         render_text(&app)
     }
 
@@ -301,7 +301,7 @@ mod tests {
         let enabled = waterui::Binding::bool(false);
         let app = ui()
             .viewport(200, 100)
-            .mount(move || vstack((button("Save"), toggle("Enable", &enabled))));
+            .mount(move || vstack((button("Save").action(|| {}), toggle("Enable", &enabled))));
         let json: serde_json::Value =
             serde_json::from_str(&render_json(&app).expect("json renders")).expect("json parses");
         assert_eq!(json["viewport"], serde_json::json!([200, 100]));

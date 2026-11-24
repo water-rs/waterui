@@ -2215,7 +2215,7 @@ checksum = "af491d569909a7e4dee0ad7db7f5341fef5c614d5b8ec8cf765732aba3cff681"
 dependencies = [
  "serde",
  "termcolor",
- "unicode-width 0.1.14",
+ "unicode-width 0.2.2",
 ]
 
 [[package]]
@@ -4778,9 +4778,9 @@ dependencies = [
 [[package]]
 name = "hydrolysis-m3"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis-m3?branch=main#d17673a23ee22743029e003963cfeffa199b6644"
+source = "git+https://github.com/water-rs/hydrolysis-m3?branch=main#0e8dbddb49c1c80921320cdd6d3b2e6781f38a04"
 dependencies = [
- "hydrolysis",
+ "hydrolysis-style",
  "material-color-utils",
  "num-traits",
  "waterui",
@@ -8831,7 +8831,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "proc-macro2 1.0.107",
  "quote 1.0.47",
  "syn 2.0.119",

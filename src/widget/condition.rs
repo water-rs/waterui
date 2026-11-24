@@ -131,7 +131,7 @@ where
 /// when(is_logged_in.clone(), || {
 ///     vstack((
 ///         "Welcome back!",
-///         button("Logout"),
+///         button("Logout").action(|| {}),
 ///     ))
 /// });
 ///

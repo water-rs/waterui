@@ -344,7 +344,10 @@ pub fn skill_block_13() {
         spacer().height(16.0) // fixed gap
     };
 
-    let buttons: HStack<_> = items.iter().map(|i| button(i.label)).collect();
+    let buttons: HStack<_> = items
+        .iter()
+        .map(|i| button(i.label).action(|| {}))
+        .collect();
 
     let _ = buttons;
 }

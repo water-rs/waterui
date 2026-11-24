@@ -109,7 +109,7 @@ iterator item must be a single concrete type, so a helper whose branches differ 
 a `OneOfN`:
 
 ```rust
-let row: HStack<_> = tabs.iter().map(|t| button(t.label())).collect();
+let row: HStack<_> = tabs.iter().map(|t| button(t.label()).action(|| {})).collect();
 let tiles: VStack<_> = (0..6).map(photo_tile).collect();   // photo_tile: fn(usize) -> impl View
 ```
 
@@ -288,7 +288,7 @@ for `waterui-testing` queries, use the display-mode API — never drop the label
 
 ```rust
 slider("Sensitivity", &level).range(0.5..=3.0).hide_label()   // exists on every labeled control
-button(label("Locate").icon(lucide::locate_fixed())).label_style(LabelDisplayMode::IconOnly)
+button(label("Locate").icon(lucide::locate_fixed())).label_style(LabelDisplayMode::IconOnly).action(|| {})
 toolbar_row().install(LabelDisplayMode::IconOnly)             // scope a mode to a whole subtree
 ```
 
@@ -298,8 +298,8 @@ renders its title instead, so install it freely on a toolbar and give each label
 `.icon(..)`. The label text remains the test-query key even when hidden.
 
 ```rust
-button("Save")                              // Button<NoAction>
-    .action(handler)                        // -> Button<impl FnMut(&Environment)>
+button("Save")                              // Button<_, NoAction>: not a View until .action / .action_async is set
+    .action(handler)                        // -> Button<_, impl FnMut(&Environment)>
     .action_async(|| async { … })
     .style(ButtonStyle::Plain)              // Automatic | Plain | Link | Borderless | Bordered | BorderedProminent
                                             // | Glass | GlassProminent (Liquid Glass capsules on Apple;
@@ -307,7 +307,7 @@ button("Save")                              // Button<NoAction>
     .size(ControlSize::Large)               // ExtraSmall..=ExtraLarge; buttons default to Small
     .state(&value)                          // inject handler state (repeatable)
 
-button(text!("{edit_label}"))               // a text! satisfies IntoLabel: reactive button titles need no watch
+button(text!("{edit_label}")).action(|| {}) // a text! satisfies IntoLabel: reactive button titles need no watch
 
 toggle("Wi-Fi", &enabled)                   // &Binding<bool>
 Toggle::new("Wi-Fi", &enabled).style(ToggleStyle::Switch)     // Automatic | Switch | Checkbox; .switch() / .checkbox()

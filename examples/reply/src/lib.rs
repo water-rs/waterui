@@ -173,6 +173,7 @@ fn star() -> impl View {
     button(label("Star").icon(star_outline()))
         .borderless()
         .label_style(LabelDisplayMode::IconOnly)
+        .action(|| {})
 }
 
 fn thread_row(thread: Thread) -> ListItem<impl View> {
