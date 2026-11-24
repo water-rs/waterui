@@ -19,7 +19,7 @@ use waterui_core::IntoSignalF32;
 pub use waterui_core::view::*;
 use waterui_core::{
     Environment, Metadata, Retain,
-    env::{Installed, With, with},
+    env::{Installed, With},
     extract::State,
     handler::{EventHandler, Handler, HandlerOnce},
     layout::{HorizontalAlignment, VerticalAlignment, ViewDimensions},
@@ -1385,7 +1385,7 @@ pub trait ViewExt: View + Sized {
     /// ```
     #[cfg(feature = "list")]
     fn list_min_row_height(self, height: f32) -> With<Self, ListMinRowHeight> {
-        with(self, ListMinRowHeight(height))
+        self.with(ListMinRowHeight(height))
     }
 
     /// Sets whether this list row can be deleted using a reactive signal.
@@ -1398,7 +1398,7 @@ pub trait ViewExt: View + Sized {
         self,
         deletable: impl IntoComputed<bool>,
     ) -> With<Self, ListRowDeletable> {
-        with(self, ListRowDeletable(deletable.into_computed()))
+        self.with(ListRowDeletable(deletable.into_computed()))
     }
 
     /// Replaces the theme's row insets for this list row.
@@ -1408,7 +1408,7 @@ pub trait ViewExt: View + Sized {
     /// the rest keep the list's row metrics.
     #[cfg(feature = "list")]
     fn list_row_insets(self, insets: EdgeInsets) -> With<Self, ListRowInsets> {
-        with(self, ListRowInsets(insets))
+        self.with(ListRowInsets(insets))
     }
 
     /// Extends this view's bounds to ignore safe area insets on the specified
