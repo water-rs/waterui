@@ -1,6 +1,7 @@
 //! Framework channel resolution and persisted dependency selection.
 
 use std::{
+    cmp::Ordering,
     collections::{BTreeMap, BTreeSet},
     fmt,
     path::{Path, PathBuf},
@@ -433,12 +434,14 @@ impl ResolvedFramework {
         project_root: &Path,
     ) -> Result<Self> {
         if let Some(framework) = manifest.framework() {
-            return framework.clone().validated().map_err(|error| {
+            let framework = framework.clone().validated().map_err(|error| {
                 eyre!(
                     "Water.toml records a framework selection waterui-cli {} cannot scaffold: {error:#}",
                     env!("CARGO_PKG_VERSION")
                 )
-            });
+            })?;
+            framework.validate_cli(facts.host())?;
+            return Ok(framework);
         }
         let Some(waterui_path) = &manifest.waterui_path() else {
             bail!(
@@ -496,7 +499,7 @@ impl ResolvedFramework {
     /// `Result` in hand — the scaffold's `minSdk` above all. A framework that
     /// reaches a template context has passed here, so a template accessor
     /// failing on it is an internal invariant, not an input error.
-    fn validated(mut self) -> Result<Self> {
+    pub(crate) fn validated(mut self) -> Result<Self> {
         require_framework_members(&self.metadata, &self.origin())?;
         self.android_min_api_level()?;
         self.android_gradle_version()?;
@@ -543,7 +546,29 @@ impl ResolvedFramework {
             };
             validate_installed_cli(host, minimum, &update)?;
         }
-        Ok(())
+        let contract = backend_contract(&self.metadata)?;
+        let cli_update = match &self.source {
+            Source::Stable { .. } => latest_registry_cli_update(),
+            Source::Dev { .. } | Source::Nightly { .. } | Source::Local { .. } => {
+                checkout_cli_update()
+            }
+        };
+        validate_backend_contract_version(
+            host,
+            contract,
+            &cli_update,
+            &self.framework_update_hint(),
+        )
+    }
+
+    /// The user-facing remedy to update the pinned framework for this selection's channel.
+    fn framework_update_hint(&self) -> String {
+        match &self.source {
+            Source::Stable { .. } => framework_update_hint_for_channel(FrameworkChannel::Stable),
+            Source::Dev { .. } => framework_update_hint_for_channel(FrameworkChannel::Dev),
+            Source::Nightly { .. } => framework_update_hint_for_channel(FrameworkChannel::Nightly),
+            Source::Local { root } => local_checkout_update_hint(root),
+        }
     }
 
     pub(crate) fn has_scaffold(&self, name: &str) -> bool {
@@ -1615,7 +1640,7 @@ impl ResolvedFramework {
                     seeded.lock_path.display()
                 )
             })?;
-        validate_resolved_cli(host, &metadata)?;
+        validate_resolved_cli(host, &metadata, Some(self))?;
         self.validate_public_api_dependencies(&metadata)?;
         if !allow_new {
             for package in &metadata.packages {
@@ -2012,13 +2037,11 @@ impl ResolvedFramework {
         } else {
             BTreeMap::new()
         };
-        if let Some(minimum) = &minimum_cli_version {
-            let update = match channel {
-                FrameworkChannel::Stable => registry_cli_update(minimum),
-                FrameworkChannel::Dev | FrameworkChannel::Nightly => checkout_cli_update(),
-            };
-            validate_installed_cli(host, minimum, &update)?;
-        }
+        let origin = certification.as_ref().map_or_else(
+            || format!("the {channel} framework {repository}@{revision}"),
+            |certification| format!("the {channel} framework {}", certification.tag),
+        );
+        validate_channel_metadata(host, channel, &origin, &metadata)?;
 
         let submodule_repositories = channel_submodule_repositories(host, tree, channel).await?;
 
@@ -2373,12 +2396,19 @@ impl CliFloor {
     }
 
     /// The checkout's root manifest at `root`, parsed, once its declared
-    /// floor admits the running CLI.
+    /// floor and backend contract admit the running CLI.
     fn checked_manifest(&self, files: &mut dyn InputFiles, root: &Path) -> Result<toml::Value> {
         let manifest: toml::Value = toml::from_slice(&checkout_file(files, root, "Cargo.toml")?)?;
-        if let Some(minimum) = minimum_cli_version(&framework_metadata(&manifest)?)? {
-            validate_installed_cli(&self.host, &minimum, &checkout_cli_update())?;
-        }
+        let metadata = framework_metadata(&manifest)?;
+        let checkout_cli = checkout_cli_update();
+        validate_framework_metadata(
+            &self.host,
+            &metadata,
+            &format!("the WaterUI checkout at {}", root.display()),
+            |_| checkout_cli.clone(),
+            &checkout_cli,
+            &local_checkout_update_hint(root),
+        )?;
         Ok(manifest)
     }
 }
@@ -2983,6 +3013,27 @@ pub(crate) fn manifest_rust_version(manifest: &toml::Value) -> Result<Option<car
         .transpose()
 }
 
+/// The backend-crate contract generated by this CLI's templates.
+///
+/// `[package.metadata.waterui].backend-contract` declares the integer contract
+/// a framework revision builds against. Raise both in the same commit when a
+/// change to generated backend crates breaks older framework revisions.
+pub(crate) const BACKEND_CONTRACT: u64 = 1;
+
+/// The backend contract a `package.metadata.waterui` metadata table declares.
+///
+/// A framework without `backend-contract` predates the declaration and is
+/// older than every contract (`0`).
+fn backend_contract(metadata: &toml::Table) -> Result<u64> {
+    let Some(value) = metadata.get("backend-contract") else {
+        return Ok(0);
+    };
+    value
+        .as_integer()
+        .and_then(|contract| u64::try_from(contract).ok())
+        .ok_or_else(|| eyre!("invalid package.metadata.waterui.backend-contract"))
+}
+
 /// The CLI floor a `package.metadata.waterui` metadata table declares —
 /// read the same way from a checked-out root manifest and from a
 /// certification's `metadata` table.
@@ -3010,6 +3061,96 @@ fn registry_cli_update(minimum: &cargo_toml::SemVer) -> String {
     format!(
         "cargo install {} --version '>={minimum}' --locked",
         env!("CARGO_PKG_NAME")
+    )
+}
+
+fn latest_registry_cli_update() -> String {
+    format!("cargo install {} --locked", env!("CARGO_PKG_NAME"))
+}
+
+fn framework_update_hint_for_channel(channel: FrameworkChannel) -> String {
+    match channel {
+        FrameworkChannel::Dev => "Update the framework: `water channel dev`.".to_owned(),
+        FrameworkChannel::Nightly => "Update the framework: `water channel nightly`.".to_owned(),
+        FrameworkChannel::Stable => {
+            "Update the framework: `water channel stable` (or switch with `water channel dev`)."
+                .to_owned()
+        }
+    }
+}
+
+fn local_checkout_update_hint(root: &Path) -> String {
+    format!(
+        "Update the local framework checkout at {} (or switch with `water channel dev`).",
+        root.display()
+    )
+}
+
+fn validate_backend_contract_version(
+    host: &Host,
+    contract: u64,
+    cli_update: &str,
+    framework_update: &str,
+) -> Result<()> {
+    match contract.cmp(&BACKEND_CONTRACT) {
+        Ordering::Equal => Ok(()),
+        Ordering::Less => {
+            let declared = if contract == 0 {
+                "none (older than contract 1)".to_owned()
+            } else {
+                contract.to_string()
+            };
+            bail!(
+                "This WaterUI framework declares backend-contract {declared}, which is older than the backend templates waterui-cli {} generates (backend-contract {BACKEND_CONTRACT}).\n{framework_update}",
+                env!("CARGO_PKG_VERSION"),
+            );
+        }
+        Ordering::Greater => {
+            let update = crate::self_update::cli_update_command(host, cli_update);
+            bail!(
+                "This WaterUI framework declares backend-contract {contract}, which is newer than the backend templates waterui-cli {} generates (backend-contract {BACKEND_CONTRACT}).\nUpdate the CLI: {update}\nThen verify the installed version with `water --version`.",
+                env!("CARGO_PKG_VERSION"),
+            );
+        }
+    }
+}
+
+fn validate_framework_metadata(
+    host: &Host,
+    metadata: &toml::Table,
+    origin: &str,
+    cli_update_for_minimum: impl FnOnce(&cargo_toml::SemVer) -> String,
+    cli_update_for_contract: &str,
+    framework_update: &str,
+) -> Result<()> {
+    if let Some(minimum) = minimum_cli_version(metadata)? {
+        validate_installed_cli(host, &minimum, &cli_update_for_minimum(&minimum))?;
+    }
+    require_framework_members(metadata, origin)?;
+    let contract = backend_contract(metadata)?;
+    validate_backend_contract_version(host, contract, cli_update_for_contract, framework_update)
+}
+
+fn validate_channel_metadata(
+    host: &Host,
+    channel: FrameworkChannel,
+    origin: &str,
+    metadata: &toml::Table,
+) -> Result<()> {
+    let cli_update_for_contract = match channel {
+        FrameworkChannel::Stable => latest_registry_cli_update(),
+        FrameworkChannel::Dev | FrameworkChannel::Nightly => checkout_cli_update(),
+    };
+    validate_framework_metadata(
+        host,
+        metadata,
+        origin,
+        |minimum| match channel {
+            FrameworkChannel::Stable => registry_cli_update(minimum),
+            FrameworkChannel::Dev | FrameworkChannel::Nightly => checkout_cli_update(),
+        },
+        &cli_update_for_contract,
+        &framework_update_hint_for_channel(channel),
     )
 }
 
@@ -3113,31 +3254,52 @@ pub(crate) async fn local_checkout_members(
 pub(crate) fn validate_resolved_cli(
     host: &crate::toolchain::Host,
     metadata: &cargo_metadata::Metadata,
+    framework: Option<&ResolvedFramework>,
 ) -> Result<()> {
+    use serde_json::Value;
+
     for package in metadata
         .packages
         .iter()
         .filter(|package| package.name.as_str() == "waterui")
     {
-        let Some(value) = package
-            .metadata
-            .get("waterui")
-            .and_then(|metadata| metadata.get("minimum-cli-version"))
-        else {
-            continue;
-        };
-        let minimum: cargo_toml::SemVer = serde_json::from_value(value.clone())
-            .wrap_err("invalid package.metadata.waterui.minimum-cli-version")?;
         let source = package
             .source
             .as_ref()
             .map(|source| source.repr.parse::<cargo_lock::SourceId>())
             .transpose()?;
-        let update = match source {
-            Some(source) if !source.is_git() => registry_cli_update(&minimum),
+        let waterui_metadata = package.metadata.get("waterui");
+        if let Some(value) = waterui_metadata.and_then(|meta| meta.get("minimum-cli-version")) {
+            let minimum: cargo_toml::SemVer = serde_json::from_value(value.clone())
+                .wrap_err("invalid package.metadata.waterui.minimum-cli-version")?;
+            let update = match &source {
+                Some(source) if !source.is_git() => registry_cli_update(&minimum),
+                Some(_) | None => checkout_cli_update(),
+            };
+            validate_installed_cli(host, &minimum, &update)?;
+        }
+        let contract = match waterui_metadata.and_then(|meta| meta.get("backend-contract")) {
+            None | Some(Value::Null) => 0,
+            Some(value) => value
+                .as_u64()
+                .ok_or_else(|| eyre!("invalid package.metadata.waterui.backend-contract"))?,
+        };
+        let cli_update = match &source {
+            Some(source) if !source.is_git() => latest_registry_cli_update(),
             Some(_) | None => checkout_cli_update(),
         };
-        validate_installed_cli(host, &minimum, &update)?;
+        let framework_update = framework.map_or_else(
+            || match &source {
+                Some(source) if !source.is_git() => {
+                    framework_update_hint_for_channel(FrameworkChannel::Stable)
+                }
+                Some(_) => framework_update_hint_for_channel(FrameworkChannel::Dev),
+                None => "Update the local framework checkout (or switch with `water channel dev`)."
+                    .to_owned(),
+            },
+            ResolvedFramework::framework_update_hint,
+        );
+        validate_backend_contract_version(host, contract, &cli_update, &framework_update)?;
     }
     Ok(())
 }
@@ -3486,6 +3648,7 @@ pub(crate) mod test_fixtures {
             minimum_cli_version: None,
             rust_version: None,
             metadata: toml::toml! {
+                backend-contract = 1
                 apple-deployment-targets = { macos = "26.0", ios = "26.0", tvos = "26.0", watchos = "26.0", visionos = "2.5" }
                 web-frontend-apple-deployment-targets = { macos = "27.0", ios = "27.0", tvos = "27.0", watchos = "27.0", visionos = "27.0" }
                 android-min-api-level = 33
@@ -3590,6 +3753,7 @@ pub(crate) mod test_fixtures {
             minimum_cli_version: None,
             rust_version: None,
             metadata: toml::toml! {
+                backend-contract = 1
                 apple-deployment-targets = { macos = "26.0", ios = "26.0", tvos = "26.0", watchos = "26.0", visionos = "2.5" }
                 web-frontend-apple-deployment-targets = { macos = "27.0", ios = "27.0", tvos = "27.0", watchos = "27.0", visionos = "27.0" }
                 android-min-api-level = 33
@@ -3732,6 +3896,38 @@ pub(crate) mod test_fixtures {
             .expect("git must run");
         assert!(status.success(), "git init failed");
         git_commit_all(root, "init")?;
+        Ok(())
+    }
+
+    /// A complete local framework checkout workspace carrying `waterui` at the
+    /// root plus minimal `backends/apple` and `backends/hydrolysis` members so
+    /// `Project::create` and `Project::open` resolve entirely offline.
+    pub fn write_local_checkout_workspace(root: &Path) -> std::io::Result<()> {
+        write_local_checkout(root)?;
+        let manifest_path = root.join("Cargo.toml");
+        let mut manifest: toml_edit::DocumentMut = std::fs::read_to_string(&manifest_path)?
+            .parse()
+            .expect("checkout manifest parses");
+        for feature in ["dynamic_linking", "media"] {
+            if manifest
+                .get("features")
+                .and_then(toml_edit::Item::as_table)
+                .and_then(|table| table.get(feature))
+                .is_none()
+            {
+                manifest["features"][feature] = toml_edit::value(toml_edit::Array::new());
+            }
+        }
+        std::fs::write(&manifest_path, manifest.to_string())?;
+        std::fs::create_dir_all(root.join("src"))?;
+        std::fs::write(root.join("src/lib.rs"), "")?;
+        write_vendor_stub(
+            &root.join("backends/apple"),
+            "waterui-apple",
+            &["map", "media", "webview"],
+        );
+        write_vendor_stub(&root.join("backends/hydrolysis"), "hydrolysis", &[]);
+        git_commit_all(root, "stage member crates")?;
         Ok(())
     }
 
@@ -4138,19 +4334,11 @@ fn verify_certification(
         bail!("{channel} certification does not match its release");
     }
     validate_revision(&certification.revision)?;
-    if let Some(minimum) = &minimum_cli_version(&certification.metadata)? {
-        let update = match channel {
-            FrameworkChannel::Stable => registry_cli_update(minimum),
-            FrameworkChannel::Dev | FrameworkChannel::Nightly => checkout_cli_update(),
-        };
-        validate_installed_cli(host, minimum, &update)?;
-    }
-    // The certification carries the framework's metadata verbatim, so a
-    // framework this CLI cannot scaffold is rejected before its tree is
-    // fetched.
-    require_framework_members(
-        &certification.metadata,
+    validate_channel_metadata(
+        host,
+        channel,
         &format!("the {channel} framework {}", certification.tag),
+        &certification.metadata,
     )?;
     Ok(())
 }
@@ -5465,6 +5653,7 @@ mod tests {
             minimum_cli_version: None,
             rust_version: None,
             metadata: toml::toml! {
+                backend-contract = 1
                 android-min-api-level = 33
                 android-gradle-version = "9.7.1"
                 apple-backend-path = "backends/apple"
@@ -5517,6 +5706,130 @@ mod tests {
         metadata["minimum-cli-version"] = toml::Value::String(">=0.1.4".into());
         assert!(minimum_cli_version(&metadata).is_err());
         assert!(minimum_cli_version(&toml::Table::new()).unwrap().is_none());
+    }
+
+    #[test]
+    fn backend_contract_metadata_parses_and_treats_missing_as_zero() {
+        let mut metadata = toml::toml! {
+            backend-contract = 1
+        };
+        assert_eq!(backend_contract(&metadata).unwrap(), 1);
+        assert_eq!(backend_contract(&toml::Table::new()).unwrap(), 0);
+        for invalid in [
+            toml::Value::String("1".into()),
+            toml::Value::Integer(-1),
+            toml::Value::Boolean(true),
+            toml::Value::Float(1.0),
+        ] {
+            metadata["backend-contract"] = invalid;
+            assert!(backend_contract(&metadata).is_err());
+        }
+    }
+
+    #[test]
+    fn backend_contract_rejects_older_and_newer_frameworks_with_channel_guidance() {
+        let host = Host::current();
+        validate_backend_contract_version(
+            &host,
+            BACKEND_CONTRACT,
+            &checkout_cli_update(),
+            &framework_update_hint_for_channel(FrameworkChannel::Dev),
+        )
+        .unwrap();
+
+        let missing = validate_backend_contract_version(
+            &host,
+            0,
+            &checkout_cli_update(),
+            &framework_update_hint_for_channel(FrameworkChannel::Nightly),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            missing.contains("none (older than contract 1)"),
+            "{missing}"
+        );
+        assert!(
+            missing.contains(&format!("backend-contract {BACKEND_CONTRACT}")),
+            "{missing}"
+        );
+        assert!(missing.contains("water channel nightly"), "{missing}");
+
+        let newer = validate_backend_contract_version(
+            &host,
+            BACKEND_CONTRACT + 1,
+            &checkout_cli_update(),
+            &framework_update_hint_for_channel(FrameworkChannel::Dev),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            newer.contains(&format!("backend-contract {}", BACKEND_CONTRACT + 1)),
+            "{newer}"
+        );
+        assert!(
+            newer.contains(&format!("backend-contract {BACKEND_CONTRACT}")),
+            "{newer}"
+        );
+        assert!(newer.contains(&checkout_cli_update()), "{newer}");
+
+        for (mut framework, expected_hint) in [
+            (test_fixtures::dev_framework(), "water channel dev"),
+            (test_fixtures::nightly_framework(), "water channel nightly"),
+            (test_fixtures::stable_framework(), "water channel stable"),
+        ] {
+            framework.metadata.remove("backend-contract");
+            let error = framework.validate_cli(&host).unwrap_err().to_string();
+            assert!(error.contains("none (older than contract 1)"), "{error}");
+            assert!(error.contains(expected_hint), "{error}");
+        }
+
+        let mut old_cert = certification(FrameworkChannel::Nightly, "nightly-test");
+        old_cert.metadata.remove("backend-contract");
+        let cert_error = verify_certification(&host, &old_cert, None, framework_repository())
+            .unwrap_err()
+            .to_string();
+        assert!(cert_error.contains("water channel nightly"), "{cert_error}");
+
+        let resolved_metadata = |contract: serde_json::Value| -> cargo_metadata::Metadata {
+            serde_json::from_value(serde_json::json!({
+                "packages": [{
+                    "name": "waterui",
+                    "version": "0.6.0",
+                    "id": "registry+https://github.com/rust-lang/crates.io-index#waterui@0.6.0",
+                    "source": "registry+https://github.com/rust-lang/crates.io-index",
+                    "dependencies": [],
+                    "targets": [],
+                    "features": {},
+                    "manifest_path": "/tmp/waterui/Cargo.toml",
+                    "metadata": { "waterui": contract },
+                }],
+                "workspace_members": [],
+                "workspace_default_members": [],
+                "resolve": null,
+                "target_directory": "/tmp/target",
+                "version": 1,
+                "workspace_root": "/tmp",
+            }))
+            .unwrap()
+        };
+        validate_resolved_cli(
+            &host,
+            &resolved_metadata(serde_json::json!({ "backend-contract": BACKEND_CONTRACT })),
+            None,
+        )
+        .unwrap();
+        let resolved_missing = validate_resolved_cli(
+            &host,
+            &resolved_metadata(serde_json::json!({ "minimum-cli-version": "0.1.0" })),
+            None,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            resolved_missing.contains("water channel stable"),
+            "{resolved_missing}"
+        );
     }
 
     #[test]
@@ -6828,6 +7141,7 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
             scaffold: BTreeMap::new(),
             experimental_packages: BTreeMap::new(),
             metadata: toml::toml! {
+                backend-contract = 1
                 android-min-api-level = 33
                 android-gradle-version = "9.7.1"
                 apple-backend-path = "backends/apple"
@@ -6950,6 +7264,7 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
             },
             "metadata": {
                 "minimum-cli-version": "0.1.0",
+                "backend-contract": 1,
                 "android-min-api-level": 33,
                 "android-gradle-version": "9.7.1",
                 "apple-backend-path": "backends/apple",

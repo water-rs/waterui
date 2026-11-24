@@ -95,6 +95,11 @@ links = "waterui"
 # launch-environment provider; apps built by older CLIs would fail the
 # handoff.
 minimum-cli-version = "0.4.6"
+# Integer contract version of the backend crates (`Cargo.toml` and entry point)
+# that this framework revision builds against. Raise this alongside
+# `cli`'s `BACKEND_CONTRACT` in the same commit whenever a template change
+# breaks older framework revisions.
+backend-contract = 1
 # Features used by the CLI's native demo scaffold.
 scaffold-features = ["slider", "stepper", "text-field", "toggle"]
 # Native Apple deployment targets, carried into every project's Cargo config.

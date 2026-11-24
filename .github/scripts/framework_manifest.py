@@ -182,6 +182,9 @@ def self_check():
             assert re.fullmatch(r"\d+(?:\.\d+)*", actual[platform])
         web = framework["package"]["metadata"]["waterui"]["web-frontend-apple-deployment-targets"]
         assert json.loads(json.dumps(manifest))["metadata"]["web-frontend-apple-deployment-targets"] == web
+        contract = framework["package"]["metadata"]["waterui"]["backend-contract"]
+        assert isinstance(contract, int) and not isinstance(contract, bool) and contract >= 1
+        assert json.loads(json.dumps(manifest))["metadata"]["backend-contract"] == contract
 
 
 def prepare_stable(tag, revision):

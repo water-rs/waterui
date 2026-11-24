@@ -14,6 +14,7 @@ rust-version = "1.95.0"
 android-gradle-version = "9.7.1"
 android-min-api-level = 33
 apple-backend-path = "backends/apple"
+backend-contract = 1
 hydrolysis-android-host-subdirectory = "backends/hydrolysis/android"
 hydrolysis-path = "backends/hydrolysis"
 minimum-cli-version = "0.4.4"

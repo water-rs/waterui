@@ -64,6 +64,9 @@ mod tests {
         smol::block_on(async {
             let dir = tempfile::tempdir().expect("temp dir");
             let host = crate::toolchain::testing::real_toolchain_host(dir.path());
+            let checkout = dir.path().join("waterui");
+            crate::framework::test_fixtures::write_local_checkout_workspace(&checkout)
+                .expect("local checkout");
             let root = dir.path().join("share-example");
             let project = Project::create(
                 &host,
@@ -74,9 +77,7 @@ mod tests {
                         .expect("bundle identifier"),
                     "Lexo Liu".to_string(),
                 )
-                // A channel resolution would fetch the newest release from
-                // GitHub; a unit test resolves a fixture in place instead.
-                .with_framework(Some(crate::framework::test_fixtures::stable_framework())),
+                .with_waterui_path(Some(checkout)),
             )
             .await
             .expect("project creation must succeed");
