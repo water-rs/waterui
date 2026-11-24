@@ -18,7 +18,7 @@ use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::Signal;
 use waterui::reactive::binding;
-use waterui::shape::{RoundedRectangle, ShapeExt as _};
+use waterui::shape::{CornerRadius, RoundedRectangle, ShapeExt as _};
 use waterui_icons_lucide as lucide;
 use waterui_map::{Coordinate, Map, MapStyle, Region};
 use waterui_map_gpu::MapGpuOptions;
@@ -138,7 +138,7 @@ fn content(state: MapExampleState) -> impl View {
     ))
     .spacing(4.0)
     .padding_with((10.0, 14.0))
-    .background(RoundedRectangle::new(0.18).fill(Surface))
+    .background(RoundedRectangle::new(CornerRadius::fraction(0.18)).fill(Surface))
     .size(STATUS_PANEL_WIDTH, STATUS_PANEL_HEIGHT)
     .position_in_offset(
         UnitPoint::TOP_LEADING,

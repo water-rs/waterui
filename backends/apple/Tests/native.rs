@@ -5494,12 +5494,12 @@ mod capture_order {
     /// (4,-12)–(196,148), so the column's top edge and rounded top-left
     /// corner cut it.
     pub fn a_clipped_scaled_gpu_child_keeps_its_place() {
-        use waterui::shape::RoundedRectangle;
+        use waterui::shape::{CornerRadius, RoundedRectangle};
         let column = |child| {
             layered(child)
                 .background(orange())
                 .scale(1.6)
-                .clip(RoundedRectangle::new(0.2))
+                .clip(RoundedRectangle::new(CornerRadius::fraction(0.2)))
         };
         assert_gpu_column_matches_native(column(native_child()), column(gpu_child()), 1);
     }

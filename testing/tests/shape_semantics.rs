@@ -4,7 +4,7 @@
 use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityRole;
 use waterui::graphics::color::Srgb;
-use waterui::shape::{Circle, RoundedRectangle, ShapeExt};
+use waterui::shape::{Circle, CornerRadius, RoundedRectangle, ShapeExt};
 use waterui_testing::{Role, SemanticApp};
 
 fn filled_circle_view() -> impl waterui::View {
@@ -17,7 +17,7 @@ fn filled_circle_view() -> impl waterui::View {
 }
 
 fn morph_shape_view() -> impl waterui::View {
-    RoundedRectangle::new(0.3)
+    RoundedRectangle::new(CornerRadius::fraction(0.3))
         .fill(Srgb::new(0.2, 0.8, 1.0))
         .morph_to(Circle)
         .width(84.0)

@@ -1223,7 +1223,7 @@ pub trait ViewExt: View + Sized {
     /// let avatar = Color::red().clip(Circle);
     ///
     /// // Clip to rounded rectangle
-    /// let card = text!("Card").clip(RoundedRectangle::new(0.1));
+    /// let card = text!("Card").clip(RoundedRectangle::new(8.0));
     ///
     /// // Custom triangle shape
     /// let triangle = Path::new()

@@ -18,7 +18,7 @@ use waterui::env::Environment;
 use waterui::graphics::gpu::{Context as GpuContext, Frame as GpuFrame};
 use waterui::graphics::{GpuContent, GpuView};
 use waterui::prelude::zstack;
-use waterui::shape::RoundedRectangle;
+use waterui::shape::{CornerRadius, RoundedRectangle};
 use waterui::{FilterViewExt, ViewExt};
 use waterui_core::AnyView;
 use waterui_graphics::backend::FilteredView;
@@ -218,7 +218,7 @@ impl View for GpuSurfaceClipView {
                 a: 1.0,
             },
         })
-        .clip(RoundedRectangle::new(0.25))
+        .clip(RoundedRectangle::new(CornerRadius::fraction(0.25)))
     }
 }
 

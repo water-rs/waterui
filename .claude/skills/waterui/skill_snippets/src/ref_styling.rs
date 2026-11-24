@@ -229,7 +229,7 @@ pub fn styling_block_07() {
     let view = Divider;
     let _ = {
         // any view is a valid background
-        view.background(RoundedRectangle::new(0.18).fill(Surface))
+        view.background(RoundedRectangle::new(12.0).fill(Surface))
     };
 }
 
@@ -272,7 +272,7 @@ pub fn styling_block_08() {
         view.background(
             Glass::regular()
                 .tint(Accent)
-                .shape(RoundedRectangle::new(0.2)),
+                .shape(RoundedRectangle::new(16.0)),
         )
     };
 }
@@ -351,8 +351,8 @@ pub fn styling_block_10() {
     let photo = Divider;
 
     use waterui::shape::{
-        Capsule, Circle, Ellipse, FixedRoundedRectangle, FixedUnevenRoundedRectangle, Path,
-        Rectangle, RoundedRectangle, ShapeExt, UnevenRoundedRectangle,
+        Capsule, Circle, CornerRadii, CornerRadius, Ellipse, Path, Rectangle, RoundedRectangle,
+        ShapeExt,
     };
 
     let _ = {
@@ -363,16 +363,28 @@ pub fn styling_block_10() {
     };
     let photo = Divider;
     let _ = {
-        photo.clip(FixedRoundedRectangle::new(12.0)) // absolute points
+        photo.clip(RoundedRectangle::new(12.0)) // radius in logical points
     };
-    let _ = FixedUnevenRoundedRectangle::new(12.0, 12.0, 0.0, 0.0);
+    let photo = Divider;
+    let _ = { photo.clip(RoundedRectangle::new(CornerRadius::fraction(0.1))) };
+    let photo = Divider;
+    let _ = {
+        photo.clip(RoundedRectangle::new(CornerRadii::new(
+            12.0, 12.0, 0.0, 0.0,
+        )))
+    };
 
     let _: Option<Capsule> = None;
     let _: Option<Ellipse> = None;
     let _: Option<Path> = None;
     let _: Option<Rectangle> = None;
     let _: Option<RoundedRectangle> = None;
-    let _ = UnevenRoundedRectangle::new(0.1, 0.1, 0.2, 0.2);
+    let _ = CornerRadii::new(
+        CornerRadius::fraction(0.1),
+        CornerRadius::fraction(0.1),
+        0.2,
+        0.2,
+    );
     fn needs_shape_ext<S: ShapeExt>(_s: S) {}
     needs_shape_ext(Circle);
 }
@@ -422,7 +434,7 @@ pub fn styling_block_12() {
 
     let _ = {
         Circle
-            .morph_to(RoundedRectangle::new(0.22), Color::srgb_hex("#3B82F6"))
+            .morph_to(RoundedRectangle::new(20.0), Color::srgb_hex("#3B82F6"))
             .duration(Duration::from_millis(600))
             .autoreverse(true) // also .repeat(bool)
             .size(90.0, 90.0)
@@ -477,7 +489,7 @@ pub fn styling_block_13() {
             Color::srgb(0, 0, 0).with_opacity(0.2), // color, with alpha
             Vector::new(0.0, 2.0),                  // offset
             8.0,                                    // blur radius
-            RoundedRectangle::new(0.1),             // the caster's own shape
+            RoundedRectangle::new(8.0),             // the caster's own shape
         ))
     };
     let _ = Shadow::splat(4.0);

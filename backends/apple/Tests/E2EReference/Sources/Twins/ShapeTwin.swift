@@ -1,7 +1,7 @@
 // Twin of examples/shape: shape gallery inside a padded scroll stack.
 //
 // WaterUI normalized corner radii are fractions of the shorter side, so
-// RoundedRectangle::new(0.1) at 80x60 is cornerRadius 6 in SwiftUI.
+// RoundedRectangle::new(CornerRadius::fraction(0.1)) at 80x60 is cornerRadius 6 in SwiftUI.
 // WaterUI Path coordinates are normalized to the shape's bounds, reproduced
 // here with a unit-space Shape that scales into `path(in:)`.
 //

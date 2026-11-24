@@ -85,12 +85,29 @@ pub enum Command {
     Close,
 }
 
+/// A corner radius for [`ShapeKind::RoundedRect`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CornerRadius {
+    /// Absolute radius in logical points, clamped to half the shorter side when resolved.
+    Points(f64),
+    /// Normalized fraction of the shorter side (`0.0…0.5`).
+    Fraction(f64),
+}
+
+impl CornerRadius {
+    /// Resolves this radius to logical points against `shorter_side`.
+    #[must_use]
+    pub fn resolve(self, shorter_side: f64) -> f64 {
+        let side = shorter_side.max(0.0);
+        let limit = side / 2.0;
+        match self {
+            Self::Points(points) => points.max(0.0).min(limit),
+            Self::Fraction(fraction) => (fraction.clamp(0.0, 0.5) * side).min(limit),
+        }
+    }
+}
+
 /// What a shape is, independent of the commands that approximate it.
-///
-/// The normalized radii of [`ShapeKind::RoundedRect`] and
-/// [`ShapeKind::UnevenRoundedRect`] are fractions of the shorter side; the
-/// `Fixed*` variants carry absolute points. Both clamp to half the shorter
-/// side at resolve time.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ShapeKind {
     /// A rectangle with sharp corners.
@@ -99,40 +116,13 @@ pub enum ShapeKind {
     Circle,
     /// An ellipse filling the rect.
     Ellipse,
-    /// A rectangle with a uniform normalized corner radius.
+    /// A rectangle with corner radii `[top_left, top_right, bottom_right, bottom_left]`.
     RoundedRect {
-        /// Corner radius as a fraction of the shorter side (`0.0…0.5`).
-        corner_radius: f64,
-    },
-    /// A rectangle with per-corner normalized radii.
-    UnevenRoundedRect {
-        /// Top-left corner.
-        top_left: f64,
-        /// Top-right corner.
-        top_right: f64,
-        /// Bottom-right corner.
-        bottom_right: f64,
-        /// Bottom-left corner.
-        bottom_left: f64,
+        /// Clockwise corner radii `[top_left, top_right, bottom_right, bottom_left]`.
+        radii: [CornerRadius; 4],
     },
     /// A pill — corner radius half the shorter side.
     Capsule,
-    /// A rectangle with a uniform corner radius in points.
-    FixedRoundedRect {
-        /// Corner radius in points.
-        corner_radius: f64,
-    },
-    /// A rectangle with per-corner radii in points.
-    FixedUnevenRoundedRect {
-        /// Top-left corner.
-        top_left: f64,
-        /// Top-right corner.
-        top_right: f64,
-        /// Bottom-right corner.
-        bottom_right: f64,
-        /// Bottom-left corner.
-        bottom_left: f64,
-    },
     /// Only the command list describes the shape.
     CustomPath,
 }
@@ -336,38 +326,31 @@ pub fn shape_path(kind: ShapeKind, commands: &[Command], rect: Rect) -> CFRetain
         ShapeKind::Ellipse => unsafe {
             CGPath::with_ellipse_in_rect(rect.into(), core::ptr::null())
         },
-        ShapeKind::RoundedRect { corner_radius } => {
-            let radius = (corner_radius * shorter).min(shorter / 2.0);
-            // SAFETY: see `ShapeKind::Rect`.
-            unsafe { CGPath::with_rounded_rect(rect.into(), radius, radius, core::ptr::null()) }
+        ShapeKind::RoundedRect { radii } => {
+            let resolved = radii.map(|radius| radius.resolve(shorter));
+            if resolved
+                .iter()
+                .all(|&r| (r - resolved[0]).abs() < f64::EPSILON)
+            {
+                // SAFETY: see `ShapeKind::Rect`.
+                unsafe {
+                    CGPath::with_rounded_rect(
+                        rect.into(),
+                        resolved[0],
+                        resolved[0],
+                        core::ptr::null(),
+                    )
+                }
+            } else {
+                uneven_rounded_rect(resolved, 1.0, rect)
+            }
         }
-        ShapeKind::UnevenRoundedRect {
-            top_left,
-            top_right,
-            bottom_right,
-            bottom_left,
-        } => uneven_rounded_rect(
-            [top_left, top_right, bottom_right, bottom_left],
-            shorter,
-            rect,
-        ),
         ShapeKind::Capsule => {
             let radius = shorter / 2.0;
             // SAFETY: see `ShapeKind::Rect`.
             unsafe { CGPath::with_rounded_rect(rect.into(), radius, radius, core::ptr::null()) }
         }
         ShapeKind::CustomPath => commands_path(commands, rect),
-        ShapeKind::FixedRoundedRect { corner_radius } => {
-            let radius = corner_radius.min(shorter / 2.0);
-            // SAFETY: see `ShapeKind::Rect`.
-            unsafe { CGPath::with_rounded_rect(rect.into(), radius, radius, core::ptr::null()) }
-        }
-        ShapeKind::FixedUnevenRoundedRect {
-            top_left,
-            top_right,
-            bottom_right,
-            bottom_left,
-        } => uneven_rounded_rect([top_left, top_right, bottom_right, bottom_left], 1.0, rect),
     }
 }
 
@@ -580,11 +563,13 @@ mod tests {
     fn uneven_rounded_rect_covers_the_rect() {
         let rect = Rect::new(0.0, 0.0, 120.0, 60.0);
         let path = shape_path(
-            ShapeKind::UnevenRoundedRect {
-                top_left: 0.1,
-                top_right: 0.3,
-                bottom_right: 0.0,
-                bottom_left: 0.5,
+            ShapeKind::RoundedRect {
+                radii: [
+                    CornerRadius::Fraction(0.1),
+                    CornerRadius::Fraction(0.3),
+                    CornerRadius::Points(0.0),
+                    CornerRadius::Fraction(0.5),
+                ],
             },
             &[],
             rect,

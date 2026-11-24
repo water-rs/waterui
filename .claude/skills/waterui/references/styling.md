@@ -182,7 +182,7 @@ use waterui::background::Material;
 view.background(Surface)                  // a color or token
 view.background(Material::Regular)        // platform blur material
 // Material::UltraThin | Thin | Regular | Thick | UltraThick
-view.background(RoundedRectangle::new(0.18).fill(Surface))   // any view is a valid background
+view.background(RoundedRectangle::new(12.0).fill(Surface))   // any view is a valid background
 ```
 
 `Material` is the content-layer frosted pane (SwiftUI's `.regularMaterial`). `UltraThin` and
@@ -206,7 +206,7 @@ use waterui::background::Glass;
 
 view.background(Glass::regular())                       // capsule pill, the default
 view.background(Glass::clear().interactive(true))       // over media; reacts to touch
-view.background(Glass::regular().tint(Accent).shape(RoundedRectangle::new(0.2)))
+view.background(Glass::regular().tint(Accent).shape(RoundedRectangle::new(16.0)))
 ```
 
 Gradients are views in `waterui::gradient` (the prelude carries `Gradient` and
@@ -248,25 +248,23 @@ A shape is an outline, not a view: `.fill(color)` turns it into one (a `FilledSh
 which fills the space it is given), and `.clip(shape)` uses it as a mask. Two uses:
 
 ```rust
-use waterui::shape::{Capsule, Circle, Ellipse, FixedRoundedRectangle,
-                     FixedUnevenRoundedRectangle, Path, Rectangle, RoundedRectangle,
-                     ShapeExt, UnevenRoundedRectangle};
+use waterui::shape::{Capsule, Circle, CornerRadii, CornerRadius, Ellipse, Path,
+                     Rectangle, RoundedRectangle, ShapeExt};
 
 Circle.fill(Color::srgb_hex("#3B82F6")).size(80.0, 80.0)   // draw the shape
 photo.clip(Circle)                                          // clip a view to the shape
-photo.clip(FixedRoundedRectangle::new(12.0))                // absolute points
+photo.clip(RoundedRectangle::new(12.0))                     // radius in logical points
+photo.clip(RoundedRectangle::new(CornerRadius::fraction(0.1)))
+photo.clip(RoundedRectangle::new(CornerRadii::new(12.0, 12.0, 0.0, 0.0)))
 ```
 
-**Corner radii are normalized, not points.** `RoundedRectangle::new(r)` takes a fraction
-of the shape's *shorter side*: `0.1` is a subtle round, `0.5` is fully rounded, and
-larger values silently saturate at 0.5. `RoundedRectangle::new(12.0)` therefore compiles
-and produces a capsule — the single most common shape mistake. For "fully rounded at any
-size", use `Capsule`. `UnevenRoundedRectangle::new(top_leading, top_trailing,
-bottom_leading, bottom_trailing)` takes four normalized radii in reading order — *not*
-clockwise. When a spec names the radius in points ("12dp card"), use
-`FixedRoundedRectangle::new(points)` or `FixedUnevenRoundedRectangle::new(..)` (same
-corner order): the radius stays constant as the shape resizes and clamps to half the
-shorter side.
+**Corner radii default to logical points.** `RoundedRectangle::new(12.0)` keeps a 12 pt
+corner radius as the shape resizes and clamps to half the shorter side; for "fully rounded
+at any size", use `Capsule`. Pass `CornerRadius::fraction(r)` when the radius should scale as
+a fraction of the shorter side (`0.1` is a subtle round, `0.5` is fully rounded), or
+`CornerRadii::new(top_leading, top_trailing, bottom_leading, bottom_trailing)` (each corner
+accepts points `f32` or `CornerRadius`) in reading order — *not* clockwise — for independent
+corners.
 
 Custom paths are unit-space (0.0–1.0 fractions of the bounds, stretched to fit) and the
 builder consumes `self` — reassign when building in a loop:
@@ -287,14 +285,13 @@ their kind instead of path commands, and why shape code is tested against a deli
 non-square rectangle, never a square.
 
 Morphing is a self-animating view over the **built-in shapes only** (`MorphableShape`:
-Rectangle, Circle, Ellipse, RoundedRectangle, UnevenRoundedRectangle, Capsule and
-the two `Fixed…` rounded rectangles — `Path` does not implement `MorphableShape`
-so `morph_to` rejects it at compile time); the
-shapes' parameters interpolate and every backend draws the same path:
+Rectangle, Circle, Ellipse, RoundedRectangle, and Capsule — `Path` does not implement
+`MorphableShape` so `morph_to` rejects it at compile time); the shapes' parameters
+interpolate and every backend draws the same path:
 
 ```rust
 Circle
-    .morph_to(RoundedRectangle::new(0.22), Color::srgb_hex("#3B82F6"))
+    .morph_to(RoundedRectangle::new(20.0), Color::srgb_hex("#3B82F6"))
     .duration(Duration::from_millis(600))
     .autoreverse(true)                       // also .repeat(bool)
     .size(90.0, 90.0)
@@ -317,11 +314,11 @@ card.shadow(Shadow::new(
     Color::srgb(0, 0, 0).with_opacity(0.2),   // color, with alpha
     Vector::new(0.0, 2.0),                    // offset
     8.0,                                      // blur radius
-    RoundedRectangle::new(0.1),               // the caster's own shape
+    RoundedRectangle::new(8.0),               // the caster's own shape
 ))
 ```
 
-`Border`'s `corner_radius` is in **points** (unlike `RoundedRectangle`'s normalized radius)
+`Border`'s `corner_radius` and `RoundedRectangle`'s default radius are both in **points**,
 and `Shadow`'s third argument is its blur radius. A shadow follows its `silhouette`
 argument, so pass the shape the view is filled or clipped with, or the shadow will not
 match its outline. `Shadow::splat(v)` is a black shadow of a rectangle.

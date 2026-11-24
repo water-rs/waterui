@@ -23,6 +23,7 @@ use cherenkov_record::PATH_TOLERANCE;
 use kurbo::{Affine, Rect, RoundedRect, Shape as _, Vec2};
 use waterui_core::contract_violation;
 use waterui_core::handler::ReportExtraction as _;
+use waterui_shape::CornerRadius;
 
 #[cfg(feature = "menu")]
 fn presentation_surface_clip(sample: &MenuPresentationSample) -> ScopeClip {
@@ -1195,28 +1196,29 @@ fn kind_clip_shape(kind: ShapeKind, bounds: kurbo::Rect) -> Option<RegularClipSh
             corner_height: corner,
         })
     };
-    let uniform = |radius: f32| rounded(f64::from(radius.clamp(0.0, 0.5)) * min_side);
-    // A fixed radius is already a length in points; only the
-    // half-shorter-side ceiling applies.
-    let fixed = |radius: f32| rounded(f64::from(radius.max(0.0)).min(min_side / 2.0));
+    let resolve_corner = |radius: CornerRadius| {
+        let limit = min_side / 2.0;
+        match (radius.as_points(), radius.as_fraction()) {
+            (Some(points), None) => f64::from(points).min(limit),
+            (None, Some(fraction)) => (f64::from(fraction) * min_side).min(limit),
+            _ => unreachable!("CornerRadius is either points or fraction"),
+        }
+    };
     match kind {
         ShapeKind::Rect => Some(RegularClipShape::Rect(bounds)),
-        ShapeKind::RoundedRect { corner_radius } => uniform(corner_radius),
-        ShapeKind::FixedRoundedRect { corner_radius } => fixed(corner_radius),
-        ShapeKind::Capsule => uniform(0.5),
+        ShapeKind::RoundedRect { radii } => {
+            radii.as_uniform().and_then(|r| rounded(resolve_corner(r)))
+        }
+        ShapeKind::Capsule => rounded(min_side / 2.0),
         // A circle is *inscribed* in the bounds, so only a square one is a
-        // rounded rect: elsewhere `uniform(0.5)` describes a stadium filling
+        // rounded rect: elsewhere `min_side / 2.0` describes a stadium filling
         // the bounds, which is what a capsule is and what a circle is not. The
         // fill path builds a real `kurbo::Circle`, and a clip that disagreed
         // with its own fill is the bug this guard closes.
-        ShapeKind::Circle if bounds.width() == bounds.height() => uniform(0.5),
+        ShapeKind::Circle if bounds.width() == bounds.height() => rounded(min_side / 2.0),
         // An ellipse is not a rounded rect, a non-square circle is not either,
         // and uneven corners need the path mask; all stay on the general route.
-        ShapeKind::Circle
-        | ShapeKind::Ellipse
-        | ShapeKind::UnevenRoundedRect { .. }
-        | ShapeKind::FixedUnevenRoundedRect { .. }
-        | ShapeKind::CustomPath => None,
+        ShapeKind::Circle | ShapeKind::Ellipse | ShapeKind::CustomPath => None,
     }
 }
 
@@ -1267,15 +1269,17 @@ mod clip_shape_tests {
         ));
     }
 
-    /// A fixed radius is a length in points: 12 stays 12 on a wide bar, and
+    /// A point radius is a length in points: 12 stays 12 on a wide bar, and
     /// only the half-shorter-side ceiling cuts it down.
     #[test]
     fn a_fixed_radius_clips_at_its_own_length_up_to_the_ceiling() {
+        use waterui_shape::{CornerRadii, CornerRadius};
+
         let wide = Rect::new(0.0, 0.0, 200.0, 50.0);
         assert!(matches!(
             kind_clip_shape(
-                ShapeKind::FixedRoundedRect {
-                    corner_radius: 12.0
+                ShapeKind::RoundedRect {
+                    radii: CornerRadii::uniform(CornerRadius::points(12.0)),
                 },
                 wide
             ),
@@ -1288,8 +1292,8 @@ mod clip_shape_tests {
         ));
         assert!(matches!(
             kind_clip_shape(
-                ShapeKind::FixedRoundedRect {
-                    corner_radius: 40.0
+                ShapeKind::RoundedRect {
+                    radii: CornerRadii::uniform(CornerRadius::points(40.0)),
                 },
                 wide
             ),
@@ -1305,14 +1309,13 @@ mod clip_shape_tests {
     /// Per-corner radii cannot be a uniform `RoundedRect` clip.
     #[test]
     fn a_fixed_uneven_kind_stays_on_the_path_mask() {
+        use waterui_shape::CornerRadii;
+
         let bounds = Rect::new(0.0, 0.0, 200.0, 100.0);
         assert!(
             kind_clip_shape(
-                ShapeKind::FixedUnevenRoundedRect {
-                    top_left: 0.0,
-                    top_right: 16.0,
-                    bottom_left: 0.0,
-                    bottom_right: 16.0,
+                ShapeKind::RoundedRect {
+                    radii: CornerRadii::new(0.0, 16.0, 0.0, 16.0),
                 },
                 bounds
             )
@@ -1487,7 +1490,7 @@ fn approx_eq(left: f32, right: f32) -> bool {
 
 #[cfg(test)]
 mod regular_clip_tests {
-    use waterui_shape::{Path, Rectangle, RoundedRectangle, Shape as _, UnevenRoundedRectangle};
+    use waterui_shape::{CornerRadii, CornerRadius, Path, Rectangle, RoundedRectangle, Shape as _};
 
     use super::*;
 
@@ -1512,7 +1515,10 @@ mod regular_clip_tests {
             rect,
             corner_width,
             corner_height,
-        }) = regular_clip_shape(&RoundedRectangle::new(0.1).path(), BOUNDS)
+        }) = regular_clip_shape(
+            &RoundedRectangle::new(CornerRadius::fraction(0.1)).path(),
+            BOUNDS,
+        )
         else {
             panic!("uniform rounded rectangle must use the regular clip route");
         };
@@ -1536,7 +1542,10 @@ mod regular_clip_tests {
             corner_width,
             corner_height,
             ..
-        }) = regular_clip_shape(&RoundedRectangle::new(0.5).path(), BOUNDS)
+        }) = regular_clip_shape(
+            &RoundedRectangle::new(CornerRadius::fraction(0.5)).path(),
+            BOUNDS,
+        )
         else {
             panic!("a fully-rounded rectangle must use the regular clip route");
         };
@@ -1549,7 +1558,13 @@ mod regular_clip_tests {
     fn leaves_uneven_and_custom_paths_on_the_path_mask_route() {
         assert_eq!(
             regular_clip_shape(
-                &UnevenRoundedRectangle::new(0.1, 0.2, 0.3, 0.4).path(),
+                &RoundedRectangle::new(CornerRadii::new(
+                    CornerRadius::fraction(0.1),
+                    CornerRadius::fraction(0.2),
+                    CornerRadius::fraction(0.3),
+                    CornerRadius::fraction(0.4),
+                ))
+                .path(),
                 BOUNDS,
             ),
             None

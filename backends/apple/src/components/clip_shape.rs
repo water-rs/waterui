@@ -96,22 +96,11 @@ fn commands_path(commands: &[PathCommand], bounds: Rect) -> CFRetained<CGPath> {
     builder.finish()
 }
 
+use super::resolved_shape::resolve_corner;
+
 /// The per-corner-arc rounded rect `ShapeKind` spells without a single
 /// `roundedRect` call.
-fn uneven_rounded_rect(
-    tl: f32,
-    tr: f32,
-    br: f32,
-    bl: f32,
-    scale: f64,
-    limit: f64,
-    bounds: Rect,
-) -> CFRetained<CGPath> {
-    let tl = (f64::from(tl) * scale).min(limit);
-    let tr = (f64::from(tr) * scale).min(limit);
-    let br = (f64::from(br) * scale).min(limit);
-    let bl = (f64::from(bl) * scale).min(limit);
-
+fn uneven_rounded_rect(tl: f64, tr: f64, br: f64, bl: f64, bounds: Rect) -> CFRetained<CGPath> {
     let min_x = bounds.origin.x;
     let min_y = bounds.origin.y;
     let max_x = bounds.origin.x + bounds.size.width;
@@ -144,44 +133,20 @@ fn shape_path(kind: ShapeKind, commands: &[PathCommand], bounds: Rect) -> CFReta
             ))
         }
         ShapeKind::Ellipse => shape::ellipse_path(bounds),
-        ShapeKind::RoundedRect { corner_radius } => {
-            let radius = (f64::from(corner_radius) * shorter).min(shorter / 2.0);
-            shape::rounded_rect_path(bounds, radius)
-        }
-        ShapeKind::UnevenRoundedRect {
-            top_left,
-            top_right,
-            bottom_left,
-            bottom_right,
-        } => uneven_rounded_rect(
-            top_left,
-            top_right,
-            bottom_right,
-            bottom_left,
-            shorter,
-            shorter / 2.0,
-            bounds,
+        ShapeKind::RoundedRect { radii } => radii.as_uniform().map_or_else(
+            || {
+                uneven_rounded_rect(
+                    resolve_corner(radii.top_leading(), shorter),
+                    resolve_corner(radii.top_trailing(), shorter),
+                    resolve_corner(radii.bottom_trailing(), shorter),
+                    resolve_corner(radii.bottom_leading(), shorter),
+                    bounds,
+                )
+            },
+            |uniform| shape::rounded_rect_path(bounds, resolve_corner(uniform, shorter)),
         ),
         ShapeKind::Capsule => shape::rounded_rect_path(bounds, shorter / 2.0),
         ShapeKind::CustomPath => commands_path(commands, bounds),
-        ShapeKind::FixedRoundedRect { corner_radius } => {
-            let radius = f64::from(corner_radius).min(shorter / 2.0);
-            shape::rounded_rect_path(bounds, radius)
-        }
-        ShapeKind::FixedUnevenRoundedRect {
-            top_left,
-            top_right,
-            bottom_left,
-            bottom_right,
-        } => uneven_rounded_rect(
-            top_left,
-            top_right,
-            bottom_right,
-            bottom_left,
-            1.0,
-            shorter / 2.0,
-            bounds,
-        ),
     }
 }
 

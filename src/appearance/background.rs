@@ -205,7 +205,7 @@ pub enum Background {
 /// let card = text!("Hello")
 ///     .padding()
 ///     .background(Material::Regular)
-///     .clip(RoundedRectangle::new(0.1));
+///     .clip(RoundedRectangle::new(8.0));
 ///
 /// // A heavier frost for an overlay over busy content
 /// let overlay = text!("Overlay").background(Material::Thick);
@@ -280,7 +280,7 @@ pub enum GlassStyle {
 ///         Glass::clear()
 ///             .interactive(true)
 ///             .tint(Color::srgb(20, 120, 255))
-///             .shape(RoundedRectangle::new(0.2)),
+///             .shape(RoundedRectangle::new(12.0)),
 ///     );
 /// ```
 #[derive(Debug, Clone)]

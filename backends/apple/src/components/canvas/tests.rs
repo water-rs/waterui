@@ -1970,7 +1970,8 @@ mod render {
     #[test]
     fn morph_sequences_render_in_square_and_wide_boxes() {
         use waterui::shape::{
-            Capsule, Circle, Ellipse, MorphShape, Rectangle, RoundedRectangle, ShapeExt as _,
+            Capsule, Circle, CornerRadius, Ellipse, MorphShape, Rectangle, RoundedRectangle,
+            ShapeExt as _,
         };
         use waterui_graphics::backend::SceneResources;
         use waterui_graphics::backend::draw::LayoutSize;
@@ -1985,7 +1986,7 @@ mod render {
             |color| Rectangle.morph_to(Circle, color),
             |color| Circle.morph_to(Ellipse, color),
             |color| Capsule.morph_to(Ellipse, color),
-            |color| RoundedRectangle::new(0.2).morph_to(Capsule, color),
+            |color| RoundedRectangle::new(CornerRadius::fraction(0.2)).morph_to(Capsule, color),
         ];
         let boxes = [(64.0_f32, 64.0_f32), (112.0, 64.0)];
         let steps = [0.0_f32, 0.25, 0.5, 0.75, 1.0];

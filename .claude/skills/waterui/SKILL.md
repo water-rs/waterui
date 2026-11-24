@@ -673,7 +673,7 @@ let view = tsx!(
 | State resets on every keystroke | `watch` rebuilding the subtree | `text!` / signal-taking API / `Lazy::for_each` |
 | `no function or associated item named 'new'` on `Binding` | `Binding::new` does not exist | `Binding::i32(v)` / `Binding::container(v)` / `Binding::default()` |
 | `cannot find function 'when'` / `cannot find trait 'Identifiable'` on the derive | not in the prelude (the derive is; the trait it implements is not) | `use waterui::widget::condition::when;` / `use waterui::Identifiable;` |
-| Rounded corners come out fully round | `RoundedRectangle::new(r)` takes a *fraction* of the shorter side, not points | `new(0.1)`-scale values, or `Capsule` |
+| Rounded corners look wrong on non-square sizes | `CornerRadius::fraction(r)` scales with the shorter side | `RoundedRectangle::new(points)` for points, or `Capsule` |
 | A background task dies instantly | the `spawn_local` handle cancels on drop | `.detach()` it |
 | `LongPressGesture::new(Duration…)` rejected | duration is a `u32` in backend time units | `LongPressGesture::new(500)` |
 | `.is_empty()` missing on a string signal | different name | `.str_is_empty()`, `.str_len()`, `.str_contains(..)` |

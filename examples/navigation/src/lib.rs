@@ -43,7 +43,7 @@ use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
 use waterui::reactive::collection::SignalCollection;
-use waterui::shape::{Circle, RoundedRectangle};
+use waterui::shape::{Circle, CornerRadius, RoundedRectangle};
 use waterui::views::ForEach;
 use waterui_icons_material_icon as mdi;
 
@@ -726,7 +726,7 @@ fn photo_tile(index: usize) -> impl View {
                 photo_color(index).size(160.0, 120.0),
                 text!("Photo {index}").subheadline().foreground(Foreground),
             ))
-            .clip(RoundedRectangle::new(0.1))
+            .clip(RoundedRectangle::new(CornerRadius::fraction(0.1)))
         }),
         PhotoRoute(index),
     )
@@ -737,9 +737,8 @@ fn photo_page(index: usize) -> NavigationView<impl View + use<>> {
     vstack((
         photo_color(index)
             .height(280.0)
-            // A `RoundedRectangle` radius is a fraction of the shorter side,
-            // not a point value.
-            .clip(RoundedRectangle::new(0.06))
+            // Proportional radius scales with the shorter side.
+            .clip(RoundedRectangle::new(CornerRadius::fraction(0.06)))
             .navigation_transition_destination(PhotoRoute(index)),
         text(include_str!("gallery_transition_description.txt"))
             .caption()

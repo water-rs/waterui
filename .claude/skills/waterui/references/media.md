@@ -452,8 +452,8 @@ it is not the frame modifier. Also available: `.emit_from_point()` / `.emit_from
 `.collide_with_particles(radius, strength)`, `.bounce(r)`, `.surface_friction(f)`).
 
 Shapes are views that fill the space they are given; `.fill()` and `.clip()` are the two
-ways to use them — the styling reference covers them, including the normalized-radius
-rule for `RoundedRectangle`.
+ways to use them — the styling reference covers them, including point and fractional radii
+for `RoundedRectangle`.
 
 ## Data: charts and maps
 

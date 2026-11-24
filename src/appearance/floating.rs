@@ -3,7 +3,7 @@
 use nami::binding;
 use waterui_core::{Dynamic, Environment, View, plugin::Plugin};
 use waterui_interaction::interaction::InteractionState;
-use waterui_shape::{RoundedRectangle, ShapeExt as _};
+use waterui_shape::{CornerRadius, RoundedRectangle, ShapeExt as _};
 
 use crate::{
     ViewExt as _,
@@ -69,7 +69,7 @@ where
             .style
             .or_else(|| env.get::<FloatingStyle>().cloned())
             .unwrap_or_default();
-        let shape = RoundedRectangle::new(style.clip_radius);
+        let shape = RoundedRectangle::new(CornerRadius::fraction(style.clip_radius));
         // The surface rises and settles with the control on it, so its shadows
         // follow the control's interaction state. They are cast by a layer of
         // their own beneath the clipped surface: clipping the surface must not
@@ -206,14 +206,18 @@ mod tests {
     /// `clip_radius` can no longer be read back as an absolute shadow radius.
     #[test]
     fn shadows_carry_the_clip_silhouette() {
+        use waterui_shape::{CornerRadii, CornerRadius};
+
         let (_report, clip_kind, layers, _live) = floating_parts(FloatingStyle {
             clip_radius: 0.4,
             ..FloatingStyle::default()
         });
         assert_eq!(
             clip_kind,
-            ShapeKind::RoundedRect { corner_radius: 0.4 },
-            "Floating clips with RoundedRectangle::new(clip_radius)"
+            ShapeKind::RoundedRect {
+                radii: CornerRadii::uniform(CornerRadius::fraction(0.4)),
+            },
+            "Floating clips with RoundedRectangle::new(CornerRadius::fraction(clip_radius))"
         );
         let layer = layers
             .take()
