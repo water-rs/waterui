@@ -269,7 +269,7 @@ on the right and Android puts it in the app bar, and that difference is the poin
 How a destination *arrives* is a modifier on the destination:
 
 ```rust
-.transition(navigation_transition::zoom(id))
+.transition(navigation_transition::zoom(PhotoRoute(index)))
 .transition(navigation_transition::fade())
 .transition(navigation_transition::none())
 ```
@@ -277,17 +277,16 @@ How a destination *arrives* is a modifier on the destination:
 `navigation_transition::automatic()` is the platform default. Put a transition on the stack
 (`NavigationStack::transition`) only when every push should move the same way. A **matched
 zoom belongs on the destination**, because the pair it names differs per destination —
-tile 3 and the page it opens share an identity that tile 4 does not. Mark both halves:
+tile 3 and the page it opens share an identity that tile 4 does not. Mark both halves with
+the application's own hashable key type (`K: Hash + Eq + 'static`, such as your route value):
 
 ```rust
-tile.navigation_transition_source(photo_transition(index))
-hero.navigation_transition_destination(photo_transition(index))
+tile.navigation_transition_source(PhotoRoute(index))
+hero.navigation_transition_destination(PhotoRoute(index))
 ```
 
-The shared identity is an `Id` — one of the few places app code touches one. `Id` is
-**non-zero and fallible**: `use waterui::id::Id;` then
-`Id::try_from(index_i32 + 1).expect("non-zero")` — there is no `Id::new`, and `0` is
-rejected, which is why a 0-based index gets `+ 1`.
+Each `NavigationStack` / `NavigationSplitView` resolves matching `(TypeId::of::<K>(), key)`
+pairs into internal non-zero `Id`s for the backend, so application code never constructs raw `Id`s.
 
 A destination that declares nothing inherits the stack's transition. A destination
 declares its arrival once: `NavigationView::transition(..)` or a `.transition(..)` on its

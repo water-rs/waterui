@@ -48,11 +48,13 @@ pub use split::{
     NavigationSplitLayout, NavigationSplitStyle, NavigationSplitView, split_style,
 };
 pub use tab::{Tab, TabBarMinimizeBehavior, TabRole, Tabs, TabsLayout, tab_style};
+use transition::TransitionKeyRegistry;
 pub use transition::{
-    AnyNavigationTransition, NativeNavigationTransition, NavigationTransition,
-    NavigationTransitionDestination, NavigationTransitionDirection, NavigationTransitionFrame,
-    NavigationTransitionLayer, NavigationTransitionSource, NavigationTransitionViewExt,
-    RetainedNavigationTransition, navigation_transition,
+    AnyNavigationTransition, KeyedNavigationTransitionDestination, KeyedNavigationTransitionSource,
+    NativeNavigationTransition, NavigationTransition, NavigationTransitionDestination,
+    NavigationTransitionDirection, NavigationTransitionFrame, NavigationTransitionLayer,
+    NavigationTransitionSource, NavigationTransitionViewExt, RetainedNavigationTransition,
+    navigation_transition,
 };
 pub use waterui_controls::{IconSlot as NavigationIconSlot, SlotBuilder};
 
@@ -925,8 +927,10 @@ impl<S: 'static> NativeView for ResolvedNavigationView<S> {
 
 impl<V: View, T: NavigationToolbarItems> View for NavigationView<V, T> {
     /// The erased form, for code that expands views by hand.
-    fn body(self, _env: &Environment) -> impl View {
-        Native::new(self.into_resolved::<AnyView>())
+    fn body(self, env: &Environment) -> impl View {
+        let mut resolved = self.into_resolved::<AnyView>();
+        resolved.resolve_native_fields(env);
+        Native::new(resolved)
     }
 
     /// Reaches the backend with the content and toolbar items in the backend's
@@ -1772,7 +1776,7 @@ impl<S> NavigationStackLayout<S> {
     /// Panics when a path-backed stack is resolved in an environment without
     /// a [`NavigationController`]: its backend inserts one first.
     pub fn resolve(self, env: &Environment) -> ResolvedNavigationView<S> {
-        let mut env = env.clone();
+        let mut env = TransitionKeyRegistry::scoped(env);
         if let Some(attach) = self.attach {
             let controller = env.get::<NavigationController>().cloned().expect(
                 "a navigation stack's backend inserts its NavigationController before resolving the stack",
@@ -1966,14 +1970,20 @@ where
     Self: IntoNavigationStackLayout,
 {
     /// The erased form, for code that expands views by hand.
-    fn body(self, _env: &Environment) -> impl View {
-        Native::new(self.into_layout::<AnyView>())
+    fn body(self, env: &Environment) -> impl View {
+        let stack_env = TransitionKeyRegistry::scoped(env);
+        let mut layout = self.into_layout::<AnyView>();
+        layout.transition = layout.transition.resolve(&stack_env);
+        Native::new(layout)
     }
 
     /// Reaches the backend with every page built in the backend's child
     /// slot.
     fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
-        backend.native(self.into_layout::<B::Slot>(), env, cx)
+        let stack_env = TransitionKeyRegistry::scoped(env);
+        let mut layout = self.into_layout::<B::Slot>();
+        layout.transition = layout.transition.resolve(&stack_env);
+        backend.native(layout, &stack_env, cx)
     }
 }
 
@@ -2182,6 +2192,10 @@ impl<S> ResolvedNavigationView<S> {
                 color.clone().map(move |color| color.resolve(&resolved_env)),
             )));
         }
+
+        if let Some(transition) = self.transition.take() {
+            self.transition = Some(transition.resolve(env));
+        }
     }
 }
 
@@ -2225,12 +2239,13 @@ impl<C, T> NavigationView<C, T> {
     /// ```rust
     /// use waterui::navigation::{NavigationView, navigation_transition};
     /// use waterui::prelude::*;
-    /// use waterui_core::id::Id;
     ///
-    /// # fn photo_id(index: i32) -> Id { Id::try_from(index + 1).expect("non-zero") }
+    /// #[derive(Hash, PartialEq, Eq)]
+    /// struct PhotoId(i32);
+    ///
     /// fn photo_page(index: i32) -> NavigationView<impl View> {
     ///     NavigationView::new("Photo", text!("photo {index}"))
-    ///         .transition(navigation_transition::zoom(photo_id(index)))
+    ///         .transition(navigation_transition::zoom(PhotoId(index)))
     /// }
     /// ```
     pub fn transition(mut self, transition: impl NavigationTransition) -> Self {

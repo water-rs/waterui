@@ -398,13 +398,13 @@ pub fn navigation_toolbar_prose() {
 // Method-fragment listing applied to a navigation destination receiver.
 // ---------------------------------------------------------------------------
 pub fn navigation_block_09() {
-    use waterui::id::Id;
     use waterui::navigation::navigation_transition;
 
-    let id = Id::try_from(1_i32).expect("non-zero");
+    #[derive(Clone, Copy, Hash, PartialEq, Eq)]
+    struct PhotoRoute(usize);
 
     let dest = message_list(Mail).title("Inbox");
-    let _ = { dest.transition(navigation_transition::zoom(id)) };
+    let _ = { dest.transition(navigation_transition::zoom(PhotoRoute(1))) };
     let dest = message_list(Mail).title("Inbox");
     let _ = { dest.transition(navigation_transition::fade()) };
     let dest = message_list(Mail).title("Inbox");
@@ -416,18 +416,15 @@ pub fn navigation_block_09() {
 // Listing: the two halves of a matched zoom.
 // ---------------------------------------------------------------------------
 pub fn navigation_block_10() {
-    use waterui::id::Id;
+    #[derive(Clone, Copy, Hash, PartialEq, Eq)]
+    struct PhotoRoute(usize);
 
-    // The prose spells out the construction: `Id::try_from(index_i32 + 1)`.
-    fn photo_transition(index: i32) -> Id {
-        Id::try_from(index + 1).expect("non-zero")
-    }
-    let index = 3_i32;
+    let index = 3_usize;
 
     let tile = text("tile");
-    let _ = { tile.navigation_transition_source(photo_transition(index)) };
+    let _ = { tile.navigation_transition_source(PhotoRoute(index)) };
     let hero = text("hero");
-    let _ = { hero.navigation_transition_destination(photo_transition(index)) };
+    let _ = { hero.navigation_transition_destination(PhotoRoute(index)) };
 }
 
 // ---------------------------------------------------------------------------
