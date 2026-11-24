@@ -194,41 +194,44 @@ pub fn i18n_with_method_prose() {
 // i18n.md § "## Locale-aware formatting" — rust block 7/7
 // ---------------------------------------------------------------------------
 pub fn i18n_block_07() -> impl View {
-    use waterui::locale::locales;
+    use jiff::civil;
+    use waterui::locale::format::unit::{Length, Meter};
+    use waterui::locale::{DateStyle, LocalizedDisplay, RelativeTime, locales};
 
     let locale = Binding::container(locales::EN_US);
+    let picked = Binding::container(civil::date(2026, 3, 20));
 
-    use waterui::locale::LocalizedDisplay; // trait import required
-    use waterui::locale::format::date::{DateStyle, SimpleDate, format_date};
-    use waterui::locale::format::unit::{Length, Meter};
-
-    let date = locale
-        .map(|l| format_date(&l, &SimpleDate::new(2026, 3, 20), DateStyle::Long))
-        .computed();
+    let due = picked.map(|date| date.formatted(DateStyle::Long));
+    let opens = RelativeTime::days(3);
     let distance = locale
         .map(|l| Length::<Meter>::new(1500.0).to_localized_string(&l))
         .computed();
-    vstack((text!("{date}"), text!("{distance}")))
+    vstack((text!("Due {due}"), text!("{opens}"), text!("{distance}")))
 }
 
 // ---------------------------------------------------------------------------
-// i18n.md § "## Locale-aware formatting" (prose): `SimpleTime::new(h, m, s)`,
-// `TimeStyle`, `format_time`, `format_datetime`,
-// `format_datetime_with_regional_context(&ctx, ..)`, explicit unit conversion
-// with `.to::<Mile>()`, the `Length` / `Temperature` / `Mass` unit types
-// in `format::unit`, the crate-root siblings `format_number` /
-// `format_percent` / `format_currency` / `LocalizedList`, and
+// i18n.md § "## Locale-aware formatting" (prose): `jiff` date/time formatters,
+// `DateStyle`, `TimeStyle`, `format_date`, `format_time`, `format_datetime`,
+// `format_zoned`, `format_datetime_with_regional_context(&ctx, ..)`,
+// `RelativeTime`, `format_relative_time`, explicit unit conversion with
+// `.to::<Mile>()`, the `Length` / `Temperature` / `Mass` unit types in
+// `format::unit`, the crate-root siblings `format_number` / `format_percent` /
+// `format_currency` / `LocalizedList`, and
 // `waterui::regional::current_settings()`.
 // Not counted as a rust block.
 // ---------------------------------------------------------------------------
 // The prose names `waterui::regional::current_settings()` with its full path.
 #[allow(unknown_lints, qualified_waterui_path)]
 pub fn i18n_formatting_siblings_prose() {
+    use jiff::{civil, tz::TimeZone};
     use waterui::locale::format::date::{
-        DateStyle, SimpleDate, SimpleTime, TimeStyle, format_datetime,
-        format_datetime_with_regional_context, format_time,
+        DateStyle, TimeStyle, format_date, format_datetime, format_datetime_with_regional_context,
+        format_time, format_zoned,
     };
     use waterui::locale::format::number::Currency;
+    use waterui::locale::format::relative::{
+        RelativeTime, RelativeTimeNumeric, RelativeTimeStyle, format_relative_time,
+    };
     use waterui::locale::format::unit::{
         Celsius, Fahrenheit, Feet, Gram, Kelvin, Kilogram, Kilometer, Length, Mass, Meter, Mile,
         Ounce, Pound, Temperature,
@@ -238,16 +241,27 @@ pub fn i18n_formatting_siblings_prose() {
     };
 
     let l = locales::EN_US;
-    let time = SimpleTime::new(13, 5, 0);
-    let date = SimpleDate::new(2026, 3, 20);
-    let _ = format_time(&l, &time, TimeStyle::Short);
-    let _ = format_datetime(&l, &date, &time, DateStyle::Long, TimeStyle::Short);
+    let time = civil::time(13, 5, 0, 0);
+    let date = civil::date(2026, 3, 20);
+    let dt = date.at(13, 5, 0, 0);
+    let zoned = dt
+        .to_zoned(TimeZone::UTC)
+        .expect("UTC conversion must succeed");
+    let _ = format_date(&l, date, DateStyle::Long);
+    let _ = format_time(&l, time, TimeStyle::Short);
+    let _ = format_datetime(&l, dt, DateStyle::Long, TimeStyle::Short);
+    let _ = format_zoned(&l, &zoned, DateStyle::Long, TimeStyle::Long);
     let _ = format_datetime_with_regional_context(
         &waterui::regional::current_settings(),
-        &date,
-        &time,
+        dt,
         DateStyle::Long,
         TimeStyle::Short,
+    );
+    let _ = format_relative_time(
+        &l,
+        RelativeTime::days(3)
+            .style(RelativeTimeStyle::Short)
+            .numeric(RelativeTimeNumeric::Auto),
     );
     let _ = Length::<Kilometer>::new(42.195).to::<Mile>();
     let _ = Length::<Meter>::new(3.0).to::<Feet>();
