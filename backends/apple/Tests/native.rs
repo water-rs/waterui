@@ -9982,6 +9982,7 @@ mod navigation {
                 .size
                 .width,
         );
+        let noop: fn() = || {};
         let leaf = resolve::render(NavigationStack::new(
             NavigationView::new("Inbox", text("root")).navigation_toolbar(NavigationToolbar::new(
                 vec![
@@ -9989,13 +9990,13 @@ mod navigation {
                         NavigationToolbarPlacement::TopBarLeading,
                         button(label("").icon(icon()))
                             .style(ButtonStyle::Borderless)
-                            .action(|| {}),
+                            .action(noop),
                     ),
                     NavigationToolbarItem::new(
                         NavigationToolbarPlacement::TopBarTrailing,
                         button(label("Keep title").icon(icon()).title_and_icon())
                             .style(ButtonStyle::Borderless)
-                            .action(|| {}),
+                            .action(noop),
                     ),
                 ],
             )),
