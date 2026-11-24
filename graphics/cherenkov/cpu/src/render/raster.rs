@@ -2307,11 +2307,18 @@ fn composite_solid_in<S: Simd, C: Source, const CLIPPED: bool>(
 /// Shades one positive compiler run under the dispatched CPU level.
 #[expect(
     clippy::too_many_arguments,
-    clippy::inline_always,
     clippy::cast_sign_loss,
-    reason = "integer crop inlines into the caller; each pixel kernel has its own SIMD boundary"
+    reason = "integer crop inlines into the caller in release; each pixel kernel has its own SIMD boundary"
 )]
-#[inline(always)]
+#[cfg_attr(debug_assertions, inline(never))]
+#[cfg_attr(
+    not(debug_assertions),
+    expect(
+        clippy::inline_always,
+        reason = "integer crop inlines into the caller; each pixel kernel has its own SIMD boundary"
+    ),
+    inline(always)
+)]
 fn shade_run<S: Simd>(
     simd: S,
     dst: &mut [[f32; 4]],
@@ -2476,11 +2483,15 @@ impl Background {
     clippy::too_many_arguments,
     reason = "the band context travels together"
 )]
-#[expect(
-    clippy::inline_always,
-    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+#[cfg_attr(debug_assertions, inline(never))]
+#[cfg_attr(
+    not(debug_assertions),
+    expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+    ),
+    inline(always)
 )]
-#[inline(always)]
 fn shade(
     level: fearless_simd::Level,
     items: &[Item],
@@ -2632,13 +2643,17 @@ fn top_captures(
 
 /// The band's pass with no capture: `run` over the caller's slice.
 #[expect(
-    clippy::inline_always,
-    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
-)]
-#[inline(always)]
-#[expect(
     clippy::too_many_arguments,
     reason = "the band context travels together"
+)]
+#[cfg_attr(debug_assertions, inline(never))]
+#[cfg_attr(
+    not(debug_assertions),
+    expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+    ),
+    inline(always)
 )]
 fn shade_plain(
     level: fearless_simd::Level,
@@ -2695,11 +2710,15 @@ fn shade_plain(
     clippy::too_many_arguments,
     reason = "the band's captured state travels together"
 )]
-#[expect(
-    clippy::inline_always,
-    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+#[cfg_attr(debug_assertions, inline(never))]
+#[cfg_attr(
+    not(debug_assertions),
+    expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+    ),
+    inline(always)
 )]
-#[inline(always)]
 fn shade_windowed(
     level: fearless_simd::Level,
     items: &[Item],
@@ -3139,11 +3158,15 @@ fn run_at(
     clippy::too_many_arguments,
     reason = "the band context travels together"
 )]
-#[expect(
-    clippy::inline_always,
-    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+#[cfg_attr(debug_assertions, inline(never))]
+#[cfg_attr(
+    not(debug_assertions),
+    expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+    ),
+    inline(always)
 )]
-#[inline(always)]
 fn run<S: Simd>(
     simd: S,
     items: &[Item],
@@ -3595,11 +3618,15 @@ fn run_filter(
     clippy::cast_sign_loss,
     reason = "device spans of texels inside the surface are small and non-negative"
 )]
-#[expect(
-    clippy::inline_always,
-    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+#[cfg_attr(debug_assertions, inline(never))]
+#[cfg_attr(
+    not(debug_assertions),
+    expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+    ),
+    inline(always)
 )]
-#[inline(always)]
 fn capture_band<S: Simd>(
     simd: S,
     band: &Band<'_>,
@@ -3994,11 +4021,15 @@ impl Band<'_> {
         clippy::too_many_arguments,
         reason = "the draw context travels together"
     )]
-    #[expect(
-        clippy::inline_always,
-        reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+    #[cfg_attr(debug_assertions, inline(never))]
+    #[cfg_attr(
+        not(debug_assertions),
+        expect(
+            clippy::inline_always,
+            reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+        ),
+        inline(always)
     )]
-    #[inline(always)]
     fn draw<S: Simd>(
         &mut self,
         simd: S,
@@ -4046,11 +4077,15 @@ impl Band<'_> {
         reason = "pixel indices and band offsets are far below 2^24 and \
                   the quadrature weights mirror the reference formula"
     )]
-    #[expect(
-        clippy::inline_always,
-        reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+    #[cfg_attr(debug_assertions, inline(never))]
+    #[cfg_attr(
+        not(debug_assertions),
+        expect(
+            clippy::inline_always,
+            reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+        ),
+        inline(always)
     )]
-    #[inline(always)]
     fn shadow<S: Simd>(
         &mut self,
         simd: S,
@@ -4255,11 +4290,15 @@ impl Band<'_> {
         clippy::too_many_arguments,
         reason = "one sample item's fields plus the band's plane stack"
     )]
-    #[expect(
-        clippy::inline_always,
-        reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+    #[cfg_attr(debug_assertions, inline(never))]
+    #[cfg_attr(
+        not(debug_assertions),
+        expect(
+            clippy::inline_always,
+            reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+        ),
+        inline(always)
     )]
-    #[inline(always)]
     fn sample<S: Simd>(
         &mut self,
         simd: S,
@@ -4460,14 +4499,18 @@ impl Band<'_> {
         reason = "mask coordinates and pixel indices are small"
     )]
     #[expect(
-        clippy::inline_always,
-        reason = "compiled under the dispatched CPU level so mul_add is one instruction"
-    )]
-    #[expect(
         clippy::too_many_arguments,
         reason = "the glyph context travels together"
     )]
-    #[inline(always)]
+    #[cfg_attr(debug_assertions, inline(never))]
+    #[cfg_attr(
+        not(debug_assertions),
+        expect(
+            clippy::inline_always,
+            reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+        ),
+        inline(always)
+    )]
     fn glyph<S: Simd>(
         &mut self,
         simd: S,
@@ -4544,11 +4587,15 @@ impl Band<'_> {
         clippy::cast_precision_loss,
         reason = "pixel indices are far below 2^53"
     )]
-    #[expect(
-        clippy::inline_always,
-        reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+    #[cfg_attr(debug_assertions, inline(never))]
+    #[cfg_attr(
+        not(debug_assertions),
+        expect(
+            clippy::inline_always,
+            reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+        ),
+        inline(always)
     )]
-    #[inline(always)]
     fn project<S: Simd>(
         &mut self,
         simd: S,
@@ -4584,11 +4631,15 @@ impl Band<'_> {
     /// paired with its buffer), which is its declared `blend_space` for a
     /// semantic level or the parent's for a pass-through one — members
     /// already composited in it.
-    #[expect(
-        clippy::inline_always,
-        reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+    #[cfg_attr(debug_assertions, inline(never))]
+    #[cfg_attr(
+        not(debug_assertions),
+        expect(
+            clippy::inline_always,
+            reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+        ),
+        inline(always)
     )]
-    #[inline(always)]
     fn composite_isolate<S: Simd>(
         &mut self,
         simd: S,
