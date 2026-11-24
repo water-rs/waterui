@@ -30,6 +30,8 @@ use waterui_core::Environment;
 use waterui_core::Str;
 #[cfg(target_os = "windows")]
 use waterui_core::contract_violation;
+#[cfg(target_os = "windows")]
+use waterui_locale::regional::refresh_system_locale;
 use waterui_text::FontCollection;
 
 #[cfg(target_os = "windows")]
@@ -40,6 +42,8 @@ use crate::num_cast::f64_as_f32;
 use windows::Win32::Graphics::{
     DirectComposition::DCompositionBoostCompositorClock, Dxgi::DXGIDisableVBlankVirtualization,
 };
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::Foundation::LPARAM;
 use winit::application::ApplicationHandler;
 use winit::event::{DeviceEvent, DeviceId, ElementState, TouchPhase, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, DeviceEvents, EventLoop};
@@ -50,6 +54,10 @@ use winit::window::{Window as NativeWindow, WindowId};
 #[cfg(any(feature = "menu", feature = "color-picker"))]
 use super::window::runtime_window_origin;
 use super::window::{RootWindow, RootWindows};
+#[cfg(target_os = "linux")]
+use crate::platform::linux_locale::SystemLocale as LinuxSystemLocale;
+#[cfg(target_os = "macos")]
+use crate::platform::macos_locale::SystemLocale as MacosSystemLocale;
 use crate::platform::{PlatformWindow, WinitPainter, WinitWindow};
 use crate::renderer::HostRedraw;
 #[cfg(any(feature = "text-field", feature = "secure-field"))]
@@ -444,6 +452,8 @@ const TERMINATION_SUBCLASS_ID: usize = 1;
 ///   dispatches the thread's messages until the machine reports
 ///   `terminate`, so `on_terminate` has finished before the message returns
 ///   and Windows ends the process.
+/// - `WM_SETTINGCHANGE` with `lParam == 0` or case-insensitive `"intl"`
+///   refreshes `waterui_locale::regional` and forwards the message.
 #[cfg(target_os = "windows")]
 unsafe extern "system" fn session_end_proc(
     hwnd: windows_sys::Win32::Foundation::HWND,
@@ -455,7 +465,9 @@ unsafe extern "system" fn session_end_proc(
 ) -> windows_sys::Win32::Foundation::LRESULT {
     use windows_sys::Win32::System::Shutdown::ShutdownBlockReasonCreate;
     use windows_sys::Win32::UI::Shell::DefSubclassProc;
-    use windows_sys::Win32::UI::WindowsAndMessaging::{WM_ENDSESSION, WM_QUERYENDSESSION};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        WM_ENDSESSION, WM_QUERYENDSESSION, WM_SETTINGCHANGE,
+    };
     // SAFETY: `refdata` is the `TerminationSubclass` box installed by
     // `install_termination_subclass`, alive until
     // `remove_termination_subclass` reclaims it at window teardown.
@@ -475,8 +487,55 @@ unsafe extern "system" fn session_end_proc(
             subclass.run_until_terminated();
             0
         }
+        WM_SETTINGCHANGE => {
+            // SAFETY: `lparam` comes directly from `WM_SETTINGCHANGE`.
+            if unsafe { is_locale_setting_change(lparam) } {
+                let _ = refresh_system_locale();
+            }
+            // SAFETY: forwarding `WM_SETTINGCHANGE` to the previous proc so winit also sees it.
+            unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
+        }
         // SAFETY: forwarding every unclaimed message to the previous proc.
         _ => unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) },
+    }
+}
+
+/// Whether a Windows `WM_SETTINGCHANGE` `lParam` names a regional/locale
+/// change (`NULL` or case-insensitive `"intl"`).
+#[cfg(target_os = "windows")]
+unsafe fn is_locale_setting_change(lparam: LPARAM) -> bool {
+    if lparam == 0 {
+        return true;
+    }
+    // SAFETY: Windows passes a NUL-terminated UTF-16 string pointer in `lParam`
+    // for `WM_SETTINGCHANGE` whenever `lParam != 0`.
+    let mut ptr = lparam as *const u16;
+    let mut buf = [0u16; 5];
+    for slot in &mut buf {
+        let ch = unsafe { *ptr };
+        if ch == 0 {
+            break;
+        }
+        *slot = ch;
+        // SAFETY: advancing inside the NUL-terminated UTF-16 string.
+        ptr = unsafe { ptr.add(1) };
+    }
+    buf[0].eq_ignore_ascii_case_u16(b'i')
+        && buf[1].eq_ignore_ascii_case_u16(b'n')
+        && buf[2].eq_ignore_ascii_case_u16(b't')
+        && buf[3].eq_ignore_ascii_case_u16(b'l')
+        && buf[4] == 0
+}
+
+#[cfg(target_os = "windows")]
+trait U16AsciiExt {
+    fn eq_ignore_ascii_case_u16(self, ascii: u8) -> bool;
+}
+
+#[cfg(target_os = "windows")]
+impl U16AsciiExt for u16 {
+    fn eq_ignore_ascii_case_u16(self, ascii: u8) -> bool {
+        u8::try_from(self).is_ok_and(|byte| byte.eq_ignore_ascii_case(&ascii))
     }
 }
 
@@ -815,6 +874,8 @@ pub fn run<W: Windows, M: AppMenuBar>(
     let system_appearance = crate::platform::macos_appearance::SystemAppearance::observe();
     #[cfg(target_os = "macos")]
     let appearance = system_appearance.scheme();
+    #[cfg(target_os = "macos")]
+    let _system_locale = MacosSystemLocale::observe();
     #[cfg(target_os = "windows")]
     let system_color_scheme = nami::binding(waterui::theme::ColorScheme::Light);
     #[cfg(target_os = "windows")]
@@ -829,6 +890,8 @@ pub fn run<W: Windows, M: AppMenuBar>(
         });
     #[cfg(target_os = "linux")]
     let appearance = linux_appearance.scheme();
+    #[cfg(target_os = "linux")]
+    let linux_locale = LinuxSystemLocale::observe(&local_executor);
     #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     let appearance = waterui::theme::ColorScheme::Light;
     crate::theme::install_theme_tokens(&mut env, Some(&style), appearance);
@@ -935,6 +998,8 @@ pub fn run<W: Windows, M: AppMenuBar>(
         system_color_scheme,
         #[cfg(target_os = "linux")]
         linux_appearance,
+        #[cfg(target_os = "linux")]
+        _linux_locale: linux_locale,
         termination,
         #[cfg(target_os = "windows")]
         session_end,
@@ -1040,6 +1105,10 @@ struct WinitRunner {
     /// Dropping the runner cancels the subscription.
     #[cfg(target_os = "linux")]
     linux_appearance: crate::platform::linux_appearance::SystemAppearance,
+    /// The XDG desktop portal locale subscription, owned for the loop's
+    /// lifetime. Dropping the runner cancels the subscription.
+    #[cfg(target_os = "linux")]
+    _linux_locale: LinuxSystemLocale,
     /// The termination machine every quit path reports through: signals,
     /// the last window closing, `Quit` in the environment, Windows'
     /// `WM_QUERYENDSESSION`.
