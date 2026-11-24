@@ -779,3 +779,31 @@ fn removing_a_registered_filter_does_not_silently_fallback() {
         "stale filter error: {error}"
     );
 }
+
+#[test]
+fn deeply_nested_filtered_groups_render_without_stack_overflow() {
+    let engine = engine();
+    let filter = engine.filter(filters::Brightness(0.05_f32));
+    let surface = engine
+        .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF32), || {})
+        .expect("surface");
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.group(Group::new().filter(filter.id()), |r| {
+                r.group(Group::new().filter(filter.id()), |r| {
+                    r.group(Group::new().filter(filter.id()), |r| {
+                        r.group(Group::new().filter(filter.id()), |r| {
+                            r.fill(
+                                Rect::new(0.0, 0.0, 32.0, 32.0),
+                                WorkingColor::new([0.2, 0.4, 0.6, 1.0]),
+                            );
+                        });
+                    });
+                });
+            });
+        }));
+    });
+    engine.render(FrameTime::now()).expect("render");
+    let pixel = surface.readback().expect("readback").pixels[16 * 32 + 16];
+    assert_close(&pixel, &[0.4_f32, 0.6, 0.8, 1.0]);
+}
