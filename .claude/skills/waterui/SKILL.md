@@ -652,7 +652,7 @@ let view = tsx!(
   another view, and a modifier attribute may never arrive through a spread.
 - Component tags import from `"waterui"` and resolve against the catalog
   (`<VStack>` `<HStack>` `<Text>` `<Button>` `<Toggle>` `<Slider>` `<List>` `<Tabs>` …),
-  with `<Show>` `<For by>` `<Suspense>` `<Box>` for control flow and `createSignal`,
+  with `<Show>` `<For by>` `<Box>` for control flow and `createSignal`,
   `createMemo`, `createContext`/`useContext`, `useTheme`, `useLocale` from the same
   module. `<Text>` children localize through the same `TranslationCatalog` as `text(…)`.
 - Tests are ordinary `#[waterui::test]`s over the mounted tree. The test host loads its

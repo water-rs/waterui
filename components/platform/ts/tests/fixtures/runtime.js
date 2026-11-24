@@ -373,7 +373,6 @@
       "text",
       "show",
       "each",
-      "suspense",
       "environment",
       "invoke",
     ]) {
