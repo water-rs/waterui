@@ -74,12 +74,14 @@ impl<T, V: View> TaggedView<T, V> {
         }
     }
 
-    /// Converts the tag to an Id using the provided mapping.
+    /// Converts the tag to a stable [`Id`] using the provided mapping.
+    ///
+    /// Repeated calls for the same tag value return the same [`Id`].
     pub fn mapping(self, mapping: &Mapping<T>) -> TaggedView<Id, V>
     where
         T: Ord + Clone,
     {
-        self.map(move |v| mapping.register(v))
+        self.map(|v| mapping.to_id(v))
     }
 
     /// Erases the specific view type, converting it to [`AnyView`].
@@ -156,6 +158,17 @@ impl<T: Ord + Clone> MappingInner<T> {
 ///
 /// This structure allows for bidirectional lookup between values and their
 /// assigned numeric IDs, with interior mutability for shared access.
+///
+/// Every public lookup (`to_id`, `TaggedView::mapping`) is idempotent; the
+/// internal `register` helper is private so existing values cannot be reissued
+/// fresh IDs:
+///
+/// ```compile_fail
+/// use waterui_core::id::Mapping;
+///
+/// let mapping = Mapping::new();
+/// let _ = mapping.register("a");
+/// ```
 #[derive(Debug)]
 pub struct Mapping<T>(Rc<RefCell<MappingInner<T>>>);
 
@@ -178,11 +191,6 @@ impl<T: Ord + Clone> Mapping<T> {
     #[must_use]
     pub fn new() -> Self {
         Self(Rc::new(RefCell::new(MappingInner::new())))
-    }
-
-    /// Registers a new value in the mapping and returns its assigned ID.
-    pub fn register(&self, value: T) -> Id {
-        self.0.borrow_mut().register(value)
     }
 
     /// Attempts to find the ID for a given value.
@@ -274,8 +282,22 @@ impl<T: Ord + Clone> Mapping<T> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Id, Mapping};
+    use super::{Id, Mapping, TaggedView};
     use nami::{Binding, Signal as _};
+
+    #[test]
+    fn recomputing_tagged_views_keeps_ids_and_selection_stable() {
+        let mapping = Mapping::new();
+        let selected = Binding::container("b");
+        let selected_id = mapping.binding(&selected);
+
+        let first_pass = ["a", "b", "c"].map(|tag| TaggedView::new(tag, ()).mapping(&mapping).tag);
+        let second_pass = ["a", "b", "c"].map(|tag| TaggedView::new(tag, ()).mapping(&mapping).tag);
+
+        assert_eq!(first_pass, second_pass);
+        assert_eq!(selected_id.snapshot(), second_pass[1]);
+        assert_eq!(mapping.to_data(second_pass[1]), Some("b"));
+    }
 
     #[test]
     #[cfg_attr(
