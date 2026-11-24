@@ -87,7 +87,7 @@ fn picker_styles() -> impl View {
         text("Picker Styles").headline(),
         text("Choose from different picker presentation styles").body(),
         spacer(),
-        text("Automatic (default)").bold(),
+        text("Automatic (default)").bold(true),
         Picker::new(
             "Automatic (default)",
             picker_items.clone(),
@@ -95,11 +95,11 @@ fn picker_styles() -> impl View {
         ),
         picker_selection_text(&automatic_selection),
         spacer(),
-        text("Menu Style").bold(),
+        text("Menu Style").bold(true),
         Picker::new("Menu Style", picker_items.clone(), &menu_selection).style(PickerStyle::Menu),
         picker_selection_text(&menu_selection),
         spacer(),
-        text("Radio Style").bold(),
+        text("Radio Style").bold(true),
         Picker::new("Radio Style", picker_items, &radio_selection).style(PickerStyle::Radio),
         picker_selection_text(&radio_selection),
     ))
@@ -196,7 +196,7 @@ fn file_picker_section() -> impl View {
         spacer(),
         FilePicker::open("Select Files", &selected_files).max_count(5),
         spacer(),
-        text("Selected files:").bold(),
+        text("Selected files:").bold(true),
         file_list(&selected_files),
     ))
     .padding_with(12.0)
@@ -237,7 +237,7 @@ fn picker_selection_text(selection: &Binding<Fruit>) -> impl View + use<> {
 }
 
 fn color_preview(color: &Binding<Color>, label: &'static str) -> impl View + use<> {
-    hstack((text(label).bold(), text(": "), ColorSwatch::new(color)))
+    hstack((text(label).bold(true), text(": "), ColorSwatch::new(color)))
 }
 
 struct ColorSwatch {

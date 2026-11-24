@@ -35,8 +35,10 @@ fn form_macros_resolve_when_form_enabled() {
     reason = "verifies compile-time macro re-export visibility when webview is enabled"
 )]
 fn webview_macros_resolve_when_webview_enabled() {
-    use waterui::prelude::{eval as _, exec as _, exec_file as _, js_api as _, js_file as _};
-    use waterui::{eval as _, exec as _, exec_file as _, js_api as _, js_file as _};
+    use waterui::prelude::{
+        TsType as _, eval as _, exec as _, exec_file as _, js_api as _, js_file as _,
+    };
+    use waterui::{TsType as _, eval as _, exec as _, exec_file as _, js_api as _, js_file as _};
 }
 
 #[cfg(feature = "ts")]

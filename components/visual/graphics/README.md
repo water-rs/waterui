@@ -110,7 +110,7 @@ let view = ShaderPaintView::new(r#"
         let t = uniforms.time;
         return vec4<f32>(uv.x, uv.y, sin(t), 1.0);
     }
-"#).animated(true);
+"#).continuous(true);
 ```
 
 `uniforms.time` and `uniforms.resolution` are injected automatically; extra

@@ -3270,7 +3270,7 @@ mod material_vibrancy {
         let (env, theme) = window_environment(mtm());
         refresh_theme(&theme, cocoa_ui::ColorScheme::Light);
         let content = vstack((
-            text("Now Playing").bold(),
+            text("Now Playing").bold(true),
             text("muted").muted(),
             text("explicit").foreground(Color::srgb(200, 30, 30)),
         ))
@@ -9974,6 +9974,7 @@ mod navigation {
         use waterui_core::layout::ProposalSize;
 
         let icon = || SfSymbol::PLUS;
+        let noop: fn() = || {};
         let icon_leaf = resolve::render(icon());
         let icon_width = f64::from(
             icon_leaf
@@ -9989,13 +9990,13 @@ mod navigation {
                         NavigationToolbarPlacement::TopBarLeading,
                         button(label("").icon(icon()))
                             .style(ButtonStyle::Borderless)
-                            .action(|| {}),
+                            .action(noop),
                     ),
                     NavigationToolbarItem::new(
                         NavigationToolbarPlacement::TopBarTrailing,
                         button(label("Keep title").icon(icon()).title_and_icon())
                             .style(ButtonStyle::Borderless)
-                            .action(|| {}),
+                            .action(noop),
                     ),
                 ],
             )),

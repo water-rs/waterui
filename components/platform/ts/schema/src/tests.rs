@@ -5,6 +5,8 @@
 //! `tests/artifact.rs`, because it has to look at the binary it is running
 //! from.
 
+use std::collections::{BTreeSet, HashSet, VecDeque};
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -126,6 +128,21 @@ fn schemas_of_mapped_types_compose() {
     assert_eq!(
         <Vec<Option<String>> as TsType>::SCHEMA,
         TypeSchema::List(&TypeSchema::Option(&TypeSchema::String))
+    );
+    assert_eq!(<char as TsType>::SCHEMA, TypeSchema::String);
+    assert_eq!(<PathBuf as TsType>::SCHEMA, TypeSchema::String);
+    assert_eq!(<&'static Path as TsType>::SCHEMA, TypeSchema::String);
+    assert_eq!(
+        <VecDeque<u32> as TsType>::SCHEMA,
+        TypeSchema::List(&TypeSchema::Number(NumberKind::U32))
+    );
+    assert_eq!(
+        <BTreeSet<String> as TsType>::SCHEMA,
+        TypeSchema::List(&TypeSchema::String)
+    );
+    assert_eq!(
+        <HashSet<u64> as TsType>::SCHEMA,
+        TypeSchema::List(&TypeSchema::Number(NumberKind::U64))
     );
     assert_eq!(
         <Box<dyn Fn(u32, bool)> as TsType>::SCHEMA,

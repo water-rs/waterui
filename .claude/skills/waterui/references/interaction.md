@@ -50,13 +50,14 @@ text("Simple Tap")
 ```
 
 Siblings: `.on_tap_gesture(handler)` (alias of `.on_tap`), `.on_tap_gesture_count(2,
-handler)` for a fixed tap count, `.on_long_press_gesture(milliseconds, handler)`, and —
-behind the `std` cargo feature, which is not among the defaults — `.on_tap_haptic(intensity,
-handler)` / `.on_tap_haptic_default(handler)` and `.on_long_press_haptic(..)` /
-`.on_long_press_haptic_default(..)` to pair the gesture with haptic feedback. Use
-`.on_tap` for tappable *content*; use `button(..)` when the
-thing is semantically a button — the button brings platform chrome and the `BUTTON`
-accessibility role.
+handler)` for a fixed tap count, and `.on_long_press_gesture(milliseconds, handler)`. Behind
+the opt-in `haptics` cargo feature, attach `.sensory_feedback(Feedback::Success, &trigger)`
+to play feedback whenever a `PartialEq + Clone` signal changes, or call
+`waterui::haptic::Haptic::impact(Intensity::LOW)` inside a gesture handler for an
+imperative trigger (`Haptic`, `Feedback`, and `Intensity` are also re-exported at the facade
+root and in `prelude`). Use `.on_tap` for tappable *content*; use `button(..)` when the thing
+is semantically a button — the button brings platform chrome and the `BUTTON` accessibility
+role.
 
 ## Gesture recognizers
 

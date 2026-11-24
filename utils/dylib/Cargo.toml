@@ -95,6 +95,7 @@ snackbar = ["waterui-internal/snackbar"]
 dialog = ["waterui-internal/dialog"]
 flow-markdown = ["waterui-internal/flow-markdown"]
 markdown-math = ["waterui-internal/markdown-math"]
+haptics = ["waterui-internal/haptics"]
 std = ["waterui-internal/std"]
 erased-dispatch = ["waterui-internal/erased-dispatch"]
 capture = ["waterui-internal/capture"]
@@ -128,6 +129,7 @@ all = [
     "locale-datetime",
     "locale-list",
     "locale-relative-time",
+    "haptics",
 ]
 
 [lints]
