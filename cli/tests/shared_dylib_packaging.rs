@@ -2,14 +2,14 @@
 //! dynamic section records.
 //!
 //! The fixture is the dependency arrangement `water build` produces for a
-//! real project: a `dylib` crate pulled in over **git** — so Cargo hashes its
-//! `-C metadata` into every `deps/` file name — linked into a binary with
-//! `-Cprefer-dynamic`. rustc writes `deps/libwaterui_dylib-<metadata>.so`,
-//! Cargo uplifts it to the unhashed `<profile>/libwaterui_dylib.so` the
-//! artifact report names, and the binary's `DT_NEEDED` records the hashed
-//! name. Staging the unhashed name ships a library the loader never looks
-//! for (water-rs/cli#184); packaging must stage each needed library under
-//! the name the binary itself records.
+//! real project: a `dylib` crate pulled in over **git** linked into a binary
+//! with `-Cprefer-dynamic`. Cargo `< 1.100` hashes `-C metadata` into every
+//! `deps/` file name (`deps/libwaterui_dylib-<metadata>.so`) and uplifts it to
+//! `<profile>/libwaterui_dylib.so` while `DT_NEEDED` records the hashed name;
+//! Cargo `1.100+` compiles into per-unit `build/<pkg>/<hash>/out/` directories
+//! without `-C extra-filename`, so both the uplift and `DT_NEEDED` record the
+//! unhashed name (with `water-rs/cli#184` staging under whichever name the
+//! binary itself records).
 //!
 //! The second fixture drives the same arrangement through the build path
 //! `water run` takes: `RustBuild::build_binary` with
@@ -604,15 +604,25 @@ fn an_unchanged_build_leaves_the_binary_artifact_untouched() -> std::io::Result<
     })
 }
 
-/// Re-resolve the vendored `waterui-dylib` at a bumped version: a new
-/// package id hashes into a new `-C metadata` suffix on every `deps/` name,
-/// the way a framework update does between two `water mcp` runs sharing one
-/// target directory.
+/// Re-resolve the vendored `waterui-dylib` at a bumped version and updated
+/// `fixture_marker` (`42 -> 43`), the way a framework update changes the
+/// runtime between two `water mcp` runs sharing one target directory. Under
+/// Cargo `< 1.100` the new package id also changes the `-C metadata` suffix
+/// on `deps/`; under Cargo `1.100+` `build-dir` keeps the runtime unhashed
+/// while updating the compiled bytes.
 fn bump_vendored_dylib(host: &Host, root: &Path, backend_dir: &Path) -> std::io::Result<()> {
     let dylib_dir = root.join("waterui-dylib");
     write(
         &dylib_dir.join("Cargo.toml"),
         "[package]\nname = \"waterui-dylib\"\nversion = \"0.2.0\"\nedition = \"2021\"\n\n[lib]\nname = \"waterui_dylib\"\ncrate-type = [\"dylib\", \"rlib\"]\n",
+    );
+    write(
+        &dylib_dir.join("src/lib.rs"),
+        "/// Marker the fixture binary calls so the linker keeps the dependency.\npub extern \"C\" fn fixture_marker() -> u8 {\n    43\n}\n",
+    );
+    write(
+        &root.join("app/src/lib.rs"),
+        "/// Entry point the generated backend's `main` calls.\npub fn run() {\n    assert_eq!(waterui_dylib::fixture_marker(), 43);\n}\n",
     );
     run(
         host.std_command("git")?
@@ -669,12 +679,13 @@ fn staged_waterui_names(dir: &Path) -> Vec<String> {
     names
 }
 
-/// Stage into the Cargo profile directory twice across a dylib `-C
-/// metadata` change — the arrangement `water mcp` uses, where the staged
-/// runtime lives beside the `<profile>/<name>` uplift the launch path
-/// executes — and assert the second stage lands the newly needed
-/// `libwaterui_dylib-<hash>.so` and removes the stale hash the first stage
-/// left, then run the uplift itself (water-rs/cli#176).
+/// Stage into the Cargo profile directory twice across a dylib update —
+/// the arrangement `water mcp` uses, where the staged runtime lives beside
+/// the `<profile>/<name>` uplift the launch path executes — and assert the
+/// second stage lands the newly needed runtime (`libwaterui_dylib-<hash>.so`
+/// when Cargo hashes dylibs, or `libwaterui_dylib.so` under Cargo `1.100+`
+/// `build-dir` layout), removes any stale hashed runtime left in
+/// `runtime_dir`, and executes the updated binary in place (water-rs/cli#176).
 #[test]
 fn restaging_replaces_a_stale_hashed_shared_runtime() -> std::io::Result<()> {
     let temporary: TempDir = tempdir().expect("tempdir");
@@ -731,10 +742,23 @@ fn restaging_replaces_a_stale_hashed_shared_runtime() -> std::io::Result<()> {
             .into_iter()
             .filter(|name| name.contains("waterui_dylib"))
             .collect();
-        assert_ne!(
-            first_waterui, rebuilt_needed,
-            "the fixture must change the recorded dylib name"
-        );
+        // Cargo `< 1.100` hashes `-C metadata` into `deps/` dylib names, so
+        // `first_waterui` already left a distinct stale hash in `runtime_dir`.
+        // Cargo `1.100+` (`build-dir` layout) emits unhashed dylibs on both
+        // builds, so seed a stale hashed file in `runtime_dir` to exercise the
+        // same cleanup path when restaging over an older hashed layout.
+        if first_waterui == rebuilt_needed {
+            let stale_hashed = format!(
+                "{}waterui_dylib-0123456789abcdef{}",
+                std::env::consts::DLL_PREFIX,
+                std::env::consts::DLL_SUFFIX
+            );
+            std::fs::write(runtime_dir.join(&stale_hashed), b"stale")?;
+            assert!(
+                staged_waterui_names(&runtime_dir).contains(&stale_hashed),
+                "stale hashed runtime fixture must exist before restaging"
+            );
+        }
         RustDynamicLibraries::resolve(&rebuilt, &triple, &project)
             .await
             .expect("resolve rebuilt shared libraries")
