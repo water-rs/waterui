@@ -201,11 +201,11 @@ enum FontShape {
 }
 
 /// Everything besides its text that makes a shader source a different
-/// shader: the same text in another language or with the other `animated`
-/// flag compiles to a different program.
+/// shader: the same text in another language or with the other
+/// `time_dependent` flag compiles to a different program.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct ShaderShape {
-    animated: bool,
+    time_dependent: bool,
     language: ShaderLanguage,
 }
 
@@ -509,10 +509,16 @@ where
         + cherenkov::ShaderPaintCapability,
 {
     fn register_shader(&self, source: ShaderSource) -> Result<Handle<ShaderId>, ResourceError> {
-        let (source, language, animated) = source.into_parts();
+        let (source, language, time_dependent) = source.into_parts();
         match language {
             ShaderLanguage::Wgsl => {
-                let shader = Self::shader(self, cherenkov::ShaderSource { source, animated })?;
+                let shader = Self::shader(
+                    self,
+                    cherenkov::ShaderSource {
+                        source,
+                        time_dependent,
+                    },
+                )?;
                 Ok(Handle::new(shader))
             }
             language @ ShaderLanguage::Agsl => Err(ResourceError::Shader(format!(
@@ -1314,7 +1320,7 @@ impl SceneResources {
         self.intern(
             |table| &table.shaders_cache,
             ShaderShape {
-                animated: source.get_animated(),
+                time_dependent: source.is_time_dependent(),
                 language: source.language(),
             },
             bytes,

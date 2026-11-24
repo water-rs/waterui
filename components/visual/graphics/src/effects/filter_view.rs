@@ -967,7 +967,7 @@ impl<C> MapSlots<C> for FilteredView<C> {
 /// backend with the lowered view, exactly as a filter's do.
 ///
 /// For a [`filtrate::ShaderEffect`], [`param`](Self::param) and
-/// [`animated`](Self::animated) bind reactive parameters without rebuilding
+/// [`continuous`](Self::continuous) bind reactive parameters without rebuilding
 /// the view.
 #[cfg(feature = "gpu")]
 #[derive(Debug)]
@@ -1028,13 +1028,13 @@ impl<V: View> WithEffect<V, filtrate::ShaderEffect> {
         self
     }
 
-    /// Drives the effect's animation flag: while `animated` holds `true` the
-    /// effect asks its host for another frame after each one it renders —
-    /// the reactive form of [`filtrate::ShaderEffect::animated`].
+    /// Drives the effect's continuous-redraw flag: while `continuous` holds
+    /// `true` the effect asks its host for another frame after each one it
+    /// renders — the reactive form of [`filtrate::ShaderEffect::continuous`].
     #[must_use]
-    pub fn animated(mut self, animated: impl IntoComputed<bool>) -> Self {
-        let flag = self.guards.bind(animated.into_computed().map(f32::from));
-        let (effect, guard) = self.effect.watch_animated(&flag);
+    pub fn continuous(mut self, continuous: impl IntoComputed<bool>) -> Self {
+        let flag = self.guards.bind(continuous.into_computed().map(f32::from));
+        let (effect, guard) = self.effect.watch_continuous(&flag);
         self.effect = effect;
         self.guards.retain(guard);
         self
@@ -2366,12 +2366,12 @@ mod tests {
         drop(guards);
     }
 
-    /// The reactive animation flag reaches the render side through the built
-    /// effect: toggling it wakes the host and flips the redraw hint.
+    /// The reactive continuous-redraw flag reaches the render side through the
+    /// built effect: toggling it wakes the host and flips the redraw hint.
     #[cfg(feature = "gpu")]
     #[test]
-    fn shader_effect_animated_signal_reaches_the_render_side() {
-        let animated = nami::binding(false);
+    fn shader_effect_continuous_signal_reaches_the_render_side() {
+        let continuous = nami::binding(false);
         let shader = filtrate::ShaderEffect::new(
             "@fragment
             fn main(in: VertexOutput) -> @location(0) vec4<f32> {
@@ -2381,7 +2381,7 @@ mod tests {
         .expect("the test shader is valid WGSL");
         let FilteredView { effect, guards, .. } =
             ().effect(shader)
-                .animated(animated.clone())
+                .continuous(continuous.clone())
                 .into_filtered_view();
         let mut effect = effect.build();
         let redraws = Arc::new(AtomicUsize::new(0));
@@ -2390,7 +2390,7 @@ mod tests {
             count.fetch_add(1, Ordering::Relaxed);
         }));
 
-        animated.set(true);
+        continuous.set(true);
         assert_eq!(
             redraws.load(Ordering::Relaxed),
             1,
@@ -2398,7 +2398,7 @@ mod tests {
         );
         assert!(effect.redraw_hint(), "the flag is set on the render side");
 
-        animated.set(false);
+        continuous.set(false);
         assert_eq!(redraws.load(Ordering::Relaxed), 2);
         drop(guards);
     }
