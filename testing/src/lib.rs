@@ -197,7 +197,7 @@ pub use image::{
 #[cfg(feature = "harness")]
 pub use perf::{PerfApp, PerfConfig, PerfMeasurement, PerfReport, PerfRun, PerfStats};
 #[cfg(feature = "harness")]
-pub use query::Query;
+pub use query::{Query, QueryMode, Queued, RenderedQueryMode, Settled};
 #[cfg(feature = "gallery")]
 pub use report::{
     CaseReport, GalleryArtifactPaths, GalleryReport, GallerySummary, REPORT_SCHEMA_VERSION,

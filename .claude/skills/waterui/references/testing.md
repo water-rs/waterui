@@ -329,8 +329,8 @@ fn dashboard_redraw(perf: &mut PerfApp) {
 ```
 
 The closure runs **before every frame**: queue input (`run.pointer_move/down/up`,
-`run.scroll_at`) or call `run.redraw()`, and the frame that follows is what gets timed.
-`run.app()` exposes the full query and interaction API mid-run.
+`run.scroll_at`, `run.query()`) or call `run.redraw()`, and the frame that follows is
+what gets timed. `run.app()` exposes read-only `&OffscreenApp` state mid-run.
 
 A bench that owns the bindings its view closes over omits the view path, takes the
 builder by value, and returns the report:
@@ -346,7 +346,7 @@ fn counter_updates(
     let for_view = value.clone();
     ui.perf_with(move || stepper("Count", &for_view), |perf| {
         perf.measure("increment", |run| {
-            run.app().query().label("Count").increment();
+            run.query().label("Count").increment();
         });
     })
 }
