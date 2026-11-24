@@ -113,7 +113,7 @@ mod tests {
     use nami::Binding;
     use waterui_core::{
         AnyView, Dynamic, Environment, Retain, View,
-        backend::{peel_metadata, peel_native},
+        backend::{connect_dynamic, peel_metadata, peel_native},
     };
     use waterui_interaction::interaction::{InteractionReport, InteractionState, StateValue};
     use waterui_layout::container::FixedContainer;
@@ -178,7 +178,9 @@ mod tests {
             .expect("the retained view is the Dynamic");
         let layers = Rc::new(RefCell::new(Vec::new()));
         let sink = Rc::clone(&layers);
-        dynamic.connect(move |ctx| sink.borrow_mut().push(ctx.into_value()));
+        connect_dynamic(dynamic, move |ctx| {
+            sink.borrow_mut().push(ctx.into_value());
+        });
 
         (report, clip_kind, layers, retained.value)
     }

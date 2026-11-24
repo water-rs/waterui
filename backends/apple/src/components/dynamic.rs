@@ -1,7 +1,7 @@
 //! The `dynamic` leaf: a `Dynamic` rendered through a [`HostView`].
 //!
 //! Mirrors `WuiDynamic`: a host container that owns at most one mounted
-//! child. `Dynamic::connect` delivers each `set` in the backend's child
+//! child. [`DynamicNode::connect`] delivers each `set` in the backend's child
 //! slot; the receiver realizes it through the captured [`Renderer`], hands
 //! the previous [`LiveChild`] to `LiveChild::remove` — which retires a
 //! claimed instance into a ghost beneath the live content — and mounts
@@ -21,13 +21,15 @@
 //! would keep the leaf's platform view alive after the leaf drops —
 //! `[weak self]` in the Swift port.
 
-use alloc::rc::Rc;
+use alloc::rc::{Rc, Weak};
 use core::cell::{Cell, RefCell};
+use core::marker::PhantomData;
 
 use cocoa_ui::geometry::Rect;
 use cocoa_ui::{Retained, view};
 use waterui::component::Dynamic;
-use waterui_backend_core::{Child, ChildView};
+use waterui::reactive::watcher::Context;
+use waterui_backend_core::{Child, ChildView, DynamicNode};
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size, StretchAxis, SubView,
     ViewDimensions,
@@ -206,6 +208,19 @@ fn update_child(state: &Rc<RefCell<DynamicState>>, child: Child<AppleBackend>) {
     host.layout_if_needed();
 }
 
+struct AppleDynamicNode<C> {
+    state: Weak<RefCell<DynamicState>>,
+    _marker: PhantomData<fn(C)>,
+}
+
+impl<C: ChildView<AppleBackend>> DynamicNode<C> for AppleDynamicNode<C> {
+    fn update(&self, update: Context<C>) {
+        if let Some(state) = self.state.upgrade() {
+            update_child(&state, update.into_value().into_child());
+        }
+    }
+}
+
 /// The `dynamic` realization: a host whose single child the handler's
 /// receiver swaps per delivered view, with the claim of a transition it
 /// adopted as the claim every child inherits.
@@ -277,12 +292,11 @@ pub fn realize_dynamic<C: ChildView<AppleBackend>>(
 
     // `setupWatcher`: the leaf connects as the handler's receiver. The
     // pre-connection view, if any, is delivered through the same queue.
-    let weak = Rc::downgrade(&state);
-    dynamic.connect(move |ctx| {
-        if let Some(state) = weak.upgrade() {
-            update_child(&state, ctx.into_value().into_child());
-        }
-    });
+    AppleDynamicNode {
+        state: Rc::downgrade(&state),
+        _marker: PhantomData,
+    }
+    .connect(dynamic);
 
     let mut leaf = NativeLeaf::new(&*host, DynamicSubView { state });
     leaf.keep(sink_guard);

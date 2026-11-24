@@ -9,14 +9,49 @@ use super::collection::{item_id, item_view_or_empty};
 use super::*;
 #[cfg(hydrolysis_gpu)]
 use crate::gpu_view::{ExternalFrameRuntime, GpuContentRuntime};
+use crate::text::TextEngine;
+use nami::watcher::Context;
 #[cfg(feature = "calendar")]
 use waterui::component::form::CalendarGrid;
 #[cfg(feature = "multi-date-picker")]
 use waterui::component::form::picker::MultiDatePickerGrid;
-use waterui_backend_core::Child;
+use waterui_backend_core::{Child, DynamicNode};
 use waterui_core::contract_violation;
 
 pub mod backend;
+
+struct HydroDynamicNode<E: TextEngine, C> {
+    pending: Rc<RefCell<Option<Child<backend::HydroFamily<E>>>>>,
+    connecting: Rc<Cell<bool>>,
+    signals: FrameSignals,
+    render_generation: u64,
+    rebuild_active: Rc<Cell<bool>>,
+    cell: Weak<NodeCell<E>>,
+    into_child: fn(C) -> Child<backend::HydroFamily<E>>,
+}
+
+impl<E: TextEngine, C: 'static> DynamicNode<C> for HydroDynamicNode<E, C> {
+    fn update(&self, update: Context<C>) {
+        let is_initial = self.connecting.get()
+            || update
+                .metadata()
+                .try_get::<DynamicInitialContent>()
+                .is_some()
+            || self
+                .signals
+                .initial_dynamic_content_already_rendered(self.render_generation);
+        *self.pending.borrow_mut() = Some((self.into_child)(update.into_value()));
+        // A real content change marks the host structure-dirty; the
+        // flush rebuilds only this node's child. A rebuild already in
+        // flight covers it, so the mark is gated on one not running.
+        if !is_initial
+            && !self.rebuild_active.get()
+            && let Some(cell) = self.cell.upgrade()
+        {
+            cell.mark(Dirty::STRUCTURE);
+        }
+    }
+}
 
 /// A retained node's layout-dirty mark and the callback its input
 /// subscriptions fire: the callback sets the mark, which an enclosing
@@ -573,28 +608,16 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         let render_generation = signals.rebuild_generation();
         let rebuild_active = renderer.rebuild_active_flag();
         let connecting = Rc::new(Cell::new(true));
-        dynamic.connect({
-            let pending = Rc::clone(&pending);
-            let connecting = Rc::clone(&connecting);
-            move |update| {
-                let is_initial = connecting.get()
-                    || update
-                        .metadata()
-                        .try_get::<DynamicInitialContent>()
-                        .is_some()
-                    || signals.initial_dynamic_content_already_rendered(render_generation);
-                *pending.borrow_mut() = Some(into_child(update.into_value()));
-                // A real content change marks the host structure-dirty; the
-                // flush rebuilds only this node's child. A rebuild already in
-                // flight covers it, so the mark is gated on one not running.
-                if !is_initial
-                    && !rebuild_active.get()
-                    && let Some(cell) = cell.upgrade()
-                {
-                    cell.mark(Dirty::STRUCTURE);
-                }
-            }
-        });
+        HydroDynamicNode {
+            pending: Rc::clone(&pending),
+            connecting: Rc::clone(&connecting),
+            signals,
+            render_generation,
+            rebuild_active,
+            cell,
+            into_child,
+        }
+        .connect(dynamic);
         connecting.set(false);
         let initial = pending.borrow_mut().take();
         let child = match initial {

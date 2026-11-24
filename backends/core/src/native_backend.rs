@@ -1294,13 +1294,22 @@ mod tests {
     }
 
     /// A dynamic's children are the views it delivers once connected.
-    impl<C> Parent<C> for waterui_core::Dynamic<C> {
+    impl<C: 'static> Parent<C> for waterui_core::Dynamic<C> {
         fn children(self) -> Vec<C> {
+            use nami::watcher::Context;
+
+            use crate::DynamicNode;
+
+            struct Collector<T>(Rc<RefCell<Vec<T>>>);
+
+            impl<T: 'static> DynamicNode<T> for Collector<T> {
+                fn update(&self, update: Context<T>) {
+                    self.0.borrow_mut().push(update.into_value());
+                }
+            }
+
             let delivered = Rc::new(RefCell::new(Vec::new()));
-            self.connect({
-                let delivered = Rc::clone(&delivered);
-                move |context| delivered.borrow_mut().push(context.into_value())
-            });
+            Collector(Rc::clone(&delivered)).connect(self);
             delivered.take()
         }
     }
