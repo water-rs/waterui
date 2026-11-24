@@ -63,7 +63,8 @@ fn labeled_picture_view() -> impl waterui::View {
             WorkingColor::BLACK,
         );
     });
-    Picture::new(Size::new(24.0, 24.0), constant(recording)).labeled("Warning sign")
+    Picture::new(Size::new(24.0, 24.0), constant(recording))
+        .offered_label(waterui::Str::from("Warning sign"))
 }
 
 /// The same drawing, named by the application instead.

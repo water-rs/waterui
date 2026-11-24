@@ -62,11 +62,13 @@ use core::fmt;
 use core::time::Duration;
 
 use cherenkov::Instant;
+use nami::{Computed, Signal};
 
 use std::sync::Mutex;
 
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, ViewDimensions};
-use waterui_core::{Environment, Native, NativeView, View, contract_violation};
+use waterui_core::reactive::signal::IntoComputed;
+use waterui_core::{Environment, Native, NativeView, Str, View, contract_violation};
 use wgpu::{Adapter, Device, Instance, Queue, Texture, TextureFormat, TextureView};
 
 use crate::draw::kurbo;
@@ -469,8 +471,8 @@ pub struct GpuView<T: GpuContent> {
     opaque: bool,
     surface_prefers_hdr: Option<bool>,
     hooks: SurfaceHooks,
-    label: Option<String>,
-    value: Option<String>,
+    label: Computed<Option<Str>>,
+    value: Computed<Option<Str>>,
 }
 
 impl<T: GpuContent> fmt::Debug for GpuView<T> {
@@ -479,7 +481,6 @@ impl<T: GpuContent> fmt::Debug for GpuView<T> {
             .field("content", &core::any::type_name::<T>())
             .field("intrinsic_size", &self.intrinsic_size)
             .field("opaque", &self.opaque)
-            .field("label", &self.label)
             .finish_non_exhaustive()
     }
 }
@@ -495,8 +496,8 @@ impl<T: GpuContent> GpuView<T> {
             content_handle: None,
             surface_prefers_hdr: None,
             hooks: SurfaceHooks::default(),
-            label: None,
-            value: None,
+            label: Computed::constant(None),
+            value: Computed::constant(None),
         }
     }
 
@@ -550,18 +551,32 @@ impl<T: GpuContent> GpuView<T> {
         self.hooks.frame();
     }
 
-    /// The accessibility name of the content.
+    /// The accessible name the content offers. An app's own `.a11y_label(…)`
+    /// overrides it.
     #[must_use]
-    pub fn labeled(mut self, label: impl Into<String>) -> Self {
-        self.label = Some(label.into());
+    pub fn offered_label(mut self, label: impl IntoComputed<Option<Str>>) -> Self {
+        self.label = label.into_computed();
         self
     }
 
-    /// The accessibility value of the content.
+    /// The accessible value the content offers. An app's own `.a11y_value(…)`
+    /// overrides it.
     #[must_use]
-    pub fn described(mut self, value: impl Into<String>) -> Self {
-        self.value = Some(value.into());
+    pub fn offered_value(mut self, value: impl IntoComputed<Option<Str>>) -> Self {
+        self.value = value.into_computed();
         self
+    }
+
+    /// The reactive accessibility label signal.
+    #[must_use]
+    pub const fn label(&self) -> &Computed<Option<Str>> {
+        &self.label
+    }
+
+    /// The reactive accessibility value signal.
+    #[must_use]
+    pub const fn value(&self) -> &Computed<Option<Str>> {
+        &self.value
     }
 
     /// Whether this view takes input events.
@@ -644,14 +659,14 @@ impl<T: GpuContent> GpuView<T> {
 
     /// The accessibility name.
     #[must_use]
-    pub fn accessibility_label(&self) -> Option<&str> {
-        self.label.as_deref()
+    pub fn accessibility_label(&self) -> Option<String> {
+        self.label.snapshot().map(|label| label.as_str().to_owned())
     }
 
     /// The accessibility value.
     #[must_use]
-    pub fn accessibility_value(&self) -> Option<&str> {
-        self.value.as_deref()
+    pub fn accessibility_value(&self) -> Option<String> {
+        self.value.snapshot().map(|value| value.as_str().to_owned())
     }
 
     /// Transfers this producer to a Cherenkov GPU layer.
@@ -868,7 +883,7 @@ mod tests {
 
     #[test]
     fn typed_gpu_view_measures_statically_and_preserves_state_when_boxed() {
-        let view: GpuView<Sized> = GpuView::new(Sized).labeled("Chart");
+        let view: GpuView<Sized> = GpuView::new(Sized).offered_label(Str::from("Chart"));
         assert_eq!(
             view.measure(ProposalSize::UNSPECIFIED).size,
             Size::new(4.0, 4.0)
@@ -876,7 +891,7 @@ mod tests {
         assert_eq!(NativeView::stretch_axis(&view), StretchAxis::None);
 
         let boxed: GpuView<Box<dyn GpuContent>> = view.into_boxed();
-        assert_eq!(boxed.accessibility_label(), Some("Chart"));
+        assert_eq!(boxed.accessibility_label().as_deref(), Some("Chart"));
         assert_eq!(
             boxed.measure(ProposalSize::UNSPECIFIED).size,
             Size::new(4.0, 4.0)

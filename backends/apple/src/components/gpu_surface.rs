@@ -24,10 +24,12 @@ use cocoa_ui::Retained;
 use cocoa_ui::metal_presenter::{DrawableFrame, MetalPresenter};
 use objc2::MainThreadMarker;
 use objc2_metal::{MTLPixelFormat, MTLTexture};
-use waterui_core::NativeView;
+use waterui::reactive::watcher::BoxWatcherGuard;
+use waterui::reactive::{Computed, Signal};
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
 };
+use waterui_core::{NativeView, Str};
 use waterui_frame_rate::{FrameRate, combine};
 use waterui_graphics::backend::cherenkov::Next;
 use waterui_graphics::gpu::{
@@ -67,6 +69,8 @@ mod pipeline;
 use crate::contract::RenderContext;
 use pipeline::{FramePipeline, FrameRequest, RendererCreation, Step};
 
+type A11ySignalPair<'a> = (&'a Computed<Option<Str>>, &'a Computed<Option<Str>>);
+
 /// The semantic half of a mounted GPU surface: what is drawn, measured and
 /// fed input, shared by GPU producers, external frames and retained scenes.
 trait HostedView {
@@ -78,6 +82,10 @@ trait HostedView {
     fn accessibility_label(&self) -> Option<String>;
     /// The accessibility value.
     fn accessibility_value(&self) -> Option<String>;
+    /// Reactive label/value signal pair when the view exposes them directly.
+    fn a11y_signals(&self) -> Option<A11ySignalPair<'_>> {
+        None
+    }
     /// Starts content-owned frame sources for this mount.
     fn mount(&mut self, _redraw: &RedrawHandle) {}
     /// Stops content-owned frame sources before releasing its renderer.
@@ -362,11 +370,15 @@ impl<T: GpuContent> HostedView for GpuView<T> {
     }
 
     fn accessibility_label(&self) -> Option<String> {
-        Self::accessibility_label(self).map(str::to_owned)
+        Self::accessibility_label(self)
     }
 
     fn accessibility_value(&self) -> Option<String> {
-        Self::accessibility_value(self).map(str::to_owned)
+        Self::accessibility_value(self)
+    }
+
+    fn a11y_signals(&self) -> Option<A11ySignalPair<'_>> {
+        Some((Self::label(self), Self::value(self)))
     }
 
     fn wants_input_events(&self) -> bool {
@@ -420,11 +432,15 @@ impl HostedView for ExternalFrameView {
     }
 
     fn accessibility_label(&self) -> Option<String> {
-        Self::accessibility_label(self).map(str::to_owned)
+        Self::accessibility_label(self)
     }
 
     fn accessibility_value(&self) -> Option<String> {
-        Self::accessibility_value(self).map(str::to_owned)
+        Self::accessibility_value(self)
+    }
+
+    fn a11y_signals(&self) -> Option<A11ySignalPair<'_>> {
+        Some((Self::label(self), Self::value(self)))
     }
 
     fn wants_input_events(&self) -> bool {
@@ -591,6 +607,8 @@ struct SurfaceState {
     ready_waiters: RefCell<Vec<std::task::Waker>>,
     /// Whether content accessibility republishes after the next frame.
     needs_a11y_refresh: Cell<bool>,
+    /// Watchers keeping reactive offered accessibility signals triggering redraws.
+    a11y_watchers: RefCell<Option<[BoxWatcherGuard; 2]>>,
     /// The surface's visibility observation: ancestor-chain wakes, the
     /// enclosing scroll viewports and the owning window/scene lifecycle,
     /// rebound together and fully detached on drop (#1545).
@@ -856,6 +874,7 @@ impl SurfaceState {
             delivered_resize: DeliveredResize::default(),
             ready_waiters: RefCell::new(Vec::new()),
             needs_a11y_refresh: Cell::new(true),
+            a11y_watchers: RefCell::new(None),
             visibility_watch: RefCell::new(None),
             last_proposal: Cell::new(None),
             last_resolved_size: RefCell::new(None),
@@ -3009,6 +3028,13 @@ fn build_surface_parts<V: HostedView + 'static>(
             )
         });
         state.view.borrow_mut().mount(&state.redraw_handle);
+        if let Some((label, value)) = state.view.borrow().a11y_signals() {
+            let watch = |signal: &Computed<Option<Str>>| {
+                let redraw = state.redraw_handle.clone();
+                signal.watch(move |_| redraw.request_redraw())
+            };
+            *state.a11y_watchers.borrow_mut() = Some([watch(label), watch(value)]);
+        }
 
         // Captures resolve surfaces through the slot on the view itself;
         // the mount guard owns removal.

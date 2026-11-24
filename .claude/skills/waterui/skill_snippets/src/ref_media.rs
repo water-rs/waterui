@@ -658,7 +658,7 @@ pub fn media_block_10() -> impl View {
 }
 
 // ---------------------------------------------------------------------------
-// media.md § "## Graphics and codes" (prose): `.labeled(..)` / `.described(..)`,
+// media.md § "## Graphics and codes" (prose): `.offered_label(..)` / `.offered_value(..)`,
 // `.on_ime_caret(..)`, and a `SceneContent` handling input. Not counted as a rust
 // block.
 // ---------------------------------------------------------------------------
@@ -667,8 +667,8 @@ pub fn media_gpu_input_prose<C: waterui::graphics::GpuContent>(content: C) -> im
     use waterui::graphics::gpu::Rect;
 
     GpuView::new(content)
-        .labeled("Terminal")
-        .described("Shell session")
+        .offered_label(Str::from("Terminal"))
+        .offered_value(Str::from("Shell session"))
         .on_ime_caret(|| Option::<Rect>::None)
 }
 
