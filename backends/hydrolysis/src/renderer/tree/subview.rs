@@ -6,6 +6,7 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::theme::WidgetTheme;
+use core::num::NonZeroUsize;
 use core::sync::atomic::{AtomicBool, Ordering};
 use std::rc::Rc;
 use waterui_core::layout::{LayoutError, ResolvedExtent};
@@ -66,13 +67,16 @@ fn try_resolve_node_text_leaf<E: crate::text::TextEngine>(
     match node {
         RenderNode::Text(text) => {
             let mut state = state.borrow_mut();
+            let line_limit = state
+                .measure_signal(&text.line_limit)
+                .map(NonZeroUsize::get);
             Some((
                 resolve_text_layout_input(
                     &state.measure_signal(&text.content),
                     state.measure_signal(&text.alignment),
                     env,
                 ),
-                text.line_limit,
+                line_limit,
             ))
         }
         RenderNode::Opacity(node) => try_resolve_node_text_leaf(&node.child, env, state),

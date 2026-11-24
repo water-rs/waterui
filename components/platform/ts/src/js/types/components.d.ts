@@ -37,13 +37,6 @@ export type ForProps<T> = {
 
 export declare function For<T>(props: ForProps<T>): Element;
 
-export interface SuspenseProps {
-  fallback?: Element | (() => Element);
-  children?: Element | (() => Element);
-}
-
-export declare function Suspense(props: SuspenseProps): Element;
-
 export interface BoxProps {
   /**
    * Exactly one element. `Box` creates no node: its modifier attributes

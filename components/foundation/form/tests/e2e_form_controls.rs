@@ -156,18 +156,12 @@ fn color_picker_accessibility_tap_is_handled(ui: UiBuilder) {
 #[waterui::test(viewport = (320, 240))]
 fn calendar_navigation_and_selection_update_binding(ui: UiBuilder) {
     let selected_date = Binding::container(Date::new(2025, 1, 10).unwrap());
-    let visible_month = Binding::container(Date::new(2025, 1, 1).unwrap());
     let selected_date_for_view = selected_date.clone();
-    let visible_month_for_view = visible_month;
 
     let mut app = ui.mount(move || {
         form_shell(
-            Calendar::new(
-                "Event Calendar",
-                &selected_date_for_view,
-                &visible_month_for_view,
-            )
-            .range(Date::new(2025, 1, 1).unwrap()..=Date::new(2025, 2, 28).unwrap()),
+            Calendar::new("Event Calendar", &selected_date_for_view)
+                .range(Date::new(2025, 1, 1).unwrap()..=Date::new(2025, 2, 28).unwrap()),
         )
     });
 

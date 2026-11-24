@@ -274,11 +274,10 @@ use jiff::civil::Date;
 
 fn trip_calendar() -> impl View {
     let trip_date: Binding<Date> = binding(Date::new(2025, 6, 15).unwrap());
-    let visible_month: Binding<Date> = binding(Date::new(2025, 6, 1).unwrap());
     let selected = trip_date.clone();
 
     vstack((
-        Calendar::new("Trip Date", &trip_date, &visible_month)
+        Calendar::new("Trip Date", &trip_date)
             .range(Date::new(2025, 1, 1).unwrap()..=Date::new(2025, 12, 31).unwrap()),
         text!("Selected date: {selected}"),
     ))
@@ -321,12 +320,9 @@ fn availability_calendar() -> impl View {
     let count = available_dates.clone().map(|dates| dates.len());
 
     vstack((
-        MultiDatePicker::new(
-            "Select Available Dates",
-            &available_dates,
-            &visible_month,
-        )
-        .range(Date::new(2025, 1, 1).unwrap()..=Date::new(2025, 12, 31).unwrap()),
+        MultiDatePicker::new("Select Available Dates", &available_dates)
+            .visible_month(&visible_month)
+            .range(Date::new(2025, 1, 1).unwrap()..=Date::new(2025, 12, 31).unwrap()),
         text!("Selected {count} dates"),
     ))
 }

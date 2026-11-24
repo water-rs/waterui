@@ -133,15 +133,6 @@ impl HostTable for Components {
     ) -> Result<AnyView, Error> {
         Ok(collection::each(bridge, items, render, by)?)
     }
-
-    fn suspense(
-        &self,
-        bridge: &Bridge,
-        children: &JsFunction,
-        fallback: Option<&JsFunction>,
-    ) -> Result<AnyView, Error> {
-        Ok(control_flow::suspense(bridge, children, fallback)?)
-    }
 }
 
 /// One element, built from its configuration and its children.

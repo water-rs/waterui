@@ -78,19 +78,6 @@ export function For(props) {
   );
 }
 
-/** `<Suspense fallback={…}>…</Suspense>` — host-driven pending state. */
-export function Suspense(props) {
-  const host = getHost();
-  const fallback =
-    propValue(props, "fallback") === undefined
-      ? undefined
-      : branch(() => resolveElement(lazyProp(props, "fallback")()));
-  return host.suspense(
-    branch(() => resolveElement(lazyProp(props, "children")())),
-    fallback,
-  );
-}
-
 /**
  * `<Box>…</Box>` — a zero-cost modifier scope. It creates no node: its
  * modifier attributes apply to its single child in written order. Nesting

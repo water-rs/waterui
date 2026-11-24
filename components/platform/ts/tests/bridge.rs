@@ -37,7 +37,6 @@ enum Call {
     Text,
     Show,
     Each,
-    Suspense,
 }
 
 /// A host table that records its calls and hands back empty views.
@@ -106,16 +105,6 @@ impl HostTable for TestHost {
         _by: Option<&JsFunction>,
     ) -> Result<AnyView, Error> {
         self.calls.borrow_mut().push(Call::Each);
-        Ok(AnyView::new(()))
-    }
-
-    fn suspense(
-        &self,
-        _bridge: &Bridge,
-        _children: &JsFunction,
-        _fallback: Option<&JsFunction>,
-    ) -> Result<AnyView, Error> {
-        self.calls.borrow_mut().push(Call::Suspense);
         Ok(AnyView::new(()))
     }
 }

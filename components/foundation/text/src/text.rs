@@ -46,7 +46,11 @@ pub struct TextConfig {
     /// machinery provides one. This is `SwiftUI`'s `lineLimit`: a control
     /// label capped at one line stays a label under compression instead of
     /// folding into a paragraph.
-    line_limit: Option<NonZeroUsize>,
+    line_limit: Computed<Option<NonZeroUsize>>,
+    /// Whether the author explicitly set a line limit via [`Text::line_limit`],
+    /// so [`Text::default_line_limit`] never overrides an explicit `None` or
+    /// reactive limit signal.
+    has_explicit_line_limit: bool,
 }
 
 impl TextConfig {
@@ -78,8 +82,8 @@ impl TextConfig {
     /// label capped at one line stays a label under compression instead of
     /// folding into a paragraph.
     #[must_use]
-    pub const fn line_limit(&self) -> Option<NonZeroUsize> {
-        self.line_limit
+    pub const fn line_limit(&self) -> &Computed<Option<NonZeroUsize>> {
+        &self.line_limit
     }
 
     /// Takes the rich text content out of the value, as [`Self::content`]
@@ -97,7 +101,7 @@ impl TextConfig {
     ) -> (
         Computed<StyledStr>,
         Computed<HorizontalAlignment>,
-        Option<NonZeroUsize>,
+        Computed<Option<NonZeroUsize>>,
     ) {
         (self.content(), self.paragraph_alignment, self.line_limit)
     }
@@ -106,13 +110,11 @@ impl TextConfig {
 /// Flattens a config signal into one config whose fields follow it.
 fn flatten_config(config: &Computed<TextConfig>) -> TextConfig {
     TextConfig {
-        // A plain field cannot be flattened through the config signal, so the
-        // resolved snapshot's value is the one that holds; every authoring
-        // path sets it before resolution.
-        line_limit: config.snapshot().line_limit,
         content: flatten_signal(config.map(|config| config.content)),
         font: flatten_signal(config.map(|config| config.font)),
         paragraph_alignment: flatten_signal(config.map(|config| config.paragraph_alignment)),
+        line_limit: flatten_signal(config.map(|config| config.line_limit)),
+        has_explicit_line_limit: config.snapshot().has_explicit_line_limit,
     }
 }
 
@@ -133,7 +135,8 @@ impl TextConfig {
             content: content.into_signal().map(StyledStr::from).computed(),
             font: Computed::constant(Font::default()),
             paragraph_alignment: Computed::constant(HorizontalAlignment::Leading),
-            line_limit: None,
+            line_limit: Computed::constant(None),
+            has_explicit_line_limit: false,
         }
     }
 }
@@ -302,6 +305,7 @@ where
                     font: Computed::constant(Font::default()),
                     paragraph_alignment: lhs.paragraph_alignment,
                     line_limit: lhs.line_limit,
+                    has_explicit_line_limit: lhs.has_explicit_line_limit,
                 })
                 .computed()
         })
@@ -598,21 +602,17 @@ impl Text {
 
     /// Caps the text at `limit` laid-out lines — `SwiftUI`'s `lineLimit`.
     ///
-    /// Text past the limit is truncated at the last visible line, with a
-    /// trailing ellipsis where the backend's native text machinery provides
-    /// one. Control labels use `NonZeroUsize::MIN` (one line) so a compressed
-    /// button stays a button instead of folding its label into a paragraph.
-    pub fn line_limit(self, limit: NonZeroUsize) -> Self {
+    /// Pass `None` to remove the limit, `NonZeroUsize::new(n)` or a
+    /// `NonZeroUsize` for a fixed cap, or a reactive signal producing
+    /// `Option<NonZeroUsize>` to toggle truncation in place without rebuilding
+    /// the view. Text past the limit is truncated at the last visible line,
+    /// with a trailing ellipsis where the backend's native text machinery
+    /// provides one.
+    pub fn line_limit(self, limit: impl IntoComputed<Option<NonZeroUsize>>) -> Self {
+        let limit = limit.into_computed();
         self.map_config(move |mut config| {
-            config.line_limit = Some(limit);
-            config
-        })
-    }
-
-    /// Removes any line limit, letting the text wrap freely again.
-    pub fn disable_line_limit(self) -> Self {
-        self.map_config(|mut config| {
-            config.line_limit = None;
+            config.line_limit = limit.clone();
+            config.has_explicit_line_limit = true;
             config
         })
     }
@@ -625,8 +625,8 @@ impl Text {
     /// [`Self::line_limit`] from the application.
     pub fn default_line_limit(self, limit: NonZeroUsize) -> Self {
         self.map_config(move |mut config| {
-            if config.line_limit.is_none() {
-                config.line_limit = Some(limit);
+            if !config.has_explicit_line_limit {
+                config.line_limit = Computed::constant(Some(limit));
             }
             config
         })
@@ -901,6 +901,35 @@ mod tests {
         assert!((fonts[0].size() - 12.0).abs() < f32::EPSILON);
         assert!(!fonts[1].bold());
         assert!((fonts[1].size() - 22.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn line_limit_accepts_reactive_signal() {
+        let env = test_env();
+        let expanded = Binding::bool(false);
+        let text = Text::verbatim("body").line_limit(expanded.select(None, NonZeroUsize::new(3)));
+        let config = text.resolve(&env);
+
+        assert_eq!(config.line_limit().snapshot(), NonZeroUsize::new(3));
+        expanded.set(true);
+        assert_eq!(config.line_limit().snapshot(), None);
+        expanded.set(false);
+        assert_eq!(config.line_limit().snapshot(), NonZeroUsize::new(3));
+    }
+
+    #[test]
+    fn explicit_line_limit_none_is_not_overridden_by_default() {
+        let env = test_env();
+        let explicit = Text::verbatim("body")
+            .line_limit(None::<NonZeroUsize>)
+            .default_line_limit(NonZeroUsize::MIN);
+        assert_eq!(explicit.resolve(&env).line_limit().snapshot(), None);
+
+        let defaulted = Text::verbatim("body").default_line_limit(NonZeroUsize::MIN);
+        assert_eq!(
+            defaulted.resolve(&env).line_limit().snapshot(),
+            Some(NonZeroUsize::MIN)
+        );
     }
 
     fn test_env() -> Environment {

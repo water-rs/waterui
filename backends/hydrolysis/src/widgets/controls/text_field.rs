@@ -234,14 +234,14 @@ pub fn render_text_field_parts<E: crate::text::TextEngine>(
     // `value`/`prompt`/`selection_menu` are cloneable signals (the value is read
     // through `read_signal` below so a binding change schedules a frame). The label
     // is a retained node sub-view flushed under the animated transform each frame.
-    let (label, value_binding, prompt_signal, selection_menu, line_limit_raw, on_submit) = {
+    let (label, value_binding, prompt_signal, selection_menu, line_limit_signal, on_submit) = {
         let text_field = &state.config;
         (
             text_field.label().clone(),
             text_field.value().clone(),
             text_field.prompt().content(),
             state.selection_menu.clone(),
-            text_field.line_limit(),
+            text_field.line_limit().clone(),
             text_field.on_submit().cloned(),
         )
     };
@@ -259,7 +259,10 @@ pub fn render_text_field_parts<E: crate::text::TextEngine>(
     );
     let label_size = state.label_view.measure_intrinsic(ctx.renderer_mut(), env);
     let label_height = material_input_label_height(label_size, input_metrics.label_height);
-    let line_limit = line_limit_raw.map(NonZeroUsize::get);
+    let line_limit = ctx
+        .renderer_mut()
+        .read_signal(&line_limit_signal)
+        .map(NonZeroUsize::get);
     #[cfg(feature = "accessibility")]
     {
         let prompt = ctx
@@ -1234,19 +1237,21 @@ pub fn emit_text_field_accessibility<E: crate::text::TextEngine>(
         renderer.read_signal(&signal)
     };
     let mut state = state.borrow_mut();
-    let (label, value_binding, prompt_signal, selection_menu, line_limit_raw, on_submit) = {
+    let (label, value_binding, prompt_signal, selection_menu, line_limit_signal, on_submit) = {
         let text_field = &state.config;
         (
             text_field.label().clone(),
             text_field.value().clone(),
             text_field.prompt().content(),
             state.selection_menu.clone(),
-            text_field.line_limit(),
+            text_field.line_limit().clone(),
             text_field.on_submit().cloned(),
         )
     };
     let default_accessibility_label = renderer.accessibility_label_from_label(&label, env);
-    let line_limit = line_limit_raw.map(NonZeroUsize::get);
+    let line_limit = renderer
+        .read_signal(&line_limit_signal)
+        .map(NonZeroUsize::get);
     {
         let prompt = renderer.read_signal(&prompt_signal).to_plain().to_string();
         let value = renderer.read_signal(&value_binding).to_plain().to_string();
