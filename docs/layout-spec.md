@@ -693,9 +693,9 @@ transforms, ends on that boundary.
 
 An accessibility element has a *geometry owner* — the logical view whose
 rectangle it reports — and an *action owner* — the object that performs its
-actions. They may differ: in `button("OK").action(ok).padding(8).a11y_label("x")` the
+actions. They may differ: in `button("OK").padding(8).a11y_label("x")` the
 padded view owns the geometry and the button the actions, while
-`button("OK").action(ok).a11y_label("x").padding(8)` makes the labelled button the
+`button("OK").a11y_label("x").padding(8)` makes the labelled button the
 geometry owner. Modifier order decides.
 
 - An element's bounds are its geometry owner's response rectangle, unless a
