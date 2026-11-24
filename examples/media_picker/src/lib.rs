@@ -88,9 +88,8 @@ fn picker_button(
 ) -> impl View + use<> {
     // The picker owns the selection; the display state it drives is injected
     // with `.state(..)` and reaches the change handler as a `State` extractor.
-    MediaPicker::new(selection)
+    MediaPicker::new(label, selection)
         .filter(filter)
-        .label(text(label))
         .on_change(
             selection,
             move |new_selection: Option<Selected>, State(state): State<Binding<DisplayState>>| {

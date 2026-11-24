@@ -11,7 +11,6 @@ use waterui_controls::{IntoLabel, button};
 use waterui_core::Signal;
 use waterui_core::reactive::signal::IntoComputed;
 use waterui_core::{Binding, Computed, Environment, View, reactive::impl_constant};
-use waterui_text::{Text, text};
 
 #[cfg(feature = "std")]
 use waterkit_dialog::{LoadedMedia, MediaType, PhotoPicker as KitPhotoPicker};
@@ -33,22 +32,22 @@ pub struct MediaPicker<Label> {
     label: Label,
 }
 
-impl MediaPicker<Text> {
-    /// Creates a new `MediaPicker` with a selection binding.
-    #[must_use]
-    pub fn new(selection: &Binding<Option<Selected>>) -> Self {
-        Self {
-            selection: selection.clone(),
-            filter: MediaFilter::Image.into_computed(),
-            label: text("Select Media"),
-        }
-    }
-}
-
 impl<Label> MediaPicker<Label>
 where
     Label: IntoLabel + 'static,
 {
+    /// Creates a new `MediaPicker` with the given label and selection binding.
+    ///
+    /// The label is announced by screen readers on the picker button.
+    #[must_use]
+    pub fn new(label: Label, selection: &Binding<Option<Selected>>) -> Self {
+        Self {
+            selection: selection.clone(),
+            filter: MediaFilter::Image.into_computed(),
+            label,
+        }
+    }
+
     /// Sets the media filter for this picker.
     #[must_use]
     pub fn filter(mut self, filter: impl IntoComputed<MediaFilter>) -> Self {

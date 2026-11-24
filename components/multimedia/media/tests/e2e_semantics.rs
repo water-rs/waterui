@@ -8,13 +8,14 @@ use waterui::OneOf2;
 use waterui::Signal;
 use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityRole;
+use waterui::component::label;
 use waterui::component::lazy::Lazy;
 use waterui::component::text;
 use waterui::layout::frame::Frame;
 use waterui::layout::scroll::scroll;
 use waterui_media::{
-    LivePhoto, Media, Photo, PhotoCache, PhotoStatus, Url, live::LivePhotoSource, photo,
-    photo::Event as PhotoEvent,
+    LivePhoto, Media, MediaPicker, Photo, PhotoCache, PhotoStatus, Url, live::LivePhotoSource,
+    media_picker::Selected, photo, photo::Event as PhotoEvent,
 };
 use waterui_testing::{Role, Selector, UiBuilder, WaitOptions, WaitResult};
 use waterui_testing::{RuntimeDriver, SemanticApp, TestStyle};
@@ -319,4 +320,26 @@ fn photo_in_lazy_list_serves_from_environment_cache_without_refetch(ui: UiBuilde
         PhotoStatus::Ready,
         "remounted row 0 must settle Ready from PhotoCache even after disk source removal"
     );
+}
+
+#[waterui::test(viewport = (320, 200))]
+fn media_picker_exposes_label_to_accessibility_tree(ui: UiBuilder) {
+    let selection = Binding::container(None::<Selected>);
+    let selection_for_second = selection.clone();
+
+    let mut app = ui.mount(move || {
+        waterui::component::vstack((
+            MediaPicker::new("Choose photo", &selection),
+            MediaPicker::new(label("Choose clip").icon(()), &selection_for_second),
+        ))
+    });
+
+    app.query()
+        .role(Role::BUTTON)
+        .label("Choose photo")
+        .assert_exists();
+    app.query()
+        .role(Role::BUTTON)
+        .label("Choose clip")
+        .assert_exists();
 }

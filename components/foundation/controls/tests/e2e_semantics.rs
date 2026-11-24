@@ -11,7 +11,8 @@ use waterui::component::vstack;
 use waterui::graphics::color::Srgb;
 use waterui::{Binding, Str};
 use waterui_controls::{
-    Menu, TextField, Toggle, ToggleStyle, button, label, slider::slider, stepper::stepper, toggle,
+    Button, Menu, Slider, Stepper, TextField, Toggle, ToggleStyle, button, label, slider::slider,
+    stepper::stepper, toggle,
 };
 use waterui_testing::{Role, Selector, SemanticApp, UiBuilder};
 
@@ -79,7 +80,7 @@ fn disabled_scope_reaches_every_control_in_the_subtree(ui: UiBuilder) {
             vstack((
                 button("Act").action(|| {}),
                 toggle("Flag", &flag),
-                slider(label("Amount"), &amount),
+                slider("Amount", &amount),
                 stepper("Count", &value),
                 TextField::new("Note", &text),
             ))
@@ -656,4 +657,37 @@ fn disabled_button_ignores_action(ui: UiBuilder) {
         },
     );
     assert_eq!(count.snapshot(), 0, "disabled-button: action must not run");
+}
+
+#[waterui::test(viewport = (320, 240))]
+fn type_new_constructors_accept_into_label(ui: UiBuilder) {
+    let slider_value = Binding::f64(0.5);
+    let stepper_value = Binding::i32(2);
+
+    let mut app = ui.mount(move || {
+        control_shell(vstack((
+            Button::new("Save").action(|| {}),
+            Button::new(label("Profile").icon(())).action(|| {}),
+            Slider::new("Volume", &slider_value),
+            Slider::new(String::from("Brightness"), &slider_value),
+            Stepper::new("Copies", &stepper_value),
+            Stepper::new(label("Seats").icon(()), &stepper_value),
+        )))
+    });
+
+    app.query().role(Role::BUTTON).label("Save").assert_exists();
+    app.query()
+        .role(Role::BUTTON)
+        .label("Profile")
+        .assert_exists();
+    app.query()
+        .role(Role::SLIDER)
+        .label("Volume")
+        .assert_exists();
+    app.query()
+        .role(Role::SLIDER)
+        .label("Brightness")
+        .assert_exists();
+    app.query().label("Copies").assert_exists();
+    app.query().label("Seats").assert_exists();
 }
