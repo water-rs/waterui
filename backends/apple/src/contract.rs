@@ -28,6 +28,7 @@ use cocoa_ui::uikit::HostView;
 use cocoa_ui::view::retain_base;
 use waterui::reactive::Signal;
 use waterui::reactive::watcher::Context;
+use waterui::shape::ClipShape;
 use waterui_backend_core::{Child, ChildView, Environment, View};
 use waterui_core::layout::SubView;
 
@@ -124,6 +125,10 @@ pub struct NativeLeaf {
     /// enclosing scope rendered around the same leaf must not apply its own,
     /// less specific state over it.
     accessibility_state_applied: bool,
+    /// The clip shape carried by this leaf when wrapped in `.clip(...)` (and
+    /// preserved across bounds-preserving wrappers), so an enclosing `.shadow(...)`
+    /// follows the caster's clipped silhouette when no explicit override is set.
+    clip_shape: Option<Rc<ClipShape>>,
     /// The view controllers [`mount`] adopted from this leaf's subtree —
     /// `UIKit` only forwards appearance and layout callbacks down a real
     /// containment chain.
@@ -159,6 +164,7 @@ impl NativeLeaf {
             transition: None,
             handler_env: None,
             accessibility_state_applied: false,
+            clip_shape: None,
             #[cfg(target_os = "ios")]
             attached_controllers: Vec::new(),
         }
@@ -212,6 +218,30 @@ impl NativeLeaf {
     /// nothing.
     pub(crate) const fn claim_accessibility_state(&mut self) -> bool {
         !core::mem::replace(&mut self.accessibility_state_applied, true)
+    }
+
+    /// The clip shape carried by this leaf, if wrapped in `.clip(...)` or a
+    /// bounds-preserving wrapper over one.
+    #[must_use]
+    pub fn clip_shape(&self) -> Option<&ClipShape> {
+        self.clip_shape.as_deref()
+    }
+
+    /// Returns a cloned handle to the caster's clip shape for bounds-preserving wrappers.
+    #[must_use]
+    pub fn clip_shape_handle(&self) -> Option<Rc<ClipShape>> {
+        self.clip_shape.as_ref().map(Rc::clone)
+    }
+
+    /// Records the caster's clip shape so an enclosing `.shadow(...)` can follow
+    /// it when no explicit `.silhouette(...)` override is given.
+    pub fn set_clip_shape(&mut self, shape: ClipShape) {
+        self.clip_shape = Some(Rc::new(shape));
+    }
+
+    /// Installs a previously captured clip-shape handle on this wrapper leaf.
+    pub fn set_clip_shape_handle(&mut self, shape: Option<Rc<ClipShape>>) {
+        self.clip_shape = shape;
     }
 
     /// The platform view. Borrowed: the leaf owns it.

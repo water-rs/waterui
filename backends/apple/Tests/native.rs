@@ -363,6 +363,8 @@ fn trials() -> Vec<Trial> {
         tests.extend(transform_modifiers::trials());
         #[cfg(target_os = "macos")]
         tests.extend(border_modifier::trials());
+        #[cfg(target_os = "macos")]
+        tests.extend(shadow_modifier::trials());
         #[cfg(feature = "gpu_surface")]
         {
             tests.extend(gpu_surface::trials());
@@ -17549,28 +17551,40 @@ mod transform_modifiers {
 /// that extends past the rounded outline stays visible (#4277).
 #[cfg(target_os = "macos")]
 mod border_modifier {
+    use cocoa_ui::Rect;
     use cocoa_ui::objc2::rc::autoreleasepool;
     use cocoa_ui::{layer, view};
     use libtest_mimic::Trial;
-    use waterui::ViewExt as _;
     use waterui::border::Border;
     use waterui::component::label::label;
+    use waterui::graphics::color::Color;
+    use waterui::{Binding, ViewExt as _};
+    use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, pump_main_until};
 
     pub fn trials() -> Vec<Trial> {
-        vec![Trial::test(
-            "border_modifier::a_rounded_border_does_not_clip_its_content",
-            || {
-                a_rounded_border_does_not_clip_its_content();
-                Ok(())
-            },
-        )]
+        vec![
+            Trial::test(
+                "border_modifier::a_rounded_border_does_not_clip_its_content",
+                || {
+                    a_rounded_border_does_not_clip_its_content();
+                    Ok(())
+                },
+            ),
+            Trial::test(
+                "border_modifier::a_reactive_border_updates_layer_without_rebuilding",
+                || {
+                    a_reactive_border_updates_layer_without_rebuilding();
+                    Ok(())
+                },
+            ),
+        ]
     }
 
     fn a_rounded_border_does_not_clip_its_content() {
         let leaf = autoreleasepool(|_| {
-            super::resolve::render(label("content").border_with(
-                Border::new(waterui::graphics::color::Color::red(), 2.0).corner_radius(8.0),
-            ))
+            super::resolve::render(
+                label("content").border_with(Border::new(Color::red(), 2.0).corner_radius(8.0)),
+            )
         });
         let wrapper = autoreleasepool(|_| view::retain_base(leaf.view()));
         let _window = autoreleasepool(|_| super::mount_and_order_front(&wrapper));
@@ -17587,6 +17601,188 @@ mod border_modifier {
                 "a border strokes only and never clips its content"
             );
         });
+    }
+
+    fn a_reactive_border_updates_layer_without_rebuilding() {
+        let width = Binding::container(2.0_f32);
+        let corner_radius = Binding::container(4.0_f32);
+        let leaf = autoreleasepool(|_| {
+            super::resolve::render(label("content").border_with(
+                Border::new(Color::red(), width.clone()).corner_radius(corner_radius.clone()),
+            ))
+        });
+        let wrapper = autoreleasepool(|_| view::retain_base(leaf.view()));
+        let _window = autoreleasepool(|_| {
+            let window = super::leaf::attach(super::mtm(), &wrapper);
+            view::set_frame(&wrapper, Rect::new(0.0, 0.0, 80.0, 80.0));
+            wrapper.layoutSubtreeIfNeeded();
+            window
+        });
+        autoreleasepool(|_| {
+            let host_layer = layer::layer_of(&wrapper).expect("a border's host is layer-backed");
+            assert_eq!(host_layer.borderWidth(), 2.0);
+            assert_eq!(host_layer.cornerRadius(), 4.0);
+        });
+
+        width.set(5.0);
+        corner_radius.set(12.0);
+        let updated = pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            autoreleasepool(|_| {
+                let host_layer =
+                    layer::layer_of(&wrapper).expect("a border's host is layer-backed");
+                (host_layer.borderWidth() - 5.0).abs() < 1e-4
+                    && (host_layer.cornerRadius() - 12.0).abs() < 1e-4
+            })
+        });
+        assert!(
+            updated,
+            "reactive border signals update host layer width and cornerRadius in place"
+        );
+    }
+}
+
+/// A `Shadow` inherits its caster's `.clip(...)` silhouette automatically
+/// unless `.silhouette(...)` overrides it, and updates layer shadow metrics
+/// reactively without rebuilding the view (#4418).
+#[cfg(target_os = "macos")]
+mod shadow_modifier {
+    use core::ptr::null;
+
+    use cocoa_ui::Rect;
+    use cocoa_ui::objc2::rc::autoreleasepool;
+    use cocoa_ui::objc2_core_foundation::CGPoint;
+    use cocoa_ui::objc2_core_graphics::CGPath;
+    use cocoa_ui::{layer, view};
+    use libtest_mimic::Trial;
+    use waterui::component::label::label;
+    use waterui::graphics::color::Color;
+    use waterui::shape::{Circle, Rectangle};
+    use waterui::style::Shadow;
+    use waterui::{Binding, SignalExt as _, ViewExt as _};
+    use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, pump_main_until};
+
+    fn attach_offscreen(wrapper: &super::PlatformView) -> super::AttachedWindow {
+        let window = super::leaf::attach(super::mtm(), wrapper);
+        view::set_frame(wrapper, Rect::new(0.0, 0.0, 80.0, 80.0));
+        wrapper.layoutSubtreeIfNeeded();
+        window
+    }
+
+    pub fn trials() -> Vec<Trial> {
+        vec![
+            Trial::test(
+                "shadow_modifier::a_clipped_caster_shadow_inherits_circular_silhouette",
+                || {
+                    a_clipped_caster_shadow_inherits_circular_silhouette();
+                    Ok(())
+                },
+            ),
+            Trial::test(
+                "shadow_modifier::explicit_silhouette_overrides_inherited_clip_shape",
+                || {
+                    explicit_silhouette_overrides_inherited_clip_shape();
+                    Ok(())
+                },
+            ),
+            Trial::test(
+                "shadow_modifier::a_reactive_shadow_updates_layer_without_rebuilding",
+                || {
+                    a_reactive_shadow_updates_layer_without_rebuilding();
+                    Ok(())
+                },
+            ),
+        ]
+    }
+
+    fn a_clipped_caster_shadow_inherits_circular_silhouette() {
+        let leaf = autoreleasepool(|_| {
+            super::resolve::render(label("avatar").size(80.0, 80.0).clip(Circle).shadow(4.0))
+        });
+        let wrapper = autoreleasepool(|_| view::retain_base(leaf.view()));
+        let _window = autoreleasepool(|_| attach_offscreen(&wrapper));
+        autoreleasepool(|_| {
+            let host_layer = layer::layer_of(&wrapper).expect("a shadow's host is layer-backed");
+            let path = host_layer
+                .shadowPath()
+                .expect("clipped shadow must materialize shadowPath");
+            // SAFETY: CoreGraphics `CGPathContainsPoint` on a valid retained `CGPath`.
+            let center_inside = unsafe {
+                CGPath::contains_point(Some(&path), null(), CGPoint::new(40.0, 40.0), false)
+            };
+            // SAFETY: CoreGraphics `CGPathContainsPoint` on a valid retained `CGPath`.
+            let corner_inside = unsafe {
+                CGPath::contains_point(Some(&path), null(), CGPoint::new(2.0, 2.0), false)
+            };
+            assert!(center_inside, "circular shadowPath covers caster center");
+            assert!(
+                !corner_inside,
+                "circular shadowPath inherited from `.clip(Circle)` excludes outer corner"
+            );
+        });
+    }
+
+    fn explicit_silhouette_overrides_inherited_clip_shape() {
+        let leaf = autoreleasepool(|_| {
+            super::resolve::render(
+                label("avatar")
+                    .size(80.0, 80.0)
+                    .clip(Circle)
+                    .shadow(Shadow::splat(4.0).silhouette(Rectangle)),
+            )
+        });
+        let wrapper = autoreleasepool(|_| view::retain_base(leaf.view()));
+        let _window = autoreleasepool(|_| attach_offscreen(&wrapper));
+        autoreleasepool(|_| {
+            let host_layer = layer::layer_of(&wrapper).expect("a shadow's host is layer-backed");
+            let path = host_layer
+                .shadowPath()
+                .expect("explicit silhouette shadow must materialize shadowPath");
+            // SAFETY: CoreGraphics `CGPathContainsPoint` on a valid retained `CGPath`.
+            let corner_inside = unsafe {
+                CGPath::contains_point(Some(&path), null(), CGPoint::new(2.0, 2.0), false)
+            };
+            assert!(
+                corner_inside,
+                "explicit `.silhouette(Rectangle)` overrides inherited `.clip(Circle)`"
+            );
+        });
+    }
+
+    fn a_reactive_shadow_updates_layer_without_rebuilding() {
+        let phase = Binding::container(false);
+        let radius = phase.map(|on| if on { 9.0_f32 } else { 2.0 });
+        let offset_x = phase.map(|on| if on { 6.0_f32 } else { 1.0 });
+        let color = phase.map(|on| Color::srgb(0, 0, 0).with_opacity(if on { 0.8 } else { 0.2 }));
+        let leaf = autoreleasepool(|_| {
+            super::resolve::render(
+                label("card")
+                    .size(80.0, 80.0)
+                    .shadow(Shadow::splat(radius).offset(offset_x, 3.0).color(color)),
+            )
+        });
+        let wrapper = autoreleasepool(|_| view::retain_base(leaf.view()));
+        let _window = autoreleasepool(|_| attach_offscreen(&wrapper));
+        autoreleasepool(|_| {
+            let host_layer = layer::layer_of(&wrapper).expect("a shadow's host is layer-backed");
+            assert!((host_layer.shadowRadius() - 2.0).abs() < 1e-4);
+            assert!((host_layer.shadowOffset().width - 1.0).abs() < 1e-4);
+            assert!((host_layer.shadowOpacity() - 0.2).abs() < 1e-3);
+        });
+
+        phase.set(true);
+        let updated = pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            autoreleasepool(|_| {
+                let host_layer =
+                    layer::layer_of(&wrapper).expect("a shadow's host is layer-backed");
+                (host_layer.shadowRadius() - 9.0).abs() < 1e-4
+                    && (host_layer.shadowOffset().width - 6.0).abs() < 1e-4
+                    && (host_layer.shadowOpacity() - 0.8).abs() < 1e-3
+            })
+        });
+        assert!(
+            updated,
+            "reactive shadow signals update radius, offset, and opacity on host layer in place"
+        );
     }
 }
 
