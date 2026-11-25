@@ -550,12 +550,12 @@ map. It needs a tile source in `app(env)` — there is no built-in one, and a ma
 or a Hydrolysis build without `waterui-map-gpu`, draws nothing. `MapStyle::Satellite` and
 `Hybrid` render there only when the options also carry `.satellite_style_url(url)` /
 `.hybrid_style_url(url)`; otherwise the map reports `MapStatus::Failed` instead of drawing
-the standard style. Tile limits, cache size, timeout and retry are further `MapGpuOptions`
+the standard style. Tile limits, cache size, timeout and retry are further `MapGpu`
 builders:
 
 ```rust
-use waterui_map_gpu::MapGpuOptions;
-env.insert(MapGpuOptions::new(waterui_url::Url::new("https://tiles.openfreemap.org/styles/positron")));
+use waterui_map_gpu::MapGpu;
+env.install(MapGpu::new(waterui_url::Url::new("https://tiles.openfreemap.org/styles/positron")));
 ```
 
 Maps need the `internet` permission; showing the user's location needs the `location`

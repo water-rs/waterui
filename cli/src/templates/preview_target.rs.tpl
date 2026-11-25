@@ -41,7 +41,7 @@ pub(crate) fn preview_style(
 ///
 /// This goes through the application's own composition root — `app(env)` is
 /// what installs the realizations and options the application configures
-/// (`waterui_map_gpu::install`, provider options, fonts) — so a preview sees
+/// (`waterui_map_gpu::MapGpu`, provider options, fonts) — so a preview sees
 /// the same environment a run would.
 pub(crate) fn app_environment() -> waterui::env::Environment {
     let env = waterui::configure_environment!(waterui::env::Environment::new());

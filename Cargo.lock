@@ -13601,7 +13601,7 @@ dependencies = [
 [[package]]
 name = "waterui-map-gpu"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/map-gpu?branch=main#937bd2e0b806d3b01d344b46086b185d89a45afd"
+source = "git+https://github.com/water-rs/map-gpu?branch=main#24ad7552e85fb3e5943b572470bb5bffe2c44237"
 dependencies = [
  "arc-swap",
  "blocking",

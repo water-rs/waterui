@@ -1825,7 +1825,7 @@ mod tests {
         // generated bindings: `app_environment()` hands the configured
         // environment to the application's `app(env)` composition root, which
         // is what installs application-owned values such as
-        // `waterui_map_gpu::MapGpuOptions` (#93). A runtime that built a bare
+        // `waterui_map_gpu::MapGpu` (#93 / #96). A runtime that built a bare
         // `Environment` would render components the app never could.
         for relative in [
             "src/preview_runtime.rs.tpl",

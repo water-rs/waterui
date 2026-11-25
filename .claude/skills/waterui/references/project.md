@@ -128,7 +128,7 @@ once it is installed with `.state(&value)`: on a view for that subtree's handler
 `App::state(&value)` for the menu-bar, quit-request and terminate handlers that run under
 the application's environment.
 
-Take `mut env` when the app installs things (a `Theme`, `MapGpuOptions`, an `ApiClient`).
+Take `mut env` when the app installs things (a `Theme`, `MapGpu`, an `ApiClient`).
 
 ## `Cargo.toml`: features that matter
 
