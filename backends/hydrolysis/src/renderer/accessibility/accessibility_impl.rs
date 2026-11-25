@@ -4,6 +4,7 @@ use super::*;
 use crate::renderer::mount::RetainedScopes;
 use crate::renderer::transformed_rect;
 use std::borrow::Cow;
+use waterui::sheet::SheetContentScope;
 use waterui_core::contract_violation;
 
 #[cfg(feature = "accessibility")]
@@ -972,6 +973,7 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
             || container.toggled().is_some()
             || container.is_disabled()
             || container.is_busy()
+            || container.is_modal()
         {
             return None;
         }
@@ -1073,6 +1075,7 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
         let modal = self
             .nodes
             .iter()
+            .rev()
             .find_map(|(id, node)| node.is_modal().then_some(*id));
         let Some(modal) = modal else {
             root.set_children(self.root_children.clone());
@@ -2191,17 +2194,22 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             env,
             AccessibilityNodeRole::Group,
         ));
-        // A presented dialog's card: the window's modal alert. Publication
-        // keeps a modal node alone under the window, so the content beneath
-        // the modal layer is inert for assistive technology.
+        // A presented dialog's card or modal sheet's surface: the window's
+        // modal root. Publication keeps the topmost modal node alone under the
+        // window, so content beneath is inert for assistive technology.
         #[cfg(waterui_feature = "dialog")]
-        if node.role() == AccessibilityNodeRole::Dialog
-            && env
-                .get::<crate::renderer::input::DialogLayerScope>()
-                .is_some()
-        {
-            node.set_role(AccessibilityNodeRole::AlertDialog);
-            node.set_modal();
+        let is_dialog_layer = env.get::<DialogLayerScope>().is_some();
+        #[cfg(not(waterui_feature = "dialog"))]
+        let is_dialog_layer = false;
+        if node.role() == AccessibilityNodeRole::Dialog {
+            if is_dialog_layer {
+                node.set_role(AccessibilityNodeRole::AlertDialog);
+                node.set_modal();
+            } else if env.get::<SheetLayerScope>().is_some()
+                && env.get::<SheetContentScope>().is_none()
+            {
+                node.set_modal();
+            }
         }
         if let Some(label) = self.resolve_accessibility_label(env, None) {
             node.set_label(label);

@@ -11,8 +11,10 @@ use waterui_core::metadata::MetadataKey;
 use waterui_core::{Metadata, NativeView};
 
 use crate::components::frame_rate::realize_frame_rate_metadata;
+use crate::components::sheet::realize_sheet_metadata;
 use crate::contract::{NativeLeaf, RenderContext};
 use waterui::animation::FrameRateVote;
+use waterui::sheet::Sheet;
 
 /// Realizes views into `AppKit`/`UIKit` leaves.
 #[derive(Debug, Clone)]
@@ -1116,6 +1118,17 @@ impl NativeBackend for AppleBackend {
             metadata,
             &self.entry(env),
         )
+    }
+
+    fn sheet<C: ChildView<Self>>(
+        &mut self,
+        metadata: Metadata<Sheet, C>,
+        env: &Environment,
+        (): (),
+    ) -> NativeLeaf {
+        mark_reached!("sheet");
+        let metadata = metadata.map_content(C::into_child);
+        realize_sheet_metadata(metadata, &self.entry(env))
     }
 
     #[cfg(waterui_feature = "dialog")]
