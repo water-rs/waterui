@@ -478,7 +478,7 @@ fn build_app_menu(
         name: product_name.to_owned(),
     });
     if let Some(declared) = declared {
-        let declared_items = declared.items.snapshot();
+        let declared_items = declared.items().snapshot();
         if !declared_items.is_empty() {
             app_menu = extend_submenu(app_menu.entry(Entry::Separator), &declared_items, ctx);
         }
