@@ -373,17 +373,12 @@ fn variable_colr_bitmap_fonts_count() {
 #[test]
 fn shadow_silhouettes_count() {
     use waterui::graphics::Color;
-    use waterui::style::{Shadow, Vector};
+    use waterui::style::Shadow;
 
     fn caster(shape: impl waterui::shape::Shape + Clone + 'static) -> impl View {
         ().size(80.0, 80.0)
             .background(RoundedRectangle::new(12.0).fill(Color::srgb(60, 120, 200)))
-            .shadow(Shadow::new(
-                Color::srgb(0, 0, 0),
-                Vector::new(2.0, 3.0),
-                4.0,
-                shape,
-            ))
+            .shadow(Shadow::new(4.0).offset(2.0, 3.0).silhouette(shape))
     }
 
     let mut runtime = runtime_with(vstack((

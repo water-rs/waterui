@@ -603,26 +603,26 @@ impl ColumnAttributes {
     }
 }
 
-/// `<Accordion>`: a header that expands to reveal its content.
+/// `<Disclosure>`: a header that expands to reveal its content.
 #[derive(Debug, TsType)]
 #[non_exhaustive]
-pub struct AccordionAttributes {
-    /// The content revealed when the accordion is expanded. A builder, because
+pub struct DisclosureAttributes {
+    /// The content revealed when the disclosure is expanded. A builder, because
     /// the content is built when it is revealed and again after it is hidden.
     content: JsViewBuilder,
-    /// Whether the accordion is expanded, when the application owns that state.
+    /// Whether the disclosure is expanded, when the application owns that state.
     expanded: Option<Binding<bool>>,
 }
 
-impl AccordionAttributes {
-    /// The content revealed when the accordion is expanded. A builder, because
+impl DisclosureAttributes {
+    /// The content revealed when the disclosure is expanded. A builder, because
     /// the content is built when it is revealed and again after it is hidden.
     #[must_use]
     pub const fn content(&self) -> &JsViewBuilder {
         &self.content
     }
 
-    /// Whether the accordion is expanded, when the application owns that state.
+    /// Whether the disclosure is expanded, when the application owns that state.
     #[must_use]
     pub const fn expanded(&self) -> Option<&Binding<bool>> {
         self.expanded.as_ref()

@@ -219,6 +219,55 @@ impl<T> Annotation<T> {
     }
 }
 
+/// A resolved map annotation delivered to backends inside [`MapConfig`].
+///
+/// Carries the erased [`Id`], coordinate, and localized plain-text title and
+/// optional subtitle resolved against the map's [`Environment`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResolvedAnnotation {
+    id: Id,
+    coordinate: Coordinate,
+    title: Str,
+    subtitle: Option<Str>,
+}
+
+impl ResolvedAnnotation {
+    /// Creates a resolved annotation payload.
+    #[must_use]
+    pub const fn new(id: Id, coordinate: Coordinate, title: Str, subtitle: Option<Str>) -> Self {
+        Self {
+            id,
+            coordinate,
+            title,
+            subtitle,
+        }
+    }
+
+    /// The erased identifier of this annotation.
+    #[must_use]
+    pub const fn id(&self) -> Id {
+        self.id
+    }
+
+    /// The coordinate where the annotation is placed.
+    #[must_use]
+    pub const fn coordinate(&self) -> Coordinate {
+        self.coordinate
+    }
+
+    /// The resolved title text shown on the annotation.
+    #[must_use]
+    pub const fn title(&self) -> &Str {
+        &self.title
+    }
+
+    /// The resolved optional subtitle text.
+    #[must_use]
+    pub const fn subtitle(&self) -> Option<&Str> {
+        self.subtitle.as_ref()
+    }
+}
+
 /// Map display style.
 ///
 /// Native realizations resolve these against the platform map's own imagery.
@@ -334,8 +383,11 @@ impl MapInteractivity {
 pub struct MapConfig {
     /// Two-way camera region: app updates move the map, user gestures write back.
     camera: Binding<Region>,
-    /// Annotations (pins) to display on the map, with erased [`Id`]s.
+    /// Temporary unlocalized annotations projection while `waterui-map-gpu`
+    /// migrates to [`Self::resolved_annotations`] (removed in the closing PR for #4343).
     annotations: Computed<Vec<Annotation<Id>>>,
+    /// Resolved annotations (pins) to display on the map, carrying erased [`Id`]s.
+    resolved_annotations: Computed<Vec<ResolvedAnnotation>>,
     /// Optional two-way selection of the currently selected annotation [`Id`].
     selection: Option<Binding<Option<Id>>>,
     /// The map display style.
@@ -371,10 +423,18 @@ impl MapConfig {
         &self.camera
     }
 
-    /// Annotations (pins) to display on the map, carrying erased [`Id`]s.
+    /// Temporary compatibility getter while `waterui-map-gpu` migrates to
+    /// [`Self::resolved_annotations`].
+    #[doc(hidden)]
     #[must_use]
     pub const fn annotations(&self) -> &Computed<Vec<Annotation<Id>>> {
         &self.annotations
+    }
+
+    /// Resolved annotations (pins) to display on the map, carrying erased [`Id`]s.
+    #[must_use]
+    pub const fn resolved_annotations(&self) -> &Computed<Vec<ResolvedAnnotation>> {
+        &self.resolved_annotations
     }
 
     /// Optional two-way binding for the currently selected annotation [`Id`].
@@ -747,9 +807,26 @@ impl<T: 'static> Map<T> {
 impl<T: MapAnnotations> Map<T> {
     fn into_config(self) -> (MapConfig, Option<Computed<Region>>) {
         let erased = T::erase(self.annotations, self.selection);
+        let resolved_annotations = erased
+            .annotations
+            .map(|items| {
+                items
+                    .into_iter()
+                    .map(|annotation| {
+                        ResolvedAnnotation::new(
+                            *annotation.id(),
+                            annotation.coordinate(),
+                            annotation.title().clone(),
+                            annotation.get_subtitle().cloned(),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .computed();
         let config = MapConfig {
             camera: self.camera,
             annotations: erased.annotations,
+            resolved_annotations,
             selection: erased.selection,
             style: self.style,
             user_location_visibility: self.user_location_visibility,

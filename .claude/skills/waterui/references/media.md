@@ -64,20 +64,28 @@ let Some(parsed) = Url::parse(entered.snapshot().as_str()) else { return };   //
 photo_slot.set(Photo::new(parsed));
 ```
 
-Media picking — the picker itself is the tappable control:
+Media picking — the picker itself is the tappable control, writing public `Media` directly into
+the bound selection and reporting loading or failure states through `PickerStatus`:
 
 ```rust
-use waterui::media::media_picker::{MediaFilter, MediaPicker, Selected};
+use waterui::media::media_picker::{MediaFilter, MediaPicker, PickerStatus};
+use waterui::media::Media;
 
-let selection: Binding<Option<Selected>> = Binding::default();
-MediaPicker::new("Pick a photo", &selection)
+let avatar: Binding<Option<Media>> = Binding::default();
+let photos: Binding<Vec<Media>> = Binding::default();
+let status: Binding<PickerStatus> = Binding::default();
+
+MediaPicker::new("Avatar", &avatar)
     .filter(MediaFilter::Image)          // Image | Video | LivePhoto (the last two need `video`); takes a signal
+    .status(&status);                    // PickerStatus::Idle | Loading | Failed(Str)
 
-// In a handler: Selected::load() is synchronous and consumes the selection.
-let media = selected.load();             // Media::Image(Url) | Video(Url) | LivePhoto(source)
+MediaPicker::multiple("Photos", &photos)
+    .limit(10)
+    .status(&status);
 ```
 
-`Selected::media()` borrows the payload without consuming it. With `video`,
+Pre-populate `avatar` or `photos` to seed a selection before the user taps; cancelling or failing
+leaves the existing selection intact. With `video`,
 `LivePhoto::new(LivePhotoSource::new(image_url, video_url))` (`waterui::media::live`)
 displays the live-photo variant, `.on_event` reports `MotionStarted` / `MotionEnded` / `MotionFailed(msg)`.
 
@@ -93,7 +101,7 @@ let controller = session.controller();                  // Clone; capture before
 
 VideoPlayer::new(session)
     .show_controls(true)
-    .content_mode(video::ContentMode::Fit)              // Fit | Fill | Stretch
+    .content_mode(ContentMode::Fit)                     // Fit | Fill; `.resizable()` stretches per axis
     .on_event(|event| match event {
         VideoEvent::ReadyToPlay | VideoEvent::Ended => (),
         VideoEvent::Error { message: _ } => (),
@@ -302,7 +310,7 @@ keeps one sub-recording per key and hands the body a `Computed<T>` of its item, 
 `cx.transform(affine, ..)`, `cx.layer(Layer::opacity(0.5), ..)` — never saved and restored.
 `Drawing::record(size, |cx| ..)` records constants, on any thread, for `cx.draw(&drawing,
 transform)` or `Canvas::from(drawing)`, a view of the drawing's size. Images are
-`ImageSource`s the target registers itself (`ImageSource::decode(bytes)` decodes PNG/JPEG/GIF/WebP/BMP/ICO/TIFF/AV1-HEIF without naming the `image` crate, and `ImageSource::new(PixelBuffer::new(..))` wraps raw pixels); `image.status()` reports a refusal. Give a
+`ImageSource`s the target registers itself (`ImageSource::decode(bytes)` decodes PNG/JPEG/GIF/WebP/BMP/ICO/TIFF/AV1-HEIF without naming the `image` crate, and `ImageSource::new(PixelBuffer::new(..))` wraps raw pixels), drawn with `cx.image(src, rect)` (linear filtering) or `cx.image_sampled(src, rect, sampling)`; `image.status()` reports a refusal. Give a
 canvas with a natural size `.intrinsic_size(..)`, and a name with `.offered_label(..)`.
 Beyond `fill` and `stroke`: `cx.shadow(shape, Shadow::new(blur, color).offset(dx, dy))`
 (`color` is a resolved `waterui::graphics::WorkingColor` such as `WorkingColor::BLACK`,
@@ -315,8 +323,8 @@ rotating token re-encodes in place. The view *panics while rendering* when the c
 exceeds QR capacity or holds characters Code128 cannot encode; validate runtime input
 first with `BarcodeSource::new(symbology, text)`, which returns a
 `Result`. `.dark_color(c)`, `.light_color(c)` and `.linear_gradient(..)` style it.
-`Svg::new(markup)` takes SVG source text (`.tint(color)` recolours it,
-`Svg::from_path(path_data, w, h)` draws one path); `waterui::svg` needs the `gpu`
+`Svg::new(markup)` takes SVG source text (`.foreground(color)` recolours `currentColor`,
+`Svg::from_path(path_data, w, h)` draws one path, chain `.stroked()` for outlines); `waterui::svg` needs the `gpu`
 feature, on by default.
 
 Custom GPU content, from cheapest to fullest control:
@@ -446,9 +454,7 @@ ParticleSystem::new(10_000)             // max particles
 ```
 
 Every numeric builder parameter is a signal slot (`impl IntoSignalF32`; colors take
-`impl IntoSignal<Color>`). Careful: on
-`ParticleSystem`, `.size(min, max)` is the *particle* size range in normalized units —
-it is not the frame modifier. Also available: `.emit_from_point()` / `.emit_from_circle(r)`,
+`impl IntoSignal<Color>`). `.particle_size(min, max)` sets the particle size range in normalized units (while `.size(w, h)` comes from `ViewExt`). Also available: `.emit_from_point()` / `.emit_from_circle(r)`,
 `.angle(min, max)`, `.spin(min, max)`, `.shape(ParticleShape::Circle | Rect)`, `.additive()`,
 `.softness(s)`, `.stretch_with_velocity()`, the forces `.gravity(x, y)`, `.wind(x, y)`,
 `.turbulence(s)`, `.drag(s)`, and collisions (`.collide_with_viewport()`,
@@ -468,16 +474,19 @@ Two facts govern the whole family:
   of the point types is a constant signal already (`BarChart::new(vec![..])` compiles);
   the composite data structs (`DepthData`, `HeatmapData`, `RadarData`, `AreaData`,
   `GaugeData`, `ContourData`) are not — wrap them: `HeatmapChart::new(binding(data))`.
-- Chart colors take **`Srgb`**, not `Color` — `Srgb::from_hex("#3B82F6")`, `Srgb::WHITE`.
-  Multi-series builders (`RadarSeries`, `AreaSeries`, `BubblePoint::with_color`) instead
-  take four normalized `f32` components `(r, g, b, a)`.
+- Every chart, series, region, tooltip, and legend color setter takes
+  **`impl IntoComputed<Color>`** and defaults to semantic theme tokens (`Accent`, `Tertiary`,
+  `Error`, `SurfaceVariant`, `Foreground`, `MutedForeground`, `Border`) so charts re-theme
+  live in light and dark. Pass theme tokens (`waterui::theme::color::Accent`), color values,
+  or reactive `Binding<Color>` / `Computed<Color>` signals.
 
 ```rust
 use waterui::chart::{AxisConfig, BarChart, ChartExt, DataBounds, DataPoint, LineChart};
+use waterui::theme::color::Accent;
 
 let bounds = DataBounds::from_points(&points);
 LineChart::new(binding(points))
-    .color(Srgb::from_hex("#22C55E"))
+    .color(Accent)
     .line_width(3.0)
     .axes(bounds)                                // ChartExt; axes first…
     .y_axis(AxisConfig::new().tick_count(5))     // …then per-axis config on the wrapper
@@ -491,16 +500,16 @@ Constructor shapes for the rest — argument order is the part you cannot guess:
 `HeatmapData::new(rows, cols, row_major_values)`; `ContourData::new(rows, cols, values,
 level_count)`; `RadarData::new(axis_count).labels(..).series(RadarSeries::new(name, values))`
 (every vec exactly `axis_count` long); `AreaData::new(x_values).series(..).stacked(true)`;
-`BubblePoint::with_color(x, y, size, r, g, b, a)`;
-`GaugeData::new(value, min, max).region(GaugeRegion::hex(upper, "#22C55E"))` (regions are
+`BubblePoint::new(x, y, size).color(color)`;
+`GaugeData::new(value, min, max).region(GaugeRegion::new(upper, Accent))` (regions are
 kept sorted by threshold), whose `GaugeChart` takes `.arc(ArcAngles::from_degrees(-135.0,
 135.0))` and `.radii(GaugeRadii::new(0.3, 0.45))` (normalized).
 
-Interaction and composition, on every chart: `.focused(&binding)` / `.selected(&binding)`
-write the hit datum into a `Binding<Option<HitResult<T>>>` (`series`, `index`, `value`,
-`anchor`); `.focused_tooltip(|hit| ..)` and `.selected_tooltip(|hit| ..)` draw a view
-anchored at the datum — `Tooltip::new(TooltipContent::new().title(..).value(label, value))`
-is the ready-made one; `.chart_overlay(|proxy| ..)` / `.chart_background(|proxy| ..)`
+Interaction and composition, on every chart: `.chart_focus(&binding)` /
+`.chart_selection(&binding)` write the hit datum into a `Binding<Option<HitResult<T>>>`
+(`series`, `index`, `value`, `anchor`); `.focused_tooltip(|hit| ..)` and
+`.selected_tooltip(|hit| ..)` draw a view anchored at the datum —
+`Tooltip::new(TooltipContent::new().title(..).value(label, value))` is the ready-made one; `.chart_overlay(|proxy| ..)` / `.chart_background(|proxy| ..)`
 layer arbitrary views, the `ChartProxy` exposing `focused()`, `selected()` and the frame
 signals. Cartesian charts also take `.chart_x_selection(&binding)` and friends; a
 `Legend::new(vec![LegendItem::new(label, color)])` is a separate view. `LineChart::fill(opacity)`

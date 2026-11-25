@@ -15,6 +15,7 @@ use crate::platform::{HeadlessColorFormat, PainterUnavailable};
 use cherenkov_gpu::interop::OutputColor;
 use waterui::window::{Window, WindowContent, WindowParts, WindowToolbar};
 use waterui_core::layout::Rect;
+use waterui_structural_transition::ReduceMotion;
 #[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
 use wgpu::TextureFormat;
 
@@ -706,10 +707,11 @@ impl HeadlessRuntime {
         family_resolution: FontFamilyResolution,
         color_format: HeadlessColorFormat,
     ) -> Self {
+        let window = root_window(default_window(content), &env);
         Self::on_painter(
             painter.into(),
             env,
-            root_window(default_window(content)),
+            window,
             width,
             height,
             style,
@@ -793,10 +795,11 @@ impl HeadlessRuntime {
         family_resolution: FontFamilyResolution,
         color_format: HeadlessColorFormat,
     ) -> Self {
+        let window = root_window(window, &env);
         Self::on_painter(
             painter.into(),
             env,
-            root_window(window),
+            window,
             width,
             height,
             style,
@@ -892,10 +895,11 @@ impl HeadlessRuntime {
         style: impl Style,
         color_format: HeadlessColorFormat,
     ) -> Self {
+        let window = root_window(default_window(content), &env);
         Self::on_painter(
             OffscreenPainter::for_tests(),
             env,
-            root_window(default_window(content)),
+            window,
             width,
             height,
             style,
@@ -920,10 +924,11 @@ impl HeadlessRuntime {
         height: u32,
         style: impl crate::Style,
     ) -> Self {
+        let window = root_window(window, &env);
         Self::on_painter(
             OffscreenPainter::for_tests(),
             env,
-            root_window(window),
+            window,
             width,
             height,
             style,
@@ -1002,6 +1007,7 @@ impl HeadlessRuntime {
         env.insert(HydrolysisTextContextMenuMode::Overlay);
         // A headless host has no platform appearance: the scheme is Light
         // unless the application installs its own.
+        let _ = env.get_or_insert_with::<ReduceMotion, _>(Default::default);
         crate::theme::install_theme_tokens(
             &mut env,
             Some(&style),
@@ -2500,10 +2506,12 @@ mod hdr_capture_tests {
     fn cpu_painter_hdr_linear_display_p3_preserves_edr_highlights() {
         let painter = OffscreenPainter::select_with(true)
             .unwrap_or_else(|error| panic!("the CPU painter must open: {error}"));
+        let env = test_environment();
+        let window = root_window(default_window(hdr_white_view()), &env);
         let mut runtime = HeadlessRuntime::on_painter(
             painter,
-            test_environment(),
-            root_window(default_window(hdr_white_view())),
+            env,
+            window,
             32,
             32,
             MinimalTestTheme::default(),

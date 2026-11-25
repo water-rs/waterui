@@ -4,16 +4,24 @@
 //! `#[waterui::widget]`:
 //!
 //! ```rust,ignore
+//! use waterui::prelude::*;
 //! use waterui::widgets::*;
 //!
 //! #[waterui::widget(name = "Steps", description = "Today's step count")]
 //! fn steps(context: WidgetContext) -> impl WidgetContent {
+//!     use waterui::widgets::prelude::*;
+//!
 //!     let steps: u32 = context.shared_store().get("steps").unwrap_or(0);
 //!     vstack((
-//!         text("Steps").font(Font::style(FontStyle::Headline)),
-//!         text(format!("{steps}")).font(Font::style(FontStyle::LargeTitle)),
+//!         text("Steps").headline(),
+//!         spacer(),
+//!         text(Date::now()).relative(),
+//!         image_system("figure.walk").a11y_label("Walking"),
+//!         text(format!("{steps}")).large_title(),
 //!     ))
 //!     .alignment(HorizontalAlignment::Leading)
+//!     .padding()
+//!     .background(Color::ACCENT)
 //! }
 //!
 //! // From the application, write shared state and ask the host to reload:
@@ -21,6 +29,13 @@
 //! store.set("steps", &6_241_u32)?;
 //! waterui::widgets::reload("steps");
 //! ```
+//!
+//! The crate root (`waterui::widgets::*`) exports only widget-specific types
+//! and host functions so it can be glob-imported alongside `waterui::prelude::*`
+//! without name collisions. Inside a widget module or `#[waterui::widget]`
+//! function body, import [`prelude`] (`use waterui::widgets::prelude::*;`) for
+//! the aligned widget-authoring vocabulary (`vstack`, `text`, `spacer`,
+//! `Color`, `Font`, …).
 //!
 //! The function's return value must implement [`IntoTimeline`]: any
 //! [`WidgetContent`] produces a single-entry timeline dated "now"; a
@@ -41,15 +56,42 @@ mod authoring;
 mod declaration;
 #[doc(hidden)]
 pub mod ffi;
-mod schema;
+pub mod schema;
 mod store;
 
+/// Complete widget-authoring vocabulary mirroring `waterui::prelude::*`.
+///
+/// Import `use waterui::widgets::prelude::*;` inside a widget module or
+/// `#[waterui::widget]` function body to build snapshots with `vstack`,
+/// `hstack`, `zstack`, `text`, `spacer`, `image_system`, `Color`, `Font`, and
+/// [`WidgetExt`] modifiers.
+pub mod prelude {
+    pub use crate::authoring::{
+        DateText, HStack, IntoLabelText, IntoText, IntoTimeline, VStack, WidgetChildren,
+        WidgetContent, WidgetExt, ZStack, fill, hstack, image_data, image_system, intent, link,
+        spacer, spacer_min, text, vstack, zstack,
+    };
+    pub use crate::schema::{
+        AccessibilityLabel, Alignment, Axis, Background, Color, Date, DateStyle,
+        DeclaredWidgetIntent, EdgeInsets, Font, FontStyle, FontWeight, Frame, HorizontalAlignment,
+        Image, ImageSource, Intent, LabelText, Link, MaxLength, Node, Padding, ReloadPolicy,
+        SemanticColor, Shape, ShapeKind, Size, Spacer, Stack, Text, TextContent, Timeline,
+        TimelineEntry, VerticalAlignment, WidgetContext, WidgetFamily, WidgetIntent,
+    };
+    pub use crate::store::{WidgetStore, WidgetStoreError, reload, reload_all, shared_store};
+}
+
+// Root exports stay collision-free with `waterui::prelude::*` so application
+// files can write `use waterui::prelude::*; use waterui::widgets::*;`.
 pub use authoring::{
-    HStack, IntoTimeline, VStack, WidgetChildren, WidgetContent, ZStack, fill, hstack, intent,
-    link, text, vstack, zstack,
+    DateText, IntoLabelText, IntoTimeline, WidgetChildren, WidgetContent, WidgetExt, fill,
+    image_data, image_system, intent,
 };
 pub use declaration::{IntentDeclaration, WidgetDeclaration};
-pub use schema::*;
+pub use schema::{
+    Date, DateStyle, DeclaredWidgetIntent, Intent, LabelText, MaxLength, Node, ReloadPolicy,
+    TextContent, Timeline, TimelineEntry, WidgetContext, WidgetFamily, WidgetIntent,
+};
 pub use store::{WidgetStore, WidgetStoreError, reload, reload_all, shared_store};
 
 #[doc(hidden)]
@@ -203,12 +245,19 @@ macro_rules! __export_intent {
 
 #[cfg(test)]
 mod tests {
+    use alloc::string::String;
     use alloc::vec;
     use std::path::Path;
+    use std::time::{Duration, UNIX_EPOCH};
 
-    use super::*;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use serde_json::{from_str, to_string, to_value};
+    use suiteki::Str;
 
-    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    use crate::WidgetDeclaration;
+    use crate::prelude::*;
+
+    #[derive(Debug, Serialize, Deserialize)]
     struct DummyIntent;
 
     impl WidgetIntent for DummyIntent {
@@ -220,39 +269,96 @@ mod tests {
     }
 
     #[test]
-    fn timeline_serializes_to_the_swift_contract() {
+    fn timeline_serializes_to_the_host_contract() {
         let timeline = Timeline::new([TimelineEntry::new(
             Date::unix_timestamp(1_700_000_000.0),
             vstack((
-                text("Hello").font(Font::style(FontStyle::Headline)),
-                fill(Color::srgb(1.0, 0.5, 0.0)),
+                text("Steps").headline(),
+                spacer(),
+                text(Date::unix_timestamp(1_700_000_060.0)).relative(),
+                image_system("figure.walk").a11y_label("Walking"),
             ))
             .alignment(HorizontalAlignment::Leading)
-            .spacing(8.0),
+            .spacing(8.0)
+            .padding()
+            .background(Color::ACCENT),
         )])
         .policy(ReloadPolicy::Never);
 
-        let json = serde_json::to_value(&timeline).unwrap();
+        let json = to_value(&timeline).unwrap();
         let entry = &json["entries"][0];
         assert_eq!(entry["date"], 1_700_000_000.0);
         assert_eq!(json["policy"]["type"], "never");
-        assert_eq!(entry["content"]["type"], "stack");
-        assert_eq!(entry["content"]["axis"], "vertical");
-        assert_eq!(entry["content"]["spacing"], 8.0);
-        assert_eq!(entry["content"]["alignment"]["horizontal"], "leading");
-        let children = &entry["content"]["children"];
+        assert_eq!(entry["content"]["type"], "background");
+        assert_eq!(entry["content"]["background"]["type"], "color");
+        assert_eq!(entry["content"]["background"]["kind"], "semantic");
+        assert_eq!(entry["content"]["background"]["semantic"], "accent");
+
+        let padded = &entry["content"]["content"];
+        assert_eq!(padded["type"], "padding");
+        assert!(padded.get("insets").is_none());
+
+        let stack = &padded["content"];
+        assert_eq!(stack["type"], "stack");
+        assert_eq!(stack["axis"], "vertical");
+        assert_eq!(stack["spacing"], 8.0);
+        assert_eq!(stack["alignment"]["horizontal"], "leading");
+
+        let children = &stack["children"];
         assert_eq!(children[0]["type"], "text");
-        assert_eq!(children[0]["content"], "Hello");
+        assert_eq!(children[0]["content"]["kind"], "localized");
+        assert_eq!(children[0]["content"]["key"], "Steps");
         assert_eq!(children[0]["font"]["kind"], "named");
         assert_eq!(children[0]["font"]["style"], "headline");
-        assert_eq!(children[1]["type"], "color");
-        assert_eq!(children[1]["kind"], "srgb");
-        assert_eq!(children[1]["red"], 1.0);
+
+        assert_eq!(children[1]["type"], "spacer");
+
+        assert_eq!(children[2]["type"], "text");
+        assert_eq!(children[2]["content"]["kind"], "date");
+        assert_eq!(children[2]["content"]["date"], 1_700_000_060.0);
+        assert_eq!(children[2]["content"]["style"], "relative");
+
+        assert_eq!(children[3]["type"], "accessibilityLabel");
+        assert_eq!(children[3]["label"]["kind"], "localized");
+        assert_eq!(children[3]["label"]["key"], "Walking");
+        assert_eq!(children[3]["content"]["type"], "image");
+        assert_eq!(children[3]["content"]["source"]["kind"], "sfSymbol");
+        assert_eq!(children[3]["content"]["source"]["name"], "figure.walk");
+    }
+
+    #[test]
+    fn into_text_distinguishes_localized_verbatim_and_dates() {
+        assert_eq!(
+            text("Steps").content(),
+            &TextContent::Localized {
+                key: String::from("Steps")
+            }
+        );
+        assert_eq!(
+            text(String::from("6,241")).content(),
+            &TextContent::Verbatim {
+                text: String::from("6,241")
+            }
+        );
+        assert_eq!(
+            text(Str::from("6,241")).content(),
+            &TextContent::Verbatim {
+                text: String::from("6,241")
+            }
+        );
+        let instant = Date::unix_timestamp(1_700_000_000.0);
+        assert_eq!(
+            text(instant).relative().content(),
+            &TextContent::Date {
+                date: instant,
+                style: DateStyle::Relative,
+            }
+        );
     }
 
     #[test]
     fn widget_context_decodes_the_extensions_json() {
-        let context: WidgetContext = serde_json::from_str(
+        let context: WidgetContext = from_str(
             r#"{"family":"accessoryRectangular","displaySize":{"width":170.0,"height":44.0},"storePath":"/tmp/waterui-widgets"}"#,
         )
         .unwrap();
@@ -269,15 +375,34 @@ mod tests {
         let nodes = vec![
             Node::Text(
                 text("body")
-                    .color(Color::PRIMARY)
+                    .bold(true)
+                    .foreground(Color::PRIMARY)
                     .line_limit(2)
                     .font(Font::system(17.0, FontWeight::Semibold)),
             ),
-            Node::Image(Image::sf_symbol("figure.walk").color(Color::ACCENT)),
-            Node::Image(Image::data([1_u8, 2, 3])),
-            Node::Stack(hstack((text("a"), text("b"))).into()),
+            Node::Text(text(String::from("verbatim")).caption()),
+            Node::Text(text(Date::unix_timestamp(1_700_000_000.0)).relative()),
+            Node::Image(image_system("figure.walk").foreground(Color::ACCENT)),
+            Node::Image(image_data([1_u8, 2, 3])),
+            Node::Stack(hstack((text("a"), spacer(), text("b"))).into()),
             Node::Shape(Shape::rounded_rectangle(12.0).fill(Color::SECONDARY)),
             Node::Color(Color::srgb_u8(0x33, 0x66, 0xcc)),
+            Node::Padding(text("default").padding()),
+            Node::Padding(text("custom").padding_with((8.0, 12.0))),
+            Node::Spacer(spacer_min(10.0)),
+            Node::Frame(
+                text("framed")
+                    .min_width(40.0)
+                    .max_width(f32::INFINITY)
+                    .height(24.0)
+                    .alignment(Alignment::TOP_LEADING),
+            ),
+            Node::Background(
+                text("bg")
+                    .padding()
+                    .background(Shape::rounded_rectangle(8.0).fill(Color::ACCENT)),
+            ),
+            Node::AccessibilityLabel(image_system("heart.fill").a11y_label("Favorite")),
             Node::Link(Link::new("waterui://open", text("open"))),
             Node::Intent(Intent::new(
                 &DummyIntent,
@@ -285,8 +410,8 @@ mod tests {
             )),
         ];
         for node in nodes {
-            let json = serde_json::to_string(&node).unwrap();
-            let back: Node = serde_json::from_str(&json).unwrap();
+            let json = to_string(&node).unwrap();
+            let back: Node = from_str(&json).unwrap();
             assert_eq!(back, node, "round-trip mismatch for {json}");
         }
     }
@@ -294,8 +419,6 @@ mod tests {
     /// An instant before the Unix epoch is a negative offset, never a panic.
     #[test]
     fn a_date_before_the_epoch_is_negative() {
-        use std::time::{Duration, UNIX_EPOCH};
-
         let before = UNIX_EPOCH - Duration::from_secs(90);
         assert!((Date::from(before).unix_seconds() + 90.0).abs() < f64::EPSILON);
         let after = UNIX_EPOCH + Duration::from_secs(90);
@@ -311,13 +434,13 @@ mod tests {
     )]
     fn an_unserializable_intent_action_carries_an_empty_payload() {
         struct Unserializable;
-        impl serde::Serialize for Unserializable {
-            fn serialize<S: serde::Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
+        impl Serialize for Unserializable {
+            fn serialize<S: Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
                 Err(serde::ser::Error::custom("no JSON form"))
             }
         }
-        impl<'de> serde::Deserialize<'de> for Unserializable {
-            fn deserialize<D: serde::Deserializer<'de>>(_: D) -> Result<Self, D::Error> {
+        impl<'de> Deserialize<'de> for Unserializable {
+            fn deserialize<D: Deserializer<'de>>(_: D) -> Result<Self, D::Error> {
                 Ok(Self)
             }
         }
@@ -335,7 +458,7 @@ mod tests {
 
     #[test]
     fn widget_declaration_decodes_a_record_payload() {
-        let declaration: WidgetDeclaration = serde_json::from_str(
+        let declaration: WidgetDeclaration = from_str(
             r#"{"fn":"steps","kind":"steps","displayName":"Steps","description":"Today","families":["systemSmall","systemMedium"]}"#,
         )
         .unwrap();

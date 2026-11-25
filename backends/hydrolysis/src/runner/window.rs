@@ -138,8 +138,9 @@ pub type RootWindow<E> = WindowParts<Box<dyn WindowRoot<E>>>;
 /// `window` as a runner holds it.
 pub fn root_window<E: TextEngine, C: ViewBuilder, T: WindowToolbar>(
     window: Window<C, T>,
+    env: &Environment,
 ) -> RootWindow<E> {
-    window.into_parts().map(
+    window.into_parts(env).map(
         |content| Box::new(content) as Box<dyn WindowRoot<E>>,
         |_| (),
     )
@@ -156,13 +157,17 @@ pub struct RootWindows<E: crate::text::TextEngine> {
 
 impl<E: crate::text::TextEngine> RootWindows<E> {
     /// `windows` as a runner holds them, in declaration order.
-    pub(crate) fn collect(windows: impl Windows) -> Self {
-        let mut sink = Self {
+    pub(crate) fn collect(windows: impl Windows, env: &Environment) -> Self {
+        let mut sink = RootWindowSink {
             initial: Vec::with_capacity(windows.len()),
             channels: Vec::new(),
+            env,
         };
         windows.for_each(&mut sink);
-        sink
+        Self {
+            initial: sink.initial,
+            channels: sink.channels,
+        }
     }
 
     /// Connects every collected [`WindowChannel`](waterui::window::WindowChannel)
@@ -182,9 +187,15 @@ enum ChannelTarget<E: crate::text::TextEngine> {
     Connected(Rc<dyn Fn(RootWindow<E>)>),
 }
 
-impl<E: crate::text::TextEngine> WindowSink for RootWindows<E> {
+struct RootWindowSink<'a, E: TextEngine> {
+    initial: Vec<RootWindow<E>>,
+    channels: Vec<RootChannelConnector<E>>,
+    env: &'a Environment,
+}
+
+impl<E: TextEngine> WindowSink for RootWindowSink<'_, E> {
     fn window<C: ViewBuilder, T: waterui::window::WindowToolbar>(&mut self, window: Window<C, T>) {
-        self.initial.push(root_window(window));
+        self.initial.push(root_window(window, self.env));
     }
 
     fn channel<C: ViewBuilder, T: waterui::window::WindowToolbar>(
@@ -193,8 +204,9 @@ impl<E: crate::text::TextEngine> WindowSink for RootWindows<E> {
     ) {
         let target = Rc::new(RefCell::new(ChannelTarget::Pending(Vec::new())));
         let receiver_target = Rc::clone(&target);
+        let channel_env = self.env.clone();
         let queued = channel.connect(move |window| {
-            let root = root_window(window);
+            let root = root_window(window, &channel_env);
             let opener = match &mut *receiver_target.borrow_mut() {
                 ChannelTarget::Pending(pending) => {
                     pending.push(root);
@@ -204,7 +216,11 @@ impl<E: crate::text::TextEngine> WindowSink for RootWindows<E> {
             };
             opener(root);
         });
-        self.initial.extend(queued.into_iter().map(root_window));
+        self.initial.extend(
+            queued
+                .into_iter()
+                .map(|window| root_window(window, self.env)),
+        );
         self.channels.push(Box::new(move |opener| {
             let pending = match &mut *target.borrow_mut() {
                 ChannelTarget::Pending(pending) => core::mem::take(pending),

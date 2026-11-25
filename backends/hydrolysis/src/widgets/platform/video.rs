@@ -30,7 +30,7 @@ use waterui_video::video::{
 };
 use waterui_video::{
     Delivery, LiveWindow, MediaItem, PlaybackMetrics, PlaybackPhase, PlayerController, RepeatMode,
-    Volume,
+    Volume, fit_video,
 };
 use web_sys::{HtmlElement, HtmlTrackElement, HtmlVideoElement, TextTrackMode};
 
@@ -69,7 +69,7 @@ pub fn video_player(config: NativeVideoPlayerConfig) -> impl View {
 /// into it, and the hosted view that places it.
 fn leaf(
     playback: BoundPlayback,
-    content_mode: ContentMode,
+    content_mode: Option<ContentMode>,
     projection: &VideoProjection,
     controls: bool,
 ) -> impl View + use<> {
@@ -99,15 +99,9 @@ fn leaf(
         }
     }
     let object_fit = match content_mode {
-        ContentMode::Fit => "contain",
-        ContentMode::Fill => "cover",
-        ContentMode::Stretch => "fill",
-        other => {
-            contract_violation!(
-                "hydrolysis web video: unsupported content mode {other:?}; the video is not drawn"
-            );
-            return OneOf3::A(());
-        }
+        Some(ContentMode::Fit) => "contain",
+        Some(ContentMode::Fill) => "cover",
+        None => "fill",
     };
     let Some(element) = video_element(object_fit, controls) else {
         return OneOf3::A(());
@@ -117,9 +111,8 @@ fn leaf(
     let natural_width = player.natural_width.clone().into();
     let hosted = Native::new(HostedView::new(VideoContent { player }));
     match content_mode {
-        ContentMode::Fit => OneOf3::B(waterui_video::fit_video(hosted, aspect, natural_width)),
-        // `Fill` and `Stretch`: `object_fit` above rejected every other mode.
-        _ => OneOf3::C(hosted),
+        Some(ContentMode::Fit) => OneOf3::B(fit_video(hosted, aspect, natural_width)),
+        Some(ContentMode::Fill) | None => OneOf3::C(hosted),
     }
 }
 

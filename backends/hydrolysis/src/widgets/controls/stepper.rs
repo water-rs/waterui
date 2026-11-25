@@ -1,4 +1,6 @@
 #[cfg(feature = "accessibility")]
+use crate::num_cast::i64_as_f64;
+#[cfg(feature = "accessibility")]
 use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::chrome::{ChromeContent, LiveChromeParts};
 use crate::renderer::{
@@ -12,6 +14,7 @@ use accesskit::{
 };
 use kurbo::{Point, Rect};
 use nami::Signal;
+use nami::watcher::BoxWatcherGuard;
 use std::cell::RefCell;
 use std::ops::RangeInclusive;
 use std::rc::Rc;
@@ -31,6 +34,7 @@ use crate::widgets::util::{label_beside_control_bounds, mirrored_in, widget_disa
 /// renders while the stepper's spec and frame stay the same.
 pub struct StepperRenderState<E: crate::text::TextEngine> {
     config: StepperConfig<HeldChild<E>>,
+    _range_watch: BoxWatcherGuard,
     label_view: RetainedSubview<E>,
     look: Option<(StepperSpec, StepperLook)>,
     decrement: EndParts,
@@ -55,7 +59,7 @@ impl EndParts {
 
 /// `range` when it is ordered. An unordered range is a contract violation by
 /// the app, reported, and the stepper holds its value at `range`'s start.
-fn ordered_range(range: &RangeInclusive<i32>) -> RangeInclusive<i32> {
+fn ordered_range(range: &RangeInclusive<i64>) -> RangeInclusive<i64> {
     if range.start() <= range.end() {
         return range.clone();
     }
@@ -67,7 +71,7 @@ fn ordered_range(range: &RangeInclusive<i32>) -> RangeInclusive<i32> {
 
 /// Whether `step` is positive. A step that is not is a contract violation by
 /// the app, reported; the stepper then ignores it.
-fn positive_step(step: i32) -> bool {
+fn positive_step(step: i64) -> bool {
     let positive = step > 0;
     if !positive {
         contract_violation!(
@@ -90,9 +94,11 @@ impl<E: crate::text::TextEngine> StepperRenderState<E> {
     }
 
     pub(crate) fn from_config(config: StepperConfig<HeldChild<E>>) -> Self {
+        let range_watch = config.watch_range_clamp();
         Self {
             label_view: RetainedSubview::held(config.label().build()),
             config,
+            _range_watch: range_watch,
             look: None,
             decrement: EndParts::new(),
             increment: EndParts::new(),
@@ -181,18 +187,18 @@ pub fn stepper_accessibility<E: crate::text::TextEngine, S>(
         if let Some(value) = renderer.resolve_accessibility_value(env, None) {
             node.set_value(value);
         }
-        let range = ordered_range(stepper.range());
+        let range = ordered_range(&renderer.read_signal(stepper.range()));
         let start = *range.start();
         let end = *range.end();
         // Read value/step through `read_signal` so a change schedules a frame and
         // this persistent node re-renders (and re-publishes the a11y value).
         let current = renderer.read_signal(stepper.value()).clamp(start, end);
-        node.set_numeric_value(f64::from(current));
-        node.set_min_numeric_value(f64::from(start));
-        node.set_max_numeric_value(f64::from(end));
+        node.set_numeric_value(i64_as_f64(current));
+        node.set_min_numeric_value(i64_as_f64(start));
+        node.set_max_numeric_value(i64_as_f64(end));
         let step = renderer.read_signal(stepper.step());
         if positive_step(step) {
-            node.set_numeric_value_step(f64::from(step));
+            node.set_numeric_value_step(i64_as_f64(step));
         }
         node.add_action(AccessibilityAction::Focus);
         // A disabled stepper stays in the tree (focusable, announced as
@@ -281,7 +287,7 @@ impl End {
     }
 
     /// Whether `value` is at this end's limit of `range`.
-    const fn at_limit(self, value: i32, range: &RangeInclusive<i32>) -> bool {
+    const fn at_limit(self, value: i64, range: &RangeInclusive<i64>) -> bool {
         match self {
             Self::Decrement => value <= *range.start(),
             Self::Increment => value >= *range.end(),
@@ -289,7 +295,7 @@ impl End {
     }
 
     /// The value one `step` from `value` towards this end, held in `range`.
-    fn stepped(self, value: i32, step: i32, range: &RangeInclusive<i32>) -> i32 {
+    fn stepped(self, value: i64, step: i64, range: &RangeInclusive<i64>) -> i64 {
         match self {
             Self::Decrement => value.saturating_sub(step),
             Self::Increment => value.saturating_add(step),
@@ -317,9 +323,9 @@ fn stepping_action<E: crate::text::TextEngine>(
 /// What stepping a stepper reads: its value, its step and its range.
 #[derive(Clone)]
 struct Stepping {
-    value: nami::Binding<i32>,
-    step: nami::Computed<i32>,
-    range: RangeInclusive<i32>,
+    value: nami::Binding<i64>,
+    step: nami::Computed<i64>,
+    range: RangeInclusive<i64>,
 }
 
 /// One end of a stepper as a render realizes it: which end, its interaction
@@ -342,14 +348,15 @@ pub fn render_stepper_parts<E: crate::text::TextEngine>(
     let theme = ctx.theme();
     let mut state = state.borrow_mut();
     let state = &mut *state;
-    let (range, value, step) = {
+    let (range_signal, value, step) = {
         let stepper = &state.config;
         (
-            ordered_range(stepper.range()),
+            stepper.range().clone(),
             stepper.value().clone(),
             stepper.step().clone(),
         )
     };
+    let range = ordered_range(&ctx.renderer_mut().read_signal(&range_signal));
     // Watch the value/step signals so a change schedules a frame and this
     // persistent node re-renders: the value decides which ends are at a
     // limit, and drives a11y and any value-formatter display.

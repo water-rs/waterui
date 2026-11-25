@@ -1,16 +1,19 @@
 //! End-to-end semantic coverage for the Rust-side composer views.
 //!
-//! Card, Badge, Accordion, Divider and the `#[derive(FormBuilder)]` flow are
+//! Card, Badge, Divider and the `#[derive(FormBuilder)]` flow are
 //! deliberate Rust-side compositions (Framework Design Principle #2): they
 //! reuse stacks, padding, and theme tokens and ship no FFI types, so their
 //! contract is exactly what the accessibility tree exposes.
+//!
+//! `Disclosure` is a backend-realized component whose semantics require a
+//! focusable header button reporting its `expanded` state and lazy content.
 
 use waterui::Binding;
 use waterui::Signal;
 use waterui::component::badge::Badge;
 use waterui::component::toggle::ToggleStyle;
-use waterui::widget::accordion::Accordion;
 use waterui::widget::card::Card;
+use waterui::widget::disclosure::Disclosure;
 use waterui_testing::{Role, SemanticApp, UiBuilder};
 
 fn titled_card() -> impl waterui::View {
@@ -56,18 +59,19 @@ fn badge_value_tracks_its_signal(ui: UiBuilder) {
 }
 
 #[waterui::test]
-fn accordion_tap_expands_and_collapses_content(ui: UiBuilder) {
+fn disclosure_tap_expands_and_collapses_content(ui: UiBuilder) {
     let expanded = Binding::bool(false);
-    let expanded_for_view = expanded.clone();
-    let mut app = ui.mount(move || {
-        Accordion::with_toggle(
-            &expanded_for_view,
-            waterui::component::text("Details"),
-            || waterui::component::text("Hidden specifics"),
-        )
+    let mut app = ui.mount({
+        let expanded = expanded.clone();
+        move || {
+            Disclosure::new(waterui::component::text("Details"), || {
+                waterui::component::text("Hidden specifics")
+            })
+            .expanded(&expanded)
+        }
     });
 
-    // The header is a button that reports whether its content is showing,
+    // The header is a focusable button reporting whether its content is showing,
     // so assistive technology can operate it as the control it is.
     app.query()
         .role(Role::BUTTON)
@@ -83,7 +87,7 @@ fn accordion_tap_expands_and_collapses_content(ui: UiBuilder) {
     header.tap(&mut app);
     assert!(
         expanded.snapshot(),
-        "activating the header must expand the accordion"
+        "activating the header must expand the disclosure"
     );
     app.query()
         .role(Role::BUTTON)
@@ -99,7 +103,7 @@ fn accordion_tap_expands_and_collapses_content(ui: UiBuilder) {
     header.tap(&mut app);
     assert!(
         !expanded.snapshot(),
-        "activating the header again must collapse the accordion"
+        "activating the header again must collapse the disclosure"
     );
     app.query()
         .role(Role::LABEL)

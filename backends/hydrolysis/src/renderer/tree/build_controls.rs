@@ -15,6 +15,15 @@ impl_widget_behavior!(
     ; a11y: crate::widgets::controls::button::emit_button_accessibility
     ; label: contributed_label
 );
+impl_widget_behavior!(
+    crate::widgets::controls::disclosure::DisclosureRenderState<E>,
+    crate::widgets::controls::disclosure::render_disclosure_node,
+    crate::widgets::controls::disclosure::measure_disclosure_node
+    ; prepare: prepare
+    ; dirty: take_layout_dirty
+    ; a11y: crate::widgets::controls::disclosure::emit_disclosure_accessibility
+    ; label: contributed_label
+);
 #[cfg(feature = "toggle")]
 impl_widget_behavior!(
     crate::widgets::controls::toggle::ToggleRenderState<E>,
@@ -450,6 +459,24 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         let core = renderer.new_core();
         renderer.with_probe_reader(&core, ReaderPhase::Record, |renderer| {
             state.prebuild_content(renderer, env);
+        });
+        let state = Rc::new(RefCell::new(state));
+        Self::build_widget_with_core(state, stretch, env, core)
+    }
+
+    /// Build a persistent disclosure node: its header label is pre-built
+    /// eagerly, while its expandable body is created lazily only when expanded.
+    pub(super) fn build_disclosure(
+        config: waterui::widget::disclosure::DisclosureConfig<HeldChild<E>>,
+        env: &Environment,
+        renderer: &mut SemanticCore<E>,
+    ) -> Self {
+        use crate::widgets::controls::disclosure::DisclosureRenderState;
+        let stretch = waterui_core::NativeView::stretch_axis(&config);
+        let mut state = DisclosureRenderState::from_config(config);
+        let core = renderer.new_core();
+        renderer.with_probe_reader(&core, ReaderPhase::Record, |renderer| {
+            state.prebuild(renderer, env);
         });
         let state = Rc::new(RefCell::new(state));
         Self::build_widget_with_core(state, stretch, env, core)

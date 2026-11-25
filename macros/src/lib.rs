@@ -866,7 +866,8 @@ fn widget_arg_string(arg: &WidgetArg) -> syn::Result<String> {
 ///
 /// #[waterui::widget(name = "Steps", description = "Today's step count")]
 /// fn steps(context: WidgetContext) -> impl WidgetContent {
-///     vstack((text("Steps"), text("6,241")))
+///     use waterui::widgets::prelude::*;
+///     vstack((text("Steps").headline(), spacer(), text("6,241"))).padding()
 /// }
 /// ```
 ///

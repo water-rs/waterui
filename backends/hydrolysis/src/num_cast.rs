@@ -140,10 +140,7 @@ pub const fn f64_as_usize(v: f64) -> usize {
     test,
     hydrolysis_winit,
     all(not(target_arch = "wasm32"), hydrolysis_cherenkov),
-    all(
-        feature = "accessibility",
-        any(feature = "stepper", target_os = "android")
-    ),
+    all(feature = "accessibility", target_os = "android"),
     all(target_os = "android", not(hydrolysis_hwui))
 ))]
 pub const fn f64_as_i32(v: f64) -> i32 {
@@ -299,4 +296,24 @@ pub const fn i32_as_usize(v: i32) -> usize {
 )]
 pub const fn i64_as_u64(v: i64) -> u64 {
     v as u64
+}
+
+/// Widens an `i64` stepper value to `f64` for accessibility numeric reporting.
+#[cfg(all(feature = "accessibility", feature = "stepper"))]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "accessibility numeric properties speak f64"
+)]
+pub const fn i64_as_f64(v: i64) -> f64 {
+    v as f64
+}
+
+/// Converts a rounded `f64` accessibility value to `i64` with `as` saturating truncation.
+#[cfg(all(feature = "accessibility", feature = "stepper"))]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "accessibility SetValue passes f64; callers round and clamp to the stepper range"
+)]
+pub const fn f64_as_i64(v: f64) -> i64 {
+    v as i64
 }

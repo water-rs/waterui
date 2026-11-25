@@ -4,6 +4,8 @@ use async_task::spawn_local as spawn_local_task;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::future::Future;
+#[cfg(target_os = "windows")]
+use std::io::Error as IoError;
 use std::mem;
 use std::num::NonZeroU32;
 use std::rc::Rc;
@@ -19,11 +21,15 @@ use executor_core::{
     async_task::{AsyncTask, Runnable},
     try_init_local_executor,
 };
+#[cfg(any(target_os = "windows", test))]
+use nami::Binding;
 use nami::Signal;
 use waterui::app::{
     App, AppMenuBar, AppParts, LastWindowPolicy, TerminationHandle, TerminationHost,
     TerminationKind, Windows,
 };
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+use waterui::theme::ColorScheme;
 use waterui::window::{Activation, Monitor, MonitorSelector, WindowParts, WindowState};
 #[cfg(hydrolysis_wayland_platform)]
 use waterui_core::Str;
@@ -32,6 +38,7 @@ use waterui_core::contract_violation;
 use waterui_core::{Environment, Retain};
 #[cfg(target_os = "windows")]
 use waterui_locale::regional::refresh_system_locale;
+use waterui_structural_transition::ReduceMotion;
 use waterui_text::FontCollection;
 
 #[cfg(target_os = "windows")]
@@ -44,6 +51,10 @@ use windows::Win32::Graphics::{
 };
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::Foundation::LPARAM;
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::UI::WindowsAndMessaging::SPI_SETCLIENTAREAANIMATION;
+#[cfg(target_os = "windows")]
+use windows_sys::core::BOOL;
 use winit::application::ApplicationHandler;
 use winit::event::{DeviceEvent, DeviceId, ElementState, TouchPhase, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, DeviceEvents, EventLoop};
@@ -55,7 +66,11 @@ use winit::window::{Window as NativeWindow, WindowId};
 use super::window::runtime_window_origin;
 use super::window::{RootWindow, RootWindows};
 #[cfg(target_os = "linux")]
+use crate::platform::linux_appearance::SystemAppearance as LinuxSystemAppearance;
+#[cfg(target_os = "linux")]
 use crate::platform::linux_locale::SystemLocale as LinuxSystemLocale;
+#[cfg(target_os = "macos")]
+use crate::platform::macos_appearance::SystemAppearance as MacosSystemAppearance;
 #[cfg(target_os = "macos")]
 use crate::platform::macos_locale::SystemLocale as MacosSystemLocale;
 use crate::platform::{PlatformWindow, WinitPainter, WinitWindow};
@@ -368,6 +383,7 @@ struct TerminationSubclass {
     termination: TerminationHandle,
     session_end: Rc<SessionEnd>,
     runnables: Rc<mpsc::Receiver<Runnable>>,
+    reduce_motion: Binding<bool>,
 }
 
 #[cfg(target_os = "windows")]
@@ -496,6 +512,9 @@ unsafe extern "system" fn session_end_proc(
             if unsafe { is_locale_setting_change(lparam) } {
                 let _ = refresh_system_locale();
             }
+            if wparam == 0 || wparam == SPI_SETCLIENTAREAANIMATION as usize {
+                sync_reduce_motion(&subclass.reduce_motion, query_windows_reduce_motion());
+            }
             // SAFETY: forwarding `WM_SETTINGCHANGE` to the previous proc so winit also sees it.
             unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
         }
@@ -531,6 +550,33 @@ unsafe fn is_locale_setting_change(lparam: LPARAM) -> bool {
         && buf[2].eq_ignore_ascii_case_u16(b't')
         && buf[3].eq_ignore_ascii_case_u16(b'l')
         && buf[4] == 0
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn sync_reduce_motion(reduce_motion: &Binding<bool>, reduced: bool) {
+    if reduce_motion.snapshot() != reduced {
+        reduce_motion.set(reduced);
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn query_windows_reduce_motion() -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        SPI_GETCLIENTAREAANIMATION, SystemParametersInfoW,
+    };
+    let mut enabled: BOOL = 1;
+    // SAFETY: `enabled` is a writable `BOOL` stack slot valid for the call.
+    if unsafe { SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, (&raw mut enabled).cast(), 0) }
+        == 0
+    {
+        tracing::error!(
+            "hydrolysis runner: SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION) failed: {}; \
+             keeping false",
+            IoError::last_os_error()
+        );
+        return false;
+    }
+    enabled == 0
 }
 
 #[cfg(target_os = "windows")]
@@ -827,7 +873,7 @@ pub fn run<W: Windows, M: AppMenuBar>(
     let RootWindows {
         initial: windows,
         channels,
-    } = RootWindows::<crate::text::ParleyEngine>::collect(windows);
+    } = RootWindows::<crate::text::ParleyEngine>::collect(windows, &env);
     // No early return for a windowless `Quit` launch: its required
     // termination goes through the machine like every other path, and its
     // hook future needs the loop running — the first `resumed` files it.
@@ -937,29 +983,40 @@ pub fn run<W: Windows, M: AppMenuBar>(
     // binding before the held first mount proceeds. Elsewhere the scheme is
     // Light unless the application installs its own.
     #[cfg(target_os = "macos")]
-    let system_appearance = crate::platform::macos_appearance::SystemAppearance::observe();
+    let system_appearance = MacosSystemAppearance::observe();
     #[cfg(target_os = "macos")]
-    let appearance = system_appearance.scheme();
+    let (appearance, reduce_motion) = (
+        system_appearance.scheme(),
+        ReduceMotion::new(system_appearance.reduce_motion()),
+    );
     #[cfg(target_os = "macos")]
     let _system_locale = MacosSystemLocale::observe();
     #[cfg(target_os = "windows")]
-    let system_color_scheme = nami::binding(waterui::theme::ColorScheme::Light);
+    let system_color_scheme = nami::binding(ColorScheme::Light);
     #[cfg(target_os = "windows")]
-    let appearance = system_color_scheme.clone();
+    let system_reduce_motion = Binding::bool(query_windows_reduce_motion());
+    #[cfg(target_os = "windows")]
+    let (appearance, reduce_motion) = (
+        system_color_scheme.clone(),
+        ReduceMotion::new(system_reduce_motion.clone()),
+    );
     #[cfg(target_os = "linux")]
-    let linux_appearance =
-        crate::platform::linux_appearance::SystemAppearance::observe(&local_executor, {
-            let event_proxy = event_proxy.clone();
-            move || {
-                let _ = event_proxy.send_event(RunnerEvent::MountPendingWindows);
-            }
-        });
+    let linux_appearance = LinuxSystemAppearance::observe(&local_executor, {
+        let event_proxy = event_proxy.clone();
+        move || {
+            let _ = event_proxy.send_event(RunnerEvent::MountPendingWindows);
+        }
+    });
     #[cfg(target_os = "linux")]
-    let appearance = linux_appearance.scheme();
+    let (appearance, reduce_motion) = (
+        linux_appearance.scheme(),
+        ReduceMotion::new(linux_appearance.reduce_motion()),
+    );
     #[cfg(target_os = "linux")]
     let linux_locale = LinuxSystemLocale::observe(&local_executor);
     #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
-    let appearance = waterui::theme::ColorScheme::Light;
+    let (appearance, reduce_motion) = (ColorScheme::Light, ReduceMotion::default());
+    env.insert(reduce_motion);
     crate::theme::install_theme_tokens(&mut env, Some(&style), appearance);
     let theme: Rc<dyn crate::theme::WidgetTheme> = Rc::new(style);
     // The application's fonts, discovered once. Every window's renderer is
@@ -1085,6 +1142,8 @@ pub fn run<W: Windows, M: AppMenuBar>(
         last_pointer_window: None,
         #[cfg(target_os = "windows")]
         system_color_scheme,
+        #[cfg(target_os = "windows")]
+        system_reduce_motion,
         #[cfg(target_os = "linux")]
         linux_appearance,
         #[cfg(target_os = "linux")]
@@ -1189,6 +1248,10 @@ struct WinitRunner {
     /// their own issues.
     #[cfg(target_os = "windows")]
     system_color_scheme: nami::Binding<waterui::theme::ColorScheme>,
+    /// The system Reduce Motion preference observed via `SPI_GETCLIENTAREAANIMATION`
+    /// and `WM_SETTINGCHANGE`.
+    #[cfg(target_os = "windows")]
+    system_reduce_motion: Binding<bool>,
     /// The XDG desktop portal colour-scheme subscription, owned for the
     /// loop's lifetime: its `ReadOne`/`SettingChanged` feed writes the
     /// scheme binding, and its initial-read gate is what
@@ -1479,6 +1542,7 @@ impl WinitRunner {
                     termination: self.termination.clone(),
                     session_end: Rc::clone(&self.session_end),
                     runnables: Rc::clone(&self.local_runnable_rx),
+                    reduce_motion: self.system_reduce_motion.clone(),
                 },
             );
         }
@@ -2357,8 +2421,8 @@ mod tests {
 
     #[test]
     fn popup_window_attributes_do_not_activate() {
-        let window = Window::new("", || ()).into_parts();
         let env = crate::renderer::tests::test_environment();
+        let window = Window::new("", || ()).into_parts(&env);
 
         assert!(native_window_attributes(&window, &env, true, None).active);
         assert!(!native_window_attributes(&window, &env, false, None).active);
@@ -2367,19 +2431,20 @@ mod tests {
     #[cfg(hydrolysis_wayland_platform)]
     #[test]
     fn window_attributes_split_wm_class_from_instance_name() {
-        use waterui_core::Str;
+        use waterui_core::{Environment, Str};
 
+        let env = Environment::new();
         let window = Window::new("", || ())
             .app_id("myclass")
             .instance_name("myinstance")
-            .into_parts();
+            .into_parts(&env);
         assert_eq!(
             super::window_desktop_identity(&window),
             Some((Str::from("myclass"), Str::from("myinstance"))),
             "WM_CLASS carries (app_id, instance_name)"
         );
 
-        let window = Window::new("", || ()).app_id("myclass").into_parts();
+        let window = Window::new("", || ()).app_id("myclass").into_parts(&env);
         assert_eq!(
             super::window_desktop_identity(&window),
             Some((Str::from("myclass"), Str::from("myclass"))),
@@ -2391,8 +2456,8 @@ mod tests {
     fn window_attributes_carry_the_requested_frame() {
         use waterui_core::layout::{Point, Rect, Size};
         let frame = Binding::container(Rect::new(Point::new(12.0, 34.0), Size::new(800.0, 300.0)));
-        let window = Window::new("", || ()).frame(&frame).into_parts();
         let env = crate::renderer::tests::test_environment();
+        let window = Window::new("", || ()).frame(&frame).into_parts(&env);
 
         let attributes = native_window_attributes(&window, &env, false, None);
         assert_eq!(
@@ -2414,8 +2479,8 @@ mod tests {
     fn window_attributes_disable_only_the_close_button_on_a_non_closable_window() {
         use winit::window::WindowButtons;
 
-        let window = Window::new("", || ()).closable(false).into_parts();
         let env = crate::renderer::tests::test_environment();
+        let window = Window::new("", || ()).closable(false).into_parts(&env);
 
         assert_eq!(
             native_window_attributes(&window, &env, false, None).enabled_buttons,
@@ -2423,7 +2488,7 @@ mod tests {
             "a non-closable window drops only the close button"
         );
 
-        let window = Window::new("", || ()).into_parts();
+        let window = Window::new("", || ()).into_parts(&env);
         assert_eq!(
             native_window_attributes(&window, &env, false, None).enabled_buttons,
             WindowButtons::all(),
@@ -2547,5 +2612,36 @@ mod tests {
             DeclaredWindowAction::QueueOpen
         );
         assert_eq!(phase, DeclaredWindowPhase::PendingOpen);
+    }
+
+    #[test]
+    fn windows_reduce_motion_sync_writes_only_on_change() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        use nami::Signal as _;
+
+        use super::sync_reduce_motion;
+
+        let reduce_motion = binding(false);
+        let notifications = Rc::new(Cell::new(0_u32));
+        let _guard = reduce_motion.watch({
+            let notifications = Rc::clone(&notifications);
+            move |_| notifications.set(notifications.get() + 1)
+        });
+
+        sync_reduce_motion(&reduce_motion, false);
+        assert_eq!(notifications.get(), 0);
+
+        sync_reduce_motion(&reduce_motion, true);
+        assert!(reduce_motion.snapshot());
+        assert_eq!(notifications.get(), 1);
+
+        sync_reduce_motion(&reduce_motion, true);
+        assert_eq!(notifications.get(), 1);
+
+        sync_reduce_motion(&reduce_motion, false);
+        assert!(!reduce_motion.snapshot());
+        assert_eq!(notifications.get(), 2);
     }
 }

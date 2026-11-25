@@ -82,7 +82,8 @@ pub fn view(title: &'static str, gpu: impl View) -> impl View {
 /// The GPU video player on a source the device plays.
 #[cfg(feature = "gpu-video-probe")]
 pub fn video() -> impl View {
-    use waterui::video::{PlaybackSession, Playlist, Url, VideoPlayer, video::ContentMode};
+    use waterui::layout::ContentMode;
+    use waterui::video::{PlaybackSession, Playlist, Url, VideoPlayer};
 
     /// The 10 s H.264 clip the video-player example opens with.
     const SOURCE: &str =

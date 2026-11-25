@@ -240,7 +240,7 @@ pub mod skill_block_10 {
 // SKILL.md § "### State" — rust block 11/18
 // ---------------------------------------------------------------------------
 pub fn skill_block_11() {
-    use waterui::media::media_picker::Selected;
+    use waterui::media::Media;
 
     #[derive(Clone)]
     enum Pane {
@@ -257,7 +257,7 @@ pub fn skill_block_11() {
     let count = Binding::i32(0); // bool f32 f64 i32 i64 isize u32 u64 usize
     let flag = Binding::bool(false);
     let name = Binding::container(String::new()); // any Clone type
-    let sel: Binding<Option<Selected>> = Binding::default(); // empty optional
+    let sel: Binding<Option<Media>> = Binding::default(); // empty optional
 
     let pane: Binding<Pane> = binding(Pane::Inbox); // general form, needs an inferable type
     let settings = Settings::binding(); // #[form] types: inference-free
