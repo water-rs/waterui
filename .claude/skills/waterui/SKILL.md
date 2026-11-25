@@ -514,7 +514,7 @@ web, graphics, and data rows live in [references/media.md](references/media.md).
 | Interaction | `.on_tap` `.gesture` `TapGesture` `LongPressGesture` `DragGesture` `.draggable` `.drop_destination` `.on_hover_enter` `.cursor` |
 | Text | `text` `text!` `StyledStr` `Code` `RichText` `include_markdown!` `FlowMarkdown` |
 | Collections | `List` `ForEach` `Lazy` `StateList` `SignalCollection` `ScrollController` `Table` `TableColumn` `TableSort` `SortDirection` `table` `col` |
-| Content | `Avatar` `Link` `Accordion` `.badge(n)` `loading()` |
+| Content | `Avatar` `Link` `Disclosure` `.badge(n)` `loading()` |
 | Navigation | `Tabs` `Tab` `NavigationStack` `NavigationLink` `NavigationSplitView` `Window` |
 | Forms | `#[form]` `form()` `DatePicker` `Calendar` `ColorPicker` `FilePicker` |
 | Overlays | `.snackbar_host` `.snackbar_host_with_icons` `Snackbar` `SnackbarManager` `.sheet` `Sheet` `SheetDetent` `SheetDismiss` `Card` `suspense` `.anchored_overlay` `AnchoredOverlay` `.dialog` `Dialog` `DialogAction` |

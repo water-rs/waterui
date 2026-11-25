@@ -13,7 +13,7 @@
 //!
 //! The catalog lives in the facade because the facade is the one crate that
 //! reaches every component and composer `WaterUI` exports. `List`, `Progress`,
-//! `Link`, `Card`, `Badge`, `Table`, `Accordion` and `Avatar` are defined in
+//! `Link`, `Card`, `Badge`, `Table`, `Disclosure` and `Avatar` are defined in
 //! it, and `opacity`, `shadow`, `border`, `clip`, `foreground` and `disabled`
 //! are its own `ViewExt` methods; the runtime crate cannot depend back on it
 //! without a cycle, which is why nothing here sits on that side of the edge.
@@ -53,8 +53,8 @@ use waterui_ts::schema::{
 #[cfg(feature = "image")]
 pub use attributes::ImageAttributes;
 pub use attributes::{
-    AccordionAttributes, AvatarAttributes, BadgeAttributes, ButtonAttributes, CardAttributes,
-    ColumnAttributes, DividerAttributes, HStackAttributes, LabelAttributes, LinkAttributes,
+    AvatarAttributes, BadgeAttributes, ButtonAttributes, CardAttributes, ColumnAttributes,
+    DisclosureAttributes, DividerAttributes, HStackAttributes, LabelAttributes, LinkAttributes,
     ListAttributes, Modifiers, NavigationLinkAttributes, NavigationStackAttributes,
     PickerAttributes, ProgressAttributes, ScrollViewAttributes, SliderAttributes, SpacerAttributes,
     StepperAttributes, TabAttributes, TableAttributes, TabsAttributes, TextAttributes,
@@ -175,10 +175,10 @@ const CORE: [ComponentSchema; 27] = [
         "One column of a `<Table>`: a heading and its rows of text.",
         ChildrenSlot::Content,
     ),
-    component::<AccordionAttributes>(
-        "Accordion",
-        "A header that expands to reveal its content.",
-        ChildrenSlot::Content,
+    component::<DisclosureAttributes>(
+        "Disclosure",
+        "A labelled header that expands to reveal its content.",
+        ChildrenSlot::Label,
     ),
     component::<AvatarAttributes>(
         "Avatar",
