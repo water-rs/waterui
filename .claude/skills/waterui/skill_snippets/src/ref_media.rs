@@ -583,7 +583,7 @@ pub fn media_canvas_prose(image: waterui::canvas::ImageSource) -> impl View {
 // ---------------------------------------------------------------------------
 // media.md § "## Graphics and codes" (prose): `BarcodeSource::qr` /
 // `::code128` pre-validation, `.dark_color` / `.light_color`, and the SVG
-// `.tint(..)` / `Svg::from_path`. Not counted as a rust block.
+// `.foreground(..)` / `Svg::from_path`. Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn media_barcode_svg_prose() -> impl View {
     use waterui::barcode::{Barcode, BarcodeError, BarcodeSource};
@@ -597,7 +597,8 @@ pub fn media_barcode_svg_prose() -> impl View {
         Barcode::qr("https://waterui.dev")
             .dark_color(Color::srgb(0, 0, 0))
             .light_color(Color::srgb(255, 255, 255)),
-        Svg::new("<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>").tint(Color::srgb(0, 122, 255)),
+        Svg::new("<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>")
+            .foreground(Color::srgb(0, 122, 255)),
     ))
 }
 

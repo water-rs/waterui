@@ -323,7 +323,7 @@ rotating token re-encodes in place. The view *panics while rendering* when the c
 exceeds QR capacity or holds characters Code128 cannot encode; validate runtime input
 first with `BarcodeSource::qr(text)` / `BarcodeSource::code128(text)`, which return a
 `Result`. `.dark_color(c)`, `.light_color(c)` and `.linear_gradient(..)` style it.
-`Svg::new(markup)` takes SVG source text (`.tint(color)` recolours it,
+`Svg::new(markup)` takes SVG source text (`.foreground(color)` recolours `currentColor`,
 `Svg::from_path(path_data, w, h)` draws one path); `waterui::svg` needs the `gpu`
 feature, on by default.
 

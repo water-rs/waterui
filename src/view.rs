@@ -30,6 +30,7 @@ use waterui_core::{
     plugin::Plugin,
 };
 use waterui_graphics::color::Color;
+use waterui_icon::IconSize;
 
 /// All view-level filter modifiers (`.blur()`, `.brightness()`, ...) come
 /// from [`waterui_graphics::filter_view::FilterViewExt`]. This re-export
@@ -444,6 +445,14 @@ pub trait ViewExt: View + Sized {
     /// ```
     fn tint(self, color: impl IntoSignal<Color> + 'static) -> impl View {
         self.with(theme::Tint::new(color))
+    }
+
+    /// Sets the shared icon size (in points) for icons in this view's subtree.
+    ///
+    /// Icons read the nearest [`IconSize`] in the environment and default to `24.0`
+    /// points when none is installed.
+    fn icon_size(self, size: impl IntoSignalF32) -> With<Self, IconSize> {
+        self.with(IconSize::new(size))
     }
 
     /// Adds an overlay to this view.
