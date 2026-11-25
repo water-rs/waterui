@@ -406,8 +406,10 @@ pub fn try_shader_module(
     label: &str,
     source: &str,
 ) -> Result<wgpu::ShaderModule, cherenkov::ResourceError> {
+    use crate::render::shaders::validate_wgsl;
+
     let composed = [source, filtrate_core::space::WGSL, cherenkov::wgsl::COLOR].join("\n");
-    let _ = crate::render::shaders::validate_wgsl(&composed)?;
+    let _ = validate_wgsl(&composed)?;
     let wgsl = cherenkov::wgsl::producer_module(source);
     #[cfg(not(target_arch = "wasm32"))]
     let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);

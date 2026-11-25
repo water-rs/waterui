@@ -4,7 +4,7 @@ use nami::Computed;
 use waterui_core::reactive::signal::IntoComputed;
 use waterui_core::{Environment, Str, View};
 
-use crate::shader_paint::ShaderPaintView;
+use crate::shader;
 
 /// An animated, smooth flowing gradient: noise-driven colour bands that
 /// drift with the engine's frame clock.
@@ -44,8 +44,7 @@ impl FlowingGradient {
 
 impl View for FlowingGradient {
     fn body(self, _env: &Environment) -> impl View {
-        ShaderPaintView::new(include_str!("flowing.wgsl"))
-            .expect("built-in flowing gradient WGSL is valid")
+        shader!("flowing.wgsl")
             .continuous(true)
             .offered_label(self.label)
             .offered_value(self.value)

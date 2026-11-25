@@ -31,6 +31,9 @@ use core::mem::size_of_val;
 
 #[cfg(feature = "gpu")]
 use arc_swap::{ArcSwap, ArcSwapOption};
+use cherenkov_record::wgsl::validate_paint_wgsl;
+#[cfg(feature = "gpu")]
+use cherenkov_record::wgsl::{PAINT_ENTRY, paint_module};
 pub use cherenkov_record::wgsl::{PAINT_MAX_PARAMS as SHADER_MAX_PARAMS, ShaderError};
 use nami::watcher::BoxWatcherGuard;
 use nami::{Computed, Signal, SignalExt};
@@ -80,7 +83,7 @@ impl ShaderPaintView {
     /// validation, or does not define `@fragment fn main`.
     pub fn new(fragment: impl Into<Cow<'static, str>>) -> Result<Self, ShaderError> {
         let fragment = fragment.into();
-        cherenkov_record::wgsl::validate_paint_wgsl(&fragment)?;
+        validate_paint_wgsl(&fragment)?;
         Ok(Self::from_validated(fragment))
     }
 
@@ -505,7 +508,7 @@ fn compile_program(
 ) -> Result<Program, String> {
     let globals_size = size_of_val(&[0.0_f32; 4]) as u64;
     let params_size = size_of_val(&[0.0_f32; SHADER_MAX_PARAMS]) as u64;
-    let module_source = cherenkov_record::wgsl::paint_module(fragment);
+    let module_source = paint_module(fragment);
 
     // Defence-in-depth for shaders that passed CPU-side naga validation
     // yet fail the backend driver's own compiler or pipeline limits.
@@ -538,7 +541,7 @@ fn compile_program(
         },
         fragment: Some(wgpu::FragmentState {
             module: &module,
-            entry_point: Some(cherenkov_record::wgsl::PAINT_ENTRY),
+            entry_point: Some(PAINT_ENTRY),
             targets: &[Some(wgpu::ColorTargetState {
                 format,
                 blend: Some(wgpu::BlendState::REPLACE),

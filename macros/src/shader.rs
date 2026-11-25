@@ -1,5 +1,8 @@
+use std::env::var_os;
+use std::fs::read_to_string;
 use std::path::{Component, Path, PathBuf};
 
+use cherenkov_record::wgsl::validate_paint_wgsl;
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
@@ -33,7 +36,7 @@ fn expand(path: &LitStr, caller: Option<&Path>) -> syn::Result<TokenStream2> {
     }
 
     let resolved = resolve_wgsl_path(path, caller)?;
-    let source = std::fs::read_to_string(&resolved).map_err(|error| {
+    let source = read_to_string(&resolved).map_err(|error| {
         syn::Error::new(
             span,
             format!(
@@ -44,7 +47,7 @@ fn expand(path: &LitStr, caller: Option<&Path>) -> syn::Result<TokenStream2> {
         )
     })?;
 
-    if let Err(error) = cherenkov_record::wgsl::validate_paint_wgsl(&source) {
+    if let Err(error) = validate_paint_wgsl(&source) {
         return Err(syn::Error::new(span, error.to_string()));
     }
 
@@ -99,7 +102,7 @@ fn resolve_wgsl_path(path: &LitStr, caller: Option<&Path>) -> syn::Result<PathBu
     if candidate.is_file() {
         return Ok(candidate);
     }
-    if let Some(manifest_dir) = std::env::var_os("CARGO_MANIFEST_DIR") {
+    if let Some(manifest_dir) = var_os("CARGO_MANIFEST_DIR") {
         let mut from_manifest = PathBuf::from(manifest_dir);
         from_manifest.push(&candidate);
         if from_manifest.is_file() {
