@@ -1552,6 +1552,7 @@ mod tests {
 
     #[test]
     fn long_press_without_minimum_follows_platform_timeout_and_reports_pointer_up_duration() {
+        use std::cell::Cell;
         use waterui::gesture::LongPressGesture;
         use waterui_core::handler::boxed_action;
 
@@ -1559,8 +1560,8 @@ mod tests {
         let platform_timeout = Duration::from_millis(750);
         engine.set_long_press_timeout(platform_timeout);
         let env = Environment::new();
-        let reported = std::rc::Rc::new(std::cell::Cell::new(None));
-        let reported_cb = std::rc::Rc::clone(&reported);
+        let reported = Rc::new(Cell::new(None));
+        let reported_cb = Rc::clone(&reported);
         engine.register_target(
             GesturePlacement::new(
                 kurbo::Rect::new(0.0, 0.0, 100.0, 100.0),

@@ -19,6 +19,7 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use jni::Env;
 use jni::objects::{Global, JMethodID, JObject, JValue};
@@ -34,6 +35,7 @@ use waterui::app::AppMenuBar;
 use waterui::cursor::CursorStyle;
 use waterui::theme::ColorScheme;
 use waterui::window::WindowState;
+use waterui_backend_core::gesture::DEFAULT_LONG_PRESS_DURATION;
 use waterui_core::contract_violation;
 use waterui_core::layout::LayoutDirection;
 #[cfg(hydrolysis_gpu_painter)]
@@ -997,15 +999,13 @@ impl PlatformWindow for AndroidHostWindow {
         let slop = f64::from(metrics.double_tap_slop_px) / metrics.density;
         crate::platform::InputConventions {
             multi_click: crate::platform::MultiClickConfig {
-                interval: std::time::Duration::from_millis(u64::from(
-                    metrics.double_tap_timeout_ms,
-                )),
+                interval: Duration::from_millis(u64::from(metrics.double_tap_timeout_ms)),
                 tolerance: kurbo::Vec2::new(slop, slop),
             },
             long_press_timeout: if metrics.long_press_timeout_ms == 0 {
-                waterui_backend_core::gesture::DEFAULT_LONG_PRESS_DURATION
+                DEFAULT_LONG_PRESS_DURATION
             } else {
-                std::time::Duration::from_millis(u64::from(metrics.long_press_timeout_ms))
+                Duration::from_millis(u64::from(metrics.long_press_timeout_ms))
             },
             // Android's paste shortcut, on a hardware keyboard, is Control-V:
             // the non-Apple family's.

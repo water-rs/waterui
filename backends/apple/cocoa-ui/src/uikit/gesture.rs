@@ -30,9 +30,10 @@ use objc2::{
 };
 use objc2_foundation::NSObjectProtocol;
 use objc2_ui_kit::{
-    UIEvent, UIGestureRecognizer, UIGestureRecognizerDelegate, UIGestureRecognizerState,
-    UILongPressGestureRecognizer, UIPanGestureRecognizer, UIPinchGestureRecognizer,
-    UIRotationGestureRecognizer, UITapGestureRecognizer, UITouchPhase, UIView,
+    UIEvent, UIEventType, UIGestureRecognizer, UIGestureRecognizerDelegate,
+    UIGestureRecognizerState, UILongPressGestureRecognizer, UIPanGestureRecognizer,
+    UIPinchGestureRecognizer, UIRotationGestureRecognizer, UITapGestureRecognizer, UITouchPhase,
+    UIView,
 };
 
 use crate::callback::guarded;
@@ -131,7 +132,7 @@ define_class!(
                     // Touches carry no button bits: the contact is the
                     // primary press. Other mask-less events — hover,
                     // motion, key presses — are not clicks.
-                    if event.r#type() == objc2_ui_kit::UIEventType::Touches {
+                    if event.r#type() == UIEventType::Touches {
                         ButtonMask::PRIMARY
                     } else {
                         ButtonMask::from_bits(0)
@@ -142,7 +143,7 @@ define_class!(
                 let accepted = buttons.intersects(self.ivars().buttons);
                 if accepted
                     && let Some(started_at) = &self.ivars().started_at
-                    && event.r#type() == objc2_ui_kit::UIEventType::Touches
+                    && event.r#type() == UIEventType::Touches
                     && event.allTouches().is_some_and(|touches| {
                         touches.iter().any(|t| t.phase() == UITouchPhase::Began)
                     })

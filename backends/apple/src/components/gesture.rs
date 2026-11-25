@@ -29,6 +29,8 @@
 use alloc::rc::Rc;
 use alloc::vec::Vec;
 use core::cell::{Cell, RefCell};
+#[cfg(test)]
+use core::time::Duration;
 
 use cocoa_ui::Rect;
 use cocoa_ui::gesture::{ButtonMask, GestureState};
@@ -866,7 +868,7 @@ mod tests {
     fn activates_on_press_searches_the_composition_for_a_tap() {
         let tap: Gesture = TapGesture::new().into();
         let hold: Gesture = LongPressGesture::new()
-            .minimum_duration(core::time::Duration::from_millis(500))
+            .minimum_duration(Duration::from_millis(500))
             .into();
         let drag: Gesture = DragGesture::new(0.0).into();
         assert!(activates_on_press(&tap));

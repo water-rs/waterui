@@ -14,6 +14,7 @@ use crate::fullscreen::FullScreenOverlayHost;
 #[cfg(feature = "snackbar")]
 use crate::snackbar::SnackbarHost;
 use core::future::Future;
+use core::time::Duration;
 use nami::{Binding, Computed, Signal, SignalExt as _, signal::IntoComputed};
 use waterui_core::IntoSignalF32;
 pub use waterui_core::view::*;
@@ -970,9 +971,8 @@ pub trait ViewExt: View + Sized {
         H: Handler<Args, ()>,
     {
         self.gesture(
-            LongPressGesture::new().minimum_duration(core::time::Duration::from_millis(u64::from(
-                minimum_duration_ms,
-            ))),
+            LongPressGesture::new()
+                .minimum_duration(Duration::from_millis(u64::from(minimum_duration_ms))),
             action,
         )
     }
