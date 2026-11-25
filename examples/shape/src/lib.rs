@@ -11,6 +11,8 @@
 //! - Use `.frame()` or container constraints to size them
 
 use core::f32::consts::{FRAC_PI_2, PI};
+use core::time::Duration;
+use waterui::animation::{Animation, Repeat};
 use waterui::app::{App, Windows};
 use waterui::prelude::*;
 use waterui::preview;
@@ -389,12 +391,17 @@ fn morph_demo() -> impl View {
                 .size(90.0, 90.0),
             RoundedRectangle::new(CornerRadius::fraction(0.08))
                 .morph_to(Capsule, Color::srgb_hex("#10B981"))
-                .duration(core::time::Duration::from_millis(1200))
+                .animation(
+                    Animation::ease_in_out(Duration::from_millis(1200))
+                        .repeat(Repeat::Forever { autoreverse: true }),
+                )
                 .size(120.0, 70.0),
             Rectangle
                 .morph_to(Ellipse, Color::srgb_hex("#F97316"))
-                .duration(core::time::Duration::from_millis(800))
-                .autoreverse(true)
+                .animation(
+                    Animation::ease_in_out(Duration::from_millis(800))
+                        .repeat(Repeat::Forever { autoreverse: true }),
+                )
                 .size(110.0, 70.0),
         ))
         .spacing(12.0),

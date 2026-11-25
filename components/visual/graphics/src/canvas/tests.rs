@@ -347,7 +347,7 @@ fn a_drawing_is_send_and_replays_on_a_new_engine() {
         move || {
             Drawing::record(Size::new(4.0, 4.0), |cx| {
                 cx.fill(Rect::from_size(Size::new(4.0, 4.0)), red());
-                cx.image(
+                cx.image_sampled(
                     &image,
                     Rect::from_size(Size::new(4.0, 4.0)),
                     Sampling::Nearest,
@@ -848,4 +848,35 @@ fn a_transformed_image_pattern_is_still_registered() {
         "the image under the transform is registered: {:?}",
         report.events
     );
+}
+
+#[cfg(feature = "image-decode")]
+#[test]
+fn image_source_decodes_png_bytes_and_rejects_corrupt_input() {
+    use image::ExtendedColorType;
+    use image::ImageEncoder as _;
+    use image::codecs::png::PngEncoder;
+
+    use crate::canvas::ImageDecodeError;
+
+    let mut png = Vec::new();
+    let rgba: [u8; 16] = [
+        255, 0, 0, 255, 0, 255, 0, 255, //
+        0, 0, 255, 255, 255, 255, 255, 128,
+    ];
+    PngEncoder::new(&mut png)
+        .write_image(&rgba, 2, 2, ExtendedColorType::Rgba8)
+        .expect("test PNG encodes");
+
+    let decoded = ImageSource::decode(&png).expect("valid PNG decodes into ImageSource");
+    assert_eq!(decoded.width(), 2);
+    assert_eq!(decoded.height(), 2);
+
+    let via_try_from =
+        ImageSource::try_from(png.as_slice()).expect("TryFrom<&[u8]> decodes valid PNG");
+    assert_eq!(via_try_from.width(), 2);
+    assert_eq!(via_try_from.height(), 2);
+
+    let err = ImageSource::decode(b"not an image").expect_err("corrupt bytes fail to decode");
+    assert!(matches!(err, ImageDecodeError::Decode(_)));
 }

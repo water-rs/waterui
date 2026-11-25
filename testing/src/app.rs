@@ -9,11 +9,12 @@ use accesskit::{
 };
 use hydrolysis::draw::{BlendSpace, MaterialRegistry};
 use hydrolysis::theme::{
-    BadgeLook, ButtonLook, ButtonSpec, CheckboxLook, GlassLook, IndicatorLook, LinearProgressLook,
-    ListLook, ListSpec, MenuLook, MenuPickerLook, MenuSpec, NavigationBarLook, NavigationSpec,
-    PickerSpec, ProgressSpec, RadioGroupLook, ScrollIndicatorLook, SegmentedLook, SegmentedSpec,
-    SliderLook, SliderSpec, StepperLook, StepperSpec, SwitchLook, TableLook, TabsLook, TabsSpec,
-    TextFieldLook, TextFieldSpec, ToggleSpec, WidgetTheme,
+    BadgeLook, ButtonLook, ButtonSpec, CheckboxLook, DisclosureLook, DisclosureSpec, GlassLook,
+    IndicatorLook, LinearProgressLook, ListLook, ListSpec, MenuLook, MenuPickerLook, MenuSpec,
+    NavigationBarLook, NavigationSpec, PickerSpec, ProgressSpec, RadioGroupLook,
+    ScrollIndicatorLook, SegmentedLook, SegmentedSpec, SliderLook, SliderSpec, StepperLook,
+    StepperSpec, SwitchLook, TableLook, TabsLook, TabsSpec, TextFieldLook, TextFieldSpec,
+    ToggleSpec, WidgetTheme,
 };
 use hydrolysis::{
     AccessibilityActivationPointError, FontFamilyResolution, HeadlessColorFormat, HeadlessRuntime,
@@ -130,6 +131,10 @@ impl WidgetTheme for ErasedStyle {
 
     fn table(&self, env: &Environment) -> TableLook {
         self.0.table(env)
+    }
+
+    fn disclosure(&self, spec: &DisclosureSpec, env: &Environment) -> DisclosureLook {
+        self.0.disclosure(spec, env)
     }
 }
 

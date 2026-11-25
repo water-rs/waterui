@@ -27,12 +27,12 @@ pub struct FilePicker<L> {
 }
 
 impl<L> FilePicker<L> {
-    /// Select files without importing them, with the given semantic label
-    /// driving the picker button.
+    /// Select files with the given semantic label driving the picker button.
     ///
-    /// You will get URLs that point to the original file locations.
+    /// Returns URLs that point to the original file locations unless
+    /// [`Self::import`] is enabled.
     #[must_use]
-    pub fn open<I: IntoLabel<Kind = L>>(label: I, value: &Binding<Vec<Url>>) -> Self {
+    pub fn new<I: IntoLabel<Kind = L>>(label: I, value: &Binding<Vec<Url>>) -> Self {
         Self {
             label: label.into_label(),
             value: value.clone(),
@@ -41,16 +41,12 @@ impl<L> FilePicker<L> {
         }
     }
 
-    /// Select files and import them into the app's sandboxed storage, with
-    /// the given semantic label driving the picker button.
+    /// Imports selected files into the app's sandboxed storage instead of
+    /// returning URLs to their original locations.
     #[must_use]
-    pub fn import<I: IntoLabel<Kind = L>>(label: I, value: &Binding<Vec<Url>>) -> Self {
-        Self {
-            label: label.into_label(),
-            value: value.clone(),
-            num: 1,
-            import: true,
-        }
+    pub const fn import(mut self) -> Self {
+        self.import = true;
+        self
     }
 
     /// Set the maximum number of files that can be selected.
@@ -139,5 +135,29 @@ impl<L: LabelKind> View for FilePicker<L> {
                 }
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec::Vec;
+    use nami::Binding;
+    use waterui_url::Url;
+
+    use super::FilePicker;
+
+    #[test]
+    fn new_defaults_to_open_and_import_enables_sandbox_copy() {
+        let files = Binding::container(Vec::<Url>::new());
+
+        let opened = FilePicker::new("Select Files", &files);
+        assert!(!opened.import);
+        assert_eq!(opened.num, 1);
+
+        let imported = FilePicker::new("Import Files", &files)
+            .import()
+            .max_count(3);
+        assert!(imported.import);
+        assert_eq!(imported.num, 3);
     }
 }

@@ -9,17 +9,17 @@
 
 use core::num::NonZeroUsize;
 
-use waterui::Identifiable;
 use waterui::app::{App, Windows};
 use waterui::component::list::List;
 use waterui::layout::ContentMode;
 use waterui::media::Photo;
 use waterui::navigation::{
-    NavigationSplitView, NavigationStack, NavigationToolbarItems, NavigationView,
+    NavigationSplitView, NavigationStack, NavigationToolbarItems, NavigationView, TabStyle,
 };
 use waterui::prelude::*;
 use waterui::widget::avatar;
 use waterui::widget::card;
+use waterui::{Identifiable, Url};
 use waterui_icons_material_icon as mdi;
 
 use mdi::dots_vertical;
@@ -323,7 +323,7 @@ fn reply(selected: Binding<Option<u64>>, destination: &Binding<usize>) -> impl V
             }),
         ),
     )
-    .style(tab_style::automatic())
+    .style(TabStyle::Automatic)
 }
 
 /// Self-contained entry for previews and embedding.

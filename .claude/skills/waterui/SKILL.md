@@ -292,7 +292,7 @@ view types that is genuinely open at run time.
 let count = Binding::i32(0);                    // bool f32 f64 i32 i64 isize u32 u64 usize
 let flag  = Binding::bool(false);
 let name  = Binding::container(String::new());  // any Clone type
-let sel: Binding<Option<Selected>> = Binding::default();   // empty optional
+let sel: Binding<Option<Media>> = Binding::default();      // empty optional
 
 let pane: Binding<Pane> = binding(Pane::Inbox); // general form, needs an inferable type
 let settings = Settings::binding();             // #[form] types: inference-free
@@ -498,8 +498,8 @@ LabelDisplayMode::IconOnly)` for icon buttons, `.install(LabelDisplayMode::IconO
 a whole toolbar. Beyond label, value, role and id, `.a11y_geometry(AccessibilityGeometry)`
 (the rectangle the element reports: the view's own response rectangle by default,
 `Allocation` for the whole assigned frame, or `Region(rect)`), `.a11y_children(
-AccessibilityChildren)` (how descendants contribute semantics) and
-`.a11y_state(AccessibilityState)` set the rest; the types are in `waterui::accessibility`.
+AccessibilityChildren)` (how descendants contribute semantics), `.a11y_hidden(hidden)` (static `bool` or reactive signal) and
+`.a11y_state(state)` (static `AccessibilityState` or reactive signal) set the rest; the types are in `waterui::accessibility`.
 
 ## Component index
 
@@ -514,13 +514,13 @@ web, graphics, and data rows live in [references/media.md](references/media.md).
 | Interaction | `.on_tap` `.gesture` `TapGesture` `LongPressGesture` `DragGesture` `.draggable` `.drop_destination` `.on_hover_enter` `.cursor` |
 | Text | `text` `text!` `StyledStr` `Code` `RichText` `include_markdown!` `FlowMarkdown` |
 | Collections | `List` `ForEach` `Lazy` `StateList` `SignalCollection` `ScrollController` `Table` `TableColumn` `TableSort` `SortDirection` `table` `col` |
-| Content | `Avatar` `Link` `Accordion` `.badge(n)` `loading()` |
+| Content | `Avatar` `Link` `Disclosure` `.badge(n)` `loading()` |
 | Navigation | `Tabs` `Tab` `NavigationStack` `NavigationLink` `NavigationSplitView` `Window` |
 | Forms | `#[form]` `form()` `DatePicker` `Calendar` `ColorPicker` `FilePicker` |
 | Overlays | `.snackbar_host` `.snackbar_host_with_icons` `Snackbar` `SnackbarManager` `.sheet` `Sheet` `SheetDetent` `SheetDismiss` `Card` `suspense` `.anchored_overlay` `AnchoredOverlay` `.dialog` `Dialog` `DialogAction` |
 | Media | `Photo` `Image` `VideoPlayer` `PlaybackSession` `MediaPicker` |
 | Data | `waterui::chart` (13 kinds: `line_chart` `bar_chart` `pie_chart` …) `Map` |
-| Graphics | `Canvas` `Barcode::qr()` `Svg` `shader!` `ParticleSystem` `GpuView` `ExternalFrameView` icon sets |
+| Graphics | `Canvas` `Barcode` `Svg` `shader!` `ParticleSystem` `GpuView` `ExternalFrameView` icon sets |
 | Platform | `WebView` `#[js_api]` `waterui-chromium` `waterui_apple::AppleView` `hydrolysis::AndroidView` |
 
 ## Verify before declaring done

@@ -33,11 +33,11 @@ pub use size::ControlSize;
 pub mod slider;
 
 #[cfg(feature = "slider")]
-pub use slider::{Slider, slider};
+pub use slider::{Slider, SliderValue, slider};
 #[cfg(feature = "text-field")]
 pub mod text_field;
 #[cfg(feature = "text-field")]
-pub use text_field::{TextField, field};
+pub use text_field::{TextField, TextFieldValue, field};
 pub mod text_selection;
 pub use text_selection::{CustomTextSelection, TextSelection};
 #[cfg(feature = "toggle")]
@@ -51,7 +51,7 @@ pub use toggle::{
 #[cfg(feature = "stepper")]
 pub mod stepper;
 #[cfg(feature = "stepper")]
-pub use stepper::{Stepper, stepper};
+pub use stepper::{Stepper, StepperValue, stepper};
 
 /// Button component and related utilities.
 pub mod button;

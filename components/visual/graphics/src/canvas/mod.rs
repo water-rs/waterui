@@ -90,6 +90,8 @@ pub use paint::{
     IntoPaint, Join, Layer, LinearGradient, MeshGradient, Paint, RadialGradient, Sampling, Shadow,
     StrokeStyle, TransformedPaint,
 };
+#[cfg(feature = "image-decode")]
+pub use resource::ImageDecodeError;
 pub use resource::{
     Font, Glyph, GlyphRun, GlyphStyle, ImageColorSpace, ImageSource, ImageStatus, PixelBuffer,
     PixelFormat,

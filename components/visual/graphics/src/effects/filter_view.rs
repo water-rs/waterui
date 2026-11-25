@@ -39,7 +39,10 @@ use core::fmt;
 use core::sync::atomic::{AtomicU32, Ordering};
 use core::time::Duration;
 
+use waterui_core::animation::Repeat;
+
 use crate::animation::engine_animation;
+use crate::draw::{Animation as EngineAnimation, Timing as EngineTiming};
 
 /// Values crossing the render-thread boundary, mirroring the engine's
 /// `RenderTransfer` marker so `effects` builds without it.
@@ -398,17 +401,17 @@ const fn flatten_quad(quad: &[[f32; 2]; 4]) -> [f32; 8] {
 /// A Cherenkov animation driving a scalar filter parameter from rest,
 /// evaluated through the shared evaluator exactly as core and the engine
 /// evaluate it.
-struct AnimationInterpolator(crate::draw::Animation);
+struct AnimationInterpolator(EngineAnimation);
 
 impl AnimationInterpolator {
     /// The parameter `elapsed` after it left `from` at rest for `to`, and
     /// whether the animation is done there; a decay lands at once.
     fn sample(&self, from: f32, to: f32, elapsed: Duration) -> (f64, bool) {
-        let Some(timing) = self.0.timing() else {
+        let Some(playback) = self.0.playback() else {
             return (f64::from(to), true);
         };
         let (mut position, mut rate) = ([0.0], [0.0]);
-        let done = timing.sample_lanes(
+        let done = playback.sample_lanes(
             &[f64::from(from)],
             &[0.0],
             &[f64::from(to)],
@@ -425,11 +428,14 @@ impl Interpolator for AnimationInterpolator {
     /// takes to settle for good, as `Animation::duration` reports it.
     fn duration(&self) -> Duration {
         match &self.0 {
-            crate::draw::Animation::Curve(curve) => curve.duration,
-            crate::draw::Animation::Spring(spring) => spring
+            EngineAnimation::Curve(curve) => curve.duration,
+            EngineAnimation::Spring(spring) => spring
                 .unit_settling_duration()
                 .expect("`engine_animation` validates its spring, which settles in finite time"),
-            crate::draw::Animation::Decay(_) => Duration::ZERO,
+            EngineAnimation::Scheduled(playback) => playback
+                .total_duration()
+                .map_or(Duration::MAX, Duration::from_secs_f64),
+            EngineAnimation::Decay(_) => Duration::ZERO,
         }
     }
 
@@ -443,6 +449,20 @@ impl Interpolator for AnimationInterpolator {
 
     fn is_complete(&self, elapsed: Duration) -> bool {
         self.sample(0.0, 1.0, elapsed).1
+    }
+
+    fn repeat_forever_cycle(&self) -> Option<(Duration, Duration, bool)> {
+        let playback = self.0.playback()?;
+        let Repeat::Forever { autoreverse } = playback.repeat else {
+            return None;
+        };
+        let cycle = playback.cycle_duration()?;
+        let speed = playback.effective_speed();
+        Some((
+            Duration::from_secs_f64(playback.delay.max(0.0)),
+            Duration::from_secs_f64(cycle / speed),
+            autoreverse,
+        ))
     }
 
     /// The span of every value `interpolate` returns: the endpoints, widened
@@ -472,8 +492,8 @@ impl AnimationInterpolator {
     /// The range `[lo, hi]` of the animation's unit progress from rest, as
     /// the samples of a unit step from 0 to 1 span it.
     fn unit_range(&self) -> (f64, f64) {
-        match &self.0 {
-            crate::draw::Animation::Spring(spring) if spring.damping < 1.0 => {
+        match self.0.timing() {
+            Some(EngineTiming::Spring(spring)) if spring.damping < 1.0 => {
                 // An underdamped step response peaks first at
                 // `1 + e^(-πζ/√(1-ζ²))`, which bounds every later sample,
                 // and never drops below its start.
@@ -482,12 +502,12 @@ impl AnimationInterpolator {
                     (-core::f64::consts::PI * zeta / f64::mul_add(zeta, -zeta, 1.0).sqrt()).exp();
                 (0.0, peak.mul_add(1.0 + EXTREMUM_MARGIN, 1.0))
             }
-            crate::draw::Animation::Spring(_) => (0.0, 1.0),
-            crate::draw::Animation::Curve(curve) => {
+            Some(EngineTiming::Spring(_)) => (0.0, 1.0),
+            Some(EngineTiming::Curve { curve, .. }) => {
                 // y(s) = a·s³ + b·s² + c·s over s in [0, 1], with y(0) = 0
                 // and y(1) = 1; its extrema are the endpoints and the real
                 // roots of y'(s) = 3a·s² + 2b·s + c inside (0, 1).
-                let (y1, y2) = (curve.p1.y, curve.p2.y);
+                let (y1, y2) = (curve.y1, curve.y2);
                 let (a, b, c) = (
                     3.0f64.mul_add(y1, 3.0f64.mul_add(-y2, 1.0)),
                     3.0 * 2.0f64.mul_add(-y1, y2),
@@ -518,7 +538,7 @@ impl AnimationInterpolator {
                 (lo, hi)
             }
             // A decay lands at once, at `to`.
-            crate::draw::Animation::Decay(_) => (1.0, 1.0),
+            None => (1.0, 1.0),
         }
     }
 }
@@ -2254,6 +2274,7 @@ mod tests {
         FilterViewExt as _, FilteredView, GaussianBlur, OutputSize, ParamGuards, Placed,
         SpatialStage, StageCollector,
     };
+
     use crate::animation::engine_animation;
     use core::time::Duration;
     use filtrate::Interpolator as _;
@@ -2646,7 +2667,7 @@ mod tests {
 
     #[test]
     fn animation_default_resolves_documented_ease_in_out() {
-        let interpolator = AnimationInterpolator(engine_animation(&Animation::Default));
+        let interpolator = AnimationInterpolator(engine_animation(&Animation::default()));
         assert_eq!(interpolator.duration(), Duration::from_millis(250));
         let mid = interpolator.interpolate(0.0, 1.0, Duration::from_millis(125));
         assert!(
@@ -2762,7 +2783,7 @@ mod tests {
 
     #[test]
     fn plain_ease_bounds_are_the_endpoints() {
-        let interpolator = AnimationInterpolator(engine_animation(&Animation::Default));
+        let interpolator = AnimationInterpolator(engine_animation(&Animation::default()));
         let (_, _, bounds) = assert_samples_within_bounds(&interpolator, 0.0, 10.0);
         assert_eq!(bounds, (0.0, 10.0));
     }

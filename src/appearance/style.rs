@@ -9,20 +9,21 @@
 //! use waterui_graphics::color::Color;
 //!
 //! fn shadow_example() {
-//!     let shadow = style::Shadow::new(
-//!         Color::srgb(0, 0, 0),
-//!         style::Vector { x: 2.0, y: 2.0 },
-//!         4.0,
-//!         RoundedRectangle::new(8.0),
-//!     );
+//!     let shadow = style::Shadow::new(4.0)
+//!         .color(Color::srgb(0, 0, 0))
+//!         .offset(2.0, 2.0)
+//!         .silhouette(RoundedRectangle::new(8.0));
 //! }
 //! ```
 
-use nami::{Computed, SignalExt, signal::IntoComputed};
+use nami::{
+    Computed, SignalExt,
+    signal::{IntoComputed, IntoSignal},
+};
 use waterui_core::{Angle, IntoSignalF32, metadata::MetadataKey, plugin::Plugin};
 use waterui_graphics::color::Color;
 use waterui_interaction::interaction::StateValue;
-use waterui_shape::{ClipShape, Rectangle, Shape};
+use waterui_shape::{ClipShape, Shape};
 
 /// Theme tokens for a view promoted with [`ViewExt::floating`](crate::ViewExt::floating).
 ///
@@ -102,105 +103,114 @@ impl Default for FloatingStyle {
 /// Represents a shadow effect that can be applied to UI elements.
 ///
 /// A shadow is defined by its color, offset from the original element, blur
-/// radius, and the silhouette of the element casting it.
+/// radius, and an optional silhouette override. When no silhouette is given,
+/// the shadow follows the caster's `.clip(...)` shape (falling back to a
+/// rectangle when unclipped).
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct Shadow {
     /// The color of the shadow, including alpha for opacity.
     color: Color,
-    /// The offset of the shadow from the original element.
-    offset: Vector<f32>,
+    /// The horizontal offset of the shadow from the original element.
+    offset_x: Computed<f32>,
+    /// The vertical offset of the shadow from the original element.
+    offset_y: Computed<f32>,
     /// The blur radius of the shadow in pixels.
-    radius: f32,
-    /// The shape of the element casting the shadow.
-    ///
-    /// Backends that rasterize the shadow themselves blur this shape, so it
-    /// must be the caster's own shape — the one it is filled or clipped with —
-    /// or the shadow will not follow the element's outline. It carries the
-    /// shape's [`ShapeKind`](waterui_shape::ShapeKind), so a normalized corner
-    /// radius and an absolute one can never be confused.
-    silhouette: ClipShape,
+    radius: Computed<f32>,
+    /// Optional explicit caster silhouette override; `None` follows the caster's clip.
+    silhouette: Option<ClipShape>,
 }
 
 impl Shadow {
     /// The color of the shadow, including alpha for opacity.
     #[must_use]
-    pub const fn color(&self) -> &Color {
+    pub const fn get_color(&self) -> &Color {
         &self.color
     }
 
-    /// The offset of the shadow from the original element.
+    /// The horizontal offset of the shadow from the original element.
     #[must_use]
-    pub const fn offset(&self) -> &Vector<f32> {
-        &self.offset
+    pub const fn offset_x(&self) -> &Computed<f32> {
+        &self.offset_x
+    }
+
+    /// The vertical offset of the shadow from the original element.
+    #[must_use]
+    pub const fn offset_y(&self) -> &Computed<f32> {
+        &self.offset_y
     }
 
     /// The blur radius of the shadow in pixels.
     #[must_use]
-    pub const fn radius(&self) -> f32 {
-        self.radius
+    pub const fn radius(&self) -> &Computed<f32> {
+        &self.radius
     }
 
-    /// The shape of the element casting the shadow.
-    ///
-    /// Backends that rasterize the shadow themselves blur this shape, so it
-    /// must be the caster's own shape — the one it is filled or clipped with —
-    /// or the shadow will not follow the element's outline. It carries the
-    /// shape's [`ShapeKind`](waterui_shape::ShapeKind), so a normalized corner
-    /// radius and an absolute one can never be confused.
+    /// Optional explicit silhouette override; `None` follows the caster's clip.
     #[must_use]
-    pub const fn silhouette(&self) -> &ClipShape {
-        &self.silhouette
+    pub const fn get_silhouette(&self) -> Option<&ClipShape> {
+        self.silhouette.as_ref()
     }
 }
 
 impl MetadataKey for Shadow {}
 
 impl Shadow {
-    /// Creates a new shadow with the specified color, offset, blur radius and
-    /// caster silhouette.
-    ///
-    /// # Arguments
-    ///
-    /// * `color` - The color of the shadow
-    /// * `offset` - The offset of the shadow from the original element
-    /// * `radius` - The blur radius of the shadow in pixels
-    /// * `silhouette` - The shape of the element casting the shadow
+    /// Sets the shadow color.
     #[must_use]
-    pub fn new(color: Color, offset: Vector<f32>, radius: f32, silhouette: impl Shape) -> Self {
+    pub fn color(mut self, color: impl IntoSignal<Color> + 'static) -> Self {
+        self.color = Color::from_signal(color);
+        self
+    }
+
+    /// Sets the shadow offset along the x and y axes.
+    #[must_use]
+    pub fn offset(mut self, x: impl IntoSignalF32, y: impl IntoSignalF32) -> Self {
+        self.offset_x = x.into_signal_f32().computed();
+        self.offset_y = y.into_signal_f32().computed();
+        self
+    }
+
+    /// Overrides the caster's silhouette with an explicit shape.
+    #[must_use]
+    pub fn silhouette(mut self, silhouette: impl Shape) -> Self {
+        self.silhouette = Some(ClipShape::new(silhouette));
+        self
+    }
+
+    /// Creates a black shadow with the given blur radius and zero offset,
+    /// inheriting the caster's clip silhouette.
+    #[must_use]
+    pub fn new(radius: impl IntoSignalF32) -> Self {
+        let zero = 0.0_f32.into_signal_f32().computed();
         Self {
-            color,
-            offset,
-            radius,
-            silhouette: ClipShape::new(silhouette),
+            color: Color::srgb(0, 0, 0),
+            offset_x: zero.clone(),
+            offset_y: zero,
+            radius: radius.into_signal_f32().computed(),
+            silhouette: None,
         }
     }
 
-    /// Creates a black shadow of a rectangular caster, with the same offset and
-    /// blur radius in both directions.
-    ///
-    /// # Arguments
-    /// * `value` - The value to set for both offset and radius
+    /// Creates a black shadow with the same offset and blur radius in both directions,
+    /// inheriting the caster's clip silhouette.
     #[must_use]
-    pub fn splat(value: f32) -> Self {
-        Self::new(
-            Color::srgb(0, 0, 0),
-            Vector { x: value, y: value },
-            value,
-            Rectangle,
-        )
+    pub fn splat(value: impl IntoSignalF32) -> Self {
+        let radius = value.into_signal_f32().computed();
+        Self {
+            color: Color::srgb(0, 0, 0),
+            offset_x: radius.clone(),
+            offset_y: radius.clone(),
+            radius,
+            silhouette: None,
+        }
     }
 }
 
 impl Default for Shadow {
-    /// A moderate black shadow slightly below a rectangular caster.
+    /// A moderate black shadow slightly below the caster.
     fn default() -> Self {
-        Self::new(
-            Color::srgb(0, 0, 0),
-            Vector { x: 0.0, y: 2.0 },
-            4.0,
-            Rectangle,
-        )
+        Self::new(4.0).offset(0.0, 2.0)
     }
 }
 
@@ -208,7 +218,7 @@ impl Default for Shadow {
 impl<T: Into<f64>> From<T> for Shadow {
     fn from(value: T) -> Self {
         let v = value.into() as f32;
-        Self::new(Color::srgb(0, 0, 0), Vector { x: 0.0, y: v }, v, Rectangle)
+        Self::new(v).offset(0.0, v)
     }
 }
 

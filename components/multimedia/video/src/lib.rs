@@ -24,10 +24,10 @@ pub use layout::{DEFAULT_ASPECT, FitVideoLayout, fit_video};
 /// Public video view configuration types.
 pub mod video;
 pub use video::{
-    AudioTrackInfo, AudioTrackSelection, ContentMode, EquirectangularProjection, Event,
-    IntoVideoSource, LiveWindow, NetworkPlaybackPolicy, PlaybackConfiguration, PlaybackMetrics,
-    PlaybackOutputPath, PlaybackPolicy, PlaybackPowerPolicy, SphericalStereoLayout,
-    SphericalViewport, SubtitleSelection, SubtitleTrackInfo, SubtitleTrackOrigin, TimedMetadata,
-    TrackCatalog, Video, VideoConfig, VideoPlayer, VideoPlayerConfig, VideoProjection, VideoSource,
+    AudioTrackInfo, AudioTrackSelection, ContentMode, EquirectangularProjection, IntoVideoSource,
+    LiveWindow, NetworkPlaybackPolicy, PlaybackConfiguration, PlaybackMetrics, PlaybackOutputPath,
+    PlaybackPolicy, PlaybackPowerPolicy, SphericalStereoLayout, SphericalViewport,
+    SubtitleSelection, SubtitleTrackInfo, SubtitleTrackOrigin, TimedMetadata, TrackCatalog, Video,
+    VideoConfig, VideoEvent, VideoPlayer, VideoPlayerConfig, VideoProjection, VideoSource,
     VideoTrackInfo, VideoTrackSelection, Volume, video, video_player,
 };

@@ -7,6 +7,7 @@ use alloc::rc::Rc;
 use core::cell::RefCell;
 
 use cocoa_ui::{PlatformView, view};
+use waterui::reactive::Signal as _;
 use waterui_backend_core::Environment;
 use waterui_core::layout::{Size, SubView};
 use waterui_structural_transition::{GhostSlot, TransitionGeometry, TransitionPhase};
@@ -205,7 +206,7 @@ impl LiveChild {
         );
         let state = claim
             .spec
-            .start(TransitionPhase::Removal, claim.reduce_motion);
+            .start(TransitionPhase::Removal, claim.reduce_motion.snapshot());
         // Without the filtered pipeline a `captures_content` transition
         // has no realization — a user-triggerable failure, reported and
         // ended at once: the site's `None` answer releases the slot.

@@ -133,12 +133,13 @@ pub mod prelude {
     // Drag and drop extension traits
     pub use super::drag_drop::DropDestinationExt;
 
-    pub use super::widget::{
-        Accordion, Card, CardStyle, CardStyleTokens, CardTheme, Divider, ErrorView, ResultExt,
-        SuspendedView, Suspense, accordion, card, condition::when, error_view, suspense,
-    };
     #[cfg(feature = "avatar")]
     pub use super::widget::{Avatar, avatar};
+    pub use super::widget::{
+        Card, CardStyle, CardStyleTokens, CardTheme, DialogTheme, Disclosure, Divider, ErrorView,
+        ResultExt, SuspendedView, Suspense, card, condition::when, disclosure, error_view,
+        suspense,
+    };
     #[cfg(feature = "flow-markdown")]
     pub use super::widget::{
         FlowAnimationPolicy, FlowAnimationPreset, FlowElementKind, FlowMarkdown, FlowStreamMode,
@@ -199,8 +200,6 @@ pub use waterui_form as form;
 pub use waterui_graphics::canvas;
 pub use waterui_graphics::color;
 pub use waterui_graphics::gradient;
-#[cfg(feature = "image")]
-pub use waterui_graphics::image_decode;
 #[cfg(feature = "gpu")]
 pub use waterui_graphics::{GpuContent, GpuView, RedrawHandle};
 #[cfg(any(feature = "gpu", feature = "cpu"))]
@@ -448,4 +447,32 @@ macro_rules! configure_environment {
         $crate::Plugin::install($crate::catalog!(), &mut __waterui_env);
         __waterui_env
     }};
+}
+
+#[cfg(all(test, feature = "widgets"))]
+mod widgets_glob_tests {
+    use crate::prelude::*;
+    use crate::widgets::*;
+
+    #[test]
+    fn widgets_root_globs_cleanly_alongside_prelude() {
+        let _app_view = vstack((text("App"), spacer())).padding();
+        let _now = Date::now();
+        let timeline = {
+            use crate::widgets::prelude::*;
+
+            Timeline::new([TimelineEntry::new(
+                Date::unix_timestamp(1_700_000_000.0),
+                vstack((
+                    text("Steps").headline(),
+                    spacer(),
+                    text(Date::now()).relative(),
+                    image_system("figure.walk").a11y_label("Walking"),
+                ))
+                .padding()
+                .background(Color::ACCENT),
+            )])
+        };
+        assert_eq!(timeline.entries().len(), 1);
+    }
 }

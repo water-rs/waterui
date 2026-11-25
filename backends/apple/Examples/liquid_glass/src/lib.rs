@@ -13,7 +13,7 @@ use waterui::background::Glass;
 use waterui::component::label::IconLabel;
 use waterui::handler::ViewBuilder;
 use waterui::id::SelfId;
-use waterui::navigation::{TabBarMinimizeBehavior, TabRole};
+use waterui::navigation::{TabBarMinimizeBehavior, TabRole, TabStyle};
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
@@ -42,7 +42,7 @@ pub fn main() -> impl View {
             pane_tab(pane.into_inner())
         }),
     )
-    .style(tab_style::automatic())
+    .style(TabStyle::Automatic)
     // iOS collapses the bar into a glass pill as the surfaces scroll, and
     // brings it back on the way up.
     .minimize_behavior(TabBarMinimizeBehavior::OnScrollDown)

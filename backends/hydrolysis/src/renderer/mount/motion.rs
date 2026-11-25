@@ -24,6 +24,7 @@ use waterui_core::animation::ChangeAnimation;
 use waterui_graphics::animation::engine_animation;
 
 use super::placement::PlacementClock;
+use crate::animation::PerpetualAnimation;
 use crate::renderer::signals::SubscribedSnapshot;
 use crate::time::Instant;
 
@@ -32,8 +33,10 @@ use crate::time::Instant;
 /// answer settle queries and fire the one settle re-record, without ever
 /// evaluating the track.
 pub struct MotionStatus {
-    /// The instant the running track is done, `None` at rest.
+    /// The instant a finite running track is done, `None` at rest or perpetual.
     until: Cell<Option<Instant>>,
+    /// Whether the running track repeats forever until replaced.
+    perpetual: Cell<bool>,
     /// Whether the owner re-records once the track is done: armed by a
     /// change whose track can show content its rest value hides, or by a
     /// record that waits on the track (an exiting overlay).
@@ -43,9 +46,16 @@ pub struct MotionStatus {
 }
 
 impl MotionStatus {
+    /// Whether the track still runs at `now`, with `perpetual` controlling
+    /// whether `Repeat::Forever` tracks count as running.
+    pub fn is_running_with(&self, perpetual: PerpetualAnimation, now: Instant) -> bool {
+        self.until.get().is_some_and(|until| now < until)
+            || (perpetual == PerpetualAnimation::Counts && self.perpetual.get())
+    }
+
     /// Whether the track still runs at `now`.
     pub fn is_running(&self, now: Instant) -> bool {
-        self.until.get().is_some_and(|until| now < until)
+        self.is_running_with(PerpetualAnimation::Counts, now)
     }
 
     /// Re-records the owner once the running track is done: a record that
@@ -100,7 +110,7 @@ impl<T: Animatable> Track<T> {
         let (mut position, mut velocity) = (T::Lanes::zero(), T::Lanes::zero());
         let done = self
             .animation
-            .timing()
+            .playback()
             .expect("a wrapper property's animation is a curve or a spring")
             .sample_lanes(
                 self.from.as_ref(),
@@ -113,32 +123,22 @@ impl<T: Animatable> Track<T> {
         (position, velocity, done)
     }
 
-    /// When the track is done: a curve once its duration passed, a spring
-    /// from its slowest lane's settling time on, rounded up to the
-    /// nanosecond so the instant itself evaluates done.
-    fn until(&self, target: T) -> Instant {
-        let after = match self.animation {
-            Animation::Curve(curve) => curve.duration,
-            Animation::Spring(spring) => {
-                let target = target.into_lanes();
-                let seconds = (0..T::Lanes::N)
-                    .map(|lane| {
-                        spring.settling_duration(
-                            self.from.get(lane) - target.get(lane),
-                            self.velocity.get(lane),
-                        )
-                    })
-                    .fold(0.0_f64, f64::max);
-                let settled = Duration::from_secs_f64(seconds);
-                if settled.as_secs_f64() < seconds {
-                    settled + Duration::from_nanos(1)
-                } else {
-                    settled
-                }
-            }
-            Animation::Decay(_) => unreachable!("a wrapper property never decays"),
+    /// When a finite track is done — rounded up to the nanosecond so the
+    /// instant itself evaluates done — or `None` when repeating forever.
+    fn until(&self, target: T) -> Option<Instant> {
+        let target = target.into_lanes();
+        let seconds = self
+            .animation
+            .playback()
+            .expect("a wrapper property never decays")
+            .duration_for(self.from.as_ref(), self.velocity.as_ref(), target.as_ref())?;
+        let settled = Duration::from_secs_f64(seconds);
+        let settled = if settled.as_secs_f64() < seconds {
+            settled + Duration::from_nanos(1)
+        } else {
+            settled
         };
-        self.start + after
+        Some(self.start + settled)
     }
 }
 
@@ -191,6 +191,14 @@ struct MotionCell<T: Animatable> {
     source: RefCell<Option<BoxWatcherGuard>>,
 }
 
+impl<T: Animatable> Drop for MotionCell<T> {
+    fn drop(&mut self) {
+        if self.status.perpetual.replace(false) {
+            self.clock.note_perpetual(false);
+        }
+    }
+}
+
 /// One wrapper property's engine-run motion: the track the engine samples
 /// on the render thread, held here so the host evaluates the same track at
 /// the instants it asks about (water-rs/waterui#2203).
@@ -239,6 +247,7 @@ impl<T: Animatable + PartialEq> Motion<T> {
             }),
             status: Rc::new(MotionStatus {
                 until: Cell::new(None),
+                perpetual: Cell::new(false),
                 settle_record: Cell::new(false),
                 record,
             }),
@@ -345,7 +354,15 @@ impl<T: Animatable + PartialEq> Motion<T> {
         state.target = target;
         state.track = track;
         drop(state);
-        let until = track.map(|track| track.until(target));
+        let (until, forever) = track.map_or((None, false), |track| {
+            track
+                .until(target)
+                .map_or((None, true), |until| (Some(until), false))
+        });
+        let was_forever = self.0.status.perpetual.replace(forever);
+        if was_forever != forever {
+            self.0.clock.note_perpetual(forever);
+        }
         self.0.status.until.set(until);
         self.0.clock.note_motion(until);
         if self.0.gates_record {

@@ -260,6 +260,19 @@ impl NativeBackend for AppleBackend {
         )
     }
 
+    fn disclosure<C: ChildView<Self>>(
+        &mut self,
+        native: waterui::widget::disclosure::DisclosureConfig<C>,
+        env: &Environment,
+        (): (),
+    ) -> NativeLeaf {
+        mark_reached!("disclosure");
+        crate::components::disclosure::realize_disclosure_config(
+            native.map_slots(C::into_child),
+            &self.entry(env),
+        )
+    }
+
     fn progress<C: ChildView<Self>>(
         &mut self,
         native: waterui::component::progress::ProgressConfig<C>,

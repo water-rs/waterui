@@ -26,7 +26,7 @@ use waterui_interaction::interaction::Disabled;
 use waterui_interaction::key::Key;
 pub use waterui_interaction::key::NamedKey;
 use waterui_locale::locale_binding;
-use waterui_text::{TextConfig, styled::StyledStr};
+use waterui_text::{IntoText, Text, TextConfig, styled::StyledStr};
 
 use crate::{
     button::{Button, ButtonRole, ButtonStyle},
@@ -491,8 +491,7 @@ impl core::str::FromStr for ShortcutKey {
 /// A string that is neither a single character nor an armable named shortcut key.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("`{0}` is neither a single character nor an armable shortcut key")]
-#[non_exhaustive]
-pub struct InvalidShortcutKey(pub String);
+pub struct InvalidShortcutKey(String);
 
 impl InvalidShortcutKey {
     /// Rejects `key`.
@@ -624,7 +623,7 @@ impl_constant!(Shortcut, ShortcutModifiers);
 pub struct Menu<L> {
     label: Label<L>,
     /// The menu items to display when the menu is opened.
-    pub items: Computed<Vec<MenuItem>>,
+    items: Computed<Vec<MenuItem>>,
     identity: Rc<()>,
     style: ButtonStyle,
     size: ControlSize,
@@ -643,6 +642,12 @@ impl<L> Menu<L> {
             style: ButtonStyle::Automatic,
             size: ControlSize::Small,
         }
+    }
+
+    /// The menu items to display when the menu is opened.
+    #[must_use]
+    pub const fn items(&self) -> &Computed<Vec<MenuItem>> {
+        &self.items
     }
 
     /// Sets the style the menu's trigger button is drawn in.
@@ -751,7 +756,7 @@ pub struct Command {
     /// What the command does, which decides its presentation.
     role: Option<ButtonRole>,
     /// An optional secondary line shown under the label.
-    subtitle: Option<Str>,
+    subtitle: Option<Text>,
     /// Local state layered onto the environment when the action runs.
     captured_env: Environment,
     identity: Rc<()>,
@@ -796,7 +801,7 @@ impl Command {
 
     /// An optional secondary line shown under the label.
     #[must_use]
-    pub const fn command_subtitle(&self) -> Option<&Str> {
+    pub const fn command_subtitle(&self) -> Option<&Text> {
         self.subtitle.as_ref()
     }
 
@@ -843,7 +848,13 @@ impl Command {
             selected: self.selected,
             shortcut: self.shortcut,
             role: self.role,
-            subtitle: self.subtitle,
+            subtitle: self.subtitle.map(|subtitle| {
+                subtitle
+                    .resolve(env)
+                    .content()
+                    .map(|styled| styled.to_plain())
+                    .computed()
+            }),
             identity: self.identity,
         }
     }
@@ -883,9 +894,12 @@ impl Command {
     }
 
     /// Shows a secondary line under the command's label.
+    ///
+    /// Accepts any [`IntoText`] value so string literals resolve through the
+    /// active translation catalog in the surrounding [`Environment`].
     #[must_use]
-    pub fn subtitle(mut self, subtitle: impl Into<Str>) -> Self {
-        self.subtitle = Some(subtitle.into());
+    pub fn subtitle(mut self, subtitle: impl IntoText) -> Self {
+        self.subtitle = Some(subtitle.into_text());
         self
     }
 
@@ -1349,23 +1363,23 @@ pub fn resolve_menu_bar_items<L: LabelKind + Clone, S: ChildSlot>(
 #[derive(Debug)]
 pub struct ResolvedCommand<S = NoopSlot> {
     /// Resolved text config for native menu presentation.
-    pub label: TextConfig,
+    label: TextConfig,
     /// The full semantic label retained for self-drawn menu renderers.
-    pub semantic_label: Label<SemanticLabel>,
+    semantic_label: Label<SemanticLabel>,
     /// Optional icon slot lifted out of the label for platform chrome.
-    pub icon: Option<IconSlot<S>>,
+    icon: Option<IconSlot<S>>,
     /// Shared action invoked by the native backend.
-    pub action: SharedAction<()>,
+    action: SharedAction<()>,
     /// Whether the command is currently disabled.
-    pub disabled: Computed<bool>,
+    disabled: Computed<bool>,
     /// Whether the command is currently selected or checked.
-    pub selected: Computed<bool>,
+    selected: Computed<bool>,
     /// Optional keyboard shortcut metadata.
-    pub shortcut: Option<Shortcut>,
+    shortcut: Option<Shortcut>,
     /// What the command does, which decides its presentation.
-    pub role: Option<ButtonRole>,
+    role: Option<ButtonRole>,
     /// An optional secondary line shown under the label.
-    pub subtitle: Option<Str>,
+    subtitle: Option<Computed<Str>>,
     identity: Rc<()>,
 }
 
@@ -1417,6 +1431,65 @@ impl<S: 'static> ResolvedCommand<S> {
 }
 
 impl<S> ResolvedCommand<S> {
+    /// Resolved text config for native menu presentation.
+    #[must_use]
+    pub const fn label(&self) -> &TextConfig {
+        &self.label
+    }
+
+    /// The full semantic label retained for self-drawn menu renderers.
+    #[must_use]
+    pub const fn semantic_label(&self) -> &Label<SemanticLabel> {
+        &self.semantic_label
+    }
+
+    /// Optional icon slot lifted out of the label for platform chrome.
+    #[must_use]
+    pub const fn icon(&self) -> Option<&IconSlot<S>> {
+        self.icon.as_ref()
+    }
+
+    /// Shared action invoked by the native backend.
+    #[must_use]
+    pub const fn action(&self) -> &SharedAction<()> {
+        &self.action
+    }
+
+    /// Whether the command is currently disabled.
+    #[must_use]
+    pub const fn is_disabled(&self) -> &Computed<bool> {
+        &self.disabled
+    }
+
+    /// Replaces the disabled signal for a resolved command.
+    pub fn set_disabled(&mut self, disabled: Computed<bool>) {
+        self.disabled = disabled;
+    }
+
+    /// Whether the command is currently selected or checked.
+    #[must_use]
+    pub const fn is_selected(&self) -> &Computed<bool> {
+        &self.selected
+    }
+
+    /// Optional keyboard shortcut metadata.
+    #[must_use]
+    pub const fn shortcut(&self) -> Option<&Shortcut> {
+        self.shortcut.as_ref()
+    }
+
+    /// What the command does, which decides its presentation.
+    #[must_use]
+    pub const fn role(&self) -> Option<ButtonRole> {
+        self.role
+    }
+
+    /// An optional secondary line shown under the label.
+    #[must_use]
+    pub const fn subtitle(&self) -> Option<&Computed<Str>> {
+        self.subtitle.as_ref()
+    }
+
     /// Stable semantic identity used by native collection reconciliation.
     #[doc(hidden)]
     #[must_use]
@@ -1471,13 +1544,13 @@ impl<S> ResolvedCommand<S> {
 #[derive(Debug)]
 pub struct ResolvedNestedMenu<S = NoopSlot> {
     /// Resolved text config for the nested menu title.
-    pub label: TextConfig,
+    label: TextConfig,
     /// The full semantic label retained for self-drawn menu renderers.
-    pub semantic_label: Label<SemanticLabel>,
+    semantic_label: Label<SemanticLabel>,
     /// Optional icon slot lifted out of the label for platform chrome.
-    pub icon: Option<IconSlot<S>>,
+    icon: Option<IconSlot<S>>,
     /// Resolved nested menu items.
-    pub items: Computed<Vec<ResolvedMenuItem<S>>>,
+    items: Computed<Vec<ResolvedMenuItem<S>>>,
     identity: Rc<()>,
 }
 
@@ -1531,6 +1604,30 @@ impl<S: 'static> ResolvedNestedMenu<S> {
 }
 
 impl<S> ResolvedNestedMenu<S> {
+    /// Resolved text config for the nested menu title.
+    #[must_use]
+    pub const fn label(&self) -> &TextConfig {
+        &self.label
+    }
+
+    /// The full semantic label retained for self-drawn menu renderers.
+    #[must_use]
+    pub const fn semantic_label(&self) -> &Label<SemanticLabel> {
+        &self.semantic_label
+    }
+
+    /// Optional icon slot lifted out of the label for platform chrome.
+    #[must_use]
+    pub const fn icon(&self) -> Option<&IconSlot<S>> {
+        self.icon.as_ref()
+    }
+
+    /// Resolved nested menu items.
+    #[must_use]
+    pub const fn items(&self) -> &Computed<Vec<ResolvedMenuItem<S>>> {
+        &self.items
+    }
+
     /// Stable semantic identity used by native collection reconciliation.
     #[doc(hidden)]
     #[must_use]
@@ -1980,7 +2077,34 @@ mod tests {
             panic!("second resolved item should be a command");
         };
         assert_eq!(delete.role, Some(ButtonRole::Destructive));
-        assert_eq!(delete.subtitle.as_deref(), Some("For everyone"));
+        assert_eq!(
+            delete.subtitle.as_ref().map(Signal::snapshot).as_deref(),
+            Some("For everyone")
+        );
+    }
+
+    #[test]
+    fn command_subtitle_resolves_through_translation_catalog() {
+        use waterui_locale::{TranslationCatalog, locales};
+
+        crate::init_test_executor();
+        let mut env = Environment::default();
+        env.insert(locales::FR);
+        env.insert(
+            TranslationCatalog::new()
+                .add_toml(locales::FR, "\"For everyone\" = \"Pour tous\"")
+                .expect("test catalog must parse"),
+        );
+
+        let resolved = Command::builder("Delete")
+            .action(|| {})
+            .subtitle("For everyone")
+            .resolve::<NoopSlot>(&env);
+
+        assert_eq!(
+            resolved.subtitle.as_ref().map(Signal::snapshot).as_deref(),
+            Some("Pour tous")
+        );
     }
 
     #[test]

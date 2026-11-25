@@ -26,19 +26,15 @@ use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::{Binding, Signal};
 
-fn set_f64_button(label: &'static str, value: f64, binding: &Binding<f64>) -> impl View + use<> {
+fn set_f32_button(label: &'static str, value: f32, binding: &Binding<f32>) -> impl View + use<> {
     button(label)
-        .action(move |State(current): State<Binding<f64>>| current.set(value))
+        .action(move |State(current): State<Binding<f32>>| current.set(value))
         .state(binding)
 }
 
-/// Reads a slider's `f64` binding as the `f32` a filter modifier takes, animated.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "slider bindings are f64 while filter modifiers take f32; every value here is UI-scale, far inside f32's range"
-)]
-fn animated_filter_value(value: &Binding<f64>, animation: Animation) -> impl Signal<Output = f32> {
-    value.clone().map(|v| v as f32).with(animation)
+/// Animates a filter's `f32` binding directly without any f64 conversion.
+fn animated_filter_value(value: &Binding<f32>, animation: Animation) -> impl Signal<Output = f32> {
+    value.clone().with(animation)
 }
 
 /// Sample content for demonstrating filters
@@ -62,7 +58,7 @@ fn sample_content() -> impl View {
 }
 
 /// Demo: Blur filter - Gaussian blur effect
-fn blur_section(blur_radius: &Binding<f64>) -> impl View + use<> {
+fn blur_section(blur_radius: &Binding<f32>) -> impl View + use<> {
     let animated_blur = animated_filter_value(
         blur_radius,
         Animation::ease_in_out(Duration::from_millis(300)),
@@ -76,17 +72,17 @@ fn blur_section(blur_radius: &Binding<f64>) -> impl View + use<> {
             .range(0.0..=20.0)
             .hide_label(),
         hstack((
-            set_f64_button("0", 0.0, blur_radius),
-            set_f64_button("5", 5.0, blur_radius),
-            set_f64_button("10", 10.0, blur_radius),
-            set_f64_button("20", 20.0, blur_radius),
+            set_f32_button("0", 0.0, blur_radius),
+            set_f32_button("5", 5.0, blur_radius),
+            set_f32_button("10", 10.0, blur_radius),
+            set_f32_button("20", 20.0, blur_radius),
         )),
     ))
     .padding()
 }
 
 /// Demo: Brightness filter - lighten or darken
-fn brightness_section(brightness: &Binding<f64>) -> impl View + use<> {
+fn brightness_section(brightness: &Binding<f32>) -> impl View + use<> {
     let animated_brightness = animated_filter_value(
         brightness,
         Animation::ease_in_out(Duration::from_millis(300)),
@@ -102,17 +98,17 @@ fn brightness_section(brightness: &Binding<f64>) -> impl View + use<> {
             .range(-1.0..=1.0)
             .hide_label(),
         hstack((
-            set_f64_button("-1", -1.0, brightness),
-            set_f64_button("0", 0.0, brightness),
-            set_f64_button("0.5", 0.5, brightness),
-            set_f64_button("1", 1.0, brightness),
+            set_f32_button("-1", -1.0, brightness),
+            set_f32_button("0", 0.0, brightness),
+            set_f32_button("0.5", 0.5, brightness),
+            set_f32_button("1", 1.0, brightness),
         )),
     ))
     .padding()
 }
 
 /// Demo: Saturation filter - color intensity
-fn saturation_section(saturation: &Binding<f64>) -> impl View + use<> {
+fn saturation_section(saturation: &Binding<f32>) -> impl View + use<> {
     let animated_saturation = animated_filter_value(
         saturation,
         Animation::ease_in_out(Duration::from_millis(300)),
@@ -128,17 +124,17 @@ fn saturation_section(saturation: &Binding<f64>) -> impl View + use<> {
             .range(0.0..=2.0)
             .hide_label(),
         hstack((
-            set_f64_button("0", 0.0, saturation),
-            set_f64_button("1", 1.0, saturation),
-            set_f64_button("1.5", 1.5, saturation),
-            set_f64_button("2", 2.0, saturation),
+            set_f32_button("0", 0.0, saturation),
+            set_f32_button("1", 1.0, saturation),
+            set_f32_button("1.5", 1.5, saturation),
+            set_f32_button("2", 2.0, saturation),
         )),
     ))
     .padding()
 }
 
 /// Demo: Contrast filter
-fn contrast_section(contrast: &Binding<f64>) -> impl View + use<> {
+fn contrast_section(contrast: &Binding<f32>) -> impl View + use<> {
     let animated_contrast =
         animated_filter_value(contrast, Animation::ease_in_out(Duration::from_millis(300)));
 
@@ -150,24 +146,20 @@ fn contrast_section(contrast: &Binding<f64>) -> impl View + use<> {
             .min_height(100.0),
         slider("Contrast", contrast).range(0.0..=2.0).hide_label(),
         hstack((
-            set_f64_button("0", 0.0, contrast),
-            set_f64_button("1", 1.0, contrast),
-            set_f64_button("1.5", 1.5, contrast),
-            set_f64_button("2", 2.0, contrast),
+            set_f32_button("0", 0.0, contrast),
+            set_f32_button("1", 1.0, contrast),
+            set_f32_button("1.5", 1.5, contrast),
+            set_f32_button("2", 2.0, contrast),
         )),
     ))
     .padding()
 }
 
 /// Demo: Hue rotation filter - shift colors
-fn hue_rotation_section(hue: &Binding<f64>) -> impl View + use<> {
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "slider bindings are f64 while Angle::degrees takes f32; 0..=360 is exact"
-    )]
+fn hue_rotation_section(hue: &Binding<f32>) -> impl View + use<> {
     let animated_hue = hue
         .clone()
-        .map(|v| Angle::degrees(v as f32))
+        .map(Angle::degrees)
         .with(Animation::ease_in_out(Duration::from_millis(400)));
 
     vstack((
@@ -178,17 +170,17 @@ fn hue_rotation_section(hue: &Binding<f64>) -> impl View + use<> {
             .min_height(100.0),
         slider("Hue rotation", hue).range(0.0..=360.0).hide_label(),
         hstack((
-            set_f64_button("0", 0.0, hue),
-            set_f64_button("90", 90.0, hue),
-            set_f64_button("180", 180.0, hue),
-            set_f64_button("270", 270.0, hue),
+            set_f32_button("0", 0.0, hue),
+            set_f32_button("90", 90.0, hue),
+            set_f32_button("180", 180.0, hue),
+            set_f32_button("270", 270.0, hue),
         )),
     ))
     .padding()
 }
 
 /// Demo: Grayscale filter
-fn grayscale_section(grayscale: &Binding<f64>) -> impl View + use<> {
+fn grayscale_section(grayscale: &Binding<f32>) -> impl View + use<> {
     let animated_grayscale = animated_filter_value(
         grayscale,
         Animation::ease_in_out(Duration::from_millis(300)),
@@ -202,16 +194,16 @@ fn grayscale_section(grayscale: &Binding<f64>) -> impl View + use<> {
             .min_height(100.0),
         slider("Grayscale", grayscale).hide_label(),
         hstack((
-            set_f64_button("0", 0.0, grayscale),
-            set_f64_button("0.5", 0.5, grayscale),
-            set_f64_button("1", 1.0, grayscale),
+            set_f32_button("0", 0.0, grayscale),
+            set_f32_button("0.5", 0.5, grayscale),
+            set_f32_button("1", 1.0, grayscale),
         )),
     ))
     .padding()
 }
 
 /// Demo: Opacity filter
-fn opacity_section(opacity: &Binding<f64>) -> impl View + use<> {
+fn opacity_section(opacity: &Binding<f32>) -> impl View + use<> {
     let animated_opacity =
         animated_filter_value(opacity, Animation::ease_in_out(Duration::from_millis(300)));
 
@@ -221,9 +213,9 @@ fn opacity_section(opacity: &Binding<f64>) -> impl View + use<> {
         sample_content().opacity(animated_opacity).min_height(100.0),
         slider("Opacity", opacity).hide_label(),
         hstack((
-            set_f64_button("0", 0.0, opacity),
-            set_f64_button("0.5", 0.5, opacity),
-            set_f64_button("1", 1.0, opacity),
+            set_f32_button("0", 0.0, opacity),
+            set_f32_button("0.5", 0.5, opacity),
+            set_f32_button("1", 1.0, opacity),
         )),
     ))
     .padding()
@@ -233,16 +225,16 @@ fn opacity_section(opacity: &Binding<f64>) -> impl View + use<> {
 #[state]
 #[derive(Clone)]
 struct CombinedFilters {
-    blur: Binding<f64>,
-    saturation: Binding<f64>,
-    hue: Binding<f64>,
+    blur: Binding<f32>,
+    saturation: Binding<f32>,
+    hue: Binding<f32>,
 }
 
 /// Demo: Combined filters with animation
 fn combined_section(
-    combined_blur: &Binding<f64>,
-    combined_saturation: &Binding<f64>,
-    combined_hue: &Binding<f64>,
+    combined_blur: &Binding<f32>,
+    combined_saturation: &Binding<f32>,
+    combined_hue: &Binding<f32>,
 ) -> impl View + use<> {
     let filters = CombinedFilters {
         blur: combined_blur.clone(),
@@ -303,19 +295,19 @@ fn combined_section(
 
 /// Root view: interactive showcase of every filter section.
 pub fn demo() -> impl View {
-    // State for individual filter sections (using f64 for Slider compatibility)
-    let blur_radius = Binding::f64(0.0);
-    let brightness = Binding::f64(0.0);
-    let saturation = Binding::f64(1.0);
-    let contrast = Binding::f64(1.0);
-    let hue = Binding::f64(0.0);
-    let grayscale = Binding::f64(0.0);
-    let opacity = Binding::f64(1.0);
+    // State for individual filter sections
+    let blur_radius = Binding::container(0.0_f32);
+    let brightness = Binding::container(0.0_f32);
+    let saturation = Binding::container(1.0_f32);
+    let contrast = Binding::container(1.0_f32);
+    let hue = Binding::container(0.0_f32);
+    let grayscale = Binding::container(0.0_f32);
+    let opacity = Binding::container(1.0_f32);
 
     // State for combined filter section
-    let combined_blur = Binding::f64(0.0);
-    let combined_saturation = Binding::f64(1.0);
-    let combined_hue = Binding::f64(0.0);
+    let combined_blur = Binding::container(0.0_f32);
+    let combined_saturation = Binding::container(1.0_f32);
+    let combined_hue = Binding::container(0.0_f32);
 
     scroll(
         vstack((

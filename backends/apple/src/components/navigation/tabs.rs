@@ -573,7 +573,7 @@ mod platform {
     use cocoa_ui::appkit::{HostView, Segment, SegmentedControl, SourceList, WindowToolbar};
     use cocoa_ui::objc2_app_kit::NSWindowStyleMask;
     use cocoa_ui::{Rect, view};
-    use waterui::navigation::{TabsLayout, tab::NativeTabStyle};
+    use waterui::navigation::{TabsLayout, tab::TabStyle};
     use waterui::reactive::Signal;
     use waterui_core::id::Id;
 
@@ -640,7 +640,7 @@ mod platform {
         }
 
         let env = ctx.env().clone();
-        let sidebar = matches!(layout.style(), NativeTabStyle::Sidebar);
+        let sidebar = matches!(layout.style(), TabStyle::Sidebar);
         let chrome = if sidebar {
             let list = SourceList::new(mtm);
             list.set_segments(&segments(&mounted.borrow(), &env));

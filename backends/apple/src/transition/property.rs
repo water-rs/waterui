@@ -11,6 +11,7 @@ use alloc::rc::Rc;
 use core::cell::RefCell;
 
 use cocoa_ui::{PlatformView, Retained, view};
+use waterui::reactive::Signal as _;
 use waterui_core::layout::{LayoutDirection, Size};
 use waterui_structural_transition::{
     TransitionGeometry, TransitionPhase, TransitionProperties, TransitionState,
@@ -237,7 +238,7 @@ impl InsertionRun {
     ) -> Rc<RefCell<Option<Self>>> {
         let state = claim
             .spec
-            .start(TransitionPhase::Insertion, claim.reduce_motion);
+            .start(TransitionPhase::Insertion, claim.reduce_motion.snapshot());
         let slot: Rc<RefCell<Option<Self>>> = Rc::new(RefCell::new(None));
         // Without the filtered pipeline a `captures_content` transition
         // has no realization — a user-triggerable failure, reported and

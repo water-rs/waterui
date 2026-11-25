@@ -199,7 +199,7 @@ pub fn close_window_command(env: &Environment, owner_closable: bool) -> Option<R
         },
     );
     if !owner_closable {
-        command.disabled = Computed::constant(true);
+        command.set_disabled(Computed::constant(true));
     }
     Some(command)
 }
@@ -262,7 +262,7 @@ fn collect_menu_shortcuts<S: 'static>(
                 }
             }
             ResolvedMenuItem::Menu(menu) => {
-                collect_menu_shortcuts(&menu.items.snapshot(), env, out);
+                collect_menu_shortcuts(&menu.items().snapshot(), env, out);
             }
             ResolvedMenuItem::Divider => {}
         }
@@ -270,12 +270,12 @@ fn collect_menu_shortcuts<S: 'static>(
 }
 
 fn collect_command_shortcut<S>(command: &ResolvedCommand<S>, out: &mut Vec<MenuShortcut>) {
-    if let Some(shortcut) = &command.shortcut {
+    if let Some(shortcut) = command.shortcut() {
         out.push(MenuShortcut::new(
             shortcut,
-            command.action.clone(),
-            command.disabled.clone(),
-            command.label.content().snapshot().to_plain(),
+            command.action().clone(),
+            command.is_disabled().clone(),
+            command.label().content().snapshot().to_plain(),
         ));
     }
 }

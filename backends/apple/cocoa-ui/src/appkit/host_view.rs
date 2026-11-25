@@ -430,7 +430,12 @@ define_class!(
                 self.ivars().drop.borrow().clone().map_or_else(
                     // SAFETY: see the module safety note.
                     || unsafe { msg_send![super(self), draggingEntered: sender] },
-                    |handlers| (handlers.entered)(&DragInfo::new(sender)),
+                    |handlers| {
+                        let location = self
+                            .convertPoint_fromView(sender.draggingLocation(), None)
+                            .into();
+                        (handlers.entered)(&DragInfo::new(sender, location))
+                    },
                 )
             })
         }
@@ -445,7 +450,12 @@ define_class!(
                 self.ivars().drop.borrow().clone().map_or_else(
                     // SAFETY: see the module safety note.
                     || unsafe { msg_send![super(self), draggingUpdated: sender] },
-                    |handlers| (handlers.updated)(&DragInfo::new(sender)),
+                    |handlers| {
+                        let location = self
+                            .convertPoint_fromView(sender.draggingLocation(), None)
+                            .into();
+                        (handlers.updated)(&DragInfo::new(sender, location))
+                    },
                 )
             })
         }
@@ -456,7 +466,10 @@ define_class!(
             guarded("HostView draggingExited:", || {
                 if let Some(handlers) = self.ivars().drop.borrow().clone() {
                     if let Some(sender) = sender {
-                        (handlers.exited)(&DragInfo::new(sender));
+                        let location = self
+                            .convertPoint_fromView(sender.draggingLocation(), None)
+                            .into();
+                        (handlers.exited)(&DragInfo::new(sender, location));
                     }
                 } else {
                     // SAFETY: see the module safety note.
@@ -475,7 +488,12 @@ define_class!(
                 self.ivars().drop.borrow().clone().map_or_else(
                     // SAFETY: see the module safety note.
                     || unsafe { msg_send![super(self), performDragOperation: sender] },
-                    |handlers| (handlers.perform)(&DragInfo::new(sender)),
+                    |handlers| {
+                        let location = self
+                            .convertPoint_fromView(sender.draggingLocation(), None)
+                            .into();
+                        (handlers.perform)(&DragInfo::new(sender, location))
+                    },
                 )
             })
         }

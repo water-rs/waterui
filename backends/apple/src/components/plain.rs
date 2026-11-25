@@ -43,12 +43,7 @@ fn as_view(label: &Label) -> &cocoa_ui::PlatformView {
 /// The cross-dissolve duration the metadata calls for, in seconds — the
 /// same table `components::text` uses.
 fn cross_dissolve_duration(metadata: &Metadata) -> Option<f64> {
-    match ChangeAnimation::of(metadata).animation() {
-        None => None,
-        Some(Animation::Default) => Some(0.25),
-        Some(Animation::Bezier { duration, .. }) => Some(duration.as_secs_f64()),
-        Some(Animation::Spring { .. }) => Some(0.15),
-    }
+    crate::animation::cross_dissolve_duration(metadata)
 }
 
 /// A `WorkingColor` as the platform's extended linear Display-P3 color object.

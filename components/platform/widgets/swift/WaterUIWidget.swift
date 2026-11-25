@@ -24,12 +24,52 @@ public struct WaterUIWidget<Declaration: WUIWidgetDeclaration>: Widget {
             kind: Declaration.kind,
             provider: WUITimelineProvider(snapshot: Declaration.snapshotProvider)
         ) { entry in
-            WUINodeView(entry.node)
-                .containerBackground(for: .widget) { Color.clear }
+            WUIWidgetRootView(node: entry.node)
         }
         .configurationDisplayName(Declaration.displayName)
         .description(Declaration.widgetDescription)
         .supportedFamilies(Declaration.families)
+    }
+}
+
+/// Lifts a root `.background(...)` node into `WidgetKit`'s
+/// `.containerBackground(for: .widget)` so the background bleeds cleanly to
+/// the widget tile edge and adapts to StandBy / tinted rendering, falling back
+/// to the system widget background when none is declared.
+private struct WUIWidgetRootView: View {
+    let node: WUINode
+
+    var body: some View {
+        let extracted = Self.extractContainerBackground(from: node)
+        if let background = extracted.background {
+            WUINodeView(extracted.content)
+                .containerBackground(for: .widget) {
+                    WUINodeView(background)
+                }
+        } else {
+            WUINodeView(extracted.content)
+                .containerBackground(.background, for: .widget)
+        }
+    }
+
+    private static func extractContainerBackground(
+        from node: WUINode
+    ) -> (content: WUINode, background: WUINode?) {
+        switch node {
+        case let .background(bg):
+            return (bg.content, bg.background)
+        case let .accessibilityLabel(a11y):
+            let inner = extractContainerBackground(from: a11y.content)
+            guard let background = inner.background else {
+                return (node, nil)
+            }
+            let relabeled = WUINode.accessibilityLabel(
+                WUIAccessibilityLabel(label: a11y.label, content: inner.content)
+            )
+            return (relabeled, background)
+        default:
+            return (node, nil)
+        }
     }
 }
 
@@ -79,7 +119,8 @@ public struct WUITimelineProvider: TimelineProvider {
     private func producedTimeline(in context: Context) -> WUITimeline {
         let widgetContext = WUIWidgetContext(
             family: familyName(context.family),
-            displaySize: context.displaySize
+            displaySize: context.displaySize,
+            storePath: WUIWidgetStore.sharedContainerPath()
         )
         let data = runSnapshot(snapshot, context: widgetContext)
         guard let timeline = try? WUITimeline.decode(from: data) else {

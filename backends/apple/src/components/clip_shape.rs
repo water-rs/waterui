@@ -231,11 +231,12 @@ pub fn realize_clip_shape_metadata(
         layer.setMasksToBounds(true);
     }
 
+    let clip_shape = metadata.value;
     let state = Rc::new(ClipShapeState {
         child: mounted,
         mask: RefCell::new(None),
-        kind: metadata.value.kind(),
-        commands: metadata.value.commands().to_vec(),
+        kind: clip_shape.kind(),
+        commands: clip_shape.commands().to_vec(),
     });
 
     // Each layout pass stretches the content over the bounds and
@@ -279,6 +280,7 @@ pub fn realize_clip_shape_metadata(
         },
     );
     leaf.keep(sink_guard);
+    leaf.set_clip_shape(clip_shape);
     leaf.keep(state);
     leaf
 }

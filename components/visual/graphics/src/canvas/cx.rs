@@ -391,11 +391,11 @@ impl Cx {
         });
     }
 
-    /// Draws `image` scaled into `rect`.
+    /// Draws `image` scaled into `rect` with `sampling`.
     ///
     /// A signal of images swaps the picture; what the target made of each
     /// image is its [`status`](ImageSource::status).
-    pub fn image(
+    pub fn image_sampled(
         &mut self,
         image: impl Into<Operand<ImageSource>>,
         rect: impl Into<Operand<Rect>>,
@@ -408,6 +408,18 @@ impl Cx {
             dst: rect.into().into_computed(),
             sampling,
         });
+    }
+
+    /// Draws `image` scaled into `rect` with linear filtering.
+    ///
+    /// A signal of images swaps the picture; what the target made of each
+    /// image is its [`status`](ImageSource::status).
+    pub fn image(
+        &mut self,
+        image: impl Into<Operand<ImageSource>>,
+        rect: impl Into<Operand<Rect>>,
+    ) {
+        self.image_sampled(image, rect, Sampling::Linear);
     }
 
     /// Records `node` as a part of its own, so a change of the resource it

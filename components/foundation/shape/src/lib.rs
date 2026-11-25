@@ -31,7 +31,7 @@ use waterui_graphics::color::Color;
 
 mod morph;
 
-pub use morph::{MorphAnimation, MorphShape};
+pub use morph::MorphShape;
 
 // ============================================================================
 // PathCommand - The primitive operations for drawing paths

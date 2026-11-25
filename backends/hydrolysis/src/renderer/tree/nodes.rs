@@ -16,6 +16,7 @@ use crate::renderer::mount::motion::{LayerMotion, Motion};
 use crate::text::{TextEngine, TextLayout as _};
 use crate::theme::WidgetTheme;
 use executor_core::{AnyLocalExecutorTask, spawn_local};
+use nami::Signal as _;
 use waterui::gesture::TapGesture;
 use waterui::sheet::Sheet;
 use waterui_backend_core::Child;
@@ -23,7 +24,7 @@ use waterui_core::Angle;
 use waterui_core::animation::FrameRateVote;
 use waterui_interaction::event::TaskHook;
 use waterui_layout::safe_area::IgnoreSafeArea;
-use waterui_structural_transition::TransitionSpec;
+use waterui_structural_transition::{ReduceMotion, TransitionSpec};
 use waterui_text::styled::TapSpan;
 
 /// A retained sub-view a native widget or wrapper owns and re-renders every
@@ -1851,8 +1852,8 @@ pub struct DynamicTransitions<E: crate::text::TextEngine> {
     /// drawing space of the nearest enclosing layer, where its ghost paints
     /// once it leaves.
     last_context: Cell<RenderContext>,
-    /// Reduce Motion resolved once at build from the host environment.
-    reduce_motion: bool,
+    /// Reduce Motion signal captured from the host environment.
+    reduce_motion: ReduceMotion,
     /// Logical-edge resolution for sampled transition properties.
     direction: waterui_core::layout::LayoutDirection,
 }
@@ -1880,9 +1881,7 @@ impl<E: crate::text::TextEngine> DynamicTransitions<E> {
                 kurbo::Affine::IDENTITY,
                 kurbo::Rect::ZERO,
             )),
-            reduce_motion: env
-                .get::<waterui_structural_transition::ReduceMotion>()
-                .is_some_and(|flag| flag.0),
+            reduce_motion: env.get::<ReduceMotion>().cloned().unwrap_or_default(),
             direction: waterui_layout::layout_direction(env).snapshot(),
         }
     }
@@ -1951,7 +1950,7 @@ impl<E: crate::text::TextEngine> DynamicHostNode<E> {
                     .map(|spec| {
                         super::transition::TransitionRun::insertion(
                             &spec,
-                            transitions.reduce_motion,
+                            transitions.reduce_motion.snapshot(),
                             renderer.frame_instant,
                         )
                     });
@@ -1977,7 +1976,7 @@ impl<E: crate::text::TextEngine> DynamicHostNode<E> {
             node: outgoing,
             removal: super::transition::TransitionRun::removal(
                 &spec,
-                transitions.reduce_motion,
+                transitions.reduce_motion.snapshot(),
                 now,
             ),
             context: transitions.last_context.get(),
@@ -2141,10 +2140,7 @@ impl<E: crate::text::TextEngine> TextNode<E> {
         styled: &StyledStr,
         env: &Environment,
     ) -> Option<AccessibilityNodeId> {
-        if env
-            .get::<AccessibilityHidden>()
-            .is_some_and(AccessibilityHidden::is_hidden)
-        {
+        if renderer.is_accessibility_hidden(env) {
             return None;
         }
         let plain = styled.to_semantic().to_string();
@@ -2187,11 +2183,7 @@ impl<E: crate::text::TextEngine> TextNode<E> {
         env: &Environment,
         parent: Option<AccessibilityNodeId>,
     ) {
-        if tap_spans.is_empty()
-            || env
-                .get::<AccessibilityHidden>()
-                .is_some_and(AccessibilityHidden::is_hidden)
-        {
+        if tap_spans.is_empty() || renderer.is_accessibility_hidden(env) {
             return;
         }
         let disabled = env
@@ -2375,10 +2367,7 @@ pub(super) fn emit_graphics_image_accessibility<E: crate::text::TextEngine>(
     default_value: Option<String>,
     focusable: bool,
 ) -> Option<AccessibilityNodeId> {
-    if env
-        .get::<AccessibilityHidden>()
-        .is_some_and(AccessibilityHidden::is_hidden)
-    {
+    if renderer.is_accessibility_hidden(env) {
         return None;
     }
     let mut node = AccessibilityNode::new(SemanticCore::<E>::resolve_accessibility_role(

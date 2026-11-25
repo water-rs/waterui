@@ -590,6 +590,32 @@ pub(crate) async fn copy_dir_contents(from: &Path, to: &Path) -> eyre::Result<()
     .await
 }
 
+/// Writes the merged signing entitlements plist when non-empty and returns its path.
+#[cfg(target_os = "macos")]
+async fn write_signing_entitlements_file(
+    files: &SigningFiles<'_>,
+    declarations: &AppleDeclarations,
+    platform: TargetPlatform,
+    environment: SigningEnvironment,
+) -> eyre::Result<Option<PathBuf>> {
+    let entitlements = signing_entitlements(
+        files.project_entitlements,
+        declarations,
+        platform,
+        environment,
+    )
+    .await?;
+    if entitlements.is_empty() {
+        return Ok(None);
+    }
+    let path = files
+        .scratch_root
+        .join("DerivedData/Signing")
+        .join(format!("{}.entitlements", files.name));
+    write_entitlements(&path, entitlements).await?;
+    Ok(Some(path))
+}
+
 /// Sign the assembled bundle per platform: ad-hoc for macOS and simulators,
 /// the resolved development identity for devices, nothing for an unsigned
 /// device package.
@@ -620,6 +646,7 @@ pub async fn sign_apple_app(
     if platform == TargetPlatform::MacOS {
         #[cfg(target_os = "macos")]
         {
+            use crate::macos_bundle::{DistributionSigning, MacOsSigning, sign_macos_app};
             use crate::platform::PackageAudience;
 
             let requires_stable_identity =
@@ -627,42 +654,35 @@ pub async fn sign_apple_app(
                     entry.is_enabled() && !key.macos_usage_description_keys().is_empty()
                 });
             let signing = match options.audience() {
-                PackageAudience::Development => crate::macos_bundle::MacOsSigning::Development {
-                    requires_stable_identity,
-                },
+                PackageAudience::Development => {
+                    let entitlements = write_signing_entitlements_file(
+                        files,
+                        declarations,
+                        platform,
+                        SigningEnvironment::Development,
+                    )
+                    .await?;
+                    MacOsSigning::Development {
+                        requires_stable_identity: requires_stable_identity
+                            || entitlements.is_some(),
+                        entitlements,
+                    }
+                }
                 PackageAudience::Distribution => {
-                    let entitlements = signing_entitlements(
-                        files.project_entitlements,
+                    let entitlements = write_signing_entitlements_file(
+                        files,
                         declarations,
                         platform,
                         SigningEnvironment::Production,
                     )
                     .await?;
-                    let entitlements = if entitlements.is_empty() {
-                        None
-                    } else {
-                        let path = files
-                            .scratch_root
-                            .join("DerivedData/Signing")
-                            .join(format!("{}.entitlements", files.name));
-                        write_entitlements(&path, entitlements).await?;
-                        Some(path)
-                    };
-                    crate::macos_bundle::MacOsSigning::Distribution(
-                        crate::macos_bundle::DistributionSigning::from_manifest(
-                            project.manifest().signing().macos(),
-                            entitlements,
-                        )?,
-                    )
+                    MacOsSigning::Distribution(DistributionSigning::from_manifest(
+                        project.manifest().signing().macos(),
+                        entitlements,
+                    )?)
                 }
             };
-            crate::macos_bundle::sign_macos_app(
-                project.host(),
-                &layout.app_path,
-                &bundle_id,
-                &signing,
-            )
-            .await?;
+            sign_macos_app(project.host(), &layout.app_path, &bundle_id, &signing).await?;
             return Ok(());
         }
         #[cfg(not(target_os = "macos"))]
@@ -672,12 +692,22 @@ pub async fn sign_apple_app(
     }
 
     if platform.is_simulator() {
+        #[cfg(target_os = "macos")]
+        let entitlements = write_signing_entitlements_file(
+            files,
+            declarations,
+            platform,
+            SigningEnvironment::Development,
+        )
+        .await?;
+        #[cfg(not(target_os = "macos"))]
+        let entitlements: Option<PathBuf> = None;
         codesign_bundle(
             project.host(),
             &layout.app_path,
             &layout.frameworks_dir,
             "-",
-            None,
+            entitlements.as_deref(),
             None,
         )
         .await?;

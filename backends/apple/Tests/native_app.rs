@@ -482,7 +482,7 @@ mod main_menu {
 /// the platform's wall clock: the offset is still at its start when the
 /// request returns, and it lands on the target no sooner than a native
 /// animation takes; a process outside the application never moves it.
-/// This is where the `UIKit` `Animation::Default` arm of the `native`
+/// This is where the `UIKit` `Animation::DEFAULT` arm of the `native`
 /// scroll suites lives.
 #[cfg(target_os = "ios")]
 mod scroll_animation {
@@ -555,7 +555,7 @@ mod scroll_animation {
         window.setHidden(true);
     }
 
-    /// `Animation::Default` on a scroll surface is `UIKit`'s own
+    /// `Animation::DEFAULT` on a scroll surface is `UIKit`'s own
     /// `setContentOffset(_:animated: true)`: driven through the
     /// controller, it does not jump, and it lands where the jump to the
     /// same target lands no sooner than a native animation takes.
@@ -575,14 +575,14 @@ mod scroll_animation {
         controller.scroll_to(origin);
         assert_native_scroll(
             "a Default surface request",
-            || controller.animate_to(target, Animation::Default),
+            || controller.animate_to(target, Animation::default()),
             || surface.content_offset(),
             || landing,
         );
         window.setHidden(true);
     }
 
-    /// `Animation::Default` on a list is `UIKit`'s own
+    /// `Animation::default()` on a list is `UIKit`'s own
     /// `scrollToRow(_:at:animated: true)`: driven through the controller
     /// on a cold table, it does not jump, and it lands with the row's top
     /// at the viewport's top no sooner than a native animation takes.
@@ -599,14 +599,14 @@ mod scroll_animation {
 
         assert_native_scroll(
             "a Default list request",
-            || controller.animate_to(TARGET_ROW, Animation::Default),
+            || controller.animate_to(TARGET_ROW, Animation::default()),
             offset,
             || list_row_top(&table, TARGET_ROW),
         );
         window.setHidden(true);
     }
 
-    /// A far `Animation::Default` list request animates only the final
+    /// A far `Animation::default()` list request animates only the final
     /// stretch: `UIKit`'s native row scroll toward a target further than
     /// the approach bound first jumps unanimated to the approach row's
     /// top — the offset right after the request — and lands from there
@@ -624,7 +624,7 @@ mod scroll_animation {
 
         assert_native_scroll_from(
             "a far Default list request",
-            || controller.animate_to(APPROACH_TARGET_ROW, Animation::Default),
+            || controller.animate_to(APPROACH_TARGET_ROW, Animation::default()),
             || list_row_top(&table, APPROACH_ROW),
             || Point::from(table.contentOffset()),
             || list_row_top(&table, APPROACH_TARGET_ROW),
@@ -2137,7 +2137,7 @@ mod text_selection_ios {
     /// binding both move.
     pub fn a_selection_menu_command_edits_the_live_selection() {
         let mtm = mtm();
-        let value = binding(Str::from("hé😀b"));
+        let value = binding::<Str>(Str::from("hé😀b"));
         let observed = Rc::new(RefCell::new((String::new(), 0usize, 0usize)));
         let optional_seen = Rc::new(RefCell::new(false));
 
@@ -2411,7 +2411,7 @@ mod text_selection_ios {
             let mount = mount_uikit_window(
                 mtm,
                 waterui::AnyView::new(
-                    TextField::new(placeholder, &binding(Str::from("t")))
+                    TextField::new(placeholder, &binding::<Str>(Str::from("t")))
                         .selection_menu(items.computed()),
                 ),
                 &render_environment(),

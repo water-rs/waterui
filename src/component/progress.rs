@@ -220,16 +220,20 @@ impl<L, V> ProgressWithTotal<L, V> {
         ProgressWithTotal(self.0.label(label))
     }
 
-    /// Changes the progress indicator to a circular style.
-    pub const fn circular(mut self) -> Self {
-        self.0.style = ProgressStyle::Circular;
+    /// Changes the visual style of the progress indicator.
+    pub const fn style(mut self, style: ProgressStyle) -> Self {
+        self.0.style = style;
         self
     }
 
+    /// Changes the progress indicator to a circular style.
+    pub const fn circular(self) -> Self {
+        self.style(ProgressStyle::Circular)
+    }
+
     /// Changes the progress indicator to a linear style.
-    pub const fn linear(mut self) -> Self {
-        self.0.style = ProgressStyle::Linear;
-        self
+    pub const fn linear(self) -> Self {
+        self.style(ProgressStyle::Linear)
     }
 }
 
@@ -303,7 +307,7 @@ impl<L, V> Progress<L, V> {
     }
 
     /// Changes the visual style of the progress indicator.
-    const fn style(mut self, style: ProgressStyle) -> Self {
+    pub const fn style(mut self, style: ProgressStyle) -> Self {
         self.style = style;
         self
     }
@@ -401,7 +405,16 @@ pub fn loading() -> Progress<Text, Text> {
 mod tests {
     use nami::{Computed, Signal as _};
 
-    use super::progress_value_label;
+    use super::{Progress, ProgressStyle, progress_value_label};
+
+    #[test]
+    fn progress_style_setter_updates_config_style() {
+        let circular = Progress::new(0.5).style(ProgressStyle::Circular).config();
+        assert_eq!(circular.style(), ProgressStyle::Circular);
+
+        let with_total = Progress::new(1.0).total(2.0).style(ProgressStyle::Circular);
+        assert_eq!(with_total.0.style, ProgressStyle::Circular);
+    }
 
     #[test]
     fn progress_value_label_formats_fraction_as_percent() {

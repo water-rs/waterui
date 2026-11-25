@@ -27,6 +27,16 @@ public struct WUINodeView: View {
             shapeView(shape)
         case let .color(color):
             colorView(color)
+        case let .padding(padding):
+            paddingView(padding)
+        case let .spacer(spacer):
+            spacerView(spacer)
+        case let .frame(frame):
+            frameView(frame)
+        case let .background(background):
+            backgroundView(background)
+        case let .accessibilityLabel(a11y):
+            accessibilityLabelView(a11y)
         case let .link(link):
             linkView(link)
         case let .intent(intent):
@@ -36,7 +46,8 @@ public struct WUINodeView: View {
 
     @ViewBuilder
     private func textView(_ text: WUIText) -> some View {
-        let styled = Text(text.content).font(text.font.map(swiftUIFont))
+        let base = baseText(text.content)
+        let styled = applyBold(base.font(text.font.map(swiftUIFont)), bold: text.bold)
         if let color = text.color {
             if let lineLimit = text.lineLimit {
                 styled.foregroundStyle(colorView(color)).lineLimit(Int(lineLimit))
@@ -47,6 +58,32 @@ public struct WUINodeView: View {
             styled.lineLimit(Int(lineLimit))
         } else {
             styled
+        }
+    }
+
+    private func baseText(_ content: WUITextContent) -> Text {
+        switch content {
+        case let .localized(key):
+            return Text(LocalizedStringKey(key))
+        case let .verbatim(text):
+            return Text(verbatim: text)
+        case let .date(date, style):
+            return Text(date, style: swiftUIDateStyle(style))
+        }
+    }
+
+    private func applyBold(_ text: Text, bold: Bool?) -> Text {
+        guard let bold else { return text }
+        return text.bold(bold)
+    }
+
+    private func swiftUIDateStyle(_ style: WUIDateStyle) -> Text.DateStyle {
+        switch style {
+        case .relative: return .relative
+        case .offset: return .offset
+        case .timer: return .timer
+        case .date: return .date
+        case .time: return .time
         }
     }
 
@@ -98,7 +135,7 @@ public struct WUINodeView: View {
                 }
             }
         case .depth:
-            ZStack(alignment: zStackAlignment(stack.alignment)) {
+            ZStack(alignment: twoDimensionalAlignment(stack.alignment, default: .center)) {
                 ForEach(stack.children.indices, id: \.self) { index in
                     WUINodeView(stack.children[index])
                 }
@@ -137,6 +174,96 @@ public struct WUINodeView: View {
             case .accent: Color.accentColor
             }
         }
+    }
+
+    @ViewBuilder
+    private func paddingView(_ padding: WUIPadding) -> some View {
+        if let insets = padding.insets {
+            WUINodeView(padding.content).padding(EdgeInsets(
+                top: CGFloat(insets.top),
+                leading: CGFloat(insets.leading),
+                bottom: CGFloat(insets.bottom),
+                trailing: CGFloat(insets.trailing)
+            ))
+        } else {
+            WUINodeView(padding.content).padding()
+        }
+    }
+
+    @ViewBuilder
+    private func spacerView(_ spacer: WUISpacer) -> some View {
+        Spacer(minLength: spacer.minLength.map(CGFloat.init))
+    }
+
+    @ViewBuilder
+    private func frameView(_ frame: WUIFrame) -> some View {
+        let alignment = twoDimensionalAlignment(frame.alignment, default: .center)
+        let hasFlexBounds = frame.minWidth != nil || frame.maxWidth != nil
+            || frame.minHeight != nil || frame.maxHeight != nil
+        let hasExactBounds = frame.width != nil || frame.height != nil
+        if hasExactBounds && hasFlexBounds {
+            WUINodeView(frame.content)
+                .frame(
+                    width: frame.width.map(CGFloat.init),
+                    height: frame.height.map(CGFloat.init),
+                    alignment: alignment
+                )
+                .frame(
+                    minWidth: frame.minWidth.map(CGFloat.init),
+                    maxWidth: frame.maxWidth.map(cgFloatMaxLength),
+                    minHeight: frame.minHeight.map(CGFloat.init),
+                    maxHeight: frame.maxHeight.map(cgFloatMaxLength),
+                    alignment: alignment
+                )
+        } else if hasFlexBounds {
+            WUINodeView(frame.content).frame(
+                minWidth: frame.minWidth.map(CGFloat.init),
+                maxWidth: frame.maxWidth.map(cgFloatMaxLength),
+                minHeight: frame.minHeight.map(CGFloat.init),
+                maxHeight: frame.maxHeight.map(cgFloatMaxLength),
+                alignment: alignment
+            )
+        } else {
+            WUINodeView(frame.content).frame(
+                width: frame.width.map(CGFloat.init),
+                height: frame.height.map(CGFloat.init),
+                alignment: alignment
+            )
+        }
+    }
+
+    private func cgFloatMaxLength(_ length: WUIMaxLength) -> CGFloat {
+        switch length {
+        case let .fixed(value):
+            return CGFloat(value)
+        case .infinity:
+            return .infinity
+        }
+    }
+
+    @ViewBuilder
+    private func backgroundView(_ background: WUIBackground) -> some View {
+        WUINodeView(background.content).background {
+            WUINodeView(background.background)
+        }
+    }
+
+    @ViewBuilder
+    private func accessibilityLabelView(_ a11y: WUIAccessibilityLabel) -> some View {
+        WUINodeView(a11y.content).accessibilityLabel(labelText(a11y.label))
+    }
+
+    internal static func labelText(_ label: WUILabelText) -> Text {
+        switch label {
+        case let .localized(key):
+            return Text(LocalizedStringKey(key))
+        case let .verbatim(text):
+            return Text(verbatim: text)
+        }
+    }
+
+    private func labelText(_ label: WUILabelText) -> Text {
+        Self.labelText(label)
     }
 
     @ViewBuilder
@@ -209,9 +336,13 @@ public struct WUINodeView: View {
         }
     }
 
-    private func zStackAlignment(_ alignment: WUIAlignment?) -> Alignment {
-        let horizontal = horizontalAlignment(alignment?.horizontal)
-        let vertical = verticalAlignment(alignment?.vertical)
+    private func twoDimensionalAlignment(
+        _ alignment: WUIAlignment?,
+        default defaultAlignment: Alignment
+    ) -> Alignment {
+        guard let alignment else { return defaultAlignment }
+        let horizontal = horizontalAlignment(alignment.horizontal)
+        let vertical = verticalAlignment(alignment.vertical)
         switch (vertical, horizontal) {
         case (.top, .leading): return .topLeading
         case (.top, .center): return .top
@@ -224,7 +355,7 @@ public struct WUINodeView: View {
         case (.bottom, .trailing): return .bottomTrailing
         // `VerticalAlignment` is not a closed enum — the schema maps only
         // the nine cases above.
-        default: return .center
+        default: return defaultAlignment
         }
     }
 }

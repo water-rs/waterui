@@ -12,11 +12,7 @@
 //! so any state created *inside* a demo would reset; owning it externally keeps the
 //! controls live (a button's counter actually counts, a toggle stays toggled).
 
-use core::time::Duration;
-
-use mdi::Svg;
-use mdi::chevron_down;
-use mdi::chevron_right;
+use mdi::Icon;
 use mdi::form_textbox;
 use mdi::format_list_bulleted;
 use mdi::gauge;
@@ -28,11 +24,7 @@ use mdi::toggle_switch;
 use mdi::tune;
 use waterui::Color;
 use waterui::Handler;
-use waterui::Identifiable;
-use waterui::PropertyTransition;
-use waterui::Signal;
 use waterui::accessibility::{AccessibilityRole, AccessibilityState};
-use waterui::animation::Animation;
 use waterui::app::{App, Windows};
 use waterui::layout::stack::VStack;
 use waterui::navigation::{NavigationSplitView, NavigationView};
@@ -44,6 +36,7 @@ use waterui::reactive::Computed;
 use waterui::reactive::binding;
 use waterui::shape::Capsule;
 use waterui::theme::color::{Foreground, MutedForeground, SurfaceVariant};
+use waterui::widget::Disclosure;
 use waterui_icons_material_icon as mdi;
 
 // Material 3 navigation-drawer metrics (M3 reference: list-item / nav-drawer).
@@ -59,8 +52,6 @@ const DRAWER_ITEM_LEADING_SPACE: f32 = 16.0;
 const DRAWER_ITEM_TRAILING_SPACE: f32 = 24.0;
 /// The gap between an item's icon and its label.
 const DRAWER_ICON_LABEL_SPACING: f32 = 12.0;
-/// A headline names a group; it is shorter than a destination row.
-const DRAWER_HEADLINE_HEIGHT: f32 = 40.0;
 /// Half the difference between `ContainerWidth` (360) and
 /// `ActiveIndicatorWidth` (336): the indicator is the drawer inset by this much
 /// on each side, which is the drawer's own horizontal padding.
@@ -88,33 +79,6 @@ impl Section {
     }
 }
 
-/// One row in the navigation drawer's reactive collection. Headers are always
-/// present; an item is present only while its group is expanded. Membership
-/// changes are diffed by [`Identifiable`] id, so collapsing a group truly
-/// removes its rows and releases their layout space (no reserved gap).
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Row {
-    Header(usize),
-    Item(usize),
-}
-
-impl Identifiable for Row {
-    type Id = u32;
-
-    fn id(&self) -> u32 {
-        // Headers occupy 0.. ; items live in a disjoint range so the two never
-        // collide in the id-keyed reconcile.
-        match *self {
-            Self::Header(group) => {
-                u32::try_from(group).expect("the section count is far below u32::MAX")
-            }
-            Self::Item(index) => {
-                0x1000 + u32::try_from(index).expect("the control count is far below u32::MAX")
-            }
-        }
-    }
-}
-
 /// The control indices belonging to a drawer group, in catalog order.
 fn group_item_indices(group: usize) -> Vec<usize> {
     let section = Section::ALL[group];
@@ -124,44 +88,6 @@ fn group_item_indices(group: usize) -> Vec<usize> {
         .filter(|(_, control)| control.section == section)
         .map(|(index, _)| index)
         .collect()
-}
-
-/// The fully expanded drawer order: every header followed by its items.
-fn expanded_rows() -> Vec<Row> {
-    let mut rows = Vec::new();
-    for group in 0..Section::ALL.len() {
-        rows.push(Row::Header(group));
-        rows.extend(group_item_indices(group).into_iter().map(Row::Item));
-    }
-    rows
-}
-
-/// Expands or collapses a group by reconciling the reactive row collection:
-/// inserting the group's item rows right after its header, or removing them.
-/// The collection engine diffs by id, so only the toggled group's rows change.
-fn set_group_expanded(rows: &mut StateList<Row>, group: usize, expanded: bool) {
-    let items = group_item_indices(group);
-    if expanded {
-        let snapshot = rows.snapshot();
-        let header_pos = snapshot
-            .iter()
-            .position(|row| *row == Row::Header(group))
-            .expect("drawer group header must be present");
-        for (at, index) in (header_pos + 1..).zip(items) {
-            let present = rows.snapshot().as_slice().contains(&Row::Item(index));
-            if !present {
-                rows.insert(at, Row::Item(index));
-            }
-        }
-    } else {
-        while let Some(pos) = rows
-            .snapshot()
-            .iter()
-            .position(|row| items.iter().any(|index| *row == Row::Item(*index)))
-        {
-            let _ = rows.remove(pos);
-        }
-    }
 }
 
 /// Reactive state for every interactive demo, owned at the window scope so it
@@ -194,7 +120,7 @@ impl DemoState {
 /// A single catalog entry: a control with its drawer icon and live demo.
 struct Control {
     title: &'static str,
-    icon: fn() -> Svg,
+    icon: fn() -> Icon,
     section: Section,
     demo: fn(&DemoState) -> AnyView,
 }
@@ -263,13 +189,12 @@ fn controls() -> Vec<Control> {
 fn catalog(
     selected: &Binding<Option<usize>>,
     groups_open: Vec<Binding<bool>>,
-    rows: StateList<Row>,
     state: DemoState,
 ) -> impl View + use<> {
     let sidebar_selected = selected.clone();
     NavigationSplitView::new(
         selected,
-        move || sidebar(sidebar_selected.clone(), groups_open.clone(), rows.clone()),
+        move || sidebar(&sidebar_selected, &groups_open),
         move |index| control_detail(index, &state),
     )
     .sidebar_width(ColumnWidth::new(240.0, 320.0, 480.0))
@@ -292,7 +217,7 @@ fn catalog(
 /// layers inside the row's pill, leaving an indicator nested in an indicator.
 fn drawer_item<F, Args>(
     title: &'static str,
-    icon: fn() -> Svg,
+    icon: fn() -> Icon,
     active: &Computed<bool>,
     action: F,
 ) -> impl View + use<F, Args>
@@ -333,75 +258,16 @@ where
     .on_tap(action)
     .a11y_role(AccessibilityRole::Button)
     .a11y_label(title)
-    .a11y_state_signal(state)
+    .a11y_state(state)
 }
 
-/// A Material 3 navigation-drawer headline: the small title that names a group
-/// of destinations.
-///
-/// `HeadlineFont` is `TitleSmall` and a headline is not a destination, so it
-/// carries no icon and no active indicator — that is what separates it from the
-/// items beneath it. This one is tappable because the catalog's groups collapse,
-/// and its chevron says which way that will go.
-fn drawer_headline<F, Args>(title: &'static str, open: Binding<bool>, action: F) -> impl View
-where
-    F: Handler<Args, ()> + 'static,
-    Args: 'static,
-{
-    let muted: Color = MutedForeground.into();
-    let chevron = zstack((
-        chevron_right().visible(open.clone().not()),
-        chevron_down().visible(open),
-    ))
-    .width(DRAWER_ICON_SIZE)
-    .height(DRAWER_ICON_SIZE);
-    hstack((text(title).subheadline(), spacer(), chevron))
-        .foreground(muted)
-        .a11y_hidden(true)
-        .height(DRAWER_HEADLINE_HEIGHT)
-        .max_width(f32::INFINITY)
-        .padding_with([
-            0.0,
-            DRAWER_ITEM_LEADING_SPACE,
-            0.0,
-            DRAWER_ITEM_TRAILING_SPACE,
-        ])
-        .on_tap(action)
-        .a11y_role(AccessibilityRole::Button)
-        .a11y_label(title)
-}
-
-/// Sidebar: a fixed title above a reactive collection of drawer rows. Headers
-/// stay put while their groups expand and collapse; the collection diffs
-/// membership by id, so a collapse removes the group's items and releases their
-/// space rather than leaving a reserved gap.
-fn sidebar(
-    selected: Binding<Option<usize>>,
-    groups_open: Vec<Binding<bool>>,
-    rows: StateList<Row>,
-) -> impl View {
-    // Animate group expand/collapse with Material 3 emphasized easing: each row
-    // declares its own transition, so a row fades in on insert and its ghost
-    // fades out on remove while holding its slot until the clock completes.
-    // The declared spec also routes the drawer to the retained collection
-    // path, where the active-indicator pill tracks selection through the
-    // items' fine-grained reactive backgrounds.
-    let drawer = VStack::for_each(rows.clone(), move |row| {
-        let row_view = match row {
-            Row::Header(group) => AnyView::new(group_header(group, &groups_open[group], &rows)),
-            Row::Item(index) => AnyView::new(item_row(index, &selected)),
-        };
-        row_view
-            .transition(PropertyTransition::opacity())
-            .animation(Animation::bezier(
-                Duration::from_millis(250),
-                0.2,
-                0.0,
-                0.0,
-                1.0,
-            ))
-    })
-    .spacing(2.0)
+/// Sidebar: a fixed title above a stack of collapsible [`Disclosure`] groups.
+fn sidebar(selected: &Binding<Option<usize>>, groups_open: &[Binding<bool>]) -> impl View + use<> {
+    let drawer = VStack::from_iter(
+        (0..Section::ALL.len())
+            .map(|group| AnyView::new(group_section(group, &groups_open[group], selected))),
+    )
+    .spacing(4.0)
     .leading();
 
     scroll(
@@ -419,23 +285,29 @@ fn sidebar(
     )
 }
 
-/// A collapsible group header, styled as a Material 3 drawer row: section icon +
-/// title (in the muted on-surface-variant role, since a header is not selectable)
-/// with a trailing chevron that flips with the open state. Tapping toggles the
-/// group and reconciles the reactive row collection.
-fn group_header(group: usize, open: &Binding<bool>, rows: &StateList<Row>) -> impl View + use<> {
+/// A collapsible group section realized with [`Disclosure`].
+fn group_section(
+    group: usize,
+    open: &Binding<bool>,
+    selected: &Binding<Option<usize>>,
+) -> impl View + use<> {
     let section = Section::ALL[group];
-    drawer_headline(
-        section.title(),
-        open.clone(),
-        move |State(open): State<Binding<bool>>, State(mut rows): State<StateList<Row>>| {
-            open.toggle();
-            let expanded = open.snapshot();
-            set_group_expanded(&mut rows, group, expanded);
+    let indices = group_item_indices(group);
+    let selected = selected.clone();
+    Disclosure::new(
+        text(section.title()).subheadline().color(MutedForeground),
+        move || {
+            VStack::from_iter(
+                indices
+                    .iter()
+                    .copied()
+                    .map(|index| AnyView::new(item_row(index, &selected))),
+            )
+            .spacing(2.0)
+            .leading()
         },
     )
-    .state(open)
-    .state(rows)
+    .expanded(open)
 }
 
 /// A selectable control row, nested under its group header. Tapping selects the
@@ -532,7 +404,7 @@ fn slider_demo(volume: &Binding<f64>) -> impl View {
         slider(label, volume)
             .range(0.0..=100.0)
             .size(size)
-            .value_indicator(|v| Str::from(format!("{v:.0}")))
+            .value_formatter(|v| Str::from(format!("{v:.0}")))
     });
 
     vstack((
@@ -625,37 +497,31 @@ fn progress_demo() -> impl View {
 // ---------------------------------------------------------------------------
 
 /// The window-scoped catalog state: the selected control, one open-flag per
-/// group, the reactive drawer rows, and the interactive demo state.
-type CatalogState = (
-    Binding<Option<usize>>,
-    Vec<Binding<bool>>,
-    StateList<Row>,
-    DemoState,
-);
+/// group, and the interactive demo state.
+type CatalogState = (Binding<Option<usize>>, Vec<Binding<bool>>, DemoState);
 
 /// Builds fresh catalog state: `selected` starts on the first control, every
 /// group starts expanded, and the demo state starts at its defaults.
 fn new_state() -> CatalogState {
     let selected = Binding::container(Some(0));
     let groups_open = Section::ALL.iter().map(|_| binding(true)).collect();
-    let rows = StateList::from(expanded_rows());
-    (selected, groups_open, rows, DemoState::new())
+    (selected, groups_open, DemoState::new())
 }
 
 /// Self-contained entry for previews and embedding.
 #[preview]
 pub fn demo() -> impl View {
-    let (selected, groups_open, rows, state) = new_state();
-    catalog(&selected, groups_open, rows, state)
+    let (selected, groups_open, state) = new_state();
+    catalog(&selected, groups_open, state)
 }
 
 /// Builds the gallery app, owning its selection and drawer state at window scope.
 #[must_use]
 pub fn app(env: Environment) -> App<impl Windows> {
     // Own all mutable state at the window scope so it persists across rebuilds.
-    let (selected, groups_open, rows, state) = new_state();
+    let (selected, groups_open, state) = new_state();
     App::new(env).window(Window::new("", move || {
-        catalog(&selected, groups_open.clone(), rows.clone(), state.clone())
+        catalog(&selected, groups_open.clone(), state.clone())
     }))
 }
 
@@ -673,9 +539,8 @@ mod tests {
     /// done out-of-band with GPU snapshots).
     #[waterui::test(viewport = (1100, 760))]
     fn every_control_renders_its_demo(ui: UiBuilder) {
-        let (selected, groups_open, rows, state) = new_state();
-        let mut app =
-            ui.mount(move || catalog(&selected, groups_open.clone(), rows.clone(), state.clone()));
+        let (selected, groups_open, state) = new_state();
+        let mut app = ui.mount(move || catalog(&selected, groups_open.clone(), state.clone()));
         let controls = [
             ("Text Field", "Name"),
             ("Slider", "Volume"),
@@ -701,9 +566,8 @@ mod tests {
     /// the selected control's live demo.
     #[waterui::test(viewport = (1100, 760))]
     fn catalog_lists_controls(ui: UiBuilder) {
-        let (selected, groups_open, rows, state) = new_state();
-        let mut app =
-            ui.mount(move || catalog(&selected, groups_open.clone(), rows.clone(), state.clone()));
+        let (selected, groups_open, state) = new_state();
+        let mut app = ui.mount(move || catalog(&selected, groups_open.clone(), state.clone()));
         for section in ["Actions", "Inputs", "Selection", "Display"] {
             app.query().label(section).assert_exists();
         }
@@ -718,9 +582,8 @@ mod tests {
     /// Selecting a control shows its live demo in the detail pane.
     #[waterui::test(viewport = (1100, 760))]
     fn selecting_control_shows_demo(ui: UiBuilder) {
-        let (selected, groups_open, rows, state) = new_state();
-        let mut app =
-            ui.mount(move || catalog(&selected, groups_open.clone(), rows.clone(), state.clone()));
+        let (selected, groups_open, state) = new_state();
+        let mut app = ui.mount(move || catalog(&selected, groups_open.clone(), state.clone()));
         app.query().label("Toggle").tap();
         assert!(
             app.query()
@@ -734,9 +597,8 @@ mod tests {
     /// rest of the catalog stays intact.
     #[waterui::test(viewport = (1100, 760))]
     fn collapsing_group_removes_items(ui: UiBuilder) {
-        let (selected, groups_open, rows, state) = new_state();
-        let mut app =
-            ui.mount(move || catalog(&selected, groups_open.clone(), rows.clone(), state.clone()));
+        let (selected, groups_open, state) = new_state();
+        let mut app = ui.mount(move || catalog(&selected, groups_open.clone(), state.clone()));
         app.query().label("Slider").assert_exists();
         // Tap the Inputs group header to collapse it.
         app.query().label("Inputs").tap();
@@ -756,9 +618,8 @@ mod tests {
     /// path brings the rows back (and they settle into the accessibility tree).
     #[waterui::test(viewport = (1100, 760))]
     fn expanding_group_restores_items(ui: UiBuilder) {
-        let (selected, groups_open, rows, state) = new_state();
-        let mut app =
-            ui.mount(move || catalog(&selected, groups_open.clone(), rows.clone(), state.clone()));
+        let (selected, groups_open, state) = new_state();
+        let mut app = ui.mount(move || catalog(&selected, groups_open.clone(), state.clone()));
         // Collapse Inputs, then expand it again.
         app.query().label("Inputs").tap();
         assert!(
@@ -780,9 +641,8 @@ mod tests {
     /// shared counter (state is owned externally, so it persists across rebuilds).
     #[waterui::test(viewport = (1100, 760))]
     fn button_demo_is_interactive(ui: UiBuilder) {
-        let (selected, groups_open, rows, state) = new_state();
-        let mut app =
-            ui.mount(move || catalog(&selected, groups_open.clone(), rows.clone(), state.clone()));
+        let (selected, groups_open, state) = new_state();
+        let mut app = ui.mount(move || catalog(&selected, groups_open.clone(), state.clone()));
         app.query().label_contains("Taps: 0").assert_exists();
         app.query().label("Bordered Prominent").tap();
         assert!(
@@ -801,11 +661,10 @@ mod tests {
     /// accessibility semantics rather than one shared role.
     #[waterui::test(viewport = (1100, 760))]
     fn toggle_demo_flips_switch_and_checkbox_bindings(ui: UiBuilder) {
-        let (selected, groups_open, rows, state) = new_state();
+        let (selected, groups_open, state) = new_state();
         let wifi = state.wifi.clone();
         let bluetooth = state.bluetooth.clone();
-        let mut app =
-            ui.mount(move || catalog(&selected, groups_open.clone(), rows.clone(), state.clone()));
+        let mut app = ui.mount(move || catalog(&selected, groups_open.clone(), state.clone()));
 
         app.query().label("Toggle").tap();
         assert!(
@@ -856,10 +715,9 @@ mod tests {
     /// demo's `0.0..=100.0` range), and the live echo text tracks it.
     #[waterui::test(viewport = (1100, 760))]
     fn slider_demo_increment_decrement_updates_volume(ui: UiBuilder) {
-        let (selected, groups_open, rows, state) = new_state();
+        let (selected, groups_open, state) = new_state();
         let volume = state.volume.clone();
-        let mut app =
-            ui.mount(move || catalog(&selected, groups_open.clone(), rows.clone(), state.clone()));
+        let mut app = ui.mount(move || catalog(&selected, groups_open.clone(), state.clone()));
 
         app.query().label("Slider").tap();
         assert!(
@@ -907,10 +765,9 @@ mod tests {
     /// tracks it.
     #[waterui::test(viewport = (1100, 760))]
     fn stepper_demo_increment_decrement_updates_quantity(ui: UiBuilder) {
-        let (selected, groups_open, rows, state) = new_state();
+        let (selected, groups_open, state) = new_state();
         let quantity = state.quantity.clone();
-        let mut app =
-            ui.mount(move || catalog(&selected, groups_open.clone(), rows.clone(), state.clone()));
+        let mut app = ui.mount(move || catalog(&selected, groups_open.clone(), state.clone()));
 
         app.query().label("Stepper").tap();
         assert!(
@@ -954,10 +811,9 @@ mod tests {
     /// tracks it.
     #[waterui::test(viewport = (1100, 760))]
     fn text_field_demo_set_text_updates_name(ui: UiBuilder) {
-        let (selected, groups_open, rows, state) = new_state();
+        let (selected, groups_open, state) = new_state();
         let name = state.name.clone();
-        let mut app =
-            ui.mount(move || catalog(&selected, groups_open.clone(), rows.clone(), state.clone()));
+        let mut app = ui.mount(move || catalog(&selected, groups_open.clone(), state.clone()));
 
         app.query().label("Text Field").tap();
         assert!(
@@ -994,9 +850,8 @@ mod tests {
     /// exposes as accesskit's `Header` role — to that control's title.
     #[waterui::test(viewport = (1100, 760))]
     fn expanding_a_collapsed_group_and_selecting_its_control_switches_the_heading(ui: UiBuilder) {
-        let (selected, groups_open, rows, state) = new_state();
-        let mut app =
-            ui.mount(move || catalog(&selected, groups_open.clone(), rows.clone(), state.clone()));
+        let (selected, groups_open, state) = new_state();
+        let mut app = ui.mount(move || catalog(&selected, groups_open.clone(), state.clone()));
 
         assert!(
             app.query()
@@ -1046,10 +901,9 @@ mod tests {
     #[ignore = "writes visual acceptance PNG files for direct image review"]
     #[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (1100, 760))]
     fn catalog_drawer_and_stepper_render(ui: UiBuilder) {
-        let (selected, groups_open, rows, state) = new_state();
-        let mut app: waterui_testing::OffscreenApp = ui.mount_offscreen(move || {
-            catalog(&selected, groups_open.clone(), rows.clone(), state.clone())
-        });
+        let (selected, groups_open, state) = new_state();
+        let mut app: waterui_testing::OffscreenApp =
+            ui.mount_offscreen(move || catalog(&selected, groups_open.clone(), state.clone()));
         app.query().label("Stepper").tap();
         assert!(
             app.query()

@@ -59,7 +59,8 @@ pub use web_time::Instant;
 
 pub use crate::animation::{
     Animatable, Animation, AnimationTrack, CubicBezier, Curve, Decay, Easing, KeyframeAnimation,
-    Keyframes, Lanes, Repeat, Spring, Timing, curve_value, decay_step, spring_step,
+    Keyframes, Lanes, Playback, PlaybackRepeat, Repeat, Spring, Timing, curve_value, decay_step,
+    spring_step,
 };
 
 pub use crate::backend::{

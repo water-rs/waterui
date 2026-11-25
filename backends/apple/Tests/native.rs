@@ -363,6 +363,8 @@ fn trials() -> Vec<Trial> {
         tests.extend(transform_modifiers::trials());
         #[cfg(target_os = "macos")]
         tests.extend(border_modifier::trials());
+        #[cfg(target_os = "macos")]
+        tests.extend(shadow_modifier::trials());
         #[cfg(feature = "gpu_surface")]
         {
             tests.extend(gpu_surface::trials());
@@ -400,6 +402,7 @@ fn trials() -> Vec<Trial> {
     tests.extend(apple_content::trials());
     #[cfg(target_os = "macos")]
     tests.extend(row_major_table::trials());
+    tests.extend(disclosure::trials());
     #[cfg(all(feature = "native-test", feature = "gpu_surface"))]
     tests.extend(capture_colour::trials());
     #[cfg(all(catalyst, feature = "native-test", feature = "gpu_surface"))]
@@ -594,24 +597,12 @@ fn animation_cases() -> Vec<(&'static str, waterui::animation::Animation)> {
     let mut cases = vec![
         (
             "bezier",
-            Animation::Bezier {
-                duration: Duration::from_millis(500),
-                x1: 0.25,
-                y1: 0.1,
-                x2: 0.25,
-                y2: 1.0,
-            },
+            Animation::bezier(Duration::from_millis(500), 0.25, 0.1, 0.25, 1.0),
         ),
-        (
-            "spring",
-            Animation::Spring {
-                stiffness: 300.0,
-                damping: 30.0,
-            },
-        ),
+        ("spring", Animation::spring(300.0, 30.0)),
     ];
     #[cfg(target_os = "macos")]
-    cases.insert(0, ("default", Animation::Default));
+    cases.insert(0, ("default", Animation::default()));
     cases
 }
 
@@ -1205,9 +1196,9 @@ mod resolve {
     /// cannot starve a trailing `ScrollView` by handing out space that
     /// only exists because the control claimed it.
     pub fn control_leaves_answer_their_intrinsic_height() {
-        let volume = binding(0.5_f64);
+        let volume = binding::<f64>(0.5);
         let selection = binding("Alpha");
-        let text_value = binding(Str::from(""));
+        let text_value = binding::<Str>(Str::from(""));
         let secret = binding(Secure::new(String::new()));
         let items: Vec<PickerItem<&'static str>> = vec![
             waterui::text!("Alpha").tag("Alpha"),
@@ -1333,7 +1324,7 @@ mod resolve {
     /// visible; a hidden label answers the buttons' intrinsic size
     /// (water-rs/waterui#2364).
     pub fn stepper_leaves_follow_the_stretch_rule() {
-        let quantity = binding(3_i32);
+        let quantity = binding::<i32>(3);
         let cases = [
             (
                 "visible label",
@@ -6623,7 +6614,7 @@ mod safe_area {
     /// in two. (The `d6171eed2` bug shape: the field answered its own
     /// open offer, so the `hstack` claimed the whole band.)
     fn a_composer_hstack_keeps_its_intrinsic_height_under_the_keyboard() {
-        let draft = binding(Str::from(""));
+        let draft = binding::<Str>(Str::from(""));
         let mount = mount(conversation_panel(&draft));
 
         let field = find_view::<cocoa_ui::uikit::TextField>(&mount.host)
@@ -6822,7 +6813,7 @@ mod safe_area {
     /// keyboard contribution and stays zero, and the delta-write never
     /// rewrites another `contentInset.bottom` term.
     fn a_scroll_above_a_composer_keeps_a_zero_keyboard_inset() {
-        let draft = binding(Str::from(""));
+        let draft = binding::<Str>(Str::from(""));
         let mount = mount(conversation_panel(&draft));
         let surface = find_view::<ScrollView>(&mount.host).expect("scroll mounts a UIScrollView");
         let scroll_view = surface
@@ -6848,7 +6839,7 @@ mod safe_area {
     /// enclosing-surface role: the inner surface still computes its own
     /// keyboard inset and still clears a focused field.
     fn a_text_view_inside_the_tree_is_not_a_scroll_surface() {
-        let value = binding(Str::from(""));
+        let value = binding::<Str>(Str::from(""));
         let mount = mount(scroll(vstack((
             spacer().size(390.0, 560.0),
             field("Message", &value).size(350.0, 44.0),
@@ -6940,7 +6931,7 @@ mod safe_area {
     /// only when the keyboard contribution itself changes — never
     /// because a content-offset change re-ran it.
     fn a_user_scroll_under_the_keyboard_is_not_undone_by_the_layout_pass() {
-        let value = binding(Str::from(""));
+        let value = binding::<Str>(Str::from(""));
         let mount = mount(scroll(vstack((
             spacer().size(390.0, 560.0),
             field("Message", &value).size(350.0, 44.0),
@@ -6976,7 +6967,7 @@ mod safe_area {
     /// inset.
     fn nested_hosts_and_a_scroll_share_the_windows_keyboard_region() {
         for content_first in [true, false] {
-            let value = binding(Str::from(""));
+            let value = binding::<Str>(Str::from(""));
             let env = render_environment();
             let mount = mount_uikit_embedded(
                 mtm(),
@@ -7289,7 +7280,7 @@ mod safe_area {
     /// unresolved contract on the real reads and feeds the resolved
     /// frame through the same function the read applies.
     fn a_stacks_only_window_seeds_its_region_and_replaces_above_the_band() {
-        let draft = binding(Str::from(""));
+        let draft = binding::<Str>(Str::from(""));
         // Stacks only — a spacer over a composer row; no scroll
         // surface anywhere in the tree.
         let mount = mount(vstack((
@@ -7357,7 +7348,7 @@ mod safe_area {
     /// — the window's one region object marked every reader and the
     /// re-entering views re-read it.
     fn a_page_pushed_over_the_keyboard_returns_keyboard_free() {
-        let value = binding(Str::from(""));
+        let value = binding::<Str>(Str::from(""));
         let mount = mount(NavigationStack::new(NavigationView::new(
             "Form",
             scroll(vstack((
@@ -7775,7 +7766,7 @@ mod safe_area {
     /// content by the band; focusing a covered field scrolls the minimum
     /// distance that brings its frame clear of the keyboard region.
     fn a_scroll_surface_scrolls_the_focused_field_clear_of_the_keyboard() {
-        let value = binding(Str::from(""));
+        let value = binding::<Str>(Str::from(""));
         let mount = mount(scroll(vstack((
             spacer().size(390.0, 560.0),
             field("Message", &value).size(350.0, 44.0),
@@ -7814,7 +7805,7 @@ mod safe_area {
     /// same minimum-scroll clearance against the deeper boundary — the
     /// field's frame lands on the new keyboard top on that frame.
     fn a_keyboard_inset_change_clears_the_field_on_that_frame() {
-        let value = binding(Str::from(""));
+        let value = binding::<Str>(Str::from(""));
         let mount = mount(scroll(vstack((
             spacer().size(390.0, 560.0),
             field("Message", &value).size(350.0, 44.0),
@@ -7833,7 +7824,7 @@ mod safe_area {
     /// innermost surface that can, which is the outermost one here because
     /// the keyboard band sits below the inner surface's own frame.
     fn a_field_in_a_nested_scroll_is_cleared_once() {
-        let value = binding(Str::from(""));
+        let value = binding::<Str>(Str::from(""));
         let mount = mount(scroll(vstack((
             spacer().size(390.0, 430.0),
             scroll(vstack((
@@ -7883,7 +7874,7 @@ mod safe_area {
     /// surface's own frame: a toolbar card under the scroll keeps the
     /// field clearing to the surface's bottom edge, not the keyboard's.
     fn a_focused_field_clears_to_the_surface_frame_above_a_toolbar() {
-        let value = binding(Str::from(""));
+        let value = binding::<Str>(Str::from(""));
         let mount = mount(vstack((
             scroll(vstack((
                 spacer().size(390.0, 560.0),
@@ -7906,7 +7897,7 @@ mod safe_area {
     /// A `List` is a scroll surface too: a focused row field scrolls
     /// clear of the keyboard and the `UITableView` carries the inset.
     fn a_list_row_field_scrolls_clear_of_the_keyboard() {
-        let value = binding(Str::from(""));
+        let value = binding::<Str>(Str::from(""));
         let field_row = 10usize;
         let mount = mount(List::for_each(
             (0..40).map(SelfId::new).collect::<Vec<_>>(),
@@ -8300,7 +8291,7 @@ mod safe_area {
     /// to the deeper boundary under the keyboard — chrome hosting does not
     /// change the scroll surface's contract.
     fn a_form_inside_navigation_content_clears_the_focused_field() {
-        let value = binding(Str::from(""));
+        let value = binding::<Str>(Str::from(""));
         let mount = mount(NavigationView::new(
             "Form",
             scroll(vstack((
@@ -8789,7 +8780,7 @@ mod owner_lifetimes {
 
 /// `ScrollController` requests against the kit's real scroll surfaces —
 /// the water-rs/waterui#1901 contract: a bare request jumps to its
-/// target, `Animation::Default` plays the platform's smooth scroll, an
+/// target, `Animation::DEFAULT` plays the platform's smooth scroll, an
 /// explicit animation moves the offset along its timing, and every
 /// flight lands where the jump would have. A request issued mid-flight
 /// takes over.
@@ -8934,7 +8925,7 @@ mod scroll {
     /// wall-clock animation: it does not jump, and it takes time to land.
     fn an_animation_scrolls_to_the_target(name: &'static str, animation: Animation) {
         let fixture = mounted();
-        let native = matches!(animation, Animation::Default);
+        let native = animation.is_default();
         let request = || {
             fixture
                 .controller
@@ -9481,7 +9472,7 @@ mod scroll {
 
 /// `ScrollController<usize>` drives a row target into a mounted list:
 /// a bare request puts the row's top at the clip's top at once, an
-/// animated request lands on the same position — `Animation::Default`
+/// animated request lands on the same position — `Animation::DEFAULT`
 /// through the platform's animated row scroll, an explicit animation
 /// written to the model each frame-clock tick — and a request issued
 /// mid-flight takes over.
@@ -9649,7 +9640,7 @@ mod list_scroll {
     /// animation: it does not jump, and it takes time to land.
     fn an_animation_scrolls_the_row_to_the_top(name: &'static str, animation: Animation) {
         let fixture = mounted();
-        let native = matches!(animation, Animation::Default);
+        let native = animation.is_default();
         let request = || {
             fixture.controller.animate_to(TARGET, animation);
             assert!(
@@ -9694,7 +9685,7 @@ mod list_scroll {
     /// platform's wall-clock animation from the approach row.
     fn a_far_animation_jumps_to_the_approach_row_first(name: &'static str, animation: Animation) {
         let fixture = mounted_with(vec![row_item as fn() -> Text; APPROACH_LIST_ROWS]);
-        let native = matches!(animation, Animation::Default);
+        let native = animation.is_default();
         let request = || {
             fixture
                 .controller
@@ -9750,10 +9741,7 @@ mod list_scroll {
     /// frame's write is clamped, so no sample passes the end as it
     /// stands at that frame, and the flight lands on it.
     fn an_overshooting_spring_toward_the_last_rows_never_passes_the_end() {
-        let spring = Animation::Spring {
-            stiffness: 300.0,
-            damping: 6.0,
-        };
+        let spring = Animation::spring(300.0, 6.0);
         let fixture = mounted_mixed_heights();
         fixture.controller.animate_to(ROWS - 1, spring.clone());
         let from = offset_y(&fixture);
@@ -11474,6 +11462,7 @@ mod gesture_ax {
 /// a union of its descendants.
 #[cfg(target_os = "macos")]
 mod a11y_frame {
+    use cocoa_ui::accessibility as a11y;
     use cocoa_ui::appkit::{ColorView, ImageView, ScrollView};
     use cocoa_ui::geometry::{EdgeInsets as KitInsets, MeasureProposal};
     use cocoa_ui::objc2::runtime::ProtocolObject;
@@ -11498,6 +11487,7 @@ mod a11y_frame {
     use waterui_apple::SfSymbol;
     use waterui_apple::contract::NativeLeaf;
     use waterui_apple::dispatch;
+    use waterui_apple::native_test_support::pump_main_until;
     use waterui_backend_core::{AnyView, View};
     use waterui_core::layout::{LayoutDirection, Point, ProposalSize, Rect, Size};
 
@@ -11843,7 +11833,7 @@ mod a11y_frame {
     /// width frame its field assigned.
     #[cfg(feature = "text_field")]
     fn a_text_field_label_sits_at_the_leading_edge() {
-        let value = binding(waterui::Str::from("typed"));
+        let value = binding::<waterui::Str>(waterui::Str::from("typed"));
         let (leaf, _window) = attached(waterui::component::text_field::TextField::new(
             "Name", &value,
         ));
@@ -12267,6 +12257,37 @@ mod a11y_frame {
         );
     }
 
+    /// `.a11y_hidden` tracks a reactive boolean signal without rebuilding.
+    fn reactive_a11y_hidden_updates_accessibility_element() {
+        let hidden = binding(true);
+        let (leaf, _window) = attached(
+            text("Greeting")
+                .a11y_label("Greeting")
+                .a11y_hidden(hidden.clone()),
+        );
+        let view = leaf.view();
+        let is_ax_element = || {
+            let ax: &ProtocolObject<dyn NSAccessibility> = ProtocolObject::from_ref(view);
+            a11y::is_element(ax)
+        };
+        assert!(
+            !is_ax_element(),
+            "a view starting a11y_hidden(true) must not be an accessibility element"
+        );
+
+        hidden.set(false);
+        assert!(
+            pump_main_until(5.0, is_ax_element),
+            "a11y_hidden flipping false must restore the accessibility element"
+        );
+
+        hidden.set(true);
+        assert!(
+            pump_main_until(5.0, || !is_ax_element()),
+            "a11y_hidden flipping true must hide the accessibility element again"
+        );
+    }
+
     /// One `a11y_frame::` trial: its name inside the module and its body.
     fn case(name: &str, body: fn()) -> (String, Box<dyn FnOnce() + Send>) {
         (format!("a11y_frame::{name}"), Box::new(body))
@@ -12310,6 +12331,7 @@ mod a11y_frame {
             case!(a_list_row_places_its_content_at_the_leading_edge),
             case!(a_right_to_left_list_row_places_its_content_at_the_trailing_edge),
             case!(a_host_view_reports_its_committed_response),
+            case!(reactive_a11y_hidden_updates_accessibility_element),
         ];
         #[cfg(feature = "plain")]
         cases.push(case!(a_plain_label_draws_and_reports_its_response));
@@ -13043,14 +13065,13 @@ mod gesture_events {
         NSRotationGestureRecognizer,
     };
     use cocoa_ui::objc2_foundation::NSPoint;
-    use waterui::ViewExt as _;
-    use waterui::gesture::{Gesture, GesturePhase};
     use waterui::gesture::{
-        MagnificationEvent, MagnificationGesture, PointerButton, RotationEvent, RotationGesture,
-        TapEvent, TapGesture,
+        Gesture, GestureEvent, GesturePhase, MagnificationEvent, MagnificationGesture,
+        PointerButton, RotationEvent, RotationGesture, TapEvent, TapGesture,
     };
     use waterui::layout::Point;
     use waterui::prelude::text;
+    use waterui::{State, ViewExt as _};
 
     use super::{resolve, trial_each};
 
@@ -13068,7 +13089,7 @@ mod gesture_events {
             let gestures = Rc::clone(&gestures);
             text("tap").gesture(
                 TapGesture::new(),
-                move |event: TapEvent, gesture: Gesture| {
+                move |event: TapEvent, State(gesture): State<Gesture>| {
                     taps.borrow_mut().push(event);
                     gestures.borrow_mut().push(gesture);
                 },
@@ -13467,7 +13488,10 @@ mod gesture_events {
             let gestures = Rc::clone(&gestures);
             text("then").gesture(
                 Gesture::Tap(TapGesture::new()).then(RotationGesture::new(Angle::ZERO)),
-                move |event: RotationEvent, gesture: Gesture| {
+                move |event: GestureEvent, State(gesture): State<Gesture>| {
+                    let GestureEvent::Rotation(event) = event else {
+                        panic!("expected RotationEvent from Then(Tap, Rotation), got {event:?}");
+                    };
                     events.borrow_mut().push(event);
                     gestures.borrow_mut().push(gesture);
                 },
@@ -13674,7 +13698,7 @@ mod text_selection {
 
     pub fn a_selection_menu_command_edits_the_live_selection() {
         let mtm = mtm();
-        let value = binding(Str::from("hé😀b"));
+        let value = binding::<Str>(Str::from("hé😀b"));
         let observed = Rc::new(RefCell::new((String::new(), 0usize, 0usize)));
         let optional_seen = Rc::new(RefCell::new(false));
 
@@ -17522,28 +17546,40 @@ mod transform_modifiers {
 /// that extends past the rounded outline stays visible (#4277).
 #[cfg(target_os = "macos")]
 mod border_modifier {
+    use cocoa_ui::Rect;
     use cocoa_ui::objc2::rc::autoreleasepool;
     use cocoa_ui::{layer, view};
     use libtest_mimic::Trial;
-    use waterui::ViewExt as _;
     use waterui::border::Border;
     use waterui::component::label::label;
+    use waterui::graphics::color::Color;
+    use waterui::{Binding, ViewExt as _};
+    use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, pump_main_until};
 
     pub fn trials() -> Vec<Trial> {
-        vec![Trial::test(
-            "border_modifier::a_rounded_border_does_not_clip_its_content",
-            || {
-                a_rounded_border_does_not_clip_its_content();
-                Ok(())
-            },
-        )]
+        vec![
+            Trial::test(
+                "border_modifier::a_rounded_border_does_not_clip_its_content",
+                || {
+                    a_rounded_border_does_not_clip_its_content();
+                    Ok(())
+                },
+            ),
+            Trial::test(
+                "border_modifier::a_reactive_border_updates_layer_without_rebuilding",
+                || {
+                    a_reactive_border_updates_layer_without_rebuilding();
+                    Ok(())
+                },
+            ),
+        ]
     }
 
     fn a_rounded_border_does_not_clip_its_content() {
         let leaf = autoreleasepool(|_| {
-            super::resolve::render(label("content").border_with(
-                Border::new(waterui::graphics::color::Color::red(), 2.0).corner_radius(8.0),
-            ))
+            super::resolve::render(
+                label("content").border_with(Border::new(Color::red(), 2.0).corner_radius(8.0)),
+            )
         });
         let wrapper = autoreleasepool(|_| view::retain_base(leaf.view()));
         let _window = autoreleasepool(|_| super::mount_and_order_front(&wrapper));
@@ -17560,6 +17596,188 @@ mod border_modifier {
                 "a border strokes only and never clips its content"
             );
         });
+    }
+
+    fn a_reactive_border_updates_layer_without_rebuilding() {
+        let width = Binding::container(2.0_f32);
+        let corner_radius = Binding::container(4.0_f32);
+        let leaf = autoreleasepool(|_| {
+            super::resolve::render(label("content").border_with(
+                Border::new(Color::red(), width.clone()).corner_radius(corner_radius.clone()),
+            ))
+        });
+        let wrapper = autoreleasepool(|_| view::retain_base(leaf.view()));
+        let _window = autoreleasepool(|_| {
+            let window = super::leaf::attach(super::mtm(), &wrapper);
+            view::set_frame(&wrapper, Rect::new(0.0, 0.0, 80.0, 80.0));
+            wrapper.layoutSubtreeIfNeeded();
+            window
+        });
+        autoreleasepool(|_| {
+            let host_layer = layer::layer_of(&wrapper).expect("a border's host is layer-backed");
+            assert_eq!(host_layer.borderWidth(), 2.0);
+            assert_eq!(host_layer.cornerRadius(), 4.0);
+        });
+
+        width.set(5.0);
+        corner_radius.set(12.0);
+        let updated = pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            autoreleasepool(|_| {
+                let host_layer =
+                    layer::layer_of(&wrapper).expect("a border's host is layer-backed");
+                (host_layer.borderWidth() - 5.0).abs() < 1e-4
+                    && (host_layer.cornerRadius() - 12.0).abs() < 1e-4
+            })
+        });
+        assert!(
+            updated,
+            "reactive border signals update host layer width and cornerRadius in place"
+        );
+    }
+}
+
+/// A `Shadow` inherits its caster's `.clip(...)` silhouette automatically
+/// unless `.silhouette(...)` overrides it, and updates layer shadow metrics
+/// reactively without rebuilding the view (#4418).
+#[cfg(target_os = "macos")]
+mod shadow_modifier {
+    use core::ptr::null;
+
+    use cocoa_ui::Rect;
+    use cocoa_ui::objc2::rc::autoreleasepool;
+    use cocoa_ui::objc2_core_foundation::CGPoint;
+    use cocoa_ui::objc2_core_graphics::CGPath;
+    use cocoa_ui::{layer, view};
+    use libtest_mimic::Trial;
+    use waterui::component::label::label;
+    use waterui::graphics::color::Color;
+    use waterui::shape::{Circle, Rectangle};
+    use waterui::style::Shadow;
+    use waterui::{Binding, SignalExt as _, ViewExt as _};
+    use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, pump_main_until};
+
+    fn attach_offscreen(wrapper: &super::PlatformView) -> super::AttachedWindow {
+        let window = super::leaf::attach(super::mtm(), wrapper);
+        view::set_frame(wrapper, Rect::new(0.0, 0.0, 80.0, 80.0));
+        wrapper.layoutSubtreeIfNeeded();
+        window
+    }
+
+    pub fn trials() -> Vec<Trial> {
+        vec![
+            Trial::test(
+                "shadow_modifier::a_clipped_caster_shadow_inherits_circular_silhouette",
+                || {
+                    a_clipped_caster_shadow_inherits_circular_silhouette();
+                    Ok(())
+                },
+            ),
+            Trial::test(
+                "shadow_modifier::explicit_silhouette_overrides_inherited_clip_shape",
+                || {
+                    explicit_silhouette_overrides_inherited_clip_shape();
+                    Ok(())
+                },
+            ),
+            Trial::test(
+                "shadow_modifier::a_reactive_shadow_updates_layer_without_rebuilding",
+                || {
+                    a_reactive_shadow_updates_layer_without_rebuilding();
+                    Ok(())
+                },
+            ),
+        ]
+    }
+
+    fn a_clipped_caster_shadow_inherits_circular_silhouette() {
+        let leaf = autoreleasepool(|_| {
+            super::resolve::render(label("avatar").size(80.0, 80.0).clip(Circle).shadow(4.0))
+        });
+        let wrapper = autoreleasepool(|_| view::retain_base(leaf.view()));
+        let _window = autoreleasepool(|_| attach_offscreen(&wrapper));
+        autoreleasepool(|_| {
+            let host_layer = layer::layer_of(&wrapper).expect("a shadow's host is layer-backed");
+            let path = host_layer
+                .shadowPath()
+                .expect("clipped shadow must materialize shadowPath");
+            // SAFETY: CoreGraphics `CGPathContainsPoint` on a valid retained `CGPath`.
+            let center_inside = unsafe {
+                CGPath::contains_point(Some(&path), null(), CGPoint::new(40.0, 40.0), false)
+            };
+            // SAFETY: CoreGraphics `CGPathContainsPoint` on a valid retained `CGPath`.
+            let corner_inside = unsafe {
+                CGPath::contains_point(Some(&path), null(), CGPoint::new(2.0, 2.0), false)
+            };
+            assert!(center_inside, "circular shadowPath covers caster center");
+            assert!(
+                !corner_inside,
+                "circular shadowPath inherited from `.clip(Circle)` excludes outer corner"
+            );
+        });
+    }
+
+    fn explicit_silhouette_overrides_inherited_clip_shape() {
+        let leaf = autoreleasepool(|_| {
+            super::resolve::render(
+                label("avatar")
+                    .size(80.0, 80.0)
+                    .clip(Circle)
+                    .shadow(Shadow::splat(4.0).silhouette(Rectangle)),
+            )
+        });
+        let wrapper = autoreleasepool(|_| view::retain_base(leaf.view()));
+        let _window = autoreleasepool(|_| attach_offscreen(&wrapper));
+        autoreleasepool(|_| {
+            let host_layer = layer::layer_of(&wrapper).expect("a shadow's host is layer-backed");
+            let path = host_layer
+                .shadowPath()
+                .expect("explicit silhouette shadow must materialize shadowPath");
+            // SAFETY: CoreGraphics `CGPathContainsPoint` on a valid retained `CGPath`.
+            let corner_inside = unsafe {
+                CGPath::contains_point(Some(&path), null(), CGPoint::new(2.0, 2.0), false)
+            };
+            assert!(
+                corner_inside,
+                "explicit `.silhouette(Rectangle)` overrides inherited `.clip(Circle)`"
+            );
+        });
+    }
+
+    fn a_reactive_shadow_updates_layer_without_rebuilding() {
+        let phase = Binding::container(false);
+        let radius = phase.map(|on| if on { 9.0_f32 } else { 2.0 });
+        let offset_x = phase.map(|on| if on { 6.0_f32 } else { 1.0 });
+        let color = phase.map(|on| Color::srgb(0, 0, 0).with_opacity(if on { 0.8 } else { 0.2 }));
+        let leaf = autoreleasepool(|_| {
+            super::resolve::render(
+                label("card")
+                    .size(80.0, 80.0)
+                    .shadow(Shadow::splat(radius).offset(offset_x, 3.0).color(color)),
+            )
+        });
+        let wrapper = autoreleasepool(|_| view::retain_base(leaf.view()));
+        let _window = autoreleasepool(|_| attach_offscreen(&wrapper));
+        autoreleasepool(|_| {
+            let host_layer = layer::layer_of(&wrapper).expect("a shadow's host is layer-backed");
+            assert!((host_layer.shadowRadius() - 2.0).abs() < 1e-4);
+            assert!((host_layer.shadowOffset().width - 1.0).abs() < 1e-4);
+            assert!((host_layer.shadowOpacity() - 0.2).abs() < 1e-3);
+        });
+
+        phase.set(true);
+        let updated = pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            autoreleasepool(|_| {
+                let host_layer =
+                    layer::layer_of(&wrapper).expect("a shadow's host is layer-backed");
+                (host_layer.shadowRadius() - 9.0).abs() < 1e-4
+                    && (host_layer.shadowOffset().width - 6.0).abs() < 1e-4
+                    && (host_layer.shadowOpacity() - 0.8).abs() < 1e-3
+            })
+        });
+        assert!(
+            updated,
+            "reactive shadow signals update radius, offset, and opacity on host layer in place"
+        );
     }
 }
 
@@ -18078,5 +18296,155 @@ mod catalyst_view_renderer {
             "Catalyst prominent glass button must render active blue pixels, got {active_blue}"
         );
         Ok(())
+    }
+}
+
+/// Native `AppKit` / `UIKit` realization tests for `Disclosure`: focusability,
+/// indicator presence, accessibility `expanded` state, lazy body construction,
+/// and click/activation toggling.
+mod disclosure {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use cocoa_ui::objc2::Message;
+    #[cfg(target_os = "macos")]
+    use cocoa_ui::objc2_app_kit::NSAccessibility as _;
+    #[cfg(target_os = "ios")]
+    use cocoa_ui::objc2_ui_kit::NSObjectUIAccessibility as _;
+    use cocoa_ui::view::subviews;
+    use cocoa_ui::{PlatformView, Retained};
+    use libtest_mimic::Trial;
+    use waterui::Signal;
+    use waterui::component::text;
+    use waterui::reactive::binding;
+    use waterui::widget::disclosure::Disclosure;
+    use waterui_core::layout::ProposalSize;
+
+    #[cfg(target_os = "macos")]
+    use cocoa_ui::appkit::disclosure::DisclosureButton;
+    #[cfg(target_os = "ios")]
+    use cocoa_ui::uikit::disclosure::DisclosureButton;
+
+    #[cfg(target_os = "ios")]
+    use super::mtm;
+    use super::resolve;
+
+    pub fn trials() -> Vec<Trial> {
+        vec![Trial::test(
+            "disclosure::focusable_header_indicator_a11y_and_lazy_body",
+            || {
+                focusable_header_indicator_a11y_and_lazy_body();
+                Ok(())
+            },
+        )]
+    }
+
+    fn find_disclosure_button(root: &PlatformView) -> Option<Retained<DisclosureButton>> {
+        for sub in subviews(root) {
+            if let Some(button) = sub.downcast_ref::<DisclosureButton>() {
+                return Some(Message::retain(button));
+            }
+            if let Some(found) = find_disclosure_button(&sub) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    fn focusable_header_indicator_a11y_and_lazy_body() {
+        let expanded = binding(false);
+        let builds = Rc::new(Cell::new(0_usize));
+        let leaf = resolve::render(
+            Disclosure::new("Advanced", {
+                let builds = Rc::clone(&builds);
+                move || {
+                    builds.set(builds.get() + 1);
+                    text("Details")
+                }
+            })
+            .expanded(&expanded),
+        );
+
+        assert_eq!(
+            builds.get(),
+            0,
+            "collapsed disclosure must build body lazily"
+        );
+        let button = find_disclosure_button(leaf.view())
+            .expect("disclosure leaf must mount a native DisclosureButton");
+
+        let size = button.intrinsic_size();
+        assert!(
+            size.width > 0.0 && size.height > 0.0,
+            "disclosure indicator button must have visible non-zero size: {size:?}"
+        );
+        assert!(!button.is_expanded());
+        assert_eq!(subviews(leaf.view()).len(), 2);
+
+        #[cfg(target_os = "macos")]
+        {
+            assert!(
+                button.acceptsFirstResponder(),
+                "AppKit DisclosureButton must accept keyboard focus"
+            );
+            assert!(
+                !button.isAccessibilityExpanded(),
+                "AppKit DisclosureButton must report expanded=false initially"
+            );
+            assert_eq!(
+                button.accessibilityLabel().map(|label| label.to_string()),
+                Some(String::from("Advanced"))
+            );
+        }
+        #[cfg(target_os = "ios")]
+        {
+            let mtm = mtm();
+            assert!(
+                button.canBecomeFocused(),
+                "UIKit DisclosureButton must accept keyboard focus"
+            );
+            assert!(
+                button.currentImage().is_some(),
+                "UIKit DisclosureButton must display chevron indicator image"
+            );
+            assert_eq!(
+                button.accessibilityValue(mtm).map(|v| v.to_string()),
+                Some(String::from("Collapsed"))
+            );
+        }
+
+        // Activating the button expands the disclosure and lazily builds its body.
+        button.activate();
+        assert!(expanded.snapshot());
+        assert!(button.is_expanded());
+        assert_eq!(builds.get(), 1);
+        assert_eq!(subviews(leaf.view()).len(), 3);
+        let expanded_dims = leaf.layout().measure(ProposalSize::UNSPECIFIED).size;
+
+        #[cfg(target_os = "macos")]
+        {
+            assert!(button.isAccessibilityExpanded());
+        }
+        #[cfg(target_os = "ios")]
+        {
+            let mtm = mtm();
+            assert_eq!(
+                button.accessibilityValue(mtm).map(|v| v.to_string()),
+                Some(String::from("Expanded"))
+            );
+        }
+
+        // Activating again collapses and drops the body view.
+        button.activate();
+        assert!(!expanded.snapshot());
+        assert!(!button.is_expanded());
+        assert_eq!(subviews(leaf.view()).len(), 2);
+        let collapsed_dims = leaf.layout().measure(ProposalSize::UNSPECIFIED).size;
+        assert!(
+            expanded_dims.height > collapsed_dims.height,
+            "expanded height ({}) must exceed collapsed height ({})",
+            expanded_dims.height,
+            collapsed_dims.height
+        );
     }
 }

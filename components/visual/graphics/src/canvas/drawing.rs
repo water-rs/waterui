@@ -293,14 +293,19 @@ impl DrawingCx {
         });
     }
 
-    /// Draws `image` scaled into `rect`.
-    pub fn image(&mut self, image: &ImageSource, rect: Rect, sampling: Sampling) {
+    /// Draws `image` scaled into `rect` with `sampling`.
+    pub fn image_sampled(&mut self, image: &ImageSource, rect: Rect, sampling: Sampling) {
         self.note_image(image);
         self.nodes.push(Node::Image {
             image: image.clone(),
             dst: lower_rect(rect),
             sampling,
         });
+    }
+
+    /// Draws `image` scaled into `rect` with linear filtering.
+    pub fn image(&mut self, image: &ImageSource, rect: Rect) {
+        self.image_sampled(image, rect, Sampling::Linear);
     }
 
     /// Draws `run`'s glyphs, exactly as positioned, with `paint`.

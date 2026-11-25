@@ -144,13 +144,15 @@ pub fn components_block_05() {
         view.max_width(f32::INFINITY) // idiom: stretch to full container width
     };
 
-    // Prose: chained on a `Frame`, the per-axis modifiers take signals.
+    // Prose: every sizing shortcut on a view takes signals, and `.alignment(...)` takes tokens.
     let height_signal = Binding::f32(80.0);
+    let _ = Divider.height(height_signal.clone());
     let _ = Divider.width(120.0).max_height(height_signal);
+    let _ = Divider.alignment(TopLeading);
 
-    // Prose (not counted): a `Frame` also takes `.ideal_width(w)` / `.ideal_height(h)`.
-    let _ = Divider.max_width(f32::INFINITY).ideal_width(w);
-    let _ = Divider.max_height(h).ideal_height(h);
+    // Prose (not counted): views also take `.ideal_width(w)` / `.ideal_height(h)`.
+    let _ = Divider.ideal_width(w);
+    let _ = Divider.ideal_height(h);
 }
 
 // ---------------------------------------------------------------------------
@@ -431,14 +433,14 @@ pub fn components_block_14() {
         Toggle::new("Wi-Fi", &enabled).style(ToggleStyle::Switch)
     };
     let _ = {
-        slider("Volume", &level).range(0.0..=1.0) // &Binding<f64>; range is RangeInclusive<f64>
+        slider("Volume", &level).range(0.0..=1.0) // &Binding<T: SliderValue>; range/step accept signals
     };
     let _ = {
         // sliders default ExtraSmall;
-        // value_indicator shows the formatted value above the thumb while dragging
+        // value_formatter shows the formatted value above the thumb while dragging
         slider("Volume", &level)
             .size(ControlSize::Large)
-            .value_indicator(|v| Str::from(format!("{v:.0}")))
+            .value_formatter(|v| Str::from(format!("{v:.0}")))
     };
     let _ = {
         slider("Volume", &level)
@@ -447,10 +449,10 @@ pub fn components_block_14() {
             .max_value_label("Loud")
     };
     let _ = {
-        stepper("Quantity", &count) // &Binding<i32>
+        stepper("Quantity", &count) // &Binding<T: StepperValue>
     };
     let _ = {
-        // range: impl RangeBounds<i32>; step takes a signal
+        // range and step accept signals
         stepper("Items", &count).range(0..=100).step(5)
     };
     let _ = {
@@ -495,8 +497,9 @@ pub fn components_block_14() {
         progress(fraction).label("Downloading") // its label is a modifier — the one exception
     };
     let _ = {
-        progress(fraction).circular() // or .linear()
+        progress(fraction).style(ProgressStyle::Circular) // or Linear / Loading (shorthands: .circular(), .linear())
     };
+    let _ = { progress(fraction).circular() };
     let _ = {
         loading() // indeterminate progress
     };
@@ -536,7 +539,7 @@ pub fn components_button_style_shorthands() {
     let styled_value = Binding::container(StyledStr::default());
     let _ = TextField::new("a", &text_value).line_limit(NonZeroUsize::new(3));
     let _ = TextField::new("a", &text_value).line_limit(None::<NonZeroUsize>);
-    let _ = TextField::styled("a", &styled_value);
+    let _ = TextField::new("a", &styled_value);
 }
 
 // ---------------------------------------------------------------------------
@@ -578,13 +581,15 @@ pub fn components_custom_control_styles() {
             configuration: PrimitiveButtonStyleConfiguration<L>,
         ) -> impl View + use<L> {
             use core::num::NonZeroU32;
+            use waterui::gesture::TapEvent;
             let trigger = configuration.trigger().clone();
             configuration
                 .into_label()
                 .padding_with((8.0, 16.0))
-                .gesture(TapGesture::repeat(NonZeroU32::new(2).unwrap()), move || {
-                    trigger.trigger()
-                })
+                .gesture(
+                    TapGesture::repeat(NonZeroU32::new(2).unwrap()),
+                    move |_: TapEvent| trigger.trigger(),
+                )
         }
     }
 
@@ -1281,15 +1286,15 @@ pub fn components_block_33() {
         ColorPicker::new("Accent", &color).with_alpha().with_hdr() // Binding<Color>
     };
     let _ = {
-        // Binding<Vec<Url>>; `import(..)` copies into app storage
-        FilePicker::open("Select Files", &urls).max_count(5)
+        // Binding<Vec<Url>>; `.import()` copies into app storage
+        FilePicker::new("Select Files", &urls).max_count(5)
     };
 
     let _ = DateTimePickerComponents::Date;
     let _ = DateTimePickerComponents::HourAndMinute;
     let _ = DateTimePickerComponents::HourMinuteAndSecond;
     let _ = DateTimePickerComponents::DateHourAndMinute;
-    let _ = FilePicker::import("Import Files", &urls);
+    let _ = FilePicker::new("Import Files", &urls).import();
 }
 
 // ---------------------------------------------------------------------------
@@ -1346,19 +1351,20 @@ pub fn components_snackbar_prose() {
     let _ = SnackbarPosition::BottomLeading;
     let _ = SnackbarPosition::BottomTrailing;
     let _ = Snackbar::new("x")
-        .icon(mdi::delete())
+        .icon(mdi::delete)
         .state(&value)
         .on_dismiss(|reason: SnackbarDismissReason| {
             let _ = reason;
         });
+    let _ = Snackbar::new("padded").icon(|| mdi::delete().padding());
     let _ = text("host").snackbar_host();
-    let _ = text("host").snackbar_host_with_icons::<mdi::Svg>();
+    let _ = text("host").snackbar_host_with_icons::<mdi::Icon>();
     let _ = SnackbarManager::host(|m| {
-        m.show(Snackbar::new("x").icon(mdi::delete()));
+        m.show(Snackbar::new("x").icon(mdi::delete));
         text("host")
     });
-    let _ = button("x").action(|m: SnackbarManager<mdi::Svg>| {
-        m.show(Snackbar::new("x").icon(mdi::delete()));
+    let _ = button("x").action(|m: SnackbarManager<mdi::Icon>| {
+        m.show(Snackbar::new("x").icon(mdi::delete));
     });
     let _ = button("x").action(|manager: SnackbarManager| manager.dismiss());
 }
@@ -1395,7 +1401,7 @@ pub fn components_block_36() {
     let header = text("header");
     let view = Divider;
 
-    use waterui::widget::accordion; // not in the prelude
+    use waterui::widget::disclosure; // not in the prelude
 
     let _ = {
         // Card; .style(CardStyle::Outlined) | Elevated | Filled
@@ -1406,8 +1412,8 @@ pub fn components_block_36() {
         suspense(async { load().await })
     };
     let _ = {
-        // disclosure; Accordion::with_toggle(&open, ..) controls it
-        accordion(header, || body())
+        // Disclosure::new(header, ..).expanded(&open) controls it
+        disclosure(header, || body())
     };
     let _ = {
         view.floating() // themed elevated surface (FloatingStyle-aware)
@@ -1416,10 +1422,10 @@ pub fn components_block_36() {
 
 // ---------------------------------------------------------------------------
 // components.md § "## Overlays: snackbars, cards, suspense, full screen" (prose): `CardStyle`, `Suspense::loading` and
-// `Accordion::with_toggle`. Not counted as a rust block.
+// `Disclosure::expanded`. Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn components_overlay_extras_prose() {
-    use waterui::widget::Accordion;
+    use waterui::widget::Disclosure;
 
     let open = Binding::bool(false);
 
@@ -1427,7 +1433,7 @@ pub fn components_overlay_extras_prose() {
     let _ = card(text("c")).style(CardStyle::Elevated);
     let _ = card(text("c")).style(CardStyle::Filled);
     let _ = suspense(async { text("x") }).loading(text("loading"));
-    let _ = Accordion::with_toggle(&open, text("h"), || text("b"));
+    let _ = Disclosure::new(text("h"), || text("b")).expanded(&open);
 }
 
 // ---------------------------------------------------------------------------
@@ -1557,10 +1563,10 @@ pub fn components_block_38() {
     let _ = { view.a11y_role(AccessibilityRole::Button) };
     let view = Divider;
     let _ = {
-        view.a11y_hidden(true) // decorative only
+        view.a11y_hidden(true) // or a reactive boolean signal
     };
     let view = Divider;
-    let _ = { view.a11y_state_signal(active.map(|a| AccessibilityState::new().selected(a))) };
+    let _ = { view.a11y_state(active.map(|a| AccessibilityState::new().selected(a))) };
 }
 
 // ---------------------------------------------------------------------------

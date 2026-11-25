@@ -32,7 +32,7 @@
 //! ```
 //! use waterui::prelude::*;
 //! use waterui::ViewExt;
-//! use waterui_core::binding;
+//! use waterui_core::{Str, binding};
 //! use waterui_form::{SecureField, secure::Secure};
 //! use waterui_controls::TextField;
 //! use waterui_layout::stack::vstack;
@@ -49,7 +49,7 @@
 //!
 //! // Use focused states with UI elements
 //! let view = vstack((
-//!     TextField::new("Username", &binding("")).focused(&focus_binding, Field::Username),
+//!     TextField::new("Username", &binding::<Str>(Str::from(""))).focused(&focus_binding, Field::Username),
 //!     SecureField::new("Password", &binding(Secure::default()))
 //!         .focused(&focus_binding, Field::Password),
 //! ));
