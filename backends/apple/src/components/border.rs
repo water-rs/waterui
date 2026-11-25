@@ -9,11 +9,14 @@
 //! cached capture re-renders.
 
 use alloc::rc::Rc;
+use core::cell::Cell;
 
 use cocoa_ui::layer;
 use cocoa_ui::{PlatformView, Rect, Retained, view};
 use waterui::border::Border;
 use waterui::graphics::color::WorkingColor;
+use waterui::layout::EdgeSet;
+use waterui::reactive::{Computed, Signal};
 use waterui_core::Metadata;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
@@ -78,6 +81,12 @@ struct BorderState {
     /// The stroke layer for a partial edge set — `None` when the layer's
     /// own border properties do the drawing.
     border_layer: Option<layer::ShapeLayer>,
+    /// Current border stroke width.
+    width: Cell<f32>,
+    /// Current border corner radius.
+    corner_radius: Cell<f32>,
+    /// Edges covered by this border.
+    edges: EdgeSet,
 }
 
 impl core::fmt::Debug for BorderState {
@@ -102,6 +111,76 @@ fn apply_border_color(
         border.set_stroke(Some(&cg));
     }
     view::invalidate_captured_rendering(host);
+}
+
+fn configure_border_layer(
+    host: &PlatformView,
+    edges: EdgeSet,
+    width: f32,
+    corner_radius: f32,
+) -> Option<layer::ShapeLayer> {
+    let draws_all_edges = edges.top && edges.leading && edges.bottom && edges.trailing;
+    if draws_all_edges {
+        if let Some(host_layer) = layer::layer_of(host) {
+            layer::set_border(
+                &host_layer,
+                f64::from(width.max(0.0)),
+                f64::from(corner_radius.max(0.0)),
+                false,
+            );
+        }
+        return None;
+    }
+    let shape = layer::ShapeLayer::new();
+    shape.set_fill(None);
+    shape.set_line_width(f64::from(width.max(0.0)));
+    shape.set_line_cap_butt();
+    if let Some(host_layer) = layer::layer_of(host) {
+        layer::add_sublayer(&host_layer, shape.layer());
+    }
+    Some(shape)
+}
+
+fn apply_border_metrics(host: &PlatformView, state: &BorderState) {
+    let width = f64::from(state.width.get().max(0.0));
+    let corner_radius = f64::from(state.corner_radius.get().max(0.0));
+    if let Some(shape) = &state.border_layer {
+        shape.set_line_width(width);
+        let bounds = view::bounds(host);
+        if bounds.size.width > 0.0 && bounds.size.height > 0.0 {
+            shape.set_frame(bounds);
+            let mask = cocoa_ui::path::EdgeMask {
+                top: state.edges.top,
+                leading: state.edges.leading,
+                bottom: state.edges.bottom,
+                trailing: state.edges.trailing,
+            };
+            let path = cocoa_ui::path::border_path(bounds, width, corner_radius, mask);
+            shape.set_path(Some(&path));
+        }
+    } else if let Some(host_layer) = layer::layer_of(host) {
+        layer::set_border(&host_layer, width, corner_radius, false);
+    }
+    view::invalidate_captured_rendering(host);
+}
+
+fn watch_border_metric(
+    leaf: &mut NativeLeaf,
+    signal: &Computed<f32>,
+    slot: impl Fn(&BorderState) -> &Cell<f32> + 'static,
+    state: &Rc<BorderState>,
+    host: &Retained<HostView>,
+) {
+    let state = Rc::clone(state);
+    let host = host.clone();
+    leaf.watch(signal, move |wctx| {
+        slot(&state).set(*wctx.value());
+        let state = Rc::clone(&state);
+        let host = host.clone();
+        crate::animation::with_platform_animation(wctx.metadata(), move || {
+            apply_border_metrics(&host, &state);
+        });
+    });
 }
 
 /// The wrapper's layout face: the content's answers everywhere.
@@ -149,44 +228,29 @@ pub fn realize_border_metadata(
 ) -> NativeLeaf {
     let border = metadata.value;
     let edges = border.get_edges();
-    let width = border.width();
-    let corner_radius = border.get_corner_radius();
-    let draws_all_edges = edges.top && edges.leading && edges.bottom && edges.trailing;
+    let initial_width = border.width().snapshot();
+    let initial_corner_radius = border.get_corner_radius().snapshot();
 
     let mtm = ctx.mtm();
     let host = HostView::new(mtm, Rect::ZERO);
     layer::ensure_layer(&host);
-    let mounted = ctx.realize(metadata.content).mount(&host);
+    let child_leaf = ctx.realize(metadata.content);
+    let inherited_clip = child_leaf.clip_shape_handle();
+    let mounted = child_leaf.mount(&host);
     crate::primary_content::forward(&host, mounted.view());
     view::set_translates_autoresizing(mounted.view(), true);
 
     // `configureBorderLayer`: all four edges go through the layer's own
     // border properties; a partial edge set draws through a stroke
     // sublayer.
-    let border_layer = if draws_all_edges {
-        if let Some(host_layer) = layer::layer_of(&host) {
-            layer::set_border(
-                &host_layer,
-                f64::from(width),
-                f64::from(corner_radius),
-                false,
-            );
-        }
-        None
-    } else {
-        let shape = layer::ShapeLayer::new();
-        shape.set_fill(None);
-        shape.set_line_width(f64::from(width));
-        shape.set_line_cap_butt();
-        if let Some(host_layer) = layer::layer_of(&host) {
-            layer::add_sublayer(&host_layer, shape.layer());
-        }
-        Some(shape)
-    };
+    let border_layer = configure_border_layer(&host, edges, initial_width, initial_corner_radius);
 
     let state = Rc::new(BorderState {
         child: mounted,
         border_layer,
+        width: Cell::new(initial_width),
+        corner_radius: Cell::new(initial_corner_radius),
+        edges,
     });
 
     // The content fills the wrapper; the stroke layer covers it and
@@ -200,15 +264,15 @@ pub fn realize_border_metadata(
             if let Some(shape) = &state.border_layer {
                 shape.set_frame(bounds);
                 let mask = cocoa_ui::path::EdgeMask {
-                    top: edges.top,
-                    leading: edges.leading,
-                    bottom: edges.bottom,
-                    trailing: edges.trailing,
+                    top: state.edges.top,
+                    leading: state.edges.leading,
+                    bottom: state.edges.bottom,
+                    trailing: state.edges.trailing,
                 };
                 let path = cocoa_ui::path::border_path(
                     bounds,
-                    f64::from(width),
-                    f64::from(corner_radius),
+                    f64::from(state.width.get().max(0.0)),
+                    f64::from(state.corner_radius.get().max(0.0)),
                     mask,
                 );
                 shape.set_path(Some(&path));
@@ -232,14 +296,30 @@ pub fn realize_border_metadata(
         },
     );
     leaf.keep(sink_guard);
+    leaf.set_clip_shape_handle(inherited_clip);
 
     let resolved = border.color().resolve(ctx.env());
-    leaf.bind(&resolved, {
+    apply_border_color(&resolved.snapshot(), &host, state.border_layer.as_ref());
+    leaf.watch(&resolved, {
         let state = Rc::clone(&state);
-        move |color| {
-            apply_border_color(&color, &host, state.border_layer.as_ref());
+        let host = host.clone();
+        move |wctx| {
+            let color = *wctx.value();
+            let state = Rc::clone(&state);
+            let host = host.clone();
+            crate::animation::with_platform_animation(wctx.metadata(), move || {
+                apply_border_color(&color, &host, state.border_layer.as_ref());
+            });
         }
     });
+    watch_border_metric(&mut leaf, border.width(), |s| &s.width, &state, &host);
+    watch_border_metric(
+        &mut leaf,
+        border.get_corner_radius(),
+        |s| &s.corner_radius,
+        &state,
+        &host,
+    );
     leaf.keep(state);
     leaf
 }

@@ -162,7 +162,7 @@ use accesskit::{
     Toggled as AccessibilityToggled, TreeId as AccessibilityTreeId, TreeInfo as AccessibilityTree,
     TreeUpdate as AccessibilityTreeUpdate,
 };
-use cherenkov_record::{Paint, WorkingColor};
+use cherenkov_record::Paint;
 use executor_core::spawn_local;
 use nami::{Binding, Signal};
 use waterkit_clipboard::Clipboard;

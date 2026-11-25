@@ -10,11 +10,13 @@
 
 use alloc::rc::Rc;
 use alloc::vec::Vec;
+use core::cell::Cell;
 
 use cocoa_ui::layer;
 use cocoa_ui::{PlatformView, Rect, Retained, Size, view};
 use waterui::graphics::color::WorkingColor;
-use waterui::shape::{ClipShape, PathCommand, ShapeKind};
+use waterui::reactive::{Computed, Signal};
+use waterui::shape::{PathCommand, ShapeKind};
 use waterui::style::Shadow;
 use waterui_core::Metadata;
 use waterui_core::layout::{
@@ -154,10 +156,13 @@ fn shape_commands(commands: &[PathCommand]) -> Vec<cocoa_ui::path::Command> {
         .collect()
 }
 
-/// The leaf's live state: the mounted child.
+/// The leaf's live state: the mounted child and reactive geometry metrics.
 struct ShadowState {
     /// The mounted content.
     child: Mounted,
+    offset_x: Cell<f32>,
+    offset_y: Cell<f32>,
+    radius: Cell<f32>,
 }
 
 impl core::fmt::Debug for ShadowState {
@@ -177,6 +182,39 @@ fn apply_shadow_color(color: &WorkingColor, host: &PlatformView) {
         layer::set_shadow_opacity(&layer, color.components[3]);
     }
     view::invalidate_captured_rendering(host);
+}
+
+fn apply_shadow_geometry(host: &PlatformView, state: &ShadowState) {
+    if let Some(host_layer) = layer::layer_of(host) {
+        layer::set_shadow(
+            &host_layer,
+            Size::new(
+                f64::from(state.offset_x.get()),
+                f64::from(state.offset_y.get()),
+            ),
+            f64::from(state.radius.get().max(0.0)),
+        );
+    }
+    view::invalidate_captured_rendering(host);
+}
+
+fn watch_shadow_metric(
+    leaf: &mut NativeLeaf,
+    signal: &Computed<f32>,
+    slot: impl Fn(&ShadowState) -> &Cell<f32> + 'static,
+    state: &Rc<ShadowState>,
+    host: &Retained<HostView>,
+) {
+    let state = Rc::clone(state);
+    let host = host.clone();
+    leaf.watch(signal, move |wctx| {
+        slot(&state).set(*wctx.value());
+        let state = Rc::clone(&state);
+        let host = host.clone();
+        crate::animation::with_platform_animation(wctx.metadata(), move || {
+            apply_shadow_geometry(&host, &state);
+        });
+    });
 }
 
 /// `updateShadowPath`: the silhouette resolved against the host's bounds —
@@ -244,29 +282,47 @@ pub fn realize_shadow_metadata(
     let mtm = ctx.mtm();
     let host = HostView::new(mtm, Rect::ZERO);
     layer::ensure_layer(&host);
-    let mounted = ctx.realize(metadata.content).mount(&host);
+    let child_leaf = ctx.realize(metadata.content);
+    let inherited_clip = child_leaf.clip_shape_handle();
+    let mounted = child_leaf.mount(&host);
     crate::primary_content::forward(&host, mounted.view());
     view::set_translates_autoresizing(mounted.view(), true);
 
     // `configureShadow`: offset and radius on the host's layer; the
     // layer must not mask the shadow it draws.
+    let initial_offset_x = shadow.offset_x().snapshot();
+    let initial_offset_y = shadow.offset_y().snapshot();
+    let initial_radius = shadow.radius().snapshot();
     if let Some(host_layer) = layer::layer_of(&host) {
         layer::set_shadow(
             &host_layer,
-            Size::new(f64::from(shadow.offset().x), f64::from(shadow.offset().y)),
-            f64::from(shadow.radius()),
+            Size::new(f64::from(initial_offset_x), f64::from(initial_offset_y)),
+            f64::from(initial_radius.max(0.0)),
         );
         layer::set_masks_to_bounds(&host_layer, false);
     }
 
-    // The silhouette: `WuiShapePath.commands(from:)`'s pair — the
-    // structured kind first, the unit-space commands as the custom-path
-    // fallback.
-    let silhouette: &ClipShape = shadow.silhouette();
-    let kind = shape_kind(silhouette.kind());
-    let commands = shape_commands(silhouette.commands());
+    // The silhouette: explicit `.silhouette(...)` override wins; otherwise follow
+    // the caster's `.clip(...)` shape, or fall back to a rectangle when unclipped.
+    let (kind, commands) = shadow
+        .get_silhouette()
+        .or(inherited_clip.as_deref())
+        .map_or_else(
+            || (cocoa_ui::path::ShapeKind::Rect, Vec::new()),
+            |silhouette| {
+                (
+                    shape_kind(silhouette.kind()),
+                    shape_commands(silhouette.commands()),
+                )
+            },
+        );
 
-    let state = Rc::new(ShadowState { child: mounted });
+    let state = Rc::new(ShadowState {
+        child: mounted,
+        offset_x: Cell::new(initial_offset_x),
+        offset_y: Cell::new(initial_offset_y),
+        radius: Cell::new(initial_radius),
+    });
 
     // The content fills the wrapper; the shadow path follows its bounds.
     host.set_layout_handler({
@@ -293,13 +349,23 @@ pub fn realize_shadow_metadata(
         },
     );
     leaf.keep(sink_guard);
+    leaf.set_clip_shape_handle(inherited_clip);
 
-    let resolved = shadow.color().resolve(ctx.env());
-    leaf.bind(&resolved, {
-        move |color| {
-            apply_shadow_color(&color, &host);
+    let resolved = shadow.get_color().resolve(ctx.env());
+    apply_shadow_color(&resolved.snapshot(), &host);
+    leaf.watch(&resolved, {
+        let host = host.clone();
+        move |wctx| {
+            let color = *wctx.value();
+            let host = host.clone();
+            crate::animation::with_platform_animation(wctx.metadata(), move || {
+                apply_shadow_color(&color, &host);
+            });
         }
     });
+    watch_shadow_metric(&mut leaf, shadow.offset_x(), |s| &s.offset_x, &state, &host);
+    watch_shadow_metric(&mut leaf, shadow.offset_y(), |s| &s.offset_y, &state, &host);
+    watch_shadow_metric(&mut leaf, shadow.radius(), |s| &s.radius, &state, &host);
     leaf.keep(state);
     leaf
 }
