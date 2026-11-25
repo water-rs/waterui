@@ -53,19 +53,19 @@ pub(super) fn collect_item_watchers(
     for item in items {
         match item {
             ResolvedMenuItem::Command(command) => {
-                for signal in [&command.disabled, &command.selected] {
+                for signal in [command.is_disabled(), command.is_selected()] {
                     let resync = Rc::clone(resync);
                     watchers.push(Box::new(signal.watch(move |wctx| {
                         resync(wctx.metadata());
                     })));
                 }
-                watchers.push(Box::new(command.label.content().watch({
+                watchers.push(Box::new(command.label().content().watch({
                     let resync = Rc::clone(resync);
                     move |wctx| {
                         resync(wctx.metadata());
                     }
                 })));
-                if let Some(subtitle) = &command.subtitle {
+                if let Some(subtitle) = command.subtitle() {
                     let resync = Rc::clone(resync);
                     watchers.push(Box::new(subtitle.watch(move |wctx| {
                         resync(wctx.metadata());
@@ -73,20 +73,20 @@ pub(super) fn collect_item_watchers(
                 }
             }
             ResolvedMenuItem::Menu(submenu) => {
-                watchers.push(Box::new(submenu.label.content().watch({
+                watchers.push(Box::new(submenu.label().content().watch({
                     let resync = Rc::clone(resync);
                     move |wctx| {
                         resync(wctx.metadata());
                     }
                 })));
-                let nested = submenu.items.clone();
+                let nested = submenu.items().clone();
                 watchers.push(Box::new(nested.watch({
                     let resync = Rc::clone(resync);
                     move |wctx| {
                         resync(wctx.metadata());
                     }
                 })));
-                collect_item_watchers(&submenu.items.snapshot(), resync, watchers);
+                collect_item_watchers(&submenu.items().snapshot(), resync, watchers);
             }
             ResolvedMenuItem::Divider | ResolvedMenuItem::Quit | ResolvedMenuItem::CloseWindow => {}
         }
@@ -96,22 +96,21 @@ pub(super) fn collect_item_watchers(
 /// A `ResolvedCommand` as a kit `Command` — every presentation field
 /// snapshotted; the shortcut's key equivalent travels cross-platform.
 fn kit_command(command: &ResolvedCommand<Held>, env: &Environment) -> KitCommand {
-    let (key_equivalent, modifiers) = command.shortcut.as_ref().map_or_else(
+    let (key_equivalent, modifiers) = command.shortcut().map_or_else(
         || (String::new(), cocoa_ui::menu::KeyModifiers::empty()),
         waterui_apple_menu::shortcut_parts,
     );
-    let (symbol, image) = crate::menus::resolve_menu_icon(command.icon.as_ref(), env);
+    let (symbol, image) = crate::menus::resolve_menu_icon(command.icon(), env);
     KitCommand {
-        label: item_title(&command.label.content().snapshot()),
+        label: item_title(&command.label().content().snapshot()),
         subtitle: command
-            .subtitle
-            .as_ref()
+            .subtitle()
             .map(|subtitle| subtitle.snapshot().to_string()),
         symbol,
         image,
-        destructive: matches!(command.role, Some(ButtonRole::Destructive)),
-        enabled: !command.disabled.snapshot(),
-        selected: command.selected.snapshot(),
+        destructive: matches!(command.role(), Some(ButtonRole::Destructive)),
+        enabled: !command.is_disabled().snapshot(),
+        selected: command.is_selected().snapshot(),
         key_equivalent,
         modifiers,
     }
@@ -128,7 +127,7 @@ pub(super) fn tree_nodes(items: &[ResolvedMenuItem<Held>], env: &Environment) ->
         match item {
             ResolvedMenuItem::Divider => nodes.push(MenuTreeNode::Divider),
             ResolvedMenuItem::Command(command) => {
-                let action = command.action.clone();
+                let action = command.action().clone();
                 let env = env.clone();
                 nodes.push(MenuTreeNode::Command(
                     kit_command(command, &env),
@@ -148,10 +147,10 @@ pub(super) fn tree_nodes(items: &[ResolvedMenuItem<Held>], env: &Environment) ->
                 ));
             }
             ResolvedMenuItem::Menu(submenu) => {
-                let (symbol, image) = crate::menus::resolve_menu_icon(submenu.icon.as_ref(), env);
+                let (symbol, image) = crate::menus::resolve_menu_icon(submenu.icon(), env);
                 nodes.push(MenuTreeNode::Submenu(
                     KitCommand {
-                        label: item_title(&submenu.label.content().snapshot()),
+                        label: item_title(&submenu.label().content().snapshot()),
                         symbol,
                         image,
                         // A submenu is a container: always activatable, like
@@ -159,7 +158,7 @@ pub(super) fn tree_nodes(items: &[ResolvedMenuItem<Held>], env: &Environment) ->
                         enabled: true,
                         ..KitCommand::default()
                     },
-                    tree_nodes(&submenu.items.snapshot(), env),
+                    tree_nodes(&submenu.items().snapshot(), env),
                 ));
             }
         }
@@ -193,7 +192,7 @@ fn command_item(
     } else if let Some(image) = &kit.image {
         item = item.with_image(image);
     }
-    let action = command.action.clone();
+    let action = command.action().clone();
     let env = env.clone();
     item.with_action(move || {
         action.run(&env);
@@ -223,11 +222,11 @@ pub(super) fn append_items(
                 ));
             }
             ResolvedMenuItem::Menu(submenu) => {
-                let title = item_title(&submenu.label.content().snapshot());
+                let title = item_title(&submenu.label().content().snapshot());
                 let nested = platform::Menu::new(mtm, &title);
-                append_items(mtm, &nested, &submenu.items.snapshot(), env);
+                append_items(mtm, &nested, &submenu.items().snapshot(), env);
                 let mut item = platform::MenuItem::new(mtm, &title, None, "");
-                let (symbol, image) = crate::menus::resolve_menu_icon(submenu.icon.as_ref(), env);
+                let (symbol, image) = crate::menus::resolve_menu_icon(submenu.icon(), env);
                 if let Some(symbol) = &symbol {
                     item = item.with_icon(symbol.as_str());
                 } else if let Some(image) = &image {
@@ -301,7 +300,7 @@ fn menu_elements(
             }
             ResolvedMenuItem::Command(command) => {
                 let kit = kit_command(command, env);
-                let action = command.action.clone();
+                let action = command.action().clone();
                 let env = env.clone();
                 Some(platform::MenuElement::Action(
                     platform::MenuAction::command(mtm, key_commands, &kit, move || {
@@ -310,15 +309,15 @@ fn menu_elements(
                 ))
             }
             ResolvedMenuItem::Menu(submenu) => {
-                let title = item_title(&submenu.label.content().snapshot());
-                let (symbol, image) = crate::menus::resolve_menu_icon(submenu.icon.as_ref(), env);
+                let title = item_title(&submenu.label().content().snapshot());
+                let (symbol, image) = crate::menus::resolve_menu_icon(submenu.icon(), env);
                 Some(platform::MenuElement::Submenu(build_menu(
                     mtm,
                     key_commands,
                     &title,
                     symbol.as_deref(),
                     image.as_deref(),
-                    &submenu.items.snapshot(),
+                    &submenu.items().snapshot(),
                     env,
                 )))
             }

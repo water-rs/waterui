@@ -352,7 +352,7 @@ pub struct SnackbarAction {
 }
 
 impl SnackbarAction {
-    /// Returns the semantic action button label.
+    /// The semantic action button label.
     #[must_use]
     pub const fn label(&self) -> &Label<SemanticLabel> {
         &self.label

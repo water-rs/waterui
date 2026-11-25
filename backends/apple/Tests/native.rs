@@ -13077,14 +13077,13 @@ mod gesture_events {
         NSRotationGestureRecognizer,
     };
     use cocoa_ui::objc2_foundation::NSPoint;
-    use waterui::ViewExt as _;
-    use waterui::gesture::{Gesture, GesturePhase};
     use waterui::gesture::{
-        MagnificationEvent, MagnificationGesture, PointerButton, RotationEvent, RotationGesture,
-        TapEvent, TapGesture,
+        Gesture, GestureEvent, GesturePhase, MagnificationEvent, MagnificationGesture,
+        PointerButton, RotationEvent, RotationGesture, TapEvent, TapGesture,
     };
     use waterui::layout::Point;
     use waterui::prelude::text;
+    use waterui::{State, ViewExt as _};
 
     use super::{resolve, trial_each};
 
@@ -13102,7 +13101,7 @@ mod gesture_events {
             let gestures = Rc::clone(&gestures);
             text("tap").gesture(
                 TapGesture::new(),
-                move |event: TapEvent, gesture: Gesture| {
+                move |event: TapEvent, State(gesture): State<Gesture>| {
                     taps.borrow_mut().push(event);
                     gestures.borrow_mut().push(gesture);
                 },
@@ -13494,7 +13493,10 @@ mod gesture_events {
             let gestures = Rc::clone(&gestures);
             text("then").gesture(
                 Gesture::Tap(TapGesture::new()).then(RotationGesture::new(0.0)),
-                move |event: RotationEvent, gesture: Gesture| {
+                move |event: GestureEvent, State(gesture): State<Gesture>| {
+                    let GestureEvent::Rotation(event) = event else {
+                        panic!("expected RotationEvent from Then(Tap, Rotation), got {event:?}");
+                    };
                     events.borrow_mut().push(event);
                     gestures.borrow_mut().push(gesture);
                 },

@@ -383,9 +383,6 @@ impl MapInteractivity {
 pub struct MapConfig {
     /// Two-way camera region: app updates move the map, user gestures write back.
     camera: Binding<Region>,
-    /// Temporary read-only projection of `camera` while `waterui-map-gpu`
-    /// migrates to [`Self::camera`] (removed in the closing PR for #4404).
-    region: Computed<Region>,
     /// Temporary unlocalized annotations projection while `waterui-map-gpu`
     /// migrates to [`Self::resolved_annotations`] (removed in the closing PR for #4343).
     annotations: Computed<Vec<Annotation<Id>>>,
@@ -424,21 +421,6 @@ impl MapConfig {
     #[must_use]
     pub const fn camera(&self) -> &Binding<Region> {
         &self.camera
-    }
-
-    /// Temporary compatibility getter while `waterui-map-gpu` migrates to
-    /// [`Self::camera`].
-    #[doc(hidden)]
-    #[must_use]
-    pub const fn region(&self) -> &Computed<Region> {
-        &self.region
-    }
-
-    /// Temporary compatibility setter while `waterui-map-gpu` migrates to
-    /// [`Self::camera`].
-    #[doc(hidden)]
-    pub fn set_region(&mut self, region: Computed<Region>) {
-        self.region = region;
     }
 
     /// Temporary compatibility getter while `waterui-map-gpu` migrates to
@@ -782,7 +764,6 @@ impl<T: 'static> Map<T> {
 impl<T: MapAnnotations> Map<T> {
     fn into_config(self) -> (MapConfig, Option<Computed<Region>>) {
         let erased = T::erase(self.annotations, self.selection);
-        let region = self.camera.computed();
         let resolved_annotations = erased
             .annotations
             .map(|items| {
@@ -801,7 +782,6 @@ impl<T: MapAnnotations> Map<T> {
             .computed();
         let config = MapConfig {
             camera: self.camera,
-            region,
             annotations: erased.annotations,
             resolved_annotations,
             selection: erased.selection,

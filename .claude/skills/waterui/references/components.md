@@ -132,13 +132,14 @@ Frame modifiers exist per-axis as well as paired:
 .max_width(f32::INFINITY)                          // idiom: stretch to full container width
 ```
 
-On a view these take a plain `f32` and return a `Frame`; chained on that `Frame` they take
-signals (`IntoSignalF32`), so `.width(120.0).max_height(height_signal)` makes the cap
-reactive. `.min_width`/`.min_height` are how you reserve stage space for a scaled or
-rotated child that overflows its intrinsic size. A `Frame` also takes `.ideal_width(w)` /
-`.ideal_height(h)` (signals): the size it asks for when its parent proposes nothing.
-Unlike `.width(w)`, which pins the minimum, ideal and maximum together, it leaves the frame
-free to be smaller or larger when the parent does propose a size.
+Every sizing shortcut on a view takes a literal or signal (`IntoSignalF32`) and returns a
+`Frame`, so `.height(height_signal)` and `.width(120.0).max_height(height_signal)` are both
+reactive; `.alignment(...)` accepts `Alignment` or an alignment token (`TopLeading`, `Center`,
+…). `.min_width`/`.min_height` are how you reserve stage space for a scaled or rotated child
+that overflows its intrinsic size. Views also take `.ideal_width(w)` / `.ideal_height(h)`
+(signals): the size requested when the parent proposes nothing. Unlike `.width(w)`, which pins
+the minimum, ideal and maximum together, it leaves the frame free to be smaller or larger when
+the parent does propose a size.
 
 Two more sizing modifiers:
 
@@ -404,9 +405,12 @@ impl PrimitiveButtonStyle for DoubleTapButtonStyle {
         configuration
             .into_label()
             .padding_with((8.0, 16.0))
-            .gesture(TapGesture::repeat(NonZeroU32::new(2).unwrap()), move || {
-                trigger.trigger();
-            })
+            .gesture(
+                TapGesture::repeat(NonZeroU32::new(2).unwrap()),
+                move |_: TapEvent| {
+                    trigger.trigger();
+                },
+            )
     }
 }
 

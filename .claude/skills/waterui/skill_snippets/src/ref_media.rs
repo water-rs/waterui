@@ -19,8 +19,7 @@ pub fn media_block_01() {
     let photo_status = Binding::container(waterui::media::PhotoStatus::Loading);
     let rgba_pixels = vec![0u8; 200 * 150 * 4];
 
-    use waterui::media::photo::Event as PhotoEvent; // the event type needs this alias import
-    use waterui::media::{Image, Photo, PhotoCache, PhotoStatus, Url, photo};
+    use waterui::media::{Image, Photo, PhotoCache, PhotoEvent, PhotoStatus, Url, photo};
 
     let _ = {
         photo("https://waterui.dev/logo.png") // impl IntoComputed<Url>; Url: From<&'static str>
@@ -113,8 +112,8 @@ pub fn media_block_03_handler(selected: Selected) {
 // `video_player(url)`. Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn media_live_prose(selected: &Selected) -> impl View {
-    use waterui::media::live::{Event as LiveEvent, LivePhotoSource};
-    use waterui::media::{LivePhoto, Media, Url};
+    use waterui::media::live::LivePhotoSource;
+    use waterui::media::{LivePhoto, LivePhotoEvent, Media, Url};
 
     let _: &Media = selected.media();
     let _chromeless = waterui::video::video("https://waterui.dev/a.mp4");
@@ -125,8 +124,8 @@ pub fn media_live_prose(selected: &Selected) -> impl View {
         Url::new("https://waterui.dev/motion.mov"),
     ))
     .on_event(|event| match event {
-        LiveEvent::MotionStarted | LiveEvent::MotionEnded => (),
-        LiveEvent::MotionFailed(_message) => (),
+        LivePhotoEvent::MotionStarted | LivePhotoEvent::MotionEnded => (),
+        LivePhotoEvent::MotionFailed(_message) => (),
         _ => (),
     })
 }
@@ -135,7 +134,9 @@ pub fn media_live_prose(selected: &Selected) -> impl View {
 // media.md § "## Media" — rust block 4/15
 // ---------------------------------------------------------------------------
 pub fn media_block_04() -> impl View {
-    use waterui::video::{self, MediaItem, PlaybackSession, Playlist, Url, VideoPlayer};
+    use waterui::video::{
+        self, MediaItem, PlaybackSession, Playlist, Url, VideoEvent, VideoPlayer,
+    };
 
     let first_item = MediaItem::from(Url::parse("https://waterui.dev/a.mp4").expect("valid url"));
     let more_items: Vec<MediaItem> = Vec::new();
@@ -150,8 +151,8 @@ pub fn media_block_04() -> impl View {
         .show_controls(true)
         .content_mode(video::ContentMode::Fit) // Fit | Fill | Stretch
         .on_event(|event| match event {
-            video::Event::ReadyToPlay | video::Event::Ended => (),
-            video::Event::Error { message: _ } => (),
+            VideoEvent::ReadyToPlay | VideoEvent::Ended => (),
+            VideoEvent::Error { message: _ } => (),
             _ => (), // Buffering, PlaybackStateChanged, …
         })
 }
@@ -209,13 +210,13 @@ pub fn media_controller_prose() {
 // media.md § "## Media" (prose): `VideoPlayer::projection(..)`, `PlaybackSession::
 // with_policy(..)`, `track_catalog()`, `live_window()`, `seek_to_live_edge()`,
 // `step_forward()` / `step_backward()`, `preserve_pitch()` and the
-// `Event::PlaybackMetrics { metrics }` event. Not counted as a rust block.
+// `VideoEvent::PlaybackMetrics { metrics }` event. Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn media_video_advanced_prose() -> impl View {
     use waterui::video::{
-        EquirectangularProjection, Event, LiveWindow, MediaItem, PlaybackError, PlaybackMetrics,
+        EquirectangularProjection, LiveWindow, MediaItem, PlaybackError, PlaybackMetrics,
         PlaybackPolicy, PlaybackSession, Playlist, SphericalViewport, TrackCatalog, Url,
-        VideoPlayer, VideoProjection,
+        VideoEvent, VideoPlayer, VideoProjection,
     };
 
     let item = MediaItem::from(Url::parse("https://waterui.dev/a.mp4").expect("valid url"));
@@ -237,7 +238,7 @@ pub fn media_video_advanced_prose() -> impl View {
             EquirectangularProjection::new(SphericalViewport::new(0.0, 0.0, 75.0)),
         ))
         .on_event(|event| {
-            if let Event::PlaybackMetrics { metrics } = event {
+            if let VideoEvent::PlaybackMetrics { metrics } = event {
                 let _: PlaybackMetrics = metrics;
             }
         })
@@ -515,7 +516,10 @@ pub fn media_block_08() {
 // as a rust block.
 // ---------------------------------------------------------------------------
 pub fn media_canvas_prose(image: waterui::canvas::ImageSource) -> impl View {
-    use waterui::canvas::{Canvas, Circle, Drawing, Layer, Sampling, Shadow, TextPlacement};
+    use waterui::canvas::{
+        Canvas, Circle, Drawing, ImageDecodeError, ImageSource, ImageStatus, Layer, Sampling,
+        Shadow, TextPlacement,
+    };
     use waterui::layout::{Affine2, Point, Rect, Size};
     use waterui::text::styled::StyledStr;
 
@@ -532,7 +536,8 @@ pub fn media_canvas_prose(image: waterui::canvas::ImageSource) -> impl View {
             waterui::graphics::WorkingColor::WHITE,
         );
     });
-    let _status: Computed<waterui::canvas::ImageStatus> = image.status();
+    let _decoded: Result<ImageSource, ImageDecodeError> = ImageSource::decode([]);
+    let _status: Computed<ImageStatus> = image.status();
     let _icon = Canvas::from(drawing.clone());
 
     Canvas::new(move |cx| {

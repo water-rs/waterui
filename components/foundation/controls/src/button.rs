@@ -743,11 +743,12 @@ fn compose_custom_button<L: View, S: CustomButtonStyle>(
         size,
         interaction,
     });
-    let gesture = GestureObserver::new(TapGesture::new(), move |action_env: Environment| {
-        if !Disabled::resolve(&action_env, false).snapshot() {
-            (action.borrow_mut())(&action_env).report_extraction();
-        }
-    });
+    let gesture =
+        GestureObserver::without_event(TapGesture::new(), move |action_env: Environment| {
+            if !Disabled::resolve(&action_env, false).snapshot() {
+                (action.borrow_mut())(&action_env).report_extraction();
+            }
+        });
     let with_gesture = Metadata::new(body, gesture);
     let with_label = wrap_default_accessibility_label(env, with_gesture, accessibility_label);
     let with_role = default_role(env, with_label, AccessibilityRole::Button);

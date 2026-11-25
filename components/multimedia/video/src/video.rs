@@ -19,11 +19,15 @@
 //!     .show_controls(true);
 //! ```
 
+use core::cell::RefCell;
 use core::fmt;
 use nami::{Signal as _, SignalExt as _};
 use std::num::{NonZeroU64, NonZeroUsize};
+use std::rc::Rc;
 use std::time::Duration;
-use waterui_core::handler::{EventHandler, ReportExtraction as _, boxed_event_handler};
+use waterui_core::handler::{
+    BoxedEventAction, EventHandler, ReportExtraction as _, boxed_event_handler,
+};
 use waterui_core::{
     Binding, Computed, Environment, Native, NativeView, SerialDispatch, View, binding,
     contract_violation, layout::StretchAxis,
@@ -1326,7 +1330,7 @@ impl PlaybackMetrics {
 /// Events emitted by video components.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
-pub enum Event {
+pub enum VideoEvent {
     /// The video is ready to play.
     ReadyToPlay,
     /// The video has finished playing.
@@ -1386,33 +1390,37 @@ pub enum Event {
     },
 }
 
+/// Temporary compatibility alias while `waterui-video-gpu` migrates to [`VideoEvent`].
+#[doc(hidden)]
+pub use VideoEvent as Event;
+
 /// Event-handler slot for the video components.
 ///
-/// Carries the user's [`Event`] callback as a [`BoxedEventAction`], the
+/// Carries the user's [`VideoEvent`] callback as a [`BoxedEventAction`], the
 /// `Handler`-style sibling that pairs an event payload with the same
 /// `State<T>` / `Environment` extractor machinery used by [`Button::action`].
-type OnEvent = waterui_core::handler::BoxedEventAction<Event>;
+type OnEvent = BoxedEventAction<VideoEvent>;
 
 /// Serializes event delivery to the user handler: an event emitted while the
 /// handler still runs — typically because it wrote a playback signal the video
 /// watches — is queued and delivered after it returns, in order, rather than
 /// re-entering the handler.
 struct QueuedVideoEvents {
-    handler: core::cell::RefCell<OnEvent>,
-    events: SerialDispatch<Event>,
+    handler: RefCell<OnEvent>,
+    events: SerialDispatch<VideoEvent>,
     env: Environment,
 }
 
 impl QueuedVideoEvents {
     fn new(handler: OnEvent, env: Environment) -> Self {
         Self {
-            handler: core::cell::RefCell::new(handler),
+            handler: RefCell::new(handler),
             events: SerialDispatch::new(),
             env,
         }
     }
 
-    fn emit(&self, event: Event) {
+    fn emit(&self, event: VideoEvent) {
         self.events.deliver(event, |event| {
             // An event handler whose extractors fail does not run; the event
             // is dropped and the failure reported.
@@ -1443,9 +1451,9 @@ impl VideoEventHandler {
     /// surface used by backend realization crates.
     #[doc(hidden)]
     #[must_use]
-    pub fn bind_callback(self, env: Environment) -> std::rc::Rc<dyn Fn(Event)> {
-        let events = std::rc::Rc::new(QueuedVideoEvents::new(self.0, env));
-        std::rc::Rc::new(move |event| events.emit(event))
+    pub fn bind_callback(self, env: Environment) -> Rc<dyn Fn(VideoEvent)> {
+        let events = Rc::new(QueuedVideoEvents::new(self.0, env));
+        Rc::new(move |event| events.emit(event))
     }
 
     fn bind(self, env: &Environment) -> BoundVideoEventHandler {
@@ -1471,7 +1479,7 @@ impl fmt::Debug for BoundVideoEventHandler {
 impl BoundVideoEventHandler {
     /// Dispatches an event using the rendering environment captured during
     /// native view resolution.
-    pub fn call(&self, event: Event) {
+    pub fn call(&self, event: VideoEvent) {
         self.handler.emit(event);
     }
 }
@@ -1856,27 +1864,26 @@ impl Video {
     ///
     /// The handler may extract dependencies from the environment using the
     /// same `Handler`-style extractor pattern as `Button::action`; the
-    /// leading argument is always the [`Event`] payload, and any additional
+    /// leading argument is always the [`VideoEvent`] payload, and any additional
     /// arguments after it implement [`Extractor`](waterui_core::extract::Extractor).
     ///
     /// # Examples
     ///
     /// ```no_run
     /// use waterui_core::binding;
-    /// use waterui_video::video;
-    /// use waterui_video::video::Event;
+    /// use waterui_video::{VideoEvent, video};
     ///
     /// let last_event = binding(String::new());
     /// let last_event_for_handler = last_event.clone();
     /// video("https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4")
-    ///     .on_event(move |event: Event| {
+    ///     .on_event(move |event: VideoEvent| {
     ///         last_event_for_handler.set(format!("{event:?}"));
     ///     });
     /// ```
     #[must_use]
     pub fn on_event<H, A>(mut self, handler: H) -> Self
     where
-        H: EventHandler<Event, A, ()> + 'static,
+        H: EventHandler<VideoEvent, A, ()> + 'static,
     {
         self.on_event = Some(VideoEventHandler::new(boxed_event_handler(handler)));
         self
@@ -2076,7 +2083,7 @@ impl VideoPlayer {
     #[must_use]
     pub fn on_event<H, A>(mut self, handler: H) -> Self
     where
-        H: EventHandler<Event, A, ()> + 'static,
+        H: EventHandler<VideoEvent, A, ()> + 'static,
     {
         self.on_event = Some(VideoEventHandler::new(boxed_event_handler(handler)));
         self
@@ -2135,7 +2142,7 @@ mod tests {
         use core::cell::{Cell, RefCell};
         use std::rc::Rc;
 
-        let callback_slot = Rc::new(RefCell::new(None::<Rc<dyn Fn(Event)>>));
+        let callback_slot = Rc::new(RefCell::new(None::<Rc<dyn Fn(VideoEvent)>>));
         let delivered = Rc::new(RefCell::new(Vec::<String>::new()));
         let inside = Cell::new(false);
         let once = Cell::new(false);
@@ -2149,7 +2156,7 @@ mod tests {
                 );
                 delivered.borrow_mut().push(format!("{event:?}"));
                 if !once.replace(true) {
-                    callback_slot.borrow().as_ref().expect("callback installed")(Event::Ended);
+                    callback_slot.borrow().as_ref().expect("callback installed")(VideoEvent::Ended);
                 }
                 inside.set(false);
                 Ok(())
@@ -2158,7 +2165,7 @@ mod tests {
         let callback = VideoEventHandler::new(handler).bind_callback(Environment::new());
         *callback_slot.borrow_mut() = Some(callback.clone());
 
-        callback(Event::ReadyToPlay);
+        callback(VideoEvent::ReadyToPlay);
 
         assert_eq!(&*delivered.borrow(), &["ReadyToPlay", "Ended"]);
     }
@@ -2188,7 +2195,7 @@ mod tests {
                         .borrow()
                         .as_ref()
                         .expect("handler installed")
-                        .call(Event::Ended);
+                        .call(VideoEvent::Ended);
                 }
                 inside.set(false);
                 Ok(())
@@ -2201,7 +2208,7 @@ mod tests {
             .borrow()
             .as_ref()
             .expect("handler installed")
-            .call(Event::ReadyToPlay);
+            .call(VideoEvent::ReadyToPlay);
 
         assert_eq!(&*delivered.borrow(), &["ReadyToPlay", "Ended"]);
     }
