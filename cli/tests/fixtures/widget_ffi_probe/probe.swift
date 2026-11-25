@@ -6,13 +6,15 @@ func stepsProvider(_ ptr: UnsafePointer<UInt8>, _ len: Int, _ out: UnsafeMutable
 @_extern(c, "waterui_widget_widget_app_now")
 func nowProvider(_ ptr: UnsafePointer<UInt8>, _ len: Int, _ out: UnsafeMutableRawPointer)
 
+let storePath = FileManager.default.currentDirectoryPath + "/widget-store"
 let context = WUIWidgetContext(
     family: "systemSmall",
-    displaySize: CGSize(width: 170, height: 44)
+    displaySize: CGSize(width: 170, height: 44),
+    storePath: storePath
 )
 
-// Context-aware: the fixture echoes family+size into its stack's text,
-// and produces two explicitly dated entries with an After policy.
+// Context-aware: the fixture echoes family+size+stored steps into its stack's
+// text, and produces two explicitly dated entries with an After policy.
 let stepsJSON = runSnapshot(stepsProvider, context: context)
 let steps = try WUITimeline.decode(from: stepsJSON)
 precondition(steps.entries.count == 2, "steps produced \(steps.entries.count) entries")
@@ -31,13 +33,15 @@ precondition({
     if case .stack(let stack) = steps.entries[0].content {
         return stack.children.contains { child in
             if case .text(let text) = child {
-                return text.content.contains("SystemSmall") && text.content.contains("170x44")
+                return text.content.contains("SystemSmall")
+                    && text.content.contains("170x44")
+                    && text.content.contains("steps=0")
             }
             return false
         }
     }
     return false
-}(), "steps' stack echoes the context into a text child")
+}(), "steps' stack echoes the context and default store value into a text child")
 
 // Context-free: the same decode runs with no abort.
 let now = try WUITimeline.decode(from: runSnapshot(nowProvider, context: context))

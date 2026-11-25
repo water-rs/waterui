@@ -91,23 +91,34 @@ pub mod project_block_04 {
     }
 
     impl WidgetIntent for MarkDone {
-        fn perform(self) {
+        fn perform(self, store: &WidgetStore) {
+            let completed: u32 = store.get("completed").unwrap_or(0);
+            let _ = store.set("completed", &(completed + 1));
             waterui::log::info!("done {}", self.id);
         }
     }
 
     #[waterui::widget(name = "Tasks", description = "Open tasks", families = [systemSmall, systemMedium])]
     pub fn tasks(context: WidgetContext) -> impl WidgetContent {
+        let completed: u32 = context.shared_store().get("completed").unwrap_or(0);
         let title = Font::style(if context.family() == WidgetFamily::SystemSmall {
             FontStyle::Headline
         } else {
             FontStyle::Title
         });
         vstack((
-            text("Tasks").font(title),
+            text(format!("Completed: {completed}")).font(title),
             intent(&MarkDone { id: 1 }, text("Mark done")),
         ))
         .alignment(HorizontalAlignment::Leading)
+    }
+
+    pub fn update_from_app() {
+        if let Ok(store) = shared_store() {
+            let _ = store.set("completed", &5_u32);
+        }
+        reload("tasks");
+        reload_all();
     }
 }
 

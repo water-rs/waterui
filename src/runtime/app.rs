@@ -732,7 +732,7 @@ mod tests {
             panic!("expected one resolved menu, got {bars:?}");
         };
         let command = menu
-            .items
+            .items()
             .snapshot()
             .into_iter()
             .find_map(|item| match item {
@@ -740,7 +740,7 @@ mod tests {
                 _ => None,
             })
             .expect("the menu must contain the declared command");
-        command.action.run(&parts.env);
+        command.action().run(&parts.env);
     }
 
     /// The environment `into_parts` hands a runner decides the Close

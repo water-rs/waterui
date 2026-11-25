@@ -1,4 +1,4 @@
-//! `WaterUI` widgets through `WidgetKit`.
+//! `WaterUI` home-screen widgets with shared state and timeline reload.
 //!
 //! A widget is declared by attributing a timeline-producing function with
 //! `#[waterui::widget]`:
@@ -8,12 +8,18 @@
 //!
 //! #[waterui::widget(name = "Steps", description = "Today's step count")]
 //! fn steps(context: WidgetContext) -> impl WidgetContent {
+//!     let steps: u32 = context.shared_store().get("steps").unwrap_or(0);
 //!     vstack((
 //!         text("Steps").font(Font::style(FontStyle::Headline)),
-//!         text("6,241").font(Font::style(FontStyle::LargeTitle)),
+//!         text(format!("{steps}")).font(Font::style(FontStyle::LargeTitle)),
 //!     ))
 //!     .alignment(HorizontalAlignment::Leading)
 //! }
+//!
+//! // From the application, write shared state and ask the host to reload:
+//! let store = waterui::widgets::shared_store()?;
+//! store.set("steps", &6_241_u32)?;
+//! waterui::widgets::reload("steps");
 //! ```
 //!
 //! The function's return value must implement [`IntoTimeline`]: any
@@ -24,8 +30,10 @@
 //! [`WidgetChildren`] are implemented only by the schema's node types, so a
 //! `WaterUI` `View` in widget position is a compile-time error — `WidgetKit`
 //! cannot host a `UIView`/`NSView` tree, and snapshots carry resolved
-//! values only. `water` packages the declared widgets as a generated
-//! `WidgetKit` extension rendered by the crate's native `SwiftUI` sources.
+//! values only. `water` provisions a shared container (App Group on Apple,
+//! app-private widget storage on Android) and packages Apple declarations as a
+//! generated `WidgetKit` extension rendered by the crate's native `SwiftUI`
+//! sources.
 
 extern crate alloc;
 
@@ -34,6 +42,7 @@ mod declaration;
 #[doc(hidden)]
 pub mod ffi;
 mod schema;
+mod store;
 
 pub use authoring::{
     HStack, IntoTimeline, VStack, WidgetChildren, WidgetContent, ZStack, fill, hstack, intent,
@@ -41,6 +50,7 @@ pub use authoring::{
 };
 pub use declaration::{IntentDeclaration, WidgetDeclaration};
 pub use schema::*;
+pub use store::{WidgetStore, WidgetStoreError, reload, reload_all, shared_store};
 
 #[doc(hidden)]
 pub use pastey;
@@ -156,7 +166,7 @@ macro_rules! __export_widget {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __export_intent {
-    ($hash:expr, $payload:expr, [$ptr:ident, $len:ident] => $body:block) => {
+    ($hash:expr, $payload:expr, [$ptr:ident, $len:ident, $store_ptr:ident, $store_len:ident] => $body:block) => {
         $crate::pastey::paste! {
             #[doc(hidden)]
             const [<__WUI_INTENT_META_LEN_ $hash>]: usize =
@@ -184,6 +194,8 @@ macro_rules! __export_intent {
             pub unsafe extern "C" fn [<waterui_intent_ env!("CARGO_CRATE_NAME") _ $hash>](
                 $ptr: *const u8,
                 $len: usize,
+                $store_ptr: *const u8,
+                $store_len: usize,
             ) $body
         }
     };
@@ -192,6 +204,7 @@ macro_rules! __export_intent {
 #[cfg(test)]
 mod tests {
     use alloc::vec;
+    use std::path::Path;
 
     use super::*;
 
@@ -199,7 +212,7 @@ mod tests {
     struct DummyIntent;
 
     impl WidgetIntent for DummyIntent {
-        fn perform(self) {}
+        fn perform(self, _store: &WidgetStore) {}
     }
 
     impl DeclaredWidgetIntent for DummyIntent {
@@ -240,11 +253,15 @@ mod tests {
     #[test]
     fn widget_context_decodes_the_extensions_json() {
         let context: WidgetContext = serde_json::from_str(
-            r#"{"family":"accessoryRectangular","displaySize":{"width":170.0,"height":44.0}}"#,
+            r#"{"family":"accessoryRectangular","displaySize":{"width":170.0,"height":44.0},"storePath":"/tmp/waterui-widgets"}"#,
         )
         .unwrap();
         assert_eq!(context.family(), WidgetFamily::AccessoryRectangular);
         assert_eq!(context.display_size().width, 170.0);
+        assert_eq!(
+            context.shared_store().root(),
+            Path::new("/tmp/waterui-widgets")
+        );
     }
 
     #[test]
@@ -305,7 +322,7 @@ mod tests {
             }
         }
         impl WidgetIntent for Unserializable {
-            fn perform(self) {}
+            fn perform(self, _store: &WidgetStore) {}
         }
         impl DeclaredWidgetIntent for Unserializable {
             const KIND: &'static str = "unserializable";
