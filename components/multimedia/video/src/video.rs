@@ -26,7 +26,7 @@ use std::time::Duration;
 use waterui_core::handler::{EventHandler, ReportExtraction as _, boxed_event_handler};
 use waterui_core::{
     Angle, Binding, Computed, Environment, Native, NativeView, SerialDispatch, View, binding,
-    configurable, contract_violation, layout::StretchAxis,
+    contract_violation, layout::StretchAxis,
 };
 
 use crate::{
