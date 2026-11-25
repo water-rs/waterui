@@ -1678,12 +1678,11 @@ fn a_navigation_bottom_toolbar_stays_docked_under_the_keyboard() {
     );
 }
 
-/// The canonical `Tab::container` shape — hidden-bar `NavigationView` →
-/// `NavigationStack` → page `NavigationView` carrying a bottom toolbar:
-/// the dock the tab bar establishes has to reach the page's chrome
-/// through every hosted/`content_area_for` hop, so the page toolbar
-/// stacks on the docked tab bar with the keyboard down and up, never
-/// riding onto the keyboard while the tab bar sits under it.
+/// `Tab::new` wrapping a `NavigationStack` → page `NavigationView`
+/// carrying a bottom toolbar: the dock the tab bar establishes has to reach
+/// the page's chrome through every hosted/`content_area_for` hop, so the
+/// page toolbar stacks on the docked tab bar with the keyboard down and up,
+/// never riding onto the keyboard while the tab bar sits under it.
 #[test]
 fn a_stack_page_toolbar_inside_a_tab_stacks_on_the_docked_tab_bar() {
     use waterui::navigation::{
@@ -1700,7 +1699,7 @@ fn a_stack_page_toolbar_inside_a_tab_stacks_on_the_docked_tab_bar() {
             Tabs::new(
                 &selection,
                 (
-                    Tab::container("Messages", move || {
+                    Tab::new("Messages", move || {
                         NavigationStack::new(
                             NavigationView::new("Root", vstack((card("content"), spacer())))
                                 .navigation_toolbar(NavigationToolbar::new(vec![
@@ -1712,7 +1711,7 @@ fn a_stack_page_toolbar_inside_a_tab_stacks_on_the_docked_tab_bar() {
                                 ])),
                         )
                     }),
-                    Tab::container("Settings", move || {
+                    Tab::new("Settings", move || {
                         NavigationStack::new(NavigationView::new("Settings", text("settings")))
                     }),
                 ),

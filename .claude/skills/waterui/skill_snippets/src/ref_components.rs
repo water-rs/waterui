@@ -1072,9 +1072,7 @@ pub fn components_block_29() -> impl View {
 // the `Row` modifiers. Not counted as a rust block. Glue: `today` stands for
 // the prose's reactive collection.
 // ---------------------------------------------------------------------------
-pub fn components_reactive_section_prose(
-    today: waterui::reactive::collection::StateList<Record>,
-) -> impl View {
+pub fn components_reactive_section_prose(today: StateList<Record>) -> impl View {
     use waterui::views::ForEach;
 
     let _ = row("a", "b")
@@ -1092,7 +1090,7 @@ pub fn components_reactive_section_prose(
 // components.md § "## Lists and collections" (prose): the list row modifiers
 // and `list_min_row_height`. Not counted as a rust block.
 // ---------------------------------------------------------------------------
-pub fn components_list_item_prose(records: waterui::reactive::collection::StateList<Record>) {
+pub fn components_list_item_prose(records: StateList<Record>) {
     use waterui::layout::padding::EdgeInsets;
     use waterui::views::ForEach;
 

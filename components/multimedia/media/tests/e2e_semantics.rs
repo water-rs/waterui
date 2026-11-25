@@ -13,6 +13,7 @@ use waterui::component::lazy::Lazy;
 use waterui::component::text;
 use waterui::layout::frame::Frame;
 use waterui::layout::scroll::scroll;
+use waterui::reactive::collection::StateList;
 use waterui_media::{
     LivePhoto, Media, MediaPicker, Photo, PhotoCache, PhotoStatus, Url, live::LivePhotoSource,
     media_picker::Selected, photo, photo::Event as PhotoEvent,
@@ -249,11 +250,10 @@ fn photo_in_lazy_list_serves_from_environment_cache_without_refetch(ui: UiBuilde
     let status_for_view = row_zero_status.clone();
     let cache = PhotoCache::new(1024 * 1024);
 
-    let mut items =
-        waterui::reactive::collection::StateList::from_iter((0..12_usize).map(|id| LazyRowItem {
-            id,
-            url: (id == 0).then(|| row_zero_url.clone()),
-        }));
+    let mut items = StateList::from_iter((0..12_usize).map(|id| LazyRowItem {
+        id,
+        url: (id == 0).then(|| row_zero_url.clone()),
+    }));
     let items_for_view = items.clone();
 
     let mut app = ui

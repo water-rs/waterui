@@ -38,7 +38,7 @@ compensate for it with an `hstack` that imitates a bar.
 builder that makes its root, so a tab reaches the backend without an `AnyView`. The set's
 id is the tab's identity *and* the type `selection` binds, so you never name an `Id`:
 
-- a tuple of tabs — `(Tab::container(..), Tab::container(..))`, up to twelve — holds tabs
+- a tuple of tabs — `(Tab::new(..), Tab::new(..))`, up to twelve — holds tabs
   whose roots differ and is selected by a `Binding<usize>` position;
 - a `Vec` or array of tabs sharing one builder type, also selected by position;
 - `ForEach` over a `StateList` of `SelfId`s keys tabs by your own enum. Its tabs share one
@@ -55,7 +55,7 @@ let panes = [Pane::Inbox, Pane::Library, Pane::Settings, Pane::Search].map(SelfI
 
 Tabs::new(&pane, ForEach::new(StateList::from(panes.to_vec()), move |pane: SelfId<Pane>| {
     let pane = *pane;
-    let tab = Tab::container(
+    let tab = Tab::new(
         match pane {
             Pane::Inbox => label("Inbox").icon(mdi::inbox()),
             Pane::Library => label("Library").icon(mdi::image_album()),
@@ -80,18 +80,16 @@ Tabs::new(&pane, ForEach::new(StateList::from(panes.to_vec()), move |pane: SelfI
 .bottom_accessory(now_playing_bar())        // iOS 26 glass bar above the tab bar (mini-player slot); not shown elsewhere
 ```
 
-A `Tab` is `Tab::container(label, content)` (`label` is `impl IntoLabel`, `content` any
+A `Tab` is `Tab::new(label, content)` (`label` is `impl IntoLabel`, `content` any
 `Fn() -> impl View`) with `.badge(value)` (`u32`, `BadgeValue::{Hidden, Dot, Count, Text}`, or signal; `0` hides) and `.enabled(bool)` signals and `.role(..)`.
 Other styles: `tab_style::tab_bar()` and `tab_style::sidebar()` force one presentation;
 `TabBarMinimizeBehavior` is `Automatic | Never | OnScrollDown | OnScrollUp`.
 
-**Use `Tab::container` whenever a tab's root is a navigation container** — a
+**Give each tab its own navigation container when it pushes or splits** — a
 `NavigationStack` or a `NavigationSplitView`, like `inbox_stack` above. Each tab owning
 its own container is what makes it remember where you left it: push twice in Inbox, visit
-Settings, come back, and both pushed pages are still there. `Tab::container` hides the
-tab page's own bar so the inner container's bar is the one shown. `Tab::new(label,
-content)` is for a tab that is a single page: its builder returns a `NavigationView`,
-whose bar is the tab's bar.
+Settings, come back, and both pushed pages are still there. A single-page tab can return
+a `NavigationView` or any plain `impl View` directly.
 
 ## Navigation stacks and routes
 
@@ -219,8 +217,7 @@ so the handler takes it bare rather than wrapped in `State<..>`.
 
 The rest of the destination's chrome: `.navigation_title_display_mode(NavigationTitleDisplayMode::Medium)`
 (the mode between `.inline_title()` and `.large_title()`; the default is `Automatic`),
-`.navigation_bar_visibility(visible)` (a bool signal; `Tab::container` pages use it to
-hide the page bar their inner stack replaces), `.navigation_bar_color(color)` (a `Color`
+`.navigation_bar_visibility(visible)` (a bool signal; pages inside a wrapper hide their own bar with `false`), `.navigation_bar_color(color)` (a `Color`
 signal that overrides the bar surface, which otherwise follows the `Surface` token) and
 `.on_navigation_pop(handler)` (fires only after a completed pop removed this destination).
 

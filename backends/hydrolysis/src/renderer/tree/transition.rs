@@ -403,7 +403,7 @@ pub fn flush_transitioned<E: crate::text::TextEngine>(
     let layer = renderer.program().origin().inverse() * paint_space;
     let scope = crate::renderer::ScopeDelta {
         transform: delta * local,
-        hit_alpha: properties.opacity(),
+        hit_alpha: properties.opacity,
     };
     let key = crate::renderer::mount::ScopeKey {
         role: "transition",
@@ -412,7 +412,7 @@ pub fn flush_transitioned<E: crate::text::TextEngine>(
     renderer.open_scope_with(
         key,
         layer,
-        properties.opacity(),
+        properties.opacity,
         Some(&crate::renderer::frame::ScopeClip::Rect(kurbo::Rect::new(
             0.0,
             0.0,
@@ -439,13 +439,13 @@ pub fn transition_transform(
         bounds.y0 + bounds.height() / 2.0,
     );
     kurbo::Affine::translate((
-        f64::from(properties.translation()[0]),
-        f64::from(properties.translation()[1]),
+        f64::from(properties.translation[0]),
+        f64::from(properties.translation[1]),
     )) * kurbo::Affine::translate(centre)
-        * kurbo::Affine::rotate(f64::from(properties.rotation()))
+        * kurbo::Affine::rotate(f64::from(properties.rotation))
         * kurbo::Affine::scale_non_uniform(
-            f64::from(properties.scale()[0]),
-            f64::from(properties.scale()[1]),
+            f64::from(properties.scale[0]),
+            f64::from(properties.scale[1]),
         )
         * kurbo::Affine::translate((-centre.0, -centre.1))
 }
@@ -509,7 +509,7 @@ pub fn record_blurred<E: TextEngine>(
     flush: impl FnOnce(&mut HydrolysisRenderer<E>, RenderContext),
 ) {
     let properties = paint.properties;
-    let radius_sample = properties.blur();
+    let radius_sample = properties.blur;
     let radius_sample = if radius_sample.is_finite() && radius_sample >= 0.0 {
         radius_sample
     } else {

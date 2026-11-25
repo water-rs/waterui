@@ -7,17 +7,14 @@ use nami::collection::Collection;
 use nami::{Binding, Computed, SignalExt as _};
 pub use waterui_controls::{BadgeValue, SlotBuilder};
 use waterui_controls::{IconSlot, IntoLabel, LabelKind, TitleLabel, label::Label};
-use waterui_core::backend::MapSlots;
 use waterui_core::{
-    AnyView, Environment, IntoSignal, Native, NativeView, Str, View,
-    backend::{Backend, ChildSlot},
+    AnyView, Environment, IntoSignal, Native, NativeView, View,
+    backend::{Backend, ChildSlot, MapSlots},
     handler::ViewBuilder,
     id::{Id, Mapping},
     layout::StretchAxis,
     views::{AnyViews, ForEach, Views},
 };
-
-use super::{NavigationToolbarItems, NavigationView, ResolvedNavigationView};
 
 /// Native tab presentation selected by a public style.
 #[doc(hidden)]
@@ -174,18 +171,22 @@ impl<C, L> Debug for Tab<C, L> {
     }
 }
 
-impl<C, L, V, Tb> Tab<C, L>
+impl<C, L> Tab<C, L>
 where
-    C: ViewBuilder<Output = NavigationView<V, Tb>>,
+    C: ViewBuilder,
     L: LabelKind + Clone,
-    V: View,
-    Tb: NavigationToolbarItems,
 {
-    /// Creates a stable tab with a semantic label and navigation root.
+    /// Creates a stable tab with a semantic label and lazy root builder.
     ///
-    /// The tab's identity comes from the collection handed to [`Tabs`]: a
-    /// tab in a `Vec` is keyed by its index, one built through `ForEach` by
-    /// the item it was built from.
+    /// The root may be any view, including a [`NavigationStack`], a
+    /// [`NavigationSplitView`], a [`NavigationView`], or plain view content.
+    /// The tab's identity comes from the collection handed to [`Tabs`]: a tab
+    /// in a `Vec` is keyed by its index, one built through `ForEach` by the
+    /// item it was built from.
+    ///
+    /// [`NavigationStack`]: crate::NavigationStack
+    /// [`NavigationSplitView`]: crate::NavigationSplitView
+    /// [`NavigationView`]: crate::NavigationView
     pub fn new<I: IntoLabel<Kind = L>>(label: I, content: C) -> Self {
         Self {
             label: label.into_label(),
@@ -209,40 +210,11 @@ where
         TabItem {
             label: SlotBuilder::new(move || S::from_view(label.clone())),
             icon,
-            content: SlotBuilder::new(move || content.build().into_resolved::<S>()),
+            content: SlotBuilder::new(move || S::from_view(content.build())),
             badge,
             enabled,
             role,
         }
-    }
-}
-
-/// The builder [`Tab::container`] wraps a container's root in: a page with
-/// no bar of its own.
-#[derive(Debug)]
-pub struct ContainerPage<B>(B);
-
-impl<B: ViewBuilder> ViewBuilder for ContainerPage<B> {
-    type Output = NavigationView<B::Output>;
-
-    fn build(&self) -> Self::Output {
-        NavigationView::new(Str::default(), self.0.build()).navigation_bar_visibility(false)
-    }
-}
-
-impl<B: ViewBuilder, L: LabelKind + Clone> Tab<ContainerPage<B>, L> {
-    /// Creates a tab whose root supplies its own navigation chrome.
-    ///
-    /// Each tab owns one navigation container — a [`NavigationStack`] or a
-    /// [`NavigationSplitView`] — so pushing inside a tab leaves the other tabs'
-    /// navigation state untouched, and returning to a tab shows it exactly
-    /// where the user left it. The tab page itself contributes no bar; the
-    /// container inside it does.
-    ///
-    /// [`NavigationStack`]: crate::NavigationStack
-    /// [`NavigationSplitView`]: crate::NavigationSplitView
-    pub fn container<I: IntoLabel<Kind = L>>(label: I, content: B) -> Self {
-        Self::new(label, ContainerPage(content))
     }
 }
 
@@ -326,7 +298,7 @@ pub struct TabItem<S> {
     /// The label's icon, lifted out so native chrome can place or inspect it itself.
     icon: Option<IconSlot<S>>,
     /// Stable lazily built tab root.
-    content: SlotBuilder<ResolvedNavigationView<S>>,
+    content: SlotBuilder<S>,
     /// Optional reactive badge value.
     badge: Option<Computed<BadgeValue>>,
     /// Whether the native tab item is enabled.
@@ -374,9 +346,7 @@ impl<S: 'static> TabItem<S> {
         TabItem {
             label: SlotBuilder::new(move || f(label.build())),
             icon: icon.map(|icon| icon.map_slot(icon_f)),
-            content: SlotBuilder::new(move || {
-                MapSlots::map_slots(content.build(), content_f.clone())
-            }),
+            content: SlotBuilder::new(move || content_f(content.build())),
             badge,
             enabled,
             role,
@@ -399,7 +369,7 @@ impl<S> TabItem<S> {
 
     /// Stable lazily built tab root.
     #[must_use]
-    pub const fn content(&self) -> &SlotBuilder<ResolvedNavigationView<S>> {
+    pub const fn content(&self) -> &SlotBuilder<S> {
         &self.content
     }
 
@@ -432,7 +402,7 @@ impl<S> TabItem<S> {
     ) -> (
         SlotBuilder<S>,
         Option<IconSlot<S>>,
-        SlotBuilder<ResolvedNavigationView<S>>,
+        SlotBuilder<S>,
         Option<Computed<BadgeValue>>,
         Computed<bool>,
         TabRole,
@@ -581,25 +551,21 @@ pub trait TabSet: 'static {
 
 /// A homogeneous collection of tabs: erased by identity, each tab mapped
 /// into the slot.
-fn collection_items<T, S, C, L, V, Tb>(tabs: T) -> (AnyViews<TabItem<S>>, Mapping<T::Id>)
+fn collection_items<T, S, C, L>(tabs: T) -> (AnyViews<TabItem<S>>, Mapping<T::Id>)
 where
     T: Views<View = Tab<C, L>> + 'static,
     S: ChildSlot,
-    C: ViewBuilder<Output = NavigationView<V, Tb>>,
+    C: ViewBuilder,
     L: LabelKind + Clone,
-    V: View,
-    Tb: NavigationToolbarItems,
 {
     let (items, ids) = AnyViews::new_with_ids(tabs);
     (items.map_views(Tab::into_item::<S>), ids)
 }
 
-impl<C, L, V, Tb> TabSet for Vec<Tab<C, L>>
+impl<C, L> TabSet for Vec<Tab<C, L>>
 where
-    C: ViewBuilder<Output = NavigationView<V, Tb>>,
+    C: ViewBuilder,
     L: LabelKind + Clone,
-    V: View,
-    Tb: NavigationToolbarItems,
 {
     type Id = usize;
 
@@ -608,12 +574,10 @@ where
     }
 }
 
-impl<C, L, V, Tb, const N: usize> TabSet for [Tab<C, L>; N]
+impl<C, L, const N: usize> TabSet for [Tab<C, L>; N]
 where
-    C: ViewBuilder<Output = NavigationView<V, Tb>>,
+    C: ViewBuilder,
     L: LabelKind + Clone,
-    V: View,
-    Tb: NavigationToolbarItems,
 {
     type Id = usize;
 
@@ -622,15 +586,13 @@ where
     }
 }
 
-impl<D, F, C, L, V, Tb> TabSet for ForEach<D, F, Tab<C, L>>
+impl<D, F, C, L> TabSet for ForEach<D, F, Tab<C, L>>
 where
     Self: Views<View = Tab<C, L>> + 'static,
     D: Collection,
     F: Fn(D::Item) -> Tab<C, L>,
-    C: ViewBuilder<Output = NavigationView<V, Tb>>,
+    C: ViewBuilder,
     L: LabelKind + Clone,
-    V: View,
-    Tb: NavigationToolbarItems,
 {
     type Id = <Self as Views>::Id;
 
@@ -640,14 +602,12 @@ where
 }
 
 macro_rules! tuple_tab_sets {
-    ($(($($tab:ident $label:ident $view:ident $tb:ident),+))+) => {$(
-        impl<$($tab, $label, $view, $tb),+> TabSet for ($(Tab<$tab, $label>,)+)
+    ($(($($tab:ident $label:ident),+))+) => {$(
+        impl<$($tab, $label),+> TabSet for ($(Tab<$tab, $label>,)+)
         where
             $(
-                $tab: ViewBuilder<Output = NavigationView<$view, $tb>>,
+                $tab: ViewBuilder,
                 $label: LabelKind + Clone,
-                $view: View,
-                $tb: NavigationToolbarItems,
             )+
         {
             type Id = usize;
@@ -662,18 +622,18 @@ macro_rules! tuple_tab_sets {
 }
 
 tuple_tab_sets! {
-    (A0 L0 V0 T0)
-    (A0 L0 V0 T0, A1 L1 V1 T1)
-    (A0 L0 V0 T0, A1 L1 V1 T1, A2 L2 V2 T2)
-    (A0 L0 V0 T0, A1 L1 V1 T1, A2 L2 V2 T2, A3 L3 V3 T3)
-    (A0 L0 V0 T0, A1 L1 V1 T1, A2 L2 V2 T2, A3 L3 V3 T3, A4 L4 V4 T4)
-    (A0 L0 V0 T0, A1 L1 V1 T1, A2 L2 V2 T2, A3 L3 V3 T3, A4 L4 V4 T4, A5 L5 V5 T5)
-    (A0 L0 V0 T0, A1 L1 V1 T1, A2 L2 V2 T2, A3 L3 V3 T3, A4 L4 V4 T4, A5 L5 V5 T5, A6 L6 V6 T6)
-    (A0 L0 V0 T0, A1 L1 V1 T1, A2 L2 V2 T2, A3 L3 V3 T3, A4 L4 V4 T4, A5 L5 V5 T5, A6 L6 V6 T6, A7 L7 V7 T7)
-    (A0 L0 V0 T0, A1 L1 V1 T1, A2 L2 V2 T2, A3 L3 V3 T3, A4 L4 V4 T4, A5 L5 V5 T5, A6 L6 V6 T6, A7 L7 V7 T7, A8 L8 V8 T8)
-    (A0 L0 V0 T0, A1 L1 V1 T1, A2 L2 V2 T2, A3 L3 V3 T3, A4 L4 V4 T4, A5 L5 V5 T5, A6 L6 V6 T6, A7 L7 V7 T7, A8 L8 V8 T8, A9 L9 V9 T9)
-    (A0 L0 V0 T0, A1 L1 V1 T1, A2 L2 V2 T2, A3 L3 V3 T3, A4 L4 V4 T4, A5 L5 V5 T5, A6 L6 V6 T6, A7 L7 V7 T7, A8 L8 V8 T8, A9 L9 V9 T9, A10 L10 V10 T10)
-    (A0 L0 V0 T0, A1 L1 V1 T1, A2 L2 V2 T2, A3 L3 V3 T3, A4 L4 V4 T4, A5 L5 V5 T5, A6 L6 V6 T6, A7 L7 V7 T7, A8 L8 V8 T8, A9 L9 V9 T9, A10 L10 V10 T10, A11 L11 V11 T11)
+    (A0 L0)
+    (A0 L0, A1 L1)
+    (A0 L0, A1 L1, A2 L2)
+    (A0 L0, A1 L1, A2 L2, A3 L3)
+    (A0 L0, A1 L1, A2 L2, A3 L3, A4 L4)
+    (A0 L0, A1 L1, A2 L2, A3 L3, A4 L4, A5 L5)
+    (A0 L0, A1 L1, A2 L2, A3 L3, A4 L4, A5 L5, A6 L6)
+    (A0 L0, A1 L1, A2 L2, A3 L3, A4 L4, A5 L5, A6 L6, A7 L7)
+    (A0 L0, A1 L1, A2 L2, A3 L3, A4 L4, A5 L5, A6 L6, A7 L7, A8 L8)
+    (A0 L0, A1 L1, A2 L2, A3 L3, A4 L4, A5 L5, A6 L6, A7 L7, A8 L8, A9 L9)
+    (A0 L0, A1 L1, A2 L2, A3 L3, A4 L4, A5 L5, A6 L6, A7 L7, A8 L8, A9 L9, A10 L10)
+    (A0 L0, A1 L1, A2 L2, A3 L3, A4 L4, A5 L5, A6 L6, A7 L7, A8 L8, A9 L9, A10 L10, A11 L11)
 }
 
 /// Adaptive native tab container keyed by the application's own tab type.
@@ -791,15 +751,17 @@ impl<T: TabSet, A: View> View for Tabs<T, A> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::NavigationView;
     use alloc::vec;
     use alloc::vec::Vec;
     use nami::Signal as _;
     use nami::collection::StateList;
     use nami::id::SelfId;
+    use waterui_core::Str;
 
     /// The label-only `Tab` fixture — content is irrelevant to id erasure.
-    fn tab(label: &'static str) -> Tab<impl ViewBuilder<Output = NavigationView<()>>> {
-        Tab::new(label, move || NavigationView::new(label, ()))
+    fn tab(label: &'static str) -> Tab<impl ViewBuilder<Output = ()>> {
+        Tab::new(label, || ())
     }
 
     #[test]
@@ -867,7 +829,7 @@ mod tests {
         let tabs = Tabs::new(
             &selection,
             (
-                Tab::new("Text", || NavigationView::new("Text", Str::from("one"))),
+                Tab::new("Text", || Str::from("one")),
                 Tab::new("Empty", || NavigationView::new("Empty", ())),
             ),
         )
@@ -877,17 +839,14 @@ mod tests {
         assert_eq!(snapshot.len(), 2);
         assert_eq!(layout.selection.snapshot(), snapshot.get_id(1).expect("id"));
         let page = snapshot.get_view(0).expect("a tab").content().build();
-        assert!(
-            page.content.downcast::<Str>().is_ok(),
-            "the root keeps its content"
-        );
+        assert!(page.downcast::<Str>().is_ok(), "the root keeps its content");
         assert!(layout.bottom_accessory.is_some());
     }
 
     #[test]
     fn an_empty_collection_is_a_valid_layout() {
         let selection = Binding::container(0usize);
-        let tabs = Tabs::new(&selection, Vec::<Tab<fn() -> NavigationView<()>>>::new());
+        let tabs = Tabs::new(&selection, Vec::<Tab<fn() -> ()>>::new());
         let layout = tabs.into_layout::<AnyView>();
         assert_eq!(layout.tabs.snapshot().len(), 0);
     }
