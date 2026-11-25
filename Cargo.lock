@@ -12847,6 +12847,7 @@ dependencies = [
  "waterui-core",
  "waterui-frame-rate",
  "waterui-graphics",
+ "waterui-icons-lucide",
  "waterui-interaction",
  "waterui-locale",
  "waterui-map",
