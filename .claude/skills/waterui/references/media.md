@@ -454,9 +454,7 @@ ParticleSystem::new(10_000)             // max particles
 ```
 
 Every numeric builder parameter is a signal slot (`impl IntoSignalF32`; colors take
-`impl IntoSignal<Color>`). Careful: on
-`ParticleSystem`, `.size(min, max)` is the *particle* size range in normalized units —
-it is not the frame modifier. Also available: `.emit_from_point()` / `.emit_from_circle(r)`,
+`impl IntoSignal<Color>`). `.particle_size(min, max)` sets the particle size range in normalized units (while `.size(w, h)` comes from `ViewExt`). Also available: `.emit_from_point()` / `.emit_from_circle(r)`,
 `.angle(min, max)`, `.spin(min, max)`, `.shape(ParticleShape::Circle | Rect)`, `.additive()`,
 `.softness(s)`, `.stretch_with_velocity()`, the forces `.gravity(x, y)`, `.wind(x, y)`,
 `.turbulence(s)`, `.drag(s)`, and collisions (`.collide_with_viewport()`,

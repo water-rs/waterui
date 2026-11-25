@@ -788,6 +788,7 @@ pub fn media_particle_prose() -> impl View {
     use waterui::particle::{ParticleShape, ParticleSystem};
 
     ParticleSystem::new(1_000)
+        .particle_size(0.01, 0.03)
         .emit_from_circle(0.2)
         .angle(0.0, core::f32::consts::TAU)
         .spin(0.0, 1.0)
@@ -831,8 +832,9 @@ pub fn media_block_13() -> impl View {
 
 // ---------------------------------------------------------------------------
 // media.md § "## Data: charts and maps" (prose): `.chart_focus(&binding)`,
-// `.focused_tooltip(..)`, `Tooltip` / `TooltipContent`, `Legend`, and
-// `LineChart::fill`. Not counted as a rust block.
+// `.chart_selection(&binding)`, `.focused_tooltip(..)`, `Tooltip` /
+// `TooltipContent`, `Legend`, and `LineChart::fill`. Not counted as a rust
+// block.
 // ---------------------------------------------------------------------------
 pub fn media_chart_interaction_prose() -> impl View {
     use waterui::chart::{
@@ -843,6 +845,7 @@ pub fn media_chart_interaction_prose() -> impl View {
 
     let points = Binding::container(vec![DataPoint::new(0.0, 1.0), DataPoint::new(1.0, 2.0)]);
     let focused: Binding<Option<HitResult<DataPoint>>> = Binding::container(None);
+    let selected: Binding<Option<HitResult<DataPoint>>> = Binding::container(None);
     let _ = (
         BubblePoint::new(0.0, 1.0, 2.0).color(Accent),
         GaugeRegion::new(50.0, Accent),
@@ -854,6 +857,7 @@ pub fn media_chart_interaction_prose() -> impl View {
         LineChart::new(points)
             .fill(0.3)
             .chart_focus(&focused)
+            .chart_selection(&selected)
             .focused_tooltip(|_hit| {
                 Tooltip::new(TooltipContent::new().title("Sales").value("Total", "2.0"))
             }),
