@@ -29,6 +29,7 @@ pub mod cursor;
 pub mod date_picker;
 #[cfg(feature = "dialog")]
 pub mod dialog;
+pub mod disclosure;
 pub mod draggable;
 pub mod drop_destination;
 pub mod dynamic;

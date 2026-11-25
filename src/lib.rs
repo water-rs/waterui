@@ -133,12 +133,13 @@ pub mod prelude {
     // Drag and drop extension traits
     pub use super::drag_drop::DropDestinationExt;
 
-    pub use super::widget::{
-        Accordion, Card, CardStyle, CardStyleTokens, CardTheme, DialogTheme, Divider, ErrorView,
-        ResultExt, SuspendedView, Suspense, accordion, card, condition::when, error_view, suspense,
-    };
     #[cfg(feature = "avatar")]
     pub use super::widget::{Avatar, avatar};
+    pub use super::widget::{
+        Card, CardStyle, CardStyleTokens, CardTheme, DialogTheme, Disclosure, Divider, ErrorView,
+        ResultExt, SuspendedView, Suspense, card, condition::when, disclosure, error_view,
+        suspense,
+    };
     #[cfg(feature = "flow-markdown")]
     pub use super::widget::{
         FlowAnimationPolicy, FlowAnimationPreset, FlowElementKind, FlowMarkdown, FlowStreamMode,

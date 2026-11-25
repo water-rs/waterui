@@ -48,7 +48,6 @@ pub mod live_progress;
 pub mod live_segmented;
 #[cfg(feature = "navigation")]
 pub mod live_tabs;
-#[cfg(any(feature = "toggle", feature = "picker"))]
 pub mod live_toggle;
 pub mod material;
 mod metadata;

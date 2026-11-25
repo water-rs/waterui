@@ -134,9 +134,8 @@ pub fn media_live_prose(selected: &Selected) -> impl View {
 // media.md § "## Media" — rust block 4/15
 // ---------------------------------------------------------------------------
 pub fn media_block_04() -> impl View {
-    use waterui::video::{
-        self, MediaItem, PlaybackSession, Playlist, Url, VideoEvent, VideoPlayer,
-    };
+    use waterui::layout::ContentMode;
+    use waterui::video::{MediaItem, PlaybackSession, Playlist, Url, VideoEvent, VideoPlayer};
 
     let first_item = MediaItem::from(Url::parse("https://waterui.dev/a.mp4").expect("valid url"));
     let more_items: Vec<MediaItem> = Vec::new();
@@ -149,7 +148,7 @@ pub fn media_block_04() -> impl View {
 
     VideoPlayer::new(session)
         .show_controls(true)
-        .content_mode(video::ContentMode::Fit) // Fit | Fill | Stretch
+        .content_mode(ContentMode::Fit) // Fit | Fill; `.resizable()` stretches per axis
         .on_event(|event| match event {
             VideoEvent::ReadyToPlay | VideoEvent::Ended => (),
             VideoEvent::Error { message: _ } => (),

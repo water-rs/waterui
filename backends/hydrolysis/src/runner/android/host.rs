@@ -27,7 +27,7 @@ use jni::signature::{MethodSignature, Primitive, ReturnType, RuntimeMethodSignat
 use jni::strings::JNIString;
 use jni::vm::JavaVM;
 use jni::{jni_sig, jni_str};
-use nami::Signal;
+use nami::{Binding, Signal};
 use ndk::looper::{FdEvent, ForeignLooper, ThreadLooper};
 use waterui::Environment;
 #[cfg(feature = "menu")]
@@ -40,6 +40,7 @@ use waterui_core::layout::LayoutDirection;
 use waterui_core::{Retain, contract_violation};
 #[cfg(hydrolysis_gpu_painter)]
 use waterui_frame_rate::{FrameRate, combine};
+use waterui_structural_transition::ReduceMotion;
 
 #[cfg(hydrolysis_gpu_painter)]
 use super::gpu::RefreshDemand;
@@ -1410,6 +1411,9 @@ pub struct AndroidSession {
     /// The live colour-scheme signal the session's theme tokens resolve
     /// against — `set_night_mode` writes it on the host's pushes.
     color_scheme: nami::Binding<ColorScheme>,
+    /// The live Reduce Motion signal driven by Android's
+    /// `Settings.Global.ANIMATOR_DURATION_SCALE` preference.
+    reduce_motion: Binding<bool>,
     /// A frame reached the surface at least once; together with an idle
     /// `wants_next_frame` it arms the one-shot readiness log the device's
     /// idle-CPU sampling waits on.
@@ -1523,6 +1527,26 @@ fn install_platform_view_surfaces(env: &mut Environment) -> crate::platform_view
     platform_views
 }
 
+/// Appearance inputs supplied by the Android host when creating a session.
+#[derive(Clone, Copy)]
+pub struct HostAppearance {
+    pub color_scheme: ColorScheme,
+    pub reduce_motion: bool,
+}
+
+impl HostAppearance {
+    pub const fn new(night: bool, reduce_motion: bool) -> Self {
+        Self {
+            color_scheme: if night {
+                ColorScheme::Dark
+            } else {
+                ColorScheme::Light
+            },
+            reduce_motion,
+        }
+    }
+}
+
 /// What `create` wires into the platform host and the session: the one
 /// window the app registered, its environment, theme and fonts, the
 /// window's registry id, and the bindings and sinks the host later drives.
@@ -1547,6 +1571,8 @@ struct SessionMounts {
     /// The session's colour-scheme signal — the binding `install_theme_tokens`
     /// resolved the default tokens over; `set_night_mode` writes it.
     color_scheme: nami::Binding<ColorScheme>,
+    /// The session's Reduce Motion signal — `set_reduce_motion` writes it.
+    reduce_motion: Binding<bool>,
     #[cfg(hydrolysis_android_system_webview)]
     android_webview: crate::widgets::platform::webview::AndroidSystemWebViewController,
 }
@@ -1561,7 +1587,7 @@ struct SessionMounts {
 /// seeded shortcut registry, no or several windows).
 fn session_mounts(
     services: &'static UiThreadServices,
-    night: bool,
+    appearance: HostAppearance,
     jni_env: &mut Env,
     bridge: &HostBridge,
 ) -> Result<Option<SessionMounts>, JniError> {
@@ -1598,11 +1624,9 @@ fn session_mounts(
     // with the real `uiMode` the create call carried and kept current by
     // `nativeSetColorScheme` pushes, so the default tokens re-resolve on a
     // theme flip the way macOS's appearance binding does (#1972).
-    let color_scheme = nami::binding(if night {
-        ColorScheme::Dark
-    } else {
-        ColorScheme::Light
-    });
+    let color_scheme = nami::binding(appearance.color_scheme);
+    let reduce_motion = Binding::bool(appearance.reduce_motion);
+    env.insert(ReduceMotion::new(reduce_motion.clone()));
     crate::theme::install_theme_tokens(&mut env, Some(&*style), color_scheme.clone());
     let theme: Rc<dyn WidgetTheme> = style;
     #[cfg(hydrolysis_gpu_painter)]
@@ -1681,6 +1705,7 @@ fn session_mounts(
         safe_area,
         keyboard_area,
         color_scheme,
+        reduce_motion,
         #[cfg(hydrolysis_android_system_webview)]
         android_webview,
     }))
@@ -1818,9 +1843,10 @@ impl AndroidSession {
     /// layers its environment over the process's.
     ///
     /// `metrics` is the host's snapshot at creation time — content size and
-    /// scale exist from the start, before the surface band attaches. `night`
-    /// is the configuration's real `uiMode` at the same instant, so the
-    /// colour-scheme signal never starts on a Light default.
+    /// scale exist from the start, before the surface band attaches.
+    /// `appearance` carries the configuration's real `uiMode` and Reduce
+    /// Motion flag at the same instant, so neither signal starts on a static
+    /// default.
     ///
     /// `None` after a reported contract violation (no registered app, no or
     /// several windows, an orphan window id): no session exists then.
@@ -1830,7 +1856,7 @@ impl AndroidSession {
         #[cfg(hydrolysis_gpu_painter)] gpu: AndroidGpuContext,
         painter: &JObject<'_>,
         metrics: MetricsSnapshot,
-        night: bool,
+        appearance: HostAppearance,
         services: &'static UiThreadServices,
     ) -> Result<Option<Box<Self>>, JniError> {
         let executor = services.executor.clone();
@@ -1852,9 +1878,10 @@ impl AndroidSession {
             safe_area,
             keyboard_area,
             color_scheme,
+            reduce_motion,
             #[cfg(hydrolysis_android_system_webview)]
             android_webview,
-        }) = session_mounts(services, night, jni_env, &bridge)?
+        }) = session_mounts(services, appearance, jni_env, &bridge)?
         else {
             return Ok(None);
         };
@@ -1923,6 +1950,7 @@ impl AndroidSession {
             keyboard_area,
             insets_direction,
             color_scheme,
+            reduce_motion,
             presented_once: Cell::new(false),
             rendering_failed: false,
             ready_logged: Cell::new(false),
@@ -2020,6 +2048,14 @@ impl AndroidSession {
         };
         if self.color_scheme.snapshot() != scheme {
             self.color_scheme.set(scheme);
+        }
+    }
+
+    /// Updates the session's Reduce Motion signal when Android's
+    /// `Settings.Global.ANIMATOR_DURATION_SCALE` changes.
+    pub(crate) fn set_reduce_motion(&self, reduced: bool) {
+        if self.reduce_motion.snapshot() != reduced {
+            self.reduce_motion.set(reduced);
         }
     }
 

@@ -906,11 +906,11 @@ use_env(|manager: SnackbarManager| {
 ```
 
 ```rust
-use waterui::widget::accordion;                        // not in the prelude
+use waterui::widget::disclosure;                       // not in the prelude
 
 card(content).title("Summary").subtitle("This week")   // Card; .style(CardStyle::Outlined) | Elevated | Filled
 suspense(async { load().await })                       // takes a future, not a closure; .loading(view) overrides the spinner
-accordion(header, || body())                           // disclosure; Accordion::with_toggle(&open, ..) controls it
+disclosure("Header", || body())                        // Disclosure::new(header, ..).expanded(&open) controls it
 view.floating()                                        // themed elevated surface (FloatingStyle-aware)
 ```
 

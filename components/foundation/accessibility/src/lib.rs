@@ -436,10 +436,9 @@ impl AccessibilityState {
     }
 
     /// Sets the expanded or collapsed state.
-    // TODO(#4376): narrow back to `expanded: bool` once `hydrolysis-m3` moves off `Some(...)`.
     #[must_use]
-    pub fn expanded(mut self, expanded: impl Into<Option<bool>>) -> Self {
-        self.expanded = expanded.into();
+    pub const fn expanded(mut self, expanded: bool) -> Self {
+        self.expanded = Some(expanded);
         self
     }
 
