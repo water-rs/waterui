@@ -4778,7 +4778,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis-m3"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis-m3?branch=main#3ed5d72f07f89d305215b68cda9165bea63e00ae"
+source = "git+https://github.com/water-rs/hydrolysis-m3?branch=main#4f6c5e577c334a191af9a3b91c9e0b5b9a7313f7"
 dependencies = [
  "hydrolysis-style",
  "material-color-utils",
@@ -13816,7 +13816,7 @@ dependencies = [
 [[package]]
 name = "waterui-svg"
 version = "0.4.0"
-source = "git+https://github.com/water-rs/svg?branch=main#b5f85828ca3bb618a82d0f8c5aab0e62e3c8d53e"
+source = "git+https://github.com/water-rs/svg?branch=main#e65eabadc45daefcf2a488aa027f12a0e5952560"
 dependencies = [
  "suiteki",
  "tracing",
