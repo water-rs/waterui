@@ -37,10 +37,11 @@ use objc2_foundation::{
 use objc2_ui_kit::{
     UIDragDropSession, UIDragInteraction, UIDragInteractionDelegate, UIDragItem, UIDragSession,
     UIDropInteraction, UIDropInteractionDelegate, UIDropOperation, UIDropProposal, UIDropSession,
-    UIView,
+    UIInteraction, UIView,
 };
 
 use crate::callback::guarded;
+use crate::geometry::Point;
 
 /// The operation a drop session proposes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -277,15 +278,32 @@ pub fn drag_source(view: &UIView, items: impl Fn() -> Vec<DragItemSpec> + 'stati
 /// A drop session as the delegate sees it.
 pub struct DropSession<'a> {
     session: &'a ProtocolObject<dyn UIDropSession>,
+    location: Point,
 }
 
 impl fmt::Debug for DropSession<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("DropSession").finish_non_exhaustive()
+        f.debug_struct("DropSession")
+            .field("location", &self.location)
+            .finish_non_exhaustive()
     }
 }
 
-impl DropSession<'_> {
+impl<'a> DropSession<'a> {
+    fn new(
+        interaction: &UIDropInteraction,
+        session: &'a ProtocolObject<dyn UIDropSession>,
+    ) -> Self {
+        let view = interaction.view();
+        let location = session.locationInView(view.as_deref()).into();
+        Self { session, location }
+    }
+
+    /// Drag location in the destination view's local coordinate space.
+    #[must_use]
+    pub const fn location(&self) -> Point {
+        self.location
+    }
     /// The payloads of the session's accepted same-process drag items.
     /// Other applications' drags carry no [`LocalPayload`].
     #[must_use]
@@ -415,33 +433,33 @@ define_class!(
         #[unsafe(method(dropInteraction:canHandleSession:))]
         fn can_handle(
             &self,
-            _interaction: &UIDropInteraction,
+            interaction: &UIDropInteraction,
             session: &ProtocolObject<dyn UIDropSession>,
         ) -> bool {
             guarded("CocoaUiDropDelegate canHandleSession:", || {
-                (self.ivars().can_handle)(&DropSession { session })
+                (self.ivars().can_handle)(&DropSession::new(interaction, session))
             })
         }
 
         #[unsafe(method(dropInteraction:sessionDidEnter:))]
         fn session_did_enter(
             &self,
-            _interaction: &UIDropInteraction,
+            interaction: &UIDropInteraction,
             session: &ProtocolObject<dyn UIDropSession>,
         ) {
             guarded("CocoaUiDropDelegate sessionDidEnter:", || {
-                (self.ivars().entered)(&DropSession { session });
+                (self.ivars().entered)(&DropSession::new(interaction, session));
             });
         }
 
         #[unsafe(method_id(dropInteraction:sessionDidUpdate:))]
         fn session_did_update(
             &self,
-            _interaction: &UIDropInteraction,
+            interaction: &UIDropInteraction,
             session: &ProtocolObject<dyn UIDropSession>,
         ) -> Retained<UIDropProposal> {
             guarded("CocoaUiDropDelegate sessionDidUpdate:", || {
-                let operation = (self.ivars().update)(&DropSession { session });
+                let operation = (self.ivars().update)(&DropSession::new(interaction, session));
                 UIDropProposal::initWithDropOperation(
                     UIDropProposal::alloc(self.mtm()),
                     operation.native(),
@@ -452,22 +470,22 @@ define_class!(
         #[unsafe(method(dropInteraction:sessionDidExit:))]
         fn session_did_exit(
             &self,
-            _interaction: &UIDropInteraction,
+            interaction: &UIDropInteraction,
             session: &ProtocolObject<dyn UIDropSession>,
         ) {
             guarded("CocoaUiDropDelegate sessionDidExit:", || {
-                (self.ivars().exited)(&DropSession { session });
+                (self.ivars().exited)(&DropSession::new(interaction, session));
             });
         }
 
         #[unsafe(method(dropInteraction:performDrop:))]
         fn perform_drop(
             &self,
-            _interaction: &UIDropInteraction,
+            interaction: &UIDropInteraction,
             session: &ProtocolObject<dyn UIDropSession>,
         ) {
             guarded("CocoaUiDropDelegate performDrop:", || {
-                (self.ivars().perform)(&DropSession { session });
+                (self.ivars().perform)(&DropSession::new(interaction, session));
             });
         }
     }

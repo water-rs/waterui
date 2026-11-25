@@ -15,15 +15,14 @@ use alloc::rc::Rc;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 
-use cocoa_ui::Rect;
-use cocoa_ui::view;
-use waterui::drag_drop::{DragPayload, DropDestination, Files, TransferKind};
+use cocoa_ui::{Point as CocoaPoint, Rect, view};
+use waterui::drag_drop::{DragPayload, DropDestination, DropInfo, Files, TransferKind};
 use waterui::{Str, Url};
 use waterui_backend_core::Environment;
 use waterui_core::Metadata;
 use waterui_core::layout::{
-    LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
-    ViewDimensions,
+    LayoutError, Point as LayoutPoint, ProposalSize, Rect as LayoutRect, ResolvedExtent,
+    StretchAxis, SubView, ViewDimensions,
 };
 
 use crate::contract::{Held, Mounted, NativeLeaf};
@@ -108,18 +107,27 @@ fn accepts(state: &RefCell<DropLeafState>, payload: &DragPayload) -> bool {
     state.borrow().destination.accepts(payload)
 }
 
-/// Delivers a payload the destination accepts.
-fn deliver(state: &RefCell<DropLeafState>, payload: DragPayload) {
-    let mut state = state.borrow_mut();
-    let env = state.env.clone();
-    state.destination.deliver(payload, &env);
+/// Converts a local `cocoa_ui::Point` into a `DropInfo`.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "Apple view coordinates are logical points matching WaterUI's f32 layout points"
+)]
+const fn drop_info_from_point(point: CocoaPoint) -> DropInfo {
+    DropInfo::new(LayoutPoint::new(point.x as f32, point.y as f32))
 }
 
-/// Reports an accepted drag entering the destination's bounds.
-fn call_enter(state: &RefCell<DropLeafState>) {
+/// Delivers a payload the destination accepts along with its local drop info.
+fn deliver(state: &RefCell<DropLeafState>, payload: DragPayload, info: DropInfo) {
     let mut state = state.borrow_mut();
     let env = state.env.clone();
-    state.destination.enter(&env);
+    state.destination.deliver(payload, info, &env);
+}
+
+/// Reports an accepted drag entering the destination's bounds at `info`.
+fn call_enter(state: &RefCell<DropLeafState>, info: DropInfo) {
+    let mut state = state.borrow_mut();
+    let env = state.env.clone();
+    state.destination.enter(info, &env);
 }
 
 /// Reports an accepted drag leaving the destination's bounds.
@@ -262,7 +270,7 @@ pub fn realize_drop_destination_metadata(
                     let state = Rc::clone(&state);
                     Rc::new(move |info| {
                         if is_accepted(info, &state) {
-                            call_enter(&state);
+                            call_enter(&state, drop_info_from_point(info.location()));
                             NSDragOperation::Copy
                         } else {
                             NSDragOperation::None
@@ -290,11 +298,12 @@ pub fn realize_drop_destination_metadata(
                 perform: {
                     let state = Rc::clone(&state);
                     Rc::new(move |info| {
+                        let drop_info = drop_info_from_point(info.location());
                         if let Some(any) = info.source_payload()
                             && let Some(payload) = shared_payload(&any)
                             && accepts(&state, &payload)
                         {
-                            deliver(&state, payload);
+                            deliver(&state, payload, drop_info);
                             return true;
                         }
                         let accepted_kind = state.borrow().destination.accepted_kind();
@@ -312,7 +321,7 @@ pub fn realize_drop_destination_metadata(
                         else {
                             return false;
                         };
-                        deliver(&state, payload);
+                        deliver(&state, payload, drop_info);
                         true
                     })
                 },
@@ -332,7 +341,7 @@ pub fn realize_drop_destination_metadata(
                 let state = Rc::clone(&state);
                 Rc::new(move |session| {
                     if is_acceptable(session, &state) {
-                        call_enter(&state);
+                        call_enter(&state, drop_info_from_point(session.location()));
                     }
                 })
             },
@@ -357,8 +366,9 @@ pub fn realize_drop_destination_metadata(
             perform: {
                 let state = Rc::clone(&state);
                 Rc::new(move |session| {
+                    let drop_info = drop_info_from_point(session.location());
                     if let Some(payload) = accepted_local_payload(session, &state) {
-                        deliver(&state, payload);
+                        deliver(&state, payload, drop_info);
                         return;
                     }
                     let accepted_kind = state.borrow().destination.accepted_kind();
@@ -373,7 +383,7 @@ pub fn realize_drop_destination_metadata(
                                 if let Some(payload) =
                                     payload_from_strings(accepted_kind, None, &file_urls)
                                 {
-                                    deliver(&state, payload);
+                                    deliver(&state, payload, drop_info);
                                 }
                             });
                         }
@@ -385,7 +395,7 @@ pub fn realize_drop_destination_metadata(
                                     urls.into_iter().next(),
                                     &[],
                                 ) {
-                                    deliver(&state, payload);
+                                    deliver(&state, payload, drop_info);
                                 }
                             });
                         }
@@ -396,7 +406,7 @@ pub fn realize_drop_destination_metadata(
                                 if let Some(payload) =
                                     payload_from_strings(accepted_kind, text, &[])
                                 {
-                                    deliver(&state, payload);
+                                    deliver(&state, payload, drop_info);
                                 }
                             });
                         }
@@ -478,5 +488,11 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn drop_info_from_point_preserves_local_coordinates() {
+        let info = drop_info_from_point(CocoaPoint::new(18.5, 42.25));
+        assert_eq!(info.location(), LayoutPoint::new(18.5, 42.25));
     }
 }

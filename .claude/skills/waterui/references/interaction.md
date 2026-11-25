@@ -214,12 +214,14 @@ The parts an agent cannot guess:
 - **The dropped value is the handler's first parameter, and its type is the filter.**
   `|text: Str| ..` accepts text drags only, `|files: Files| ..` file drags only,
   `|fruit: Fruit| ..` in-process `Fruit` drags only; any other drag is neither
-  highlighted nor delivered. Extractors such as `State<T>` follow it.
+  highlighted nor delivered. Extractors such as `DropInfo` (carrying `.location()`
+  in the destination's local coordinate space) and `State<T>` follow it.
 - **`.drop_hover(&binding)` must chain directly on `.drop_destination(..)`.** It exists
   only on the value that call returns; inserting another modifier between them is a
   compile error. It sets the binding `true` on drag-enter, `false` on exit — feed it to
-  a background or scale signal for a highlight. `.on_enter(f)` / `.on_exit(f)` chain in
-  the same position and *add* handlers rather than replacing them.
+  a background or scale signal for a highlight. `.on_enter(handler)` / `.on_exit(handler)`
+  chain in the same position, accept extractor parameters (`DropInfo` on enter, `State<T>`
+  on both), and *add* handlers rather than replacing them.
 - `.draggable(..)` takes a plain transferable value or any signal of one (`Binding<T>`,
   `Computed<T>`); the payload type is inferred from it. A plain value of your own type
   needs `impl_constant!` (as above). Text is `.draggable(Str::from(..))`.

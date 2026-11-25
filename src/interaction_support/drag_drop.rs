@@ -57,16 +57,70 @@ use nami::Computed;
 use nami::Signal;
 use suiteki::Str;
 use waterui_core::{
-    Environment,
+    Environment, Error,
+    extract::Extractor,
     handler::{
-        BoxedAction, BoxedEventAction, EventHandler, ReportExtraction, boxed_action,
+        BoxedAction, BoxedEventAction, EventHandler, Handler, ReportExtraction, boxed_action,
         boxed_event_handler,
     },
+    layout::Point,
     metadata::{Metadata, MetadataKey},
 };
 use waterui_url::Url;
 
 use crate::reactive::Binding;
+
+/// Contextual details for a drag-enter or drop event, in the destination's
+/// local coordinate space.
+///
+/// Extract `DropInfo` directly as a parameter in
+/// [`ViewExt::drop_destination`](crate::ViewExt::drop_destination) and
+/// [`DropDestinationExt::on_enter`] handlers:
+///
+/// ```rust
+/// use waterui::drag_drop::{DropInfo, Files};
+/// use waterui::prelude::*;
+///
+/// let target = text!("Drop here")
+///     .drop_destination(|_files: Files, info: DropInfo| {
+///         let _point = info.location();
+///     })
+///     .on_enter(|info: DropInfo| {
+///         let _entry = info.location();
+///     });
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct DropInfo {
+    /// Location in the destination view's local coordinate space (logical points).
+    location: Point,
+}
+
+impl DropInfo {
+    /// Creates drop info carrying `location` in the destination's local
+    /// coordinate space.
+    #[must_use]
+    pub const fn new(location: Point) -> Self {
+        Self { location }
+    }
+
+    /// Location of the drag or drop in the destination's local coordinate
+    /// space (logical points).
+    #[must_use]
+    pub const fn location(&self) -> Point {
+        self.location
+    }
+}
+
+impl Extractor for DropInfo {
+    fn extract(env: &Environment) -> Result<Self, Error> {
+        env.get::<Self>().copied().ok_or_else(|| {
+            Error::msg(
+                "`DropInfo` is only available inside `drop_destination` and `on_enter` handlers",
+            )
+        })
+    }
+}
 
 /// A value that a drag can carry.
 ///
@@ -341,14 +395,14 @@ impl DropDestination {
         payload.kind() == self.accepted_kind
     }
 
-    /// Delivers a dropped payload to the handler.
+    /// Delivers a dropped payload and its local [`DropInfo`] to the handler.
     ///
     /// # Contract
     ///
     /// A backend delivers only accepted drags. A payload this destination does
     /// not [accept](Self::accepts) breaks the contract: a debug build panics,
     /// and a release build logs the error and drops the payload.
-    pub fn deliver(&mut self, payload: DragPayload, env: &Environment) {
+    pub fn deliver(&mut self, payload: DragPayload, info: DropInfo, env: &Environment) {
         if !self.accepts(&payload) {
             crate::contract_violation!(
                 "drop destination accepting {:?} was delivered a {:?} payload, which is dropped",
@@ -357,13 +411,16 @@ impl DropDestination {
             );
             return;
         }
-        (self.on_drop)(payload, env).report_extraction();
+        let env = env.extending(info);
+        (self.on_drop)(payload, &env).report_extraction();
     }
 
-    /// Reports that an accepted drag entered the destination's bounds.
-    pub fn enter(&mut self, env: &Environment) {
+    /// Reports that an accepted drag entered the destination's bounds at
+    /// `info`'s local coordinates.
+    pub fn enter(&mut self, info: DropInfo, env: &Environment) {
         if let Some(on_enter) = &mut self.on_enter {
-            on_enter(env).report_extraction();
+            let env = env.extending(info);
+            on_enter(&env).report_extraction();
         }
     }
 
@@ -374,26 +431,43 @@ impl DropDestination {
         }
     }
 
-    /// Adds a callback for when an accepted drag enters the view bounds.
+    /// Adds a handler for when an accepted drag enters the view bounds.
     ///
-    /// This chains with any existing `on_enter` handler, executing both.
+    /// The handler accepts any [`Extractor`] parameters — including
+    /// [`DropInfo`] for the local entry point and [`State`](crate::State) for
+    /// injected state. Chains with any existing `on_enter` handler, executing
+    /// both.
     #[must_use]
-    pub fn on_enter(mut self, handler: impl FnMut() + 'static) -> Self {
+    pub fn on_enter<H, Args>(mut self, handler: H) -> Self
+    where
+        H: Handler<Args, ()>,
+        Args: 'static,
+    {
         self.on_enter = Some(chain(self.on_enter.take(), handler));
         self
     }
 
-    /// Adds a callback for when an accepted drag exits the view bounds.
+    /// Adds a handler for when an accepted drag exits the view bounds.
     ///
-    /// This chains with any existing `on_exit` handler, executing both.
+    /// The handler accepts any [`Extractor`] parameters (such as
+    /// [`State`](crate::State)). Chains with any existing `on_exit` handler,
+    /// executing both.
     #[must_use]
-    pub fn on_exit(mut self, handler: impl FnMut() + 'static) -> Self {
+    pub fn on_exit<H, Args>(mut self, handler: H) -> Self
+    where
+        H: Handler<Args, ()>,
+        Args: 'static,
+    {
         self.on_exit = Some(chain(self.on_exit.take(), handler));
         self
     }
 }
 
-fn chain(previous: Option<BoxedAction<()>>, handler: impl FnMut() + 'static) -> BoxedAction<()> {
+fn chain<H, Args>(previous: Option<BoxedAction<()>>, handler: H) -> BoxedAction<()>
+where
+    H: Handler<Args, ()>,
+    Args: 'static,
+{
     let mut previous = previous;
     let mut handler = boxed_action(handler);
     Box::new(move |env| {
@@ -434,17 +508,26 @@ pub trait DropDestinationExt {
     #[must_use]
     fn drop_hover(self, is_hovering: &Binding<bool>) -> Self;
 
-    /// Adds a callback for when an accepted drag enters the view bounds.
+    /// Adds a handler for when an accepted drag enters the view bounds.
     ///
-    /// This chains with any existing `on_enter` handler, executing both.
+    /// Accepts any [`Extractor`] parameters, including [`DropInfo`] and
+    /// [`State`](crate::State). Chains with any existing `on_enter` handler,
+    /// executing both.
     #[must_use]
-    fn on_enter(self, handler: impl FnMut() + 'static) -> Self;
+    fn on_enter<H, Args>(self, handler: H) -> Self
+    where
+        H: Handler<Args, ()>,
+        Args: 'static;
 
-    /// Adds a callback for when an accepted drag exits the view bounds.
+    /// Adds a handler for when an accepted drag exits the view bounds.
     ///
-    /// This chains with any existing `on_exit` handler, executing both.
+    /// Accepts any [`Extractor`] parameters (such as [`State`](crate::State)).
+    /// Chains with any existing `on_exit` handler, executing both.
     #[must_use]
-    fn on_exit(self, handler: impl FnMut() + 'static) -> Self;
+    fn on_exit<H, Args>(self, handler: H) -> Self
+    where
+        H: Handler<Args, ()>,
+        Args: 'static;
 }
 
 impl<C> DropDestinationExt for Metadata<DropDestination, C> {
@@ -455,12 +538,20 @@ impl<C> DropDestinationExt for Metadata<DropDestination, C> {
             .on_exit(move || exit.set(false))
     }
 
-    fn on_enter(mut self, handler: impl FnMut() + 'static) -> Self {
+    fn on_enter<H, Args>(mut self, handler: H) -> Self
+    where
+        H: Handler<Args, ()>,
+        Args: 'static,
+    {
         self.value = self.value.on_enter(handler);
         self
     }
 
-    fn on_exit(mut self, handler: impl FnMut() + 'static) -> Self {
+    fn on_exit<H, Args>(mut self, handler: H) -> Self
+    where
+        H: Handler<Args, ()>,
+        Args: 'static,
+    {
         self.value = self.value.on_exit(handler);
         self
     }
@@ -470,6 +561,8 @@ impl<C> DropDestinationExt for Metadata<DropDestination, C> {
 mod tests {
     use alloc::rc::Rc;
     use core::cell::Cell;
+
+    use waterui_core::State;
 
     use super::*;
 
@@ -483,8 +576,52 @@ mod tests {
         });
         destination.deliver(
             DragPayload::new(Files::new(core::iter::empty())),
+            DropInfo::new(Point::zero()),
             &Environment::new(),
         );
         assert!(!delivered.get());
+    }
+
+    #[test]
+    fn drop_and_enter_deliver_drop_info_and_extractors() {
+        let indicator = Binding::container(None::<Point>);
+        let landed = Binding::container(None::<(Str, Point)>);
+        let env = Environment::new()
+            .extending(State(indicator.clone()))
+            .extending(State(landed.clone()));
+
+        let mut destination = DropDestination::new(
+            |text: Str, info: DropInfo, State(landed): State<Binding<Option<(Str, Point)>>>| {
+                landed.set(Some((text, info.location())));
+            },
+        )
+        .on_enter(
+            |info: DropInfo, State(indicator): State<Binding<Option<Point>>>| {
+                indicator.set(Some(info.location()));
+            },
+        )
+        .on_exit(|State(indicator): State<Binding<Option<Point>>>| {
+            indicator.set(None);
+        });
+
+        let entry_point = Point::new(14.0, 22.0);
+        let drop_point = Point::new(42.0, 64.0);
+        destination.enter(DropInfo::new(entry_point), &env);
+        assert_eq!(indicator.snapshot(), Some(entry_point));
+
+        destination.deliver(
+            DragPayload::new(Str::from("note")),
+            DropInfo::new(drop_point),
+            &env,
+        );
+        assert_eq!(landed.snapshot(), Some((Str::from("note"), drop_point)));
+
+        destination.exit(&env);
+        assert_eq!(indicator.snapshot(), None);
+    }
+
+    #[test]
+    fn drop_info_fails_extraction_outside_drop_handlers() {
+        assert!(DropInfo::extract(&Environment::new()).is_err());
     }
 }
