@@ -1086,13 +1086,20 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
         content_height: f64,
     ) -> Option<ScrollPositionReport> {
         use crate::num_cast::f64_as_f32;
-        self.config.scroll_controller().as_ref().map(|controller| {
-            ScrollPositionReport::new(
-                controller.position_report(),
-                LayoutSize::new(f64_as_f32(viewport_width), f64_as_f32(viewport_height)),
-                LayoutSize::new(f64_as_f32(viewport_width), f64_as_f32(content_height)),
-            )
-        })
+        self.config
+            .scroll_controller()
+            .as_ref()
+            .map(|controller| ScrollPositionReport {
+                binding: controller.position_report(),
+                viewport_size: LayoutSize::new(
+                    f64_as_f32(viewport_width),
+                    f64_as_f32(viewport_height),
+                ),
+                content_size: LayoutSize::new(
+                    f64_as_f32(viewport_width),
+                    f64_as_f32(content_height),
+                ),
+            })
     }
 
     /// Applies the pending scroll request, if there is one. `animate` selects

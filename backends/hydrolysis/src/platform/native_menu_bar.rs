@@ -237,7 +237,7 @@ fn menu_shortcut(shortcut: &Shortcut) -> MenuShortcut {
 }
 
 fn command_title(command: &ResolvedCommand) -> String {
-    command.label.content().snapshot().to_plain().to_string()
+    command.label().content().snapshot().to_plain().to_string()
 }
 
 /// Builds one bar [`Command`]: `checked` reflects `selected` (the gutter
@@ -255,21 +255,21 @@ fn build_command(
 ) -> Command {
     let id = ctx.alloc_id();
     let mut item = Command::new(id, title)
-        .enabled(!command.disabled.snapshot())
-        .checked(command.selected.snapshot());
+        .enabled(!command.is_disabled().snapshot())
+        .checked(command.is_selected().snapshot());
     if let Some(accelerator) = accelerator {
         item = item.shortcut(accelerator);
     }
-    ctx.actions.insert(id, command.action.clone());
+    ctx.actions.insert(id, command.action().clone());
     let target = ctx.target.clone();
     ctx.state_watches
-        .push(command.disabled.watch(move |watch_ctx| {
+        .push(command.is_disabled().watch(move |watch_ctx| {
             let enabled = !watch_ctx.into_value();
             target.update(|bar| bar.set_enabled(id, enabled));
         }));
     let target = ctx.target.clone();
     ctx.state_watches
-        .push(command.selected.watch(move |watch_ctx| {
+        .push(command.is_selected().watch(move |watch_ctx| {
             let selected = watch_ctx.into_value();
             target.update(|bar| bar.set_checked(id, selected));
         }));
@@ -278,12 +278,7 @@ fn build_command(
 
 /// Builds `command`'s item with its own shortcut as the key equivalent.
 fn declared_command(title: &str, command: &ResolvedCommand, ctx: &mut Builder) -> Command {
-    build_command(
-        title,
-        command,
-        command.shortcut.as_ref().map(menu_shortcut),
-        ctx,
-    )
+    build_command(title, command, command.shortcut().map(menu_shortcut), ctx)
 }
 
 /// Appends resolved items to `submenu` — `Submenu::entry` is a builder, so
@@ -413,14 +408,14 @@ fn product_name() -> String {
 
 /// A resolved menu's title in plain text.
 fn menu_title(menu: &ResolvedNestedMenu) -> String {
-    menu.label.content().snapshot().to_plain().to_string()
+    menu.label().content().snapshot().to_plain().to_string()
 }
 
 /// A resolved `Menu`'s `Submenu`, its items resolved recursively.
 fn build_nested(nested: &ResolvedNestedMenu, ctx: &mut Builder) -> Submenu {
     extend_submenu(
         Submenu::new(menu_title(nested)),
-        &nested.items.snapshot(),
+        &nested.items().snapshot(),
         ctx,
     )
 }
@@ -455,10 +450,10 @@ fn watch_structure(
         let rebuild_slot = Rc::clone(slot);
         let rebuild_items = top_items.clone();
         let rebuild_env = env.clone();
-        watches.push(menu.items.watch(move |_| {
+        watches.push(menu.items().watch(move |_| {
             rebuild_bar(&rebuild_slot, &rebuild_items, &rebuild_env);
         }));
-        watch_structure(&menu.items.snapshot(), slot, top_items, env, watches);
+        watch_structure(&menu.items().snapshot(), slot, top_items, env, watches);
     }
 }
 

@@ -346,9 +346,17 @@ impl SnackbarPosition {
 #[derive(Clone)]
 pub struct SnackbarAction {
     /// The action button label.
-    pub label: Str,
+    label: Str,
     /// The callback when action is pressed.
     handler: SharedAction<()>,
+}
+
+impl SnackbarAction {
+    /// The action button label.
+    #[must_use]
+    pub const fn label(&self) -> &Str {
+        &self.label
+    }
 }
 
 impl core::fmt::Debug for SnackbarAction {

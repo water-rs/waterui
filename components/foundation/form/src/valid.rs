@@ -124,8 +124,7 @@ where
 
 /// An error indicating that a value is out of a specified range.
 #[derive(Debug, Clone)]
-#[non_exhaustive]
-pub struct OutOfRange<T>(pub Range<T>);
+pub struct OutOfRange<T>(Range<T>);
 
 impl<T> OutOfRange<T> {
     /// Reports a value outside `range`.
