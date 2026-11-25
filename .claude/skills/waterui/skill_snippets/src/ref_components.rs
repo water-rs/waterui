@@ -1334,9 +1334,8 @@ pub fn components_block_34() {
 }
 
 // ---------------------------------------------------------------------------
-// components.md § "## Overlays: snackbars, cards, suspense, full screen" (prose): the other snackbar placements,
-// `.icon`, `.state`, `.on_dismiss`, `SnackbarManager::dismiss` and the full-screen
-// overlay manager. Not counted as a rust block.
+// components.md § "## Overlays: snackbars, cards, suspense" (prose): the other snackbar placements,
+// `.icon`, `.state`, `.on_dismiss`, and `SnackbarManager::dismiss`. Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn components_snackbar_prose() {
     use waterui::snackbar::{Snackbar, SnackbarDismissReason, SnackbarManager, SnackbarPosition};
@@ -1362,19 +1361,10 @@ pub fn components_snackbar_prose() {
         m.show(Snackbar::new("x").icon(mdi::delete()));
     });
     let _ = button("x").action(|manager: SnackbarManager| manager.dismiss());
-    let _ = text("host").full_screen_overlay_host::<Text>();
-    let _ = FullScreenOverlayManager::host(|overlay| {
-        overlay.show(text("modal"));
-        text("host")
-    });
-    let _ = button("x").action(|overlay: FullScreenOverlayManager<Text>| {
-        overlay.show(text("modal"));
-        overlay.hide();
-    });
 }
 
 // ---------------------------------------------------------------------------
-// components.md § "## Overlays: snackbars, cards, suspense, full screen" — rust block 35/39
+// components.md § "## Overlays: snackbars, cards, suspense" — rust block 35/39
 // ---------------------------------------------------------------------------
 pub fn components_block_35() -> impl View {
     use waterui::env::use_env;

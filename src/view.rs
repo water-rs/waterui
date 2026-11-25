@@ -10,7 +10,6 @@
 //! These extensions help create a fluent API for constructing user interfaces.
 
 use crate::animation::{FrameRate, FrameRateVote};
-use crate::fullscreen::FullScreenOverlayHost;
 use crate::sheet::Sheet;
 #[cfg(feature = "snackbar")]
 use crate::snackbar::SnackbarHost;
@@ -1369,16 +1368,6 @@ pub trait ViewExt: View + Sized {
     #[cfg(feature = "snackbar")]
     fn snackbar_host_with_icons<I: View + Clone + 'static>(self) -> SnackbarHost<Self, I> {
         SnackbarHost::new(self)
-    }
-
-    /// Hosts a [`FullScreenOverlayManager<O>`](crate::fullscreen::FullScreenOverlayManager)
-    /// and its overlay for this view subtree.
-    ///
-    /// Descendant handlers can extract `FullScreenOverlayManager<O>` bare
-    /// (`|overlay: FullScreenOverlayManager<O>| ...`). Each built instance
-    /// creates its own manager and overlay view.
-    fn full_screen_overlay_host<O: View>(self) -> FullScreenOverlayHost<Self, O> {
-        FullScreenOverlayHost::new(self)
     }
 
     /// Sets the minimum row height of every list inside this view, in points.

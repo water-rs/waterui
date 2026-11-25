@@ -13,7 +13,7 @@ mod runtime;
 pub use runtime::dialog;
 #[cfg(feature = "snackbar")]
 pub use runtime::snackbar;
-pub use runtime::{app, fullscreen, metadata, sheet, task, window};
+pub use runtime::{app, metadata, sheet, task, window};
 pub use widget::error;
 // Inspection is a TCP endpoint that also launches the inspector application on
 // the developer's machine; a browser page can do neither, so on wasm the
@@ -76,8 +76,8 @@ pub mod prelude {
         AnimationExt, AnyView, Binding, Color, Computed, Identifiable, OneOf2, OneOf3, OneOf4,
         OneOf5, OneOf6, OneOf7, OneOf8, Signal, SignalExt, State, Str, View, ViewExt,
         accessibility, animation, app, binding, color, component, cursor, drag_drop, env, error,
-        filter, fullscreen, gesture, gradient, id, layout, locale, metadata, reactive, regional,
-        shape, sheet, signal, style, task, text, widget, window,
+        filter, gesture, gradient, id, layout, locale, metadata, reactive, regional, shape, sheet,
+        signal, style, task, text, widget, window,
     };
 
     #[cfg(feature = "flow-markdown")]
@@ -86,7 +86,6 @@ pub mod prelude {
     pub use super::color::*;
     #[cfg(feature = "dialog")]
     pub use super::dialog::{Dialog, DialogAction};
-    pub use super::fullscreen::*;
     pub use super::sheet::{Sheet, SheetDetent, SheetDismiss};
     #[cfg(feature = "snackbar")]
     pub use super::snackbar::{
