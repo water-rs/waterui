@@ -542,6 +542,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeCreateSess
             long_press_timeout_ms: 0,
         };
         let bridge = std::sync::Arc::new(super::host::HostBridge::new(env, vm, host_view)?);
+        let appearance = super::host::HostAppearance::new(night, reduce_motion);
         #[cfg(hydrolysis_gpu_painter)]
         {
             if !painter.is_null() {
@@ -553,25 +554,14 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeCreateSess
                 entered: Cell::new(false),
                 session: None,
                 startup: Some(super::startup::Startup::new(
-                    bridge,
-                    services,
-                    metrics,
-                    night,
-                    reduce_motion,
+                    bridge, services, metrics, appearance,
                 )),
             })) as jlong)
         }
         #[cfg(hydrolysis_hwui)]
         {
-            let Some(session) = AndroidSession::create(
-                env,
-                bridge,
-                &painter,
-                metrics,
-                night,
-                reduce_motion,
-                services,
-            )?
+            let Some(session) =
+                AndroidSession::create(env, bridge, &painter, metrics, appearance, services)?
             else {
                 return Ok(0);
             };
@@ -1002,7 +992,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetColorSc
 ) {
     guard(&mut env, |_env| {
         initializing!(session_ptr, pending, {
-            pending.color_scheme = if night {
+            pending.appearance.color_scheme = if night {
                 waterui::theme::ColorScheme::Dark
             } else {
                 waterui::theme::ColorScheme::Light
@@ -1025,7 +1015,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetReduceM
 ) {
     guard(&mut env, |_env| {
         initializing!(session_ptr, pending, {
-            pending.reduce_motion = reduce_motion;
+            pending.appearance.reduce_motion = reduce_motion;
             return Ok(());
         });
         session!(session_ptr).set_reduce_motion(reduce_motion);

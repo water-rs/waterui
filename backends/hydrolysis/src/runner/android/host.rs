@@ -1527,6 +1527,26 @@ fn install_platform_view_surfaces(env: &mut Environment) -> crate::platform_view
     platform_views
 }
 
+/// Appearance inputs supplied by the Android host when creating a session.
+#[derive(Clone, Copy)]
+pub struct HostAppearance {
+    pub color_scheme: ColorScheme,
+    pub reduce_motion: bool,
+}
+
+impl HostAppearance {
+    pub const fn new(night: bool, reduce_motion: bool) -> Self {
+        Self {
+            color_scheme: if night {
+                ColorScheme::Dark
+            } else {
+                ColorScheme::Light
+            },
+            reduce_motion,
+        }
+    }
+}
+
 /// What `create` wires into the platform host and the session: the one
 /// window the app registered, its environment, theme and fonts, the
 /// window's registry id, and the bindings and sinks the host later drives.
@@ -1567,8 +1587,7 @@ struct SessionMounts {
 /// seeded shortcut registry, no or several windows).
 fn session_mounts(
     services: &'static UiThreadServices,
-    night: bool,
-    reduce_motion: bool,
+    appearance: HostAppearance,
     jni_env: &mut Env,
     bridge: &HostBridge,
 ) -> Result<Option<SessionMounts>, JniError> {
@@ -1605,12 +1624,8 @@ fn session_mounts(
     // with the real `uiMode` the create call carried and kept current by
     // `nativeSetColorScheme` pushes, so the default tokens re-resolve on a
     // theme flip the way macOS's appearance binding does (#1972).
-    let color_scheme = nami::binding(if night {
-        ColorScheme::Dark
-    } else {
-        ColorScheme::Light
-    });
-    let reduce_motion = Binding::bool(reduce_motion);
+    let color_scheme = nami::binding(appearance.color_scheme);
+    let reduce_motion = Binding::bool(appearance.reduce_motion);
     env.insert(ReduceMotion::new(reduce_motion.clone()));
     crate::theme::install_theme_tokens(&mut env, Some(&*style), color_scheme.clone());
     let theme: Rc<dyn WidgetTheme> = style;
@@ -1828,9 +1843,10 @@ impl AndroidSession {
     /// layers its environment over the process's.
     ///
     /// `metrics` is the host's snapshot at creation time — content size and
-    /// scale exist from the start, before the surface band attaches. `night`
-    /// is the configuration's real `uiMode` at the same instant, so the
-    /// colour-scheme signal never starts on a Light default.
+    /// scale exist from the start, before the surface band attaches.
+    /// `appearance` carries the configuration's real `uiMode` and Reduce
+    /// Motion flag at the same instant, so neither signal starts on a static
+    /// default.
     ///
     /// `None` after a reported contract violation (no registered app, no or
     /// several windows, an orphan window id): no session exists then.
@@ -1840,8 +1856,7 @@ impl AndroidSession {
         #[cfg(hydrolysis_gpu_painter)] gpu: AndroidGpuContext,
         painter: &JObject<'_>,
         metrics: MetricsSnapshot,
-        night: bool,
-        reduce_motion: bool,
+        appearance: HostAppearance,
         services: &'static UiThreadServices,
     ) -> Result<Option<Box<Self>>, JniError> {
         let executor = services.executor.clone();
@@ -1866,7 +1881,7 @@ impl AndroidSession {
             reduce_motion,
             #[cfg(hydrolysis_android_system_webview)]
             android_webview,
-        }) = session_mounts(services, night, reduce_motion, jni_env, &bridge)?
+        }) = session_mounts(services, appearance, jni_env, &bridge)?
         else {
             return Ok(None);
         };

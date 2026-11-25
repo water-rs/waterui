@@ -6,10 +6,8 @@ use executor_core::LocalExecutor;
 use executor_core::async_task::AsyncTask;
 use ndk::native_window::NativeWindow;
 
-use waterui::theme::ColorScheme;
-
 use super::gpu::{AndroidGpuContext, DisplayRefresh, GpuError};
-use super::host::{AndroidSession, HostBridge, MetricsSnapshot, UiThreadServices};
+use super::host::{AndroidSession, HostAppearance, HostBridge, MetricsSnapshot, UiThreadServices};
 use super::jni::JniError;
 use crate::platform::InputEvent;
 
@@ -26,8 +24,7 @@ pub(super) struct Startup {
     pub bridge: Arc<HostBridge>,
     pub services: &'static UiThreadServices,
     pub metrics: MetricsSnapshot,
-    pub color_scheme: ColorScheme,
-    pub reduce_motion: bool,
+    pub appearance: HostAppearance,
     pub visible: bool,
     pub resumed: bool,
     pub attached: bool,
@@ -41,8 +38,7 @@ impl Startup {
         bridge: Arc<HostBridge>,
         services: &'static UiThreadServices,
         metrics: MetricsSnapshot,
-        night: bool,
-        reduce_motion: bool,
+        appearance: HostAppearance,
     ) -> Self {
         let wake = Arc::clone(&bridge);
         let task = services.executor.spawn_local(async move {
@@ -55,12 +51,7 @@ impl Startup {
             bridge,
             services,
             metrics,
-            color_scheme: if night {
-                ColorScheme::Dark
-            } else {
-                ColorScheme::Light
-            },
-            reduce_motion,
+            appearance,
             visible: false,
             resumed: false,
             attached: false,
@@ -87,8 +78,7 @@ impl Startup {
             gpu,
             &jni::objects::JObject::null(),
             self.metrics,
-            self.color_scheme == ColorScheme::Dark,
-            self.reduce_motion,
+            self.appearance,
             self.services,
         )?
         .ok_or_else(|| JniError("hydrolysis android: application mounting failed".to_owned()))?;
