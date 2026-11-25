@@ -140,10 +140,7 @@ pub const fn f64_as_usize(v: f64) -> usize {
     test,
     hydrolysis_winit,
     all(not(target_arch = "wasm32"), hydrolysis_cherenkov),
-    all(
-        feature = "accessibility",
-        any(feature = "stepper", target_os = "android")
-    ),
+    all(feature = "accessibility", target_os = "android"),
     all(target_os = "android", not(hydrolysis_hwui))
 ))]
 pub const fn f64_as_i32(v: f64) -> i32 {
