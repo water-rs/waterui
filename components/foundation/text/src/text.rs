@@ -539,12 +539,6 @@ impl Text {
         self.map_font(size, Font::font_size)
     }
 
-    /// Temporary compatibility shim for downstream crates migrating off `Text::size`.
-    #[doc(hidden)]
-    pub fn size(self, size: impl IntoSignal<f64> + 'static) -> Self {
-        self.font_size(size)
-    }
-
     /// Sets the font weight, keeping the font's slot; see
     /// [`Font::weight`](crate::font::Font::weight).
     pub fn weight(self, weight: impl IntoSignal<FontWeight> + 'static) -> Self {

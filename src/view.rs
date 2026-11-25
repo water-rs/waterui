@@ -1826,4 +1826,12 @@ mod tests {
         range.set(DynamicRange::High);
         assert_eq!(reactive.value.range().snapshot(), DynamicRange::High);
     }
+
+    #[test]
+    fn text_font_size_does_not_shadow_view_ext_size() {
+        use waterui_layout::frame::Frame;
+        use waterui_text::{Text, text};
+
+        let _framed: Frame<Text> = text("Hi").font_size(17.0).size(120.0, 40.0);
+    }
 }
