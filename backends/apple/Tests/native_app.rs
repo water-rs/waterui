@@ -1378,13 +1378,18 @@ mod gesture_events {
     /// event's angle is the raw getter value, phases map the state
     /// transitions, and `Ended` carries zero velocity (#2757).
     fn a_rotation_gesture_reports_native_radians() {
+        use waterui::Angle;
+
         let rotations = Rc::new(RefCell::new(Vec::new()));
         let leaf = dispatch::render(
             waterui::AnyView::new({
                 let rotations = Rc::clone(&rotations);
-                text("rotate").gesture(RotationGesture::new(0.0), move |e: RotationEvent| {
-                    rotations.borrow_mut().push(e);
-                })
+                text("rotate").gesture(
+                    RotationGesture::new(Angle::ZERO),
+                    move |e: RotationEvent| {
+                        rotations.borrow_mut().push(e);
+                    },
+                )
             }),
             &render_environment(),
             mtm(),
@@ -1409,20 +1414,20 @@ mod gesture_events {
         let e = fire(UIGestureRecognizerState::Began, 0.0);
         assert_eq!(
             (e.phase(), e.angle(), e.velocity()),
-            (GesturePhase::Started, 0.0, 0.0)
+            (GesturePhase::Started, Angle::ZERO, 0.0)
         );
         let e = fire(UIGestureRecognizerState::Changed, 0.75);
         assert_eq!(e.phase(), GesturePhase::Updated);
         assert!(
-            (e.angle() - 0.75).abs() < 1e-6,
+            (e.angle().to_radians() - 0.75).abs() < 1e-6,
             "raw radians getter, saw {}",
             e.angle()
         );
         let e = fire(UIGestureRecognizerState::Changed, 1.25);
-        assert!((e.angle() - 1.25).abs() < 1e-6);
+        assert!((e.angle().to_radians() - 1.25).abs() < 1e-6);
         let e = fire(UIGestureRecognizerState::Ended, 1.25);
         assert_eq!((e.phase(), e.velocity()), (GesturePhase::Ended, 0.0));
-        assert!((e.angle() - 1.25).abs() < 1e-6);
+        assert!((e.angle().to_radians() - 1.25).abs() < 1e-6);
     }
 
     /// The shared scale composition clamps at the contract's `.01`

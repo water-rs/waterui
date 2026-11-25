@@ -191,10 +191,10 @@ pub fn components_transforms_prose() {
     // `Anchor` comes from the prelude, as the prose says.
     let _ = text("x").scale(1.5);
     let _ = text("x").scale_xy(1.5, 1.0);
-    let _ = text("x").rotation(45.0);
+    let _ = text("x").rotation(Angle::degrees(45.0));
     let _ = text("x").scale_from(0.5, Anchor::TOP_LEFT);
     let _ = text("x").scale_xy_from(0.5, 1.0, Anchor::TOP_LEFT);
-    let _ = text("x").rotation_from(45.0, Anchor::TOP_LEFT);
+    let _ = text("x").rotation_from(Angle::degrees(45.0), Anchor::TOP_LEFT);
     let _ = [
         Anchor::CENTER,
         Anchor::TOP_RIGHT,

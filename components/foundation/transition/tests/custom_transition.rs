@@ -50,7 +50,7 @@ fn custom_translation_only_transition_returns_non_identity_properties() {
     near(mid.scale[1], 1.0);
     near(mid.translation[0], 0.0);
     near(mid.translation[1], 12.0);
-    near(mid.rotation, 0.0);
+    near(mid.rotation.to_radians(), 0.0);
     near(mid.blur, 0.0);
 
     let mut outgoing = spec.start(TransitionPhase::Removal, false);
@@ -73,6 +73,6 @@ fn property_transition_offset_translates_from_outside_crate() {
     near(properties.opacity, 1.0);
     near(properties.scale[0], 1.0);
     near(properties.scale[1], 1.0);
-    near(properties.rotation, 0.0);
+    near(properties.rotation.to_radians(), 0.0);
     near(properties.blur, 0.0);
 }

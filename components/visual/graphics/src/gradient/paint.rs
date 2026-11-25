@@ -12,7 +12,6 @@ extern crate alloc;
 use alloc::rc::Rc;
 use alloc::vec;
 use alloc::vec::Vec;
-use core::f32::consts::TAU;
 use core::fmt;
 
 use crate::draw::kurbo::{Affine, Point};
@@ -25,7 +24,7 @@ use nami::{Computed, Signal, SignalExt};
 use waterui_color::Color;
 use waterui_core::layout::{StretchAxis, UnitPoint};
 use waterui_core::reactive::signal::IntoComputed;
-use waterui_core::{Environment, View, contract_violation, flatten_signal};
+use waterui_core::{Angle, Environment, View, contract_violation, flatten_signal};
 
 /// The family of a [`Gradient`], for backends that map it onto a platform type.
 #[repr(u32)]
@@ -354,8 +353,8 @@ enum GradientGeometry {
     },
     Angular {
         center: Point,
-        start_angle: f32,
-        end_angle: f32,
+        start_angle: Angle,
+        end_angle: Angle,
     },
 }
 
@@ -394,8 +393,11 @@ impl GradientGeometry {
                 start_angle,
                 end_angle,
             } => {
-                let mut gradient =
-                    SweepGradient::new(center, f64::from(start_angle), f64::from(end_angle));
+                let mut gradient = SweepGradient::new(
+                    center,
+                    f64::from(start_angle.to_radians()),
+                    f64::from(end_angle.to_radians()),
+                );
                 gradient.stops = stops;
                 Paint::Sweep(gradient)
             }
@@ -487,38 +489,39 @@ impl Gradient {
         }
     }
 
-    /// A gradient whose colours run around `center`, from one angle to the
-    /// other, in radians.
+    /// A gradient whose colours run around `center`, from `start_angle` to
+    /// `end_angle`.
     ///
     /// An angle that is not finite, or a sweep that is not positive or is
     /// more than a full turn, is a contract violation: the gradient runs a
-    /// full turn from the start angle (`0` when it is not finite).
+    /// full turn from the start angle (`Angle::ZERO` when it is not finite).
     #[must_use]
     pub fn angular(
         stops: impl IntoComputed<GradientStops>,
         center: UnitPoint,
-        start_angle: f32,
-        end_angle: f32,
+        start_angle: Angle,
+        end_angle: Angle,
     ) -> Self {
-        let (start_angle, end_angle) = if !(start_angle.is_finite() && end_angle.is_finite()) {
+        let (start_angle, end_angle) = if start_angle.is_finite() && end_angle.is_finite() {
+            let sweep = end_angle - start_angle;
+            if sweep <= Angle::ZERO {
+                contract_violation!(
+                    "angular gradient sweep must be positive, got {sweep}; a full turn is used"
+                );
+                (start_angle, start_angle + Angle::FULL)
+            } else if sweep > Angle::FULL {
+                contract_violation!(
+                    "angular gradient sweep must be <= one full turn, got {sweep}; a full turn is used"
+                );
+                (start_angle, start_angle + Angle::FULL)
+            } else {
+                (start_angle, end_angle)
+            }
+        } else {
             contract_violation!(
                 "angular gradient angles must be finite, got {start_angle} and {end_angle}; a full turn from 0 is used"
             );
-            (0.0, TAU)
-        } else if end_angle - start_angle <= 0.0 {
-            contract_violation!(
-                "angular gradient sweep must be positive, got {}; a full turn is used",
-                end_angle - start_angle
-            );
-            (start_angle, start_angle + TAU)
-        } else if end_angle - start_angle > TAU {
-            contract_violation!(
-                "angular gradient sweep must be <= TAU, got {}; a full turn is used",
-                end_angle - start_angle
-            );
-            (start_angle, start_angle + TAU)
-        } else {
-            (start_angle, end_angle)
+            (Angle::ZERO, Angle::FULL)
         };
         Self {
             geometry: GradientGeometry::Angular {
@@ -703,13 +706,16 @@ mod tests {
         let gradient = Gradient::angular(
             vec![(0.0, working(WorkingColor::BLACK))],
             UnitPoint::CENTER,
-            1.0,
-            0.5,
+            Angle::radians(1.0),
+            Angle::radians(0.5),
         );
         let Paint::Sweep(sweep) = resolve_paint(&gradient) else {
             panic!("an angular gradient is a sweep paint");
         };
-        assert!((sweep.end_angle - sweep.start_angle - f64::from(TAU)).abs() < 1e-6);
+        assert!(
+            (sweep.end_angle - sweep.start_angle - f64::from(Angle::FULL.to_radians())).abs()
+                < 1e-6
+        );
     }
 
     #[test]

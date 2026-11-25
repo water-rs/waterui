@@ -18,6 +18,7 @@ use crate::theme::WidgetTheme;
 use executor_core::{AnyLocalExecutorTask, spawn_local};
 use waterui::gesture::TapGesture;
 use waterui_backend_core::Child;
+use waterui_core::Angle;
 use waterui_core::animation::FrameRateVote;
 use waterui_interaction::event::TaskHook;
 use waterui_layout::safe_area::IgnoreSafeArea;
@@ -1467,18 +1468,18 @@ fn unit(value: f32) -> f64 {
     f64::from(value)
 }
 
-/// A rotation's degrees as the engine's radians.
-fn radians(degrees: f32) -> f64 {
-    f64::from(degrees).to_radians()
+/// A rotation angle as the engine's radians.
+fn radians(angle: Angle) -> f64 {
+    f64::from(angle.to_radians())
 }
 
 /// A transform wrapper's motion axis following `signal` into the layer's
 /// `f64` lanes through `map`.
-fn transform_axis<E: crate::text::TextEngine>(
+fn transform_axis<E: crate::text::TextEngine, T: Clone + 'static>(
     renderer: &SemanticCore<E>,
     core: &NodeCore<E>,
-    signal: &Computed<f32>,
-    map: fn(f32) -> f64,
+    signal: &Computed<T>,
+    map: fn(T) -> f64,
 ) -> Motion<f64> {
     renderer.wrapper_motion(signal, map, &core.cell, false)
 }

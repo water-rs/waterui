@@ -457,7 +457,7 @@ pub fn skill_block_15() {
 
     let (w, h) = (100.0_f32, 40.0_f32);
     let (x, y) = (1.5_f32, 2.5_f32);
-    let degrees = 30.0_f32;
+    let angle = Angle::degrees(30.0);
     let width = 2.0_f32;
     use waterui::shape::Circle;
     let shape = Circle;
@@ -509,7 +509,7 @@ pub fn skill_block_15() {
     let view = Divider;
     let _ = { view.scale_xy(x, y) };
     let view = Divider;
-    let _ = { view.rotation(degrees) };
+    let _ = { view.rotation(angle) };
     let view = Divider;
     let _ = {
         view.offset(x, y) // two arguments, not one
@@ -558,7 +558,7 @@ pub fn skill_block_15() {
     };
     let view = Divider;
     let _ = {
-        view.hue_rotation(30.0) // [ellipsis filled]
+        view.hue_rotation(Angle::degrees(30.0)) // [ellipsis filled]
     };
 
     let view = Divider;

@@ -146,8 +146,8 @@ fn shape_commands(commands: &[PathCommand]) -> Vec<cocoa_ui::path::Command> {
                 cy: f64::from(cy),
                 rx: f64::from(rx),
                 ry: f64::from(ry),
-                start: f64::from(start),
-                sweep: f64::from(sweep),
+                start: f64::from(start.to_radians()),
+                sweep: f64::from(sweep.to_radians()),
             },
             PathCommand::Close => cocoa_ui::path::Command::Close,
         })
@@ -308,6 +308,7 @@ pub fn realize_shadow_metadata(
 mod tests {
     use super::*;
     use waterui::shape::ShapeKind as WaterShapeKind;
+    use waterui_core::Angle;
 
     #[test]
     fn kind_conversion_preserves_per_corner_radii() {
@@ -360,8 +361,8 @@ mod tests {
                 cy: 0.5,
                 rx: 0.25,
                 ry: 0.5,
-                start: 0.0,
-                sweep: 1.5,
+                start: Angle::ZERO,
+                sweep: Angle::radians(1.5),
             },
             PathCommand::Close,
         ]);

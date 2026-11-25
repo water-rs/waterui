@@ -1438,14 +1438,14 @@ fn regular_rounded_rect(commands: &[PathCommand], bounds: kurbo::Rect) -> Option
         && approx_eq(*left_end_y, *y0 + *ry)
         && approx_eq(*top_left_cx, *x0 + *rx)
         && approx_eq(*top_left_cy, *y0 + *ry);
-    let angles_match = approx_eq(*top_right_start, -quarter_turn)
-        && approx_eq(*top_right_sweep, quarter_turn)
-        && approx_eq(*bottom_right_start, 0.0)
-        && approx_eq(*bottom_right_sweep, quarter_turn)
-        && approx_eq(*bottom_left_start, quarter_turn)
-        && approx_eq(*bottom_left_sweep, quarter_turn)
-        && approx_eq(*top_left_start, core::f32::consts::PI)
-        && approx_eq(*top_left_sweep, quarter_turn);
+    let angles_match = approx_eq(top_right_start.to_radians(), -quarter_turn)
+        && approx_eq(top_right_sweep.to_radians(), quarter_turn)
+        && approx_eq(bottom_right_start.to_radians(), 0.0)
+        && approx_eq(bottom_right_sweep.to_radians(), quarter_turn)
+        && approx_eq(bottom_left_start.to_radians(), quarter_turn)
+        && approx_eq(bottom_left_sweep.to_radians(), quarter_turn)
+        && approx_eq(top_left_start.to_radians(), core::f32::consts::PI)
+        && approx_eq(top_left_sweep.to_radians(), quarter_turn);
     if !uniform_radii
         || !geometry_matches
         || !angles_match

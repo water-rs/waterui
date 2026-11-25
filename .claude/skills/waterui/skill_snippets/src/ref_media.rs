@@ -234,7 +234,11 @@ pub fn media_video_advanced_prose() -> impl View {
 
     VideoPlayer::new(session)
         .projection(VideoProjection::Equirectangular(
-            EquirectangularProjection::new(SphericalViewport::new(0.0, 0.0, 75.0)),
+            EquirectangularProjection::new(SphericalViewport::new(
+                Angle::ZERO,
+                Angle::ZERO,
+                Angle::degrees(75.0),
+            )),
         ))
         .on_event(|event| {
             if let Event::PlaybackMetrics { metrics } = event {
@@ -707,12 +711,12 @@ pub fn media_filter_table_prose(png: &[u8]) -> Result<impl View, waterui::Error>
     let _ = text("a")
         .tone_curve(0.1, 0.5, 0.9, 1.0, 1.0)
         .color_matrix([[1.0, 0.0, 0.0, 0.0]; 3])
-        .motion_blur(4.0, 30.0)
+        .motion_blur(4.0, Angle::degrees(30.0))
         .median3x3()
         .convolution3x3([0.0_f32; 9])
         .photo_effect_noir()
-        .dot_halftone(1.0, 2.0, 3.0, 4.0)
-        .twirl_distortion(1.0, 2.0, 3.0, 4.0)
+        .dot_halftone(1.0, Angle::degrees(2.0), 3.0, 4.0)
+        .twirl_distortion(1.0, 2.0, 3.0, Angle::degrees(4.0))
         .perspective_transform([[0.0, 0.0]; 4])
         .perspective_correction(quad);
 

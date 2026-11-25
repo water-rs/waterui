@@ -60,7 +60,7 @@ fn system_tile(toggle: &Binding<bool>, index: usize) -> impl View + use<> {
     let amp = ((index % 5) as f32).mul_add(2.0, 8.0);
     let hi_scale = ((index % 4) as f32).mul_add(0.09, 0.9);
     let lo_scale = ((index % 3) as f32).mul_add(0.08, 0.45);
-    let hi_rot = (index % 8) as f32 * 22.5;
+    let hi_rot = Angle::degrees((index % 8) as f32 * 22.5);
 
     let scale = toggle.select(hi_scale, lo_scale).with(easing.clone());
     let rotation = toggle.select(hi_rot, -hi_rot).with(easing);
@@ -107,7 +107,7 @@ fn filter_tile(
 
     let hue = hue_target
         .clone()
-        .map(move |v| idx.mul_add(11.0, v).rem_euclid(360.0) as f32)
+        .map(move |v| Angle::degrees(idx.mul_add(11.0, v).rem_euclid(360.0) as f32))
         .with(Animation::ease_in_out(Duration::from_millis(420)));
 
     zstack((

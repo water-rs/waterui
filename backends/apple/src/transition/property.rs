@@ -44,7 +44,8 @@ fn layer_transform(
         0.0,
     );
     let to_centre = CATransform3D::new_translation(cx, cy, 0.0);
-    let rotate = CATransform3D::new_rotation(f64::from(properties.rotation), 0.0, 0.0, 1.0);
+    let rotate =
+        CATransform3D::new_rotation(f64::from(properties.rotation.to_radians()), 0.0, 0.0, 1.0);
     let scale = CATransform3D::new_scale(
         f64::from(properties.scale[0]),
         f64::from(properties.scale[1]),
@@ -61,7 +62,7 @@ fn layer_transform(
 /// `UIView.transform` already applies about the view's centre.
 #[cfg(target_os = "ios")]
 fn affine_transform(properties: &TransitionProperties) -> objc2_core_foundation::CGAffineTransform {
-    let (sin, cos) = f64::from(properties.rotation).sin_cos();
+    let (sin, cos) = f64::from(properties.rotation.to_radians()).sin_cos();
     let sx = f64::from(properties.scale[0]);
     let sy = f64::from(properties.scale[1]);
     objc2_core_foundation::CGAffineTransform {

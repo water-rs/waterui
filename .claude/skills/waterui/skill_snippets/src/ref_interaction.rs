@@ -88,7 +88,7 @@ pub fn interaction_remaining_gestures_prose() {
     use waterui::gesture::{MagnificationGesture, RotationGesture};
 
     let _ = MagnificationGesture::new(1.0);
-    let _ = RotationGesture::new(0.0);
+    let _ = RotationGesture::new(Angle::ZERO);
 }
 
 // ---------------------------------------------------------------------------
@@ -116,7 +116,7 @@ pub fn interaction_event_payloads_prose() {
         );
     });
     let _ = Divider.gesture(MagnificationGesture::new(1.0), |_: MagnificationEvent| ());
-    let _ = Divider.gesture(RotationGesture::new(0.0), |_: RotationEvent| ());
+    let _ = Divider.gesture(RotationGesture::new(Angle::ZERO), |_: RotationEvent| ());
     let _ = Divider.event(Event::HoverMove, |hover: HoverEvent| {
         let _ = hover.location();
     });

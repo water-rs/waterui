@@ -25,7 +25,7 @@ use std::num::{NonZeroU64, NonZeroUsize};
 use std::time::Duration;
 use waterui_core::handler::ReportExtraction as _;
 use waterui_core::{
-    Binding, Computed, Environment, NativeView, SerialDispatch, binding, configurable,
+    Angle, Binding, Computed, Environment, NativeView, SerialDispatch, binding, configurable,
     contract_violation, layout::StretchAxis,
 };
 
@@ -68,19 +68,19 @@ pub enum SphericalStereoLayout {
 /// Reactive camera orientation shared by spherical presentation and input.
 #[derive(Clone)]
 pub struct SphericalViewport {
-    yaw: Binding<f32>,
-    pitch: Binding<f32>,
-    vertical_field_of_view: Binding<f32>,
+    yaw: Binding<Angle>,
+    pitch: Binding<Angle>,
+    vertical_field_of_view: Binding<Angle>,
 }
 
 impl fmt::Debug for SphericalViewport {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("SphericalViewport")
-            .field("yaw_degrees", &self.yaw.snapshot())
-            .field("pitch_degrees", &self.pitch.snapshot())
+            .field("yaw", &self.yaw.snapshot())
+            .field("pitch", &self.pitch.snapshot())
             .field(
-                "vertical_field_of_view_degrees",
+                "vertical_field_of_view",
                 &self.vertical_field_of_view.snapshot(),
             )
             .finish()
@@ -92,44 +92,42 @@ impl SphericalViewport {
     ///
     /// # Contract violation
     ///
-    /// All values must be finite, pitch within `-90..=90`, and vertical field
-    /// of view within `30..=120` degrees. Otherwise a debug build panics; a
+    /// All values must be finite, pitch within `-90°..=90°`, and vertical field
+    /// of view within `30°..=120°`. Otherwise a debug build panics; a
     /// release build logs it and uses the nearest valid value, with a
     /// non-finite value replaced by the centered camera's.
     #[must_use]
-    pub fn new(yaw_degrees: f32, pitch_degrees: f32, vertical_field_of_view_degrees: f32) -> Self {
-        let (yaw_degrees, pitch_degrees) =
-            checked_spherical_orientation(yaw_degrees, pitch_degrees);
-        let vertical_field_of_view_degrees =
-            checked_spherical_field_of_view(vertical_field_of_view_degrees);
+    pub fn new(yaw: Angle, pitch: Angle, vertical_field_of_view: Angle) -> Self {
+        let (yaw, pitch) = checked_spherical_orientation(yaw, pitch);
+        let vertical_field_of_view = checked_spherical_field_of_view(vertical_field_of_view);
         Self {
-            yaw: binding(normalize_yaw(yaw_degrees)),
-            pitch: binding(pitch_degrees),
-            vertical_field_of_view: binding(vertical_field_of_view_degrees),
+            yaw: binding(normalize_yaw(yaw)),
+            pitch: binding(pitch),
+            vertical_field_of_view: binding(vertical_field_of_view),
         }
     }
 
     /// Creates a forward-facing 90-degree camera.
     #[must_use]
     pub fn centered() -> Self {
-        Self::new(0.0, 0.0, 90.0)
+        Self::new(Angle::ZERO, Angle::ZERO, Angle::QUARTER)
     }
 
-    /// Returns the current normalized yaw in degrees.
+    /// Returns the current normalized yaw.
     #[must_use]
-    pub fn yaw_degrees(&self) -> f32 {
+    pub fn yaw(&self) -> Angle {
         self.yaw.snapshot()
     }
 
-    /// Returns the current pitch in degrees.
+    /// Returns the current pitch.
     #[must_use]
-    pub fn pitch_degrees(&self) -> f32 {
+    pub fn pitch(&self) -> Angle {
         self.pitch.snapshot()
     }
 
-    /// Returns the current vertical field of view in degrees.
+    /// Returns the current vertical field of view.
     #[must_use]
-    pub fn vertical_field_of_view_degrees(&self) -> f32 {
+    pub fn vertical_field_of_view(&self) -> Angle {
         self.vertical_field_of_view.snapshot()
     }
 
@@ -137,14 +135,13 @@ impl SphericalViewport {
     ///
     /// # Contract violation
     ///
-    /// Both values must be finite and pitch within `-90..=90`. Otherwise a
+    /// Both values must be finite and pitch within `-90°..=90°`. Otherwise a
     /// debug build panics; a release build logs it and applies the nearest
-    /// valid orientation, with a non-finite value replaced by `0.0`.
-    pub fn set_orientation(&self, yaw_degrees: f32, pitch_degrees: f32) {
-        let (yaw_degrees, pitch_degrees) =
-            checked_spherical_orientation(yaw_degrees, pitch_degrees);
-        self.yaw.set(normalize_yaw(yaw_degrees));
-        self.pitch.set(pitch_degrees);
+    /// valid orientation, with a non-finite value replaced by [`Angle::ZERO`].
+    pub fn set_orientation(&self, yaw: Angle, pitch: Angle) {
+        let (yaw, pitch) = checked_spherical_orientation(yaw, pitch);
+        self.yaw.set(normalize_yaw(yaw));
+        self.pitch.set(pitch);
     }
 
     /// Applies an interactive orientation delta, clamping pitch at the poles.
@@ -153,14 +150,14 @@ impl SphericalViewport {
     ///
     /// Both deltas must be finite. Otherwise a debug build panics; a release
     /// build logs it and ignores the call.
-    pub fn pan_by(&self, yaw_delta_degrees: f32, pitch_delta_degrees: f32) {
-        if !(yaw_delta_degrees.is_finite() && pitch_delta_degrees.is_finite()) {
+    pub fn pan_by(&self, yaw_delta: Angle, pitch_delta: Angle) {
+        if !(yaw_delta.is_finite() && pitch_delta.is_finite()) {
             contract_violation!("spherical camera deltas must be finite; the call is ignored");
             return;
         }
         self.set_orientation(
-            self.yaw_degrees() + yaw_delta_degrees,
-            (self.pitch_degrees() + pitch_delta_degrees).clamp(-90.0, 90.0),
+            self.yaw() + yaw_delta,
+            (self.pitch() + pitch_delta).clamp(-Angle::QUARTER, Angle::QUARTER),
         );
     }
 
@@ -168,12 +165,12 @@ impl SphericalViewport {
     ///
     /// # Contract violation
     ///
-    /// `degrees` must be finite and within `30..=120`. Otherwise a debug
+    /// `fov` must be finite and within `30°..=120°`. Otherwise a debug
     /// build panics; a release build logs it and applies the nearest valid
     /// field of view, with a non-finite value replaced by 90 degrees.
-    pub fn set_vertical_field_of_view_degrees(&self, degrees: f32) {
+    pub fn set_vertical_field_of_view(&self, fov: Angle) {
         self.vertical_field_of_view
-            .set(checked_spherical_field_of_view(degrees));
+            .set(checked_spherical_field_of_view(fov));
     }
 
     /// Applies a positive magnification scale to the current field of view.
@@ -190,24 +187,24 @@ impl SphericalViewport {
             return;
         }
         self.vertical_field_of_view
-            .set((self.vertical_field_of_view_degrees() / scale).clamp(30.0, 120.0));
+            .set((self.vertical_field_of_view() / scale).clamp(MIN_FOV, MAX_FOV));
     }
 
     /// Returns a reactive yaw signal for renderer and application observation.
     #[must_use]
-    pub fn yaw_signal(&self) -> Computed<f32> {
+    pub fn yaw_signal(&self) -> Computed<Angle> {
         self.yaw.clone().computed()
     }
 
     /// Returns a reactive pitch signal for renderer and application observation.
     #[must_use]
-    pub fn pitch_signal(&self) -> Computed<f32> {
+    pub fn pitch_signal(&self) -> Computed<Angle> {
         self.pitch.clone().computed()
     }
 
     /// Returns a reactive vertical-field-of-view signal.
     #[must_use]
-    pub fn vertical_field_of_view_signal(&self) -> Computed<f32> {
+    pub fn vertical_field_of_view_signal(&self) -> Computed<Angle> {
         self.vertical_field_of_view.clone().computed()
     }
 }
@@ -277,46 +274,55 @@ impl VideoProjection {
     }
 }
 
+const MIN_FOV: Angle = Angle::degrees(30.0);
+const MAX_FOV: Angle = Angle::degrees(120.0);
+
 /// The orientation to apply for a requested one: the request when valid,
-/// otherwise the nearest valid orientation (a non-finite value becomes `0.0`).
-fn checked_spherical_orientation(yaw_degrees: f32, pitch_degrees: f32) -> (f32, f32) {
-    if !(yaw_degrees.is_finite() && pitch_degrees.is_finite()) {
+/// otherwise the nearest valid orientation (a non-finite value becomes `Angle::ZERO`).
+fn checked_spherical_orientation(yaw: Angle, pitch: Angle) -> (Angle, Angle) {
+    if !(yaw.is_finite() && pitch.is_finite()) {
         contract_violation!(
             "spherical camera orientation must be finite; a non-finite value becomes 0.0"
         );
-        let finite_or_zero = |degrees: f32| if degrees.is_finite() { degrees } else { 0.0 };
+        let finite_or_zero = |angle: Angle| {
+            if angle.is_finite() {
+                angle
+            } else {
+                Angle::ZERO
+            }
+        };
         return (
-            finite_or_zero(yaw_degrees),
-            finite_or_zero(pitch_degrees).clamp(-90.0, 90.0),
+            finite_or_zero(yaw),
+            finite_or_zero(pitch).clamp(-Angle::QUARTER, Angle::QUARTER),
         );
     }
-    if !(-90.0..=90.0).contains(&pitch_degrees) {
+    if pitch < -Angle::QUARTER || pitch > Angle::QUARTER {
         contract_violation!(
             "spherical camera pitch must be within -90..=90 degrees; the pitch is clamped"
         );
-        return (yaw_degrees, pitch_degrees.clamp(-90.0, 90.0));
+        return (yaw, pitch.clamp(-Angle::QUARTER, Angle::QUARTER));
     }
-    (yaw_degrees, pitch_degrees)
+    (yaw, pitch)
 }
 
 /// The field of view to apply for a requested one: the request when valid,
 /// otherwise the nearest valid one (a non-finite value becomes 90 degrees).
-fn checked_spherical_field_of_view(degrees: f32) -> f32 {
-    if degrees.is_finite() && (30.0..=120.0).contains(&degrees) {
-        return degrees;
+fn checked_spherical_field_of_view(fov: Angle) -> Angle {
+    if fov.is_finite() && fov >= MIN_FOV && fov <= MAX_FOV {
+        return fov;
     }
     contract_violation!(
         "spherical vertical field of view must be within 30..=120 degrees; the nearest valid field of view is used (90 for a non-finite value)"
     );
-    if degrees.is_finite() {
-        degrees.clamp(30.0, 120.0)
+    if fov.is_finite() {
+        fov.clamp(MIN_FOV, MAX_FOV)
     } else {
-        90.0
+        Angle::QUARTER
     }
 }
 
-fn normalize_yaw(yaw_degrees: f32) -> f32 {
-    (yaw_degrees + 180.0).rem_euclid(360.0) - 180.0
+fn normalize_yaw(yaw: Angle) -> Angle {
+    (yaw + Angle::HALF).rem_euclid(Angle::FULL) - Angle::HALF
 }
 
 /// A finite linear playback-volume level in the inclusive `0.0..=1.0` range.
@@ -2164,17 +2170,21 @@ mod tests {
 
     #[test]
     fn spherical_viewport_normalizes_pan_and_magnification() {
-        let viewport = SphericalViewport::new(540.0, 80.0, 90.0);
-        assert!((viewport.yaw_degrees() + 180.0).abs() < f32::EPSILON);
+        let viewport = SphericalViewport::new(
+            Angle::degrees(540.0),
+            Angle::degrees(80.0),
+            Angle::degrees(90.0),
+        );
+        assert!((viewport.yaw().to_degrees() + 180.0).abs() < 1e-4);
 
-        viewport.pan_by(45.0, 20.0);
-        assert!((viewport.yaw_degrees() + 135.0).abs() < f32::EPSILON);
-        assert!((viewport.pitch_degrees() - 90.0).abs() < f32::EPSILON);
+        viewport.pan_by(Angle::degrees(45.0), Angle::degrees(20.0));
+        assert!((viewport.yaw().to_degrees() + 135.0).abs() < 1e-4);
+        assert!((viewport.pitch().to_degrees() - 90.0).abs() < 1e-4);
 
         viewport.magnify(2.0);
-        assert!((viewport.vertical_field_of_view_degrees() - 45.0).abs() < f32::EPSILON);
+        assert!((viewport.vertical_field_of_view().to_degrees() - 45.0).abs() < 1e-4);
         viewport.magnify(10.0);
-        assert!((viewport.vertical_field_of_view_degrees() - 30.0).abs() < f32::EPSILON);
+        assert!((viewport.vertical_field_of_view().to_degrees() - 30.0).abs() < 1e-4);
     }
 
     #[test]
@@ -2186,8 +2196,8 @@ mod tests {
     )]
     fn spherical_viewport_rejects_invalid_field_of_view() {
         // Release outcome: the nearest valid field of view is used.
-        let viewport = SphericalViewport::new(0.0, 0.0, 121.0);
-        assert!((viewport.vertical_field_of_view_degrees() - 120.0).abs() < f32::EPSILON);
+        let viewport = SphericalViewport::new(Angle::ZERO, Angle::ZERO, Angle::degrees(121.0));
+        assert!((viewport.vertical_field_of_view().to_degrees() - 120.0).abs() < 1e-4);
     }
 
     #[test]
@@ -2197,9 +2207,9 @@ mod tests {
     )]
     fn spherical_viewport_ignores_non_finite_pan() {
         let viewport = SphericalViewport::centered();
-        viewport.pan_by(f32::NAN, 1.0);
-        assert!(viewport.yaw_degrees().abs() < f32::EPSILON);
-        assert!(viewport.pitch_degrees().abs() < f32::EPSILON);
+        viewport.pan_by(Angle::degrees(f32::NAN), Angle::degrees(1.0));
+        assert!(viewport.yaw().to_degrees().abs() < f32::EPSILON);
+        assert!(viewport.pitch().to_degrees().abs() < f32::EPSILON);
     }
 
     #[test]

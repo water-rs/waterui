@@ -162,11 +162,11 @@ chrome) and `keyboard` (the software keyboard) — and `.ignore_safe_area` takes
 the keyboard but above the container inset, `SafeAreaRegions::CONTAINER` / `ALL` name the
 other combinations, and a bare `EdgeSet` ignores every region.
 
-Visual transforms never affect layout. `.scale(factor)` / `.scale_xy(x, y)` and `.rotation(degrees)` pivot on the
-centre; `.scale_from(factor, Anchor::TOP_LEFT)` / `.scale_xy_from(x, y, Anchor::TOP_LEFT)` and `.rotation_from(45.0, Anchor::TOP_LEFT)`
+Visual transforms never affect layout. `.scale(factor)` / `.scale_xy(x, y)` and `.rotation(angle)` pivot on the
+centre; `.scale_from(factor, Anchor::TOP_LEFT)` / `.scale_xy_from(x, y, Anchor::TOP_LEFT)` and `.rotation_from(Angle::degrees(45.0), Anchor::TOP_LEFT)`
 pivot on an `Anchor` (in the prelude; normalized, `(0, 0)` top-left: `CENTER`, `TOP_LEFT`,
 `TOP_RIGHT`, `BOTTOM_LEFT`, `BOTTOM_RIGHT`, or `Anchor::new(x, y)`). Factors and angles take
-signals; the anchor is a plain value.
+signals (`Angle::degrees(..)`, `Angle::radians(..)`, `Angle::turns(..)`, `Angle::{ZERO, QUARTER, HALF, FULL}`); the anchor is a plain value.
 
 Grid — note the import and the `row` name collision with the list row builder. Rows go in
 a tuple, which lets each row hold different views; an array or `Vec` works when every row

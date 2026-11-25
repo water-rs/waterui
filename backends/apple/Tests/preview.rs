@@ -1128,6 +1128,7 @@ mod suite {
     fn gpu_set() -> impl View {
         // The checkerboard shader lives beside the suite — shaders in separate
         // files.
+        use waterui::Angle;
         const SHADER: &str = include_str!("gpu_set.wgsl");
         vstack((
             text("GPU canvas + filtered views").title(),
@@ -1135,7 +1136,7 @@ mod suite {
             text("filtered: grayscale + blur")
                 .grayscale(0.8_f32)
                 .blur(2.0_f32),
-            text("filtered: hue rotation").hue_rotation(120.0_f32),
+            text("filtered: hue rotation").hue_rotation(Angle::degrees(120.0)),
         ))
         .padding()
     }

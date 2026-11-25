@@ -71,6 +71,7 @@ use alloc::boxed::Box;
 use core::fmt;
 
 use nami::{Computed, SignalExt as _};
+pub use waterui_core::Angle;
 use waterui_core::layout::{Affine2, Size};
 use waterui_core::reactive::signal::IntoComputed;
 use waterui_core::{Environment, Str, View};

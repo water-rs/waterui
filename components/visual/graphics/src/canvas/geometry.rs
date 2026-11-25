@@ -8,11 +8,10 @@
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::f32::consts::TAU;
 
 use nami::impl_constant;
-use waterui_core::contract_violation;
 use waterui_core::layout::{Point, Rect, Size};
+use waterui_core::{Angle, contract_violation};
 
 use crate::draw::kurbo::{self, PathEl, Shape as _};
 use crate::draw::{FillRule as RecordFillRule, ShapeData};
@@ -303,30 +302,39 @@ impl PathBuilder {
     }
 
     /// An elliptical arc around `center` with radii `radii` (x, y), starting
-    /// at angle `start` and sweeping `sweep` radians clockwise in canvas
-    /// space. The arc joins the current point with a straight segment, or
-    /// starts a subpath when there is none.
+    /// at `start` and sweeping `sweep` clockwise in canvas space. The arc joins
+    /// the current point with a straight segment, or starts a subpath when
+    /// there is none.
     ///
     /// A `sweep` of more than one full turn either way is a contract
     /// violation: the arc sweeps one full turn in that direction (none when
     /// `sweep` is `NaN`).
     #[must_use]
-    pub fn arc(mut self, center: Point, radii: (f32, f32), start: f32, sweep: f32) -> Self {
-        let sweep = if sweep.abs() <= TAU {
-            sweep
-        } else {
-            contract_violation!("an arc sweeps at most one full turn, got {sweep} radians");
-            if sweep.is_nan() {
-                0.0
+    pub fn arc<M1, M2>(
+        mut self,
+        center: Point,
+        radii: (f32, f32),
+        start: impl IntoArcAngle<M1>,
+        sweep: impl IntoArcAngle<M2>,
+    ) -> Self {
+        let start = start.into_arc_angle();
+        let sweep = sweep.into_arc_angle();
+        let sweep_radians = if sweep.is_finite() {
+            if sweep.abs() > Angle::FULL {
+                contract_violation!("an arc sweeps at most one full turn, got {sweep}");
+                sweep.clamp(-Angle::FULL, Angle::FULL).to_radians()
             } else {
-                sweep.clamp(-TAU, TAU)
+                sweep.to_radians()
             }
+        } else {
+            contract_violation!("an arc sweeps at most one full turn, got {sweep}");
+            0.0
         };
         let arc = kurbo::Arc::new(
             point(center),
             (f64::from(radii.0), f64::from(radii.1)),
-            f64::from(start),
-            f64::from(sweep),
+            f64::from(start.to_radians()),
+            f64::from(sweep_radians),
             0.0,
         );
         let begin = arc.path_elements(crate::draw::PATH_TOLERANCE).next();
@@ -365,6 +373,33 @@ impl PathBuilder {
             elements: elements.into(),
             rule: self.rule,
         }
+    }
+}
+
+/// Temporary Step 1 bridge for `Cargo.lock`-pinned split-repo callers (`waterui-chart`).
+/// Removed once `waterui-chart` migrates to `Angle`.
+#[doc(hidden)]
+pub trait IntoArcAngle<Marker = ()> {
+    fn into_arc_angle(self) -> Angle;
+}
+
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct AngleArcMarker;
+
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct LegacyArcRadiansMarker;
+
+impl IntoArcAngle<AngleArcMarker> for Angle {
+    fn into_arc_angle(self) -> Angle {
+        self
+    }
+}
+
+impl IntoArcAngle<LegacyArcRadiansMarker> for f32 {
+    fn into_arc_angle(self) -> Angle {
+        Angle::radians(self)
     }
 }
 

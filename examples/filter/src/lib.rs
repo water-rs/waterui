@@ -161,8 +161,14 @@ fn contrast_section(contrast: &Binding<f64>) -> impl View + use<> {
 
 /// Demo: Hue rotation filter - shift colors
 fn hue_rotation_section(hue: &Binding<f64>) -> impl View + use<> {
-    let animated_hue =
-        animated_filter_value(hue, Animation::ease_in_out(Duration::from_millis(400)));
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "slider bindings are f64 while Angle::degrees takes f32; 0..=360 is exact"
+    )]
+    let animated_hue = hue
+        .clone()
+        .map(|v| Angle::degrees(v as f32))
+        .with(Animation::ease_in_out(Duration::from_millis(400)));
 
     vstack((
         text("Hue Rotation").headline(),
@@ -246,10 +252,14 @@ fn combined_section(
     let animated_blur = animated_filter_value(combined_blur, Animation::spring(200.0, 15.0));
     let animated_saturation =
         animated_filter_value(combined_saturation, Animation::spring(200.0, 15.0));
-    let animated_hue = animated_filter_value(
-        combined_hue,
-        Animation::ease_in_out(Duration::from_millis(500)),
-    );
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "slider bindings are f64 while Angle::degrees takes f32; 0..=360 is exact"
+    )]
+    let animated_hue = combined_hue
+        .clone()
+        .map(|v| Angle::degrees(v as f32))
+        .with(Animation::ease_in_out(Duration::from_millis(500)));
 
     vstack((
         text("Combined Filters").headline(),
@@ -468,7 +478,7 @@ fn filter_preview() -> impl View {
         sample_content()
             .blur(4.0)
             .saturation(1.3)
-            .hue_rotation(36.0)
+            .hue_rotation(Angle::degrees(36.0))
             .contrast(1.1)
             .size(220.0, 140.0),
     ))

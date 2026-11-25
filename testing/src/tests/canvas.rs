@@ -12,9 +12,9 @@ use waterui::ViewExt as _;
 use waterui::animation::Animation;
 use waterui::graphics::canvas::TextPlacement;
 use waterui::graphics::canvas::{
-    BlendMode, Canvas, Cap, Circle, ConicGradient, Cx, Ellipse, ImagePattern, ImageSource, Join,
-    Layer, LinearGradient, MeshGradient, Paint, Path, PixelBuffer, PixelFormat, RadialGradient,
-    RoundedRect, Sampling, Shadow, StrokeStyle,
+    Angle, BlendMode, Canvas, Cap, Circle, ConicGradient, Cx, Ellipse, ImagePattern, ImageSource,
+    Join, Layer, LinearGradient, MeshGradient, Paint, Path, PixelBuffer, PixelFormat,
+    RadialGradient, RoundedRect, Sampling, Shadow, StrokeStyle,
 };
 use waterui::graphics::color::{Srgb, WorkingColor};
 use waterui::graphics::gradient::{AnimatedMeshGradient, AnimatedMeshGradientConfig};
@@ -73,7 +73,7 @@ fn gradients(cx: &mut Cx) {
     );
     cx.fill(
         Circle::new(Point::new(220.0, 40.0), 30.0),
-        ConicGradient::new(Point::new(220.0, 40.0), 0.0, core::f32::consts::TAU)
+        ConicGradient::new(Point::new(220.0, 40.0), Angle::ZERO, Angle::FULL)
             .stop(0.0, rgb(1.0, 0.0, 0.0))
             .stop(0.5, rgb(0.0, 1.0, 0.0))
             .stop(1.0, rgb(1.0, 0.0, 0.0)),
@@ -144,8 +144,8 @@ fn canvas_gallery_renders_every_paint_and_scope() {
                         .arc(
                             Point::new(70.0, 130.0),
                             (20.0, 20.0),
-                            -core::f32::consts::FRAC_PI_2,
-                            core::f32::consts::PI,
+                            -Angle::QUARTER,
+                            Angle::HALF,
                         )
                         .build(),
                     StrokeStyle::new(5.0).cap(Cap::Round).dash([12.0, 8.0], 0.0),
@@ -455,7 +455,7 @@ fn placed(paint: impl Into<Paint>, x: f32, y: f32) -> Paint {
     paint
         .into()
         .transformed(Affine2::scale(1.8, 0.6))
-        .transformed(Affine2::rotate(0.5))
+        .transformed(Affine2::rotate(Angle::radians(0.5)))
         .transformed(Affine2::translate(x, y))
 }
 

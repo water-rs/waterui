@@ -219,14 +219,15 @@ impl<T: Animatable + PartialEq> Motion<T> {
     /// or from zero: the opacity's own gate on what its record shows.
     pub(crate) fn new<S>(
         signal: &S,
-        map: fn(f32) -> T,
+        map: fn(S::Output) -> T,
         frames: FrameSignals,
         clock: Rc<PlacementClock>,
         record: Box<dyn Fn()>,
         gates_record: bool,
     ) -> Self
     where
-        S: Signal<Output = f32> + 'static,
+        S: Signal + 'static,
+        S::Output: Clone + 'static,
     {
         // Subscribed before the read, so no change between the two is lost;
         // the subscription's registration echo lands on the read value.
@@ -248,7 +249,7 @@ impl<T: Animatable + PartialEq> Motion<T> {
             source: RefCell::new(None),
         });
         let weak: Weak<MotionCell<T>> = Rc::downgrade(&cell);
-        let guard = subscription.activate(move |update: Context<f32>| {
+        let guard = subscription.activate(move |update: Context<S::Output>| {
             if let Some(cell) = weak.upgrade() {
                 let animation = ChangeAnimation::of(update.metadata())
                     .animation()
