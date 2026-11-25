@@ -339,11 +339,14 @@ fn update_attached_views(state: &TableState) {
     for &id in &state.ids {
         if let Some(row_host) = state.row_hosts.get(&id) {
             desired.push(view::retain_base(&row_host.host));
-        }
-        for col_index in 0..state.columns.len() {
-            if let Some(cell) = state.cells.get(&(id, col_index)) {
-                desired.push(view::retain_base(cell.view()));
+            let mut row_cells: Vec<Retained<cocoa_ui::PlatformView>> =
+                Vec::with_capacity(state.columns.len());
+            for col_index in 0..state.columns.len() {
+                if let Some(cell) = state.cells.get(&(id, col_index)) {
+                    row_cells.push(view::retain_base(cell.view()));
+                }
             }
+            view::reconcile_subviews(&row_host.host, &row_cells);
         }
     }
     view::reconcile_subviews(&state.host, &desired);
@@ -499,34 +502,34 @@ fn sync_rows(state_rc: &Rc<RefCell<TableState>>, ids: Vec<ItemId>) {
     let col_count = state.columns.len();
     let renderer = state.renderer.clone();
     #[cfg(target_os = "ios")]
-    let host = state.host.clone();
-    #[cfg(target_os = "ios")]
     let mtm = renderer.context().mtm();
     #[cfg(target_os = "ios")]
     let allows_selection = state.allows_selection();
 
     for (row_index, &id) in ids.iter().enumerate() {
         #[cfg(target_os = "ios")]
-        if !state.row_hosts.contains_key(&id) {
-            let row_host = HostView::new(mtm, cocoa_ui::Rect::ZERO);
-            let tap = allows_selection.then(|| {
-                let weak = Rc::downgrade(state_rc);
-                tap(&row_host, 1, ButtonMask::PRIMARY, move |phase, _| {
-                    if phase == GestureState::Ended
-                        && let Some(state) = weak.upgrade()
-                    {
-                        select_row_id(&state, id);
-                    }
-                })
-            });
-            state.row_hosts.insert(
-                id,
+        let row_host_view = state
+            .row_hosts
+            .entry(id)
+            .or_insert_with(|| {
+                let row_host = HostView::new(mtm, cocoa_ui::Rect::ZERO);
+                let tap = allows_selection.then(|| {
+                    let weak = Rc::downgrade(state_rc);
+                    tap(&row_host, 1, ButtonMask::PRIMARY, move |phase, _| {
+                        if phase == GestureState::Ended
+                            && let Some(state) = weak.upgrade()
+                        {
+                            select_row_id(&state, id);
+                        }
+                    })
+                });
                 RowHost {
                     host: row_host,
                     _tap: tap,
-                },
-            );
-        }
+                }
+            })
+            .host
+            .clone();
 
         let needs_build = (0..col_count).any(|col| !state.cells.contains_key(&(id, col)));
         if !needs_build {
@@ -542,7 +545,7 @@ fn sync_rows(state_rc: &Rc<RefCell<TableState>>, ids: Vec<ItemId>) {
             let leaf = renderer.realize(cell);
             #[cfg(target_os = "ios")]
             let stored = {
-                let mounted = leaf.mount(&host);
+                let mounted = leaf.mount(&row_host_view);
                 view::set_translates_autoresizing(mounted.view(), true);
                 mounted
             };
@@ -779,7 +782,7 @@ fn layout_children(state: &TableState) {
                         cell.view(),
                         cocoa_ui::Rect::new(
                             x + HORIZONTAL_PADDING,
-                            y + VERTICAL_PADDING,
+                            VERTICAL_PADDING,
                             HORIZONTAL_PADDING.mul_add(-2.0, col_width).max(0.0),
                             VERTICAL_PADDING.mul_add(-2.0, *row_height).max(0.0),
                         ),
@@ -918,12 +921,9 @@ fn watch_table_inputs(
     state: &Rc<RefCell<TableState>>,
     pending: &Rc<RefCell<TablePending>>,
     config: &TableConfig<Held>,
-) -> (
-    BoxWatcherGuard,
-    Option<BoxWatcherGuard>,
-    Option<BoxWatcherGuard>,
-) {
-    let rows_guard: BoxWatcherGuard = config.rows().watch(.., {
+) -> Vec<BoxWatcherGuard> {
+    let mut guards: Vec<BoxWatcherGuard> = Vec::new();
+    guards.push(config.rows().watch(.., {
         let weak = Rc::downgrade(state);
         let pending = Rc::clone(pending);
         move |ctx, _change| {
@@ -941,14 +941,14 @@ fn watch_table_inputs(
                 drain_table(&state, &pending);
             }
         }
-    });
+    }));
 
-    let selection_guard: Option<BoxWatcherGuard> = match config.selection() {
-        TableSelection::None => None,
+    match config.selection() {
+        TableSelection::None => {}
         TableSelection::Single(binding) => {
             let weak = Rc::downgrade(state);
             let pending = Rc::clone(pending);
-            Some(Box::new(binding.watch(move |_ctx| {
+            guards.push(Box::new(binding.watch(move |_ctx| {
                 let Some(state) = weak.upgrade() else {
                     return;
                 };
@@ -956,12 +956,12 @@ fn watch_table_inputs(
                 if pending.borrow().depth == 0 {
                     drain_table(&state, &pending);
                 }
-            })))
+            })));
         }
         TableSelection::Multiple(binding) => {
             let weak = Rc::downgrade(state);
             let pending = Rc::clone(pending);
-            Some(Box::new(binding.watch(move |_ctx| {
+            guards.push(Box::new(binding.watch(move |_ctx| {
                 let Some(state) = weak.upgrade() else {
                     return;
                 };
@@ -969,14 +969,14 @@ fn watch_table_inputs(
                 if pending.borrow().depth == 0 {
                     drain_table(&state, &pending);
                 }
-            })))
+            })));
         }
-    };
+    }
 
-    let sort_guard: Option<BoxWatcherGuard> = config.sort_order().map(|binding| {
+    if let Some(binding) = config.sort_order() {
         let weak = Rc::downgrade(state);
         let pending = Rc::clone(pending);
-        Box::new(binding.watch(move |_ctx| {
+        guards.push(Box::new(binding.watch(move |_ctx| {
             let Some(state) = weak.upgrade() else {
                 return;
             };
@@ -984,10 +984,25 @@ fn watch_table_inputs(
             if pending.borrow().depth == 0 {
                 drain_table(&state, &pending);
             }
-        })) as BoxWatcherGuard
-    });
+        })));
+    }
 
-    (rows_guard, selection_guard, sort_guard)
+    #[cfg(target_os = "ios")]
+    if let Some(signal) = state.borrow().selection_fill.as_ref() {
+        let weak = Rc::downgrade(state);
+        let pending = Rc::clone(pending);
+        guards.push(Box::new(signal.watch(move |_ctx| {
+            let Some(state) = weak.upgrade() else {
+                return;
+            };
+            pending.borrow_mut().selection_changed = true;
+            if pending.borrow().depth == 0 {
+                drain_table(&state, &pending);
+            }
+        })));
+    }
+
+    guards
 }
 
 fn install_host_handlers(
@@ -1090,7 +1105,7 @@ fn render(config: &TableConfig<Held>, ctx: &RenderContext<'_>) -> NativeLeaf {
 
     install_host_handlers(&host, &state, &pending);
 
-    let (rows_guard, selection_guard, sort_guard) = watch_table_inputs(&state, &pending, config);
+    let guards = watch_table_inputs(&state, &pending, config);
 
     with_table_tx(&state, &pending, || {
         sync_rows(&state, initial_ids);
@@ -1106,9 +1121,7 @@ fn render(config: &TableConfig<Held>, ctx: &RenderContext<'_>) -> NativeLeaf {
             state: Rc::clone(&state),
         },
     );
-    leaf.keep(rows_guard);
-    leaf.keep(selection_guard);
-    leaf.keep(sort_guard);
+    leaf.keep(guards);
     leaf.keep(state);
     leaf
 }

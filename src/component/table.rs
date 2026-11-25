@@ -52,22 +52,21 @@
 use alloc::collections::BTreeSet;
 use alloc::rc::Rc;
 use alloc::vec::Vec;
+use core::any::type_name;
 use core::fmt;
 use core::marker::PhantomData;
-use core::ops::{Range, RangeBounds};
 
-use nami::collection::{Collection, CollectionChange};
-use nami::watcher::Context;
-use nami::{Binding, Computed, Signal as _, SignalExt as _};
+use nami::collection::Collection;
+use nami::{Binding, Signal as _, SignalExt as _};
 use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 use waterui_core::id::{Id as RawId, Mapping};
-use waterui_core::resolve::Resolvable as _;
-use waterui_core::views::{ForEach, SharedAnyViews, ViewSnapshot, Views};
-use waterui_core::{AnyView, Environment, Metadata, Native, NativeView, OneOf2, View};
+use waterui_core::views::{ForEach, SharedAnyViews};
+use waterui_core::{AnyView, Environment, Native, NativeView, OneOf2, View};
 use waterui_text::{IntoText, Text};
 
-use crate::color::WorkingColor;
-use crate::theme::{color, install_color_signal};
+pub use crate::component::selection_support::SelectionThemed;
+use crate::component::selection_support::WithId;
+use crate::contract_violation;
 
 /// Direction of an active table column sort.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -176,12 +175,12 @@ pub enum TableSelection<Id: 'static> {
 
 impl<Id: 'static> fmt::Debug for TableSelection<Id> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(core::any::type_name::<Self>())
+        f.write_str(type_name::<Self>())
     }
 }
 
 fn report_foreign_row_id() {
-    crate::contract_violation!(
+    contract_violation!(
         "a table selection id was not taken from the table's rows, so the write ignores it"
     );
 }
@@ -909,7 +908,7 @@ where
                         Some(sort) => {
                             let Some(key) = keys.get(sort.column).and_then(Option::as_ref).cloned()
                             else {
-                                crate::contract_violation!(
+                                contract_violation!(
                                     "table sort write named non-sortable column index {}; ignoring",
                                     sort.column
                                 );
@@ -967,10 +966,7 @@ where
                         .computed(),
                 ),
             };
-            row.map_cells(|content| SelectionThemed {
-                content,
-                selected: selected.clone(),
-            })
+            row.map_cells(|content| SelectionThemed::new(content, selected.clone()))
         });
 
         let (rows, ids) = SharedAnyViews::new_with_ids(themed_rows);
@@ -986,151 +982,6 @@ where
             selection: erased_selection,
             sort_order,
         }
-    }
-}
-
-/// A cell's content re-themed to `SelectionForeground` while its row is
-/// selected, matching [`crate::component::list`] selection contrast behavior.
-pub struct SelectionThemed<C> {
-    content: C,
-    selected: Option<Computed<bool>>,
-}
-
-impl<C> fmt::Debug for SelectionThemed<C> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SelectionThemed")
-            .field("selectable", &self.selected.is_some())
-            .finish_non_exhaustive()
-    }
-}
-
-impl<C: View> View for SelectionThemed<C> {
-    fn body(self, env: &Environment) -> impl View {
-        let Some(selected) = self.selected else {
-            return OneOf2::A(self.content);
-        };
-        let mut env = env.clone();
-        let on_selection = color::SelectionForeground.resolve(&env).computed();
-        let flip = |normal: Computed<WorkingColor>| {
-            selected
-                .clone()
-                .zip(&normal)
-                .zip(&on_selection)
-                .map(
-                    |((is_selected, normal), selection)| {
-                        if is_selected { selection } else { normal }
-                    },
-                )
-                .computed()
-        };
-        let foreground = flip(color::Foreground.resolve(&env).computed());
-        let muted = flip(color::MutedForeground.resolve(&env).computed());
-        let accent = flip(color::Accent.resolve(&env).computed());
-        install_color_signal::<color::Foreground>(&mut env, foreground);
-        install_color_signal::<color::MutedForeground>(&mut env, muted);
-        install_color_signal::<color::Accent>(&mut env, accent);
-        OneOf2::B(Metadata::new(self.content, env))
-    }
-}
-
-struct WithId<C, F> {
-    contents: C,
-    transform: Rc<F>,
-}
-
-impl<C, F> WithId<C, F> {
-    fn new(contents: C, transform: F) -> Self {
-        Self {
-            contents,
-            transform: Rc::new(transform),
-        }
-    }
-}
-
-struct WithIdSnapshot<S, F, V> {
-    contents: S,
-    transform: Rc<F>,
-    _marker: PhantomData<fn() -> V>,
-}
-
-impl<S: Clone, F, V> Clone for WithIdSnapshot<S, F, V> {
-    fn clone(&self) -> Self {
-        Self {
-            contents: self.contents.clone(),
-            transform: Rc::clone(&self.transform),
-            _marker: PhantomData,
-        }
-    }
-}
-
-impl<S, F, V> fmt::Debug for WithIdSnapshot<S, F, V> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(core::any::type_name::<Self>())
-    }
-}
-
-impl<S, F, V> ViewSnapshot for WithIdSnapshot<S, F, V>
-where
-    S: ViewSnapshot,
-    F: Fn(S::Id, S::View) -> V,
-    V: View,
-{
-    type Id = S::Id;
-    type View = V;
-
-    fn range(&self) -> Range<usize> {
-        self.contents.range()
-    }
-
-    fn get_id(&self, index: usize) -> Option<Self::Id> {
-        self.contents.get_id(index)
-    }
-
-    fn get_view(&self, index: usize) -> Option<Self::View> {
-        Some((self.transform)(
-            self.contents.get_id(index)?,
-            self.contents.get_view(index)?,
-        ))
-    }
-}
-
-impl<V, C, F> Views for WithId<C, F>
-where
-    V: View,
-    C: Views,
-    F: 'static + Fn(C::Id, C::View) -> V,
-{
-    type Id = C::Id;
-    type Guard = C::Guard;
-    type View = V;
-    type Snapshot = WithIdSnapshot<C::Snapshot, F, V>;
-
-    fn len(&self) -> Computed<usize> {
-        self.contents.len()
-    }
-
-    fn snapshot(&self) -> Self::Snapshot {
-        WithIdSnapshot {
-            contents: self.contents.snapshot(),
-            transform: Rc::clone(&self.transform),
-            _marker: PhantomData,
-        }
-    }
-
-    fn watch(
-        &self,
-        range: impl RangeBounds<usize>,
-        watcher: impl Fn(Context<Self::Snapshot>, &CollectionChange) + 'static,
-    ) -> Self::Guard {
-        let transform = Rc::clone(&self.transform);
-        self.contents.watch(range, move |ctx, change| {
-            let snapshot = ctx.map(|contents| WithIdSnapshot {
-                contents,
-                transform: Rc::clone(&transform),
-                _marker: PhantomData,
-            });
-            watcher(snapshot, change);
-        })
     }
 }
 
@@ -1177,8 +1028,8 @@ mod tests {
     use alloc::collections::BTreeSet;
     use alloc::vec;
 
-    use nami::Signal as _;
     use nami::collection::List as ReactiveList;
+    use nami::{Binding, Signal as _};
     use waterui_core::id::{Id as RawId, Identifiable};
 
     use super::{SortDirection, Table, TableColumn, TableSelection, TableSort, col, table};
@@ -1223,8 +1074,8 @@ mod tests {
     #[test]
     fn row_major_table_maps_heterogeneous_cells_selection_and_sort_order() {
         let people = sample_people();
-        let selection = nami::Binding::container(Some(10_u64));
-        let sort_order = nami::Binding::container(Some(TableSort::ascending(PersonSort::Name)));
+        let selection = Binding::container(Some(10_u64));
+        let sort_order = Binding::container(Some(TableSort::ascending(PersonSort::Name)));
 
         let config = Table::new(
             people,
@@ -1282,7 +1133,7 @@ mod tests {
     #[test]
     fn multi_selection_round_trips_identities() {
         let people = sample_people();
-        let selection = nami::Binding::container(BTreeSet::from([20_u64]));
+        let selection = Binding::container(BTreeSet::from([20_u64]));
         let config = table(people, (col("Name", |p: &Person| text(p.name)),))
             .multi_selection(&selection)
             .config();
@@ -1306,7 +1157,7 @@ mod tests {
     )]
     fn foreign_selection_id_is_rejected() {
         let people = sample_people();
-        let selection = nami::Binding::container(Some(10_u64));
+        let selection = Binding::container(Some(10_u64));
         let config = table(people, (col("Name", |p: &Person| text(p.name)),))
             .selection(&selection)
             .config();

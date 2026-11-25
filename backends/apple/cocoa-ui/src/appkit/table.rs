@@ -20,7 +20,6 @@
 //! with [`crate::callback::guarded`].
 
 use std::cell::RefCell;
-use std::collections::BTreeSet;
 use std::ptr;
 use std::rc::Rc;
 
@@ -285,14 +284,11 @@ impl TableView {
 
     /// Replaces the table's selection with `rows`.
     pub fn set_selected_rows(&self, rows: &[usize]) {
-        let wanted: BTreeSet<usize> = rows.iter().copied().collect();
-        for row in self.selected_rows() {
-            if !wanted.contains(&row) {
-                self.deselectRow(row.cast_signed());
-            }
-        }
-        if !rows.is_empty() {
-            self.selectRowIndexes_byExtendingSelection(&index_set(rows), true);
+        if rows.is_empty() {
+            // SAFETY: `deselectAll:` is a main-thread selection update.
+            unsafe { self.deselectAll(None) };
+        } else {
+            self.selectRowIndexes_byExtendingSelection(&index_set(rows), false);
         }
     }
 

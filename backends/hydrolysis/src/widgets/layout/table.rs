@@ -10,6 +10,8 @@ use accesskit::{
 use cherenkov_record::Draw as _;
 use nami::SignalExt as _;
 use nami::watcher::BoxWatcherGuard;
+#[cfg(feature = "accessibility")]
+use waterui::accessibility::AccessibilityHidden;
 use waterui::component::table::{SortDirection, TableConfig, TableRow, TableSelection, TableSort};
 use waterui::theme::color;
 use waterui_core::Environment;
@@ -494,6 +496,7 @@ pub fn table_accessibility<E: crate::text::TextEngine>(
 
     #[cfg(feature = "accessibility")]
     {
+        let mut table_metrics = table_metrics;
         let scroll_metrics = handle.metrics();
         let is_rendered_pass = layout_metrics.is_some();
         let row_span = state
@@ -549,6 +552,7 @@ pub fn table_accessibility<E: crate::text::TextEngine>(
             );
             let state_ref = state.borrow();
             let slot = state_ref.slot.borrow();
+            table_metrics = table_metrics_from_slot(&slot, metrics);
             column_window = resolve_visible_column_window(
                 &slot.column_widths,
                 column_span.start,
@@ -847,8 +851,8 @@ pub fn render_table_node<E: crate::text::TextEngine>(
 ) {
     #[cfg(feature = "accessibility")]
     let hidden = env
-        .get::<waterui::accessibility::AccessibilityHidden>()
-        .is_some_and(waterui::accessibility::AccessibilityHidden::is_hidden);
+        .get::<AccessibilityHidden>()
+        .is_some_and(AccessibilityHidden::is_hidden);
     #[cfg(feature = "accessibility")]
     if hidden {
         ctx.renderer_mut().push_accessibility_suppression();
