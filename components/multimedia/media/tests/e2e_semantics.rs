@@ -17,7 +17,7 @@ use waterui_media::{
     LivePhoto, Media, MediaPicker, Photo, PhotoCache, PhotoStatus, Url, live::LivePhotoSource,
     media_picker::Selected, photo, photo::Event as PhotoEvent,
 };
-use waterui_testing::{Role, Selector, UiBuilder, WaitOptions, WaitResult};
+use waterui_testing::{Role, UiBuilder};
 use waterui_testing::{RuntimeDriver, SemanticApp, TestStyle};
 
 fn sample_image_path() -> String {
@@ -67,10 +67,11 @@ fn live_photo_view(source: LivePhotoSource) -> impl waterui::View {
 }
 
 fn assert_image_eventually_exists<R: RuntimeDriver>(app: &mut SemanticApp<R>, label: &str) {
-    if app.wait_for(
-        &[app.expect_exists(Selector::default().role(Role::IMAGE).label(label))],
-        WaitOptions::new(Duration::from_millis(750)),
-    ) == WaitResult::Completed
+    if app
+        .query()
+        .role(Role::IMAGE)
+        .label(label)
+        .wait_for_existence(Duration::from_millis(750))
     {
         return;
     }
@@ -216,12 +217,10 @@ fn photo_placeholder_failure_and_status_track_each_source(ui: UiBuilder) {
         PhotoStatus::Loading,
         "changing source must reset bound status to Loading"
     );
-    let failed_settled = {
-        let sem = app.semantic_mut();
-        let cond = sem.expect_exists(Selector::default().role(Role::LABEL));
-        sem.wait_for(&[cond], WaitOptions::new(Duration::from_millis(750)))
-    };
-    assert_eq!(failed_settled, WaitResult::Completed);
+    app.semantic_mut()
+        .query()
+        .role(Role::LABEL)
+        .assert_exists_within(Duration::from_millis(750));
     let reason = status
         .snapshot()
         .failure()
