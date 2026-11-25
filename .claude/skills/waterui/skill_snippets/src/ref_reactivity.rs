@@ -385,8 +385,10 @@ pub mod reactivity_block_11 {
         pub rows: ReactiveList<Row>,
     }
 
-    fn delete_row(ListDelete(index): ListDelete, mut state: Editor) {
-        let _ = state.rows.remove(index);
+    fn delete_row(ListDelete(id): ListDelete<u64>, mut state: Editor) {
+        if let Some(index) = state.rows.snapshot().iter().position(|r| r.id == id) {
+            let _ = state.rows.remove(index);
+        }
     }
 
     pub fn use_it() -> impl View {

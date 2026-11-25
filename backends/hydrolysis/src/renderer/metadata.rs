@@ -773,7 +773,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         }
 
         if let Gesture::Tap(tap) = &effect.gesture
-            && tap.count() == 1
+            && tap.count().get() == 1
             && tap.get_buttons() == waterui_interaction::gesture::PointerButtons::PRIMARY
             && env
                 .get::<waterui_interaction::interaction::InteractionReport>()

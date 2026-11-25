@@ -1333,7 +1333,6 @@ mod uikit_surface {
             items.clone(),
             (col(text(header.clone()), {
                 let items = items.clone();
-                let header = header.clone();
                 let fired = Rc::clone(&fired);
                 move |row: &ProbeRow| {
                     if row.id == 61 && !fired.replace(true) {

@@ -285,9 +285,8 @@ struct Snapshot {
 }
 
 /// Renders `view` into an offscreen RGBA8 texture under [`TestStyle`] and
-/// reads it back — the same capture pipeline `waterui_testing`'s `TestHost`
-/// runs, expressed against Hydrolysis's public surface: a shared offscreen
-/// GPU context, an `OffscreenWindow`, a `HydrolysisRenderer` and a
+/// reads it back via Hydrolysis's public surface: a shared offscreen GPU
+/// context, an `OffscreenWindow`, a `HydrolysisRenderer` and a
 /// transparent-base `render_scene_to_texture`.
 fn render(view: impl View, width: u32, height: u32) -> Snapshot {
     let width = width.max(1);

@@ -1,3 +1,4 @@
+use core::cell::OnceCell;
 use std::path::Path;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -16,7 +17,7 @@ use hydrolysis::theme::{
 };
 use hydrolysis::{
     AccessibilityActivationPointError, FontFamilyResolution, HeadlessColorFormat, HeadlessRuntime,
-    KeyCode, Modifiers, PainterUnavailable, PointerKind, SemanticRuntime, Style,
+    KeyCode, Modifiers, OffscreenPainter, PainterUnavailable, PointerKind, SemanticRuntime, Style,
 };
 use waterui::app::{App, AppMenuBar, AppParts, WindowSink, Windows};
 use waterui::background::Glass;
@@ -191,7 +192,10 @@ fn frame_points_as_u32(points: f32) -> u32 {
 /// `UiBuilder`): [`Self::mount`] then applies `Style::install_tokens` to the
 /// mounted view's environment, while [`Self::mount_offscreen`],
 /// [`Self::mount_app`], [`Self::perf`] and [`Self::perf_with`] run the
-/// rendered [`HeadlessRuntime`].
+/// rendered [`HeadlessRuntime`]. Cloned builders share one lazily selected
+/// offscreen painter (GPU device or CPU engine) across mounts, so mounting
+/// multiple views from one configured builder avoids creating a new device
+/// per view.
 ///
 /// Framework tokens are installed by the runtimes themselves; the builder's
 /// environment carries only what the test installs into it.
@@ -204,6 +208,7 @@ pub struct UiBuilder {
     perf_config: PerfConfig,
     scale_factor: f64,
     hdr: bool,
+    pub(crate) painter: Rc<OnceCell<OffscreenPainter>>,
 }
 
 impl core::fmt::Debug for UiBuilder {
@@ -212,6 +217,7 @@ impl core::fmt::Debug for UiBuilder {
             .field("width", &self.width)
             .field("height", &self.height)
             .field("has_theme", &self.style.is_some())
+            .field("has_painter", &self.painter.get().is_some())
             .field("perf_config", &self.perf_config)
             .field("scale_factor", &self.scale_factor)
             .field("hdr", &self.hdr)
@@ -237,7 +243,17 @@ impl UiBuilder {
             perf_config: PerfConfig::default(),
             scale_factor: 1.0,
             hdr: false,
+            painter: Rc::new(OnceCell::new()),
         }
+    }
+
+    fn shared_painter(&self) -> Result<OffscreenPainter, PainterUnavailable> {
+        if let Some(painter) = self.painter.get() {
+            return Ok(painter.clone());
+        }
+        let painter = OffscreenPainter::select()?;
+        let _ = self.painter.set(painter.clone());
+        Ok(painter)
     }
 
     /// Attaches a `hydrolysis` style to the builder.
@@ -566,6 +582,9 @@ impl UiBuilder {
         mut env: Environment,
         content: AnyViewBuilder<AnyView>,
     ) -> OffscreenApp {
+        let painter = self
+            .shared_painter()
+            .unwrap_or_else(|error| no_painter(error));
         let Self {
             width,
             height,
@@ -584,7 +603,8 @@ impl UiBuilder {
         } else {
             HeadlessColorFormat::SdrSrgb
         };
-        let runtime = HeadlessRuntime::new_with_format(
+        let runtime = HeadlessRuntime::new_on_painter_with_format(
+            painter,
             env,
             content,
             width,
@@ -592,8 +612,7 @@ impl UiBuilder {
             style,
             FontFamilyResolution::Strict,
             color_format,
-        )
-        .unwrap_or_else(|error| no_painter(error));
+        );
         Self::wrap_rendered(runtime, width, height, scale_factor, ledger)
     }
 
@@ -609,6 +628,9 @@ impl UiBuilder {
         mut env: Environment,
         window: Window<C, T>,
     ) -> OffscreenApp {
+        let painter = self
+            .shared_painter()
+            .unwrap_or_else(|error| no_painter(error));
         let Self {
             width,
             height,
@@ -626,7 +648,8 @@ impl UiBuilder {
         } else {
             HeadlessColorFormat::SdrSrgb
         };
-        let runtime = HeadlessRuntime::new_with_window_and_format(
+        let runtime = HeadlessRuntime::new_with_window_on_painter_and_format(
+            painter,
             env,
             window,
             width,
@@ -634,8 +657,7 @@ impl UiBuilder {
             style,
             FontFamilyResolution::Strict,
             color_format,
-        )
-        .unwrap_or_else(|error| no_painter(error));
+        );
         Self::wrap_rendered(runtime, width, height, scale_factor, ledger)
     }
 

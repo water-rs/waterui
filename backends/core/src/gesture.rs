@@ -1475,7 +1475,7 @@ const fn gesture_input_instant(input: GestureInput) -> Instant {
 
 fn build_gesture_detector(gesture: &Gesture) -> Box<dyn GestureDetector> {
     match gesture {
-        Gesture::Tap(tap) => Box::new(TapDetector::new(tap.count(), tap.get_buttons())),
+        Gesture::Tap(tap) => Box::new(TapDetector::new(tap.count().get(), tap.get_buttons())),
         Gesture::LongPress(long_press) => Box::new(LongPressDetector::new(
             long_press.get_minimum_duration(),
             long_press.get_buttons(),

@@ -403,8 +403,8 @@ fn message_list(mail: Mail) -> impl View {
         move |message| message_row(&mail, message)
     })
     .editing(mail.editing)
-    .on_delete(|delete: ListDelete, mail: Mail| delete_message(delete, &mail))
-    .on_move(|list_move: ListMove, mail: Mail| move_message(list_move, &mail))
+    .on_delete(|delete: ListDelete<u64>, mail: Mail| delete_message(delete, &mail))
+    .on_move(|list_move: ListMove<u64>, mail: Mail| move_message(list_move, &mail))
 }
 
 fn message_row(mail: &Mail, message: Message) -> impl View + use<> {
@@ -463,38 +463,24 @@ fn message_row(mail: &Mail, message: Message) -> impl View + use<> {
     )
 }
 
-fn delete_message(ListDelete(index): ListDelete, mail: &Mail) {
-    let Some(id) = visible_id(mail, index) else {
-        return;
-    };
+fn delete_message(ListDelete(id): ListDelete<u64>, mail: &Mail) {
     mail.messages.get_mut().retain(|message| message.id != id);
 }
 
-fn move_message(ListMove(movement): ListMove, mail: &Mail) {
-    let (Some(moved), Some(target)) = (
-        visible_id(mail, movement.from()),
-        visible_id(mail, movement.to()),
-    ) else {
-        return;
-    };
+fn move_message(ListMove(movement): ListMove<u64>, mail: &Mail) {
     let mut messages = mail.messages.get_mut();
     let (Some(from), Some(to)) = (
-        messages.iter().position(|message| message.id == moved),
-        messages.iter().position(|message| message.id == target),
+        messages
+            .iter()
+            .position(|message| message.id == *movement.id()),
+        messages
+            .iter()
+            .position(|message| message.id == *movement.target()),
     ) else {
         return;
     };
     let message = messages.remove(from);
     messages.insert(to, message);
-}
-
-/// Rows are addressed by position in the *filtered* list, so an edit maps back
-/// through the same filter the user is looking at.
-fn visible_id(mail: &Mail, index: usize) -> Option<u64> {
-    let messages = mail.messages.snapshot();
-    let query = mail.query.snapshot();
-    let visible = filter_messages(&messages, &query);
-    visible.as_slice().get(index).map(|message| message.id)
 }
 
 fn message_detail(
