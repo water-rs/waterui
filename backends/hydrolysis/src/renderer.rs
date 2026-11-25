@@ -487,6 +487,8 @@ pub struct PresentationHosts<E: crate::text::TextEngine> {
     pub(crate) context_menu: NodeCore<E>,
     /// `.anchored_overlay` presentations' host.
     pub(crate) anchored: NodeCore<E>,
+    /// The `.sheet` modal layer's host.
+    pub(crate) sheet: NodeCore<E>,
     /// The `.dialog` modal layer's host.
     #[cfg(waterui_feature = "dialog")]
     pub(crate) dialog: NodeCore<E>,
@@ -504,6 +506,7 @@ impl<E: crate::text::TextEngine> PresentationHosts<E> {
         #[cfg(feature = "menu")]
         self.context_menu.cell.unmount_subtree();
         self.anchored.cell.unmount_subtree();
+        self.sheet.cell.unmount_subtree();
         #[cfg(waterui_feature = "dialog")]
         self.dialog.cell.unmount_subtree();
     }
@@ -1032,6 +1035,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             #[cfg(feature = "menu")]
             context_menu: host(),
             anchored: host(),
+            sheet: host(),
             #[cfg(waterui_feature = "dialog")]
             dialog: host(),
         }
@@ -1054,11 +1058,11 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         let root_core = NodeCore::for_cell(&root);
         let cells = RefCell::new(vec![Rc::downgrade(&root)]);
         // The window's item space is pinned, not cursor-dealt: slot 0 is
-        // the root content's, slots 1..=3 the three presentation hosts'
+        // the root content's, slots 1..=5 the presentation hosts'
         // (hosts rank above all content — their path compares greater),
         // and the cursor advances past them so a window-anchored
         // registration ranks above the fixed set as "registered last".
-        for _ in 0..4 {
+        for _ in 0..5 {
             let _ = window_placement.take_item();
         }
         let presentation_hosts = Self::build_presentation_hosts(
@@ -1243,15 +1247,10 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// A pass is also the dialog stack's frame: every `.dialog` node reports
     /// inside it, so the stack opens here and closes in
     /// [`Self::finish_emit_pass`].
-    #[cfg_attr(
-        not(waterui_feature = "dialog"),
-        expect(
-            clippy::needless_pass_by_ref_mut,
-            reason = "dialog stack state mutates self when dialog is enabled"
-        )
-    )]
     pub(crate) fn begin_emit_pass(&mut self) {
         self.emit_pass_active.set(true);
+        self.popup_menu.sheet_stack.begin_pass();
+        self.popup_menu.front_sheet = None;
         #[cfg(waterui_feature = "dialog")]
         {
             self.popup_menu.dialog_stack.begin_pass();
@@ -1259,26 +1258,45 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         }
     }
 
-    /// Closes the pass [`Self::begin_emit_pass`] opened. A dialog that came
-    /// on screen takes keyboard focus; once the last one closes, focus
-    /// returns to where it was before the first one came up.
-    #[cfg_attr(
-        not(waterui_feature = "dialog"),
-        expect(
-            clippy::needless_pass_by_ref_mut,
-            reason = "dialog stack state mutates self when dialog is enabled"
-        )
-    )]
+    /// Closes the pass [`Self::begin_emit_pass`] opened. A modal layer (sheet
+    /// or dialog) that came on screen takes keyboard focus; once it closes,
+    /// focus returns to where it was before it came up.
     pub(crate) fn finish_emit_pass(&mut self) {
+        let sheet_focus = self.popup_menu.sheet_stack.finish_pass();
         #[cfg(waterui_feature = "dialog")]
-        match self.popup_menu.dialog_stack.finish_pass() {
+        let dialog_focus = self.popup_menu.dialog_stack.finish_pass();
+        #[cfg(waterui_feature = "dialog")]
+        let dialog_open = self.popup_menu.dialog_stack.front().is_some();
+        #[cfg(not(waterui_feature = "dialog"))]
+        let dialog_open = false;
+
+        #[cfg(waterui_feature = "dialog")]
+        match dialog_focus {
             DialogFocus::Keep => {}
             DialogFocus::Enter => {
                 self.move_keyboard_focus(false);
+                self.emit_pass_active.set(false);
+                return;
             }
             DialogFocus::Return(focus) => {
                 if focus.is_some() {
                     self.set_keyboard_focus(focus, true);
+                }
+                self.emit_pass_active.set(false);
+                return;
+            }
+        }
+
+        if !dialog_open {
+            match sheet_focus {
+                SheetFocus::Keep => {}
+                SheetFocus::Enter => {
+                    self.move_keyboard_focus(false);
+                }
+                SheetFocus::Return(focus) => {
+                    if focus.is_some() {
+                        self.set_keyboard_focus(focus, true);
+                    }
                 }
             }
         }
@@ -2303,7 +2321,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     pub(crate) fn mount_roots(
         &self,
     ) -> [Rc<NodeCell<E>>;
-        2 + cfg!(feature = "menu") as usize
+        3 + cfg!(feature = "menu") as usize
             + cfg!(any(feature = "text-field", feature = "secure-field")) as usize
             + cfg!(waterui_feature = "dialog") as usize] {
         let hosts = &self.core.presentation_hosts;
@@ -2314,6 +2332,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             Rc::clone(&hosts.anchored.cell),
             #[cfg(any(feature = "text-field", feature = "secure-field"))]
             Rc::clone(&hosts.text_overlay.cell),
+            Rc::clone(&hosts.sheet.cell),
             #[cfg(waterui_feature = "dialog")]
             Rc::clone(&hosts.dialog.cell),
         ]

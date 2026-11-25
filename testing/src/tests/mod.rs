@@ -2,6 +2,7 @@ mod canvas;
 mod harness;
 mod settle;
 mod shape_morph;
+mod sheet;
 mod transitions;
 
 use super::*;

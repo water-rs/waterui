@@ -615,6 +615,7 @@ objc2-ui-kit = { version = "0.3", default-features = false, features = [
     "UIContextMenuConfiguration",
     "UIContextMenuInteraction",
     "UIPresentationController",
+    "UISheetPresentationController",
     "UIBackgroundConfiguration",
     "UIPopoverPresentationController",
     "UIPopoverSupport",

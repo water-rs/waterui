@@ -999,3 +999,35 @@ button("Delete")
             .action(DialogAction::destructive("Delete", |_: Environment| trash_photo())),
     )
 ```
+
+## Sheets (in-window modal presentation)
+
+`.sheet(...)` presents arbitrary view content window-modal while its `Binding<bool>` is
+true — `UISheetPresentationController` (or full-screen modal `UIViewController`) on iOS,
+`NSWindow` sheet (`beginSheet:`) on macOS, and a self-drawn modal sheet layer with `Scrim`
+backdrop on Hydrolysis. While open, content beneath is inert to pointer, keyboard, and
+assistive technology; focus enters the sheet on present and returns to the previously
+focused control on dismiss. Configure heights with `.detents(...)` (`SheetDetent::Medium`,
+`Large`, `Fraction(f32)`, `Height(f32)`, `FullScreen`), opt out of user dismissal with
+`.dismissible(false)`, and handle Escape / back / scrim / swipe dismissal with
+`.on_dismiss(...)`. Handlers inside the sheet extract `SheetDismiss` to close it
+programmatically.
+
+```rust
+use waterui::sheet::{Sheet, SheetDetent, SheetDismiss};
+
+let open = binding(false);
+button("Filters")
+    .action({ let open = open.clone(); move || open.set(true) })
+    .sheet(
+        Sheet::new(&open, || {
+            vstack((
+                text("Filter options"),
+                button("Done").action(|sheet: SheetDismiss| sheet.dismiss()),
+            ))
+        })
+        .detents([SheetDetent::Medium, SheetDetent::Large])
+        .label("Filter options")
+        .on_dismiss(|| {}),
+    )
+```

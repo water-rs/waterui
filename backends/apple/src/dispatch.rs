@@ -3,18 +3,16 @@
 use waterui_backend_core::{Environment, Realize, View};
 
 use crate::backend::AppleBackend;
+#[cfg(waterui_feature = "dialog")]
+use crate::components::dialog;
+use crate::components::sheet;
 use crate::contract::NativeLeaf;
 
 /// Gives a root environment the state its leaves share.
-#[cfg(waterui_feature = "dialog")]
 pub fn install(env: &mut Environment) {
-    crate::components::dialog::install(env);
-}
-
-/// Gives a root environment the state its leaves share.
-#[cfg(not(waterui_feature = "dialog"))]
-pub const fn install(env: &mut Environment) {
-    let _ = env;
+    #[cfg(waterui_feature = "dialog")]
+    dialog::install(env);
+    sheet::install(env);
 }
 
 /// Renders `view` under `env` into the platform view it becomes.

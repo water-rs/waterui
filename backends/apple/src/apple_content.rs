@@ -373,6 +373,7 @@ pub(crate) fn realize_apple_view<T: AppleContent>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use waterui::sheet::Sheet;
     use waterui_backend_core::{
         ChildView, NativeBackend, NativeBackendFamily, Realize, report_unprovided,
     };
@@ -685,6 +686,7 @@ mod tests {
             dynamic_range: waterui::metadata::secure::DynamicRangeMetadata,
             frame_rate: waterui::animation::FrameRateVote,
             anchored_overlay: waterui::metadata::anchored_overlay::AnchoredOverlay,
+            sheet: Sheet,
             #[cfg(waterui_feature = "dialog")]
             dialog: waterui::dialog::Dialog,
             #[cfg(waterui_feature = "navigation")]

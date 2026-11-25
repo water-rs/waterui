@@ -1027,6 +1027,8 @@ native_backend! {
         dynamic_range: waterui::metadata::secure::DynamicRangeMetadata,
         /// An anchored overlay.
         anchored_overlay: waterui::metadata::anchored_overlay::AnchoredOverlay,
+        /// A window-modal sheet.
+        sheet: waterui::sheet::Sheet,
         #[cfg(waterui_feature = "dialog")]
         /// A dialog.
         dialog: waterui::dialog::Dialog,

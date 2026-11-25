@@ -1109,6 +1109,34 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         render_content(renderer);
     }
 
+    /// Report the sheet's presentation to the window's sheet stack and, when
+    /// it is the one on screen, register its modal layer for the post-flush
+    /// render pass; otherwise drop any retained layer so dismissal tears down
+    /// the sheet subtree cleanly.
+    pub(super) fn apply_sheet(
+        renderer: &mut Self,
+        env: &Environment,
+        value: &SheetEffect<E>,
+        render_content: impl FnOnce(&mut Self),
+    ) {
+        let presented = renderer.read_signal(value.sheet.is_presented());
+        let focus = renderer.hit_test.keyboard_focus.clone();
+        if renderer
+            .popup_menu
+            .sheet_stack
+            .report(&value.marker, &value.sheet, presented, focus)
+        {
+            renderer.popup_menu.front_sheet = Some(RegisteredSheet {
+                env: sheet_modal_environment(env, &value.sheet),
+                sheet: value.sheet.clone(),
+                content: Rc::clone(&value.content),
+            });
+        } else {
+            *value.content.borrow_mut() = None;
+        }
+        render_content(renderer);
+    }
+
     /// Report the dialog's presentation to the window's dialog stack and,
     /// when it is the one on screen, register its layer for the post-flush
     /// render pass; then render the node's own content. The registration

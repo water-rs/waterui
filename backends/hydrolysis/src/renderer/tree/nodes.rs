@@ -17,6 +17,7 @@ use crate::text::{TextEngine, TextLayout as _};
 use crate::theme::WidgetTheme;
 use executor_core::{AnyLocalExecutorTask, spawn_local};
 use waterui::gesture::TapGesture;
+use waterui::sheet::Sheet;
 use waterui_backend_core::Child;
 use waterui_core::animation::FrameRateVote;
 use waterui_interaction::event::TaskHook;
@@ -1148,6 +1149,10 @@ pub(super) enum WrapperEffect<E: crate::text::TextEngine> {
     /// for the post-flush `render_anchored_overlays` pass, which measures,
     /// places and draws the open overlay at window level above all content.
     AnchoredOverlay(AnchoredOverlayEffect<E>),
+    /// `.sheet(...)`: reports the sheet's presentation to the window's sheet
+    /// stack each flush; the post-flush `render_sheets` pass draws the one on
+    /// screen in the modal sheet layer above regular window content.
+    Sheet(SheetEffect<E>),
     /// `.dialog(...)`: reports the dialog's presentation to the window's
     /// dialog stack each flush; the post-flush `render_dialogs` pass draws
     /// the one on screen in the modal layer above all content — its scrim
@@ -1185,6 +1190,7 @@ impl<E: crate::text::TextEngine> WrapperEffect<E> {
                 | Self::GestureObserver(_)
                 | Self::DropDestination(_)
                 | Self::AnchoredOverlay(_)
+                | Self::Sheet(_)
                 | Self::LifeCycle(_)
                 | Self::Task(_)
         )
@@ -1216,6 +1222,19 @@ pub struct AnchoredOverlayEffect<E: crate::text::TextEngine> {
     /// Identity shared with the registration, so the render pass can match an
     /// open overlay to the anchor that emitted it — and tell that an anchor
     /// that stopped registering left the tree.
+    pub(crate) marker: Rc<()>,
+}
+
+/// The node-owned state of a `.sheet(...)` wrapper. The content slot stays
+/// `None` while dismissed so each presentation builds fresh sheet content and
+/// dismissal drops its subtree cleanly.
+pub struct SheetEffect<E: TextEngine> {
+    /// Lazily-built modal layer (`Scrim` plus detent-sized surface), kept alive
+    /// while this sheet stays at the front of `SheetStack`.
+    pub(crate) content: Rc<RefCell<Option<RetainedSubview<E>>>>,
+    /// The sheet being presented.
+    pub(crate) sheet: Sheet,
+    /// The node's identity in the window's sheet stack.
     pub(crate) marker: Rc<()>,
 }
 

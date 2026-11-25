@@ -4,6 +4,7 @@
 #[cfg(feature = "accessibility")]
 use super::layout::accessibility_rect;
 use super::layout::kurbo_rect;
+use kurbo::Affine;
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
@@ -531,6 +532,11 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                                 node.child.flush(r, ctx, child_env, kurbo::Affine::IDENTITY);
                             },
                         );
+                    }
+                    WrapperEffect::Sheet(value) => {
+                        HydrolysisRenderer::apply_sheet(renderer, child_env, value, |r| {
+                            node.child.flush(r, ctx, child_env, Affine::IDENTITY);
+                        });
                     }
                     #[cfg(waterui_feature = "dialog")]
                     WrapperEffect::Dialog(value) => {
@@ -1104,6 +1110,26 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                     WrapperEffect::Task(effect) => {
                         node.child.emit_accessibility(renderer, child_env);
                         effect.start_if_pending();
+                    }
+                    WrapperEffect::Sheet(effect) => {
+                        let presented = renderer.read_signal(effect.sheet.is_presented());
+                        let focus = renderer.hit_test.keyboard_focus.clone();
+                        if renderer.popup_menu.sheet_stack.report(
+                            &effect.marker,
+                            &effect.sheet,
+                            presented,
+                            focus,
+                        ) {
+                            let env = sheet_modal_environment(child_env, &effect.sheet);
+                            let mut slot = effect.content.borrow_mut();
+                            let layer = slot.get_or_insert_with(|| {
+                                RetainedSubview::new(effect.sheet.modal_layer())
+                            });
+                            layer.emit_accessibility(renderer, &env);
+                        } else {
+                            *effect.content.borrow_mut() = None;
+                            node.child.emit_accessibility(renderer, child_env);
+                        }
                     }
                     #[cfg(waterui_feature = "dialog")]
                     WrapperEffect::Dialog(effect) => {

@@ -1616,3 +1616,28 @@ pub fn components_block_39() {
                 })),
         );
 }
+
+// ---------------------------------------------------------------------------
+// Block 40 — `Sheet` modal presentation
+// ---------------------------------------------------------------------------
+pub fn components_block_40() {
+    use waterui::sheet::{Sheet, SheetDetent, SheetDismiss};
+
+    let open = binding(false);
+    let _ = button("Filters")
+        .action({
+            let open = open.clone();
+            move || open.set(true)
+        })
+        .sheet(
+            Sheet::new(&open, || {
+                vstack((
+                    text("Filter options"),
+                    button("Done").action(|sheet: SheetDismiss| sheet.dismiss()),
+                ))
+            })
+            .detents([SheetDetent::Medium, SheetDetent::Large])
+            .label("Filter options")
+            .on_dismiss(|| {}),
+        );
+}
