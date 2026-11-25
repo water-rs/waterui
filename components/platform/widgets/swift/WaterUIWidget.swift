@@ -79,7 +79,8 @@ public struct WUITimelineProvider: TimelineProvider {
     private func producedTimeline(in context: Context) -> WUITimeline {
         let widgetContext = WUIWidgetContext(
             family: familyName(context.family),
-            displaySize: context.displaySize
+            displaySize: context.displaySize,
+            storePath: WUIWidgetStore.sharedContainerPath()
         )
         let data = runSnapshot(snapshot, context: widgetContext)
         guard let timeline = try? WUITimeline.decode(from: data) else {

@@ -6,8 +6,8 @@ rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "The type-restricted authoring surface for home-screen widgets: Rust produces dated, immutable snapshots that the generated Apple WidgetKit extension renders with native SwiftUI"
-keywords = ["widget", "widgetkit", "apple"]
+description = "The type-restricted authoring surface, shared state store, and timeline reload bridge for home-screen widgets on Apple WidgetKit and Android"
+keywords = ["widget", "widgetkit", "apple", "android"]
 categories.workspace = true
 
 [lints]
@@ -24,6 +24,25 @@ pastey = { workspace = true }
 waterui-meta = { workspace = true }
 waterui-contract.workspace = true
 
+[target.'cfg(target_os = "android")'.dependencies]
+jni = { workspace = true }
+waterkit-build = { workspace = true, default-features = false }
+
+[build-dependencies]
+waterkit-build = { workspace = true, default-features = false }
+
 [dev-dependencies]
 waterui-text.workspace = true
 serde_json.workspace = true
+tempfile = "3.27"
+
+[package.metadata.waterui.android]
+kotlin-sources = ["kotlin/WaterUIWidgetHost.kt"]
+
+[[package.metadata.waterui.android.keep]]
+class = "dev.waterui.widgets.WaterUIWidgetHost"
+members = [
+    "public static java.lang.String sharedStorePath(android.content.Context)",
+    "public static void reload(android.content.Context, java.lang.String)",
+    "public static void reloadAll(android.content.Context)",
+]

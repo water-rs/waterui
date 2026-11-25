@@ -312,6 +312,37 @@ impl AppleDeclarations {
         Ok(())
     }
 
+    /// Records the shared App Group provisioned for an application that
+    /// declares one or more `#[waterui::widget]` extensions.
+    ///
+    /// Adds `app_group` to `com.apple.security.application-groups` (unioning
+    /// with any App Groups already declared by the project) and writes
+    /// `WaterUIWidgetAppGroup` to the application's `Info.plist` so both the
+    /// app and its `.appex` extension resolve the same shared container.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a crate or project already declared a conflicting
+    /// `WaterUIWidgetAppGroup` scalar value or non-array
+    /// `com.apple.security.application-groups` entitlement.
+    pub fn add_widget_app_group(&mut self, app_group: &str) -> eyre::Result<()> {
+        merge_declared(
+            &mut self.entitlements,
+            "entitlement",
+            "waterui-widgets",
+            "com.apple.security.application-groups".to_owned(),
+            plist::Value::Array(vec![plist::Value::String(app_group.to_owned())]),
+        )?;
+        merge_declared(
+            &mut self.info_plist,
+            "Info.plist key",
+            "waterui-widgets",
+            "WaterUIWidgetAppGroup".to_owned(),
+            plist::Value::String(app_group.to_owned()),
+        )?;
+        Ok(())
+    }
+
     /// Merges the declared `Info.plist` keys into the generated `plist`.
     ///
     /// # Errors
@@ -719,5 +750,42 @@ mod tests {
                 "must reject: {text}"
             );
         }
+    }
+
+    #[test]
+    fn add_widget_app_group_unions_entitlements_and_sets_info_plist() {
+        let mut declarations = AppleDeclarations::default();
+        declarations
+            .add_widget_app_group("group.dev.waterui.steps")
+            .expect("widget app group adds cleanly");
+
+        let mut entitlements = plist::Dictionary::new();
+        entitlements.insert(
+            "com.apple.security.application-groups".to_owned(),
+            strings(&["group.dev.waterui.existing"]),
+        );
+        declarations
+            .merge_into_entitlements(
+                &mut entitlements,
+                TargetPlatform::IOS,
+                SigningEnvironment::Development,
+            )
+            .expect("entitlements merge");
+        assert_eq!(
+            entitlements.get("com.apple.security.application-groups"),
+            Some(&strings(&[
+                "group.dev.waterui.existing",
+                "group.dev.waterui.steps",
+            ]))
+        );
+
+        let mut info_plist = plist::Dictionary::new();
+        declarations
+            .merge_into_info_plist(&mut info_plist)
+            .expect("info plist merges");
+        assert_eq!(
+            info_plist.get("WaterUIWidgetAppGroup"),
+            Some(&plist::Value::String("group.dev.waterui.steps".to_owned()))
+        );
     }
 }

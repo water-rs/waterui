@@ -13399,7 +13399,7 @@ dependencies = [
 [[package]]
 name = "waterui-image"
 version = "0.5.0"
-source = "git+https://github.com/water-rs/image?branch=main#37778a7e1afeecbf8d85674b44d5d27db888ffbd"
+source = "git+https://github.com/water-rs/image?branch=main#e6894e5062a5a9c74b665af4142254bfb91a3cde"
 dependencies = [
  "half",
  "image",
@@ -13604,7 +13604,7 @@ dependencies = [
 [[package]]
 name = "waterui-map-gpu"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/map-gpu?branch=main#559361c38bf3771ff8a11410fbca44cbdd4bae6e"
+source = "git+https://github.com/water-rs/map-gpu?branch=main#937bd2e0b806d3b01d344b46086b185d89a45afd"
 dependencies = [
  "arc-swap",
  "blocking",
@@ -14056,10 +14056,13 @@ dependencies = [
 name = "waterui-widgets"
 version = "0.5.1"
 dependencies = [
+ "jni 0.22.4",
  "pastey 0.2.3",
  "serde",
  "serde_json",
  "suiteki",
+ "tempfile",
+ "waterkit-build",
  "waterui-contract",
  "waterui-meta",
  "waterui-text",

@@ -29,6 +29,33 @@ use waterui_widgets::{IntentDeclaration, WidgetDeclaration};
 /// `containerBackground` needs `macOS`/`iOS` 26.
 pub const WIDGET_MINIMUM_APPLE_VERSION: &str = "26.0";
 
+/// `Info.plist` key storing the shared App Group identifier on both the host
+/// application and its `WidgetKit` extension so both processes open the same
+/// [`waterui_widgets::WidgetStore`] container.
+pub const WIDGET_APP_GROUP_INFO_PLIST_KEY: &str = "WaterUIWidgetAppGroup";
+
+/// Apple entitlement granting access to shared App Group containers.
+pub const APPLICATION_GROUPS_ENTITLEMENT: &str = "com.apple.security.application-groups";
+
+/// Returns the shared App Group identifier provisioned for `bundle_id`'s app
+/// and widget extension (`group.<bundle_id>`).
+#[must_use]
+pub fn widget_app_group_id(bundle_id: &AppleBundleIdentifier) -> String {
+    format!("group.{}", bundle_id.as_str())
+}
+
+/// Builds the entitlements dictionary granting `app_group` through
+/// `com.apple.security.application-groups`.
+#[must_use]
+pub fn widget_app_group_entitlements(app_group: &str) -> plist::Dictionary {
+    let mut dict = plist::Dictionary::new();
+    dict.insert(
+        APPLICATION_GROUPS_ENTITLEMENT.to_owned(),
+        plist::Value::Array(vec![plist::Value::String(app_group.to_owned())]),
+    );
+    dict
+}
+
 #[cfg(target_os = "macos")]
 use crate::apple::app_bundle;
 use crate::apple::app_bundle::AppleAppLayout;
@@ -287,6 +314,10 @@ fn plugins_dir(app_path: &Path, sdk_name: &str) -> PathBuf {
     clippy::too_many_arguments,
     reason = "each argument is a distinct input of the packaging step; bundling them would only rename the list"
 )]
+#[expect(
+    clippy::too_many_lines,
+    reason = "sequential extension assembly pipeline (render, compile, metadata, plist, sign)"
+)]
 pub async fn assemble_widget_extensions(
     project: &Project,
     platform: TargetPlatform,
@@ -370,11 +401,14 @@ pub async fn assemble_widget_extensions(
         )
         .await?;
 
+        let app_group = widget_app_group_id(bundle_id);
+
         write_extension_info_plist(
             layout,
             &appex_layout,
             &appex_name,
             bundle_id,
+            &app_group,
             deployment_target,
             sdk_name,
         )
@@ -385,7 +419,9 @@ pub async fn assemble_widget_extensions(
             platform,
             options,
             &appex_layout,
+            &appex_name,
             &format!("{}.widgets", bundle_id.as_str()),
+            &app_group,
             backend_root,
             deployment_target,
         )
@@ -620,6 +656,7 @@ async fn write_extension_info_plist(
     appex_layout: &AppleAppLayout,
     appex_name: &str,
     bundle_id: &AppleBundleIdentifier,
+    app_group: &str,
     deployment_target: &str,
     sdk_name: &str,
 ) -> eyre::Result<()> {
@@ -657,6 +694,7 @@ async fn write_extension_info_plist(
     insert(&mut dict, "CFBundleInfoDictionaryVersion", "6.0");
     insert(&mut dict, "CFBundleName", appex_name);
     insert(&mut dict, "CFBundlePackageType", "XPC!");
+    insert(&mut dict, WIDGET_APP_GROUP_INFO_PLIST_KEY, app_group);
     // The extension reports the host app's versions verbatim — a
     // `1.0/1` stub would misrepresent the bundle to the App Store.
     dict.insert(
@@ -696,43 +734,66 @@ async fn write_extension_info_plist(
     Ok(())
 }
 
-/// Signs the `.appex` — ad-hoc for simulator and unsigned packages, the
-/// development provisioning profile matching its own bundle identifier for
-/// device packages, `sign_macos_app`'s development signature on macOS.
+/// Signs the `.appex` with its shared App Group entitlement — ad-hoc with
+/// entitlements for simulator packages, the development provisioning profile
+/// matching `<app>.widgets` and `com.apple.security.application-groups` for
+/// device packages, and `sign_macos_app` with the App Group entitlement on
+/// macOS.
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is a distinct signing input for the widget extension"
+)]
 async fn sign_widget_appex(
     project: &Project,
     platform: TargetPlatform,
     options: &PackageOptions,
     appex_layout: &AppleAppLayout,
+    appex_name: &str,
     widget_bundle_id: &str,
+    app_group: &str,
     backend_root: &Path,
     deployment_target: &str,
 ) -> eyre::Result<()> {
-    use crate::apple::app_bundle::codesign_path;
+    use crate::apple::app_bundle::{codesign_path, write_entitlements};
+    use crate::apple::provisioning::SigningRequest;
+    use crate::macos_bundle::{DistributionSigning, MacOsSigning, sign_macos_app};
     let host = project.host();
+    let widget_entitlements = widget_app_group_entitlements(app_group);
+    let entitlements_path = backend_root
+        .join("DerivedData/Signing")
+        .join(format!("{appex_name}.entitlements"));
 
     if platform == TargetPlatform::MacOS {
+        write_entitlements(&entitlements_path, widget_entitlements).await?;
         let signing = match options.audience() {
-            PackageAudience::Development => crate::macos_bundle::MacOsSigning::Development {
-                requires_stable_identity: false,
+            PackageAudience::Development => MacOsSigning::Development {
+                requires_stable_identity: true,
+                entitlements: Some(entitlements_path),
             },
-            PackageAudience::Distribution => crate::macos_bundle::MacOsSigning::Distribution(
-                crate::macos_bundle::DistributionSigning::from_manifest(
+            PackageAudience::Distribution => {
+                MacOsSigning::Distribution(DistributionSigning::from_manifest(
                     project.manifest().signing().macos(),
-                    None,
-                )?,
-            ),
+                    Some(entitlements_path),
+                )?)
+            }
         };
         let widget_id = AppleBundleIdentifier::try_from(widget_bundle_id.to_string())
             .map_err(eyre::Report::msg)?;
-        crate::macos_bundle::sign_macos_app(host, appex_layout.app_path(), &widget_id, &signing)
-            .await?;
+        sign_macos_app(host, appex_layout.app_path(), &widget_id, &signing).await?;
         return Ok(());
     }
 
     if platform.is_simulator() {
-        codesign_path(host, appex_layout.app_path(), "-", None, None).await?;
+        write_entitlements(&entitlements_path, widget_entitlements).await?;
+        codesign_path(
+            host,
+            appex_layout.app_path(),
+            "-",
+            Some(&entitlements_path),
+            None,
+        )
+        .await?;
         return Ok(());
     }
 
@@ -740,13 +801,12 @@ async fn sign_widget_appex(
         return Ok(());
     }
 
-    // A device build's `.appex` needs its own provisioning profile, exactly
-    // the way the app gets its own: the same development team, the
-    // extension's `<app>.widgets` bundle identifier, and an empty
-    // entitlement set — the extension declares no capabilities.
+    // A device build's `.appex` needs its own provisioning profile carrying
+    // the same development team, the extension's `<app>.widgets` bundle
+    // identifier, and the shared App Group entitlement shared with the host
+    // app.
     let team = development_team_id(host).await?;
-    let widget_entitlements = plist::Dictionary::new();
-    let request = crate::apple::provisioning::SigningRequest::new(
+    let request = SigningRequest::new(
         &team,
         widget_bundle_id,
         options.device_udid(),
@@ -860,11 +920,13 @@ mod tests {
         std::fs::create_dir_all(appex_layout.info_plist_path().parent().unwrap()).unwrap();
         let bundle_id = AppleBundleIdentifier::try_from("dev.test.app".to_string())
             .expect("a valid bundle identifier");
+        let app_group = widget_app_group_id(&bundle_id);
         smol::block_on(write_extension_info_plist(
             &host_layout,
             &appex_layout,
             "HostWidgets",
             &bundle_id,
+            &app_group,
             WIDGET_MINIMUM_APPLE_VERSION,
             "macosx",
         ))
@@ -880,6 +942,18 @@ mod tests {
             dict["CFBundleVersion"].as_string().unwrap(),
             "42",
             "the extension carries the host's build number"
+        );
+        assert_eq!(
+            dict[WIDGET_APP_GROUP_INFO_PLIST_KEY].as_string().unwrap(),
+            "group.dev.test.app",
+            "the extension carries the shared App Group identifier"
+        );
+        let entitlements = widget_app_group_entitlements(&app_group);
+        assert_eq!(
+            entitlements.get(APPLICATION_GROUPS_ENTITLEMENT),
+            Some(&plist::Value::Array(vec![plist::Value::String(
+                "group.dev.test.app".to_string()
+            )]))
         );
     }
 
@@ -1340,7 +1414,11 @@ async fn rust_widget_link_arguments(
             if framework {
                 args.push("-framework".into());
                 args.push(name.into());
-            } else {
+            } else if !name.starts_with("clang_rt.") {
+                // `swiftc` links the target's compiler-rt builtins implicitly;
+                // forwarding `-lclang_rt.*` from `--print=native-static-libs`
+                // without its internal clang `-L` search directory fails the
+                // link.
                 args.push(format!("-l{name}").into());
             }
         }
