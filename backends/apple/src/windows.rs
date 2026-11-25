@@ -1587,9 +1587,7 @@ pub use imp::realize;
 #[cfg(all(target_os = "ios", feature = "native-test"))]
 pub use imp::{Pending, Veil, WindowHost, realize};
 #[cfg(target_os = "ios")]
-pub use imp::{
-    Scenes, bind_background, connect, connect_embedded, declare, show_unsupported_on_ios,
-};
+pub use imp::{Scenes, bind_background, connect, connect_embedded, declare};
 #[cfg(target_os = "macos")]
 pub use imp::{bind_background, close_all, declare_embedded, declare_root};
 
