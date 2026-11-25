@@ -94,6 +94,7 @@ pub(crate) mod primary_content;
 pub(crate) mod proposal;
 #[cfg(feature = "gpu_surface")]
 mod publication_park;
+pub(crate) mod reduce_motion;
 #[cfg(any(target_os = "ios", test))]
 mod scene_registry;
 pub(crate) mod startup;

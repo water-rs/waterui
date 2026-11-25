@@ -15,6 +15,7 @@ use crate::platform::{HeadlessColorFormat, PainterUnavailable};
 use cherenkov_gpu::interop::OutputColor;
 use waterui::window::{WindowContent, WindowToolbar};
 use waterui_core::layout::Rect;
+use waterui_structural_transition::ReduceMotion;
 #[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
 use wgpu::TextureFormat;
 
@@ -1002,6 +1003,7 @@ impl HeadlessRuntime {
         env.insert(HydrolysisTextContextMenuMode::Overlay);
         // A headless host has no platform appearance: the scheme is Light
         // unless the application installs its own.
+        let _ = env.get_or_insert_with::<ReduceMotion, _>(Default::default);
         crate::theme::install_theme_tokens(
             &mut env,
             Some(&style),

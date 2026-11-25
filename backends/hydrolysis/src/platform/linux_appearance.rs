@@ -23,7 +23,7 @@
 //! dependencies, so they compile — and are covered — in test builds on
 //! every host; the zbus client lives in `portal`, Linux only.
 
-use nami::Binding;
+use nami::{Binding, Signal as _};
 use waterui::theme::ColorScheme;
 use waterui_core::contract_violation;
 
@@ -55,6 +55,29 @@ fn sync_portal_color_scheme(scheme: &Binding<ColorScheme>, value: u32) {
     crate::theme::sync_color_scheme(scheme, color_scheme_of(value));
 }
 
+/// A portal `reduced-motion` value mapped per the spec: `1` prefers reduced
+/// motion; `0` means no preference (`false`).
+fn reduced_motion_of(value: u32) -> bool {
+    match value {
+        1 => true,
+        0 => false,
+        _ => {
+            contract_violation!(
+                "hydrolysis Linux appearance: portal reduced-motion {value} is outside the spec's 0–1; it reads as false"
+            );
+            false
+        }
+    }
+}
+
+/// Writes the reduce-motion flag `value` maps to into `reduce_motion` when changed.
+fn sync_portal_reduced_motion(reduce_motion: &Binding<bool>, value: u32) {
+    let reduced = reduced_motion_of(value);
+    if reduce_motion.snapshot() != reduced {
+        reduce_motion.set(reduced);
+    }
+}
+
 /// The D-Bus error names the portal spec calls "no preference": the portal
 /// service is not on the bus, or the setting does not exist.
 fn no_preference_error_name(name: &str) -> bool {
@@ -79,21 +102,24 @@ mod portal {
     use waterui_core::contract_violation;
     use zbus::zvariant::OwnedValue;
 
-    use super::sync_portal_color_scheme;
+    use super::{sync_portal_color_scheme, sync_portal_reduced_motion};
 
     /// `org.freedesktop.portal.Settings`, served by `xdg-desktop-portal`.
     const SETTINGS_SERVICE: &str = "org.freedesktop.portal.Desktop";
     const SETTINGS_PATH: &str = "/org/freedesktop/portal/desktop";
     const SETTINGS_INTERFACE: &str = "org.freedesktop.portal.Settings";
-    /// The portal namespace the colour scheme lives in.
+    /// The portal namespace the colour scheme and reduced-motion settings live in.
     const APPEARANCE_NAMESPACE: &str = "org.freedesktop.appearance";
-    /// The setting within it: `org.freedesktop.appearance` `color-scheme`.
+    /// The colour-scheme key under [`APPEARANCE_NAMESPACE`].
     const COLOR_SCHEME_KEY: &str = "color-scheme";
+    /// The reduced-motion key under [`APPEARANCE_NAMESPACE`].
+    const REDUCED_MOTION_KEY: &str = "reduced-motion";
 
-    /// The portal's colour scheme as a signal, kept current for as long as
-    /// this value lives.
+    /// The portal's colour scheme and reduced-motion settings as signals,
+    /// kept current for as long as this value lives.
     pub struct SystemAppearance {
         scheme: Binding<ColorScheme>,
+        reduce_motion: Binding<bool>,
         /// Flips once the initial `ReadOne` resolved — the real value or the
         /// spec's no-preference answer — which releases the runner's held
         /// first-window mount.
@@ -107,13 +133,14 @@ mod portal {
         fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
             f.debug_struct("SystemAppearance")
                 .field("scheme", &self.scheme.snapshot())
+                .field("reduce_motion", &self.reduce_motion.snapshot())
                 .finish_non_exhaustive()
         }
     }
 
     impl SystemAppearance {
-        /// Starts following the portal's colour-scheme setting, with the
-        /// client driven by `executor` — the runner's local executor, so
+        /// Starts following the portal's colour-scheme and reduced-motion settings,
+        /// with the client driven by `executor` — the runner's local executor, so
         /// every write lands on the event-loop thread.
         ///
         /// `wake` runs once the initial `ReadOne` resolves — the real value
@@ -124,10 +151,17 @@ mod portal {
             E: LocalExecutor<Task<()> = AsyncTask<()>>,
         {
             let scheme = nami::binding(ColorScheme::Light);
+            let reduce_motion = Binding::bool(false);
             let initial_read = Rc::new(Cell::new(false));
-            let watch = executor.spawn_local(watch(scheme.clone(), Rc::clone(&initial_read), wake));
+            let watch = executor.spawn_local(watch(
+                scheme.clone(),
+                reduce_motion.clone(),
+                Rc::clone(&initial_read),
+                wake,
+            ));
             Self {
                 scheme,
+                reduce_motion,
                 initial_read,
                 _watch: watch,
             }
@@ -136,6 +170,11 @@ mod portal {
         /// The colour-scheme signal following the portal's setting.
         pub fn scheme(&self) -> Computed<ColorScheme> {
             self.scheme.computed()
+        }
+
+        /// The Reduce Motion signal following the portal's setting.
+        pub fn reduce_motion(&self) -> Computed<bool> {
+            self.reduce_motion.computed()
         }
 
         /// Whether the initial `ReadOne` resolved. Until it has, the runner
@@ -182,13 +221,68 @@ mod portal {
         })
     }
 
+    /// Reads one setting key under `APPEARANCE_NAMESPACE` via `ReadOne` (portal v2+) or `Read`.
+    async fn read_appearance_key(
+        proxy: &zbus::Proxy<'_>,
+        version: u32,
+        key: &'static str,
+    ) -> zbus::Result<zbus::Message> {
+        if version >= 2 {
+            proxy
+                .call_method("ReadOne", &(APPEARANCE_NAMESPACE, key))
+                .await
+        } else {
+            proxy
+                .call_method("Read", &(APPEARANCE_NAMESPACE, key))
+                .await
+        }
+    }
+
+    /// Applies one portal key's initial `Read`/`ReadOne` reply without failing the sibling key.
+    fn apply_portal_key_reply(
+        reply: zbus::Result<zbus::Message>,
+        key_label: &str,
+        default_label: &str,
+        apply: impl FnOnce(u32),
+    ) {
+        match reply {
+            Ok(reply) => match reply.body().deserialize::<OwnedValue>() {
+                Ok(value) => {
+                    if let Some(value) = portal_u32(&value) {
+                        apply(value);
+                    }
+                }
+                Err(error) => contract_violation!(
+                    "hydrolysis Linux appearance: the portal's {key_label} reply is not a variant: {error}; holding {default_label}"
+                ),
+            },
+            Err(error) if no_preference(&error) => {
+                tracing::debug!(
+                    "hydrolysis Linux appearance: portal {key_label} unavailable; \
+                     holding {default_label}"
+                );
+            }
+            Err(error) => {
+                tracing::error!(
+                    "hydrolysis Linux appearance: reading the portal {key_label} setting failed: {error}; \
+                     holding {default_label}"
+                );
+            }
+        }
+    }
+
     /// The one task the whole client is: connect, subscribe, read once,
-    /// then relay `SettingChanged` into the binding.
+    /// then relay `SettingChanged` into the bindings.
     #[expect(
         clippy::future_not_send,
         reason = "spawned with spawn_local on the event-loop thread; it holds the runner's Rc state"
     )]
-    async fn watch(scheme: Binding<ColorScheme>, initial_read: Rc<Cell<bool>>, wake: impl Fn()) {
+    async fn watch(
+        scheme: Binding<ColorScheme>,
+        reduce_motion: Binding<bool>,
+        initial_read: Rc<Cell<bool>>,
+        wake: impl Fn(),
+    ) {
         // The match rule registers before the initial read so a change
         // landing between the two is queued by the daemon, not lost.
         let subscribed = async {
@@ -208,10 +302,7 @@ mod portal {
             )?;
             let changes = step(
                 proxy
-                    .receive_signal_with_args(
-                        "SettingChanged",
-                        &[(0, APPEARANCE_NAMESPACE), (1, COLOR_SCHEME_KEY)],
-                    )
+                    .receive_signal_with_args("SettingChanged", &[(0, APPEARANCE_NAMESPACE)])
                     .await,
                 "subscribing to SettingChanged",
             )?;
@@ -222,37 +313,28 @@ mod portal {
                 proxy.get_property("version").await,
                 "reading the portal Settings version",
             )?;
-            let reply = step(
-                if version >= 2 {
-                    proxy
-                        .call_method("ReadOne", &(APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY))
-                        .await
-                } else {
-                    proxy
-                        .call_method("Read", &(APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY))
-                        .await
-                },
-                "reading the portal colour scheme",
-            )?;
-            Result::<_, StepFailed>::Ok((proxy, changes, reply))
+            let (scheme_reply, reduced_reply) = futures::join!(
+                read_appearance_key(&proxy, version, COLOR_SCHEME_KEY),
+                read_appearance_key(&proxy, version, REDUCED_MOTION_KEY),
+            );
+            Result::<_, StepFailed>::Ok((proxy, changes, scheme_reply, reduced_reply))
         }
         .await;
-        let (_proxy, mut changes, reply) = match subscribed {
+        let (_proxy, mut changes, scheme_reply, reduced_reply) = match subscribed {
             Ok(subscribed) => subscribed,
             Err(StepFailed { step, error }) => {
-                // No session bus, no portal service or no such setting: the
-                // spec's answer is "no preference" — Light, the value the
-                // binding was seeded with. Any other failure is an
-                // operational one, reported, and the scheme holds Light too.
+                // No session bus or no portal service: the spec's answer is
+                // "no preference" — Light and no reduced motion, the values
+                // the bindings were seeded with. Any other failure is logged.
                 if no_preference(&error) {
                     tracing::debug!(
-                        "hydrolysis Linux appearance: portal colour scheme unavailable; \
-                         holding the spec's no-preference scheme"
+                        "hydrolysis Linux appearance: portal Settings unavailable; \
+                         holding no-preference"
                     );
                 } else {
                     tracing::error!(
                         "hydrolysis Linux appearance: {step} failed: {error}; \
-                         holding the no-preference scheme"
+                         holding no-preference"
                     );
                 }
                 initial_read.set(true);
@@ -260,29 +342,34 @@ mod portal {
                 return;
             }
         };
-        match reply.body().deserialize::<OwnedValue>() {
-            Ok(value) => {
-                if let Some(value) = portal_u32(&value) {
-                    sync_portal_color_scheme(&scheme, value);
-                }
-            }
-            Err(error) => contract_violation!(
-                "hydrolysis Linux appearance: the portal's colour-scheme reply is not a variant: {error}; the scheme holds Light"
-            ),
-        }
+        apply_portal_key_reply(
+            scheme_reply,
+            "colour-scheme",
+            "the spec's no-preference scheme",
+            |value| sync_portal_color_scheme(&scheme, value),
+        );
+        apply_portal_key_reply(reduced_reply, "reduced-motion", "no-preference", |value| {
+            sync_portal_reduced_motion(&reduce_motion, value)
+        });
         initial_read.set(true);
         wake();
         while let Some(signal) =
             std::future::poll_fn(|cx| std::pin::Pin::new(&mut changes).poll_next(cx)).await
         {
             match signal.body().deserialize::<(String, String, OwnedValue)>() {
-                Ok(args) => {
-                    if let Some(value) = portal_u32(&args.2) {
+                Ok((_, key, value)) if key == COLOR_SCHEME_KEY => {
+                    if let Some(value) = portal_u32(&value) {
                         sync_portal_color_scheme(&scheme, value);
                     }
                 }
+                Ok((_, key, value)) if key == REDUCED_MOTION_KEY => {
+                    if let Some(value) = portal_u32(&value) {
+                        sync_portal_reduced_motion(&reduce_motion, value);
+                    }
+                }
+                Ok(_) => {}
                 Err(error) => contract_violation!(
-                    "hydrolysis Linux appearance: SettingChanged body is not the spec's (s, s, v): {error}; the scheme keeps its value"
+                    "hydrolysis Linux appearance: SettingChanged body is not the spec's (s, s, v): {error}; the appearance settings keep their values"
                 ),
             }
         }
@@ -321,7 +408,10 @@ mod tests {
     use waterui::theme::ColorScheme;
     use waterui_core::binding;
 
-    use super::{color_scheme_of, no_preference_error_name, sync_portal_color_scheme};
+    use super::{
+        color_scheme_of, no_preference_error_name, reduced_motion_of, sync_portal_color_scheme,
+        sync_portal_reduced_motion,
+    };
 
     /// The spec's mapping: `1` is dark, `0` and `2` read as light, and a
     /// portal value moves the binding only when the scheme moved — a
@@ -391,5 +481,33 @@ mod tests {
         ] {
             assert!(!no_preference_error_name(name), "{name}");
         }
+    }
+
+    #[test]
+    fn portal_reduced_motion_values_write_only_on_a_move() {
+        let reduced = binding(false);
+        let notifications = Rc::new(Cell::new(0_u32));
+        let _guard = reduced.watch({
+            let notifications = Rc::clone(&notifications);
+            move |_| notifications.set(notifications.get() + 1)
+        });
+
+        assert!(!reduced_motion_of(0));
+        assert!(reduced_motion_of(1));
+
+        sync_portal_reduced_motion(&reduced, 0);
+        assert!(!reduced.snapshot());
+        assert_eq!(notifications.get(), 0);
+
+        sync_portal_reduced_motion(&reduced, 1);
+        assert!(reduced.snapshot());
+        assert_eq!(notifications.get(), 1);
+
+        sync_portal_reduced_motion(&reduced, 1);
+        assert_eq!(notifications.get(), 1);
+
+        sync_portal_reduced_motion(&reduced, 0);
+        assert!(!reduced.snapshot());
+        assert_eq!(notifications.get(), 2);
     }
 }

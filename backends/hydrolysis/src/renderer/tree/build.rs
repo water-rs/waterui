@@ -408,7 +408,8 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             ghost_placed: Vec::new(),
             reduce_motion: env
                 .get::<waterui_structural_transition::ReduceMotion>()
-                .is_some_and(|flag| flag.0),
+                .cloned()
+                .unwrap_or_default(),
             direction: waterui_layout::layout_direction(env).snapshot(),
             dirty,
             replaced_ids,

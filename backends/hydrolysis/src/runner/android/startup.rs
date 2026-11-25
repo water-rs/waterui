@@ -27,6 +27,7 @@ pub(super) struct Startup {
     pub services: &'static UiThreadServices,
     pub metrics: MetricsSnapshot,
     pub color_scheme: ColorScheme,
+    pub reduce_motion: bool,
     pub visible: bool,
     pub resumed: bool,
     pub attached: bool,
@@ -41,6 +42,7 @@ impl Startup {
         services: &'static UiThreadServices,
         metrics: MetricsSnapshot,
         night: bool,
+        reduce_motion: bool,
     ) -> Self {
         let wake = Arc::clone(&bridge);
         let task = services.executor.spawn_local(async move {
@@ -58,6 +60,7 @@ impl Startup {
             } else {
                 ColorScheme::Light
             },
+            reduce_motion,
             visible: false,
             resumed: false,
             attached: false,
@@ -85,6 +88,7 @@ impl Startup {
             &jni::objects::JObject::null(),
             self.metrics,
             self.color_scheme == ColorScheme::Dark,
+            self.reduce_motion,
             self.services,
         )?
         .ok_or_else(|| JniError("hydrolysis android: application mounting failed".to_owned()))?;

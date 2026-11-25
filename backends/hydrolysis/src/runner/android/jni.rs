@@ -100,9 +100,11 @@ use super::host::{AndroidSession, MetricsSnapshot, UiThreadServices};
 /// passes painted device-pixel rects through `onNativeBandShow` for viewability.
 /// 32 passes the active Choreographer frame timeline vsync ID (`has_vsync_id`,
 /// `vsync_id`) through `nativeOnFrame`.
-/// 33 adds `nativeSetLocale` to forward Android configuration locale changes
-/// into `waterui_locale::regional`.
-pub const JNI_SCHEMA: jint = 34;
+/// 34 passes `ViewConfiguration.getLongPressTimeout()` in `nativeSetMetrics`.
+/// 35 passes the initial `Settings.Global.ANIMATOR_DURATION_SCALE == 0` flag
+/// through `nativeCreateSession` and adds `nativeSetReduceMotion` to push
+/// live system setting changes.
+pub const JNI_SCHEMA: jint = 35;
 
 /// A failure crossing the JNI boundary as an exception.
 #[derive(Debug)]
@@ -510,6 +512,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeCreateSess
     painter: JObject<'local>,
     services_ptr: jlong,
     night: jboolean,
+    reduce_motion: jboolean,
 ) -> jlong {
     guard_val(&mut env, 0, |env| {
         // A refused services pointer creates no session: the null handle.
@@ -550,14 +553,25 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeCreateSess
                 entered: Cell::new(false),
                 session: None,
                 startup: Some(super::startup::Startup::new(
-                    bridge, services, metrics, night,
+                    bridge,
+                    services,
+                    metrics,
+                    night,
+                    reduce_motion,
                 )),
             })) as jlong)
         }
         #[cfg(hydrolysis_hwui)]
         {
-            let Some(session) =
-                AndroidSession::create(env, bridge, &painter, metrics, night, services)?
+            let Some(session) = AndroidSession::create(
+                env,
+                bridge,
+                &painter,
+                metrics,
+                night,
+                reduce_motion,
+                services,
+            )?
             else {
                 return Ok(0);
             };
@@ -996,6 +1010,25 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetColorSc
             return Ok(());
         });
         session!(session_ptr).set_night_mode(night);
+        Ok(())
+    });
+}
+
+/// The system `ANIMATOR_DURATION_SCALE == 0` flag — pushed by the host at bind
+/// and whenever `Settings.Global.ANIMATOR_DURATION_SCALE` changes.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetReduceMotion<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    session_ptr: jlong,
+    reduce_motion: jboolean,
+) {
+    guard(&mut env, |_env| {
+        initializing!(session_ptr, pending, {
+            pending.reduce_motion = reduce_motion;
+            return Ok(());
+        });
+        session!(session_ptr).set_reduce_motion(reduce_motion);
         Ok(())
     });
 }

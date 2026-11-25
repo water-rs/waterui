@@ -36,7 +36,7 @@ use waterui_layout::AbsoluteLayout;
 use waterui_layout::container::LazyContainer;
 use waterui_layout::frame::Frame;
 use waterui_layout::stack::ZStackLayout;
-use waterui_structural_transition::PropertyTransition;
+use waterui_structural_transition::{PropertyTransition, ReduceMotion};
 
 #[cfg(hydrolysis_cherenkov)]
 use super::pumped_test_environment;
@@ -1513,7 +1513,7 @@ fn reduced_pixel_transition_runs_as_opacity() {
         })
     };
     let mut env = test_environment();
-    env.insert(waterui_structural_transition::ReduceMotion(true));
+    env.insert(ReduceMotion::new(true));
     let mut runtime =
         HeadlessRuntime::new_for_tests(env, builder, 400, 640, MinimalTestTheme::default());
     let start = Instant::now();
@@ -1571,6 +1571,92 @@ fn reduced_pixel_transition_runs_as_opacity() {
     assert!(
         settled_edge + 20 < resting_edge,
         "after the reduced removal completes the sibling must move up (rest {resting_edge}, settled {settled_edge})"
+    );
+}
+
+/// Toggling a reactive `ReduceMotion` binding mid-session switches a mounted
+/// `Dynamic` transition site (`watch`) between the full `move_in` slide and its
+/// `reduced()` opacity fade without rebuilding the outer host.
+#[test]
+fn live_reduce_motion_toggle_switches_dynamic_transition_variant() {
+    use waterui_structural_transition::Edge;
+
+    let setting = Binding::bool(false);
+    let show = Binding::bool(false);
+    let builder = {
+        let show = show.clone();
+        AnyViewBuilder::<AnyView>::new(move || {
+            AnyView::new(watch(show.clone(), |visible| {
+                if visible {
+                    AnyView::new(
+                        ().size(120.0, 80.0)
+                            .background(Color::srgb(220, 40, 40))
+                            .transition(PropertyTransition::move_in(Edge::Bottom))
+                            .animation(Animation::linear(Duration::from_millis(1_000))),
+                    )
+                } else {
+                    AnyView::new(())
+                }
+            }))
+        })
+    };
+    let mut env = test_environment();
+    env.insert(ReduceMotion::new(setting.clone()));
+    let mut runtime =
+        HeadlessRuntime::new_for_tests(env, builder, 120, 80, MinimalTestTheme::default());
+    let start = Instant::now();
+    let empty = runtime
+        .pump_at(true, start)
+        .into_snapshot()
+        .expect("empty initial frame must produce a snapshot");
+    let bg = pixel_at(&empty, 60, 10);
+
+    // First insertion with Reduce Motion disabled: full bottom slide.
+    show.set(true);
+    let _ = runtime.pump_at(true, start + Duration::from_millis(16));
+    let full_mid = runtime
+        .pump_at(true, start + Duration::from_millis(516))
+        .into_snapshot()
+        .expect("mid-insertion slide frame must produce a snapshot");
+    assert_eq!(
+        pixel_at(&full_mid, 60, 10),
+        bg,
+        "full move_in(Bottom) keeps top region empty mid-slide"
+    );
+    assert!(
+        rgb_contrast(pixel_at(&full_mid, 60, 60), bg) > 50,
+        "full move_in(Bottom) renders bottom region mid-slide"
+    );
+    let settled = runtime
+        .pump_at(true, start + Duration::from_millis(1_200))
+        .into_snapshot()
+        .expect("settled frame must produce a snapshot");
+    let opaque_contrast = rgb_contrast(pixel_at(&settled, 60, 10), bg);
+    assert!(opaque_contrast > 50);
+
+    // Remove and settle, then enable Reduce Motion mid-session.
+    show.set(false);
+    let _ = runtime.pump_at(true, start + Duration::from_millis(1_216));
+    let _ = runtime.pump_at(true, start + Duration::from_millis(2_400));
+    setting.set(true);
+
+    // Second insertion on the same mounted host: reduced opacity fade in place.
+    show.set(true);
+    let _ = runtime.pump_at(true, start + Duration::from_millis(2_416));
+    let reduced_mid = runtime
+        .pump_at(true, start + Duration::from_millis(2_916))
+        .into_snapshot()
+        .expect("mid-insertion reduced frame must produce a snapshot");
+    let top_pixel = pixel_at(&reduced_mid, 60, 10);
+    let bottom_pixel = pixel_at(&reduced_mid, 60, 60);
+    assert_eq!(
+        top_pixel, bottom_pixel,
+        "reduced move_in(Bottom) must fade in place without vertical slide"
+    );
+    let reduced_contrast = rgb_contrast(top_pixel, bg);
+    assert!(
+        reduced_contrast > 0 && reduced_contrast < opaque_contrast,
+        "reduced transition must be partially faded mid-insertion ({reduced_contrast} vs opaque {opaque_contrast})"
     );
 }
 

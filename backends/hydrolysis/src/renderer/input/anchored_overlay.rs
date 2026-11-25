@@ -34,7 +34,7 @@ use waterui_core::Environment;
 use waterui_core::layout::{Size as LayoutSize, layout_direction};
 #[cfg(feature = "menu")]
 use waterui_graphics::animation::engine_animation;
-use waterui_structural_transition::TransitionSpec;
+use waterui_structural_transition::{ReduceMotion, TransitionSpec};
 
 #[cfg(feature = "menu")]
 use crate::num_cast::f64_as_f32;
@@ -485,10 +485,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         let ctx = RenderContext::new(transform, self.window_bounds);
         for entry in registered {
             let mut state = core::mem::take(&mut *entry.presentations.borrow_mut());
-            let reduce_motion = entry
-                .env
-                .get::<waterui_structural_transition::ReduceMotion>()
-                .is_some_and(|flag| flag.0);
+            let reduce_motion = ReduceMotion::is_reduced(&entry.env);
             if entry.presented {
                 // A new presentation builds fresh content: still-presented
                 // keeps its subtree — signals already patch it in place —

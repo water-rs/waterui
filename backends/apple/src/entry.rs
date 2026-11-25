@@ -65,6 +65,7 @@ mod imp {
         _theme: Rc<ThemeSignals>,
         _appearance: ColorSchemeObservation,
         _locale: Box<dyn Any>,
+        _reduce_motion: Box<dyn Any>,
         /// Filled once `app(env)` declared its termination hooks; the
         /// application delegate's quit questions go through it.
         termination: Rc<OnceCell<Session>>,
@@ -163,6 +164,7 @@ mod imp {
             move |scheme| crate::theme::refresh(&theme, scheme)
         });
         let locale = crate::locale::install(env, mtm);
+        let reduce_motion = crate::reduce_motion::install(env, mtm);
 
         let termination = Rc::new(OnceCell::new());
         let launch = Box::new(Launch {
@@ -171,6 +173,7 @@ mod imp {
             _theme: theme,
             _appearance: appearance,
             _locale: Box::new(locale),
+            _reduce_motion: Box::new(reduce_motion),
             termination: Rc::clone(&termination),
         });
 
@@ -251,6 +254,7 @@ mod imp {
         scenes: crate::scene_registry::Registration<crate::windows::Scenes>,
         _theme: Rc<ThemeSignals>,
         _locale: Box<dyn Any>,
+        _reduce_motion: Box<dyn Any>,
     }
 
     /// GPU completion: `app(env)` declares its windows, and each fills
@@ -322,6 +326,7 @@ mod imp {
         // What a scene window shows before its content has painted.
         let background = Color::new(Background).resolve(env);
         let locale = crate::locale::install(env, mtm);
+        let reduce_motion = crate::reduce_motion::install(env, mtm);
 
         // Filled by `prepared`: `build_menus` can fire before `app(env)`
         // runs, so the declared menus sit behind this slot.
@@ -342,6 +347,7 @@ mod imp {
             scenes,
             _theme: Rc::clone(&theme),
             _locale: Box::new(locale),
+            _reduce_motion: Box::new(reduce_motion),
         });
 
         // Scenes may connect before the asynchronous preparation finishes:

@@ -23,6 +23,7 @@ use crate::renderer::{SemanticCore, WindowId};
 use std::rc::Rc;
 use std::sync::Arc;
 use waterui_core::contract_violation;
+use waterui_structural_transition::ReduceMotion;
 
 /// What one semantic pump produced.
 ///
@@ -275,6 +276,7 @@ impl SemanticRuntime {
         // style-package tokens ever install — widget structure, roles, labels
         // and actions do not depend on one. No platform appearance either: the
         // scheme is Light unless the application installs its own.
+        let _ = env.get_or_insert_with::<ReduceMotion, _>(Default::default);
         crate::theme::install_theme_tokens(&mut env, None, waterui::theme::ColorScheme::Light);
         let fonts = build_fonts(&env);
         fonts.clone().install(&mut env);

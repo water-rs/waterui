@@ -10,6 +10,7 @@ use waterui::navigation::{
 use waterui_core::contract_violation;
 use waterui_core::id::Id;
 use waterui_core::layout::{LayoutDirection, layout_direction};
+use waterui_structural_transition::ReduceMotion;
 
 pub const ROOT_NAVIGATION_IDENTITY: u64 = 0;
 
@@ -253,9 +254,7 @@ impl<E: crate::text::TextEngine> PageTransition<E> {
         env: &Environment,
         now: Instant,
     ) -> Self {
-        let reduce_motion = env
-            .get::<waterui_structural_transition::ReduceMotion>()
-            .is_some_and(|flag| flag.0);
+        let reduce_motion = ReduceMotion::is_reduced(env);
         let run = match navigation {
             NavigationTransitionDirection::Push => {
                 crate::renderer::tree::transition::TransitionRun::insertion(
@@ -521,9 +520,7 @@ impl<E: crate::text::TextEngine> NavigationInteractivePop<E> {
     ) -> Rc<RefCell<InteractivePageTransition<E>>> {
         let identity = self.from_page.identity;
         let page = self.page.get_or_insert_with(|| {
-            let reduce_motion = env
-                .get::<waterui_structural_transition::ReduceMotion>()
-                .is_some_and(|flag| flag.0);
+            let reduce_motion = ReduceMotion::is_reduced(env);
             Rc::new(RefCell::new(InteractivePageTransition {
                 identity,
                 removal: crate::renderer::tree::transition::ScrubbedRemoval::new(
