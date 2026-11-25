@@ -12,9 +12,13 @@ categories = ["gui"]
 
 [dependencies]
 waterui-core.workspace = true
+waterui-text.workspace = true
 suiteki.workspace = true
 waterkit-location.workspace = true
 nami.workspace = true
+
+[dev-dependencies]
+waterui-locale.workspace = true
 
 [lints]
 workspace = true
