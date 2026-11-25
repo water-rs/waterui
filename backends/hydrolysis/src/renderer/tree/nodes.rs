@@ -1737,10 +1737,10 @@ pub struct GpuContentNode<E: crate::text::TextEngine> {
 #[cfg(hydrolysis_gpu)]
 impl<E: crate::text::TextEngine> GpuContentNode<E> {
     /// The leaf's live measure under `proposal` — the `measure_body`
-    /// arm's own call. [`GpuView::measure`] asks the content
+    /// arm's own call. [`GpuContentLeaf::measure`] asks the content
     /// itself, so a source whose size resolves after mount answers its
     /// new natural size instead of the `intrinsic_size` snapshot
-    /// [`GpuView::new`] took (water-rs/waterui#1958).
+    /// `GpuView::new` took (water-rs/waterui#1958).
     pub(super) fn intrinsic_dimensions(&self, proposal: ProposalSize) -> ViewDimensions {
         self.runtime.borrow().view.measure(proposal)
     }

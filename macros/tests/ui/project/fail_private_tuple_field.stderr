@@ -1,0 +1,5 @@
+error[E0616]: field `1` of struct `SecretPairProjected` is private
+  --> tests/ui/project/fail_private_tuple_field.rs:18:20
+   |
+18 |     pair.project().1.set(99);
+   |                    ^ private field

@@ -252,15 +252,17 @@ use waterui_form::picker::color::ColorPickerConfig;
 use waterui_form::picker::date::DatePickerConfig;
 #[cfg(feature = "secure-field")]
 use waterui_form::secure::{Secure as FormSecure, SecureFieldConfig};
+#[cfg(hydrolysis_gpu)]
+use waterui_graphics::ExternalFrameView;
 use waterui_graphics::Gradient;
 #[cfg(waterui_feature = "effects")]
 use waterui_graphics::backend::FilteredView;
+#[cfg(hydrolysis_gpu)]
+use waterui_graphics::backend::GpuContentLeaf;
 #[cfg(any(feature = "menu", feature = "navigation", feature = "color-picker"))]
 use waterui_graphics::color::Color;
 #[cfg(hydrolysis_gpu)]
 use waterui_graphics::gpu::RedrawHandle;
-#[cfg(hydrolysis_gpu)]
-use waterui_graphics::{ExternalFrameView, GpuView};
 use waterui_interaction::event::{Event, HoverEvent, LifeCycle, LifeCycleHook, OnEvent};
 use waterui_interaction::key::{KeyHandling, KeyPress, OnKeyPress};
 

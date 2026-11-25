@@ -858,7 +858,7 @@ FilePicker::open("Select Files", &urls).max_count(5)           // Binding<Vec<Ur
 Seeding a `Binding<Color>` from a constant: `binding(Color::from(Srgb::from_hex("#4A84F6")))`.
 A `Binding<BTreeSet<Date>>` needs the turbofish: `binding(BTreeSet::<Date>::new())`.
 
-## Overlays: snackbars, cards, suspense, full screen
+## Overlays: snackbars, cards, suspense
 
 Attach `.snackbar_host()` to a root view to install a plain `SnackbarManager` (and
 `CodeCopyFeedback` when `flow-markdown` is enabled) into its subtree; it is a `#[state]`-marked
@@ -908,11 +908,6 @@ suspense(async { load().await })                       // takes a future, not a 
 accordion(header, || body())                           // disclosure; Accordion::with_toggle(&open, ..) controls it
 view.floating()                                        // themed elevated surface (FloatingStyle-aware)
 ```
-
-Attach `.full_screen_overlay_host::<V>()` to a root view (or wrap the subtree in
-`FullScreenOverlayManager::host(|overlay| ...)`)
-so descendant handlers can take `overlay: FullScreenOverlayManager<V>` bare to present modal,
-window-filling content: `overlay.show(view)` and `overlay.hide()`.
 
 `.secure()` on any view marks it as content that must not appear in screenshots. Only the
 iOS backend enforces it today; macOS and Hydrolysis (Android included) render the content

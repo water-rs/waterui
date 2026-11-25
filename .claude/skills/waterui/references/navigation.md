@@ -353,8 +353,8 @@ The `Window` builder, precisely:
   default; chain `.state(&window_state)` when external code reads or drives its
   `Binding<WindowState>`. An empty title is shown as the application's own name;
   `.title(..)` sets it later.
-  Windows mount only their own content; attach `.snackbar_host()` or
-  `.full_screen_overlay_host::<V>()` to a root view when the window uses those overlays.
+  Windows mount only their own content; attach `.snackbar_host()` to a root view
+  when the window uses snackbars.
 - `.style(..)` — a `WindowStyle` or a `Binding<WindowStyle>`; exactly three variants:
   `Titled` (default), `Borderless`, `FullSizeContentView` (content extends under the
   title bar). The style is reactive: setting the binding (or

@@ -11,7 +11,6 @@
 
 use crate::animation::{FrameRate, FrameRateVote};
 use crate::appearance::style::IntoRotationAngle;
-use crate::fullscreen::FullScreenOverlayHost;
 use crate::sheet::Sheet;
 #[cfg(feature = "snackbar")]
 use crate::snackbar::SnackbarHost;
@@ -1358,16 +1357,6 @@ pub trait ViewExt: View + Sized {
         SnackbarHost::new(self)
     }
 
-    /// Hosts a [`FullScreenOverlayManager<O>`](crate::fullscreen::FullScreenOverlayManager)
-    /// and its overlay for this view subtree.
-    ///
-    /// Descendant handlers can extract `FullScreenOverlayManager<O>` bare
-    /// (`|overlay: FullScreenOverlayManager<O>| ...`). Each built instance
-    /// creates its own manager and overlay view.
-    fn full_screen_overlay_host<O: View>(self) -> FullScreenOverlayHost<Self, O> {
-        FullScreenOverlayHost::new(self)
-    }
-
     /// Sets the minimum row height of every list inside this view, in points.
     ///
     /// Replaces the theme's one-line row height as the floor rows are measured
@@ -1843,5 +1832,13 @@ mod tests {
         );
         angle.set(event.angle());
         assert!((rotated.content.value.angle().snapshot().to_degrees() - 90.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn text_font_size_does_not_shadow_view_ext_size() {
+        use waterui_layout::frame::Frame;
+        use waterui_text::{Text, text};
+
+        let _framed: Frame<Text> = text("Hi").font_size(17.0).size(120.0, 40.0);
     }
 }
