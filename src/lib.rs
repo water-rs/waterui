@@ -1,9 +1,6 @@
 #![doc = include_str!("README.md")]
 extern crate alloc;
 extern crate self as waterui;
-#[cfg(feature = "table")]
-#[macro_use]
-mod macros;
 mod appearance;
 pub use appearance::{background, border, filter, floating, shape, style};
 pub mod component;
@@ -128,6 +125,10 @@ pub mod prelude {
     pub use super::component::menu::{
         Command, CommandExt, Menu, MenuItem, NamedKey, Shortcut, ShortcutKey, ShortcutModifiers,
         ShortcutNamedKey,
+    };
+    #[cfg(feature = "table")]
+    pub use super::component::table::{
+        SortDirection, SortableTableColumn, Table, TableColumn, TableSort, col, table,
     };
     #[cfg(feature = "menu")]
     pub use super::metadata::context_menu::{ContextMenu, DismissContextMenu};

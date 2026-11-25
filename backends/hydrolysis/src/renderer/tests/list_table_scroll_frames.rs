@@ -23,7 +23,6 @@ use waterui::component::text;
 use waterui_core::AnyView;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::SelfId;
-use waterui_core::views::ForEach;
 use waterui_layout::stack::vstack;
 
 use super::{MinimalTestTheme, test_environment};
@@ -57,20 +56,17 @@ fn list_runtime() -> HeadlessRuntime {
 fn table_runtime() -> HeadlessRuntime {
     let builder = AnyViewBuilder::<AnyView>::new(|| {
         let rows = (0..ROWS).map(SelfId::new).collect::<Vec<_>>();
-        AnyView::new(Table::new(nami::Computed::constant(vec![
-            col(
-                "A",
-                ForEach::new(SignalCollection::new(rows.clone()), |id| {
-                    text(format!("A{}", id.into_inner()))
+        AnyView::new(Table::new(
+            SignalCollection::new(rows),
+            (
+                col("A", |id: &SelfId<usize>| {
+                    text(format!("A{}", (*id).into_inner()))
+                }),
+                col("B", |id: &SelfId<usize>| {
+                    text(format!("B{}", (*id).into_inner()))
                 }),
             ),
-            col(
-                "B",
-                ForEach::new(SignalCollection::new(rows), |id| {
-                    text(format!("B{}", id.into_inner()))
-                }),
-            ),
-        ])))
+        ))
     });
     HeadlessRuntime::new_for_tests(
         test_environment(),

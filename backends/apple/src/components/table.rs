@@ -1,64 +1,77 @@
-//! The `table` leaf: `Native<TableConfig>` rendered through an
-//! `NSTableView` on macOS and a manually framed header/cell grid on iOS.
+//! The `table` leaf: row-major `Native<TableConfig<Held>>` rendered through an
+//! `NSTableView` on macOS and a manually framed header/row grid on iOS.
 //!
-//! Mirrors `WuiTable` + `WuiTableColumnNode`: columns reconcile by their
-//! `semantic_id` inside `with_platform_animation`, each column keeps an
-//! id-keyed set of rendered cells driven by `rows().watch(..)`, cells are
-//! `ctx.render(text)` leaves measured under
-//! `ProposalSize::UNSPECIFIED`, and `sizeThatFits` ignores the proposal —
-//! width is the sum of the per-column fitted widths, height is the header
-//! band plus the per-row maxima.
-//!
-//! Contract friction: `SubView` has no `place` hook, so the
-//! `setPlacementProposal(WuiProposalSize())` the Swift port delivered to
-//! each cell at layout/viewFor time has no channel here — cells measure
-//! under unspecified proposals like every other ported container's
-//! children.
+//! Rows carry collection identity (`RawId`) and produce arbitrary view cells
+//! realized through `Renderer::realize`. Selection binds to row identities
+//! (single or multiple) and sortable column headers bind to `TableSort<usize>`
+//! with native sort indicators and accessibility state.
 
 #[cfg(target_os = "macos")]
 use alloc::format;
 use alloc::rc::Rc;
 use alloc::vec::Vec;
-use core::cell::{Cell, RefCell};
-use std::collections::HashMap;
+#[cfg(target_os = "macos")]
+use core::cell::Cell;
+use core::cell::RefCell;
+use std::collections::{BTreeSet, HashMap};
+#[cfg(target_os = "macos")]
+use std::ptr;
 
+#[cfg(target_os = "ios")]
+use cocoa_ui::accessibility::{Role, apply_state, set_role};
 use cocoa_ui::{Retained, view};
-use waterui::component::table::{TableColumn, TableConfig};
+#[cfg(target_os = "macos")]
+use objc2_foundation::NSString;
+use waterui::component::table::{
+    SortDirection, TableColumnDescriptor, TableConfig, TableRow, TableSelection, TableSort,
+};
 use waterui::id::Id as RawId;
-use waterui::reactive::watcher::Metadata;
-use waterui::reactive::{Computed, Signal};
-use waterui::text::{StyledStr, Text};
+#[cfg(target_os = "ios")]
+use waterui::reactive::SignalExt as _;
+use waterui::reactive::watcher::{BoxWatcherGuard, Metadata};
+use waterui::reactive::{Binding, Computed, Signal};
+use waterui::text::StyledStr;
 use waterui::views::AnyViewsSnapshot;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
 };
 
-use crate::contract::{NativeLeaf, RenderContext, Renderer};
+use crate::contract::{Held, NativeLeaf, RenderContext, Renderer};
 
 #[cfg(target_os = "macos")]
-use cocoa_ui::appkit::{HostView, TableView};
+use cocoa_ui::appkit::{HostView, TableSortIndicator, TableView};
 #[cfg(target_os = "ios")]
-use cocoa_ui::uikit::HostView;
+use cocoa_ui::gesture::{ButtonMask, GestureState};
+#[cfg(target_os = "ios")]
+use cocoa_ui::uikit::{HostView, gesture::GestureAttachment, gesture::tap};
 
 #[cfg(target_os = "macos")]
 use cocoa_ui::objc2_app_kit::{NSTableColumn, NSTableHeaderView};
+#[cfg(target_os = "ios")]
+use waterui::color::WorkingColor;
+#[cfg(target_os = "ios")]
+use waterui::theme::color::SelectionContainer;
+#[cfg(target_os = "ios")]
+use waterui_core::resolve::Resolvable as _;
 
-/// A row's identity: the collection id `Views` answers for an index.
+/// A row's identity: the collection id `SharedAnyViews` answers for an index.
 type ItemId = RawId;
 
-/// `HORIZONTAL_PADDING` — the cell inset on the horizontal axis.
+/// Cell horizontal inset.
 const HORIZONTAL_PADDING: f64 = 12.0;
-/// `VERTICAL_PADDING` — the cell inset on the vertical axis.
+/// Cell vertical inset.
 const VERTICAL_PADDING: f64 = 6.0;
-/// `minimumColumnWidth` — a column never narrows below this.
+/// A column never narrows below this width.
 const MINIMUM_COLUMN_WIDTH: f64 = 80.0;
-/// `nativeHeaderHeight` — the macOS header band's fixed height.
+/// Extra horizontal space reserved for a sortable column's sort indicator.
+const SORT_INDICATOR_ALLOWANCE: f64 = 18.0;
+/// Fixed macOS header band height.
 #[cfg(target_os = "macos")]
 const NATIVE_HEADER_HEIGHT: f64 = 24.0;
-/// The minimum header band height on iOS (`max(28, ...)`).
+/// Minimum header band height on iOS.
 #[cfg(target_os = "ios")]
 const MIN_HEADER_HEIGHT: f64 = 28.0;
-/// The minimum row height (`max(28, ...)`).
+/// Minimum row height.
 const MIN_ROW_HEIGHT: f64 = 28.0;
 
 /// A cell's platform view.
@@ -69,66 +82,145 @@ type CellStore = crate::contract::Mounted;
 #[cfg(target_os = "macos")]
 type CellStore = NativeLeaf;
 
-/// A rendered column: the `WuiTableColumnNode` — its rows collection,
-/// id-keyed cells, header label, and watcher guards.
+/// One row's background & selection-tap container on iOS.
+#[cfg(target_os = "ios")]
+struct RowHost {
+    host: Retained<HostView>,
+    _tap: Option<GestureAttachment>,
+}
+
+/// A rendered column: descriptor metadata, header view/column, and label
+/// observation.
 struct ColumnState {
-    /// `semantic_id` — the reconcile key.
-    semantic_id: usize,
-    /// The retained rows snapshot aligned with `ids` — every
-    /// `get_id`/`get_view` answer during reconcile comes from it, never
-    /// the live collection.
-    snapshot: AnyViewsSnapshot<Text>,
-    /// Current row ids in display order — the applied membership; the
-    /// row count answers `ids.len()`, never the live `rows.len()`.
-    ids: Vec<ItemId>,
-    /// Coalesced `rows` notifications for this column — outside
-    /// `TableState`, so an emission landing while cell materialization
-    /// holds the state borrow never touches it.
-    pending: Rc<RefCell<PendingColumnRows>>,
-    /// Rendered cells by row id.
-    cells: HashMap<ItemId, CellStore>,
-    /// `UILabel` header — the label's rendered `Text` leaf (iOS).
+    sortable: bool,
+    #[cfg(target_os = "ios")]
+    header_host: Retained<HostView>,
     #[cfg(target_os = "ios")]
     label: crate::contract::Mounted,
-    /// The label's `content` signal — on `AppKit` the header title reads its
-    /// snapshot; the watch drives `reloadContent`.
-    #[cfg(target_os = "macos")]
-    label_content: Computed<StyledStr>,
-    /// The same signal on `UIKit`, kept alive so `_label_guard`'s watch stays
-    /// subscribed; the rendered label leaf reads its own copy.
     #[cfg(target_os = "ios")]
-    _label_content: Computed<StyledStr>,
-    /// `labelContentObservation` / `labelObservation` — kept alive by the
-    /// field, never read: dropping it unsubscribes the watch.
+    _header_tap: Option<GestureAttachment>,
+    label_content: Computed<StyledStr>,
     _label_guard: <Computed<StyledStr> as Signal>::Guard,
-    /// The `rows.watch` guard — kept alive like `_label_guard`.
-    _rows_guard: waterui::reactive::watcher::BoxWatcherGuard,
-    /// `nativeColumns[id]` (macOS).
     #[cfg(target_os = "macos")]
     ns_column: Retained<NSTableColumn>,
 }
 
-/// The table's shared state — `WuiTable`'s stored properties.
+/// The table's shared state.
 struct TableState {
-    /// The leaf's view: the `WuiTable` itself (`UIView` / `NSView` host).
     host: Retained<HostView>,
-    /// `tableView` (macOS).
     #[cfg(target_os = "macos")]
     table: Retained<TableView>,
-    /// `nativeHeader` (macOS).
     #[cfg(target_os = "macos")]
     header: Retained<NSTableHeaderView>,
-    /// Renders row `Text`s and label `Text`s after `install` returns.
     renderer: Renderer,
-    /// `collection.ordered` — columns in display order.
     columns: Vec<ColumnState>,
-    /// `appKitRowHeights` — the cached row heights the delegate answers.
+    snapshot: AnyViewsSnapshot<TableRow<Held>>,
+    ids: Vec<ItemId>,
+    cells: HashMap<(ItemId, usize), CellStore>,
+    #[cfg(target_os = "ios")]
+    row_hosts: HashMap<ItemId, RowHost>,
+    #[cfg(target_os = "ios")]
+    selection_fill: Option<Computed<WorkingColor>>,
     #[cfg(target_os = "macos")]
     row_heights: Vec<f64>,
+    selection: TableSelection<RawId>,
+    #[cfg(target_os = "macos")]
+    applying_selection: Cell<bool>,
+    sort_order: Option<Binding<Option<TableSort<usize>>>>,
 }
 
-/// `sizeThatFits` measure of a leaf under the fully unspecified proposal —
-/// `row.sizeThatFits(WuiProposalSize())`.
+impl TableState {
+    const fn allows_selection(&self) -> bool {
+        !matches!(self.selection, TableSelection::None)
+    }
+
+    fn selected_ids(&self) -> BTreeSet<RawId> {
+        match &self.selection {
+            TableSelection::None => BTreeSet::new(),
+            TableSelection::Single(binding) => binding.snapshot().into_iter().collect(),
+            TableSelection::Multiple(binding) => binding.snapshot(),
+        }
+    }
+
+    fn sort_binding_for_column(
+        &self,
+        column_index: usize,
+    ) -> Option<Binding<Option<TableSort<usize>>>> {
+        let column = self.columns.get(column_index)?;
+        if !column.sortable {
+            return None;
+        }
+        self.sort_order.clone()
+    }
+
+    #[cfg(target_os = "macos")]
+    fn selection_write_plan(&self, rows: &[usize]) -> Option<SelectionWrite> {
+        if self.applying_selection.get() {
+            return None;
+        }
+        match &self.selection {
+            TableSelection::None => None,
+            TableSelection::Single(binding) => {
+                let id = rows.first().and_then(|&row| self.ids.get(row).copied());
+                Some(SelectionWrite::Single(binding.clone(), id))
+            }
+            TableSelection::Multiple(binding) => {
+                let ids: BTreeSet<RawId> = rows
+                    .iter()
+                    .filter_map(|&row| self.ids.get(row).copied())
+                    .collect();
+                Some(SelectionWrite::Multiple(binding.clone(), ids))
+            }
+        }
+    }
+
+    #[cfg(target_os = "ios")]
+    fn selection_for_row(&self) -> TableSelection<RawId> {
+        self.selection.clone()
+    }
+}
+
+#[cfg(target_os = "macos")]
+enum SelectionWrite {
+    Single(Binding<Option<RawId>>, Option<RawId>),
+    Multiple(Binding<BTreeSet<RawId>>, BTreeSet<RawId>),
+}
+
+fn toggle_sort(state: &Rc<RefCell<TableState>>, column_index: usize) {
+    let binding = state.borrow().sort_binding_for_column(column_index);
+    if let Some(binding) = binding {
+        let next = TableSort::next_for_column(binding.snapshot(), column_index);
+        binding.set(Some(next));
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn write_selection_indices(state: &Rc<RefCell<TableState>>, rows: &[usize]) {
+    let plan = state.borrow().selection_write_plan(rows);
+    match plan {
+        Some(SelectionWrite::Single(binding, id)) => binding.set(id),
+        Some(SelectionWrite::Multiple(binding, ids)) => binding.set(ids),
+        None => {}
+    }
+}
+
+#[cfg(target_os = "ios")]
+fn select_row_id(state: &Rc<RefCell<TableState>>, id: RawId) {
+    let selection = state.borrow().selection_for_row();
+    match selection {
+        TableSelection::None => {}
+        TableSelection::Single(binding) => binding.set(Some(id)),
+        TableSelection::Multiple(binding) => {
+            binding.with_mut(|selected| {
+                if !selected.insert(id) {
+                    selected.remove(&id);
+                }
+            });
+        }
+    }
+}
+
+/// Measures a leaf under the fully unspecified proposal.
 fn intrinsic_size(layout: &dyn SubView) -> (f64, f64) {
     let measured = layout.measure(ProposalSize::UNSPECIFIED);
     (
@@ -137,15 +229,15 @@ fn intrinsic_size(layout: &dyn SubView) -> (f64, f64) {
     )
 }
 
-/// `columnWidths` for one column: `max(minimumColumnWidth, headerWidth,
-/// cellWidths + HORIZONTAL_PADDING * 2)`.
+/// Fitted width for one column: `max(MINIMUM_COLUMN_WIDTH, header_width,
+/// cell_widths + HORIZONTAL_PADDING * 2)`.
 fn fitted_column_width(header_width: f64, cell_widths: impl Iterator<Item = f64>) -> f64 {
     cell_widths.fold(MINIMUM_COLUMN_WIDTH.max(header_width), |width, cell| {
         width.max(HORIZONTAL_PADDING.mul_add(2.0, cell))
     })
 }
 
-/// One entry of `rowHeights`: `max(28, cells + VERTICAL_PADDING * 2)`.
+/// Fitted height for one row: `max(MIN_ROW_HEIGHT, cells + VERTICAL_PADDING * 2)`.
 fn fitted_row_height(cell_heights: impl Iterator<Item = f64>) -> f64 {
     cell_heights
         .reduce(f64::max)
@@ -154,8 +246,6 @@ fn fitted_row_height(cell_heights: impl Iterator<Item = f64>) -> f64 {
         .max(MIN_ROW_HEIGHT)
 }
 
-/// `headerHeight` on iOS: `max(28, labels + VERTICAL_PADDING * 2)`; on
-/// macOS the fixed `nativeHeaderHeight`. Empty table answers `0`.
 #[cfg_attr(
     target_os = "macos",
     expect(
@@ -184,53 +274,52 @@ fn header_height(state: &TableState) -> f64 {
     }
 }
 
-/// `columnWidths` for every column.
 fn column_widths(state: &TableState) -> Vec<f64> {
     state
         .columns
         .iter()
-        .map(|column| {
+        .enumerate()
+        .map(|(col_index, column)| {
+            let sort_allowance = if column.sortable {
+                SORT_INDICATOR_ALLOWANCE
+            } else {
+                0.0
+            };
             #[cfg(target_os = "ios")]
-            let header_width =
-                HORIZONTAL_PADDING.mul_add(2.0, intrinsic_size(column.label.layout()).0);
-            // The native header cell measures its own title, padding
-            // included.
+            let header_width = HORIZONTAL_PADDING.mul_add(
+                2.0,
+                intrinsic_size(column.label.layout()).0 + sort_allowance,
+            );
             #[cfg(target_os = "macos")]
-            let header_width = column.ns_column.headerCell().cellSize().width;
+            let header_width = column.ns_column.headerCell().cellSize().width + sort_allowance;
             fitted_column_width(
                 header_width,
-                column
+                state
                     .ids
                     .iter()
-                    .filter_map(|id| column.cells.get(id))
+                    .filter_map(|&id| state.cells.get(&(id, col_index)))
                     .map(|cell| intrinsic_size(cell.layout()).0),
             )
         })
         .collect()
 }
 
-/// `rowHeights`: per row index, the max fitted cell height across columns.
 fn row_heights(state: &TableState) -> Vec<f64> {
-    let count = state
-        .columns
+    let col_count = state.columns.len();
+    state
+        .ids
         .iter()
-        .map(|column| column.ids.len())
-        .max()
-        .unwrap_or(0);
-    (0..count)
-        .map(|row| {
-            fitted_row_height(state.columns.iter().filter_map(|column| {
-                column
-                    .ids
-                    .get(row)
-                    .and_then(|id| column.cells.get(id))
+        .map(|&id| {
+            fitted_row_height((0..col_count).filter_map(|col_index| {
+                state
+                    .cells
+                    .get(&(id, col_index))
                     .map(|cell| intrinsic_size(cell.layout()).1)
             }))
         })
         .collect()
 }
 
-/// `sizeThatFits` — the proposal is ignored on both platforms.
 fn size_that_fits(state: &TableState) -> Size {
     let width: f64 = column_widths(state).iter().sum();
     let height = header_height(state) + row_heights(state).iter().sum::<f64>();
@@ -241,198 +330,311 @@ fn size_that_fits(state: &TableState) -> Size {
     Size::new(width as f32, height as f32)
 }
 
-/// `updateAttachedViews` (iOS): the host's subviews are exactly the labels
-/// in column order, then every column's cells in row order.
 #[cfg(target_os = "ios")]
 fn update_attached_views(state: &TableState) {
-    let desired: Vec<Retained<cocoa_ui::PlatformView>> = state
-        .columns
-        .iter()
-        .map(|column| view::retain_base(column.label.view()))
-        .chain(state.columns.iter().flat_map(|column| {
-            column
-                .ids
-                .iter()
-                .filter_map(|id| column.cells.get(id))
-                .map(|cell| view::retain_base(cell.view()))
-        }))
-        .collect();
+    let mut desired: Vec<Retained<cocoa_ui::PlatformView>> = Vec::new();
+    for column in &state.columns {
+        desired.push(view::retain_base(&column.header_host));
+    }
+    for &id in &state.ids {
+        if let Some(row_host) = state.row_hosts.get(&id) {
+            desired.push(view::retain_base(&row_host.host));
+        }
+        for col_index in 0..state.columns.len() {
+            if let Some(cell) = state.cells.get(&(id, col_index)) {
+                desired.push(view::retain_base(cell.view()));
+            }
+        }
+    }
     view::reconcile_subviews(&state.host, &desired);
 }
 
-/// `reloadContent` (iOS): reconcile the attached views and invalidate.
+#[cfg(target_os = "ios")]
+fn apply_selection_and_sort_chrome(state: &TableState) {
+    let selected_ids = state.selected_ids();
+    let fill = state
+        .selection_fill
+        .as_ref()
+        .map(|signal| crate::theme::platform_color(&signal.snapshot()));
+    for &id in &state.ids {
+        let is_selected = selected_ids.contains(&id);
+        if let Some(row_host) = state.row_hosts.get(&id) {
+            if is_selected {
+                view::set_background_color(&row_host.host, fill.as_deref());
+            } else {
+                view::set_background_color(&row_host.host, None);
+            }
+            if state.allows_selection() {
+                apply_state(
+                    &row_host.host,
+                    false,
+                    is_selected,
+                    None,
+                    false,
+                    None,
+                    false,
+                    None,
+                );
+            }
+        }
+    }
+    let active_sort = state.sort_order.as_ref().and_then(Signal::snapshot);
+    for (col_index, column) in state.columns.iter().enumerate() {
+        let title = column.label_content.snapshot().to_plain();
+        let value = match active_sort {
+            Some(sort) if sort.column == col_index => match sort.direction {
+                SortDirection::Ascending => Some("ascending"),
+                SortDirection::Descending => Some("descending"),
+            },
+            _ => None,
+        };
+        view::set_accessibility_content(&column.header_host, Some(&title), value);
+    }
+}
+
 #[cfg(target_os = "ios")]
 fn reload_content(state: &TableState) {
     update_attached_views(state);
+    apply_selection_and_sort_chrome(state);
     state.host.set_needs_layout();
     crate::measure_memo::invalidate();
     view::invalidate_layout(&state.host);
     crate::measure_memo::invalidate();
 }
 
-/// `reloadContent` (`AppKit`): refresh the column titles, recompute row
-/// heights and column widths, reload, and propagate the invalidation
-/// upward.
 #[cfg(target_os = "macos")]
-fn reload_content(state: &mut TableState) {
-    for column in &state.columns {
-        column
-            .ns_column
-            .setTitle(&objc2_foundation::NSString::from_str(
+fn apply_binding_selection(state: &Rc<RefCell<TableState>>) {
+    let (table, indexes) = {
+        let borrowed = state.borrow();
+        if borrowed.applying_selection.get() {
+            return;
+        }
+        borrowed.applying_selection.set(true);
+        let indexes = if borrowed.allows_selection() {
+            let selected_ids = borrowed.selected_ids();
+            borrowed
+                .ids
+                .iter()
+                .enumerate()
+                .filter_map(|(index, id)| selected_ids.contains(id).then_some(index))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        (borrowed.table.clone(), indexes)
+    };
+    table.set_selected_rows(&indexes);
+    state.borrow().applying_selection.set(false);
+}
+
+#[cfg(target_os = "macos")]
+fn apply_sort_indicators(state: &Rc<RefCell<TableState>>) {
+    let (table, header, updates, highlighted) = {
+        let borrowed = state.borrow();
+        let active_sort = borrowed.sort_order.as_ref().and_then(Signal::snapshot);
+        let mut highlighted: Option<Retained<NSTableColumn>> = None;
+        let updates: Vec<(Retained<NSTableColumn>, Option<TableSortIndicator>)> = borrowed
+            .columns
+            .iter()
+            .enumerate()
+            .map(|(col_index, column)| {
+                let indicator = match active_sort {
+                    Some(sort) if sort.column == col_index && column.sortable => {
+                        highlighted = Some(column.ns_column.clone());
+                        Some(match sort.direction {
+                            SortDirection::Ascending => TableSortIndicator::Ascending,
+                            SortDirection::Descending => TableSortIndicator::Descending,
+                        })
+                    }
+                    _ => None,
+                };
+                (column.ns_column.clone(), indicator)
+            })
+            .collect();
+        (
+            borrowed.table.clone(),
+            borrowed.header.clone(),
+            updates,
+            highlighted,
+        )
+    };
+    for (ns_column, indicator) in &updates {
+        table.set_sort_indicator(ns_column, *indicator);
+    }
+    table.set_highlighted_column(highlighted.as_deref());
+    TableView::refresh_header(&header);
+}
+
+#[cfg(target_os = "macos")]
+fn reload_content(state: &Rc<RefCell<TableState>>) {
+    let (table, host) = {
+        let mut borrowed = state.borrow_mut();
+        for column in &borrowed.columns {
+            column.ns_column.setTitle(&NSString::from_str(
                 &column.label_content.snapshot().to_plain(),
             ));
-    }
-    state.row_heights = row_heights(state);
-    for (column, width) in state.columns.iter().zip(column_widths(state)) {
-        column.ns_column.setWidth(width);
-    }
-    state.table.reload_data();
-    TableView::refresh_header(&state.header);
-    state.host.set_needs_layout();
+        }
+        borrowed.row_heights = row_heights(&borrowed);
+        for (column, width) in borrowed.columns.iter().zip(column_widths(&borrowed)) {
+            column.ns_column.setWidth(width);
+        }
+        (borrowed.table.clone(), borrowed.host.clone())
+    };
+    // Run every AppKit NSTableView method with no `RefCell` borrow held so
+    // synchronous data-source and delegate callbacks can read `state`.
+    table.reload_data();
+    apply_binding_selection(state);
+    apply_sort_indicators(state);
+    host.set_needs_layout();
     crate::measure_memo::invalidate();
-    view::invalidate_layout(&state.host);
+    view::invalidate_layout(&host);
     crate::measure_memo::invalidate();
 }
 
-/// `WuiStableViewCollection`'s reconcile for one column's rows: reuse the
-/// rendered cell of every unchanged id, render only the joins, drop the
-/// leaves that left.
-fn sync_column_cells(
-    column: &mut ColumnState,
-    renderer: &Renderer,
-    host: &cocoa_ui::PlatformView,
-    ids: Vec<ItemId>,
-) {
-    #[cfg(target_os = "macos")]
-    let _ = host;
-    for (index, &id) in ids.iter().enumerate() {
-        if column.cells.contains_key(&id) {
+/// Reconciles rendered cells for every row id: keeps surviving rows untouched,
+/// materializes cells for joining rows via `Renderer::realize`, and drops
+/// departed rows.
+fn sync_rows(state_rc: &Rc<RefCell<TableState>>, ids: Vec<ItemId>) {
+    let mut state = state_rc.borrow_mut();
+    let col_count = state.columns.len();
+    let renderer = state.renderer.clone();
+    #[cfg(target_os = "ios")]
+    let host = state.host.clone();
+    #[cfg(target_os = "ios")]
+    let mtm = renderer.context().mtm();
+    #[cfg(target_os = "ios")]
+    let allows_selection = state.allows_selection();
+
+    for (row_index, &id) in ids.iter().enumerate() {
+        #[cfg(target_os = "ios")]
+        if !state.row_hosts.contains_key(&id) {
+            let row_host = HostView::new(mtm, cocoa_ui::Rect::ZERO);
+            let tap = allows_selection.then(|| {
+                let weak = Rc::downgrade(state_rc);
+                tap(&row_host, 1, ButtonMask::PRIMARY, move |phase, _| {
+                    if phase == GestureState::Ended
+                        && let Some(state) = weak.upgrade()
+                    {
+                        select_row_id(&state, id);
+                    }
+                })
+            });
+            state.row_hosts.insert(
+                id,
+                RowHost {
+                    host: row_host,
+                    _tap: tap,
+                },
+            );
+        }
+
+        let needs_build = (0..col_count).any(|col| !state.cells.contains_key(&(id, col)));
+        if !needs_build {
             continue;
         }
-        let text = column
-            .snapshot
-            .get_view(index)
-            .expect("table row index is in bounds");
-        let leaf = renderer.render(text);
-        #[cfg(target_os = "ios")]
-        let cell = {
-            let mounted = leaf.mount(host);
-            view::set_translates_autoresizing(mounted.view(), true);
-            mounted
+        let Some(row) = state.snapshot.get_view(row_index) else {
+            continue;
         };
-        #[cfg(target_os = "macos")]
-        let cell = leaf;
-        column.cells.insert(id, cell);
+        for (col_index, cell) in row.into_cells().into_iter().enumerate() {
+            if state.cells.contains_key(&(id, col_index)) {
+                continue;
+            }
+            let leaf = renderer.realize(cell);
+            #[cfg(target_os = "ios")]
+            let stored = {
+                let mounted = leaf.mount(&host);
+                view::set_translates_autoresizing(mounted.view(), true);
+                mounted
+            };
+            #[cfg(target_os = "macos")]
+            let stored = leaf;
+            state.cells.insert((id, col_index), stored);
+        }
     }
-    let dropped: Vec<ItemId> = column
+
+    let active: BTreeSet<ItemId> = ids.iter().copied().collect();
+    let dropped_cells: Vec<(ItemId, usize)> = state
         .cells
         .keys()
         .copied()
-        .filter(|id| !ids.contains(id))
+        .filter(|(id, _)| !active.contains(id))
         .collect();
-    for id in dropped {
-        if let Some(cell) = column.cells.remove(&id) {
-            // `AppKit`: the leaf is unmounted, so detach its view by hand —
-            // `Mounted`'s drop does this on `UIKit`.
+    for key in dropped_cells {
+        if let Some(cell) = state.cells.remove(&key) {
             #[cfg(target_os = "macos")]
             view::remove_from_superview(cell.view());
             drop(cell);
         }
     }
-    column.ids = ids;
-}
-
-/// Coalesced `rows` notifications for one column — outside `TableState`,
-/// so an emission landing while cell materialization holds the state
-/// borrow never touches it. Each event records its own snapshot with the
-/// ids captured from it and the metadata; the newest recorded triple
-/// applies at the outermost transaction's finish and an older snapshot
-/// is never replayed after a newer one. The cell lives exactly as long
-/// as its column: a dropped column releases it, so nothing is delivered
-/// to a column that no longer exists.
-#[derive(Default)]
-struct PendingColumnRows {
-    /// The newest unapplied (snapshot, ids, metadata) triple.
-    emission: Option<(AnyViewsSnapshot<Text>, Vec<ItemId>, Metadata)>,
-}
-
-impl PendingColumnRows {
-    /// The newest emission is authoritative.
-    fn record(&mut self, snapshot: AnyViewsSnapshot<Text>, ids: Vec<ItemId>, metadata: Metadata) {
-        self.emission = Some((snapshot, ids, metadata));
-    }
-
-    /// Drains the pending emission; the apply owns delivery from here.
-    const fn take(&mut self) -> Option<(AnyViewsSnapshot<Text>, Vec<ItemId>, Metadata)> {
-        self.emission.take()
-    }
-
-    /// Returns an emission the apply could not deliver: anything recorded
-    /// since the take is newer and stays authoritative.
-    fn restore(&mut self, emission: (AnyViewsSnapshot<Text>, Vec<ItemId>, Metadata)) {
-        if self.emission.is_none() {
-            self.emission = Some(emission);
+    #[cfg(target_os = "ios")]
+    {
+        let dropped_hosts: Vec<ItemId> = state
+            .row_hosts
+            .keys()
+            .copied()
+            .filter(|id| !active.contains(id))
+            .collect();
+        for id in dropped_hosts {
+            if let Some(row_host) = state.row_hosts.remove(&id) {
+                view::remove_from_superview(&row_host.host);
+            }
         }
     }
+
+    state.ids = ids;
 }
 
-/// The table-owned delivery coordinator: the transaction depth shared by
-/// every scope that holds the state borrow across `get_view`/render/
-/// mount, plus the non-rows notifications — a pending `columns`
-/// reconcile (payload + metadata, newest wins) and a `reloadContent`
-/// request from a column label's `content` change.
 #[derive(Default)]
 struct TablePending {
-    /// Active transaction depth — a notification raised inside one only
-    /// records and the outermost finish delivers.
     depth: usize,
-    /// The newest unapplied columns emission.
-    columns: Option<(Vec<TableColumn>, Metadata)>,
-    /// A label `content` change asked for `reloadContent`.
+    rows: Option<(AnyViewsSnapshot<TableRow<Held>>, Vec<ItemId>, Metadata)>,
     reload: bool,
+    selection_changed: bool,
+    sort_changed: bool,
 }
 
-/// The table drain — the outermost transaction's finish and
-/// `reconcile_columns`' attach boundary share it. One pass applies the
-/// recorded columns reconcile (new columns' recorded rows deliver in the
-/// same drain), then every attached column's rows emission, then a
-/// recorded `reloadContent`; it loops until a whole pass records nothing
-/// — a work queue drained to quiescence, not a poll.
 fn drain_table(state: &Rc<RefCell<TableState>>, pending: &Rc<RefCell<TablePending>>) {
     pending.borrow_mut().depth += 1;
     loop {
-        // `take` outside the `if let` scrutinee — the scrutinee would
-        // hold the `RefMut` across the reconcile, and a reentrant
-        // `record`/watch callback there would collide with it.
-        let columns_event = pending.borrow_mut().columns.take();
-        if let Some((columns, metadata)) = columns_event {
+        let rows_event = pending.borrow_mut().rows.take();
+        if let Some((snapshot, ids, metadata)) = rows_event {
             crate::animation::with_platform_animation(&metadata, {
                 let state = Rc::clone(state);
-                let pending = Rc::clone(pending);
-                move || reconcile_columns(&state, &pending, columns)
+                move || {
+                    state.borrow_mut().snapshot = snapshot;
+                    sync_rows(&state, ids);
+                    #[cfg(target_os = "ios")]
+                    reload_content(&state.borrow());
+                    #[cfg(target_os = "macos")]
+                    reload_content(&state);
+                }
             });
             continue;
         }
         let mut progressed = false;
-        let attached: Vec<(usize, Rc<RefCell<PendingColumnRows>>)> = state
-            .borrow()
-            .columns
-            .iter()
-            .map(|column| (column.semantic_id, Rc::clone(&column.pending)))
-            .collect();
-        for (semantic_id, column_pending) in attached {
-            if column_pending.borrow().emission.is_some() {
-                progressed = true;
-                deliver_column_rows(state, &column_pending, semantic_id);
-            }
-        }
         if pending.borrow_mut().reload {
             pending.borrow_mut().reload = false;
             progressed = true;
             #[cfg(target_os = "ios")]
             reload_content(&state.borrow());
             #[cfg(target_os = "macos")]
-            reload_content(&mut state.borrow_mut());
+            reload_content(state);
+        }
+        if pending.borrow_mut().selection_changed {
+            pending.borrow_mut().selection_changed = false;
+            progressed = true;
+            #[cfg(target_os = "ios")]
+            apply_selection_and_sort_chrome(&state.borrow());
+            #[cfg(target_os = "macos")]
+            apply_binding_selection(state);
+        }
+        if pending.borrow_mut().sort_changed {
+            pending.borrow_mut().sort_changed = false;
+            progressed = true;
+            #[cfg(target_os = "ios")]
+            apply_selection_and_sort_chrome(&state.borrow());
+            #[cfg(target_os = "macos")]
+            apply_sort_indicators(state);
         }
         if !progressed {
             break;
@@ -441,68 +643,6 @@ fn drain_table(state: &Rc<RefCell<TableState>>, pending: &Rc<RefCell<TablePendin
     pending.borrow_mut().depth -= 1;
 }
 
-/// Delivers recorded rows changes for `semantic_id`'s column until the
-/// newest has applied: each snapshot and its ids swap in atomically
-/// under one borrow inside the emission's animation. Only called inside
-/// `drain_table`, which marks the transaction active — a synchronous
-/// emission raised by cell materialization only records, and this loop
-/// drains it. Every scope that can run view generation or mounting
-/// under the state borrow is a transaction, so the borrow is always
-/// free here; the `borrow_mut` asserts it. An emission whose column is
-/// not yet attached stays recorded and is delivered when the reconcile
-/// installs it.
-fn deliver_column_rows(
-    state: &Rc<RefCell<TableState>>,
-    pending: &Rc<RefCell<PendingColumnRows>>,
-    semantic_id: usize,
-) {
-    loop {
-        // `take` inside the loop body, not a `while let` scrutinee — the
-        // scrutinee would hold the `RefMut` across the apply, and a
-        // reentrant `record` there would collide with it.
-        let Some((snapshot, ids, metadata)) = pending.borrow_mut().take() else {
-            break;
-        };
-        let applied = Rc::new(Cell::new(false));
-        crate::animation::with_platform_animation(&metadata, {
-            let state = Rc::clone(state);
-            let snapshot = snapshot.clone();
-            let ids = ids.clone();
-            let applied = Rc::clone(&applied);
-            move || {
-                let mut state = state.borrow_mut();
-                let Some(index) = state
-                    .columns
-                    .iter()
-                    .position(|column| column.semantic_id == semantic_id)
-                else {
-                    return;
-                };
-                let (renderer, host) = (state.renderer.clone(), state.host.clone());
-                state.columns[index].snapshot = snapshot;
-                sync_column_cells(&mut state.columns[index], &renderer, &host, ids);
-                #[cfg(target_os = "ios")]
-                reload_content(&state);
-                #[cfg(target_os = "macos")]
-                reload_content(&mut state);
-                applied.set(true);
-            }
-        });
-        if !applied.get() {
-            // The column is not attached yet — the emission stays
-            // recorded and `reconcile_columns`' install boundary
-            // delivers it; if the column never attaches, it dies with
-            // its owner.
-            pending.borrow_mut().restore((snapshot, ids, metadata));
-            break;
-        }
-    }
-}
-
-/// Runs `body` as a table transaction: notifications raised inside it
-/// only record, and the outermost finish drains everything recorded.
-/// Every scope that holds the state borrow across `get_view`/render/
-/// mount goes through here.
 fn with_table_tx<T>(
     state: &Rc<RefCell<TableState>>,
     pending: &Rc<RefCell<TablePending>>,
@@ -521,34 +661,22 @@ fn with_table_tx<T>(
     result
 }
 
-/// `WuiTableColumnNode.init` — build a column: render the label, take the
-/// initial row ids, and subscribe the row and label watches that drive
-/// `reloadContent` (row changes additionally animate through
-/// `withPlatformAnimation`).
 fn materialize_column(
     state: &Rc<RefCell<TableState>>,
     pending: &Rc<RefCell<TablePending>>,
-    column: &TableColumn,
+    descriptor: &TableColumnDescriptor,
+    col_index: usize,
+    has_sort_binding: bool,
 ) -> ColumnState {
-    let (renderer, host, env) = {
+    let sortable = has_sort_binding && descriptor.is_sortable();
+    let (renderer, env) = {
         let state = state.borrow();
         (
             state.renderer.clone(),
-            state.host.clone(),
             state.renderer.context().env().clone(),
         )
     };
-    let rows = column.rows();
-
-    // The label's `content` drives `reloadContent` (`onContentChange`) and,
-    // on `AppKit`, the `NSTableColumn` title. The rest of the resolved
-    // `TextConfig` — `paragraph_alignment`, `line_limit` — is consumed and
-    // released here, as `WuiTableColumnNode` releases the alignment signal.
-    let label_content = column.label().resolve(&env).into_content();
-
-    // A label `content` event only records the reload request while a
-    // transaction is active; otherwise it drains immediately — the watch
-    // never borrows the state itself.
+    let label_content = descriptor.label().resolve(&env).into_content();
     let weak = Rc::downgrade(state);
     let label_guard = label_content.watch({
         let pending = Rc::clone(pending);
@@ -564,181 +692,106 @@ fn materialize_column(
     });
 
     #[cfg(target_os = "ios")]
-    let label = {
-        let leaf = renderer.render(column.label());
-        let mounted = leaf.mount(&host);
+    let (header_host, label, header_tap) = {
+        let mtm = renderer.context().mtm();
+        let header_host = HostView::new(mtm, cocoa_ui::Rect::ZERO);
+        let role = if sortable { Role::Button } else { Role::Header };
+        set_role(&header_host, role);
+        let leaf = renderer.render(descriptor.label().clone());
+        let mounted = leaf.mount(&header_host);
         view::set_translates_autoresizing(mounted.view(), true);
-        mounted
+        let header_tap = sortable.then(|| {
+            let weak = Rc::downgrade(state);
+            tap(&header_host, 1, ButtonMask::PRIMARY, move |phase, _| {
+                if phase == GestureState::Ended
+                    && let Some(state) = weak.upgrade()
+                {
+                    toggle_sort(&state, col_index);
+                }
+            })
+        });
+        (header_host, mounted, header_tap)
     };
 
     #[cfg(target_os = "macos")]
     let ns_column = {
-        let id = column.semantic_id();
+        let id = descriptor.identity();
         let ns_column = NSTableColumn::initWithIdentifier(
-            state
-                .borrow()
-                .renderer
-                .context()
-                .mtm()
-                .alloc::<NSTableColumn>(),
-            &objc2_foundation::NSString::from_str(&format!("waterui.table.{id}")),
+            renderer.context().mtm().alloc::<NSTableColumn>(),
+            &NSString::from_str(&format!("waterui.table.{col_index}.{id}")),
         );
         ns_column.setMinWidth(MINIMUM_COLUMN_WIDTH);
-        ns_column.setTitle(&objc2_foundation::NSString::from_str(
-            &label_content.snapshot().to_plain(),
-        ));
+        ns_column.setTitle(&NSString::from_str(&label_content.snapshot().to_plain()));
         ns_column
     };
 
-    let semantic_id = column.semantic_id();
-    let column_pending = Rc::new(RefCell::new(PendingColumnRows::default()));
-    // A rows event only records into this column's pending cell while a
-    // transaction is active; otherwise it drains immediately, so an
-    // emission inside a cell's own materialization can never collide
-    // with the borrow that materialization holds. An emission recorded
-    // before this column is attached is delivered at
-    // `reconcile_columns`' install boundary.
-    let weak = Rc::downgrade(state);
-    let rows_guard = rows.watch(.., {
-        let column_pending = Rc::clone(&column_pending);
-        let pending = Rc::clone(pending);
-        move |ctx, _change| {
-            let Some(state) = weak.upgrade() else {
-                return;
-            };
-            let snapshot = ctx.value().clone();
-            let metadata = ctx.metadata().clone();
-            let ids: Vec<ItemId> = snapshot
-                .range()
-                .filter_map(|index| snapshot.get_id(index))
-                .collect();
-            column_pending.borrow_mut().record(snapshot, ids, metadata);
-            if pending.borrow().depth == 0 {
-                drain_table(&state, &pending);
-            }
-        }
-    });
-
-    let mut column_state = ColumnState {
-        semantic_id,
-        snapshot: rows.snapshot(),
-        ids: Vec::new(),
-        pending: column_pending,
-        cells: HashMap::new(),
+    ColumnState {
+        sortable,
+        #[cfg(target_os = "ios")]
+        header_host,
         #[cfg(target_os = "ios")]
         label,
-        #[cfg(target_os = "macos")]
-        label_content,
         #[cfg(target_os = "ios")]
-        _label_content: label_content,
+        _header_tap: header_tap,
+        label_content,
         _label_guard: label_guard,
-        _rows_guard: rows_guard,
         #[cfg(target_os = "macos")]
         ns_column,
-    };
-    let ids: Vec<ItemId> = column_state
-        .snapshot
-        .range()
-        .filter_map(|index| column_state.snapshot.get_id(index))
-        .collect();
-    sync_column_cells(&mut column_state, &renderer, &host, ids);
-    column_state
-}
-
-/// `reconcileColumns` — the `semantic_id`-keyed reconcile: keep surviving
-/// columns (their cells, watches, and platform objects untouched), build
-/// the joins, drop the leaves that left. Always runs inside a
-/// transaction (its callers `drain_table` and the initial population
-/// provide it), so rows emissions raised while materializing a column's
-/// cells only record; after `columns` is installed, the drain delivers
-/// each attached column's recorded emission — the attach boundary.
-fn reconcile_columns(
-    state: &Rc<RefCell<TableState>>,
-    pending: &Rc<RefCell<TablePending>>,
-    columns: Vec<TableColumn>,
-) {
-    let mut kept = HashMap::new();
-    for existing in core::mem::take(&mut state.borrow_mut().columns) {
-        kept.insert(existing.semantic_id, existing);
     }
-    let mut ordered = Vec::with_capacity(columns.len());
-    for column in columns {
-        let id = column.semantic_id();
-        ordered.push(
-            kept.remove(&id)
-                .unwrap_or_else(|| materialize_column(state, pending, &column)),
-        );
-    }
-    // `kept`'s leftovers are the departed columns; dropping them
-    // releases their cells and unsubscribes their watchers.
-    drop(kept);
-    state.borrow_mut().columns = ordered;
-    #[cfg(target_os = "ios")]
-    update_columns(&state.borrow());
-    #[cfg(target_os = "macos")]
-    update_columns(&mut state.borrow_mut());
 }
 
-/// `updateColumns` (iOS) — reconcile attached views, then reload.
-#[cfg(target_os = "ios")]
-fn update_columns(state: &TableState) {
-    update_attached_views(state);
-    reload_content(state);
-}
-
-/// `updateColumns` (`AppKit`) — push the current column list to the
-/// `NSTableView`, then reload.
-#[cfg(target_os = "macos")]
-fn update_columns(state: &mut TableState) {
-    {
-        let ordered: Vec<Retained<NSTableColumn>> = state
-            .columns
-            .iter()
-            .map(|column| column.ns_column.clone())
-            .collect();
-        state.table.set_columns(&ordered);
-    }
-    reload_content(state);
-}
-
-/// `layoutSubviews` on `UIKit` — frame labels across the top band and cells
-/// on their row/column grid.
 #[cfg(target_os = "ios")]
 fn layout_children(state: &TableState) {
     let widths = column_widths(state);
+    let total_width: f64 = widths.iter().sum();
     let header_height = header_height(state);
     let row_heights = row_heights(state);
     let mut x = 0.0;
     for (index, column) in state.columns.iter().enumerate() {
         view::set_frame(
-            column.label.view(),
+            &column.header_host,
             cocoa_ui::Rect::new(x, 0.0, widths[index], header_height),
+        );
+        view::set_frame(
+            column.label.view(),
+            cocoa_ui::Rect::new(
+                HORIZONTAL_PADDING,
+                VERTICAL_PADDING,
+                HORIZONTAL_PADDING.mul_add(-2.0, widths[index]).max(0.0),
+                VERTICAL_PADDING.mul_add(-2.0, header_height).max(0.0),
+            ),
         );
         x += widths[index];
     }
     let mut y = header_height;
-    for (row, row_height) in row_heights.iter().enumerate() {
-        x = 0.0;
-        for (index, column) in state.columns.iter().enumerate() {
-            if let Some(cell) = column.ids.get(row).and_then(|id| column.cells.get(id)) {
+    for (row_index, row_height) in row_heights.iter().enumerate() {
+        if let Some(&id) = state.ids.get(row_index) {
+            if let Some(row_host) = state.row_hosts.get(&id) {
                 view::set_frame(
-                    cell.view(),
-                    cocoa_ui::Rect::new(
-                        x + HORIZONTAL_PADDING,
-                        y + VERTICAL_PADDING,
-                        HORIZONTAL_PADDING.mul_add(-2.0, widths[index]),
-                        VERTICAL_PADDING.mul_add(-2.0, *row_height),
-                    ),
+                    &row_host.host,
+                    cocoa_ui::Rect::new(0.0, y, total_width, *row_height),
                 );
             }
-            x += widths[index];
+            x = 0.0;
+            for (col_index, &col_width) in widths.iter().enumerate() {
+                if let Some(cell) = state.cells.get(&(id, col_index)) {
+                    view::set_frame(
+                        cell.view(),
+                        cocoa_ui::Rect::new(
+                            x + HORIZONTAL_PADDING,
+                            y + VERTICAL_PADDING,
+                            HORIZONTAL_PADDING.mul_add(-2.0, col_width).max(0.0),
+                            VERTICAL_PADDING.mul_add(-2.0, *row_height).max(0.0),
+                        ),
+                    );
+                }
+                x += col_width;
+            }
         }
         y += row_height;
     }
 }
 
-/// `layout` on `AppKit` — refresh the column widths, then frame the header
-/// band and the table inside the host's bounds.
 #[cfg(target_os = "macos")]
 fn layout_children(state: &TableState) {
     for (column, width) in state.columns.iter().zip(column_widths(state)) {
@@ -761,7 +814,6 @@ fn layout_children(state: &TableState) {
     );
 }
 
-/// The table's layout face: `sizeThatFits` — the proposal is ignored.
 struct TableSubView {
     state: Rc<RefCell<TableState>>,
 }
@@ -785,7 +837,6 @@ impl SubView for TableSubView {
         ViewDimensions::new(size_that_fits(&self.state.borrow()))
     }
 
-    /// `NSTableView`-driven stretch: `.none`.
     fn stretch_axis(&self) -> StretchAxis {
         StretchAxis::None
     }
@@ -795,31 +846,28 @@ impl SubView for TableSubView {
     }
 }
 
-/// The `NSTableView` data handlers (macOS) — row count and heights read
-/// the applied `column.ids`, and `cell_view` returns the already
-/// materialized leaf for a snapshot position.
 #[cfg(target_os = "macos")]
 fn install_table_handlers(state: &Rc<RefCell<TableState>>) {
     let table = &state.borrow().table;
+    table.set_allows_multiple_selection(matches!(
+        state.borrow().selection,
+        TableSelection::Multiple(_)
+    ));
     table.set_row_count_handler({
         let weak = Rc::downgrade(state);
-        move || {
-            weak.upgrade().map_or(0, |state| {
-                state
-                    .borrow()
-                    .columns
-                    .iter()
-                    .map(|column| column.ids.len())
-                    .max()
-                    .unwrap_or(0)
-            })
-        }
+        move || weak.upgrade().map_or(0, |state| state.borrow().ids.len())
     });
     table.set_row_height_handler({
         let weak = Rc::downgrade(state);
         move |row| {
-            weak.upgrade()
-                .map_or(0.0, |state| state.borrow().row_heights[row])
+            weak.upgrade().map_or(MIN_ROW_HEIGHT, |state| {
+                state
+                    .borrow()
+                    .row_heights
+                    .get(row)
+                    .copied()
+                    .unwrap_or(MIN_ROW_HEIGHT)
+            })
         }
     });
     table.set_cell_view_handler({
@@ -827,22 +875,142 @@ fn install_table_handlers(state: &Rc<RefCell<TableState>>) {
         move |ns_column, row| {
             let state = weak.upgrade()?;
             let state = state.borrow();
-            let column = state.columns.iter().find(|column| {
-                std::ptr::eq(
-                    std::ptr::from_ref(&*column.ns_column),
-                    std::ptr::from_ref(ns_column),
-                )
+            let col_index = state.columns.iter().position(|column| {
+                ptr::eq(ptr::from_ref(&*column.ns_column), ptr::from_ref(ns_column))
             })?;
-            let id = column.ids.get(row)?;
-            let cell = column.cells.get(id)?;
+            let &id = state.ids.get(row)?;
+            let cell = state.cells.get(&(id, col_index))?;
             Some(view::retain_base(cell.view()))
+        }
+    });
+    table.set_should_select_row_handler({
+        let weak = Rc::downgrade(state);
+        move |_row| {
+            weak.upgrade()
+                .is_some_and(|state| state.borrow().allows_selection())
+        }
+    });
+    table.set_selection_did_change_handler({
+        let weak = Rc::downgrade(state);
+        move |selected_rows| {
+            if let Some(state) = weak.upgrade() {
+                write_selection_indices(&state, selected_rows);
+            }
+        }
+    });
+    table.set_column_clicked_handler({
+        let weak = Rc::downgrade(state);
+        move |ns_column| {
+            let Some(state) = weak.upgrade() else {
+                return;
+            };
+            let col_index = state.borrow().columns.iter().position(|column| {
+                ptr::eq(ptr::from_ref(&*column.ns_column), ptr::from_ref(ns_column))
+            });
+            if let Some(col_index) = col_index {
+                toggle_sort(&state, col_index);
+            }
         }
     });
 }
 
-/// Renders a `TableConfig` into the host: `WuiTable.init(columns:env:)`.
-fn render(config: TableConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
-    let TableConfig { columns } = config;
+fn watch_table_inputs(
+    state: &Rc<RefCell<TableState>>,
+    pending: &Rc<RefCell<TablePending>>,
+    config: &TableConfig<Held>,
+) -> (
+    BoxWatcherGuard,
+    Option<BoxWatcherGuard>,
+    Option<BoxWatcherGuard>,
+) {
+    let rows_guard: BoxWatcherGuard = config.rows().watch(.., {
+        let weak = Rc::downgrade(state);
+        let pending = Rc::clone(pending);
+        move |ctx, _change| {
+            let Some(state) = weak.upgrade() else {
+                return;
+            };
+            let snapshot = ctx.value().clone();
+            let metadata = ctx.metadata().clone();
+            let ids: Vec<ItemId> = snapshot
+                .range()
+                .filter_map(|index| snapshot.get_id(index))
+                .collect();
+            pending.borrow_mut().rows = Some((snapshot, ids, metadata));
+            if pending.borrow().depth == 0 {
+                drain_table(&state, &pending);
+            }
+        }
+    });
+
+    let selection_guard: Option<BoxWatcherGuard> = match config.selection() {
+        TableSelection::None => None,
+        TableSelection::Single(binding) => {
+            let weak = Rc::downgrade(state);
+            let pending = Rc::clone(pending);
+            Some(Box::new(binding.watch(move |_ctx| {
+                let Some(state) = weak.upgrade() else {
+                    return;
+                };
+                pending.borrow_mut().selection_changed = true;
+                if pending.borrow().depth == 0 {
+                    drain_table(&state, &pending);
+                }
+            })))
+        }
+        TableSelection::Multiple(binding) => {
+            let weak = Rc::downgrade(state);
+            let pending = Rc::clone(pending);
+            Some(Box::new(binding.watch(move |_ctx| {
+                let Some(state) = weak.upgrade() else {
+                    return;
+                };
+                pending.borrow_mut().selection_changed = true;
+                if pending.borrow().depth == 0 {
+                    drain_table(&state, &pending);
+                }
+            })))
+        }
+    };
+
+    let sort_guard: Option<BoxWatcherGuard> = config.sort_order().map(|binding| {
+        let weak = Rc::downgrade(state);
+        let pending = Rc::clone(pending);
+        Box::new(binding.watch(move |_ctx| {
+            let Some(state) = weak.upgrade() else {
+                return;
+            };
+            pending.borrow_mut().sort_changed = true;
+            if pending.borrow().depth == 0 {
+                drain_table(&state, &pending);
+            }
+        })) as BoxWatcherGuard
+    });
+
+    (rows_guard, selection_guard, sort_guard)
+}
+
+fn install_host_handlers(
+    host: &HostView,
+    state: &Rc<RefCell<TableState>>,
+    pending: &Rc<RefCell<TablePending>>,
+) {
+    host.set_measure_handler({
+        let state = Rc::clone(state);
+        let pending = Rc::clone(pending);
+        move |_host, _proposal| {
+            let size = with_table_tx(&state, &pending, || size_that_fits(&state.borrow()));
+            cocoa_ui::Size::new(f64::from(size.width), f64::from(size.height))
+        }
+    });
+    host.set_layout_handler({
+        let state = Rc::clone(state);
+        let pending = Rc::clone(pending);
+        move |_host| with_table_tx(&state, &pending, || layout_children(&state.borrow()))
+    });
+}
+
+fn render(config: &TableConfig<Held>, ctx: &RenderContext<'_>) -> NativeLeaf {
     let mtm = ctx.mtm();
     let host = HostView::new(mtm, cocoa_ui::Rect::ZERO);
     #[cfg(target_os = "ios")]
@@ -857,6 +1025,20 @@ fn render(config: TableConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
         (table, header)
     };
 
+    let descriptors = config.columns();
+    let selection = config.selection().clone();
+    let sort_order = config.sort_order().cloned();
+    let has_sort_binding = sort_order.is_some();
+    #[cfg(target_os = "ios")]
+    let selection_fill = (!matches!(selection, TableSelection::None))
+        .then(|| SelectionContainer.resolve(ctx.env()).computed());
+
+    let initial_snapshot = config.rows().snapshot();
+    let initial_ids: Vec<ItemId> = initial_snapshot
+        .range()
+        .filter_map(|index| initial_snapshot.get_id(index))
+        .collect();
+
     let state = Rc::new(RefCell::new(TableState {
         host: host.clone(),
         #[cfg(target_os = "macos")]
@@ -864,57 +1046,58 @@ fn render(config: TableConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
         #[cfg(target_os = "macos")]
         header,
         renderer: ctx.renderer(),
-        columns: Vec::new(),
+        columns: Vec::with_capacity(descriptors.len()),
+        snapshot: initial_snapshot,
+        ids: Vec::new(),
+        cells: HashMap::new(),
+        #[cfg(target_os = "ios")]
+        row_hosts: HashMap::new(),
+        #[cfg(target_os = "ios")]
+        selection_fill,
         #[cfg(target_os = "macos")]
         row_heights: Vec::new(),
+        selection,
+        #[cfg(target_os = "macos")]
+        applying_selection: Cell::new(false),
+        sort_order,
     }));
 
-    // The table delivery coordinator — every scope that borrows the
-    // state across `get_view`/render/mount enters a transaction, so a
-    // notification raised inside only records and the outermost finish
-    // drains all of them.
     let pending = Rc::new(RefCell::new(TablePending::default()));
-    host.set_measure_handler({
-        let state = Rc::clone(&state);
-        let pending = Rc::clone(&pending);
-        move |_host, _proposal| {
-            let size = with_table_tx(&state, &pending, || size_that_fits(&state.borrow()));
-            cocoa_ui::Size::new(f64::from(size.width), f64::from(size.height))
-        }
-    });
-    host.set_layout_handler({
-        let state = Rc::clone(&state);
-        let pending = Rc::clone(&pending);
-        move |_host| with_table_tx(&state, &pending, || layout_children(&state.borrow()))
-    });
+
+    let columns: Vec<ColumnState> = descriptors
+        .iter()
+        .enumerate()
+        .map(|(col_index, descriptor)| {
+            materialize_column(&state, &pending, descriptor, col_index, has_sort_binding)
+        })
+        .collect();
+    state.borrow_mut().columns = columns;
 
     #[cfg(target_os = "macos")]
-    install_table_handlers(&state);
+    {
+        let (table, ordered) = {
+            let borrowed = state.borrow();
+            let ordered: Vec<Retained<NSTableColumn>> = borrowed
+                .columns
+                .iter()
+                .map(|column| column.ns_column.clone())
+                .collect();
+            (borrowed.table.clone(), ordered)
+        };
+        table.set_columns(&ordered);
+        install_table_handlers(&state);
+    }
 
-    // `watchAnyViewsIds` — the columns watch. An event only records the
-    // newest payload and metadata while a transaction is active;
-    // otherwise it drains immediately — the reconcile itself applies at
-    // the outermost finish inside the emission's animation.
-    let columns_guard = columns.watch({
-        let weak = Rc::downgrade(&state);
-        let pending = Rc::clone(&pending);
-        move |ctx| {
-            let Some(state) = weak.upgrade() else {
-                return;
-            };
-            let metadata = ctx.metadata().clone();
-            let columns = ctx.into_value();
-            pending.borrow_mut().columns = Some((columns, metadata));
-            if pending.borrow().depth == 0 {
-                drain_table(&state, &pending);
-            }
-        }
-    });
+    install_host_handlers(&host, &state, &pending);
 
-    // `reconcileColumns(ids: source.allIds())` — the initial population,
-    // a transaction since materializing columns may emit back.
+    let (rows_guard, selection_guard, sort_guard) = watch_table_inputs(&state, &pending, config);
+
     with_table_tx(&state, &pending, || {
-        reconcile_columns(&state, &pending, columns.snapshot());
+        sync_rows(&state, initial_ids);
+        #[cfg(target_os = "ios")]
+        reload_content(&state.borrow());
+        #[cfg(target_os = "macos")]
+        reload_content(&state);
     });
 
     let mut leaf = NativeLeaf::new(
@@ -923,13 +1106,15 @@ fn render(config: TableConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
             state: Rc::clone(&state),
         },
     );
-    leaf.keep(columns_guard);
+    leaf.keep(rows_guard);
+    leaf.keep(selection_guard);
+    leaf.keep(sort_guard);
     leaf.keep(state);
     leaf
 }
 
-/// Registers the `table` leaf.
-pub fn realize_table_config(value: TableConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
+/// Realizes a row-major `TableConfig<Held>`.
+pub fn realize_table_config(value: &TableConfig<Held>, ctx: &RenderContext<'_>) -> NativeLeaf {
     render(value, ctx)
 }
 

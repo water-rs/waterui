@@ -930,6 +930,7 @@ fn ts_a_list_of_written_out_rows_is_refused() {
 
 #[test]
 fn ts_table_is_a_table() {
+    let rows = vec![SelfId::new(("Ada", "1815")), SelfId::new(("Alan", "1912"))];
     assert_same(
         "Table",
         &module(
@@ -938,10 +939,17 @@ fn ts_table_is_a_table() {
                 waterui.jsx("Column", { label: "Year", children: ["1815", "1912"] }),
             ] })"#,
         ),
-        table(vec![
-            col("Name", vec![text("Ada"), text("Alan")]),
-            col("Year", vec![text("1815"), text("1912")]),
-        ]),
+        table(
+            rows,
+            (
+                col("Name", |row: &SelfId<(&str, &str)>| {
+                    text((*row).into_inner().0)
+                }),
+                col("Year", |row: &SelfId<(&str, &str)>| {
+                    text((*row).into_inner().1)
+                }),
+            ),
+        ),
     );
 }
 

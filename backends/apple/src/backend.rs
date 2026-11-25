@@ -452,14 +452,17 @@ impl NativeBackend for AppleBackend {
     }
 
     #[cfg(waterui_feature = "table")]
-    fn table(
+    fn table<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::table::TableConfig,
+        native: waterui::component::table::TableConfig<C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
         mark_reached!("table");
-        crate::components::table::realize_table_config(native, &self.entry(env))
+        crate::components::table::realize_table_config(
+            &MapSlots::map_slots(native, C::into_child),
+            &self.entry(env),
+        )
     }
 
     #[cfg(waterui_feature = "navigation")]

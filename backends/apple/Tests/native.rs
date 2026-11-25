@@ -383,6 +383,8 @@ fn trials() -> Vec<Trial> {
     tests.extend(scroll::trials());
     tests.extend(list_scroll::trials());
     tests.extend(apple_content::trials());
+    #[cfg(target_os = "macos")]
+    tests.extend(row_major_table::trials());
     #[cfg(all(feature = "native-test", feature = "gpu_surface"))]
     tests.extend(capture_colour::trials());
     #[cfg(all(catalyst, feature = "native-test", feature = "gpu_surface"))]
@@ -17450,6 +17452,130 @@ mod apple_content {
         assert_eq!(
             leaf.layout().measure(ProposalSize::UNSPECIFIED).size,
             Size::new(96.0, 44.0)
+        );
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod row_major_table {
+    use cocoa_ui::PlatformView;
+    use cocoa_ui::appkit::TableView;
+    use cocoa_ui::objc2::rc::Retained;
+    use cocoa_ui::view;
+    use libtest_mimic::Trial;
+    use waterui::Color;
+    use waterui::ViewExt as _;
+    use waterui::component::table::{SortDirection, Table, TableColumn, TableSort};
+    use waterui::component::text;
+    use waterui::id::Identifiable;
+    use waterui::reactive::collection::List as ReactiveList;
+    use waterui::reactive::{Binding, Signal as _};
+    use waterui_core::layout::ProposalSize;
+
+    #[derive(Clone)]
+    struct Person {
+        id: u64,
+        name: &'static str,
+    }
+
+    impl Identifiable for Person {
+        type Id = u64;
+
+        fn id(&self) -> Self::Id {
+            self.id
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum PersonSort {
+        Name,
+    }
+
+    fn find_appkit_table(root: &PlatformView) -> Option<Retained<TableView>> {
+        if let Ok(table) = view::retain_base(root).downcast::<TableView>() {
+            return Some(table);
+        }
+        view::subviews(root)
+            .iter()
+            .find_map(|sub| find_appkit_table(sub))
+    }
+
+    pub fn trials() -> Vec<Trial> {
+        vec![Trial::test(
+            "table::selectable_sortable_table_with_non_text_cell",
+            || {
+                selectable_sortable_table_with_non_text_cell();
+                Ok(())
+            },
+        )]
+    }
+
+    fn selectable_sortable_table_with_non_text_cell() {
+        let people = ReactiveList::from(vec![
+            Person { id: 1, name: "Ada" },
+            Person {
+                id: 2,
+                name: "Grace",
+            },
+        ]);
+        let selection = Binding::container(Some(1_u64));
+        let sort_order = Binding::container(Some(TableSort::ascending(PersonSort::Name)));
+        let view = Table::new(
+            people,
+            (
+                TableColumn::new("Name", |p: &Person| text(p.name)).sortable(PersonSort::Name),
+                TableColumn::new("Swatch", |p: &Person| {
+                    let swatch = if p.id == 1 {
+                        Color::srgb(0, 128, 255)
+                    } else {
+                        Color::srgb(255, 128, 0)
+                    };
+                    swatch.size(24.0, 24.0)
+                }),
+            ),
+        )
+        .selection(&selection)
+        .sort_order(&sort_order);
+
+        let leaf = super::resolve::render(view);
+        let measured = leaf.layout().measure(ProposalSize::UNSPECIFIED).size;
+        assert!(measured.width > 0.0 && measured.height > 0.0);
+
+        let table = find_appkit_table(leaf.view()).expect("table mounts an AppKit TableView");
+        assert_eq!(table.numberOfRows(), 2);
+        let columns = table.tableColumns();
+        assert_eq!(columns.count(), 2);
+        let name_col = columns.objectAtIndex(0);
+        let avatar_col = columns.objectAtIndex(1);
+
+        // Initial selection syncs from binding to NSTableView.
+        assert_eq!(table.selected_rows(), vec![0]);
+
+        // Selecting row 1 in NSTableView writes identity 2 back to the binding.
+        table.set_selected_rows(&[1]);
+        assert_eq!(selection.snapshot(), Some(2));
+
+        // Updating the binding pushes selection back onto NSTableView.
+        selection.set(Some(1));
+        assert_eq!(table.selected_rows(), vec![0]);
+
+        // Initial sort indicator is installed on the active sortable column only.
+        assert!(table.indicator_image(&name_col).is_some());
+        assert!(table.indicator_image(&avatar_col).is_none());
+
+        // Clicking the sortable column header toggles direction to Descending.
+        table.click_column(&name_col);
+        assert_eq!(
+            sort_order.snapshot(),
+            Some(TableSort::new(PersonSort::Name, SortDirection::Descending))
+        );
+        assert!(table.indicator_image(&name_col).is_some());
+
+        // Clicking the non-sortable Avatar column leaves sort order unchanged.
+        table.click_column(&avatar_col);
+        assert_eq!(
+            sort_order.snapshot(),
+            Some(TableSort::new(PersonSort::Name, SortDirection::Descending))
         );
     }
 }

@@ -1504,6 +1504,48 @@ pub fn components_avatar_prose() {
 }
 
 // ---------------------------------------------------------------------------
+// components.md § "## Badges, avatars, tables, focus" (prose): row-major
+// `Table` with sortable columns, selection, and view cells. Not counted as a
+// rust block.
+// ---------------------------------------------------------------------------
+pub fn components_table_prose() {
+    #[derive(Clone)]
+    struct Person {
+        id: u64,
+        name: String,
+    }
+    impl Identifiable for Person {
+        type Id = u64;
+        fn id(&self) -> Self::Id {
+            self.id
+        }
+    }
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Sort {
+        Name,
+    }
+
+    let people = ReactiveList::from(vec![Person {
+        id: 1,
+        name: "Ada".into(),
+    }]);
+    let sel = Binding::container(Some(1_u64));
+    let order = Binding::container(Some(TableSort::new(Sort::Name, SortDirection::Ascending)));
+
+    let _ = Table::new(
+        people.clone(),
+        (
+            TableColumn::new("Name", |p: &Person| text(p.name.clone())).sortable(Sort::Name),
+            TableColumn::new("Avatar", |p: &Person| avatar(p.name.clone())),
+        ),
+    )
+    .selection(&sel)
+    .sort_order(&order);
+
+    let _ = table(people, (col("Name", |p: &Person| text(p.name.clone())),));
+}
+
+// ---------------------------------------------------------------------------
 // components.md § "## Accessibility modifiers" — rust block 38/39
 // Method-fragment listing applied to fresh receivers.
 // ---------------------------------------------------------------------------

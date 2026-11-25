@@ -1465,15 +1465,17 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     }
 
     #[cfg(waterui_feature = "table")]
-    fn table(
+    fn table<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::table::TableConfig,
+        native: waterui::component::table::TableConfig<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        use waterui_core::backend::MapSlots as _;
         mark_reached!("table");
         let renderer = &mut *self.renderer;
-        RenderNode::build_table(renderer, native, env)
+        let into_child: fn(C) -> HeldChild<E> = C::into_child;
+        RenderNode::build_table(renderer, native.map_slots(into_child), env)
     }
 
     fn gradient(
