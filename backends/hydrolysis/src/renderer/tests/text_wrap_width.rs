@@ -28,7 +28,7 @@ const LABELS: [&str; 3] = ["Menu Style", "Radio Style", "Fruit Basket"];
 fn drawn_runs(label: &'static str, width: u32) -> usize {
     let mut runtime = HeadlessRuntime::new_for_tests(
         test_environment(),
-        AnyViewBuilder::<AnyView>::new(move || AnyView::new(text(label).size(FONT_SIZE))),
+        AnyViewBuilder::<AnyView>::new(move || AnyView::new(text(label).font_size(FONT_SIZE))),
         width,
         WINDOW_HEIGHT,
         MinimalTestTheme::default(),

@@ -20,7 +20,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use nami::Signal as _;
-use nami::collection::List as ReactiveList;
+use nami::collection::StateList;
 use support::{
     count_role_label, mount_rendered, mount_semantic, node_id_contains, node_label_exists, nodes,
 };
@@ -54,7 +54,7 @@ const fn usize_as_f64(v: usize) -> f64 {
 /// attached and an accessibility label to query it by.
 #[allow(clippy::needless_pass_by_value)]
 fn pending_scroll_list(
-    items: ReactiveList<SelfId<usize>>,
+    items: StateList<SelfId<usize>>,
     controller: ScrollController<usize>,
 ) -> impl View {
     List::for_each(items, |item| text(format!("row {}", *item)))
@@ -72,7 +72,7 @@ fn mount_list<V: View>(view: impl Fn() -> V + Clone + 'static) -> support::Rende
 
 /// Mounts [`pending_scroll_list`] over `items`, driven by `controller`.
 fn mount_messages(
-    items: &ReactiveList<SelfId<usize>>,
+    items: &StateList<SelfId<usize>>,
     controller: &ScrollController<usize>,
 ) -> support::RenderedApp {
     let items = items.clone();
@@ -99,7 +99,7 @@ fn scroll_y(tree: &accesskit::TreeUpdate) -> f64 {
 /// index as `scroll_y`.
 #[test]
 fn pending_scroll_target_above_row_count_waits_for_contents_semantic() {
-    let mut items = ReactiveList::<SelfId<usize>>::new();
+    let mut items = StateList::<SelfId<usize>>::new();
     let controller = ScrollController::new(0);
     // The request lands while the contents are still empty: the dogfood's
     // cleared message list carried a pending target in exactly this shape.
@@ -129,7 +129,7 @@ fn pending_scroll_target_above_row_count_waits_for_contents_semantic() {
 /// shows which rows are realized.
 #[test]
 fn pending_scroll_target_above_row_count_waits_for_contents_offscreen() {
-    let mut items = ReactiveList::<SelfId<usize>>::new();
+    let mut items = StateList::<SelfId<usize>>::new();
     let controller = ScrollController::new(0);
     controller.scroll_to(SCROLL_TARGET);
     let mut app = mount_messages(&items, &controller);
@@ -159,7 +159,7 @@ fn pending_scroll_target_above_row_count_waits_for_contents_offscreen() {
 /// between the two requests' rest and landing points.
 #[test]
 fn animate_to_a_row_glides_and_lands_where_the_jump_would_offscreen() {
-    let mut items = ReactiveList::<SelfId<usize>>::new();
+    let mut items = StateList::<SelfId<usize>>::new();
     let _ = items.replace((0..GROWN_ROW_COUNT).map(SelfId::new).collect());
     let controller = ScrollController::new(0);
     let mut app = mount_messages(&items, &controller);
@@ -203,7 +203,7 @@ fn querying_between_frames_of_animate_to_observes_every_frame_offscreen() {
     /// A linear run moves the same distance every frame, so a sample that
     /// moved further than that saw the clock advance behind its back.
     const DURATION: std::time::Duration = std::time::Duration::from_millis(320);
-    let mut items = ReactiveList::<SelfId<usize>>::new();
+    let mut items = StateList::<SelfId<usize>>::new();
     let _ = items.replace((0..GROWN_ROW_COUNT).map(SelfId::new).collect());
     let controller = ScrollController::new(0);
     let mut app = mount_messages(&items, &controller);
@@ -254,7 +254,7 @@ fn querying_between_frames_of_animate_to_observes_every_frame_offscreen() {
 /// its row (water-rs/waterui#1901).
 #[test]
 fn animate_to_survives_rows_inserted_during_the_flight_offscreen() {
-    let mut items = ReactiveList::<SelfId<usize>>::new();
+    let mut items = StateList::<SelfId<usize>>::new();
     let _ = items.replace((0..30).map(SelfId::new).collect());
     let controller = ScrollController::new(0);
     let mut app = mount_messages(&items, &controller);
@@ -289,7 +289,7 @@ fn animate_to_survives_rows_inserted_during_the_flight_offscreen() {
 /// does not jump under the user's finger (water-rs/waterui#1901).
 #[test]
 fn animate_to_interrupted_then_rows_change_still_anchors_offscreen() {
-    let mut items = ReactiveList::<SelfId<usize>>::new();
+    let mut items = StateList::<SelfId<usize>>::new();
     let _ = items.replace((0..40).map(SelfId::new).collect());
     let controller = ScrollController::new(0);
     let mut app = mount_messages(&items, &controller);
@@ -335,7 +335,7 @@ fn animate_to_interrupted_then_rows_change_still_anchors_offscreen() {
 /// (water-rs/waterui#1901).
 #[test]
 fn out_of_range_pending_scroll_still_anchors_membership_changes_offscreen() {
-    let mut items = ReactiveList::<SelfId<usize>>::new();
+    let mut items = StateList::<SelfId<usize>>::new();
     let _ = items.replace((0..30).map(SelfId::new).collect());
     let controller = ScrollController::new(0);
     let mut app = mount_messages(&items, &controller);
@@ -364,7 +364,7 @@ fn out_of_range_pending_scroll_still_anchors_membership_changes_offscreen() {
 /// lands on the clamp, the row is already in view, and the request consumes.
 #[test]
 fn animate_to_a_row_in_the_last_screenful_lands_on_the_clamp_offscreen() {
-    let mut items = ReactiveList::<SelfId<usize>>::new();
+    let mut items = StateList::<SelfId<usize>>::new();
     let _ = items.replace((0..10).map(SelfId::new).collect());
     let controller = ScrollController::new(0);
     let mut app = mount_messages(&items, &controller);
@@ -390,7 +390,7 @@ fn animate_to_a_row_in_the_last_screenful_lands_on_the_clamp_offscreen() {
 /// (the motion is over; settling the final position is a correction).
 #[test]
 fn animate_to_lands_then_corrects_as_rows_remeasure_offscreen() {
-    let mut items = ReactiveList::<SelfId<usize>>::new();
+    let mut items = StateList::<SelfId<usize>>::new();
     let _ = items.replace((0..20).map(SelfId::new).collect());
     let controller = ScrollController::new(0);
     let mut app = mount_list({
@@ -427,7 +427,7 @@ fn animate_to_lands_then_corrects_as_rows_remeasure_offscreen() {
 /// request lands in place there, in row units like any other request.
 #[test]
 fn animate_to_a_row_lands_in_place_semantic() {
-    let mut items = ReactiveList::<SelfId<usize>>::new();
+    let mut items = StateList::<SelfId<usize>>::new();
     let _ = items.replace((0..GROWN_ROW_COUNT).map(SelfId::new).collect());
     let controller = ScrollController::new(0);
     controller.animate_to(SCROLL_TARGET, waterui::animation::Animation::default());
@@ -594,7 +594,7 @@ impl Identifiable for FilteredEntry {
 
 fn filtered_sectioned_list(
     backing: &Binding<Vec<FilteredEntry>>,
-    archive: &ReactiveList<FilteredEntry>,
+    archive: &StateList<FilteredEntry>,
 ) -> impl View + use<> {
     use nami::SignalExt as _;
     use nami::collection::SignalCollection;
@@ -654,7 +654,7 @@ fn sectioned_mixed_and_filtered_list_edits_by_identity_within_part_offscreen() {
         entry(25, "Hidden-2", false),
         entry(30, "Gamma", true),
     ]);
-    let archive = ReactiveList::from(vec![entry(100, "Old-1", true), entry(200, "Old-2", true)]);
+    let archive = StateList::from(vec![entry(100, "Old-1", true), entry(200, "Old-2", true)]);
 
     let mut app = mount_rendered(
         Environment::new(),
@@ -836,7 +836,7 @@ fn for_each_same_id_item_update_rematerializes_row_offscreen() {
 /// through the insertion (water-rs/waterui#1901).
 #[test]
 fn a_fling_survives_rows_inserted_above_the_viewport_offscreen() {
-    let mut items = ReactiveList::<SelfId<usize>>::new();
+    let mut items = StateList::<SelfId<usize>>::new();
     let _ = items.replace((0..40).map(SelfId::new).collect());
     let controller = ScrollController::new(0);
     let mut app = mount_messages(&items, &controller);
@@ -889,7 +889,7 @@ fn a_fling_survives_rows_inserted_above_the_viewport_offscreen() {
 /// (water-rs/waterui#1901).
 #[test]
 fn animate_to_running_reanchors_rows_inserted_above_offscreen() {
-    let mut items = ReactiveList::<SelfId<usize>>::new();
+    let mut items = StateList::<SelfId<usize>>::new();
     let _ = items.replace((0..40).map(SelfId::new).collect());
     let controller = ScrollController::new(0);
     let mut app = mount_messages(&items, &controller);
@@ -936,7 +936,7 @@ fn animate_to_running_reanchors_rows_inserted_above_offscreen() {
 /// would remove the deleted height twice (water-rs/waterui#1901).
 #[test]
 fn rows_deleted_above_the_bottom_land_on_the_new_end_offscreen() {
-    let mut items = ReactiveList::<SelfId<usize>>::new();
+    let mut items = StateList::<SelfId<usize>>::new();
     let _ = items.replace((0..40).map(SelfId::new).collect());
     let controller = ScrollController::new(0);
     let mut app = mount_messages(&items, &controller);
@@ -964,7 +964,7 @@ fn rows_deleted_above_the_bottom_land_on_the_new_end_offscreen() {
 /// deleted height plus one frame of the run (water-rs/waterui#1901).
 #[test]
 fn rows_deleted_above_a_run_past_the_new_end_translate_once_offscreen() {
-    let mut items = ReactiveList::<SelfId<usize>>::new();
+    let mut items = StateList::<SelfId<usize>>::new();
     let _ = items.replace((0..40).map(SelfId::new).collect());
     let controller = ScrollController::new(0);
     let mut app = mount_messages(&items, &controller);
@@ -1016,7 +1016,7 @@ fn rows_deleted_above_a_run_past_the_new_end_translate_once_offscreen() {
 /// of passing vacuously.
 #[test]
 fn an_update_between_the_frames_passes_translates_once_offscreen() {
-    let mut items = ReactiveList::<SelfId<usize>>::new();
+    let mut items = StateList::<SelfId<usize>>::new();
     let _ = items.replace((0..40).map(SelfId::new).collect());
     let controller = ScrollController::new(0);
     let prepended = Rc::new(Cell::new(false));
@@ -1085,7 +1085,7 @@ fn an_update_between_the_frames_passes_translates_once_offscreen() {
 // first layout, applied requests — and never a pending request's target row.
 #[test]
 fn scroll_position_reports_actual_offset_not_pending_requests() {
-    let mut items = ReactiveList::<SelfId<usize>>::new();
+    let mut items = StateList::<SelfId<usize>>::new();
     let _ = items.replace((0..GROWN_ROW_COUNT).map(SelfId::new).collect());
     let controller = ScrollController::new(0);
     let mut app = mount_messages(&items, &controller);
@@ -1117,7 +1117,7 @@ fn scroll_position_reports_actual_offset_not_pending_requests() {
 // geometry and edge flags — the tail the controller was on moves away.
 #[test]
 fn scroll_position_updates_edge_flags_when_content_grows() {
-    let mut items = ReactiveList::<SelfId<usize>>::new();
+    let mut items = StateList::<SelfId<usize>>::new();
     let _ = items.replace((0..GROWN_ROW_COUNT).map(SelfId::new).collect());
     let controller = ScrollController::new(0);
     let mut app = mount_messages(&items, &controller);
@@ -1145,7 +1145,7 @@ fn scroll_position_updates_edge_flags_when_content_grows() {
 // the report write — the flush must not hold a borrow it would deadlock.
 #[test]
 fn scroll_position_watcher_may_mutate_the_list_collection() {
-    let mut items = ReactiveList::<SelfId<usize>>::new();
+    let mut items = StateList::<SelfId<usize>>::new();
     let _ = items.replace((0..GROWN_ROW_COUNT).map(SelfId::new).collect());
     let controller = ScrollController::new(0);
     let mut app = mount_messages(&items, &controller);

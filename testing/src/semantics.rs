@@ -125,18 +125,17 @@ impl Role {
     /// The role a toggle of `style` reports: [`Self::SWITCH`] for a switch,
     /// [`Self::CHECKBOX`] for a checkbox.
     ///
-    /// [`ToggleStyle::Automatic`] is the target's default style — a checkbox
-    /// on macOS, a switch elsewhere — so a query for a default-style toggle
-    /// that must hold on every host asks for
-    /// `Role::toggle(ToggleStyle::Automatic)`.
+    /// `waterui-testing` drives the Hydrolysis backend, whose default toggle
+    /// style is [`ToggleStyle::Switch`], so
+    /// `Role::toggle(ToggleStyle::Automatic)` maps to [`Self::SWITCH`].
     ///
     /// # Panics
     ///
     /// When `style` is a variant this testing crate does not know.
     #[must_use]
     pub const fn toggle(style: ToggleStyle) -> Self {
-        match style.resolved() {
-            ToggleStyle::Switch => Self::SWITCH,
+        match style {
+            ToggleStyle::Automatic | ToggleStyle::Switch => Self::SWITCH,
             ToggleStyle::Checkbox => Self::CHECKBOX,
             _ => panic!("waterui-testing has no role for this ToggleStyle"),
         }

@@ -35,7 +35,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 use waterui::theme::color::Background;
-use waterui::window::{ResolvedWindowBackground, WindowState};
+use waterui::window::{ResolvedWindowBackground, Window, WindowParts, WindowState, WindowToolbar};
 #[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
 use waterui_core::Error;
 use waterui_core::contract_violation;
@@ -132,57 +132,15 @@ impl<E: crate::text::TextEngine, C: ViewBuilder> WindowRoot<E> for C {
     }
 }
 
-struct HeldWindowSlot<E: crate::text::TextEngine>(
-    waterui::window::WindowSlot<crate::renderer::HeldChild<E>>,
-);
-
-impl<E: crate::text::TextEngine> WindowRoot<E> for HeldWindowSlot<E> {
-    fn capture_tree(
-        &self,
-        renderer: &mut HydrolysisRenderer<E>,
-        env: &Environment,
-        bounds: kurbo::Rect,
-        transform: kurbo::Affine,
-        hit_transform: kurbo::Affine,
-        built: &mut dyn FnMut(),
-    ) {
-        let child = self.0.build();
-        built();
-        renderer.capture_held_window_tree(child, env, bounds, transform, hit_transform);
-    }
-
-    #[cfg(hydrolysis_cherenkov)]
-    fn capture_semantics(&self, core: &mut SemanticCore<E>, env: &Environment) {
-        core.capture_held_window_semantics(self.0.build(), env);
-    }
-}
-
 /// A window as a runner holds it, see [`WindowRoot`].
-pub type RootWindow<E> = Window<Box<dyn WindowRoot<E>>>;
+pub type RootWindow<E> = WindowParts<Box<dyn WindowRoot<E>>>;
 
 /// `window` as a runner holds it.
-pub fn root_window<
-    E: crate::text::TextEngine,
-    C: ViewBuilder,
-    T: waterui::window::WindowToolbar,
->(
+pub fn root_window<E: TextEngine, C: ViewBuilder, T: WindowToolbar>(
     window: Window<C, T>,
 ) -> RootWindow<E> {
-    window.map(
+    window.into_parts().map(
         |content| Box::new(content) as Box<dyn WindowRoot<E>>,
-        |_| (),
-    )
-}
-
-/// A window dispatched from the view tree as a runner holds it.
-pub fn slot_root_window<E: crate::text::TextEngine>(
-    window: Window<
-        waterui::window::WindowSlot<crate::renderer::HeldChild<E>>,
-        Option<crate::renderer::HeldChild<E>>,
-    >,
-) -> RootWindow<E> {
-    window.map(
-        |slot| Box::new(HeldWindowSlot(slot)) as Box<dyn WindowRoot<E>>,
         |_| (),
     )
 }
@@ -1726,7 +1684,7 @@ pub(super) struct SurfaceBackground(ResolvedWindowBackground);
 
 impl SurfaceBackground {
     /// `window`'s background as it resolves now.
-    pub(super) fn of<C, T>(window: &Window<C, T>, env: &Environment) -> Self {
+    pub(super) fn of<C, T>(window: &WindowParts<C, T>, env: &Environment) -> Self {
         Self(window.resolved_background(env).snapshot())
     }
 
@@ -1816,7 +1774,7 @@ pub(super) fn apply_window_background<P: PaintedWindow, E: crate::text::TextEngi
 }
 
 #[cfg(hydrolysis_winit)]
-pub fn window_requires_transparency<C, T>(window: &Window<C, T>, env: &Environment) -> bool {
+pub fn window_requires_transparency<C, T>(window: &WindowParts<C, T>, env: &Environment) -> bool {
     SurfaceBackground::of(window, env).transparent()
 }
 

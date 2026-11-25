@@ -5,7 +5,6 @@
 use waterui::Identifiable;
 use waterui::component::lazy::Lazy;
 use waterui::prelude::*;
-use waterui::reactive::collection::List as ReactiveList;
 
 #[derive(Clone, Identifiable)]
 struct Row {
@@ -15,7 +14,7 @@ struct Row {
 }
 
 fn broken() -> impl View {
-    let rows = ReactiveList::from(vec![Row { id: 1, name: "one" }]);
+    let rows = StateList::from(vec![Row { id: 1, name: "one" }]);
     Lazy::vstack(rows)
 }
 

@@ -97,7 +97,7 @@ pub fn login_form() -> impl View {
     let password = binding(Secure::default());
 
     stack::vstack((
-        text("Login").size(24.0).bold(true),
+        text("Login").font_size(24.0).bold(true),
         TextField::new("Username", &username).prompt("Enter username"),
         SecureField::new("Password", &password),
     ))

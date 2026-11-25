@@ -75,7 +75,7 @@ pub fn navigation_block_01() -> impl View {
     }
     let unread_count: Binding<u32> = binding(3_u32);
 
-    use waterui::{id::SelfId, reactive::collection::List, views::ForEach};
+    use waterui::{id::SelfId, views::ForEach};
 
     #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
     enum Pane {
@@ -90,28 +90,31 @@ pub fn navigation_block_01() -> impl View {
 
     Tabs::new(
         &pane,
-        ForEach::new(List::from(panes.to_vec()), move |pane: SelfId<Pane>| {
-            let pane = *pane;
-            let tab = Tab::new(
+        ForEach::new(
+            StateList::from(panes.to_vec()),
+            move |pane: SelfId<Pane>| {
+                let pane = *pane;
+                let tab = Tab::new(
+                    match pane {
+                        Pane::Inbox => label("Inbox").icon(mdi::inbox()),
+                        Pane::Library => label("Library").icon(mdi::image_album()),
+                        Pane::Settings => label("Settings").icon(mdi::cog()),
+                        Pane::Search => label("Search").icon(mdi::magnify()),
+                    },
+                    move || match pane {
+                        Pane::Inbox => OneOf4::A(inbox_stack()),
+                        Pane::Library => OneOf4::B(library_split()),
+                        Pane::Settings => OneOf4::C(settings_stack()),
+                        Pane::Search => OneOf4::D(search_stack()),
+                    },
+                );
                 match pane {
-                    Pane::Inbox => label("Inbox").icon(mdi::inbox()),
-                    Pane::Library => label("Library").icon(mdi::image_album()),
-                    Pane::Settings => label("Settings").icon(mdi::cog()),
-                    Pane::Search => label("Search").icon(mdi::magnify()),
-                },
-                move || match pane {
-                    Pane::Inbox => OneOf4::A(inbox_stack()),
-                    Pane::Library => OneOf4::B(library_split()),
-                    Pane::Settings => OneOf4::C(settings_stack()),
-                    Pane::Search => OneOf4::D(search_stack()),
-                },
-            );
-            match pane {
-                Pane::Inbox => tab.badge(unread_count.clone()),
-                Pane::Search => tab.role(TabRole::Search), // iOS: the trailing system search tab; elsewhere a regular tab
-                Pane::Library | Pane::Settings => tab,
-            }
-        }),
+                    Pane::Inbox => tab.badge(unread_count.clone()),
+                    Pane::Search => tab.role(TabRole::Search), // iOS: the trailing system search tab; elsewhere a regular tab
+                    Pane::Library | Pane::Settings => tab,
+                }
+            },
+        ),
     )
     .style(tab_style::automatic())
     .minimize_behavior(TabBarMinimizeBehavior::OnScrollDown) // iOS 26 collapses the bar while scrolling; ignored elsewhere
@@ -542,15 +545,16 @@ pub fn navigation_block_12(env: Environment) -> App<impl Windows> {
 // `Binding<Option<WindowIcon>>`, `set_icon(..)`, `.resizable(bool)`,
 // `.min_size(..)` / `.max_size(..)` (one `impl IntoComputed<Size>` each),
 // `.level(..)` / `.resize_increments(..)`, `.title(..)`, `.placement(..)`,
-// `.activation(..)`, `.app_id(..)` / `.instance_name(..)`, the `closable` and
-// `attention` fields, the `WindowState` variants, and the `WindowHandle`
-// controls. Not counted as a rust block.
+// `.activation(..)`, `.app_id(..)` / `.instance_name(..)`, `.closable(..)`,
+// `.default_size(..)`, `.frame(..)`, `.attention(..)`, the `WindowState`
+// variants, and `WindowHandle` controls & handler extraction. Not counted as a
+// rust block.
 // ---------------------------------------------------------------------------
 pub fn navigation_window_builder_prose() {
     use waterui::background::Material;
     use waterui::window::{
-        Activation, Monitor, MonitorSelector, UserAttention, Window, WindowBackground, WindowIcon,
-        WindowLevel, WindowState, WindowStyle,
+        Activation, Monitor, MonitorSelector, UserAttention, Window, WindowBackground,
+        WindowHandle, WindowIcon, WindowLevel, WindowState, WindowStyle,
     };
 
     let state = binding::<WindowState>(WindowState::default());
@@ -593,20 +597,25 @@ pub fn navigation_window_builder_prose() {
     window.handle().set_icon(icon);
     window.handle().set_icon(None);
 
-    let mut window = Window::new("W", || text("c"))
-        .title("Renamed")
-        .icon(None::<WindowIcon>)
-        .placement(MonitorSelector::Pointer, |monitor: &Monitor| {
-            Rect::new(
-                monitor.visible_frame().origin(),
-                Size::new(monitor.visible_frame().width(), 320.0),
-            )
-        })
-        .activation(Activation::OnClick)
-        .app_id("cool.lexo.terminal")
-        .instance_name("dropdown");
-    window.closable = false;
-    window.attention.set(Some(UserAttention::Critical));
+    let attention = binding(None::<UserAttention>);
+    let window = Window::new("W", || {
+        button("Max").action(|window: WindowHandle| window.maximize())
+    })
+    .title("Renamed")
+    .default_size(Size::new(1024.0, 768.0))
+    .closable(false)
+    .attention(&attention)
+    .icon(None::<WindowIcon>)
+    .placement(MonitorSelector::Pointer, |monitor: &Monitor| {
+        Rect::new(
+            monitor.visible_frame().origin(),
+            Size::new(monitor.visible_frame().width(), 320.0),
+        )
+    })
+    .activation(Activation::OnClick)
+    .app_id("cool.lexo.terminal")
+    .instance_name("dropdown");
+    attention.set(Some(UserAttention::Critical));
     window.handle().focus();
     let _ = (
         MonitorSelector::Primary,

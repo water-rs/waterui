@@ -10,7 +10,6 @@ use waterui::component::list::{List, ListDelete, ListMove};
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
-use waterui::reactive::collection::List as ReactiveList;
 use waterui::theme::color::Foreground;
 
 const DATASET_SIZE: usize = 100_000;
@@ -24,7 +23,7 @@ struct Record {
 #[state]
 #[derive(Clone)]
 struct DemoState {
-    records: ReactiveList<Record>,
+    records: StateList<Record>,
     remaining: Binding<i32>,
     editing: Binding<bool>,
     scroll: ScrollController<usize>,
@@ -36,7 +35,7 @@ impl DemoState {
             .map(|index| Record { id: index as u64 })
             .collect::<Vec<_>>();
         Self {
-            records: ReactiveList::from(records),
+            records: StateList::from(records),
             remaining: binding(
                 i32::try_from(DATASET_SIZE).expect("DATASET_SIZE is 100,000, which fits in i32"),
             ),

@@ -14,7 +14,7 @@
 //   and unstyled text the plain bold (Bold on macOS).
 //   fenced blocks get a header row (language name + Copy) over the
 //   SurfaceVariant fill, and the code text is the syntect base16-ocean.light
-//   palette at Body.size(14).monospaced() (components/foundation/text/src/
+//   palette at Body.font_size(14).monospaced() (components/foundation/text/src/
 //   code.rs `default_rendering`)
 
 import SwiftUI

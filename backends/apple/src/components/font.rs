@@ -269,7 +269,7 @@ mod tests {
     #[test]
     fn bold_on_a_fixed_face_takes_the_symbolic_trait() {
         assert_eq!(
-            face_weight(&resolve(&Font::new(Body).size(17.0).bold(true))),
+            face_weight(&resolve(&Font::new(Body).font_size(17.0).bold(true))),
             FaceWeight {
                 weight: FontWeight::Normal,
                 bold_trait: true

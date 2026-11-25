@@ -216,21 +216,6 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         RenderNode::build_empty(self.renderer, env)
     }
 
-    fn window<C: ChildView<Self>>(
-        &mut self,
-        native: waterui::window::Window<waterui::window::WindowSlot<C>, Option<C>>,
-        env: &Environment,
-        (): (),
-    ) -> RenderNode<E> {
-        mark_reached!("window");
-        self.renderer
-            .open_window(crate::runner::window::slot_root_window(native.map(
-                |slot| slot.map(C::into_child),
-                |toolbar| toolbar.map(C::into_child),
-            )));
-        RenderNode::build_empty(self.renderer, env)
-    }
-
     /// Builds the [`RenderNode::Container`] for a fixed container. A
     /// `BackgroundLayout` container's slot 0 is the background the §7.1 fill
     /// rule extends: its fill is wrapped in [`RenderNode::Fill`], the type
