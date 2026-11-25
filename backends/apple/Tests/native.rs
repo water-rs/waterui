@@ -290,6 +290,13 @@ fn chrome_trials() -> Vec<Trial> {
                 Ok(())
             },
         ),
+        Trial::test(
+            "menus::a_menu_command_with_a_pack_icon_renders_a_nonempty_nsmenu_image",
+            || {
+                menus::a_menu_command_with_a_pack_icon_renders_a_nonempty_nsmenu_image();
+                Ok(())
+            },
+        ),
         #[cfg(feature = "text_field")]
         Trial::test(
             "text_selection::a_selection_menu_command_edits_the_live_selection",
@@ -373,6 +380,7 @@ fn trials() -> Vec<Trial> {
             },
         ));
         tests.extend(tabs::trials());
+        tests.extend(menus_ios::trials());
         tests.extend(navigation::trials());
         tests.extend(controller_bounds::trials());
         // A Catalyst window carries no container bands, so the suite's
@@ -2560,6 +2568,144 @@ mod menus {
             })
             .collect();
         assert_eq!(enabled, [true, false, false, false]);
+    }
+
+    pub fn a_menu_command_with_a_pack_icon_renders_a_nonempty_nsmenu_image() {
+        use core::ptr::null_mut;
+
+        use cocoa_ui::objc2::Message;
+        use cocoa_ui::objc2_app_kit::NSPopUpButton;
+        use cocoa_ui::objc2_foundation::NSString;
+        use cocoa_ui::view::subviews;
+        use waterui::component::label::label;
+        use waterui::component::menu::{Command as MenuCommand, Menu as MenuView};
+        use waterui::prelude::button;
+        use waterui_icons_lucide as lucide;
+
+        fn find_popup(view: &crate::PlatformView) -> Option<crate::Retained<NSPopUpButton>> {
+            if let Some(button) = view.downcast_ref::<NSPopUpButton>() {
+                return Some(Message::retain(button));
+            }
+            subviews(view).into_iter().find_map(|sub| find_popup(&sub))
+        }
+
+        let leaf = crate::resolve::render(MenuView::new(
+            "Actions",
+            (
+                MenuCommand::builder(label("Delete").icon(lucide::trash())).action(|| {}),
+                button(label("Star").icon(lucide::star())).action(|| {}),
+            ),
+        ));
+        let popup = find_popup(leaf.view()).expect("Menu mounts an NSPopUpButton");
+        let native_menu = popup.menu().expect("Menu attaches an NSMenu");
+        for title in ["Delete", "Star"] {
+            let item = native_menu
+                .itemWithTitle(&NSString::from_str(title))
+                .expect("menu item exists");
+            let image = item
+                .image()
+                .expect("pack icon renders onto AppKit NSMenuItem");
+            assert!(image.isTemplate());
+            let size = image.size();
+            assert!(size.width > 0.0 && size.height > 0.0);
+            // SAFETY: null proposed rect retrieves the image's CGImage.
+            let cg = unsafe { image.CGImageForProposedRect_context_hints(null_mut(), None, None) }
+                .expect("NSImage yields a CGImage");
+            super::assert_menu_cgimage_nonempty(&cg);
+        }
+    }
+}
+
+#[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "native-test"))]
+fn assert_menu_cgimage_nonempty(cg: &cocoa_ui::objc2_core_graphics::CGImage) {
+    use cocoa_ui::Rect;
+    use cocoa_ui::bitmap::{bitmap_context, draw_image};
+    use cocoa_ui::objc2_core_graphics::CGImage;
+
+    let width = CGImage::width(Some(cg));
+    let height = CGImage::height(Some(cg));
+    assert!(
+        width > 0 && height > 0,
+        "nonzero menu icon {width}x{height}"
+    );
+    let mut pixels = vec![0_u8; width * height * 4];
+    let ctx =
+        bitmap_context(&mut pixels, width, height).expect("bitmap context creates for menu icon");
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "icon bitmap dimensions are small integer pixel counts"
+    )]
+    let rect = Rect::new(0.0, 0.0, width as f64, height as f64);
+    draw_image(&ctx, cg, rect);
+    assert!(
+        pixels.as_chunks::<4>().0.iter().any(|px| px[3] > 0),
+        "menu icon bitmap must draw at least one visible pixel"
+    );
+}
+
+#[cfg(all(target_os = "ios", feature = "native-test"))]
+mod menus_ios {
+    use cocoa_ui::objc2::Message;
+    use cocoa_ui::objc2_ui_kit::{UIAction, UIButton, UIImageRenderingMode};
+    use cocoa_ui::view::subviews;
+    use libtest_mimic::Trial;
+    use waterui::component::label::label;
+    use waterui::component::menu::{Command as MenuCommand, Menu as MenuView};
+    use waterui::prelude::button;
+    use waterui_icons_lucide as lucide;
+
+    pub fn trials() -> Vec<Trial> {
+        vec![Trial::test(
+            "menus::a_menu_command_with_a_pack_icon_renders_a_nonempty_uiaction_image",
+            || {
+                a_menu_command_with_a_pack_icon_renders_a_nonempty_uiaction_image();
+                Ok(())
+            },
+        )]
+    }
+
+    fn find_button(view: &crate::PlatformView) -> Option<crate::Retained<UIButton>> {
+        if let Some(button) = view.downcast_ref::<UIButton>() {
+            return Some(Message::retain(button));
+        }
+        subviews(view).into_iter().find_map(|sub| find_button(&sub))
+    }
+
+    fn a_menu_command_with_a_pack_icon_renders_a_nonempty_uiaction_image() {
+        let leaf = crate::resolve::render(MenuView::new(
+            "Actions",
+            (
+                MenuCommand::builder(label("Delete").icon(lucide::trash())).action(|| {}),
+                button(label("Star").icon(lucide::star())).action(|| {}),
+            ),
+        ));
+        let button = find_button(leaf.view()).expect("Menu mounts a UIButton");
+        let native_menu = button.menu().expect("UIButton attaches a UIMenu");
+        let actions: Vec<_> = native_menu
+            .children()
+            .iter()
+            .filter_map(|elem| elem.downcast::<UIAction>().ok())
+            .collect();
+        for title in ["Delete", "Star"] {
+            let action = actions
+                .iter()
+                .find(|a| a.title().to_string() == title)
+                .expect("UIAction item exists");
+            let image = action
+                .image()
+                .expect("pack icon renders onto UIKit UIAction");
+            // SAFETY: `renderingMode`, `size`, and `CGImage` are plain main-thread getters on UIImage.
+            let (rendering_mode, size, cg) = unsafe {
+                (
+                    image.renderingMode(),
+                    image.size(),
+                    image.CGImage().expect("UIImage yields a CGImage"),
+                )
+            };
+            assert_eq!(rendering_mode, UIImageRenderingMode::AlwaysTemplate);
+            assert!(size.width > 0.0 && size.height > 0.0);
+            super::assert_menu_cgimage_nonempty(&cg);
+        }
     }
 }
 
