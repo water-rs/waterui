@@ -1094,7 +1094,7 @@ mod tests {
         use core::cell::RefCell;
 
         let tap_loc = Rc::new(RefCell::new(None));
-        let tap_observer = GestureObserver::new(TapGesture::new(), {
+        let tap_observer = GestureObserver::from_event(TapGesture::new(), {
             let tap_loc = Rc::clone(&tap_loc);
             move |tap: TapEvent| *tap_loc.borrow_mut() = Some(tap.location())
         });
@@ -1108,7 +1108,7 @@ mod tests {
         assert_eq!(*tap_loc.borrow(), Some(Point::new(10.0, 20.0)));
 
         let composite_events = Rc::new(RefCell::new(Vec::new()));
-        let composite_observer = GestureObserver::new(Gesture::from(TapGesture::new()), {
+        let composite_observer = GestureObserver::from_event(Gesture::from(TapGesture::new()), {
             let composite_events = Rc::clone(&composite_events);
             move |event: GestureEvent| composite_events.borrow_mut().push(event)
         });
