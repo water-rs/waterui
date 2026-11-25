@@ -89,11 +89,7 @@ fn state_change(metadata: &Metadata) -> StateChange {
         return StateChange::Immediate;
     };
     let playback = crate::animation::timing(&animation);
-    let speed = if playback.speed.is_finite() && playback.speed > 0.0 {
-        playback.speed
-    } else {
-        1.0
-    };
+    let speed = playback.effective_speed();
     match playback.timing {
         Timing::Curve { curve, duration } => StateChange::Implicit {
             seconds: duration.max(0.0) / speed,

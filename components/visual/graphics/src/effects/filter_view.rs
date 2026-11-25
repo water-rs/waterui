@@ -441,11 +441,7 @@ impl Interpolator for AnimationInterpolator {
             return None;
         };
         let cycle = playback.cycle_duration()?;
-        let speed = if playback.speed.is_finite() && playback.speed > 0.0 {
-            playback.speed
-        } else {
-            1.0
-        };
+        let speed = playback.effective_speed();
         Some((
             Duration::from_secs_f64(playback.delay.max(0.0)),
             Duration::from_secs_f64(cycle / speed),

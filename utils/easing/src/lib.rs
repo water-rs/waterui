@@ -580,7 +580,7 @@ impl Playback {
         if count == 0 {
             return Some(delay);
         }
-        let speed = effective_speed(self.speed);
+        let speed = self.effective_speed();
         let (cycle0, rest) = match self.timing {
             Timing::Curve { duration, .. } => {
                 let clamped = duration.max(0.0);
@@ -601,6 +601,16 @@ impl Playback {
             f64::from(count - 1).mul_add(rest, cycle0)
         };
         Some(delay + total / speed)
+    }
+
+    /// Normalized playback speed multiplier (`1.0` when non-finite or non-positive).
+    #[must_use]
+    pub const fn effective_speed(&self) -> f64 {
+        if self.speed.is_finite() && self.speed > 0.0 {
+            self.speed
+        } else {
+            1.0
+        }
     }
 
     /// Single-cycle duration at unit step from rest in seconds, or `None` if a
@@ -656,7 +666,7 @@ impl Playback {
             rate[..lanes].fill(0.0);
             return false;
         }
-        let speed = effective_speed(self.speed);
+        let speed = self.effective_speed();
         let scaled_t = (t - delay) * speed;
         match self.repeat {
             Repeat::Once => {
@@ -741,14 +751,6 @@ impl Playback {
                 false
             }
         }
-    }
-}
-
-const fn effective_speed(speed: f64) -> f64 {
-    if speed.is_finite() && speed > 0.0 {
-        speed
-    } else {
-        1.0
     }
 }
 

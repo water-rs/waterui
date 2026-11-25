@@ -80,7 +80,7 @@ pub fn block_on_main<F: core::future::Future>(seconds: f64, future: F) -> F::Out
     }
 }
 
-/// The least wall-clock time a native `Animation::Default` scroll takes.
+/// The least wall-clock time a native `Animation::DEFAULT` scroll takes.
 ///
 /// Measured from the request to the landing, it is well under `AppKit`'s
 /// 0.25 s group and `UIKit`'s own scroll animation. A jump lands at once;

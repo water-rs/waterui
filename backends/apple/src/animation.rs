@@ -23,11 +23,7 @@ pub fn timing(animation: &Animation) -> Playback {
 pub fn cross_dissolve_duration(metadata: &Metadata) -> Option<f64> {
     let animation = ChangeAnimation::of(metadata).animation()?;
     let playback = timing(&animation);
-    let speed = if playback.speed.is_finite() && playback.speed > 0.0 {
-        playback.speed
-    } else {
-        1.0
-    };
+    let speed = playback.effective_speed();
     Some(match playback.timing {
         Timing::Curve { duration, .. } => duration.max(0.0) / speed,
         Timing::Spring(_) => 0.15 / speed,

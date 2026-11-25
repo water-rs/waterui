@@ -1238,6 +1238,31 @@ fn resample_bound_stream(
     );
 }
 
+/// Computes single-cycle sample timestamps for a Core Animation keyframe stream.
+///
+/// For non-autoreversing `Repeat::Forever` streams (`repeat == Some((_, false))`),
+/// the final keyframe is pinned 1 ns before `duration` so `Playback::sample_lanes`
+/// evaluates the cycle's end (`target`) instead of wrapping `rem == 0` back to `from`.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn keyframe_sample_offsets(
+    duration: Duration,
+    fps: f32,
+    repeat: Option<(Duration, bool)>,
+) -> Vec<Duration> {
+    let count = ((duration.as_secs_f64() * f64::from(fps)).ceil() as usize).max(2);
+    let step = duration / (count - 1) as u32;
+    let non_autoreverse_forever = matches!(repeat, Some((_, false)));
+    (0..count)
+        .map(|i| {
+            if non_autoreverse_forever && i + 1 == count {
+                duration.saturating_sub(Duration::from_nanos(1))
+            } else {
+                step * i as u32
+            }
+        })
+        .collect()
+}
+
 /// Submits a `CAKeyframeAnimation` on `key_path` — one native value per
 /// display frame of `duration` — at the attached screen's cadence, no
 /// synthetic cap. Returns `false` when the view is not on a screen: no
@@ -1258,9 +1283,10 @@ fn submit_animation<T: Message>(
     }
     // Every frame of the attached display gets a sample — the cadence is
     // the screen's, not an invented ceiling.
-    let count = ((duration.as_secs_f64() * f64::from(fps)).ceil() as usize).max(2);
-    let step = duration / (count - 1) as u32;
-    let values: Vec<Retained<T>> = (0..count).map(|i| frames(step * i as u32)).collect();
+    let values: Vec<Retained<T>> = keyframe_sample_offsets(duration, fps, repeat)
+        .into_iter()
+        .map(frames)
+        .collect();
     let path = NSString::from_str(key_path);
     let animation = CAKeyframeAnimation::animationWithKeyPath(Some(&path));
     let array = NSArray::from_retained_slice(&values);
@@ -2262,4 +2288,27 @@ pub fn mount(
     leaf.keep(guard);
     leaf.keep(owner);
     leaf
+}
+
+#[cfg(test)]
+mod tests {
+    use super::keyframe_sample_offsets;
+    use core::time::Duration;
+    use waterui_core::animation::{Animation, AnimationTrack, Repeat};
+
+    #[test]
+    fn non_autoreversing_repeat_forever_keyframes_do_not_wrap_to_start() {
+        let period = Duration::from_millis(600);
+        let offsets = keyframe_sample_offsets(period, 100.0, Some((Duration::ZERO, false)));
+        let anim = Animation::linear(period).repeat(Repeat::Forever { autoreverse: false });
+        let last = offsets.last().copied().expect("at least 2 keyframes");
+        let mut track = AnimationTrack::new(0.0_f64);
+        track.set_target(1.0, Some(anim));
+        let _ = track.advance(last);
+        let end_value = track.value();
+        assert!(
+            end_value > 0.99,
+            "final keyframe of non-autoreversing forever cycle should reach target, got {end_value}"
+        );
+    }
 }

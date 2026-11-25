@@ -222,14 +222,6 @@ const fn ca_repeat_params(repeat: Repeat) -> (f32, bool) {
     }
 }
 
-const fn effective_speed(speed: f64) -> f64 {
-    if speed.is_finite() && speed > 0.0 {
-        speed
-    } else {
-        1.0
-    }
-}
-
 /// Runs `body` while `playback` plays its animatable changes: a
 /// `UIViewPropertyAnimator` on iOS, an `NSAnimationContext` group on macOS.
 ///
@@ -259,7 +251,7 @@ pub fn animate_with(playback: Playback, body: impl FnOnce() + 'static) {
         body();
         return;
     };
-    let speed = effective_speed(playback.speed);
+    let speed = playback.effective_speed();
     // `addAnimations` may evaluate its block once only; the option still
     // guards a double evaluation.
     let body = RefCell::new(Some(body));
@@ -355,7 +347,7 @@ pub fn animate_with(playback: Playback, body: impl FnOnce() + 'static) {
             body();
             return;
         }
-        let speed = effective_speed(playback.speed);
+        let speed = playback.effective_speed();
         match playback.timing {
             Timing::Curve { curve, duration } => animate(
                 duration.max(0.0) / speed,
@@ -433,56 +425,69 @@ fn install_ca_property_animation(
     };
 
     layer.removeAnimationForKey(&NSString::from_str(animation_key));
-    if matches!(playback.repeat, Repeat::Count { count: 0, .. }) && playback.delay <= 0.0 {
+    let zero_cycles = matches!(playback.repeat, Repeat::Count { count: 0, .. });
+    if zero_cycles && playback.delay <= 0.0 {
         apply_model();
         return;
     }
 
-    let animation: Retained<CAAnimation> = match playback.timing {
-        Timing::Curve { curve, duration } => {
-            let basic = CABasicAnimation::animationWithKeyPath(Some(key_path));
-            basic.setDuration(duration.max(0.0));
-            let function = CAMediaTimingFunction::functionWithControlPoints(
-                curve.x1 as f32,
-                curve.y1 as f32,
-                curve.x2 as f32,
-                curve.y2 as f32,
-            );
-            basic.setTimingFunction(Some(&function));
-            // SAFETY: callers supply `NSValue`/`NSNumber` objects matching the keypath's property type.
-            unsafe {
-                basic.setFromValue(Some(from_value));
-                basic.setToValue(Some(to_value));
-            }
-            // SAFETY: `CAAnimation` is `CABasicAnimation`'s superclass.
-            unsafe { Retained::cast_unchecked(basic) }
+    let make_basic = |duration: f64, timing: Option<&CAMediaTimingFunction>| {
+        let basic = CABasicAnimation::animationWithKeyPath(Some(key_path));
+        basic.setDuration(duration);
+        if let Some(timing) = timing {
+            basic.setTimingFunction(Some(timing));
         }
-        Timing::Spring(parameters) => {
-            let spring = CASpringAnimation::animationWithKeyPath(Some(key_path));
-            spring.setMass(1.0);
-            spring.setStiffness(parameters.stiffness());
-            spring.setDamping(parameters.damping_coefficient());
-            spring.setAllowsOverdamping(true);
-            spring.setInitialVelocity(0.0);
-            spring.setDuration(parameters.settling_duration(-1.0, 0.0));
-            // SAFETY: callers supply `NSValue`/`NSNumber` objects matching the keypath's property type.
-            unsafe {
-                spring.setFromValue(Some(from_value));
-                spring.setToValue(Some(to_value));
+        // SAFETY: callers supply `NSValue`/`NSNumber` objects matching the keypath's property type.
+        unsafe {
+            basic.setFromValue(Some(from_value));
+            basic.setToValue(Some(to_value));
+        }
+        // SAFETY: `CAAnimation` is `CABasicAnimation`'s superclass.
+        unsafe { Retained::cast_unchecked(basic) }
+    };
+
+    let animation: Retained<CAAnimation> = if zero_cycles {
+        make_basic(0.0, None)
+    } else {
+        match playback.timing {
+            Timing::Curve { curve, duration } => {
+                let function = CAMediaTimingFunction::functionWithControlPoints(
+                    curve.x1 as f32,
+                    curve.y1 as f32,
+                    curve.x2 as f32,
+                    curve.y2 as f32,
+                );
+                make_basic(duration.max(0.0), Some(&function))
             }
-            // SAFETY: `CAAnimation` is `CASpringAnimation`'s superclass.
-            unsafe { Retained::cast_unchecked(spring) }
+            Timing::Spring(parameters) => {
+                let spring = CASpringAnimation::animationWithKeyPath(Some(key_path));
+                spring.setMass(1.0);
+                spring.setStiffness(parameters.stiffness());
+                spring.setDamping(parameters.damping_coefficient());
+                spring.setAllowsOverdamping(true);
+                spring.setInitialVelocity(0.0);
+                spring.setDuration(parameters.settling_duration(-1.0, 0.0));
+                // SAFETY: callers supply `NSValue`/`NSNumber` objects matching the keypath's property type.
+                unsafe {
+                    spring.setFromValue(Some(from_value));
+                    spring.setToValue(Some(to_value));
+                }
+                // SAFETY: `CAAnimation` is `CASpringAnimation`'s superclass.
+                unsafe { Retained::cast_unchecked(spring) }
+            }
         }
     };
     if playback.delay > 0.0 {
         let now = layer.convertTime_fromLayer(CACurrentMediaTime(), None);
         animation.setBeginTime(now + playback.delay);
     }
-    let speed = effective_speed(playback.speed);
-    animation.setSpeed(speed as f32);
-    let (repeat_count, autoreverses) = ca_repeat_params(playback.repeat);
-    animation.setAutoreverses(autoreverses);
-    animation.setRepeatCount(repeat_count);
+    if !zero_cycles {
+        let speed = playback.effective_speed();
+        animation.setSpeed(speed as f32);
+        let (repeat_count, autoreverses) = ca_repeat_params(playback.repeat);
+        animation.setAutoreverses(autoreverses);
+        animation.setRepeatCount(repeat_count);
+    }
     animation.setRemovedOnCompletion(true);
     // SAFETY: `kCAFillModeBoth` is a `CAMediaTimingFillMode` constant Core
     // Animation exports.

@@ -482,7 +482,7 @@ mod main_menu {
 /// the platform's wall clock: the offset is still at its start when the
 /// request returns, and it lands on the target no sooner than a native
 /// animation takes; a process outside the application never moves it.
-/// This is where the `UIKit` `Animation::Default` arm of the `native`
+/// This is where the `UIKit` `Animation::DEFAULT` arm of the `native`
 /// scroll suites lives.
 #[cfg(target_os = "ios")]
 mod scroll_animation {
@@ -555,7 +555,7 @@ mod scroll_animation {
         window.setHidden(true);
     }
 
-    /// `Animation::Default` on a scroll surface is `UIKit`'s own
+    /// `Animation::DEFAULT` on a scroll surface is `UIKit`'s own
     /// `setContentOffset(_:animated: true)`: driven through the
     /// controller, it does not jump, and it lands where the jump to the
     /// same target lands no sooner than a native animation takes.

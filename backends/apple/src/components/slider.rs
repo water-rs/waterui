@@ -282,11 +282,7 @@ fn value_animation(metadata: &Metadata) -> Option<ValueAnimation> {
         return Some(ValueAnimation::Duration(0.25));
     }
     let playback = crate::animation::timing(&animation);
-    let speed = if playback.speed.is_finite() && playback.speed > 0.0 {
-        playback.speed
-    } else {
-        1.0
-    };
+    let speed = playback.effective_speed();
     Some(match playback.timing {
         Timing::Curve { curve, duration } => ValueAnimation::Bezier {
             duration: duration.max(0.0) / speed,

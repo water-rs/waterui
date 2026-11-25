@@ -8777,7 +8777,7 @@ mod owner_lifetimes {
 
 /// `ScrollController` requests against the kit's real scroll surfaces —
 /// the water-rs/waterui#1901 contract: a bare request jumps to its
-/// target, `Animation::Default` plays the platform's smooth scroll, an
+/// target, `Animation::DEFAULT` plays the platform's smooth scroll, an
 /// explicit animation moves the offset along its timing, and every
 /// flight lands where the jump would have. A request issued mid-flight
 /// takes over.
@@ -9469,7 +9469,7 @@ mod scroll {
 
 /// `ScrollController<usize>` drives a row target into a mounted list:
 /// a bare request puts the row's top at the clip's top at once, an
-/// animated request lands on the same position — `Animation::Default`
+/// animated request lands on the same position — `Animation::DEFAULT`
 /// through the platform's animated row scroll, an explicit animation
 /// written to the model each frame-clock tick — and a request issued
 /// mid-flight takes over.

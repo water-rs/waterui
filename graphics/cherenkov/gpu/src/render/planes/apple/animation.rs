@@ -55,37 +55,43 @@ pub(super) fn build(
     playback: Playback,
     path: &NSString,
 ) -> Retained<CABasicAnimation> {
-    let animation = match playback.timing {
-        Timing::Curve { curve, duration } => {
-            let animation = CABasicAnimation::animationWithKeyPath(Some(path));
-            animation.setDuration(duration);
-            animation.setTimingFunction(Some(&CAMediaTimingFunction::functionWithControlPoints(
-                curve.x1 as f32,
-                curve.y1 as f32,
-                curve.x2 as f32,
-                curve.y2 as f32,
-            )));
-            animation
-        }
-        Timing::Spring(spring) => {
-            let animation = CASpringAnimation::animationWithKeyPath(Some(path));
-            animation.setMass(1.0);
-            animation.setStiffness(spring.stiffness());
-            animation.setDamping(spring.damping_coefficient());
-            animation.setAllowsOverdamping(true);
-            let distance = value.target - value.from;
-            animation.setInitialVelocity(if distance == 0.0 {
-                0.0
-            } else {
-                value.velocity / distance
-            });
-            animation.setDuration(value.duration());
-            Retained::into_super(animation)
+    let animation = if matches!(playback.repeat, PlaybackRepeat::Count { count: 0, .. }) {
+        let animation = CABasicAnimation::animationWithKeyPath(Some(path));
+        animation.setDuration(0.0);
+        animation
+    } else {
+        match playback.timing {
+            Timing::Curve { curve, duration } => {
+                let animation = CABasicAnimation::animationWithKeyPath(Some(path));
+                animation.setDuration(duration);
+                animation.setTimingFunction(Some(
+                    &CAMediaTimingFunction::functionWithControlPoints(
+                        curve.x1 as f32,
+                        curve.y1 as f32,
+                        curve.x2 as f32,
+                        curve.y2 as f32,
+                    ),
+                ));
+                animation
+            }
+            Timing::Spring(spring) => {
+                let animation = CASpringAnimation::animationWithKeyPath(Some(path));
+                animation.setMass(1.0);
+                animation.setStiffness(spring.stiffness());
+                animation.setDamping(spring.damping_coefficient());
+                animation.setAllowsOverdamping(true);
+                let distance = value.target - value.from;
+                animation.setInitialVelocity(if distance == 0.0 {
+                    0.0
+                } else {
+                    value.velocity / distance
+                });
+                animation.setDuration(value.duration());
+                Retained::into_super(animation)
+            }
         }
     };
-    if playback.speed.is_finite() && playback.speed > 0.0 {
-        animation.setSpeed(playback.speed as f32);
-    }
+    animation.setSpeed(playback.effective_speed() as f32);
     let (repeat_count, autoreverses) = ca_repeat(playback.repeat);
     animation.setAutoreverses(autoreverses);
     animation.setRepeatCount(repeat_count);

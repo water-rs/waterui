@@ -2580,7 +2580,7 @@ fn approach(state: &Rc<RefCell<Shared>>, table: &TableView, target: usize) {
 
 /// Wires a `ScrollController<usize>` into the table: a generation bump
 /// scrolls the target row to the top — with the request's animation, if
-/// it carries one: `Animation::Default` is the native animated row
+/// it carries one: `Animation::DEFAULT` is the native animated row
 /// scroll, and an explicit animation drives the offset on the frame
 /// clock along the core curve, landing where the jump would have. An
 /// animated request first closes in through [`approach`], so a far
