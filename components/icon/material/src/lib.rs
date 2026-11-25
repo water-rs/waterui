@@ -11,15 +11,15 @@
 //!
 //! # Features
 //!
-//! - `svg` (default) - Icons as `Svg` components for native rendering
-//! - `webfont` - Icons as styled text using Material Icons font (requires font installation)
+//! - `svg` (default) - Icons backed by SVG paths
+//! - `webfont` - Icons backed by Material Icons webfont glyphs (requires font installation)
 //!
 //! # Usage
 //!
 //! ```ignore
 //! use waterui_icons_material_icon as mdi;
 //!
-//! // Get an icon as Svg component
+//! // Every icon constructor returns `waterui_icon::Icon`
 //! mdi::home()
 //! mdi::settings()
 //! mdi::account()
@@ -40,9 +40,10 @@
 
 #![no_std]
 
-// Re-export Svg and IconGlyph behind their respective feature gates.
+pub use waterui_icon::Icon;
+
 #[cfg(feature = "svg")]
-pub use waterui_svg::Svg;
+pub use waterui_icon::Svg;
 
 #[cfg(feature = "webfont")]
 pub use waterui_icon::IconGlyph;

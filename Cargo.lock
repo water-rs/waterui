@@ -2216,7 +2216,7 @@ checksum = "af491d569909a7e4dee0ad7db7f5341fef5c614d5b8ec8cf765732aba3cff681"
 dependencies = [
  "serde",
  "termcolor",
- "unicode-width 0.2.2",
+ "unicode-width 0.1.14",
 ]
 
 [[package]]
@@ -4779,7 +4779,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis-m3"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis-m3?branch=main#994155b0b8bee6153a777c8608f26775d19b4f71"
+source = "git+https://github.com/water-rs/hydrolysis-m3?branch=main#1a3f56c0a01f9a66d205b5e406b91319b53a53e3"
 dependencies = [
  "hydrolysis-style",
  "material-color-utils",
@@ -8191,7 +8191,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.45.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -8838,7 +8838,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.13.0",
  "proc-macro2 1.0.107",
  "quote 1.0.47",
  "syn 2.0.119",
@@ -13045,7 +13045,7 @@ dependencies = [
 [[package]]
 name = "waterui-chart"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/chart?branch=main#620280e67f30b506e44fe19f721231b17ae73173"
+source = "git+https://github.com/water-rs/chart?branch=main#c3f8e3f448276a0c8850ebf02661dec53069b2ec"
 dependencies = [
  "bytemuck",
  "nami",
@@ -13338,7 +13338,7 @@ version = "0.5.1"
 dependencies = [
  "waterui",
  "waterui-core",
- "waterui-graphics",
+ "waterui-layout",
  "waterui-svg",
  "waterui-testing",
  "waterui-text",
@@ -13366,7 +13366,6 @@ dependencies = [
  "ureq",
  "waterui-icon",
  "waterui-icons-codegen",
- "waterui-svg",
  "zip",
 ]
 
@@ -13378,7 +13377,6 @@ dependencies = [
  "waterui",
  "waterui-icon",
  "waterui-icons-codegen",
- "waterui-svg",
  "waterui-testing",
 ]
 
@@ -13392,7 +13390,6 @@ dependencies = [
  "waterui",
  "waterui-icon",
  "waterui-icons-codegen",
- "waterui-svg",
  "waterui-testing",
 ]
 
@@ -13604,7 +13601,7 @@ dependencies = [
 [[package]]
 name = "waterui-map-gpu"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/map-gpu?branch=main#937bd2e0b806d3b01d344b46086b185d89a45afd"
+source = "git+https://github.com/water-rs/map-gpu?branch=main#24ad7552e85fb3e5943b572470bb5bffe2c44237"
 dependencies = [
  "arc-swap",
  "blocking",
@@ -13822,7 +13819,7 @@ dependencies = [
 [[package]]
 name = "waterui-svg"
 version = "0.4.0"
-source = "git+https://github.com/water-rs/svg?branch=main#e65eabadc45daefcf2a488aa027f12a0e5952560"
+source = "git+https://github.com/water-rs/svg?branch=main#aa8720cfaf436e560f25d13fd5cc178f3512c848"
 dependencies = [
  "suiteki",
  "tracing",

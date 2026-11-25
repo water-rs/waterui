@@ -323,7 +323,7 @@ rotating token re-encodes in place. The view *panics while rendering* when the c
 exceeds QR capacity or holds characters Code128 cannot encode; validate runtime input
 first with `BarcodeSource::qr(text)` / `BarcodeSource::code128(text)`, which return a
 `Result`. `.dark_color(c)`, `.light_color(c)` and `.linear_gradient(..)` style it.
-`Svg::new(markup)` takes SVG source text (`.tint(color)` recolours it,
+`Svg::new(markup)` takes SVG source text (`.foreground(color)` recolours `currentColor`,
 `Svg::from_path(path_data, w, h)` draws one path); `waterui::svg` needs the `gpu`
 feature, on by default.
 
@@ -454,9 +454,7 @@ ParticleSystem::new(10_000)             // max particles
 ```
 
 Every numeric builder parameter is a signal slot (`impl IntoSignalF32`; colors take
-`impl IntoSignal<Color>`). Careful: on
-`ParticleSystem`, `.size(min, max)` is the *particle* size range in normalized units —
-it is not the frame modifier. Also available: `.emit_from_point()` / `.emit_from_circle(r)`,
+`impl IntoSignal<Color>`). `.particle_size(min, max)` sets the particle size range in normalized units (while `.size(w, h)` comes from `ViewExt`). Also available: `.emit_from_point()` / `.emit_from_circle(r)`,
 `.angle(min, max)`, `.spin(min, max)`, `.shape(ParticleShape::Circle | Rect)`, `.additive()`,
 `.softness(s)`, `.stretch_with_velocity()`, the forces `.gravity(x, y)`, `.wind(x, y)`,
 `.turbulence(s)`, `.drag(s)`, and collisions (`.collide_with_viewport()`,
@@ -476,16 +474,19 @@ Two facts govern the whole family:
   of the point types is a constant signal already (`BarChart::new(vec![..])` compiles);
   the composite data structs (`DepthData`, `HeatmapData`, `RadarData`, `AreaData`,
   `GaugeData`, `ContourData`) are not — wrap them: `HeatmapChart::new(binding(data))`.
-- Chart colors take **`Srgb`**, not `Color` — `Srgb::from_hex("#3B82F6")`, `Srgb::WHITE`.
-  Multi-series builders (`RadarSeries`, `AreaSeries`, `BubblePoint::with_color`) instead
-  take four normalized `f32` components `(r, g, b, a)`.
+- Every chart, series, region, tooltip, and legend color setter takes
+  **`impl IntoComputed<Color>`** and defaults to semantic theme tokens (`Accent`, `Tertiary`,
+  `Error`, `SurfaceVariant`, `Foreground`, `MutedForeground`, `Border`) so charts re-theme
+  live in light and dark. Pass theme tokens (`waterui::theme::color::Accent`), color values,
+  or reactive `Binding<Color>` / `Computed<Color>` signals.
 
 ```rust
 use waterui::chart::{AxisConfig, BarChart, ChartExt, DataBounds, DataPoint, LineChart};
+use waterui::theme::color::Accent;
 
 let bounds = DataBounds::from_points(&points);
 LineChart::new(binding(points))
-    .color(Srgb::from_hex("#22C55E"))
+    .color(Accent)
     .line_width(3.0)
     .axes(bounds)                                // ChartExt; axes first…
     .y_axis(AxisConfig::new().tick_count(5))     // …then per-axis config on the wrapper
@@ -499,16 +500,16 @@ Constructor shapes for the rest — argument order is the part you cannot guess:
 `HeatmapData::new(rows, cols, row_major_values)`; `ContourData::new(rows, cols, values,
 level_count)`; `RadarData::new(axis_count).labels(..).series(RadarSeries::new(name, values))`
 (every vec exactly `axis_count` long); `AreaData::new(x_values).series(..).stacked(true)`;
-`BubblePoint::with_color(x, y, size, r, g, b, a)`;
-`GaugeData::new(value, min, max).region(GaugeRegion::hex(upper, "#22C55E"))` (regions are
+`BubblePoint::new(x, y, size).color(color)`;
+`GaugeData::new(value, min, max).region(GaugeRegion::new(upper, Accent))` (regions are
 kept sorted by threshold), whose `GaugeChart` takes `.arc(ArcAngles::from_degrees(-135.0,
 135.0))` and `.radii(GaugeRadii::new(0.3, 0.45))` (normalized).
 
-Interaction and composition, on every chart: `.focused(&binding)` / `.selected(&binding)`
-write the hit datum into a `Binding<Option<HitResult<T>>>` (`series`, `index`, `value`,
-`anchor`); `.focused_tooltip(|hit| ..)` and `.selected_tooltip(|hit| ..)` draw a view
-anchored at the datum — `Tooltip::new(TooltipContent::new().title(..).value(label, value))`
-is the ready-made one; `.chart_overlay(|proxy| ..)` / `.chart_background(|proxy| ..)`
+Interaction and composition, on every chart: `.chart_focus(&binding)` /
+`.chart_selection(&binding)` write the hit datum into a `Binding<Option<HitResult<T>>>`
+(`series`, `index`, `value`, `anchor`); `.focused_tooltip(|hit| ..)` and
+`.selected_tooltip(|hit| ..)` draw a view anchored at the datum —
+`Tooltip::new(TooltipContent::new().title(..).value(label, value))` is the ready-made one; `.chart_overlay(|proxy| ..)` / `.chart_background(|proxy| ..)`
 layer arbitrary views, the `ChartProxy` exposing `focused()`, `selected()` and the frame
 signals. Cartesian charts also take `.chart_x_selection(&binding)` and friends; a
 `Legend::new(vec![LegendItem::new(label, color)])` is a separate view. `LineChart::fill(opacity)`
@@ -549,12 +550,12 @@ map. It needs a tile source in `app(env)` — there is no built-in one, and a ma
 or a Hydrolysis build without `waterui-map-gpu`, draws nothing. `MapStyle::Satellite` and
 `Hybrid` render there only when the options also carry `.satellite_style_url(url)` /
 `.hybrid_style_url(url)`; otherwise the map reports `MapStatus::Failed` instead of drawing
-the standard style. Tile limits, cache size, timeout and retry are further `MapGpuOptions`
+the standard style. Tile limits, cache size, timeout and retry are further `MapGpu`
 builders:
 
 ```rust
-use waterui_map_gpu::MapGpuOptions;
-env.insert(MapGpuOptions::new(waterui_url::Url::new("https://tiles.openfreemap.org/styles/positron")));
+use waterui_map_gpu::MapGpu;
+env.install(MapGpu::new(waterui_url::Url::new("https://tiles.openfreemap.org/styles/positron")));
 ```
 
 Maps need the `internet` permission; showing the user's location needs the `location`

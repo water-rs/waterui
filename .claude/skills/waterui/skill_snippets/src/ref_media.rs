@@ -583,7 +583,7 @@ pub fn media_canvas_prose(image: waterui::canvas::ImageSource) -> impl View {
 // ---------------------------------------------------------------------------
 // media.md § "## Graphics and codes" (prose): `BarcodeSource::qr` /
 // `::code128` pre-validation, `.dark_color` / `.light_color`, and the SVG
-// `.tint(..)` / `Svg::from_path`. Not counted as a rust block.
+// `.foreground(..)` / `Svg::from_path`. Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn media_barcode_svg_prose() -> impl View {
     use waterui::barcode::{Barcode, BarcodeError, BarcodeSource};
@@ -597,7 +597,8 @@ pub fn media_barcode_svg_prose() -> impl View {
         Barcode::qr("https://waterui.dev")
             .dark_color(Color::srgb(0, 0, 0))
             .light_color(Color::srgb(255, 255, 255)),
-        Svg::new("<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>").tint(Color::srgb(0, 122, 255)),
+        Svg::new("<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>")
+            .foreground(Color::srgb(0, 122, 255)),
     ))
 }
 
@@ -787,6 +788,7 @@ pub fn media_particle_prose() -> impl View {
     use waterui::particle::{ParticleShape, ParticleSystem};
 
     ParticleSystem::new(1_000)
+        .particle_size(0.01, 0.03)
         .emit_from_circle(0.2)
         .angle(0.0, core::f32::consts::TAU)
         .spin(0.0, 1.0)
@@ -810,10 +812,10 @@ pub fn media_particle_prose() -> impl View {
 // media.md § "## Data: charts and maps" — rust block 13/15
 // ---------------------------------------------------------------------------
 pub fn media_block_13() -> impl View {
-    use waterui::color::Srgb;
     use waterui::reactive::binding;
 
     use waterui::chart::{AxisConfig, BarChart, ChartExt, DataBounds, DataPoint, LineChart};
+    use waterui::theme::color::Accent;
 
     let points = vec![DataPoint::new(0.0, 1.0), DataPoint::new(1.0, 2.0)];
 
@@ -821,7 +823,7 @@ pub fn media_block_13() -> impl View {
 
     let bounds = DataBounds::from_points(&points);
     LineChart::new(binding(points))
-        .color(Srgb::from_hex("#22C55E"))
+        .color(Accent)
         .line_width(3.0)
         .axes(bounds) // ChartExt; axes first…
         .y_axis(AxisConfig::new().tick_count(5)) // …then per-axis config on the wrapper
@@ -829,27 +831,37 @@ pub fn media_block_13() -> impl View {
 }
 
 // ---------------------------------------------------------------------------
-// media.md § "## Data: charts and maps" (prose): `.focused(&binding)`,
-// `.focused_tooltip(..)`, `Tooltip` / `TooltipContent`, `Legend`, and
-// `LineChart::fill`. Not counted as a rust block.
+// media.md § "## Data: charts and maps" (prose): `.chart_focus(&binding)`,
+// `.chart_selection(&binding)`, `.focused_tooltip(..)`, `Tooltip` /
+// `TooltipContent`, `Legend`, and `LineChart::fill`. Not counted as a rust
+// block.
 // ---------------------------------------------------------------------------
 pub fn media_chart_interaction_prose() -> impl View {
     use waterui::chart::{
-        DataPoint, HitResult, Legend, LegendItem, LineChart, Tooltip, TooltipContent,
+        AreaSeries, BubblePoint, DataPoint, GaugeRegion, HitResult, Legend, LegendItem, LineChart,
+        RadarSeries, Tooltip, TooltipContent,
     };
-    use waterui::color::Srgb;
+    use waterui::theme::color::{Accent, Tertiary};
 
     let points = Binding::container(vec![DataPoint::new(0.0, 1.0), DataPoint::new(1.0, 2.0)]);
     let focused: Binding<Option<HitResult<DataPoint>>> = Binding::container(None);
+    let selected: Binding<Option<HitResult<DataPoint>>> = Binding::container(None);
+    let _ = (
+        BubblePoint::new(0.0, 1.0, 2.0).color(Accent),
+        GaugeRegion::new(50.0, Accent),
+        RadarSeries::new("A", vec![1.0, 2.0, 3.0]).color(Tertiary),
+        AreaSeries::new("A", vec![1.0, 2.0]).color(Accent),
+    );
 
     vstack((
         LineChart::new(points)
             .fill(0.3)
-            .focused(&focused)
+            .chart_focus(&focused)
+            .chart_selection(&selected)
             .focused_tooltip(|_hit| {
                 Tooltip::new(TooltipContent::new().title("Sales").value("Total", "2.0"))
             }),
-        Legend::new(vec![LegendItem::new("Sales", Srgb::from_hex("#22C55E"))]),
+        Legend::new(vec![LegendItem::new("Sales", Accent)]),
     ))
 }
 
@@ -907,20 +919,20 @@ pub fn media_map_prose() -> impl View {
 // media.md writes `waterui_url::Url` qualified to show which crate owns it.
 #[allow(unknown_lints, qualified_waterui_path)]
 pub fn media_block_15(mut env: Environment) {
-    use waterui_map_gpu::MapGpuOptions;
-    env.insert(MapGpuOptions::new(waterui_url::Url::new(
+    use waterui_map_gpu::MapGpu;
+    env.install(MapGpu::new(waterui_url::Url::new(
         "https://tiles.openfreemap.org/styles/positron",
     )));
 }
 
 // ---------------------------------------------------------------------------
-// media.md § "## Data: charts and maps" (prose): `MapGpuOptions::
+// media.md § "## Data: charts and maps" (prose): `MapGpu::
 // satellite_style_url` / `hybrid_style_url`. Not counted as a rust block.
 // ---------------------------------------------------------------------------
-pub fn media_map_gpu_styles_prose() -> waterui_map_gpu::MapGpuOptions {
-    use waterui_map_gpu::MapGpuOptions;
+pub fn media_map_gpu_styles_prose() -> waterui_map_gpu::MapGpu {
+    use waterui_map_gpu::MapGpu;
 
-    MapGpuOptions::new(waterui_url::Url::new(
+    MapGpu::new(waterui_url::Url::new(
         "https://tiles.openfreemap.org/styles/positron",
     ))
     .satellite_style_url(waterui_url::Url::new(

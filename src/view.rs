@@ -30,6 +30,7 @@ use waterui_core::{
     plugin::Plugin,
 };
 use waterui_graphics::color::Color;
+use waterui_icon::IconSize;
 
 /// All view-level filter modifiers (`.blur()`, `.brightness()`, ...) come
 /// from [`waterui_graphics::filter_view::FilterViewExt`]. This re-export
@@ -85,7 +86,7 @@ use waterui_controls::button::{ButtonStyleHook, IntoButtonStyle};
 use waterui_controls::toggle::{IntoToggleStyle, ToggleStyleHook};
 use waterui_core::id::TaggedView;
 use waterui_interaction::event::{
-    Event, HoverEvent, LifeCycle, LifeCycleHook, OnChange, OnEvent, TaskHook,
+    EventTarget, HoverEvent, LifeCycle, LifeCycleHook, OnChange, OnEvent, TaskHook,
 };
 use waterui_interaction::interaction::{Disabled, InteractionReport, InteractionState, Selected};
 use waterui_interaction::key::{KeyHandling, KeyPress, OnKeyPress};
@@ -446,6 +447,14 @@ pub trait ViewExt: View + Sized {
         self.with(theme::Tint::new(color))
     }
 
+    /// Sets the shared icon size (in points) for icons in this view's subtree.
+    ///
+    /// Icons read the nearest [`IconSize`] in the environment and default to `24.0`
+    /// points when none is installed.
+    fn icon_size(self, size: impl IntoSignalF32) -> With<Self, IconSize> {
+        self.with(IconSize::new(size))
+    }
+
     /// Adds an overlay to this view.
     ///
     /// Unlike `ZStack`, `Overlay` will not affect the size of the base view.
@@ -523,13 +532,23 @@ pub trait ViewExt: View + Sized {
         self.lifecycle(LifeCycle::Appear, handler)
     }
 
-    /// Adds an event handler for the specified interaction event.
+    /// Adds an event handler for the specified interaction event target.
     ///
     /// You may want to use `ViewExt::on_hover_enter`, `ViewExt::on_hover_move`,
     /// or `ViewExt::on_hover_exit` for convenience.
-    fn event<H, Args>(self, event: Event, handler: H) -> Metadata<OnEvent, Self>
+    ///
+    /// Passing a payload-expecting handler for a payload-free event fails to
+    /// compile:
+    ///
+    /// ```compile_fail
+    /// use waterui::event::{HoverEnter, HoverEvent};
+    /// use waterui::prelude::*;
+    ///
+    /// let _ = Divider.event(HoverEnter, |_: HoverEvent| {});
+    /// ```
+    fn event<E, H, Args>(self, event: E, handler: H) -> Metadata<OnEvent, Self>
     where
-        H: Handler<Args, ()>,
+        E: EventTarget<H, Args>,
     {
         Metadata::new(self, OnEvent::new(event, handler))
     }
@@ -541,6 +560,16 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Arguments
     /// * `handler` - The action to execute when hover starts
+    ///
+    /// Hover enter carries no payload, so requesting [`HoverEvent`] fails to
+    /// compile:
+    ///
+    /// ```compile_fail
+    /// use waterui::event::HoverEvent;
+    /// use waterui::prelude::*;
+    ///
+    /// let _ = Divider.on_hover_enter(|_: HoverEvent| {});
+    /// ```
     fn on_hover_enter<H, Args>(self, handler: H) -> Metadata<OnEvent, Self>
     where
         H: Handler<Args, ()>,
@@ -953,7 +982,7 @@ pub trait ViewExt: View + Sized {
         G: GestureType,
         H: EventHandler<G::Event, Args>,
     {
-        Metadata::new(self, GestureObserver::from_event(gesture, action))
+        Metadata::new(self, GestureObserver::new(gesture, action))
     }
 
     /// Adds a tap gesture recognizer to this view that triggers the specified action.

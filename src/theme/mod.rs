@@ -715,7 +715,7 @@ mod tests {
         use crate::text::text;
         use crate::theme::color::{Accent, SurfaceVariant};
         use crate::widget::avatar;
-        use waterui_icon::IconGlyph;
+        use waterui_icon::{Icon, IconGlyph};
 
         let selected = Binding::bool(false);
         let signal = selected.select(Color::from(Accent), Color::from(SurfaceVariant));
@@ -753,9 +753,9 @@ mod tests {
         let _ = row("Key", "Val")
             .value_color(Accent)
             .value_color(signal.clone());
-        let _ = IconGlyph::new('\u{e88a}', "MaterialIcons-Regular")
-            .color(Accent)
-            .color(signal);
+        let _ = Icon::from_glyph(IconGlyph::new('\u{e88a}', "MaterialIcons-Regular"))
+            .foreground(Accent)
+            .foreground(signal);
 
         // ForegroundOverride resolves a reactive signal in place.
         let active = Binding::bool(false);

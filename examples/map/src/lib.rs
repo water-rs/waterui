@@ -21,7 +21,7 @@ use waterui::shape::{CornerRadius, RoundedRectangle, ShapeExt as _};
 use waterui::theme::color::Surface;
 use waterui_icons_lucide as lucide;
 use waterui_map::{Coordinate, Map, MapStyle, Region};
-use waterui_map_gpu::MapGpuOptions;
+use waterui_map_gpu::MapGpu;
 use waterui_url::Url;
 
 const MAP_CONTROL_SPACING: f32 = 10.0;
@@ -186,7 +186,7 @@ pub fn demo() -> impl View {
 /// `MapKit`; Hydrolysis bridges no platform map and draws it with
 /// `waterui-map-gpu`, which this example links, from the tile source below.
 fn with_tiles(view: impl View) -> impl View {
-    view.with(MapGpuOptions::new(Url::new(
+    view.install(MapGpu::new(Url::new(
         "https://tiles.openfreemap.org/styles/positron",
     )))
 }
