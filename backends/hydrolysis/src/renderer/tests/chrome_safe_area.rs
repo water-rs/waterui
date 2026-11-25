@@ -188,7 +188,8 @@ fn navigation_view() -> impl waterui_core::View {
                         button("Mark All").action(|| {}),
                     )),
             )
-            .searchable(&query, "Search mail"),
+            .searchable(&query)
+            .search_prompt("Search mail"),
     )
 }
 

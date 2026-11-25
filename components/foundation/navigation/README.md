@@ -166,7 +166,8 @@ NavigationView::new("Editor", editor)
             save,
         ),
     ]))
-    .searchable(&query, "Search")
+    .searchable(&query)
+    .search_prompt("Search")
     .navigation_bar_visibility(show_bar)
 ```
 

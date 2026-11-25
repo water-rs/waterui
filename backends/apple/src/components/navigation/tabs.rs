@@ -2,10 +2,10 @@
 //!
 //! iOS renders a `UITabBarController` (kit [`TabsController`]); macOS renders a
 //! sidebar source list for `Sidebar` style and a segmented control above the
-//! content otherwise. Each tab's `NavigationView` renders through the
-//! navigation handler, so it draws its own standalone bar inside the pane.
-//! The selection binding is two-way: native selection writes back, external
-//! writes select the matching tab.
+//! content otherwise. Each tab's root view renders directly through the renderer,
+//! so a `NavigationStack`, `NavigationSplitView`, standalone `NavigationView`, or
+//! plain view brings its own chrome (or none). The selection binding is two-way:
+//! native selection writes back, external writes select the matching tab.
 
 use alloc::{
     string::{String, ToString},
@@ -82,7 +82,7 @@ fn badge_display(value: &BadgeValue, env: &Environment) -> BadgeDisplay {
 /// leaf the platform chrome still binds.
 fn mount_tab(id: Id, tab: TabItem<Held>, renderer: &crate::contract::Renderer) -> Mounted {
     let (label, icon, content, badge, enabled, role) = tab.into_parts();
-    let pane = super::nav_view::realize_navigation_view(content.build(), &renderer.context());
+    let pane = renderer.realize(content.build());
     let label_leaf = renderer.realize(label.build());
     let label = extract_title_text(label_leaf.view());
     let (symbol, icon_leaf) = icon.map_or_else(

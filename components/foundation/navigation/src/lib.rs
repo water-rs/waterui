@@ -1246,6 +1246,10 @@ impl<S> Debug for ResolvedNavigationToolbarItem<S> {
 
 /// A sequence of authored navigation toolbar items lowered into child slot `S`.
 pub trait NavigationToolbarItems: 'static {
+    /// The resulting toolbar type after replacing the toolbar items.
+    #[doc(hidden)]
+    type WithToolbar<New: NavigationToolbarItems>: NavigationToolbarItems;
+
     /// Appends every resolved item in declaration order into `out`.
     #[doc(hidden)]
     fn push_into<S: ChildSlot>(self, out: &mut Vec<ResolvedNavigationToolbarItem<S>>);
@@ -1258,12 +1262,25 @@ pub trait NavigationToolbarItems: 'static {
     {
         let mut items = Vec::new();
         self.push_into(&mut items);
-        ResolvedNavigationToolbar { items }
+        ResolvedNavigationToolbar {
+            items,
+            search_suggestions: None,
+        }
     }
+
+    /// Replaces the toolbar items while keeping any attached search suggestions.
+    #[doc(hidden)]
+    fn with_toolbar<New: NavigationToolbarItems>(self, new: New) -> Self::WithToolbar<New>;
 }
 
 impl NavigationToolbarItems for () {
+    type WithToolbar<New: NavigationToolbarItems> = New;
+
     fn push_into<S: ChildSlot>(self, _out: &mut Vec<ResolvedNavigationToolbarItem<S>>) {}
+
+    fn with_toolbar<New: NavigationToolbarItems>(self, new: New) -> New {
+        new
+    }
 }
 
 impl<Head, Tail> NavigationToolbarItems for (Head, Tail)
@@ -1271,41 +1288,71 @@ where
     Head: NavigationToolbarItems,
     Tail: NavigationToolbarItemSource,
 {
+    type WithToolbar<New: NavigationToolbarItems> = New;
+
     fn push_into<S: ChildSlot>(self, out: &mut Vec<ResolvedNavigationToolbarItem<S>>) {
         self.0.push_into(out);
         out.push(self.1.into_resolved::<S>());
     }
+
+    fn with_toolbar<New: NavigationToolbarItems>(self, new: New) -> New {
+        new
+    }
 }
 
 impl<Item: NavigationToolbarItemSource> NavigationToolbarItems for Vec<Item> {
+    type WithToolbar<New: NavigationToolbarItems> = New;
+
     fn push_into<S: ChildSlot>(self, out: &mut Vec<ResolvedNavigationToolbarItem<S>>) {
         out.reserve(self.len());
         for item in self {
             out.push(item.into_resolved::<S>());
         }
     }
+
+    fn with_toolbar<New: NavigationToolbarItems>(self, new: New) -> New {
+        new
+    }
 }
 
 impl<Item: NavigationToolbarItemSource, const N: usize> NavigationToolbarItems for [Item; N] {
+    type WithToolbar<New: NavigationToolbarItems> = New;
+
     fn push_into<S: ChildSlot>(self, out: &mut Vec<ResolvedNavigationToolbarItem<S>>) {
         out.reserve(N);
         for item in self {
             out.push(item.into_resolved::<S>());
         }
     }
+
+    fn with_toolbar<New: NavigationToolbarItems>(self, new: New) -> New {
+        new
+    }
 }
 
 impl<Items: NavigationToolbarItems> NavigationToolbarItems for NavigationToolbar<Items> {
+    type WithToolbar<New: NavigationToolbarItems> = New;
+
     fn push_into<S: ChildSlot>(self, out: &mut Vec<ResolvedNavigationToolbarItem<S>>) {
         self.items.push_into(out);
+    }
+
+    fn with_toolbar<New: NavigationToolbarItems>(self, new: New) -> New {
+        new
     }
 }
 
 impl<Items: NavigationToolbarItems> NavigationToolbarItems for Option<Items> {
+    type WithToolbar<New: NavigationToolbarItems> = New;
+
     fn push_into<S: ChildSlot>(self, out: &mut Vec<ResolvedNavigationToolbarItem<S>>) {
         if let Some(items) = self {
             items.push_into(out);
         }
+    }
+
+    fn with_toolbar<New: NavigationToolbarItems>(self, new: New) -> New {
+        new
     }
 }
 
@@ -1314,10 +1361,16 @@ macro_rules! impl_one_of_toolbar_items {
         impl<$($variant: NavigationToolbarItems),+> NavigationToolbarItems
             for waterui_core::$name<$($variant),+>
         {
+            type WithToolbar<New: NavigationToolbarItems> = New;
+
             fn push_into<S: ChildSlot>(self, out: &mut Vec<ResolvedNavigationToolbarItem<S>>) {
                 match self {
                     $(Self::$variant(items) => items.push_into(out),)+
                 }
+            }
+
+            fn with_toolbar<New: NavigationToolbarItems>(self, new: New) -> New {
+                new
             }
         }
     };
@@ -1384,17 +1437,56 @@ impl<Items: NavigationToolbarItems> NavigationToolbar<Items> {
     }
 }
 
+/// Toolbar items paired with search suggestions attached via [`NavigationView::search_suggestions`].
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct WithSearchSuggestions<T, F> {
+    toolbar: T,
+    suggestions: F,
+}
+
+impl<T, F> NavigationToolbarItems for WithSearchSuggestions<T, F>
+where
+    T: NavigationToolbarItems,
+    F: ViewBuilder + 'static,
+{
+    type WithToolbar<New: NavigationToolbarItems> = WithSearchSuggestions<T::WithToolbar<New>, F>;
+
+    fn push_into<S: ChildSlot>(self, out: &mut Vec<ResolvedNavigationToolbarItem<S>>) {
+        self.toolbar.push_into(out);
+    }
+
+    fn into_resolved<S: ChildSlot>(self) -> ResolvedNavigationToolbar<S> {
+        let mut resolved = self.toolbar.into_resolved::<S>();
+        let suggestions = self.suggestions;
+        resolved.search_suggestions =
+            Some(SlotBuilder::new(move || S::from_view(suggestions.build())));
+        resolved
+    }
+
+    fn with_toolbar<New: NavigationToolbarItems>(self, new: New) -> Self::WithToolbar<New> {
+        WithSearchSuggestions {
+            toolbar: self.toolbar.with_toolbar(new),
+            suggestions: self.suggestions,
+        }
+    }
+}
+
 /// Resolved native toolbar items carried on [`ResolvedNavigationView<S>`].
 #[doc(hidden)]
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct ResolvedNavigationToolbar<S> {
     items: Vec<ResolvedNavigationToolbarItem<S>>,
+    search_suggestions: Option<SlotBuilder<S>>,
 }
 
 impl<S> Default for ResolvedNavigationToolbar<S> {
     fn default() -> Self {
-        Self { items: Vec::new() }
+        Self {
+            items: Vec::new(),
+            search_suggestions: None,
+        }
     }
 }
 
@@ -1414,6 +1506,11 @@ impl<S> ResolvedNavigationToolbar<S> {
     pub fn take_items(&mut self) -> Vec<ResolvedNavigationToolbarItem<S>> {
         core::mem::take(&mut self.items)
     }
+
+    /// Takes the resolved search suggestions slot builder, if any.
+    pub const fn take_search_suggestions(&mut self) -> Option<SlotBuilder<S>> {
+        self.search_suggestions.take()
+    }
 }
 
 impl<S: 'static> ResolvedNavigationToolbar<S> {
@@ -1429,6 +1526,7 @@ impl<S: 'static> ResolvedNavigationToolbar<S> {
                 .into_iter()
                 .map(|item| item.map_slots(f.clone()))
                 .collect(),
+            search_suggestions: self.search_suggestions.map(|slot| slot.map_slot(f)),
         }
     }
 }
@@ -2204,9 +2302,11 @@ impl<S> ResolvedNavigationView<S> {
             self.bar.subtitle = Some(Text::from(subtitle.resolve(env)));
         }
 
-        if let Some(search) = &mut self.bar.search {
+        if let Some(search) = &mut self.bar.search
+            && let Some(prompt) = search.prompt().cloned()
+        {
             search.set_prompt(waterui_text::Text::computed(
-                search.prompt().resolve(env).into_content(),
+                prompt.resolve(env).into_content(),
             ));
         }
 
@@ -2321,13 +2421,11 @@ impl<C, T> NavigationView<C, T> {
     pub fn navigation_toolbar<Items: NavigationToolbarItems>(
         self,
         toolbar: NavigationToolbar<Items>,
-    ) -> NavigationView<C, Items> {
-        NavigationView {
-            bar: self.bar.map_toolbar(|_| toolbar.items),
-            content: self.content,
-            state: self.state,
-            transition: self.transition,
-        }
+    ) -> NavigationView<C, T::WithToolbar<Items>>
+    where
+        T: NavigationToolbarItems,
+    {
+        self.map_toolbar(|existing| existing.with_toolbar(toolbar.items))
     }
 
     /// Controls native navigation bar visibility (`true` means visible).
@@ -2337,9 +2435,67 @@ impl<C, T> NavigationView<C, T> {
     }
 
     /// Installs a navigation-scoped search field in the bar chrome.
-    pub fn searchable(mut self, text: &Binding<Str>, prompt: impl IntoText) -> Self {
-        self.bar.search = Some(NavigationSearch::new(text, prompt));
+    pub fn searchable(mut self, text: &Binding<Str>) -> Self {
+        self.bar.search = Some(NavigationSearch::new(text));
         self
+    }
+
+    /// Sets the prompt displayed when the search field is empty.
+    pub fn search_prompt(mut self, prompt: impl IntoText) -> Self {
+        let Some(search) = self.bar.search.as_mut() else {
+            contract_violation!(
+                "NavigationView::search_prompt requires calling .searchable(&query) first"
+            );
+            return self;
+        };
+        search.set_prompt(prompt);
+        self
+    }
+
+    /// Binds whether the navigation search field is active.
+    ///
+    /// Writing `false` dismisses an active search field, and native search
+    /// activation/dismissal updates the binding.
+    pub fn search_active(mut self, active: &Binding<bool>) -> Self {
+        let Some(search) = self.bar.search.as_mut() else {
+            contract_violation!(
+                "NavigationView::search_active requires calling .searchable(&query) first"
+            );
+            return self;
+        };
+        search.set_active(active);
+        self
+    }
+
+    /// Runs `action` when the user submits the navigation search query.
+    pub fn on_search_submit<Args>(mut self, action: impl Handler<Args, ()>) -> Self {
+        let Some(search) = self.bar.search.as_mut() else {
+            contract_violation!(
+                "NavigationView::on_search_submit requires calling .searchable(&query) first"
+            );
+            return self;
+        };
+        search.set_on_submit(action);
+        self
+    }
+
+    /// Attaches a suggestions view shown while the navigation search field is active.
+    pub fn search_suggestions<F: ViewBuilder + 'static>(
+        self,
+        suggestions: F,
+    ) -> NavigationView<C, WithSearchSuggestions<T, F>>
+    where
+        T: NavigationToolbarItems,
+    {
+        if self.bar.search.is_none() {
+            contract_violation!(
+                "NavigationView::search_suggestions requires calling .searchable(&query) first"
+            );
+        }
+        self.map_toolbar(|toolbar| WithSearchSuggestions {
+            toolbar,
+            suggestions,
+        })
     }
 
     /// Overrides the platform navigation bar surface color.
