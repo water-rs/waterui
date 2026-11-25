@@ -2823,7 +2823,7 @@ fn present_navigation_pages<E: TextEngine>(
         return;
     }
     let dir = layout_direction(stack_env).snapshot();
-    let reduce_motion = stack_env.get::<ReduceMotion>().is_some_and(|flag| flag.0);
+    let reduce_motion = ReduceMotion::is_reduced(stack_env);
     match navigation_presentation(
         &style,
         motion,

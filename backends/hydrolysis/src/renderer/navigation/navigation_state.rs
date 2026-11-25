@@ -249,7 +249,7 @@ pub struct PagePairTransition<E: TextEngine> {
 
 impl<E: TextEngine> PagePairTransition<E> {
     pub(crate) fn start(pair: &NavigationTransitionPair, env: &Environment, now: Instant) -> Self {
-        let reduce_motion = env.get::<ReduceMotion>().is_some_and(|flag| flag.0);
+        let reduce_motion = ReduceMotion::is_reduced(env);
         let outgoing = TransitionRun::removal(&pair.outgoing, reduce_motion, now);
         let incoming = TransitionRun::insertion(&pair.incoming, reduce_motion, now);
         Self {
