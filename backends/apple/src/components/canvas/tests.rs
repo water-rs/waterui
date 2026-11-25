@@ -4,6 +4,7 @@
 //! each rendered case as a PNG there.
 
 use kurbo::{Affine, Cap, Circle, Rect, RoundedRect, Stroke};
+#[cfg(target_os = "macos")]
 use waterui_core::Angle;
 use waterui_graphics::backend::draw::{
     BlendMode, ColorStop, Content, ContentChange, Draw as _, Group, LayoutSize, LinearGradient,

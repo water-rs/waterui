@@ -1848,7 +1848,7 @@ mod tests {
         );
         assert!(matches!(
             started.recognized,
-            Some(GesturePayload::Rotation(event)) if event.angle() == 0.0
+            Some(GesturePayload::Rotation(event)) if event.angle() == Angle::ZERO
         ));
 
         let moved = detector.input(
@@ -1862,7 +1862,7 @@ mod tests {
         );
         match moved.recognized {
             Some(GesturePayload::Rotation(event)) => {
-                assert!((event.angle() - 0.5).abs() < 1e-6);
+                assert!((event.angle().to_radians() - 0.5).abs() < 1e-6);
                 assert!(event.velocity() > 0.0);
             }
             other => panic!("expected a rotation payload, got {:?}", other.is_some()),
@@ -1879,7 +1879,7 @@ mod tests {
         );
         assert!(matches!(
             ended.recognized,
-            Some(GesturePayload::Rotation(event)) if (event.angle() - 0.75).abs() < 1e-6
+            Some(GesturePayload::Rotation(event)) if (event.angle().to_radians() - 0.75).abs() < 1e-6
         ));
     }
 
