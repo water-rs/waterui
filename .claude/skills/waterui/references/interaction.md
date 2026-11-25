@@ -66,11 +66,12 @@ anything `Into<Gesture>`:
 
 ```rust
 use core::{num::NonZeroU32, time::Duration};
+use waterui::gesture::{DragEvent, LongPressEvent, TapEvent};
 
-view.gesture(TapGesture::new(), handler)                                // single tap
-view.gesture(TapGesture::repeat(NonZeroU32::new(2).unwrap()), handler)    // double tap — a count, not a new type
-view.gesture(LongPressGesture::new().minimum_duration(Duration::from_millis(500)), handler)
-view.gesture(DragGesture::new(5.0), handler)          // minimum pointer travel, f32 layout units
+view.gesture(TapGesture::new(), |_: TapEvent| {})                                          // single tap
+view.gesture(TapGesture::repeat(NonZeroU32::new(2).unwrap()), |_: TapEvent| {})             // double tap — a count, not a new type
+view.gesture(LongPressGesture::new().minimum_duration(Duration::from_millis(500)), |_: LongPressEvent| {})
+view.gesture(DragGesture::new(5.0), |_: DragEvent| {})                                      // minimum pointer travel, f32 layout units
 ```
 
 Two details to keep straight:
@@ -86,13 +87,12 @@ Two details to keep straight:
 complete the set. All gesture structs are `#[non_exhaustive]` — construct them only
 through these constructors.
 
-A recognized gesture's payload is read in the handler directly as `TapEvent`,
+A recognized gesture's payload is passed as the handler's typed first argument — `TapEvent`,
 `LongPressEvent`, `DragEvent` (`location()`, `translation()`, `velocity()`,
 `phase()`), `MagnificationEvent` or `RotationEvent`, all from
-`waterui::gesture`. Pointer motion inside a view is `.event(Event::HoverMove, handler)`,
-whose handler reads the local pointer `location()` as `HoverEvent` (both from
-`waterui::event`); `.on_hover_enter` / `.on_hover_exit` carry no `HoverEvent`, so
-`HoverEvent` fails to extract there.
+`waterui::gesture` (with `GestureEvent` for composite `Gesture` combinators). Pointer motion inside a view is `.on_hover_move(handler)` (or `.event(Event::HoverMove, handler)`),
+whose handler takes `HoverEvent` (`location()`) (`waterui::event`);
+`.on_hover_enter` / `.on_hover_exit` carry no `HoverEvent`.
 
 `.buttons(..)` restricts tap, long-press, and drag recognizers to a `PointerButtons`
 mask (default `PRIMARY`). A recognizer activates only when the pressing
@@ -101,21 +101,23 @@ second button pressed mid-sequence does not join it. `TapEvent`, `LongPressEvent
 and `DragEvent` carry the pressing `button`.
 
 ```rust
-use waterui::gesture::PointerButtons;
+use waterui::gesture::{PointerButtons, TapEvent};
 
-view.gesture(TapGesture::new().buttons(PointerButtons::MIDDLE), handler) // middle click
+view.gesture(TapGesture::new().buttons(PointerButtons::MIDDLE), |_: TapEvent| {}) // middle click
 ```
 
 ## Combining gestures
 
-`.then(..)` sequences gestures; the handler fires only after the whole sequence succeeds:
+`.then(..)` sequences gestures; the handler fires only after the whole sequence succeeds,
+receiving [`GestureEvent`]:
 
 ```rust
 use core::time::Duration;
+use waterui::gesture::GestureEvent;
 
 view.gesture(
     TapGesture::new().then(LongPressGesture::new().minimum_duration(Duration::from_millis(300))), // tap, then long-press
-    |State(status): State<Binding<&'static str>>| status.set("Done!"),
+    |_: GestureEvent, State(status): State<Binding<&'static str>>| status.set("Done!"),
 )
 .state(&status)
 ```
@@ -229,8 +231,7 @@ The parts an agent cannot guess:
 `.on_key_press(handler)` attaches a key handler to a view. The focused view sees each
 key first; a key it does not consume bubbles to the nearest ancestor with an
 `OnKeyPress` handler, then the next, stopping at the first `KeyHandling::Handled`. The
-handler runs with `KeyPress` in its environment — read it as `press: KeyPress` — and
-returns `Handled` or `Ignored`. The backend is what decides "consumed": a single-line
+handler receives `press: KeyPress` as its first argument and returns `Handled` or `Ignored`. The backend is what decides "consumed": a single-line
 `field` eats text-editing keys and submits Return through `.on_submit(..)` when one is
 set; Escape, Up/Down, PageUp/PageDown and a Return with no `on_submit` bubble out.
 

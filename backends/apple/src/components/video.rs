@@ -13,7 +13,7 @@
 //! remote commands + audio focus); its command receiver is pumped on a
 //! dedicated thread that hops onto the main queue before touching state.
 //!
-//! `Event`s go to the view's optional `BoundVideoEventHandler`; errors are
+//! `VideoEvent`s go to the view's optional `BoundVideoEventHandler`; errors are
 //! non-fatal unless the contract demands `fatalError` (spherical projection
 //! and required hardware power paths — neither has an `AVPlayer` answer).
 
@@ -50,9 +50,9 @@ use waterui_video::video::NativeVideoConfig;
 #[cfg(feature = "video_player")]
 use waterui_video::video::NativeVideoPlayerConfig;
 use waterui_video::video::{
-    AudioTrackInfo, AudioTrackSelection, BoundVideoEventHandler, ContentMode, Event,
-    PlaybackMetrics, PlaybackOutputPath, PlaybackPowerPolicy, SubtitleSelection, SubtitleTrackInfo,
-    SubtitleTrackOrigin, TrackCatalog, VideoTrackInfo, VideoTrackSelection,
+    AudioTrackInfo, AudioTrackSelection, BoundVideoEventHandler, ContentMode, PlaybackMetrics,
+    PlaybackOutputPath, PlaybackPowerPolicy, SubtitleSelection, SubtitleTrackInfo,
+    SubtitleTrackOrigin, TrackCatalog, VideoEvent, VideoTrackInfo, VideoTrackSelection,
 };
 use waterui_video::{
     Delivery, LiveWindow, MediaItem, PlaybackPhase, PlaybackPolicy, PlayerController, RepeatMode,
@@ -89,16 +89,16 @@ const FALLBACK_HEIGHT: f32 = FALLBACK_WIDTH / waterui_video::DEFAULT_ASPECT;
 const PERIODIC_SECONDS: f64 = 0.25;
 
 /// Report a transition when the player's empty/waiting state changes.
-const fn buffering_event(buffering: &mut bool, empty: bool, waiting: bool) -> Option<Event> {
+const fn buffering_event(buffering: &mut bool, empty: bool, waiting: bool) -> Option<VideoEvent> {
     let now = empty && waiting;
     if now == *buffering {
         return None;
     }
     *buffering = now;
     Some(if now {
-        Event::Buffering
+        VideoEvent::Buffering
     } else {
-        Event::BufferingEnded
+        VideoEvent::BufferingEnded
     })
 }
 
@@ -321,7 +321,7 @@ enum Deferred {
     SeekGeneration(u64),
     /// `State::emit` — the app handler can write bindings, so it too must
     /// run off the borrow.
-    Emit(Event),
+    Emit(VideoEvent),
     /// `State::push_playback_state` — reads the bindings it reports, so it
     /// must run after the queued writes above it.
     PushPlaybackState,
@@ -420,13 +420,13 @@ impl core::fmt::Debug for State {
 impl State {
     /// Queues an event for the view's handler — handlers can write
     /// bindings, so delivery waits for [`update`] to release the borrow.
-    fn emit(&mut self, event: Event) {
+    fn emit(&mut self, event: VideoEvent) {
         self.deferred.push(Deferred::Emit(event));
     }
 
     /// Emits a non-fatal error event.
     fn emit_error(&mut self, message: impl Into<String>) {
-        self.emit(Event::Error {
+        self.emit(VideoEvent::Error {
             message: message.into(),
         });
     }
@@ -656,7 +656,7 @@ impl State {
                         f64_as_f32(size.height),
                     )));
                 }
-                self.emit(Event::ReadyToPlay);
+                self.emit(VideoEvent::ReadyToPlay);
                 self.set_phase(PlaybackPhase::Ready);
                 self.report_duration(&item);
                 self.update_live_window();
@@ -724,11 +724,11 @@ impl State {
                 && self.last_buffer_level_ms != Some(level_ms)
             {
                 self.last_buffer_level_ms = Some(level_ms);
-                self.emit(Event::BufferLevel {
+                self.emit(VideoEvent::BufferLevel {
                     buffered_ms: level_ms,
                 });
             }
-            self.emit(Event::PlaybackMetrics {
+            self.emit(VideoEvent::PlaybackMetrics {
                 metrics: self.metrics(&item, position),
             });
         }
@@ -1086,7 +1086,7 @@ impl State {
             return;
         }
         self.ended = true;
-        self.emit(Event::Ended);
+        self.emit(VideoEvent::Ended);
         let repeat = self.bindings.repeat.snapshot();
         if repeat == RepeatMode::One {
             self.player.seek_to_seconds(0.0);
@@ -1231,13 +1231,13 @@ impl State {
             MediaCommand::Next => {
                 if self.bindings.has_next.snapshot() {
                     let _ = self.controller.next();
-                    self.emit(Event::NextRequested);
+                    self.emit(VideoEvent::NextRequested);
                 }
             }
             MediaCommand::Previous => {
                 if self.bindings.has_previous.snapshot() {
                     let _ = self.controller.previous();
-                    self.emit(Event::PreviousRequested);
+                    self.emit(VideoEvent::PreviousRequested);
                 }
             }
             MediaCommand::Seek(position) => {
@@ -1546,7 +1546,7 @@ fn coordinator(
         move || {
             if let Some(state) = state.upgrade() {
                 update(&state, |state| {
-                    state.emit(Event::ExternalPlaybackChanged {
+                    state.emit(VideoEvent::ExternalPlaybackChanged {
                         active: state.player.is_external_playback_active(),
                     });
                 });
@@ -1728,7 +1728,7 @@ fn render_video(config: NativeVideoConfig, ctx: &RenderContext<'_>) -> NativeLea
     let (coordinator, player) = coordinator(mtm, config.playback);
     surface.set_player(Some(&player));
     update(&coordinator.state, |state| {
-        state.emit(Event::PlaybackOutputPathChanged {
+        state.emit(VideoEvent::PlaybackOutputPathChanged {
             path: PlaybackOutputPath::PlatformManaged,
         });
     });
@@ -1764,7 +1764,7 @@ fn render_video_player(config: NativeVideoPlayerConfig, ctx: &RenderContext<'_>)
     let (coordinator, player) = coordinator(mtm, config.playback);
     view.set_player(Some(&player));
     update(&coordinator.state, |state| {
-        state.emit(Event::PlaybackOutputPathChanged {
+        state.emit(VideoEvent::PlaybackOutputPathChanged {
             path: PlaybackOutputPath::PlatformManaged,
         });
     });
@@ -1774,7 +1774,7 @@ fn render_video_player(config: NativeVideoPlayerConfig, ctx: &RenderContext<'_>)
             if let Some(state) = state.upgrade() {
                 let active = matches!(event, PipEvent::Started);
                 update(&state, |state| {
-                    state.emit(Event::PictureInPictureChanged { active });
+                    state.emit(VideoEvent::PictureInPictureChanged { active });
                 });
             }
         }
@@ -1943,12 +1943,12 @@ mod tests {
         let mut buffering = false;
         assert!(matches!(
             buffering_event(&mut buffering, true, true),
-            Some(Event::Buffering)
+            Some(VideoEvent::Buffering)
         ));
         assert!(buffering);
         assert!(matches!(
             buffering_event(&mut buffering, false, true),
-            Some(Event::BufferingEnded)
+            Some(VideoEvent::BufferingEnded)
         ));
         assert!(!buffering);
     }
@@ -1961,11 +1961,11 @@ mod tests {
         let mut buffering = false;
         assert!(matches!(
             buffering_event(&mut buffering, true, true),
-            Some(Event::Buffering)
+            Some(VideoEvent::Buffering)
         ));
         assert!(matches!(
             buffering_event(&mut buffering, true, false),
-            Some(Event::BufferingEnded)
+            Some(VideoEvent::BufferingEnded)
         ));
     }
 
@@ -1976,12 +1976,12 @@ mod tests {
         let mut buffering = false;
         assert!(matches!(
             buffering_event(&mut buffering, true, true),
-            Some(Event::Buffering)
+            Some(VideoEvent::Buffering)
         ));
         assert!(buffering_event(&mut buffering, true, true).is_none());
         assert!(matches!(
             buffering_event(&mut buffering, false, false),
-            Some(Event::BufferingEnded)
+            Some(VideoEvent::BufferingEnded)
         ));
         assert!(buffering_event(&mut buffering, false, false).is_none());
     }
@@ -1993,11 +1993,11 @@ mod tests {
         for _ in 0..2 {
             assert!(matches!(
                 buffering_event(&mut buffering, true, true),
-                Some(Event::Buffering)
+                Some(VideoEvent::Buffering)
             ));
             assert!(matches!(
                 buffering_event(&mut buffering, false, false),
-                Some(Event::BufferingEnded)
+                Some(VideoEvent::BufferingEnded)
             ));
         }
     }

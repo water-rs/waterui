@@ -23,10 +23,10 @@ use nami::{Binding, Computed, Signal};
 use wasm_bindgen::{JsCast, JsValue, closure::Closure};
 use waterui_core::{Native, OneOf3, View, contract_violation};
 use waterui_video::video::{
-    AudioTrackSelection, BoundVideoEventHandler, ContentMode, Event, NativeVideoConfig,
+    AudioTrackSelection, BoundVideoEventHandler, ContentMode, NativeVideoConfig,
     NativeVideoPlayerConfig, PlaybackConfiguration, PlaybackOutputPath, PlaybackPowerPolicy,
     SubtitleSelection, SubtitleTrackInfo, SubtitleTrackOrigin, TrackCatalog, VideoConfig,
-    VideoPlayerConfig, VideoProjection, VideoTrackSelection,
+    VideoEvent, VideoPlayerConfig, VideoProjection, VideoTrackSelection,
 };
 use waterui_video::{
     Delivery, LiveWindow, MediaItem, PlaybackMetrics, PlaybackPhase, PlayerController, RepeatMode,
@@ -207,7 +207,7 @@ struct Player {
     element: HtmlVideoElement,
     bindings: Bindings,
     controller: PlayerController,
-    emit: Option<Rc<dyn Fn(Event)>>,
+    emit: Option<Rc<dyn Fn(VideoEvent)>>,
     /// The `(url, delivery)` of the loaded source; a repeated source is not
     /// reloaded.
     source_key: RefCell<Option<(String, Delivery)>>,
@@ -269,9 +269,9 @@ impl Player {
             element,
             bindings,
             controller: playback.controller,
-            emit: playback
-                .on_event
-                .map(|handler| -> Rc<dyn Fn(Event)> { Rc::new(move |event| handler.call(event)) }),
+            emit: playback.on_event.map(|handler| -> Rc<dyn Fn(VideoEvent)> {
+                Rc::new(move |event| handler.call(event))
+            }),
             source_key: RefCell::new(None),
             ready: Cell::new(false),
             ended: Cell::new(false),
@@ -288,7 +288,7 @@ impl Player {
         });
         player.listen();
         player.watch();
-        player.emit(Event::PlaybackOutputPathChanged {
+        player.emit(VideoEvent::PlaybackOutputPathChanged {
             path: PlaybackOutputPath::PlatformManaged,
         });
         player.apply_audio();
@@ -296,14 +296,14 @@ impl Player {
         player
     }
 
-    fn emit(&self, event: Event) {
+    fn emit(&self, event: VideoEvent) {
         if let Some(emit) = &self.emit {
             emit(event);
         }
     }
 
     fn emit_error(&self, message: impl Into<String>) {
-        self.emit(Event::Error {
+        self.emit(VideoEvent::Error {
             message: message.into(),
         });
     }
@@ -636,7 +636,7 @@ impl Player {
         self.bindings.position_seconds.set(position);
         let buffered_ms = self.buffered_ahead_ms();
         if self.last_buffer_level_ms.replace(Some(buffered_ms)) != Some(buffered_ms) {
-            self.emit(Event::BufferLevel { buffered_ms });
+            self.emit(VideoEvent::BufferLevel { buffered_ms });
         }
         let mut metrics = PlaybackMetrics::new(
             core::time::Duration::from_secs_f64(position.max(0.0)),
@@ -645,13 +645,13 @@ impl Player {
         );
         let quality = self.element.get_video_playback_quality();
         metrics = metrics.dropped_video_frames(u64::from(quality.dropped_video_frames()));
-        self.emit(Event::PlaybackMetrics { metrics });
+        self.emit(VideoEvent::PlaybackMetrics { metrics });
     }
 
     /// Data flows again: a reported stall ends.
     fn end_stall(&self) {
         if self.stalled.replace(false) {
-            self.emit(Event::BufferingEnded);
+            self.emit(VideoEvent::BufferingEnded);
         }
     }
 
@@ -661,7 +661,7 @@ impl Player {
             return;
         }
         self.report_duration();
-        self.emit(Event::ReadyToPlay);
+        self.emit(VideoEvent::ReadyToPlay);
         self.set_phase(PlaybackPhase::Ready);
         self.apply_subtitle_selection();
         self.apply_track_selections();
@@ -673,7 +673,7 @@ impl Player {
     fn playing(&self) {
         self.end_stall();
         self.set_phase(PlaybackPhase::Playing);
-        self.emit(Event::PlaybackStateChanged { playing: true });
+        self.emit(VideoEvent::PlaybackStateChanged { playing: true });
         // The browser's own controls started it.
         if !self.bindings.desired_playing.snapshot() {
             self.bindings.desired_playing.set(true);
@@ -691,7 +691,7 @@ impl Player {
         ) {
             self.set_phase(PlaybackPhase::Paused);
         }
-        self.emit(Event::PlaybackStateChanged { playing: false });
+        self.emit(VideoEvent::PlaybackStateChanged { playing: false });
         // Loading a new source pauses the element before it is ready; only
         // a pause of a ready source withdraws the request to play, so a
         // playlist that advances keeps playing.
@@ -702,7 +702,7 @@ impl Player {
 
     fn waiting(&self) {
         if !self.stalled.replace(true) {
-            self.emit(Event::Buffering);
+            self.emit(VideoEvent::Buffering);
             self.set_phase(PlaybackPhase::Buffering);
         }
     }
@@ -712,7 +712,7 @@ impl Player {
         if self.ended.replace(true) {
             return;
         }
-        self.emit(Event::Ended);
+        self.emit(VideoEvent::Ended);
         let repeat = self.bindings.repeat.snapshot();
         if repeat == RepeatMode::One {
             self.element.set_current_time(0.0);
@@ -787,10 +787,10 @@ impl Player {
             ("volumechange", |player| player.volume_changed()),
             ("ratechange", |player| player.rate_changed()),
             ("enterpictureinpicture", |player| {
-                player.emit(Event::PictureInPictureChanged { active: true });
+                player.emit(VideoEvent::PictureInPictureChanged { active: true });
             }),
             ("leavepictureinpicture", |player| {
-                player.emit(Event::PictureInPictureChanged { active: false });
+                player.emit(VideoEvent::PictureInPictureChanged { active: false });
             }),
             ("focusin", |player| player.focused.set(true)),
             ("focusout", |player| player.focused.set(false)),

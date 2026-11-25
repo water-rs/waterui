@@ -129,7 +129,7 @@ mod chrome_member {
         MaterialEffect, MaterialGrouping, MaterialShader, Paint,
     };
     use waterui::ViewExt as _;
-    use waterui::gesture::TapGesture;
+    use waterui::gesture::{TapEvent, TapGesture};
     use waterui::graphics::Color;
     use waterui_core::AnyView;
     use waterui_layout::stack::zstack;
@@ -226,7 +226,7 @@ mod chrome_member {
                 AnyView::new(zstack((
                     Color::srgb(BASE[0], BASE[1], BASE[2]),
                     Color::transparent()
-                        .gesture(TapGesture::new(), || {})
+                        .gesture(TapGesture::new(), |_: TapEvent| {})
                         .opacity(0.5),
                 )))
             },
