@@ -128,6 +128,7 @@ mod semantic_runtime;
 #[cfg(hydrolysis_cherenkov)]
 mod shader_paint;
 mod shadow;
+mod shadow_border_signals;
 mod stepper_look;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod structural_transitions;
@@ -153,7 +154,9 @@ mod window_background;
 #[cfg(not(target_arch = "wasm32"))]
 mod window_mount;
 use kurbo::{Affine, Point, Rect, Size};
-use waterui::gesture::{DragGesture, GestureObserver, MagnificationGesture};
+use waterui::gesture::{
+    DragEvent, DragGesture, GestureObserver, MagnificationEvent, MagnificationGesture,
+};
 use waterui::interaction::InteractionState;
 use waterui::prelude::text;
 use waterui::style::FloatingStyle;
@@ -1095,9 +1098,9 @@ fn stacked_icon_buttons_above_gesture_surface_receive_clicks() {
     let gesture_surface = Metadata::new(
         Metadata::new(
             ().size(160.0, 160.0),
-            GestureObserver::new(DragGesture::new(0.0), || {}),
+            GestureObserver::new(DragGesture::new(0.0), |_: DragEvent| {}),
         ),
-        GestureObserver::new(MagnificationGesture::new(1.0), || {}),
+        GestureObserver::new(MagnificationGesture::new(1.0), |_: MagnificationEvent| {}),
     );
     let controls = vstack((zoom_in, Divider, zoom_out)).size(48.0, 97.0);
     let mut renderer = test_renderer();
@@ -1188,9 +1191,9 @@ fn nested_gesture_observers_on_one_view_share_a_group() {
     let view = Metadata::new(
         Metadata::new(
             ().size(20.0, 10.0).opacity(0.5),
-            GestureObserver::new(DragGesture::new(8.0), || {}),
+            GestureObserver::new(DragGesture::new(8.0), |_: DragEvent| {}),
         ),
-        GestureObserver::new(MagnificationGesture::new(1.0), || {}),
+        GestureObserver::new(MagnificationGesture::new(1.0), |_: MagnificationEvent| {}),
     );
     let node = RenderNode::build(AnyView::new(view), &env, &mut renderer);
 
@@ -1225,7 +1228,7 @@ fn renderer_magnification_targets_outer_observer_in_stacked_gesture_chain() {
             let drag_hits = Rc::clone(&drag_hits);
             Metadata::new(
                 canvas,
-                GestureObserver::new(DragGesture::new(0.0), move || {
+                GestureObserver::new(DragGesture::new(0.0), move |_: DragEvent| {
                     drag_hits.set(drag_hits.get() + 1);
                 }),
             )
@@ -1234,9 +1237,12 @@ fn renderer_magnification_targets_outer_observer_in_stacked_gesture_chain() {
             let magnify_hits = Rc::clone(&magnify_hits);
             Metadata::new(
                 canvas,
-                GestureObserver::new(MagnificationGesture::new(1.0), move || {
-                    magnify_hits.set(magnify_hits.get() + 1);
-                }),
+                GestureObserver::new(
+                    MagnificationGesture::new(1.0),
+                    move |_: MagnificationEvent| {
+                        magnify_hits.set(magnify_hits.get() + 1);
+                    },
+                ),
             )
         }
     };

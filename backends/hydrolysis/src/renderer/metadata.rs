@@ -4,26 +4,101 @@
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
-#[cfg(feature = "menu")]
 use crate::num_cast::f64_as_f32;
 #[cfg(feature = "menu")]
 use crate::renderer::chrome::record_surface_at_rest;
 use crate::renderer::frame::ScopeClip;
+use crate::renderer::input::PressSlot;
 #[cfg(feature = "menu")]
 use crate::renderer::input::{anchored_overlay_scope, menu_look, presentation_content_transform};
 #[cfg(feature = "menu")]
 use crate::renderer::mount::ScopeKey;
 #[cfg(feature = "menu")]
 use crate::renderer::tree::transition::record_with_blur_radius;
+use crate::text::TextEngine;
 #[cfg(feature = "menu")]
 use crate::theme::{MenuLook, MenuPresentationSample};
 #[cfg(feature = "menu")]
 use cherenkov_record::PATH_TOLERANCE;
+use cherenkov_record::{Shadow as EngineShadow, ShapeData, WorkingColor as EngineWorkingColor};
 #[cfg(feature = "menu")]
-use kurbo::{Affine, Rect, RoundedRect, Shape as _, Vec2};
+use kurbo::{Affine, Shape as _};
+use kurbo::{Rect, RoundedRect, Stroke, Vec2};
+use nami::watcher::Context as WatcherContext;
+use nami::{Computed, Signal, SignalExt as _};
+use waterui_core::animation::ChangeAnimation;
 use waterui_core::contract_violation;
 use waterui_core::handler::ReportExtraction as _;
+use waterui_core::layout::Point;
+use waterui_graphics::animation::engine_animation;
+use waterui_interaction::gesture::{PointerButton, TapEvent};
 use waterui_shape::CornerRadius;
+
+/// Adapts a reactive signal so changes carrying a [`waterui_core::animation::Animation`]
+/// expose the matching [`cherenkov_record::Animation`] in their metadata.
+#[derive(Clone)]
+struct EngineAnimated<S>(S);
+
+impl<S: Signal + Clone + 'static> Signal for EngineAnimated<S> {
+    type Output = S::Output;
+    type Guard = S::Guard;
+
+    fn snapshot(&self) -> Self::Output {
+        self.0.snapshot()
+    }
+
+    fn watch(&self, watcher: impl Fn(WatcherContext<Self::Output>) + 'static) -> Self::Guard {
+        self.0.watch(move |change| {
+            let (value, metadata) = change.into_parts();
+            let next_metadata = match (
+                metadata.try_get::<cherenkov_record::Animation>(),
+                ChangeAnimation::of(&metadata).animation(),
+            ) {
+                (None, Some(animation)) => metadata.with(engine_animation(&animation)),
+                _ => metadata,
+            };
+            watcher(WatcherContext::new(value, next_metadata));
+        })
+    }
+}
+
+fn live_border_edge<E: TextEngine>(
+    renderer: &mut HydrolysisRenderer<E>,
+    local: kurbo::Affine,
+    paint: Computed<Paint>,
+    width: &Computed<f32>,
+    rect_for_width: impl Fn(f64) -> Rect + Clone + 'static,
+) {
+    let shape = EngineAnimated(
+        width
+            .clone()
+            .map(move |w| ShapeData::of(&rect_for_width(f64::from(w).max(0.0)))),
+    )
+    .computed();
+    renderer.scene_mut().live_fill_paint(local, paint, shape);
+}
+
+/// Resolves the shadow's recorded shape from an explicit override or inherited clip.
+pub fn resolve_shadow_shape(
+    bounds: Rect,
+    shadow: &Shadow,
+    inherited_clip: Option<&ClipShape>,
+) -> ShapeData {
+    shadow.get_silhouette().or(inherited_clip).map_or_else(
+        || ShapeData::of(&bounds),
+        |silhouette| match kind_clip_shape(silhouette.kind(), bounds) {
+            Some(RegularClipShape::RoundedRect { corner_width, .. }) => {
+                ShapeData::of(&RoundedRect::from_rect(bounds, corner_width))
+            }
+            Some(RegularClipShape::Rect(_)) => ShapeData::of(&bounds),
+            None => {
+                let path = shape_kind_path(silhouette.kind(), bounds)
+                    .unwrap_or_else(|| path_commands_to_path(silhouette.commands(), bounds));
+                ShapeData::of(&path)
+            }
+        },
+    )
+}
 
 #[cfg(feature = "menu")]
 fn presentation_surface_clip(sample: &MenuPresentationSample) -> ScopeClip {
@@ -115,66 +190,65 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     ) {
         render_content(renderer);
 
-        if border.width() <= 0.0 {
+        let bounds = ctx.bounds();
+        let edges = border.get_edges();
+        let width_signal = border.width().clone();
+        let corner_signal = border.get_corner_radius().clone();
+        let color_signal = border.color().resolve(env);
+        let paint = EngineAnimated(color_signal.zip(&width_signal).map(|(color, width)| {
+            Paint::Solid(if width <= 0.0 {
+                EngineWorkingColor::TRANSPARENT
+            } else {
+                color
+            })
+        }))
+        .computed();
+
+        if edges.all() && renderer.read_signal(&corner_signal.map(|r| r > 0.0)) {
+            let shape = EngineAnimated(corner_signal.map(move |radius| {
+                ShapeData::of(&RoundedRect::from_rect(bounds, f64::from(radius).max(0.0)))
+            }))
+            .computed();
+            let stroke =
+                EngineAnimated(width_signal.map(|width| Stroke::new(f64::from(width).max(0.0))))
+                    .computed();
+            renderer
+                .scene_mut()
+                .live_stroke_paint(stroke, ctx.local(), paint, shape);
             return;
         }
 
-        let paint = || Paint::Solid(border.color().resolve(env).snapshot());
-        let width = f64::from(border.width());
-
-        if border.get_edges().all() && border.get_corner_radius() > 0.0 {
-            let rounded =
-                kurbo::RoundedRect::from_rect(ctx.bounds(), f64::from(border.get_corner_radius()));
-            let stroke = kurbo::Stroke::new(width);
-            renderer
-                .scene_mut()
-                .stroke_paint(&stroke, ctx.local(), paint(), &rounded);
-            return;
-        }
-
-        if border.get_edges().top {
-            let top = kurbo::Rect::new(
-                ctx.bounds().x0,
-                ctx.bounds().y0,
-                ctx.bounds().x1,
-                ctx.bounds().y0 + width,
+        if edges.top {
+            live_border_edge(
+                renderer,
+                ctx.local(),
+                paint.clone(),
+                &width_signal,
+                move |w| Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y0 + w),
             );
-            renderer
-                .scene_mut()
-                .fill_paint(peniko::Fill::NonZero, ctx.local(), paint(), &top);
         }
-        if border.get_edges().bottom {
-            let bottom = kurbo::Rect::new(
-                ctx.bounds().x0,
-                ctx.bounds().y1 - width,
-                ctx.bounds().x1,
-                ctx.bounds().y1,
+        if edges.bottom {
+            live_border_edge(
+                renderer,
+                ctx.local(),
+                paint.clone(),
+                &width_signal,
+                move |w| Rect::new(bounds.x0, bounds.y1 - w, bounds.x1, bounds.y1),
             );
-            renderer
-                .scene_mut()
-                .fill_paint(peniko::Fill::NonZero, ctx.local(), paint(), &bottom);
         }
-        if border.get_edges().leading {
-            let leading = kurbo::Rect::new(
-                ctx.bounds().x0,
-                ctx.bounds().y0,
-                ctx.bounds().x0 + width,
-                ctx.bounds().y1,
+        if edges.leading {
+            live_border_edge(
+                renderer,
+                ctx.local(),
+                paint.clone(),
+                &width_signal,
+                move |w| Rect::new(bounds.x0, bounds.y0, bounds.x0 + w, bounds.y1),
             );
-            renderer
-                .scene_mut()
-                .fill_paint(peniko::Fill::NonZero, ctx.local(), paint(), &leading);
         }
-        if border.get_edges().trailing {
-            let trailing = kurbo::Rect::new(
-                ctx.bounds().x1 - width,
-                ctx.bounds().y0,
-                ctx.bounds().x1,
-                ctx.bounds().y1,
-            );
-            renderer
-                .scene_mut()
-                .fill_paint(peniko::Fill::NonZero, ctx.local(), paint(), &trailing);
+        if edges.trailing {
+            live_border_edge(renderer, ctx.local(), paint, &width_signal, move |w| {
+                Rect::new(bounds.x1 - w, bounds.y0, bounds.x1, bounds.y1)
+            });
         }
     }
 
@@ -186,90 +260,29 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         ctx: RenderContext,
         env: &Environment,
         shadow: &Shadow,
+        shape: ShapeData,
         render_content: impl FnOnce(&mut Self),
     ) {
-        let blur = f64::from(shadow.radius().max(0.0));
-        let offset_x = f64::from(shadow.offset().x);
-        let offset_y = f64::from(shadow.offset().y);
-        let shadow_rect = kurbo::Rect::new(
-            ctx.bounds().x0 + offset_x,
-            ctx.bounds().y0 + offset_y,
-            ctx.bounds().x1 + offset_x,
-            ctx.bounds().y1 + offset_y,
-        );
-        let shadow_color = shadow.color().resolve(env).snapshot();
+        let live_shadow = EngineAnimated(
+            shadow
+                .radius()
+                .clone()
+                .zip(shadow.offset_x())
+                .zip(shadow.offset_y())
+                .zip(&shadow.get_color().resolve(env))
+                .map(|(((radius, ox), oy), color)| EngineShadow {
+                    sigma: f64::from(radius.max(0.0)),
+                    offset: Vec2::new(f64::from(ox), f64::from(oy)),
+                    spread: 0.0,
+                    color,
+                }),
+        )
+        .computed();
 
-        // The silhouette states the caster's shape. `kind_clip_shape` — the
-        // same resolver a clip uses to decide between the uniform rounded-rect
-        // fast path and the general path route — answers whether the shadow can
-        // feed the engine's blurred-rounded-rect primitive directly.
-        let silhouette = &shadow.silhouette();
-        let uniform_radius = match kind_clip_shape(silhouette.kind(), shadow_rect) {
-            Some(RegularClipShape::RoundedRect { corner_width, .. }) => Some(corner_width),
-            Some(RegularClipShape::Rect(_)) => Some(0.0),
-            None => None,
-        };
-        match uniform_radius {
-            Some(corner_radius) => renderer.scene_mut().blurred_rounded_rect(
-                ctx.local(),
-                shadow_rect,
-                shadow_color,
-                corner_radius,
-                blur,
-            ),
-            None => Self::draw_blurred_silhouette(
-                renderer,
-                ctx.local(),
-                silhouette,
-                shadow_rect,
-                shadow_color,
-                blur,
-            ),
-        }
+        renderer
+            .scene_mut()
+            .live_shadow(ctx.local(), shape, live_shadow);
         render_content(renderer);
-    }
-
-    /// Draw a non-rounded-rect silhouette's blurred shadow into `rect` — the
-    /// general route for silhouettes `kind_clip_shape` cannot express as a
-    /// uniform rounded rect (ellipse, non-square circle, uneven corners,
-    /// custom path). The engine rasterizes and caches the blur; Hydrolysis
-    /// keeps no pixmap cache of its own.
-    fn draw_blurred_silhouette(
-        renderer: &mut Self,
-        transform: kurbo::Affine,
-        silhouette: &ClipShape,
-        rect: kurbo::Rect,
-        color: WorkingColor,
-        blur: f64,
-    ) {
-        // The same resolution `apply_clip_shape` performs — structured kind
-        // first, unit-space commands only for a custom path — but against the
-        // rect normalized to the origin: the rect's own position is applied
-        // at draw time.
-        let local_rect = kurbo::Rect::new(0.0, 0.0, rect.width(), rect.height());
-        let local_path = shape_kind_path(silhouette.kind(), local_rect)
-            .unwrap_or_else(|| path_commands_to_path(silhouette.commands(), local_rect));
-        let placement = transform * kurbo::Affine::translate((rect.x0, rect.y0));
-
-        if blur <= 0.0 {
-            renderer.scene_mut().fill_paint(
-                peniko::Fill::NonZero,
-                placement,
-                Paint::Solid(color),
-                &local_path,
-            );
-            return;
-        }
-
-        // `blur` is already in device pixels; the engine scales `sigma` by
-        // the transform's axis length, so the path arrives pre-transformed
-        // and the op transform is identity.
-        renderer.scene_mut().shadow(
-            kurbo::Affine::IDENTITY,
-            &(placement * &local_path),
-            blur,
-            color,
-        );
     }
 
     /// Draw the theme's context-menu panel behind the wrapped menu rows,
@@ -501,6 +514,36 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         render_content(renderer);
     }
 
+    fn extend_primary_tap_env(runtime_env: &Environment, location: Point) -> Environment {
+        runtime_env.extending(State(TapEvent::new(location, 1, PointerButton::Primary)))
+    }
+
+    fn register_primary_tap_target(
+        renderer: &mut Self,
+        target: Rect,
+        bounds: Rect,
+        press_slot: PressSlot,
+        keyboard_focusable: bool,
+        mut action: BoxedAction<()>,
+    ) {
+        renderer.register_interactive_pointer_target_with_keyboard(
+            target,
+            press_slot,
+            keyboard_focusable,
+            move |_renderer, point, runtime_env| {
+                let tap_env = Self::extend_primary_tap_env(
+                    runtime_env,
+                    Point::new(
+                        f64_as_f32(point.x - bounds.x0),
+                        f64_as_f32(point.y - bounds.y0),
+                    ),
+                );
+                action(&tap_env).report_extraction();
+                false
+            },
+        );
+    }
+
     /// The `Click` → `Activate` wiring of a tap gesture's accessibility node:
     /// invoke the gesture's own action with the same layered environment the
     /// pointer path uses (`captured_env.layered_on(runtime_env)`).
@@ -513,7 +556,8 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         let action = Rc::clone(action);
         Rc::new(RefCell::new(
             move |_renderer: &mut crate::renderer::SemanticCore<E>, runtime_env: &Environment| {
-                let action_env = captured_env.layered_on(runtime_env);
+                let tap_env = Self::extend_primary_tap_env(runtime_env, Point::new(0.0, 0.0));
+                let action_env = captured_env.layered_on(&tap_env);
                 action.borrow_mut()(&action_env).report_extraction();
                 true
             },
@@ -688,7 +732,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         let group_id = renderer.gesture_group_id_for_identity(effect.gesture_group_identity);
         let captured_env = env.clone();
         let action = Rc::clone(&effect.action);
-        let mut layered_action: BoxedAction<()> = Box::new(move |runtime_env: &Environment| {
+        let layered_action: BoxedAction<()> = Box::new(move |runtime_env: &Environment| {
             let action_env = captured_env.layered_on(runtime_env);
             action.borrow_mut()(&action_env)
         });
@@ -755,14 +799,13 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             parts.push_above(renderer, ctx);
 
             if !disabled {
-                renderer.register_interactive_pointer_target_with_keyboard(
+                Self::register_primary_tap_target(
+                    renderer,
                     target,
+                    bounds,
                     press_slot,
                     chrome.keyboard_focusable(),
-                    move |_renderer, _point, runtime_env| {
-                        layered_action(runtime_env).report_extraction();
-                        false
-                    },
+                    layered_action,
                 );
             }
             return;
@@ -799,14 +842,13 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 }
             }
             if !disabled {
-                renderer.register_interactive_pointer_target_with_keyboard(
+                Self::register_primary_tap_target(
+                    renderer,
+                    bounds,
                     bounds,
                     press_slot,
                     true,
-                    move |_renderer, _point, runtime_env| {
-                        layered_action(runtime_env).report_extraction();
-                        false
-                    },
+                    layered_action,
                 );
             }
             return;

@@ -11,7 +11,7 @@ use waterui::app::{App, Windows};
 use waterui::component::Dynamic;
 use waterui::media::live::LivePhotoSource;
 use waterui::media::media_picker::{MediaFilter, MediaPicker, Selected};
-use waterui::media::{LivePhoto, Media};
+use waterui::media::{LivePhoto, Media, Url};
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::{binding, impl_constant};
@@ -159,7 +159,7 @@ fn video_view(url: Url) -> impl View {
     vstack((
         video_player(url)
             .show_controls(true)
-            .content_mode(video::ContentMode::Fit),
+            .content_mode(ContentMode::Fit),
         text("Video").body().muted().padding_with(8.0),
     ))
 }

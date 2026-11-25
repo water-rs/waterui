@@ -327,13 +327,13 @@ impl Intent {
 /// Implementing the action alone does not declare its native handler:
 ///
 /// ```compile_fail
-/// use waterui_widgets::{WidgetIntent, intent, text};
+/// use waterui_widgets::{WidgetIntent, WidgetStore, intent, text};
 ///
 /// #[derive(serde::Serialize, serde::Deserialize)]
 /// struct Undeclared;
 ///
 /// impl WidgetIntent for Undeclared {
-///     fn perform(self) {}
+///     fn perform(self, _store: &WidgetStore) {}
 /// }
 ///
 /// let _ = intent(&Undeclared, text("Run"));

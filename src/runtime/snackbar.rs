@@ -78,7 +78,7 @@ use waterui_text::{font::Font, text::text};
 
 use crate::ViewExt;
 use crate::shape::{FilledShape, Path, RoundedRectangle, ShapeExt};
-use crate::style::{Shadow, Vector};
+use crate::style::Shadow;
 use waterui_graphics::color::Color;
 
 /// Maximum number of snackbars visible at once *per placement*. M3 keeps each
@@ -347,9 +347,17 @@ impl SnackbarPosition {
 #[derive(Clone)]
 pub struct SnackbarAction {
     /// The action button label.
-    pub label: Str,
+    label: Str,
     /// The callback when action is pressed.
     handler: SharedAction<()>,
+}
+
+impl SnackbarAction {
+    /// The action button label.
+    #[must_use]
+    pub const fn label(&self) -> &Str {
+        &self.label
+    }
 }
 
 impl core::fmt::Debug for SnackbarAction {
@@ -1259,18 +1267,14 @@ impl<I: SnackbarIconSlot> View for StackedSnackbarView<I> {
 
         let enter_animation = theme.enter_animation.clone();
         let shape = RoundedRectangle::new(theme.corner_radius);
-        let shadow = Shadow::new(
-            theme.shadow_color.clone(),
-            Vector::new(0.0, theme.shadow_offset_y),
-            theme.shadow_radius,
-            shape,
-        );
-        let ambient_shadow = Shadow::new(
-            theme.ambient_shadow_color.clone(),
-            Vector::new(0.0, theme.ambient_shadow_offset_y),
-            theme.ambient_shadow_radius,
-            shape,
-        );
+        let shadow = Shadow::splat(theme.shadow_radius)
+            .color(theme.shadow_color.clone())
+            .offset(0.0, theme.shadow_offset_y)
+            .silhouette(shape);
+        let ambient_shadow = Shadow::splat(theme.ambient_shadow_radius)
+            .color(theme.ambient_shadow_color.clone())
+            .offset(0.0, theme.ambient_shadow_offset_y)
+            .silhouette(shape);
 
         // The appear hook runs after this subtree's first flush, once the animated
         // opacity/offset handles have bound their hidden initial values, so the

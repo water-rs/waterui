@@ -70,7 +70,7 @@ pub fn build_handler<S: 'static>(declared: Declared<S>) -> impl Fn(&MenuBuilder<
             };
             let identifier = format!("dev.waterui.menu.{index}");
             let command = kit_command_for_menu(menu, &env, &*resolve_icon);
-            let nodes = menu_tree(&menu.items.snapshot(), &env, &*resolve_icon);
+            let nodes = menu_tree(&menu.items().snapshot(), &env, &*resolve_icon);
             let ui_menu = cocoa_ui::uikit::menu_with_identifier(
                 mtm,
                 builder.key_commands(),

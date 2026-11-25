@@ -358,20 +358,23 @@ pub struct MarkDone {
 }
 
 impl WidgetIntent for MarkDone {
-    fn perform(self) {
+    fn perform(self, store: &WidgetStore) {
+        let completed: u32 = store.get("completed").unwrap_or(0);
+        let _ = store.set("completed", &(completed + 1));
         waterui::log::info!("done {}", self.id);
     }
 }
 
 #[waterui::widget(name = "Tasks", description = "Open tasks", families = [systemSmall, systemMedium])]
 pub fn tasks(context: WidgetContext) -> impl WidgetContent {
+    let completed: u32 = context.shared_store().get("completed").unwrap_or(0);
     let title = Font::style(if context.family() == WidgetFamily::SystemSmall {
         FontStyle::Headline
     } else {
         FontStyle::Title
     });
     vstack((
-        text("Tasks").font(title),
+        text(format!("Completed: {completed}")).font(title),
         intent(&MarkDone { id: 1 }, text("Mark done")),
     ))
     .alignment(HorizontalAlignment::Leading)
@@ -380,9 +383,14 @@ pub fn tasks(context: WidgetContext) -> impl WidgetContent {
 
 `name` and `description` are required; `kind` defaults to the function name and `families`
 to `[systemSmall, systemMedium, systemLarge]`. The `WidgetContext` parameter is optional
-(by value or by reference). Return a `Timeline` of `TimelineEntry`s with a `ReloadPolicy`
-for dated entries; any plain `WidgetContent` becomes one entry dated now. `#[widget_intent]`
-declares the action type, and `WidgetIntent::perform` runs in the extension's process.
+(by value or by reference) and exposes `context.shared_store()` backed by the shared container
+the `water` CLI provisions (an App Group on Apple, app-private widget storage on Android).
+Return a `Timeline` of `TimelineEntry`s with a `ReloadPolicy` for dated entries; any plain
+`WidgetContent` becomes one entry dated now. `#[widget_intent]` declares the action type, and
+`WidgetIntent::perform(self, store)` runs in the extension's process with the same shared
+store. From the main app, open `waterui::widgets::shared_store()`, write values with
+`store.set(key, &value)`, and trigger a refresh with `waterui::widgets::reload("tasks")` (or
+`waterui::widgets::reload_all()`).
 
 ## Running and building
 

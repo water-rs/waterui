@@ -56,27 +56,29 @@ pub fn interaction_tap_siblings_prose() {
 // ---------------------------------------------------------------------------
 pub fn interaction_block_03() {
     use core::time::Duration;
-
-    let handler = || ();
+    use waterui::gesture::{DragEvent, LongPressEvent, TapEvent};
 
     let view = Divider;
     let _ = {
-        view.gesture(TapGesture::new(), handler) // single tap
+        view.gesture(TapGesture::new(), |_: TapEvent| {}) // single tap
     };
     let view = Divider;
     let _ = {
-        view.gesture(TapGesture::repeat(NonZeroU32::new(2).unwrap()), handler) // double tap — a count, not a new type
+        view.gesture(
+            TapGesture::repeat(NonZeroU32::new(2).unwrap()),
+            |_: TapEvent| {},
+        ) // double tap — a count, not a new type
     };
     let view = Divider;
     let _ = {
         view.gesture(
             LongPressGesture::new().minimum_duration(Duration::from_millis(500)),
-            handler,
+            |_: LongPressEvent| {},
         )
     };
     let view = Divider;
     let _ = {
-        view.gesture(DragGesture::new(5.0), handler) // minimum pointer travel, f32 layout units
+        view.gesture(DragGesture::new(5.0), |_: DragEvent| {}) // minimum pointer travel, f32 layout units
     };
 }
 
@@ -103,7 +105,7 @@ pub fn interaction_event_payloads_prose() {
         RotationGesture, TapEvent,
     };
 
-    let _ = Divider.on_tap(|tap: TapEvent| {
+    let _ = Divider.gesture(TapGesture::new(), |tap: TapEvent| {
         let _ = tap.location();
     });
     let _ = Divider.gesture(LongPressGesture::new(), |_: LongPressEvent| ());
@@ -126,12 +128,14 @@ pub fn interaction_event_payloads_prose() {
 // interaction.md § "## Gesture recognizers" — rust block 4/12
 // ---------------------------------------------------------------------------
 pub fn interaction_block_04() {
-    let handler = || ();
     let view = Divider;
 
-    use waterui::gesture::PointerButtons;
+    use waterui::gesture::{PointerButtons, TapEvent};
 
-    let _ = view.gesture(TapGesture::new().buttons(PointerButtons::MIDDLE), handler); // middle click
+    let _ = view.gesture(
+        TapGesture::new().buttons(PointerButtons::MIDDLE),
+        |_: TapEvent| {},
+    ); // middle click
 }
 
 // ---------------------------------------------------------------------------
@@ -139,6 +143,7 @@ pub fn interaction_block_04() {
 // ---------------------------------------------------------------------------
 pub fn interaction_block_05() -> impl View {
     use core::time::Duration;
+    use waterui::gesture::GestureEvent;
 
     let status = Binding::container("Waiting…");
 
@@ -146,7 +151,7 @@ pub fn interaction_block_05() -> impl View {
     view.gesture(
         TapGesture::new()
             .then(LongPressGesture::new().minimum_duration(Duration::from_millis(300))), // tap, then long-press
-        |State(status): State<Binding<&'static str>>| status.set("Done!"),
+        |_: GestureEvent, State(status): State<Binding<&'static str>>| status.set("Done!"),
     )
     .state(&status)
 }

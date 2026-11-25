@@ -107,7 +107,9 @@ pub fn realize_opacity_metadata(
 ) -> NativeLeaf {
     let mtm = ctx.mtm();
     let host = HostView::new(mtm, Rect::ZERO);
-    let mounted = ctx.realize(metadata.content).mount(&host);
+    let child_leaf = ctx.realize(metadata.content);
+    let inherited_clip = child_leaf.clip_shape_handle();
+    let mounted = child_leaf.mount(&host);
     // §7.1: the fill answer resolves through the `cocoaUiPrimaryContent`
     // chain — `Color.opacity(..)` in a background slot stays a fill.
     crate::primary_content::forward(&host, mounted.view());
@@ -179,6 +181,7 @@ pub fn realize_opacity_metadata(
             }
         }
     });
+    leaf.set_clip_shape_handle(inherited_clip);
     leaf.keep(state);
     leaf
 }

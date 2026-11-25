@@ -10,9 +10,11 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::authoring::WidgetContent;
+use crate::store::WidgetStore;
 
 /// One node of a widget snapshot.
 ///
@@ -532,12 +534,12 @@ impl Intent {
 ///
 /// The action is serialized to the `Intent` node's `payload`; the
 /// extension decodes the concrete `AppIntent` named by the action's kind
-/// and calls `perform()` with it. `perform` is a synchronous unit action —
-/// the extension owns no application state, so the action is its own
-/// context.
-pub trait WidgetIntent: Serialize + serde::de::DeserializeOwned + 'static {
-    /// The action's effect — run in the extension's process.
-    fn perform(self);
+/// and calls `perform` with the widget's shared [`WidgetStore`] so the
+/// action can mutate state that the next timeline reads.
+pub trait WidgetIntent: Serialize + DeserializeOwned + 'static {
+    /// The action's effect — run in the extension's process with access to
+    /// the shared widget store.
+    fn perform(self, store: &WidgetStore);
 }
 
 /// The identity emitted by `#[widget_intent]` for a declared action.
@@ -659,10 +661,12 @@ pub struct Size {
     pub height: f64,
 }
 
-/// The context the extension hands the Rust timeline producer for each
-/// timeline request — the family being rendered and the display size the
-/// system proposed.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+/// The context handed to a widget timeline producer.
+///
+/// Carries the widget family being rendered, the proposed display size, and
+/// the shared [`WidgetStore`] container provisioned for the app and its
+/// widgets.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[non_exhaustive]
 pub struct WidgetContext {
@@ -670,9 +674,22 @@ pub struct WidgetContext {
     family: WidgetFamily,
     /// The size the system proposes for the widget's content.
     display_size: Size,
+    /// The shared widget store backing cross-process state with the app.
+    #[serde(rename = "storePath")]
+    shared_store: WidgetStore,
 }
 
 impl WidgetContext {
+    /// Creates a widget context for tests and host bridges.
+    #[must_use]
+    pub const fn new(family: WidgetFamily, display_size: Size, shared_store: WidgetStore) -> Self {
+        Self {
+            family,
+            display_size,
+            shared_store,
+        }
+    }
+
     /// The widget family being rendered.
     #[must_use]
     pub const fn family(&self) -> WidgetFamily {
@@ -683,6 +700,13 @@ impl WidgetContext {
     #[must_use]
     pub const fn display_size(&self) -> Size {
         self.display_size
+    }
+
+    /// The shared key-value store provisioned for the application and its
+    /// widget extension.
+    #[must_use]
+    pub const fn shared_store(&self) -> &WidgetStore {
+        &self.shared_store
     }
 }
 

@@ -405,9 +405,12 @@ impl PrimitiveButtonStyle for DoubleTapButtonStyle {
         configuration
             .into_label()
             .padding_with((8.0, 16.0))
-            .gesture(TapGesture::repeat(NonZeroU32::new(2).unwrap()), move || {
-                trigger.trigger();
-            })
+            .gesture(
+                TapGesture::repeat(NonZeroU32::new(2).unwrap()),
+                move |_: TapEvent| {
+                    trigger.trigger();
+                },
+            )
     }
 }
 
@@ -903,11 +906,11 @@ use_env(|manager: SnackbarManager| {
 ```
 
 ```rust
-use waterui::widget::accordion;                        // not in the prelude
+use waterui::widget::disclosure;                       // not in the prelude
 
 card(content).title("Summary").subtitle("This week")   // Card; .style(CardStyle::Outlined) | Elevated | Filled
 suspense(async { load().await })                       // takes a future, not a closure; .loading(view) overrides the spinner
-accordion(header, || body())                           // disclosure; Accordion::with_toggle(&open, ..) controls it
+disclosure("Header", || body())                        // Disclosure::new(header, ..).expanded(&open) controls it
 view.floating()                                        // themed elevated surface (FloatingStyle-aware)
 ```
 

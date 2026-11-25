@@ -9,7 +9,7 @@ use waterui::accessibility::AccessibilityRole;
 #[cfg(hydrolysis_gpu_painter)]
 use waterui::animation::Animation;
 use waterui::animation::FrameRate;
-use waterui::gesture::TapGesture;
+use waterui::gesture::{TapEvent, TapGesture};
 use waterui::prelude::{text, when};
 use waterui::{AnyView, Color, ViewExt as _};
 use waterui_core::Binding;
@@ -108,7 +108,7 @@ fn pointer_down_votes_fast_until_pointer_up() {
     let builder = AnyViewBuilder::new(|| {
         AnyView::new(
             Color::srgb_hex("#3F3F46")
-                .gesture(TapGesture::new(), || {})
+                .gesture(TapGesture::new(), |_: TapEvent| {})
                 .a11y_role(AccessibilityRole::Button),
         )
     });
