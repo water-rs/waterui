@@ -20,6 +20,10 @@ use send_wrapper::SendWrapper;
 
 use crate::canvas::paint::StrokeStyle;
 use crate::draw::{self, ImageData, ResourceError, Rgba8, Rgba16F};
+#[cfg(feature = "image-decode")]
+pub use crate::image::ImageDecodeError;
+#[cfg(feature = "image-decode")]
+use crate::image::decode_pixel_buffer;
 use crate::source::FontSource;
 
 /// How an image's texels are stored.
@@ -89,6 +93,17 @@ impl PixelBuffer {
             premultiplied: false,
             pixels: pixels.into(),
         }
+    }
+
+    /// Decodes encoded raster image bytes (PNG, JPEG, GIF, WebP, BMP, ICO,
+    /// TIFF, or AV1-backed HEIF) into straight-alpha sRGB `Rgba8` pixels.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ImageDecodeError`] when the input cannot be decoded.
+    #[cfg(feature = "image-decode")]
+    pub fn decode(bytes: impl AsRef<[u8]>) -> Result<Self, ImageDecodeError> {
+        decode_pixel_buffer(bytes.as_ref())
     }
 }
 
@@ -198,6 +213,22 @@ impl ImageSource {
         })))
     }
 
+    /// Decodes encoded raster image bytes (PNG, JPEG, GIF, WebP, BMP, ICO,
+    /// TIFF, or AV1-backed HEIF) into an [`ImageSource`].
+    ///
+    /// Accepts any byte slice or buffer such as `include_bytes!("sprite.png")`,
+    /// `Vec<u8>`, or `waterui::Data`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ImageDecodeError`] when the input cannot be decoded or
+    /// produces an empty pixel grid.
+    #[cfg(feature = "image-decode")]
+    pub fn decode(bytes: impl AsRef<[u8]>) -> Result<Self, ImageDecodeError> {
+        let buffer = PixelBuffer::decode(bytes)?;
+        Self::new(buffer).map_err(ImageDecodeError::from)
+    }
+
     /// Width in pixels.
     #[must_use]
     pub fn width(&self) -> u32 {
@@ -255,6 +286,24 @@ impl ImageSource {
         for watcher in watchers {
             watcher(Context::from(status.clone()));
         }
+    }
+}
+
+#[cfg(feature = "image-decode")]
+impl TryFrom<&[u8]> for ImageSource {
+    type Error = ImageDecodeError;
+
+    fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
+        Self::decode(bytes)
+    }
+}
+
+#[cfg(feature = "image-decode")]
+impl TryFrom<Vec<u8>> for ImageSource {
+    type Error = ImageDecodeError;
+
+    fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
+        Self::decode(bytes)
     }
 }
 

@@ -134,8 +134,8 @@ pub mod prelude {
     pub use super::drag_drop::DropDestinationExt;
 
     pub use super::widget::{
-        Accordion, Card, CardStyle, CardStyleTokens, CardTheme, Divider, ErrorView, ResultExt,
-        SuspendedView, Suspense, accordion, card, condition::when, error_view, suspense,
+        Accordion, Card, CardStyle, CardStyleTokens, CardTheme, DialogTheme, Divider, ErrorView,
+        ResultExt, SuspendedView, Suspense, accordion, card, condition::when, error_view, suspense,
     };
     #[cfg(feature = "avatar")]
     pub use super::widget::{Avatar, avatar};
@@ -199,8 +199,6 @@ pub use waterui_form as form;
 pub use waterui_graphics::canvas;
 pub use waterui_graphics::color;
 pub use waterui_graphics::gradient;
-#[cfg(feature = "image")]
-pub use waterui_graphics::image_decode;
 #[cfg(feature = "gpu")]
 pub use waterui_graphics::{GpuContent, GpuView, RedrawHandle};
 #[cfg(any(feature = "gpu", feature = "cpu"))]

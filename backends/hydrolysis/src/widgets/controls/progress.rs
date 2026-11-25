@@ -331,10 +331,7 @@ pub fn render_progress_node<E: crate::text::TextEngine>(
     env: &Environment,
 ) {
     #[cfg(feature = "accessibility")]
-    if !env
-        .get::<waterui::accessibility::AccessibilityHidden>()
-        .is_some_and(waterui::accessibility::AccessibilityHidden::is_hidden)
-    {
+    if !ctx.renderer_mut().is_accessibility_hidden(env) {
         let render_ctx = ctx.render_context();
         let (default_label, value) = {
             let progress = state.borrow();
@@ -470,6 +467,9 @@ pub fn emit_progress_accessibility<E: crate::text::TextEngine>(
     state: &Rc<RefCell<ProgressRenderState<E>>>,
     env: &Environment,
 ) {
+    if renderer.is_accessibility_hidden(env) {
+        return;
+    }
     let (default_label, value) = {
         let progress = state.borrow();
         (

@@ -24,13 +24,12 @@ behind the `image` feature, which is not on by default: add `features = ["image"
   bridge a native player; Hydrolysis platforms (Android, Windows, Linux) draw video only
   when the app's own `waterui` dependency declares `video-gpu`.
 - `remote` — fetching from web URLs links an HTTP client. Without it a `Photo` pointed
-  at `https://…` reports `Event::Error` naming the feature; bundled and local sources
+  at `https://…` reports `PhotoEvent::Error` naming the feature; bundled and local sources
   need nothing.
 - `webview` — see Web content.
 
 ```rust
-use waterui::media::photo::Event as PhotoEvent;   // the event type needs this alias import
-use waterui::media::{Image, Photo, PhotoCache, PhotoStatus, Url, photo};
+use waterui::media::{Image, Photo, PhotoCache, PhotoEvent, PhotoStatus, Url, photo};
 
 photo("https://waterui.dev/logo.png")        // impl IntoComputed<Url>; Url: From<&'static str>
     .resizable()
@@ -96,8 +95,8 @@ VideoPlayer::new(session)
     .show_controls(true)
     .content_mode(video::ContentMode::Fit)              // Fit | Fill | Stretch
     .on_event(|event| match event {
-        video::Event::ReadyToPlay | video::Event::Ended => (),
-        video::Event::Error { message: _ } => (),
+        VideoEvent::ReadyToPlay | VideoEvent::Ended => (),
+        VideoEvent::Error { message: _ } => (),
         _ => (),                                        // Buffering, PlaybackStateChanged, …
     })
 ```
@@ -123,7 +122,7 @@ the default `vod_default()` buffering. On the controller, `track_catalog()` is a
 `Computed<TrackCatalog>` of audio, video and subtitle tracks, `live_window()` a
 `Computed<Option<LiveWindow>>` (`None` for finite media) with `seek_to_live_edge()` →
 `Result<(), PlaybackError>`, `step_forward()` / `step_backward()` pause and show the next or
-previous frame, and `preserve_pitch()` is a `Binding<bool>`. `video::Event::PlaybackMetrics
+previous frame, and `preserve_pitch()` is a `Binding<bool>`. `VideoEvent::PlaybackMetrics
 { metrics }` arrives periodically while playing.
 
 Runtime capture permissions (camera, microphone, location) are requested through
@@ -303,7 +302,7 @@ keeps one sub-recording per key and hands the body a `Computed<T>` of its item, 
 `cx.transform(affine, ..)`, `cx.layer(Layer::opacity(0.5), ..)` — never saved and restored.
 `Drawing::record(size, |cx| ..)` records constants, on any thread, for `cx.draw(&drawing,
 transform)` or `Canvas::from(drawing)`, a view of the drawing's size. Images are
-`ImageSource`s the target registers itself; `image.status()` reports a refusal. Give a
+`ImageSource`s the target registers itself (`ImageSource::decode(bytes)` decodes PNG/JPEG/GIF/WebP/BMP/ICO/TIFF/AV1-HEIF without naming the `image` crate, and `ImageSource::new(PixelBuffer::new(..))` wraps raw pixels); `image.status()` reports a refusal. Give a
 canvas with a natural size `.intrinsic_size(..)`, and a name with `.offered_label(..)`.
 Beyond `fill` and `stroke`: `cx.shadow(shape, Shadow::new(blur, color).offset(dx, dy))`
 (`color` is a resolved `waterui::graphics::WorkingColor` such as `WorkingColor::BLACK`,

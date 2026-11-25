@@ -251,9 +251,7 @@ pub fn render_stepper_node<E: crate::text::TextEngine>(
     state: &Rc<RefCell<StepperRenderState<E>>>,
     env: &Environment,
 ) {
-    let hidden = env
-        .get::<waterui::accessibility::AccessibilityHidden>()
-        .is_some_and(waterui::accessibility::AccessibilityHidden::is_hidden);
+    let hidden = ctx.renderer_mut().is_accessibility_hidden(env);
     if !hidden {
         let render_ctx = ctx.render_context();
         stepper_accessibility(
@@ -515,6 +513,9 @@ pub fn emit_stepper_accessibility<E: crate::text::TextEngine>(
     state: &Rc<RefCell<StepperRenderState<E>>>,
     env: &Environment,
 ) {
+    if renderer.is_accessibility_hidden(env) {
+        return;
+    }
     stepper_accessibility(
         renderer,
         None,

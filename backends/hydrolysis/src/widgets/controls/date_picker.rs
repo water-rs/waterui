@@ -262,9 +262,7 @@ pub fn render_date_picker_node<E: crate::text::TextEngine>(
     state: &Rc<RefCell<DatePickerRenderState<E>>>,
     env: &Environment,
 ) {
-    let hidden = env
-        .get::<waterui::accessibility::AccessibilityHidden>()
-        .is_some_and(waterui::accessibility::AccessibilityHidden::is_hidden);
+    let hidden = ctx.renderer_mut().is_accessibility_hidden(env);
     if !hidden {
         let render_ctx = ctx.render_context();
         date_picker_accessibility(
@@ -465,8 +463,11 @@ pub fn emit_date_picker_accessibility<E: crate::text::TextEngine>(
     state: &Rc<RefCell<DatePickerRenderState<E>>>,
     env: &Environment,
 ) {
+    let hidden = renderer.is_accessibility_hidden(env);
     let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
     let mut state = state.borrow_mut();
-    date_picker_accessibility(renderer, None, &state.config, env, &[interaction_key]);
+    if !hidden {
+        date_picker_accessibility(renderer, None, &state.config, env, &[interaction_key]);
+    }
     state.label_view.emit_accessibility(renderer, env);
 }

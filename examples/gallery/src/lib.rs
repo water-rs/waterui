@@ -333,7 +333,7 @@ where
     .on_tap(action)
     .a11y_role(AccessibilityRole::Button)
     .a11y_label(title)
-    .a11y_state_signal(state)
+    .a11y_state(state)
 }
 
 /// A Material 3 navigation-drawer headline: the small title that names a group

@@ -12,7 +12,7 @@
 
 extern crate alloc;
 
-use nami::{Computed, SignalExt, impl_constant, signal::IntoComputed, zip::zip};
+use nami::{Computed, Signal, SignalExt, impl_constant, signal::IntoComputed, zip::zip};
 use suiteki::Str;
 
 use waterui_core::layout::{PlacedGeometry, Rect};
@@ -223,22 +223,31 @@ pub fn default_role<V: View>(
 }
 
 /// Controls whether this view should participate in accessibility.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AccessibilityHidden(bool);
+///
+/// Accepts a constant `bool` or any reactive boolean signal so toggling
+/// hidden state updates assistive technologies without rebuilding the subtree.
+#[derive(Debug, Clone)]
+pub struct AccessibilityHidden(Computed<bool>);
 
 impl MetadataKey for AccessibilityHidden {}
 
 impl AccessibilityHidden {
     /// Creates a hidden flag for accessibility.
     #[must_use]
-    pub const fn new(hidden: bool) -> Self {
-        Self(hidden)
+    pub fn new(hidden: impl IntoComputed<bool>) -> Self {
+        Self(hidden.into_computed())
+    }
+
+    /// The reactive hidden signal.
+    #[must_use]
+    pub const fn signal(&self) -> &Computed<bool> {
+        &self.0
     }
 
     /// Returns whether this view is hidden from assistive technologies.
     #[must_use]
-    pub const fn is_hidden(&self) -> bool {
-        self.0
+    pub fn is_hidden(&self) -> bool {
+        self.0.snapshot()
     }
 }
 
@@ -367,14 +376,14 @@ impl AccessibilityState {
         self
     }
 
-    /// Sets the checkbox or tri-state checked value; `None` leaves it unset.
+    /// Sets the checkbox or toggle checked value.
     #[must_use]
-    pub const fn checked(mut self, checked: Option<bool>) -> Self {
-        self.checked = match checked {
-            Some(true) => Some(AccessibilityChecked::True),
-            Some(false) => Some(AccessibilityChecked::False),
-            None => None,
-        };
+    pub const fn checked(mut self, checked: bool) -> Self {
+        self.checked = Some(if checked {
+            AccessibilityChecked::True
+        } else {
+            AccessibilityChecked::False
+        });
         self
     }
 
@@ -385,10 +394,11 @@ impl AccessibilityState {
         self
     }
 
-    /// Sets the expanded or collapsed state; `None` leaves it unset.
+    /// Sets the expanded or collapsed state.
+    // TODO(#4376): narrow back to `expanded: bool` once `hydrolysis-m3` moves off `Some(...)`.
     #[must_use]
-    pub const fn expanded(mut self, expanded: Option<bool>) -> Self {
-        self.expanded = expanded;
+    pub fn expanded(mut self, expanded: impl Into<Option<bool>>) -> Self {
+        self.expanded = expanded.into();
         self
     }
 
@@ -601,5 +611,27 @@ mod tests {
                 .selected(false)
                 .disabled(true)
         );
+    }
+
+    #[test]
+    fn accessibility_hidden_tracks_reactive_signal() {
+        let hidden = nami::Binding::bool(true);
+        let metadata = super::AccessibilityHidden::new(hidden.clone());
+        assert!(metadata.is_hidden());
+        assert!(metadata.signal().snapshot());
+
+        hidden.set(false);
+        assert!(!metadata.is_hidden());
+        assert!(!metadata.signal().snapshot());
+    }
+
+    #[test]
+    fn accessibility_state_checked_and_expanded_accept_booleans() {
+        let state = AccessibilityState::new().checked(true).expanded(false);
+        assert_eq!(
+            state.checked_state(),
+            Some(super::AccessibilityChecked::True)
+        );
+        assert_eq!(state.expanded_state(), Some(false));
     }
 }

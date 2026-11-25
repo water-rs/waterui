@@ -485,9 +485,7 @@ pub fn render_slider_node<E: crate::text::TextEngine>(
     state: &Rc<RefCell<SliderRenderState<E>>>,
     env: &Environment,
 ) {
-    let hidden = env
-        .get::<waterui::accessibility::AccessibilityHidden>()
-        .is_some_and(waterui::accessibility::AccessibilityHidden::is_hidden);
+    let hidden = ctx.renderer_mut().is_accessibility_hidden(env);
     if !hidden {
         let render_ctx = ctx.render_context();
         let (label, range_signal, step_signal, value) = {
@@ -981,20 +979,23 @@ pub fn emit_slider_accessibility<E: crate::text::TextEngine>(
     state: &Rc<RefCell<SliderRenderState<E>>>,
     env: &Environment,
 ) {
+    let hidden = renderer.is_accessibility_hidden(env);
     let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
     let mut state = state.borrow_mut();
-    let range = valid_range(renderer.read_signal(&state.range));
-    let step = renderer.read_signal(&state.step);
-    slider_accessibility_parts(
-        renderer,
-        None,
-        &state.label,
-        &range,
-        step,
-        &state.value,
-        env,
-        &[interaction_key],
-    );
+    if !hidden {
+        let range = valid_range(renderer.read_signal(&state.range));
+        let step = renderer.read_signal(&state.step);
+        slider_accessibility_parts(
+            renderer,
+            None,
+            &state.label,
+            &range,
+            step,
+            &state.value,
+            env,
+            &[interaction_key],
+        );
+    }
     state.min_value_label.emit_accessibility(renderer, env);
     state.max_value_label.emit_accessibility(renderer, env);
 }

@@ -98,7 +98,7 @@ fn signal_panel(state: AccessibilityState) -> impl waterui::View {
     vstack((button("Inbox").action(|| {}),))
         .a11y_label("Panel")
         .a11y_role(AccessibilityRole::Group)
-        .a11y_state_signal(waterui::Computed::constant(state))
+        .a11y_state(waterui::Computed::constant(state))
 }
 
 fn check_hidden_panel_survives(tree: &TreeSnapshot) {
@@ -133,7 +133,7 @@ fn check_leaf_panel_survives(tree: &TreeSnapshot) {
 
 #[waterui::test(viewport = (300, 300))]
 fn expanded_panel_survives(ui: UiBuilder) {
-    let mut app = ui.mount(move || stateful_panel(AccessibilityState::new().expanded(Some(true))));
+    let mut app = ui.mount(move || stateful_panel(AccessibilityState::new().expanded(true)));
     app.settle();
     check_expanded_panel_survives(app.tree());
 }
@@ -147,7 +147,7 @@ fn selected_panel_survives(ui: UiBuilder) {
 
 #[waterui::test(viewport = (300, 300))]
 fn toggled_panel_survives(ui: UiBuilder) {
-    let mut app = ui.mount(move || stateful_panel(AccessibilityState::new().checked(Some(true))));
+    let mut app = ui.mount(move || stateful_panel(AccessibilityState::new().checked(true)));
     app.settle();
     check_toggled_panel_survives(app.tree());
 }
@@ -161,8 +161,8 @@ fn hidden_panel_survives(ui: UiBuilder) {
 
 #[waterui::test(viewport = (300, 300))]
 fn leaf_reduced_panel_survives(ui: UiBuilder) {
-    let mut app = ui
-        .mount(move || panel_with_decorative_leaf(AccessibilityState::new().expanded(Some(true))));
+    let mut app =
+        ui.mount(move || panel_with_decorative_leaf(AccessibilityState::new().expanded(true)));
     app.settle();
     check_leaf_panel_survives(app.tree());
 }
