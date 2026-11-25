@@ -165,7 +165,7 @@ impl<F: ViewBuilder> AvatarFallback for F {
 ///     .image(photo)
 ///     .shape(RoundedRectangle::new(CornerRadius::fraction(0.25)))
 ///     .size(64.0)
-///     .ring(Color::new(theme_color::Accent), 2.0)
+///     .ring(Color::accent(), 2.0)
 /// # }
 /// ```
 #[derive(Debug)]

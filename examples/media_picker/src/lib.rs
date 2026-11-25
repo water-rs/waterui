@@ -12,10 +12,10 @@ use waterui::component::Dynamic;
 use waterui::media::live::LivePhotoSource;
 use waterui::media::media_picker::{MediaFilter, MediaPicker, Selected};
 use waterui::media::{LivePhoto, Media};
-use waterui::prelude::theme_color::Accent;
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::{binding, impl_constant};
+use waterui::theme::color::Accent;
 
 /// Combined state for the media display area
 #[derive(Debug, Clone, PartialEq)]

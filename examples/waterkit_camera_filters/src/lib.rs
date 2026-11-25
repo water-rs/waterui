@@ -15,10 +15,10 @@ use waterui::app::{App, Windows};
 use waterui::graphics::gpu::bytemuck;
 use waterui::graphics::{Context, Frame, GpuContent, GpuView};
 use waterui::prelude::slider::slider;
-use waterui::prelude::theme_color::Surface;
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::task::spawn_local;
+use waterui::theme::color::Surface;
 
 #[state]
 #[derive(Clone)]

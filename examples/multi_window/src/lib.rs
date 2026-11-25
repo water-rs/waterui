@@ -13,11 +13,11 @@ use std::time::Duration;
 use waterui::app::{App, Windows};
 use waterui::background::Material;
 use waterui::handler::ViewBuilder;
-use waterui::prelude::theme_color::SurfaceVariant;
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
 use waterui::task::{sleep, spawn_local};
+use waterui::theme::color::SurfaceVariant;
 use waterui::window::{
     UserAttention, Window, WindowHandle, WindowLevel, WindowPresentation, WindowState, WindowStyle,
     conditional_window,

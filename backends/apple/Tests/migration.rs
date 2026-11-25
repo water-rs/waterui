@@ -319,10 +319,10 @@ mod uikit_surface {
     };
     use waterui::Str;
     use waterui::component::list::List;
-    use waterui::prelude::theme_color::{Accent, Foreground};
     use waterui::prelude::*;
     use waterui::reactive::binding;
     use waterui::shape::Circle;
+    use waterui::theme::color::{Accent, Foreground};
     use waterui_apple::native_test_support::{
         MAIN_QUEUE_DEADLINE, drain_main_queue, pump_main_until,
     };

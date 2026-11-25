@@ -6,9 +6,9 @@
 //! next match.
 use waterui::app::{App, Windows};
 use waterui::key::{Key, KeyHandling, KeyPress, NamedKey};
-use waterui::prelude::theme_color::Surface;
 use waterui::prelude::*;
 use waterui::preview;
+use waterui::theme::color::Surface;
 use waterui::widget::condition::when;
 
 const DOCUMENT: &str = include_str!("example.md");

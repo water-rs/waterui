@@ -32,11 +32,12 @@ over by hardcoding a color in the view.
 ## Theme color tokens
 
 ```rust
-use waterui::prelude::theme_color::{Accent, Foreground, Surface};
+use waterui::theme::color::{Accent, Foreground, Surface};
 
 text("Title").foreground(Foreground)
 text("Caption").caption().muted()   // `.muted()` is `.foreground(MutedForeground)`
 card.background(Surface)
+text("Link").foreground(Color::accent())            // shorthand constructors exist for every token
 button("Delete").action(|| {}).tint(Color::red())   // this subtree's controls draw with red
 ```
 
@@ -309,7 +310,7 @@ shape.morph_to(target, fill).progress(t.clone())   // or drive it from a 0..=1 s
 
 ```rust
 use waterui::border::Border;
-use waterui::prelude::theme_color::Accent;
+use waterui::theme::color::Accent;
 use waterui::shape::RoundedRectangle;
 
 card.border(Color::srgb_hex("#E5E7EB"), 1.0)                       // all edges, square corners
@@ -429,7 +430,8 @@ Material3::with_color_schemes(&schemes, MaterialColorMode::Light);
 
 Material-specific role tokens live in `hydrolysis_m3::color::*` (`Primary`, `OnPrimary`,
 `PrimaryContainer`, `SurfaceContainerHighest`, `OnSurfaceVariant`, …) and resolve from the
-installed scheme. WaterUI's portable `theme_color::*` tokens map onto the active theme —
+installed scheme. WaterUI's portable `theme::color::*` tokens (and `Color::accent()`,
+`Color::surface()`, … constructors) map onto the active theme —
 prefer the portable ones in views that should also run on native backends, and use the
 Material roles only where the design is specifically Material.
 

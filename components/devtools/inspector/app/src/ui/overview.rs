@@ -3,8 +3,8 @@
 //! This is where a developer decides what the target should spend effort
 //! producing, so each channel says what it costs as well as what it shows.
 
-use waterui::prelude::theme_color::MutedForeground;
 use waterui::prelude::*;
+use waterui::theme::color::MutedForeground;
 use waterui::widget::condition::when;
 use waterui_controls::LabelDisplayMode;
 use waterui_inspector_protocol::{Channel, ChannelSet};

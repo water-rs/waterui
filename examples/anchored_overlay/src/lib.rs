@@ -12,11 +12,11 @@ use waterui::border::Border;
 use waterui::metadata::anchored_overlay::{
     AnchorEdge, AnchoredOverlay, Clamp, Dismissal, EdgeAlignment,
 };
-use waterui::prelude::theme_color::{Border as BorderColor, Surface};
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
 use waterui::shape::RoundedRectangle;
+use waterui::theme::color::{Border as BorderToken, Surface};
 
 /// The small card every demo presents as overlay content. The label names
 /// the edge the placement asked for.
@@ -26,7 +26,7 @@ fn overlay_card(note: &'static str) -> impl View {
         .padding_with(12.0)
         .background(Surface)
         .clip(RoundedRectangle::new(8.0))
-        .border_with(Border::new(BorderColor, 1.0).corner_radius(8.0))
+        .border_with(Border::new(BorderToken, 1.0).corner_radius(8.0))
 }
 
 /// A taller overlay card for the flip demos — too tall to fit in the band

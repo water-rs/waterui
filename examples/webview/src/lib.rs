@@ -132,10 +132,10 @@ fn toolbar<B: View>(
     vstack((
         text("WebView Playground")
             .title()
-            .foreground(theme_color::Foreground),
+            .foreground(theme::color::Foreground),
         text(web.title())
             .caption()
-            .foreground(theme_color::MutedForeground),
+            .foreground(theme::color::MutedForeground),
         hstack((
             TextField::new("Address", address).hide_label(),
             button("Go")
@@ -158,8 +158,10 @@ fn toolbar<B: View>(
         vstack((
             text("Status:")
                 .caption()
-                .foreground(theme_color::MutedForeground),
-            text!("{status}").body().foreground(theme_color::Foreground),
+                .foreground(theme::color::MutedForeground),
+            text!("{status}")
+                .body()
+                .foreground(theme::color::Foreground),
         ))
         .spacing(8.0),
         progress(web.progress()).label(text("Load progress").caption()),
@@ -205,10 +207,10 @@ fn bridge_controls(allow_redirects: &Binding<bool>, web: &WebViewProxy) -> impl 
         hstack((
             text("JS Result:")
                 .caption()
-                .foreground(theme_color::MutedForeground),
+                .foreground(theme::color::MutedForeground),
             text!("{js_result}")
                 .body()
-                .foreground(theme_color::Foreground),
+                .foreground(theme::color::Foreground),
         ))
         .spacing(8.0),
     ))

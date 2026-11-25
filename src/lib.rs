@@ -112,9 +112,7 @@ pub mod prelude {
     pub use super::views::ForEach;
     pub use waterui_core::dynamic::{DynamicHandler, watch};
 
-    pub use super::theme::{
-        self, ColorScheme, ColorSettings, FontSettings, Theme, Tint, color as theme_color,
-    };
+    pub use super::theme::{self, ColorScheme, ColorSettings, FontSettings, Theme, Tint};
 
     pub use super::text::{TextConfig, font, highlight, styled};
 
@@ -155,7 +153,7 @@ pub mod prelude {
     pub use super::gradient::{Gradient, GradientStops, MeshGradient};
 
     // Background types (explicit to avoid module name conflict with layout::background)
-    pub use super::background::{Background, Glass, GlassStyle, Material};
+    pub use super::background::{Glass, GlassStyle, Material};
 
     // Asset types
     #[cfg(all(feature = "assets", feature = "image", not(target_arch = "wasm32")))]

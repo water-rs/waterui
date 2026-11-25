@@ -653,7 +653,7 @@ mod tests {
     use core::cell::Cell;
     use nami::{Binding, Signal, SignalExt};
     use waterui_core::resolve::Resolvable;
-    use waterui_graphics::color::{AccentColor, Color, Working};
+    use waterui_graphics::color::{Color, Working};
 
     use super::*;
 
@@ -773,11 +773,7 @@ mod tests {
     }
 
     #[test]
-    fn tier_tokens_install_and_mirror_into_graphics_keys() {
-        use waterui_graphics::color::{
-            DisabledForegroundColor, TertiaryForegroundColor, UnemphasizedSelectionColor,
-        };
-
+    fn tier_tokens_install_and_resolve_through_color_constructors() {
         let red = WorkingColor::new([1.0, 0.0, 0.0, 1.0]);
         let green = WorkingColor::new([0.0, 1.0, 0.0, 1.0]);
         let blue = WorkingColor::new([0.0, 0.0, 1.0, 1.0]);
@@ -805,30 +801,24 @@ mod tests {
             channel(blue)
         );
         assert_eq!(
-            channel(Color::new(TertiaryForegroundColor).resolve(&env).snapshot()),
+            channel(Color::tertiary_foreground().resolve(&env).snapshot()),
             channel(red)
         );
         assert_eq!(
-            channel(Color::new(DisabledForegroundColor).resolve(&env).snapshot()),
+            channel(Color::disabled_foreground().resolve(&env).snapshot()),
             channel(green)
         );
         assert_eq!(
-            channel(
-                Color::new(UnemphasizedSelectionColor)
-                    .resolve(&env)
-                    .snapshot()
-            ),
+            channel(Color::unemphasized_selection().resolve(&env).snapshot()),
             channel(blue)
         );
     }
 
-    /// A scheme installed on a subtree re-derives a per-scheme slot there,
-    /// the graphics mirror included, and the slot keeps following its
-    /// per-scheme signals; a slot installed as a signal is left as it is.
+    /// A scheme installed on a subtree re-derives a per-scheme slot there, and
+    /// the slot keeps following its per-scheme signals; a slot installed as a
+    /// signal is left as it is.
     #[test]
     fn subtree_scheme_rederives_per_scheme_slots() {
-        use waterui_graphics::color::BackgroundColor;
-
         let red = WorkingColor::new([1.0, 0.0, 0.0, 1.0]);
         let green = WorkingColor::new([0.0, 1.0, 0.0, 1.0]);
         let blue = WorkingColor::new([0.0, 0.0, 1.0, 1.0]);
@@ -849,10 +839,7 @@ mod tests {
         assert_eq!(channels(&env), red.components);
         assert_eq!(channels(&subtree), blue.components);
         assert_eq!(
-            Color::new(BackgroundColor)
-                .resolve(&subtree)
-                .snapshot()
-                .components,
+            Color::background().resolve(&subtree).snapshot().components,
             blue.components
         );
         assert_eq!(
@@ -866,11 +853,11 @@ mod tests {
     }
 
     #[test]
-    fn graphics_accent_color_tracks_installed_theme_signal() {
+    fn color_accent_tracks_installed_theme_signal() {
         let accent = Binding::container(WorkingColor::BLACK);
         let mut env = Environment::new();
         install_color_signal::<color::Accent>(&mut env, accent.computed());
-        let resolved = Color::new(AccentColor).resolve(&env);
+        let resolved = Color::accent().resolve(&env);
         let observed_red = Rc::new(Cell::new(0.0));
         let captured_red = Rc::clone(&observed_red);
         let _guard = resolved.watch(move |context| {

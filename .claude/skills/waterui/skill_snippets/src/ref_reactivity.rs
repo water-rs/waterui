@@ -203,7 +203,7 @@ pub fn reactivity_binding_helpers_prose() {
 // arms as one concrete type — `let on: Color = Accent.into();`.
 // ---------------------------------------------------------------------------
 pub fn reactivity_select_token_conversion() {
-    use waterui::prelude::theme_color::Accent;
+    use waterui::theme::color::Accent;
 
     let on: Color = Accent.into();
     let off = Color::transparent();

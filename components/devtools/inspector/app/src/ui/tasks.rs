@@ -4,9 +4,9 @@
 //! frame". A stall without a stack is normal — capturing one costs milliseconds
 //! on the thread being measured, so the target rations them.
 
-use waterui::prelude::theme_color::MutedForeground;
 use waterui::prelude::*;
 use waterui::reactive::collection::SignalCollection;
+use waterui::theme::color::MutedForeground;
 use waterui::widget::condition::when;
 
 use crate::model::{Model, StallRow, TaskRow};

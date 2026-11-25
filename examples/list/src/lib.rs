@@ -7,11 +7,11 @@ use waterui::Identifiable;
 use waterui::animation::Animation;
 use waterui::app::{App, Windows};
 use waterui::component::list::{List, ListDelete, ListMove};
-use waterui::prelude::theme_color::Foreground;
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
 use waterui::reactive::collection::List as ReactiveList;
+use waterui::theme::color::Foreground;
 
 const DATASET_SIZE: usize = 100_000;
 

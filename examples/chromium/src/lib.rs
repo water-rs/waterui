@@ -195,7 +195,7 @@ fn visible_cdp_controls(page: &ChromiumPage) -> impl View + use<> {
         input_probe_controls(page, &raw_result),
         text!("{raw_result}")
             .caption()
-            .foreground(theme_color::MutedForeground),
+            .foreground(theme::color::MutedForeground),
         button("Read typed navigation history")
             .style(ButtonStyle::Bordered)
             .action_async(
@@ -217,7 +217,7 @@ fn visible_cdp_controls(page: &ChromiumPage) -> impl View + use<> {
             .state(&typed_result),
         text!("{typed_result}")
             .caption()
-            .foreground(theme_color::MutedForeground),
+            .foreground(theme::color::MutedForeground),
         button("Capture Chromium PNG")
             .style(ButtonStyle::Bordered)
             .action_async(
@@ -235,7 +235,7 @@ fn visible_cdp_controls(page: &ChromiumPage) -> impl View + use<> {
             .state(&screenshot_result),
         text!("{screenshot_result}")
             .caption()
-            .foreground(theme_color::MutedForeground),
+            .foreground(theme::color::MutedForeground),
     ))
     .spacing(8.0)
 }
@@ -332,7 +332,7 @@ fn headless_controls() -> impl View + use<> {
             .state(&headless_result),
         text!("{headless_result}")
             .caption()
-            .foreground(theme_color::MutedForeground),
+            .foreground(theme::color::MutedForeground),
     ))
     .spacing(8.0)
 }
@@ -346,7 +346,7 @@ fn controls(
         text("Chromium + CDP").title(),
         text("Independent advanced browser runtime")
             .caption()
-            .foreground(theme_color::MutedForeground),
+            .foreground(theme::color::MutedForeground),
     ))
     .spacing(4.0);
 
