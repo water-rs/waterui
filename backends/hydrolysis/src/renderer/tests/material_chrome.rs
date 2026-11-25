@@ -23,11 +23,11 @@ use kurbo::{Affine, Rect, RoundedRect, Shape as _};
 use nami::SignalExt as _;
 use waterui::FilterViewExt as _;
 use waterui::ViewExt as _;
-use waterui::gesture::TapGesture;
+use waterui::gesture::{TapEvent, TapGesture};
 use waterui::graphics::Color;
 use waterui::interaction::InteractionState;
-use waterui_core::Environment;
 use waterui_core::handler::AnyViewBuilder;
+use waterui_core::{AnyView, Environment};
 
 use super::mirror::{mirror_engine, no_shader_mount};
 use super::{
@@ -134,18 +134,18 @@ fn chrome_draw(class: CaptureClass, shader: MaterialShader, uniforms: Vec<f32>) 
 
 /// A tappable colour: the plan's chrome realizes on it, so its custom part
 /// records the plan's materials.
-fn tap_color(hex: &str) -> waterui_core::AnyView {
-    waterui_core::AnyView::new(Color::srgb_hex(hex).gesture(TapGesture::new(), || {}))
+fn tap_color(hex: &str) -> AnyView {
+    AnyView::new(Color::srgb_hex(hex).gesture(TapGesture::new(), |_: TapEvent| {}))
 }
 
-fn tap_view() -> waterui_core::AnyView {
+fn tap_view() -> AnyView {
     tap_color("#3F3F46")
 }
 
 /// A tappable view that paints nothing itself, so the chrome beneath its
 /// content is what a pixel test sees.
-fn clear_tap() -> waterui_core::AnyView {
-    waterui_core::AnyView::new(Color::transparent().gesture(TapGesture::new(), || {}))
+fn clear_tap() -> AnyView {
+    AnyView::new(Color::transparent().gesture(TapGesture::new(), |_: TapEvent| {}))
 }
 
 /// An environment presenting every tappable view with `plan`'s chrome.

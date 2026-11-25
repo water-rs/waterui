@@ -54,7 +54,9 @@ use core::{fmt, num::NonZeroU32, time::Duration};
 use waterui_core::{
     Environment, Error,
     extract::{ExtractionState, Extractor, State},
-    handler::{BoxedAction, Handler, boxed_action},
+    handler::{
+        BoxedAction, EventHandler, ExtractionError, Handler, boxed_action, boxed_event_handler,
+    },
     layout::Point,
     metadata::MetadataKey,
 };
@@ -143,11 +145,7 @@ pub enum GesturePhase {
     Cancelled,
 }
 
-/// Event payload for tap gestures.
-///
-/// Backends install this structure into the environment via [`State<TapEvent>`]
-/// when a tap is recognised, allowing gesture handlers to extract it directly as
-/// `event: TapEvent` or `State(event): State<TapEvent>`.
+/// Event payload delivered as the first argument to a [`TapGesture`] handler.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct TapEvent {
@@ -196,10 +194,7 @@ impl TapEvent {
     }
 }
 
-/// Event payload for long-press gestures.
-///
-/// Backends insert this into the environment alongside [`Gesture::LongPress`]
-/// whenever a long-press interaction fires.
+/// Event payload delivered as the first argument to a [`LongPressGesture`] handler.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct LongPressEvent {
@@ -248,10 +243,7 @@ impl LongPressEvent {
     }
 }
 
-/// Event payload for drag gestures.
-///
-/// Each drag update stores a fresh [`DragEvent`] in the environment so handlers
-/// can observe pointer position and motion metrics.
+/// Event payload delivered as the first argument to a [`DragGesture`] handler.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct DragEvent {
@@ -335,10 +327,7 @@ impl DragEvent {
     }
 }
 
-/// Event payload for magnification (pinch) gestures.
-///
-/// This payload accompanies [`Gesture::Magnification`] entries in the
-/// environment when zoom gestures are recognised.
+/// Event payload delivered as the first argument to a [`MagnificationGesture`] handler.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct MagnificationEvent {
@@ -857,8 +846,75 @@ impl fmt::Debug for GestureObserver {
 
 impl MetadataKey for GestureObserver {}
 
+/// Event payload emitted by a dynamic [`Gesture`] observer.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub enum GestureEvent {
+    /// Tap gesture recognized.
+    Tap(TapEvent),
+    /// Long-press gesture recognized.
+    LongPress(LongPressEvent),
+    /// Drag gesture recognized.
+    Drag(DragEvent),
+    /// Magnification gesture recognized.
+    Magnification(MagnificationEvent),
+    /// Rotation gesture recognized.
+    Rotation(RotationEvent),
+}
+
+/// Associates a gesture descriptor with the typed event payload delivered to
+/// its handler.
+pub trait GestureType: Into<Gesture> {
+    /// Event payload passed as the first argument to handlers for this gesture.
+    type Event: 'static;
+
+    /// Extracts the backend-installed [`Self::Event`] from `env`.
+    #[doc(hidden)]
+    fn extract_event(env: &Environment) -> Result<Self::Event, ExtractionError>;
+}
+
+macro_rules! impl_gesture_type {
+    ($gesture:ty => $event:ty) => {
+        impl GestureType for $gesture {
+            type Event = $event;
+
+            fn extract_event(env: &Environment) -> Result<Self::Event, ExtractionError> {
+                Handler::call(&mut |s: State<$event>| s, env).map(|State(event)| event)
+            }
+        }
+    };
+}
+
+impl_gesture_type!(TapGesture => TapEvent);
+impl_gesture_type!(LongPressGesture => LongPressEvent);
+impl_gesture_type!(DragGesture => DragEvent);
+impl_gesture_type!(MagnificationGesture => MagnificationEvent);
+impl_gesture_type!(RotationGesture => RotationEvent);
+
+impl GestureType for Gesture {
+    type Event = GestureEvent;
+
+    fn extract_event(env: &Environment) -> Result<Self::Event, ExtractionError> {
+        if let Ok(State(event)) = Handler::call(&mut |s: State<TapEvent>| s, env) {
+            return Ok(GestureEvent::Tap(event));
+        }
+        if let Ok(State(event)) = Handler::call(&mut |s: State<LongPressEvent>| s, env) {
+            return Ok(GestureEvent::LongPress(event));
+        }
+        if let Ok(State(event)) = Handler::call(&mut |s: State<DragEvent>| s, env) {
+            return Ok(GestureEvent::Drag(event));
+        }
+        if let Ok(State(event)) = Handler::call(&mut |s: State<MagnificationEvent>| s, env) {
+            return Ok(GestureEvent::Magnification(event));
+        }
+        Handler::call(&mut |s: State<RotationEvent>| s, env)
+            .map(|State(event)| GestureEvent::Rotation(event))
+    }
+}
+
 impl GestureObserver {
-    /// Creates a gesture observer for the given gesture and action.
+    /// Creates a gesture observer for `gesture` whose handler consumes
+    /// `G::Event` as its first argument, followed by environment extractors.
     ///
     /// Local state can be injected by wrapping the owning view with
     /// `.state(...)`.
@@ -867,9 +923,9 @@ impl GestureObserver {
     ///
     /// Simple action:
     /// ```
-    /// use waterui_interaction::gesture::{GestureObserver, TapGesture};
+    /// use waterui_interaction::gesture::{GestureObserver, TapEvent, TapGesture};
     ///
-    /// let observer = GestureObserver::new(TapGesture::new(), || {});
+    /// let observer = GestureObserver::new(TapGesture::new(), |_: TapEvent| {});
     /// ```
     ///
     /// With injected state:
@@ -877,15 +933,50 @@ impl GestureObserver {
     /// use core::num::NonZeroU32;
     /// use nami::Binding;
     /// use waterui_core::State;
-    /// use waterui_interaction::gesture::{GestureObserver, TapGesture};
+    /// use waterui_interaction::gesture::{GestureObserver, TapEvent, TapGesture};
     ///
     /// let observer = GestureObserver::new(
     ///     TapGesture::repeat(NonZeroU32::new(2).unwrap()),
-    ///     |State(counter): State<Binding<i32>>| *counter.get_mut() += 1,
+    ///     |_: TapEvent, State(counter): State<Binding<i32>>| *counter.get_mut() += 1,
     /// );
     /// ```
+    /// Temporary Step 1 implementation keeping `waterui-map-gpu` and
+    /// `waterui-video-gpu` compiling until they migrate to typed gesture args;
+    /// Step 3 switches `new` to [`Self::from_event`]'s typed signature.
     #[must_use]
     pub fn new<Args>(gesture: impl Into<Gesture>, action: impl Handler<Args, ()>) -> Self {
+        Self {
+            gesture: gesture.into(),
+            action: boxed_action(action),
+        }
+    }
+
+    /// Creates a gesture observer for `gesture` whose handler consumes
+    /// `G::Event` as its first argument, followed by environment extractors.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn from_event<G, H, Args>(gesture: G, action: H) -> Self
+    where
+        G: GestureType,
+        H: EventHandler<G::Event, Args>,
+    {
+        let mut handler = boxed_event_handler(action);
+        Self {
+            gesture: gesture.into(),
+            action: Box::new(move |env: &Environment| {
+                let event = G::extract_event(env)?;
+                handler(event, env)
+            }),
+        }
+    }
+
+    /// Creates a gesture observer whose handler ignores the recognized event
+    /// payload (used by payload-free shortcuts such as `on_tap` and `on_long_press`).
+    #[must_use]
+    pub fn without_event<Args>(
+        gesture: impl Into<Gesture>,
+        action: impl Handler<Args, ()>,
+    ) -> Self {
         Self {
             gesture: gesture.into(),
             action: boxed_action(action),
@@ -896,6 +987,7 @@ impl GestureObserver {
 macro_rules! impl_state_extractor {
     ($($ty:ty),+ $(,)?) => {
         $(
+            #[doc(hidden)]
             impl Extractor for $ty {
                 fn extract(env: &Environment) -> Result<Self, Error> {
                     State::<Self>::extract(env).map(|State(value)| value)
@@ -912,6 +1004,8 @@ macro_rules! impl_state_extractor {
     };
 }
 
+// Temporary Step 1 bridge for `water-rs/chart`, `water-rs/map-gpu`, and
+// `water-rs/video-gpu` until Step 2 migrates them to typed `GestureObserver::new`.
 impl_state_extractor!(
     TapEvent,
     LongPressEvent,
@@ -920,6 +1014,29 @@ impl_state_extractor!(
     RotationEvent,
     Gesture,
 );
+
+#[doc(hidden)]
+impl Extractor for GestureEvent {
+    fn extract(env: &Environment) -> Result<Self, Error> {
+        if let Ok(State(event)) = State::<TapEvent>::extract(env) {
+            return Ok(Self::Tap(event));
+        }
+        if let Ok(State(event)) = State::<LongPressEvent>::extract(env) {
+            return Ok(Self::LongPress(event));
+        }
+        if let Ok(State(event)) = State::<DragEvent>::extract(env) {
+            return Ok(Self::Drag(event));
+        }
+        if let Ok(State(event)) = State::<MagnificationEvent>::extract(env) {
+            return Ok(Self::Magnification(event));
+        }
+        State::<RotationEvent>::extract(env).map(|State(event)| Self::Rotation(event))
+    }
+
+    fn extract_from_action(env: &Environment, _state: &mut ExtractionState) -> Result<Self, Error> {
+        Self::extract(env)
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -969,5 +1086,41 @@ mod tests {
             }
             other => panic!("expected Gesture::Exclusive, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn typed_and_composite_gesture_observers_deliver_expected_events() {
+        use alloc::{rc::Rc, vec, vec::Vec};
+        use core::cell::RefCell;
+
+        let tap_loc = Rc::new(RefCell::new(None));
+        let tap_observer = GestureObserver::from_event(TapGesture::new(), {
+            let tap_loc = Rc::clone(&tap_loc);
+            move |tap: TapEvent| *tap_loc.borrow_mut() = Some(tap.location())
+        });
+        let (_gesture, mut tap_action) = tap_observer.into_parts();
+        let tap_env = Environment::new().extending(State(TapEvent::new(
+            Point::new(10.0, 20.0),
+            1,
+            PointerButton::Primary,
+        )));
+        assert!(tap_action(&tap_env).is_ok());
+        assert_eq!(*tap_loc.borrow(), Some(Point::new(10.0, 20.0)));
+
+        let composite_events = Rc::new(RefCell::new(Vec::new()));
+        let composite_observer = GestureObserver::from_event(Gesture::from(TapGesture::new()), {
+            let composite_events = Rc::clone(&composite_events);
+            move |event: GestureEvent| composite_events.borrow_mut().push(event)
+        });
+        let (_gesture, mut composite_action) = composite_observer.into_parts();
+        assert!(composite_action(&tap_env).is_ok());
+        assert_eq!(
+            *composite_events.borrow(),
+            vec![GestureEvent::Tap(TapEvent::new(
+                Point::new(10.0, 20.0),
+                1,
+                PointerButton::Primary,
+            ))]
+        );
     }
 }
