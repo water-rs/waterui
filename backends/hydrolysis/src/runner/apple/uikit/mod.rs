@@ -344,7 +344,7 @@ pub(in crate::runner) fn run<W: Windows, M: AppMenuBar>(
             app: Box::new(move |env| {
                 let parts = app(env).into_parts();
                 LaunchParts {
-                    windows: RootWindows::collect(parts.windows),
+                    windows: RootWindows::collect(parts.windows, &parts.env),
                     #[cfg(feature = "menu")]
                     menu_bar: M::HAS_DECLARED
                         .then(|| parts.menu_bar.declared().cloned())

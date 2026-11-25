@@ -997,7 +997,7 @@ mod custom_style_tests {
         let a11y_label = peel_metadata::<AccessibilityLabel>(role_view.content, &env)
             .expect("custom-styled toggle keeps hidden label in accessibility tree");
         assert_eq!(
-            a11y_label.value.signal().snapshot().as_str(),
+            a11y_label.value.resolve(&env).snapshot().as_str(),
             "Airplane Mode"
         );
 

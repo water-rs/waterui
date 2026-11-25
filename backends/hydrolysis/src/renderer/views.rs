@@ -93,7 +93,7 @@ fn command_node<S>(command: ResolvedCommand<S>) -> PopupMenuNode {
         action: command.action,
         disabled: command.disabled,
         shortcut: command.shortcut,
-        subtitle: command.subtitle,
+        subtitle: command.subtitle.map(|subtitle| subtitle.snapshot()),
     }
 }
 

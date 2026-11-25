@@ -31,7 +31,7 @@ use waterui_core::id::Id;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
 };
-use waterui_map::{Annotation, Coordinate, MapConfig, MapStatus, MapStyle, Region};
+use waterui_map::{Coordinate, MapConfig, MapStatus, MapStyle, Region, ResolvedAnnotation};
 
 use crate::contract::{NativeLeaf, RenderContext};
 
@@ -78,13 +78,13 @@ fn regions_close(a: &Region, b: &Region) -> bool {
         && (a.longitude_delta - b.longitude_delta).abs() <= REGION_EPSILON
 }
 
-/// A `waterui_map::Annotation` as the kit's pin value.
-fn kit_annotation(annotation: &Annotation<Id>) -> KitAnnotation {
+/// A `waterui_map::ResolvedAnnotation` as the kit's pin value.
+fn kit_annotation(annotation: &ResolvedAnnotation) -> KitAnnotation {
     KitAnnotation {
         coordinate: kit_coordinate(&annotation.coordinate()),
         title: annotation.title().as_str().to_owned(),
         subtitle: annotation
-            .get_subtitle()
+            .subtitle()
             .as_ref()
             .map(|text| text.as_str().to_owned()),
     }
@@ -138,7 +138,7 @@ impl MapState {
 /// preserving the exact order of `values`.
 fn reconcile_markers<M>(
     existing_markers: &mut Vec<(Id, M)>,
-    values: &[Annotation<Id>],
+    values: &[ResolvedAnnotation],
     mut update: impl FnMut(&M, &KitAnnotation),
     mut remove: impl FnMut(Vec<M>),
     mut add: impl FnMut(&[KitAnnotation]) -> Vec<M>,
@@ -149,7 +149,7 @@ fn reconcile_markers<M>(
     let mut added_values = Vec::new();
 
     for (slot, value) in values.iter().enumerate() {
-        let id = *value.id();
+        let id = value.id();
         if let Some(marker) = existing.remove(&id) {
             update(&marker, &kit_annotation(value));
             merged[slot] = Some((id, marker));
@@ -178,7 +178,7 @@ fn reconcile_markers<M>(
 fn reconcile_annotations(
     view: &MapView,
     state: &mut MapState,
-    values: &[Annotation<Id>],
+    values: &[ResolvedAnnotation],
     suppressing_selection: &Cell<bool>,
 ) {
     reconcile_markers(
@@ -416,7 +416,7 @@ pub fn realize_map_config(config: MapConfig, ctx: &RenderContext<'_>) -> NativeL
         reconcile_annotations(
             &map,
             &mut state,
-            &config.annotations().snapshot(),
+            &config.resolved_annotations().snapshot(),
             &suppressing_selection,
         );
     }
@@ -424,7 +424,7 @@ pub fn realize_map_config(config: MapConfig, ctx: &RenderContext<'_>) -> NativeL
         let map = map.clone();
         let state = Rc::clone(&state);
         let suppressing_selection = Rc::clone(&suppressing_selection);
-        leaf.watch(config.annotations(), move |change| {
+        leaf.watch(config.resolved_annotations(), move |change| {
             let mut state = state.borrow_mut();
             reconcile_annotations(&map, &mut state, change.value(), &suppressing_selection);
         });
@@ -500,10 +500,20 @@ mod tests {
         let mapping = Mapping::new();
         let id = mapping.to_id(1_u32);
         let coordinate = Coordinate::default();
-        let with = kit_annotation(&Annotation::new(id, coordinate, "title").subtitle("sub"));
+        let with = kit_annotation(&ResolvedAnnotation::new(
+            id,
+            coordinate,
+            Str::from("title"),
+            Some(Str::from("sub")),
+        ));
         assert_eq!(with.title, "title");
         assert_eq!(with.subtitle.as_deref(), Some("sub"));
-        let without = kit_annotation(&Annotation::new(id, coordinate, "title"));
+        let without = kit_annotation(&ResolvedAnnotation::new(
+            id,
+            coordinate,
+            Str::from("title"),
+            None,
+        ));
         assert_eq!(without.subtitle, None);
     }
 
@@ -540,9 +550,9 @@ mod tests {
 
         // Initial mount with three newly added annotations must track all three in order.
         let initial = vec![
-            Annotation::new(a, coord, "A"),
-            Annotation::new(b, coord, "B"),
-            Annotation::new(c, coord, "C"),
+            ResolvedAnnotation::new(a, coord, Str::from("A"), None),
+            ResolvedAnnotation::new(b, coord, Str::from("B"), None),
+            ResolvedAnnotation::new(c, coord, Str::from("C"), None),
         ];
         reconcile_markers(
             &mut markers,
@@ -566,8 +576,8 @@ mod tests {
         let mut updated_tokens = Vec::new();
         let mut removed_tokens = Vec::new();
         let next = vec![
-            Annotation::new(d, coord, "D"),
-            Annotation::new(b, coord, "B updated"),
+            ResolvedAnnotation::new(d, coord, Str::from("D"), None),
+            ResolvedAnnotation::new(b, coord, Str::from("B updated"), None),
         ];
         reconcile_markers(
             &mut markers,

@@ -80,7 +80,10 @@ fn kit_command<S>(
     let (symbol, image) = resolve_icon(command.icon.as_ref(), env);
     kit_command_fields(
         command.label.content().snapshot().to_plain().to_string(),
-        command.subtitle.as_ref().map(ToString::to_string),
+        command
+            .subtitle
+            .as_ref()
+            .map(|subtitle| subtitle.snapshot().to_string()),
         symbol,
         image,
         command.role,

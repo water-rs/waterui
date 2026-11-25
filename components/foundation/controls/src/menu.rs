@@ -26,7 +26,7 @@ use waterui_interaction::interaction::Disabled;
 use waterui_interaction::key::Key;
 pub use waterui_interaction::key::NamedKey;
 use waterui_locale::locale_binding;
-use waterui_text::{TextConfig, styled::StyledStr};
+use waterui_text::{IntoText, Text, TextConfig, styled::StyledStr};
 
 use crate::{
     button::{Button, ButtonRole, ButtonStyle},
@@ -751,7 +751,7 @@ pub struct Command {
     /// What the command does, which decides its presentation.
     role: Option<ButtonRole>,
     /// An optional secondary line shown under the label.
-    subtitle: Option<Str>,
+    subtitle: Option<Text>,
     /// Local state layered onto the environment when the action runs.
     captured_env: Environment,
     identity: Rc<()>,
@@ -796,7 +796,7 @@ impl Command {
 
     /// An optional secondary line shown under the label.
     #[must_use]
-    pub const fn command_subtitle(&self) -> Option<&Str> {
+    pub const fn command_subtitle(&self) -> Option<&Text> {
         self.subtitle.as_ref()
     }
 
@@ -843,7 +843,13 @@ impl Command {
             selected: self.selected,
             shortcut: self.shortcut,
             role: self.role,
-            subtitle: self.subtitle,
+            subtitle: self.subtitle.map(|subtitle| {
+                subtitle
+                    .resolve(env)
+                    .content()
+                    .map(|styled| styled.to_plain())
+                    .computed()
+            }),
             identity: self.identity,
         }
     }
@@ -883,9 +889,12 @@ impl Command {
     }
 
     /// Shows a secondary line under the command's label.
+    ///
+    /// Accepts any [`IntoText`] value so string literals resolve through the
+    /// active translation catalog in the surrounding [`Environment`].
     #[must_use]
-    pub fn subtitle(mut self, subtitle: impl Into<Str>) -> Self {
-        self.subtitle = Some(subtitle.into());
+    pub fn subtitle(mut self, subtitle: impl IntoText) -> Self {
+        self.subtitle = Some(subtitle.into_text());
         self
     }
 
@@ -1365,7 +1374,7 @@ pub struct ResolvedCommand<S = NoopSlot> {
     /// What the command does, which decides its presentation.
     pub role: Option<ButtonRole>,
     /// An optional secondary line shown under the label.
-    pub subtitle: Option<Str>,
+    pub subtitle: Option<Computed<Str>>,
     identity: Rc<()>,
 }
 
@@ -1980,7 +1989,34 @@ mod tests {
             panic!("second resolved item should be a command");
         };
         assert_eq!(delete.role, Some(ButtonRole::Destructive));
-        assert_eq!(delete.subtitle.as_deref(), Some("For everyone"));
+        assert_eq!(
+            delete.subtitle.as_ref().map(Signal::snapshot).as_deref(),
+            Some("For everyone")
+        );
+    }
+
+    #[test]
+    fn command_subtitle_resolves_through_translation_catalog() {
+        use waterui_locale::{TranslationCatalog, locales};
+
+        crate::init_test_executor();
+        let mut env = Environment::default();
+        env.insert(locales::FR);
+        env.insert(
+            TranslationCatalog::new()
+                .add_toml(locales::FR, "\"For everyone\" = \"Pour tous\"")
+                .expect("test catalog must parse"),
+        );
+
+        let resolved = Command::builder("Delete")
+            .action(|| {})
+            .subtitle("For everyone")
+            .resolve::<NoopSlot>(&env);
+
+        assert_eq!(
+            resolved.subtitle.as_ref().map(Signal::snapshot).as_deref(),
+            Some("Pour tous")
+        );
     }
 
     #[test]

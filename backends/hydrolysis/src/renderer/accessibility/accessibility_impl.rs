@@ -2703,7 +2703,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         // label ("3 unread messages") republishes without a subtree rebuild.
         let signal = env
             .get::<AccessibilityLabel>()
-            .map(|label| label.signal().clone());
+            .map(|label| label.resolve(env));
         signal
             .map(|signal| self.read_signal(&signal).as_str().to_owned())
             .or(default_label)
@@ -2724,7 +2724,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     ) -> Option<String> {
         let signal = env
             .get::<AccessibilityValue>()
-            .map(|value| value.signal().clone());
+            .map(|value| value.resolve(env));
         signal
             .map(|signal| self.read_signal(&signal).as_str().to_owned())
             .or(default_value)

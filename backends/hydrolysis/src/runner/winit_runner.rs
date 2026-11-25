@@ -827,7 +827,7 @@ pub fn run<W: Windows, M: AppMenuBar>(
     let RootWindows {
         initial: windows,
         channels,
-    } = RootWindows::<crate::text::ParleyEngine>::collect(windows);
+    } = RootWindows::<crate::text::ParleyEngine>::collect(windows, &env);
     // No early return for a windowless `Quit` launch: its required
     // termination goes through the machine like every other path, and its
     // hook future needs the loop running — the first `resumed` files it.
@@ -2357,8 +2357,8 @@ mod tests {
 
     #[test]
     fn popup_window_attributes_do_not_activate() {
-        let window = Window::new("", || ()).into_parts();
         let env = crate::renderer::tests::test_environment();
+        let window = Window::new("", || ()).into_parts(&env);
 
         assert!(native_window_attributes(&window, &env, true, None).active);
         assert!(!native_window_attributes(&window, &env, false, None).active);
@@ -2369,17 +2369,18 @@ mod tests {
     fn window_attributes_split_wm_class_from_instance_name() {
         use waterui_core::Str;
 
+        let env = Environment::new();
         let window = Window::new("", || ())
             .app_id("myclass")
             .instance_name("myinstance")
-            .into_parts();
+            .into_parts(&env);
         assert_eq!(
             super::window_desktop_identity(&window),
             Some((Str::from("myclass"), Str::from("myinstance"))),
             "WM_CLASS carries (app_id, instance_name)"
         );
 
-        let window = Window::new("", || ()).app_id("myclass").into_parts();
+        let window = Window::new("", || ()).app_id("myclass").into_parts(&env);
         assert_eq!(
             super::window_desktop_identity(&window),
             Some((Str::from("myclass"), Str::from("myclass"))),
@@ -2391,8 +2392,8 @@ mod tests {
     fn window_attributes_carry_the_requested_frame() {
         use waterui_core::layout::{Point, Rect, Size};
         let frame = Binding::container(Rect::new(Point::new(12.0, 34.0), Size::new(800.0, 300.0)));
-        let window = Window::new("", || ()).frame(&frame).into_parts();
         let env = crate::renderer::tests::test_environment();
+        let window = Window::new("", || ()).frame(&frame).into_parts(&env);
 
         let attributes = native_window_attributes(&window, &env, false, None);
         assert_eq!(
@@ -2414,8 +2415,8 @@ mod tests {
     fn window_attributes_disable_only_the_close_button_on_a_non_closable_window() {
         use winit::window::WindowButtons;
 
-        let window = Window::new("", || ()).closable(false).into_parts();
         let env = crate::renderer::tests::test_environment();
+        let window = Window::new("", || ()).closable(false).into_parts(&env);
 
         assert_eq!(
             native_window_attributes(&window, &env, false, None).enabled_buttons,
@@ -2423,7 +2424,7 @@ mod tests {
             "a non-closable window drops only the close button"
         );
 
-        let window = Window::new("", || ()).into_parts();
+        let window = Window::new("", || ()).into_parts(&env);
         assert_eq!(
             native_window_attributes(&window, &env, false, None).enabled_buttons,
             WindowButtons::all(),

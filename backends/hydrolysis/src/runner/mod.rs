@@ -518,7 +518,7 @@ pub fn run<W: Windows, M: AppMenuBar>(
         .get::<crate::renderer::WindowIdentities>()
         .expect("install_window_registries seeds WindowIdentities")
         .clone();
-    let window::RootWindows { initial, channels } = window::RootWindows::collect(windows);
+    let window::RootWindows { initial, channels } = window::RootWindows::collect(windows, &env);
     let opener = queue_window_opener(&pending_window_queue);
     window::RootWindows::connect_channels(channels, &opener);
     let mut pending_windows = VecDeque::from(initial);

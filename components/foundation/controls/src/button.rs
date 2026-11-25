@@ -1904,7 +1904,7 @@ mod custom_style_tests {
 
         let a11y_label = peel_metadata::<AccessibilityLabel>(role_view.content, &env)
             .expect("custom-styled button attaches AccessibilityLabel even when label is hidden");
-        assert_eq!(a11y_label.value.signal().snapshot().as_str(), "Delete");
+        assert_eq!(a11y_label.value.resolve(&env).snapshot().as_str(), "Delete");
 
         let observer = peel_metadata::<GestureObserver>(a11y_label.content, &env)
             .expect("custom-styled button wraps body in TapGesture observer");
