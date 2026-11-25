@@ -893,27 +893,6 @@ pub trait ViewExt: View + Sized {
         Metadata::new(self, GestureObserver::new(gesture, action))
     }
 
-    /// Attaches a pre-built gesture observer to this view.
-    ///
-    /// Use this method when you need the builder pattern for state capture.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use waterui::prelude::*;
-    /// use waterui::gesture::{GestureObserver, TapGesture};
-    ///
-    /// let counted = text!("Tap twice").gesture_observer(
-    ///     GestureObserver::new(
-    ///         TapGesture::repeat(2),
-    ///         |State(counter): State<Binding<i32>>| *counter.get_mut() += 1,
-    ///     )
-    /// );
-    /// ```
-    fn gesture_observer(self, observer: GestureObserver) -> Metadata<GestureObserver, Self> {
-        Metadata::new(self, observer)
-    }
-
     /// Adds a tap gesture recognizer to this view that triggers the specified action.
     ///
     /// # Arguments
@@ -933,24 +912,6 @@ pub trait ViewExt: View + Sized {
         self.gesture(TapGesture::new(), action)
     }
 
-    /// Adds a tap gesture recognizer to this view (`SwiftUI` naming style).
-    ///
-    /// Equivalent to [`ViewExt::on_tap`].
-    fn on_tap_gesture<H, Args>(self, action: H) -> Metadata<GestureObserver, Self>
-    where
-        H: Handler<Args, ()>,
-    {
-        self.on_tap(action)
-    }
-
-    /// Adds a tap gesture recognizer requiring an exact tap count.
-    fn on_tap_gesture_count<H, Args>(self, count: u32, action: H) -> Metadata<GestureObserver, Self>
-    where
-        H: Handler<Args, ()>,
-    {
-        self.gesture(TapGesture::repeat(count.max(1)), action)
-    }
-
     /// Adds a long-press gesture recognizer to this view using the platform's
     /// default long-press timeout.
     fn on_long_press<H, Args>(self, action: H) -> Metadata<GestureObserver, Self>
@@ -959,7 +920,6 @@ pub trait ViewExt: View + Sized {
     {
         self.gesture(LongPressGesture::new(), action)
     }
-
     /// Adds a long-press gesture recognizer to this view.
     ///
     /// Temporary Step 1 migration bridge for `water-rs/waterui#4458` while

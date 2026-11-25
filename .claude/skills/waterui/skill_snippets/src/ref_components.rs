@@ -577,11 +577,14 @@ pub fn components_custom_control_styles() {
             &self,
             configuration: PrimitiveButtonStyleConfiguration<L>,
         ) -> impl View + use<L> {
+            use core::num::NonZeroU32;
             let trigger = configuration.trigger().clone();
             configuration
                 .into_label()
                 .padding_with((8.0, 16.0))
-                .gesture(TapGesture::repeat(2), move || trigger.trigger())
+                .gesture(TapGesture::repeat(NonZeroU32::new(2).unwrap()), move || {
+                    trigger.trigger()
+                })
         }
     }
 
@@ -1007,10 +1010,12 @@ pub mod components_block_27 {
         let _ = {
             List::for_each(records.clone(), |r| text(r.title))
                 .editing(is_editing.clone()) // impl IntoComputed<bool>
-                .on_delete(|ListDelete(i), mut s: AppState| {
-                    let _ = s.rows.remove(i);
+                .on_delete(|ListDelete(id): ListDelete<u64>, mut s: AppState| {
+                    if let Some(i) = s.rows.snapshot().iter().position(|r| r.id == id) {
+                        let _ = s.rows.remove(i);
+                    }
                 })
-                .on_move(|ListMove(m), mut s: AppState| {
+                .on_move(|ListMove(m): ListMove<u64>, mut s: AppState| {
                     let moved = s.rows.remove(m.from());
                     s.rows.insert(m.to(), moved);
                 })

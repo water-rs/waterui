@@ -38,8 +38,8 @@ fn list_runtime(editing: bool) -> HeadlessRuntime {
                 text(format!("Row {index}"))
             })
             .editing(editing)
-            .on_delete(|_: ListDelete| {})
-            .on_move(|_: ListMove| {}),
+            .on_delete(|_: ListDelete<usize>| {})
+            .on_move(|_: ListMove<usize>| {}),
         )
     });
     HeadlessRuntime::new_for_tests(

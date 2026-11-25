@@ -480,10 +480,10 @@ pub fn list_intrinsic_for_first_row<E: crate::text::TextEngine, C>(
     let mut row_width = metrics
         .horizontal_inset
         .mul_add(2.0, f64::from(content_size.width));
-    if editing && list.on_move().is_some() {
+    if editing && list.edits().has_move() {
         row_width += metrics.move_control_width + metrics.trailing_control_spacing;
     }
-    if editing && list.on_delete().is_some() {
+    if editing && list.edits().has_delete() {
         row_width += metrics.delete_control_width + metrics.trailing_control_spacing;
     }
     // Section chrome is part of the list's own height: each section holding
