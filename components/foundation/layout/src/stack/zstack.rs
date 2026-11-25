@@ -2,7 +2,7 @@
 
 use alloc::{vec, vec::Vec};
 use nami::collection::Collection;
-use waterui_core::{View, id::Identifiable, view::ViewSequence, views::ForEach};
+use waterui_core::{Environment, View, view::ViewSequence, views::ForEach};
 
 use crate::{
     Layout, LayoutError, LazyContainer, PlacedSubview, PlacementInput, Point, ProposalSize, Rect,
@@ -344,11 +344,11 @@ where
 impl<C, F, V> View for ZStack<ForEach<C, F, V>>
 where
     C: Collection + Clone,
-    C::Item: Identifiable + Clone,
+    C::Item: Clone,
     F: 'static + Fn(C::Item) -> V,
     V: View,
 {
-    fn body(self, _env: &waterui_core::Environment) -> impl View {
+    fn body(self, _env: &Environment) -> impl View {
         LazyContainer::new(self.layout, self.contents)
     }
 }

@@ -172,17 +172,17 @@ fn horizontal_scroll_rail_keeps_zero_minimum_on_scrolling_axis() {
 }
 
 // Defect reproduction: water-rs/hydrolysis#182 — watergram's folder rail is a
-// `scroll_horizontal` wrapping `Lazy::hstack(ForEach)` caption chips beside a
+// nested `scroll_horizontal` wrapping horizontal caption chips beside a
 // trailing icon button, as `water-rs/watergram` `sidebar_view` built it
 // (src/views.rs at 937ea83). The last chip rendered "Archiv" in a 340 pt
 // sidebar even though the rail had room to scroll to it.
 //
 // Root cause is the same `RenderNode::Scroll::measure` arm one layer deeper:
-// `Lazy::hstack` wraps its stack in a vertical `scroll()`, so the horizontal
-// rail's content measure proposes `(None, Some(height))` to a *scroll* — and
-// the arm answered `proposal.unwrap_or(0)`, i.e. `0`, where §2 asks for the
-// ideal (intrinsic) extent. The outer scroll's `content_size` collapsed to
-// the viewport, so the rail could never scroll and the viewport clip cut the
+// when a horizontal rail wraps an inner scroll, the rail's content measure
+// proposes `(None, Some(height))` to that inner *scroll* — and the arm
+// answered `proposal.unwrap_or(0)`, i.e. `0`, where §2 asks for the ideal
+// (intrinsic) extent. The outer scroll's `content_size` collapsed to the
+// viewport, so the rail could never scroll and the viewport clip cut the
 // last chip mid-glyph. The arm now measures the content's intrinsic extent on
 // a `None` axis — the same extent the layout pass then measures the content
 // at — while the `0` probe keeps the contract above.
@@ -224,12 +224,11 @@ fn folder_rail_row(
     chips: &[(&'static str, i32)],
     controller: &waterui_layout::scroll::ScrollController<waterui::layout::Point>,
 ) -> impl View + use<> {
-    use waterui::component::lazy::Lazy;
     use waterui::id::SelfId;
-    use waterui::views::ForEach;
+    use waterui::layout::stack::HStack;
 
     hstack((
-        scroll_horizontal(Lazy::hstack(ForEach::new(
+        scroll_horizontal(scroll_horizontal(HStack::for_each(
             chips.iter().copied().map(SelfId::new).collect::<Vec<_>>(),
             |tab| {
                 let (name, id) = tab.into_inner();
@@ -269,9 +268,9 @@ fn a_nested_scroll_reports_its_content_extent_and_scrolls_the_last_chip_in() {
         340,
         640,
     );
-    // `Lazy::hstack` keeps a small perpetual measure queue under this
-    // runtime, so the test pumps a bounded window instead of settling; the
-    // geometry the assertions read is stable well inside it.
+    // A virtualized `HStack::for_each` keeps a small perpetual measure queue
+    // under this runtime, so the test pumps a bounded window instead of
+    // settling; the geometry the assertions read is stable well inside it.
     app.pump_for(std::time::Duration::from_secs(1));
 
     let rail_ids: Vec<_> = nodes(app.tree())

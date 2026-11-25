@@ -9,10 +9,10 @@ use waterui::Signal;
 use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityRole;
 use waterui::component::label;
-use waterui::component::lazy::Lazy;
 use waterui::component::text;
 use waterui::layout::frame::Frame;
 use waterui::layout::scroll::scroll;
+use waterui::layout::stack::VStack;
 use waterui::reactive::collection::StateList;
 use waterui_media::{
     LivePhoto, Media, MediaPicker, Photo, PhotoCache, PhotoEvent, PhotoStatus, PickerStatus, Url,
@@ -262,7 +262,7 @@ fn photo_in_lazy_list_serves_from_environment_cache_without_refetch(ui: UiBuilde
         .theme(TestStyle::default())
         .mount_offscreen(move || {
             let status_for_view = status_for_view.clone();
-            scroll(Lazy::for_each(items_for_view.clone(), move |row| {
+            scroll(VStack::for_each(items_for_view.clone(), move |row| {
                 if let Some(url) = row.url {
                     OneOf2::A(
                         photo(url)

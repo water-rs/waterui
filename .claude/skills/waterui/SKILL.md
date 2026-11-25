@@ -68,7 +68,7 @@ any state living inside that subtree is destroyed. Three things replace nearly e
 ```rust
 text!("{status}")                               // reactive text — not watch + format!
 Photo::new(url).blur(blur.clone())              // reactive value — pass the signal
-Lazy::for_each(rows.clone(), row_view)          // dynamic set of views — a collection
+VStack::for_each(rows.clone(), row_view)        // dynamic set of views — a collection
 ```
 
 Reach for `watch` only for a genuinely one-off structural swap where no signal-aware API
@@ -139,25 +139,26 @@ its own clone (`mut state: Editor`).
 
 ```rust
 use waterui::Identifiable;                             // the trait the derive implements is NOT in the prelude
-use waterui::component::lazy::Lazy;
 
 #[derive(Clone, Identifiable)]
 struct Row { #[id] id: u64, title: Str }
 
 let rows = StateList::from(seed_rows);                 // bulk-seed; .push/.insert/.remove (&mut self) diff by id
 
-Lazy::for_each(rows.clone(), |row| text(row.title))        // reactive sequence in a stack
-List::for_each(rows.clone(), |row| text(row.title))        // platform list: lazy, editable
+scroll(VStack::for_each(rows.clone(), |row| text(row.title))) // virtualized inside scroll
+List::for_each(rows.clone(), |row| text(row.title))           // platform list: lazy, editable
 ```
 
 Note the shape: **`ForEach` is a *collection of views*, not a view.** A container consumes
-it — `Lazy::for_each(data, f)` is the shorthand for `Lazy::vstack(ForEach::new(data, f))`,
-and `List::for_each` is the list-control equivalent. Writing `ForEach::new(..)` where a
+it — `VStack::for_each(data, f)` / `HStack::for_each(data, f)` (virtualized when enclosed
+by a co-axial `scroll` / `scroll_horizontal`, or opt out with `.eager()`), and
+`List::for_each` for the list-control equivalent. Writing `ForEach::new(..)` where a
 view is expected is a trait-bound error, not a runtime surprise.
 
 `List` realizes only the visible window — it handles 100,000 rows, including after a
-programmatic jump. Use it whenever the data is a list of rows; use the `Lazy` stacks when
-you just need a reactive sequence inside your own layout. A **derived** row set (filtered
+programmatic jump. Use it whenever the data is a list of rows; use `VStack::for_each` /
+`HStack::for_each` (inside `scroll` / `scroll_horizontal` when you want viewport
+virtualization) when you need a reactive sequence inside your own layout. A **derived** row set (filtered
 or sorted from other state) is still a collection: wrap the derived signal in
 `SignalCollection` rather than watching a `Vec`.
 
@@ -205,7 +206,6 @@ their features, `Dialog` and `Snackbar`. Several everyday names live outside it:
 use waterui::Identifiable;                             // the trait the derive implements
 use waterui::widget::condition::when;                  // conditionals
 use waterui::animation::Animation;                     // animation curves
-use waterui::component::lazy::Lazy;                    // reactive stacks over a collection
 use waterui::views::ForEach;                           // the collection itself
 use waterui::gesture::{DragGesture, LongPressGesture, TapGesture};
 use waterui::cursor::CursorStyle;
@@ -668,7 +668,7 @@ let view = tsx!(
 | Symptom | Cause | Fix |
 |---|---|---|
 | UI never updates | `.snapshot()` in a view body | pass the binding |
-| State resets on every keystroke | `watch` rebuilding the subtree | `text!` / signal-taking API / `Lazy::for_each` |
+| State resets on every keystroke | `watch` rebuilding the subtree | `text!` / signal-taking API / `VStack::for_each` |
 | `no function or associated item named 'new'` on `Binding` | `Binding::new` does not exist | `Binding::i32(v)` / `Binding::container(v)` / `Binding::default()` |
 | `cannot find function 'when'` / `cannot find trait 'Identifiable'` on the derive | not in the prelude (the derive is; the trait it implements is not) | `use waterui::widget::condition::when;` / `use waterui::Identifiable;` |
 | Rounded corners look wrong on non-square sizes | `CornerRadius::fraction(r)` scales with the shorter side | `RoundedRectangle::new(points)` for points, or `Capsule` |
@@ -676,8 +676,8 @@ let view = tsx!(
 | `LongPressGesture` constructor mismatch | `new()` takes no args; timeout via `.minimum_duration(Duration)` | `LongPressGesture::new().minimum_duration(Duration::from_millis(500))` |
 | `.is_empty()` missing on a string signal | different name | `.str_is_empty()`, `.str_len()`, `.str_contains(..)` |
 | Wrong binding arrives in a handler | positional `.state()` extraction | first `.state()` → first parameter of that type |
-| Scrolling or list updates are janky | `watch` over a `Vec` | `List::for_each` / `Lazy::for_each` / `SignalCollection` |
-| `ForEach<..>: View is not satisfied` | `ForEach` is a collection, not a view | `Lazy::for_each(..)`, or hand it to a container |
+| Scrolling or list updates are janky | `watch` over a `Vec` | `List::for_each` / `VStack::for_each` / `SignalCollection` |
+| `ForEach<..>: View is not satisfied` | `ForEach` is a collection, not a view | `VStack::for_each(..)`, or hand it to a container |
 | `.title("Inbox")` rejected | navigation titles use `.navigation_title(..)`, `.title()` on `Text` is font style | `.navigation_title("Inbox")` or `NavigationView::new(title, content)` |
 | A test's wait can never fail | query `.wait_for_existence(..)` returns `bool` | wrap it in `assert!` |
 | `use of undeclared crate 'tracing'` | logging is re-exported | `use waterui::log::debug;` then `debug!(..)` |

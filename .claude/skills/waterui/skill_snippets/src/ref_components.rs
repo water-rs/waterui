@@ -981,8 +981,8 @@ pub mod components_block_27 {
     }
 
     use waterui::Identifiable; // the trait the derive expands to is NOT in the prelude
-    use waterui::component::lazy::Lazy;
     use waterui::component::list::{ListDelete, ListMove}; // NOT in the prelude
+    use waterui::layout::scroll::scroll_horizontal;
     use waterui::views::ForEach;
 
     #[derive(Clone, Identifiable)]
@@ -1002,13 +1002,10 @@ pub mod components_block_27 {
         let controller = ScrollController::<usize>::new(0);
 
         // `ForEach` is a `Views` collection, not a `View`: a container consumes it.
-        let _ = {
-            // == Lazy::vstack(ForEach::new(..))
-            Lazy::for_each(records.clone(), |r| text(r.title))
-        };
+        let _ = { scroll(VStack::for_each(records.clone(), |r| text(r.title))) };
         let _ = {
             // record_card: fn(Record) -> impl View
-            Lazy::hstack(ForEach::new(records.clone(), record_card))
+            scroll_horizontal(HStack::for_each(records.clone(), record_card))
         };
 
         let _ = {
@@ -1026,9 +1023,10 @@ pub mod components_block_27 {
                 .scroll_controller(&controller)
         };
 
-        // Prose: `Lazy` spaced stacks and `List::new` over pre-built rows.
-        let _ = Lazy::vstack_spaced(8.0, ForEach::new(records.clone(), record_card));
-        let _ = Lazy::hstack_spaced(8.0, ForEach::new(records.clone(), record_card));
+        // Prose: spaced / eager stacks and `List::new` over pre-built rows.
+        let _ = scroll(VStack::for_each(records.clone(), record_card).spacing(8.0));
+        let _ = scroll_horizontal(HStack::for_each(records.clone(), record_card).spacing(8.0));
+        let _ = scroll(VStack::for_each(records.clone(), record_card).eager());
         let _ = List::new(ForEach::new(records, |r: Record| text(r.title)));
     }
 }

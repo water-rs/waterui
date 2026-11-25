@@ -13,11 +13,45 @@
 /// The macro is private to this crate (no `#[macro_export]`) and is
 /// invoked at the call site in each stack module.
 macro_rules! impl_stack_for_each {
+    ($Stack:ident, $Layout:ident, $virtualize_axes:expr) => {
+        impl<C, F, V> $Stack<ForEach<C, F, V>>
+        where
+            C: Collection + Clone,
+            C::Item: Clone,
+            F: 'static + Fn(C::Item) -> V,
+            V: View,
+        {
+            /// Creates the stack by iterating over a collection and generating
+            /// views.
+            ///
+            /// Rows take their identity from the collection: an array or static
+            /// slice identifies each row by its index, and a reactive `List` of
+            /// `Identifiable` items by each item's id. Inside a co-axial
+            /// [`ScrollView`](crate::scroll::ScrollView), rows virtualize along
+            /// the stack's axis unless [`eager`](Self::eager) is called.
+            pub fn for_each(collection: C, generator: F) -> Self {
+                Self {
+                    layout: $Layout::default(),
+                    contents: ForEach::new(collection, generator),
+                    virtualize_axes: $virtualize_axes,
+                }
+            }
+
+            /// Opts out of viewport virtualization and materializes every item
+            /// eagerly even when enclosed by a co-axial
+            /// [`ScrollView`](crate::scroll::ScrollView).
+            #[must_use]
+            pub const fn eager(mut self) -> Self {
+                self.virtualize_axes = None;
+                self
+            }
+        }
+    };
     ($Stack:ident, $Layout:ident) => {
         impl<C, F, V> $Stack<ForEach<C, F, V>>
         where
-            C: Collection,
-            C::Item: Identifiable + Clone,
+            C: Collection + Clone,
+            C::Item: Clone,
             F: 'static + Fn(C::Item) -> V,
             V: View,
         {
@@ -46,6 +80,7 @@ pub use zstack::*;
 pub use waterui_core::layout::{Alignment, HorizontalAlignment, VerticalAlignment};
 
 use crate::Layout;
+use crate::scroll::Axis as ScrollAxis;
 use nami::Computed;
 use waterui_core::layout::StretchAxis;
 
@@ -208,4 +243,151 @@ pub fn lazy_stack_axis(layout: &dyn Layout) -> Option<LazyStackAxis> {
         });
     }
     None
+}
+
+/// Resolves a layout to the virtualized stack axis only when `virtualize_axes`
+/// permits virtualization along that stack's axis.
+#[must_use]
+pub fn lazy_stack_axis_for(
+    layout: &dyn Layout,
+    virtualize_axes: Option<ScrollAxis>,
+) -> Option<LazyStackAxis> {
+    let virtualize_axes = virtualize_axes?;
+    let axis = lazy_stack_axis(layout)?;
+    let allowed = match axis {
+        LazyStackAxis::Vertical { .. } => virtualize_axes.allows_vertical(),
+        LazyStackAxis::Horizontal { .. } => virtualize_axes.allows_horizontal(),
+    };
+    allowed.then_some(axis)
+}
+
+/// Projects a sampled lazy-stack item's stretch claim onto the stack's cross
+/// axis so an enclosing [`ScrollView`](crate::scroll::ScrollView) preserves
+/// cross-axis filling without stretching along the scrolling main axis.
+#[must_use]
+pub const fn lazy_stack_cross_stretch(axis: Axis, item_stretch: StretchAxis) -> StretchAxis {
+    match axis {
+        Axis::Vertical => {
+            if matches!(
+                item_stretch,
+                StretchAxis::Horizontal | StretchAxis::Both | StretchAxis::CrossAxis
+            ) {
+                StretchAxis::Horizontal
+            } else {
+                StretchAxis::None
+            }
+        }
+        Axis::Horizontal => {
+            if matches!(
+                item_stretch,
+                StretchAxis::Vertical | StretchAxis::Both | StretchAxis::CrossAxis
+            ) {
+                StretchAxis::Vertical
+            } else {
+                StretchAxis::None
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scroll_axis_intersection_matches_shared_axes() {
+        assert_eq!(
+            ScrollAxis::Vertical.intersect(ScrollAxis::Vertical),
+            Some(ScrollAxis::Vertical)
+        );
+        assert_eq!(
+            ScrollAxis::Horizontal.intersect(ScrollAxis::Horizontal),
+            Some(ScrollAxis::Horizontal)
+        );
+        assert_eq!(
+            ScrollAxis::All.intersect(ScrollAxis::Vertical),
+            Some(ScrollAxis::Vertical)
+        );
+        assert_eq!(
+            ScrollAxis::All.intersect(ScrollAxis::Horizontal),
+            Some(ScrollAxis::Horizontal)
+        );
+        assert_eq!(
+            ScrollAxis::All.intersect(ScrollAxis::All),
+            Some(ScrollAxis::All)
+        );
+        assert_eq!(ScrollAxis::Vertical.intersect(ScrollAxis::Horizontal), None);
+        assert_eq!(ScrollAxis::Horizontal.intersect(ScrollAxis::Vertical), None);
+    }
+
+    #[test]
+    fn lazy_stack_axis_for_gates_by_virtualize_axes() {
+        let vstack = VStackLayout::default();
+        let hstack = HStackLayout::default();
+        let zstack = ZStackLayout::default();
+
+        assert!(matches!(
+            lazy_stack_axis_for(&vstack, Some(ScrollAxis::Vertical)),
+            Some(LazyStackAxis::Vertical { .. })
+        ));
+        assert!(matches!(
+            lazy_stack_axis_for(&vstack, Some(ScrollAxis::All)),
+            Some(LazyStackAxis::Vertical { .. })
+        ));
+        assert!(lazy_stack_axis_for(&vstack, Some(ScrollAxis::Horizontal)).is_none());
+        assert!(lazy_stack_axis_for(&vstack, None).is_none());
+
+        assert!(matches!(
+            lazy_stack_axis_for(&hstack, Some(ScrollAxis::Horizontal)),
+            Some(LazyStackAxis::Horizontal { .. })
+        ));
+        assert!(matches!(
+            lazy_stack_axis_for(&hstack, Some(ScrollAxis::All)),
+            Some(LazyStackAxis::Horizontal { .. })
+        ));
+        assert!(lazy_stack_axis_for(&hstack, Some(ScrollAxis::Vertical)).is_none());
+        assert!(lazy_stack_axis_for(&hstack, None).is_none());
+
+        assert!(lazy_stack_axis_for(&zstack, Some(ScrollAxis::All)).is_none());
+    }
+
+    #[test]
+    fn lazy_stack_cross_stretch_projects_only_cross_axis() {
+        assert_eq!(
+            lazy_stack_cross_stretch(Axis::Vertical, StretchAxis::Horizontal),
+            StretchAxis::Horizontal
+        );
+        assert_eq!(
+            lazy_stack_cross_stretch(Axis::Vertical, StretchAxis::Both),
+            StretchAxis::Horizontal
+        );
+        assert_eq!(
+            lazy_stack_cross_stretch(Axis::Vertical, StretchAxis::CrossAxis),
+            StretchAxis::Horizontal
+        );
+        assert_eq!(
+            lazy_stack_cross_stretch(Axis::Vertical, StretchAxis::Vertical),
+            StretchAxis::None
+        );
+        assert_eq!(
+            lazy_stack_cross_stretch(Axis::Vertical, StretchAxis::MainAxis),
+            StretchAxis::None
+        );
+        assert_eq!(
+            lazy_stack_cross_stretch(Axis::Horizontal, StretchAxis::Vertical),
+            StretchAxis::Vertical
+        );
+        assert_eq!(
+            lazy_stack_cross_stretch(Axis::Horizontal, StretchAxis::Both),
+            StretchAxis::Vertical
+        );
+        assert_eq!(
+            lazy_stack_cross_stretch(Axis::Horizontal, StretchAxis::CrossAxis),
+            StretchAxis::Vertical
+        );
+        assert_eq!(
+            lazy_stack_cross_stretch(Axis::Horizontal, StretchAxis::Horizontal),
+            StretchAxis::None
+        );
+    }
 }

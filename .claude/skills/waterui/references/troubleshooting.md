@@ -33,10 +33,10 @@ value is fine — the defect is specifically `.snapshot()` on a signal.)
 
 **Typed input resets, or a control loses focus on every keystroke.** Something above it is a
 `watch` that rebuilds the subtree. Replace it — reactive text with `text!`, a reactive
-property by passing the signal, a dynamic set of views with `Lazy::for_each` / `List::for_each`.
+property by passing the signal, a dynamic set of views with `VStack::for_each` / `List::for_each`.
 
 **A list re-renders entirely when one row changes.** The collection is behind a `watch` over
-a `Vec` instead of a `Lazy::for_each` / `List::for_each` over an `Identifiable` collection.
+a `Vec` instead of a `VStack::for_each` / `List::for_each` over an `Identifiable` collection.
 For a *derived* row set (filtering, sorting), wrap the signal in `SignalCollection` rather
 than reaching for `watch`.
 
@@ -119,7 +119,7 @@ Use `app.pump_for(duration)`.
 | ``can't compare `Row` with `Row` `` on `replace` or `SignalCollection` | the diff compares surviving rows | `#[derive(Clone, PartialEq, Identifiable)]` |
 | `expected 'Binding<T>', found '&Binding<T>'` (or the reverse) | two-way controls borrow, modifiers own | controls take `&binding`; modifiers take `binding.clone()` |
 | `cannot find macro 'text'` | macro not imported | `use waterui::prelude::*;` then bare `text!` — never `waterui::text!` (same rule for `include_markdown!`); `shader!` is not in the prelude: `use waterui::graphics::shader;`, then bare `shader!` |
-| `` `ForEach<..>` is not a WaterUI view `` (or "expected an `FnOnce()` closure") | `ForEach` is a `Views` collection, not a view | `Lazy::for_each(data, f)`, `VStack::for_each(data, f)`, or `List::for_each` |
+| `` `ForEach<..>` is not a WaterUI view `` (or "expected an `FnOnce()` closure") | `ForEach` is a `Views` collection, not a view | `VStack::for_each(data, f)`, `HStack::for_each(data, f)`, or `List::for_each` |
 | `.title("Inbox")` — no matching method or wrong arg count | navigation titles use `.navigation_title(..)` (`.title()` on `Text` is font style) | use `.navigation_title("Inbox")` or `NavigationView::new(title, content)` |
 | `borrowed data escapes outside of function` on a view helper | views are `'static` | take `&'static str` / `Str` / `impl IntoText`; a helper that only *reads* a `&T` during construction can return `impl View + use<>` |
 | `no method named 'map'` on a signal (outside the prelude) | `SignalExt` not in scope | `use waterui::reactive::SignalExt;` |

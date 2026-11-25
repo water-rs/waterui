@@ -1192,8 +1192,7 @@ mod uikit_surface {
     /// notification — it must record and deliver at the next safe
     /// boundary, never collide with the in-flight borrow (`#319`).
     pub fn reentrant_container_remove_applies_at_boundary() {
-        use waterui::component::lazy::Lazy;
-        use waterui::views::ForEach;
+        use waterui::prelude::{VStack, scroll};
 
         let env = crate::resolve::env();
         let fired = Rc::new(Cell::new(false));
@@ -1211,7 +1210,7 @@ mod uikit_surface {
                 tall: false,
             },
         ]);
-        let container = Lazy::vstack(ForEach::new(items.clone(), {
+        let container = scroll(VStack::for_each(items.clone(), {
             move |row: ProbeRow| {
                 if !fired.replace(true) {
                     let _ = items.clone().remove(0);
