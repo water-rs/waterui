@@ -1,102 +1,65 @@
 //! Gradient Example - Demonstrates `WaterUI`'s gradient system
 //!
 //! This example showcases the gradient views:
-//! - A mesh gradient whose colours follow a signal
+//! - A mesh gradient animated with a repeating hue rotation
 //! - An animated mesh gradient driven by the canvas clock
 //! - A GPU flowing shader gradient
 //! - Linear, radial, angular gradients
 //! - Mesh gradients with per-vertex colors
 //! - Shape fills with gradients
 
+use waterui::animation::{Animation, Repeat};
 use waterui::app::{App, Windows};
+use waterui::color::Working;
 use waterui::color::working::from_linear_srgb;
+use waterui::layout::UnitPoint;
 use waterui::prelude::*;
 use waterui::preview;
-use waterui::shape::{Circle, RoundedRectangle};
-use waterui::task::sleep;
+use waterui::shape::{Circle, CornerRadius, RoundedRectangle};
 
 use core::time::Duration;
 
 /// A colour from linear sRGB components. Components above 1.0 are brighter
 /// than SDR white and need an HDR display to show.
-fn color(r: f32, g: f32, b: f32) -> WorkingColor {
-    from_linear_srgb([r, g, b], 1.0)
+fn color(r: f32, g: f32, b: f32) -> Color {
+    Color::new(Working(from_linear_srgb([r, g, b], 1.0)))
 }
 
-/// Computes animated mesh colors based on elapsed time.
-/// Uses sine waves with different phases and frequencies for a dreamy fluid effect.
-fn compute_animated_colors(time: f32) -> [WorkingColor; 9] {
-    // Base palette - deep blues, purples, teals
-    let base_colors: [[f32; 3]; 9] = [
-        [0.1, 0.1, 0.3],   // Top-left: dark blue
-        [0.2, 0.1, 0.4],   // Top-center: purple
-        [0.3, 0.1, 0.3],   // Top-right: magenta
-        [0.1, 0.2, 0.4],   // Mid-left: blue
-        [0.2, 0.3, 0.5],   // Center: lighter blue
-        [0.3, 0.2, 0.4],   // Mid-right: purple
-        [0.05, 0.15, 0.3], // Bottom-left: dark teal
-        [0.1, 0.2, 0.35],  // Bottom-center: blue
-        [0.15, 0.1, 0.25], // Bottom-right: dark purple
-    ];
-
-    let mut colors = [WorkingColor::BLACK; 9];
-
-    for (i, base) in base_colors.iter().enumerate() {
-        // Each vertex has unique phase offsets for organic movement
-        let index = u8::try_from(i).expect("the mesh gradient has 9 vertices");
-        let phase = f32::from(index) * 0.7;
-        let x = f32::from(index % 3);
-        let y = f32::from(index / 3);
-
-        // Multiple sine waves at different frequencies for complex motion
-        let wave1 = time.mul_add(0.5, phase).sin() * 0.15;
-        let wave2 = x.mul_add(0.5, time * 0.3).sin() * 0.1;
-        let wave3 = y.mul_add(0.8, time * 0.7).cos() * 0.08;
-
-        // Apply waves to each color channel with different phases
-        colors[i] = color(
-            wave2.mul_add(0.5, base[0] + wave1).clamp(0.0, 1.0),
-            wave3.mul_add(0.5, base[1] + wave2).clamp(0.0, 1.0),
-            wave1.mul_add(0.5, base[2] + wave3).clamp(0.0, 1.0),
-        );
-    }
-
-    colors
+/// Base 3×3 mesh gradient palette (deep blues, purples, teals).
+fn initial_mesh_colors() -> [Color; 9] {
+    [
+        color(0.1, 0.1, 0.3),   // Top-left: dark blue
+        color(0.2, 0.1, 0.4),   // Top-center: purple
+        color(0.3, 0.1, 0.3),   // Top-right: magenta
+        color(0.1, 0.2, 0.4),   // Mid-left: blue
+        color(0.2, 0.3, 0.5),   // Center: lighter blue
+        color(0.3, 0.2, 0.4),   // Mid-right: purple
+        color(0.05, 0.15, 0.3), // Bottom-left: dark teal
+        color(0.1, 0.2, 0.35),  // Bottom-center: blue
+        color(0.15, 0.1, 0.25), // Bottom-right: dark purple
+    ]
 }
 
-#[expect(
-    clippy::future_not_send,
-    reason = "UI animation task runs on the main thread"
-)]
-async fn animate_mesh_colors(colors: Binding<[WorkingColor; 9]>) {
-    // `std::time::Instant` panics on wasm32-unknown-unknown; web-time is the
-    // same clock natively and `performance.now()` in a browser.
-    let start = web_time::Instant::now();
-    loop {
-        let elapsed = start.elapsed().as_secs_f32();
-        colors.set(compute_animated_colors(elapsed));
-        sleep(Duration::from_millis(16)).await;
-    }
-}
-
-/// Demo: mesh gradient whose colours follow a signal
+/// Demo: mesh gradient whose hue cycles under a repeating `Animation`
 fn animated_background_section() -> impl View {
-    // Create binding for animated colors
-    let colors: Binding<[WorkingColor; 9]> = Binding::container(compute_animated_colors(0.0));
+    let active = Binding::container(false);
+    let hue = active.select(180.0_f32, 0.0_f32).with(
+        Animation::ease_in_out(Duration::from_secs(4))
+            .repeat(Repeat::Forever { autoreverse: true }),
+    );
 
     vstack((
-        text("Animated Mesh Gradient").size(20.0),
-        "Colours follow a signal; each change updates the paint in place",
-        // The animated mesh gradient
+        text("Animated Mesh Gradient").font_size(20.0),
+        "Colors flow under a repeating animation without a manual clock loop",
         zstack((
-            // Background: MeshGradient accepts Signal directly!
-            MeshGradient::new(3, 3, colors.clone()).size(300.0, 200.0),
-            // Overlay content
+            MeshGradient::new(3, 3, initial_mesh_colors())
+                .size(300.0, 200.0)
+                .hue_rotation(hue),
             vstack((
                 text("Fluid Background")
-                    .size(24.0)
+                    .font_size(24.0)
                     .foreground(Color::srgb(255, 255, 255)),
-                text("Colors flow over time").foreground(Color::srgb(200, 200, 255)),
+                text("Colors flow over time").foreground(Color::srgb(200, 220, 255)),
             ))
             .padding(),
         ))
@@ -104,7 +67,7 @@ fn animated_background_section() -> impl View {
     ))
     .spacing(12.0)
     .padding()
-    .task(animate_mesh_colors(colors))
+    .on_appear(move || active.set(true))
 }
 
 /// Demo: mesh gradient animated by the canvas clock (no per-frame CPU updates)
@@ -118,13 +81,13 @@ fn gpu_animated_mesh_gradient_section() -> impl View {
     });
 
     vstack((
-        text("GPU Animated Mesh Gradient").size(20.0),
+        text("GPU Animated Mesh Gradient").font_size(20.0),
         "Speed, warp and palette follow a signal",
         zstack((
             AnimatedMeshGradient::new(config).size(300.0, 200.0),
             vstack((
                 text("Mesh Gradient")
-                    .size(24.0)
+                    .font_size(24.0)
                     .foreground(Color::srgb(255, 255, 255)),
                 text("No per-frame CPU updates").foreground(Color::srgb(200, 220, 255)),
             ))
@@ -149,7 +112,7 @@ fn animated_mesh_gradient_preview() -> impl View {
 /// Demo: GPU flowing shader gradient
 fn flowing_gradient_section() -> impl View {
     vstack((
-        text("Flowing Gradient").size(20.0),
+        text("Flowing Gradient").font_size(20.0),
         "Noise-driven colour bands drifting on the GPU",
         FlowingGradient::new().size(300.0, 200.0),
     ))
@@ -160,18 +123,18 @@ fn flowing_gradient_section() -> impl View {
 /// Demo: Shape filled with gradient
 fn shape_fill_section() -> impl View {
     vstack((
-        text("Shape + Gradient Fill").size(20.0),
+        text("Shape + Gradient Fill").font_size(20.0),
         "Gradients clipped to shapes on the GPU",
         hstack((
             // Linear gradient clipped to rounded rectangle
             vstack((
                 Gradient::linear(
-                    vec![(0.0, color(1.0, 0.3, 0.5)), (1.0, color(0.3, 0.5, 1.0))],
-                    [0.0, 0.0],
-                    [1.0, 1.0],
+                    [color(1.0, 0.3, 0.5), color(0.3, 0.5, 1.0)],
+                    UnitPoint::TOP_LEADING,
+                    UnitPoint::BOTTOM_TRAILING,
                 )
                 .size(100.0, 100.0)
-                .clip(RoundedRectangle::new(0.18)),
+                .clip(RoundedRectangle::new(CornerRadius::fraction(0.18))),
                 "Linear + Rounded",
             )),
             // Radial gradient clipped to circle
@@ -182,7 +145,7 @@ fn shape_fill_section() -> impl View {
                         (0.5, color(1.0, 0.6, 0.2)),
                         (1.0, color(0.6, 0.2, 0.1)),
                     ],
-                    [0.5, 0.5],
+                    UnitPoint::CENTER,
                     0.0,
                     0.7,
                 )
@@ -192,19 +155,18 @@ fn shape_fill_section() -> impl View {
             )),
             // Mesh gradient clipped to rounded rectangle
             vstack((
-                Gradient::mesh(
+                MeshGradient::new(
                     2,
                     2,
-                    vec![
-                        ([0.0, 0.0], color(0.0, 0.8, 0.4)),
-                        ([1.0, 0.0], color(0.0, 0.4, 0.8)),
-                        ([0.0, 1.0], color(0.8, 0.4, 0.0)),
-                        ([1.0, 1.0], color(0.8, 0.0, 0.4)),
+                    [
+                        color(0.0, 0.8, 0.4),
+                        color(0.0, 0.4, 0.8),
+                        color(0.8, 0.4, 0.0),
+                        color(0.8, 0.0, 0.4),
                     ],
-                    true,
                 )
                 .size(100.0, 100.0)
-                .clip(RoundedRectangle::new(0.22)),
+                .clip(RoundedRectangle::new(CornerRadius::fraction(0.22))),
                 "Mesh + Rounded",
             )),
         ))
@@ -216,7 +178,7 @@ fn shape_fill_section() -> impl View {
 /// Demo: Linear gradient - horizontal, vertical, and diagonal
 fn linear_gradient_section() -> impl View {
     vstack((
-        text("Linear Gradients").size(20.0),
+        text("Linear Gradients").font_size(20.0),
         "Gradients along a line from start to end point",
         hstack((
             // Horizontal: left to right
@@ -227,8 +189,8 @@ fn linear_gradient_section() -> impl View {
                         (0.5, color(1.0, 1.0, 0.0)), // Yellow
                         (1.0, color(0.0, 1.0, 0.0)), // Green
                     ],
-                    [0.0, 0.5], // Start: left center
-                    [1.0, 0.5], // End: right center
+                    UnitPoint::LEADING,
+                    UnitPoint::TRAILING,
                 )
                 .size(120.0, 80.0),
                 "Horizontal",
@@ -236,12 +198,12 @@ fn linear_gradient_section() -> impl View {
             // Vertical: top to bottom
             vstack((
                 Gradient::linear(
-                    vec![
-                        (0.0, color(0.0, 0.5, 1.0)), // Sky blue
-                        (1.0, color(0.0, 0.0, 0.5)), // Dark blue
+                    [
+                        color(0.0, 0.5, 1.0), // Sky blue
+                        color(0.0, 0.0, 0.5), // Dark blue
                     ],
-                    [0.5, 0.0], // Start: top center
-                    [0.5, 1.0], // End: bottom center
+                    UnitPoint::TOP,
+                    UnitPoint::BOTTOM,
                 )
                 .size(120.0, 80.0),
                 "Vertical",
@@ -249,12 +211,12 @@ fn linear_gradient_section() -> impl View {
             // Diagonal
             vstack((
                 Gradient::linear(
-                    vec![
-                        (0.0, color(1.0, 0.0, 1.0)), // Magenta
-                        (1.0, color(0.0, 1.0, 1.0)), // Cyan
+                    [
+                        color(1.0, 0.0, 1.0), // Magenta
+                        color(0.0, 1.0, 1.0), // Cyan
                     ],
-                    [0.0, 0.0], // Start: top-left
-                    [1.0, 1.0], // End: bottom-right
+                    UnitPoint::TOP_LEADING,
+                    UnitPoint::BOTTOM_TRAILING,
                 )
                 .size(120.0, 80.0),
                 "Diagonal",
@@ -268,7 +230,7 @@ fn linear_gradient_section() -> impl View {
 /// Demo: Radial gradient - expanding from center
 fn radial_gradient_section() -> impl View {
     vstack((
-        text("Radial Gradients").size(20.0),
+        text("Radial Gradients").font_size(20.0),
         "Gradients expanding outward from a center point",
         hstack((
             // Centered radial
@@ -279,9 +241,9 @@ fn radial_gradient_section() -> impl View {
                         (0.5, color(1.0, 0.8, 0.0)), // Yellow
                         (1.0, color(1.0, 0.3, 0.0)), // Orange-red
                     ],
-                    [0.5, 0.5], // Center
-                    0.0,        // Start radius (point)
-                    0.7,        // End radius
+                    UnitPoint::CENTER,
+                    0.0, // Start radius (point)
+                    0.7, // End radius
                 )
                 .size(120.0, 120.0),
                 "Centered",
@@ -289,11 +251,11 @@ fn radial_gradient_section() -> impl View {
             // Off-center radial
             vstack((
                 Gradient::radial(
-                    vec![
-                        (0.0, color(1.0, 1.0, 1.0)), // White
-                        (1.0, color(0.2, 0.4, 1.0)), // Blue
+                    [
+                        color(1.0, 1.0, 1.0), // White
+                        color(0.2, 0.4, 1.0), // Blue
                     ],
-                    [0.3, 0.3], // Off-center
+                    UnitPoint::new(0.3, 0.3), // Off-center
                     0.0,
                     0.8,
                 )
@@ -309,42 +271,40 @@ fn radial_gradient_section() -> impl View {
 /// Demo: Mesh gradient - bilinear interpolation between vertex colors
 fn mesh_gradient_section() -> impl View {
     vstack((
-        text("Static Mesh Gradients").size(20.0),
+        text("Static Mesh Gradients").font_size(20.0),
         "Gradients with per-vertex colors interpolated across a grid",
         hstack((
             // 2x2 mesh (4 corners)
             vstack((
-                Gradient::mesh(
+                MeshGradient::new(
                     2,
                     2,
-                    vec![
-                        ([0.0, 0.0], color(1.0, 0.0, 0.0)), // Top-left: Red
-                        ([1.0, 0.0], color(0.0, 1.0, 0.0)), // Top-right: Green
-                        ([0.0, 1.0], color(0.0, 0.0, 1.0)), // Bottom-left: Blue
-                        ([1.0, 1.0], color(1.0, 1.0, 0.0)), // Bottom-right: Yellow
+                    [
+                        color(1.0, 0.0, 0.0), // Top-left: Red
+                        color(0.0, 1.0, 0.0), // Top-right: Green
+                        color(0.0, 0.0, 1.0), // Bottom-left: Blue
+                        color(1.0, 1.0, 0.0), // Bottom-right: Yellow
                     ],
-                    true,
                 )
                 .size(120.0, 120.0),
                 "2x2 Corners",
             )),
             // 3x3 mesh with center highlight
             vstack((
-                Gradient::mesh(
+                MeshGradient::new(
                     3,
                     3,
-                    vec![
-                        ([0.0, 0.0], color(0.2, 0.2, 0.4)),
-                        ([0.5, 0.0], color(0.3, 0.3, 0.5)),
-                        ([1.0, 0.0], color(0.2, 0.2, 0.4)),
-                        ([0.0, 0.5], color(0.3, 0.3, 0.5)),
-                        ([0.5, 0.5], color(1.0, 1.0, 1.0)), // Bright center
-                        ([1.0, 0.5], color(0.3, 0.3, 0.5)),
-                        ([0.0, 1.0], color(0.2, 0.2, 0.4)),
-                        ([0.5, 1.0], color(0.3, 0.3, 0.5)),
-                        ([1.0, 1.0], color(0.2, 0.2, 0.4)),
+                    [
+                        color(0.2, 0.2, 0.4),
+                        color(0.3, 0.3, 0.5),
+                        color(0.2, 0.2, 0.4),
+                        color(0.3, 0.3, 0.5),
+                        color(1.0, 1.0, 1.0), // Bright center
+                        color(0.3, 0.3, 0.5),
+                        color(0.2, 0.2, 0.4),
+                        color(0.3, 0.3, 0.5),
+                        color(0.2, 0.2, 0.4),
                     ],
-                    true,
                 )
                 .size(120.0, 120.0),
                 "3x3 Highlight",
@@ -358,17 +318,17 @@ fn mesh_gradient_section() -> impl View {
 /// Demo: HDR gradients - extended dynamic range colors
 fn hdr_gradient_section() -> impl View {
     vstack((
-        text("HDR Gradients").size(20.0),
+        text("HDR Gradients").font_size(20.0),
         "Extended brightness beyond SDR (requires HDR display)",
         hstack((
             // SDR comparison (baseline)
             vstack((
                 Gradient::radial(
-                    vec![
-                        (0.0, color(1.0, 1.0, 1.0)), // SDR white
-                        (1.0, color(0.1, 0.1, 0.2)), // Dark edge
+                    [
+                        color(1.0, 1.0, 1.0), // SDR white
+                        color(0.1, 0.1, 0.2), // Dark edge
                     ],
-                    [0.5, 0.5],
+                    UnitPoint::CENTER,
                     0.0,
                     0.7,
                 )
@@ -378,11 +338,11 @@ fn hdr_gradient_section() -> impl View {
             // HDR bright white (1.5x brightness)
             vstack((
                 Gradient::radial(
-                    vec![
-                        (0.0, color(1.5, 1.5, 1.5)), // HDR bright
-                        (1.0, color(0.1, 0.1, 0.2)), // Dark edge
+                    [
+                        color(1.5, 1.5, 1.5), // HDR bright
+                        color(0.1, 0.1, 0.2), // Dark edge
                     ],
-                    [0.5, 0.5],
+                    UnitPoint::CENTER,
                     0.0,
                     0.7,
                 )
@@ -392,11 +352,11 @@ fn hdr_gradient_section() -> impl View {
             // HDR super bright (2x brightness)
             vstack((
                 Gradient::radial(
-                    vec![
-                        (0.0, color(2.0, 2.0, 2.0)), // Very bright HDR
-                        (1.0, color(0.1, 0.1, 0.2)), // Dark edge
+                    [
+                        color(2.0, 2.0, 2.0), // Very bright HDR
+                        color(0.1, 0.1, 0.2), // Dark edge
                     ],
-                    [0.5, 0.5],
+                    UnitPoint::CENTER,
                     0.0,
                     0.7,
                 )
@@ -410,12 +370,12 @@ fn hdr_gradient_section() -> impl View {
             // HDR red highlight
             vstack((
                 Gradient::linear(
-                    vec![
-                        (0.0, color(2.0, 0.3, 0.3)), // Bright HDR red
-                        (1.0, color(0.3, 0.0, 0.0)), // Dark red
+                    [
+                        color(2.0, 0.3, 0.3), // Bright HDR red
+                        color(0.3, 0.0, 0.0), // Dark red
                     ],
-                    [0.0, 0.0],
-                    [1.0, 1.0],
+                    UnitPoint::TOP_LEADING,
+                    UnitPoint::BOTTOM_TRAILING,
                 )
                 .size(120.0, 80.0),
                 "HDR Red",
@@ -423,12 +383,12 @@ fn hdr_gradient_section() -> impl View {
             // HDR green highlight
             vstack((
                 Gradient::linear(
-                    vec![
-                        (0.0, color(0.3, 2.0, 0.3)), // Bright HDR green
-                        (1.0, color(0.0, 0.3, 0.0)), // Dark green
+                    [
+                        color(0.3, 2.0, 0.3), // Bright HDR green
+                        color(0.0, 0.3, 0.0), // Dark green
                     ],
-                    [0.0, 0.0],
-                    [1.0, 1.0],
+                    UnitPoint::TOP_LEADING,
+                    UnitPoint::BOTTOM_TRAILING,
                 )
                 .size(120.0, 80.0),
                 "HDR Green",
@@ -436,12 +396,12 @@ fn hdr_gradient_section() -> impl View {
             // HDR blue highlight
             vstack((
                 Gradient::linear(
-                    vec![
-                        (0.0, color(0.3, 0.3, 2.0)), // Bright HDR blue
-                        (1.0, color(0.0, 0.0, 0.3)), // Dark blue
+                    [
+                        color(0.3, 0.3, 2.0), // Bright HDR blue
+                        color(0.0, 0.0, 0.3), // Dark blue
                     ],
-                    [0.0, 0.0],
-                    [1.0, 1.0],
+                    UnitPoint::TOP_LEADING,
+                    UnitPoint::BOTTOM_TRAILING,
                 )
                 .size(120.0, 80.0),
                 "HDR Blue",
@@ -458,7 +418,7 @@ pub fn demo() -> impl View {
     scroll(
         vstack((
             // Header
-            text("WaterUI Gradient Examples").size(28.0),
+            text("WaterUI Gradient Examples").font_size(28.0),
             "GPU-rendered gradients with animation support",
             Divider,
             vstack((
@@ -495,5 +455,5 @@ pub fn demo() -> impl View {
 
 /// Builds the gradient example app around [`demo`].
 pub fn app(env: Environment) -> App<impl Windows> {
-    App::new(demo, env)
+    App::new(env).window(Window::new("", demo))
 }

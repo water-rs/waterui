@@ -538,14 +538,14 @@ pub(crate) async fn build_rust_lib_with_links(
         .with_final_rustc_arg("-Clink-arg=-Wl,-rpath,@executable_path/Frameworks")
         .with_final_rustc_arg("-Clink-arg=-lc++");
 
-    // VideoToolbox serves the media codec chain (`waterkit-codec`'s hardware
-    // decode); an app without the media capability never loads it, so it
+    // VideoToolbox serves the video codec chain (`waterkit-codec`'s hardware
+    // decode); an app without the video capability never loads it, so it
     // joins the link line only when the resolved graph says so — the same
-    // predicate that selects the `media` capability surface.
+    // predicate that selects the `video` capability surface.
     if crate::project_model::assets::capability_enabled(
         project,
         &project.apple_crate_path().join("Cargo.toml"),
-        "media",
+        "video",
         &triple,
     )
     .await?
@@ -885,6 +885,11 @@ pub async fn package_apple(
         .ok_or_else(|| eyre::eyre!("Platform {platform:?} is not an Apple platform"))?;
     let (_, deployment_target) = apple_deployment_target(project, platform).await?;
 
+    let app_symbols = built.app_symbols().await?;
+    if !widgets::declared_widgets(&app_symbols)?.is_empty() {
+        apple_declarations.add_widget_app_group(&widgets::widget_app_group_id(&bundle_id))?;
+    }
+
     // Assets are staged into a scratch directory; the bundle copies them out
     // from there (`waterui_assets`, `fonts`) and `actool` compiles the asset
     // catalog (`WaterUIAssets.xcassets`).
@@ -894,7 +899,7 @@ pub async fn package_apple(
         platform,
         &staging_dir,
         &project.apple_crate_path().join("Cargo.toml"),
-        &built.app_symbols().await?,
+        &app_symbols,
         options.uses_dev_server(),
         &built.features,
     )

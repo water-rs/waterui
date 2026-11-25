@@ -15,10 +15,10 @@ use waterui::app::{App, Windows};
 use waterui::graphics::gpu::bytemuck;
 use waterui::graphics::{Context, Frame, GpuContent, GpuView};
 use waterui::prelude::slider::slider;
-use waterui::prelude::theme_color::Surface;
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::task::spawn_local;
+use waterui::theme::color::Surface;
 
 #[state]
 #[derive(Clone)]
@@ -235,7 +235,7 @@ impl GpuContent for SyntheticCameraPreviewContent {
             .clamp(0.0, 1.0);
 
         let mut encoder = frame
-            .device
+            .device()
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Synthetic Camera Preview Encoder"),
             });
@@ -243,7 +243,7 @@ impl GpuContent for SyntheticCameraPreviewContent {
             let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Synthetic Camera Preview Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: frame.view,
+                    view: frame.view(),
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
@@ -262,7 +262,7 @@ impl GpuContent for SyntheticCameraPreviewContent {
                 multiview_mask: None,
             });
         }
-        frame.queue.submit([encoder.finish()]);
+        frame.queue().submit([encoder.finish()]);
     }
 }
 
@@ -579,12 +579,12 @@ impl GpuContent for CameraFilterContent {
                 brightness, saturation, contrast, tint, vignette, 0.0, 0.0, 0.0,
             ];
             frame
-                .queue
+                .queue()
                 .write_buffer(uniform_buffer, 0, bytemuck::cast_slice(&uniforms));
         }
 
         let mut encoder = frame
-            .device
+            .device()
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Camera Filter Encoder"),
             });
@@ -602,12 +602,12 @@ impl GpuContent for CameraFilterContent {
                 .as_ref()
                 .is_none_or(|texture| texture.size() != FrameConverter::upright_size(&camera_frame))
             {
-                self.upright = Some(FrameConverter::create_output(frame.device, &camera_frame));
+                self.upright = Some(FrameConverter::create_output(frame.device(), &camera_frame));
                 self.latest_bind_group = None;
             }
             let upright = self.upright.as_ref().expect("the output was just created");
             converter
-                .encode(frame.device, &mut encoder, &camera_frame, upright)
+                .encode(frame.device(), &mut encoder, &camera_frame, upright)
                 .expect("the camera frame converts on the device it was imported into");
         }
 
@@ -619,8 +619,8 @@ impl GpuContent for CameraFilterContent {
         ) && self.latest_bind_group.is_none()
         {
             let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-            self.latest_bind_group =
-                Some(frame.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            self.latest_bind_group = Some(frame.device().create_bind_group(
+                &wgpu::BindGroupDescriptor {
                     label: Some("Camera Filter Bind Group"),
                     layout,
                     entries: &[
@@ -637,14 +637,15 @@ impl GpuContent for CameraFilterContent {
                             resource: uniform_buffer.as_entire_binding(),
                         },
                     ],
-                }));
+                },
+            ));
         }
 
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Camera Filter Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: frame.view,
+                    view: frame.view(),
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
@@ -665,7 +666,7 @@ impl GpuContent for CameraFilterContent {
             }
         }
 
-        frame.queue.submit([encoder.finish()]);
+        frame.queue().submit([encoder.finish()]);
         frame.request_redraw();
     }
 }
@@ -846,5 +847,5 @@ const CAMERA_FILTER_SHADER: CompiledShader =
 
 /// Builds the camera filter lab app around [`demo`].
 pub fn app(env: Environment) -> App<impl Windows> {
-    App::new(demo, env)
+    App::new(env).window(Window::new("", demo))
 }

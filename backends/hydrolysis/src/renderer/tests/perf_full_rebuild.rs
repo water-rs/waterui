@@ -24,7 +24,7 @@ use core::time::Duration;
 use std::time::Instant;
 
 use waterui::reactive::binding;
-use waterui::shape::{Circle, RoundedRectangle, ShapeExt as _};
+use waterui::shape::{Circle, CornerRadius, RoundedRectangle, ShapeExt as _};
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::{AnyView, Binding, Computed};
 
@@ -60,8 +60,8 @@ fn dense_row(i: usize, with_text: bool) -> AnyView {
     let middle: AnyView = if with_text {
         AnyView::new(
             vstack((
-                text(format!("Item {i}")).size(16.0),
-                text("Subtitle line for visual density").size(13.0),
+                text(format!("Item {i}")).font_size(16.0),
+                text("Subtitle line for visual density").font_size(13.0),
             ))
             .spacing(2.0),
         )
@@ -79,7 +79,7 @@ fn dense_row(i: usize, with_text: bool) -> AnyView {
             Circle.fill(Color::srgb_hex("#3B82F6")).size(36.0, 36.0),
             middle,
             spacer(),
-            RoundedRectangle::new(0.3)
+            RoundedRectangle::new(CornerRadius::fraction(0.3))
                 .fill(Color::srgb_hex("#E5E7EB"))
                 .size(22.0, 22.0),
         ))

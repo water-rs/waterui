@@ -25,8 +25,8 @@
 mod support;
 
 use nami::Binding;
-use nami::collection::SignalCollection;
-use waterui::component::list::{List, ListItem};
+use nami::collection::{SignalCollection, StateList};
+use waterui::component::list::List;
 use waterui::component::table::{col, table};
 use waterui::component::{Link, button, field, label, progress, slider, stepper, toggle};
 use waterui::form::picker::{Picker, PickerItem};
@@ -36,7 +36,7 @@ use waterui::layout::{Divider, ScrollView, Spacer};
 use waterui::navigation::tab::{Tab, Tabs};
 use waterui::navigation::{NavigationLink, NavigationStack, NavigationView};
 use waterui::text::text;
-use waterui::widget::{Accordion, Avatar, Card};
+use waterui::widget::{Avatar, Card, Disclosure};
 use waterui::{AnyView, Str, ViewExt as _};
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::SelfId;
@@ -242,53 +242,40 @@ fn ts_card_is_a_card() {
 }
 
 #[test]
-fn ts_accordion_is_an_accordion() {
+fn ts_disclosure_is_a_disclosure() {
     assert_same(
-        "Accordion",
+        "Disclosure",
         &module(
-            r#"waterui.jsx("Accordion", {
+            r#"waterui.jsx("Disclosure", {
                 content: () => waterui.jsx("Text", { children: "Body" }),
-                children: waterui.jsx("Text", { children: "Header" }),
+                children: "Header",
             })"#,
         ),
-        Accordion::new(
-            vstack(
-                HorizontalAlignment::Leading,
-                vec![AnyView::new(text("Header"))],
-            ),
-            || text("Body"),
-        ),
+        Disclosure::new("Header", || text("Body")),
     );
     let expanded = Binding::container(true);
     assert_same(
-        "Accordion, expanded by a binding",
+        "Disclosure, expanded by a binding",
         &stateful(
             "globalThis.open = waterui.createSignal(true);",
-            r#"waterui.jsx("Accordion", {
+            r#"waterui.jsx("Disclosure", {
                 expanded: globalThis.open,
                 content: () => waterui.jsx("Text", { children: "Body" }),
-                children: waterui.jsx("Text", { children: "Header" }),
+                children: "Header",
             })"#,
         ),
-        Accordion::with_toggle(
-            &expanded,
-            vstack(
-                HorizontalAlignment::Leading,
-                vec![AnyView::new(text("Header"))],
-            ),
-            || text("Body"),
-        ),
+        Disclosure::new("Header", || text("Body")).expanded(&expanded),
     );
 }
 
 #[test]
-fn ts_an_accordion_header_toggles_the_javascript_signal() {
+fn ts_a_disclosure_header_toggles_the_javascript_signal() {
     let module = Module::mount(&stateful(
         "globalThis.open = waterui.createSignal(false);",
-        r#"waterui.jsx("Accordion", {
+        r#"waterui.jsx("Disclosure", {
             expanded: globalThis.open,
             content: () => waterui.jsx("Text", { children: "Body" }),
-            children: waterui.jsx("Text", { children: "Header" }),
+            children: "Header",
         })"#,
     ));
     let mut app = module.app();
@@ -304,7 +291,7 @@ fn ts_an_accordion_header_toggles_the_javascript_signal() {
     assert_eq!(
         module.eval("globalThis.open()"),
         JsValue::Bool(true),
-        "expanding the accordion wrote the JavaScript signal"
+        "expanding the disclosure wrote the JavaScript signal"
     );
     app.query().label("Body").assert_exists();
     app.query()
@@ -392,7 +379,7 @@ fn ts_badge_is_a_badge() {
                 content: () => waterui.jsx("Text", { children: "Inbox" }),
             })"#,
         ),
-        text("Inbox").badge(3),
+        text("Inbox").badge(3_u32),
     );
 }
 
@@ -824,7 +811,7 @@ fn ts_list_is_a_list() {
         module.tree(),
         rust_tree(List::new(ForEach::new(
             SignalCollection::new(rows),
-            |row: SelfId<Str>| ListItem::new(text(row.into_inner())),
+            |row: SelfId<Str>| text(row.into_inner()),
         ))),
         "the JSX list and the Rust list differ"
     );
@@ -930,6 +917,7 @@ fn ts_a_list_of_written_out_rows_is_refused() {
 
 #[test]
 fn ts_table_is_a_table() {
+    let rows = vec![SelfId::new(("Ada", "1815")), SelfId::new(("Alan", "1912"))];
     assert_same(
         "Table",
         &module(
@@ -938,10 +926,17 @@ fn ts_table_is_a_table() {
                 waterui.jsx("Column", { label: "Year", children: ["1815", "1912"] }),
             ] })"#,
         ),
-        table(vec![
-            col("Name", vec![text("Ada"), text("Alan")]),
-            col("Year", vec![text("1815"), text("1912")]),
-        ]),
+        table(
+            rows,
+            (
+                col("Name", |row: &SelfId<(&str, &str)>| {
+                    text((*row).into_inner().0)
+                }),
+                col("Year", |row: &SelfId<(&str, &str)>| {
+                    text((*row).into_inner().1)
+                }),
+            ),
+        ),
     );
 }
 
@@ -1106,7 +1101,7 @@ fn ts_tabs_is_a_tabs() {
                 .collect::<Vec<_>>();
             Tabs::new(
                 &selection,
-                ForEach::new(nami::collection::List::from(ids), move |id: SelfId<Str>| {
+                ForEach::new(StateList::from(ids), move |id: SelfId<Str>| {
                     tabs.get(&id.into_inner())
                         .expect("a keyed tab collection reports a tab for every id")
                         .clone()
@@ -1304,19 +1299,20 @@ fn ts_opacity_is_the_rust_opacity() {
 #[test]
 fn ts_shadow_is_the_rust_shadow() {
     use waterui::graphics::color::Color;
-    use waterui::style::{Shadow, Vector};
+    use waterui::style::Shadow;
     assert_same_pixels(
         "shadow",
         &Module::mount(&module(
             r#"waterui.jsx("Text", { shadow: { radius: 4, y: 2 }, children: "Raised" })"#,
         ))
         .pixels(),
-        &rust_pixels(text("Raised").shadow(Shadow::new(
-            Color::srgb(0, 0, 0),
-            Vector { x: 0.0, y: 2.0 },
-            4.0,
-            waterui::shape::FixedRoundedRectangle::new(0.0),
-        ))),
+        &rust_pixels(
+            text("Raised").shadow(
+                Shadow::splat(4.0)
+                    .color(Color::srgb(0, 0, 0))
+                    .offset(0.0, 2.0),
+            ),
+        ),
     );
 }
 
@@ -1448,7 +1444,7 @@ fn ts_on_tap_gesture_is_the_rust_gesture() {
     assert_same(
         "onTapGesture",
         &module(r#"waterui.jsx("Text", { onTapGesture: () => {}, children: "Tap me" })"#),
-        text("Tap me").on_tap_gesture(|| {}),
+        text("Tap me").on_tap(|| {}),
     );
 }
 

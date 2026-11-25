@@ -9,7 +9,7 @@ GPU and engine rendering primitives for WaterUI applications.
 - **GpuView** - a view driven by a `GpuContent` producer drawing raw wgpu frames
 - **SceneView** - a view whose `SceneContent` records vector scenes into `waterui_graphics::backend::draw::Recorder`
 - **ShaderPaintView** - a view painted by a WGSL fragment shader
-- **Gradients** - `Gradient` (linear, radial, angular, mesh), the signal-driven `MeshGradient`, and the canvas-drawn `AnimatedMeshGradient`, and the GPU-animated `FlowingGradient`
+- **Gradients** - `Gradient` (linear, radial, angular), the signal-driven `MeshGradient`, the canvas-drawn `AnimatedMeshGradient`, and the GPU-animated `FlowingGradient`
 - **OffscreenRenderer** - headless rendering of either kind of content to `OffscreenImage`
 - **Effects** - GPU filter, transition and capture effects applied to arbitrary views
 
@@ -46,11 +46,11 @@ struct Flame;
 
 impl GpuContent for Flame {
     fn setup(&mut self, gpu: &Context<'_>) {
-        // Create pipelines, buffers and bind groups against `gpu.device`.
+        // Create pipelines, buffers and bind groups against `gpu.device()`.
     }
 
     fn render(&mut self, frame: &mut Frame<'_>) {
-        // Encode one frame into `frame.view`, submit to `frame.queue`,
+        // Encode one frame into `frame.view()`, submit to `frame.queue()`,
         // and call `frame.request_redraw()` when the content animates.
     }
 }
@@ -71,7 +71,7 @@ GpuView::new(RenderSide::new())
 ```
 
 Per-view hooks also exist for input (`on_input`), the IME caret
-(`on_ime_caret`), and accessibility (`labeled`, `described`).
+(`on_ime_caret`), and accessibility (`offered_label`, `offered_value`).
 
 ### SceneView - Vector Scenes
 
@@ -110,11 +110,13 @@ let view = ShaderPaintView::new(r#"
         let t = uniforms.time;
         return vec4<f32>(uv.x, uv.y, sin(t), 1.0);
     }
-"#).continuous(true);
+"#)?
+.continuous(true);
 ```
 
-`uniforms.time` and `uniforms.resolution` are injected automatically; extra
-user uniforms follow a signal via `.uniforms(...)`.
+`uniforms.time` and `uniforms.resolution` are injected automatically; up to 64
+scalar `f32` signals bind via `.param(...)` / `.params(...)` and are read in
+WGSL with `shader_param(index)` or `params[...]`.
 
 ## Core Concepts
 

@@ -12,16 +12,15 @@ use mdi::plus;
 use waterui::Identifiable;
 use waterui::app::{App, Windows};
 use waterui::background::Material;
-use waterui::component::list::{List, ListItem, Section};
+use waterui::component::list::{List, Section};
 use waterui::navigation::NavigationToolbarItems;
-use waterui::prelude::theme_color::Foreground;
 use waterui::prelude::*;
-use waterui::reactive::collection::SignalCollection;
-use waterui::shape::{Circle, RoundedRectangle};
+use waterui::shape::{Circle, CornerRadius, RoundedRectangle};
+use waterui::theme::color::Foreground;
 use waterui::views::ForEach;
 use waterui::widget::condition::when;
 use waterui_icons_material_icon as mdi;
-use waterui_icons_material_icon::Svg;
+use waterui_icons_material_icon::Icon;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum SidebarDestination {
@@ -45,7 +44,7 @@ impl SidebarDestination {
         }
     }
 
-    fn icon(self) -> Svg {
+    fn icon(self) -> Icon {
         match self {
             Self::Today => calendar_today(),
             Self::Scheduled => calendar_clock(),
@@ -329,7 +328,7 @@ fn destination_tile(
 
     vstack((
         hstack((
-            dest.icon().tint(Srgb::WHITE).size(20.0, 20.0),
+            dest.icon().foreground(Srgb::WHITE).icon_size(20.0),
             spacer(),
             text!("{count}")
                 .headline()
@@ -343,9 +342,9 @@ fn destination_tile(
     .spacing(4.0)
     .padding_with(10.0)
     .min_height(56.0)
-    .background(signal_color(bg))
+    .background(bg)
     // ~10pt on the tile's shorter side, matching the official app's tiles.
-    .clip(RoundedRectangle::new(0.15))
+    .clip(RoundedRectangle::new(CornerRadius::fraction(0.15)))
     .on_tap(
         move |State(selection): State<Binding<Option<SidebarDestination>>>| {
             selection.set(Some(dest));
@@ -358,8 +357,8 @@ fn destination_tile(
 fn user_list_row(name: &'static str, count: i32, color: Srgb) -> impl View {
     hstack((
         r#format_list_bulleted()
-            .tint(Srgb::WHITE)
-            .size(14.0, 14.0)
+            .foreground(Srgb::WHITE)
+            .icon_size(14.0)
             .padding_with(6.0)
             .background(color)
             .clip(Circle),
@@ -385,7 +384,8 @@ fn detail_view(
     ))
     .background(Material::Regular)
     .navigation_title(dest.title())
-    .searchable(search, "Search reminders")
+    .searchable(search)
+    .search_prompt("Search reminders")
     .navigation_toolbar(NavigationToolbar::new(vec![NavigationToolbarItem::action(
         NavigationToolbarPlacement::PrimaryAction,
         label("").icon(plus()),
@@ -408,7 +408,7 @@ fn content_header(dest: SidebarDestination) -> impl View {
     // The official app shows the list name as a large bold title in the
     // list's accent color, leading-aligned — no date line underneath.
     text(dest.title())
-        .size(32.0)
+        .font_size(32.0)
         .bold(true)
         .foreground(dest.color())
         .max_width(f32::INFINITY)
@@ -443,25 +443,23 @@ fn matching_rows(
 // `row.flagged` is immutable fixture data: the `&'static [ReminderRow]` rows
 // never change, so reading the field in the row builder cannot go stale.
 #[allow(unknown_lints, collection_item_snapshot)]
-fn reminder_item(row: &ReminderRow) -> ListItem<impl View + use<>> {
-    ListItem::new(
-        hstack((
-            circle_outline().size(16.0, 16.0).muted(),
-            vstack((
-                text(row.title).body().foreground(Foreground),
-                row.subtitle
-                    .map(|subtitle| text(subtitle).caption().muted()),
-            ))
-            .spacing(2.0)
-            .leading(),
-            spacer(),
-            when(row.flagged, || {
-                flag().tint(Srgb::from_hex("#F28A34")).size(12.0, 12.0)
-            })
-            .otherwise(|| spacer().width(12.0)),
+fn reminder_item(row: &ReminderRow) -> impl View + use<> {
+    hstack((
+        circle_outline().size(16.0, 16.0).muted(),
+        vstack((
+            text(row.title).body().foreground(Foreground),
+            row.subtitle
+                .map(|subtitle| text(subtitle).caption().muted()),
         ))
-        .padding_with((10.0, 18.0)),
-    )
+        .spacing(2.0)
+        .leading(),
+        spacer(),
+        when(row.flagged, || {
+            flag().foreground(Srgb::from_hex("#F28A34")).icon_size(12.0)
+        })
+        .otherwise(|| spacer().width(12.0)),
+    ))
+    .padding_with((10.0, 18.0))
 }
 
 fn reminder_list(
@@ -482,5 +480,5 @@ fn reminder_list(
 
 /// Builds the reminders example app.
 pub fn app(env: Environment) -> App<impl Windows> {
-    App::new(demo, env)
+    App::new(env).window(Window::new("", demo))
 }

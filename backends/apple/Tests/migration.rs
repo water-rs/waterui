@@ -318,11 +318,11 @@ mod uikit_surface {
         NSIndexPathUIKitAdditions, UILabel, UITableView, UITextBorderStyle,
     };
     use waterui::Str;
-    use waterui::component::list::{List, ListItem};
-    use waterui::prelude::theme_color::{Accent, Foreground};
+    use waterui::component::list::List;
     use waterui::prelude::*;
     use waterui::reactive::binding;
     use waterui::shape::Circle;
+    use waterui::theme::color::{Accent, Foreground};
     use waterui_apple::native_test_support::{
         MAIN_QUEUE_DEADLINE, drain_main_queue, pump_main_until,
     };
@@ -332,7 +332,7 @@ mod uikit_surface {
     use std::cell::Cell;
     use std::rc::Rc;
     use waterui::Identifiable;
-    use waterui::reactive::collection::List as ReactiveList;
+    use waterui::reactive::collection::StateList;
 
     /// `id`-keyed row whose payload flips between a short label and a tall
     /// one — the stable-id replace regression probe.
@@ -347,7 +347,7 @@ mod uikit_surface {
     /// materialization — the reentrant-emission probe for the pending
     /// delivery queue.
     struct ReentrantRow {
-        items: ReactiveList<ProbeRow>,
+        items: StateList<ProbeRow>,
         fired: Rc<Cell<bool>>,
     }
 
@@ -365,7 +365,7 @@ mod uikit_surface {
     /// while its emission is still queued must read the retained
     /// snapshot, never the live source.
     struct RemovingRow {
-        items: ReactiveList<ProbeRow>,
+        items: StateList<ProbeRow>,
         fired: Rc<Cell<bool>>,
     }
 
@@ -422,30 +422,27 @@ mod uikit_surface {
         sender: &'static str,
         subject: &'static str,
         preview: &'static str,
-    ) -> ListItem<impl View> {
-        ListItem::new(Label::new(
-            Str::from(format!("{sender}: {subject}")),
-            move || {
-                hstack((
-                    hstack((Accent.size(8.0, 8.0).clip(Circle),)).size(8.0, 8.0),
-                    vstack((
-                        hstack((
-                            text(sender).subheadline().foreground(Foreground),
-                            spacer(),
-                            text("flag").caption().muted(),
-                        ))
-                        .spacing(6.0),
-                        text(subject).body().foreground(Foreground),
-                        text(preview).caption().muted(),
+    ) -> impl View {
+        Label::new(Str::from(format!("{sender}: {subject}")), move || {
+            hstack((
+                hstack((Accent.size(8.0, 8.0).clip(Circle),)).size(8.0, 8.0),
+                vstack((
+                    hstack((
+                        text(sender).subheadline().foreground(Foreground),
+                        spacer(),
+                        text("flag").caption().muted(),
                     ))
-                    .leading()
-                    .spacing(2.0),
+                    .spacing(6.0),
+                    text(subject).body().foreground(Foreground),
+                    text(preview).caption().muted(),
                 ))
-                .top()
-                .spacing(6.0)
-                .padding_vertical(8.0)
-            },
-        ))
+                .leading()
+                .spacing(2.0),
+            ))
+            .top()
+            .spacing(6.0)
+            .padding_vertical(8.0)
+        })
     }
 
     /// The hosted list: five of the nested-stack rows, the same content
@@ -536,7 +533,7 @@ mod uikit_surface {
 
     /// Compare the actual plain field to the independently hosted `SwiftUI` field.
     pub fn text_field_renders_plain_with_a_real_height() {
-        let value = binding(Str::from("x"));
+        let value = binding::<Str>(Str::from("x"));
         let env = crate::resolve::env();
         let mount = waterui_apple::native_test_support::mount_uikit_in(
             mtm(),
@@ -579,7 +576,7 @@ mod uikit_surface {
             let mount = waterui_apple::native_test_support::mount_uikit_in(
                 mtm(),
                 AnyView::new(List::content((move || {
-                    ListItem::new(Color::srgb(255, 0, 0).height(height))
+                    Color::srgb(255, 0, 0).height(height)
                 },))),
                 &env,
                 cocoa_ui::Rect::new(0.0, 0.0, 402.0, 874.0),
@@ -718,17 +715,16 @@ mod uikit_surface {
     /// mounted leaf must be re-materialized and its measured contract
     /// re-derived, not reused — the `#306` regression.
     pub fn stable_id_payload_replace_remateries_the_row() {
-        let mut items = ReactiveList::from(vec![
+        let mut items = StateList::from(vec![
             ProbeRow { id: 1, tall: false },
             ProbeRow { id: 2, tall: false },
         ]);
         let list = List::for_each(items.clone(), |row: ProbeRow| {
-            let content: AnyView = if row.tall {
+            if row.tall {
                 AnyView::new(text("updated tall row").height(60.0))
             } else {
                 AnyView::new(text("row"))
-            };
-            ListItem::new(content)
+            }
         });
         let env = crate::resolve::env();
         let mount = waterui_apple::native_test_support::mount_uikit_in(
@@ -810,7 +806,7 @@ mod uikit_surface {
     fn mixed_membership_turn_lands_each_contract(
         mount: &waterui_apple::native_test_support::UIKitMount,
         table: &UITableView,
-        items: &mut ReactiveList<ProbeRow>,
+        items: &mut StateList<ProbeRow>,
         first_row: &NSIndexPath,
         short: f64,
     ) {
@@ -861,7 +857,7 @@ mod uikit_surface {
         // Sectioned shape: a labeled section is not a single plain group,
         // so changes apply through the whole-table `reloadData` path —
         // a stable-id replace must still evict the row's measured contract.
-        let mut sectioned = ReactiveList::from(vec![
+        let mut sectioned = StateList::from(vec![
             ProbeRow { id: 10, tall: true },
             ProbeRow {
                 id: 11,
@@ -870,12 +866,11 @@ mod uikit_surface {
         ]);
         let list = List::content(waterui::component::list::Section::new("Sectioned").content(
             waterui::views::ForEach::new(sectioned.clone(), |row: ProbeRow| {
-                let content: AnyView = if row.tall {
+                if row.tall {
                     AnyView::new(text("updated tall row").height(60.0))
                 } else {
                     AnyView::new(text("row"))
-                };
-                ListItem::new(content)
+                }
             }),
         ));
         let mount = waterui_apple::native_test_support::mount_uikit_in(
@@ -946,7 +941,7 @@ mod uikit_surface {
     pub fn stable_id_payload_replace_under_reentrant_emission() {
         let env = crate::resolve::env();
         let fired = Rc::new(Cell::new(false));
-        let mut items = ReactiveList::from(vec![
+        let mut items = StateList::from(vec![
             ProbeRow {
                 id: 20,
                 tall: false,
@@ -960,7 +955,7 @@ mod uikit_surface {
             let items = items.clone();
             let fired = Rc::clone(&fired);
             move |row: ProbeRow| {
-                let content: AnyView = if row.tall {
+                if row.tall {
                     AnyView::new(text("updated tall row").height(60.0))
                 } else if row.id == 20 {
                     AnyView::new(ReentrantRow {
@@ -969,8 +964,7 @@ mod uikit_surface {
                     })
                 } else {
                     AnyView::new(text("row"))
-                };
-                ListItem::new(content)
+                }
             }
         });
         let mount = waterui_apple::native_test_support::mount_uikit_in(
@@ -1062,7 +1056,7 @@ mod uikit_surface {
         let env = crate::resolve::env();
         let fired = Rc::new(Cell::new(false));
         let rendered = Rc::new(std::cell::RefCell::new(Vec::new()));
-        let items = ReactiveList::from(vec![
+        let items = StateList::from(vec![
             ProbeRow {
                 id: 30,
                 tall: false,
@@ -1081,15 +1075,14 @@ mod uikit_surface {
             let rendered = Rc::clone(&rendered);
             move |row: ProbeRow| {
                 rendered.borrow_mut().push((row.id, items.len()));
-                let content: AnyView = if row.id == 30 {
+                if row.id == 30 {
                     AnyView::new(RemovingRow {
                         items: items.clone(),
                         fired: fired.clone(),
                     })
                 } else {
                     AnyView::new(text("row"))
-                };
-                ListItem::new(content)
+                }
             }
         });
         let mount = waterui_apple::native_test_support::mount_uikit_in(
@@ -1203,7 +1196,7 @@ mod uikit_surface {
 
         let env = crate::resolve::env();
         let fired = Rc::new(Cell::new(false));
-        let items = ReactiveList::from(vec![
+        let items = StateList::from(vec![
             ProbeRow {
                 id: 40,
                 tall: false,
@@ -1252,12 +1245,11 @@ mod uikit_surface {
     /// column lands, so its emission must also survive that window.
     pub fn reentrant_table_rows_apply_at_boundary() {
         use waterui::component::table::{col, table};
-        use waterui::views::ForEach;
 
         let env = crate::resolve::env();
         let first = Rc::new(Cell::new(false));
         let second = Rc::new(Cell::new(false));
-        let mut items = ReactiveList::from(vec![
+        let mut items = StateList::from(vec![
             ProbeRow {
                 id: 50,
                 tall: false,
@@ -1267,26 +1259,28 @@ mod uikit_surface {
                 tall: false,
             },
         ]);
-        let rows = ForEach::new(items.clone(), {
-            let items = items.clone();
-            let first = Rc::clone(&first);
-            let second = Rc::clone(&second);
-            move |row: ProbeRow| {
-                if !first.replace(true) {
-                    items.clone().push(ProbeRow {
-                        id: 52,
-                        tall: false,
-                    });
-                } else if row.id == 53 && !second.replace(true) {
-                    items.clone().push(ProbeRow {
-                        id: 54,
-                        tall: false,
-                    });
+        let view = table(
+            items.clone(),
+            (col("c", {
+                let items = items.clone();
+                let first = Rc::clone(&first);
+                let second = Rc::clone(&second);
+                move |row: &ProbeRow| {
+                    if !first.replace(true) {
+                        items.clone().push(ProbeRow {
+                            id: 52,
+                            tall: false,
+                        });
+                    } else if row.id == 53 && !second.replace(true) {
+                        items.clone().push(ProbeRow {
+                            id: 54,
+                            tall: false,
+                        });
+                    }
+                    text(format!("row {}", row.id))
                 }
-                text(format!("row {}", row.id))
-            }
-        });
-        let view = table(vec![col("c", rows)]);
+            }),),
+        );
         let mount = waterui_apple::native_test_support::mount_uikit_in(
             mtm(),
             AnyView::new(view),
@@ -1320,75 +1314,37 @@ mod uikit_surface {
         );
     }
 
-    /// A rows apply whose generator mutates a column's label binding and
-    /// the columns signal itself: both notifications land inside the
-    /// in-flight apply — the coordinator must record them and deliver at
-    /// the outermost finish (`#319`), reconciling the new column set
-    /// inside the emission's own animation and draining the recorded
-    /// reload with the transaction.
+    /// A rows apply whose cell generator mutates a column's label binding and
+    /// appends another row: both notifications land inside the in-flight apply
+    /// and must drain cleanly at the transaction boundary.
     pub fn reentrant_columns_and_label_apply_at_boundary() {
-        use core::cell::OnceCell;
-        use waterui::component::table::{TableColumn, col, table};
+        use waterui::component::table::{col, table};
         use waterui::reactive::binding;
-        use waterui::views::ForEach;
 
         let env = crate::resolve::env();
         let fired = Rc::new(Cell::new(false));
-        let cross = Rc::new(Cell::new(false));
-        let mut items = ReactiveList::from(vec![ProbeRow {
+        let mut items = StateList::from(vec![ProbeRow {
             id: 60,
             tall: false,
         }]);
-        let other = ReactiveList::from(vec![ProbeRow {
-            id: 70,
-            tall: false,
-        }]);
         let header = binding("h1".to_string());
-        // The generator needs the column it lives in to keep it through
-        // the reconcile; `TableColumn` clones share its `semantic_id`.
-        let first_column = Rc::new(OnceCell::<TableColumn>::new());
-        let columns = binding(Vec::<TableColumn>::new());
-        let rows = ForEach::new(items.clone(), {
-            let items = items.clone();
-            let header = header.clone();
-            let columns = columns.clone();
-            let first_column = Rc::clone(&first_column);
-            let fired = Rc::clone(&fired);
-            let cross = Rc::clone(&cross);
-            move |row: ProbeRow| {
-                if row.id == 61 && !fired.replace(true) {
-                    columns.set(vec![
-                        first_column.get().expect("column installed").clone(),
-                        col(
-                            text(header.clone()),
-                            ForEach::new(other.clone(), {
-                                let items = items.clone();
-                                let cross = Rc::clone(&cross);
-                                move |row: ProbeRow| {
-                                    // Materializing the joining column
-                                    // mutates the first column's rows —
-                                    // a cross-column emission recorded
-                                    // mid-drain must still deliver.
-                                    if !cross.replace(true) {
-                                        items.clone().push(ProbeRow {
-                                            id: 62,
-                                            tall: false,
-                                        });
-                                    }
-                                    text(format!("row {}", row.id))
-                                }
-                            }),
-                        ),
-                    ]);
-                    header.set("h2".to_string());
+        let view = table(
+            items.clone(),
+            (col(text(header.clone()), {
+                let items = items.clone();
+                let fired = Rc::clone(&fired);
+                move |row: &ProbeRow| {
+                    if row.id == 61 && !fired.replace(true) {
+                        items.clone().push(ProbeRow {
+                            id: 62,
+                            tall: false,
+                        });
+                        header.set("h2".to_string());
+                    }
+                    text(format!("row {}", row.id))
                 }
-                text(format!("row {}", row.id))
-            }
-        });
-        let column = col(text(header), rows);
-        let _ = first_column.set(column.clone());
-        columns.set(vec![column]);
-        let view = table(columns);
+            }),),
+        );
         let mount = waterui_apple::native_test_support::mount_uikit_in(
             mtm(),
             AnyView::new(view),
@@ -1399,33 +1355,30 @@ mod uikit_surface {
             pump_main_until(MAIN_QUEUE_DEADLINE, || {
                 row_labels(mount.content.view()) == ["row 60"]
             }),
-            "the initial column rows materialize"
+            "the initial rows materialize"
         );
-        // The post-mount apply runs under the table borrow; the row-61
-        // generator emits the label and columns notifications reentrantly
-        // inside it.
         items.push(ProbeRow {
             id: 61,
             tall: false,
         });
         assert!(
             pump_main_until(MAIN_QUEUE_DEADLINE, || {
-                row_labels(mount.content.view()) == ["row 60", "row 61", "row 62", "row 70"]
+                row_labels(mount.content.view()) == ["row 60", "row 61", "row 62"]
             }),
             "the recorded emissions deliver at the boundary"
         );
         let labels = row_labels(mount.content.view());
         assert_eq!(
             labels,
-            ["row 60", "row 61", "row 62", "row 70"],
-            "the recorded columns reconcile, cross-column, and label reload deliver at the boundary"
+            ["row 60", "row 61", "row 62"],
+            "the recorded rows and label reload deliver at the boundary"
         );
     }
 }
 
 mod colors {
     use objc2_core_graphics::{CGColor, CGColorSpace, kCGColorSpaceExtendedLinearDisplayP3};
-    use waterui::graphics::color::{Color, Working, WorkingColor, signal_color, srgb_to_linear};
+    use waterui::graphics::color::{Color, Working, WorkingColor, srgb_to_linear};
     use waterui::reactive::binding;
     use waterui_backend_core::AnyView;
 
@@ -1497,7 +1450,7 @@ mod colors {
         let initial = [1.4, -0.2, 0.3, 0.4];
         let source = binding(Color::new(Working(WorkingColor::new(initial))));
         let leaf = waterui_apple::dispatch::render(
-            AnyView::new(signal_color(source.clone())),
+            AnyView::new(Color::from_signal(source.clone())),
             &env,
             mtm(),
         );

@@ -80,7 +80,7 @@ pub fn block_on_main<F: core::future::Future>(seconds: f64, future: F) -> F::Out
     }
 }
 
-/// The least wall-clock time a native `Animation::Default` scroll takes.
+/// The least wall-clock time a native `Animation::DEFAULT` scroll takes.
 ///
 /// Measured from the request to the landing, it is well under `AppKit`'s
 /// 0.25 s group and `UIKit`'s own scroll animation. A jump lands at once;
@@ -357,7 +357,7 @@ pub fn realize_into_shown_scene(
     env: &Environment,
     window: cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIWindow>,
 ) -> RealizedScene {
-    let declaration = crate::windows::root_window(declaration);
+    let declaration = crate::windows::root_window(declaration, env);
     let controller = cocoa_ui::uikit::ViewController::new(mtm, cocoa_ui::uikit::window_root(mtm));
     window.setRootViewController(Some(&controller));
     window.makeKeyAndVisible();
@@ -514,7 +514,7 @@ use waterui::reactive::{Binding, binding};
 #[cfg(target_os = "macos")]
 use waterui::window::{WindowBackground, WindowState, WindowStyle};
 #[cfg(target_os = "macos")]
-use waterui_core::layout::{Point, Rect, Size};
+use waterui_core::layout::Size;
 
 /// Checks that connecting a `WindowChannel` drains pre-queued windows as
 /// typed `RootWindow` declarations without erasing through `Environment`.
@@ -522,15 +522,12 @@ use waterui_core::layout::{Point, Rect, Size};
 /// # Panics
 /// Panics if the queued window declaration is lost or altered.
 pub fn channel_connects_typed_declarations(_mtm: MainThreadMarker) {
+    use waterui::window::Window;
+
     let mut env = Environment::new();
     crate::dispatch::install(&mut env);
     let (manager, channel) = WindowManager::new();
-    waterui::window::Window::new(
-        "Queued Root",
-        waterui::reactive::binding(waterui::window::WindowState::Closed),
-        || (),
-    )
-    .show(&manager);
+    Window::new("Queued Root", || ()).show(&manager);
     let declarations = crate::windows::connect_windows(channel, &env);
     assert_eq!(declarations.len(), 1);
     assert_eq!(
@@ -654,29 +651,29 @@ pub fn bind_window_background(
 /// Panics if the window cannot be realized or an assertion fails.
 #[cfg(target_os = "macos")]
 pub fn a_declared_window_realizes_its_declaration(mtm: MainThreadMarker) {
+    use waterui::component::text::Text;
+    use waterui::window::Window;
+
     let (mut env, _theme) = window_environment(mtm);
     env.insert(crate::first_paint::FirstPaint::default());
     let state: Binding<WindowState> = binding(WindowState::Normal);
     let closed = alloc::rc::Rc::new(core::cell::RefCell::new(false));
-    let declaration = waterui::window::Window::new("Bind Root", state.clone(), || {
-        waterui::component::text::Text::new("x")
-    })
-    .style(WindowStyle::Titled)
-    .background(WindowBackground::Color(Color::srgb(255, 255, 255)))
-    .on_close_request({
-        let closed = alloc::rc::Rc::clone(&closed);
-        move || {
+    let declaration = Window::new("Bind Root", || Text::new("x"))
+        .state(&state)
+        .style(WindowStyle::Titled)
+        .background(WindowBackground::Color(Color::srgb(255, 255, 255)))
+        .default_size(Size::new(640.0, 480.0))
+        .on_close_request({
             let closed = alloc::rc::Rc::clone(&closed);
-            async move {
-                *closed.borrow_mut() = true;
-                waterui::window::CloseReply::Close
+            move || {
+                let closed = alloc::rc::Rc::clone(&closed);
+                async move {
+                    *closed.borrow_mut() = true;
+                    waterui::window::CloseReply::Close
+                }
             }
-        }
-    });
+        });
 
-    declaration
-        .frame
-        .set(Rect::new(Point::new(0.0, 0.0), Size::new(640.0, 480.0)));
     let host = crate::windows::realize(declaration, &env, mtm);
     let window = host.window();
     let native = window.native();
@@ -733,15 +730,15 @@ pub mod toolbar_reach {
     use cocoa_ui::{MainThreadMarker, Retained};
     use waterui::Str;
     use waterui::ViewExt as _;
-    use waterui::component::list::{List, ListItem};
+    use waterui::component::list::List;
     use waterui::id::SelfId;
     use waterui::navigation::{
-        NavigationLink, NavigationPath, NavigationStack, NavigationView, Tab, Tabs, tab_style,
+        NavigationLink, NavigationPath, NavigationStack, NavigationView, Tab, TabStyle, Tabs,
     };
     use waterui::prelude::{scroll, text, vstack, zstack};
     use waterui::reactive::binding;
-    use waterui::window::{WindowState, WindowStyle};
-    use waterui_core::layout::{Point, Rect, Size};
+    use waterui::window::WindowStyle;
+    use waterui_core::layout::Size;
 
     use super::{
         ListSurface, MAIN_QUEUE_DEADLINE, ScrollSurface, pump_main_until, row_item,
@@ -808,14 +805,13 @@ pub mod toolbar_reach {
         searchable: bool,
         check: impl FnOnce(&NSView, &Edges),
     ) {
+        use waterui::window::Window;
+
         let (mut env, _theme) = window_environment(mtm);
         env.insert(crate::first_paint::FirstPaint::default());
-        let declaration =
-            waterui::window::Window::new("Toolbar Reach", binding(WindowState::Normal), content)
-                .style(WindowStyle::Titled);
-        declaration
-            .frame
-            .set(Rect::new(Point::new(0.0, 0.0), Size::new(700.0, 520.0)));
+        let declaration = Window::new("Toolbar Reach", content)
+            .style(WindowStyle::Titled)
+            .default_size(Size::new(700.0, 520.0));
         let host = crate::windows::realize(declaration, &env, mtm);
         let native = host.window().native();
         assert!(
@@ -954,11 +950,7 @@ pub mod toolbar_reach {
 
     /// The fixtures' list: three plain rows.
     fn rows() -> impl waterui::View {
-        List::content(vec![
-            row_item
-                as fn() -> ListItem<waterui::component::text::Text>;
-            3
-        ])
+        List::content(vec![row_item as fn() -> waterui::component::text::Text; 3])
     }
 
     /// Window → `NavigationStack` → page whose content is a `List`.
@@ -982,11 +974,7 @@ pub mod toolbar_reach {
             || {
                 NavigationStack::new(NavigationView::new(
                     "Inbox",
-                    List::content(vec![
-                        row_item
-                            as fn() -> ListItem<waterui::component::text::Text>;
-                        60
-                    ]),
+                    List::content(vec![row_item as fn() -> waterui::component::text::Text; 60]),
                 ))
             },
             false,
@@ -1031,16 +1019,16 @@ pub mod toolbar_reach {
         );
     }
 
-    /// `Tabs` whose first tab is a `NavigationStack` over `inbox`, each tab
-    /// a `Tab::container` — the picker sits in the window toolbar.
+    /// `Tabs` whose first tab is a `NavigationStack` over `inbox` —
+    /// the picker sits in the window toolbar.
     fn tabbed<V: waterui::View>(
         inbox: impl Fn() -> NavigationView<V> + 'static,
     ) -> impl waterui::View {
         Tabs::new(
             &binding(0usize),
             (
-                Tab::container("Inbox", move || NavigationStack::new(inbox())),
-                Tab::container("Settings", || {
+                Tab::new("Inbox", move || NavigationStack::new(inbox())),
+                Tab::new("Settings", || {
                     NavigationStack::new(NavigationView::new("Settings", text("settings")))
                 }),
             ),
@@ -1081,34 +1069,34 @@ pub mod toolbar_reach {
         );
     }
 
-    /// The navigation example's structure: automatic-style `Tabs` of
-    /// `Tab::container`s, the Inbox tab a path-backed `NavigationStack`
-    /// whose root page carries a large title, a subtitle and a search
-    /// field in the bar around `content`.
+    /// The navigation example's structure: automatic-style `Tabs` whose
+    /// Inbox tab is a path-backed `NavigationStack` whose root page carries a
+    /// large title, a subtitle and a search field in the bar around `content`.
     fn inbox_tabs<V: waterui::View>(content: impl Fn() -> V + 'static) -> impl waterui::View {
         let content = std::rc::Rc::new(content);
         Tabs::new(
             &binding(0usize),
             (
-                Tab::container("Inbox", move || {
+                Tab::new("Inbox", move || {
                     NavigationStack::with_path(
                         NavigationPath::<u64>::new(),
                         content()
                             .navigation_title("Inbox")
                             .large_title()
                             .navigation_subtitle("3 unread")
-                            .searchable(&binding(Str::from("")), "Search mail"),
+                            .searchable(&binding(Str::from("")))
+                            .search_prompt("Search mail"),
                     )
                     .destination(|id: u64| {
                         NavigationView::new("Message", text(format!("message {id}")))
                     })
                 }),
-                Tab::container("Settings", || {
+                Tab::new("Settings", || {
                     NavigationStack::new(NavigationView::new("Settings", text("settings")))
                 }),
             ),
         )
-        .style(tab_style::Automatic)
+        .style(TabStyle::Automatic)
     }
 
     /// The navigation example's Inbox: its `List` of navigation-link rows
@@ -1120,9 +1108,7 @@ pub mod toolbar_reach {
                 inbox_tabs(|| {
                     List::for_each(
                         vec![SelfId::new(1_u64), SelfId::new(2), SelfId::new(3)],
-                        |id: SelfId<u64>| {
-                            ListItem::new(NavigationLink::value(text("message"), id.into_inner()))
-                        },
+                        |id: SelfId<u64>| NavigationLink::value(text("message"), id.into_inner()),
                     )
                     .editing(binding::<bool>(false))
                 })
@@ -2199,16 +2185,15 @@ pub fn scroll_surface(
 
 /// The list suites' row body — identical one-line rows; the cases assert
 /// positions, not labels.
-#[must_use]
-pub fn row_item() -> waterui::component::list::ListItem<waterui::component::text::Text> {
-    waterui::component::list::ListItem::new(waterui::prelude::text("row"))
+pub fn row_item() -> waterui::component::text::Text {
+    waterui::prelude::text("row")
 }
 
 /// The list suites' table, rendered but not mounted: `rows` in a list
 /// driven by `controller`, with the leaf that owns its wiring.
 #[must_use]
 pub fn row_list<V: waterui::View>(
-    rows: Vec<fn() -> waterui::component::list::ListItem<V>>,
+    rows: Vec<fn() -> V>,
     controller: &waterui::layout::scroll::ScrollController<usize>,
 ) -> (crate::contract::NativeLeaf, cocoa_ui::Retained<ListSurface>) {
     use objc2::Message;
@@ -2372,11 +2357,11 @@ pub fn inspector_tree(
 pub mod chrome_top {
     use cocoa_ui::objc2_app_kit::{NSSegmentedControl, NSTextField, NSView};
     use cocoa_ui::{MainThreadMarker, Retained};
-    use waterui::navigation::{NavigationView, Tab, Tabs, tab_style};
+    use waterui::navigation::{NavigationView, Tab, TabStyle, Tabs};
     use waterui::prelude::text;
     use waterui::reactive::binding;
-    use waterui::window::{WindowState, WindowStyle};
-    use waterui_core::layout::{Point, Rect, Size};
+    use waterui::window::WindowStyle;
+    use waterui_core::layout::Size;
 
     use super::{MAIN_QUEUE_DEADLINE, pump_main_until, window_environment};
 
@@ -2435,14 +2420,13 @@ pub mod chrome_top {
         content: impl Fn() -> V + 'static,
         check: impl FnOnce(&NSView),
     ) {
+        use waterui::window::Window;
+
         let (mut env, _theme) = window_environment(mtm);
         env.insert(crate::first_paint::FirstPaint::default());
-        let declaration =
-            waterui::window::Window::new("Chrome Top", binding(WindowState::Normal), content)
-                .style(WindowStyle::Borderless);
-        declaration
-            .frame
-            .set(Rect::new(Point::new(0.0, 0.0), Size::new(700.0, 520.0)));
+        let declaration = Window::new("Chrome Top", content)
+            .style(WindowStyle::Borderless)
+            .default_size(Size::new(700.0, 520.0));
         let host = crate::windows::realize(declaration, &env, mtm);
         let native = host.window().native();
         let root = native
@@ -2498,11 +2482,11 @@ pub mod chrome_top {
                 Tabs::new(
                     &binding(0usize),
                     (
-                        Tab::container("First", || text(MARKER)),
-                        Tab::container("Second", || text("second")),
+                        Tab::new("First", || text(MARKER)),
+                        Tab::new("Second", || text("second")),
                     ),
                 )
-                .style(tab_style::Automatic)
+                .style(TabStyle::Automatic)
             },
             |root| {
                 let (_, window_top) = in_window(root, root.bounds());

@@ -21,7 +21,7 @@ fn glue_row_view(row: Row) -> Text {
 // reactivity.md § "## Creating state" — rust block 1/23
 // ---------------------------------------------------------------------------
 pub fn reactivity_block_01() {
-    use waterui::media::media_picker::Selected;
+    use waterui::media::Media;
     use waterui::window::WindowState;
 
     #[derive(Clone)]
@@ -38,7 +38,7 @@ pub fn reactivity_block_01() {
     let items = Binding::container(Vec::<Row>::new());
     let status = Binding::container("Waiting…"); // Binding<&'static str> — fine for status text
 
-    let sel: Binding<Option<Selected>> = Binding::default(); // empty optional selection
+    let sel: Binding<Option<Media>> = Binding::default(); // empty optional selection
     let pane: Binding<Pane> = binding(Pane::Inbox); // general form
     let ws = binding::<WindowState>(WindowState::default()); // …or pin T with a turbofish
 
@@ -203,7 +203,7 @@ pub fn reactivity_binding_helpers_prose() {
 // arms as one concrete type — `let on: Color = Accent.into();`.
 // ---------------------------------------------------------------------------
 pub fn reactivity_select_token_conversion() {
-    use waterui::prelude::theme_color::Accent;
+    use waterui::theme::color::Accent;
 
     let on: Color = Accent.into();
     let off = Color::transparent();
@@ -377,16 +377,17 @@ pub mod reactivity_block_11 {
     use super::Row;
     use waterui::component::list::ListDelete;
     use waterui::prelude::*;
-    use waterui::reactive::collection::List as ReactiveList;
 
     #[state]
     #[derive(Clone)]
     pub struct Editor {
-        pub rows: ReactiveList<Row>,
+        pub rows: StateList<Row>,
     }
 
-    fn delete_row(ListDelete(index): ListDelete, mut state: Editor) {
-        let _ = state.rows.remove(index);
+    fn delete_row(ListDelete(id): ListDelete<u64>, mut state: Editor) {
+        if let Some(index) = state.rows.snapshot().iter().position(|r| r.id == id) {
+            let _ = state.rows.remove(index);
+        }
     }
 
     pub fn use_it() -> impl View {
@@ -458,14 +459,15 @@ pub fn reactivity_block_14() {
 // reactivity.md § "## Animation" (prose curve list, not a fenced block):
 // `Animation::linear(d)`, `ease_in(d)`, `ease_out(d)`, `ease_in_out(d)`,
 // `spring(stiffness, damping)`, `bezier(d, x1, y1, x2, y2)`,
-// `Animation::default()`, `.with(animation)` as the one attachment spelling,
-// and `.animated()` as shorthand for `.with(Animation::Default)` — one
+// `Animation::default()`, `.delay(d)`, `.speed(factor)`, `.repeat(Repeat::...)`,
+// `.with(animation)` as the one attachment spelling,
+// and `.animated()` as shorthand for `.with(Animation::default())` — one
 // `AnimationExt`, reachable from the prelude and from `waterui::animation`.
 // Not counted as one of the 23 rust blocks.
 // ---------------------------------------------------------------------------
 pub fn reactivity_animation_prose() {
     use core::time::Duration;
-    use waterui::animation::Animation;
+    use waterui::animation::{Animation, Repeat};
 
     let d = Duration::from_millis(250);
     let _ = Animation::linear(d);
@@ -475,10 +477,14 @@ pub fn reactivity_animation_prose() {
     let _ = Animation::spring(300.0, 15.0);
     let _ = Animation::bezier(d, 0.2, 0.0, 0.2, 1.0);
     let _ = Animation::default();
+    let _ = Animation::ease_in_out(d)
+        .delay(Duration::from_millis(60))
+        .speed(1.5)
+        .repeat(Repeat::Forever { autoreverse: true });
 
     let scale = Binding::f32(1.0);
     let _ = scale.with(Animation::spring(300.0, 15.0)); // the one attachment spelling
-    let _ = scale.animated(); // shorthand for `.with(Animation::Default)`
+    let _ = scale.animated(); // shorthand for `.with(Animation::default())`
 }
 
 // ---------------------------------------------------------------------------
@@ -538,9 +544,8 @@ pub fn reactivity_block_16() {
     }];
 
     use waterui::layout::scroll::scroll_horizontal;
-    use waterui::reactive::collection::List as ReactiveList;
 
-    let mut rows = ReactiveList::from(seed_vec); // bulk-seed in one move — not a push loop
+    let mut rows = StateList::from(seed_vec); // bulk-seed in one move — not a push loop
     rows.push(Row {
         id: 9,
         title: "Last".into(),
@@ -568,9 +573,8 @@ pub fn reactivity_block_16() {
 // ---------------------------------------------------------------------------
 pub fn reactivity_stack_for_each_prose() {
     use waterui::layout::stack::{HStack, VStack};
-    use waterui::reactive::collection::List as ReactiveList;
 
-    let rows = ReactiveList::<Row>::new();
+    let rows = StateList::<Row>::new();
     let _ = VStack::for_each(rows.clone(), glue_row_view);
     let _ = HStack::for_each(rows, glue_row_view);
 }
@@ -585,13 +589,11 @@ pub fn reactivity_block_17() {
         id: u64,
         subject: Str,
     }
-    fn message_row(m: Message) -> ListItem<impl View> {
-        ListItem::new(text(m.subject))
+    fn message_row(m: Message) -> impl View {
+        text(m.subject)
     }
     let messages = Binding::container(Vec::<Message>::new());
     let query = Binding::container(Str::from(""));
-
-    use waterui::reactive::collection::SignalCollection;
 
     let visible = SignalCollection::new(messages.zip(&query).map(|(all, q)| {
         all.into_iter()
@@ -786,7 +788,7 @@ pub fn reactivity_block_22() {
     // scope rather than being wrapped in `let _ = { … }`.
     {
         let view = Divider;
-        view.task(async { warm_cache().await }); // runs while the view is alive; dropped with it
+        view.task(|| async { warm_cache().await }); // starts on appear, cancels on disappear; supports extractors
     }
     {
         let view = Divider;

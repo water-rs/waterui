@@ -118,11 +118,18 @@ enum Op {
         paint: Paint,
         shape: ShapeData,
     },
-    StrokePaint {
-        stroke: kurbo::Stroke,
+    /// A filled shape whose geometry and paint remain live engine operands.
+    LiveFillPaint {
         transform: Affine,
-        paint: Paint,
-        shape: ShapeData,
+        paint: Computed<Paint>,
+        shape: Computed<ShapeData>,
+    },
+    /// A stroked shape whose geometry, stroke width, and paint remain live engine operands.
+    LiveStrokePaint {
+        stroke: Computed<kurbo::Stroke>,
+        transform: Affine,
+        paint: Computed<Paint>,
+        shape: Computed<ShapeData>,
     },
     #[cfg_attr(hydrolysis_hwui, expect(dead_code))]
     Glyphs {
@@ -144,14 +151,11 @@ enum Op {
         radius: f64,
         sigma: f64,
     },
-    /// A shape's blurred silhouette in one colour — the shadow view's
-    /// output, rasterized and cached by the engine rather than a
-    /// renderer-owned pixmap cache.
-    Shadow {
+    /// A shape's blurred shadow whose metrics and colour remain live engine operands.
+    LiveShadow {
         transform: Affine,
         shape: ShapeData,
-        color: WorkingColor,
-        sigma: f64,
+        shadow: Computed<Shadow>,
     },
     #[cfg(any(feature = "menu", test))]
     PushGroup {
@@ -720,19 +724,33 @@ impl Recording {
         });
     }
 
-    /// Strokes `shape` under `transform` with an engine paint.
-    pub(crate) fn stroke_paint<S: Shape + 'static>(
+    /// Fills a shape whose paint and geometry remain live engine operands.
+    pub(crate) fn live_fill_paint(
         &mut self,
-        stroke: &kurbo::Stroke,
         transform: Affine,
-        paint: Paint,
-        shape: &S,
+        paint: Computed<Paint>,
+        shape: Computed<ShapeData>,
     ) {
-        self.ops.push(Op::StrokePaint {
-            stroke: stroke.clone(),
+        self.ops.push(Op::LiveFillPaint {
             transform,
             paint,
-            shape: shape_data(Fill::NonZero, shape),
+            shape,
+        });
+    }
+
+    /// Strokes a shape whose geometry, width, and paint remain live engine operands.
+    pub(crate) fn live_stroke_paint(
+        &mut self,
+        stroke: Computed<kurbo::Stroke>,
+        transform: Affine,
+        paint: Computed<Paint>,
+        shape: Computed<ShapeData>,
+    ) {
+        self.ops.push(Op::LiveStrokePaint {
+            stroke,
+            transform,
+            paint,
+            shape,
         });
     }
 
@@ -810,20 +828,17 @@ impl Recording {
         });
     }
 
-    /// Draws `shape`'s Gaussian-blurred silhouette in `color` under
-    /// `transform` — `sigma` in the shape's units.
-    pub(crate) fn shadow<S: Shape + 'static>(
+    /// Draws `shape`'s Gaussian-blurred shadow with live engine operands.
+    pub(crate) fn live_shadow(
         &mut self,
         transform: Affine,
-        shape: &S,
-        sigma: f64,
-        color: WorkingColor,
+        shape: ShapeData,
+        shadow: Computed<Shadow>,
     ) {
-        self.ops.push(Op::Shadow {
+        self.ops.push(Op::LiveShadow {
             transform,
-            shape: shape_data(Fill::NonZero, shape),
-            color,
-            sigma,
+            shape,
+            shadow,
         });
     }
 
@@ -883,10 +898,11 @@ impl Recording {
                 Op::Fill { transform, .. } => *transform = placement * *transform,
                 Op::LiveRect { transform, .. }
                 | Op::FillPaint { transform, .. }
-                | Op::StrokePaint { transform, .. }
+                | Op::LiveFillPaint { transform, .. }
+                | Op::LiveStrokePaint { transform, .. }
                 | Op::Glyphs { transform, .. }
                 | Op::BlurredRoundedRect { transform, .. }
-                | Op::Shadow { transform, .. }
+                | Op::LiveShadow { transform, .. }
                 | Op::Picture { transform, .. } => *transform = placement * *transform,
                 #[cfg(any(test, hydrolysis_hwui))]
                 Op::Text { transform, .. } => *transform = placement * *transform,
@@ -936,6 +952,9 @@ impl Recording {
             Op::LiveRect {
                 transform, rect, ..
             } => Some((*transform, rect.snapshot())),
+            Op::LiveFillPaint {
+                transform, shape, ..
+            } => Some((*transform, shape.snapshot().bounds())),
             Op::Fill {
                 transform, shape, ..
             }
@@ -1227,7 +1246,14 @@ fn lower(
             } => {
                 recorder.transform(*transform, |r| r.fill(shape.clone(), paint.clone()));
             }
-            Op::StrokePaint {
+            Op::LiveFillPaint {
+                transform,
+                paint,
+                shape,
+            } => {
+                recorder.transform(*transform, |r| r.fill(shape.clone(), paint.clone()));
+            }
+            Op::LiveStrokePaint {
                 stroke,
                 transform,
                 paint,
@@ -1311,19 +1337,12 @@ fn lower(
                 };
                 recorder.transform(*transform, |r| r.shadow(shape, shadow));
             }
-            Op::Shadow {
+            Op::LiveShadow {
                 transform,
                 shape,
-                color,
-                sigma,
+                shadow,
             } => {
-                let shadow = Shadow {
-                    sigma: *sigma,
-                    offset: Vec2::ZERO,
-                    spread: 0.0,
-                    color: *color,
-                };
-                recorder.transform(*transform, |r| r.shadow(shape.clone(), shadow));
+                recorder.transform(*transform, |r| r.shadow(shape.clone(), shadow.clone()));
             }
             #[cfg(any(feature = "menu", test))]
             Op::PushGroup {
@@ -1934,7 +1953,11 @@ fn picture_static_eq_cost(a: &Picture, b: &Picture) -> Option<usize> {
 
 fn op_compact_static_cost(op: &Op) -> Option<usize> {
     match op {
-        Op::LiveRect { .. } | Op::Glyphs { .. } => None,
+        Op::LiveRect { .. }
+        | Op::LiveFillPaint { .. }
+        | Op::LiveStrokePaint { .. }
+        | Op::LiveShadow { .. }
+        | Op::Glyphs { .. } => None,
         #[cfg(any(test, hydrolysis_hwui))]
         Op::Text { .. } => None,
         #[cfg(any(test, hydrolysis_cherenkov, feature = "menu"))]
@@ -1944,17 +1967,7 @@ fn op_compact_static_cost(op: &Op) -> Option<usize> {
         Op::FillPaint { paint, shape, .. } => {
             (is_compact_static_paint(paint) && is_compact_static_shape(shape)).then_some(1)
         }
-        Op::StrokePaint {
-            stroke,
-            paint,
-            shape,
-            ..
-        } => (is_compact_static_stroke(stroke)
-            && is_compact_static_paint(paint)
-            && is_compact_static_shape(shape))
-        .then_some(1),
         Op::BlurredRoundedRect { .. } => Some(1),
-        Op::Shadow { shape, .. } => is_compact_static_shape(shape).then_some(1),
         #[cfg(any(feature = "menu", test))]
         Op::PushGroup { clip, .. } => is_compact_static_shape(clip).then_some(1),
         #[cfg(any(feature = "menu", test))]
@@ -1998,25 +2011,6 @@ fn effect_op_static_eq(left: &Op, right: &Op) -> bool {
                 && rect_bits_eq(*left_rect, *right_rect)
                 && working_color_bits_eq(*left_color, *right_color)
                 && f64_bits_eq(*left_radius, *right_radius)
-                && f64_bits_eq(*left_sigma, *right_sigma)
-        }
-        (
-            Op::Shadow {
-                transform: left_tf,
-                shape: left_shape,
-                color: left_color,
-                sigma: left_sigma,
-            },
-            Op::Shadow {
-                transform: right_tf,
-                shape: right_shape,
-                color: right_color,
-                sigma: right_sigma,
-            },
-        ) => {
-            affine_bits_eq(*left_tf, *right_tf)
-                && shape_static_eq(left_shape, right_shape)
-                && working_color_bits_eq(*left_color, *right_color)
                 && f64_bits_eq(*left_sigma, *right_sigma)
         }
         #[cfg(any(feature = "menu", test))]
@@ -2078,24 +2072,6 @@ fn op_static_eq_cost(left: &Op, right: &Op) -> Option<usize> {
                 shape: right_shape,
             },
         ) => (affine_bits_eq(*left_tf, *right_tf)
-            && paint_static_eq(left_paint, right_paint)
-            && shape_static_eq(left_shape, right_shape))
-        .then_some(1),
-        (
-            Op::StrokePaint {
-                stroke: left_stroke,
-                transform: left_tf,
-                paint: left_paint,
-                shape: left_shape,
-            },
-            Op::StrokePaint {
-                stroke: right_stroke,
-                transform: right_tf,
-                paint: right_paint,
-                shape: right_shape,
-            },
-        ) => (stroke_static_eq(left_stroke, right_stroke)
-            && affine_bits_eq(*left_tf, *right_tf)
             && paint_static_eq(left_paint, right_paint)
             && shape_static_eq(left_shape, right_shape))
         .then_some(1),

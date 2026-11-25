@@ -50,7 +50,7 @@ let name  = Binding::container(Str::from("Ada"));  // any Clone type
 let items = Binding::container(Vec::<Row>::new());
 let status = Binding::container("Waiting…");    // Binding<&'static str> — fine for status text
 
-let sel: Binding<Option<Selected>> = Binding::default();   // empty optional selection
+let sel: Binding<Option<Media>> = Binding::default();      // empty optional selection
 let pane: Binding<Pane> = binding(Pane::Inbox);            // general form
 let ws = binding::<WindowState>(WindowState::default());   // …or pin T with a turbofish
 ```
@@ -194,6 +194,9 @@ vstack((
 ```
 
 Use `#[derive(Project)]` directly when you want projection without form generation.
+`waterui::Project`, `waterui::prelude::Project`, and `waterui::reactive::Project` all
+refer to the same derive, and each projected field keeps the visibility of its source
+field so private fields stay private outside their module or crate.
 
 ## Feeding signals to views
 
@@ -230,7 +233,7 @@ Handler parameters are extractors. Besides `State<T>`:
   parameter bare (`state: Editor`) and it reads what `.state(&value)` / `App::state(&value)`
   injected.
 - Context extractors supplied by components on the same channel, e.g. `Navigator<Route>`,
-  `ListDelete`, `ListMove`, `SnackbarManager`, `WebViewProxy`.
+  `ListDelete<Id>`, `ListMove<Id>`, `SnackbarManager`, `WebViewProxy`.
 
 Repeated parameters of one state type bind positionally: the first `.state()` call feeds
 the first parameter of that type. A parameter that cannot be extracted means the handler
@@ -238,8 +241,10 @@ does not run and the failure is reported as a contract violation (a panic in a d
 build, a log line in release) — take `Option<E>` when absence is legitimate.
 
 ```rust
-fn delete_row(ListDelete(index): ListDelete, mut state: Editor) {
-    let _ = state.rows.remove(index);
+fn delete_row(ListDelete(id): ListDelete<u64>, mut state: Editor) {
+    if let Some(index) = state.rows.snapshot().iter().position(|r| r.id == id) {
+        let _ = state.rows.remove(index);
+    }
 }
 ```
 
@@ -289,8 +294,8 @@ view.scale(animated)
 
 Curves: `Animation::linear(d)`, `ease_in(d)`, `ease_out(d)`, `ease_in_out(d)`,
 `spring(stiffness, damping)`, `bezier(d, x1, y1, x2, y2)`, and `Animation::default()`
-(the system default). `.with(animation)` is the one attachment spelling to use.
-`.animated()` is shorthand for `.with(Animation::Default)`; it comes from `AnimationExt`,
+(the system default), modified with `.delay(d)`, `.speed(factor)`, and `.repeat(Repeat::Once | Count { count, autoreverse } | Forever { autoreverse })`. `.with(animation)` is the one attachment spelling to use.
+`.animated()` is shorthand for `.with(Animation::default())`; it comes from `AnimationExt`,
 which the prelude re-exports and `waterui::animation` also exports — one trait, one
 meaning, whichever path you import it by.
 
@@ -311,14 +316,13 @@ let combined = hover_scale.zip(&drop_bounce).map(|(a, b)| a * b);   // still ani
 
 ## Reactive collections
 
-`waterui::reactive::collection::List<T>` is a reactive sequence: mutating it emits a membership patch
-rather than a whole-collection invalidation.
+`StateList<T>` (in the prelude; `waterui::reactive::collection::StateList`) is a reactive
+sequence: mutating it emits a membership patch rather than a whole-collection invalidation.
 
 ```rust
 use waterui::layout::scroll::scroll_horizontal;
-use waterui::reactive::collection::List as ReactiveList;
 
-let mut rows = ReactiveList::from(seed_vec);   // bulk-seed in one move — not a push loop
+let mut rows = StateList::from(seed_vec);      // bulk-seed in one move — not a push loop
 rows.push(Row { id: 9, title: "Last".into() });
 rows.insert(0, Row { id: 0, title: "First".into() });   // positional splice, id-diffed
 let _ = rows.remove(0);              // #[must_use] — bind the removed value
@@ -333,7 +337,7 @@ scroll_horizontal(HStack::for_each(rows.clone(), row_view))
 consume it. `VStack::for_each` / `HStack::for_each` virtualize automatically when inside a
 co-axial `ScrollView` (`scroll` / `scroll_horizontal` / `scroll_both`) and materialize
 eagerly outside one (or when `.eager()` is called). They accept any `nami::collection::Collection`
-— a reactive `List` of `Identifiable` items, or an array or static slice identified by index
+— a `StateList` of `Identifiable` items, or an array or static slice identified by index
 (see components.md for per-row `.transition(PropertyTransition::opacity())` membership
 animation).
 
@@ -349,8 +353,6 @@ PartialEq` items into a diffable collection. This is the answer to "filter a lis
 user types"; without it the only road is `watch` over a `Vec`, which rule 4 forbids:
 
 ```rust
-use waterui::reactive::collection::SignalCollection;
-
 let visible = SignalCollection::new(
     messages.zip(&query).map(|(all, q)| {
         all.into_iter().filter(|m| m.subject.contains(q.as_str())).collect::<Vec<_>>()
@@ -480,7 +482,7 @@ button("Fetch")
     })
     .state(&result);
 
-view.task(async { warm_cache().await });   // runs while the view is alive; dropped with it
+view.task(|| async { warm_cache().await }); // starts on appear, cancels on disappear; supports extractors
 view.on_appear(|| debug!("shown"));
 view.on_disappear(|| ());
 view.lifecycle(LifeCycle::Appear, || ());   // what on_appear/on_disappear call

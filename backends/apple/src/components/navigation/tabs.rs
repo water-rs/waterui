@@ -2,18 +2,25 @@
 //!
 //! iOS renders a `UITabBarController` (kit [`TabsController`]); macOS renders a
 //! sidebar source list for `Sidebar` style and a segmented control above the
-//! content otherwise. Each tab's `NavigationView` renders through the
-//! navigation handler, so it draws its own standalone bar inside the pane.
-//! The selection binding is two-way: native selection writes back, external
-//! writes select the matching tab.
+//! content otherwise. Each tab's root view renders directly through the renderer,
+//! so a `NavigationStack`, `NavigationSplitView`, standalone `NavigationView`, or
+//! plain view brings its own chrome (or none). The selection binding is two-way:
+//! native selection writes back, external writes select the matching tab.
 
-use alloc::{string::String, vec::Vec};
+use alloc::{
+    string::{String, ToString},
+    vec::Vec,
+};
 
 use crate::contract::{Held, NativeLeaf};
+use cocoa_ui::badge::BadgeDisplay;
+use waterui::component::badge::BadgeValue;
 use waterui::navigation::{
     TabsLayout,
     tab::{TabItem, TabRole},
 };
+use waterui::reactive::Signal as _;
+use waterui_core::Environment;
 use waterui_core::id::Id;
 
 use super::{Fill, extract_title_text};
@@ -45,7 +52,7 @@ struct Mounted {
     #[allow(dead_code)]
     icon_leaf: Option<NativeLeaf>,
     /// Badge signal.
-    badge: Option<waterui::reactive::Computed<i32>>,
+    badge: Option<waterui::reactive::Computed<BadgeValue>>,
     /// Enabled signal.
     enabled: waterui::reactive::Computed<bool>,
     /// Search-role tab.
@@ -56,11 +63,26 @@ struct Mounted {
     keep: core::cell::RefCell<crate::contract::KeepAlive>,
 }
 
+fn badge_display(value: &BadgeValue, env: &Environment) -> BadgeDisplay {
+    match value {
+        BadgeValue::Hidden | BadgeValue::Count(0) => BadgeDisplay::Hidden,
+        BadgeValue::Dot => BadgeDisplay::Dot,
+        BadgeValue::Count(count) => BadgeDisplay::Text(count.to_string()),
+        BadgeValue::Text(text) => BadgeDisplay::Text(
+            text.resolve(env)
+                .content()
+                .snapshot()
+                .to_plain()
+                .to_string(),
+        ),
+    }
+}
+
 /// Renders one tab once: the pane, the label's extracted text and the icon's
 /// leaf the platform chrome still binds.
 fn mount_tab(id: Id, tab: TabItem<Held>, renderer: &crate::contract::Renderer) -> Mounted {
     let (label, icon, content, badge, enabled, role) = tab.into_parts();
-    let pane = super::nav_view::realize_navigation_view(content.build(), &renderer.context());
+    let pane = renderer.realize(content.build());
     let label_leaf = renderer.realize(label.build());
     let label = extract_title_text(label_leaf.view());
     let (symbol, icon_leaf) = icon.map_or_else(
@@ -140,13 +162,16 @@ mod platform {
     use core::cell::RefCell;
 
     use crate::contract::{Held, NativeLeaf, RenderContext};
+    use cocoa_ui::badge::BadgeDisplay;
     use cocoa_ui::geometry::Rect;
-    use cocoa_ui::objc2_ui_kit::{UITabAccessory, UITabBarMinimizeBehavior};
+    use cocoa_ui::objc2_ui_kit::{UITabAccessory, UITabBarItem, UITabBarMinimizeBehavior};
     use cocoa_ui::uikit::{HostView, TabContentController, TabSpec, TabsController};
     use cocoa_ui::{Retained, view};
     use waterui::Environment;
+    use waterui::component::badge::BadgeValue;
     use waterui::navigation::{TabsLayout, tab::TabBarMinimizeBehavior};
     use waterui::reactive::Signal;
+    use waterui::reactive::watcher::BoxWatcherGuard;
     use waterui_core::id::Id;
     use waterui_core::layout::ProposalSize;
 
@@ -182,16 +207,21 @@ mod platform {
     /// scroll — a rasterized template image for a custom icon, and the
     /// badge/enabled watchers mutating the `UITabBarItem` in place, all into
     /// the tab's own keep so they die with the tab, not the container.
+    fn tab_badge_string(display: &BadgeDisplay) -> Option<alloc::string::String> {
+        match display {
+            BadgeDisplay::Hidden => None,
+            BadgeDisplay::Dot => Some(alloc::string::String::new()),
+            BadgeDisplay::Text(text) => Some(text.clone()),
+        }
+    }
+
     fn install_controller(
         mtm: cocoa_ui::MainThreadMarker,
         tab: &Mounted,
         env: &Environment,
     ) -> Retained<TabContentController> {
-        // `env` feeds only the `gpu_surface` icon raster below.
-        #[cfg(not(feature = "gpu_surface"))]
-        let _ = env;
         let controller = TabContentController::new(mtm, tab.pane.view());
-        controller.apply_spec(&spec(tab));
+        controller.apply_spec(&spec(tab, env));
         controller.set_bottom_scroll_surface(|controller| {
             crate::primary_content::declared_scroll_view(controller.view()?.as_ref())
         });
@@ -243,11 +273,43 @@ mod platform {
         if let Some(item) = controller.tabBarItem() {
             if let Some(badge) = &tab.badge {
                 let item = item.clone();
-                tab.keep.borrow_mut().bind(badge, move |value| {
-                    let badge = (value > 0)
-                        .then(|| objc2_foundation::NSString::from_str(&value.to_string()));
-                    item.setBadgeValue(badge.as_deref());
+                let env = env.clone();
+                let text_guard: Rc<RefCell<Option<BoxWatcherGuard>>> = Rc::new(RefCell::new(None));
+                let set_item_badge = |item: &UITabBarItem, text: Option<&str>| {
+                    let ns = text.map(objc2_foundation::NSString::from_str);
+                    item.setBadgeValue(ns.as_deref());
+                };
+                tab.keep.borrow_mut().bind(badge, {
+                    let text_guard = Rc::clone(&text_guard);
+                    move |value| match value {
+                        BadgeValue::Hidden | BadgeValue::Count(0) => {
+                            *text_guard.borrow_mut() = None;
+                            set_item_badge(&item, None);
+                        }
+                        BadgeValue::Dot => {
+                            *text_guard.borrow_mut() = None;
+                            set_item_badge(&item, Some(""));
+                        }
+                        BadgeValue::Count(count) => {
+                            *text_guard.borrow_mut() = None;
+                            set_item_badge(
+                                &item,
+                                Some(&alloc::string::ToString::to_string(&count)),
+                            );
+                        }
+                        BadgeValue::Text(text) => {
+                            let content = text.resolve(&env).content();
+                            let initial = content.snapshot().to_plain().to_string();
+                            set_item_badge(&item, Some(&initial));
+                            let item = item.clone();
+                            *text_guard.borrow_mut() = Some(content.watch(move |ctx| {
+                                let plain = ctx.into_value().to_plain().to_string();
+                                set_item_badge(&item, Some(&plain));
+                            }));
+                        }
+                    }
                 });
+                tab.keep.borrow_mut().keep(text_guard);
             }
             tab.keep.borrow_mut().bind(&tab.enabled, move |enabled| {
                 item.setEnabled(enabled);
@@ -483,11 +545,14 @@ mod platform {
         leaf
     }
 
-    fn spec(tab: &Mounted) -> TabSpec {
+    fn spec(tab: &Mounted, env: &Environment) -> TabSpec {
         TabSpec {
             label: tab.label.clone(),
             symbol: tab.symbol.clone(),
-            badge: tab.badge.as_ref().map(|badge| badge.snapshot().to_string()),
+            badge: tab
+                .badge
+                .as_ref()
+                .and_then(|badge| tab_badge_string(&super::badge_display(&badge.snapshot(), env))),
             is_search: tab.is_search,
             enabled: tab.enabled.snapshot(),
         }
@@ -496,10 +561,11 @@ mod platform {
 
 #[cfg(target_os = "macos")]
 mod platform {
-    use super::{Fill, Mounted, reconcile_tabs};
+    use super::{Fill, Mounted, badge_display, reconcile_tabs};
     use alloc::rc::Rc;
     use alloc::vec::Vec;
     use core::cell::RefCell;
+    use waterui_core::Environment;
     use waterui_core::layout::ProposalSize;
 
     use crate::contract::{Held, NativeLeaf, RenderContext};
@@ -507,14 +573,14 @@ mod platform {
     use cocoa_ui::appkit::{HostView, Segment, SegmentedControl, SourceList, WindowToolbar};
     use cocoa_ui::objc2_app_kit::NSWindowStyleMask;
     use cocoa_ui::{Rect, view};
-    use waterui::navigation::{TabsLayout, tab::NativeTabStyle};
+    use waterui::navigation::{TabsLayout, tab::TabStyle};
     use waterui::reactive::Signal;
     use waterui_core::id::Id;
 
     use crate::contract::KeepAlive;
 
     /// The segments one mounted set's labels describe, in bar order.
-    fn segments(mounted: &[Mounted]) -> Vec<Segment> {
+    fn segments(mounted: &[Mounted], env: &Environment) -> Vec<Segment> {
         mounted
             .iter()
             .map(|tab| {
@@ -531,7 +597,10 @@ mod platform {
                     symbol: tab.symbol.clone(),
                     image,
                     enabled: tab.enabled.snapshot(),
-                    badge: tab.badge.as_ref().map(|badge| badge.snapshot().to_string()),
+                    badge: tab
+                        .badge
+                        .as_ref()
+                        .map(|badge| badge_display(&badge.snapshot(), env)),
                     is_search: tab.is_search,
                 }
             })
@@ -570,10 +639,11 @@ mod platform {
             view::add_subview(&host, tab.pane.view());
         }
 
-        let sidebar = matches!(layout.style(), NativeTabStyle::Sidebar);
+        let env = ctx.env().clone();
+        let sidebar = matches!(layout.style(), TabStyle::Sidebar);
         let chrome = if sidebar {
             let list = SourceList::new(mtm);
-            list.set_segments(&segments(&mounted.borrow()));
+            list.set_segments(&segments(&mounted.borrow(), &env));
             view::add_subview(&host, list.view());
             list.set_select_handler({
                 let selection = layout.selection().clone();
@@ -592,7 +662,7 @@ mod platform {
         // (control path adds via add_subview below)
         } else {
             let control = SegmentedControl::new(mtm);
-            control.set_segments(&segments(&mounted.borrow()));
+            control.set_segments(&segments(&mounted.borrow(), &env));
             view::add_subview(&host, &control);
             control.set_select_handler({
                 let selection = layout.selection().clone();
@@ -681,8 +751,8 @@ mod platform {
                         view::set_hidden(tab.pane.view(), true);
                     }
                     match &chrome {
-                        Chrome::List(list) => list.set_segments(&segments(&mounted)),
-                        Chrome::Control(control) => control.set_segments(&segments(&mounted)),
+                        Chrome::List(list) => list.set_segments(&segments(&mounted, &env)),
+                        Chrome::Control(control) => control.set_segments(&segments(&mounted, &env)),
                     }
                 }
                 let id = selection.snapshot();

@@ -14,10 +14,9 @@
 //!
 //! A value is a reactive input wherever the Rust modifier takes one, and a
 //! plain value wherever it takes one of those: `foreground` follows a signal
-//! because `Color` is reactive, and `shadow`'s blur radius does not because
-//! `Shadow::radius` is an `f32`.
+//! because `Color` is reactive, and `shadow`'s blur radius in TypeScript is a
+//! plain value matching [`ShadowValue`].
 
-use crate::appearance::style::Vector;
 use nami::{Computed, SignalExt as _};
 use suiteki::Str;
 use waterui_accessibility::AccessibilityIdentifier;
@@ -28,7 +27,7 @@ use waterui_layout::background::BackgroundView;
 use waterui_layout::frame::Frame;
 use waterui_layout::padding::Padding;
 use waterui_locale::locale_binding;
-use waterui_shape::{Capsule, Circle, Ellipse, FixedRoundedRectangle, Rectangle, RoundedRectangle};
+use waterui_shape::{Capsule, Circle, Ellipse, Rectangle, RoundedRectangle};
 use waterui_ts::engine::{JsError, JsValue};
 use waterui_ts::{Bridge, FromJs as _};
 
@@ -95,7 +94,7 @@ pub fn apply(
         }
         "onTapGesture" => {
             let action = JsAction::from_js(value, bridge)?;
-            Ok(AnyView::new(view.on_tap_gesture(move || action.call(()))))
+            Ok(AnyView::new(view.on_tap(move || action.call(()))))
         }
         "a11yLabel" => semantic(bridge, view, value, A11yTextKind::Label),
         "a11yValue" => semantic(bridge, view, value, A11yTextKind::Value),
@@ -204,18 +203,16 @@ fn semantic(
 
 impl From<ShadowValue> for Shadow {
     fn from(value: ShadowValue) -> Self {
-        Self::new(
-            value.color().map_or_else(
+        let shadow = Self::splat(value.radius())
+            .color(value.color().map_or_else(
                 || Color::srgb(0, 0, 0),
                 |color| Color::new(Working(WorkingColor::from(color))),
-            ),
-            Vector {
-                x: value.x().unwrap_or_default(),
-                y: value.y().unwrap_or_default(),
-            },
-            value.radius(),
-            FixedRoundedRectangle::new(value.corner_radius().unwrap_or_default()),
-        )
+            ))
+            .offset(value.x().unwrap_or_default(), value.y().unwrap_or_default());
+        match value.corner_radius() {
+            Some(radius) => shadow.silhouette(RoundedRectangle::new(radius)),
+            None => shadow,
+        }
     }
 }
 

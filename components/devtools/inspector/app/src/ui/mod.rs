@@ -4,9 +4,8 @@
 //! status strip that is always visible because "am I actually connected?" is the
 //! question every other answer depends on.
 
-use waterui::prelude::theme_color::{Accent, Background, MutedForeground};
 use waterui::prelude::*;
-use waterui::reactive::collection::List as ReactiveList;
+use waterui::theme::color::{Accent, Background, MutedForeground};
 use waterui_icons_lucide as lucide;
 
 use crate::connection::SubscriptionSender;
@@ -63,9 +62,9 @@ fn sidebar(model: Model) -> impl View + Clone {
         vstack((
             connection_badge(&model).background(Background),
             Divider,
-            List::for_each(ReactiveList::from(Vec::from(Section::ALL)), {
+            List::for_each(StateList::from(Vec::from(Section::ALL)), {
                 let model = model.clone();
-                move |section| ListItem::new(sidebar_row(section, &model))
+                move |section| sidebar_row(section, &model)
             })
             .selection(&model.section),
         ))

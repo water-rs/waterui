@@ -17,9 +17,7 @@ use waterui::Signal as _;
 use waterui::ViewExt as _;
 use waterui::component::{button, text, vstack};
 use waterui::dialog::{Dialog, DialogAction};
-use waterui_testing::{
-    AccessKitRole, Role, RuntimeDriver, SemanticApp, Styled, TestStyle, UiBuilder, ui,
-};
+use waterui_testing::{AccessKitRole, Role, RuntimeDriver, SemanticApp, TestStyle, UiBuilder, ui};
 
 /// A presented dialog publishes its card as the window's modal alert.
 const ALERT: Role = Role::new(AccessKitRole::AlertDialog);
@@ -257,7 +255,7 @@ fn app_dismissal_closes_without_running_a_handler() {
 }
 
 #[waterui::test(theme = TestStyle::new(), viewport = (400, 300))]
-fn presented_dialog_is_in_the_offscreen_a11y_tree(ui: UiBuilder<Styled<TestStyle>>) {
+fn presented_dialog_is_in_the_offscreen_a11y_tree(ui: UiBuilder) {
     let presented = Binding::bool(false);
     let flag = Rc::new(Cell::new(false));
     let shown = presented.clone();
@@ -326,9 +324,7 @@ fn presented_dialog_makes_the_whole_window_inert_on_semantic_mount() {
 }
 
 #[waterui::test(theme = TestStyle::new(), viewport = (400, 300))]
-fn presented_dialog_makes_the_whole_window_inert_on_offscreen_mount(
-    ui: UiBuilder<Styled<TestStyle>>,
-) {
+fn presented_dialog_makes_the_whole_window_inert_on_offscreen_mount(ui: UiBuilder) {
     let presented = Binding::bool(false);
     let shown = presented.clone();
     let mut app = ui.mount_offscreen(move || sibling_fixture(&presented));
@@ -376,7 +372,7 @@ fn return_runs_the_primary_action() {
 }
 
 #[waterui::test(theme = TestStyle::new(), viewport = (400, 300))]
-fn scrim_tap_runs_the_cancel_path(ui: UiBuilder<Styled<TestStyle>>) {
+fn scrim_tap_runs_the_cancel_path(ui: UiBuilder) {
     let presented = Binding::bool(false);
     let shown = presented.clone();
     let cancelled = Rc::new(Cell::new(false));
@@ -453,9 +449,7 @@ fn a_second_dialog_waits_in_presentation_order_on_semantic_mount() {
 }
 
 #[waterui::test(theme = TestStyle::new(), viewport = (400, 300))]
-fn a_second_dialog_waits_in_presentation_order_on_offscreen_mount(
-    ui: UiBuilder<Styled<TestStyle>>,
-) {
+fn a_second_dialog_waits_in_presentation_order_on_offscreen_mount(ui: UiBuilder) {
     let first = Binding::bool(false);
     let second = Binding::bool(false);
     let (f, s) = (first.clone(), second.clone());
@@ -473,7 +467,7 @@ fn focused_label<R>(app: &SemanticApp<R>) -> Option<String> {
 }
 
 #[waterui::test(theme = TestStyle::new(), viewport = (400, 300))]
-fn focus_moves_into_the_dialog_and_returns_on_dismissal(ui: UiBuilder<Styled<TestStyle>>) {
+fn focus_moves_into_the_dialog_and_returns_on_dismissal(ui: UiBuilder) {
     let presented = Binding::bool(false);
     let flag = Rc::new(Cell::new(false));
     let shown = presented.clone();
@@ -491,4 +485,75 @@ fn focus_moves_into_the_dialog_and_returns_on_dismissal(ui: UiBuilder<Styled<Tes
     app.settle();
     assert!(!shown.snapshot());
     assert_eq!(focused_label(&app).as_deref(), Some("Open"));
+}
+
+#[waterui::test]
+fn button_role_reaches_accessibility_tree_on_buttons_and_dialogs(ui: UiBuilder) {
+    use waterui::component::button::{ButtonRole, button};
+
+    let presented = Binding::bool(true);
+    let mut app = ui.mount(move || {
+        vstack((
+            button("Delete").role(ButtonRole::Destructive).action(|| {}),
+            button("Dismiss").role(ButtonRole::Cancel).action(|| {}),
+            button("Apply").action(|| {}),
+        ))
+        .dialog(
+            Dialog::new(&presented, "Delete item?")
+                .action(DialogAction::cancel("Keep", || {}))
+                .action(DialogAction::destructive("Erase", || {})),
+        )
+    });
+    app.settle();
+
+    assert_eq!(
+        app.query()
+            .role(Role::BUTTON)
+            .label("Keep")
+            .single()
+            .node()
+            .description(),
+        Some("cancel")
+    );
+    assert_eq!(
+        app.query()
+            .role(Role::BUTTON)
+            .label("Erase")
+            .single()
+            .node()
+            .description(),
+        Some("destructive")
+    );
+
+    // Dismiss the dialog so the underlying buttons enter the active tree.
+    app.query().role(Role::BUTTON).label("Keep").tap();
+    app.settle();
+
+    assert_eq!(
+        app.query()
+            .role(Role::BUTTON)
+            .label("Delete")
+            .single()
+            .node()
+            .description(),
+        Some("destructive")
+    );
+    assert_eq!(
+        app.query()
+            .role(Role::BUTTON)
+            .label("Dismiss")
+            .single()
+            .node()
+            .description(),
+        Some("cancel")
+    );
+    assert_eq!(
+        app.query()
+            .role(Role::BUTTON)
+            .label("Apply")
+            .single()
+            .node()
+            .description(),
+        None
+    );
 }

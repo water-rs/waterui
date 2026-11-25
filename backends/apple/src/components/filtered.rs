@@ -349,7 +349,7 @@ enum ContentOwner {
     /// A filtered leaf over its own child: the output frames the content
     /// and measurement delegates to the mount's layout face when there is
     /// one.
-    Leaf(Option<Mounted>),
+    Leaf(Option<Box<Mounted>>),
     /// A transition effect over a sibling the transition host lays out.
     Effect,
 }
@@ -1843,7 +1843,7 @@ impl FilteredSubView {
             FilteredInput::Captured {
                 owner: ContentOwner::Leaf(mounted),
                 ..
-            } => mounted.as_ref(),
+            } => mounted.as_deref(),
             FilteredInput::Captured {
                 owner: ContentOwner::Effect,
                 ..
@@ -2696,7 +2696,7 @@ fn build_filtered_parts(
     let input = FilteredInput::Captured {
         capture: Rc::new(cocoa_ui::capture::ViewCapture::new(mtm, child_view.clone())),
         content_view: child_view,
-        owner: ContentOwner::Leaf(mounted),
+        owner: ContentOwner::Leaf(mounted.map(Box::new)),
     };
     let (state, mut guard, capturable) =
         wire_filtered_state(mtm, services, view, input, effects, env);

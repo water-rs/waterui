@@ -17,9 +17,11 @@
 //! ```
 
 use alloc::borrow::ToOwned;
+use alloc::boxed::Box;
 use alloc::rc::Rc;
 use alloc::string::String;
 use core::cell::{Cell, RefCell};
+use core::fmt;
 
 use crate::Url;
 use executor_core::spawn_local;
@@ -34,11 +36,14 @@ use waterui_capture::ContentLedger;
 use waterui_capture::content_ledger::OwedContent;
 use waterui_core::contract_violation;
 use waterui_core::dynamic::{Dynamic, DynamicHandler};
-use waterui_core::handler::ReportExtraction as _;
+use waterui_core::handler::{
+    BoxedEventAction, EventHandler, ReportExtraction as _, boxed_event_handler,
+};
 use waterui_core::reactive::signal::IntoComputed;
 use waterui_core::reactive::watcher::BoxWatcherGuard;
 use waterui_core::{
-    Binding, Computed, Environment, Metadata, OneOf2, OneOf3, Retain, Signal, Str, View,
+    Binding, Computed, Environment, Metadata, OneOf2, OneOf3, Retain, Signal, SignalExt as _, Str,
+    View,
 };
 use waterui_image::{
     ContentMode, Image, ImageStatus, ReactiveImage, ReactiveImageHandle, reactive_image,
@@ -280,7 +285,111 @@ where
     }
 }
 
-/// A photo component that displays an image from a URL.
+/// Source accepted by [`Photo::new`] and [`photo`]: a URL signal or an
+/// environment-resolved handle (such as an `ImageAsset`).
+pub struct PhotoSource(PhotoSourceInner);
+
+type PhotoSourceResolver = Box<dyn FnOnce(&Environment) -> Option<Computed<Url>>>;
+
+enum PhotoSourceInner {
+    Url(Computed<Url>),
+    Resolve(PhotoSourceResolver),
+}
+
+impl fmt::Debug for PhotoSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.0 {
+            PhotoSourceInner::Url(url) => f.debug_tuple("Url").field(url).finish(),
+            PhotoSourceInner::Resolve(_) => f.write_str("Resolve(..)"),
+        }
+    }
+}
+
+impl PhotoSource {
+    /// Creates a photo source from a URL or reactive signal of URLs.
+    #[must_use]
+    pub fn url(source: impl IntoComputed<Url>) -> Self {
+        Self(PhotoSourceInner::Url(source.into_computed()))
+    }
+
+    /// Creates a photo source resolved from the view's [`Environment`] when
+    /// the [`Photo`] mounts.
+    #[must_use]
+    pub fn from_env(
+        resolver: impl FnOnce(&Environment) -> Option<Computed<Url>> + 'static,
+    ) -> Self {
+        Self(PhotoSourceInner::Resolve(Box::new(resolver)))
+    }
+
+    /// Resolves this photo source against `env`.
+    #[must_use]
+    pub fn resolve(self, env: &Environment) -> Option<Computed<Url>> {
+        match self.0 {
+            PhotoSourceInner::Url(url) => Some(url),
+            PhotoSourceInner::Resolve(resolver) => resolver(env),
+        }
+    }
+}
+
+/// A handle that resolves to a photo [`Url`] against a context extracted once
+/// from the rendering [`Environment`] (`()` for [`Url`] and `&'static str`;
+/// `ResourceContext` for `ImageAsset`).
+pub trait ResolvePhotoUrl: Clone + 'static {
+    /// Context extracted once from [`Environment`] when the [`Photo`] mounts.
+    type Context: Clone + 'static;
+
+    /// Extracts the resolution context from `env`.
+    fn context(env: &Environment) -> Option<Self::Context>;
+
+    /// Resolves this handle into a photo [`Url`] using `context`.
+    fn resolve(&self, context: &Self::Context) -> Url;
+}
+
+impl ResolvePhotoUrl for Url {
+    type Context = ();
+
+    fn context(_env: &Environment) -> Option<Self::Context> {
+        Some(())
+    }
+
+    fn resolve(&self, (): &Self::Context) -> Url {
+        self.clone()
+    }
+}
+
+impl ResolvePhotoUrl for &'static str {
+    type Context = ();
+
+    fn context(_env: &Environment) -> Option<Self::Context> {
+        Some(())
+    }
+
+    fn resolve(&self, (): &Self::Context) -> Url {
+        Url::from(*self)
+    }
+}
+
+/// Input accepted by [`Photo::new`] and [`photo`]: a URL (or signal of URLs)
+/// or an asset handle resolved against the view's [`Environment`] at render time.
+pub trait IntoPhotoSource {
+    /// Converts this input into a [`PhotoSource`].
+    fn into_photo_source(self) -> PhotoSource;
+}
+
+impl<S> IntoPhotoSource for S
+where
+    S: Signal + 'static,
+    S::Output: ResolvePhotoUrl,
+{
+    fn into_photo_source(self) -> PhotoSource {
+        PhotoSource::from_env(move |env| {
+            let context = S::Output::context(env)?;
+            Some(self.map(move |value| value.resolve(&context)).computed())
+        })
+    }
+}
+
+/// A photo component that displays an image from a URL or asset handle.
 ///
 /// `Photo` fetches the image asynchronously, caches decoded frames in the
 /// environment's [`PhotoCache`], and displays them using [`Image`] once loaded.
@@ -294,10 +403,10 @@ where
 /// Photo::new(Url::parse("https://www.rust-lang.org/logos/rust-logo-512x512.png").unwrap());
 /// ```
 pub struct Photo<P = (), F = ()> {
-    /// The URL of the image to display.
-    source: Computed<Url>,
+    /// The image source to resolve and display.
+    source: PhotoSource,
     /// Event handler for photo loading events.
-    on_event: Option<waterui_core::handler::BoxedEventAction<Event>>,
+    on_event: Option<BoxedEventAction<PhotoEvent>>,
     /// Caller-owned status binding updated across each source's load lifecycle.
     status: Option<Binding<PhotoStatus>>,
     /// Static placeholder builder shown while a source loads.
@@ -325,10 +434,10 @@ impl<P, F> core::fmt::Debug for Photo<P, F> {
 /// Events emitted by the Photo component.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
-pub enum Event {
+pub enum PhotoEvent {
     /// The picture is on screen: the source's final decoded frame registered
     /// with the scene backend. Registration settles after the frame is
-    /// decoded — a frame the backend refuses reports [`Event::Error`]
+    /// decoded — a frame the backend refuses reports [`PhotoEvent::Error`]
     /// instead, never `Loaded`.
     Loaded,
     /// The image failed to load: the source did not decode, or the render
@@ -338,12 +447,18 @@ pub enum Event {
 }
 
 impl Photo<(), ()> {
-    /// Creates a new `Photo` component with the specified image source URL.
+    /// Creates a new `Photo` component from a URL signal or asset handle.
     #[must_use]
-    pub fn new(source: impl IntoComputed<Url>) -> Self {
+    pub fn new(source: impl IntoPhotoSource) -> Self {
+        Self::from_source(source.into_photo_source())
+    }
+
+    /// Creates a new `Photo` component from an explicit [`PhotoSource`].
+    #[must_use]
+    pub fn from_source(source: PhotoSource) -> Self {
         let (content_handler, content) = reactive_image();
         Self {
-            source: source.into_computed(),
+            source,
             on_event: None,
             status: None,
             placeholder: (),
@@ -431,19 +546,19 @@ impl<P, F> Photo<P, F> {
     /// ```rust
     /// use waterui::prelude::*;
     /// use waterui_media::url::Url;
-    /// use waterui_media::{Photo, photo::Event};
+    /// use waterui_media::{Photo, PhotoEvent};
     ///
     /// # fn gallery() -> impl View {
     /// # let url = Url::parse("https://www.rust-lang.org/logos/rust-logo-512x512.png").unwrap();
-    /// let photo = Photo::new(url.clone()).on_event(|event: Event| match event {
-    ///     Event::Loaded => tracing::debug!("Image loaded!"),
-    ///     Event::Error(msg) => tracing::debug!("Error: {msg}"),
+    /// let photo = Photo::new(url.clone()).on_event(|event: PhotoEvent| match event {
+    ///     PhotoEvent::Loaded => tracing::debug!("Image loaded!"),
+    ///     PhotoEvent::Error(msg) => tracing::debug!("Error: {msg}"),
     ///     _ => {}
     /// });
     ///
     /// let last_status: Binding<String> = binding(String::new());
     /// let photo = Photo::new(url)
-    ///     .on_event(|event: Event, State(last): State<Binding<String>>| {
+    ///     .on_event(|event: PhotoEvent, State(last): State<Binding<String>>| {
     ///         last.set(format!("{event:?}"));
     ///     })
     ///     .state(&last_status);
@@ -453,9 +568,9 @@ impl<P, F> Photo<P, F> {
     #[must_use]
     pub fn on_event<H, A>(mut self, handler: H) -> Self
     where
-        H: waterui_core::handler::EventHandler<Event, A, ()> + 'static,
+        H: EventHandler<PhotoEvent, A, ()> + 'static,
     {
-        self.on_event = Some(waterui_core::handler::boxed_event_handler(handler));
+        self.on_event = Some(boxed_event_handler(handler));
         self
     }
 }
@@ -529,6 +644,8 @@ impl<P: PlaceholderSlot, F: FailureSlot> View for Photo<P, F> {
             content_handler,
         } = self;
 
+        let source = source.resolve(env)?;
+
         let cache = env.get::<PhotoCache>().cloned();
         let (overlay_handler, overlay_view) = if P::PRESENT || F::PRESENT {
             let (handler, view) = Dynamic::<OneOf3<(), P::View, F::View>>::new();
@@ -589,7 +706,7 @@ impl<P: PlaceholderSlot, F: FailureSlot> View for Photo<P, F> {
             None => OneOf2::A(content),
         };
 
-        Metadata::new(
+        Some(Metadata::new(
             Metadata::new(
                 composed,
                 LifeCycleHook::new(LifeCycle::Appear, {
@@ -598,7 +715,7 @@ impl<P: PlaceholderSlot, F: FailureSlot> View for Photo<P, F> {
                 }),
             ),
             Retain::new((guard, source, load_state)),
-        )
+        ))
     }
 }
 
@@ -706,7 +823,7 @@ impl core::fmt::Display for PhotoLoadError {
 
 impl core::error::Error for PhotoLoadError {}
 
-type PhotoEventHandler = Rc<RefCell<Option<waterui_core::handler::BoxedEventAction<Event>>>>;
+type PhotoEventHandler = Rc<RefCell<Option<BoxedEventAction<PhotoEvent>>>>;
 
 #[expect(
     clippy::too_many_arguments,
@@ -789,7 +906,7 @@ fn start_load_task(
                         owed.fail(PhotoLoadError(e.clone()));
                     }
                     if fresh && let Some(on_event) = on_event.borrow_mut().as_mut() {
-                        on_event(Event::Error(e), &env).report_extraction();
+                        on_event(PhotoEvent::Error(e), &env).report_extraction();
                     }
                 }
             }
@@ -948,7 +1065,7 @@ fn settle_registration_inner(
             if finished {
                 ui_sink.mark_ready();
                 if let Some(on_event) = on_event.borrow_mut().as_mut() {
-                    on_event(Event::Loaded, env).report_extraction();
+                    on_event(PhotoEvent::Loaded, env).report_extraction();
                 }
             }
         }
@@ -962,7 +1079,7 @@ fn settle_registration_inner(
                 owed.fail(error);
             }
             if let Some(on_event) = on_event.borrow_mut().as_mut() {
-                on_event(Event::Error(message), env).report_extraction();
+                on_event(PhotoEvent::Error(message), env).report_extraction();
             }
         }
         Outcome::Unknown(status) => {
@@ -1048,7 +1165,7 @@ fn publish_decoded_frame(handler: &ReactiveImageHandle, image: Image) {
 
 /// Convenience constructor for building a `Photo` component inline.
 #[must_use]
-pub fn photo(source: impl IntoComputed<Url>) -> Photo {
+pub fn photo(source: impl IntoPhotoSource) -> Photo {
     Photo::new(source)
 }
 
@@ -1062,7 +1179,7 @@ mod tests {
     #[cfg(feature = "remote")]
     use super::fetch_and_decode_streaming;
     use super::{
-        Event, Photo, PhotoCache, PhotoEventHandler, PhotoLoadState, PhotoStatus, PhotoUiSink,
+        Photo, PhotoCache, PhotoEvent, PhotoEventHandler, PhotoLoadState, PhotoStatus, PhotoUiSink,
         appear_photo, begin_source_load, decode_finished, subscribe_photo_source,
         update_photo_source,
     };
@@ -1327,15 +1444,15 @@ mod tests {
         let events = Rc::new(RefCell::new(Vec::new()));
         let handler: PhotoEventHandler = Rc::new(RefCell::new(Some(Box::new({
             let events = Rc::clone(&events);
-            move |event: Event, _: &Environment| {
+            move |event: PhotoEvent, _: &Environment| {
                 events.borrow_mut().push(match event {
-                    Event::Loaded => String::from("Loaded"),
-                    Event::Error(message) => format!("Error({message})"),
+                    PhotoEvent::Loaded => String::from("Loaded"),
+                    PhotoEvent::Error(message) => format!("Error({message})"),
                 });
                 Ok(())
             }
         })
-            as BoxedEventAction<Event>)));
+            as BoxedEventAction<PhotoEvent>)));
         (events, handler)
     }
 

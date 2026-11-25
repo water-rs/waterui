@@ -138,11 +138,11 @@ itself.
 `ui().theme(style).mount(..)` is still semantic; it adds the style's tokens for
 components whose bodies read them.
 The macro expands to a plain `#[test]`, so do not also write `#[test]`, and the
-function must take exactly one parameter and return `()`. `waterui::test` is an alias of
+function must take exactly one parameter and return `()` or `Result<(), E>`
+(any `std::process::Termination`, matching `#[test]`). `waterui::test` is an alias of
 the macro `ui_test`, which is the name `waterui::prelude` exports, so a glob import of the
 prelude leaves the built-in `#[test]` unshadowed; write `#[waterui::test]` qualified.
-A styled manual mount names the style in its parameter type:
-`ui: UiBuilder<Styled<hydrolysis_m3::Material3>>`.
+A styled manual mount also takes a plain `UiBuilder`.
 
 Use the mounting form whenever the test needs only a view function. Take the
 manual-mount form when the test must own the bindings the view closes over. Check
@@ -247,19 +247,27 @@ test that pumps and captures the frames between events: `queue_scroll_at`,
 
 ## Waiting
 
-Wait on the condition, never on the clock. A `Selector` is built the same way a query is:
+Wait on the condition, never on the clock. Wait and expectation terminals live directly on
+`Query` — both frame-bounded (`*_within_frames`, for readiness inside the runtime) and
+wall-clock (`*_within` / `wait_for_*`, for work arriving from outside the runtime):
 
 ```rust
-let selector = Selector::default().label("Done");
+app.query().role(Role::IMAGE).label("Video content").assert_exists_within_frames(4);
+app.query().label("Done").assert_value_eq_within("Done", Duration::from_secs(2));
 
-app.wait_for_existence(&selector, Duration::from_secs(2));
-app.wait_for_nonexistence(&selector, timeout);
-app.wait_for_value_eq(&selector, "Done", timeout);
-app.wait_for(&[app.expect_value_eq(selector, "Done")], WaitOptions::new(timeout));
+assert!(app.query().label("Done").wait_for_existence(Duration::from_secs(2)), "missing Done");
+app.query().label("Done").wait_for_nonexistence(timeout);
+app.query().label("Done").wait_for_value_eq("Done", timeout);
+
+let ready = app.query().label("Done").expect_value_eq("Done");
+app.wait_for(&[ready], WaitOptions::new(timeout));
 ```
 
-The first three return `bool`; `wait_for` returns a `WaitResult`. `wait_for_ui_focus`
-waits for keyboard focus, and `app.assert_value_eq(&selector, "Done")` asserts at once.
+The `wait_for_*` terminals return `bool`; `assert_*_within` and `assert_*_within_frames`
+panic with the selector and outcome on failure; `expect_*` converts a query into an
+`Expectation` (or `Expectation::value_eq(Selector::new().label("Done"), "Done")` from a
+detached `Selector`) for multi-condition `app.wait_for(..)` calls (`WaitResult`).
+`wait_for_ui_focus` waits for keyboard focus, and `assert_ui_focus` asserts it at once.
 
 The frame pumps — `app.pump_for(duration)` and `app.pump_until(timeout, || cond())` —
 exist on **`OffscreenApp` only**, not on `SemanticApp`; a `SemanticApp` test waits on
@@ -336,12 +344,10 @@ A bench that owns the bindings its view closes over omits the view path, takes t
 builder by value, and returns the report:
 
 ```rust
-use waterui_testing::{PerfReport, Styled, UiBuilder};
+use waterui_testing::{PerfReport, UiBuilder};
 
 #[waterui::bench(theme = hydrolysis_m3::Material3::defaults(), max_rebuild_ratio = 0.2)]
-fn counter_updates(
-    ui: UiBuilder<Styled<hydrolysis_m3::Material3>>,
-) -> PerfReport {
+fn counter_updates(ui: UiBuilder) -> PerfReport {
     let value = Binding::i32(0);
     let for_view = value.clone();
     ui.perf_with(move || stepper("Count", &for_view), |perf| {

@@ -14,35 +14,42 @@
 //!
 //! ```rust
 //! use waterui::prelude::*;
-//! use waterui::window::{Window, WindowState};
+//! use waterui::window::Window;
 //!
 //! // Semi-transparent colored window
-//! let tinted = Window::new("Tinted", binding::<WindowState>(WindowState::default()), || text!("Hello"))
+//! let tinted = Window::new("Tinted", || text!("Hello"))
 //!     .background(Color::srgb(0, 0, 0).with_opacity(0.8));
 //!
 //! // Frosted glass window: the desktop shows through, blurred on macOS;
 //! // on Hydrolysis tinted, and blurred where the compositor
 //! // supports it
-//! let frosted = Window::new("Frosted", binding::<WindowState>(WindowState::default()), || text!("Hello"))
+//! let frosted = Window::new("Frosted", || text!("Hello"))
 //!     .background(Material::UltraThin);
 //! ```
 
-use std::{cell::RefCell, fmt::Debug, future::Future, rc::Rc, sync::Arc};
+use std::{
+    cell::RefCell,
+    fmt::{self, Debug},
+    future::Future,
+    rc::Rc,
+    sync::Arc,
+};
 
 use nami::{Binding, Computed, Signal, SignalExt as _, impl_constant, signal::IntoComputed};
 use suiteki::Str;
-use waterui_core::backend::{Backend, ChildSlot, MapSlots};
+use waterui_core::backend::Backend;
 use waterui_core::env::Installed;
+use waterui_core::extract::State as EnvState;
 use waterui_core::handler::{AnyViewBuilder, Handler, ViewBuilder, boxed_action};
+use waterui_core::metadata::Metadata;
 use waterui_core::plugin::Plugin;
-use waterui_core::{
-    AnyView, Dynamic, Environment, Native, NativeView, OneOf2, SerialDispatch, View, flatten_signal,
-};
+use waterui_core::{AnyView, Environment, SerialDispatch, View, flatten_signal};
 use waterui_graphics::{Color, color::WorkingColor};
 use waterui_layout::{Point, Rect, Size};
+use waterui_text::{IntoText, Text};
 
 pub use super::window_close::CloseReply;
-use super::window_close::{CloseRequest, Question};
+use super::window_close::{CloseRequest, Question, WeakCloseRequest};
 use super::window_focus::FocusRequest;
 
 use crate::app::{application_identifier, application_name};
@@ -50,12 +57,42 @@ use crate::{background::Material, component::label::LabelDisplayMode, theme::col
 
 /// Represents a window in the UI.
 ///
+/// `Window` is builder-only: configure it with [`Window::new`] and chained
+/// setters, pass it to [`App::window`](crate::app::App::window) or
+/// [`Window::show`], and extract [`WindowHandle`] as handler state inside its
+/// content. Backends take a window apart with [`Window::into_parts`].
+///
 /// `C` builds the window's content; [`Window::new`] wraps the application's
 /// builder in a [`WindowContent`], so the content keeps its type up to the
 /// backend that realizes it. `T` holds the window's optional toolbar (`()`
 /// until [`Window::toolbar`] attaches one), keeping the toolbar view type
 /// intact up to the backend as well.
 pub struct Window<C, T = ()> {
+    title: Text,
+    closable: bool,
+    resizable: bool,
+    frame: Binding<Rect>,
+    content: C,
+    state: Binding<WindowState>,
+    toolbar: T,
+    style: Binding<WindowStyle>,
+    background: Binding<WindowBackground>,
+    min_size: Option<Computed<Size>>,
+    max_size: Option<Computed<Size>>,
+    app_id: Option<Str>,
+    instance_name: Option<Str>,
+    placement: Option<WindowPlacement>,
+    activation: Activation,
+    level: Computed<WindowLevel>,
+    attention: Binding<Option<UserAttention>>,
+    resize_increments: Option<Computed<Size>>,
+    icon: Binding<Option<WindowIcon>>,
+    close_request: CloseRequest,
+    focus_request: FocusRequest,
+}
+
+/// A [`Window`] taken apart for a backend runner, see [`Window::into_parts`].
+pub struct WindowParts<C, T = ()> {
     /// The title of the window.
     ///
     /// Notice that it may not be displayed on all platforms.
@@ -102,7 +139,7 @@ pub struct Window<C, T = ()> {
     /// window is shown, including a switch between [`WindowBackground::Opaque`],
     /// a translucent [`WindowBackground::Color`] and a
     /// [`WindowBackground::Material`]. Backends realize what
-    /// [`Window::resolved_background`] resolves it to.
+    /// [`WindowParts::resolved_background`] resolves it to.
     ///
     /// Notice that it may not be supported on all platforms.
     pub background: Binding<WindowBackground>,
@@ -222,7 +259,7 @@ pub struct Window<C, T = ()> {
     /// identify an application by one icon: unsupported there, not faked
     /// through the Dock. The attribute does not cross the C ABI.
     pub icon: Binding<Option<WindowIcon>>,
-    /// The close-request machine [`Self::on_close_request`] installs into,
+    /// The close-request machine [`Window::on_close_request`] installs into,
     /// shared by `Rc` with [`WindowHandle`] and armed by the backend when the
     /// window is realized.
     close_request: CloseRequest,
@@ -245,14 +282,6 @@ pub trait WindowToolbar: 'static {
     /// Extracts the toolbar view if one was configured.
     fn into_view(self) -> Option<Self::View>;
 
-    /// Builds the toolbar into a backend child slot if one was configured.
-    fn into_slot<S: ChildSlot>(self) -> Option<S>
-    where
-        Self: Sized,
-    {
-        self.into_view().map(S::from_view)
-    }
-
     /// Erases a configured toolbar into [`AnyView`].
     fn erase(self) -> Option<AnyView>
     where
@@ -266,10 +295,6 @@ impl WindowToolbar for () {
     type View = ();
 
     fn into_view(self) -> Option<Self::View> {
-        None
-    }
-
-    fn into_slot<S: ChildSlot>(self) -> Option<S> {
         None
     }
 
@@ -311,50 +336,63 @@ impl<V: View> WindowToolbar for Option<V> {
     }
 }
 
-/// Builds a window's content into its backend's child slot each time the
-/// backend mounts it.
-pub struct WindowSlot<S>(Rc<dyn Fn() -> S>);
-
-impl<S> WindowSlot<S> {
-    fn new(build: impl Fn() -> S + 'static) -> Self {
-        Self(Rc::new(build))
-    }
-
-    /// Builds the window's content in the backend's slot.
-    #[must_use]
-    pub fn build(&self) -> S {
-        (self.0)()
-    }
-}
-
-impl<S: 'static> WindowSlot<S> {
-    /// The same slot builder with each built child mapped through `f`.
-    #[must_use]
-    pub fn map<T>(self, f: impl Fn(S) -> T + 'static) -> WindowSlot<T> {
-        WindowSlot::new(move || f(self.build()))
-    }
-}
-
-impl<S> Clone for WindowSlot<S> {
-    fn clone(&self) -> Self {
-        Self(Rc::clone(&self.0))
-    }
-}
-
-impl<S> Debug for WindowSlot<S> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("WindowSlot")
-    }
-}
-
 impl<C, T> Debug for Window<C, T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Window")
             .field("title", &self.title)
             .field("closable", &self.closable)
             .field("resizable", &self.resizable)
             .field("state", &self.state)
             .finish_non_exhaustive()
+    }
+}
+
+impl<C, T> Debug for WindowParts<C, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WindowParts")
+            .field("title", &self.title)
+            .field("closable", &self.closable)
+            .field("resizable", &self.resizable)
+            .field("state", &self.state)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Wraps a window's content builder so each built root view installs the
+/// window's own [`WindowHandle`] into its environment as handler state.
+#[derive(Debug)]
+pub struct WindowHandleContent<C> {
+    content: C,
+    handle: WindowHandle,
+}
+
+impl<C: ViewBuilder> ViewBuilder for WindowHandleContent<C> {
+    type Output = WindowHandleView<C::Output>;
+
+    fn build(&self) -> Self::Output {
+        WindowHandleView {
+            content: self.content.build(),
+            handle: self.handle.clone(),
+        }
+    }
+}
+
+/// One built instance of a window's content with its [`WindowHandle`]
+/// installed in the environment, see [`WindowHandleContent`].
+#[derive(Debug)]
+pub struct WindowHandleView<V> {
+    content: V,
+    handle: WindowHandle,
+}
+
+impl<V: View> View for WindowHandleView<V> {
+    fn body(self, env: &Environment) -> impl View {
+        Metadata::new(self.content, env.extending(EnvState(self.handle)))
+    }
+
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        let env = env.extending(EnvState(self.handle));
+        self.content.dispatch(backend, &env, cx)
     }
 }
 
@@ -686,8 +724,12 @@ pub enum Activation {
 /// The state of a window.
 ///
 /// `Default::default()` returns [`Self::Closed`]: a freshly initialized
-/// state binding represents a window that has not yet been shown. Setting
-/// the binding to [`Self::Normal`] is what triggers the window to open.
+/// state binding represents a window that has not yet been shown. On a
+/// window declared on [`App`](crate::app::App), setting the binding from
+/// [`Self::Closed`] to [`Self::Normal`] (or any open state) creates the
+/// platform window, writing [`Self::Normal`] while it is already open
+/// restores and focuses it, and writing [`Self::Closed`] tears down the
+/// platform window while keeping the declaration armed for future reopens.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[expect(
     clippy::exhaustive_enums,
@@ -921,7 +963,6 @@ impl From<Material> for WindowBackgroundInput {
 /// owning the paired [`WindowChannel`].
 ///
 /// Created with [`WindowManager::new`]; pass the returned [`WindowChannel`] to
-/// [`App::new_with_windows`](crate::app::App::new_with_windows) or
 /// [`App::window`](crate::app::App::window), and show windows from handlers
 /// through [`Self::show`] or [`Window::show`].
 ///
@@ -1084,23 +1125,24 @@ impl From<WindowStyle> for Binding<WindowStyle> {
 }
 
 impl<B: ViewBuilder> Window<WindowContent<B>> {
-    /// Create a new window with the specified title, state binding, and content.
+    /// Create a new window with the specified title and content.
     ///
-    /// `state` is required: every example calls `.with_state(...)` on every
-    /// window in practice, so the parameter is positional. Use
-    /// `binding::<WindowState>(default())` (which is [`WindowState::Closed`])
-    /// to start the window closed; flip to [`WindowState::Normal`] to open it.
+    /// Accepts any [`IntoText`] value for `title` so string literals resolve
+    /// through the active translation catalog in the application's
+    /// [`Environment`].
     ///
-    /// Note: this does not show the window immediately. It is shown via
-    /// [`Self::show`] or by being conditionally rendered with
-    /// [`conditional_window`].
+    /// The window owns a [`WindowState::Normal`] state binding by default so it
+    /// opens immediately when declared on [`App`](crate::app::App). Chain
+    /// [`Window::state`] to bind the window's lifetime to an external
+    /// `Binding<WindowState>`.
     #[must_use]
-    pub fn new(title: impl IntoComputed<Str>, state: Binding<WindowState>, content: B) -> Self {
+    pub fn new(title: impl IntoText, content: B) -> Self {
         let default_frame = Rect::new(Point::zero(), Size::new(800.0, 600.0));
         let content = WindowContent(content);
+        let state = Binding::container(WindowState::Normal);
         let close_request = CloseRequest::new(&state);
         Self {
-            title: title.into_computed(),
+            title: title.into_text(),
             closable: true,
             resizable: true,
             frame: Binding::container(default_frame),
@@ -1126,14 +1168,136 @@ impl<B: ViewBuilder> Window<WindowContent<B>> {
 }
 
 impl<C, T> Window<C, T> {
-    /// The same window showing `content` instead, wrapped as
-    /// [`Window::new`] wraps it.
+    /// Bind this window's state to an external [`Binding<WindowState>`].
     ///
-    /// For content that needs the window itself, such as its
-    /// [`handle`](Self::handle), which exists only once the window does.
+    /// By default [`Window::new`] owns an internal [`WindowState::Normal`]
+    /// binding. Call this when the application reads or drives the window's
+    /// state — for example, declaring a secondary window on
+    /// [`App`](crate::app::App) starting [`WindowState::Closed`], flipping it
+    /// to [`WindowState::Normal`] to open (or focus if already open), and
+    /// returning it to [`WindowState::Closed`] to close while keeping the
+    /// declaration armed to reopen later.
     #[must_use]
-    pub fn content<B: ViewBuilder>(self, content: B) -> Window<WindowContent<B>, T> {
-        self.map_content(|_| WindowContent(content))
+    pub fn state(mut self, state: &Binding<WindowState>) -> Self {
+        self.close_request.set_state(state);
+        self.state = state.clone();
+        self
+    }
+
+    /// Set whether the window can be closed by the user.
+    ///
+    /// Defaults to `true`. See [`WindowParts::closable`] for how each platform
+    /// honours `false`.
+    #[must_use]
+    pub const fn closable(mut self, closable: bool) -> Self {
+        self.closable = closable;
+        self
+    }
+
+    /// Set the initial content size of the window.
+    ///
+    /// Defaults to `800×600` logical points. Preserves any origin already set
+    /// on the window's frame binding.
+    #[must_use]
+    pub fn default_size(self, size: Size) -> Self {
+        let origin = self.frame.snapshot().origin();
+        self.frame.set(Rect::new(origin, size));
+        self
+    }
+
+    /// Bind this window's frame to an external [`Binding<Rect>`].
+    ///
+    /// By default [`Window::new`] owns an `800×600` frame binding. Call this
+    /// when external code reads or drives the window's position and size.
+    #[must_use]
+    pub fn frame(mut self, frame: &Binding<Rect>) -> Self {
+        self.frame = frame.clone();
+        self
+    }
+
+    /// Bind this window's attention request to an external
+    /// [`Binding<Option<UserAttention>>`].
+    ///
+    /// See [`WindowParts::attention`] for platform support notes.
+    #[must_use]
+    pub fn attention(mut self, attention: &Binding<Option<UserAttention>>) -> Self {
+        self.attention = attention.clone();
+        self
+    }
+
+    /// Returns the window's current [`WindowState`] snapshot.
+    #[must_use]
+    pub fn current_state(&self) -> WindowState {
+        self.state.snapshot()
+    }
+
+    /// Returns the window's current frame snapshot.
+    #[must_use]
+    pub fn current_frame(&self) -> Rect {
+        self.frame.snapshot()
+    }
+
+    /// Takes this window apart for a backend runner, resolving its title
+    /// against `env` so localized titles track the application's translation
+    /// catalog and locale.
+    ///
+    /// Wraps `content` in [`WindowHandleContent`] with the finalized
+    /// [`WindowHandle`] so every view and handler inside the window extracts
+    /// its own `WindowHandle` from the environment on every backend.
+    #[must_use]
+    pub fn into_parts(self, env: &Environment) -> WindowParts<WindowHandleContent<C>, T> {
+        let handle = self.handle();
+        let Self {
+            title,
+            closable,
+            resizable,
+            frame,
+            content,
+            state,
+            toolbar,
+            style,
+            background,
+            min_size,
+            max_size,
+            app_id,
+            instance_name,
+            placement,
+            activation,
+            level,
+            attention,
+            resize_increments,
+            icon,
+            close_request,
+            focus_request,
+        } = self;
+        let title = title
+            .resolve(env)
+            .content()
+            .map(|styled| styled.to_plain())
+            .computed();
+        WindowParts {
+            title,
+            closable,
+            resizable,
+            frame,
+            content: WindowHandleContent { content, handle },
+            state,
+            toolbar,
+            style,
+            background,
+            min_size,
+            max_size,
+            app_id,
+            instance_name,
+            placement,
+            activation,
+            level,
+            attention,
+            resize_increments,
+            icon,
+            close_request,
+            focus_request,
+        }
     }
 
     /// The same window with its content builder replaced by `f(content)`.
@@ -1196,7 +1360,7 @@ impl<C, T> Window<C, T> {
     ///
     /// Without one, the backend derives the minimum from the content's layout
     /// by measuring each axis independently at a zero proposal. See
-    /// [`Self::min_size`] for platform support notes.
+    /// [`WindowParts::min_size`] for platform support notes.
     #[must_use]
     pub fn min_size(mut self, size: impl IntoComputed<Size>) -> Self {
         self.min_size = Some(size.into_computed());
@@ -1205,7 +1369,7 @@ impl<C, T> Window<C, T> {
 
     /// Set an explicit maximum content size for the window.
     ///
-    /// See [`Self::max_size`] for platform support notes.
+    /// See [`WindowParts::max_size`] for platform support notes.
     #[must_use]
     pub fn max_size(mut self, size: impl IntoComputed<Size>) -> Self {
         self.max_size = Some(size.into_computed());
@@ -1215,7 +1379,7 @@ impl<C, T> Window<C, T> {
     /// Set the identity the desktop groups this window under — its X11
     /// `WM_CLASS` and Wayland `app_id`.
     ///
-    /// See [`Self::app_id`] for the default and platform support notes.
+    /// See [`WindowParts::app_id`] for the default and platform support notes.
     #[must_use]
     pub fn app_id(mut self, app_id: impl Into<Str>) -> Self {
         self.app_id = Some(app_id.into());
@@ -1225,7 +1389,7 @@ impl<C, T> Window<C, T> {
     /// Set the window's instance name inside the desktop identity — the X11
     /// `WM_CLASS` instance part.
     ///
-    /// See [`Self::instance_name`] for the default and platform support notes.
+    /// See [`WindowParts::instance_name`] for the default and platform support notes.
     #[must_use]
     pub fn instance_name(mut self, instance_name: impl Into<Str>) -> Self {
         self.instance_name = Some(instance_name.into());
@@ -1234,7 +1398,7 @@ impl<C, T> Window<C, T> {
 
     /// Set where the window stacks relative to other applications' windows.
     ///
-    /// See [`Self::level`] for platform support notes.
+    /// See [`WindowParts::level`] for platform support notes.
     #[must_use]
     pub fn level(mut self, level: impl IntoComputed<WindowLevel>) -> Self {
         self.level = level.into_computed();
@@ -1244,7 +1408,7 @@ impl<C, T> Window<C, T> {
     /// Set the steps the window's content size moves in while the user
     /// resizes it.
     ///
-    /// See [`Self::resize_increments`] for platform support notes.
+    /// See [`WindowParts::resize_increments`] for platform support notes.
     #[must_use]
     pub fn resize_increments(mut self, increments: impl IntoComputed<Size>) -> Self {
         self.resize_increments = Some(increments.into_computed());
@@ -1255,8 +1419,8 @@ impl<C, T> Window<C, T> {
     ///
     /// Takes a [`WindowIcon`] for a fixed icon, an `Option<WindowIcon>`, or a
     /// `Binding<Option<WindowIcon>>` the app keeps to change the icon after
-    /// the window is shown. See [`Self::icon`] for the default and platform
-    /// support notes.
+    /// the window is shown. See [`WindowParts::icon`] for the default and
+    /// platform support notes.
     #[must_use]
     pub fn icon(mut self, icon: impl IntoWindowIcon) -> Self {
         self.icon = icon.into_window_icon();
@@ -1273,7 +1437,7 @@ impl<C, T> Window<C, T> {
     /// Place the window on the monitor `monitor` resolves to, at the frame
     /// `place` computes from that monitor's [`Monitor`].
     ///
-    /// See [`Self::placement`] for the resolution contract and platform
+    /// See [`WindowParts::placement`] for the resolution contract and platform
     /// support notes.
     #[must_use]
     pub fn placement(
@@ -1331,16 +1495,16 @@ impl<C, T> Window<C, T> {
     ///
     /// ```rust
     /// use waterui::prelude::*;
-    /// use waterui::window::{Window, WindowState};
+    /// use waterui::window::Window;
     ///
     /// // Semi-transparent colored window
-    /// let tinted = Window::new("Tinted", binding::<WindowState>(WindowState::default()), || text!("Hello"))
+    /// let tinted = Window::new("Tinted", || text!("Hello"))
     ///     .background(Color::srgb(0, 0, 0).with_opacity(0.8));
     ///
     /// // Frosted glass window: the desktop shows through, blurred on macOS;
     /// // on Hydrolysis tinted, and blurred where the compositor
     /// // supports it
-    /// let frosted = Window::new("Frosted", binding::<WindowState>(WindowState::default()), || text!("Hello"))
+    /// let frosted = Window::new("Frosted", || text!("Hello"))
     ///     .background(Material::UltraThin);
     /// ```
     #[must_use]
@@ -1378,9 +1542,12 @@ impl<C, T> Window<C, T> {
     }
 
     /// Set the title of the window.
+    ///
+    /// Accepts any [`IntoText`] value so string literals resolve through the
+    /// active translation catalog in the application's [`Environment`].
     #[must_use]
-    pub fn title(mut self, title: impl IntoComputed<Str>) -> Self {
-        self.title = title.into_computed();
+    pub fn title(mut self, title: impl IntoText) -> Self {
+        self.title = title.into_text();
         self
     }
 
@@ -1396,10 +1563,13 @@ impl<C, T> Window<C, T> {
     /// which leaves the decision to the platform: a bundle knows its own name
     /// and keeps whatever it had.
     #[must_use]
-    pub fn display_title(&self) -> Computed<Str> {
+    pub fn display_title(&self, env: &Environment) -> Computed<Str> {
         let application = application_name();
         self.title
+            .resolve(env)
+            .content()
             .map(move |declared| {
+                let declared = declared.to_plain();
                 if declared.is_empty() {
                     application.clone()
                 } else {
@@ -1484,7 +1654,8 @@ impl<C, T> Window<C, T> {
     /// arrives.
     #[doc(hidden)]
     pub fn arm_close_requests(&self, env: &Environment) {
-        self.close_request.arm(env, self.closable);
+        let window_env = env.extending(EnvState(self.handle()));
+        self.close_request.arm(&window_env, self.closable);
     }
 
     /// Arms focus requests with `hook` — the platform call
@@ -1526,22 +1697,22 @@ impl<C, T> Window<C, T> {
             style: self.style.clone(),
             background: self.background.clone(),
             icon: self.icon.clone(),
-            close_request: self.close_request.clone(),
+            close_request: self.close_request.downgrade(),
             focus_request: self.focus_request.clone(),
         }
     }
 
     /// Show the window on screen through `manager`.
     ///
-    /// The window opens independently of any view's lifetime, which makes
-    /// this the way to show a window that must outlive every other window —
-    /// for example one reopened under
-    /// [`LastWindowPolicy::StayResident`](crate::app::LastWindowPolicy::StayResident)
-    /// after the last window closed. Pass `manager`'s paired [`WindowChannel`]
-    /// to [`App::new_with_windows`](crate::app::App::new_with_windows) or
+    /// Every call opens a fresh platform window — the right tool for
+    /// unbounded document or scratch windows, or windows opened imperatively
+    /// from handlers after the last window closed under
+    /// [`LastWindowPolicy::StayResident`](crate::app::LastWindowPolicy::StayResident).
+    /// Pass `manager`'s paired [`WindowChannel`] to
     /// [`App::window`](crate::app::App::window) so the runner receives the
-    /// window with its content type intact. For window presentation tied to a
-    /// mounted view, see [`conditional_window`].
+    /// window with its content type intact. For a single-instance secondary
+    /// window that opens once and focuses on repeat, declare it directly on
+    /// [`App::window`](crate::app::App::window) with [`Window::state`] instead.
     ///
     /// # Contract
     ///
@@ -1555,115 +1726,159 @@ impl<C, T> Window<C, T> {
     {
         manager.show(self);
     }
-
-    fn into_slot<S: ChildSlot>(self) -> Window<WindowSlot<S>, Option<S>>
-    where
-        C: ViewBuilder,
-        T: WindowToolbar,
-    {
-        self.map(
-            |content| WindowSlot::new(move || S::from_view(content.build())),
-            WindowToolbar::into_slot,
-        )
-    }
 }
 
-impl<S: 'static> NativeView for Window<WindowSlot<S>, Option<S>> {}
-
-impl<S: 'static> MapSlots<S> for Window<WindowSlot<S>, Option<S>> {
-    type With<T: 'static> = Window<WindowSlot<T>, Option<T>>;
-
-    fn map_slots<T: 'static>(
-        self,
-        f: impl Fn(S) -> T + Clone + 'static,
-    ) -> Window<WindowSlot<T>, Option<T>> {
-        let f_toolbar = f.clone();
-        self.map(|slot| slot.map(f), |toolbar| toolbar.map(f_toolbar))
-    }
-}
-
-impl<C: ViewBuilder, T: WindowToolbar> View for Window<C, T> {
-    /// The erased form, for code that expands views by hand.
-    fn body(self, _env: &Environment) -> impl View {
-        Native::new(self.into_slot::<AnyView>())
+impl<C, T> WindowParts<C, T> {
+    /// The same parts with `content` replaced by `f(content)`.
+    pub fn map_content<D>(self, f: impl FnOnce(C) -> D) -> WindowParts<D, T> {
+        self.map(f, |toolbar| toolbar)
     }
 
-    /// Reaches the backend with the window's content and toolbar in the
-    /// backend's child slot, so a window declared in the tree —
-    /// [`conditional_window`] included — keeps its content and toolbar types
-    /// up to the backend.
-    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
-        backend.native(self.into_slot::<B::Slot>(), env, cx)
-    }
-}
-
-/// Owns the explicit presentation state for a conditionally created window.
-///
-/// Keep this value at the same semantic level as the window's [`WindowState`]
-/// binding. Its retained `presented` binding prevents unrelated state changes
-/// such as Normal → Minimized from creating duplicate native windows.
-#[derive(Debug, Clone)]
-pub struct WindowPresentation {
-    state: Binding<WindowState>,
-    presented: Binding<bool>,
-}
-
-impl WindowPresentation {
-    /// Creates presentation state for a window controlled by `state`.
-    #[must_use]
-    pub fn new(state: &Binding<WindowState>) -> Self {
-        Self {
-            state: state.clone(),
-            presented: Binding::container(false),
+    /// The same parts with `content` replaced by `f(content)` and `toolbar`
+    /// replaced by `g(toolbar)`.
+    pub fn map<D, U>(self, f: impl FnOnce(C) -> D, g: impl FnOnce(T) -> U) -> WindowParts<D, U> {
+        let Self {
+            title,
+            closable,
+            resizable,
+            frame,
+            content,
+            state,
+            toolbar,
+            style,
+            background,
+            min_size,
+            max_size,
+            app_id,
+            instance_name,
+            placement,
+            activation,
+            level,
+            attention,
+            resize_increments,
+            icon,
+            close_request,
+            focus_request,
+        } = self;
+        WindowParts {
+            title,
+            closable,
+            resizable,
+            frame,
+            content: f(content),
+            state,
+            toolbar: g(toolbar),
+            style,
+            background,
+            min_size,
+            max_size,
+            app_id,
+            instance_name,
+            placement,
+            activation,
+            level,
+            attention,
+            resize_increments,
+            icon,
+            close_request,
+            focus_request,
         }
     }
 
-    /// Returns the window-state binding controlled by this presentation.
+    /// What a backend realizes behind the window's content, following the
+    /// reactive [`Self::background`]. See [`resolve_background`].
     #[must_use]
-    pub fn state(&self) -> Binding<WindowState> {
-        self.state.clone()
+    pub fn resolved_background(&self, env: &Environment) -> Computed<ResolvedWindowBackground> {
+        resolve_background(&self.background, env)
+    }
+
+    /// The title to put on the window, see [`Window::display_title`].
+    #[must_use]
+    pub fn display_title(&self) -> Computed<Str> {
+        let application = application_name();
+        self.title
+            .map(move |declared| {
+                if declared.is_empty() {
+                    application.clone()
+                } else {
+                    declared
+                }
+            })
+            .into_computed()
+    }
+
+    /// The identity to give the window, see [`Window::display_app_id`].
+    #[must_use]
+    pub fn display_app_id(&self) -> Str {
+        self.app_id.clone().unwrap_or_else(application_identifier)
+    }
+
+    /// The window's resolved instance name, see [`Window::display_instance_name`].
+    #[must_use]
+    pub fn display_instance_name(&self) -> Str {
+        self.instance_name
+            .clone()
+            .unwrap_or_else(|| self.display_app_id())
+    }
+
+    /// Arms close requests with `env` extended by this window's [`WindowHandle`].
+    #[doc(hidden)]
+    pub fn arm_close_requests(&self, env: &Environment) {
+        let window_env = env.extending(EnvState(self.handle()));
+        self.close_request.arm(&window_env, self.closable);
+    }
+
+    /// Arms focus requests with `hook`, see [`Window::arm_focus_requests`].
+    #[doc(hidden)]
+    pub fn arm_focus_requests(&self, hook: impl FnMut() + 'static) {
+        self.focus_request.arm(hook);
+    }
+
+    /// Files a user close request, see [`Window::request_close`].
+    #[doc(hidden)]
+    pub fn request_close(&self, env: &Environment) {
+        self.arm_close_requests(env);
+        self.close_request.request();
+    }
+
+    /// Whether an [`Window::on_close_request`] handler is installed.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn has_close_handler(&self) -> bool {
+        self.close_request.has_handler()
+    }
+
+    /// Get a handle to control this window.
+    #[must_use]
+    pub fn handle(&self) -> WindowHandle {
+        WindowHandle {
+            frame: self.frame.clone(),
+            state: self.state.clone(),
+            attention: self.attention.clone(),
+            style: self.style.clone(),
+            background: self.background.clone(),
+            icon: self.icon.clone(),
+            close_request: self.close_request.downgrade(),
+            focus_request: self.focus_request.clone(),
+        }
     }
 }
 
-/// Shows a window only once per "open" cycle.
+/// A handle to control a window from its own content or from outside it.
 ///
-/// The window is shown when the presentation's state transitions from
-/// [`WindowState::Closed`] to any other state. Closing the window resets the
-/// retained presentation binding so a subsequent open creates a new native
-/// window.
+/// Every backend installs a window's `WindowHandle` into the environment of
+/// its content, toolbar, and [`Window::on_close_request`] handler, so any
+/// handler inside the window can extract it directly:
 ///
-/// The returned view is invisible and must be placed in the tree, or the
-/// window is never presented. The presentation lives only as long as the
-/// window hosting that view and ends when the host closes; a window that
-/// must outlive every other window — for example one reopened under
-/// [`LastWindowPolicy::StayResident`](crate::app::LastWindowPolicy::StayResident)
-/// after the last window closed — is opened with [`Window::show`] instead.
-pub fn conditional_window<F, C, T>(
-    presentation: &WindowPresentation,
-    creator: F,
-) -> impl View + use<F, C, T>
-where
-    F: Fn(Binding<WindowState>) -> Window<C, T> + 'static,
-    C: ViewBuilder,
-    T: WindowToolbar,
-{
-    let state = presentation.state.clone();
-    let presented = presentation.presented.clone();
-
-    Dynamic::watch(state.clone(), move |s| {
-        if s == WindowState::Closed {
-            presented.set(false);
-            OneOf2::A(())
-        } else if !presented.snapshot() {
-            presented.set(true);
-            OneOf2::B(creator(state.clone()))
-        } else {
-            OneOf2::A(())
-        }
-    })
-}
-
-/// A handle to control a window after it has been shown.
+/// ```rust
+/// use waterui::prelude::*;
+/// use waterui::window::WindowHandle;
+///
+/// fn controls() -> impl View {
+///     button("Maximize").action(|window: WindowHandle| window.maximize())
+/// }
+/// ```
+#[waterui_macros::state]
 #[derive(Debug, Clone)]
 pub struct WindowHandle {
     frame: Binding<Rect>,
@@ -1672,7 +1887,7 @@ pub struct WindowHandle {
     style: Binding<WindowStyle>,
     background: Binding<WindowBackground>,
     icon: Binding<Option<WindowIcon>>,
-    close_request: CloseRequest,
+    close_request: WeakCloseRequest,
     focus_request: FocusRequest,
 }
 
@@ -1811,12 +2026,25 @@ mod tests {
         }
     }
 
+    /// `Window::new` defaults to `WindowState::Normal`, and `.state(&binding)`
+    /// rebinds both the window's state and its close-request machine.
+    #[test]
+    fn window_new_defaults_to_normal_and_state_rebinds_close_requests() {
+        let default_window = Window::new("Notes", || ());
+        assert_eq!(default_window.state.snapshot(), WindowState::Normal);
+
+        let external = Binding::container(WindowState::Normal);
+        let window = Window::new("Settings", || ()).state(&external);
+        assert_eq!(window.state.snapshot(), WindowState::Normal);
+        window.request_close(&Environment::new());
+        assert_eq!(external.snapshot(), WindowState::Closed);
+    }
+
     /// `Window::background(Material)` stores the material as the window's
     /// background instead of wrapping the content.
     #[test]
     fn a_material_is_the_window_background() {
-        let window = Window::new("", Binding::container(WindowState::Normal), || ())
-            .background(Material::Thin);
+        let window = Window::new("", || ()).background(Material::Thin);
         assert!(matches!(
             window.background.snapshot(),
             WindowBackground::Material(Material::Thin)
@@ -1897,7 +2125,7 @@ mod tests {
         let state = Binding::container(WindowState::Closed);
         let (manager, channel) = WindowManager::new();
         drop(channel);
-        Window::new("Orphan", state.clone(), || ()).show(&manager);
+        Window::new("Orphan", || ()).state(&state).show(&manager);
         assert_eq!(state.snapshot(), WindowState::Closed);
     }
 
@@ -1911,7 +2139,7 @@ mod tests {
         }
 
         let (manager, channel) = WindowManager::new();
-        Window::new("first", Binding::container(WindowState::Normal), body("a")).show(&manager);
+        Window::new("first", body("a")).show(&manager);
         assert_eq!(channel.queued_len(), 1);
 
         let received = Rc::new(RefCell::new(Vec::new()));
@@ -1921,18 +2149,32 @@ mod tests {
             let manager = manager.clone();
             move |window| {
                 let built: &'static str = window.build_content().0;
-                received.borrow_mut().push((window.title.snapshot(), built));
+                let title = window
+                    .title
+                    .resolve(&Environment::new())
+                    .content()
+                    .snapshot()
+                    .to_plain();
+                received.borrow_mut().push((title, built));
                 if !nested.replace(true) {
-                    Window::new("third", Binding::container(WindowState::Normal), body("c"))
-                        .show(&manager);
+                    Window::new("third", body("c")).show(&manager);
                 }
             }
         });
         assert_eq!(queued.len(), 1);
-        assert_eq!(queued[0].title.snapshot().as_str(), "first");
+        assert_eq!(
+            queued[0]
+                .title
+                .resolve(&Environment::new())
+                .content()
+                .snapshot()
+                .to_plain()
+                .as_str(),
+            "first"
+        );
         assert_eq!(queued[0].build_content().0, "a");
 
-        Window::new("second", Binding::container(WindowState::Normal), body("b")).show(&manager);
+        Window::new("second", body("b")).show(&manager);
         let log: Vec<_> = received
             .borrow()
             .iter()
@@ -1945,23 +2187,89 @@ mod tests {
     }
 
     #[test]
+    fn window_builders_set_closable_default_size_and_inject_window_handle() {
+        use super::{WindowHandle, WindowRoot};
+        use waterui_core::extract::Extractor as _;
+        use waterui_core::handler::ViewBuilder as _;
+        use waterui_core::layout::{Point, Rect, Size};
+        use waterui_core::metadata::Metadata;
+        use waterui_core::{AnyView, View as _};
+
+        let state = Binding::container(WindowState::Normal);
+        let parts = Window::new("Controls", || ())
+            .state(&state)
+            .closable(false)
+            .default_size(Size::new(1024.0, 768.0))
+            .into_parts(&Environment::new());
+
+        assert!(!parts.closable);
+        assert_eq!(
+            parts.frame.snapshot(),
+            Rect::new(Point::zero(), Size::new(1024.0, 768.0))
+        );
+
+        let wrapped = parts.content.build();
+        let metadata = AnyView::new(wrapped.body(&Environment::new()))
+            .downcast::<Metadata<Environment, WindowRoot<()>>>()
+            .expect("WindowHandleView installs WindowHandle via Metadata<Environment>");
+        let handle = WindowHandle::extract(&metadata.value)
+            .expect("Window::into_parts installs WindowHandle as handler state");
+        handle.maximize();
+        assert_eq!(state.snapshot(), WindowState::Maximized);
+    }
+
+    #[test]
+    fn window_title_resolves_through_translation_catalog_and_a11y_metadata() {
+        use waterui_core::metadata::Metadata;
+        use waterui_locale::{TranslationCatalog, locales};
+
+        use crate::ViewExt as _;
+
+        let locale = Binding::container(locales::EN);
+        let mut env = Environment::new();
+        env.insert(locale.clone());
+        env.insert(
+            TranslationCatalog::new()
+                .add_toml(
+                    locales::FR,
+                    "\"Settings\" = \"Réglages\"\n\"Close window\" = \"Fermer la fenêtre\"\n\"Ready\" = \"Prêt\"",
+                )
+                .expect("test catalog must parse"),
+        );
+
+        let parts = Window::new("Settings", || ()).into_parts(&env);
+        assert_eq!(parts.title.snapshot().as_str(), "Settings");
+
+        let Metadata {
+            value: a11y_label, ..
+        } = ().a11y_label("Close window");
+        let Metadata {
+            value: a11y_value, ..
+        } = ().a11y_value("Ready");
+        let label_signal = a11y_label.resolve(&env);
+        let value_signal = a11y_value.resolve(&env);
+        assert_eq!(label_signal.snapshot().as_str(), "Close window");
+        assert_eq!(value_signal.snapshot().as_str(), "Ready");
+
+        locale.set(locales::FR);
+        assert_eq!(parts.title.snapshot().as_str(), "Réglages");
+        assert_eq!(label_signal.snapshot().as_str(), "Fermer la fenêtre");
+        assert_eq!(value_signal.snapshot().as_str(), "Prêt");
+    }
+
+    #[test]
     fn window_toolbar_keeps_concrete_type_without_erasing() {
         use super::WindowToolbar as _;
 
-        let unset = Window::new("Plain", Binding::container(WindowState::Normal), || ());
+        let unset = Window::new("Plain", || ());
         let _: () = unset.toolbar;
         assert!(().into_view().is_none());
         assert!(().erase().is_none());
-        assert!(().into_slot::<super::AnyView>().is_none());
 
         let (manager, channel) = WindowManager::new();
-        Window::new(
-            "With Toolbar",
-            Binding::container(WindowState::Normal),
-            || (),
-        )
-        .toolbar(crate::widget::Divider)
-        .show(&manager);
+        Window::new("With Toolbar", || ())
+            .toolbar(crate::widget::Divider)
+            .show(&manager);
         let mut queued = channel.drain();
         assert_eq!(queued.len(), 1);
         let delivered = queued.pop().expect("one queued window");
@@ -2004,14 +2312,15 @@ mod tests {
     }
 
     #[test]
-    fn window_root_does_not_install_overlay_or_snackbar_managers() {
+    fn window_root_does_not_install_snackbar_manager() {
         use core::any::{Any, TypeId};
 
         use super::WindowRoot;
-        use crate::fullscreen::FullScreenOverlayManager;
+        use crate::View;
+        #[cfg(feature = "snackbar")]
+        use crate::ViewExt as _;
         #[cfg(feature = "snackbar")]
         use crate::snackbar::SnackbarManager;
-        use crate::{View, ViewExt as _};
 
         struct Probe;
 
@@ -2023,8 +2332,6 @@ mod tests {
         let root_body = WindowRoot(Probe).body(&env);
         assert_eq!(Any::type_id(&root_body), TypeId::of::<Probe>());
 
-        let _overlay_host = Probe.full_screen_overlay_host::<()>();
-        assert!(env.get::<FullScreenOverlayManager<()>>().is_none());
         #[cfg(feature = "snackbar")]
         {
             let _snackbar_host = Probe.snackbar_host();

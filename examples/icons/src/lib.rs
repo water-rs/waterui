@@ -18,7 +18,7 @@ use waterui_icons_material_icon as mdi;
 #[cfg(target_vendor = "apple")]
 fn sf_symbols_demo() -> impl View {
     vstack((
-        text("SF Symbols (Apple)").size(18.0),
+        text("SF Symbols (Apple)").font_size(18.0),
         hstack((
             SfSymbol::HOUSE_FILL,
             SfSymbol::PERSON_FILL,
@@ -36,7 +36,7 @@ fn material_icons_demo() -> impl View {
     use mdi::{account, cog, heart, home, star};
 
     vstack((
-        text("Material Design Icons").size(18.0),
+        text("Material Design Icons").font_size(18.0),
         hstack((home(), account(), cog(), heart(), star())).spacing(16.0),
     ))
     .padding()
@@ -47,7 +47,7 @@ fn lucide_icons_demo() -> impl View {
     use lucide::{heart, house, settings, star, user};
 
     vstack((
-        text("Lucide Icons").size(18.0),
+        text("Lucide Icons").font_size(18.0),
         hstack((house(), user(), settings(), heart(), star())).spacing(16.0),
     ))
     .padding()
@@ -59,16 +59,20 @@ fn colored_icons_demo() -> impl View {
     use mdi::{check_circle, heart, information};
 
     vstack((
-        text("Colored Icons").size(18.0),
+        text("Colored Icons").font_size(18.0),
         hstack((
-            heart().tint(Color::srgb_hex("#EF4444")).size(32.0, 32.0),
-            star().tint(Color::srgb_hex("#F59E0B")).size(32.0, 32.0),
+            heart()
+                .foreground(Color::srgb_hex("#EF4444"))
+                .icon_size(32.0),
+            star()
+                .foreground(Color::srgb_hex("#F59E0B"))
+                .icon_size(32.0),
             check_circle()
-                .tint(Color::srgb_hex("#10B981"))
-                .size(32.0, 32.0),
+                .foreground(Color::srgb_hex("#10B981"))
+                .icon_size(32.0),
             information()
-                .tint(Color::srgb_hex("#3B82F6"))
-                .size(32.0, 32.0),
+                .foreground(Color::srgb_hex("#3B82F6"))
+                .icon_size(32.0),
         ))
         .spacing(16.0),
     ))
@@ -100,7 +104,7 @@ fn all_demos() -> impl View {
 pub fn demo() -> impl View {
     scroll(
         vstack((
-            text("WaterUI Icon Packs").size(28.0),
+            text("WaterUI Icon Packs").font_size(28.0),
             text("Icon packs: SF Symbols, MDI, Lucide"),
             Divider,
             all_demos(),
@@ -111,5 +115,5 @@ pub fn demo() -> impl View {
 
 /// Builds the icons example app.
 pub fn app(env: Environment) -> App<impl Windows> {
-    App::new(demo, env)
+    App::new(env).window(Window::new("", demo))
 }

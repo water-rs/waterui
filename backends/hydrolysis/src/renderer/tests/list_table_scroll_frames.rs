@@ -17,13 +17,12 @@ use nami::collection::SignalCollection;
 use nami::{Binding, Computed, SignalExt as _};
 use waterui::ViewExt as _;
 use waterui::animation::Animation;
-use waterui::component::list::{List, ListItem};
+use waterui::component::list::List;
 use waterui::component::table::{Table, col};
 use waterui::component::text;
 use waterui_core::AnyView;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::SelfId;
-use waterui_core::views::ForEach;
 use waterui_layout::stack::vstack;
 
 use super::{MinimalTestTheme, test_environment};
@@ -42,7 +41,7 @@ fn list_runtime() -> HeadlessRuntime {
     let builder = AnyViewBuilder::<AnyView>::new(move || {
         AnyView::new(List::for_each(SignalCollection::new(rows.clone()), |id| {
             let index = id.into_inner();
-            ListItem::new(text(format!("Row {index}")))
+            text(format!("Row {index}"))
         }))
     });
     HeadlessRuntime::new_for_tests(
@@ -57,20 +56,17 @@ fn list_runtime() -> HeadlessRuntime {
 fn table_runtime() -> HeadlessRuntime {
     let builder = AnyViewBuilder::<AnyView>::new(|| {
         let rows = (0..ROWS).map(SelfId::new).collect::<Vec<_>>();
-        AnyView::new(Table::new(nami::Computed::constant(vec![
-            col(
-                "A",
-                ForEach::new(SignalCollection::new(rows.clone()), |id| {
-                    text(format!("A{}", id.into_inner()))
+        AnyView::new(Table::new(
+            SignalCollection::new(rows),
+            (
+                col("A", |id: &SelfId<usize>| {
+                    text(format!("A{}", (*id).into_inner()))
+                }),
+                col("B", |id: &SelfId<usize>| {
+                    text(format!("B{}", (*id).into_inner()))
                 }),
             ),
-            col(
-                "B",
-                ForEach::new(SignalCollection::new(rows), |id| {
-                    text(format!("B{}", id.into_inner()))
-                }),
-            ),
-        ])))
+        ))
     });
     HeadlessRuntime::new_for_tests(
         test_environment(),
@@ -161,7 +157,7 @@ fn headered_list_runtime() -> HeadlessRuntime {
             ().size(0.0, crate::num_cast::f64_as_f32(HEADER_HEIGHT)),
             List::for_each(SignalCollection::new(rows.clone()), |id| {
                 let index = id.into_inner();
-                ListItem::new(text(format!("Row {index}")))
+                text(format!("Row {index}"))
             }),
         )))
     });
@@ -454,7 +450,7 @@ fn a_decorated_list_scroll_frame_reuses_row_measurements_and_run_layers() {
                 } else {
                     Computed::constant(20.0)
                 };
-                ListItem::new(text(format!("Row {index}")).size(height))
+                text(format!("Row {index}")).font_size(height)
             })
             .selection(&selection_for_list),
         )

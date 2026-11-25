@@ -9,7 +9,7 @@ use waterui::app::{App, Windows};
 use waterui::layout::stack::{HStack, VStack};
 use waterui::prelude::*;
 use waterui::preview;
-use waterui::shape::{RoundedRectangle, ShapeExt};
+use waterui::shape::{CornerRadius, RoundedRectangle, ShapeExt};
 use waterui::widget::condition::when;
 
 /// 8 levels of alternating hstack/vstack nesting. Recursion through `AnyView`
@@ -50,7 +50,7 @@ fn dense_grid() -> impl View {
                         .expect("the 16x10 grid has indices below 160");
                     let hue = f32::from(index) / 160.0;
                     let (r, g, b) = hsl(hue, 0.7, 0.55);
-                    RoundedRectangle::new(0.2)
+                    RoundedRectangle::new(CornerRadius::fraction(0.2))
                         .fill(Color::srgb_f32(r, g, b))
                         .size(28.0, 18.0)
                 },
@@ -88,7 +88,7 @@ fn constraint_edges() -> impl View {
     vstack((
         hstack((
             text("zero:").caption(),
-            RoundedRectangle::new(0.5)
+            RoundedRectangle::new(CornerRadius::fraction(0.5))
                 .fill(Color::srgb_hex("#EF4444"))
                 .size(0.0, 0.0),
             text("after zero").caption().muted(),
@@ -139,5 +139,5 @@ pub fn demo() -> impl View {
 
 /// Builds the example app, showing the edge layout demo.
 pub fn app(env: Environment) -> App<impl Windows> {
-    App::new(demo, env)
+    App::new(env).window(Window::new("", demo))
 }

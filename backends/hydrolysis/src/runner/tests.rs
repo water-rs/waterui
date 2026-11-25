@@ -24,8 +24,8 @@ use core::time::Duration;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Instant;
-use waterui::component::list::{List, ListItem};
-use waterui::window::{Window, WindowState};
+use waterui::component::list::List;
+use waterui::window::Window;
 use waterui::{Binding, Signal, ViewExt as _};
 use waterui_core::animation::Animation;
 use waterui_core::id::SelfId;
@@ -241,11 +241,7 @@ fn a_terminal_frame_failure_requests_no_further_frame() {
     let env = test_environment();
     let gpu = OffscreenGpuContext::for_tests();
     let platform = HeadlessPlatformWindow::on_painter(&OffscreenPainter::Gpu(gpu.clone()), 16, 16);
-    let mut runtime = runtime_window_with_platform(
-        Window::new("", binding(WindowState::Normal), || ()),
-        platform,
-        &env,
-    );
+    let mut runtime = runtime_window_with_platform(Window::new("", || ()), platform, &env);
     let mut now = Instant::now();
     assert!(
         drive_until_idle(&mut runtime, &env, &mut now, 60) < 60,
@@ -429,7 +425,7 @@ fn window_size_limits_reach_the_platform_window() {
             .max_width(640.0)
             .max_height(480.0)
     };
-    let window = Window::new("", binding(WindowState::Normal), content);
+    let window = Window::new("", content);
     let mut runtime = runtime_window_for(window, &test_environment());
     let env = Environment::new();
     let _ = super::pump_window_semantics(&mut runtime, &env);
@@ -441,7 +437,7 @@ fn window_size_limits_reach_the_platform_window() {
     assert_eq!(max, None);
 
     // Explicit limits win over the content-derived ones on both axes.
-    let window = Window::new("", binding(WindowState::Normal), content)
+    let window = Window::new("", content)
         .min_size(Size::new(300.0, 150.0))
         .max_size(Size::new(640.0, 480.0));
     let mut runtime = runtime_window_for(window, &test_environment());
@@ -547,7 +543,7 @@ fn a_reapply_clamps_only_the_axes_whose_limits_changed() {
 fn stretch_axis_content_leaves_the_window_maximum_unbounded() {
     use waterui_layout::frame::Frame;
 
-    let window = Window::new("", binding(WindowState::Normal), || {
+    let window = Window::new("", || {
         Frame::new(().size(100.0, 50.0)).max_width(f32::INFINITY)
     });
     let mut runtime = runtime_window_for(window, &test_environment());
@@ -571,8 +567,7 @@ fn an_infinite_max_size_component_leaves_that_axis_unbounded() {
     use waterui_core::layout::Size;
 
     let max = binding(Size::new(640.0, 480.0));
-    let window = Window::new("", binding(WindowState::Normal), || ().size(100.0, 50.0))
-        .max_size(max.clone());
+    let window = Window::new("", || ().size(100.0, 50.0)).max_size(max.clone());
     let env = test_environment();
     let mut runtime = runtime_window_for(window, &env);
     let _ = pump_window_semantics(&mut runtime, &env);
@@ -613,12 +608,11 @@ fn an_infinite_max_size_component_leaves_that_axis_unbounded() {
     should_panic(expected = "Window::frame.width must be finite, got NaN")
 )]
 fn a_nan_frame_reports_the_field_and_value() {
+    use waterui::binding;
     use waterui_core::layout::{Point, Rect, Size};
 
-    let window = Window::new("", binding(WindowState::Normal), || ().size(100.0, 50.0));
-    window
-        .frame
-        .set(Rect::new(Point::new(0.0, 0.0), Size::new(f32::NAN, 300.0)));
+    let frame = binding(Rect::new(Point::new(0.0, 0.0), Size::new(f32::NAN, 300.0)));
+    let window = Window::new("", || ().size(100.0, 50.0)).frame(&frame);
     let mut runtime = runtime_window_for(window, &test_environment());
     let _ = pump_window_semantics(&mut runtime, &test_environment());
     let read = crate::platform::validated_window_frame(runtime.window.frame.snapshot());
@@ -637,8 +631,7 @@ fn a_nan_frame_reports_the_field_and_value() {
 fn a_nan_min_size_reports_the_field_and_value() {
     use waterui_core::layout::Size;
 
-    let window = Window::new("", binding(WindowState::Normal), || ().size(100.0, 50.0))
-        .min_size(Size::new(f32::NAN, 100.0));
+    let window = Window::new("", || ().size(100.0, 50.0)).min_size(Size::new(f32::NAN, 100.0));
     let mut runtime = runtime_window_for(window, &test_environment());
     let _ = pump_window_semantics(&mut runtime, &test_environment());
 }
@@ -655,8 +648,7 @@ fn a_nan_min_size_reports_the_field_and_value() {
 fn a_nan_max_size_reports_the_field_and_value() {
     use waterui_core::layout::Size;
 
-    let window = Window::new("", binding(WindowState::Normal), || ().size(100.0, 50.0))
-        .max_size(Size::new(640.0, f32::NAN));
+    let window = Window::new("", || ().size(100.0, 50.0)).max_size(Size::new(640.0, f32::NAN));
     let mut runtime = runtime_window_for(window, &test_environment());
     let _ = pump_window_semantics(&mut runtime, &test_environment());
 }
@@ -688,7 +680,7 @@ fn a_remeasure_preserves_the_user_size_inside_the_new_limits() {
 
     let main = binding(false);
     let main_for_view = main.clone();
-    let window = Window::new("", binding(WindowState::Normal), move || {
+    let window = Window::new("", move || {
         let main = main_for_view.clone();
         watch(main, |main| {
             ().size(
@@ -737,7 +729,7 @@ fn a_remeasure_clamps_the_window_size_into_the_new_limits() {
 
     let main = binding(false);
     let main_for_view = main.clone();
-    let window = Window::new("", binding(WindowState::Normal), move || {
+    let window = Window::new("", move || {
         let main = main_for_view.clone();
         watch(main, |main| {
             ().size(
@@ -783,7 +775,7 @@ fn an_explicit_maximum_clamps_a_larger_window() {
     // The pin is reactive: tightening it below the settled window size is a
     // limits change, so the window is clamped into it.
     let pinned_max = Binding::container(Size::new(2000.0, 2000.0));
-    let window = Window::new("", binding(WindowState::Normal), || ()).max_size(pinned_max.clone());
+    let window = Window::new("", || ()).max_size(pinned_max.clone());
     let mut runtime = runtime_window_sized(window, 800, 600, &test_environment());
     let _ = pump_window_semantics(&mut runtime, &Environment::new());
     assert_eq!(
@@ -837,9 +829,7 @@ fn zero_layout_minimum_is_not_replaced_by_ideal_size() {
         }
     }
 
-    let window = Window::new("", binding(WindowState::Normal), || {
-        FixedContainer::new(IdealOnlyLayout, ())
-    });
+    let window = Window::new("", || FixedContainer::new(IdealOnlyLayout, ()));
     let mut runtime = runtime_window_for(window, &test_environment());
     let _ = super::pump_window_semantics(&mut runtime, &Environment::new());
     let (min, _) = runtime
@@ -864,7 +854,7 @@ fn window_minimum_is_the_coupled_box_not_independent_axes() {
 
     let env = test_environment();
     let minimum_of = |content: &'static str| {
-        let window = Window::new("", binding(WindowState::Normal), move || text(content));
+        let window = Window::new("", move || text(content));
         let mut runtime = runtime_window_for(window, &env);
         let _ = super::pump_window_semantics(&mut runtime, &env);
         runtime
@@ -896,7 +886,7 @@ fn rapid_resize_events_keep_the_retained_tree_at_the_latest_size() {
     use std::{cell::Cell, rc::Rc};
 
     let build_count = Rc::new(Cell::new(0));
-    let window = Window::new("", binding(WindowState::Normal), {
+    let window = Window::new("", {
         let build_count = Rc::clone(&build_count);
         move || build_count.set(build_count.get() + 1)
     });
@@ -950,7 +940,7 @@ fn rapid_resize_events_keep_the_retained_tree_at_the_latest_size() {
 #[test]
 fn an_idle_window_repaints_when_its_background_changes() {
     let title = binding(waterui_core::Str::from("old title"));
-    let window = Window::new(title.clone(), binding(WindowState::Normal), || ());
+    let window = Window::new(title.clone(), || ());
     let handle = window.handle();
     let env = test_environment();
     let mut runtime = runtime_window_sized(window, 16, 16, &env);
@@ -1018,7 +1008,7 @@ fn a_scheme_change_repaints_the_clear_colour_of_an_idle_window() {
 
     let scheme = binding(ColorScheme::Light);
     let env = crate::renderer::tests::test_environment_with_scheme(scheme.clone());
-    let window = Window::new("", binding(WindowState::Normal), || ());
+    let window = Window::new("", || ());
     let mut runtime = runtime_window_sized(window, 16, 16, &env);
     let mut now = Instant::now();
 
@@ -1074,7 +1064,7 @@ fn pending_lazy_height_refresh_precedes_scroll_input() {
     let expanded = binding(false);
     let expanded_for_view = expanded.clone();
     let rows = vec![SelfId::new(0usize)];
-    let window = Window::new("", binding(WindowState::Normal), move || {
+    let window = Window::new("", move || {
         let expanded = expanded_for_view.clone();
         scroll(VStack::for_each(rows.clone(), move |_| {
             let expanded = expanded.clone();
@@ -1129,7 +1119,7 @@ fn a_behind_window_material_asks_the_platform_to_blur_behind() {
         (Material::Thick, false),
         (Material::UltraThick, false),
     ] {
-        let window = Window::new("", binding(WindowState::Normal), || ()).background(material);
+        let window = Window::new("", || ()).background(material);
         let mut runtime = runtime_window_for(window, &env);
         render_window(&mut runtime, &env, &mut || false);
         assert_eq!(
@@ -1144,7 +1134,7 @@ fn a_behind_window_material_asks_the_platform_to_blur_behind() {
         waterui::Color::srgb(51, 51, 51),
         waterui::Color::srgb(51, 51, 51).with_opacity(0.5),
     ] {
-        let window = Window::new("", binding(WindowState::Normal), || ()).background(color);
+        let window = Window::new("", || ()).background(color);
         let mut runtime = runtime_window_for(window, &test_environment());
         render_window(&mut runtime, &env, &mut || false);
         assert_eq!(
@@ -1178,13 +1168,14 @@ fn runtime_window_with_platform(
     mut platform: HeadlessPlatformWindow,
     env: &Environment,
 ) -> RuntimeWindow<HeadlessPlatformWindow, crate::text::ParleyEngine> {
+    let window = root_window(window, env);
     platform.apply_properties(&window);
     let renderer = HydrolysisRenderer::with_engine(
         Rc::new(MinimalTestTheme::default()),
         ParleyEngine::system(FontFamilyResolution::Strict),
     );
     RuntimeWindow::new_painted(
-        root_window(window),
+        window,
         platform,
         renderer,
         RenderDiagnosticsConfig {
@@ -1208,7 +1199,7 @@ fn host_window_pipeline_requires_no_gpu_surface_trait() {
         env: &Environment,
     ) -> RuntimeWindow<P, E> {
         RuntimeWindow::new(
-            root_window(window),
+            root_window(window, env),
             platform,
             renderer,
             RenderDiagnosticsConfig {
@@ -1236,11 +1227,7 @@ fn host_window_pipeline_requires_no_gpu_surface_trait() {
     let platform = HeadlessPlatformWindow::on_painter(&OffscreenPainter::for_tests(), 320, 200);
     let env = test_environment();
     let mut runtime = construct(
-        Window::new(
-            "",
-            waterui::Binding::container(waterui::window::WindowState::Normal),
-            || (),
-        ),
+        Window::new("", || ()),
         platform,
         HydrolysisRenderer::with_engine(
             Rc::new(MinimalTestTheme::default()),
@@ -1267,13 +1254,11 @@ fn an_animated_list_scroll_keeps_the_window_awake_until_it_settles() {
 
     let controller = ScrollController::new(0usize);
     let controller_for_view = controller.clone();
-    let window = Window::new("", binding(WindowState::Normal), move || {
+    let window = Window::new("", move || {
         let rows = (0..ROWS).map(SelfId::new).collect::<Vec<_>>();
         AnyView::new(
-            List::for_each(rows, |_row| {
-                ListItem::new(().size(160.0, ROW_HEIGHT_FOR_JUMP_TEST))
-            })
-            .scroll_controller(&controller_for_view),
+            List::for_each(rows, |_row| ().size(160.0, ROW_HEIGHT_FOR_JUMP_TEST))
+                .scroll_controller(&controller_for_view),
         )
     });
     let env = test_environment();
@@ -1432,16 +1417,17 @@ fn sized_test_runtime_window(
     height: u32,
     env: &Environment,
 ) -> RuntimeWindow<HeadlessPlatformWindow, crate::text::ParleyEngine> {
-    let window = Window::new("", binding(WindowState::Normal), || ());
+    let window = Window::new("", || ());
     let mut platform =
         HeadlessPlatformWindow::on_painter(&OffscreenPainter::for_tests(), width, height);
+    let window = root_window(window, env);
     platform.apply_properties(&window);
     let renderer = HydrolysisRenderer::with_engine(
         Rc::new(MinimalTestTheme::default()),
         ParleyEngine::system(FontFamilyResolution::Strict),
     );
     RuntimeWindow::new_painted(
-        root_window(window),
+        window,
         platform,
         renderer,
         RenderDiagnosticsConfig {
@@ -1592,12 +1578,8 @@ fn a_binding_set_outside_a_frame_fires_the_installed_wake_once() {
     let value = Binding::i32(0);
     let content = value.clone();
     let env = test_environment();
-    let mut runtime = runtime_window_for(
-        Window::new("", binding(WindowState::Normal), move || {
-            waterui::text!("{content}")
-        }),
-        &env,
-    );
+    let mut runtime =
+        runtime_window_for(Window::new("", move || waterui::text!("{content}")), &env);
     let mut now = Instant::now();
     assert!(drive_until_idle(&mut runtime, &env, &mut now, 60) < 60);
     let fires = Rc::clone(&runtime.platform.frame_wake_count);
@@ -1663,11 +1645,7 @@ fn frame_transaction_gates_wakes_and_renders_the_restore_frame() {
     let mut platform = HeadlessPlatformWindow::on_painter(&OffscreenPainter::for_tests(), 16, 16);
     platform.frame_transaction = Some(Rc::clone(&transaction));
     let env = test_environment();
-    let mut runtime = runtime_window_with_platform(
-        Window::new("", binding(WindowState::Normal), || ()),
-        platform,
-        &env,
-    );
+    let mut runtime = runtime_window_with_platform(Window::new("", || ()), platform, &env);
     let now = Instant::now();
     transaction.sync_occlusion(runtime.platform.is_occluded());
     let _ = pump_frame_transaction(&mut runtime, &transaction, &env, now);
@@ -1804,12 +1782,10 @@ fn frame_transaction_consumes_a_focused_fields_caret_redraw() {
     use waterui_controls::text_field::TextField;
     use waterui_core::Str;
 
-    let value = binding(Str::from("Caret"));
+    let value = binding::<Str>(Str::from("Caret"));
     let env = test_environment();
     let mut runtime = runtime_window_sized(
-        Window::new("", binding(WindowState::Normal), move || {
-            TextField::new("Value", &value).hide_label()
-        }),
+        Window::new("", move || TextField::new("Value", &value).hide_label()),
         240,
         120,
         &env,
@@ -1957,6 +1933,8 @@ fn a_run_installs_tracing_before_the_app_factory_runs() {
     let mut factory_saw_subscriber = false;
     super::run(
         |env| {
+            use waterui::app::App;
+
             // `set_global_default` succeeds only where no subscriber exists:
             // an Err means `run` installed the subscriber first, an Ok means
             // the factory ran against none — the #2513 order.
@@ -1964,7 +1942,7 @@ fn a_run_installs_tracing_before_the_app_factory_runs() {
                 tracing::subscriber::NoSubscriber::default(),
             )
             .is_err();
-            waterui::app::App::new_with_windows((), env)
+            App::new(env)
         },
         Environment::new(),
         crate::testing::TestStyle::new(),

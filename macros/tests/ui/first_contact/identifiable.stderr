@@ -9,7 +9,7 @@ help: the trait `waterui::Identifiable` is not implemented for `Row`
    |
  8 | struct Row {
    | ^^^^^^^^^^
-   = note: collections such as `nami::collection::List` diff items by id, so each item needs `Identifiable`: implement it for your type, or, for a type you do not own, wrap the value with `SelfId::new(..)` / `.self_id()` (the value is its own id) or `UseId::new(..)` / `.use_id(..)`
+   = note: collections such as `nami::collection::StateList` diff items by id, so each item needs `Identifiable`: implement it for your type, or, for a type you do not own, wrap the value with `SelfId::new(..)` / `.self_id()` (the value is its own id) or `UseId::new(..)` / `.use_id(..)`
 help: the following other types implement trait `waterui::Identifiable`
   --> $CARGO/nami-core-$VERSION/src/id.rs
    |
@@ -21,11 +21,6 @@ help: the following other types implement trait `waterui::Identifiable`
 ...
    |   impl<T: Ord + Clone> Identifiable for SelfId<T> {
    |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `SelfId<T>`
-   |
-  ::: $WORKSPACE/src/component/table.rs
-   |
-   |   impl Identifiable for TableColumn {
-   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `TableColumn`
    = note: required for `Vec<Row>` to implement `waterui::nami::collection::Collection`
 
 error[E0277]: `waterui::component::VStack<ForEach<Vec<Row>, {closure@$DIR/tests/ui/first_contact/identifiable.rs:15:28: 15:33}, waterui::component::Text>>` is not a WaterUI view

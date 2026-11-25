@@ -16,7 +16,7 @@ use waterui_layout::overlay;
 use crate::{
     PlaybackSession, Playlist, Url,
     photo::Photo,
-    video::{ContentMode as VideoContentMode, Event as VideoEvent, Video},
+    video::{Video, VideoEvent},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -52,7 +52,7 @@ impl LivePhotoSource {
 /// one that never ran.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
-pub enum Event {
+pub enum LivePhotoEvent {
     /// A long press held past the activation duration started motion playback.
     MotionStarted,
     /// Motion playback reached the end of the video; the still photo is back.
@@ -71,7 +71,7 @@ pub struct LivePhoto {
     is_playing: Binding<bool>,
     resizable: bool,
     content_mode: Option<ContentMode>,
-    on_event: Option<BoxedEventAction<Event>>,
+    on_event: Option<BoxedEventAction<LivePhotoEvent>>,
 }
 
 impl core::fmt::Debug for LivePhoto {
@@ -113,7 +113,7 @@ impl LivePhoto {
     #[must_use]
     pub fn on_event<H, A>(mut self, handler: H) -> Self
     where
-        H: EventHandler<Event, A, ()> + 'static,
+        H: EventHandler<LivePhotoEvent, A, ()> + 'static,
     {
         self.on_event = Some(boxed_event_handler(handler));
         self
@@ -146,8 +146,7 @@ impl LivePhoto {
 impl View for LivePhoto {
     fn body(self, env: &Environment) -> impl View {
         let source = self.source;
-        let activation_duration_ms =
-            u32::try_from(self.activation_duration.as_millis()).unwrap_or(u32::MAX);
+        let activation_duration = self.activation_duration;
         let is_playing = self.is_playing;
         let resizable = self.resizable;
         let content_mode = self.content_mode;
@@ -163,6 +162,7 @@ impl View for LivePhoto {
                     motion_source.snapshot(),
                     playback_state.clone(),
                     report.clone(),
+                    resizable,
                     content_mode,
                 )
             })
@@ -178,12 +178,15 @@ impl View for LivePhoto {
 
         Metadata::new(
             overlay(still, motion),
-            GestureObserver::new(LongPressGesture::new(activation_duration_ms), move || {
-                if !is_playing_on_press.snapshot() {
-                    is_playing_on_press.set(true);
-                    report_on_press.emit(Event::MotionStarted);
-                }
-            }),
+            GestureObserver::without_event(
+                LongPressGesture::new().minimum_duration(activation_duration),
+                move || {
+                    if !is_playing_on_press.snapshot() {
+                        is_playing_on_press.set(true);
+                        report_on_press.emit(LivePhotoEvent::MotionStarted);
+                    }
+                },
+            ),
         )
     }
 }
@@ -199,15 +202,15 @@ struct LivePhotoReporter {
 }
 
 struct LivePhotoReporterInner {
-    handler: RefCell<Option<BoxedEventAction<Event>>>,
+    handler: RefCell<Option<BoxedEventAction<LivePhotoEvent>>>,
     /// Events emitted while the handler still runs; they are delivered after
     /// it returns, in order, rather than re-entering it.
-    events: SerialDispatch<Event>,
+    events: SerialDispatch<LivePhotoEvent>,
     env: Environment,
 }
 
 impl LivePhotoReporter {
-    fn new(handler: Option<BoxedEventAction<Event>>, env: Environment) -> Self {
+    fn new(handler: Option<BoxedEventAction<LivePhotoEvent>>, env: Environment) -> Self {
         Self {
             inner: Rc::new(LivePhotoReporterInner {
                 handler: RefCell::new(handler),
@@ -217,7 +220,7 @@ impl LivePhotoReporter {
         }
     }
 
-    fn emit(&self, event: Event) {
+    fn emit(&self, event: LivePhotoEvent) {
         self.inner.events.deliver(event, |event| {
             if let Some(handler) = self.inner.handler.borrow_mut().as_mut() {
                 handler(event, &self.inner.env).report_extraction();
@@ -230,17 +233,17 @@ fn live_photo_video(
     source: LivePhotoSource,
     is_playing: Binding<bool>,
     report: LivePhotoReporter,
+    resizable: bool,
     content_mode: Option<ContentMode>,
 ) -> Video {
     let session = PlaybackSession::new(Playlist::single(source.video)).autoplay();
     session.controller().muted().set(true);
     let mut video = Video::new(session);
+    if resizable {
+        video = video.resizable();
+    }
     if let Some(mode) = content_mode {
-        let video_mode = match mode {
-            ContentMode::Fit => VideoContentMode::Fit,
-            ContentMode::Fill => VideoContentMode::Fill,
-        };
-        video = video.content_mode(video_mode);
+        video = video.content_mode(mode);
     }
     video.on_event(move |event| {
         // Both outcomes put the still photo back, but they are not the same
@@ -249,11 +252,11 @@ fn live_photo_video(
         match event {
             VideoEvent::Ended => {
                 is_playing.set(false);
-                report.emit(Event::MotionEnded);
+                report.emit(LivePhotoEvent::MotionEnded);
             }
             VideoEvent::Error { message } => {
                 is_playing.set(false);
-                report.emit(Event::MotionFailed(message));
+                report.emit(LivePhotoEvent::MotionFailed(message));
             }
             _ => {}
         }
@@ -276,21 +279,21 @@ mod tests {
         *reporter.inner.handler.borrow_mut() = Some(Box::new({
             let reporter = reporter.clone();
             let delivered = Rc::clone(&delivered);
-            move |event: Event, _env: &Environment| {
+            move |event: LivePhotoEvent, _env: &Environment| {
                 assert!(
                     !inside.replace(true),
                     "the handler must not run re-entrantly"
                 );
                 delivered.borrow_mut().push(format!("{event:?}"));
                 if !once.replace(true) {
-                    reporter.emit(Event::MotionEnded);
+                    reporter.emit(LivePhotoEvent::MotionEnded);
                 }
                 inside.set(false);
                 Ok(())
             }
         }));
 
-        reporter.emit(Event::MotionStarted);
+        reporter.emit(LivePhotoEvent::MotionStarted);
 
         assert_eq!(&*delivered.borrow(), &["MotionStarted", "MotionEnded"]);
     }

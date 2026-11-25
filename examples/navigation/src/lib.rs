@@ -14,11 +14,11 @@
 //! | `List` with sections | grouped `UITableView`, swipe-to-delete | Material list, drag handles | list box | themed rows |
 //!
 //! The style axis works the same way: `.large_title()` collapses on scroll on
-//! iOS and becomes a large app bar on Android, and `tab_style::automatic()`
+//! iOS and becomes a large app bar on Android, and `TabStyle::Automatic`
 //! resolves to a tab bar on a phone and a sidebar on a desktop-class window.
 //! None of that is decided by this file.
 //!
-//! Each tab owns its own navigation container (`Tab::container`), which is what
+//! Each tab owns its own navigation container (`Tab::new`), which is what
 //! makes a tab remember where you left it: push twice in Inbox, visit Settings,
 //! come back, and the two pushed pages are still there.
 
@@ -31,20 +31,19 @@ use mdi::pencil;
 use mdi::view_gallery;
 use waterui::Identifiable;
 use waterui::app::{App, Windows};
-use waterui::component::label::LabelKind;
 use waterui::component::list::{
-    List, ListContent, ListDelete, ListItem, ListMove, Section, SectionScope, TaggedBy, row,
+    List, ListContent, ListDelete, ListMove, Section, SectionScope, TaggedBy, row,
 };
-use waterui::handler::ViewBuilder;
-use waterui::id::SelfId;
-use waterui::navigation::{NavigationSplitView, NavigationToolbarItems, NavigationView, Navigator};
-use waterui::prelude::theme_color::{Accent, Foreground, SurfaceVariant};
+use waterui::navigation::{
+    NavigationSplitStyle, NavigationSplitView, NavigationToolbarItems, NavigationView, Navigator,
+    TabStyle,
+};
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
 use waterui::reactive::collection::SignalCollection;
-use waterui::shape::{Circle, RoundedRectangle};
-use waterui::views::ForEach;
+use waterui::shape::{Circle, CornerRadius, RoundedRectangle};
+use waterui::theme::color::{Accent, Foreground, SurfaceVariant};
 use waterui_icons_material_icon as mdi;
 
 // ---------------------------------------------------------------------------
@@ -198,12 +197,12 @@ impl Mail {
         )
     }
 
-    fn unread_count(&self) -> Computed<i32> {
+    fn unread_count(&self) -> Computed<u32> {
         self.messages
             .clone()
             .map(|messages| {
                 let unread = messages.iter().filter(|message| message.unread).count();
-                i32::try_from(unread).expect("a mailbox holds fewer than 2^31 unread messages")
+                u32::try_from(unread).expect("a mailbox holds fewer than 2^32 unread messages")
             })
             .computed()
     }
@@ -272,55 +271,29 @@ pub fn library_pane() -> impl View {
 }
 
 /// The navigation tour: an inbox, a library, a gallery and settings, each in its own tab.
-///
-/// # Panics
-///
-/// Panics if the tab collection has no tab for one of the four panes. The tabs and
-/// the pane ids are built from the same four panes, so this cannot happen.
 #[preview]
 pub fn demo() -> impl View {
     let mail = Mail::new();
     let pane = binding(Pane::Inbox);
 
-    let panes = [Pane::Inbox, Pane::Library, Pane::Gallery, Pane::Settings].map(SelfId::new);
     Tabs::new(
         &pane,
-        ForEach::new(panes.to_vec(), move |pane: SelfId<Pane>| {
-            pane_tab(pane.into_inner(), &mail)
-        }),
+        (
+            Tab::new(label("Inbox").icon(inbox()), {
+                let mail = mail.clone();
+                move || inbox_stack(mail.clone())
+            })
+            .tag(Pane::Inbox)
+            .badge(mail.unread_count()),
+            Tab::new(label("Library").icon(image_album()), library_split).tag(Pane::Library),
+            Tab::new(label("Gallery").icon(view_gallery()), gallery_stack).tag(Pane::Gallery),
+            Tab::new(label("Settings").icon(cog()), settings_stack).tag(Pane::Settings),
+        ),
     )
     // A tab bar on a phone, a sidebar or navigation rail on a large window: the
     // backend decides from the platform and the current window size.
-    .style(tab_style::automatic())
+    .style(TabStyle::Automatic)
     .snackbar_host()
-}
-
-/// The tab for `pane`. Every tab shares one root builder, whose page is the
-/// variant of one `OneOf4` its pane picks.
-fn pane_tab(
-    pane: Pane,
-    mail: &Mail,
-) -> Tab<impl ViewBuilder<Output = NavigationView<impl View + use<>>> + use<>, impl LabelKind + use<>>
-{
-    let (title, icon) = match pane {
-        Pane::Inbox => ("Inbox", inbox()),
-        Pane::Library => ("Library", image_album()),
-        Pane::Gallery => ("Gallery", view_gallery()),
-        Pane::Settings => ("Settings", cog()),
-    };
-    let tab = Tab::container(label(title).icon(icon), {
-        let mail = mail.clone();
-        move || match pane {
-            Pane::Inbox => OneOf4::A(inbox_stack(mail.clone())),
-            Pane::Library => OneOf4::B(library_split()),
-            Pane::Gallery => OneOf4::C(gallery_stack()),
-            Pane::Settings => OneOf4::D(settings_stack()),
-        }
-    });
-    match pane {
-        Pane::Inbox => tab.badge(mail.unread_count()),
-        Pane::Library | Pane::Gallery | Pane::Settings => tab,
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -354,7 +327,8 @@ fn inbox_root(
         .navigation_subtitle(text!("{unread} unread"))
         // A search field inside the bar chrome, not a text field drawn above
         // the content.
-        .searchable(&mail.query, "Search mail")
+        .searchable(&mail.query)
+        .search_prompt("Search mail")
         .navigation_toolbar(
             NavigationToolbar::default()
                 // Leading: the edit affordance, where each platform puts it.
@@ -403,11 +377,11 @@ fn message_list(mail: Mail) -> impl View {
         move |message| message_row(&mail, message)
     })
     .editing(mail.editing)
-    .on_delete(|delete: ListDelete, mail: Mail| delete_message(delete, &mail))
-    .on_move(|list_move: ListMove, mail: Mail| move_message(list_move, &mail))
+    .on_delete(|delete: ListDelete<u64>, mail: Mail| delete_message(delete, &mail))
+    .on_move(|list_move: ListMove<u64>, mail: Mail| move_message(list_move, &mail))
 }
 
-fn message_row(mail: &Mail, message: Message) -> ListItem<impl View + use<>> {
+fn message_row(mail: &Mail, message: Message) -> impl View + use<> {
     let id = message.id;
     // The dot has to *derive* from the state that owns it. `List::for_each`
     // diffs membership by id, so marking every message read changes no ids and
@@ -427,7 +401,7 @@ fn message_row(mail: &Mail, message: Message) -> ListItem<impl View + use<>> {
         .computed();
     let announced = Str::from(format!("{}: {}", message.sender, message.subject));
 
-    ListItem::new(NavigationLink::value(
+    NavigationLink::value(
         // A row that reads as one thing to assistive technology and shows
         // three lines on screen: `Label::new` keeps both, and requires the
         // spoken text rather than guessing it from the layout.
@@ -460,41 +434,27 @@ fn message_row(mail: &Mail, message: Message) -> ListItem<impl View + use<>> {
             .padding_vertical(8.0)
         }),
         MailRoute::Message(id),
-    ))
+    )
 }
 
-fn delete_message(ListDelete(index): ListDelete, mail: &Mail) {
-    let Some(id) = visible_id(mail, index) else {
-        return;
-    };
+fn delete_message(ListDelete(id): ListDelete<u64>, mail: &Mail) {
     mail.messages.get_mut().retain(|message| message.id != id);
 }
 
-fn move_message(ListMove(movement): ListMove, mail: &Mail) {
-    let (Some(moved), Some(target)) = (
-        visible_id(mail, movement.from()),
-        visible_id(mail, movement.to()),
-    ) else {
-        return;
-    };
+fn move_message(ListMove(movement): ListMove<u64>, mail: &Mail) {
     let mut messages = mail.messages.get_mut();
     let (Some(from), Some(to)) = (
-        messages.iter().position(|message| message.id == moved),
-        messages.iter().position(|message| message.id == target),
+        messages
+            .iter()
+            .position(|message| message.id == *movement.id()),
+        messages
+            .iter()
+            .position(|message| message.id == *movement.target()),
     ) else {
         return;
     };
     let message = messages.remove(from);
     messages.insert(to, message);
-}
-
-/// Rows are addressed by position in the *filtered* list, so an edit maps back
-/// through the same filter the user is looking at.
-fn visible_id(mail: &Mail, index: usize) -> Option<u64> {
-    let messages = mail.messages.snapshot();
-    let query = mail.query.snapshot();
-    let visible = filter_messages(&messages, &query);
-    visible.as_slice().get(index).map(|message| message.id)
 }
 
 fn message_detail(
@@ -633,7 +593,7 @@ fn library_split() -> impl View {
         album_detail,
     )
     .sidebar_width(ColumnWidth::new(220.0, 280.0, 360.0))
-    .style(split_style::prominent_detail())
+    .style(NavigationSplitStyle::ProminentDetail)
     .placeholder(placeholder)
 }
 
@@ -667,16 +627,14 @@ fn album_row(album: Album) -> impl ListContent<SectionScope> + TaggedBy<Album> {
     let count = album.count();
 
     (move || {
-        ListItem::new(
-            hstack((
-                album_icon().size(20.0, 20.0).foreground(Accent),
-                text(album.title()).body().foreground(Foreground),
-                spacer(),
-                text!("{count}").caption().muted(),
-            ))
-            .spacing(10.0)
-            .padding_with((10.0, 12.0)),
-        )
+        hstack((
+            album_icon().size(20.0, 20.0).foreground(Accent),
+            text(album.title()).body().foreground(Foreground),
+            spacer(),
+            text!("{count}").caption().muted(),
+        ))
+        .spacing(10.0)
+        .padding_with((10.0, 12.0))
     })
     .tag(album)
 }
@@ -726,7 +684,7 @@ fn photo_tile(index: usize) -> impl View {
                 photo_color(index).size(160.0, 120.0),
                 text!("Photo {index}").subheadline().foreground(Foreground),
             ))
-            .clip(RoundedRectangle::new(0.1))
+            .clip(RoundedRectangle::new(CornerRadius::fraction(0.1)))
         }),
         PhotoRoute(index),
     )
@@ -737,9 +695,8 @@ fn photo_page(index: usize) -> NavigationView<impl View + use<>> {
     vstack((
         photo_color(index)
             .height(280.0)
-            // A `RoundedRectangle` radius is a fraction of the shorter side,
-            // not a point value.
-            .clip(RoundedRectangle::new(0.06))
+            // Proportional radius scales with the shorter side.
+            .clip(RoundedRectangle::new(CornerRadius::fraction(0.06)))
             .navigation_transition_destination(PhotoRoute(index)),
         text(include_str!("gallery_transition_description.txt"))
             .caption()
@@ -750,7 +707,7 @@ fn photo_page(index: usize) -> NavigationView<impl View + use<>> {
     .navigation_title(text!("Photo {index}"))
     .inline_title()
     // The declaration lives on the destination, because the pair it names does.
-    .transition(navigation_transition::zoom(PhotoRoute(index)))
+    .page_transition(navigation_transition::zoom(PhotoRoute(index)))
 }
 
 /// Six flat swatches standing in for photographs.
@@ -796,8 +753,8 @@ fn settings_root(
 
     List::content((
         Section::new("General").content((
-            move || ListItem::new(Toggle::new("Notifications", &notifications)),
-            move || ListItem::new(Toggle::new("Compact rows", &compact)),
+            move || Toggle::new("Notifications", &notifications),
+            move || Toggle::new("Compact rows", &compact),
         )),
         Section::new("More")
             .footer("Sub-pages push onto this tab's own stack.")
@@ -810,11 +767,11 @@ fn settings_root(
     .large_title()
 }
 
-fn settings_link(title: &'static str, route: SettingsRoute) -> ListItem<impl View> {
+fn settings_link(title: &'static str, route: SettingsRoute) -> impl View {
     // No disclosure indicator here: whether a row that pushes shows one is the
     // platform's own convention — iOS draws a chevron, a Mac does not — so the
     // link decides, not the application.
-    ListItem::new(NavigationLink::value(title, route))
+    NavigationLink::value(title, route)
 }
 
 fn appearance_page(compact: Binding<bool>) -> NavigationView<impl View + use<>> {
@@ -823,7 +780,7 @@ fn appearance_page(compact: Binding<bool>) -> NavigationView<impl View + use<>> 
     List::content((Section::new("Density")
         .footer("The row height the message list uses.")
         .content((
-            move || ListItem::new(Toggle::new("Compact rows", &compact)),
+            move || Toggle::new("Compact rows", &compact),
             row("Current", text!("{density}")),
         )),))
     .navigation_title("Appearance")
@@ -852,5 +809,5 @@ fn about_page() -> NavigationView<impl View + use<>> {
 
 /// Builds the navigation tour app around [`demo`].
 pub fn app(env: Environment) -> App<impl Windows> {
-    App::new(demo, env)
+    App::new(env).window(Window::new("", demo))
 }

@@ -1,13 +1,13 @@
-error[E0277]: `ReactiveList<Row>` is not a WaterUI view collection
-  --> tests/ui/first_contact/views.rs:19:49
+error[E0277]: `waterui::prelude::StateList<Row>` is not a WaterUI view collection
+  --> tests/ui/first_contact/views.rs:18:49
    |
-19 |     LazyContainer::new(VStackLayout::default(), rows)
+18 |     LazyContainer::new(VStackLayout::default(), rows)
    |     ------------------                          ^^^^ expected a collection of views
    |     |
    |     required by a bound introduced by this call
    |
-   = help: the trait `Views` is not implemented for `ReactiveList<Row>`
-   = note: `Views` is implemented by `ForEach`, `Constant`, `Vec` and arrays of views, and `AnyViews`. To turn a data collection into views use `ForEach::new(data, f)` — exposed as `VStack::for_each` / `List::for_each` — over any `nami` collection: a `List` of `Identifiable` items, or an array or static slice, whose rows are identified by index.
+   = help: the trait `Views` is not implemented for `waterui::prelude::StateList<Row>`
+   = note: `Views` is implemented by `ForEach`, `Constant`, `Vec` and arrays of views, and `AnyViews`. To turn a data collection into views use `ForEach::new(data, f)` — exposed as `VStack::for_each` / `List::for_each` — over any `nami` collection: a `StateList` of `Identifiable` items, or an array or static slice, whose rows are identified by index.
    = help: the following other types implement trait `Views`:
              AnyViews<V>
              ContentRows<C, R>
@@ -15,6 +15,7 @@ error[E0277]: `ReactiveList<Row>` is not a WaterUI view collection
              SharedAnyViews<V>
              Vec<V>
              [V; N]
+             component::selection_support::WithId<C, F>
              waterui::views::Constant<C>
              waterui::views::Map<C, F>
 note: required by a bound in `waterui::prelude::LazyContainer::<V>::new`

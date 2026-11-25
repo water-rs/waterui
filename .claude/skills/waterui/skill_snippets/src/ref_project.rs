@@ -5,7 +5,7 @@
 
 use waterui::prelude::*;
 
-/// Glue: the root view `App::new(root_view, env)` refers to.
+/// Glue: the root view `App::new(env).window(Window::new("My App", root_view))` refers to.
 fn root_view() -> impl View {
     text("root")
 }
@@ -34,7 +34,7 @@ pub mod project_block_01 {
     use waterui::prelude::*;
 
     pub fn app(env: Environment) -> App<impl Windows> {
-        App::new(root_view, env)
+        App::new(env).window(Window::new("My App", root_view))
     }
 }
 
@@ -48,7 +48,7 @@ pub mod project_block_02 {
 
     pub fn app(env: Environment) -> App<impl Windows> {
         let state = AppState::new();
-        App::new(move || content(state.clone()), env)
+        App::new(env).window(Window::new("My App", move || content(state.clone())))
     }
 }
 
@@ -83,6 +83,7 @@ pub fn project_block_03() -> impl View {
 // must enable it for this module to compile.
 // ---------------------------------------------------------------------------
 pub mod project_block_04 {
+    use waterui::prelude::*;
     use waterui::widgets::*;
 
     #[waterui::widget_intent(name = "Mark done")]
@@ -91,23 +92,47 @@ pub mod project_block_04 {
     }
 
     impl WidgetIntent for MarkDone {
-        fn perform(self) {
+        fn perform(self, store: &WidgetStore) {
+            let completed: u32 = store.get("completed").unwrap_or(0);
+            let _ = store.set("completed", &(completed + 1));
             waterui::log::info!("done {}", self.id);
         }
     }
 
     #[waterui::widget(name = "Tasks", description = "Open tasks", families = [systemSmall, systemMedium])]
     pub fn tasks(context: WidgetContext) -> impl WidgetContent {
-        let title = Font::style(if context.family() == WidgetFamily::SystemSmall {
-            FontStyle::Headline
+        use waterui::widgets::prelude::*;
+
+        let completed: u32 = context.shared_store().get("completed").unwrap_or(0);
+        let header = if context.family() == WidgetFamily::SystemSmall {
+            text(format!("Completed: {completed}")).headline()
         } else {
-            FontStyle::Title
-        });
+            text(format!("Completed: {completed}")).title()
+        };
         vstack((
-            text("Tasks").font(title),
-            intent(&MarkDone { id: 1 }, text("Mark done")),
+            header,
+            spacer(),
+            text(Date::now()).relative(),
+            intent(
+                &MarkDone { id: 1 },
+                image_system("checkmark.circle.fill").a11y_label("Mark done"),
+            ),
         ))
         .alignment(HorizontalAlignment::Leading)
+        .padding()
+        .background(Color::ACCENT)
+    }
+
+    pub fn app_view_alongside_widgets() -> impl View {
+        vstack((text("Tasks"), spacer())).padding()
+    }
+
+    pub fn update_from_app() {
+        if let Ok(store) = shared_store() {
+            let _ = store.set("completed", &5_u32);
+        }
+        reload("tasks");
+        reload_all();
     }
 }
 

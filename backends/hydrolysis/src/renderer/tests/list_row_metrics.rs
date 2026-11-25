@@ -1,6 +1,6 @@
 //! Row metrics tests for water-rs/hydrolysis#201 (water-rs/waterui#1249).
 //!
-//! `ListItem::insets` replaces the theme's row insets for one row and
+//! `ViewExt::list_row_insets` replaces the theme's row insets for one row and
 //! `ListConfig::min_row_height` (via `.list_min_row_height`) replaces the
 //! theme's one-line floor for every row under it. Both unset keeps the
 //! theme's metrics exactly.
@@ -14,11 +14,11 @@ use nami::Binding;
 use nami::collection::SignalCollection;
 use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityGeometry;
-use waterui::component::list::{List, ListItem};
+use waterui::component::list::List;
 use waterui::component::text;
-use waterui_core::AnyView;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::SelfId;
+use waterui_core::{AnyView, OneOf2};
 use waterui_layout::padding::EdgeInsets;
 
 use super::{MinimalTestTheme, Realized, test_environment};
@@ -98,14 +98,12 @@ fn metrics_list(
             let index = id.into_inner();
             // These tests pin the content rect the row allots, so the label
             // reports its allocation rather than the text's own box.
-            let item = ListItem::new(
-                text(format!("Row {index}"))
-                    .size(LABEL_SIZE)
-                    .a11y_geometry(AccessibilityGeometry::Allocation),
-            );
+            let item = text(format!("Row {index}"))
+                .font_size(LABEL_SIZE)
+                .a11y_geometry(AccessibilityGeometry::Allocation);
             match insets_of(index) {
-                Some(insets) => item.insets(insets),
-                None => item,
+                Some(insets) => OneOf2::A(item.list_row_insets(insets)),
+                None => OneOf2::B(item),
             }
         });
         match floor {
@@ -272,7 +270,7 @@ fn wrapping_list() -> AnyViewBuilder<AnyView> {
     let rows = Binding::container(vec![SelfId::new(0_u64)]);
     AnyViewBuilder::<AnyView>::new(move || {
         AnyView::new(List::for_each(SignalCollection::new(rows.clone()), |_| {
-            ListItem::new(text(LONG_LABEL))
+            text(LONG_LABEL)
         }))
     })
 }

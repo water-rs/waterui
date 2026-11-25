@@ -3,7 +3,7 @@
 //! [`ListContent`] mirrors the closed-collection pattern used by `MenuView`
 //! (see `components/controls/src/menu.rs`): every value type the user can
 //! drop into [`crate::component::list::List::content`] explicitly opts in
-//! through this trait. Implementations exist for any `Fn() -> ListItem` row
+//! through this trait. Implementations exist for any `Fn() -> impl View` row
 //! builder, the [`Row`] builder produced by [`row`] / [`detail_row`], a
 //! [`ForEach`] over a reactive collection, [`super::Section`], tuples up to
 //! 15 elements, fixed-size arrays, [`Vec<T>`], and `Option<T>`.
@@ -13,17 +13,17 @@
 //! rows — a tuple — unifies them as nested [`OneOf2`] branches, so a row
 //! reaches the backend without erasure.
 //!
-//! Static rows are *builders*, not finished [`super::ListItem`] values,
-//! because the list rematerializes a row every time it needs one — write
-//! `|| ListItem::new(…)`, not `ListItem::new(…)`. A [`ForEach`] keeps its
-//! collection's identity and follows it row by row.
+//! Static rows are *builders*, not finished views, because the list
+//! rematerializes a row every time it needs one — write `|| text("...")`, not
+//! `text("...")`. A [`ForEach`] keeps its collection's identity and follows it
+//! row by row.
 //!
 //! The scope parameter keeps sections flat: a [`super::Section`] is
 //! [`ListContent`] of the list ([`ListScope`]) but not of another section
 //! ([`SectionScope`]), so nesting one section in another does not compile.
 //!
 //! A static row becomes selectable by tagging it with the value that selects
-//! it — `(|| ListItem::new(…)).tag(value)` through
+//! it — `(|| text("...")).tag(value)` through
 //! [`ViewExt::tag`](crate::ViewExt::tag), or [`Row::tag`] — and a `ForEach`
 //! row is selected by its item's id. [`ContentTags`] states, per selection
 //! type, which content a list may select by it and whether any of its rows
@@ -32,7 +32,8 @@
 use alloc::vec::Vec;
 
 use nami::collection::Collection;
-use waterui_core::handler::AnyViewBuilder;
+use nami::signal::IntoSignal;
+use waterui_core::handler::{AnyViewBuilder, Handler};
 use waterui_core::id::TaggedView;
 use waterui_core::{Environment, OneOf2, View};
 
@@ -48,7 +49,7 @@ use crate::Color;
 use crate::view::ViewExt;
 use crate::views::ForEach;
 
-use super::ListItem;
+use super::edits::{StaticOnDelete, static_delete_action};
 use super::rows::ListItemSink;
 
 // ============================================================================
@@ -263,14 +264,12 @@ impl<T, C: ContentTags<T>, const N: usize> ContentTags<T> for [C; N] {
     type Presence = C::Presence;
 }
 
-/// Closures that return a fresh [`ListItem`] are valid leaf content. This is
-/// the escape hatch for embedding arbitrary [`ListItem`] producers — e.g.
-/// pre-built items from another module — without forcing them through
-/// [`Row`]. The closure is called by the framework whenever the row needs to
-/// be (re)materialized, so it must be `Fn`, not `FnOnce`.
+/// Closures that return a fresh view are valid leaf content. The closure is
+/// called by the framework whenever the row needs to be (re)materialized, so
+/// it must be `Fn`, not `FnOnce`.
 impl<S, F, V> ListContent<S> for F
 where
-    F: Fn() -> ListItem<V> + 'static,
+    F: Fn() -> V + 'static,
     V: View,
 {
     type Row = V;
@@ -280,39 +279,37 @@ where
         R: View,
         W: Fn(Self::Row) -> R + Clone + 'static,
     {
-        sink.push(wrapped_builder(self, wrap));
+        sink.push_row(wrapped_builder(self, wrap));
     }
 }
 
 /// The builder of a static row whose content `wrap` carries into the sink's
 /// row type.
-fn wrapped_builder<V, R, W>(
-    build: impl Fn() -> ListItem<V> + 'static,
-    wrap: W,
-) -> AnyViewBuilder<ListItem<R>>
+fn wrapped_builder<V, R, W>(build: impl Fn() -> V + 'static, wrap: W) -> AnyViewBuilder<R>
 where
     V: View,
     R: View,
     W: Fn(V) -> R + 'static,
 {
-    AnyViewBuilder::new(move || build().map_content(&wrap))
+    AnyViewBuilder::new(move || wrap(build()))
 }
 
 /// An untagged row builder is not selectable, so it fits a list selected by
 /// any type and gives it nothing to select.
 impl<T, F, V> ContentTags<T> for F
 where
-    F: Fn() -> ListItem<V> + 'static,
+    F: Fn() -> V + 'static,
+    V: View,
 {
     type Presence = Untagged;
 }
 
 /// A row builder tagged with [`ViewExt::tag`](crate::ViewExt::tag) is
-/// selected by its tag: `(|| ListItem::new(…)).tag(value)`.
+/// selected by its tag: `(|| text("...")).tag(value)`.
 impl<S, T, F, V> ListContent<S> for TaggedView<T, F>
 where
     T: 'static,
-    F: Fn() -> ListItem<V> + 'static,
+    F: Fn() -> V + 'static,
     V: View,
 {
     type Row = V;
@@ -322,13 +319,14 @@ where
         R: View,
         W: Fn(Self::Row) -> R + Clone + 'static,
     {
-        sink.push_tagged(wrapped_builder(self.content, wrap), self.tag);
+        sink.push_tagged(wrapped_builder(self.content, wrap), self.tag, None);
     }
 }
 
 impl<T, F, V> ContentTags<T> for TaggedView<T, F>
 where
-    F: Fn() -> ListItem<V> + 'static,
+    F: Fn() -> V + 'static,
+    V: View,
 {
     type Presence = Tagged;
 }
@@ -338,11 +336,11 @@ where
 /// items it inserts, removes or moves are inserted, removed or moved in
 /// place, and inside a [`super::Section`] the header opens whichever row
 /// currently leads it.
-impl<S, C, F, V> ListContent<S> for ForEach<C, F, ListItem<V>>
+impl<S, C, F, V> ListContent<S> for ForEach<C, F, V>
 where
     C: Collection + Clone + 'static,
     C::Item: Clone,
-    F: Fn(C::Item) -> ListItem<V> + 'static,
+    F: Fn(C::Item) -> V + 'static,
     V: View,
 {
     type Row = V;
@@ -352,14 +350,14 @@ where
         R: View,
         W: Fn(Self::Row) -> R + Clone + 'static,
     {
-        sink.push_rows(self, move |item: ListItem<V>| item.map_content(&wrap));
+        sink.push_rows(self, wrap);
     }
 }
 
-impl<C, F, V> ContentTags<C::Id> for ForEach<C, F, ListItem<V>>
+impl<C, F, V> ContentTags<C::Id> for ForEach<C, F, V>
 where
     C: Collection,
-    F: Fn(C::Item) -> ListItem<V>,
+    F: Fn(C::Item) -> V,
     V: View,
 {
     type Presence = Tagged;
@@ -479,6 +477,7 @@ pub struct Row<L> {
     layout: RowLayout,
     value_color: Option<Color>,
     deletable: Option<bool>,
+    on_delete: Option<StaticOnDelete>,
 }
 
 impl<L> core::fmt::Debug for Row<L> {
@@ -487,6 +486,7 @@ impl<L> core::fmt::Debug for Row<L> {
             .field("layout", &self.layout)
             .field("has_value_color", &self.value_color.is_some())
             .field("deletable_override", &self.deletable)
+            .field("has_delete_handler", &self.on_delete.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -509,15 +509,28 @@ impl<L> Row<L> {
 
     /// Sets the foreground color applied to the value view.
     ///
-    /// Theme tokens like `Accent` and `MutedForeground` work here because
-    /// they implement `Into<Color>` via the theme module.
+    /// Accepts any [`IntoSignal<Color>`]: a constant colour, a theme token such
+    /// as `Accent` or `MutedForeground`, or a reactive colour signal.
     #[must_use]
-    pub fn value_color(mut self, color: impl Into<Color>) -> Self {
-        self.value_color = Some(color.into());
+    pub fn value_color(mut self, color: impl IntoSignal<Color> + 'static) -> Self {
+        self.value_color = Some(Color::from_signal(color));
         self
     }
 
-    /// Overrides the deletability of the resulting [`ListItem`].
+    /// Attaches a delete handler to this static row, opting it in to deletion.
+    ///
+    /// Static rows are not deletable unless asked for through this method.
+    #[must_use]
+    pub fn on_delete<H, Args>(mut self, handler: H) -> Self
+    where
+        H: Handler<Args, ()>,
+    {
+        self.on_delete = Some(static_delete_action(handler));
+        self
+    }
+
+    /// Overrides the deletability of this row when it has an [`Row::on_delete`]
+    /// handler.
     #[must_use]
     pub const fn deletable(mut self, deletable: bool) -> Self {
         self.deletable = Some(deletable);
@@ -533,17 +546,14 @@ impl<L> Row<L> {
 }
 
 impl<L: LabelKind> Row<L> {
-    /// The row the list builds whenever it realizes this one.
-    fn build_item(&self) -> ListItem<RowContent<L>> {
-        let item = ListItem::new(RowContent {
+    /// The row view the list builds whenever it realizes this one.
+    fn build_content(&self) -> RowContent<L> {
+        RowContent {
             label: self.label.clone(),
             value: self.value.clone(),
             layout: self.layout,
             value_color: self.value_color.clone(),
-        });
-        match self.deletable {
-            Some(deletable) => item.deletable(deletable),
-            None => item,
+            deletable: self.deletable,
         }
     }
 }
@@ -556,6 +566,7 @@ pub struct RowContent<L> {
     value: Text,
     layout: RowLayout,
     value_color: Option<Color>,
+    deletable: Option<bool>,
 }
 
 impl<L: LabelKind> View for RowContent<L> {
@@ -564,7 +575,7 @@ impl<L: LabelKind> View for RowContent<L> {
             Some(color) => OneOf2::A(self.value.foreground(color)),
             None => OneOf2::B(self.value),
         };
-        match self.layout {
+        let body = match self.layout {
             RowLayout::Inline => OneOf2::A(
                 hstack((self.label, spacer(), value))
                     .spacing(12.0)
@@ -576,6 +587,10 @@ impl<L: LabelKind> View for RowContent<L> {
                     .spacing(6.0)
                     .padding_with(EdgeInsets::symmetric(10.0, 16.0)),
             ),
+        };
+        match self.deletable {
+            Some(deletable) => OneOf2::A(body.list_row_deletable(deletable)),
+            None => OneOf2::B(body),
         }
     }
 }
@@ -588,7 +603,11 @@ impl<S, L: LabelKind> ListContent<S> for Row<L> {
         R: View,
         W: Fn(Self::Row) -> R + Clone + 'static,
     {
-        sink.push(wrapped_builder(move || self.build_item(), wrap));
+        let on_delete = self.on_delete.clone();
+        sink.push_row_with_delete(
+            wrapped_builder(move || self.build_content(), wrap),
+            on_delete,
+        );
     }
 }
 
@@ -608,7 +627,12 @@ impl<S, T: 'static, L: LabelKind> ListContent<S> for TaggedView<T, Row<L>> {
         W: Fn(Self::Row) -> R + Clone + 'static,
     {
         let row = self.content;
-        sink.push_tagged(wrapped_builder(move || row.build_item(), wrap), self.tag);
+        let on_delete = row.on_delete.clone();
+        sink.push_tagged(
+            wrapped_builder(move || row.build_content(), wrap),
+            self.tag,
+            on_delete,
+        );
     }
 }
 
@@ -633,6 +657,7 @@ pub fn row<L: IntoLabel>(label: L, value: impl IntoText) -> Row<L::Kind> {
         layout: RowLayout::Inline,
         value_color: None,
         deletable: None,
+        on_delete: None,
     }
 }
 

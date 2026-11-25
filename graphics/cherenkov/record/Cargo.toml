@@ -12,8 +12,11 @@ categories = ["graphics", "rendering"]
 
 [features]
 serde = ["dep:serde", "color/serde", "kurbo/serde"]
+# Compile-time and constructor-time WGSL validation for shader paints via naga.
+validate = ["dep:cherenkov-shader"]
 
 [dependencies]
+cherenkov-shader = { version = "0.0.0", path = "../shader", optional = true }
 color = "0.3.3"
 # The working-space matrices (`filtrate_core::space`), the one definition
 # the engine's backends share.

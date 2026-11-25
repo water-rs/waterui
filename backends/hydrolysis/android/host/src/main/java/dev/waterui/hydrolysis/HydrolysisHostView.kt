@@ -114,6 +114,7 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
     private var lastScrollFriction = Float.NaN
     private var lastDoubleTapTimeout = -1
     private var lastDoubleTapSlop = Float.NaN
+    private var lastLongPressTimeout = -1
     private var lastRootInsets: WindowInsetsCompat? = null
 
     /**
@@ -273,6 +274,7 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
         session?.setNightMode(newConfig.isNightMode)
+        session?.setLocale(newConfig.primaryLocaleTag)
     }
 
     // ------------------------------------------------------------------
@@ -355,6 +357,7 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
         val scrollFriction = ViewConfiguration.getScrollFriction()
         val doubleTapTimeout = ViewConfiguration.getDoubleTapTimeout()
         val doubleTapSlop = viewConfiguration.scaledDoubleTapSlop.toFloat()
+        val longPressTimeout = ViewConfiguration.getLongPressTimeout()
         if (width == lastMetricsWidth &&
             height == lastMetricsHeight &&
             metrics.density == lastDensity &&
@@ -367,7 +370,8 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
             maxFlingVelocity == lastMaxFlingVelocity &&
             scrollFriction == lastScrollFriction &&
             doubleTapTimeout == lastDoubleTapTimeout &&
-            doubleTapSlop == lastDoubleTapSlop
+            doubleTapSlop == lastDoubleTapSlop &&
+            longPressTimeout == lastLongPressTimeout
         ) {
             return false
         }
@@ -384,6 +388,7 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
         lastScrollFriction = scrollFriction
         lastDoubleTapTimeout = doubleTapTimeout
         lastDoubleTapSlop = doubleTapSlop
+        lastLongPressTimeout = longPressTimeout
         session.withNativePtr(NativeBridge::nativeSetMetrics.name) { ptr ->
             NativeBridge.nativeSetMetrics(
                 ptr,
@@ -406,6 +411,7 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
                 scrollFriction,
                 doubleTapTimeout,
                 doubleTapSlop,
+                longPressTimeout,
             )
         }
         return true

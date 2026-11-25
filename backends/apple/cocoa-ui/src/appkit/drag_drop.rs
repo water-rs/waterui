@@ -38,6 +38,7 @@ use objc2_foundation::{
 };
 
 use crate::callback::guarded;
+use crate::geometry::Point;
 
 struct SourceIvars {
     payload: Option<Rc<dyn Any>>,
@@ -214,17 +215,26 @@ pub fn begin_drag(
 /// A dragging-info object as a destination sees it.
 pub struct DragInfo<'a> {
     info: &'a ProtocolObject<dyn NSDraggingInfo>,
+    location: Point,
 }
 
 impl fmt::Debug for DragInfo<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("DragInfo").finish_non_exhaustive()
+        f.debug_struct("DragInfo")
+            .field("location", &self.location)
+            .finish_non_exhaustive()
     }
 }
 
 impl<'a> DragInfo<'a> {
-    pub(crate) fn new(info: &'a ProtocolObject<dyn NSDraggingInfo>) -> Self {
-        Self { info }
+    pub(crate) fn new(info: &'a ProtocolObject<dyn NSDraggingInfo>, location: Point) -> Self {
+        Self { info, location }
+    }
+
+    /// Drag location in the destination view's flipped local coordinate space.
+    #[must_use]
+    pub const fn location(&self) -> Point {
+        self.location
     }
 
     /// The payload of a same-process [`begin_drag`] source, if this drag is

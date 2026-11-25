@@ -656,6 +656,7 @@ async fn package_hydrolysis_macos(
     let signing = match options.audience() {
         PackageAudience::Development => MacOsSigning::Development {
             requires_stable_identity: !usage_descriptions.is_empty(),
+            entitlements: None,
         },
         PackageAudience::Distribution => {
             MacOsSigning::Distribution(crate::macos_bundle::DistributionSigning::from_manifest(

@@ -1,3 +1,4 @@
+use core::cell::OnceCell;
 use std::path::Path;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -6,12 +7,22 @@ use accesskit::{
     Action as AccessibilityAction, ActionData as AccessibilityActionData,
     ActionRequest as AccessibilityActionRequest, TreeId as AccessibilityTreeId,
 };
+use hydrolysis::draw::{BlendSpace, MaterialRegistry};
+use hydrolysis::theme::{
+    BadgeLook, ButtonLook, ButtonSpec, CheckboxLook, DisclosureLook, DisclosureSpec, GlassLook,
+    IndicatorLook, LinearProgressLook, ListLook, ListSpec, MenuLook, MenuPickerLook, MenuSpec,
+    NavigationBarLook, NavigationSpec, PickerSpec, ProgressSpec, RadioGroupLook,
+    ScrollIndicatorLook, SegmentedLook, SegmentedSpec, SliderLook, SliderSpec, StepperLook,
+    StepperSpec, SwitchLook, TableLook, TabsLook, TabsSpec, TextFieldLook, TextFieldSpec,
+    ToggleSpec, WidgetTheme,
+};
 use hydrolysis::{
     AccessibilityActivationPointError, FontFamilyResolution, HeadlessColorFormat, HeadlessRuntime,
-    KeyCode, Modifiers, PainterUnavailable, PointerKind, SemanticRuntime, Style,
+    KeyCode, Modifiers, OffscreenPainter, PainterUnavailable, PointerKind, SemanticRuntime, Style,
 };
 use waterui::app::{App, AppMenuBar, AppParts, WindowSink, Windows};
-use waterui::window::{Window, WindowChannel, WindowToolbar};
+use waterui::background::Glass;
+use waterui::window::{Window, WindowChannel, WindowState, WindowToolbar};
 use waterui::{ContentLedger, Plugin, ViewExt as _};
 use waterui_core::handler::{AnyViewBuilder, ViewBuilder};
 use waterui_core::{AnyView, Environment, View};
@@ -28,30 +39,117 @@ use crate::semantics::{NodeId, TreeSnapshot};
 use crate::snapshot::{HdrSnapshot, Snapshot};
 use crate::wait::{Expectation, ExpectationKind, WaitOptions, WaitResult};
 
-/// The style state of a [`UiBuilder`] that carries none: `ui()`'s starting
-/// point. A `UiBuilder<NoStyle>` mounts only the semantic runtime — geometry,
-/// pointer and capture belong to the styled builder.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct NoStyle;
+/// Type-erased `hydrolysis` [`Style`] held by [`UiBuilder`] so every test
+/// signature stays a plain `UiBuilder` regardless of which theme it mounts.
+#[derive(Clone)]
+struct ErasedStyle(Rc<dyn Style>);
 
-/// The style state of a [`UiBuilder`] that carries a `hydrolysis` [`Style`].
-///
-/// The styled builder's mounts stay semantic — `mount` runs the same
-/// GPU-free [`SemanticRuntime`], only with the style's tokens installed into
-/// the mounted view's environment — while `mount_offscreen`, `mount_app` and
-/// the `perf` entry points hand the style to the rendered headless runtime.
-#[derive(Clone, Debug)]
-pub struct Styled<S: Style> {
-    pub(crate) style: S,
+impl WidgetTheme for ErasedStyle {
+    fn register_backdrop_shaders(&self, registry: &mut MaterialRegistry) {
+        self.0.register_backdrop_shaders(registry);
+    }
+
+    fn blend_space(&self) -> BlendSpace {
+        self.0.blend_space()
+    }
+
+    fn glass_background(&self, glass: &Glass, env: &Environment) -> Option<GlassLook> {
+        self.0.glass_background(glass, env)
+    }
+
+    fn button(&self, spec: &ButtonSpec, env: &Environment) -> ButtonLook {
+        self.0.button(spec, env)
+    }
+
+    fn switch(&self, spec: &ToggleSpec, env: &Environment) -> SwitchLook {
+        self.0.switch(spec, env)
+    }
+
+    fn checkbox(&self, spec: &ToggleSpec, env: &Environment) -> CheckboxLook {
+        self.0.checkbox(spec, env)
+    }
+
+    fn stepper(&self, spec: &StepperSpec, env: &Environment) -> StepperLook {
+        self.0.stepper(spec, env)
+    }
+
+    fn text_field(&self, spec: &TextFieldSpec, env: &Environment) -> TextFieldLook {
+        self.0.text_field(spec, env)
+    }
+
+    fn menu(&self, spec: &MenuSpec, env: &Environment) -> MenuLook {
+        self.0.menu(spec, env)
+    }
+
+    fn menu_picker(&self, spec: &PickerSpec, env: &Environment) -> MenuPickerLook {
+        self.0.menu_picker(spec, env)
+    }
+
+    fn radio_group(&self, spec: &PickerSpec, env: &Environment) -> RadioGroupLook {
+        self.0.radio_group(spec, env)
+    }
+
+    fn segmented_picker(&self, spec: &SegmentedSpec, env: &Environment) -> SegmentedLook {
+        self.0.segmented_picker(spec, env)
+    }
+
+    fn slider(&self, spec: &SliderSpec, env: &Environment) -> SliderLook {
+        self.0.slider(spec, env)
+    }
+
+    fn linear_progress(&self, spec: &ProgressSpec, env: &Environment) -> LinearProgressLook {
+        self.0.linear_progress(spec, env)
+    }
+
+    fn circular_progress(&self, spec: &ProgressSpec, env: &Environment) -> IndicatorLook {
+        self.0.circular_progress(spec, env)
+    }
+
+    fn loading_indicator(&self, spec: &ProgressSpec, env: &Environment) -> IndicatorLook {
+        self.0.loading_indicator(spec, env)
+    }
+
+    fn navigation_bar(&self, spec: &NavigationSpec, env: &Environment) -> NavigationBarLook {
+        self.0.navigation_bar(spec, env)
+    }
+
+    fn tabs(&self, spec: &TabsSpec, env: &Environment) -> TabsLook {
+        self.0.tabs(spec, env)
+    }
+
+    fn scroll_indicator(&self, env: &Environment) -> ScrollIndicatorLook {
+        self.0.scroll_indicator(env)
+    }
+
+    fn badge(&self, env: &Environment) -> BadgeLook {
+        self.0.badge(env)
+    }
+
+    fn list(&self, spec: &ListSpec, env: &Environment) -> ListLook {
+        self.0.list(spec, env)
+    }
+
+    fn table(&self, env: &Environment) -> TableLook {
+        self.0.table(env)
+    }
+
+    fn disclosure(&self, spec: &DisclosureSpec, env: &Environment) -> DisclosureLook {
+        self.0.disclosure(spec, env)
+    }
+}
+
+impl Style for ErasedStyle {
+    fn install_tokens(&self, env: &mut Environment) {
+        self.0.install_tokens(env);
+    }
 }
 
 /// Creates a semantic UI test builder.
 ///
-/// The returned `UiBuilder<NoStyle>` mounts views on `hydrolysis`'s semantic
+/// The returned [`UiBuilder`] mounts views on `hydrolysis`'s semantic
 /// runtime through [`UiBuilder::mount`] — no style package is involved, so a
 /// test cannot read geometry, dispatch pointer gestures or capture snapshots.
-/// [`UiBuilder::theme`] carries a [`Style`] into the builder and unlocks the
-/// rendered mount points.
+/// [`UiBuilder::theme`] attaches a [`Style`] for rendered mounts.
 #[must_use]
 pub fn ui() -> UiBuilder {
     UiBuilder::new()
@@ -93,32 +191,38 @@ fn frame_points_as_u32(points: f32) -> u32 {
 
 /// Runtime test host and configuration.
 ///
-/// `S` is the builder's style state: [`NoStyle`] for the semantic builder
-/// `ui()` returns, or [`Styled<S>`] once [`UiBuilder::theme`] carries a
-/// style. Both states mount the GPU-free [`SemanticRuntime`] — the styled
-/// builder's `mount` additionally applies `Style::install_tokens` to the
-/// mounted view's environment — while `mount_offscreen`, `mount_app` and the
-/// performance entry points exist only on the styled builder and run the
-/// rendered [`HeadlessRuntime`].
+/// [`ui()`] starts without a style and mounts the GPU-free
+/// [`SemanticRuntime`]. Calling [`UiBuilder::theme`] attaches a [`Style`]
+/// (erased inside the builder so every test parameter stays a plain
+/// `UiBuilder`): [`Self::mount`] then applies `Style::install_tokens` to the
+/// mounted view's environment, while [`Self::mount_offscreen`],
+/// [`Self::mount_app`], [`Self::perf`] and [`Self::perf_with`] run the
+/// rendered [`HeadlessRuntime`]. Cloned builders share one lazily selected
+/// offscreen painter (GPU device or CPU engine) across mounts, so mounting
+/// multiple views from one configured builder avoids creating a new device
+/// per view.
 ///
 /// Framework tokens are installed by the runtimes themselves; the builder's
 /// environment carries only what the test installs into it.
 #[derive(Clone)]
-pub struct UiBuilder<S = NoStyle> {
+pub struct UiBuilder {
     env: Environment,
     width: u32,
     height: u32,
-    style: S,
+    style: Option<ErasedStyle>,
     perf_config: PerfConfig,
     scale_factor: f64,
     hdr: bool,
+    pub(crate) painter: Rc<OnceCell<OffscreenPainter>>,
 }
 
-impl<S> core::fmt::Debug for UiBuilder<S> {
+impl core::fmt::Debug for UiBuilder {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("UiBuilder")
             .field("width", &self.width)
             .field("height", &self.height)
+            .field("has_theme", &self.style.is_some())
+            .field("has_painter", &self.painter.get().is_some())
             .field("perf_config", &self.perf_config)
             .field("scale_factor", &self.scale_factor)
             .field("hdr", &self.hdr)
@@ -132,7 +236,7 @@ impl Default for UiBuilder {
     }
 }
 
-impl UiBuilder<NoStyle> {
+impl UiBuilder {
     /// Creates a default semantic UI test builder (390x844 viewport).
     #[must_use]
     pub fn new() -> Self {
@@ -140,63 +244,74 @@ impl UiBuilder<NoStyle> {
             env: Environment::new(),
             width: 390,
             height: 844,
-            style: NoStyle,
+            style: None,
             perf_config: PerfConfig::default(),
             scale_factor: 1.0,
             hdr: false,
+            painter: Rc::new(OnceCell::new()),
         }
     }
 
-    /// Carries a `hydrolysis` style into the builder.
-    ///
-    /// The returned `UiBuilder<Styled<S>>` keeps `mount` on the semantic
-    /// runtime — still semantic, but with the style's tokens installed into
-    /// the mounted view's environment — and unlocks `mount_offscreen`,
-    /// `mount_app`, `perf` and `perf_with`, which mount the rendered runtime
-    /// constructed with `style`.
-    #[must_use]
-    pub fn theme<S: Style>(self, style: S) -> UiBuilder<Styled<S>> {
-        UiBuilder {
-            env: self.env,
-            width: self.width,
-            height: self.height,
-            style: Styled { style },
-            perf_config: self.perf_config,
-            scale_factor: self.scale_factor,
-            hdr: self.hdr,
+    fn shared_painter(&self) -> Result<OffscreenPainter, PainterUnavailable> {
+        if let Some(painter) = self.painter.get() {
+            return Ok(painter.clone());
         }
+        let painter = OffscreenPainter::select()?;
+        let _ = self.painter.set(painter.clone());
+        Ok(painter)
+    }
+
+    /// Attaches a `hydrolysis` style to the builder.
+    ///
+    /// [`Self::mount`] stays on the semantic runtime — still semantic, but
+    /// with the style's tokens installed into the mounted view's environment —
+    /// and [`Self::mount_offscreen`], [`Self::mount_app`], [`Self::perf`] and
+    /// [`Self::perf_with`] mount the rendered runtime constructed with `style`.
+    #[must_use]
+    pub fn theme(mut self, style: impl Style) -> Self {
+        self.style = Some(ErasedStyle(Rc::new(style)));
+        self
     }
 
     /// Mounts a no-arg view builder on the semantic runtime.
     ///
-    /// The semantic pipeline carries no style: the accessibility tree is a
-    /// product of the view tree and the widgets' semantics, so the returned
-    /// [`SemanticApp`] answers role, label, value, description, state,
-    /// structure and focus queries and dispatches accessibility actions —
-    /// taps, focus, text entry, increment/decrement, scroll, expand/collapse
-    /// and key events — without a style package. The mounted view's
-    /// environment resolves only the framework default tokens the runtime
-    /// installs; a view whose body reads a style package's tokens mounts
-    /// through [`UiBuilder::theme`] instead. Geometry, pointer gestures and
-    /// capture live on the styled builder's `mount_offscreen`.
+    /// When no style was attached via [`UiBuilder::theme`], the accessibility
+    /// tree is a product of the view tree and the widgets' semantics using
+    /// only framework default tokens. When a style is attached, its
+    /// [`Style::install_tokens`] step runs over those framework defaults on the
+    /// mounted view's environment, matching the rendered runtime's ordering so
+    /// components whose bodies read style tokens see them in a semantic test.
+    /// Geometry, pointer gestures and capture remain on
+    /// [`UiBuilder::mount_offscreen`].
     ///
     /// # Panics
     ///
     /// Panics if the initial Hydrolysis semantic pass does not produce an
     /// accessibility tree.
-    pub fn mount<V, F>(self, view_fn: F) -> SemanticApp
+    pub fn mount<V, F>(mut self, view_fn: F) -> SemanticApp
     where
         V: View + 'static,
         F: Fn() -> V + 'static,
     {
-        self.mount_semantic(
-            AnyViewBuilder::new(move || Self::with_session_runtime(view_fn())),
-            FontFamilyResolution::Lenient,
-        )
+        match self.style.take() {
+            Some(style) => self.mount_semantic(
+                AnyViewBuilder::new(move || {
+                    // The style's tokens go on outside the runtime install, so a
+                    // module reads the colours this session's style package
+                    // resolves rather than only the framework defaults.
+                    AnyView::new(
+                        Self::with_session_runtime(view_fn()).install(StyleTokens(style.clone())),
+                    )
+                }),
+                FontFamilyResolution::Strict,
+            ),
+            None => self.mount_semantic(
+                AnyViewBuilder::new(move || Self::with_session_runtime(view_fn())),
+                FontFamilyResolution::Lenient,
+            ),
+        }
     }
-}
 
-impl<S> UiBuilder<S> {
     /// Adds a value to the builder's environment, preserving earlier values
     /// and plugins.
     ///
@@ -317,9 +432,9 @@ impl<S> UiBuilder<S> {
 /// view reproduces the rendered runtime's ordering — framework defaults
 /// first, then [`Style::install_tokens`] — on the environment the view tree
 /// actually resolves.
-struct StyleTokens<S: Style>(Rc<S>);
+struct StyleTokens(ErasedStyle);
 
-impl<S: Style> Plugin for StyleTokens<S> {
+impl Plugin for StyleTokens {
     fn install(self, env: &mut Environment) {
         self.0.install_tokens(env);
     }
@@ -335,20 +450,23 @@ enum Viewport {
 }
 
 /// Mounts the first window an app declares and drops the rest.
-struct FirstWindow<S: Style> {
-    builder: Option<UiBuilder<Styled<S>>>,
+struct FirstWindow {
+    builder: Option<UiBuilder>,
     env: Option<Environment>,
     viewport: Viewport,
     mounted: Option<OffscreenApp>,
 }
 
-impl<S: Style> WindowSink for FirstWindow<S> {
+impl WindowSink for FirstWindow {
     fn window<C: ViewBuilder, T: WindowToolbar>(&mut self, window: Window<C, T>) {
+        if window.current_state() == WindowState::Closed {
+            return;
+        }
         let Some(mut builder) = self.builder.take() else {
             return;
         };
         if matches!(self.viewport, Viewport::FromWindow) {
-            let size = *waterui_core::Signal::snapshot(&window.frame).size();
+            let size = *window.current_frame().size();
             builder = builder.viewport(
                 frame_points_as_u32(size.width),
                 frame_points_as_u32(size.height),
@@ -371,68 +489,12 @@ impl<S: Style> WindowSink for FirstWindow<S> {
     }
 }
 
-impl<S: Style> UiBuilder<Styled<S>> {
-    /// Splits the style out of the builder, leaving a `UiBuilder<NoStyle>`
-    /// with the same environment, viewport, and runtime configuration.
-    fn untheme(self) -> (UiBuilder<NoStyle>, S) {
-        let Self {
-            env,
-            width,
-            height,
-            style: Styled { style },
-            perf_config,
-            scale_factor,
-            hdr,
-        } = self;
-        (
-            UiBuilder {
-                env,
-                width,
-                height,
-                style: NoStyle,
-                perf_config,
-                scale_factor,
-                hdr,
-            },
-            style,
-        )
-    }
-
-    /// Mounts a no-arg view builder on the semantic runtime with the
-    /// builder's style tokens installed over the framework defaults.
-    ///
-    /// The mount is still semantic — the runtime is [`SemanticRuntime`] and
-    /// the style is never handed to it, so there is no widget theme,
-    /// geometry, pointer gestures or capture (those stay on
-    /// [`UiBuilder::mount_offscreen`]). What the style contributes is its
-    /// [`Style::install_tokens`] step, applied to the mounted view's
-    /// environment after the runtime's framework defaults — the ordering the
-    /// rendered runtime uses — so components whose bodies resolve their
-    /// style package's tokens from the environment see them in a semantic
-    /// test.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the initial Hydrolysis semantic pass does not produce an
-    /// accessibility tree.
-    pub fn mount<V, F>(self, view_fn: F) -> SemanticApp
-    where
-        V: View + 'static,
-        F: Fn() -> V + 'static,
-    {
-        let (builder, style) = self.untheme();
-        let style = Rc::new(style);
-        builder.mount_semantic(
-            AnyViewBuilder::new(move || {
-                // The style's tokens go on outside the runtime install, so a
-                // module reads the colours this session's style package
-                // resolves rather than only the framework defaults.
-                AnyView::new(
-                    Self::with_session_runtime(view_fn()).install(StyleTokens(Rc::clone(&style))),
-                )
-            }),
-            FontFamilyResolution::Strict,
-        )
+impl UiBuilder {
+    fn require_style(&self, method: &str) {
+        assert!(
+            self.style.is_some(),
+            "waterui-testing: `{method}` requires a style — call `.theme(style)` first"
+        );
     }
 
     /// Mounts a no-arg view builder on the rendered runtime and returns the
@@ -440,14 +502,16 @@ impl<S: Style> UiBuilder<Styled<S>> {
     ///
     /// # Panics
     ///
-    /// Panics if [`UiBuilder::scale_factor`] was configured with a non-finite
-    /// or non-positive value, or if the initial Hydrolysis offscreen frame
-    /// does not produce an accessibility tree.
+    /// Panics if no style was configured via [`UiBuilder::theme`], if
+    /// [`UiBuilder::scale_factor`] was configured with a non-finite or
+    /// non-positive value, or if the initial Hydrolysis offscreen frame does
+    /// not produce an accessibility tree.
     pub fn mount_offscreen<V, F>(self, view_fn: F) -> OffscreenApp
     where
         V: View + 'static,
         F: Fn() -> V + 'static,
     {
+        self.require_style("mount_offscreen");
         let env = self.mount_env();
         self.mount_rendered(
             env,
@@ -473,12 +537,13 @@ impl<S: Style> UiBuilder<Styled<S>> {
     ///
     /// # Panics
     ///
-    /// Panics if the app declares no window, if [`UiBuilder::scale_factor`]
-    /// was configured with a non-finite or non-positive value, or if the
-    /// initial Hydrolysis offscreen frame does not produce an accessibility
-    /// tree.
+    /// Panics if no style was configured via [`UiBuilder::theme`], if the app
+    /// declares no window, if [`UiBuilder::scale_factor`] was configured with a
+    /// non-finite or non-positive value, or if the initial Hydrolysis offscreen
+    /// frame does not produce an accessibility tree.
     #[must_use]
     pub fn mount_app<W: Windows, M: AppMenuBar>(self, app: App<W, M>) -> OffscreenApp {
+        self.require_style("mount_app");
         self.mount_first_window(app, Viewport::Configured)
     }
 
@@ -522,6 +587,9 @@ impl<S: Style> UiBuilder<Styled<S>> {
         mut env: Environment,
         content: AnyViewBuilder<AnyView>,
     ) -> OffscreenApp {
+        let painter = self
+            .shared_painter()
+            .unwrap_or_else(|error| no_painter(error));
         let Self {
             width,
             height,
@@ -530,6 +598,9 @@ impl<S: Style> UiBuilder<Styled<S>> {
             hdr,
             ..
         } = self;
+        let style = style.expect(
+            "waterui-testing: `mount_offscreen` requires a style — call `.theme(style)` first",
+        );
         let ledger = ContentLedger::new();
         env.insert(ledger.clone());
         let color_format = if hdr {
@@ -537,16 +608,16 @@ impl<S: Style> UiBuilder<Styled<S>> {
         } else {
             HeadlessColorFormat::SdrSrgb
         };
-        let runtime = HeadlessRuntime::new_with_format(
+        let runtime = HeadlessRuntime::new_on_painter_with_format(
+            painter,
             env,
             content,
             width,
             height,
-            style.style,
+            style,
             FontFamilyResolution::Strict,
             color_format,
-        )
-        .unwrap_or_else(|error| no_painter(error));
+        );
         Self::wrap_rendered(runtime, width, height, scale_factor, ledger)
     }
 
@@ -562,6 +633,9 @@ impl<S: Style> UiBuilder<Styled<S>> {
         mut env: Environment,
         window: Window<C, T>,
     ) -> OffscreenApp {
+        let painter = self
+            .shared_painter()
+            .unwrap_or_else(|error| no_painter(error));
         let Self {
             width,
             height,
@@ -570,6 +644,8 @@ impl<S: Style> UiBuilder<Styled<S>> {
             hdr,
             ..
         } = self;
+        let style = style
+            .expect("waterui-testing: `mount_app` requires a style — call `.theme(style)` first");
         let ledger = ContentLedger::new();
         env.insert(ledger.clone());
         let color_format = if hdr {
@@ -577,16 +653,16 @@ impl<S: Style> UiBuilder<Styled<S>> {
         } else {
             HeadlessColorFormat::SdrSrgb
         };
-        let runtime = HeadlessRuntime::new_with_window_and_format(
+        let runtime = HeadlessRuntime::new_with_window_on_painter_and_format(
+            painter,
             env,
             window,
             width,
             height,
-            style.style,
+            style,
             FontFamilyResolution::Strict,
             color_format,
-        )
-        .unwrap_or_else(|error| no_painter(error));
+        );
         Self::wrap_rendered(runtime, width, height, scale_factor, ledger)
     }
 
@@ -614,12 +690,16 @@ impl<S: Style> UiBuilder<Styled<S>> {
 
     /// Measures steady-state offscreen frames for a view with the default
     /// `steady-redraw` scenario.
+    ///
+    /// # Panics
+    ///
+    /// Panics if no style was configured via [`UiBuilder::theme`].
     pub fn perf<V, F>(self, view_fn: F) -> PerfReport
     where
         V: View + 'static,
         F: Fn() -> V + 'static,
-        S: Clone,
     {
+        self.require_style("perf");
         self.perf_with(view_fn, |perf| {
             perf.measure("steady-redraw", |run| {
                 run.redraw();
@@ -629,13 +709,17 @@ impl<S: Style> UiBuilder<Styled<S>> {
 
     /// Measures custom offscreen scenarios using a closure-driven automation
     /// API.
+    ///
+    /// # Panics
+    ///
+    /// Panics if no style was configured via [`UiBuilder::theme`].
     pub fn perf_with<V, F, A>(self, view_fn: F, automation: A) -> PerfReport
     where
         V: View + 'static,
         F: Fn() -> V + 'static,
         A: FnOnce(&mut PerfApp),
-        S: Clone,
     {
+        self.require_style("perf_with");
         let config = self.perf_config;
         let mut app = PerfApp::new(self, view_fn, config);
         automation(&mut app);
@@ -1214,46 +1298,6 @@ impl<R: RuntimeDriver> SemanticApp<R> {
         );
     }
 
-    /// Creates an existence expectation.
-    #[must_use]
-    pub const fn expect_exists(&self, selector: Selector) -> Expectation {
-        Expectation {
-            kind: ExpectationKind::Exists(selector),
-            inverted: false,
-        }
-    }
-
-    /// Creates a non-existence expectation.
-    #[must_use]
-    pub const fn expect_not_exists(&self, selector: Selector) -> Expectation {
-        Expectation {
-            kind: ExpectationKind::NotExists(selector),
-            inverted: false,
-        }
-    }
-
-    /// Creates a value-equality expectation.
-    #[must_use]
-    pub fn expect_value_eq(&self, selector: Selector, value: impl Into<String>) -> Expectation {
-        Expectation {
-            kind: ExpectationKind::ValueEquals {
-                selector,
-                value: value.into(),
-            },
-            inverted: false,
-        }
-    }
-
-    /// Creates a UI-focus expectation: fulfilled once the selector resolves to
-    /// the element holding Hydrolysis UI focus.
-    #[must_use]
-    pub const fn expect_ui_focus(&self, selector: Selector) -> Expectation {
-        Expectation {
-            kind: ExpectationKind::UiFocus(selector),
-            inverted: false,
-        }
-    }
-
     /// Resolves a node id to an [`ElementRef`] bound to the current tree, or
     /// `None` when the id is absent.
     ///
@@ -1432,14 +1476,18 @@ impl<R: RuntimeDriver> SemanticApp<R> {
 
     /// Convenience API mirroring `XCTest` `waitForExistence`.
     pub fn wait_for_existence(&mut self, selector: &Selector, timeout: Duration) -> bool {
-        let expectation = self.expect_exists(selector.clone());
-        self.wait_for(&[expectation], WaitOptions::new(timeout)) == WaitResult::Completed
+        self.wait_for(
+            &[Expectation::exists(selector.clone())],
+            WaitOptions::new(timeout),
+        ) == WaitResult::Completed
     }
 
     /// Convenience API mirroring `XCTest` `waitForNonexistence`.
     pub fn wait_for_nonexistence(&mut self, selector: &Selector, timeout: Duration) -> bool {
-        let expectation = self.expect_not_exists(selector.clone());
-        self.wait_for(&[expectation], WaitOptions::new(timeout)) == WaitResult::Completed
+        self.wait_for(
+            &[Expectation::not_exists(selector.clone())],
+            WaitOptions::new(timeout),
+        ) == WaitResult::Completed
     }
 
     /// Waits for one node's value to equal the expected value.
@@ -1449,42 +1497,18 @@ impl<R: RuntimeDriver> SemanticApp<R> {
         value: impl Into<String>,
         timeout: Duration,
     ) -> bool {
-        let expectation = self.expect_value_eq(selector.clone(), value);
-        self.wait_for(&[expectation], WaitOptions::new(timeout)) == WaitResult::Completed
+        self.wait_for(
+            &[Expectation::value_eq(selector.clone(), value)],
+            WaitOptions::new(timeout),
+        ) == WaitResult::Completed
     }
 
     /// Waits until the selector resolves to the current UI-focused element.
     pub fn wait_for_ui_focus(&mut self, selector: &Selector, timeout: Duration) -> bool {
-        const MIN_IDLE_BACKOFF: Duration = Duration::from_millis(1);
-        const MAX_IDLE_BACKOFF: Duration = Duration::from_millis(16);
-
-        let deadline = Instant::now() + timeout;
-        let mut idle_backoff = Duration::ZERO;
-        loop {
-            if self.matches_ui_focus(selector) {
-                return true;
-            }
-
-            if Instant::now() >= deadline {
-                return false;
-            }
-
-            let _ = self.pump_once();
-            if !self.runtime.is_settled() {
-                idle_backoff = Duration::ZERO;
-                continue;
-            }
-
-            let next_backoff = if idle_backoff.is_zero() {
-                MIN_IDLE_BACKOFF
-            } else {
-                idle_backoff.saturating_mul(2).min(MAX_IDLE_BACKOFF)
-            };
-            idle_backoff = next_backoff;
-            std::thread::sleep(
-                next_backoff.min(deadline.saturating_duration_since(Instant::now())),
-            );
-        }
+        self.wait_for(
+            &[Expectation::ui_focus(selector.clone())],
+            WaitOptions::new(timeout),
+        ) == WaitResult::Completed
     }
 
     fn evaluate_expectation(&mut self, expectation: &Expectation) -> bool {

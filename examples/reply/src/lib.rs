@@ -9,18 +9,17 @@
 
 use core::num::NonZeroUsize;
 
-use waterui::Identifiable;
 use waterui::app::{App, Windows};
-use waterui::component::list::{List, ListItem};
+use waterui::component::list::List;
 use waterui::layout::ContentMode;
 use waterui::media::Photo;
 use waterui::navigation::{
-    NavigationSplitView, NavigationStack, NavigationToolbarItems, NavigationView,
+    NavigationSplitView, NavigationStack, NavigationToolbarItems, NavigationView, TabStyle,
 };
 use waterui::prelude::*;
-use waterui::reactive::collection::SignalCollection;
 use waterui::widget::avatar;
 use waterui::widget::card;
+use waterui::{Identifiable, Url};
 use waterui_icons_material_icon as mdi;
 
 use mdi::dots_vertical;
@@ -37,7 +36,7 @@ const TOOLBAR_AVATAR: f32 = 32.0;
 /// The tallest a thread photo grows inside its list row.
 const PHOTO_HEIGHT: f32 = 160.0;
 /// Unread mail shown on the Mail destination's badge.
-const UNREAD: i32 = 4;
+const UNREAD: u32 = 4;
 
 const ASSETS: &str = "https://raw.githubusercontent.com/android/compose-samples/main/Reply/app/src/main/res/drawable";
 
@@ -176,13 +175,13 @@ fn star() -> impl View {
         .action(|| {})
 }
 
-fn thread_row(thread: Thread) -> ListItem<impl View> {
-    ListItem::new(Label::new(thread.subject, move || {
+fn thread_row(thread: Thread) -> impl View {
+    Label::new(thread.subject, move || {
         vstack((
             hstack((
                 avatar(thread.sender)
                     .image(asset(thread.avatar_asset))
-                    .size(AVATAR),
+                    .side(AVATAR),
                 vstack((
                     text(thread.sender).subheadline(),
                     text(thread.time).caption().muted(),
@@ -204,7 +203,7 @@ fn thread_row(thread: Thread) -> ListItem<impl View> {
             }),
         ))
         .leading()
-    }))
+    })
 }
 
 /// The inbox column: the thread list under a titled bar that carries the
@@ -222,7 +221,8 @@ fn inbox(
     List::for_each(visible, thread_row)
         .selection(selected)
         .navigation_title("Inbox")
-        .searchable(query, "Search replies")
+        .searchable(query)
+        .search_prompt("Search replies")
         .navigation_toolbar(
             NavigationToolbar::default()
                 .item(NavigationToolbarItem::action(
@@ -234,7 +234,7 @@ fn inbox(
                     NavigationToolbarPlacement::TopBarTrailing,
                     avatar("Me")
                         .image(asset("avatar_10.jpg"))
-                        .size(TOOLBAR_AVATAR),
+                        .side(TOOLBAR_AVATAR),
                 )),
         )
 }
@@ -245,7 +245,7 @@ fn message_card(message: &'static Message) -> impl View {
             hstack((
                 avatar(message.sender)
                     .image(asset(message.avatar_asset))
-                    .size(AVATAR),
+                    .side(AVATAR),
                 vstack((
                     text(message.sender).subheadline(),
                     text(message.time).caption().muted(),
@@ -308,22 +308,22 @@ fn reply(selected: Binding<Option<u64>>, destination: &Binding<usize>) -> impl V
     Tabs::new(
         destination,
         (
-            Tab::container(label("Mail").icon(email_outline()), move || {
+            Tab::new(label("Mail").icon(email_outline()), move || {
                 mail(selected.clone())
             })
             .badge(UNREAD),
-            Tab::container(label("Notes").icon(note_outline()), || {
+            Tab::new(label("Notes").icon(note_outline()), || {
                 empty_destination("Notes")
             }),
-            Tab::container(label("Chat").icon(message_outline()), || {
+            Tab::new(label("Chat").icon(message_outline()), || {
                 empty_destination("Chat")
             }),
-            Tab::container(label("Meet").icon(video_outline()), || {
+            Tab::new(label("Meet").icon(video_outline()), || {
                 empty_destination("Meet")
             }),
         ),
     )
-    .style(tab_style::automatic())
+    .style(TabStyle::Automatic)
 }
 
 /// Self-contained entry for previews and embedding.
@@ -337,5 +337,7 @@ pub fn demo() -> impl View {
 pub fn app(env: Environment) -> App<impl Windows> {
     let selected = binding(Some(2u64));
     let destination = binding(0usize);
-    App::new(move || reply(selected.clone(), &destination), env)
+    App::new(env).window(Window::new("", move || {
+        reply(selected.clone(), &destination)
+    }))
 }

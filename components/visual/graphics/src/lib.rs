@@ -1,6 +1,7 @@
 #![doc = "Graphics primitives for `WaterUI`, recording Cherenkov `Content`."]
 
 extern crate alloc;
+extern crate self as waterui_graphics;
 
 /// The bridge from the framework's animations to the engine's.
 pub mod animation;
@@ -56,9 +57,9 @@ pub use gpu::{
 #[cfg(any(feature = "gpu", feature = "cpu"))]
 pub use gradient::FlowingGradient;
 pub use gradient::{ANIMATED_MESH_PALETTE_LEN, AnimatedMeshGradient, AnimatedMeshGradientConfig};
-pub use gradient::{Gradient, GradientType, MeshGradient};
+pub use gradient::{Gradient, GradientStops, GradientType, MeshGradient};
 #[cfg(feature = "image-decode")]
-pub use image::image_decode;
+pub use image::ImageDecodeError;
 #[cfg(feature = "input")]
 pub use input::{
     Code, GesturePhase, Key, Modifiers, NamedKey, ScrollPhase, ScrollUnit, SurfaceInputEvent,
@@ -67,7 +68,9 @@ pub use input::{
 #[cfg(any(feature = "gpu", feature = "cpu"))]
 pub use offscreen::{OffscreenError, OffscreenImage, OffscreenRenderer, OffscreenSize};
 #[cfg(any(feature = "gpu", feature = "cpu"))]
-pub use shader_paint::ShaderPaintView;
+pub use shader_paint::{SHADER_MAX_PARAMS, ShaderError, ShaderPaintView};
 /// Color types and conversion utilities.
 pub use waterui_color as color;
 pub use waterui_color::{Color, ColorScheme, Colorspace, CurrentColorScheme, WorkingColor};
+#[cfg(any(feature = "gpu", feature = "cpu"))]
+pub use waterui_macros::shader;

@@ -577,11 +577,7 @@ impl From<WorkingColor> for ColorValue {
 /// The reactive colour a colour-valued attribute becomes.
 #[must_use]
 pub fn color_of(value: &Computed<ColorValue>) -> Color {
-    waterui_graphics::color::signal_color(
-        value
-            .map(|value| Color::new(Working(WorkingColor::from(value))))
-            .computed(),
-    )
+    Color::from_signal(value.map(|value| Color::new(Working(WorkingColor::from(value)))))
 }
 
 /// The insets an `EdgeInsets`-shaped object carries.
@@ -741,10 +737,8 @@ impl IntoJs for BackgroundValue {
 /// The shadow `shadow` casts, which is the Rust [`Shadow`] spelled as an
 /// object.
 ///
-/// Only the colour is reactive, because only the colour is reactive in Rust:
-/// `Shadow`'s offset, blur radius and corner radius are `f32` fields, and a
-/// signal declared where the framework takes a number would promise an update
-/// nothing delivers.
+/// Only the colour is reactive here: `ShadowValue`'s offset, blur radius and
+/// corner radius are `f32` schema values for TypeScript.
 ///
 /// [`Shadow`]: crate::appearance::style::Shadow
 #[derive(Debug, Clone, PartialEq, TsType)]
@@ -881,7 +875,7 @@ pub enum ShapeValue {
     Capsule,
     /// `clip="ellipse"`.
     Ellipse,
-    /// `clip={{ cornerRadius: 0.25 }}`.
+    /// `clip={{ cornerRadius: 12 }}`.
     Rounded(f32),
 }
 

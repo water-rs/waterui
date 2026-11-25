@@ -1,14 +1,16 @@
 //! The example program, compiled where `hydrolysis::run` exists.
 
+use std::process::exit;
 use std::time::Duration;
 
 use hydrolysis::run;
 use waterui::Environment;
 use waterui::app::App;
+use waterui::env::use_env;
 use waterui::layout::Size;
 use waterui::prelude::*;
 use waterui::task::sleep;
-use waterui::window::{UserAttention, Window, WindowHandle, WindowLevel, WindowState};
+use waterui::window::{UserAttention, Window, WindowHandle, WindowLevel};
 
 /// Live probe for the window API (water-rs/waterui#1264, #1268): the window
 /// opens always-on-top with 24x12 resize increments, maximizes itself after a
@@ -16,31 +18,23 @@ use waterui::window::{UserAttention, Window, WindowHandle, WindowLevel, WindowSt
 /// window shows `_NET_WM_STATE_ABOVE`, `_NET_WM_STATE_MAXIMIZED_*`,
 /// `_NET_WM_STATE_DEMANDS_ATTENTION`, and the increment in `WM_NORMAL_HINTS`.
 pub fn main() {
-    let window = Window::new(
-        "window-api-probe",
-        waterui::reactive::binding(WindowState::Normal),
-        || (),
-    )
-    .level(WindowLevel::AlwaysOnTop)
-    .resize_increments(Size::new(24.0, 12.0));
-
-    let handle: WindowHandle = window.handle();
-    let window = window.content(move || {
-        text("window API probe").padding().task({
-            let handle = handle.clone();
-            async move {
+    let window = Window::new("window-api-probe", || {
+        use_env(|handle: WindowHandle| {
+            text("window API probe").padding().task(move || async move {
                 sleep(Duration::from_secs(4)).await;
                 handle.maximize();
                 sleep(Duration::from_secs(1)).await;
                 handle.request_attention(UserAttention::Critical);
                 sleep(Duration::from_secs(20)).await;
-                std::process::exit(0);
-            }
+                exit(0);
+            })
         })
-    });
+    })
+    .level(WindowLevel::AlwaysOnTop)
+    .resize_increments(Size::new(24.0, 12.0));
 
     run(
-        |env| App::new_with_windows([window], env),
+        |env| App::new(env).window(window),
         Environment::new(),
         hydrolysis::testing::TestStyle::new(),
     );

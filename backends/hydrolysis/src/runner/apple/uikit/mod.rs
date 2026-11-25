@@ -25,9 +25,15 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use cocoa_ui::MainThreadMarker;
+use cocoa_ui::locale::observe_changes as observe_locale_changes;
 use cocoa_ui::main_queue::MainQueueWake;
+use cocoa_ui::notification::NotificationObserver;
+use cocoa_ui::reduce_motion::{
+    observe_changes as observe_reduce_motion_changes, system_reduce_motion,
+};
 use cocoa_ui::uikit::{self, ApplicationHandlers, Window, WindowScene};
 use executor_core::{LocalExecutor as _, Task as _};
+use nami::{Binding, Signal as _};
 use waterui::app::{App, AppMenuBar, Windows};
 use waterui::theme::ColorScheme;
 #[cfg(feature = "menu")]
@@ -36,7 +42,9 @@ use waterui_apple_menu::ios::{Declared, build_handler, declared, install_declare
 use waterui_controls::label::SemanticLabel;
 #[cfg(feature = "menu")]
 use waterui_controls::menu::Menu;
-use waterui_core::Environment;
+use waterui_core::{Environment, Retain, contract_violation};
+use waterui_locale::regional::refresh_system_locale;
+use waterui_structural_transition::ReduceMotion;
 
 use super::session::AppleExecutor;
 use crate::platform::EngineGpuContext;
@@ -51,7 +59,7 @@ use crate::runner::init_main_thread_executors;
 use crate::runner::install_platform_services;
 #[cfg(feature = "menu")]
 use crate::runner::menu_bar;
-use crate::runner::window::{RootWindow, RootWindows};
+use crate::runner::window::{RootWindow, RootWindows, split_open_and_watch_dormant};
 use crate::runner::{install_window_registries, queue_window_opener};
 use crate::text::ParleyEngine;
 use crate::theme::WidgetTheme;
@@ -90,6 +98,12 @@ pub(super) struct Process {
     window: RefCell<Option<RootWindow<ParleyEngine>>>,
     opener: Rc<dyn Fn(RootWindow<ParleyEngine>)>,
     pub(super) pending_window_queue: Rc<RefCell<Vec<RootWindow<ParleyEngine>>>>,
+    /// Keeps state watchers on dormant `Closed` secondary windows alive so
+    /// opening one at run time reports the unsupported secondary-window error.
+    _dormant_window_watches: Vec<Retain>,
+    /// Keeps the `UIKit` Reduce Motion notification observer registered for the
+    /// lifetime of the process.
+    _reduce_motion: NotificationObserver,
 }
 
 impl Process {
@@ -113,6 +127,9 @@ struct UiKitApplication {
     launch: RefCell<Option<Launch>>,
     /// The process-wide appearance, fed by the scene's trait observation.
     color_scheme: nami::Binding<ColorScheme>,
+    /// Keeps the `NSCurrentLocaleDidChangeNotification` observer registered
+    /// for the lifetime of the `UIKit` application.
+    locale_observer: RefCell<Option<NotificationObserver>>,
     process: OnceCell<Rc<Process>>,
     scenes: RefCell<BTreeMap<String, Rc<UiKitScene>>>,
     #[cfg(feature = "menu")]
@@ -129,6 +146,10 @@ impl UiKitApplication {
     /// context; scenes that connected first mount when it resolves.
     fn did_finish_launching(self: &Rc<Self>) {
         waterui_locale::start_system_locale_listener();
+        let mtm = MainThreadMarker::new().expect("UIKit finishes launching on the main thread");
+        *self.locale_observer.borrow_mut() = Some(observe_locale_changes(mtm, || {
+            let _ = refresh_system_locale();
+        }));
         let Launch {
             app,
             env,
@@ -146,7 +167,12 @@ impl UiKitApplication {
             env,
         } = app(env);
         let RootWindows { initial, channels } = windows;
-        let mut windows = initial.into_iter();
+        let (open_windows, dormant_window_watches) = split_open_and_watch_dormant(initial, || {
+            contract_violation!(
+                "hydrolysis UIKit: secondary windows are unsupported — a scene mounts exactly one window; the window is not shown"
+            );
+        });
+        let mut windows = open_windows.into_iter();
         let window = windows
             .next()
             .expect("an iOS application must declare at least one window");
@@ -167,6 +193,14 @@ impl UiKitApplication {
         }
         #[cfg(any(feature = "text-field", feature = "secure-field"))]
         env.insert(HydrolysisTextContextMenuMode::Overlay);
+        let mtm = MainThreadMarker::new().expect("launch runs on the main thread");
+        let reduce_motion_binding = Binding::bool(system_reduce_motion());
+        env.insert(ReduceMotion::new(reduce_motion_binding.clone()));
+        let reduce_motion_observer = observe_reduce_motion_changes(mtm, move |reduced| {
+            if reduce_motion_binding.snapshot() != reduced {
+                reduce_motion_binding.set(reduced);
+            }
+        });
         crate::theme::install_theme_tokens(&mut env, Some(&*style), self.color_scheme.clone());
         let theme: Rc<dyn WidgetTheme> = style;
         let fonts = crate::text::fonts::native_collection(&env);
@@ -182,7 +216,7 @@ impl UiKitApplication {
         #[cfg(feature = "menu")]
         if let Some(ref menu_bar) = menu_bar {
             *self.menu_watch.borrow_mut() = Some(install_declared(
-                MainThreadMarker::new().expect("launch runs on the main thread"),
+                mtm,
                 menu_bar,
                 &env,
                 &self.menus,
@@ -209,6 +243,8 @@ impl UiKitApplication {
                     window: RefCell::new(Some(window)),
                     opener,
                     pending_window_queue,
+                    _dormant_window_watches: dormant_window_watches,
+                    _reduce_motion: reduce_motion_observer,
                 });
             })
             .detach();
@@ -325,7 +361,7 @@ pub(in crate::runner) fn run<W: Windows, M: AppMenuBar>(
             app: Box::new(move |env| {
                 let parts = app(env).into_parts();
                 LaunchParts {
-                    windows: RootWindows::collect(parts.windows),
+                    windows: RootWindows::collect(parts.windows, &parts.env),
                     #[cfg(feature = "menu")]
                     menu_bar: M::HAS_DECLARED
                         .then(|| parts.menu_bar.declared().cloned())
@@ -338,6 +374,7 @@ pub(in crate::runner) fn run<W: Windows, M: AppMenuBar>(
             services,
         })),
         color_scheme: nami::binding(framework_scheme(uikit::current_scheme())),
+        locale_observer: RefCell::new(None),
         process: OnceCell::new(),
         scenes: RefCell::new(BTreeMap::new()),
         #[cfg(feature = "menu")]

@@ -25,8 +25,8 @@ use std::any::Any;
 use std::rc::Rc;
 
 use cherenkov_record::{
-    Animation as EngineAnimation, BlendSpace, Curve, KeyframeAnimation, Keyframes, Live, Paint,
-    Recorder, Repeat, Spring, curve_value,
+    BlendSpace, Curve, KeyframeAnimation, Keyframes, Live, Paint, Recorder, Repeat, Spring, Timing,
+    curve_value,
 };
 use kurbo::{Point, Rect, Size, Vec2};
 use nami::Signal;
@@ -738,17 +738,24 @@ fn resolve_window_timing(
     } else {
         (edge0, edge1)
     };
-    match engine_animation(animation) {
-        EngineAnimation::Curve(curve) => {
-            if curve.duration.is_zero() {
+    match engine_animation(animation).timing() {
+        Some(Timing::Curve { curve, duration }) => {
+            if duration <= 0.0 {
                 return None;
             }
-            let t0 = invert_curve(&curve, win_lo);
-            let t1 = invert_curve(&curve, win_hi).max(t0);
-            Some((curve.duration, t0, t1))
+            let engine_curve = Curve::bezier(
+                Duration::from_secs_f64(duration),
+                curve.x1,
+                curve.y1,
+                curve.x2,
+                curve.y2,
+            );
+            let t0 = invert_curve(&engine_curve, win_lo);
+            let t1 = invert_curve(&engine_curve, win_hi).max(t0);
+            Some((engine_curve.duration, t0, t1))
         }
-        EngineAnimation::Spring(spring) => Some(spring_window_times(&spring, win_lo, win_hi)),
-        EngineAnimation::Decay(_) => None,
+        Some(Timing::Spring(spring)) => Some(spring_window_times(&spring, win_lo, win_hi)),
+        None => None,
     }
 }
 

@@ -15,7 +15,7 @@
 use std::time::Duration;
 
 use waterui::accessibility::AccessibilityGeometry;
-use waterui::component::list::{List, ListItem};
+use waterui::component::list::List;
 use waterui::graphics::color::Srgb;
 use waterui::id::SelfId;
 use waterui::layout::LayoutDirection;
@@ -25,6 +25,7 @@ use waterui::layout::safe_area::{EdgeSet, IgnoreSafeArea, SafeAreaRegions};
 use waterui::layout::scroll::ScrollView;
 use waterui::navigation::NavigationView;
 use waterui::prelude::*;
+use waterui::text::IntoText;
 use waterui::{AnyView, Binding, Color, View};
 mod support;
 
@@ -59,7 +60,7 @@ fn card(label: &'static str) -> impl View {
 /// release moves, not the answer-sized response inside it.
 fn edge_probe(
     view: impl View,
-    label: impl signal::IntoComputed<Str>,
+    label: impl IntoText,
     ignore: impl Into<IgnoreSafeArea>,
 ) -> impl View {
     view.ignore_safe_area(ignore)
@@ -806,9 +807,9 @@ fn a_list_row_field_scrolls_clear_of_the_keyboard() {
                 let value = value.clone();
                 move |item| {
                     if *item == field_row {
-                        ListItem::new(AnyView::new(field("Message", &value)))
+                        AnyView::new(field("Message", &value))
                     } else {
-                        ListItem::new(AnyView::new(text(format!("row-{}", *item))))
+                        AnyView::new(text(format!("row-{}", *item)))
                     }
                 }
             })
@@ -1292,7 +1293,7 @@ fn a_split_detail_background_does_not_cross_the_sidebar() {
                 &selection,
                 || {
                     List::for_each((0..8).map(SelfId::new).collect::<Vec<_>>(), |item| {
-                        ListItem::new(text(format!("side {}", *item)))
+                        text(format!("side {}", *item))
                     })
                 },
                 |id| {
@@ -1678,12 +1679,11 @@ fn a_navigation_bottom_toolbar_stays_docked_under_the_keyboard() {
     );
 }
 
-/// The canonical `Tab::container` shape — hidden-bar `NavigationView` →
-/// `NavigationStack` → page `NavigationView` carrying a bottom toolbar:
-/// the dock the tab bar establishes has to reach the page's chrome
-/// through every hosted/`content_area_for` hop, so the page toolbar
-/// stacks on the docked tab bar with the keyboard down and up, never
-/// riding onto the keyboard while the tab bar sits under it.
+/// `Tab::new` wrapping a `NavigationStack` → page `NavigationView`
+/// carrying a bottom toolbar: the dock the tab bar establishes has to reach
+/// the page's chrome through every hosted/`content_area_for` hop, so the
+/// page toolbar stacks on the docked tab bar with the keyboard down and up,
+/// never riding onto the keyboard while the tab bar sits under it.
 #[test]
 fn a_stack_page_toolbar_inside_a_tab_stacks_on_the_docked_tab_bar() {
     use waterui::navigation::{
@@ -1700,7 +1700,7 @@ fn a_stack_page_toolbar_inside_a_tab_stacks_on_the_docked_tab_bar() {
             Tabs::new(
                 &selection,
                 (
-                    Tab::container("Messages", move || {
+                    Tab::new("Messages", move || {
                         NavigationStack::new(
                             NavigationView::new("Root", vstack((card("content"), spacer())))
                                 .navigation_toolbar(NavigationToolbar::new(vec![
@@ -1712,7 +1712,7 @@ fn a_stack_page_toolbar_inside_a_tab_stacks_on_the_docked_tab_bar() {
                                 ])),
                         )
                     }),
-                    Tab::container("Settings", move || {
+                    Tab::new("Settings", move || {
                         NavigationStack::new(NavigationView::new("Settings", text("settings")))
                     }),
                 ),
@@ -2062,7 +2062,8 @@ fn chrome_surface_extension_captures() {
                             button("Mark All").action(|| {}),
                         )),
                 )
-                .searchable(&query, "Search mail"),
+                .searchable(&query)
+                .search_prompt("Search mail"),
             )
         },
         390,

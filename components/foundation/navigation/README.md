@@ -166,7 +166,8 @@ NavigationView::new("Editor", editor)
             save,
         ),
     ]))
-    .searchable(&query, "Search")
+    .searchable(&query)
+    .search_prompt("Search")
     .navigation_bar_visibility(show_bar)
 ```
 
@@ -192,7 +193,7 @@ Built-in transitions are platform automatic, fade, matched zoom, and none.
 ```rust
 NavigationStack::with_path(path, root)
     .destination(destination)
-    .transition(navigation_transition::fade())
+    .page_transition(navigation_transition::fade())
 ```
 
 Matched zoom uses one shared key type on the source, destination, and transition:
@@ -211,7 +212,7 @@ NavigationStack::with_path(path, root)
             hero().navigation_transition_destination(key),
         )
     })
-    .transition(navigation_transition::zoom(key))
+    .page_transition(navigation_transition::zoom(key))
 ```
 
 Apple executes supported transitions through native transition systems. Hydrolysis executes the same built-ins, interactive edge-pop motion, matched geometry, and custom `NavigationTransition` implementations on the retained GPU scene. A custom transition without a native projection is intentionally applied without animation on native backends and logged as unsupported there.
@@ -242,10 +243,10 @@ let tabs = Tabs::new(
         .enabled(settings_enabled),
     ],
 )
-.style(tab_style::automatic());
+.style(TabStyle::Automatic);
 ```
 
-`automatic` selects native tab-bar, sidebar, or navigation-rail presentation from platform and window size. `tab_bar` and `sidebar` request explicit native styles.
+`Automatic` selects native tab-bar, sidebar, or navigation-rail presentation from platform and window size. `TabBar` and `Sidebar` request explicit native styles.
 
 `Tabs` erases its identifiers into `TabsLayout`, the `Id`-keyed container the C ABI carries; backends consume `TabsLayout`, application code never names an `Id`.
 
@@ -262,7 +263,7 @@ let split = NavigationSplitView::new(
 .placeholder(empty_detail)
 .column_visibility(visibility)
 .sidebar_width(ColumnWidth::new(240.0, 320.0, 480.0))
-.style(split_style::prominent_detail());
+.style(NavigationSplitStyle::ProminentDetail);
 ```
 
 Use `NavigationSplitView::three_column` for independent sidebar and content selections. Apple maps this to `UISplitViewController`; compact layouts collapse to native stack-like navigation.

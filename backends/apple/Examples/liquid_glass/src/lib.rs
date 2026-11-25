@@ -13,13 +13,12 @@ use waterui::background::Glass;
 use waterui::component::label::IconLabel;
 use waterui::handler::ViewBuilder;
 use waterui::id::SelfId;
-use waterui::navigation::{TabBarMinimizeBehavior, TabRole};
-use waterui::prelude::theme_color::Accent;
+use waterui::navigation::{TabBarMinimizeBehavior, TabRole, TabStyle};
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
-use waterui::reactive::collection::List;
-use waterui::shape::{Circle, RoundedRectangle, ShapeExt};
+use waterui::shape::{Circle, CornerRadius, RoundedRectangle, ShapeExt};
+use waterui::theme::color::Accent;
 use waterui::views::ForEach;
 use waterui_apple::SfSymbol;
 
@@ -39,11 +38,11 @@ pub fn main() -> impl View {
     let panes = [Pane::Surfaces, Pane::Controls, Pane::About, Pane::Search].map(SelfId::new);
     Tabs::new(
         &pane,
-        ForEach::new(List::from(panes.to_vec()), |pane: SelfId<Pane>| {
+        ForEach::new(StateList::from(panes.to_vec()), |pane: SelfId<Pane>| {
             pane_tab(pane.into_inner())
         }),
     )
-    .style(tab_style::automatic())
+    .style(TabStyle::Automatic)
     // iOS collapses the bar into a glass pill as the surfaces scroll, and
     // brings it back on the way up.
     .minimize_behavior(TabBarMinimizeBehavior::OnScrollDown)
@@ -54,16 +53,14 @@ pub fn main() -> impl View {
 
 /// The tab for `pane`. Every tab shares one root builder, whose page is the
 /// variant of one `OneOf4` its pane picks.
-fn pane_tab(
-    pane: Pane,
-) -> Tab<impl ViewBuilder<Output = NavigationView<impl View>>, IconLabel<SfSymbol>> {
+fn pane_tab(pane: Pane) -> Tab<impl ViewBuilder, IconLabel<SfSymbol>> {
     let (title, symbol) = match pane {
         Pane::Surfaces => ("Surfaces", SfSymbol::SQUARE_ON_SQUARE),
         Pane::Controls => ("Controls", SfSymbol::BUTTON_HORIZONTAL),
         Pane::About => ("About", SfSymbol::INFO_CIRCLE),
         Pane::Search => ("Search", SfSymbol::MAGNIFYINGGLASS),
     };
-    let tab = Tab::container(label(title).icon(symbol), move || match pane {
+    let tab = Tab::new(label(title).icon(symbol), move || match pane {
         Pane::Surfaces => OneOf4::A(surfaces_page()),
         Pane::Controls => OneOf4::B(controls_page()),
         Pane::About => OneOf4::C(about_page()),
@@ -86,8 +83,8 @@ fn now_playing() -> impl View {
     hstack((
         label("Play").icon(SfSymbol::PLAY_FILL),
         vstack((
-            text("Now Playing").bold(true).size(15.0),
-            text("Liquid Glass — Surfaces").size(12.0),
+            text("Now Playing").bold(true).font_size(15.0),
+            text("Liquid Glass — Surfaces").font_size(12.0),
         ))
         .spacing(1.0),
     ))
@@ -127,13 +124,13 @@ fn surfaces_root() -> NavigationView<impl View> {
                 caption("The capsule follows the size of what it wraps."),
                 text("Small")
                     .bold(true)
-                    .size(13.0)
+                    .font_size(13.0)
                     .padding_with(EdgeInsets::all(8.0))
                     .background(Glass::regular()),
                 pill("Medium", Glass::regular()),
                 text("Large")
                     .bold(true)
-                    .size(24.0)
+                    .font_size(24.0)
                     .padding_with(EdgeInsets::all(20.0))
                     .background(Glass::regular()),
             ))
@@ -196,7 +193,7 @@ fn controls_root() -> NavigationView<impl View> {
 fn about_page() -> impl View {
     NavigationStack::new(
         vstack((
-            text("Liquid Glass").size(24.0),
+            text("Liquid Glass").font_size(24.0),
             "Glass is the chrome-layer surface of iOS 26 and macOS 26. This app declares it; the Apple backend projects it.",
         ))
         .spacing(12.0)
@@ -217,12 +214,13 @@ fn search_page() -> impl View {
         .spacing(12.0)
         .padding()
         .navigation_title("Search")
-        .searchable(&query, "Search glass"),
+        .searchable(&query)
+        .search_prompt("Search glass"),
     )
 }
 
 fn caption(body: &'static str) -> impl View {
-    text(body).size(15.0)
+    text(body).font_size(15.0)
 }
 
 fn pill(title: &'static str, glass: Glass) -> impl View {
@@ -236,7 +234,7 @@ fn card() -> impl View {
     ))
     .spacing(6.0)
     .padding()
-    .background(Glass::regular().shape(RoundedRectangle::new(0.2)))
+    .background(Glass::regular().shape(RoundedRectangle::new(CornerRadius::fraction(0.2))))
 }
 
 /// Large colored discs, so the lensing at each glass edge has edges to bend.
@@ -263,5 +261,5 @@ fn backdrop() -> impl View {
 
 /// Builds the Liquid Glass example app around [`main`].
 pub fn app(env: Environment) -> App<impl Windows> {
-    App::new(main, env)
+    App::new(env).window(Window::new("", main))
 }

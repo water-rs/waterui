@@ -340,7 +340,7 @@ pub fn realize_resolved_menu(config: &ResolvedMenu<Held>, ctx: &RenderContext<'_
     };
     #[cfg(target_os = "ios")]
     let padding = label_padding(style, mtm);
-    let label_env = button_chrome::label_environment(style, config.size, ctx.env());
+    let label_env = button_chrome::label_environment(style, config.size, None, ctx.env());
 
     let label_leaf = ctx.with_env(&label_env).realize(config.label.build());
     let child_view = view::retain_base(label_leaf.view());
@@ -461,7 +461,7 @@ pub fn realize_resolved_menu(config: &ResolvedMenu<Held>, ctx: &RenderContext<'_
     let styled = state.borrow().button.button();
     #[cfg(target_os = "ios")]
     let styled = state.borrow().button.button().clone();
-    button_chrome::bind_tint(&mut leaf, styled, style, ctx.env(), mtm);
+    button_chrome::bind_tint(&mut leaf, styled, style, None, ctx.env(), mtm);
 
     leaf.keep(state);
     // Kept after the state, so it drops first (reverse order).

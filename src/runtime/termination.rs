@@ -461,8 +461,7 @@ mod tests {
     fn a_cancel_refuses_and_rearms_the_question() {
         install_executor();
         let log = Log::default();
-        let app = App::new_with_windows((), Environment::new())
-            .on_quit_request(|| async { QuitReply::Cancel });
+        let app = App::new(Environment::new()).on_quit_request(|| async { QuitReply::Cancel });
         let (handle, env) = start(app, &log);
 
         handle.request(TerminationKind::Cancellable);
@@ -486,7 +485,7 @@ mod tests {
         install_executor();
         let log = Log::default();
         let asked = log.clone();
-        let app = App::new_with_windows((), Environment::new()).on_quit_request(move || {
+        let app = App::new(Environment::new()).on_quit_request(move || {
             asked.calls.borrow_mut().push("asked".into());
             async { QuitReply::Cancel }
         });
@@ -502,12 +501,12 @@ mod tests {
             "Quit"
         };
         assert_eq!(
-            command.label.content().snapshot().to_plain().as_str(),
+            command.label().content().snapshot().to_plain().as_str(),
             label
         );
-        assert_eq!(command.shortcut, Some(Shortcut::new('q').command()));
+        assert_eq!(command.shortcut(), Some(&Shortcut::new('q').command()));
 
-        command.action.run(&env);
+        command.action().run(&env);
         drain();
         // Only a cancellable request asks `on_quit_request`; a required one
         // would skip straight to terminating.
@@ -519,7 +518,7 @@ mod tests {
         install_executor();
         let log = Log::default();
         let hook_log = log.clone();
-        let app = App::new_with_windows((), Environment::new())
+        let app = App::new(Environment::new())
             .on_quit_request(|| async { QuitReply::Quit })
             .on_terminate(move || {
                 let hook_log = hook_log.clone();
@@ -540,7 +539,7 @@ mod tests {
         let log = Log::default();
         let asked = log.clone();
         let shutdown = log.clone();
-        let app = App::new_with_windows((), Environment::new())
+        let app = App::new(Environment::new())
             .on_quit_request(move || {
                 asked.calls.borrow_mut().push("asked".into());
                 async { QuitReply::Cancel }
@@ -564,7 +563,7 @@ mod tests {
         let log = Log::default();
         let asked = log.clone();
         let shutdown = log.clone();
-        let app = App::new_with_windows((), Environment::new())
+        let app = App::new(Environment::new())
             .on_quit_request(move || {
                 asked.calls.borrow_mut().push("asked".into());
                 // The question stays open — its future never answers.
@@ -593,7 +592,7 @@ mod tests {
         install_executor();
         let log = Log::default();
         let asked = log.clone();
-        let app = App::new_with_windows((), Environment::new()).on_quit_request(move || {
+        let app = App::new(Environment::new()).on_quit_request(move || {
             asked.calls.borrow_mut().push("asked".into());
             core::future::pending::<QuitReply>()
         });
@@ -617,7 +616,7 @@ mod tests {
     fn a_request_without_hooks_terminates_immediately() {
         install_executor();
         let log = Log::default();
-        let app = App::new_with_windows((), Environment::new());
+        let app = App::new(Environment::new());
         let (handle, _) = start(app, &log);
 
         handle.request(TerminationKind::Cancellable);

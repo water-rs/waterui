@@ -22,17 +22,18 @@ use accesskit::{
 use kurbo::{Point, Rect, Vec2};
 use nami::watcher::BoxWatcherGuard;
 use nami::{Binding, Signal, SignalExt as _};
-use waterui::navigation::tab::{NativeTabStyle, TabItem, TabsLayout};
+use waterui::component::badge::BadgeValue;
+use waterui::navigation::tab::{TabItem, TabStyle, TabsLayout};
 use waterui::theme::ForegroundOverride;
 use waterui::theme::color::Foreground;
 use waterui_controls::label::LabelDisplayMode;
+use waterui_core::Environment;
 use waterui_core::contract_violation;
 use waterui_core::id::Id;
 use waterui_core::layout::{LayoutDirection, ProposalSize, Size as LayoutSize, ViewDimensions};
 use waterui_core::plugin::Plugin;
 use waterui_core::views::AnyViewsSnapshot;
-use waterui_core::{Environment, Native};
-use waterui_graphics::color::{Color, signal_color};
+use waterui_graphics::color::Color;
 
 #[cfg(feature = "accessibility")]
 use crate::widgets::util::widget_disabled;
@@ -49,8 +50,8 @@ struct TabRenderState<E: crate::text::TextEngine> {
     icon: Option<RetainedSubview<E>>,
     content: RetainedSubview<E>,
     enabled: nami::Computed<bool>,
-    /// The reactive badge count drawn on the item; zero draws nothing.
-    badge: Option<nami::Computed<i32>>,
+    /// The reactive badge value drawn on the item.
+    badge: Option<nami::Computed<BadgeValue>>,
 }
 
 impl<E: crate::text::TextEngine> TabRenderState<E> {
@@ -60,7 +61,7 @@ impl<E: crate::text::TextEngine> TabRenderState<E> {
             tag,
             label: RetainedSubview::held(label.build()),
             icon: icon.map(|slot| RetainedSubview::held(slot.build())),
-            content: RetainedSubview::new(Native::new(content.build())),
+            content: RetainedSubview::held(content.build()),
             enabled,
             badge,
         }
@@ -77,7 +78,7 @@ impl<E: crate::text::TextEngine> TabRenderState<E> {
 /// removed tabs materialize or drop theirs.
 pub struct TabsRenderState<E: crate::text::TextEngine> {
     selection: Binding<Id>,
-    style: NativeTabStyle,
+    style: TabStyle,
     tabs: Vec<TabRenderState<E>>,
     /// The collection snapshot the last applied change reported — every
     /// reconcile works this membership, never the live collection.
@@ -304,16 +305,21 @@ impl<E: crate::text::TextEngine> TabsRenderState<E> {
         index
     }
 
-    /// Each tab's live badge count, read through `renderer` so a change
-    /// schedules a frame. A tab without a badge reads zero.
+    /// Each tab's live accessible badge text, read through `renderer` so a
+    /// change schedules a frame. Hidden and dot badges report `None`.
     #[cfg(feature = "accessibility")]
-    fn badge_counts(&self, renderer: &mut crate::renderer::SemanticCore<E>) -> Vec<i32> {
+    fn badge_values(
+        &self,
+        renderer: &mut crate::renderer::SemanticCore<E>,
+        env: &Environment,
+    ) -> Vec<Option<String>> {
         self.tabs
             .iter()
             .map(|tab| {
-                tab.badge
-                    .as_ref()
-                    .map_or(0, |badge| renderer.read_signal(badge))
+                tab.badge.as_ref().and_then(|badge| {
+                    let value = renderer.read_signal(badge);
+                    crate::widgets::layout::badge::badge_accessibility_text(&value, renderer, env)
+                })
             })
             .collect()
     }
@@ -338,14 +344,14 @@ impl<E: crate::text::TextEngine> TabsRenderState<E> {
 }
 
 /// One tab's accessibility inputs: `(tag, interaction_key, default_label,
-/// is_selected, badge_count)`; a zero badge count is not announced.
+/// is_selected, badge_text)`.
 #[cfg(feature = "accessibility")]
 type TabAccessibilityEntry = (
     Id,
     crate::renderer::InteractionKey,
     Option<String>,
     bool,
-    i32,
+    Option<String>,
 );
 
 /// Emits a tab list's accessibility tree from per-tab [`TabAccessibilityEntry`]
@@ -359,7 +365,7 @@ pub fn tabs_accessibility<E: TextEngine>(
     renderer: &mut SemanticCore<E>,
     bar_rects: Option<(Rect, Rect)>,
     selection: &Binding<Id>,
-    style: NativeTabStyle,
+    style: TabStyle,
     labels: &[TabAccessibilityEntry],
     env: &Environment,
 ) {
@@ -391,8 +397,8 @@ pub fn tabs_accessibility<E: TextEngine>(
             tab_node.set_label(label);
         }
         tab_node.set_selected(*is_selected);
-        if *badge != 0 {
-            tab_node.set_value(badge.to_string());
+        if let Some(badge) = badge {
+            tab_node.set_value(badge.clone());
         }
         tab_node.add_action(AccessibilityAction::Focus);
         if disabled {
@@ -485,16 +491,17 @@ pub fn measure_tabs_node<E: crate::text::TextEngine>(
         max_content_height = max_content_height.max(f64::from(content_size.height));
     }
     let bar_width = margin.mul_add(2.0, compact_width.unwrap_or(natural_bar_width));
-    let (width, height) = match state.style {
-        NativeTabStyle::Automatic | NativeTabStyle::TabBar => (
-            max_content_width.max(bar_width),
-            max_content_height + metrics.bar_height + margin,
-        ),
-        NativeTabStyle::Sidebar => (
+    let (width, height) = if matches!(state.style, TabStyle::Sidebar) {
+        (
             max_content_width + metrics.bar_height,
             max_content_height
                 .max(metrics.button_min_width * crate::num_cast::usize_as_f64(state.tabs.len())),
-        ),
+        )
+    } else {
+        (
+            max_content_width.max(bar_width),
+            max_content_height + metrics.bar_height + margin,
+        )
     };
     ViewDimensions::new(LayoutSize::new(
         proposal
@@ -535,9 +542,7 @@ pub fn render_tabs_node<E: crate::text::TextEngine>(
     );
     #[cfg(feature = "accessibility")]
     {
-        let hidden = env
-            .get::<waterui::accessibility::AccessibilityHidden>()
-            .is_some_and(waterui::accessibility::AccessibilityHidden::is_hidden);
+        let hidden = ctx.renderer_mut().is_accessibility_hidden(env);
         if !hidden {
             let selected_id = ctx.renderer_mut().read_signal(&state.borrow().selection);
             let (selection, labels, relocation) = {
@@ -545,7 +550,7 @@ pub fn render_tabs_node<E: crate::text::TextEngine>(
                 st.reconcile();
                 st.prebuild_labels_for_look(ctx.renderer_mut(), env, Some(&look));
                 let selected_index = st.selected_index(selected_id);
-                let badges = st.badge_counts(ctx.renderer_mut());
+                let badges = st.badge_values(ctx.renderer_mut(), env);
                 let renderer = ctx.renderer_mut();
                 let labels: Vec<TabAccessibilityEntry> = st
                     .tabs
@@ -560,7 +565,7 @@ pub fn render_tabs_node<E: crate::text::TextEngine>(
                             ),
                             tab.label.accessibility_label(renderer),
                             Some(index) == selected_index,
-                            badges[index],
+                            badges[index].clone(),
                         )
                     })
                     .collect();
@@ -822,7 +827,9 @@ fn render_tabs_parts<E: crate::text::TextEngine>(
         let has_label = label_rect.width() > 0.0 && label_rect.height() > 0.0;
         let badge = {
             let badge = state.borrow().tabs[index].badge.clone();
-            badge.map_or(0, |badge| ctx.renderer_mut().read_signal(&badge))
+            badge.map_or(BadgeValue::Hidden, |badge| {
+                ctx.renderer_mut().read_signal(&badge)
+            })
         };
         if icon_rect.is_some() || has_label {
             // The tab item's a11y is emitted by `tabs_accessibility`, so suppress
@@ -869,11 +876,11 @@ fn render_tabs_parts<E: crate::text::TextEngine>(
                         );
                     }
                     drop(st);
-                    // The count anchors on the icon, on the title without one.
-                    if badge != 0 {
+                    // The indicator anchors on the icon, on the title without one.
+                    if !badge.is_hidden() {
                         let anchor = icon_rect.unwrap_or(label_rect);
                         crate::widgets::layout::badge::draw_badge_indicator(
-                            ctx, anchor, badge, env,
+                            ctx, anchor, &badge, env,
                         );
                     }
                 },
@@ -913,13 +920,13 @@ fn tab_track(
     tabs: Rc<LiveTabs>,
     index: usize,
     tag: Id,
-    style: NativeTabStyle,
+    style: TabStyle,
     selection: Binding<Id>,
     slop: f64,
 ) -> TrackAction {
     let start = Cell::new(None::<Point>);
     let dragging = Cell::new(false);
-    let vertical = matches!(style, NativeTabStyle::Sidebar);
+    let vertical = matches!(style, TabStyle::Sidebar);
     Rc::new(RefCell::new(move |step: Track| match step {
         Track::Begin(point) => {
             start.set(Some(point));
@@ -991,12 +998,10 @@ fn resolve_tabs_layout<E: TextEngine>(
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
     look: &TabsLook,
-    style: NativeTabStyle,
+    style: TabStyle,
 ) -> (TabItemLayout, TabsMetrics, Option<f64>, f64) {
     let margin = bottom_floating_margin(look, style);
-    if style != NativeTabStyle::Sidebar
-        && matches!(look.get_bar_width(), TabBarWidth::Compact { .. })
-    {
+    if style != TabStyle::Sidebar && matches!(look.get_bar_width(), TabBarWidth::Compact { .. }) {
         let measure_label_env = tab_label_env(env);
         let item_sizes: Vec<(LayoutSize, Option<LayoutSize>)> = {
             let mut st = state.borrow_mut();
@@ -1021,7 +1026,7 @@ fn resolve_tabs_layout<E: TextEngine>(
         return (layout, metrics, compact_width, margin);
     }
     let base_extent = tabs_bar_item_extent(ctx.bounds.width(), style, look);
-    let extent = if style == NativeTabStyle::Sidebar {
+    let extent = if style == TabStyle::Sidebar {
         base_extent
     } else {
         margin.mul_add(-2.0, base_extent).max(0.0)
@@ -1056,20 +1061,18 @@ fn tab_reactive_env(
             unselected_color.clone()
         }
     });
-    tab_foreground_env(env, signal_color(combined))
+    tab_foreground_env(env, Color::from_signal(combined))
 }
 
-const fn bottom_floating_margin(look: &TabsLook, style: NativeTabStyle) -> f64 {
-    match style {
-        NativeTabStyle::Automatic | NativeTabStyle::TabBar => {
-            let margin = look.get_floating_margin();
-            if margin.is_finite() && margin > 0.0 {
-                margin
-            } else {
-                0.0
-            }
-        }
-        NativeTabStyle::Sidebar => 0.0,
+const fn bottom_floating_margin(look: &TabsLook, style: TabStyle) -> f64 {
+    if matches!(style, TabStyle::Sidebar) {
+        return 0.0;
+    }
+    let margin = look.get_floating_margin();
+    if margin.is_finite() && margin > 0.0 {
+        margin
+    } else {
+        0.0
     }
 }
 
@@ -1106,11 +1109,11 @@ fn compact_bar_width(
 
 fn tabs_decide_placement(
     look: &TabsLook,
-    style: NativeTabStyle,
+    style: TabStyle,
     proposed_width: Option<f64>,
     item_sizes: &[(LayoutSize, Option<LayoutSize>)],
 ) -> (TabItemLayout, TabsMetrics, Option<f64>) {
-    if style == NativeTabStyle::Sidebar {
+    if style == TabStyle::Sidebar {
         let (layout, metrics) = tabs_decide_layout(look, style, proposed_width, item_sizes);
         return (layout, metrics, None);
     }
@@ -1162,13 +1165,13 @@ fn tabs_decide_placement(
 fn tabs_bar_geometry(
     bar: &ChromeBar,
     look: &TabsLook,
-    style: NativeTabStyle,
+    style: TabStyle,
     dock_edge: Edge,
     metrics: &TabsMetrics,
     compact_width: Option<f64>,
 ) -> TabsBarGeometry {
     let bar_band = bar.band;
-    if style == NativeTabStyle::Sidebar {
+    if style == TabStyle::Sidebar {
         let bar_surface = bar.surface(dock_edge);
         let inner = dock_edge.inner_edge(bar_band);
         let divider = match dock_edge {
@@ -1239,16 +1242,16 @@ fn tabs_bar_geometry(
 /// are physical, so the leading dock resolves under `direction` — a
 /// sidebar lands on the right edge under right-to-left
 /// (water-rs/waterui#1827).
-const fn tabs_dock_edge(style: NativeTabStyle, direction: LayoutDirection) -> Edge {
-    match style {
-        NativeTabStyle::Sidebar => {
-            if direction.is_right_to_left() {
-                Edge::Trailing
-            } else {
-                Edge::Leading
-            }
+const fn tabs_dock_edge(style: TabStyle, direction: LayoutDirection) -> Edge {
+    if matches!(style, TabStyle::Sidebar) {
+        if direction.is_right_to_left() {
+            Edge::Trailing
+        } else {
+            Edge::Leading
         }
-        NativeTabStyle::Automatic | NativeTabStyle::TabBar => Edge::Bottom,
+    } else {
+        // `Automatic`, `TabBar`, and any future horizontal bar style dock at the bottom.
+        Edge::Bottom
     }
 }
 
@@ -1256,14 +1259,12 @@ const fn tabs_dock_edge(style: NativeTabStyle, direction: LayoutDirection) -> Ed
 /// the container is `container_width` wide: a bottom bar's extent is the
 /// container's width; a sidebar strip reports its own thickness — the
 /// vertical metrics' `bar_height` — which never widens into the pane.
-pub const fn tabs_bar_item_extent(
-    container_width: f64,
-    style: NativeTabStyle,
-    look: &TabsLook,
-) -> f64 {
-    match style {
-        NativeTabStyle::Sidebar => look.metrics(TabItemLayout::Vertical).bar_height,
-        NativeTabStyle::Automatic | NativeTabStyle::TabBar => container_width,
+pub const fn tabs_bar_item_extent(container_width: f64, style: TabStyle, look: &TabsLook) -> f64 {
+    if matches!(style, TabStyle::Sidebar) {
+        look.metrics(TabItemLayout::Vertical).bar_height
+    } else {
+        // `Automatic`, `TabBar`, and any future bar style span `container_width`.
+        container_width
     }
 }
 
@@ -1277,14 +1278,14 @@ pub const fn tabs_bar_item_extent(
 )]
 pub fn tabs_decide_layout(
     look: &TabsLook,
-    style: NativeTabStyle,
+    style: TabStyle,
     proposed_width: Option<f64>,
     item_sizes: &[(LayoutSize, Option<LayoutSize>)],
 ) -> (TabItemLayout, crate::theme::TabsMetrics) {
     let extent = match proposed_width {
         Some(width) => tabs_bar_item_extent(width, style, look),
         None => {
-            if style == NativeTabStyle::Sidebar {
+            if style == TabStyle::Sidebar {
                 tabs_bar_item_extent(0.0, style, look)
             } else {
                 let vertical_metrics = look.metrics(TabItemLayout::Vertical);
@@ -1442,7 +1443,7 @@ pub fn emit_tabs_accessibility<E: crate::text::TextEngine>(
     let selected_id = renderer.read_signal(&state.selection);
     let (selection, style, labels) = {
         let selected_index = state.selected_index(selected_id);
-        let badges = state.badge_counts(renderer);
+        let badges = state.badge_values(renderer, env);
         let labels: Vec<TabAccessibilityEntry> = state
             .tabs
             .iter()
@@ -1456,13 +1457,15 @@ pub fn emit_tabs_accessibility<E: crate::text::TextEngine>(
                     ),
                     tab.label.accessibility_label(renderer),
                     Some(index) == selected_index,
-                    badges[index],
+                    badges[index].clone(),
                 )
             })
             .collect();
         (state.selection.clone(), state.style, labels)
     };
-    tabs_accessibility(renderer, None, &selection, style, &labels, env);
+    if !renderer.is_accessibility_hidden(env) {
+        tabs_accessibility(renderer, None, &selection, style, &labels, env);
+    }
     if let Some(selected_index) = state.selected_index(selected_id) {
         state.tabs[selected_index]
             .content

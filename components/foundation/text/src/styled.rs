@@ -7,11 +7,11 @@ use crate::{
 };
 use alloc::{string::String, vec::Vec};
 use core::ops::AddAssign;
-use nami::signal::IntoComputed;
+use nami::signal::{IntoComputed, IntoSignal};
 use nami::{Signal, impl_constant};
 #[cfg(feature = "markdown")]
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag};
-use waterui_color::{Color, SurfaceVariantColor};
+use waterui_color::Color;
 use waterui_core::{
     Environment, Str, View,
     handler::{EventHandler, ReportExtraction, SharedAction},
@@ -95,15 +95,15 @@ impl Style {
 
     /// Sets the text color.
     #[must_use]
-    pub fn foreground(mut self, color: impl Into<Color>) -> Self {
-        self.foreground = Some(color.into());
+    pub fn foreground(mut self, color: impl IntoSignal<Color> + 'static) -> Self {
+        self.foreground = Some(Color::from_signal(color));
         self
     }
 
     /// Sets the background color.
     #[must_use]
-    pub fn background(mut self, color: impl Into<Color>) -> Self {
-        self.background = Some(color.into());
+    pub fn background(mut self, color: impl IntoSignal<Color> + 'static) -> Self {
+        self.background = Some(Color::from_signal(color));
         self
     }
 
@@ -130,8 +130,8 @@ impl Style {
 
     /// Sets the font size in points.
     #[must_use]
-    pub fn size(mut self, size: f32) -> Self {
-        self.font = self.font.size(size);
+    pub fn font_size(mut self, size: f32) -> Self {
+        self.font = self.font.font_size(size);
         self
     }
 
@@ -476,8 +476,8 @@ impl StyledStr {
 
     /// Sets the font size for all chunks.
     #[must_use]
-    pub fn size(self, size: f32) -> Self {
-        self.apply_style(|s| *s = take(s).size(size))
+    pub fn font_size(self, size: f32) -> Self {
+        self.apply_style(|s| *s = take(s).font_size(size))
     }
 
     /// Applies a font over every chunk's font.
@@ -503,15 +503,15 @@ impl StyledStr {
 
     /// Sets the foreground color for all chunks.
     #[must_use]
-    pub fn foreground(self, color: impl Into<Color>) -> Self {
-        let color = color.into();
+    pub fn foreground(self, color: impl IntoSignal<Color> + 'static) -> Self {
+        let color = Color::from_signal(color);
         self.apply_style(|s| s.foreground = Some(color.clone()))
     }
 
     /// Sets the background color for all chunks.
     #[must_use]
-    pub fn background_color(self, color: impl Into<Color>) -> Self {
-        let color = color.into();
+    pub fn background_color(self, color: impl IntoSignal<Color> + 'static) -> Self {
+        let color = Color::from_signal(color);
         self.apply_style(|s| s.background = Some(color.clone()))
     }
 
@@ -731,9 +731,7 @@ pub fn heading_style(level: HeadingLevel) -> Style {
 }
 
 fn inline_code_style(style: Style) -> Style {
-    style
-        .monospaced(true)
-        .background(Color::new(SurfaceVariantColor))
+    style.monospaced(true).background(Color::surface_variant())
 }
 
 impl View for StyledStr {

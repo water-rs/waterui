@@ -11,7 +11,7 @@ use waterui::prelude::*;
 // Listing: three token applications.
 // ---------------------------------------------------------------------------
 pub fn styling_block_01() {
-    use waterui::prelude::theme_color::{Accent, Foreground, Surface};
+    use waterui::theme::color::{Accent, Foreground, Surface};
 
     let _: Option<Accent> = None;
 
@@ -28,7 +28,7 @@ pub fn styling_block_01() {
 // Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn styling_token_as_value_prose() {
-    use waterui::prelude::theme_color::{
+    use waterui::theme::color::{
         AccentContainer, AccentForeground, Background, Border, DisabledForeground, Error,
         ErrorForeground, Scrim, SelectionContainer, SelectionForeground, SurfaceVariant, Tertiary,
         TertiaryContainer, TertiaryForeground, UnemphasizedSelection,
@@ -78,7 +78,7 @@ pub mod styling_block_02 {
                     "Inter",
                 ))),
         );
-        App::new(move || root(dark.clone()), env)
+        App::new(env).window(Window::new("Themed", move || root(dark.clone())))
     }
 }
 
@@ -191,14 +191,14 @@ pub fn styling_block_05() {
 // styling.md § "## Reactive colors" — rust block 6/19
 // ---------------------------------------------------------------------------
 pub fn styling_block_06() -> impl View {
-    use waterui::prelude::theme_color::SurfaceVariant;
     use waterui::shape::{Rectangle, ShapeExt};
+    use waterui::theme::color::SurfaceVariant;
 
     let selected = Binding::bool(true);
     let indicator: Color = SurfaceVariant.into();
     let clear = Color::transparent();
 
-    let fill = signal_color(selected.select(indicator, clear).computed());
+    let fill = selected.select(indicator, clear);
     Rectangle.fill(fill).size(64.0, 32.0)
 }
 
@@ -206,8 +206,8 @@ pub fn styling_block_06() -> impl View {
 // styling.md § "## Backgrounds, materials, gradients" — rust block 7/19
 // ---------------------------------------------------------------------------
 pub fn styling_block_07() {
-    use waterui::prelude::theme_color::Surface;
     use waterui::shape::{RoundedRectangle, ShapeExt};
+    use waterui::theme::color::Surface;
 
     use waterui::background::Material;
 
@@ -229,7 +229,7 @@ pub fn styling_block_07() {
     let view = Divider;
     let _ = {
         // any view is a valid background
-        view.background(RoundedRectangle::new(0.18).fill(Surface))
+        view.background(RoundedRectangle::new(12.0).fill(Surface))
     };
 }
 
@@ -254,8 +254,8 @@ pub fn styling_material_group_prose() -> impl View {
 // Listing: three glass backgrounds.
 // ---------------------------------------------------------------------------
 pub fn styling_block_08() {
-    use waterui::prelude::theme_color::Accent;
     use waterui::shape::RoundedRectangle;
+    use waterui::theme::color::Accent;
 
     use waterui::background::Glass;
 
@@ -272,20 +272,20 @@ pub fn styling_block_08() {
         view.background(
             Glass::regular()
                 .tint(Accent)
-                .shape(RoundedRectangle::new(0.2)),
+                .shape(RoundedRectangle::new(16.0)),
         )
     };
 }
 
 // ---------------------------------------------------------------------------
 // styling.md § "## Backgrounds, materials, gradients" (prose): the prelude
-// carries `Gradient` and `MeshGradient`, and the colour type gradients take.
+// carries `Gradient`, `GradientStops` and `MeshGradient`.
 // Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn styling_prelude_gradients_prose() {
     let _: Option<Gradient> = None;
+    let _: Option<GradientStops> = None;
     let _: Option<MeshGradient> = None;
-    let _: Option<waterui::color::WorkingColor> = None;
 }
 
 // ---------------------------------------------------------------------------
@@ -293,26 +293,42 @@ pub fn styling_prelude_gradients_prose() {
 // ---------------------------------------------------------------------------
 pub fn styling_block_09() {
     let view = Divider;
-    let vertices: Vec<([f32; 2], waterui::color::WorkingColor)> = Vec::new();
 
+    use waterui::color::Working;
     use waterui::color::working::from_linear_srgb;
     use waterui::gradient::{
         AnimatedMeshGradient, AnimatedMeshGradientConfig, FlowingGradient, Gradient, MeshGradient,
     };
+    use waterui::layout::UnitPoint;
+    use waterui::theme::color::{Accent, Surface};
 
-    let rose = Srgb::from_hex("#FF4D80").resolve();
-    let sky = from_linear_srgb([0.3, 0.5, 1.0], 1.0);
+    let rose = Color::srgb_hex("#FF4D80");
+    let sky = Color::new(Working(from_linear_srgb([0.3, 0.5, 1.0], 1.0)));
 
-    let colors = Binding::container(vec![rose; 9]);
+    let progress = Binding::f32(0.5);
+    let stops_signal = progress.map({
+        let rose = rose.clone();
+        let sky = sky.clone();
+        move |p| vec![(0.0, rose.clone()), (p, sky.clone())]
+    });
+    let colors = Binding::container(vec![rose.clone(); 9]);
 
     let _ = {
-        // fixed colours
-        Gradient::linear(vec![(0.0, rose), (1.0, sky)], [0.0, 0.0], [1.0, 1.0])
+        // theme tokens, evenly spaced
+        Gradient::linear(
+            [Accent.into(), Surface.into()],
+            UnitPoint::TOP,
+            UnitPoint::BOTTOM,
+        )
+    };
+    let _ = {
+        // reactive (offset, Color) stops
+        Gradient::linear(stops_signal, UnitPoint::LEADING, UnitPoint::TRAILING)
     };
     let _ = {
         view.background(Gradient::radial(
-            vec![(0.0, rose), (1.0, sky)],
-            [0.5, 0.5],
+            [rose.clone(), sky.clone()],
+            UnitPoint::CENTER,
             0.0,
             0.7,
         ))
@@ -321,17 +337,13 @@ pub fn styling_block_09() {
         // radians
         Gradient::angular(
             vec![(0.0, rose), (1.0, sky)],
-            [0.5, 0.5],
+            UnitPoint::CENTER,
             0.0,
             core::f32::consts::TAU,
         )
     };
     let _ = {
-        // vertices: Vec<([f32; 2], WorkingColor)>, row-major
-        Gradient::mesh(2, 2, vertices, true)
-    };
-    let _ = {
-        // colors: any signal of WorkingColors
+        // colors: any signal of Colors
         MeshGradient::new(3, 3, colors.clone()).size(300.0, 200.0)
     };
     let _ = {
@@ -351,8 +363,8 @@ pub fn styling_block_10() {
     let photo = Divider;
 
     use waterui::shape::{
-        Capsule, Circle, Ellipse, FixedRoundedRectangle, FixedUnevenRoundedRectangle, Path,
-        Rectangle, RoundedRectangle, ShapeExt, UnevenRoundedRectangle,
+        Capsule, Circle, CornerRadii, CornerRadius, Ellipse, Path, Rectangle, RoundedRectangle,
+        ShapeExt,
     };
 
     let _ = {
@@ -363,16 +375,28 @@ pub fn styling_block_10() {
     };
     let photo = Divider;
     let _ = {
-        photo.clip(FixedRoundedRectangle::new(12.0)) // absolute points
+        photo.clip(RoundedRectangle::new(12.0)) // radius in logical points
     };
-    let _ = FixedUnevenRoundedRectangle::new(12.0, 12.0, 0.0, 0.0);
+    let photo = Divider;
+    let _ = { photo.clip(RoundedRectangle::new(CornerRadius::fraction(0.1))) };
+    let photo = Divider;
+    let _ = {
+        photo.clip(RoundedRectangle::new(CornerRadii::new(
+            12.0, 12.0, 0.0, 0.0,
+        )))
+    };
 
     let _: Option<Capsule> = None;
     let _: Option<Ellipse> = None;
     let _: Option<Path> = None;
     let _: Option<Rectangle> = None;
     let _: Option<RoundedRectangle> = None;
-    let _ = UnevenRoundedRectangle::new(0.1, 0.1, 0.2, 0.2);
+    let _ = CornerRadii::new(
+        CornerRadius::fraction(0.1),
+        CornerRadius::fraction(0.1),
+        0.2,
+        0.2,
+    );
     fn needs_shape_ext<S: ShapeExt>(_s: S) {}
     needs_shape_ext(Circle);
 }
@@ -381,8 +405,8 @@ pub fn styling_block_10() {
 // styling.md § "## Shapes" — rust block 11/19
 // ---------------------------------------------------------------------------
 pub fn styling_block_11() -> impl View {
-    use waterui::prelude::theme_color::Accent;
     use waterui::shape::{Path, ShapeExt};
+    use waterui::theme::color::Accent;
 
     let triangle = Path::new()
         .move_to(0.5, 0.0)
@@ -413,18 +437,22 @@ pub fn styling_path_cubic_prose() {
 // ---------------------------------------------------------------------------
 pub fn styling_block_12() {
     use core::time::Duration;
+    use waterui::animation::{Animation, Repeat};
     use waterui::shape::{Circle, Rectangle, RoundedRectangle, ShapeExt};
 
     let shape = Circle;
     let target = Rectangle;
     let fill = Color::srgb_hex("#22C55E");
+
     let t = Binding::f32(0.5);
 
     let _ = {
         Circle
-            .morph_to(RoundedRectangle::new(0.22), Color::srgb_hex("#3B82F6"))
-            .duration(Duration::from_millis(600))
-            .autoreverse(true) // also .repeat(bool)
+            .morph_to(RoundedRectangle::new(20.0), Color::srgb_hex("#3B82F6"))
+            .animation(
+                Animation::ease_in_out(Duration::from_millis(600))
+                    .repeat(Repeat::Forever { autoreverse: true }),
+            )
             .size(90.0, 90.0)
     };
 
@@ -432,11 +460,6 @@ pub fn styling_block_12() {
         // or drive it from a 0..=1 signal instead
         shape.morph_to(target, fill).progress(t.clone())
     };
-
-    // `.repeat(bool)`, named in the trailing comment.
-    let _ = Circle
-        .morph_to(Rectangle, Color::transparent())
-        .repeat(true);
 }
 
 // ---------------------------------------------------------------------------
@@ -452,12 +475,12 @@ pub fn styling_filled_shape_morph_prose() {
 // ---------------------------------------------------------------------------
 // styling.md § "## Borders and shadows" — rust block 13/19
 // Listing: a plain border, a configured border, a shadow; then the prose's
-// `Shadow::splat(v)`.
+// `Shadow::new(v)` / `Shadow::splat(v)`.
 // ---------------------------------------------------------------------------
 pub fn styling_block_13() {
     use waterui::border::Border;
-    use waterui::prelude::theme_color::Accent;
-    use waterui::shape::RoundedRectangle;
+    use waterui::shape::{Circle, RoundedRectangle};
+    use waterui::theme::color::Accent;
 
     let card = Divider;
     let _ = {
@@ -471,16 +494,17 @@ pub fn styling_block_13() {
                 .edges(EdgeSet::BOTTOM),
         )
     };
+    let avatar = Divider;
+    let _ = { avatar.clip(Circle).shadow(4.0) };
     let card = Divider;
     let _ = {
-        card.shadow(Shadow::new(
-            Color::srgb(0, 0, 0).with_opacity(0.2), // color, with alpha
-            Vector::new(0.0, 2.0),                  // offset
-            8.0,                                    // blur radius
-            RoundedRectangle::new(0.1),             // the caster's own shape
-        ))
+        card.shadow(
+            Shadow::new(8.0)
+                .color(Color::srgb(0, 0, 0).with_opacity(0.2))
+                .offset(0.0, 2.0)
+                .silhouette(RoundedRectangle::new(8.0)),
+        )
     };
-    let _ = Shadow::splat(4.0);
 }
 
 // ---------------------------------------------------------------------------
@@ -504,19 +528,17 @@ pub fn styling_floating_prose() {
 // styling.md writes `mdi::`/`lucide::` qualified so the icon set stays visible.
 #[allow(unknown_lints, qualified_waterui_path)]
 pub fn styling_block_14() {
-    use waterui::prelude::theme_color::Accent;
+    use waterui::theme::color::Accent;
 
     use waterui_icons_lucide as lucide;
     use waterui_icons_material_icon as mdi;
 
     let _ = { mdi::check_circle() };
-    let _ = { mdi::delete().size(20.0, 20.0) };
+    let _ = { mdi::delete().icon_size(20.0) };
     let _ = {
         mdi::flag().foreground(Accent) // theme color
     };
-    let _ = {
-        lucide::star().tint(Color::srgb_hex("#F59E0B")) // explicit tint
-    };
+    let _ = { lucide::star().foreground(Color::srgb_hex("#F59E0B")) };
 }
 
 // ---------------------------------------------------------------------------
@@ -541,8 +563,8 @@ mod material3 {
     use waterui::prelude::*;
 
     /// Glue: the `app(env) -> App<impl Windows>` every example library exposes.
-    fn app(env: Environment) -> waterui::app::App<impl waterui::app::Windows> {
-        waterui::app::App::new(move || vstack((text("demo"),)), env)
+    fn app(env: Environment) -> App<impl Windows> {
+        App::new(env).window(Window::new("", move || vstack((text("demo"),))))
     }
 
     // -----------------------------------------------------------------------

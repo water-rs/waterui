@@ -7,6 +7,7 @@ use super::ContainerNode;
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::scroll::ScrollPositionReport;
 use crate::text::TextEngine;
 use crate::theme::WidgetTheme;
 use core::num::NonZeroUsize;
@@ -790,13 +791,14 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 // viewport and content: the safe-area extension is the
                 // surface's presentation detail, not the semantic scroll
                 // geometry the controller reads back.
-                let position_report = node.controller.as_ref().map(|controller| {
-                    crate::scroll::ScrollPositionReport::new(
-                        controller.position_report(),
-                        size,
-                        content_size,
-                    )
-                });
+                let position_report =
+                    node.controller
+                        .as_ref()
+                        .map(|controller| ScrollPositionReport {
+                            binding: controller.position_report(),
+                            viewport_size: size,
+                            content_size,
+                        });
                 let existing = node.handle.borrow().clone();
                 let handle = if let Some(mut handle) = existing {
                     // Rebind outside the `node.handle` borrow — the report

@@ -159,7 +159,7 @@ impl Ghost {
         if let Some(realization) = run.realization.borrow().as_ref() {
             realization.target.apply(&sample);
         }
-        run.update_blur(sample.blur());
+        run.update_blur(sample.blur);
         // Losing the window is the native signal that the ghost left the
         // screen — an enclosing ghost completed and took this one with it —
         // so the windowless `FrameClock` never leaks the run.
@@ -187,7 +187,7 @@ impl Ghost {
                     if let Some(realization) = run.realization.borrow().as_ref() {
                         realization.target.apply(&sample);
                     }
-                    run.update_blur(sample.blur());
+                    run.update_blur(sample.blur);
                     #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
                     run.update_pixel();
                 } else {
@@ -196,7 +196,7 @@ impl Ghost {
                         // Keep issuing captures: a `Deferred` retry only
                         // runs inside `update_blur`/`update_pixel` (#3798).
                         let sample = run.state.borrow().properties(run.visual.geometry);
-                        run.update_blur(sample.blur());
+                        run.update_blur(sample.blur);
                         #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
                         run.update_pixel();
                     } else {

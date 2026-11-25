@@ -25,11 +25,14 @@ use wasm_bindgen::{JsCast, closure::Closure};
 use wasm_bindgen_futures::JsFuture;
 use waterui::app::{App, AppMenuBar, AppParts, Windows};
 use waterui::window::WindowState;
-use waterui_core::{Environment, contract_violation};
+use waterui_core::{Environment, Retain, contract_violation};
+use waterui_structural_transition::ReduceMotion;
 use web_sys::Response;
 
 use crate::text::fonts::WebFonts;
 
+use crate::platform::web_appearance::SystemAppearance;
+use crate::platform::web_locale::SystemLocale;
 use crate::platform::{BrowserWindow, PlatformWindow};
 #[cfg(any(feature = "text-field", feature = "secure-field"))]
 use crate::renderer::HydrolysisTextContextMenuMode;
@@ -37,7 +40,9 @@ use crate::renderer::HydrolysisTextContextMenuMode;
 use crate::renderer::MenuShortcutRegistry;
 use crate::renderer::{FontFamilyResolution, HydrolysisRenderer, Next};
 use crate::runner::web_accessibility::WebAccessibilityBridge;
-use crate::runner::window::{FrameMode, RootWindow, RootWindows, self_pace_interval};
+use crate::runner::window::{
+    FrameMode, RootWindow, RootWindows, self_pace_interval, split_open_and_watch_dormant,
+};
 use crate::runner::{
     RenderDiagnosticsConfig, RuntimeWindow, WindowFrame, advance_runtime, handle_input_events,
     render_window,
@@ -251,9 +256,15 @@ struct BrowserRunner {
     fonts_arrived: Rc<Cell<bool>>,
     /// Schedules a frame — what an arriving face wakes the page with.
     wake: Rc<dyn Fn()>,
+    /// Keeps state watchers on dormant `Closed` secondary windows alive so
+    /// opening one at run time reports the unsupported secondary-window error.
+    _dormant_window_watches: Vec<Retain>,
     /// Held for its lifetime: the media-query listener keeps writing the
     /// colour-scheme binding only while the runner holds the observation.
     _appearance: crate::platform::web_appearance::SystemAppearance,
+    /// Held for its lifetime: the `languagechange` listener pushes browser
+    /// locale changes into `waterui_locale::regional`.
+    _system_locale: SystemLocale,
     /// Earliest `Instant` for the next self-paced continuous
     /// frame when an active vote caps below 60Hz.
     next_paced_due: Option<Instant>,
@@ -538,7 +549,7 @@ pub fn run<W: Windows, M: AppMenuBar>(app: App<W, M>, style: impl crate::Style) 
         let RootWindows {
             initial: windows,
             channels,
-        } = RootWindows::<crate::text::ParleyEngine>::collect(windows);
+        } = RootWindows::<crate::text::ParleyEngine>::collect(windows, &env);
         let unsupported_opener: Rc<dyn Fn(RootWindow<crate::text::ParleyEngine>)> = Rc::new(|_| {
             contract_violation!(
                 "hydrolysis web runner: secondary windows are unsupported — a browser \
@@ -546,6 +557,12 @@ pub fn run<W: Windows, M: AppMenuBar>(app: App<W, M>, style: impl crate::Style) 
             );
         });
         RootWindows::connect_channels(channels, &unsupported_opener);
+        let (windows, dormant_window_watches) = split_open_and_watch_dormant(windows, || {
+            contract_violation!(
+                "hydrolysis web runner: secondary windows are unsupported — a browser \
+                 page is the application's only window; the window is not shown"
+            );
+        });
         let window_count = windows.len();
         let Ok([window]) = <[RootWindow<crate::text::ParleyEngine>; 1]>::try_from(windows) else {
             let message = format!(
@@ -584,7 +601,9 @@ pub fn run<W: Windows, M: AppMenuBar>(app: App<W, M>, style: impl crate::Style) 
         // appearance: `matches` seeds the scheme so the first frame already
         // draws in it, and the query's `change` event writes each later
         // one. The runner holds the observation for its lifetime.
-        let system_appearance = crate::platform::web_appearance::SystemAppearance::observe();
+        let system_appearance = SystemAppearance::observe();
+        let system_locale = SystemLocale::observe();
+        env.insert(ReduceMotion::new(system_appearance.reduce_motion()));
         crate::theme::install_theme_tokens(&mut env, Some(&style), system_appearance.scheme());
         let theme: Rc<dyn crate::theme::WidgetTheme> = Rc::new(style);
 
@@ -661,7 +680,9 @@ pub fn run<W: Windows, M: AppMenuBar>(app: App<W, M>, style: impl crate::Style) 
             deferred_fonts,
             fonts_arrived: Rc::new(Cell::new(false)),
             wake: browser_schedule,
+            _dormant_window_watches: dormant_window_watches,
             _appearance: system_appearance,
+            _system_locale: system_locale,
             next_paced_due: None,
         };
 

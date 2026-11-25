@@ -29,6 +29,8 @@
 use alloc::rc::Rc;
 use alloc::vec::Vec;
 use core::cell::{Cell, RefCell};
+#[cfg(test)]
+use core::time::Duration;
 
 use cocoa_ui::Rect;
 use cocoa_ui::gesture::{ButtonMask, GestureState};
@@ -38,14 +40,14 @@ use cocoa_ui::objc2::MainThreadOnly as _;
 use cocoa_ui::objc2_app_kit::{NSApplication, NSEventType};
 use cocoa_ui::view;
 use waterui::gesture::{
-    DragEvent, Gesture, GestureObserver, GesturePhase, GesturePoint, LongPressEvent,
-    MagnificationEvent, PointerButton, RotationEvent, TapEvent,
+    DragEvent, Gesture, GestureObserver, GesturePhase, LongPressEvent, MagnificationEvent,
+    PointerButton, RotationEvent, TapEvent,
 };
 use waterui_core::Metadata;
 use waterui_core::extract::State;
 use waterui_core::handler::ReportExtraction as _;
 use waterui_core::layout::{
-    LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
+    LayoutError, Point, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
     ViewDimensions,
 };
 
@@ -139,13 +141,13 @@ enum GesturePayload {
 type Recognized = Rc<dyn Fn(GesturePayload)>;
 
 /// A point `AppKit`/`UIKit` reports — `NSPoint`/`CGPoint`, both `f64` pairs —
-/// as a [`GesturePoint`].
+/// as a [`Point`].
 #[expect(
     clippy::cast_possible_truncation,
     reason = "the gesture contract is f32; kit geometry is f64"
 )]
-const fn gesture_point(x: f64, y: f64) -> GesturePoint {
-    GesturePoint::new(x as f32, y as f32)
+const fn gesture_point(x: f64, y: f64) -> Point {
+    Point::new(x as f32, y as f32)
 }
 
 /// The [`GesturePhase`] a recognizer's `state` stands for: `Began` opens a
@@ -190,7 +192,7 @@ fn pan_event(
     }
     // A cancelled drag reports no velocity, matching the shared contract.
     let velocity = if phase == GesturePhase::Cancelled {
-        GesturePoint::new(0.0, 0.0)
+        Point::new(0.0, 0.0)
     } else {
         gesture_point(velocity.0, velocity.1)
     };
@@ -285,14 +287,13 @@ fn pressed_button(
 )]
 #[expect(
     clippy::cast_possible_truncation,
-    clippy::cast_precision_loss,
-    reason = "the gesture contract is f32; kit geometry is f64, and a press duration in milliseconds fits an f32 mantissa"
+    reason = "kit geometry is f64 and the gesture contract uses f32"
 )]
 fn attach(host: &HostView, gesture: &Gesture, on_recognized: Recognized) -> Vec<GestureAttachment> {
     match gesture {
         Gesture::Tap(tap) => {
             let buttons = button_mask(tap.get_buttons());
-            let count = tap.count();
+            let count = tap.count().get();
             #[cfg(target_os = "ios")]
             {
                 vec![kit::tap(host, count as usize, buttons, {
@@ -325,18 +326,17 @@ fn attach(host: &HostView, gesture: &Gesture, on_recognized: Recognized) -> Vec<
             }
         }
         Gesture::LongPress(long_press) => {
-            let seconds = f64::from(long_press.duration()) / 1000.0;
-            let duration = long_press.duration() as f32;
+            let seconds = long_press.get_minimum_duration().map(|d| d.as_secs_f64());
             let buttons = button_mask(long_press.get_buttons());
             #[cfg(target_os = "ios")]
             {
                 vec![kit::long_press(host, seconds, buttons, {
-                    move |state, recognizer| {
+                    move |state, recognizer, held| {
                         if state == GestureState::Began {
                             let location = recognizer.locationInView(recognizer.view().as_deref());
                             on_recognized(GesturePayload::LongPress(LongPressEvent::new(
                                 gesture_point(location.x, location.y),
-                                duration,
+                                held,
                                 pressed_button(recognizer),
                             )));
                         }
@@ -346,12 +346,12 @@ fn attach(host: &HostView, gesture: &Gesture, on_recognized: Recognized) -> Vec<
             #[cfg(target_os = "macos")]
             {
                 vec![kit::press(host, seconds, buttons, {
-                    move |state, recognizer| {
+                    move |state, recognizer, held| {
                         if state == GestureState::Began {
                             let location = recognizer.locationInView(recognizer.view().as_deref());
                             on_recognized(GesturePayload::LongPress(LongPressEvent::new(
                                 gesture_point(location.x, location.y),
-                                duration,
+                                held,
                                 pressed_button(recognizer, buttons),
                             )));
                         }
@@ -798,9 +798,9 @@ mod tests {
         let opened = report(GestureState::Changed, (15.0, 0.0))
             .expect("crossing the threshold opens the drag");
         assert_eq!(opened.phase(), GesturePhase::Started);
-        assert_eq!(opened.location(), GesturePoint::new(20.0, 30.0));
-        assert_eq!(opened.translation(), GesturePoint::new(15.0, 0.0));
-        assert_eq!(opened.velocity(), GesturePoint::new(100.0, -50.0));
+        assert_eq!(opened.location(), Point::new(20.0, 30.0));
+        assert_eq!(opened.translation(), Point::new(15.0, 0.0));
+        assert_eq!(opened.velocity(), Point::new(100.0, -50.0));
         assert_eq!(opened.button(), PointerButton::Primary);
 
         let updated =
@@ -835,7 +835,7 @@ mod tests {
         let cancelled = report(GestureState::Cancelled, (15.0, 0.0), (500.0, 0.0))
             .expect("an open drag reports its cancellation");
         assert_eq!(cancelled.phase(), GesturePhase::Cancelled);
-        assert_eq!(cancelled.velocity(), GesturePoint::new(0.0, 0.0));
+        assert_eq!(cancelled.velocity(), Point::new(0.0, 0.0));
         assert!(
             report(GestureState::Cancelled, (15.0, 0.0), (0.0, 0.0)).is_none(),
             "a cancelled sequence disarms the gate"
@@ -867,7 +867,9 @@ mod tests {
     #[test]
     fn activates_on_press_searches_the_composition_for_a_tap() {
         let tap: Gesture = TapGesture::new().into();
-        let hold: Gesture = LongPressGesture::new(500).into();
+        let hold: Gesture = LongPressGesture::new()
+            .minimum_duration(Duration::from_millis(500))
+            .into();
         let drag: Gesture = DragGesture::new(0.0).into();
         assert!(activates_on_press(&tap));
         assert!(!activates_on_press(&hold));

@@ -1,13 +1,14 @@
 //! Floating-surface presentation for elevated interactive views.
 
-use nami::binding;
-use waterui_core::{Dynamic, Environment, View, plugin::Plugin};
+use nami::{SignalExt as _, binding};
+use waterui_core::{Environment, View, plugin::Plugin};
+use waterui_graphics::color::Color;
 use waterui_interaction::interaction::InteractionState;
-use waterui_shape::{RoundedRectangle, ShapeExt as _};
+use waterui_shape::{CornerRadius, RoundedRectangle, ShapeExt as _};
 
 use crate::{
     ViewExt as _,
-    style::{FloatingStyle, Shadow, Vector},
+    style::{FloatingStyle, Shadow},
 };
 
 /// Marks the content of a [`Floating`] surface, carrying the style that surface
@@ -69,31 +70,25 @@ where
             .style
             .or_else(|| env.get::<FloatingStyle>().cloned())
             .unwrap_or_default();
-        let shape = RoundedRectangle::new(style.clip_radius);
+        let shape = RoundedRectangle::new(CornerRadius::fraction(style.clip_radius));
         // The surface rises and settles with the control on it, so its shadows
-        // follow the control's interaction state. They are cast by a layer of
-        // their own beneath the clipped surface: clipping the surface must not
-        // cut them off, and a state change rebuilds only that layer.
+        // follow the control's interaction state in place via reactive shadow
+        // metrics rather than rebuilding the layer on state changes.
         let state = binding(InteractionState::empty());
-        let container = style.container_color.clone();
         let elevation = style.elevation.clone();
-        let shadows = Dynamic::watch(state.clone(), move |state| {
-            let elevation = elevation.resolve(state);
-            shape
-                .fill(container.clone())
-                .shadow(Shadow::new(
-                    elevation.ambient_shadow_color.clone(),
-                    Vector::new(0.0, elevation.ambient_shadow_offset_y),
-                    elevation.ambient_shadow_radius,
-                    shape,
-                ))
-                .shadow(Shadow::new(
-                    elevation.key_shadow_color.clone(),
-                    Vector::new(0.0, elevation.key_shadow_offset_y),
-                    elevation.key_shadow_radius,
-                    shape,
-                ))
-        });
+        let resolved = state.map(move |current| elevation.resolve(current).clone());
+        let ambient = Shadow::splat(resolved.map(|e| e.ambient_shadow_radius))
+            .color(Color::from_signal(resolved.map(|e| e.ambient_shadow_color)))
+            .offset(0.0, resolved.map(|e| e.ambient_shadow_offset_y))
+            .silhouette(shape);
+        let key = Shadow::splat(resolved.map(|e| e.key_shadow_radius))
+            .color(Color::from_signal(resolved.map(|e| e.key_shadow_color)))
+            .offset(0.0, resolved.map(|e| e.key_shadow_offset_y))
+            .silhouette(shape);
+        let shadows = shape
+            .fill(style.container_color.clone())
+            .shadow(ambient)
+            .shadow(key);
 
         self.content
             .install(FloatingScope(style.clone()))
@@ -106,14 +101,12 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
-    use std::rc::Rc;
     use std::vec::Vec;
 
-    use nami::Binding;
+    use nami::{Binding, Signal as _};
     use waterui_core::{
-        AnyView, Dynamic, Environment, Retain, View,
-        backend::{connect_dynamic, peel_metadata, peel_native},
+        AnyView, Environment, View,
+        backend::{peel_metadata, peel_native},
     };
     use waterui_interaction::interaction::{InteractionReport, InteractionState, StateValue};
     use waterui_layout::container::FixedContainer;
@@ -134,15 +127,8 @@ mod tests {
 
     /// Explodes a `Floating` body into the pieces a backend sees: the binding
     /// `.interaction_state` asks the backend to report into, the surface's clip
-    /// silhouette, and every shadow layer the background `Dynamic` produces.
-    fn floating_parts(
-        style: FloatingStyle,
-    ) -> (
-        Binding<InteractionState>,
-        ShapeKind,
-        Rc<RefCell<Vec<AnyView>>>,
-        Retain,
-    ) {
+    /// silhouette, and the shadow layer directly in the background (with no `Dynamic` wrapper).
+    fn floating_parts(style: FloatingStyle) -> (Binding<InteractionState>, ShapeKind, AnyView) {
         let env = Environment::new();
         let surface = Floating::with_style(Text::new("label"), style);
         let mut children = container_children(surface, &env, "a background modifier").into_iter();
@@ -169,29 +155,15 @@ mod tests {
             .0
             .clone();
 
-        // The background is a watched Dynamic; unroll one step to reach it,
-        // then connect a receiver as a renderer would. The Retain keeps the
-        // watcher guard alive, so it is handed back to the caller.
-        let retained =
-            peel_metadata::<Retain>(shadows, &env).expect("the shadow layer is a watched Dynamic");
-        let dynamic = peel_native::<Dynamic<AnyView>>(retained.content, &env)
-            .expect("the retained view is the Dynamic");
-        let layers = Rc::new(RefCell::new(Vec::new()));
-        let sink = Rc::clone(&layers);
-        connect_dynamic(dynamic, move |ctx| {
-            sink.borrow_mut().push(ctx.into_value());
-        });
-
-        (report, clip_kind, layers, retained.value)
+        (report, clip_kind, shadows)
     }
 
-    /// The ambient and key shadow radii of one shadow layer, innermost first.
-    fn shadow_radii(layer: AnyView) -> (f32, f32) {
-        let (key, ambient) = shadow_pair(layer);
-        (ambient.radius(), key.radius())
+    /// The ambient and key shadow radii of the shadow layer, innermost first.
+    fn shadow_radii(key: &Shadow, ambient: &Shadow) -> (f32, f32) {
+        (ambient.radius().snapshot(), key.radius().snapshot())
     }
 
-    /// The key shadow of one shadow layer and the ambient shadow inside it.
+    /// The key shadow of the shadow layer and the ambient shadow inside it.
     fn shadow_pair(layer: AnyView) -> (Shadow, Shadow) {
         let env = Environment::new();
         let key = peel_metadata::<Shadow>(layer, &env)
@@ -206,25 +178,27 @@ mod tests {
     /// `clip_radius` can no longer be read back as an absolute shadow radius.
     #[test]
     fn shadows_carry_the_clip_silhouette() {
-        let (_report, clip_kind, layers, _live) = floating_parts(FloatingStyle {
+        use waterui_shape::{CornerRadii, CornerRadius};
+
+        let (_report, clip_kind, shadows) = floating_parts(FloatingStyle {
             clip_radius: 0.4,
             ..FloatingStyle::default()
         });
         assert_eq!(
             clip_kind,
-            ShapeKind::RoundedRect { corner_radius: 0.4 },
-            "Floating clips with RoundedRectangle::new(clip_radius)"
+            ShapeKind::RoundedRect {
+                radii: CornerRadii::uniform(CornerRadius::fraction(0.4)),
+            },
+            "Floating clips with RoundedRectangle::new(CornerRadius::fraction(clip_radius))"
         );
-        let layer = layers
-            .take()
-            .into_iter()
-            .next()
-            .expect("connecting delivers the resting shadow layer");
-        let (key, ambient) = shadow_pair(layer);
-        for (name, kind) in [
-            ("key", key.silhouette().kind()),
-            ("ambient", ambient.silhouette().kind()),
+        let (key, ambient) = shadow_pair(shadows);
+        for (name, silhouette) in [
+            ("key", key.get_silhouette()),
+            ("ambient", ambient.get_silhouette()),
         ] {
+            let kind = silhouette
+                .unwrap_or_else(|| panic!("the {name} shadow must declare its explicit silhouette"))
+                .kind();
             assert_eq!(
                 kind, clip_kind,
                 "the {name} shadow's silhouette must be the clip's shape"
@@ -233,7 +207,8 @@ mod tests {
     }
 
     /// The shadow layer is driven by the state `.interaction_state` reports:
-    /// writing HOVERED into the binding rebuilds it at the hovered elevation.
+    /// writing HOVERED into the binding updates the live shadow signals in place
+    /// without rebuilding the layer.
     #[test]
     fn shadow_layer_follows_the_reported_state() {
         let mut style = FloatingStyle::default();
@@ -246,18 +221,14 @@ mod tests {
                 ..resting
             },
         );
-        let (report, _clip, layers, _live) = floating_parts(style);
+        let (report, _clip, shadows) = floating_parts(style);
+        let (key, ambient) = shadow_pair(shadows);
 
-        let resting = layers.take();
-        assert_eq!(resting.len(), 1, "connect delivers the resting layer");
-        let (ambient_rest, key_rest) = shadow_radii(resting.into_iter().next().expect("one layer"));
+        let (ambient_rest, key_rest) = shadow_radii(&key, &ambient);
 
         report.set(InteractionState::HOVERED);
 
-        let hovered = layers.take();
-        assert_eq!(hovered.len(), 1, "a reported state rebuilds the layer");
-        let (ambient_hover, key_hover) =
-            shadow_radii(hovered.into_iter().next().expect("one layer"));
+        let (ambient_hover, key_hover) = shadow_radii(&key, &ambient);
         assert!(
             ambient_hover > ambient_rest && key_hover > key_rest,
             "a reported HOVERED state must raise the shadows: \

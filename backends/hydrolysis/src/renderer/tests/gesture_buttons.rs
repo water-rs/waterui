@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use accesskit::Role;
 use nami::Signal as _;
-use waterui::gesture::{PointerButtons, TapGesture};
+use waterui::gesture::{PointerButtons, TapEvent, TapGesture};
 use waterui::{AnyView, Binding, Color, ViewExt as _};
 use waterui_controls::button::button;
 use waterui_controls::menu::CommandExt as _;
@@ -87,12 +87,12 @@ fn middle_click_fires_the_middle_button_tap_only() {
     let mut runtime = runtime(AnyView::new(
         Frame::new(
             AnyView::new(Color::srgb_hex("#18181B"))
-                .gesture(TapGesture::new(), move || {
+                .gesture(TapGesture::new(), move |_: TapEvent| {
                     *default_for_view.borrow_mut() += 1;
                 })
                 .gesture(
                     TapGesture::new().buttons(PointerButtons::MIDDLE),
-                    move || {
+                    move |_: TapEvent| {
                         *middle_for_view.borrow_mut() += 1;
                     },
                 ),
@@ -124,7 +124,7 @@ fn secondary_click_prefers_the_context_menu_over_a_secondary_tap() {
     let mut runtime = runtime(AnyView::new(
         Frame::new(AnyView::new(Color::srgb_hex("#18181B")).gesture(
             TapGesture::new().buttons(PointerButtons::SECONDARY),
-            move || {
+            move |_: TapEvent| {
                 *tapped_for_view.borrow_mut() = true;
             },
         ))

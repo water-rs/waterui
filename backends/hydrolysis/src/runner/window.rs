@@ -26,6 +26,7 @@ use crate::readback::{ReadbackError, readback_surface_texture_rgba16f};
 use crate::renderer::material::{BehindWindowLevel, Blending, WithinWindowLevel};
 #[cfg(hydrolysis_cpu_painter)]
 use crate::renderer::{FrameGeometry, working_color};
+use crate::text::TextEngine;
 #[cfg(hydrolysis_cherenkov)]
 use cherenkov::OutputAlpha;
 #[cfg(any(hydrolysis_frame_transaction, test))]
@@ -34,7 +35,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 use waterui::theme::color::Background;
-use waterui::window::ResolvedWindowBackground;
+use waterui::window::{ResolvedWindowBackground, Window, WindowParts, WindowState, WindowToolbar};
 #[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
 use waterui_core::Error;
 use waterui_core::contract_violation;
@@ -131,57 +132,16 @@ impl<E: crate::text::TextEngine, C: ViewBuilder> WindowRoot<E> for C {
     }
 }
 
-struct HeldWindowSlot<E: crate::text::TextEngine>(
-    waterui::window::WindowSlot<crate::renderer::HeldChild<E>>,
-);
-
-impl<E: crate::text::TextEngine> WindowRoot<E> for HeldWindowSlot<E> {
-    fn capture_tree(
-        &self,
-        renderer: &mut HydrolysisRenderer<E>,
-        env: &Environment,
-        bounds: kurbo::Rect,
-        transform: kurbo::Affine,
-        hit_transform: kurbo::Affine,
-        built: &mut dyn FnMut(),
-    ) {
-        let child = self.0.build();
-        built();
-        renderer.capture_held_window_tree(child, env, bounds, transform, hit_transform);
-    }
-
-    #[cfg(hydrolysis_cherenkov)]
-    fn capture_semantics(&self, core: &mut SemanticCore<E>, env: &Environment) {
-        core.capture_held_window_semantics(self.0.build(), env);
-    }
-}
-
 /// A window as a runner holds it, see [`WindowRoot`].
-pub type RootWindow<E> = Window<Box<dyn WindowRoot<E>>>;
+pub type RootWindow<E> = WindowParts<Box<dyn WindowRoot<E>>>;
 
 /// `window` as a runner holds it.
-pub fn root_window<
-    E: crate::text::TextEngine,
-    C: ViewBuilder,
-    T: waterui::window::WindowToolbar,
->(
+pub fn root_window<E: TextEngine, C: ViewBuilder, T: WindowToolbar>(
     window: Window<C, T>,
+    env: &Environment,
 ) -> RootWindow<E> {
-    window.map(
+    window.into_parts(env).map(
         |content| Box::new(content) as Box<dyn WindowRoot<E>>,
-        |_| (),
-    )
-}
-
-/// A window dispatched from the view tree as a runner holds it.
-pub fn slot_root_window<E: crate::text::TextEngine>(
-    window: Window<
-        waterui::window::WindowSlot<crate::renderer::HeldChild<E>>,
-        Option<crate::renderer::HeldChild<E>>,
-    >,
-) -> RootWindow<E> {
-    window.map(
-        |slot| Box::new(HeldWindowSlot(slot)) as Box<dyn WindowRoot<E>>,
         |_| (),
     )
 }
@@ -197,13 +157,17 @@ pub struct RootWindows<E: crate::text::TextEngine> {
 
 impl<E: crate::text::TextEngine> RootWindows<E> {
     /// `windows` as a runner holds them, in declaration order.
-    pub(crate) fn collect(windows: impl Windows) -> Self {
-        let mut sink = Self {
+    pub(crate) fn collect(windows: impl Windows, env: &Environment) -> Self {
+        let mut sink = RootWindowSink {
             initial: Vec::with_capacity(windows.len()),
             channels: Vec::new(),
+            env,
         };
         windows.for_each(&mut sink);
-        sink
+        Self {
+            initial: sink.initial,
+            channels: sink.channels,
+        }
     }
 
     /// Connects every collected [`WindowChannel`](waterui::window::WindowChannel)
@@ -223,9 +187,15 @@ enum ChannelTarget<E: crate::text::TextEngine> {
     Connected(Rc<dyn Fn(RootWindow<E>)>),
 }
 
-impl<E: crate::text::TextEngine> WindowSink for RootWindows<E> {
+struct RootWindowSink<'a, E: TextEngine> {
+    initial: Vec<RootWindow<E>>,
+    channels: Vec<RootChannelConnector<E>>,
+    env: &'a Environment,
+}
+
+impl<E: TextEngine> WindowSink for RootWindowSink<'_, E> {
     fn window<C: ViewBuilder, T: waterui::window::WindowToolbar>(&mut self, window: Window<C, T>) {
-        self.initial.push(root_window(window));
+        self.initial.push(root_window(window, self.env));
     }
 
     fn channel<C: ViewBuilder, T: waterui::window::WindowToolbar>(
@@ -234,8 +204,9 @@ impl<E: crate::text::TextEngine> WindowSink for RootWindows<E> {
     ) {
         let target = Rc::new(RefCell::new(ChannelTarget::Pending(Vec::new())));
         let receiver_target = Rc::clone(&target);
+        let channel_env = self.env.clone();
         let queued = channel.connect(move |window| {
-            let root = root_window(window);
+            let root = root_window(window, &channel_env);
             let opener = match &mut *receiver_target.borrow_mut() {
                 ChannelTarget::Pending(pending) => {
                     pending.push(root);
@@ -245,7 +216,11 @@ impl<E: crate::text::TextEngine> WindowSink for RootWindows<E> {
             };
             opener(root);
         });
-        self.initial.extend(queued.into_iter().map(root_window));
+        self.initial.extend(
+            queued
+                .into_iter()
+                .map(|window| root_window(window, self.env)),
+        );
         self.channels.push(Box::new(move |opener| {
             let pending = match &mut *target.borrow_mut() {
                 ChannelTarget::Pending(pending) => core::mem::take(pending),
@@ -259,8 +234,48 @@ impl<E: crate::text::TextEngine> WindowSink for RootWindows<E> {
     }
 }
 
+/// Partitions app-declared windows into initially open windows (`state != Closed`)
+/// and dormant secondary declarations (`state == Closed`), watching each dormant
+/// window's state so opening one on a single-window host reports `on_unsupported`.
+#[cfg_attr(
+    not(any(
+        target_os = "android",
+        target_os = "ios",
+        all(target_arch = "wasm32", feature = "web")
+    )),
+    expect(
+        dead_code,
+        reason = "used by the single-window runners (Android, iOS UIKit, and Web)"
+    )
+)]
+pub(super) fn split_open_and_watch_dormant<E: TextEngine>(
+    windows: Vec<RootWindow<E>>,
+    on_unsupported: impl Fn() + 'static,
+) -> (Vec<RootWindow<E>>, Vec<Retain>) {
+    let on_unsupported = Rc::new(on_unsupported);
+    let mut open = Vec::new();
+    let mut dormant_watches = Vec::new();
+    for window in windows {
+        if window.state.snapshot() == WindowState::Closed {
+            let on_unsupported = Rc::clone(&on_unsupported);
+            let guard = window.state.watch(move |ctx| {
+                if *ctx.value() != WindowState::Closed {
+                    on_unsupported();
+                }
+            });
+            dormant_watches.push(Retain::new(guard));
+        } else {
+            open.push(window);
+        }
+    }
+    (open, dormant_watches)
+}
+
 pub(super) struct RuntimeWindow<P: PlatformWindow, E: crate::text::TextEngine> {
-    pub(super) window: RootWindow<E>,
+    pub(super) window: Rc<RootWindow<E>>,
+    /// True while platform chrome callbacks publish state back into
+    /// `window.state`, suppressing echo into declared-window watchers.
+    pub(super) suppress_state_echo: Rc<Cell<bool>>,
     pub(super) platform: P,
     pub(super) renderer: HydrolysisRenderer<E>,
     pub(super) mode: FrameMode,
@@ -315,12 +330,13 @@ pub(super) struct RuntimeWindow<P: PlatformWindow, E: crate::text::TextEngine> {
 // a compile-time painter boundary.
 impl<P: PlatformWindow, E: crate::text::TextEngine> RuntimeWindow<P, E> {
     pub(super) fn new(
-        window: RootWindow<E>,
+        window: impl Into<Rc<RootWindow<E>>>,
         platform: P,
         renderer: HydrolysisRenderer<E>,
         render_diagnostics_config: RenderDiagnosticsConfig,
         env: &Environment,
     ) -> Self {
+        let window = window.into();
         // The window's host wake, installed before any subscription can
         // record a request: from here on, a `Binding::set` outside a frame
         // — an executor drain, a platform-view callback, an accessibility
@@ -330,6 +346,7 @@ impl<P: PlatformWindow, E: crate::text::TextEngine> RuntimeWindow<P, E> {
         let declaration_watches = subscribe_window_declaration_signals(&window, env, &renderer);
         Self {
             window,
+            suppress_state_echo: Rc::new(Cell::new(false)),
             platform,
             renderer,
             mode: FrameMode::Refresh,
@@ -346,6 +363,11 @@ impl<P: PlatformWindow, E: crate::text::TextEngine> RuntimeWindow<P, E> {
             _declaration_watches: declaration_watches,
         }
     }
+
+    #[cfg(hydrolysis_winit)]
+    pub(super) fn set_suppress_state_echo(&mut self, suppress_state_echo: Rc<Cell<bool>>) {
+        self.suppress_state_echo = suppress_state_echo;
+    }
 }
 
 #[cfg(hydrolysis_cherenkov)]
@@ -353,7 +375,7 @@ impl<P: PaintedWindow> RuntimeWindow<P, crate::text::ParleyEngine> {
     /// A Cherenkov painter's window: the shared construction plus the host
     /// redraw handle, installed before the window's first frame.
     pub(super) fn new_painted(
-        window: RootWindow<crate::text::ParleyEngine>,
+        window: impl Into<Rc<RootWindow<crate::text::ParleyEngine>>>,
         platform: P,
         renderer: HydrolysisRenderer<crate::text::ParleyEngine>,
         config: RenderDiagnosticsConfig,
@@ -1678,7 +1700,7 @@ pub(super) struct SurfaceBackground(ResolvedWindowBackground);
 
 impl SurfaceBackground {
     /// `window`'s background as it resolves now.
-    pub(super) fn of<C, T>(window: &Window<C, T>, env: &Environment) -> Self {
+    pub(super) fn of<C, T>(window: &WindowParts<C, T>, env: &Environment) -> Self {
         Self(window.resolved_background(env).snapshot())
     }
 
@@ -1768,7 +1790,7 @@ pub(super) fn apply_window_background<P: PaintedWindow, E: crate::text::TextEngi
 }
 
 #[cfg(hydrolysis_winit)]
-pub fn window_requires_transparency<C, T>(window: &Window<C, T>, env: &Environment) -> bool {
+pub fn window_requires_transparency<C, T>(window: &WindowParts<C, T>, env: &Environment) -> bool {
     SurfaceBackground::of(window, env).transparent()
 }
 
@@ -3562,7 +3584,9 @@ where
                     waterui::window::WindowState::Normal | waterui::window::WindowState::Maximized
                 ) && state != next
                 {
+                    runtime.suppress_state_echo.set(true);
                     runtime.window.state.set(next);
+                    runtime.suppress_state_echo.set(false);
                 }
             }
             InputEvent::Focused(focused) => {

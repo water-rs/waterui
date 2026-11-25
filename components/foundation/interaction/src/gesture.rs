@@ -49,12 +49,15 @@
 //!    not simply the topmost view in the Z-order.
 
 use alloc::boxed::Box;
-use core::fmt;
+use core::{fmt, num::NonZeroU32, time::Duration};
 
 use waterui_core::{
-    Environment, Error,
-    extract::{ExtractionState, Extractor, State},
-    handler::{BoxedAction, Handler, boxed_action},
+    Environment,
+    extract::State,
+    handler::{
+        BoxedAction, EventHandler, ExtractionError, Handler, boxed_action, boxed_event_handler,
+    },
+    layout::Point,
     metadata::MetadataKey,
 };
 
@@ -142,33 +145,12 @@ pub enum GesturePhase {
     Cancelled,
 }
 
-/// A two-dimensional point used to describe gesture locations.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct GesturePoint {
-    /// Horizontal component of the point.
-    pub x: f32,
-    /// Vertical component of the point.
-    pub y: f32,
-}
-
-impl GesturePoint {
-    /// Creates a new [`GesturePoint`].
-    #[must_use]
-    pub const fn new(x: f32, y: f32) -> Self {
-        Self { x, y }
-    }
-}
-
-/// Event payload for tap gestures.
-///
-/// Backends install this structure into the environment via [`State<TapEvent>`]
-/// when a tap is recognised, allowing gesture handlers to extract it directly as
-/// `event: TapEvent` or `State(event): State<TapEvent>`.
+/// Event payload delivered as the first argument to a [`TapGesture`] handler.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct TapEvent {
     /// Location of the tap in the widget's coordinate space.
-    location: GesturePoint,
+    location: Point,
     /// Number of taps that occurred in succession.
     count: u32,
     /// The button that tapped.
@@ -178,12 +160,12 @@ pub struct TapEvent {
 impl TapEvent {
     /// Location of the tap in the widget's coordinate space.
     #[must_use]
-    pub const fn location(&self) -> GesturePoint {
+    pub const fn location(&self) -> Point {
         self.location
     }
 
     /// Sets the `location`.
-    pub const fn set_location(&mut self, location: GesturePoint) {
+    pub const fn set_location(&mut self, location: Point) {
         self.location = location;
     }
 
@@ -203,7 +185,7 @@ impl TapEvent {
 impl TapEvent {
     /// A tap of `count` successive taps of `button` at `location`.
     #[must_use]
-    pub const fn new(location: GesturePoint, count: u32, button: PointerButton) -> Self {
+    pub const fn new(location: Point, count: u32, button: PointerButton) -> Self {
         Self {
             location,
             count,
@@ -212,17 +194,14 @@ impl TapEvent {
     }
 }
 
-/// Event payload for long-press gestures.
-///
-/// Backends insert this into the environment alongside [`Gesture::LongPress`]
-/// whenever a long-press interaction fires.
+/// Event payload delivered as the first argument to a [`LongPressGesture`] handler.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct LongPressEvent {
     /// Location of the press in the widget's coordinate space.
-    location: GesturePoint,
-    /// Duration, in platform-defined time units, that the press was held.
-    duration: f32,
+    location: Point,
+    /// Duration that the press was held.
+    duration: Duration,
     /// The button that is held.
     button: PointerButton,
 }
@@ -230,18 +209,18 @@ pub struct LongPressEvent {
 impl LongPressEvent {
     /// Location of the press in the widget's coordinate space.
     #[must_use]
-    pub const fn location(&self) -> GesturePoint {
+    pub const fn location(&self) -> Point {
         self.location
     }
 
     /// Sets the `location`.
-    pub const fn set_location(&mut self, location: GesturePoint) {
+    pub const fn set_location(&mut self, location: Point) {
         self.location = location;
     }
 
-    /// Duration, in platform-defined time units, that the press was held.
+    /// Duration that the press was held.
     #[must_use]
-    pub const fn duration(&self) -> f32 {
+    pub const fn duration(&self) -> Duration {
         self.duration
     }
 
@@ -255,7 +234,7 @@ impl LongPressEvent {
 impl LongPressEvent {
     /// A press of `button` at `location`, held for `duration`.
     #[must_use]
-    pub const fn new(location: GesturePoint, duration: f32, button: PointerButton) -> Self {
+    pub const fn new(location: Point, duration: Duration, button: PointerButton) -> Self {
         Self {
             location,
             duration,
@@ -264,21 +243,18 @@ impl LongPressEvent {
     }
 }
 
-/// Event payload for drag gestures.
-///
-/// Each drag update stores a fresh [`DragEvent`] in the environment so handlers
-/// can observe pointer position and motion metrics.
+/// Event payload delivered as the first argument to a [`DragGesture`] handler.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct DragEvent {
     /// Phase of the drag gesture.
     phase: GesturePhase,
     /// Current location of the pointer.
-    location: GesturePoint,
+    location: Point,
     /// Total translation since the drag started.
-    translation: GesturePoint,
+    translation: Point,
     /// Velocity of the drag in points per second.
-    velocity: GesturePoint,
+    velocity: Point,
     /// The button that drags.
     button: PointerButton,
 }
@@ -292,34 +268,34 @@ impl DragEvent {
 
     /// Current location of the pointer.
     #[must_use]
-    pub const fn location(&self) -> GesturePoint {
+    pub const fn location(&self) -> Point {
         self.location
     }
 
     /// Sets the `location`.
-    pub const fn set_location(&mut self, location: GesturePoint) {
+    pub const fn set_location(&mut self, location: Point) {
         self.location = location;
     }
 
     /// Total translation since the drag started.
     #[must_use]
-    pub const fn translation(&self) -> GesturePoint {
+    pub const fn translation(&self) -> Point {
         self.translation
     }
 
     /// Sets the `translation`.
-    pub const fn set_translation(&mut self, translation: GesturePoint) {
+    pub const fn set_translation(&mut self, translation: Point) {
         self.translation = translation;
     }
 
     /// Velocity of the drag in points per second.
     #[must_use]
-    pub const fn velocity(&self) -> GesturePoint {
+    pub const fn velocity(&self) -> Point {
         self.velocity
     }
 
     /// Sets the `velocity`.
-    pub const fn set_velocity(&mut self, velocity: GesturePoint) {
+    pub const fn set_velocity(&mut self, velocity: Point) {
         self.velocity = velocity;
     }
 
@@ -336,9 +312,9 @@ impl DragEvent {
     #[must_use]
     pub const fn new(
         phase: GesturePhase,
-        location: GesturePoint,
-        translation: GesturePoint,
-        velocity: GesturePoint,
+        location: Point,
+        translation: Point,
+        velocity: Point,
         button: PointerButton,
     ) -> Self {
         Self {
@@ -351,17 +327,14 @@ impl DragEvent {
     }
 }
 
-/// Event payload for magnification (pinch) gestures.
-///
-/// This payload accompanies [`Gesture::Magnification`] entries in the
-/// environment when zoom gestures are recognised.
+/// Event payload delivered as the first argument to a [`MagnificationGesture`] handler.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct MagnificationEvent {
     /// Phase of the magnification gesture.
     phase: GesturePhase,
     /// Focal point of the gesture.
-    center: GesturePoint,
+    center: Point,
     /// Current scale factor relative to the gesture start.
     scale: f32,
     /// Rate of change of the scale factor.
@@ -377,12 +350,12 @@ impl MagnificationEvent {
 
     /// Focal point of the gesture.
     #[must_use]
-    pub const fn center(&self) -> GesturePoint {
+    pub const fn center(&self) -> Point {
         self.center
     }
 
     /// Sets the `center`.
-    pub const fn set_center(&mut self, center: GesturePoint) {
+    pub const fn set_center(&mut self, center: Point) {
         self.center = center;
     }
 
@@ -403,7 +376,7 @@ impl MagnificationEvent {
     /// A magnification in `phase` about `center`, at `scale` relative to the
     /// gesture start, changing at `velocity`.
     #[must_use]
-    pub const fn new(phase: GesturePhase, center: GesturePoint, scale: f32, velocity: f32) -> Self {
+    pub const fn new(phase: GesturePhase, center: Point, scale: f32, velocity: f32) -> Self {
         Self {
             phase,
             center,
@@ -424,7 +397,7 @@ pub struct RotationEvent {
     /// Phase of the rotation gesture.
     phase: GesturePhase,
     /// Pivot point the rotation is measured around.
-    center: GesturePoint,
+    center: Point,
     /// Current angle in radians relative to the gesture start.
     angle: f32,
     /// Rate of change of the angle, in radians per second.
@@ -440,12 +413,12 @@ impl RotationEvent {
 
     /// Pivot point the rotation is measured around.
     #[must_use]
-    pub const fn center(&self) -> GesturePoint {
+    pub const fn center(&self) -> Point {
         self.center
     }
 
     /// Sets the `center`.
-    pub const fn set_center(&mut self, center: GesturePoint) {
+    pub const fn set_center(&mut self, center: Point) {
         self.center = center;
     }
 
@@ -466,7 +439,7 @@ impl RotationEvent {
     /// A rotation in `phase` about `center`, at `angle` radians from the
     /// gesture start, changing at `velocity` radians per second.
     #[must_use]
-    pub const fn new(phase: GesturePhase, center: GesturePoint, angle: f32, velocity: f32) -> Self {
+    pub const fn new(phase: GesturePhase, center: Point, angle: f32, velocity: f32) -> Self {
         Self {
             phase,
             center,
@@ -481,7 +454,7 @@ impl RotationEvent {
 #[non_exhaustive]
 pub struct TapGesture {
     /// The number of consecutive taps required to trigger this gesture.
-    count: u32,
+    count: NonZeroU32,
     /// The buttons that can tap; [`PointerButtons::PRIMARY`] by default.
     buttons: PointerButtons,
 }
@@ -489,7 +462,7 @@ pub struct TapGesture {
 impl TapGesture {
     /// The number of consecutive taps required to trigger this gesture.
     #[must_use]
-    pub const fn count(&self) -> u32 {
+    pub const fn count(&self) -> NonZeroU32 {
         self.count
     }
 
@@ -503,7 +476,7 @@ impl TapGesture {
 impl TapGesture {
     /// Creates a tap gesture that requires `count` consecutive taps to activate.
     #[must_use]
-    pub const fn repeat(count: u32) -> Self {
+    pub const fn repeat(count: NonZeroU32) -> Self {
         Self {
             count,
             buttons: PointerButtons::PRIMARY,
@@ -513,7 +486,7 @@ impl TapGesture {
     /// Creates a tap gesture that requires a single tap to activate.
     #[must_use]
     pub const fn new() -> Self {
-        Self::repeat(1)
+        Self::repeat(NonZeroU32::MIN)
     }
 
     /// Responds to `buttons` instead of the primary button alone — a middle
@@ -535,17 +508,17 @@ impl Default for TapGesture {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct LongPressGesture {
-    /// The minimum duration (in time units) the press must be held.
-    duration: u32,
+    /// Explicit minimum duration before recognition; `None` uses the platform long-press timeout.
+    minimum_duration: Option<Duration>,
     /// The buttons that can press; [`PointerButtons::PRIMARY`] by default.
     buttons: PointerButtons,
 }
 
 impl LongPressGesture {
-    /// The minimum duration (in time units) the press must be held.
+    /// Explicit minimum duration before recognition, or `None` to follow the platform timeout.
     #[must_use]
-    pub const fn duration(&self) -> u32 {
-        self.duration
+    pub const fn get_minimum_duration(&self) -> Option<Duration> {
+        self.minimum_duration
     }
 
     /// The buttons that can press; [`PointerButtons::PRIMARY`] by default.
@@ -556,16 +529,20 @@ impl LongPressGesture {
 }
 
 impl LongPressGesture {
-    /// Creates a long-press gesture that activates after holding for `duration` time units.
-    ///
-    /// Backends decide how to interpret the unit (for example milliseconds), allowing
-    /// platform-specific gesture systems to provide consistent behaviour.
+    /// Creates a long-press gesture that uses the platform's default long-press timeout.
     #[must_use]
-    pub const fn new(duration: u32) -> Self {
+    pub const fn new() -> Self {
         Self {
-            duration,
+            minimum_duration: None,
             buttons: PointerButtons::PRIMARY,
         }
+    }
+
+    /// Sets an explicit minimum hold `duration` before the gesture activates.
+    #[must_use]
+    pub const fn minimum_duration(mut self, duration: Duration) -> Self {
+        self.minimum_duration = Some(duration);
+        self
     }
 
     /// Responds to `buttons` instead of the primary button alone.
@@ -573,6 +550,12 @@ impl LongPressGesture {
     pub const fn buttons(mut self, buttons: PointerButtons) -> Self {
         self.buttons = buttons;
         self
+    }
+}
+
+impl Default for LongPressGesture {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -766,12 +749,6 @@ impl Gesture {
         }))
     }
 
-    /// SwiftUI-style alias for [`Gesture::then`].
-    #[must_use]
-    pub fn sequenced_before(self, other: impl Into<Self>) -> Self {
-        self.then(other)
-    }
-
     /// Combines this gesture with another so they can be recognized simultaneously.
     #[must_use]
     pub fn simultaneously_with(self, other: impl Into<Self>) -> Self {
@@ -799,12 +776,6 @@ macro_rules! impl_gesture {
                 #[must_use]
                 pub fn then(self, other: impl Into<Gesture>) -> Gesture {
                     Gesture::$variant(self).then(other)
-                }
-
-                /// SwiftUI-style alias for [`Self::then`].
-                #[must_use]
-                pub fn sequenced_before(self, other: impl Into<Gesture>) -> Gesture {
-                    self.then(other)
                 }
 
                 /// Combines two gestures that can be recognized simultaneously.
@@ -875,8 +846,75 @@ impl fmt::Debug for GestureObserver {
 
 impl MetadataKey for GestureObserver {}
 
+/// Event payload emitted by a dynamic [`Gesture`] observer.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub enum GestureEvent {
+    /// Tap gesture recognized.
+    Tap(TapEvent),
+    /// Long-press gesture recognized.
+    LongPress(LongPressEvent),
+    /// Drag gesture recognized.
+    Drag(DragEvent),
+    /// Magnification gesture recognized.
+    Magnification(MagnificationEvent),
+    /// Rotation gesture recognized.
+    Rotation(RotationEvent),
+}
+
+/// Associates a gesture descriptor with the typed event payload delivered to
+/// its handler.
+pub trait GestureType: Into<Gesture> {
+    /// Event payload passed as the first argument to handlers for this gesture.
+    type Event: 'static;
+
+    /// Extracts the backend-installed [`Self::Event`] from `env`.
+    #[doc(hidden)]
+    fn extract_event(env: &Environment) -> Result<Self::Event, ExtractionError>;
+}
+
+macro_rules! impl_gesture_type {
+    ($gesture:ty => $event:ty) => {
+        impl GestureType for $gesture {
+            type Event = $event;
+
+            fn extract_event(env: &Environment) -> Result<Self::Event, ExtractionError> {
+                Handler::call(&mut |s: State<$event>| s, env).map(|State(event)| event)
+            }
+        }
+    };
+}
+
+impl_gesture_type!(TapGesture => TapEvent);
+impl_gesture_type!(LongPressGesture => LongPressEvent);
+impl_gesture_type!(DragGesture => DragEvent);
+impl_gesture_type!(MagnificationGesture => MagnificationEvent);
+impl_gesture_type!(RotationGesture => RotationEvent);
+
+impl GestureType for Gesture {
+    type Event = GestureEvent;
+
+    fn extract_event(env: &Environment) -> Result<Self::Event, ExtractionError> {
+        if let Ok(State(event)) = Handler::call(&mut |s: State<TapEvent>| s, env) {
+            return Ok(GestureEvent::Tap(event));
+        }
+        if let Ok(State(event)) = Handler::call(&mut |s: State<LongPressEvent>| s, env) {
+            return Ok(GestureEvent::LongPress(event));
+        }
+        if let Ok(State(event)) = Handler::call(&mut |s: State<DragEvent>| s, env) {
+            return Ok(GestureEvent::Drag(event));
+        }
+        if let Ok(State(event)) = Handler::call(&mut |s: State<MagnificationEvent>| s, env) {
+            return Ok(GestureEvent::Magnification(event));
+        }
+        Handler::call(&mut |s: State<RotationEvent>| s, env)
+            .map(|State(event)| GestureEvent::Rotation(event))
+    }
+}
+
 impl GestureObserver {
-    /// Creates a gesture observer for the given gesture and action.
+    /// Creates a gesture observer for `gesture` whose handler consumes
+    /// `G::Event` as its first argument, followed by environment extractors.
     ///
     /// Local state can be injected by wrapping the owning view with
     /// `.state(...)`.
@@ -885,98 +923,76 @@ impl GestureObserver {
     ///
     /// Simple action:
     /// ```
-    /// use waterui_interaction::gesture::{GestureObserver, TapGesture};
+    /// use waterui_interaction::gesture::{GestureObserver, TapEvent, TapGesture};
     ///
-    /// let observer = GestureObserver::new(TapGesture::new(), || {});
+    /// let observer = GestureObserver::new(TapGesture::new(), |_: TapEvent| {});
     /// ```
     ///
     /// With injected state:
     /// ```
+    /// use core::num::NonZeroU32;
     /// use nami::Binding;
     /// use waterui_core::State;
-    /// use waterui_interaction::gesture::{GestureObserver, TapGesture};
+    /// use waterui_interaction::gesture::{GestureObserver, TapEvent, TapGesture};
     ///
     /// let observer = GestureObserver::new(
-    ///     TapGesture::repeat(2),
-    ///     |State(counter): State<Binding<i32>>| *counter.get_mut() += 1,
+    ///     TapGesture::repeat(NonZeroU32::new(2).unwrap()),
+    ///     |_: TapEvent, State(counter): State<Binding<i32>>| *counter.get_mut() += 1,
     /// );
     /// ```
+    /// Passing a handler expecting another gesture's event type fails to
+    /// compile:
+    ///
+    /// ```compile_fail
+    /// use waterui_interaction::gesture::{DragEvent, GestureObserver, TapGesture};
+    ///
+    /// let _ = GestureObserver::new(TapGesture::new(), |_: DragEvent| {});
+    /// ```
     #[must_use]
-    pub fn new<Args>(gesture: impl Into<Gesture>, action: impl Handler<Args, ()>) -> Self {
+    pub fn new<G, H, Args>(gesture: G, action: H) -> Self
+    where
+        G: GestureType,
+        H: EventHandler<G::Event, Args>,
+    {
+        let mut handler = boxed_event_handler(action);
+        Self {
+            gesture: gesture.into(),
+            action: Box::new(move |env: &Environment| {
+                let event = G::extract_event(env)?;
+                handler(event, env)
+            }),
+        }
+    }
+
+    /// Creates a gesture observer whose handler ignores the recognized event
+    /// payload (used by payload-free shortcuts such as `on_tap` and `on_long_press`).
+    #[must_use]
+    pub fn without_event<Args>(
+        gesture: impl Into<Gesture>,
+        action: impl Handler<Args, ()>,
+    ) -> Self {
         Self {
             gesture: gesture.into(),
             action: boxed_action(action),
         }
     }
-
-    /// Creates a gesture observer builder for the given gesture.
-    #[must_use]
-    pub fn builder(gesture: impl Into<Gesture>) -> GestureObserverBuilder {
-        GestureObserverBuilder::new(gesture)
-    }
 }
-
-// ============================================================================
-// GestureObserver Builder
-// ============================================================================
-
-/// Builder for creating gesture observers with extracted actions.
-#[derive(Debug)]
-pub struct GestureObserverBuilder {
-    gesture: Gesture,
-}
-
-impl GestureObserverBuilder {
-    /// Creates a gesture observer builder for the given gesture.
-    #[must_use]
-    pub fn new(gesture: impl Into<Gesture>) -> Self {
-        Self {
-            gesture: gesture.into(),
-        }
-    }
-
-    /// Sets the action handler (no state).
-    #[must_use]
-    pub fn action<Args>(self, action: impl Handler<Args, ()>) -> GestureObserver {
-        GestureObserver::new(self.gesture, action)
-    }
-}
-
-macro_rules! impl_state_extractor {
-    ($($ty:ty),+ $(,)?) => {
-        $(
-            impl Extractor for $ty {
-                fn extract(env: &Environment) -> Result<Self, Error> {
-                    State::<Self>::extract(env).map(|State(value)| value)
-                }
-
-                fn extract_from_action(
-                    env: &Environment,
-                    state: &mut ExtractionState,
-                ) -> Result<Self, Error> {
-                    State::<Self>::extract_from_action(env, state).map(|State(value)| value)
-                }
-            }
-        )+
-    };
-}
-
-impl_state_extractor!(
-    TapEvent,
-    LongPressEvent,
-    DragEvent,
-    MagnificationEvent,
-    RotationEvent,
-    Gesture,
-);
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn sequenced_before_aliases_then() {
-        let gesture = TapGesture::new().sequenced_before(LongPressGesture::new(300));
+    fn tap_gesture_count_tracks_non_zero_repeat() {
+        assert_eq!(TapGesture::new().count(), NonZeroU32::MIN);
+        let double_tap = TapGesture::repeat(NonZeroU32::new(2).unwrap());
+        assert_eq!(double_tap.count().get(), 2);
+    }
+
+    #[test]
+    fn then_sequences_gestures() {
+        let gesture = TapGesture::new()
+            .then(LongPressGesture::new().minimum_duration(Duration::from_millis(300)));
         match gesture {
             Gesture::Then(pair) => {
                 assert!(matches!(pair.first(), Gesture::Tap(_)));
@@ -1000,7 +1016,9 @@ mod tests {
 
     #[test]
     fn exclusive_composition_contains_primary_and_fallback() {
-        let gesture = TapGesture::new().exclusively_before(LongPressGesture::new(500));
+        let gesture = TapGesture::new().exclusively_before(
+            LongPressGesture::new().minimum_duration(Duration::from_millis(500)),
+        );
         match gesture {
             Gesture::Exclusive(pair) => {
                 assert!(matches!(pair.first(), Gesture::Tap(_)));
@@ -1008,5 +1026,41 @@ mod tests {
             }
             other => panic!("expected Gesture::Exclusive, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn typed_and_composite_gesture_observers_deliver_expected_events() {
+        use alloc::{rc::Rc, vec, vec::Vec};
+        use core::cell::RefCell;
+
+        let tap_loc = Rc::new(RefCell::new(None));
+        let tap_observer = GestureObserver::new(TapGesture::new(), {
+            let tap_loc = Rc::clone(&tap_loc);
+            move |tap: TapEvent| *tap_loc.borrow_mut() = Some(tap.location())
+        });
+        let (_gesture, mut tap_action) = tap_observer.into_parts();
+        let tap_env = Environment::new().extending(State(TapEvent::new(
+            Point::new(10.0, 20.0),
+            1,
+            PointerButton::Primary,
+        )));
+        assert!(tap_action(&tap_env).is_ok());
+        assert_eq!(*tap_loc.borrow(), Some(Point::new(10.0, 20.0)));
+
+        let composite_events = Rc::new(RefCell::new(Vec::new()));
+        let composite_observer = GestureObserver::new(Gesture::from(TapGesture::new()), {
+            let composite_events = Rc::clone(&composite_events);
+            move |event: GestureEvent| composite_events.borrow_mut().push(event)
+        });
+        let (_gesture, mut composite_action) = composite_observer.into_parts();
+        assert!(composite_action(&tap_env).is_ok());
+        assert_eq!(
+            *composite_events.borrow(),
+            vec![GestureEvent::Tap(TapEvent::new(
+                Point::new(10.0, 20.0),
+                1,
+                PointerButton::Primary,
+            ))]
+        );
     }
 }

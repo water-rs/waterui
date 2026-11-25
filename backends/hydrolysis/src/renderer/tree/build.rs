@@ -17,6 +17,7 @@ use waterui::component::form::CalendarGrid;
 use waterui::component::form::picker::MultiDatePickerGrid;
 use waterui_backend_core::{Child, DynamicNode};
 use waterui_core::contract_violation;
+use waterui_interaction::event::TaskHook;
 
 pub mod backend;
 
@@ -225,7 +226,10 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     /// none of them. Resolving on the *built* node means each `With` was
     /// already expanded exactly once into the `Env` node that carries its
     /// scoped env.
-    fn resolved_handler_env<'a>(node: &'a Self, env: &'a Environment) -> &'a Environment {
+    pub(crate) fn resolved_handler_env<'a>(
+        node: &'a Self,
+        env: &'a Environment,
+    ) -> &'a Environment {
         match node {
             Self::Env(node) => Self::resolved_handler_env(&node.child, &node.env),
             // Retention is transparent to handler resolution.
@@ -283,6 +287,31 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             accessibility_identity: Rc::new(()),
             core: renderer.new_core(),
             effect: WrapperEffect::LifeCycle(effect),
+            env,
+            released_offsets: Cell::default(),
+            child,
+        }))
+    }
+
+    /// Build a view-scoped task wrapper: resolves its environment like a
+    /// lifecycle hook, starts the task on first flush/walk, and cancels it
+    /// when the node drops.
+    fn build_task(
+        hook: TaskHook,
+        content: HeldChild<E>,
+        env: &Environment,
+        renderer: &mut SemanticCore<E>,
+    ) -> Self {
+        let child = Self::build_slot(content, env, renderer);
+        let env = Self::resolved_handler_env(&child, env).clone();
+        let effect = TaskEffect {
+            pending: Cell::new(Some((hook, env.clone()))),
+            running: RefCell::new(None),
+        };
+        Self::Wrapper(Box::new(WrapperNode {
+            accessibility_identity: Rc::new(()),
+            core: renderer.new_core(),
+            effect: WrapperEffect::Task(effect),
             env,
             released_offsets: Cell::default(),
             child,
@@ -379,7 +408,8 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             ghost_placed: Vec::new(),
             reduce_motion: env
                 .get::<waterui_structural_transition::ReduceMotion>()
-                .is_some_and(|flag| flag.0),
+                .cloned()
+                .unwrap_or_default(),
             direction: waterui_layout::layout_direction(env).snapshot(),
             dirty,
             replaced_ids,
@@ -519,13 +549,13 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         }))
     }
 
-    /// Build a `GpuView` node owning its [`GpuContentRuntime`] — the
-    /// view keeps its UI-side hooks (input, frame pump, ime caret, a11y); the
+    /// Build a `GpuContentLeaf` node owning its [`GpuContentRuntime`] — the
+    /// leaf keeps its UI-side hooks (input, frame pump, ime caret, a11y); the
     /// producer inside is taken exactly once, when the node's install layer
     /// first commits it on the window's engine.
     #[cfg(hydrolysis_gpu)]
-    fn build_gpu_content<T: waterui_graphics::gpu::GpuContent>(
-        view: GpuView<T>,
+    fn build_gpu_content(
+        view: GpuContentLeaf,
         renderer: &SemanticCore<E>,
         #[cfg_attr(not(hydrolysis_hwui_gpu), expect(unused_variables))] env: &Environment,
     ) -> Self {
@@ -673,6 +703,7 @@ fn is_background_fill_leaf<E: crate::text::TextEngine>(node: &RenderNode<E>) -> 
                 node.effect,
                 WrapperEffect::LayoutPriority(_)
                     | WrapperEffect::LifeCycle(_)
+                    | WrapperEffect::Task(_)
                     | WrapperEffect::Focused(_)
                     | WrapperEffect::FrameRate(_)
                     | WrapperEffect::OnKeyPress(_)

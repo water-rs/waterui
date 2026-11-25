@@ -144,13 +144,15 @@ pub fn components_block_05() {
         view.max_width(f32::INFINITY) // idiom: stretch to full container width
     };
 
-    // Prose: chained on a `Frame`, the per-axis modifiers take signals.
+    // Prose: every sizing shortcut on a view takes signals, and `.alignment(...)` takes tokens.
     let height_signal = Binding::f32(80.0);
+    let _ = Divider.height(height_signal.clone());
     let _ = Divider.width(120.0).max_height(height_signal);
+    let _ = Divider.alignment(TopLeading);
 
-    // Prose (not counted): a `Frame` also takes `.ideal_width(w)` / `.ideal_height(h)`.
-    let _ = Divider.max_width(f32::INFINITY).ideal_width(w);
-    let _ = Divider.max_height(h).ideal_height(h);
+    // Prose (not counted): views also take `.ideal_width(w)` / `.ideal_height(h)`.
+    let _ = Divider.ideal_width(w);
+    let _ = Divider.ideal_height(h);
 }
 
 // ---------------------------------------------------------------------------
@@ -329,8 +331,8 @@ pub fn components_block_12() {
     use waterui::animation::Animation;
     use waterui::layout::scroll::ScrollController;
 
-    fn row_view(r: Record) -> ListItem<impl View> {
-        ListItem::new(text(r.title))
+    fn row_view(r: Record) -> impl View {
+        text(r.title)
     }
     let records = vec![Record {
         id: 1,
@@ -431,14 +433,14 @@ pub fn components_block_14() {
         Toggle::new("Wi-Fi", &enabled).style(ToggleStyle::Switch)
     };
     let _ = {
-        slider("Volume", &level).range(0.0..=1.0) // &Binding<f64>; range is RangeInclusive<f64>
+        slider("Volume", &level).range(0.0..=1.0) // &Binding<T: SliderValue>; range/step accept signals
     };
     let _ = {
         // sliders default ExtraSmall;
-        // value_indicator shows the formatted value above the thumb while dragging
+        // value_formatter shows the formatted value above the thumb while dragging
         slider("Volume", &level)
             .size(ControlSize::Large)
-            .value_indicator(|v| Str::from(format!("{v:.0}")))
+            .value_formatter(|v| Str::from(format!("{v:.0}")))
     };
     let _ = {
         slider("Volume", &level)
@@ -447,10 +449,10 @@ pub fn components_block_14() {
             .max_value_label("Loud")
     };
     let _ = {
-        stepper("Quantity", &count) // &Binding<i32>
+        stepper("Quantity", &count) // &Binding<T: StepperValue>
     };
     let _ = {
-        // range: impl RangeBounds<i32>; step takes a signal
+        // range and step accept signals
         stepper("Items", &count).range(0..=100).step(5)
     };
     let _ = {
@@ -495,8 +497,9 @@ pub fn components_block_14() {
         progress(fraction).label("Downloading") // its label is a modifier — the one exception
     };
     let _ = {
-        progress(fraction).circular() // or .linear()
+        progress(fraction).style(ProgressStyle::Circular) // or Linear / Loading (shorthands: .circular(), .linear())
     };
+    let _ = { progress(fraction).circular() };
     let _ = {
         loading() // indeterminate progress
     };
@@ -536,7 +539,7 @@ pub fn components_button_style_shorthands() {
     let styled_value = Binding::container(StyledStr::default());
     let _ = TextField::new("a", &text_value).line_limit(NonZeroUsize::new(3));
     let _ = TextField::new("a", &text_value).line_limit(None::<NonZeroUsize>);
-    let _ = TextField::styled("a", &styled_value);
+    let _ = TextField::new("a", &styled_value);
 }
 
 // ---------------------------------------------------------------------------
@@ -546,8 +549,8 @@ pub fn components_custom_control_styles() {
     let enabled = Binding::bool(true);
 
     use waterui::gesture::TapGesture;
-    use waterui::prelude::theme_color::{Accent, Error, SurfaceVariant};
     use waterui::shape::Capsule;
+    use waterui::theme::color::{Accent, Error, SurfaceVariant};
 
     struct PillButtonStyle;
 
@@ -565,7 +568,7 @@ pub fn components_custom_control_styles() {
             configuration
                 .into_label()
                 .padding_with((8.0, 16.0))
-                .background(signal_color(bg))
+                .background(bg)
                 .clip(Capsule)
         }
     }
@@ -577,11 +580,16 @@ pub fn components_custom_control_styles() {
             &self,
             configuration: PrimitiveButtonStyleConfiguration<L>,
         ) -> impl View + use<L> {
+            use core::num::NonZeroU32;
+            use waterui::gesture::TapEvent;
             let trigger = configuration.trigger().clone();
             configuration
                 .into_label()
                 .padding_with((8.0, 16.0))
-                .gesture(TapGesture::repeat(2), move || trigger.trigger())
+                .gesture(
+                    TapGesture::repeat(NonZeroU32::new(2).unwrap()),
+                    move |_: TapEvent| trigger.trigger(),
+                )
         }
     }
 
@@ -596,8 +604,8 @@ pub fn components_custom_control_styles() {
             hstack((
                 label,
                 spacer(),
-                signal_color(is_on.select(Color::new(Accent), Color::new(SurfaceVariant)))
-                    .size(44.0, 26.0)
+                ().size(44.0, 26.0)
+                    .background(is_on.select(Color::new(Accent), Color::new(SurfaceVariant)))
                     .clip(Capsule),
             ))
         }
@@ -698,12 +706,12 @@ pub fn components_block_17() {
             .shortcut(Shortcut::new('c').command())
     };
     let _ = {
-        "Delete".action(delete_handler).destructive() // red in every menu; == .role(CommandRole::Destructive)
+        "Delete".action(delete_handler).destructive() // red in every menu; == .role(ButtonRole::Destructive)
     };
     let _ = {
         "Delete"
             .action(delete_handler)
-            .shortcut(Shortcut::new(NamedKey::Delete))
+            .shortcut(Shortcut::new(ShortcutNamedKey::Delete))
     };
     let _ = {
         Shortcut::new('s').command().shift() // ⇧⌘S; also .option() and .control()
@@ -712,7 +720,7 @@ pub fn components_block_17() {
     // The alternatives named in the trailing comments.
     let _ = "Delete"
         .action(delete_handler)
-        .role(CommandRole::Destructive);
+        .role(ButtonRole::Destructive);
     let _ = Shortcut::new('s').command().option();
     let _ = Shortcut::new('s').command().control();
 }
@@ -733,15 +741,17 @@ pub fn components_block_18(env: Environment) -> App<impl Windows, impl AppMenuBa
 
     use waterui::app::App;
 
-    App::new(move || content(), env).menu_bar(Menu::new(
-        "File",
-        (
-            "Save".action(save).shortcut(Shortcut::new('s').command()),
-            Divider,
-            MenuItem::CloseWindow,
-            MenuItem::Quit,
-        ),
-    ))
+    App::new(env)
+        .window(Window::new("", move || content()))
+        .menu_bar(Menu::new(
+            "File",
+            (
+                "Save".action(save).shortcut(Shortcut::new('s').command()),
+                Divider,
+                MenuItem::CloseWindow,
+                MenuItem::Quit,
+            ),
+        ))
 }
 
 // ---------------------------------------------------------------------------
@@ -799,7 +809,7 @@ pub fn components_block_22() {
     let _ = { text("t").caption() };
     let _ = { text("t").footnote() };
 
-    let _ = { text("t").size(18.0) };
+    let _ = { text("t").font_size(18.0) };
     let _ = { text("t").bold(true) };
     let _ = { text("t").italic(true) };
     let _ = { text("t").font(font::Caption) };
@@ -963,12 +973,11 @@ pub fn components_flow_overrides_prose() {
 pub mod components_block_27 {
     use waterui::layout::scroll::ScrollController;
     use waterui::prelude::*;
-    use waterui::reactive::collection::List as ReactiveList;
 
     #[state]
     #[derive(Clone)]
     pub struct AppState {
-        pub rows: ReactiveList<Record>,
+        pub rows: StateList<Record>,
     }
 
     use waterui::Identifiable; // the trait the derive expands to is NOT in the prelude
@@ -988,7 +997,7 @@ pub mod components_block_27 {
     }
 
     pub fn body() {
-        let records = ReactiveList::<Record>::new();
+        let records = StateList::<Record>::new();
         let is_editing = Binding::bool(false);
         let controller = ScrollController::<usize>::new(0);
 
@@ -1000,12 +1009,14 @@ pub mod components_block_27 {
         };
 
         let _ = {
-            List::for_each(records.clone(), |r| ListItem::new(text(r.title)))
+            List::for_each(records.clone(), |r| text(r.title))
                 .editing(is_editing.clone()) // impl IntoComputed<bool>
-                .on_delete(|ListDelete(i), mut s: AppState| {
-                    let _ = s.rows.remove(i);
+                .on_delete(|ListDelete(id): ListDelete<u64>, mut s: AppState| {
+                    if let Some(i) = s.rows.snapshot().iter().position(|r| r.id == id) {
+                        let _ = s.rows.remove(i);
+                    }
                 })
-                .on_move(|ListMove(m), mut s: AppState| {
+                .on_move(|ListMove(m): ListMove<u64>, mut s: AppState| {
                     let moved = s.rows.remove(m.from());
                     s.rows.insert(m.to(), moved);
                 })
@@ -1016,9 +1027,7 @@ pub mod components_block_27 {
         let _ = scroll(VStack::for_each(records.clone(), record_card).spacing(8.0));
         let _ = scroll_horizontal(HStack::for_each(records.clone(), record_card).spacing(8.0));
         let _ = scroll(VStack::for_each(records.clone(), record_card).eager());
-        let _ = List::new(ForEach::new(records, |r: Record| {
-            ListItem::new(text(r.title))
-        }));
+        let _ = List::new(ForEach::new(records, |r: Record| text(r.title)));
     }
 }
 
@@ -1028,9 +1037,8 @@ pub mod components_block_27 {
 pub fn components_block_28() {
     use core::time::Duration;
     use waterui::animation::Animation;
-    use waterui::reactive::collection::List as ReactiveList;
 
-    let rows = ReactiveList::<Record>::new();
+    let rows = StateList::<Record>::new();
 
     use waterui::PropertyTransition; // NOT in the prelude
     use waterui::layout::stack::VStack;
@@ -1054,11 +1062,11 @@ pub fn components_block_29() -> impl View {
         Section::new("Recent")
             .footer("Sub-pages push onto this tab's own stack.")
             .content((
-                || ListItem::new(text("Today")),
+                || text("Today"),
                 row("Streak", "14 days"), // Row is valid content directly
                 detail_row("Last entry", "Yesterday"),
             )),
-        || ListItem::new(text("Footer")),
+        || text("Footer"),
     ))
 }
 
@@ -1067,9 +1075,7 @@ pub fn components_block_29() -> impl View {
 // the `Row` modifiers. Not counted as a rust block. Glue: `today` stands for
 // the prose's reactive collection.
 // ---------------------------------------------------------------------------
-pub fn components_reactive_section_prose(
-    today: waterui::reactive::collection::List<Record>,
-) -> impl View {
+pub fn components_reactive_section_prose(today: StateList<Record>) -> impl View {
     use waterui::views::ForEach;
 
     let _ = row("a", "b")
@@ -1079,17 +1085,15 @@ pub fn components_reactive_section_prose(
         .deletable(true);
 
     List::content(
-        Section::new("Today").content(ForEach::new(today, |item: Record| {
-            ListItem::new(text(item.title))
-        })),
+        Section::new("Today").content(ForEach::new(today, |item: Record| text(item.title))),
     )
 }
 
 // ---------------------------------------------------------------------------
-// components.md § "## Lists and collections" (prose): the `ListItem` modifiers
+// components.md § "## Lists and collections" (prose): the list row modifiers
 // and `list_min_row_height`. Not counted as a rust block.
 // ---------------------------------------------------------------------------
-pub fn components_list_item_prose(records: waterui::reactive::collection::List<Record>) {
+pub fn components_list_item_prose(records: StateList<Record>) {
     use waterui::layout::padding::EdgeInsets;
     use waterui::views::ForEach;
 
@@ -1104,13 +1108,12 @@ pub fn components_list_item_prose(records: waterui::reactive::collection::List<R
     let multi = Binding::container(alloc::collections::BTreeSet::<Mailbox>::new());
     let record_selection = Binding::container(None::<u64>);
 
-    let _ = ListItem::new(text("a")).deletable(signal.clone());
-    let _ = ListItem::new(text("a")).insets(EdgeInsets::all(4.0));
+    let _ = text("a").list_row_deletable(signal.clone());
+    let _ = text("a").list_row_insets(EdgeInsets::all(4.0));
     let _ = text("a").list_min_row_height(0.0);
-    let _ = List::for_each(records.clone(), |r: Record| ListItem::new(text(r.title)))
-        .selection(&record_selection);
+    let _ = List::for_each(records.clone(), |r: Record| text(r.title)).selection(&record_selection);
     let _ = List::content((
-        (|| ListItem::new(text("Inbox"))).tag(Mailbox::Inbox),
+        (|| text("Inbox")).tag(Mailbox::Inbox),
         row("Archive", "12").tag(Mailbox::Archive),
     ))
     .selection(&selection);
@@ -1120,14 +1123,12 @@ pub fn components_list_item_prose(records: waterui::reactive::collection::List<R
     ))
     .multi_selection(&multi);
     let _ = List::content(
-        Section::new("Records").content(ForEach::new(records, |r: Record| {
-            ListItem::new(text(r.title))
-        })),
+        Section::new("Records").content(ForEach::new(records, |r: Record| text(r.title))),
     )
     .selection(&record_selection);
     // A row under `.disabled(true)` is inert to selection; there is no
     // per-item selectable flag — selection follows the content's disabled state.
-    let _ = ListItem::new(text("a").disabled(true));
+    let _ = text("a").disabled(true);
 }
 
 // ---------------------------------------------------------------------------
@@ -1283,15 +1284,15 @@ pub fn components_block_33() {
         ColorPicker::new("Accent", &color).with_alpha().with_hdr() // Binding<Color>
     };
     let _ = {
-        // Binding<Vec<Url>>; `import(..)` copies into app storage
-        FilePicker::open("Select Files", &urls).max_count(5)
+        // Binding<Vec<Url>>; `.import()` copies into app storage
+        FilePicker::new("Select Files", &urls).max_count(5)
     };
 
     let _ = DateTimePickerComponents::Date;
     let _ = DateTimePickerComponents::HourAndMinute;
     let _ = DateTimePickerComponents::HourMinuteAndSecond;
     let _ = DateTimePickerComponents::DateHourAndMinute;
-    let _ = FilePicker::import("Import Files", &urls);
+    let _ = FilePicker::new("Import Files", &urls).import();
 }
 
 // ---------------------------------------------------------------------------
@@ -1336,9 +1337,8 @@ pub fn components_block_34() {
 }
 
 // ---------------------------------------------------------------------------
-// components.md § "## Overlays: snackbars, cards, suspense, full screen" (prose): the other snackbar placements,
-// `.icon`, `.state`, `.on_dismiss`, `SnackbarManager::dismiss` and the full-screen
-// overlay manager. Not counted as a rust block.
+// components.md § "## Overlays: snackbars, cards, suspense" (prose): the other snackbar placements,
+// `.icon`, `.state`, `.on_dismiss`, and `SnackbarManager::dismiss`. Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn components_snackbar_prose() {
     use waterui::snackbar::{Snackbar, SnackbarDismissReason, SnackbarManager, SnackbarPosition};
@@ -1349,28 +1349,26 @@ pub fn components_snackbar_prose() {
     let _ = SnackbarPosition::BottomLeading;
     let _ = SnackbarPosition::BottomTrailing;
     let _ = Snackbar::new("x")
-        .icon(mdi::delete())
+        .icon(mdi::delete)
         .state(&value)
         .on_dismiss(|reason: SnackbarDismissReason| {
             let _ = reason;
         });
+    let _ = Snackbar::new("padded").icon(|| mdi::delete().padding());
     let _ = text("host").snackbar_host();
-    let _ = text("host").snackbar_host_with_icons::<mdi::Svg>();
-    let _ = SnackbarManager::with_icons::<mdi::Svg>();
-    let _ = button("x").action(|m: SnackbarManager<mdi::Svg>| {
-        m.show(Snackbar::new("x").icon(mdi::delete()));
+    let _ = text("host").snackbar_host_with_icons::<mdi::Icon>();
+    let _ = SnackbarManager::host(|m| {
+        m.show(Snackbar::new("x").icon(mdi::delete));
+        text("host")
+    });
+    let _ = button("x").action(|m: SnackbarManager<mdi::Icon>| {
+        m.show(Snackbar::new("x").icon(mdi::delete));
     });
     let _ = button("x").action(|manager: SnackbarManager| manager.dismiss());
-    let _ = text("host").full_screen_overlay_host::<Text>();
-    let (_overlay_mgr, _overlay_view) = FullScreenOverlayManager::<Text>::new();
-    let _ = button("x").action(|overlay: FullScreenOverlayManager<Text>| {
-        overlay.show(text("modal"));
-        overlay.hide();
-    });
 }
 
 // ---------------------------------------------------------------------------
-// components.md § "## Overlays: snackbars, cards, suspense, full screen" — rust block 35/39
+// components.md § "## Overlays: snackbars, cards, suspense" — rust block 35/39
 // ---------------------------------------------------------------------------
 pub fn components_block_35() -> impl View {
     use waterui::env::use_env;
@@ -1401,7 +1399,7 @@ pub fn components_block_36() {
     let header = text("header");
     let view = Divider;
 
-    use waterui::widget::accordion; // not in the prelude
+    use waterui::widget::disclosure; // not in the prelude
 
     let _ = {
         // Card; .style(CardStyle::Outlined) | Elevated | Filled
@@ -1412,8 +1410,8 @@ pub fn components_block_36() {
         suspense(async { load().await })
     };
     let _ = {
-        // disclosure; Accordion::with_toggle(&open, ..) controls it
-        accordion(header, || body())
+        // Disclosure::new(header, ..).expanded(&open) controls it
+        disclosure(header, || body())
     };
     let _ = {
         view.floating() // themed elevated surface (FloatingStyle-aware)
@@ -1422,10 +1420,10 @@ pub fn components_block_36() {
 
 // ---------------------------------------------------------------------------
 // components.md § "## Overlays: snackbars, cards, suspense, full screen" (prose): `CardStyle`, `Suspense::loading` and
-// `Accordion::with_toggle`. Not counted as a rust block.
+// `Disclosure::expanded`. Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn components_overlay_extras_prose() {
-    use waterui::widget::Accordion;
+    use waterui::widget::Disclosure;
 
     let open = Binding::bool(false);
 
@@ -1433,7 +1431,7 @@ pub fn components_overlay_extras_prose() {
     let _ = card(text("c")).style(CardStyle::Elevated);
     let _ = card(text("c")).style(CardStyle::Filled);
     let _ = suspense(async { text("x") }).loading(text("loading"));
-    let _ = Accordion::with_toggle(&open, text("h"), || text("b"));
+    let _ = Disclosure::new(text("h"), || text("b")).expanded(&open);
 }
 
 // ---------------------------------------------------------------------------
@@ -1473,14 +1471,14 @@ pub fn components_block_37(photo_url: waterui::Url) {
     let focus = Binding::container(None::<Field>);
 
     let _ = {
-        text("Inbox").badge(3) // a count badge on any Clone view; badge::Badge::new(n, view).color(..)
+        text("Inbox").badge(3_u32) // 0 hides; BadgeValue::{Hidden, Dot, Count(u32), Text(Text)}; badge::Badge::new(v, view).color(..)
     };
     let _ = {
         avatar("Grace Hopper") // initials when there is no image; the name is always spoken
             .image(photo_url) // a signal of Url: the fallback shows until it decodes
-            .shape(RoundedRectangle::new(0.25))
-            .size(64.0)
-            .ring(Color::new(theme_color::Accent), 2.0)
+            .shape(RoundedRectangle::new(16.0))
+            .side(64.0)
+            .ring(Color::accent(), 2.0)
     };
     let _ = {
         field("Email", &email).focused(&focus, Field::Email) // focused while `focus` holds Some(Field::Email)
@@ -1496,9 +1494,50 @@ pub fn components_avatar_prose() {
 
     let _ = Avatar::new("Katherine Johnson", || text("KJ").bold(true));
 
-    // Prose (not counted): `.dynamic_range(ColorSpace::Hdr)`.
-    use waterui::metadata::secure::ColorSpace;
-    let _ = avatar("Grace Hopper").dynamic_range(ColorSpace::Hdr);
+    // Prose (not counted): `.dynamic_range(DynamicRange::High)`.
+    let _ = avatar("Grace Hopper").dynamic_range(DynamicRange::High);
+}
+
+// ---------------------------------------------------------------------------
+// components.md § "## Badges, avatars, tables, focus" (prose): row-major
+// `Table` with sortable columns, selection, and view cells. Not counted as a
+// rust block.
+// ---------------------------------------------------------------------------
+pub fn components_table_prose() {
+    #[derive(Clone)]
+    struct Person {
+        id: u64,
+        name: String,
+    }
+    impl Identifiable for Person {
+        type Id = u64;
+        fn id(&self) -> Self::Id {
+            self.id
+        }
+    }
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Sort {
+        Name,
+    }
+
+    let people = StateList::from(vec![Person {
+        id: 1,
+        name: "Ada".into(),
+    }]);
+    let sel = Binding::container(Some(1_u64));
+    let order = Binding::container(Some(TableSort::new(Sort::Name, SortDirection::Ascending)));
+
+    let _ = Table::new(
+        people.clone(),
+        (
+            TableColumn::new("Name", |p: &Person| text(p.name.clone())).sortable(Sort::Name),
+            TableColumn::new("Avatar", |p: &Person| avatar(p.name.clone())),
+        ),
+    )
+    .selection(&sel)
+    .sort_order(&order);
+
+    let _ = table(people, (col("Name", |p: &Person| text(p.name.clone())),));
 }
 
 // ---------------------------------------------------------------------------
@@ -1522,10 +1561,10 @@ pub fn components_block_38() {
     let _ = { view.a11y_role(AccessibilityRole::Button) };
     let view = Divider;
     let _ = {
-        view.a11y_hidden(true) // decorative only
+        view.a11y_hidden(true) // or a reactive boolean signal
     };
     let view = Divider;
-    let _ = { view.a11y_state_signal(active.map(|a| AccessibilityState::new().selected(a))) };
+    let _ = { view.a11y_state(active.map(|a| AccessibilityState::new().selected(a))) };
 }
 
 // ---------------------------------------------------------------------------
@@ -1570,5 +1609,30 @@ pub fn components_block_39() {
                 .action(DialogAction::destructive("Delete", |_: Environment| {
                     trash_photo()
                 })),
+        );
+}
+
+// ---------------------------------------------------------------------------
+// Block 40 — `Sheet` modal presentation
+// ---------------------------------------------------------------------------
+pub fn components_block_40() {
+    use waterui::sheet::{Sheet, SheetDetent, SheetDismiss};
+
+    let open = binding(false);
+    let _ = button("Filters")
+        .action({
+            let open = open.clone();
+            move || open.set(true)
+        })
+        .sheet(
+            Sheet::new(&open, || {
+                vstack((
+                    text("Filter options"),
+                    button("Done").action(|sheet: SheetDismiss| sheet.dismiss()),
+                ))
+            })
+            .detents([SheetDetent::Medium, SheetDetent::Large])
+            .label("Filter options")
+            .on_dismiss(|| {}),
         );
 }

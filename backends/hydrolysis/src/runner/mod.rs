@@ -14,7 +14,6 @@ use accesskit::{
 #[cfg(hydrolysis_cherenkov)]
 use executor_core::try_init_local_executor;
 use nami::Signal as _;
-#[cfg(not(target_arch = "wasm32"))]
 use std::cell::Cell;
 #[cfg(hydrolysis_cherenkov)]
 use std::collections::VecDeque;
@@ -30,11 +29,25 @@ use waterui::app::AppParts;
 #[cfg(hydrolysis_run)]
 use waterui::app::{App, AppMenuBar};
 use waterui::app::{WindowSink, Windows};
-use waterui::window::Window;
+use waterui::window::WindowParts;
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    not(hydrolysis_winit),
+    not(hydrolysis_uikit),
+    not(target_os = "android")
+))]
+use waterui::window::WindowState;
 use waterui_core::Environment;
 use waterui_core::Retain;
 use waterui_core::handler::ViewBuilder;
 use waterui_interaction::key::KeyPress;
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    not(hydrolysis_winit),
+    not(hydrolysis_uikit),
+    not(target_os = "android")
+))]
+use waterui_structural_transition::ReduceMotion;
 #[cfg(hydrolysis_cherenkov)]
 use waterui_text::FontCollection;
 
@@ -261,7 +274,7 @@ use crate::time::Instant;
 /// the resolved background reads; every runner installs it before mounting
 /// a window.
 fn subscribe_window_declaration_signals<E: crate::text::TextEngine, C, T>(
-    window: &Window<C, T>,
+    window: &WindowParts<C, T>,
     env: &Environment,
     core: &SemanticCore<E>,
 ) -> Vec<Retain> {
@@ -366,8 +379,9 @@ fn install_core_window_openers<E: crate::text::TextEngine>(
     opener: Rc<dyn Fn(window::RootWindow<E>)>,
 ) {
     #[cfg(any(feature = "menu", feature = "color-picker"))]
-    core.set_popup_window_manager(PopupWindowManager::from_opener(Rc::clone(&opener)));
-    core.set_window_opener(opener);
+    core.set_popup_window_manager(PopupWindowManager::from_opener(opener));
+    #[cfg(not(any(feature = "menu", feature = "color-picker")))]
+    let _ = (core, opener);
 }
 
 fn install_window_registries<E: crate::text::TextEngine>(env: &mut Environment) {
@@ -498,6 +512,7 @@ pub fn run<W: Windows, M: AppMenuBar>(
     env.insert(HydrolysisTextContextMenuMode::Overlay);
     // A headless host has no platform appearance: the scheme is Light
     // unless the application installs its own.
+    let _ = env.get_or_insert_with::<ReduceMotion, _>(Default::default);
     crate::theme::install_theme_tokens(&mut env, Some(&style), waterui::theme::ColorScheme::Light);
     let theme: Rc<dyn crate::theme::WidgetTheme> = Rc::new(style);
     // The application's fonts, discovered once. Every window's renderer is
@@ -511,11 +526,14 @@ pub fn run<W: Windows, M: AppMenuBar>(
         .get::<crate::renderer::WindowIdentities>()
         .expect("install_window_registries seeds WindowIdentities")
         .clone();
-    let window::RootWindows { initial, channels } = window::RootWindows::collect(windows);
+    let window::RootWindows { initial, channels } = window::RootWindows::collect(windows, &env);
     let opener = queue_window_opener(&pending_window_queue);
     window::RootWindows::connect_channels(channels, &opener);
     let mut pending_windows = VecDeque::from(initial);
     while let Some(window) = pending_windows.pop_front() {
+        if window.state.snapshot() == WindowState::Closed {
+            continue;
+        }
         let frame = crate::platform::validated_window_frame(window.frame.snapshot());
         let width = crate::num_cast::f32_as_u32(frame.width().max(1.0));
         let height = crate::num_cast::f32_as_u32(frame.height().max(1.0));

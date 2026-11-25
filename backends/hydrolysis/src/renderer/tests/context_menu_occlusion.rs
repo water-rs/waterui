@@ -10,8 +10,9 @@ use std::time::{Duration, Instant};
 
 use accesskit::Role;
 use nami::collection::SignalCollection;
-use waterui::component::list::{List, ListItem};
+use waterui::component::list::List;
 use waterui::component::text;
+use waterui::gesture::{LongPressEvent, LongPressGesture};
 use waterui::metadata::context_menu::IntoContextMenu;
 use waterui::prelude::ContextMenu;
 use waterui::{AnyView, ViewExt as _};
@@ -37,7 +38,7 @@ const ROW_H: f32 = 48.0;
 /// The last row's tap region is tall enough to cover the whole menu.
 const TAP_ROW_H: f32 = 400.0;
 /// The tail row's long-press minimum, in milliseconds.
-const LONG_PRESS_MS: u32 = 50;
+const LONG_PRESS_DURATION: Duration = Duration::from_millis(50);
 
 fn secondary_click(x: f32, y: f32) -> [InputEvent; 2] {
     [
@@ -92,7 +93,7 @@ fn chat_list_with_tail<M: IntoContextMenu + 'static>(
             let tail = tail.clone();
             move |row| {
                 let index = row.into_inner();
-                let content = if index == MENU_ROW {
+                if index == MENU_ROW {
                     AnyView::new(
                         Frame::new(button("Menu row").action(|| {}).context_menu(menu()))
                             .height(ROW_H)
@@ -102,8 +103,7 @@ fn chat_list_with_tail<M: IntoContextMenu + 'static>(
                     tail()
                 } else {
                     AnyView::new(vstack((text(format!("Row {index}")),)).size(f32::INFINITY, ROW_H))
-                };
-                ListItem::new(content)
+                }
             }
         })))
     })
@@ -127,7 +127,7 @@ fn chat_list<M: IntoContextMenu + 'static>(
     )
 }
 
-/// Same list, with an `.on_long_press_gesture` on the last row instead —
+/// Same list, with a `.gesture(LongPressGesture::new()...)` on the last row instead —
 /// occlusion must hold for every gesture kind the engine could arm, not
 /// only taps.
 fn chat_list_with_long_press<M: IntoContextMenu + 'static>(
@@ -140,9 +140,12 @@ fn chat_list_with_long_press<M: IntoContextMenu + 'static>(
             AnyView::new(
                 vstack((text("Tail row"),))
                     .size(f32::INFINITY, TAP_ROW_H)
-                    .on_long_press_gesture(LONG_PRESS_MS, move || {
-                        *long_presses.borrow_mut() += 1;
-                    }),
+                    .gesture(
+                        LongPressGesture::new().minimum_duration(LONG_PRESS_DURATION),
+                        move |_: LongPressEvent| {
+                            *long_presses.borrow_mut() += 1;
+                        },
+                    ),
             )
         },
         menu,
@@ -309,7 +312,7 @@ fn popup_window_item_press_does_not_fall_through_to_the_row_tap() {
 }
 
 /// The same occlusion, proven gesture-kind independent: a press held on a
-/// menu item must not arm the `.on_long_press_gesture` on the row beneath —
+/// menu item must not arm the long-press gesture on the row beneath —
 /// the engine's candidates are filtered by the occluder before it chooses
 /// what to arm, so there is no recognizer for the hold to feed.
 #[test]
@@ -356,11 +359,8 @@ fn drawn_menu_item_press_and_hold_does_not_fall_through_to_the_row_long_press() 
         button: PointerButton::Primary,
     });
     let _ = runtime.pump_at(false, start);
-    for step in 1..=4u64 {
-        let _ = runtime.pump_at(
-            false,
-            start + Duration::from_millis(u64::from(LONG_PRESS_MS) * step),
-        );
+    for step in 1..=4u32 {
+        let _ = runtime.pump_at(false, start + LONG_PRESS_DURATION * step);
     }
     runtime.push_input_event(InputEvent::PointerUp {
         id: 2,
@@ -369,10 +369,7 @@ fn drawn_menu_item_press_and_hold_does_not_fall_through_to_the_row_long_press() 
         y,
         button: PointerButton::Primary,
     });
-    let _ = runtime.pump_at(
-        false,
-        start + Duration::from_millis(u64::from(LONG_PRESS_MS) * 5),
-    );
+    let _ = runtime.pump_at(false, start + LONG_PRESS_DURATION * 5);
     pump_until_settled(&mut runtime);
 
     assert!(command.get(), "the item's command must run");

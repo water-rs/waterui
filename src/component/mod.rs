@@ -12,9 +12,12 @@ pub mod link;
 #[cfg(feature = "list")]
 pub mod list;
 
+#[cfg(any(feature = "list", feature = "table"))]
+pub(crate) mod selection_support;
+
 pub mod progress;
 #[doc(inline)]
-pub use progress::{Progress, loading, progress};
+pub use progress::{Progress, ProgressStyle, loading, progress};
 
 #[cfg(feature = "table")]
 pub mod table;
@@ -25,8 +28,12 @@ pub use waterui_core::{AnyView, Dynamic, anyview, dynamic};
 #[cfg(feature = "link")]
 #[doc(inline)]
 pub use link::{Link, link};
-#[cfg(feature = "media")]
-pub use media::*;
+#[cfg(feature = "image")]
+#[doc(inline)]
+pub use media::{Image, MediaPicker, Photo, PhotoEvent, PickerStatus, photo};
+#[cfg(all(feature = "image", feature = "video"))]
+#[doc(inline)]
+pub use media::{LivePhoto, LivePhotoEvent};
 pub use text::{Text, text::text};
 #[cfg(feature = "form")]
 #[doc(inline)]
@@ -38,7 +45,10 @@ pub use waterui_layout::{
     stack::{self, HStack, VStack, ZStack, hstack, vstack, zstack},
 };
 #[doc(inline)]
-#[cfg(feature = "media")]
+#[cfg(feature = "image")]
 pub use waterui_media as media;
 #[doc(inline)]
 pub use waterui_text as text;
+#[cfg(feature = "video")]
+#[doc(inline)]
+pub use waterui_video::{Video, VideoEvent, VideoPlayer, video_player};

@@ -4,9 +4,10 @@
 use core::marker::PhantomData;
 
 use waterui::animation::FrameRateVote;
+use waterui::sheet::Sheet;
 
 #[cfg(waterui_feature = "gpu")]
-use waterui::graphics::backend::Picture;
+use waterui::graphics::backend::{GpuContentLeaf, Picture};
 #[cfg(waterui_feature = "navigation")]
 use waterui::navigation::ResolvedNavigationView;
 use waterui_backend_core::{
@@ -216,21 +217,6 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         RenderNode::build_empty(self.renderer, env)
     }
 
-    fn window<C: ChildView<Self>>(
-        &mut self,
-        native: waterui::window::Window<waterui::window::WindowSlot<C>, Option<C>>,
-        env: &Environment,
-        (): (),
-    ) -> RenderNode<E> {
-        mark_reached!("window");
-        self.renderer
-            .open_window(crate::runner::window::slot_root_window(native.map(
-                |slot| slot.map(C::into_child),
-                |toolbar| toolbar.map(C::into_child),
-            )));
-        RenderNode::build_empty(self.renderer, env)
-    }
-
     /// Builds the [`RenderNode::Container`] for a fixed container. A
     /// `BackgroundLayout` container's slot 0 is the background the §7.1 fill
     /// rule extends: its fill is wrapped in [`RenderNode::Fill`], the type
@@ -289,12 +275,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     // setup state, redraw handle), so a reactive swap renders the new content
     // and a per-frame re-flush re-binds the *same* runtime.
     #[cfg(waterui_feature = "gpu")]
-    fn gpu(
-        &mut self,
-        native: waterui::GpuView<Box<dyn waterui::graphics::GpuContent>>,
-        env: &Environment,
-        (): (),
-    ) -> RenderNode<E> {
+    fn gpu(&mut self, native: GpuContentLeaf, env: &Environment, (): ()) -> RenderNode<E> {
         mark_reached!("gpu");
         #[cfg(hydrolysis_gpu)]
         return RenderNode::build_gpu_content(native, self.renderer, env);
@@ -707,26 +688,14 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
 
     // Dynamic-range metadata used to scope a preference read by the retired
     // GPU-surface path; Cherenkov's engine owns headroom per surface, so
-    // both pass through to the content like `Secure` above.
-    fn standard_dynamic_range<C: ChildView<Self>>(
+    // it passes through to the content like `Secure` above.
+    fn dynamic_range<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::metadata::secure::StandardDynamicRange, C>,
+        metadata: Metadata<waterui::metadata::secure::DynamicRangeMetadata, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
-        mark_reached!("standard_dynamic_range");
-        let metadata = metadata.map_content(C::into_child);
-        let renderer = &mut *self.renderer;
-        RenderNode::build_slot(metadata.content, env, renderer)
-    }
-
-    fn high_dynamic_range<C: ChildView<Self>>(
-        &mut self,
-        metadata: Metadata<waterui::metadata::secure::HighDynamicRange, C>,
-        env: &Environment,
-        (): (),
-    ) -> RenderNode<E> {
-        mark_reached!("high_dynamic_range");
+        mark_reached!("dynamic_range");
         let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         RenderNode::build_slot(metadata.content, env, renderer)
@@ -925,6 +894,32 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
                 placed_edge,
                 placement,
                 dismissal,
+                marker: Rc::new(()),
+            }),
+            content,
+            env,
+            renderer,
+        )
+    }
+
+    fn sheet<C: ChildView<Self>>(
+        &mut self,
+        metadata: Metadata<Sheet, C>,
+        env: &Environment,
+        (): (),
+    ) -> RenderNode<E> {
+        mark_reached!("sheet");
+        let metadata = metadata.map_content(C::into_child);
+        let renderer = &mut *self.renderer;
+        let Metadata { content, value } = metadata;
+        let sheet_for_builder = value.clone();
+        let build_layer: Rc<dyn Fn() -> RetainedSubview<E>> =
+            Rc::new(move || RetainedSubview::new(sheet_for_builder.modal_layer()));
+        RenderNode::build_wrapper(
+            WrapperEffect::Sheet(SheetEffect {
+                content: Rc::new(RefCell::new(None)),
+                build_layer,
+                sheet: value,
                 marker: Rc::new(()),
             }),
             content,
@@ -1160,6 +1155,19 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
         RenderNode::build_lifecycle(value, content, env, renderer)
+    }
+
+    fn task_hook<C: ChildView<Self>>(
+        &mut self,
+        metadata: Metadata<waterui_interaction::event::TaskHook, C>,
+        env: &Environment,
+        (): (),
+    ) -> RenderNode<E> {
+        mark_reached!("task_hook");
+        let metadata = metadata.map_content(C::into_child);
+        let renderer = &mut *self.renderer;
+        let Metadata { content, value } = metadata;
+        RenderNode::build_task(value, content, env, renderer)
     }
 
     fn scroll<C: ChildView<Self>>(
@@ -1449,6 +1457,19 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         RenderNode::build_badge(native.map_slots(into_child), env, renderer)
     }
 
+    fn disclosure<C: ChildView<Self>>(
+        &mut self,
+        native: waterui::widget::disclosure::DisclosureConfig<C>,
+        env: &Environment,
+        (): (),
+    ) -> RenderNode<E> {
+        use waterui_core::backend::MapSlots as _;
+        mark_reached!("disclosure");
+        let renderer = &mut *self.renderer;
+        let into_child: fn(C) -> HeldChild<E> = C::into_child;
+        RenderNode::build_disclosure(native.map_slots(into_child), env, renderer)
+    }
+
     #[cfg(waterui_feature = "list")]
     fn list<C: ChildView<Self>>(
         &mut self,
@@ -1465,15 +1486,17 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     }
 
     #[cfg(waterui_feature = "table")]
-    fn table(
+    fn table<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::table::TableConfig,
+        native: waterui::component::table::TableConfig<C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
+        use waterui_core::backend::MapSlots as _;
         mark_reached!("table");
         let renderer = &mut *self.renderer;
-        RenderNode::build_table(renderer, native, env)
+        let into_child: fn(C) -> HeldChild<E> = C::into_child;
+        RenderNode::build_table(renderer, native.map_slots(into_child), env)
     }
 
     fn gradient(
@@ -1484,7 +1507,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     ) -> RenderNode<E> {
         mark_reached!("gradient");
         let renderer = &mut *self.renderer;
-        RenderNode::build_gradient(renderer, native, env)
+        RenderNode::build_gradient(renderer, &native, env)
     }
 
     fn shape(

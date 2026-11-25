@@ -15,7 +15,7 @@ pub struct ScrollRequest<T> {
     /// The position the scroll view moves to.
     target: T,
     /// How the scroll view moves there. `None` jumps in one frame.
-    /// [`Animation::Default`] uses the backend's default scroll motion: the
+    /// [`Animation::DEFAULT`] uses the backend's default scroll motion: the
     /// native smooth scroll on a backend that drives a platform scroll view,
     /// the backend's default animation curve on a self-drawn one. Any other
     /// animation drives the offset along its own curve and duration.
@@ -34,7 +34,7 @@ impl<T> ScrollRequest<T> {
     }
 
     /// How the scroll view moves there. `None` jumps in one frame.
-    /// [`Animation::Default`] uses the backend's default scroll motion: the
+    /// [`Animation::DEFAULT`] uses the backend's default scroll motion: the
     /// native smooth scroll on a backend that drives a platform scroll view,
     /// the backend's default animation curve on a self-drawn one. Any other
     /// animation drives the offset along its own curve and duration.

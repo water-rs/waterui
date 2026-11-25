@@ -111,7 +111,7 @@ This is the idiomatic shape for a real screen:
 #[state]
 #[derive(Clone)]
 struct Editor {
-    rows: ReactiveList<Row>,
+    rows: StateList<Row>,
     editing: Binding<bool>,
 }
 
@@ -139,15 +139,14 @@ its own clone (`mut state: Editor`).
 
 ```rust
 use waterui::Identifiable;                             // the trait the derive implements is NOT in the prelude
-use waterui::reactive::collection::List as ReactiveList;
 
 #[derive(Clone, Identifiable)]
 struct Row { #[id] id: u64, title: Str }
 
-let rows = ReactiveList::from(seed_rows);              // bulk-seed; .push/.insert/.remove (&mut self) diff by id
+let rows = StateList::from(seed_rows);                 // bulk-seed; .push/.insert/.remove (&mut self) diff by id
 
 scroll(VStack::for_each(rows.clone(), |row| text(row.title))) // virtualized inside scroll
-List::for_each(rows.clone(), |row| ListItem::new(...))        // platform list: lazy, editable
+List::for_each(rows.clone(), |row| text(row.title))           // platform list: lazy, editable
 ```
 
 Note the shape: **`ForEach` is a *collection of views*, not a view.** A container consumes
@@ -194,18 +193,17 @@ fn counter() -> impl View {
 }
 
 pub fn app(env: Environment) -> App<impl Windows> {
-    App::new(counter, env)
+    App::new(env).window(Window::new("Counter", counter))
 }
 ```
 
 `use waterui::prelude::*;` brings in views, layout, colors, text, controls, navigation,
-menus, `Binding`, `Computed`, `binding` (the general constructor), `State`, `Str`,
-`AnyView`, `SignalExt`, `AnimationExt`, and, with their features, `Dialog` and
-`Snackbar`. Several everyday names live outside it:
+menus, `Binding`, `Computed`, `binding` (the general constructor), `StateList`,
+`SignalCollection`, `State`, `Str`, `AnyView`, `SignalExt`, `AnimationExt`, and, with
+their features, `Dialog` and `Snackbar`. Several everyday names live outside it:
 
 ```rust
 use waterui::Identifiable;                             // the trait the derive implements
-use waterui::reactive::collection::List as ReactiveList;
 use waterui::widget::condition::when;                  // conditionals
 use waterui::animation::Animation;                     // animation curves
 use waterui::views::ForEach;                           // the collection itself
@@ -220,8 +218,8 @@ Components behind cargo features are also absent until you enable them. `waterui
 defaults are `canvas`, `gpu`, `assets`, `dialog`, `snackbar`, `highlight` (the `Code` widget),
 `avatar`, `cpu-time`, `link`, `list`, `table`, `navigation`, `menu`, the standard form/control
 features, and the `locale-datetime` / `locale-list` formatters. Everything else is opt-in in
-`Cargo.toml`: `media` (`Photo`, `MediaPicker`; the generated project's own `media`
-feature forwards to it), `video`, `video-gpu`, `remote` (web URLs for `Photo`,
+`Cargo.toml`: `image` (`Photo`, `MediaPicker`), `video` (`Video`, `VideoPlayer`; the
+generated project's own `video` feature forwards to it), `video-gpu`, `remote` (web URLs for `Photo`,
 `Url::fetch`), `webview`, `capture`, `flow-markdown`, `markdown-math`, `inspector`,
 `inspector-signals`, `widgets` (home-screen widgets, `#[waterui::widget]`), `ts` / `ts-ota`
 (TypeScript views and their over-the-air update client `waterui::ts::Ota`),
@@ -278,7 +276,7 @@ struct ColorSwatch { color: Binding<Color> }
 
 impl View for ColorSwatch {
     fn body(self, _env: &Environment) -> impl View {
-        signal_color(self.color).size(64.0, 32.0)   // a Color is itself a view
+        ().size(64.0, 32.0).background(self.color)
     }
 }
 ```
@@ -294,7 +292,7 @@ view types that is genuinely open at run time.
 let count = Binding::i32(0);                    // bool f32 f64 i32 i64 isize u32 u64 usize
 let flag  = Binding::bool(false);
 let name  = Binding::container(String::new());  // any Clone type
-let sel: Binding<Option<Selected>> = Binding::default();   // empty optional
+let sel: Binding<Option<Media>> = Binding::default();      // empty optional
 
 let pane: Binding<Pane> = binding(Pane::Inbox); // general form, needs an inferable type
 let settings = Settings::binding();             // #[form] types: inference-free
@@ -332,8 +330,8 @@ name, inside macro bodies too: bring it into scope with `use` and write `ForEach
 written `#[waterui::test]`, because the prelude names it `ui_test` so that its glob import
 cannot shadow the built-in `#[test]`, and a bare `#[test]` is the standard one. By
 convention `#[waterui::bench]`, `#[waterui::widget]`, `#[waterui::widget_intent]` and
-`#[waterui::view_builder]` are written qualified too. On a `Text`, `.size(..)`
-is the *font* size (and shadows the two-argument frame `.size(w, h)`). `.monospaced(bool)` is a
+`#[waterui::view_builder]` are written qualified too. On a `Text`, `.font_size(..)`
+sets the font size (leaving the two-argument frame `.size(w, h)` unshadowed). `.monospaced(bool)` is a
 design, not a family: it keeps the slot and size and each backend picks its own monospaced
 face, so never spell a font name for code. A reactive string that is not catalog
 content (a derived id, a debug label) is `s!("{name}-{count}")` from
@@ -500,8 +498,8 @@ LabelDisplayMode::IconOnly)` for icon buttons, `.install(LabelDisplayMode::IconO
 a whole toolbar. Beyond label, value, role and id, `.a11y_geometry(AccessibilityGeometry)`
 (the rectangle the element reports: the view's own response rectangle by default,
 `Allocation` for the whole assigned frame, or `Region(rect)`), `.a11y_children(
-AccessibilityChildren)` (how descendants contribute semantics) and
-`.a11y_state(AccessibilityState)` set the rest; the types are in `waterui::accessibility`.
+AccessibilityChildren)` (how descendants contribute semantics), `.a11y_hidden(hidden)` (static `bool` or reactive signal) and
+`.a11y_state(state)` (static `AccessibilityState` or reactive signal) set the rest; the types are in `waterui::accessibility`.
 
 ## Component index
 
@@ -515,14 +513,14 @@ web, graphics, and data rows live in [references/media.md](references/media.md).
 | Menus | `Menu` `Command` `.context_menu` `Shortcut` |
 | Interaction | `.on_tap` `.gesture` `TapGesture` `LongPressGesture` `DragGesture` `.draggable` `.drop_destination` `.on_hover_enter` `.cursor` |
 | Text | `text` `text!` `StyledStr` `Code` `RichText` `include_markdown!` `FlowMarkdown` |
-| Collections | `List` `ListItem` `ForEach` `Lazy` `SignalCollection` `ScrollController` `table` `col` |
-| Content | `Avatar` `Link` `Accordion` `.badge(n)` `loading()` |
+| Collections | `List` `ForEach` `Lazy` `StateList` `SignalCollection` `ScrollController` `Table` `TableColumn` `TableSort` `SortDirection` `table` `col` |
+| Content | `Avatar` `Link` `Disclosure` `.badge(n)` `loading()` |
 | Navigation | `Tabs` `Tab` `NavigationStack` `NavigationLink` `NavigationSplitView` `Window` |
 | Forms | `#[form]` `form()` `DatePicker` `Calendar` `ColorPicker` `FilePicker` |
-| Overlays | `.snackbar_host` `.snackbar_host_with_icons` `Snackbar` `SnackbarManager` `.full_screen_overlay_host` `FullScreenOverlayManager` `Card` `suspense` `.anchored_overlay` `AnchoredOverlay` `.dialog` `Dialog` `DialogAction` |
+| Overlays | `.snackbar_host` `.snackbar_host_with_icons` `Snackbar` `SnackbarManager` `.sheet` `Sheet` `SheetDetent` `SheetDismiss` `Card` `suspense` `.anchored_overlay` `AnchoredOverlay` `.dialog` `Dialog` `DialogAction` |
 | Media | `Photo` `Image` `VideoPlayer` `PlaybackSession` `MediaPicker` |
 | Data | `waterui::chart` (13 kinds: `line_chart` `bar_chart` `pie_chart` …) `Map` |
-| Graphics | `Canvas` `Barcode::qr()` `Svg` `shader!` `ParticleSystem` `GpuView` `ExternalFrameView` icon sets |
+| Graphics | `Canvas` `Barcode` `Svg` `shader!` `ParticleSystem` `GpuView` `ExternalFrameView` icon sets |
 | Platform | `WebView` `#[js_api]` `waterui-chromium` `waterui_apple::AppleView` `hydrolysis::AndroidView` |
 
 ## Verify before declaring done
@@ -673,9 +671,9 @@ let view = tsx!(
 | State resets on every keystroke | `watch` rebuilding the subtree | `text!` / signal-taking API / `VStack::for_each` |
 | `no function or associated item named 'new'` on `Binding` | `Binding::new` does not exist | `Binding::i32(v)` / `Binding::container(v)` / `Binding::default()` |
 | `cannot find function 'when'` / `cannot find trait 'Identifiable'` on the derive | not in the prelude (the derive is; the trait it implements is not) | `use waterui::widget::condition::when;` / `use waterui::Identifiable;` |
-| Rounded corners come out fully round | `RoundedRectangle::new(r)` takes a *fraction* of the shorter side, not points | `new(0.1)`-scale values, or `Capsule` |
+| Rounded corners look wrong on non-square sizes | `CornerRadius::fraction(r)` scales with the shorter side | `RoundedRectangle::new(points)` for points, or `Capsule` |
 | A background task dies instantly | the `spawn_local` handle cancels on drop | `.detach()` it |
-| `LongPressGesture::new(Duration…)` rejected | duration is a `u32` in backend time units | `LongPressGesture::new(500)` |
+| `LongPressGesture` constructor mismatch | `new()` takes no args; timeout via `.minimum_duration(Duration)` | `LongPressGesture::new().minimum_duration(Duration::from_millis(500))` |
 | `.is_empty()` missing on a string signal | different name | `.str_is_empty()`, `.str_len()`, `.str_contains(..)` |
 | Wrong binding arrives in a handler | positional `.state()` extraction | first `.state()` → first parameter of that type |
 | Scrolling or list updates are janky | `watch` over a `Vec` | `List::for_each` / `VStack::for_each` / `SignalCollection` |

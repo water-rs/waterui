@@ -1,9 +1,11 @@
 //! Desktop event loop on winit, including AccessKit integration.
 
 use async_task::spawn_local as spawn_local_task;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::future::Future;
+#[cfg(target_os = "windows")]
+use std::io::Error as IoError;
 use std::mem;
 use std::num::NonZeroU32;
 use std::rc::Rc;
@@ -19,17 +21,24 @@ use executor_core::{
     async_task::{AsyncTask, Runnable},
     try_init_local_executor,
 };
+#[cfg(any(target_os = "windows", test))]
+use nami::Binding;
 use nami::Signal;
 use waterui::app::{
     App, AppMenuBar, AppParts, LastWindowPolicy, TerminationHandle, TerminationHost,
     TerminationKind, Windows,
 };
-use waterui::window::{Monitor, MonitorSelector, Window, WindowState};
-use waterui_core::Environment;
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+use waterui::theme::ColorScheme;
+use waterui::window::{Activation, Monitor, MonitorSelector, WindowParts, WindowState};
 #[cfg(hydrolysis_wayland_platform)]
 use waterui_core::Str;
 #[cfg(target_os = "windows")]
 use waterui_core::contract_violation;
+use waterui_core::{Environment, Retain};
+#[cfg(target_os = "windows")]
+use waterui_locale::regional::refresh_system_locale;
+use waterui_structural_transition::ReduceMotion;
 use waterui_text::FontCollection;
 
 #[cfg(target_os = "windows")]
@@ -40,6 +49,12 @@ use crate::num_cast::f64_as_f32;
 use windows::Win32::Graphics::{
     DirectComposition::DCompositionBoostCompositorClock, Dxgi::DXGIDisableVBlankVirtualization,
 };
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::Foundation::LPARAM;
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::UI::WindowsAndMessaging::SPI_SETCLIENTAREAANIMATION;
+#[cfg(target_os = "windows")]
+use windows_sys::core::BOOL;
 use winit::application::ApplicationHandler;
 use winit::event::{DeviceEvent, DeviceId, ElementState, TouchPhase, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, DeviceEvents, EventLoop};
@@ -50,6 +65,14 @@ use winit::window::{Window as NativeWindow, WindowId};
 #[cfg(any(feature = "menu", feature = "color-picker"))]
 use super::window::runtime_window_origin;
 use super::window::{RootWindow, RootWindows};
+#[cfg(target_os = "linux")]
+use crate::platform::linux_appearance::SystemAppearance as LinuxSystemAppearance;
+#[cfg(target_os = "linux")]
+use crate::platform::linux_locale::SystemLocale as LinuxSystemLocale;
+#[cfg(target_os = "macos")]
+use crate::platform::macos_appearance::SystemAppearance as MacosSystemAppearance;
+#[cfg(target_os = "macos")]
+use crate::platform::macos_locale::SystemLocale as MacosSystemLocale;
 use crate::platform::{PlatformWindow, WinitPainter, WinitWindow};
 use crate::renderer::HostRedraw;
 #[cfg(any(feature = "text-field", feature = "secure-field"))]
@@ -73,6 +96,10 @@ use crate::text::ParleyEngine;
 pub(super) enum RunnerEvent {
     PollLocalTasks,
     MountPendingWindows,
+    /// An app-declared window's [`WindowState`] binding was written; the
+    /// runner reconciles the declaration's lifecycle (open, focus, apply
+    /// state, or close) on the event loop.
+    DeclaredWindowStateChanged(DeclaredWindowId),
     /// A window's wake, posted by the [`RedrawHandle`] its [`WinitWindow`]
     /// hands GPU content and the engine: the window is redrawn here, on the
     /// event loop, because the handle runs on — and its last clone can be
@@ -356,6 +383,7 @@ struct TerminationSubclass {
     termination: TerminationHandle,
     session_end: Rc<SessionEnd>,
     runnables: Rc<mpsc::Receiver<Runnable>>,
+    reduce_motion: Binding<bool>,
 }
 
 #[cfg(target_os = "windows")]
@@ -444,6 +472,8 @@ const TERMINATION_SUBCLASS_ID: usize = 1;
 ///   dispatches the thread's messages until the machine reports
 ///   `terminate`, so `on_terminate` has finished before the message returns
 ///   and Windows ends the process.
+/// - `WM_SETTINGCHANGE` with `lParam == 0` or case-insensitive `"intl"`
+///   refreshes `waterui_locale::regional` and forwards the message.
 #[cfg(target_os = "windows")]
 unsafe extern "system" fn session_end_proc(
     hwnd: windows_sys::Win32::Foundation::HWND,
@@ -455,7 +485,9 @@ unsafe extern "system" fn session_end_proc(
 ) -> windows_sys::Win32::Foundation::LRESULT {
     use windows_sys::Win32::System::Shutdown::ShutdownBlockReasonCreate;
     use windows_sys::Win32::UI::Shell::DefSubclassProc;
-    use windows_sys::Win32::UI::WindowsAndMessaging::{WM_ENDSESSION, WM_QUERYENDSESSION};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        WM_ENDSESSION, WM_QUERYENDSESSION, WM_SETTINGCHANGE,
+    };
     // SAFETY: `refdata` is the `TerminationSubclass` box installed by
     // `install_termination_subclass`, alive until
     // `remove_termination_subclass` reclaims it at window teardown.
@@ -475,8 +507,87 @@ unsafe extern "system" fn session_end_proc(
             subclass.run_until_terminated();
             0
         }
+        WM_SETTINGCHANGE => {
+            // SAFETY: `lparam` comes directly from `WM_SETTINGCHANGE`.
+            if unsafe { is_locale_setting_change(lparam) } {
+                let _ = refresh_system_locale();
+            }
+            if wparam == 0 || wparam == SPI_SETCLIENTAREAANIMATION as usize {
+                sync_reduce_motion(&subclass.reduce_motion, query_windows_reduce_motion());
+            }
+            // SAFETY: forwarding `WM_SETTINGCHANGE` to the previous proc so winit also sees it.
+            unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
+        }
         // SAFETY: forwarding every unclaimed message to the previous proc.
         _ => unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) },
+    }
+}
+
+/// Whether a Windows `WM_SETTINGCHANGE` `lParam` names a regional/locale
+/// change (`NULL` or case-insensitive `"intl"`).
+#[cfg(target_os = "windows")]
+unsafe fn is_locale_setting_change(lparam: LPARAM) -> bool {
+    if lparam == 0 {
+        return true;
+    }
+    // SAFETY: Windows passes a NUL-terminated UTF-16 string pointer in `lParam`
+    // for `WM_SETTINGCHANGE` whenever `lParam != 0`.
+    let mut ptr = lparam as *const u16;
+    let mut buf = [0u16; 5];
+    for slot in &mut buf {
+        // SAFETY: `ptr` points into the NUL-terminated UTF-16 string passed in
+        // `WM_SETTINGCHANGE`'s `lParam`, and the loop stops on the NUL terminator.
+        let ch = unsafe { *ptr };
+        if ch == 0 {
+            break;
+        }
+        *slot = ch;
+        // SAFETY: advancing inside the NUL-terminated UTF-16 string.
+        ptr = unsafe { ptr.add(1) };
+    }
+    buf[0].eq_ignore_ascii_case_u16(b'i')
+        && buf[1].eq_ignore_ascii_case_u16(b'n')
+        && buf[2].eq_ignore_ascii_case_u16(b't')
+        && buf[3].eq_ignore_ascii_case_u16(b'l')
+        && buf[4] == 0
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn sync_reduce_motion(reduce_motion: &Binding<bool>, reduced: bool) {
+    if reduce_motion.snapshot() != reduced {
+        reduce_motion.set(reduced);
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn query_windows_reduce_motion() -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        SPI_GETCLIENTAREAANIMATION, SystemParametersInfoW,
+    };
+    let mut enabled: BOOL = 1;
+    // SAFETY: `enabled` is a writable `BOOL` stack slot valid for the call.
+    if unsafe { SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, (&raw mut enabled).cast(), 0) }
+        == 0
+    {
+        tracing::error!(
+            "hydrolysis runner: SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION) failed: {}; \
+             keeping false",
+            IoError::last_os_error()
+        );
+        return false;
+    }
+    enabled == 0
+}
+
+#[cfg(target_os = "windows")]
+trait U16AsciiExt {
+    fn eq_ignore_ascii_case_u16(self, ascii: u8) -> bool;
+}
+
+#[cfg(target_os = "windows")]
+impl U16AsciiExt for u16 {
+    fn eq_ignore_ascii_case_u16(self, ascii: u8) -> bool {
+        u8::try_from(self).is_ok_and(|byte| byte.eq_ignore_ascii_case(&ascii))
     }
 }
 
@@ -609,24 +720,84 @@ fn install_console_close_handler(event_proxy: &winit::event_loop::EventLoopProxy
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) struct DeclaredWindowId(usize);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DeclaredWindowPhase<Id> {
+    Closed,
+    PendingOpen,
+    Open(Id),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DeclaredWindowAction<Id> {
+    None,
+    QueueOpen,
+    Focus(Id),
+    ApplyState(Id),
+    Close(Id),
+}
+
+/// Reconciles an app-declared window's lifecycle phase against a write to its
+/// [`WindowState`] binding.
+const fn transition_declared_window<Id: Copy>(
+    phase: &mut DeclaredWindowPhase<Id>,
+    target: WindowState,
+) -> DeclaredWindowAction<Id> {
+    match (*phase, target) {
+        (DeclaredWindowPhase::Closed, WindowState::Closed) => DeclaredWindowAction::None,
+        (DeclaredWindowPhase::Closed, _) => {
+            *phase = DeclaredWindowPhase::PendingOpen;
+            DeclaredWindowAction::QueueOpen
+        }
+        (DeclaredWindowPhase::PendingOpen, WindowState::Closed) => {
+            *phase = DeclaredWindowPhase::Closed;
+            DeclaredWindowAction::None
+        }
+        (DeclaredWindowPhase::PendingOpen, _) => DeclaredWindowAction::None,
+        (DeclaredWindowPhase::Open(id), WindowState::Closed) => DeclaredWindowAction::Close(id),
+        (DeclaredWindowPhase::Open(id), WindowState::Normal) => DeclaredWindowAction::Focus(id),
+        (DeclaredWindowPhase::Open(id), _) => DeclaredWindowAction::ApplyState(id),
+    }
+}
+
+struct DeclaredWindow {
+    window: Rc<RootWindow<ParleyEngine>>,
+    phase: DeclaredWindowPhase<WindowId>,
+    suppress_state_echo: Rc<Cell<bool>>,
+    _state_watch: Retain,
+}
+
 struct PendingWindow {
-    window: RootWindow<crate::text::ParleyEngine>,
+    window: Rc<RootWindow<ParleyEngine>>,
     activates: bool,
+    declared: Option<DeclaredWindowId>,
 }
 
 impl PendingWindow {
-    fn application(window: RootWindow<crate::text::ParleyEngine>) -> Self {
+    fn application(window: RootWindow<ParleyEngine>) -> Self {
+        Self {
+            window: Rc::new(window),
+            activates: true,
+            declared: None,
+        }
+    }
+
+    fn declared(id: DeclaredWindowId, window: Rc<RootWindow<ParleyEngine>>) -> Self {
         Self {
             window,
             activates: true,
+            declared: Some(id),
         }
     }
 
     #[cfg(any(feature = "menu", feature = "color-picker"))]
-    fn popup(window: RootWindow<crate::text::ParleyEngine>) -> Self {
+    fn popup(window: RootWindow<ParleyEngine>) -> Self {
         Self {
-            window,
+            window: Rc::new(window),
             activates: false,
+            declared: None,
         }
     }
 }
@@ -702,7 +873,7 @@ pub fn run<W: Windows, M: AppMenuBar>(
     let RootWindows {
         initial: windows,
         channels,
-    } = RootWindows::<crate::text::ParleyEngine>::collect(windows);
+    } = RootWindows::<crate::text::ParleyEngine>::collect(windows, &env);
     // No early return for a windowless `Quit` launch: its required
     // termination goes through the machine like every other path, and its
     // hook future needs the loop running — the first `resumed` files it.
@@ -812,25 +983,40 @@ pub fn run<W: Windows, M: AppMenuBar>(
     // binding before the held first mount proceeds. Elsewhere the scheme is
     // Light unless the application installs its own.
     #[cfg(target_os = "macos")]
-    let system_appearance = crate::platform::macos_appearance::SystemAppearance::observe();
+    let system_appearance = MacosSystemAppearance::observe();
     #[cfg(target_os = "macos")]
-    let appearance = system_appearance.scheme();
+    let (appearance, reduce_motion) = (
+        system_appearance.scheme(),
+        ReduceMotion::new(system_appearance.reduce_motion()),
+    );
+    #[cfg(target_os = "macos")]
+    let _system_locale = MacosSystemLocale::observe();
     #[cfg(target_os = "windows")]
-    let system_color_scheme = nami::binding(waterui::theme::ColorScheme::Light);
+    let system_color_scheme = nami::binding(ColorScheme::Light);
     #[cfg(target_os = "windows")]
-    let appearance = system_color_scheme.clone();
+    let system_reduce_motion = Binding::bool(query_windows_reduce_motion());
+    #[cfg(target_os = "windows")]
+    let (appearance, reduce_motion) = (
+        system_color_scheme.clone(),
+        ReduceMotion::new(system_reduce_motion.clone()),
+    );
     #[cfg(target_os = "linux")]
-    let linux_appearance =
-        crate::platform::linux_appearance::SystemAppearance::observe(&local_executor, {
-            let event_proxy = event_proxy.clone();
-            move || {
-                let _ = event_proxy.send_event(RunnerEvent::MountPendingWindows);
-            }
-        });
+    let linux_appearance = LinuxSystemAppearance::observe(&local_executor, {
+        let event_proxy = event_proxy.clone();
+        move || {
+            let _ = event_proxy.send_event(RunnerEvent::MountPendingWindows);
+        }
+    });
     #[cfg(target_os = "linux")]
-    let appearance = linux_appearance.scheme();
+    let (appearance, reduce_motion) = (
+        linux_appearance.scheme(),
+        ReduceMotion::new(linux_appearance.reduce_motion()),
+    );
+    #[cfg(target_os = "linux")]
+    let linux_locale = LinuxSystemLocale::observe(&local_executor);
     #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
-    let appearance = waterui::theme::ColorScheme::Light;
+    let (appearance, reduce_motion) = (ColorScheme::Light, ReduceMotion::default());
+    env.insert(reduce_motion);
     crate::theme::install_theme_tokens(&mut env, Some(&style), appearance);
     let theme: Rc<dyn crate::theme::WidgetTheme> = Rc::new(style);
     // The application's fonts, discovered once. Every window's renderer is
@@ -902,6 +1088,32 @@ pub fn run<W: Windows, M: AppMenuBar>(
     {
         super::menu_bar::register_menu_bar::<crate::text::ParleyEngine>(menu_bar, &env);
     }
+    let mut declared_windows = Vec::with_capacity(windows.len());
+    let mut pending_windows = Vec::new();
+    for (index, window) in windows.into_iter().enumerate() {
+        let id = DeclaredWindowId(index);
+        let window = Rc::new(window);
+        let suppress_state_echo = Rc::new(Cell::new(false));
+        let watch_proxy = event_proxy.clone();
+        let watch_suppress = Rc::clone(&suppress_state_echo);
+        let state_watch = Retain::new(window.state.watch(move |_| {
+            if !watch_suppress.get() {
+                let _ = watch_proxy.send_event(RunnerEvent::DeclaredWindowStateChanged(id));
+            }
+        }));
+        let phase = if window.state.snapshot() == WindowState::Closed {
+            DeclaredWindowPhase::Closed
+        } else {
+            pending_windows.push(PendingWindow::declared(id, Rc::clone(&window)));
+            DeclaredWindowPhase::PendingOpen
+        };
+        declared_windows.push(DeclaredWindow {
+            window,
+            phase,
+            suppress_state_echo,
+            _state_watch: state_watch,
+        });
+    }
     let mut runner = WinitRunner {
         env,
         theme,
@@ -910,13 +1122,10 @@ pub fn run<W: Windows, M: AppMenuBar>(
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         #[cfg(feature = "menu")]
         native_menu_bar,
-        pending_windows: windows
-            .into_iter()
-            .map(PendingWindow::application)
-            .collect(),
+        declared_windows,
+        pending_windows,
         last_window,
         pending_window_queue,
-        app_window_opener,
         #[cfg(any(feature = "menu", feature = "color-picker"))]
         popup_window_manager,
         windows: HashMap::new(),
@@ -933,8 +1142,12 @@ pub fn run<W: Windows, M: AppMenuBar>(
         last_pointer_window: None,
         #[cfg(target_os = "windows")]
         system_color_scheme,
+        #[cfg(target_os = "windows")]
+        system_reduce_motion,
         #[cfg(target_os = "linux")]
         linux_appearance,
+        #[cfg(target_os = "linux")]
+        _linux_locale: linux_locale,
         termination,
         #[cfg(target_os = "windows")]
         session_end,
@@ -989,11 +1202,13 @@ struct WinitRunner {
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[cfg(feature = "menu")]
     native_menu_bar: crate::platform::native_menu_bar::NativeMenuBar,
+    /// App-declared windows retained across close/reopen cycles, driven by
+    /// their [`WindowState`] bindings.
+    declared_windows: Vec<DeclaredWindow>,
     pending_windows: Vec<PendingWindow>,
     /// What the application does once it has no window left.
     last_window: LastWindowPolicy,
     pending_window_queue: Rc<RefCell<Vec<PendingWindow>>>,
-    app_window_opener: Rc<dyn Fn(RootWindow<crate::text::ParleyEngine>)>,
     #[cfg(any(feature = "menu", feature = "color-picker"))]
     popup_window_manager: PopupWindowManager<crate::text::ParleyEngine>,
     windows: HashMap<WindowId, RuntimeWindow<WinitWindow, crate::text::ParleyEngine>>,
@@ -1033,6 +1248,10 @@ struct WinitRunner {
     /// their own issues.
     #[cfg(target_os = "windows")]
     system_color_scheme: nami::Binding<waterui::theme::ColorScheme>,
+    /// The system Reduce Motion preference observed via `SPI_GETCLIENTAREAANIMATION`
+    /// and `WM_SETTINGCHANGE`.
+    #[cfg(target_os = "windows")]
+    system_reduce_motion: Binding<bool>,
     /// The XDG desktop portal colour-scheme subscription, owned for the
     /// loop's lifetime: its `ReadOne`/`SettingChanged` feed writes the
     /// scheme binding, and its initial-read gate is what
@@ -1040,6 +1259,10 @@ struct WinitRunner {
     /// Dropping the runner cancels the subscription.
     #[cfg(target_os = "linux")]
     linux_appearance: crate::platform::linux_appearance::SystemAppearance,
+    /// The XDG desktop portal locale subscription, owned for the loop's
+    /// lifetime. Dropping the runner cancels the subscription.
+    #[cfg(target_os = "linux")]
+    _linux_locale: LinuxSystemLocale,
     /// The termination machine every quit path reports through: signals,
     /// the last window closing, `Quit` in the environment, Windows'
     /// `WM_QUERYENDSESSION`.
@@ -1114,7 +1337,7 @@ fn load_staged_window_icon(resources: &waterui::ResourceContext) -> Option<winit
 /// activation-token request, as the handle's docs say. The hook holds the
 /// native window weakly, so a request filed through a handle that outlived
 /// the window's teardown is a no-op.
-fn arm_window_focus_requests<C, T>(window: &Window<C, T>, native_window: &Arc<NativeWindow>) {
+fn arm_window_focus_requests<C, T>(window: &WindowParts<C, T>, native_window: &Arc<NativeWindow>) {
     let native = Arc::downgrade(native_window);
     window.arm_focus_requests(move || {
         if let Some(native) = native.upgrade() {
@@ -1124,7 +1347,7 @@ fn arm_window_focus_requests<C, T>(window: &Window<C, T>, native_window: &Arc<Na
 }
 
 fn native_window_attributes<C, T>(
-    window: &Window<C, T>,
+    window: &WindowParts<C, T>,
     env: &Environment,
     activates: bool,
     icon: Option<winit::window::Icon>,
@@ -1227,7 +1450,7 @@ fn native_window_attributes<C, T>(
 /// when the window and the application both leave the identity unset, so
 /// winit's default (the executable name) applies.
 #[cfg(hydrolysis_wayland_platform)]
-fn window_desktop_identity<C, T>(window: &Window<C, T>) -> Option<(Str, Str)> {
+fn window_desktop_identity<C, T>(window: &WindowParts<C, T>) -> Option<(Str, Str)> {
     let class = window.display_app_id();
     (!class.is_empty()).then(|| (class, window.display_instance_name()))
 }
@@ -1252,16 +1475,33 @@ impl WinitRunner {
         event_loop.exit();
     }
 
+    fn open_window_count(&self) -> usize {
+        let pending_declared = self
+            .declared_windows
+            .iter()
+            .filter(|declared| matches!(declared.phase, DeclaredWindowPhase::PendingOpen))
+            .count();
+        let pending_imperative = self
+            .pending_windows
+            .iter()
+            .filter(|pending| pending.declared.is_none())
+            .count()
+            + self
+                .pending_window_queue
+                .borrow()
+                .iter()
+                .filter(|pending| pending.declared.is_none())
+                .count();
+        self.windows.len() + pending_declared + pending_imperative
+    }
+
     /// Files a required termination when the application's last-window
     /// policy says a runner with no window left stops. The loop keeps
     /// running — possibly with zero windows — until `on_terminate` finishes
     /// and the host's `TerminationFinished` reaches
     /// [`Self::exit_after_runtime_cleanup`].
     fn exit_if_last_window_closed(&self) {
-        if ends_event_loop(
-            self.last_window,
-            self.windows.len() + self.pending_windows.len(),
-        ) {
+        if ends_event_loop(self.last_window, self.open_window_count()) {
             self.termination.request(TerminationKind::Required);
         }
     }
@@ -1302,6 +1542,7 @@ impl WinitRunner {
                     termination: self.termination.clone(),
                     session_end: Rc::clone(&self.session_end),
                     runnables: Rc::clone(&self.local_runnable_rx),
+                    reduce_motion: self.system_reduce_motion.clone(),
                 },
             );
         }
@@ -1323,7 +1564,7 @@ impl WinitRunner {
     fn create_platform_window<C, T>(
         &mut self,
         native_window: Arc<NativeWindow>,
-        window: &Window<C, T>,
+        window: &WindowParts<C, T>,
     ) -> Option<WinitWindow> {
         let wake = {
             let event_proxy = self.event_proxy.clone();
@@ -1359,8 +1600,14 @@ impl WinitRunner {
 
     fn create_window_renderer(&self) -> HydrolysisRenderer<crate::text::ParleyEngine> {
         let text = ParleyEngine::from_collection(&self.fonts, FontFamilyResolution::Lenient);
+        #[cfg_attr(
+            not(any(feature = "menu", feature = "color-picker")),
+            expect(
+                unused_mut,
+                reason = "renderer is only mutated when menu or color-picker attaches popup_window_manager"
+            )
+        )]
         let mut renderer = HydrolysisRenderer::with_engine(Rc::clone(&self.theme), text);
-        renderer.set_window_opener(Rc::clone(&self.app_window_opener));
         #[cfg(any(feature = "menu", feature = "color-picker"))]
         renderer.set_popup_window_manager(self.popup_window_manager.clone());
         renderer
@@ -1370,16 +1617,15 @@ impl WinitRunner {
         &mut self,
         event_loop: &ActiveEventLoop,
         pending: PendingWindow,
-    ) -> Option<(
-        RuntimeWindow<WinitWindow, crate::text::ParleyEngine>,
-        AccessKitAdapter,
-    )> {
-        let PendingWindow { window, activates } = pending;
+    ) -> Option<(RuntimeWindow<WinitWindow, ParleyEngine>, AccessKitAdapter)> {
+        let PendingWindow {
+            window, activates, ..
+        } = pending;
         let activation = window.activation;
-        // `Window::placement` resolves each time the window is shown — and a
-        // winit window is shown exactly once, at mount (a `Closed` window is
-        // destroyed, never re-shown) — so the resolved rect is written into
-        // `frame` here, before the attributes carry it into the map request.
+        // `Window::placement` resolves each time the window is shown — including
+        // when a closed declared window reopens — so the resolved rect is
+        // written into `frame` here, before the attributes carry it into the
+        // map request.
         if let Some(placement) = window.placement.as_ref()
             && let Some(monitor) = self.resolve_placement_monitor(event_loop, placement.monitor())
         {
@@ -1562,12 +1808,77 @@ impl WinitRunner {
         let mut pending = mem::take(&mut self.pending_windows);
         pending.extend(self.pending_window_queue.borrow_mut().drain(..));
         for pending in pending {
-            let Some((runtime, adapter)) = self.create_runtime_window(event_loop, pending) else {
+            let declared = pending.declared;
+            if let Some(declared_id) = declared {
+                let entry = &mut self.declared_windows[declared_id.0];
+                if !matches!(entry.phase, DeclaredWindowPhase::PendingOpen)
+                    || entry.window.state.snapshot() == WindowState::Closed
+                {
+                    if matches!(entry.phase, DeclaredWindowPhase::PendingOpen) {
+                        entry.phase = DeclaredWindowPhase::Closed;
+                    }
+                    continue;
+                }
+            }
+            let Some((mut runtime, adapter)) = self.create_runtime_window(event_loop, pending)
+            else {
+                if let Some(declared_id) = declared {
+                    self.declared_windows[declared_id.0].phase = DeclaredWindowPhase::Closed;
+                }
                 continue;
             };
             let id = runtime.platform.id();
+            if let Some(declared_id) = declared {
+                let entry = &mut self.declared_windows[declared_id.0];
+                runtime.set_suppress_state_echo(Rc::clone(&entry.suppress_state_echo));
+                entry.phase = DeclaredWindowPhase::Open(id);
+            }
             self.windows.insert(id, runtime);
             self.accesskit_adapters.insert(id, adapter);
+        }
+    }
+
+    /// Reconciles an app-declared window against its current [`WindowState`]:
+    /// creates a fresh platform window on `Closed -> open`, restores and
+    /// focuses an already-open window on `Normal`, applies non-closing state
+    /// changes immediately, and reaps the platform window on `Closed` while
+    /// keeping the declaration armed.
+    fn reconcile_declared_window(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        declared_id: DeclaredWindowId,
+    ) {
+        let target = self.declared_windows[declared_id.0].window.state.snapshot();
+        let action =
+            transition_declared_window(&mut self.declared_windows[declared_id.0].phase, target);
+        match action {
+            DeclaredWindowAction::None => {
+                if target == WindowState::Closed {
+                    self.exit_if_last_window_closed();
+                }
+            }
+            DeclaredWindowAction::QueueOpen => {
+                let window = Rc::clone(&self.declared_windows[declared_id.0].window);
+                self.pending_windows
+                    .push(PendingWindow::declared(declared_id, window));
+                self.mount_pending_windows(event_loop);
+            }
+            DeclaredWindowAction::Focus(window_id) => {
+                if let Some(runtime) = self.windows.get_mut(&window_id) {
+                    runtime.platform.apply_properties(&runtime.window);
+                    if runtime.window.activation != Activation::Never {
+                        runtime.platform.native_window().focus_window();
+                    }
+                }
+            }
+            DeclaredWindowAction::ApplyState(window_id) => {
+                if let Some(runtime) = self.windows.get_mut(&window_id) {
+                    runtime.platform.apply_properties(&runtime.window);
+                }
+            }
+            DeclaredWindowAction::Close(window_id) => {
+                self.reap_closed_window(window_id);
+            }
         }
     }
 
@@ -1641,17 +1952,29 @@ impl WinitRunner {
         }
 
         for id in close_ids {
-            #[cfg(target_os = "windows")]
-            if let Some(runtime) = self.windows.get(&id) {
-                self.detach_menu_bar_hwnd(runtime);
-            }
-            self.windows.remove(&id);
-            self.popup_window_ids.remove(&id);
-            self.accesskit_adapters.remove(&id);
-            self.last_accessibility_updates.remove(&id);
+            self.remove_window_entry(id);
         }
 
+        #[cfg(target_os = "windows")]
+        self.sync_windows_compositor_boost();
         self.exit_if_last_window_closed();
+    }
+
+    fn remove_window_entry(&mut self, window_id: WindowId) {
+        #[cfg(target_os = "windows")]
+        if let Some(runtime) = self.windows.get(&window_id) {
+            self.detach_menu_bar_hwnd(runtime);
+        }
+        self.windows.remove(&window_id);
+        self.popup_window_ids.remove(&window_id);
+        self.accesskit_adapters.remove(&window_id);
+        self.last_accessibility_updates.remove(&window_id);
+        for declared in &mut self.declared_windows {
+            if matches!(declared.phase, DeclaredWindowPhase::Open(open_id) if open_id == window_id)
+            {
+                declared.phase = DeclaredWindowPhase::Closed;
+            }
+        }
     }
 
     /// A declared `MenuItem::CloseWindow` asks `source` to close — the
@@ -1700,17 +2023,11 @@ impl WinitRunner {
     }
 
     /// Removes a window whose close ran: its native bar attachment, adapter
-    /// and cached tree go with it, and the last-window policy answers
-    /// whether the app exits.
+    /// and cached tree go with it, any matching app-declared slot returns to
+    /// `Closed` ready to reopen, and the last-window policy answers whether
+    /// the app exits.
     fn reap_closed_window(&mut self, window_id: WindowId) {
-        #[cfg(target_os = "windows")]
-        if let Some(runtime) = self.windows.get(&window_id) {
-            self.detach_menu_bar_hwnd(runtime);
-        }
-        self.windows.remove(&window_id);
-        self.popup_window_ids.remove(&window_id);
-        self.accesskit_adapters.remove(&window_id);
-        self.last_accessibility_updates.remove(&window_id);
+        self.remove_window_entry(window_id);
         #[cfg(target_os = "windows")]
         self.sync_windows_compositor_boost();
         self.exit_if_last_window_closed();
@@ -2019,6 +2336,9 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
             RunnerEvent::MountPendingWindows => {
                 self.mount_pending_windows(event_loop);
             }
+            RunnerEvent::DeclaredWindowStateChanged(declared_id) => {
+                self.reconcile_declared_window(event_loop, declared_id);
+            }
             RunnerEvent::RedrawWindow(window_id) => {
                 // The window may have closed while the wake was in flight.
                 // The wake asks winit for a frame only: GPU content's
@@ -2062,9 +2382,12 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
 
 #[cfg(test)]
 mod tests {
+    use super::{
+        DeclaredWindowAction, DeclaredWindowPhase, ends_event_loop, native_window_attributes,
+        transition_declared_window,
+    };
     #[cfg(windows)]
     use super::{TerminationAction, TerminationRequests};
-    use super::{ends_event_loop, native_window_attributes};
     use waterui::window::{Window, WindowState};
     use waterui_core::{Binding, binding};
 
@@ -2098,8 +2421,8 @@ mod tests {
 
     #[test]
     fn popup_window_attributes_do_not_activate() {
-        let window = Window::new("", binding(WindowState::Normal), || ());
         let env = crate::renderer::tests::test_environment();
+        let window = Window::new("", || ()).into_parts(&env);
 
         assert!(native_window_attributes(&window, &env, true, None).active);
         assert!(!native_window_attributes(&window, &env, false, None).active);
@@ -2108,19 +2431,20 @@ mod tests {
     #[cfg(hydrolysis_wayland_platform)]
     #[test]
     fn window_attributes_split_wm_class_from_instance_name() {
-        use waterui_core::Str;
+        use waterui_core::{Environment, Str};
 
-        let mut window = Window::new("", binding(WindowState::Normal), || ());
-        window.app_id = Some(Str::from("myclass"));
-        window.instance_name = Some(Str::from("myinstance"));
+        let env = Environment::new();
+        let window = Window::new("", || ())
+            .app_id("myclass")
+            .instance_name("myinstance")
+            .into_parts(&env);
         assert_eq!(
             super::window_desktop_identity(&window),
             Some((Str::from("myclass"), Str::from("myinstance"))),
             "WM_CLASS carries (app_id, instance_name)"
         );
 
-        let mut window = Window::new("", binding(WindowState::Normal), || ());
-        window.app_id = Some(Str::from("myclass"));
+        let window = Window::new("", || ()).app_id("myclass").into_parts(&env);
         assert_eq!(
             super::window_desktop_identity(&window),
             Some((Str::from("myclass"), Str::from("myclass"))),
@@ -2132,9 +2456,8 @@ mod tests {
     fn window_attributes_carry_the_requested_frame() {
         use waterui_core::layout::{Point, Rect, Size};
         let frame = Binding::container(Rect::new(Point::new(12.0, 34.0), Size::new(800.0, 300.0)));
-        let mut window = Window::new("", binding(WindowState::Normal), || ());
-        window.frame = frame;
         let env = crate::renderer::tests::test_environment();
+        let window = Window::new("", || ()).frame(&frame).into_parts(&env);
 
         let attributes = native_window_attributes(&window, &env, false, None);
         assert_eq!(
@@ -2156,9 +2479,8 @@ mod tests {
     fn window_attributes_disable_only_the_close_button_on_a_non_closable_window() {
         use winit::window::WindowButtons;
 
-        let mut window = Window::new("", binding(WindowState::Normal), || ());
-        window.closable = false;
         let env = crate::renderer::tests::test_environment();
+        let window = Window::new("", || ()).closable(false).into_parts(&env);
 
         assert_eq!(
             native_window_attributes(&window, &env, false, None).enabled_buttons,
@@ -2166,7 +2488,7 @@ mod tests {
             "a non-closable window drops only the close button"
         );
 
-        let window = Window::new("", binding(WindowState::Normal), || ());
+        let window = Window::new("", || ()).into_parts(&env);
         assert_eq!(
             native_window_attributes(&window, &env, false, None).enabled_buttons,
             WindowButtons::all(),
@@ -2225,5 +2547,101 @@ mod tests {
             "the dispatching window's id is the target"
         );
         assert_eq!(pick(Some(2)), None, "a popup is never the target");
+    }
+
+    /// An app-declared window opens from `Closed`, deduplicates repeated open
+    /// writes while mounting, focuses without duplicating when already open,
+    /// closes back to `Closed`, and reopens cleanly on the next `Normal` write.
+    #[test]
+    fn declared_window_lifecycle_opens_focuses_closes_and_reopens() {
+        let mut phase = DeclaredWindowPhase::<u32>::Closed;
+
+        assert_eq!(
+            transition_declared_window(&mut phase, WindowState::Closed),
+            DeclaredWindowAction::None
+        );
+        assert_eq!(phase, DeclaredWindowPhase::Closed);
+
+        assert_eq!(
+            transition_declared_window(&mut phase, WindowState::Normal),
+            DeclaredWindowAction::QueueOpen
+        );
+        assert_eq!(phase, DeclaredWindowPhase::PendingOpen);
+
+        // Repeat writes while mounting do not queue a duplicate window.
+        assert_eq!(
+            transition_declared_window(&mut phase, WindowState::Normal),
+            DeclaredWindowAction::None
+        );
+        assert_eq!(phase, DeclaredWindowPhase::PendingOpen);
+
+        // Closing before mount cancels the pending open.
+        assert_eq!(
+            transition_declared_window(&mut phase, WindowState::Closed),
+            DeclaredWindowAction::None
+        );
+        assert_eq!(phase, DeclaredWindowPhase::Closed);
+
+        // Re-open, finish mount, then write Normal again -> Focus, never QueueOpen.
+        assert_eq!(
+            transition_declared_window(&mut phase, WindowState::Normal),
+            DeclaredWindowAction::QueueOpen
+        );
+        phase = DeclaredWindowPhase::Open(7);
+        assert_eq!(
+            transition_declared_window(&mut phase, WindowState::Normal),
+            DeclaredWindowAction::Focus(7)
+        );
+        assert_eq!(
+            transition_declared_window(&mut phase, WindowState::Minimized),
+            DeclaredWindowAction::ApplyState(7)
+        );
+        assert_eq!(
+            transition_declared_window(&mut phase, WindowState::Maximized),
+            DeclaredWindowAction::ApplyState(7)
+        );
+        assert_eq!(
+            transition_declared_window(&mut phase, WindowState::Closed),
+            DeclaredWindowAction::Close(7)
+        );
+
+        // After the runner reaps the window back to Closed, Normal reopens it.
+        phase = DeclaredWindowPhase::Closed;
+        assert_eq!(
+            transition_declared_window(&mut phase, WindowState::Normal),
+            DeclaredWindowAction::QueueOpen
+        );
+        assert_eq!(phase, DeclaredWindowPhase::PendingOpen);
+    }
+
+    #[test]
+    fn windows_reduce_motion_sync_writes_only_on_change() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        use nami::Signal as _;
+
+        use super::sync_reduce_motion;
+
+        let reduce_motion = binding(false);
+        let notifications = Rc::new(Cell::new(0_u32));
+        let _guard = reduce_motion.watch({
+            let notifications = Rc::clone(&notifications);
+            move |_| notifications.set(notifications.get() + 1)
+        });
+
+        sync_reduce_motion(&reduce_motion, false);
+        assert_eq!(notifications.get(), 0);
+
+        sync_reduce_motion(&reduce_motion, true);
+        assert!(reduce_motion.snapshot());
+        assert_eq!(notifications.get(), 1);
+
+        sync_reduce_motion(&reduce_motion, true);
+        assert_eq!(notifications.get(), 1);
+
+        sync_reduce_motion(&reduce_motion, false);
+        assert!(!reduce_motion.snapshot());
+        assert_eq!(notifications.get(), 2);
     }
 }

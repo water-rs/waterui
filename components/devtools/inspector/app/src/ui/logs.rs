@@ -3,9 +3,9 @@
 //! The same records `water run --logs debug` prints, so a developer does not
 //! have to choose between watching a terminal and watching the app.
 
-use waterui::prelude::theme_color::MutedForeground;
 use waterui::prelude::*;
 use waterui::reactive::collection::SignalCollection;
+use waterui::theme::color::MutedForeground;
 use waterui::widget::condition::when;
 use waterui_inspector_protocol::LogLevel;
 
@@ -97,21 +97,20 @@ fn level_picker(minimum: &Binding<LogLevel>) -> impl View + use<> {
         .spacing(4.0)
 }
 
-fn row_view(row: LogRow) -> ListItem<impl View> {
+fn row_view(row: LogRow) -> impl View {
     let (_, level, target, message, origin) = row.into_parts();
-    ListItem::new(
-        hstack((
-            text(level.name())
-                .caption()
-                .foreground(parts::level_color(level))
-                .width(52.0),
-            vstack((text(message), origin_view(target, origin)))
-                .alignment(HorizontalAlignment::Leading)
-                .spacing(2.0),
-        ))
-        .spacing(10.0)
-        .padding_with(EdgeInsets::new(6.0, 12.0, 6.0, 12.0)),
-    )
+
+    hstack((
+        text(level.name())
+            .caption()
+            .foreground(parts::level_color(level))
+            .width(52.0),
+        vstack((text(message), origin_view(target, origin)))
+            .alignment(HorizontalAlignment::Leading)
+            .spacing(2.0),
+    ))
+    .spacing(10.0)
+    .padding_with(EdgeInsets::new(6.0, 12.0, 6.0, 12.0))
 }
 
 #[expect(

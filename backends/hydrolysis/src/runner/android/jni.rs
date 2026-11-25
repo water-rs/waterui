@@ -18,6 +18,7 @@ use jni::sys::{jboolean, jdouble, jfloat, jint, jlong};
 use jni::vm::JavaVM;
 use jni::{Env, EnvUnowned, jni_str};
 use waterui_core::contract_violation;
+use waterui_locale::regional::update_system_locale_tag;
 
 use crate::platform::{
     BackEdge, BackNavigation, InputEvent, Modifiers, PointerButton, PointerKind,
@@ -99,7 +100,11 @@ use super::host::{AndroidSession, MetricsSnapshot, UiThreadServices};
 /// passes painted device-pixel rects through `onNativeBandShow` for viewability.
 /// 32 passes the active Choreographer frame timeline vsync ID (`has_vsync_id`,
 /// `vsync_id`) through `nativeOnFrame`.
-pub const JNI_SCHEMA: jint = 32;
+/// 34 passes `ViewConfiguration.getLongPressTimeout()` in `nativeSetMetrics`.
+/// 35 passes the initial `Settings.Global.ANIMATOR_DURATION_SCALE == 0` flag
+/// through `nativeCreateSession` and adds `nativeSetReduceMotion` to push
+/// live system setting changes.
+pub const JNI_SCHEMA: jint = 35;
 
 /// A failure crossing the JNI boundary as an exception.
 #[derive(Debug)]
@@ -507,6 +512,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeCreateSess
     painter: JObject<'local>,
     services_ptr: jlong,
     night: jboolean,
+    reduce_motion: jboolean,
 ) -> jlong {
     guard_val(&mut env, 0, |env| {
         // A refused services pointer creates no session: the null handle.
@@ -533,8 +539,10 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeCreateSess
             scroll_friction: 0.0,
             double_tap_timeout_ms: 0,
             double_tap_slop_px: 0.0,
+            long_press_timeout_ms: 0,
         };
         let bridge = std::sync::Arc::new(super::host::HostBridge::new(env, vm, host_view)?);
+        let appearance = super::host::HostAppearance::new(night, reduce_motion);
         #[cfg(hydrolysis_gpu_painter)]
         {
             if !painter.is_null() {
@@ -546,14 +554,14 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeCreateSess
                 entered: Cell::new(false),
                 session: None,
                 startup: Some(super::startup::Startup::new(
-                    bridge, services, metrics, night,
+                    bridge, services, metrics, appearance,
                 )),
             })) as jlong)
         }
         #[cfg(hydrolysis_hwui)]
         {
             let Some(session) =
-                AndroidSession::create(env, bridge, &painter, metrics, night, services)?
+                AndroidSession::create(env, bridge, &painter, metrics, appearance, services)?
             else {
                 return Ok(0);
             };
@@ -624,6 +632,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetMetrics
     scroll_friction: jfloat,
     double_tap_timeout_ms: jint,
     double_tap_slop: jfloat,
+    long_press_timeout_ms: jint,
 ) {
     guard(&mut env, |_env| {
         let metrics = MetricsSnapshot {
@@ -640,6 +649,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetMetrics
             scroll_friction: f64::from(scroll_friction),
             double_tap_timeout_ms: crate::num_cast::i32_as_u32(double_tap_timeout_ms.max(0)),
             double_tap_slop_px: double_tap_slop,
+            long_press_timeout_ms: crate::num_cast::i32_as_u32(long_press_timeout_ms.max(0)),
         };
         initializing!(session_ptr, pending, {
             pending.metrics = metrics;
@@ -982,7 +992,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetColorSc
 ) {
     guard(&mut env, |_env| {
         initializing!(session_ptr, pending, {
-            pending.color_scheme = if night {
+            pending.appearance.color_scheme = if night {
                 waterui::theme::ColorScheme::Dark
             } else {
                 waterui::theme::ColorScheme::Light
@@ -990,6 +1000,47 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetColorSc
             return Ok(());
         });
         session!(session_ptr).set_night_mode(night);
+        Ok(())
+    });
+}
+
+/// The system `ANIMATOR_DURATION_SCALE == 0` flag — pushed by the host at bind
+/// and whenever `Settings.Global.ANIMATOR_DURATION_SCALE` changes.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetReduceMotion<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    session_ptr: jlong,
+    reduce_motion: jboolean,
+) {
+    guard(&mut env, |_env| {
+        initializing!(session_ptr, pending, {
+            pending.appearance.reduce_motion = reduce_motion;
+            return Ok(());
+        });
+        session!(session_ptr).set_reduce_motion(reduce_motion);
+        Ok(())
+    });
+}
+
+/// The configuration's primary BCP 47 locale tag — pushed by the host at bind
+/// and on every `onConfigurationChanged`, into `waterui_locale::regional`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetLocale<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    _session_ptr: jlong,
+    locale_tag: JString<'local>,
+) {
+    guard(&mut env, |jni_env| {
+        let tag = get_string(jni_env, &locale_tag)?;
+        if let Err(error) = update_system_locale_tag(&tag) {
+            tracing::warn!(
+                tag,
+                %error,
+                "hydrolysis Android host reported an invalid locale tag"
+            );
+        }
         Ok(())
     });
 }

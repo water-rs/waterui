@@ -348,10 +348,6 @@ pub unsafe fn mount<W: Windows, M: AppMenuBar>(
     // process without notice — so the termination machine is never started.
     let _ = parts.termination;
     let env = parts.env;
-    #[cfg(target_os = "macos")]
-    let mut env = env;
-    #[cfg(target_os = "macos")]
-    crate::windows::install_root_environment(&mut env);
     let mut windows = crate::windows::connect_windows(parts.windows, &env).into_iter();
     let Some(declaration) = windows.next() else {
         waterui::contract_violation!(
@@ -386,7 +382,7 @@ pub unsafe fn mount<W: Windows, M: AppMenuBar>(
             mtm,
         );
         for window in windows {
-            keepalive.keep(crate::windows::realize_root(window, &env, mtm));
+            keepalive.keep(crate::windows::declare_embedded(window, &env, mtm));
         }
         #[cfg(waterui_feature = "menu")]
         keepalive.keep(parts.menu_bar);
@@ -475,6 +471,7 @@ fn install_scoped_or_ambient(
     keepalive: &mut KeepAlive,
     ambient: bool,
 ) {
+    keepalive.keep(crate::reduce_motion::install(env, mtm));
     if ambient {
         keepalive.keep(crate::locale::install(env, mtm));
     }

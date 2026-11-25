@@ -65,6 +65,7 @@ mod imp {
         _theme: Rc<ThemeSignals>,
         _appearance: ColorSchemeObservation,
         _locale: Box<dyn Any>,
+        _reduce_motion: Box<dyn Any>,
         /// Filled once `app(env)` declared its termination hooks; the
         /// application delegate's quit questions go through it.
         termination: Rc<OnceCell<Session>>,
@@ -101,7 +102,6 @@ mod imp {
         // renders as the standard Quit item, whose `terminate:` reaches the
         // machine through `applicationShouldTerminate:`.
         let session = Session::start(parts.termination, &mut app_env, parts.last_window, mtm);
-        crate::windows::install_root_environment(&mut app_env);
         assert!(
             launch.termination.set(session).is_ok(),
             "`prepared` consumes the one-shot `Launch`, so the termination slot is still empty"
@@ -125,14 +125,15 @@ mod imp {
             ));
         }
         let initial = crate::windows::connect_windows(parts.windows, &app_env);
-        if initial.is_empty() {
-            // A zero-window application acts on its policy at launch.
-            session.no_window_left();
-        } else {
-            for window in initial {
-                let host = crate::windows::realize_root(window, &app_env, mtm);
-                crate::windows::track(host);
+        let mut open_count = 0usize;
+        for window in initial {
+            if crate::windows::declare_root(window, &app_env, mtm) {
+                open_count += 1;
             }
+        }
+        if open_count == 0 {
+            // A zero-open-window application acts on its policy at launch.
+            session.no_window_left();
         }
         // The theme signals, the appearance observation and the locale
         // observer must outlive the process; `app` is already consumed.
@@ -162,6 +163,7 @@ mod imp {
             move |scheme| crate::theme::refresh(&theme, scheme)
         });
         let locale = crate::locale::install(env, mtm);
+        let reduce_motion = crate::reduce_motion::install(env, mtm);
 
         let termination = Rc::new(OnceCell::new());
         let launch = Box::new(Launch {
@@ -170,6 +172,7 @@ mod imp {
             _theme: theme,
             _appearance: appearance,
             _locale: Box::new(locale),
+            _reduce_motion: Box::new(reduce_motion),
             termination: Rc::clone(&termination),
         });
 
@@ -232,7 +235,9 @@ mod imp {
     use cocoa_ui::uikit::{self, ApplicationHandlers};
     use waterui::app::{App, AppMenuBar, Windows};
     use waterui::graphics::Color;
+    use waterui::reactive::Signal as _;
     use waterui::theme::color::Background;
+    use waterui::window::WindowState;
     use waterui_backend_core::Environment;
 
     use crate::theme::ThemeSignals;
@@ -248,6 +253,7 @@ mod imp {
         scenes: crate::scene_registry::Registration<crate::windows::Scenes>,
         _theme: Rc<ThemeSignals>,
         _locale: Box<dyn Any>,
+        _reduce_motion: Box<dyn Any>,
     }
 
     /// GPU completion: `app(env)` declares its windows, and each fills
@@ -278,7 +284,10 @@ mod imp {
         // returned — its installs are invisible to the host env.
         let app_env = parts.env;
         let initial = crate::windows::connect_windows(parts.windows, &app_env);
-        if initial.is_empty() {
+        if initial
+            .iter()
+            .all(|window| window.state.snapshot() == WindowState::Closed)
+        {
             waterui::contract_violation!(
                 "an iOS application must declare at least one window; the app shows no window"
             );
@@ -316,6 +325,7 @@ mod imp {
         // What a scene window shows before its content has painted.
         let background = Color::new(Background).resolve(env);
         let locale = crate::locale::install(env, mtm);
+        let reduce_motion = crate::reduce_motion::install(env, mtm);
 
         // Filled by `prepared`: `build_menus` can fire before `app(env)`
         // runs, so the declared menus sit behind this slot.
@@ -336,6 +346,7 @@ mod imp {
             scenes,
             _theme: Rc::clone(&theme),
             _locale: Box::new(locale),
+            _reduce_motion: Box::new(reduce_motion),
         });
 
         // Scenes may connect before the asynchronous preparation finishes:

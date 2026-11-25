@@ -17,7 +17,7 @@ use waterui::color::Srgb;
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
-use waterui::shape::{Rectangle, RoundedRectangle, ShapeExt};
+use waterui::shape::{CornerRadius, Rectangle, RoundedRectangle, ShapeExt};
 
 const PICKER_BLUE: Srgb = Srgb::from_hex("#3380CC");
 const PICKER_PINK: Srgb = Srgb::from_hex("#FF4D80");
@@ -194,7 +194,7 @@ fn file_picker_section() -> impl View {
         text("FilePicker").headline(),
         text("Select files from the device").body(),
         spacer(),
-        FilePicker::open("Select Files", &selected_files).max_count(5),
+        FilePicker::new("Select Files", &selected_files).max_count(5),
         spacer(),
         text("Selected files:").bold(true),
         file_list(&selected_files),
@@ -255,9 +255,9 @@ impl ColorSwatch {
 impl View for ColorSwatch {
     fn body(self, _env: &Environment) -> impl View {
         Rectangle
-            .fill(signal_color(self.color))
+            .fill(self.color)
             .size(64.0, 32.0)
-            .clip(RoundedRectangle::new(0.1))
+            .clip(RoundedRectangle::new(CornerRadius::fraction(0.1)))
     }
 }
 
@@ -277,5 +277,5 @@ fn file_list(files: &Binding<Vec<Url>>) -> impl View + use<> {
 
 /// Builds the example app, showing the picker gallery demo.
 pub fn app(env: Environment) -> App<impl Windows> {
-    App::new(demo, env)
+    App::new(env).window(Window::new("", demo))
 }

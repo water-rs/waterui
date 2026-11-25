@@ -457,26 +457,6 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// the pending patch and re-emits instead of re-dispatching.
     #[cfg(hydrolysis_cherenkov)]
     pub(crate) fn capture_window_semantics(&mut self, content: impl View, env: &Environment) {
-        self.capture_window_semantics_with(env, |core, env| RenderNode::build(content, env, core));
-    }
-
-    #[cfg(hydrolysis_cherenkov)]
-    pub(crate) fn capture_held_window_semantics(
-        &mut self,
-        content: HeldChild<E>,
-        env: &Environment,
-    ) {
-        self.capture_window_semantics_with(env, |core, env| {
-            RenderNode::build_held(content, env, core)
-        });
-    }
-
-    #[cfg(hydrolysis_cherenkov)]
-    fn capture_window_semantics_with(
-        &mut self,
-        env: &Environment,
-        build: impl FnOnce(&mut Self, &Environment) -> RenderNode<E>,
-    ) {
         if self.render_tree.is_some() {
             assert!(
                 self.flush_window_semantics(env),
@@ -491,7 +471,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         self.begin_rebuild();
         self.begin_semantic_rebuild_frame();
         self.render_depth = 0;
-        let tree = build(self, env);
+        let tree = RenderNode::build(content, env, self);
         // Marks on the window tree propagate to the window's root cell,
         // which the pump polls.
         tree.core().cell.set_parent(self.root_cell());
@@ -616,6 +596,13 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         self.record_host(&host, |renderer| {
             renderer.render_anchored_overlays(transform, safe_area);
         });
+        // The `.sheet` modal layer draws above regular content and anchored
+        // overlays, and below `.dialog` alerts so a confirmation alert opened
+        // from inside a sheet stacks cleanly above it.
+        let host = self.core.presentation_hosts.sheet.clone();
+        self.record_host(&host, |renderer| {
+            renderer.render_sheets(transform, safe_area);
+        });
         // The `.dialog` modal layer draws above everything: scrim, card and
         // the modal input scope the card registers through its environment.
         #[cfg(waterui_feature = "dialog")]
@@ -714,34 +701,6 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         transform: kurbo::Affine,
         hit_transform: kurbo::Affine,
     ) {
-        self.capture_window_tree_with(env, bounds, transform, hit_transform, |core, env| {
-            RenderNode::build(content, env, core)
-        });
-    }
-
-    /// [`Self::capture_window_tree`] for a window dispatched from the view
-    /// tree, whose content is held in [`HeldChild`].
-    pub(crate) fn capture_held_window_tree(
-        &mut self,
-        content: HeldChild<E>,
-        env: &Environment,
-        bounds: kurbo::Rect,
-        transform: kurbo::Affine,
-        hit_transform: kurbo::Affine,
-    ) {
-        self.capture_window_tree_with(env, bounds, transform, hit_transform, |core, env| {
-            RenderNode::build_held(content, env, core)
-        });
-    }
-
-    fn capture_window_tree_with(
-        &mut self,
-        env: &Environment,
-        bounds: kurbo::Rect,
-        transform: kurbo::Affine,
-        hit_transform: kurbo::Affine,
-        build: impl FnOnce(&mut SemanticCore<E>, &Environment) -> RenderNode<E>,
-    ) {
         let _flush_span = tracing::debug_span!("hydrolysis_capture_window_tree").entered();
         self.app_frame_rate_vote = None;
         let (content_rect, size, safe_area) = window_root_layout(self, env, bounds, transform);
@@ -797,7 +756,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 .set_update(self.frame_stage_times.update() + update_started_at.elapsed());
         }
         self.render_depth = 0;
-        let mut node = build(self, env);
+        let mut node = RenderNode::build(content, env, self);
         node.core().cell.set_parent(self.root_cell());
         // The build is the flush for every mark it raised (dev's rebuild
         // generation dropped the same marks): only a mark raised by the

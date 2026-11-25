@@ -68,14 +68,12 @@ fn now_playing_bar() -> impl View {
 // navigation.md writes `mdi::` qualified so the icon set stays visible.
 #[allow(unknown_lints, qualified_waterui_path)]
 pub fn navigation_block_01() -> impl View {
-    use waterui::navigation::tab_style;
+    use waterui::navigation::TabStyle;
 
     fn inbox_stack() -> impl View {
         text("inbox stack")
     }
-    let unread_count = Binding::i32(3);
-
-    use waterui::{id::SelfId, reactive::collection::List, views::ForEach};
+    let unread_count: Binding<u32> = binding(3_u32);
 
     #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
     enum Pane {
@@ -86,34 +84,21 @@ pub fn navigation_block_01() -> impl View {
     }
 
     let pane = binding(Pane::Inbox);
-    let panes = [Pane::Inbox, Pane::Library, Pane::Settings, Pane::Search].map(SelfId::new);
 
     Tabs::new(
         &pane,
-        ForEach::new(List::from(panes.to_vec()), move |pane: SelfId<Pane>| {
-            let pane = *pane;
-            let tab = Tab::container(
-                match pane {
-                    Pane::Inbox => label("Inbox").icon(mdi::inbox()),
-                    Pane::Library => label("Library").icon(mdi::image_album()),
-                    Pane::Settings => label("Settings").icon(mdi::cog()),
-                    Pane::Search => label("Search").icon(mdi::magnify()),
-                },
-                move || match pane {
-                    Pane::Inbox => OneOf4::A(inbox_stack()),
-                    Pane::Library => OneOf4::B(library_split()),
-                    Pane::Settings => OneOf4::C(settings_stack()),
-                    Pane::Search => OneOf4::D(search_stack()),
-                },
-            );
-            match pane {
-                Pane::Inbox => tab.badge(unread_count.clone()),
-                Pane::Search => tab.role(TabRole::Search), // iOS: the trailing system search tab; elsewhere a regular tab
-                Pane::Library | Pane::Settings => tab,
-            }
-        }),
+        (
+            Tab::new(label("Inbox").icon(mdi::inbox()), inbox_stack)
+                .tag(Pane::Inbox)
+                .badge(unread_count.clone()),
+            Tab::new(label("Library").icon(mdi::image_album()), library_split).tag(Pane::Library),
+            Tab::new(label("Settings").icon(mdi::cog()), settings_stack).tag(Pane::Settings),
+            Tab::new(label("Search").icon(mdi::magnify()), search_stack)
+                .tag(Pane::Search)
+                .role(TabRole::Search), // iOS: the trailing system search tab; elsewhere a regular tab
+        ),
     )
-    .style(tab_style::automatic())
+    .style(TabStyle::Automatic)
     .minimize_behavior(TabBarMinimizeBehavior::OnScrollDown) // iOS 26 collapses the bar while scrolling; ignored elsewhere
     .bottom_accessory(now_playing_bar()) // iOS 26 glass bar above the tab bar (mini-player slot); not shown elsewhere
 }
@@ -124,7 +109,7 @@ pub fn navigation_block_01() -> impl View {
 // `TabBarMinimizeBehavior` variants. Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn navigation_tabs_prose() -> impl View {
-    use waterui::navigation::tab_style;
+    use waterui::navigation::TabStyle;
 
     let selected = binding(0_usize);
     let _ = TabBarMinimizeBehavior::Automatic;
@@ -134,17 +119,17 @@ pub fn navigation_tabs_prose() -> impl View {
         &selected,
         vec![Tab::new("Raw", || NavigationView::new("Raw", text("raw")))],
     )
-    .style(tab_style::sidebar());
+    .style(TabStyle::Sidebar);
     let _ = Tabs::new(
         &selected,
-        vec![Tab::container(label("Library"), library_split).enabled(true)],
+        vec![Tab::new(label("Library"), library_split).enabled(true)],
     )
-    .style(tab_style::tab_bar());
+    .style(TabStyle::TabBar);
     Tabs::new(
         &selected,
         (
-            Tab::container(label("Library"), library_split),
-            Tab::container(label("Settings"), settings_stack),
+            Tab::new(label("Library"), library_split),
+            Tab::new(label("Settings"), settings_stack),
         ),
     )
 }
@@ -234,7 +219,7 @@ pub fn navigation_path_operations_prose(navigator: Navigator<MailRoute>) -> impl
     let _ = (path.len(), path.is_empty(), path.snapshot());
     path.truncate(0);
 
-    NavigationStack::new(inbox_root(Mail)).transition(navigation_transition::automatic())
+    NavigationStack::new(inbox_root(Mail)).page_transition(navigation_transition::automatic())
 }
 
 pub fn navigation_route_free_link_prose() -> impl View {
@@ -294,11 +279,16 @@ pub fn navigation_block_07() -> NavigationView<impl View> {
         let can_leave = Binding::bool(true);
         let unread = Binding::i32(2);
 
+        let searching = Binding::bool(false);
+
         message_list(mail)
             .navigation_title("Inbox") // or .navigation_title(text!("{subject}"))
             .large_title() // or .inline_title()
             .navigation_subtitle(text!("{unread} unread"))
-            .searchable(&query, "Search mail") // a field inside the bar, not above the content
+            .searchable(&query)
+            .search_prompt("Search mail") // a field inside the bar, not above the content
+            .search_active(&searching) // two-way Binding<bool>
+            .on_search_submit(|| {}) // fires when the user commits the query
             .navigation_pop_enabled(can_leave) // refuse a back gesture reactively
             .on_navigation_pop_attempted(|m: SnackbarManager| {
                 m.show(Snackbar::new("Finish the draft first"));
@@ -402,17 +392,20 @@ pub fn navigation_toolbar_prose() {
 // Method-fragment listing applied to a navigation destination receiver.
 // ---------------------------------------------------------------------------
 pub fn navigation_block_09() {
+    use waterui::PropertyTransition;
     use waterui::navigation::navigation_transition;
 
     #[derive(Clone, Copy, Hash, PartialEq, Eq)]
     struct PhotoRoute(usize);
 
     let dest = message_list(Mail).navigation_title("Inbox");
-    let _ = { dest.transition(navigation_transition::zoom(PhotoRoute(1))) };
+    let _ = { dest.page_transition(navigation_transition::zoom(PhotoRoute(1))) };
     let dest = message_list(Mail).navigation_title("Inbox");
-    let _ = { dest.transition(navigation_transition::fade()) };
+    let _ = { dest.page_transition(navigation_transition::fade()) };
     let dest = message_list(Mail).navigation_title("Inbox");
-    let _ = { dest.transition(navigation_transition::none()) };
+    let _ = { dest.page_transition(navigation_transition::none()) };
+    let dest = message_list(Mail).navigation_title("Inbox");
+    let _ = { dest.page_transition(PropertyTransition::opacity()) };
 }
 
 // ---------------------------------------------------------------------------
@@ -435,7 +428,7 @@ pub fn navigation_block_10() {
 // navigation.md § "## Split views" — rust block 11/16
 // ---------------------------------------------------------------------------
 pub fn navigation_block_11() -> impl View {
-    use waterui::navigation::{ColumnWidth, split_style};
+    use waterui::navigation::{ColumnWidth, NavigationSplitStyle};
 
     #[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
     enum Album {
@@ -460,7 +453,7 @@ pub fn navigation_block_11() -> impl View {
         album_detail,
     )
     .sidebar_width(ColumnWidth::new(220.0, 280.0, 360.0)) // min, ideal, max
-    .style(split_style::prominent_detail())
+    .style(NavigationSplitStyle::ProminentDetail)
     .placeholder(|| text("No album selected"))
 }
 
@@ -470,7 +463,9 @@ pub fn navigation_block_11() -> impl View {
 // block.
 // ---------------------------------------------------------------------------
 pub fn navigation_split_prose() -> impl View {
-    use waterui::navigation::{NavigationSplitColumnVisibility, NavigationSplitView, split_style};
+    use waterui::navigation::{
+        NavigationSplitColumnVisibility, NavigationSplitStyle, NavigationSplitView,
+    };
 
     #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
     enum Section {
@@ -487,8 +482,8 @@ pub fn navigation_split_prose() -> impl View {
     let _ = NavigationSplitView::new(&sidebar_selection, text("sidebar"), |_: Section| {
         vstack((text("detail"), Divider)).navigation_title("Detail")
     })
-    .style(split_style::automatic())
-    .style(split_style::balanced());
+    .style(NavigationSplitStyle::Automatic)
+    .style(NavigationSplitStyle::Balanced);
 
     NavigationSplitView::three_column(
         &sidebar_selection,
@@ -516,18 +511,12 @@ pub fn navigation_block_12(env: Environment) -> App<impl Windows> {
     }
     let status = Binding::container(Str::from("ready"));
 
-    use waterui::window::{Window, WindowState, WindowStyle};
+    use waterui::window::{Window, WindowStyle};
 
     let _: Option<WindowStyle> = None;
 
-    App::new_with_windows(
-        [Window::new(
-            "WaterUI Menu Examples",
-            binding(WindowState::Normal),
-            move || scene(),
-        )
-        .toolbar(window_toolbar(&status))],
-        env,
+    App::new(env).window(
+        Window::new("WaterUI Menu Examples", move || scene()).toolbar(window_toolbar(&status)),
     )
 }
 
@@ -540,20 +529,22 @@ pub fn navigation_block_12(env: Environment) -> App<impl Windows> {
 // `Binding<Option<WindowIcon>>`, `set_icon(..)`, `.resizable(bool)`,
 // `.min_size(..)` / `.max_size(..)` (one `impl IntoComputed<Size>` each),
 // `.level(..)` / `.resize_increments(..)`, `.title(..)`, `.placement(..)`,
-// `.activation(..)`, `.app_id(..)` / `.instance_name(..)`, the `closable` and
-// `attention` fields, the `WindowState` variants, and the `WindowHandle`
-// controls. Not counted as a rust block.
+// `.activation(..)`, `.app_id(..)` / `.instance_name(..)`, `.closable(..)`,
+// `.default_size(..)`, `.frame(..)`, `.attention(..)`, the `WindowState`
+// variants, and `WindowHandle` controls & handler extraction. Not counted as a
+// rust block.
 // ---------------------------------------------------------------------------
 pub fn navigation_window_builder_prose() {
     use waterui::background::Material;
     use waterui::window::{
-        Activation, Monitor, MonitorSelector, UserAttention, Window, WindowBackground, WindowIcon,
-        WindowLevel, WindowState, WindowStyle,
+        Activation, Monitor, MonitorSelector, UserAttention, Window, WindowBackground,
+        WindowHandle, WindowIcon, WindowLevel, WindowState, WindowStyle,
     };
 
     let state = binding::<WindowState>(WindowState::default());
 
-    let window = Window::new("W", state.clone(), || text("c"))
+    let window = Window::new("W", || text("c"))
+        .state(&state)
         .style(WindowStyle::Titled)
         .background(Color::transparent())
         .resizable(true)
@@ -566,12 +557,14 @@ pub fn navigation_window_builder_prose() {
     handle.request_close();
     handle.request_attention(UserAttention::Informational);
     handle.cancel_attention();
-    let _ = Window::new("W", state.clone(), || text("c"))
+    let _ = Window::new("W", || text("c"))
+        .state(&state)
         .style(WindowStyle::Borderless)
         .background(Material::Regular);
     let style = binding(WindowStyle::Titled);
     let background = binding(WindowBackground::Opaque);
-    let window = Window::new("W", state, || text("c"))
+    let window = Window::new("W", || text("c"))
+        .state(&state)
         .style(style.clone())
         .background(background.clone());
     window.handle().set_style(WindowStyle::Borderless);
@@ -583,26 +576,30 @@ pub fn navigation_window_builder_prose() {
     background.set(WindowBackground::Color(Color::transparent()));
     let icon = WindowIcon::new(1, 1, vec![255_u8, 0, 0, 255]).expect("a one-pixel RGBA icon");
     let themed_icon = binding(None::<WindowIcon>);
-    let _ = Window::new("W", binding(WindowState::Closed), || text("c")).icon(icon.clone());
-    let window =
-        Window::new("W", binding(WindowState::Closed), || text("c")).icon(themed_icon.clone());
+    let _ = Window::new("W", || text("c")).icon(icon.clone());
+    let window = Window::new("W", || text("c")).icon(themed_icon.clone());
     window.handle().set_icon(icon);
     window.handle().set_icon(None);
 
-    let mut window = Window::new("W", binding(WindowState::Closed), || text("c"))
-        .title("Renamed")
-        .icon(None::<WindowIcon>)
-        .placement(MonitorSelector::Pointer, |monitor: &Monitor| {
-            Rect::new(
-                monitor.visible_frame().origin(),
-                Size::new(monitor.visible_frame().width(), 320.0),
-            )
-        })
-        .activation(Activation::OnClick)
-        .app_id("cool.lexo.terminal")
-        .instance_name("dropdown");
-    window.closable = false;
-    window.attention.set(Some(UserAttention::Critical));
+    let attention = binding(None::<UserAttention>);
+    let window = Window::new("W", || {
+        button("Max").action(|window: WindowHandle| window.maximize())
+    })
+    .title("Renamed")
+    .default_size(Size::new(1024.0, 768.0))
+    .closable(false)
+    .attention(&attention)
+    .icon(None::<WindowIcon>)
+    .placement(MonitorSelector::Pointer, |monitor: &Monitor| {
+        Rect::new(
+            monitor.visible_frame().origin(),
+            Size::new(monitor.visible_frame().width(), 320.0),
+        )
+    })
+    .activation(Activation::OnClick)
+    .app_id("cool.lexo.terminal")
+    .instance_name("dropdown");
+    attention.set(Some(UserAttention::Critical));
     window.handle().focus();
     let _ = (
         MonitorSelector::Primary,
@@ -649,40 +646,50 @@ pub fn navigation_block_14() -> waterui::window::Window<impl waterui::handler::V
     let confirm_discard = binding(false);
     let window_state = binding(WindowState::Normal);
 
-    Window::new("Editor", window_state.clone(), editor_content).on_close_request(move || {
-        let ask = unsaved.snapshot();
-        confirm_discard.set(ask);
-        async move {
-            if ask {
-                CloseReply::Cancel
-            } else {
-                CloseReply::Close
+    Window::new("Editor", editor_content)
+        .state(&window_state)
+        .on_close_request(move || {
+            let ask = unsaved.snapshot();
+            confirm_discard.set(ask);
+            async move {
+                if ask {
+                    CloseReply::Cancel
+                } else {
+                    CloseReply::Close
+                }
             }
-        }
-    })
+        })
 }
 
 // ---------------------------------------------------------------------------
 // navigation.md § "## Windows that open and close" — rust block 15/16
 // ---------------------------------------------------------------------------
-pub fn navigation_block_15() -> impl View {
+pub fn navigation_block_15(env: Environment) -> App<impl Windows> {
     fn inspector_content() -> impl View {
         text("inspector")
     }
 
-    use waterui::window::{
-        Window, WindowPresentation, WindowState, WindowStyle, conditional_window,
-    };
+    use waterui::app::{App, Windows};
+    use waterui::window::{Window, WindowState, WindowStyle};
 
-    let state = binding::<WindowState>(WindowState::default());
-    let presentation = WindowPresentation::new(&state); // guards against duplicate opens
+    fn app(env: Environment) -> App<impl Windows> {
+        let inspector_state = binding::<WindowState>(WindowState::default()); // starts Closed
+        let main_state = inspector_state.clone();
+        App::new(env)
+            .window(Window::new("Main", move || {
+                button("Inspector")
+                    .action(|State(s): State<Binding<WindowState>>| s.set(WindowState::Normal))
+                    .state(&main_state)
+            }))
+            .window(
+                Window::new("Inspector", inspector_content)
+                    .state(&inspector_state)
+                    .style(WindowStyle::Titled)
+                    .resizable(true),
+            )
+    }
 
-    // An INVISIBLE view — it must still be placed in the tree (e.g. a later zstack child).
-    conditional_window(&presentation, |state| {
-        Window::new("Inspector", state, inspector_content)
-            .style(WindowStyle::Titled)
-            .resizable(true)
-    })
+    app(env)
 }
 
 // ---------------------------------------------------------------------------
@@ -694,19 +701,19 @@ pub fn navigation_block_16(env: Environment) -> App<impl Windows, impl AppMenuBa
     }
 
     use waterui::app::{App, AppMenuBar, LastWindowPolicy, QuitReply, Windows};
-    use waterui::window::{Window, WindowManager, WindowState};
+    use waterui::window::{Window, WindowManager};
 
     fn app(env: Environment) -> App<impl Windows, impl AppMenuBar> {
         let (windows, channel) = WindowManager::new();
-        App::new_with_windows(channel, env)
+        App::new(env)
+            .window(channel)
             .on_last_window_closed(LastWindowPolicy::StayResident)
             .on_quit_request(|| async { QuitReply::Quit })
             .on_terminate(|| async {})
             .menu_bar(Menu::new(
                 "App",
                 "New Window".action(move || {
-                    Window::new("Scratch", binding(WindowState::Normal), scratch_content)
-                        .show(&windows);
+                    Window::new("Scratch", scratch_content).show(&windows);
                 }),
             ))
     }

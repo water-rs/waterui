@@ -25,7 +25,7 @@ You declare *what* they are, and each backend projects that into its own platfor
 notebook on GTK, retained bar chrome in the self-drawn renderers.
 
 The same declaration therefore looks different — correctly — on each platform, and it
-adapts within a platform too: `tab_style::automatic()` is a tab bar on a phone and a
+adapts within a platform too: `TabStyle::Automatic` is a tab bar on a phone and a
 sidebar on a desktop-class window; `.large_title()` collapses on scroll on iOS and becomes
 a large app bar on Android. Do not try to control that from app code.
 
@@ -35,63 +35,47 @@ compensate for it with an `hstack` that imitates a bar.
 ## Tabs
 
 `Tabs::new(&selection, tabs)` takes a tab set, and each tab keeps the type of the
-builder that makes its root, so a tab reaches the backend without an `AnyView`. The set's
-id is the tab's identity *and* the type `selection` binds, so you never name an `Id`:
+builder that makes its root, so a tab reaches the backend without an `AnyView`:
 
-- a tuple of tabs — `(Tab::container(..), Tab::container(..))`, up to twelve — holds tabs
-  whose roots differ and is selected by a `Binding<usize>` position;
-- a `Vec` or array of tabs sharing one builder type, also selected by position;
-- `ForEach` over a `List` of `SelfId`s keys tabs by your own enum. Its tabs share one
-  builder, so the builder returns the variant of one `OneOfN` its item picks:
+- untagged tabs (`(Tab::new(..), Tab::new(..))`, `Vec<Tab>`, arrays, or `ForEach`) fall
+  back to positional `Binding<usize>` (or `ForEach` item) identity;
+- chaining `.tag(value)` keys any tuple, `Vec`, array, or `ForEach` by your own `T`
+  (such as a `Pane` enum) without `SelfId` or `OneOfN`:
 
 ```rust
-use waterui::{id::SelfId, reactive::collection::List, views::ForEach};
-
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Pane { Inbox, Library, Settings, Search }
 
 let pane = binding(Pane::Inbox);
-let panes = [Pane::Inbox, Pane::Library, Pane::Settings, Pane::Search].map(SelfId::new);
 
-Tabs::new(&pane, ForEach::new(List::from(panes.to_vec()), move |pane: SelfId<Pane>| {
-    let pane = *pane;
-    let tab = Tab::container(
-        match pane {
-            Pane::Inbox => label("Inbox").icon(mdi::inbox()),
-            Pane::Library => label("Library").icon(mdi::image_album()),
-            Pane::Settings => label("Settings").icon(mdi::cog()),
-            Pane::Search => label("Search").icon(mdi::magnify()),
-        },
-        move || match pane {
-            Pane::Inbox => OneOf4::A(inbox_stack()),
-            Pane::Library => OneOf4::B(library_split()),
-            Pane::Settings => OneOf4::C(settings_stack()),
-            Pane::Search => OneOf4::D(search_stack()),
-        },
-    );
-    match pane {
-        Pane::Inbox => tab.badge(unread_count.clone()),
-        Pane::Search => tab.role(TabRole::Search), // iOS: the trailing system search tab; elsewhere a regular tab
-        Pane::Library | Pane::Settings => tab,
-    }
-}))
-.style(tab_style::automatic())
+Tabs::new(
+    &pane,
+    (
+        Tab::new(label("Inbox").icon(mdi::inbox()), inbox_stack)
+            .tag(Pane::Inbox)
+            .badge(unread_count.clone()),
+        Tab::new(label("Library").icon(mdi::image_album()), library_split).tag(Pane::Library),
+        Tab::new(label("Settings").icon(mdi::cog()), settings_stack).tag(Pane::Settings),
+        Tab::new(label("Search").icon(mdi::magnify()), search_stack)
+            .tag(Pane::Search)
+            .role(TabRole::Search), // iOS: the trailing system search tab; elsewhere a regular tab
+    ),
+)
+.style(TabStyle::Automatic)
 .minimize_behavior(TabBarMinimizeBehavior::OnScrollDown)   // iOS 26 collapses the bar while scrolling; ignored elsewhere
 .bottom_accessory(now_playing_bar())        // iOS 26 glass bar above the tab bar (mini-player slot); not shown elsewhere
 ```
 
-A `Tab` is `Tab::container(label, content)` (`label` is `impl IntoLabel`, `content` any
-`Fn() -> impl View`) with `.badge(count)` and `.enabled(bool)` signals and `.role(..)`.
-Other styles: `tab_style::tab_bar()` and `tab_style::sidebar()` force one presentation;
+A `Tab` is `Tab::new(label, content)` (`label` is `impl IntoLabel`, `content` any
+`Fn() -> impl View`) with `.badge(value)` (`u32`, `BadgeValue::{Hidden, Dot, Count, Text}`, or signal; `0` hides) and `.enabled(bool)` signals and `.role(..)`.
+Other styles: `TabStyle::TabBar` and `TabStyle::Sidebar` force one presentation;
 `TabBarMinimizeBehavior` is `Automatic | Never | OnScrollDown | OnScrollUp`.
 
-**Use `Tab::container` whenever a tab's root is a navigation container** — a
+**Give each tab its own navigation container when it pushes or splits** — a
 `NavigationStack` or a `NavigationSplitView`, like `inbox_stack` above. Each tab owning
 its own container is what makes it remember where you left it: push twice in Inbox, visit
-Settings, come back, and both pushed pages are still there. `Tab::container` hides the
-tab page's own bar so the inner container's bar is the one shown. `Tab::new(label,
-content)` is for a tab that is a single page: its builder returns a `NavigationView`,
-whose bar is the tab's bar.
+Settings, come back, and both pushed pages are still there. A single-page tab can return
+a `NavigationView` or any plain `impl View` directly.
 
 ## Navigation stacks and routes
 
@@ -206,7 +190,10 @@ fn message_list_page(mail: Mail) -> NavigationView<impl View> {
         .navigation_title("Inbox")                  // or .navigation_title(text!("{subject}"))
         .large_title()                              // or .inline_title()
         .navigation_subtitle(text!("{unread} unread"))
-        .searchable(&query, "Search mail")          // a field inside the bar, not above the content
+        .searchable(&query)
+        .search_prompt("Search mail")               // a field inside the bar, not above the content
+        .search_active(&searching)                  // two-way Binding<bool>
+        .on_search_submit(run_query)                // fires when the user commits the query
         .navigation_pop_enabled(can_leave)          // refuse a back gesture reactively
         .on_navigation_pop_attempted(|m: SnackbarManager| {
             m.show(Snackbar::new("Finish the draft first"));
@@ -219,8 +206,7 @@ so the handler takes it bare rather than wrapped in `State<..>`.
 
 The rest of the destination's chrome: `.navigation_title_display_mode(NavigationTitleDisplayMode::Medium)`
 (the mode between `.inline_title()` and `.large_title()`; the default is `Automatic`),
-`.navigation_bar_visibility(visible)` (a bool signal; `Tab::container` pages use it to
-hide the page bar their inner stack replaces), `.navigation_bar_color(color)` (a `Color`
+`.navigation_bar_visibility(visible)` (a bool signal; pages inside a wrapper hide their own bar with `false`), `.navigation_bar_color(color)` (a `Color`
 signal that overrides the bar surface, which otherwise follows the `Surface` token) and
 `.on_navigation_pop(handler)` (fires only after a completed pop removed this destination).
 
@@ -262,16 +248,17 @@ on the right and Android puts it in the app bar, and that difference is the poin
 
 ## Transitions
 
-How a destination *arrives* is a modifier on the destination:
+How a destination *arrives* and leaves is `.page_transition(..)` on the destination (named separately so it never shadows `ViewExt::transition(..)`). It accepts both built-in platform hints and any core `Transition` or `TransitionSpec`:
 
 ```rust
-.transition(navigation_transition::zoom(PhotoRoute(index)))
-.transition(navigation_transition::fade())
-.transition(navigation_transition::none())
+.page_transition(navigation_transition::zoom(PhotoRoute(index)))
+.page_transition(navigation_transition::fade())
+.page_transition(navigation_transition::none())
+.page_transition(PropertyTransition::opacity())
 ```
 
 `navigation_transition::automatic()` is the platform default. Put a transition on the stack
-(`NavigationStack::transition`) only when every push should move the same way. A **matched
+(`NavigationStack::page_transition`) only when every push should move the same way. A **matched
 zoom belongs on the destination**, because the pair it names differs per destination —
 tile 3 and the page it opens share an identity that tile 4 does not. Mark both halves with
 the application's own hashable key type (`K: Hash + Eq + 'static`, such as your route value):
@@ -284,22 +271,22 @@ hero.navigation_transition_destination(PhotoRoute(index))
 Each `NavigationStack` / `NavigationSplitView` resolves matching `(TypeId::of::<K>(), key)`
 pairs into internal non-zero `Id`s for the backend, so application code never constructs raw `Id`s.
 
-A destination that declares nothing inherits the stack's transition. A destination
-declares its arrival once: `NavigationView::transition(..)` or a `.transition(..)` on its
-content root (its insertion on push, removal on pop), not both. A pair whose halves are
-not both on screen falls back to the platform default rather than failing.
+A destination that declares nothing inherits the stack's transition. `.page_transition(..)`
+on a `NavigationView` takes precedence over a `.transition(..)` on its content root without
+conflicting. A pair whose halves are not both on screen falls back to the platform default
+rather than failing.
 
 ## Split views
 
 ```rust
-use waterui::navigation::NavigationSplitView;
+use waterui::navigation::{NavigationSplitStyle, NavigationSplitView};
 
 let selection: Binding<Option<Album>> = binding(Some(Album::default()));
 let sidebar_selection = selection.clone();
 
 NavigationSplitView::new(&selection, move || album_sidebar(sidebar_selection.clone()), album_detail)
     .sidebar_width(ColumnWidth::new(220.0, 280.0, 360.0))   // min, ideal, max
-    .style(split_style::prominent_detail())
+    .style(NavigationSplitStyle::ProminentDetail)
     .placeholder(|| text("No album selected"))
 ```
 
@@ -315,7 +302,7 @@ be owned outside them.
 content, detail)` adds a middle column with its own `Binding<Option<C>>`; the `content`
 closure maps the sidebar selection to a `NavigationView`. `.column_visibility(..)` takes a
 `NavigationSplitColumnVisibility` (`Automatic | All | DoubleColumn | DetailOnly`) or a
-signal of one. Styles: `split_style::automatic()`, `balanced()`, `prominent_detail()`.
+signal of one. Styles: `NavigationSplitStyle::{Automatic, Balanced, ProminentDetail}`.
 `ColumnWidth::new` panics unless `0 < min <= ideal <= max`.
 
 At compact widths a two-column split shows exactly one column, chosen by the
@@ -326,33 +313,35 @@ app should open on the sidebar. At wider widths the columns remain side by side.
 
 ## Windows
 
-A single-window app needs nothing beyond `App::new(view, env)`. For window chrome,
-multiple windows, or a window-level toolbar, describe the windows explicitly:
+Declare an application's windows directly on `App::new(env)` with `.window(...)`:
 
 ```rust
-use waterui::window::{Window, WindowState, WindowStyle};
+use waterui::window::{Window, WindowStyle};
 
-App::new_with_windows(
-    [Window::new("WaterUI Menu Examples", binding(WindowState::Normal), move || scene())
-        .toolbar(window_toolbar(&status))],
-    env,
+App::new(env).window(
+    Window::new("WaterUI Menu Examples", move || scene())
+        .toolbar(window_toolbar(&status)),
 )
 ```
 
 The windows are a window set, and `fn app(env: Environment) -> App<impl Windows>` (with
 `waterui::app::{App, Windows}`) returns it unnamed: one `Window`, a tuple of windows whose
 contents each keep their own type, an array or `Vec` of windows with one content type, or
-`()` for none. `App::new(view, env)` declares one window, and `.window(w)` appends another.
+`()` for none. `App::new(env)` starts empty and `.window(w)` appends each window or
+`WindowChannel`.
 Each window's content and toolbar keep their types up to the backend, so nothing in the tree is erased.
 
 The `Window` builder, precisely:
 
-- `Window::new(title, state, content)` — the title is `impl IntoComputed<Str>` (a
-  reactive window title is free), `state` is a `Binding<WindowState>` **by value**, and
-  `content` is any `Fn() -> impl View`, so a bare function item works. An empty title
-  (`App::new` uses one) is shown as the application's own name; `.title(..)` sets it later.
-  Windows mount only their own content; attach `.snackbar_host()` or
-  `.full_screen_overlay_host::<V>()` to a root view when the window uses those overlays.
+- `Window::new(title, content)` — the title is `impl IntoText` (literals, `text!(...)`,
+  and reactive strings localize through the environment's `TranslationCatalog`), and
+  `content` is any `Fn() -> impl View`, so a bare
+  function item works. The window owns an internal `WindowState::Normal` binding by
+  default; chain `.state(&window_state)` when external code reads or drives its
+  `Binding<WindowState>`. An empty title is shown as the application's own name;
+  `.title(..)` sets it later.
+  Windows mount only their own content; attach `.snackbar_host()` to a root view
+  when the window uses snackbars.
 - `.style(..)` — a `WindowStyle` or a `Binding<WindowStyle>`; exactly three variants:
   `Titled` (default), `Borderless`, `FullSizeContentView` (content extends under the
   title bar). The style is reactive: setting the binding (or
@@ -402,23 +391,29 @@ The `Window` builder, precisely:
   (X11 `WM_CLASS` class and instance, Wayland `app_id`). `app_id` defaults to the
   application's identifier and `instance_name` to the resolved `app_id`; Wayland carries
   only `app_id`. Ignored on macOS, iOS, Android and Windows.
-- `closable` is a plain public field (`window.closable = false`): the close button is
-  disabled on macOS and Windows and the request is ignored on Linux.
-- `attention` is a public `Binding<Option<UserAttention>>`: setting it asks the platform
-  to draw the user to the window (taskbar flash, Dock bounce) and the backend resets it to
-  `None` when the window gains focus; `handle().request_attention(..)` writes the same binding.
+- `.closable(bool)` — plain bool, default `true`: when `false`, the close button is
+  disabled on macOS and Windows and close requests are ignored on Linux.
+- `.default_size(Size)` — initial content size (defaults to `800×600`); `.frame(&binding)`
+  binds the window's `Binding<Rect>` when external code reads or drives its geometry.
+- `.attention(&binding)` — binds `Binding<Option<UserAttention>>`: setting it asks the
+  platform to draw the user to the window (taskbar flash, Dock bounce) and the backend
+  resets it to `None` when the window gains focus; `WindowHandle::request_attention(..)`
+  writes the same binding.
 
 `WindowState` variants: `Normal`, `Closed` (**the `Default`**), `Minimized`,
 `Maximized`, `Fullscreen`. `WindowState` is held in a binding, so opening, closing,
-minimizing, maximizing, and restoring are ordinary reactive state changes:
+minimizing, maximizing, and restoring are ordinary reactive state changes.
 
-`Window::handle()` returns a `WindowHandle` that survives after the window is shown:
-`close()`, `request_close()`, `minimize()`, `maximize()`, `fullscreen()`, `restore()`, `focus()` (bring to front and give it the
-keyboard — "show the existing settings window"; panics before the window is realized and
-on headless runners),
-`request_attention(UserAttention::Informational | UserAttention::Critical)` (the
-backend clears it when the window gains focus), `cancel_attention()`, and
-`set_frame(Rect)`.
+Every backend installs a window's `WindowHandle` into the environment of its content,
+toolbar, and `on_close_request` handler, so handlers inside the window extract
+`|window: WindowHandle|` directly without calling `window.handle()` beforehand.
+`Window::handle()` still returns a `WindowHandle` for callers outside the window's tree.
+`WindowHandle` provides: `close()`, `request_close()`, `minimize()`, `maximize()`,
+`fullscreen()`, `restore()`, `focus()` (bring to front and give it the keyboard — "show
+the existing settings window"; panics before the window is realized and on headless
+runners), `request_attention(UserAttention::Informational | UserAttention::Critical)`
+(the backend clears it when the window gains focus), `cancel_attention()`, `set_frame(Rect)`,
+`set_style(WindowStyle)`, `set_background(..)`, and `set_icon(..)`.
 
 ```rust
 button("Open Window")
@@ -452,7 +447,9 @@ let unsaved = binding(true);
 let confirm_discard = binding(false);
 let window_state = binding(WindowState::Normal);
 
-Window::new("Editor", window_state.clone(), editor_content).on_close_request(move || {
+Window::new("Editor", editor_content)
+    .state(&window_state)
+    .on_close_request(move || {
     let ask = unsaved.snapshot();
     confirm_discard.set(ask);
     async move {
@@ -467,67 +464,77 @@ Window::new("Editor", window_state.clone(), editor_content).on_close_request(mov
 
 ## Windows that open and close
 
-A window created on demand needs two pieces, created **together, at the same level as the
-state** (never inside a rebuilt subtree, or the open-once guard resets):
+A single-instance secondary window (Settings, Inspector, Preferences) is declared directly on
+`App` and driven by its `Binding<WindowState>`:
 
 ```rust
-use waterui::window::{Window, WindowPresentation, WindowState, WindowStyle, conditional_window};
+use waterui::app::{App, Windows};
+use waterui::window::{Window, WindowState, WindowStyle};
 
-let state = binding::<WindowState>(WindowState::default());
-let presentation = WindowPresentation::new(&state);    // guards against duplicate opens
-
-// An INVISIBLE view — it must still be placed in the tree (e.g. a later zstack child).
-conditional_window(&presentation, |state| {
-    Window::new("Inspector", state, inspector_content)
-        .style(WindowStyle::Titled)
-        .resizable(true)
-})
+fn app(env: Environment) -> App<impl Windows> {
+    let inspector_state = binding::<WindowState>(WindowState::default()); // starts Closed
+    let main_state = inspector_state.clone();
+    App::new(env)
+        .window(Window::new("Main", move || {
+            button("Inspector")
+                .action(|State(s): State<Binding<WindowState>>| s.set(WindowState::Normal))
+                .state(&main_state)
+        }))
+        .window(
+            Window::new("Inspector", inspector_content)
+                .state(&inspector_state)
+                .style(WindowStyle::Titled)
+                .resizable(true),
+        )
+}
 ```
 
-`conditional_window(&presentation, creator)` materializes the native window when the
-state leaves `Closed` and tears it down when it returns there; `Normal → Minimized` does
-not spawn a duplicate, and it re-arms after closing. It is the one sanctioned use of
-subtree-watching in window code — do not reimplement it with `watch`. A window-filling
-overlay layer inside a window must use `absolute(..)`, not a content-sized `zstack`, or
-edge-anchored children mis-anchor as soon as the window is larger than the content.
+Writing `WindowState::Normal` while `Closed` creates the platform window; writing
+`WindowState::Normal` while it is already open restores and focuses it without creating a
+duplicate; writing `WindowState::Closed` (or closing the window via its title bar) tears down
+the platform window while keeping the declaration armed to reopen on the next `Normal` write.
+A window-filling overlay layer inside a window must use `absolute(..)`, not a content-sized
+`zstack`, or edge-anchored children mis-anchor as soon as the window is larger than the
+content.
 
 ## Resident apps and windows on demand
 
-`App::new_with_windows` accepts any number of windows, none included. What the app does
+`App::new(env)` starts with no windows, and `.window(..)` adds any number of windows or
+channels. What the app does
 once it has no open window is `App::on_last_window_closed(LastWindowPolicy)` from
 `waterui::app`: `Quit` (the default, on every platform, and immediately for an app that
-declares no window) or `StayResident` (macOS Dock convention, a tray or status-item app,
+declares no open window) or `StayResident` (macOS Dock convention, a tray or status-item app,
 an app that opens windows on demand). iOS and Android have no windowless foreground state:
-their runners reject an app that declares no window whatever its policy.
+their runners reject an app that declares no open window whatever its policy.
 
-`conditional_window` lives only as long as the window hosting it, so it cannot reopen a
-window after the last one closed. `WindowManager::new()` returns a `(WindowManager<C>, WindowChannel<C>)`
-pair: pass `channel` to `App::new_with_windows` (or `App::window(channel)` alongside initial
-windows) so the runner monomorphizes `C` directly into its root window type, and call
+For unbounded multi-instance windows (new document or scratch windows where every click opens
+a fresh window), `WindowManager::new()` returns a `(WindowManager<C>, WindowChannel<C>)`
+pair: pass `channel` to `App::window(channel)` so the runner monomorphizes `C` directly
+into its root window type, and call
 `window.show(&windows)` from any handler — including `App::menu_bar` commands, or nested
 handlers when `.state(&windows)` is attached:
 
 ```rust
 use waterui::app::{App, AppMenuBar, LastWindowPolicy, QuitReply, Windows};
-use waterui::window::{Window, WindowManager, WindowState};
+use waterui::window::{Window, WindowManager};
 
 fn app(env: Environment) -> App<impl Windows, impl AppMenuBar> {
     let (windows, channel) = WindowManager::new();
-    App::new_with_windows(channel, env)
+    App::new(env)
+        .window(channel)
         .on_last_window_closed(LastWindowPolicy::StayResident)
         .on_quit_request(|| async { QuitReply::Quit })
         .on_terminate(|| async {})
         .menu_bar(Menu::new(
             "App",
             "New Window".action(move || {
-                Window::new("Scratch", binding(WindowState::Normal), scratch_content)
-                    .show(&windows);
+                Window::new("Scratch", scratch_content).show(&windows);
             }),
         ))
 }
 ```
 
-The window's state binding must start at `Normal` here: `show` opens it as declared. Showing a
+`Window::new` starts in `WindowState::Normal`, so `show` opens it immediately. Showing a
 window after its `WindowChannel` was dropped without being handed to a runner is a contract
 violation (a debug panic, a logged error in release).
 

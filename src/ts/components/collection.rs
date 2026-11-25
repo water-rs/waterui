@@ -16,7 +16,7 @@ use core::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
-use nami::collection::SignalCollection;
+use nami::collection::{Collection as NamiCollection, SignalCollection};
 use nami::{Binding, Computed, Signal, SignalExt as _};
 use suiteki::Str;
 use waterui_core::id::Identifiable;
@@ -25,7 +25,7 @@ use waterui_core::views::ForEach;
 use waterui_core::{AnyView, Environment, Metadata, Retain, View};
 use waterui_layout::stack::{HStack, VStack, ZStack};
 
-use crate::component::list::{List, ListDelete, ListItem, ListMove};
+use crate::component::list::{List, ListDelete, ListMove};
 use crate::ts::catalog::ListAttributes;
 use waterui_ts::engine::{JsError, JsFunction, JsValue};
 
@@ -310,10 +310,7 @@ pub fn into_vstack(
 /// insertions and removals rather than as a rebuilt list — which is what
 /// `List::new(ForEach…)` gives a Rust author.
 pub fn into_list(collection: &Collection, attributes: ListAttributes) -> AnyView {
-    let items = collection.items();
-    let list = List::new(ForEach::new(collection.keys(), move |key| {
-        ListItem::new(items(key))
-    }));
+    let list = List::new(ForEach::new(collection.keys(), collection.items()));
     let (editing, on_delete, on_move) = attributes.into_parts();
     if editing.is_none() && on_delete.is_none() && on_move.is_none() {
         return AnyView::new(Metadata::new(list, collection.retain()));
@@ -323,11 +320,18 @@ pub fn into_list(collection: &Collection, attributes: ListAttributes) -> AnyView
     // out of the way until edit mode is on.
     let mut list = list.editing(editing.unwrap_or_else(|| Computed::new(false)));
     if let Some(action) = on_delete {
-        list =
-            list.on_delete(move |ListDelete(index): ListDelete| action.call((row_index(index),)));
+        let keys = collection.keys();
+        list = list.on_delete(move |ListDelete(key): ListDelete<ItemKey>| {
+            let Some(index) = keys.with_range(.., |items| {
+                items.iter().position(|candidate| candidate == &key)
+            }) else {
+                return;
+            };
+            action.call((row_index(index),));
+        });
     }
     if let Some(action) = on_move {
-        list = list.on_move(move |ListMove(movement): ListMove| {
+        list = list.on_move(move |ListMove(movement): ListMove<ItemKey>| {
             action.call((row_index(movement.from()), row_index(movement.to())));
         });
     }

@@ -8,7 +8,6 @@ use waterui::Identifiable;
 use waterui::app::{App, Windows};
 use waterui::prelude::*;
 use waterui::preview;
-use waterui::reactive::collection::List as ReactiveList;
 use waterui::shape::{Circle, ShapeExt};
 
 const ROW_COUNT: u64 = 200_000;
@@ -32,7 +31,7 @@ fn detail_line(n: u64, label: &'static str) -> impl View {
     text(text!("detail line {n} {label}")).caption().muted()
 }
 
-fn record_row(index: u64) -> ListItem<impl View> {
+fn record_row(index: u64) -> impl View {
     let lines = index % 3 + 1;
     let header = hstack((
         Circle.fill(chip_color(index)).size(10.0, 10.0),
@@ -62,13 +61,13 @@ fn record_row(index: u64) -> ListItem<impl View> {
         ),
     };
 
-    ListItem::new(content.padding_with((8.0, 16.0)))
+    content.padding_with((8.0, 16.0))
 }
 
 /// The edge-list example page: a list of records with per-row detail.
 #[preview]
 pub fn demo() -> impl View {
-    let records = ReactiveList::from((0..ROW_COUNT).map(|id| Row { id }).collect::<Vec<_>>());
+    let records = StateList::from((0..ROW_COUNT).map(|id| Row { id }).collect::<Vec<_>>());
     let list = List::for_each(records, |row| record_row(row.id));
 
     vstack((
@@ -88,5 +87,5 @@ pub fn demo() -> impl View {
 
 /// Builds the edge-list example app.
 pub fn app(env: Environment) -> App<impl Windows> {
-    App::new(demo, env)
+    App::new(env).window(Window::new("", demo))
 }

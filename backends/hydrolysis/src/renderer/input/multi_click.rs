@@ -95,5 +95,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// press.
     pub(crate) const fn set_input_conventions(&mut self, conventions: InputConventions) {
         self.hit_test.input_conventions = conventions;
+        self.gesture_engine
+            .set_long_press_timeout(conventions.long_press_timeout);
     }
 }

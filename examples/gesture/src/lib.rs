@@ -8,14 +8,18 @@
 //! - Using `on_tap` convenience method
 //! - Non-primary pointer buttons (middle-click closes a tab)
 
+use core::{num::NonZeroU32, time::Duration};
+
 use waterui::Identifiable;
 use waterui::app::{App, Windows};
-use waterui::gesture::{DragGesture, LongPressGesture, PointerButtons, TapGesture};
+use waterui::gesture::{
+    DragEvent, DragGesture, GestureEvent, LongPressEvent, LongPressGesture, PointerButtons,
+    TapEvent, TapGesture,
+};
 use waterui::graphics::color::Srgb;
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::Binding;
-use waterui::reactive::collection::List as ReactiveList;
 
 const TAP_COLOR: Srgb = Srgb::from_hex("#2196F3");
 const DOUBLE_TAP_COLOR: Srgb = Srgb::from_hex("#4CAF50");
@@ -33,9 +37,12 @@ fn tap_section(tap_count: &Binding<i32>) -> impl View + use<> {
         text("Tap Me!")
             .padding()
             .background(TAP_COLOR.with_opacity(0.3))
-            .gesture(TapGesture::new(), |State(c): State<Binding<i32>>| {
-                *c.get_mut() += 1;
-            })
+            .gesture(
+                TapGesture::new(),
+                |_: TapEvent, State(c): State<Binding<i32>>| {
+                    *c.get_mut() += 1;
+                },
+            )
             .state(tap_count),
     ))
     .padding()
@@ -53,9 +60,12 @@ fn double_tap_section(double_tap_count: &Binding<i32>) -> impl View + use<> {
         text("Double Tap Me!")
             .padding()
             .background(DOUBLE_TAP_COLOR.with_opacity(0.3))
-            .gesture(TapGesture::repeat(2), |State(c): State<Binding<i32>>| {
-                *c.get_mut() += 1;
-            })
+            .gesture(
+                TapGesture::repeat(NonZeroU32::new(2).unwrap()),
+                |_: TapEvent, State(c): State<Binding<i32>>| {
+                    *c.get_mut() += 1;
+                },
+            )
             .state(double_tap_count),
     ))
     .padding()
@@ -74,8 +84,8 @@ fn long_press_section(long_press_count: &Binding<i32>) -> impl View + use<> {
             .padding()
             .background(LONG_PRESS_COLOR.with_opacity(0.3))
             .gesture(
-                LongPressGesture::new(500),
-                |State(c): State<Binding<i32>>| *c.get_mut() += 1,
+                LongPressGesture::new().minimum_duration(Duration::from_millis(500)),
+                |_: LongPressEvent, State(c): State<Binding<i32>>| *c.get_mut() += 1,
             )
             .state(long_press_count),
     ))
@@ -93,9 +103,12 @@ fn drag_section(drag_count: &Binding<i32>) -> impl View + use<> {
             .width(200.0)
             .height(100.0)
             .background(DRAG_COLOR.with_opacity(0.3))
-            .gesture(DragGesture::new(5.0), |State(c): State<Binding<i32>>| {
-                *c.get_mut() += 1;
-            })
+            .gesture(
+                DragGesture::new(5.0),
+                |_: DragEvent, State(c): State<Binding<i32>>| {
+                    *c.get_mut() += 1;
+                },
+            )
             .state(drag_count),
     ))
     .padding()
@@ -112,8 +125,11 @@ fn chained_section(chained_status: &Binding<&'static str>) -> impl View + use<> 
             .padding()
             .background(CHAINED_COLOR.with_opacity(0.3))
             .gesture(
-                TapGesture::new().then(LongPressGesture::new(300)),
-                |State(s): State<Binding<&'static str>>| s.set("Chained gesture completed!"),
+                TapGesture::new()
+                    .then(LongPressGesture::new().minimum_duration(Duration::from_millis(300))),
+                |_: GestureEvent, State(s): State<Binding<&'static str>>| {
+                    s.set("Chained gesture completed!");
+                },
             )
             .state(chained_status),
     ))
@@ -132,7 +148,7 @@ struct TabChip {
 /// `MIDDLE`-only tap runs alongside its primary selection tap without
 /// competing for the same press.
 fn middle_click_tab_section(
-    tabs: &ReactiveList<TabChip>,
+    tabs: &StateList<TabChip>,
     open_tabs: &Binding<i32>,
 ) -> impl View + use<> {
     let tabs_for_rows = tabs.clone();
@@ -149,7 +165,8 @@ fn middle_click_tab_section(
                     .background(Srgb::from_hex("#607D8B").with_opacity(0.3))
                     .gesture(
                         TapGesture::new().buttons(PointerButtons::MIDDLE),
-                        move |State(mut tabs): State<ReactiveList<TabChip>>,
+                        move |_: TapEvent,
+                              State(mut tabs): State<StateList<TabChip>>,
                               State(open_tabs): State<Binding<i32>>| {
                             if let Some(index) =
                                 tabs.snapshot().iter().position(|tab| tab.id == tab_id)
@@ -196,7 +213,7 @@ pub fn demo() -> impl View {
     let drag_count = Binding::i32(0);
     let chained_status = Binding::container("Waiting for tap...");
     let open_tabs = Binding::i32(4);
-    let tabs = ReactiveList::from(
+    let tabs = StateList::from(
         ["Overview", "Details", "Activity", "Settings"]
             .iter()
             .enumerate()
@@ -237,5 +254,5 @@ pub fn demo() -> impl View {
 
 /// Builds the gesture example app.
 pub fn app(env: Environment) -> App<impl Windows> {
-    App::new(demo, env)
+    App::new(env).window(Window::new("", demo))
 }

@@ -32,13 +32,14 @@ use std::rc::Rc;
 
 use accesskit::{Action, ActionRequest, NodeId, Role, TreeId, TreeUpdate};
 use waterui::accessibility::AccessibilityRole;
-use waterui::gesture::{DragEvent, DragGesture, GesturePoint, TapEvent, TapGesture};
+use waterui::gesture::{DragEvent, DragGesture, TapEvent, TapGesture};
+use waterui::layout::Point;
 use waterui::style::Anchor;
 use waterui::{AnyView, Binding, Color, ViewExt as _};
 use waterui_core::Environment;
 use waterui_core::extract::State;
 use waterui_core::handler::AnyViewBuilder;
-use waterui_interaction::event::{Event, HoverEvent};
+use waterui_interaction::event::{HoverEvent, HoverMove};
 use waterui_layout::stack::hstack;
 
 use super::{MinimalTestTheme, test_environment};
@@ -148,21 +149,28 @@ fn split(handle: AnyView) -> AnyView {
 /// The drag action body both orders share: extract `State` optionally so the
 /// action still runs when the environment cannot satisfy the extractor —
 /// which is what a regression to the old contract produces.
+fn record_fired(fired: &Fired, sizes: OptState<Vec<f32>>, grab: OptState<f32>) {
+    fired.borrow_mut().push((
+        sizes.map(|State(s)| s.get_mut()[0]),
+        grab.map(|State(g)| *g.get_mut()),
+    ));
+}
+
 fn drag_action(fired: Fired) -> impl Fn(DragEvent, OptState<Vec<f32>>, OptState<f32>) {
     move |_drag: DragEvent, sizes: OptState<Vec<f32>>, grab: OptState<f32>| {
-        fired.borrow_mut().push((
-            sizes.map(|State(s)| s.get_mut()[0]),
-            grab.map(|State(g)| *g.get_mut()),
-        ));
+        record_fired(&fired, sizes, grab);
     }
 }
 
-fn tap_action(fired: Fired) -> impl Fn(OptState<Vec<f32>>, OptState<f32>) {
+fn tap_action(fired: Fired) -> impl Fn(TapEvent, OptState<Vec<f32>>, OptState<f32>) {
+    move |_tap: TapEvent, sizes: OptState<Vec<f32>>, grab: OptState<f32>| {
+        record_fired(&fired, sizes, grab);
+    }
+}
+
+fn state_action(fired: Fired) -> impl Fn(OptState<Vec<f32>>, OptState<f32>) {
     move |sizes: OptState<Vec<f32>>, grab: OptState<f32>| {
-        fired.borrow_mut().push((
-            sizes.map(|State(s)| s.get_mut()[0]),
-            grab.map(|State(g)| *g.get_mut()),
-        ));
+        record_fired(&fired, sizes, grab);
     }
 }
 
@@ -272,10 +280,15 @@ fn tap_gesture_extracts_state_installed_between_view_and_gesture() {
 fn on_tap_extracts_state_installed_between_view_and_handler() {
     let fired = fired_sink();
     let (sizes, grab) = state_bindings();
-    let view = handle()
-        .state(&sizes)
-        .state(&grab)
-        .on_tap(tap_action(Rc::clone(&fired)));
+    let view = handle().state(&sizes).state(&grab).on_tap({
+        let fired = Rc::clone(&fired);
+        move |sizes: OptState<Vec<f32>>, grab: OptState<f32>| {
+            fired.borrow_mut().push((
+                sizes.map(|State(s)| s.get_mut()[0]),
+                grab.map(|State(g)| *g.get_mut()),
+            ));
+        }
+    });
     let mut runtime = runtime_with(split(AnyView::new(view)));
 
     pointer_down(&mut runtime, 400.0, 300.0);
@@ -361,7 +374,7 @@ fn hover_enter_extracts_state_installed_on_an_ancestor() {
     let fired = fired_sink();
     let (sizes, grab) = state_bindings();
     let view = handle()
-        .on_hover_enter(tap_action(Rc::clone(&fired)))
+        .on_hover_enter(state_action(Rc::clone(&fired)))
         .state(&sizes)
         .state(&grab);
     let mut runtime = runtime_with(split(AnyView::new(view)));
@@ -379,7 +392,7 @@ fn hover_enter_extracts_state_installed_between_view_and_handler() {
     let view = handle()
         .state(&sizes)
         .state(&grab)
-        .on_hover_enter(tap_action(Rc::clone(&fired)));
+        .on_hover_enter(state_action(Rc::clone(&fired)));
     let mut runtime = runtime_with(split(AnyView::new(view)));
 
     pointer_move(&mut runtime, 400.0, 300.0);
@@ -522,7 +535,7 @@ fn hover_move_location_is_view_local() {
 
     // The handle sits at x = 390 between two 390-point panes.
     let translated_fired = Rc::new(RefCell::new(Vec::new()));
-    let translated = handle().event(Event::HoverMove, record(Rc::clone(&translated_fired)));
+    let translated = handle().event(HoverMove, record(Rc::clone(&translated_fired)));
     let mut runtime = runtime_with(split(AnyView::new(translated)));
     pointer_move(&mut runtime, 400.0, 300.0);
     assert_eq!(
@@ -534,7 +547,7 @@ fn hover_move_location_is_view_local() {
     // Doubled from its top-left corner: window (400, 300) is local (5, 150).
     let scaled_fired = Rc::new(RefCell::new(Vec::new()));
     let scaled = handle()
-        .event(Event::HoverMove, record(Rc::clone(&scaled_fired)))
+        .event(HoverMove, record(Rc::clone(&scaled_fired)))
         .scale_from(2.0, Anchor::TOP_LEFT);
     let mut runtime = runtime_with(split(AnyView::new(scaled)));
     pointer_move(&mut runtime, 400.0, 300.0);
@@ -564,7 +577,7 @@ fn gesture_event_locations_are_view_local_under_scale() {
     pointer_up(&mut runtime, 410.0, 20.0);
     assert_eq!(
         taps.borrow().as_slice(),
-        [GesturePoint::new(10.0, 10.0)],
+        [Point::new(10.0, 10.0)],
         "a scaled view's tap location must be mapped through the inverse transform"
     );
 
@@ -584,7 +597,7 @@ fn gesture_event_locations_are_view_local_under_scale() {
     pointer_move(&mut runtime, 450.0, 20.0);
     assert_eq!(
         drags.borrow().last().copied(),
-        Some((GesturePoint::new(30.0, 10.0), GesturePoint::new(20.0, 0.0))),
+        Some((Point::new(30.0, 10.0), Point::new(20.0, 0.0))),
         "a scaled view's drag location maps as a point and its translation as a vector"
     );
 }

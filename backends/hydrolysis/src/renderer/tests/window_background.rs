@@ -17,6 +17,8 @@ fn pixel_at(rgba8: &[u8], width: u32, x: u32, y: u32) -> [u8; 4] {
 
 #[test]
 fn a_translucent_window_frame_keeps_its_background_alpha_under_opaque_content() {
+    use waterui::window::Window;
+
     let env = test_environment();
     // A 160x160 window whose only content is an opaque 80x80 red box.
     let content_builder = AnyViewBuilder::<AnyView>::new(move || {
@@ -24,12 +26,8 @@ fn a_translucent_window_frame_keeps_its_background_alpha_under_opaque_content() 
             .size(80.0, 80.0)
             .background(Color::srgb(255, 0, 0)),)))
     });
-    let window = waterui::window::Window::new(
-        "",
-        waterui_core::binding(waterui::window::WindowState::Normal),
-        move || content_builder.build(),
-    )
-    .background(Color::srgb(51, 51, 51).with_opacity(0.5));
+    let window = Window::new("", move || content_builder.build())
+        .background(Color::srgb(51, 51, 51).with_opacity(0.5));
     let mut rt = crate::HeadlessRuntime::new_for_tests_with_window(
         env,
         window,

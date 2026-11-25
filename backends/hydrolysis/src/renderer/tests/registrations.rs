@@ -13,10 +13,10 @@ use std::time::{Duration, Instant};
 
 use accesskit::Role;
 use nami::Binding;
-use nami::collection::List as Membership;
 use nami::collection::SignalCollection;
+use nami::collection::StateList;
 use waterui::animation::Animation;
-use waterui::component::list::{List, ListItem};
+use waterui::component::list::List;
 use waterui::component::text;
 use waterui::graphics::Color;
 use waterui::prelude::ContextMenu;
@@ -228,7 +228,7 @@ fn a_closed_menus_occluder_leaves_the_row_beneath_hittable() {
                 SignalCollection::new(rows),
                 move |row| {
                     let index = row.into_inner();
-                    let content = if index == MENU_ROW {
+                    if index == MENU_ROW {
                         AnyView::new(
                             Frame::new(button("Menu row").action(|| {}).context_menu(menu()))
                                 .height(ROW_H)
@@ -245,8 +245,7 @@ fn a_closed_menus_occluder_leaves_the_row_beneath_hittable() {
                         AnyView::new(
                             vstack((text(format!("Row {index}")),)).size(f32::INFINITY, ROW_H),
                         )
-                    };
-                    ListItem::new(content)
+                    }
                 },
             )))
         })
@@ -575,11 +574,10 @@ fn materialized_paint_order_keeps_devs_ranking() {
         AnyView::new(scroll(
             List::for_each(SignalCollection::new(rows), |row| {
                 let index = row.into_inner();
-                ListItem::new(
-                    vstack((text(format!("Row {index}")),))
-                        .size(360.0, 44.0)
-                        .on_tap(|| {}),
-                )
+
+                vstack((text(format!("Row {index}")),))
+                    .size(360.0, 44.0)
+                    .on_tap(|| {})
             })
             .selection(&selection),
         ))
@@ -761,11 +759,10 @@ fn reference_over_rows(tapped: &Rc<Cell<Option<usize>>>) -> AnyView {
             move |row| {
                 let index = row.into_inner();
                 let tapped = tapped.clone();
-                ListItem::new(
-                    vstack((text(format!("Row {index}")),))
-                        .size(360.0, 44.0)
-                        .on_tap(move || tapped.set(Some(index))),
-                )
+
+                vstack((text(format!("Row {index}")),))
+                    .size(360.0, 44.0)
+                    .on_tap(move || tapped.set(Some(index)))
             },
         ),
     )))
@@ -874,7 +871,7 @@ fn a_list_row_inside_a_pushed_navigation_page_is_hit_below_the_stack_offset() {
 #[test]
 fn a_collection_entry_mid_transition_is_hit_at_its_single_offset_position() {
     let tapped = Rc::new(Cell::new(None));
-    let mut list: Membership<SelfId<u64>> = Membership::from(vec![SelfId::new(0), SelfId::new(1)]);
+    let mut list: StateList<SelfId<u64>> = StateList::from(vec![SelfId::new(0), SelfId::new(1)]);
     let builder = {
         let list = list.clone();
         let tapped = tapped.clone();

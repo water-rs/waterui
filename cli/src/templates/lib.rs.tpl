@@ -1,6 +1,7 @@
 use waterui::app::{App, Windows};
 use waterui::prelude::*;
 use waterui::preview;
+use waterui::window::Window;
 
 // Demo form data structure
 #[form]
@@ -23,14 +24,14 @@ fn main() -> impl View {
         vstack((
             // App header
             vstack((
-                text("WaterUI Demo").size(24),
+                text("WaterUI Demo").font_size(24),
                 "Cross-platform Reactive UI Framework",
                 Divider,
             )),
             spacer(),
             // Counter demo with reactive updates
             vstack((
-                text("Interactive Counter").size(18),
+                text("Interactive Counter").font_size(18),
                 hstack((
                     "Count: ",
                     text!("{counter}"),
@@ -44,17 +45,17 @@ fn main() -> impl View {
             {
                 let proj = profile.project();
                 vstack((
-                    text("User Profile").size(18.0f32),
+                    text("User Profile").font_size(18.0f32),
                     form(&profile),
-                    text!("Name: {name}", name = proj.name).bold(),
+                    text!("Name: {name}", name = proj.name).bold(true),
                     text!("Email: {email}", email = proj.email),
                 ))
             },
             spacer(),
             // Interactive controls
             vstack((
-                text("Controls").size(18.0f32),
-                Slider::new("Progress".into_label(), &progress_value),
+                text("Controls").font_size(18.0f32),
+                Slider::new("Progress", &progress_value),
                 progress(progress_value),
                 loading(),
             )),
@@ -67,5 +68,5 @@ fn main() -> impl View {
 }
 
 pub fn app(env: Environment) -> App<impl Windows> {
-    App::new(main, env)
+    App::new(env).window(Window::new("{{ ctx.app_display_name }}", main))
 }

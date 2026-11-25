@@ -29,6 +29,7 @@ pub mod cursor;
 pub mod date_picker;
 #[cfg(feature = "dialog")]
 pub mod dialog;
+pub mod disclosure;
 pub mod draggable;
 pub mod drop_destination;
 pub mod dynamic;
@@ -91,6 +92,7 @@ pub mod secure;
 #[cfg(feature = "secure_field")]
 pub mod secure_field;
 pub mod shadow;
+pub mod sheet;
 #[cfg(feature = "slider")]
 pub mod slider;
 pub mod spacer;

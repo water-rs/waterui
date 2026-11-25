@@ -26,10 +26,10 @@ use waterui_interaction::interaction::Disabled;
 use waterui_interaction::key::Key;
 pub use waterui_interaction::key::NamedKey;
 use waterui_locale::locale_binding;
-use waterui_text::{TextConfig, styled::StyledStr};
+use waterui_text::{IntoText, Text, TextConfig, styled::StyledStr};
 
 use crate::{
-    button::{Button, ButtonStyle},
+    button::{Button, ButtonRole, ButtonStyle},
     label::{
         ControlLabel, IntoAccessibilityLabel, IntoLabel, Label, LabelDisplayMode, LabelKind,
         SemanticLabel,
@@ -80,14 +80,242 @@ impl ShortcutModifiers {
     }
 }
 
-/// The key a [`Shortcut`] fires on: one character, or a named key from the
-/// W3C `KeyboardEvent.key` vocabulary — the same [`NamedKey`] that
-/// `SurfaceInputEvent::Key` carries.
+/// A named key that desktop platform menus can arm on a [`Shortcut`].
 ///
-/// The variants are public so backends can match on them; constructing one
-/// directly bypasses validation — a `Named` modifier or lock key, or a
-/// `Character` control character, names a key no press reports, so build
-/// keys through the `From`/`FromStr` conversions that refuse them.
+/// Restricts `W3C` [`NamedKey`] values to the portable subset backed by menu
+/// accelerators across platforms (`Backspace`, `Tab`, `Enter`, `Escape`,
+/// `Delete`, `Insert`, navigation keys, `F1`..=`F24`, and editing/function keys).
+/// Convert from a broader [`NamedKey`] fallibly via `TryFrom<NamedKey>`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each armable named shortcut key directly; adding a key must fail backend builds instead of hitting a wildcard"
+)]
+pub enum ShortcutNamedKey {
+    /// Arrow Up (`↑`).
+    ArrowUp,
+    /// Arrow Down (`↓`).
+    ArrowDown,
+    /// Arrow Left (`←`).
+    ArrowLeft,
+    /// Arrow Right (`→`).
+    ArrowRight,
+    /// Backspace (`⌫`).
+    Backspace,
+    /// Clear key (`⌧`).
+    Clear,
+    /// Context Menu / Application key.
+    ContextMenu,
+    /// Forward Delete (`⌦`).
+    Delete,
+    /// End (`↘`).
+    End,
+    /// Enter / Return (`↩`).
+    Enter,
+    /// Escape (`⎋`).
+    Escape,
+    /// Execute key.
+    Execute,
+    /// F1 function key.
+    F1,
+    /// F2 function key.
+    F2,
+    /// F3 function key.
+    F3,
+    /// F4 function key.
+    F4,
+    /// F5 function key.
+    F5,
+    /// F6 function key.
+    F6,
+    /// F7 function key.
+    F7,
+    /// F8 function key.
+    F8,
+    /// F9 function key.
+    F9,
+    /// F10 function key.
+    F10,
+    /// F11 function key.
+    F11,
+    /// F12 function key.
+    F12,
+    /// F13 function key.
+    F13,
+    /// F14 function key.
+    F14,
+    /// F15 function key.
+    F15,
+    /// F16 function key.
+    F16,
+    /// F17 function key.
+    F17,
+    /// F18 function key.
+    F18,
+    /// F19 function key.
+    F19,
+    /// F20 function key.
+    F20,
+    /// F21 function key.
+    F21,
+    /// F22 function key.
+    F22,
+    /// F23 function key.
+    F23,
+    /// F24 function key.
+    F24,
+    /// Help key.
+    Help,
+    /// Home (`↖`).
+    Home,
+    /// Insert key.
+    Insert,
+    /// Page Down (`⇟`).
+    PageDown,
+    /// Page Up (`⇞`).
+    PageUp,
+    /// Pause key.
+    Pause,
+    /// Print Screen key.
+    PrintScreen,
+    /// Select key.
+    Select,
+    /// Tab (`⇥`).
+    Tab,
+}
+
+impl ShortcutNamedKey {
+    /// Returns the corresponding W3C [`NamedKey`].
+    #[must_use]
+    pub const fn to_named_key(self) -> NamedKey {
+        match self {
+            Self::ArrowUp => NamedKey::ArrowUp,
+            Self::ArrowDown => NamedKey::ArrowDown,
+            Self::ArrowLeft => NamedKey::ArrowLeft,
+            Self::ArrowRight => NamedKey::ArrowRight,
+            Self::Backspace => NamedKey::Backspace,
+            Self::Clear => NamedKey::Clear,
+            Self::ContextMenu => NamedKey::ContextMenu,
+            Self::Delete => NamedKey::Delete,
+            Self::End => NamedKey::End,
+            Self::Enter => NamedKey::Enter,
+            Self::Escape => NamedKey::Escape,
+            Self::Execute => NamedKey::Execute,
+            Self::F1 => NamedKey::F1,
+            Self::F2 => NamedKey::F2,
+            Self::F3 => NamedKey::F3,
+            Self::F4 => NamedKey::F4,
+            Self::F5 => NamedKey::F5,
+            Self::F6 => NamedKey::F6,
+            Self::F7 => NamedKey::F7,
+            Self::F8 => NamedKey::F8,
+            Self::F9 => NamedKey::F9,
+            Self::F10 => NamedKey::F10,
+            Self::F11 => NamedKey::F11,
+            Self::F12 => NamedKey::F12,
+            Self::F13 => NamedKey::F13,
+            Self::F14 => NamedKey::F14,
+            Self::F15 => NamedKey::F15,
+            Self::F16 => NamedKey::F16,
+            Self::F17 => NamedKey::F17,
+            Self::F18 => NamedKey::F18,
+            Self::F19 => NamedKey::F19,
+            Self::F20 => NamedKey::F20,
+            Self::F21 => NamedKey::F21,
+            Self::F22 => NamedKey::F22,
+            Self::F23 => NamedKey::F23,
+            Self::F24 => NamedKey::F24,
+            Self::Help => NamedKey::Help,
+            Self::Home => NamedKey::Home,
+            Self::Insert => NamedKey::Insert,
+            Self::PageDown => NamedKey::PageDown,
+            Self::PageUp => NamedKey::PageUp,
+            Self::Pause => NamedKey::Pause,
+            Self::PrintScreen => NamedKey::PrintScreen,
+            Self::Select => NamedKey::Select,
+            Self::Tab => NamedKey::Tab,
+        }
+    }
+
+    /// Converts a W3C [`NamedKey`] into a [`ShortcutNamedKey`] when platform menus can arm it.
+    #[must_use]
+    pub const fn from_named_key(key: NamedKey) -> Option<Self> {
+        Some(match key {
+            NamedKey::ArrowUp => Self::ArrowUp,
+            NamedKey::ArrowDown => Self::ArrowDown,
+            NamedKey::ArrowLeft => Self::ArrowLeft,
+            NamedKey::ArrowRight => Self::ArrowRight,
+            NamedKey::Backspace => Self::Backspace,
+            NamedKey::Clear => Self::Clear,
+            NamedKey::ContextMenu => Self::ContextMenu,
+            NamedKey::Delete => Self::Delete,
+            NamedKey::End => Self::End,
+            NamedKey::Enter => Self::Enter,
+            NamedKey::Escape => Self::Escape,
+            NamedKey::Execute => Self::Execute,
+            NamedKey::F1 => Self::F1,
+            NamedKey::F2 => Self::F2,
+            NamedKey::F3 => Self::F3,
+            NamedKey::F4 => Self::F4,
+            NamedKey::F5 => Self::F5,
+            NamedKey::F6 => Self::F6,
+            NamedKey::F7 => Self::F7,
+            NamedKey::F8 => Self::F8,
+            NamedKey::F9 => Self::F9,
+            NamedKey::F10 => Self::F10,
+            NamedKey::F11 => Self::F11,
+            NamedKey::F12 => Self::F12,
+            NamedKey::F13 => Self::F13,
+            NamedKey::F14 => Self::F14,
+            NamedKey::F15 => Self::F15,
+            NamedKey::F16 => Self::F16,
+            NamedKey::F17 => Self::F17,
+            NamedKey::F18 => Self::F18,
+            NamedKey::F19 => Self::F19,
+            NamedKey::F20 => Self::F20,
+            NamedKey::F21 => Self::F21,
+            NamedKey::F22 => Self::F22,
+            NamedKey::F23 => Self::F23,
+            NamedKey::F24 => Self::F24,
+            NamedKey::Help => Self::Help,
+            NamedKey::Home => Self::Home,
+            NamedKey::Insert => Self::Insert,
+            NamedKey::PageDown => Self::PageDown,
+            NamedKey::PageUp => Self::PageUp,
+            NamedKey::Pause => Self::Pause,
+            NamedKey::PrintScreen => Self::PrintScreen,
+            NamedKey::Select => Self::Select,
+            NamedKey::Tab => Self::Tab,
+            _ => return None,
+        })
+    }
+}
+
+impl fmt::Display for ShortcutNamedKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.to_named_key(), f)
+    }
+}
+
+impl From<ShortcutNamedKey> for NamedKey {
+    fn from(key: ShortcutNamedKey) -> Self {
+        key.to_named_key()
+    }
+}
+
+impl TryFrom<NamedKey> for ShortcutNamedKey {
+    type Error = InvalidShortcutKey;
+
+    fn try_from(key: NamedKey) -> Result<Self, Self::Error> {
+        Self::from_named_key(key).ok_or_else(|| InvalidShortcutKey::new(key.to_string()))
+    }
+}
+
+/// The key a [`Shortcut`] fires on: one character, or an armable named key.
+///
+/// The variants are public so backends can match on them; constructing
+/// `Character` directly bypasses control-character validation, so build
+/// character keys through `From<char>` (`Shortcut::new`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[expect(
     clippy::exhaustive_enums,
@@ -98,7 +326,7 @@ pub enum ShortcutKey {
     /// Shift is a separate modifier.
     Character(char),
     /// A named key such as `Delete`, `Enter`, `F5` or `ArrowLeft`.
-    Named(NamedKey),
+    Named(ShortcutNamedKey),
 }
 
 impl ShortcutKey {
@@ -114,7 +342,7 @@ impl ShortcutKey {
                     chars.next().is_none() && expected.to_lowercase().eq(pressed.to_lowercase())
                 })
             }
-            (Self::Named(expected), Key::Named(pressed)) => expected == pressed,
+            (Self::Named(expected), Key::Named(pressed)) => expected.to_named_key() == *pressed,
             _ => false,
         }
     }
@@ -124,7 +352,7 @@ impl ShortcutKey {
     pub fn to_key(&self) -> Key {
         match self {
             Self::Character(character) => Key::Character(character.to_string()),
-            Self::Named(named) => Key::Named(*named),
+            Self::Named(named) => Key::Named(named.to_named_key()),
         }
     }
 }
@@ -154,81 +382,50 @@ impl fmt::Display for ShortcutKey {
 }
 
 #[cfg(target_vendor = "apple")]
-const fn named_key_label(key: NamedKey) -> Option<&'static str> {
+const fn named_key_label(key: ShortcutNamedKey) -> Option<&'static str> {
     Some(match key {
-        NamedKey::Delete => "⌦",
-        NamedKey::Backspace => "⌫",
-        NamedKey::Enter => "↩",
-        NamedKey::Escape => "⎋",
-        NamedKey::Tab => "⇥",
-        NamedKey::ArrowUp => "↑",
-        NamedKey::ArrowDown => "↓",
-        NamedKey::ArrowLeft => "←",
-        NamedKey::ArrowRight => "→",
-        NamedKey::PageUp => "⇞",
-        NamedKey::PageDown => "⇟",
-        NamedKey::Home => "↖",
-        NamedKey::End => "↘",
-        NamedKey::Clear => "⌧",
+        ShortcutNamedKey::Delete => "⌦",
+        ShortcutNamedKey::Backspace => "⌫",
+        ShortcutNamedKey::Enter => "↩",
+        ShortcutNamedKey::Escape => "⎋",
+        ShortcutNamedKey::Tab => "⇥",
+        ShortcutNamedKey::ArrowUp => "↑",
+        ShortcutNamedKey::ArrowDown => "↓",
+        ShortcutNamedKey::ArrowLeft => "←",
+        ShortcutNamedKey::ArrowRight => "→",
+        ShortcutNamedKey::PageUp => "⇞",
+        ShortcutNamedKey::PageDown => "⇟",
+        ShortcutNamedKey::Home => "↖",
+        ShortcutNamedKey::End => "↘",
+        ShortcutNamedKey::Clear => "⌧",
         _ => return None,
     })
 }
 
 #[cfg(not(target_vendor = "apple"))]
-const fn named_key_label(key: NamedKey) -> Option<&'static str> {
+const fn named_key_label(key: ShortcutNamedKey) -> Option<&'static str> {
     Some(match key {
-        NamedKey::Delete => "Del",
-        NamedKey::Insert => "Ins",
-        NamedKey::Escape => "Esc",
-        NamedKey::PageUp => "PgUp",
-        NamedKey::PageDown => "PgDn",
-        NamedKey::ArrowUp => "Up",
-        NamedKey::ArrowDown => "Down",
-        NamedKey::ArrowLeft => "Left",
-        NamedKey::ArrowRight => "Right",
+        ShortcutNamedKey::Delete => "Del",
+        ShortcutNamedKey::Insert => "Ins",
+        ShortcutNamedKey::Escape => "Esc",
+        ShortcutNamedKey::PageUp => "PgUp",
+        ShortcutNamedKey::PageDown => "PgDn",
+        ShortcutNamedKey::ArrowUp => "Up",
+        ShortcutNamedKey::ArrowDown => "Down",
+        ShortcutNamedKey::ArrowLeft => "Left",
+        ShortcutNamedKey::ArrowRight => "Right",
         _ => return None,
     })
 }
 
-/// Whether `key` can name a shortcut: `Unidentified` and `Dead` are reported
-/// for presses the layout could not or did not resolve, and a modifier or
-/// lock key only changes the presses around it, so a chord on any of them
-/// could never fire.
-#[expect(
-    deprecated,
-    reason = "the legacy `Hyper` and `Super` still parse from their W3C names, so they are refused \
-              like the other modifiers"
-)]
-const fn named_key_fires(key: NamedKey) -> bool {
-    !matches!(
-        key,
-        NamedKey::Unidentified
-            | NamedKey::Dead
-            | NamedKey::Alt
-            | NamedKey::AltGraph
-            | NamedKey::CapsLock
-            | NamedKey::Control
-            | NamedKey::Fn
-            | NamedKey::FnLock
-            | NamedKey::Meta
-            | NamedKey::NumLock
-            | NamedKey::ScrollLock
-            | NamedKey::Shift
-            | NamedKey::Symbol
-            | NamedKey::SymbolLock
-            | NamedKey::Hyper
-            | NamedKey::Super
-    )
-}
-
 /// The named key a control character stands for, when it has one.
-const fn named_key_for_control(character: char) -> Option<NamedKey> {
+const fn named_key_for_control(character: char) -> Option<ShortcutNamedKey> {
     match character {
-        '\u{8}' => Some(NamedKey::Backspace),
-        '\t' => Some(NamedKey::Tab),
-        '\n' | '\r' => Some(NamedKey::Enter),
-        '\u{1b}' => Some(NamedKey::Escape),
-        '\u{7f}' => Some(NamedKey::Delete),
+        '\u{8}' => Some(ShortcutNamedKey::Backspace),
+        '\t' => Some(ShortcutNamedKey::Tab),
+        '\n' | '\r' => Some(ShortcutNamedKey::Enter),
+        '\u{1b}' => Some(ShortcutNamedKey::Escape),
+        '\u{7f}' => Some(ShortcutNamedKey::Delete),
         _ => None,
     }
 }
@@ -237,7 +434,7 @@ impl From<char> for ShortcutKey {
     /// # Contract violation
     ///
     /// A control character is reported: a press reports the key it stands
-    /// for as a named key (`'\t'` is `NamedKey::Tab`), never as that
+    /// for as a named key (`'\t'` is `ShortcutNamedKey::Tab`), never as that
     /// character. A debug build panics; a release build logs it and the
     /// shortcut is created but never fires.
     fn from(character: char) -> Self {
@@ -246,7 +443,9 @@ impl From<char> for ShortcutKey {
                 "{character:?} is a control character, not a shortcut key: {}; the shortcut is created but never fires",
                 named_key_for_control(character).map_or_else(
                     || String::from("no key press reports it, so the shortcut could never fire"),
-                    |named| format!("the key press reports it as `NamedKey::{named}`, so use that"),
+                    |named| format!(
+                        "the key press reports it as `ShortcutNamedKey::{named:?}`, so use that"
+                    ),
                 )
             );
         }
@@ -254,25 +453,21 @@ impl From<char> for ShortcutKey {
     }
 }
 
-impl From<NamedKey> for ShortcutKey {
-    /// # Contract violation
-    ///
-    /// `NamedKey::Unidentified`, `NamedKey::Dead` and the modifier and lock
-    /// keys are reported: a shortcut on them could never fire. A debug build
-    /// panics; a release build logs it and the shortcut is created but never
-    /// fires.
-    fn from(key: NamedKey) -> Self {
-        if !named_key_fires(key) {
-            contract_violation!(
-                "`NamedKey::{key}` is not a valid shortcut key: it is unidentified, dead, a modifier \
-                 or a lock key, so the shortcut could never fire; the shortcut is created but never fires"
-            );
-        }
+impl From<ShortcutNamedKey> for ShortcutKey {
+    fn from(key: ShortcutNamedKey) -> Self {
         Self::Named(key)
     }
 }
 
-/// Parses a single character or a W3C named key; anything else is an error.
+impl TryFrom<NamedKey> for ShortcutKey {
+    type Error = InvalidShortcutKey;
+
+    fn try_from(key: NamedKey) -> Result<Self, Self::Error> {
+        ShortcutNamedKey::try_from(key).map(Self::Named)
+    }
+}
+
+/// Parses a single character or an armable W3C named key; anything else is an error.
 impl core::str::FromStr for ShortcutKey {
     type Err = InvalidShortcutKey;
 
@@ -287,17 +482,16 @@ impl core::str::FromStr for ShortcutKey {
         value
             .parse::<NamedKey>()
             .ok()
-            .filter(|key| named_key_fires(*key))
+            .and_then(ShortcutNamedKey::from_named_key)
             .map(Self::Named)
             .ok_or_else(|| InvalidShortcutKey::new(value.to_string()))
     }
 }
 
-/// A string that is neither a single character nor a W3C named key.
+/// A string that is neither a single character nor an armable named shortcut key.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("`{0}` is neither a single character nor a W3C KeyboardEvent.key name")]
-#[non_exhaustive]
-pub struct InvalidShortcutKey(pub String);
+#[error("`{0}` is neither a single character nor an armable shortcut key")]
+pub struct InvalidShortcutKey(String);
 
 impl InvalidShortcutKey {
     /// Rejects `key`.
@@ -338,12 +532,14 @@ impl Shortcut {
 }
 
 impl Shortcut {
-    /// Creates a shortcut on `key` — a `char` or a [`NamedKey`].
+    /// Creates a shortcut on `key` — a `char` or a [`ShortcutNamedKey`].
     ///
-    /// A backend whose platform menu cannot arm `key` — as an `AppKit` key
-    /// equivalent, a `UIKit` key command, a Win32 menu accelerator or an
-    /// Android menu shortcut character — panics when it builds the menu
-    /// item, so choose a key the target platforms' menus support.
+    /// Named keys are restricted at compile time to [`ShortcutNamedKey`] so
+    /// unarmable W3C keys such as media, browser, modifier, or lock keys are
+    /// rejected unless explicitly converted with `TryFrom<NamedKey>`. Any
+    /// per-platform gap (for example desktop-only keys such as `F13`..=`F24`
+    /// on iOS) logs a contract violation and omits the key equivalent in
+    /// release builds rather than aborting.
     #[must_use]
     pub fn new(key: impl Into<ShortcutKey>) -> Self {
         Self {
@@ -427,7 +623,7 @@ impl_constant!(Shortcut, ShortcutModifiers);
 pub struct Menu<L> {
     label: Label<L>,
     /// The menu items to display when the menu is opened.
-    pub items: Computed<Vec<MenuItem>>,
+    items: Computed<Vec<MenuItem>>,
     identity: Rc<()>,
     style: ButtonStyle,
     size: ControlSize,
@@ -446,6 +642,12 @@ impl<L> Menu<L> {
             style: ButtonStyle::Automatic,
             size: ControlSize::Small,
         }
+    }
+
+    /// The menu items to display when the menu is opened.
+    #[must_use]
+    pub const fn items(&self) -> &Computed<Vec<MenuItem>> {
+        &self.items
     }
 
     /// Sets the style the menu's trigger button is drawn in.
@@ -537,21 +739,6 @@ impl<L: LabelKind> View for Menu<L> {
     }
 }
 
-/// What a command does to the thing it acts on, which decides how every
-/// menu presents it.
-///
-/// A destructive command is drawn in the platform's destructive style: red
-/// text on iOS, macOS and Android, and the error colour in drawn menus.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[non_exhaustive]
-pub enum CommandRole {
-    /// An ordinary command.
-    #[default]
-    Standard,
-    /// A command that deletes or irreversibly changes data.
-    Destructive,
-}
-
 /// A semantic command that can be reused across menu-like surfaces.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
@@ -567,9 +754,9 @@ pub struct Command {
     /// Optional keyboard shortcut metadata.
     shortcut: Option<Shortcut>,
     /// What the command does, which decides its presentation.
-    role: CommandRole,
+    role: Option<ButtonRole>,
     /// An optional secondary line shown under the label.
-    subtitle: Option<Str>,
+    subtitle: Option<Text>,
     /// Local state layered onto the environment when the action runs.
     captured_env: Environment,
     identity: Rc<()>,
@@ -608,13 +795,13 @@ impl Command {
 
     /// What the command does, which decides its presentation.
     #[must_use]
-    pub const fn command_role(&self) -> CommandRole {
+    pub const fn command_role(&self) -> Option<ButtonRole> {
         self.role
     }
 
     /// An optional secondary line shown under the label.
     #[must_use]
-    pub const fn command_subtitle(&self) -> Option<&Str> {
+    pub const fn command_subtitle(&self) -> Option<&Text> {
         self.subtitle.as_ref()
     }
 
@@ -661,7 +848,13 @@ impl Command {
             selected: self.selected,
             shortcut: self.shortcut,
             role: self.role,
-            subtitle: self.subtitle,
+            subtitle: self.subtitle.map(|subtitle| {
+                subtitle
+                    .resolve(env)
+                    .content()
+                    .map(|styled| styled.to_plain())
+                    .computed()
+            }),
             identity: self.identity,
         }
     }
@@ -689,21 +882,24 @@ impl Command {
 
     /// Sets what the command does, which decides its presentation.
     #[must_use]
-    pub const fn role(mut self, role: CommandRole) -> Self {
-        self.role = role;
+    pub const fn role(mut self, role: ButtonRole) -> Self {
+        self.role = Some(role);
         self
     }
 
     /// Marks the command as destructive.
     #[must_use]
     pub const fn destructive(self) -> Self {
-        self.role(CommandRole::Destructive)
+        self.role(ButtonRole::Destructive)
     }
 
     /// Shows a secondary line under the command's label.
+    ///
+    /// Accepts any [`IntoText`] value so string literals resolve through the
+    /// active translation catalog in the surrounding [`Environment`].
     #[must_use]
-    pub fn subtitle(mut self, subtitle: impl Into<Str>) -> Self {
-        self.subtitle = Some(subtitle.into());
+    pub fn subtitle(mut self, subtitle: impl IntoText) -> Self {
+        self.subtitle = Some(subtitle.into_text());
         self
     }
 
@@ -748,7 +944,7 @@ impl CommandBuilder {
             disabled: Computed::constant(false),
             selected: Computed::constant(false),
             shortcut: None,
-            role: CommandRole::Standard,
+            role: None,
             subtitle: None,
             captured_env: Environment::new(),
             identity: Rc::new(()),
@@ -1167,23 +1363,23 @@ pub fn resolve_menu_bar_items<L: LabelKind + Clone, S: ChildSlot>(
 #[derive(Debug)]
 pub struct ResolvedCommand<S = NoopSlot> {
     /// Resolved text config for native menu presentation.
-    pub label: TextConfig,
+    label: TextConfig,
     /// The full semantic label retained for self-drawn menu renderers.
-    pub semantic_label: Label<SemanticLabel>,
+    semantic_label: Label<SemanticLabel>,
     /// Optional icon slot lifted out of the label for platform chrome.
-    pub icon: Option<IconSlot<S>>,
+    icon: Option<IconSlot<S>>,
     /// Shared action invoked by the native backend.
-    pub action: SharedAction<()>,
+    action: SharedAction<()>,
     /// Whether the command is currently disabled.
-    pub disabled: Computed<bool>,
+    disabled: Computed<bool>,
     /// Whether the command is currently selected or checked.
-    pub selected: Computed<bool>,
+    selected: Computed<bool>,
     /// Optional keyboard shortcut metadata.
-    pub shortcut: Option<Shortcut>,
+    shortcut: Option<Shortcut>,
     /// What the command does, which decides its presentation.
-    pub role: CommandRole,
+    role: Option<ButtonRole>,
     /// An optional secondary line shown under the label.
-    pub subtitle: Option<Str>,
+    subtitle: Option<Computed<Str>>,
     identity: Rc<()>,
 }
 
@@ -1235,6 +1431,65 @@ impl<S: 'static> ResolvedCommand<S> {
 }
 
 impl<S> ResolvedCommand<S> {
+    /// Resolved text config for native menu presentation.
+    #[must_use]
+    pub const fn label(&self) -> &TextConfig {
+        &self.label
+    }
+
+    /// The full semantic label retained for self-drawn menu renderers.
+    #[must_use]
+    pub const fn semantic_label(&self) -> &Label<SemanticLabel> {
+        &self.semantic_label
+    }
+
+    /// Optional icon slot lifted out of the label for platform chrome.
+    #[must_use]
+    pub const fn icon(&self) -> Option<&IconSlot<S>> {
+        self.icon.as_ref()
+    }
+
+    /// Shared action invoked by the native backend.
+    #[must_use]
+    pub const fn action(&self) -> &SharedAction<()> {
+        &self.action
+    }
+
+    /// Whether the command is currently disabled.
+    #[must_use]
+    pub const fn is_disabled(&self) -> &Computed<bool> {
+        &self.disabled
+    }
+
+    /// Replaces the disabled signal for a resolved command.
+    pub fn set_disabled(&mut self, disabled: Computed<bool>) {
+        self.disabled = disabled;
+    }
+
+    /// Whether the command is currently selected or checked.
+    #[must_use]
+    pub const fn is_selected(&self) -> &Computed<bool> {
+        &self.selected
+    }
+
+    /// Optional keyboard shortcut metadata.
+    #[must_use]
+    pub const fn shortcut(&self) -> Option<&Shortcut> {
+        self.shortcut.as_ref()
+    }
+
+    /// What the command does, which decides its presentation.
+    #[must_use]
+    pub const fn role(&self) -> Option<ButtonRole> {
+        self.role
+    }
+
+    /// An optional secondary line shown under the label.
+    #[must_use]
+    pub const fn subtitle(&self) -> Option<&Computed<Str>> {
+        self.subtitle.as_ref()
+    }
+
     /// Stable semantic identity used by native collection reconciliation.
     #[doc(hidden)]
     #[must_use]
@@ -1289,13 +1544,13 @@ impl<S> ResolvedCommand<S> {
 #[derive(Debug)]
 pub struct ResolvedNestedMenu<S = NoopSlot> {
     /// Resolved text config for the nested menu title.
-    pub label: TextConfig,
+    label: TextConfig,
     /// The full semantic label retained for self-drawn menu renderers.
-    pub semantic_label: Label<SemanticLabel>,
+    semantic_label: Label<SemanticLabel>,
     /// Optional icon slot lifted out of the label for platform chrome.
-    pub icon: Option<IconSlot<S>>,
+    icon: Option<IconSlot<S>>,
     /// Resolved nested menu items.
-    pub items: Computed<Vec<ResolvedMenuItem<S>>>,
+    items: Computed<Vec<ResolvedMenuItem<S>>>,
     identity: Rc<()>,
 }
 
@@ -1349,6 +1604,30 @@ impl<S: 'static> ResolvedNestedMenu<S> {
 }
 
 impl<S> ResolvedNestedMenu<S> {
+    /// Resolved text config for the nested menu title.
+    #[must_use]
+    pub const fn label(&self) -> &TextConfig {
+        &self.label
+    }
+
+    /// The full semantic label retained for self-drawn menu renderers.
+    #[must_use]
+    pub const fn semantic_label(&self) -> &Label<SemanticLabel> {
+        &self.semantic_label
+    }
+
+    /// Optional icon slot lifted out of the label for platform chrome.
+    #[must_use]
+    pub const fn icon(&self) -> Option<&IconSlot<S>> {
+        self.icon.as_ref()
+    }
+
+    /// Resolved nested menu items.
+    #[must_use]
+    pub const fn items(&self) -> &Computed<Vec<ResolvedMenuItem<S>>> {
+        &self.items
+    }
+
     /// Stable semantic identity used by native collection reconciliation.
     #[doc(hidden)]
     #[must_use]
@@ -1606,12 +1885,27 @@ mod tests {
     use nami::Signal;
 
     #[test]
-    fn shortcut_key_parses_characters_and_w3c_named_keys() {
+    fn shortcut_key_parses_characters_and_armable_named_keys() {
         assert_eq!("q".parse(), Ok(ShortcutKey::Character('q')));
         assert_eq!("Q".parse(), Ok(ShortcutKey::Character('Q')));
-        assert_eq!("Delete".parse(), Ok(ShortcutKey::Named(NamedKey::Delete)));
-        assert_eq!("F5".parse(), Ok(ShortcutKey::Named(NamedKey::F5)));
-        for rejected in ["", "ab", "Unidentified", "Dead", "\t", "Shift", "CapsLock"] {
+        assert_eq!(
+            "Delete".parse(),
+            Ok(ShortcutKey::Named(ShortcutNamedKey::Delete))
+        );
+        assert_eq!("F5".parse(), Ok(ShortcutKey::Named(ShortcutNamedKey::F5)));
+        assert_eq!("F24".parse(), Ok(ShortcutKey::Named(ShortcutNamedKey::F24)));
+        for rejected in [
+            "",
+            "ab",
+            "Unidentified",
+            "Dead",
+            "\t",
+            "Shift",
+            "CapsLock",
+            "MediaPlayPause",
+            "AudioVolumeUp",
+            "F25",
+        ] {
             assert_eq!(
                 rejected.parse::<ShortcutKey>(),
                 Err(InvalidShortcutKey::new(rejected.to_string())),
@@ -1632,35 +1926,39 @@ mod tests {
         assert!(!lower.matches(&Key::Character("w".to_string())));
         assert!(!lower.matches(&Key::Character("qq".to_string())));
         assert!(!lower.matches(&Key::Named(NamedKey::Delete)));
-        let delete = ShortcutKey::from(NamedKey::Delete);
+        let delete = ShortcutKey::from(ShortcutNamedKey::Delete);
         assert!(delete.matches(&Key::Named(NamedKey::Delete)));
         assert!(!delete.matches(&Key::Named(NamedKey::Backspace)));
     }
 
     #[test]
-    #[cfg_attr(
-        debug_assertions,
-        should_panic(expected = "is not a valid shortcut key")
-    )]
-    fn shortcut_key_refuses_a_named_key_no_press_resolves_to() {
-        // Release outcome: the shortcut is created and never fires.
-        let key = ShortcutKey::from(NamedKey::Unidentified);
-        assert_eq!(key, ShortcutKey::Named(NamedKey::Unidentified));
-        assert!(!key.matches(&Key::Named(NamedKey::Delete)));
+    fn try_from_named_key_accepts_armable_and_rejects_unarmable_keys() {
+        assert_eq!(
+            ShortcutKey::try_from(NamedKey::Delete),
+            Ok(ShortcutKey::Named(ShortcutNamedKey::Delete))
+        );
+        assert_eq!(
+            ShortcutKey::try_from(NamedKey::F24),
+            Ok(ShortcutKey::Named(ShortcutNamedKey::F24))
+        );
+        for unsupported in [
+            NamedKey::Unidentified,
+            NamedKey::Dead,
+            NamedKey::Shift,
+            NamedKey::MediaPlayPause,
+            NamedKey::AudioVolumeUp,
+            NamedKey::BrowserBack,
+            NamedKey::F25,
+        ] {
+            assert_eq!(
+                ShortcutKey::try_from(unsupported),
+                Err(InvalidShortcutKey::new(unsupported.to_string()))
+            );
+        }
     }
 
     #[test]
-    #[cfg_attr(
-        debug_assertions,
-        should_panic(expected = "is not a valid shortcut key")
-    )]
-    fn shortcut_key_refuses_a_modifier_key() {
-        let key = ShortcutKey::from(NamedKey::Shift);
-        assert_eq!(key, ShortcutKey::Named(NamedKey::Shift));
-    }
-
-    #[test]
-    #[cfg_attr(debug_assertions, should_panic(expected = "`NamedKey::Tab`"))]
+    #[cfg_attr(debug_assertions, should_panic(expected = "`ShortcutNamedKey::Tab`"))]
     fn shortcut_key_refuses_a_control_character_naming_its_key() {
         let key = ShortcutKey::from('\t');
         assert_eq!(key, ShortcutKey::Character('\t'));
@@ -1710,7 +2008,7 @@ mod tests {
     /// `Del` elsewhere.
     #[test]
     fn shortcut_displays_named_key_labels() {
-        let shortcut = Shortcut::new(NamedKey::Delete).command();
+        let shortcut = Shortcut::new(ShortcutNamedKey::Delete).command();
         #[cfg(target_vendor = "apple")]
         assert_eq!(shortcut.to_string(), "⌘⌦");
         #[cfg(not(target_vendor = "apple"))]
@@ -1772,14 +2070,41 @@ mod tests {
         let ResolvedMenuItem::Command(reply) = &resolved[0] else {
             panic!("first resolved item should be a command");
         };
-        assert_eq!(reply.role, CommandRole::Standard);
+        assert_eq!(reply.role, None);
         assert!(reply.subtitle.is_none());
 
         let ResolvedMenuItem::Command(delete) = &resolved[1] else {
             panic!("second resolved item should be a command");
         };
-        assert_eq!(delete.role, CommandRole::Destructive);
-        assert_eq!(delete.subtitle.as_deref(), Some("For everyone"));
+        assert_eq!(delete.role, Some(ButtonRole::Destructive));
+        assert_eq!(
+            delete.subtitle.as_ref().map(Signal::snapshot).as_deref(),
+            Some("For everyone")
+        );
+    }
+
+    #[test]
+    fn command_subtitle_resolves_through_translation_catalog() {
+        use waterui_locale::{TranslationCatalog, locales};
+
+        crate::init_test_executor();
+        let mut env = Environment::default();
+        env.insert(locales::FR);
+        env.insert(
+            TranslationCatalog::new()
+                .add_toml(locales::FR, "\"For everyone\" = \"Pour tous\"")
+                .expect("test catalog must parse"),
+        );
+
+        let resolved = Command::builder("Delete")
+            .action(|| {})
+            .subtitle("For everyone")
+            .resolve::<NoopSlot>(&env);
+
+        assert_eq!(
+            resolved.subtitle.as_ref().map(Signal::snapshot).as_deref(),
+            Some("Pour tous")
+        );
     }
 
     #[test]

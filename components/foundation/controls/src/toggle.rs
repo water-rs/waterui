@@ -11,8 +11,9 @@ use waterui_accessibility::{
 use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 use waterui_core::env::Installed;
 use waterui_core::layout::StretchAxis;
+use waterui_core::plugin::Plugin;
 use waterui_core::view::hook::Hook;
-use waterui_core::{AnyView, Environment, Metadata, Native, NativeView, View};
+use waterui_core::{AnyView, Environment, Metadata, Native, NativeView, View, contract_violation};
 use waterui_interaction::gesture::{GestureObserver, TapGesture};
 use waterui_interaction::interaction::{Disabled, InteractionReport, InteractionState};
 use waterui_text::styled::StyledStr;
@@ -27,8 +28,10 @@ use crate::slot::StyleSlot;
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum ToggleStyle {
-    /// The platform's default style: [`Self::Switch`] on iOS and Android,
-    /// [`Self::Checkbox`] on macOS. See [`Self::resolved`].
+    /// The platform's default style, resolved from the environment
+    /// ([`Self::Switch`] on Hydrolysis and iOS, [`Self::Checkbox`] on macOS
+    /// `AppKit`, or [`Self::Switch`] when no backend default is installed).
+    /// See [`Self::resolve`].
     #[default]
     Automatic,
     /// A switch-style toggle (sliding pill).
@@ -37,24 +40,53 @@ pub enum ToggleStyle {
     Checkbox,
 }
 
+/// A toggle style installed on a subtree becomes the default for toggles
+/// that did not pick one, the same way [`LabelDisplayMode`] and
+/// [`ButtonStyle`](crate::button::ButtonStyle) adapt controls to their
+/// surroundings.
+impl Plugin for ToggleStyle {}
+
+/// Backend-installed default [`ToggleStyle`] read when [`ToggleStyle::Automatic`]
+/// is resolved without an ambient [`ToggleStyle`] override in the environment.
+#[derive(Debug, Clone, Copy)]
+struct DefaultToggleStyle(ToggleStyle);
+
 impl ToggleStyle {
-    /// The concrete style this style draws on the target platform.
+    /// Registers `style` as the platform's default [`ToggleStyle`] in `env`
+    /// for descendants whose style is [`Self::Automatic`].
     ///
-    /// [`Self::Automatic`] resolves to the platform's default — a checkbox on
-    /// macOS, a switch everywhere else, iOS and Android included; every
-    /// other style is already concrete. The default is a property of the
-    /// target, not of the backend, so every backend on one target answers
-    /// the same stretch axis for it.
-    #[must_use]
-    pub const fn resolved(self) -> Self {
-        match self {
+    /// A `.with(ToggleStyle::...)` ancestor or explicit `.style(...)` wins over
+    /// the registered default, while an explicit `.with(ToggleStyle::Automatic)`
+    /// restores it.
+    pub fn install_default(style: Self, env: &mut Environment) {
+        let resolved = match style {
             Self::Automatic => {
-                if cfg!(target_os = "macos") {
-                    Self::Checkbox
-                } else {
-                    Self::Switch
-                }
+                contract_violation!(
+                    "ToggleStyle::install_default requires a concrete style; \
+                     using ToggleStyle::Switch"
+                );
+                Self::Switch
             }
+            concrete => concrete,
+        };
+        env.insert(DefaultToggleStyle(resolved));
+    }
+
+    /// Resolves this style in `env`.
+    ///
+    /// [`Self::Automatic`] reads an ambient [`ToggleStyle`] installed in `env`
+    /// first, then falls back to the backend's registered platform default
+    /// ([`Self::install_default`]), or [`Self::Switch`] when neither is present.
+    /// Concrete styles resolve to themselves.
+    #[must_use]
+    pub fn resolve(self, env: &Environment) -> Self {
+        match self {
+            Self::Automatic => match env.get::<Self>().copied() {
+                Some(Self::Automatic) | None => env
+                    .get::<DefaultToggleStyle>()
+                    .map_or(Self::Switch, |default| default.0),
+                Some(style) => style,
+            },
             style => style,
         }
     }
@@ -261,15 +293,16 @@ fn compose_custom_toggle<L: View, S: CustomToggleStyle>(
         interaction,
     });
     let tap_toggle = toggle.clone();
-    let gesture = GestureObserver::new(TapGesture::new(), move |action_env: Environment| {
-        if !Disabled::resolve(&action_env, false).snapshot() {
-            tap_toggle.set(!tap_toggle.snapshot());
-        }
-    });
+    let gesture =
+        GestureObserver::without_event(TapGesture::new(), move |action_env: Environment| {
+            if !Disabled::resolve(&action_env, false).snapshot() {
+                tap_toggle.set(!tap_toggle.snapshot());
+            }
+        });
     let with_gesture = Metadata::new(body, gesture);
     let checked_state = AccessibilityStateSignal::resolve(
         env,
-        toggle.map(|on| AccessibilityState::new().checked(Some(on))),
+        toggle.map(|on| AccessibilityState::new().checked(on)),
     );
     let with_state = Metadata::new(with_gesture, checked_state);
     let with_label =
@@ -524,17 +557,23 @@ impl<S> ToggleConfig<S> {
 
     /// `docs/layout-spec.md` §3: a toggle is `Horizontal` when it draws the
     /// switch style with a visible label, and `None` otherwise. Backends ask
-    /// the resolved payload, whose label carries an environment-wide
-    /// [`LabelDisplayMode`] too.
-    const fn layout_stretch_axis(&self) -> StretchAxis {
+    /// the resolved payload, whose style and [`LabelDisplayMode`] have already
+    /// been resolved against the environment.
+    fn layout_stretch_axis(&self) -> StretchAxis {
         let label_visible = !matches!(
             self.label.display_mode_preference(),
             LabelDisplayMode::Hidden
         );
-        match self.style.resolved() {
+        match self.style {
             ToggleStyle::Switch if label_visible => StretchAxis::Horizontal,
             ToggleStyle::Switch | ToggleStyle::Checkbox => StretchAxis::None,
-            ToggleStyle::Automatic => panic!("ToggleStyle::resolved never answers Automatic"),
+            ToggleStyle::Automatic => {
+                contract_violation!(
+                    "ToggleConfig::stretch_axis received an unresolved Automatic style; \
+                     resolve through the environment before measuring"
+                );
+                StretchAxis::None
+            }
         }
     }
 }
@@ -601,8 +640,9 @@ impl<S: 'static> MapSlots<S> for ToggleConfig<S> {
 /// available width, placing the label at the leading edge and the switch
 /// at the trailing edge with the free space between. A checkbox (box,
 /// then label) and a toggle with a hidden label are content-sized.
-/// [`ToggleStyle::Automatic`] takes the platform's default style first —
-/// a switch on iOS and Android, a checkbox on macOS.
+/// [`ToggleStyle::Automatic`] takes the ambient style installed in the
+/// environment (a `.with(ToggleStyle::...)` ancestor or the backend's
+/// platform default).
 ///
 /// # Examples
 ///
@@ -710,7 +750,7 @@ impl<L: LabelKind> Toggle<L, ToggleStyle> {
         ToggleConfig {
             label: self.label.into_control_label::<S>(env),
             toggle: self.toggle,
-            style: self.style.resolved(),
+            style: self.style.resolve(env),
             explicit_style: self.explicit_style,
             size: self.size,
         }
@@ -783,17 +823,13 @@ mod tests {
                 StretchAxis::None
             }
         };
-        let automatic_axis = |visible: bool| match ToggleStyle::Automatic.resolved() {
-            ToggleStyle::Switch => switch_axis(visible),
-            _ => StretchAxis::None,
-        };
         let cases = [
             (ToggleStyle::Switch, true, switch_axis(true)),
             (ToggleStyle::Switch, false, switch_axis(false)),
             (ToggleStyle::Checkbox, true, StretchAxis::None),
             (ToggleStyle::Checkbox, false, StretchAxis::None),
-            (ToggleStyle::Automatic, true, automatic_axis(true)),
-            (ToggleStyle::Automatic, false, automatic_axis(false)),
+            (ToggleStyle::Automatic, true, switch_axis(true)),
+            (ToggleStyle::Automatic, false, switch_axis(false)),
         ];
         let env = test_env();
         for (style, visible, expected) in cases {
@@ -808,24 +844,54 @@ mod tests {
                 "{style:?}, label visible: {visible} (resolved payload)"
             );
         }
+
+        let mut checkbox_default = test_env();
+        ToggleStyle::install_default(ToggleStyle::Checkbox, &mut checkbox_default);
+        let resolved = Toggle::new("Wi-Fi", &on).into_config::<AnyView>(&checkbox_default);
+        assert_eq!(NativeView::stretch_axis(&resolved), StretchAxis::None);
+
+        let switch_override = checkbox_default.extending(ToggleStyle::Switch);
+        let resolved = Toggle::new("Wi-Fi", &on).into_config::<AnyView>(&switch_override);
+        assert_eq!(NativeView::stretch_axis(&resolved), StretchAxis::Horizontal);
     }
 
-    /// The payload a backend receives never carries `Automatic`: it is the
-    /// target's default, a checkbox on macOS and a switch elsewhere.
+    /// The payload a backend receives never carries `Automatic`: it resolves
+    /// from the ambient `ToggleStyle` in the environment first, then the
+    /// backend's installed default, or `Switch` when unconfigured.
     #[test]
-    fn resolution_replaces_automatic_with_the_platform_default() {
-        let expected = if cfg!(target_os = "macos") {
+    fn resolution_replaces_automatic_with_the_environment_or_default() {
+        let empty = test_env();
+        assert_eq!(ToggleStyle::Automatic.resolve(&empty), ToggleStyle::Switch);
+
+        let mut checkbox_default = test_env();
+        ToggleStyle::install_default(ToggleStyle::Checkbox, &mut checkbox_default);
+        assert_eq!(
+            ToggleStyle::Automatic.resolve(&checkbox_default),
             ToggleStyle::Checkbox
-        } else {
-            ToggleStyle::Switch
-        };
-        assert_eq!(ToggleStyle::Automatic.resolved(), expected);
+        );
         for style in [ToggleStyle::Switch, ToggleStyle::Checkbox] {
-            assert_eq!(style.resolved(), style);
+            assert_eq!(style.resolve(&checkbox_default), style);
         }
+
         let on = Binding::bool(false);
-        let resolved: ToggleConfig<AnyView> = Toggle::new("Wi-Fi", &on).into_config(&test_env());
-        assert_eq!(resolved.style, expected);
+        let resolved: ToggleConfig<AnyView> =
+            Toggle::new("Wi-Fi", &on).into_config(&checkbox_default);
+        assert_eq!(resolved.style, ToggleStyle::Checkbox);
+
+        let subtree_switch = checkbox_default.extending(ToggleStyle::Switch);
+        assert_eq!(
+            ToggleStyle::Automatic.resolve(&subtree_switch),
+            ToggleStyle::Switch
+        );
+        let resolved: ToggleConfig<AnyView> =
+            Toggle::new("Wi-Fi", &on).into_config(&subtree_switch);
+        assert_eq!(resolved.style, ToggleStyle::Switch);
+
+        let reset_automatic = subtree_switch.extending(ToggleStyle::Automatic);
+        assert_eq!(
+            ToggleStyle::Automatic.resolve(&reset_automatic),
+            ToggleStyle::Checkbox
+        );
     }
 
     /// An environment-wide hidden display mode reaches the resolved payload:
@@ -932,7 +998,7 @@ mod custom_style_tests {
         let a11y_label = peel_metadata::<AccessibilityLabel>(role_view.content, &env)
             .expect("custom-styled toggle keeps hidden label in accessibility tree");
         assert_eq!(
-            a11y_label.value.signal().snapshot().as_str(),
+            a11y_label.value.resolve(&env).snapshot().as_str(),
             "Airplane Mode"
         );
 

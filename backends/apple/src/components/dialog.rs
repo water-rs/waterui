@@ -26,9 +26,10 @@ use cocoa_ui::objc2_app_kit::NSWindow as PlatformWindow;
 use cocoa_ui::objc2_ui_kit::UIWindow as PlatformWindow;
 use cocoa_ui::view;
 use cocoa_ui::{PlatformView, Retained};
+use waterui::component::button::ButtonRole;
+use waterui::dialog::Dialog;
 #[cfg(target_os = "macos")]
 use waterui::dialog::DialogAction;
-use waterui::dialog::{Dialog, DialogRole};
 use waterui::reactive::{Binding, Computed, Signal};
 use waterui::text::StyledStr;
 use waterui_backend_core::Environment;
@@ -268,9 +269,7 @@ fn present(state: &Rc<DialogState>) {
     // follows in resolved order (Cancel, then Destructive, then the
     // remaining Defaults), landing leftward.
     let resolved = state.dialog.resolved_actions();
-    let primary = resolved
-        .iter()
-        .position(|action| action.role() == DialogRole::Default);
+    let primary = resolved.iter().position(|action| action.role().is_none());
     let mut ordered = Vec::with_capacity(resolved.len());
     if let Some(primary) = primary {
         ordered.push(resolved[primary].clone());
@@ -304,11 +303,11 @@ fn present(state: &Rc<DialogState>) {
                 .as_ref(),
         );
         match action.role() {
-            DialogRole::Cancel => {
+            Some(ButtonRole::Cancel) => {
                 button.setKeyEquivalent(&NSString::from_str("\u{1b}"));
             }
-            DialogRole::Destructive => button.setHasDestructiveAction(true),
-            DialogRole::Default => {}
+            Some(ButtonRole::Destructive) => button.setHasDestructiveAction(true),
+            _ => {}
         }
     }
     // The sheet's end — a button, or `endSheet` from a dismissal, whose
@@ -349,9 +348,9 @@ fn present(state: &Rc<DialogState>) {
     let mut preferred = None;
     for action in &resolved {
         let style = match action.role() {
-            DialogRole::Default => UIAlertActionStyle::Default,
-            DialogRole::Cancel => UIAlertActionStyle::Cancel,
-            DialogRole::Destructive => UIAlertActionStyle::Destructive,
+            Some(ButtonRole::Cancel) => UIAlertActionStyle::Cancel,
+            Some(ButtonRole::Destructive) => UIAlertActionStyle::Destructive,
+            _ => UIAlertActionStyle::Default,
         };
         let title = action
             .title()
@@ -375,7 +374,7 @@ fn present(state: &Rc<DialogState>) {
             }
         };
         let platform_action = controller.add_action(&title, style, run);
-        if preferred.is_none() && action.role() == DialogRole::Default {
+        if preferred.is_none() && action.role().is_none() {
             preferred = Some(platform_action);
         }
     }

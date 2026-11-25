@@ -14,9 +14,10 @@ use accesskit::{
 use cherenkov_record::Recorder;
 use nami::Binding;
 use nami::Signal as _;
+use nami::collection::StateList;
 use waterui::ViewExt as _;
-use waterui::accessibility::AccessibilityState;
-use waterui::component::list::{List, ListItem};
+use waterui::accessibility::{AccessibilityRole, AccessibilityState};
+use waterui::component::list::List;
 use waterui::component::progress::progress;
 use waterui::component::table::{col, table};
 use waterui::theme::color::Error;
@@ -786,10 +787,10 @@ fn a_clean_pump_publishes_no_tree_update() {
 fn list_emits_all_rows_and_scrolls() {
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
         AnyView::new(List::content((
-            || ListItem::new(text("Row 1")),
-            || ListItem::new(text("Row 2")),
-            || ListItem::new(text("Row 3")),
-            || ListItem::new(text("Row 4")),
+            || text("Row 1"),
+            || text("Row 2"),
+            || text("Row 3"),
+            || text("Row 4"),
         )))
     }));
 
@@ -851,8 +852,8 @@ fn list_emits_all_rows_and_scrolls() {
 fn list_rows_emit_content_subtree_and_derived_label() {
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
         AnyView::new(List::content((
-            || ListItem::new(hstack((text("Name"), spacer(), text("Value")))),
-            || ListItem::new(text("Plain")),
+            || hstack((text("Name"), spacer(), text("Value"))),
+            || text("Plain"),
         )))
     }));
 
@@ -908,7 +909,7 @@ fn list_toggle_row_emits_actionable_switch() {
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
         let on_for_row = on_for_view.clone();
         AnyView::new(List::content((move || {
-            ListItem::new(toggle("Wi-Fi", &on_for_row).switch())
+            toggle("Wi-Fi", &on_for_row).switch()
         },)))
     }));
 
@@ -947,7 +948,7 @@ fn list_toggle_row_emits_actionable_switch() {
 fn list_row_explicit_label_names_the_row() {
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
         AnyView::new(List::content((|| {
-            ListItem::new(text("content text").a11y_label("Row name"))
+            text("content text").a11y_label("Row name")
         },)))
     }));
 
@@ -976,7 +977,7 @@ fn list_row_state_signal_hidden_removes_row_next_frame() {
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
         let state_for_row = state_for_view.clone();
         AnyView::new(List::content((move || {
-            ListItem::new(text("Hide me").a11y_state_signal(state_for_row.clone()))
+            text("Hide me").a11y_state(state_for_row.clone())
         },)))
     }));
 
@@ -995,12 +996,111 @@ fn list_row_state_signal_hidden_removes_row_next_frame() {
 }
 
 #[test]
-fn table_emits_headers_cells_and_scrolls() {
+fn reactive_a11y_hidden_toggles_control_and_container_on_semantic_walk() {
+    let hidden = Binding::bool(true);
+    let hidden_for_view = hidden.clone();
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
-        AnyView::new(table([
-            col("Name", vec![text("Ada"), text("Grace")]),
-            col("Lang", vec![text("Rust"), text("COBOL")]),
-        ]))
+        let hidden_flag = hidden_for_view.clone();
+        AnyView::new(vstack((
+            button("Save")
+                .action(|| {})
+                .a11y_hidden(hidden_flag.clone()),
+            vstack((text("Details A"), text("Details B")))
+                .a11y_label("Section")
+                .a11y_role(AccessibilityRole::Group)
+                .a11y_hidden(hidden_flag),
+        )))
+    }));
+
+    let update = pumped(&mut runtime);
+    assert_rooted(&update);
+    assert!(
+        update
+            .nodes
+            .iter()
+            .all(|(_, node)| node.label() != Some("Save")
+                && node.label() != Some("Section")
+                && node.label() != Some("Details A")
+                && node.label() != Some("Details B")),
+        "hidden button and group must stay absent while hidden starts true"
+    );
+
+    hidden.set(false);
+    let update = pumped(&mut runtime);
+    assert!(
+        update
+            .nodes
+            .iter()
+            .any(|(_, node)| node.label() == Some("Save")),
+        "button must appear on semantic walk when a11y_hidden flips false"
+    );
+    assert!(
+        update
+            .nodes
+            .iter()
+            .any(|(_, node)| node.label() == Some("Section")),
+        "group must appear on semantic walk when a11y_hidden flips false"
+    );
+    assert!(
+        update
+            .nodes
+            .iter()
+            .any(|(_, node)| node.label() == Some("Details A"))
+            && update
+                .nodes
+                .iter()
+                .any(|(_, node)| node.label() == Some("Details B")),
+        "group children must appear on semantic walk when a11y_hidden flips false"
+    );
+
+    hidden.set(true);
+    let update = pumped(&mut runtime);
+    assert!(
+        update
+            .nodes
+            .iter()
+            .all(|(_, node)| node.label() != Some("Save")
+                && node.label() != Some("Section")
+                && node.label() != Some("Details A")
+                && node.label() != Some("Details B")),
+        "button and group must disappear on semantic walk when a11y_hidden flips back to true"
+    );
+}
+
+fn table_children_by_role<'a>(
+    update: &'a TreeUpdate,
+    table_node: &Node,
+    role: Role,
+) -> Vec<(accesskit::NodeId, &'a Node)> {
+    table_node
+        .children()
+        .iter()
+        .copied()
+        .map(|id| (id, lookup(update, id)))
+        .filter(|(_, node)| node.role() == role)
+        .collect()
+}
+
+#[test]
+fn table_emits_headers_cells_and_scrolls() {
+    use waterui_core::id::SelfId;
+
+    let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
+        let rows = vec![
+            SelfId::new(("Ada", "Rust")),
+            SelfId::new(("Grace", "COBOL")),
+        ];
+        AnyView::new(table(
+            rows,
+            (
+                col("Name", |row: &SelfId<(&str, &str)>| {
+                    text((*row).into_inner().0)
+                }),
+                col("Lang", |row: &SelfId<(&str, &str)>| {
+                    text((*row).into_inner().1)
+                }),
+            ),
+        ))
     }));
 
     let update = pumped(&mut runtime);
@@ -1010,77 +1110,144 @@ fn table_emits_headers_cells_and_scrolls() {
     assert!(table_node.supports_action(Action::ScrollLeft));
     assert!(table_node.supports_action(Action::ScrollRight));
     assert_eq!(table_node.scroll_x(), Some(0.0));
-    let children = table_node.children();
+    assert_eq!(table_node.row_count(), Some(2));
+    assert_eq!(table_node.column_count(), Some(2));
     assert_eq!(
-        children.len(),
-        6,
-        "two column headers plus four cells must be the table's semantic children"
+        table_node.children().len(),
+        4,
+        "two column headers plus two rows must be the table's semantic children"
     );
-    let headers: Vec<&Node> = children
-        .iter()
-        .map(|id| lookup(&update, *id))
-        .filter(|node| node.role() == Role::ColumnHeader)
-        .collect();
+
+    let headers = table_children_by_role(&update, table_node, Role::ColumnHeader);
     assert_eq!(headers.len(), 2);
-    assert_eq!(headers[0].label(), Some("Name"));
-    assert_eq!(headers[1].label(), Some("Lang"));
-    let cells: Vec<&Node> = children
+    assert_eq!(headers[0].1.label(), Some("Name"));
+    assert_eq!(headers[1].1.label(), Some("Lang"));
+
+    let rows = table_children_by_role(&update, table_node, Role::Row);
+    assert_eq!(rows.len(), 2, "two data rows must be emitted");
+    let cells: Vec<&Node> = rows
         .iter()
-        .map(|id| lookup(&update, *id))
+        .flat_map(|(_, row)| row.children().iter().map(|id| lookup(&update, *id)))
         .filter(|node| node.role() == Role::Cell)
         .collect();
-    assert_eq!(
-        cells.len(),
-        4,
-        "every cell exists in the semantic tree — there is no viewport to virtualize"
-    );
+    assert_eq!(cells.len(), 4, "every cell exists under its row");
     let labels: Vec<Option<&str>> = cells.iter().map(|cell| cell.label()).collect();
     for expected in ["Ada", "Grace", "Rust", "COBOL"] {
         assert!(
             labels.contains(&Some(expected)),
-            "cell {expected:?} is missing from the semantic tree"
+            "cell {expected:?} missing"
         );
     }
 
-    assert!(
-        act(&mut runtime, Action::ScrollDown, table_id),
-        "ScrollDown changed nothing"
-    );
+    assert!(act(&mut runtime, Action::ScrollDown, table_id));
     let update = pumped(&mut runtime);
     let (_, table_node) = find_only(&update, Role::Table).expect("the table vanished");
-    assert!(
-        table_node
-            .scroll_y()
-            .expect("the table must keep reporting its scroll offset")
-            > 0.0,
-        "ScrollDown did not move the scroll offset"
-    );
+    assert!(table_node.scroll_y().expect("scroll_y missing") > 0.0);
 
-    // The semantic scroll domain is measured in cells on both axes;
-    // ScrollRight moves the bound horizontal offset directly.
-    assert!(
-        act(&mut runtime, Action::ScrollRight, table_id),
-        "ScrollRight changed nothing"
-    );
+    assert!(act(&mut runtime, Action::ScrollRight, table_id));
     let update = pumped(&mut runtime);
     let (_, table_node) = find_only(&update, Role::Table).expect("the table vanished");
-    assert!(
-        table_node
-            .scroll_x()
-            .expect("the table must keep reporting its horizontal offset")
-            > 0.0,
-        "ScrollRight did not move the horizontal offset"
-    );
-    assert!(
-        act(&mut runtime, Action::ScrollLeft, table_id),
-        "ScrollLeft changed nothing"
-    );
+    assert!(table_node.scroll_x().expect("scroll_x missing") > 0.0);
+
+    assert!(act(&mut runtime, Action::ScrollLeft, table_id));
     let update = pumped(&mut runtime);
     let (_, table_node) = find_only(&update, Role::Table).expect("the table vanished");
+    assert_eq!(table_node.scroll_x(), Some(0.0));
+}
+
+#[test]
+fn selectable_sortable_table_with_non_text_cell_works() {
+    use accesskit::SortDirection as AccessKitSortDirection;
+    use waterui::Color;
+    use waterui::component::table::{SortDirection, Table, TableColumn, TableSort};
+    use waterui_core::id::Identifiable;
+
+    #[derive(Clone)]
+    struct Person {
+        id: u64,
+        name: &'static str,
+    }
+    impl Identifiable for Person {
+        type Id = u64;
+        fn id(&self) -> Self::Id {
+            self.id
+        }
+    }
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum PersonSort {
+        Name,
+    }
+
+    let people = StateList::from(vec![
+        Person { id: 1, name: "Ada" },
+        Person {
+            id: 2,
+            name: "Grace",
+        },
+    ]);
+    let selection = Binding::container(Some(1_u64));
+    let sort_order = Binding::container(Some(TableSort::ascending(PersonSort::Name)));
+    let (sel_view, sort_view) = (selection.clone(), sort_order.clone());
+
+    let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
+        AnyView::new(
+            Table::new(
+                people.clone(),
+                (
+                    TableColumn::new("Name", |p: &Person| text(p.name)).sortable(PersonSort::Name),
+                    TableColumn::new("Swatch", |p: &Person| {
+                        let swatch = if p.id == 1 {
+                            Color::srgb(0, 128, 255)
+                        } else {
+                            Color::srgb(255, 128, 0)
+                        };
+                        swatch.size(24.0, 24.0)
+                    }),
+                ),
+            )
+            .selection(&sel_view)
+            .sort_order(&sort_view),
+        )
+    }));
+
+    let update = pumped(&mut runtime);
+    let (_, table_node) = find_only(&update, Role::Table).expect("the table is missing");
+    let headers = table_children_by_role(&update, table_node, Role::ColumnHeader);
+    assert_eq!(headers.len(), 2);
+    assert!(headers[0].1.supports_action(Action::Click));
     assert_eq!(
-        table_node.scroll_x(),
-        Some(0.0),
-        "ScrollLeft did not return the horizontal offset to the start"
+        headers[0].1.sort_direction(),
+        Some(AccessKitSortDirection::Ascending)
+    );
+    assert!(!headers[1].1.supports_action(Action::Click));
+    assert_eq!(headers[1].1.sort_direction(), None);
+
+    let rows = table_children_by_role(&update, table_node, Role::Row);
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].1.is_selected(), Some(true));
+    assert_eq!(rows[1].1.is_selected(), Some(false));
+    assert!(rows[1].1.supports_action(Action::Click));
+
+    let (second_row_id, name_header_id) = (rows[1].0, headers[0].0);
+    assert!(act(&mut runtime, Action::Click, second_row_id));
+    assert_eq!(selection.snapshot(), Some(2));
+    let update = pumped(&mut runtime);
+    let (_, table_node) = find_only(&update, Role::Table).expect("the table vanished");
+    let updated_rows = table_children_by_role(&update, table_node, Role::Row);
+    assert_eq!(updated_rows[0].1.is_selected(), Some(false));
+    assert_eq!(updated_rows[1].1.is_selected(), Some(true));
+
+    assert!(act(&mut runtime, Action::Click, name_header_id));
+    assert_eq!(
+        sort_order.snapshot(),
+        Some(TableSort::new(PersonSort::Name, SortDirection::Descending))
+    );
+    let update = pumped(&mut runtime);
+    let (_, table_node) = find_only(&update, Role::Table).expect("the table vanished");
+    let updated_headers = table_children_by_role(&update, table_node, Role::ColumnHeader);
+    assert_eq!(
+        updated_headers[0].1.sort_direction(),
+        Some(AccessKitSortDirection::Descending)
     );
 }
 
@@ -1210,7 +1377,7 @@ fn scroll_view_emits_and_scroll_actions_move_offset() {
 #[test]
 fn badge_emits_count_beside_content() {
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
-        AnyView::new(waterui::component::badge::Badge::new(3, text("Inbox")))
+        AnyView::new(waterui::component::badge::Badge::new(3_u32, text("Inbox")))
     }));
 
     let update = pumped(&mut runtime);

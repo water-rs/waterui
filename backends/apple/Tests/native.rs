@@ -167,6 +167,13 @@ fn navigation_trials() -> Vec<Trial> {
             },
         ),
         Trial::test(
+            "navigation::a_searchable_page_submits_tracks_active_and_dismisses",
+            || {
+                navigation::a_searchable_page_submits_tracks_active_and_dismisses();
+                Ok(())
+            },
+        ),
+        Trial::test(
             "navigation::a_hidden_tab_split_releases_the_toolbar_sidebar_space",
             || {
                 navigation::a_hidden_tab_split_releases_the_toolbar_sidebar_space();
@@ -283,6 +290,13 @@ fn chrome_trials() -> Vec<Trial> {
                 Ok(())
             },
         ),
+        Trial::test(
+            "menus::a_menu_command_with_a_pack_icon_renders_a_nonempty_nsmenu_image",
+            || {
+                menus::a_menu_command_with_a_pack_icon_renders_a_nonempty_nsmenu_image();
+                Ok(())
+            },
+        ),
         #[cfg(feature = "text_field")]
         Trial::test(
             "text_selection::a_selection_menu_command_edits_the_live_selection",
@@ -349,6 +363,8 @@ fn trials() -> Vec<Trial> {
         tests.extend(transform_modifiers::trials());
         #[cfg(target_os = "macos")]
         tests.extend(border_modifier::trials());
+        #[cfg(target_os = "macos")]
+        tests.extend(shadow_modifier::trials());
         #[cfg(feature = "gpu_surface")]
         {
             tests.extend(gpu_surface::trials());
@@ -366,6 +382,7 @@ fn trials() -> Vec<Trial> {
             },
         ));
         tests.extend(tabs::trials());
+        tests.extend(menus_ios::trials());
         tests.extend(navigation::trials());
         tests.extend(controller_bounds::trials());
         // A Catalyst window carries no container bands, so the suite's
@@ -383,6 +400,9 @@ fn trials() -> Vec<Trial> {
     tests.extend(scroll::trials());
     tests.extend(list_scroll::trials());
     tests.extend(apple_content::trials());
+    #[cfg(target_os = "macos")]
+    tests.extend(row_major_table::trials());
+    tests.extend(disclosure::trials());
     #[cfg(all(feature = "native-test", feature = "gpu_surface"))]
     tests.extend(capture_colour::trials());
     #[cfg(all(catalyst, feature = "native-test", feature = "gpu_surface"))]
@@ -577,24 +597,12 @@ fn animation_cases() -> Vec<(&'static str, waterui::animation::Animation)> {
     let mut cases = vec![
         (
             "bezier",
-            Animation::Bezier {
-                duration: Duration::from_millis(500),
-                x1: 0.25,
-                y1: 0.1,
-                x2: 0.25,
-                y2: 1.0,
-            },
+            Animation::bezier(Duration::from_millis(500), 0.25, 0.1, 0.25, 1.0),
         ),
-        (
-            "spring",
-            Animation::Spring {
-                stiffness: 300.0,
-                damping: 30.0,
-            },
-        ),
+        ("spring", Animation::spring(300.0, 30.0)),
     ];
     #[cfg(target_os = "macos")]
-    cases.insert(0, ("default", Animation::Default));
+    cases.insert(0, ("default", Animation::default()));
     cases
 }
 
@@ -1028,7 +1036,7 @@ mod resolve {
     use waterui::component::slider::slider;
     use waterui::component::stepper::stepper;
     use waterui::component::text_field::TextField;
-    use waterui::component::toggle::Toggle;
+    use waterui::component::toggle::{Toggle, ToggleStyle};
     use waterui::filter::Opacity;
     use waterui::layout::Spacer;
     use waterui::reactive::binding;
@@ -1188,9 +1196,9 @@ mod resolve {
     /// cannot starve a trailing `ScrollView` by handing out space that
     /// only exists because the control claimed it.
     pub fn control_leaves_answer_their_intrinsic_height() {
-        let volume = binding(0.5_f64);
+        let volume = binding::<f64>(0.5);
         let selection = binding("Alpha");
-        let text_value = binding(Str::from(""));
+        let text_value = binding::<Str>(Str::from(""));
         let secret = binding(Secure::new(String::new()));
         let items: Vec<PickerItem<&'static str>> = vec![
             waterui::text!("Alpha").tag("Alpha"),
@@ -1241,28 +1249,42 @@ mod resolve {
         let cases = [
             (
                 "switch",
-                Toggle::new("Wi-Fi", &on).switch(),
+                AnyView::new(Toggle::new("Wi-Fi", &on).switch()),
                 StretchAxis::Horizontal,
             ),
             (
                 "hidden-label switch",
-                Toggle::new("Wi-Fi", &on).switch().hide_label(),
+                AnyView::new(Toggle::new("Wi-Fi", &on).switch().hide_label()),
                 StretchAxis::None,
             ),
             (
                 "checkbox",
-                Toggle::new("Wi-Fi", &on).checkbox(),
+                AnyView::new(Toggle::new("Wi-Fi", &on).checkbox()),
                 StretchAxis::None,
             ),
             (
                 "hidden-label checkbox",
-                Toggle::new("Wi-Fi", &on).checkbox().hide_label(),
+                AnyView::new(Toggle::new("Wi-Fi", &on).checkbox().hide_label()),
                 StretchAxis::None,
             ),
-            ("automatic", Toggle::new("Wi-Fi", &on), automatic),
+            (
+                "automatic",
+                AnyView::new(Toggle::new("Wi-Fi", &on)),
+                automatic,
+            ),
             (
                 "hidden-label automatic",
-                Toggle::new("Wi-Fi", &on).hide_label(),
+                AnyView::new(Toggle::new("Wi-Fi", &on).hide_label()),
+                StretchAxis::None,
+            ),
+            (
+                "environment switch",
+                AnyView::new(Toggle::new("Wi-Fi", &on).with(ToggleStyle::Switch)),
+                StretchAxis::Horizontal,
+            ),
+            (
+                "environment checkbox",
+                AnyView::new(Toggle::new("Wi-Fi", &on).with(ToggleStyle::Checkbox)),
                 StretchAxis::None,
             ),
         ];
@@ -1302,7 +1324,7 @@ mod resolve {
     /// visible; a hidden label answers the buttons' intrinsic size
     /// (water-rs/waterui#2364).
     pub fn stepper_leaves_follow_the_stretch_rule() {
-        let quantity = binding(3_i32);
+        let quantity = binding::<i32>(3);
         let cases = [
             (
                 "visible label",
@@ -1987,8 +2009,8 @@ mod tabs {
             Tabs::new(
                 &pane,
                 (
-                    Tab::container(label("One"), || text("pane one")),
-                    Tab::container(label("Two"), || text("pane two")),
+                    Tab::new(label("One"), || text("pane one")),
+                    Tab::new(label("Two"), || text("pane two")),
                 ),
             )
             .bottom_accessory(accessory),
@@ -2104,7 +2126,7 @@ mod tabs {
         ] {
             let pane = binding(0usize);
             let leaf = resolve::render(
-                Tabs::new(&pane, vec![Tab::container(label("One"), || text("one"))])
+                Tabs::new(&pane, vec![Tab::new(label("One"), || text("one"))])
                     .minimize_behavior(shared),
             );
             assert_eq!(tab_bar_controller(&leaf).tabBarMinimizeBehavior(), native);
@@ -2134,10 +2156,10 @@ mod tabs {
         let leaf = resolve::render(Tabs::new(
             &pane,
             (
-                Tab::container(label("One"), || {
+                Tab::new(label("One"), || {
                     scroll(vstack((text("one"), text("two"), text("three"))))
                 }),
-                Tab::container(label("Two"), || {
+                Tab::new(label("Two"), || {
                     vstack((text("aside"), scroll(text("nested"))))
                 }),
             ),
@@ -2168,8 +2190,8 @@ mod tabs {
         let leaf = resolve::render(Tabs::new(
             &pane,
             (
-                Tab::container(label("One"), || scroll(text("scrollable"))),
-                Tab::container(label("Two"), || text("static")),
+                Tab::new(label("One"), || scroll(text("scrollable"))),
+                Tab::new(label("Two"), || text("static")),
             ),
         ));
         let controllers = tab_bar_controller(&leaf)
@@ -2221,7 +2243,7 @@ mod tabs {
         let leaf = autoreleasepool(|_| {
             resolve::render(Tabs::new(
                 &pane,
-                vec![Tab::container(label("One"), move || {
+                vec![Tab::new(label("One"), move || {
                     Dynamic::watch(content.clone(), |scrolled| {
                         if scrolled {
                             AnyView::new(scroll(text("surface")))
@@ -2319,7 +2341,7 @@ mod tabs {
         let pane = binding(0usize);
         let leaf = resolve::render(Tabs::new(
             &pane,
-            vec![Tab::container(label("One"), || {
+            vec![Tab::new(label("One"), || {
                 NavigationStack::new(NavigationView::new("Root", scroll(text("root"))))
             })],
         ));
@@ -2538,6 +2560,144 @@ mod menus {
             .collect();
         assert_eq!(enabled, [true, false, false, false]);
     }
+
+    pub fn a_menu_command_with_a_pack_icon_renders_a_nonempty_nsmenu_image() {
+        use core::ptr::null_mut;
+
+        use cocoa_ui::objc2::Message;
+        use cocoa_ui::objc2_app_kit::NSPopUpButton;
+        use cocoa_ui::objc2_foundation::NSString;
+        use cocoa_ui::view::subviews;
+        use waterui::component::label::label;
+        use waterui::component::menu::{Command as MenuCommand, Menu as MenuView};
+        use waterui::prelude::button;
+        use waterui_icons_lucide as lucide;
+
+        fn find_popup(view: &crate::PlatformView) -> Option<crate::Retained<NSPopUpButton>> {
+            if let Some(button) = view.downcast_ref::<NSPopUpButton>() {
+                return Some(Message::retain(button));
+            }
+            subviews(view).into_iter().find_map(|sub| find_popup(&sub))
+        }
+
+        let leaf = crate::resolve::render(MenuView::new(
+            "Actions",
+            (
+                MenuCommand::builder(label("Delete").icon(lucide::trash())).action(|| {}),
+                button(label("Star").icon(lucide::star())).action(|| {}),
+            ),
+        ));
+        let popup = find_popup(leaf.view()).expect("Menu mounts an NSPopUpButton");
+        let native_menu = popup.menu().expect("Menu attaches an NSMenu");
+        for title in ["Delete", "Star"] {
+            let item = native_menu
+                .itemWithTitle(&NSString::from_str(title))
+                .expect("menu item exists");
+            let image = item
+                .image()
+                .expect("pack icon renders onto AppKit NSMenuItem");
+            assert!(image.isTemplate());
+            let size = image.size();
+            assert!(size.width > 0.0 && size.height > 0.0);
+            // SAFETY: null proposed rect retrieves the image's CGImage.
+            let cg = unsafe { image.CGImageForProposedRect_context_hints(null_mut(), None, None) }
+                .expect("NSImage yields a CGImage");
+            super::assert_menu_cgimage_nonempty(&cg);
+        }
+    }
+}
+
+#[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "native-test"))]
+fn assert_menu_cgimage_nonempty(cg: &cocoa_ui::objc2_core_graphics::CGImage) {
+    use cocoa_ui::Rect;
+    use cocoa_ui::bitmap::{bitmap_context, draw_image};
+    use cocoa_ui::objc2_core_graphics::CGImage;
+
+    let width = CGImage::width(Some(cg));
+    let height = CGImage::height(Some(cg));
+    assert!(
+        width > 0 && height > 0,
+        "nonzero menu icon {width}x{height}"
+    );
+    let mut pixels = vec![0_u8; width * height * 4];
+    let ctx =
+        bitmap_context(&mut pixels, width, height).expect("bitmap context creates for menu icon");
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "icon bitmap dimensions are small integer pixel counts"
+    )]
+    let rect = Rect::new(0.0, 0.0, width as f64, height as f64);
+    draw_image(&ctx, cg, rect);
+    assert!(
+        pixels.as_chunks::<4>().0.iter().any(|px| px[3] > 0),
+        "menu icon bitmap must draw at least one visible pixel"
+    );
+}
+
+#[cfg(all(target_os = "ios", feature = "native-test"))]
+mod menus_ios {
+    use cocoa_ui::objc2::Message;
+    use cocoa_ui::objc2_ui_kit::{UIAction, UIButton, UIImageRenderingMode};
+    use cocoa_ui::view::subviews;
+    use libtest_mimic::Trial;
+    use waterui::component::label::label;
+    use waterui::component::menu::{Command as MenuCommand, Menu as MenuView};
+    use waterui::prelude::button;
+    use waterui_icons_lucide as lucide;
+
+    pub fn trials() -> Vec<Trial> {
+        vec![Trial::test(
+            "menus::a_menu_command_with_a_pack_icon_renders_a_nonempty_uiaction_image",
+            || {
+                a_menu_command_with_a_pack_icon_renders_a_nonempty_uiaction_image();
+                Ok(())
+            },
+        )]
+    }
+
+    fn find_button(view: &crate::PlatformView) -> Option<crate::Retained<UIButton>> {
+        if let Some(button) = view.downcast_ref::<UIButton>() {
+            return Some(Message::retain(button));
+        }
+        subviews(view).into_iter().find_map(|sub| find_button(&sub))
+    }
+
+    fn a_menu_command_with_a_pack_icon_renders_a_nonempty_uiaction_image() {
+        let leaf = crate::resolve::render(MenuView::new(
+            "Actions",
+            (
+                MenuCommand::builder(label("Delete").icon(lucide::trash())).action(|| {}),
+                button(label("Star").icon(lucide::star())).action(|| {}),
+            ),
+        ));
+        let button = find_button(leaf.view()).expect("Menu mounts a UIButton");
+        let native_menu = button.menu().expect("UIButton attaches a UIMenu");
+        let actions: Vec<_> = native_menu
+            .children()
+            .iter()
+            .filter_map(|elem| elem.downcast::<UIAction>().ok())
+            .collect();
+        for title in ["Delete", "Star"] {
+            let action = actions
+                .iter()
+                .find(|a| a.title().to_string() == title)
+                .expect("UIAction item exists");
+            let image = action
+                .image()
+                .expect("pack icon renders onto UIKit UIAction");
+            // SAFETY: `renderingMode`, `size`, and `CGImage` are plain main-thread getters on UIImage.
+            let (rendering_mode, size, cg) = unsafe {
+                (
+                    image.renderingMode(),
+                    image.size(),
+                    image.CGImage().expect("UIImage yields a CGImage"),
+                )
+            };
+            assert_eq!(rendering_mode, UIImageRenderingMode::AlwaysTemplate);
+            assert!(size.width > 0.0 && size.height > 0.0);
+            super::assert_menu_cgimage_nonempty(&cg);
+        }
+    }
 }
 
 /// Navigation-chrome trials on `AppKit` against a real titled `NSWindow`: a
@@ -2548,14 +2708,20 @@ mod menus {
 /// namespace the `UIKit` cases own on iOS.
 #[cfg(all(target_os = "macos", feature = "native-test"))]
 mod navigation {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
     use cocoa_ui::appkit::{Segment, SegmentedControl};
+    use cocoa_ui::objc2::sel;
     use cocoa_ui::objc2_app_kit::{
         NSControlSize, NSLayoutAttribute, NSSearchField, NSSegmentDistribution, NSSegmentStyle,
-        NSSegmentedControl, NSSplitView, NSSplitViewController, NSTrackingSeparatorToolbarItem,
+        NSSegmentedControl, NSSplitView, NSSplitViewController,
+        NSStandardKeyBindingResponding as _, NSTrackingSeparatorToolbarItem,
     };
     use cocoa_ui::{PlatformView, Retained, view};
     use objc2::ClassType as _;
     use objc2::runtime::NSObjectProtocol as _;
+    use waterui::Signal as _;
     use waterui::Str;
     use waterui::navigation::{
         NavigationSplitView, NavigationToolbar, NavigationToolbarItem, NavigationToolbarPlacement,
@@ -2577,7 +2743,9 @@ mod navigation {
         let mtm = mtm();
         let query = binding(Str::from(""));
         let page = resolve::render(
-            NavigationView::new("Title", text("body")).searchable(&query, "Search mail"),
+            NavigationView::new("Title", text("body"))
+                .searchable(&query)
+                .search_prompt("Search mail"),
         );
         let window = leaf::attach(mtm, page.view());
         // The platform's reference window: the metrics were measured at an
@@ -2638,6 +2806,105 @@ mod navigation {
         assert!(
             (field_center_x - window_center_x).abs() <= 1.0,
             "the platform centres the field in the window: field at {field_center_x}, window at {window_center_x}"
+        );
+    }
+
+    /// `.searchable` wires `search_active`, `on_search_submit`, optional prompt,
+    /// and `search_suggestions` on `AppKit`'s `NSSearchField`.
+    pub fn a_searchable_page_submits_tracks_active_and_dismisses() {
+        let mtm = mtm();
+        let query = binding(Str::from("inbox"));
+        let active = binding(false);
+        let submits = Rc::new(Cell::new(0usize));
+        let suggestion_builds = Rc::new(Cell::new(0usize));
+        let page = resolve::render(
+            NavigationView::new("Title", text("body"))
+                .searchable(&query)
+                .search_active(&active)
+                .on_search_submit({
+                    let submits = Rc::clone(&submits);
+                    move || submits.set(submits.get() + 1)
+                })
+                .search_suggestions({
+                    let suggestion_builds = Rc::clone(&suggestion_builds);
+                    move || {
+                        suggestion_builds.set(suggestion_builds.get() + 1);
+                        text("Suggestion row")
+                    }
+                }),
+        );
+        let window = leaf::attach(mtm, page.view());
+        window.set_content_rect(cocoa_ui::Rect::new(0.0, 0.0, 800.0, 600.0), false);
+        window.order_front();
+        let native = window.native();
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                native.titlebarAccessoryViewControllers().count() == 1
+            }),
+            "the searchable page must install a titlebar accessory"
+        );
+        assert_eq!(
+            suggestion_builds.get(),
+            0,
+            "search suggestions must build lazily only when active"
+        );
+        let accessory = native.titlebarAccessoryViewControllers().objectAtIndex(0);
+        let field = accessory
+            .view()
+            .subviews()
+            .iter()
+            .find_map(|sub| sub.downcast::<NSSearchField>().ok())
+            .expect("the accessory row hosts an NSSearchField");
+
+        // Programmatic activation focuses the field, updates `active`, and opens the suggestions panel.
+        active.set(true);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                field.currentEditor().is_some()
+                    && native.childWindows().is_some_and(|w| !w.is_empty())
+            }),
+            "setting search_active(true) must focus the field and show suggestions"
+        );
+        assert!(active.snapshot());
+        assert_eq!(
+            suggestion_builds.get(),
+            1,
+            "activating search must build suggestions lazily once"
+        );
+        let panel_window = native
+            .childWindows()
+            .and_then(|children| children.iter().next())
+            .expect("suggestions panel attached");
+        let panel_content = panel_window
+            .contentView()
+            .expect("suggestions panel has contentView");
+        let mounted_suggestions = panel_content
+            .subviews()
+            .into_iter()
+            .next()
+            .expect("suggestions panel mounts live view");
+        assert!(
+            mounted_suggestions.frame().size.width >= field.frame().size.width,
+            "suggestions panel child must receive full proposal width: {:?}",
+            mounted_suggestions.frame()
+        );
+
+        // Sending `insertNewline:` fires `on_search_submit` once.
+        let responder = native
+            .firstResponder()
+            .expect("focused search field editor is first responder");
+        // SAFETY: `insertNewline:` is the standard `NSResponder` newline command.
+        unsafe { responder.doCommandBySelector(sel!(insertNewline:)) };
+        assert_eq!(submits.get(), 1);
+
+        // Setting `search_active` back to `false` ends editing and closes suggestions.
+        active.set(false);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                field.currentEditor().is_none()
+                    && native.childWindows().is_none_or(|w| w.is_empty())
+            }),
+            "setting search_active(false) must dismiss the field and hide suggestions"
         );
     }
 
@@ -2722,7 +2989,7 @@ mod navigation {
                         )]),
                     )
                 }),
-                Tab::container("Split", move || {
+                Tab::new("Split", move || {
                     NavigationSplitView::new(&detail, text("Sidebar"), |id: i32| {
                         NavigationView::new(format!("Detail {id}"), text("detail"))
                     })
@@ -2985,7 +3252,7 @@ mod split {
     use cocoa_ui::objc2_app_kit::NSTableViewStyle;
     use cocoa_ui::{PlatformView, view};
     use waterui::ViewExt as _;
-    use waterui::component::list::{List, ListItem};
+    use waterui::component::list::List;
     use waterui::navigation::{NavigationSplitView, NavigationView};
     use waterui::prelude::text;
     use waterui::reactive::binding;
@@ -3011,8 +3278,7 @@ mod split {
         let leaf = resolve::render(NavigationSplitView::new(
             &selection,
             move || {
-                List::content(((|| ListItem::new(text("row"))).tag(0_usize),))
-                    .selection(&binding(Some(0_usize)))
+                List::content(((|| text("row")).tag(0_usize),)).selection(&binding(Some(0_usize)))
             },
             |_id: i32| NavigationView::new("Detail", text("detail")),
         ));
@@ -3031,9 +3297,8 @@ mod split {
     /// The same list outside a split keeps the regular table chrome.
     pub fn a_plain_list_keeps_the_regular_chrome() {
         let selection = binding(Some(0_usize));
-        let leaf = resolve::render(
-            List::content(((|| ListItem::new(text("row"))).tag(0_usize),)).selection(&selection),
-        );
+        let leaf =
+            resolve::render(List::content(((|| text("row")).tag(0_usize),)).selection(&selection));
         let table = sidebar_table(leaf.view()).expect("the list mounts a table");
         assert!(
             !table.is_sidebar(),
@@ -5393,7 +5658,11 @@ mod capture_order {
     fn gpu_child() -> AnyView {
         use waterui::graphics::gradient::MeshGradient;
         use waterui::reactive::constant;
-        AnyView::new(MeshGradient::new(2, 2, constant(vec![CHILD; 4])))
+        AnyView::new(MeshGradient::new(
+            2,
+            2,
+            constant(vec![Color::new(Working(CHILD)); 4]),
+        ))
     }
 
     /// The GPU child's native stand-in: a [`CHILD`] colour view.
@@ -5494,12 +5763,12 @@ mod capture_order {
     /// (4,-12)–(196,148), so the column's top edge and rounded top-left
     /// corner cut it.
     pub fn a_clipped_scaled_gpu_child_keeps_its_place() {
-        use waterui::shape::RoundedRectangle;
+        use waterui::shape::{CornerRadius, RoundedRectangle};
         let column = |child| {
             layered(child)
                 .background(orange())
                 .scale(1.6)
-                .clip(RoundedRectangle::new(0.2))
+                .clip(RoundedRectangle::new(CornerRadius::fraction(0.2)))
         };
         assert_gpu_column_matches_native(column(native_child()), column(gpu_child()), 1);
     }
@@ -5713,7 +5982,7 @@ mod safe_area {
     use cocoa_ui::{PlatformView, Retained, view};
     use objc2::runtime::AnyObject;
     use objc2::{MainThreadOnly, msg_send};
-    use waterui::component::list::{List, ListItem};
+    use waterui::component::list::List;
     use waterui::graphics::color::Srgb;
     use waterui::id::SelfId;
     use waterui::layout::safe_area::{EdgeSet, SafeAreaRegions};
@@ -6345,7 +6614,7 @@ mod safe_area {
     /// in two. (The `d6171eed2` bug shape: the field answered its own
     /// open offer, so the `hstack` claimed the whole band.)
     fn a_composer_hstack_keeps_its_intrinsic_height_under_the_keyboard() {
-        let draft = binding(Str::from(""));
+        let draft = binding::<Str>(Str::from(""));
         let mount = mount(conversation_panel(&draft));
 
         let field = find_view::<cocoa_ui::uikit::TextField>(&mount.host)
@@ -6544,7 +6813,7 @@ mod safe_area {
     /// keyboard contribution and stays zero, and the delta-write never
     /// rewrites another `contentInset.bottom` term.
     fn a_scroll_above_a_composer_keeps_a_zero_keyboard_inset() {
-        let draft = binding(Str::from(""));
+        let draft = binding::<Str>(Str::from(""));
         let mount = mount(conversation_panel(&draft));
         let surface = find_view::<ScrollView>(&mount.host).expect("scroll mounts a UIScrollView");
         let scroll_view = surface
@@ -6570,7 +6839,7 @@ mod safe_area {
     /// enclosing-surface role: the inner surface still computes its own
     /// keyboard inset and still clears a focused field.
     fn a_text_view_inside_the_tree_is_not_a_scroll_surface() {
-        let value = binding(Str::from(""));
+        let value = binding::<Str>(Str::from(""));
         let mount = mount(scroll(vstack((
             spacer().size(390.0, 560.0),
             field("Message", &value).size(350.0, 44.0),
@@ -6662,7 +6931,7 @@ mod safe_area {
     /// only when the keyboard contribution itself changes — never
     /// because a content-offset change re-ran it.
     fn a_user_scroll_under_the_keyboard_is_not_undone_by_the_layout_pass() {
-        let value = binding(Str::from(""));
+        let value = binding::<Str>(Str::from(""));
         let mount = mount(scroll(vstack((
             spacer().size(390.0, 560.0),
             field("Message", &value).size(350.0, 44.0),
@@ -6698,7 +6967,7 @@ mod safe_area {
     /// inset.
     fn nested_hosts_and_a_scroll_share_the_windows_keyboard_region() {
         for content_first in [true, false] {
-            let value = binding(Str::from(""));
+            let value = binding::<Str>(Str::from(""));
             let env = render_environment();
             let mount = mount_uikit_embedded(
                 mtm(),
@@ -7011,7 +7280,7 @@ mod safe_area {
     /// unresolved contract on the real reads and feeds the resolved
     /// frame through the same function the read applies.
     fn a_stacks_only_window_seeds_its_region_and_replaces_above_the_band() {
-        let draft = binding(Str::from(""));
+        let draft = binding::<Str>(Str::from(""));
         // Stacks only — a spacer over a composer row; no scroll
         // surface anywhere in the tree.
         let mount = mount(vstack((
@@ -7079,7 +7348,7 @@ mod safe_area {
     /// — the window's one region object marked every reader and the
     /// re-entering views re-read it.
     fn a_page_pushed_over_the_keyboard_returns_keyboard_free() {
-        let value = binding(Str::from(""));
+        let value = binding::<Str>(Str::from(""));
         let mount = mount(NavigationStack::new(NavigationView::new(
             "Form",
             scroll(vstack((
@@ -7497,7 +7766,7 @@ mod safe_area {
     /// content by the band; focusing a covered field scrolls the minimum
     /// distance that brings its frame clear of the keyboard region.
     fn a_scroll_surface_scrolls_the_focused_field_clear_of_the_keyboard() {
-        let value = binding(Str::from(""));
+        let value = binding::<Str>(Str::from(""));
         let mount = mount(scroll(vstack((
             spacer().size(390.0, 560.0),
             field("Message", &value).size(350.0, 44.0),
@@ -7536,7 +7805,7 @@ mod safe_area {
     /// same minimum-scroll clearance against the deeper boundary — the
     /// field's frame lands on the new keyboard top on that frame.
     fn a_keyboard_inset_change_clears_the_field_on_that_frame() {
-        let value = binding(Str::from(""));
+        let value = binding::<Str>(Str::from(""));
         let mount = mount(scroll(vstack((
             spacer().size(390.0, 560.0),
             field("Message", &value).size(350.0, 44.0),
@@ -7555,7 +7824,7 @@ mod safe_area {
     /// innermost surface that can, which is the outermost one here because
     /// the keyboard band sits below the inner surface's own frame.
     fn a_field_in_a_nested_scroll_is_cleared_once() {
-        let value = binding(Str::from(""));
+        let value = binding::<Str>(Str::from(""));
         let mount = mount(scroll(vstack((
             spacer().size(390.0, 430.0),
             scroll(vstack((
@@ -7605,7 +7874,7 @@ mod safe_area {
     /// surface's own frame: a toolbar card under the scroll keeps the
     /// field clearing to the surface's bottom edge, not the keyboard's.
     fn a_focused_field_clears_to_the_surface_frame_above_a_toolbar() {
-        let value = binding(Str::from(""));
+        let value = binding::<Str>(Str::from(""));
         let mount = mount(vstack((
             scroll(vstack((
                 spacer().size(390.0, 560.0),
@@ -7628,15 +7897,15 @@ mod safe_area {
     /// A `List` is a scroll surface too: a focused row field scrolls
     /// clear of the keyboard and the `UITableView` carries the inset.
     fn a_list_row_field_scrolls_clear_of_the_keyboard() {
-        let value = binding(Str::from(""));
+        let value = binding::<Str>(Str::from(""));
         let field_row = 10usize;
         let mount = mount(List::for_each(
             (0..40).map(SelfId::new).collect::<Vec<_>>(),
             move |item| {
                 if *item == field_row {
-                    ListItem::new(waterui::OneOf2::A(field("Notes", &value).size(350.0, 44.0)))
+                    waterui::OneOf2::A(field("Notes", &value).size(350.0, 44.0))
                 } else {
-                    ListItem::new(waterui::OneOf2::B(text(format!("row-{}", *item))))
+                    waterui::OneOf2::B(text(format!("row-{}", *item)))
                 }
             },
         ));
@@ -7891,7 +8160,7 @@ mod safe_area {
         let selection = binding(0usize);
         let mount = mount(Tabs::new(
             &selection,
-            vec![Tab::container("Home", move || {
+            vec![Tab::new("Home", move || {
                 NavigationStack::new(
                     NavigationView::new(
                         "Home",
@@ -8022,7 +8291,7 @@ mod safe_area {
     /// to the deeper boundary under the keyboard — chrome hosting does not
     /// change the scroll surface's contract.
     fn a_form_inside_navigation_content_clears_the_focused_field() {
-        let value = binding(Str::from(""));
+        let value = binding::<Str>(Str::from(""));
         let mount = mount(NavigationView::new(
             "Form",
             scroll(vstack((
@@ -8052,7 +8321,6 @@ mod owner_lifetimes {
     use waterui::Identifiable;
     use waterui::prelude::*;
     use waterui::reactive::binding;
-    use waterui::reactive::collection::List as ReactiveList;
     use waterui_core::layout::ProposalSize;
 
     use super::{HostView, Label, MainThreadMarker, PlatformView, Retained, leaf, mtm, resolve};
@@ -8101,10 +8369,7 @@ mod owner_lifetimes {
     /// The hierarchy the repairs cover: `.size`/`padding` wrappers around
     /// `hstack`/`zstack` containers plus a lazy `ForEach` membership — one
     /// tree holding every repaired owner class.
-    fn hierarchy(
-        track: &waterui::reactive::Binding<String>,
-        items: &ReactiveList<Row>,
-    ) -> impl View {
+    fn hierarchy(track: &waterui::reactive::Binding<String>, items: &StateList<Row>) -> impl View {
         let track = track.clone();
         let items = items.clone();
         zstack((
@@ -8220,7 +8485,7 @@ mod owner_lifetimes {
         // afterwards names a real retainer, not a pooled autorelease.
         let mut env = resolve::env();
         let track = binding(String::from("first"));
-        let mut items = ReactiveList::from(vec![Row { id: 1 }, Row { id: 2 }]);
+        let mut items = StateList::from(vec![Row { id: 1 }, Row { id: 2 }]);
         // The theme `Foreground` slot backs every unstyled chunk — the
         // `label_leaf` default watcher this fix touches. Reinstall it
         // from a binding the test keeps, so a live update is reachable.
@@ -8513,7 +8778,7 @@ mod owner_lifetimes {
 
 /// `ScrollController` requests against the kit's real scroll surfaces —
 /// the water-rs/waterui#1901 contract: a bare request jumps to its
-/// target, `Animation::Default` plays the platform's smooth scroll, an
+/// target, `Animation::DEFAULT` plays the platform's smooth scroll, an
 /// explicit animation moves the offset along its timing, and every
 /// flight lands where the jump would have. A request issued mid-flight
 /// takes over.
@@ -8658,7 +8923,7 @@ mod scroll {
     /// wall-clock animation: it does not jump, and it takes time to land.
     fn an_animation_scrolls_to_the_target(name: &'static str, animation: Animation) {
         let fixture = mounted();
-        let native = matches!(animation, Animation::Default);
+        let native = animation.is_default();
         let request = || {
             fixture
                 .controller
@@ -9024,7 +9289,7 @@ mod scroll {
 
         vstack((
             text("Interactive glass answers touch and hover with the platform's own effects.")
-                .size(15.0),
+                .font_size(15.0),
             spacer().size(100.0, 2000.0),
         ))
         .padding()
@@ -9205,7 +9470,7 @@ mod scroll {
 
 /// `ScrollController<usize>` drives a row target into a mounted list:
 /// a bare request puts the row's top at the clip's top at once, an
-/// animated request lands on the same position — `Animation::Default`
+/// animated request lands on the same position — `Animation::DEFAULT`
 /// through the platform's animated row scroll, an explicit animation
 /// written to the model each frame-clock tick — and a request issued
 /// mid-flight takes over.
@@ -9215,7 +9480,6 @@ mod list_scroll {
     use waterui::OneOf2;
     use waterui::ViewExt;
     use waterui::animation::Animation;
-    use waterui::component::list::ListItem;
     use waterui::component::text::Text;
     use waterui::layout::padding::Padding;
     use waterui::layout::scroll::ScrollController;
@@ -9305,16 +9569,16 @@ mod list_scroll {
     }
 
     /// A row of a list mixing plain and tall rows.
-    type MixedRow = ListItem<OneOf2<Text, Padding<Text>>>;
+    type MixedRow = OneOf2<Text, Padding<Text>>;
 
     /// A row taller than the rest — mixed heights keep the last row's
     /// offset an honest measure instead of a multiple of the first.
-    fn tall_row_item() -> ListItem<Padding<Text>> {
-        ListItem::new(text("row").padding_with(24.0))
+    fn tall_row_item() -> Padding<Text> {
+        text("row").padding_with(24.0)
     }
 
     /// Mounts `rows` in a list driven by a fresh `usize` controller.
-    fn mounted_with<V: waterui::View>(rows: Vec<fn() -> ListItem<V>>) -> Fixture {
+    fn mounted_with<V: waterui::View>(rows: Vec<fn() -> V>) -> Fixture {
         let controller = ScrollController::new(0usize);
         let (leaf, table) = row_list(rows, &controller);
         let window = mount_and_order_front(leaf.view());
@@ -9336,7 +9600,7 @@ mod list_scroll {
 
     /// Mounts a uniform list.
     fn mounted() -> Fixture {
-        mounted_with(vec![row_item as fn() -> ListItem<Text>; ROWS])
+        mounted_with(vec![row_item as fn() -> Text; ROWS])
     }
 
     /// Mounts a list whose rows differ in height — every fourth row
@@ -9346,9 +9610,9 @@ mod list_scroll {
             (0..ROWS)
                 .map(|index| {
                     if index % 4 == 0 {
-                        (|| tall_row_item().map_content(OneOf2::B)) as fn() -> MixedRow
+                        (|| OneOf2::B(tall_row_item())) as fn() -> MixedRow
                     } else {
-                        (|| row_item().map_content(OneOf2::A)) as fn() -> MixedRow
+                        (|| OneOf2::A(row_item())) as fn() -> MixedRow
                     }
                 })
                 .collect(),
@@ -9374,7 +9638,7 @@ mod list_scroll {
     /// animation: it does not jump, and it takes time to land.
     fn an_animation_scrolls_the_row_to_the_top(name: &'static str, animation: Animation) {
         let fixture = mounted();
-        let native = matches!(animation, Animation::Default);
+        let native = animation.is_default();
         let request = || {
             fixture.controller.animate_to(TARGET, animation);
             assert!(
@@ -9418,8 +9682,8 @@ mod list_scroll {
     /// through intermediate offsets from there; `Default` is the
     /// platform's wall-clock animation from the approach row.
     fn a_far_animation_jumps_to_the_approach_row_first(name: &'static str, animation: Animation) {
-        let fixture = mounted_with(vec![row_item as fn() -> ListItem<Text>; APPROACH_LIST_ROWS]);
-        let native = matches!(animation, Animation::Default);
+        let fixture = mounted_with(vec![row_item as fn() -> Text; APPROACH_LIST_ROWS]);
+        let native = animation.is_default();
         let request = || {
             fixture
                 .controller
@@ -9475,10 +9739,7 @@ mod list_scroll {
     /// frame's write is clamped, so no sample passes the end as it
     /// stands at that frame, and the flight lands on it.
     fn an_overshooting_spring_toward_the_last_rows_never_passes_the_end() {
-        let spring = Animation::Spring {
-            stiffness: 300.0,
-            damping: 6.0,
-        };
+        let spring = Animation::spring(300.0, 6.0);
         let fixture = mounted_mixed_heights();
         fixture.controller.animate_to(ROWS - 1, spring.clone());
         let from = offset_y(&fixture);
@@ -10760,12 +11021,15 @@ mod webview {
 /// through the generic tree must stay bounded to the realized ones.
 #[cfg(target_os = "macos")]
 mod list_ax {
+    use cocoa_ui::appkit::ListTableView;
+    use cocoa_ui::objc2_app_kit::{NSButton, NSTableViewDataSource};
+    use cocoa_ui::{PlatformView, view};
     use objc2::msg_send;
     use objc2::runtime::AnyObject;
     use objc2_app_kit::{NSAccessibilityChildrenAttribute, NSTableView};
     use objc2_foundation::{NSArray, NSIndexSet};
-    use waterui::component::list::ListItem;
     use waterui::component::text::Text;
+    use waterui::id::Identifiable;
     use waterui::layout::scroll::ScrollController;
     use waterui_apple::native_test_support::{row_item, row_list, sectioned_row_list};
 
@@ -10820,7 +11084,7 @@ mod list_ax {
 
     fn mounted() -> Fixture {
         let controller = ScrollController::new(0usize);
-        let (leaf, surface) = row_list(vec![row_item as fn() -> ListItem<Text>; ROWS], &controller);
+        let (leaf, surface) = row_list(vec![row_item as fn() -> Text; ROWS], &controller);
         let window = leaf::attach(mtm(), leaf.view());
         leaf.view().setNeedsLayout(true);
         leaf.view().layoutSubtreeIfNeeded();
@@ -10932,12 +11196,161 @@ mod list_ax {
         );
     }
 
+    #[derive(Clone, PartialEq, Eq)]
+    struct FilteredListEntry {
+        id: u64,
+        label: &'static str,
+        visible: bool,
+    }
+
+    impl Identifiable for FilteredListEntry {
+        type Id = u64;
+
+        fn id(&self) -> Self::Id {
+            self.id
+        }
+    }
+
+    fn find_list_table(root: &PlatformView) -> Option<Retained<ListTableView>> {
+        let mut stack = vec![view::retain_base(root)];
+        while let Some(current) = stack.pop() {
+            stack.extend(view::subviews(&current));
+            if let Ok(table) = current.downcast::<ListTableView>() {
+                return Some(table);
+            }
+        }
+        None
+    }
+
+    fn find_delete_button(root: &PlatformView) -> Option<Retained<NSButton>> {
+        let mut stack = vec![view::retain_base(root)];
+        while let Some(current) = stack.pop() {
+            stack.extend(view::subviews(&current));
+            if let Ok(button) = current.downcast::<NSButton>()
+                && button.title().to_string() == "Delete"
+            {
+                return Some(button);
+            }
+        }
+        None
+    }
+
+    /// `water-rs/waterui#4295`: a sectioned, mixed, filtered list on `AppKit`
+    /// renders no inline delete control or drag payload for static rows, and
+    /// deletes the intended item by identity from a filtered `ForEach` without
+    /// re-running the filter or tripping a re-entrant borrow.
+    fn sectioned_mixed_and_filtered_list_edits_by_identity() {
+        use waterui::component::list::{ForEachExt as _, List, ListDelete, ListMove, Section, row};
+        use waterui::prelude::text;
+        use waterui::reactive::collection::SignalCollection;
+        use waterui::reactive::{Binding, Signal as _, SignalExt as _};
+        use waterui::views::ForEach;
+
+        let entry = |id, label, visible| FilteredListEntry { id, label, visible };
+        let backing = Binding::container(vec![
+            entry(10, "Alpha", true),
+            entry(15, "Hidden-1", false),
+            entry(20, "Beta", true),
+            entry(25, "Hidden-2", false),
+            entry(30, "Gamma", true),
+        ]);
+        let filtered = SignalCollection::new(
+            backing
+                .map(|items| {
+                    items
+                        .into_iter()
+                        .filter(|item| item.visible)
+                        .collect::<Vec<_>>()
+                })
+                .computed(),
+        );
+        let delete_backing = backing.clone();
+        let move_backing = backing.clone();
+        let leaf = super::resolve::render(
+            List::content((
+                Section::new("Account").content(row("Plan", "Pro")),
+                Section::new("Items").content(
+                    ForEach::new(filtered, |entry: FilteredListEntry| text(entry.label))
+                        .on_delete(move |ListDelete(id): ListDelete<u64>| {
+                            delete_backing
+                                .get_mut()
+                                .retain(|candidate| candidate.id != id);
+                        })
+                        .on_move(move |ListMove(movement): ListMove<u64>| {
+                            let mut items = move_backing.get_mut();
+                            if let (Some(from), Some(to)) = (
+                                items.iter().position(|item| item.id == *movement.id()),
+                                items.iter().position(|item| item.id == *movement.target()),
+                            ) {
+                                let moved = items.remove(from);
+                                items.insert(to, moved);
+                            }
+                        }),
+                ),
+            ))
+            .editing(true),
+        );
+        let _window = leaf::attach(mtm(), leaf.view());
+        leaf.view().setNeedsLayout(true);
+        leaf.view().layoutSubtreeIfNeeded();
+
+        let surface = find_list_table(leaf.view()).expect("list mounts ListTableView");
+        let table = surface.table_view();
+        // Flat rows: 0 Header("Account"), 1 Spacer, 2 Row("Plan"),
+        //            3 Header("Items"), 4 Row("Alpha"), 5 Row("Beta"), 6 Row("Gamma").
+        assert_eq!(table.numberOfRows(), 7);
+        for row_idx in 0..table.numberOfRows() {
+            let _ = table.rowViewAtRow_makeIfNecessary(row_idx, true);
+        }
+
+        let static_row = table
+            .rowViewAtRow_makeIfNecessary(2, false)
+            .expect("static row realized");
+        assert!(
+            find_delete_button(&static_row).is_none(),
+            "static row must not show a Delete button unless asked for"
+        );
+        // SAFETY: `dataSource` is installed on the table and stays alive with `surface`.
+        let data_source = unsafe { table.dataSource() }.expect("table has data source");
+        assert!(
+            data_source
+                .tableView_pasteboardWriterForRow(&table, 2)
+                .is_none(),
+            "static row must not offer a drag payload"
+        );
+        assert!(
+            data_source
+                .tableView_pasteboardWriterForRow(&table, 4)
+                .is_some(),
+            "editable ForEach row must offer a drag payload"
+        );
+
+        let beta_row = table
+            .rowViewAtRow_makeIfNecessary(5, false)
+            .expect("Beta row realized");
+        let delete_button =
+            find_delete_button(&beta_row).expect("Beta row shows inline Delete button");
+        // SAFETY: `performClick:` runs the button's target-action on the main thread.
+        unsafe { delete_button.performClick(None) };
+
+        let remaining: Vec<u64> = backing.snapshot().iter().map(|entry| entry.id).collect();
+        assert_eq!(
+            remaining,
+            vec![10, 15, 25, 30],
+            "clicking Beta's Delete button must delete id 20 from the unfiltered backing Vec"
+        );
+    }
+
     /// The `list_ax::` trials.
     pub fn trials() -> Vec<libtest_mimic::Trial> {
         trial_each(vec![
             (
                 "list_ax::a_sectioned_list_exposes_no_spacer_row".to_owned(),
                 Box::new(a_sectioned_list_exposes_no_spacer_row),
+            ),
+            (
+                "list_ax::sectioned_mixed_and_filtered_list_edits_by_identity".to_owned(),
+                Box::new(sectioned_mixed_and_filtered_list_edits_by_identity),
             ),
             (
                 "list_ax::a_large_list_walk_materializes_no_rows".to_owned(),
@@ -11009,7 +11422,7 @@ mod gesture_ax {
         let pressed = Rc::new(Cell::new(0u32));
         let leaf = resolve::render({
             let pressed = Rc::clone(&pressed);
-            text("hold").on_long_press_gesture(500, move || {
+            text("hold").on_long_press(move || {
                 pressed.set(pressed.get() + 1);
             })
         });
@@ -11047,6 +11460,7 @@ mod gesture_ax {
 /// a union of its descendants.
 #[cfg(target_os = "macos")]
 mod a11y_frame {
+    use cocoa_ui::accessibility as a11y;
     use cocoa_ui::appkit::{ColorView, ImageView, ScrollView};
     use cocoa_ui::geometry::{EdgeInsets as KitInsets, MeasureProposal};
     use cocoa_ui::objc2::runtime::ProtocolObject;
@@ -11059,7 +11473,7 @@ mod a11y_frame {
     use waterui::Color;
     use waterui::ViewExt as _;
     use waterui::accessibility::AccessibilityGeometry;
-    use waterui::component::list::{List, ListItem};
+    use waterui::component::list::List;
     use waterui::component::toggle::Toggle;
     use waterui::graphics::color::Srgb;
     use waterui::layout::container::LazyContainer;
@@ -11071,6 +11485,7 @@ mod a11y_frame {
     use waterui_apple::SfSymbol;
     use waterui_apple::contract::NativeLeaf;
     use waterui_apple::dispatch;
+    use waterui_apple::native_test_support::pump_main_until;
     use waterui_backend_core::{AnyView, View};
     use waterui_core::layout::{LayoutDirection, Point, ProposalSize, Rect, Size};
 
@@ -11416,7 +11831,7 @@ mod a11y_frame {
     /// width frame its field assigned.
     #[cfg(feature = "text_field")]
     fn a_text_field_label_sits_at_the_leading_edge() {
-        let value = binding(waterui::Str::from("typed"));
+        let value = binding::<waterui::Str>(waterui::Str::from("typed"));
         let (leaf, _window) = attached(waterui::component::text_field::TextField::new(
             "Name", &value,
         ));
@@ -11500,7 +11915,7 @@ mod a11y_frame {
             "the region-named scroll surface",
         );
         let (list, _list_window) = attached(
-            AnyView::new(List::content((|| ListItem::new(text("Row")),)))
+            AnyView::new(List::content((|| text("Row"),)))
                 .a11y_geometry(AccessibilityGeometry::Region(region)),
         );
         assert_frame(
@@ -11573,10 +11988,8 @@ mod a11y_frame {
     /// the leading edge of the row's content rect — the trailing edge in
     /// right-to-left — centred vertically, and the text draws there.
     fn assert_row_content_anchored(direction: LayoutDirection) {
-        let (leaf, _window) = mounted_list(
-            AnyView::new(List::content((|| ListItem::new(text("Row")),))),
-            direction,
-        );
+        let (leaf, _window) =
+            mounted_list(AnyView::new(List::content((|| text("Row"),))), direction);
         let (host, label) = text_host(leaf.view()).expect("the row mounts its text");
         let own = own_frame(&host);
         let reported = ax_frame(&host);
@@ -11640,12 +12053,12 @@ mod a11y_frame {
                     text(label).padding_with(EdgeInsets::new(4.0, INSET, 4.0, INSET))
                 };
                 if lazy {
-                    ListItem::new(AnyView::new(LazyContainer::new(
+                    AnyView::new(LazyContainer::new(
                         HStackLayout::default(),
                         ForEach::new(["Row"], padded),
-                    )))
+                    ))
                 } else {
-                    ListItem::new(AnyView::new(padded("Row")))
+                    AnyView::new(padded("Row"))
                 }
             },))),
             direction,
@@ -11749,14 +12162,14 @@ mod a11y_frame {
             fn render(&mut self, frame: &mut Frame<'_>) {
                 let mut encoder =
                     frame
-                        .device
+                        .device()
                         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                             label: Some("a11y_frame gpu surface"),
                         });
                 drop(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("a11y_frame gpu surface"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: frame.view,
+                        view: frame.view(),
                         depth_slice: None,
                         resolve_target: None,
                         ops: wgpu::Operations {
@@ -11769,7 +12182,7 @@ mod a11y_frame {
                     occlusion_query_set: None,
                     multiview_mask: None,
                 }));
-                frame.queue.submit([encoder.finish()]);
+                frame.queue().submit([encoder.finish()]);
             }
 
             fn intrinsic_size(&self) -> Option<Size> {
@@ -11842,6 +12255,37 @@ mod a11y_frame {
         );
     }
 
+    /// `.a11y_hidden` tracks a reactive boolean signal without rebuilding.
+    fn reactive_a11y_hidden_updates_accessibility_element() {
+        let hidden = binding(true);
+        let (leaf, _window) = attached(
+            text("Greeting")
+                .a11y_label("Greeting")
+                .a11y_hidden(hidden.clone()),
+        );
+        let view = leaf.view();
+        let is_ax_element = || {
+            let ax: &ProtocolObject<dyn NSAccessibility> = ProtocolObject::from_ref(view);
+            a11y::is_element(ax)
+        };
+        assert!(
+            !is_ax_element(),
+            "a view starting a11y_hidden(true) must not be an accessibility element"
+        );
+
+        hidden.set(false);
+        assert!(
+            pump_main_until(5.0, is_ax_element),
+            "a11y_hidden flipping false must restore the accessibility element"
+        );
+
+        hidden.set(true);
+        assert!(
+            pump_main_until(5.0, || !is_ax_element()),
+            "a11y_hidden flipping true must hide the accessibility element again"
+        );
+    }
+
     /// One `a11y_frame::` trial: its name inside the module and its body.
     fn case(name: &str, body: fn()) -> (String, Box<dyn FnOnce() + Send>) {
         (format!("a11y_frame::{name}"), Box::new(body))
@@ -11885,6 +12329,7 @@ mod a11y_frame {
             case!(a_list_row_places_its_content_at_the_leading_edge),
             case!(a_right_to_left_list_row_places_its_content_at_the_trailing_edge),
             case!(a_host_view_reports_its_committed_response),
+            case!(reactive_a11y_hidden_updates_accessibility_element),
         ];
         #[cfg(feature = "plain")]
         cases.push(case!(a_plain_label_draws_and_reports_its_response));
@@ -11928,10 +12373,10 @@ mod embedding {
     use waterui::graphics::color::ColorScheme;
     use waterui::handler::ViewBuilder;
     use waterui::layout::container::FixedContainer;
-    use waterui::reactive::{Computed, binding};
+    use waterui::reactive::Computed;
     use waterui::regional;
     use waterui::text::font::ResolvedFont;
-    use waterui::window::{Window, WindowContent, WindowState};
+    use waterui::window::{Window, WindowContent};
     use waterui::{Environment, Signal};
 
     use crate::mtm;
@@ -12044,20 +12489,16 @@ mod embedding {
         let host_mask = native.styleMask();
 
         let embed = Embed::new(&host, |env| {
-            App::new_with_windows(
-                vec![waterui::window::Window::new(
-                    "Declared Title",
-                    binding(WindowState::Normal),
-                    || Text::new("embedded"),
-                )],
-                env,
-            )
-            .menu_bar(Menu::new(
-                "Embed",
-                vec![MenuItem::Command(
-                    Command::builder("DeclaredItem").action(|| {}),
-                )],
-            ))
+            use waterui::window::Window;
+
+            App::new(env)
+                .window(Window::new("Declared Title", || Text::new("embedded")))
+                .menu_bar(Menu::new(
+                    "Embed",
+                    vec![MenuItem::Command(
+                        Command::builder("DeclaredItem").action(|| {}),
+                    )],
+                ))
         });
 
         assert_eq!(native.title().to_string(), "Host Title");
@@ -12080,7 +12521,11 @@ mod embedding {
         // Detach and remount on the same host.
         drop(embed);
         assert_eq!(view::subviews(&host).len(), 0, "drop detaches the root");
-        let _remounted = Embed::new(&host, |env| App::new(|| Text::new("again"), env));
+        let _remounted = Embed::new(&host, |env| {
+            use waterui::window::Window;
+
+            App::new(env).window(Window::new("", || Text::new("again")))
+        });
         assert_eq!(view::subviews(&host).len(), 1);
         application.setMainMenu(saved_menu.as_deref());
     }
@@ -12101,12 +12546,14 @@ mod embedding {
         let capture = |slot: &Rc<RefCell<Option<Computed<ColorScheme>>>>| {
             let slot = Rc::clone(slot);
             move |env: Environment| {
+                use waterui::window::Window;
+
                 *slot.borrow_mut() = Some(
                     env.query::<ColorScheme, Computed<ColorScheme>>()
                         .cloned()
                         .expect("the mount installs a color scheme"),
                 );
-                App::new(|| Text::new("x"), env)
+                App::new(env).window(Window::new("", || Text::new("x")))
             }
         };
         let embed_a = Embed::new(&host_a, capture(&scheme_a));
@@ -12146,7 +12593,11 @@ mod embedding {
     pub fn the_embedded_root_follows_the_host_bounds_and_detaches_on_drop() {
         let mtm = mtm();
         let host = plain_view(mtm);
-        let embed = Embed::new(&host, |env| App::new(|| Text::new("x"), env));
+        let embed = Embed::new(&host, |env| {
+            use waterui::window::Window;
+
+            App::new(env).window(Window::new("", || Text::new("x")))
+        });
 
         let root = view::subviews(&host)
             .into_iter()
@@ -12184,7 +12635,7 @@ mod embedding {
                     c"/tmp/waterui-embed-test-assets".as_ptr(),
                     c"/tmp/waterui-embed-test-fonts".as_ptr(),
                     None,
-                    |env| App::new_with_windows((), env),
+                    App::new,
                 )
             }
         }));
@@ -12342,7 +12793,8 @@ mod embedding {
         fn app(
             &self,
             seen: Rc<RefCell<Vec<ProposalSize>>>,
-        ) -> impl FnOnce(Environment) -> App<Window<WindowContent<ProbeContent>>> + use<> {
+        ) -> impl FnOnce(Environment) -> App<((), Window<WindowContent<ProbeContent>>)> + use<>
+        {
             let (bodies, scheme, fonts, direction, locale) = (
                 Rc::clone(&self.bodies),
                 Rc::clone(&self.scheme),
@@ -12372,7 +12824,7 @@ mod embedding {
                     &binding.snapshot()
                 );
                 *locale.borrow_mut() = Some(binding);
-                App::new(ProbeContent { seen }, env)
+                App::new(env).window(Window::new("", ProbeContent { seen }))
             }
         }
         fn scheme_now(&self) -> ColorScheme {
@@ -12611,13 +13063,13 @@ mod gesture_events {
         NSRotationGestureRecognizer,
     };
     use cocoa_ui::objc2_foundation::NSPoint;
-    use waterui::ViewExt as _;
-    use waterui::gesture::{Gesture, GesturePhase};
     use waterui::gesture::{
-        MagnificationEvent, MagnificationGesture, PointerButton, RotationEvent, RotationGesture,
-        TapEvent, TapGesture,
+        Gesture, GestureEvent, GesturePhase, MagnificationEvent, MagnificationGesture,
+        PointerButton, RotationEvent, RotationGesture, TapEvent, TapGesture,
     };
+    use waterui::layout::Point;
     use waterui::prelude::text;
+    use waterui::{State, ViewExt as _};
 
     use super::{resolve, trial_each};
 
@@ -12635,7 +13087,7 @@ mod gesture_events {
             let gestures = Rc::clone(&gestures);
             text("tap").gesture(
                 TapGesture::new(),
-                move |event: TapEvent, gesture: Gesture| {
+                move |event: TapEvent, State(gesture): State<Gesture>| {
                     taps.borrow_mut().push(event);
                     gestures.borrow_mut().push(gesture);
                 },
@@ -12665,7 +13117,7 @@ mod gesture_events {
                 assert_eq!(tap.button(), PointerButton::Primary);
                 assert_eq!(
                     tap.location(),
-                    waterui::gesture::GesturePoint::new(expected.0, expected.1),
+                    Point::new(expected.0, expected.1),
                     "the event names the activation point — the bounds-space center"
                 );
             }
@@ -13027,7 +13479,10 @@ mod gesture_events {
             let gestures = Rc::clone(&gestures);
             text("then").gesture(
                 Gesture::Tap(TapGesture::new()).then(RotationGesture::new(0.0)),
-                move |event: RotationEvent, gesture: Gesture| {
+                move |event: GestureEvent, State(gesture): State<Gesture>| {
+                    let GestureEvent::Rotation(event) = event else {
+                        panic!("expected RotationEvent from Then(Tap, Rotation), got {event:?}");
+                    };
                     events.borrow_mut().push(event);
                     gestures.borrow_mut().push(gesture);
                 },
@@ -13234,7 +13689,7 @@ mod text_selection {
 
     pub fn a_selection_menu_command_edits_the_live_selection() {
         let mtm = mtm();
-        let value = binding(Str::from("hé😀b"));
+        let value = binding::<Str>(Str::from("hé😀b"));
         let observed = Rc::new(RefCell::new((String::new(), 0usize, 0usize)));
         let optional_seen = Rc::new(RefCell::new(false));
 
@@ -13374,8 +13829,7 @@ mod transition {
     use waterui::animation::Animation;
     use waterui::component::Dynamic;
     use waterui::component::label::label;
-    use waterui::prelude::{VStack, hstack, scroll, spacer, text, vstack};
-    use waterui::reactive::collection::List as ReactiveList;
+    use waterui::prelude::{StateList, VStack, hstack, scroll, spacer, text, vstack};
     use waterui_apple::contract::Mounted;
     use waterui_apple::native_test_support::transition::ManualTransitionClock;
     use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, pump_main_until};
@@ -15003,7 +15457,7 @@ mod transition {
     /// re-measures live members but never the ghost.
     pub fn collection_ghost_keeps_its_last_placement() {
         let _mtm = mtm();
-        let mut items = ReactiveList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
+        let mut items = StateList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
         let leaf = super::resolve::render(VStack::for_each(items.clone(), |row: Row| {
             let height = match row.id % 3 {
                 0 => 20.0,
@@ -15078,7 +15532,7 @@ mod transition {
     /// ghost stays ahead of an insertion at the head, as in Hydrolysis.
     pub fn ghosts_rebase_across_later_edits() {
         let _mtm = mtm();
-        let mut items = ReactiveList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
+        let mut items = StateList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
         // Only row 2 claims a transition — an anchor that ghosts would
         // make "first" ambiguous.
         let leaf = super::resolve::render(VStack::for_each(items.clone(), |row: Row| {
@@ -15145,7 +15599,7 @@ mod transition {
     /// completes on its own clock.
     pub fn reinsertion_creates_a_fresh_instance_beside_the_ghost() {
         let _mtm = mtm();
-        let mut items = ReactiveList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
+        let mut items = StateList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
         let flags: DiedFlags = Rc::new(RefCell::new(Vec::new()));
         let leaf = super::resolve::render(VStack::for_each(items.clone(), {
             let flags = Rc::clone(&flags);
@@ -15217,7 +15671,7 @@ mod transition {
     pub fn unplaced_lazy_row_releases_immediately() {
         let _mtm = mtm();
         let rows: Vec<Row> = (0..40).map(|id| Row { id }).collect();
-        let mut items = ReactiveList::from(rows);
+        let mut items = StateList::from(rows);
         let leaf = super::resolve::render(scroll(VStack::for_each(items.clone(), |row: Row| {
             Metadata::new(
                 hstack((text(format!("row {}", row.id)), spacer())).size(300.0, 30.0),
@@ -15258,7 +15712,7 @@ mod transition {
         /// How far pixel alignment may move one member against another.
         const PIXEL: f64 = 0.5;
         let _mtm = mtm();
-        let mut items = ReactiveList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
+        let mut items = StateList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
         // Only the middle row claims a transition.
         let leaf = super::resolve::render(VStack::for_each(items.clone(), |row: Row| {
             let height = match row.id {
@@ -15308,7 +15762,7 @@ mod transition {
     /// order, as the fixed path's `reconcile_subviews` keeps it.
     pub fn an_insert_before_existing_members_paints_in_item_order() {
         let _mtm = mtm();
-        let mut items = ReactiveList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
+        let mut items = StateList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
         let leaf = super::resolve::render(VStack::for_each(items.clone(), |row: Row| {
             hstack((text(format!("row {}", row.id)), spacer())).size(200.0, 20.0)
         }));
@@ -15531,13 +15985,13 @@ mod transition {
 
     /// A single-selection list whose every row claims the row transition
     /// — fixed-height rows, so the frozen height is a real contract.
-    fn row_list(items: &ReactiveList<Row>) -> AnyView {
-        use waterui::component::list::{List, ListItem};
+    fn row_list(items: &StateList<Row>) -> AnyView {
+        use waterui::component::list::List;
         use waterui::reactive::binding;
         AnyView::new(
             List::for_each(items.clone(), |row: Row| {
                 let content = hstack((text(format!("row {}", row.id)), spacer())).size(200.0, 44.0);
-                ListItem::new(Metadata::new(content, row_spec()))
+                Metadata::new(content, row_spec())
             })
             .selection(&binding(Option::<u64>::None)),
         )
@@ -15549,7 +16003,7 @@ mod transition {
     /// row's last measurement, and completion deletes the row.
     pub fn list_ghost_row_keeps_its_frozen_height() {
         let _mtm = mtm();
-        let mut items = ReactiveList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
+        let mut items = StateList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
         let leaf = super::resolve::render(row_list(&items));
         let _window = super::mount_and_order_front(leaf.view());
         autoreleasepool(|_| view::layout_immediately(leaf.view()));
@@ -15580,7 +16034,7 @@ mod transition {
     /// accessibility tree.
     pub fn list_ghost_row_is_not_selectable_or_accessible() {
         let _mtm = mtm();
-        let mut items = ReactiveList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
+        let mut items = StateList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
         let leaf = super::resolve::render(row_list(&items));
         let _window = super::mount_and_order_front(leaf.view());
         autoreleasepool(|_| view::layout_immediately(leaf.view()));
@@ -15612,7 +16066,7 @@ mod transition {
     /// own transition ramps the host alpha from the absent sample.
     pub fn list_claimed_insertion_plays_without_row_animation() {
         let _mtm = mtm();
-        let mut items = ReactiveList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
+        let mut items = StateList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
         let leaf = super::resolve::render(row_list(&items));
         let _window = super::mount_and_order_front(leaf.view());
         autoreleasepool(|_| view::layout_immediately(leaf.view()));
@@ -15837,7 +16291,7 @@ mod transition {
     /// frozen-frame trials arm.
     #[cfg(feature = "gpu_surface")]
     pub fn gpu_picture() -> impl waterui_backend_core::View {
-        use waterui::graphics::color::WorkingColor;
+        use waterui::graphics::color::{Color, Working, WorkingColor};
         use waterui::graphics::gradient::MeshGradient;
         use waterui::reactive::constant;
         // Four distinct corners, so a review PNG tells the frozen frame
@@ -15846,10 +16300,10 @@ mod transition {
             2,
             2,
             constant(vec![
-                WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
-                WorkingColor::new([0.0, 1.0, 0.0, 1.0]),
-                WorkingColor::new([0.0, 0.0, 1.0, 1.0]),
-                WorkingColor::new([1.0, 1.0, 0.0, 1.0]),
+                Color::new(Working(WorkingColor::new([1.0, 0.0, 0.0, 1.0]))),
+                Color::new(Working(WorkingColor::new([0.0, 1.0, 0.0, 1.0]))),
+                Color::new(Working(WorkingColor::new([0.0, 0.0, 1.0, 1.0]))),
+                Color::new(Working(WorkingColor::new([1.0, 1.0, 0.0, 1.0]))),
             ]),
         )
     }
@@ -16182,7 +16636,7 @@ mod transition {
     #[cfg(feature = "gpu_surface")]
     fn blur_picture() -> impl waterui_backend_core::View {
         use waterui::prelude::{text, vstack};
-        vstack((text("BLUR").size(96.0), gpu_picture()))
+        vstack((text("BLUR").font_size(96.0), gpu_picture()))
     }
 
     /// The blur transition's animation length — on a
@@ -16379,9 +16833,10 @@ mod transition {
                 progress: f32,
                 _geometry: TransitionGeometry,
             ) -> TransitionProperties {
-                let mut properties = TransitionProperties::IDENTITY;
-                properties.set_blur(8.0 * (1.0 - 3.0f32.mul_add(progress, -1.5).abs()).max(0.0));
-                properties
+                TransitionProperties {
+                    blur: 8.0 * (1.0 - 3.0f32.mul_add(progress, -1.5).abs()).max(0.0),
+                    ..TransitionProperties::IDENTITY
+                }
             }
         }
         let _mtm = mtm();
@@ -17078,28 +17533,40 @@ mod transform_modifiers {
 /// that extends past the rounded outline stays visible (#4277).
 #[cfg(target_os = "macos")]
 mod border_modifier {
+    use cocoa_ui::Rect;
     use cocoa_ui::objc2::rc::autoreleasepool;
     use cocoa_ui::{layer, view};
     use libtest_mimic::Trial;
-    use waterui::ViewExt as _;
     use waterui::border::Border;
     use waterui::component::label::label;
+    use waterui::graphics::color::Color;
+    use waterui::{Binding, ViewExt as _};
+    use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, pump_main_until};
 
     pub fn trials() -> Vec<Trial> {
-        vec![Trial::test(
-            "border_modifier::a_rounded_border_does_not_clip_its_content",
-            || {
-                a_rounded_border_does_not_clip_its_content();
-                Ok(())
-            },
-        )]
+        vec![
+            Trial::test(
+                "border_modifier::a_rounded_border_does_not_clip_its_content",
+                || {
+                    a_rounded_border_does_not_clip_its_content();
+                    Ok(())
+                },
+            ),
+            Trial::test(
+                "border_modifier::a_reactive_border_updates_layer_without_rebuilding",
+                || {
+                    a_reactive_border_updates_layer_without_rebuilding();
+                    Ok(())
+                },
+            ),
+        ]
     }
 
     fn a_rounded_border_does_not_clip_its_content() {
         let leaf = autoreleasepool(|_| {
-            super::resolve::render(label("content").border_with(
-                Border::new(waterui::graphics::color::Color::red(), 2.0).corner_radius(8.0),
-            ))
+            super::resolve::render(
+                label("content").border_with(Border::new(Color::red(), 2.0).corner_radius(8.0)),
+            )
         });
         let wrapper = autoreleasepool(|_| view::retain_base(leaf.view()));
         let _window = autoreleasepool(|_| super::mount_and_order_front(&wrapper));
@@ -17116,6 +17583,188 @@ mod border_modifier {
                 "a border strokes only and never clips its content"
             );
         });
+    }
+
+    fn a_reactive_border_updates_layer_without_rebuilding() {
+        let width = Binding::container(2.0_f32);
+        let corner_radius = Binding::container(4.0_f32);
+        let leaf = autoreleasepool(|_| {
+            super::resolve::render(label("content").border_with(
+                Border::new(Color::red(), width.clone()).corner_radius(corner_radius.clone()),
+            ))
+        });
+        let wrapper = autoreleasepool(|_| view::retain_base(leaf.view()));
+        let _window = autoreleasepool(|_| {
+            let window = super::leaf::attach(super::mtm(), &wrapper);
+            view::set_frame(&wrapper, Rect::new(0.0, 0.0, 80.0, 80.0));
+            wrapper.layoutSubtreeIfNeeded();
+            window
+        });
+        autoreleasepool(|_| {
+            let host_layer = layer::layer_of(&wrapper).expect("a border's host is layer-backed");
+            assert_eq!(host_layer.borderWidth(), 2.0);
+            assert_eq!(host_layer.cornerRadius(), 4.0);
+        });
+
+        width.set(5.0);
+        corner_radius.set(12.0);
+        let updated = pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            autoreleasepool(|_| {
+                let host_layer =
+                    layer::layer_of(&wrapper).expect("a border's host is layer-backed");
+                (host_layer.borderWidth() - 5.0).abs() < 1e-4
+                    && (host_layer.cornerRadius() - 12.0).abs() < 1e-4
+            })
+        });
+        assert!(
+            updated,
+            "reactive border signals update host layer width and cornerRadius in place"
+        );
+    }
+}
+
+/// A `Shadow` inherits its caster's `.clip(...)` silhouette automatically
+/// unless `.silhouette(...)` overrides it, and updates layer shadow metrics
+/// reactively without rebuilding the view (#4418).
+#[cfg(target_os = "macos")]
+mod shadow_modifier {
+    use core::ptr::null;
+
+    use cocoa_ui::Rect;
+    use cocoa_ui::objc2::rc::autoreleasepool;
+    use cocoa_ui::objc2_core_foundation::CGPoint;
+    use cocoa_ui::objc2_core_graphics::CGPath;
+    use cocoa_ui::{layer, view};
+    use libtest_mimic::Trial;
+    use waterui::component::label::label;
+    use waterui::graphics::color::Color;
+    use waterui::shape::{Circle, Rectangle};
+    use waterui::style::Shadow;
+    use waterui::{Binding, SignalExt as _, ViewExt as _};
+    use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, pump_main_until};
+
+    fn attach_offscreen(wrapper: &super::PlatformView) -> super::AttachedWindow {
+        let window = super::leaf::attach(super::mtm(), wrapper);
+        view::set_frame(wrapper, Rect::new(0.0, 0.0, 80.0, 80.0));
+        wrapper.layoutSubtreeIfNeeded();
+        window
+    }
+
+    pub fn trials() -> Vec<Trial> {
+        vec![
+            Trial::test(
+                "shadow_modifier::a_clipped_caster_shadow_inherits_circular_silhouette",
+                || {
+                    a_clipped_caster_shadow_inherits_circular_silhouette();
+                    Ok(())
+                },
+            ),
+            Trial::test(
+                "shadow_modifier::explicit_silhouette_overrides_inherited_clip_shape",
+                || {
+                    explicit_silhouette_overrides_inherited_clip_shape();
+                    Ok(())
+                },
+            ),
+            Trial::test(
+                "shadow_modifier::a_reactive_shadow_updates_layer_without_rebuilding",
+                || {
+                    a_reactive_shadow_updates_layer_without_rebuilding();
+                    Ok(())
+                },
+            ),
+        ]
+    }
+
+    fn a_clipped_caster_shadow_inherits_circular_silhouette() {
+        let leaf = autoreleasepool(|_| {
+            super::resolve::render(label("avatar").size(80.0, 80.0).clip(Circle).shadow(4.0))
+        });
+        let wrapper = autoreleasepool(|_| view::retain_base(leaf.view()));
+        let _window = autoreleasepool(|_| attach_offscreen(&wrapper));
+        autoreleasepool(|_| {
+            let host_layer = layer::layer_of(&wrapper).expect("a shadow's host is layer-backed");
+            let path = host_layer
+                .shadowPath()
+                .expect("clipped shadow must materialize shadowPath");
+            // SAFETY: CoreGraphics `CGPathContainsPoint` on a valid retained `CGPath`.
+            let center_inside = unsafe {
+                CGPath::contains_point(Some(&path), null(), CGPoint::new(40.0, 40.0), false)
+            };
+            // SAFETY: CoreGraphics `CGPathContainsPoint` on a valid retained `CGPath`.
+            let corner_inside = unsafe {
+                CGPath::contains_point(Some(&path), null(), CGPoint::new(2.0, 2.0), false)
+            };
+            assert!(center_inside, "circular shadowPath covers caster center");
+            assert!(
+                !corner_inside,
+                "circular shadowPath inherited from `.clip(Circle)` excludes outer corner"
+            );
+        });
+    }
+
+    fn explicit_silhouette_overrides_inherited_clip_shape() {
+        let leaf = autoreleasepool(|_| {
+            super::resolve::render(
+                label("avatar")
+                    .size(80.0, 80.0)
+                    .clip(Circle)
+                    .shadow(Shadow::splat(4.0).silhouette(Rectangle)),
+            )
+        });
+        let wrapper = autoreleasepool(|_| view::retain_base(leaf.view()));
+        let _window = autoreleasepool(|_| attach_offscreen(&wrapper));
+        autoreleasepool(|_| {
+            let host_layer = layer::layer_of(&wrapper).expect("a shadow's host is layer-backed");
+            let path = host_layer
+                .shadowPath()
+                .expect("explicit silhouette shadow must materialize shadowPath");
+            // SAFETY: CoreGraphics `CGPathContainsPoint` on a valid retained `CGPath`.
+            let corner_inside = unsafe {
+                CGPath::contains_point(Some(&path), null(), CGPoint::new(2.0, 2.0), false)
+            };
+            assert!(
+                corner_inside,
+                "explicit `.silhouette(Rectangle)` overrides inherited `.clip(Circle)`"
+            );
+        });
+    }
+
+    fn a_reactive_shadow_updates_layer_without_rebuilding() {
+        let phase = Binding::container(false);
+        let radius = phase.map(|on| if on { 9.0_f32 } else { 2.0 });
+        let offset_x = phase.map(|on| if on { 6.0_f32 } else { 1.0 });
+        let color = phase.map(|on| Color::srgb(0, 0, 0).with_opacity(if on { 0.8 } else { 0.2 }));
+        let leaf = autoreleasepool(|_| {
+            super::resolve::render(
+                label("card")
+                    .size(80.0, 80.0)
+                    .shadow(Shadow::splat(radius).offset(offset_x, 3.0).color(color)),
+            )
+        });
+        let wrapper = autoreleasepool(|_| view::retain_base(leaf.view()));
+        let _window = autoreleasepool(|_| attach_offscreen(&wrapper));
+        autoreleasepool(|_| {
+            let host_layer = layer::layer_of(&wrapper).expect("a shadow's host is layer-backed");
+            assert!((host_layer.shadowRadius() - 2.0).abs() < 1e-4);
+            assert!((host_layer.shadowOffset().width - 1.0).abs() < 1e-4);
+            assert!((host_layer.shadowOpacity() - 0.2).abs() < 1e-3);
+        });
+
+        phase.set(true);
+        let updated = pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            autoreleasepool(|_| {
+                let host_layer =
+                    layer::layer_of(&wrapper).expect("a shadow's host is layer-backed");
+                (host_layer.shadowRadius() - 9.0).abs() < 1e-4
+                    && (host_layer.shadowOffset().width - 6.0).abs() < 1e-4
+                    && (host_layer.shadowOpacity() - 0.8).abs() < 1e-3
+            })
+        });
+        assert!(
+            updated,
+            "reactive shadow signals update radius, offset, and opacity on host layer in place"
+        );
     }
 }
 
@@ -17445,6 +18094,130 @@ mod apple_content {
     }
 }
 
+#[cfg(target_os = "macos")]
+mod row_major_table {
+    use cocoa_ui::PlatformView;
+    use cocoa_ui::appkit::TableView;
+    use cocoa_ui::objc2::rc::Retained;
+    use cocoa_ui::view;
+    use libtest_mimic::Trial;
+    use waterui::Color;
+    use waterui::ViewExt as _;
+    use waterui::component::table::{SortDirection, Table, TableColumn, TableSort};
+    use waterui::component::text;
+    use waterui::id::Identifiable;
+    use waterui::reactive::collection::StateList;
+    use waterui::reactive::{Binding, Signal as _};
+    use waterui_core::layout::ProposalSize;
+
+    #[derive(Clone)]
+    struct Person {
+        id: u64,
+        name: &'static str,
+    }
+
+    impl Identifiable for Person {
+        type Id = u64;
+
+        fn id(&self) -> Self::Id {
+            self.id
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum PersonSort {
+        Name,
+    }
+
+    fn find_appkit_table(root: &PlatformView) -> Option<Retained<TableView>> {
+        if let Ok(table) = view::retain_base(root).downcast::<TableView>() {
+            return Some(table);
+        }
+        view::subviews(root)
+            .iter()
+            .find_map(|sub| find_appkit_table(sub))
+    }
+
+    pub fn trials() -> Vec<Trial> {
+        vec![Trial::test(
+            "table::selectable_sortable_table_with_non_text_cell",
+            || {
+                selectable_sortable_table_with_non_text_cell();
+                Ok(())
+            },
+        )]
+    }
+
+    fn selectable_sortable_table_with_non_text_cell() {
+        let people = StateList::from(vec![
+            Person { id: 1, name: "Ada" },
+            Person {
+                id: 2,
+                name: "Grace",
+            },
+        ]);
+        let selection = Binding::container(Some(1_u64));
+        let sort_order = Binding::container(Some(TableSort::ascending(PersonSort::Name)));
+        let view = Table::new(
+            people,
+            (
+                TableColumn::new("Name", |p: &Person| text(p.name)).sortable(PersonSort::Name),
+                TableColumn::new("Swatch", |p: &Person| {
+                    let swatch = if p.id == 1 {
+                        Color::srgb(0, 128, 255)
+                    } else {
+                        Color::srgb(255, 128, 0)
+                    };
+                    swatch.size(24.0, 24.0)
+                }),
+            ),
+        )
+        .selection(&selection)
+        .sort_order(&sort_order);
+
+        let leaf = super::resolve::render(view);
+        let measured = leaf.layout().measure(ProposalSize::UNSPECIFIED).size;
+        assert!(measured.width > 0.0 && measured.height > 0.0);
+
+        let table = find_appkit_table(leaf.view()).expect("table mounts an AppKit TableView");
+        assert_eq!(table.numberOfRows(), 2);
+        let columns = table.tableColumns();
+        assert_eq!(columns.count(), 2);
+        let name_col = columns.objectAtIndex(0);
+        let avatar_col = columns.objectAtIndex(1);
+
+        // Initial selection syncs from binding to NSTableView.
+        assert_eq!(table.selected_rows(), vec![0]);
+
+        // Selecting row 1 in NSTableView writes identity 2 back to the binding.
+        table.set_selected_rows(&[1]);
+        assert_eq!(selection.snapshot(), Some(2));
+
+        // Updating the binding pushes selection back onto NSTableView.
+        selection.set(Some(1));
+        assert_eq!(table.selected_rows(), vec![0]);
+
+        // Initial sort indicator is installed on the active sortable column only.
+        assert!(table.indicator_image(&name_col).is_some());
+        assert!(table.indicator_image(&avatar_col).is_none());
+
+        // Clicking the sortable column header toggles direction to Descending.
+        table.click_column(&name_col);
+        assert_eq!(
+            sort_order.snapshot(),
+            Some(TableSort::new(PersonSort::Name, SortDirection::Descending))
+        );
+        assert!(table.indicator_image(&name_col).is_some());
+
+        // Clicking the non-sortable Avatar column leaves sort order unchanged.
+        table.click_column(&avatar_col);
+        assert_eq!(
+            sort_order.snapshot(),
+            Some(TableSort::new(PersonSort::Name, SortDirection::Descending))
+        );
+    }
+}
+
 /// Headless Mac Catalyst `ViewRenderer` capture through the in-process
 /// `Core Animation` render server without any `UIWindowScene` or `NSWindow`.
 #[cfg(all(catalyst, feature = "native-test", feature = "gpu_surface"))]
@@ -17510,5 +18283,155 @@ mod catalyst_view_renderer {
             "Catalyst prominent glass button must render active blue pixels, got {active_blue}"
         );
         Ok(())
+    }
+}
+
+/// Native `AppKit` / `UIKit` realization tests for `Disclosure`: focusability,
+/// indicator presence, accessibility `expanded` state, lazy body construction,
+/// and click/activation toggling.
+mod disclosure {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use cocoa_ui::objc2::Message;
+    #[cfg(target_os = "macos")]
+    use cocoa_ui::objc2_app_kit::NSAccessibility as _;
+    #[cfg(target_os = "ios")]
+    use cocoa_ui::objc2_ui_kit::NSObjectUIAccessibility as _;
+    use cocoa_ui::view::subviews;
+    use cocoa_ui::{PlatformView, Retained};
+    use libtest_mimic::Trial;
+    use waterui::Signal;
+    use waterui::component::text;
+    use waterui::reactive::binding;
+    use waterui::widget::disclosure::Disclosure;
+    use waterui_core::layout::ProposalSize;
+
+    #[cfg(target_os = "macos")]
+    use cocoa_ui::appkit::disclosure::DisclosureButton;
+    #[cfg(target_os = "ios")]
+    use cocoa_ui::uikit::disclosure::DisclosureButton;
+
+    #[cfg(target_os = "ios")]
+    use super::mtm;
+    use super::resolve;
+
+    pub fn trials() -> Vec<Trial> {
+        vec![Trial::test(
+            "disclosure::focusable_header_indicator_a11y_and_lazy_body",
+            || {
+                focusable_header_indicator_a11y_and_lazy_body();
+                Ok(())
+            },
+        )]
+    }
+
+    fn find_disclosure_button(root: &PlatformView) -> Option<Retained<DisclosureButton>> {
+        for sub in subviews(root) {
+            if let Some(button) = sub.downcast_ref::<DisclosureButton>() {
+                return Some(Message::retain(button));
+            }
+            if let Some(found) = find_disclosure_button(&sub) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    fn focusable_header_indicator_a11y_and_lazy_body() {
+        let expanded = binding(false);
+        let builds = Rc::new(Cell::new(0_usize));
+        let leaf = resolve::render(
+            Disclosure::new("Advanced", {
+                let builds = Rc::clone(&builds);
+                move || {
+                    builds.set(builds.get() + 1);
+                    text("Details")
+                }
+            })
+            .expanded(&expanded),
+        );
+
+        assert_eq!(
+            builds.get(),
+            0,
+            "collapsed disclosure must build body lazily"
+        );
+        let button = find_disclosure_button(leaf.view())
+            .expect("disclosure leaf must mount a native DisclosureButton");
+
+        let size = button.intrinsic_size();
+        assert!(
+            size.width > 0.0 && size.height > 0.0,
+            "disclosure indicator button must have visible non-zero size: {size:?}"
+        );
+        assert!(!button.is_expanded());
+        assert_eq!(subviews(leaf.view()).len(), 2);
+
+        #[cfg(target_os = "macos")]
+        {
+            assert!(
+                button.acceptsFirstResponder(),
+                "AppKit DisclosureButton must accept keyboard focus"
+            );
+            assert!(
+                !button.isAccessibilityExpanded(),
+                "AppKit DisclosureButton must report expanded=false initially"
+            );
+            assert_eq!(
+                button.accessibilityLabel().map(|label| label.to_string()),
+                Some(String::from("Advanced"))
+            );
+        }
+        #[cfg(target_os = "ios")]
+        {
+            let mtm = mtm();
+            assert!(
+                button.canBecomeFocused(),
+                "UIKit DisclosureButton must accept keyboard focus"
+            );
+            assert!(
+                button.currentImage().is_some(),
+                "UIKit DisclosureButton must display chevron indicator image"
+            );
+            assert_eq!(
+                button.accessibilityValue(mtm).map(|v| v.to_string()),
+                Some(String::from("Collapsed"))
+            );
+        }
+
+        // Activating the button expands the disclosure and lazily builds its body.
+        button.activate();
+        assert!(expanded.snapshot());
+        assert!(button.is_expanded());
+        assert_eq!(builds.get(), 1);
+        assert_eq!(subviews(leaf.view()).len(), 3);
+        let expanded_dims = leaf.layout().measure(ProposalSize::UNSPECIFIED).size;
+
+        #[cfg(target_os = "macos")]
+        {
+            assert!(button.isAccessibilityExpanded());
+        }
+        #[cfg(target_os = "ios")]
+        {
+            let mtm = mtm();
+            assert_eq!(
+                button.accessibilityValue(mtm).map(|v| v.to_string()),
+                Some(String::from("Expanded"))
+            );
+        }
+
+        // Activating again collapses and drops the body view.
+        button.activate();
+        assert!(!expanded.snapshot());
+        assert!(!button.is_expanded());
+        assert_eq!(subviews(leaf.view()).len(), 2);
+        let collapsed_dims = leaf.layout().measure(ProposalSize::UNSPECIFIED).size;
+        assert!(
+            expanded_dims.height > collapsed_dims.height,
+            "expanded height ({}) must exceed collapsed height ({})",
+            expanded_dims.height,
+            collapsed_dims.height
+        );
     }
 }

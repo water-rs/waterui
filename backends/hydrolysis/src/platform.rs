@@ -6,7 +6,7 @@ use cherenkov_gpu::interop::OutputColor;
 #[cfg(hydrolysis_cherenkov)]
 use nami::Signal;
 use waterui::cursor::CursorStyle;
-use waterui::window::Window as WuiWindow;
+use waterui::window::WindowParts as WuiWindow;
 #[cfg(hydrolysis_cherenkov)]
 use waterui::window::WindowState;
 use waterui_core::contract_violation;
@@ -4431,6 +4431,9 @@ mod web_impl;
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
 pub mod web_appearance;
 
+#[cfg(all(target_arch = "wasm32", feature = "web"))]
+pub mod web_locale;
+
 #[cfg(hydrolysis_wayland_platform)]
 mod wayland_blur;
 
@@ -4446,10 +4449,18 @@ mod macos_blur_behind;
 #[cfg(all(hydrolysis_winit, target_os = "macos"))]
 pub mod macos_appearance;
 
+#[cfg(all(hydrolysis_winit, target_os = "macos"))]
+pub mod macos_locale;
+
 // Compiled under `test` on every host: the module's pure mapping seam is
 // covered off-device, while the zbus client inside stays Linux-gated.
 #[cfg(any(all(hydrolysis_winit, target_os = "linux"), test))]
 pub mod linux_appearance;
+
+// Compiled under `test` on every host: the portal locale parser is covered
+// off-device, while the zbus client inside stays Linux-gated.
+#[cfg(any(all(hydrolysis_winit, target_os = "linux"), test))]
+pub mod linux_locale;
 
 #[cfg(all(hydrolysis_winit, any(target_os = "macos", target_os = "windows")))]
 #[cfg(feature = "menu")]
@@ -4616,8 +4627,8 @@ mod winit_impl {
     use super::{
         CursorStyle, InputConventions, InputEvent, KeyCode, KeyState, Modifiers, MultiClickConfig,
         PaintedWindow, PainterUnavailable, PlatformWindow, PointerButton, PointerKind,
-        TextInputPurpose, TextInputState, TouchPhase, TouchScrollConfig, enabled_window_buttons,
-        validated_window_frame,
+        TextInputPurpose, TextInputState, TouchPhase, TouchScrollConfig, WuiWindow,
+        enabled_window_buttons, validated_window_frame,
     };
     #[cfg(hydrolysis_gpu_painter)]
     use super::{DeviceLostError, GpuGeneration, GpuUnavailable};
@@ -6991,7 +7002,7 @@ mod winit_impl {
         }
 
         /// Applies the window's declarative properties to the platform window.
-        fn apply_properties<C, T>(&mut self, window: &waterui::window::Window<C, T>) {
+        fn apply_properties<C, T>(&mut self, window: &WuiWindow<C, T>) {
             let title = window.display_title().snapshot();
             let decorations = !matches!(
                 window.style.snapshot(),
@@ -7944,14 +7955,11 @@ mod winit_impl {
         #[test]
         fn a_behind_window_material_window_gets_a_multiplied_alpha_mode() {
             use waterui::background::Material;
-            use waterui::window::{Window, WindowState};
+            use waterui::window::Window;
             use wgpu::CompositeAlphaMode as Mode;
 
             let env = waterui_core::Environment::new();
-            let window = |material| {
-                Window::new("", waterui_core::binding(WindowState::Normal), || ())
-                    .background(material)
-            };
+            let window = |material| Window::new("", || ()).background(material).into_parts(&env);
             let select = |material, modes: &[Mode]| {
                 negotiated_alpha_mode(
                     crate::runner::window_requires_transparency(&window(material), &env),

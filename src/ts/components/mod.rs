@@ -21,6 +21,7 @@ mod modifiers;
 
 use core::cell::RefCell;
 
+use nami::collection::StateList;
 use nami::{Computed, SignalExt as _};
 use suiteki::Str;
 use waterui_controls::label::{ErasedLabel, Label, TitleLabel};
@@ -40,28 +41,28 @@ use waterui_navigation::{NavigationLink, NavigationStack, NavigationView};
 use crate::component::badge::Badge;
 use crate::component::link::Link;
 use crate::component::progress::Progress;
-use crate::component::table::{TableColumn, table};
+use crate::component::table::{Table, TableColumn};
 use crate::widget::Divider;
-use crate::widget::accordion::Accordion;
 use crate::widget::avatar::Avatar;
 use crate::widget::card::Card;
+use crate::widget::disclosure::Disclosure;
 use waterui_core::handler::ViewBuilder as _;
-#[cfg(feature = "media")]
+#[cfg(feature = "image")]
 use waterui_media::Photo;
-use waterui_text::Text;
+use waterui_text::{IntoText as _, Text};
 use waterui_ts::engine::{JsError, JsFunction, JsValue};
 use waterui_ts::{Bridge, FromJs, HostTable, JsViewBuilder};
 
-#[cfg(feature = "media")]
+#[cfg(feature = "image")]
 use crate::ts::catalog::ImageAttributes;
 use crate::ts::catalog::{
-    AccordionAttributes, AvatarAttributes, BadgeAttributes, ButtonAttributes, CardAttributes,
-    ColumnAttributes, HStackAttributes, LinkAttributes, ListAttributes, NavigationLinkAttributes,
-    NavigationStackAttributes, PickerAttributes, PickerOption, ProgressAttributes,
-    ProgressStyleValue, ScrollAxis, ScrollViewAttributes, SliderAttributes, SpacerAttributes,
-    StepperAttributes, TabAttributes, TableAttributes, TabsAttributes, TextContent,
-    TextFieldAttributes, ToggleAttributes, VStackAttributes, ZStackAttributes, attribute_names,
-    component_named, component_names, modifier_names,
+    AvatarAttributes, BadgeAttributes, ButtonAttributes, CardAttributes, ColumnAttributes,
+    DisclosureAttributes, HStackAttributes, LinkAttributes, ListAttributes,
+    NavigationLinkAttributes, NavigationStackAttributes, PickerAttributes, PickerOption,
+    ProgressAttributes, ProgressStyleValue, ScrollAxis, ScrollViewAttributes, SliderAttributes,
+    SpacerAttributes, StepperAttributes, TabAttributes, TableAttributes, TabsAttributes,
+    TextContent, TextFieldAttributes, ToggleAttributes, VStackAttributes, ZStackAttributes,
+    attribute_names, component_named, component_names, modifier_names,
 };
 use collection::Spliced;
 
@@ -248,20 +249,6 @@ fn containers(
             }
             AnyView::new(card)
         }
-        "Accordion" => {
-            let attributes = AccordionAttributes::from_js(config, bridge)?;
-            let header = VStack::new(
-                HorizontalAlignment::Leading,
-                0.0,
-                children::content(bridge, children)?,
-            )
-            .spacing(default_vertical_spacing());
-            let (content, expanded) = attributes.into_parts();
-            AnyView::new(match expanded {
-                Some(expanded) => Accordion::with_toggle(&expanded, header, content),
-                None => Accordion::new(header, content),
-            })
-        }
         _ => return Ok(None),
     }))
 }
@@ -297,19 +284,19 @@ fn leaves(
         "Avatar" => {
             let attributes = AvatarAttributes::from_js(config, bridge)?;
             children::none(component, children)?;
-            #[cfg(feature = "media")]
+            #[cfg(feature = "image")]
             let (name, image) = attributes.into_parts();
-            #[cfg(not(feature = "media"))]
+            #[cfg(not(feature = "image"))]
             let name = attributes.into_name();
             let avatar = Avatar::new(Text::computed(name), || ());
-            #[cfg(feature = "media")]
+            #[cfg(feature = "image")]
             let avatar = match image {
                 Some(source) => avatar.image(source.map(|url| url.0).computed()),
                 None => avatar,
             };
             AnyView::new(avatar)
         }
-        #[cfg(feature = "media")]
+        #[cfg(feature = "image")]
         "Image" => {
             let attributes = ImageAttributes::from_js(config, bridge)?;
             children::none(component, children)?;
@@ -355,17 +342,35 @@ fn collections(
         }
         "Table" => {
             TableAttributes::from_js(config, bridge)?;
-            let columns = children::content(bridge, children)?
+            let carried = children::content(bridge, children)?
                 .into_iter()
-                .map(|child| Carried::<TableColumn>::take_from(child, "Column", "Table"))
+                .map(|child| Carried::<(Text, Vec<Text>)>::take_from(child, "Column", "Table"))
                 .collect::<Result<Vec<_>, _>>()?;
-            AnyView::new(table(columns))
+            let row_count = carried
+                .iter()
+                .map(|(_, cells)| cells.len())
+                .max()
+                .unwrap_or(0);
+            let rows: Vec<SelfId<usize>> = (0..row_count).map(SelfId::new).collect();
+            let columns: Vec<TableColumn<SelfId<usize>, _, Text>> = carried
+                .into_iter()
+                .map(|(label, cells)| {
+                    let cells = alloc::rc::Rc::new(cells);
+                    TableColumn::new(label, move |row: &SelfId<usize>| {
+                        cells
+                            .get((*row).into_inner())
+                            .cloned()
+                            .unwrap_or_else(|| Text::verbatim(""))
+                    })
+                })
+                .collect();
+            AnyView::new(Table::new(rows, columns))
         }
         "Column" => {
             let attributes = ColumnAttributes::from_js(config, bridge)?;
             children::none(component, &[])?;
-            AnyView::new(Carried::new(TableColumn::new(
-                attributes.into_label(),
+            AnyView::new(Carried::new((
+                attributes.into_label().into_text(),
                 children::texts(bridge, children)?,
             )))
         }
@@ -417,7 +422,7 @@ fn navigation(
                 .collect::<Vec<_>>();
             AnyView::new(Tabs::new(
                 attributes.value(),
-                ForEach::new(nami::collection::List::from(ids), move |id: SelfId<Str>| {
+                ForEach::new(StateList::from(ids), move |id: SelfId<Str>| {
                     tabs.get(&id.into_inner())
                         .expect("the ids are built from the keys of this same `tabs` map, so every id has its tab")
                         .clone()
@@ -518,6 +523,16 @@ fn controls(
                 label,
                 attributes.into_url().map(|url| url.0).computed(),
             )))
+        }
+        "Disclosure" => {
+            let attributes = DisclosureAttributes::from_js(config, bridge)?;
+            let label = children::label(bridge, component, None, children)?;
+            let (content, expanded) = attributes.into_parts();
+            let disclosure = Disclosure::new(label, content);
+            Ok(AnyView::new(match expanded {
+                Some(expanded) => disclosure.expanded(&expanded),
+                None => disclosure,
+            }))
         }
         // `create` checked the catalog before dispatching, so a name reaching
         // here is one the catalog declares and this match does not build.

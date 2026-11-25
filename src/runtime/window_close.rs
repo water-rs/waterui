@@ -1,7 +1,7 @@
 //! A window's cancellable close request.
 //!
 //! One [`CloseRequest`] rides inside every [`Window`](crate::window::Window)
-//! and is shared by `Rc` with the [`WindowHandle`](crate::window::WindowHandle)s
+//! and is referenced weakly by the [`WindowHandle`](crate::window::WindowHandle)s
 //! the window hands out — the per-window sibling of the termination machine in
 //! `termination`. The backend arms it with the environment the window renders
 //! under and the window's `closable` when it realizes the window, and files
@@ -97,16 +97,49 @@ struct Shared {
     hook: Option<CloseRequestHook>,
     /// The subscription dropping the open question when `window_state`
     /// reaches `Closed` by any path. It lives here so it dies with the machine.
-    _close_watch: <Binding<WindowState> as Signal>::Guard,
+    close_watch: <Binding<WindowState> as Signal>::Guard,
 }
 
 /// The close-request machine one [`Window`](crate::window::Window) carries.
 ///
-/// Cloning shares the machine — a `WindowHandle` files requests into the same
-/// machine the backend armed.
+/// [`WindowHandle`](crate::window::WindowHandle) holds a [`WeakCloseRequest`]
+/// so installing the handle in the window's armed environment or capturing it
+/// in a handler cannot keep a dropped window's machine alive.
 #[derive(Clone)]
 pub struct CloseRequest {
     inner: Rc<RefCell<Shared>>,
+}
+
+/// Weak handle to a [`CloseRequest`], held by [`WindowHandle`](crate::window::WindowHandle).
+#[derive(Clone)]
+pub struct WeakCloseRequest {
+    inner: Weak<RefCell<Shared>>,
+}
+
+impl fmt::Debug for WeakCloseRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(inner) = self.inner.upgrade() {
+            fmt::Debug::fmt(&CloseRequest { inner }, f)
+        } else {
+            f.debug_struct("WeakCloseRequest")
+                .field("dropped", &true)
+                .finish()
+        }
+    }
+}
+
+impl WeakCloseRequest {
+    /// Files a close request if the owning window is still alive.
+    pub(crate) fn request(&self) {
+        let Some(inner) = self.inner.upgrade() else {
+            crate::contract_violation!(
+                "a close request was filed for a window that has already been dropped; \
+                 the request is dropped"
+            );
+            return;
+        };
+        CloseRequest { inner }.request();
+    }
 }
 
 impl fmt::Debug for CloseRequest {
@@ -137,15 +170,38 @@ impl CloseRequest {
                 window_state: window_state.clone(),
                 armed: None,
                 hook: None,
-                _close_watch: close_watch,
+                close_watch,
             })
         });
         Self { inner }
     }
 
+    /// Returns a weak reference to this machine for [`WindowHandle`](crate::window::WindowHandle).
+    pub(crate) fn downgrade(&self) -> WeakCloseRequest {
+        WeakCloseRequest {
+            inner: Rc::downgrade(&self.inner),
+        }
+    }
+
     /// Installs the `on_close_request` hook, replacing any set before.
     pub(crate) fn set_hook(&self, hook: CloseRequestHook) {
         self.inner.borrow_mut().hook = Some(hook);
+    }
+
+    /// Rebinds the watched and written `WindowState` binding while preserving
+    /// any previously installed `on_close_request` hook.
+    pub(crate) fn set_state(&self, window_state: &Binding<WindowState>) {
+        let machine = Rc::downgrade(&self.inner);
+        let close_watch = window_state.watch(move |context| {
+            if *context.value() == WindowState::Closed
+                && let Some(inner) = machine.upgrade()
+            {
+                Self { inner }.cancel_question();
+            }
+        });
+        let mut shared = self.inner.borrow_mut();
+        shared.window_state = window_state.clone();
+        shared.close_watch = close_watch;
     }
 
     /// Records the environment the window renders under and its `closable`.
@@ -258,8 +314,6 @@ mod tests {
     use std::cell::Cell;
     use std::future::pending;
 
-    use waterui_core::binding;
-
     use super::super::parked_executor::{drain, install as install_executor};
     use super::*;
     use crate::window::Window;
@@ -275,42 +329,51 @@ mod tests {
         }
     }
 
-    fn window() -> Window<impl ViewBuilder> {
-        Window::new("w", binding(WindowState::Normal), || ())
+    fn window() -> (Window<impl ViewBuilder>, Binding<WindowState>) {
+        let state = Binding::container(WindowState::Normal);
+        let window = Window::new("w", || ()).state(&state);
+        (window, state)
     }
 
     /// A window whose handler counts its questions and answers `reply`.
-    fn counting(reply: CloseReply) -> (Window<impl ViewBuilder>, Rc<Cell<u32>>) {
+    fn counting(
+        reply: CloseReply,
+    ) -> (
+        Window<impl ViewBuilder>,
+        Binding<WindowState>,
+        Rc<Cell<u32>>,
+    ) {
         let calls = Rc::new(Cell::new(0u32));
-        let window = window().on_close_request({
+        let (window, state) = window();
+        let window = window.on_close_request({
             let calls = Rc::clone(&calls);
             move || {
                 calls.set(calls.get() + 1);
                 async move { reply }
             }
         });
-        (window, calls)
+        (window, state, calls)
     }
 
     #[test]
     fn a_request_with_no_handler_closes_immediately() {
         install_executor();
-        let window = window();
+        let (window, state) = window();
         window.request_close(&Environment::new());
-        assert_eq!(window.state.snapshot(), WindowState::Closed);
+        assert_eq!(state.snapshot(), WindowState::Closed);
     }
 
     #[test]
     fn a_cancel_leaves_the_window_open_and_rearms_the_question() {
         install_executor();
         let env = Environment::new();
-        let (window, calls) = counting(CloseReply::Cancel);
+        let (window, state, calls) = counting(CloseReply::Cancel);
         window.request_close(&env);
         // The answer is a future: nothing is written until the executor runs
         // it.
-        assert_eq!(window.state.snapshot(), WindowState::Normal);
+        assert_eq!(state.snapshot(), WindowState::Normal);
         drain();
-        assert_eq!(window.state.snapshot(), WindowState::Normal);
+        assert_eq!(state.snapshot(), WindowState::Normal);
         assert_eq!(calls.get(), 1);
 
         window.request_close(&env);
@@ -321,11 +384,11 @@ mod tests {
     #[test]
     fn a_close_reply_writes_closed() {
         install_executor();
-        let (window, _) = counting(CloseReply::Close);
+        let (window, state, _) = counting(CloseReply::Close);
         window.request_close(&Environment::new());
-        assert_eq!(window.state.snapshot(), WindowState::Normal);
+        assert_eq!(state.snapshot(), WindowState::Normal);
         drain();
-        assert_eq!(window.state.snapshot(), WindowState::Closed);
+        assert_eq!(state.snapshot(), WindowState::Closed);
     }
 
     #[test]
@@ -333,7 +396,8 @@ mod tests {
         install_executor();
         let env = Environment::new();
         let calls = Rc::new(Cell::new(0u32));
-        let window = window().on_close_request({
+        let (window, _state) = window();
+        let window = window.on_close_request({
             let calls = Rc::clone(&calls);
             move || {
                 calls.set(calls.get() + 1);
@@ -349,9 +413,14 @@ mod tests {
 
     /// A pending question whose future reports its drop through the returned
     /// flag.
-    fn pending_question() -> (Window<impl ViewBuilder>, Rc<Cell<bool>>) {
+    fn pending_question() -> (
+        Window<impl ViewBuilder>,
+        Binding<WindowState>,
+        Rc<Cell<bool>>,
+    ) {
         let dropped = Rc::new(Cell::new(false));
-        let window = window().on_close_request({
+        let (window, state) = window();
+        let window = window.on_close_request({
             let dropped = Rc::clone(&dropped);
             move || {
                 let dropped = Dropped(Rc::clone(&dropped));
@@ -361,13 +430,13 @@ mod tests {
                 }
             }
         });
-        (window, dropped)
+        (window, state, dropped)
     }
 
     #[test]
     fn a_programmatic_close_cancels_the_question() {
         install_executor();
-        let (window, dropped) = pending_question();
+        let (window, state, dropped) = pending_question();
         window.request_close(&Environment::new());
         drain();
         window.handle().close();
@@ -375,13 +444,13 @@ mod tests {
         // turns the cancelled runnable.
         drain();
         assert!(dropped.get(), "a programmatic close drops the question");
-        assert_eq!(window.state.snapshot(), WindowState::Closed);
+        assert_eq!(state.snapshot(), WindowState::Closed);
     }
 
     #[test]
     fn dropping_the_window_cancels_the_question() {
         install_executor();
-        let (window, dropped) = pending_question();
+        let (window, _state, dropped) = pending_question();
         window.request_close(&Environment::new());
         drain();
         drop(window);
@@ -392,42 +461,42 @@ mod tests {
     #[test]
     fn closable_false_drops_the_request_before_the_handler() {
         install_executor();
-        let (mut window, calls) = counting(CloseReply::Close);
-        window.closable = false;
+        let (window, state, calls) = counting(CloseReply::Close);
+        let window = window.closable(false);
         window.request_close(&Environment::new());
         window.handle().request_close();
         drain();
         assert_eq!(calls.get(), 0);
-        assert_eq!(window.state.snapshot(), WindowState::Normal);
+        assert_eq!(state.snapshot(), WindowState::Normal);
     }
 
     #[test]
     fn a_handle_request_routes_through_the_handler() {
         install_executor();
-        let (window, calls) = counting(CloseReply::Cancel);
+        let (window, state, calls) = counting(CloseReply::Cancel);
         window.arm_close_requests(&Environment::new());
         window.handle().request_close();
         drain();
         assert_eq!(calls.get(), 1);
-        assert_eq!(window.state.snapshot(), WindowState::Normal);
+        assert_eq!(state.snapshot(), WindowState::Normal);
     }
 
     #[test]
     fn a_handle_close_bypasses_the_handler() {
         install_executor();
-        let (window, calls) = counting(CloseReply::Cancel);
+        let (window, state, calls) = counting(CloseReply::Cancel);
         window.arm_close_requests(&Environment::new());
         window.handle().close();
         drain();
         assert_eq!(calls.get(), 0);
-        assert_eq!(window.state.snapshot(), WindowState::Closed);
+        assert_eq!(state.snapshot(), WindowState::Closed);
     }
 
     #[test]
     #[cfg_attr(debug_assertions, should_panic(expected = "never realized"))]
     fn a_handle_request_before_realization_is_dropped() {
-        let window = window();
+        let (window, state) = window();
         window.handle().request_close();
-        assert_eq!(window.state.snapshot(), WindowState::Normal);
+        assert_eq!(state.snapshot(), WindowState::Normal);
     }
 }

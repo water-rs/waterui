@@ -8,20 +8,20 @@ use waterui::Environment;
 use waterui::app::{App, Windows};
 use waterui::prelude::*;
 use waterui::reactive::binding;
-use waterui::shape::{RoundedRectangle, ShapeExt};
-use waterui::window::{Window, WindowState};
+use waterui::shape::{CornerRadius, RoundedRectangle, ShapeExt};
+use waterui::window::Window;
 use waterui_controls::{slider::slider, stepper::stepper};
 
 fn main_view() -> impl View {
     let toggle_value = binding(true);
-    let slider_value = binding(0.4_f64);
-    let stepper_value = binding(3_i32);
+    let slider_value = binding::<f64>(0.4);
+    let stepper_value = binding::<i32>(3);
 
     scroll(
         vstack((
-            text("Hydrolysis Wayland Smoke").size(28.0),
-            text("Direct self-drawn window via winit + Cherenkov").size(16.0),
-            RoundedRectangle::new(0.2)
+            text("Hydrolysis Wayland Smoke").font_size(28.0),
+            text("Direct self-drawn window via winit + Cherenkov").font_size(16.0),
+            RoundedRectangle::new(CornerRadius::fraction(0.2))
                 .fill(Color::srgb_hex("#2563EB"))
                 .size(560.0, 180.0),
             hstack((
@@ -30,7 +30,7 @@ fn main_view() -> impl View {
                 stepper("Stepper", &stepper_value).range(0..=10),
             ))
             .spacing(16.0),
-            text("Scroll to verify wheel routing").size(14.0),
+            text("Scroll to verify wheel routing").font_size(14.0),
             spacer(),
         ))
         .spacing(20.0)
@@ -41,14 +41,7 @@ fn main_view() -> impl View {
 }
 
 fn app(env: Environment) -> App<impl Windows> {
-    App::new_with_windows(
-        [Window::new(
-            "Hydrolysis Wayland Smoke",
-            binding(WindowState::Normal),
-            main_view,
-        )],
-        env,
-    )
+    App::new(env).window(Window::new("Hydrolysis Wayland Smoke", main_view))
 }
 
 fn smoke_lifetime() -> Duration {

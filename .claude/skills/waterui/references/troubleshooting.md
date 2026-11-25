@@ -56,12 +56,12 @@ therefore shadows its ancestor's `.on_tap`; put the handler on the view that sho
 remove the nested one. Recognizers on the *same* view combine (see interaction.md).
 
 **The app quits when its last window closes, or an on-demand window cannot reopen.** The
-default `LastWindowPolicy::Quit` ends the app with its last window. A tray, resident or
+default `LastWindowPolicy::Quit` ends the app with its last open window. A tray, resident or
 on-demand-window app sets `App::on_last_window_closed(LastWindowPolicy::StayResident)`
-(iOS and Android reject an app that declares no window), registers a `WindowChannel` from
-`WindowManager::new()` with `App::new_with_windows` or `App::window`, and opens windows with
-`window.show(&windows)` (`Window::show`): a `conditional_window` lives only as long as the
-window hosting it.
+(iOS and Android reject an app that declares no open window), declares single-instance
+secondary windows on `App::window` with a `Binding<WindowState>` (or registers a
+`WindowChannel` from `WindowManager::new()` for unbounded document windows opened with
+`window.show(&windows)`).
 
 **A snackbar shown from a callback does nothing.** First make sure an ancestor view attaches
 `.snackbar_host()` (or `.snackbar_host_with_icons::<V>()`). `SnackbarManager` reaches handlers as a
@@ -69,12 +69,11 @@ parameter, but a callback that is not a WaterUI handler (a `GpuView::on_input`, 
 closure handed to another component) has none. Read it while building the view with
 `use_env(|manager: SnackbarManager| ..)` and move it into the callback.
 
-**Rounded corners come out as a capsule.** `RoundedRectangle::new(r)` takes a fraction of
-the shorter side, not points — `new(12.0)` saturates at fully-rounded. Use `new(0.1)`-scale
-values, `Capsule` when fully-rounded is the intent, or `FixedRoundedRectangle::new(points)`
-(and `FixedUnevenRoundedRectangle`) for an absolute radius. `UnevenRoundedRectangle`'s four
-radii are in reading order (top_leading, top_trailing, bottom_leading, bottom_trailing),
-not clockwise.
+**Rounded corners look wrong on non-square boxes.** `RoundedRectangle::new(points)` takes logical
+points and clamps to half the shorter side (`Capsule` when fully-rounded at any size is the
+intent). Pass `CornerRadius::fraction(r)` when a corner should scale with the shorter side
+(`0.1` is subtle, `0.5` is capsule), and `CornerRadii::new(top_leading, top_trailing,
+bottom_leading, bottom_trailing)` in reading order — *not* clockwise — for per-corner radii.
 
 **Padding lands on the wrong edges.** `EdgeInsets::new(top, leading, bottom, trailing)` —
 SwiftUI's order, not CSS — and `EdgeInsets::symmetric(vertical, horizontal)`.
@@ -82,10 +81,10 @@ SwiftUI's order, not CSS — and `EdgeInsets::symmetric(vertical, horizontal)`.
 **A background task never runs, or an animation loop dies instantly.** The
 `spawn_local(..)` handle was dropped — it cancels the future on drop. Call `.detach()`.
 
-**An on-demand window never opens (or opens duplicated).** `conditional_window` returns an
-*invisible view that must still be placed in the tree*, and its `WindowPresentation` must
-be created once alongside the state binding — recreating it inside a rebuilt subtree resets
-the open-once guard.
+**An on-demand window never opens (or opens duplicated).** Declare single-instance secondary
+windows directly on `App::window` with `.state(&state)` starting `WindowState::Closed`:
+writing `WindowState::Normal` opens it when closed and focuses it when already open. Only use
+`Window::show(&manager)` when every call is supposed to open a fresh window.
 
 **An animation snapshot shows the end state instead of the transition.** A test used
 `std::thread::sleep`. The animation clock advances with pumped frames, not wall-clock time.
@@ -107,14 +106,12 @@ Use `app.pump_for(duration)`.
 | `E0525` / `E0507` pointing at `when(..)`, `.or(..)` or `.otherwise(..)` | payloads are `Fn` builders that run each time their branch becomes active, so the closure may not move a captured value out | clone captured values inside the body and build the view there: `when(c, move \|\| text("Saved").opacity(fade.clone()))` |
 | `cannot find type 'ListDelete' / 'ListMove'` | not in the prelude | `use waterui::component::list::{ListDelete, ListMove};` |
 | `cannot find type 'TapGesture' / 'CursorStyle' / 'Transferable'` | interaction types are not in the prelude | `use waterui::gesture::…;` / `use waterui::cursor::…;` / `use waterui::drag_drop::…;` |
-| `cannot find type 'PhotoEvent'` | the real name is `photo::Event` | `use waterui::media::photo::Event as PhotoEvent;` |
-| mismatched types on `LongPressGesture::new(Duration::…)` | it takes a `u32` in backend time units | `LongPressGesture::new(500)` |
+| `LongPressGesture::new` constructor or duration type error | `LongPressGesture::new()` uses the platform timeout; custom timeout takes `core::time::Duration` via builder | `LongPressGesture::new().minimum_duration(Duration::from_millis(500))` |
 | `no method named 'drop_hover'` | it exists only on the value `.drop_destination(..)` returns | chain it directly after `.drop_destination` |
 | `the trait bound 'MyType: Transferable' is not satisfied` on `.draggable`/`.drop_destination` | a drag value must be marked transferable | `impl Transferable for MyType {}` (plus `impl_constant!(MyType)` to pass a plain value) |
 | `no method named 'is_empty'` on a signal | signal string methods are prefixed | `.str_is_empty()`, `.str_len()`, `.str_contains(..)` |
 | mismatched arms in `.select(TokenA, TokenB)` | both arms must be one concrete type | convert first: `let a: Color = Accent.into();` |
 | `this function takes 1 argument but 2 were supplied` on `.scale` | uniform scale takes one factor; per-axis is `scale_xy` | `.scale(factor)` or `.scale_xy(x, y)` |
-| `.size(24)` on a `Text` then `.size(w, h)` fails | `Text::size` (font size) shadows the frame modifier | use `.width(..)`/`.height(..)` on text, or size the container |
 | `this function takes 2 arguments` on `row("Title")` | `row`/`detail_row` take (label, value) | `row("Streak", "14 days")` |
 | wrong `row` / `grid` resolves | list `row` vs grid `row` name collision | `use waterui::layout::grid::{grid as layout_grid, row as grid_row};` |
 | `` `Row` has no stable identity `` (an unsatisfied `Identifiable` bound) | collection item lacks an id | `#[derive(Clone, Identifiable)]` + `#[id]`, or manual `impl` for enums (disjoint id ranges) |
@@ -185,7 +182,7 @@ not from unit-space path commands, which scale with the aspect ratio. Test shape
 against a deliberately non-square rectangle.
 
 **A map renders nothing on a self-drawn backend.** Hydrolysis draws a map only with
-`waterui-map-gpu`: the app must depend on it and put a `MapGpuOptions` tile source into the
+`waterui-map-gpu`: the app must depend on it and install the `MapGpu` plugin into the
 environment in `app(env)`. See [media.md](media.md).
 
 ## Build and run problems

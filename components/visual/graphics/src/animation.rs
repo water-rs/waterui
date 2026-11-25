@@ -1,29 +1,40 @@
-use waterui_core::animation::Animation;
+use waterui_core::animation::{Animation, Repeat};
 use waterui_core::easing::Timing;
+
+use crate::draw::{self, Curve};
 
 /// Maps the public [`Animation`] onto the engine's execution type.
 ///
 /// Both sides evaluate through the same shared timing: a curve keeps its
-/// control points and its exact duration — [`Animation::Default`] is the
+/// control points and its exact duration — [`Animation::default`] is the
 /// documented ease-in-out 250 ms — and a spring is the very
-/// [`Spring`](crate::draw::Spring) core runs, so the engine samples the
-/// animation to the values core would.
+/// [`Spring`](draw::Spring) core runs, so the engine samples the
+/// animation to the values core would. Any delay, speed, or repeat modifier
+/// carries over verbatim into [`Scheduled`](draw::Animation::Scheduled).
 ///
 /// A recorded operand or a layer property bound to a signal animates under
 /// the engine animation its change's metadata carries; a backend that drives
 /// such a change with a framework animation converts it here.
 #[must_use]
-pub fn engine_animation(animation: &Animation) -> crate::draw::Animation {
+pub fn engine_animation(animation: &Animation) -> draw::Animation {
     let animation = animation.clone().validated();
-    match animation.timing() {
-        Timing::Curve { curve, .. } => crate::draw::Animation::Curve(crate::draw::Curve::bezier(
-            animation.duration(),
-            curve.x1,
-            curve.y1,
-            curve.x2,
-            curve.y2,
-        )),
-        Timing::Spring(spring) => crate::draw::Animation::Spring(spring),
+    let playback = animation.playback();
+    if playback.delay == 0.0
+        && (playback.speed - 1.0).abs() == 0.0
+        && matches!(playback.repeat, Repeat::Once)
+    {
+        match playback.timing {
+            Timing::Curve { curve, .. } => draw::Animation::Curve(Curve::bezier(
+                animation.cycle_duration(),
+                curve.x1,
+                curve.y1,
+                curve.x2,
+                curve.y2,
+            )),
+            Timing::Spring(spring) => draw::Animation::Spring(spring),
+        }
+    } else {
+        draw::Animation::Scheduled(playback)
     }
 }
 
@@ -38,10 +49,11 @@ mod tests {
 
     /// The curves and springs the parity grid covers: the system default,
     /// every standard curve, an emphasized and an overshooting curve, a
-    /// zero-length curve, and under-, critically and overdamped springs.
+    /// zero-length curve, under-, critically and overdamped springs, and
+    /// delayed, sped-up, and repeating animations.
     fn animations() -> Vec<Animation> {
         vec![
-            Animation::Default,
+            Animation::default(),
             Animation::linear(Duration::from_millis(200)),
             Animation::ease_in(Duration::from_millis(300)),
             Animation::ease_out(Duration::from_millis(300)),
@@ -53,6 +65,17 @@ mod tests {
             Animation::spring(300.0, 15.0),
             Animation::spring(400.0, 40.0),
             Animation::spring(150.0, 60.0),
+            Animation::ease_in_out(Duration::from_millis(400))
+                .delay(Duration::from_millis(80))
+                .speed(2.0),
+            Animation::linear(Duration::from_millis(200)).repeat(Repeat::Count {
+                count: 3,
+                autoreverse: true,
+            }),
+            Animation::spring(180.0, 18.0)
+                .delay(Duration::from_millis(50))
+                .speed(1.5)
+                .repeat(Repeat::Forever { autoreverse: true }),
         ]
     }
 

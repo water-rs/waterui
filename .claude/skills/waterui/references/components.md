@@ -4,7 +4,7 @@ Signatures verified against the WaterUI source and compiled. Everything here is 
 from `use waterui::prelude::*;` unless an explicit import is shown.
 
 **Feature gates.** `waterui`'s default features are `gpu`, `assets`, `dialog`, `snackbar`,
-`highlight`, `locale-datetime` and `locale-list`. Everything else is opt-in, chiefly `media`,
+`highlight`, `locale-datetime` and `locale-list`. Everything else is opt-in, chiefly `image`,
 `video`, `video-gpu`, `webview`, `flow-markdown` (also gates `RichText` and
 `include_markdown!`), `markdown-math`, `navigation-restoration`, `haptics`, `inspector`, `remote`, `ts`,
 `widgets`, and the component features `canvas`, `chart`, `barcode` and `particle`. `all`
@@ -70,8 +70,7 @@ as their lowercase forms; `Button::new`, `Slider::new` and `Stepper::new` take a
 `Label`, so write `slider("Volume", &level)` rather than `Slider::new("Volume", &level)`.
 
 There is no `Type::custom(...)` anywhere; if you find yourself looking for one, `new` is
-it. Named exceptions: `FilePicker::open(..)` / `FilePicker::import(..)` are that type's
-constructors, and `progress(..)` takes its label as a `.label(..)` modifier rather than a
+it. `progress(..)` takes its label as a `.label(..)` modifier rather than a
 first argument — the one control that does.
 
 ## Layout containers
@@ -132,13 +131,14 @@ Frame modifiers exist per-axis as well as paired:
 .max_width(f32::INFINITY)                          // idiom: stretch to full container width
 ```
 
-On a view these take a plain `f32` and return a `Frame`; chained on that `Frame` they take
-signals (`IntoSignalF32`), so `.width(120.0).max_height(height_signal)` makes the cap
-reactive. `.min_width`/`.min_height` are how you reserve stage space for a scaled or
-rotated child that overflows its intrinsic size. A `Frame` also takes `.ideal_width(w)` /
-`.ideal_height(h)` (signals): the size it asks for when its parent proposes nothing.
-Unlike `.width(w)`, which pins the minimum, ideal and maximum together, it leaves the frame
-free to be smaller or larger when the parent does propose a size.
+Every sizing shortcut on a view takes a literal or signal (`IntoSignalF32`) and returns a
+`Frame`, so `.height(height_signal)` and `.width(120.0).max_height(height_signal)` are both
+reactive; `.alignment(...)` accepts `Alignment` or an alignment token (`TopLeading`, `Center`,
+…). `.min_width`/`.min_height` are how you reserve stage space for a scaled or rotated child
+that overflows its intrinsic size. Views also take `.ideal_width(w)` / `.ideal_height(h)`
+(signals): the size requested when the parent proposes nothing. Unlike `.width(w)`, which pins
+the minimum, ideal and maximum together, it leaves the frame free to be smaller or larger when
+the parent does propose a size.
 
 Two more sizing modifiers:
 
@@ -311,12 +311,12 @@ button(text!("{edit_label}")).action(|| {}) // a text! satisfies IntoLabel: reac
 
 toggle("Wi-Fi", &enabled)                   // &Binding<bool>
 Toggle::new("Wi-Fi", &enabled).style(ToggleStyle::Switch)     // Automatic | Switch | Checkbox; .switch() / .checkbox()
-slider("Volume", &level).range(0.0..=1.0)   // &Binding<f64>; range is RangeInclusive<f64>
+slider("Volume", &level).range(0.0..=1.0)   // &Binding<T: SliderValue> (f32, f64, ints); range/step accept signals
 slider("Volume", &level).size(ControlSize::Large)      // sliders default ExtraSmall
-    .value_indicator(|v| Str::from(format!("{v:.0}"))) // shown above the thumb while dragging
+    .value_formatter(|v| Str::from(format!("{v:.0}"))) // shown above the thumb while dragging
 slider("Volume", &level).step(0.1).min_value_label("Quiet").max_value_label("Loud")
-stepper("Quantity", &count)                 // &Binding<i32>
-stepper("Items", &count).range(0..=100).step(5)   // range: impl RangeBounds<i32>; step takes a signal
+stepper("Quantity", &count)                 // &Binding<T: StepperValue> (i32, u32, i64, usize, ...)
+stepper("Items", &count).range(0..=100).step(5)   // range and step accept signals
 stepper("Items", &count).value_formatter(|n| format!("{n} items"))   // inline value text; T: Into<StyledStr>
 field("Email", &address)                    // &Binding<Str>
 field("Search", &query).on_submit(handler)  // Return in a line-limited field runs it
@@ -338,7 +338,7 @@ TextField::new("Note", &note).selection_menu((
 ))
 progress(fraction)                          // impl IntoComputed<f64>
 progress(fraction).label("Downloading")     // its label is a modifier — the one exception
-progress(fraction).circular()               // or .linear()
+progress(fraction).style(ProgressStyle::Circular)  // or Linear / Loading (shorthands: .circular(), .linear())
 loading()                                   // indeterminate progress
 link("Docs", "https://waterui.dev")         // a Link-style button that opens the URL
 ```
@@ -347,10 +347,11 @@ Style shorthands on `Button` — `.plain()`, `.link()`, `.borderless()`, `.borde
 `.bordered_prominent()` — equal `.style(..)` and work before or after `.action(..)`.
 `.borderless()` is the idiomatic toolbar-button style; `Link` shows the
 pointing-hand cursor on pointer platforms. `TextField::line_limit(impl IntoComputed<Option<NonZeroUsize>>)` caps the
-lines (pass `None` for unlimited multi-line input, or a signal to toggle it); `TextField::styled(label, &Binding<StyledStr>)` binds styled text. `Switch` and `checkbox` map to different accessibility roles (`SWITCH` vs `CHECKBOX`), which matters to
-tests. `ToggleStyle::Automatic` is the platform's style — a switch on iOS and Android, a
-checkbox on macOS — so a test that must pass on every host queries a default toggle
-with `Role::toggle(ToggleStyle::Automatic)`. A switch with a visible label fills the
+lines (pass `None` for unlimited multi-line input, or a signal to toggle it); `TextField::new(label, &value)` accepts both `&Binding<Str>` and `&Binding<StyledStr>` via `TextFieldValue`. `Switch` and `checkbox` map to different accessibility roles (`SWITCH` vs `CHECKBOX`), which matters to
+tests. `ToggleStyle::Automatic` reads the ambient `ToggleStyle` installed in the environment
+(`.with(ToggleStyle::...)`) first, then the backend's platform default (`Switch` on
+Hydrolysis and iOS, `Checkbox` on macOS AppKit). On Hydrolysis, `Role::toggle(ToggleStyle::Automatic)`
+maps to `Role::SWITCH`. A switch with a visible label fills the
 width it is offered (label leading, switch trailing); a checkbox and a toggle with a
 hidden label are content-sized.
 
@@ -369,7 +370,7 @@ an outer custom style.
 
 ```rust
 use waterui::gesture::TapGesture;
-use waterui::prelude::theme_color::{Accent, Error, SurfaceVariant};
+use waterui::theme::color::{Accent, Error, SurfaceVariant};
 use waterui::shape::Capsule;
 
 struct PillButtonStyle;
@@ -387,7 +388,7 @@ impl CustomButtonStyle for PillButtonStyle {
         configuration
             .into_label()
             .padding_with((8.0, 16.0))
-            .background(signal_color(bg))
+            .background(bg)
             .clip(Capsule)
     }
 }
@@ -403,7 +404,12 @@ impl PrimitiveButtonStyle for DoubleTapButtonStyle {
         configuration
             .into_label()
             .padding_with((8.0, 16.0))
-            .gesture(TapGesture::repeat(2), move || trigger.trigger())
+            .gesture(
+                TapGesture::repeat(NonZeroU32::new(2).unwrap()),
+                move |_: TapEvent| {
+                    trigger.trigger();
+                },
+            )
     }
 }
 
@@ -417,8 +423,8 @@ impl CustomToggleStyle for PillToggleStyle {
         hstack((
             configuration.into_label(),
             spacer(),
-            signal_color(bg)
-                .size(44.0, 26.0)
+            ().size(44.0, 26.0)
+                .background(bg)
                 .clip(Capsule),
         ))
     }
@@ -489,12 +495,12 @@ a toolbar, a menu, and a keyboard shortcut. `Command` has its own builder chain:
     .selected(checked)                         // signal of bool: a checked / toggled row
     .subtitle("Copy the selection")            // secondary line under the label
     .shortcut(Shortcut::new('c').command())
-"Delete".action(delete_handler).destructive()  // red in every menu; == .role(CommandRole::Destructive)
-"Delete".action(delete_handler).shortcut(Shortcut::new(NamedKey::Delete))
+"Delete".action(delete_handler).destructive()  // red in every menu; == .role(ButtonRole::Destructive)
+"Delete".action(delete_handler).shortcut(Shortcut::new(ShortcutNamedKey::Delete))
 Shortcut::new('s').command().shift()           // ⇧⌘S; also .option() and .control()
 ```
 
-A shortcut key is a `char` or a W3C `NamedKey`. `.command()` is the platform's primary
+A shortcut key is a `char` or a `ShortcutNamedKey` (or `ShortcutKey::try_from(NamedKey)`). `.command()` is the platform's primary
 modifier: ⌘ on Apple, Ctrl elsewhere. When a chord is live depends on where the command
 sits: a mounted `Menu` arms its chords whether or not its popup is open, a `.context_menu`
 arms them only while it is open, and `App::menu_bar` arms them app-wide. A chord without
@@ -507,7 +513,9 @@ and headless hosts draw nothing but keep the shortcuts armed:
 ```rust
 use waterui::app::App;
 
-App::new(move || content(), env).menu_bar(Menu::new("File", (
+App::new(env)
+    .window(Window::new("", move || content()))
+    .menu_bar(Menu::new("File", (
     "Save".action(save).shortcut(Shortcut::new('s').command()),
     Divider,
     MenuItem::CloseWindow,
@@ -569,7 +577,7 @@ Both carry the full font API:
 
 ```rust
 .title() .headline() .subheadline() .body() .caption() .footnote()
-.size(18.0) .bold(true) .italic(true) .font(font::Caption) .foreground(color)
+.font_size(18.0) .bold(true) .italic(true) .font(font::Caption) .foreground(color)
 .weight(font::FontWeight::SemiBold) .monospaced(true) .underline(true) .strikethrough(true) .color(color)
 ```
 
@@ -578,7 +586,7 @@ Both carry the full font API:
 sets the paragraph alignment of multiline text (a signal works too) and
 `.background_color(color)` paints behind the text run.
 
-`StyledStr` (`waterui::text::StyledStr`; what `TextField::styled` and `text(..)` also accept) takes
+`StyledStr` (`waterui::text::StyledStr`; what `TextField::new` and `text(..)` also accept) takes
 `.strikethrough(bool)` beside `.underline(bool)`, and `.on_tap(payload, handler)` makes the
 whole string a tappable span: the handler receives the payload (`impl IntoComputed<E>`,
 read at tap time, so a `Binding` reports its latest value); a second `.on_tap` replaces the
@@ -587,12 +595,11 @@ first: `text(StyledStr::plain("Terms").on_tap("terms", |page: &'static str| open
 `.font(..)` takes a slot struct from the prelude's `font` module — `font::Title`,
 `Headline`, `Subheadline` (note the spelling; the method is `.subheadline()`), `Body`,
 `Caption`, `Footnote` — the form to use when the style is chosen dynamically. On `Text`,
-`.size(..)` is the *font* size, is reactive (`impl IntoSignal<f64>`), and **shadows** the
-two-argument frame `.size(w, h)` — to give a text a frame, use `.width(..)`/`.height(..)`
-or size its container.
+`.font_size(..)` sets the font size and is reactive (`impl IntoSignal<f64>`), leaving the
+two-argument frame `.size(w, h)` available directly on `Text`.
 
 A `font::Font` built from a slot carries the same overrides, and every one of them —
-`.family(..)`, `.size(..)`, `.weight(..)`, `.design(..)`, `.line_height(..)`,
+`.family(..)`, `.font_size(..)`, `.weight(..)`, `.design(..)`, `.line_height(..)`,
 `.letter_spacing(..)` — takes a plain value or a signal of one. A family that follows a
 setting is a signal, never a `watch(..)`:
 
@@ -681,10 +688,14 @@ struct Record { #[id] id: u64, title: Str }
 scroll(VStack::for_each(records.clone(), |r| text(r.title)))
 scroll_horizontal(HStack::for_each(records.clone(), record_card)) // record_card: fn(Record) -> impl View
 
-List::for_each(records.clone(), |r| ListItem::new(text(r.title)))
+List::for_each(records.clone(), |r| text(r.title))
     .editing(is_editing.clone())          // impl IntoComputed<bool>
-    .on_delete(|ListDelete(i), mut s: AppState| { let _ = s.rows.remove(i); })
-    .on_move(|ListMove(m), mut s: AppState| {
+    .on_delete(|ListDelete(id): ListDelete<u64>, mut s: AppState| {
+        if let Some(i) = s.rows.snapshot().iter().position(|r| r.id == id) {
+            let _ = s.rows.remove(i);
+        }
+    })
+    .on_move(|ListMove(m): ListMove<u64>, mut s: AppState| {
         let moved = s.rows.remove(m.from());
         s.rows.insert(m.to(), moved);
     })
@@ -694,9 +705,13 @@ List::for_each(records.clone(), |r| ListItem::new(text(r.title)))
 `VStack::for_each` and `HStack::for_each` automatically virtualize along their stack axis
 when enclosed by a co-axial `ScrollView` (`scroll` / `scroll_horizontal` / `scroll_both`)
 and stay eager outside one; call `.eager()` to opt out inside a scroll view, and chain
-ordinary stack modifiers like `.spacing(8.0)` directly. `ListDelete(index)` destructures
-to a `usize`; `ListMove(m)` exposes `.from()`/`.to()`. `AppState` is an owned `#[state]`
-type (SKILL.md rule 3), so handlers take it bare.
+ordinary stack modifiers like `.spacing(8.0)` directly. `ListDelete<Id>(id)` carries the deleted
+item's identity; `ListMove<Id>(m)` exposes `.id()`, `.target()` (the item occupying the
+destination slot before the move), and part-local `.from()` / post-removal `.to()`. Inside
+`List::content`, attach `.on_delete` and `.on_move` directly to each `ForEach` (via
+`ForEachExt` in the prelude) or `.on_delete` to an individual `Row`; static rows are not
+deletable unless opted in, and moves stay inside their owning part. `AppState` is an owned
+`#[state]` type (SKILL.md rule 3), so handlers take it bare.
 
 Membership animation on a stack's `for_each` is declared per row
 with `.transition(...)` plus `.animation(...)` (a removed row's ghost holds its slot
@@ -723,39 +738,39 @@ List::content((
     Section::new("Recent")
         .footer("Sub-pages push onto this tab's own stack.")
         .content((
-            || ListItem::new(text("Today")),
+            || text("Today"),
             row("Streak", "14 days"),                    // Row is valid content directly
             detail_row("Last entry", "Yesterday"),
         )),
-    || ListItem::new(text("Footer")),
+    || text("Footer"),
 ))
 ```
 
 A `Row` also takes `.value_color(color)`, `.detail()` / `.inline()` (the two-line and
 one-line layouts) and `.deletable(bool)`. A section's content may also be a `ForEach` over
 a reactive collection, next to or instead
-of static rows — `Section::new("Today").content(ForEach::new(today, |item| ListItem::new(text(item.title))))`.
+of static rows — `Section::new("Today").content(ForEach::new(today, |item| text(item.title)))`.
 Its rows are inserted and removed in place as the collection changes, the header sits on
 whichever row currently opens the section, and a section with no rows draws neither header
 nor footer until rows come back. A grouped, filtered list is therefore one `List::content`
 with a `Section` per group, each over its own `SignalCollection`; sections do not nest.
 
-`ListItem` modifiers: `.deletable(signal)`, `.insets(insets)`; `.list_min_row_height(h)` on
+Row modifiers: `.list_row_deletable(signal)`, `.list_row_insets(insets)`; `.list_min_row_height(h)` on
 any ancestor sets the row-height floor for every list inside (`0.0` sizes rows to their
 content). Selection lives on the
 list itself and holds the app's own values — `.selection(&Binding<Option<T>>)` or
 `.multi_selection(&Binding<BTreeSet<T>>)` on both `List` and `ListBuilder`, `T: Ord + Clone`.
 A `ForEach` row — every row of `List::for_each`, or a `ForEach` inside `List::content` —
-is selected by its collection id: `Identifiable::Id` for a `List`/`Vec`/`SignalCollection`,
+is selected by its collection id: `Identifiable::Id` for a `StateList`/`Vec`/`SignalCollection`,
 the index for an array or static slice. A static row of `List::content` is selected by the
-value it is tagged with, like SwiftUI's `.tag(_:)` — `(|| ListItem::new(text("Inbox"))).tag(Mailbox::Inbox)`
+value it is tagged with, like SwiftUI's `.tag(_:)` — `(|| text("Inbox")).tag(Mailbox::Inbox)`
 or `row("Archive", "12").tag(Mailbox::Archive)` — and an untagged static row is not
 selectable. Every selectable row of one list is selected by the same type; a selection
 of another type does not compile, and neither does a selection over a `List::content`
 whose rows are all untagged. Rows carrying the same value are selected together.
 At most one mode per list: a later call replaces an earlier one.
 `List::for_each` takes any collection whose items are `Clone`; `List::content` takes the
-structural tree above; `List::new(views)` takes pre-built `Views<View = ListItem<C>>`. An
+structural tree above; `List::new(views)` takes pre-built `Views`. An
 enum row type implements `Identifiable` by hand (`type Id; fn id(&self)`),
 keeping the id ranges of different variants disjoint.
 
@@ -841,19 +856,19 @@ Calendar::new("Trip Date", &date)                        // month owned by confi
 MultiDatePicker::new("Available", &date_set)             // Binding<BTreeSet<Date>>; `.visible_month(&shown)` optional
 
 ColorPicker::new("Accent", &color).with_alpha().with_hdr()     // Binding<Color>
-FilePicker::open("Select Files", &urls).max_count(5)           // Binding<Vec<Url>>; `import(..)` copies into app storage
+FilePicker::new("Select Files", &urls).max_count(5)            // Binding<Vec<Url>>; `.import()` copies into app storage
 ```
 
 Seeding a `Binding<Color>` from a constant: `binding(Color::from(Srgb::from_hex("#4A84F6")))`.
 A `Binding<BTreeSet<Date>>` needs the turbofish: `binding(BTreeSet::<Date>::new())`.
 
-## Overlays: snackbars, cards, suspense, full screen
+## Overlays: snackbars, cards, suspense
 
 Attach `.snackbar_host()` to a root view to install a plain `SnackbarManager` (and
 `CodeCopyFeedback` when `flow-markdown` is enabled) into its subtree; it is a `#[state]`-marked
 framework type, so descendant handlers take it bare. For snackbars with icons of view type `V`,
-attach `.snackbar_host_with_icons::<V>()` (or construct `SnackbarManager::with_icons::<V>()`
-manually with `.overlay(overlay).state(&snackbars)`) and extract `m: SnackbarManager<V>`.
+attach `.snackbar_host_with_icons::<V>()` (or wrap the subtree in `SnackbarManager::host(|m| ...)`)
+and extract `m: SnackbarManager<V>`.
 
 ```rust
 use core::time::Duration;
@@ -871,7 +886,8 @@ button("Save").action(|m: SnackbarManager| {
 ```
 
 Placements are independent stacks: a top snackbar never evicts a bottom one, and multiple
-at one placement stack and reflow. `.icon(view)` attaches a typed leading icon (`Snackbar<V>`),
+at one placement stack and reflow. `.icon(|| view)` attaches a typed leading icon builder
+(`Snackbar<V>`, so modified non-`Clone` views like `|| mdi::delete().padding()` work directly),
 `.state(&v)` injects state for the `.action(..)` and
 `.on_dismiss(..)` handlers; `.on_dismiss(|reason: SnackbarDismissReason| ..)` runs once per
 presentation with why it went (`Action`, `Timeout`, `Closed`, `Replaced`, `Programmatic`),
@@ -890,18 +906,13 @@ use_env(|manager: SnackbarManager| {
 ```
 
 ```rust
-use waterui::widget::accordion;                        // not in the prelude
+use waterui::widget::disclosure;                       // not in the prelude
 
 card(content).title("Summary").subtitle("This week")   // Card; .style(CardStyle::Outlined) | Elevated | Filled
 suspense(async { load().await })                       // takes a future, not a closure; .loading(view) overrides the spinner
-accordion(header, || body())                           // disclosure; Accordion::with_toggle(&open, ..) controls it
+disclosure("Header", || body())                        // Disclosure::new(header, ..).expanded(&open) controls it
 view.floating()                                        // themed elevated surface (FloatingStyle-aware)
 ```
-
-Attach `.full_screen_overlay_host::<V>()` to a root view (or construct
-`FullScreenOverlayManager::<V>::new()` manually with `.overlay(overlay_view).state(&overlay)`)
-so descendant handlers can take `overlay: FullScreenOverlayManager<V>` bare to present modal,
-window-filling content: `overlay.show(view)` and `overlay.hide()`.
 
 `.secure()` on any view marks it as content that must not appear in screenshots. Only the
 iOS backend enforces it today; macOS and Hydrolysis (Android included) render the content
@@ -921,23 +932,21 @@ body can return `Result<impl View, ErrorView<_>>` or `Result<impl View, impl Vie
 ```rust
 use waterui::shape::RoundedRectangle;
 
-text("Inbox").badge(3)                          // a count badge on any Clone view; badge::Badge::new(n, view).color(..)
+text("Inbox").badge(3_u32)                      // 0 hides; BadgeValue::{Hidden, Dot, Count(u32), Text(Text)}; badge::Badge::new(v, view).color(..)
 avatar("Grace Hopper")                          // initials when there is no image; the name is always spoken
     .image(photo_url)                           // a signal of Url: the fallback shows until it decodes
-    .shape(RoundedRectangle::new(0.25))
-    .size(64.0)
-    .ring(Color::new(theme_color::Accent), 2.0)
+    .shape(RoundedRectangle::new(16.0))
+    .side(64.0)
+    .ring(Color::accent(), 2.0)
 field("Email", &email).focused(&focus, Field::Email)    // focused while `focus` holds Some(Field::Email)
 ```
 
 `avatar(name)` shows the initials; `Avatar::new(name, || view)` takes a fallback view
 instead. An avatar renders SDR by default, unlike the framework's HDR default;
-`.dynamic_range(ColorSpace::Hdr)` (`waterui::metadata::secure::ColorSpace`) opts one back
+`.dynamic_range(DynamicRange::High)` (in the prelude) opts one back
 in when the picture is the subject, such as a full-width profile header. `.focused(&Binding<Option<T>>, value)` ties a control to a shared focus binding
 (`T: Eq + Clone`): setting the binding moves focus, and focusing a control writes its value.
-`table(columns)` takes a signal of `Vec<TableColumn>` built with `col(label, rows)`, each
-column a `Views` of `Text` rows; both come from `waterui::component::table` (in the
-prelude, `table` names that module, not the function).
+`Table::new(data, (TableColumn::new("Name", |p: &Person| text(p.name.clone())).sortable(Sort::Name), TableColumn::new("Avatar", |p: &Person| avatar(p.name.clone()))))` builds a row-major table over an identifiable `Collection` with arbitrary view-valued cells; chain `.selection(&Binding<Option<C::Id>>)` or `.multi_selection(&Binding<BTreeSet<C::Id>>)` for identity-based row selection and `.sort_order(&Binding<Option<TableSort<K>>>)` when at least one column is marked `.sortable(key)`. Convenience constructors `table(data, columns)` and `col(label, cell)` are exported in the prelude alongside `Table`, `TableColumn`, `TableSort`, and `SortDirection`.
 
 ## Accessibility modifiers
 
@@ -947,16 +956,16 @@ use waterui::accessibility::{AccessibilityRole, AccessibilityState};
 .a11y_label("Delete message")          // override the derived label
 .a11y_id("inbox.row.3")                // stable automation id — reaches XCUITest and Android
 .a11y_role(AccessibilityRole::Button)
-.a11y_hidden(true)                     // decorative only
-.a11y_state_signal(active.map(|a| AccessibilityState::new().selected(a)))
+.a11y_hidden(true)                     // or a reactive boolean signal
+.a11y_state(active.map(|a| AccessibilityState::new().selected(a)))
 ```
 
 The idiom for a composed row that should read as a single node: `.a11y_hidden(true)` on
 the inner content, then `.a11y_role(..)` + `.a11y_label(..)` on the wrapper — or better,
 build it with `Label::new(semantic_text, || content)`, which does this for you.
 
-Three more modifiers carry explicit semantics. `.a11y_state(AccessibilityState::new()
-.selected(true))` is the constant form of `a11y_state_signal`. `.a11y_children(
+Three more modifiers carry explicit semantics. `.a11y_state(..)` accepts either a
+constant `AccessibilityState` or a reactive signal of one. `.a11y_children(
 AccessibilityChildren::ExcludeDescendants)` hides every descendant and exposes only this
 node (`Automatic`, the default, leaves it to the backend) — the one-modifier form of the
 hidden-inner idiom above. `.a11y_geometry(AccessibilityGeometry::Allocation)` reports the
@@ -998,5 +1007,37 @@ button("Delete")
             .message("This cannot be undone.")          // optional, also IntoText
             .action(DialogAction::cancel("Cancel", || {}))
             .action(DialogAction::destructive("Delete", |_: Environment| trash_photo())),
+    )
+```
+
+## Sheets (in-window modal presentation)
+
+`.sheet(...)` presents arbitrary view content window-modal while its `Binding<bool>` is
+true — `UISheetPresentationController` (or full-screen modal `UIViewController`) on iOS,
+`NSWindow` sheet (`beginSheet:`) on macOS, and a self-drawn modal sheet layer with `Scrim`
+backdrop on Hydrolysis. While open, content beneath is inert to pointer, keyboard, and
+assistive technology; focus enters the sheet on present and returns to the previously
+focused control on dismiss. Configure heights with `.detents(...)` (`SheetDetent::Medium`,
+`Large`, `Fraction(f32)`, `Height(f32)`, `FullScreen`), opt out of user dismissal with
+`.dismissible(false)`, and handle Escape / back / scrim / swipe dismissal with
+`.on_dismiss(...)`. Handlers inside the sheet extract `SheetDismiss` to close it
+programmatically.
+
+```rust
+use waterui::sheet::{Sheet, SheetDetent, SheetDismiss};
+
+let open = binding(false);
+button("Filters")
+    .action({ let open = open.clone(); move || open.set(true) })
+    .sheet(
+        Sheet::new(&open, || {
+            vstack((
+                text("Filter options"),
+                button("Done").action(|sheet: SheetDismiss| sheet.dismiss()),
+            ))
+        })
+        .detents([SheetDetent::Medium, SheetDetent::Large])
+        .label("Filter options")
+        .on_dismiss(|| {}),
     )
 ```

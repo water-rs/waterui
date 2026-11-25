@@ -67,29 +67,31 @@ pub mod live;
 pub mod photo;
 
 /// Media picker functionality for platform-native media selection.
-#[cfg(feature = "media-picker")]
+#[cfg(all(feature = "media-picker", feature = "std"))]
 pub mod media_picker;
 /// Video components and types re-exported from `waterui-video`.
 #[cfg(feature = "video")]
 pub mod video {
     pub use waterui_video::video::*;
 }
-#[cfg(feature = "media-picker")]
-pub use media_picker::MediaPicker;
+#[cfg(all(feature = "media-picker", feature = "std"))]
+pub use media_picker::{MediaPicker, PickerStatus};
 #[cfg(feature = "video")]
 pub use {
-    live::LivePhoto,
-    // `ContentMode` is deliberately not re-exported unqualified: the layout crate
-    // owns that name in the prelude for its ratio-box fill mode. Video's own
-    // gravity mode stays at `media::video::ContentMode`.
-    video::{Event, SubtitleSelection, Video, VideoConfig, VideoPlayer, VideoPlayerConfig, Volume},
+    live::{LivePhoto, LivePhotoEvent},
+    video::{
+        SubtitleSelection, Video, VideoConfig, VideoEvent, VideoPlayer, VideoPlayerConfig, Volume,
+    },
     waterui_video::{
         Delivery, MediaItem, MediaItemId, PlaybackError, PlaybackPhase, PlaybackSession,
         PlayerController, Playlist, RepeatMode, SubtitleTrack, video_player,
     },
 };
 pub use {
-    photo::{FailureSlot, Photo, PhotoCache, PhotoStatus, PlaceholderSlot, photo},
+    photo::{
+        FailureSlot, IntoPhotoSource, Photo, PhotoCache, PhotoEvent, PhotoSource, PhotoStatus,
+        PlaceholderSlot, ResolvePhotoUrl, photo,
+    },
     waterui_image::Image,
 };
 
@@ -103,7 +105,6 @@ pub use url::Url;
 
 #[cfg(feature = "video")]
 use waterui_core::OneOf3;
-#[cfg(feature = "video")]
 use waterui_core::reactive::impl_constant;
 use waterui_core::{Environment, View};
 
@@ -148,8 +149,9 @@ pub enum Media {
     Video(Url),
 }
 
+impl_constant!(Media);
 #[cfg(feature = "video")]
-impl_constant!(LivePhotoSource, Media);
+impl_constant!(LivePhotoSource);
 
 impl View for Media {
     fn body(self, _env: &Environment) -> impl View {

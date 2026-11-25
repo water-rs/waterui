@@ -14,18 +14,18 @@ use std::time::Duration;
 use waterui::Binding;
 use waterui::Signal as _;
 use waterui::ViewExt as _;
-use waterui::component::list::{List, ListItem};
+use waterui::component::list::List;
 use waterui::component::{hstack, spacer, text};
 use waterui::id::SelfId;
-use waterui::reactive::collection::List as ReactiveList;
+use waterui::reactive::collection::StateList;
 use waterui_testing::{
     AccessibilityActivationPointError, ElementRef, HeadlessRuntime, NodeId, OffscreenApp, Role, ui,
 };
 
 const ROW_COUNT: i32 = 10;
 
-fn row_items() -> ReactiveList<SelfId<i32>> {
-    ReactiveList::from((1..=ROW_COUNT).map(SelfId::new).collect::<Vec<_>>())
+fn row_items() -> StateList<SelfId<i32>> {
+    StateList::from((1..=ROW_COUNT).map(SelfId::new).collect::<Vec<_>>())
 }
 
 fn row_label(row: i32) -> String {
@@ -48,9 +48,9 @@ fn mount_list() -> (OffscreenApp, Binding<i32>, Binding<Option<i32>>) {
             List::for_each(row_items(), move |item| {
                 let row = item.into_inner();
                 let counter = counter.clone();
-                ListItem::new(hstack((text(row_label(row)), spacer())).on_tap(move || {
+                hstack((text(row_label(row)), spacer())).on_tap(move || {
                     counter.with_mut(|c| *c += 1);
-                }))
+                })
             })
             .selection(&binding)
         });

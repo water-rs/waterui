@@ -16,15 +16,19 @@ use alloc::rc::{Rc, Weak};
 use alloc::string::ToString;
 use alloc::vec::Vec;
 use core::cell::{Cell, RefCell};
+#[cfg(target_os = "ios")]
+use core::cmp::Ordering;
 use core::fmt;
+#[cfg(target_os = "macos")]
+use core::ops::Range;
 use std::collections::{HashMap, HashSet};
 
 use cocoa_ui::geometry::EdgeInsets as KitInsets;
 use cocoa_ui::{Retained, view};
-use waterui::animation::{Animation, ChangeAnimation};
+use waterui::animation::ChangeAnimation;
 use waterui::component::list::{
-    ListConfig, ListItem, ListRowTags, ListSection, ListSections, ListSelection, ListTagId, Move,
-    OnDelete, OnMove,
+    ListConfig, ListEdits, ListRowDeletable, ListRowInsets, ListRowTags, ListSection, ListSections,
+    ListSelection, ListTagId,
 };
 use waterui::id::Id as RawId;
 use waterui::layout::padding::EdgeInsets;
@@ -204,7 +208,7 @@ fn sequential_moves(
 }
 
 /// The snapshot's ids, in order.
-fn ids_snapshot(snapshot: &AnyViewsSnapshot<ListItem<Held>>) -> Vec<ItemId> {
+fn ids_snapshot(snapshot: &AnyViewsSnapshot<Held>) -> Vec<ItemId> {
     snapshot
         .range()
         .filter_map(|index| snapshot.get_id(index))
@@ -214,7 +218,7 @@ fn ids_snapshot(snapshot: &AnyViewsSnapshot<ListItem<Held>>) -> Vec<ItemId> {
 /// Each snapshot id's collection-wide position — item ids stay stable
 /// across display reordering, so row realization always finds a row's
 /// retained data.
-fn positions_snapshot(snapshot: &AnyViewsSnapshot<ListItem<Held>>) -> HashMap<ItemId, usize> {
+fn positions_snapshot(snapshot: &AnyViewsSnapshot<Held>) -> HashMap<ItemId, usize> {
     snapshot
         .range()
         .filter_map(|index| snapshot.get_id(index).map(|id| (id, index)))
@@ -519,12 +523,12 @@ struct Shared {
     /// The lazily materialized collection — watches register here and
     /// `snapshot()` captures state; membership and row answers never
     /// read it live.
-    contents: SharedAnyViews<ListItem<Held>>,
+    contents: SharedAnyViews<Held>,
     /// The retained row-data snapshot aligned with `item_ids` — every
     /// `get_id`/`get_view` answer comes from it, so row realization
     /// materializes exact retained data even when the source mutates
     /// mid-materialization.
-    snapshot: AnyViewsSnapshot<ListItem<Held>>,
+    snapshot: AnyViewsSnapshot<Held>,
     /// `item_ids`-keyed positions inside `snapshot` — survives local
     /// deletes and moves, so a row's retained view stays exact while
     /// display order and snapshot membership differ mid-transition.
@@ -573,10 +577,8 @@ struct Shared {
     /// The editing signal.
     #[cfg(target_os = "macos")]
     editing: Computed<bool>,
-    /// Delete callback.
-    on_delete: Option<OnDelete>,
-    /// Reorder callback.
-    on_move: Option<OnMove>,
+    /// Per-row delete and per-part move routing, by item id.
+    edits: ListEdits,
     /// The sections the items group into, by item id.
     sections: ListSections,
     /// The theme's row insets for `None` inputs.
@@ -595,6 +597,9 @@ struct Shared {
     /// recorded on the row's own render pass, so a `.disabled` binding flip
     /// takes effect without a reload (water-rs/waterui#2244).
     disabled_rows: RefCell<HashMap<ItemId, Computed<bool>>>,
+    /// The `ListRowDeletable` signal each rendered row resolved under, by item id.
+    #[cfg(target_os = "ios")]
+    deletable_rows: RefCell<HashMap<ItemId, Computed<bool>>>,
 }
 
 impl fmt::Debug for Shared {
@@ -624,7 +629,7 @@ impl Shared {
     /// `updateVirtualIds` + `reloadSectionGroups`: take `snapshot` as
     /// current — ids, positions, groups and the height cache all follow
     /// it.
-    fn apply_snapshot(&mut self, snapshot: AnyViewsSnapshot<ListItem<Held>>) {
+    fn apply_snapshot(&mut self, snapshot: AnyViewsSnapshot<Held>) {
         self.item_ids = ids_snapshot(&snapshot);
         self.positions = positions_snapshot(&snapshot);
         self.snapshot = snapshot;
@@ -632,6 +637,10 @@ impl Shared {
         let seen: HashSet<ItemId> = self.item_ids.iter().copied().collect();
         self.measured_heights.retain(|id, _| seen.contains(id));
         self.disabled_rows
+            .get_mut()
+            .retain(|id, _| seen.contains(id));
+        #[cfg(target_os = "ios")]
+        self.deletable_rows
             .get_mut()
             .retain(|id, _| seen.contains(id));
     }
@@ -690,21 +699,31 @@ impl Shared {
         self.selection.write(&tags);
     }
 
-    /// Renders `flat`'s item, returning its insets, deletable signal and leaf.
+    /// Renders `flat`'s row, returning its insets, deletable signal and leaf.
     fn render_row(&self, flat: usize) -> (Option<EdgeInsets>, Computed<bool>, NativeLeaf) {
-        let item = self
+        let id = self.item_ids[flat];
+        let content = self
             .snapshot
-            .get_view(self.positions[&self.item_ids[flat]])
+            .get_view(self.positions[&id])
             .expect("list item index is in bounds");
-        let (content, deletable, insets) = item.into_parts();
-        // The row's `Disabled` signal comes from the scope its content's
-        // leading environment chain resolved, which the realized leaf
-        // records — the same pass, not a second walk.
+        // The row's `Disabled`, `ListRowDeletable`, and `ListRowInsets` come
+        // from the scope its content's leading environment chain resolved,
+        // which the realized leaf records — the same pass, not a second walk.
         let leaf = self.renderer.realize(content);
         let resolved_env = leaf.handler_env(self.renderer.env());
+        let deletable = resolved_env
+            .get::<ListRowDeletable>()
+            .map_or_else(|| Computed::new(true), |entry| entry.0.clone());
+        let insets = resolved_env
+            .get::<ListRowInsets>()
+            .map(|entry| entry.0.clone());
         self.disabled_rows
             .borrow_mut()
-            .insert(self.item_ids[flat], Disabled::resolve(&resolved_env, false));
+            .insert(id, Disabled::resolve(&resolved_env, false));
+        #[cfg(target_os = "ios")]
+        self.deletable_rows
+            .borrow_mut()
+            .insert(id, deletable.clone());
         (insets, deletable, leaf)
     }
 
@@ -1085,7 +1104,7 @@ fn metadata_animated(metadata: &Metadata) -> bool {
 #[derive(Default)]
 struct PendingRows {
     scheduled: bool,
-    snapshot: Option<AnyViewsSnapshot<ListItem<Held>>>,
+    snapshot: Option<AnyViewsSnapshot<Held>>,
     metadata: Option<Metadata>,
     dirty: HashSet<ItemId>,
 }
@@ -1097,7 +1116,7 @@ impl PendingRows {
     /// emissions — both index this emission's own snapshot.
     fn record(
         &mut self,
-        snapshot: AnyViewsSnapshot<ListItem<Held>>,
+        snapshot: AnyViewsSnapshot<Held>,
         metadata: Metadata,
         change: &CollectionChange,
     ) {
@@ -1113,7 +1132,7 @@ impl PendingRows {
     }
 
     /// Drains the pending batch; the flush owns delivery from here.
-    fn take(&mut self) -> Option<(AnyViewsSnapshot<ListItem<Held>>, Metadata, HashSet<ItemId>)> {
+    fn take(&mut self) -> Option<(AnyViewsSnapshot<Held>, Metadata, HashSet<ItemId>)> {
         self.scheduled = false;
         self.snapshot.take().map(|snapshot| {
             (
@@ -1130,7 +1149,7 @@ impl PendingRows {
     /// the take is newer and stays authoritative for snapshot/metadata.
     fn merge_back(
         &mut self,
-        snapshot: AnyViewsSnapshot<ListItem<Held>>,
+        snapshot: AnyViewsSnapshot<Held>,
         metadata: Metadata,
         dirty: HashSet<ItemId>,
     ) {
@@ -1870,29 +1889,35 @@ mod platform_impl {
 
         fn is_row_deletable(&self, _table: &TableView, index: IndexPath) -> bool {
             let state = self.state.borrow();
-            if state.on_delete.is_none() {
-                return false;
-            }
             let Some(DisplayRow::Live(flat)) = state.display_at(index.section, index.row) else {
                 return false;
             };
-            state
-                .item_ids
-                .get(flat)
-                .and_then(|id| state.positions.get(id).copied())
-                .and_then(|pos| state.snapshot.get_view(pos))
-                .is_some_and(|item| item.get_deletable().snapshot())
+            let Some(&id) = state.item_ids.get(flat) else {
+                return false;
+            };
+            if !state.edits.can_delete(id) {
+                return false;
+            }
+            if let Some(deletable) = state.deletable_rows.borrow().get(&id) {
+                return deletable.snapshot();
+            }
+            state.render_row(flat).1.snapshot()
         }
 
         fn delete_row(&self, table: &TableView, index: IndexPath) {
-            let Some(DisplayRow::Live(flat)) =
-                self.state.borrow().display_at(index.section, index.row)
-            else {
-                return;
-            };
-            {
+            let (id, edits, env) = {
                 let mut state = self.state.borrow_mut();
-                let id = state.item_ids.remove(flat);
+                let Some(DisplayRow::Live(flat)) = state.display_at(index.section, index.row)
+                else {
+                    return;
+                };
+                let Some(&id) = state.item_ids.get(flat) else {
+                    return;
+                };
+                if !state.edits.can_delete(id) {
+                    return;
+                }
+                state.item_ids.remove(flat);
                 state.regroup();
                 let ids = state.item_ids.clone();
                 // The table's own delete animation carries this row, so
@@ -1901,46 +1926,100 @@ mod platform_impl {
                 if let Some(slot) = state.live_rows.remove(&id).and_then(|weak| weak.upgrade()) {
                     drop(slot.borrow_mut().take());
                 }
-            }
+                (id, state.edits.clone(), state.env.clone())
+            };
             table.reload_data();
-            let state = self.state.borrow();
-            if let Some(on_delete) = &state.on_delete {
-                on_delete(&state.env, flat);
-            }
+            edits.delete(&env, id);
         }
 
         fn can_move_row(&self, _table: &TableView, index: IndexPath) -> bool {
             let state = self.state.borrow();
-            state.on_move.is_some()
-                && state.groups.len() == 1
-                && index.section == 0
-                && matches!(
-                    state.display_at(index.section, index.row),
-                    Some(DisplayRow::Live(_))
-                )
+            let Some(DisplayRow::Live(flat)) = state.display_at(index.section, index.row) else {
+                return false;
+            };
+            state
+                .item_ids
+                .get(flat)
+                .is_some_and(|&id| state.edits.can_move(id))
+        }
+
+        fn target_move_index_path(
+            &self,
+            _table: &TableView,
+            from: IndexPath,
+            proposed: IndexPath,
+        ) -> IndexPath {
+            let state = self.state.borrow();
+            let Some(DisplayRow::Live(source)) = state.display_at(from.section, from.row) else {
+                return from;
+            };
+            let Some(span) = state.edits.movable_span_in_slice(&state.item_ids, source) else {
+                return from;
+            };
+            let mut first_row: Option<usize> = None;
+            let mut last_row: Option<usize> = None;
+            let mut section_row = 0usize;
+            for (sec, member) in state.display_rows() {
+                if sec != from.section {
+                    continue;
+                }
+                if let DisplayRow::Live(flat) = member
+                    && span.contains(&flat)
+                {
+                    first_row.get_or_insert(section_row);
+                    last_row = Some(section_row);
+                }
+                section_row += 1;
+            }
+            let (Some(first), Some(last)) = (first_row, last_row) else {
+                return from;
+            };
+            let clamped_row = match proposed.section.cmp(&from.section) {
+                Ordering::Less => first,
+                Ordering::Greater => last,
+                Ordering::Equal => proposed.row.clamp(first, last),
+            };
+            IndexPath {
+                section: from.section,
+                row: clamped_row,
+            }
         }
 
         fn move_row(&self, _table: &TableView, from: IndexPath, to: IndexPath) {
-            let (Some(DisplayRow::Live(source)), Some(DisplayRow::Live(destination))) = (
-                self.state.borrow().display_at(from.section, from.row),
-                self.state.borrow().display_at(to.section, to.row),
-            ) else {
-                return;
+            let (from_id, to_id, from_in_part, to_in_part, edits, env) = {
+                let mut state = self.state.borrow_mut();
+                let (Some(DisplayRow::Live(source)), Some(DisplayRow::Live(destination))) = (
+                    state.display_at(from.section, from.row),
+                    state.display_at(to.section, to.row),
+                ) else {
+                    return;
+                };
+                if source == destination {
+                    return;
+                }
+                let Some(span) = state.edits.movable_span_in_slice(&state.item_ids, source) else {
+                    return;
+                };
+                if !span.contains(&destination) {
+                    return;
+                }
+                let from_id = state.item_ids[source];
+                let to_id = state.item_ids[destination];
+                state.item_ids.remove(source);
+                state.item_ids.insert(destination, from_id);
+                state.regroup();
+                let ids = state.item_ids.clone();
+                state.display.reconcile(&ids, |_| false);
+                (
+                    from_id,
+                    to_id,
+                    source - span.start,
+                    destination - span.start,
+                    state.edits.clone(),
+                    state.env.clone(),
+                )
             };
-            let mut state = self.state.borrow_mut();
-            let id = state.item_ids.remove(source);
-            state.item_ids.insert(destination, id);
-            state.regroup();
-            let ids = state.item_ids.clone();
-            state.display.reconcile(&ids, |_| false);
-            let adjusted = if destination > source {
-                destination - 1
-            } else {
-                destination
-            };
-            if let Some(on_move) = &state.on_move {
-                on_move(&state.env, Move::new(source, adjusted));
-            }
+            edits.move_row(&env, from_id, to_id, from_in_part, to_in_part);
         }
 
         fn should_select(&self, _table: &TableView, index: IndexPath) -> bool {
@@ -1971,6 +2050,32 @@ mod platform_impl {
             write_from_table(&self.state, table);
         }
     }
+}
+
+#[cfg(target_os = "macos")]
+fn resolve_macos_drop(
+    edits: &ListEdits,
+    item_ids: &[ItemId],
+    flat_layout: &[FlatEntry],
+    drop_row: usize,
+    source: usize,
+) -> Option<(usize, usize, Range<usize>)> {
+    let span = edits.movable_span_in_slice(item_ids, source)?;
+    let gap = match flat_layout.get(drop_row).copied() {
+        Some(FlatEntry::Row(flat)) if span.contains(&flat) => flat,
+        _ if drop_row > 0
+            && matches!(
+                flat_layout.get(drop_row - 1),
+                Some(FlatEntry::Row(prev)) if *prev + 1 == span.end
+            ) =>
+        {
+            span.end
+        }
+        _ => return None,
+    };
+    let destination = if gap > source { gap - 1 } else { gap };
+    span.contains(&destination)
+        .then_some((source, destination, span))
 }
 
 #[cfg(target_os = "macos")]
@@ -2055,7 +2160,7 @@ mod platform_impl {
 
             let editing = self.state.borrow().editing.snapshot();
             let row_deletable = deletable.snapshot();
-            let shows_delete = editing && self.state.borrow().on_delete.is_some() && row_deletable;
+            let shows_delete = editing && self.state.borrow().edits.can_delete(id) && row_deletable;
 
             let container = RowContainer::new(self.mtm);
             let child = if insertion {
@@ -2179,16 +2284,15 @@ mod platform_impl {
         /// The delete action a row's inline button fires — the same
         /// sequence `commit editingStyle .delete` runs.
         fn delete_at(&self, table: &TableView, id: ItemId) {
-            let flat = {
-                let borrowed = self.state.borrow();
-                borrowed.flat_of_id(id)
-            };
-            let Some(flat) = flat else {
-                return;
-            };
-            {
+            let (edits, env) = {
                 let mut state = self.state.borrow_mut();
-                let id = state.item_ids.remove(flat);
+                let Some(flat) = state.flat_of_id(id) else {
+                    return;
+                };
+                if !state.edits.can_delete(id) {
+                    return;
+                }
+                state.item_ids.remove(flat);
                 state.regroup();
                 let ids = state.item_ids.clone();
                 // The table's own delete animation carries this row, so
@@ -2198,12 +2302,28 @@ mod platform_impl {
                     drop(slot.borrow_mut().take());
                 }
                 rebuild_flat_layout(&mut state);
-            }
+                (state.edits.clone(), state.env.clone())
+            };
             table.reload_data();
-            let state = self.state.borrow();
-            if let Some(on_delete) = &state.on_delete {
-                on_delete(&state.env, flat);
-            }
+            edits.delete(&env, id);
+        }
+
+        /// Resolves an `AppKit` above-row drop against the dragged row's
+        /// movable part, returning `(source_flat, destination_flat, part_span)`
+        /// where `destination_flat` is the post-removal flat index.
+        fn resolve_drop(
+            state: &Shared,
+            drop_row: usize,
+            payload: &str,
+        ) -> Option<(usize, usize, Range<usize>)> {
+            let source = payload.parse::<usize>().ok()?;
+            resolve_macos_drop(
+                &state.edits,
+                &state.item_ids,
+                &state.flat_layout,
+                drop_row,
+                source,
+            )
         }
     }
 
@@ -2287,7 +2407,7 @@ mod platform_impl {
         }
 
         fn row_height(&self, table: &TableView, row: usize) -> f64 {
-            let (flat, id, insets) = {
+            let (flat, id) = {
                 let state = self.state.borrow();
                 match state.flat_layout.get(row) {
                     Some(FlatEntry::Header(_)) if !state.sidebar => {
@@ -2307,13 +2427,7 @@ mod platform_impl {
                         if let Some(height) = state.measured_heights.get(&id) {
                             return *height;
                         }
-                        let Some(pos) = state.positions.get(&id).copied() else {
-                            return 30.0;
-                        };
-                        let Some(item) = state.snapshot.get_view(pos) else {
-                            return 30.0;
-                        };
-                        (flat, id, state.insets_for(item.get_insets()))
+                        (flat, id)
                     }
                     None => return 30.0,
                 }
@@ -2323,11 +2437,13 @@ mod platform_impl {
             // source — measure the rendered content on demand, the same
             // arithmetic `viewFor` stores back. The row renders through
             // `render_row`, as every other row path does: it resolves the
-            // row's environment wrapper (the selection theming) so the
-            // row's own `.transition(...)` stays at the leaf root, unmounted.
-            let (_insets, _deletable, leaf) = self.state.borrow().render_row(flat);
-            let width = view::bounds(table).size.width - insets.left - insets.right;
+            // row's environment wrapper (the selection theming and row
+            // modifiers) so the row's own `.transition(...)` stays at the leaf
+            // root, unmounted.
+            let (item_insets, _deletable, leaf) = self.state.borrow().render_row(flat);
             let mut state = self.state.borrow_mut();
+            let insets = state.insets_for(item_insets.as_ref());
+            let width = view::bounds(table).size.width - insets.left - insets.right;
             let measured = state.measure_row(leaf.layout(), width, insets);
             state.measured_heights.insert(id, measured);
             measured
@@ -2368,51 +2484,58 @@ mod platform_impl {
         }
 
         fn dragged_payload(&self, _table: &TableView, row: usize) -> Option<String> {
-            let entry = *self.state.borrow().flat_layout.get(row)?;
-            let FlatEntry::Row(flat) = entry else {
+            let state = self.state.borrow();
+            let FlatEntry::Row(flat) = *state.flat_layout.get(row)? else {
                 return None;
             };
-            Some(flat.to_string())
+            let id = *state.item_ids.get(flat)?;
+            state.edits.can_move(id).then(|| flat.to_string())
         }
 
-        fn validate_drop(&self, _table: &TableView, row: usize, on_row: bool) -> bool {
+        fn validate_drop(
+            &self,
+            _table: &TableView,
+            row: usize,
+            on_row: bool,
+            payload: &str,
+        ) -> bool {
+            if on_row {
+                return false;
+            }
             let state = self.state.borrow();
-            !on_row
-                && state.on_move.is_some()
-                && matches!(state.flat_layout.get(row), Some(FlatEntry::Row(_)))
+            Self::resolve_drop(&state, row, payload).is_some()
         }
 
         fn accept_drop(&self, table: &TableView, row: usize, payload: &str) -> bool {
-            let Ok(source) = payload.parse::<usize>() else {
-                return false;
+            let resolved = {
+                let mut state = self.state.borrow_mut();
+                let Some((source, destination, span)) = Self::resolve_drop(&state, row, payload)
+                else {
+                    return false;
+                };
+                if source == destination {
+                    return true;
+                }
+                let from_id = state.item_ids[source];
+                let to_id = state.item_ids[destination];
+                state.item_ids.remove(source);
+                state.item_ids.insert(destination, from_id);
+                state.regroup();
+                let ids = state.item_ids.clone();
+                state.display.reconcile(&ids, |_| false);
+                rebuild_flat_layout(&mut state);
+                (
+                    from_id,
+                    to_id,
+                    source - span.start,
+                    destination - span.start,
+                    state.edits.clone(),
+                    state.env.clone(),
+                )
             };
-            let Some(FlatEntry::Row(destination)) =
-                self.state.borrow().flat_layout.get(row).copied()
-            else {
-                return false;
-            };
-            let mut state = self.state.borrow_mut();
-            let Some(id) = state.item_ids.get(source).copied() else {
-                return false;
-            };
-            state.item_ids.remove(source);
-            let destination = destination.min(state.item_ids.len());
-            let adjusted = if destination > source {
-                destination - 1
-            } else {
-                destination
-            };
-            state.item_ids.insert(destination, id);
-            state.regroup();
-            let ids = state.item_ids.clone();
-            state.display.reconcile(&ids, |_| false);
-            rebuild_flat_layout(&mut state);
-            drop(state);
             table.reload_data();
-            let state = self.state.borrow();
-            if let Some(on_move) = &state.on_move {
-                on_move(&state.env, Move::new(source, adjusted));
-            }
+            let (from_id, to_id, from_in_part, to_in_part, edits, env) = resolved;
+            edits.move_row(&env, from_id, to_id, from_in_part, to_in_part);
             true
         }
     }
@@ -2457,7 +2580,7 @@ fn approach(state: &Rc<RefCell<Shared>>, table: &TableView, target: usize) {
 
 /// Wires a `ScrollController<usize>` into the table: a generation bump
 /// scrolls the target row to the top — with the request's animation, if
-/// it carries one: `Animation::Default` is the native animated row
+/// it carries one: `Animation::DEFAULT` is the native animated row
 /// scroll, and an explicit animation drives the offset on the frame
 /// clock along the core curve, landing where the jump would have. An
 /// animated request first closes in through [`approach`], so a far
@@ -2498,7 +2621,7 @@ fn wire_controller(
             #[cfg(target_os = "ios")]
             None => table.scroll_to_row(target, false),
             #[cfg(target_os = "ios")]
-            Some(Animation::Default) => table.scroll_to_row(target, true),
+            Some(animation) if animation.is_default() => table.scroll_to_row(target, true),
             #[cfg(target_os = "ios")]
             Some(animation) => {
                 table.animate_scroll_to_row(
@@ -2510,7 +2633,7 @@ fn wire_controller(
             #[cfg(target_os = "macos")]
             None => table.scroll_row_to_top(target),
             #[cfg(target_os = "macos")]
-            Some(Animation::Default) => table.scroll_row_to_top_animated(target),
+            Some(animation) if animation.is_default() => table.scroll_row_to_top_animated(target),
             #[cfg(target_os = "macos")]
             Some(animation) => {
                 table.animate_scroll_row_to_top(
@@ -2542,7 +2665,7 @@ fn wire_controller(
     clippy::too_many_lines,
     reason = "one render pass: state init, source wiring, watches"
 )]
-fn render(mut config: ListConfig<Held>, ctx: &RenderContext<'_>) -> NativeLeaf {
+fn render(config: &ListConfig<Held>, ctx: &RenderContext<'_>) -> NativeLeaf {
     let mtm = ctx.mtm();
     let table = TableView::new(mtm);
     // A navigation split marks its sidebar column with `SidebarContent`:
@@ -2574,12 +2697,15 @@ fn render(mut config: ListConfig<Held>, ctx: &RenderContext<'_>) -> NativeLeaf {
         },
         24.0,
     );
+    let mut row_env = ctx.env().clone();
+    row_env.remove::<ListRowDeletable>();
+    row_env.remove::<ListRowInsets>();
     let state = Rc::new(RefCell::new(Shared {
         contents: config.contents().clone(),
         snapshot: config.contents().snapshot(),
         positions: HashMap::new(),
         env: ctx.env().clone(),
-        renderer: ctx.renderer(),
+        renderer: ctx.with_env(&row_env).renderer(),
         item_ids: Vec::new(),
         display: SlotSequence::new(Vec::new()),
         live_rows: HashMap::new(),
@@ -2600,8 +2726,7 @@ fn render(mut config: ListConfig<Held>, ctx: &RenderContext<'_>) -> NativeLeaf {
         applying_selection: Cell::new(false),
         #[cfg(target_os = "macos")]
         editing: config.editing().clone(),
-        on_delete: config.take_on_delete(),
-        on_move: config.take_on_move(),
+        edits: config.edits().clone(),
         sections: config.sections().clone(),
         #[cfg(target_os = "macos")]
         theme_insets,
@@ -2610,6 +2735,8 @@ fn render(mut config: ListConfig<Held>, ctx: &RenderContext<'_>) -> NativeLeaf {
         nav_header_applied: Cell::new(false),
         measured_heights: HashMap::new(),
         disabled_rows: RefCell::new(HashMap::new()),
+        #[cfg(target_os = "ios")]
+        deletable_rows: RefCell::new(HashMap::new()),
     }));
 
     #[cfg(target_os = "ios")]
@@ -2619,7 +2746,7 @@ fn render(mut config: ListConfig<Held>, ctx: &RenderContext<'_>) -> NativeLeaf {
         table.set_allows_multiple_selection(borrowed.selection.allows_multiple());
     }
     #[cfg(target_os = "macos")]
-    if state.borrow().on_move.is_some() {
+    if state.borrow().edits.has_move() {
         table.set_drag_types(&["dev.waterui.listitem"]);
     }
 
@@ -2871,7 +2998,7 @@ pub fn realize_list_config<C: ChildView<AppleBackend>>(
     value: ListConfig<C>,
     ctx: &RenderContext<'_>,
 ) -> NativeLeaf {
-    render(value.map_slots(C::into_child), ctx)
+    render(&value.map_slots(C::into_child), ctx)
 }
 
 #[cfg(test)]
@@ -2949,5 +3076,85 @@ mod tests {
         };
         assert_eq!(row_height(10.0, insets, 24.0).to_bits(), 24.0_f64.to_bits());
         assert_eq!(row_height(40.0, insets, 24.0).to_bits(), 48.0_f64.to_bits());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn drop_resolution_stays_within_owning_part_and_uses_post_removal_index() {
+        use waterui::component::list::{ForEachExt as _, List, ListMove, Section, row};
+        use waterui::component::text;
+        use waterui::id::Identifiable;
+        use waterui::reactive::collection::StateList;
+        use waterui::views::ForEach;
+
+        #[derive(Clone)]
+        struct Entry(u64);
+        impl Identifiable for Entry {
+            type Id = u64;
+            fn id(&self) -> Self::Id {
+                self.0
+            }
+        }
+
+        let part1 = StateList::from(vec![Entry(10), Entry(20), Entry(30)]);
+        let part2 = StateList::from(vec![Entry(100), Entry(200)]);
+        let config = List::content((
+            Section::new("Account").content(row("Plan", "Pro")),
+            Section::new("Items").content(
+                ForEach::new(part1, |e: Entry| text(format!("{}", e.0)))
+                    .on_move(|_: ListMove<u64>| {}),
+            ),
+            Section::new("Archive").content(
+                ForEach::new(part2, |e: Entry| text(format!("{}", e.0)))
+                    .on_move(|_: ListMove<u64>| {}),
+            ),
+        ))
+        .config();
+
+        let snapshot = config.contents().snapshot();
+        let item_ids: Vec<ItemId> = snapshot
+            .range()
+            .filter_map(|index| snapshot.get_id(index))
+            .collect();
+        assert_eq!(item_ids.len(), 6);
+        let edits = config.edits();
+
+        // Simulate AppKit flat_layout:
+        // 0: Header(0), 1: Spacer, 2: Row(0) [static],
+        // 3: Header(1), 4: Row(1), 5: Row(2), 6: Row(3) [part1: 1..4],
+        // 7: Header(2), 8: Row(4), 9: Row(5) [part2: 4..6].
+        let flat_layout = vec![
+            FlatEntry::Header(0),
+            FlatEntry::Spacer,
+            FlatEntry::Row(0),
+            FlatEntry::Header(1),
+            FlatEntry::Row(1),
+            FlatEntry::Row(2),
+            FlatEntry::Row(3),
+            FlatEntry::Header(2),
+            FlatEntry::Row(4),
+            FlatEntry::Row(5),
+        ];
+
+        let resolve = |drop_row: usize, source_flat: usize| {
+            resolve_macos_drop(edits, &item_ids, &flat_layout, drop_row, source_flat)
+        };
+
+        // Static row is not movable.
+        assert_eq!(resolve(4, 0), None);
+        // Dragging part1's first row (flat 1) onto Account section (flat_layout 2) or Archive (8) is rejected.
+        assert_eq!(resolve(2, 1), None);
+        assert_eq!(resolve(3, 1), None);
+        assert_eq!(resolve(8, 1), None);
+        // Dropping above row 3 (flat_layout 6, gap 3) lands at post-removal index 2.
+        assert_eq!(resolve(6, 1), Some((1, 2, 1..4)));
+        // Dropping immediately after part1's last row (flat_layout 7 = Header(2), gap 4) lands at post-removal index 3.
+        assert_eq!(resolve(7, 1), Some((1, 3, 1..4)));
+        // Dragging part1's last row (flat 3) above part1's first row (flat_layout 4, gap 1) lands at index 1.
+        assert_eq!(resolve(4, 3), Some((3, 1, 1..4)));
+        // Dropping part2's row (flat 4) after the very end of the table (flat_layout 10, gap 6) lands at index 5.
+        assert_eq!(resolve(10, 4), Some((4, 5, 4..6)));
+        // Part2 cannot drop into part1.
+        assert_eq!(resolve(5, 4), None);
     }
 }

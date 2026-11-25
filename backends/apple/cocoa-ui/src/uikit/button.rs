@@ -29,13 +29,26 @@ use objc2_foundation::{NSArray, NSAttributedString, NSObjectProtocol, NSString};
 #[cfg(target_abi = "macabi")]
 use objc2_ui_kit::UIWindow;
 use objc2_ui_kit::{
-    NSDirectionalEdgeInsets, UIButton, UIButtonConfiguration, UIButtonType, UIColor, UICommand,
-    UIControl, UIControlState, UIKeyCommand,
+    NSDirectionalEdgeInsets, UIButton, UIButtonConfiguration, UIButtonRole, UIButtonType, UIColor,
+    UICommand, UIControl, UIControlState, UIKeyCommand,
 };
 
 use super::key_commands::{KeyCommandRegistry, KeyCommands};
 use crate::callback::{emit, guarded};
 use crate::geometry::EdgeInsets;
+
+/// Semantic role carried by a `UIButton`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Role {
+    /// Standard push button without a specialized role.
+    Normal,
+    /// Primary default action button.
+    Primary,
+    /// Cancels or dismisses the current action.
+    Cancel,
+    /// Performs a destructive action.
+    Destructive,
+}
 
 /// The chrome a `UIButtonConfiguration` draws around the label.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -320,6 +333,17 @@ impl Button {
     /// Enables or disables user interaction.
     pub fn set_enabled(&self, enabled: bool) {
         self.inner.setEnabled(enabled);
+    }
+
+    /// Sets the button's `UIButton.role`.
+    pub fn set_role(&self, role: Role) {
+        let native = match role {
+            Role::Normal => UIButtonRole::Normal,
+            Role::Primary => UIButtonRole::Primary,
+            Role::Cancel => UIButtonRole::Cancel,
+            Role::Destructive => UIButtonRole::Destructive,
+        };
+        self.inner.setRole(native);
     }
 
     /// Whether the button currently accepts interaction.

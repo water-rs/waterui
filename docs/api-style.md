@@ -70,7 +70,7 @@ discussion. In short:
   and respect accessibility text-size scaling.
 - Use **font slots** when you need to pass the choice around as a value:
   `.font(Title)`, `.font(font::Caption)`.
-- Use **direct overrides** (`.size(f32)`, `.weight(..)`, `.italic(bool)`,
+- Use **direct overrides** (`.font_size(f32)`, `.weight(..)`, `.italic(bool)`,
   explicit `Font` construction) for fixed-layout cases that should NOT
   follow Theme scaling: posters, splash screens, examples that demonstrate
   a specific visual.
@@ -252,39 +252,37 @@ Builder methods come in three flavors; use the one whose semantics fit:
 
 ---
 
-## 10. Window state is not optional
+## 10. Window state is opt-in
 
-`Window::new(title, state, body)` requires the state binding positionally.
-Every example calls it; making it optional was a misleading affordance.
+`Window::new(title, body)` owns a `WindowState::Normal` binding by default, so
+a single-window app declares and titles its window in one expression:
+`App::new(env).window(Window::new("Notes", notes))`.
 
-`WindowState::default()` returns `Closed` so `binding::<WindowState>(default())`
-is the idiomatic "not-yet-shown" initialization. Flip to
-`WindowState::Normal` to open.
-
-For app-internal one-shot windows (the implicit `App::new` window, popups in
-hydrolysis), pass `binding(WindowState::Normal)` explicitly.
-
-`conditional_window(&state, creator)` takes a reference to the state binding;
-the closure receives an owned clone for use inside the rendered Window.
-
----
-
-## 11. Color space → `.color_space(ColorSpace)`
-
-For HDR/SDR control on a subtree, prefer the new
-`ViewExt::color_space(ColorSpace)` modifier over the underlying
-`metadata(HighDynamicRange::new())` / `metadata(StandardDynamicRange::new())`
-calls. The `ColorSpace { Sdr, Hdr }` enum is `impl_constant!`-registered
-and is a more direct surface than the metadata-key types.
-
-The metadata types remain public for code that needs the lower-level
-mechanism, but new code should use `.color_space(...)`.
+Chain `.state(&state)` when external code reads or drives the window's
+lifecycle. `WindowState::default()` remains `Closed`, so
+`binding::<WindowState>(default())` is the idiomatic initialization for a
+secondary window declared on `App`: writing `WindowState::Normal` while
+`Closed` (re)creates it, writing `WindowState::Normal` while open restores and
+focuses it, and writing `WindowState::Closed` tears down the platform window
+while keeping the declaration armed.
 
 ---
 
-## 12. Icon packs: function form everywhere
+## 11. Dynamic range → `.dynamic_range(DynamicRange)`
+
+For HDR/SDR control on a subtree, use `ViewExt::dynamic_range(impl IntoComputed<DynamicRange>)`
+(or `Avatar::dynamic_range` on an avatar), attaching `DynamicRangeMetadata`.
+`DynamicRange { Standard, High }` is `impl_constant!`-registered and accepts both
+plain constants and reactive signals.
+
+---
+
+## 12. Icon packs: one `Icon` type, function form everywhere
 
 Portable icon packs — `lucide`, `material-icon`, and `fontawesome7` — expose
-their icons as **functions** (`lucide::house()`, `mdi::home()`, ...). Apple SF
-Symbols live in `waterui_apple::SfSymbol` as typed constants (`SfSymbol::HOUSE`,
+their icons as snake_case **functions** returning `waterui_icon::Icon`
+(`lucide::house()`, `mdi::home()`, `fa::solid::house()`), regardless of whether
+the pack feature selects SVG paths or webfont glyphs. Colour uses `.foreground(..)`
+and size flows through the shared `IconSize` channel (`.icon_size(..)`). Apple
+SF Symbols live in `waterui_apple::SfSymbol` as typed constants (`SfSymbol::HOUSE`,
 `SfSymbol::HOUSE_FILL`).

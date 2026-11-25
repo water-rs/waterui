@@ -2,13 +2,14 @@ use super::edge_stretch::{ScrollStretch, shown_stretch};
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::num_cast::f64_as_f32;
 use crate::platform::Overscroll;
 use crate::theme::{InteractionFocusBinding, InteractionMotion, ModalInteraction};
 use kurbo::Point;
 use nami::Signal as _;
 use std::path::PathBuf;
 use waterui::Url;
-use waterui::drag_drop::{DragPayload, Files};
+use waterui::drag_drop::{DragPayload, DropInfo, Files};
 use waterui::gesture::PointerButton as WuiPointerButton;
 use waterui_backend_core::gesture::GesturePlacement;
 #[cfg(feature = "menu")]
@@ -1720,6 +1721,14 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         target.env.layered_on(runtime_env)
     }
 
+    /// Converts window-space `point` into `target`'s local coordinate space.
+    fn drop_info(target: &DropTarget<E>, point: Point) -> DropInfo {
+        DropInfo::new(LayoutPoint::new(
+            f64_as_f32(point.x - target.bounds.x0),
+            f64_as_f32(point.y - target.bounds.y0),
+        ))
+    }
+
     fn sync_active_drag_hover(&mut self, point: kurbo::Point, env: &Environment) -> bool {
         let Some(active_drag) = self.hit_test.active_drag.as_ref() else {
             return false;
@@ -1750,7 +1759,10 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         };
         if let Some(target) = current_target {
             let action_env = Self::drop_target_env(&target, env);
-            target.destination.borrow_mut().enter(&action_env);
+            target
+                .destination
+                .borrow_mut()
+                .enter(Self::drop_info(&target, point), &action_env);
             Self::mark_owner(&target.owner, Dirty::LAYOUT);
             true
         } else {
@@ -1789,10 +1801,11 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
 
         let delivered = if let Some(target) = drop_target {
             let action_env = Self::drop_target_env(&target, env);
-            target
-                .destination
-                .borrow_mut()
-                .deliver(active_drag.payload, &action_env);
+            target.destination.borrow_mut().deliver(
+                active_drag.payload,
+                Self::drop_info(&target, point),
+                &action_env,
+            );
             Self::mark_owner(&target.owner, Dirty::LAYOUT);
             true
         } else {
@@ -3606,7 +3619,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 }) {
                     return None;
                 }
-                if modal_active {
+                if modal_active && !self.semantic_walk {
                     let modal = key.as_ref().is_some_and(|key| {
                         self.hit_test.pointer_targets.iter().any(|target| {
                             target.modal

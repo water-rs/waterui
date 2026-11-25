@@ -1,6 +1,8 @@
 //! Snippets from `.claude/skills/waterui/references/interaction.md`, in file
 //! order. Transcription conventions are documented in the crate README.
 
+use core::num::NonZeroU32;
+
 use waterui::prelude::*;
 
 // ---------------------------------------------------------------------------
@@ -26,7 +28,8 @@ pub fn interaction_block_02() -> impl View {
 }
 
 // ---------------------------------------------------------------------------
-// interaction.md § "## Tap shortcuts" (prose): `.on_tap_gesture_count(2, h)`,
+// interaction.md § "## Tap shortcuts" (prose):
+// `.on_long_press(h)`,
 // `.sensory_feedback(Feedback::Success, &trigger)`, and imperative
 // `waterui::haptic::Haptic::impact(Intensity::LOW)`.
 // Not counted as a rust block.
@@ -37,9 +40,7 @@ pub fn interaction_tap_siblings_prose() {
 
     let handler = || ();
     let saved_count = Binding::i32(0);
-    let _ = Divider.on_tap_gesture_count(2, handler);
-    let _ = Divider.on_tap_gesture(handler);
-    let _ = Divider.on_long_press_gesture(500, handler);
+    let _ = Divider.on_long_press(handler);
     let _ = Divider.sensory_feedback(Feedback::Success, &saved_count);
     let _ = Divider.on_tap(|| {
         spawn_local(async {
@@ -54,24 +55,30 @@ pub fn interaction_tap_siblings_prose() {
 // Listing: four independent recognizers.
 // ---------------------------------------------------------------------------
 pub fn interaction_block_03() {
-    let handler = || ();
+    use core::time::Duration;
+    use waterui::gesture::{DragEvent, LongPressEvent, TapEvent};
 
     let view = Divider;
     let _ = {
-        view.gesture(TapGesture::new(), handler) // single tap
+        view.gesture(TapGesture::new(), |_: TapEvent| {}) // single tap
     };
     let view = Divider;
     let _ = {
-        view.gesture(TapGesture::repeat(2), handler) // double tap — a count, not a new type
+        view.gesture(
+            TapGesture::repeat(NonZeroU32::new(2).unwrap()),
+            |_: TapEvent| {},
+        ) // double tap — a count, not a new type
     };
     let view = Divider;
     let _ = {
-        // duration is a u32, NOT a core::time::Duration
-        view.gesture(LongPressGesture::new(500), handler)
+        view.gesture(
+            LongPressGesture::new().minimum_duration(Duration::from_millis(500)),
+            |_: LongPressEvent| {},
+        )
     };
     let view = Divider;
     let _ = {
-        view.gesture(DragGesture::new(5.0), handler) // minimum pointer travel, f32 layout units
+        view.gesture(DragGesture::new(5.0), |_: DragEvent| {}) // minimum pointer travel, f32 layout units
     };
 }
 
@@ -88,20 +95,20 @@ pub fn interaction_remaining_gestures_prose() {
 
 // ---------------------------------------------------------------------------
 // interaction.md § "## Gesture recognizers" (prose): the gesture payloads read
-// directly, and `HoverEvent` in an `.event(Event::HoverMove, ..)`
+// directly, and `HoverEvent` in an `.event(HoverMove, ..)`
 // handler. Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn interaction_event_payloads_prose() {
-    use waterui::event::{Event, HoverEvent};
+    use waterui::event::{HoverEvent, HoverMove};
     use waterui::gesture::{
         DragEvent, LongPressEvent, MagnificationEvent, MagnificationGesture, RotationEvent,
         RotationGesture, TapEvent,
     };
 
-    let _ = Divider.on_tap(|tap: TapEvent| {
+    let _ = Divider.gesture(TapGesture::new(), |tap: TapEvent| {
         let _ = tap.location();
     });
-    let _ = Divider.gesture(LongPressGesture::new(500), |_: LongPressEvent| ());
+    let _ = Divider.gesture(LongPressGesture::new(), |_: LongPressEvent| ());
     let _ = Divider.gesture(DragGesture::new(5.0), |drag: DragEvent| {
         let _ = (
             drag.location(),
@@ -112,59 +119,54 @@ pub fn interaction_event_payloads_prose() {
     });
     let _ = Divider.gesture(MagnificationGesture::new(1.0), |_: MagnificationEvent| ());
     let _ = Divider.gesture(RotationGesture::new(0.0), |_: RotationEvent| ());
-    let _ = Divider.event(Event::HoverMove, |hover: HoverEvent| {
+    let _ = Divider.event(HoverMove, |hover: HoverEvent| {
         let _ = hover.location();
     });
-}
-
-// ---------------------------------------------------------------------------
-// interaction.md § "## Gesture recognizers" (prose): `.gesture_observer(..)`
-// with `GestureObserver::new` and the `builder(..).action(..)` form.
-// Not counted as a rust block.
-// ---------------------------------------------------------------------------
-pub fn interaction_gesture_observer_prose() {
-    use waterui::gesture::GestureObserver;
-
-    let handler = || ();
-    let _ = Divider.gesture_observer(GestureObserver::new(TapGesture::new(), handler));
-    let _ = Divider.gesture_observer(GestureObserver::builder(TapGesture::new()).action(handler));
 }
 
 // ---------------------------------------------------------------------------
 // interaction.md § "## Gesture recognizers" — rust block 4/12
 // ---------------------------------------------------------------------------
 pub fn interaction_block_04() {
-    let handler = || ();
     let view = Divider;
 
-    use waterui::gesture::PointerButtons;
+    use waterui::gesture::{PointerButtons, TapEvent};
 
-    let _ = view.gesture(TapGesture::new().buttons(PointerButtons::MIDDLE), handler); // middle click
+    let _ = view.gesture(
+        TapGesture::new().buttons(PointerButtons::MIDDLE),
+        |_: TapEvent| {},
+    ); // middle click
 }
 
 // ---------------------------------------------------------------------------
 // interaction.md § "## Combining gestures" — rust block 5/12
 // ---------------------------------------------------------------------------
 pub fn interaction_block_05() -> impl View {
+    use core::time::Duration;
+    use waterui::gesture::GestureEvent;
+
     let status = Binding::container("Waiting…");
 
     let view = Divider;
     view.gesture(
-        TapGesture::new().then(LongPressGesture::new(300)), // tap, then long-press
-        |State(status): State<Binding<&'static str>>| status.set("Done!"),
+        TapGesture::new()
+            .then(LongPressGesture::new().minimum_duration(Duration::from_millis(300))), // tap, then long-press
+        |_: GestureEvent, State(status): State<Binding<&'static str>>| status.set("Done!"),
     )
     .state(&status)
 }
 
 // ---------------------------------------------------------------------------
-// interaction.md § "## Combining gestures" (prose): `sequenced_before` (alias of
-// `then`), `simultaneously_with`, `exclusively_before`.
+// interaction.md § "## Combining gestures" (prose): `simultaneously_with`,
+// `exclusively_before`.
 // Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn interaction_combinators_prose() {
-    let _ = TapGesture::new().sequenced_before(LongPressGesture::new(300));
-    let _ = TapGesture::new().simultaneously_with(LongPressGesture::new(300));
-    let _ = TapGesture::new().exclusively_before(LongPressGesture::new(300));
+    use core::time::Duration;
+
+    let hold = LongPressGesture::new().minimum_duration(Duration::from_millis(300));
+    let _ = TapGesture::new().simultaneously_with(hold.clone());
+    let _ = TapGesture::new().exclusively_before(hold);
 }
 
 // ---------------------------------------------------------------------------
@@ -291,12 +293,25 @@ pub mod interaction_block_08 {
 // counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn interaction_drop_extras_prose() {
+    use waterui::drag_drop::DropInfo;
+    use waterui::layout::Point;
+
+    let indicator = Binding::container(None::<Point>);
     let _ = text("copy me").draggable(Str::from("payload"));
     let _ = Divider.drop_destination(|_text: Str| ());
     let _ = Divider
-        .drop_destination(|_files: Files| ())
-        .on_enter(|| ())
-        .on_exit(|| ());
+        .drop_destination(|_files: Files, info: DropInfo| {
+            let _point = info.location();
+        })
+        .on_enter(
+            |info: DropInfo, State(ind): State<Binding<Option<Point>>>| {
+                ind.set(Some(info.location()));
+            },
+        )
+        .on_exit(|State(ind): State<Binding<Option<Point>>>| {
+            ind.set(None);
+        })
+        .state(&indicator);
 }
 
 /// Glue: keeps the module-scope `Transferable` import proven to resolve.

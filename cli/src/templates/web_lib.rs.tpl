@@ -1,6 +1,6 @@
 use waterui::app::{App, Windows};
-use waterui::env::use_env;
 use waterui::prelude::*;
+use waterui::window::Window;
 use waterui::{include_web, js_api, preview};
 
 /// Everything the page is allowed to reach: `#[js_api]` exposes each `async`
@@ -21,12 +21,9 @@ impl Api {
 // `water package`/`water run --release` stages the production build.
 #[preview]
 fn main() -> impl View {
-    use_env(|env: Environment| {
-        ResourceContext::from_environment(&env)
-            .map(|resources| include_web!(resources, "{{ ctx.web_arg() }}").serve(Api))
-    })
+    include_web!("{{ ctx.web_arg() }}").serve(Api)
 }
 
 pub fn app(env: Environment) -> App<impl Windows> {
-    App::new(main, env)
+    App::new(env).window(Window::new("{{ ctx.app_display_name }}", main))
 }

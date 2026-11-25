@@ -36,36 +36,22 @@
 
 use nami::Binding;
 use waterui_accessibility::AccessibilityRole;
-use waterui_controls::{ButtonStyle, button};
-use waterui_core::handler::{Handler, SharedAction, shared_action};
+use waterui_controls::{Button, ButtonRole, ButtonStyle, LabelKind, button};
+use waterui_core::handler::{
+    ExtractionError, Handler, ReportExtraction as _, SharedAction, shared_action,
+};
 use waterui_core::metadata::MetadataKey;
 use waterui_core::{Environment, OneOf2, View};
-use waterui_layout::alignment;
 use waterui_layout::frame::Frame;
 use waterui_layout::padding::EdgeInsets;
 use waterui_layout::stack::{HorizontalAlignment, hstack, vstack, zstack};
 use waterui_text::text::{IntoText, Text, text};
 
-use crate::shape::{FixedRoundedRectangle, ShapeExt};
-use crate::theme::color::{Accent, Error, Foreground, MutedForeground, Scrim, Surface};
+use crate::shape::{RoundedRectangle, ShapeExt};
+use crate::theme::color::Scrim;
+pub use crate::widget::DialogTheme;
 use crate::{Computed, SignalExt as _, Str, ViewExt};
 use waterui_graphics::color::Color;
-
-/// M3 `dialog.container.min-width`: the narrowest a card gets, in dp.
-const CARD_MIN_WIDTH: f32 = 280.0;
-/// M3 `dialog.container.max-width`: the widest a card gets, in dp.
-const CARD_MAX_WIDTH: f32 = 560.0;
-/// M3 `dialog.container.corner-radius` (extra-large shape scale), in dp.
-const CARD_CORNER_RADIUS: f32 = 28.0;
-/// M3 `dialog.container.padding`, in dp.
-const CARD_PADDING: f32 = 24.0;
-/// Gap between the headline, the supporting text and the action row, in dp.
-const CARD_CONTENT_SPACING: f32 = 16.0;
-/// Extra gap the M3 spec asks between supporting text and the action row
-/// (`body` → `actions` is 24 dp, on top of the 16 dp row spacing), in dp.
-const ACTIONS_TOP_PADDING: f32 = 8.0;
-/// Gap between adjacent action buttons, in dp.
-const ACTIONS_SPACING: f32 = 8.0;
 
 /// Translation key for the acknowledgement button a dialog declared without
 /// actions presents.
@@ -74,34 +60,14 @@ const ACTIONS_SPACING: f32 = 8.0;
 /// `NSAlert` button instead, so the platform's wording wins where one exists.
 pub const DIALOG_ACKNOWLEDGE_LABEL_KEY: &str = "waterui.dialog.acknowledge";
 
-/// The role a [`DialogAction`] carries: how it reads and where it sits.
+/// One action button of a [`Dialog`]: a title, an optional [`ButtonRole`],
+/// and the handler that runs when the user chooses it.
 ///
-/// Ordering inside the action row follows the platform convention; declaration
-/// order is kept within each role. At most one `Cancel` action is allowed —
-/// more than one fails at render. The first `Default` action is the primary
-/// one and is bound to `Return` on platforms with a hardware Return key.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[expect(
-    clippy::exhaustive_enums,
-    reason = "backends realize each dialog role variant by variant; a new dialog role must fail their build instead of falling into a wildcard arm"
-)]
-pub enum DialogRole {
-    /// An ordinary confirmation action (`Save`, `Paste`). The first declared
-    /// one is the primary action.
-    Default,
-    /// The dismissive answer. Escape, the Android back gesture and the
-    /// Hydrolysis scrim tap all run the `Cancel` action's handler. A dialog
-    /// with no `Cancel` action must be answered — the cancel path does
-    /// nothing.
-    Cancel,
-    /// A destructive confirmation (`Delete`, `Discard`), drawn with the
-    /// `Error` emphasis on Hydrolysis and `hasDestructiveAction` / `.destructive`
-    /// on Apple.
-    Destructive,
-}
-
-/// One action button of a [`Dialog`]: a title, a role and the handler that
-/// runs when the user chooses it.
+/// Ordering inside the action row follows the platform convention: `Cancel`
+/// first, `Destructive` next, then ordinary (`None`) confirmation actions in
+/// declaration order. At most one `Cancel` action is allowed — more than one
+/// fails at render. The first ordinary (`None`) action is the primary one and
+/// is bound to `Return` on platforms with a hardware Return key.
 ///
 /// Titles are plain text — native alert buttons take a title only, so this
 /// accepts [`IntoText`], not `IntoLabel` (an icon would be silently dropped on
@@ -109,7 +75,7 @@ pub enum DialogRole {
 #[derive(Clone)]
 pub struct DialogAction {
     title: Text,
-    role: DialogRole,
+    role: Option<ButtonRole>,
     action: SharedAction,
 }
 
@@ -124,38 +90,38 @@ impl core::fmt::Debug for DialogAction {
 }
 
 impl DialogAction {
-    /// Creates an action with [`DialogRole::Default`].
+    /// Creates an ordinary confirmation action (`role = None`).
     pub fn new<H, Args>(title: impl IntoText, action: H) -> Self
     where
         H: Handler<Args, ()> + 'static,
     {
-        Self {
-            title: title.into_text(),
-            role: DialogRole::Default,
-            action: shared_action(action),
-        }
+        Self::with_role(title, None, action)
     }
 
-    /// Creates an action with [`DialogRole::Destructive`].
+    /// Creates an action with [`ButtonRole::Destructive`].
     pub fn destructive<H, Args>(title: impl IntoText, action: H) -> Self
     where
         H: Handler<Args, ()> + 'static,
     {
-        Self {
-            title: title.into_text(),
-            role: DialogRole::Destructive,
-            action: shared_action(action),
-        }
+        Self::with_role(title, Some(ButtonRole::Destructive), action)
     }
 
-    /// Creates an action with [`DialogRole::Cancel`].
+    /// Creates an action with [`ButtonRole::Cancel`].
     pub fn cancel<H, Args>(title: impl IntoText, action: H) -> Self
+    where
+        H: Handler<Args, ()> + 'static,
+    {
+        Self::with_role(title, Some(ButtonRole::Cancel), action)
+    }
+
+    /// Creates an action with an explicit optional [`ButtonRole`].
+    pub fn with_role<H, Args>(title: impl IntoText, role: Option<ButtonRole>, action: H) -> Self
     where
         H: Handler<Args, ()> + 'static,
     {
         Self {
             title: title.into_text(),
-            role: DialogRole::Cancel,
+            role,
             action: shared_action(action),
         }
     }
@@ -166,9 +132,9 @@ impl DialogAction {
         &self.title
     }
 
-    /// The role this action carries.
+    /// The semantic role this action carries, if any.
     #[must_use]
-    pub const fn role(&self) -> DialogRole {
+    pub const fn role(&self) -> Option<ButtonRole> {
         self.role
     }
 
@@ -176,6 +142,23 @@ impl DialogAction {
     #[must_use]
     pub const fn action(&self) -> &SharedAction {
         &self.action
+    }
+}
+
+impl<L, Action, Style> From<Button<L, Action, Style>> for DialogAction
+where
+    L: LabelKind,
+    Action: FnMut(&Environment) -> Result<(), ExtractionError> + 'static,
+{
+    fn from(value: Button<L, Action, Style>) -> Self {
+        let (label, mut action, role) = value.into_action_parts();
+        Self {
+            title: label.semantic_text().clone(),
+            role,
+            action: shared_action(move |env: Environment| {
+                action(&env).report_extraction();
+            }),
+        }
     }
 }
 
@@ -251,8 +234,8 @@ impl Dialog {
     /// Appends an action to the dialog. Declaration order is kept within each
     /// role; roles are laid out in platform convention order.
     #[must_use]
-    pub fn action(mut self, action: DialogAction) -> Self {
-        self.actions.push(action);
+    pub fn action(mut self, action: impl Into<DialogAction>) -> Self {
+        self.actions.push(action.into());
         self
     }
 
@@ -288,7 +271,7 @@ impl Dialog {
     pub fn cancel_action(&self) -> Option<&DialogAction> {
         self.actions
             .iter()
-            .find(|action| action.role == DialogRole::Cancel)
+            .find(|action| action.role == Some(ButtonRole::Cancel))
     }
 
     /// The action list as renderers must present it: roles in platform
@@ -309,7 +292,7 @@ impl Dialog {
         if self
             .actions
             .iter()
-            .filter(|action| action.role == DialogRole::Cancel)
+            .filter(|action| action.role == Some(ButtonRole::Cancel))
             .count()
             > 1
         {
@@ -327,33 +310,36 @@ impl Dialog {
         ordered.extend(
             self.actions
                 .iter()
-                .filter(|action| action.role == DialogRole::Cancel)
+                .filter(|action| action.role == Some(ButtonRole::Cancel))
                 .cloned(),
         );
         ordered.extend(
             self.actions
                 .iter()
-                .filter(|action| action.role == DialogRole::Destructive)
+                .filter(|action| action.role == Some(ButtonRole::Destructive))
                 .cloned(),
         );
         ordered.extend(
             self.actions
                 .iter()
-                .filter(|action| action.role == DialogRole::Default)
+                .filter(|action| {
+                    !matches!(
+                        action.role,
+                        Some(ButtonRole::Cancel | ButtonRole::Destructive)
+                    )
+                })
                 .cloned(),
         );
         ordered
     }
 
-    /// The primary action: the first `Default` one, bound to Return.
+    /// The primary action: the first ordinary (`None`) one, bound to Return.
     ///
-    /// `None` when no `Default` action was declared — Return then has no
+    /// `None` when no ordinary action was declared — Return then has no
     /// dialog-level meaning and activates the focused button.
     #[must_use]
     pub fn primary_action(&self) -> Option<&DialogAction> {
-        self.actions
-            .iter()
-            .find(|action| action.role == DialogRole::Default)
+        self.actions.iter().find(|action| action.role.is_none())
     }
 
     /// The shared "chose this action" step: run the handler, then write the
@@ -381,33 +367,40 @@ impl Dialog {
     }
 }
 
-/// One dialog action as a card button.
-///
-/// The primary action (the first `Default`) draws with the `Accent` emphasis;
-/// `Destructive` draws with `Error`; everything else keeps the theme's default
-/// text colour.
-fn action_button(action: DialogAction, dialog: &Dialog, primary: bool) -> impl View + use<> {
+/// One dialog action as a card button styled with `theme`.
+fn action_button(
+    action: DialogAction,
+    dialog: &Dialog,
+    primary: bool,
+    theme: &DialogTheme,
+) -> impl View + use<> {
     let title = text(action.title().clone());
-    let label = match action.role() {
-        DialogRole::Destructive => title.color(Color::new(Error)),
-        _ if primary => title.color(Color::new(Accent)),
-        _ => title,
+    let role = action.role();
+    let color = match role {
+        Some(ButtonRole::Destructive) => theme.destructive_action_color.clone(),
+        _ if primary => theme.primary_action_color.clone(),
+        _ => theme.default_action_color.clone(),
     };
+    let label = title.color(color);
     let dialog = dialog.clone();
-    button(label)
+    let btn = button(label)
         .style(ButtonStyle::Plain)
-        .action(move |env: Environment| dialog.run_action(&action, &env))
+        .action(move |env: Environment| dialog.run_action(&action, &env));
+    match role {
+        Some(role) => btn.role(role),
+        None => btn,
+    }
 }
 
-/// The alert card the Hydrolysis modal layer draws: `Surface` container,
-/// `Foreground` title, `MutedForeground` message, and the action row —
-/// `Accent` primary, `Error` destructive — carrying the `Dialog`
-/// accessibility role, labelled by the title.
+/// The alert card the Hydrolysis modal layer draws using the active
+/// [`DialogTheme`] from the environment, carrying the `Dialog` accessibility
+/// role and labelled by the title.
 struct DialogCard(Dialog);
 
 impl View for DialogCard {
     fn body(self, env: &Environment) -> impl View {
         let dialog = &self.0;
+        let theme = env.get::<DialogTheme>().cloned().unwrap_or_default();
         // Resolving first is what lets the label read a localized title: an
         // unresolved environment-dependent `Text` has no content signal.
         let spoken = dialog
@@ -416,59 +409,59 @@ impl View for DialogCard {
             .content()
             .map(|title| title.to_plain())
             .computed();
-        dialog_card(dialog, spoken)
+        dialog_card(dialog, spoken, &theme)
     }
 }
 
-fn dialog_card(dialog: &Dialog, label: Computed<Str>) -> impl View + use<> {
+fn dialog_card(dialog: &Dialog, label: Computed<Str>, theme: &DialogTheme) -> impl View + use<> {
     let actions = dialog.resolved_actions();
     let mut seen_default = false;
     let buttons: Vec<_> = actions
         .into_iter()
         .map(|action| {
-            let primary = action.role() == DialogRole::Default && !seen_default;
-            seen_default |= action.role() == DialogRole::Default;
-            action_button(action, dialog, primary)
+            let primary = action.role().is_none() && !seen_default;
+            seen_default |= action.role().is_none();
+            action_button(action, dialog, primary, theme)
         })
         .collect();
     let headline = text(dialog.title.clone())
         .headline()
-        .color(Color::new(Foreground));
-    // The action row hugs the trailing edge (M3): a trailing-aligned full-width
-    // frame carries the content-sized button stack.
+        .color(theme.title_color.clone());
     let actions_row = Frame::new(
         hstack(buttons)
-            .spacing(ACTIONS_SPACING)
-            .padding_with(EdgeInsets::new(ACTIONS_TOP_PADDING, 0.0, 0.0, 0.0)),
+            .spacing(theme.actions_spacing)
+            .padding_with(EdgeInsets::new(theme.actions_top_padding, 0.0, 0.0, 0.0)),
     )
     .max_width(f32::INFINITY)
-    .alignment(alignment::Trailing);
+    .alignment(theme.actions_alignment);
     let contents = match &dialog.message {
         Some(message) => OneOf2::A(
             vstack((
                 headline,
-                text(message.clone()).color(Color::new(MutedForeground)),
+                text(message.clone()).color(theme.message_color.clone()),
                 actions_row,
             ))
             .alignment(HorizontalAlignment::Leading)
-            .spacing(CARD_CONTENT_SPACING),
+            .spacing(theme.content_spacing),
         ),
         None => OneOf2::B(
             vstack((headline, actions_row))
                 .alignment(HorizontalAlignment::Leading)
-                .spacing(CARD_CONTENT_SPACING),
+                .spacing(theme.content_spacing),
         ),
     };
 
     Frame::new(
         contents
-            .padding_with(EdgeInsets::all(CARD_PADDING))
-            .background(FixedRoundedRectangle::new(CARD_CORNER_RADIUS).fill(Color::new(Surface)))
+            .padding_with(theme.content_padding.clone())
+            .background(
+                RoundedRectangle::new(theme.corner_radius).fill(theme.container_color.clone()),
+            )
             .a11y_label(label)
             .a11y_role(AccessibilityRole::Dialog),
     )
-    .min_width(CARD_MIN_WIDTH)
-    .max_width(CARD_MAX_WIDTH)
+    .min_width(theme.min_width)
+    .max_width(theme.max_width)
 }
 
 impl Dialog {
@@ -496,8 +489,9 @@ impl Dialog {
 #[cfg(test)]
 mod tests {
     use nami::Binding;
+    use waterui_controls::{ButtonRole, button};
 
-    use super::{Dialog, DialogAction, DialogRole};
+    use super::{Dialog, DialogAction};
 
     #[test]
     #[cfg_attr(
@@ -513,6 +507,74 @@ mod tests {
             .iter()
             .map(DialogAction::role)
             .collect::<Vec<_>>();
-        assert_eq!(roles, [DialogRole::Cancel, DialogRole::Cancel]);
+        assert_eq!(roles, [Some(ButtonRole::Cancel), Some(ButtonRole::Cancel)]);
+    }
+
+    #[test]
+    fn button_conversion_preserves_role_in_dialog_actions() {
+        let dialog = Dialog::new(&Binding::bool(true), "Title")
+            .action(button("Save").action(|| {}))
+            .action(button("Delete").role(ButtonRole::Destructive).action(|| {}))
+            .action(button("Cancel").role(ButtonRole::Cancel).action(|| {}));
+        let roles = dialog
+            .resolved_actions()
+            .iter()
+            .map(DialogAction::role)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            roles,
+            [
+                Some(ButtonRole::Cancel),
+                Some(ButtonRole::Destructive),
+                None,
+            ]
+        );
+    }
+
+    #[test]
+    fn dialog_theme_plugin_overrides_card_widths() {
+        use waterui_core::plugin::Plugin as _;
+        use waterui_core::{AnyView, Environment, Native, View};
+        use waterui_layout::{ProposalSize, container::FixedContainer};
+
+        use super::{DialogCard, DialogTheme};
+
+        let dialog = Dialog::new(&Binding::bool(true), "Confirm");
+        let default_env = Environment::new();
+        let default_view = DialogCard(dialog.clone())
+            .body(&default_env)
+            .body(&default_env)
+            .body(&default_env);
+        let default_native = AnyView::new(default_view)
+            .downcast::<Native<FixedContainer<Vec<AnyView>>>>()
+            .expect("DialogCard expands to Native<FixedContainer>");
+        let default_container = default_native.into_inner();
+        let (default_layout, _) = default_container.as_parts();
+        let default_min = default_layout
+            .size_that_fits(ProposalSize::new(100.0, 200.0), &[])
+            .width;
+        assert!((default_min - DialogTheme::default().min_width).abs() < f32::EPSILON);
+
+        let mut custom_env = Environment::new();
+        DialogTheme {
+            min_width: 340.0,
+            max_width: 620.0,
+            ..DialogTheme::default()
+        }
+        .install(&mut custom_env);
+
+        let custom_view = DialogCard(dialog)
+            .body(&custom_env)
+            .body(&custom_env)
+            .body(&custom_env);
+        let custom_native = AnyView::new(custom_view)
+            .downcast::<Native<FixedContainer<Vec<AnyView>>>>()
+            .expect("DialogCard expands to Native<FixedContainer>");
+        let custom_container = custom_native.into_inner();
+        let (custom_layout, _) = custom_container.as_parts();
+        let custom_min = custom_layout
+            .size_that_fits(ProposalSize::new(100.0, 200.0), &[])
+            .width;
+        assert!((custom_min - 340.0).abs() < f32::EPSILON);
     }
 }

@@ -20,14 +20,15 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use nami::Signal as _;
-use nami::collection::List as ReactiveList;
+use nami::collection::StateList;
 use support::{
     count_role_label, mount_rendered, mount_semantic, node_id_contains, node_label_exists, nodes,
 };
-use waterui::component::list::{List, ListDelete, ListItem, ListMove};
+use waterui::component::list::{ForEachExt, List, ListDelete, ListMove, Section, row};
 use waterui::component::{hstack, spacer, text, vstack};
-use waterui::id::SelfId;
+use waterui::id::{Identifiable, SelfId};
 use waterui::layout::scroll::ScrollController;
+use waterui::views::ForEach;
 use waterui::{Binding, View, ViewExt};
 use waterui_core::Environment;
 use waterui_core::dynamic::watch;
@@ -53,10 +54,10 @@ const fn usize_as_f64(v: usize) -> f64 {
 /// attached and an accessibility label to query it by.
 #[allow(clippy::needless_pass_by_value)]
 fn pending_scroll_list(
-    items: ReactiveList<SelfId<usize>>,
+    items: StateList<SelfId<usize>>,
     controller: ScrollController<usize>,
 ) -> impl View {
-    List::for_each(items, |item| ListItem::new(text(format!("row {}", *item))))
+    List::for_each(items, |item| text(format!("row {}", *item)))
         .scroll_controller(&controller)
         .a11y_label("messages")
 }
@@ -71,7 +72,7 @@ fn mount_list<V: View>(view: impl Fn() -> V + Clone + 'static) -> support::Rende
 
 /// Mounts [`pending_scroll_list`] over `items`, driven by `controller`.
 fn mount_messages(
-    items: &ReactiveList<SelfId<usize>>,
+    items: &StateList<SelfId<usize>>,
     controller: &ScrollController<usize>,
 ) -> support::RenderedApp {
     let items = items.clone();
@@ -98,7 +99,7 @@ fn scroll_y(tree: &accesskit::TreeUpdate) -> f64 {
 /// index as `scroll_y`.
 #[test]
 fn pending_scroll_target_above_row_count_waits_for_contents_semantic() {
-    let mut items = ReactiveList::<SelfId<usize>>::new();
+    let mut items = StateList::<SelfId<usize>>::new();
     let controller = ScrollController::new(0);
     // The request lands while the contents are still empty: the dogfood's
     // cleared message list carried a pending target in exactly this shape.
@@ -128,7 +129,7 @@ fn pending_scroll_target_above_row_count_waits_for_contents_semantic() {
 /// shows which rows are realized.
 #[test]
 fn pending_scroll_target_above_row_count_waits_for_contents_offscreen() {
-    let mut items = ReactiveList::<SelfId<usize>>::new();
+    let mut items = StateList::<SelfId<usize>>::new();
     let controller = ScrollController::new(0);
     controller.scroll_to(SCROLL_TARGET);
     let mut app = mount_messages(&items, &controller);
@@ -158,7 +159,7 @@ fn pending_scroll_target_above_row_count_waits_for_contents_offscreen() {
 /// between the two requests' rest and landing points.
 #[test]
 fn animate_to_a_row_glides_and_lands_where_the_jump_would_offscreen() {
-    let mut items = ReactiveList::<SelfId<usize>>::new();
+    let mut items = StateList::<SelfId<usize>>::new();
     let _ = items.replace((0..GROWN_ROW_COUNT).map(SelfId::new).collect());
     let controller = ScrollController::new(0);
     let mut app = mount_messages(&items, &controller);
@@ -202,7 +203,7 @@ fn querying_between_frames_of_animate_to_observes_every_frame_offscreen() {
     /// A linear run moves the same distance every frame, so a sample that
     /// moved further than that saw the clock advance behind its back.
     const DURATION: std::time::Duration = std::time::Duration::from_millis(320);
-    let mut items = ReactiveList::<SelfId<usize>>::new();
+    let mut items = StateList::<SelfId<usize>>::new();
     let _ = items.replace((0..GROWN_ROW_COUNT).map(SelfId::new).collect());
     let controller = ScrollController::new(0);
     let mut app = mount_messages(&items, &controller);
@@ -253,7 +254,7 @@ fn querying_between_frames_of_animate_to_observes_every_frame_offscreen() {
 /// its row (water-rs/waterui#1901).
 #[test]
 fn animate_to_survives_rows_inserted_during_the_flight_offscreen() {
-    let mut items = ReactiveList::<SelfId<usize>>::new();
+    let mut items = StateList::<SelfId<usize>>::new();
     let _ = items.replace((0..30).map(SelfId::new).collect());
     let controller = ScrollController::new(0);
     let mut app = mount_messages(&items, &controller);
@@ -288,7 +289,7 @@ fn animate_to_survives_rows_inserted_during_the_flight_offscreen() {
 /// does not jump under the user's finger (water-rs/waterui#1901).
 #[test]
 fn animate_to_interrupted_then_rows_change_still_anchors_offscreen() {
-    let mut items = ReactiveList::<SelfId<usize>>::new();
+    let mut items = StateList::<SelfId<usize>>::new();
     let _ = items.replace((0..40).map(SelfId::new).collect());
     let controller = ScrollController::new(0);
     let mut app = mount_messages(&items, &controller);
@@ -334,7 +335,7 @@ fn animate_to_interrupted_then_rows_change_still_anchors_offscreen() {
 /// (water-rs/waterui#1901).
 #[test]
 fn out_of_range_pending_scroll_still_anchors_membership_changes_offscreen() {
-    let mut items = ReactiveList::<SelfId<usize>>::new();
+    let mut items = StateList::<SelfId<usize>>::new();
     let _ = items.replace((0..30).map(SelfId::new).collect());
     let controller = ScrollController::new(0);
     let mut app = mount_messages(&items, &controller);
@@ -363,7 +364,7 @@ fn out_of_range_pending_scroll_still_anchors_membership_changes_offscreen() {
 /// lands on the clamp, the row is already in view, and the request consumes.
 #[test]
 fn animate_to_a_row_in_the_last_screenful_lands_on_the_clamp_offscreen() {
-    let mut items = ReactiveList::<SelfId<usize>>::new();
+    let mut items = StateList::<SelfId<usize>>::new();
     let _ = items.replace((0..10).map(SelfId::new).collect());
     let controller = ScrollController::new(0);
     let mut app = mount_messages(&items, &controller);
@@ -389,14 +390,14 @@ fn animate_to_a_row_in_the_last_screenful_lands_on_the_clamp_offscreen() {
 /// (the motion is over; settling the final position is a correction).
 #[test]
 fn animate_to_lands_then_corrects_as_rows_remeasure_offscreen() {
-    let mut items = ReactiveList::<SelfId<usize>>::new();
+    let mut items = StateList::<SelfId<usize>>::new();
     let _ = items.replace((0..20).map(SelfId::new).collect());
     let controller = ScrollController::new(0);
     let mut app = mount_list({
         let controller = controller.clone();
         move || {
             List::for_each(items.clone(), |item| {
-                ListItem::new(vstack((text(format!("row {}", *item)),)).size(300.0, 112.0))
+                vstack((text(format!("row {}", *item)),)).size(300.0, 112.0)
             })
             .scroll_controller(&controller)
             .a11y_label("messages")
@@ -426,7 +427,7 @@ fn animate_to_lands_then_corrects_as_rows_remeasure_offscreen() {
 /// request lands in place there, in row units like any other request.
 #[test]
 fn animate_to_a_row_lands_in_place_semantic() {
-    let mut items = ReactiveList::<SelfId<usize>>::new();
+    let mut items = StateList::<SelfId<usize>>::new();
     let _ = items.replace((0..GROWN_ROW_COUNT).map(SelfId::new).collect());
     let controller = ScrollController::new(0);
     controller.animate_to(SCROLL_TARGET, waterui::animation::Animation::default());
@@ -465,14 +466,14 @@ fn row_content_tap_survives_retained_swipe_order_offscreen() {
                 let taps = Rc::clone(&taps);
                 List::for_each([1, 2, 3], move |row: i32| {
                     let taps = Rc::clone(&taps);
-                    ListItem::new(watch(highlight.clone(), move |on| {
+                    watch(highlight.clone(), move |on| {
                         let label = if on { "high" } else { "low" };
                         let taps = Rc::clone(&taps);
                         hstack((text(format!("row {row} {label}")), spacer()))
                             .on_tap(move || taps.set(row))
-                    }))
+                    })
                 })
-                .on_delete(|_: ListDelete| {})
+                .on_delete(|_: ListDelete<usize>| {})
             }
         },
         360,
@@ -518,12 +519,12 @@ fn edit_controls_emit_accessibility_nodes_offscreen() {
             move || {
                 let deletes = Rc::clone(&deletes);
                 let moves = Rc::clone(&moves);
-                List::for_each([1, 2, 3], move |row: i32| {
-                    ListItem::new(text(format!("row {row}")))
-                })
-                .editing(true)
-                .on_delete(move |ListDelete(index)| deletes.set(index))
-                .on_move(move |ListMove(reorder)| moves.set((reorder.from(), reorder.to())))
+                List::for_each([1, 2, 3], move |row: i32| text(format!("row {row}")))
+                    .editing(true)
+                    .on_delete(move |ListDelete(id): ListDelete<usize>| deletes.set(id))
+                    .on_move(move |ListMove(reorder): ListMove<usize>| {
+                        moves.set((reorder.from(), reorder.to()));
+                    })
             }
         },
         360,
@@ -576,6 +577,142 @@ fn edit_controls_emit_accessibility_nodes_offscreen() {
     );
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FilteredEntry {
+    id: u64,
+    label: &'static str,
+    visible: bool,
+}
+
+impl Identifiable for FilteredEntry {
+    type Id = u64;
+
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+}
+
+fn filtered_sectioned_list(
+    backing: &Binding<Vec<FilteredEntry>>,
+    archive: &StateList<FilteredEntry>,
+) -> impl View + use<> {
+    use nami::SignalExt as _;
+    use nami::collection::SignalCollection;
+
+    let filtered = SignalCollection::new(
+        backing
+            .map(|items| {
+                items
+                    .into_iter()
+                    .filter(|item| item.visible)
+                    .collect::<Vec<_>>()
+            })
+            .computed(),
+    );
+    let delete_backing = backing.clone();
+    let move_backing = backing.clone();
+    List::content((
+        Section::new("Account").content(row("Plan", "Pro")),
+        Section::new("Items").content(
+            ForEach::new(filtered, |item: FilteredEntry| text(item.label))
+                .on_delete(move |ListDelete(id): ListDelete<u64>| {
+                    delete_backing
+                        .get_mut()
+                        .retain(|candidate| candidate.id != id);
+                })
+                .on_move(move |ListMove(movement): ListMove<u64>| {
+                    let mut items = move_backing.get_mut();
+                    if let (Some(from), Some(to)) = (
+                        items.iter().position(|item| item.id == *movement.id()),
+                        items.iter().position(|item| item.id == *movement.target()),
+                    ) {
+                        let moved = items.remove(from);
+                        items.insert(to, moved);
+                    }
+                }),
+        ),
+        Section::new("Archive").content(
+            ForEach::new(archive.clone(), |item: FilteredEntry| text(item.label))
+                .on_move(|_: ListMove<u64>| {}),
+        ),
+    ))
+    .editing(true)
+}
+
+/// `water-rs/waterui#4295`: a sectioned, mixed and filtered list reports item
+/// identity to `on_delete` and `on_move`, keeps static rows non-deletable by
+/// default, and bounds move controls strictly to each `ForEach` part.
+#[test]
+fn sectioned_mixed_and_filtered_list_edits_by_identity_within_part_offscreen() {
+    use accesskit::Role;
+
+    let entry = |id, label, visible| FilteredEntry { id, label, visible };
+    let backing = Binding::container(vec![
+        entry(10, "Alpha", true),
+        entry(15, "Hidden-1", false),
+        entry(20, "Beta", true),
+        entry(25, "Hidden-2", false),
+        entry(30, "Gamma", true),
+    ]);
+    let archive = StateList::from(vec![entry(100, "Old-1", true), entry(200, "Old-2", true)]);
+
+    let mut app = mount_rendered(
+        Environment::new(),
+        {
+            let backing = backing.clone();
+            move || filtered_sectioned_list(&backing, &archive)
+        },
+        360,
+        640,
+    );
+    app.settle();
+
+    // Only the 3 visible rows in Section "Items" emit Delete controls — never
+    // the static "Plan" row or the non-deletable "Archive" rows.
+    assert_eq!(
+        count_role_label(app.tree(), Role::Button, "Delete"),
+        3,
+        "only the editable ForEach's visible rows expose Delete"
+    );
+    // Moves stay inside each part: "Items" has 3 rows (2 up, 2 down) and
+    // "Archive" has 2 rows (1 up, 1 down), total 3 up and 3 down — NOT 4,
+    // proving part boundaries block cross-part moves.
+    assert_eq!(
+        count_role_label(app.tree(), Role::Button, "Move up"),
+        3,
+        "first row of each part has no Move up button"
+    );
+    assert_eq!(
+        count_role_label(app.tree(), Role::Button, "Move down"),
+        3,
+        "last row of each part has no Move down button"
+    );
+
+    // Delete the 2nd visible row ("Beta", id 20) — must remove id 20 from the
+    // unfiltered backing Vec without touching "Plan" or hidden items.
+    let second_delete = nodes(app.tree())
+        .filter(|(_, node)| node.role() == Role::Button && node.label() == Some("Delete"))
+        .map(|(id, _)| id)
+        .nth(1)
+        .expect("Beta's delete button");
+    app.click(second_delete);
+    app.settle();
+    let ids_after_delete: Vec<u64> = backing.snapshot().iter().map(|item| item.id).collect();
+    assert_eq!(ids_after_delete, vec![10, 15, 25, 30]);
+
+    // Move "Alpha" (id 10) down onto "Gamma" (id 30) without re-running the
+    // filter — Alpha lands after Gamma in the backing Vec.
+    let first_move_down = nodes(app.tree())
+        .filter(|(_, node)| node.role() == Role::Button && node.label() == Some("Move down"))
+        .map(|(id, _)| id)
+        .next()
+        .expect("Alpha's move-down button");
+    app.click(first_move_down);
+    app.settle();
+    let ids_after_move: Vec<u64> = backing.snapshot().iter().map(|item| item.id).collect();
+    assert_eq!(ids_after_move, vec![15, 25, 30, 10]);
+}
+
 /// An item whose id stays stable while a baked field changes — the shape from
 /// <https://github.com/water-rs/hydrolysis/issues/227>: `get_id` still resolves
 /// the same identity, so membership reconciliation alone never sees that the
@@ -596,10 +733,7 @@ impl waterui::id::Identifiable for FieldRow {
 
 fn badge_list(items: nami::collection::SignalCollection<Binding<Vec<FieldRow>>>) -> impl View {
     List::for_each(items, |item| {
-        ListItem::new(waterui::component::vstack((
-            text(format!("row {}", item.id)),
-            text(item.badge),
-        )))
+        waterui::component::vstack((text(format!("row {}", item.id)), text(item.badge)))
     })
 }
 
@@ -702,7 +836,7 @@ fn for_each_same_id_item_update_rematerializes_row_offscreen() {
 /// through the insertion (water-rs/waterui#1901).
 #[test]
 fn a_fling_survives_rows_inserted_above_the_viewport_offscreen() {
-    let mut items = ReactiveList::<SelfId<usize>>::new();
+    let mut items = StateList::<SelfId<usize>>::new();
     let _ = items.replace((0..40).map(SelfId::new).collect());
     let controller = ScrollController::new(0);
     let mut app = mount_messages(&items, &controller);
@@ -755,7 +889,7 @@ fn a_fling_survives_rows_inserted_above_the_viewport_offscreen() {
 /// (water-rs/waterui#1901).
 #[test]
 fn animate_to_running_reanchors_rows_inserted_above_offscreen() {
-    let mut items = ReactiveList::<SelfId<usize>>::new();
+    let mut items = StateList::<SelfId<usize>>::new();
     let _ = items.replace((0..40).map(SelfId::new).collect());
     let controller = ScrollController::new(0);
     let mut app = mount_messages(&items, &controller);
@@ -802,7 +936,7 @@ fn animate_to_running_reanchors_rows_inserted_above_offscreen() {
 /// would remove the deleted height twice (water-rs/waterui#1901).
 #[test]
 fn rows_deleted_above_the_bottom_land_on_the_new_end_offscreen() {
-    let mut items = ReactiveList::<SelfId<usize>>::new();
+    let mut items = StateList::<SelfId<usize>>::new();
     let _ = items.replace((0..40).map(SelfId::new).collect());
     let controller = ScrollController::new(0);
     let mut app = mount_messages(&items, &controller);
@@ -830,7 +964,7 @@ fn rows_deleted_above_the_bottom_land_on_the_new_end_offscreen() {
 /// deleted height plus one frame of the run (water-rs/waterui#1901).
 #[test]
 fn rows_deleted_above_a_run_past_the_new_end_translate_once_offscreen() {
-    let mut items = ReactiveList::<SelfId<usize>>::new();
+    let mut items = StateList::<SelfId<usize>>::new();
     let _ = items.replace((0..40).map(SelfId::new).collect());
     let controller = ScrollController::new(0);
     let mut app = mount_messages(&items, &controller);
@@ -882,7 +1016,7 @@ fn rows_deleted_above_a_run_past_the_new_end_translate_once_offscreen() {
 /// of passing vacuously.
 #[test]
 fn an_update_between_the_frames_passes_translates_once_offscreen() {
-    let mut items = ReactiveList::<SelfId<usize>>::new();
+    let mut items = StateList::<SelfId<usize>>::new();
     let _ = items.replace((0..40).map(SelfId::new).collect());
     let controller = ScrollController::new(0);
     let prepended = Rc::new(Cell::new(false));
@@ -905,7 +1039,7 @@ fn an_update_between_the_frames_passes_translates_once_offscreen() {
                             .collect(),
                     );
                 }
-                ListItem::new(text(format!("row {}", *item)))
+                text(format!("row {}", *item))
             })
             .scroll_controller(&controller)
             .a11y_label("messages")
@@ -951,7 +1085,7 @@ fn an_update_between_the_frames_passes_translates_once_offscreen() {
 // first layout, applied requests — and never a pending request's target row.
 #[test]
 fn scroll_position_reports_actual_offset_not_pending_requests() {
-    let mut items = ReactiveList::<SelfId<usize>>::new();
+    let mut items = StateList::<SelfId<usize>>::new();
     let _ = items.replace((0..GROWN_ROW_COUNT).map(SelfId::new).collect());
     let controller = ScrollController::new(0);
     let mut app = mount_messages(&items, &controller);
@@ -983,7 +1117,7 @@ fn scroll_position_reports_actual_offset_not_pending_requests() {
 // geometry and edge flags — the tail the controller was on moves away.
 #[test]
 fn scroll_position_updates_edge_flags_when_content_grows() {
-    let mut items = ReactiveList::<SelfId<usize>>::new();
+    let mut items = StateList::<SelfId<usize>>::new();
     let _ = items.replace((0..GROWN_ROW_COUNT).map(SelfId::new).collect());
     let controller = ScrollController::new(0);
     let mut app = mount_messages(&items, &controller);
@@ -1011,7 +1145,7 @@ fn scroll_position_updates_edge_flags_when_content_grows() {
 // the report write — the flush must not hold a borrow it would deadlock.
 #[test]
 fn scroll_position_watcher_may_mutate_the_list_collection() {
-    let mut items = ReactiveList::<SelfId<usize>>::new();
+    let mut items = StateList::<SelfId<usize>>::new();
     let _ = items.replace((0..GROWN_ROW_COUNT).map(SelfId::new).collect());
     let controller = ScrollController::new(0);
     let mut app = mount_messages(&items, &controller);

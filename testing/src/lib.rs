@@ -7,7 +7,7 @@
 //! *semantic* runtime — a GPU-free pipeline whose accessibility tree is a
 //! product of the view tree and the widgets' semantics, so it carries no style
 //! package and answers no geometry (`UiBuilder::mount` is all a
-//! `UiBuilder<NoStyle>` offers). Tests that need pixels, bounds, pointer
+//! `UiBuilder` offers before `.theme(...)` is attached). Tests that need pixels, bounds, pointer
 //! gestures or frame timing carry a `hydrolysis::Style` through
 //! `UiBuilder::theme` and mount the *rendered* runtime through
 //! `mount_offscreen` — the distinction is in the type, not a runtime check, so
@@ -93,26 +93,20 @@
 //! # Snapshot Artifacts
 //!
 //! ```ignore
-//! use waterui::Environment;
 //! use waterui::ViewExt as _;
 //! use waterui::graphics::color::Srgb;
-//! use waterui_testing::TestHost;
+//! use waterui_testing::ui;
 //!
-//! let host = TestHost::new(
-//!     Environment::new(),
-//!     320,
-//!     180,
-//!     hydrolysis_m3::Material3::defaults(),
-//! );
-//! let captured = host.capture_snapshot(
-//!     waterui::text("Preview")
-//!         .body()
-//!         .foreground(Srgb::WHITE)
-//!         .background(Srgb::BLACK),
-//!     "docs/visual",
-//!     "text-preview",
-//!     "00_initial",
-//! );
+//! let mut app = ui()
+//!     .viewport(320, 180)
+//!     .theme(hydrolysis_m3::Material3::defaults())
+//!     .mount_offscreen(|| {
+//!         waterui::text("Preview")
+//!             .body()
+//!             .foreground(Srgb::WHITE)
+//!             .background(Srgb::BLACK)
+//!     });
+//! let captured = app.capture_snapshot("docs/visual", "text-preview", "00_initial");
 //! assert!(captured.path().is_file());
 //! ```
 //!
@@ -169,7 +163,7 @@ pub(crate) mod wait;
 #[cfg(feature = "harness")]
 pub use accesskit::Role as AccessKitRole;
 #[cfg(feature = "harness")]
-pub use app::{DragOptions, NoStyle, OffscreenApp, SemanticApp, Styled, UiBuilder, mount_app, ui};
+pub use app::{DragOptions, OffscreenApp, SemanticApp, UiBuilder, mount_app, ui};
 pub use artifacts::{CapturedSnapshot, TestArtifacts, artifact_root};
 #[cfg(feature = "harness")]
 pub use driver::{FrameTiming, RuntimeDriver, VIRTUAL_FRAME};
@@ -207,8 +201,6 @@ pub use report::{
 pub use selector::{ElementAnchor, ElementRef, ElementSet, Selector};
 #[cfg(feature = "harness")]
 pub use semantics::{CheckedState, NodeBounds, NodeId, NodeSnapshot, Role, TreeSnapshot};
-#[cfg(feature = "gpu")]
-pub use snapshot::TestHost;
 pub use snapshot::{HdrSnapshot, Snapshot};
 #[cfg(feature = "harness")]
 pub use wait::{Expectation, WaitOptions, WaitResult};

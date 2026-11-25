@@ -20,8 +20,9 @@ fn the_mounted_window_is_the_apps_window() {
     let frame = binding(Rect::new(Point::new(4.0, 6.0), Size::new(800.0, 600.0)));
     let state = binding(WindowState::Normal);
     let content = AnyViewBuilder::<AnyView>::new(move || AnyView::new(vstack(((),))));
-    let mut window = Window::new("app window", state.clone(), move || content.build());
-    window.frame = frame.clone();
+    let window = Window::new("app window", move || content.build())
+        .state(&state)
+        .frame(&frame);
     let mut rt = crate::HeadlessRuntime::new_for_tests_with_window(
         env,
         window,
@@ -76,10 +77,12 @@ fn a_close_request_closes_only_a_closable_window() {
         closable: bool,
     ) -> (crate::HeadlessRuntime, Binding<WindowState>, Binding<Rect>) {
         let state = binding(WindowState::Normal);
+        let frame = binding(Rect::new(Point::zero(), Size::new(800.0, 600.0)));
         let content = AnyViewBuilder::<AnyView>::new(move || AnyView::new(vstack(((),))));
-        let mut window = Window::new("app window", state.clone(), move || content.build());
-        window.closable = closable;
-        let frame = window.frame.clone();
+        let window = Window::new("app window", move || content.build())
+            .state(&state)
+            .frame(&frame)
+            .closable(closable);
         let rt = crate::HeadlessRuntime::new_for_tests_with_window(
             test_environment(),
             window,
@@ -140,7 +143,8 @@ fn an_on_close_request_handler_cancels_then_allows_the_close() {
     // The first question is refused, the second answered `Close`.
     let reply = Rc::new(Cell::new(CloseReply::Cancel));
     let content = AnyViewBuilder::<AnyView>::new(move || AnyView::new(vstack(((),))));
-    let window = Window::new("app window", state.clone(), move || content.build())
+    let window = Window::new("app window", move || content.build())
+        .state(&state)
         .on_close_request({
             let asked = Rc::clone(&asked);
             let reply = Rc::clone(&reply);
@@ -195,7 +199,8 @@ fn request_close_routes_through_the_handler_and_close_bypasses_it() {
     let state = binding(WindowState::Normal);
     let asked = Rc::new(Cell::new(0u32));
     let content = AnyViewBuilder::<AnyView>::new(move || AnyView::new(vstack(((),))));
-    let window = Window::new("app window", state.clone(), move || content.build())
+    let window = Window::new("app window", move || content.build())
+        .state(&state)
         .on_close_request({
             let asked = Rc::clone(&asked);
             move || {

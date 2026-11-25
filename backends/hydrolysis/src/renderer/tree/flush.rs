@@ -4,9 +4,48 @@
 #[cfg(feature = "accessibility")]
 use super::layout::accessibility_rect;
 use super::layout::kurbo_rect;
+use crate::renderer::metadata::resolve_shadow_shape;
+use crate::text::TextEngine;
+use kurbo::Affine;
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
+
+fn with_caster_clip<E: TextEngine, R>(
+    node: &RenderNode<E>,
+    f: impl FnOnce(Option<&ClipShape>) -> R,
+) -> R {
+    match node {
+        RenderNode::Wrapper(wrapper) => match &wrapper.effect {
+            WrapperEffect::Clip(shape) => f(Some(shape)),
+            WrapperEffect::Border(_)
+            | WrapperEffect::Shadow(_)
+            | WrapperEffect::Cursor(_)
+            | WrapperEffect::Draggable(_)
+            | WrapperEffect::DropDestination(_)
+            | WrapperEffect::Hittable(_)
+            | WrapperEffect::OnEvent(_)
+            | WrapperEffect::OnKeyPress(_)
+            | WrapperEffect::GestureObserver(_)
+            | WrapperEffect::Focused(_)
+            | WrapperEffect::FrameRate(_)
+            | WrapperEffect::LifeCycle(_)
+            | WrapperEffect::MaterialGroup
+            | WrapperEffect::Transition(_)
+            | WrapperEffect::AnchoredOverlay(_) => with_caster_clip(&wrapper.child, f),
+            #[cfg(feature = "menu")]
+            WrapperEffect::ContextMenu(_) => with_caster_clip(&wrapper.child, f),
+            #[cfg(waterui_feature = "dialog")]
+            WrapperEffect::Dialog(_) => with_caster_clip(&wrapper.child, f),
+            _ => f(None),
+        },
+        RenderNode::Opacity(opacity) => with_caster_clip(&opacity.child, f),
+        RenderNode::Retain(retain) => with_caster_clip(&retain.child, f),
+        RenderNode::Env(env_node) => with_caster_clip(&env_node.child, f),
+        RenderNode::Dynamic(dynamic) => with_caster_clip(&dynamic.child.borrow(), f),
+        _ => f(None),
+    }
+}
 
 impl<E: crate::text::TextEngine> RenderNode<E> {
     /// Records this subtree into the nodes' programs using the cached
@@ -442,9 +481,23 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                         });
                     }
                     WrapperEffect::Shadow(value) => {
-                        HydrolysisRenderer::apply_shadow(renderer, ctx, child_env, value, |r| {
-                            node.child.flush(r, ctx, child_env, kurbo::Affine::IDENTITY);
-                        });
+                        let shape = if value.get_silhouette().is_some() {
+                            resolve_shadow_shape(ctx.bounds(), value, None)
+                        } else {
+                            with_caster_clip(&node.child, |clip| {
+                                resolve_shadow_shape(ctx.bounds(), value, clip)
+                            })
+                        };
+                        HydrolysisRenderer::apply_shadow(
+                            renderer,
+                            ctx,
+                            child_env,
+                            value,
+                            shape,
+                            |r| {
+                                node.child.flush(r, ctx, child_env, kurbo::Affine::IDENTITY);
+                            },
+                        );
                     }
                     WrapperEffect::Material(level) => {
                         // Everything painted so far is the material's
@@ -531,6 +584,11 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                                 node.child.flush(r, ctx, child_env, kurbo::Affine::IDENTITY);
                             },
                         );
+                    }
+                    WrapperEffect::Sheet(value) => {
+                        HydrolysisRenderer::apply_sheet(renderer, child_env, value, |r| {
+                            node.child.flush(r, ctx, child_env, Affine::IDENTITY);
+                        });
                     }
                     #[cfg(waterui_feature = "dialog")]
                     WrapperEffect::Dialog(value) => {
@@ -657,6 +715,11 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                         if let Some(hook) = effect.appear.take() {
                             hook.call();
                         }
+                    }
+                    WrapperEffect::Task(effect) => {
+                        node.child
+                            .flush(renderer, ctx, child_env, kurbo::Affine::IDENTITY);
+                        effect.start_if_pending();
                     }
                 }
                 renderer.pop_render_owner();
@@ -1094,6 +1157,28 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                         node.child.emit_accessibility(renderer, child_env);
                         if let Some(hook) = effect.appear.take() {
                             hook.call();
+                        }
+                    }
+                    WrapperEffect::Task(effect) => {
+                        node.child.emit_accessibility(renderer, child_env);
+                        effect.start_if_pending();
+                    }
+                    WrapperEffect::Sheet(effect) => {
+                        let presented = renderer.read_signal(effect.sheet.is_presented());
+                        let focus = renderer.hit_test.keyboard_focus.clone();
+                        if renderer.popup_menu.sheet_stack.report(
+                            &effect.marker,
+                            &effect.sheet,
+                            presented,
+                            focus,
+                        ) {
+                            let env = sheet_modal_environment(child_env, &effect.sheet);
+                            let mut slot = effect.content.borrow_mut();
+                            let layer = slot.get_or_insert_with(|| (effect.build_layer)());
+                            layer.emit_accessibility(renderer, &env);
+                        } else {
+                            *effect.content.borrow_mut() = None;
+                            node.child.emit_accessibility(renderer, child_env);
                         }
                     }
                     #[cfg(waterui_feature = "dialog")]

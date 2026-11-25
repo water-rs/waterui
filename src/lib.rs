@@ -1,9 +1,6 @@
 #![doc = include_str!("README.md")]
 extern crate alloc;
 extern crate self as waterui;
-#[cfg(feature = "table")]
-#[macro_use]
-mod macros;
 mod appearance;
 pub use appearance::{background, border, filter, floating, shape, style};
 pub mod component;
@@ -16,7 +13,7 @@ mod runtime;
 pub use runtime::dialog;
 #[cfg(feature = "snackbar")]
 pub use runtime::snackbar;
-pub use runtime::{app, fullscreen, metadata, task, window};
+pub use runtime::{app, metadata, sheet, task, window};
 pub use widget::error;
 // Inspection is a TCP endpoint that also launches the inspector application on
 // the developer's machine; a browser page can do neither, so on wasm the
@@ -68,7 +65,7 @@ pub mod prelude {
     pub use super::haptic::{Feedback, Haptic, Intensity};
     #[cfg(feature = "locale-datetime")]
     pub use super::locale::LocalizedDateTimeExt;
-    #[cfg(feature = "media")]
+    #[cfg(feature = "image")]
     pub use super::media;
     #[cfg(feature = "video")]
     pub use super::video;
@@ -77,10 +74,10 @@ pub mod prelude {
     pub use super::window::{Window, WindowState};
     pub use super::{
         AnimationExt, AnyView, Binding, Color, Computed, Identifiable, OneOf2, OneOf3, OneOf4,
-        OneOf5, OneOf6, OneOf7, OneOf8, Signal, SignalExt, State, Str, View, ViewExt,
+        OneOf5, OneOf6, OneOf7, OneOf8, Project, Signal, SignalExt, State, Str, View, ViewExt,
         accessibility, animation, app, binding, color, component, cursor, drag_drop, env, error,
-        filter, fullscreen, gesture, gradient, id, layout, locale, metadata, reactive, regional,
-        shape, signal, style, task, text, widget, window,
+        filter, gesture, gradient, id, layout, locale, metadata, reactive, regional, shape, sheet,
+        signal, style, task, text, widget, window,
     };
 
     #[cfg(feature = "flow-markdown")]
@@ -88,17 +85,16 @@ pub mod prelude {
 
     pub use super::color::*;
     #[cfg(feature = "dialog")]
-    pub use super::dialog::{Dialog, DialogAction, DialogRole};
-    pub use super::fullscreen::*;
+    pub use super::dialog::{Dialog, DialogAction};
+    pub use super::sheet::{Sheet, SheetDetent, SheetDismiss};
     #[cfg(feature = "snackbar")]
     pub use super::snackbar::{
         Snackbar, SnackbarDismissReason, SnackbarHost, SnackbarManager, SnackbarPosition,
         SnackbarTheme,
     };
 
-    pub use super::gesture::GestureObserver;
-
     pub use super::border::Border;
+    pub use super::component::badge::BadgeValue;
     pub use super::component::*;
     #[cfg(feature = "form")]
     pub use super::form::*;
@@ -106,14 +102,12 @@ pub mod prelude {
     pub use super::layout::*;
     #[cfg(feature = "navigation")]
     pub use super::navigation::{self, *};
-    pub use super::reactive::collection::{List as ReactiveList, SignalCollection};
+    pub use super::reactive::collection::{SignalCollection, StateList};
     pub use super::style::*;
     pub use super::views::ForEach;
     pub use waterui_core::dynamic::{DynamicHandler, watch};
 
-    pub use super::theme::{
-        self, ColorScheme, ColorSettings, FontSettings, Theme, Tint, color as theme_color,
-    };
+    pub use super::theme::{self, ColorScheme, ColorSettings, FontSettings, Theme, Tint};
 
     pub use super::text::{TextConfig, font, highlight, styled};
 
@@ -121,25 +115,31 @@ pub mod prelude {
     pub use super::component::link::{Link, LinkTarget, link};
     #[cfg(feature = "list")]
     pub use super::component::list::{
-        List, ListContent, ListItem, ListMinRowHeight, ListSection, Row, Section, detail_row, row,
+        ForEachExt, List, ListContent, ListMinRowHeight, Row, Section, detail_row, row,
     };
     #[cfg(feature = "menu")]
     pub use super::component::menu::{
-        Command, CommandExt, CommandRole, Menu, MenuItem, NamedKey, Shortcut, ShortcutKey,
-        ShortcutModifiers,
+        Command, CommandExt, Menu, MenuItem, NamedKey, Shortcut, ShortcutKey, ShortcutModifiers,
+        ShortcutNamedKey,
+    };
+    #[cfg(feature = "table")]
+    pub use super::component::table::{
+        SortDirection, SortableTableColumn, Table, TableColumn, TableSort, col, table,
     };
     #[cfg(feature = "menu")]
     pub use super::metadata::context_menu::{ContextMenu, DismissContextMenu};
+    pub use super::metadata::secure::DynamicRange;
 
     // Drag and drop extension traits
     pub use super::drag_drop::DropDestinationExt;
 
-    pub use super::widget::{
-        Accordion, Card, CardStyle, CardStyleTokens, CardTheme, Divider, ErrorView, ResultExt,
-        SuspendedView, Suspense, accordion, card, condition::when, error_view, suspense,
-    };
     #[cfg(feature = "avatar")]
     pub use super::widget::{Avatar, avatar};
+    pub use super::widget::{
+        Card, CardStyle, CardStyleTokens, CardTheme, DialogTheme, Disclosure, Divider, ErrorView,
+        ResultExt, SuspendedView, Suspense, card, condition::when, disclosure, error_view,
+        suspense,
+    };
     #[cfg(feature = "flow-markdown")]
     pub use super::widget::{
         FlowAnimationPolicy, FlowAnimationPreset, FlowElementKind, FlowMarkdown, FlowStreamMode,
@@ -150,13 +150,13 @@ pub mod prelude {
     #[cfg(any(feature = "gpu", feature = "cpu"))]
     pub use super::gradient::FlowingGradient;
     pub use super::gradient::{AnimatedMeshGradient, AnimatedMeshGradientConfig};
-    pub use super::gradient::{Gradient, MeshGradient};
+    pub use super::gradient::{Gradient, GradientStops, MeshGradient};
 
     // Background types (explicit to avoid module name conflict with layout::background)
-    pub use super::background::{Background, Glass, GlassStyle, Material};
+    pub use super::background::{Glass, GlassStyle, Material};
 
     // Asset types
-    #[cfg(all(feature = "assets", feature = "media", not(target_arch = "wasm32")))]
+    #[cfg(all(feature = "assets", feature = "image", not(target_arch = "wasm32")))]
     pub use super::ImageAsset;
     #[cfg(all(feature = "assets", feature = "video", not(target_arch = "wasm32")))]
     pub use super::VideoAsset;
@@ -175,15 +175,14 @@ pub mod prelude {
     pub use waterui_macros::FormBuilder;
     #[cfg(any(feature = "ts", feature = "webview"))]
     pub use waterui_macros::TsType;
-    pub use waterui_macros::{
-        Project, bench, catalog, preview, state, ui_test, view, view_builder,
-    };
     #[cfg(feature = "ts")]
     pub use waterui_macros::{TsProps, tsx};
+    pub use waterui_macros::{bench, catalog, preview, state, ui_test, view, view_builder};
     #[cfg(feature = "webview")]
     pub use waterui_macros::{eval, exec, exec_file, js_api, js_file};
 }
 pub use color::Color;
+pub use component::badge::BadgeValue;
 #[cfg(feature = "form")]
 pub use form::FormBuilder;
 #[cfg(feature = "effects")]
@@ -197,16 +196,14 @@ pub use waterui_barcode as barcode;
 pub use waterui_chart as chart;
 #[cfg(feature = "form")]
 pub use waterui_form as form;
-#[cfg(any(feature = "gpu", feature = "cpu"))]
-pub use waterui_graphics::ShaderPaintView;
 #[cfg(feature = "canvas")]
 pub use waterui_graphics::canvas;
 pub use waterui_graphics::color;
 pub use waterui_graphics::gradient;
-#[cfg(feature = "media")]
-pub use waterui_graphics::image_decode;
 #[cfg(feature = "gpu")]
 pub use waterui_graphics::{GpuContent, GpuView, RedrawHandle};
+#[cfg(any(feature = "gpu", feature = "cpu"))]
+pub use waterui_graphics::{SHADER_MAX_PARAMS, ShaderError, ShaderPaintView};
 pub use waterui_icon as icon;
 #[cfg(feature = "particle")]
 pub use waterui_particle as particle;
@@ -233,9 +230,7 @@ pub use waterui_macros::ui_test as test;
 #[doc(inline)]
 pub use waterui_macros::{FormBuilder, form};
 #[doc(inline)]
-pub use waterui_macros::{
-    Identifiable, Project, bench, catalog, preview, state, text, view, view_builder,
-};
+pub use waterui_macros::{Identifiable, bench, catalog, preview, state, text, view, view_builder};
 #[cfg(feature = "ts")]
 #[doc(inline)]
 pub use waterui_macros::{TsProps, tsx};
@@ -245,7 +240,7 @@ pub use waterui_macros::{eval, exec, exec_file, js_api, js_file};
 #[cfg(feature = "widgets")]
 #[doc(inline)]
 pub use waterui_macros::{widget, widget_intent};
-#[cfg(feature = "media")]
+#[cfg(feature = "image")]
 pub use waterui_media as media;
 #[cfg(feature = "navigation")]
 pub use waterui_navigation as navigation;
@@ -278,7 +273,7 @@ pub use waterui_webview::ts_schema as __ts_schema;
 pub use waterui_widgets as widgets;
 
 // Asset types re-exported for convenience
-#[cfg(all(feature = "assets", feature = "media", not(target_arch = "wasm32")))]
+#[cfg(all(feature = "assets", feature = "image", not(target_arch = "wasm32")))]
 pub use waterui_assets::ImageAsset;
 #[cfg(all(feature = "assets", feature = "video", not(target_arch = "wasm32")))]
 pub use waterui_assets::VideoAsset;
@@ -290,9 +285,10 @@ pub use waterui_assets::{
 };
 #[cfg(all(feature = "assets", target_arch = "wasm32"))]
 pub use waterui_assets::{AssetError, AssetKind, Data};
-/// `include_web!(resources, "web")` — the one-macro web frontend. Its expansion speaks
+/// `include_web!("web")` — the one-macro web frontend. Its expansion speaks
 /// [`webview`](crate::webview)'s asset-origin API and serves a staged
-/// [`Bundle`], so it is exported only when both features are on.
+/// [`Bundle`] resolved from the rendering environment's [`ResourceContext`], so
+/// it is exported only when both features are on.
 #[doc(inline)]
 #[cfg(all(feature = "webview", feature = "assets"))]
 pub use waterui_assets_macros::include_web;
@@ -341,7 +337,7 @@ pub use haptic::{Feedback, Haptic, Intensity};
 pub use nami as reactive;
 pub use nami::SignalExt;
 #[doc(inline)]
-pub use reactive::{Binding, Computed, Signal, binding, signal};
+pub use reactive::{Binding, Computed, Project, Signal, binding, signal};
 #[doc(inline)]
 pub use waterui_core::AnimationExt;
 
@@ -417,11 +413,11 @@ pub fn install_application_resources(env: &mut Environment) {
         });
         env.insert(context);
     }
-    #[cfg(feature = "media")]
+    #[cfg(feature = "image")]
     if env.get::<waterui_media::PhotoCache>().is_none() {
         env.insert(waterui_media::PhotoCache::default());
     }
-    #[cfg(all(target_arch = "wasm32", not(feature = "media")))]
+    #[cfg(all(target_arch = "wasm32", not(feature = "image")))]
     let _ = env;
 }
 
@@ -451,4 +447,32 @@ macro_rules! configure_environment {
         $crate::Plugin::install($crate::catalog!(), &mut __waterui_env);
         __waterui_env
     }};
+}
+
+#[cfg(all(test, feature = "widgets"))]
+mod widgets_glob_tests {
+    use crate::prelude::*;
+    use crate::widgets::*;
+
+    #[test]
+    fn widgets_root_globs_cleanly_alongside_prelude() {
+        let _app_view = vstack((text("App"), spacer())).padding();
+        let _now = Date::now();
+        let timeline = {
+            use crate::widgets::prelude::*;
+
+            Timeline::new([TimelineEntry::new(
+                Date::unix_timestamp(1_700_000_000.0),
+                vstack((
+                    text("Steps").headline(),
+                    spacer(),
+                    text(Date::now()).relative(),
+                    image_system("figure.walk").a11y_label("Walking"),
+                ))
+                .padding()
+                .background(Color::ACCENT),
+            )])
+        };
+        assert_eq!(timeline.entries().len(), 1);
+    }
 }

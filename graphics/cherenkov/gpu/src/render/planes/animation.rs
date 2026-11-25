@@ -1,6 +1,6 @@
 //! Property tracks that have an exact scalar Core Animation realization.
 
-use cherenkov::{Animation, AnimationTrack, Instant, LayerId, SurfaceTree};
+use cherenkov::{Animation, AnimationTrack, Instant, LayerId, PlaybackRepeat, SurfaceTree, Timing};
 use kurbo::Affine;
 
 /// One scalar animation, in the engine's presentation clock.
@@ -15,27 +15,34 @@ pub struct Scalar {
 
 impl Scalar {
     fn expressible(self) -> bool {
-        match self.animation {
-            Animation::Curve(_) => true,
-            Animation::Spring(spring) => {
+        let Some(playback) = self.animation.playback() else {
+            return false;
+        };
+        if matches!(playback.repeat, PlaybackRepeat::Count { count: 0, .. }) {
+            return false;
+        }
+        match playback.timing {
+            Timing::Curve { .. } => true,
+            Timing::Spring(spring) => {
                 spring.is_valid() && (self.target - self.from != 0.0 || self.velocity == 0.0)
             }
-            Animation::Decay(_) => false,
         }
     }
 
-    /// A duration after which both displacement and velocity stay within
-    /// the shared absolute settle tolerance — the spring's own settling
-    /// duration from this lane's displacement and velocity. Core
-    /// Animation's normalized settling duration alone cannot account for
-    /// layer size.
+    /// A single-cycle duration after which both displacement and velocity stay
+    /// within the shared absolute settle tolerance — the spring's own settling
+    /// duration from this lane's displacement and velocity. Core Animation's
+    /// normalized settling duration alone cannot account for layer size.
     pub fn duration(self) -> f64 {
-        match self.animation {
-            Animation::Spring(spring) => {
+        let playback = self
+            .animation
+            .playback()
+            .expect("only springs and curves are handed off");
+        match playback.timing {
+            Timing::Spring(spring) => {
                 spring.settling_duration(self.from - self.target, self.velocity)
             }
-            Animation::Curve(curve) => curve.duration.as_secs_f64(),
-            Animation::Decay(_) => unreachable!("only springs and curves are handed off"),
+            Timing::Curve { duration, .. } => duration,
         }
     }
 }

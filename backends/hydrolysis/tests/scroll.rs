@@ -194,7 +194,7 @@ fn horizontal_scroll_rail_keeps_zero_minimum_on_scrolling_axis() {
 /// One watergram folder chip: caption text over a rounded `SurfaceVariant`
 /// when active.
 fn folder_chip(name: &'static str, active: bool) -> impl View {
-    use waterui::shape::{RoundedRectangle, ShapeExt as _};
+    use waterui::shape::{CornerRadius, RoundedRectangle, ShapeExt as _};
     use waterui::theme::color::{Accent, SurfaceVariant};
 
     let label_view = if active {
@@ -203,7 +203,7 @@ fn folder_chip(name: &'static str, active: bool) -> impl View {
         waterui::OneOf2::B(text(name).caption().muted())
     };
     label_view.padding_with((3.0, 10.0)).background(if active {
-        waterui::OneOf2::A(RoundedRectangle::new(0.5).fill(SurfaceVariant))
+        waterui::OneOf2::A(RoundedRectangle::new(CornerRadius::fraction(0.5)).fill(SurfaceVariant))
     } else {
         waterui::OneOf2::B(())
     })

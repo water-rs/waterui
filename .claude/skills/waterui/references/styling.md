@@ -32,11 +32,12 @@ over by hardcoding a color in the view.
 ## Theme color tokens
 
 ```rust
-use waterui::prelude::theme_color::{Accent, Foreground, Surface};
+use waterui::theme::color::{Accent, Foreground, Surface};
 
 text("Title").foreground(Foreground)
 text("Caption").caption().muted()   // `.muted()` is `.foreground(MutedForeground)`
 card.background(Surface)
+text("Link").foreground(Color::accent())            // shorthand constructors exist for every token
 button("Delete").action(|| {}).tint(Color::red())   // this subtree's controls draw with red
 ```
 
@@ -92,7 +93,7 @@ pub fn app(mut env: Environment) -> App<impl Windows> {
             .colors(ColorSettings::new().accent(Srgb::from_hex("#0066CC")))   // per-token setters
             .fonts(FontSettings::new().body(ResolvedFont::with_family(16.0, FontWeight::Normal, "Inter"))),
     );
-    App::new(move || root(dark.clone()), env)
+    App::new(env).window(Window::new("Themed", move || root(dark.clone())))
 }
 ```
 
@@ -155,25 +156,24 @@ drive each layer's `.opacity`.
 
 ## Reactive colors
 
-APIs that take a concrete `Color` (`.fill(..)`, `.background(..)`, `.foreground(..)`) do
-not accept a signal directly — wrap the signal with `signal_color` (in the prelude), which
-produces a `Color` that updates in place:
+Colour-taking modifiers (`.fill(..)`, `.background(..)`, `.foreground(..)`, `.tint(..)`,
+`.border(..)`, `Badge::color(..)`, `Avatar::ring(..)`) accept any
+colour signal, palette struct, or theme token directly (`impl IntoSignal<Color>`):
 
 ```rust
-let fill = signal_color(selected.select(indicator, clear).computed());
+let fill = selected.select(indicator, clear);
 Rectangle.fill(fill).size(64.0, 32.0)
 ```
 
-Without it, `.fill(binding)` fails to type-check and `.fill(binding.snapshot())` freezes —
+Passing a signal updates the native colour in place; passing `binding.snapshot()` freezes —
 the rule-1 bug in a hat.
 
 ## HDR
 
 `color.with_headroom(1.5)` marks a color as extended-range (up to 2.5× SDR white), and
-the *view* must additionally opt in: `.color_space(ColorSpace::Hdr)` (import
-`waterui::metadata::secure::ColorSpace`). `.color_space(..)` takes a plain enum, not a
-signal, so the choice is fixed when the view is built. Compare SDR/HDR variants by stacking both
-and cross-fading opacity — not by swapping subtrees.
+the *view* must additionally opt in: `.dynamic_range(DynamicRange::High)` (`DynamicRange` is
+in the prelude; `DynamicRange::Standard` pins a subtree to SDR). `.dynamic_range(..)` accepts
+`impl IntoComputed<DynamicRange>`, so the choice can be either a constant or a reactive signal.
 
 ## Backgrounds, materials, gradients
 
@@ -183,7 +183,7 @@ use waterui::background::Material;
 view.background(Surface)                  // a color or token
 view.background(Material::Regular)        // platform blur material
 // Material::UltraThin | Thin | Regular | Thick | UltraThick
-view.background(RoundedRectangle::new(0.18).fill(Surface))   // any view is a valid background
+view.background(RoundedRectangle::new(12.0).fill(Surface))   // any view is a valid background
 ```
 
 `Material` is the content-layer frosted pane (SwiftUI's `.regularMaterial`). `UltraThin` and
@@ -207,38 +207,42 @@ use waterui::background::Glass;
 
 view.background(Glass::regular())                       // capsule pill, the default
 view.background(Glass::clear().interactive(true))       // over media; reacts to touch
-view.background(Glass::regular().tint(Accent).shape(RoundedRectangle::new(0.2)))
+view.background(Glass::regular().tint(Accent).shape(RoundedRectangle::new(16.0)))
 ```
 
-Gradients are views in `waterui::gradient` (the prelude carries `Gradient` and
-`MeshGradient`), so they work anywhere a view does — on their own or inside
-`.background(..)`. They are authored in unit space, `(0, 0)` the top-left, and take
-`WorkingColor` (linear Display P3): `Srgb::from_hex(..).resolve()` makes one from a hex
-colour, and `color::working::from_linear_srgb` from linear components, where values
-above `1.0` are HDR.
+Gradients are views in `waterui::gradient` (the prelude carries `Gradient`,
+`GradientStops` and `MeshGradient`), so they work anywhere a view does — on
+their own or inside `.background(..)`. They are authored in unit space with
+`UnitPoint` anchors, `(0, 0)` the top-left, and take unresolved `Color` values
+(theme tokens, sRGB/P3/Oklch colours, or `Color::new(Working(..))` for HDR
+working-space values) that resolve in the view's environment and update in
+place on scheme or signal changes.
 
 ```rust
 use waterui::color::working::from_linear_srgb;
+use waterui::color::Working;
 use waterui::gradient::{
     AnimatedMeshGradient, AnimatedMeshGradientConfig, FlowingGradient, Gradient, MeshGradient,
 };
+use waterui::layout::UnitPoint;
 
-let rose = Srgb::from_hex("#FF4D80").resolve();
-let sky = from_linear_srgb([0.3, 0.5, 1.0], 1.0);
+let rose = Color::srgb_hex("#FF4D80");
+let sky = Color::new(Working(from_linear_srgb([0.3, 0.5, 1.0], 1.0)));
 
-Gradient::linear(vec![(0.0, rose), (1.0, sky)], [0.0, 0.0], [1.0, 1.0])   // fixed colours
-view.background(Gradient::radial(vec![(0.0, rose), (1.0, sky)], [0.5, 0.5], 0.0, 0.7))
-Gradient::angular(vec![(0.0, rose), (1.0, sky)], [0.5, 0.5], 0.0, core::f32::consts::TAU)   // radians
-Gradient::mesh(2, 2, vertices, true)   // vertices: Vec<([f32; 2], WorkingColor)>, row-major
-MeshGradient::new(3, 3, colors.clone()).size(300.0, 200.0)   // colors: any signal of WorkingColors
+Gradient::linear([Accent.into(), Surface.into()], UnitPoint::TOP, UnitPoint::BOTTOM)   // theme tokens, evenly spaced
+Gradient::linear(stops_signal, UnitPoint::LEADING, UnitPoint::TRAILING)   // reactive (offset, Color) stops
+view.background(Gradient::radial([rose.clone(), sky.clone()], UnitPoint::CENTER, 0.0, 0.7))
+Gradient::angular(vec![(0.0, rose), (1.0, sky)], UnitPoint::CENTER, 0.0, core::f32::consts::TAU)   // radians
+MeshGradient::new(3, 3, colors.clone()).size(300.0, 200.0)   // colors: any signal of Colors
 AnimatedMeshGradient::new(AnimatedMeshGradientConfig::aqua_bloom())   // flows with the canvas clock, on every backend
 FlowingGradient::new()   // drifting noise bands, GPU only
 ```
 
 A radial gradient's radii are fractions of the box's *shorter side*, so it stays circular
 on a non-square box (the end radius must be above `0.0`); an angular sweep is above `0` and
-at most `TAU`. The constructors panic on a violated bound. `MeshGradient` follows signals
-for its colours, its control points (`.points(..)`) and its interpolation
+at most `TAU`. Violated bounds report a contract violation (panic in debug builds, safe
+fallback in release). `MeshGradient` is the single mesh gradient type and follows signals
+for its colours, its `UnitPoint` control points (`.points(..)`) and its interpolation
 (`.smooths_colors(..)`), and `AnimatedMeshGradient::new` takes a
 signal of its whole configuration, so an animated gradient is a signal change, not a
 rebuild. An animated mesh with `speed` `0.0` holds still and lets the engine idle.
@@ -249,25 +253,23 @@ A shape is an outline, not a view: `.fill(color)` turns it into one (a `FilledSh
 which fills the space it is given), and `.clip(shape)` uses it as a mask. Two uses:
 
 ```rust
-use waterui::shape::{Capsule, Circle, Ellipse, FixedRoundedRectangle,
-                     FixedUnevenRoundedRectangle, Path, Rectangle, RoundedRectangle,
-                     ShapeExt, UnevenRoundedRectangle};
+use waterui::shape::{Capsule, Circle, CornerRadii, CornerRadius, Ellipse, Path,
+                     Rectangle, RoundedRectangle, ShapeExt};
 
 Circle.fill(Color::srgb_hex("#3B82F6")).size(80.0, 80.0)   // draw the shape
 photo.clip(Circle)                                          // clip a view to the shape
-photo.clip(FixedRoundedRectangle::new(12.0))                // absolute points
+photo.clip(RoundedRectangle::new(12.0))                     // radius in logical points
+photo.clip(RoundedRectangle::new(CornerRadius::fraction(0.1)))
+photo.clip(RoundedRectangle::new(CornerRadii::new(12.0, 12.0, 0.0, 0.0)))
 ```
 
-**Corner radii are normalized, not points.** `RoundedRectangle::new(r)` takes a fraction
-of the shape's *shorter side*: `0.1` is a subtle round, `0.5` is fully rounded, and
-larger values silently saturate at 0.5. `RoundedRectangle::new(12.0)` therefore compiles
-and produces a capsule — the single most common shape mistake. For "fully rounded at any
-size", use `Capsule`. `UnevenRoundedRectangle::new(top_leading, top_trailing,
-bottom_leading, bottom_trailing)` takes four normalized radii in reading order — *not*
-clockwise. When a spec names the radius in points ("12dp card"), use
-`FixedRoundedRectangle::new(points)` or `FixedUnevenRoundedRectangle::new(..)` (same
-corner order): the radius stays constant as the shape resizes and clamps to half the
-shorter side.
+**Corner radii default to logical points.** `RoundedRectangle::new(12.0)` keeps a 12 pt
+corner radius as the shape resizes and clamps to half the shorter side; for "fully rounded
+at any size", use `Capsule`. Pass `CornerRadius::fraction(r)` when the radius should scale as
+a fraction of the shorter side (`0.1` is a subtle round, `0.5` is fully rounded), or
+`CornerRadii::new(top_leading, top_trailing, bottom_leading, bottom_trailing)` (each corner
+accepts points `f32` or `CornerRadius`) in reading order — *not* clockwise — for independent
+corners.
 
 Custom paths are unit-space (0.0–1.0 fractions of the bounds, stretched to fit) and the
 builder consumes `self` — reassign when building in a loop:
@@ -288,16 +290,17 @@ their kind instead of path commands, and why shape code is tested against a deli
 non-square rectangle, never a square.
 
 Morphing is a self-animating view over the **built-in shapes only** (`MorphableShape`:
-Rectangle, Circle, Ellipse, RoundedRectangle, UnevenRoundedRectangle, Capsule and
-the two `Fixed…` rounded rectangles — `Path` does not implement `MorphableShape`
-so `morph_to` rejects it at compile time); the
-shapes' parameters interpolate and every backend draws the same path:
+Rectangle, Circle, Ellipse, RoundedRectangle, and Capsule — `Path` does not implement
+`MorphableShape` so `morph_to` rejects it at compile time); the shapes' parameters
+interpolate and every backend draws the same path:
 
 ```rust
 Circle
-    .morph_to(RoundedRectangle::new(0.22), Color::srgb_hex("#3B82F6"))
-    .duration(Duration::from_millis(600))
-    .autoreverse(true)                       // also .repeat(bool)
+    .morph_to(RoundedRectangle::new(20.0), Color::srgb_hex("#3B82F6"))
+    .animation(
+        Animation::ease_in_out(Duration::from_millis(600))
+            .repeat(Repeat::Forever { autoreverse: true }),
+    )
     .size(90.0, 90.0)
 
 shape.morph_to(target, fill).progress(t.clone())   // or drive it from a 0..=1 signal instead
@@ -309,23 +312,26 @@ shape.morph_to(target, fill).progress(t.clone())   // or drive it from a 0..=1 s
 
 ```rust
 use waterui::border::Border;
-use waterui::prelude::theme_color::Accent;
-use waterui::shape::RoundedRectangle;
+use waterui::shape::{Circle, RoundedRectangle};
+use waterui::theme::color::Accent;
 
 card.border(Color::srgb_hex("#E5E7EB"), 1.0)                       // all edges, square corners
 card.border_with(Border::new(Accent, 1.0).corner_radius(12.0).edges(EdgeSet::BOTTOM))
-card.shadow(Shadow::new(
-    Color::srgb(0, 0, 0).with_opacity(0.2),   // color, with alpha
-    Vector::new(0.0, 2.0),                    // offset
-    8.0,                                      // blur radius
-    RoundedRectangle::new(0.1),               // the caster's own shape
-))
+avatar.clip(Circle).shadow(4.0)                                    // inherits the caster's `.clip` silhouette
+card.shadow(
+    Shadow::new(8.0)                                               // blur radius
+        .color(Color::srgb(0, 0, 0).with_opacity(0.2))             // color, with alpha
+        .offset(0.0, 2.0)                                          // horizontal and vertical offset
+        .silhouette(RoundedRectangle::new(8.0)),                   // explicit silhouette override
+)
 ```
 
-`Border`'s `corner_radius` is in **points** (unlike `RoundedRectangle`'s normalized radius)
-and `Shadow`'s third argument is its blur radius. A shadow follows its `silhouette`
-argument, so pass the shape the view is filled or clipped with, or the shadow will not
-match its outline. `Shadow::splat(v)` is a black shadow of a rectangle.
+`Border`'s `corner_radius` and `RoundedRectangle`'s default radius are both in **points**.
+`Border` (`width`, `corner_radius`, `color`) and `Shadow` (`radius`, `offset`, `color`) accept
+reactive signals (`impl IntoSignalF32` / `impl IntoSignal<Color>`), so animated metrics update in
+place without rebuilding views. `Shadow::new(v)` / `Shadow::splat(v)` / `Shadow::default()` / `.shadow(v)` inherit
+the caster's `.clip(...)` silhouette automatically (falling back to a rectangle when unclipped)
+unless `.silhouette(...)` sets an explicit shape.
 
 ## Floating surfaces
 
@@ -347,9 +353,9 @@ Icons come from packaged icon-set crates. **Pick one set per app** and depend on
 
 | Crate | Set |
 |---|---|
-| `waterui-icons-material-icon` | Material Design Icons (Pictogrammers), SVG |
+| `waterui-icons-material-icon` | Material Design Icons (Pictogrammers), SVG default / webfont optional |
 | `waterui-icons-lucide` | Lucide, SVG |
-| `waterui-icons-fontawesome7` | Font Awesome 7 Free (webfont by default, SVG optional) — constants such as `fa::solid::HOUSE`, `.with_size(32.0)` |
+| `waterui-icons-fontawesome7` | Font Awesome 7 Free (webfont default / SVG optional) |
 | `waterui-apple` (`SfSymbol`) | Type-safe Apple SF Symbols (`SfSymbol::HOUSE`, gated by deployment target) — **Apple platforms only** |
 
 ```rust
@@ -357,15 +363,18 @@ use waterui_icons_material_icon as mdi;
 use waterui_icons_lucide as lucide;
 
 mdi::check_circle()
-mdi::delete().size(20.0, 20.0)
+mdi::delete().icon_size(20.0)
 mdi::flag().foreground(Accent)                      // theme color
-lucide::star().tint(Color::srgb_hex("#F59E0B"))     // explicit tint
+lucide::star().foreground(Color::srgb_hex("#F59E0B"))
 ```
 
-Icon names are `snake_case` (`account-circle` → `account_circle()`); Material and Lucide
-icons are 24×24 by default. Font Awesome's default webfont mode draws glyphs from the
-Font Awesome font files (`fa-solid-900.ttf`, `fa-regular-400.ttf`, `fa-brands-400.ttf`),
-which the app must bundle; its `svg` feature needs no font.
+Every pack function returns `waterui_icon::Icon` from a `snake_case` name
+(`account-circle` → `account_circle()`, `fa::solid::house()`); whether it draws from
+an SVG path or a webfont glyph is controlled by the pack's feature rather than a
+separate type. Colour uses `.foreground(..)`, size flows from the shared `IconSize`
+channel (`.icon_size(..)`, defaulting to `24.0` points). Font Awesome's default
+`webfont` mode draws from bundled Font Awesome fonts (`fa-solid-900.ttf`,
+`fa-regular-400.ttf`, `fa-brands-400.ttf`); its `svg` feature needs no font.
 
 Match the set to the design language: a Material 3 app uses Material icons, not Lucide.
 
@@ -429,7 +438,8 @@ Material3::with_color_schemes(&schemes, MaterialColorMode::Light);
 
 Material-specific role tokens live in `hydrolysis_m3::color::*` (`Primary`, `OnPrimary`,
 `PrimaryContainer`, `SurfaceContainerHighest`, `OnSurfaceVariant`, …) and resolve from the
-installed scheme. WaterUI's portable `theme_color::*` tokens map onto the active theme —
+installed scheme. WaterUI's portable `theme::color::*` tokens (and `Color::accent()`,
+`Color::surface()`, … constructors) map onto the active theme —
 prefer the portable ones in views that should also run on native backends, and use the
 Material roles only where the design is specifically Material.
 

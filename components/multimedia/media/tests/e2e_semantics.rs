@@ -8,15 +8,17 @@ use waterui::OneOf2;
 use waterui::Signal;
 use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityRole;
+use waterui::component::label;
 use waterui::component::text;
 use waterui::layout::frame::Frame;
 use waterui::layout::scroll::scroll;
 use waterui::layout::stack::VStack;
+use waterui::reactive::collection::StateList;
 use waterui_media::{
-    LivePhoto, Media, Photo, PhotoCache, PhotoStatus, Url, live::LivePhotoSource, photo,
-    photo::Event as PhotoEvent,
+    LivePhoto, Media, MediaPicker, Photo, PhotoCache, PhotoEvent, PhotoStatus, PickerStatus, Url,
+    live::LivePhotoSource, photo,
 };
-use waterui_testing::{Role, Selector, UiBuilder, WaitOptions, WaitResult};
+use waterui_testing::{Role, UiBuilder};
 use waterui_testing::{RuntimeDriver, SemanticApp, TestStyle};
 
 fn sample_image_path() -> String {
@@ -66,10 +68,11 @@ fn live_photo_view(source: LivePhotoSource) -> impl waterui::View {
 }
 
 fn assert_image_eventually_exists<R: RuntimeDriver>(app: &mut SemanticApp<R>, label: &str) {
-    if app.wait_for(
-        &[app.expect_exists(Selector::default().role(Role::IMAGE).label(label))],
-        WaitOptions::new(Duration::from_millis(750)),
-    ) == WaitResult::Completed
+    if app
+        .query()
+        .role(Role::IMAGE)
+        .label(label)
+        .wait_for_existence(Duration::from_millis(750))
     {
         return;
     }
@@ -101,7 +104,7 @@ fn photo_exposes_accessibility_image_after_load(ui: UiBuilder) {
     let last_event = Binding::container(String::new());
     let loaded_for_view = loaded.clone();
     let last_event_for_view = last_event.clone();
-    // `Event::Loaded` waits for the frame's registration with the engine,
+    // `PhotoEvent::Loaded` waits for the frame's registration with the engine,
     // which only the rendered runtime performs — the semantic runtime never
     // records a scene.
     let mut app = ui.theme(TestStyle::default()).mount_offscreen(move || {
@@ -215,12 +218,10 @@ fn photo_placeholder_failure_and_status_track_each_source(ui: UiBuilder) {
         PhotoStatus::Loading,
         "changing source must reset bound status to Loading"
     );
-    let failed_settled = {
-        let sem = app.semantic_mut();
-        let cond = sem.expect_exists(Selector::default().role(Role::LABEL));
-        sem.wait_for(&[cond], WaitOptions::new(Duration::from_millis(750)))
-    };
-    assert_eq!(failed_settled, WaitResult::Completed);
+    app.semantic_mut()
+        .query()
+        .role(Role::LABEL)
+        .assert_exists_within(Duration::from_millis(750));
     let reason = status
         .snapshot()
         .failure()
@@ -249,11 +250,10 @@ fn photo_in_lazy_list_serves_from_environment_cache_without_refetch(ui: UiBuilde
     let status_for_view = row_zero_status.clone();
     let cache = PhotoCache::new(1024 * 1024);
 
-    let mut items =
-        waterui::reactive::collection::List::from_iter((0..12_usize).map(|id| LazyRowItem {
-            id,
-            url: (id == 0).then(|| row_zero_url.clone()),
-        }));
+    let mut items = StateList::from_iter((0..12_usize).map(|id| LazyRowItem {
+        id,
+        url: (id == 0).then(|| row_zero_url.clone()),
+    }));
     let items_for_view = items.clone();
 
     let mut app = ui
@@ -319,4 +319,50 @@ fn photo_in_lazy_list_serves_from_environment_cache_without_refetch(ui: UiBuilde
         PhotoStatus::Ready,
         "remounted row 0 must settle Ready from PhotoCache even after disk source removal"
     );
+}
+
+#[waterui::test(viewport = (320, 200))]
+fn media_picker_exposes_label_to_accessibility_tree(ui: UiBuilder) {
+    let selection = Binding::container(Some(Media::Image(Url::from_file_path_str(
+        "/tmp/seeded-avatar.png",
+    ))));
+    let selection_for_second = selection.clone();
+    let photos = Binding::container(Vec::<Media>::new());
+    let status = Binding::container(PickerStatus::Idle);
+    let status_for_view = status.clone();
+
+    let mut app = ui.mount(move || {
+        waterui::component::vstack((
+            MediaPicker::new("Choose photo", &selection),
+            MediaPicker::new(label("Choose clip").icon(()), &selection_for_second),
+            MediaPicker::multiple("Choose photos", &photos)
+                .limit(10)
+                .status(&status_for_view),
+            waterui::component::Dynamic::watch(status_for_view.clone(), |current| match current {
+                PickerStatus::Failed(message) => {
+                    waterui::component::text(format!("Picker failed: {message}"))
+                }
+                _ => waterui::component::text("Picker ready"),
+            }),
+        ))
+    });
+
+    app.query()
+        .role(Role::BUTTON)
+        .label("Choose photo")
+        .assert_exists();
+    app.query()
+        .role(Role::BUTTON)
+        .label("Choose clip")
+        .assert_exists();
+    app.query()
+        .role(Role::BUTTON)
+        .label("Choose photos")
+        .assert_exists();
+    app.query().label("Picker ready").assert_exists();
+
+    status.set(PickerStatus::Failed("denied photo access".into()));
+    app.query()
+        .label("Picker failed: denied photo access")
+        .assert_exists();
 }

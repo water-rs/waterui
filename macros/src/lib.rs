@@ -82,6 +82,8 @@ pub fn apple_available(input: TokenStream) -> TokenStream {
 
 mod javascript;
 mod js_api;
+#[cfg(feature = "shader")]
+mod shader;
 mod ts;
 mod tsx;
 
@@ -616,243 +618,9 @@ pub fn form(_args: TokenStream, input: TokenStream) -> TokenStream {
     TokenStream::from(expanded)
 }
 
-use syn::{Expr, Token, Type, parse::Parse, punctuated::Punctuated};
-
-/// Derive macro for implementing the `Project` trait on structs.
-///
-/// This macro automatically generates a `Project` implementation that allows
-/// decomposing a struct binding into separate bindings for each field.
-///
-/// # Examples
-///
-/// ```rust
-/// use waterui::Signal;
-/// use waterui::reactive::{Binding, binding, project::Project};
-/// use waterui_macros::Project;
-///
-/// #[derive(Project, Clone)]
-/// struct Person {
-///     name: String,
-///     age: u32,
-/// }
-///
-/// let person_binding: Binding<Person> = binding(Person {
-///     name: "Alice".to_string(),
-///     age: 30,
-/// });
-///
-/// let projected = person_binding.project();
-/// projected.name.set("Bob".to_string());
-/// projected.age.set(25u32);
-///
-/// let person = person_binding.snapshot();
-/// assert_eq!(person.name, "Bob");
-/// assert_eq!(person.age, 25);
-/// ```
-#[proc_macro_derive(Project)]
-pub fn derive_project(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as DeriveInput);
-    let waterui = match waterui_crate_path() {
-        Ok(path) => path,
-        Err(error) => return error.into_compile_error().into(),
-    };
-
-    match &input.data {
-        Data::Struct(data_struct) => match &data_struct.fields {
-            Fields::Named(fields_named) => derive_project_struct(&input, fields_named, &waterui),
-            Fields::Unnamed(fields_unnamed) => {
-                derive_project_tuple_struct(&input, fields_unnamed, &waterui)
-            }
-            Fields::Unit => derive_project_unit_struct(&input, &waterui),
-        },
-        Data::Enum(_) => {
-            syn::Error::new_spanned(input, "Project derive macro does not support enums")
-                .to_compile_error()
-                .into()
-        }
-        Data::Union(_) => {
-            syn::Error::new_spanned(input, "Project derive macro does not support unions")
-                .to_compile_error()
-                .into()
-        }
-    }
-}
-
-fn derive_project_struct(
-    input: &DeriveInput,
-    fields: &syn::FieldsNamed,
-    waterui: &TokenStream2,
-) -> TokenStream {
-    let struct_name = &input.ident;
-    let (_impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
-
-    // Create the projected struct type
-    let projected_struct_name =
-        syn::Ident::new(&format!("{struct_name}Projected"), struct_name.span());
-
-    // Generate fields for the projected struct
-    let projected_fields = fields.named.iter().map(|field| {
-        let field_name = &field.ident;
-        let field_type = &field.ty;
-        let doc = format!(
-            "Projected binding for the `{}` field.",
-            field_name
-                .as_ref()
-                .map_or_else(String::new, ToString::to_string)
-        );
-        quote! {
-            #[doc = #doc]
-            pub #field_name: #waterui::reactive::Binding<#field_type>
-        }
-    });
-
-    // Generate the projection logic
-    let field_projections = fields.named.iter().map(|field| {
-        let field_name = &field.ident;
-        quote! {
-            #field_name: {
-                let source = source.clone();
-                #waterui::reactive::Binding::mapping(
-                    &source,
-                    |value| value.#field_name.clone(),
-                    move |binding, value| {
-                        binding.get_mut().#field_name = value;
-                    },
-                )
-            }
-        }
-    });
-
-    // Add lifetime bounds to generic parameters
-    let mut generics_with_static = input.generics.clone();
-    for param in &mut generics_with_static.params {
-        if let syn::GenericParam::Type(type_param) = param {
-            type_param.bounds.push(syn::parse_quote!('static));
-        }
-    }
-    let (impl_generics_with_static, _, _) = generics_with_static.split_for_impl();
-
-    // The projection mirrors its source field for field, so it is exactly as
-    // visible and as exhaustive as the struct it projects.
-    let visibility = &input.vis;
-    let exhaustiveness = if input
-        .attrs
-        .iter()
-        .any(|attr| attr.path().is_ident("non_exhaustive"))
-    {
-        quote! { #[non_exhaustive] }
-    } else {
-        quote! {}
-    };
-
-    let expanded = quote! {
-        /// Projected version of #struct_name with each field wrapped in a Binding.
-        #[derive(Debug)]
-        #exhaustiveness
-        #visibility struct #projected_struct_name #ty_generics #where_clause {
-            #(#projected_fields,)*
-        }
-
-        impl #impl_generics_with_static #waterui::reactive::project::Project for #struct_name #ty_generics #where_clause {
-            type Projected = #projected_struct_name #ty_generics;
-
-            fn project(source: &#waterui::reactive::Binding<Self>) -> Self::Projected {
-                #projected_struct_name {
-                    #(#field_projections,)*
-                }
-            }
-        }
-    };
-
-    TokenStream::from(expanded)
-}
-
-fn derive_project_tuple_struct(
-    input: &DeriveInput,
-    fields: &syn::FieldsUnnamed,
-    waterui: &TokenStream2,
-) -> TokenStream {
-    let struct_name = &input.ident;
-    let (_impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
-
-    // Generate tuple type for projection
-    let field_types: Vec<&Type> = fields.unnamed.iter().map(|field| &field.ty).collect();
-    let projected_tuple = if field_types.len() == 1 {
-        quote! { (#waterui::reactive::Binding<#(#field_types)*>,) }
-    } else {
-        quote! { (#(#waterui::reactive::Binding<#field_types>),*) }
-    };
-
-    // Generate field projections using index access
-    let field_projections = fields.unnamed.iter().enumerate().map(|(index, _)| {
-        let idx = syn::Index::from(index);
-        quote! {
-            {
-                let source = source.clone();
-                #waterui::reactive::Binding::mapping(
-                    &source,
-                    |value| value.#idx.clone(),
-                    move |binding, value| {
-                        binding.get_mut().#idx = value;
-                    },
-                )
-            }
-        }
-    });
-
-    // Add lifetime bounds to generic parameters
-    let mut generics_with_static = input.generics.clone();
-    for param in &mut generics_with_static.params {
-        if let syn::GenericParam::Type(type_param) = param {
-            type_param.bounds.push(syn::parse_quote!('static));
-        }
-    }
-    let (impl_generics_with_static, _, _) = generics_with_static.split_for_impl();
-
-    let projection_tuple = if field_projections.len() == 1 {
-        quote! { (#(#field_projections)*,) }
-    } else {
-        quote! { (#(#field_projections),*) }
-    };
-
-    let expanded = quote! {
-        impl #impl_generics_with_static #waterui::reactive::project::Project for #struct_name #ty_generics #where_clause {
-            type Projected = #projected_tuple;
-
-            fn project(source: &#waterui::reactive::Binding<Self>) -> Self::Projected {
-                #projection_tuple
-            }
-        }
-    };
-
-    TokenStream::from(expanded)
-}
-
-fn derive_project_unit_struct(input: &DeriveInput, waterui: &TokenStream2) -> TokenStream {
-    let struct_name = &input.ident;
-    let (_impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
-
-    // Add lifetime bounds to generic parameters
-    let mut generics_with_static = input.generics.clone();
-    for param in &mut generics_with_static.params {
-        if let syn::GenericParam::Type(type_param) = param {
-            type_param.bounds.push(syn::parse_quote!('static));
-        }
-    }
-    let (impl_generics_with_static, _, _) = generics_with_static.split_for_impl();
-
-    let expanded = quote! {
-        impl #impl_generics_with_static #waterui::reactive::project::Project for #struct_name #ty_generics #where_clause {
-            type Projected = ();
-
-            fn project(_source: &#waterui::reactive::Binding<Self>) -> Self::Projected {
-                ()
-            }
-        }
-    };
-
-    TokenStream::from(expanded)
-}
+#[cfg(feature = "widgets")]
+use syn::Type;
+use syn::{Expr, Token, parse::Parse, punctuated::Punctuated};
 
 /// Attribute macro for enabling view preview functionality.
 ///
@@ -1098,7 +866,8 @@ fn widget_arg_string(arg: &WidgetArg) -> syn::Result<String> {
 ///
 /// #[waterui::widget(name = "Steps", description = "Today's step count")]
 /// fn steps(context: WidgetContext) -> impl WidgetContent {
-///     vstack((text("Steps"), text("6,241")))
+///     use waterui::widgets::prelude::*;
+///     vstack((text("Steps").headline(), spacer(), text("6,241"))).padding()
 /// }
 /// ```
 ///
@@ -1608,7 +1377,7 @@ pub fn widget_intent(args: TokenStream, input: TokenStream) -> TokenStream {
         #waterui::widgets::__export_intent!(
             #hash_lit,
             #record_lit,
-            [__wui_intent_ptr, __wui_intent_len] => {
+            [__wui_intent_ptr, __wui_intent_len, __wui_store_ptr, __wui_store_len] => {
                 let __wui_action: #type_ident = match #waterui::widgets::serde_json::from_slice(
                     unsafe {
                         ::core::slice::from_raw_parts(
@@ -1625,7 +1394,10 @@ pub fn widget_intent(args: TokenStream, input: TokenStream) -> TokenStream {
                         return;
                     }
                 };
-                <#type_ident as #waterui::widgets::WidgetIntent>::perform(__wui_action);
+                let __wui_store = unsafe {
+                    #waterui::widgets::ffi::decode_store(__wui_store_ptr, __wui_store_len)
+                };
+                <#type_ident as #waterui::widgets::WidgetIntent>::perform(__wui_action, &__wui_store);
             }
         );
 
@@ -1884,14 +1656,6 @@ fn validate_harness_fn_shape(input_fn: &ItemFn, macro_label: &str) -> Result<(),
 fn validate_test_fn(input_fn: &ItemFn, mounts_view: bool) -> Result<&syn::PatType, TokenStream> {
     const LABEL: &str = "#[waterui::test(...)]";
     validate_harness_fn_shape(input_fn, LABEL)?;
-    if !is_unit_output(&input_fn.sig.output) {
-        return Err(syn::Error::new_spanned(
-            &input_fn.sig.output,
-            "`#[waterui::test(...)]` test functions must not return a value",
-        )
-        .to_compile_error()
-        .into());
-    }
 
     if mounts_view {
         validate_mounted_parameter(input_fn, LABEL, "a `&mut` app session")
@@ -1944,7 +1708,7 @@ fn validate_test_fn(input_fn: &ItemFn, mounts_view: bool) -> Result<&syn::PatTyp
 /// Without a view path the test function receives the configured
 /// [`UiBuilder`](https://docs.rs/waterui-testing) by value and mounts in its
 /// own body — the form for tests that own `Binding`s the view closes over.
-/// A styled manual mount names the style in the parameter type.
+/// Styled tests also take a plain `UiBuilder`.
 ///
 /// ```rust
 /// # use waterui::prelude::*;
@@ -1985,6 +1749,7 @@ pub fn ui_test(args: TokenStream, input: TokenStream) -> TokenStream {
     let attrs = &input_fn.attrs;
     let visibility = &input_fn.vis;
     let fn_name = &input_fn.sig.ident;
+    let output = &input_fn.sig.output;
     let fn_body = &input_fn.block;
     let arg_pattern = &typed_arg.pat;
     let arg_type = &typed_arg.ty;
@@ -2026,7 +1791,7 @@ pub fn ui_test(args: TokenStream, input: TokenStream) -> TokenStream {
             #testing_path::block_on(async {
                 #bind_arg
                 #fn_body
-            });
+            })
         }
     } else {
         quote! {
@@ -2035,10 +1800,25 @@ pub fn ui_test(args: TokenStream, input: TokenStream) -> TokenStream {
         }
     };
 
+    let termination_assert = match output {
+        syn::ReturnType::Default => quote! {},
+        syn::ReturnType::Type(_, ty) => {
+            let cfg_attrs = attrs.iter().filter(|attr| attr.path().is_ident("cfg"));
+            quote! {
+                #(#cfg_attrs)*
+                const _: fn() = || {
+                    fn assert_termination<T: ::std::process::Termination>() {}
+                    assert_termination::<#ty>();
+                };
+            }
+        }
+    };
+
     let expanded = quote! {
+        #termination_assert
         #(#attrs)*
         #[test]
-        #visibility fn #fn_name() {
+        #visibility fn #fn_name() #output {
             #run_body
         }
     };
@@ -2218,9 +1998,8 @@ fn validate_bench_fn(input_fn: &ItemFn, mounts_view: bool) -> Result<&syn::PatTy
 /// # Manual form
 ///
 /// Without a view path the bench function receives the configured `UiBuilder`
-/// — typed `UiBuilder<Styled<S>>` by the `theme =` argument — by value, drives
-/// `perf_with` itself, and returns the `PerfReport` — the form for benches
-/// that own `Binding`s the view closes over.
+/// by value, drives `perf_with` itself, and returns the `PerfReport` — the
+/// form for benches that own `Binding`s the view closes over.
 ///
 /// ```ignore
 /// # use waterui::prelude::*;
@@ -2229,9 +2008,7 @@ fn validate_bench_fn(input_fn: &ItemFn, mounts_view: bool) -> Result<&syn::PatTy
 /// #     button("Increment").action(move || *value.get_mut() += 1)
 /// # }
 /// #[waterui::bench(theme = hydrolysis_m3::Material3::defaults(), max_rebuild_ratio = 0.2)]
-/// fn counter_updates(
-///     ui: waterui_testing::UiBuilder<waterui_testing::Styled<hydrolysis_m3::Material3>>,
-/// ) -> waterui_testing::PerfReport {
+/// fn counter_updates(ui: waterui_testing::UiBuilder) -> waterui_testing::PerfReport {
 ///     let value = Binding::i32(0);
 ///     let value_for_view = value.clone();
 ///     ui.perf_with(move || counter(&value_for_view), |perf| {
@@ -2475,4 +2252,11 @@ pub fn derive_ts_props(input: TokenStream) -> TokenStream {
 #[proc_macro]
 pub fn tsx(input: TokenStream) -> TokenStream {
     tsx::tsx(input)
+}
+
+/// A [`ShaderPaintView`](waterui_graphics::ShaderPaintView) from a `.wgsl` file beside the calling source file, validated at compile time.
+#[cfg(feature = "shader")]
+#[proc_macro]
+pub fn shader(input: TokenStream) -> TokenStream {
+    shader::shader(input)
 }

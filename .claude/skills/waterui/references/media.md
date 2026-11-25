@@ -15,22 +15,21 @@ conventions in [components.md](components.md): lowercase ergonomic constructors,
 ## Media
 
 `waterui::media` (`Photo`, `Image`, `MediaPicker`, and the image kind of `asset!`) is
-behind the `media` feature, which is not on by default: add `features = ["media"]` to the
-`waterui` dependency. Four features sit beside it, none implied by `media`:
+behind the `image` feature, which is not on by default: add `features = ["image"]` to the
+`waterui` dependency. Four features sit beside it, none implied by `image`:
 
 - `video` — `Video`, `VideoPlayer`, `LivePhoto`, video picks, the video kind of `asset!`;
-  also `waterui::video`. Enable `["media", "video"]` for photo and video together.
+  also `waterui::video`. Enable `["image", "video"]` for photo and video together.
 - `video-gpu` — WaterUI's own GPU player (implies `video` and `gpu`). Apple and the web
   bridge a native player; Hydrolysis platforms (Android, Windows, Linux) draw video only
   when the app's own `waterui` dependency declares `video-gpu`.
 - `remote` — fetching from web URLs links an HTTP client. Without it a `Photo` pointed
-  at `https://…` reports `Event::Error` naming the feature; bundled and local sources
+  at `https://…` reports `PhotoEvent::Error` naming the feature; bundled and local sources
   need nothing.
 - `webview` — see Web content.
 
 ```rust
-use waterui::media::photo::Event as PhotoEvent;   // the event type needs this alias import
-use waterui::media::{Image, Photo, PhotoCache, PhotoStatus, Url, photo};
+use waterui::media::{Image, Photo, PhotoCache, PhotoEvent, PhotoStatus, Url, photo};
 
 photo("https://waterui.dev/logo.png")        // impl IntoComputed<Url>; Url: From<&'static str>
     .resizable()
@@ -65,21 +64,28 @@ let Some(parsed) = Url::parse(entered.snapshot().as_str()) else { return };   //
 photo_slot.set(Photo::new(parsed));
 ```
 
-Media picking — the picker itself is the tappable control:
+Media picking — the picker itself is the tappable control, writing public `Media` directly into
+the bound selection and reporting loading or failure states through `PickerStatus`:
 
 ```rust
-use waterui::media::media_picker::{MediaFilter, MediaPicker, Selected};
+use waterui::media::media_picker::{MediaFilter, MediaPicker, PickerStatus};
+use waterui::media::Media;
 
-let selection: Binding<Option<Selected>> = Binding::default();
-MediaPicker::new(&selection)
+let avatar: Binding<Option<Media>> = Binding::default();
+let photos: Binding<Vec<Media>> = Binding::default();
+let status: Binding<PickerStatus> = Binding::default();
+
+MediaPicker::new("Avatar", &avatar)
     .filter(MediaFilter::Image)          // Image | Video | LivePhoto (the last two need `video`); takes a signal
-    .label(text("Pick a photo"))         // type-changing builder — call before storing
+    .status(&status);                    // PickerStatus::Idle | Loading | Failed(Str)
 
-// In a handler: Selected::load() is synchronous and consumes the selection.
-let media = selected.load();             // Media::Image(Url) | Video(Url) | LivePhoto(source)
+MediaPicker::multiple("Photos", &photos)
+    .limit(10)
+    .status(&status);
 ```
 
-`Selected::media()` borrows the payload without consuming it. With `video`,
+Pre-populate `avatar` or `photos` to seed a selection before the user taps; cancelling or failing
+leaves the existing selection intact. With `video`,
 `LivePhoto::new(LivePhotoSource::new(image_url, video_url))` (`waterui::media::live`)
 displays the live-photo variant, `.on_event` reports `MotionStarted` / `MotionEnded` / `MotionFailed(msg)`.
 
@@ -95,10 +101,10 @@ let controller = session.controller();                  // Clone; capture before
 
 VideoPlayer::new(session)
     .show_controls(true)
-    .content_mode(video::ContentMode::Fit)              // Fit | Fill | Stretch
+    .content_mode(ContentMode::Fit)                     // Fit | Fill; `.resizable()` stretches per axis
     .on_event(|event| match event {
-        video::Event::ReadyToPlay | video::Event::Ended => (),
-        video::Event::Error { message: _ } => (),
+        VideoEvent::ReadyToPlay | VideoEvent::Ended => (),
+        VideoEvent::Error { message: _ } => (),
         _ => (),                                        // Buffering, PlaybackStateChanged, …
     })
 ```
@@ -124,7 +130,7 @@ the default `vod_default()` buffering. On the controller, `track_catalog()` is a
 `Computed<TrackCatalog>` of audio, video and subtitle tracks, `live_window()` a
 `Computed<Option<LiveWindow>>` (`None` for finite media) with `seek_to_live_edge()` →
 `Result<(), PlaybackError>`, `step_forward()` / `step_backward()` pause and show the next or
-previous frame, and `preserve_pitch()` is a `Binding<bool>`. `video::Event::PlaybackMetrics
+previous frame, and `preserve_pitch()` is a `Binding<bool>`. `VideoEvent::PlaybackMetrics
 { metrics }` arrives periodically while playing.
 
 Runtime capture permissions (camera, microphone, location) are requested through
@@ -155,14 +161,15 @@ from a file at compile time). `.on_event` takes `Fn` — capture cloned bindings
 
 Bundled and controlled content:
 
-- `include_web!(resources, "web")` (features `webview` + `assets`) embeds a web frontend:
-  the first argument borrows the app's `ResourceContext`, the second is the web project
-  root (relative to the crate's `Cargo.toml`) holding `package.json`; named options
-  `out_dir` (`dist`), `entry` (`index.html`), `spa`, `csp`. It expands to a `WebViewOpen`,
-  so `.serve(..)`, `.inject(..)`, `.on_event(..)` chain on it. The `water` CLI builds and
-  stages the frontend; one per application; main-frame navigations that leave its origin
-  open in the system browser. It installs a navigation policy, which compiles only with
-  the Apple deployment targets raised to `27.0` ([project.md](project.md)).
+- `include_web!("web")` (features `webview` + `assets`) embeds a web frontend:
+  the first argument is the web project root (relative to the crate's `Cargo.toml`)
+  holding `package.json`, and `ResourceContext` is resolved from the rendering
+  environment; named options `out_dir` (`dist`), `entry` (`index.html`), `spa`, `csp`.
+  It expands to a `WebViewOpen`, so `.serve(..)`, `.inject(..)`, `.on_event(..)` chain
+  on it. The `water` CLI builds and stages the frontend; one per application; main-frame
+  navigations that leave its origin open in the system browser. It installs a navigation
+  policy, which compiles only with the Apple deployment targets raised to `27.0`
+  ([project.md](project.md)).
 - `WebView::open_assets(server, entry)` serves `Fn(&AssetRequest) -> AssetResponse`
   (GET/HEAD only) under the engine's local asset origin, a secure context on every
   engine; `DirectoryServer::new(dir).into_server_fn()` is the ready-made server over a
@@ -258,7 +265,7 @@ WaterUI's bundled engines instead, add `waterui-browser-cef` (with its `webview`
 or `waterui-browser-wpe` (with its `webview` feature) as a dependency; the backend
 enables `webview-cef` or `webview-wpe` at compile time, uses its `WebViewController`
 through `NativeBackend`, and realizes every `WebView` through that engine with plain
-`App::new(root, env)`. The `WebView` code above is unchanged either way. Linux outside GTK bridges no system engine,
+`App::new(env).window(Window::new("Browser", root))`. The `WebView` code above is unchanged either way. Linux outside GTK bridges no system engine,
 so a `WebView` there needs one of these crates.
 
 `waterui-chromium` is the separate, heavier component for a full Chromium surface,
@@ -285,9 +292,9 @@ Canvas::new(move |cx| {                  // runs once per mount; signals stay bo
     cx.stroke(radius.map(|r| Circle::new(Point::new(40.0, 40.0), r)), StrokeStyle::new(2.0), accent);
 })
 
-use waterui::barcode::Barcode;           // facade feature `barcode` (the crate is also usable directly)
-Barcode::qr("https://waterui.dev").size(120.0, 120.0)
-Barcode::code128("012345").size(160.0, 60.0)
+use waterui::barcode::{Barcode, BarcodeSymbology}; // facade feature `barcode` (the crate is also usable directly)
+Barcode::new(BarcodeSymbology::Qr, "https://waterui.dev").size(120.0, 120.0)
+Barcode::new(BarcodeSymbology::Code128, "012345").size(160.0, 60.0)
 
 use waterui::svg::Svg;
 Svg::new(source)
@@ -303,7 +310,7 @@ keeps one sub-recording per key and hands the body a `Computed<T>` of its item, 
 `cx.transform(affine, ..)`, `cx.layer(Layer::opacity(0.5), ..)` — never saved and restored.
 `Drawing::record(size, |cx| ..)` records constants, on any thread, for `cx.draw(&drawing,
 transform)` or `Canvas::from(drawing)`, a view of the drawing's size. Images are
-`ImageSource`s the target registers itself; `image.status()` reports a refusal. Give a
+`ImageSource`s the target registers itself (`ImageSource::decode(bytes)` decodes PNG/JPEG/GIF/WebP/BMP/ICO/TIFF/AV1-HEIF without naming the `image` crate, and `ImageSource::new(PixelBuffer::new(..))` wraps raw pixels), drawn with `cx.image(src, rect)` (linear filtering) or `cx.image_sampled(src, rect, sampling)`; `image.status()` reports a refusal. Give a
 canvas with a natural size `.intrinsic_size(..)`, and a name with `.offered_label(..)`.
 Beyond `fill` and `stroke`: `cx.shadow(shape, Shadow::new(blur, color).offset(dx, dy))`
 (`color` is a resolved `waterui::graphics::WorkingColor` such as `WorkingColor::BLACK`,
@@ -311,13 +318,13 @@ not a `Color`),
 `cx.text(styled, TextPlacement::at(point))` (laid out by the same text stack as every
 `Text`; the canvas never measures it) and `cx.glyphs(..)` for pre-shaped runs.
 
-Barcodes: `Barcode::qr(content)` and `Barcode::code128(content)` take a signal, so a
+Barcodes: `Barcode::new(symbology, content)` takes a signal, so a
 rotating token re-encodes in place. The view *panics while rendering* when the content
 exceeds QR capacity or holds characters Code128 cannot encode; validate runtime input
-first with `BarcodeSource::qr(text)` / `BarcodeSource::code128(text)`, which return a
+first with `BarcodeSource::new(symbology, text)`, which returns a
 `Result`. `.dark_color(c)`, `.light_color(c)` and `.linear_gradient(..)` style it.
-`Svg::new(markup)` takes SVG source text (`.tint(color)` recolours it,
-`Svg::from_path(path_data, w, h)` draws one path); `waterui::svg` needs the `gpu`
+`Svg::new(markup)` takes SVG source text (`.foreground(color)` recolours `currentColor`,
+`Svg::from_path(path_data, w, h)` draws one path, chain `.stroked()` for outlines); `waterui::svg` needs the `gpu`
 feature, on by default.
 
 Custom GPU content, from cheapest to fullest control:
@@ -327,17 +334,22 @@ use waterui::graphics::shader;
 shader!("starfield.wgsl").size(400.0, 500.0)   // static fragment shader from the .wgsl file beside this source file, no build.rs, no wgpu dep
 ```
 
-`shader!` reads the file next to the calling source file (`include_str!`) and expands to a
-`ShaderPaintView` that fills the space it is given. It renders once per change of its
-inputs; `.continuous(signal)` (a `bool`, `.continuous(true)` for constant) re-renders every
-frame so `uniforms.time` advances, and `.uniforms(signal)` of a `Vec<f32>` (up to 64
-floats) feeds `params`. The WGSL writes `@fragment fn main(@location(0) uv: vec2<f32>) ->
+`shader!` validates the `.wgsl` file next to the calling source file (`include_str!`) at compile
+time and expands to a `ShaderPaintView` that fills the space it is given; `ShaderPaintView::new(src)`
+validates runtime strings and returns `Result<ShaderPaintView, ShaderError>`. It renders once
+per change of its inputs; `.continuous(signal)` (a `bool`, `.continuous(true)` for constant)
+re-renders every frame so `uniforms.time` advances, and `.param(signal)` / `.params([...])`
+(up to 64 scalar `f32` signals, returning `Result<_, ShaderError>`) feeds `shader_param(index)`
+/ `params` (`array<vec4<f32>, 16>`). The WGSL writes `@fragment fn main(@location(0) uv: vec2<f32>) ->
 @location(0) vec4<f32>` (`uv` runs 0..1 from the top-left) against the prelude's
 `uniforms.time`, `uniforms.resolution` and `params` (`array<vec4<f32>, 16>`), returning
 premultiplied linear Display P3; `cherenkov_linear_srgb` converts an sRGB colour. For
 full control, implement `GpuContent` (sync `setup(&mut self, gpu: &Context<'_>)` owns persistent GPU
-resources; `render(&mut self, frame: &mut Frame<'_>)` draws — call `frame.request_redraw()` at the
-end to keep animating) and wrap it: `GpuView::new(content).size(w, h)`. The content is `Send`
+resources; `render(&mut self, frame: &mut Frame<'_>)` draws via accessors such as `frame.device()`,
+`frame.queue()`, `frame.view()`, `frame.width()`, `frame.height()`, `frame.elapsed()`, and
+`frame.delta()`, calling `frame.request_redraw()` at the end to keep animating) and wrap it in the
+authoring builder `GpuView::new(content).size(w, h)` (which lowers to the backend-only
+`waterui::graphics::backend::GpuContentLeaf`). The content is `Send`
 and lives on the render thread once installed — it must NOT hold `Binding`s or other UI-thread
 state; instead read reactive state in a `.on_frame` hook (UI thread, once per frame) and post
 plain values to the content through shared `Arc<Mutex<..>>` state. `waterui::graphics` re-exports
@@ -442,9 +454,7 @@ ParticleSystem::new(10_000)             // max particles
 ```
 
 Every numeric builder parameter is a signal slot (`impl IntoSignalF32`; colors take
-`impl IntoSignal<Color>`). Careful: on
-`ParticleSystem`, `.size(min, max)` is the *particle* size range in normalized units —
-it is not the frame modifier. Also available: `.emit_from_point()` / `.emit_from_circle(r)`,
+`impl IntoSignal<Color>`). `.particle_size(min, max)` sets the particle size range in normalized units (while `.size(w, h)` comes from `ViewExt`). Also available: `.emit_from_point()` / `.emit_from_circle(r)`,
 `.angle(min, max)`, `.spin(min, max)`, `.shape(ParticleShape::Circle | Rect)`, `.additive()`,
 `.softness(s)`, `.stretch_with_velocity()`, the forces `.gravity(x, y)`, `.wind(x, y)`,
 `.turbulence(s)`, `.drag(s)`, and collisions (`.collide_with_viewport()`,
@@ -452,8 +462,8 @@ it is not the frame modifier. Also available: `.emit_from_point()` / `.emit_from
 `.collide_with_particles(radius, strength)`, `.bounce(r)`, `.surface_friction(f)`).
 
 Shapes are views that fill the space they are given; `.fill()` and `.clip()` are the two
-ways to use them — the styling reference covers them, including the normalized-radius
-rule for `RoundedRectangle`.
+ways to use them — the styling reference covers them, including point and fractional radii
+for `RoundedRectangle`.
 
 ## Data: charts and maps
 
@@ -464,16 +474,19 @@ Two facts govern the whole family:
   of the point types is a constant signal already (`BarChart::new(vec![..])` compiles);
   the composite data structs (`DepthData`, `HeatmapData`, `RadarData`, `AreaData`,
   `GaugeData`, `ContourData`) are not — wrap them: `HeatmapChart::new(binding(data))`.
-- Chart colors take **`Srgb`**, not `Color` — `Srgb::from_hex("#3B82F6")`, `Srgb::WHITE`.
-  Multi-series builders (`RadarSeries`, `AreaSeries`, `BubblePoint::with_color`) instead
-  take four normalized `f32` components `(r, g, b, a)`.
+- Every chart, series, region, tooltip, and legend color setter takes
+  **`impl IntoComputed<Color>`** and defaults to semantic theme tokens (`Accent`, `Tertiary`,
+  `Error`, `SurfaceVariant`, `Foreground`, `MutedForeground`, `Border`) so charts re-theme
+  live in light and dark. Pass theme tokens (`waterui::theme::color::Accent`), color values,
+  or reactive `Binding<Color>` / `Computed<Color>` signals.
 
 ```rust
 use waterui::chart::{AxisConfig, BarChart, ChartExt, DataBounds, DataPoint, LineChart};
+use waterui::theme::color::Accent;
 
 let bounds = DataBounds::from_points(&points);
 LineChart::new(binding(points))
-    .color(Srgb::from_hex("#22C55E"))
+    .color(Accent)
     .line_width(3.0)
     .axes(bounds)                                // ChartExt; axes first…
     .y_axis(AxisConfig::new().tick_count(5))     // …then per-axis config on the wrapper
@@ -487,16 +500,16 @@ Constructor shapes for the rest — argument order is the part you cannot guess:
 `HeatmapData::new(rows, cols, row_major_values)`; `ContourData::new(rows, cols, values,
 level_count)`; `RadarData::new(axis_count).labels(..).series(RadarSeries::new(name, values))`
 (every vec exactly `axis_count` long); `AreaData::new(x_values).series(..).stacked(true)`;
-`BubblePoint::with_color(x, y, size, r, g, b, a)`;
-`GaugeData::new(value, min, max).region(GaugeRegion::hex(upper, "#22C55E"))` (regions are
+`BubblePoint::new(x, y, size).color(color)`;
+`GaugeData::new(value, min, max).region(GaugeRegion::new(upper, Accent))` (regions are
 kept sorted by threshold), whose `GaugeChart` takes `.arc(ArcAngles::from_degrees(-135.0,
 135.0))` and `.radii(GaugeRadii::new(0.3, 0.45))` (normalized).
 
-Interaction and composition, on every chart: `.focused(&binding)` / `.selected(&binding)`
-write the hit datum into a `Binding<Option<HitResult<T>>>` (`series`, `index`, `value`,
-`anchor`); `.focused_tooltip(|hit| ..)` and `.selected_tooltip(|hit| ..)` draw a view
-anchored at the datum — `Tooltip::new(TooltipContent::new().title(..).value(label, value))`
-is the ready-made one; `.chart_overlay(|proxy| ..)` / `.chart_background(|proxy| ..)`
+Interaction and composition, on every chart: `.chart_focus(&binding)` /
+`.chart_selection(&binding)` write the hit datum into a `Binding<Option<HitResult<T>>>`
+(`series`, `index`, `value`, `anchor`); `.focused_tooltip(|hit| ..)` and
+`.selected_tooltip(|hit| ..)` draw a view anchored at the datum —
+`Tooltip::new(TooltipContent::new().title(..).value(label, value))` is the ready-made one; `.chart_overlay(|proxy| ..)` / `.chart_background(|proxy| ..)`
 layer arbitrary views, the `ChartProxy` exposing `focused()`, `selected()` and the frame
 signals. Cartesian charts also take `.chart_x_selection(&binding)` and friends; a
 `Legend::new(vec![LegendItem::new(label, color)])` is a separate view. `LineChart::fill(opacity)`
@@ -510,21 +523,23 @@ use waterui_map::{Annotation, Coordinate, Map, MapStyle, Region};
 let center = Coordinate::from_degrees(37.33, -122.03).expect("valid coordinate");
 let region: Binding<Region> = binding(Region::new(center, 0.05, 0.05));   // deltas are degree
 // spans; the annotation is needed — `binding`'s `impl Into<T>` cannot infer `T` here
+let selected: Binding<Option<&'static str>> = binding(None);
 
-Map::new(region.clone())                     // impl IntoComputed<Region>
+Map::new(&region)                            // &Binding<Region>: two-way camera
     .style(MapStyle::Standard)               // Standard | Satellite | Hybrid
-    .annotations(pins.clone())               // impl IntoComputed<Vec<Annotation>>
+    .annotations(pins.clone())               // impl IntoComputed<Vec<Annotation<T>>>
+    .selection(&selected)                    // &Binding<Option<T>>: two-way pin selection
     .optional_user_location(loc.clone())     // starts None while permission is pending
     .shows_compass(true).shows_scale(true)   // plain bools
 ```
 
-`Region` has public `center` / `latitude_delta` / `longitude_delta` fields — zooming is a
-handler that `.set()`s a region with scaled deltas. `Coordinate::from_degrees` returns a
-`Result`; out-of-range coordinates are errors, not clamps. Also: `Map::centered_on(coordinate)`
-and `Map::centered_on_location(location)` (signals; default zoom), `Annotation::new(coordinate,
-title).subtitle(..)`, `.is_interactive(false)`, `.shows_user_location(true)`,
-`.follows_location(signal)`, and `.status(&Binding<MapStatus>)`, which the map fills with
-`Loading | Ready | Failed(reason)` so the app can draw its own spinner or error over it.
+`Region` has public `center` / `latitude_delta` / `longitude_delta` fields — user pan and zoom
+gestures write back into the bound `Region`, and zooming or recentering is a handler that
+`.set()`s the region. `Coordinate::from_degrees` returns a `Result`; out-of-range coordinates are
+errors, not clamps. Also: `Map::new(coordinate)` / `Map::new(location)` (one-way signals; default zoom), `Annotation::new(id, coordinate, title).subtitle(..)`,
+`.is_interactive(false)`, `.shows_user_location(true)`, `.follows_location(signal)`, and
+`.status(&Binding<MapStatus>)`, which the map fills with `Loading | Ready | Failed(reason)` so the
+app can draw its own spinner or error over it.
 
 `waterui-map` is the semantic component; who *draws* it follows the backend and the app's
 dependencies. The Apple backend bridges MapKit and needs nothing. Hydrolysis — Android,
@@ -534,12 +549,12 @@ map. It needs a tile source in `app(env)` — there is no built-in one, and a ma
 or a Hydrolysis build without `waterui-map-gpu`, draws nothing. `MapStyle::Satellite` and
 `Hybrid` render there only when the options also carry `.satellite_style_url(url)` /
 `.hybrid_style_url(url)`; otherwise the map reports `MapStatus::Failed` instead of drawing
-the standard style. Tile limits, cache size, timeout and retry are further `MapGpuOptions`
+the standard style. Tile limits, cache size, timeout and retry are further `MapGpu`
 builders:
 
 ```rust
-use waterui_map_gpu::MapGpuOptions;
-env.insert(MapGpuOptions::new(waterui_url::Url::new("https://tiles.openfreemap.org/styles/positron")));
+use waterui_map_gpu::MapGpu;
+env.install(MapGpu::new(waterui_url::Url::new("https://tiles.openfreemap.org/styles/positron")));
 ```
 
 Maps need the `internet` permission; showing the user's location needs the `location`

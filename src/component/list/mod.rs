@@ -2,33 +2,27 @@
 //!
 //! This module provides the necessary components to build and configure lists
 //! in the `WaterUI` framework. It includes the `List` component for displaying
-//! collections of data, [`ListItem`] for configuring individual items, and
-//! the [`ListContent`] / [`Section`] / [`row`] surface for composing
-//! heterogeneous lists with sections, static or reactive.
+//! collections of data, row modifiers ([`ListRowDeletable`], [`ListRowInsets`],
+//! [`ListMinRowHeight`]), and the [`ListContent`] / [`Section`] / [`row`]
+//! surface for composing heterogeneous lists with sections, static or reactive.
 
-use alloc::boxed::Box;
 use alloc::collections::BTreeSet;
-use alloc::rc::Rc;
-use core::marker::PhantomData;
-use core::ops::{Range, RangeBounds};
-use nami::collection::{Collection, CollectionChange};
-use nami::watcher::Context;
+use nami::collection::Collection;
 use nami::{Binding, Computed, signal::IntoComputed};
 
-use crate::views::{AnyViews, ForEach, SharedAnyViews, ViewSnapshot, Views};
+use crate::component::selection_support::{SelectionThemed, WithId};
+use crate::views::{AnyViews, ForEach, SharedAnyViews, Views};
 use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 use waterui_core::id::Mapping;
 use waterui_core::{
-    AnyView, Environment, Metadata, Native, NativeView, OneOf2, View,
-    extract::State,
-    handler::{Handler, shared_action},
-    layout::StretchAxis,
+    AnyView, Environment, Native, NativeView, View, handler::Handler, layout::StretchAxis,
 };
 use waterui_layout::padding::EdgeInsets;
 use waterui_layout::scroll::ScrollController;
-use waterui_text::{IntoText, Text};
+use waterui_text::Text;
 
 mod content;
+mod edits;
 mod rows;
 mod section;
 mod selection;
@@ -37,6 +31,8 @@ pub use content::{
     ContentTags, HoldsTag, ListContent, ListScope, Row, RowContent, RowLayout, SectionScope,
     TagPresence, Tagged, TaggedBy, Untagged, detail_row, row,
 };
+pub use edits::{EditableForEach, EditableRows, ForEachExt, ListDelete, ListEdits, ListMove, Move};
+use edits::{RowEdits, TypedOnDelete, TypedOnMove, list_delete_action, list_move_action};
 use rows::RowSections;
 pub use rows::{
     ContentRows, ContentRowsGuard, ContentRowsSnapshot, ListItemSink, ListSectionSpan, ListSections,
@@ -45,49 +41,6 @@ pub use section::Section;
 use selection::RowTags;
 pub use selection::{ListRowTags, ListSelection, ListTagId, SelectableRows};
 
-/// A list reorder operation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Move {
-    from: usize,
-    to: usize,
-}
-
-/// Per-row delete payload injected into list delete handlers.
-#[waterui_macros::state]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ListDelete(pub usize);
-
-/// Per-row move payload injected into list move handlers.
-#[waterui_macros::state]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ListMove(pub Move);
-
-impl Move {
-    /// Creates a new move operation.
-    #[must_use]
-    pub const fn new(from: usize, to: usize) -> Self {
-        Self { from, to }
-    }
-
-    /// Returns the source index.
-    #[must_use]
-    pub const fn from(self) -> usize {
-        self.from
-    }
-
-    /// Returns the destination index.
-    #[must_use]
-    pub const fn to(self) -> usize {
-        self.to
-    }
-}
-
-/// Callback type for delete operations (receives environment and index).
-pub type OnDelete = Box<dyn Fn(&Environment, usize)>;
-
-/// Callback type for move/reorder operations (receives environment and movement).
-pub type OnMove = Box<dyn Fn(&Environment, Move)>;
-
 /// Configuration for a list component.
 ///
 /// `C` is the content every row carries: the rows' own view type up to
@@ -95,7 +48,7 @@ pub type OnMove = Box<dyn Fn(&Environment, Move)>;
 #[non_exhaustive]
 pub struct ListConfig<C> {
     /// Content items to be displayed in the list.
-    contents: SharedAnyViews<ListItem<C>>,
+    contents: SharedAnyViews<C>,
     /// The list's selection bindings, keyed by the erased tags `tags`
     /// answers for the rows. `ListSelection::None` when the list is not
     /// selectable.
@@ -105,10 +58,9 @@ pub struct ListConfig<C> {
     tags: ListRowTags,
     /// Read-only signal for edit mode state.
     editing: Computed<bool>,
-    /// Optional callback when any item is deleted.
-    on_delete: Option<OnDelete>,
-    /// Optional callback when items are moved/reordered.
-    on_move: Option<OnMove>,
+    /// Per-row delete and per-part move routing, keyed by the same row ids
+    /// `contents.get_id` returns.
+    edits: ListEdits,
     /// Optional programmatic item-index scroll controller.
     scroll_controller: Option<ScrollController<usize>>,
     /// The sections `contents` groups into, keyed by the same row ids.
@@ -121,7 +73,7 @@ pub struct ListConfig<C> {
 impl<C> ListConfig<C> {
     /// Content items to be displayed in the list.
     #[must_use]
-    pub const fn contents(&self) -> &SharedAnyViews<ListItem<C>> {
+    pub const fn contents(&self) -> &SharedAnyViews<C> {
         &self.contents
     }
 
@@ -147,26 +99,11 @@ impl<C> ListConfig<C> {
         &self.editing
     }
 
-    /// Optional callback when any item is deleted.
+    /// Per-row delete and per-part move routing, keyed by the same row ids
+    /// `contents.get_id` returns.
     #[must_use]
-    pub const fn on_delete(&self) -> Option<&OnDelete> {
-        self.on_delete.as_ref()
-    }
-
-    /// Takes the `on_delete` out of the value, leaving none behind.
-    pub const fn take_on_delete(&mut self) -> Option<OnDelete> {
-        self.on_delete.take()
-    }
-
-    /// Optional callback when items are moved/reordered.
-    #[must_use]
-    pub const fn on_move(&self) -> Option<&OnMove> {
-        self.on_move.as_ref()
-    }
-
-    /// Takes the `on_move` out of the value, leaving none behind.
-    pub const fn take_on_move(&mut self) -> Option<OnMove> {
-        self.on_move.take()
+    pub const fn edits(&self) -> &ListEdits {
+        &self.edits
     }
 
     /// Optional programmatic item-index scroll controller.
@@ -203,14 +140,11 @@ impl<C: 'static> MapSlots<C> for ListConfig<C> {
 
     fn map_slots<T: 'static>(self, f: impl Fn(C) -> T + Clone + 'static) -> ListConfig<T> {
         ListConfig {
-            contents: self
-                .contents
-                .map_views(move |item: ListItem<C>| item.map_content(&f)),
+            contents: self.contents.map_views(f),
             selection: self.selection,
             tags: self.tags,
             editing: self.editing,
-            on_delete: self.on_delete,
-            on_move: self.on_move,
+            edits: self.edits,
             scroll_controller: self.scroll_controller,
             sections: self.sections,
             min_row_height: self.min_row_height,
@@ -225,6 +159,20 @@ impl<C: 'static> MapSlots<C> for ListConfig<C> {
 /// [`ViewExt::list_min_row_height`](crate::ViewExt::list_min_row_height).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ListMinRowHeight(pub f32);
+
+/// Whether a list row can be deleted when its enclosing list has `on_delete`.
+///
+/// Installed on a row's view environment by
+/// [`ViewExt::list_row_deletable`](crate::ViewExt::list_row_deletable).
+#[derive(Debug, Clone)]
+pub struct ListRowDeletable(pub Computed<bool>);
+
+/// Custom insets between a list row's edges and its content.
+///
+/// Installed on a row's view environment by
+/// [`ViewExt::list_row_insets`](crate::ViewExt::list_row_insets).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ListRowInsets(pub EdgeInsets);
 
 /// Marks the subtree below it as a navigation container's sidebar column.
 ///
@@ -255,11 +203,12 @@ impl<C: 'static> NativeView for ListConfig<C> {
 pub struct List<V: Views> {
     contents: V,
     sections: RowSections<V::Id>,
+    edits: RowEdits<V::Id>,
 }
 
-impl<V, C> List<V>
+impl<V> List<V>
 where
-    V: Views<View = ListItem<C>>,
+    V: Views,
 {
     /// Creates a new list with the specified contents, all in one section
     /// without chrome.
@@ -267,19 +216,21 @@ where
         Self {
             contents,
             sections: RowSections::plain(),
+            edits: RowEdits::none(),
         }
     }
 
-    /// The builder carrying this list's contents and sections, with every
-    /// option unset.
+    /// The builder carrying this list's contents, sections, and edits, with
+    /// every remaining option unset.
     fn builder(self) -> ListBuilder<V> {
         ListBuilder {
             contents: self.contents,
             selection: ListSelection::None,
             tags: RowTags::none(),
             editing: Computed::new(false),
-            on_delete: None,
-            on_move: None,
+            edits: self.edits,
+            single_delete: None,
+            single_move: None,
             scroll_controller: None,
             sections: self.sections,
         }
@@ -293,19 +244,30 @@ where
         self.builder().editing(editing)
     }
 
-    /// Sets the callback for when any item is deleted.
+    /// Sets the callback for when an item is deleted, injecting
+    /// [`ListDelete<V::Id>`].
+    ///
+    /// Available on single-collection lists such as [`List::for_each`]; inside
+    /// [`List::content`], attach `.on_delete(...)` to each [`ForEach`] or
+    /// [`Row`] instead.
     #[must_use]
     pub fn on_delete<H, Args>(self, on_delete: H) -> ListBuilder<V>
     where
+        V: EditableRows,
         H: Handler<Args, ()>,
     {
         self.builder().on_delete(on_delete)
     }
 
-    /// Sets the callback for when items are moved/reordered.
+    /// Sets the callback for when an item is moved/reordered, injecting
+    /// [`ListMove<V::Id>`].
+    ///
+    /// Available on single-collection lists such as [`List::for_each`]; inside
+    /// [`List::content`], attach `.on_move(...)` to each [`ForEach`] instead.
     #[must_use]
     pub fn on_move<H, Args>(self, on_move: H) -> ListBuilder<V>
     where
+        V: EditableRows,
         H: Handler<Args, ()>,
     {
         self.builder().on_move(on_move)
@@ -354,11 +316,11 @@ where
     }
 }
 
-impl<C, F, V> List<ForEach<C, F, ListItem<V>>>
+impl<C, F, V> List<ForEach<C, F, V>>
 where
     C: Collection + Clone,
     C::Item: Clone,
-    F: 'static + Fn(C::Item) -> ListItem<V>,
+    F: 'static + Fn(C::Item) -> V,
     V: View,
 {
     /// Creates a lazy list over an identity-keyed reactive collection.
@@ -376,23 +338,22 @@ where
 impl<C: ListContent> List<ContentRows<C, C::Row>> {
     /// Creates a list from a [`ListContent`] tree.
     ///
-    /// `ListContent` accepts `|| ListItem::new(…)` row builders, [`Row`] (the
+    /// `ListContent` accepts `|| text("...")` row builders, [`Row`] (the
     /// [`row`] / [`detail_row`] helpers produce one), a [`ForEach`] over a
     /// reactive collection, [`Section<C>`], tuples, arrays, vectors, and
     /// `Option<T>`, so heterogeneous content composes structurally just like
     /// `SwiftUI`'s `Section { row; ForEach(items) { … } }` form. A static row
-    /// is a builder rather than a finished [`ListItem`] because the list
-    /// rebuilds it whenever the row is realized again; a `ForEach` follows
-    /// its collection row by row. For any pre-built [`Views`]
-    /// implementation, use [`List::new`].
+    /// is a builder rather than a finished view because the list rebuilds it
+    /// whenever the row is realized again; a `ForEach` follows its collection
+    /// row by row. For any pre-built [`Views`] implementation, use [`List::new`].
     ///
     /// The list is selected the way `SwiftUI`'s `List(selection:)` is: a
     /// `ForEach` row by its item's id, a static row by the value it is
-    /// tagged with — `(|| ListItem::new(…)).tag(value)` or
-    /// [`Row::tag`] — and an untagged static row not at all.
+    /// tagged with — `(|| text("...")).tag(value)` or [`Row::tag`] — and an
+    /// untagged static row not at all.
     ///
     /// ```rust
-    /// use waterui::component::list::{List, ListItem, Section, row};
+    /// use waterui::component::list::{List, Section, row};
     /// use waterui::prelude::*;
     ///
     /// #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -403,7 +364,7 @@ impl<C: ListContent> List<ContentRows<C, C::Row>> {
     ///
     /// let selection = binding(Some(Mailbox::Inbox));
     /// let list = List::content(Section::new("Mailboxes").content((
-    ///     (|| ListItem::new(text("Inbox"))).tag(Mailbox::Inbox),
+    ///     (|| text("Inbox")).tag(Mailbox::Inbox),
     ///     row("Archive", "12").tag(Mailbox::Archive),
     ///     row("Storage", "3 GB"),
     /// )))
@@ -413,28 +374,32 @@ impl<C: ListContent> List<ContentRows<C, C::Row>> {
     pub fn content(content: C) -> Self {
         let mut sink = ListItemSink::new();
         content.collect_items(&mut sink, |row| row);
-        let (contents, sections) = sink.finish();
-        Self { contents, sections }
+        let (contents, sections, edits) = sink.finish();
+        Self {
+            contents,
+            sections,
+            edits,
+        }
     }
 }
 
-impl<V, C> List<V>
+impl<V> List<V>
 where
-    V: Views<View = ListItem<C>> + 'static,
-    C: View,
+    V: Views + 'static,
 {
     /// Returns the configuration for this list.
     #[must_use]
-    pub fn config(self) -> ListConfig<C> {
+    pub fn config(self) -> ListConfig<V::View> {
         self.builder().config()
     }
 }
 
-impl<C: View> From<ListConfig<C>> for List<SharedAnyViews<ListItem<C>>> {
+impl<C: View> From<ListConfig<C>> for List<SharedAnyViews<C>> {
     fn from(value: ListConfig<C>) -> Self {
         Self {
             contents: value.contents,
             sections: RowSections::from_erased(value.sections),
+            edits: RowEdits::from_erased(value.edits),
         }
     }
 }
@@ -446,15 +411,14 @@ fn resolve_list_config<C: View>(
     env: &Environment,
 ) -> ListConfig<SelectionThemed<C>> {
     // Erasing the themed contents again re-keys every row id, so the row
-    // tags and sections travel through the same generator — a backend's
-    // `get_id` must return exactly the ids both are keyed by. The selection
-    // holds tags, which the re-keying leaves alone.
+    // tags, sections and edits travel through the same generator — a backend's
+    // `get_id` must return exactly the ids all three are keyed by. The
+    // selection holds tags, which the re-keying leaves alone.
     let selection = config.selection.clone();
     let tags = config.tags.clone();
-    let (contents, ids) = AnyViews::new_with_ids(WithId {
-        contents: config.contents,
-        transform: Rc::new(move |id, item| selection_themed(item, &selection, tags.tag(id))),
-    });
+    let (contents, ids) = AnyViews::new_with_ids(WithId::new(config.contents, move |id, item| {
+        selection_themed(item, &selection, tags.tag(id))
+    }));
     ListConfig {
         contents: SharedAnyViews::from(contents),
         tags: config.tags.rekeyed(&ids),
@@ -462,11 +426,10 @@ fn resolve_list_config<C: View>(
         // they may be driven by a signal. Resolving them here is the one
         // place the environment is in hand.
         sections: config.sections.rekeyed(&ids).resolved(env),
+        edits: config.edits.rekeyed(&ids),
         min_row_height: env.get::<ListMinRowHeight>().map(|height| height.0),
         selection: config.selection,
         editing: config.editing,
-        on_delete: config.on_delete,
-        on_move: config.on_move,
         scroll_controller: config.scroll_controller,
     }
 }
@@ -487,104 +450,6 @@ fn dispatch_list<B: Backend, C: View>(
     backend.native(config, env, cx)
 }
 
-/// `Views` adapter that hands each element's id to the mapping closure — the
-/// row-keyed sibling of `Map`, so `selection_themed` can derive a row's
-/// selected state from the list selection and the row's own id.
-struct WithId<C, F> {
-    contents: C,
-    transform: Rc<F>,
-}
-
-/// The immutable snapshot a [`WithId`] captures: the source snapshot plus a
-/// shared handle to the transform, so the id and the view a row reports come
-/// from the same captured source state.
-struct WithIdSnapshot<S, F, V> {
-    contents: S,
-    transform: Rc<F>,
-    _marker: PhantomData<fn() -> V>,
-}
-
-impl<S: Clone, F, V> Clone for WithIdSnapshot<S, F, V> {
-    fn clone(&self) -> Self {
-        Self {
-            contents: self.contents.clone(),
-            transform: self.transform.clone(),
-            _marker: PhantomData,
-        }
-    }
-}
-
-impl<S, F, V> core::fmt::Debug for WithIdSnapshot<S, F, V> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str(core::any::type_name::<Self>())
-    }
-}
-
-impl<S, F, V> ViewSnapshot for WithIdSnapshot<S, F, V>
-where
-    S: ViewSnapshot,
-    F: Fn(S::Id, S::View) -> V,
-    V: View,
-{
-    type Id = S::Id;
-    type View = V;
-
-    fn range(&self) -> Range<usize> {
-        self.contents.range()
-    }
-
-    fn get_id(&self, index: usize) -> Option<Self::Id> {
-        self.contents.get_id(index)
-    }
-
-    fn get_view(&self, index: usize) -> Option<Self::View> {
-        Some((self.transform)(
-            self.contents.get_id(index)?,
-            self.contents.get_view(index)?,
-        ))
-    }
-}
-
-impl<V, C, F> Views for WithId<C, F>
-where
-    V: View,
-    C: Views,
-    F: 'static + Fn(C::Id, C::View) -> V,
-{
-    type Id = C::Id;
-    type Guard = C::Guard;
-    type View = V;
-    type Snapshot = WithIdSnapshot<C::Snapshot, F, V>;
-
-    fn len(&self) -> Computed<usize> {
-        self.contents.len()
-    }
-
-    fn snapshot(&self) -> Self::Snapshot {
-        WithIdSnapshot {
-            contents: self.contents.snapshot(),
-            transform: self.transform.clone(),
-            _marker: PhantomData,
-        }
-    }
-
-    fn watch(
-        &self,
-        range: impl RangeBounds<usize>,
-        watcher: impl Fn(Context<Self::Snapshot>, &CollectionChange) + 'static,
-    ) -> Self::Guard {
-        let transform = self.transform.clone();
-        self.contents.watch(range, move |ctx, change| {
-            let snapshot = ctx.map(|contents| WithIdSnapshot {
-                contents,
-                transform: transform.clone(),
-                _marker: PhantomData,
-            });
-            watcher(snapshot, change);
-        })
-    }
-}
-
 /// Re-themes a row's content while it is selected.
 ///
 /// A selected row is filled with the theme's `SelectionContainer`, so everything
@@ -597,10 +462,10 @@ where
 /// the row itself is not rebuilt. A row without a tag is never selected and
 /// is left as it is.
 fn selection_themed<C>(
-    item: ListItem<C>,
+    content: C,
     selection: &ListSelection<ListTagId>,
     tag: Option<ListTagId>,
-) -> ListItem<SelectionThemed<C>> {
+) -> SelectionThemed<C> {
     use nami::SignalExt;
 
     // A row's selected state derives from the list selection and the row's
@@ -623,57 +488,12 @@ fn selection_themed<C>(
             ),
         }
     });
-    item.map_content(|content| SelectionThemed { content, selected })
+    SelectionThemed::for_list(content, selected)
 }
 
-/// A row's content re-themed while the row is selected; see
-/// [`selection_themed`].
-struct SelectionThemed<C> {
-    content: C,
-    /// Whether the row is selected; `None` for a row that never is.
-    selected: Option<Computed<bool>>,
-}
-
-impl<C: View> View for SelectionThemed<C> {
-    fn body(self, env: &Environment) -> impl View {
-        use crate::color::WorkingColor;
-        use crate::theme::{color, install_color_signal};
-        use nami::SignalExt;
-        use waterui_core::resolve::Resolvable;
-
-        let Some(selected) = self.selected else {
-            return OneOf2::A(self.content);
-        };
-        // A sidebar's selection chrome is the unemphasised pill, not the
-        // accent fill `SelectionForeground` is written for — a selected
-        // sidebar row keeps its own colors (water-rs/waterui#1495).
-        if env.get::<SidebarContent>().is_some() {
-            return OneOf2::A(self.content);
-        }
-        let mut env = env.clone();
-        let on_selection = color::SelectionForeground.resolve(&env).computed();
-        let flip = |normal: Computed<WorkingColor>| {
-            selected
-                .clone()
-                .zip(&normal)
-                .zip(&on_selection)
-                .map(|((selected, normal), selection)| if selected { selection } else { normal })
-                .computed()
-        };
-        let foreground = flip(color::Foreground.resolve(&env).computed());
-        let muted = flip(color::MutedForeground.resolve(&env).computed());
-        let accent = flip(color::Accent.resolve(&env).computed());
-        install_color_signal::<color::Foreground>(&mut env, foreground);
-        install_color_signal::<color::MutedForeground>(&mut env, muted);
-        install_color_signal::<color::Accent>(&mut env, accent);
-        OneOf2::B(Metadata::new(self.content, env))
-    }
-}
-
-impl<V, C> View for List<V>
+impl<V> View for List<V>
 where
-    V: Views<View = ListItem<C>> + 'static,
-    C: View,
+    V: Views + 'static,
 {
     fn body(self, env: &Environment) -> impl View {
         erased_list(self.config(), env)
@@ -696,8 +516,9 @@ pub struct ListBuilder<V: Views> {
     selection: ListSelection<ListTagId>,
     tags: RowTags<V::Id>,
     editing: Computed<bool>,
-    on_delete: Option<OnDelete>,
-    on_move: Option<OnMove>,
+    edits: RowEdits<V::Id>,
+    single_delete: Option<TypedOnDelete<V::Id>>,
+    single_move: Option<TypedOnMove<V::Id>>,
     scroll_controller: Option<ScrollController<usize>>,
     sections: RowSections<V::Id>,
 }
@@ -708,9 +529,9 @@ impl<V: Views> core::fmt::Debug for ListBuilder<V> {
     }
 }
 
-impl<V, C> ListBuilder<V>
+impl<V> ListBuilder<V>
 where
-    V: Views<View = ListItem<C>>,
+    V: Views,
 {
     /// Enables edit mode with the given reactive signal.
     #[must_use]
@@ -719,23 +540,29 @@ where
         self
     }
 
-    /// Sets the callback for when any item is deleted.
+    /// Sets the callback for when an item is deleted, injecting
+    /// [`ListDelete<V::Id>`].
     #[must_use]
     pub fn on_delete<H, Args>(mut self, on_delete: H) -> Self
     where
+        V: EditableRows,
         H: Handler<Args, ()>,
     {
-        self.on_delete = Some(list_delete_action(on_delete));
+        self.single_delete = Some(list_delete_action(on_delete));
+        self.edits = RowEdits::single_part(self.single_delete.clone(), self.single_move.clone());
         self
     }
 
-    /// Sets the callback for when items are moved/reordered.
+    /// Sets the callback for when items are moved/reordered, injecting
+    /// [`ListMove<V::Id>`].
     #[must_use]
     pub fn on_move<H, Args>(mut self, on_move: H) -> Self
     where
+        V: EditableRows,
         H: Handler<Args, ()>,
     {
-        self.on_move = Some(list_move_action(on_move));
+        self.single_move = Some(list_move_action(on_move));
+        self.edits = RowEdits::single_part(self.single_delete.clone(), self.single_move.clone());
         self
     }
 
@@ -779,22 +606,20 @@ where
     }
 }
 
-impl<V, C> ListBuilder<V>
+impl<V> ListBuilder<V>
 where
-    V: Views<View = ListItem<C>> + 'static,
-    C: View,
+    V: Views + 'static,
 {
     /// Returns the configuration for this list builder.
     #[must_use]
-    pub fn config(self) -> ListConfig<C> {
+    pub fn config(self) -> ListConfig<V::View> {
         let (contents, ids) = AnyViews::new_with_ids(self.contents);
         ListConfig {
             contents: SharedAnyViews::from(contents),
             selection: self.selection,
             tags: self.tags.erased(&ids),
             editing: self.editing,
-            on_delete: self.on_delete,
-            on_move: self.on_move,
+            edits: self.edits.erased(&ids),
             scroll_controller: self.scroll_controller,
             sections: self.sections.erased(&ids),
             min_row_height: None,
@@ -802,10 +627,9 @@ where
     }
 }
 
-impl<V, C> View for ListBuilder<V>
+impl<V> View for ListBuilder<V>
 where
-    V: Views<View = ListItem<C>> + 'static,
-    C: View,
+    V: Views + 'static,
 {
     fn body(self, env: &Environment) -> impl View {
         erased_list(self.config(), env)
@@ -816,24 +640,8 @@ where
     }
 }
 
-fn list_delete_action<H, Args>(handler: H) -> OnDelete
-where
-    H: Handler<Args, ()>,
-{
-    let action = shared_action(handler);
-    Box::new(move |env, index| action.run(&env.extending(State(ListDelete(index)))))
-}
-
-fn list_move_action<H, Args>(handler: H) -> OnMove
-where
-    H: Handler<Args, ()>,
-{
-    let action = shared_action(handler);
-    Box::new(move |env, movement| action.run(&env.extending(State(ListMove(movement)))))
-}
-
 // ============================================================================
-// ListItem - Individual item in a list
+// ListSection - Section chrome descriptor
 // ============================================================================
 
 /// The chrome of one section of a list: its header and footer.
@@ -852,7 +660,7 @@ where
 /// signal in place rather than rebuilding the section. The chrome's
 /// typography belongs to the platform, so a header takes the list's own
 /// section style regardless of any styling applied to the text.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct ListSection {
     /// Title shown above the section.
@@ -862,6 +670,13 @@ pub struct ListSection {
 }
 
 impl ListSection {
+    /// Creates a section descriptor from resolved/semantic optional header and
+    /// footer text. App code constructs sections through [`Section`].
+    #[must_use]
+    pub(crate) const fn new(label: Option<Text>, footer: Option<Text>) -> Self {
+        Self { label, footer }
+    }
+
     /// Title shown above the section.
     #[must_use]
     pub const fn label(&self) -> Option<&Text> {
@@ -874,47 +689,10 @@ impl ListSection {
         self.footer.as_ref()
     }
 
-    /// Sets the title shown above the section.
-    pub fn set_label(&mut self, label: Option<Text>) {
-        self.label = label;
-    }
-
-    /// Sets the footer text shown below the section.
-    pub fn set_footer(&mut self, footer: Option<Text>) {
-        self.footer = footer;
-    }
-
     /// Takes the value apart into its fields, in declaration order.
     #[must_use]
     pub fn into_parts(self) -> (Option<Text>, Option<Text>) {
         (self.label, self.footer)
-    }
-}
-
-impl ListSection {
-    /// Creates a new section descriptor with just a header label.
-    #[must_use]
-    pub fn new(label: impl IntoText) -> Self {
-        Self {
-            label: Some(label.into_text()),
-            footer: None,
-        }
-    }
-
-    /// Creates an unlabeled section break (visual divider only, no header).
-    #[must_use]
-    pub const fn unlabeled() -> Self {
-        Self {
-            label: None,
-            footer: None,
-        }
-    }
-
-    /// Adds a footer note shown below the section.
-    #[must_use]
-    pub fn with_footer(mut self, footer: impl IntoText) -> Self {
-        self.footer = Some(footer.into_text());
-        self
     }
 
     /// Resolves the semantic header and footer against `env`, turning
@@ -933,119 +711,13 @@ impl ListSection {
     }
 }
 
-/// An item in a list that can be configured with various behaviors.
-///
-/// There is no per-item selectable flag: selection follows the content's
-/// own disabled state. Wrap the row's content in
-/// [`.disabled(true)`](crate::ViewExt::disabled) to make the row inert to
-/// selection — the way a disabled `Button` cannot be pressed — while its
-/// label and disabled accessibility state still report.
-///
-/// `C` is the row's content, kept as its own view type until the backend
-/// realizes the row.
-#[non_exhaustive]
-pub struct ListItem<C> {
-    /// The view content to display for this item.
-    content: C,
-    /// Read-only signal indicating whether this item can be deleted.
-    deletable: Computed<bool>,
-    /// The insets between the row's edges and its content. `None` uses the
-    /// theme's row insets.
-    insets: Option<EdgeInsets>,
-}
-
-impl<C> ListItem<C> {
-    /// The view content to display for this item.
-    #[must_use]
-    pub const fn content(&self) -> &C {
-        &self.content
-    }
-
-    /// Takes the `content` out of the value.
-    pub fn into_content(self) -> C {
-        self.content
-    }
-
-    /// The same item with its content passed through `f`.
-    pub fn map_content<D>(self, f: impl FnOnce(C) -> D) -> ListItem<D> {
-        ListItem {
-            content: f(self.content),
-            deletable: self.deletable,
-            insets: self.insets,
-        }
-    }
-
-    /// Read-only signal indicating whether this item can be deleted.
-    #[must_use]
-    pub const fn get_deletable(&self) -> &Computed<bool> {
-        &self.deletable
-    }
-
-    /// The insets between the row's edges and its content. `None` uses the
-    /// theme's row insets.
-    #[must_use]
-    pub const fn get_insets(&self) -> Option<&EdgeInsets> {
-        self.insets.as_ref()
-    }
-
-    /// Takes the value apart into its fields, in declaration order.
-    pub fn into_parts(self) -> (C, Computed<bool>, Option<EdgeInsets>) {
-        (self.content, self.deletable, self.insets)
-    }
-}
-
-impl<C: 'static> NativeView for ListItem<C> {}
-
-impl<C: View> View for ListItem<C> {
-    fn body(self, _env: &Environment) -> impl View {
-        self.content
-    }
-}
-
-impl<C> core::fmt::Debug for ListItem<C> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str(core::any::type_name::<Self>())
-    }
-}
-
-impl<C: View> ListItem<C> {
-    /// Creates a new list item with the given content.
-    ///
-    /// By default, the item is deletable when the list has `on_delete`.
-    pub fn new(content: C) -> Self {
-        Self {
-            content,
-            deletable: Computed::new(true),
-            insets: None,
-        }
-    }
-
-    /// Sets whether this item can be deleted using a reactive signal.
-    ///
-    /// When false, swipe-to-delete and delete button are disabled for this item.
-    #[must_use]
-    pub fn deletable(mut self, deletable: impl IntoComputed<bool>) -> Self {
-        self.deletable = deletable.into_computed();
-        self
-    }
-
-    /// Replaces the theme's row insets for this item.
-    ///
-    /// Together with [`ListMinRowHeight`], this lets one row size to its
-    /// content (a one-line event in a chat log, a compact header) while the
-    /// rest keep the list's row metrics.
-    #[must_use]
-    pub const fn insets(mut self, insets: EdgeInsets) -> Self {
-        self.insets = Some(insets);
-        self
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ViewExt;
+    use nami::Signal as _;
     use waterui_controls::label::TitleLabel;
+    use waterui_core::OneOf2;
     use waterui_core::backend::peel_metadata;
     use waterui_macros::text;
 
@@ -1083,34 +755,193 @@ mod tests {
         assert_eq!(with_floor.min_row_height, Some(0.0));
 
         let without = render_config(
-            List::content((
-                || ListItem::new(text!("Alice joined")),
-                || ListItem::new(text!("Hello")),
-            ))
-            .config(),
+            List::content((|| text!("Alice joined"), || text!("Hello"))).config(),
             &Environment::new(),
         );
         assert_eq!(without.min_row_height, None);
     }
 
-    /// `water-rs/waterui#1249`: a row's `insets` survives the section and
-    /// selection transforms `render_list_config` wraps every item in.
+    /// `water-rs/waterui#1249` / `#4300`: a row's `.list_row_insets` and
+    /// `.list_row_deletable` modifiers survive the section and selection
+    /// transforms `resolve_list_config` wraps every row in.
     #[test]
-    fn row_insets_survive_the_section_and_selection_transform() {
+    fn row_modifiers_survive_the_section_and_selection_transform() {
+        use crate::color::WorkingColor;
+        use crate::theme::color::{Accent, Foreground, MutedForeground, SelectionForeground};
+        use crate::theme::install_color_signal;
+
+        let mut env = Environment::new();
+        install_color_signal::<Foreground>(
+            &mut env,
+            Computed::constant(WorkingColor::new([0.0, 0.0, 0.0, 1.0])),
+        );
+        install_color_signal::<MutedForeground>(
+            &mut env,
+            Computed::constant(WorkingColor::new([0.4, 0.4, 0.4, 1.0])),
+        );
+        install_color_signal::<Accent>(
+            &mut env,
+            Computed::constant(WorkingColor::new([0.0, 0.5, 1.0, 1.0])),
+        );
+        install_color_signal::<SelectionForeground>(
+            &mut env,
+            Computed::constant(WorkingColor::new([1.0, 1.0, 1.0, 1.0])),
+        );
+
         let selection = nami::Binding::container(Option::<i32>::None);
         let config = render_config(
             List::content((
-                (|| ListItem::new(text!("Alice joined")).insets(EdgeInsets::all(4.0))).tag(1),
-                (|| ListItem::new(text!("Hello"))).tag(2),
+                (|| {
+                    text!("Alice joined")
+                        .list_row_insets(EdgeInsets::all(4.0))
+                        .list_row_deletable(false)
+                })
+                .tag(1),
+                (|| text!("Hello")).tag(2),
             ))
             .selection(&selection)
             .config(),
-            &Environment::new(),
+            &env,
         );
         let contents = config.contents.snapshot();
-        let first = contents.get_view(0).expect("row 0 exists");
-        let second = contents.get_view(1).expect("row 1 exists");
-        assert_eq!(first.insets, Some(EdgeInsets::all(4.0)));
-        assert_eq!(second.insets, None);
+        // Peel the leading Metadata<Environment> chain (SelectionThemed ->
+        // ListRowDeletable -> ListRowInsets) the way backends resolve row env.
+        let mut current = AnyView::new(contents.get_view(0).expect("row 0 exists"));
+        let mut resolved = env.clone();
+        while let Some(meta) = peel_metadata::<Environment>(current, &resolved) {
+            resolved = meta.value;
+            current = meta.content;
+        }
+        assert!(
+            !resolved
+                .get::<ListRowDeletable>()
+                .expect("resolved row env carries ListRowDeletable")
+                .0
+                .snapshot()
+        );
+        assert_eq!(
+            resolved.get::<ListRowInsets>().map(|entry| entry.0.clone()),
+            Some(EdgeInsets::all(4.0))
+        );
+
+        let mut second = AnyView::new(contents.get_view(1).expect("row 1 exists"));
+        let mut second_env = env;
+        while let Some(meta) = peel_metadata::<Environment>(second, &second_env) {
+            second_env = meta.value;
+            second = meta.content;
+        }
+        assert!(second_env.get::<ListRowDeletable>().is_none());
+        assert!(second_env.get::<ListRowInsets>().is_none());
+    }
+
+    #[test]
+    fn sectioned_mixed_list_routes_edits_by_identity_and_bounds_moves_to_part() {
+        use alloc::rc::Rc;
+        use alloc::vec;
+        use alloc::vec::Vec;
+        use core::cell::{Cell, RefCell};
+        use nami::collection::StateList;
+        use waterui_core::id::Identifiable;
+
+        use crate::component::text;
+
+        #[derive(Clone)]
+        struct Entry {
+            id: u64,
+            title: &'static str,
+        }
+
+        impl Identifiable for Entry {
+            type Id = u64;
+            fn id(&self) -> Self::Id {
+                self.id
+            }
+        }
+
+        let static_deleted = Rc::new(Cell::new(false));
+        let deleted_ids = Rc::new(RefCell::new(Vec::new()));
+        let moved_events = Rc::new(RefCell::new(Vec::new()));
+
+        let first = StateList::from(vec![
+            Entry { id: 10, title: "A" },
+            Entry { id: 20, title: "B" },
+            Entry { id: 30, title: "C" },
+        ]);
+        let second = StateList::from(vec![
+            Entry {
+                id: 100,
+                title: "X",
+            },
+            Entry {
+                id: 200,
+                title: "Y",
+            },
+        ]);
+
+        let list = List::content((
+            Section::new("Account").content((
+                row("Plan", "Pro"),
+                row("Cache", "120 MB").on_delete({
+                    let static_deleted = Rc::clone(&static_deleted);
+                    move || static_deleted.set(true)
+                }),
+            )),
+            Section::new("Items").content(
+                ForEach::new(first, |entry: Entry| text(entry.title))
+                    .on_delete({
+                        let deleted_ids = Rc::clone(&deleted_ids);
+                        move |ListDelete(id): ListDelete<u64>| deleted_ids.borrow_mut().push(id)
+                    })
+                    .on_move({
+                        let moved_events = Rc::clone(&moved_events);
+                        move |ListMove(movement): ListMove<u64>| {
+                            moved_events.borrow_mut().push(movement);
+                        }
+                    }),
+            ),
+            Section::new("Archive").content(
+                ForEach::new(second, |entry: Entry| text(entry.title))
+                    .on_move(|_: ListMove<u64>| {}),
+            ),
+        ));
+
+        let env = Environment::new();
+        let config = render_config(list.config(), &env);
+        let snapshot = config.contents().snapshot();
+        assert_eq!(snapshot.len(), 7);
+
+        let id = |i: usize| snapshot.get_id(i).expect("row id exists");
+        let edits = config.edits();
+
+        // Plain static row is neither deletable nor movable.
+        assert!(!edits.can_delete(id(0)));
+        assert!(!edits.can_move(id(0)));
+        assert_eq!(edits.movable_span(&snapshot, 0), None);
+
+        // Opt-in static row is deletable, not movable, and fires its own handler.
+        assert!(edits.can_delete(id(1)));
+        assert!(!edits.can_move(id(1)));
+        edits.delete(&env, id(1));
+        assert!(static_deleted.get());
+
+        // First ForEach spans flat indices 2..5 and carries Entry's u64 ids.
+        for flat in 2..5 {
+            assert!(edits.can_delete(id(flat)));
+            assert!(edits.can_move(id(flat)));
+            assert_eq!(edits.movable_span(&snapshot, flat), Some(2..5));
+        }
+        edits.delete(&env, id(3));
+        assert_eq!(*deleted_ids.borrow(), vec![20]);
+
+        edits.move_row(&env, id(2), id(4), 0, 2);
+        assert_eq!(*moved_events.borrow(), vec![Move::new(10, 30, 0, 2)]);
+
+        // Second ForEach spans flat indices 5..7, is movable-only, and cannot mix with part 1.
+        for flat in 5..7 {
+            assert!(!edits.can_delete(id(flat)));
+            assert!(edits.can_move(id(flat)));
+            assert_eq!(edits.movable_span(&snapshot, flat), Some(5..7));
+        }
+        assert_ne!(edits.movable_part(id(2)), edits.movable_part(id(5)));
     }
 }

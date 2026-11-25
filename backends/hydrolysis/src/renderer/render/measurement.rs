@@ -11,6 +11,8 @@ use crate::widgets::controls::field_look::value_text;
 #[cfg(feature = "picker")]
 use crate::widgets::controls::picker::segmented_intrinsic;
 #[cfg(feature = "list")]
+use waterui_core::backend::ChildSlot;
+#[cfg(feature = "list")]
 use waterui_core::views::AnyViewsSnapshot;
 #[cfg(any(feature = "text-field", feature = "secure-field"))]
 use waterui_interaction::interaction::InteractionState;
@@ -361,22 +363,23 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
 #[cfg(feature = "navigation")]
 pub fn tabs_content_proposal(
     proposal: ProposalSize,
-    style: NativeTabStyle,
+    style: TabStyle,
     bar_extent: f64,
 ) -> ProposalSize {
-    match style {
-        NativeTabStyle::Automatic | NativeTabStyle::TabBar => ProposalSize::new(
-            proposal.width,
-            proposal.height.map(|height| {
-                crate::num_cast::f64_as_f32((f64::from(height) - bar_extent).max(0.0))
-            }),
-        ),
-        NativeTabStyle::Sidebar => ProposalSize::new(
+    if matches!(style, TabStyle::Sidebar) {
+        ProposalSize::new(
             proposal
                 .width
                 .map(|width| crate::num_cast::f64_as_f32((f64::from(width) - bar_extent).max(0.0))),
             proposal.height,
-        ),
+        )
+    } else {
+        ProposalSize::new(
+            proposal.width,
+            proposal.height.map(|height| {
+                crate::num_cast::f64_as_f32((f64::from(height) - bar_extent).max(0.0))
+            }),
+        )
     }
 }
 
@@ -385,19 +388,16 @@ pub fn tabs_button_rect(
     bar_rect: kurbo::Rect,
     tab_count: usize,
     index: usize,
-    style: NativeTabStyle,
+    style: TabStyle,
 ) -> kurbo::Rect {
-    match style {
-        NativeTabStyle::Automatic | NativeTabStyle::TabBar => {
-            let button_width = bar_rect.width() / crate::num_cast::usize_as_f64(tab_count);
-            let x0 = button_width.mul_add(crate::num_cast::usize_as_f64(index), bar_rect.x0);
-            kurbo::Rect::new(x0, bar_rect.y0, x0 + button_width, bar_rect.y1)
-        }
-        NativeTabStyle::Sidebar => {
-            let button_height = bar_rect.height() / crate::num_cast::usize_as_f64(tab_count);
-            let y0 = button_height.mul_add(crate::num_cast::usize_as_f64(index), bar_rect.y0);
-            kurbo::Rect::new(bar_rect.x0, y0, bar_rect.x1, y0 + button_height)
-        }
+    if matches!(style, TabStyle::Sidebar) {
+        let button_height = bar_rect.height() / crate::num_cast::usize_as_f64(tab_count);
+        let y0 = button_height.mul_add(crate::num_cast::usize_as_f64(index), bar_rect.y0);
+        kurbo::Rect::new(bar_rect.x0, y0, bar_rect.x1, y0 + button_height)
+    } else {
+        let button_width = bar_rect.width() / crate::num_cast::usize_as_f64(tab_count);
+        let x0 = button_width.mul_add(crate::num_cast::usize_as_f64(index), bar_rect.x0);
+        kurbo::Rect::new(x0, bar_rect.y0, x0 + button_width, bar_rect.y1)
     }
 }
 
@@ -451,11 +451,11 @@ pub fn list_spec(env: &Environment) -> crate::theme::ListSpec {
 }
 
 /// The list's own size from its first row's measured content, which every
-/// row is estimated at: `insets` are that row's `ListItem::insets`.
+/// row is estimated at: `insets` are that row's [`ViewExt::list_row_insets`].
 #[cfg(feature = "list")]
 pub fn list_intrinsic_for_first_row<E: crate::text::TextEngine, C>(
     list: &ListConfig<C>,
-    contents: &AnyViewsSnapshot<ListItem<C>>,
+    contents: &AnyViewsSnapshot<C>,
     content_size: LayoutSize,
     insets: Option<&EdgeInsets>,
     state: &mut HydroState<E>,
@@ -478,10 +478,10 @@ pub fn list_intrinsic_for_first_row<E: crate::text::TextEngine, C>(
     let mut row_width = metrics
         .horizontal_inset
         .mul_add(2.0, f64::from(content_size.width));
-    if editing && list.on_move().is_some() {
+    if editing && list.edits().has_move() {
         row_width += metrics.move_control_width + metrics.trailing_control_spacing;
     }
-    if editing && list.on_delete().is_some() {
+    if editing && list.edits().has_delete() {
         row_width += metrics.delete_control_width + metrics.trailing_control_spacing;
     }
     // Section chrome is part of the list's own height: each section holding
@@ -509,27 +509,25 @@ pub fn list_intrinsic_for_first_row<E: crate::text::TextEngine, C>(
     )
 }
 
-/// Materializes the `ListItem` at `index` from `contents` — an immutable
+/// Materializes the row at `index` from `contents` — an immutable
 /// snapshot of the row collection, so the caller's whole pass (section walk,
 /// accessibility emit, or draw loop) reads one coherent membership.
 #[cfg(feature = "list")]
 pub fn materialize_list_item<E: crate::text::TextEngine>(
-    contents: &AnyViewsSnapshot<ListItem<crate::renderer::HeldChild<E>>>,
+    contents: &AnyViewsSnapshot<HeldChild<E>>,
     index: usize,
-) -> ListItem<crate::renderer::HeldChild<E>> {
+) -> HeldChild<E> {
     contents.get_view(index).unwrap_or_else(|| {
         contract_violation!(
             "ListConfig failed to materialize item at index {index}; the row is empty"
         );
-        ListItem::new(()).map_content(
-            <crate::renderer::HeldChild<E> as waterui_core::backend::ChildSlot>::from_view,
-        )
+        HeldChild::from_view(())
     })
 }
 
 /// A list row's extent from its content's measured height: the content plus
-/// the row's vertical insets, floored at the configured minimum. `insets` is
-/// `ListItem::insets` — `None` uses the theme's `vertical_inset` — and
+/// the row's vertical insets, floored at the configured minimum. `insets` comes
+/// from `ListRowInsets` — `None` uses the theme's `vertical_inset` — and
 /// `min_height` is `ListConfig::min_row_height` — `None` uses the theme's
 /// `one_line_row_height`, so both unset reproduces the theme metrics exactly.
 /// The caller measures the content (the realized row's node) and the

@@ -11,5 +11,12 @@ description = "Cubic Bézier timing and physical spring evaluation shared by Wat
 keywords = ["animation", "easing", "spring", "bezier", "waterui"]
 categories = ["graphics", "mathematics"]
 
+[features]
+default = []
+serde = ["dep:serde"]
+
+[dependencies]
+serde = { version = "1.0", optional = true, default-features = false, features = ["derive"] }
+
 [lints]
 workspace = true

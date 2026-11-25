@@ -848,15 +848,12 @@ native_backend! {
         #[cfg(any(waterui_feature = "gpu", waterui_feature = "cpu"))]
         /// A WGSL fragment shader fill.
         shader_paint: waterui::graphics::ShaderPaintView,
-        #[cfg(waterui_feature = "table")]
-        /// A table.
-        table: waterui::component::table::TableConfig,
         #[cfg(waterui_feature = "canvas")]
         /// A canvas.
         canvas: waterui::graphics::canvas::CanvasView,
         #[cfg(waterui_feature = "gpu")]
         /// GPU content.
-        gpu: waterui::GpuView<alloc::boxed::Box<dyn waterui::graphics::GpuContent>>,
+        gpu: waterui::graphics::backend::GpuContentLeaf,
         #[cfg(waterui_feature = "gpu")]
         /// Frames from an external source.
         external_frame: waterui::graphics::gpu::external::ExternalFrameView,
@@ -884,6 +881,8 @@ native_backend! {
         button<C>: waterui::component::button::ButtonConfig<C>,
         /// A badge.
         badge<C>: waterui::component::badge::BadgeConfig<C>,
+        /// A disclosure group.
+        disclosure<C>: waterui::widget::disclosure::DisclosureConfig<C>,
         /// A progress indicator.
         progress<C>: waterui::component::progress::ProgressConfig<C>,
         #[cfg(waterui_feature = "toggle")]
@@ -927,14 +926,15 @@ native_backend! {
         dynamic<C>: waterui_core::Dynamic<C>,
         /// A container whose children are produced lazily.
         lazy_container<C>: waterui::layout::container::LazyContainer<C>,
-        /// A window opened from the view tree.
-        window<C>: waterui::window::Window<waterui::window::WindowSlot<C>, Option<C>>,
         #[cfg(waterui_feature = "effects")]
         /// A view drawn through a filter.
         filtered<C>: waterui::graphics::backend::FilteredView<C>,
         #[cfg(waterui_feature = "list")]
         /// A list, each row's content a child.
         list<C>: waterui::component::list::ListConfig<C>,
+        #[cfg(waterui_feature = "table")]
+        /// A table, each row's cells children.
+        table<C>: waterui::component::table::TableConfig<C>,
         #[cfg(waterui_feature = "navigation")]
         /// A navigation bar around its content.
         navigation_view<C>: waterui::navigation::ResolvedNavigationView<C>,
@@ -959,6 +959,8 @@ native_backend! {
         frame_rate: FrameRateVote,
         /// A lifecycle hook.
         lifecycle_hook: waterui_interaction::event::LifeCycleHook,
+        /// A view-scoped asynchronous task hook.
+        task_hook: waterui_interaction::event::TaskHook,
         /// An event handler.
         on_event: waterui_interaction::event::OnEvent,
         /// A key-press handler.
@@ -1021,12 +1023,12 @@ native_backend! {
         focused: waterui::component::focus::Focused,
         /// Secure content.
         secure: waterui::metadata::secure::Secure,
-        /// Standard dynamic range.
-        standard_dynamic_range: waterui::metadata::secure::StandardDynamicRange,
-        /// High dynamic range.
-        high_dynamic_range: waterui::metadata::secure::HighDynamicRange,
+        /// Dynamic range.
+        dynamic_range: waterui::metadata::secure::DynamicRangeMetadata,
         /// An anchored overlay.
         anchored_overlay: waterui::metadata::anchored_overlay::AnchoredOverlay,
+        /// A window-modal sheet.
+        sheet: waterui::sheet::Sheet,
         #[cfg(waterui_feature = "dialog")]
         /// A dialog.
         dialog: waterui::dialog::Dialog,
@@ -1098,6 +1100,13 @@ mod tests {
     impl<C> Parent<C> for waterui::component::badge::BadgeConfig<C> {
         fn children(self) -> Vec<C> {
             alloc::vec![self.content]
+        }
+    }
+
+    impl<C> Parent<C> for waterui::widget::disclosure::DisclosureConfig<C> {
+        fn children(self) -> Vec<C> {
+            let (header, content, _) = self.into_parts();
+            alloc::vec![header.build(), content.build()]
         }
     }
 
@@ -1225,7 +1234,19 @@ mod tests {
             snapshot
                 .range()
                 .filter_map(|index| snapshot.get_view(index))
-                .map(waterui::component::list::ListItem::into_content)
+                .collect()
+        }
+    }
+
+    /// A table's children are its rows' cells.
+    #[cfg(waterui_feature = "table")]
+    impl<C: 'static> Parent<C> for waterui::component::table::TableConfig<C> {
+        fn children(self) -> Vec<C> {
+            let snapshot = self.rows().snapshot();
+            snapshot
+                .range()
+                .filter_map(|index| snapshot.get_view(index))
+                .flat_map(waterui::component::table::TableRow::into_cells)
                 .collect()
         }
     }
@@ -1279,7 +1300,7 @@ mod tests {
             snapshot
                 .range()
                 .filter_map(|index| snapshot.get_view(index))
-                .map(|tab| tab.content().build().content)
+                .map(|tab| tab.content().build())
                 .chain(accessory)
                 .collect()
         }
@@ -1311,14 +1332,6 @@ mod tests {
             let delivered = Rc::new(RefCell::new(Vec::new()));
             Collector(Rc::clone(&delivered)).connect(self);
             delivered.take()
-        }
-    }
-
-    impl<C> Parent<C> for waterui::window::Window<waterui::window::WindowSlot<C>, Option<C>> {
-        fn children(self) -> Vec<C> {
-            let mut children = alloc::vec![self.content.build()];
-            children.extend(self.toolbar);
-            children
         }
     }
 
@@ -1618,49 +1631,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_window_in_the_tree_reaches_its_backend_with_its_content_typed() {
-        let hits = reached(waterui::window::Window::new(
-            "Test",
-            waterui::binding(waterui::window::WindowState::Normal),
-            Spacer::flexible,
-        ));
-        assert_eq!(hits[0], "window");
-        assert_eq!(hits[1], UNHOOKED_CHILD);
-        #[cfg(not(feature = "erased-dispatch"))]
-        assert!(!hits.contains(&"erased child"));
-        #[cfg(feature = "erased-dispatch")]
-        assert!(!hits.contains(&"typed child"));
-        assert!(hits.contains(&"spacer"));
-    }
-
-    #[test]
-    fn a_window_with_a_toolbar_reaches_its_backend_with_both_typed() {
-        let hits = reached(
-            waterui::window::Window::new(
-                "Test",
-                waterui::binding(waterui::window::WindowState::Normal),
-                Spacer::flexible,
-            )
-            .toolbar(waterui::layout::Divider),
-        );
-        #[cfg(not(feature = "erased-dispatch"))]
-        assert!(!hits.contains(&"erased child"));
-        #[cfg(feature = "erased-dispatch")]
-        assert!(!hits.contains(&"typed child"));
-        assert_eq!(
-            hits,
-            [
-                "window",
-                UNHOOKED_CHILD,
-                "spacer",
-                UNHOOKED_CHILD,
-                "environment",
-                "divider",
-            ]
-        );
-    }
-
     #[cfg(waterui_feature = "menu")]
     #[test]
     fn context_menu_preview_and_accessory_stay_typed_and_reenter_hooks() {
@@ -1722,7 +1692,7 @@ mod tests {
 
         let authored = || {
             Badge::new(
-                1,
+                1_u32,
                 button(Label::new("Save", Spacer::flexible)).action(|| {}),
             )
         };
@@ -1883,7 +1853,7 @@ mod tests {
         assert_eq!(
             reached(Hooks::new(
                 Badge::new(
-                    1,
+                    1_u32,
                     button(Label::new("Save", Spacer::flexible)).action(|| {})
                 ),
                 DecliningButtonStyleHook,

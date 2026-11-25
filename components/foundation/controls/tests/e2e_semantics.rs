@@ -11,7 +11,8 @@ use waterui::component::vstack;
 use waterui::graphics::color::Srgb;
 use waterui::{Binding, Str};
 use waterui_controls::{
-    Menu, TextField, Toggle, ToggleStyle, button, label, slider::slider, stepper::stepper, toggle,
+    Button, Menu, Slider, Stepper, TextField, Toggle, ToggleStyle, button, label, slider::slider,
+    stepper::stepper, toggle,
 };
 use waterui_testing::{Role, Selector, SemanticApp, UiBuilder};
 
@@ -79,7 +80,7 @@ fn disabled_scope_reaches_every_control_in_the_subtree(ui: UiBuilder) {
             vstack((
                 button("Act").action(|| {}),
                 toggle("Flag", &flag),
-                slider(label("Amount"), &amount),
+                slider("Amount", &amount),
                 stepper("Count", &value),
                 TextField::new("Note", &text),
             ))
@@ -208,28 +209,30 @@ fn toggle_accessibility_role_follows_the_resolved_style(ui: UiBuilder) {
     let wifi = Binding::bool(false);
     let bluetooth = Binding::bool(false);
     let airdrop = Binding::bool(false);
+    let hotspot = Binding::bool(false);
+    let vpn = Binding::bool(false);
 
     let mut app = ui.mount(move || {
         control_shell(vstack((
             Toggle::new("Wi-Fi", &wifi).switch(),
             Toggle::new("Bluetooth", &bluetooth).checkbox(),
             Toggle::new("AirDrop", &airdrop),
+            vstack((
+                Toggle::new("Hotspot", &hotspot),
+                Toggle::new("VPN", &vpn).switch(),
+            ))
+            .with(ToggleStyle::Checkbox),
         )))
     });
 
     for (label, role) in [
         ("Wi-Fi", Role::SWITCH),
         ("Bluetooth", Role::CHECKBOX),
-        // The default style is the platform's: a checkbox on macOS, a switch
-        // elsewhere.
-        (
-            "AirDrop",
-            if cfg!(target_os = "macos") {
-                Role::CHECKBOX
-            } else {
-                Role::SWITCH
-            },
-        ),
+        // Hydrolysis registers Switch as its default style on every host.
+        ("AirDrop", Role::SWITCH),
+        // Ancestor `.with(ToggleStyle::Checkbox)` changes descendants unless overridden.
+        ("Hotspot", Role::CHECKBOX),
+        ("VPN", Role::SWITCH),
     ] {
         app.query()
             .role(role)
@@ -385,7 +388,7 @@ fn text_field_focus_updates_ui_focus(ui: UiBuilder) {
 
     let mut app = ui.mount(move || control_shell(TextField::new("Search", &value_for_view)));
 
-    let selector = Selector::default().role(Role::TEXT_INPUT).label("Search");
+    let selector = Selector::new().role(Role::TEXT_INPUT).label("Search");
     app.query().role(Role::TEXT_INPUT).label("Search").focus();
     app.assert_ui_focus(&selector);
 }
@@ -656,4 +659,37 @@ fn disabled_button_ignores_action(ui: UiBuilder) {
         },
     );
     assert_eq!(count.snapshot(), 0, "disabled-button: action must not run");
+}
+
+#[waterui::test(viewport = (320, 240))]
+fn type_new_constructors_accept_into_label(ui: UiBuilder) {
+    let slider_value = Binding::f64(0.5);
+    let stepper_value = Binding::i32(2);
+
+    let mut app = ui.mount(move || {
+        control_shell(vstack((
+            Button::new("Save").action(|| {}),
+            Button::new(label("Profile").icon(())).action(|| {}),
+            Slider::new("Volume", &slider_value),
+            Slider::new(String::from("Brightness"), &slider_value),
+            Stepper::new("Copies", &stepper_value),
+            Stepper::new(label("Seats").icon(()), &stepper_value),
+        )))
+    });
+
+    app.query().role(Role::BUTTON).label("Save").assert_exists();
+    app.query()
+        .role(Role::BUTTON)
+        .label("Profile")
+        .assert_exists();
+    app.query()
+        .role(Role::SLIDER)
+        .label("Volume")
+        .assert_exists();
+    app.query()
+        .role(Role::SLIDER)
+        .label("Brightness")
+        .assert_exists();
+    app.query().label("Copies").assert_exists();
+    app.query().label("Seats").assert_exists();
 }

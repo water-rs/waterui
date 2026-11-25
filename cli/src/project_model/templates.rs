@@ -1739,7 +1739,7 @@ mod tests {
         // The root package doubles as the workspace root: the `waterui`
         // facade resolves to it as a path dependency, so its `[features]`
         // table is what the forward filter learns for `waterui/*` forwards —
-        // `gpu` and `video` here, so a facade missing `media`/`webview` keeps
+        // `gpu` and `video` here, so a facade missing `image`/`webview` keeps
         // those forwards off the generated manifest — and
         // `local_checkout_dependency` reads `waterui-browser-cef` out of
         // `[workspace.dependencies]`.
@@ -1825,7 +1825,7 @@ mod tests {
         // generated bindings: `app_environment()` hands the configured
         // environment to the application's `app(env)` composition root, which
         // is what installs application-owned values such as
-        // `waterui_map_gpu::MapGpuOptions` (#93). A runtime that built a bare
+        // `waterui_map_gpu::MapGpu` (#93 / #96). A runtime that built a bare
         // `Environment` would render components the app never could.
         for relative in [
             "src/preview_runtime.rs.tpl",
@@ -3387,23 +3387,31 @@ mod tests {
         let mut tables = super::FeatureTables::new();
         tables.insert(
             "waterui".to_string(),
-            ["gpu", "media"].into_iter().map(str::to_string).collect(),
+            ["gpu", "image", "video"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
         );
         tables.insert(
             "waterui-apple".to_string(),
-            ["map", "media", "webview"]
+            ["map", "video", "webview"]
                 .into_iter()
                 .map(str::to_string)
                 .collect(),
         );
 
-        // `media` reaches both the facade and the Apple backend.
+        // `video` reaches both the facade and the Apple backend; `image` reaches
+        // the facade alone.
         assert_eq!(
-            super::feature_forwards("media", &tables),
+            super::feature_forwards("video", &tables),
             vec![
-                "waterui/media".to_string(),
-                "waterui-apple/media".to_string()
+                "waterui/video".to_string(),
+                "waterui-apple/video".to_string()
             ]
+        );
+        assert_eq!(
+            super::feature_forwards("image", &tables),
+            vec!["waterui/image".to_string()]
         );
         // `map` is declared only by the Apple package; the facade carries no
         // `map` feature at all, so only the backend entry is emitted.
@@ -3437,7 +3445,7 @@ mod tests {
             std::collections::BTreeSet::new(),
         );
         assert_eq!(
-            super::feature_forwards("media", &older_tables),
+            super::feature_forwards("video", &older_tables),
             Vec::<String>::new()
         );
     }
@@ -3575,7 +3583,7 @@ mod tests {
     fn apple_companion_forwards_only_the_features_waterui_apple_declares() {
         let tempdir = tempdir().expect("temporary scaffold dir");
         let waterui = tempdir.path().join("waterui");
-        write_fake_framework_checkout(&waterui, &["media"]);
+        write_fake_framework_checkout(&waterui, &["video"]);
         let companion_dir = tempdir.path().join("managed_backends/apple-companion");
         let ctx = ctx(
             Some(waterui),
@@ -3597,13 +3605,13 @@ mod tests {
             .expect("companion Cargo.toml should parse");
         let features = manifest["features"].as_table().expect("features table");
         assert_eq!(
-            features["media"]
+            features["video"]
                 .as_array()
                 .unwrap()
                 .iter()
                 .map(|forward| forward.as_str())
                 .collect::<Vec<_>>(),
-            [Some("waterui-apple/media")]
+            [Some("waterui/video"), Some("waterui-apple/video")]
         );
         assert!(
             !features.contains_key("map"),
@@ -3634,7 +3642,7 @@ mod tests {
     fn embedded_apple_companion_enables_the_swiftui_feature() {
         let tempdir = tempdir().expect("temporary scaffold dir");
         let waterui = tempdir.path().join("waterui");
-        write_fake_framework_checkout(&waterui, &["media", "swiftui"]);
+        write_fake_framework_checkout(&waterui, &["video", "swiftui"]);
         let companion_dir = tempdir.path().join("managed_backends/apple-companion");
         let mut ctx = ctx(
             Some(waterui),
@@ -3745,8 +3753,8 @@ mod tests {
         let host = crate::toolchain::Host::current()
             .with_env("CARGO_HOME", tempdir.path().join("cargo-home"));
         for (dir_name, version, features) in [
-            ("apple-0.5.2", "0.5.2", vec!["map", "media"]),
-            ("apple-0.6.0", "0.6.0", vec!["map", "media", "inspector"]),
+            ("apple-0.5.2", "0.5.2", vec!["map", "video"]),
+            ("apple-0.6.0", "0.6.0", vec!["map", "video", "inspector"]),
         ] {
             let (git_url, rev) = write_backend(dir_name, version, &features)?;
             let manifest = manifest_for(&git_url, &rev);
@@ -4968,9 +4976,8 @@ mod tests {
     }
 
     /// The scaffold enables the controls used by its form and counter; video
-    /// is declared as the crate's own `media` feature and left off, because
-    /// `waterui/media` carries the system media stack (VA-API, `PipeWire`) a
-    /// hello-world never uses.
+    /// is declared as the crate's own `video` feature and left off, because
+    /// a hello-world plays no video.
     #[test]
     fn root_manifest_keeps_video_behind_an_opt_in_feature() {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -5006,13 +5013,13 @@ mod tests {
             Some(false)
         );
 
-        let media = manifest["features"][crate::templates::root::MEDIA_FEATURE]
+        let video = manifest["features"][crate::templates::root::VIDEO_FEATURE]
             .as_array()
-            .expect("media feature is declared")
+            .expect("video feature is declared")
             .iter()
             .map(|feature| feature.as_str().expect("feature name"))
             .collect::<Vec<_>>();
-        assert_eq!(media, ["waterui/media"]);
+        assert_eq!(video, ["waterui/video"]);
         assert_eq!(
             manifest["features"]["dev"].as_array().map(Vec::len),
             Some(1),
@@ -5024,9 +5031,9 @@ mod tests {
             .lines()
             .skip_while(|line| !line.starts_with("# Video playback"))
             .find(|line| !line.starts_with('#'));
-        assert_eq!(comment_then_feature, Some("media = [\"waterui/media\"]"));
+        assert_eq!(comment_then_feature, Some("video = [\"waterui/video\"]"));
         assert!(
-            rendered.contains("--features media"),
+            rendered.contains("--features video"),
             "manifest names the command that turns video on:\n{rendered}"
         );
     }
@@ -8103,10 +8110,10 @@ const FORWARDED_FEATURES: &[&str] = &[
     "chromium",
     "erased-dispatch",
     "gpu",
+    "image",
     "inspector",
     "inspector-signals",
     "map",
-    "media",
     "video",
     "webview",
     "webview-cef",
@@ -8115,7 +8122,7 @@ const FORWARDED_FEATURES: &[&str] = &[
 /// Additional `dep/feature` forwards a selectable feature emits beyond the
 /// `waterui` facade: (feature name, destination dependency, the feature it
 /// turns on there). `map` also turns on `waterui-apple/map` so the native
-/// `MKMapView` leaf compiles only when the app's graph opted in; the `media`
+/// `MKMapView` leaf compiles only when the app's graph opted in; the `video`
 /// and `webview` capabilities forward the same way, so the `AVKit` and
 /// `WebKit` leaves — and the framework links they carry through `cocoa-ui` —
 /// compile only for apps whose graph holds `waterui-video` /
@@ -8131,7 +8138,7 @@ const BACKEND_FEATURE_FORWARDS: &[(&str, &str, &str)] = &[
     ("inspector-signals", "hydrolysis", "inspector-signals"),
     ("inspector", "waterui-apple", "inspector"),
     ("map", "waterui-apple", "map"),
-    ("media", "waterui-apple", "media"),
+    ("video", "waterui-apple", "video"),
     ("webview", "waterui-apple", "webview"),
     ("chromium", "waterui-browser-cef", "chromium"),
     ("webview-cef", "waterui-browser-cef", "webview"),
@@ -8139,11 +8146,11 @@ const BACKEND_FEATURE_FORWARDS: &[(&str, &str, &str)] = &[
 ];
 
 /// The selectable features that also reach the `waterui` facade crate — the
-/// gpu/media/video/webview capability surface the native Apple entry
+/// gpu/image/video/webview capability surface the native Apple entry
 /// compiles; the Hydrolysis launcher's `gpu` and `cpu` painter features
 /// reach the facade through the same entry.
 const APPLE_RUNTIME_FEATURE_FORWARDS: &[&str] =
-    &["erased-dispatch", "gpu", "cpu", "media", "video", "webview"];
+    &["erased-dispatch", "gpu", "cpu", "image", "video", "webview"];
 
 /// The declaration `name` carries in `manifest`, wherever it lives:
 /// `[dependencies]` or a `[target.*.dependencies]` table. A generated
@@ -8826,17 +8833,19 @@ pub mod root {
 
     /// Cargo feature of the generated crate that turns on video playback.
     ///
-    /// `waterui/media` links the framework's video stack, and on Linux that
-    /// stack needs VA-API 1.19+ and `PipeWire` 0.3.65+ at build time — floors
-    /// Ubuntu 22.04 and Debian 12 do not meet. A first app plays no video, so
-    /// the scaffold declares the feature and leaves it off; the manifest
-    /// comment on the declaration tells the user where to turn it on.
-    pub const MEDIA_FEATURE: &str = "media";
+    /// `waterui/video` enables the framework's video views (`Video`,
+    /// `VideoPlayer`) and native Apple/web playback. A first app plays no
+    /// video, so the scaffold declares the feature and leaves it off; the
+    /// manifest comment on the declaration tells the user where to turn it on
+    /// and notes `waterui/video-gpu` for Hydrolysis playback (whose codec stack
+    /// on Linux needs VA-API 1.19+ and `PipeWire` 0.3.65+ at build time).
+    pub const VIDEO_FEATURE: &str = "video";
 
-    const MEDIA_FEATURE_COMMENT: &str = "\
-# Video playback. Off by default: it links the framework's video stack, which\n\
-# on Linux needs VA-API 1.19+ and PipeWire 0.3.65+ to build. Enable it when the\n\
-# app uses video: `cargo build --features media`, or add it to `default`.\n";
+    const VIDEO_FEATURE_COMMENT: &str = "\
+# Video playback (`Video`, `VideoPlayer`). Off by default; enable it when the\n\
+# app uses video: `cargo build --features video`, or add it to `default`.\n\
+# Desktop and Android (Hydrolysis) also need `waterui/video-gpu` to link the\n\
+# GPU player, which on Linux needs VA-API 1.19+ and PipeWire 0.3.65+ to build.\n";
 
     /// Root template files, paired with their destination relative to the
     /// project root. The assets README is what makes the documented `assets!`
@@ -8945,7 +8954,7 @@ pub mod root {
                     "dev".to_string(),
                     vec!["waterui/dynamic_linking".to_string()],
                 ),
-                (MEDIA_FEATURE.to_string(), vec!["waterui/media".to_string()]),
+                (VIDEO_FEATURE.to_string(), vec!["waterui/video".to_string()]),
             ]),
             dependencies: BTreeMap::from([("waterui".to_string(), waterui_dependency.clone())]),
             build_dependencies: BTreeMap::new(),
@@ -8965,14 +8974,14 @@ pub mod root {
             },
         };
 
-        let rendered = annotate_media_feature(&super::render_generated_cargo_toml(&manifest)?)?;
+        let rendered = annotate_video_feature(&super::render_generated_cargo_toml(&manifest)?)?;
         write_generated_cargo_toml(base_dir, rendered).await
     }
 
-    /// Places [`MEDIA_FEATURE_COMMENT`] above the `media` entry of
+    /// Places [`VIDEO_FEATURE_COMMENT`] above the `video` entry of
     /// `[features]`, so the generated manifest itself says how video is
     /// turned on. Serialization cannot carry comments, hence the second pass.
-    fn annotate_media_feature(rendered: &str) -> io::Result<String> {
+    fn annotate_video_feature(rendered: &str) -> io::Result<String> {
         let mut document: toml_edit::DocumentMut = rendered
             .parse()
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
@@ -8985,13 +8994,13 @@ pub mod root {
                     "generated Cargo.toml has no [features] table",
                 )
             })?;
-        let mut media = features.key_mut(MEDIA_FEATURE).ok_or_else(|| {
+        let mut video = features.key_mut(VIDEO_FEATURE).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("generated Cargo.toml declares no `{MEDIA_FEATURE}` feature"),
+                format!("generated Cargo.toml declares no `{VIDEO_FEATURE}` feature"),
             )
         })?;
-        media.leaf_decor_mut().set_prefix(MEDIA_FEATURE_COMMENT);
+        video.leaf_decor_mut().set_prefix(VIDEO_FEATURE_COMMENT);
         Ok(document.to_string())
     }
 

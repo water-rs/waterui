@@ -482,7 +482,7 @@ mod main_menu {
 /// the platform's wall clock: the offset is still at its start when the
 /// request returns, and it lands on the target no sooner than a native
 /// animation takes; a process outside the application never moves it.
-/// This is where the `UIKit` `Animation::Default` arm of the `native`
+/// This is where the `UIKit` `Animation::DEFAULT` arm of the `native`
 /// scroll suites lives.
 #[cfg(target_os = "ios")]
 mod scroll_animation {
@@ -491,7 +491,6 @@ mod scroll_animation {
 
     use super::{mtm, scene_window};
     use waterui::animation::Animation;
-    use waterui::component::list::ListItem;
     use waterui::component::text::Text;
     use waterui::layout::scroll::ScrollController;
     use waterui::reactive::binding;
@@ -556,7 +555,7 @@ mod scroll_animation {
         window.setHidden(true);
     }
 
-    /// `Animation::Default` on a scroll surface is `UIKit`'s own
+    /// `Animation::DEFAULT` on a scroll surface is `UIKit`'s own
     /// `setContentOffset(_:animated: true)`: driven through the
     /// controller, it does not jump, and it lands where the jump to the
     /// same target lands no sooner than a native animation takes.
@@ -576,14 +575,14 @@ mod scroll_animation {
         controller.scroll_to(origin);
         assert_native_scroll(
             "a Default surface request",
-            || controller.animate_to(target, Animation::Default),
+            || controller.animate_to(target, Animation::default()),
             || surface.content_offset(),
             || landing,
         );
         window.setHidden(true);
     }
 
-    /// `Animation::Default` on a list is `UIKit`'s own
+    /// `Animation::default()` on a list is `UIKit`'s own
     /// `scrollToRow(_:at:animated: true)`: driven through the controller
     /// on a cold table, it does not jump, and it lands with the row's top
     /// at the viewport's top no sooner than a native animation takes.
@@ -593,21 +592,21 @@ mod scroll_animation {
     fn a_default_list_request_lands_after_a_native_animation() {
         let mtm = mtm();
         let controller = ScrollController::new(0usize);
-        let (leaf, table) = row_list(vec![row_item as fn() -> ListItem<Text>; ROWS], &controller);
+        let (leaf, table) = row_list(vec![row_item as fn() -> Text; ROWS], &controller);
         let window = scene_window(mtm, leaf.view());
         table.layout_if_needed();
         let offset = || Point::from(table.contentOffset());
 
         assert_native_scroll(
             "a Default list request",
-            || controller.animate_to(TARGET_ROW, Animation::Default),
+            || controller.animate_to(TARGET_ROW, Animation::default()),
             offset,
             || list_row_top(&table, TARGET_ROW),
         );
         window.setHidden(true);
     }
 
-    /// A far `Animation::Default` list request animates only the final
+    /// A far `Animation::default()` list request animates only the final
     /// stretch: `UIKit`'s native row scroll toward a target further than
     /// the approach bound first jumps unanimated to the approach row's
     /// top — the offset right after the request — and lands from there
@@ -617,7 +616,7 @@ mod scroll_animation {
         let mtm = mtm();
         let controller = ScrollController::new(0usize);
         let (leaf, table) = row_list(
-            vec![row_item as fn() -> ListItem<Text>; APPROACH_LIST_ROWS],
+            vec![row_item as fn() -> Text; APPROACH_LIST_ROWS],
             &controller,
         );
         let window = scene_window(mtm, leaf.view());
@@ -625,7 +624,7 @@ mod scroll_animation {
 
         assert_native_scroll_from(
             "a far Default list request",
-            || controller.animate_to(APPROACH_TARGET_ROW, Animation::Default),
+            || controller.animate_to(APPROACH_TARGET_ROW, Animation::default()),
             || list_row_top(&table, APPROACH_ROW),
             || Point::from(table.contentOffset()),
             || list_row_top(&table, APPROACH_TARGET_ROW),
@@ -1527,6 +1526,13 @@ mod navigation {
                     Ok(())
                 },
             ),
+            libtest_mimic::Trial::test(
+                "navigation::a_searchable_page_wires_search_controller_and_results",
+                || {
+                    a_searchable_page_wires_search_controller_and_results();
+                    Ok(())
+                },
+            ),
         ]
     }
 
@@ -1564,7 +1570,8 @@ mod navigation {
                 )
                 .icon(SfSymbol::PLUS);
                 NavigationView::new("Today", text("detail").background(Material::Regular))
-                    .searchable(&query, "Search reminders")
+                    .searchable(&query)
+                    .search_prompt("Search reminders")
                     .navigation_toolbar(
                         NavigationToolbar::default()
                             .item(item)
@@ -1809,18 +1816,15 @@ mod navigation {
     /// the page must end with the safe area the same fixture gets when it
     /// is mounted before the window shows.
     fn a_split_realized_into_a_shown_scene_collapses_at_window_size() {
+        use waterui::color::Color;
+        use waterui::window::{Window, WindowBackground};
+
         let reference = reference_page_insets();
 
         let mtm = mtm();
         let window = native_test::window(mtm, Rect::new(0.0, 0.0, 390.0, 844.0));
-        let declaration = waterui::window::Window::new(
-            "Shown scene",
-            binding(waterui::window::WindowState::Normal),
-            navigation_fixture_view,
-        )
-        .background(waterui::window::WindowBackground::Color(
-            waterui::color::Color::srgb(255, 255, 255),
-        ));
+        let declaration = Window::new("Shown scene", navigation_fixture_view)
+            .background(WindowBackground::Color(Color::srgb(255, 255, 255)));
         let scene =
             realize_into_shown_scene(mtm, declaration, &render_environment(), window.clone());
 
@@ -1878,6 +1882,157 @@ mod navigation {
             .topViewController()
             .expect("the column stack has a root page");
         assert_content_shown(&window, &top.navigationItem(), &page);
+    }
+
+    fn a_searchable_page_wires_search_controller_and_results() {
+        use cocoa_ui::objc2::msg_send;
+        use std::cell::Cell;
+        use std::rc::Rc;
+        use waterui::navigation::NavigationStack;
+
+        let mtm = mtm();
+        let query = binding(Str::from("mail"));
+        let active = binding(false);
+        let submits = Rc::new(Cell::new(0usize));
+        let suggestion_builds = Rc::new(Cell::new(0usize));
+        let page = NavigationView::new("Mail", text("inbox"))
+            .searchable(&query)
+            .search_prompt("Filter mail")
+            .search_active(&active)
+            .on_search_submit({
+                let submits = Rc::clone(&submits);
+                move || submits.set(submits.get() + 1)
+            })
+            .search_suggestions({
+                let suggestion_builds = Rc::clone(&suggestion_builds);
+                move || {
+                    suggestion_builds.set(suggestion_builds.get() + 1);
+                    text("Suggestion")
+                }
+            });
+        let leaf = render(NavigationStack::new(page));
+        let window = native_test::window(mtm, Rect::new(0.0, 0.0, 390.0, 844.0));
+        let root_controller = UIViewController::new(mtm);
+        window.setRootViewController(Some(&root_controller));
+        let root_view = root_controller
+            .view()
+            .expect("the controller's view is loaded");
+        let mounted = leaf.mount(&root_view);
+        view::set_frame(mounted.view(), view::bounds(&root_view));
+        window.makeKeyAndVisible();
+        window.layoutIfNeeded();
+        let nav = view::subviews(&root_view)
+            .into_iter()
+            .find_map(|sub| {
+                enclosing_controller(&sub).and_then(|c| c.downcast::<UINavigationController>().ok())
+            })
+            .expect("stack mounts a UINavigationController");
+        let top = nav.topViewController().expect("stack has root controller");
+        let controller = top
+            .navigationItem()
+            .searchController()
+            .expect("page installs UISearchController");
+        assert!(
+            controller.searchResultsController().is_some(),
+            "search_suggestions attaches a search results controller"
+        );
+        assert_eq!(
+            suggestion_builds.get(),
+            0,
+            "search suggestions must build lazily only when active"
+        );
+        assert_eq!(
+            controller
+                .searchBar()
+                .placeholder()
+                .map(|p| p.to_string())
+                .as_deref(),
+            Some("Filter mail")
+        );
+
+        let bar = controller.searchBar();
+        if let Some(delegate) = bar.delegate() {
+            // SAFETY: delegate is CocoaUiSearchUpdater conforming to UISearchBarDelegate.
+            let _: () = unsafe { msg_send![&delegate, searchBarSearchButtonClicked: &*bar] };
+        }
+        assert_eq!(
+            submits.get(),
+            1,
+            "search button click fires on_search_submit"
+        );
+
+        active.set(true);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || controller.isActive()),
+            "setting search_active(true) activates UISearchController"
+        );
+        assert_eq!(
+            suggestion_builds.get(),
+            1,
+            "activating search lazily builds search_suggestions"
+        );
+        active.set(false);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || !controller.isActive()),
+            "setting search_active(false) dismisses UISearchController"
+        );
+        window.setHidden(true);
+        window.setRootViewController(None);
+        assert_standalone_searchable_nav_view();
+    }
+
+    fn assert_standalone_searchable_nav_view() {
+        use cocoa_ui::objc2::msg_send;
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        let mtm = mtm();
+
+        // Standalone `NavigationView` (outside a `NavigationStack`) also wires
+        // `on_search_submit`, two-way `search_active`, and lazy `search_suggestions`.
+        let standalone_submits = Rc::new(Cell::new(0usize));
+        let standalone_builds = Rc::new(Cell::new(0usize));
+        let standalone_active = binding(false);
+        let standalone_query = binding(Str::from("inbox"));
+        let standalone_leaf = render(
+            NavigationView::new("Standalone", text("body"))
+                .searchable(&standalone_query)
+                .search_active(&standalone_active)
+                .on_search_submit({
+                    let standalone_submits = Rc::clone(&standalone_submits);
+                    move || standalone_submits.set(standalone_submits.get() + 1)
+                })
+                .search_suggestions({
+                    let standalone_builds = Rc::clone(&standalone_builds);
+                    move || {
+                        standalone_builds.set(standalone_builds.get() + 1);
+                        text("Standalone Suggestion")
+                    }
+                }),
+        );
+        let host_window = native_test::window(mtm, Rect::new(0.0, 0.0, 390.0, 844.0));
+        let vc = UIViewController::new(mtm);
+        host_window.setRootViewController(Some(&vc));
+        let vc_view = vc.view().expect("standalone vc view loaded");
+        let mounted_standalone = standalone_leaf.mount(&vc_view);
+        view::set_frame(mounted_standalone.view(), view::bounds(&vc_view));
+        host_window.makeKeyAndVisible();
+        host_window.layoutIfNeeded();
+        assert_eq!(standalone_builds.get(), 0);
+        let search_bar = view::subviews(mounted_standalone.view())
+            .into_iter()
+            .find_map(|sub| sub.downcast::<cocoa_ui::uikit::SearchBar>().ok())
+            .expect("standalone iOS NavigationView mounts cocoa_ui SearchBar");
+        if let Some(delegate) = search_bar.delegate() {
+            // SAFETY: SearchBar conforms to UISearchBarDelegate.
+            let _: () = unsafe { msg_send![&delegate, searchBarSearchButtonClicked: &*search_bar] };
+        }
+        assert_eq!(standalone_submits.get(), 1);
+        standalone_active.set(true);
+        assert_eq!(standalone_builds.get(), 1);
+        standalone_active.set(false);
+        host_window.setHidden(true);
+        host_window.setRootViewController(None);
     }
 }
 
@@ -1977,7 +2132,7 @@ mod text_selection_ios {
     /// binding both move.
     pub fn a_selection_menu_command_edits_the_live_selection() {
         let mtm = mtm();
-        let value = binding(Str::from("hé😀b"));
+        let value = binding::<Str>(Str::from("hé😀b"));
         let observed = Rc::new(RefCell::new((String::new(), 0usize, 0usize)));
         let optional_seen = Rc::new(RefCell::new(false));
 
@@ -2251,7 +2406,7 @@ mod text_selection_ios {
             let mount = mount_uikit_window(
                 mtm,
                 waterui::AnyView::new(
-                    TextField::new(placeholder, &binding(Str::from("t")))
+                    TextField::new(placeholder, &binding::<Str>(Str::from("t")))
                         .selection_menu(items.computed()),
                 ),
                 &render_environment(),
@@ -2373,7 +2528,7 @@ mod list_spacing {
     use super::mtm;
     use cocoa_ui::Retained;
     use cocoa_ui::objc2_ui_kit::{NSIndexPathUIKitAdditions, UITableView};
-    use waterui::component::list::{List, ListItem};
+    use waterui::component::list::List;
     use waterui::id::SelfId;
     use waterui::prelude::*;
     use waterui::reactive::binding;
@@ -2412,14 +2567,14 @@ mod list_spacing {
     }
 
     fn check_spacing(searchable: bool) {
-        let list = || List::for_each(vec![SelfId::new(0_u32)], |_| ListItem::new(text("Row")));
+        let list = || List::for_each(vec![SelfId::new(0_u32)], |_| text("Row"));
         let query = binding(Str::default());
         let page = NavigationView::new(
             "Lists",
             vstack((list(), list())).background(waterui::background::Material::Regular),
         );
         let page = if searchable {
-            page.searchable(&query, "Search")
+            page.searchable(&query).search_prompt("Search")
         } else {
             page
         };

@@ -18,7 +18,7 @@ use waterui::env::Environment;
 use waterui::graphics::gpu::{Context as GpuContext, Frame as GpuFrame};
 use waterui::graphics::{GpuContent, GpuView};
 use waterui::prelude::zstack;
-use waterui::shape::RoundedRectangle;
+use waterui::shape::{CornerRadius, RoundedRectangle};
 use waterui::{FilterViewExt, ViewExt};
 use waterui_core::AnyView;
 use waterui_graphics::backend::FilteredView;
@@ -46,7 +46,7 @@ impl GpuContent for SolidClearRenderer {
 
     fn render(&mut self, frame: &mut GpuFrame<'_>) {
         let mut encoder = frame
-            .device
+            .device()
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("hydrolysis_ext_gpu_surface_test_encoder"),
             });
@@ -54,7 +54,7 @@ impl GpuContent for SolidClearRenderer {
             let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("hydrolysis_ext_gpu_surface_test_pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: frame.view,
+                    view: frame.view(),
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -68,7 +68,7 @@ impl GpuContent for SolidClearRenderer {
                 multiview_mask: None,
             });
         }
-        frame.queue.submit([encoder.finish()]);
+        frame.queue().submit([encoder.finish()]);
     }
 }
 
@@ -84,7 +84,7 @@ impl GpuContent for CountingClearRenderer {
     fn render(&mut self, frame: &mut GpuFrame<'_>) {
         self.calls.fetch_add(1, Ordering::Relaxed);
         let mut encoder = frame
-            .device
+            .device()
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("hydrolysis_ext_counting_gpu_surface_test_encoder"),
             });
@@ -92,7 +92,7 @@ impl GpuContent for CountingClearRenderer {
             let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("hydrolysis_ext_counting_gpu_surface_test_pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: frame.view,
+                    view: frame.view(),
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -106,7 +106,7 @@ impl GpuContent for CountingClearRenderer {
                 multiview_mask: None,
             });
         }
-        frame.queue.submit([encoder.finish()]);
+        frame.queue().submit([encoder.finish()]);
     }
 }
 
@@ -218,7 +218,7 @@ impl View for GpuSurfaceClipView {
                 a: 1.0,
             },
         })
-        .clip(RoundedRectangle::new(0.25))
+        .clip(RoundedRectangle::new(CornerRadius::fraction(0.25)))
     }
 }
 
@@ -285,9 +285,8 @@ struct Snapshot {
 }
 
 /// Renders `view` into an offscreen RGBA8 texture under [`TestStyle`] and
-/// reads it back — the same capture pipeline `waterui_testing`'s `TestHost`
-/// runs, expressed against Hydrolysis's public surface: a shared offscreen
-/// GPU context, an `OffscreenWindow`, a `HydrolysisRenderer` and a
+/// reads it back via Hydrolysis's public surface: a shared offscreen GPU
+/// context, an `OffscreenWindow`, a `HydrolysisRenderer` and a
 /// transparent-base `render_scene_to_texture`.
 fn render(view: impl View, width: u32, height: u32) -> Snapshot {
     let width = width.max(1);

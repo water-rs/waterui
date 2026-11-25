@@ -11,7 +11,7 @@ use waterui::graphics::color::Srgb;
 use waterui::layout::frame::Frame;
 use waterui::layout::{PinConstraints, PositionExt as _};
 use waterui::prelude::*;
-use waterui::shape::RoundedRectangle;
+use waterui::shape::{CornerRadius, RoundedRectangle};
 
 /// Height of the stage the GPU view sits in.
 const STAGE_HEIGHT: f32 = 320.0;
@@ -31,13 +31,14 @@ fn stage(gpu: impl View) -> impl View {
             .height(120.0)
             .background(Srgb::from_hex("#D81B60"))
             .pin(PinConstraints::new().leading(0.0).trailing(0.0).top(0.0)),
-        gpu.clip(RoundedRectangle::new(0.08)).pin(
-            PinConstraints::new()
-                .leading(24.0)
-                .trailing(24.0)
-                .top(72.0)
-                .bottom(0.0),
-        ),
+        gpu.clip(RoundedRectangle::new(CornerRadius::fraction(0.08)))
+            .pin(
+                PinConstraints::new()
+                    .leading(24.0)
+                    .trailing(24.0)
+                    .top(72.0)
+                    .bottom(0.0),
+            ),
         Frame::new(text("ABOVE the GPU view").foreground(Srgb::from_hex("#FFFFFF")))
             .width(200.0)
             .height(56.0)
@@ -81,7 +82,8 @@ pub fn view(title: &'static str, gpu: impl View) -> impl View {
 /// The GPU video player on a source the device plays.
 #[cfg(feature = "gpu-video-probe")]
 pub fn video() -> impl View {
-    use waterui::video::{PlaybackSession, Playlist, Url, VideoPlayer, video::ContentMode};
+    use waterui::layout::ContentMode;
+    use waterui::video::{PlaybackSession, Playlist, Url, VideoPlayer};
 
     /// The 10 s H.264 clip the video-player example opens with.
     const SOURCE: &str =
@@ -103,16 +105,17 @@ pub fn map() -> impl View {
 
     let manhattan =
         Coordinate::from_degrees(40.7580, -73.9855).expect("the probe's coordinate is valid");
+    let region = binding::<Region>(Region::new(manhattan, 0.030, 0.050));
     view(
         "GPU vector map",
-        Map::new(binding::<Region>(Region::new(manhattan, 0.030, 0.050))).style(MapStyle::Standard),
+        Map::new(&region).style(MapStyle::Standard),
     )
 }
 
 /// The tile style the GPU map draws from.
 #[cfg(feature = "gpu-map-probe")]
 pub fn install_map(env: &mut Environment) {
-    env.insert(waterui_map_gpu::MapGpuOptions::new(waterui_url::Url::new(
+    env.install(waterui_map_gpu::MapGpu::new(waterui_url::Url::new(
         "https://tiles.openfreemap.org/styles/positron",
     )));
 }

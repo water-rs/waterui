@@ -81,5 +81,5 @@ fn main() -> impl View {
 
 /// Builds the keyboard panel example app around [`main`].
 pub fn app(env: Environment) -> App<impl Windows> {
-    App::new(main, env)
+    App::new(env).window(Window::new("", main))
 }

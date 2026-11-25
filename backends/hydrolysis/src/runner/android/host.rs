@@ -19,6 +19,7 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use jni::Env;
 use jni::objects::{Global, JMethodID, JObject, JValue};
@@ -26,18 +27,20 @@ use jni::signature::{MethodSignature, Primitive, ReturnType, RuntimeMethodSignat
 use jni::strings::JNIString;
 use jni::vm::JavaVM;
 use jni::{jni_sig, jni_str};
-use nami::Signal;
+use nami::{Binding, Signal};
 use ndk::looper::{FdEvent, ForeignLooper, ThreadLooper};
 use waterui::Environment;
 #[cfg(feature = "menu")]
 use waterui::app::AppMenuBar;
 use waterui::cursor::CursorStyle;
 use waterui::theme::ColorScheme;
-use waterui::window::WindowState;
-use waterui_core::contract_violation;
+use waterui::window::{WindowParts, WindowState};
+use waterui_backend_core::gesture::DEFAULT_LONG_PRESS_DURATION;
 use waterui_core::layout::LayoutDirection;
+use waterui_core::{Retain, contract_violation};
 #[cfg(hydrolysis_gpu_painter)]
 use waterui_frame_rate::{FrameRate, combine};
+use waterui_structural_transition::ReduceMotion;
 
 #[cfg(hydrolysis_gpu_painter)]
 use super::gpu::RefreshDemand;
@@ -66,6 +69,7 @@ use crate::runner::init_main_thread_executors;
 use crate::runner::install_platform_services;
 #[cfg(feature = "menu")]
 use crate::runner::menu_bar;
+use crate::runner::window::split_open_and_watch_dormant;
 use crate::runner::window::{
     FrameHost, FrameTransaction, RuntimeWindow, reports_ui_idle, run_frame_transaction,
 };
@@ -141,6 +145,9 @@ pub struct MetricsSnapshot {
     pub(crate) double_tap_timeout_ms: u32,
     /// `ViewConfiguration.getScaledDoubleTapSlop()`, in physical px.
     pub(crate) double_tap_slop_px: f32,
+    /// `ViewConfiguration.getLongPressTimeout()`, in milliseconds — `0`
+    /// until the first `nativeSetMetrics` lands, like `scroll_friction`.
+    pub(crate) long_press_timeout_ms: u32,
 }
 
 impl MetricsSnapshot {
@@ -862,7 +869,7 @@ impl PlatformWindow for AndroidHostWindow {
         (self.metrics.width_px, self.metrics.height_px)
     }
 
-    fn apply_properties<C, T>(&mut self, window: &waterui::window::Window<C, T>) {
+    fn apply_properties<C, T>(&mut self, window: &WindowParts<C, T>) {
         if window.state.snapshot() == WindowState::Closed {
             return;
         }
@@ -994,10 +1001,13 @@ impl PlatformWindow for AndroidHostWindow {
         let slop = f64::from(metrics.double_tap_slop_px) / metrics.density;
         crate::platform::InputConventions {
             multi_click: crate::platform::MultiClickConfig {
-                interval: std::time::Duration::from_millis(u64::from(
-                    metrics.double_tap_timeout_ms,
-                )),
+                interval: Duration::from_millis(u64::from(metrics.double_tap_timeout_ms)),
                 tolerance: kurbo::Vec2::new(slop, slop),
+            },
+            long_press_timeout: if metrics.long_press_timeout_ms == 0 {
+                DEFAULT_LONG_PRESS_DURATION
+            } else {
+                Duration::from_millis(u64::from(metrics.long_press_timeout_ms))
             },
             // Android's paste shortcut, on a hardware keyboard, is Control-V:
             // the non-Apple family's.
@@ -1364,6 +1374,9 @@ pub struct AndroidSession {
     /// unsupported-feature error, not a silently dropped request.
     pending_window_queue:
         Rc<RefCell<Vec<super::super::window::RootWindow<super::AndroidTextEngine>>>>,
+    /// Keeps state watchers on dormant `Closed` secondary windows alive so
+    /// opening one at run time reports the unsupported secondary-window error.
+    _dormant_window_watches: Vec<Retain>,
     /// The published accessibility snapshot — read only by the
     /// `accessibility` feature's publish/query paths.
     #[cfg_attr(
@@ -1398,6 +1411,9 @@ pub struct AndroidSession {
     /// The live colour-scheme signal the session's theme tokens resolve
     /// against — `set_night_mode` writes it on the host's pushes.
     color_scheme: nami::Binding<ColorScheme>,
+    /// The live Reduce Motion signal driven by Android's
+    /// `Settings.Global.ANIMATOR_DURATION_SCALE` preference.
+    reduce_motion: Binding<bool>,
     /// A frame reached the surface at least once; together with an idle
     /// `wants_next_frame` it arms the one-shot readiness log the device's
     /// idle-CPU sampling waits on.
@@ -1511,6 +1527,26 @@ fn install_platform_view_surfaces(env: &mut Environment) -> crate::platform_view
     platform_views
 }
 
+/// Appearance inputs supplied by the Android host when creating a session.
+#[derive(Clone, Copy)]
+pub struct HostAppearance {
+    pub color_scheme: ColorScheme,
+    pub reduce_motion: bool,
+}
+
+impl HostAppearance {
+    pub const fn new(night: bool, reduce_motion: bool) -> Self {
+        Self {
+            color_scheme: if night {
+                ColorScheme::Dark
+            } else {
+                ColorScheme::Light
+            },
+            reduce_motion,
+        }
+    }
+}
+
 /// What `create` wires into the platform host and the session: the one
 /// window the app registered, its environment, theme and fonts, the
 /// window's registry id, and the bindings and sinks the host later drives.
@@ -1526,6 +1562,7 @@ struct SessionMounts {
     window_id: crate::renderer::WindowId,
     pending_window_queue:
         Rc<RefCell<Vec<super::super::window::RootWindow<super::AndroidTextEngine>>>>,
+    dormant_window_watches: Vec<Retain>,
     platform_views: crate::platform_view::PlatformViewSink,
     platform_view_focus: crate::platform_view::PlatformViewFocus,
     android_bridge: AndroidHostBridge,
@@ -1534,6 +1571,8 @@ struct SessionMounts {
     /// The session's colour-scheme signal — the binding `install_theme_tokens`
     /// resolved the default tokens over; `set_night_mode` writes it.
     color_scheme: nami::Binding<ColorScheme>,
+    /// The session's Reduce Motion signal — `set_reduce_motion` writes it.
+    reduce_motion: Binding<bool>,
     #[cfg(hydrolysis_android_system_webview)]
     android_webview: crate::widgets::platform::webview::AndroidSystemWebViewController,
 }
@@ -1548,7 +1587,7 @@ struct SessionMounts {
 /// seeded shortcut registry, no or several windows).
 fn session_mounts(
     services: &'static UiThreadServices,
-    night: bool,
+    appearance: HostAppearance,
     jni_env: &mut Env,
     bridge: &HostBridge,
 ) -> Result<Option<SessionMounts>, JniError> {
@@ -1585,11 +1624,9 @@ fn session_mounts(
     // with the real `uiMode` the create call carried and kept current by
     // `nativeSetColorScheme` pushes, so the default tokens re-resolve on a
     // theme flip the way macOS's appearance binding does (#1972).
-    let color_scheme = nami::binding(if night {
-        ColorScheme::Dark
-    } else {
-        ColorScheme::Light
-    });
+    let color_scheme = nami::binding(appearance.color_scheme);
+    let reduce_motion = Binding::bool(appearance.reduce_motion);
+    env.insert(ReduceMotion::new(reduce_motion.clone()));
     crate::theme::install_theme_tokens(&mut env, Some(&*style), color_scheme.clone());
     let theme: Rc<dyn WidgetTheme> = style;
     #[cfg(hydrolysis_gpu_painter)]
@@ -1634,7 +1671,12 @@ fn session_mounts(
     } = windows;
     let opener = queue_window_opener(&pending_window_queue);
     super::super::window::RootWindows::connect_channels(channels, &opener);
-    let mut windows = VecDeque::from(windows);
+    let (open_windows, dormant_window_watches) = split_open_and_watch_dormant(windows, || {
+        contract_violation!(
+            "hydrolysis android: secondary windows are unsupported — the host mounts exactly one window per session; the window is not shown"
+        );
+    });
+    let mut windows = VecDeque::from(open_windows);
     let Some(window) = windows.pop_front() else {
         contract_violation!(
             "hydrolysis android: the app registered no window to mount; no session is created"
@@ -1656,12 +1698,14 @@ fn session_mounts(
         fonts,
         window_id: identities.mint_window_id(),
         pending_window_queue,
+        dormant_window_watches,
         platform_views,
         platform_view_focus,
         android_bridge,
         safe_area,
         keyboard_area,
         color_scheme,
+        reduce_motion,
         #[cfg(hydrolysis_android_system_webview)]
         android_webview,
     }))
@@ -1799,9 +1843,10 @@ impl AndroidSession {
     /// layers its environment over the process's.
     ///
     /// `metrics` is the host's snapshot at creation time — content size and
-    /// scale exist from the start, before the surface band attaches. `night`
-    /// is the configuration's real `uiMode` at the same instant, so the
-    /// colour-scheme signal never starts on a Light default.
+    /// scale exist from the start, before the surface band attaches.
+    /// `appearance` carries the configuration's real `uiMode` and Reduce
+    /// Motion flag at the same instant, so neither signal starts on a static
+    /// default.
     ///
     /// `None` after a reported contract violation (no registered app, no or
     /// several windows, an orphan window id): no session exists then.
@@ -1811,7 +1856,7 @@ impl AndroidSession {
         #[cfg(hydrolysis_gpu_painter)] gpu: AndroidGpuContext,
         painter: &JObject<'_>,
         metrics: MetricsSnapshot,
-        night: bool,
+        appearance: HostAppearance,
         services: &'static UiThreadServices,
     ) -> Result<Option<Box<Self>>, JniError> {
         let executor = services.executor.clone();
@@ -1826,15 +1871,17 @@ impl AndroidSession {
             fonts,
             window_id,
             pending_window_queue,
+            dormant_window_watches,
             platform_views,
             platform_view_focus,
             android_bridge,
             safe_area,
             keyboard_area,
             color_scheme,
+            reduce_motion,
             #[cfg(hydrolysis_android_system_webview)]
             android_webview,
-        }) = session_mounts(services, night, jni_env, &bridge)?
+        }) = session_mounts(services, appearance, jni_env, &bridge)?
         else {
             return Ok(None);
         };
@@ -1890,6 +1937,7 @@ impl AndroidSession {
             #[cfg(hydrolysis_hwui)]
             hwui,
             pending_window_queue,
+            _dormant_window_watches: dormant_window_watches,
             a11y: AccessibilitySnapshot::default(),
             platform_views,
             android_bridge,
@@ -1902,6 +1950,7 @@ impl AndroidSession {
             keyboard_area,
             insets_direction,
             color_scheme,
+            reduce_motion,
             presented_once: Cell::new(false),
             rendering_failed: false,
             ready_logged: Cell::new(false),
@@ -1999,6 +2048,14 @@ impl AndroidSession {
         };
         if self.color_scheme.snapshot() != scheme {
             self.color_scheme.set(scheme);
+        }
+    }
+
+    /// Updates the session's Reduce Motion signal when Android's
+    /// `Settings.Global.ANIMATOR_DURATION_SCALE` changes.
+    pub(crate) fn set_reduce_motion(&self, reduced: bool) {
+        if self.reduce_motion.snapshot() != reduced {
+            self.reduce_motion.set(reduced);
         }
     }
 

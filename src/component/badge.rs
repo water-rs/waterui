@@ -1,30 +1,34 @@
-//! Badge component for displaying numeric indicators attached to content.
+//! Badge component for displaying indicators attached to content.
 //!
-//! The Badge component displays a small numeric indicator attached to another view,
-//! commonly used to show counts of items, notifications, or other numeric values
-//! that require attention.
+//! The Badge component displays a small indicator attached to another view,
+//! commonly used to show unread counts, status dots, or short labels that
+//! require attention. Zero counts and [`BadgeValue::Hidden`] hide the badge.
 //!
 //! # Example
 //!
 //! ```
 //! use waterui::prelude::*;
 //!
-//! let badge = badge::Badge::new(5, button("Messages").action(|| {}));
+//! let badge = badge::Badge::new(5_u32, button("Messages").action(|| {}));
 //! ```
 
-use nami::{Computed, Signal, signal::IntoComputed};
+use nami::{
+    Computed, SignalExt as _,
+    signal::{IntoComputed, IntoSignal},
+};
+pub use waterui_controls::BadgeValue;
 use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 use waterui_core::{AnyView, Environment, Native, NativeView, View};
 use waterui_graphics::color::Color;
 
-/// Configuration for the Badge component
+/// Configuration for the Badge component.
 #[derive(Debug, Clone)]
 pub struct BadgeConfig<S> {
-    /// The numeric value to display on the badge
-    pub value: Computed<i32>,
-    /// The content that the badge will be attached to
+    /// The indicator value to display on the badge.
+    pub value: Computed<BadgeValue>,
+    /// The content that the badge will be attached to.
     pub content: S,
-    /// The color of the badge
+    /// The color of the badge.
     pub color: Computed<Color>,
 }
 
@@ -42,10 +46,11 @@ impl<S: 'static> MapSlots<S> for BadgeConfig<S> {
     }
 }
 
-/// A small indicator that displays a count on top of another view.
+/// A small indicator overlaid on top of another view.
 ///
-/// Badge is typically used to show notification counts or item quantities
-/// overlaid on icons or buttons.
+/// Badge is typically used to show notification counts, dots, or short text
+/// overlaid on icons or buttons. Zero counts and [`BadgeValue::Hidden`] hide
+/// the indicator.
 ///
 /// # Layout Behavior
 ///
@@ -56,15 +61,15 @@ impl<S: 'static> MapSlots<S> for BadgeConfig<S> {
 pub struct Badge<C>(BadgeConfig<C>);
 
 impl<C: View> Badge<C> {
-    /// Creates a new Badge with the specified value and content
+    /// Creates a new Badge with the specified value and content.
     ///
     /// The badge color defaults to the theme's [`Error`](crate::theme::color::Error)
     /// slot; backends render the platform error color unless `.color(..)` overrides it.
     ///
     /// # Arguments
-    /// * `value` - The numeric value to display on the badge
+    /// * `value` - The badge indicator (count, dot, text, hidden, or signal)
     /// * `content` - The content that the badge will be attached to
-    pub fn new(value: impl IntoComputed<i32>, content: C) -> Self {
+    pub fn new(value: impl IntoComputed<BadgeValue>, content: C) -> Self {
         Self(BadgeConfig {
             value: value.into_computed(),
             content,
@@ -76,8 +81,8 @@ impl<C: View> Badge<C> {
     ///
     /// # Arguments
     /// * `color` - The color to use for the badge
-    pub fn color(mut self, color: impl Signal<Output = Color>) -> Self {
-        self.0.color = color.into_computed();
+    pub fn color(mut self, color: impl IntoSignal<Color> + 'static) -> Self {
+        self.0.color = color.into_signal().computed();
         self
     }
 
@@ -111,5 +116,18 @@ impl<C: View> View for Badge<C> {
 
     fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
         backend.native(self.into_config::<B::Slot>(), env, cx)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Badge;
+    use crate::view::ViewExt as _;
+    use waterui_text::text;
+
+    #[test]
+    fn badge_accepts_non_clone_modified_views() {
+        let _by_modifier = text("Inbox").padding().badge(3_u32);
+        let _by_constructor = Badge::new(3_u32, text("Inbox").padding().size(48.0, 48.0));
     }
 }

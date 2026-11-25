@@ -1,7 +1,7 @@
 use nami::{Computed, Signal};
 use std::cell::RefCell;
 use std::rc::Rc;
-use waterui::component::badge::BadgeConfig;
+use waterui::component::badge::{BadgeConfig, BadgeValue};
 use waterui_core::Environment;
 use waterui_core::layout::{HorizontalAlignment, ProposalSize, ViewDimensions};
 use waterui_text::styled::StyledStr;
@@ -19,7 +19,7 @@ use accesskit::{Node as AccessibilityNode, Role as AccessibilityNodeRole};
 /// frame; the `value` is read through `read_signal` so a change schedules a frame
 /// and the indicator re-renders.
 pub struct BadgeRenderState<E: crate::text::TextEngine> {
-    value: Computed<i32>,
+    value: Computed<BadgeValue>,
     content: RetainedSubview<E>,
 }
 
@@ -50,10 +50,27 @@ impl<E: crate::text::TextEngine> BadgeRenderState<E> {
     }
 }
 
-fn badge_large_label(value: i32, look: &BadgeLook) -> StyledStr {
-    StyledStr::plain(value.to_string())
+fn badge_pill_label(text: &str, look: &BadgeLook) -> StyledStr {
+    StyledStr::plain(text.to_owned())
         .font(look.label_font().clone())
         .foreground(look.label_color().clone())
+}
+
+/// Resolves the spoken/pill string carried by `value`, or `None` when `value`
+/// is hidden or a dot.
+pub fn badge_accessibility_text<E: crate::text::TextEngine>(
+    value: &BadgeValue,
+    renderer: &mut crate::renderer::SemanticCore<E>,
+    env: &Environment,
+) -> Option<String> {
+    match value {
+        BadgeValue::Hidden | BadgeValue::Count(0) | BadgeValue::Dot => None,
+        BadgeValue::Count(count) => Some(count.to_string()),
+        BadgeValue::Text(text) => {
+            let content = text.resolve(env).content();
+            Some(renderer.read_signal(&content).to_plain().to_string())
+        }
+    }
 }
 
 /// Measures a retained badge leaf from its [`BadgeRenderState`]: the badge sizes
@@ -103,18 +120,22 @@ pub fn render_badge_parts<E: crate::text::TextEngine>(
         let signal = state.borrow().value.clone();
         ctx.renderer_mut().read_signal(&signal)
     };
-    draw_badge_indicator(ctx, bounds, value, env);
+    draw_badge_indicator(ctx, bounds, &value, env);
 }
 
-/// Draws the badge indicator for `value` anchored on `anchor`: a count of zero
-/// is the theme's small dot, anything else the large count pill. Shared by the
-/// badge widget and by tab items, which anchor it on their icon.
+/// Draws the badge indicator for `value` anchored on `anchor`: hidden and
+/// `Count(0)` draw nothing, `Dot` draws the theme's small dot, and nonzero
+/// counts or text draw the large pill. Shared by the badge widget and by tab
+/// items, which anchor it on their icon.
 pub fn draw_badge_indicator<E: crate::text::TextEngine>(
     ctx: &mut WidgetRenderContext<'_, E>,
     anchor: kurbo::Rect,
-    value: i32,
+    value: &BadgeValue,
     env: &Environment,
 ) {
+    if value.is_hidden() {
+        return;
+    }
     let look = ctx.theme().badge(env);
     let metrics = look.metrics();
 
@@ -122,8 +143,9 @@ pub fn draw_badge_indicator<E: crate::text::TextEngine>(
     // the content's trailing edge — mirrored to the leading edge in RTL — and
     // its bottom edge overlaps the top edge by `offset_y`, matching
     // `BadgedBox` in Compose.
-    let large = (value != 0).then(|| {
-        let label = badge_large_label(value, &look);
+    let pill_text = badge_accessibility_text(value, ctx.renderer_mut(), env);
+    let large = pill_text.map(|text| {
+        let label = badge_pill_label(&text, &look);
         let text_size = HydrolysisRenderer::measure_text_dimensions(
             ctx.state_mut(),
             label.clone(),
@@ -133,7 +155,7 @@ pub fn draw_badge_indicator<E: crate::text::TextEngine>(
             Some(1),
         )
         .size;
-        (label, text_size)
+        (text, label, text_size)
     });
 
     let (badge_width, badge_height, offset_x, offset_y) = match &large {
@@ -143,7 +165,7 @@ pub fn draw_badge_indicator<E: crate::text::TextEngine>(
             metrics.small_offset_x,
             metrics.small_offset_y,
         ),
-        Some((_, text_size)) => (
+        Some((_, _, text_size)) => (
             metrics
                 .large_horizontal_padding
                 .mul_add(2.0, f64::from(text_size.width))
@@ -165,7 +187,7 @@ pub fn draw_badge_indicator<E: crate::text::TextEngine>(
     let y0 = anchor.y0 + offset_y - badge_height;
     let rect = kurbo::Rect::new(x0, y0, x0 + badge_width, y0 + badge_height);
 
-    let Some((label, text_size)) = large else {
+    let Some((raw_text, label, text_size)) = large else {
         ctx.draw_context(|draw| {
             look.record_small(&mut *draw, rect);
         });
@@ -175,17 +197,19 @@ pub fn draw_badge_indicator<E: crate::text::TextEngine>(
         look.record_large(&mut *draw, rect);
     });
 
-    // The count indicator is vector-drawn, so it must emit its own semantic
+    // The pill indicator is vector-drawn, so it must emit its own semantic
     // node — otherwise the badge value is invisible to assistive technology.
     #[cfg(feature = "accessibility")]
     {
         let mut node = AccessibilityNode::new(AccessibilityNodeRole::Label);
-        node.set_label(value.to_string());
+        node.set_label(raw_text);
         let node_bounds = rect;
         let _ = ctx
             .renderer_mut()
             .register_accessibility_node(node, node_bounds, env, None);
     }
+    #[cfg(not(feature = "accessibility"))]
+    let _ = raw_text;
 
     let text_height = f64::from(text_size.height);
     let text_rect = kurbo::Rect::new(
@@ -201,7 +225,7 @@ pub fn draw_badge_indicator<E: crate::text::TextEngine>(
 
 /// Emits a retained badge's accessibility nodes for the semantic walk: the
 /// wrapped content's subtree (unsuppressed in the rendered path), then the
-/// count indicator's `Label` node — a vector-drawn badge value is otherwise
+/// pill indicator's `Label` node — a vector-drawn badge value is otherwise
 /// invisible to assistive technology.
 #[cfg(feature = "accessibility")]
 #[cfg(hydrolysis_cherenkov)]
@@ -210,15 +234,19 @@ pub fn emit_badge_accessibility<E: crate::text::TextEngine>(
     state: &Rc<RefCell<BadgeRenderState<E>>>,
     env: &Environment,
 ) {
+    let hidden = renderer.is_accessibility_hidden(env);
     let mut state = state.borrow_mut();
     state.content.emit_accessibility(renderer, env);
+    if hidden {
+        return;
+    }
     let value = {
         let signal = state.value.clone();
         renderer.read_signal(&signal)
     };
-    if value != 0 {
+    if let Some(label) = badge_accessibility_text(&value, renderer, env) {
         let mut node = AccessibilityNode::new(AccessibilityNodeRole::Label);
-        node.set_label(value.to_string());
+        node.set_label(label);
         let _ = renderer.register_accessibility_node_semantic(node, env, None);
     }
 }

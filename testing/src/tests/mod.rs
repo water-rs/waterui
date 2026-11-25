@@ -2,6 +2,7 @@ mod canvas;
 mod harness;
 mod settle;
 mod shape_morph;
+mod sheet;
 mod transitions;
 
 use super::*;
@@ -18,9 +19,11 @@ use accesskit::{
 use hydrolysis::InputEvent;
 use waterui::Binding;
 use waterui::ContentLedger;
+use waterui::Environment;
 use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityGeometry;
-use waterui::component::list::{List, ListItem};
+use waterui::app::App;
+use waterui::component::list::List;
 use waterui::component::{text, vstack};
 use waterui::graphics::WorkingColor;
 use waterui::graphics::backend::draw::{self, Draw as _, Recorder};
@@ -29,6 +32,7 @@ use waterui::graphics::canvas::Canvas;
 use waterui::graphics::color::Srgb;
 use waterui::layout::scroll::ScrollView;
 use waterui::text::Text;
+use waterui::window::Window;
 use waterui_core::layout::{Point, Rect, Size};
 use waterui_core::{AnyView, Native, Signal, View};
 
@@ -93,6 +97,7 @@ fn node(
         id: node_id(id),
         role,
         label: label.map(ToOwned::to_owned),
+        description: None,
         identifier: None,
         value: value.map(ToOwned::to_owned),
         placeholder: None,
@@ -640,8 +645,8 @@ fn styled_semantic_mount_installs_style_tokens_over_framework_defaults() {
     assert_ne!(styled_label, unstyled_label);
 }
 
-/// `UiBuilder<Styled<S>>::mount_app` honours the builder's viewport and scale
-/// factor over the window's declared frame: the window content is allocated
+/// [`UiBuilder::mount_app`] honours the builder's viewport and scale factor
+/// over the window's declared frame: the window content is allocated
 /// `320x240` logical points — not the `800x600` `Window::new` declares — and
 /// the scale factor stays a capture concern, so bounds read back in logical
 /// points. A text root reports its centred response by default
@@ -649,10 +654,13 @@ fn styled_semantic_mount_installs_style_tokens_over_framework_defaults() {
 /// report the frame the mount assigned.
 #[test]
 fn styled_builder_mount_app_mounts_at_the_builder_viewport() {
-    let app = waterui::app::App::new(
-        || text("app content").a11y_geometry(AccessibilityGeometry::Allocation),
-        waterui::Environment::new(),
-    );
+    use waterui::Environment;
+    use waterui::app::App;
+    use waterui::window::Window;
+
+    let app = App::new(Environment::new()).window(Window::new("", || {
+        text("app content").a11y_geometry(AccessibilityGeometry::Allocation)
+    }));
     let mut app = ui()
         .theme(token_probe::TokenProbeStyle)
         .viewport(320, 240)
@@ -669,13 +677,35 @@ fn styled_builder_mount_app_mounts_at_the_builder_viewport() {
 /// than the text's centred response.
 #[test]
 fn free_mount_app_mounts_at_the_window_frame() {
-    let app = waterui::app::App::new(
-        || text("app content").a11y_geometry(AccessibilityGeometry::Allocation),
-        waterui::Environment::new(),
-    );
+    use waterui::Environment;
+    use waterui::app::App;
+    use waterui::window::Window;
+
+    let app = App::new(Environment::new()).window(Window::new("", || {
+        text("app content").a11y_geometry(AccessibilityGeometry::Allocation)
+    }));
     let mut app = mount_app(app, token_probe::TokenProbeStyle);
     let bounds = app.query().role(Role::LABEL).single().bounds();
     assert_eq!(bounds, NodeBounds::new(0.0, 0.0, 800.0, 600.0));
+}
+
+#[test]
+#[should_panic(expected = "requires a style")]
+fn unstyled_mount_offscreen_panics_without_theme() {
+    let _ = ui().mount_offscreen(|| text("unstyled"));
+}
+
+#[test]
+#[should_panic(expected = "requires a style")]
+fn unstyled_mount_app_panics_without_theme() {
+    let app = App::new(Environment::new()).window(Window::new("", || text("unstyled")));
+    let _ = ui().mount_app(app);
+}
+
+#[test]
+#[should_panic(expected = "requires a style")]
+fn unstyled_perf_panics_without_theme() {
+    let _ = ui().perf(|| text("unstyled"));
 }
 
 /// Chained frame setters mutate one `FrameLayout`, so `.size(40, 20)` followed
@@ -897,7 +927,7 @@ fn canvas_and_text_expose_accessibility_nodes_semantically() {
             .a11y_role(waterui::accessibility::AccessibilityRole::Image)
             .a11y_label("Canvas layer"),
             text("W")
-                .size(48.0)
+                .font_size(48.0)
                 .color(Srgb::WHITE)
                 .body()
                 .padding_with(6.0)
@@ -987,7 +1017,7 @@ fn semantic_mount_drains_spawned_local_work() {
             .state(&status_for_view)
     });
 
-    let status_selector = Selector::default().role(Role::LABEL).label("ready");
+    let status_selector = Selector::new().role(Role::LABEL).label("ready");
     assert!(
         app.wait_for_existence(&status_selector, Duration::from_millis(500)),
         "expected the semantic runtime to drain spawn_local task and update the binding"
@@ -1122,8 +1152,8 @@ fn wait_for_existence_and_nonexistence_complete_immediately() {
         node(2, Role::LABEL, Some("status"), Some("ready"), true),
     ]));
 
-    let status_selector = Selector::default().role(Role::LABEL).label("status");
-    let missing_button_selector = Selector::default().role(Role::BUTTON).label("missing");
+    let status_selector = Selector::new().role(Role::LABEL).label("status");
+    let missing_button_selector = Selector::new().role(Role::BUTTON).label("missing");
     assert!(app.wait_for_existence(&status_selector, Duration::from_millis(50),));
     assert!(app.wait_for_nonexistence(&missing_button_selector, Duration::from_millis(50),));
     assert!(app.wait_for_value_eq(&status_selector, "ready", Duration::from_millis(50),));
@@ -1137,7 +1167,10 @@ fn wait_for_inverted_reports_fulfillment() {
     ]));
 
     let expectation = app
-        .expect_exists(Selector::default().role(Role::BUTTON).label("Delete"))
+        .query()
+        .role(Role::BUTTON)
+        .label("Delete")
+        .expect_exists()
         .inverted();
     let result = app.wait_for(&[expectation], WaitOptions::new(Duration::from_millis(10)));
     assert_eq!(result, WaitResult::InvertedFulfillment);
@@ -1147,7 +1180,11 @@ fn wait_for_inverted_reports_fulfillment() {
 fn wait_for_times_out_when_condition_never_matches() {
     let mut app = mounted(tree(vec![node(1, Role::LIST, Some("root"), None, true)]));
 
-    let expectation = app.expect_exists(Selector::default().role(Role::BUTTON).label("never"));
+    let expectation = app
+        .query()
+        .role(Role::BUTTON)
+        .label("never")
+        .expect_exists();
     let result = app.wait_for(&[expectation], WaitOptions::new(Duration::from_millis(10)));
     assert_eq!(result, WaitResult::TimedOut);
 }
@@ -1172,10 +1209,16 @@ fn wait_for_ordered_expectations_skip_inverted_positions() {
     // An inverted expectation holds no position in the required order, so the
     // two present elements fulfill in list order and the wait completes.
     let expectations = [
-        app.expect_exists(Selector::default().role(Role::BUTTON).label("Delete"))
+        app.query()
+            .role(Role::BUTTON)
+            .label("Delete")
+            .expect_exists()
             .inverted(),
-        app.expect_exists(Selector::default().role(Role::LABEL).label("Ready")),
-        app.expect_exists(Selector::default().role(Role::BUTTON).label("Continue")),
+        app.query().role(Role::LABEL).label("Ready").expect_exists(),
+        app.query()
+            .role(Role::BUTTON)
+            .label("Continue")
+            .expect_exists(),
     ];
     let result = app.wait_for(
         &expectations,
@@ -1191,8 +1234,10 @@ fn wait_for_frames_completes_when_the_expectation_is_met() {
         node(2, Role::IMAGE, Some("Video content"), None, true),
     ]));
 
-    let motion = app.expect_exists(Selector::default().role(Role::IMAGE).label("Video content"));
-    assert_eq!(app.wait_for_frames(&[motion], 4), WaitResult::Completed);
+    app.query()
+        .role(Role::IMAGE)
+        .label("Video content")
+        .assert_exists_within_frames(4);
 }
 
 #[test]
@@ -1201,8 +1246,18 @@ fn wait_for_frames_stops_when_a_quiescent_runtime_cannot_produce_the_node() {
 
     // `NoopDriver` is settled from the start: with nothing in flight the wait
     // must not burn its frame budget before answering TimedOut.
-    let missing = app.expect_exists(Selector::default().role(Role::IMAGE).label("Video content"));
+    let missing = app
+        .query()
+        .role(Role::IMAGE)
+        .label("Video content")
+        .expect_exists();
     assert_eq!(app.wait_for_frames(&[missing], 60), WaitResult::TimedOut);
+    assert!(
+        !app.query()
+            .role(Role::IMAGE)
+            .label("Video content")
+            .wait_for_existence_within_frames(60)
+    );
 }
 
 #[test]
@@ -1222,8 +1277,54 @@ fn wait_for_frames_observes_the_pump_that_settled_the_runtime() {
         tree(vec![node(1, Role::LIST, Some("root"), None, true)]),
     );
 
-    let motion = app.expect_exists(Selector::default().role(Role::IMAGE).label("Video content"));
-    assert_eq!(app.wait_for_frames(&[motion], 60), WaitResult::Completed);
+    app.query()
+        .role(Role::IMAGE)
+        .label("Video content")
+        .assert_exists_within_frames(60);
+}
+
+#[test]
+fn query_expect_and_frame_assert_terminals_cover_all_kinds() {
+    let mut app = mounted(tree(vec![
+        node(1, Role::LIST, Some("root"), None, true),
+        node(2, Role::LABEL, Some("status"), Some("ready"), true),
+    ]));
+
+    app.query()
+        .role(Role::LABEL)
+        .label("status")
+        .assert_value_eq_within_frames("ready", 2);
+    app.query()
+        .role(Role::BUTTON)
+        .label("missing")
+        .assert_not_exists_within_frames(2);
+    assert!(
+        app.query()
+            .role(Role::LABEL)
+            .label("status")
+            .wait_for_value_eq_within_frames("ready", 2)
+    );
+    assert!(
+        app.query()
+            .role(Role::BUTTON)
+            .label("missing")
+            .wait_for_nonexistence_within_frames(2)
+    );
+
+    let expectations = [
+        app.query()
+            .role(Role::LABEL)
+            .label("status")
+            .expect_value_eq("ready"),
+        app.query()
+            .role(Role::BUTTON)
+            .label("missing")
+            .expect_not_exists(),
+    ];
+    assert_eq!(
+        app.wait_for(&expectations, WaitOptions::new(Duration::from_millis(10))),
+        WaitResult::Completed
+    );
 }
 
 #[test]
@@ -1278,7 +1379,7 @@ fn assert_ui_focus_failure_names_the_actual_focus_target() {
     app.ui_focus = Some(node_id(3));
 
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        app.assert_ui_focus(&Selector::default().role(Role::BUTTON).label("Save"));
+        app.assert_ui_focus(&Selector::new().role(Role::BUTTON).label("Save"));
     }));
     let message = panic_message(&*outcome.expect_err("assertion must fail"));
     assert!(
@@ -1381,10 +1482,8 @@ fn ui_focus_is_separate_from_accessibility_focus() {
         ))
     });
 
-    let username_selector = Selector::default().role(Role::TEXT_INPUT).label("Username");
-    let password_selector = Selector::default()
-        .role(Role::PASSWORD_INPUT)
-        .label("Password");
+    let username_selector = Selector::new().role(Role::TEXT_INPUT).label("Username");
+    let password_selector = Selector::new().role(Role::PASSWORD_INPUT).label("Password");
 
     assert!(
         app.wait_for_ui_focus(&username_selector, Duration::from_millis(200)),
@@ -1449,10 +1548,8 @@ fn runtime_focus_writes_move_and_clear_ui_focus() {
         ))
     });
 
-    let username_selector = Selector::default().role(Role::TEXT_INPUT).label("Username");
-    let password_selector = Selector::default()
-        .role(Role::PASSWORD_INPUT)
-        .label("Password");
+    let username_selector = Selector::new().role(Role::TEXT_INPUT).label("Username");
+    let password_selector = Selector::new().role(Role::PASSWORD_INPUT).label("Password");
 
     assert_eq!(app.ui_focus(), None);
 
@@ -1484,7 +1581,7 @@ fn ui_focus_accepts_a_new_target_after_being_cleared() {
     let mut app =
         ui().mount(move || TextField::new(text("Field"), &value).focused(&focus_for_view, 0));
 
-    let selector = Selector::default().role(Role::TEXT_INPUT).label("Field");
+    let selector = Selector::new().role(Role::TEXT_INPUT).label("Field");
 
     focus.set(Some(0));
     assert!(app.wait_for_ui_focus(&selector, Duration::from_millis(200)));
@@ -1728,7 +1825,7 @@ fn list_arrow_keys_move_row_focus() {
     let mut app = ui().mount(|| {
         List::content(
             (0..4)
-                .map(|index| move || ListItem::new(text(format!("Row {index}"))))
+                .map(|index| move || text(format!("Row {index}")))
                 .collect::<Vec<_>>(),
         )
     });
@@ -1759,10 +1856,10 @@ fn list_arrow_keys_do_not_activate_rows() {
                     .map(|index| {
                         let taps = taps.clone();
                         move || {
-                            ListItem::new(text(format!("Row {index}")).on_tap({
+                            text(format!("Row {index}")).on_tap({
                                 let taps = taps.clone();
                                 move || taps.with_mut(|t| *t += 1)
-                            }))
+                            })
                         }
                     })
                     .collect::<Vec<_>>(),
@@ -1800,12 +1897,12 @@ fn list_enter_activates_focused_row() {
                     .map(|index| {
                         let taps = taps.clone();
                         move || {
-                            ListItem::new(vstack((text(format!("Row {index}"))
+                            vstack((text(format!("Row {index}"))
                                 .on_tap({
                                     let taps = taps.clone();
                                     move || taps.with_mut(|t| *t += 1)
                                 })
-                                .a11y_role(waterui::accessibility::AccessibilityRole::Button),)))
+                                .a11y_role(waterui::accessibility::AccessibilityRole::Button),))
                         }
                     })
                     .collect::<Vec<_>>(),
@@ -1838,7 +1935,7 @@ fn list_arrow_key_scrolls_row_into_view() {
     let mut app = ui().mount(|| {
         List::content(
             (0..20)
-                .map(|index| move || ListItem::new(text(format!("Row {index}"))))
+                .map(|index| move || text(format!("Row {index}")))
                 .collect::<Vec<_>>(),
         )
     });
@@ -1877,7 +1974,7 @@ fn list_home_end_move_row_focus_to_edges() {
     let mut app = ui().mount(|| {
         List::content(
             (0..4)
-                .map(|index| move || ListItem::new(text(format!("Row {index}"))))
+                .map(|index| move || text(format!("Row {index}")))
                 .collect::<Vec<_>>(),
         )
     });
@@ -1897,7 +1994,7 @@ fn list_arrow_keys_stop_at_row_boundaries() {
     let mut app = ui().mount(|| {
         List::content(
             (0..3)
-                .map(|index| move || ListItem::new(text(format!("Row {index}"))))
+                .map(|index| move || text(format!("Row {index}")))
                 .collect::<Vec<_>>(),
         )
     });

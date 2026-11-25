@@ -29,6 +29,7 @@ use kurbo::Rect;
 #[cfg(feature = "menu")]
 use nami::{Binding, Computed};
 use nami::{Signal, SignalExt};
+use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use waterui::floating::FloatingScope;
@@ -37,8 +38,9 @@ use waterui::metadata::anchored_overlay::{
     AnchorEdge, AnchorPlacement, Clamp, Dismissal, EdgeAlignment,
 };
 use waterui::style::FloatingStyle;
+use waterui::theme::Tint;
 use waterui_controls::ControlSize;
-use waterui_controls::button::{ButtonConfig, ButtonStyle};
+use waterui_controls::button::{ButtonConfig, ButtonRole, ButtonStyle};
 use waterui_controls::label::{ControlLabel, LabelDisplayMode};
 #[cfg(feature = "menu")]
 use waterui_controls::menu::ResolvedMenu;
@@ -253,6 +255,30 @@ fn lower_floating(look: &ButtonLook, style: &FloatingStyle) -> ButtonLook {
     }
 }
 
+/// The environment a button resolves its look against: a destructive role
+/// tints the button with `Error` so prominent fills and tinted styles adopt
+/// destructive emphasis uniformly across widget themes.
+fn role_environment(role: Option<ButtonRole>, env: &Environment) -> Cow<'_, Environment> {
+    if role == Some(ButtonRole::Destructive) {
+        let mut tinted = env.clone();
+        tinted.insert(Tint::new(Color::new(waterui::theme::color::Error)));
+        Cow::Owned(tinted)
+    } else {
+        Cow::Borrowed(env)
+    }
+}
+
+/// The label colour override for a semantic role on styles whose look keeps a
+/// neutral `Foreground` label rather than tinting.
+fn role_label_color(role: Option<ButtonRole>, style: ButtonStyle) -> Option<Color> {
+    (role == Some(ButtonRole::Destructive)
+        && !matches!(
+            style,
+            ButtonStyle::BorderedProminent | ButtonStyle::GlassProminent
+        ))
+    .then(|| Color::new(waterui::theme::color::Error))
+}
+
 /// The spec of a `style` button of `size` in `env`.
 fn button_spec(
     style: ButtonStyle,
@@ -296,12 +322,9 @@ fn retained_label_color(
     }
     let color = look.label().get_color()?.clone();
     let frame = Rc::clone(&chrome.frame);
-    Some(waterui_graphics::color::signal_color(
-        chrome
-            .label_state
-            .clone()
-            .map(move |state| color.target(&Inputs::at_rest(frame.get(), state, &()))),
-    ))
+    Some(Color::from_signal(chrome.label_state.clone().map(
+        move |state| color.target(&Inputs::at_rest(frame.get(), state, &())),
+    )))
 }
 
 /// The retained render state of a button. A `TitleOnly` label is rendered as
@@ -366,11 +389,12 @@ impl<E: crate::text::TextEngine> ButtonRenderState<E> {
     }
 
     fn spec(&self, env: &Environment) -> ButtonSpec {
+        let role_env = role_environment(self.config.role(), env);
         button_spec(
             self.config.style(),
             self.config.size(),
-            label_resolves_icon_only(self.config.label(), env),
-            env,
+            label_resolves_icon_only(self.config.label(), role_env.as_ref()),
+            role_env.as_ref(),
         )
     }
 
@@ -392,9 +416,16 @@ impl<E: crate::text::TextEngine> ButtonRenderState<E> {
             return;
         }
         let theme = renderer.theme();
+        let role = self.config.role();
+        let style = self.config.style();
+        let role_env = role_environment(role, env);
         let spec = self.spec(env);
-        let look = self.chrome.look(&theme, &spec, env).clone();
-        let color = retained_label_color(&look, &self.chrome, env);
+        let look = self.chrome.look(&theme, &spec, role_env.as_ref()).clone();
+        let color = if env.get::<ListRowChrome>().is_some() {
+            retained_label_color(&look, &self.chrome, env)
+        } else {
+            role_label_color(role, style).or_else(|| retained_label_color(&look, &self.chrome, env))
+        };
         let font = look_font(
             &look,
             self.chrome.label_state.snapshot(),
@@ -440,6 +471,11 @@ pub fn button_accessibility<E: crate::text::TextEngine>(
         }
         if let Some(value) = renderer.resolve_accessibility_value(env, None) {
             node.set_value(value);
+        }
+        match button.role() {
+            Some(ButtonRole::Destructive) => node.set_description("destructive"),
+            Some(ButtonRole::Cancel) => node.set_description("cancel"),
+            _ => {}
         }
         node.add_action(AccessibilityAction::Focus);
         // A button under a `Selected` scope it owns announces the state.
@@ -555,8 +591,9 @@ pub fn measure_button_node<E: crate::text::TextEngine>(
     env: &Environment,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
+    let role_env = role_environment(render_state.config.role(), env);
     let spec = render_state.spec(env);
-    let look = render_state.chrome.peek(theme, &spec, env);
+    let look = render_state.chrome.peek(theme, &spec, role_env.as_ref());
     let label_size = if let Some(subview) = &render_state.label_view {
         subview.measure_built(state, env, theme)
     } else {
@@ -578,9 +615,7 @@ pub fn render_button_node<E: crate::text::TextEngine>(
     state: &Rc<RefCell<ButtonRenderState<E>>>,
     env: &Environment,
 ) {
-    let hidden = env
-        .get::<waterui::accessibility::AccessibilityHidden>()
-        .is_some_and(waterui::accessibility::AccessibilityHidden::is_hidden);
+    let hidden = ctx.renderer_mut().is_accessibility_hidden(env);
     if !hidden {
         let render_ctx = ctx.render_context();
         button_accessibility(ctx.renderer_mut(), Some(render_ctx), state, env);
@@ -877,9 +912,7 @@ pub fn render_menu_node<E: crate::text::TextEngine>(
     state: &Rc<RefCell<MenuRenderState<E>>>,
     env: &Environment,
 ) {
-    let hidden = env
-        .get::<waterui::accessibility::AccessibilityHidden>()
-        .is_some_and(waterui::accessibility::AccessibilityHidden::is_hidden);
+    let hidden = ctx.renderer_mut().is_accessibility_hidden(env);
     if !hidden {
         let theme = ctx.theme();
         let render_ctx = ctx.render_context();
@@ -1145,6 +1178,8 @@ fn render_title<E: crate::text::TextEngine, S>(
     ctx: &mut WidgetRenderContext<'_, E>,
     rendered: &RenderedChrome,
     label: &ControlLabel<S>,
+    role: Option<ButtonRole>,
+    style: ButtonStyle,
     env: &Environment,
 ) {
     let target = rendered.label_target;
@@ -1158,6 +1193,9 @@ fn render_title<E: crate::text::TextEngine, S>(
     if paint.is_none() {
         let color = if env.get::<ListRowChrome>().is_some() {
             Some(Color::new(waterui::theme::color::Foreground))
+        } else if !rendered.flags.contains(InteractionState::DISABLED) {
+            role_label_color(role, style)
+                .or_else(|| look_color(&rendered.look, rendered.flags, frame))
         } else {
             look_color(&rendered.look, rendered.flags, frame)
         };
@@ -1196,8 +1234,17 @@ pub fn render_button_parts<E: crate::text::TextEngine>(
     let rendered = {
         let mut state_mut = state.borrow_mut();
         let spec = state_mut.spec(env);
+        let role_env = role_environment(state_mut.config.role(), env);
         let title = state_mut.label_view.is_none();
-        bind_button_chrome(ctx, &mut state_mut.chrome, key, &spec, disabled, title, env)
+        bind_button_chrome(
+            ctx,
+            &mut state_mut.chrome,
+            key,
+            &spec,
+            disabled,
+            title,
+            role_env.as_ref(),
+        )
     };
     record_button_chrome(ctx, &rendered, |ctx| {
         let mut state_mut = state.borrow_mut();
@@ -1205,7 +1252,9 @@ pub fn render_button_parts<E: crate::text::TextEngine>(
         if let Some(subview) = &mut state_mut.label_view {
             place_label_view(ctx, &rendered, subview, env);
         } else {
-            render_title(ctx, &rendered, state_mut.config.label(), env);
+            let role = state_mut.config.role();
+            let style = state_mut.config.style();
+            render_title(ctx, &rendered, state_mut.config.label(), role, style, env);
         }
     });
 
@@ -1407,7 +1456,7 @@ pub fn render_menu_parts<E: crate::text::TextEngine>(
             let mut state_mut = state.borrow_mut();
             match &mut state_mut.label {
                 MenuLabel::Title(label) => {
-                    render_title(ctx, &rendered, label, env);
+                    render_title(ctx, &rendered, label, None, ButtonStyle::Automatic, env);
                 }
                 MenuLabel::View { subview, .. } => {
                     place_label_view(ctx, &rendered, subview, env);
@@ -1557,6 +1606,9 @@ pub fn emit_button_accessibility<E: crate::text::TextEngine>(
     state: &Rc<RefCell<ButtonRenderState<E>>>,
     env: &Environment,
 ) {
+    if renderer.is_accessibility_hidden(env) {
+        return;
+    }
     button_accessibility(renderer, None, state, env);
 }
 
@@ -1570,6 +1622,9 @@ pub fn emit_menu_accessibility<E: crate::text::TextEngine>(
     state: &Rc<RefCell<MenuRenderState<E>>>,
     env: &Environment,
 ) {
+    if renderer.is_accessibility_hidden(env) {
+        return;
+    }
     menu_accessibility(renderer, None, None, state, env);
 }
 
@@ -1593,17 +1648,22 @@ pub fn label_styled(label: &LookLabel, styled: StyledStr) -> StyledStr {
 mod tests {
     #[cfg(feature = "menu")]
     use super::MenuRenderState;
-    use super::{ButtonChromeState, button_size, look_color, retained_label_color};
+    use super::{
+        ButtonChromeState, button_size, button_spec, look_color, retained_label_color,
+        role_environment,
+    };
     use crate::theme::{
         ButtonLook, Chrome, CornerShape, FocusIndicator, Label, Motion, PressFeedback, StateLayer,
         Surface,
     };
     use cherenkov_record::WorkingColor;
     use kurbo::Rect;
-    use nami::{Signal as _, SignalExt as _};
+    use nami::{Signal as _, SignalExt as _, constant};
+    use std::borrow::Cow;
     use waterui::Color;
+    use waterui::theme::{color::Error as ThemeError, install_color_signal};
     use waterui_controls::ControlSize;
-    use waterui_controls::button::ButtonStyle;
+    use waterui_controls::button::{ButtonRole, ButtonStyle};
     #[cfg(feature = "menu")]
     use waterui_controls::menu::{Menu, ResolvedMenu};
     use waterui_core::Environment;
@@ -1694,9 +1754,9 @@ mod tests {
     #[test]
     fn a_tint_signal_change_reaches_the_look_without_requesting_it_again() {
         let source = nami::Binding::container(WorkingColor::new([1.0, 0.0, 0.0, 1.0]));
-        let tint = waterui::theme::Tint::new(waterui_graphics::color::signal_color(
+        let tint = waterui::theme::Tint::new(
             source.map(|color| Color::new(waterui_graphics::color::Working(color))),
-        ));
+        );
         let env = Environment::new().extending(tint);
         let spec = super::button_spec(ButtonStyle::Automatic, ControlSize::Small, false, &env);
         let color = spec.tint().resolve(&env);
@@ -1812,5 +1872,24 @@ mod tests {
         assert_eq!(rgb(resolved.snapshot()), (255, 0, 0), "hovered");
         chrome.label_state.set(InteractionState::empty());
         assert_eq!(rgb(resolved.snapshot()), (0, 0, 255), "back to resting");
+    }
+
+    #[test]
+    fn destructive_button_role_tints_spec_in_error_color() {
+        let env = crate::renderer::tests::pumped_test_environment();
+        let mut env_with_error = env;
+        let error_color = WorkingColor::new([0.9, 0.1, 0.1, 1.0]);
+        install_color_signal::<ThemeError>(&mut env_with_error, constant(error_color).computed());
+        let destructive_env = role_environment(Some(ButtonRole::Destructive), &env_with_error);
+        let spec = button_spec(
+            ButtonStyle::BorderedProminent,
+            ControlSize::Small,
+            false,
+            destructive_env.as_ref(),
+        );
+        assert_eq!(tint_of(&spec, &env_with_error), error_color.components);
+
+        let cancel_env = role_environment(Some(ButtonRole::Cancel), &env_with_error);
+        assert!(matches!(cancel_env, Cow::Borrowed(_)));
     }
 }

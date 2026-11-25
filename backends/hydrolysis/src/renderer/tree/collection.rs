@@ -10,12 +10,13 @@ use super::*;
 use crate::theme::WidgetTheme;
 use std::rc::Rc;
 
+use nami::Signal as _;
 use nami::collection::CollectionChange;
 use waterui_core::backend::ChildSlot;
 use waterui_core::contract_violation;
 use waterui_core::layout::{LayoutError, PlacementInput, ResolvedExtent, resolve_layout_extent};
 use waterui_layout::stack::{Axis as StackAxis, lazy_stack_cross_stretch};
-use waterui_structural_transition::{Ghost, GhostSlot, TransitionSpec};
+use waterui_structural_transition::{Ghost, GhostSlot, ReduceMotion, TransitionSpec};
 
 use super::transition::{
     TransitionPaint, TransitionRun, TransitionRuntime, claim_transition, flush_transitioned,
@@ -194,9 +195,9 @@ pub struct CollectionNode<E: crate::text::TextEngine> {
     pub(super) ghosts: Vec<CollectionGhost<E>>,
     /// Ghost slot frames in `ghosts` order, filled by `layout` beside `placed`.
     pub(super) ghost_placed: Vec<Rect>,
-    /// Reduce Motion resolved once at build from the item environment: every
-    /// clock started here maps through `Transition::reduced` when set.
-    pub(super) reduce_motion: bool,
+    /// Reduce Motion signal captured from the item environment: every
+    /// clock started here samples it so mid-session setting changes apply.
+    pub(super) reduce_motion: ReduceMotion,
     /// Logical-edge resolution for sampled transition properties.
     pub(super) direction: waterui_core::layout::LayoutDirection,
     /// Set by the membership watcher; consumed by `patch` to trigger a reconcile.
@@ -620,7 +621,7 @@ impl<E: crate::text::TextEngine> CollectionNode<E> {
                             entry.node,
                             GhostSlot::new(dimensions, priority),
                             &spec,
-                            self.reduce_motion,
+                            self.reduce_motion.snapshot(),
                         ),
                         runtime: TransitionRuntime::new(renderer.frame_instant),
                     });
@@ -651,7 +652,7 @@ impl<E: crate::text::TextEngine> CollectionNode<E> {
                 let node = RenderNode::build_held(view, &env, renderer);
                 node.core().cell.set_parent(&core.cell);
                 let mut entry = CollectionEntry::new(id, node, core);
-                entry.begin_insertion(self.reduce_motion, renderer.frame_instant);
+                entry.begin_insertion(self.reduce_motion.snapshot(), renderer.frame_instant);
                 entry
             };
             next.push(entry);
@@ -712,8 +713,8 @@ pub struct LazyTransitions<E: crate::text::TextEngine, T: 'static> {
     /// Removed rows still animating out, ordered by the row position they
     /// sit before.
     ghosts: RefCell<Vec<LazyGhost<E>>>,
-    /// Reduce Motion resolved once at build from the item environment.
-    reduce_motion: bool,
+    /// Reduce Motion signal captured from the item environment.
+    reduce_motion: ReduceMotion,
     /// Logical-edge resolution for sampled transition properties.
     pub(crate) direction: waterui_core::layout::LayoutDirection,
 }
@@ -795,9 +796,7 @@ impl<T: 'static, E: crate::text::TextEngine> LazyTransitions<E, T> {
             replaced_set: RefCell::new(None),
             rows: RefCell::new(std::collections::HashMap::new()),
             ghosts: RefCell::new(Vec::new()),
-            reduce_motion: env
-                .get::<waterui_structural_transition::ReduceMotion>()
-                .is_some_and(|flag| flag.0),
+            reduce_motion: env.get::<ReduceMotion>().cloned().unwrap_or_default(),
             direction: waterui_layout::layout_direction(env).snapshot(),
         }
     }
@@ -921,7 +920,13 @@ impl<T: 'static, E: crate::text::TextEngine> LazyTransitions<E, T> {
         let insertion = spec
             .as_ref()
             .filter(|_| self.was_inserted(id, renderer.frame_instant))
-            .map(|spec| TransitionRun::insertion(spec, self.reduce_motion, renderer.frame_instant));
+            .map(|spec| {
+                TransitionRun::insertion(
+                    spec,
+                    self.reduce_motion.snapshot(),
+                    renderer.frame_instant,
+                )
+            });
         if insertion.is_some() {
             renderer.context_mark_layout();
         }
@@ -1024,7 +1029,7 @@ impl<T: 'static, E: crate::text::TextEngine> LazyTransitions<E, T> {
                     subview,
                     GhostSlot::new(ViewDimensions::new(kurbo_size(placement.content)), 0),
                     &spec,
-                    self.reduce_motion,
+                    self.reduce_motion.snapshot(),
                 ),
                 placement,
                 runtime: TransitionRuntime::new(now),

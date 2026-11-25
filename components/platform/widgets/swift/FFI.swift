@@ -7,6 +7,13 @@ import Foundation
 public struct WUIWidgetContext {
     public let family: String
     public let displaySize: CGSize
+    public let storePath: String
+
+    public init(family: String, displaySize: CGSize, storePath: String) {
+        self.family = family
+        self.displaySize = displaySize
+        self.storePath = storePath
+    }
 }
 
 /// Mirrors `waterui_widgets::ffi::Buffer` — the serialized timeline bytes a
@@ -73,6 +80,7 @@ private func contextJSON(context: WUIWidgetContext) -> Data {
     struct ContextJSON: Encodable {
         let family: String
         let displaySize: SizeJSON
+        let storePath: String
     }
     do {
         return try JSONEncoder().encode(ContextJSON(
@@ -80,7 +88,8 @@ private func contextJSON(context: WUIWidgetContext) -> Data {
             displaySize: SizeJSON(
                 width: context.displaySize.width,
                 height: context.displaySize.height
-            )
+            ),
+            storePath: context.storePath
         ))
     } catch {
         fatalError("widget context does not encode: \(error)")

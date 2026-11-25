@@ -46,13 +46,14 @@ A `WaterUI` project is a plain Rust crate; the CLI keeps native projects out of 
 use waterui::app::{App, Windows};
 use waterui::prelude::*;
 use waterui::preview;
+use waterui::window::Window;
 
 #[preview]
 fn main() -> impl View {
     let count = Binding::i32(0);
 
     vstack((
-        text("Hello, WaterUI!").size(28),
+        text("Hello, WaterUI!").font_size(28),
         text!("Count: {count}"),
         stepper("Count", &count),
     ))
@@ -60,7 +61,7 @@ fn main() -> impl View {
 }
 
 pub fn app(env: Environment) -> App<impl Windows> {
-    App::new(main, env)
+    App::new(env).window(Window::new("Counter", main))
 }
 ```
 
@@ -139,7 +140,7 @@ fn contacts() -> impl View {
         Contact { id: 2, name: "Bob Smith" },
     ];
 
-    List::for_each(contacts, |contact| ListItem::new(text(contact.name)))
+    List::for_each(contacts, |contact| text(contact.name))
 }
 ```
 

@@ -1,6 +1,8 @@
 //! The Apple backend's [`NativeBackend`]: each component's realization,
 //! reached through static dispatch.
 
+#[cfg(waterui_feature = "gpu")]
+use waterui::graphics::backend::GpuContentLeaf;
 #[cfg(waterui_feature = "navigation")]
 use waterui::navigation::ResolvedNavigationView;
 use waterui_backend_core::{
@@ -11,8 +13,10 @@ use waterui_core::metadata::MetadataKey;
 use waterui_core::{Metadata, NativeView};
 
 use crate::components::frame_rate::realize_frame_rate_metadata;
+use crate::components::sheet::realize_sheet_metadata;
 use crate::contract::{NativeLeaf, RenderContext};
 use waterui::animation::FrameRateVote;
+use waterui::sheet::Sheet;
 
 /// Realizes views into `AppKit`/`UIKit` leaves.
 #[derive(Debug, Clone)]
@@ -186,23 +190,6 @@ impl NativeBackend for AppleBackend {
         crate::components::dynamic::realize_dynamic(native, &self.entry(env))
     }
 
-    fn window<C: ChildView<Self>>(
-        &mut self,
-        native: waterui::window::Window<waterui::window::WindowSlot<C>, Option<C>>,
-        env: &Environment,
-        (): (),
-    ) -> NativeLeaf {
-        mark_reached!("window");
-        #[cfg(target_os = "macos")]
-        crate::windows::show_from_tree(native, env, self.mtm);
-        #[cfg(target_os = "ios")]
-        {
-            let _ = native;
-            crate::windows::show_unsupported_on_ios();
-        }
-        crate::components::empty::realize_empty((), &RenderContext::entry(env, self.mtm))
-    }
-
     fn shape(
         &mut self,
         native: waterui::shape::ResolvedShape,
@@ -233,7 +220,7 @@ impl NativeBackend for AppleBackend {
         mark_reached!("shader_paint");
         #[cfg(feature = "gpu_surface")]
         return crate::components::gpu_surface::realize_gpu_view(
-            native.into_gpu_view(),
+            GpuContentLeaf::from(native.into_gpu_view()),
             &self.entry(env),
         );
         #[cfg(not(feature = "gpu_surface"))]
@@ -268,6 +255,19 @@ impl NativeBackend for AppleBackend {
     ) -> NativeLeaf {
         mark_reached!("badge");
         crate::components::badge::realize_badge_config(
+            native.map_slots(C::into_child),
+            &self.entry(env),
+        )
+    }
+
+    fn disclosure<C: ChildView<Self>>(
+        &mut self,
+        native: waterui::widget::disclosure::DisclosureConfig<C>,
+        env: &Environment,
+        (): (),
+    ) -> NativeLeaf {
+        mark_reached!("disclosure");
+        crate::components::disclosure::realize_disclosure_config(
             native.map_slots(C::into_child),
             &self.entry(env),
         )
@@ -452,14 +452,17 @@ impl NativeBackend for AppleBackend {
     }
 
     #[cfg(waterui_feature = "table")]
-    fn table(
+    fn table<C: ChildView<Self>>(
         &mut self,
-        native: waterui::component::table::TableConfig,
+        native: waterui::component::table::TableConfig<C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
         mark_reached!("table");
-        crate::components::table::realize_table_config(native, &self.entry(env))
+        crate::components::table::realize_table_config(
+            &MapSlots::map_slots(native, C::into_child),
+            &self.entry(env),
+        )
     }
 
     #[cfg(waterui_feature = "navigation")]
@@ -551,12 +554,7 @@ impl NativeBackend for AppleBackend {
     }
 
     #[cfg(waterui_feature = "gpu")]
-    fn gpu(
-        &mut self,
-        native: waterui::GpuView<alloc::boxed::Box<dyn waterui::graphics::GpuContent>>,
-        env: &Environment,
-        (): (),
-    ) -> NativeLeaf {
+    fn gpu(&mut self, native: GpuContentLeaf, env: &Environment, (): ()) -> NativeLeaf {
         mark_reached!("gpu");
         crate::components::gpu_surface::realize_gpu_view(native, &self.entry(env))
     }
@@ -681,6 +679,17 @@ impl NativeBackend for AppleBackend {
             metadata,
             &self.entry(env),
         )
+    }
+
+    fn task_hook<C: ChildView<Self>>(
+        &mut self,
+        metadata: Metadata<waterui_interaction::event::TaskHook, C>,
+        env: &Environment,
+        (): (),
+    ) -> NativeLeaf {
+        mark_reached!("task_hook");
+        let metadata = metadata.map_content(C::into_child);
+        crate::components::lifecycle_hook::realize_task_hook_metadata(metadata, &self.entry(env))
     }
 
     fn on_event<C: ChildView<Self>>(
@@ -1069,18 +1078,15 @@ impl NativeBackend for AppleBackend {
         crate::components::secure::realize_secure_metadata(metadata, &self.entry(env))
     }
 
-    fn standard_dynamic_range<C: ChildView<Self>>(
+    fn dynamic_range<C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::metadata::secure::StandardDynamicRange, C>,
+        metadata: Metadata<waterui::metadata::secure::DynamicRangeMetadata, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
-        mark_reached!("standard_dynamic_range");
+        mark_reached!("dynamic_range");
         let metadata = metadata.map_content(C::into_child);
-        crate::components::dynamic_range::realize_standard_dynamic_range_metadata(
-            metadata,
-            &self.entry(env),
-        )
+        crate::components::dynamic_range::realize_dynamic_range_metadata(metadata, &self.entry(env))
     }
 
     fn frame_rate<C: ChildView<Self>>(
@@ -1092,20 +1098,6 @@ impl NativeBackend for AppleBackend {
         mark_reached!("frame_rate");
         let metadata = metadata.map_content(C::into_child);
         realize_frame_rate_metadata(metadata, &self.entry(env))
-    }
-
-    fn high_dynamic_range<C: ChildView<Self>>(
-        &mut self,
-        metadata: Metadata<waterui::metadata::secure::HighDynamicRange, C>,
-        env: &Environment,
-        (): (),
-    ) -> NativeLeaf {
-        mark_reached!("high_dynamic_range");
-        let metadata = metadata.map_content(C::into_child);
-        crate::components::dynamic_range::realize_high_dynamic_range_metadata(
-            metadata,
-            &self.entry(env),
-        )
     }
 
     fn anchored_overlay<C: ChildView<Self>>(
@@ -1136,6 +1128,17 @@ impl NativeBackend for AppleBackend {
             metadata,
             &self.entry(env),
         )
+    }
+
+    fn sheet<C: ChildView<Self>>(
+        &mut self,
+        metadata: Metadata<Sheet, C>,
+        env: &Environment,
+        (): (),
+    ) -> NativeLeaf {
+        mark_reached!("sheet");
+        let metadata = metadata.map_content(C::into_child);
+        realize_sheet_metadata(metadata, &self.entry(env))
     }
 
     #[cfg(waterui_feature = "dialog")]

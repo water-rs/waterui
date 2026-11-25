@@ -4,17 +4,31 @@ use alloc::collections::BTreeSet;
 use core::ops::RangeInclusive;
 
 use jiff::civil::Date;
+use nami::watcher::BoxWatcherGuard;
 use nami::{Binding, Computed, Signal, SignalExt, signal::IntoComputed};
 use waterui_controls::label::{ControlLabel, Label, LabelKind};
 use waterui_controls::{IntoLabel, impl_label_style_methods};
 use waterui_core::backend::{Backend, ChildSlot, MapSlots};
-use waterui_core::{AnyView, Environment, Native, NativeView, View};
+use waterui_core::{AnyView, Environment, Metadata, Native, NativeView, Retain, View};
 use waterui_locale::locale_binding;
 
 use crate::calendar::{
     CalendarBody, calendar_rows, ensure_visible_month_in_range, initial_visible_month,
-    map_visible_month_binding, multi_day_cell_content,
+    map_visible_month_binding, multi_day_cell_content, sanitize_date_range,
 };
+
+/// Removes any selected dates outside `range` in place.
+pub fn clamp_dates_to_range(value: &Binding<BTreeSet<Date>>, range: &RangeInclusive<Date>) {
+    let range = sanitize_date_range(range.clone());
+    let current = value.snapshot();
+    if current.iter().any(|date| !range.contains(date)) {
+        let clamped: BTreeSet<Date> = current
+            .into_iter()
+            .filter(|date| range.contains(date))
+            .collect();
+        value.set(clamped);
+    }
+}
 
 /// Configuration for the `MultiDatePicker` component.
 #[derive(Debug, Clone)]
@@ -25,7 +39,7 @@ pub struct MultiDatePickerConfig<S> {
     /// The selected dates.
     value: Binding<BTreeSet<Date>>,
     /// The valid date range.
-    range: RangeInclusive<Date>,
+    range: Computed<RangeInclusive<Date>>,
     /// Passively decorated dates.
     decorated: Computed<BTreeSet<Date>>,
     /// The month the picker shows.
@@ -57,8 +71,27 @@ impl<S> MultiDatePickerConfig<S> {
 
     /// The valid date range.
     #[must_use]
-    pub const fn range(&self) -> &RangeInclusive<Date> {
+    pub const fn range(&self) -> &Computed<RangeInclusive<Date>> {
         &self.range
+    }
+
+    /// Watches `range` and removes out-of-range dates and adjusts
+    /// `visible_month` in place whenever the range updates, returning the
+    /// subscription guard.
+    pub fn watch_range_clamp(&self) -> BoxWatcherGuard {
+        let value = self.value.clone();
+        let visible_month = self.visible_month.clone();
+        let apply = move |range: &RangeInclusive<Date>| {
+            let range = sanitize_date_range(range.clone());
+            clamp_dates_to_range(&value, &range);
+            ensure_visible_month_in_range(
+                &visible_month,
+                value.snapshot().into_iter().next(),
+                &range,
+            );
+        };
+        apply(&self.range.snapshot());
+        self.range.watch(move |ctx| apply(ctx.value()))
     }
 
     /// Passively decorated dates.
@@ -81,7 +114,7 @@ impl<S> MultiDatePickerConfig<S> {
 pub struct MultiDatePicker<L> {
     label: Label<L>,
     value: Binding<BTreeSet<Date>>,
-    range: RangeInclusive<Date>,
+    range: Computed<RangeInclusive<Date>>,
     decorated: Computed<BTreeSet<Date>>,
     visible_month: Binding<Date>,
 }
@@ -144,14 +177,14 @@ impl<L> MultiDatePicker<L> {
     /// announce. Use [`hide_label`](Self::hide_label) to omit it visually
     /// while keeping it in the accessibility tree.
     pub fn new<I: IntoLabel<Kind = L>>(label: I, date: &Binding<BTreeSet<Date>>) -> Self {
-        let range = Date::MIN..=Date::MAX;
+        let initial_range = Date::MIN..=Date::MAX;
         let visible_month = Binding::container(
-            initial_visible_month(date.snapshot().into_iter().next(), &range).first_day(),
+            initial_visible_month(date.snapshot().into_iter().next(), &initial_range).first_day(),
         );
         Self {
             label: label.into_label(),
             value: date.clone(),
-            range,
+            range: Computed::constant(initial_range),
             decorated: Computed::constant(BTreeSet::new()),
             visible_month,
         }
@@ -162,13 +195,21 @@ impl<L> MultiDatePicker<L> {
     }
 
     /// Sets the valid date range for the picker.
-    pub fn range(mut self, range: RangeInclusive<Date>) -> Self {
+    ///
+    /// # Contract violation
+    ///
+    /// A reversed range panics in debug builds and logs and clamps in release
+    /// builds.
+    pub fn range(mut self, range: impl IntoComputed<RangeInclusive<Date>>) -> Self {
+        let mapped = range.into_computed().map(sanitize_date_range).computed();
+        let initial = mapped.snapshot();
+        clamp_dates_to_range(&self.value, &initial);
         ensure_visible_month_in_range(
             &self.visible_month,
             self.value.snapshot().into_iter().next(),
-            &range,
+            &initial,
         );
-        self.range = range;
+        self.range = mapped;
         self
     }
 
@@ -178,7 +219,7 @@ impl<L> MultiDatePicker<L> {
         ensure_visible_month_in_range(
             &visible_month,
             self.value.snapshot().into_iter().next(),
-            &self.range,
+            &self.range.snapshot(),
         );
         self.visible_month = visible_month;
         self
@@ -229,6 +270,7 @@ impl<S> MultiDatePickerGrid<S> {
 
     /// Splits this grid into its resolved label and its composed calendar body.
     pub fn into_parts(self, env: &Environment) -> (ControlLabel<S>, impl View + use<S>) {
+        let range_guard = self.0.watch_range_clamp();
         let MultiDatePickerConfig {
             label,
             value: selection,
@@ -245,7 +287,10 @@ impl<S> MultiDatePickerGrid<S> {
         let rows = calendar_rows(&visible_month, move |cell| {
             multi_day_cell_content(cell, &cell_range, cell_selection.clone(), &cell_decorated)
         });
-        let calendar = CalendarBody::new(locale, range, visible_month, rows);
+        let calendar = Metadata::new(
+            CalendarBody::new(locale, range, visible_month, rows),
+            Retain::new(range_guard),
+        );
         (label, calendar)
     }
 }

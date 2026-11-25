@@ -31,7 +31,7 @@ compile-gate-tests = []
 # `barcode`, `chart` and `particle` back media.md's facade imports
 # (`waterui::barcode`, `waterui::chart`, `waterui::particle`); `widgets` backs
 # project.md's home-screen widget section (`waterui::widgets`, `#[waterui::widget]`).
-waterui = { workspace = true, features = ["webview", "flow-markdown", "media", "video", "gpu", "assets", "snackbar", "highlight", "locale-datetime", "locale-list", "locale-relative-time", "ts", "dialog", "canvas", "barcode", "chart", "particle", "widgets", "list", "navigation", "menu", "slider", "stepper", "toggle", "text-field", "secure-field", "validation", "picker", "calendar", "date-picker", "multi-date-picker", "color-picker", "file-picker", "haptics"] }
+waterui = { workspace = true, features = ["webview", "flow-markdown", "image", "video", "gpu", "assets", "snackbar", "highlight", "locale-datetime", "locale-list", "locale-relative-time", "ts", "dialog", "canvas", "barcode", "chart", "particle", "widgets", "list", "navigation", "menu", "slider", "stepper", "toggle", "text-field", "secure-field", "validation", "picker", "calendar", "date-picker", "multi-date-picker", "color-picker", "file-picker", "haptics"] }
 waterui-icons-material-icon.workspace = true
 waterui-icons-lucide.workspace = true
 # Direct-crate dependencies the skill's own snippets name.
@@ -42,7 +42,7 @@ waterui-locale = { workspace = true, features = ["datetime", "number", "relative
 waterui-map.workspace = true                                 # media.md, Map
 waterui-map-gpu.workspace = true                             # media.md, tile source
 waterui-particle.workspace = true                            # media.md, ParticleSystem
-waterui-url.workspace = true                                 # media.md, MapGpuOptions
+waterui-url.workspace = true                                 # media.md, MapGpu
 waterkit-permission.workspace = true                         # project.md, runtime permissions
 jiff.workspace = true                                        # components.md, date pickers
 # Glue only: media.md's `#[js_api]` snippet returns `Json<Greeting>`, which needs

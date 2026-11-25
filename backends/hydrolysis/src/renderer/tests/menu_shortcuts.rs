@@ -16,7 +16,9 @@ use waterui::prelude::{ContextMenu, Shortcut};
 use waterui::widget::condition::when;
 use waterui_controls::NoopSlot;
 use waterui_controls::button::button;
-use waterui_controls::menu::{CommandExt as _, Menu, MenuItem, NamedKey, ResolvedMenuItem};
+use waterui_controls::menu::{
+    CommandExt as _, Menu, MenuItem, NamedKey, ResolvedMenuItem, ShortcutNamedKey,
+};
 use waterui_controls::text_field::field;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::{AnyView, Environment};
@@ -514,7 +516,7 @@ impl TerminationHost for TerminateCount {
 fn a_declared_quit_chord_requests_termination() {
     let mut env = test_environment();
     let terminated = TerminateCount::default();
-    let _machine = App::new_with_windows((), Environment::new())
+    let _machine = App::new(Environment::new())
         .into_parts()
         .termination
         .start(&mut env, terminated.clone());
@@ -902,28 +904,28 @@ fn named_key_chords_fire_their_commands() {
             let removed = removed.clone();
             "Remove"
                 .action(move || removed.set(removed.snapshot() + 1))
-                .shortcut(Shortcut::new(NamedKey::Delete).control())
+                .shortcut(Shortcut::new(ShortcutNamedKey::Delete).control())
                 .into()
         },
         {
             let reloaded = reloaded.clone();
             "Reload"
                 .action(move || reloaded.set(reloaded.snapshot() + 1))
-                .shortcut(Shortcut::new(NamedKey::F5))
+                .shortcut(Shortcut::new(ShortcutNamedKey::F5))
                 .into()
         },
         {
             let switched = switched.clone();
             "Switch"
                 .action(move || switched.set(switched.snapshot() + 1))
-                .shortcut(Shortcut::new(NamedKey::Tab).control())
+                .shortcut(Shortcut::new(ShortcutNamedKey::Tab).control())
                 .into()
         },
         {
             let back = back.clone();
             "Back"
                 .action(move || back.set(back.snapshot() + 1))
-                .shortcut(Shortcut::new(NamedKey::ArrowLeft).control())
+                .shortcut(Shortcut::new(ShortcutNamedKey::ArrowLeft).control())
                 .into()
         },
     ]);
@@ -1064,7 +1066,7 @@ fn a_bare_named_key_chord_leaves_the_focused_field_its_key() {
                     "Actions",
                     "Remove"
                         .action(move || hits.set(hits.snapshot() + 1))
-                        .shortcut(Shortcut::new(NamedKey::Delete)),
+                        .shortcut(Shortcut::new(ShortcutNamedKey::Delete)),
                 ),
             )))
         })

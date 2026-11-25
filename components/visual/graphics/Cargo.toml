@@ -16,7 +16,7 @@ default = ["gpu"]
 text = ["dep:waterui-text"]
 # Interactive surface keyboard, pointer, scroll and IME events (`keyboard-types`).
 input = ["dep:keyboard-types"]
-# Raster image decoding (`image_decode`) and offscreen PNG encoding (`image`, `mp4parse`).
+# Raster image decoding (`ImageSource::decode`, `PixelBuffer::decode`) and offscreen PNG encoding (`image`, `mp4parse`).
 image-decode = ["dep:image", "dep:mp4parse"]
 # Filters on views (`.filter(F)`, `.blur(..)`, …) and the portable description
 # a backend reads from them: the filter's stages with their WGSL snippets, its
@@ -38,10 +38,12 @@ cherenkov = ["dep:cherenkov"]
 # and needs no device here.
 gpu = [
     "cherenkov",
+    "cherenkov-record/validate",
     "effects",
     "input",
     "filtrate/gpu",
     "dep:cherenkov-gpu",
+    "dep:waterui-macros",
     "dep:wgpu",
     "dep:bytemuck",
     "dep:pollster",
@@ -52,12 +54,20 @@ gpu = [
 # Offscreen rendering through `Engine<Raster>`: pictures rasterised for hosts
 # whose image views take bitmaps, shader paints included. With `effects`,
 # filtered views run on the raster too (`AnyEffect::into_cpu`).
-cpu = ["cherenkov", "dep:cherenkov-cpu", "cherenkov-cpu/shaders", "filtrate?/lanes"]
+cpu = [
+    "cherenkov",
+    "cherenkov-record/validate",
+    "dep:cherenkov-cpu",
+    "dep:waterui-macros",
+    "cherenkov-cpu/shaders",
+    "filtrate?/lanes",
+]
 
 [dependencies]
 arc-swap = { workspace = true, optional = true }
 waterui-core.workspace = true
 waterui-frame-rate.workspace = true
+waterui-macros = { workspace = true, features = ["shader"], optional = true }
 nami.workspace = true
 # The render-target-neutral recorder: always on — `draw`, `SceneContent`,
 # `Picture` and the `SceneResources` contract are all spelled in its types.
@@ -85,9 +95,9 @@ keyboard-types = { workspace = true, optional = true }
 send_wrapper = { version = "0.6", default-features = false }
 thiserror.workspace = true
 # `avif` is `image`'s AVIF *encoder* (ravif -> rav1e), not its decoder
-# (`avif-native`). `image_decode` only decodes, and its HEIF retry hands the
-# patched container to the platform decoder, so the encoder was pure weight.
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff"], optional = true }
+# (`avif-native`). Decoding only needs the raster decoders; the HEIF retry hands
+# a patched container to the decoder when supported.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico", "tiff"], optional = true }
 mp4parse = { version = "0.17", optional = true }
 # Operational failures of the canvas — a refused font, an unlayoutable text —
 # are logged and skipped, with or without the GPU stack.

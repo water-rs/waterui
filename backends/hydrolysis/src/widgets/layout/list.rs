@@ -1,5 +1,6 @@
 use crate::renderer::HeldChild;
 use crate::renderer::bounded_proposal;
+use core::ops::Range;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
@@ -27,13 +28,15 @@ use accesskit::{
 #[cfg(feature = "accessibility")]
 use waterui::accessibility::{AccessibilityHidden, AccessibilityStateSignal};
 use waterui::component::list::{
-    ListConfig, ListItem, ListRowTags, ListSectionSpan, ListSelection, ListTagId, Move,
+    ListConfig, ListRowDeletable, ListRowInsets, ListRowTags, ListSectionSpan, ListSelection,
+    ListTagId,
 };
 use waterui::gesture::{DragEvent, DragGesture, Gesture, GesturePhase};
 use waterui_backend_core::scroll::{ScrollPositionReport, animated_row_scroll_approach};
 use waterui_core::Environment;
 use waterui_core::animation::Animation;
 use waterui_core::contract_violation;
+use waterui_core::extract::State;
 use waterui_core::handler::{BoxedAction, boxed_action};
 use waterui_core::id::Id as RawId;
 use waterui_core::layout::{
@@ -59,7 +62,7 @@ use waterui_core::resolve::Resolvable as _;
 pub type ListItemId = RawId;
 
 /// A row as this backend holds it: its content a child the renderer builds.
-pub type Row<E> = ListItem<HeldChild<E>>;
+pub type Row<E> = HeldChild<E>;
 
 #[derive(Clone, Copy)]
 struct ListViewportAnchor {
@@ -109,8 +112,10 @@ struct RowBinding {
     width: f64,
     /// Row height, the slot size a reorder drag steps by.
     height: f64,
-    /// Collection length, clamping where a reorder can land.
-    total_rows: usize,
+    /// Inclusive start of the movable part span containing this row.
+    movable_start: usize,
+    /// Exclusive end of the movable part span containing this row.
+    movable_end: usize,
 }
 
 impl RowBinding {
@@ -120,7 +125,8 @@ impl RowBinding {
         index: 0,
         width: 0.0,
         height: 0.0,
-        total_rows: 0,
+        movable_start: 0,
+        movable_end: 0,
     };
 }
 
@@ -276,8 +282,8 @@ pub struct ListRenderState<E: crate::text::TextEngine> {
     /// live) and only builds rows entering the window.
     item_cache: RefCell<VisibleSubviewCache<ListItemId, E>>,
     /// What each row in `item_cache` was realized with, keyed by the same id
-    /// and retired with it: the parts of its `ListItem` beside the content and
-    /// the environments the content was built under.
+    /// and retired with it: the row modifiers (`ListRowDeletable`,
+    /// `ListRowInsets`) and the environments the content was built under.
     realized_rows: RefCell<std::collections::HashMap<ListItemId, RealizedRow>>,
     /// One activation claim scope per row, keyed by the same stable id. The
     /// row's content sub-view flushes under the environment it was *built*
@@ -437,8 +443,8 @@ impl RowSectionChrome {
     }
 }
 
-/// What a list row was realized with: the parts of its `ListItem` beside the
-/// content, and the environments its content was built under.
+/// What a list row was realized with: its row modifiers (`ListRowDeletable`,
+/// `ListRowInsets`) and the environments its content was built under.
 struct RealizedRow {
     deletable: waterui_core::Computed<bool>,
     insets: Option<waterui_layout::padding::EdgeInsets>,
@@ -501,6 +507,8 @@ fn adopt_content_naming<E: crate::text::TextEngine>(
 /// keep it.
 fn list_row_environment(env: &Environment) -> Environment {
     let mut row_env = env.clone();
+    row_env.remove::<ListRowDeletable>();
+    row_env.remove::<ListRowInsets>();
     row_env.insert(waterui_controls::button::ButtonStyle::Plain);
     row_env.insert(crate::widgets::controls::button::ListRowChrome);
     row_env
@@ -735,7 +743,7 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
             return;
         }
         let row_env = list_row_environment(env);
-        let (content, deletable, insets) = materialize_list_item(contents, index).into_parts();
+        let content = materialize_list_item(contents, index);
         let subtree_env = self.row_subtree_environment(row_id, &row_env);
         let subview = cache.entry(row_id, move || {
             crate::renderer::RetainedSubview::held(content)
@@ -746,6 +754,15 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
         let scope_env = subview
             .node()
             .and_then(crate::renderer::RenderNode::leading_scope_env);
+        let resolved_env = subview.node().map_or(&row_env, |node| {
+            crate::renderer::RenderNode::resolved_handler_env(node, &row_env)
+        });
+        let deletable = resolved_env
+            .get::<ListRowDeletable>()
+            .map_or_else(|| Computed::new(true), |entry| entry.0.clone());
+        let insets = resolved_env
+            .get::<ListRowInsets>()
+            .map(|entry| entry.0.clone());
         let disabled = crate::widgets::util::widget_disabled(scope_env.unwrap_or(&row_env));
         // The row's `ListItem` node claims the naming scope its content
         // opens with, or the first leaf inside the subtree would claim the
@@ -1070,13 +1087,20 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
         content_height: f64,
     ) -> Option<ScrollPositionReport> {
         use crate::num_cast::f64_as_f32;
-        self.config.scroll_controller().as_ref().map(|controller| {
-            ScrollPositionReport::new(
-                controller.position_report(),
-                LayoutSize::new(f64_as_f32(viewport_width), f64_as_f32(viewport_height)),
-                LayoutSize::new(f64_as_f32(viewport_width), f64_as_f32(content_height)),
-            )
-        })
+        self.config
+            .scroll_controller()
+            .as_ref()
+            .map(|controller| ScrollPositionReport {
+                binding: controller.position_report(),
+                viewport_size: LayoutSize::new(
+                    f64_as_f32(viewport_width),
+                    f64_as_f32(viewport_height),
+                ),
+                content_size: LayoutSize::new(
+                    f64_as_f32(viewport_width),
+                    f64_as_f32(content_height),
+                ),
+            })
     }
 
     /// Applies the pending scroll request, if there is one. `animate` selects
@@ -1526,8 +1550,6 @@ pub fn list_accessibility<E: crate::text::TextEngine>(
         list_node.add_action(AccessibilityAction::ScrollUp);
         list_node.add_action(AccessibilityAction::ScrollDown);
         let editing = renderer.read_signal(list.editing());
-        let has_delete = list.on_delete().is_some();
-        let has_move = list.on_move().is_some();
         if ctx.is_none() {
             // The semantic walk emits every row's content through the shared
             // sub-view cache — the same frame bookkeeping the rendered flush
@@ -1658,12 +1680,11 @@ pub fn list_accessibility<E: crate::text::TextEngine>(
             let row_disabled = renderer.read_signal(&row_disabled_signal);
             // A hidden row vanishes whole — node and content — matching the
             // naming container's treatment of `accessibilityHidden`.
-            let row_hidden = row_a11y_env
-                .get::<AccessibilityHidden>()
-                .is_some_and(AccessibilityHidden::is_hidden)
-                || row_a11y_env
-                    .get::<AccessibilityStateSignal>()
-                    .is_some_and(|signal| renderer.read_signal(signal.state()).is_hidden());
+            let hidden_prop = renderer.is_accessibility_hidden(&row_a11y_env);
+            let hidden_state = row_a11y_env
+                .get::<AccessibilityStateSignal>()
+                .is_some_and(|signal| renderer.read_signal(signal.state()).is_hidden());
+            let row_hidden = hidden_prop || hidden_state;
             let mut row_node = AccessibilityNode::new(
                 crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
                     &row_a11y_env,
@@ -1760,7 +1781,9 @@ pub fn list_accessibility<E: crate::text::TextEngine>(
                     &crate::renderer::InteractionKey::for_rc(owner, row_interaction_base + 3),
                     row_node_id,
                 );
-                let deletable = editing && renderer.read_signal(&row_deletable);
+                let row_can_delete = list.edits().can_delete(row_id);
+                let row_movable_span = list.edits().movable_span(&rows_snapshot, index);
+                let deletable = editing && row_can_delete && renderer.read_signal(&row_deletable);
                 #[cfg(hydrolysis_cherenkov)]
                 if ctx.is_none() {
                     // Emit the row content's own semantics under the row's node:
@@ -1793,12 +1816,11 @@ pub fn list_accessibility<E: crate::text::TextEngine>(
                         row_rect,
                         slot_rect.height(),
                         index,
-                        row_count,
-                        has_move,
-                        deletable && has_delete,
+                        editing.then(|| row_movable_span.clone()).flatten(),
+                        deletable,
                     )
                 });
-                if editing && deletable && has_delete {
+                if deletable {
                     let state = Rc::clone(owner);
                     let action_env = row_env.clone();
                     let node_id = register_edit_control_node(
@@ -1811,7 +1833,7 @@ pub fn list_accessibility<E: crate::text::TextEngine>(
                         Rc::new(RefCell::new(
                             move |_renderer: &mut crate::renderer::SemanticCore<E>,
                                   _env: &Environment| {
-                                run_row_delete(&state, &action_env, index)
+                                run_row_delete(&state, &action_env, row_id)
                             },
                         )),
                     );
@@ -1826,21 +1848,30 @@ pub fn list_accessibility<E: crate::text::TextEngine>(
                         );
                     }
                 }
-                if editing && has_move {
+                if editing && let Some(span) = row_movable_span {
                     // The handle's halves are the two directions the draw pass
-                    // presses on: a row at a boundary advertises only the
-                    // direction it can move.
+                    // presses on: a row at a part boundary advertises only the
+                    // direction it can move within its part.
                     for (label_key, up, key, slot) in [
                         ("move_up", true, A11Y_KEY_MOVE_UP, 0usize),
                         ("move_down", false, A11Y_KEY_MOVE_DOWN, 1usize),
                     ] {
-                        let enabled = if up { index > 0 } else { index + 1 < row_count };
+                        let enabled = if up {
+                            index > span.start
+                        } else {
+                            index + 1 < span.end
+                        };
                         if !enabled {
                             continue;
                         }
+                        let to = if up { index - 1 } else { index + 1 };
+                        let Some(target_id) = rows_snapshot.get_id(to) else {
+                            continue;
+                        };
+                        let from_in_part = index - span.start;
+                        let to_in_part = to - span.start;
                         let state = Rc::clone(owner);
                         let action_env = row_env.clone();
-                        let to = if up { index - 1 } else { index + 1 };
                         let node_id = register_edit_control_node(
                             renderer,
                             ctx,
@@ -1857,7 +1888,14 @@ pub fn list_accessibility<E: crate::text::TextEngine>(
                             Rc::new(RefCell::new(
                                 move |_renderer: &mut crate::renderer::SemanticCore<E>,
                                       _env: &Environment| {
-                                    run_row_move(&state, &action_env, index, to)
+                                    run_row_move(
+                                        &state,
+                                        &action_env,
+                                        row_id,
+                                        target_id,
+                                        from_in_part,
+                                        to_in_part,
+                                    )
                                 },
                             )),
                         );
@@ -2024,9 +2062,7 @@ pub fn render_list_node<E: crate::text::TextEngine>(
     env: &Environment,
 ) {
     #[cfg(feature = "accessibility")]
-    let hidden = env
-        .get::<waterui::accessibility::AccessibilityHidden>()
-        .is_some_and(waterui::accessibility::AccessibilityHidden::is_hidden);
+    let hidden = ctx.renderer_mut().is_accessibility_hidden(env);
     #[cfg(feature = "accessibility")]
     if hidden {
         ctx.renderer_mut().push_accessibility_suppression();
@@ -2195,12 +2231,6 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
         .extent_index
         .borrow()
         .visible_window(span.start, span.end);
-    // The delete/move handlers (`Option<Box<dyn Fn>>`) stay owned by the retained
-    // config; per-row tap targets invoke them through the shared cell so they are
-    // reused every flush instead of being consumed.
-    let has_delete = state.borrow().config.on_delete().is_some();
-    let has_move = state.borrow().config.on_move().is_some();
-    let total_rows = row_count;
     // One hit-test group for every row gesture in this list, so a swipe on one
     // row and a reorder drag on another can never both claim the same pointer.
     let gesture_group = ctx.renderer_mut().allocate_gesture_group_id();
@@ -2393,8 +2423,19 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
             slot_rect.x1,
             slot_rect.y1 - footer_height,
         );
+        let (row_can_delete, row_movable_span) = {
+            let state_ref = state.borrow();
+            let edits = state_ref.config.edits();
+            (
+                edits.can_delete(row_id),
+                edits.movable_span(&contents, index),
+            )
+        };
+        let (movable_start, movable_end) = row_movable_span
+            .as_ref()
+            .map_or((index, index), |span| (span.start, span.end));
         // Refreshed before either recognizer runs this frame, so an in-flight
-        // drag always sees the row's current index and size.
+        // drag always sees the row's current index, size, and part bounds.
         let (row_binding, motion) = refresh_row_binding(
             state,
             row_id,
@@ -2402,7 +2443,8 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
                 index,
                 width: slot_rect.width(),
                 height: row_height,
-                total_rows,
+                movable_start,
+                movable_end,
             },
         );
         // The background a swipe uncovers stays anchored to the slot, beneath
@@ -2481,7 +2523,7 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
             }
         });
 
-        let deletable = ctx.renderer_mut().read_signal(&row_deletable);
+        let deletable = row_can_delete && ctx.renderer_mut().read_signal(&row_deletable);
         // The content's measured size was resolved in the resting-geometry pass
         // above — the same measure that wrote the row's extent this frame.
         let mut content_rect = list_content_rect(
@@ -2498,9 +2540,8 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
             row_rect,
             row_height,
             index,
-            total_rows,
-            editing && has_move,
-            editing && deletable && has_delete,
+            editing.then(|| row_movable_span.clone()).flatten(),
+            editing && deletable,
         );
 
         // A selectable row owns the whole row rect as a press target: a
@@ -2549,10 +2590,10 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
             }
         }
 
-        // Swipe-to-dismiss covers the whole row and is available whenever the
-        // list can delete, matching Material's `SwipeToDismissBox` rather than
-        // being gated behind edit mode.
-        if has_delete && deletable {
+        // Swipe-to-dismiss covers the whole row and is available whenever this
+        // row can be deleted, matching Material's `SwipeToDismissBox` rather
+        // than being gated behind edit mode.
+        if deletable {
             register_row_swipe_gesture(
                 ctx,
                 state,
@@ -2568,7 +2609,9 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
             );
         }
 
-        if let Some(control_rect) = controls.reorder {
+        if let Some(control_rect) = controls.reorder
+            && let Some(span) = row_movable_span
+        {
             // The handle is also the reorder grip: dragging it lifts the row.
             // The tap targets below stay, so the same control still offers
             // discrete one-step moves for pointer and keyboard users.
@@ -2585,7 +2628,9 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
                 control_rect,
                 &row_env,
             );
-            if let Some(rect) = controls.reorder_up {
+            if let Some(rect) = controls.reorder_up
+                && let Some(target_id) = contents.get_id(index - 1)
+            {
                 let key = crate::renderer::InteractionKey::for_rc(state, row_interaction_base);
                 let (hit_bounds, press_slot) = realize_control(
                     ctx,
@@ -2601,15 +2646,26 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
                 );
                 let state = Rc::clone(state);
                 let action_env = row_env.clone();
+                let from_in_part = index - span.start;
+                let to_in_part = from_in_part - 1;
                 ctx.renderer_mut().register_interactive_pointer_target(
                     hit_bounds,
                     press_slot,
                     move |_renderer, _point, _env| {
-                        run_row_move(&state, &action_env, index, index - 1)
+                        run_row_move(
+                            &state,
+                            &action_env,
+                            row_id,
+                            target_id,
+                            from_in_part,
+                            to_in_part,
+                        )
                     },
                 );
             }
-            if let Some(rect) = controls.reorder_down {
+            if let Some(rect) = controls.reorder_down
+                && let Some(target_id) = contents.get_id(index + 1)
+            {
                 let key = crate::renderer::InteractionKey::for_rc(state, row_interaction_base + 1);
                 let (hit_bounds, press_slot) = realize_control(
                     ctx,
@@ -2625,11 +2681,20 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
                 );
                 let state = Rc::clone(state);
                 let action_env = row_env.clone();
+                let from_in_part = index - span.start;
+                let to_in_part = from_in_part + 1;
                 ctx.renderer_mut().register_interactive_pointer_target(
                     hit_bounds,
                     press_slot,
                     move |_renderer, _point, _env| {
-                        run_row_move(&state, &action_env, index, index + 1)
+                        run_row_move(
+                            &state,
+                            &action_env,
+                            row_id,
+                            target_id,
+                            from_in_part,
+                            to_in_part,
+                        )
                     },
                 );
             }
@@ -2655,7 +2720,7 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
             ctx.renderer_mut().register_interactive_pointer_target(
                 delete_hit_bounds,
                 delete_press_slot,
-                move |_renderer, _point, _env| run_row_delete(&state, &action_env, index),
+                move |_renderer, _point, _env| run_row_delete(&state, &action_env, row_id),
             );
         }
 
@@ -3003,8 +3068,7 @@ fn row_edit_controls(
     row_rect: kurbo::Rect,
     slot_height: f64,
     index: usize,
-    total_rows: usize,
-    move_enabled: bool,
+    movable_span: Option<Range<usize>>,
     delete_enabled: bool,
 ) -> RowEditControls {
     let mut controls = RowEditControls {
@@ -3015,7 +3079,7 @@ fn row_edit_controls(
         trailing_x: row_rect.x1 - 8.0,
     };
     let mut trailing_x = controls.trailing_x;
-    if move_enabled {
+    if let Some(span) = movable_span {
         let control_width = metrics.move_control_width;
         let vertical_inset = metrics.trailing_control_vertical_inset;
         let control_height = vertical_inset
@@ -3030,7 +3094,7 @@ fn row_edit_controls(
         trailing_x -= control_width + metrics.trailing_control_spacing;
         let half_height = control_rect.height() / 2.0;
         controls.reorder = Some(control_rect);
-        controls.reorder_up = (index > 0).then(|| {
+        controls.reorder_up = (index > span.start).then(|| {
             kurbo::Rect::new(
                 control_rect.x0,
                 control_rect.y0,
@@ -3038,7 +3102,7 @@ fn row_edit_controls(
                 control_rect.y0 + half_height,
             )
         });
-        controls.reorder_down = (index + 1 < total_rows).then(|| {
+        controls.reorder_down = (index + 1 < span.end).then(|| {
             kurbo::Rect::new(
                 control_rect.x0,
                 control_rect.y0 + half_height,
@@ -3066,10 +3130,11 @@ fn row_edit_controls(
 fn run_row_delete<E: crate::text::TextEngine>(
     state: &RefCell<ListRenderState<E>>,
     env: &Environment,
-    index: usize,
+    row_id: ListItemId,
 ) -> bool {
-    if let Some(action) = state.borrow().config.on_delete().as_ref() {
-        (action)(env, index);
+    let edits = state.borrow().config.edits().clone();
+    if edits.can_delete(row_id) {
+        edits.delete(env, row_id);
     }
     true
 }
@@ -3081,13 +3146,17 @@ fn run_row_delete<E: crate::text::TextEngine>(
 fn run_row_move<E: crate::text::TextEngine>(
     state: &RefCell<ListRenderState<E>>,
     env: &Environment,
-    from: usize,
-    to: usize,
+    from_id: ListItemId,
+    to_id: ListItemId,
+    from_in_part: usize,
+    to_in_part: usize,
 ) -> bool {
-    state.borrow().preserve_anchor_index_once.set(true);
-    if let Some(action) = state.borrow().config.on_move().as_ref() {
-        (action)(env, Move::new(from, to));
-    }
+    let edits = {
+        let state_ref = state.borrow();
+        state_ref.preserve_anchor_index_once.set(true);
+        state_ref.config.edits().clone()
+    };
+    edits.move_row(env, from_id, to_id, from_in_part, to_in_part);
     if !state.borrow().rows_dirty.get() {
         state.borrow().preserve_anchor_index_once.set(false);
     }
@@ -3126,19 +3195,21 @@ fn register_row_swipe_gesture<E: crate::text::TextEngine>(
                 };
                 let offset = f64::from(event.translation().x);
                 let row = binding.get();
-                let list = owner.borrow();
-                let gestures = list.gestures();
+                let (gestures, edits) = {
+                    let list = owner.borrow();
+                    (list.gestures(), list.config.edits().clone())
+                };
                 match event.phase() {
                     GesturePhase::Started | GesturePhase::Updated => {
                         if motion.track_swipe(offset, row.width, gestures.swipe_threshold) {
-                            list.mark_rows_relisted();
+                            owner.borrow().mark_rows_relisted();
                         }
                     }
                     GesturePhase::Ended => {
                         if offset.abs() >= row.width * gestures.swipe_threshold {
                             motion.rest();
-                            if let Some(delete) = list.config.on_delete().as_ref() {
-                                (delete)(&action_env, row.index);
+                            if edits.can_delete(row_id) {
+                                edits.delete(&action_env, row_id);
                             }
                         } else {
                             // Short of the threshold the row springs back instead
@@ -3186,8 +3257,7 @@ fn register_row_reorder_gesture<E: crate::text::TextEngine>(
                 };
                 let dy = f64::from(event.translation().y);
                 let row = binding.get();
-                let list = owner.borrow();
-                let gestures = list.gestures();
+                let gestures = owner.borrow().gestures();
                 // How many whole slots the pointer has travelled, a slot
                 // stepped once the drag crosses the look's threshold of it.
                 // Rows are measured individually, but a drag only ever
@@ -3201,12 +3271,13 @@ fn register_row_reorder_gesture<E: crate::text::TextEngine>(
                 } else {
                     0.0
                 };
-                let to = reorder_destination(row.index, step, row.total_rows);
+                let to = reorder_destination(row.index, step, row.movable_start, row.movable_end);
                 match event.phase() {
                     GesturePhase::Started | GesturePhase::Updated => {
                         // The lifted row follows the pointer; every row
                         // between its origin and its destination slides one
                         // slot to make room.
+                        let list = owner.borrow();
                         if motion.set_lifted(true) {
                             list.mark_rows_relisted();
                         }
@@ -3214,22 +3285,37 @@ fn register_row_reorder_gesture<E: crate::text::TextEngine>(
                         list.shift_rows_for_reorder(row_id, row.index, to, Some(&gestures.settle));
                     }
                     GesturePhase::Ended => {
-                        if motion.set_lifted(false) {
-                            list.mark_rows_relisted();
-                        }
-                        motion.displace(kurbo::Vec2::ZERO, None);
-                        list.shift_rows_for_reorder(row_id, row.index, row.index, None);
-                        if to != row.index {
-                            list.preserve_anchor_index_once.set(true);
-                            if let Some(action) = list.config.on_move().as_ref() {
-                                (action)(&action_env, Move::new(row.index, to));
+                        let target_and_edits = {
+                            let list = owner.borrow();
+                            if motion.set_lifted(false) {
+                                list.mark_rows_relisted();
                             }
-                            if !list.rows_dirty.get() {
-                                list.preserve_anchor_index_once.set(false);
+                            motion.displace(kurbo::Vec2::ZERO, None);
+                            list.shift_rows_for_reorder(row_id, row.index, row.index, None);
+                            if to == row.index {
+                                None
+                            } else {
+                                list.rows_snapshot.borrow().get_id(to).map(|target_id| {
+                                    list.preserve_anchor_index_once.set(true);
+                                    (target_id, list.config.edits().clone())
+                                })
+                            }
+                        };
+                        if let Some((target_id, edits)) = target_and_edits {
+                            edits.move_row(
+                                &action_env,
+                                row_id,
+                                target_id,
+                                row.index - row.movable_start,
+                                to - row.movable_start,
+                            );
+                            if !owner.borrow().rows_dirty.get() {
+                                owner.borrow().preserve_anchor_index_once.set(false);
                             }
                         }
                     }
                     GesturePhase::Cancelled => {
+                        let list = owner.borrow();
                         if motion.set_lifted(false) {
                             list.mark_rows_relisted();
                         }
@@ -3248,12 +3334,13 @@ fn register_row_reorder_gesture<E: crate::text::TextEngine>(
     );
 }
 
-/// Clamps a slot step from `index` into the collection's index range.
-fn reorder_destination(index: usize, step: f64, total_rows: usize) -> usize {
-    if total_rows == 0 {
-        return 0;
+/// Clamps a slot step from `index` into the owning part's movable index span
+/// `span_start..span_end`.
+fn reorder_destination(index: usize, step: f64, span_start: usize, span_end: usize) -> usize {
+    if span_start >= span_end {
+        return index;
     }
-    let last = total_rows - 1;
+    let last = span_end - 1;
     if step >= 0.0 {
         #[allow(
             clippy::cast_possible_truncation,
@@ -3269,7 +3356,7 @@ fn reorder_destination(index: usize, step: f64, total_rows: usize) -> usize {
             reason = "the negated step is a whole non-negative slot count"
         )]
         let backward = (-step) as usize;
-        index.saturating_sub(backward)
+        index.saturating_sub(backward).max(span_start)
     }
 }
 
@@ -3279,7 +3366,10 @@ fn reorder_destination(index: usize, step: f64, total_rows: usize) -> usize {
 /// An action without its [`DragEvent`] is a contract violation by the gesture
 /// engine, reported; the action is then ignored (`None`).
 fn drag_event(env: &Environment) -> Option<DragEvent> {
-    let event = env.extract::<DragEvent>().ok();
+    let event = env
+        .extract::<State<DragEvent>>()
+        .ok()
+        .map(|State(event)| event);
     if event.is_none() {
         contract_violation!(
             "hydrolysis list drag action is missing its DragEvent; the drag is ignored"
@@ -3415,5 +3505,12 @@ pub fn emit_list_accessibility<E: crate::text::TextEngine>(
     state: &Rc<RefCell<ListRenderState<E>>>,
     env: &Environment,
 ) {
+    let hidden = renderer.is_accessibility_hidden(env);
+    if hidden {
+        renderer.push_accessibility_suppression();
+    }
     list_accessibility(renderer, None, None, state, env);
+    if hidden {
+        renderer.pop_accessibility_suppression();
+    }
 }

@@ -13,13 +13,13 @@
 //! `.with(Animation::...)` modifiers.
 
 use core::time::Duration;
-use waterui::animation::Animation;
+use waterui::animation::{Animation, Repeat};
 use waterui::app::{App, Windows};
 use waterui::prelude::slider::slider;
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::Binding;
-use waterui::shape::{Capsule, Circle, Rectangle, RoundedRectangle, ShapeExt};
+use waterui::shape::{Capsule, Circle, CornerRadius, Rectangle, RoundedRectangle, ShapeExt};
 
 const SCALE_BOX_SIDE: f32 = 80.0;
 const SCALE_STAGE_SIDE: f32 = SCALE_BOX_SIDE * 2.25;
@@ -347,23 +347,22 @@ fn toggle_animation_section(toggle_state: &Binding<bool>) -> impl View + use<> {
 
 /// Demo: Staggered animations with bars
 fn staggered_section(expanded: &Binding<bool>) -> impl View + use<> {
-    // Each bar has different spring stiffness, creating a cascading effect
-    let bar1_scale = expanded
-        .select(1.0, 0.2)
-        .with(Animation::spring(200.0, 15.0));
+    // Each bar uses the same spring staged with a progressive delay.
+    let base = Animation::spring(220.0, 16.0);
+    let bar1_scale = expanded.select(1.0, 0.2).with(base.clone());
     let bar2_scale = expanded
         .select(1.0, 0.2)
-        .with(Animation::spring(150.0, 15.0));
+        .with(base.clone().delay(Duration::from_millis(60)));
     let bar3_scale = expanded
         .select(1.0, 0.2)
-        .with(Animation::spring(100.0, 15.0));
+        .with(base.clone().delay(Duration::from_millis(120)));
     let bar4_scale = expanded
         .select(1.0, 0.2)
-        .with(Animation::spring(80.0, 12.0));
+        .with(base.delay(Duration::from_millis(180)));
 
     vstack((
         text("Staggered Animations").headline(),
-        text("Different spring stiffness creates cascading effect").body(),
+        text("Animation delays create a cascading wave").body(),
         hstack((
             Green
                 .size(50.0, 80.0)
@@ -461,13 +460,21 @@ fn custom_gpu_animation_section() -> impl View {
         text("Shape geometry morphing (renderer-side, not plain Core Animation transform)").body(),
         hstack((
             Circle
-                .morph_to(RoundedRectangle::new(0.22), Color::srgb_hex("#3B82F6"))
-                .duration(Duration::from_millis(1100))
+                .morph_to(
+                    RoundedRectangle::new(CornerRadius::fraction(0.22)),
+                    Color::srgb_hex("#3B82F6"),
+                )
+                .animation(
+                    Animation::ease_in_out(Duration::from_millis(1100))
+                        .repeat(Repeat::Forever { autoreverse: true }),
+                )
                 .size(90.0, 90.0),
             Rectangle
                 .morph_to(Capsule, Color::srgb_hex("#10B981"))
-                .duration(Duration::from_millis(900))
-                .autoreverse(true)
+                .animation(
+                    Animation::ease_in_out(Duration::from_millis(900))
+                        .repeat(Repeat::Forever { autoreverse: true }),
+                )
                 .size(128.0, 72.0),
         ))
         .spacing(16.0),
@@ -537,5 +544,5 @@ pub fn demo() -> impl View {
 
 /// Builds the animation example app.
 pub fn app(env: Environment) -> App<impl Windows> {
-    App::new(demo, env)
+    App::new(env).window(Window::new("", demo))
 }

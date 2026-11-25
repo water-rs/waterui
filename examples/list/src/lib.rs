@@ -6,12 +6,11 @@
 use waterui::Identifiable;
 use waterui::animation::Animation;
 use waterui::app::{App, Windows};
-use waterui::component::list::{List, ListDelete, ListItem, ListMove};
-use waterui::prelude::theme_color::Foreground;
+use waterui::component::list::{List, ListDelete, ListMove};
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
-use waterui::reactive::collection::List as ReactiveList;
+use waterui::theme::color::Foreground;
 
 const DATASET_SIZE: usize = 100_000;
 
@@ -24,7 +23,7 @@ struct Record {
 #[state]
 #[derive(Clone)]
 struct DemoState {
-    records: ReactiveList<Record>,
+    records: StateList<Record>,
     remaining: Binding<i32>,
     editing: Binding<bool>,
     scroll: ScrollController<usize>,
@@ -36,7 +35,7 @@ impl DemoState {
             .map(|index| Record { id: index as u64 })
             .collect::<Vec<_>>();
         Self {
-            records: ReactiveList::from(records),
+            records: StateList::from(records),
             remaining: binding(
                 i32::try_from(DATASET_SIZE).expect("DATASET_SIZE is 100,000, which fits in i32"),
             ),
@@ -46,27 +45,28 @@ impl DemoState {
     }
 }
 
-fn record_row(record: Record) -> ListItem<impl View> {
-    ListItem::new(
-        vstack((
-            text(text!("Record #{id:06}", id = record.id))
-                .subheadline()
-                .foreground(Foreground),
-            text("Materialized only while this row is visible")
-                .caption()
-                .muted(),
-        ))
-        .leading()
-        .padding_with((10.0, 16.0)),
-    )
+fn record_row(record: Record) -> impl View {
+    vstack((
+        text(text!("Record #{id:06}", id = record.id))
+            .subheadline()
+            .foreground(Foreground),
+        text("Materialized only while this row is visible")
+            .caption()
+            .muted(),
+    ))
+    .leading()
+    .padding_with((10.0, 16.0))
 }
 
-fn delete_record(ListDelete(index): ListDelete, mut state: DemoState) {
-    let _ = state.records.remove(index);
-    *state.remaining.get_mut() -= 1;
+fn delete_record(ListDelete(id): ListDelete<u64>, mut state: DemoState) {
+    let records = state.records.snapshot();
+    if let Some(index) = records.iter().position(|record| record.id == id) {
+        let _ = state.records.remove(index);
+        *state.remaining.get_mut() -= 1;
+    }
 }
 
-fn move_record(ListMove(movement): ListMove, mut state: DemoState) {
+fn move_record(ListMove(movement): ListMove<u64>, mut state: DemoState) {
     let mut records = state.records.snapshot();
     let record = records.remove(movement.from());
     records.insert(movement.to(), record);
@@ -166,7 +166,7 @@ pub fn demo() -> impl View {
 #[must_use]
 pub fn app(env: Environment) -> App<impl Windows> {
     let state = DemoState::new();
-    App::new(move || content(&state), env)
+    App::new(env).window(Window::new("", move || content(&state)))
 }
 
 #[cfg(test)]

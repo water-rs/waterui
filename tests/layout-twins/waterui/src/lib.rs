@@ -37,7 +37,7 @@ fn f(tag: &'static str) -> impl View {
 /// The audit's breakable text: 20 ~10pt monospaced glyphs with one space.
 fn t(tag: &'static str) -> impl View {
     text("mmmmmmmmmm mmmmmmmmmm")
-        .size(16.7)
+        .font_size(16.7)
         .monospaced(true)
         .a11y_label(tag)
 }
@@ -45,7 +45,7 @@ fn t(tag: &'static str) -> impl View {
 /// The same text capped at `limit` lines.
 fn lt(tag: &'static str, limit: usize) -> impl View {
     text("mmmmmmmmmm mmmmmmmmmm")
-        .size(16.7)
+        .font_size(16.7)
         .monospaced(true)
         .line_limit(NonZeroUsize::new(limit).unwrap_or(NonZeroUsize::MIN))
         .a11y_label(tag)
@@ -54,7 +54,7 @@ fn lt(tag: &'static str, limit: usize) -> impl View {
 /// Short text that fits on one line at any reasonable width.
 fn tshort(tag: &'static str) -> impl View {
     text("mm mm mm mm mm mm mm m")
-        .size(16.7)
+        .font_size(16.7)
         .monospaced(true)
         .a11y_label(tag)
 }
@@ -62,7 +62,7 @@ fn tshort(tag: &'static str) -> impl View {
 /// Small monospaced text for the A13 sub-10pt line-height probe.
 fn ttiny(tag: &'static str) -> impl View {
     text("aaaaaaaaaa")
-        .size(8.4)
+        .font_size(8.4)
         .monospaced(true)
         .a11y_label(tag)
 }
@@ -485,5 +485,5 @@ fn root_case(case: &str) -> impl View + use<> {
 #[must_use]
 pub fn app(env: Environment) -> App<impl Windows> {
     let case = std::env::var("TWINS_CASE").unwrap_or_else(|_| "all".to_string());
-    App::new(move || root_case(&case), env)
+    App::new(env).window(Window::new("", move || root_case(&case)))
 }

@@ -24,10 +24,14 @@ use waterui_core::{AnyView, Environment, Str};
 use waterui_layout::padding::EdgeInsets;
 use waterui_layout::spacer::spacer;
 use waterui_layout::stack::vstack;
-use waterui_navigation::tab::{Tab, Tabs, tab_style};
+use waterui_navigation::tab::{Tab, TabStyle, Tabs};
 use waterui_navigation::{
     NavigationPath, NavigationSplitView, NavigationStack, NavigationToolbar, NavigationToolbarItem,
-    NavigationToolbarPlacement, NavigationView,
+    NavigationToolbarPlacement, NavigationTransition, NavigationTransitionDirection,
+    NavigationTransitionPair, NavigationView,
+};
+use waterui_structural_transition::{
+    PropertyTransition, Transition, TransitionGeometry, TransitionPhase, TransitionProperties,
 };
 
 use super::{MinimalTestTheme, test_environment, test_renderer_with_theme};
@@ -184,7 +188,8 @@ fn navigation_view() -> impl waterui_core::View {
                         button("Mark All").action(|| {}),
                     )),
             )
-            .searchable(&query, "Search mail"),
+            .searchable(&query)
+            .search_prompt("Search mail"),
     )
 }
 
@@ -324,7 +329,7 @@ fn sidebar_strip_extends_through_the_top_inset_with_a_trailing_divider() {
                 Tab::new("Second", || NavigationView::new("Two", text("two"))),
             ),
         )
-        .style(tab_style::Sidebar),
+        .style(TabStyle::Sidebar),
         &env_with_insets(edge_insets(), EdgeInsets::default()),
         theme,
     );
@@ -693,7 +698,7 @@ fn a_transitioning_page_clip_covers_the_extended_surfaces() {
         AnyView::new(
             NavigationStack::with_path(path, NavigationView::new("Root", text("root")))
                 .destination(|_| NavigationView::new("Detail", text("detail")))
-                .transition(SlideUpTransition),
+                .page_transition(SlideUpTransition),
         ),
         &env,
     );
@@ -718,21 +723,35 @@ fn a_transitioning_page_clip_covers_the_extended_surfaces() {
     );
 }
 
+/// A core transition that parks its page one painted viewport below the window.
+#[derive(Debug)]
+struct OffscreenBelow;
+
+impl Transition for OffscreenBelow {
+    fn properties(
+        &self,
+        _phase: TransitionPhase,
+        _progress: f32,
+        geometry: TransitionGeometry,
+    ) -> TransitionProperties {
+        TransitionProperties {
+            translation: [0.0, geometry.size().height],
+            ..TransitionProperties::IDENTITY
+        }
+    }
+}
+
 /// A custom transition whose incoming page arrives from one viewport below:
-/// the offset-1 case — an `offset_y` counted against `bounds` instead of
+/// the offset-1 case — a translation counted against `bounds` instead of
 /// the painted reach would leave the page's extended top band on screen.
 #[derive(Debug)]
 struct SlideUpTransition;
 
-impl waterui_navigation::NavigationTransition for SlideUpTransition {
-    fn frame(
-        &self,
-        _progress: f32,
-        _direction: waterui_navigation::NavigationTransitionDirection,
-    ) -> waterui_navigation::NavigationTransitionFrame {
-        waterui_navigation::NavigationTransitionFrame::new(
-            waterui_navigation::NavigationTransitionLayer::IDENTITY,
-            waterui_navigation::NavigationTransitionLayer::new(0.0, 1.0, 1.0, 1.0),
+impl NavigationTransition for SlideUpTransition {
+    fn transitions(&self, _direction: NavigationTransitionDirection) -> NavigationTransitionPair {
+        NavigationTransitionPair::new(
+            OffscreenBelow,
+            PropertyTransition::new(TransitionProperties::IDENTITY),
         )
     }
 }

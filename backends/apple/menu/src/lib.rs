@@ -22,11 +22,10 @@ use std::rc::Rc;
 use cocoa_ui::Retained;
 use nami::Signal;
 use waterui_controls::IconSlot;
+use waterui_controls::button::ButtonRole;
 #[cfg(target_os = "macos")]
 use waterui_controls::menu::CloseWindowChord;
-use waterui_controls::menu::{
-    CommandRole, ResolvedCommand, ResolvedMenuItem, ResolvedNestedMenu, Shortcut,
-};
+use waterui_controls::menu::{ResolvedCommand, ResolvedMenuItem, ResolvedNestedMenu, Shortcut};
 use waterui_core::Environment;
 
 #[cfg(target_os = "macos")]
@@ -78,14 +77,16 @@ fn kit_command<S>(
     env: &Environment,
     resolve_icon: &IconResolver<S>,
 ) -> cocoa_ui::menu::Command {
-    let (symbol, image) = resolve_icon(command.icon.as_ref(), env);
+    let (symbol, image) = resolve_icon(command.icon(), env);
     kit_command_fields(
-        command.label.content().snapshot().to_plain().to_string(),
-        command.subtitle.as_ref().map(ToString::to_string),
+        command.label().content().snapshot().to_plain().to_string(),
+        command
+            .subtitle()
+            .map(|subtitle| subtitle.snapshot().to_string()),
         symbol,
         image,
-        command.role,
-        command.shortcut.as_ref(),
+        command.role(),
+        command.shortcut(),
     )
 }
 
@@ -96,13 +97,13 @@ pub fn kit_command_for_menu<S>(
     env: &Environment,
     resolve_icon: &IconResolver<S>,
 ) -> cocoa_ui::menu::Command {
-    let (symbol, image) = resolve_icon(menu.icon.as_ref(), env);
+    let (symbol, image) = resolve_icon(menu.icon(), env);
     kit_command_fields(
-        menu.label.content().snapshot().to_plain().to_string(),
+        menu.label().content().snapshot().to_plain().to_string(),
         None,
         symbol,
         image,
-        CommandRole::Standard,
+        None,
         None,
     )
 }
@@ -114,7 +115,7 @@ pub fn kit_command_fields(
     subtitle: Option<String>,
     symbol: Option<String>,
     image: Option<Retained<PlatformMenuImage>>,
-    role: CommandRole,
+    role: Option<ButtonRole>,
     shortcut: Option<&Shortcut>,
 ) -> cocoa_ui::menu::Command {
     let (key_equivalent, modifiers) = shortcut.map_or_else(
@@ -126,7 +127,7 @@ pub fn kit_command_fields(
         subtitle,
         symbol,
         image,
-        destructive: matches!(role, CommandRole::Destructive),
+        destructive: matches!(role, Some(ButtonRole::Destructive)),
         enabled: true,
         selected: false,
         key_equivalent,
@@ -155,7 +156,7 @@ pub fn menu_tree<S: 'static>(
                 if !command.allowed_in_macos_menu_bar() {
                     return None;
                 }
-                let action = command.action.clone();
+                let action = command.action().clone();
                 let env = env.clone();
                 Some(cocoa_ui::menu::MenuTreeNode::Command(
                     kit_command(command, &env, resolve_icon),
@@ -166,7 +167,7 @@ pub fn menu_tree<S: 'static>(
             }
             ResolvedMenuItem::Menu(menu) => Some(cocoa_ui::menu::MenuTreeNode::Submenu(
                 kit_command_for_menu(menu, env, resolve_icon),
-                menu_tree(&menu.items.snapshot(), env, resolve_icon),
+                menu_tree(&menu.items().snapshot(), env, resolve_icon),
             )),
             // macOS: the standard application menu already ends with Quit
             // (`build_default`), so a declared one is dropped rather than
@@ -195,7 +196,7 @@ mod tests {
     use nami::{Computed, Signal};
     use waterui_controls::NoopSlot;
     use waterui_controls::menu::{
-        CloseWindowChord, Menu, MenuItem, NamedKey, ResolvedMenuItem, ShortcutKey,
+        CloseWindowChord, Menu, MenuItem, ResolvedMenuItem, ShortcutKey, ShortcutNamedKey,
         resolve_menu_bar_items,
     };
     use waterui_core::Environment;
@@ -209,11 +210,11 @@ mod tests {
     #[test]
     fn named_keys_map_to_appkit_function_key_equivalents() {
         assert_eq!(
-            key_equivalent_for(&ShortcutKey::from(NamedKey::Delete)),
+            key_equivalent_for(&ShortcutKey::from(ShortcutNamedKey::Delete)),
             function_key(NSDeleteFunctionKey)
         );
         assert_eq!(
-            key_equivalent_for(&ShortcutKey::from(NamedKey::F5)),
+            key_equivalent_for(&ShortcutKey::from(ShortcutNamedKey::F5)),
             function_key(NSF5FunctionKey)
         );
         assert_eq!(key_equivalent_for(&ShortcutKey::from('q')), "q");
@@ -225,15 +226,36 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(
-        debug_assertions,
-        should_panic(expected = "has no AppKit key equivalent")
-    )]
-    fn a_named_key_without_an_appkit_equivalent_arms_no_shortcut() {
-        assert_eq!(
-            key_equivalent_for(&ShortcutKey::from(NamedKey::AudioVolumeUp)),
-            ""
-        );
+    fn every_shortcut_named_key_maps_to_a_non_empty_appkit_key_equivalent() {
+        for key in [
+            ShortcutNamedKey::ArrowUp,
+            ShortcutNamedKey::ArrowDown,
+            ShortcutNamedKey::ArrowLeft,
+            ShortcutNamedKey::ArrowRight,
+            ShortcutNamedKey::Backspace,
+            ShortcutNamedKey::Clear,
+            ShortcutNamedKey::ContextMenu,
+            ShortcutNamedKey::Delete,
+            ShortcutNamedKey::End,
+            ShortcutNamedKey::Enter,
+            ShortcutNamedKey::Escape,
+            ShortcutNamedKey::Execute,
+            ShortcutNamedKey::F1,
+            ShortcutNamedKey::F12,
+            ShortcutNamedKey::F13,
+            ShortcutNamedKey::F24,
+            ShortcutNamedKey::Help,
+            ShortcutNamedKey::Home,
+            ShortcutNamedKey::Insert,
+            ShortcutNamedKey::PageDown,
+            ShortcutNamedKey::PageUp,
+            ShortcutNamedKey::Pause,
+            ShortcutNamedKey::PrintScreen,
+            ShortcutNamedKey::Select,
+            ShortcutNamedKey::Tab,
+        ] {
+            assert_ne!(key_equivalent_for(&ShortcutKey::from(key)), "");
+        }
     }
 
     /// `menus` resolved as the declared menu bar.

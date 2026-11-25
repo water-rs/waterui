@@ -13,15 +13,15 @@ use waterkit_location::{Location, Permission, PermissionStatus};
 use waterkit_permission::request;
 use waterui::app::{App, Windows};
 use waterui::env::use_env;
-use waterui::prelude::theme_color::Surface;
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::Signal;
 use waterui::reactive::binding;
-use waterui::shape::{RoundedRectangle, ShapeExt as _};
+use waterui::shape::{CornerRadius, RoundedRectangle, ShapeExt as _};
+use waterui::theme::color::Surface;
 use waterui_icons_lucide as lucide;
 use waterui_map::{Coordinate, Map, MapStyle, Region};
-use waterui_map_gpu::MapGpuOptions;
+use waterui_map_gpu::MapGpu;
 use waterui_url::Url;
 
 const MAP_CONTROL_SPACING: f32 = 10.0;
@@ -75,7 +75,7 @@ fn content(state: MapExampleState) -> impl View {
     let user_location = state.user_location;
     let location_status = state.location_status;
     let locating = state.locating;
-    let map = Map::new(region.clone())
+    let map = Map::new(&region)
         .style(MapStyle::Standard)
         .optional_user_location(user_location.clone())
         .shows_compass(true)
@@ -138,7 +138,7 @@ fn content(state: MapExampleState) -> impl View {
     ))
     .spacing(4.0)
     .padding_with((10.0, 14.0))
-    .background(RoundedRectangle::new(0.18).fill(Surface))
+    .background(RoundedRectangle::new(CornerRadius::fraction(0.18)).fill(Surface))
     .size(STATUS_PANEL_WIDTH, STATUS_PANEL_HEIGHT)
     .position_in_offset(
         UnitPoint::TOP_LEADING,
@@ -186,7 +186,7 @@ pub fn demo() -> impl View {
 /// `MapKit`; Hydrolysis bridges no platform map and draws it with
 /// `waterui-map-gpu`, which this example links, from the tile source below.
 fn with_tiles(view: impl View) -> impl View {
-    view.with(MapGpuOptions::new(Url::new(
+    view.install(MapGpu::new(Url::new(
         "https://tiles.openfreemap.org/styles/positron",
     )))
 }
@@ -195,5 +195,5 @@ fn with_tiles(view: impl View) -> impl View {
 #[must_use]
 pub fn app(env: Environment) -> App<impl Windows> {
     let state = MapExampleState::new();
-    App::new(move || with_tiles(content(state.clone())), env)
+    App::new(env).window(Window::new("", move || with_tiles(content(state.clone()))))
 }

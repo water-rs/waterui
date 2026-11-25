@@ -128,6 +128,7 @@ mod semantic_runtime;
 #[cfg(hydrolysis_cherenkov)]
 mod shader_paint;
 mod shadow;
+mod shadow_border_signals;
 mod stepper_look;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod structural_transitions;
@@ -153,7 +154,9 @@ mod window_background;
 #[cfg(not(target_arch = "wasm32"))]
 mod window_mount;
 use kurbo::{Affine, Point, Rect, Size};
-use waterui::gesture::{DragGesture, GestureObserver, MagnificationGesture};
+use waterui::gesture::{
+    DragEvent, DragGesture, GestureObserver, MagnificationEvent, MagnificationGesture,
+};
 use waterui::interaction::InteractionState;
 use waterui::prelude::text;
 use waterui::style::FloatingStyle;
@@ -174,7 +177,7 @@ use waterui_layout::stack::{VStackLayout, hstack, vstack, zstack};
 #[cfg(feature = "accessibility")]
 use waterui_navigation::NavigationView;
 #[cfg(feature = "accessibility")]
-use waterui_navigation::tab::{NativeTabStyle, Tab, Tabs};
+use waterui_navigation::tab::{Tab, TabStyle, Tabs};
 
 #[cfg(feature = "list")]
 use crate::testing::plain_list_look;
@@ -325,12 +328,16 @@ struct TestLocalExecutor {
 /// its teardown race — the runnable cannot be dropped on the waker's thread
 /// (async-task's `spawn_local` thread check) and must not wait for
 /// thread-local teardown.
-struct ParkedRunnables {
-    #[expect(
-        dead_code,
-        reason = "held for its Drop — empties the parked queue while thread-locals are alive"
-    )]
+pub(super) struct ParkedRunnables {
     rx: mpsc::Receiver<Runnable>,
+}
+
+impl ParkedRunnables {
+    pub(super) fn drain(&self) {
+        while let Ok(runnable) = self.rx.try_recv() {
+            runnable.run();
+        }
+    }
 }
 
 impl LocalExecutor for TestLocalExecutor {
@@ -1091,9 +1098,9 @@ fn stacked_icon_buttons_above_gesture_surface_receive_clicks() {
     let gesture_surface = Metadata::new(
         Metadata::new(
             ().size(160.0, 160.0),
-            GestureObserver::new(DragGesture::new(0.0), || {}),
+            GestureObserver::new(DragGesture::new(0.0), |_: DragEvent| {}),
         ),
-        GestureObserver::new(MagnificationGesture::new(1.0), || {}),
+        GestureObserver::new(MagnificationGesture::new(1.0), |_: MagnificationEvent| {}),
     );
     let controls = vstack((zoom_in, Divider, zoom_out)).size(48.0, 97.0);
     let mut renderer = test_renderer();
@@ -1184,9 +1191,9 @@ fn nested_gesture_observers_on_one_view_share_a_group() {
     let view = Metadata::new(
         Metadata::new(
             ().size(20.0, 10.0).opacity(0.5),
-            GestureObserver::new(DragGesture::new(8.0), || {}),
+            GestureObserver::new(DragGesture::new(8.0), |_: DragEvent| {}),
         ),
-        GestureObserver::new(MagnificationGesture::new(1.0), || {}),
+        GestureObserver::new(MagnificationGesture::new(1.0), |_: MagnificationEvent| {}),
     );
     let node = RenderNode::build(AnyView::new(view), &env, &mut renderer);
 
@@ -1221,7 +1228,7 @@ fn renderer_magnification_targets_outer_observer_in_stacked_gesture_chain() {
             let drag_hits = Rc::clone(&drag_hits);
             Metadata::new(
                 canvas,
-                GestureObserver::new(DragGesture::new(0.0), move || {
+                GestureObserver::new(DragGesture::new(0.0), move |_: DragEvent| {
                     drag_hits.set(drag_hits.get() + 1);
                 }),
             )
@@ -1230,9 +1237,12 @@ fn renderer_magnification_targets_outer_observer_in_stacked_gesture_chain() {
             let magnify_hits = Rc::clone(&magnify_hits);
             Metadata::new(
                 canvas,
-                GestureObserver::new(MagnificationGesture::new(1.0), move || {
-                    magnify_hits.set(magnify_hits.get() + 1);
-                }),
+                GestureObserver::new(
+                    MagnificationGesture::new(1.0),
+                    move |_: MagnificationEvent| {
+                        magnify_hits.set(magnify_hits.get() + 1);
+                    },
+                ),
             )
         }
     };
@@ -1787,7 +1797,8 @@ fn a_label_reaches_the_view_a_hook_realizes() {
     let mut renderer = test_renderer();
     // The frame puts the hooked map inside a layout container, one level below
     // the naming scope the build installs.
-    let view = Map::new(Region::new(Coordinate::default(), 1.0, 1.0))
+    let camera = Binding::container(Region::new(Coordinate::default(), 1.0, 1.0));
+    let view = Map::new(&camera)
         .hooks(TextMap)
         .a11y_label("City map")
         .size(120.0, 120.0);
@@ -1832,13 +1843,13 @@ fn a_webview_with_no_engine_to_draw_it_is_reported_and_not_drawn() {
 #[cfg(feature = "accessibility")]
 #[test]
 fn lazy_stack_role_emits_the_container_node_over_its_rows() {
-    use nami::collection::List;
+    use nami::collection::StateList;
     use waterui_core::id::SelfId;
     use waterui_layout::stack::VStack;
 
     let env = test_environment();
     let mut renderer = test_renderer();
-    let rows: List<SelfId<u64>> = List::from(vec![SelfId::new(0), SelfId::new(1)]);
+    let rows: StateList<SelfId<u64>> = StateList::from(vec![SelfId::new(0), SelfId::new(1)]);
     let view = VStack::for_each(rows, |_: SelfId<u64>| text("Row"))
         .a11y_label("Rows")
         .a11y_role(AccessibilityRole::List);
@@ -1870,13 +1881,13 @@ fn lazy_stack_role_emits_the_container_node_over_its_rows() {
 #[cfg(feature = "accessibility")]
 #[test]
 fn overlay_collection_role_emits_the_container_node() {
-    use nami::collection::List;
+    use nami::collection::StateList;
     use waterui_core::id::SelfId;
     use waterui_layout::stack::ZStack;
 
     let env = test_environment();
     let mut renderer = test_renderer();
-    let items: List<SelfId<u64>> = List::from(vec![SelfId::new(0), SelfId::new(1)]);
+    let items: StateList<SelfId<u64>> = StateList::from(vec![SelfId::new(0), SelfId::new(1)]);
     let view = ZStack::for_each(items, |_: SelfId<u64>| text("Card"))
         .a11y_label("Cards")
         .a11y_role(AccessibilityRole::Group);
@@ -1978,7 +1989,7 @@ fn reactive_hidden_accessibility_group_suppresses_descendants() {
     let view = vstack((text("Hidden child"),))
         .a11y_label("Hidden group")
         .a11y_role(AccessibilityRole::Group)
-        .a11y_state_signal(state);
+        .a11y_state(state);
 
     capture_root_window(&mut renderer, view, &env, Rect::new(0.0, 0.0, 160.0, 160.0));
 
@@ -2009,7 +2020,7 @@ fn mixed_busy_state_is_preserved_and_node_identity_survives_refresh() {
     let state = busy.map(|busy| AccessibilityState::new().mixed().busy(busy));
     let view = text("Tri-state")
         .a11y_role(AccessibilityRole::Checkbox)
-        .a11y_state_signal(state);
+        .a11y_state(state);
     let bounds = Rect::new(0.0, 0.0, 160.0, 160.0);
 
     capture_root_window(&mut renderer, view, &env, bounds);
@@ -2040,6 +2051,84 @@ fn mixed_busy_state_is_preserved_and_node_identity_survives_refresh() {
     );
     assert_eq!(second_node.toggled(), Some(AccessibilityToggled::Mixed));
     assert!(second_node.is_busy());
+}
+
+#[cfg(feature = "accessibility")]
+#[test]
+fn reactive_a11y_hidden_toggles_leaf_and_container_without_rebuild() {
+    let env = test_environment();
+    let mut renderer = test_renderer();
+    let hidden = Binding::bool(true);
+    let view = vstack((
+        text("Leaf").a11y_hidden(hidden.clone()),
+        vstack((text("Inside A"), text("Inside B")))
+            .a11y_label("Panel")
+            .a11y_role(AccessibilityRole::Group)
+            .a11y_hidden(hidden.clone()),
+    ));
+    let bounds = Rect::new(0.0, 0.0, 160.0, 160.0);
+
+    capture_root_window(&mut renderer, view, &env, bounds);
+    let first = renderer
+        .take_accessibility_tree_update()
+        .expect("initial accessibility update must exist");
+    assert!(
+        first
+            .nodes
+            .iter()
+            .all(|(_, node)| node.label() != Some("Leaf")
+                && node.label() != Some("Panel")
+                && node.label() != Some("Inside A")
+                && node.label() != Some("Inside B")),
+        "nodes starting a11y_hidden(true) must not emit initially"
+    );
+
+    hidden.set(false);
+    assert!(renderer.flush_window_tree(&env, bounds, Affine::IDENTITY, Affine::IDENTITY));
+    let second = renderer
+        .take_accessibility_tree_update()
+        .expect("unhidden accessibility update must exist");
+    assert!(
+        second
+            .nodes
+            .iter()
+            .any(|(_, node)| node.label() == Some("Leaf")),
+        "leaf hidden signal flipping false must emit its node"
+    );
+    assert!(
+        second
+            .nodes
+            .iter()
+            .any(|(_, node)| node.label() == Some("Panel")),
+        "container hidden signal flipping false must emit its node"
+    );
+    assert!(
+        second
+            .nodes
+            .iter()
+            .any(|(_, node)| node.label() == Some("Inside A"))
+            && second
+                .nodes
+                .iter()
+                .any(|(_, node)| node.label() == Some("Inside B")),
+        "container children must emit once container hidden signal flips false"
+    );
+
+    hidden.set(true);
+    assert!(renderer.flush_window_tree(&env, bounds, Affine::IDENTITY, Affine::IDENTITY));
+    let third = renderer
+        .take_accessibility_tree_update()
+        .expect("re-hidden accessibility update must exist");
+    assert!(
+        third
+            .nodes
+            .iter()
+            .all(|(_, node)| node.label() != Some("Leaf")
+                && node.label() != Some("Panel")
+                && node.label() != Some("Inside A")
+                && node.label() != Some("Inside B")),
+        "re-hiding via reactive signal must suppress leaf and container again"
+    );
 }
 
 #[cfg(feature = "accessibility")]
@@ -3155,7 +3244,7 @@ fn tab_highlight_strip(item: TabItemGeometry) -> Rect {
         let height = thickness.min(bounds.height());
         let y0 = (bounds.height() - height).mul_add(0.5, bounds.y0);
         Rect::new(bounds.x0, y0, bounds.x1, y0 + height)
-    } else if matches!(item.placement, NativeTabStyle::Sidebar) {
+    } else if matches!(item.placement, TabStyle::Sidebar) {
         Rect::new(
             (bounds.x1 - thickness).max(bounds.x0),
             item.title.y0,
@@ -4112,7 +4201,7 @@ fn every_view_answers_the_three_point_probe_consistently() {
 /// matching `BadgedBox` in Compose. They are not center offsets.
 #[test]
 fn badge_indicator_anchors_to_the_content_trailing_edge() {
-    use waterui::component::badge::Badge;
+    use waterui::component::badge::{Badge, BadgeValue};
     use waterui_core::layout::LayoutDirection;
 
     /// `Badge` requires `Clone` content and `Frame` is not `Clone`, so the
@@ -4146,38 +4235,59 @@ fn badge_indicator_anchors_to_the_content_trailing_edge() {
         log.0.borrow().clone()
     };
 
-    // Dot (value 0): leading edge 6 inside the trailing edge, top edge flush —
+    // Zero count (0_u32 / Hidden / Count(0)) draws nothing on either Badge or Tab::badge.
+    assert_eq!(capture(Badge::new(0_u32, anchor.clone()), &env), []);
+    assert_eq!(
+        capture(Badge::new(BadgeValue::Hidden, anchor.clone()), &env),
+        []
+    );
+    assert_eq!(
+        capture(Badge::new(BadgeValue::Count(0), anchor.clone()), &env),
+        []
+    );
+
+    // Dot: leading edge 6 inside the trailing edge, top edge flush —
     // the dot fills the content's top-trailing 6×6 corner.
     assert_eq!(
-        capture(Badge::new(0, anchor.clone()), &env).as_slice(),
+        capture(Badge::new(BadgeValue::Dot, anchor.clone()), &env).as_slice(),
         &[Rect::new(154.0, 0.0, 160.0, 6.0)]
     );
 
-    // Count badge: leading edge 12 inside the trailing edge regardless of its
-    // width, bottom edge 14 below the content's top (its 16-high pill tops out
-    // 2 above the anchor).
-    let draws = capture(Badge::new(5, anchor.clone()), &env);
+    // Count and text badges: leading edge 12 inside the trailing edge regardless
+    // of their width, bottom edge 14 below the content's top (their 16-high pill
+    // tops out 2 above the anchor).
+    let draws = capture(Badge::new(5_u32, anchor.clone()), &env);
     assert_eq!(draws.len(), 1, "one badge indicator draw, got {draws:?}");
     approx::assert_relative_eq!(draws[0].x0, 148.0);
     approx::assert_relative_eq!(draws[0].y0, -2.0);
 
+    let text_draws = capture(Badge::new(BadgeValue::text("New"), anchor.clone()), &env);
+    assert_eq!(
+        text_draws.len(),
+        1,
+        "one text badge draw, got {text_draws:?}"
+    );
+    approx::assert_relative_eq!(text_draws[0].x0, 148.0);
+    approx::assert_relative_eq!(text_draws[0].y0, -2.0);
+
     // RTL mirrors the anchor to the leading edge.
     env.insert(LayoutDirection::RightToLeft);
     assert_eq!(
-        capture(Badge::new(0, anchor.clone()), &env).as_slice(),
+        capture(Badge::new(BadgeValue::Dot, anchor.clone()), &env).as_slice(),
         &[Rect::new(0.0, 0.0, 6.0, 6.0)]
     );
 
-    let draws = capture(Badge::new(5, anchor), &env);
+    let draws = capture(Badge::new(5_u32, anchor), &env);
     assert_eq!(draws.len(), 1, "one badge indicator draw, got {draws:?}");
     approx::assert_relative_eq!(draws[0].x1, 12.0);
     approx::assert_relative_eq!(draws[0].y0, -2.0);
 }
 
-/// A tab's `badge` count draws the theme's count badge on the item; a tab
-/// without one, or with a zero count, draws none (water-rs/waterui#3709).
+/// A tab's `badge` draws dot, count, and text badges on the item; no badge,
+/// `BadgeValue::Hidden`, `Count(0)`, and `0_u32` draw none.
 #[test]
 fn tab_badge_draws_only_for_a_nonzero_count() {
+    use waterui::component::badge::BadgeValue;
     let env = test_environment();
     let log = env
         .get::<BadgeDrawLog>()
@@ -4186,11 +4296,11 @@ fn tab_badge_draws_only_for_a_nonzero_count() {
     let bounds = Rect::new(0.0, 0.0, 480.0, 480.0);
     // The renderer retains tab state by node, so each variant captures on a
     // fresh renderer.
-    let capture = |badge: Option<i32>| {
+    let capture = |badge: Option<BadgeValue>| {
         log.0.borrow_mut().clear();
         let inbox = Tab::new("Inbox", || NavigationView::new("Inbox", text("One")));
         let inbox = match badge {
-            Some(count) => inbox.badge(count),
+            Some(value) => inbox.badge(value),
             None => inbox,
         };
         let tabs = Tabs::new(&Binding::container(0usize), vec![inbox]);
@@ -4203,8 +4313,32 @@ fn tab_badge_draws_only_for_a_nonzero_count() {
     };
 
     assert_eq!(capture(None), 0, "an unbadged tab draws no badge");
-    assert_eq!(capture(Some(0)), 0, "a zero count draws no badge");
-    assert_eq!(capture(Some(3)), 1, "a counted tab draws one count badge");
+    assert_eq!(
+        capture(Some(BadgeValue::from(0_u32))),
+        0,
+        "a zero count draws no badge"
+    );
+    assert_eq!(
+        capture(Some(BadgeValue::Hidden)),
+        0,
+        "an explicitly hidden badge draws nothing"
+    );
+    assert_eq!(
+        capture(Some(BadgeValue::Count(0))),
+        0,
+        "Count(0) draws nothing"
+    );
+    assert_eq!(capture(Some(BadgeValue::Dot)), 1, "Dot draws one dot badge");
+    assert_eq!(
+        capture(Some(BadgeValue::Count(3))),
+        1,
+        "a counted tab draws one count badge"
+    );
+    assert_eq!(
+        capture(Some(BadgeValue::text("New"))),
+        1,
+        "a text tab badge draws one pill badge"
+    );
 }
 
 /// water-rs/hydrolysis#51: after the single-child collapse the surviving

@@ -7,9 +7,8 @@ use hydrolysis::run;
 use waterui::Environment;
 use waterui::app::App;
 use waterui::prelude::*;
-use waterui::reactive::binding;
-use waterui::shape::{RoundedRectangle, ShapeExt};
-use waterui::window::{Window, WindowState};
+use waterui::shape::{CornerRadius, RoundedRectangle, ShapeExt};
+use waterui::window::Window;
 
 /// Bounded-content probe for window size limits: no scroll, so the vstack's
 /// intrinsic minimum (two text lines + a 320x120 fixed chip + padding) is the
@@ -17,9 +16,9 @@ use waterui::window::{Window, WindowState};
 /// window may grow to — nothing in the tree stretches.
 fn main_view() -> impl View {
     vstack((
-        text("Window size limits probe").size(24.0),
-        text("Shrink and grow the window; it should clamp to content.").size(14.0),
-        RoundedRectangle::new(0.2)
+        text("Window size limits probe").font_size(24.0),
+        text("Shrink and grow the window; it should clamp to content.").font_size(14.0),
+        RoundedRectangle::new(CornerRadius::fraction(0.2))
             .fill(Color::srgb_hex("#2563EB"))
             .size(320.0, 120.0),
     ))
@@ -46,16 +45,7 @@ pub fn main() {
     });
 
     run(
-        |env| {
-            App::new_with_windows(
-                [Window::new(
-                    "size-probe",
-                    binding(WindowState::Normal),
-                    main_view,
-                )],
-                env,
-            )
-        },
+        |env| App::new(env).window(Window::new("size-probe", main_view)),
         Environment::new(),
         hydrolysis::testing::TestStyle::new(),
     );

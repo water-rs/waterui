@@ -7,7 +7,7 @@ use std::time::Duration;
 use hydrolysis::run;
 use waterui::Environment;
 use waterui::app::{App, Windows};
-use waterui::component::list::{List, ListItem};
+use waterui::component::list::List;
 use waterui::component::progress::loading;
 use waterui::component::table::{col, table};
 use waterui::form::picker::{Picker, PickerStyle};
@@ -37,11 +37,11 @@ impl RenderMode {
 }
 
 fn main_view() -> impl View {
-    let username = binding("lexo");
+    let username = binding::<Str>(Str::from("lexo"));
     let password = binding(Secure::from_str("hunter2").expect("static secure seed must parse"));
     let toggle_value = binding(true);
-    let slider_value = binding(0.62_f64);
-    let stepper_value = binding(4_i32);
+    let slider_value = binding::<f64>(0.62);
+    let stepper_value = binding::<i32>(4);
     let list_editing = binding(false);
     let render_mode = binding(RenderMode::Balanced);
     let diagnostics_rows = vec![
@@ -57,49 +57,44 @@ fn main_view() -> impl View {
 
     scroll(
         vstack((
-            text("Hydrolysis Wayland Showcase").size(34.0),
-            text("Control matrix on pure-Rust backend").size(16.0),
+            text("Hydrolysis Wayland Showcase").font_size(34.0),
+            text("Control matrix on pure-Rust backend").font_size(16.0),
             TextField::new("Username", &username).prompt("Type your name"),
             SecureField::new("Password", &password),
             Toggle::new("Realtime rebuild", &toggle_value),
             slider("Animation blend", &slider_value),
             stepper("Detail level", &stepper_value).range(1..=12),
-            hstack((loading(), text("Background task running").size(14.0))).spacing(12.0),
+            hstack((loading(), text("Background task running").font_size(14.0))).spacing(12.0),
             Picker::new("Render mode", picker_items, &render_mode).style(PickerStyle::Menu),
             Toggle::new("List editing", &list_editing),
             List::for_each(diagnostics_rows, |row| {
                 let (name, value, color) = row.into_inner();
-                ListItem::new(hstack((
+                hstack((
                     text(name),
                     spacer(),
                     text(value).foreground(Color::srgb_hex(color)),
-                )))
+                ))
             })
             .editing(list_editing.clone()),
-            table(vec![
-                col(
-                    "Metric",
-                    vec![
-                        text("Window Size"),
-                        text("Surface"),
-                        text("Text Pipeline"),
-                        text("Filters"),
-                    ],
+            table(
+                vec![
+                    SelfId::new(("Window Size", "1366x900", "Ready")),
+                    SelfId::new(("Surface", "Wayland", "Ready")),
+                    SelfId::new(("Text Pipeline", "Parley", "Ready")),
+                    SelfId::new(("Filters", "GPU AppliedFilter", "Ready")),
+                ],
+                (
+                    col("Metric", |row: &SelfId<(&str, &str, &str)>| {
+                        text((*row).into_inner().0)
+                    }),
+                    col("Value", |row: &SelfId<(&str, &str, &str)>| {
+                        text((*row).into_inner().1)
+                    }),
+                    col("Status", |row: &SelfId<(&str, &str, &str)>| {
+                        text((*row).into_inner().2)
+                    }),
                 ),
-                col(
-                    "Value",
-                    vec![
-                        text("1366x900"),
-                        text("Wayland"),
-                        text("Parley"),
-                        text("GPU AppliedFilter"),
-                    ],
-                ),
-                col(
-                    "Status",
-                    vec![text("Ready"), text("Ready"), text("Ready"), text("Ready")],
-                ),
-            ]),
+            ),
         ))
         .spacing(14.0)
         .padding_with(EdgeInsets::all(24.0)),
@@ -109,17 +104,11 @@ fn main_view() -> impl View {
 }
 
 fn app(env: Environment) -> App<impl Windows> {
-    let window = Window::new(
-        "Hydrolysis Wayland Showcase",
-        binding(waterui::window::WindowState::Normal),
-        main_view,
-    )
-    .resizable(true)
-    .background(Color::srgb_hex("#EEF2FF"));
-    window
-        .frame
-        .set(Rect::new(Point::zero(), Size::new(1366.0, 900.0)));
-    App::new_with_windows([window], env)
+    let window = Window::new("Hydrolysis Wayland Showcase", main_view)
+        .resizable(true)
+        .default_size(Size::new(1366.0, 900.0))
+        .background(Color::srgb_hex("#EEF2FF"));
+    App::new(env).window(window)
 }
 
 fn showcase_lifetime() -> Duration {

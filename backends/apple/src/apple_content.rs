@@ -373,6 +373,7 @@ pub(crate) fn realize_apple_view<T: AppleContent>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use waterui::sheet::Sheet;
     use waterui_backend_core::{
         ChildView, NativeBackend, NativeBackendFamily, Realize, report_unprovided,
     };
@@ -578,12 +579,10 @@ mod tests {
             gradient: waterui::graphics::Gradient,
             #[cfg(any(waterui_feature = "gpu", waterui_feature = "cpu"))]
             shader_paint: waterui::graphics::ShaderPaintView,
-            #[cfg(waterui_feature = "table")]
-            table: waterui::component::table::TableConfig,
             #[cfg(waterui_feature = "canvas")]
             canvas: waterui::graphics::canvas::CanvasView,
             #[cfg(waterui_feature = "gpu")]
-            gpu: waterui::GpuView<alloc::boxed::Box<dyn waterui::graphics::GpuContent>>,
+            gpu: waterui::graphics::backend::GpuContentLeaf,
             #[cfg(waterui_feature = "gpu")]
             external_frame: waterui::graphics::gpu::external::ExternalFrameView,
             #[cfg(waterui_feature = "gpu")]
@@ -603,6 +602,7 @@ mod tests {
         stub_parents! {
             button<C>: waterui::component::button::ButtonConfig<C>,
             badge<C>: waterui::component::badge::BadgeConfig<C>,
+            disclosure<C>: waterui::widget::disclosure::DisclosureConfig<C>,
             progress<C>: waterui::component::progress::ProgressConfig<C>,
             #[cfg(waterui_feature = "toggle")]
             toggle<C>: waterui::component::toggle::ToggleConfig<C>,
@@ -629,12 +629,13 @@ mod tests {
             scroll<C>: waterui::layout::scroll::ScrollView<C>,
             fixed_container<C>: waterui::layout::container::FixedContainer<alloc::vec::Vec<C>>,
             dynamic<C>: waterui_core::Dynamic<C>,
-            window<C>: waterui::window::Window<waterui::window::WindowSlot<C>, Option<C>>,
             lazy_container<C>: waterui::layout::container::LazyContainer<C>,
             #[cfg(waterui_feature = "effects")]
             filtered<C>: waterui::graphics::backend::FilteredView<C>,
             #[cfg(waterui_feature = "list")]
             list<C>: waterui::component::list::ListConfig<C>,
+            #[cfg(waterui_feature = "table")]
+            table<C>: waterui::component::table::TableConfig<C>,
             #[cfg(waterui_feature = "navigation")]
             navigation_view<C>: waterui::navigation::ResolvedNavigationView<C>,
             #[cfg(waterui_feature = "navigation")]
@@ -650,6 +651,7 @@ mod tests {
             retain: waterui_core::metadata::Retain,
             layout_priority: waterui_core::layout::LayoutPriority,
             lifecycle_hook: waterui_interaction::event::LifeCycleHook,
+            task_hook: waterui_interaction::event::TaskHook,
             on_event: waterui_interaction::event::OnEvent,
             on_key_press: waterui_interaction::key::OnKeyPress,
             gesture_observer: waterui_interaction::gesture::GestureObserver,
@@ -681,10 +683,10 @@ mod tests {
             hittable: waterui::interaction::Hittable,
             focused: waterui::component::focus::Focused,
             secure: waterui::metadata::secure::Secure,
-            standard_dynamic_range: waterui::metadata::secure::StandardDynamicRange,
-            high_dynamic_range: waterui::metadata::secure::HighDynamicRange,
+            dynamic_range: waterui::metadata::secure::DynamicRangeMetadata,
             frame_rate: waterui::animation::FrameRateVote,
             anchored_overlay: waterui::metadata::anchored_overlay::AnchoredOverlay,
+            sheet: Sheet,
             #[cfg(waterui_feature = "dialog")]
             dialog: waterui::dialog::Dialog,
             #[cfg(waterui_feature = "navigation")]

@@ -15,6 +15,7 @@ use std::rc::Rc;
 use nami::Binding;
 use waterui::app::App;
 use waterui::tsx;
+use waterui::window::Window;
 use waterui_core::{AnyView, Environment};
 #[path = "support/host_view.rs"]
 mod host_view;
@@ -107,14 +108,11 @@ fn ts_a_host_scoped_render_installs_the_runtime_for_the_view() {
 
     // A view crosses once, so the builder hands it over exactly once.
     let view = RefCell::new(Some(view));
-    let app = App::new(
-        move || {
-            view.borrow_mut()
-                .take()
-                .expect("the application realizes its root once")
-        },
-        environment,
-    );
+    let app = App::new(environment).window(Window::new("", move || {
+        view.borrow_mut()
+            .take()
+            .expect("the application realizes its root once")
+    }));
     let mut app = ui()
         .theme(hydrolysis_m3::Material3::defaults())
         .viewport(320, 240)

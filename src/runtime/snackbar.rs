@@ -5,51 +5,56 @@
 //!
 //! # Examples
 //!
-//! Building a manager needs a running local executor, so this compiles rather
-//! than runs.
+//! Attach [`ViewExt::snackbar_host`] to a root view and extract
+//! [`SnackbarManager`] in any descendant handler:
 //!
-//! ```rust,no_run
+//! ```rust
 //! use core::time::Duration;
 //!
 //! use waterui::prelude::*;
 //! use waterui::snackbar::{Snackbar, SnackbarManager, SnackbarPosition};
 //!
-//! // Attach `.snackbar_host()` to a root view to install a manager into the
-//! // environment automatically, or construct one directly:
-//! let (manager, _overlay) = SnackbarManager::new();
-//!
-//! // Show a simple message
-//! manager.show(Snackbar::new("File saved"));
-//!
-//! // With icon and action (use a packaged icon crate for portable apps)
-//! manager.show(
-//!     Snackbar::new("Item deleted")
-//!         .action("Undo", || {})
-//!         .duration(Duration::from_secs(5))
-//! );
-//!
-//! // Custom position
-//! manager.show(
-//!     Snackbar::new("Connection restored")
-//!         .position(SnackbarPosition::TopCenter)
-//! );
+//! fn view() -> impl View {
+//!     vstack((
+//!         // Show a simple message
+//!         button("Save").action(|manager: SnackbarManager| {
+//!             manager.show(Snackbar::new("File saved"));
+//!         }),
+//!         // With action and custom duration
+//!         button("Delete").action(|manager: SnackbarManager| {
+//!             manager.show(
+//!                 Snackbar::new("Item deleted")
+//!                     .action("Undo", || {})
+//!                     .duration(Duration::from_secs(5)),
+//!             );
+//!         }),
+//!         // Custom position
+//!         button("Reconnect").action(|manager: SnackbarManager| {
+//!             manager.show(
+//!                 Snackbar::new("Connection restored")
+//!                     .position(SnackbarPosition::TopCenter),
+//!             );
+//!         }),
+//!     ))
+//!     .snackbar_host()
+//! }
 //! ```
 
 use alloc::rc::Rc;
 use core::cell::{Cell, RefCell};
+use core::fmt::{self, Debug, Formatter};
 use core::marker::PhantomData;
 use core::time::Duration;
 
 use executor_core::spawn_local;
 use nami::Binding;
-use nami::collection::List;
-use suiteki::Str;
-use waterui_controls::{Button, ButtonStyle, button, label};
+use nami::collection::StateList;
+use waterui_controls::{Button, ButtonStyle, IntoLabel, Label, SemanticLabel, button, label};
 use waterui_core::animation::Animation;
 use waterui_core::extract::State;
 use waterui_core::handler::{
-    BoxedEventAction, EventHandler, Handler, ReportExtraction, SharedAction, boxed_event_handler,
-    shared_action,
+    BoxedEventAction, EventHandler, Handler, ReportExtraction, SharedAction, ViewBuilder,
+    boxed_event_handler, shared_action,
 };
 use waterui_core::plugin::Plugin;
 use waterui_core::views::ForEach;
@@ -68,11 +73,11 @@ use waterui_macros::state;
 use waterui_markdown::CodeCopyFeedback;
 #[cfg(feature = "flow-markdown")]
 use waterui_text::code::OnCopied;
-use waterui_text::{font::Font, text::text};
+use waterui_text::{IntoText, Text, font::Font};
 
 use crate::ViewExt;
-use crate::shape::{FilledShape, FixedRoundedRectangle, Path, ShapeExt};
-use crate::style::{Shadow, Vector};
+use crate::shape::{FilledShape, Path, RoundedRectangle, ShapeExt};
+use crate::style::Shadow;
 use waterui_graphics::color::Color;
 
 /// Maximum number of snackbars visible at once *per placement*. M3 keeps each
@@ -341,9 +346,17 @@ impl SnackbarPosition {
 #[derive(Clone)]
 pub struct SnackbarAction {
     /// The action button label.
-    pub label: Str,
+    label: Label<SemanticLabel>,
     /// The callback when action is pressed.
     handler: SharedAction<()>,
+}
+
+impl SnackbarAction {
+    /// The semantic action button label.
+    #[must_use]
+    pub const fn label(&self) -> &Label<SemanticLabel> {
+        &self.label
+    }
 }
 
 impl core::fmt::Debug for SnackbarAction {
@@ -390,6 +403,45 @@ impl core::fmt::Debug for DismissalCallback {
     }
 }
 
+/// Cloneable factory that constructs a snackbar's leading icon view on demand.
+#[doc(hidden)]
+pub struct IconFactory<I>(Rc<dyn Fn() -> I>);
+
+impl<I> Clone for IconFactory<I> {
+    fn clone(&self) -> Self {
+        Self(Rc::clone(&self.0))
+    }
+}
+
+impl<I> Debug for IconFactory<I> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("IconFactory").finish_non_exhaustive()
+    }
+}
+
+/// Cloneable view adapter backed by an [`IconFactory`], allowing non-`Clone`
+/// views inside a snackbar's `Label::icon` slot.
+#[doc(hidden)]
+pub struct BuiltIcon<V>(IconFactory<V>);
+
+impl<V> Clone for BuiltIcon<V> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl<V> Debug for BuiltIcon<V> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BuiltIcon").finish_non_exhaustive()
+    }
+}
+
+impl<V: View> View for BuiltIcon<V> {
+    fn body(self, _env: &Environment) -> impl View {
+        (self.0.0)()
+    }
+}
+
 /// Configuration for a snackbar notification.
 ///
 /// Use the builder pattern to configure the snackbar before showing it.
@@ -404,12 +456,11 @@ impl core::fmt::Debug for DismissalCallback {
 /// let snackbar = Snackbar::new("Message sent")
 ///     .duration(Duration::from_secs(3));
 /// ```
-#[derive(Clone)]
 pub struct Snackbar<I = NoIcon> {
     /// The message to display.
-    message: Str,
-    /// Optional icon to display before the message.
-    icon: Option<I>,
+    message: Text,
+    /// Optional icon builder to display before the message.
+    icon: Option<IconFactory<I>>,
     /// Optional action button.
     action: Option<SnackbarAction>,
     /// Display duration before auto-dismiss.
@@ -422,6 +473,21 @@ pub struct Snackbar<I = NoIcon> {
     dismissal: Option<DismissalCallback>,
     /// State injected into the action button environment.
     captured_env: waterui_core::Environment,
+}
+
+impl<I> Clone for Snackbar<I> {
+    fn clone(&self) -> Self {
+        Self {
+            message: self.message.clone(),
+            icon: self.icon.clone(),
+            action: self.action.clone(),
+            duration: self.duration,
+            position: self.position,
+            closeable: self.closeable,
+            dismissal: self.dismissal.clone(),
+            captured_env: self.captured_env.clone(),
+        }
+    }
 }
 
 impl<I> core::fmt::Debug for Snackbar<I> {
@@ -448,12 +514,12 @@ mod icon_sealed {
 }
 
 /// Leading-icon type accepted by [`Snackbar`], [`SnackbarManager`], and [`SnackbarHost`]:
-/// either [`NoIcon`] or any cloneable [`View`].
+/// either [`NoIcon`] or any [`View`].
 #[doc(hidden)]
-pub trait SnackbarIconSlot: icon_sealed::Sealed + Clone + 'static {
+pub trait SnackbarIconSlot: icon_sealed::Sealed + Sized + 'static {
     type IconView: View + Clone;
 
-    fn into_icon_view(self) -> Option<Self::IconView>;
+    fn into_icon_view(factory: IconFactory<Self>) -> Option<Self::IconView>;
 
     fn from_plain(snackbar: Snackbar<NoIcon>) -> Snackbar<Self>;
 }
@@ -463,7 +529,7 @@ impl icon_sealed::Sealed for NoIcon {}
 impl SnackbarIconSlot for NoIcon {
     type IconView = ();
 
-    fn into_icon_view(self) -> Option<Self::IconView> {
+    fn into_icon_view(_factory: IconFactory<Self>) -> Option<Self::IconView> {
         None
     }
 
@@ -472,13 +538,13 @@ impl SnackbarIconSlot for NoIcon {
     }
 }
 
-impl<V: View + Clone + 'static> icon_sealed::Sealed for V {}
+impl<V: View + 'static> icon_sealed::Sealed for V {}
 
-impl<V: View + Clone + 'static> SnackbarIconSlot for V {
-    type IconView = Self;
+impl<V: View + 'static> SnackbarIconSlot for V {
+    type IconView = BuiltIcon<Self>;
 
-    fn into_icon_view(self) -> Option<Self::IconView> {
-        Some(self)
+    fn into_icon_view(factory: IconFactory<Self>) -> Option<Self::IconView> {
+        Some(BuiltIcon(factory))
     }
 
     fn from_plain(snackbar: Snackbar<NoIcon>) -> Snackbar<Self> {
@@ -503,10 +569,13 @@ impl<V: View> From<Snackbar<NoIcon>> for Snackbar<V> {
 
 impl Snackbar<NoIcon> {
     /// Creates a new snackbar with the specified message.
+    ///
+    /// Accepts any [`IntoText`] value so string literals resolve through the
+    /// active translation catalog in the surrounding [`Environment`].
     #[must_use]
-    pub fn new(message: impl Into<Str>) -> Self {
+    pub fn new(message: impl IntoText) -> Self {
         Self {
-            message: message.into(),
+            message: message.into_text(),
             icon: None,
             action: None,
             duration: Duration::from_secs(3),
@@ -519,18 +588,20 @@ impl Snackbar<NoIcon> {
 }
 
 impl<I> Snackbar<I> {
-    /// Adds a leading icon to the snackbar.
+    /// Adds a leading icon builder to the snackbar.
     ///
-    /// Any view works; for portable apps prefer a packaged icon crate such as
+    /// Any [`ViewBuilder`] works, including closures returning non-`Clone`
+    /// modified views (for example `|| mdi::check_circle().padding()`). For
+    /// portable apps prefer a packaged icon crate such as
     /// `waterui-icons-material-icon` (`waterui_apple::SfSymbol` is only
     /// available on Apple backends). Pair with
-    /// [`SnackbarManager::with_icons`] or [`SnackbarManager::host`] when
-    /// showing snackbars that carry an icon of type `NewI`.
+    /// [`ViewExt::snackbar_host_with_icons`] or [`SnackbarManager::host`] when
+    /// showing snackbars that carry an icon of type `B::Output`.
     #[must_use]
-    pub fn icon<NewI: View + Clone + 'static>(self, icon: NewI) -> Snackbar<NewI> {
+    pub fn icon<B: ViewBuilder>(self, icon: B) -> Snackbar<B::Output> {
         Snackbar {
             message: self.message,
-            icon: Some(icon),
+            icon: Some(IconFactory(Rc::new(move || icon.build()))),
             action: self.action,
             duration: self.duration,
             position: self.position,
@@ -566,11 +637,11 @@ impl<I> Snackbar<I> {
     #[must_use]
     pub fn action<Args>(
         mut self,
-        label: impl Into<Str>,
+        label: impl IntoLabel,
         handler: impl Handler<Args, ()> + 'static,
     ) -> Self {
         self.action = Some(SnackbarAction {
-            label: label.into(),
+            label: label.into_label().into_semantic(),
             handler: shared_action(handler),
         });
         self
@@ -659,7 +730,7 @@ impl<I> Snackbar<I> {
 ///
 /// Every presentation owns its own animation bindings ([`Self::opacity`],
 /// [`Self::entrance_offset`], [`Self::stack_offset`]). The overlay renders the
-/// stack as a [`ForEach`] over the manager's [`List`], so the hydrolysis
+/// stack as a [`ForEach`] over the manager's [`StateList`], so the hydrolysis
 /// collection engine dispatches each presentation's subtree exactly once (keyed
 /// by [`Self::id`]) and reconciles only the items that join or leave. A
 /// presentation that stays on screen is never re-dispatched, so its `on_appear`
@@ -668,7 +739,7 @@ impl<I> Snackbar<I> {
 ///
 /// Cloning an `ActiveSnackbar` shares those bindings by reference count, so the
 /// snapshots the manager reflows from all refer to the same animated state.
-#[derive(Clone, crate::Identifiable)]
+#[derive(crate::Identifiable)]
 struct ActiveSnackbar<I: 'static = NoIcon> {
     #[id]
     id: u64,
@@ -686,21 +757,35 @@ struct ActiveSnackbar<I: 'static = NoIcon> {
     dismissing: Rc<Cell<bool>>,
 }
 
+impl<I: 'static> Clone for ActiveSnackbar<I> {
+    fn clone(&self) -> Self {
+        Self {
+            id: self.id,
+            snackbar: self.snackbar.clone(),
+            opacity: self.opacity.clone(),
+            entrance_offset: self.entrance_offset.clone(),
+            stack_offset: self.stack_offset.clone(),
+            dismissing: Rc::clone(&self.dismissing),
+        }
+    }
+}
+
 /// Internal state for the snackbar manager.
 struct SnackbarManagerState<I: 'static = NoIcon> {
-    /// The active on-screen snackbars, oldest first. A reactive [`List`] so the
+    /// The active on-screen snackbars, oldest first. A reactive [`StateList`] so the
     /// overlay's [`ForEach`] reconciles the stack item-by-item as snackbars are
     /// added and removed; per-row animation bindings live on each
     /// [`ActiveSnackbar`] and are untouched by membership changes.
-    active: List<ActiveSnackbar<I>>,
+    active: StateList<ActiveSnackbar<I>>,
     /// Monotonic presentation identifier used to ignore stale timers.
     next_id: u64,
 }
 
 /// Manages snackbar notifications in a FIFO queue.
 ///
-/// This plugin is automatically installed in every `Window`. Access it from the environment
-/// to show snackbar notifications.
+/// Attach [`ViewExt::snackbar_host`] (or [`ViewExt::snackbar_host_with_icons`]
+/// / [`SnackbarManager::host`]) to an ancestor view to install the manager and
+/// its overlay, then extract `SnackbarManager` in descendant handlers.
 ///
 /// # Examples
 ///
@@ -709,11 +794,11 @@ struct SnackbarManagerState<I: 'static = NoIcon> {
 /// use waterui::snackbar::{Snackbar, SnackbarManager};
 ///
 /// fn my_view() -> impl View {
-///     let (manager, _overlay) = SnackbarManager::new();
-///
-///     button("Save").action(move || {
-///         manager.show(Snackbar::new("File saved successfully"));
-///     })
+///     button("Save")
+///         .action(|manager: SnackbarManager| {
+///             manager.show(Snackbar::new("File saved successfully"));
+///         })
+///         .snackbar_host()
 /// }
 /// ```
 #[state]
@@ -739,29 +824,16 @@ impl<I: 'static> core::fmt::Debug for SnackbarManager<I> {
 
 impl SnackbarManager<NoIcon> {
     /// Creates a new snackbar manager and returns the overlay view.
-    ///
-    /// Place the returned view in an overlay above the content and install the
-    /// manager with `.state(&manager)`, or use [`ViewExt::snackbar_host`] on
-    /// the root view to do both automatically.
-    ///
-    /// # Returns
-    ///
-    /// A tuple containing the manager and the overlay view.
-    pub fn new() -> (Self, impl View + Clone) {
+    #[cfg(test)]
+    pub(crate) fn new() -> (Self, impl View + Clone) {
         Self::typed()
-    }
-
-    /// Creates a new snackbar manager whose snackbars may carry icons of view type `V`,
-    /// alongside plain icon-less snackbars.
-    pub fn with_icons<V: View + Clone + 'static>() -> (SnackbarManager<V>, impl View + Clone) {
-        SnackbarManager::<V>::typed()
     }
 }
 
 impl<I: SnackbarIconSlot> SnackbarManager<I> {
     /// Creates a new typed snackbar manager and returns the overlay view.
-    pub fn typed() -> (Self, impl View + Clone) {
-        let active = List::new();
+    pub(crate) fn typed() -> (Self, impl View + Clone) {
+        let active = StateList::new();
         let state = Rc::new(RefCell::new(SnackbarManagerState {
             active: active.clone(),
             next_id: 0,
@@ -990,7 +1062,7 @@ impl<I: SnackbarIconSlot> SnackbarManager<I> {
 /// [`StretchAxis::Both`]: waterui_layout::StretchAxis
 /// [`Window`]: crate::runtime::window::Window
 struct SnackbarOverlay<I: 'static = NoIcon> {
-    active: List<ActiveSnackbar<I>>,
+    active: StateList<ActiveSnackbar<I>>,
     manager: SnackbarManager<I>,
 }
 
@@ -1025,7 +1097,7 @@ struct StackedSnackbarView<I: 'static = NoIcon> {
     manager: SnackbarManager<I>,
 }
 
-impl<I: Clone + 'static> Clone for StackedSnackbarView<I> {
+impl<I: 'static> Clone for StackedSnackbarView<I> {
     fn clone(&self) -> Self {
         Self {
             item: self.item.clone(),
@@ -1064,11 +1136,16 @@ impl<I: SnackbarIconSlot> StackedSnackbarView<I> {
         let action_button = snackbar.action.map(|action| {
             let captured_env = snackbar.captured_env.clone();
             let manager = manager.clone();
-            button(
-                text(action.label.clone())
-                    .font(theme.action_label_font.clone())
-                    .color(theme.action_label_color.clone()),
-            )
+            let action_label = action.label.clone();
+            let semantic_text = action_label.semantic_text().clone();
+            let action_font = theme.action_label_font.clone();
+            let action_color = theme.action_label_color.clone();
+            button(Label::new(semantic_text, move || {
+                action_label
+                    .clone()
+                    .font(action_font.clone())
+                    .foreground(action_color.clone())
+            }))
             .style(ButtonStyle::Borderless)
             .action(move |env: waterui_core::Environment| {
                 action.handler.run(&captured_env.layered_on(&env));
@@ -1196,19 +1273,15 @@ impl<I: SnackbarIconSlot> View for StackedSnackbarView<I> {
         let content = Self::build_content(item.snackbar.clone(), manager, item.id, &theme);
 
         let enter_animation = theme.enter_animation.clone();
-        let shape = FixedRoundedRectangle::new(theme.corner_radius);
-        let shadow = Shadow::new(
-            theme.shadow_color.clone(),
-            Vector::new(0.0, theme.shadow_offset_y),
-            theme.shadow_radius,
-            shape,
-        );
-        let ambient_shadow = Shadow::new(
-            theme.ambient_shadow_color.clone(),
-            Vector::new(0.0, theme.ambient_shadow_offset_y),
-            theme.ambient_shadow_radius,
-            shape,
-        );
+        let shape = RoundedRectangle::new(theme.corner_radius);
+        let shadow = Shadow::splat(theme.shadow_radius)
+            .color(theme.shadow_color.clone())
+            .offset(0.0, theme.shadow_offset_y)
+            .silhouette(shape);
+        let ambient_shadow = Shadow::splat(theme.ambient_shadow_radius)
+            .color(theme.ambient_shadow_color.clone())
+            .offset(0.0, theme.ambient_shadow_offset_y)
+            .silhouette(shape);
 
         // The appear hook runs after this subtree's first flush, once the animated
         // opacity/offset handles have bound their hidden initial values, so the
@@ -1286,12 +1359,6 @@ impl<V: View, I: SnackbarIconSlot> View for SnackbarHost<V, I> {
             }
         })));
         content
-    }
-}
-
-impl Default for SnackbarManager<NoIcon> {
-    fn default() -> Self {
-        Self::new().0
     }
 }
 
@@ -1456,9 +1523,68 @@ mod tests {
         install_executor();
         let view = SnackbarManager::host(|manager| {
             manager.show(Snackbar::new("Plain"));
-            manager.show(Snackbar::new("Icon").icon("★"));
+            manager.show(Snackbar::new("Icon").icon(|| "★"));
             "Content"
         });
         let _ = view.body(&Environment::new());
+    }
+
+    #[test]
+    fn snackbar_icon_accepts_non_clone_modified_view_builder() {
+        use waterui_layout::padding::Padding;
+        use waterui_text::{Text, text};
+
+        install_executor();
+        let snackbar = Snackbar::new("Padded").icon(|| text("★").padding());
+        let cloned = snackbar.clone();
+        let host = text("Content").snackbar_host_with_icons::<Padding<Text>>();
+        let _ = host.body(&Environment::new());
+
+        let view = SnackbarManager::host(move |manager| {
+            manager.show(snackbar);
+            manager.show(cloned);
+            "Content"
+        });
+        let _ = view.body(&Environment::new());
+    }
+
+    #[test]
+    fn snackbar_message_and_action_resolve_through_translation_catalog() {
+        use waterui_locale::{TranslationCatalog, locales};
+
+        let mut env = Environment::new();
+        env.insert(locales::FR);
+        env.insert(
+            TranslationCatalog::new()
+                .add_toml(
+                    locales::FR,
+                    "\"File saved\" = \"Fichier enregistré\"\n\"Undo\" = \"Annuler\"",
+                )
+                .expect("test catalog must parse"),
+        );
+
+        let snackbar = Snackbar::new("File saved").action("Undo", || {});
+        assert_eq!(
+            snackbar
+                .message
+                .resolve(&env)
+                .content()
+                .snapshot()
+                .to_plain()
+                .as_str(),
+            "Fichier enregistré"
+        );
+        let action = snackbar.action.as_ref().expect("action must be present");
+        assert_eq!(
+            action
+                .label()
+                .semantic_text()
+                .resolve(&env)
+                .content()
+                .snapshot()
+                .to_plain()
+                .as_str(),
+            "Annuler"
+        );
     }
 }

@@ -8,15 +8,18 @@
 //! ## Example
 //!
 //! ```ignore
+//! use waterui::reactive::binding;
 //! use waterui_map::{Annotation, Coordinate, Map, Region};
 //!
-//! // Display a map centered on San Francisco
+//! // Display a map centered on San Francisco with selectable pins
 //! # fn example() -> Result<(), waterui_map::OutOfRange> {
 //! let san_francisco = Coordinate::from_degrees(37.7749, -122.4194)?;
-//! let region = Region::new(san_francisco, 0.1, 0.1);
+//! let camera = binding(Region::new(san_francisco, 0.1, 0.1));
+//! let selected = binding(None);
 //!
-//! let map = Map::new(region)
-//!     .annotations(vec![Annotation::new(san_francisco, "San Francisco")])
+//! let map = Map::new(&camera)
+//!     .annotations(vec![Annotation::new("sf", san_francisco, "San Francisco")])
+//!     .selection(&selected)
 //!     .shows_user_location(true);
 //! # let _ = map;
 //! # Ok(())
@@ -25,10 +28,17 @@
 
 extern crate alloc;
 
+use alloc::rc::Rc;
 use alloc::vec::Vec;
-use nami::{Binding, impl_constant, signal::IntoComputed};
+use nami::watcher::{BoxWatcherGuard, Context, WatcherGuard};
+use nami::{Binding, Signal, impl_constant, signal::IntoComputed};
 use suiteki::Str;
-use waterui_core::{Computed, SignalExt, configurable, layout::StretchAxis};
+use waterui_core::id::{Id, Mapping};
+use waterui_core::{
+    Computed, Environment, Metadata, Native, NativeView, OneOf2, Retain, SignalExt, View,
+    flatten_signal, layout::StretchAxis,
+};
+use waterui_text::{IntoText, Text};
 
 // Re-export waterkit-location for downstream convenience.
 pub use waterkit_location as location;
@@ -137,21 +147,34 @@ impl From<Coordinate> for Region {
     }
 }
 
-impl_constant!(Coordinate, Region, Annotation, MapStyle, MapStatus);
+impl_constant!(Coordinate, Region, MapStyle, MapStatus);
 
-/// A map annotation (pin marker).
-#[derive(Debug, Clone, PartialEq)]
+/// A map annotation (pin marker) carrying an application-defined identifier.
+///
+/// The type parameter defaults to [`Id`], the erased identifier type backends
+/// receive inside [`MapConfig`]. Application code constructs annotations with
+/// any `T: Ord + Clone + 'static` (such as an enum, integer, or string) and
+/// binds selection through [`Map::selection`].
+#[derive(Debug, Clone)]
 #[non_exhaustive]
-pub struct Annotation {
+pub struct Annotation<T = Id> {
+    /// Application-defined identity for reconciliation and selection.
+    id: T,
     /// The coordinate where the annotation is placed.
     coordinate: Coordinate,
     /// The title text shown on the annotation.
-    title: Str,
+    title: Text,
     /// Optional subtitle text.
-    subtitle: Option<Str>,
+    subtitle: Option<Text>,
 }
 
-impl Annotation {
+impl<T> Annotation<T> {
+    /// The application-defined identifier of this annotation.
+    #[must_use]
+    pub const fn id(&self) -> &T {
+        &self.id
+    }
+
     /// The coordinate where the annotation is placed.
     #[must_use]
     pub const fn coordinate(&self) -> Coordinate {
@@ -160,32 +183,91 @@ impl Annotation {
 
     /// The title text shown on the annotation.
     #[must_use]
-    pub const fn title(&self) -> &Str {
+    pub const fn title(&self) -> &Text {
         &self.title
     }
 
     /// Optional subtitle text.
     #[must_use]
-    pub const fn get_subtitle(&self) -> Option<&Str> {
+    pub const fn get_subtitle(&self) -> Option<&Text> {
         self.subtitle.as_ref()
     }
-}
 
-impl Annotation {
-    /// Creates a new annotation with a title.
-    pub fn new(coordinate: Coordinate, title: impl Into<Str>) -> Self {
+    /// Creates a new annotation with an identifier, coordinate, and title.
+    pub fn new(id: T, coordinate: Coordinate, title: impl IntoText) -> Self {
         Self {
+            id,
             coordinate,
-            title: title.into(),
+            title: title.into_text(),
             subtitle: None,
         }
     }
 
     /// Sets the subtitle for this annotation.
     #[must_use]
-    pub fn subtitle(mut self, subtitle: impl Into<Str>) -> Self {
-        self.subtitle = Some(subtitle.into());
+    pub fn subtitle(mut self, subtitle: impl IntoText) -> Self {
+        self.subtitle = Some(subtitle.into_text());
         self
+    }
+
+    /// Transforms this annotation's identifier, preserving coordinate and text.
+    #[must_use]
+    pub fn map_id<U>(self, f: impl FnOnce(T) -> U) -> Annotation<U> {
+        Annotation {
+            id: f(self.id),
+            coordinate: self.coordinate,
+            title: self.title,
+            subtitle: self.subtitle,
+        }
+    }
+}
+
+/// A resolved map annotation delivered to backends inside [`MapConfig`].
+///
+/// Carries the erased [`Id`], coordinate, and localized plain-text title and
+/// optional subtitle resolved against the map's [`Environment`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResolvedAnnotation {
+    id: Id,
+    coordinate: Coordinate,
+    title: Str,
+    subtitle: Option<Str>,
+}
+
+impl ResolvedAnnotation {
+    /// Creates a resolved annotation payload.
+    #[must_use]
+    pub const fn new(id: Id, coordinate: Coordinate, title: Str, subtitle: Option<Str>) -> Self {
+        Self {
+            id,
+            coordinate,
+            title,
+            subtitle,
+        }
+    }
+
+    /// The erased identifier of this annotation.
+    #[must_use]
+    pub const fn id(&self) -> Id {
+        self.id
+    }
+
+    /// The coordinate where the annotation is placed.
+    #[must_use]
+    pub const fn coordinate(&self) -> Coordinate {
+        self.coordinate
+    }
+
+    /// The resolved title text shown on the annotation.
+    #[must_use]
+    pub const fn title(&self) -> &Str {
+        &self.title
+    }
+
+    /// The resolved optional subtitle text.
+    #[must_use]
+    pub const fn subtitle(&self) -> Option<&Str> {
+        self.subtitle.as_ref()
     }
 }
 
@@ -194,7 +276,7 @@ impl Annotation {
 /// Native realizations resolve these against the platform map's own imagery.
 /// The portable GPU realization has no imagery of its own, so an application
 /// asking for [`Self::Satellite`] or [`Self::Hybrid`] must also supply the
-/// matching provider style (`MapGpuOptions::satellite_style_url` and
+/// matching provider style (`MapGpu::satellite_style_url` and
 /// `hybrid_style_url`). The map reports a load failure when it did not, rather
 /// than silently drawing the standard style.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -302,10 +384,12 @@ impl MapInteractivity {
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct MapConfig {
-    /// The region to display.
-    region: Computed<Region>,
-    /// Annotations (pins) to display on the map.
-    annotations: Computed<Vec<Annotation>>,
+    /// Two-way camera region: app updates move the map, user gestures write back.
+    camera: Binding<Region>,
+    /// Resolved annotations (pins) to display on the map, carrying erased [`Id`]s.
+    resolved_annotations: Computed<Vec<ResolvedAnnotation>>,
+    /// Optional two-way selection of the currently selected annotation [`Id`].
+    selection: Option<Binding<Option<Id>>>,
     /// The map display style.
     style: MapStyle,
     /// Whether to show the user's current location.
@@ -330,21 +414,25 @@ pub struct MapConfig {
 }
 
 impl MapConfig {
-    /// The region to display.
+    /// Two-way camera region binding.
+    ///
+    /// Changes written by the application move the camera; user pan and zoom
+    /// gestures write the settled region back into this binding.
     #[must_use]
-    pub const fn region(&self) -> &Computed<Region> {
-        &self.region
+    pub const fn camera(&self) -> &Binding<Region> {
+        &self.camera
     }
 
-    /// Sets the `region`.
-    pub fn set_region(&mut self, region: Computed<Region>) {
-        self.region = region;
+    /// Resolved annotations (pins) to display on the map, carrying erased [`Id`]s.
+    #[must_use]
+    pub const fn resolved_annotations(&self) -> &Computed<Vec<ResolvedAnnotation>> {
+        &self.resolved_annotations
     }
 
-    /// Annotations (pins) to display on the map.
+    /// Optional two-way binding for the currently selected annotation [`Id`].
     #[must_use]
-    pub const fn annotations(&self) -> &Computed<Vec<Annotation>> {
-        &self.annotations
+    pub const fn selection(&self) -> Option<&Binding<Option<Id>>> {
+        self.selection.as_ref()
     }
 
     /// The map display style.
@@ -397,25 +485,194 @@ impl MapConfig {
     }
 }
 
-// Use configurable! with StretchAxis::Both - this provides both NativeView and View impls
-configurable!(
-    #[doc = "A map view that displays a geographic region with optional annotations."]
-    Map,
-    MapConfig,
-    StretchAxis::Both
-);
+impl NativeView for MapConfig {
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::Both
+    }
+}
 
-impl Map {
-    /// Creates a new Map displaying the specified region.
+mod sealed {
+    pub trait Sealed {}
+}
+
+/// Marker type for a [`Map`] that has not yet been given typed annotations or
+/// an annotation selection binding.
+#[derive(Debug, Clone, Copy)]
+pub struct NoAnnotations;
+
+impl sealed::Sealed for NoAnnotations {}
+impl<T: Ord + Clone + 'static> sealed::Sealed for T {}
+
+/// Erased annotation list and optional selection binding produced by [`MapAnnotations`].
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct ErasedMapAnnotations {
+    annotations: Computed<Vec<Annotation<Id>>>,
+    selection: Option<Binding<Option<Id>>>,
+}
+
+/// Erases a [`Map`]'s typed annotation identifiers and selection binding into
+/// the [`Id`]-keyed backend contract.
+pub trait MapAnnotations: sealed::Sealed + Sized + 'static {
+    /// Converts typed annotations and optional selection into erased [`Id`]
+    /// signals sharing one [`Mapping`].
+    #[doc(hidden)]
+    fn erase(
+        annotations: Option<Computed<Vec<Annotation<Self>>>>,
+        selection: Option<Binding<Option<Self>>>,
+    ) -> ErasedMapAnnotations;
+}
+
+impl MapAnnotations for NoAnnotations {
+    fn erase(
+        _annotations: Option<Computed<Vec<Annotation<Self>>>>,
+        _selection: Option<Binding<Option<Self>>>,
+    ) -> ErasedMapAnnotations {
+        ErasedMapAnnotations {
+            annotations: Computed::new(Vec::new()),
+            selection: None,
+        }
+    }
+}
+
+impl<T: Ord + Clone + 'static> MapAnnotations for T {
+    fn erase(
+        annotations: Option<Computed<Vec<Annotation<Self>>>>,
+        selection: Option<Binding<Option<Self>>>,
+    ) -> ErasedMapAnnotations {
+        let mapping: Mapping<T> = Mapping::new();
+        let erased_annotations = annotations.map_or_else(
+            || Computed::new(Vec::new()),
+            |annotations| {
+                let mapping = mapping.clone();
+                annotations
+                    .map(move |items| {
+                        items
+                            .into_iter()
+                            .map(|annotation| annotation.map_id(|id| mapping.to_id(id)))
+                            .collect::<Vec<_>>()
+                    })
+                    .computed()
+            },
+        );
+        let erased_selection = selection.map(|selection| mapping.optional_binding(&selection));
+        ErasedMapAnnotations {
+            annotations: erased_annotations,
+            selection: erased_selection,
+        }
+    }
+}
+
+/// A map view that displays a geographic region with optional selectable
+/// annotations.
+#[derive(Debug)]
+#[must_use]
+pub struct Map<T: 'static = NoAnnotations> {
+    camera: Binding<Region>,
+    follows_region: Option<Computed<Region>>,
+    annotations: Option<Computed<Vec<Annotation<T>>>>,
+    selection: Option<Binding<Option<T>>>,
+    style: MapStyle,
+    user_location_visibility: MapVisibility,
+    user_location: Option<Computed<Option<Location>>>,
+    interactivity: MapInteractivity,
+    compass_visibility: MapVisibility,
+    scale_visibility: MapVisibility,
+    status: Option<Binding<MapStatus>>,
+}
+
+mod private {
+    pub trait SealedCenter {}
+    pub trait SealedRegion<M> {}
+    #[derive(Debug)]
+    pub struct TwoWayRegion;
+    #[derive(Debug)]
+    pub struct SignalCenter;
+    #[derive(Debug)]
+    pub struct ConstantLocation;
+}
+
+/// Target center value carried by a one-way signal passed to [`IntoMapRegion`].
+pub trait MapCenter: private::SealedCenter + Clone + 'static {
+    #[doc(hidden)]
+    fn into_region(self) -> Region;
+}
+
+impl private::SealedCenter for Coordinate {}
+impl private::SealedCenter for Location {}
+
+impl MapCenter for Coordinate {
+    fn into_region(self) -> Region {
+        Region::from_coordinate(self)
+    }
+}
+
+impl MapCenter for Location {
+    fn into_region(self) -> Region {
+        Region::from_coordinate(Coordinate::from(self))
+    }
+}
+
+/// Center coordinates or camera regions accepted by [`Map::new`] and [`map`].
+///
+/// Implemented for `&Binding<Region>` (two-way camera binding) and for any
+/// reactive signal or constant producing [`Coordinate`] or [`Location`]
+/// (one-way centered camera).
+pub trait IntoMapRegion<M = private::SignalCenter>: private::SealedRegion<M> {
+    #[doc(hidden)]
+    fn into_map_camera(self) -> (Binding<Region>, Option<Computed<Region>>);
+}
+
+impl private::SealedRegion<private::TwoWayRegion> for &Binding<Region> {}
+
+impl IntoMapRegion<private::TwoWayRegion> for &Binding<Region> {
+    fn into_map_camera(self) -> (Binding<Region>, Option<Computed<Region>>) {
+        (self.clone(), None)
+    }
+}
+
+impl private::SealedRegion<private::ConstantLocation> for Location {}
+
+impl IntoMapRegion<private::ConstantLocation> for Location {
+    fn into_map_camera(self) -> (Binding<Region>, Option<Computed<Region>>) {
+        let region_signal = Computed::constant(Region::from_coordinate(Coordinate::from(self)));
+        let camera = Binding::container(region_signal.snapshot());
+        (camera, Some(region_signal))
+    }
+}
+
+impl<S> private::SealedRegion<private::SignalCenter> for S
+where
+    S: Signal + Clone + 'static,
+    S::Output: MapCenter,
+{
+}
+
+impl<S> IntoMapRegion<private::SignalCenter> for S
+where
+    S: Signal + Clone + 'static,
+    S::Output: MapCenter,
+{
+    fn into_map_camera(self) -> (Binding<Region>, Option<Computed<Region>>) {
+        let region_signal = self.map(MapCenter::into_region).computed();
+        let camera = Binding::container(region_signal.snapshot());
+        (camera, Some(region_signal))
+    }
+}
+
+impl Map<NoAnnotations> {
+    /// Creates a new `Map` centered on `center`.
     ///
-    /// # Arguments
-    ///
-    /// * `region` - The map region to display (can be reactive).
-    pub fn new(region: impl IntoComputed<Region>) -> Self {
-        let empty_annotations: Vec<Annotation> = Vec::new();
-        Self(MapConfig {
-            region: region.into_computed(),
-            annotations: empty_annotations.into_computed(),
+    /// Pass `&Binding<Region>` for a two-way camera binding (pan and zoom
+    /// gestures write back into the binding), or any [`Coordinate`] /
+    /// [`Location`] value or reactive signal for a one-way centered camera.
+    pub fn new<M>(center: impl IntoMapRegion<M>) -> Self {
+        let (camera, follows_region) = center.into_map_camera();
+        Self {
+            camera,
+            follows_region,
+            annotations: None,
+            selection: None,
             style: MapStyle::default(),
             user_location_visibility: MapVisibility::Hidden,
             user_location: None,
@@ -423,51 +680,78 @@ impl Map {
             compass_visibility: MapVisibility::Visible,
             scale_visibility: MapVisibility::Visible,
             status: None,
-        })
-    }
-
-    /// Creates a new Map centered on the specified coordinate with default zoom.
-    pub fn centered_on(coordinate: impl IntoComputed<Coordinate>) -> Self {
-        let coord_signal = coordinate.into_computed();
-        let region_signal: Computed<Region> = coord_signal.map(Region::from_coordinate).computed();
-        Self::new(region_signal)
-    }
-
-    /// Creates a new Map centered on reactive `Location` values.
-    pub fn centered_on_location(location: impl IntoComputed<Location>) -> Self {
-        let location_signal = location.into_computed();
-        let region_signal: Computed<Region> = location_signal
-            .map(|location| Region::from_coordinate(Coordinate::from(location)))
-            .computed();
-        Self::new(region_signal)
+        }
     }
 
     /// Sets the annotations (pins) to display on the map.
-    #[must_use]
-    pub fn annotations(mut self, annotations: impl IntoComputed<Vec<Annotation>>) -> Self {
-        self.0.annotations = annotations.into_computed();
+    pub fn annotations<T: Ord + Clone + 'static>(
+        self,
+        annotations: impl IntoComputed<Vec<Annotation<T>>>,
+    ) -> Map<T> {
+        Map {
+            camera: self.camera,
+            follows_region: self.follows_region,
+            annotations: Some(annotations.into_computed()),
+            selection: None,
+            style: self.style,
+            user_location_visibility: self.user_location_visibility,
+            user_location: self.user_location,
+            interactivity: self.interactivity,
+            compass_visibility: self.compass_visibility,
+            scale_visibility: self.scale_visibility,
+            status: self.status,
+        }
+    }
+
+    /// Binds annotation selection two-way to `selection`.
+    pub fn selection<T: Ord + Clone + 'static>(self, selection: &Binding<Option<T>>) -> Map<T> {
+        Map {
+            camera: self.camera,
+            follows_region: self.follows_region,
+            annotations: None,
+            selection: Some(selection.clone()),
+            style: self.style,
+            user_location_visibility: self.user_location_visibility,
+            user_location: self.user_location,
+            interactivity: self.interactivity,
+            compass_visibility: self.compass_visibility,
+            scale_visibility: self.scale_visibility,
+            status: self.status,
+        }
+    }
+}
+
+impl<T: Ord + Clone + 'static> Map<T> {
+    /// Sets the annotations (pins) to display on the map.
+    pub fn annotations(mut self, annotations: impl IntoComputed<Vec<Annotation<T>>>) -> Self {
+        self.annotations = Some(annotations.into_computed());
         self
     }
 
+    /// Binds annotation selection two-way to `selection`.
+    pub fn selection(mut self, selection: &Binding<Option<T>>) -> Self {
+        self.selection = Some(selection.clone());
+        self
+    }
+}
+
+impl<T: 'static> Map<T> {
     /// Sets the map display style.
-    #[must_use]
     pub const fn style(mut self, style: MapStyle) -> Self {
-        self.0.style = style;
+        self.style = style;
         self
     }
 
     /// Sets whether to show the user's current location on the map.
-    #[must_use]
     pub const fn shows_user_location(mut self, show: bool) -> Self {
-        self.0.user_location_visibility = MapVisibility::from_bool(show);
+        self.user_location_visibility = MapVisibility::from_bool(show);
         self
     }
 
     /// Displays reactive `WaterKit` location values and their horizontal accuracy.
-    #[must_use]
     pub fn user_location(mut self, location: impl IntoComputed<Location>) -> Self {
-        self.0.user_location = Some(location.into_computed().map(Some).computed());
-        self.0.user_location_visibility = MapVisibility::Visible;
+        self.user_location = Some(location.into_computed().map(Some).computed());
+        self.user_location_visibility = MapVisibility::Visible;
         self
     }
 
@@ -476,43 +760,40 @@ impl Map {
     /// This is useful while an asynchronous location permission/request flow is
     /// pending: `None` draws no location marker and the first `Some` value
     /// updates the existing map without replacing its view identity.
-    #[must_use]
     pub fn optional_user_location(mut self, location: impl IntoComputed<Option<Location>>) -> Self {
-        self.0.user_location = Some(location.into_computed());
-        self.0.user_location_visibility = MapVisibility::Visible;
+        self.user_location = Some(location.into_computed());
+        self.user_location_visibility = MapVisibility::Visible;
         self
     }
 
     /// Binds the map center to reactive `Location` updates and enables user-location display.
-    #[must_use]
     pub fn follows_location(mut self, location: impl IntoComputed<Location>) -> Self {
         let location_signal = location.into_computed();
-        self.0.region = location_signal
+        let region_signal = location_signal
             .map(|location| Region::from_coordinate(Coordinate::from(location)))
-            .into_computed();
-        self.0.user_location = Some(location_signal.map(Some).computed());
-        self.0.user_location_visibility = MapVisibility::Visible;
+            .computed();
+        self.camera.set(region_signal.snapshot());
+        self.follows_region = Some(region_signal);
+        self.user_location = Some(location_signal.map(Some).computed());
+        self.user_location_visibility = MapVisibility::Visible;
         self
     }
 
     /// Sets whether the map is interactive (pan/zoom enabled).
-    #[must_use]
     pub const fn is_interactive(mut self, interactive: bool) -> Self {
-        self.0.interactivity = MapInteractivity::from_bool(interactive);
+        self.interactivity = MapInteractivity::from_bool(interactive);
         self
     }
 
     /// Sets whether to show the compass.
-    #[must_use]
     pub const fn shows_compass(mut self, show: bool) -> Self {
-        self.0.compass_visibility = MapVisibility::from_bool(show);
+        self.compass_visibility = MapVisibility::from_bool(show);
         self
     }
 
     /// Sets whether to show the scale.
-    #[must_use]
     pub const fn shows_scale(mut self, show: bool) -> Self {
-        self.0.scale_visibility = MapVisibility::from_bool(show);
+        self.scale_visibility = MapVisibility::from_bool(show);
         self
     }
 
@@ -521,42 +802,187 @@ impl Map {
     /// The map writes [`MapStatus`] into `status` as it loads, fails, or
     /// becomes ready, so an application can show its own loading and error
     /// affordances over the map.
-    #[must_use]
     pub fn status(mut self, status: &Binding<MapStatus>) -> Self {
-        self.0.status = Some(status.clone());
+        self.status = Some(status.clone());
         self
     }
 }
 
-/// Convenience function to create a Map view.
-pub fn map(region: impl IntoComputed<Region>) -> Map {
-    Map::new(region)
+#[derive(Clone)]
+struct CombineResolvedAnnotations(Vec<Computed<ResolvedAnnotation>>);
+
+struct CombineResolvedAnnotationsGuard {
+    _guards: Vec<BoxWatcherGuard>,
 }
 
-/// Convenience constructor for [`Map::centered_on`].
-pub fn map_centered_on(coordinate: impl IntoComputed<Coordinate>) -> Map {
-    Map::centered_on(coordinate)
+impl WatcherGuard for CombineResolvedAnnotationsGuard {}
+
+impl Signal for CombineResolvedAnnotations {
+    type Output = Vec<ResolvedAnnotation>;
+    type Guard = CombineResolvedAnnotationsGuard;
+
+    fn snapshot(&self) -> Self::Output {
+        self.0.iter().map(Signal::snapshot).collect()
+    }
+
+    fn watch(&self, watcher: impl Fn(Context<Self::Output>) + 'static) -> Self::Guard {
+        let watcher = Rc::new(watcher);
+        let signals = self.0.clone();
+        let guards = signals
+            .iter()
+            .map(|signal| {
+                let watcher = Rc::clone(&watcher);
+                let signals = signals.clone();
+                signal.watch(move |ctx| {
+                    let resolved = signals.iter().map(Signal::snapshot).collect();
+                    watcher(Context::new(resolved, ctx.metadata().clone()));
+                })
+            })
+            .collect();
+        CombineResolvedAnnotationsGuard { _guards: guards }
+    }
 }
 
-/// Convenience constructor for [`Map::centered_on_location`].
-pub fn map_centered_on_location(location: impl IntoComputed<Location>) -> Map {
-    Map::centered_on_location(location)
+fn resolve_annotation(
+    annotation: Annotation<Id>,
+    env: &Environment,
+) -> Computed<ResolvedAnnotation> {
+    let id = annotation.id;
+    let coordinate = annotation.coordinate;
+    let title = annotation
+        .title
+        .resolve(env)
+        .content()
+        .map(|styled| styled.to_plain());
+    match annotation.subtitle {
+        Some(subtitle) => {
+            let subtitle = subtitle
+                .resolve(env)
+                .content()
+                .map(|styled| styled.to_plain());
+            title
+                .zip(&subtitle)
+                .map(move |(title, subtitle)| {
+                    ResolvedAnnotation::new(id, coordinate, title, Some(subtitle))
+                })
+                .computed()
+        }
+        None => title
+            .map(move |title| ResolvedAnnotation::new(id, coordinate, title, None))
+            .computed(),
+    }
+}
+
+fn resolve_annotations(
+    annotations: &Computed<Vec<Annotation<Id>>>,
+    env: &Environment,
+) -> Computed<Vec<ResolvedAnnotation>> {
+    let env = env.clone();
+    flatten_signal(annotations.map(move |items| {
+        let resolved = items
+            .into_iter()
+            .map(|annotation| resolve_annotation(annotation, &env))
+            .collect();
+        Computed::new(CombineResolvedAnnotations(resolved))
+    }))
+}
+
+impl<T: MapAnnotations> Map<T> {
+    fn into_config(self, env: &Environment) -> (MapConfig, Option<Computed<Region>>) {
+        let erased = T::erase(self.annotations, self.selection);
+        let resolved_annotations = resolve_annotations(&erased.annotations, env);
+        let config = MapConfig {
+            camera: self.camera,
+            resolved_annotations,
+            selection: erased.selection,
+            style: self.style,
+            user_location_visibility: self.user_location_visibility,
+            user_location: self.user_location,
+            interactivity: self.interactivity,
+            compass_visibility: self.compass_visibility,
+            scale_visibility: self.scale_visibility,
+            status: self.status,
+        };
+        (config, self.follows_region)
+    }
+}
+
+impl<T: MapAnnotations> View for Map<T> {
+    fn body(self, env: &Environment) -> impl View {
+        let (config, follows_region) = self.into_config(env);
+        match follows_region {
+            Some(region_signal) => {
+                let camera = config.camera.clone();
+                let guard = region_signal.watch(move |context| {
+                    camera.set(context.into_value());
+                });
+                OneOf2::B(Metadata::new(
+                    Native::new(config),
+                    Retain::new((guard, region_signal)),
+                ))
+            }
+            None => OneOf2::A(Native::new(config)),
+        }
+    }
+}
+
+/// Convenience function to create a `Map` view centered on `center`.
+pub fn map<M>(center: impl IntoMapRegion<M>) -> Map {
+    Map::new(center)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Coordinate, Map, MapStatus, Region};
+    use alloc::rc::Rc;
+    use core::cell::RefCell;
+
+    use super::{Annotation, Coordinate, Location, Map, MapStatus, Region, Timestamp, map};
     use nami::{Binding, Signal};
+    use suiteki::Str;
+    use waterui_core::Environment;
+    use waterui_locale::{TranslationCatalog, locales};
+
+    #[test]
+    fn map_new_accepts_coordinates_locations_and_signals() {
+        let sf = Coordinate::from_degrees(37.7749, -122.4194).expect("valid sf");
+        let nyc = Coordinate::from_degrees(40.7128, -74.0060).expect("valid nyc");
+        let sf_loc = Location::new(sf.latitude, sf.longitude, Timestamp::UNIX_EPOCH);
+        let nyc_loc = Location::new(nyc.latitude, nyc.longitude, Timestamp::UNIX_EPOCH);
+        let env = Environment::new();
+
+        let (config, follows) = Map::new(sf).into_config(&env);
+        assert_eq!(config.camera().snapshot(), Region::from_coordinate(sf));
+        assert!(follows.is_some());
+
+        let coord_binding = Binding::container(sf);
+        let (_, coord_follows) = Map::new(coord_binding.clone()).into_config(&env);
+        let coord_follows = coord_follows.expect("coordinate binding produces region signal");
+        assert_eq!(coord_follows.snapshot(), Region::from_coordinate(sf));
+        coord_binding.set(nyc);
+        assert_eq!(coord_follows.snapshot(), Region::from_coordinate(nyc));
+
+        let (loc_config, loc_follows) = Map::new(sf_loc.clone()).into_config(&env);
+        assert_eq!(loc_config.camera().snapshot(), Region::from_coordinate(sf));
+        assert!(loc_follows.is_some());
+
+        let loc_binding = Binding::container(sf_loc);
+        let (_, loc_follows) = map(loc_binding.clone()).into_config(&env);
+        let loc_follows = loc_follows.expect("location binding produces region signal");
+        assert_eq!(loc_follows.snapshot(), Region::from_coordinate(sf));
+        loc_binding.set(nyc_loc);
+        assert_eq!(loc_follows.snapshot(), Region::from_coordinate(nyc));
+    }
 
     #[test]
     fn a_map_reports_status_into_the_caller_owned_binding() {
         let status = Binding::container(MapStatus::Loading);
-        let map = Map::new(Region::from_coordinate(
+        let camera = Binding::container(Region::from_coordinate(
             Coordinate::from_degrees(37.7749, -122.4194).expect("valid coordinate"),
-        ))
-        .status(&status);
+        ));
+        let env = Environment::new();
+        let (config, _) = Map::new(&camera).status(&status).into_config(&env);
 
-        let sink = map.0.status.expect("status sink must be retained");
+        let sink = config.status.expect("status sink must be retained");
         sink.set(MapStatus::Failed("style unreachable".into()));
 
         assert_eq!(
@@ -568,8 +994,145 @@ mod tests {
 
     #[test]
     fn a_map_without_an_observer_allocates_no_status_sink() {
-        let map = Map::new(Region::default());
+        let camera = Binding::container(Region::default());
+        let env = Environment::new();
+        let (config, _) = Map::new(&camera).into_config(&env);
 
-        assert!(map.0.status.is_none());
+        assert!(config.status.is_none());
+    }
+
+    #[test]
+    fn camera_binding_is_two_way() {
+        let sf = Coordinate::from_degrees(37.7749, -122.4194).expect("valid sf");
+        let nyc = Coordinate::from_degrees(40.7128, -74.0060).expect("valid nyc");
+        let camera = Binding::container(Region::from_coordinate(sf));
+        let env = Environment::new();
+        let (config, _) = Map::new(&camera).into_config(&env);
+
+        // Backend writes back panned region into caller's camera binding.
+        config.camera().set(Region::from_coordinate(nyc));
+        assert_eq!(camera.snapshot(), Region::from_coordinate(nyc));
+
+        // Caller recentering back to sf updates backend binding.
+        camera.set(Region::from_coordinate(sf));
+        assert_eq!(config.camera().snapshot(), Region::from_coordinate(sf));
+    }
+
+    #[test]
+    fn annotations_and_selection_erase_through_shared_mapping() {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+        enum Pin {
+            Ferry,
+            Bridge,
+        }
+
+        let sf = Coordinate::from_degrees(37.7955, -122.3937).expect("valid ferry");
+        let bridge = Coordinate::from_degrees(37.8199, -122.4783).expect("valid bridge");
+        let camera = Binding::container(Region::from_coordinate(sf));
+        let selected = Binding::container(None::<Pin>);
+        let pins = vec![
+            Annotation::new(Pin::Ferry, sf, "Ferry Building"),
+            Annotation::new(Pin::Bridge, bridge, "Golden Gate Bridge"),
+        ];
+        let env = Environment::new();
+
+        let (config, _) = Map::new(&camera)
+            .annotations(pins)
+            .selection(&selected)
+            .into_config(&env);
+
+        let erased = config.resolved_annotations().snapshot();
+        assert_eq!(erased.len(), 2);
+        assert_ne!(erased[0].id(), erased[1].id());
+
+        let selection = config.selection().expect("selection binding retained");
+        assert_eq!(selection.snapshot(), None);
+
+        // Backend taps second pin -> caller selection becomes Some(Pin::Bridge).
+        selection.set(Some(erased[1].id()));
+        assert_eq!(selected.snapshot(), Some(Pin::Bridge));
+
+        // Caller changes selection programmatically -> backend sees first pin's Id.
+        selected.set(Some(Pin::Ferry));
+        assert_eq!(selection.snapshot(), Some(erased[0].id()));
+
+        // Deselecting clears both sides.
+        selection.set(None);
+        assert_eq!(selected.snapshot(), None);
+    }
+
+    #[test]
+    fn annotation_title_and_subtitle_resolve_through_translation_catalog() {
+        let tokyo = Coordinate::from_degrees(35.6812, 139.7671).expect("valid tokyo");
+        let shinjuku = Coordinate::from_degrees(35.6895, 139.6917).expect("valid shinjuku");
+        let camera = Binding::container(Region::from_coordinate(tokyo));
+        let pins = Binding::container(vec![
+            Annotation::new(1_u32, tokyo, "Central Station").subtitle("Transit Hub"),
+        ]);
+
+        let locale = Binding::container(locales::EN);
+        let mut env = Environment::new();
+        env.insert(locale.clone());
+        env.insert(
+            TranslationCatalog::new()
+                .add_toml(
+                    locales::ZH_CN,
+                    "\"Central Station\" = \"中央车站\"\n\"Transit Hub\" = \"交通枢纽\"\n\"West Park\" = \"西公园\"",
+                )
+                .expect("zh catalog must parse")
+                .add_toml(
+                    locales::JA,
+                    "\"Central Station\" = \"中央駅\"\n\"Transit Hub\" = \"乗換拠点\"\n\"West Park\" = \"西公園\"",
+                )
+                .expect("ja catalog must parse")
+                .add_toml(
+                    locales::KO,
+                    "\"Central Station\" = \"중앙역\"\n\"Transit Hub\" = \"환승 거점\"\n\"West Park\" = \"서쪽 공원\"",
+                )
+                .expect("ko catalog must parse"),
+        );
+
+        let (config, _) = Map::new(&camera)
+            .annotations(pins.clone())
+            .into_config(&env);
+        let resolved = config.resolved_annotations().clone();
+        let observed = Rc::new(RefCell::new(Vec::new()));
+        let _guard = resolved.watch({
+            let observed = Rc::clone(&observed);
+            move |ctx| {
+                observed.borrow_mut().push(ctx.into_value());
+            }
+        });
+
+        let initial = resolved.snapshot();
+        assert_eq!(initial.len(), 1);
+        assert_eq!(initial[0].title().as_str(), "Central Station");
+        assert_eq!(initial[0].subtitle().map(Str::as_str), Some("Transit Hub"));
+
+        locale.set(locales::ZH_CN);
+        let zh = resolved.snapshot();
+        assert_eq!(zh[0].title().as_str(), "中央车站");
+        assert_eq!(zh[0].subtitle().map(Str::as_str), Some("交通枢纽"));
+
+        locale.set(locales::JA);
+        let ja = resolved.snapshot();
+        assert_eq!(ja[0].title().as_str(), "中央駅");
+        assert_eq!(ja[0].subtitle().map(Str::as_str), Some("乗換拠点"));
+
+        locale.set(locales::KO);
+        let ko = resolved.snapshot();
+        assert_eq!(ko[0].title().as_str(), "중앙역");
+        assert_eq!(ko[0].subtitle().map(Str::as_str), Some("환승 거점"));
+
+        // Replacing the outer annotations list re-resolves in the active locale.
+        pins.set(vec![Annotation::new(2_u32, shinjuku, "West Park")]);
+        let replaced = resolved.snapshot();
+        assert_eq!(replaced.len(), 1);
+        assert_eq!(replaced[0].title().as_str(), "서쪽 공원");
+        assert_eq!(replaced[0].subtitle(), None);
+        assert!(
+            !observed.borrow().is_empty(),
+            "watcher must observe locale and list updates"
+        );
     }
 }

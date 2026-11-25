@@ -49,8 +49,8 @@ text("Simple Tap")
     .state(&taps)
 ```
 
-Siblings: `.on_tap_gesture(handler)` (alias of `.on_tap`), `.on_tap_gesture_count(2,
-handler)` for a fixed tap count, and `.on_long_press_gesture(milliseconds, handler)`. Behind
+Sibling: `.on_long_press(handler)` (using the platform's
+long-press timeout). Behind
 the opt-in `haptics` cargo feature, attach `.sensory_feedback(Feedback::Success, &trigger)`
 to play feedback whenever a `PartialEq + Clone` signal changes, or call
 `waterui::haptic::Haptic::impact(Intensity::LOW)` inside a gesture handler for an
@@ -65,16 +65,20 @@ role.
 anything `Into<Gesture>`:
 
 ```rust
-view.gesture(TapGesture::new(), handler)              // single tap
-view.gesture(TapGesture::repeat(2), handler)          // double tap — a count, not a new type
-view.gesture(LongPressGesture::new(500), handler)     // duration is a u32, NOT a core::time::Duration
-view.gesture(DragGesture::new(5.0), handler)          // minimum pointer travel, f32 layout units
+use core::{num::NonZeroU32, time::Duration};
+use waterui::gesture::{DragEvent, LongPressEvent, TapEvent};
+
+view.gesture(TapGesture::new(), |_: TapEvent| {})                                          // single tap
+view.gesture(TapGesture::repeat(NonZeroU32::new(2).unwrap()), |_: TapEvent| {})             // double tap — a count, not a new type
+view.gesture(LongPressGesture::new().minimum_duration(Duration::from_millis(500)), |_: LongPressEvent| {})
+view.gesture(DragGesture::new(5.0), |_: DragEvent| {})                                      // minimum pointer travel, f32 layout units
 ```
 
-Two argument types are traps:
+Two details to keep straight:
 
-- `LongPressGesture::new` takes a bare `u32` in backend-interpreted time units (typically
-  milliseconds). `Duration::from_millis(500)` does not compile there.
+- `LongPressGesture::new()` uses the platform's default long-press timeout; call
+  `.minimum_duration(Duration::from_millis(500))` to override it. `LongPressEvent::duration()`
+  reports the `Duration` actually held.
 - `DragGesture::new` takes an `f32` distance threshold. This recognizer only *detects* a
   drag — it moves no data. Moving data between views is the separate drag-and-drop system
   below; do not conflate them.
@@ -83,18 +87,12 @@ Two argument types are traps:
 complete the set. All gesture structs are `#[non_exhaustive]` — construct them only
 through these constructors.
 
-A recognized gesture's payload is read in the handler directly as `TapEvent`,
+A recognized gesture's payload is passed as the handler's typed first argument — `TapEvent`,
 `LongPressEvent`, `DragEvent` (`location()`, `translation()`, `velocity()`,
 `phase()`), `MagnificationEvent` or `RotationEvent`, all from
-`waterui::gesture`. Pointer motion inside a view is `.event(Event::HoverMove, handler)`,
-whose handler reads the local pointer `location()` as `HoverEvent` (both from
-`waterui::event`); `.on_hover_enter` / `.on_hover_exit` carry no `HoverEvent`, so
-`HoverEvent` fails to extract there.
-
-`.gesture(g, handler)` is shorthand for `.gesture_observer(GestureObserver::new(g,
-handler))` (`GestureObserver` from `waterui::gesture`). Use `.gesture_observer(..)` when
-the observer is built or stored separately; `GestureObserver::builder(g).action(handler)`
-is the equivalent builder form.
+`waterui::gesture` (with `GestureEvent` for composite `Gesture` combinators). Pointer motion inside a view is `.on_hover_move(handler)` (or `.event(HoverMove, handler)`),
+whose handler takes `HoverEvent` (`location()`) (`waterui::event`);
+`.on_hover_enter` / `.on_hover_exit` carry no `HoverEvent`.
 
 `.buttons(..)` restricts tap, long-press, and drag recognizers to a `PointerButtons`
 mask (default `PRIMARY`). A recognizer activates only when the pressing
@@ -103,25 +101,29 @@ second button pressed mid-sequence does not join it. `TapEvent`, `LongPressEvent
 and `DragEvent` carry the pressing `button`.
 
 ```rust
-use waterui::gesture::PointerButtons;
+use waterui::gesture::{PointerButtons, TapEvent};
 
-view.gesture(TapGesture::new().buttons(PointerButtons::MIDDLE), handler) // middle click
+view.gesture(TapGesture::new().buttons(PointerButtons::MIDDLE), |_: TapEvent| {}) // middle click
 ```
 
 ## Combining gestures
 
-`.then(..)` sequences gestures; the handler fires only after the whole sequence succeeds:
+`.then(..)` sequences gestures; the handler fires only after the whole sequence succeeds,
+receiving [`GestureEvent`]:
 
 ```rust
+use core::time::Duration;
+use waterui::gesture::GestureEvent;
+
 view.gesture(
-    TapGesture::new().then(LongPressGesture::new(300)),   // tap, then long-press
-    |State(status): State<Binding<&'static str>>| status.set("Done!"),
+    TapGesture::new().then(LongPressGesture::new().minimum_duration(Duration::from_millis(300))), // tap, then long-press
+    |_: GestureEvent, State(status): State<Binding<&'static str>>| status.set("Done!"),
 )
 .state(&status)
 ```
 
 `.then` returns the erased `Gesture` type. Siblings with the same shape:
-`sequenced_before` (alias of `then`), `simultaneously_with`, `exclusively_before`.
+`simultaneously_with`, `exclusively_before`.
 
 Note in passing: `Binding::container("Waiting…")` infers `Binding<&'static str>`, which is
 a perfectly good status-string binding — `text!("{status}")` accepts it directly.
@@ -212,12 +214,14 @@ The parts an agent cannot guess:
 - **The dropped value is the handler's first parameter, and its type is the filter.**
   `|text: Str| ..` accepts text drags only, `|files: Files| ..` file drags only,
   `|fruit: Fruit| ..` in-process `Fruit` drags only; any other drag is neither
-  highlighted nor delivered. Extractors such as `State<T>` follow it.
+  highlighted nor delivered. Extractors such as `DropInfo` (carrying `.location()`
+  in the destination's local coordinate space) and `State<T>` follow it.
 - **`.drop_hover(&binding)` must chain directly on `.drop_destination(..)`.** It exists
   only on the value that call returns; inserting another modifier between them is a
   compile error. It sets the binding `true` on drag-enter, `false` on exit — feed it to
-  a background or scale signal for a highlight. `.on_enter(f)` / `.on_exit(f)` chain in
-  the same position and *add* handlers rather than replacing them.
+  a background or scale signal for a highlight. `.on_enter(handler)` / `.on_exit(handler)`
+  chain in the same position, accept extractor parameters (`DropInfo` on enter, `State<T>`
+  on both), and *add* handlers rather than replacing them.
 - `.draggable(..)` takes a plain transferable value or any signal of one (`Binding<T>`,
   `Computed<T>`); the payload type is inferred from it. A plain value of your own type
   needs `impl_constant!` (as above). Text is `.draggable(Str::from(..))`.
@@ -229,8 +233,7 @@ The parts an agent cannot guess:
 `.on_key_press(handler)` attaches a key handler to a view. The focused view sees each
 key first; a key it does not consume bubbles to the nearest ancestor with an
 `OnKeyPress` handler, then the next, stopping at the first `KeyHandling::Handled`. The
-handler runs with `KeyPress` in its environment — read it as `press: KeyPress` — and
-returns `Handled` or `Ignored`. The backend is what decides "consumed": a single-line
+handler receives `press: KeyPress` as its first argument and returns `Handled` or `Ignored`. The backend is what decides "consumed": a single-line
 `field` eats text-editing keys and submits Return through `.on_submit(..)` when one is
 set; Escape, Up/Down, PageUp/PageDown and a Return with no `on_submit` bubble out.
 

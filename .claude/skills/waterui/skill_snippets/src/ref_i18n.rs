@@ -136,7 +136,7 @@ pub mod i18n_block_05 {
 
     pub fn app(env: Environment) -> App<impl Windows> {
         let locale = locale_binding(&env);
-        App::new(move || scene(locale.clone()), env)
+        App::new(env).window(Window::new("", move || scene(locale.clone())))
     }
 }
 

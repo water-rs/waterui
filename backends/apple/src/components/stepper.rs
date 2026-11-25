@@ -13,10 +13,11 @@
 use alloc::rc::Rc;
 use alloc::string::String;
 use core::cell::RefCell;
+use core::ops::RangeInclusive;
 
 use cocoa_ui::{PlatformView, Rect, Retained, view};
-use waterui::component::stepper::StepperConfig;
-use waterui::reactive::Signal;
+use waterui::component::stepper::{StepperConfig, clamp_value_to_range};
+use waterui::reactive::{Binding, Computed, Signal};
 use waterui::text::{StyledStr, TextConfig};
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size, StretchAxis, SubView,
@@ -238,20 +239,54 @@ fn as_view(stepper: &Stepper) -> &PlatformView {
     stepper
 }
 
-/// A platform value as the `i32` the binding speaks — `Int32(stepper.value)`
+/// Converts a canonical `i64` stepper value to the `f64` AppKit/UIKit expects.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "platform stepper controls speak f64"
+)]
+const fn i64_to_f64(value: i64) -> f64 {
+    value as f64
+}
+
+/// A platform value as the `i64` the binding speaks — `Int64(stepper.value)`
 /// truncates the same way.
 #[expect(
     clippy::cast_possible_truncation,
-    reason = "the binding is i32; the control speaks f64 and stepping yields whole values"
+    reason = "the binding is i64; the control speaks f64 and stepping yields whole values"
 )]
-const fn stepped(value: f64) -> i32 {
-    value as i32
+const fn stepped(value: f64) -> i64 {
+    value as i64
 }
 
 /// What the control announces: the formatted text when the row has one, the
 /// raw number otherwise — `applyAccessibilityValue`'s table.
-fn accessibility_value(formatted: Option<&String>, value: i32) -> String {
+fn accessibility_value(formatted: Option<&String>, value: i64) -> String {
     formatted.map_or_else(|| value.to_string(), Clone::clone)
+}
+
+fn bind_stepper_range_and_step(
+    leaf: &mut NativeLeaf,
+    stepper: &Retained<Stepper>,
+    value: &Binding<i64>,
+    range: &Computed<RangeInclusive<i64>>,
+    step: &Computed<i64>,
+) {
+    // Range signal → control bounds and in-place value clamping.
+    leaf.bind(range, {
+        let stepper = stepper.clone();
+        let value = value.clone();
+        move |bounds| {
+            clamp_value_to_range(&value, &bounds);
+            stepper.set_range(i64_to_f64(*bounds.start()), i64_to_f64(*bounds.end()));
+            stepper.set_value(i64_to_f64(value.snapshot()));
+        }
+    });
+
+    // The step size is computed: every change re-arms the control.
+    leaf.bind(step, {
+        let stepper = stepper.clone();
+        move |step| stepper.set_step(i64_to_f64(step))
+    });
 }
 
 /// The `stepper` realization: `Native<StepperConfig>`
@@ -264,9 +299,13 @@ pub fn realize_stepper_config(config: StepperConfig<Held>, ctx: &RenderContext<'
     let host = HostView::new(mtm, Rect::ZERO);
     let (value, step, label, value_formatter, range) = config.into_parts();
     let stepper = Stepper::new(mtm);
-    stepper.set_range(f64::from(*range.start()), f64::from(*range.end()));
-    stepper.set_step(f64::from(step.snapshot()));
-    stepper.set_value(f64::from(value.snapshot()));
+    let initial_range = range.snapshot();
+    stepper.set_range(
+        i64_to_f64(*initial_range.start()),
+        i64_to_f64(*initial_range.end()),
+    );
+    stepper.set_step(i64_to_f64(step.snapshot()));
+    stepper.set_value(i64_to_f64(value.snapshot()));
     host.add_subview(as_view(&stepper));
 
     let action = stepper.install_action({
@@ -318,7 +357,7 @@ pub fn realize_stepper_config(config: StepperConfig<Held>, ctx: &RenderContext<'
         move |change| {
             let value = *change.value();
             let state = state.borrow();
-            state.stepper.set_value(f64::from(value));
+            state.stepper.set_value(i64_to_f64(value));
             state.stepper.set_accessibility_value(&accessibility_value(
                 state.formatted_text.as_ref(),
                 value,
@@ -326,11 +365,7 @@ pub fn realize_stepper_config(config: StepperConfig<Held>, ctx: &RenderContext<'
         }
     });
 
-    // The step size is computed: every change re-arms the control.
-    leaf.bind(&step, {
-        let stepper = stepper.clone();
-        move |step| stepper.set_step(f64::from(step))
-    });
+    bind_stepper_range_and_step(&mut leaf, &stepper, &value, &range, &step);
 
     // Announce the label's semantic text on the control.
     leaf.bind(&accessibility_label, {

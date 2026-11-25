@@ -11,7 +11,7 @@
 use core::time::Duration;
 use waterui::animation::Animation;
 use waterui::app::{App, Windows};
-use waterui::drag_drop::Transferable;
+use waterui::drag_drop::{DropInfo, Transferable};
 use waterui::prelude::font::Title;
 use waterui::prelude::*;
 use waterui::preview;
@@ -32,7 +32,7 @@ impl_constant!(Fruit);
 
 /// A draggable fruit card
 fn fruit_card(emoji: &'static str, label: &'static str, color: Color) -> impl View + use<> {
-    hstack((text(emoji).size(28.0), text(label).size(16.0)))
+    hstack((text(emoji).font_size(28.0), text(label).font_size(16.0)))
         .spacing(8.0)
         .padding()
         .width(FRUIT_CARD_WIDTH)
@@ -82,8 +82,8 @@ fn fruit_basket(
     });
 
     vstack((
-        text!("{emojis_display}").size(40.0),
-        text!("{count_display}").size(14.0),
+        text!("{emojis_display}").font_size(40.0),
+        text!("{count_display}").font_size(14.0),
     ))
     .spacing(12.0)
     .padding_with(24.0)
@@ -94,8 +94,16 @@ fn fruit_basket(
     .border(Color::srgb_hex("#10B981"), 3.0)
     .drop_destination(
         |fruit: Fruit,
+         info: DropInfo,
          State(collected): State<Binding<Vec<String>>>,
          State(bounce): State<Binding<f32>>| {
+            let point = info.location();
+            waterui::log::debug!(
+                x = point.x,
+                y = point.y,
+                fruit = fruit.label,
+                "Dropped fruit into basket"
+            );
             // Add to collection
             let dropped_item = format!("{} {}", fruit.emoji, fruit.label);
             let mut current_items = collected.snapshot();
@@ -118,7 +126,15 @@ fn fruit_basket(
             .detach();
         },
     )
-    .drop_hover(is_hovering)
+    .on_enter(|info: DropInfo, State(hover): State<Binding<bool>>| {
+        let point = info.location();
+        waterui::log::debug!(x = point.x, y = point.y, "Drag entered basket");
+        hover.set(true);
+    })
+    .on_exit(|State(hover): State<Binding<bool>>| {
+        hover.set(false);
+    })
+    .state(is_hovering)
     .state(collected)
     .state(bounce)
 }
@@ -137,7 +153,7 @@ pub fn demo() -> impl View {
             Divider,
             // Fruits to drag
             vstack((
-                text("Drag these fruits").size(14.0),
+                text("Drag these fruits").font_size(14.0),
                 hstack((
                     fruit_card("🍎", "Apple", Color::srgb_hex("#EF4444")),
                     fruit_card("🍊", "Orange", Color::srgb_hex("#F97316")),
@@ -172,5 +188,5 @@ pub fn demo() -> impl View {
 
 /// Builds the drag-and-drop app around [`demo`].
 pub fn app(env: Environment) -> App<impl Windows> {
-    App::new(demo, env)
+    App::new(env).window(Window::new("", demo))
 }

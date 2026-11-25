@@ -51,7 +51,7 @@ use waterui_graphics::{GpuContent, GpuView};
 use waterui_layout::frame::Frame;
 use waterui_layout::scroll::scroll;
 use waterui_layout::stack::{VStack, vstack};
-use waterui_shape::{Ellipse, FixedRoundedRectangle, ShapeExt as _};
+use waterui_shape::{Ellipse, ShapeExt as _};
 use waterui_text::font::{Body, Font};
 
 use super::{MinimalTestTheme, pumped_test_environment, test_environment};
@@ -373,21 +373,16 @@ fn variable_colr_bitmap_fonts_count() {
 #[test]
 fn shadow_silhouettes_count() {
     use waterui::graphics::Color;
-    use waterui::style::{Shadow, Vector};
+    use waterui::style::Shadow;
 
     fn caster(shape: impl waterui::shape::Shape + Clone + 'static) -> impl View {
         ().size(80.0, 80.0)
-            .background(FixedRoundedRectangle::new(12.0).fill(Color::srgb(60, 120, 200)))
-            .shadow(Shadow::new(
-                Color::srgb(0, 0, 0),
-                Vector::new(2.0, 3.0),
-                4.0,
-                shape,
-            ))
+            .background(RoundedRectangle::new(12.0).fill(Color::srgb(60, 120, 200)))
+            .shadow(Shadow::new(4.0).offset(2.0, 3.0).silhouette(shape))
     }
 
     let mut runtime = runtime_with(vstack((
-        caster(FixedRoundedRectangle::new(12.0)),
+        caster(RoundedRectangle::new(12.0)),
         caster(Ellipse),
     )));
     let mut frames = Frames::new();
@@ -588,14 +583,14 @@ impl GpuContent for FillProbe {
         self.renders
             .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         let mut encoder = frame
-            .device
+            .device()
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("frame_work_fixture_gpu_probe"),
             });
         drop(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("frame_work_fixture_gpu_probe_pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: frame.view,
+                view: frame.view(),
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
@@ -608,7 +603,7 @@ impl GpuContent for FillProbe {
             occlusion_query_set: None,
             multiview_mask: None,
         }));
-        frame.queue.submit([encoder.finish()]);
+        frame.queue().submit([encoder.finish()]);
     }
 }
 
@@ -699,7 +694,7 @@ fn repeated_fixed_clock_captures_are_identical() {
 #[test]
 fn live_colour_updates_without_layout_or_recording() {
     let color = Binding::container(Color::srgb(210, 30, 10));
-    let mut runtime = runtime_with(waterui_graphics::color::signal_color(color.clone()));
+    let mut runtime = runtime_with(Color::from_signal(color.clone()));
     let mut frames = Frames::new();
     let (_, before) = frames.render(&mut runtime);
     let deadline = Instant::now() + Duration::from_secs(2);

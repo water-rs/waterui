@@ -30,7 +30,9 @@ use waterui_controls::button::ButtonStyle;
 #[cfg(feature = "menu")]
 use waterui_controls::menu::Shortcut;
 #[cfg(feature = "date-picker")]
-use waterui_controls::{Stepper, stepper::stepper};
+use waterui_controls::{Stepper, label::TitleLabel, stepper::stepper};
+#[cfg(feature = "date-picker")]
+use waterui_core::Computed;
 #[cfg(any(feature = "menu", feature = "color-picker"))]
 use waterui_core::Error;
 #[cfg(any(feature = "menu", feature = "color-picker"))]
@@ -56,6 +58,8 @@ use waterui_layout::{
     spacer::spacer,
     stack::{hstack, vstack},
 };
+#[cfg(any(feature = "color-picker", feature = "date-picker"))]
+use waterui_shape::CornerRadius;
 #[cfg(feature = "menu")]
 use waterui_text::{font::Font, text as text_view};
 
@@ -111,6 +115,7 @@ impl<E: crate::text::TextEngine> PopupWindowManager<E> {
     ) {
         (self.0)(crate::runner::window::root_window(
             window_in_opening_environment(window, env),
+            env,
         ));
     }
 }
@@ -129,7 +134,7 @@ pub fn window_in_opening_environment<C: ViewBuilder, T>(
     window: Window<C, T>,
     env: &Environment,
 ) -> Window<impl ViewBuilder<Output = Metadata<Environment, C::Output>>, T> {
-    let frame = window.frame.snapshot();
+    let frame = window.current_frame();
     let content_env = env.extending(HydrolysisWindowOrigin {
         x: frame.x(),
         y: frame.y(),
@@ -239,6 +244,11 @@ pub struct PopupMenuState<E: crate::text::TextEngine> {
     /// [`PopupMenuSurface`]; `None` outside an animated anchored presentation.
     #[cfg(feature = "menu")]
     pub(crate) active_menu_presentation: Option<ActiveMenuPresentation<E>>,
+    /// The window's open `.sheet` presentations in presentation order.
+    pub(crate) sheet_stack: SheetStack,
+    /// The front sheet this frame's flush registered — its modal environment
+    /// and retained layer slot. The post-flush `render_sheets` takes it.
+    pub(crate) front_sheet: Option<RegisteredSheet<E>>,
     /// The window's open `.dialog` presentations in presentation order —
     /// which one is on screen, which wait, and which closed with their node.
     #[cfg(waterui_feature = "dialog")]
@@ -919,18 +929,14 @@ pub fn popup_menu_window<E: crate::text::TextEngine>(
             look.get_presentation_motion(),
         )
     };
-    let mut popup = Window::new(
-        TEXT_CONTEXT_MENU_WINDOW_TITLE,
-        state_for_content,
-        popup_content,
-    )
-    .style(WindowStyle::Borderless)
-    .resizable(false)
-    .background(Color::transparent());
-    popup.closable = false;
-    popup
-        .frame
-        .set(popup_menu_window_frame(origin, width, height, margin));
+    let frame = Binding::container(popup_menu_window_frame(origin, width, height, margin));
+    let popup = Window::new(TEXT_CONTEXT_MENU_WINDOW_TITLE, popup_content)
+        .state(&state_for_content)
+        .frame(&frame)
+        .style(WindowStyle::Borderless)
+        .closable(false)
+        .resizable(false)
+        .background(Color::transparent());
     (popup, state)
 }
 
@@ -1035,15 +1041,12 @@ pub fn semantic_popup_menu_window<E: crate::text::TextEngine>(
         depth,
         popup_opener: popup_opener.clone(),
     };
-    let mut popup = Window::new(
-        TEXT_CONTEXT_MENU_WINDOW_TITLE,
-        state_for_content,
-        popup_content,
-    )
-    .style(WindowStyle::Borderless)
-    .resizable(false)
-    .background(Color::transparent());
-    popup.closable = false;
+    let popup = Window::new(TEXT_CONTEXT_MENU_WINDOW_TITLE, popup_content)
+        .state(&state_for_content)
+        .style(WindowStyle::Borderless)
+        .closable(false)
+        .resizable(false)
+        .background(Color::transparent());
     (popup, state)
 }
 
@@ -1088,11 +1091,12 @@ pub fn semantic_picker_menu_window(
             .spacing(0.0)
             .with(State(group_for_content.clone()))
     };
-    let mut popup = Window::new("WaterUI Picker Menu", state_for_content, popup_content)
+    let popup = Window::new("WaterUI Picker Menu", popup_content)
+        .state(&state_for_content)
         .style(WindowStyle::Borderless)
+        .closable(false)
         .resizable(false)
         .background(Color::transparent());
-    popup.closable = false;
     (popup, state)
 }
 
@@ -1171,14 +1175,14 @@ pub fn picker_menu_window(
             presentation_motion.as_ref(),
         )
     };
-    let mut popup = Window::new("WaterUI Picker Menu", state_for_content, popup_content)
+    let frame = Binding::container(popup_menu_window_frame(origin, width, height, margin));
+    let popup = Window::new("WaterUI Picker Menu", popup_content)
+        .state(&state_for_content)
+        .frame(&frame)
         .style(WindowStyle::Borderless)
+        .closable(false)
         .resizable(false)
         .background(Color::transparent());
-    popup.closable = false;
-    popup
-        .frame
-        .set(popup_menu_window_frame(origin, width, height, margin));
     (popup, state)
 }
 
@@ -1284,7 +1288,10 @@ fn color_picker_window_base(
                                 group.close_all();
                             })
                             .install(LabelDisplayMode::Hidden)
-                            .background(RoundedRectangle::new(0.2).fill(swatch_color)),
+                            .background(
+                                RoundedRectangle::new(CornerRadius::fraction(0.2))
+                                    .fill(swatch_color),
+                            ),
                     )
                     .width(crate::num_cast::f64_as_f32(swatch))
                     .height(crate::num_cast::f64_as_f32(swatch)),
@@ -1335,7 +1342,10 @@ fn color_picker_window_base(
             .alignment(HorizontalAlignment::Leading)
             .spacing(gap)
             .padding_with(EdgeInsets::all(16.0))
-            .background(RoundedRectangle::new(0.05).fill(Color::new(Surface).with_opacity(0.96)));
+            .background(
+                RoundedRectangle::new(CornerRadius::fraction(0.05))
+                    .fill(Color::new(Surface).with_opacity(0.96)),
+            );
         animated_popup_panel(
             panel,
             group_for_content.clone(),
@@ -1343,11 +1353,12 @@ fn color_picker_window_base(
             None,
         )
     };
-    let mut popup = Window::new("WaterUI Color Picker", state_for_content, popup_content)
+    let popup = Window::new("WaterUI Color Picker", popup_content)
+        .state(&state_for_content)
         .style(WindowStyle::Borderless)
+        .closable(false)
         .resizable(false)
         .background(Color::transparent());
-    popup.closable = false;
     (popup, state)
 }
 
@@ -1365,14 +1376,14 @@ pub fn color_picker_window(
 ) -> (Window<impl ViewBuilder>, Binding<WindowState>) {
     let (popup, state) = color_picker_window_base(value, support_alpha, support_hdr, group, env);
     let (width, height) = color_picker_size(support_alpha, support_hdr);
-    popup.frame.set(LayoutRect::new(
+    let frame = Binding::container(LayoutRect::new(
         origin,
         LayoutSize::new(
             crate::num_cast::f64_as_f32(width),
             crate::num_cast::f64_as_f32(height),
         ),
     ));
-    (popup, state)
+    (popup.frame(&frame), state)
 }
 
 #[cfg(feature = "date-picker")]
@@ -1380,7 +1391,7 @@ fn time_part_binding(
     value: &Binding<i32>,
     range: RangeInclusive<i32>,
     label: String,
-) -> Stepper<waterui_controls::label::TitleLabel> {
+) -> Stepper<TitleLabel, i32> {
     stepper(label, value)
         .range(range)
         .value_formatter(|part| format!("{part:02}"))
@@ -1440,13 +1451,16 @@ const fn date_picker_size(ty: DatePickerType) -> (f64, f64) {
 #[cfg(feature = "date-picker")]
 fn date_picker_window_base(
     value: Binding<DateTime>,
-    range: RangeInclusive<DateTime>,
+    range: Computed<RangeInclusive<DateTime>>,
     ty: DatePickerType,
     group: PopupMenuStateGroup,
     env: &Environment,
 ) -> (Window<impl ViewBuilder>, Binding<WindowState>) {
     let state = Binding::container(WindowState::Normal);
-    let current = value.snapshot().clamp(*range.start(), *range.end());
+    let initial_range = range.snapshot();
+    let current = value
+        .snapshot()
+        .clamp(*initial_range.start(), *initial_range.end());
     let staged_date = Binding::container(current.date());
     let staged_visible_month = Binding::container(current.date());
     let current_time = current.time();
@@ -1464,8 +1478,6 @@ fn date_picker_window_base(
         ty,
         DatePickerType::HourMinuteAndSecond | DatePickerType::DateHourMinuteAndSecond
     );
-    let range_start = *range.start();
-    let range_end = *range.end();
     let group_for_content = group;
     let state_for_content = state.clone();
     let popup_env = env.clone();
@@ -1476,10 +1488,11 @@ fn date_picker_window_base(
         ));
         if uses_date {
             let visible_month = staged_visible_month.clone();
+            let date_range = range.map(|r| r.start().date()..=r.end().date()).computed();
             sections.push(waterui_core::OneOf4::B(
                 Calendar::new(crate::localization::text(&popup_env, "date"), &staged_date)
                     .visible_month(&visible_month)
-                    .range(range_start.date()..=range_end.date())
+                    .range(date_range)
                     .hide_label(),
             ));
         }
@@ -1527,7 +1540,7 @@ fn date_picker_window_base(
                     .action(move || {
                         apply_staged_date_time(
                             &apply_value,
-                            &apply_range,
+                            &apply_range.snapshot(),
                             apply_date.snapshot(),
                             apply_hour.snapshot(),
                             apply_minute.snapshot(),
@@ -1548,7 +1561,10 @@ fn date_picker_window_base(
             .alignment(HorizontalAlignment::Leading)
             .spacing(16.0)
             .padding_with(EdgeInsets::all(24.0))
-            .background(RoundedRectangle::new(0.04).fill(Color::new(Surface).with_opacity(0.96)));
+            .background(
+                RoundedRectangle::new(CornerRadius::fraction(0.04))
+                    .fill(Color::new(Surface).with_opacity(0.96)),
+            );
         animated_popup_panel(
             panel,
             group_for_content.clone(),
@@ -1556,11 +1572,12 @@ fn date_picker_window_base(
             None,
         )
     };
-    let mut popup = Window::new("WaterUI Date Picker", state_for_content, popup_content)
+    let popup = Window::new("WaterUI Date Picker", popup_content)
+        .state(&state_for_content)
         .style(WindowStyle::Borderless)
+        .closable(false)
         .resizable(false)
         .background(Color::transparent());
-    popup.closable = false;
     (popup, state)
 }
 
@@ -1570,7 +1587,7 @@ fn date_picker_window_base(
 #[cfg(feature = "date-picker")]
 pub fn date_picker_window(
     value: Binding<DateTime>,
-    range: RangeInclusive<DateTime>,
+    range: Computed<RangeInclusive<DateTime>>,
     ty: DatePickerType,
     origin: LayoutPoint,
     group: PopupMenuStateGroup,
@@ -1578,14 +1595,14 @@ pub fn date_picker_window(
 ) -> (Window<impl ViewBuilder>, Binding<WindowState>) {
     let (popup, state) = date_picker_window_base(value, range, ty, group, env);
     let (width, height) = date_picker_size(ty);
-    popup.frame.set(LayoutRect::new(
+    let frame = Binding::container(LayoutRect::new(
         origin,
         LayoutSize::new(
             crate::num_cast::f64_as_f32(width),
             crate::num_cast::f64_as_f32(height),
         ),
     ));
-    (popup, state)
+    (popup.frame(&frame), state)
 }
 
 impl<E: crate::text::TextEngine> SemanticCore<E> {
@@ -2014,7 +2031,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     pub(crate) fn show_date_picker(
         &mut self,
         value: Binding<DateTime>,
-        range: RangeInclusive<DateTime>,
+        range: Computed<RangeInclusive<DateTime>>,
         ty: DatePickerType,
         origin: LayoutPoint,
         env: &Environment,
@@ -2068,7 +2085,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     pub(crate) fn activate_date_picker(
         &mut self,
         value: Binding<DateTime>,
-        range: RangeInclusive<DateTime>,
+        range: Computed<RangeInclusive<DateTime>>,
         ty: DatePickerType,
         env: &Environment,
     ) -> bool {
@@ -2137,6 +2154,8 @@ impl<E: crate::text::TextEngine> Default for PopupMenuState<E> {
             presented_anchored_overlays: Vec::default(),
             #[cfg(feature = "menu")]
             active_menu_presentation: None,
+            sheet_stack: SheetStack::default(),
+            front_sheet: Option::default(),
             #[cfg(waterui_feature = "dialog")]
             dialog_stack: DialogStack::default(),
             #[cfg(waterui_feature = "dialog")]
