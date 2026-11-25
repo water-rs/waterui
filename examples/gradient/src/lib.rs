@@ -84,7 +84,7 @@ fn animated_background_section() -> impl View {
     let colors: Binding<[Color; 9]> = Binding::container(compute_animated_colors(0.0));
 
     vstack((
-        text("Animated Mesh Gradient").size(20.0),
+        text("Animated Mesh Gradient").font_size(20.0),
         "Colours follow a signal; each change updates the paint in place",
         // The animated mesh gradient
         zstack((
@@ -93,7 +93,7 @@ fn animated_background_section() -> impl View {
             // Overlay content
             vstack((
                 text("Fluid Background")
-                    .size(24.0)
+                    .font_size(24.0)
                     .foreground(Color::srgb(255, 255, 255)),
                 text("Colors flow over time").foreground(Color::srgb(200, 200, 255)),
             ))
@@ -117,13 +117,13 @@ fn gpu_animated_mesh_gradient_section() -> impl View {
     });
 
     vstack((
-        text("GPU Animated Mesh Gradient").size(20.0),
+        text("GPU Animated Mesh Gradient").font_size(20.0),
         "Speed, warp and palette follow a signal",
         zstack((
             AnimatedMeshGradient::new(config).size(300.0, 200.0),
             vstack((
                 text("Mesh Gradient")
-                    .size(24.0)
+                    .font_size(24.0)
                     .foreground(Color::srgb(255, 255, 255)),
                 text("No per-frame CPU updates").foreground(Color::srgb(200, 220, 255)),
             ))
@@ -148,7 +148,7 @@ fn animated_mesh_gradient_preview() -> impl View {
 /// Demo: GPU flowing shader gradient
 fn flowing_gradient_section() -> impl View {
     vstack((
-        text("Flowing Gradient").size(20.0),
+        text("Flowing Gradient").font_size(20.0),
         "Noise-driven colour bands drifting on the GPU",
         FlowingGradient::new().size(300.0, 200.0),
     ))
@@ -159,7 +159,7 @@ fn flowing_gradient_section() -> impl View {
 /// Demo: Shape filled with gradient
 fn shape_fill_section() -> impl View {
     vstack((
-        text("Shape + Gradient Fill").size(20.0),
+        text("Shape + Gradient Fill").font_size(20.0),
         "Gradients clipped to shapes on the GPU",
         hstack((
             // Linear gradient clipped to rounded rectangle
@@ -214,7 +214,7 @@ fn shape_fill_section() -> impl View {
 /// Demo: Linear gradient - horizontal, vertical, and diagonal
 fn linear_gradient_section() -> impl View {
     vstack((
-        text("Linear Gradients").size(20.0),
+        text("Linear Gradients").font_size(20.0),
         "Gradients along a line from start to end point",
         hstack((
             // Horizontal: left to right
@@ -266,7 +266,7 @@ fn linear_gradient_section() -> impl View {
 /// Demo: Radial gradient - expanding from center
 fn radial_gradient_section() -> impl View {
     vstack((
-        text("Radial Gradients").size(20.0),
+        text("Radial Gradients").font_size(20.0),
         "Gradients expanding outward from a center point",
         hstack((
             // Centered radial
@@ -307,7 +307,7 @@ fn radial_gradient_section() -> impl View {
 /// Demo: Mesh gradient - bilinear interpolation between vertex colors
 fn mesh_gradient_section() -> impl View {
     vstack((
-        text("Static Mesh Gradients").size(20.0),
+        text("Static Mesh Gradients").font_size(20.0),
         "Gradients with per-vertex colors interpolated across a grid",
         hstack((
             // 2x2 mesh (4 corners)
@@ -354,7 +354,7 @@ fn mesh_gradient_section() -> impl View {
 /// Demo: HDR gradients - extended dynamic range colors
 fn hdr_gradient_section() -> impl View {
     vstack((
-        text("HDR Gradients").size(20.0),
+        text("HDR Gradients").font_size(20.0),
         "Extended brightness beyond SDR (requires HDR display)",
         hstack((
             // SDR comparison (baseline)
@@ -454,7 +454,7 @@ pub fn demo() -> impl View {
     scroll(
         vstack((
             // Header
-            text("WaterUI Gradient Examples").size(28.0),
+            text("WaterUI Gradient Examples").font_size(28.0),
             "GPU-rendered gradients with animation support",
             Divider,
             vstack((

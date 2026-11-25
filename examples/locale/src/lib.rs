@@ -63,7 +63,7 @@ fn locale_picker_section(
     detected: String,
 ) -> impl View + use<> {
     vstack((
-        text!("Language Booth").size(16.0).bold(true),
+        text!("Language Booth").font_size(16.0).bold(true),
         hstack((text!("Detected Locale:"), spacer(), text(detected))),
         hstack((
             text!("Chosen Language:"),
@@ -81,15 +81,15 @@ fn locale_picker_section(
 /// Welcome desk section using text! macro
 fn greeting_section() -> impl View {
     vstack((
-        text!("Welcome Desk").size(16.0).bold(true),
-        text!("Welcome to the World Fair!").size(24.0),
+        text!("Welcome Desk").font_size(16.0).bold(true),
+        text!("Welcome to the World Fair!").font_size(24.0),
     ))
 }
 
 /// Local flavor section - demonstrates variant differences (US vs UK English)
 fn regional_vocab_section() -> impl View {
     vstack((
-        text!("Local Flavor").size(16.0).bold(true),
+        text!("Local Flavor").font_size(16.0).bold(true),
         hstack((spacer(), text!("Color"), spacer())),
         hstack((spacer(), text!("Favorite"), spacer())),
     ))
@@ -98,8 +98,8 @@ fn regional_vocab_section() -> impl View {
 /// Human rights section - UDHR Article 1
 fn paragraph_section() -> impl View {
     vstack((
-        text!("Human Rights - Article 1").size(16.0).bold(true),
-        text!("$udhr_article_1").size(14.0),
+        text!("Human Rights - Article 1").font_size(16.0).bold(true),
+        text!("$udhr_article_1").font_size(14.0),
     ))
 }
 
@@ -126,7 +126,9 @@ fn date_section(locale: &Computed<Locale>) -> impl View + use<> {
         .computed();
 
     vstack((
-        text!("Festival Date (2006-03-20)").size(16.0).bold(true),
+        text!("Festival Date (2006-03-20)")
+            .font_size(16.0)
+            .bold(true),
         hstack((text!("Short:"), spacer(), text!("{date_short}"))),
         hstack((text!("Long:"), spacer(), text!("{date_long}"))),
         hstack((text!("Countdown:"), spacer(), text!("{opens_in}"))),
@@ -142,7 +144,7 @@ fn date_section(locale: &Computed<Locale>) -> impl View + use<> {
 /// Plural section using text! macro with plural source
 fn plural_section() -> impl View {
     vstack((
-        text!("Passport Stamps").size(16.0).bold(true),
+        text!("Passport Stamps").font_size(16.0).bold(true),
         text!("I have {#count} passport stamp", count = 0),
         text!("I have {#count} passport stamp", count = 1),
         text!("I have {#count} passport stamp", count = 2),
@@ -162,7 +164,7 @@ fn unit_section(locale: &Computed<Locale>) -> impl View + use<> {
         .computed();
 
     vstack((
-        text!("Distance Guide").size(16.0).bold(true),
+        text!("Distance Guide").font_size(16.0).bold(true),
         hstack((text!("City Walk:"), spacer(), text!("{distance}"))),
         hstack((text!("Marathon Route:"), spacer(), text!("{marathon}"))),
     ))
@@ -200,8 +202,8 @@ fn scene(system_locale: &Locale) -> impl View + use<> {
     scroll(
         vstack((
             // Title
-            text!("WaterUI World Fair").size(28.0).bold(true),
-            text!("Live translations for a tiny world-fair kiosk").size(14.0),
+            text!("WaterUI World Fair").font_size(28.0).bold(true),
+            text!("Live translations for a tiny world-fair kiosk").font_size(14.0),
             Divider,
             // Locale picker
             locale_picker_section(&catalog, &selection, system_locale.to_string()),

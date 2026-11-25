@@ -32,7 +32,7 @@ impl_constant!(Fruit);
 
 /// A draggable fruit card
 fn fruit_card(emoji: &'static str, label: &'static str, color: Color) -> impl View + use<> {
-    hstack((text(emoji).size(28.0), text(label).size(16.0)))
+    hstack((text(emoji).font_size(28.0), text(label).font_size(16.0)))
         .spacing(8.0)
         .padding()
         .width(FRUIT_CARD_WIDTH)
@@ -82,8 +82,8 @@ fn fruit_basket(
     });
 
     vstack((
-        text!("{emojis_display}").size(40.0),
-        text!("{count_display}").size(14.0),
+        text!("{emojis_display}").font_size(40.0),
+        text!("{count_display}").font_size(14.0),
     ))
     .spacing(12.0)
     .padding_with(24.0)
@@ -137,7 +137,7 @@ pub fn demo() -> impl View {
             Divider,
             // Fruits to drag
             vstack((
-                text("Drag these fruits").size(14.0),
+                text("Drag these fruits").font_size(14.0),
                 hstack((
                     fruit_card("🍎", "Apple", Color::srgb_hex("#EF4444")),
                     fruit_card("🍊", "Orange", Color::srgb_hex("#F97316")),

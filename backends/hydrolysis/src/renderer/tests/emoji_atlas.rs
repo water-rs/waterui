@@ -50,7 +50,7 @@ fn count_emoji_pixels(snapshot: &HeadlessSnapshot) -> usize {
 fn emoji_beside_blurred_box() -> AnyView {
     AnyView::new(
         vstack((
-            text("\u{1F600}").size(20.0),
+            text("\u{1F600}").font_size(20.0),
             ().size(48.0, 24.0)
                 .background(Color::srgb_hex("#36343B"))
                 .blur(2.0f32),

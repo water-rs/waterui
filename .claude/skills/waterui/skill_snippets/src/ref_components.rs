@@ -804,7 +804,7 @@ pub fn components_block_22() {
     let _ = { text("t").caption() };
     let _ = { text("t").footnote() };
 
-    let _ = { text("t").size(18.0) };
+    let _ = { text("t").font_size(18.0) };
     let _ = { text("t").bold(true) };
     let _ = { text("t").italic(true) };
     let _ = { text("t").font(font::Caption) };
@@ -1487,7 +1487,7 @@ pub fn components_block_37(photo_url: waterui::Url) {
         avatar("Grace Hopper") // initials when there is no image; the name is always spoken
             .image(photo_url) // a signal of Url: the fallback shows until it decodes
             .shape(RoundedRectangle::new(16.0))
-            .size(64.0)
+            .side(64.0)
             .ring(Color::accent(), 2.0)
     };
     let _ = {
