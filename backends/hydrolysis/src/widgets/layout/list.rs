@@ -1672,12 +1672,11 @@ pub fn list_accessibility<E: crate::text::TextEngine>(
             let row_disabled = renderer.read_signal(&row_disabled_signal);
             // A hidden row vanishes whole — node and content — matching the
             // naming container's treatment of `accessibilityHidden`.
-            let row_hidden = row_a11y_env
-                .get::<AccessibilityHidden>()
-                .is_some_and(AccessibilityHidden::is_hidden)
-                || row_a11y_env
-                    .get::<AccessibilityStateSignal>()
-                    .is_some_and(|signal| renderer.read_signal(signal.state()).is_hidden());
+            let hidden_prop = renderer.is_accessibility_hidden(&row_a11y_env);
+            let hidden_state = row_a11y_env
+                .get::<AccessibilityStateSignal>()
+                .is_some_and(|signal| renderer.read_signal(signal.state()).is_hidden());
+            let row_hidden = hidden_prop || hidden_state;
             let mut row_node = AccessibilityNode::new(
                 crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
                     &row_a11y_env,
@@ -2055,9 +2054,7 @@ pub fn render_list_node<E: crate::text::TextEngine>(
     env: &Environment,
 ) {
     #[cfg(feature = "accessibility")]
-    let hidden = env
-        .get::<waterui::accessibility::AccessibilityHidden>()
-        .is_some_and(waterui::accessibility::AccessibilityHidden::is_hidden);
+    let hidden = ctx.renderer_mut().is_accessibility_hidden(env);
     #[cfg(feature = "accessibility")]
     if hidden {
         ctx.renderer_mut().push_accessibility_suppression();
@@ -3497,5 +3494,12 @@ pub fn emit_list_accessibility<E: crate::text::TextEngine>(
     state: &Rc<RefCell<ListRenderState<E>>>,
     env: &Environment,
 ) {
+    let hidden = renderer.is_accessibility_hidden(env);
+    if hidden {
+        renderer.push_accessibility_suppression();
+    }
     list_accessibility(renderer, None, None, state, env);
+    if hidden {
+        renderer.pop_accessibility_suppression();
+    }
 }

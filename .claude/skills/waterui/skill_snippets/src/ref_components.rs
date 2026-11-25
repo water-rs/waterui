@@ -1557,10 +1557,10 @@ pub fn components_block_38() {
     let _ = { view.a11y_role(AccessibilityRole::Button) };
     let view = Divider;
     let _ = {
-        view.a11y_hidden(true) // decorative only
+        view.a11y_hidden(true) // or a reactive boolean signal
     };
     let view = Divider;
-    let _ = { view.a11y_state_signal(active.map(|a| AccessibilityState::new().selected(a))) };
+    let _ = { view.a11y_state(active.map(|a| AccessibilityState::new().selected(a))) };
 }
 
 // ---------------------------------------------------------------------------

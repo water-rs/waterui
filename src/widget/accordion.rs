@@ -79,7 +79,7 @@ where
         // the content it reveals is showing — rather than as text that happens
         // to react to a tap. Its descendants are folded into that node, as a
         // button's label is, so the header is not announced twice.
-        let state = expanded.map(|expanded| AccessibilityState::new().expanded(Some(expanded)));
+        let state = expanded.map(|expanded| AccessibilityState::new().expanded(expanded));
         vstack((
             self.header
                 .on_tap(move || {
@@ -87,7 +87,7 @@ where
                 })
                 .a11y_role(AccessibilityRole::Button)
                 .a11y_children(AccessibilityChildren::ExcludeDescendants)
-                .a11y_state_signal(state),
+                .a11y_state(state),
             when(expanded, move || self.content.build()),
         ))
     }

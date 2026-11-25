@@ -280,9 +280,7 @@ pub fn render_toggle_node<E: crate::text::TextEngine>(
     state: &Rc<RefCell<ToggleRenderState<E>>>,
     env: &Environment,
 ) {
-    let hidden = env
-        .get::<waterui::accessibility::AccessibilityHidden>()
-        .is_some_and(waterui::accessibility::AccessibilityHidden::is_hidden);
+    let hidden = ctx.renderer_mut().is_accessibility_hidden(env);
     if !hidden {
         let render_ctx = ctx.render_context();
         toggle_accessibility(
@@ -597,6 +595,9 @@ pub fn emit_toggle_accessibility<E: crate::text::TextEngine>(
     state: &Rc<RefCell<ToggleRenderState<E>>>,
     env: &Environment,
 ) {
+    if renderer.is_accessibility_hidden(env) {
+        return;
+    }
     toggle_accessibility(
         renderer,
         None,

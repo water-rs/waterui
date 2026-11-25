@@ -951,16 +951,16 @@ use waterui::accessibility::{AccessibilityRole, AccessibilityState};
 .a11y_label("Delete message")          // override the derived label
 .a11y_id("inbox.row.3")                // stable automation id — reaches XCUITest and Android
 .a11y_role(AccessibilityRole::Button)
-.a11y_hidden(true)                     // decorative only
-.a11y_state_signal(active.map(|a| AccessibilityState::new().selected(a)))
+.a11y_hidden(true)                     // or a reactive boolean signal
+.a11y_state(active.map(|a| AccessibilityState::new().selected(a)))
 ```
 
 The idiom for a composed row that should read as a single node: `.a11y_hidden(true)` on
 the inner content, then `.a11y_role(..)` + `.a11y_label(..)` on the wrapper — or better,
 build it with `Label::new(semantic_text, || content)`, which does this for you.
 
-Three more modifiers carry explicit semantics. `.a11y_state(AccessibilityState::new()
-.selected(true))` is the constant form of `a11y_state_signal`. `.a11y_children(
+Three more modifiers carry explicit semantics. `.a11y_state(..)` accepts either a
+constant `AccessibilityState` or a reactive signal of one. `.a11y_children(
 AccessibilityChildren::ExcludeDescendants)` hides every descendant and exposes only this
 node (`Automatic`, the default, leaves it to the backend) — the one-modifier form of the
 hidden-inner idiom above. `.a11y_geometry(AccessibilityGeometry::Allocation)` reports the

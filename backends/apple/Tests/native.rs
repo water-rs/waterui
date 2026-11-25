@@ -11474,6 +11474,7 @@ mod gesture_ax {
 /// a union of its descendants.
 #[cfg(target_os = "macos")]
 mod a11y_frame {
+    use cocoa_ui::accessibility as a11y;
     use cocoa_ui::appkit::{ColorView, ImageView, ScrollView};
     use cocoa_ui::geometry::{EdgeInsets as KitInsets, MeasureProposal};
     use cocoa_ui::objc2::runtime::ProtocolObject;
@@ -11498,6 +11499,7 @@ mod a11y_frame {
     use waterui_apple::SfSymbol;
     use waterui_apple::contract::NativeLeaf;
     use waterui_apple::dispatch;
+    use waterui_apple::native_test_support::pump_main_until;
     use waterui_backend_core::{AnyView, View};
     use waterui_core::layout::{LayoutDirection, Point, ProposalSize, Rect, Size};
 
@@ -12267,6 +12269,37 @@ mod a11y_frame {
         );
     }
 
+    /// `.a11y_hidden` tracks a reactive boolean signal without rebuilding.
+    fn reactive_a11y_hidden_updates_accessibility_element() {
+        let hidden = binding(true);
+        let (leaf, _window) = attached(
+            text("Greeting")
+                .a11y_label("Greeting")
+                .a11y_hidden(hidden.clone()),
+        );
+        let view = leaf.view();
+        let is_ax_element = || {
+            let ax: &ProtocolObject<dyn NSAccessibility> = ProtocolObject::from_ref(view);
+            a11y::is_element(ax)
+        };
+        assert!(
+            !is_ax_element(),
+            "a view starting a11y_hidden(true) must not be an accessibility element"
+        );
+
+        hidden.set(false);
+        assert!(
+            pump_main_until(5.0, is_ax_element),
+            "a11y_hidden flipping false must restore the accessibility element"
+        );
+
+        hidden.set(true);
+        assert!(
+            pump_main_until(5.0, || !is_ax_element()),
+            "a11y_hidden flipping true must hide the accessibility element again"
+        );
+    }
+
     /// One `a11y_frame::` trial: its name inside the module and its body.
     fn case(name: &str, body: fn()) -> (String, Box<dyn FnOnce() + Send>) {
         (format!("a11y_frame::{name}"), Box::new(body))
@@ -12310,6 +12343,7 @@ mod a11y_frame {
             case!(a_list_row_places_its_content_at_the_leading_edge),
             case!(a_right_to_left_list_row_places_its_content_at_the_trailing_edge),
             case!(a_host_view_reports_its_committed_response),
+            case!(reactive_a11y_hidden_updates_accessibility_element),
         ];
         #[cfg(feature = "plain")]
         cases.push(case!(a_plain_label_draws_and_reports_its_response));

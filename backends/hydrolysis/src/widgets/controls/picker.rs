@@ -785,9 +785,7 @@ pub fn render_picker_node<E: crate::text::TextEngine>(
     state: &Rc<RefCell<PickerRenderState<E>>>,
     env: &Environment,
 ) {
-    let hidden = env
-        .get::<waterui::accessibility::AccessibilityHidden>()
-        .is_some_and(waterui::accessibility::AccessibilityHidden::is_hidden);
+    let hidden = ctx.renderer_mut().is_accessibility_hidden(env);
     if !hidden {
         let theme = ctx.theme();
         let render_ctx = ctx.render_context();
@@ -1921,6 +1919,9 @@ pub fn emit_picker_accessibility<E: crate::text::TextEngine>(
     state: &Rc<RefCell<PickerRenderState<E>>>,
     env: &Environment,
 ) {
+    if renderer.is_accessibility_hidden(env) {
+        return;
+    }
     picker_accessibility(renderer, None, None, state, env);
 }
 

@@ -498,8 +498,8 @@ LabelDisplayMode::IconOnly)` for icon buttons, `.install(LabelDisplayMode::IconO
 a whole toolbar. Beyond label, value, role and id, `.a11y_geometry(AccessibilityGeometry)`
 (the rectangle the element reports: the view's own response rectangle by default,
 `Allocation` for the whole assigned frame, or `Region(rect)`), `.a11y_children(
-AccessibilityChildren)` (how descendants contribute semantics) and
-`.a11y_state(AccessibilityState)` set the rest; the types are in `waterui::accessibility`.
+AccessibilityChildren)` (how descendants contribute semantics), `.a11y_hidden(hidden)` (static `bool` or reactive signal) and
+`.a11y_state(state)` (static `AccessibilityState` or reactive signal) set the rest; the types are in `waterui::accessibility`.
 
 ## Component index
 
