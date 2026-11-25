@@ -4,12 +4,13 @@
 //! mounted header label and lazily mounted content.
 
 use alloc::rc::Rc;
-use core::cell::{Cell, RefCell};
+use core::cell::RefCell;
+use core::fmt::{self, Debug, Formatter};
 
 use cocoa_ui::geometry::{Rect as KitRect, Size as KitSize};
 use cocoa_ui::text::strip_bidi_controls;
 use cocoa_ui::view::hide_from_accessibility;
-use cocoa_ui::{PlatformView, Retained, view};
+use cocoa_ui::{Retained, view};
 use waterui::Signal as _;
 use waterui::widget::disclosure::{DisclosureConfig, SlotBuilder};
 use waterui_core::layout::{
@@ -19,6 +20,7 @@ use waterui_core::layout::{
 use waterui_interaction::interaction::Disabled;
 
 use crate::contract::{Held, Mounted, NativeLeaf, RenderContext, Renderer};
+use crate::measure_memo::invalidate;
 use crate::proposal::{self, Placement};
 
 #[cfg(target_os = "ios")]
@@ -51,7 +53,6 @@ struct DisclosureState {
     content_builder: SlotBuilder<Held>,
     content: Option<Mounted>,
     rtl: bool,
-    last_width: Cell<f32>,
 }
 
 impl DisclosureState {
@@ -62,11 +63,11 @@ impl DisclosureState {
             view::set_translates_autoresizing(mounted.view(), true);
             self.content = Some(mounted);
             view::invalidate_layout(&self.host);
-            crate::measure_memo::invalidate();
+            invalidate();
         } else if !expanded && self.content.is_some() {
             self.content = None;
             view::invalidate_layout(&self.host);
-            crate::measure_memo::invalidate();
+            invalidate();
         }
     }
 
@@ -95,21 +96,11 @@ impl DisclosureState {
     fn layout_subviews(&self, bounds: KitRect) {
         let width = bounds.size.width;
         let (btn, hdr, _, header_h) = self.header_metrics();
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "AppKit/UIKit intrinsic button points always fit f32"
-        )]
-        let btn_w = btn.width as f32;
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "AppKit/UIKit intrinsic button points always fit f32"
-        )]
-        let btn_h = btn.height as f32;
 
         let btn_x = if self.rtl { width - btn.width } else { 0.0 };
         let btn_y = (f64::from(header_h) - btn.height) * 0.5;
         view::set_frame(
-            as_platform_view(&self.button),
+            self.button.as_view(),
             KitRect::new(btn_x.max(0.0), btn_y.max(0.0), btn.width, btn.height),
         );
 
@@ -163,27 +154,15 @@ impl DisclosureState {
                 KitRect::new(content_x, content_y, content_w, content_h),
             );
         }
-        let _ = btn_w;
-        let _ = btn_h;
     }
-}
-
-#[cfg(target_os = "macos")]
-fn as_platform_view(button: &DisclosureButton) -> &PlatformView {
-    button.as_view()
-}
-
-#[cfg(target_os = "ios")]
-fn as_platform_view(button: &DisclosureButton) -> &PlatformView {
-    button.as_view()
 }
 
 struct DisclosureSubView {
     state: Rc<RefCell<DisclosureState>>,
 }
 
-impl core::fmt::Debug for DisclosureSubView {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl Debug for DisclosureSubView {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("DisclosureSubView").finish_non_exhaustive()
     }
 }
@@ -219,7 +198,6 @@ impl SubView for DisclosureSubView {
             Some(w) if w.is_finite() => w.max(intrinsic_w),
             _ => intrinsic_w,
         };
-        state.last_width.set(width);
         ViewDimensions::new(Size::new(width, total_h))
     }
 
@@ -250,7 +228,7 @@ pub fn realize_disclosure_config(
 
     let host = HostView::new(mtm, KitRect::ZERO);
     let button = DisclosureButton::new(mtm, initial_expanded);
-    view::add_subview(&host, as_platform_view(&button));
+    view::add_subview(&host, button.as_view());
 
     let header = ctx.realize(header_label.build()).mount(&host);
     view::set_translates_autoresizing(header.view(), true);
@@ -266,7 +244,6 @@ pub fn realize_disclosure_config(
         content_builder,
         content: None,
         rtl,
-        last_width: Cell::new(0.0),
     }));
     state.borrow_mut().sync_content(initial_expanded);
 

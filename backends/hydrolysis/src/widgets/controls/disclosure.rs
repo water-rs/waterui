@@ -3,6 +3,7 @@
 //! and a lazily realized body when expanded.
 
 use core::cell::RefCell;
+use core::mem::take;
 use std::rc::Rc;
 
 #[cfg(feature = "accessibility")]
@@ -10,12 +11,15 @@ use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
 };
 use kurbo::Rect;
-use nami::Signal as _;
+use nami::{Binding, Signal as _};
 use waterui::widget::disclosure::DisclosureConfig;
 use waterui_core::Environment;
-use waterui_core::layout::{LayoutDirection, ProposalSize, Size as LayoutSize, ViewDimensions};
+use waterui_core::layout::{
+    LayoutDirection, ProposalSize, Size as LayoutSize, ViewDimensions, layout_direction,
+};
 use waterui_interaction::interaction::InteractionState;
 
+use crate::num_cast::f64_as_f32;
 #[cfg(feature = "accessibility")]
 use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::chrome::{ChromeContent, LiveChromeParts};
@@ -25,7 +29,10 @@ use crate::renderer::{
     GroupOpacity, HeldChild, HydroState, HydrolysisRenderer, InteractionKey, PressSlot,
     RenderContext, RetainedSubview, SemanticCore, WidgetRenderContext, bounded_proposal,
 };
-use crate::theme::{DisclosureLook, DisclosureSpec, SpecTint, WidgetTheme};
+use crate::text::TextEngine;
+use crate::theme::{
+    DISABLED_FOREGROUND_ALPHA, DisclosureLook, DisclosureSpec, SpecTint, WidgetTheme,
+};
 use crate::widgets::util::{mirrored_in, widget_disabled};
 
 /// Retained render state for a [`Disclosure`](waterui::widget::disclosure::Disclosure).
@@ -33,18 +40,18 @@ use crate::widgets::util::{mirrored_in, widget_disabled};
 /// The header label stays retained for its lifetime so measurements match renders,
 /// while the expandable content sub-view is created only when `expanded` is `true`
 /// and dropped on collapse.
-pub struct DisclosureRenderState<E: crate::text::TextEngine> {
+pub struct DisclosureRenderState<E: TextEngine> {
     config: DisclosureConfig<HeldChild<E>>,
     header_view: RetainedSubview<E>,
     content_view: Option<RetainedSubview<E>>,
     look: Option<(DisclosureSpec, DisclosureLook)>,
     chrome_parts: Option<LiveChromeParts>,
     indicator_parts: Option<LiveToggleParts>,
-    header_state: nami::Binding<InteractionState>,
+    header_state: Binding<InteractionState>,
     content_dirty: bool,
 }
 
-impl<E: crate::text::TextEngine> DisclosureRenderState<E> {
+impl<E: TextEngine> DisclosureRenderState<E> {
     /// The label this control contributes to a node naming itself from its
     /// content: its header label.
     #[cfg(feature = "accessibility")]
@@ -64,7 +71,7 @@ impl<E: crate::text::TextEngine> DisclosureRenderState<E> {
             look: None,
             chrome_parts: None,
             indicator_parts: None,
-            header_state: nami::Binding::container(InteractionState::empty()),
+            header_state: Binding::container(InteractionState::empty()),
             content_dirty: false,
         }
     }
@@ -83,7 +90,7 @@ impl<E: crate::text::TextEngine> DisclosureRenderState<E> {
 
     /// Consumes layout-dirty flags from child subviews or expand/collapse transitions.
     pub(crate) fn take_layout_dirty(&mut self) -> bool {
-        core::mem::take(&mut self.content_dirty)
+        take(&mut self.content_dirty)
             | self.header_view.take_layout_dirty_if_built()
             | self
                 .content_view
@@ -144,10 +151,7 @@ impl<E: crate::text::TextEngine> DisclosureRenderState<E> {
 }
 
 fn disclosure_spec(env: &Environment) -> DisclosureSpec {
-    DisclosureSpec::new(
-        waterui_core::layout::layout_direction(env).snapshot(),
-        SpecTint::resolve(env),
-    )
+    DisclosureSpec::new(layout_direction(env).snapshot(), SpecTint::resolve(env))
 }
 
 fn header_height_for(label_size: LayoutSize, look: &DisclosureLook) -> f64 {
@@ -177,12 +181,7 @@ fn header_label_proposal(header_width: f64, look: &DisclosureLook) -> ProposalSi
     let indicator = look.control();
     let reserved = layout.horizontal_inset.mul_add(2.0, indicator.size().width)
         + indicator.get_label_spacing();
-    ProposalSize::new(
-        Some(crate::num_cast::f64_as_f32(
-            (header_width - reserved).max(0.0),
-        )),
-        None,
-    )
+    ProposalSize::new(Some(f64_as_f32((header_width - reserved).max(0.0))), None)
 }
 
 fn header_part_bounds(
@@ -226,7 +225,7 @@ fn header_part_bounds(
     }
 }
 
-fn disclosure_accessibility<E: crate::text::TextEngine>(
+fn disclosure_accessibility<E: TextEngine>(
     renderer: &mut SemanticCore<E>,
     ctx: Option<RenderContext>,
     config: &DisclosureConfig<HeldChild<E>>,
@@ -274,7 +273,7 @@ fn disclosure_accessibility<E: crate::text::TextEngine>(
 /// Emits accessibility nodes for a [`Disclosure`] during semantic-only tree walks.
 #[cfg(feature = "accessibility")]
 #[cfg(hydrolysis_cherenkov)]
-pub fn emit_disclosure_accessibility<E: crate::text::TextEngine>(
+pub fn emit_disclosure_accessibility<E: TextEngine>(
     renderer: &mut SemanticCore<E>,
     state: &Rc<RefCell<DisclosureRenderState<E>>>,
     env: &Environment,
@@ -302,7 +301,7 @@ pub fn emit_disclosure_accessibility<E: crate::text::TextEngine>(
 
 /// Measures a retained disclosure leaf from its header and, when expanded, its
 /// lazily built body.
-pub fn measure_disclosure_node<E: crate::text::TextEngine>(
+pub fn measure_disclosure_node<E: TextEngine>(
     render_state: &DisclosureRenderState<E>,
     proposal: ProposalSize,
     state: &mut HydroState<E>,
@@ -332,30 +331,24 @@ pub fn measure_disclosure_node<E: crate::text::TextEngine>(
         let layout = look.layout();
         let content_width = (total_w - layout.content_indent).max(0.0);
         let content_proposal = ProposalSize::new(
-            Some(crate::num_cast::f64_as_f32(content_width)),
+            Some(f64_as_f32(content_width)),
             proposal
                 .height
                 .filter(|h| h.is_finite())
                 .map(|h| (f64::from(h) - header_h - layout.content_spacing).max(0.0))
-                .map(crate::num_cast::f64_as_f32),
+                .map(f64_as_f32),
         );
         let content_size = content.measure_built_with_proposal(state, env, theme, content_proposal);
         let width = total_w.max(layout.content_indent + f64::from(content_size.width));
         let height = header_h + layout.content_spacing + f64::from(content_size.height);
-        return ViewDimensions::new(LayoutSize::new(
-            crate::num_cast::f64_as_f32(width),
-            crate::num_cast::f64_as_f32(height),
-        ));
+        return ViewDimensions::new(LayoutSize::new(f64_as_f32(width), f64_as_f32(height)));
     }
-    ViewDimensions::new(LayoutSize::new(
-        crate::num_cast::f64_as_f32(total_w),
-        crate::num_cast::f64_as_f32(header_h),
-    ))
+    ViewDimensions::new(LayoutSize::new(f64_as_f32(total_w), f64_as_f32(header_h)))
 }
 
 struct DisclosureFrame {
     expanded: bool,
-    expanded_binding: nami::Binding<bool>,
+    expanded_binding: Binding<bool>,
     look: DisclosureLook,
     header_bounds: Rect,
     label_bounds: Rect,
@@ -364,7 +357,7 @@ struct DisclosureFrame {
     press_slot: PressSlot,
 }
 
-fn prepare_disclosure_frame<E: crate::text::TextEngine>(
+fn prepare_disclosure_frame<E: TextEngine>(
     ctx: &mut WidgetRenderContext<'_, E>,
     state: &Rc<RefCell<DisclosureRenderState<E>>>,
     env: &Environment,
@@ -438,7 +431,7 @@ fn prepare_disclosure_frame<E: crate::text::TextEngine>(
     }
 }
 
-fn render_disclosure_header<E: crate::text::TextEngine>(
+fn render_disclosure_header<E: TextEngine>(
     ctx: &mut WidgetRenderContext<'_, E>,
     state: &Rc<RefCell<DisclosureRenderState<E>>>,
     env: &Environment,
@@ -472,7 +465,7 @@ fn render_disclosure_header<E: crate::text::TextEngine>(
                     role: "disclosure-dim",
                     item: 0,
                 },
-                crate::theme::DISABLED_FOREGROUND_ALPHA,
+                DISABLED_FOREGROUND_ALPHA,
                 frame.header_bounds,
                 |ctx| {
                     let ind_render_ctx = ctx.render_context();
@@ -508,7 +501,7 @@ fn render_disclosure_header<E: crate::text::TextEngine>(
 
 /// Renders a retained disclosure leaf: header chrome, animated indicator, header
 /// label, interactive focus/click target, and lazily placed body when expanded.
-pub fn render_disclosure_node<E: crate::text::TextEngine>(
+pub fn render_disclosure_node<E: TextEngine>(
     ctx: &mut WidgetRenderContext<'_, E>,
     state: &Rc<RefCell<DisclosureRenderState<E>>>,
     env: &Environment,

@@ -12,6 +12,7 @@ use cherenkov_record::{Draw as _, FillRule, Paint, ShapeData, WorkingColor};
 use kurbo::{BezPath, Cap, Join, Rect, Size, Stroke};
 use waterui::Environment;
 use waterui::animation::Animation;
+use waterui::theme::color::{Foreground, MutedForeground};
 use waterui_core::layout::LayoutDirection;
 use waterui_graphics::color::Color;
 
@@ -166,7 +167,7 @@ pub fn default_disclosure_look(spec: &DisclosureSpec, env: &Environment) -> Disc
     let motion = Motion::uniform(Animation::linear(duration));
     let value_motion = ValueMotion::Follow(Animation::linear(duration));
     let direction = spec.direction();
-    let indicator_color = Color::new(waterui::theme::color::MutedForeground);
+    let indicator_color = Color::new(MutedForeground);
     let control = ToggleControl::new(Size::new(16.0, 16.0), motion.clone())
         .label_spacing(8.0)
         .part(chevron_part(
@@ -185,7 +186,7 @@ pub fn default_disclosure_look(spec: &DisclosureSpec, env: &Environment) -> Disc
         ));
     let chrome = Chrome::new(
         Surface::clear(CornerShape::radius(6.0)),
-        StateLayer::new(Color::new(waterui::theme::color::Foreground)),
+        StateLayer::new(Color::new(Foreground)),
         PressFeedback::new(),
         FocusIndicator::Tint,
         motion,
