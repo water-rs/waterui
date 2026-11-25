@@ -33,13 +33,11 @@ use nami::debug::Debug as DebugSignal;
 use nami::distinct::Distinct;
 use nami::map::Map;
 use nami::scan::Scan;
-use nami::signal::{IntoComputed, IntoSignal, WithMetadata};
+use nami::signal::{IntoSignal, WithMetadata};
 use nami::{Binding, Signal};
 use std::sync::Arc;
-use suiteki::Str;
 use waterui_core::{Computed, Metadata, View, metadata::MetadataKey};
-use waterui_graphics::color::{Color, Srgb};
-use waterui_graphics::gradient::Gradient;
+use waterui_graphics::color::Color;
 use waterui_layout::BackgroundView;
 use waterui_shape::{Capsule, ClipShape, Shape, ShapeKind};
 
@@ -201,25 +199,6 @@ where
     fn apply_background<Content: View>(self, content: Content) -> Self::Output<Content> {
         BackgroundView::new(content, Color::from_signal(self))
     }
-}
-
-/// Represents different kinds of backgrounds that can be applied to UI elements.
-///
-/// A metadata key that nothing in this repository attaches or reads: a
-/// background is any [`View`] passed to
-/// [`background`](crate::ViewExt::background). It remains because renderers
-/// built against this crate still name it.
-#[derive(Debug)]
-#[non_exhaustive]
-pub enum Background {
-    /// A solid color background.
-    Color(Computed<Color>),
-    /// An image background.
-    Image(Computed<Str>),
-    /// A material background (blur effects).
-    Material(Material),
-    /// A gradient background.
-    Gradient(Gradient),
 }
 
 /// Material types for background blur effects.
@@ -449,44 +428,5 @@ impl Glass {
     #[must_use]
     pub fn outline(&self) -> &ClipShape {
         &self.shape
-    }
-}
-
-impl MetadataKey for Background {}
-
-impl From<Color> for Background {
-    fn from(color: Color) -> Self {
-        Self::Color(Computed::new(color))
-    }
-}
-
-impl From<Srgb> for Background {
-    fn from(color: Srgb) -> Self {
-        Self::from(Color::from(color))
-    }
-}
-
-impl From<Material> for Background {
-    fn from(material: Material) -> Self {
-        Self::Material(material)
-    }
-}
-
-impl From<Gradient> for Background {
-    fn from(gradient: Gradient) -> Self {
-        Self::Gradient(gradient)
-    }
-}
-
-impl Background {
-    /// Creates a new background with a solid color.
-    pub fn color(color: impl IntoComputed<Color>) -> Self {
-        Self::Color(color.into_computed())
-    }
-
-    /// Creates a new background with a blur material effect.
-    #[must_use]
-    pub const fn material(material: Material) -> Self {
-        Self::Material(material)
     }
 }

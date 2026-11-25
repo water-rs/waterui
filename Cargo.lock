@@ -2215,7 +2215,7 @@ checksum = "af491d569909a7e4dee0ad7db7f5341fef5c614d5b8ec8cf765732aba3cff681"
 dependencies = [
  "serde",
  "termcolor",
- "unicode-width 0.2.2",
+ "unicode-width 0.1.14",
 ]
 
 [[package]]
@@ -8836,7 +8836,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.13.0",
  "proc-macro2 1.0.107",
  "quote 1.0.47",
  "syn 2.0.119",
@@ -13662,7 +13662,7 @@ dependencies = [
 [[package]]
 name = "waterui-math"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/math?branch=main#dd1aa5784ead6eb13e68b2a32a4d3533838e4f37"
+source = "git+https://github.com/water-rs/math?branch=main#3bf6f29d4ff677e83e04d6f41c941c5dfc47d473"
 dependencies = [
  "kurbo",
  "mathcat",
@@ -13816,7 +13816,7 @@ dependencies = [
 [[package]]
 name = "waterui-svg"
 version = "0.4.0"
-source = "git+https://github.com/water-rs/svg?branch=main#ad60d37ecb46b15f8d4eb29e83cbf6211ed57e9b"
+source = "git+https://github.com/water-rs/svg?branch=main#b5f85828ca3bb618a82d0f8c5aab0e62e3c8d53e"
 dependencies = [
  "suiteki",
  "tracing",

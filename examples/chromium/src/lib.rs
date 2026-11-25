@@ -13,6 +13,7 @@ use waterui::app::{App, Windows};
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
+use waterui::theme::color::MutedForeground;
 use waterui_browser_cef::CefRuntime;
 use waterui_chromium::cdp::browser_protocol::page::GetNavigationHistoryParams;
 use waterui_chromium::{
@@ -193,9 +194,7 @@ fn visible_cdp_controls(page: &ChromiumPage) -> impl View + use<> {
             .state(page)
             .state(&raw_result),
         input_probe_controls(page, &raw_result),
-        text!("{raw_result}")
-            .caption()
-            .foreground(theme_color::MutedForeground),
+        text!("{raw_result}").caption().foreground(MutedForeground),
         button("Read typed navigation history")
             .style(ButtonStyle::Bordered)
             .action_async(
@@ -217,7 +216,7 @@ fn visible_cdp_controls(page: &ChromiumPage) -> impl View + use<> {
             .state(&typed_result),
         text!("{typed_result}")
             .caption()
-            .foreground(theme_color::MutedForeground),
+            .foreground(MutedForeground),
         button("Capture Chromium PNG")
             .style(ButtonStyle::Bordered)
             .action_async(
@@ -235,7 +234,7 @@ fn visible_cdp_controls(page: &ChromiumPage) -> impl View + use<> {
             .state(&screenshot_result),
         text!("{screenshot_result}")
             .caption()
-            .foreground(theme_color::MutedForeground),
+            .foreground(MutedForeground),
     ))
     .spacing(8.0)
 }
@@ -332,7 +331,7 @@ fn headless_controls() -> impl View + use<> {
             .state(&headless_result),
         text!("{headless_result}")
             .caption()
-            .foreground(theme_color::MutedForeground),
+            .foreground(MutedForeground),
     ))
     .spacing(8.0)
 }
@@ -346,7 +345,7 @@ fn controls(
         text("Chromium + CDP").title(),
         text("Independent advanced browser runtime")
             .caption()
-            .foreground(theme_color::MutedForeground),
+            .foreground(MutedForeground),
     ))
     .spacing(4.0);
 

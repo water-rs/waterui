@@ -4,9 +4,9 @@
 //! status strip that is always visible because "am I actually connected?" is the
 //! question every other answer depends on.
 
-use waterui::prelude::theme_color::{Accent, Background, MutedForeground};
 use waterui::prelude::*;
 use waterui::reactive::collection::List as ReactiveList;
+use waterui::theme::color::{Accent, Background, MutedForeground};
 use waterui_icons_lucide as lucide;
 
 use crate::connection::SubscriptionSender;

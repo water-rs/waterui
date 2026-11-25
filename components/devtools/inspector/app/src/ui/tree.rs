@@ -5,9 +5,9 @@
 //! against. A node missing a label here is missing it for a screen reader too,
 //! which makes this pane an accessibility check as much as a layout one.
 
-use waterui::prelude::theme_color::{Accent, MutedForeground};
 use waterui::prelude::*;
 use waterui::reactive::collection::SignalCollection;
+use waterui::theme::color::{Accent, MutedForeground};
 use waterui::widget::condition::when;
 
 use crate::model::{Model, TreeRow};

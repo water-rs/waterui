@@ -20,6 +20,7 @@ use waterui::js_api;
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
+use waterui::theme::color::{Foreground, MutedForeground};
 #[cfg(not(target_arch = "wasm32"))]
 use waterui::webview::{Json, ScriptInjectionTime, TsType, serde_json};
 use waterui::webview::{Url, WebView, WebViewEvent, WebViewProxy};
@@ -130,12 +131,8 @@ fn toolbar<B: View>(
     bridge: B,
 ) -> impl View + use<B> {
     vstack((
-        text("WebView Playground")
-            .title()
-            .foreground(theme_color::Foreground),
-        text(web.title())
-            .caption()
-            .foreground(theme_color::MutedForeground),
+        text("WebView Playground").title().foreground(Foreground),
+        text(web.title()).caption().foreground(MutedForeground),
         hstack((
             TextField::new("Address", address).hide_label(),
             button("Go")
@@ -156,10 +153,8 @@ fn toolbar<B: View>(
         .spacing(8.0),
         bridge,
         vstack((
-            text("Status:")
-                .caption()
-                .foreground(theme_color::MutedForeground),
-            text!("{status}").body().foreground(theme_color::Foreground),
+            text("Status:").caption().foreground(MutedForeground),
+            text!("{status}").body().foreground(Foreground),
         ))
         .spacing(8.0),
         progress(web.progress()).label(text("Load progress").caption()),
@@ -203,12 +198,8 @@ fn bridge_controls(allow_redirects: &Binding<bool>, web: &WebViewProxy) -> impl 
             )
             .state(&js_result),
         hstack((
-            text("JS Result:")
-                .caption()
-                .foreground(theme_color::MutedForeground),
-            text!("{js_result}")
-                .body()
-                .foreground(theme_color::Foreground),
+            text("JS Result:").caption().foreground(MutedForeground),
+            text!("{js_result}").body().foreground(Foreground),
         ))
         .spacing(8.0),
     ))

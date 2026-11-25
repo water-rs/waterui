@@ -3,9 +3,9 @@
 use waterui::app::{App, Windows};
 use waterui::env::with;
 use waterui::locale::{Locale, locales};
-use waterui::prelude::theme_color::SurfaceVariant;
 use waterui::prelude::*;
 use waterui::preview;
+use waterui::theme::color::SurfaceVariant;
 
 fn type_scale() -> impl View {
     vstack((

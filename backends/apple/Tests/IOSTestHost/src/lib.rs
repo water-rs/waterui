@@ -10,9 +10,9 @@
 
 use waterui::app::{App, Windows};
 use waterui::component::list::List;
-use waterui::prelude::theme_color::{Accent, Foreground};
 use waterui::prelude::*;
 use waterui::shape::Circle;
+use waterui::theme::color::{Accent, Foreground};
 
 fn message_row(sender: &'static str, subject: &'static str, preview: &'static str) -> impl View {
     Label::new(Str::from(format!("{sender}: {subject}")), move || {

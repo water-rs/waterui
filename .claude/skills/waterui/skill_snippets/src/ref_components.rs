@@ -546,8 +546,8 @@ pub fn components_custom_control_styles() {
     let enabled = Binding::bool(true);
 
     use waterui::gesture::TapGesture;
-    use waterui::prelude::theme_color::{Accent, Error, SurfaceVariant};
     use waterui::shape::Capsule;
+    use waterui::theme::color::{Accent, Error, SurfaceVariant};
 
     struct PillButtonStyle;
 
@@ -1483,7 +1483,7 @@ pub fn components_block_37(photo_url: waterui::Url) {
             .image(photo_url) // a signal of Url: the fallback shows until it decodes
             .shape(RoundedRectangle::new(16.0))
             .size(64.0)
-            .ring(Color::new(theme_color::Accent), 2.0)
+            .ring(Color::accent(), 2.0)
     };
     let _ = {
         field("Email", &email).focused(&focus, Field::Email) // focused while `focus` holds Some(Field::Email)

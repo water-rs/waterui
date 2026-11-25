@@ -38,13 +38,13 @@ use waterui::layout::stack::VStack;
 use waterui::navigation::{NavigationSplitView, NavigationView};
 use waterui::prelude::slider::slider;
 use waterui::prelude::stepper::stepper;
-use waterui::prelude::theme_color::{Foreground, MutedForeground, SurfaceVariant};
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::Computed;
 use waterui::reactive::binding;
 use waterui::reactive::collection::List as ReactiveList;
 use waterui::shape::Capsule;
+use waterui::theme::color::{Foreground, MutedForeground, SurfaceVariant};
 use waterui_icons_material_icon as mdi;
 
 // Material 3 navigation-drawer metrics (M3 reference: list-item / nav-drawer).

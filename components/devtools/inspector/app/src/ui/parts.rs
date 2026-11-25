@@ -3,9 +3,9 @@
 //! These exist so a metric looks the same wherever it appears, and so a value
 //! that is genuinely unknown renders as unknown rather than as zero.
 
-use waterui::prelude::theme_color::{Accent, MutedForeground};
 use waterui::prelude::*;
 use waterui::shape::ShapeExt as _;
+use waterui::theme::color::{Accent, MutedForeground};
 use waterui_inspector_protocol::LogLevel;
 
 use crate::model::{Model, Section};

@@ -38,12 +38,12 @@ use waterui::component::list::{
 use waterui::handler::ViewBuilder;
 use waterui::id::SelfId;
 use waterui::navigation::{NavigationSplitView, NavigationToolbarItems, NavigationView, Navigator};
-use waterui::prelude::theme_color::{Accent, Foreground, SurfaceVariant};
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
 use waterui::reactive::collection::SignalCollection;
 use waterui::shape::{Circle, CornerRadius, RoundedRectangle};
+use waterui::theme::color::{Accent, Foreground, SurfaceVariant};
 use waterui::views::ForEach;
 use waterui_icons_material_icon as mdi;
 
