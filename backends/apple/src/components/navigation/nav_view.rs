@@ -25,20 +25,22 @@ use super::Fill;
 #[cfg(target_os = "ios")]
 mod platform {
 
-    use cocoa_ui::uikit::{LargeTitle, NavBar, NavPage, SearchBar};
-    use cocoa_ui::{Rect, view};
+    use cocoa_ui::objc2_ui_kit::UIView;
+    use cocoa_ui::uikit::{HostView, LargeTitle, NavBar, NavPage, SearchBar};
+    use cocoa_ui::{MainThreadMarker, Rect, Retained, view};
     use waterui::Str;
     use waterui::navigation::{
-        NavigationController, NavigationTitleDisplayMode, ResolvedNavigationView,
+        NavigationController, NavigationSearch, NavigationTitleDisplayMode, ResolvedNavigationView,
+        SlotBuilder,
     };
     use waterui::resolve::Resolvable;
     use waterui::theme::color::Foreground;
     use waterui_core::reactive::Signal;
 
     use crate::components::navigation::bar::{
-        BarItem, BarState, bar_color, bar_item_frame, search_prompt,
+        BarItem, BarState, bar_color, bar_item_frame, ios_suggestions_controller, search_prompt,
     };
-    use crate::contract::{Held, KeepAlive, NativeLeaf, RenderContext};
+    use crate::contract::{Held, KeepAlive, NativeLeaf, RenderContext, Renderer};
     use crate::theme::platform_color;
 
     use super::Fill;
@@ -106,23 +108,16 @@ mod platform {
         let bar_view = NavBar::new(mtm);
         view::add_subview(&host, &bar_view);
 
-        let search_bar = bar.search.as_ref().map(|search| {
-            let field = SearchBar::new(mtm);
-            field.set_change_handler({
-                let text = search.text().clone();
-                move |value| text.set(Str::from(value))
-            });
-            keep.bind(search.text(), {
-                let field = field.clone();
-                move |text: Str| field.set_text(text.as_ref())
-            });
-            keep.bind(&search_prompt(search, env), {
-                let field = field.clone();
-                move |prompt| field.set_placeholder(&prompt.to_plain())
-            });
-            view::add_subview(&host, &field);
-            field
-        });
+        let renderer = ctx.renderer();
+        let search_bar = install_ios_search(
+            mtm,
+            &host,
+            bar.search.as_ref(),
+            bar.search_suggestions.as_ref(),
+            &renderer,
+            env,
+            &mut keep,
+        );
 
         bar_view.set_page(&page(&bar, &mut keep, env));
         keep.bind(&Foreground.resolve(env), {
@@ -176,25 +171,23 @@ mod platform {
                     );
                     top += size.height;
                 }
+                let body_frame = Rect::new(
+                    bounds.origin.x,
+                    top,
+                    bounds.size.width,
+                    (bounds.size.height - (top - bounds.origin.y)).max(0.0),
+                );
                 for sub in view::subviews(host) {
-                    let bar_u: &cocoa_ui::objc2_ui_kit::UIView = &bar_view;
-                    if *sub == *bar_u
+                    let bar_u: &UIView = &bar_view;
+                    let is_bar = *sub == *bar_u
                         || search_bar.as_ref().is_some_and(|field| {
-                            let field_u: &cocoa_ui::objc2_ui_kit::UIView = field;
+                            let field_u: &UIView = field;
                             *sub == *field_u
-                        })
-                    {
+                        });
+                    if is_bar {
                         continue;
                     }
-                    view::set_frame(
-                        &sub,
-                        Rect::new(
-                            bounds.origin.x,
-                            top,
-                            bounds.size.width,
-                            bounds.size.height - (top - bounds.origin.y),
-                        ),
-                    );
+                    view::set_frame(&sub, body_frame);
                 }
             }
         });
@@ -206,6 +199,82 @@ mod platform {
         let mut leaf = NativeLeaf::new(&*host, Fill);
         leaf.keep(keep);
         leaf
+    }
+
+    fn install_ios_search(
+        mtm: MainThreadMarker,
+        host: &Retained<HostView>,
+        search: Option<&NavigationSearch>,
+        suggestions: Option<&SlotBuilder<Held>>,
+        renderer: &Renderer,
+        env: &waterui::Environment,
+        keep: &mut KeepAlive,
+    ) -> Option<Retained<SearchBar>> {
+        let search = search?;
+        let field = SearchBar::new(mtm);
+        field.set_text(search.text().snapshot().as_ref());
+        field.set_change_handler({
+            let text = search.text().clone();
+            move |value| text.set(Str::from(value))
+        });
+        keep.bind(search.text(), {
+            let field = field.clone();
+            move |text: Str| field.set_text(text.as_ref())
+        });
+        if let Some(prompt) = search_prompt(search, env) {
+            keep.bind(&prompt, {
+                let field = field.clone();
+                move |prompt| field.set_placeholder(&prompt.to_plain())
+            });
+        }
+        if let Some(on_submit) = search.on_submit().cloned() {
+            let env = env.clone();
+            field.set_submit_handler(move || {
+                let _ = on_submit.call(&env);
+            });
+        }
+        let (_results_host, sync_suggestions) =
+            ios_suggestions_controller(mtm, Some(host), suggestions, renderer, keep);
+        let active = search.active().cloned();
+        field.set_begin_editing_handler({
+            let active = active.clone();
+            let sync_suggestions = Rc::clone(&sync_suggestions);
+            move || {
+                if let Some(active) = active.as_ref()
+                    && !active.snapshot()
+                {
+                    active.set(true);
+                }
+                sync_suggestions(true);
+            }
+        });
+        field.set_end_editing_handler({
+            let active = active.clone();
+            let sync_suggestions = Rc::clone(&sync_suggestions);
+            move || {
+                if let Some(active) = active.as_ref()
+                    && active.snapshot()
+                {
+                    active.set(false);
+                }
+                sync_suggestions(false);
+            }
+        });
+        if let Some(active) = active {
+            if active.snapshot() {
+                field.set_active(true);
+                sync_suggestions(true);
+            }
+            keep.bind(&active, {
+                let field = field.clone();
+                move |is_active| {
+                    field.set_active(is_active);
+                    sync_suggestions(is_active);
+                }
+            });
+        }
+        view::add_subview(host, &field);
+        Some(field)
     }
 
     /// The standalone page chrome — no back affordance: there is nothing to
@@ -326,15 +395,14 @@ mod platform {
     use cocoa_ui::objc2_app_kit::NSWindowStyleMask;
     use cocoa_ui::text::WrapWidth;
     use cocoa_ui::{Rect, Retained, view};
-    use waterui::Str;
+    use waterui::Signal;
     use waterui::navigation::{
         NavigationController, NavigationToolbarPlacement, ResolvedNavigationView,
     };
-    use waterui::reactive::Signal;
     use waterui_core::layout::ProposalSize;
 
     use crate::components::navigation::bar::{
-        BarItem, BarItemIcon, BarState, bar_color, bar_item_frame, search_prompt,
+        BarItem, BarItemIcon, BarState, bar_color, bar_item_frame, bind_macos_search_field,
     };
     use crate::contract::{Held, KeepAlive, NativeLeaf, RenderContext};
     use crate::theme::platform_color;
@@ -406,18 +474,15 @@ mod platform {
         }
         let search_field = bar.search.as_ref().map(|search| {
             let field = SearchField::new(mtm);
-            field.set_change_handler({
-                let text = search.text().clone();
-                move |field| text.set(Str::from(field.text()))
-            });
-            keep.bind(search.text(), {
-                let field = field.clone();
-                move |text: Str| field.set_text(text.as_ref())
-            });
-            keep.bind(&search_prompt(search, env), {
-                let field = field.clone();
-                move |prompt| field.set_placeholder(prompt.to_plain().as_ref())
-            });
+            bind_macos_search_field(
+                mtm,
+                &field,
+                search,
+                bar.search_suggestions.as_ref(),
+                &ctx.renderer(),
+                env,
+                &mut keep,
+            );
             header.addSubview(&field);
             field
         });

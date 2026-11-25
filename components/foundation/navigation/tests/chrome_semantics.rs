@@ -123,10 +123,29 @@ fn navigation_toolbar_items_emit_on_offscreen_mount(ui: UiBuilder) {
 }
 
 #[waterui::test(viewport = (390, 844))]
+fn navigation_search_field_without_prompt_uses_default_label(ui: UiBuilder) {
+    let query = Binding::container(Str::from(""));
+    let active = Binding::bool(false);
+    let mut app = ui.mount(move || {
+        NavigationView::new("Mail", text("mail body"))
+            .searchable(&query)
+            .search_active(&active)
+            .on_search_submit(|| {})
+    });
+    app.settle();
+    assert!(
+        app.query().role(Role::TEXT_INPUT).label("Search").exists(),
+        "searchable without an explicit prompt must default to the localized Search label"
+    );
+}
+
+#[waterui::test(viewport = (390, 844))]
 fn navigation_search_field_emits_on_semantic_mount(ui: UiBuilder) {
     let query = Binding::container(Str::from(""));
     let mut app = ui.mount(move || {
-        NavigationView::new("Mail", text("mail body")).searchable(&query, "Search mail")
+        NavigationView::new("Mail", text("mail body"))
+            .searchable(&query)
+            .search_prompt("Search mail")
     });
     app.settle();
     assert!(
@@ -142,7 +161,9 @@ fn navigation_search_field_emits_on_semantic_mount(ui: UiBuilder) {
 fn navigation_search_field_emits_on_offscreen_mount(ui: UiBuilder) {
     let query = Binding::container(Str::from(""));
     let mut app = ui.mount_offscreen(move || {
-        NavigationView::new("Mail", text("mail body")).searchable(&query, "Search mail")
+        NavigationView::new("Mail", text("mail body"))
+            .searchable(&query)
+            .search_prompt("Search mail")
     });
     app.settle();
     assert!(

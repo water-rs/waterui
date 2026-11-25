@@ -92,7 +92,7 @@ pub fn navigation_block_01() -> impl View {
         &pane,
         ForEach::new(List::from(panes.to_vec()), move |pane: SelfId<Pane>| {
             let pane = *pane;
-            let tab = Tab::container(
+            let tab = Tab::new(
                 match pane {
                     Pane::Inbox => label("Inbox").icon(mdi::inbox()),
                     Pane::Library => label("Library").icon(mdi::image_album()),
@@ -137,14 +137,14 @@ pub fn navigation_tabs_prose() -> impl View {
     .style(tab_style::sidebar());
     let _ = Tabs::new(
         &selected,
-        vec![Tab::container(label("Library"), library_split).enabled(true)],
+        vec![Tab::new(label("Library"), library_split).enabled(true)],
     )
     .style(tab_style::tab_bar());
     Tabs::new(
         &selected,
         (
-            Tab::container(label("Library"), library_split),
-            Tab::container(label("Settings"), settings_stack),
+            Tab::new(label("Library"), library_split),
+            Tab::new(label("Settings"), settings_stack),
         ),
     )
 }
@@ -294,11 +294,16 @@ pub fn navigation_block_07() -> NavigationView<impl View> {
         let can_leave = Binding::bool(true);
         let unread = Binding::i32(2);
 
+        let searching = Binding::bool(false);
+
         message_list(mail)
             .navigation_title("Inbox") // or .navigation_title(text!("{subject}"))
             .large_title() // or .inline_title()
             .navigation_subtitle(text!("{unread} unread"))
-            .searchable(&query, "Search mail") // a field inside the bar, not above the content
+            .searchable(&query)
+            .search_prompt("Search mail") // a field inside the bar, not above the content
+            .search_active(&searching) // two-way Binding<bool>
+            .on_search_submit(|| {}) // fires when the user commits the query
             .navigation_pop_enabled(can_leave) // refuse a back gesture reactively
             .on_navigation_pop_attempted(|m: SnackbarManager| {
                 m.show(Snackbar::new("Finish the draft first"));
