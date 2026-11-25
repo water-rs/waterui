@@ -15,8 +15,10 @@ proc-macro = true
 
 [features]
 widgets = ["dep:serde_json", "dep:sha2"]
+shader = ["dep:cherenkov-record", "cherenkov-record/validate"]
 
 [dependencies]
+cherenkov-record = { workspace = true, optional = true }
 proc-macro2 = "1.0"
 quote = "1.0"
 syn = { version = "3.0.9", default-features = false, features = ["parsing", "printing", "proc-macro", "full", "visit-mut"] }

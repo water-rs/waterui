@@ -1,0 +1,5 @@
+error: shader! file `does_not_exist.wgsl` not found (resolved to `$DIR/tests/ui/shader/does_not_exist.wgsl`)
+ --> tests/ui/shader/fail_missing_file.rs:2:40
+  |
+2 |     let _ = waterui::graphics::shader!("does_not_exist.wgsl");
+  |                                        ^^^^^^^^^^^^^^^^^^^^^

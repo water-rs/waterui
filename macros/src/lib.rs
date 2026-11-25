@@ -82,6 +82,8 @@ pub fn apple_available(input: TokenStream) -> TokenStream {
 
 mod javascript;
 mod js_api;
+#[cfg(feature = "shader")]
+mod shader;
 mod ts;
 mod tsx;
 
@@ -2480,4 +2482,11 @@ pub fn derive_ts_props(input: TokenStream) -> TokenStream {
 #[proc_macro]
 pub fn tsx(input: TokenStream) -> TokenStream {
     tsx::tsx(input)
+}
+
+/// A [`ShaderPaintView`](waterui_graphics::ShaderPaintView) from a `.wgsl` file beside the calling source file, validated at compile time.
+#[cfg(feature = "shader")]
+#[proc_macro]
+pub fn shader(input: TokenStream) -> TokenStream {
+    shader::shader(input)
 }
