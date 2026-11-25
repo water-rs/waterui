@@ -529,15 +529,84 @@ pub struct Map<T: 'static = NoAnnotations> {
     status: Option<Binding<MapStatus>>,
 }
 
+mod private {
+    pub trait SealedCenter {}
+    pub trait SealedRegion<M> {}
+    #[derive(Debug)]
+    pub struct TwoWayRegion;
+    #[derive(Debug)]
+    pub struct SignalCenter;
+}
+
+/// Target center value carried by a one-way signal passed to [`IntoMapRegion`].
+pub trait MapCenter: private::SealedCenter + Clone + 'static {
+    #[doc(hidden)]
+    fn into_region(self) -> Region;
+}
+
+impl private::SealedCenter for Coordinate {}
+impl private::SealedCenter for Location {}
+
+impl MapCenter for Coordinate {
+    fn into_region(self) -> Region {
+        Region::from_coordinate(self)
+    }
+}
+
+impl MapCenter for Location {
+    fn into_region(self) -> Region {
+        Region::from_coordinate(Coordinate::from(self))
+    }
+}
+
+/// Center coordinates or camera regions accepted by [`Map::new`] and [`map`].
+///
+/// Implemented for `&Binding<Region>` (two-way camera binding) and for any
+/// reactive signal or constant producing [`Coordinate`] or [`Location`]
+/// (one-way centered camera).
+pub trait IntoMapRegion<M = private::SignalCenter>: private::SealedRegion<M> {
+    #[doc(hidden)]
+    fn into_map_camera(self) -> (Binding<Region>, Option<Computed<Region>>);
+}
+
+impl private::SealedRegion<private::TwoWayRegion> for &Binding<Region> {}
+
+impl IntoMapRegion<private::TwoWayRegion> for &Binding<Region> {
+    fn into_map_camera(self) -> (Binding<Region>, Option<Computed<Region>>) {
+        (self.clone(), None)
+    }
+}
+
+impl<S> private::SealedRegion<private::SignalCenter> for S
+where
+    S: Signal + Clone + 'static,
+    S::Output: MapCenter,
+{
+}
+
+impl<S> IntoMapRegion<private::SignalCenter> for S
+where
+    S: Signal + Clone + 'static,
+    S::Output: MapCenter,
+{
+    fn into_map_camera(self) -> (Binding<Region>, Option<Computed<Region>>) {
+        let region_signal = self.map(MapCenter::into_region).computed();
+        let camera = Binding::container(region_signal.snapshot());
+        (camera, Some(region_signal))
+    }
+}
+
 impl Map<NoAnnotations> {
-    /// Creates a new `Map` bound two-way to `region`.
+    /// Creates a new `Map` centered on `center`.
     ///
-    /// Writing to `region` moves the map camera; user pan and zoom gestures
-    /// write the updated region back into `region`.
-    pub fn new(region: &Binding<Region>) -> Self {
+    /// Pass `&Binding<Region>` for a two-way camera binding (pan and zoom
+    /// gestures write back into the binding), or any [`Coordinate`] /
+    /// [`Location`] value or reactive signal for a one-way centered camera.
+    pub fn new<M>(center: impl IntoMapRegion<M>) -> Self {
+        let (camera, follows_region) = center.into_map_camera();
         Self {
-            camera: region.clone(),
-            follows_region: None,
+            camera,
+            follows_region,
             annotations: None,
             selection: None,
             style: MapStyle::default(),
@@ -547,32 +616,6 @@ impl Map<NoAnnotations> {
             compass_visibility: MapVisibility::Visible,
             scale_visibility: MapVisibility::Visible,
             status: None,
-        }
-    }
-
-    /// Creates a new `Map` centered on the specified coordinate with default zoom.
-    pub fn centered_on(coordinate: impl IntoComputed<Coordinate>) -> Self {
-        let region_signal = coordinate
-            .into_computed()
-            .map(Region::from_coordinate)
-            .computed();
-        let camera = Binding::container(region_signal.snapshot());
-        Self {
-            follows_region: Some(region_signal),
-            ..Self::new(&camera)
-        }
-    }
-
-    /// Creates a new `Map` centered on reactive `Location` values.
-    pub fn centered_on_location(location: impl IntoComputed<Location>) -> Self {
-        let region_signal = location
-            .into_computed()
-            .map(|location| Region::from_coordinate(Coordinate::from(location)))
-            .computed();
-        let camera = Binding::container(region_signal.snapshot());
-        Self {
-            follows_region: Some(region_signal),
-            ..Self::new(&camera)
         }
     }
 
@@ -739,19 +782,9 @@ impl<T: MapAnnotations> View for Map<T> {
     }
 }
 
-/// Convenience function to create a `Map` view bound two-way to `region`.
-pub fn map(region: &Binding<Region>) -> Map {
-    Map::new(region)
-}
-
-/// Convenience constructor for [`Map::centered_on`].
-pub fn map_centered_on(coordinate: impl IntoComputed<Coordinate>) -> Map {
-    Map::centered_on(coordinate)
-}
-
-/// Convenience constructor for [`Map::centered_on_location`].
-pub fn map_centered_on_location(location: impl IntoComputed<Location>) -> Map {
-    Map::centered_on_location(location)
+/// Convenience function to create a `Map` view centered on `center`.
+pub fn map<M>(center: impl IntoMapRegion<M>) -> Map {
+    Map::new(center)
 }
 
 #[cfg(test)]

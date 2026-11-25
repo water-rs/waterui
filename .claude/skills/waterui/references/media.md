@@ -284,9 +284,9 @@ Canvas::new(move |cx| {                  // runs once per mount; signals stay bo
     cx.stroke(radius.map(|r| Circle::new(Point::new(40.0, 40.0), r)), StrokeStyle::new(2.0), accent);
 })
 
-use waterui::barcode::Barcode;           // facade feature `barcode` (the crate is also usable directly)
-Barcode::qr("https://waterui.dev").size(120.0, 120.0)
-Barcode::code128("012345").size(160.0, 60.0)
+use waterui::barcode::{Barcode, BarcodeSymbology}; // facade feature `barcode` (the crate is also usable directly)
+Barcode::new(BarcodeSymbology::Qr, "https://waterui.dev").size(120.0, 120.0)
+Barcode::new(BarcodeSymbology::Code128, "012345").size(160.0, 60.0)
 
 use waterui::svg::Svg;
 Svg::new(source)
@@ -310,10 +310,10 @@ not a `Color`),
 `cx.text(styled, TextPlacement::at(point))` (laid out by the same text stack as every
 `Text`; the canvas never measures it) and `cx.glyphs(..)` for pre-shaped runs.
 
-Barcodes: `Barcode::qr(content)` and `Barcode::code128(content)` take a signal, so a
+Barcodes: `Barcode::new(symbology, content)` takes a signal, so a
 rotating token re-encodes in place. The view *panics while rendering* when the content
 exceeds QR capacity or holds characters Code128 cannot encode; validate runtime input
-first with `BarcodeSource::qr(text)` / `BarcodeSource::code128(text)`, which return a
+first with `BarcodeSource::new(symbology, text)`, which returns a
 `Result`. `.dark_color(c)`, `.light_color(c)` and `.linear_gradient(..)` style it.
 `Svg::new(markup)` takes SVG source text (`.tint(color)` recolours it,
 `Svg::from_path(path_data, w, h)` draws one path); `waterui::svg` needs the `gpu`
@@ -527,8 +527,7 @@ Map::new(&region)                            // &Binding<Region>: two-way camera
 `Region` has public `center` / `latitude_delta` / `longitude_delta` fields — user pan and zoom
 gestures write back into the bound `Region`, and zooming or recentering is a handler that
 `.set()`s the region. `Coordinate::from_degrees` returns a `Result`; out-of-range coordinates are
-errors, not clamps. Also: `Map::centered_on(coordinate)` and `Map::centered_on_location(location)`
-(signals; default zoom), `Annotation::new(id, coordinate, title).subtitle(..)`,
+errors, not clamps. Also: `Map::new(coordinate)` / `Map::new(location)` (one-way signals; default zoom), `Annotation::new(id, coordinate, title).subtitle(..)`,
 `.is_interactive(false)`, `.shows_user_location(true)`, `.follows_location(signal)`, and
 `.status(&Binding<MapStatus>)`, which the map fills with `Loading | Ready | Failed(reason)` so the
 app can draw its own spinner or error over it.

@@ -70,8 +70,7 @@ as their lowercase forms; `Button::new`, `Slider::new` and `Stepper::new` take a
 `Label`, so write `slider("Volume", &level)` rather than `Slider::new("Volume", &level)`.
 
 There is no `Type::custom(...)` anywhere; if you find yourself looking for one, `new` is
-it. Named exceptions: `FilePicker::open(..)` / `FilePicker::import(..)` are that type's
-constructors, and `progress(..)` takes its label as a `.label(..)` modifier rather than a
+it. `progress(..)` takes its label as a `.label(..)` modifier rather than a
 first argument — the one control that does.
 
 ## Layout containers
@@ -348,7 +347,7 @@ Style shorthands on `Button` — `.plain()`, `.link()`, `.borderless()`, `.borde
 `.bordered_prominent()` — equal `.style(..)` and work before or after `.action(..)`.
 `.borderless()` is the idiomatic toolbar-button style; `Link` shows the
 pointing-hand cursor on pointer platforms. `TextField::line_limit(impl IntoComputed<Option<NonZeroUsize>>)` caps the
-lines (pass `None` for unlimited multi-line input, or a signal to toggle it); `TextField::styled(label, &Binding<StyledStr>)` binds styled text. `Switch` and `checkbox` map to different accessibility roles (`SWITCH` vs `CHECKBOX`), which matters to
+lines (pass `None` for unlimited multi-line input, or a signal to toggle it); `TextField::new(label, &value)` accepts both `&Binding<Str>` and `&Binding<StyledStr>` via `TextFieldValue`. `Switch` and `checkbox` map to different accessibility roles (`SWITCH` vs `CHECKBOX`), which matters to
 tests. `ToggleStyle::Automatic` reads the ambient `ToggleStyle` installed in the environment
 (`.with(ToggleStyle::...)`) first, then the backend's platform default (`Switch` on
 Hydrolysis and iOS, `Checkbox` on macOS AppKit). On Hydrolysis, `Role::toggle(ToggleStyle::Automatic)`
@@ -587,7 +586,7 @@ Both carry the full font API:
 sets the paragraph alignment of multiline text (a signal works too) and
 `.background_color(color)` paints behind the text run.
 
-`StyledStr` (`waterui::text::StyledStr`; what `TextField::styled` and `text(..)` also accept) takes
+`StyledStr` (`waterui::text::StyledStr`; what `TextField::new` and `text(..)` also accept) takes
 `.strikethrough(bool)` beside `.underline(bool)`, and `.on_tap(payload, handler)` makes the
 whole string a tappable span: the handler receives the payload (`impl IntoComputed<E>`,
 read at tap time, so a `Binding` reports its latest value); a second `.on_tap` replaces the
@@ -856,7 +855,7 @@ Calendar::new("Trip Date", &date)                        // month owned by confi
 MultiDatePicker::new("Available", &date_set)             // Binding<BTreeSet<Date>>; `.visible_month(&shown)` optional
 
 ColorPicker::new("Accent", &color).with_alpha().with_hdr()     // Binding<Color>
-FilePicker::open("Select Files", &urls).max_count(5)           // Binding<Vec<Url>>; `import(..)` copies into app storage
+FilePicker::new("Select Files", &urls).max_count(5)            // Binding<Vec<Url>>; `.import()` copies into app storage
 ```
 
 Seeding a `Binding<Color>` from a constant: `binding(Color::from(Srgb::from_hex("#4A84F6")))`.

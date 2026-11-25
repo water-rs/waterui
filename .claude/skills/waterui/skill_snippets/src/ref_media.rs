@@ -500,9 +500,9 @@ pub fn media_block_08() {
         })
     };
 
-    use waterui::barcode::Barcode; // facade feature `barcode` (the crate is also usable directly)
-    let _ = { Barcode::qr("https://waterui.dev").size(120.0, 120.0) };
-    let _ = { Barcode::code128("012345").size(160.0, 60.0) };
+    use waterui::barcode::{Barcode, BarcodeSymbology}; // facade feature `barcode` (the crate is also usable directly)
+    let _ = { Barcode::new(BarcodeSymbology::Qr, "https://waterui.dev").size(120.0, 120.0) };
+    let _ = { Barcode::new(BarcodeSymbology::Code128, "012345").size(160.0, 60.0) };
 
     use waterui::svg::Svg;
     let _ = { Svg::new(source) };
@@ -584,20 +584,22 @@ pub fn media_canvas_prose(image: waterui::canvas::ImageSource) -> impl View {
 }
 
 // ---------------------------------------------------------------------------
-// media.md § "## Graphics and codes" (prose): `BarcodeSource::qr` /
-// `::code128` pre-validation, `.dark_color` / `.light_color`, and the SVG
+// media.md § "## Graphics and codes" (prose): `BarcodeSource::new`
+// pre-validation, `.dark_color` / `.light_color`, and the SVG
 // `.tint(..)` / `Svg::from_path`. Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn media_barcode_svg_prose() -> impl View {
-    use waterui::barcode::{Barcode, BarcodeError, BarcodeSource};
+    use waterui::barcode::{Barcode, BarcodeError, BarcodeSource, BarcodeSymbology};
     use waterui::svg::Svg;
 
-    let _qr: Result<BarcodeSource, BarcodeError> = BarcodeSource::qr("https://waterui.dev");
-    let _code: Result<BarcodeSource, BarcodeError> = BarcodeSource::code128("012345");
+    let _qr: Result<BarcodeSource, BarcodeError> =
+        BarcodeSource::new(BarcodeSymbology::Qr, "https://waterui.dev");
+    let _code: Result<BarcodeSource, BarcodeError> =
+        BarcodeSource::new(BarcodeSymbology::Code128, "012345");
     let _path = Svg::from_path("M0 0 L10 10", 24.0, 24.0);
 
     vstack((
-        Barcode::qr("https://waterui.dev")
+        Barcode::new(BarcodeSymbology::Qr, "https://waterui.dev")
             .dark_color(Color::srgb(0, 0, 0))
             .light_color(Color::srgb(255, 255, 255)),
         Svg::new("<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>").tint(Color::srgb(0, 122, 255)),
@@ -884,7 +886,7 @@ pub fn media_block_14() -> impl View {
 }
 
 // ---------------------------------------------------------------------------
-// media.md § "## Data: charts and maps" (prose): `Map::centered_on`,
+// media.md § "## Data: charts and maps" (prose): `Map::new(coordinate)`,
 // `Annotation::new(..).subtitle(..)`, `.is_interactive`, `.shows_user_location`
 // and `.status(&binding)`. Not counted as a rust block.
 // ---------------------------------------------------------------------------
@@ -897,7 +899,7 @@ pub fn media_map_prose() -> impl View {
     ]);
     let status = Binding::container(MapStatus::Loading);
 
-    Map::centered_on(coordinate)
+    Map::new(coordinate)
         .annotations(pins)
         .is_interactive(false)
         .shows_user_location(true)

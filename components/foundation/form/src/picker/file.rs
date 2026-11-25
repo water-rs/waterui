@@ -27,12 +27,12 @@ pub struct FilePicker<L> {
 }
 
 impl<L> FilePicker<L> {
-    /// Select files without importing them, with the given semantic label
-    /// driving the picker button.
+    /// Select files with the given semantic label driving the picker button.
     ///
-    /// You will get URLs that point to the original file locations.
+    /// Returns URLs that point to the original file locations unless
+    /// [`Self::import`] is enabled.
     #[must_use]
-    pub fn open<I: IntoLabel<Kind = L>>(label: I, value: &Binding<Vec<Url>>) -> Self {
+    pub fn new<I: IntoLabel<Kind = L>>(label: I, value: &Binding<Vec<Url>>) -> Self {
         Self {
             label: label.into_label(),
             value: value.clone(),
@@ -41,16 +41,12 @@ impl<L> FilePicker<L> {
         }
     }
 
-    /// Select files and import them into the app's sandboxed storage, with
-    /// the given semantic label driving the picker button.
+    /// Imports selected files into the app's sandboxed storage instead of
+    /// returning URLs to their original locations.
     #[must_use]
-    pub fn import<I: IntoLabel<Kind = L>>(label: I, value: &Binding<Vec<Url>>) -> Self {
-        Self {
-            label: label.into_label(),
-            value: value.clone(),
-            num: 1,
-            import: true,
-        }
+    pub const fn import(mut self) -> Self {
+        self.import = true;
+        self
     }
 
     /// Set the maximum number of files that can be selected.
