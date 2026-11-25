@@ -13853,7 +13853,6 @@ dependencies = [
  "waterui-assets-planner",
  "waterui-core",
  "waterui-preview-protocol",
- "wgpu",
 ]
 
 [[package]]
