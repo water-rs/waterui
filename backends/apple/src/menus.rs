@@ -303,49 +303,21 @@ mod imp {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 mod tests {
-    use cocoa_ui::MainThreadMarker;
-    use cocoa_ui::objc2_core_graphics::CGImage;
+    use alloc::vec::Vec;
+    use cocoa_ui::appkit::KeyModifiers;
+    use cocoa_ui::menu::MenuTreeNode;
     use waterui::component::label::label;
-    use waterui::component::menu::Command;
+    use waterui::component::menu::{CloseWindowChord, Command, ResolvedMenuItem};
+    use waterui::reactive::Computed;
     use waterui_backend_core::Environment;
 
+    use crate::SfSymbol;
     use crate::contract::Held;
 
-    fn assert_cgimage_nonempty(cg: &CGImage) {
-        let width = CGImage::width(Some(cg));
-        let height = CGImage::height(Some(cg));
-        assert!(
-            width > 0 && height > 0,
-            "expected nonzero bitmap {width}x{height}"
-        );
-        let mut pixels = alloc::vec![0_u8; width * height * 4];
-        let ctx = cocoa_ui::bitmap::bitmap_context(&mut pixels, width, height)
-            .expect("bitmap context creates for menu icon");
-        #[expect(
-            clippy::cast_precision_loss,
-            reason = "icon bitmap dimensions are small integer pixel counts"
-        )]
-        let rect = cocoa_ui::Rect::new(0.0, 0.0, width as f64, height as f64);
-        cocoa_ui::bitmap::draw_image(&ctx, cg, rect);
-        assert!(
-            pixels.as_chunks::<4>().0.iter().any(|px| px[3] > 0),
-            "rasterized menu icon must draw at least one visible pixel"
-        );
-    }
-
-    #[cfg(target_os = "macos")]
     #[test]
     fn sf_symbol_command_projects_directly_without_rasterization() {
-        use alloc::vec::Vec;
-        use cocoa_ui::appkit::KeyModifiers;
-        use cocoa_ui::menu::MenuTreeNode;
-        use waterui::component::menu::{CloseWindowChord, ResolvedMenuItem};
-        use waterui::reactive::Computed;
-
-        use crate::SfSymbol;
-
         let mut env = Environment::new();
         env.insert(CloseWindowChord::new(&Computed::constant(Vec::new()), &env));
         let command = Command::builder(label("Add").icon(SfSymbol::PLUS))
@@ -362,48 +334,5 @@ mod tests {
         assert_eq!(cmd.symbol.as_deref(), Some("plus"));
         assert!(cmd.image.is_none());
         assert_eq!(cmd.modifiers, KeyModifiers::empty());
-    }
-
-    #[test]
-    fn pack_icon_command_rasterizes_a_nonempty_template_image() {
-        if MainThreadMarker::new().is_none() {
-            return;
-        }
-        let env = Environment::new();
-        let command = Command::builder(label("Delete").icon(waterui_icons_lucide::trash()))
-            .action(|| {})
-            .resolve::<Held>(&env);
-        let (symbol, image) = super::resolve_menu_icon(command.icon.as_ref(), &env);
-        assert!(symbol.is_none(), "pack icons do not resolve as SF Symbols");
-        let image = image.expect("pack icon must rasterize into a platform menu image");
-
-        #[cfg(target_os = "macos")]
-        {
-            assert!(image.isTemplate());
-            let size = image.size();
-            assert!(size.width > 0.0 && size.height > 0.0);
-            // SAFETY: null proposed rect asks AppKit for the default CGImage.
-            let cg = unsafe {
-                image.CGImageForProposedRect_context_hints(core::ptr::null_mut(), None, None)
-            }
-            .expect("NSImage supplies a CGImage");
-            assert_cgimage_nonempty(&cg);
-        }
-
-        #[cfg(target_os = "ios")]
-        {
-            use cocoa_ui::objc2_ui_kit::UIImageRenderingMode;
-            // SAFETY: `renderingMode`, `size`, and `CGImage` are plain main-thread getters on UIImage.
-            let (rendering_mode, size, cg) = unsafe {
-                (
-                    image.renderingMode(),
-                    image.size(),
-                    image.CGImage().expect("UIImage supplies a CGImage"),
-                )
-            };
-            assert_eq!(rendering_mode, UIImageRenderingMode::AlwaysTemplate);
-            assert!(size.width > 0.0 && size.height > 0.0);
-            assert_cgimage_nonempty(&cg);
-        }
     }
 }

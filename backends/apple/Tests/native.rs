@@ -2557,8 +2557,12 @@ mod menus {
     }
 
     pub fn a_menu_command_with_a_pack_icon_renders_a_nonempty_nsmenu_image() {
+        use core::ptr::null_mut;
+
+        use cocoa_ui::objc2::Message;
         use cocoa_ui::objc2_app_kit::NSPopUpButton;
         use cocoa_ui::objc2_foundation::NSString;
+        use cocoa_ui::view::subviews;
         use waterui::component::label::label;
         use waterui::component::menu::{Command as MenuCommand, Menu as MenuView};
         use waterui::prelude::button;
@@ -2566,11 +2570,9 @@ mod menus {
 
         fn find_popup(view: &crate::PlatformView) -> Option<crate::Retained<NSPopUpButton>> {
             if let Some(button) = view.downcast_ref::<NSPopUpButton>() {
-                return Some(cocoa_ui::objc2::Message::retain(button));
+                return Some(Message::retain(button));
             }
-            cocoa_ui::view::subviews(view)
-                .into_iter()
-                .find_map(|sub| find_popup(&sub))
+            subviews(view).into_iter().find_map(|sub| find_popup(&sub))
         }
 
         let leaf = crate::resolve::render(MenuView::new(
@@ -2593,10 +2595,8 @@ mod menus {
             let size = image.size();
             assert!(size.width > 0.0 && size.height > 0.0);
             // SAFETY: null proposed rect retrieves the image's CGImage.
-            let cg = unsafe {
-                image.CGImageForProposedRect_context_hints(core::ptr::null_mut(), None, None)
-            }
-            .expect("NSImage yields a CGImage");
+            let cg = unsafe { image.CGImageForProposedRect_context_hints(null_mut(), None, None) }
+                .expect("NSImage yields a CGImage");
             super::assert_menu_cgimage_nonempty(&cg);
         }
     }
@@ -2604,6 +2604,8 @@ mod menus {
 
 #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "native-test"))]
 fn assert_menu_cgimage_nonempty(cg: &cocoa_ui::objc2_core_graphics::CGImage) {
+    use cocoa_ui::Rect;
+    use cocoa_ui::bitmap::{bitmap_context, draw_image};
     use cocoa_ui::objc2_core_graphics::CGImage;
 
     let width = CGImage::width(Some(cg));
@@ -2613,14 +2615,14 @@ fn assert_menu_cgimage_nonempty(cg: &cocoa_ui::objc2_core_graphics::CGImage) {
         "nonzero menu icon {width}x{height}"
     );
     let mut pixels = vec![0_u8; width * height * 4];
-    let ctx = cocoa_ui::bitmap::bitmap_context(&mut pixels, width, height)
-        .expect("bitmap context creates for menu icon");
+    let ctx =
+        bitmap_context(&mut pixels, width, height).expect("bitmap context creates for menu icon");
     #[expect(
         clippy::cast_precision_loss,
         reason = "icon bitmap dimensions are small integer pixel counts"
     )]
-    let rect = cocoa_ui::Rect::new(0.0, 0.0, width as f64, height as f64);
-    cocoa_ui::bitmap::draw_image(&ctx, cg, rect);
+    let rect = Rect::new(0.0, 0.0, width as f64, height as f64);
+    draw_image(&ctx, cg, rect);
     assert!(
         pixels.as_chunks::<4>().0.iter().any(|px| px[3] > 0),
         "menu icon bitmap must draw at least one visible pixel"
@@ -2629,7 +2631,9 @@ fn assert_menu_cgimage_nonempty(cg: &cocoa_ui::objc2_core_graphics::CGImage) {
 
 #[cfg(all(target_os = "ios", feature = "native-test"))]
 mod menus_ios {
+    use cocoa_ui::objc2::Message;
     use cocoa_ui::objc2_ui_kit::{UIAction, UIButton, UIImageRenderingMode};
+    use cocoa_ui::view::subviews;
     use libtest_mimic::Trial;
     use waterui::component::label::label;
     use waterui::component::menu::{Command as MenuCommand, Menu as MenuView};
@@ -2648,11 +2652,9 @@ mod menus_ios {
 
     fn find_button(view: &crate::PlatformView) -> Option<crate::Retained<UIButton>> {
         if let Some(button) = view.downcast_ref::<UIButton>() {
-            return Some(cocoa_ui::objc2::Message::retain(button));
+            return Some(Message::retain(button));
         }
-        cocoa_ui::view::subviews(view)
-            .into_iter()
-            .find_map(|sub| find_button(&sub))
+        subviews(view).into_iter().find_map(|sub| find_button(&sub))
     }
 
     fn a_menu_command_with_a_pack_icon_renders_a_nonempty_uiaction_image() {
