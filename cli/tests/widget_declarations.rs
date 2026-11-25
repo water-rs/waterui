@@ -198,7 +198,16 @@ fn build_fixture(profile: &str) -> WidgetFixture {
                     if let Some(flags) =
                         message.message.message.strip_prefix("native-static-libs: ")
                     {
-                        native_links = Some(flags.split_whitespace().map(OsString::from).collect());
+                        // `swiftc` links compiler-rt builtins implicitly;
+                        // forwarding `-lclang_rt.*` without clang's internal
+                        // `-L` directory fails the link.
+                        native_links = Some(
+                            flags
+                                .split_whitespace()
+                                .filter(|flag| !flag.starts_with("-lclang_rt."))
+                                .map(OsString::from)
+                                .collect(),
+                        );
                     }
                 }
                 _ => {}
@@ -264,7 +273,7 @@ fn assert_fixture_declarations(fixture: &WidgetFixture) {
     assert_eq!(intent.declaration().display_name(), "Write record");
     assert_eq!(
         intent.declaration().description(),
-        "Writes a value to the record file"
+        "Writes a value to the shared store and record file"
     );
     let hash = intent
         .swift_type()
@@ -387,6 +396,7 @@ fn widget_intent_performs_through_generated_app_intent() {
     #[template(path = "apple_widgets/IntentProbe.swift.tpl", escape = "none")]
     struct IntentProbe<'a> {
         provider_symbol: &'a str,
+        steps_symbol: &'a str,
         intent_type: &'a str,
     }
 
@@ -401,6 +411,10 @@ fn widget_intent_performs_through_generated_app_intent() {
             .iter()
             .find(|widget| widget.kind() == "record-kind")
             .expect("the record widget invokes the action");
+        let steps_widget = widgets
+            .iter()
+            .find(|widget| widget.kind() == "steps")
+            .expect("the steps widget reads from the shared store");
         let shipped_sources = fixture_swift_sources(&symbols);
         let generated = output.path().join("DeclaredIntents.swift");
         render_declared_intents_swift(&generated, &intents)
@@ -411,6 +425,7 @@ fn widget_intent_performs_through_generated_app_intent() {
             &probe,
             askama::Template::render(&IntentProbe {
                 provider_symbol: widget.symbol(),
+                steps_symbol: steps_widget.symbol(),
                 intent_type: intent.swift_type(),
             })
             .expect("the intent probe template renders"),
