@@ -534,15 +534,16 @@ pub fn navigation_block_12(env: Environment) -> App<impl Windows> {
 // `Binding<Option<WindowIcon>>`, `set_icon(..)`, `.resizable(bool)`,
 // `.min_size(..)` / `.max_size(..)` (one `impl IntoComputed<Size>` each),
 // `.level(..)` / `.resize_increments(..)`, `.title(..)`, `.placement(..)`,
-// `.activation(..)`, `.app_id(..)` / `.instance_name(..)`, the `closable` and
-// `attention` fields, the `WindowState` variants, and the `WindowHandle`
-// controls. Not counted as a rust block.
+// `.activation(..)`, `.app_id(..)` / `.instance_name(..)`, `.closable(..)`,
+// `.default_size(..)`, `.frame(..)`, `.attention(..)`, the `WindowState`
+// variants, and `WindowHandle` controls & handler extraction. Not counted as a
+// rust block.
 // ---------------------------------------------------------------------------
 pub fn navigation_window_builder_prose() {
     use waterui::background::Material;
     use waterui::window::{
-        Activation, Monitor, MonitorSelector, UserAttention, Window, WindowBackground, WindowIcon,
-        WindowLevel, WindowState, WindowStyle,
+        Activation, Monitor, MonitorSelector, UserAttention, Window, WindowBackground,
+        WindowHandle, WindowIcon, WindowLevel, WindowState, WindowStyle,
     };
 
     let state = binding::<WindowState>(WindowState::default());
@@ -585,20 +586,25 @@ pub fn navigation_window_builder_prose() {
     window.handle().set_icon(icon);
     window.handle().set_icon(None);
 
-    let mut window = Window::new("W", || text("c"))
-        .title("Renamed")
-        .icon(None::<WindowIcon>)
-        .placement(MonitorSelector::Pointer, |monitor: &Monitor| {
-            Rect::new(
-                monitor.visible_frame().origin(),
-                Size::new(monitor.visible_frame().width(), 320.0),
-            )
-        })
-        .activation(Activation::OnClick)
-        .app_id("cool.lexo.terminal")
-        .instance_name("dropdown");
-    window.closable = false;
-    window.attention.set(Some(UserAttention::Critical));
+    let attention = binding(None::<UserAttention>);
+    let window = Window::new("W", || {
+        button("Max").action(|window: WindowHandle| window.maximize())
+    })
+    .title("Renamed")
+    .default_size(Size::new(1024.0, 768.0))
+    .closable(false)
+    .attention(&attention)
+    .icon(None::<WindowIcon>)
+    .placement(MonitorSelector::Pointer, |monitor: &Monitor| {
+        Rect::new(
+            monitor.visible_frame().origin(),
+            Size::new(monitor.visible_frame().width(), 320.0),
+        )
+    })
+    .activation(Activation::OnClick)
+    .app_id("cool.lexo.terminal")
+    .instance_name("dropdown");
+    attention.set(Some(UserAttention::Critical));
     window.handle().focus();
     let _ = (
         MonitorSelector::Primary,

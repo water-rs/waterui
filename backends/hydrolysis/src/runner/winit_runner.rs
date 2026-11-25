@@ -24,7 +24,7 @@ use waterui::app::{
     App, AppMenuBar, AppParts, LastWindowPolicy, TerminationHandle, TerminationHost,
     TerminationKind, Windows,
 };
-use waterui::window::{Activation, Monitor, MonitorSelector, Window, WindowState};
+use waterui::window::{Activation, Monitor, MonitorSelector, WindowParts, WindowState};
 #[cfg(hydrolysis_wayland_platform)]
 use waterui_core::Str;
 #[cfg(target_os = "windows")]
@@ -1069,7 +1069,6 @@ pub fn run<W: Windows, M: AppMenuBar>(
         pending_windows,
         last_window,
         pending_window_queue,
-        app_window_opener,
         #[cfg(any(feature = "menu", feature = "color-picker"))]
         popup_window_manager,
         windows: HashMap::new(),
@@ -1151,7 +1150,6 @@ struct WinitRunner {
     /// What the application does once it has no window left.
     last_window: LastWindowPolicy,
     pending_window_queue: Rc<RefCell<Vec<PendingWindow>>>,
-    app_window_opener: Rc<dyn Fn(RootWindow<crate::text::ParleyEngine>)>,
     #[cfg(any(feature = "menu", feature = "color-picker"))]
     popup_window_manager: PopupWindowManager<crate::text::ParleyEngine>,
     windows: HashMap<WindowId, RuntimeWindow<WinitWindow, crate::text::ParleyEngine>>,
@@ -1276,7 +1274,7 @@ fn load_staged_window_icon(resources: &waterui::ResourceContext) -> Option<winit
 /// activation-token request, as the handle's docs say. The hook holds the
 /// native window weakly, so a request filed through a handle that outlived
 /// the window's teardown is a no-op.
-fn arm_window_focus_requests<C, T>(window: &Window<C, T>, native_window: &Arc<NativeWindow>) {
+fn arm_window_focus_requests<C, T>(window: &WindowParts<C, T>, native_window: &Arc<NativeWindow>) {
     let native = Arc::downgrade(native_window);
     window.arm_focus_requests(move || {
         if let Some(native) = native.upgrade() {
@@ -1286,7 +1284,7 @@ fn arm_window_focus_requests<C, T>(window: &Window<C, T>, native_window: &Arc<Na
 }
 
 fn native_window_attributes<C, T>(
-    window: &Window<C, T>,
+    window: &WindowParts<C, T>,
     env: &Environment,
     activates: bool,
     icon: Option<winit::window::Icon>,
@@ -1389,7 +1387,7 @@ fn native_window_attributes<C, T>(
 /// when the window and the application both leave the identity unset, so
 /// winit's default (the executable name) applies.
 #[cfg(hydrolysis_wayland_platform)]
-fn window_desktop_identity<C, T>(window: &Window<C, T>) -> Option<(Str, Str)> {
+fn window_desktop_identity<C, T>(window: &WindowParts<C, T>) -> Option<(Str, Str)> {
     let class = window.display_app_id();
     (!class.is_empty()).then(|| (class, window.display_instance_name()))
 }
@@ -1502,7 +1500,7 @@ impl WinitRunner {
     fn create_platform_window<C, T>(
         &mut self,
         native_window: Arc<NativeWindow>,
-        window: &Window<C, T>,
+        window: &WindowParts<C, T>,
     ) -> Option<WinitWindow> {
         let wake = {
             let event_proxy = self.event_proxy.clone();
@@ -1538,8 +1536,11 @@ impl WinitRunner {
 
     fn create_window_renderer(&self) -> HydrolysisRenderer<crate::text::ParleyEngine> {
         let text = ParleyEngine::from_collection(&self.fonts, FontFamilyResolution::Lenient);
+        #[cfg_attr(
+            not(any(feature = "menu", feature = "color-picker")),
+            expect(unused_mut)
+        )]
         let mut renderer = HydrolysisRenderer::with_engine(Rc::clone(&self.theme), text);
-        renderer.set_window_opener(Rc::clone(&self.app_window_opener));
         #[cfg(any(feature = "menu", feature = "color-picker"))]
         renderer.set_popup_window_manager(self.popup_window_manager.clone());
         renderer
@@ -2353,7 +2354,7 @@ mod tests {
 
     #[test]
     fn popup_window_attributes_do_not_activate() {
-        let window = Window::new("", || ());
+        let window = Window::new("", || ()).into_parts();
         let env = crate::renderer::tests::test_environment();
 
         assert!(native_window_attributes(&window, &env, true, None).active);
@@ -2365,17 +2366,17 @@ mod tests {
     fn window_attributes_split_wm_class_from_instance_name() {
         use waterui_core::Str;
 
-        let mut window = Window::new("", || ());
-        window.app_id = Some(Str::from("myclass"));
-        window.instance_name = Some(Str::from("myinstance"));
+        let window = Window::new("", || ())
+            .app_id("myclass")
+            .instance_name("myinstance")
+            .into_parts();
         assert_eq!(
             super::window_desktop_identity(&window),
             Some((Str::from("myclass"), Str::from("myinstance"))),
             "WM_CLASS carries (app_id, instance_name)"
         );
 
-        let mut window = Window::new("", || ());
-        window.app_id = Some(Str::from("myclass"));
+        let window = Window::new("", || ()).app_id("myclass").into_parts();
         assert_eq!(
             super::window_desktop_identity(&window),
             Some((Str::from("myclass"), Str::from("myclass"))),
@@ -2387,8 +2388,7 @@ mod tests {
     fn window_attributes_carry_the_requested_frame() {
         use waterui_core::layout::{Point, Rect, Size};
         let frame = Binding::container(Rect::new(Point::new(12.0, 34.0), Size::new(800.0, 300.0)));
-        let mut window = Window::new("", || ());
-        window.frame = frame;
+        let window = Window::new("", || ()).frame(&frame).into_parts();
         let env = crate::renderer::tests::test_environment();
 
         let attributes = native_window_attributes(&window, &env, false, None);
@@ -2411,8 +2411,7 @@ mod tests {
     fn window_attributes_disable_only_the_close_button_on_a_non_closable_window() {
         use winit::window::WindowButtons;
 
-        let mut window = Window::new("", || ());
-        window.closable = false;
+        let window = Window::new("", || ()).closable(false).into_parts();
         let env = crate::renderer::tests::test_environment();
 
         assert_eq!(
@@ -2421,7 +2420,7 @@ mod tests {
             "a non-closable window drops only the close button"
         );
 
-        let window = Window::new("", || ());
+        let window = Window::new("", || ()).into_parts();
         assert_eq!(
             native_window_attributes(&window, &env, false, None).enabled_buttons,
             WindowButtons::all(),

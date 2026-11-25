@@ -106,10 +106,8 @@ fn main_view() -> impl View {
 fn app(env: Environment) -> App<impl Windows> {
     let window = Window::new("Hydrolysis Wayland Showcase", main_view)
         .resizable(true)
+        .default_size(Size::new(1366.0, 900.0))
         .background(Color::srgb_hex("#EEF2FF"));
-    window
-        .frame
-        .set(Rect::new(Point::zero(), Size::new(1366.0, 900.0)));
     App::new(env).window(window)
 }
 
