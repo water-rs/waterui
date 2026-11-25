@@ -7,21 +7,25 @@
 //! the design calls "unsupported components are a compile-time error".
 
 use alloc::string::String;
+use alloc::vec;
 use alloc::vec::Vec;
+use core::ops::{Add, Sub};
 use core::time::Duration;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use suiteki::Str;
 use waterui_contract::contract_violation;
 
 use crate::schema::{
-    Alignment, Axis, Color, Date, DeclaredWidgetIntent, Font, FontStyle, FontWeight,
-    HorizontalAlignment, Image, Intent, Link, Node, SemanticColor, Shape, Stack, Text, Timeline,
+    AccessibilityLabel, Alignment, Axis, Background, Color, Date, DateStyle, DeclaredWidgetIntent,
+    EdgeInsets, Font, FontStyle, FontWeight, Frame, HorizontalAlignment, Image, Intent, LabelText,
+    Link, MaxLength, Node, Padding, SemanticColor, Shape, Spacer, Stack, Text, Timeline,
     TimelineEntry, VerticalAlignment,
 };
 
 /// A value that can occupy a widget snapshot.
 ///
-/// Implemented by every schema node type and by the string types that
+/// Implemented by every schema node type and by the string/date types that
 /// convert to [`Text`]. `View`s, signals, environments and `AnyView`s do not
 /// implement it — nothing reactive or platform-bound can cross into a
 /// snapshot.
@@ -31,25 +35,129 @@ use crate::schema::{
 /// does not compile —
 ///
 /// ```compile_fail
-/// use waterui_widgets::vstack;
+/// use waterui_widgets::prelude::*;
 /// let _ = vstack((waterui_text::text("inside an app"),));
 /// ```
 ///
 /// — and neither does a value with no schema representation:
 ///
 /// ```compile_fail
-/// use waterui_widgets::vstack;
+/// use waterui_widgets::prelude::*;
 /// let _ = vstack((42,));
 /// ```
 #[diagnostic::on_unimplemented(
     message = "`{Self}` cannot appear in a widget",
     label = "expected a widget node",
-    note = "the widget schema admits text, image, stack, shape, color, link and intent nodes only. `WaterUI` views (`Text`, `Button`, `VStack`, …) are not widget content; use the `waterui::widgets` constructors instead."
+    note = "the widget schema admits text, image, stack, shape, color, padding, spacer, frame, background, accessibility label, link and intent nodes only. `WaterUI` views (`Text`, `Button`, `VStack`, …) are not widget content; use `waterui::widgets::prelude::*` constructors instead."
 )]
 pub trait WidgetContent {
     /// Convert into the wire node.
     fn into_node(self) -> Node;
 }
+
+/// Modifier methods shared by every widget node, mirroring `waterui::ViewExt`.
+pub trait WidgetExt: WidgetContent + Sized {
+    /// Adds platform-default padding around this node.
+    #[must_use]
+    fn padding(self) -> Padding {
+        Padding::default_insets(self)
+    }
+
+    /// Adds explicit edge-inset padding around this node.
+    #[must_use]
+    fn padding_with(self, insets: impl Into<EdgeInsets>) -> Padding {
+        Padding::new(insets, self)
+    }
+
+    /// Adds leading and trailing padding around this node.
+    #[must_use]
+    fn padding_horizontal(self, value: f32) -> Padding {
+        Padding::new(EdgeInsets::symmetric(0.0, value), self)
+    }
+
+    /// Adds top and bottom padding around this node.
+    #[must_use]
+    fn padding_vertical(self, value: f32) -> Padding {
+        Padding::new(EdgeInsets::symmetric(value, 0.0), self)
+    }
+
+    /// Fixes this node's width.
+    #[must_use]
+    fn width(self, width: f32) -> Frame {
+        Frame::new(self).width(width)
+    }
+
+    /// Fixes this node's height.
+    #[must_use]
+    fn height(self, height: f32) -> Frame {
+        Frame::new(self).height(height)
+    }
+
+    /// Fixes both width and height simultaneously.
+    #[must_use]
+    fn size(self, width: f32, height: f32) -> Frame {
+        Frame::new(self).size(width, height)
+    }
+
+    /// Applies a minimum width constraint.
+    #[must_use]
+    fn min_width(self, width: f32) -> Frame {
+        Frame::new(self).min_width(width)
+    }
+
+    /// Applies a maximum width constraint (`f32::INFINITY` expands to fill).
+    #[must_use]
+    fn max_width(self, width: impl Into<MaxLength>) -> Frame {
+        Frame::new(self).max_width(width)
+    }
+
+    /// Applies a minimum height constraint.
+    #[must_use]
+    fn min_height(self, height: f32) -> Frame {
+        Frame::new(self).min_height(height)
+    }
+
+    /// Applies a maximum height constraint (`f32::INFINITY` expands to fill).
+    #[must_use]
+    fn max_height(self, height: impl Into<MaxLength>) -> Frame {
+        Frame::new(self).max_height(height)
+    }
+
+    /// Applies minimum constraints on both axes.
+    #[must_use]
+    fn min_size(self, width: f32, height: f32) -> Frame {
+        Frame::new(self).min_size(width, height)
+    }
+
+    /// Applies maximum constraints on both axes.
+    #[must_use]
+    fn max_size(self, width: impl Into<MaxLength>, height: impl Into<MaxLength>) -> Frame {
+        Frame::new(self).max_size(width, height)
+    }
+
+    /// Aligns this node within a frame.
+    #[must_use]
+    fn alignment(self, alignment: impl Into<Alignment>) -> Frame {
+        Frame::new(self).alignment(alignment)
+    }
+
+    /// Paints `background` behind this node.
+    ///
+    /// At the root of a widget entry, the Apple `WidgetKit` host lifts this
+    /// background into `.containerBackground(for: .widget)`.
+    #[must_use]
+    fn background(self, background: impl WidgetContent) -> Background {
+        Background::new(self, background)
+    }
+
+    /// Attaches a screen-reader accessibility label to this node.
+    #[must_use]
+    fn a11y_label(self, label: impl IntoLabelText) -> AccessibilityLabel {
+        AccessibilityLabel::new(label, self)
+    }
+}
+
+impl<T: WidgetContent + Sized> WidgetExt for T {}
 
 /// A value usable as the root of a timeline-producing function.
 ///
@@ -84,7 +192,7 @@ impl<T: WidgetContent> IntoTimeline for T {
 #[diagnostic::on_unimplemented(
     message = "`{Self}` cannot be widget children",
     label = "expected a tuple of widget nodes",
-    note = "stack children are tuples of `WidgetContent` values — `(text(\"a\"), fill(color))` — or `Vec`/`Option`/`[_; N]` of `WidgetContent`. `WaterUI` views and tuples containing them do not qualify."
+    note = "stack children are tuples of `WidgetContent` values — `(text(\"a\"), spacer(), fill(color))` — or `Vec`/`Option`/`[_; N]` of `WidgetContent`. `WaterUI` views and tuples containing them do not qualify."
 )]
 pub trait WidgetChildren {
     /// Convert into the stack's ordered child nodes.
@@ -107,7 +215,7 @@ impl<T: WidgetContent, const N: usize> WidgetChildren for [T; N] {
 /// children without leaving the snapshot value world.
 impl<T: WidgetContent> WidgetChildren for Option<T> {
     fn into_nodes(self) -> Vec<Node> {
-        self.map_or_else(Vec::new, |node| alloc::vec![node.into_node()])
+        self.map_or_else(Vec::new, |node| vec![node.into_node()])
     }
 }
 
@@ -132,11 +240,14 @@ macro_rules! tuples {
 
 macro_rules! impl_widget_children {
     ($($ty:ident),*) => {
-        #[allow(non_snake_case)]
+        #[expect(
+            non_snake_case,
+            reason = "tuple destructuring reuses type parameter identifiers"
+        )]
         impl<$($ty: WidgetContent),*> WidgetChildren for ($($ty,)*) {
             fn into_nodes(self) -> Vec<Node> {
                 let ($($ty,)*) = self;
-                alloc::vec![$($ty.into_node()),*]
+                vec![$($ty.into_node()),*]
             }
         }
     };
@@ -168,25 +279,322 @@ impl_node!(
     Stack => Stack,
     Shape => Shape,
     Color => Color,
+    Padding => Padding,
+    Spacer => Spacer,
+    Frame => Frame,
+    Background => Background,
+    AccessibilityLabel => AccessibilityLabel,
     Link => Link,
     Intent => Intent
 );
 
 impl WidgetContent for &'static str {
     fn into_node(self) -> Node {
-        Node::Text(Text::new(self))
+        Node::Text(Text::localized(self))
     }
 }
 
 impl WidgetContent for String {
     fn into_node(self) -> Node {
-        Node::Text(Text::new(self))
+        Node::Text(Text::verbatim(self))
     }
 }
 
 impl WidgetContent for Str {
     fn into_node(self) -> Node {
-        Node::Text(Text::new(String::from(self)))
+        Node::Text(Text::verbatim(String::from(self)))
+    }
+}
+
+impl WidgetContent for Date {
+    fn into_node(self) -> Node {
+        DateText::new(self).into_node()
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// Text & label conversion traits
+// ══════════════════════════════════════════════════════════════════════════
+
+/// Conversion trait for widget text construction, mirroring
+/// `waterui_text::IntoText` and additionally accepting [`Date`] for live
+/// host-formatted dates (`text(Date::now()).relative()`).
+///
+/// - `&'static str` produces localized text (resolved by the host platform's
+///   string catalog).
+/// - `String` and [`Str`] produce verbatim text.
+/// - [`Date`] produces a [`DateText`] leaf whose formatting style can be
+///   refined with `.relative()`, `.offset()`, `.timer()`, `.date()`, or
+///   `.time()`.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` cannot be used as widget text",
+    label = "expected widget text or a `Date`",
+    note = "`IntoText` is implemented by `&'static str` (localized), `String` / `Str` (verbatim), `Date` (live formatted date), `Text`, and `DateText`."
+)]
+pub trait IntoText {
+    /// The text node produced by [`text`].
+    type Output: WidgetContent;
+
+    /// Converts this value into a widget text leaf.
+    fn into_text(self) -> Self::Output;
+}
+
+impl IntoText for Text {
+    type Output = Self;
+
+    fn into_text(self) -> Self {
+        self
+    }
+}
+
+impl IntoText for DateText {
+    type Output = Self;
+
+    fn into_text(self) -> Self {
+        self
+    }
+}
+
+impl IntoText for &'static str {
+    type Output = Text;
+
+    fn into_text(self) -> Text {
+        Text::localized(self)
+    }
+}
+
+impl IntoText for String {
+    type Output = Text;
+
+    fn into_text(self) -> Text {
+        Text::verbatim(self)
+    }
+}
+
+impl IntoText for Str {
+    type Output = Text;
+
+    fn into_text(self) -> Text {
+        Text::verbatim(String::from(self))
+    }
+}
+
+impl IntoText for Date {
+    type Output = DateText;
+
+    fn into_text(self) -> DateText {
+        DateText::new(self)
+    }
+}
+
+/// A live date [`Text`] leaf produced by `text(Date::now())`.
+///
+/// Defaults to [`DateStyle::Date`] if placed directly in a widget; call
+/// [`.relative()`](Self::relative), [`.offset()`](Self::offset),
+/// [`.timer()`](Self::timer), [`.date()`](Self::date), or
+/// [`.time()`](Self::time) to choose the live formatting style.
+///
+/// Calling `.relative()` on string text is a compile-time error:
+///
+/// ```compile_fail
+/// use waterui_widgets::prelude::*;
+/// let _ = text("Steps").relative();
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct DateText {
+    inner: Text,
+}
+
+impl DateText {
+    /// Creates a date text leaf defaulting to [`DateStyle::Date`].
+    #[must_use]
+    pub const fn new(date: Date) -> Self {
+        Self {
+            inner: Text::date(date, DateStyle::Date),
+        }
+    }
+
+    /// Formats the date relative to the current time (`Text(date, style: .relative)`).
+    #[must_use]
+    pub fn relative(self) -> Text {
+        self.inner.with_date_style(DateStyle::Relative)
+    }
+
+    /// Formats the date as a signed offset from the current time.
+    #[must_use]
+    pub fn offset(self) -> Text {
+        self.inner.with_date_style(DateStyle::Offset)
+    }
+
+    /// Formats the date as a live counting timer.
+    #[must_use]
+    pub fn timer(self) -> Text {
+        self.inner.with_date_style(DateStyle::Timer)
+    }
+
+    /// Formats the date as a calendar date.
+    #[must_use]
+    pub fn date(self) -> Text {
+        self.inner.with_date_style(DateStyle::Date)
+    }
+
+    /// Formats the date as a time of day.
+    #[must_use]
+    pub fn time(self) -> Text {
+        self.inner.with_date_style(DateStyle::Time)
+    }
+
+    /// Sets the font.
+    #[must_use]
+    pub fn font(mut self, font: Font) -> Self {
+        self.inner = self.inner.font(font);
+        self
+    }
+
+    /// Enables or disables the bold face on top of the current text style.
+    #[must_use]
+    pub fn bold(mut self, bold: bool) -> Self {
+        self.inner = self.inner.bold(bold);
+        self
+    }
+
+    /// Sets the foreground color.
+    #[must_use]
+    pub fn foreground(mut self, color: Color) -> Self {
+        self.inner = self.inner.foreground(color);
+        self
+    }
+
+    /// Sets the foreground color.
+    #[must_use]
+    pub fn color(self, color: Color) -> Self {
+        self.foreground(color)
+    }
+
+    /// Caps the text at `limit` laid-out lines.
+    #[must_use]
+    pub fn line_limit(mut self, limit: u32) -> Self {
+        self.inner = self.inner.line_limit(limit);
+        self
+    }
+
+    /// Applies the `largeTitle` text style preset.
+    #[must_use]
+    pub fn large_title(mut self) -> Self {
+        self.inner = self.inner.large_title();
+        self
+    }
+
+    /// Applies the `title` text style preset.
+    #[must_use]
+    pub fn title(mut self) -> Self {
+        self.inner = self.inner.title();
+        self
+    }
+
+    /// Applies the `title2` text style preset.
+    #[must_use]
+    pub fn title2(mut self) -> Self {
+        self.inner = self.inner.title2();
+        self
+    }
+
+    /// Applies the `title3` text style preset.
+    #[must_use]
+    pub fn title3(mut self) -> Self {
+        self.inner = self.inner.title3();
+        self
+    }
+
+    /// Applies the `headline` text style preset.
+    #[must_use]
+    pub fn headline(mut self) -> Self {
+        self.inner = self.inner.headline();
+        self
+    }
+
+    /// Applies the `subheadline` text style preset.
+    #[must_use]
+    pub fn subheadline(mut self) -> Self {
+        self.inner = self.inner.subheadline();
+        self
+    }
+
+    /// Applies the `body` text style preset.
+    #[must_use]
+    pub fn body(mut self) -> Self {
+        self.inner = self.inner.body();
+        self
+    }
+
+    /// Applies the `callout` text style preset.
+    #[must_use]
+    pub fn callout(mut self) -> Self {
+        self.inner = self.inner.callout();
+        self
+    }
+
+    /// Applies the `footnote` text style preset.
+    #[must_use]
+    pub fn footnote(mut self) -> Self {
+        self.inner = self.inner.footnote();
+        self
+    }
+
+    /// Applies the `caption` text style preset.
+    #[must_use]
+    pub fn caption(mut self) -> Self {
+        self.inner = self.inner.caption();
+        self
+    }
+
+    /// Applies the `caption2` text style preset.
+    #[must_use]
+    pub fn caption2(mut self) -> Self {
+        self.inner = self.inner.caption2();
+        self
+    }
+}
+
+impl WidgetContent for DateText {
+    fn into_node(self) -> Node {
+        Node::Text(self.inner)
+    }
+}
+
+impl From<DateText> for Text {
+    fn from(date_text: DateText) -> Self {
+        date_text.inner
+    }
+}
+
+/// Conversion trait for localizable accessibility labels.
+pub trait IntoLabelText {
+    /// Converts this value into a [`LabelText`].
+    fn into_label_text(self) -> LabelText;
+}
+
+impl IntoLabelText for LabelText {
+    fn into_label_text(self) -> LabelText {
+        self
+    }
+}
+
+impl IntoLabelText for &'static str {
+    fn into_label_text(self) -> LabelText {
+        LabelText::localized(self)
+    }
+}
+
+impl IntoLabelText for String {
+    fn into_label_text(self) -> LabelText {
+        LabelText::verbatim(self)
+    }
+}
+
+impl IntoLabelText for Str {
+    fn into_label_text(self) -> LabelText {
+        LabelText::verbatim(String::from(self))
     }
 }
 
@@ -194,9 +602,35 @@ impl WidgetContent for Str {
 // Leaf constructors
 // ══════════════════════════════════════════════════════════════════════════
 
-/// Creates a text leaf — the ergonomic entry point.
-pub fn text(content: impl Into<String>) -> Text {
-    Text::new(content)
+/// Creates a widget text leaf using [`IntoText`] rules.
+///
+/// Pass a `&'static str` for localized text, a `String`/`Str` for verbatim
+/// text, or a [`Date`] for live host-formatted date text
+/// (`text(Date::now()).relative()`).
+pub fn text<T: IntoText>(content: T) -> T::Output {
+    content.into_text()
+}
+
+/// Creates flexible empty space along the enclosing stack's main axis.
+#[must_use]
+pub const fn spacer() -> Spacer {
+    Spacer::new()
+}
+
+/// Creates flexible empty space with a minimum length in points/dp.
+#[must_use]
+pub const fn spacer_min(min_length: f32) -> Spacer {
+    Spacer::with_min_length(min_length)
+}
+
+/// Creates a system symbol image (SF Symbol on Apple, matching drawable on Android).
+pub fn image_system(name: impl Into<String>) -> Image {
+    Image::sf_symbol(name)
+}
+
+/// Creates an image from inline encoded image bytes (PNG).
+pub fn image_data(data: impl Into<Vec<u8>>) -> Image {
+    Image::data(data)
 }
 
 impl Font {
@@ -299,7 +733,7 @@ impl Intent {
     /// build logs it and the region carries an empty payload, which the
     /// extension cannot decode into an action.
     pub fn new<I: DeclaredWidgetIntent>(action: &I, label: impl WidgetContent) -> Self {
-        let payload = crate::serde_json::to_string(action).unwrap_or_else(|error| {
+        let payload = serde_json::to_string(action).unwrap_or_else(|error| {
             contract_violation!(
                 "the WidgetIntent action `{}` must serialize as JSON: {error}; \
                  the region carries an empty payload",
@@ -320,14 +754,14 @@ impl Intent {
 /// A string cannot substitute for a declared action:
 ///
 /// ```compile_fail
-/// use waterui_widgets::{intent, text};
+/// use waterui_widgets::prelude::*;
 /// let _ = intent(&"undeclared", text("Run"));
 /// ```
 ///
 /// Implementing the action alone does not declare its native handler:
 ///
 /// ```compile_fail
-/// use waterui_widgets::{WidgetIntent, WidgetStore, intent, text};
+/// use waterui_widgets::prelude::*;
 ///
 /// #[derive(serde::Serialize, serde::Deserialize)]
 /// struct Undeclared;
@@ -395,9 +829,7 @@ macro_rules! stack_impls {
 
 /// Applies `change` to the stack's alignment, creating an empty one first.
 fn align(stack: &mut Stack, change: impl FnOnce(&mut Alignment)) {
-    let mut alignment = stack
-        .alignment()
-        .unwrap_or_else(|| Alignment::new(None, None));
+    let mut alignment = Stack::alignment(stack).unwrap_or_else(|| Alignment::new(None, None));
     change(&mut alignment);
     stack.set_alignment(Some(alignment));
 }
@@ -474,7 +906,7 @@ impl Date {
     /// A system clock set before the Unix epoch gives a negative offset.
     #[must_use]
     pub fn now() -> Self {
-        Self::from(std::time::SystemTime::now())
+        Self::from(SystemTime::now())
     }
 
     /// An instant `seconds` after the Unix epoch.
@@ -490,24 +922,24 @@ impl Date {
     }
 }
 
-impl From<std::time::SystemTime> for Date {
-    fn from(time: std::time::SystemTime) -> Self {
+impl From<SystemTime> for Date {
+    fn from(time: SystemTime) -> Self {
         // An instant before the epoch is a negative offset from it.
-        Self(match time.duration_since(std::time::UNIX_EPOCH) {
+        Self(match time.duration_since(UNIX_EPOCH) {
             Ok(after) => after.as_secs_f64(),
             Err(before) => -before.duration().as_secs_f64(),
         })
     }
 }
 
-impl core::ops::Add<Duration> for Date {
+impl Add<Duration> for Date {
     type Output = Self;
     fn add(self, duration: Duration) -> Self {
         Self(self.0 + duration.as_secs_f64())
     }
 }
 
-impl core::ops::Sub<Duration> for Date {
+impl Sub<Duration> for Date {
     type Output = Self;
     fn sub(self, duration: Duration) -> Self {
         Self(self.0 - duration.as_secs_f64())

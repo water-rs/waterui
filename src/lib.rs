@@ -447,3 +447,31 @@ macro_rules! configure_environment {
         __waterui_env
     }};
 }
+
+#[cfg(all(test, feature = "widgets"))]
+mod widgets_glob_tests {
+    use crate::prelude::*;
+    use crate::widgets::*;
+
+    #[test]
+    fn widgets_root_globs_cleanly_alongside_prelude() {
+        let _app_view = vstack((text("App"), spacer())).padding();
+        let _now = Date::now();
+        let _timeline = {
+            use crate::widgets::prelude::*;
+
+            Timeline::new([TimelineEntry::new(
+                Date::unix_timestamp(1_700_000_000.0),
+                vstack((
+                    text("Steps").headline(),
+                    spacer(),
+                    text(Date::now()).relative(),
+                    image_system("figure.walk").a11y_label("Walking"),
+                ))
+                .padding()
+                .background(Color::ACCENT),
+            )])
+        };
+        assert_eq!(_timeline.entries().len(), 1);
+    }
+}
