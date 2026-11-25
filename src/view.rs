@@ -202,7 +202,7 @@ pub trait ViewExt: View + Sized {
         let opacity_value = visible.map(|visible| if visible { 1.0 } else { 0.0 });
         let hittable_value = visible;
 
-        self.a11y_state_signal(accessibility_state)
+        self.a11y_state(accessibility_state)
             .opacity(opacity_value)
             .hittable(hittable_value)
     }
@@ -829,7 +829,9 @@ pub trait ViewExt: View + Sized {
     }
 
     /// Overrides whether this view is hidden from assistive technologies.
-    fn a11y_hidden(self, hidden: bool) -> Metadata<AccessibilityHidden, Self> {
+    ///
+    /// Accepts a constant `bool` or any reactive boolean signal.
+    fn a11y_hidden(self, hidden: impl IntoComputed<bool>) -> Metadata<AccessibilityHidden, Self> {
         Metadata::new(self, accessibility::AccessibilityHidden::new(hidden))
     }
 
@@ -856,20 +858,22 @@ pub trait ViewExt: View + Sized {
         Metadata::new(self, behavior)
     }
 
-    /// Applies explicit accessibility state metadata.
+    /// Applies static or reactive accessibility state metadata.
     fn a11y_state(
-        self,
-        state: accessibility::AccessibilityState,
-    ) -> Metadata<AccessibilityState, Self> {
-        Metadata::new(self, state)
-    }
-
-    /// Applies reactive accessibility state metadata.
-    fn a11y_state_signal(
         self,
         state: impl IntoComputed<accessibility::AccessibilityState>,
     ) -> Metadata<accessibility::AccessibilityStateSignal, Self> {
         Metadata::new(self, accessibility::AccessibilityStateSignal::new(state))
+    }
+
+    /// Temporary Step-1 compatibility alias until split crates migrate to
+    /// [`ViewExt::a11y_state`].
+    #[doc(hidden)]
+    fn a11y_state_signal(
+        self,
+        state: impl IntoComputed<accessibility::AccessibilityState>,
+    ) -> Metadata<accessibility::AccessibilityStateSignal, Self> {
+        self.a11y_state(state)
     }
 
     /// Observes a gesture and executes an action when the gesture is recognized.
@@ -1599,7 +1603,7 @@ pub trait ViewExt: View + Sized {
         });
         let hittable_value = is_disabled.map(|d| !d);
 
-        self.a11y_state_signal(accessibility_state)
+        self.a11y_state(accessibility_state)
             .hittable(hittable_value)
             .install(DisabledScope(is_disabled))
     }

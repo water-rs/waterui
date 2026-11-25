@@ -2118,10 +2118,7 @@ impl<E: crate::text::TextEngine> TextNode<E> {
         styled: &StyledStr,
         env: &Environment,
     ) -> Option<AccessibilityNodeId> {
-        if env
-            .get::<AccessibilityHidden>()
-            .is_some_and(AccessibilityHidden::is_hidden)
-        {
+        if renderer.is_accessibility_hidden(env) {
             return None;
         }
         let plain = styled.to_semantic().to_string();
@@ -2164,11 +2161,7 @@ impl<E: crate::text::TextEngine> TextNode<E> {
         env: &Environment,
         parent: Option<AccessibilityNodeId>,
     ) {
-        if tap_spans.is_empty()
-            || env
-                .get::<AccessibilityHidden>()
-                .is_some_and(AccessibilityHidden::is_hidden)
-        {
+        if tap_spans.is_empty() || renderer.is_accessibility_hidden(env) {
             return;
         }
         let disabled = env
@@ -2352,10 +2345,7 @@ pub(super) fn emit_graphics_image_accessibility<E: crate::text::TextEngine>(
     default_value: Option<String>,
     focusable: bool,
 ) -> Option<AccessibilityNodeId> {
-    if env
-        .get::<AccessibilityHidden>()
-        .is_some_and(AccessibilityHidden::is_hidden)
-    {
+    if renderer.is_accessibility_hidden(env) {
         return None;
     }
     let mut node = AccessibilityNode::new(SemanticCore::<E>::resolve_accessibility_role(

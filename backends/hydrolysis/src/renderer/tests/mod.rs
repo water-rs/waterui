@@ -1983,7 +1983,7 @@ fn reactive_hidden_accessibility_group_suppresses_descendants() {
     let view = vstack((text("Hidden child"),))
         .a11y_label("Hidden group")
         .a11y_role(AccessibilityRole::Group)
-        .a11y_state_signal(state);
+        .a11y_state(state);
 
     capture_root_window(&mut renderer, view, &env, Rect::new(0.0, 0.0, 160.0, 160.0));
 
@@ -2014,7 +2014,7 @@ fn mixed_busy_state_is_preserved_and_node_identity_survives_refresh() {
     let state = busy.map(|busy| AccessibilityState::new().mixed().busy(busy));
     let view = text("Tri-state")
         .a11y_role(AccessibilityRole::Checkbox)
-        .a11y_state_signal(state);
+        .a11y_state(state);
     let bounds = Rect::new(0.0, 0.0, 160.0, 160.0);
 
     capture_root_window(&mut renderer, view, &env, bounds);
@@ -2045,6 +2045,84 @@ fn mixed_busy_state_is_preserved_and_node_identity_survives_refresh() {
     );
     assert_eq!(second_node.toggled(), Some(AccessibilityToggled::Mixed));
     assert!(second_node.is_busy());
+}
+
+#[cfg(feature = "accessibility")]
+#[test]
+fn reactive_a11y_hidden_toggles_leaf_and_container_without_rebuild() {
+    let env = test_environment();
+    let mut renderer = test_renderer();
+    let hidden = Binding::bool(true);
+    let view = vstack((
+        text("Leaf").a11y_hidden(hidden.clone()),
+        vstack((text("Inside A"), text("Inside B")))
+            .a11y_label("Panel")
+            .a11y_role(AccessibilityRole::Group)
+            .a11y_hidden(hidden.clone()),
+    ));
+    let bounds = Rect::new(0.0, 0.0, 160.0, 160.0);
+
+    capture_root_window(&mut renderer, view, &env, bounds);
+    let first = renderer
+        .take_accessibility_tree_update()
+        .expect("initial accessibility update must exist");
+    assert!(
+        first
+            .nodes
+            .iter()
+            .all(|(_, node)| node.label() != Some("Leaf")
+                && node.label() != Some("Panel")
+                && node.label() != Some("Inside A")
+                && node.label() != Some("Inside B")),
+        "nodes starting a11y_hidden(true) must not emit initially"
+    );
+
+    hidden.set(false);
+    assert!(renderer.flush_window_tree(&env, bounds, Affine::IDENTITY, Affine::IDENTITY));
+    let second = renderer
+        .take_accessibility_tree_update()
+        .expect("unhidden accessibility update must exist");
+    assert!(
+        second
+            .nodes
+            .iter()
+            .any(|(_, node)| node.label() == Some("Leaf")),
+        "leaf hidden signal flipping false must emit its node"
+    );
+    assert!(
+        second
+            .nodes
+            .iter()
+            .any(|(_, node)| node.label() == Some("Panel")),
+        "container hidden signal flipping false must emit its node"
+    );
+    assert!(
+        second
+            .nodes
+            .iter()
+            .any(|(_, node)| node.label() == Some("Inside A"))
+            && second
+                .nodes
+                .iter()
+                .any(|(_, node)| node.label() == Some("Inside B")),
+        "container children must emit once container hidden signal flips false"
+    );
+
+    hidden.set(true);
+    assert!(renderer.flush_window_tree(&env, bounds, Affine::IDENTITY, Affine::IDENTITY));
+    let third = renderer
+        .take_accessibility_tree_update()
+        .expect("re-hidden accessibility update must exist");
+    assert!(
+        third
+            .nodes
+            .iter()
+            .all(|(_, node)| node.label() != Some("Leaf")
+                && node.label() != Some("Panel")
+                && node.label() != Some("Inside A")
+                && node.label() != Some("Inside B")),
+        "re-hiding via reactive signal must suppress leaf and container again"
+    );
 }
 
 #[cfg(feature = "accessibility")]

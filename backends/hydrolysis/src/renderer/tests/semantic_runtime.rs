@@ -15,7 +15,7 @@ use cherenkov_record::Recorder;
 use nami::Binding;
 use nami::Signal as _;
 use waterui::ViewExt as _;
-use waterui::accessibility::AccessibilityState;
+use waterui::accessibility::{AccessibilityRole, AccessibilityState};
 use waterui::component::list::List;
 use waterui::component::progress::progress;
 use waterui::component::table::{col, table};
@@ -976,7 +976,7 @@ fn list_row_state_signal_hidden_removes_row_next_frame() {
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
         let state_for_row = state_for_view.clone();
         AnyView::new(List::content((move || {
-            text("Hide me").a11y_state_signal(state_for_row.clone())
+            text("Hide me").a11y_state(state_for_row.clone())
         },)))
     }));
 
@@ -991,6 +991,78 @@ fn list_row_state_signal_hidden_removes_row_next_frame() {
     assert!(
         list_node.children().is_empty(),
         "a row whose state signal turns hidden must leave the tree on the next frame"
+    );
+}
+
+#[test]
+fn reactive_a11y_hidden_toggles_control_and_container_on_semantic_walk() {
+    let hidden = Binding::bool(true);
+    let hidden_for_view = hidden.clone();
+    let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
+        let hidden_flag = hidden_for_view.clone();
+        AnyView::new(vstack((
+            button("Save")
+                .action(|| {})
+                .a11y_hidden(hidden_flag.clone()),
+            vstack((text("Details A"), text("Details B")))
+                .a11y_label("Section")
+                .a11y_role(AccessibilityRole::Group)
+                .a11y_hidden(hidden_flag),
+        )))
+    }));
+
+    let update = pumped(&mut runtime);
+    assert_rooted(&update);
+    assert!(
+        update
+            .nodes
+            .iter()
+            .all(|(_, node)| node.label() != Some("Save")
+                && node.label() != Some("Section")
+                && node.label() != Some("Details A")
+                && node.label() != Some("Details B")),
+        "hidden button and group must stay absent while hidden starts true"
+    );
+
+    hidden.set(false);
+    let update = pumped(&mut runtime);
+    assert!(
+        update
+            .nodes
+            .iter()
+            .any(|(_, node)| node.label() == Some("Save")),
+        "button must appear on semantic walk when a11y_hidden flips false"
+    );
+    assert!(
+        update
+            .nodes
+            .iter()
+            .any(|(_, node)| node.label() == Some("Section")),
+        "group must appear on semantic walk when a11y_hidden flips false"
+    );
+    assert!(
+        update
+            .nodes
+            .iter()
+            .any(|(_, node)| node.label() == Some("Details A"))
+            && update
+                .nodes
+                .iter()
+                .any(|(_, node)| node.label() == Some("Details B")),
+        "group children must appear on semantic walk when a11y_hidden flips false"
+    );
+
+    hidden.set(true);
+    let update = pumped(&mut runtime);
+    assert!(
+        update
+            .nodes
+            .iter()
+            .all(|(_, node)| node.label() != Some("Save")
+                && node.label() != Some("Section")
+                && node.label() != Some("Details A")
+                && node.label() != Some("Details B")),
+        "button and group must disappear on semantic walk when a11y_hidden flips back to true"
     );
 }
 

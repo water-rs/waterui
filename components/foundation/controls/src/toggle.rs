@@ -269,7 +269,7 @@ fn compose_custom_toggle<L: View, S: CustomToggleStyle>(
     let with_gesture = Metadata::new(body, gesture);
     let checked_state = AccessibilityStateSignal::resolve(
         env,
-        toggle.map(|on| AccessibilityState::new().checked(Some(on))),
+        toggle.map(|on| AccessibilityState::new().checked(on)),
     );
     let with_state = Metadata::new(with_gesture, checked_state);
     let with_label =

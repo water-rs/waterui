@@ -824,9 +824,7 @@ pub fn render_navigation_view_node<E: crate::text::TextEngine>(
     state: &Rc<RefCell<NavigationViewRenderState<E>>>,
     env: &Environment,
 ) {
-    let hidden = env
-        .get::<waterui::accessibility::AccessibilityHidden>()
-        .is_some_and(waterui::accessibility::AccessibilityHidden::is_hidden);
+    let hidden = ctx.renderer_mut().is_accessibility_hidden(env);
     if !hidden {
         let render_ctx = ctx.render_context();
         let (hidden_signal, display_mode) = {
@@ -2853,9 +2851,7 @@ pub fn render_navigation_stack_node<E: crate::text::TextEngine>(
     env: &Environment,
 ) {
     #[cfg(feature = "accessibility")]
-    let hidden = env
-        .get::<waterui::accessibility::AccessibilityHidden>()
-        .is_some_and(waterui::accessibility::AccessibilityHidden::is_hidden);
+    let hidden = ctx.renderer_mut().is_accessibility_hidden(env);
     #[cfg(feature = "accessibility")]
     if hidden {
         ctx.renderer_mut().push_accessibility_suppression();
@@ -3350,10 +3346,7 @@ pub fn emit_navigation_view_accessibility<E: crate::text::TextEngine>(
     state: &Rc<RefCell<NavigationViewRenderState<E>>>,
     env: &Environment,
 ) {
-    if env
-        .get::<waterui::accessibility::AccessibilityHidden>()
-        .is_some_and(waterui::accessibility::AccessibilityHidden::is_hidden)
-    {
+    if renderer.is_accessibility_hidden(env) {
         return;
     }
     let mut state = state.borrow_mut();
@@ -3400,6 +3393,9 @@ pub fn emit_navigation_split_accessibility<E: crate::text::TextEngine>(
     state: &Rc<RefCell<NavigationSplitRenderState<E>>>,
     env: &Environment,
 ) {
+    if renderer.is_accessibility_hidden(env) {
+        return;
+    }
     let (selection, compact, show_all) = {
         let state = state.borrow();
         let three_column = state.is_three_column();
@@ -3512,6 +3508,10 @@ pub fn emit_navigation_stack_accessibility<E: crate::text::TextEngine>(
     state: &Rc<RefCell<NavigationStackRenderState<E>>>,
     env: &Environment,
 ) {
+    let hidden = renderer.is_accessibility_hidden(env);
+    if hidden {
+        renderer.push_accessibility_suppression();
+    }
     navigation_stack_accessibility(renderer, None, None, state, env);
     let slot_key = crate::renderer::NavigationKey::for_rc(state);
     let entries = renderer.bind_navigation_entries(&slot_key);
@@ -3550,16 +3550,19 @@ pub fn emit_navigation_stack_accessibility<E: crate::text::TextEngine>(
             .borrow_mut()
             .root_mut()
             .emit_accessibility(renderer, &local_env);
-        return;
+    } else {
+        let mut entries = entries.borrow_mut();
+        let entry = entries
+            .iter_mut()
+            .find(|entry| entry.identity == active_identity)
+            .unwrap_or_else(|| {
+                panic!("Hydrolysis navigation entry identity {active_identity} is not retained")
+            });
+        entry.content.emit_accessibility(renderer, &local_env);
     }
-    let mut entries = entries.borrow_mut();
-    let entry = entries
-        .iter_mut()
-        .find(|entry| entry.identity == active_identity)
-        .unwrap_or_else(|| {
-            panic!("Hydrolysis navigation entry identity {active_identity} is not retained")
-        });
-    entry.content.emit_accessibility(renderer, &local_env);
+    if hidden {
+        renderer.pop_accessibility_suppression();
+    }
 }
 #[cfg(test)]
 mod tests {
