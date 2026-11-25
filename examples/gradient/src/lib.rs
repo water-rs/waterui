@@ -43,7 +43,7 @@ fn initial_mesh_colors() -> [Color; 9] {
 /// Demo: mesh gradient whose hue cycles under a repeating `Animation`
 fn animated_background_section() -> impl View {
     let active = Binding::container(false);
-    let hue = active.select(180.0_f32, 0.0_f32).with(
+    let hue = active.select(Angle::degrees(180.0), Angle::ZERO).with(
         Animation::ease_in_out(Duration::from_secs(4))
             .repeat(Repeat::Forever { autoreverse: true }),
     );
