@@ -6,7 +6,10 @@ use core::fmt;
 use core::marker::PhantomData;
 use std::rc::Rc;
 
-use nami::{Computed, Signal, SignalExt, signal::IntoComputed};
+use nami::{
+    Computed, Signal, SignalExt,
+    signal::{IntoComputed, IntoSignal},
+};
 use waterui_core::{Environment, contract_violation, env::Store, resolve::Resolvable};
 
 use crate::{
@@ -245,8 +248,8 @@ pub struct Tint(Rc<Color>);
 
 impl Tint {
     /// A tint of `color`.
-    pub fn new(color: impl Into<Color>) -> Self {
-        Self(Rc::new(color.into()))
+    pub fn new(color: impl IntoSignal<Color> + 'static) -> Self {
+        Self(Rc::new(Color::from_signal(color)))
     }
 
     /// The tint colour.

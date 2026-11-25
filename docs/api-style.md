@@ -261,10 +261,10 @@ a single-window app declares and titles its window in one expression:
 Chain `.state(&state)` when external code reads or drives the window's
 lifecycle. `WindowState::default()` remains `Closed`, so
 `binding::<WindowState>(default())` is the idiomatic initialization for a
-window that starts closed and flips to `WindowState::Normal` to open.
-
-`conditional_window(&state, creator)` takes a reference to the state binding;
-the closure receives an owned clone for use inside the rendered Window.
+secondary window declared on `App`: writing `WindowState::Normal` while
+`Closed` (re)creates it, writing `WindowState::Normal` while open restores and
+focuses it, and writing `WindowState::Closed` tears down the platform window
+while keeping the declaration armed.
 
 ---
 

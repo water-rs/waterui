@@ -28,6 +28,7 @@ use cherenkov_record::{
 use kurbo::{Affine, Circle, Point, Rect, RoundedRect, RoundedRectRadii, Size, Vec2};
 use waterui_core::animation::Animation;
 use waterui_core::plugin::Plugin;
+use waterui_core::reactive::signal::IntoSignal;
 use waterui_graphics::color::Color;
 use waterui_interaction::interaction::{InteractionState, StateValue};
 
@@ -593,9 +594,9 @@ pub struct StateLayer {
 impl StateLayer {
     /// A layer of `color` with no opacity in any state.
     #[must_use]
-    pub fn new(color: impl Into<Color>) -> Self {
+    pub fn new(color: impl IntoSignal<Color> + 'static) -> Self {
         Self {
-            color: color.into(),
+            color: Color::from_signal(color),
             hover: 0.0,
             focus: 0.0,
             pressed: 0.0,

@@ -3,9 +3,9 @@
 //! These exist so a metric looks the same wherever it appears, and so a value
 //! that is genuinely unknown renders as unknown rather than as zero.
 
-use waterui::color::signal_color;
 use waterui::prelude::theme_color::{Accent, MutedForeground};
 use waterui::prelude::*;
+use waterui::shape::ShapeExt as _;
 use waterui_inspector_protocol::LogLevel;
 
 use crate::model::{Model, Section};
@@ -16,8 +16,8 @@ use crate::model::{Model, Section};
     reason = "a signal handle is cloned into the view it drives, not borrowed"
 )]
 pub fn status_dot(live: Computed<bool>) -> impl View {
-    signal_color(live.select(Color::from(Accent), Color::from(MutedForeground)))
-        .clip(shape::Circle)
+    shape::Circle
+        .fill(live.select(Color::from(Accent), Color::from(MutedForeground)))
         .size(9.0, 9.0)
 }
 

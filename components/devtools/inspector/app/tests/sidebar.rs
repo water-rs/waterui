@@ -37,7 +37,7 @@ fn inspector_wide() -> impl View {
 
 /// The navigation title of whichever detail is on screen.
 fn detail_header(title: &str) -> Selector {
-    Selector::default().role(Role::HEADER).label(title)
+    Selector::new().role(Role::HEADER).label(title)
 }
 
 #[waterui::test(inspector_collapsed, theme = hydrolysis_m3::Material3::defaults(), viewport = (412, 915), offscreen)]

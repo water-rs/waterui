@@ -26,6 +26,7 @@ use crate::readback::{ReadbackError, readback_surface_texture_rgba16f};
 use crate::renderer::material::{BehindWindowLevel, Blending, WithinWindowLevel};
 #[cfg(hydrolysis_cpu_painter)]
 use crate::renderer::{FrameGeometry, working_color};
+use crate::text::TextEngine;
 #[cfg(hydrolysis_cherenkov)]
 use cherenkov::OutputAlpha;
 #[cfg(any(hydrolysis_frame_transaction, test))]
@@ -34,7 +35,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 use waterui::theme::color::Background;
-use waterui::window::ResolvedWindowBackground;
+use waterui::window::{ResolvedWindowBackground, WindowState};
 #[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
 use waterui_core::Error;
 use waterui_core::contract_violation;
@@ -259,8 +260,48 @@ impl<E: crate::text::TextEngine> WindowSink for RootWindows<E> {
     }
 }
 
+/// Partitions app-declared windows into initially open windows (`state != Closed`)
+/// and dormant secondary declarations (`state == Closed`), watching each dormant
+/// window's state so opening one on a single-window host reports `on_unsupported`.
+#[cfg_attr(
+    not(any(
+        target_os = "android",
+        target_os = "ios",
+        all(target_arch = "wasm32", feature = "web")
+    )),
+    expect(
+        dead_code,
+        reason = "used by the single-window runners (Android, iOS UIKit, and Web)"
+    )
+)]
+pub(super) fn split_open_and_watch_dormant<E: TextEngine>(
+    windows: Vec<RootWindow<E>>,
+    on_unsupported: impl Fn() + 'static,
+) -> (Vec<RootWindow<E>>, Vec<Retain>) {
+    let on_unsupported = Rc::new(on_unsupported);
+    let mut open = Vec::new();
+    let mut dormant_watches = Vec::new();
+    for window in windows {
+        if window.state.snapshot() == WindowState::Closed {
+            let on_unsupported = Rc::clone(&on_unsupported);
+            let guard = window.state.watch(move |ctx| {
+                if *ctx.value() != WindowState::Closed {
+                    on_unsupported();
+                }
+            });
+            dormant_watches.push(Retain::new(guard));
+        } else {
+            open.push(window);
+        }
+    }
+    (open, dormant_watches)
+}
+
 pub(super) struct RuntimeWindow<P: PlatformWindow, E: crate::text::TextEngine> {
-    pub(super) window: RootWindow<E>,
+    pub(super) window: Rc<RootWindow<E>>,
+    /// True while platform chrome callbacks publish state back into
+    /// `window.state`, suppressing echo into declared-window watchers.
+    pub(super) suppress_state_echo: Rc<Cell<bool>>,
     pub(super) platform: P,
     pub(super) renderer: HydrolysisRenderer<E>,
     pub(super) mode: FrameMode,
@@ -315,12 +356,13 @@ pub(super) struct RuntimeWindow<P: PlatformWindow, E: crate::text::TextEngine> {
 // a compile-time painter boundary.
 impl<P: PlatformWindow, E: crate::text::TextEngine> RuntimeWindow<P, E> {
     pub(super) fn new(
-        window: RootWindow<E>,
+        window: impl Into<Rc<RootWindow<E>>>,
         platform: P,
         renderer: HydrolysisRenderer<E>,
         render_diagnostics_config: RenderDiagnosticsConfig,
         env: &Environment,
     ) -> Self {
+        let window = window.into();
         // The window's host wake, installed before any subscription can
         // record a request: from here on, a `Binding::set` outside a frame
         // — an executor drain, a platform-view callback, an accessibility
@@ -330,6 +372,7 @@ impl<P: PlatformWindow, E: crate::text::TextEngine> RuntimeWindow<P, E> {
         let declaration_watches = subscribe_window_declaration_signals(&window, env, &renderer);
         Self {
             window,
+            suppress_state_echo: Rc::new(Cell::new(false)),
             platform,
             renderer,
             mode: FrameMode::Refresh,
@@ -346,6 +389,11 @@ impl<P: PlatformWindow, E: crate::text::TextEngine> RuntimeWindow<P, E> {
             _declaration_watches: declaration_watches,
         }
     }
+
+    #[cfg(hydrolysis_winit)]
+    pub(super) fn set_suppress_state_echo(&mut self, suppress_state_echo: Rc<Cell<bool>>) {
+        self.suppress_state_echo = suppress_state_echo;
+    }
 }
 
 #[cfg(hydrolysis_cherenkov)]
@@ -353,7 +401,7 @@ impl<P: PaintedWindow> RuntimeWindow<P, crate::text::ParleyEngine> {
     /// A Cherenkov painter's window: the shared construction plus the host
     /// redraw handle, installed before the window's first frame.
     pub(super) fn new_painted(
-        window: RootWindow<crate::text::ParleyEngine>,
+        window: impl Into<Rc<RootWindow<crate::text::ParleyEngine>>>,
         platform: P,
         renderer: HydrolysisRenderer<crate::text::ParleyEngine>,
         config: RenderDiagnosticsConfig,
@@ -3562,7 +3610,9 @@ where
                     waterui::window::WindowState::Normal | waterui::window::WindowState::Maximized
                 ) && state != next
                 {
+                    runtime.suppress_state_echo.set(true);
                     runtime.window.state.set(next);
+                    runtime.suppress_state_echo.set(false);
                 }
             }
             InputEvent::Focused(focused) => {

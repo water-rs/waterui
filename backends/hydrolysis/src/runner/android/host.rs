@@ -36,8 +36,8 @@ use waterui::cursor::CursorStyle;
 use waterui::theme::ColorScheme;
 use waterui::window::WindowState;
 use waterui_backend_core::gesture::DEFAULT_LONG_PRESS_DURATION;
-use waterui_core::contract_violation;
 use waterui_core::layout::LayoutDirection;
+use waterui_core::{Retain, contract_violation};
 #[cfg(hydrolysis_gpu_painter)]
 use waterui_frame_rate::{FrameRate, combine};
 
@@ -68,6 +68,7 @@ use crate::runner::init_main_thread_executors;
 use crate::runner::install_platform_services;
 #[cfg(feature = "menu")]
 use crate::runner::menu_bar;
+use crate::runner::window::split_open_and_watch_dormant;
 use crate::runner::window::{
     FrameHost, FrameTransaction, RuntimeWindow, reports_ui_idle, run_frame_transaction,
 };
@@ -1372,6 +1373,9 @@ pub struct AndroidSession {
     /// unsupported-feature error, not a silently dropped request.
     pending_window_queue:
         Rc<RefCell<Vec<super::super::window::RootWindow<super::AndroidTextEngine>>>>,
+    /// Keeps state watchers on dormant `Closed` secondary windows alive so
+    /// opening one at run time reports the unsupported secondary-window error.
+    _dormant_window_watches: Vec<Retain>,
     /// The published accessibility snapshot — read only by the
     /// `accessibility` feature's publish/query paths.
     #[cfg_attr(
@@ -1534,6 +1538,7 @@ struct SessionMounts {
     window_id: crate::renderer::WindowId,
     pending_window_queue:
         Rc<RefCell<Vec<super::super::window::RootWindow<super::AndroidTextEngine>>>>,
+    dormant_window_watches: Vec<Retain>,
     platform_views: crate::platform_view::PlatformViewSink,
     platform_view_focus: crate::platform_view::PlatformViewFocus,
     android_bridge: AndroidHostBridge,
@@ -1642,7 +1647,12 @@ fn session_mounts(
     } = windows;
     let opener = queue_window_opener(&pending_window_queue);
     super::super::window::RootWindows::connect_channels(channels, &opener);
-    let mut windows = VecDeque::from(windows);
+    let (open_windows, dormant_window_watches) = split_open_and_watch_dormant(windows, || {
+        contract_violation!(
+            "hydrolysis android: secondary windows are unsupported — the host mounts exactly one window per session; the window is not shown"
+        );
+    });
+    let mut windows = VecDeque::from(open_windows);
     let Some(window) = windows.pop_front() else {
         contract_violation!(
             "hydrolysis android: the app registered no window to mount; no session is created"
@@ -1664,6 +1674,7 @@ fn session_mounts(
         fonts,
         window_id: identities.mint_window_id(),
         pending_window_queue,
+        dormant_window_watches,
         platform_views,
         platform_view_focus,
         android_bridge,
@@ -1834,6 +1845,7 @@ impl AndroidSession {
             fonts,
             window_id,
             pending_window_queue,
+            dormant_window_watches,
             platform_views,
             platform_view_focus,
             android_bridge,
@@ -1898,6 +1910,7 @@ impl AndroidSession {
             #[cfg(hydrolysis_hwui)]
             hwui,
             pending_window_queue,
+            _dormant_window_watches: dormant_window_watches,
             a11y: AccessibilitySnapshot::default(),
             platform_views,
             android_bridge,

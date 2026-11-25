@@ -56,12 +56,12 @@ therefore shadows its ancestor's `.on_tap`; put the handler on the view that sho
 remove the nested one. Recognizers on the *same* view combine (see interaction.md).
 
 **The app quits when its last window closes, or an on-demand window cannot reopen.** The
-default `LastWindowPolicy::Quit` ends the app with its last window. A tray, resident or
+default `LastWindowPolicy::Quit` ends the app with its last open window. A tray, resident or
 on-demand-window app sets `App::on_last_window_closed(LastWindowPolicy::StayResident)`
-(iOS and Android reject an app that declares no window), registers a `WindowChannel` from
-`WindowManager::new()` with `App::window`, and opens windows with
-`window.show(&windows)` (`Window::show`): a `conditional_window` lives only as long as the
-window hosting it.
+(iOS and Android reject an app that declares no open window), declares single-instance
+secondary windows on `App::window` with a `Binding<WindowState>` (or registers a
+`WindowChannel` from `WindowManager::new()` for unbounded document windows opened with
+`window.show(&windows)`).
 
 **A snackbar shown from a callback does nothing.** First make sure an ancestor view attaches
 `.snackbar_host()` (or `.snackbar_host_with_icons::<V>()`). `SnackbarManager` reaches handlers as a
@@ -81,10 +81,10 @@ SwiftUI's order, not CSS — and `EdgeInsets::symmetric(vertical, horizontal)`.
 **A background task never runs, or an animation loop dies instantly.** The
 `spawn_local(..)` handle was dropped — it cancels the future on drop. Call `.detach()`.
 
-**An on-demand window never opens (or opens duplicated).** `conditional_window` returns an
-*invisible view that must still be placed in the tree*, and its `WindowPresentation` must
-be created once alongside the state binding — recreating it inside a rebuilt subtree resets
-the open-once guard.
+**An on-demand window never opens (or opens duplicated).** Declare single-instance secondary
+windows directly on `App::window` with `.state(&state)` starting `WindowState::Closed`:
+writing `WindowState::Normal` opens it when closed and focuses it when already open. Only use
+`Window::show(&manager)` when every call is supposed to open a fresh window.
 
 **An animation snapshot shows the end state instead of the transition.** A test used
 `std::thread::sleep`. The animation clock advances with pumped frames, not wall-clock time.

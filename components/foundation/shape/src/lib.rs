@@ -25,7 +25,7 @@ extern crate alloc;
 use core::f32::consts::{FRAC_PI_2, PI, TAU};
 use core::marker::PhantomData;
 
-use nami::{Computed, SignalExt as _};
+use nami::{Computed, SignalExt as _, signal::IntoSignal};
 use waterui_core::{Environment, View, metadata::MetadataKey};
 use waterui_graphics::color::Color;
 
@@ -819,11 +819,11 @@ pub struct FilledShape<S = ()> {
 impl<S: Shape> FilledShape<S> {
     /// Creates a new filled shape from a shape and color.
     #[allow(clippy::needless_pass_by_value)]
-    pub fn new(shape: S, fill: impl Into<Color>) -> Self {
+    pub fn new(shape: S, fill: impl IntoSignal<Color> + 'static) -> Self {
         Self {
             kind: shape.shape_kind(),
             commands: shape.path().into_iter().collect(),
-            fill: fill.into(),
+            fill: Color::from_signal(fill),
             _shape: PhantomData,
         }
     }
@@ -922,7 +922,7 @@ pub trait MorphableShape: ShapeExt + sealed::Sealed {}
 /// Extension trait for filling shapes with color.
 pub trait ShapeExt: Shape + Sized {
     /// Fills the shape with the specified color.
-    fn fill(self, color: impl Into<Color>) -> FilledShape<Self> {
+    fn fill(self, color: impl IntoSignal<Color> + 'static) -> FilledShape<Self> {
         FilledShape::new(self, color)
     }
 
@@ -930,11 +930,19 @@ pub trait ShapeExt: Shape + Sized {
     ///
     /// Morphing supports only the built-in parameterized shapes; custom paths
     /// do not implement [`MorphableShape`] and fail to compile.
-    fn morph_to(self, target: impl MorphableShape, fill: impl Into<Color>) -> MorphShape
+    fn morph_to(
+        self,
+        target: impl MorphableShape,
+        fill: impl IntoSignal<Color> + 'static,
+    ) -> MorphShape
     where
         Self: MorphableShape,
     {
-        MorphShape::new(self.shape_kind(), target.shape_kind(), fill.into())
+        MorphShape::new(
+            self.shape_kind(),
+            target.shape_kind(),
+            Color::from_signal(fill),
+        )
     }
 }
 

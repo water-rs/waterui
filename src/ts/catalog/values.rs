@@ -577,11 +577,7 @@ impl From<WorkingColor> for ColorValue {
 /// The reactive colour a colour-valued attribute becomes.
 #[must_use]
 pub fn color_of(value: &Computed<ColorValue>) -> Color {
-    waterui_graphics::color::signal_color(
-        value
-            .map(|value| Color::new(Working(WorkingColor::from(value))))
-            .computed(),
-    )
+    Color::from_signal(value.map(|value| Color::new(Working(WorkingColor::from(value)))))
 }
 
 /// The insets an `EdgeInsets`-shaped object carries.

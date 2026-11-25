@@ -303,10 +303,10 @@ where
 {
     let indicator: Color = SurfaceVariant.into();
     let clear: Color = Srgb::WHITE.with_opacity(0.0).into();
-    let pill = signal_color(active.select(indicator, clear).computed());
+    let pill = active.select(indicator, clear);
     let active_content: Color = Foreground.into();
     let resting_content: Color = MutedForeground.into();
-    let content = signal_color(active.select(active_content, resting_content).computed());
+    let content = active.select(active_content, resting_content);
     let state = active.map(|active| AccessibilityState::new().selected(active));
     // The row is one accessibility node carrying the title, so its own label
     // stays out of the tree rather than repeating it.

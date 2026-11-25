@@ -126,21 +126,20 @@ Window::new("Colored Window", content)
 
 ```rust
 let state = binding(WindowState::Closed);
-let presentation = WindowPresentation::new(&state);
 
-// Declarative window in the view tree
-conditional_window(&presentation, |state| {
-    Window::new("My Window", content).state(&state)
-})
+// Declare the secondary window on `App`, driven by its state binding
+App::new(env)
+    .window(Window::new("Main", main_content))
+    .window(Window::new("My Window", content).state(&state));
 
-// Open or close reactively
+// Closed -> Normal opens (or reopens); Normal while open focuses it; Closed tears it down
 state.set(WindowState::Normal);
 state.set(WindowState::Closed);
 ```
 
 ## Architecture Notes
 
-- Windows declared in the view tree (`Window`, `conditional_window`) reach their backend through static `View::dispatch`; imperative windows use a typed `(WindowManager<C>, WindowChannel<C>)` pair registered on `App`
+- Single-instance secondary windows are declared directly on `App::window` with a `Binding<WindowState>`; unbounded imperative windows use a typed `(WindowManager<C>, WindowChannel<C>)` pair registered on `App`
 - Each window tracks its lifecycle reactively through its `Binding<WindowState>`
 - Window backgrounds are composited by the native platform
 - Material effects leverage platform-native blur APIs for best performance

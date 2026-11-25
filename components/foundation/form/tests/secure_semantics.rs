@@ -7,7 +7,7 @@ use waterui::text::Text;
 use waterui::{Binding, SignalExt, View};
 use waterui_form::secure;
 use waterui_form::secure::Secure;
-use waterui_testing::{Role, Selector, SemanticApp};
+use waterui_testing::{Role, SemanticApp};
 
 fn secure_view() -> impl View {
     let password = Binding::container(Secure::default());
@@ -20,19 +20,16 @@ fn secure_view() -> impl View {
 
 #[waterui::test(secure_view)]
 fn secure_field_set_text_updates_value(app: &mut SemanticApp) {
-    let selector = Selector::default()
+    app.query()
         .role(Role::PASSWORD_INPUT)
-        .label("Password");
-    app.assert_exists(&selector);
+        .label("Password")
+        .assert_exists();
     app.query()
         .role(Role::PASSWORD_INPUT)
         .label("Password")
         .set_text("hunter2");
-    assert!(
-        app.wait_for(
-            &[app.expect_exists(Selector::default().role(Role::LABEL).label("len:7"))],
-            waterui_testing::WaitOptions::new(Duration::from_millis(200)),
-        ) == waterui_testing::WaitResult::Completed,
-        "secure field binding should update after set_text"
-    );
+    app.query()
+        .role(Role::LABEL)
+        .label("len:7")
+        .assert_exists_within(Duration::from_millis(200));
 }

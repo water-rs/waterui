@@ -278,7 +278,7 @@ struct ColorSwatch { color: Binding<Color> }
 
 impl View for ColorSwatch {
     fn body(self, _env: &Environment) -> impl View {
-        signal_color(self.color).size(64.0, 32.0)   // a Color is itself a view
+        ().size(64.0, 32.0).background(self.color)
     }
 }
 ```

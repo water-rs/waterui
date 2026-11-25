@@ -89,6 +89,8 @@ impl Default for Color {
 #[derive(Debug, Clone, Copy)]
 pub struct Working(pub WorkingColor);
 
+impl_constant!(Working);
+
 impl Resolvable for Working {
     type Resolved = WorkingColor;
 
@@ -103,24 +105,34 @@ impl<T: Resolvable<Resolved = WorkingColor> + 'static> From<T> for Color {
     }
 }
 
-#[derive(Debug, Clone)]
-struct SignalColor(Computed<Color>);
+impl Color {
+    /// Wraps a reactive signal of colors as a [`Color`].
+    ///
+    /// Prefer passing signals directly to colour-taking modifiers; this constructor
+    /// exists for modifiers and components that accept `impl IntoSignal<Color> + 'static`
+    /// and store a [`Color`].
+    #[must_use]
+    pub fn from_signal(source: impl IntoSignal<Self> + 'static) -> Self {
+        #[derive(Debug, Clone)]
+        struct ReactiveColor(Computed<Color>);
 
-impl Resolvable for SignalColor {
-    type Resolved = WorkingColor;
+        impl Resolvable for ReactiveColor {
+            type Resolved = WorkingColor;
 
-    fn resolve(&self, env: &Environment) -> impl Signal<Output = Self::Resolved> {
-        let env = env.clone();
-        flatten_signal(self.0.clone().map(move |color| color.resolve(&env)))
+            fn resolve(&self, env: &Environment) -> impl Signal<Output = Self::Resolved> {
+                let env = env.clone();
+                flatten_signal(self.0.clone().map(move |color| color.resolve(&env)))
+            }
+        }
+
+        Self::new(ReactiveColor(source.into_signal().computed()))
     }
 }
 
-/// Creates a semantic color view backed by a reactive color signal.
-///
-/// Both replacement of the selected color and changes inside its environment
-/// resolution update the existing native color node without rebuilding it.
+/// Temporary compatibility shim for downstream crates migrating off `signal_color`.
+#[doc(hidden)]
 pub fn signal_color(source: impl IntoSignal<Color> + 'static) -> Color {
-    Color::new(SignalColor(source.into_signal().computed()))
+    Color::from_signal(source)
 }
 
 /// Represents a color with an opacity/alpha value applied.
@@ -504,6 +516,8 @@ macro_rules! environment_color {
                     })
             }
         }
+
+        impl_constant!($name);
     };
 }
 
@@ -639,6 +653,8 @@ macro_rules! color_const {
                         .unwrap_or_else(|| default_color.resolve())
                 }
             }
+
+            impl_constant!($name);
 
             impl Color{
                 #[doc=$doc]
