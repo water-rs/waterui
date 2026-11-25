@@ -497,8 +497,9 @@ pub fn components_block_14() {
         progress(fraction).label("Downloading") // its label is a modifier — the one exception
     };
     let _ = {
-        progress(fraction).circular() // or .linear()
+        progress(fraction).style(ProgressStyle::Circular) // or Linear / Loading (shorthands: .circular(), .linear())
     };
+    let _ = { progress(fraction).circular() };
     let _ = {
         loading() // indeterminate progress
     };

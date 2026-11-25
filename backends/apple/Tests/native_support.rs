@@ -733,7 +733,7 @@ pub mod toolbar_reach {
     use waterui::component::list::List;
     use waterui::id::SelfId;
     use waterui::navigation::{
-        NavigationLink, NavigationPath, NavigationStack, NavigationView, Tab, Tabs, tab_style,
+        NavigationLink, NavigationPath, NavigationStack, NavigationView, Tab, TabStyle, Tabs,
     };
     use waterui::prelude::{scroll, text, vstack, zstack};
     use waterui::reactive::binding;
@@ -1096,7 +1096,7 @@ pub mod toolbar_reach {
                 }),
             ),
         )
-        .style(tab_style::Automatic)
+        .style(TabStyle::Automatic)
     }
 
     /// The navigation example's Inbox: its `List` of navigation-link rows
@@ -2357,7 +2357,7 @@ pub fn inspector_tree(
 pub mod chrome_top {
     use cocoa_ui::objc2_app_kit::{NSSegmentedControl, NSTextField, NSView};
     use cocoa_ui::{MainThreadMarker, Retained};
-    use waterui::navigation::{NavigationView, Tab, Tabs, tab_style};
+    use waterui::navigation::{NavigationView, Tab, TabStyle, Tabs};
     use waterui::prelude::text;
     use waterui::reactive::binding;
     use waterui::window::WindowStyle;
@@ -2486,7 +2486,7 @@ pub mod chrome_top {
                         Tab::new("Second", || text("second")),
                     ),
                 )
-                .style(tab_style::Automatic)
+                .style(TabStyle::Automatic)
             },
             |root| {
                 let (_, window_top) = in_window(root, root.bounds());

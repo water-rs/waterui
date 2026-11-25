@@ -18,7 +18,7 @@ pub(crate) mod selection_support;
 
 pub mod progress;
 #[doc(inline)]
-pub use progress::{Progress, loading, progress};
+pub use progress::{Progress, ProgressStyle, loading, progress};
 
 #[cfg(feature = "table")]
 pub mod table;

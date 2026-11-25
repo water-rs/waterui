@@ -11,12 +11,12 @@
 // Tabs sit beside the split-view navigation types instead of behind
 // `navigation::tab::…`.
 use waterui::navigation::{
-    NavigationSplitView, Tab, Tabs, navigation_transition, split_style, tab_style,
+    NavigationSplitStyle, NavigationSplitView, Tab, TabStyle, Tabs, navigation_transition,
 };
 
 // The `slider` free function joins `button`/`toggle`/`stepper`/`field`/`label`
-// at the controls root.
-use waterui::component::{button, field, label, slider, stepper, toggle};
+// at the controls root; `ProgressStyle` sits beside `Progress`.
+use waterui::component::{ProgressStyle, button, field, label, slider, stepper, toggle};
 
 // Custom extractors reach the single `State` environment channel through `Extractor` and `State`.
 use waterui::extract::{Extractor, State};

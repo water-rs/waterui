@@ -14,7 +14,7 @@
 //! | `List` with sections | grouped `UITableView`, swipe-to-delete | Material list, drag handles | list box | themed rows |
 //!
 //! The style axis works the same way: `.large_title()` collapses on scroll on
-//! iOS and becomes a large app bar on Android, and `tab_style::automatic()`
+//! iOS and becomes a large app bar on Android, and `TabStyle::Automatic`
 //! resolves to a tab bar on a phone and a sidebar on a desktop-class window.
 //! None of that is decided by this file.
 //!
@@ -34,7 +34,10 @@ use waterui::app::{App, Windows};
 use waterui::component::list::{
     List, ListContent, ListDelete, ListMove, Section, SectionScope, TaggedBy, row,
 };
-use waterui::navigation::{NavigationSplitView, NavigationToolbarItems, NavigationView, Navigator};
+use waterui::navigation::{
+    NavigationSplitStyle, NavigationSplitView, NavigationToolbarItems, NavigationView, Navigator,
+    TabStyle,
+};
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
@@ -289,7 +292,7 @@ pub fn demo() -> impl View {
     )
     // A tab bar on a phone, a sidebar or navigation rail on a large window: the
     // backend decides from the platform and the current window size.
-    .style(tab_style::automatic())
+    .style(TabStyle::Automatic)
     .snackbar_host()
 }
 
@@ -590,7 +593,7 @@ fn library_split() -> impl View {
         album_detail,
     )
     .sidebar_width(ColumnWidth::new(220.0, 280.0, 360.0))
-    .style(split_style::prominent_detail())
+    .style(NavigationSplitStyle::ProminentDetail)
     .placeholder(placeholder)
 }
 
