@@ -37,7 +37,7 @@ pub use slider::{Slider, SliderValue, slider};
 #[cfg(feature = "text-field")]
 pub mod text_field;
 #[cfg(feature = "text-field")]
-pub use text_field::{TextField, field};
+pub use text_field::{TextField, TextFieldValue, field};
 pub mod text_selection;
 pub use text_selection::{CustomTextSelection, TextSelection};
 #[cfg(feature = "toggle")]

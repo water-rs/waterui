@@ -37,7 +37,7 @@ impl RenderMode {
 }
 
 fn main_view() -> impl View {
-    let username = binding("lexo");
+    let username = binding::<Str>(Str::from("lexo"));
     let password = binding(Secure::from_str("hunter2").expect("static secure seed must parse"));
     let toggle_value = binding(true);
     let slider_value = binding::<f64>(0.62);

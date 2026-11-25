@@ -539,7 +539,7 @@ pub fn components_button_style_shorthands() {
     let styled_value = Binding::container(StyledStr::default());
     let _ = TextField::new("a", &text_value).line_limit(NonZeroUsize::new(3));
     let _ = TextField::new("a", &text_value).line_limit(None::<NonZeroUsize>);
-    let _ = TextField::styled("a", &styled_value);
+    let _ = TextField::new("a", &styled_value);
 }
 
 // ---------------------------------------------------------------------------
@@ -1286,15 +1286,15 @@ pub fn components_block_33() {
         ColorPicker::new("Accent", &color).with_alpha().with_hdr() // Binding<Color>
     };
     let _ = {
-        // Binding<Vec<Url>>; `import(..)` copies into app storage
-        FilePicker::open("Select Files", &urls).max_count(5)
+        // Binding<Vec<Url>>; `.import()` copies into app storage
+        FilePicker::new("Select Files", &urls).max_count(5)
     };
 
     let _ = DateTimePickerComponents::Date;
     let _ = DateTimePickerComponents::HourAndMinute;
     let _ = DateTimePickerComponents::HourMinuteAndSecond;
     let _ = DateTimePickerComponents::DateHourAndMinute;
-    let _ = FilePicker::import("Import Files", &urls);
+    let _ = FilePicker::new("Import Files", &urls).import();
 }
 
 // ---------------------------------------------------------------------------

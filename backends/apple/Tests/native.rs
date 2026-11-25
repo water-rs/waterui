@@ -1198,7 +1198,7 @@ mod resolve {
     pub fn control_leaves_answer_their_intrinsic_height() {
         let volume = binding::<f64>(0.5);
         let selection = binding("Alpha");
-        let text_value = binding(Str::from(""));
+        let text_value = binding::<Str>(Str::from(""));
         let secret = binding(Secure::new(String::new()));
         let items: Vec<PickerItem<&'static str>> = vec![
             waterui::text!("Alpha").tag("Alpha"),
@@ -6614,7 +6614,7 @@ mod safe_area {
     /// in two. (The `d6171eed2` bug shape: the field answered its own
     /// open offer, so the `hstack` claimed the whole band.)
     fn a_composer_hstack_keeps_its_intrinsic_height_under_the_keyboard() {
-        let draft = binding(Str::from(""));
+        let draft = binding::<Str>(Str::from(""));
         let mount = mount(conversation_panel(&draft));
 
         let field = find_view::<cocoa_ui::uikit::TextField>(&mount.host)
@@ -6813,7 +6813,7 @@ mod safe_area {
     /// keyboard contribution and stays zero, and the delta-write never
     /// rewrites another `contentInset.bottom` term.
     fn a_scroll_above_a_composer_keeps_a_zero_keyboard_inset() {
-        let draft = binding(Str::from(""));
+        let draft = binding::<Str>(Str::from(""));
         let mount = mount(conversation_panel(&draft));
         let surface = find_view::<ScrollView>(&mount.host).expect("scroll mounts a UIScrollView");
         let scroll_view = surface
@@ -6839,7 +6839,7 @@ mod safe_area {
     /// enclosing-surface role: the inner surface still computes its own
     /// keyboard inset and still clears a focused field.
     fn a_text_view_inside_the_tree_is_not_a_scroll_surface() {
-        let value = binding(Str::from(""));
+        let value = binding::<Str>(Str::from(""));
         let mount = mount(scroll(vstack((
             spacer().size(390.0, 560.0),
             field("Message", &value).size(350.0, 44.0),
@@ -6931,7 +6931,7 @@ mod safe_area {
     /// only when the keyboard contribution itself changes — never
     /// because a content-offset change re-ran it.
     fn a_user_scroll_under_the_keyboard_is_not_undone_by_the_layout_pass() {
-        let value = binding(Str::from(""));
+        let value = binding::<Str>(Str::from(""));
         let mount = mount(scroll(vstack((
             spacer().size(390.0, 560.0),
             field("Message", &value).size(350.0, 44.0),
@@ -6967,7 +6967,7 @@ mod safe_area {
     /// inset.
     fn nested_hosts_and_a_scroll_share_the_windows_keyboard_region() {
         for content_first in [true, false] {
-            let value = binding(Str::from(""));
+            let value = binding::<Str>(Str::from(""));
             let env = render_environment();
             let mount = mount_uikit_embedded(
                 mtm(),
@@ -7280,7 +7280,7 @@ mod safe_area {
     /// unresolved contract on the real reads and feeds the resolved
     /// frame through the same function the read applies.
     fn a_stacks_only_window_seeds_its_region_and_replaces_above_the_band() {
-        let draft = binding(Str::from(""));
+        let draft = binding::<Str>(Str::from(""));
         // Stacks only — a spacer over a composer row; no scroll
         // surface anywhere in the tree.
         let mount = mount(vstack((
@@ -7348,7 +7348,7 @@ mod safe_area {
     /// — the window's one region object marked every reader and the
     /// re-entering views re-read it.
     fn a_page_pushed_over_the_keyboard_returns_keyboard_free() {
-        let value = binding(Str::from(""));
+        let value = binding::<Str>(Str::from(""));
         let mount = mount(NavigationStack::new(NavigationView::new(
             "Form",
             scroll(vstack((
@@ -7766,7 +7766,7 @@ mod safe_area {
     /// content by the band; focusing a covered field scrolls the minimum
     /// distance that brings its frame clear of the keyboard region.
     fn a_scroll_surface_scrolls_the_focused_field_clear_of_the_keyboard() {
-        let value = binding(Str::from(""));
+        let value = binding::<Str>(Str::from(""));
         let mount = mount(scroll(vstack((
             spacer().size(390.0, 560.0),
             field("Message", &value).size(350.0, 44.0),
@@ -7805,7 +7805,7 @@ mod safe_area {
     /// same minimum-scroll clearance against the deeper boundary — the
     /// field's frame lands on the new keyboard top on that frame.
     fn a_keyboard_inset_change_clears_the_field_on_that_frame() {
-        let value = binding(Str::from(""));
+        let value = binding::<Str>(Str::from(""));
         let mount = mount(scroll(vstack((
             spacer().size(390.0, 560.0),
             field("Message", &value).size(350.0, 44.0),
@@ -7824,7 +7824,7 @@ mod safe_area {
     /// innermost surface that can, which is the outermost one here because
     /// the keyboard band sits below the inner surface's own frame.
     fn a_field_in_a_nested_scroll_is_cleared_once() {
-        let value = binding(Str::from(""));
+        let value = binding::<Str>(Str::from(""));
         let mount = mount(scroll(vstack((
             spacer().size(390.0, 430.0),
             scroll(vstack((
@@ -7874,7 +7874,7 @@ mod safe_area {
     /// surface's own frame: a toolbar card under the scroll keeps the
     /// field clearing to the surface's bottom edge, not the keyboard's.
     fn a_focused_field_clears_to_the_surface_frame_above_a_toolbar() {
-        let value = binding(Str::from(""));
+        let value = binding::<Str>(Str::from(""));
         let mount = mount(vstack((
             scroll(vstack((
                 spacer().size(390.0, 560.0),
@@ -7897,7 +7897,7 @@ mod safe_area {
     /// A `List` is a scroll surface too: a focused row field scrolls
     /// clear of the keyboard and the `UITableView` carries the inset.
     fn a_list_row_field_scrolls_clear_of_the_keyboard() {
-        let value = binding(Str::from(""));
+        let value = binding::<Str>(Str::from(""));
         let field_row = 10usize;
         let mount = mount(List::for_each(
             (0..40).map(SelfId::new).collect::<Vec<_>>(),
@@ -8291,7 +8291,7 @@ mod safe_area {
     /// to the deeper boundary under the keyboard — chrome hosting does not
     /// change the scroll surface's contract.
     fn a_form_inside_navigation_content_clears_the_focused_field() {
-        let value = binding(Str::from(""));
+        let value = binding::<Str>(Str::from(""));
         let mount = mount(NavigationView::new(
             "Form",
             scroll(vstack((
@@ -11833,7 +11833,7 @@ mod a11y_frame {
     /// width frame its field assigned.
     #[cfg(feature = "text_field")]
     fn a_text_field_label_sits_at_the_leading_edge() {
-        let value = binding(waterui::Str::from("typed"));
+        let value = binding::<waterui::Str>(waterui::Str::from("typed"));
         let (leaf, _window) = attached(waterui::component::text_field::TextField::new(
             "Name", &value,
         ));
@@ -13691,7 +13691,7 @@ mod text_selection {
 
     pub fn a_selection_menu_command_edits_the_live_selection() {
         let mtm = mtm();
-        let value = binding(Str::from("hé😀b"));
+        let value = binding::<Str>(Str::from("hé😀b"));
         let observed = Rc::new(RefCell::new((String::new(), 0usize, 0usize)));
         let optional_seen = Rc::new(RefCell::new(false));
 

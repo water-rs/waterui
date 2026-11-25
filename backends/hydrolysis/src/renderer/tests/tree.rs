@@ -456,7 +456,7 @@ fn text_field_value_display_stays_live() {
     use waterui_core::Str;
     use waterui_core::handler::AnyViewBuilder;
 
-    let value = binding(Str::from("AAA"));
+    let value = binding::<Str>(Str::from("AAA"));
     let builder = {
         let value = value.clone();
         AnyViewBuilder::<AnyView>::new(move || {

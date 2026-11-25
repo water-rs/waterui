@@ -50,7 +50,7 @@ fn settle_runs_a_spring_scroll_to_its_target() {
 /// work, and settling a scene with a focused field returns.
 #[test]
 fn settle_returns_with_a_focused_field() {
-    let value = waterui::binding(waterui::Str::from(""));
+    let value = waterui::binding::<waterui::Str>(waterui::Str::from(""));
     let mut app = ui()
         .viewport(320, 120)
         .theme(TestStyle::new())

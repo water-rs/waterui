@@ -18,6 +18,35 @@ use waterui_text::{IntoText, Text, TextConfig, styled::StyledStr};
 use crate::label::{ControlLabel, IntoLabel, Label, LabelKind, impl_label_style_methods};
 use crate::menu::{MenuItem, MenuView, ResolvedMenuItem, resolve_menu_items};
 
+mod private {
+    pub trait Sealed {}
+}
+
+/// Value types accepted by [`TextField::new`] and [`field`].
+///
+/// Implemented for [`Str`] (plain text) and [`StyledStr`] (styled rich text),
+/// so `&Binding<Str>` and `&Binding<StyledStr>` flow through the same
+/// constructor.
+pub trait TextFieldValue: private::Sealed + Clone + 'static {
+    #[doc(hidden)]
+    fn into_text_field_binding(binding: &Binding<Self>) -> Binding<StyledStr>;
+}
+
+impl private::Sealed for Str {}
+impl private::Sealed for StyledStr {}
+
+impl TextFieldValue for Str {
+    fn into_text_field_binding(binding: &Binding<Self>) -> Binding<StyledStr> {
+        map_plain_binding(binding)
+    }
+}
+
+impl TextFieldValue for StyledStr {
+    fn into_text_field_binding(binding: &Binding<Self>) -> Binding<StyledStr> {
+        binding.clone()
+    }
+}
+
 /// Configuration for the [`TextField`] component.
 #[derive(Debug)]
 #[non_exhaustive]
@@ -210,17 +239,10 @@ impl<L> TextField<L> {
     /// [`Self::prompt`], which is the placeholder shown inside an empty field.
     /// Chain [`Self::hide_label`] to drop the visible label while keeping the
     /// accessibility name.
-    pub fn new<I: IntoLabel<Kind = L>>(label: I, value: &Binding<Str>) -> Self {
-        let styled_value = map_plain_binding(value);
-        Self::styled(label, &styled_value)
-    }
-
-    /// Creates a new `TextField` with the given label, backed by a styled text
-    /// binding.
-    pub fn styled<I: IntoLabel<Kind = L>>(label: I, value: &Binding<StyledStr>) -> Self {
+    pub fn new<I: IntoLabel<Kind = L>, V: TextFieldValue>(label: I, value: &Binding<V>) -> Self {
         Self {
             label: label.into_label(),
-            value: value.clone(),
+            value: V::into_text_field_binding(value),
             prompt: Text::default(),
             keyboard: KeyboardType::default(),
             content_type: None,
@@ -323,7 +345,7 @@ impl<L: LabelKind> View for TextField<L> {
 impl_label_style_methods!(TextField<L>);
 
 /// Creates a new [`TextField`] with the specified label and value binding.
-pub fn field<L: IntoLabel>(label: L, value: &Binding<Str>) -> TextField<L::Kind> {
+pub fn field<L: IntoLabel, V: TextFieldValue>(label: L, value: &Binding<V>) -> TextField<L::Kind> {
     TextField::new(label, value)
 }
 
@@ -331,7 +353,7 @@ fn map_plain_binding(value: &Binding<Str>) -> Binding<StyledStr> {
     Binding::mapping(value, StyledStr::plain, |plain_binding, styled| {
         if !styled.is_plain() {
             contract_violation!(
-                "TextField::new(label, &Binding<Str>) cannot accept styled text updates; use TextField::styled(label, &Binding<StyledStr>); the styling is dropped and the plain text is stored"
+                "TextField::new(label, &Binding<Str>) cannot accept styled text updates; pass a &Binding<StyledStr> for styled text; the styling is dropped and the plain text is stored"
             );
         }
         plain_binding.set(styled.to_plain());
@@ -373,9 +395,9 @@ mod tests {
     }
 
     #[test]
-    fn styled_constructor_accepts_styled_binding() {
+    fn new_constructor_accepts_styled_binding() {
         let styled = Binding::container(StyledStr::plain("a"));
-        let _ = TextField::styled("Body", &styled);
+        let _ = TextField::new("Body", &styled);
     }
 
     #[test]
