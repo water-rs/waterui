@@ -36,7 +36,7 @@ use waterui_core::env::Installed;
 use waterui_core::handler::{AnyViewBuilder, Handler, ViewBuilder, boxed_action};
 use waterui_core::plugin::Plugin;
 use waterui_core::{
-    AnyView, Dynamic, Environment, Native, NativeView, OneOf2, SerialDispatch, View, flatten_signal,
+    AnyView, Environment, Native, NativeView, SerialDispatch, View, flatten_signal,
 };
 use waterui_graphics::{Color, color::WorkingColor};
 use waterui_layout::{Point, Rect, Size};
@@ -686,8 +686,12 @@ pub enum Activation {
 /// The state of a window.
 ///
 /// `Default::default()` returns [`Self::Closed`]: a freshly initialized
-/// state binding represents a window that has not yet been shown. Setting
-/// the binding to [`Self::Normal`] is what triggers the window to open.
+/// state binding represents a window that has not yet been shown. On a
+/// window declared on [`App`](crate::app::App), setting the binding from
+/// [`Self::Closed`] to [`Self::Normal`] (or any open state) creates the
+/// platform window, writing [`Self::Normal`] while it is already open
+/// restores and focuses it, and writing [`Self::Closed`] tears down the
+/// platform window while keeping the declaration armed for future reopens.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[expect(
     clippy::exhaustive_enums,
@@ -1126,9 +1130,11 @@ impl<C, T> Window<C, T> {
     ///
     /// By default [`Window::new`] owns an internal [`WindowState::Normal`]
     /// binding. Call this when the application reads or drives the window's
-    /// state — for example, starting a secondary window
-    /// [`WindowState::Closed`] and flipping it to [`WindowState::Normal`]
-    /// later.
+    /// state — for example, declaring a secondary window on
+    /// [`App`](crate::app::App) starting [`WindowState::Closed`], flipping it
+    /// to [`WindowState::Normal`] to open (or focus if already open), and
+    /// returning it to [`WindowState::Closed`] to close while keeping the
+    /// declaration armed to reopen later.
     #[must_use]
     pub fn state(mut self, state: &Binding<WindowState>) -> Self {
         self.close_request.set_state(state);
@@ -1542,14 +1548,15 @@ impl<C, T> Window<C, T> {
 
     /// Show the window on screen through `manager`.
     ///
-    /// The window opens independently of any view's lifetime, which makes
-    /// this the way to show a window that must outlive every other window —
-    /// for example one reopened under
-    /// [`LastWindowPolicy::StayResident`](crate::app::LastWindowPolicy::StayResident)
-    /// after the last window closed. Pass `manager`'s paired [`WindowChannel`]
-    /// to [`App::window`](crate::app::App::window) so the runner receives the
-    /// window with its content type intact. For window presentation tied to a
-    /// mounted view, see [`conditional_window`].
+    /// Every call opens a fresh platform window — the right tool for
+    /// unbounded document or scratch windows, or windows opened imperatively
+    /// from handlers after the last window closed under
+    /// [`LastWindowPolicy::StayResident`](crate::app::LastWindowPolicy::StayResident).
+    /// Pass `manager`'s paired [`WindowChannel`] to
+    /// [`App::window`](crate::app::App::window) so the runner receives the
+    /// window with its content type intact. For a single-instance secondary
+    /// window that opens once and focuses on repeat, declare it directly on
+    /// [`App::window`](crate::app::App::window) with [`Window::state`] instead.
     ///
     /// # Contract
     ///
@@ -1597,78 +1604,11 @@ impl<C: ViewBuilder, T: WindowToolbar> View for Window<C, T> {
     }
 
     /// Reaches the backend with the window's content and toolbar in the
-    /// backend's child slot, so a window declared in the tree —
-    /// [`conditional_window`] included — keeps its content and toolbar types
-    /// up to the backend.
+    /// backend's child slot, keeping its content and toolbar types up to the
+    /// backend.
     fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
         backend.native(self.into_slot::<B::Slot>(), env, cx)
     }
-}
-
-/// Owns the explicit presentation state for a conditionally created window.
-///
-/// Keep this value at the same semantic level as the window's [`WindowState`]
-/// binding. Its retained `presented` binding prevents unrelated state changes
-/// such as Normal → Minimized from creating duplicate native windows.
-#[derive(Debug, Clone)]
-pub struct WindowPresentation {
-    state: Binding<WindowState>,
-    presented: Binding<bool>,
-}
-
-impl WindowPresentation {
-    /// Creates presentation state for a window controlled by `state`.
-    #[must_use]
-    pub fn new(state: &Binding<WindowState>) -> Self {
-        Self {
-            state: state.clone(),
-            presented: Binding::container(false),
-        }
-    }
-
-    /// Returns the window-state binding controlled by this presentation.
-    #[must_use]
-    pub fn state(&self) -> Binding<WindowState> {
-        self.state.clone()
-    }
-}
-
-/// Shows a window only once per "open" cycle.
-///
-/// The window is shown when the presentation's state transitions from
-/// [`WindowState::Closed`] to any other state. Closing the window resets the
-/// retained presentation binding so a subsequent open creates a new native
-/// window.
-///
-/// The returned view is invisible and must be placed in the tree, or the
-/// window is never presented. The presentation lives only as long as the
-/// window hosting that view and ends when the host closes; a window that
-/// must outlive every other window — for example one reopened under
-/// [`LastWindowPolicy::StayResident`](crate::app::LastWindowPolicy::StayResident)
-/// after the last window closed — is opened with [`Window::show`] instead.
-pub fn conditional_window<F, C, T>(
-    presentation: &WindowPresentation,
-    creator: F,
-) -> impl View + use<F, C, T>
-where
-    F: Fn(Binding<WindowState>) -> Window<C, T> + 'static,
-    C: ViewBuilder,
-    T: WindowToolbar,
-{
-    let state = presentation.state.clone();
-    let presented = presentation.presented.clone();
-
-    Dynamic::watch(state.clone(), move |s| {
-        if s == WindowState::Closed {
-            presented.set(false);
-            OneOf2::A(())
-        } else if !presented.snapshot() {
-            presented.set(true);
-            OneOf2::B(creator(state.clone()))
-        } else {
-            OneOf2::A(())
-        }
-    })
 }
 
 /// A handle to control a window after it has been shown.

@@ -470,30 +470,38 @@ Window::new("Editor", editor_content)
 
 ## Windows that open and close
 
-A window created on demand needs two pieces, created **together, at the same level as the
-state** (never inside a rebuilt subtree, or the open-once guard resets):
+A single-instance secondary window (Settings, Inspector, Preferences) is declared directly on
+`App` and driven by its `Binding<WindowState>`:
 
 ```rust
-use waterui::window::{Window, WindowPresentation, WindowState, WindowStyle, conditional_window};
+use waterui::app::{App, Windows};
+use waterui::window::{Window, WindowState, WindowStyle};
 
-let state = binding::<WindowState>(WindowState::default());
-let presentation = WindowPresentation::new(&state);    // guards against duplicate opens
-
-// An INVISIBLE view — it must still be placed in the tree (e.g. a later zstack child).
-conditional_window(&presentation, |state| {
-    Window::new("Inspector", inspector_content)
-        .state(&state)
-        .style(WindowStyle::Titled)
-        .resizable(true)
-})
+fn app(env: Environment) -> App<impl Windows> {
+    let inspector_state = binding::<WindowState>(WindowState::default()); // starts Closed
+    let main_state = inspector_state.clone();
+    App::new(env)
+        .window(Window::new("Main", move || {
+            button("Inspector")
+                .action(|State(s): State<Binding<WindowState>>| s.set(WindowState::Normal))
+                .state(&main_state)
+        }))
+        .window(
+            Window::new("Inspector", inspector_content)
+                .state(&inspector_state)
+                .style(WindowStyle::Titled)
+                .resizable(true),
+        )
+}
 ```
 
-`conditional_window(&presentation, creator)` materializes the native window when the
-state leaves `Closed` and tears it down when it returns there; `Normal → Minimized` does
-not spawn a duplicate, and it re-arms after closing. It is the one sanctioned use of
-subtree-watching in window code — do not reimplement it with `watch`. A window-filling
-overlay layer inside a window must use `absolute(..)`, not a content-sized `zstack`, or
-edge-anchored children mis-anchor as soon as the window is larger than the content.
+Writing `WindowState::Normal` while `Closed` creates the platform window; writing
+`WindowState::Normal` while it is already open restores and focuses it without creating a
+duplicate; writing `WindowState::Closed` (or closing the window via its title bar) tears down
+the platform window while keeping the declaration armed to reopen on the next `Normal` write.
+A window-filling overlay layer inside a window must use `absolute(..)`, not a content-sized
+`zstack`, or edge-anchored children mis-anchor as soon as the window is larger than the
+content.
 
 ## Resident apps and windows on demand
 
@@ -501,12 +509,12 @@ edge-anchored children mis-anchor as soon as the window is larger than the conte
 channels. What the app does
 once it has no open window is `App::on_last_window_closed(LastWindowPolicy)` from
 `waterui::app`: `Quit` (the default, on every platform, and immediately for an app that
-declares no window) or `StayResident` (macOS Dock convention, a tray or status-item app,
+declares no open window) or `StayResident` (macOS Dock convention, a tray or status-item app,
 an app that opens windows on demand). iOS and Android have no windowless foreground state:
-their runners reject an app that declares no window whatever its policy.
+their runners reject an app that declares no open window whatever its policy.
 
-`conditional_window` lives only as long as the window hosting it, so it cannot reopen a
-window after the last one closed. `WindowManager::new()` returns a `(WindowManager<C>, WindowChannel<C>)`
+For unbounded multi-instance windows (new document or scratch windows where every click opens
+a fresh window), `WindowManager::new()` returns a `(WindowManager<C>, WindowChannel<C>)`
 pair: pass `channel` to `App::window(channel)` so the runner monomorphizes `C` directly
 into its root window type, and call
 `window.show(&windows)` from any handler — including `App::menu_bar` commands, or nested

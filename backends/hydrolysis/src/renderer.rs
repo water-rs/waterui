@@ -595,7 +595,7 @@ pub struct SemanticCore<E: crate::text::TextEngine> {
     /// and needs no signal.
     window_closable: bool,
     /// The runner's callback for opening windows declared inside this
-    /// window's view tree (`conditional_window`). `None` on standalone test
+    /// window's view tree. `None` on standalone test
     /// cores no runner claimed.
     window_opener: Option<Rc<dyn Fn(crate::runner::window::RootWindow<E>)>>,
     /// The window's declared logical frame — the semantic walk's only
