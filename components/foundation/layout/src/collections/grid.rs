@@ -473,12 +473,11 @@ impl<R: GridRows> ViewSequence for GridCells<R> {
 /// and the grid automatically arranges your content into rows.
 ///
 /// ```rust
-/// # use waterui::layout::grid::{grid, row};
 /// # use waterui::prelude::*;
 /// # fn table() -> impl View {
 /// grid(2, [
-///     row((text("A1"), text("A2"))),
-///     row((text("B1"), text("B2"))),
+///     grid_row((text("A1"), text("A2"))),
+///     grid_row((text("B1"), text("B2"))),
 /// ])
 /// # }
 /// ```
@@ -577,7 +576,7 @@ pub fn grid<R: GridRows>(columns: usize, rows: R) -> Grid<R> {
 /// Creates a new grid row containing the specified views.
 ///
 /// This is a convenience function for creating `GridRow` instances.
-pub const fn row<S: ViewSequence>(contents: S) -> GridRow<S> {
+pub const fn grid_row<S: ViewSequence>(contents: S) -> GridRow<S> {
     GridRow::new(contents)
 }
 

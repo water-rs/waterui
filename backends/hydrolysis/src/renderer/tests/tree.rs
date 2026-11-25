@@ -1038,7 +1038,6 @@ fn render_tree_grid_snapshot() {
     }
 
     fn screen() -> AnyView {
-        use waterui::layout::grid::{grid, row};
         use waterui::prelude::*;
         fn cell(label: &str) -> impl View {
             button(label.to_owned()).action(|| {}).width(92.0)
@@ -1046,9 +1045,9 @@ fn render_tree_grid_snapshot() {
         let controls = grid(
             3,
             [
-                row((cell("Bar"), cell("Line"), cell("Pie"))),
-                row((cell("Scatter"), cell("Candle"), cell("Depth"))),
-                row((cell("Heatmap"), cell("Contour"), cell("Radar"))),
+                grid_row((cell("Bar"), cell("Line"), cell("Pie"))),
+                grid_row((cell("Scatter"), cell("Candle"), cell("Depth"))),
+                grid_row((cell("Heatmap"), cell("Contour"), cell("Radar"))),
             ],
         )
         .spacing(10.0);
