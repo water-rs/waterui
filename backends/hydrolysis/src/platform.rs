@@ -6,7 +6,7 @@ use cherenkov_gpu::interop::OutputColor;
 #[cfg(hydrolysis_cherenkov)]
 use nami::Signal;
 use waterui::cursor::CursorStyle;
-use waterui::window::Window as WuiWindow;
+use waterui::window::WindowParts as WuiWindow;
 #[cfg(hydrolysis_cherenkov)]
 use waterui::window::WindowState;
 use waterui_core::contract_violation;
@@ -4627,8 +4627,8 @@ mod winit_impl {
     use super::{
         CursorStyle, InputConventions, InputEvent, KeyCode, KeyState, Modifiers, MultiClickConfig,
         PaintedWindow, PainterUnavailable, PlatformWindow, PointerButton, PointerKind,
-        TextInputPurpose, TextInputState, TouchPhase, TouchScrollConfig, enabled_window_buttons,
-        validated_window_frame,
+        TextInputPurpose, TextInputState, TouchPhase, TouchScrollConfig, WuiWindow,
+        enabled_window_buttons, validated_window_frame,
     };
     #[cfg(hydrolysis_gpu_painter)]
     use super::{DeviceLostError, GpuGeneration, GpuUnavailable};
@@ -7002,7 +7002,7 @@ mod winit_impl {
         }
 
         /// Applies the window's declarative properties to the platform window.
-        fn apply_properties<C, T>(&mut self, window: &waterui::window::Window<C, T>) {
+        fn apply_properties<C, T>(&mut self, window: &WuiWindow<C, T>) {
             let title = window.display_title().snapshot();
             let decorations = !matches!(
                 window.style.snapshot(),
@@ -7959,7 +7959,7 @@ mod winit_impl {
             use wgpu::CompositeAlphaMode as Mode;
 
             let env = waterui_core::Environment::new();
-            let window = |material| Window::new("", || ()).background(material);
+            let window = |material| Window::new("", || ()).background(material).into_parts();
             let select = |material, modes: &[Mode]| {
                 negotiated_alpha_mode(
                     crate::runner::window_requires_transparency(&window(material), &env),

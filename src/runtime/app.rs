@@ -117,11 +117,11 @@ pub struct App<W, M = NoMenuBar> {
     /// What the application does once it has no window left.
     last_window: LastWindowPolicy,
     /// Optional system menu bar menus.
-    pub menu_bar: M,
+    menu_bar: M,
     /// The application environment containing injected services. Values
     /// installed with [`App::state`] are layered over it when the runner
     /// takes the application apart with [`App::into_parts`].
-    pub env: Environment,
+    env: Environment,
     /// The values installed with [`App::state`], the first call's nearest.
     states: Environment,
     /// The termination hooks, carried to the runner inside [`AppParts`].

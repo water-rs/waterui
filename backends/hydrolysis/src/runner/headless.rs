@@ -13,7 +13,7 @@ use crate::platform::RasterOffscreen;
 use crate::platform::{HeadlessColorFormat, PainterUnavailable};
 #[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
 use cherenkov_gpu::interop::OutputColor;
-use waterui::window::{WindowContent, WindowToolbar};
+use waterui::window::{Window, WindowContent, WindowParts, WindowToolbar};
 use waterui_core::layout::Rect;
 #[cfg(all(not(target_arch = "wasm32"), hydrolysis_gpu_painter))]
 use wgpu::TextureFormat;
@@ -291,7 +291,7 @@ impl PlatformWindow for HeadlessPlatformWindow {
         self.inner.content_size()
     }
 
-    fn apply_properties<C, T>(&mut self, window: &Window<C, T>) {
+    fn apply_properties<C, T>(&mut self, window: &WindowParts<C, T>) {
         self.inner.apply_properties(window);
     }
 
