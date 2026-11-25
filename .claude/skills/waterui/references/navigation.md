@@ -35,46 +35,32 @@ compensate for it with an `hstack` that imitates a bar.
 ## Tabs
 
 `Tabs::new(&selection, tabs)` takes a tab set, and each tab keeps the type of the
-builder that makes its root, so a tab reaches the backend without an `AnyView`. The set's
-id is the tab's identity *and* the type `selection` binds, so you never name an `Id`:
+builder that makes its root, so a tab reaches the backend without an `AnyView`:
 
-- a tuple of tabs — `(Tab::new(..), Tab::new(..))`, up to twelve — holds tabs
-  whose roots differ and is selected by a `Binding<usize>` position;
-- a `Vec` or array of tabs sharing one builder type, also selected by position;
-- `ForEach` over a `StateList` of `SelfId`s keys tabs by your own enum. Its tabs share one
-  builder, so the builder returns the variant of one `OneOfN` its item picks:
+- untagged tabs (`(Tab::new(..), Tab::new(..))`, `Vec<Tab>`, arrays, or `ForEach`) fall
+  back to positional `Binding<usize>` (or `ForEach` item) identity;
+- chaining `.tag(value)` keys any tuple, `Vec`, array, or `ForEach` by your own `T`
+  (such as a `Pane` enum) without `SelfId` or `OneOfN`:
 
 ```rust
-use waterui::id::SelfId;
-
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Pane { Inbox, Library, Settings, Search }
 
 let pane = binding(Pane::Inbox);
-let panes = [Pane::Inbox, Pane::Library, Pane::Settings, Pane::Search].map(SelfId::new);
 
-Tabs::new(&pane, ForEach::new(StateList::from(panes.to_vec()), move |pane: SelfId<Pane>| {
-    let pane = *pane;
-    let tab = Tab::new(
-        match pane {
-            Pane::Inbox => label("Inbox").icon(mdi::inbox()),
-            Pane::Library => label("Library").icon(mdi::image_album()),
-            Pane::Settings => label("Settings").icon(mdi::cog()),
-            Pane::Search => label("Search").icon(mdi::magnify()),
-        },
-        move || match pane {
-            Pane::Inbox => OneOf4::A(inbox_stack()),
-            Pane::Library => OneOf4::B(library_split()),
-            Pane::Settings => OneOf4::C(settings_stack()),
-            Pane::Search => OneOf4::D(search_stack()),
-        },
-    );
-    match pane {
-        Pane::Inbox => tab.badge(unread_count.clone()),
-        Pane::Search => tab.role(TabRole::Search), // iOS: the trailing system search tab; elsewhere a regular tab
-        Pane::Library | Pane::Settings => tab,
-    }
-}))
+Tabs::new(
+    &pane,
+    (
+        Tab::new(label("Inbox").icon(mdi::inbox()), inbox_stack)
+            .tag(Pane::Inbox)
+            .badge(unread_count.clone()),
+        Tab::new(label("Library").icon(mdi::image_album()), library_split).tag(Pane::Library),
+        Tab::new(label("Settings").icon(mdi::cog()), settings_stack).tag(Pane::Settings),
+        Tab::new(label("Search").icon(mdi::magnify()), search_stack)
+            .tag(Pane::Search)
+            .role(TabRole::Search), // iOS: the trailing system search tab; elsewhere a regular tab
+    ),
+)
 .style(tab_style::automatic())
 .minimize_behavior(TabBarMinimizeBehavior::OnScrollDown)   // iOS 26 collapses the bar while scrolling; ignored elsewhere
 .bottom_accessory(now_playing_bar())        // iOS 26 glass bar above the tab bar (mini-player slot); not shown elsewhere
