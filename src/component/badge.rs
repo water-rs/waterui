@@ -118,3 +118,16 @@ impl<C: View> View for Badge<C> {
         backend.native(self.into_config::<B::Slot>(), env, cx)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Badge;
+    use crate::view::ViewExt as _;
+    use waterui_text::text;
+
+    #[test]
+    fn badge_accepts_non_clone_modified_views() {
+        let _by_modifier = text("Inbox").padding().badge(3_u32);
+        let _by_constructor = Badge::new(3_u32, text("Inbox").padding().size(48.0, 48.0));
+    }
+}

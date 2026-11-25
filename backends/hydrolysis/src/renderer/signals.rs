@@ -567,7 +567,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             reason = "with `accessibility` enabled this queries `Environment::get`, which is not const"
         )
     )]
-    pub(crate) fn is_frame_rate_vote_visible(&self, env: &Environment) -> bool {
+    pub(crate) fn is_frame_rate_vote_visible(&mut self, env: &Environment) -> bool {
         if self.zero_opacity_depth > 0 {
             return false;
         }
@@ -576,10 +576,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             return false;
         }
         #[cfg(feature = "accessibility")]
-        if env
-            .get::<AccessibilityHidden>()
-            .is_some_and(AccessibilityHidden::is_hidden)
-        {
+        if self.is_accessibility_hidden(env) {
             return false;
         }
         #[cfg(not(feature = "accessibility"))]

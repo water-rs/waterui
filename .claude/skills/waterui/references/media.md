@@ -303,7 +303,7 @@ keeps one sub-recording per key and hands the body a `Computed<T>` of its item, 
 `cx.transform(affine, ..)`, `cx.layer(Layer::opacity(0.5), ..)` — never saved and restored.
 `Drawing::record(size, |cx| ..)` records constants, on any thread, for `cx.draw(&drawing,
 transform)` or `Canvas::from(drawing)`, a view of the drawing's size. Images are
-`ImageSource`s the target registers itself; `image.status()` reports a refusal. Give a
+`ImageSource`s the target registers itself (`ImageSource::decode(bytes)` decodes PNG/JPEG/GIF/WebP/BMP/ICO/TIFF/AV1-HEIF without naming the `image` crate, and `ImageSource::new(PixelBuffer::new(..))` wraps raw pixels); `image.status()` reports a refusal. Give a
 canvas with a natural size `.intrinsic_size(..)`, and a name with `.offered_label(..)`.
 Beyond `fill` and `stroke`: `cx.shadow(shape, Shadow::new(blur, color).offset(dx, dy))`
 (`color` is a resolved `waterui::graphics::WorkingColor` such as `WorkingColor::BLACK`,
@@ -338,8 +338,11 @@ re-renders every frame so `uniforms.time` advances, and `.param(signal)` / `.par
 `uniforms.time`, `uniforms.resolution` and `params` (`array<vec4<f32>, 16>`), returning
 premultiplied linear Display P3; `cherenkov_linear_srgb` converts an sRGB colour. For
 full control, implement `GpuContent` (sync `setup(&mut self, gpu: &Context<'_>)` owns persistent GPU
-resources; `render(&mut self, frame: &mut Frame<'_>)` draws — call `frame.request_redraw()` at the
-end to keep animating) and wrap it: `GpuView::new(content).size(w, h)`. The content is `Send`
+resources; `render(&mut self, frame: &mut Frame<'_>)` draws via accessors such as `frame.device()`,
+`frame.queue()`, `frame.view()`, `frame.width()`, `frame.height()`, `frame.elapsed()`, and
+`frame.delta()`, calling `frame.request_redraw()` at the end to keep animating) and wrap it in the
+authoring builder `GpuView::new(content).size(w, h)` (which lowers to the backend-only
+`waterui::graphics::backend::GpuContentLeaf`). The content is `Send`
 and lives on the render thread once installed — it must NOT hold `Binding`s or other UI-thread
 state; instead read reactive state in a `.on_frame` hook (UI thread, once per frame) and post
 plain values to the content through shared `Arc<Mutex<..>>` state. `waterui::graphics` re-exports

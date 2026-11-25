@@ -12848,6 +12848,7 @@ dependencies = [
  "waterui-core",
  "waterui-frame-rate",
  "waterui-graphics",
+ "waterui-icons-lucide",
  "waterui-interaction",
  "waterui-locale",
  "waterui-map",
@@ -13043,7 +13044,7 @@ dependencies = [
 [[package]]
 name = "waterui-chart"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/chart?branch=main#4aeda6a09bb308e4768f1cd6424aedbe57897fc2"
+source = "git+https://github.com/water-rs/chart?branch=main#4c1f44531a340bd15d42811d331452726e7becf9"
 dependencies = [
  "bytemuck",
  "nami",

@@ -498,8 +498,8 @@ LabelDisplayMode::IconOnly)` for icon buttons, `.install(LabelDisplayMode::IconO
 a whole toolbar. Beyond label, value, role and id, `.a11y_geometry(AccessibilityGeometry)`
 (the rectangle the element reports: the view's own response rectangle by default,
 `Allocation` for the whole assigned frame, or `Region(rect)`), `.a11y_children(
-AccessibilityChildren)` (how descendants contribute semantics) and
-`.a11y_state(AccessibilityState)` set the rest; the types are in `waterui::accessibility`.
+AccessibilityChildren)` (how descendants contribute semantics), `.a11y_hidden(hidden)` (static `bool` or reactive signal) and
+`.a11y_state(state)` (static `AccessibilityState` or reactive signal) set the rest; the types are in `waterui::accessibility`.
 
 ## Component index
 
@@ -517,7 +517,7 @@ web, graphics, and data rows live in [references/media.md](references/media.md).
 | Content | `Avatar` `Link` `Accordion` `.badge(n)` `loading()` |
 | Navigation | `Tabs` `Tab` `NavigationStack` `NavigationLink` `NavigationSplitView` `Window` |
 | Forms | `#[form]` `form()` `DatePicker` `Calendar` `ColorPicker` `FilePicker` |
-| Overlays | `.snackbar_host` `.snackbar_host_with_icons` `Snackbar` `SnackbarManager` `.full_screen_overlay_host` `FullScreenOverlayManager` `Card` `suspense` `.anchored_overlay` `AnchoredOverlay` `.dialog` `Dialog` `DialogAction` |
+| Overlays | `.snackbar_host` `.snackbar_host_with_icons` `Snackbar` `SnackbarManager` `.sheet` `Sheet` `SheetDetent` `SheetDismiss` `Card` `suspense` `.anchored_overlay` `AnchoredOverlay` `.dialog` `Dialog` `DialogAction` |
 | Media | `Photo` `Image` `VideoPlayer` `PlaybackSession` `MediaPicker` |
 | Data | `waterui::chart` (13 kinds: `line_chart` `bar_chart` `pie_chart` …) `Map` |
 | Graphics | `Canvas` `Barcode::qr()` `Svg` `shader!` `ParticleSystem` `GpuView` `ExternalFrameView` icon sets |

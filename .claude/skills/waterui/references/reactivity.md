@@ -194,6 +194,9 @@ vstack((
 ```
 
 Use `#[derive(Project)]` directly when you want projection without form generation.
+`waterui::Project`, `waterui::prelude::Project`, and `waterui::reactive::Project` all
+refer to the same derive, and each projected field keeps the visibility of its source
+field so private fields stay private outside their module or crate.
 
 ## Feeding signals to views
 

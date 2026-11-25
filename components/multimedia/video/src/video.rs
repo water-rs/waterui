@@ -28,6 +28,7 @@ use waterui_core::{
     Binding, Computed, Environment, Native, NativeView, SerialDispatch, View, binding,
     contract_violation, layout::StretchAxis,
 };
+use waterui_layout::ContentMode as LayoutContentMode;
 
 use crate::{
     Url,
@@ -47,6 +48,16 @@ pub enum ContentMode {
     Fill = 1,
     /// Stretch the video to fill the bounds, ignoring aspect ratio.
     Stretch = 2,
+}
+
+impl ContentMode {
+    const fn into_layout_mode(self) -> Option<LayoutContentMode> {
+        match self {
+            Self::Fit => Some(LayoutContentMode::Fit),
+            Self::Fill => Some(LayoutContentMode::Fill),
+            Self::Stretch => None,
+        }
+    }
 }
 
 /// Packing layout for an equirectangular spherical-video source.
@@ -1656,6 +1667,25 @@ impl<H> fmt::Debug for VideoConfig<H> {
 pub type NativeVideoConfig = VideoConfig<Option<BoundVideoEventHandler>>;
 
 impl<H> VideoConfig<H> {
+    /// Temporary migration bridge unpacking the video configuration with the
+    /// shared layout `ContentMode` (`None` for stretch) so split video
+    /// renderers can migrate before `content_mode` changes type.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        PlaybackConfiguration<H>,
+        Option<LayoutContentMode>,
+        VideoProjection,
+    ) {
+        (
+            self.playback,
+            self.content_mode.into_layout_mode(),
+            self.projection,
+        )
+    }
+
     fn map_event_handler<T>(self, map: impl FnOnce(H) -> T) -> VideoConfig<T> {
         let Self {
             playback,
@@ -1931,6 +1961,27 @@ impl<H> fmt::Debug for VideoPlayerConfig<H> {
 pub type NativeVideoPlayerConfig = VideoPlayerConfig<Option<BoundVideoEventHandler>>;
 
 impl<H> VideoPlayerConfig<H> {
+    /// Temporary migration bridge unpacking the video player configuration with
+    /// the shared layout `ContentMode` (`None` for stretch) so split video
+    /// renderers can migrate before `content_mode` changes type.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        PlaybackConfiguration<H>,
+        Option<LayoutContentMode>,
+        VideoProjection,
+        bool,
+    ) {
+        (
+            self.playback,
+            self.content_mode.into_layout_mode(),
+            self.projection,
+            self.show_controls,
+        )
+    }
+
     fn map_event_handler<T>(self, map: impl FnOnce(H) -> T) -> VideoPlayerConfig<T> {
         let Self {
             playback,

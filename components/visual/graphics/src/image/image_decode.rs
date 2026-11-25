@@ -1,50 +1,62 @@
 extern crate alloc;
 
+use alloc::string::{String, ToString as _};
 use alloc::vec::Vec;
 use core::ops::Range;
 use std::io::Cursor;
 
+use image::{DynamicImage, ImageError, load_from_memory};
 use mp4parse::{ParseStrictness, read_avif};
+
+use crate::canvas::{PixelBuffer, PixelFormat};
+use crate::draw::ResourceError;
 
 const FTYP_TYPE: &[u8; 4] = b"ftyp";
 const AVIF_BRAND: [u8; 4] = *b"avif";
 const AVIS_BRAND: [u8; 4] = *b"avis";
 
-/// Loads an image and applies HEIF-to-AVIF patching when needed.
-///
-/// # Errors
-///
-/// Returns the decoder error when the input cannot be loaded, even after AVIF
-/// compatibility patching is attempted.
-pub fn load_dynamic_image(bytes: &[u8]) -> Result<image::DynamicImage, image::ImageError> {
-    match image::load_from_memory(bytes) {
+/// Failure decoding encoded image bytes into a [`PixelBuffer`] or
+/// [`ImageSource`](crate::canvas::ImageSource).
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum ImageDecodeError {
+    /// The encoded bytes could not be decoded as a supported image format.
+    #[error("image decode failed: {0}")]
+    Decode(String),
+    /// The decoded pixel grid was rejected by the canvas resource contract.
+    #[error(transparent)]
+    Resource(#[from] ResourceError),
+}
+
+/// Decodes encoded raster image bytes into straight-alpha sRGB `Rgba8` pixels,
+/// retrying AV1-backed HEIF containers with an AVIF brand header when needed.
+pub fn decode_pixel_buffer(bytes: &[u8]) -> Result<PixelBuffer, ImageDecodeError> {
+    let dynamic =
+        load_dynamic_image(bytes).map_err(|err| ImageDecodeError::Decode(err.to_string()))?;
+    let rgba = dynamic.into_rgba8();
+    let (width, height) = rgba.dimensions();
+    Ok(PixelBuffer::new(
+        width,
+        height,
+        PixelFormat::Rgba8,
+        rgba.into_raw(),
+    ))
+}
+
+fn load_dynamic_image(bytes: &[u8]) -> Result<DynamicImage, ImageError> {
+    match load_from_memory(bytes) {
         Ok(image) => Ok(image),
         Err(primary_err) => {
             let Some(patched) = bridge_heif_av1_to_avif(bytes) else {
                 return Err(primary_err);
             };
-            image::load_from_memory(&patched).map_err(|_| primary_err)
+            load_from_memory(&patched).map_err(|_| primary_err)
         }
     }
 }
 
-/// Returns whether the container belongs to the HEIF family.
-#[must_use]
-pub fn is_heif_family(data: &[u8]) -> bool {
-    let Some(ftyp) = parse_file_type_box(data) else {
-        return false;
-    };
-
-    is_heif_brand(ftyp.major_brand)
-        || ftyp
-            .compatible_brands
-            .iter()
-            .any(|brand| is_heif_brand(*brand))
-}
-
 /// Rewrites HEIF AV1 brands to AVIF brands when the container is compatible.
-#[must_use]
-pub fn bridge_heif_av1_to_avif(data: &[u8]) -> Option<Vec<u8>> {
+fn bridge_heif_av1_to_avif(data: &[u8]) -> Option<Vec<u8>> {
     let ftyp = parse_file_type_box(data)?;
     if !is_heif_brand(ftyp.major_brand)
         && !ftyp

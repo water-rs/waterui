@@ -270,3 +270,108 @@ mod waterui_bench {
         )
     }
 }
+
+mod project {
+    use waterui::{Binding, Signal as _, Str, binding};
+
+    mod root_path {
+        use waterui::{Project, Str};
+
+        #[derive(Project, Clone)]
+        pub struct Account {
+            pub name: Str,
+            token: Str,
+        }
+
+        impl Account {
+            pub fn new(name: impl Into<Str>, token: impl Into<Str>) -> Self {
+                Self {
+                    name: name.into(),
+                    token: token.into(),
+                }
+            }
+
+            pub const fn token(&self) -> &Str {
+                &self.token
+            }
+        }
+
+        #[derive(Project, Clone)]
+        pub struct Pair(pub u32, u32);
+
+        impl Pair {
+            pub const fn new(public: u32, private: u32) -> Self {
+                Self(public, private)
+            }
+
+            pub const fn private(&self) -> u32 {
+                self.1
+            }
+        }
+    }
+
+    mod prelude_path {
+        use waterui::prelude::*;
+
+        #[derive(Project, Clone)]
+        pub struct Profile {
+            pub display_name: Str,
+        }
+    }
+
+    mod reactive_path {
+        use waterui::reactive::Project;
+
+        #[derive(Project, Clone)]
+        pub struct Settings {
+            pub volume: f64,
+        }
+    }
+
+    mod form_macro {
+        use waterui::{Str, form};
+
+        #[form]
+        pub struct Registration {
+            pub email: Str,
+            pub accepted: bool,
+        }
+    }
+
+    #[test]
+    fn single_project_derive_works_across_all_export_paths() {
+        let account: Binding<root_path::Account> =
+            binding(root_path::Account::new("Ada", "secret"));
+        let projected = account.project();
+        projected.name.set(Str::from("Grace"));
+        assert_eq!(account.snapshot().name, Str::from("Grace"));
+        assert_eq!(account.snapshot().token(), &Str::from("secret"));
+
+        let pair: Binding<root_path::Pair> = binding(root_path::Pair::new(1, 9));
+        let projected_pair = pair.project();
+        projected_pair.0.set(2);
+        assert_eq!(pair.snapshot().0, 2);
+        assert_eq!(pair.snapshot().private(), 9);
+
+        let profile: Binding<prelude_path::Profile> = binding(prelude_path::Profile {
+            display_name: Str::from("Ada"),
+        });
+        profile.project().display_name.set(Str::from("Lin"));
+        assert_eq!(profile.snapshot().display_name, Str::from("Lin"));
+
+        let settings: Binding<reactive_path::Settings> =
+            binding(reactive_path::Settings { volume: 0.5 });
+        settings.project().volume.set(0.8);
+        assert!((settings.snapshot().volume - 0.8).abs() < f64::EPSILON);
+
+        let form_binding: Binding<form_macro::Registration> =
+            binding(form_macro::Registration::default());
+        form_binding
+            .project()
+            .email
+            .set(Str::from("ada@example.com"));
+        form_binding.project().accepted.set(true);
+        assert_eq!(form_binding.snapshot().email, Str::from("ada@example.com"));
+        assert!(form_binding.snapshot().accepted);
+    }
+}

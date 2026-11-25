@@ -43,6 +43,9 @@ fn macro_contracts() {
     cases.compile_fail("tests/ui/list_selection/fail_untagged_multi_selection.rs");
     cases.compile_fail("tests/ui/list_selection/fail_other_tag.rs");
 
+    cases.compile_fail("tests/ui/project/fail_private_field.rs");
+    cases.compile_fail("tests/ui/project/fail_private_tuple_field.rs");
+
     cases.compile_fail("tests/ui/state/fail_on_fn.rs");
     cases.compile_fail("tests/ui/state/fail_union.rs");
     cases.compile_fail("tests/ui/state/fail_with_args.rs");

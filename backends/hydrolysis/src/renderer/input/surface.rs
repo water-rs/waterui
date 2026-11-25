@@ -2,10 +2,10 @@
 //!
 //! An embedded surface is a rectangle of the window that draws its own
 //! interactive content and therefore owns the input landing on it: a browser
-//! engine, any [`GpuView`](waterui_graphics::GpuView) or
-//! [`ExternalFrameView`](waterui_graphics::ExternalFrameView) whose view asks
+//! engine, any [`GpuContentLeaf`](waterui_graphics::backend::GpuContentLeaf) or
+//! [`ExternalFrameView`](waterui_graphics::ExternalFrameView) whose leaf asks
 //! for input with
-//! [`wants_input_events`](waterui_graphics::GpuView::wants_input_events),
+//! [`wants_input_events`](waterui_graphics::backend::GpuContentLeaf::wants_input_events),
 //! or any [`SceneView`](waterui_graphics::backend::SceneView) whose content asks the same
 //! through
 //! [`SceneContent::wants_input_events`](waterui_graphics::backend::SceneContent::wants_input_events).

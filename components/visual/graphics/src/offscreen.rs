@@ -7,9 +7,15 @@
 //! which [`OffscreenImage`] unpremultiplies and encodes as sRGB8 for PNGs.
 
 use alloc::rc::Rc;
+#[cfg(feature = "image-decode")]
+use alloc::string::{String, ToString as _};
 use alloc::vec::Vec;
 use core::fmt;
 use core::num::NonZeroU32;
+#[cfg(feature = "image-decode")]
+use std::fs::File;
+#[cfg(feature = "image-decode")]
+use std::io::{self, BufWriter};
 #[cfg(feature = "image-decode")]
 use std::path::Path;
 
@@ -24,7 +30,9 @@ use cherenkov_cpu::{Raster, RasterConfig};
 #[cfg(feature = "gpu")]
 use cherenkov_gpu::{Gpu, GpuConfig};
 #[cfg(feature = "image-decode")]
-use image::ImageEncoder as _;
+use image::codecs::png::PngEncoder;
+#[cfg(feature = "image-decode")]
+use image::{ExtendedColorType, ImageEncoder as _};
 
 use waterui_core::contract_violation;
 
@@ -76,6 +84,14 @@ pub enum OffscreenError {
     /// The frame did not render or could not be read back.
     #[error(transparent)]
     Render(#[from] RenderError),
+    /// Writing an encoded image to disk failed.
+    #[cfg(feature = "image-decode")]
+    #[error(transparent)]
+    Io(#[from] io::Error),
+    /// Encoding pixels as PNG failed.
+    #[cfg(feature = "image-decode")]
+    #[error("PNG encoding failed: {0}")]
+    Encode(String),
 }
 
 /// The pixels of an offscreen render: straight-alpha sRGB8, row-major.
@@ -183,14 +199,16 @@ impl OffscreenImage {
     /// # Errors
     /// When the file cannot be created or the encoder rejects the data.
     #[cfg(feature = "image-decode")]
-    pub fn save_png(&self, path: impl AsRef<Path>) -> Result<(), image::ImageError> {
-        let file = std::fs::File::create(path)?;
-        image::codecs::png::PngEncoder::new(std::io::BufWriter::new(file)).write_image(
-            &self.rgba8,
-            self.width,
-            self.height,
-            image::ExtendedColorType::Rgba8,
-        )
+    pub fn save_png(&self, path: impl AsRef<Path>) -> Result<(), OffscreenError> {
+        let file = File::create(path)?;
+        PngEncoder::new(BufWriter::new(file))
+            .write_image(
+                &self.rgba8,
+                self.width,
+                self.height,
+                ExtendedColorType::Rgba8,
+            )
+            .map_err(|err| OffscreenError::Encode(err.to_string()))
     }
 }
 
