@@ -75,10 +75,9 @@ pub mod prelude {
     pub use super::{
         Angle, AnimationExt, AnyView, Binding, Color, Computed, Identifiable, OneOf2, OneOf3,
         OneOf4, OneOf5, OneOf6, OneOf7, OneOf8, Project, Signal, SignalExt, State, Str, View,
-        ViewExt,
-        accessibility, animation, app, binding, color, component, cursor, drag_drop, env, error,
-        filter, gesture, gradient, id, layout, locale, metadata, reactive, regional, shape, sheet,
-        signal, style, task, text, widget, window,
+        ViewExt, accessibility, animation, app, binding, color, component, cursor, drag_drop, env,
+        error, filter, gesture, gradient, id, layout, locale, metadata, reactive, regional, shape,
+        sheet, signal, style, task, text, widget, window,
     };
 
     #[cfg(feature = "flow-markdown")]
