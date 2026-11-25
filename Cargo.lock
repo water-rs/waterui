@@ -13338,7 +13338,7 @@ version = "0.5.1"
 dependencies = [
  "waterui",
  "waterui-core",
- "waterui-graphics",
+ "waterui-layout",
  "waterui-svg",
  "waterui-testing",
  "waterui-text",
@@ -13366,7 +13366,6 @@ dependencies = [
  "ureq",
  "waterui-icon",
  "waterui-icons-codegen",
- "waterui-svg",
  "zip",
 ]
 
@@ -13378,7 +13377,6 @@ dependencies = [
  "waterui",
  "waterui-icon",
  "waterui-icons-codegen",
- "waterui-svg",
  "waterui-testing",
 ]
 
@@ -13392,7 +13390,6 @@ dependencies = [
  "waterui",
  "waterui-icon",
  "waterui-icons-codegen",
- "waterui-svg",
  "waterui-testing",
 ]
 
@@ -13822,7 +13819,7 @@ dependencies = [
 [[package]]
 name = "waterui-svg"
 version = "0.4.0"
-source = "git+https://github.com/water-rs/svg?branch=main#e65eabadc45daefcf2a488aa027f12a0e5952560"
+source = "git+https://github.com/water-rs/svg?branch=main#aa8720cfaf436e560f25d13fd5cc178f3512c848"
 dependencies = [
  "suiteki",
  "tracing",

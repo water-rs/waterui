@@ -1357,12 +1357,12 @@ pub fn components_snackbar_prose() {
         });
     let _ = Snackbar::new("padded").icon(|| mdi::delete().padding());
     let _ = text("host").snackbar_host();
-    let _ = text("host").snackbar_host_with_icons::<mdi::Svg>();
+    let _ = text("host").snackbar_host_with_icons::<mdi::Icon>();
     let _ = SnackbarManager::host(|m| {
         m.show(Snackbar::new("x").icon(mdi::delete));
         text("host")
     });
-    let _ = button("x").action(|m: SnackbarManager<mdi::Svg>| {
+    let _ = button("x").action(|m: SnackbarManager<mdi::Icon>| {
         m.show(Snackbar::new("x").icon(mdi::delete));
     });
     let _ = button("x").action(|manager: SnackbarManager| manager.dismiss());

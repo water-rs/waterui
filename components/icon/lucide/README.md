@@ -9,15 +9,15 @@ See [LICENSE](https://github.com/lucide-icons/lucide/blob/main/LICENSE) for full
 
 ## Features
 
-- `svg` (default) - Icons as `Svg` components for native rendering
-- `webfont` - Icons as styled text using Lucide font
+- `svg` (default) - Icons backed by SVG paths
+- `webfont` - Icons backed by Lucide font (requires font installation)
 
 ## Usage
 
 ```rust
 use waterui_icons_lucide as lucide;
 
-// Get an icon as Svg component (svg feature)
+// Every icon constructor returns `waterui_icon::Icon`
 lucide::house()
 lucide::settings()
 lucide::user()

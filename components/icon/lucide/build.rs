@@ -186,15 +186,15 @@ fn generate_icons_rs(out_dir: &str, icons: &IconNodes) {
 
         let const_name = rust_const_name(icon_name);
         let path_const = format!("{const_name}_PATH");
-        let ctor = format!("crate::Svg::from_stroke_path({path_const}, 24.0, 24.0)");
+        let ctor = format!("crate::Icon::from_path({path_const}, 24.0, 24.0).stroked()");
         entries.push(IconEntry {
             source_name: icon_name.clone(),
+            fn_name: rust_fn_name(icon_name),
             glyph: None,
             svg: Some(SvgConst {
                 path_const,
                 path_literal: format!("{path:?}"),
                 viewbox: None,
-                fn_name: rust_fn_name(icon_name),
                 ctor,
             }),
         });
