@@ -199,8 +199,6 @@ pub use waterui_form as form;
 pub use waterui_graphics::canvas;
 pub use waterui_graphics::color;
 pub use waterui_graphics::gradient;
-#[cfg(feature = "image")]
-pub use waterui_graphics::image_decode;
 #[cfg(feature = "gpu")]
 pub use waterui_graphics::{GpuContent, GpuView, RedrawHandle};
 #[cfg(any(feature = "gpu", feature = "cpu"))]

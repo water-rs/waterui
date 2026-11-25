@@ -515,7 +515,10 @@ pub fn media_block_08() {
 // as a rust block.
 // ---------------------------------------------------------------------------
 pub fn media_canvas_prose(image: waterui::canvas::ImageSource) -> impl View {
-    use waterui::canvas::{Canvas, Circle, Drawing, Layer, Sampling, Shadow, TextPlacement};
+    use waterui::canvas::{
+        Canvas, Circle, Drawing, ImageDecodeError, ImageSource, ImageStatus, Layer, Sampling,
+        Shadow, TextPlacement,
+    };
     use waterui::layout::{Affine2, Point, Rect, Size};
     use waterui::text::styled::StyledStr;
 
@@ -532,7 +535,8 @@ pub fn media_canvas_prose(image: waterui::canvas::ImageSource) -> impl View {
             waterui::graphics::WorkingColor::WHITE,
         );
     });
-    let _status: Computed<waterui::canvas::ImageStatus> = image.status();
+    let _decoded: Result<ImageSource, ImageDecodeError> = ImageSource::decode([]);
+    let _status: Computed<ImageStatus> = image.status();
     let _icon = Canvas::from(drawing.clone());
 
     Canvas::new(move |cx| {
