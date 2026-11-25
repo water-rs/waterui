@@ -17,6 +17,7 @@ serde = ["dep:erased-serde", "dep:serde"]
 
 [dependencies]
 waterui-core.workspace = true
+waterui-structural-transition.workspace = true
 waterui-text.workspace = true
 waterui-graphics = { workspace = true, default-features = false }
 waterui-controls.workspace = true
