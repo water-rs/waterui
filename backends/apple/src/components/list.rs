@@ -25,7 +25,7 @@ use std::collections::{HashMap, HashSet};
 
 use cocoa_ui::geometry::EdgeInsets as KitInsets;
 use cocoa_ui::{Retained, view};
-use waterui::animation::{Animation, ChangeAnimation};
+use waterui::animation::ChangeAnimation;
 use waterui::component::list::{
     ListConfig, ListEdits, ListRowDeletable, ListRowInsets, ListRowTags, ListSection, ListSections,
     ListSelection, ListTagId,
@@ -2621,7 +2621,7 @@ fn wire_controller(
             #[cfg(target_os = "ios")]
             None => table.scroll_to_row(target, false),
             #[cfg(target_os = "ios")]
-            Some(Animation::Default) => table.scroll_to_row(target, true),
+            Some(animation) if animation.is_default() => table.scroll_to_row(target, true),
             #[cfg(target_os = "ios")]
             Some(animation) => {
                 table.animate_scroll_to_row(
@@ -2633,7 +2633,7 @@ fn wire_controller(
             #[cfg(target_os = "macos")]
             None => table.scroll_row_to_top(target),
             #[cfg(target_os = "macos")]
-            Some(Animation::Default) => table.scroll_row_to_top_animated(target),
+            Some(animation) if animation.is_default() => table.scroll_row_to_top_animated(target),
             #[cfg(target_os = "macos")]
             Some(animation) => {
                 table.animate_scroll_row_to_top(

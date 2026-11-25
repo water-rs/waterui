@@ -454,6 +454,304 @@ pub enum Timing {
     Spring(Spring),
 }
 
+/// How an animation repeats once its cycle finishes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "repeat policies are part of the animation contract and handled exhaustively by backends"
+)]
+pub enum Repeat {
+    /// Plays once from the starting value to the target.
+    #[default]
+    Once,
+    /// Plays `count` cycles, optionally reversing every odd cycle.
+    ///
+    /// Once all cycles finish, the animated value holds its target.
+    Count {
+        /// Total number of cycles to play.
+        count: u32,
+        /// Whether odd-indexed cycles play in reverse.
+        autoreverse: bool,
+    },
+    /// Repeats indefinitely until replaced, optionally reversing every odd cycle.
+    Forever {
+        /// Whether odd-indexed cycles play in reverse.
+        autoreverse: bool,
+    },
+}
+
+impl Repeat {
+    /// Whether this repeat policy runs indefinitely without settling.
+    #[must_use]
+    pub const fn is_forever(self) -> bool {
+        matches!(self, Self::Forever { .. })
+    }
+
+    /// The number of cycles when finite, or `None` for [`Repeat::Forever`].
+    #[must_use]
+    pub const fn count(self) -> Option<u32> {
+        match self {
+            Self::Once => Some(1),
+            Self::Count { count, .. } => Some(count),
+            Self::Forever { .. } => None,
+        }
+    }
+
+    /// Whether odd-indexed cycles reverse direction.
+    #[must_use]
+    pub const fn autoreverse(self) -> bool {
+        match self {
+            Self::Once => false,
+            Self::Count { autoreverse, .. } | Self::Forever { autoreverse } => autoreverse,
+        }
+    }
+}
+
+/// A timing definition together with its playback schedule: leading delay,
+/// speed multiplier, and repetition policy.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Playback {
+    /// Single-cycle curve or physical spring.
+    pub timing: Timing,
+    /// Pause before playback starts, in seconds.
+    pub delay: f64,
+    /// Speed multiplier applied after `delay` (`> 0.0`).
+    pub speed: f64,
+    /// Cycle repetition policy.
+    pub repeat: Repeat,
+}
+
+impl Playback {
+    /// Schedules `timing` to run once at normal speed with no delay.
+    #[must_use]
+    pub const fn new(timing: Timing) -> Self {
+        Self {
+            timing,
+            delay: 0.0,
+            speed: 1.0,
+            repeat: Repeat::Once,
+        }
+    }
+
+    /// Sets the leading pause before playback starts, in seconds.
+    #[must_use]
+    pub const fn delay(mut self, delay: f64) -> Self {
+        self.delay = delay;
+        self
+    }
+
+    /// Sets the playback speed multiplier.
+    #[must_use]
+    pub const fn speed(mut self, speed: f64) -> Self {
+        self.speed = speed;
+        self
+    }
+
+    /// Sets how the cycle repeats.
+    #[must_use]
+    pub const fn repeat(mut self, repeat: Repeat) -> Self {
+        self.repeat = repeat;
+        self
+    }
+
+    /// Whether the playback repeats indefinitely.
+    #[must_use]
+    pub const fn is_perpetual(&self) -> bool {
+        self.repeat.is_forever()
+    }
+
+    /// Total scheduled wall-clock duration in seconds from `from` with initial
+    /// `velocity` toward `target`, or `None` for [`Repeat::Forever`].
+    ///
+    /// # Panics
+    ///
+    /// When `velocity` or `target` does not match `from`'s length.
+    #[must_use]
+    pub fn duration_for(&self, from: &[f64], velocity: &[f64], target: &[f64]) -> Option<f64> {
+        let lanes = from.len();
+        debug_assert!(
+            velocity.len() == lanes && target.len() == lanes,
+            "every lane slice of a track has the same length"
+        );
+        let count = self.repeat.count()?;
+        let delay = self.delay.max(0.0);
+        if count == 0 {
+            return Some(delay);
+        }
+        let speed = effective_speed(self.speed);
+        let (cycle0, rest) = match self.timing {
+            Timing::Curve { duration, .. } => {
+                let clamped = duration.max(0.0);
+                (clamped, clamped)
+            }
+            Timing::Spring(spring) => (
+                (0..lanes)
+                    .map(|lane| spring.settling_duration(from[lane] - target[lane], velocity[lane]))
+                    .fold(0.0_f64, f64::max),
+                (0..lanes)
+                    .map(|lane| spring.settling_duration(from[lane] - target[lane], 0.0))
+                    .fold(0.0_f64, f64::max),
+            ),
+        };
+        let total = if count == 1 || rest <= 0.0 {
+            cycle0
+        } else {
+            f64::from(count - 1).mul_add(rest, cycle0)
+        };
+        Some(delay + total / speed)
+    }
+
+    /// Single-cycle duration at unit step from rest in seconds, or `None` if a
+    /// spring never settles.
+    #[must_use]
+    pub fn cycle_duration(&self) -> Option<f64> {
+        match self.timing {
+            Timing::Curve { duration, .. } => Some(duration.max(0.0)),
+            Timing::Spring(spring) => spring
+                .unit_settling_duration()
+                .map(|duration| duration.as_secs_f64()),
+        }
+    }
+
+    /// Total scheduled wall-clock duration in seconds at unit step from rest,
+    /// or `None` for [`Repeat::Forever`] or an unsettled spring.
+    #[must_use]
+    pub fn total_duration(&self) -> Option<f64> {
+        if let Timing::Spring(spring) = self.timing {
+            spring.unit_settling_duration()?;
+        }
+        self.duration_for(&[0.0], &[0.0], &[1.0])
+    }
+
+    /// Evaluates the scheduled track `t` seconds after activation, writing each
+    /// lane's position and velocity per real second; returns whether playback
+    /// has finished.
+    ///
+    /// # Panics
+    ///
+    /// When `velocity`, `target`, `position` or `rate` does not match `from`'s
+    /// length.
+    pub fn sample_lanes(
+        &self,
+        from: &[f64],
+        velocity: &[f64],
+        target: &[f64],
+        t: f64,
+        position: &mut [f64],
+        rate: &mut [f64],
+    ) -> bool {
+        let lanes = from.len();
+        debug_assert!(
+            velocity.len() == lanes
+                && target.len() == lanes
+                && position.len() == lanes
+                && rate.len() == lanes,
+            "every lane slice of a track has the same length"
+        );
+        let delay = self.delay.max(0.0);
+        if t < delay {
+            position[..lanes].copy_from_slice(&from[..lanes]);
+            rate[..lanes].fill(0.0);
+            return false;
+        }
+        let speed = effective_speed(self.speed);
+        let scaled_t = (t - delay) * speed;
+        match self.repeat {
+            Repeat::Once => {
+                let done = self.timing.sample_lanes_inner(
+                    from,
+                    Some(velocity),
+                    target,
+                    scaled_t,
+                    position,
+                    rate,
+                );
+                if !done {
+                    for value in &mut rate[..lanes] {
+                        *value *= speed;
+                    }
+                }
+                done
+            }
+            Repeat::Count { count: 0, .. } => {
+                position[..lanes].copy_from_slice(&target[..lanes]);
+                rate[..lanes].fill(0.0);
+                true
+            }
+            Repeat::Count { .. } | Repeat::Forever { .. } => {
+                let (cycle0_dur, rest_dur) = match self.timing {
+                    Timing::Curve { duration, .. } => {
+                        let clamped = duration.max(0.0);
+                        (clamped, clamped)
+                    }
+                    Timing::Spring(spring) => (
+                        (0..lanes)
+                            .map(|lane| {
+                                spring.settling_duration(from[lane] - target[lane], velocity[lane])
+                            })
+                            .fold(0.0_f64, f64::max),
+                        (0..lanes)
+                            .map(|lane| spring.settling_duration(from[lane] - target[lane], 0.0))
+                            .fold(0.0_f64, f64::max),
+                    ),
+                };
+                if scaled_t < cycle0_dur {
+                    let _ = self.timing.sample_lanes_inner(
+                        from,
+                        Some(velocity),
+                        target,
+                        scaled_t,
+                        position,
+                        rate,
+                    );
+                    for value in &mut rate[..lanes] {
+                        *value *= speed;
+                    }
+                    return false;
+                }
+                let rem = scaled_t - cycle0_dur;
+                if let Repeat::Count { count, .. } = self.repeat
+                    && (rest_dur <= 0.0 || rem >= f64::from(count - 1) * rest_dur)
+                {
+                    position[..lanes].copy_from_slice(&target[..lanes]);
+                    rate[..lanes].fill(0.0);
+                    return true;
+                }
+                if rest_dur <= 0.0 {
+                    position[..lanes].copy_from_slice(&target[..lanes]);
+                    rate[..lanes].fill(0.0);
+                    return false;
+                }
+                let completed = (rem / rest_dur).floor();
+                let cycle_t = completed.mul_add(-rest_dur, rem);
+                let reverse =
+                    self.repeat.autoreverse() && ((completed + 1.0).rem_euclid(2.0) > 0.5);
+                let local_t = if reverse { rest_dur - cycle_t } else { cycle_t };
+                let _ = self
+                    .timing
+                    .sample_lanes_inner(from, None, target, local_t, position, rate);
+                let sign = if reverse { -speed } else { speed };
+                for value in &mut rate[..lanes] {
+                    if *value != 0.0 {
+                        *value *= sign;
+                    }
+                }
+                false
+            }
+        }
+    }
+}
+
+const fn effective_speed(speed: f64) -> f64 {
+    if speed.is_finite() && speed > 0.0 {
+        speed
+    } else {
+        1.0
+    }
+}
+
 impl Timing {
     /// Evaluates a track `t` seconds in, lane by lane, writing each lane's
     /// position and velocity per second; returns whether the track is done.
@@ -479,9 +777,21 @@ impl Timing {
         position: &mut [f64],
         rate: &mut [f64],
     ) -> bool {
+        self.sample_lanes_inner(from, Some(velocity), target, t, position, rate)
+    }
+
+    fn sample_lanes_inner(
+        &self,
+        from: &[f64],
+        velocity: Option<&[f64]>,
+        target: &[f64],
+        t: f64,
+        position: &mut [f64],
+        rate: &mut [f64],
+    ) -> bool {
         let lanes = from.len();
         debug_assert!(
-            velocity.len() == lanes
+            velocity.is_none_or(|vel| vel.len() == lanes)
                 && target.len() == lanes
                 && position.len() == lanes
                 && rate.len() == lanes,
@@ -507,10 +817,11 @@ impl Timing {
                 let mut settled = true;
                 for lane in 0..lanes {
                     let start = from[lane] - target[lane];
-                    let (offset, speed) = spring.sample(start, velocity[lane], t);
+                    let vel = velocity.map_or(0.0, |slice| slice[lane]);
+                    let (offset, speed) = spring.sample(start, vel, t);
                     position[lane] = target[lane] + offset;
                     rate[lane] = speed;
-                    settled &= t >= spring.settling_duration(start, velocity[lane]);
+                    settled &= t >= spring.settling_duration(start, vel);
                 }
                 settled
             }
@@ -778,5 +1089,60 @@ mod tests {
             &mut rate
         ));
         assert_eq!((position, rate), (target, [0.0; 2]));
+    }
+
+    #[test]
+    fn playback_delay_holds_origin_and_speed_scales_rate() {
+        let playback = Playback::new(Timing::Curve {
+            curve: CubicBezier::LINEAR,
+            duration: 1.0,
+        })
+        .delay(0.5)
+        .speed(2.0);
+        assert_eq!(playback.total_duration(), Some(1.0));
+        let (mut pos, mut rate) = ([0.0], [0.0]);
+        assert!(!playback.sample_lanes(&[10.0], &[0.0], &[20.0], 0.25, &mut pos, &mut rate));
+        assert_eq!((pos[0], rate[0]), (10.0, 0.0));
+        assert!(!playback.sample_lanes(&[10.0], &[0.0], &[20.0], 0.75, &mut pos, &mut rate));
+        assert!((pos[0] - 15.0).abs() < 1e-9);
+        assert!((rate[0] - 20.0).abs() < 1e-9);
+        assert!(playback.sample_lanes(&[10.0], &[0.0], &[20.0], 1.0, &mut pos, &mut rate));
+        assert_eq!((pos[0], rate[0]), (20.0, 0.0));
+    }
+
+    #[test]
+    fn playback_repeat_count_autoreverse_and_forever() {
+        let count = Playback::new(Timing::Curve {
+            curve: CubicBezier::LINEAR,
+            duration: 1.0,
+        })
+        .repeat(Repeat::Count {
+            count: 3,
+            autoreverse: true,
+        });
+        assert_eq!(count.total_duration(), Some(3.0));
+        let (mut pos, mut rate) = ([0.0], [0.0]);
+        // Cycle 0 (forward): 0.25 -> 0.25
+        assert!(!count.sample_lanes(&[0.0], &[0.0], &[1.0], 0.25, &mut pos, &mut rate));
+        assert!((pos[0] - 0.25).abs() < 1e-9);
+        assert!((rate[0] - 1.0).abs() < 1e-9);
+        // Cycle 1 (reversed): 1.25 -> 0.75 with rate -1.0
+        assert!(!count.sample_lanes(&[0.0], &[0.0], &[1.0], 1.25, &mut pos, &mut rate));
+        assert!((pos[0] - 0.75).abs() < 1e-9);
+        assert!((rate[0] + 1.0).abs() < 1e-9);
+        // Cycle 2 (forward): 2.25 -> 0.25
+        assert!(!count.sample_lanes(&[0.0], &[0.0], &[1.0], 2.25, &mut pos, &mut rate));
+        assert!((pos[0] - 0.25).abs() < 1e-9);
+        assert!((rate[0] - 1.0).abs() < 1e-9);
+        // Settled at target once count ends
+        assert!(count.sample_lanes(&[0.0], &[0.0], &[1.0], 3.0, &mut pos, &mut rate));
+        assert_eq!((pos[0], rate[0]), (1.0, 0.0));
+
+        let forever = count.repeat(Repeat::Forever { autoreverse: true });
+        assert_eq!(forever.total_duration(), None);
+        assert!(!forever.sample_lanes(&[0.0], &[0.0], &[1.0], 100.25, &mut pos, &mut rate));
+        assert!((pos[0] - 0.25).abs() < 1e-9);
+        assert!(!forever.sample_lanes(&[0.0], &[0.0], &[1.0], 101.25, &mut pos, &mut rate));
+        assert!((pos[0] - 0.75).abs() < 1e-9);
     }
 }

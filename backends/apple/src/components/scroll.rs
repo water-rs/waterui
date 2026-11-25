@@ -20,7 +20,6 @@ use alloc::rc::Rc;
 use core::cell::Cell;
 
 use cocoa_ui::{MainThreadMarker, Retained};
-use waterui::animation::Animation;
 use waterui::layout::scroll::{
     Axis, ScrollController, ScrollPosition, ScrollRequest, ScrollView, scroll_stretch_axis,
 };
@@ -414,7 +413,7 @@ fn apply_scroll_request(scroll: &ScrollSurface, request: &ScrollRequest<Point>) 
     let offset = clamped_offset(scroll, *request.target());
     match request.animation() {
         None => scroll.set_content_offset(offset, false),
-        Some(Animation::Default) => scroll.set_content_offset(offset, true),
+        Some(animation) if animation.is_default() => scroll.set_content_offset(offset, true),
         Some(animation) => scroll.animate_content_offset(
             offset,
             animation.duration().as_secs_f64(),
@@ -445,7 +444,7 @@ fn apply_scroll_request(scroll: &ScrollSurface, request: &ScrollRequest<Point>) 
     let target = raw_content_offset(*request.target(), scroll.adjusted_content_inset());
     match request.animation().as_ref() {
         None => scroll.scroll_to(target),
-        Some(Animation::Default) => scroll.scroll_to_animated(target),
+        Some(animation) if animation.is_default() => scroll.scroll_to_animated(target),
         Some(animation) => scroll.animate_scroll_to(
             target,
             animation.duration().as_secs_f64(),

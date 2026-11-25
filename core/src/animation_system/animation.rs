@@ -134,8 +134,10 @@
 use core::time::Duration;
 
 pub use crate::animation_system::frame_rate::{FrameRate, FrameRateVote};
+pub use crate::easing::Repeat;
 use crate::easing::{
-    EasingCurve, Interpolatable, Lanes, Spring, Timing, bezier_is_valid, cubic_bezier, lanes_of,
+    EasingCurve, Interpolatable, Lanes, Playback, Spring, Timing, bezier_is_valid, cubic_bezier,
+    lanes_of,
 };
 
 /// SwiftUI-style animation protocol.
@@ -257,7 +259,7 @@ where
 /// A running animation of a track, in lanes.
 #[derive(Debug, Clone)]
 struct ActiveTrack<T: Animatable> {
-    timing: Timing,
+    playback: Playback,
     elapsed: Duration,
     /// The lanes the animation started from.
     from: Lanes,
@@ -300,33 +302,39 @@ impl<T: Animatable> AnimationTrack<T> {
 
     /// Replace the target value.
     ///
-    /// If animation metadata is absent, or the animation is a zero-duration
-    /// curve, the value is applied immediately. Otherwise the animation
-    /// starts from the current value, carrying the velocity of the animation
-    /// it interrupts: a spring continues smoothly toward the new target,
-    /// while a curve runs its own shape from the current value.
+    /// If animation metadata is absent, or the playback finishes immediately
+    /// (zero-count repeat, or zero-duration non-forever curve with no delay),
+    /// the value is applied immediately. Otherwise the animation starts from
+    /// the current value, carrying the velocity of the animation it interrupts:
+    /// a spring continues smoothly toward the new target, while a curve runs
+    /// its own shape from the current value.
     pub fn set_target(&mut self, target: T, animation: Option<Animation>) {
-        let timing = animation.map(|animation| animation.validated().timing());
-        match timing {
-            Some(Timing::Curve { duration, .. }) if duration <= 0.0 => self.snap(target),
-            None => self.snap(target),
-            Some(timing) => {
-                let lanes = <T::AnimatableData as Interpolatable>::LANES;
-                let velocity = self
-                    .active
-                    .take()
-                    .map_or_else(|| Lanes::from_elem(0.0, lanes), |active| active.rate);
-                self.active = Some(ActiveTrack {
-                    timing,
-                    elapsed: Duration::ZERO,
-                    from: lanes_of(&self.current.animatable_data()),
-                    velocity,
-                    target: lanes_of(&target.animatable_data()),
-                    rate: Lanes::from_elem(0.0, lanes),
-                    to: target,
-                });
-            }
+        let Some(playback) = animation.map(|animation| animation.validated().playback()) else {
+            self.snap(target);
+            return;
+        };
+        let immediate = playback.delay <= 0.0
+            && (matches!(playback.repeat, Repeat::Count { count: 0, .. })
+                || (matches!(playback.timing, Timing::Curve { duration, .. } if duration <= 0.0)
+                    && !playback.is_perpetual()));
+        if immediate {
+            self.snap(target);
+            return;
         }
+        let lanes = <T::AnimatableData as Interpolatable>::LANES;
+        let velocity = self
+            .active
+            .take()
+            .map_or_else(|| Lanes::from_elem(0.0, lanes), |active| active.rate);
+        self.active = Some(ActiveTrack {
+            playback,
+            elapsed: Duration::ZERO,
+            from: lanes_of(&self.current.animatable_data()),
+            velocity,
+            target: lanes_of(&target.animatable_data()),
+            rate: Lanes::from_elem(0.0, lanes),
+            to: target,
+        });
     }
 
     fn snap(&mut self, target: T) {
@@ -344,7 +352,7 @@ impl<T: Animatable> AnimationTrack<T> {
 
         active.elapsed = active.elapsed.saturating_add(delta);
         let mut position = Lanes::from_elem(0.0, active.from.len());
-        let done = active.timing.sample_lanes(
+        let done = active.playback.sample_lanes(
             &active.from,
             &active.velocity,
             &active.target,
@@ -385,60 +393,67 @@ pub(super) const fn spring_is_valid(stiffness: f32, damping: f32) -> bool {
     stiffness.is_finite() && stiffness > 0.0 && damping.is_finite() && damping > 0.0
 }
 
-/// An enumeration representing different types of animations
-///
-/// This enum exposes two native animation primitives:
-/// - `Bezier`: Timed animations represented by cubic bezier control points
-/// - `Spring`: A physical spring with configurable stiffness and damping,
-///   running in real seconds until it settles
-///
-/// Convenience constructors (`linear`, `ease_in`, etc.) all map to `Bezier`.
-/// Every animation evaluates through the shared evaluator
-/// ([`timing`](Self::timing)), the one the Cherenkov engine samples, so a
-/// value animates identically whichever side draws it.
-#[derive(Debug, Default, Clone, PartialEq)]
+/// Whether playback speed is finite and strictly greater than zero.
+const fn speed_is_valid(speed: f32) -> bool {
+    speed.is_finite() && speed > 0.0
+}
+
+/// Native curve or spring primitive underlying an [`Animation`].
+#[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[expect(
-    clippy::exhaustive_enums,
-    reason = "backends realize each animation primitive natively, variant by variant; a new primitive must fail their build instead of falling into a wildcard arm"
-)]
-pub enum Animation {
-    /// Default animation behavior (uses system defaults)
-    #[default]
+enum AnimationKind {
     Default,
-    /// Timed cubic bezier animation with control points (x1, y1, x2, y2)
     Bezier {
-        /// Animation duration
         duration: Duration,
-        /// First control point X (0.0 to 1.0)
         x1: f32,
-        /// First control point Y
         y1: f32,
-        /// Second control point X (0.0 to 1.0)
         x2: f32,
-        /// Second control point Y
         y2: f32,
     },
-    /// A damped spring on a unit mass, evolving in real seconds: the
-    /// stiffness and damping coefficient `UISpringTimingParameters`,
-    /// `CASpringAnimation` and Compose's `spring` take.
-    ///
-    /// It overshoots when `damping < 2√stiffness` and runs until it settles
-    /// within [`SETTLE_TOLERANCE`](crate::easing::SETTLE_TOLERANCE); a
-    /// retarget carries its velocity.
     Spring {
-        /// Stiffness `k` on a unit mass: higher is faster. The natural
-        /// angular frequency is `√k` radians per second.
         stiffness: f32,
-        /// Damping coefficient `c`: higher bounces less; `2√k` is critically
-        /// damped.
         damping: f32,
     },
+}
+
+/// Configuration for UI animations.
+///
+/// Exposes two native primitives — cubic Bézier curves and physical springs on
+/// a unit mass — together with optional leading [`delay`](Self::delay),
+/// [`speed`](Self::speed) multiplier, and [`repeat`](Self::repeat) policy.
+/// Every animation evaluates through the shared evaluator
+/// ([`playback`](Self::playback)), the one the Cherenkov engine samples, so a
+/// value animates identically whichever side draws it.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Animation {
+    kind: AnimationKind,
+    delay: Duration,
+    speed: f32,
+    repeat: Repeat,
+}
+
+impl Default for Animation {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
 }
 
 nami::impl_constant!(Animation);
 
 impl Animation {
+    /// Default system animation with no delay, unit speed, and single-cycle playback.
+    pub const DEFAULT: Self = Self::from_kind(AnimationKind::Default);
+
+    const fn from_kind(kind: AnimationKind) -> Self {
+        Self {
+            kind,
+            delay: Duration::ZERO,
+            speed: 1.0,
+            repeat: Repeat::Once,
+        }
+    }
+
     /// Creates a new Linear animation with the specified duration
     ///
     /// # Examples
@@ -452,13 +467,13 @@ impl Animation {
     /// ```
     #[must_use]
     pub const fn linear(duration: Duration) -> Self {
-        Self::Bezier {
+        Self::from_kind(AnimationKind::Bezier {
             duration,
             x1: 0.0,
             y1: 0.0,
             x2: 1.0,
             y2: 1.0,
-        }
+        })
     }
 
     /// Creates a new ease-in animation with the specified duration
@@ -474,13 +489,13 @@ impl Animation {
     /// ```
     #[must_use]
     pub const fn ease_in(duration: Duration) -> Self {
-        Self::Bezier {
+        Self::from_kind(AnimationKind::Bezier {
             duration,
             x1: 0.42,
             y1: 0.0,
             x2: 1.0,
             y2: 1.0,
-        }
+        })
     }
 
     /// Creates a new ease-out animation with the specified duration
@@ -496,13 +511,13 @@ impl Animation {
     /// ```
     #[must_use]
     pub const fn ease_out(duration: Duration) -> Self {
-        Self::Bezier {
+        Self::from_kind(AnimationKind::Bezier {
             duration,
             x1: 0.0,
             y1: 0.0,
             x2: 0.58,
             y2: 1.0,
-        }
+        })
     }
 
     /// Creates a new ease-in-out animation with the specified duration
@@ -518,13 +533,13 @@ impl Animation {
     /// ```
     #[must_use]
     pub const fn ease_in_out(duration: Duration) -> Self {
-        Self::Bezier {
+        Self::from_kind(AnimationKind::Bezier {
             duration,
             x1: 0.42,
             y1: 0.0,
             x2: 0.58,
             y2: 1.0,
-        }
+        })
     }
 
     /// Creates a physical spring with the given stiffness and damping
@@ -553,7 +568,7 @@ impl Animation {
             spring_is_valid(stiffness, damping),
             "Animation::spring requires finite stiffness > 0 and finite damping > 0"
         );
-        Self::Spring { stiffness, damping }
+        Self::from_kind(AnimationKind::Spring { stiffness, damping })
     }
 
     /// Creates a new custom cubic bezier animation
@@ -585,49 +600,85 @@ impl Animation {
             bezier_is_valid(x1, y1, x2, y2),
             "Animation::bezier requires finite control points with x1/x2 in [0, 1]"
         );
-        Self::Bezier {
+        Self::from_kind(AnimationKind::Bezier {
             duration,
             x1,
             y1,
             x2,
             y2,
-        }
+        })
+    }
+
+    /// Delays playback by `delay` before the first cycle begins.
+    #[must_use]
+    pub const fn delay(mut self, delay: Duration) -> Self {
+        self.delay = delay;
+        self
+    }
+
+    /// Scales the animation's playback speed by `speed` (`> 0`).
+    ///
+    /// A debug build asserts that `speed` is finite and positive; a consumer
+    /// calls [`validated`](Self::validated) to guard untrusted values.
+    #[must_use]
+    pub const fn speed(mut self, speed: f32) -> Self {
+        debug_assert!(
+            speed_is_valid(speed),
+            "Animation::speed requires a finite speed > 0"
+        );
+        self.speed = speed;
+        self
+    }
+
+    /// Sets how the animation repeats after completing its cycle.
+    #[must_use]
+    pub const fn repeat(mut self, repeat: Repeat) -> Self {
+        self.repeat = repeat;
+        self
+    }
+
+    /// Whether this is the unmodified system default animation.
+    #[must_use]
+    pub const fn is_default(&self) -> bool {
+        matches!(self.kind, AnimationKind::Default)
+            && self.delay.is_zero()
+            && self.speed.to_bits() == 1.0_f32.to_bits()
+            && matches!(self.repeat, Repeat::Once)
     }
 
     /// This animation when its parameters are valid, otherwise the default
     /// animation.
     ///
     /// A consumer calls it where it takes an `Animation` from app code. An
-    /// invalid spring or bezier is a contract violation: a debug build panics
-    /// and a release build logs it and uses [`Animation::Default`].
+    /// invalid curve, spring, or speed is a contract violation: a debug build
+    /// panics and a release build logs it and uses [`Animation::DEFAULT`].
     #[must_use]
     pub fn validated(self) -> Self {
-        let valid = match &self {
-            Self::Default => true,
-            Self::Bezier { x1, y1, x2, y2, .. } => bezier_is_valid(*x1, *y1, *x2, *y2),
-            Self::Spring { stiffness, damping } => spring_is_valid(*stiffness, *damping),
+        let kind_valid = match self.kind {
+            AnimationKind::Default => true,
+            AnimationKind::Bezier { x1, y1, x2, y2, .. } => bezier_is_valid(x1, y1, x2, y2),
+            AnimationKind::Spring { stiffness, damping } => spring_is_valid(stiffness, damping),
         };
-        if valid {
+        if kind_valid && speed_is_valid(self.speed) {
             self
         } else {
             crate::contract_violation!("invalid animation parameters: {self:?}");
-            Self::Default
+            Self::DEFAULT
         }
     }
 
-    /// How this animation moves, in the shared evaluator's terms: the
-    /// timing curve over its duration, or the physical spring.
+    /// The single-cycle curve or physical spring, without schedule modifiers.
     ///
-    /// The Cherenkov engine evaluates the same [`Timing`], which is what
-    /// makes core and the engine sample an animation identically.
+    /// Prefer [`playback`](Self::playback) when evaluating or realizing an
+    /// animation so delay, speed, and repeat apply consistently.
     #[must_use]
     pub fn timing(&self) -> Timing {
-        match *self {
-            Self::Default => Timing::Curve {
+        match self.kind {
+            AnimationKind::Default => Timing::Curve {
                 curve: EasingCurve::EASE_IN_OUT.cubic_bezier(),
                 duration: DEFAULT_TIMED_DURATION.as_secs_f64(),
             },
-            Self::Bezier {
+            AnimationKind::Bezier {
                 duration,
                 x1,
                 y1,
@@ -637,22 +688,32 @@ impl Animation {
                 curve: cubic_bezier(x1, y1, x2, y2),
                 duration: duration.as_secs_f64(),
             },
-            Self::Spring { stiffness, damping } => Timing::Spring(physical(stiffness, damping)),
+            AnimationKind::Spring { stiffness, damping } => {
+                Timing::Spring(physical(stiffness, damping))
+            }
         }
     }
 
-    /// How long the animation runs from rest to its target.
-    ///
-    /// A curve runs its duration. A spring runs until it settles, which
-    /// depends on how far it moves; this is the time by which a unit step
-    /// from rest has settled for good, so [`progress`](Self::progress) is
-    /// exactly `1` from then on.
+    /// The shared evaluator schedule for this animation, carrying its timing
+    /// primitive alongside [`delay`](Self::delay), [`speed`](Self::speed), and
+    /// [`repeat`](Self::repeat).
     #[must_use]
-    pub fn duration(&self) -> Duration {
-        match *self {
-            Self::Default => DEFAULT_TIMED_DURATION,
-            Self::Bezier { duration, .. } => duration,
-            Self::Spring { stiffness, damping } => physical(stiffness, damping)
+    pub fn playback(&self) -> Playback {
+        Playback {
+            timing: self.timing(),
+            delay: self.delay.as_secs_f64(),
+            speed: f64::from(self.speed),
+            repeat: self.repeat,
+        }
+    }
+
+    /// How long one unscaled cycle runs from rest to its target.
+    #[must_use]
+    pub fn cycle_duration(&self) -> Duration {
+        match self.kind {
+            AnimationKind::Default => DEFAULT_TIMED_DURATION,
+            AnimationKind::Bezier { duration, .. } => duration,
+            AnimationKind::Spring { stiffness, damping } => physical(stiffness, damping)
                 .unit_settling_duration()
                 .unwrap_or_else(|| {
                     crate::contract_violation!(
@@ -663,12 +724,41 @@ impl Animation {
         }
     }
 
+    /// Total wall-clock duration from activation to settlement for a unit step
+    /// from rest, or `None` when repeating forever.
+    #[must_use]
+    pub fn total_duration(&self) -> Option<Duration> {
+        let count = self.repeat.count()?;
+        if count == 0 {
+            return Some(self.delay);
+        }
+        let cycle = self.cycle_duration();
+        if cycle == Duration::MAX {
+            return Some(Duration::MAX);
+        }
+        let cycles = cycle.saturating_mul(count);
+        let scaled = if self.speed.to_bits() == 1.0_f32.to_bits() || !speed_is_valid(self.speed) {
+            cycles
+        } else {
+            Duration::from_secs_f64(cycles.as_secs_f64() / f64::from(self.speed))
+        };
+        Some(self.delay.saturating_add(scaled))
+    }
+
+    /// How long the animation runs from rest to settlement (`Duration::MAX`
+    /// when repeating forever).
+    #[must_use]
+    pub fn duration(&self) -> Duration {
+        self.total_duration().unwrap_or(Duration::MAX)
+    }
+
     /// The eased progress `elapsed` after a unit step from rest started:
-    /// `0` at the start and exactly `1` once the animation is complete.
+    /// `0` at the start and exactly `1` once a finite animation is complete.
     ///
     /// A curve follows its timing over its duration. A spring follows its
     /// step response in real seconds and may overshoot (return values above
-    /// `1` or below `0`) before it settles.
+    /// `1` or below `0`) before it settles. Leading delay holds at `0`, and
+    /// `speed` / `repeat` shape the cycle progress.
     #[must_use]
     pub fn progress(&self, elapsed: Duration) -> f64 {
         self.step(elapsed).0
@@ -677,7 +767,7 @@ impl Animation {
     /// The unit step `elapsed` in: its progress and whether it is done.
     fn step(&self, elapsed: Duration) -> (f64, bool) {
         let (mut position, mut rate) = ([0.0], [0.0]);
-        let done = self.timing().sample_lanes(
+        let done = self.playback().sample_lanes(
             &[0.0],
             &[0.0],
             &[1.0],
@@ -691,7 +781,7 @@ impl Animation {
     /// Interpolate between two values based on elapsed time.
     ///
     /// Each lane moves from `from` at rest to `to` exactly as an
-    /// [`AnimationTrack`] does, and lands on `to` once the animation is
+    /// [`AnimationTrack`] does, and lands on `to` once a finite animation is
     /// complete.
     ///
     /// # Examples
@@ -711,7 +801,7 @@ impl Animation {
         let target = lanes_of(&to.animatable_data());
         let at_rest = Lanes::from_elem(0.0, from.len());
         let (mut position, mut rate) = (at_rest.clone(), at_rest.clone());
-        if self.timing().sample_lanes(
+        if self.playback().sample_lanes(
             &from,
             &at_rest,
             &target,
@@ -725,10 +815,10 @@ impl Animation {
     }
 
     /// Returns true if the animation is complete `elapsed` after a unit step
-    /// from rest started.
+    /// from rest started (`false` while repeating forever).
     ///
-    /// A curve is complete once its duration has passed, a spring once it
-    /// has settled within
+    /// A curve is complete once its scheduled duration has passed, a spring
+    /// once it has settled within
     /// [`SETTLE_TOLERANCE`](crate::easing::SETTLE_TOLERANCE).
     #[must_use]
     pub fn is_complete(&self, elapsed: Duration) -> bool {
@@ -791,11 +881,11 @@ impl ChangeAnimation {
     ///
     /// assert_eq!(ChangeAnimation::of(&Metadata::new()), ChangeAnimation::Unspecified);
     /// assert_eq!(
-    ///     ChangeAnimation::of(&Metadata::new().with(Animation::Default)),
-    ///     ChangeAnimation::Animated(Animation::Default),
+    ///     ChangeAnimation::of(&Metadata::new().with(Animation::default())),
+    ///     ChangeAnimation::Animated(Animation::default()),
     /// );
     /// assert_eq!(
-    ///     ChangeAnimation::of(&Metadata::new().with(Animation::Default).with(NoAnimation)),
+    ///     ChangeAnimation::of(&Metadata::new().with(Animation::default()).with(NoAnimation)),
     ///     ChangeAnimation::Disabled,
     /// );
     /// ```
@@ -840,13 +930,13 @@ impl ChangeAnimation {
 pub trait AnimationExt: nami::SignalExt {
     /// Attach the system-default animation to this reactive value.
     ///
-    /// Equivalent to `self.with(Animation::Default)`; the backend picks the
+    /// Equivalent to `self.with(Animation::default())`; the backend picks the
     /// curve and duration that match the platform. To pick an explicit
     /// animation, use [`nami::SignalExt::with`] directly:
     /// `value.with(Animation::spring(100.0, 10.0))`.
     #[track_caller]
     fn animated(&self) -> WithMetadata<Self, Animation> {
-        self.with(Animation::Default)
+        self.with(Animation::default())
     }
 }
 
@@ -859,10 +949,10 @@ mod tests {
     use crate::easing::SETTLE_TOLERANCE;
 
     #[test]
-    fn convenience_curves_use_bezier_variant() {
+    fn convenience_curves_use_bezier_kind() {
         assert!(matches!(
-            Animation::linear(Duration::from_millis(100)),
-            Animation::Bezier {
+            Animation::linear(Duration::from_millis(100)).kind,
+            AnimationKind::Bezier {
                 x1: 0.0,
                 y1: 0.0,
                 x2: 1.0,
@@ -871,8 +961,8 @@ mod tests {
             }
         ));
         assert!(matches!(
-            Animation::ease_in(Duration::from_millis(100)),
-            Animation::Bezier {
+            Animation::ease_in(Duration::from_millis(100)).kind,
+            AnimationKind::Bezier {
                 x1: 0.42,
                 y1: 0.0,
                 x2: 1.0,
@@ -881,8 +971,8 @@ mod tests {
             }
         ));
         assert!(matches!(
-            Animation::ease_out(Duration::from_millis(100)),
-            Animation::Bezier {
+            Animation::ease_out(Duration::from_millis(100)).kind,
+            AnimationKind::Bezier {
                 x1: 0.0,
                 y1: 0.0,
                 x2: 0.58,
@@ -891,8 +981,8 @@ mod tests {
             }
         ));
         assert!(matches!(
-            Animation::ease_in_out(Duration::from_millis(100)),
-            Animation::Bezier {
+            Animation::ease_in_out(Duration::from_millis(100)).kind,
+            AnimationKind::Bezier {
                 x1: 0.42,
                 y1: 0.0,
                 x2: 0.58,
@@ -917,41 +1007,112 @@ mod tests {
     }
 
     #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "finite speed > 0")]
+    fn speed_modifier_asserts_non_positive_in_debug() {
+        let _ = Animation::default().speed(0.0);
+    }
+
+    #[test]
     fn validated_keeps_valid_animations() {
-        let spring = Animation::spring(100.0, 10.0);
+        let spring = Animation::spring(100.0, 10.0)
+            .delay(Duration::from_millis(40))
+            .speed(1.5)
+            .repeat(Repeat::Count {
+                count: 2,
+                autoreverse: true,
+            });
         assert_eq!(spring.clone().validated(), spring);
         let bezier = Animation::ease_in_out(Duration::from_millis(100));
         assert_eq!(bezier.clone().validated(), bezier);
-        assert_eq!(Animation::Default.validated(), Animation::Default);
+        assert_eq!(Animation::default().validated(), Animation::default());
+        assert!(Animation::default().is_default());
+        assert!(
+            !Animation::default()
+                .delay(Duration::from_millis(10))
+                .is_default()
+        );
+        assert!(!Animation::default().speed(2.0).is_default());
+        assert!(
+            !Animation::default()
+                .repeat(Repeat::Forever { autoreverse: false })
+                .is_default()
+        );
     }
 
     #[test]
     #[cfg(debug_assertions)]
     #[should_panic(expected = "invalid animation parameters")]
     fn validated_reports_an_invalid_spring_in_debug() {
-        let _ = Animation::Spring {
+        let _ = Animation::from_kind(AnimationKind::Spring {
             stiffness: 100.0,
             damping: -1.0,
-        }
+        })
         .validated();
     }
 
     #[test]
     #[cfg(not(debug_assertions))]
     fn validated_replaces_invalid_animations_with_the_default_in_release() {
-        let spring = Animation::Spring {
+        let spring = Animation::from_kind(AnimationKind::Spring {
             stiffness: 0.0,
             damping: 10.0,
-        };
-        assert_eq!(spring.validated(), Animation::Default);
-        let bezier = Animation::Bezier {
+        });
+        assert_eq!(spring.validated(), Animation::default());
+        let bezier = Animation::from_kind(AnimationKind::Bezier {
             duration: Duration::from_millis(100),
             x1: -0.1,
             y1: 0.0,
             x2: 0.5,
             y2: 1.0,
+        });
+        assert_eq!(bezier.validated(), Animation::default());
+        let bad_speed = Animation {
+            speed: 0.0,
+            ..Animation::linear(Duration::from_millis(100))
         };
-        assert_eq!(bezier.validated(), Animation::Default);
+        assert_eq!(bad_speed.validated(), Animation::default());
+    }
+
+    #[test]
+    fn animation_modifiers_shape_progress_duration_and_tracks() {
+        let anim = Animation::linear(Duration::from_millis(400))
+            .delay(Duration::from_millis(100))
+            .speed(2.0)
+            .repeat(Repeat::Count {
+                count: 2,
+                autoreverse: true,
+            });
+        // Single cycle is 400ms; at 2x speed, 2 cycles = 400ms + 100ms delay = 500ms.
+        assert_eq!(anim.cycle_duration(), Duration::from_millis(400));
+        assert_eq!(anim.total_duration(), Some(Duration::from_millis(500)));
+        assert_eq!(anim.duration(), Duration::from_millis(500));
+        // During delay: still at 0, not complete.
+        assert_eq!(anim.progress(Duration::from_millis(50)), 0.0);
+        assert!(!anim.is_complete(Duration::from_millis(50)));
+        // Halfway through first cycle (100ms + 100ms = 200ms).
+        assert!((anim.progress(Duration::from_millis(200)) - 0.5).abs() < 1e-9);
+        // Halfway through reversed second cycle (100ms + 200ms + 100ms = 400ms).
+        assert!((anim.progress(Duration::from_millis(400)) - 0.5).abs() < 1e-9);
+        // Settled at 500ms.
+        assert!(anim.is_complete(Duration::from_millis(500)));
+        assert_eq!(anim.progress(Duration::from_millis(500)), 1.0);
+
+        // Repeat::Forever never settles and reports total_duration() == None.
+        let forever = Animation::linear(Duration::from_millis(200))
+            .repeat(Repeat::Forever { autoreverse: true });
+        assert_eq!(forever.total_duration(), None);
+        assert_eq!(forever.duration(), Duration::MAX);
+        assert!(!forever.is_complete(Duration::from_secs(600)));
+
+        let mut track = AnimationTrack::new(0.0_f32);
+        track.set_target(10.0, Some(anim));
+        assert!(track.advance(Duration::from_millis(50)));
+        assert_eq!(track.value(), 0.0);
+        assert!(track.advance(Duration::from_millis(150)));
+        assert!((track.value() - 5.0).abs() < 1e-4);
+        assert!(!track.advance(Duration::from_millis(400)));
+        assert_eq!(track.value(), 10.0);
     }
 
     #[test]
@@ -1078,8 +1239,8 @@ mod tests {
 
     #[test]
     fn no_animation_wins_over_an_attached_animation() {
-        let inner = Metadata::new().with(NoAnimation).with(Animation::Default);
-        let outer = Metadata::new().with(Animation::Default).with(NoAnimation);
+        let inner = Metadata::new().with(NoAnimation).with(Animation::default());
+        let outer = Metadata::new().with(Animation::default()).with(NoAnimation);
         assert_eq!(ChangeAnimation::of(&inner), ChangeAnimation::Disabled);
         assert_eq!(ChangeAnimation::of(&outer), ChangeAnimation::Disabled);
     }

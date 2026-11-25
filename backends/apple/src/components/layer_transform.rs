@@ -19,14 +19,14 @@
 use waterui::animation::ChangeAnimation;
 use waterui::reactive::watcher::Metadata as WatchMetadata;
 
-use cocoa_ui::core_animation::Timing;
+use cocoa_ui::core_animation::Playback;
 use cocoa_ui::objc2_quartz_core::CATransform3D;
 
 /// `parseAnimation`: the watcher metadata's `Animation` mapped to a kit
-/// [`Timing`] by the shared [`crate::animation::timing`] mapping. A change
+/// [`Playback`] by the shared [`crate::animation::timing`] mapping. A change
 /// that names no animation or disables it answers `None`: the change
 /// applies directly.
-pub fn watcher_timing(metadata: &WatchMetadata) -> Option<Timing> {
+pub fn watcher_timing(metadata: &WatchMetadata) -> Option<Playback> {
     ChangeAnimation::of(metadata)
         .animation()
         .map(|animation| crate::animation::timing(&animation))

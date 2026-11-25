@@ -586,24 +586,12 @@ fn animation_cases() -> Vec<(&'static str, waterui::animation::Animation)> {
     let mut cases = vec![
         (
             "bezier",
-            Animation::Bezier {
-                duration: Duration::from_millis(500),
-                x1: 0.25,
-                y1: 0.1,
-                x2: 0.25,
-                y2: 1.0,
-            },
+            Animation::bezier(Duration::from_millis(500), 0.25, 0.1, 0.25, 1.0),
         ),
-        (
-            "spring",
-            Animation::Spring {
-                stiffness: 300.0,
-                damping: 30.0,
-            },
-        ),
+        ("spring", Animation::spring(300.0, 30.0)),
     ];
     #[cfg(target_os = "macos")]
-    cases.insert(0, ("default", Animation::Default));
+    cases.insert(0, ("default", Animation::default()));
     cases
 }
 
@@ -8788,7 +8776,7 @@ mod scroll {
     /// wall-clock animation: it does not jump, and it takes time to land.
     fn an_animation_scrolls_to_the_target(name: &'static str, animation: Animation) {
         let fixture = mounted();
-        let native = matches!(animation, Animation::Default);
+        let native = animation.is_default();
         let request = || {
             fixture
                 .controller
@@ -9503,7 +9491,7 @@ mod list_scroll {
     /// animation: it does not jump, and it takes time to land.
     fn an_animation_scrolls_the_row_to_the_top(name: &'static str, animation: Animation) {
         let fixture = mounted();
-        let native = matches!(animation, Animation::Default);
+        let native = animation.is_default();
         let request = || {
             fixture.controller.animate_to(TARGET, animation);
             assert!(
@@ -9548,7 +9536,7 @@ mod list_scroll {
     /// platform's wall-clock animation from the approach row.
     fn a_far_animation_jumps_to_the_approach_row_first(name: &'static str, animation: Animation) {
         let fixture = mounted_with(vec![row_item as fn() -> Text; APPROACH_LIST_ROWS]);
-        let native = matches!(animation, Animation::Default);
+        let native = animation.is_default();
         let request = || {
             fixture
                 .controller
@@ -9604,10 +9592,7 @@ mod list_scroll {
     /// frame's write is clamped, so no sample passes the end as it
     /// stands at that frame, and the flight lands on it.
     fn an_overshooting_spring_toward_the_last_rows_never_passes_the_end() {
-        let spring = Animation::Spring {
-            stiffness: 300.0,
-            damping: 6.0,
-        };
+        let spring = Animation::spring(300.0, 6.0);
         let fixture = mounted_mixed_heights();
         fixture.controller.animate_to(ROWS - 1, spring.clone());
         let from = offset_y(&fixture);

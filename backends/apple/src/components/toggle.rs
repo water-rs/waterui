@@ -10,7 +10,7 @@
 //! the control; the payload's stretch axis picks how the row fills its
 //! offer (`docs/layout-spec.md` §3, §6).
 
-use waterui::animation::{Animation, ChangeAnimation};
+use waterui::animation::ChangeAnimation;
 use waterui::component::ControlSize;
 use waterui::component::toggle::{ToggleConfig, ToggleStyle};
 use waterui::reactive::Signal;
@@ -68,39 +68,47 @@ fn kind(style: ToggleStyle) -> Kind {
 /// for the seconds the table gives.
 #[cfg(target_os = "ios")]
 fn state_change(metadata: &Metadata) -> StateChange {
-    match ChangeAnimation::of(metadata).animation() {
-        None => StateChange::Immediate,
-        Some(Animation::Default) => StateChange::Dissolve { seconds: 0.25 },
-        Some(Animation::Bezier { duration, .. }) => StateChange::Dissolve {
-            seconds: duration.as_secs_f64(),
-        },
-        Some(Animation::Spring { .. }) => StateChange::Dissolve { seconds: 0.15 },
-    }
+    crate::animation::cross_dissolve_duration(metadata).map_or(StateChange::Immediate, |seconds| {
+        StateChange::Dissolve { seconds }
+    })
 }
 
 /// The `StateChange` the metadata asks for, `withPlatformAnimation`'s table:
 /// a bezier becomes an implicit group under its curve, a spring an implicit
 /// group lasting the spring's settling duration.
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "CAMediaTimingFunction stores f32 control points"
+)]
 fn state_change(metadata: &Metadata) -> StateChange {
-    match ChangeAnimation::of(metadata).animation() {
-        None => StateChange::Immediate,
-        Some(Animation::Default) => StateChange::Implicit {
-            seconds: 0.25,
-            control_points: None,
+    use cocoa_ui::core_animation::Timing;
+
+    let Some(animation) = ChangeAnimation::of(metadata).animation() else {
+        return StateChange::Immediate;
+    };
+    let playback = crate::animation::timing(&animation);
+    let speed = if playback.speed.is_finite() && playback.speed > 0.0 {
+        playback.speed
+    } else {
+        1.0
+    };
+    match playback.timing {
+        Timing::Curve { curve, duration } => StateChange::Implicit {
+            seconds: duration.max(0.0) / speed,
+            control_points: if animation.is_default() {
+                None
+            } else {
+                Some((
+                    curve.x1 as f32,
+                    curve.y1 as f32,
+                    curve.x2 as f32,
+                    curve.y2 as f32,
+                ))
+            },
         },
-        Some(Animation::Bezier {
-            duration,
-            x1,
-            y1,
-            x2,
-            y2,
-        }) => StateChange::Implicit {
-            seconds: duration.as_secs_f64(),
-            control_points: Some((x1, y1, x2, y2)),
-        },
-        Some(spring @ Animation::Spring { .. }) => StateChange::Implicit {
-            seconds: spring.duration().as_secs_f64(),
+        Timing::Spring(spring) => StateChange::Implicit {
+            seconds: spring.settling_duration(-1.0, 0.0) / speed,
             control_points: None,
         },
     }
@@ -259,7 +267,7 @@ pub fn realize_toggle_config(config: ToggleConfig<Held>, ctx: &RenderContext<'_>
 mod tests {
     use core::time::Duration;
 
-    use waterui::animation::NoAnimation;
+    use waterui::animation::{Animation, NoAnimation};
 
     use super::*;
 
@@ -316,7 +324,7 @@ mod tests {
     /// animation is attached too.
     #[test]
     fn state_change_snaps_when_animation_is_disabled() {
-        let disabled = Metadata::new().with(Animation::Default).with(NoAnimation);
+        let disabled = Metadata::new().with(Animation::default()).with(NoAnimation);
         let StateChange::Immediate = state_change(&disabled) else {
             panic!("a change that disables animation must write immediately");
         };
@@ -329,24 +337,12 @@ mod tests {
             panic!("absent animation must write immediately");
         };
         let table: [(Animation, f64); 3] = [
-            (Animation::Default, 0.25),
+            (Animation::default(), 0.25),
             (
-                Animation::Bezier {
-                    duration: Duration::from_millis(300),
-                    x1: 0.0,
-                    y1: 0.0,
-                    x2: 1.0,
-                    y2: 1.0,
-                },
+                Animation::bezier(Duration::from_millis(300), 0.0, 0.0, 1.0, 1.0),
                 0.3,
             ),
-            (
-                Animation::Spring {
-                    stiffness: 170.0,
-                    damping: 15.0,
-                },
-                0.15,
-            ),
+            (Animation::spring(170.0, 15.0), 0.15),
         ];
         for (animation, expected) in table {
             let StateChange::Dissolve { seconds } = state_change(&Metadata::new().with(animation))
@@ -365,23 +361,14 @@ mod tests {
             panic!("absent animation must write immediately");
         };
         let table: [Row; 3] = [
-            (Animation::Default, 0.25, None),
+            (Animation::default(), 0.25, None),
             (
-                Animation::Bezier {
-                    duration: Duration::from_millis(300),
-                    x1: 0.0,
-                    y1: 0.0,
-                    x2: 1.0,
-                    y2: 1.0,
-                },
+                Animation::bezier(Duration::from_millis(300), 0.0, 0.0, 1.0, 1.0),
                 0.3,
                 Some((0.0, 0.0, 1.0, 1.0)),
             ),
             (
-                Animation::Spring {
-                    stiffness: 170.0,
-                    damping: 15.0,
-                },
+                Animation::spring(170.0, 15.0),
                 // The spring runs for its own settling duration.
                 Animation::spring(170.0, 15.0).duration().as_secs_f64(),
                 None,

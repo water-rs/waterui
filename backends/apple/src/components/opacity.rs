@@ -8,7 +8,9 @@
 
 use alloc::rc::Rc;
 
-use cocoa_ui::{PlatformView, Rect, view};
+use cocoa_ui::objc2_foundation::ns_string;
+use cocoa_ui::{PlatformView, Rect, core_animation, layer, view};
+use waterui::animation::ChangeAnimation;
 use waterui::filter::Opacity;
 use waterui::reactive::Signal;
 use waterui_core::Metadata;
@@ -139,10 +141,38 @@ pub fn realize_opacity_metadata(
     leaf.watch(value, {
         move |wctx| {
             let next = *wctx.value();
+            #[cfg(target_os = "ios")]
             crate::animation::with_platform_animation(wctx.metadata(), {
                 let host = host.clone();
                 move || apply_opacity(next, &host)
             });
+            #[cfg(target_os = "macos")]
+            {
+                if let Some(animation) = ChangeAnimation::of(wctx.metadata()).animation() {
+                    let clamped = if (0.0..=1.0).contains(&next) {
+                        next
+                    } else {
+                        next.clamp(0.0, 1.0)
+                    };
+                    layer::ensure_layer(&host);
+                    let host_layer = layer::layer_of(&host)
+                        .expect("an opacity wrapper with animation is layer-backed");
+                    let playback = crate::animation::timing(&animation);
+                    let host_for_model = host.clone();
+                    core_animation::animate_layer_opacity(
+                        &host_layer,
+                        f64::from(clamped),
+                        "wuiOpacity",
+                        playback,
+                        move || apply_opacity(next, &host_for_model),
+                    );
+                } else {
+                    if let Some(host_layer) = layer::layer_of(&host) {
+                        host_layer.removeAnimationForKey(ns_string!("wuiOpacity"));
+                    }
+                    core_animation::without_animation(|| apply_opacity(next, &host));
+                }
+            }
         }
     });
     leaf.keep(state);

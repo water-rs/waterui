@@ -66,7 +66,7 @@ use objc2_metal::{
 };
 use objc2_quartz_core::{
     CACurrentMediaTime, CAKeyframeAnimation, CALayer, CAMediaTiming, CAMediaTimingFunction,
-    CATransaction, kCAAnimationLinear, kCAMediaTimingFunctionLinear,
+    CATransaction, kCAAnimationLinear, kCAFillModeBackwards, kCAMediaTimingFunctionLinear,
 };
 use waterui_backend_core::Environment;
 use waterui_core::layout::{
@@ -1102,6 +1102,31 @@ fn write_bound_input_at(
     }
 }
 
+/// Resolves the cycle duration, initial sample offset, and optional `(delay, autoreverse)`
+/// repeat metadata for `live` timelines on a bound filter stream.
+fn bound_stream_timing(
+    animations: &HashMap<AnimKey, ComponentAnim>,
+    effect: usize,
+    live: &[usize],
+    now: f64,
+) -> (Duration, Duration, Option<(Duration, bool)>) {
+    let forever = live.iter().find_map(|flat| {
+        animations[&(effect, *flat)]
+            .interpolator
+            .repeat_forever_cycle()
+    });
+    if let Some((delay, period, autoreverse)) = forever {
+        (period, delay, Some((delay, autoreverse)))
+    } else {
+        let stream = live
+            .iter()
+            .map(|flat| animations[&(effect, *flat)].remaining(now))
+            .max()
+            .unwrap_or_default();
+        (stream, Duration::ZERO, None)
+    }
+}
+
 /// Re-submits one bound input's CA stream so every bound parameter's own
 /// raw timeline stays authoritative: drops settled timelines, then —
 /// when any live curve remains — samples the whole input at `now` plus
@@ -1162,34 +1187,32 @@ fn resample_bound_stream(
     if !force && live.iter().all(|flat| animations[&(effect, *flat)].applied) {
         return;
     }
-    let stream = live
-        .iter()
-        .map(|flat| animations[&(effect, *flat)].remaining(now))
-        .max()
-        .unwrap_or_default();
+    let (stream, cycle_offset, repeat) = bound_stream_timing(animations, effect, &live, now);
     let submitted = match bound {
-        BoundValue::Scalar(bound) => submit_animation(owner, key_path, stream, |elapsed| {
+        BoundValue::Scalar(bound) => submit_animation(owner, key_path, stream, repeat, |elapsed| {
             NSNumber::new_f32(bound.value_at(
                 animations,
                 effect,
                 model,
-                now + elapsed.as_secs_f64(),
+                now + (cycle_offset + elapsed).as_secs_f64(),
                 gamut,
             ))
         }),
-        BoundValue::Vec4(components) => submit_animation(owner, key_path, stream, |elapsed| {
-            let mut value = [0.0f32; 4];
-            for (index, b) in components.iter().enumerate() {
-                value[index] = b.value_at(
-                    animations,
-                    effect,
-                    model,
-                    now + elapsed.as_secs_f64(),
-                    gamut,
-                );
-            }
-            ci_vec4(value)
-        }),
+        BoundValue::Vec4(components) => {
+            submit_animation(owner, key_path, stream, repeat, |elapsed| {
+                let mut value = [0.0f32; 4];
+                for (index, b) in components.iter().enumerate() {
+                    value[index] = b.value_at(
+                        animations,
+                        effect,
+                        model,
+                        now + (cycle_offset + elapsed).as_secs_f64(),
+                        gamut,
+                    );
+                }
+                ci_vec4(value)
+            })
+        }
     };
     if submitted {
         for flat in &live {
@@ -1197,28 +1220,22 @@ fn resample_bound_stream(
                 anim.applied = true;
             }
         }
-        write_bound_input_at(
-            &owner.layer,
-            key_path,
-            bound,
-            animations,
-            effect,
-            model,
-            now + stream.as_secs_f64(),
-            gamut,
-        );
-    } else {
-        write_bound_input_at(
-            &owner.layer,
-            key_path,
-            bound,
-            animations,
-            effect,
-            model,
-            now,
-            gamut,
-        );
     }
+    let write_at = if submitted && repeat.is_none() {
+        now + stream.as_secs_f64()
+    } else {
+        now
+    };
+    write_bound_input_at(
+        &owner.layer,
+        key_path,
+        bound,
+        animations,
+        effect,
+        model,
+        write_at,
+        gamut,
+    );
 }
 
 /// Submits a `CAKeyframeAnimation` on `key_path` — one native value per
@@ -1230,6 +1247,7 @@ fn submit_animation<T: Message>(
     owner: &NativeFilterOwner,
     key_path: &str,
     duration: Duration,
+    repeat: Option<(Duration, bool)>,
     frames: impl Fn(Duration) -> Retained<T>,
 ) -> bool {
     let Some(fps) = display_fps(&owner.view) else {
@@ -1252,6 +1270,18 @@ fn submit_animation<T: Message>(
         animation.setValues(Some(&*(std::ptr::from_ref(&*array)).cast::<NSArray>()));
     }
     animation.setDuration(duration.as_secs_f64());
+    if let Some((delay, autoreverse)) = repeat {
+        animation.setRepeatCount(f32::INFINITY);
+        animation.setAutoreverses(autoreverse);
+        if !delay.is_zero() {
+            let now = owner
+                .layer
+                .convertTime_fromLayer(CACurrentMediaTime(), None);
+            animation.setBeginTime(now + delay.as_secs_f64());
+            // SAFETY: `kCAFillModeBackwards` is a Core Animation constant.
+            animation.setFillMode(unsafe { kCAFillModeBackwards });
+        }
+    }
     // Explicit linear calculation and pacing — `values` already carry
     // the interpolator's curve, so CA must not pace them a second time.
     // SAFETY: the `kCA…` externs are immutable well-known constant

@@ -575,14 +575,14 @@ mod scroll_animation {
         controller.scroll_to(origin);
         assert_native_scroll(
             "a Default surface request",
-            || controller.animate_to(target, Animation::Default),
+            || controller.animate_to(target, Animation::default()),
             || surface.content_offset(),
             || landing,
         );
         window.setHidden(true);
     }
 
-    /// `Animation::Default` on a list is `UIKit`'s own
+    /// `Animation::default()` on a list is `UIKit`'s own
     /// `scrollToRow(_:at:animated: true)`: driven through the controller
     /// on a cold table, it does not jump, and it lands with the row's top
     /// at the viewport's top no sooner than a native animation takes.
@@ -599,14 +599,14 @@ mod scroll_animation {
 
         assert_native_scroll(
             "a Default list request",
-            || controller.animate_to(TARGET_ROW, Animation::Default),
+            || controller.animate_to(TARGET_ROW, Animation::default()),
             offset,
             || list_row_top(&table, TARGET_ROW),
         );
         window.setHidden(true);
     }
 
-    /// A far `Animation::Default` list request animates only the final
+    /// A far `Animation::default()` list request animates only the final
     /// stretch: `UIKit`'s native row scroll toward a target further than
     /// the approach bound first jumps unanimated to the approach row's
     /// top — the offset right after the request — and lands from there
@@ -624,7 +624,7 @@ mod scroll_animation {
 
         assert_native_scroll_from(
             "a far Default list request",
-            || controller.animate_to(APPROACH_TARGET_ROW, Animation::Default),
+            || controller.animate_to(APPROACH_TARGET_ROW, Animation::default()),
             || list_row_top(&table, APPROACH_ROW),
             || Point::from(table.contentOffset()),
             || list_row_top(&table, APPROACH_TARGET_ROW),
