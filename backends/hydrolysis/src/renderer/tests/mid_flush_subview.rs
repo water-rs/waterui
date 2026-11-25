@@ -187,7 +187,7 @@ fn mid_flush_dynamic_apply_in_retained_subview_relayouts() {
                                 },
                             )
                             .spacing(0.0)
-                            .padding_with((4.0, 0.0))
+                            .padding_vertical(4.0)
                             .background(Surface)
                             .clip(RoundedRectangle::new(6.0))
                         }),

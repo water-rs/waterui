@@ -794,9 +794,37 @@ impl EdgeInsets {
         }
     }
 
-    /// Explicit insets for each edge.
+    /// Vertical (top and bottom) insets with zero horizontal insets.
     #[must_use]
-    pub const fn new(top: f32, bottom: f32, leading: f32, trailing: f32) -> Self {
+    pub const fn vertical(value: f32) -> Self {
+        Self::symmetric(value, 0.0)
+    }
+
+    /// Horizontal (leading and trailing) insets with zero vertical insets.
+    #[must_use]
+    pub const fn horizontal(value: f32) -> Self {
+        Self::symmetric(0.0, value)
+    }
+
+    /// Returns a copy with top and bottom set to `value`.
+    #[must_use]
+    pub const fn with_vertical(mut self, value: f32) -> Self {
+        self.top = value;
+        self.bottom = value;
+        self
+    }
+
+    /// Returns a copy with leading and trailing set to `value`.
+    #[must_use]
+    pub const fn with_horizontal(mut self, value: f32) -> Self {
+        self.leading = value;
+        self.trailing = value;
+        self
+    }
+
+    /// Explicit insets for each edge in `top, leading, bottom, trailing` order.
+    #[must_use]
+    pub const fn new(top: f32, leading: f32, bottom: f32, trailing: f32) -> Self {
         Self {
             top,
             bottom,
@@ -812,15 +840,9 @@ impl From<f32> for EdgeInsets {
     }
 }
 
-impl From<(f32, f32)> for EdgeInsets {
-    fn from((vertical, horizontal): (f32, f32)) -> Self {
-        Self::symmetric(vertical, horizontal)
-    }
-}
-
 impl From<[f32; 4]> for EdgeInsets {
     fn from([top, leading, bottom, trailing]: [f32; 4]) -> Self {
-        Self::new(top, bottom, leading, trailing)
+        Self::new(top, leading, bottom, trailing)
     }
 }
 

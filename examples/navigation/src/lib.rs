@@ -634,7 +634,7 @@ fn album_row(album: Album) -> impl ListContent<SectionScope> + TaggedBy<Album> {
             text!("{count}").caption().muted(),
         ))
         .spacing(10.0)
-        .padding_with((10.0, 12.0))
+        .padding_with(EdgeInsets::vertical(10.0).with_horizontal(12.0))
     })
     .tag(album)
 }

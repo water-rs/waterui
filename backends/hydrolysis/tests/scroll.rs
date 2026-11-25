@@ -202,11 +202,15 @@ fn folder_chip(name: &'static str, active: bool) -> impl View {
     } else {
         waterui::OneOf2::B(text(name).caption().muted())
     };
-    label_view.padding_with((3.0, 10.0)).background(if active {
-        waterui::OneOf2::A(RoundedRectangle::new(CornerRadius::fraction(0.5)).fill(SurfaceVariant))
-    } else {
-        waterui::OneOf2::B(())
-    })
+    label_view
+        .padding_with(EdgeInsets::vertical(3.0).with_horizontal(10.0))
+        .background(if active {
+            waterui::OneOf2::A(
+                RoundedRectangle::new(CornerRadius::fraction(0.5)).fill(SurfaceVariant),
+            )
+        } else {
+            waterui::OneOf2::B(())
+        })
 }
 
 /// The app's trailing icon button (`folder_plus()` in watergram): a plain
@@ -239,7 +243,7 @@ fn folder_rail_row(
         .a11y_label("chip-rail"),
         folder_icon_button().a11y_label("New folder"),
     ))
-    .padding_with((4.0, 8.0))
+    .padding_with(EdgeInsets::vertical(4.0).with_horizontal(8.0))
 }
 
 /// A scroll whose content is reached through another scroll must keep a real

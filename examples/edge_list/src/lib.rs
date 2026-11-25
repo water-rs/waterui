@@ -61,7 +61,7 @@ fn record_row(index: u64) -> impl View {
         ),
     };
 
-    content.padding_with((8.0, 16.0))
+    content.padding_with(EdgeInsets::vertical(8.0).with_horizontal(16.0))
 }
 
 /// The edge-list example page: a list of records with per-row detail.

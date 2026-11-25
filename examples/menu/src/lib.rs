@@ -68,7 +68,7 @@ fn toolbar_scene_section(status: &Binding<String>) -> impl View + use<> {
 }
 
 fn window_toolbar(status: &Binding<String>) -> impl View + use<> {
-    toolbar_actions(status).padding_with((6.0, 8.0))
+    toolbar_actions(status).padding_with(EdgeInsets::vertical(6.0).with_horizontal(8.0))
 }
 
 fn menu_section(selected: &Binding<String>) -> impl View + use<> {

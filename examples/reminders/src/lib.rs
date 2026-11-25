@@ -366,7 +366,7 @@ fn user_list_row(name: &'static str, count: i32, color: Srgb) -> impl View {
     ))
     .centered()
     .spacing(10.0)
-    .padding_with((4.0, 8.0))
+    .padding_with(EdgeInsets::vertical(4.0).with_horizontal(8.0))
 }
 
 fn detail_view(
@@ -457,7 +457,7 @@ fn reminder_item(row: &ReminderRow) -> impl View + use<> {
         })
         .otherwise(|| spacer().width(12.0)),
     ))
-    .padding_with((10.0, 18.0))
+    .padding_with(EdgeInsets::vertical(10.0).with_horizontal(18.0))
 }
 
 fn reminder_list(

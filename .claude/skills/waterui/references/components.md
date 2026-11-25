@@ -86,16 +86,16 @@ Common modifiers on stacks:
 ```rust
 .spacing(8.0)
 .leading()   // or .alignment(Leading); hstack aligns vertically: .top() / .centered() / .bottom()
-.padding()  /  .padding_with(16.0)  /  .padding_with((10.0, 16.0))
+.padding()  /  .padding_with(16.0)  /  .padding_with(EdgeInsets::vertical(10.0).with_horizontal(16.0))
 ```
 
 `.padding()` is 14 pt on every edge. `.padding_with` takes `impl IntoComputed<EdgeInsets>`: a
-bare number (every edge), a `(vertical, horizontal)` pair, a `[top, leading, bottom,
-trailing]` array, an `EdgeInsets`, or a signal of one. `.padding_horizontal(x)` /
-`.padding_vertical(x)` pad one axis. Do not spell `EdgeInsets::all(x)` / `symmetric(v, h)` /
-`new(..)` at a padding call — the number, pair and array are those constructors. The orders
-are traps worth memorizing — `[top, leading, bottom, trailing]` (SwiftUI's order, not CSS)
-and `(vertical, horizontal)`.
+bare number (every edge), a `[top, leading, bottom, trailing]` array, an `EdgeInsets` (using
+`EdgeInsets::vertical(v)` / `EdgeInsets::horizontal(h)` and `.with_horizontal(h)` /
+`.with_vertical(v)` / `.with_top(..)` for named axes), or a signal of one.
+`.padding_horizontal(x)` / `.padding_vertical(x)` pad one axis. Bare `(v, h)` pairs do not
+convert to `EdgeInsets` — always name both axes. The array order is `[top, leading, bottom,
+trailing]` (SwiftUI's order, not CSS).
 
 Alignment is a token or a method, never the qualified constant: `vstack(..).leading()` or
 `.alignment(Leading)`, `hstack(..).top()`, `zstack(..).top_leading()`. The tokens
@@ -388,7 +388,7 @@ impl CustomButtonStyle for PillButtonStyle {
             .select(Color::new(Accent), base);
         configuration
             .into_label()
-            .padding_with((8.0, 16.0))
+            .padding_with(EdgeInsets::vertical(8.0).with_horizontal(16.0))
             .background(bg)
             .clip(Capsule)
     }
@@ -404,7 +404,7 @@ impl PrimitiveButtonStyle for DoubleTapButtonStyle {
         let trigger = configuration.trigger().clone();
         configuration
             .into_label()
-            .padding_with((8.0, 16.0))
+            .padding_with(EdgeInsets::vertical(8.0).with_horizontal(16.0))
             .gesture(
                 TapGesture::repeat(NonZeroU32::new(2).unwrap()),
                 move |_: TapEvent| {
