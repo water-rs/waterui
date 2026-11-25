@@ -28,7 +28,7 @@ fn opacity_fade_refreshes_at_the_slow_rate_until_the_fade_finishes() {
     let mut renderer = test_renderer();
     let env = test_environment();
     let bounds = Rect::new(0.0, 0.0, 200.0, 200.0);
-    let source = Binding::container(false);
+    let source = Binding::new(false);
     let view = || {
         text("Fade").opacity(
             source
@@ -92,7 +92,7 @@ fn offsets_sharing_a_signal_identity_slide_independently() {
     let mut renderer = test_renderer();
     let env = test_environment();
     let bounds = Rect::new(0.0, 0.0, 200.0, 200.0);
-    let source = Binding::container(0_i32);
+    let source = Binding::new(0_i32);
     assert_eq!(
         slide(&source, 1).identity(),
         slide(&source, 2).identity(),
@@ -140,7 +140,7 @@ fn progress_indicators_sharing_a_signal_identity_fill_to_their_own_values() {
         progress_bar_realizations: Rc::clone(&realizations),
         ..Default::default()
     });
-    let source = Binding::container(1_i32);
+    let source = Binding::new(1_i32);
     let fraction = |index: i32| {
         source
             .clone()
@@ -175,7 +175,7 @@ fn radio_pickers_sharing_a_signal_identity_draw_their_own_selection() {
         radio_indicator_realizations: Rc::clone(&indicator_draws),
         ..Default::default()
     });
-    let source = Binding::container([0_i32, 1_i32]);
+    let source = Binding::new([0_i32, 1_i32]);
     let (first, second) = (selection(&source, 0), selection(&source, 1));
     assert_eq!(
         first.identity(),

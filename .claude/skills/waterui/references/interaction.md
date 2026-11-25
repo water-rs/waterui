@@ -125,7 +125,7 @@ view.gesture(
 `.then` returns the erased `Gesture` type. Siblings with the same shape:
 `simultaneously_with`, `exclusively_before`.
 
-Note in passing: `Binding::container("Waiting…")` infers `Binding<&'static str>`, which is
+Note in passing: `Binding::new("Waiting…")` infers `Binding<&'static str>`, which is
 a perfectly good status-string binding — `text!("{status}")` accepts it directly.
 
 ## Which view receives a press

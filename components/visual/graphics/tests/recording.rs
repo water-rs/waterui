@@ -340,7 +340,7 @@ fn an_image_first_drawn_on_the_third_frame_reaches_the_pixels() {
 
 #[test]
 fn a_signal_operand_updates_the_content_without_recording_again() {
-    let color = Binding::container(srgb(1.0, 0.0, 0.0));
+    let color = Binding::new(srgb(1.0, 0.0, 0.0));
     let paint = color.computed();
     let mut content = Content::record(&LayoutSize::new(), |recorder| {
         recorder.fill(Rect::new(0.0, 0.0, 4.0, 4.0).to_path(0.05), paint);
@@ -366,7 +366,7 @@ fn an_invalidator_fires_when_a_bound_signal_changes() {
     let asked = Rc::clone(&flag);
     let invalidator: SceneInvalidator = Rc::new(move || asked.set(true));
 
-    let color = Binding::container(srgb(1.0, 0.0, 0.0));
+    let color = Binding::new(srgb(1.0, 0.0, 0.0));
     let _guard = invalidate_on_change(&invalidator, &color.computed());
     color.set(srgb(0.0, 0.0, 1.0));
     assert!(

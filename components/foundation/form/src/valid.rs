@@ -464,7 +464,7 @@ mod tests {
         // a `View` is what pins the surface as usable.
         fn assert_view<V: View>(_: &V) {}
 
-        let value = Binding::container(Str::from(""));
+        let value = Binding::new(Str::from(""));
         let view = ValidatableView::new(TextField::new("Value", &value), Plain(Required));
         assert_view(&view);
     }

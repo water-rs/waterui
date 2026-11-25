@@ -98,8 +98,7 @@ Use `app.pump_for(duration)`.
 
 | Error | Cause | Fix |
 |---|---|---|
-| `no function or associated item named 'new' found for struct 'Binding'` | `Binding::new` does not exist | `Binding::i32(v)` / `Binding::bool(v)` / `Binding::container(v)`; `Binding::default()` for `Binding<Option<T>>` |
-| "type annotations needed for `Binding<_>`" after `binding(v)` | `binding` takes `impl Into<T>`, so `T` is unconstrained | typed constructor, `let` annotation, turbofish `binding::<T>(v)`, or let a control / typed helper parameter pin it |
+| `mismatched types: expected Str, found &str` on `binding("..")` | `binding(v)` / `Binding::new(v)` take `T` directly for inference | pass an owned value: `binding(Str::from(".."))` or `Binding::new(String::from(".."))` |
 | `cannot find function 'when' in this scope` | not in the prelude | `use waterui::widget::condition::when;` |
 | `cannot find macro 's'` (or a lint suggesting `s!`) | `s!` is nami's macro, not in the prelude | `use waterui::reactive::s;` |
 | ``expected trait, found derive macro `Identifiable` `` on a manual `impl` | the prelude carries the derive, not the trait | `use waterui::Identifiable;` |

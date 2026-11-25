@@ -68,7 +68,7 @@ fn runtime(build: impl Fn() -> AnyView + 'static) -> HeadlessRuntime {
 /// `NodeCell` across the animated frames.
 #[test]
 fn scalar_update_preserves_node_cells() {
-    let value = Binding::f32(1.0);
+    let value = Binding::new(1.0_f32);
     let mut runtime = {
         let value = value.clone();
         runtime(move || {

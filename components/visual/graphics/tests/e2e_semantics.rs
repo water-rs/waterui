@@ -27,7 +27,7 @@ fn linear_gradient_view() -> impl waterui::View {
 }
 
 fn mesh_gradient_view() -> impl waterui::View {
-    let colors = Binding::container(vec![
+    let colors = Binding::new(vec![
         Color::new(Working(WorkingColor::BLACK)),
         Color::new(Working(WorkingColor::WHITE)),
         Color::new(Working(WorkingColor::WHITE)),

@@ -287,7 +287,7 @@ mod tests {
         should_panic(expected = "was not taken from the list's rows")
     )]
     fn a_single_selection_write_of_a_foreign_tag_keeps_the_selection() {
-        let selection: Binding<Option<i32>> = Binding::container(Some(1));
+        let selection: Binding<Option<i32>> = Binding::new(Some(1));
         let values = Mapping::new();
         let ListSelection::Single(erased) = ListSelection::single(&selection, &values) else {
             unreachable!("`single` builds a single selection");
@@ -302,7 +302,7 @@ mod tests {
         should_panic(expected = "was not taken from the list's rows")
     )]
     fn a_multiple_selection_write_drops_foreign_tags() {
-        let selection: Binding<BTreeSet<i32>> = Binding::container(BTreeSet::new());
+        let selection: Binding<BTreeSet<i32>> = Binding::new(BTreeSet::new());
         let values = Mapping::new();
         let known = ListTagId::new(values.to_id(7));
         let ListSelection::Multiple(erased) = ListSelection::multiple(&selection, &values) else {

@@ -11261,7 +11261,7 @@ mod list_ax {
         use waterui::views::ForEach;
 
         let entry = |id, label, visible| FilteredListEntry { id, label, visible };
-        let backing = Binding::container(vec![
+        let backing = Binding::new(vec![
             entry(10, "Alpha", true),
             entry(15, "Hidden-1", false),
             entry(20, "Beta", true),
@@ -17978,8 +17978,8 @@ mod row_major_table {
                 name: "Grace",
             },
         ]);
-        let selection = Binding::container(Some(1_u64));
-        let sort_order = Binding::container(Some(TableSort::ascending(PersonSort::Name)));
+        let selection = Binding::new(Some(1_u64));
+        let sort_order = Binding::new(Some(TableSort::ascending(PersonSort::Name)));
         let view = Table::new(
             people,
             (

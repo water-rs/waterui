@@ -429,8 +429,8 @@ fn a_member_in_a_filtered_view_gets_its_own_group() {
 /// commit of the first frame with no visible member at all.
 #[test]
 fn the_group_survives_one_member_and_releases_with_the_last() {
-    let first = Binding::container(true);
-    let second = Binding::container(true);
+    let first = Binding::new(true);
+    let second = Binding::new(true);
     let (first_in_view, second_in_view) = (first.clone(), second.clone());
     let mut runtime = {
         let builder = AnyViewBuilder::<AnyView>::new(move || {
@@ -576,7 +576,7 @@ fn a_dropped_surface_leaves_the_members_unbound() {
 /// content around the anchor built.
 #[test]
 fn a_material_in_an_anchored_overlay_does_not_join_the_outer_group() {
-    let open = Binding::container(true);
+    let open = Binding::new(true);
     let mut runtime = {
         let builder = AnyViewBuilder::<AnyView>::new(move || {
             let open = open.clone();
@@ -772,7 +772,7 @@ fn a_grouped_empty_view_claims_no_stack_slot() {
 /// releases.
 #[test]
 fn an_appearance_flip_moves_the_member_to_a_new_group() {
-    let scheme = Binding::container(ColorScheme::Light);
+    let scheme = Binding::new(ColorScheme::Light);
     let member_scheme = scheme.clone();
     let mut runtime = {
         let builder = AnyViewBuilder::<AnyView>::new(move || {
@@ -876,7 +876,7 @@ fn a_grouped_list_row_hoists_its_accessibility_label() {
     fn roles_and_labels(grouped: bool) -> Vec<(Role, Option<String>)> {
         let mut runtime = {
             let builder = AnyViewBuilder::<AnyView>::new(move || {
-                let rows = Binding::container(vec![SelfId::new(1_u64)]);
+                let rows = Binding::new(vec![SelfId::new(1_u64)]);
                 AnyView::new(List::for_each(SignalCollection::new(rows), move |_| {
                     let content = text("inside").a11y_label("row label");
                     if grouped {
@@ -1036,7 +1036,7 @@ fn a_scopes_groups_capture_beneath_its_anchor() {
 /// the mount table.
 #[test]
 fn a_scopes_anchor_releases_with_the_scope() {
-    let shown = Binding::container(true);
+    let shown = Binding::new(true);
     let mut runtime = {
         let shown = shown.clone();
         let builder = AnyViewBuilder::<AnyView>::new(move || {
@@ -1172,7 +1172,7 @@ fn a_scope_inside_a_filtered_view_anchors_on_its_canvas() {
 /// descendant that skips the scope flush, which is #2268's shape.)
 #[test]
 fn a_partial_re_record_keeps_the_scope_anchored() {
-    let shown = Binding::container(true);
+    let shown = Binding::new(true);
     let mut runtime = {
         let shown = shown.clone();
         let builder = AnyViewBuilder::<AnyView>::new(move || {
@@ -1425,7 +1425,7 @@ fn a_scope_reinserted_during_exit_keeps_one_direct_owner() {
 /// re-keys on the layer the item mounts now, never on a stale one.
 #[test]
 fn a_scope_returning_after_unmount_reanchors() {
-    let shown = Binding::container(true);
+    let shown = Binding::new(true);
     let mut runtime = {
         let shown = shown.clone();
         let builder = AnyViewBuilder::<AnyView>::new(move || {

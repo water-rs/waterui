@@ -294,8 +294,8 @@ pub trait ViewExt: View + Sized {
     /// ```
     /// use waterui::prelude::*;
     ///
-    /// let selection = Binding::i32(0);
-    /// let last_seen = Binding::i32(0);
+    /// let selection = Binding::new(0_i32);
+    /// let last_seen = Binding::new(0_i32);
     ///
     /// let view = text!("{selection}")
     ///     .on_change(&selection, |value: i32, State(last_seen): State<Binding<i32>>| {
@@ -988,7 +988,7 @@ pub trait ViewExt: View + Sized {
     /// ```rust
     /// use waterui::prelude::*;
     ///
-    /// let saved_count = Binding::i32(0);
+    /// let saved_count = Binding::new(0_i32);
     /// text!("Saved").sensory_feedback(Feedback::Success, &saved_count);
     /// ```
     #[cfg(feature = "haptics")]
@@ -1776,7 +1776,7 @@ mod tests {
     #[test]
     fn interaction_state_does_not_borrow_the_binding() {
         fn reported(content: AnyView) -> impl View {
-            let state = Binding::container(InteractionState::empty());
+            let state = Binding::new(InteractionState::empty());
             content.interaction_state(&state)
         }
 
@@ -1791,7 +1791,7 @@ mod tests {
         use crate::haptic::Feedback;
 
         fn triggered(content: AnyView) -> impl View {
-            let count = Binding::i32(0);
+            let count = Binding::new(0_i32);
             content.sensory_feedback(Feedback::Success, &count)
         }
 
@@ -1845,7 +1845,7 @@ mod tests {
             AnyView::new(()).dynamic_range(DynamicRange::Standard);
         assert_eq!(constant.value.range().snapshot(), DynamicRange::Standard);
 
-        let range = Binding::container(DynamicRange::Standard);
+        let range = Binding::new(DynamicRange::Standard);
         let reactive: Metadata<DynamicRangeMetadata, AnyView> =
             AnyView::new(()).dynamic_range(range.clone());
         assert_eq!(reactive.value.range().snapshot(), DynamicRange::Standard);
@@ -1901,9 +1901,9 @@ mod tests {
             }
         }
 
-        let expanded = Binding::bool(false);
+        let expanded = Binding::new(false);
         let animated_height = expanded.select(240.0_f32, 0.0_f32).animated();
-        let width_signal = Binding::f32(120.0);
+        let width_signal = Binding::new(120.0_f32);
 
         let _ = AnyView::new(()).width(width_signal.clone());
         let _ = AnyView::new(()).height(animated_height.clone());
@@ -1942,8 +1942,8 @@ mod tests {
         assert!(invalidations.get() > 0);
         assert!((layout.size_that_fits(proposal, &[]).height - 240.0).abs() < f32::EPSILON);
 
-        let ideal_w = Binding::f32(90.0);
-        let ideal_h = Binding::f32(45.0);
+        let ideal_w = Binding::new(90.0_f32);
+        let ideal_h = Binding::new(45.0_f32);
         let ideal_view = AnyView::new(())
             .ideal_width(ideal_w.clone())
             .ideal_height(ideal_h.clone())

@@ -1051,7 +1051,7 @@ fn tab_focuses_the_surface_and_ctrl_tab_leaves_it() {
 #[test]
 fn the_focused_binding_focuses_the_surface_without_a_pointer() {
     let log = ProbeLog::default();
-    let focus = Binding::container(None::<Pane>);
+    let focus = Binding::new(None::<Pane>);
     let view = probe_view(log.clone(), None).focused(&focus, Pane::Document);
     let mut runtime = runtime_with(view);
     let start = Instant::now();
@@ -1106,8 +1106,8 @@ fn the_focused_binding_focuses_the_surface_without_a_pointer() {
 fn a_structural_rebuild_re_focuses_the_surface_programmatically() {
     let log_document = ProbeLog::default();
     let log_canvas = ProbeLog::default();
-    let focus = Binding::container(None::<Pane>);
-    let show_canvas = Binding::container(false);
+    let focus = Binding::new(None::<Pane>);
+    let show_canvas = Binding::new(false);
     let view = vstack((
         probe_view(log_document.clone(), None).focused(&focus, Pane::Document),
         probe_view(log_canvas.clone(), None)
@@ -1178,7 +1178,7 @@ enum Tab {
 fn hiding_the_focused_tab_moves_focus_to_the_shown_tab() {
     let log_one = ProbeLog::default();
     let log_two = ProbeLog::default();
-    let selected = Binding::container(Tab::One);
+    let selected = Binding::new(Tab::One);
     let view = vstack((
         probe_view(log_one.clone(), None).visible(selected.equal_to(Tab::One)),
         probe_view(log_two.clone(), None).visible(selected.equal_to(Tab::Two)),

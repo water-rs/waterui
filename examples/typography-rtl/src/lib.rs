@@ -36,7 +36,7 @@ fn cjk_specimens() -> impl View {
 }
 
 fn reading_order_panel(title: &'static str, body: &'static str, arrow: &'static str) -> impl View {
-    let input = Binding::container(Str::from(""));
+    let input = Binding::new(Str::from(""));
     vstack((
         text(title).subheadline(),
         hstack((

@@ -440,7 +440,7 @@ fn shadow_silhouettes_count() {
 #[test]
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 fn context_menu_holes_render() {
-    let copied = Binding::container(false);
+    let copied = Binding::new(false);
     let copied_for_view = copied;
     let builder = AnyViewBuilder::<AnyView>::new(move || {
         let copied = copied_for_view.clone();
@@ -497,7 +497,7 @@ fn context_menu_holes_render() {
 #[test]
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 fn popup_opening_counts() {
-    let copied = Binding::container(false);
+    let copied = Binding::new(false);
     let copied_for_view = copied;
     let builder = AnyViewBuilder::<AnyView>::new(move || {
         let copied = copied_for_view.clone();
@@ -698,7 +698,7 @@ fn repeated_fixed_clock_captures_are_identical() {
 /// A paint signal reaches the retained command without another host tree pass.
 #[test]
 fn live_colour_updates_without_layout_or_recording() {
-    let color = Binding::container(Color::srgb(210, 30, 10));
+    let color = Binding::new(Color::srgb(210, 30, 10));
     let mut runtime = runtime_with(Color::from_signal(color.clone()));
     let mut frames = Frames::new();
     let (_, before) = frames.render(&mut runtime);
@@ -740,7 +740,7 @@ fn live_colour_updates_without_layout_or_recording() {
 
 #[test]
 fn short_text_signal_repaints_only_its_changed_region() {
-    let value = Binding::container(10u32);
+    let value = Binding::new(10u32);
     let label = value.clone();
     let (gpu, diagnostics) = super::diagnostic_gpu();
     let mut runtime = runtime_with_on(
@@ -782,9 +782,9 @@ fn paint_and_scroll_flushes_skip_unchanged_window_layout() {
     use waterui_core::dynamic::watch;
 
     let env = pumped_test_environment();
-    let toggled = Binding::container(false);
-    let show_extra = Binding::container(false);
-    let row_tall = Binding::container(false);
+    let toggled = Binding::new(false);
+    let show_extra = Binding::new(false);
+    let row_tall = Binding::new(false);
     let tapped = std::rc::Rc::new(std::cell::Cell::new(None));
     let tapped_for_rows = std::rc::Rc::clone(&tapped);
     let data = (0..40).map(SelfId::new).collect::<Vec<_>>();
@@ -885,9 +885,9 @@ fn window_geometry_and_environment_changes_rerun_layout() {
     use waterui_core::layout::LayoutDirection;
     use waterui_layout::padding::EdgeInsets;
 
-    let safe_area = Binding::container(EdgeInsets::default());
-    let keyboard_area = Binding::container(EdgeInsets::default());
-    let direction = Binding::container(LayoutDirection::LeftToRight);
+    let safe_area = Binding::new(EdgeInsets::default());
+    let keyboard_area = Binding::new(EdgeInsets::default());
+    let direction = Binding::new(LayoutDirection::LeftToRight);
     let direction_signal: nami::Computed<LayoutDirection> = direction.clone().into();
     let env = pumped_test_environment()
         .extending(crate::platform::WindowSafeArea(safe_area.clone()))

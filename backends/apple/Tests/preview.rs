@@ -1004,11 +1004,11 @@ mod suite {
         // `Bundle::main()`'s root. `ImageAsset` resolves there and loads
         // through `Photo`'s asynchronous decode, which the capture awaits
         // through the content ledger.
-        let wifi = Binding::bool(true);
-        let level = Binding::f64(0.6);
-        let count = Binding::i32(1);
-        let email = Binding::container(Str::from_static("user@example.com"));
-        let choice = Binding::container("M");
+        let wifi = Binding::new(true);
+        let level = Binding::new(0.6_f64);
+        let count = Binding::new(1_i32);
+        let email = Binding::new(Str::from_static("user@example.com"));
+        let choice = Binding::new("M");
         let sky = Color::srgb_hex("#38BDF8");
         let rose = Color::srgb_hex("#FB7185");
 
@@ -1318,7 +1318,7 @@ mod suite {
         use waterui::navigation::{NavigationView, Tab, Tabs};
         use waterui::theme::color::Background;
 
-        let selection = Binding::container(0_usize);
+        let selection = Binding::new(0_usize);
         zstack((
             Background,
             Tabs::new(
@@ -1351,7 +1351,7 @@ mod suite {
         use waterui::component::toggle::ToggleStyle;
         use waterui::theme::color::Background;
 
-        let on = Binding::bool(true);
+        let on = Binding::new(true);
         zstack((
             Background,
             toggle("Wi-Fi", &on).style(ToggleStyle::Checkbox).padding(),

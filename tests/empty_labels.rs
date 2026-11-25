@@ -24,7 +24,7 @@ fn empty_text_leaf_emits_no_node(ui: UiBuilder) {
 /// becomes non-empty.
 #[waterui::test]
 fn empty_text_gains_a_node_when_content_becomes_non_empty(ui: UiBuilder) {
-    let note = Binding::container(String::new());
+    let note = Binding::new(String::new());
     let note_for_view = note.clone();
     let mut app = ui.mount(move || text(note_for_view.clone()));
     app.settle();

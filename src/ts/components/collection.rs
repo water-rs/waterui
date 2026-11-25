@@ -183,7 +183,7 @@ impl EachState {
                 keys.push(key);
                 continue;
             }
-            let binding = Binding::container(index);
+            let binding = Binding::new(index);
             // The scope is opened around this item's export and closed again
             // straight away, so nothing else lands in it; what it owns lives as
             // long as the item does and is released with it. The render
@@ -368,7 +368,7 @@ pub fn each(
         items: RefCell::new(BTreeMap::new()),
     });
 
-    let keys = Binding::container(state.reconcile(bridge, &source.snapshot())?);
+    let keys = Binding::new(state.reconcile(bridge, &source.snapshot())?);
     let guard = source.watch({
         let state = Rc::clone(&state);
         let bridge = bridge.downgrade();

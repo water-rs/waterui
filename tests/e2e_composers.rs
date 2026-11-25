@@ -37,7 +37,7 @@ fn card_exposes_title_subtitle_and_content(app: &mut SemanticApp) {
 
 #[waterui::test]
 fn badge_value_tracks_its_signal(ui: UiBuilder) {
-    let unread = Binding::container(3_u32);
+    let unread = Binding::new(3_u32);
     let unread_for_view = unread.clone();
     let mut app =
         ui.mount(move || Badge::new(unread_for_view.clone(), waterui::component::text("Inbox")));
@@ -57,7 +57,7 @@ fn badge_value_tracks_its_signal(ui: UiBuilder) {
 
 #[waterui::test]
 fn accordion_tap_expands_and_collapses_content(ui: UiBuilder) {
-    let expanded = Binding::bool(false);
+    let expanded = Binding::new(false);
     let expanded_for_view = expanded.clone();
     let mut app = ui.mount(move || {
         Accordion::with_toggle(
@@ -132,7 +132,7 @@ struct Profile {
 
 #[waterui::test]
 fn derived_form_edits_flow_back_into_the_struct_binding(ui: UiBuilder) {
-    let profile = Binding::container(Profile::default());
+    let profile = Binding::new(Profile::default());
     let profile_for_view = profile.clone();
     let mut app = ui.mount(move || waterui::form::form(&profile_for_view));
 
@@ -163,7 +163,7 @@ struct Nickname {
 
 #[waterui::test]
 fn single_field_derived_form_edits_flow_back_into_the_struct_binding(ui: UiBuilder) {
-    let nickname = Binding::container(Nickname::default());
+    let nickname = Binding::new(Nickname::default());
     let nickname_for_view = nickname.clone();
     let mut app = ui.mount(move || waterui::form::form(&nickname_for_view));
 

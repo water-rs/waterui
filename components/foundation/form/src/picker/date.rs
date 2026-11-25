@@ -525,7 +525,7 @@ mod tests {
 
     #[test]
     fn time_binding_preserves_time_value() {
-        let source = Binding::container(Time::new(8, 30, 0, 0).unwrap());
+        let source = Binding::new(Time::new(8, 30, 0, 0).unwrap());
         let mapped = map_time_binding(&source);
 
         mapped.set(anchor_time(Time::new(18, 45, 12, 0).unwrap()));
@@ -572,13 +572,13 @@ mod tests {
 
     #[test]
     fn date_picker_config_defaults_and_builders_match_bound_type() {
-        let date = Binding::container(Date::constant(2025, 6, 15));
+        let date = Binding::new(Date::constant(2025, 6, 15));
         let date_cfg = DatePicker::new("Date", &date)
             .range(Date::constant(2025, 1, 1)..=Date::constant(2025, 12, 31))
             .config();
         assert_eq!(date_cfg.ty(), DatePickerType::Date);
 
-        let time = Binding::container(Time::constant(8, 30, 0, 0));
+        let time = Binding::new(Time::constant(8, 30, 0, 0));
         assert_eq!(
             DatePicker::new("Time", &time).config().ty(),
             DatePickerType::HourAndMinute
@@ -597,7 +597,7 @@ mod tests {
             DatePickerType::HourMinuteAndSecond
         );
 
-        let dt = Binding::container(Date::constant(2025, 6, 15).at(8, 30, 0, 0));
+        let dt = Binding::new(Date::constant(2025, 6, 15).at(8, 30, 0, 0));
         assert_eq!(
             DatePicker::new("DT", &dt).seconds().config().ty(),
             DatePickerType::DateHourMinuteAndSecond

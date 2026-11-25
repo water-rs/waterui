@@ -102,7 +102,7 @@ fn photo_row_list() -> (ReactiveImageHandle, AnyViewBuilder<AnyView>) {
     )));
     let builder = AnyViewBuilder::<AnyView>::new(move || {
         let dynamic = dynamic.clone();
-        let rows = Binding::container(vec![SelfId::new(1_u64)]);
+        let rows = Binding::new(vec![SelfId::new(1_u64)]);
         AnyView::new(List::for_each(SignalCollection::new(rows), move |_| {
             dynamic
                 .clone()

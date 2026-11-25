@@ -774,7 +774,7 @@ fn an_explicit_maximum_clamps_a_larger_window() {
 
     // The pin is reactive: tightening it below the settled window size is a
     // limits change, so the window is clamped into it.
-    let pinned_max = Binding::container(Size::new(2000.0, 2000.0));
+    let pinned_max = Binding::new(Size::new(2000.0, 2000.0));
     let window = Window::new("", || ()).max_size(pinned_max.clone());
     let mut runtime = runtime_window_sized(window, 800, 600, &test_environment());
     let _ = pump_window_semantics(&mut runtime, &Environment::new());
@@ -1575,7 +1575,7 @@ fn debounced_on_change_fires_after_the_quiet_period() {
 /// installed over the runtime's wake, and the binding belongs to content.
 #[test]
 fn a_binding_set_outside_a_frame_fires_the_installed_wake_once() {
-    let value = Binding::i32(0);
+    let value = Binding::new(0_i32);
     let content = value.clone();
     let env = test_environment();
     let mut runtime =

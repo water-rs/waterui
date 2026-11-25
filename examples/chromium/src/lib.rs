@@ -171,9 +171,9 @@ fn input_probe_controls(page: &ChromiumPage, result: &Binding<Str>) -> impl View
 }
 
 fn visible_cdp_controls(page: &ChromiumPage) -> impl View + use<> {
-    let raw_result: Binding<Str> = binding("Raw CDP has not run");
-    let typed_result: Binding<Str> = binding("Typed CDP has not run");
-    let screenshot_result: Binding<Str> = binding("No screenshot captured");
+    let raw_result: Binding<Str> = binding(Str::from("Raw CDP has not run"));
+    let typed_result: Binding<Str> = binding(Str::from("Typed CDP has not run"));
+    let screenshot_result: Binding<Str> = binding(Str::from("No screenshot captured"));
 
     vstack((
         text("Visible page CDP").headline(),
@@ -284,7 +284,7 @@ async fn load_headless_title(page: &ChromiumPage) -> Result<Value, CdpError> {
 }
 
 fn headless_controls() -> impl View + use<> {
-    let headless_result: Binding<Str> = binding("Headless Chromium has not run");
+    let headless_result: Binding<Str> = binding(Str::from("Headless Chromium has not run"));
 
     vstack((
         text("Headless page").headline(),
@@ -366,8 +366,8 @@ fn controls(
 }
 
 fn scene(controller: &ChromiumController) -> impl View + use<> {
-    let status: Binding<Str> = binding("Opening Chromium");
-    let progress_value = Binding::f64(0.0);
+    let status: Binding<Str> = binding(Str::from("Opening Chromium"));
+    let progress_value = Binding::new(0.0_f64);
     let chromium = controller.open(ChromiumConfiguration::new(START_URL).language("en-US"));
     let page = chromium.page().clone();
     install_event_observer(&page, &status, &progress_value);

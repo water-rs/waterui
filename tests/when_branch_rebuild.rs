@@ -12,7 +12,7 @@ use waterui_testing::ui;
 
 #[test]
 fn when_does_not_rebuild_unchanged_branch() {
-    let items: Binding<Vec<u32>> = Binding::container(vec![1]);
+    let items: Binding<Vec<u32>> = Binding::new(vec![1]);
     let builds = Rc::new(Cell::new(0_u32));
     let counter = Rc::clone(&builds);
     let flag = items.clone();

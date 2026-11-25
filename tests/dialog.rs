@@ -45,7 +45,7 @@ fn fixture(presented: &Binding<bool>, flag: Rc<Cell<bool>>) -> impl waterui::Vie
 
 #[test]
 fn dialog_presents_by_binding_on_semantic_mount() {
-    let presented = Binding::bool(false);
+    let presented = Binding::new(false);
     let flag = Rc::new(Cell::new(false));
     let mut app = ui()
         .viewport(400, 300)
@@ -77,7 +77,7 @@ fn dialog_presents_by_binding_on_semantic_mount() {
 
 #[test]
 fn presented_dialog_replaces_content_in_the_semantic_tree() {
-    let presented = Binding::bool(false);
+    let presented = Binding::new(false);
     let flag = Rc::new(Cell::new(false));
     let shown = presented.clone();
     let mut app = ui()
@@ -101,7 +101,7 @@ fn presented_dialog_replaces_content_in_the_semantic_tree() {
 
 #[test]
 fn default_action_runs_handler_and_writes_binding_back() {
-    let presented = Binding::bool(false);
+    let presented = Binding::new(false);
     let flag = Rc::new(Cell::new(false));
     let shown = presented.clone();
     let hit = flag.clone();
@@ -130,7 +130,7 @@ fn default_action_runs_handler_and_writes_binding_back() {
 
 #[test]
 fn cancel_action_runs_its_handler_and_closes() {
-    let presented = Binding::bool(false);
+    let presented = Binding::new(false);
     let cancelled = Rc::new(Cell::new(false));
     let shown = presented.clone();
     let c = cancelled.clone();
@@ -165,7 +165,7 @@ fn cancel_action_runs_its_handler_and_closes() {
 
 #[test]
 fn escape_runs_the_cancel_path_and_closes() {
-    let presented = Binding::bool(false);
+    let presented = Binding::new(false);
     let cancelled = Rc::new(Cell::new(false));
     let shown = presented.clone();
     let c = cancelled.clone();
@@ -192,7 +192,7 @@ fn escape_runs_the_cancel_path_and_closes() {
 
 #[test]
 fn escape_without_a_cancel_action_keeps_the_dialog_up() {
-    let presented = Binding::bool(false);
+    let presented = Binding::new(false);
     let shown = presented.clone();
     let mut app = ui().viewport(400, 300).mount(move || {
         text("Content")
@@ -214,7 +214,7 @@ fn escape_without_a_cancel_action_keeps_the_dialog_up() {
 
 #[test]
 fn actionless_dialog_gains_one_ok_acknowledgement() {
-    let presented = Binding::bool(false);
+    let presented = Binding::new(false);
     let shown = presented.clone();
     let mut app = ui()
         .viewport(400, 300)
@@ -234,7 +234,7 @@ fn actionless_dialog_gains_one_ok_acknowledgement() {
 
 #[test]
 fn app_dismissal_closes_without_running_a_handler() {
-    let presented = Binding::bool(false);
+    let presented = Binding::new(false);
     let flag = Rc::new(Cell::new(false));
     let shown = presented.clone();
     let hit = flag.clone();
@@ -256,7 +256,7 @@ fn app_dismissal_closes_without_running_a_handler() {
 
 #[waterui::test(theme = TestStyle::new(), viewport = (400, 300))]
 fn presented_dialog_is_in_the_offscreen_a11y_tree(ui: UiBuilder) {
-    let presented = Binding::bool(false);
+    let presented = Binding::new(false);
     let flag = Rc::new(Cell::new(false));
     let shown = presented.clone();
     let mut app = ui.mount_offscreen(move || fixture(&presented, flag.clone()));
@@ -277,7 +277,7 @@ fn presented_dialog_is_in_the_offscreen_a11y_tree(ui: UiBuilder) {
 #[test]
 #[should_panic(expected = "more than one Cancel")]
 fn two_cancel_actions_fail_fast() {
-    let presented = Binding::bool(true);
+    let presented = Binding::new(true);
     let mut app = ui().viewport(400, 300).mount(move || {
         text("Content").dialog(
             Dialog::new(&presented, "Invalid")
@@ -304,7 +304,7 @@ fn sibling_fixture(presented: &Binding<bool>) -> impl waterui::View + use<> {
 
 #[test]
 fn presented_dialog_makes_the_whole_window_inert_on_semantic_mount() {
-    let presented = Binding::bool(false);
+    let presented = Binding::new(false);
     let shown = presented.clone();
     let mut app = ui()
         .viewport(400, 300)
@@ -325,7 +325,7 @@ fn presented_dialog_makes_the_whole_window_inert_on_semantic_mount() {
 
 #[waterui::test(theme = TestStyle::new(), viewport = (400, 300))]
 fn presented_dialog_makes_the_whole_window_inert_on_offscreen_mount(ui: UiBuilder) {
-    let presented = Binding::bool(false);
+    let presented = Binding::new(false);
     let shown = presented.clone();
     let mut app = ui.mount_offscreen(move || sibling_fixture(&presented));
     app.settle();
@@ -345,7 +345,7 @@ fn presented_dialog_makes_the_whole_window_inert_on_offscreen_mount(ui: UiBuilde
 
 #[test]
 fn return_runs_the_primary_action() {
-    let presented = Binding::bool(false);
+    let presented = Binding::new(false);
     let shown = presented.clone();
     let saved = Rc::new(Cell::new(false));
     let hit = saved.clone();
@@ -373,7 +373,7 @@ fn return_runs_the_primary_action() {
 
 #[waterui::test(theme = TestStyle::new(), viewport = (400, 300))]
 fn scrim_tap_runs_the_cancel_path(ui: UiBuilder) {
-    let presented = Binding::bool(false);
+    let presented = Binding::new(false);
     let shown = presented.clone();
     let cancelled = Rc::new(Cell::new(false));
     let hit = cancelled.clone();
@@ -440,8 +440,8 @@ fn assert_second_dialog_waits<R: RuntimeDriver>(
 
 #[test]
 fn a_second_dialog_waits_in_presentation_order_on_semantic_mount() {
-    let first = Binding::bool(false);
-    let second = Binding::bool(false);
+    let first = Binding::new(false);
+    let second = Binding::new(false);
     let (f, s) = (first.clone(), second.clone());
     let mut app = ui().viewport(400, 300).mount(move || two_dialogs(&f, &s));
     app.settle();
@@ -450,8 +450,8 @@ fn a_second_dialog_waits_in_presentation_order_on_semantic_mount() {
 
 #[waterui::test(theme = TestStyle::new(), viewport = (400, 300))]
 fn a_second_dialog_waits_in_presentation_order_on_offscreen_mount(ui: UiBuilder) {
-    let first = Binding::bool(false);
-    let second = Binding::bool(false);
+    let first = Binding::new(false);
+    let second = Binding::new(false);
     let (f, s) = (first.clone(), second.clone());
     let mut app = ui.mount_offscreen(move || two_dialogs(&f, &s));
     app.settle();
@@ -468,7 +468,7 @@ fn focused_label<R>(app: &SemanticApp<R>) -> Option<String> {
 
 #[waterui::test(theme = TestStyle::new(), viewport = (400, 300))]
 fn focus_moves_into_the_dialog_and_returns_on_dismissal(ui: UiBuilder) {
-    let presented = Binding::bool(false);
+    let presented = Binding::new(false);
     let flag = Rc::new(Cell::new(false));
     let shown = presented.clone();
     let mut app = ui.mount_offscreen(move || fixture(&presented, flag.clone()));
@@ -491,7 +491,7 @@ fn focus_moves_into_the_dialog_and_returns_on_dismissal(ui: UiBuilder) {
 fn button_role_reaches_accessibility_tree_on_buttons_and_dialogs(ui: UiBuilder) {
     use waterui::component::button::{ButtonRole, button};
 
-    let presented = Binding::bool(true);
+    let presented = Binding::new(true);
     let mut app = ui.mount(move || {
         vstack((
             button("Delete").role(ButtonRole::Destructive).action(|| {}),

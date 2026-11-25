@@ -410,7 +410,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         mark_reached!("color");
         let renderer = &mut *self.renderer;
         RenderNode::Color(ColorNode {
-            bounds: nami::Binding::container(kurbo::Rect::ZERO),
+            bounds: nami::Binding::new(kurbo::Rect::ZERO),
             core: renderer.new_core(),
             color: native.resolve(env),
         })
@@ -1110,7 +1110,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
             gesture_group_identity: child.gesture_group_identity(),
             gesture_target: Cell::new(None),
             chrome: RefCell::new(None),
-            chrome_state: nami::Binding::container(
+            chrome_state: nami::Binding::new(
                 waterui_interaction::interaction::InteractionState::empty(),
             ),
         };

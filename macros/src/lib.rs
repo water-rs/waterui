@@ -1710,7 +1710,7 @@ fn validate_test_fn(input_fn: &ItemFn, mounts_view: bool) -> Result<&syn::PatTyp
 /// # use waterui::prelude::*;
 /// #[waterui::test]
 /// fn stepper_updates_binding(ui: waterui_testing::UiBuilder) {
-///     let value = Binding::i32(2);
+///     let value = Binding::new(2_i32);
 ///     let value_for_view = value.clone();
 ///     let mut app = ui.mount(move || stepper("Limited", &value_for_view));
 ///     app.query().label("Limited").increment();
@@ -2005,7 +2005,7 @@ fn validate_bench_fn(input_fn: &ItemFn, mounts_view: bool) -> Result<&syn::PatTy
 /// # }
 /// #[waterui::bench(theme = hydrolysis_m3::Material3::defaults(), max_rebuild_ratio = 0.2)]
 /// fn counter_updates(ui: waterui_testing::UiBuilder) -> waterui_testing::PerfReport {
-///     let value = Binding::i32(0);
+///     let value = Binding::new(0_i32);
 ///     let value_for_view = value.clone();
 ///     ui.perf_with(move || counter(&value_for_view), |perf| {
 ///         perf.measure("increment", |run| {

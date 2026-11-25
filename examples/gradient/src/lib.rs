@@ -81,7 +81,7 @@ async fn animate_mesh_colors(colors: Binding<[Color; 9]>) {
 /// Demo: mesh gradient whose colours follow a signal
 fn animated_background_section() -> impl View {
     // Create binding for animated colors
-    let colors: Binding<[Color; 9]> = Binding::container(compute_animated_colors(0.0));
+    let colors: Binding<[Color; 9]> = Binding::new(compute_animated_colors(0.0));
 
     vstack((
         text("Animated Mesh Gradient").font_size(20.0),
@@ -108,7 +108,7 @@ fn animated_background_section() -> impl View {
 
 /// Demo: mesh gradient animated by the canvas clock (no per-frame CPU updates)
 fn gpu_animated_mesh_gradient_section() -> impl View {
-    let animating = Binding::container(true);
+    let animating = Binding::new(true);
     // The configuration is a signal: pausing sets the speed to zero, which
     // holds the gradient still and lets the engine idle.
     let config = animating.map(|animating| {

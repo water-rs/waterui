@@ -754,8 +754,8 @@ mod tests {
     #[test]
     fn bold_and_monospaced_follow_signals() {
         let env = env_with_body(ResolvedFont::new(17.0, FontWeight::Normal));
-        let is_bold = Binding::bool(false);
-        let is_mono = Binding::bool(false);
+        let is_bold = Binding::new(false);
+        let is_mono = Binding::new(false);
         let resolved = Font::new(Body)
             .bold(is_bold.clone())
             .monospaced(is_mono.clone())
@@ -852,7 +852,7 @@ mod tests {
             FontWeight::Normal,
             "Inter",
         ));
-        let setting: Binding<Option<Str>> = Binding::container(None);
+        let setting: Binding<Option<Str>> = Binding::new(None);
         let resolved = Font::new(Body).family(setting.clone()).resolve(&env);
 
         let observed = Rc::new(RefCell::new(Vec::new()));

@@ -47,7 +47,7 @@ fn assert_selected<R: RuntimeDriver>(app: &mut SemanticApp<R>, label: &str, sele
 /// untagged row meets a real pointer press.
 #[test]
 fn selecting_a_tagged_static_row_writes_its_value() {
-    let selection = Binding::container(None::<Mailbox>);
+    let selection = Binding::new(None::<Mailbox>);
     let mut app = ui()
         .theme(hydrolysis_m3::Material3::defaults())
         .viewport(360, 320)
@@ -83,7 +83,7 @@ fn selecting_a_tagged_static_row_writes_its_value() {
 /// untagged ones stay out of the selection.
 #[test]
 fn multi_selecting_tagged_rows_beside_untagged_ones() {
-    let selection = Binding::container(BTreeSet::<Mailbox>::new());
+    let selection = Binding::new(BTreeSet::<Mailbox>::new());
     let mut app = ui().mount({
         let selection = selection.clone();
         move || {
@@ -166,8 +166,8 @@ fn mount_reminders(query: &Binding<Str>, selection: &Binding<Option<&'static str
 /// Tapping a row of a `ForEach` inside a section writes the item's id.
 #[test]
 fn selecting_a_foreach_row_in_a_reactive_section_writes_the_item_id() {
-    let query = Binding::container(Str::from(""));
-    let selection = Binding::container(None::<&'static str>);
+    let query = Binding::new(Str::from(""));
+    let selection = Binding::new(None::<&'static str>);
     let mut app = mount_reminders(&query, &selection);
 
     app.query().role(Role::LIST_ITEM).label("Call Ana").tap();
@@ -186,8 +186,8 @@ fn selecting_a_foreach_row_in_a_reactive_section_writes_the_item_id() {
 /// own ids.
 #[test]
 fn selection_survives_its_row_moving_when_another_section_is_filtered() {
-    let query = Binding::container(Str::from(""));
-    let selection = Binding::container(None::<&'static str>);
+    let query = Binding::new(Str::from(""));
+    let selection = Binding::new(None::<&'static str>);
     let mut app = mount_reminders(&query, &selection);
 
     app.query()

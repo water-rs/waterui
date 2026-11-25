@@ -31,8 +31,8 @@ fn dropped_paths() -> [PathBuf; 2] {
 /// delivered path, plus the `drop_hover` binding the drag's enter and exit
 /// drive — the view's evidence a file drag reached it.
 fn mount_destination() -> (OffscreenApp, Binding<Vec<PathBuf>>, Binding<bool>) {
-    let received = Binding::container(Vec::<PathBuf>::new());
-    let hovering = Binding::container(false);
+    let received = Binding::new(Vec::<PathBuf>::new());
+    let hovering = Binding::new(false);
     let recordings = received.clone();
     let hover_flag = hovering.clone();
     let mut app = ui()

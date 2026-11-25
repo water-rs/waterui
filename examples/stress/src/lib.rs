@@ -199,7 +199,7 @@ fn filter_section(
 
 #[preview]
 fn system_pressure_preview() -> impl View {
-    let toggle = Binding::bool(false);
+    let toggle = Binding::new(false);
     scroll(system_section(120, &toggle))
 }
 
@@ -210,9 +210,9 @@ fn custom_pressure_preview() -> impl View {
 
 #[preview]
 fn filter_pressure_preview() -> impl View {
-    let blur_target = Binding::f64(1.0);
-    let saturation_target = Binding::f64(1.0);
-    let hue_target = Binding::f64(0.0);
+    let blur_target = Binding::new(1.0_f64);
+    let saturation_target = Binding::new(1.0_f64);
+    let hue_target = Binding::new(0.0_f64);
     scroll(filter_section(
         144,
         &blur_target,
@@ -232,11 +232,11 @@ pub fn demo() -> impl View {
     let toggle_ms = env_u64("WATERUI_STRESS_TOGGLE_MS", 680).max(120);
     let filter_toggle_ms = env_u64("WATERUI_STRESS_FILTER_TOGGLE_MS", 240).max(80);
 
-    let system_toggle = Binding::bool(false);
+    let system_toggle = Binding::new(false);
 
-    let blur_target = Binding::f64(1.0);
-    let saturation_target = Binding::f64(1.0);
-    let hue_target = Binding::f64(0.0);
+    let blur_target = Binding::new(1.0_f64);
+    let saturation_target = Binding::new(1.0_f64);
+    let hue_target = Binding::new(0.0_f64);
 
     {
         let system_toggle = system_toggle.clone();
@@ -306,10 +306,10 @@ mod bench {
     /// The three stress pressure paths at their default preview scale, without
     /// the app's background toggle tasks: the bench drives frames itself.
     fn stress_scene() -> impl View {
-        let system_toggle = Binding::bool(true);
-        let blur_target = Binding::f64(1.0);
-        let saturation_target = Binding::f64(1.0);
-        let hue_target = Binding::f64(0.0);
+        let system_toggle = Binding::new(true);
+        let blur_target = Binding::new(1.0_f64);
+        let saturation_target = Binding::new(1.0_f64);
+        let hue_target = Binding::new(0.0_f64);
         scroll(
             vstack((
                 system_section(120, &system_toggle),

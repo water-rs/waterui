@@ -140,7 +140,7 @@ fn painted_ink_stays_within_measured_frame_native_fonts() {
             "suggestion 4",
         ];
         let pill = VStack::for_each(
-            SignalCollection::new(Binding::container(
+            SignalCollection::new(Binding::new(
                 (0..texts.len() as u64).map(SelfId::new).collect::<Vec<_>>(),
             )),
             move |id: SelfId<u64>| {
@@ -155,7 +155,7 @@ fn painted_ink_stays_within_measured_frame_native_fonts() {
         // Unclipped twin in white ink, same text and padding: its painted ink
         // extent is directly visible on the blue canvas.
         let twin = VStack::for_each(
-            SignalCollection::new(Binding::container(
+            SignalCollection::new(Binding::new(
                 (0..texts.len() as u64).map(SelfId::new).collect::<Vec<_>>(),
             )),
             move |id: SelfId<u64>| {

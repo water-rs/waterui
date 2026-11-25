@@ -712,7 +712,7 @@ impl TransitionSpec {
         } else {
             self.transition.clone()
         };
-        let progress = Binding::f32(match phase {
+        let progress = Binding::<f32>::new(match phase {
             TransitionPhase::Insertion => 1.0,
             TransitionPhase::Removal => 0.0,
         });

@@ -1060,7 +1060,7 @@ fn retained_picture_reuses_pixels_across_fractional_translation() -> Result<(), 
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
     let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
     surface.clear_color(CLEAR);
-    let placement = Binding::container(Affine::IDENTITY);
+    let placement = Binding::new(Affine::IDENTITY);
     let picture = Picture::record(|c| c.fill(overhang(), RED));
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|c| {
@@ -1155,7 +1155,7 @@ fn a_retained_picture_keeps_working_precision() -> Result<(), Box<dyn std::error
         c.fill(band, blue_to_yellow());
         c.fill(block, red);
     });
-    let placement = Binding::container(scale);
+    let placement = Binding::new(scale);
     retained.update(|tx| {
         tx[retained.root()].content(retained.record(|c| c.picture(&picture, placement.clone())));
     });
@@ -1202,7 +1202,7 @@ fn tiled_picture_scroll_matches_direct_commands() -> Result<(), Box<dyn std::err
     let direct = wait!(engine.surface(Offscreen::new((128, 64), OffscreenFormat::LinearF16), || {}))?;
     let retained = wait!(engine.surface(Offscreen::new((128, 64), OffscreenFormat::LinearF16), || {}))?;
     let picture = Picture::record(scene);
-    let placement = Binding::container(Affine::IDENTITY);
+    let placement = Binding::new(Affine::IDENTITY);
     retained.update(|tx| {
         tx[retained.root()].content(retained.record(|c| c.picture(&picture, placement.clone())));
     });

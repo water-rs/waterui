@@ -84,7 +84,7 @@ impl ContentLedger {
             next_id: Cell::new(0),
             owed: RefCell::new(BTreeMap::new()),
             failures: RefCell::new(VecDeque::new()),
-            pending: Binding::container(0),
+            pending: Binding::new(0),
             wakers: RefCell::new(Vec::new()),
         }))
     }

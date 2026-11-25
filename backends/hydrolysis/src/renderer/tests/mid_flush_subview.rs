@@ -123,9 +123,9 @@ const INNER_ROW_B: [u8; 3] = [0x60, 0x40, 0x60];
     reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
 )]
 fn mid_flush_dynamic_apply_in_retained_subview_relayouts() {
-    let open = Binding::bool(false);
-    let inner_items: Binding<Vec<SelfId<u64>>> = Binding::container(vec![SelfId::new(7_u64)]);
-    let messages = SignalCollection::new(Binding::container(
+    let open = Binding::new(false);
+    let inner_items: Binding<Vec<SelfId<u64>>> = Binding::new(vec![SelfId::new(7_u64)]);
+    let messages = SignalCollection::new(Binding::new(
         (0..3_u64).map(SelfId::new).collect::<Vec<_>>(),
     ));
 
@@ -179,7 +179,7 @@ fn mid_flush_dynamic_apply_in_retained_subview_relayouts() {
                         }),
                         when(open, || {
                             VStack::for_each(
-                                SignalCollection::new(Binding::container(
+                                SignalCollection::new(Binding::new(
                                     (1..=2_u64).map(SelfId::new).collect::<Vec<_>>(),
                                 )),
                                 move |id: SelfId<u64>| {

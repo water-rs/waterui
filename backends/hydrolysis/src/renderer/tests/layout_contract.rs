@@ -280,7 +280,7 @@ fn retained_subview_relayouts_when_a_layout_signal_invalidates() {
 
     let env = test_environment();
     let mut renderer = test_renderer();
-    let max_width = nami::Binding::container(120.0f32);
+    let max_width = nami::Binding::new(120.0f32);
     let constraint = max_width.clone();
     let trace = Rc::new(RefCell::new(Vec::new()));
     let mut retained = RetainedSubview::new(AnyView::new(
@@ -343,9 +343,9 @@ fn retained_subview_relayouts_when_a_widget_leaf_label_invalidates() {
     for (style, relaid) in [(ToggleStyle::Checkbox, 160.0), (ToggleStyle::Switch, 400.0)] {
         let env = test_environment();
         let mut renderer = test_renderer();
-        let max_width = nami::Binding::container(120.0f32);
+        let max_width = nami::Binding::new(120.0f32);
         let constraint = max_width.clone();
-        let on = nami::Binding::container(false);
+        let on = nami::Binding::new(false);
         let trace = Rc::new(RefCell::new(Vec::new()));
         let probe_trace = Rc::clone(&trace);
         // The toggle always wraps its label in a `RetainedSubview`; a

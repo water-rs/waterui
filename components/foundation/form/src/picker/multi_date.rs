@@ -145,7 +145,7 @@ impl<L> MultiDatePicker<L> {
     /// while keeping it in the accessibility tree.
     pub fn new<I: IntoLabel<Kind = L>>(label: I, date: &Binding<BTreeSet<Date>>) -> Self {
         let range = Date::MIN..=Date::MAX;
-        let visible_month = Binding::container(
+        let visible_month = Binding::new(
             initial_visible_month(date.snapshot().into_iter().next(), &range).first_day(),
         );
         Self {
@@ -266,7 +266,7 @@ mod tests {
     fn owned_visible_month_defaults_to_first_selected_and_supports_opt_in() {
         let mut selected = BTreeSet::new();
         selected.insert(Date::new(2025, 4, 20).unwrap());
-        let dates = Binding::container(selected);
+        let dates = Binding::new(selected);
 
         let default_cfg = MultiDatePicker::new("Available", &dates).config();
         assert_eq!(
@@ -274,7 +274,7 @@ mod tests {
             Date::new(2025, 4, 1).unwrap()
         );
 
-        let shown = Binding::container(Date::new(2025, 7, 1).unwrap());
+        let shown = Binding::new(Date::new(2025, 7, 1).unwrap());
         let opt_in_cfg = MultiDatePicker::new("Available", &dates)
             .visible_month(&shown)
             .range(Date::new(2025, 1, 1).unwrap()..=Date::new(2025, 6, 30).unwrap())

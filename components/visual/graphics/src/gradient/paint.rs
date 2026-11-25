@@ -731,7 +731,7 @@ mod tests {
     fn theme_token_gradient_recolours_on_scheme_change() {
         use waterui::theme::color::{Accent, Surface};
 
-        let scheme = Binding::container(ColorScheme::Light);
+        let scheme = Binding::new(ColorScheme::Light);
         let mut env = Environment::new();
         waterui::theme::install_color_scheme(&mut env, scheme.computed());
         waterui::theme::install_color_signal::<Accent>(
@@ -793,7 +793,7 @@ mod tests {
         reason = "the test checks the exact animated stop offset"
     )]
     fn animated_stop_position_updates_in_place() {
-        let progress = Binding::container(0.25_f32);
+        let progress = Binding::new(0.25_f32);
         let rose = Color::srgb_hex("#FF4D80");
         let sky = Color::srgb_hex("#38BDF8");
         let stops_signal = progress.map(move |p| vec![(0.0, rose.clone()), (p, sky.clone())]);

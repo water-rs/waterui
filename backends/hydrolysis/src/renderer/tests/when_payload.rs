@@ -67,8 +67,8 @@ fn pump_until_settled(runtime: &mut HeadlessRuntime) -> Option<accesskit::TreeUp
 /// flip is driven by a pointer tap on the payload's own row.
 #[test]
 fn nested_when_inside_a_when_payload_materializes() {
-    let outer = Binding::container(false);
-    let inner = Binding::container(false);
+    let outer = Binding::new(false);
+    let inner = Binding::new(false);
     let view_outer = outer.clone();
     let view_inner = inner;
     let mut runtime = HeadlessRuntime::new_for_tests(
@@ -121,8 +121,8 @@ fn nested_when_inside_a_when_payload_materializes() {
 /// action — the press slot `bind_interaction_target` registers.
 #[test]
 fn button_inside_a_when_payload_receives_pointer_input() {
-    let show = Binding::container(false);
-    let hits = Binding::container(0_i32);
+    let show = Binding::new(false);
+    let hits = Binding::new(0_i32);
     let probe = hits.clone();
     let view_show = show.clone();
     let view_hits = hits;
@@ -169,9 +169,9 @@ fn button_inside_a_when_payload_receives_pointer_input() {
 /// pass itself — the press slot still binds and the button still fires.
 #[test]
 fn button_inserted_mid_lazy_materialize_receives_pointer_input() {
-    let items = Binding::container(vec![SelfId::new(0_u32)]);
-    let mid = Binding::container(false);
-    let hits = Binding::container(0_i32);
+    let items = Binding::new(vec![SelfId::new(0_u32)]);
+    let mid = Binding::new(false);
+    let hits = Binding::new(0_i32);
     let probe = hits.clone();
     let rows = items.clone();
     let mut runtime = HeadlessRuntime::new_for_tests(

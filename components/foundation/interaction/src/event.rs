@@ -435,7 +435,7 @@ mod tests {
 
     #[test]
     fn fires_on_first_update() {
-        let source = Binding::i32(0);
+        let source = Binding::new(0_i32);
         let seen = Rc::new(RefCell::new(Vec::new()));
 
         let _guard = OnChange::new((), &source, {
@@ -456,7 +456,7 @@ mod tests {
 
     #[test]
     fn establishes_initial_cache_after_subscribing() {
-        let source = Binding::i32(0);
+        let source = Binding::new(0_i32);
         let changes_before_watch = ChangesBeforeWatch {
             source: source.clone(),
             replacement: 1,
@@ -478,7 +478,7 @@ mod tests {
     #[test]
     fn handler_extracts_injected_state() {
         let source = binding(0_i32);
-        let total = Binding::i32(0);
+        let total = Binding::new(0_i32);
         let mut env = Environment::new();
         env.insert(State(total.clone()));
 
@@ -502,7 +502,7 @@ mod tests {
     /// and the handler stops once the value settles.
     #[test]
     fn handler_writing_watched_binding_runs_again_then_settles() {
-        let source = Binding::i32(0);
+        let source = Binding::new(0_i32);
         let seen = Rc::new(RefCell::new(Vec::new()));
 
         let _guard = OnChange::new((), &source, {
@@ -530,7 +530,7 @@ mod tests {
     /// keeps moving the value forward converges instead of panicking.
     #[test]
     fn self_writes_chain_until_the_value_settles() {
-        let source = Binding::i32(0);
+        let source = Binding::new(0_i32);
         let seen = Rc::new(RefCell::new(Vec::new()));
 
         let _guard = OnChange::new((), &source, {
@@ -552,7 +552,7 @@ mod tests {
 
     #[test]
     fn nothing_fires_before_subscribing() {
-        let source = Binding::i32(0);
+        let source = Binding::new(0_i32);
         let seen = Rc::new(RefCell::new(Vec::new()));
 
         let on_change = OnChange::new((), &source, {
@@ -573,7 +573,7 @@ mod tests {
         use waterui_core::layout::Point;
 
         let seen = Rc::new(RefCell::new(None));
-        let total = Binding::i32(0);
+        let total = Binding::new(0_i32);
         let mut handler = OnEvent::hover_move({
             let seen = Rc::clone(&seen);
             move |hover: HoverEvent, State(total): State<Binding<i32>>| {

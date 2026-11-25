@@ -221,7 +221,7 @@ fn parts_at(fixture: &mut Fixture) -> (f64, f64) {
 
 #[test]
 fn hover_press_and_toggle_record_nothing() {
-    let mut fixture = fixture(Binding::container(false));
+    let mut fixture = fixture(Binding::new(false));
     let toggle = fixture.toggle();
     let recordings = toggle.recordings();
     assert_eq!(recordings, 1, "the mount records the parts once");
@@ -259,7 +259,7 @@ fn hover_press_and_toggle_record_nothing() {
 /// knob's 100 ms and the strip's 400 ms.
 #[test]
 fn operands_run_their_own_motion() {
-    let mut fixture = fixture(Binding::container(false));
+    let mut fixture = fixture(Binding::new(false));
     let (rest_knob, rest_strip) = parts_at(&mut fixture);
 
     fixture.value.set(true);
@@ -285,7 +285,7 @@ fn operands_run_their_own_motion() {
 /// snaps when the change disables animation.
 #[test]
 fn own_motion_overrides_the_caller_and_snaps_without_animation() {
-    let mut named = fixture(Binding::container(false));
+    let mut named = fixture(Binding::new(false));
     let (rest, _) = parts_at(&mut named);
     // The change names a 10 s animation; the look's 100 ms still runs.
     named.toggle().change_value(
@@ -300,7 +300,7 @@ fn own_motion_overrides_the_caller_and_snaps_without_animation() {
         knob - rest
     );
 
-    let mut snapped = fixture(Binding::container(false));
+    let mut snapped = fixture(Binding::new(false));
     let (rest, _) = parts_at(&mut snapped);
     snapped
         .toggle()
@@ -315,7 +315,7 @@ fn own_motion_overrides_the_caller_and_snaps_without_animation() {
 /// The knob follows the finger, and a release settles it on the nearer end.
 #[test]
 fn drag_moves_the_knob_and_settles_on_the_nearer_end() {
-    let mut fixture = fixture(Binding::container(false));
+    let mut fixture = fixture(Binding::new(false));
     let (rest, _) = parts_at(&mut fixture);
     let (x, y) = fixture.center();
 
@@ -359,7 +359,7 @@ fn drag_moves_the_knob_and_settles_on_the_nearer_end() {
 /// dragged position.
 #[test]
 fn release_beyond_the_cancel_distance_settles_back() {
-    let mut fixture = fixture(Binding::container(false));
+    let mut fixture = fixture(Binding::new(false));
     let (x, y) = fixture.center();
     fixture.down(x, y);
     fixture.move_to(x + 16.0, y);
@@ -373,7 +373,7 @@ fn release_beyond_the_cancel_distance_settles_back() {
 /// size, and the parts record on a frame of exactly that size.
 #[test]
 fn measurement_equals_drawing() {
-    let fixture = fixture(Binding::container(false));
+    let fixture = fixture(Binding::new(false));
     let recorded = fixture.recorded.borrow();
     let frame = recorded.last().expect("the parts recorded");
     assert_eq!(frame.size(), kurbo::Size::new(40.0, 20.0));
@@ -399,7 +399,7 @@ fn measurement_equals_drawing() {
 /// each own their parts: the off switch never shows the on switch's state.
 #[test]
 fn toggles_sharing_a_mapping_call_site_own_their_parts() {
-    let source = Binding::container(0b01_u8);
+    let source = Binding::new(0b01_u8);
     assert_eq!(
         bit(&source, 1).identity(),
         bit(&source, 2).identity(),

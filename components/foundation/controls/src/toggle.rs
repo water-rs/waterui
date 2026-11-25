@@ -815,7 +815,7 @@ mod tests {
     /// the resolved payload a backend receives.
     #[test]
     fn stretch_axis_follows_style_and_label_visibility() {
-        let on = Binding::bool(false);
+        let on = Binding::new(false);
         let switch_axis = |visible: bool| {
             if visible {
                 StretchAxis::Horizontal
@@ -873,7 +873,7 @@ mod tests {
             assert_eq!(style.resolve(&checkbox_default), style);
         }
 
-        let on = Binding::bool(false);
+        let on = Binding::new(false);
         let resolved: ToggleConfig<AnyView> =
             Toggle::new("Wi-Fi", &on).into_config(&checkbox_default);
         assert_eq!(resolved.style, ToggleStyle::Checkbox);
@@ -898,7 +898,7 @@ mod tests {
     /// a switch whose label the environment hides is content-sized.
     #[test]
     fn an_environment_hidden_label_stops_a_switch_stretching() {
-        let on = Binding::bool(false);
+        let on = Binding::new(false);
         let mut env = test_env();
         env.insert(LabelDisplayMode::Hidden);
         let resolved = Toggle::new("Wi-Fi", &on)
@@ -958,7 +958,7 @@ mod custom_style_tests {
 
     #[test]
     fn custom_toggle_style_exposes_binding_and_toggles_on_tap() {
-        let on = Binding::bool(false);
+        let on = Binding::new(false);
         let recorded = Rc::new(RefCell::new(None));
         let disabled_binding = binding(false);
         let mut env = Environment::new();

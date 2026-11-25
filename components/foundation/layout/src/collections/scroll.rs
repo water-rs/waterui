@@ -165,12 +165,12 @@ impl<T: Clone + 'static> ScrollController<T> {
     #[must_use]
     pub fn new(initial_target: T) -> Self {
         Self {
-            request: Binding::container(ScrollRequest {
+            request: Binding::new(ScrollRequest {
                 target: initial_target,
                 animation: None,
             }),
-            generation: Binding::container(0),
-            position: Binding::container(None),
+            generation: Binding::new(0),
+            position: Binding::new(None),
         }
     }
 

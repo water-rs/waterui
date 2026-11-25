@@ -37,7 +37,7 @@ where
     /// * `header` - The view to display as the accordion header.
     /// * `content` - A function that generates the content view when the accordion is expanded.
     pub fn new(header: H, content: F) -> Self {
-        Self::with_toggle(&Binding::bool(false), header, content)
+        Self::with_toggle(&Binding::new(false), header, content)
     }
 
     /// Creates a new accordion with a custom toggle binding.

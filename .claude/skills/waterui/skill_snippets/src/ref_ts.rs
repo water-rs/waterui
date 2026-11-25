@@ -25,7 +25,7 @@ struct PromoProps {
 // SKILL.md § "## TypeScript views" — rust block 18/18
 // ---------------------------------------------------------------------------
 pub fn mount_promo() -> impl waterui::View {
-    let unread = Binding::container(3_u32);
+    let unread = Binding::new(3_u32);
     let view = tsx!(
         "./promo.tsx",
         PromoProps {

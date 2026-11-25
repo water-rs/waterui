@@ -14,9 +14,9 @@ use waterui::prelude::*;
 // An import pair, then two independent constructors.
 // ---------------------------------------------------------------------------
 pub fn media_block_01() {
-    let radius = Binding::f64(2.0);
-    let sat = Binding::f64(1.0);
-    let photo_status = Binding::container(waterui::media::PhotoStatus::Loading);
+    let radius = Binding::new(2.0_f64);
+    let sat = Binding::new(1.0_f64);
+    let photo_status = Binding::new(waterui::media::PhotoStatus::Loading);
     let rgba_pixels = vec![0u8; 200 * 150 * 4];
 
     use waterui::media::{Image, Photo, PhotoCache, PhotoEvent, PhotoStatus, Url, photo};
@@ -73,7 +73,7 @@ pub fn media_image_prose(encoded: &[u8], env: &mut Environment, max_bytes: usize
 pub fn media_block_02() {
     use waterui::media::{Photo, Url};
 
-    let entered = Binding::container(Str::from("https://waterui.dev/logo.png"));
+    let entered = Binding::new(Str::from("https://waterui.dev/logo.png"));
     let (photo_slot, _view) = Dynamic::new();
 
     let Some(parsed) = Url::parse(entered.snapshot().as_str()) else {
@@ -248,8 +248,8 @@ pub fn media_video_advanced_prose() -> impl View {
 // media.md § "## Web content" — rust block 5/15
 // ---------------------------------------------------------------------------
 pub fn media_block_05() -> impl View {
-    let allow = Binding::bool(true);
-    let ua = Binding::container(Str::from("WaterUI"));
+    let allow = Binding::new(true);
+    let ua = Binding::new(Str::from("WaterUI"));
 
     use waterui::webview::{ScriptInjectionTime, Url, WebView, WebViewEvent, WebViewProxy};
 
@@ -285,7 +285,7 @@ pub fn media_web_bundled_prose() -> impl View {
         AssetRequest, AssetResponse, BridgeOrigins, DirectoryServer, Json, WebView,
     };
 
-    let address = Binding::container(Str::from(""));
+    let address = Binding::new(Str::from(""));
 
     let _directory = WebView::open_assets(
         DirectoryServer::new("web/dist").into_server_fn(),
@@ -349,7 +349,7 @@ pub fn media_block_06() -> impl View {
     use waterui::webview::{Url, WebView, WebViewProxy};
 
     let open = WebView::open("https://waterui.dev");
-    let address = Binding::container(Str::from("waterui.dev"));
+    let address = Binding::new(Str::from("waterui.dev"));
 
     open.proxy_scope(move |page, web| {
         vstack((
@@ -419,8 +419,8 @@ pub mod media_block_07 {
         use waterui::webview::WebView;
 
         let url = "https://waterui.dev";
-        let address = Binding::container(Str::from(""));
-        let greetings = Binding::container(0_u32);
+        let address = Binding::new(Str::from(""));
+        let greetings = Binding::new(0_u32);
 
         WebView::open(url).serve(PageApi { address, greetings })
     }
@@ -483,7 +483,7 @@ pub mod media_js_api_prose {
 pub fn media_block_08() {
     use waterui::layout::{Point, Rect};
     let source = Str::from("<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>");
-    let radius = Binding::f32(20.0);
+    let radius = Binding::new(20.0_f32);
     let accent = Color::srgb(0, 122, 255);
 
     use waterui::canvas::{Canvas, Circle, StrokeStyle}; // facade feature `canvas`
@@ -528,8 +528,8 @@ pub fn media_canvas_prose(image: waterui::canvas::ImageSource) -> impl View {
         id: u32,
         at: Point,
     }
-    let dots: Binding<Vec<Dot>> = Binding::container(Vec::new());
-    let detail = Binding::u32(1);
+    let dots: Binding<Vec<Dot>> = Binding::new(Vec::new());
+    let detail = Binding::new(1_u32);
     let drawing = Drawing::record(Size::new(24.0, 24.0), |cx| {
         cx.fill(
             Circle::new(Point::new(12.0, 12.0), 12.0),
@@ -622,7 +622,7 @@ pub fn media_block_09() -> impl View {
 // ---------------------------------------------------------------------------
 pub fn media_shader_prose() -> impl View {
     use waterui::graphics::shader;
-    let level = Binding::f32(0.5);
+    let level = Binding::new(0.5_f32);
     shader!("starfield.wgsl")
         .continuous(true)
         .param(level)
@@ -658,10 +658,10 @@ pub fn media_block_10() -> impl View {
         }
     }
     let terminal = Terminal;
-    let typed = Binding::container(Str::from(""));
-    let interrupt = Binding::bool(false);
-    let submit = Binding::bool(false);
-    let pointer_x = Binding::f64(0.0);
+    let typed = Binding::new(Str::from(""));
+    let interrupt = Binding::new(false);
+    let submit = Binding::new(false);
+    let pointer_x = Binding::new(0.0_f64);
 
     use waterui::graphics::input::{Code, Key, Modifiers, NamedKey, SurfaceInputEvent};
 
@@ -723,7 +723,7 @@ pub fn media_filter_table_prose(png: &[u8]) -> Result<impl View, waterui::Error>
             BlendMode::Multiply,
         )
         .displacement_warp(decoded, 1.0, 1.0);
-    let quad = Binding::container([[0.0_f32, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]);
+    let quad = Binding::new([[0.0_f32, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]);
     let _ = text("a")
         .tone_curve(0.1, 0.5, 0.9, 1.0, 1.0)
         .color_matrix([[1.0, 0.0, 0.0, 0.0]; 3])
@@ -751,8 +751,8 @@ pub fn media_filter_table_prose(png: &[u8]) -> Result<impl View, waterui::Error>
 // ---------------------------------------------------------------------------
 pub fn media_block_11() -> Result<impl View, waterui::graphics::filter_view::ShaderEffectError> {
     let terminal = || text("terminal");
-    let strength = Binding::f32(0.35);
-    let focused = Binding::bool(true);
+    let strength = Binding::new(0.35_f32);
+    let focused = Binding::new(true);
 
     use waterui::graphics::filter_view::ShaderEffect;
 
@@ -842,8 +842,8 @@ pub fn media_chart_interaction_prose() -> impl View {
     };
     use waterui::color::Srgb;
 
-    let points = Binding::container(vec![DataPoint::new(0.0, 1.0), DataPoint::new(1.0, 2.0)]);
-    let focused: Binding<Option<HitResult<DataPoint>>> = Binding::container(None);
+    let points = Binding::new(vec![DataPoint::new(0.0, 1.0), DataPoint::new(1.0, 2.0)]);
+    let focused: Binding<Option<HitResult<DataPoint>>> = Binding::new(None);
 
     vstack((
         LineChart::new(points)
@@ -864,8 +864,8 @@ pub fn media_block_14() -> impl View {
 
     use waterui_map::{Annotation, Coordinate, Location, Map, MapStyle, Region};
 
-    let pins = Binding::container(Vec::<Annotation<&'static str>>::new());
-    let loc = Binding::container(None::<Location>);
+    let pins = Binding::new(Vec::<Annotation<&'static str>>::new());
+    let loc = Binding::new(None::<Location>);
 
     let center = Coordinate::from_degrees(37.33, -122.03).expect("valid coordinate");
     let region: Binding<Region> = binding(Region::new(center, 0.05, 0.05)); // deltas are degree
@@ -892,10 +892,10 @@ pub fn media_map_prose() -> impl View {
     use waterui_map::{Annotation, Coordinate, Map, MapStatus};
 
     let coordinate = Coordinate::from_degrees(37.33, -122.03).expect("valid coordinate");
-    let pins = Binding::container(vec![
+    let pins = Binding::new(vec![
         Annotation::new("apple-park", coordinate, "Apple Park").subtitle("Cupertino"),
     ]);
-    let status = Binding::container(MapStatus::Loading);
+    let status = Binding::new(MapStatus::Loading);
 
     Map::centered_on(coordinate)
         .annotations(pins)

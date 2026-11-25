@@ -30,7 +30,7 @@ fn picker_items() -> Vec<PickerItem<&'static str>> {
 
 #[waterui::test(viewport = (320, 240))]
 fn picker_selection_flow(ui: UiBuilder) {
-    let selection = Binding::container("Alpha");
+    let selection = Binding::new("Alpha");
     let selection_for_view = selection.clone();
 
     let mut app = ui.mount(move || {
@@ -78,7 +78,7 @@ fn picker_selection_flow(ui: UiBuilder) {
 
 #[waterui::test(viewport = (320, 240))]
 fn picker_initial_non_first_selection_uses_matching_item_id(ui: UiBuilder) {
-    let selection = Binding::container("Beta");
+    let selection = Binding::new("Beta");
     let selection_for_view = selection.clone();
 
     let mut app = ui.mount(move || {
@@ -101,7 +101,7 @@ fn picker_initial_non_first_selection_uses_matching_item_id(ui: UiBuilder) {
 
 #[waterui::test(viewport = (320, 240))]
 fn date_picker_accessibility(ui: UiBuilder) {
-    let selected_date = Binding::container(Date::new(2025, 1, 10).unwrap());
+    let selected_date = Binding::new(Date::new(2025, 1, 10).unwrap());
     let selected_date_for_view = selected_date.clone();
 
     let mut app = ui.mount(move || {
@@ -140,7 +140,7 @@ fn date_picker_accessibility(ui: UiBuilder) {
 
 #[waterui::test(viewport = (320, 240))]
 fn color_picker_accessibility_tap_is_handled(ui: UiBuilder) {
-    let selected_color = Binding::container(Color::srgb(0, 0, 0));
+    let selected_color = Binding::new(Color::srgb(0, 0, 0));
     let selected_color_for_view = selected_color;
 
     let mut app = ui.mount(move || {
@@ -155,7 +155,7 @@ fn color_picker_accessibility_tap_is_handled(ui: UiBuilder) {
 
 #[waterui::test(viewport = (320, 240))]
 fn calendar_navigation_and_selection_update_binding(ui: UiBuilder) {
-    let selected_date = Binding::container(Date::new(2025, 1, 10).unwrap());
+    let selected_date = Binding::new(Date::new(2025, 1, 10).unwrap());
     let selected_date_for_view = selected_date.clone();
 
     let mut app = ui.mount(move || {

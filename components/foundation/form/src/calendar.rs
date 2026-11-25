@@ -167,7 +167,7 @@ impl<L> Calendar<L> {
     pub fn new<I: IntoLabel<Kind = L>>(label: I, date: &Binding<Date>) -> Self {
         let range = Date::MIN..=Date::MAX;
         let visible_month =
-            Binding::container(initial_visible_month(Some(date.snapshot()), &range).first_day());
+            Binding::new(initial_visible_month(Some(date.snapshot()), &range).first_day());
         Self {
             label: label.into_label(),
             value: date.clone(),
@@ -749,14 +749,14 @@ mod tests {
 
     #[test]
     fn owned_visible_month_defaults_to_selection_and_opt_in_replaces_it() {
-        let selected = Binding::container(Date::new(2025, 6, 15).unwrap());
+        let selected = Binding::new(Date::new(2025, 6, 15).unwrap());
         let default_cfg = Calendar::new("Trip", &selected).config();
         assert_eq!(
             default_cfg.visible_month().snapshot(),
             Date::new(2025, 6, 1).unwrap()
         );
 
-        let shown = Binding::container(Date::new(2025, 10, 12).unwrap());
+        let shown = Binding::new(Date::new(2025, 10, 12).unwrap());
         let opt_in_cfg = Calendar::new("Trip", &selected)
             .range(Date::new(2025, 1, 1).unwrap()..=Date::new(2025, 8, 31).unwrap())
             .visible_month(&shown)
@@ -775,7 +775,7 @@ mod tests {
         let mut env = Environment::new();
         install_color_signal::<Accent>(&mut env, Computed::constant(accent));
 
-        let selected = Binding::bool(true).computed();
+        let selected = Binding::new(true).computed();
         let fill = selection_fill_color(&selected);
 
         assert_eq!(fill.resolve(&env).snapshot().components, accent.components);

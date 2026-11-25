@@ -35,7 +35,7 @@ impl<E: crate::text::TextEngine> HydroState<E> {
             measurement: MeasurementCaches::default(),
             counters: FrameWorkCounters::default(),
             layout_dependencies: None,
-            font_revision: nami::Binding::container(0),
+            font_revision: nami::Binding::new(0),
         }
     }
 

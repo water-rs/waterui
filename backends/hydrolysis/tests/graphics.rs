@@ -234,7 +234,7 @@ fn theme_token_gradient_recolours_in_place_on_scheme_change() {
     use waterui::theme::color::{Accent, Surface};
     use waterui::theme::{ColorDerivation, ColorScheme, Theme, install_color_derivation};
 
-    let scheme = Binding::container(ColorScheme::Light);
+    let scheme = Binding::new(ColorScheme::Light);
     let mut env = Environment::new();
     env.install(Theme::new().color_scheme(scheme.computed()));
 
@@ -302,7 +302,7 @@ fn animated_gradient_stop_updates_in_place_without_rebuild() {
     use waterui::SignalExt as _;
     use waterui::graphics::color::Working;
 
-    let stop_pos = Binding::container(0.1_f32);
+    let stop_pos = Binding::new(0.1_f32);
     let red = Color::new(Working(WorkingColor::new([1.0, 0.0, 0.0, 1.0])));
     let blue = Color::new(Working(WorkingColor::new([0.0, 0.0, 1.0, 1.0])));
     let stops = stop_pos.map(move |p| vec![(0.0, red.clone()), (p, blue.clone())]);

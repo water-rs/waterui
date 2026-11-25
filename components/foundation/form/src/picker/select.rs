@@ -315,7 +315,7 @@ mod tests {
     /// the payload a backend receives.
     #[test]
     fn only_the_segmented_style_stretches() {
-        let selection = Binding::i32(0);
+        let selection = Binding::new(0_i32);
         let cases = [
             (PickerStyle::Automatic, StretchAxis::None),
             (PickerStyle::Menu, StretchAxis::None),

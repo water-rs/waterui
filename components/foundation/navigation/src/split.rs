@@ -717,8 +717,8 @@ mod tests {
 
     #[test]
     fn into_layout_preserves_concrete_column_view_types() {
-        let primary = Binding::container(Some(1_i32));
-        let secondary = Binding::container(Some(2_i32));
+        let primary = Binding::new(Some(1_i32));
+        let secondary = Binding::new(Some(2_i32));
         let split = NavigationSplitView::three_column(
             &primary,
             &secondary,

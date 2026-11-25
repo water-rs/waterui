@@ -16,7 +16,7 @@
 //! handler.set("Initial content");
 //!
 //! // Replace a subtree only when the semantic view type genuinely changes.
-//! let show_details = Binding::container(false);
+//! let show_details = Binding::new(false);
 //! let content = watch(show_details, |show| {
 //!     if show { "Details" } else { "Summary" }
 //! });
@@ -462,7 +462,7 @@ mod tests {
     /// write as the pending value and runs again once it has returned.
     #[test]
     fn watch_drains_a_nested_write_after_the_builder_returns() {
-        let source = Binding::i32(1);
+        let source = Binding::new(1_i32);
         let delivered = Rc::new(RefCell::new(Vec::new()));
         let env = Environment::new();
         let view = Dynamic::watch(source.clone(), {
@@ -504,7 +504,7 @@ mod tests {
         use crate::animation::NoAnimation;
         use nami::SignalExt as _;
 
-        let source = Binding::i32(1);
+        let source = Binding::new(1_i32);
         let seen = Rc::new(RefCell::new(Vec::new()));
         let env = Environment::new();
         let view = Dynamic::watch(source.with(NoAnimation), |value| {

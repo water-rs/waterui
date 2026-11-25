@@ -1083,7 +1083,7 @@ mod tests {
     /// A focused single-line field bound to `value`, its editing session
     /// already synced.
     fn focused_field(initial: &str) -> (HeadlessRuntime, Binding<Str>, EditingSession, u64) {
-        let value = Binding::container(Str::from(initial.to_owned()));
+        let value = Binding::new(Str::from(initial.to_owned()));
         let view = AnyView::new(field("Name", &value).size(300.0, 60.0));
         let mut runtime = runtime_with(view);
         let start = Instant::now();
@@ -1383,8 +1383,8 @@ mod tests {
 
     #[test]
     fn editor_action_submits_a_declared_field() {
-        let value = Binding::container(Str::default());
-        let submitted = Binding::bool(false);
+        let value = Binding::new(Str::default());
+        let submitted = Binding::new(false);
         let view = AnyView::new({
             let submitted_for_action = submitted.clone();
             field("Name", &value)
@@ -1418,7 +1418,7 @@ mod tests {
 
     #[test]
     fn secure_field_projects_through_the_same_session() {
-        let secret = Binding::container(Secure::new("hunter2".to_string()));
+        let secret = Binding::new(Secure::new("hunter2".to_string()));
         let view = AnyView::new(secure("Password", &secret).size(300.0, 60.0));
         let mut runtime = runtime_with(view);
         let start = Instant::now();

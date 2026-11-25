@@ -42,8 +42,8 @@ fn excerpt(offset: usize) -> String {
 #[preview]
 pub fn demo() -> impl View {
     let open: Binding<bool> = binding(false);
-    let query = Binding::container(Str::from(""));
-    let current: Binding<usize> = Binding::container(0);
+    let query = Binding::new(Str::from(""));
+    let current: Binding<usize> = Binding::new(0);
     let focus: Binding<Option<&'static str>> = Binding::default();
 
     let matches = query.map(|needle| match_offsets(&needle)).computed();

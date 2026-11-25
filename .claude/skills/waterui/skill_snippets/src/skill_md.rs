@@ -44,9 +44,9 @@ fn glue_row_view(row: GlueRow) -> impl View {
 // passing a snapshot freezes the view while still compiling.
 #[allow(unknown_lints, signal_get_in_view)]
 pub fn skill_block_01() {
-    let fade = Binding::f32(1.0);
-    let blur = Binding::f64(4.0);
-    let count = Binding::i32(0);
+    let fade = Binding::new(1.0_f32);
+    let blur = Binding::new(4.0_f64);
+    let count = Binding::new(0_i32);
     let url = "https://waterui.dev/logo.png";
 
     let view = Divider;
@@ -71,8 +71,8 @@ pub fn skill_block_01() {
 // Listing: three independent replacements for `watch`.
 // ---------------------------------------------------------------------------
 pub fn skill_block_02() {
-    let status = Binding::container(Str::from("idle"));
-    let blur = Binding::f64(4.0);
+    let status = Binding::new(Str::from("idle"));
+    let blur = Binding::new(4.0_f64);
     let url = "https://waterui.dev/logo.png";
     let rows = StateList::<GlueRow>::new();
     let row_view = glue_row_view;
@@ -92,7 +92,7 @@ pub fn skill_block_02() {
 // SKILL.md § "### 3. Inject handler state with `.state()`" — rust block 3/18
 // ---------------------------------------------------------------------------
 pub fn skill_block_03() -> impl View {
-    let count = Binding::i32(0);
+    let count = Binding::new(0_i32);
 
     button("Increment")
         .action(|State(count): State<Binding<i32>>| *count.get_mut() += 1)
@@ -103,8 +103,8 @@ pub fn skill_block_03() -> impl View {
 // SKILL.md § "### 3. Inject handler state with `.state()`" — rust block 4/18
 // ---------------------------------------------------------------------------
 pub fn skill_block_04() -> impl View {
-    let query = Binding::container(Str::from(""));
-    let history = Binding::container(Vec::<Str>::new());
+    let query = Binding::new(Str::from(""));
+    let history = Binding::new(Vec::<Str>::new());
 
     button("Search")
         .action(
@@ -146,7 +146,7 @@ pub mod skill_block_05 {
     pub fn use_it() -> impl View {
         content(Editor {
             rows: StateList::new(),
-            editing: Binding::bool(false),
+            editing: Binding::new(false),
         })
     }
 }
@@ -191,7 +191,7 @@ pub mod skill_block_07 {
     use waterui::prelude::*;
 
     fn counter() -> impl View {
-        let count = Binding::i32(0);
+        let count = Binding::new(0_i32);
 
         vstack((
             text!("Count: {count}").headline(),
@@ -254,9 +254,9 @@ pub fn skill_block_11() {
         notifications: bool,
     }
 
-    let count = Binding::i32(0); // bool f32 f64 i32 i64 isize u32 u64 usize
-    let flag = Binding::bool(false);
-    let name = Binding::container(String::new()); // any Clone type
+    let count = Binding::new(0_i32); // bool f32 f64 i32 i64 isize u32 u64 usize
+    let flag = Binding::new(false);
+    let name = Binding::new(String::new()); // any Clone type
     let sel: Binding<Option<Selected>> = Binding::default(); // empty optional
 
     let pane: Binding<Pane> = binding(Pane::Inbox); // general form, needs an inferable type
@@ -279,10 +279,10 @@ pub fn skill_block_12() {
         }
     }
 
-    let count = Binding::i32(0);
-    let blur = Binding::f64(1.25);
+    let count = Binding::new(0_i32);
+    let blur = Binding::new(1.25_f64);
     let mail = Mail {
-        unread: Binding::i32(3),
+        unread: Binding::new(3_i32),
     };
 
     let _ = {
@@ -309,8 +309,8 @@ pub fn skill_block_12() {
 pub fn prose_s_macro() {
     use waterui::reactive::s;
 
-    let name = Binding::container(Str::from("inbox"));
-    let count = Binding::i32(3);
+    let name = Binding::new(Str::from("inbox"));
+    let count = Binding::new(3_i32);
 
     let _ = s!("{name}-{count}");
 }
@@ -391,11 +391,11 @@ pub fn skill_block_14() {
     }
 
     let row = RowFlags { flagged: true };
-    let logged_in = Binding::bool(false);
-    let state = Binding::i32(0);
-    let is_new = Binding::bool(true);
-    let loaded = Binding::bool(true);
-    let items = Binding::container(Vec::<Str>::new());
+    let logged_in = Binding::new(false);
+    let state = Binding::new(0_i32);
+    let is_new = Binding::new(true);
+    let loaded = Binding::new(true);
+    let items = Binding::new(Vec::<Str>::new());
 
     use waterui::widget::condition::when; // not in the prelude
 
@@ -524,17 +524,17 @@ pub fn skill_block_15() {
     // `.opacity` / `.blur` take numeric signals; `.visible` / `.disabled` take
     // bool signals. The listing spells the free variable `signal` for all of
     // them, so each line gets the signal its own modifier requires.
-    let signal = Binding::f32(1.0);
+    let signal = Binding::new(1.0_f32);
     let view = Divider;
     let _ = { view.opacity(signal) };
-    let signal = Binding::bool(true);
+    let signal = Binding::new(true);
     let view = Divider;
     let _ = { view.visible(signal) };
-    let signal = Binding::bool(true);
+    let signal = Binding::new(true);
     let view = Divider;
     let _ = { view.disabled(signal) };
 
-    let signal = Binding::f32(2.0);
+    let signal = Binding::new(2.0_f32);
     let view = Divider;
     let _ = { view.blur(signal) };
     let view = Divider;
@@ -569,7 +569,7 @@ pub fn skill_block_15() {
         view.a11y_role(AccessibilityRole::Button) // [ellipsis filled]
     };
 
-    let signal = Binding::bool(true);
+    let signal = Binding::new(true);
     let view = Divider;
     let _ = {
         view.on_appear(|| ()) // [ellipsis filled]
@@ -664,7 +664,7 @@ pub mod skill_block_16 {
 
     pub fn reading_from_a_view() -> impl View {
         // Reading, from a view:
-        use_env(|client: ApiClient| text!("API: {url}", url = Binding::container(client.base_url)))
+        use_env(|client: ApiClient| text!("API: {url}", url = Binding::new(client.base_url)))
     }
 
     pub fn reading_from_a_handler() -> impl View {
@@ -697,7 +697,7 @@ pub fn skill_block_08_imports_are_live() {
     let _ = Animation::default();
     let _ = ForEach::new(StateList::<GlueRow>::new(), glue_row_view);
     let _ = binding::<i32>(0);
-    let _ = when(Binding::bool(true), || text("a")).otherwise(|| text("b"));
+    let _ = when(Binding::new(true), || text("a")).otherwise(|| text("b"));
     let _ = with(text("x"), 1_i32);
     spawn_local(async { sleep(core::time::Duration::from_millis(1)).await }).detach();
 }

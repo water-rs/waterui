@@ -440,7 +440,7 @@ mod tests {
         should_panic(expected = "a slider step must be positive and finite")
     )]
     fn invalid_step_is_ignored() {
-        let value = Binding::container(0.0);
+        let value = Binding::new(0.0);
         let stepped = slider("Volume", &value).step(2.0).step(0.0);
 
         // Release outcome: the slider keeps the step it had.

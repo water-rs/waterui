@@ -129,7 +129,7 @@ fn scroll_with_button(tapped: Binding<bool>) -> impl View {
 
 #[test]
 fn a_tap_inside_a_scroll_view_still_activates_the_content() {
-    let tapped = Binding::container(false);
+    let tapped = Binding::new(false);
     let mut runtime = runtime(scroll_with_button(tapped.clone()));
     let start = Instant::now();
     let _ = runtime.pump_at(false, start);
@@ -152,7 +152,7 @@ fn a_tap_inside_a_scroll_view_still_activates_the_content() {
 
 #[test]
 fn a_drag_past_the_slop_scrolls_and_never_activates_the_press() {
-    let tapped = Binding::container(false);
+    let tapped = Binding::new(false);
     let mut runtime = runtime(scroll_with_button(tapped.clone()));
     let start = Instant::now();
     let _ = runtime.pump_at(false, start);
@@ -373,7 +373,7 @@ fn a_touch_down_during_a_fling_stops_it_where_it_is() {
 /// handle no registered `ScrollTarget` holds.
 #[test]
 fn a_fling_whose_scroll_view_is_replaced_mid_fling_ends_with_it() {
-    let show = Binding::container(true);
+    let show = Binding::new(true);
     let mut runtime = runtime(when(show.clone(), tall_stack).otherwise(|| text("Loaded")));
     let start = Instant::now();
     let _ = runtime.pump_at(false, start);
@@ -417,7 +417,7 @@ fn a_fling_whose_scroll_view_is_hidden_by_a_tab_switch_mid_fling_ends_with_it() 
         Tab::new("Rows", || NavigationView::new("Rows", tall_stack())),
         Tab::new("Other", || NavigationView::new("Other", text("Other"))),
     );
-    let selection = Binding::container(0usize);
+    let selection = Binding::new(0usize);
     let mut runtime = runtime(Tabs::new(&selection, tabs));
     let start = Instant::now();
     let _ = runtime.pump_at(false, start);
@@ -496,8 +496,8 @@ fn a_touch_press_without_a_touch_scroll_config_is_reported_and_does_not_scroll()
 /// release never begins a press on a node that no longer exists.
 #[test]
 fn a_touch_press_whose_target_is_removed_before_release_is_dropped() {
-    let show = Binding::container(true);
-    let tapped = Binding::container(false);
+    let show = Binding::new(true);
+    let tapped = Binding::new(false);
     let tapped_for_view = tapped.clone();
     let mut runtime = runtime(
         when(show.clone(), move || {
@@ -587,7 +587,7 @@ fn drag_past_the_top(runtime: &mut HeadlessRuntime, start: Instant) {
 
 #[test]
 fn a_uikit_drag_past_the_top_edge_rubber_bands_and_its_release_springs_back() {
-    let offset = Binding::container(waterui_core::layout::Point::zero());
+    let offset = Binding::new(waterui_core::layout::Point::zero());
     let mut runtime = uikit_runtime(reporting_stack(ROWS, &offset));
     let start = Instant::now();
     let _ = runtime.pump_at(false, start);
@@ -637,7 +637,7 @@ fn a_uikit_drag_past_the_top_edge_rubber_bands_and_its_release_springs_back() {
 
 #[test]
 fn a_uikit_fling_into_the_bottom_edge_bounces_back_onto_it() {
-    let offset = Binding::container(waterui_core::layout::Point::zero());
+    let offset = Binding::new(waterui_core::layout::Point::zero());
     // 20 rows of 44 over the 640-high window: a 240-unit extent.
     let mut runtime = uikit_runtime(reporting_stack(20, &offset));
     let start = Instant::now();
@@ -838,7 +838,7 @@ fn a_drag_past_the_top_edge_stretches_and_its_release_relaxes() {
 
 #[test]
 fn a_fling_into_the_bottom_edge_is_absorbed_by_the_stretch() {
-    let offset = Binding::container(waterui_core::layout::Point::zero());
+    let offset = Binding::new(waterui_core::layout::Point::zero());
     // 20 rows of 44 over the 640-high window: a 240-unit extent.
     let mut runtime = runtime(reporting_stack(20, &offset));
     let start = Instant::now();

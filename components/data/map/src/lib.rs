@@ -574,7 +574,7 @@ impl Map<NoAnnotations> {
             .into_computed()
             .map(Region::from_coordinate)
             .computed();
-        let camera = Binding::container(region_signal.snapshot());
+        let camera = Binding::new(region_signal.snapshot());
         Self {
             follows_region: Some(region_signal),
             ..Self::new(&camera)
@@ -587,7 +587,7 @@ impl Map<NoAnnotations> {
             .into_computed()
             .map(|location| Region::from_coordinate(Coordinate::from(location)))
             .computed();
-        let camera = Binding::container(region_signal.snapshot());
+        let camera = Binding::new(region_signal.snapshot());
         Self {
             follows_region: Some(region_signal),
             ..Self::new(&camera)
@@ -781,8 +781,8 @@ mod tests {
 
     #[test]
     fn a_map_reports_status_into_the_caller_owned_binding() {
-        let status = Binding::container(MapStatus::Loading);
-        let camera = Binding::container(Region::from_coordinate(
+        let status = Binding::new(MapStatus::Loading);
+        let camera = Binding::new(Region::from_coordinate(
             Coordinate::from_degrees(37.7749, -122.4194).expect("valid coordinate"),
         ));
         let (config, _) = Map::new(&camera).status(&status).into_config();
@@ -799,7 +799,7 @@ mod tests {
 
     #[test]
     fn a_map_without_an_observer_allocates_no_status_sink() {
-        let camera = Binding::container(Region::default());
+        let camera = Binding::new(Region::default());
         let (config, _) = Map::new(&camera).into_config();
 
         assert!(config.status.is_none());
@@ -809,7 +809,7 @@ mod tests {
     fn camera_binding_is_two_way() {
         let sf = Coordinate::from_degrees(37.7749, -122.4194).expect("valid sf");
         let nyc = Coordinate::from_degrees(40.7128, -74.0060).expect("valid nyc");
-        let camera = Binding::container(Region::from_coordinate(sf));
+        let camera = Binding::new(Region::from_coordinate(sf));
         let (config, _) = Map::new(&camera).into_config();
 
         // Backend writes back panned region into caller's camera binding.
@@ -831,8 +831,8 @@ mod tests {
 
         let sf = Coordinate::from_degrees(37.7955, -122.3937).expect("valid ferry");
         let bridge = Coordinate::from_degrees(37.8199, -122.4783).expect("valid bridge");
-        let camera = Binding::container(Region::from_coordinate(sf));
-        let selected = Binding::container(None::<Pin>);
+        let camera = Binding::new(Region::from_coordinate(sf));
+        let selected = Binding::new(None::<Pin>);
         let pins = vec![
             Annotation::new(Pin::Ferry, sf, "Ferry Building"),
             Annotation::new(Pin::Bridge, bridge, "Golden Gate Bridge"),

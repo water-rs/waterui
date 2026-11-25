@@ -91,7 +91,7 @@ impl StretchFilter {
         world: kurbo::Affine,
     ) -> Option<Self> {
         let written = shown.params(world);
-        let slots = written.map(Binding::container);
+        let slots = written.map(Binding::new);
         let mut guards = ParamGuards::default();
         let params: [Reactive; 10] = std::array::from_fn(|index| guards.bind(slots[index].clone()));
         let [xx, xy, yx, yy, tx, ty, width, height, stretch_x, stretch_y] = params;

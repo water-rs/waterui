@@ -164,7 +164,7 @@ fn assert_rooted(update: &TreeUpdate) {
 
 #[test]
 fn text_and_button_emit_and_click_fires() {
-    let fired = Binding::container(false);
+    let fired = Binding::new(false);
     let fired_for_button = fired.clone();
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
         let fired = fired_for_button.clone();
@@ -211,7 +211,7 @@ fn error_token_foreground_resolves_against_framework_defaults() {
 
 #[test]
 fn toggle_emits_and_click_flips() {
-    let on = Binding::container(false);
+    let on = Binding::new(false);
     let on_for_view = on.clone();
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
         AnyView::new(vstack((toggle("Airplane mode", &on_for_view).switch(),)))
@@ -242,7 +242,7 @@ fn toggle_emits_and_click_flips() {
     reason = "SetValue must store the written value exactly, not a stepped or snapped one"
 )]
 fn slider_emits_and_value_actions_step() {
-    let value = Binding::container(0.5f64);
+    let value = Binding::new(0.5f64);
     let value_for_view = value.clone();
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
         AnyView::new(vstack((slider("Volume", &value_for_view),)))
@@ -310,7 +310,7 @@ fn slider_emits_and_value_actions_step() {
 
 #[test]
 fn stepper_emits_and_value_actions_step() {
-    let value = Binding::container(3i32);
+    let value = Binding::new(3i32);
     let value_for_view = value.clone();
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
         AnyView::new(vstack((stepper("Quantity", &value_for_view),)))
@@ -371,7 +371,7 @@ fn progress_emits_its_value() {
 
 #[test]
 fn text_field_emits_and_set_value_edits() {
-    let value = Binding::container(Str::default());
+    let value = Binding::new(Str::default());
     let value_for_view = value.clone();
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
         AnyView::new(vstack((field("Name", &value_for_view),)))
@@ -416,7 +416,7 @@ fn text_field_emits_and_set_value_edits() {
 
 #[test]
 fn secure_field_emits_and_set_value_edits() {
-    let secret = Binding::container(waterui_form::secure::Secure::new(String::new()));
+    let secret = Binding::new(waterui_form::secure::Secure::new(String::new()));
     let secret_for_view = secret.clone();
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
         AnyView::new(vstack((secure("Password", &secret_for_view),)))
@@ -446,7 +446,7 @@ fn secure_field_emits_and_set_value_edits() {
 
 #[test]
 fn menu_picker_emits_options_and_selects() {
-    let selection = Binding::container(0i32);
+    let selection = Binding::new(0i32);
     let selection_for_view = selection.clone();
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
         AnyView::new(vstack((picker(
@@ -505,7 +505,7 @@ fn menu_picker_emits_options_and_selects() {
 /// the picker's accessibility node still carries the label — exactly once.
 #[test]
 fn menu_picker_hidden_label_still_names_the_combo() {
-    let selection = Binding::container(0i32);
+    let selection = Binding::new(0i32);
     let selection_for_view = selection;
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
         AnyView::new(vstack((picker(
@@ -534,7 +534,7 @@ fn menu_picker_hidden_label_still_names_the_combo() {
 
 #[test]
 fn radio_picker_emits_group_and_selects() {
-    let selection = Binding::container(0i32);
+    let selection = Binding::new(0i32);
     let selection_for_view = selection.clone();
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
         AnyView::new(vstack((picker(
@@ -579,7 +579,7 @@ fn radio_picker_emits_group_and_selects() {
 /// the group's accessibility node still carries the label — exactly once.
 #[test]
 fn radio_picker_hidden_label_still_names_the_group() {
-    let selection = Binding::container(0i32);
+    let selection = Binding::new(0i32);
     let selection_for_view = selection;
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
         AnyView::new(vstack((picker(
@@ -607,7 +607,7 @@ fn radio_picker_hidden_label_still_names_the_group() {
 
 #[test]
 fn date_picker_emits_and_set_value_edits() {
-    let day = Binding::container(jiff::civil::date(2025, 1, 15));
+    let day = Binding::new(jiff::civil::date(2025, 1, 15));
     let day_for_view = day.clone();
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
         AnyView::new(vstack((DatePicker::new("When", &day_for_view),)))
@@ -640,7 +640,7 @@ fn date_picker_emits_and_set_value_edits() {
 
 #[test]
 fn color_picker_emits_and_popup_swatches_select() {
-    let tint = Binding::container(Color::srgb(0, 0, 0));
+    let tint = Binding::new(Color::srgb(0, 0, 0));
     let tint_for_view = tint.clone();
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
         AnyView::new(vstack((ColorPicker::new("Tint", &tint_for_view),)))
@@ -706,7 +706,7 @@ fn color_picker_emits_and_popup_swatches_select() {
 
 #[test]
 fn menu_opens_a_semantic_popup_window_and_commands_fire() {
-    let fired = Binding::container(false);
+    let fired = Binding::new(false);
     let fired_for_view = fired.clone();
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
         let fired = fired_for_view.clone();
@@ -754,7 +754,7 @@ fn menu_opens_a_semantic_popup_window_and_commands_fire() {
 /// its snapshot on every pump.
 #[test]
 fn a_clean_pump_publishes_no_tree_update() {
-    let tint = Binding::container(Color::srgb(0, 0, 0));
+    let tint = Binding::new(Color::srgb(0, 0, 0));
     let tint_for_view = tint;
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
         AnyView::new(vstack((ColorPicker::new("Tint", &tint_for_view),)))
@@ -904,7 +904,7 @@ fn list_rows_emit_content_subtree_and_derived_label() {
 /// control's own name.
 #[test]
 fn list_toggle_row_emits_actionable_switch() {
-    let on = Binding::container(false);
+    let on = Binding::new(false);
     let on_for_view = on.clone();
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
         let on_for_row = on_for_view.clone();
@@ -972,7 +972,7 @@ fn list_row_explicit_label_names_the_row() {
 /// no rebuild is scheduled and the stale row outlives the flip.
 #[test]
 fn list_row_state_signal_hidden_removes_row_next_frame() {
-    let state = Binding::container(AccessibilityState::new());
+    let state = Binding::new(AccessibilityState::new());
     let state_for_view = state.clone();
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
         let state_for_row = state_for_view.clone();
@@ -997,7 +997,7 @@ fn list_row_state_signal_hidden_removes_row_next_frame() {
 
 #[test]
 fn reactive_a11y_hidden_toggles_control_and_container_on_semantic_walk() {
-    let hidden = Binding::bool(true);
+    let hidden = Binding::new(true);
     let hidden_for_view = hidden.clone();
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
         let hidden_flag = hidden_for_view.clone();
@@ -1185,8 +1185,8 @@ fn selectable_sortable_table_with_non_text_cell_works() {
             name: "Grace",
         },
     ]);
-    let selection = Binding::container(Some(1_u64));
-    let sort_order = Binding::container(Some(TableSort::ascending(PersonSort::Name)));
+    let selection = Binding::new(Some(1_u64));
+    let sort_order = Binding::new(Some(TableSort::ascending(PersonSort::Name)));
     let (sel_view, sort_view) = (selection.clone(), sort_order.clone());
 
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
@@ -1253,7 +1253,7 @@ fn selectable_sortable_table_with_non_text_cell_works() {
 
 #[test]
 fn tabs_emit_tab_list_and_click_selects() {
-    let selection = Binding::container(0usize);
+    let selection = Binding::new(0usize);
     let selection_for_view = selection.clone();
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
         AnyView::new(Tabs::new(
@@ -1427,9 +1427,9 @@ fn press(runtime: &mut SemanticRuntime, key: KeyCode, modifiers: Modifiers) {
     reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
 )]
 fn tab_traverses_the_semantic_tree_and_activation_dispatches_click() {
-    let tapped = Binding::container(false);
-    let on = Binding::container(false);
-    let value = Binding::container(Str::default());
+    let tapped = Binding::new(false);
+    let on = Binding::new(false);
+    let value = Binding::new(Str::default());
     let tapped_for_view = tapped.clone();
     let on_for_view = on.clone();
     let value_for_view = value;
@@ -1722,7 +1722,7 @@ fn navigation_stack_denied_pop_reports_attempt_and_keeps_destination() {
 
 #[test]
 fn navigation_split_emits_sidebar_and_selected_detail() {
-    let selection = Binding::container(None::<i32>);
+    let selection = Binding::new(None::<i32>);
     let selection_for_view = selection.clone();
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
         let selection = selection_for_view.clone();
@@ -1774,7 +1774,7 @@ fn navigation_split_emits_sidebar_and_selected_detail() {
 
 #[test]
 fn segmented_picker_emits_group_and_click_selects() {
-    let selection = Binding::container(0i32);
+    let selection = Binding::new(0i32);
     let selection_for_view = selection.clone();
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
         AnyView::new(vstack((picker(
@@ -1830,7 +1830,7 @@ fn segmented_picker_emits_group_and_click_selects() {
 /// but the group's accessibility node still carries the label — exactly once.
 #[test]
 fn segmented_picker_hidden_label_still_names_the_group() {
-    let selection = Binding::container(0i32);
+    let selection = Binding::new(0i32);
     let selection_for_view = selection;
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
         AnyView::new(vstack((picker(
@@ -1972,9 +1972,9 @@ fn focused_binding_moves_ui_focus_and_tree_focus() {
         Email,
     }
 
-    let focus = Binding::container(None::<Field>);
-    let name = Binding::container(Str::default());
-    let email = Binding::container(Str::default());
+    let focus = Binding::new(None::<Field>);
+    let name = Binding::new(Str::default());
+    let email = Binding::new(Str::default());
     let focus_for_view = focus.clone();
     let name_for_view = name;
     let email_for_view = email;
@@ -2055,7 +2055,7 @@ fn a_tap_region_over_a_composite_derives_its_label_from_the_content() {
 
 #[test]
 fn a_tap_region_names_itself_from_its_content_as_it_is_now() {
-    let name = Binding::container(Str::from("Alpha"));
+    let name = Binding::new(Str::from("Alpha"));
     let shown = name.clone();
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
         AnyView::new(vstack((

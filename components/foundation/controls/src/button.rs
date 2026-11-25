@@ -44,7 +44,7 @@
 //!     })
 //!     .state(&counter);
 //!
-//! let query: Binding<Str> = binding("");
+//! let query: Binding<Str> = binding(Str::from(""));
 //! let history: Binding<Vec<Str>> = binding(Vec::new());
 //!
 //! button("Search")
@@ -126,7 +126,7 @@
 //! #     Str::from("payload")
 //! # }
 //! # fn asynchronous() {
-//! # let result_binding: Binding<Str> = binding("");
+//! # let result_binding: Binding<Str> = binding(Str::from(""));
 //! button("Fetch Data")
 //!     .action_async(|State(result): State<Binding<Str>>| async move {
 //!         let data = fetch_from_server().await;

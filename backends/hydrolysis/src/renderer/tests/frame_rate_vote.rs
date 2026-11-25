@@ -43,7 +43,7 @@ fn mounted_visible_frame_rate_modifier_votes_and_unmounting_clears() {
     let mut renderer = test_renderer();
     let env = test_environment();
     let bounds = Rect::new(0.0, 0.0, 200.0, 200.0);
-    let mounted = Binding::container(true);
+    let mounted = Binding::new(true);
     let rate = FrameRate::fixed(24.0);
     let view = || {
         when(mounted.clone(), move || {
@@ -65,7 +65,7 @@ fn zero_opacity_suppresses_frame_rate_vote() {
     let mut renderer = test_renderer();
     let env = test_environment();
     let bounds = Rect::new(0.0, 0.0, 200.0, 200.0);
-    let opacity = Binding::container(0.0_f32);
+    let opacity = Binding::new(0.0_f32);
     let view = || {
         text("Hidden")
             .frame_rate(Some(FrameRate::FAST))
@@ -86,7 +86,7 @@ fn hidden_modifier_suppresses_frame_rate_vote() {
     let mut renderer = test_renderer();
     let env = test_environment();
     let bounds = Rect::new(0.0, 0.0, 200.0, 200.0);
-    let visible = Binding::container(false);
+    let visible = Binding::new(false);
     let view = || {
         text("Conditional")
             .frame_rate(Some(FrameRate::FAST))
@@ -145,7 +145,7 @@ fn lower_app_vote_never_lowers_active_fade_rate() {
     let mut renderer = test_renderer();
     let env = test_environment();
     let bounds = Rect::new(0.0, 0.0, 200.0, 200.0);
-    let visible = Binding::container(true);
+    let visible = Binding::new(true);
     let rate = FrameRate::fixed(24.0);
     let view = || {
         text("Combo")

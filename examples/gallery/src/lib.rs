@@ -186,7 +186,7 @@ impl DemoState {
             volume: binding(40.0),
             quantity: binding(2),
             name: binding(Str::from("")),
-            size: Binding::container("Medium"),
+            size: Binding::new("Medium"),
         }
     }
 }
@@ -636,7 +636,7 @@ type CatalogState = (
 /// Builds fresh catalog state: `selected` starts on the first control, every
 /// group starts expanded, and the demo state starts at its defaults.
 fn new_state() -> CatalogState {
-    let selected = Binding::container(Some(0));
+    let selected = Binding::new(Some(0));
     let groups_open = Section::ALL.iter().map(|_| binding(true)).collect();
     let rows = StateList::from(expanded_rows());
     (selected, groups_open, rows, DemoState::new())

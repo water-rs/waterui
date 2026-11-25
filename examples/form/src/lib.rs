@@ -141,8 +141,8 @@ fn scene(
 pub fn app(mut env: Environment) -> App<impl Windows> {
     let settings = AppSettings::binding();
     let registration = RegistrationForm::binding();
-    let custom_name = binding("");
-    let custom_bio = binding("");
+    let custom_name = binding(Str::from(""));
+    let custom_bio = binding(Str::from(""));
     let custom_enabled = binding(false);
     let custom_count = binding(5);
     let custom_slider = binding(0.5);
@@ -195,8 +195,8 @@ pub fn demo() -> impl View {
     scene(
         &AppSettings::binding(),
         &RegistrationForm::binding(),
-        &binding(""),
-        &binding(""),
+        &binding(Str::from("")),
+        &binding(Str::from("")),
         &binding(false),
         &binding(5),
         &binding(0.5),

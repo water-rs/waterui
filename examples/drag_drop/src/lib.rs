@@ -126,9 +126,9 @@ fn fruit_basket(
 /// The drag-and-drop demo: draggable fruit cards and a basket that collects them.
 #[preview]
 pub fn demo() -> impl View {
-    let is_hovering = Binding::bool(false);
-    let collected: Binding<Vec<String>> = Binding::container(Vec::new());
-    let bounce = Binding::f32(1.0);
+    let is_hovering = Binding::new(false);
+    let collected: Binding<Vec<String>> = Binding::new(Vec::new());
+    let bounce = Binding::new(1.0_f32);
 
     scroll(
         vstack((

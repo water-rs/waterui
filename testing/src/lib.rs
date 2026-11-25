@@ -35,7 +35,7 @@
 //! ```ignore
 //! #[waterui::test]
 //! fn stepper_updates(ui: waterui_testing::UiBuilder) {
-//!     let value = waterui::Binding::i32(2);
+//!     let value = waterui::Binding::new(2_i32);
 //!     let value_for_view = value.clone();
 //!     let mut app = ui.mount(move || stepper("Limited", &value_for_view));
 //!     app.query().label("Limited").increment();

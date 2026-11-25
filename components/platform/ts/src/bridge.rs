@@ -316,8 +316,7 @@ impl Bridge {
         match self.classify(value)? {
             ReactiveSource::Signal(source) => {
                 let seed = T::from_js(&self.read_value(&source)?, self)?;
-                let cell =
-                    ReactiveCell::attach(self, source, Binding::container(seed), Flow::TwoWay)?;
+                let cell = ReactiveCell::attach(self, source, Binding::new(seed), Flow::TwoWay)?;
                 Ok(Binding::custom(Tethered::new(
                     cell.binding().clone(),
                     cell as Rc<dyn Any>,
@@ -351,8 +350,7 @@ impl Bridge {
         match self.classify(value)? {
             ReactiveSource::Signal(source) | ReactiveSource::Accessor(source) => {
                 let seed = T::from_js(&self.read_value(&source)?, self)?;
-                let cell =
-                    ReactiveCell::attach(self, source, Binding::container(seed), Flow::Inbound)?;
+                let cell = ReactiveCell::attach(self, source, Binding::new(seed), Flow::Inbound)?;
                 Ok(Computed::new(Tethered::new(
                     cell.binding().clone(),
                     cell as Rc<dyn Any>,

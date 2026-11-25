@@ -107,7 +107,7 @@ fn the_engine_samples_the_tracks_hydrolysis_evaluates() {
     let mut renderer = test_renderer();
     let env = test_environment();
     let bounds = Rect::new(0.0, 0.0, 320.0, 320.0);
-    let phase = Binding::container(false);
+    let phase = Binding::new(false);
     let fade = Animation::ease_in_out(Duration::from_millis(300));
     let stretch = Animation::linear(Duration::from_millis(200));
     let squash = Animation::spring(300.0, 20.0);
@@ -198,7 +198,7 @@ fn hit_testing_places_the_target_where_the_engine_draws_it() {
     let mut renderer = test_renderer();
     let env = test_environment();
     let bounds = Rect::new(0.0, 0.0, 320.0, 320.0);
-    let phase = Binding::container(false);
+    let phase = Binding::new(false);
     let driven = |rest: f32, moved: f32, animation: Animation| {
         phase
             .clone()
@@ -291,7 +291,7 @@ fn a_remount_mid_spring_keeps_the_track_whole() {
     let mut renderer = test_renderer();
     let env = test_environment();
     let bounds = Rect::new(0.0, 0.0, 320.0, 320.0);
-    let phase = Binding::container(false);
+    let phase = Binding::new(false);
     let lift = Animation::spring(180.0, 14.0);
     let view = vstack((button("Probe").action(|| {}).offset(
         0.0,
@@ -356,7 +356,7 @@ fn a_remount_mid_spring_keeps_the_track_whole() {
 fn a_platform_view_under_a_moving_offset_follows_the_track() {
     let mut env = test_environment();
     env.insert(crate::platform_view::PlatformViewSink::new());
-    let phase = Binding::container(false);
+    let phase = Binding::new(false);
     let slide = Animation::linear(Duration::from_millis(200));
     let builder = {
         let phase = phase.clone();

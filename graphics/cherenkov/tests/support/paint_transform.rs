@@ -36,7 +36,7 @@ pub fn retained<B: Backend>(config: B::Config) {
         .expect("surface");
     let stable = Picture::record(|c| c.fill(Rect::new(1.0, 1.0, 4.0, 4.0), WorkingColor::WHITE));
     let source = Arc::new(gradient());
-    let transform = Binding::container(Affine::IDENTITY);
+    let transform = Binding::new(Affine::IDENTITY);
     let paint = nami::SignalExt::map(&transform, move |transform| TransformedPaint {
         paint: Arc::clone(&source),
         transform,

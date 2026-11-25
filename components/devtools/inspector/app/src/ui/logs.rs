@@ -19,8 +19,8 @@ use super::parts;
     reason = "view builders take owned reactive handles: the views they return capture them for 'static, so a borrow would not do"
 )]
 pub fn view(model: Model) -> impl View {
-    let filter = Binding::container(Str::from(""));
-    let minimum = Binding::container(LogLevel::Debug);
+    let filter = Binding::new(Str::from(""));
+    let minimum = Binding::new(LogLevel::Debug);
     let rows = visible_rows(&model, &filter, &minimum);
     let empty = rows.map(|rows| rows.is_empty()).computed();
 

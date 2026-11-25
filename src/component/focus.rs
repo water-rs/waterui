@@ -49,7 +49,7 @@
 //!
 //! // Use focused states with UI elements
 //! let view = vstack((
-//!     TextField::new("Username", &binding("")).focused(&focus_binding, Field::Username),
+//!     TextField::new("Username", &binding(Str::from(""))).focused(&focus_binding, Field::Username),
 //!     SecureField::new("Password", &binding(Secure::default()))
 //!         .focused(&focus_binding, Field::Password),
 //! ));
@@ -123,7 +123,7 @@ mod tests {
 
     #[test]
     fn clearing_matching_focus_sets_source_to_none() {
-        let source = Binding::container(Some(Field::Username));
+        let source = Binding::new(Some(Field::Username));
         let focused = Focused::new(&source, Field::Username);
 
         focused.0.set(false);
@@ -133,7 +133,7 @@ mod tests {
 
     #[test]
     fn clearing_other_field_focus_is_ignored() {
-        let source = Binding::container(Some(Field::Password));
+        let source = Binding::new(Some(Field::Password));
         let focused = Focused::new(&source, Field::Username);
 
         focused.0.set(false);
@@ -143,7 +143,7 @@ mod tests {
 
     #[test]
     fn reads_true_only_while_source_holds_the_matching_value() {
-        let source = Binding::container(Some(Field::Username));
+        let source = Binding::new(Some(Field::Username));
         let focused = Focused::new(&source, Field::Username);
 
         assert!(focused.0.snapshot());
@@ -155,7 +155,7 @@ mod tests {
 
     #[test]
     fn setting_focus_writes_the_matching_value() {
-        let source = Binding::container(None::<Field>);
+        let source = Binding::new(None::<Field>);
         let focused = Focused::new(&source, Field::Password);
 
         focused.0.set(true);
@@ -165,7 +165,7 @@ mod tests {
 
     #[test]
     fn focusing_one_field_unfocuses_the_other() {
-        let source = Binding::container(Some(Field::Username));
+        let source = Binding::new(Some(Field::Username));
         let username = Focused::new(&source, Field::Username);
         let password = Focused::new(&source, Field::Password);
 
@@ -178,7 +178,7 @@ mod tests {
 
     #[test]
     fn clearing_focus_on_empty_source_is_a_no_op() {
-        let source = Binding::container(None::<Field>);
+        let source = Binding::new(None::<Field>);
         let focused = Focused::new(&source, Field::Username);
 
         focused.0.set(false);
@@ -188,7 +188,7 @@ mod tests {
 
     #[test]
     fn source_changes_reach_focused_watchers() {
-        let source = Binding::container(Some(Field::Username));
+        let source = Binding::new(Some(Field::Username));
         let focused = Focused::new(&source, Field::Username);
         let seen = Rc::new(RefCell::new(Vec::new()));
         let _guard = focused.0.watch({

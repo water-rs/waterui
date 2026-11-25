@@ -454,7 +454,7 @@ fn animate_to_a_row_lands_in_place_semantic() {
 /// the tap recognizer never activates.
 #[test]
 fn row_content_tap_survives_retained_swipe_order_offscreen() {
-    let highlight = Binding::bool(false);
+    let highlight = Binding::new(false);
     let taps = Rc::new(Cell::new(0));
     let mut app = mount_rendered(
         Environment::new(),
@@ -647,7 +647,7 @@ fn sectioned_mixed_and_filtered_list_edits_by_identity_within_part_offscreen() {
     use accesskit::Role;
 
     let entry = |id, label, visible| FilteredEntry { id, label, visible };
-    let backing = Binding::container(vec![
+    let backing = Binding::new(vec![
         entry(10, "Alpha", true),
         entry(15, "Hidden-1", false),
         entry(20, "Beta", true),
@@ -743,7 +743,7 @@ fn badge_list(items: nami::collection::SignalCollection<Binding<Vec<FieldRow>>>)
 /// can observe whether the retained subtree rebuilt.
 #[test]
 fn for_each_same_id_item_update_rematerializes_row_semantic() {
-    let items = Binding::container(vec![
+    let items = Binding::new(vec![
         FieldRow {
             id: 1,
             badge: "badge-a",
@@ -787,7 +787,7 @@ fn for_each_same_id_item_update_rematerializes_row_semantic() {
 /// survives the re-materialization.
 #[test]
 fn for_each_same_id_item_update_rematerializes_row_offscreen() {
-    let items = Binding::container(
+    let items = Binding::new(
         (0..10)
             .map(|id| FieldRow {
                 id,

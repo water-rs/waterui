@@ -243,7 +243,7 @@ fn a_button_clipped_by_a_scroll_rail_activates_through_the_clip() {
 /// never needed a point at all.
 #[test]
 fn a_list_row_straddling_the_viewport_edge_activates_its_retained_action() {
-    let selection = Binding::container(Option::<i32>::None);
+    let selection = Binding::new(Option::<i32>::None);
     let binding = selection.clone();
     let reactions = Rc::new(Cell::new(0));
     let reactions_for_view = Rc::clone(&reactions);
@@ -311,7 +311,7 @@ fn a_list_row_straddling_the_viewport_edge_activates_its_retained_action() {
 /// inside the surviving fragment, and a real tap there fires the gesture.
 #[test]
 fn a_list_row_partially_straddling_resolves_a_point_inside_the_strip() {
-    let selection = Binding::container(Option::<i32>::None);
+    let selection = Binding::new(Option::<i32>::None);
     let binding = selection;
     let reactions = Rc::new(Cell::new(0));
     let reactions_for_view = Rc::clone(&reactions);

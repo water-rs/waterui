@@ -2216,7 +2216,7 @@ checksum = "af491d569909a7e4dee0ad7db7f5341fef5c614d5b8ec8cf765732aba3cff681"
 dependencies = [
  "serde",
  "termcolor",
- "unicode-width 0.2.2",
+ "unicode-width 0.1.14",
 ]
 
 [[package]]
@@ -4779,7 +4779,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis-m3"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis-m3?branch=main#98359851e6cd73d31fd0851a7a38426748d12d0e"
+source = "git+https://github.com/water-rs/hydrolysis-m3?branch=main#53bdd97c06898ca21f9fab86fbefcef9d580e8dc"
 dependencies = [
  "hydrolysis-style",
  "material-color-utils",
@@ -6858,7 +6858,7 @@ dependencies = [
 [[package]]
 name = "nami"
 version = "0.13.0"
-source = "git+https://github.com/water-rs/nami?branch=main#5717a036c1dc1a56845b71dd2c3890c3553b5f68"
+source = "git+https://github.com/water-rs/nami?branch=main#f131e2c7a0ed2b4fd7b99b59fded97310efee20d"
 dependencies = [
  "async-channel",
  "async-io",
@@ -6875,7 +6875,7 @@ dependencies = [
 [[package]]
 name = "nami-core"
 version = "0.5.0"
-source = "git+https://github.com/water-rs/nami?branch=main#5717a036c1dc1a56845b71dd2c3890c3553b5f68"
+source = "git+https://github.com/water-rs/nami?branch=main#f131e2c7a0ed2b4fd7b99b59fded97310efee20d"
 dependencies = [
  "kurbo",
 ]
@@ -6883,7 +6883,7 @@ dependencies = [
 [[package]]
 name = "nami-derive"
 version = "0.5.0"
-source = "git+https://github.com/water-rs/nami?branch=main#5717a036c1dc1a56845b71dd2c3890c3553b5f68"
+source = "git+https://github.com/water-rs/nami?branch=main#f131e2c7a0ed2b4fd7b99b59fded97310efee20d"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2 1.0.107",
@@ -8838,7 +8838,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.13.0",
  "proc-macro2 1.0.107",
  "quote 1.0.47",
  "syn 2.0.119",
@@ -13045,7 +13045,7 @@ dependencies = [
 [[package]]
 name = "waterui-chart"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/chart?branch=main#4c1f44531a340bd15d42811d331452726e7becf9"
+source = "git+https://github.com/water-rs/chart?branch=main#620280e67f30b506e44fe19f721231b17ae73173"
 dependencies = [
  "bytemuck",
  "nami",
@@ -13399,7 +13399,7 @@ dependencies = [
 [[package]]
 name = "waterui-image"
 version = "0.5.0"
-source = "git+https://github.com/water-rs/image?branch=main#37778a7e1afeecbf8d85674b44d5d27db888ffbd"
+source = "git+https://github.com/water-rs/image?branch=main#b4f287232b8361ccffd94aae7230ef6242ab4772"
 dependencies = [
  "half",
  "image",
@@ -13993,7 +13993,7 @@ dependencies = [
 [[package]]
 name = "waterui-video-gpu"
 version = "0.4.0"
-source = "git+https://github.com/water-rs/video-gpu?branch=main#29c6745b2d41d79360d48f01795b3479fc3350d5"
+source = "git+https://github.com/water-rs/video-gpu?branch=main#8c58e1db8219ef495ae39de83d449e7388b882a6"
 dependencies = [
  "async-channel",
  "executor-core",

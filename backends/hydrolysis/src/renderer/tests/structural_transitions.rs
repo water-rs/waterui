@@ -130,7 +130,7 @@ pub(super) fn save(snapshot: &HeadlessSnapshot, case: &str, name: &str) {
 /// overlaps it, until its clock completes.
 #[test]
 fn a_when_removal_leaves_semantics_at_once_and_its_ghost_overlaps_the_released_slot() {
-    let show = Binding::container(true);
+    let show = Binding::new(true);
     let show_for_view = show.clone();
     let mut runtime = runtime(move || {
         AnyView::new(vstack((
@@ -182,7 +182,7 @@ fn a_when_removal_leaves_semantics_at_once_and_its_ghost_overlaps_the_released_s
 /// clock.
 #[test]
 fn a_when_insertion_allocates_its_slot_at_once_and_fades_in() {
-    let show = Binding::container(false);
+    let show = Binding::new(false);
     let show_for_view = show.clone();
     let mut runtime = runtime(move || {
         AnyView::new(vstack((
@@ -227,7 +227,7 @@ fn a_when_insertion_allocates_its_slot_at_once_and_fades_in() {
 /// beneath the incoming branch, fading where it left.
 #[test]
 fn a_when_in_a_stack_swaps_in_place_with_its_ghost_beneath_the_new_branch() {
-    let first = Binding::container(true);
+    let first = Binding::new(true);
     let first_for_view = first.clone();
     let mut runtime = runtime(move || {
         AnyView::new(vstack((
@@ -284,7 +284,7 @@ fn a_when_in_a_stack_swaps_in_place_with_its_ghost_beneath_the_new_branch() {
 /// live content alone — is released on the event frame.
 #[test]
 fn a_declaration_behind_erasure_is_owned_by_the_conditional() {
-    let show = Binding::container(true);
+    let show = Binding::new(true);
     let show_for_view = show.clone();
     let mut runtime = runtime(move || {
         AnyView::new(vstack((
@@ -340,7 +340,7 @@ fn a_declaration_behind_erasure_is_owned_by_the_conditional() {
 )]
 fn a_declaration_beneath_a_modifier_is_reported_and_drawn_without_the_transition() {
     let mut runtime = runtime(|| {
-        AnyView::new(vstack((when(Binding::container(true), || {
+        AnyView::new(vstack((when(Binding::new(true), || {
             transitioned("padded", RED, PropertyTransition::opacity())
                 .padding_with(EdgeInsets::all(8.0))
         }),)))
@@ -364,7 +364,7 @@ fn a_conditional_at_a_collection_row_root_owns_its_ghost() {
     use waterui::layout::stack::VStack;
     use waterui_core::id::SelfId;
 
-    let first = Binding::container(true);
+    let first = Binding::new(true);
     let first_for_view = first.clone();
     let rows: StateList<SelfId<u64>> = StateList::from(vec![SelfId::new(1), SelfId::new(2)]);
     let mut runtime = runtime(move || {
@@ -429,7 +429,7 @@ fn a_conditional_at_a_collection_row_root_owns_its_ghost() {
 #[cfg(hydrolysis_cherenkov)]
 #[test]
 fn a_blur_removal_draws_the_ghost_blurred_mid_flight() {
-    let show = Binding::container(true);
+    let show = Binding::new(true);
     let show_for_view = show.clone();
     let mut runtime = runtime(move || {
         AnyView::new(vstack((
@@ -503,7 +503,7 @@ fn between(mid: [u8; 4], from: [u8; 4], to: [u8; 4]) -> bool {
 /// ghost fades at the frame it left at. The mid-swap frame lands under
 /// `<artifacts>/hydrolysis/<case>/mid-swap.png`.
 fn assert_ghost_overlaps_under<V: View>(case: &str, modifier: impl Fn(AnyView) -> V + 'static) {
-    let first = Binding::container(true);
+    let first = Binding::new(true);
     let first_for_view = first.clone();
     let mut runtime = runtime(move || {
         AnyView::new(vstack((

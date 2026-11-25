@@ -512,8 +512,7 @@ Maps (`waterui-map`, or `waterui::map` with the facade feature `map`):
 use waterui_map::{Annotation, Coordinate, Map, MapStyle, Region};
 
 let center = Coordinate::from_degrees(37.33, -122.03).expect("valid coordinate");
-let region: Binding<Region> = binding(Region::new(center, 0.05, 0.05));   // deltas are degree
-// spans; the annotation is needed — `binding`'s `impl Into<T>` cannot infer `T` here
+let region = binding(Region::new(center, 0.05, 0.05));   // deltas are degree spans
 let selected: Binding<Option<&'static str>> = binding(None);
 
 Map::new(&region)                            // &Binding<Region>: two-way camera

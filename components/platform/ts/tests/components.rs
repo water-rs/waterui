@@ -259,7 +259,7 @@ fn ts_accordion_is_an_accordion() {
             || text("Body"),
         ),
     );
-    let expanded = Binding::container(true);
+    let expanded = Binding::new(true);
     assert_same(
         "Accordion, expanded by a binding",
         &stateful(
@@ -435,7 +435,7 @@ fn ts_button_is_a_button() {
 
 #[test]
 fn ts_toggle_is_a_toggle() {
-    let on = Binding::container(true);
+    let on = Binding::new(true);
     assert_same(
         "Toggle",
         &stateful(
@@ -448,7 +448,7 @@ fn ts_toggle_is_a_toggle() {
 
 #[test]
 fn ts_slider_is_a_slider() {
-    let amount = Binding::container(0.25_f64);
+    let amount = Binding::new(0.25_f64);
     assert_same(
         "Slider",
         &stateful(
@@ -464,7 +464,7 @@ fn ts_stepper_is_a_stepper() {
     // The step is not in the tree — a stepper reports its value, not how far
     // one press moves it — so it is observed by pressing, in
     // `ts_a_stepper_steps_the_javascript_signal_by_its_step`.
-    let count = Binding::container(2_i32);
+    let count = Binding::new(2_i32);
     assert_same(
         "Stepper",
         &stateful(
@@ -477,7 +477,7 @@ fn ts_stepper_is_a_stepper() {
 
 #[test]
 fn ts_textfield_is_a_text_field() {
-    let name = Binding::container(Str::from("Ada"));
+    let name = Binding::new(Str::from("Ada"));
     assert_same(
         "TextField",
         &stateful(
@@ -499,7 +499,7 @@ fn ts_a_text_fields_prompt_is_the_rust_prompt() {
         app.semantic_mut().settle();
         app.snapshot()
     };
-    let prompted = Binding::container(Str::from(""));
+    let prompted = Binding::new(Str::from(""));
     assert_same_pixels(
         "TextField with a prompt",
         &focused(
@@ -521,7 +521,7 @@ fn ts_a_text_fields_prompt_is_the_rust_prompt() {
 
 #[test]
 fn ts_picker_is_a_picker() {
-    let choice = Binding::container(Str::from("alpha"));
+    let choice = Binding::new(Str::from("alpha"));
     assert_same(
         "Picker",
         &stateful(
@@ -619,7 +619,7 @@ fn ts_a_controls_label_attribute_is_its_label() {
         )),
         button("Save").action(|| {}),
     );
-    let on = Binding::container(true);
+    let on = Binding::new(true);
     assert_same(
         "Toggle by label attribute",
         &stateful(
@@ -631,7 +631,7 @@ fn ts_a_controls_label_attribute_is_its_label() {
         ),
         toggle("Dark mode", &on),
     );
-    let amount = Binding::container(0.25_f64);
+    let amount = Binding::new(0.25_f64);
     assert_same(
         "Slider by label attribute",
         &stateful(
@@ -643,7 +643,7 @@ fn ts_a_controls_label_attribute_is_its_label() {
         ),
         slider("Volume", &amount),
     );
-    let count = Binding::container(2_i32);
+    let count = Binding::new(2_i32);
     assert_same(
         "Stepper by label attribute",
         &stateful(
@@ -655,7 +655,7 @@ fn ts_a_controls_label_attribute_is_its_label() {
         ),
         stepper("Guests", &count),
     );
-    let name = Binding::container(Str::from("Ada"));
+    let name = Binding::new(Str::from("Ada"));
     assert_same(
         "TextField by label attribute",
         &stateful(
@@ -667,7 +667,7 @@ fn ts_a_controls_label_attribute_is_its_label() {
         ),
         field("Name", &name),
     );
-    let choice = Binding::container(Str::from("alpha"));
+    let choice = Binding::new(Str::from("alpha"));
     assert_same(
         "Picker by label attribute",
         &stateful(
@@ -816,7 +816,7 @@ fn ts_list_is_a_list() {
             }),
         })"#,
     ));
-    let rows = Binding::container(vec![
+    let rows = Binding::new(vec![
         SelfId::new(Str::from("one")),
         SelfId::new(Str::from("two")),
     ]);
@@ -1067,7 +1067,7 @@ fn ts_a_navigation_links_title_heads_the_destination() {
 
 #[test]
 fn ts_tabs_is_a_tabs() {
-    let selection = Binding::container(Str::from("inbox"));
+    let selection = Binding::new(Str::from("inbox"));
     assert_same(
         "Tabs",
         &stateful(
@@ -1970,7 +1970,7 @@ fn ts_runtime_strings_and_avatar_names_are_verbatim_never_looked_up() {
         });
         "#,
     );
-    let mut app = mounted.app_with_locale(catalog, Binding::container(locales::EN));
+    let mut app = mounted.app_with_locale(catalog, Binding::new(locales::EN));
     app.query().label("WRONG_TRANSLATION").assert_not_exists();
     app.query().label("WRONG_AVATAR_NAME").assert_not_exists();
     app.query().label("secret_key").assert_exists();
@@ -2027,7 +2027,7 @@ fn ts_localized_literals_and_interpolated_args_resolve_reactively_across_locales
         )
         .expect("ko catalog parses");
 
-    let locale: Binding<Locale> = Binding::container(locales::EN);
+    let locale: Binding<Locale> = Binding::new(locales::EN);
 
     let mounted = Module::mount(
         r#"
@@ -2144,7 +2144,7 @@ fn ts_a11y_label_and_value_respect_verbatim_and_localized_interpolation() {
         )
         .expect("ko catalog parses");
 
-    let locale: Binding<Locale> = Binding::container(locales::EN);
+    let locale: Binding<Locale> = Binding::new(locales::EN);
     let mounted = Module::mount(
         r#"
         const [name, setName] = waterui.createSignal("Ada");

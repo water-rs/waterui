@@ -120,10 +120,10 @@ fn sectioned_list(
 /// visible emission left behind.
 #[test]
 fn hiding_a_mounted_list_section_emits_no_stale_parent() {
-    let shown = Binding::bool(true);
+    let shown = Binding::new(true);
     let mut runtime = runtime(
         test_environment(),
-        sectioned_list(shown.clone(), Binding::container(None::<u64>)),
+        sectioned_list(shown.clone(), Binding::new(None::<u64>)),
     );
     let mut at = Instant::now();
 
@@ -160,8 +160,8 @@ fn hiding_a_mounted_list_section_emits_no_stale_parent() {
 /// row's `ListItem`.
 #[test]
 fn a_focused_row_hidden_and_shown_again_refocuses() {
-    let shown = Binding::bool(true);
-    let selection = Binding::container(None::<u64>);
+    let shown = Binding::new(true);
+    let selection = Binding::new(None::<u64>);
     let mut runtime = runtime(test_environment(), sectioned_list(shown.clone(), selection));
     let mut at = Instant::now();
 

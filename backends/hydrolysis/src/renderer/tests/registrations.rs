@@ -165,7 +165,7 @@ fn a_hidden_tabs_button_is_not_hittable_after_the_switch() {
             })
         })
         .collect::<Vec<_>>();
-    let selection = Binding::container(0usize);
+    let selection = Binding::new(0usize);
     let second = 1;
     let builder = {
         let selection = selection.clone();
@@ -569,7 +569,7 @@ fn a_host_pixel_touch_reaches_the_platform_view_drawn_under_it() {
 fn materialized_paint_order_keeps_devs_ranking() {
     const ROWS: usize = 40;
     let builder = AnyViewBuilder::<AnyView>::new(move || {
-        let selection = Binding::container(Option::<usize>::None);
+        let selection = Binding::new(Option::<usize>::None);
         let rows = (0..ROWS).map(SelfId::new).collect::<Vec<_>>();
         AnyView::new(scroll(
             List::for_each(SignalCollection::new(rows), |row| {
@@ -935,7 +935,7 @@ fn a_collection_entry_mid_transition_is_hit_at_its_single_offset_position() {
 /// handles both report not hovering once the subtree is unhittable.
 #[test]
 fn a_hovered_target_that_turns_unhittable_clears_its_hover() {
-    let enabled = Binding::container(true);
+    let enabled = Binding::new(true);
     let builder = {
         let enabled = enabled.clone();
         AnyViewBuilder::<AnyView>::new(move || {

@@ -18,7 +18,7 @@ fn tabs_view(
             })
         })
         .collect::<Vec<_>>();
-    Tabs::new(&Binding::container(0usize), tabs)
+    Tabs::new(&Binding::new(0usize), tabs)
 }
 
 /// Tabs whose items carry a text icon beside the title, so the item's
@@ -33,7 +33,7 @@ fn icon_tabs_view(count: usize, icon: &str) -> impl View + use<> {
             )
         })
         .collect::<Vec<_>>();
-    Tabs::new(&Binding::container(0usize), tabs)
+    Tabs::new(&Binding::new(0usize), tabs)
 }
 
 fn sidebar_tabs_view(count: usize) -> impl View + use<> {

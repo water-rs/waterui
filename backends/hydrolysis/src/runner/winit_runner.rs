@@ -2390,7 +2390,7 @@ mod tests {
     #[test]
     fn window_attributes_carry_the_requested_frame() {
         use waterui_core::layout::{Point, Rect, Size};
-        let frame = Binding::container(Rect::new(Point::new(12.0, 34.0), Size::new(800.0, 300.0)));
+        let frame = Binding::new(Rect::new(Point::new(12.0, 34.0), Size::new(800.0, 300.0)));
         let window = Window::new("", || ()).frame(&frame).into_parts();
         let env = crate::renderer::tests::test_environment();
 

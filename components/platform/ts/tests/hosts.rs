@@ -59,7 +59,7 @@ fn ts_a_test_session_mounts_a_tsx_view(ui: UiBuilder) {
     // `bundle_var_unset.rs` asserts — so a tree with the module's labels in
     // it is a runtime the session installed, not one the test did.
     bundle::configure(PromoProps::CONTRACT_HASH);
-    let unread = Binding::container(3_u32);
+    let unread = Binding::new(3_u32);
     let dismissed = Rc::new(Cell::new(false));
     let mut app = {
         let unread = unread.clone();
@@ -102,7 +102,7 @@ fn ts_a_host_scoped_render_installs_the_runtime_for_the_view() {
     hydrolysis_m3::Material3::defaults().install_tokens(&mut environment);
     let view = with_configured_runtime(
         &environment,
-        AnyView::new(promo(Binding::container(3), &dismissed)),
+        AnyView::new(promo(Binding::new(3), &dismissed)),
     )
     .unwrap_or_else(|error| panic!("installing the runtime for the view: {error}"));
 

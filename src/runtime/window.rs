@@ -557,13 +557,13 @@ pub trait IntoWindowIcon {
 
 impl IntoWindowIcon for WindowIcon {
     fn into_window_icon(self) -> Binding<Option<WindowIcon>> {
-        Binding::container(Some(self))
+        Binding::new(Some(self))
     }
 }
 
 impl IntoWindowIcon for Option<WindowIcon> {
     fn into_window_icon(self) -> Binding<Option<WindowIcon>> {
-        Binding::container(self)
+        Binding::new(self)
     }
 }
 
@@ -873,7 +873,7 @@ impl From<Material> for WindowBackground {
 
 impl From<WindowBackground> for Binding<WindowBackground> {
     fn from(background: WindowBackground) -> Self {
-        Self::container(background)
+        Self::new(background)
     }
 }
 
@@ -1119,7 +1119,7 @@ impl_constant!(WindowStyle);
 
 impl From<WindowStyle> for Binding<WindowStyle> {
     fn from(style: WindowStyle) -> Self {
-        Self::container(style)
+        Self::new(style)
     }
 }
 
@@ -1134,18 +1134,18 @@ impl<B: ViewBuilder> Window<WindowContent<B>> {
     pub fn new(title: impl IntoComputed<Str>, content: B) -> Self {
         let default_frame = Rect::new(Point::zero(), Size::new(800.0, 600.0));
         let content = WindowContent(content);
-        let state = Binding::container(WindowState::Normal);
+        let state = Binding::new(WindowState::Normal);
         let close_request = CloseRequest::new(&state);
         Self {
             title: title.into_computed(),
             closable: true,
             resizable: true,
-            frame: Binding::container(default_frame),
+            frame: Binding::new(default_frame),
             content,
             state,
             toolbar: (),
-            style: Binding::container(WindowStyle::default()),
-            background: Binding::container(WindowBackground::default()),
+            style: Binding::new(WindowStyle::default()),
+            background: Binding::new(WindowBackground::default()),
             min_size: None,
             max_size: None,
             app_id: None,
@@ -1153,9 +1153,9 @@ impl<B: ViewBuilder> Window<WindowContent<B>> {
             placement: None,
             activation: Activation::default(),
             level: Computed::constant(WindowLevel::Normal),
-            attention: Binding::container(None),
+            attention: Binding::new(None),
             resize_increments: None,
-            icon: Binding::container(None),
+            icon: Binding::new(None),
             close_request,
             focus_request: FocusRequest::new(),
         }
@@ -2015,7 +2015,7 @@ mod tests {
         let default_window = Window::new("Notes", || ());
         assert_eq!(default_window.state.snapshot(), WindowState::Normal);
 
-        let external = Binding::container(WindowState::Normal);
+        let external = Binding::new(WindowState::Normal);
         let window = Window::new("Settings", || ()).state(&external);
         assert_eq!(window.state.snapshot(), WindowState::Normal);
         window.request_close(&Environment::new());
@@ -2044,7 +2044,7 @@ mod tests {
     fn resolved_background_follows_a_replaced_background() {
         let green = from_linear_srgb([0.0, 1.0, 0.0], 1.0);
         let red = from_linear_srgb([1.0, 0.0, 0.0], 1.0);
-        let accent = Binding::container(green);
+        let accent = Binding::new(green);
         let mut env = Environment::new();
         Theme::new()
             .colors(
@@ -2054,7 +2054,7 @@ mod tests {
             )
             .install(&mut env);
 
-        let background = Binding::container(WindowBackground::Color(Color::srgb(255, 0, 0)));
+        let background = Binding::new(WindowBackground::Color(Color::srgb(255, 0, 0)));
         let resolved = resolve_background(&background, &env);
         // Components are linear Display P3 red, green, blue, alpha: sRGB red
         // lands near 0.82 in the wider P3 gamut.
@@ -2104,7 +2104,7 @@ mod tests {
     #[test]
     #[cfg_attr(debug_assertions, should_panic(expected = "WindowChannel was dropped"))]
     fn showing_a_window_on_a_dropped_channel_is_dropped() {
-        let state = Binding::container(WindowState::Closed);
+        let state = Binding::new(WindowState::Closed);
         let (manager, channel) = WindowManager::new();
         drop(channel);
         Window::new("Orphan", || ()).state(&state).show(&manager);
@@ -2162,7 +2162,7 @@ mod tests {
         use waterui_core::metadata::Metadata;
         use waterui_core::{AnyView, View as _};
 
-        let state = Binding::container(WindowState::Normal);
+        let state = Binding::new(WindowState::Normal);
         let parts = Window::new("Controls", || ())
             .state(&state)
             .closable(false)

@@ -167,7 +167,7 @@ fn toolbar<B: View>(
 /// view offers beyond navigation.
 #[cfg(not(target_arch = "wasm32"))]
 fn bridge_controls(allow_redirects: &Binding<bool>, web: &WebViewProxy) -> impl View + use<> {
-    let js_result: Binding<Str> = binding("");
+    let js_result: Binding<Str> = binding(Str::from(""));
     vstack((
         hstack((
             button("Back")
@@ -207,9 +207,9 @@ fn bridge_controls(allow_redirects: &Binding<bool>, web: &WebViewProxy) -> impl 
 }
 
 fn webview_playground() -> impl View {
-    let status: Binding<Str> = binding("Idle");
-    let address: Binding<Str> = binding("https://waterui.dev");
-    let allow_redirects = Binding::bool(false);
+    let status: Binding<Str> = binding(Str::from("Idle"));
+    let address: Binding<Str> = binding(Str::from("https://waterui.dev"));
+    let allow_redirects = Binding::new(false);
 
     let open = WebView::open("https://waterui.dev");
     #[cfg(not(target_arch = "wasm32"))]

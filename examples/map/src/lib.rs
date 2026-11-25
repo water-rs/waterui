@@ -63,7 +63,7 @@ impl MapExampleState {
         Self {
             region: binding(Region::new(manhattan, 0.030, 0.050)),
             user_location: binding(None),
-            location_status: binding("Location is not requested"),
+            location_status: binding(Str::from("Location is not requested")),
             locating: binding(false),
         }
     }

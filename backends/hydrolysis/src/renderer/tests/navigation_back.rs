@@ -349,7 +349,7 @@ fn system_back_cancels_a_presented_dialog_only_when_committed() {
     use waterui::dialog::{Dialog, DialogAction};
     use waterui::{Signal as _, ViewExt as _};
 
-    let presented = waterui::Binding::bool(false);
+    let presented = waterui::Binding::new(false);
     let cancels = Rc::new(Cell::new(0_u32));
     let view = {
         let cancels = Rc::clone(&cancels);

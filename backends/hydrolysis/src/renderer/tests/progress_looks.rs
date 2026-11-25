@@ -316,7 +316,7 @@ fn bar_color(snapshot: &HeadlessSnapshot) -> [u8; 4] {
 /// records, builds and mounts nothing to do so.
 #[test]
 fn a_running_track_follows_the_signal_it_is_built_from() {
-    let scheme = Binding::container(ColorScheme::Light);
+    let scheme = Binding::new(ColorScheme::Light);
     let theme = MinimalTestTheme {
         indeterminate_progress: IndeterminateProgress::Scheme,
         ..Default::default()
@@ -365,7 +365,7 @@ fn progress_value_change_records_nothing() {
         progress_bar_recordings: Rc::clone(&recordings),
         ..Default::default()
     };
-    let value = Binding::container(0.2_f64);
+    let value = Binding::new(0.2_f64);
     let mut runtime = runtime_with(progress(value.clone()), theme);
     let mut frames = Frames::new();
     for _ in 0..4 {
@@ -406,10 +406,7 @@ fn progress_spec_carries_the_subtrees_tint() {
         ..Default::default()
     };
     let tint = Color::srgb_f32(0.9, 0.1, 0.2);
-    let mut runtime = runtime_with(
-        progress(Binding::container(0.5_f64)).tint(tint.clone()),
-        theme,
-    );
+    let mut runtime = runtime_with(progress(Binding::new(0.5_f64)).tint(tint.clone()), theme);
     Frames::new().pump(&mut runtime);
 
     let env = pumped_test_environment();
@@ -487,7 +484,7 @@ mod measured_equals_drawn {
 
     #[test]
     fn a_determinate_progress_reserves_its_value_label_band() {
-        let (bounds, bar) = laid_out(progress(Binding::container(0.5_f64)).label(""));
+        let (bounds, bar) = laid_out(progress(Binding::new(0.5_f64)).label(""));
         assert!(
             bar.y0.abs() < 1e-3,
             "no label, no band above the bar: bar at {bar:?} in {bounds:?}"
@@ -501,7 +498,7 @@ mod measured_equals_drawn {
     #[test]
     fn a_circular_progress_reserves_label_and_value_label_bands() {
         let (bounds, ring) = laid_out(
-            progress(Binding::container(0.65_f64))
+            progress(Binding::new(0.65_f64))
                 .circular()
                 .label("Please wait..."),
         );
@@ -521,7 +518,7 @@ mod measured_equals_drawn {
 
     #[test]
     fn circular_indicator_without_labels_reserves_no_bands() {
-        let view = vstack((progress(Binding::container(0.65_f64))
+        let view = vstack((progress(Binding::new(0.65_f64))
             .circular()
             .label("Please wait..."),));
         let realizations = Rc::new(RefCell::new(Vec::new()));

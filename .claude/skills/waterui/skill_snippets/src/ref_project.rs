@@ -56,7 +56,7 @@ pub mod project_block_02 {
 // project.md § "## Permissions: declaring and requesting" — rust block 3/5
 // ---------------------------------------------------------------------------
 pub fn project_block_03() -> impl View {
-    let granted = Binding::bool(false);
+    let granted = Binding::new(false);
 
     use waterkit_permission::{Permission, PermissionStatus, check, request};
 

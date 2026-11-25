@@ -936,7 +936,7 @@ mod tests {
 
     #[test]
     fn semantic_pump_emits_widgets_and_click_activates() {
-        let fired = Binding::container(false);
+        let fired = Binding::new(false);
         let fired_for_button = fired.clone();
         let builder = AnyViewBuilder::<AnyView>::new(move || {
             let fired = fired_for_button.clone();
@@ -974,7 +974,7 @@ mod tests {
 
     #[test]
     fn semantic_menu_popup_emits_items_and_dismisses() {
-        let fired = Binding::container(String::new());
+        let fired = Binding::new(String::new());
         let fired_for_menu = fired.clone();
         let builder = AnyViewBuilder::<AnyView>::new(move || {
             let save = fired_for_menu.clone();
@@ -1045,7 +1045,7 @@ mod tests {
         }
 
         let store = Store {
-            hits: Binding::container(0),
+            hits: Binding::new(0),
         };
         let store_for_view = store.clone();
         let builder = AnyViewBuilder::<AnyView>::new(move || {
@@ -1120,7 +1120,7 @@ mod tests {
 
     #[test]
     fn semantic_text_field_focuses_and_edits() {
-        let value = Binding::container(waterui_core::Str::default());
+        let value = Binding::new(waterui_core::Str::default());
         let value_for_field = value.clone();
         let builder = AnyViewBuilder::<AnyView>::new(move || {
             AnyView::new(vstack((waterui_controls::text_field::field(
@@ -1257,9 +1257,9 @@ mod tests {
 
     #[test]
     fn unconsumed_escape_bubbles_to_ancestor_on_key_press() {
-        let hits = Binding::container(Vec::<String>::new());
+        let hits = Binding::new(Vec::<String>::new());
         let hits_for_view = hits.clone();
-        let value = Binding::container(waterui_core::Str::default());
+        let value = Binding::new(waterui_core::Str::default());
         let builder = AnyViewBuilder::<AnyView>::new(move || {
             let value = value.clone();
             let hits = hits_for_view.clone();
@@ -1281,11 +1281,11 @@ mod tests {
 
     #[test]
     fn handled_stops_the_bubble_before_outer_handlers() {
-        let inner_hits = Binding::container(Vec::<String>::new());
-        let outer_hits = Binding::container(Vec::<String>::new());
+        let inner_hits = Binding::new(Vec::<String>::new());
+        let outer_hits = Binding::new(Vec::<String>::new());
         let inner_for_view = inner_hits.clone();
         let outer_for_view = outer_hits.clone();
-        let value = Binding::container(waterui_core::Str::default());
+        let value = Binding::new(waterui_core::Str::default());
         let builder = AnyViewBuilder::<AnyView>::new(move || {
             let value = value.clone();
             AnyView::new(
@@ -1316,10 +1316,10 @@ mod tests {
 
         // With the nearer handler ignoring, the same key reaches the outer one.
         inner_hits.set(Vec::new());
-        let inner_ignores = Binding::container(Vec::<String>::new());
+        let inner_ignores = Binding::new(Vec::<String>::new());
         let outer_ignores = outer_hits.clone();
         let inner_for_second = inner_ignores.clone();
-        let value = Binding::container(waterui_core::Str::default());
+        let value = Binding::new(waterui_core::Str::default());
         let builder = AnyViewBuilder::<AnyView>::new(move || {
             let value = value.clone();
             let outer = outer_ignores.clone();
@@ -1349,9 +1349,9 @@ mod tests {
 
     #[test]
     fn return_submits_a_line_limited_field_with_on_submit() {
-        let submitted = Binding::container(0u32);
+        let submitted = Binding::new(0u32);
         let submitted_for_view = submitted.clone();
-        let value = Binding::container(waterui_core::Str::default());
+        let value = Binding::new(waterui_core::Str::default());
         let builder = AnyViewBuilder::<AnyView>::new(move || {
             let value = value.clone();
             let submitted = submitted_for_view.clone();
@@ -1369,9 +1369,9 @@ mod tests {
 
     #[test]
     fn return_without_on_submit_bubbles() {
-        let hits = Binding::container(Vec::<String>::new());
+        let hits = Binding::new(Vec::<String>::new());
         let hits_for_view = hits.clone();
-        let value = Binding::container(waterui_core::Str::default());
+        let value = Binding::new(waterui_core::Str::default());
         let builder = AnyViewBuilder::<AnyView>::new(move || {
             let value = value.clone();
             let hits = hits_for_view.clone();
@@ -1393,9 +1393,9 @@ mod tests {
 
     #[test]
     fn arrow_up_and_down_bubble_from_a_single_line_field() {
-        let hits = Binding::container(Vec::<String>::new());
+        let hits = Binding::new(Vec::<String>::new());
         let hits_for_view = hits.clone();
-        let value = Binding::container(waterui_core::Str::default());
+        let value = Binding::new(waterui_core::Str::default());
         let builder = AnyViewBuilder::<AnyView>::new(move || {
             let value = value.clone();
             let hits = hits_for_view.clone();
@@ -1421,9 +1421,9 @@ mod tests {
 
     #[test]
     fn characters_never_bubble() {
-        let hits = Binding::container(Vec::<String>::new());
+        let hits = Binding::new(Vec::<String>::new());
         let hits_for_view = hits.clone();
-        let value = Binding::container(waterui_core::Str::default());
+        let value = Binding::new(waterui_core::Str::default());
         let value_for_assert = value.clone();
         let builder = AnyViewBuilder::<AnyView>::new(move || {
             let value = value.clone();
@@ -1459,9 +1459,9 @@ mod tests {
     #[test]
     fn a_consumed_key_press_suppresses_its_paired_text() {
         // The ancestor consumes 'x' only; 'y' falls through to the field.
-        let hits = Binding::container(Vec::<String>::new());
+        let hits = Binding::new(Vec::<String>::new());
         let hits_for_view = hits.clone();
-        let value = Binding::container(waterui_core::Str::default());
+        let value = Binding::new(waterui_core::Str::default());
         let value_for_assert = value.clone();
         let builder = AnyViewBuilder::<AnyView>::new(move || {
             let value = value.clone();
@@ -1521,7 +1521,7 @@ mod tests {
         // water-rs/waterui#1265: the bubble starts at whatever node holds
         // keyboard focus, not only at text inputs — a focused button inside
         // an `on_key_press` overlay hands Escape to the overlay's handler.
-        let hits = Binding::container(Vec::<String>::new());
+        let hits = Binding::new(Vec::<String>::new());
         let hits_for_view = hits.clone();
         let builder = AnyViewBuilder::<AnyView>::new(move || {
             let hits = hits_for_view.clone();
@@ -1575,9 +1575,9 @@ mod tests {
         // the scopes enclosing every registration — sibling `on_key_press`
         // handlers are not ancestors of one another, so only the shared root
         // handler hears the key.
-        let root_hits = Binding::container(Vec::<String>::new());
-        let a_hits = Binding::container(Vec::<String>::new());
-        let b_hits = Binding::container(Vec::<String>::new());
+        let root_hits = Binding::new(Vec::<String>::new());
+        let a_hits = Binding::new(Vec::<String>::new());
+        let b_hits = Binding::new(Vec::<String>::new());
         let root_for_view = root_hits.clone();
         let a_for_view = a_hits.clone();
         let b_for_view = b_hits.clone();

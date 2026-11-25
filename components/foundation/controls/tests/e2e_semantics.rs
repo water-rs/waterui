@@ -42,7 +42,7 @@ fn assert_close(actual: f64, expected: f64, epsilon: f64, context: &str) {
 
 #[waterui::test(viewport = (320, 240))]
 fn button_tap_triggers_action(ui: UiBuilder) {
-    let count = Binding::i32(0);
+    let count = Binding::new(0_i32);
     let count_for_view = count.clone();
 
     let mut app = ui.mount(move || {
@@ -70,10 +70,10 @@ fn disabled_scope_reaches_every_control_in_the_subtree(ui: UiBuilder) {
     // environment attribute and each control reads the state in force at its
     // own position. A scope on the container must therefore reach a stepper and
     // a text field just as it reaches a button, toggle and slider.
-    let value = Binding::i32(0);
-    let text = Binding::container(Str::from("hello"));
-    let flag = Binding::bool(false);
-    let amount = Binding::f64(0.5);
+    let value = Binding::new(0_i32);
+    let text = Binding::new(Str::from("hello"));
+    let flag = Binding::new(false);
+    let amount = Binding::new(0.5_f64);
 
     let mut app = ui.mount(move || {
         control_shell(
@@ -112,8 +112,8 @@ fn disabled_scope_reaches_every_control_in_the_subtree(ui: UiBuilder) {
 
 #[waterui::test(viewport = (320, 240))]
 fn repeated_state_calls_bind_in_argument_order(ui: UiBuilder) {
-    let first = Binding::i32(0);
-    let second = Binding::i32(0);
+    let first = Binding::new(0_i32);
+    let second = Binding::new(0_i32);
     let first_for_view = first.clone();
     let second_for_view = second.clone();
 
@@ -173,7 +173,7 @@ fn button_label_is_accessible(app: &mut SemanticApp) {
 
 #[waterui::test(viewport = (320, 240))]
 fn toggle_tap_toggles_binding(ui: UiBuilder) {
-    let enabled = Binding::bool(false);
+    let enabled = Binding::new(false);
     let enabled_for_view = enabled.clone();
 
     let mut app = ui.mount(move || {
@@ -206,11 +206,11 @@ fn toggle_tap_toggles_binding(ui: UiBuilder) {
 
 #[waterui::test(viewport = (320, 240))]
 fn toggle_accessibility_role_follows_the_resolved_style(ui: UiBuilder) {
-    let wifi = Binding::bool(false);
-    let bluetooth = Binding::bool(false);
-    let airdrop = Binding::bool(false);
-    let hotspot = Binding::bool(false);
-    let vpn = Binding::bool(false);
+    let wifi = Binding::new(false);
+    let bluetooth = Binding::new(false);
+    let airdrop = Binding::new(false);
+    let hotspot = Binding::new(false);
+    let vpn = Binding::new(false);
 
     let mut app = ui.mount(move || {
         control_shell(vstack((
@@ -244,7 +244,7 @@ fn toggle_accessibility_role_follows_the_resolved_style(ui: UiBuilder) {
 
 #[waterui::test(viewport = (320, 240))]
 fn slider_increment_decrement_updates_value(ui: UiBuilder) {
-    let value = Binding::f64(0.50);
+    let value = Binding::new(0.50_f64);
     let value_for_view = value.clone();
 
     let mut app = ui.mount(move || {
@@ -281,7 +281,7 @@ fn slider_increment_decrement_updates_value(ui: UiBuilder) {
 
 #[waterui::test(viewport = (320, 240))]
 fn slider_accessibility_role_is_slider(ui: UiBuilder) {
-    let value = Binding::f64(0.25);
+    let value = Binding::new(0.25_f64);
     let value_for_view = value;
 
     let mut app = ui.mount(move || control_shell(slider("Exposure", &value_for_view)));
@@ -303,7 +303,7 @@ fn slider_accessibility_role_is_slider(ui: UiBuilder) {
 
 #[waterui::test(viewport = (320, 240))]
 fn stepper_increment_decrement_updates_binding(ui: UiBuilder) {
-    let value = Binding::i32(2);
+    let value = Binding::new(2_i32);
     let value_for_view = value.clone();
 
     let mut app = ui.mount(move || {
@@ -338,7 +338,7 @@ fn stepper_increment_decrement_updates_binding(ui: UiBuilder) {
 
 #[waterui::test(viewport = (320, 240))]
 fn stepper_respects_range_bounds(ui: UiBuilder) {
-    let value = Binding::i32(2);
+    let value = Binding::new(2_i32);
     let value_for_view = value.clone();
 
     let mut app = ui.mount(move || control_shell(stepper("Limited", &value_for_view).range(0..=2)));
@@ -356,7 +356,7 @@ fn stepper_respects_range_bounds(ui: UiBuilder) {
 
 #[waterui::test(viewport = (320, 240))]
 fn text_field_set_text_updates_binding(ui: UiBuilder) {
-    let value = Binding::container(Str::from(""));
+    let value = Binding::new(Str::from(""));
     let value_for_view = value.clone();
 
     let mut app = ui.mount(move || {
@@ -383,7 +383,7 @@ fn text_field_set_text_updates_binding(ui: UiBuilder) {
 
 #[waterui::test(viewport = (320, 240))]
 fn text_field_focus_updates_ui_focus(ui: UiBuilder) {
-    let value = Binding::container(Str::from(""));
+    let value = Binding::new(Str::from(""));
     let value_for_view = value;
 
     let mut app = ui.mount(move || control_shell(TextField::new("Search", &value_for_view)));
@@ -399,7 +399,7 @@ fn multi_line_text_field_accepts_newlines_up_to_its_limit(ui: UiBuilder) {
     // takes any `NonZeroUsize`, and a field with a limit above one both reports
     // the multi-line accessibility role and accepts newline input, refusing only
     // the edit that would push it past the limit.
-    let value = Binding::container(Str::from(""));
+    let value = Binding::new(Str::from(""));
     let observed = value.clone();
 
     let mut app = ui.mount(move || {
@@ -435,9 +435,9 @@ fn multi_line_text_field_accepts_newlines_up_to_its_limit(ui: UiBuilder) {
 
 #[waterui::test(viewport = (320, 240))]
 fn text_field_line_limit_signal_toggles_multiline_in_place(ui: UiBuilder) {
-    let value = Binding::container(Str::from(""));
+    let value = Binding::new(Str::from(""));
     let observed = value.clone();
-    let limit = Binding::container(NonZeroUsize::new(1));
+    let limit = Binding::new(NonZeroUsize::new(1));
     let limit_for_view = limit.clone();
 
     let mut app = ui.mount(move || {
@@ -480,7 +480,7 @@ fn accessibility_label_follows_a_signal_without_rebuilding(ui: UiBuilder) {
     // An accessibility label derived from app state must stay current the way
     // accessibility *state* already does, instead of freezing at the value it
     // had when the subtree was built.
-    let unread = Binding::i32(3);
+    let unread = Binding::new(3_i32);
     let label = unread.map(|count| Str::from(format!("{count} unread messages")));
 
     let mut app =
@@ -534,7 +534,7 @@ fn menu_button_exposes_accessible_name(app: &mut SemanticApp) {
 
 #[waterui::test(viewport = (320, 240))]
 fn disabled_toggle_ignores_input_and_reports_disabled(ui: UiBuilder) {
-    let enabled = Binding::bool(false);
+    let enabled = Binding::new(false);
     let enabled_for_view = enabled.clone();
 
     let mut app =
@@ -559,9 +559,9 @@ fn disabled_toggle_ignores_input_and_reports_disabled(ui: UiBuilder) {
 
 #[waterui::test(viewport = (320, 240))]
 fn disabled_scope_cascades_and_reenables_reactively(ui: UiBuilder) {
-    let enabled = Binding::bool(false);
+    let enabled = Binding::new(false);
     let enabled_for_view = enabled.clone();
-    let form_locked = Binding::bool(true);
+    let form_locked = Binding::new(true);
     let form_locked_for_view = form_locked.clone();
 
     let mut app = ui.mount(move || {
@@ -615,7 +615,7 @@ fn disabled_scope_cascades_and_reenables_reactively(ui: UiBuilder) {
 
 #[waterui::test(viewport = (320, 240))]
 fn disabled_slider_ignores_value_actions(ui: UiBuilder) {
-    let value = Binding::f64(0.5);
+    let value = Binding::new(0.5_f64);
     let value_for_view = value.clone();
 
     let mut app = ui.mount(move || control_shell(slider("Volume", &value_for_view).disabled(true)));
@@ -638,7 +638,7 @@ fn disabled_slider_ignores_value_actions(ui: UiBuilder) {
 
 #[waterui::test(viewport = (320, 240))]
 fn disabled_button_ignores_action(ui: UiBuilder) {
-    let count = Binding::i32(0);
+    let count = Binding::new(0_i32);
     let count_for_view = count.clone();
 
     let mut app = ui.mount(move || {
@@ -663,8 +663,8 @@ fn disabled_button_ignores_action(ui: UiBuilder) {
 
 #[waterui::test(viewport = (320, 240))]
 fn type_new_constructors_accept_into_label(ui: UiBuilder) {
-    let slider_value = Binding::f64(0.5);
-    let stepper_value = Binding::i32(2);
+    let slider_value = Binding::new(0.5_f64);
+    let stepper_value = Binding::new(2_i32);
 
     let mut app = ui.mount(move || {
         control_shell(vstack((

@@ -563,7 +563,7 @@ fn scroll_controller_applies_requests_inside_navigation_content() {
 /// still re-lay the text out.
 #[test]
 fn scroll_child_measure_memo_cannot_hide_a_layout_dependency() {
-    let value = Binding::container(String::from("9"));
+    let value = Binding::new(String::from("9"));
     let mut app = mount_rendered(
         Environment::new(),
         {

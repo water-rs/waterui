@@ -946,14 +946,14 @@ mod tests {
             MinimalTestTheme::default()
                 .with_input_metrics(InputFieldMetrics::new(16.0, 280.0, 40.0, 16.0, 8.0)),
         );
-        let value = Binding::container(Str::from("x"));
+        let value = Binding::new(Str::from("x"));
         let view = AnyView::new(field("Label", &value));
         let size = Realized::with_theme(view, &env, &theme)
             .measure(ProposalSize::UNSPECIFIED)
             .size;
         approx::assert_relative_eq!(f64::from(size.height), 56.0);
 
-        let secret = Binding::container(Secure::new(String::from("x")));
+        let secret = Binding::new(Secure::new(String::from("x")));
         let view = AnyView::new(secure("Label", &secret));
         let size = Realized::with_theme(view, &env, &theme)
             .measure(ProposalSize::UNSPECIFIED)

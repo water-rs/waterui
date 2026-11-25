@@ -377,7 +377,7 @@ impl InsertionRun {
     fn update_blur(&mut self, sample: &TransitionProperties) {
         use waterui::reactive::Signal as _;
         if self.blur.is_none() && sample.blur > 0.0 {
-            let radius = waterui::reactive::Binding::container(sample.blur);
+            let radius = waterui::reactive::Binding::new(sample.blur);
             let mut guards = waterui_graphics::backend::ParamGuards::default();
             let effect = waterui_graphics::backend::AnyEffect::filter(
                 waterui_graphics::backend::filtrate::filters::Blur(guards.bind(radius.clone())),

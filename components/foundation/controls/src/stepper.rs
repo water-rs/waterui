@@ -325,7 +325,7 @@ mod tests {
     /// a backend receives — an environment-wide hidden mode included.
     #[test]
     fn stretch_axis_follows_label_visibility() {
-        let quantity = Binding::i32(0);
+        let quantity = Binding::new(0_i32);
         let env = test_env();
         for (visible, expected) in [(true, StretchAxis::Horizontal), (false, StretchAxis::None)] {
             let make = || {

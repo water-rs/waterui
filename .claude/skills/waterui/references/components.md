@@ -274,7 +274,7 @@ rows.animate_to(50_000, Animation::default());   // glide with the platform's sm
 let at_end = rows.position().map(|p| p.is_some_and(|p| p.at_end()));
 
 let offset = ScrollController::<Point>::new(Point::zero());
-let reported = Binding::container(Point::zero());
+let reported = Binding::new(Point::zero());
 let view = scroll(content).scroll_controller(&offset).report_offset(&reported);
 let lifted = reported.map(|o| o.y > 0.0);        // e.g. lift a top bar once content passes under it
 offset.scroll_to(Point::new(0.0, 2_400.0));
@@ -605,7 +605,7 @@ A `font::Font` built from a slot carries the same overrides, and every one of th
 setting is a signal, never a `watch(..)`:
 
 ```rust
-let family: Binding<Option<Str>> = Binding::container(None); // e.g. a user setting
+let family: Binding<Option<Str>> = Binding::new(None); // e.g. a user setting
 text("~/src").font(font::Font::from(font::Body).family(family.clone()))
 ```
 

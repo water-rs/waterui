@@ -34,7 +34,7 @@ fn mesh_interpolates_premultiplied_color_and_updates_one_retained_command() {
     let surface = wait!(engine
         .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16), || {}))
         .expect("surface");
-    let value = Binding::container(mesh(0.25));
+    let value = Binding::new(mesh(0.25));
     let fixed = Picture::record(|c| {
         c.fill(Rect::new(0.0, 0.0, 2.0, 2.0), WorkingColor::WHITE);
     });

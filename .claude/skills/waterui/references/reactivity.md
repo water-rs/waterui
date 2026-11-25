@@ -43,25 +43,22 @@ and `Picker` all take `&Binding<..>` because they mutate it.
 ```rust
 use waterui::reactive::binding;
 
-let count = Binding::i32(0);                    // typed constructors, primitives:
-let ratio = Binding::f64(1.5);                  // bool f32 f64 i32 i64 isize u32 u64 usize
-let flag  = Binding::bool(false);
-let name  = Binding::container(Str::from("Ada"));  // any Clone type
-let items = Binding::container(Vec::<Row>::new());
-let status = Binding::container("Waiting…");    // Binding<&'static str> — fine for status text
+let count = Binding::new(0);                     // Binding<i32>
+let ratio = binding(1.5_f64);                    // Binding<f64>
+let flag  = binding(false);                      // Binding<bool>
+let name  = binding(Str::from("Ada"));           // any Clone type
+let items = binding(Vec::<Row>::new());
+let status = binding("Waiting…");                // Binding<&'static str> — fine for status text
 
 let sel: Binding<Option<Selected>> = Binding::default();   // empty optional selection
-let pane: Binding<Pane> = binding(Pane::Inbox);            // general form
-let ws = binding::<WindowState>(WindowState::default());   // …or pin T with a turbofish
+let pane = binding(Pane::Inbox);                           // Binding<Pane>
 ```
 
-`Binding::new` does not exist. `binding(v)` is declared as `binding<T>(value: impl
-Into<T>)`, so `T` cannot be inferred from the argument alone — it works when something
-downstream pins the type: a `let` annotation, a turbofish, a struct field, a control such
-as `toggle(.., &b)`, or a helper parameter typed `&Binding<i32>`. When a helper with a
-typed parameter consumes the binding, plain `binding(0)` / `binding(false)` is the
-idiomatic spelling — no typed constructor needed. A `#[form]` struct has the cleanest
-form of all: `Settings::binding()` (from `FormBuilder`), which needs no annotation.
+`Binding::new(v)` and `binding(v)` both take `T` directly (no `impl Into<T>`), so Rust
+infers the binding's type from the value without annotations (`binding(0)` is
+`Binding<i32>`). Pass owned values directly (`binding(Str::from("Ada"))`,
+`binding(String::new())`). A `#[form]` struct also provides `Settings::binding()` (from
+`FormBuilder`).
 
 Writing:
 
@@ -147,8 +144,8 @@ arguments.
 ```rust
 use waterui::reactive::s;
 
-let count = Binding::i32(3);
-let total = Binding::i32(10);
+let count = Binding::new(3);
+let total = Binding::new(10);
 let progress = s!("{count} of {total}");   // Signal<Output = String>
 ```
 
@@ -286,7 +283,7 @@ pass the animated signal wherever the plain one would go.
 use core::time::Duration;
 use waterui::animation::Animation;   // not in the prelude
 
-let scale = Binding::f32(1.0);
+let scale = Binding::new(1.0_f32);
 let animated = scale.with(Animation::spring(300.0, 15.0));
 
 view.scale(animated)

@@ -12,8 +12,8 @@ use waterui_testing::{ContentType as SnapshotContentType, Role, UiBuilder};
 
 /// A declared one-time-code field beside an undeclared one.
 fn autofill_view() -> impl View {
-    let code = Binding::container(Str::from(""));
-    let note = Binding::container(Str::from(""));
+    let code = Binding::new(Str::from(""));
+    let note = Binding::new(Str::from(""));
     vstack((
         waterui_controls::TextField::new("Verification code", &code)
             .keyboard(KeyboardType::Number)

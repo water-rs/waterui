@@ -67,11 +67,11 @@ fn row_text(row: u64) -> String {
 
 #[divan::bench]
 fn list200_plus_paragraph_at_3_widths(bencher: Bencher) {
-    let width = Binding::container(WIDTHS[0]);
+    let width = Binding::new(WIDTHS[0]);
     let driver = width.clone();
     let builder = AnyViewBuilder::<AnyView>::new(move || {
         let rows = VStack::for_each(
-            SignalCollection::new(Binding::container(
+            SignalCollection::new(Binding::new(
                 (0..200u64).map(SelfId::new).collect::<Vec<_>>(),
             )),
             |id: SelfId<u64>| text(row_text(id.into_inner())).body(),

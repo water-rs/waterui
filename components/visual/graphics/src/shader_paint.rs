@@ -811,8 +811,8 @@ fn main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
 
     #[test]
     fn scene_content_retains_static_recordings_and_invalidates_on_signal_changes() {
-        let continuous = Binding::container(false);
-        let param0 = Binding::container(1.0_f32);
+        let continuous = Binding::new(false);
+        let param0 = Binding::new(1.0_f32);
         let mut scene = ShaderPaintView::new(FRAGMENT)
             .expect("valid fragment shader")
             .continuous(continuous.clone())
@@ -892,9 +892,9 @@ fn main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
     fn signals_reach_the_render_side_and_wake_the_host() {
         use core::sync::atomic::{AtomicUsize, Ordering};
 
-        let continuous = Binding::container(false);
-        let param0 = Binding::container(1.0_f32);
-        let param1 = Binding::container(2.0_f32);
+        let continuous = Binding::new(false);
+        let param0 = Binding::new(1.0_f32);
+        let param1 = Binding::new(2.0_f32);
         let shared = Arc::new(Shared::default());
         let wakes = Arc::new(AtomicUsize::new(0));
         let count = Arc::clone(&wakes);

@@ -75,7 +75,7 @@ fn composer(draft: Binding<Str>) -> impl View {
 
 #[preview]
 fn main() -> impl View {
-    let draft = Binding::container(Str::from(""));
+    let draft = Binding::new(Str::from(""));
     vstack((conversation(), composer(draft)))
 }
 

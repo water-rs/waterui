@@ -194,9 +194,9 @@ mod real {
             view: NSView::new(MainThreadMarker::new().expect("main thread")),
             mounts: Rc::clone(&mounts),
             unmounts: Rc::clone(&unmounts),
-            focus: Binding::bool(false),
+            focus: Binding::new(false),
         };
-        let shown = Binding::bool(true);
+        let shown = Binding::new(true);
         let watched = shown.clone();
         let mut runtime = SemanticRuntime::new(
             Environment::new(),

@@ -92,7 +92,7 @@ fn unknown_language_code_block_shows_original_token_in_header(ui: UiBuilder) {
 
 #[waterui::test()]
 fn mutating_bound_code_content_rehighlights_in_place(ui: UiBuilder) {
-    let source = Binding::container(Str::from("fn alpha() {}"));
+    let source = Binding::new(Str::from("fn alpha() {}"));
     let mut app = ui.mount({
         let source = source.clone();
         move || code(Language::Rust, source.clone()).padding_with(16.0)

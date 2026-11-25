@@ -234,8 +234,8 @@ fn matching_reminder_count(rows: &[ReminderRow], normalized_query: &str) -> usiz
 /// The reminders example page: a smart-list sidebar and a searchable detail column.
 #[preview]
 pub fn demo() -> impl View {
-    let selection = Binding::container(Some(SidebarDestination::Today));
-    let search = Binding::container(Str::default());
+    let selection = Binding::new(Some(SidebarDestination::Today));
+    let search = Binding::new(Str::default());
 
     NavigationSplitView::new(
         &selection,

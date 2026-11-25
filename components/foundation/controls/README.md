@@ -48,11 +48,11 @@ There are no Cargo features; the whole control set is always available.
 use waterui::prelude::*;
 
 fn settings_form() -> impl View {
-    let name = Binding::container(Str::from(""));
-    let quantity = Binding::i32(1);
-    let notify = Binding::bool(true);
-    let volume = Binding::f64(0.5);
-    let saved = Binding::bool(false);
+    let name = Binding::new(Str::from(""));
+    let quantity = Binding::new(1);
+    let notify = Binding::new(true);
+    let volume = Binding::new(0.5);
+    let saved = Binding::new(false);
 
     vstack((
         field("Name", &name),

@@ -11,8 +11,8 @@ use waterui_testing::ui;
 
 #[test]
 fn on_change_sees_state_installed_before_it() {
-    let source: Binding<i32> = Binding::i32(0);
-    let total: Binding<i32> = Binding::i32(0);
+    let source: Binding<i32> = Binding::new(0_i32);
+    let total: Binding<i32> = Binding::new(0_i32);
     let (src, tot) = (source.clone(), total.clone());
     let mut app = ui().viewport(400, 300).mount(move || {
         text("x")
@@ -31,8 +31,8 @@ fn on_change_sees_state_installed_before_it() {
 
 #[test]
 fn on_change_sees_state_installed_after_it() {
-    let source: Binding<i32> = Binding::i32(0);
-    let total: Binding<i32> = Binding::i32(0);
+    let source: Binding<i32> = Binding::new(0_i32);
+    let total: Binding<i32> = Binding::new(0_i32);
     let (src, tot) = (source.clone(), total.clone());
     let mut app = ui().viewport(400, 300).mount(move || {
         text("x")
@@ -51,8 +51,8 @@ fn on_change_sees_state_installed_after_it() {
 
 #[test]
 fn on_change_sees_state_installed_before_another_handler() {
-    let source: Binding<i32> = Binding::i32(0);
-    let total: Binding<i32> = Binding::i32(0);
+    let source: Binding<i32> = Binding::new(0_i32);
+    let total: Binding<i32> = Binding::new(0_i32);
     let (src, tot) = (source.clone(), total.clone());
     let mut app = ui().viewport(400, 300).mount(move || {
         text("x")
