@@ -1,13 +1,13 @@
-//! The retained state a `GpuView` leaf carries through the frame.
+//! The retained state a `GpuContentLeaf` carries through the frame.
 //!
-//! `GpuView` owns its producer — a `Send` `GpuContent` the engine runs
+//! `GpuContentLeaf` owns its producer — a `Send` `GpuContent` the engine runs
 //! on its render thread — plus the UI-side hooks (input, per-frame pump, ime
 //! caret, accessibility label) that stay on this thread. The compositor holds
-//! the view behind this node so input routing and the per-frame
-//! [`waterui_graphics::gpu::GpuView::frame`] pump keep working after
+//! the leaf behind this node so input routing and the per-frame
+//! [`waterui_graphics::backend::GpuContentLeaf::frame`] pump keep working after
 //! the producer moves to the engine.
 //!
-//! The producer installs exactly once: [`GpuView::take_engine_content`]
+//! The producer installs exactly once: [`GpuContentLeaf::take_engine_content`]
 //! moves it into an engine `GpuContentHandle`, registered as a
 //! `GpuProducer`. The producer outlives any one layer: a keyed mount that is
 //! dropped (a navigation page that is covered) and comes back binds the same
@@ -19,7 +19,8 @@ use std::rc::{Rc, Weak};
 use nami::watcher::BoxWatcherGuard;
 use nami::{Computed, Signal};
 use waterui_core::Str;
-use waterui_graphics::gpu::{ExternalFrameView, FrameReceiver, GpuContent, GpuView};
+use waterui_graphics::backend::GpuContentLeaf;
+use waterui_graphics::gpu::{ExternalFrameView, FrameReceiver};
 
 use crate::renderer::mount::{Dirty, NodeCell};
 use crate::text::TextEngine;
@@ -42,13 +43,13 @@ fn watch_a11y<E: TextEngine>(
     [watch(label), watch(value)]
 }
 
-/// The `GpuView` a [`crate::renderer::tree::GpuContentNode`] owns, and
+/// The [`GpuContentLeaf`] a [`crate::renderer::tree::GpuContentNode`] owns, and
 /// its engine producer once installed.
 ///
 /// `producer` is set when the node's install layer first commits through the
 /// window's mount (`LayerTarget::mount_gpu_content`).
 pub struct GpuContentRuntime {
-    pub(crate) view: GpuView<Box<dyn GpuContent>>,
+    pub(crate) view: GpuContentLeaf,
     /// The size and scale the view's input handler was last told about.
     pub(crate) resize: crate::renderer::ResizeTracker,
     /// The engine producer the content was registered as: `Some` once
@@ -140,12 +141,11 @@ impl HostedGpuView for ExternalFrameRuntime {
 }
 
 impl GpuContentRuntime {
-    pub(crate) fn new<T: GpuContent, E: TextEngine>(
-        view: GpuView<T>,
+    pub(crate) fn new<E: TextEngine>(
+        view: GpuContentLeaf,
         cell: &Rc<NodeCell<E>>,
         #[cfg(hydrolysis_hwui_gpu)] hosted: crate::runner::android::hosted_gpu::HostedLayer,
     ) -> Self {
-        let view = view.into_boxed();
         let a11y_watchers = watch_a11y(view.label(), view.value(), cell);
         Self {
             view,

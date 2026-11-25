@@ -46,11 +46,11 @@ struct Flame;
 
 impl GpuContent for Flame {
     fn setup(&mut self, gpu: &Context<'_>) {
-        // Create pipelines, buffers and bind groups against `gpu.device`.
+        // Create pipelines, buffers and bind groups against `gpu.device()`.
     }
 
     fn render(&mut self, frame: &mut Frame<'_>) {
-        // Encode one frame into `frame.view`, submit to `frame.queue`,
+        // Encode one frame into `frame.view()`, submit to `frame.queue()`,
         // and call `frame.request_redraw()` when the content animates.
     }
 }
@@ -71,7 +71,7 @@ GpuView::new(RenderSide::new())
 ```
 
 Per-view hooks also exist for input (`on_input`), the IME caret
-(`on_ime_caret`), and accessibility (`labeled`, `described`).
+(`on_ime_caret`), and accessibility (`offered_label`, `offered_value`).
 
 ### SceneView - Vector Scenes
 
