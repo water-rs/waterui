@@ -125,7 +125,7 @@ fn generate_style_module(out_dir: &str, style: &str, icons: &HashMap<String, Ico
             let width = svg_data.viewbox.get(2).copied().unwrap_or(512.0);
             let height = svg_data.viewbox.get(3).copied().unwrap_or(512.0);
             let ctor = format!(
-                "crate::Svg::from_path({path_const}, {viewbox_const}.0, {viewbox_const}.1)"
+                "crate::Icon::from_path({path_const}, {viewbox_const}.0, {viewbox_const}.1)"
             );
             SvgConst {
                 path_const,
@@ -134,15 +134,14 @@ fn generate_style_module(out_dir: &str, style: &str, icons: &HashMap<String, Ico
                     const_name: viewbox_const,
                     literal: format!("({width:.1}, {height:.1})"),
                 }),
-                fn_name: rust_fn_name(icon_name),
                 ctor,
             }
         });
 
         entries.push(IconEntry {
             source_name: icon_name.clone(),
+            fn_name: rust_fn_name(icon_name),
             glyph: Some(GlyphConst {
-                const_name,
                 type_path: "IconGlyph".to_owned(),
                 escape: format!("\\u{{{codepoint:04x}}}"),
             }),

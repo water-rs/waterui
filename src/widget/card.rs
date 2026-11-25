@@ -1,6 +1,6 @@
 //! A card is a styled container that groups related content.
 use crate::prelude::*;
-use crate::style::{Shadow, Vector};
+use crate::style::Shadow;
 use waterui_core::OneOf2;
 use waterui_graphics::color::Color;
 use waterui_layout::stack::vstack;
@@ -134,18 +134,14 @@ where
         };
         let tokens = theme.tokens(self.style);
         let shape = RoundedRectangle::new(tokens.corner_radius);
-        let shadow = Shadow::new(
-            tokens.shadow_color.clone(),
-            Vector::new(0.0, tokens.shadow_offset_y),
-            tokens.shadow_radius,
-            shape,
-        );
-        let ambient_shadow = Shadow::new(
-            tokens.ambient_shadow_color.clone(),
-            Vector::new(0.0, tokens.ambient_shadow_offset_y),
-            tokens.ambient_shadow_radius,
-            shape,
-        );
+        let shadow = Shadow::splat(tokens.shadow_radius)
+            .color(tokens.shadow_color.clone())
+            .offset(0.0, tokens.shadow_offset_y)
+            .silhouette(shape);
+        let ambient_shadow = Shadow::splat(tokens.ambient_shadow_radius)
+            .color(tokens.ambient_shadow_color.clone())
+            .offset(0.0, tokens.ambient_shadow_offset_y)
+            .silhouette(shape);
         OneOf2::B(
             vstack((self.title, self.subtitle, self.content))
                 .spacing(theme.content_spacing)

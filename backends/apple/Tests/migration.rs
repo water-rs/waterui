@@ -533,7 +533,7 @@ mod uikit_surface {
 
     /// Compare the actual plain field to the independently hosted `SwiftUI` field.
     pub fn text_field_renders_plain_with_a_real_height() {
-        let value = binding(Str::from("x"));
+        let value = binding::<Str>(Str::from("x"));
         let env = crate::resolve::env();
         let mount = waterui_apple::native_test_support::mount_uikit_in(
             mtm(),

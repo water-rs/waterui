@@ -2,8 +2,11 @@
 
 use alloc::{rc::Rc, vec, vec::Vec};
 use core::fmt::Debug;
+use core::marker::PhantomData;
+use core::ops::{Range, RangeBounds};
 
-use nami::collection::Collection;
+use nami::collection::{Collection, CollectionChange};
+use nami::watcher::Context;
 use nami::{Binding, Computed, SignalExt as _};
 pub use waterui_controls::{BadgeValue, SlotBuilder};
 use waterui_controls::{IconSlot, IntoLabel, LabelKind, TitleLabel, label::Label};
@@ -13,19 +16,19 @@ use waterui_core::{
     handler::ViewBuilder,
     id::{Id, Mapping},
     layout::StretchAxis,
-    views::{AnyViews, ForEach, Views},
+    views::{AnyViews, ForEach, ViewSnapshot, Views},
 };
 
-/// Native tab presentation selected by a public style.
-#[doc(hidden)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
+/// Adaptive presentation style for a [`Tabs`] container.
 #[expect(
     clippy::exhaustive_enums,
-    reason = "backends realize each tab style variant by variant; a new tab style must fail their build instead of falling into a wildcard arm"
+    reason = "Step 3 marks TabStyle #[non_exhaustive] once split crate hydrolysis-m3 updates its match on item.placement"
 )]
-pub enum NativeTabStyle {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(u8)]
+pub enum TabStyle {
     /// Platform- and window-adaptive default.
+    #[default]
     Automatic = 0,
     /// Always request the platform tab bar presentation.
     TabBar = 1,
@@ -33,63 +36,31 @@ pub enum NativeTabStyle {
     Sidebar = 2,
 }
 
-/// Extensible public tab style contract.
-pub trait TabStyle: 'static {
-    /// Resolves the native presentation capability.
-    #[doc(hidden)]
-    fn into_native(self) -> NativeTabStyle;
-}
+/// Temporary compatibility alias for split crates during the `#4431` migration.
+#[doc(hidden)]
+pub type NativeTabStyle = TabStyle;
 
-/// Built-in tab styles.
+/// Temporary compatibility constructors for split crates during the `#4431` migration.
+#[doc(hidden)]
 pub mod tab_style {
-    use super::{NativeTabStyle, TabStyle};
+    use super::TabStyle;
 
-    /// Platform- and window-adaptive tab style.
-    #[derive(Debug, Clone, Copy, Default)]
-    pub struct Automatic;
-
-    impl TabStyle for Automatic {
-        fn into_native(self) -> NativeTabStyle {
-            NativeTabStyle::Automatic
-        }
-    }
-
-    /// Native tab-bar style.
-    #[derive(Debug, Clone, Copy, Default)]
-    pub struct TabBar;
-
-    impl TabStyle for TabBar {
-        fn into_native(self) -> NativeTabStyle {
-            NativeTabStyle::TabBar
-        }
-    }
-
-    /// Native sidebar or navigation-rail style.
-    #[derive(Debug, Clone, Copy, Default)]
-    pub struct Sidebar;
-
-    impl TabStyle for Sidebar {
-        fn into_native(self) -> NativeTabStyle {
-            NativeTabStyle::Sidebar
-        }
-    }
-
-    /// Returns the platform-adaptive tab style.
+    /// Returns [`TabStyle::Automatic`].
     #[must_use]
-    pub const fn automatic() -> Automatic {
-        Automatic
+    pub const fn automatic() -> TabStyle {
+        TabStyle::Automatic
     }
 
-    /// Returns the native tab-bar style.
+    /// Returns [`TabStyle::TabBar`].
     #[must_use]
-    pub const fn tab_bar() -> TabBar {
-        TabBar
+    pub const fn tab_bar() -> TabStyle {
+        TabStyle::TabBar
     }
 
-    /// Returns the native sidebar or navigation-rail style.
+    /// Returns [`TabStyle::Sidebar`].
     #[must_use]
-    pub const fn sidebar() -> Sidebar {
-        Sidebar
+    pub const fn sidebar() -> TabStyle {
+        TabStyle::Sidebar
     }
 }
 
@@ -132,13 +103,27 @@ pub enum TabBarMinimizeBehavior {
     OnScrollUp,
 }
 
-/// One stable native tab. The collection it lives in supplies its identity.
+/// Marker on [`Tab`] when no `.tag(...)` value has been attached.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Untagged;
+
+/// Marker on [`Tab`] carrying a selection tag `T`.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy)]
+pub struct TabTag<T>(T);
+
+/// One stable native tab.
+///
+/// By default, the collection a tab lives in supplies its positional or item
+/// identity; chaining [`Tab::tag`] keys selection by an application value `T`
+/// (such as a `Pane` enum) without `ForEach` or `SelfId`.
 ///
 /// `C` builds the tab's root page and `L` keeps the tab label's concrete
 /// [`LabelKind`] until lowered into a backend's child slot. `Clone` shares the
-/// builder and signals — a `Vec<Tab<C, L>>` collection clones on snapshot.
+/// builder and signals — a `Vec<Tab<C, L, Tag>>` collection clones on snapshot.
 #[non_exhaustive]
-pub struct Tab<C, L = TitleLabel> {
+pub struct Tab<C, L = TitleLabel, Tag = Untagged> {
     /// Semantic tab label.
     label: Label<L>,
     /// Stable lazily built tab root.
@@ -149,9 +134,11 @@ pub struct Tab<C, L = TitleLabel> {
     enabled: Computed<bool>,
     /// The part the tab plays in the container's chrome.
     role: TabRole,
+    /// Optional selection tag attached via [`Tab::tag`].
+    tag: Tag,
 }
 
-impl<C, L: Clone> Clone for Tab<C, L> {
+impl<C, L: Clone, Tag: Clone> Clone for Tab<C, L, Tag> {
     fn clone(&self) -> Self {
         Self {
             label: self.label.clone(),
@@ -159,11 +146,12 @@ impl<C, L: Clone> Clone for Tab<C, L> {
             badge: self.badge.clone(),
             enabled: self.enabled.clone(),
             role: self.role,
+            tag: self.tag.clone(),
         }
     }
 }
 
-impl<C, L> Debug for Tab<C, L> {
+impl<C, L, Tag> Debug for Tab<C, L, Tag> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Tab")
             .field("role", &self.role)
@@ -171,7 +159,7 @@ impl<C, L> Debug for Tab<C, L> {
     }
 }
 
-impl<C, L> Tab<C, L>
+impl<C, L> Tab<C, L, Untagged>
 where
     C: ViewBuilder,
     L: LabelKind + Clone,
@@ -180,9 +168,8 @@ where
     ///
     /// The root may be any view, including a [`NavigationStack`], a
     /// [`NavigationSplitView`], a [`NavigationView`], or plain view content.
-    /// The tab's identity comes from the collection handed to [`Tabs`]: a tab
-    /// in a `Vec` is keyed by its index, one built through `ForEach` by the
-    /// item it was built from.
+    /// Chain [`Tab::tag`] to key the tab by an application selection value; tabs
+    /// without a tag fall back to the collection's positional or `ForEach` identity.
     ///
     /// [`NavigationStack`]: crate::NavigationStack
     /// [`NavigationSplitView`]: crate::NavigationSplitView
@@ -194,31 +181,47 @@ where
             badge: None,
             enabled: Computed::constant(true),
             role: TabRole::Regular,
+            tag: Untagged,
         }
     }
+}
 
-    /// The tab with its parts built in the child slot `S`.
-    fn into_item<S: ChildSlot>(self) -> TabItem<S> {
+impl<C, L, Tag> Tab<C, L, Tag>
+where
+    C: ViewBuilder,
+    L: LabelKind + Clone,
+{
+    /// Lowers the tab into its backend [`TabItem`] and returns its attached tag.
+    fn into_parts_with_tag<S: ChildSlot>(self) -> (TabItem<S>, Tag) {
         let Self {
             label,
             content,
             badge,
             enabled,
             role,
+            tag,
         } = self;
         let icon = label.icon_slot::<S>();
-        TabItem {
-            label: SlotBuilder::new(move || S::from_view(label.clone())),
-            icon,
-            content: SlotBuilder::new(move || S::from_view(content.build())),
-            badge,
-            enabled,
-            role,
-        }
+        (
+            TabItem {
+                label: SlotBuilder::new(move || S::from_view(label.clone())),
+                icon,
+                content: SlotBuilder::new(move || S::from_view(content.build())),
+                badge,
+                enabled,
+                role,
+            },
+            tag,
+        )
+    }
+
+    /// The tab with its parts built in the child slot `S`.
+    fn into_item<S: ChildSlot>(self) -> TabItem<S> {
+        self.into_parts_with_tag().0
     }
 }
 
-impl<C, L: LabelKind> Tab<C, L> {
+impl<C, L: LabelKind, Tag> Tab<C, L, Tag> {
     /// Whether this tab's label carries an icon.
     #[must_use]
     pub fn has_icon(&self) -> bool {
@@ -226,7 +229,7 @@ impl<C, L: LabelKind> Tab<C, L> {
     }
 }
 
-impl<C, L> Tab<C, L> {
+impl<C, L, Tag> Tab<C, L, Tag> {
     /// Semantic tab label.
     #[must_use]
     pub const fn label(&self) -> &Label<L> {
@@ -257,6 +260,19 @@ impl<C, L> Tab<C, L> {
         self.role
     }
 
+    /// Associates a selection value with this tab for [`Tabs`].
+    #[must_use]
+    pub fn tag<T: Ord + Clone + 'static>(self, value: T) -> Tab<C, L, TabTag<T>> {
+        Tab {
+            label: self.label,
+            content: self.content,
+            badge: self.badge,
+            enabled: self.enabled,
+            role: self.role,
+            tag: TabTag(value),
+        }
+    }
+
     /// Sets a reactive badge value (`u32`, [`BadgeValue`], or signal; `0` hides).
     #[must_use]
     pub fn badge(mut self, value: impl IntoSignal<BadgeValue> + 'static) -> Self {
@@ -283,7 +299,7 @@ impl<C, L> Tab<C, L> {
 
 /// A bare tab shows its label — outside a [`Tabs`] container there is no
 /// chrome to hang the content on.
-impl<C: 'static, L: LabelKind> View for Tab<C, L> {
+impl<C: 'static, L: LabelKind, Tag: 'static> View for Tab<C, L, Tag> {
     fn body(self, _env: &Environment) -> impl View {
         self.label
     }
@@ -434,7 +450,7 @@ pub struct TabsLayout<S> {
     /// The tab collection, keyed by erased tab identity.
     tabs: AnyViews<TabItem<S>>,
     /// Native adaptive style.
-    style: NativeTabStyle,
+    style: TabStyle,
     /// How the bar behaves while content scrolls.
     minimize_behavior: TabBarMinimizeBehavior,
     /// A view the platform floats above the tab bar, when it has such a slot.
@@ -456,7 +472,7 @@ impl<S> TabsLayout<S> {
 
     /// Native adaptive style.
     #[must_use]
-    pub const fn style(&self) -> NativeTabStyle {
+    pub const fn style(&self) -> TabStyle {
         self.style
     }
 
@@ -484,7 +500,7 @@ impl<S> TabsLayout<S> {
     ) -> (
         Binding<Id>,
         AnyViews<TabItem<S>>,
-        NativeTabStyle,
+        TabStyle,
         TabBarMinimizeBehavior,
         Option<S>,
     ) {
@@ -549,11 +565,172 @@ pub trait TabSet: 'static {
     fn into_items<S: ChildSlot>(self) -> (AnyViews<TabItem<S>>, Mapping<Self::Id>);
 }
 
+/// View wrapper carrying an already-lowered [`TabItem`] through [`AnyViews::new_with_ids`].
+struct SlotTabItem<S>(TabItem<S>);
+
+impl<S: 'static> View for SlotTabItem<S> {
+    fn body(self, _env: &Environment) -> impl View {}
+}
+
+/// Fixed collection of tagged [`TabItem`]s erased through [`AnyViews::new_with_ids`].
+struct TaggedTabItems<T, S> {
+    items: Rc<[(T, TabItem<S>)]>,
+}
+
+impl<T, S> Clone for TaggedTabItems<T, S> {
+    fn clone(&self) -> Self {
+        Self {
+            items: Rc::clone(&self.items),
+        }
+    }
+}
+
+impl<T: Ord + Clone + 'static, S: 'static> ViewSnapshot for TaggedTabItems<T, S> {
+    type Id = T;
+    type View = SlotTabItem<S>;
+
+    fn range(&self) -> Range<usize> {
+        0..self.items.len()
+    }
+
+    fn get_id(&self, index: usize) -> Option<Self::Id> {
+        self.items.get(index).map(|(id, _)| id.clone())
+    }
+
+    fn get_view(&self, index: usize) -> Option<Self::View> {
+        self.items
+            .get(index)
+            .map(|(_, item)| SlotTabItem(item.clone()))
+    }
+}
+
+impl<T: Ord + Clone + 'static, S: 'static> Views for TaggedTabItems<T, S> {
+    type Id = T;
+    type Guard = ();
+    type View = SlotTabItem<S>;
+    type Snapshot = Self;
+
+    fn len(&self) -> Computed<usize> {
+        Computed::constant(self.items.len())
+    }
+
+    fn snapshot(&self) -> Self::Snapshot {
+        self.clone()
+    }
+
+    fn watch(
+        &self,
+        _range: impl RangeBounds<usize>,
+        _watcher: impl Fn(Context<Self::Snapshot>, &CollectionChange) + 'static,
+    ) -> Self::Guard {
+    }
+}
+
+/// Reactive collection wrapper projecting each [`Tab`]'s `.tag(T)` as the collection's `Id`.
+struct TaggedTabViews<V, C, L, T, S> {
+    inner: V,
+    _marker: PhantomData<fn(C, L, T) -> S>,
+}
+
+struct TaggedTabViewsSnapshot<Snap, C, L, T, S> {
+    inner: Snap,
+    _marker: PhantomData<fn(C, L, T) -> S>,
+}
+
+impl<Snap: Clone, C, L, T, S> Clone for TaggedTabViewsSnapshot<Snap, C, L, T, S> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<Snap, C, L, T, S> ViewSnapshot for TaggedTabViewsSnapshot<Snap, C, L, T, S>
+where
+    Snap: ViewSnapshot<View = Tab<C, L, TabTag<T>>>,
+    C: ViewBuilder,
+    L: LabelKind + Clone,
+    T: Ord + Clone + 'static,
+    S: ChildSlot,
+{
+    type Id = T;
+    type View = SlotTabItem<S>;
+
+    fn range(&self) -> Range<usize> {
+        self.inner.range()
+    }
+
+    fn get_id(&self, index: usize) -> Option<Self::Id> {
+        self.inner.get_view(index).map(|tab| tab.tag.0)
+    }
+
+    fn get_view(&self, index: usize) -> Option<Self::View> {
+        self.inner
+            .get_view(index)
+            .map(|tab| SlotTabItem(tab.into_item::<S>()))
+    }
+}
+
+impl<V, C, L, T, S> Views for TaggedTabViews<V, C, L, T, S>
+where
+    V: Views<View = Tab<C, L, TabTag<T>>> + 'static,
+    C: ViewBuilder,
+    L: LabelKind + Clone,
+    T: Ord + Clone + 'static,
+    S: ChildSlot,
+{
+    type Id = T;
+    type Guard = V::Guard;
+    type View = SlotTabItem<S>;
+    type Snapshot = TaggedTabViewsSnapshot<V::Snapshot, C, L, T, S>;
+
+    fn len(&self) -> Computed<usize> {
+        self.inner.len()
+    }
+
+    fn snapshot(&self) -> Self::Snapshot {
+        TaggedTabViewsSnapshot {
+            inner: self.inner.snapshot(),
+            _marker: PhantomData,
+        }
+    }
+
+    fn watch(
+        &self,
+        range: impl RangeBounds<usize>,
+        watcher: impl Fn(Context<Self::Snapshot>, &CollectionChange) + 'static,
+    ) -> Self::Guard {
+        self.inner.watch(range, move |ctx, change| {
+            watcher(
+                ctx.map(|inner| TaggedTabViewsSnapshot {
+                    inner,
+                    _marker: PhantomData,
+                }),
+                change,
+            );
+        })
+    }
+}
+
+/// Lowers fixed tagged tab entries through `AnyViews::new_with_ids` so `Mapping<T>` aligns
+/// with every snapshot `Id`.
+fn tagged_items<T, S>(items: Vec<(T, TabItem<S>)>) -> (AnyViews<TabItem<S>>, Mapping<T>)
+where
+    T: Ord + Clone + 'static,
+    S: 'static,
+{
+    let (items, ids) = AnyViews::new_with_ids(TaggedTabItems {
+        items: Rc::from(items),
+    });
+    (items.map_views(|SlotTabItem(item)| item), ids)
+}
+
 /// A homogeneous collection of tabs: erased by identity, each tab mapped
 /// into the slot.
 fn collection_items<T, S, C, L>(tabs: T) -> (AnyViews<TabItem<S>>, Mapping<T::Id>)
 where
-    T: Views<View = Tab<C, L>> + 'static,
+    T: Views<View = Tab<C, L, Untagged>> + 'static,
     S: ChildSlot,
     C: ViewBuilder,
     L: LabelKind + Clone,
@@ -562,7 +739,7 @@ where
     (items.map_views(Tab::into_item::<S>), ids)
 }
 
-impl<C, L> TabSet for Vec<Tab<C, L>>
+impl<C, L> TabSet for Vec<Tab<C, L, Untagged>>
 where
     C: ViewBuilder,
     L: LabelKind + Clone,
@@ -574,7 +751,27 @@ where
     }
 }
 
-impl<C, L, const N: usize> TabSet for [Tab<C, L>; N]
+impl<C, L, T> TabSet for Vec<Tab<C, L, TabTag<T>>>
+where
+    C: ViewBuilder,
+    L: LabelKind + Clone,
+    T: Ord + Clone + 'static,
+{
+    type Id = T;
+
+    fn into_items<S: ChildSlot>(self) -> (AnyViews<TabItem<S>>, Mapping<T>) {
+        let pairs = self
+            .into_iter()
+            .map(|tab| {
+                let (item, TabTag(tag)) = tab.into_parts_with_tag::<S>();
+                (tag, item)
+            })
+            .collect();
+        tagged_items(pairs)
+    }
+}
+
+impl<C, L, const N: usize> TabSet for [Tab<C, L, Untagged>; N]
 where
     C: ViewBuilder,
     L: LabelKind + Clone,
@@ -586,11 +783,31 @@ where
     }
 }
 
-impl<D, F, C, L> TabSet for ForEach<D, F, Tab<C, L>>
+impl<C, L, T, const N: usize> TabSet for [Tab<C, L, TabTag<T>>; N]
 where
-    Self: Views<View = Tab<C, L>> + 'static,
+    C: ViewBuilder,
+    L: LabelKind + Clone,
+    T: Ord + Clone + 'static,
+{
+    type Id = T;
+
+    fn into_items<S: ChildSlot>(self) -> (AnyViews<TabItem<S>>, Mapping<T>) {
+        let pairs = self
+            .into_iter()
+            .map(|tab| {
+                let (item, TabTag(tag)) = tab.into_parts_with_tag::<S>();
+                (tag, item)
+            })
+            .collect();
+        tagged_items(pairs)
+    }
+}
+
+impl<D, F, C, L> TabSet for ForEach<D, F, Tab<C, L, Untagged>>
+where
+    Self: Views<View = Tab<C, L, Untagged>> + 'static,
     D: Collection,
-    F: Fn(D::Item) -> Tab<C, L>,
+    F: Fn(D::Item) -> Tab<C, L, Untagged>,
     C: ViewBuilder,
     L: LabelKind + Clone,
 {
@@ -601,9 +818,29 @@ where
     }
 }
 
+impl<D, F, C, L, T> TabSet for ForEach<D, F, Tab<C, L, TabTag<T>>>
+where
+    Self: Views<View = Tab<C, L, TabTag<T>>> + 'static,
+    D: Collection,
+    F: Fn(D::Item) -> Tab<C, L, TabTag<T>>,
+    C: ViewBuilder,
+    L: LabelKind + Clone,
+    T: Ord + Clone + 'static,
+{
+    type Id = T;
+
+    fn into_items<S: ChildSlot>(self) -> (AnyViews<TabItem<S>>, Mapping<T>) {
+        let (items, ids) = AnyViews::new_with_ids(TaggedTabViews::<_, C, L, T, S> {
+            inner: self,
+            _marker: PhantomData,
+        });
+        (items.map_views(|SlotTabItem(item)| item), ids)
+    }
+}
+
 macro_rules! tuple_tab_sets {
     ($(($($tab:ident $label:ident),+))+) => {$(
-        impl<$($tab, $label),+> TabSet for ($(Tab<$tab, $label>,)+)
+        impl<$($tab, $label),+> TabSet for ($(Tab<$tab, $label, Untagged>,)+)
         where
             $(
                 $tab: ViewBuilder,
@@ -616,6 +853,27 @@ macro_rules! tuple_tab_sets {
             fn into_items<S: ChildSlot>(self) -> (AnyViews<TabItem<S>>, Mapping<usize>) {
                 let ($($tab,)+) = self;
                 AnyViews::from_items(vec![$($tab.into_item::<S>()),+])
+            }
+        }
+
+        impl<T, $($tab, $label),+> TabSet for ($(Tab<$tab, $label, TabTag<T>>,)+)
+        where
+            T: Ord + Clone + 'static,
+            $(
+                $tab: ViewBuilder,
+                $label: LabelKind + Clone,
+            )+
+        {
+            type Id = T;
+
+            #[allow(non_snake_case, reason = "the bindings are the tuple's type parameters")]
+            fn into_items<S: ChildSlot>(self) -> (AnyViews<TabItem<S>>, Mapping<T>) {
+                let ($($tab,)+) = self;
+                let pairs = vec![$({
+                    let (item, TabTag(tag)) = $tab.into_parts_with_tag::<S>();
+                    (tag, item)
+                }),+];
+                tagged_items(pairs)
             }
         }
     )+};
@@ -648,7 +906,7 @@ tuple_tab_sets! {
 pub struct Tabs<T: TabSet, A> {
     selection: Binding<T::Id>,
     set: T,
-    style: NativeTabStyle,
+    style: TabStyle,
     minimize_behavior: TabBarMinimizeBehavior,
     bottom_accessory: Option<A>,
 }
@@ -674,7 +932,7 @@ impl<T: TabSet> Tabs<T, ()> {
         Self {
             selection: selection.clone(),
             set: tabs,
-            style: NativeTabStyle::Automatic,
+            style: TabStyle::Automatic,
             minimize_behavior: TabBarMinimizeBehavior::Automatic,
             bottom_accessory: None,
         }
@@ -703,8 +961,8 @@ impl<T: TabSet> Tabs<T, ()> {
 
 impl<T: TabSet, A> Tabs<T, A> {
     /// Sets native adaptive tab presentation.
-    pub fn style(mut self, style: impl TabStyle) -> Self {
-        self.style = style.into_native();
+    pub const fn style(mut self, style: TabStyle) -> Self {
+        self.style = style;
         self
     }
 
@@ -849,5 +1107,106 @@ mod tests {
         let tabs = Tabs::new(&selection, Vec::<Tab<fn() -> ()>>::new());
         let layout = tabs.into_layout::<AnyView>();
         assert_eq!(layout.tabs.snapshot().len(), 0);
+    }
+
+    #[test]
+    fn tagged_vec_tabs_map_selection_both_ways() {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+        enum Pane {
+            Inbox,
+            Settings,
+        }
+
+        let pane = Binding::container(Pane::Inbox);
+        let tabs = Tabs::new(
+            &pane,
+            vec![
+                tab("Inbox").tag(Pane::Inbox),
+                tab("Settings").tag(Pane::Settings),
+            ],
+        );
+        let layout = tabs.into_layout::<AnyView>();
+        let snapshot = layout.tabs.snapshot();
+        assert_eq!(snapshot.len(), 2);
+        assert_eq!(layout.selection.snapshot(), snapshot.get_id(0).expect("id"));
+
+        pane.set(Pane::Settings);
+        assert_eq!(layout.selection.snapshot(), snapshot.get_id(1).expect("id"));
+
+        layout.selection.set(snapshot.get_id(0).expect("id"));
+        assert_eq!(pane.snapshot(), Pane::Inbox);
+    }
+
+    #[test]
+    fn tagged_tuple_tabs_key_divergent_roots() {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+        enum Pane {
+            Text,
+            Nav,
+        }
+
+        let pane = Binding::container(Pane::Nav);
+        let tabs = Tabs::new(
+            &pane,
+            (
+                Tab::new("Text", || Str::from("one")).tag(Pane::Text),
+                Tab::new("Empty", || NavigationView::new("Empty", ()))
+                    .tag(Pane::Nav)
+                    .badge(3u32),
+            ),
+        );
+        let layout = tabs.into_layout::<AnyView>();
+        let snapshot = layout.tabs.snapshot();
+        assert_eq!(snapshot.len(), 2);
+        assert_eq!(layout.selection.snapshot(), snapshot.get_id(1).expect("id"));
+        layout.selection.set(snapshot.get_id(0).expect("id"));
+        assert_eq!(pane.snapshot(), Pane::Text);
+    }
+
+    #[test]
+    fn tagged_array_and_foreach_tabs_map_selection() {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+        enum Pane {
+            First,
+            Second,
+        }
+
+        let pane = Binding::container(Pane::Second);
+        let array_layout = Tabs::new(
+            &pane,
+            [
+                tab("First").tag(Pane::First),
+                tab("Second").tag(Pane::Second),
+            ],
+        )
+        .into_layout::<AnyView>();
+        let snapshot = array_layout.tabs.snapshot();
+        assert_eq!(
+            array_layout.selection.snapshot(),
+            snapshot.get_id(1).expect("id")
+        );
+
+        let list = StateList::from(vec![SelfId::new(Pane::First), SelfId::new(Pane::Second)]);
+        let foreach_layout = Tabs::new(
+            &pane,
+            ForEach::new(list, |entry: SelfId<Pane>| {
+                let p = *entry;
+                tab(match p {
+                    Pane::First => "First",
+                    Pane::Second => "Second",
+                })
+                .tag(p)
+            }),
+        )
+        .into_layout::<AnyView>();
+        let foreach_snap = foreach_layout.tabs.snapshot();
+        assert_eq!(
+            foreach_layout.selection.snapshot(),
+            foreach_snap.get_id(1).expect("id")
+        );
+        foreach_layout
+            .selection
+            .set(foreach_snap.get_id(0).expect("id"));
+        assert_eq!(pane.snapshot(), Pane::First);
     }
 }

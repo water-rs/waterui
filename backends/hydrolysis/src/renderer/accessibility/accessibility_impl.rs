@@ -8,6 +8,9 @@ use waterui::sheet::SheetContentScope;
 use waterui_core::contract_violation;
 
 #[cfg(feature = "accessibility")]
+#[cfg(feature = "stepper")]
+use crate::num_cast::f64_as_i64;
+#[cfg(feature = "accessibility")]
 use crate::theme::InteractionFocusBinding;
 #[cfg(feature = "accessibility")]
 use std::collections::BTreeSet;
@@ -297,9 +300,12 @@ pub struct DelegatedActivation<E: crate::text::TextEngine> {
 pub enum AccessibilityActionTarget<E: crate::text::TextEngine> {
     /// Direct semantic activation: `Click` invokes the widget's own activation
     /// handler, no pointer and no coordinates.
-    Activate { action: AccessibilityActivation<E> },
-    #[cfg(feature = "toggle")]
-    Toggle { binding: nami::Binding<bool> },
+    Activate {
+        action: AccessibilityActivation<E>,
+    },
+    Toggle {
+        binding: nami::Binding<bool>,
+    },
     #[cfg(feature = "slider")]
     Slider {
         value: nami::Binding<f64>,
@@ -308,14 +314,14 @@ pub enum AccessibilityActionTarget<E: crate::text::TextEngine> {
     },
     #[cfg(feature = "stepper")]
     Stepper {
-        value: nami::Binding<i32>,
-        step: nami::Computed<i32>,
-        range: RangeInclusive<i32>,
+        value: nami::Binding<i64>,
+        step: nami::Computed<i64>,
+        range: RangeInclusive<i64>,
     },
     #[cfg(feature = "date-picker")]
     DatePicker {
         value: nami::Binding<DateTime>,
-        range: RangeInclusive<DateTime>,
+        range: nami::Computed<RangeInclusive<DateTime>>,
         ty: DatePickerType,
         /// Widget-registered popup opener invoked on `Click`, so
         /// `date_picker_window_base` (`Calendar`/`Stepper`) is only reachable
@@ -328,7 +334,9 @@ pub enum AccessibilityActionTarget<E: crate::text::TextEngine> {
         line_limit: Option<usize>,
     },
     #[cfg(feature = "secure-field")]
-    SecureField { value: nami::Binding<FormSecure> },
+    SecureField {
+        value: nami::Binding<FormSecure>,
+    },
     #[cfg(any(feature = "picker", feature = "navigation"))]
     PickerSelect {
         selection: nami::Binding<waterui_core::id::Id>,
@@ -466,6 +474,9 @@ pub struct AccessibilityBuilder<E: crate::text::TextEngine> {
     /// A transform wrapper's motion moves its placement without re-recording,
     /// so a later epoch means published bounds may be stale.
     resolved_epoch: u64,
+    /// Whether this core has produced at least one accessibility tree update,
+    /// distinguishing an all-hidden empty window from an unemitted window.
+    has_emitted: bool,
     /// The numeric values that follow their binding in the published tree
     /// without their widget re-rendering, by the widget's interaction
     /// identity. Kept across flushes.
@@ -534,6 +545,7 @@ impl<E: crate::text::TextEngine> Default for AccessibilityBuilder<E> {
             content_types: BTreeMap::new(),
             pending_tree_update: None,
             resolved_epoch: 0,
+            has_emitted: false,
             live_numeric: BTreeMap::new(),
             live_selection: BTreeMap::new(),
         }
@@ -1264,6 +1276,7 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
         let interaction_nodes = &self.interaction_nodes;
         self.focus_key_handlers
             .retain(|key, _| interaction_nodes.contains_key(key));
+        self.has_emitted = true;
         self.pending_tree_update = Some(self.assembled_tree_update());
     }
 }
@@ -1340,6 +1353,23 @@ pub fn accessibility_container_child_environment(env: &Environment) -> Option<En
 }
 
 impl<E: crate::text::TextEngine> SemanticCore<E> {
+    /// Whether `env` currently hides accessibility output for this view.
+    ///
+    /// Subscribes the active evaluation to the signal so flipping
+    /// `a11y_hidden` back to `false` schedules an accessibility update even
+    /// when the subtree started suppressed.
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn is_accessibility_hidden(&mut self, env: &Environment) -> bool {
+        env.get::<AccessibilityHidden>()
+            .is_some_and(|hidden| self.read_signal(hidden.signal()))
+    }
+
+    #[cfg(not(feature = "accessibility"))]
+    #[expect(dead_code, reason = "called unconditionally from widget render paths")]
+    pub(crate) const fn is_accessibility_hidden(&self, _env: &Environment) -> bool {
+        false
+    }
+
     #[cfg(feature = "accessibility")]
     pub fn set_accessibility_root_label(&mut self, label: &str) {
         self.accessibility.root_label.clear();
@@ -1391,7 +1421,9 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// root's children list is republished whole each merge).
     #[cfg(feature = "accessibility")]
     fn current_accessibility_tree_update(&self) -> Option<AccessibilityTreeUpdate> {
-        (!self.accessibility.nodes.is_empty()).then(|| self.accessibility.assembled_tree_update())
+        self.accessibility
+            .has_emitted
+            .then(|| self.accessibility.assembled_tree_update())
     }
 
     /// The accessibility tree of every open window, merged into one update —
@@ -1633,11 +1665,18 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 AccessibilityAction::Focus => true,
                 _ => declined_action("activation", action),
             },
-            #[cfg(feature = "toggle")]
             AccessibilityActionTarget::Toggle { binding } => match action {
                 AccessibilityAction::Click => {
                     let next = !binding.snapshot();
                     binding.set(next);
+                    true
+                }
+                AccessibilityAction::Expand => {
+                    binding.set(true);
+                    true
+                }
+                AccessibilityAction::Collapse => {
+                    binding.set(false);
                     true
                 }
                 AccessibilityAction::Focus => true,
@@ -2169,10 +2208,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             "hydrolysis accessibility container scope requires a role, a label, or a value"
         );
 
-        if env
-            .get::<AccessibilityHidden>()
-            .is_some_and(AccessibilityHidden::is_hidden)
-        {
+        if self.is_accessibility_hidden(env) {
             self.push_accessibility_suppression();
             return AccessibilityContainerScope {
                 parent_pushed: false,
@@ -2219,7 +2255,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         }
         let state_hidden = env
             .get::<AccessibilityStateSignal>()
-            .is_some_and(|signal| signal.state().snapshot().is_hidden());
+            .is_some_and(|signal| self.read_signal(signal.state()).is_hidden());
         let excludes_descendants = env
             .get::<AccessibilityChildren>()
             .is_some_and(AccessibilityChildren::excludes_descendants);
@@ -2682,7 +2718,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         // label ("3 unread messages") republishes without a subtree rebuild.
         let signal = env
             .get::<AccessibilityLabel>()
-            .map(|label| label.signal().clone());
+            .map(|label| label.resolve(env));
         signal
             .map(|signal| self.read_signal(&signal).as_str().to_owned())
             .or(default_label)
@@ -2703,7 +2739,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     ) -> Option<String> {
         let signal = env
             .get::<AccessibilityValue>()
-            .map(|value| value.signal().clone());
+            .map(|value| value.resolve(env));
         signal
             .map(|signal| self.read_signal(&signal).as_str().to_owned())
             .or(default_value)
@@ -2923,10 +2959,10 @@ fn handle_accessibility_slider_action(
 )]
 #[cfg(feature = "stepper")]
 fn handle_accessibility_stepper_action(
-    value: &nami::Binding<i32>,
-    step: &nami::Computed<i32>,
-    start: i32,
-    end: i32,
+    value: &nami::Binding<i64>,
+    step: &nami::Computed<i64>,
+    start: i64,
+    end: i64,
     action: AccessibilityAction,
     data: Option<AccessibilityActionData>,
 ) -> bool {
@@ -2946,13 +2982,13 @@ fn handle_accessibility_stepper_action(
         AccessibilityAction::Decrement => previous.saturating_sub(step_value).max(start),
         AccessibilityAction::SetValue => match data {
             Some(AccessibilityActionData::NumericValue(target)) => {
-                let rounded = crate::num_cast::f64_as_i32(target.round());
+                let rounded = f64_as_i64(target.round());
                 rounded.clamp(start, end)
             }
             Some(AccessibilityActionData::Value(ref text)) => {
-                let Ok(parsed) = text.parse::<i32>() else {
+                let Ok(parsed) = text.parse::<i64>() else {
                     contract_violation!(
-                        "hydrolysis accessibility stepper SetValue text {text:?} must parse as i32; the action is declined"
+                        "hydrolysis accessibility stepper SetValue text {text:?} must parse as i64; the action is declined"
                     );
                     return false;
                 };
@@ -2977,7 +3013,7 @@ fn handle_accessibility_stepper_action(
 fn handle_accessibility_date_picker_action<E: crate::text::TextEngine>(
     renderer: &mut SemanticCore<E>,
     value: &nami::Binding<DateTime>,
-    range: &RangeInclusive<DateTime>,
+    range: &nami::Computed<RangeInclusive<DateTime>>,
     ty: DatePickerType,
     open_popup: &AccessibilityActivation<E>,
     action: AccessibilityAction,
@@ -3002,6 +3038,7 @@ fn handle_accessibility_date_picker_action<E: crate::text::TextEngine>(
                     return false;
                 }
             };
+            let range = range.snapshot();
             let previous = value.snapshot().clamp(*range.start(), *range.end());
             let next = parsed.clamp(*range.start(), *range.end());
             if next != previous {
@@ -3190,7 +3227,6 @@ impl<E: crate::text::TextEngine> Clone for AccessibilityActionTarget<E> {
             Self::Activate { action } => Self::Activate {
                 action: action.clone(),
             },
-            #[cfg(feature = "toggle")]
             Self::Toggle { binding } => Self::Toggle {
                 binding: binding.clone(),
             },

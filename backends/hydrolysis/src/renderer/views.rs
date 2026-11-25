@@ -8,6 +8,8 @@ use crate::renderer::recording::transform_paint;
 use nami::Computed;
 #[cfg(feature = "menu")]
 use waterui::app::Quit;
+#[cfg(feature = "menu")]
+use waterui_controls::NoopSlot;
 
 #[cfg(feature = "menu")]
 use waterui_core::handler::ReportExtraction as _;
@@ -37,14 +39,13 @@ pub fn popup_menu_nodes<S: 'static>(
 ) -> Vec<PopupMenuNode> {
     items
         .iter()
-        .cloned()
         .filter_map(|item| popup_menu_node(item, env, owner_closable))
         .collect()
 }
 
 #[cfg(feature = "menu")]
 fn popup_menu_node<S: 'static>(
-    item: ResolvedMenuItem<S>,
+    item: &ResolvedMenuItem<S>,
     env: &Environment,
     owner_closable: bool,
 ) -> Option<PopupMenuNode> {
@@ -53,47 +54,47 @@ fn popup_menu_node<S: 'static>(
         ResolvedMenuItem::Quit => env
             .extract::<Quit>()
             .ok()
-            .map(|quit| command_node(quit.command::<waterui_controls::NoopSlot>(env))),
-        ResolvedMenuItem::CloseWindow => {
-            close_window_command(env, owner_closable).map(command_node)
-        }
+            .map(|quit| command_node(&quit.command::<NoopSlot>(env))),
+        ResolvedMenuItem::CloseWindow => close_window_command(env, owner_closable)
+            .as_ref()
+            .map(command_node),
         ResolvedMenuItem::Divider => Some(PopupMenuNode::Divider),
         ResolvedMenuItem::Menu(menu) => {
-            let styled_label = menu.label.content().snapshot() + StyledStr::plain(" ›");
+            let styled_label = menu.label().content().snapshot() + StyledStr::plain(" ›");
             let plain_label = styled_label.to_plain().to_string();
-            let semantic_text = menu.semantic_label.semantic_text().clone();
+            let semantic_text = menu.semantic_label().semantic_text().clone();
             Some(PopupMenuNode::Menu {
                 semantic_text,
                 styled_label,
                 plain_label,
-                items: popup_menu_nodes(&menu.items.snapshot(), env, owner_closable),
+                items: popup_menu_nodes(&menu.items().snapshot(), env, owner_closable),
             })
         }
     }
 }
 
 #[cfg(feature = "menu")]
-fn command_node<S>(command: ResolvedCommand<S>) -> PopupMenuNode {
-    let mut styled_label = command.label.content().snapshot();
-    if command.selected.snapshot() {
+fn command_node<S>(command: &ResolvedCommand<S>) -> PopupMenuNode {
+    let mut styled_label = command.label().content().snapshot();
+    if command.is_selected().snapshot() {
         styled_label = StyledStr::plain("✓ ") + styled_label;
     }
     // The destructive role lives in the styled label itself: an explicit
     // span colour survives the button's environment-level foreground,
     // so the theme's error colour wins (water-rs/hydrolysis#200).
-    if command.role == Some(ButtonRole::Destructive) {
+    if command.role() == Some(ButtonRole::Destructive) {
         styled_label = styled_label.foreground(waterui::Color::new(waterui::theme::color::Error));
     }
     let plain_label = styled_label.to_plain().to_string();
-    let semantic_text = command.semantic_label.semantic_text().clone();
+    let semantic_text = command.semantic_label().semantic_text().clone();
     PopupMenuNode::Command {
         semantic_text,
         styled_label,
         plain_label,
-        action: command.action,
-        disabled: command.disabled,
-        shortcut: command.shortcut,
-        subtitle: command.subtitle,
+        action: command.action().clone(),
+        disabled: command.is_disabled().clone(),
+        shortcut: command.shortcut().cloned(),
+        subtitle: command.subtitle().map(Signal::snapshot),
     }
 }
 
@@ -193,9 +194,7 @@ pub fn render_gradient_node<E: crate::text::TextEngine>(
     gradient: &Rc<RefCell<ResolvedGradient>>,
     env: &Environment,
 ) {
-    let hidden = env
-        .get::<AccessibilityHidden>()
-        .is_some_and(AccessibilityHidden::is_hidden);
+    let hidden = ctx.renderer_mut().is_accessibility_hidden(env);
     if !hidden {
         let render_ctx = ctx.render_context();
         graphics_image_accessibility(ctx.renderer_mut(), Some(render_ctx), env, None, None);
@@ -259,9 +258,7 @@ pub fn render_shape_node<E: crate::text::TextEngine>(
     shape: &Rc<RefCell<ResolvedShape>>,
     env: &Environment,
 ) {
-    let hidden = env
-        .get::<AccessibilityHidden>()
-        .is_some_and(AccessibilityHidden::is_hidden);
+    let hidden = ctx.renderer_mut().is_accessibility_hidden(env);
     if !hidden {
         let render_ctx = ctx.render_context();
         graphics_image_accessibility(ctx.renderer_mut(), Some(render_ctx), env, None, None);
@@ -302,10 +299,7 @@ pub fn str_accessibility<E: crate::text::TextEngine>(
 ) {
     #[cfg(feature = "accessibility")]
     {
-        if env
-            .get::<AccessibilityHidden>()
-            .is_some_and(AccessibilityHidden::is_hidden)
-        {
+        if renderer.is_accessibility_hidden(env) {
             return;
         }
         // An empty text leaf names nothing: like a decorative graphics leaf

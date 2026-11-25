@@ -128,6 +128,7 @@ mod semantic_runtime;
 #[cfg(hydrolysis_cherenkov)]
 mod shader_paint;
 mod shadow;
+mod shadow_border_signals;
 mod stepper_look;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod structural_transitions;
@@ -153,7 +154,9 @@ mod window_background;
 #[cfg(not(target_arch = "wasm32"))]
 mod window_mount;
 use kurbo::{Affine, Point, Rect, Size};
-use waterui::gesture::{DragGesture, GestureObserver, MagnificationGesture};
+use waterui::gesture::{
+    DragEvent, DragGesture, GestureObserver, MagnificationEvent, MagnificationGesture,
+};
 use waterui::interaction::InteractionState;
 use waterui::prelude::text;
 use waterui::style::FloatingStyle;
@@ -174,7 +177,7 @@ use waterui_layout::stack::{VStackLayout, hstack, vstack, zstack};
 #[cfg(feature = "accessibility")]
 use waterui_navigation::NavigationView;
 #[cfg(feature = "accessibility")]
-use waterui_navigation::tab::{NativeTabStyle, Tab, Tabs};
+use waterui_navigation::tab::{Tab, TabStyle, Tabs};
 
 #[cfg(feature = "list")]
 use crate::testing::plain_list_look;
@@ -1095,9 +1098,9 @@ fn stacked_icon_buttons_above_gesture_surface_receive_clicks() {
     let gesture_surface = Metadata::new(
         Metadata::new(
             ().size(160.0, 160.0),
-            GestureObserver::new(DragGesture::new(0.0), || {}),
+            GestureObserver::new(DragGesture::new(0.0), |_: DragEvent| {}),
         ),
-        GestureObserver::new(MagnificationGesture::new(1.0), || {}),
+        GestureObserver::new(MagnificationGesture::new(1.0), |_: MagnificationEvent| {}),
     );
     let controls = vstack((zoom_in, Divider, zoom_out)).size(48.0, 97.0);
     let mut renderer = test_renderer();
@@ -1188,9 +1191,9 @@ fn nested_gesture_observers_on_one_view_share_a_group() {
     let view = Metadata::new(
         Metadata::new(
             ().size(20.0, 10.0).opacity(0.5),
-            GestureObserver::new(DragGesture::new(8.0), || {}),
+            GestureObserver::new(DragGesture::new(8.0), |_: DragEvent| {}),
         ),
-        GestureObserver::new(MagnificationGesture::new(1.0), || {}),
+        GestureObserver::new(MagnificationGesture::new(1.0), |_: MagnificationEvent| {}),
     );
     let node = RenderNode::build(AnyView::new(view), &env, &mut renderer);
 
@@ -1225,7 +1228,7 @@ fn renderer_magnification_targets_outer_observer_in_stacked_gesture_chain() {
             let drag_hits = Rc::clone(&drag_hits);
             Metadata::new(
                 canvas,
-                GestureObserver::new(DragGesture::new(0.0), move || {
+                GestureObserver::new(DragGesture::new(0.0), move |_: DragEvent| {
                     drag_hits.set(drag_hits.get() + 1);
                 }),
             )
@@ -1234,9 +1237,12 @@ fn renderer_magnification_targets_outer_observer_in_stacked_gesture_chain() {
             let magnify_hits = Rc::clone(&magnify_hits);
             Metadata::new(
                 canvas,
-                GestureObserver::new(MagnificationGesture::new(1.0), move || {
-                    magnify_hits.set(magnify_hits.get() + 1);
-                }),
+                GestureObserver::new(
+                    MagnificationGesture::new(1.0),
+                    move |_: MagnificationEvent| {
+                        magnify_hits.set(magnify_hits.get() + 1);
+                    },
+                ),
             )
         }
     };
@@ -1983,7 +1989,7 @@ fn reactive_hidden_accessibility_group_suppresses_descendants() {
     let view = vstack((text("Hidden child"),))
         .a11y_label("Hidden group")
         .a11y_role(AccessibilityRole::Group)
-        .a11y_state_signal(state);
+        .a11y_state(state);
 
     capture_root_window(&mut renderer, view, &env, Rect::new(0.0, 0.0, 160.0, 160.0));
 
@@ -2014,7 +2020,7 @@ fn mixed_busy_state_is_preserved_and_node_identity_survives_refresh() {
     let state = busy.map(|busy| AccessibilityState::new().mixed().busy(busy));
     let view = text("Tri-state")
         .a11y_role(AccessibilityRole::Checkbox)
-        .a11y_state_signal(state);
+        .a11y_state(state);
     let bounds = Rect::new(0.0, 0.0, 160.0, 160.0);
 
     capture_root_window(&mut renderer, view, &env, bounds);
@@ -2045,6 +2051,84 @@ fn mixed_busy_state_is_preserved_and_node_identity_survives_refresh() {
     );
     assert_eq!(second_node.toggled(), Some(AccessibilityToggled::Mixed));
     assert!(second_node.is_busy());
+}
+
+#[cfg(feature = "accessibility")]
+#[test]
+fn reactive_a11y_hidden_toggles_leaf_and_container_without_rebuild() {
+    let env = test_environment();
+    let mut renderer = test_renderer();
+    let hidden = Binding::bool(true);
+    let view = vstack((
+        text("Leaf").a11y_hidden(hidden.clone()),
+        vstack((text("Inside A"), text("Inside B")))
+            .a11y_label("Panel")
+            .a11y_role(AccessibilityRole::Group)
+            .a11y_hidden(hidden.clone()),
+    ));
+    let bounds = Rect::new(0.0, 0.0, 160.0, 160.0);
+
+    capture_root_window(&mut renderer, view, &env, bounds);
+    let first = renderer
+        .take_accessibility_tree_update()
+        .expect("initial accessibility update must exist");
+    assert!(
+        first
+            .nodes
+            .iter()
+            .all(|(_, node)| node.label() != Some("Leaf")
+                && node.label() != Some("Panel")
+                && node.label() != Some("Inside A")
+                && node.label() != Some("Inside B")),
+        "nodes starting a11y_hidden(true) must not emit initially"
+    );
+
+    hidden.set(false);
+    assert!(renderer.flush_window_tree(&env, bounds, Affine::IDENTITY, Affine::IDENTITY));
+    let second = renderer
+        .take_accessibility_tree_update()
+        .expect("unhidden accessibility update must exist");
+    assert!(
+        second
+            .nodes
+            .iter()
+            .any(|(_, node)| node.label() == Some("Leaf")),
+        "leaf hidden signal flipping false must emit its node"
+    );
+    assert!(
+        second
+            .nodes
+            .iter()
+            .any(|(_, node)| node.label() == Some("Panel")),
+        "container hidden signal flipping false must emit its node"
+    );
+    assert!(
+        second
+            .nodes
+            .iter()
+            .any(|(_, node)| node.label() == Some("Inside A"))
+            && second
+                .nodes
+                .iter()
+                .any(|(_, node)| node.label() == Some("Inside B")),
+        "container children must emit once container hidden signal flips false"
+    );
+
+    hidden.set(true);
+    assert!(renderer.flush_window_tree(&env, bounds, Affine::IDENTITY, Affine::IDENTITY));
+    let third = renderer
+        .take_accessibility_tree_update()
+        .expect("re-hidden accessibility update must exist");
+    assert!(
+        third
+            .nodes
+            .iter()
+            .all(|(_, node)| node.label() != Some("Leaf")
+                && node.label() != Some("Panel")
+                && node.label() != Some("Inside A")
+                && node.label() != Some("Inside B")),
+        "re-hiding via reactive signal must suppress leaf and container again"
+    );
 }
 
 #[cfg(feature = "accessibility")]
@@ -3160,7 +3244,7 @@ fn tab_highlight_strip(item: TabItemGeometry) -> Rect {
         let height = thickness.min(bounds.height());
         let y0 = (bounds.height() - height).mul_add(0.5, bounds.y0);
         Rect::new(bounds.x0, y0, bounds.x1, y0 + height)
-    } else if matches!(item.placement, NativeTabStyle::Sidebar) {
+    } else if matches!(item.placement, TabStyle::Sidebar) {
         Rect::new(
             (bounds.x1 - thickness).max(bounds.x0),
             item.title.y0,

@@ -6,9 +6,13 @@ use block2::RcBlock;
 use objc2::MainThreadMarker;
 #[cfg(target_os = "macos")]
 use objc2::rc::Retained;
+#[cfg(target_os = "macos")]
+use objc2::runtime::AnyObject;
 use objc2_core_foundation::{
     CFIndex, CFOptionFlags, CFRunLoop, CFRunLoopActivity, CFRunLoopObserver, kCFRunLoopCommonModes,
 };
+#[cfg(target_os = "macos")]
+use objc2_foundation::NSString;
 use objc2_quartz_core::CALayer;
 use objc2_quartz_core::CATransaction;
 #[cfg(target_os = "macos")]
@@ -196,41 +200,47 @@ pub fn cross_dissolve(view: &objc2_ui_kit::UIView, duration: f64, body: impl FnO
     );
 }
 
-/// A timing curve [`animate_with`] plays `body`'s animatable changes under.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Timing {
-    /// A cubic-bezier timing curve over `duration` seconds.
-    Bezier {
-        /// Seconds the animation runs.
-        duration: f64,
-        /// The curve's two control points, `[x1, y1, x2, y2]`.
-        control_points: [f32; 4],
-    },
-    /// A physical spring on a unit mass: the definition `WaterUI` core and
-    /// the Cherenkov engine evaluate, whose stiffness, damping coefficient
-    /// and settling duration every platform animator here takes.
-    Spring(waterui_easing::Spring),
+pub use waterui_easing::{Playback, Repeat, Timing};
+
+/// Core Animation `repeatCount` units double in duration when `autoreverses`
+/// is enabled.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "CAMediaTiming repeatCount is f32"
+)]
+const fn ca_repeat_params(repeat: Repeat) -> (f32, bool) {
+    match repeat {
+        Repeat::Once | Repeat::Count { count: 1, .. } => (1.0, false),
+        Repeat::Count { count, autoreverse } => {
+            if autoreverse {
+                ((count as f32) * 0.5, true)
+            } else {
+                (count as f32, false)
+            }
+        }
+        Repeat::Forever { autoreverse } => (f32::INFINITY, autoreverse),
+    }
 }
 
-/// Runs `body` while `timing` plays its animatable changes: a
+/// Runs `body` while `playback` plays its animatable changes: a
 /// `UIViewPropertyAnimator` on iOS, an `NSAnimationContext` group on macOS.
 ///
-/// The curve the animator plays: `UICubicTimingParameters` for `Bezier`,
-/// a mass-1 `UISpringTimingParameters` with the spring's stiffness and
-/// damping coefficient for `Spring` (the animator's `duration` argument is
-/// unused there; the spring's physics sets it).
+/// The curve the animator plays: `UICubicTimingParameters` for `Curve`,
+/// a mass-1 `UISpringTimingParameters` with scaled stiffness and damping
+/// coefficient for `Spring` (the animator's `duration` argument is unused
+/// there; the spring's physics sets it).
 ///
 /// Off the main thread this breaks the contract: it is reported and `body`
 /// runs at once, unanimated.
 #[cfg(target_os = "ios")]
-pub fn animate_with(timing: Timing, body: impl FnOnce() + 'static) {
+pub fn animate_with(playback: Playback, body: impl FnOnce() + 'static) {
     use objc2::MainThreadOnly;
     use objc2::rc::Retained;
     use objc2::runtime::ProtocolObject;
-    use objc2_core_foundation::{CGPoint, CGVector};
+    use objc2_core_foundation::{CGFloat, CGPoint, CGVector};
     use objc2_ui_kit::{
-        UICubicTimingParameters, UISpringTimingParameters, UITimingCurveProvider, UIViewAnimating,
-        UIViewPropertyAnimator,
+        UICubicTimingParameters, UISpringTimingParameters, UITimingCurveProvider, UIView,
+        UIViewAnimating, UIViewPropertyAnimator,
     };
     use std::cell::RefCell;
 
@@ -241,64 +251,138 @@ pub fn animate_with(timing: Timing, body: impl FnOnce() + 'static) {
         body();
         return;
     };
+    let speed = playback.effective_speed();
     // `addAnimations` may evaluate its block once only; the option still
     // guards a double evaluation.
     let body = RefCell::new(Some(body));
-    let block = block2::RcBlock::new(move || {
+    let raw_block = block2::RcBlock::new(move || {
         if let Some(body) = body.borrow_mut().take() {
             body();
         }
     });
+    let zero_cycles = matches!(playback.repeat, Repeat::Count { count: 0, .. });
     let (duration, parameters): (f64, Retained<ProtocolObject<dyn UITimingCurveProvider>>) =
-        match timing {
-            Timing::Bezier {
-                duration,
-                control_points: [x1, y1, x2, y2],
-            } => (
-                duration,
+        if zero_cycles {
+            (
+                0.0,
                 ProtocolObject::from_retained(
                     UICubicTimingParameters::initWithControlPoint1_controlPoint2(
                         UICubicTimingParameters::alloc(mtm),
-                        CGPoint::new(f64::from(x1), f64::from(y1)),
-                        CGPoint::new(f64::from(x2), f64::from(y2)),
+                        CGPoint::new(0.0, 0.0),
+                        CGPoint::new(1.0, 1.0),
                     ),
                 ),
-            ),
-            Timing::Spring(spring) => (
-                0.0,
-                ProtocolObject::from_retained(
-                    UISpringTimingParameters::initWithMass_stiffness_damping_initialVelocity(
-                        UISpringTimingParameters::alloc(mtm),
-                        1.0,
-                        spring.stiffness(),
-                        spring.damping_coefficient(),
-                        CGVector::new(0.0, 0.0),
+            )
+        } else {
+            match playback.timing {
+                Timing::Curve { curve, duration } => (
+                    duration.max(0.0) / speed,
+                    ProtocolObject::from_retained(
+                        UICubicTimingParameters::initWithControlPoint1_controlPoint2(
+                            UICubicTimingParameters::alloc(mtm),
+                            CGPoint::new(curve.x1, curve.y1),
+                            CGPoint::new(curve.x2, curve.y2),
+                        ),
                     ),
                 ),
-            ),
+                Timing::Spring(spring) => (
+                    0.0,
+                    ProtocolObject::from_retained(
+                        UISpringTimingParameters::initWithMass_stiffness_damping_initialVelocity(
+                            UISpringTimingParameters::alloc(mtm),
+                            1.0,
+                            spring.stiffness() * speed * speed,
+                            spring.damping_coefficient() * speed,
+                            CGVector::new(0.0, 0.0),
+                        ),
+                    ),
+                ),
+            }
         };
     let animator = UIViewPropertyAnimator::initWithDuration_timingParameters(
         UIViewPropertyAnimator::alloc(mtm),
         duration,
         &parameters,
     );
-    animator.addAnimations(&block);
-    animator.startAnimation();
+    if zero_cycles
+        || matches!(
+            playback.repeat,
+            Repeat::Once | Repeat::Count { count: 1, .. }
+        )
+    {
+        animator.addAnimations(&raw_block);
+    } else {
+        let (repeat_count, autoreverses) = ca_repeat_params(playback.repeat);
+        let repeated_block = block2::RcBlock::new(move || {
+            UIView::modifyAnimationsWithRepeatCount_autoreverses_animations(
+                CGFloat::from(repeat_count),
+                autoreverses,
+                &raw_block,
+                mtm,
+            );
+        });
+        animator.addAnimations(&repeated_block);
+    }
+    if playback.delay > 0.0 {
+        animator.startAnimationAfterDelay(playback.delay);
+    } else {
+        animator.startAnimation();
+    }
 }
 
-/// Runs `body` while `timing` plays its animatable changes.
+/// Runs `body` while `playback` plays its animatable changes.
 ///
 /// `NSAnimationContext` has no spring curve and wants a duration, so a
-/// spring runs for its own settling duration: the time a unit step from rest
-/// takes to settle, as `WaterUI`'s `Animation::duration` reports it.
+/// spring runs for its own settling duration divided by `speed`: the time a
+/// unit step from rest takes to settle, as `WaterUI`'s `Animation::duration`
+/// reports it.
 #[cfg(target_os = "macos")]
-pub fn animate_with(timing: Timing, body: impl FnOnce() + 'static) {
-    match timing {
-        Timing::Bezier {
-            duration,
-            control_points,
-        } => animate(duration, Some(control_points), body),
-        Timing::Spring(spring) => animate(spring.settling_duration(-1.0, 0.0), None, body),
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "CAMediaTimingFunction stores f32 control points"
+)]
+pub fn animate_with(playback: Playback, body: impl FnOnce() + 'static) {
+    let run = move || {
+        if matches!(playback.repeat, Repeat::Count { count: 0, .. }) {
+            body();
+            return;
+        }
+        let speed = playback.effective_speed();
+        match playback.timing {
+            Timing::Curve { curve, duration } => animate(
+                duration.max(0.0) / speed,
+                Some([
+                    curve.x1 as f32,
+                    curve.y1 as f32,
+                    curve.x2 as f32,
+                    curve.y2 as f32,
+                ]),
+                body,
+            ),
+            Timing::Spring(spring) => {
+                animate(spring.settling_duration(-1.0, 0.0) / speed, None, body);
+            }
+        }
+    };
+    if playback.delay > 0.0 {
+        use std::cell::Cell;
+        use std::ptr::NonNull;
+
+        use objc2_foundation::{NSRunLoop, NSRunLoopCommonModes, NSTimer};
+
+        let task = Cell::new(Some(run));
+        let fire = block2::RcBlock::new(move |_: NonNull<NSTimer>| {
+            if let Some(run) = task.take() {
+                run();
+            }
+        });
+        // SAFETY: `fire` is a single-shot block scheduled on the main run loop under `NSRunLoopCommonModes`.
+        unsafe {
+            let timer = NSTimer::timerWithTimeInterval_repeats_block(playback.delay, false, &fire);
+            NSRunLoop::mainRunLoop().addTimer_forMode(&timer, NSRunLoopCommonModes);
+        }
+    } else {
+        run();
     }
 }
 
@@ -320,8 +404,101 @@ pub fn set_sublayer_transform(layer: &objc2_quartz_core::CALayer, transform: CAT
     CATransaction::commit();
 }
 
+/// Shared Core Animation installer for explicit `CALayer` property animations.
+#[cfg(target_os = "macos")]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "CAMediaTimingFunction and CAMediaTiming store f32 controls and speed"
+)]
+fn install_ca_property_animation(
+    layer: &CALayer,
+    key_path: &NSString,
+    animation_key: &str,
+    from_value: &AnyObject,
+    to_value: &AnyObject,
+    playback: Playback,
+    apply_model: impl FnOnce(),
+) {
+    use objc2_quartz_core::{
+        CAAnimation, CABasicAnimation, CACurrentMediaTime, CAMediaTiming, CAMediaTimingFunction,
+        CASpringAnimation, kCAFillModeBoth,
+    };
+
+    layer.removeAnimationForKey(&NSString::from_str(animation_key));
+    let zero_cycles = matches!(playback.repeat, Repeat::Count { count: 0, .. });
+    if zero_cycles && playback.delay <= 0.0 {
+        apply_model();
+        return;
+    }
+
+    let make_basic = |duration: f64, timing: Option<&CAMediaTimingFunction>| {
+        let basic = CABasicAnimation::animationWithKeyPath(Some(key_path));
+        basic.setDuration(duration);
+        if let Some(timing) = timing {
+            basic.setTimingFunction(Some(timing));
+        }
+        // SAFETY: callers supply `NSValue`/`NSNumber` objects matching the keypath's property type.
+        unsafe {
+            basic.setFromValue(Some(from_value));
+            basic.setToValue(Some(to_value));
+        }
+        // SAFETY: `CAAnimation` is `CABasicAnimation`'s superclass.
+        unsafe { Retained::cast_unchecked(basic) }
+    };
+
+    let animation: Retained<CAAnimation> = if zero_cycles {
+        make_basic(0.0, None)
+    } else {
+        match playback.timing {
+            Timing::Curve { curve, duration } => {
+                let function = CAMediaTimingFunction::functionWithControlPoints(
+                    curve.x1 as f32,
+                    curve.y1 as f32,
+                    curve.x2 as f32,
+                    curve.y2 as f32,
+                );
+                make_basic(duration.max(0.0), Some(&function))
+            }
+            Timing::Spring(parameters) => {
+                let spring = CASpringAnimation::animationWithKeyPath(Some(key_path));
+                spring.setMass(1.0);
+                spring.setStiffness(parameters.stiffness());
+                spring.setDamping(parameters.damping_coefficient());
+                spring.setAllowsOverdamping(true);
+                spring.setInitialVelocity(0.0);
+                spring.setDuration(parameters.settling_duration(-1.0, 0.0));
+                // SAFETY: callers supply `NSValue`/`NSNumber` objects matching the keypath's property type.
+                unsafe {
+                    spring.setFromValue(Some(from_value));
+                    spring.setToValue(Some(to_value));
+                }
+                // SAFETY: `CAAnimation` is `CASpringAnimation`'s superclass.
+                unsafe { Retained::cast_unchecked(spring) }
+            }
+        }
+    };
+    if playback.delay > 0.0 {
+        let now = layer.convertTime_fromLayer(CACurrentMediaTime(), None);
+        animation.setBeginTime(now + playback.delay);
+    }
+    if !zero_cycles {
+        let speed = playback.effective_speed();
+        animation.setSpeed(speed as f32);
+        let (repeat_count, autoreverses) = ca_repeat_params(playback.repeat);
+        animation.setAutoreverses(autoreverses);
+        animation.setRepeatCount(repeat_count);
+    }
+    animation.setRemovedOnCompletion(true);
+    // SAFETY: `kCAFillModeBoth` is a `CAMediaTimingFillMode` constant Core
+    // Animation exports.
+    animation.setFillMode(unsafe { kCAFillModeBoth });
+
+    apply_model();
+    layer.addAnimation_forKey(&animation, Some(&NSString::from_str(animation_key)));
+}
+
 /// Moves `layer`'s `sublayerTransform` to `transform`, animating the
-/// `sublayerTransform` keypath under `timing` — `None` writes it directly.
+/// `sublayerTransform` keypath under `playback` — `None` writes it directly.
 ///
 /// The explicit `CAAnimation` runs on the compositor so it survives the
 /// layout passes that rewrite the layer's geometry; `key` identifies it so
@@ -333,16 +510,13 @@ pub fn animate_sublayer_transform(
     layer: &objc2_quartz_core::CALayer,
     transform: CATransform3D,
     key: &str,
-    timing: Option<Timing>,
+    playback: Option<Playback>,
 ) {
     use objc2::runtime::AnyObject;
     use objc2_foundation::{NSString, ns_string};
-    use objc2_quartz_core::{
-        CAAnimation, CABasicAnimation, CAMediaTiming, CAMediaTimingFunction, CASpringAnimation,
-        kCAFillModeBoth,
-    };
 
-    let Some(timing) = timing else {
+    let Some(playback) = playback else {
+        layer.removeAnimationForKey(&NSString::from_str(key));
         set_sublayer_transform(layer, transform);
         return;
     };
@@ -356,7 +530,6 @@ pub fn animate_sublayer_transform(
             |presentation| presentation.sublayerTransform(),
         )
     };
-    layer.removeAnimationForKey(&NSString::from_str(key));
 
     // `NSValue +valueWithCATransform3D:` wraps the transform for
     // `fromValue`/`toValue`; it has no generated binding, so the selector
@@ -369,49 +542,53 @@ pub fn animate_sublayer_transform(
     let to_value: Retained<AnyObject> =
         unsafe { objc2::msg_send![objc2::class!(NSValue), valueWithCATransform3D: transform] };
 
-    let animation: Retained<CAAnimation> = match timing {
-        Timing::Bezier {
-            duration,
-            control_points: [x1, y1, x2, y2],
-        } => {
-            let basic =
-                CABasicAnimation::animationWithKeyPath(Some(ns_string!("sublayerTransform")));
-            basic.setDuration(duration);
-            let function = CAMediaTimingFunction::functionWithControlPoints(x1, y1, x2, y2);
-            basic.setTimingFunction(Some(&function));
-            // SAFETY: the values are `NSValue` objects — `AnyObject`s.
-            unsafe {
-                basic.setFromValue(Some(&from_value));
-                basic.setToValue(Some(&to_value));
-            }
-            // SAFETY: `CAAnimation` is `CABasicAnimation`'s superclass.
-            unsafe { Retained::cast_unchecked(basic) }
-        }
-        Timing::Spring(parameters) => {
-            let spring =
-                CASpringAnimation::animationWithKeyPath(Some(ns_string!("sublayerTransform")));
-            spring.setMass(1.0);
-            spring.setStiffness(parameters.stiffness());
-            spring.setDamping(parameters.damping_coefficient());
-            spring.setAllowsOverdamping(true);
-            spring.setInitialVelocity(0.0);
-            spring.setDuration(parameters.settling_duration(-1.0, 0.0));
-            // SAFETY: the values are `NSValue` objects — `AnyObject`s.
-            unsafe {
-                spring.setFromValue(Some(&from_value));
-                spring.setToValue(Some(&to_value));
-            }
-            // SAFETY: `CAAnimation` is `CASpringAnimation`'s superclass.
-            unsafe { Retained::cast_unchecked(spring) }
-        }
-    };
-    animation.setRemovedOnCompletion(true);
-    // SAFETY: `kCAFillModeBoth` is a `CAMediaTimingFillMode` constant Core
-    // Animation exports.
-    animation.setFillMode(unsafe { kCAFillModeBoth });
+    install_ca_property_animation(
+        layer,
+        ns_string!("sublayerTransform"),
+        key,
+        &from_value,
+        &to_value,
+        playback,
+        || set_sublayer_transform(layer, transform),
+    );
+}
 
-    set_sublayer_transform(layer, transform);
-    layer.addAnimation_forKey(&animation, Some(&NSString::from_str(key)));
+/// Animates `layer`'s `opacity` from its current presentation opacity to
+/// `opacity` under `playback`, running `apply_model` inside
+/// [`without_animation`] so the view/model opacity stays updated immediately.
+#[cfg(target_os = "macos")]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "CALayer.opacity is f32 while view alpha is f64"
+)]
+pub fn animate_layer_opacity(
+    layer: &CALayer,
+    opacity: f64,
+    key: &str,
+    playback: Playback,
+    apply_model: impl FnOnce(),
+) {
+    use objc2_foundation::{NSNumber, ns_string};
+
+    // SAFETY: `presentationLayer` is a documented accessor on a live layer.
+    let from = unsafe {
+        layer
+            .presentationLayer()
+            .map_or_else(|| layer.opacity(), |presentation| presentation.opacity())
+    };
+    let from_value: Retained<AnyObject> =
+        Retained::into_super(Retained::into_super(NSNumber::new_f32(from))).into();
+    let to_value: Retained<AnyObject> =
+        Retained::into_super(Retained::into_super(NSNumber::new_f32(opacity as f32))).into();
+    install_ca_property_animation(
+        layer,
+        ns_string!("opacity"),
+        key,
+        &from_value,
+        &to_value,
+        playback,
+        || without_animation(apply_model),
+    );
 }
 /// Sets a layer's frame — the presentation plane updates
 /// batches inside a transaction.

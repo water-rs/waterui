@@ -437,18 +437,22 @@ pub fn styling_path_cubic_prose() {
 // ---------------------------------------------------------------------------
 pub fn styling_block_12() {
     use core::time::Duration;
+    use waterui::animation::{Animation, Repeat};
     use waterui::shape::{Circle, Rectangle, RoundedRectangle, ShapeExt};
 
     let shape = Circle;
     let target = Rectangle;
     let fill = Color::srgb_hex("#22C55E");
+
     let t = Binding::f32(0.5);
 
     let _ = {
         Circle
             .morph_to(RoundedRectangle::new(20.0), Color::srgb_hex("#3B82F6"))
-            .duration(Duration::from_millis(600))
-            .autoreverse(true) // also .repeat(bool)
+            .animation(
+                Animation::ease_in_out(Duration::from_millis(600))
+                    .repeat(Repeat::Forever { autoreverse: true }),
+            )
             .size(90.0, 90.0)
     };
 
@@ -456,11 +460,6 @@ pub fn styling_block_12() {
         // or drive it from a 0..=1 signal instead
         shape.morph_to(target, fill).progress(t.clone())
     };
-
-    // `.repeat(bool)`, named in the trailing comment.
-    let _ = Circle
-        .morph_to(Rectangle, Color::transparent())
-        .repeat(true);
 }
 
 // ---------------------------------------------------------------------------
@@ -476,11 +475,11 @@ pub fn styling_filled_shape_morph_prose() {
 // ---------------------------------------------------------------------------
 // styling.md § "## Borders and shadows" — rust block 13/19
 // Listing: a plain border, a configured border, a shadow; then the prose's
-// `Shadow::splat(v)`.
+// `Shadow::new(v)` / `Shadow::splat(v)`.
 // ---------------------------------------------------------------------------
 pub fn styling_block_13() {
     use waterui::border::Border;
-    use waterui::shape::RoundedRectangle;
+    use waterui::shape::{Circle, RoundedRectangle};
     use waterui::theme::color::Accent;
 
     let card = Divider;
@@ -495,16 +494,17 @@ pub fn styling_block_13() {
                 .edges(EdgeSet::BOTTOM),
         )
     };
+    let avatar = Divider;
+    let _ = { avatar.clip(Circle).shadow(4.0) };
     let card = Divider;
     let _ = {
-        card.shadow(Shadow::new(
-            Color::srgb(0, 0, 0).with_opacity(0.2), // color, with alpha
-            Vector::new(0.0, 2.0),                  // offset
-            8.0,                                    // blur radius
-            RoundedRectangle::new(8.0),             // the caster's own shape
-        ))
+        card.shadow(
+            Shadow::new(8.0)
+                .color(Color::srgb(0, 0, 0).with_opacity(0.2))
+                .offset(0.0, 2.0)
+                .silhouette(RoundedRectangle::new(8.0)),
+        )
     };
-    let _ = Shadow::splat(4.0);
 }
 
 // ---------------------------------------------------------------------------
@@ -534,13 +534,11 @@ pub fn styling_block_14() {
     use waterui_icons_material_icon as mdi;
 
     let _ = { mdi::check_circle() };
-    let _ = { mdi::delete().size(20.0, 20.0) };
+    let _ = { mdi::delete().icon_size(20.0) };
     let _ = {
         mdi::flag().foreground(Accent) // theme color
     };
-    let _ = {
-        lucide::star().tint(Color::srgb_hex("#F59E0B")) // explicit tint
-    };
+    let _ = { lucide::star().foreground(Color::srgb_hex("#F59E0B")) };
 }
 
 // ---------------------------------------------------------------------------

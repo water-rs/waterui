@@ -41,6 +41,13 @@ use waterui_core::Environment;
 use waterui_core::Retain;
 use waterui_core::handler::ViewBuilder;
 use waterui_interaction::key::KeyPress;
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    not(hydrolysis_winit),
+    not(hydrolysis_uikit),
+    not(target_os = "android")
+))]
+use waterui_structural_transition::ReduceMotion;
 #[cfg(hydrolysis_cherenkov)]
 use waterui_text::FontCollection;
 
@@ -505,6 +512,7 @@ pub fn run<W: Windows, M: AppMenuBar>(
     env.insert(HydrolysisTextContextMenuMode::Overlay);
     // A headless host has no platform appearance: the scheme is Light
     // unless the application installs its own.
+    let _ = env.get_or_insert_with::<ReduceMotion, _>(Default::default);
     crate::theme::install_theme_tokens(&mut env, Some(&style), waterui::theme::ColorScheme::Light);
     let theme: Rc<dyn crate::theme::WidgetTheme> = Rc::new(style);
     // The application's fonts, discovered once. Every window's renderer is
@@ -518,7 +526,7 @@ pub fn run<W: Windows, M: AppMenuBar>(
         .get::<crate::renderer::WindowIdentities>()
         .expect("install_window_registries seeds WindowIdentities")
         .clone();
-    let window::RootWindows { initial, channels } = window::RootWindows::collect(windows);
+    let window::RootWindows { initial, channels } = window::RootWindows::collect(windows, &env);
     let opener = queue_window_opener(&pending_window_queue);
     window::RootWindows::connect_channels(channels, &opener);
     let mut pending_windows = VecDeque::from(initial);

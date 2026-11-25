@@ -408,7 +408,8 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             ghost_placed: Vec::new(),
             reduce_motion: env
                 .get::<waterui_structural_transition::ReduceMotion>()
-                .is_some_and(|flag| flag.0),
+                .cloned()
+                .unwrap_or_default(),
             direction: waterui_layout::layout_direction(env).snapshot(),
             dirty,
             replaced_ids,
@@ -548,13 +549,13 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         }))
     }
 
-    /// Build a `GpuView` node owning its [`GpuContentRuntime`] — the
-    /// view keeps its UI-side hooks (input, frame pump, ime caret, a11y); the
+    /// Build a `GpuContentLeaf` node owning its [`GpuContentRuntime`] — the
+    /// leaf keeps its UI-side hooks (input, frame pump, ime caret, a11y); the
     /// producer inside is taken exactly once, when the node's install layer
     /// first commits it on the window's engine.
     #[cfg(hydrolysis_gpu)]
-    fn build_gpu_content<T: waterui_graphics::gpu::GpuContent>(
-        view: GpuView<T>,
+    fn build_gpu_content(
+        view: GpuContentLeaf,
         renderer: &SemanticCore<E>,
         #[cfg_attr(not(hydrolysis_hwui_gpu), expect(unused_variables))] env: &Environment,
     ) -> Self {

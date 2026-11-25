@@ -44,10 +44,12 @@ pub use path::{ErasedNavigationRoute, NavigationPath, NavigationPathReplacement}
 pub use router::NavigationRouter;
 pub use search::NavigationSearch;
 pub use split::{
-    ColumnWidth, NativeNavigationSplitStyle, NavigationSplitColumnVisibility,
-    NavigationSplitLayout, NavigationSplitStyle, NavigationSplitView, split_style,
+    ColumnWidth, NavigationSplitColumnVisibility, NavigationSplitLayout, NavigationSplitStyle,
+    NavigationSplitView,
 };
-pub use tab::{BadgeValue, Tab, TabBarMinimizeBehavior, TabRole, Tabs, TabsLayout, tab_style};
+#[doc(hidden)]
+pub use tab::tab_style;
+pub use tab::{BadgeValue, Tab, TabBarMinimizeBehavior, TabRole, TabStyle, Tabs, TabsLayout};
 use transition::TransitionKeyRegistry;
 pub use transition::{
     AnyNavigationTransition, CoreTransitionMarker, IntoNavigationTransition, IntoTransitionSpec,

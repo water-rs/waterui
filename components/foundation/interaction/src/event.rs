@@ -10,8 +10,8 @@ use core::{cell::RefCell, fmt, future::Future, pin::Pin};
 use nami::Signal;
 use nami::watcher::BoxWatcherGuard;
 use waterui_core::{
-    Environment, Error, LatestDispatch, Metadata, Retain, View,
-    extract::{ExtractionState, Extractor, State},
+    Environment, LatestDispatch, Metadata, Retain, View,
+    extract::State,
     handler::{
         BoxedAction, BoxedActionOnce, EventHandler, Handler, HandlerOnce, ReportExtraction,
         boxed_action, boxed_action_once, boxed_event_handler,
@@ -157,16 +157,6 @@ impl HoverEvent {
     }
 }
 
-impl Extractor for HoverEvent {
-    fn extract(env: &Environment) -> Result<Self, Error> {
-        State::<Self>::extract(env).map(|State(event)| event)
-    }
-
-    fn extract_from_action(env: &Environment, state: &mut ExtractionState) -> Result<Self, Error> {
-        State::<Self>::extract_from_action(env, state).map(|State(event)| event)
-    }
-}
-
 /// Interaction events that can occur multiple times.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -177,6 +167,52 @@ pub enum Event {
     HoverMove,
     /// The event representing when the cursor exits a component's bounds.
     HoverExit,
+}
+
+/// Pointer entered a view's bounds. Carries no payload.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HoverEnter;
+
+/// Pointer moved inside a view's bounds, delivering [`HoverEvent`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HoverMove;
+
+/// Pointer exited a view's bounds. Carries no payload.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HoverExit;
+
+/// Associates an interaction event target with the handler signature it accepts.
+pub trait EventTarget<H, Args> {
+    /// Builds an [`OnEvent`] descriptor for this target and `handler`.
+    #[doc(hidden)]
+    fn into_on_event(self, handler: H) -> OnEvent;
+}
+
+impl<H, Args> EventTarget<H, Args> for HoverEnter
+where
+    H: Handler<Args, ()>,
+{
+    fn into_on_event(self, handler: H) -> OnEvent {
+        OnEvent::hover_enter(handler)
+    }
+}
+
+impl<H, Args> EventTarget<H, Args> for HoverExit
+where
+    H: Handler<Args, ()>,
+{
+    fn into_on_event(self, handler: H) -> OnEvent {
+        OnEvent::hover_exit(handler)
+    }
+}
+
+impl<H, Args> EventTarget<H, Args> for HoverMove
+where
+    H: EventHandler<HoverEvent, Args>,
+{
+    fn into_on_event(self, handler: H) -> OnEvent {
+        OnEvent::hover_move(handler)
+    }
 }
 
 /// An event handler for repeatable interaction events.
@@ -191,19 +227,47 @@ pub struct OnEvent {
 impl MetadataKey for OnEvent {}
 
 impl OnEvent {
-    /// Creates a new event handler for the specified interaction event.
-    ///
-    /// # Arguments
-    ///
-    /// * `event` - The event to listen for.
-    /// * `handler` - The action to execute when the event occurs (can be called multiple times).
+    /// Creates a repeatable event handler for `event`, typing the handler's
+    /// signature through [`EventTarget`].
     #[must_use]
-    pub fn new<Args>(event: Event, handler: impl Handler<Args, ()>) -> Self {
+    pub fn new<E, H, Args>(event: E, handler: H) -> Self
+    where
+        E: EventTarget<H, Args>,
+    {
+        event.into_on_event(handler)
+    }
+
+    /// Creates a repeatable handler for pointer enter events (carries no payload).
+    #[must_use]
+    pub fn hover_enter<Args>(handler: impl Handler<Args, ()>) -> Self {
         Self {
-            event,
+            event: Event::HoverEnter,
             handler: boxed_action(handler),
         }
     }
+
+    /// Creates a repeatable handler for pointer exit events (carries no payload).
+    #[must_use]
+    pub fn hover_exit<Args>(handler: impl Handler<Args, ()>) -> Self {
+        Self {
+            event: Event::HoverExit,
+            handler: boxed_action(handler),
+        }
+    }
+
+    /// Creates a repeatable handler for pointer move events delivering [`HoverEvent`].
+    #[must_use]
+    pub fn hover_move<Args>(handler: impl EventHandler<HoverEvent, Args>) -> Self {
+        let mut handler = boxed_event_handler(handler);
+        Self {
+            event: Event::HoverMove,
+            handler: Box::new(move |env: &Environment| {
+                let State(hover) = Handler::call(&mut |s: State<HoverEvent>| s, env)?;
+                handler(hover, env)
+            }),
+        }
+    }
+
     /// Returns the event associated with this handler.
     #[must_use]
     pub const fn event(&self) -> Event {
@@ -484,5 +548,29 @@ mod tests {
         let _guard = on_change.subscribe(&Environment::new());
         source.set(2);
         assert_eq!(&*seen.borrow(), &[2]);
+    }
+
+    #[test]
+    fn hover_move_handler_receives_typed_event_and_state() {
+        use super::{HoverEvent, OnEvent};
+        use waterui_core::layout::Point;
+
+        let seen = Rc::new(RefCell::new(None));
+        let total = Binding::i32(0);
+        let mut handler = OnEvent::hover_move({
+            let seen = Rc::clone(&seen);
+            move |hover: HoverEvent, State(total): State<Binding<i32>>| {
+                *seen.borrow_mut() = Some(hover.location());
+                *total.get_mut() += 1;
+            }
+        });
+        let env = Environment::new()
+            .extending(State(total.clone()))
+            .extending(State(HoverEvent::new(Point::new(12.0, 34.0))));
+
+        handler.handle(&env);
+
+        assert_eq!(*seen.borrow(), Some(Point::new(12.0, 34.0)));
+        assert_eq!(total.snapshot(), 1);
     }
 }

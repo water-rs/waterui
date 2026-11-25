@@ -42,7 +42,7 @@ waterui-locale = { workspace = true, features = ["datetime", "number", "relative
 waterui-map.workspace = true                                 # media.md, Map
 waterui-map-gpu.workspace = true                             # media.md, tile source
 waterui-particle.workspace = true                            # media.md, ParticleSystem
-waterui-url.workspace = true                                 # media.md, MapGpuOptions
+waterui-url.workspace = true                                 # media.md, MapGpu
 waterkit-permission.workspace = true                         # project.md, runtime permissions
 jiff.workspace = true                                        # components.md, date pickers
 # Glue only: media.md's `#[js_api]` snippet returns `Json<Greeting>`, which needs

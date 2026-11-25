@@ -293,15 +293,16 @@ fn compose_custom_toggle<L: View, S: CustomToggleStyle>(
         interaction,
     });
     let tap_toggle = toggle.clone();
-    let gesture = GestureObserver::new(TapGesture::new(), move |action_env: Environment| {
-        if !Disabled::resolve(&action_env, false).snapshot() {
-            tap_toggle.set(!tap_toggle.snapshot());
-        }
-    });
+    let gesture =
+        GestureObserver::without_event(TapGesture::new(), move |action_env: Environment| {
+            if !Disabled::resolve(&action_env, false).snapshot() {
+                tap_toggle.set(!tap_toggle.snapshot());
+            }
+        });
     let with_gesture = Metadata::new(body, gesture);
     let checked_state = AccessibilityStateSignal::resolve(
         env,
-        toggle.map(|on| AccessibilityState::new().checked(Some(on))),
+        toggle.map(|on| AccessibilityState::new().checked(on)),
     );
     let with_state = Metadata::new(with_gesture, checked_state);
     let with_label =
@@ -997,7 +998,7 @@ mod custom_style_tests {
         let a11y_label = peel_metadata::<AccessibilityLabel>(role_view.content, &env)
             .expect("custom-styled toggle keeps hidden label in accessibility tree");
         assert_eq!(
-            a11y_label.value.signal().snapshot().as_str(),
+            a11y_label.value.resolve(&env).snapshot().as_str(),
             "Airplane Mode"
         );
 

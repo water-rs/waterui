@@ -1,11 +1,11 @@
 //! Native animations on the same layers that carry promoted pixels.
 
-use cherenkov::{Animation, Instant};
+use cherenkov::{Instant, Playback, PlaybackRepeat, Timing};
 use objc2::rc::Retained;
 use objc2_foundation::{NSNumber, NSString};
 use objc2_quartz_core::{
     CABasicAnimation, CACurrentMediaTime, CALayer, CAMediaTiming, CAMediaTimingFunction,
-    CASpringAnimation,
+    CASpringAnimation, kCAFillModeBackwards,
 };
 
 use super::super::animation::Scalar;
@@ -23,43 +23,82 @@ fn media_time(start: Instant) -> f64 {
     }
 }
 
+/// Core Animation `repeatCount` units become double-cycles when `autoreverses`
+/// is enabled.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "Core Animation repeatCount is f32"
+)]
+const fn ca_repeat(repeat: PlaybackRepeat) -> (f32, bool) {
+    match repeat {
+        PlaybackRepeat::Once | PlaybackRepeat::Count { count: 1, .. } => (1.0, false),
+        PlaybackRepeat::Count { count, autoreverse } => {
+            if autoreverse {
+                ((count as f32) * 0.5, true)
+            } else {
+                (count as f32, false)
+            }
+        }
+        PlaybackRepeat::Forever { autoreverse } => (f32::INFINITY, autoreverse),
+    }
+}
+
 /// Builds a scalar animation in absolute property units. Unit mass with the
 /// spring's own stiffness and damping coefficient gives exactly the engine
 /// oscillator.
 #[expect(
     clippy::cast_possible_truncation,
-    reason = "CAMediaTimingFunction stores f32 controls"
+    reason = "CAMediaTiming stores f32 timing controls and speed"
 )]
-pub(super) fn build(value: Scalar, path: &NSString) -> Retained<CABasicAnimation> {
-    let animation = match value.animation {
-        Animation::Curve(curve) => {
-            let animation = CABasicAnimation::animationWithKeyPath(Some(path));
-            animation.setDuration(curve.duration.as_secs_f64());
-            animation.setTimingFunction(Some(&CAMediaTimingFunction::functionWithControlPoints(
-                curve.p1.x as f32,
-                curve.p1.y as f32,
-                curve.p2.x as f32,
-                curve.p2.y as f32,
-            )));
-            animation
+pub(super) fn build(
+    value: Scalar,
+    playback: Playback,
+    path: &NSString,
+) -> Retained<CABasicAnimation> {
+    let animation = if matches!(playback.repeat, PlaybackRepeat::Count { count: 0, .. }) {
+        let animation = CABasicAnimation::animationWithKeyPath(Some(path));
+        animation.setDuration(0.0);
+        animation
+    } else {
+        match playback.timing {
+            Timing::Curve { curve, duration } => {
+                let animation = CABasicAnimation::animationWithKeyPath(Some(path));
+                animation.setDuration(duration);
+                animation.setTimingFunction(Some(
+                    &CAMediaTimingFunction::functionWithControlPoints(
+                        curve.x1 as f32,
+                        curve.y1 as f32,
+                        curve.x2 as f32,
+                        curve.y2 as f32,
+                    ),
+                ));
+                animation
+            }
+            Timing::Spring(spring) => {
+                let animation = CASpringAnimation::animationWithKeyPath(Some(path));
+                animation.setMass(1.0);
+                animation.setStiffness(spring.stiffness());
+                animation.setDamping(spring.damping_coefficient());
+                animation.setAllowsOverdamping(true);
+                let distance = value.target - value.from;
+                animation.setInitialVelocity(if distance == 0.0 {
+                    0.0
+                } else {
+                    value.velocity / distance
+                });
+                animation.setDuration(value.duration());
+                Retained::into_super(animation)
+            }
         }
-        Animation::Spring(spring) => {
-            let animation = CASpringAnimation::animationWithKeyPath(Some(path));
-            animation.setMass(1.0);
-            animation.setStiffness(spring.stiffness());
-            animation.setDamping(spring.damping_coefficient());
-            animation.setAllowsOverdamping(true);
-            let distance = value.target - value.from;
-            animation.setInitialVelocity(if distance == 0.0 {
-                0.0
-            } else {
-                value.velocity / distance
-            });
-            animation.setDuration(value.duration());
-            Retained::into_super(animation)
-        }
-        Animation::Decay(_) => unreachable!("decays never pass animation admission"),
     };
+    animation.setSpeed(playback.effective_speed() as f32);
+    let (repeat_count, autoreverses) = ca_repeat(playback.repeat);
+    animation.setAutoreverses(autoreverses);
+    animation.setRepeatCount(repeat_count);
+    if playback.delay > 0.0 {
+        // SAFETY: `kCAFillModeBackwards` is a Core Animation exported fill mode constant.
+        animation.setFillMode(unsafe { kCAFillModeBackwards });
+    }
     // SAFETY: `build` is reached only through `install` for the scalar
     // properties `position.x`, `position.y` and `opacity`, whose animatable
     // value type is `NSNumber` — the correct type for both endpoints.
@@ -71,9 +110,14 @@ pub(super) fn build(value: Scalar, path: &NSString) -> Retained<CABasicAnimation
 }
 
 pub(super) fn install(layer: &CALayer, value: Scalar, path: &str) {
+    let playback = value
+        .animation
+        .playback()
+        .expect("decays never pass animation admission");
     let path = NSString::from_str(path);
-    let animation = build(value, &path);
-    animation.setBeginTime(layer.convertTime_fromLayer(media_time(value.start), None));
+    let animation = build(value, playback, &path);
+    let start = media_time(value.start) + playback.delay.max(0.0);
+    animation.setBeginTime(layer.convertTime_fromLayer(start, None));
     layer.addAnimation_forKey(&animation, Some(&path));
 }
 

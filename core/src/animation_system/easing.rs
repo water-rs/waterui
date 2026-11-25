@@ -17,7 +17,7 @@
 use core::time::Duration;
 
 use smallvec::SmallVec;
-pub use waterui_easing::{CubicBezier, SETTLE_TOLERANCE, Spring, Timing};
+pub use waterui_easing::{CubicBezier, Playback, Repeat, SETTLE_TOLERANCE, Spring, Timing};
 
 /// A cubic Bézier timing curve from `(0, 0)` to `(1, 1)` with the control
 /// points `(x1, y1)` and `(x2, y2)`.

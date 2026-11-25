@@ -10,10 +10,11 @@
 
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
+use core::ops::RangeInclusive;
 
 use cocoa_ui::date::CalendarSelectionMode;
 use waterui::component::form::picker::date::Date;
-use waterui::component::form::picker::multi_date::MultiDatePickerConfig;
+use waterui::component::form::picker::multi_date::{MultiDatePickerConfig, clamp_dates_to_range};
 use waterui::reactive::{Binding, Signal};
 
 use super::calendar::{CalendarSelection, CalendarSpec, render_calendar};
@@ -38,6 +39,10 @@ impl CalendarSelection for Binding<BTreeSet<Date>> {
         let mut selected = self.snapshot();
         toggle_selection(&mut selected, day);
         self.set(selected);
+    }
+
+    fn clamp_to_range(&self, range: &RangeInclusive<Date>) {
+        clamp_dates_to_range(self, range);
     }
 }
 

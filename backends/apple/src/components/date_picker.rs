@@ -15,7 +15,9 @@ use core::cell::{Cell, RefCell};
 
 use cocoa_ui::date::{DateParts, DateTimeParts, TimeParts};
 use cocoa_ui::{PlatformView, Rect, Retained, view};
-use waterui::component::form::picker::date::{DatePickerConfig, DatePickerType, DateTime};
+use waterui::component::form::picker::date::{
+    DatePickerConfig, DatePickerType, DateTime, clamp_value_to_range,
+};
 use waterui::reactive::{Binding, Signal};
 use waterui::resolve::Resolvable;
 use waterui_core::layout::{
@@ -479,9 +481,10 @@ pub fn realize_date_picker_config(
     let picker = DatePicker::new(mtm, platform::elements(config.ty()));
     #[cfg(target_os = "ios")]
     let picker = DatePicker::new(mtm, platform::mode(config.ty()));
+    let initial_range = config.range().snapshot();
     picker.set_range(
-        range_bound(*config.range().start()).as_deref(),
-        range_bound(*config.range().end()).as_deref(),
+        range_bound(*initial_range.start()).as_deref(),
+        range_bound(*initial_range.end()).as_deref(),
     );
     cocoa_ui::view::add_subview(host_view, as_view(&picker));
 
@@ -594,6 +597,23 @@ fn wire(
             }
             borrowed.syncing.set(true);
             sync_controls(&borrowed, *ctx.value());
+            borrowed.syncing.set(false);
+        }
+    });
+
+    // Range signal → control bounds and in-place value clamping.
+    leaf.bind(config.range(), {
+        let state = Rc::clone(state);
+        let value = config.value().clone();
+        move |bounds| {
+            clamp_value_to_range(&value, &bounds);
+            let borrowed = state.borrow();
+            borrowed.syncing.set(true);
+            borrowed.picker.set_range(
+                range_bound(*bounds.start()).as_deref(),
+                range_bound(*bounds.end()).as_deref(),
+            );
+            sync_controls(&borrowed, value.snapshot());
             borrowed.syncing.set(false);
         }
     });

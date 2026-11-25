@@ -10,7 +10,7 @@ use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use waterui::drag_drop::{DropDestinationExt as _, Files, Transferable};
+use waterui::drag_drop::{DropDestinationExt as _, DropInfo, Files, Transferable};
 use waterui::reactive::impl_constant;
 use waterui::{AnyView, Str, Url, ViewExt as _};
 use waterui_core::handler::AnyViewBuilder;
@@ -386,5 +386,73 @@ fn os_file_drop_produces_no_text() {
         calls.borrow().is_empty(),
         "a file drop carries Files, not Str — the text destination stays untouched: {:?}",
         calls.borrow()
+    );
+}
+
+#[test]
+fn drop_and_enter_receive_destination_local_location_and_state_extractors() {
+    use waterui_core::layout::Point as LayoutPoint;
+    use waterui_core::{Binding, Signal as _, State};
+
+    let entered_at = Binding::container(None::<LayoutPoint>);
+    let dropped = Binding::container(None::<(TabId, LayoutPoint)>);
+    let exited = Binding::container(false);
+
+    // Two 60x60 views in an hstack with spacing 20.0 centered vertically in the
+    // 160x160 test viewport:
+    //   source: x in [10, 70], y in [50, 110]
+    //   target: x in [90, 150], y in [50, 110]
+    // Moving into the target at (105, 70) enters at local (15, 20), and
+    // dropping at (130, 95) lands at local (40, 45).
+    let view = hstack((
+        ().size(60.0, 60.0).draggable(TabId(9)),
+        ().size(60.0, 60.0)
+            .drop_destination(
+                |id: TabId,
+                 info: DropInfo,
+                 State(dropped): State<Binding<Option<(TabId, LayoutPoint)>>>| {
+                    dropped.set(Some((id, info.location())));
+                },
+            )
+            .on_enter(
+                |info: DropInfo, State(entered): State<Binding<Option<LayoutPoint>>>| {
+                    entered.set(Some(info.location()));
+                },
+            )
+            .on_exit(|State(exited): State<Binding<bool>>| {
+                exited.set(true);
+            })
+            .state(&dropped)
+            .state(&entered_at)
+            .state(&exited),
+    ))
+    .spacing(20.0);
+    let mut runtime = runtime_with(AnyView::new(view));
+
+    pointer_down(&mut runtime, 40.0, 80.0);
+    pointer_move(&mut runtime, 105.0, 70.0);
+    let enter_point = entered_at
+        .snapshot()
+        .expect("on_enter should record local entry location through State extractor");
+    assert!(
+        (enter_point.x - 15.0).abs() < 1.0 && (enter_point.y - 20.0).abs() < 1.0,
+        "expected local enter point near (15, 20), got {enter_point:?}"
+    );
+    assert!(!exited.snapshot());
+
+    pointer_move(&mut runtime, 130.0, 95.0);
+    pointer_up(&mut runtime, 130.0, 95.0);
+
+    let (id, drop_point) = dropped
+        .snapshot()
+        .expect("drop_destination should record dropped value and local location");
+    assert_eq!(id, TabId(9));
+    assert!(
+        (drop_point.x - 40.0).abs() < 1.0 && (drop_point.y - 45.0).abs() < 1.0,
+        "expected local drop point near (40, 45), got {drop_point:?}"
+    );
+    assert!(
+        exited.snapshot(),
+        "on_exit should update State<Binding<bool>> after delivery"
     );
 }

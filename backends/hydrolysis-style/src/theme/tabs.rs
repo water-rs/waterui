@@ -13,7 +13,7 @@ use std::rc::Rc;
 
 use kurbo::{Rect, Vec2};
 use nami::Computed;
-use waterui::navigation::tab::NativeTabStyle;
+use waterui::navigation::tab::TabStyle;
 use waterui_graphics::color::Color;
 
 use super::Chrome;
@@ -25,20 +25,20 @@ use super::look::{Custom, CustomPart, DrivenSet, Motion};
 /// A spec change requests the look again.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TabsSpec {
-    placement: NativeTabStyle,
+    placement: TabStyle,
 }
 
 impl TabsSpec {
     /// The spec of a tab container presented as `placement`.
     #[must_use]
-    pub const fn new(placement: NativeTabStyle) -> Self {
+    pub const fn new(placement: TabStyle) -> Self {
         Self { placement }
     }
 
     /// Whether the items sit in a bar or a sidebar strip; `Automatic` and
     /// `TabBar` are both a bar.
     #[must_use]
-    pub const fn placement(&self) -> NativeTabStyle {
+    pub const fn placement(&self) -> TabStyle {
         self.placement
     }
 }
@@ -96,7 +96,7 @@ pub struct TabItemGeometry {
     pub layout: TabItemLayout,
     /// Whether the item sits in a bar or a sidebar strip; `Automatic` and
     /// `TabBar` are both a bar.
-    pub placement: NativeTabStyle,
+    pub placement: TabStyle,
 }
 
 /// Layout metrics for tab containers.
@@ -227,7 +227,7 @@ impl TabsDrag {
         if items.len() == 1 {
             return 0.0;
         }
-        let vertical = matches!(items[0].placement, NativeTabStyle::Sidebar);
+        let vertical = matches!(items[0].placement, TabStyle::Sidebar);
         let axis = |rect: Rect| {
             if vertical {
                 rect.center().y
@@ -588,11 +588,11 @@ mod tests {
 
     use approx::assert_relative_eq;
     use kurbo::{Rect, Vec2};
-    use waterui::navigation::tab::NativeTabStyle;
+    use waterui::navigation::tab::TabStyle;
 
     use super::{TabItemGeometry, TabItemLayout, TabsDrag, TabsValue};
 
-    fn item(bounds: Rect, placement: NativeTabStyle) -> TabItemGeometry {
+    fn item(bounds: Rect, placement: TabStyle) -> TabItemGeometry {
         TabItemGeometry {
             bounds,
             icon: None,
@@ -605,9 +605,9 @@ mod tests {
     #[test]
     fn tabs_value_interpolates_indicator_bounds_across_items() {
         let items: Rc<[TabItemGeometry]> = Rc::from([
-            item(Rect::new(0.0, 0.0, 80.0, 48.0), NativeTabStyle::TabBar),
-            item(Rect::new(80.0, 0.0, 180.0, 48.0), NativeTabStyle::TabBar),
-            item(Rect::new(180.0, 0.0, 240.0, 48.0), NativeTabStyle::TabBar),
+            item(Rect::new(0.0, 0.0, 80.0, 48.0), TabStyle::TabBar),
+            item(Rect::new(80.0, 0.0, 180.0, 48.0), TabStyle::TabBar),
+            item(Rect::new(180.0, 0.0, 240.0, 48.0), TabStyle::TabBar),
         ]);
         let rest = TabsValue {
             selected: Some(1),
@@ -630,9 +630,9 @@ mod tests {
     fn tabs_drag_tracks_horizontal_rtl_and_sidebar_axes() {
         let drag = TabsDrag::new();
         let horizontal = [
-            item(Rect::new(0.0, 0.0, 100.0, 48.0), NativeTabStyle::TabBar),
-            item(Rect::new(100.0, 0.0, 200.0, 48.0), NativeTabStyle::TabBar),
-            item(Rect::new(200.0, 0.0, 300.0, 48.0), NativeTabStyle::TabBar),
+            item(Rect::new(0.0, 0.0, 100.0, 48.0), TabStyle::TabBar),
+            item(Rect::new(100.0, 0.0, 200.0, 48.0), TabStyle::TabBar),
+            item(Rect::new(200.0, 0.0, 300.0, 48.0), TabStyle::TabBar),
         ];
         assert_relative_eq!(
             drag.position(0, Some(Vec2::new(50.0, 12.0)), &horizontal),
@@ -646,15 +646,15 @@ mod tests {
         assert_eq!(drag.settles_on(1.6, 3), 2);
 
         let rtl = [
-            item(Rect::new(200.0, 0.0, 300.0, 48.0), NativeTabStyle::TabBar),
-            item(Rect::new(100.0, 0.0, 200.0, 48.0), NativeTabStyle::TabBar),
-            item(Rect::new(0.0, 0.0, 100.0, 48.0), NativeTabStyle::TabBar),
+            item(Rect::new(200.0, 0.0, 300.0, 48.0), TabStyle::TabBar),
+            item(Rect::new(100.0, 0.0, 200.0, 48.0), TabStyle::TabBar),
+            item(Rect::new(0.0, 0.0, 100.0, 48.0), TabStyle::TabBar),
         ];
         assert_relative_eq!(drag.position(0, Some(Vec2::new(-50.0, 0.0)), &rtl), 0.5);
 
         let sidebar = [
-            item(Rect::new(0.0, 0.0, 80.0, 60.0), NativeTabStyle::Sidebar),
-            item(Rect::new(0.0, 60.0, 80.0, 120.0), NativeTabStyle::Sidebar),
+            item(Rect::new(0.0, 0.0, 80.0, 60.0), TabStyle::Sidebar),
+            item(Rect::new(0.0, 60.0, 80.0, 120.0), TabStyle::Sidebar),
         ];
         assert_relative_eq!(drag.position(0, Some(Vec2::new(0.0, 30.0)), &sidebar), 0.5);
     }

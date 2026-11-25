@@ -269,12 +269,12 @@ fn notes(value: &Binding<Str>) -> impl View {
 }
 
 fn body(value: &Binding<styled::StyledStr>) -> impl View {
-    TextField::styled("Body", value).line_limit(None::<NonZeroUsize>)
+    TextField::new("Body", value).line_limit(None::<NonZeroUsize>)
 }
 ```
 
-`TextField::new` takes a plain `Binding<Str>` and rejects styled write-back; use
-`TextField::styled` for rich text. Both take the label first, and the prompt
+`TextField::new` accepts both `&Binding<Str>` (rejecting styled write-back) and
+`&Binding<StyledStr>` for rich text. Both take the label first, and the prompt
 stays a separate concept: it is the placeholder inside an empty field, not the
 field's name. `keyboard(...)` is a hint that platforms without a software
 keyboard ignore.
@@ -346,9 +346,9 @@ fn note(value: &Binding<Str>) -> impl View {
 | --- | --- | --- |
 | `Button<Action>` | `Button::new(label)`, `button(impl IntoLabel)` | `action` / `action_async`, `style`, `size`; content-sized |
 | `Toggle` | `Toggle::new(label, &Binding<bool>)`, `toggle(label, &binding)` | `switch()` / `checkbox()` presentation |
-| `Slider` | `Slider::new(label, &Binding<f64>)`, `slider(label, &binding)` | `range`, `min_value_label`, `max_value_label` |
-| `Stepper` | `Stepper::new(label, &Binding<i32>)`, `stepper(label, &binding)` | `range`, `step`, `value_formatter` |
-| `TextField` | `TextField::new(label, &Binding<Str>)`, `TextField::styled(label, &Binding<StyledStr>)`, `field(label, &binding)` | `prompt`, `keyboard`, `line_limit`, `selection_menu` |
+| `Slider` | `Slider::new(label, &Binding<T: SliderValue>)`, `slider(label, &binding)` | `range`, `step`, `value_formatter`, `min_value_label`, `max_value_label` |
+| `Stepper` | `Stepper::new(label, &Binding<T: StepperValue>)`, `stepper(label, &binding)` | `range`, `step`, `value_formatter` |
+| `TextField` | `TextField::new(label, &Binding<T: TextFieldValue>)`, `field(label, &binding)` | `prompt`, `keyboard`, `line_limit`, `selection_menu` |
 | `Menu` | `Menu::new(label, impl MenuView)` | Renders as a popup trigger, or nests inside another menu |
 
 ### Labels

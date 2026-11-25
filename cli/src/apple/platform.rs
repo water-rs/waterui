@@ -885,6 +885,11 @@ pub async fn package_apple(
         .ok_or_else(|| eyre::eyre!("Platform {platform:?} is not an Apple platform"))?;
     let (_, deployment_target) = apple_deployment_target(project, platform).await?;
 
+    let app_symbols = built.app_symbols().await?;
+    if !widgets::declared_widgets(&app_symbols)?.is_empty() {
+        apple_declarations.add_widget_app_group(&widgets::widget_app_group_id(&bundle_id))?;
+    }
+
     // Assets are staged into a scratch directory; the bundle copies them out
     // from there (`waterui_assets`, `fonts`) and `actool` compiles the asset
     // catalog (`WaterUIAssets.xcassets`).
@@ -894,7 +899,7 @@ pub async fn package_apple(
         platform,
         &staging_dir,
         &project.apple_crate_path().join("Cargo.toml"),
-        &built.app_symbols().await?,
+        &app_symbols,
         options.uses_dev_server(),
         &built.features,
     )

@@ -272,7 +272,7 @@ fn context_menu_accessory_section(
 }
 
 fn selection_menu_section(selection_action: &Binding<String>) -> impl View + use<> {
-    let draft = binding(Str::from("Select some of this text, then open the menu"));
+    let draft = binding::<Str>(Str::from("Select some of this text, then open the menu"));
     vstack((
         text("Selection Menu").subheadline(),
         text("Select text in the field and use its context menu")

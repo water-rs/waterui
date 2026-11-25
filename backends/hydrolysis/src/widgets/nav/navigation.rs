@@ -830,9 +830,7 @@ pub fn render_navigation_view_node<E: crate::text::TextEngine>(
     state: &Rc<RefCell<NavigationViewRenderState<E>>>,
     env: &Environment,
 ) {
-    let hidden = env
-        .get::<waterui::accessibility::AccessibilityHidden>()
-        .is_some_and(waterui::accessibility::AccessibilityHidden::is_hidden);
+    let hidden = ctx.renderer_mut().is_accessibility_hidden(env);
     if !hidden {
         let render_ctx = ctx.render_context();
         let (hidden_signal, display_mode) = {
@@ -1342,7 +1340,7 @@ pub struct NavigationSplitRenderState<E: crate::text::TextEngine> {
     detail_builder: NavigationSplitDetailBuilder<HeldChild<E>>,
     visibility: Computed<waterui::navigation::NavigationSplitColumnVisibility>,
     column_width: waterui::navigation::ColumnWidth,
-    style: waterui::navigation::NativeNavigationSplitStyle,
+    style: waterui::navigation::NavigationSplitStyle,
     primary: RetainedSubview<E>,
     placeholder: RetainedSubview<E>,
     content: Option<(Id, bool, RetainedSubview<E>)>,
@@ -1517,7 +1515,7 @@ struct SplitMeasurePlan {
 fn split_measure_plan(
     three_column: bool,
     column_width: waterui::navigation::ColumnWidth,
-    style: waterui::navigation::NativeNavigationSplitStyle,
+    style: waterui::navigation::NavigationSplitStyle,
     visibility: waterui::navigation::NavigationSplitColumnVisibility,
     proposal: ProposalSize,
 ) -> SplitMeasurePlan {
@@ -1773,12 +1771,18 @@ pub fn render_navigation_split_parts<E: crate::text::TextEngine>(
 
 fn resolved_split_column_width(
     width: waterui::navigation::ColumnWidth,
-    style: waterui::navigation::NativeNavigationSplitStyle,
+    style: waterui::navigation::NavigationSplitStyle,
 ) -> f64 {
     match style {
-        waterui::navigation::NativeNavigationSplitStyle::Automatic
-        | waterui::navigation::NativeNavigationSplitStyle::Balanced => f64::from(width.ideal()),
-        waterui::navigation::NativeNavigationSplitStyle::ProminentDetail => f64::from(width.min()),
+        waterui::navigation::NavigationSplitStyle::Automatic
+        | waterui::navigation::NavigationSplitStyle::Balanced => f64::from(width.ideal()),
+        waterui::navigation::NavigationSplitStyle::ProminentDetail => f64::from(width.min()),
+        _ => {
+            contract_violation!(
+                "hydrolysis NavigationSplitStyle variant {style:?} is not implemented; falling back to Balanced width"
+            );
+            f64::from(width.ideal())
+        }
     }
 }
 
@@ -2823,7 +2827,7 @@ fn present_navigation_pages<E: TextEngine>(
         return;
     }
     let dir = layout_direction(stack_env).snapshot();
-    let reduce_motion = stack_env.get::<ReduceMotion>().is_some_and(|flag| flag.0);
+    let reduce_motion = ReduceMotion::is_reduced(stack_env);
     match navigation_presentation(
         &style,
         motion,
@@ -2962,9 +2966,7 @@ pub fn render_navigation_stack_node<E: crate::text::TextEngine>(
     env: &Environment,
 ) {
     #[cfg(feature = "accessibility")]
-    let hidden = env
-        .get::<waterui::accessibility::AccessibilityHidden>()
-        .is_some_and(waterui::accessibility::AccessibilityHidden::is_hidden);
+    let hidden = ctx.renderer_mut().is_accessibility_hidden(env);
     #[cfg(feature = "accessibility")]
     if hidden {
         ctx.renderer_mut().push_accessibility_suppression();
@@ -3466,10 +3468,7 @@ pub fn emit_navigation_view_accessibility<E: crate::text::TextEngine>(
     state: &Rc<RefCell<NavigationViewRenderState<E>>>,
     env: &Environment,
 ) {
-    if env
-        .get::<waterui::accessibility::AccessibilityHidden>()
-        .is_some_and(waterui::accessibility::AccessibilityHidden::is_hidden)
-    {
+    if renderer.is_accessibility_hidden(env) {
         return;
     }
     let mut state = state.borrow_mut();
@@ -3516,6 +3515,9 @@ pub fn emit_navigation_split_accessibility<E: crate::text::TextEngine>(
     state: &Rc<RefCell<NavigationSplitRenderState<E>>>,
     env: &Environment,
 ) {
+    if renderer.is_accessibility_hidden(env) {
+        return;
+    }
     let (selection, compact, show_all) = {
         let state = state.borrow();
         let three_column = state.is_three_column();
@@ -3628,6 +3630,10 @@ pub fn emit_navigation_stack_accessibility<E: crate::text::TextEngine>(
     state: &Rc<RefCell<NavigationStackRenderState<E>>>,
     env: &Environment,
 ) {
+    let hidden = renderer.is_accessibility_hidden(env);
+    if hidden {
+        renderer.push_accessibility_suppression();
+    }
     navigation_stack_accessibility(renderer, None, None, state, env);
     let slot_key = crate::renderer::NavigationKey::for_rc(state);
     let entries = renderer.bind_navigation_entries(&slot_key);
@@ -3666,16 +3672,19 @@ pub fn emit_navigation_stack_accessibility<E: crate::text::TextEngine>(
             .borrow_mut()
             .root_mut()
             .emit_accessibility(renderer, &local_env);
-        return;
+    } else {
+        let mut entries = entries.borrow_mut();
+        let entry = entries
+            .iter_mut()
+            .find(|entry| entry.identity == active_identity)
+            .unwrap_or_else(|| {
+                panic!("Hydrolysis navigation entry identity {active_identity} is not retained")
+            });
+        entry.content.emit_accessibility(renderer, &local_env);
     }
-    let mut entries = entries.borrow_mut();
-    let entry = entries
-        .iter_mut()
-        .find(|entry| entry.identity == active_identity)
-        .unwrap_or_else(|| {
-            panic!("Hydrolysis navigation entry identity {active_identity} is not retained")
-        });
-    entry.content.emit_accessibility(renderer, &local_env);
+    if hidden {
+        renderer.pop_accessibility_suppression();
+    }
 }
 #[cfg(test)]
 mod tests {
@@ -3688,8 +3697,8 @@ mod tests {
     use nami::Binding;
     use waterui::component::text;
     use waterui::navigation::{
-        ColumnWidth, NativeNavigationSplitStyle, NavigationPath, NavigationSplitView,
-        NavigationStack, NavigationView,
+        ColumnWidth, NavigationPath, NavigationSplitStyle, NavigationSplitView, NavigationStack,
+        NavigationView,
     };
     use waterui_core::handler::AnyViewBuilder;
 
@@ -3702,12 +3711,12 @@ mod tests {
         let width = ColumnWidth::new(180.0, 260.0, 400.0);
 
         approx::assert_relative_eq!(
-            resolved_split_column_width(width, NativeNavigationSplitStyle::ProminentDetail),
+            resolved_split_column_width(width, NavigationSplitStyle::ProminentDetail),
             180.0
         );
         for balanced in [
-            NativeNavigationSplitStyle::Automatic,
-            NativeNavigationSplitStyle::Balanced,
+            NavigationSplitStyle::Automatic,
+            NavigationSplitStyle::Balanced,
         ] {
             approx::assert_relative_eq!(resolved_split_column_width(width, balanced), 260.0);
         }
@@ -3720,9 +3729,9 @@ mod tests {
         let fixed = ColumnWidth::new(240.0, 240.0, 240.0);
 
         for style in [
-            NativeNavigationSplitStyle::Automatic,
-            NativeNavigationSplitStyle::Balanced,
-            NativeNavigationSplitStyle::ProminentDetail,
+            NavigationSplitStyle::Automatic,
+            NavigationSplitStyle::Balanced,
+            NavigationSplitStyle::ProminentDetail,
         ] {
             approx::assert_relative_eq!(resolved_split_column_width(fixed, style), 240.0);
         }

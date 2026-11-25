@@ -1,6 +1,8 @@
 //! The Apple backend's [`NativeBackend`]: each component's realization,
 //! reached through static dispatch.
 
+#[cfg(waterui_feature = "gpu")]
+use waterui::graphics::backend::GpuContentLeaf;
 #[cfg(waterui_feature = "navigation")]
 use waterui::navigation::ResolvedNavigationView;
 use waterui_backend_core::{
@@ -218,7 +220,7 @@ impl NativeBackend for AppleBackend {
         mark_reached!("shader_paint");
         #[cfg(feature = "gpu_surface")]
         return crate::components::gpu_surface::realize_gpu_view(
-            native.into_gpu_view(),
+            GpuContentLeaf::from(native.into_gpu_view()),
             &self.entry(env),
         );
         #[cfg(not(feature = "gpu_surface"))]
@@ -253,6 +255,19 @@ impl NativeBackend for AppleBackend {
     ) -> NativeLeaf {
         mark_reached!("badge");
         crate::components::badge::realize_badge_config(
+            native.map_slots(C::into_child),
+            &self.entry(env),
+        )
+    }
+
+    fn disclosure<C: ChildView<Self>>(
+        &mut self,
+        native: waterui::widget::disclosure::DisclosureConfig<C>,
+        env: &Environment,
+        (): (),
+    ) -> NativeLeaf {
+        mark_reached!("disclosure");
+        crate::components::disclosure::realize_disclosure_config(
             native.map_slots(C::into_child),
             &self.entry(env),
         )
@@ -539,12 +554,7 @@ impl NativeBackend for AppleBackend {
     }
 
     #[cfg(waterui_feature = "gpu")]
-    fn gpu(
-        &mut self,
-        native: waterui::GpuView<alloc::boxed::Box<dyn waterui::graphics::GpuContent>>,
-        env: &Environment,
-        (): (),
-    ) -> NativeLeaf {
+    fn gpu(&mut self, native: GpuContentLeaf, env: &Environment, (): ()) -> NativeLeaf {
         mark_reached!("gpu");
         crate::components::gpu_surface::realize_gpu_view(native, &self.entry(env))
     }

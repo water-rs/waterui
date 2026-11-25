@@ -9,7 +9,7 @@ use waterui::preview;
 use waterui::snackbar::{Snackbar, SnackbarManager, SnackbarPosition};
 use waterui_icons_material_icon as mdi;
 
-type IconSnackbarManager = SnackbarManager<mdi::Svg>;
+type IconSnackbarManager = SnackbarManager<mdi::Icon>;
 
 /// The snackbar example page, with buttons that show each snackbar variant.
 #[preview]
@@ -22,12 +22,12 @@ pub fn demo() -> impl View {
                 m.show(Snackbar::new("Hello from Snackbar!"));
             }),
             button("With Icon").action(|m: IconSnackbarManager| {
-                m.show(Snackbar::new("File saved successfully").icon(check_circle()));
+                m.show(Snackbar::new("File saved successfully").icon(check_circle));
             }),
             button("With Action Button").action(|m: IconSnackbarManager| {
                 m.show(
                     Snackbar::new("Item moved to trash")
-                        .icon(delete())
+                        .icon(delete)
                         .duration(Duration::from_secs(5))
                         .action("Undo", || {
                             info!("Undo clicked!");
@@ -37,7 +37,7 @@ pub fn demo() -> impl View {
             button("Top Position").action(|m: IconSnackbarManager| {
                 m.show(
                     Snackbar::new("Network connected")
-                        .icon(check_circle())
+                        .icon(check_circle)
                         .position(SnackbarPosition::TopCenter),
                 );
             }),
@@ -50,7 +50,7 @@ pub fn demo() -> impl View {
                 // Different placements are independent — these coexist.
                 m.show(
                     Snackbar::new("Top banner")
-                        .icon(check_circle())
+                        .icon(check_circle)
                         .position(SnackbarPosition::TopCenter),
                 );
                 m.show(Snackbar::new("Bottom banner"));
@@ -66,7 +66,7 @@ pub fn demo() -> impl View {
         ))
         .padding(),
     )
-    .snackbar_host_with_icons::<mdi::Svg>()
+    .snackbar_host_with_icons::<mdi::Icon>()
 }
 
 /// Builds the snackbar example app.

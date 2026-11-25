@@ -45,6 +45,7 @@ mod context_menu;
 pub mod control;
 mod cursor;
 mod date_picker;
+pub mod disclosure;
 pub mod drag_drop;
 mod effect_view;
 pub mod event;

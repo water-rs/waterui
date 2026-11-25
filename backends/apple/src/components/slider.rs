@@ -14,13 +14,14 @@
 use alloc::rc::Rc;
 use alloc::string::String;
 use core::cell::RefCell;
+use core::ops::RangeInclusive;
 
 use cocoa_ui::slider::ValueAnimation;
 use cocoa_ui::{PlatformView, Rect, Retained, view};
-use waterui::animation::{Animation, ChangeAnimation};
-use waterui::component::slider::{SliderConfig, snap};
-use waterui::reactive::Signal;
+use waterui::animation::ChangeAnimation;
+use waterui::component::slider::{SliderConfig, clamp_value_to_range, snap};
 use waterui::reactive::watcher::Metadata;
+use waterui::reactive::{Binding, Computed, Signal};
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, Size, StretchAxis, SubView,
     ViewDimensions,
@@ -270,27 +271,33 @@ impl SubView for SliderSubView {
 /// directly. `Spring` has no `AppKit` equivalent — `WuiSlider` runs it as a
 /// timed animation of the spring's settling duration, matching
 /// `withPlatformAnimation`.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "CAMediaTimingFunction stores f32 control points"
+)]
 fn value_animation(metadata: &Metadata) -> Option<ValueAnimation> {
-    match ChangeAnimation::of(metadata)
-        .animation()
-        .map(Animation::validated)
-    {
-        None => None,
-        Some(Animation::Default) => Some(ValueAnimation::Duration(0.25)),
-        Some(Animation::Bezier {
-            duration,
-            x1,
-            y1,
-            x2,
-            y2,
-        }) => Some(ValueAnimation::Bezier {
-            duration: duration.as_secs_f64(),
-            control_points: [x1, y1, x2, y2],
-        }),
-        Some(spring @ Animation::Spring { .. }) => {
-            Some(ValueAnimation::Duration(spring.duration().as_secs_f64()))
-        }
+    use cocoa_ui::core_animation::Timing;
+
+    let animation = ChangeAnimation::of(metadata).animation()?;
+    if animation.is_default() {
+        return Some(ValueAnimation::Duration(0.25));
     }
+    let playback = crate::animation::timing(&animation);
+    let speed = playback.effective_speed();
+    Some(match playback.timing {
+        Timing::Curve { curve, duration } => ValueAnimation::Bezier {
+            duration: duration.max(0.0) / speed,
+            control_points: [
+                curve.x1 as f32,
+                curve.y1 as f32,
+                curve.x2 as f32,
+                curve.y2 as f32,
+            ],
+        },
+        Timing::Spring(_) => {
+            ValueAnimation::Duration(playback.cycle_duration().unwrap_or(0.0) / speed)
+        }
+    })
 }
 
 /// A styled string as spoken text: plain text with the bidi control
@@ -321,6 +328,52 @@ fn as_view(slider: &Slider) -> &PlatformView {
     slider
 }
 
+fn bind_slider_signals(
+    leaf: &mut NativeLeaf,
+    slider: &Retained<Slider>,
+    value: &Binding<f64>,
+    range: &Computed<RangeInclusive<f64>>,
+    step: &Computed<Option<f64>>,
+) {
+    // Signal → control: push binding changes (clamped into range) with
+    // the animation the watcher metadata carries.
+    leaf.watch(value, {
+        let slider = slider.clone();
+        let range = range.clone();
+        move |ctx| {
+            let animation = value_animation(ctx.metadata());
+            let bounds = range.snapshot();
+            slider.set_value(
+                clamped(*ctx.value(), *bounds.start(), *bounds.end()),
+                animation,
+            );
+        }
+    });
+
+    // Range signal → control bounds and in-place value clamping.
+    leaf.bind(range, {
+        let slider = slider.clone();
+        let value = value.clone();
+        move |bounds| {
+            clamp_value_to_range(&value, &bounds);
+            slider.set_range(*bounds.start(), *bounds.end());
+            slider.set_value(
+                clamped(value.snapshot(), *bounds.start(), *bounds.end()),
+                None,
+            );
+        }
+    });
+
+    // Step signal → AppKit tick marks (UIKit snaps in the action closure).
+    #[cfg(target_os = "macos")]
+    leaf.bind(step, {
+        let slider = slider.clone();
+        move |step| slider.set_step(step)
+    });
+    #[cfg(not(target_os = "macos"))]
+    let _ = step;
+}
+
 /// The `slider` realization: `Native<SliderConfig>`
 /// maps to a container view with the platform slider and the three label
 /// children mounted in it.
@@ -335,31 +388,33 @@ pub fn realize_slider_config(config: SliderConfig<Held>, ctx: &RenderContext<'_>
         config.size(),
         waterui::component::ControlSize::ExtraSmall,
     ));
-    slider.set_range(*config.range().start(), *config.range().end());
+    let initial_range = config.range().snapshot();
+    slider.set_range(*initial_range.start(), *initial_range.end());
     // AppKit holds the thumb to tick marks, one per step.
     #[cfg(target_os = "macos")]
-    slider.set_step(config.step());
+    slider.set_step(config.step().snapshot());
     slider.set_value(
         clamped(
             config.value().snapshot(),
-            *config.range().start(),
-            *config.range().end(),
+            *initial_range.start(),
+            *initial_range.end(),
         ),
         None,
     );
     host.add_subview(as_view(&slider));
 
     let range = config.range().clone();
-    let step = config.step();
+    let step = config.step().clone();
     let action = slider.install_action({
         let binding = config.value().clone();
         let slider = slider.clone();
         let range = range.clone();
+        let step = step.clone();
         move |value| {
             // UIKit has no step: the thumb moves freely, so the value is
             // snapped here and the thumb follows it, whether or not the
             // binding changes.
-            let snapped = snap(value, &range, step);
+            let snapped = snap(value, &range.snapshot(), step.snapshot());
             slider.set_value(snapped, None);
             binding.set(snapped);
         }
@@ -398,18 +453,7 @@ pub fn realize_slider_config(config: SliderConfig<Held>, ctx: &RenderContext<'_>
         },
     );
 
-    // Signal → control: push binding changes (clamped into range) with
-    // the animation the watcher metadata carries.
-    leaf.watch(&value, {
-        let slider = slider.clone();
-        move |ctx| {
-            let animation = value_animation(ctx.metadata());
-            slider.set_value(
-                clamped(*ctx.value(), *range.start(), *range.end()),
-                animation,
-            );
-        }
-    });
+    bind_slider_signals(&mut leaf, &slider, &value, &range, &step);
 
     // Announce the label's semantic text on the control.
     leaf.bind(&accessibility_label, {
@@ -445,7 +489,7 @@ pub fn realize_slider_config(config: SliderConfig<Held>, ctx: &RenderContext<'_>
 mod tests {
     use core::time::Duration;
 
-    use waterui::animation::NoAnimation;
+    use waterui::animation::{Animation, NoAnimation};
 
     use super::*;
 
@@ -504,31 +548,28 @@ mod tests {
     fn value_animation_follows_metadata_table() {
         assert_eq!(value_animation(&Metadata::new()), None);
         assert_eq!(
-            value_animation(&Metadata::new().with(Animation::Default)),
+            value_animation(&Metadata::new().with(Animation::default())),
             Some(ValueAnimation::Duration(0.25))
         );
         assert_eq!(
-            value_animation(&Metadata::new().with(Animation::Default).with(NoAnimation)),
+            value_animation(&Metadata::new().with(Animation::default()).with(NoAnimation)),
             None
         );
         assert_eq!(
-            value_animation(&Metadata::new().with(Animation::Bezier {
-                duration: Duration::from_millis(300),
-                x1: 0.1,
-                y1: 0.2,
-                x2: 0.3,
-                y2: 0.4,
-            })),
+            value_animation(&Metadata::new().with(Animation::bezier(
+                Duration::from_millis(300),
+                0.1,
+                0.2,
+                0.3,
+                0.4,
+            ))),
             Some(ValueAnimation::Bezier {
                 duration: 0.3,
                 control_points: [0.1, 0.2, 0.3, 0.4],
             })
         );
         // A spring runs for its own settling duration.
-        let spring = value_animation(&Metadata::new().with(Animation::Spring {
-            stiffness: 170.0,
-            damping: 15.0,
-        }));
+        let spring = value_animation(&Metadata::new().with(Animation::spring(170.0, 15.0)));
         match spring {
             Some(ValueAnimation::Duration(d)) => assert_eq!(
                 d.to_bits(),

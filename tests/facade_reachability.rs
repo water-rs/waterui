@@ -11,12 +11,12 @@
 // Tabs sit beside the split-view navigation types instead of behind
 // `navigation::tab::…`.
 use waterui::navigation::{
-    NavigationSplitView, Tab, Tabs, navigation_transition, split_style, tab_style,
+    NavigationSplitStyle, NavigationSplitView, Tab, TabStyle, Tabs, navigation_transition,
 };
 
 // The `slider` free function joins `button`/`toggle`/`stepper`/`field`/`label`
-// at the controls root.
-use waterui::component::{button, field, label, slider, stepper, toggle};
+// at the controls root; `ProgressStyle` sits beside `Progress`.
+use waterui::component::{ProgressStyle, button, field, label, slider, stepper, toggle};
 
 // Custom extractors reach the single `State` environment channel through `Extractor` and `State`.
 use waterui::extract::{Extractor, State};
@@ -88,19 +88,64 @@ fn prelude_exports_app_window_widgets_and_collections_without_shadowing() {
             let _ = items.len();
             let flag = Binding::bool(true);
             let _ = when(flag, || "ok");
-            let _ = accordion("Header", || "Body");
+            let _ = disclosure("Header", || "Body");
             let _ = error_view(io::Error::other("err"));
             let _ = ErrorView::new(io::Error::other("err"));
             let _ = Suspense::new(async { "ready" });
             let _ = SignalCollection::new(Binding::container(vec![RowItem { id: 3 }]));
             let _ = ForEach::new(items, |item| text!("{id}", id = item.id));
-            let _ = FullScreenOverlayManager::host(|overlay| {
-                overlay.show("Overlay");
-                "Main"
-            });
+            let presented = Binding::bool(false);
+            let _ = "Main".sheet(Sheet::new(&presented, || "Sheet"));
             "Root"
         });
         App::new(env).window(Window::new("Hello", || text!("Hello")))
     }
     let _ = sample_app;
+}
+
+#[cfg(all(feature = "image", feature = "video"))]
+mod media_prelude_exports {
+    mod app_types {
+        pub enum Event {
+            App,
+        }
+        pub struct Url;
+        pub struct Filter;
+    }
+
+    use app_types::*;
+    use waterui::Url as WaterUrl;
+    use waterui::media::live::LivePhotoEvent as MediaLivePhotoEvent;
+    use waterui::media::photo::PhotoEvent as MediaPhotoEvent;
+    use waterui::prelude::*;
+    use waterui::video::VideoEvent as MediaVideoEvent;
+
+    #[test]
+    fn media_prelude_exports_named_components_and_events_without_bare_event() {
+        // Two glob imports containing the same name fail to compile (`E0659`),
+        // proving the prelude does not leak bare `Event`, `Url`, or `Filter`.
+        let _ = (Event::App, Url, Filter);
+
+        let _: fn(PhotoEvent) -> MediaPhotoEvent = |event| {
+            let _ = matches!(event, PhotoEvent::Loaded | PhotoEvent::Error(_));
+            event
+        };
+        let _: fn(VideoEvent) -> MediaVideoEvent = |event| {
+            let _ = matches!(event, VideoEvent::ReadyToPlay | VideoEvent::Ended);
+            event
+        };
+        let _: fn(LivePhotoEvent) -> MediaLivePhotoEvent = |event| {
+            let _ = matches!(
+                event,
+                LivePhotoEvent::MotionStarted
+                    | LivePhotoEvent::MotionEnded
+                    | LivePhotoEvent::MotionFailed(_)
+            );
+            event
+        };
+
+        let _: Option<(Photo, Image, MediaPicker<()>, Video, VideoPlayer, LivePhoto)> = None;
+        let _: fn(WaterUrl) -> Photo = photo;
+        let _: fn(WaterUrl) -> VideoPlayer = video_player;
+    }
 }
