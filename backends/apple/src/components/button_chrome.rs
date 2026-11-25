@@ -7,7 +7,7 @@
 
 use cocoa_ui::Retained;
 use waterui::component::ControlSize;
-use waterui::component::button::ButtonStyle;
+use waterui::component::button::{ButtonRole, ButtonStyle};
 use waterui::graphics::color::WorkingColor;
 use waterui::reactive::{Computed, SignalExt};
 use waterui::resolve::Resolvable;
@@ -15,7 +15,7 @@ use waterui::resolve::Resolvable;
 use waterui::text::font::{Body, ResolvedFont};
 #[cfg(target_os = "macos")]
 use waterui::theme::color::MutedForeground;
-use waterui::theme::color::{AccentForeground, Foreground};
+use waterui::theme::color::{AccentForeground, Error, ErrorForeground, Foreground};
 #[cfg(target_os = "macos")]
 use waterui::theme::install_font_signal;
 use waterui::theme::{install_color_signal, resolve_tint};
@@ -86,7 +86,19 @@ pub(super) fn tint_signal(env: &Environment) -> Computed<WorkingColor> {
 /// borderless label takes the primary label color instead, as `SwiftUI` and
 /// `UIBarButtonItem` draw it there.
 #[cfg(target_os = "ios")]
-fn label_foreground(style: ButtonStyle, env: &Environment) -> Computed<WorkingColor> {
+fn label_foreground(
+    style: ButtonStyle,
+    role: Option<ButtonRole>,
+    env: &Environment,
+) -> Computed<WorkingColor> {
+    if role == Some(ButtonRole::Destructive) {
+        return match style {
+            ButtonStyle::BorderedProminent | ButtonStyle::GlassProminent => {
+                ErrorForeground.resolve(env).computed()
+            }
+            _ => Error.resolve(env).computed(),
+        };
+    }
     match style {
         ButtonStyle::BorderedProminent | ButtonStyle::GlassProminent => {
             AccentForeground.resolve(env).computed()
@@ -105,7 +117,7 @@ fn label_foreground(style: ButtonStyle, env: &Environment) -> Computed<WorkingCo
             waterui::contract_violation!(
                 "unsupported WaterUI button style: {style:?}; the automatic style's label color is used"
             );
-            label_foreground(ButtonStyle::Automatic, env)
+            label_foreground(ButtonStyle::Automatic, None, env)
         }
     }
 }
@@ -115,7 +127,19 @@ fn label_foreground(style: ButtonStyle, env: &Environment) -> Computed<WorkingCo
 /// toolbar a borderless label takes the toolbar's secondary label color
 /// instead, as `SwiftUI` draws it there.
 #[cfg(target_os = "macos")]
-fn label_foreground(style: ButtonStyle, env: &Environment) -> Computed<WorkingColor> {
+fn label_foreground(
+    style: ButtonStyle,
+    role: Option<ButtonRole>,
+    env: &Environment,
+) -> Computed<WorkingColor> {
+    if role == Some(ButtonRole::Destructive) {
+        return match style {
+            ButtonStyle::BorderedProminent | ButtonStyle::GlassProminent => {
+                ErrorForeground.resolve(env).computed()
+            }
+            _ => Error.resolve(env).computed(),
+        };
+    }
     match style {
         ButtonStyle::BorderedProminent | ButtonStyle::GlassProminent => {
             AccentForeground.resolve(env).computed()
@@ -132,7 +156,7 @@ fn label_foreground(style: ButtonStyle, env: &Environment) -> Computed<WorkingCo
             waterui::contract_violation!(
                 "unsupported WaterUI button style: {style:?}; the automatic style's label color is used"
             );
-            label_foreground(ButtonStyle::Automatic, env)
+            label_foreground(ButtonStyle::Automatic, None, env)
         }
     }
 }
@@ -177,10 +201,11 @@ pub(super) const fn control_size(size: ControlSize) -> NSControlSize {
 pub(super) fn label_environment(
     style: ButtonStyle,
     size: ControlSize,
+    role: Option<ButtonRole>,
     env: &Environment,
 ) -> Environment {
     let mut label_env = env.clone();
-    install_color_signal::<Foreground>(&mut label_env, label_foreground(style, env));
+    install_color_signal::<Foreground>(&mut label_env, label_foreground(style, role, env));
     #[cfg(target_os = "macos")]
     install_font_signal::<Body>(&mut label_env, label_font(env, control_size(size)));
     #[cfg(target_os = "ios")]
@@ -272,10 +297,15 @@ pub(super) fn bind_tint(
     leaf: &mut NativeLeaf,
     button: StyledButton,
     style: ButtonStyle,
+    role: Option<ButtonRole>,
     env: &Environment,
     mtm: cocoa_ui::MainThreadMarker,
 ) {
-    let tint = tint_signal(env);
+    let tint = if role == Some(ButtonRole::Destructive) {
+        Error.resolve(env).computed()
+    } else {
+        tint_signal(env)
+    };
     #[cfg(target_os = "macos")]
     let _ = mtm;
     leaf.bind(&tint, move |color| {
@@ -316,14 +346,14 @@ mod tests {
         install_color_signal::<Accent>(&mut env, constant(accent).computed());
         assert_eq!(components(&tint_signal(&env)), accent.components);
         assert_eq!(
-            components(&label_foreground(ButtonStyle::Link, &env)),
+            components(&label_foreground(ButtonStyle::Link, None, &env)),
             accent.components
         );
 
         let tinted = env.extending(Tint::new(Color::new(Working(red))));
         assert_eq!(components(&tint_signal(&tinted)), red.components);
         assert_eq!(
-            components(&label_foreground(ButtonStyle::Link, &tinted)),
+            components(&label_foreground(ButtonStyle::Link, None, &tinted)),
             red.components
         );
     }

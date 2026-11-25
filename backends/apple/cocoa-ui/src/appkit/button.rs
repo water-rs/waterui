@@ -143,6 +143,11 @@ impl Button {
         self.setTransparent(transparent);
     }
 
+    /// Marks whether the button performs a destructive action (`hasDestructiveAction`).
+    pub fn set_destructive(&self, destructive: bool) {
+        self.setHasDestructiveAction(destructive);
+    }
+
     /// The color a prominent bezel is filled with; `None` restores the
     /// default.
     pub fn set_bezel_color(&self, color: Option<&NSColor>) {

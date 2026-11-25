@@ -22,11 +22,10 @@ use std::rc::Rc;
 use cocoa_ui::Retained;
 use nami::Signal;
 use waterui_controls::IconSlot;
+use waterui_controls::button::ButtonRole;
 #[cfg(target_os = "macos")]
 use waterui_controls::menu::CloseWindowChord;
-use waterui_controls::menu::{
-    CommandRole, ResolvedCommand, ResolvedMenuItem, ResolvedNestedMenu, Shortcut,
-};
+use waterui_controls::menu::{ResolvedCommand, ResolvedMenuItem, ResolvedNestedMenu, Shortcut};
 use waterui_core::Environment;
 
 #[cfg(target_os = "macos")]
@@ -102,7 +101,7 @@ pub fn kit_command_for_menu<S>(
         None,
         symbol,
         image,
-        CommandRole::Standard,
+        None,
         None,
     )
 }
@@ -114,7 +113,7 @@ pub fn kit_command_fields(
     subtitle: Option<String>,
     symbol: Option<String>,
     image: Option<Retained<PlatformMenuImage>>,
-    role: CommandRole,
+    role: Option<ButtonRole>,
     shortcut: Option<&Shortcut>,
 ) -> cocoa_ui::menu::Command {
     let (key_equivalent, modifiers) = shortcut.map_or_else(
@@ -126,7 +125,7 @@ pub fn kit_command_fields(
         subtitle,
         symbol,
         image,
-        destructive: matches!(role, CommandRole::Destructive),
+        destructive: matches!(role, Some(ButtonRole::Destructive)),
         enabled: true,
         selected: false,
         key_equivalent,

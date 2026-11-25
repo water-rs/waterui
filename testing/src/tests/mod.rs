@@ -96,6 +96,7 @@ fn node(
         id: node_id(id),
         role,
         label: label.map(ToOwned::to_owned),
+        description: None,
         identifier: None,
         value: value.map(ToOwned::to_owned),
         placeholder: None,

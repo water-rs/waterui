@@ -698,7 +698,7 @@ pub fn components_block_17() {
             .shortcut(Shortcut::new('c').command())
     };
     let _ = {
-        "Delete".action(delete_handler).destructive() // red in every menu; == .role(CommandRole::Destructive)
+        "Delete".action(delete_handler).destructive() // red in every menu; == .role(ButtonRole::Destructive)
     };
     let _ = {
         "Delete"
@@ -712,7 +712,7 @@ pub fn components_block_17() {
     // The alternatives named in the trailing comments.
     let _ = "Delete"
         .action(delete_handler)
-        .role(CommandRole::Destructive);
+        .role(ButtonRole::Destructive);
     let _ = Shortcut::new('s').command().option();
     let _ = Shortcut::new('s').command().control();
 }
