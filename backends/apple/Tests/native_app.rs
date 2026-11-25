@@ -2132,7 +2132,7 @@ mod text_selection_ios {
     /// binding both move.
     pub fn a_selection_menu_command_edits_the_live_selection() {
         let mtm = mtm();
-        let value = binding(Str::from("hé😀b"));
+        let value = binding::<Str>(Str::from("hé😀b"));
         let observed = Rc::new(RefCell::new((String::new(), 0usize, 0usize)));
         let optional_seen = Rc::new(RefCell::new(false));
 
@@ -2406,7 +2406,7 @@ mod text_selection_ios {
             let mount = mount_uikit_window(
                 mtm,
                 waterui::AnyView::new(
-                    TextField::new(placeholder, &binding(Str::from("t")))
+                    TextField::new(placeholder, &binding::<Str>(Str::from("t")))
                         .selection_menu(items.computed()),
                 ),
                 &render_environment(),

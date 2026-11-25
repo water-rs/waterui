@@ -1782,7 +1782,7 @@ fn frame_transaction_consumes_a_focused_fields_caret_redraw() {
     use waterui_controls::text_field::TextField;
     use waterui_core::Str;
 
-    let value = binding(Str::from("Caret"));
+    let value = binding::<Str>(Str::from("Caret"));
     let env = test_environment();
     let mut runtime = runtime_window_sized(
         Window::new("", move || TextField::new("Value", &value).hide_label()),
