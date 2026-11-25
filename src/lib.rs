@@ -74,7 +74,7 @@ pub mod prelude {
     pub use super::window::{Window, WindowState};
     pub use super::{
         AnimationExt, AnyView, Binding, Color, Computed, Identifiable, OneOf2, OneOf3, OneOf4,
-        OneOf5, OneOf6, OneOf7, OneOf8, Signal, SignalExt, State, Str, View, ViewExt,
+        OneOf5, OneOf6, OneOf7, OneOf8, Project, Signal, SignalExt, State, Str, View, ViewExt,
         accessibility, animation, app, binding, color, component, cursor, drag_drop, env, error,
         filter, gesture, gradient, id, layout, locale, metadata, reactive, regional, shape, sheet,
         signal, style, task, text, widget, window,
@@ -174,11 +174,9 @@ pub mod prelude {
     pub use waterui_macros::FormBuilder;
     #[cfg(any(feature = "ts", feature = "webview"))]
     pub use waterui_macros::TsType;
-    pub use waterui_macros::{
-        Project, bench, catalog, preview, state, ui_test, view, view_builder,
-    };
     #[cfg(feature = "ts")]
     pub use waterui_macros::{TsProps, tsx};
+    pub use waterui_macros::{bench, catalog, preview, state, ui_test, view, view_builder};
     #[cfg(feature = "webview")]
     pub use waterui_macros::{eval, exec, exec_file, js_api, js_file};
 }
@@ -233,9 +231,7 @@ pub use waterui_macros::ui_test as test;
 #[doc(inline)]
 pub use waterui_macros::{FormBuilder, form};
 #[doc(inline)]
-pub use waterui_macros::{
-    Identifiable, Project, bench, catalog, preview, state, text, view, view_builder,
-};
+pub use waterui_macros::{Identifiable, bench, catalog, preview, state, text, view, view_builder};
 #[cfg(feature = "ts")]
 #[doc(inline)]
 pub use waterui_macros::{TsProps, tsx};
@@ -342,7 +338,7 @@ pub use haptic::{Feedback, Haptic, Intensity};
 pub use nami as reactive;
 pub use nami::SignalExt;
 #[doc(inline)]
-pub use reactive::{Binding, Computed, Signal, binding, signal};
+pub use reactive::{Binding, Computed, Project, Signal, binding, signal};
 #[doc(inline)]
 pub use waterui_core::AnimationExt;
 
