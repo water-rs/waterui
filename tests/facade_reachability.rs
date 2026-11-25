@@ -88,7 +88,7 @@ fn prelude_exports_app_window_widgets_and_collections_without_shadowing() {
             let _ = items.len();
             let flag = Binding::bool(true);
             let _ = when(flag, || "ok");
-            let _ = accordion("Header", || "Body");
+            let _ = disclosure("Header", || "Body");
             let _ = error_view(io::Error::other("err"));
             let _ = ErrorView::new(io::Error::other("err"));
             let _ = Suspense::new(async { "ready" });

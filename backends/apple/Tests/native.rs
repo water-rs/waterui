@@ -400,6 +400,7 @@ fn trials() -> Vec<Trial> {
     tests.extend(apple_content::trials());
     #[cfg(target_os = "macos")]
     tests.extend(row_major_table::trials());
+    tests.extend(disclosure::trials());
     #[cfg(all(feature = "native-test", feature = "gpu_surface"))]
     tests.extend(capture_colour::trials());
     #[cfg(all(catalyst, feature = "native-test", feature = "gpu_surface"))]
@@ -18103,5 +18104,155 @@ mod catalyst_view_renderer {
             "Catalyst prominent glass button must render active blue pixels, got {active_blue}"
         );
         Ok(())
+    }
+}
+
+/// Native `AppKit` / `UIKit` realization tests for `Disclosure`: focusability,
+/// indicator presence, accessibility `expanded` state, lazy body construction,
+/// and click/activation toggling.
+mod disclosure {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use cocoa_ui::objc2::Message;
+    #[cfg(target_os = "macos")]
+    use cocoa_ui::objc2_app_kit::NSAccessibility as _;
+    #[cfg(target_os = "ios")]
+    use cocoa_ui::objc2_ui_kit::NSObjectUIAccessibility as _;
+    use cocoa_ui::view::subviews;
+    use cocoa_ui::{PlatformView, Retained};
+    use libtest_mimic::Trial;
+    use waterui::Signal;
+    use waterui::component::text;
+    use waterui::reactive::binding;
+    use waterui::widget::disclosure::Disclosure;
+    use waterui_core::layout::ProposalSize;
+
+    #[cfg(target_os = "macos")]
+    use cocoa_ui::appkit::disclosure::DisclosureButton;
+    #[cfg(target_os = "ios")]
+    use cocoa_ui::uikit::disclosure::DisclosureButton;
+
+    #[cfg(target_os = "ios")]
+    use super::mtm;
+    use super::resolve;
+
+    pub fn trials() -> Vec<Trial> {
+        vec![Trial::test(
+            "disclosure::focusable_header_indicator_a11y_and_lazy_body",
+            || {
+                focusable_header_indicator_a11y_and_lazy_body();
+                Ok(())
+            },
+        )]
+    }
+
+    fn find_disclosure_button(root: &PlatformView) -> Option<Retained<DisclosureButton>> {
+        for sub in subviews(root) {
+            if let Some(button) = sub.downcast_ref::<DisclosureButton>() {
+                return Some(Message::retain(button));
+            }
+            if let Some(found) = find_disclosure_button(&sub) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    fn focusable_header_indicator_a11y_and_lazy_body() {
+        let expanded = binding(false);
+        let builds = Rc::new(Cell::new(0_usize));
+        let leaf = resolve::render(
+            Disclosure::new("Advanced", {
+                let builds = Rc::clone(&builds);
+                move || {
+                    builds.set(builds.get() + 1);
+                    text("Details")
+                }
+            })
+            .expanded(&expanded),
+        );
+
+        assert_eq!(
+            builds.get(),
+            0,
+            "collapsed disclosure must build body lazily"
+        );
+        let button = find_disclosure_button(leaf.view())
+            .expect("disclosure leaf must mount a native DisclosureButton");
+
+        let size = button.intrinsic_size();
+        assert!(
+            size.width > 0.0 && size.height > 0.0,
+            "disclosure indicator button must have visible non-zero size: {size:?}"
+        );
+        assert!(!button.is_expanded());
+        assert_eq!(subviews(leaf.view()).len(), 2);
+
+        #[cfg(target_os = "macos")]
+        {
+            assert!(
+                button.acceptsFirstResponder(),
+                "AppKit DisclosureButton must accept keyboard focus"
+            );
+            assert!(
+                !button.isAccessibilityExpanded(),
+                "AppKit DisclosureButton must report expanded=false initially"
+            );
+            assert_eq!(
+                button.accessibilityLabel().map(|label| label.to_string()),
+                Some(String::from("Advanced"))
+            );
+        }
+        #[cfg(target_os = "ios")]
+        {
+            let mtm = mtm();
+            assert!(
+                button.canBecomeFocused(),
+                "UIKit DisclosureButton must accept keyboard focus"
+            );
+            assert!(
+                button.currentImage().is_some(),
+                "UIKit DisclosureButton must display chevron indicator image"
+            );
+            assert_eq!(
+                button.accessibilityValue(mtm).map(|v| v.to_string()),
+                Some(String::from("Collapsed"))
+            );
+        }
+
+        // Activating the button expands the disclosure and lazily builds its body.
+        button.activate();
+        assert!(expanded.snapshot());
+        assert!(button.is_expanded());
+        assert_eq!(builds.get(), 1);
+        assert_eq!(subviews(leaf.view()).len(), 3);
+        let expanded_dims = leaf.layout().measure(ProposalSize::UNSPECIFIED).size;
+
+        #[cfg(target_os = "macos")]
+        {
+            assert!(button.isAccessibilityExpanded());
+        }
+        #[cfg(target_os = "ios")]
+        {
+            let mtm = mtm();
+            assert_eq!(
+                button.accessibilityValue(mtm).map(|v| v.to_string()),
+                Some(String::from("Expanded"))
+            );
+        }
+
+        // Activating again collapses and drops the body view.
+        button.activate();
+        assert!(!expanded.snapshot());
+        assert!(!button.is_expanded());
+        assert_eq!(subviews(leaf.view()).len(), 2);
+        let collapsed_dims = leaf.layout().measure(ProposalSize::UNSPECIFIED).size;
+        assert!(
+            expanded_dims.height > collapsed_dims.height,
+            "expanded height ({}) must exceed collapsed height ({})",
+            expanded_dims.height,
+            collapsed_dims.height
+        );
     }
 }

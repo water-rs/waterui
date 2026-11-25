@@ -43,9 +43,9 @@ use crate::component::link::Link;
 use crate::component::progress::Progress;
 use crate::component::table::{Table, TableColumn};
 use crate::widget::Divider;
-use crate::widget::accordion::Accordion;
 use crate::widget::avatar::Avatar;
 use crate::widget::card::Card;
+use crate::widget::disclosure::Disclosure;
 use waterui_core::handler::ViewBuilder as _;
 #[cfg(feature = "image")]
 use waterui_media::Photo;
@@ -56,13 +56,13 @@ use waterui_ts::{Bridge, FromJs, HostTable, JsViewBuilder};
 #[cfg(feature = "image")]
 use crate::ts::catalog::ImageAttributes;
 use crate::ts::catalog::{
-    AccordionAttributes, AvatarAttributes, BadgeAttributes, ButtonAttributes, CardAttributes,
-    ColumnAttributes, HStackAttributes, LinkAttributes, ListAttributes, NavigationLinkAttributes,
-    NavigationStackAttributes, PickerAttributes, PickerOption, ProgressAttributes,
-    ProgressStyleValue, ScrollAxis, ScrollViewAttributes, SliderAttributes, SpacerAttributes,
-    StepperAttributes, TabAttributes, TableAttributes, TabsAttributes, TextContent,
-    TextFieldAttributes, ToggleAttributes, VStackAttributes, ZStackAttributes, attribute_names,
-    component_named, component_names, modifier_names,
+    AvatarAttributes, BadgeAttributes, ButtonAttributes, CardAttributes, ColumnAttributes,
+    DisclosureAttributes, HStackAttributes, LinkAttributes, ListAttributes,
+    NavigationLinkAttributes, NavigationStackAttributes, PickerAttributes, PickerOption,
+    ProgressAttributes, ProgressStyleValue, ScrollAxis, ScrollViewAttributes, SliderAttributes,
+    SpacerAttributes, StepperAttributes, TabAttributes, TableAttributes, TabsAttributes,
+    TextContent, TextFieldAttributes, ToggleAttributes, VStackAttributes, ZStackAttributes,
+    attribute_names, component_named, component_names, modifier_names,
 };
 use collection::Spliced;
 
@@ -248,20 +248,6 @@ fn containers(
                 card = card.subtitle(subtitle);
             }
             AnyView::new(card)
-        }
-        "Accordion" => {
-            let attributes = AccordionAttributes::from_js(config, bridge)?;
-            let header = VStack::new(
-                HorizontalAlignment::Leading,
-                0.0,
-                children::content(bridge, children)?,
-            )
-            .spacing(default_vertical_spacing());
-            let (content, expanded) = attributes.into_parts();
-            AnyView::new(match expanded {
-                Some(expanded) => Accordion::with_toggle(&expanded, header, content),
-                None => Accordion::new(header, content),
-            })
         }
         _ => return Ok(None),
     }))
@@ -537,6 +523,16 @@ fn controls(
                 label,
                 attributes.into_url().map(|url| url.0).computed(),
             )))
+        }
+        "Disclosure" => {
+            let attributes = DisclosureAttributes::from_js(config, bridge)?;
+            let label = children::label(bridge, component, None, children)?;
+            let (content, expanded) = attributes.into_parts();
+            let disclosure = Disclosure::new(label, content);
+            Ok(AnyView::new(match expanded {
+                Some(expanded) => disclosure.expanded(&expanded),
+                None => disclosure,
+            }))
         }
         // `create` checked the catalog before dispatching, so a name reaching
         // here is one the catalog declares and this match does not build.
