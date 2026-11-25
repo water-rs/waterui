@@ -55,6 +55,7 @@ use waterui_core::{
     Environment, Error,
     extract::{ExtractionState, Extractor, State},
     handler::{BoxedAction, Handler, boxed_action},
+    layout::Point,
     metadata::MetadataKey,
 };
 
@@ -142,23 +143,6 @@ pub enum GesturePhase {
     Cancelled,
 }
 
-/// A two-dimensional point used to describe gesture locations.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct GesturePoint {
-    /// Horizontal component of the point.
-    pub x: f32,
-    /// Vertical component of the point.
-    pub y: f32,
-}
-
-impl GesturePoint {
-    /// Creates a new [`GesturePoint`].
-    #[must_use]
-    pub const fn new(x: f32, y: f32) -> Self {
-        Self { x, y }
-    }
-}
-
 /// Event payload for tap gestures.
 ///
 /// Backends install this structure into the environment via [`State<TapEvent>`]
@@ -168,7 +152,7 @@ impl GesturePoint {
 #[non_exhaustive]
 pub struct TapEvent {
     /// Location of the tap in the widget's coordinate space.
-    location: GesturePoint,
+    location: Point,
     /// Number of taps that occurred in succession.
     count: u32,
     /// The button that tapped.
@@ -178,12 +162,12 @@ pub struct TapEvent {
 impl TapEvent {
     /// Location of the tap in the widget's coordinate space.
     #[must_use]
-    pub const fn location(&self) -> GesturePoint {
+    pub const fn location(&self) -> Point {
         self.location
     }
 
     /// Sets the `location`.
-    pub const fn set_location(&mut self, location: GesturePoint) {
+    pub const fn set_location(&mut self, location: Point) {
         self.location = location;
     }
 
@@ -203,7 +187,7 @@ impl TapEvent {
 impl TapEvent {
     /// A tap of `count` successive taps of `button` at `location`.
     #[must_use]
-    pub const fn new(location: GesturePoint, count: u32, button: PointerButton) -> Self {
+    pub const fn new(location: Point, count: u32, button: PointerButton) -> Self {
         Self {
             location,
             count,
@@ -220,7 +204,7 @@ impl TapEvent {
 #[non_exhaustive]
 pub struct LongPressEvent {
     /// Location of the press in the widget's coordinate space.
-    location: GesturePoint,
+    location: Point,
     /// Duration, in platform-defined time units, that the press was held.
     duration: f32,
     /// The button that is held.
@@ -230,12 +214,12 @@ pub struct LongPressEvent {
 impl LongPressEvent {
     /// Location of the press in the widget's coordinate space.
     #[must_use]
-    pub const fn location(&self) -> GesturePoint {
+    pub const fn location(&self) -> Point {
         self.location
     }
 
     /// Sets the `location`.
-    pub const fn set_location(&mut self, location: GesturePoint) {
+    pub const fn set_location(&mut self, location: Point) {
         self.location = location;
     }
 
@@ -255,7 +239,7 @@ impl LongPressEvent {
 impl LongPressEvent {
     /// A press of `button` at `location`, held for `duration`.
     #[must_use]
-    pub const fn new(location: GesturePoint, duration: f32, button: PointerButton) -> Self {
+    pub const fn new(location: Point, duration: f32, button: PointerButton) -> Self {
         Self {
             location,
             duration,
@@ -274,11 +258,11 @@ pub struct DragEvent {
     /// Phase of the drag gesture.
     phase: GesturePhase,
     /// Current location of the pointer.
-    location: GesturePoint,
+    location: Point,
     /// Total translation since the drag started.
-    translation: GesturePoint,
+    translation: Point,
     /// Velocity of the drag in points per second.
-    velocity: GesturePoint,
+    velocity: Point,
     /// The button that drags.
     button: PointerButton,
 }
@@ -292,34 +276,34 @@ impl DragEvent {
 
     /// Current location of the pointer.
     #[must_use]
-    pub const fn location(&self) -> GesturePoint {
+    pub const fn location(&self) -> Point {
         self.location
     }
 
     /// Sets the `location`.
-    pub const fn set_location(&mut self, location: GesturePoint) {
+    pub const fn set_location(&mut self, location: Point) {
         self.location = location;
     }
 
     /// Total translation since the drag started.
     #[must_use]
-    pub const fn translation(&self) -> GesturePoint {
+    pub const fn translation(&self) -> Point {
         self.translation
     }
 
     /// Sets the `translation`.
-    pub const fn set_translation(&mut self, translation: GesturePoint) {
+    pub const fn set_translation(&mut self, translation: Point) {
         self.translation = translation;
     }
 
     /// Velocity of the drag in points per second.
     #[must_use]
-    pub const fn velocity(&self) -> GesturePoint {
+    pub const fn velocity(&self) -> Point {
         self.velocity
     }
 
     /// Sets the `velocity`.
-    pub const fn set_velocity(&mut self, velocity: GesturePoint) {
+    pub const fn set_velocity(&mut self, velocity: Point) {
         self.velocity = velocity;
     }
 
@@ -336,9 +320,9 @@ impl DragEvent {
     #[must_use]
     pub const fn new(
         phase: GesturePhase,
-        location: GesturePoint,
-        translation: GesturePoint,
-        velocity: GesturePoint,
+        location: Point,
+        translation: Point,
+        velocity: Point,
         button: PointerButton,
     ) -> Self {
         Self {
@@ -361,7 +345,7 @@ pub struct MagnificationEvent {
     /// Phase of the magnification gesture.
     phase: GesturePhase,
     /// Focal point of the gesture.
-    center: GesturePoint,
+    center: Point,
     /// Current scale factor relative to the gesture start.
     scale: f32,
     /// Rate of change of the scale factor.
@@ -377,12 +361,12 @@ impl MagnificationEvent {
 
     /// Focal point of the gesture.
     #[must_use]
-    pub const fn center(&self) -> GesturePoint {
+    pub const fn center(&self) -> Point {
         self.center
     }
 
     /// Sets the `center`.
-    pub const fn set_center(&mut self, center: GesturePoint) {
+    pub const fn set_center(&mut self, center: Point) {
         self.center = center;
     }
 
@@ -403,7 +387,7 @@ impl MagnificationEvent {
     /// A magnification in `phase` about `center`, at `scale` relative to the
     /// gesture start, changing at `velocity`.
     #[must_use]
-    pub const fn new(phase: GesturePhase, center: GesturePoint, scale: f32, velocity: f32) -> Self {
+    pub const fn new(phase: GesturePhase, center: Point, scale: f32, velocity: f32) -> Self {
         Self {
             phase,
             center,
@@ -424,7 +408,7 @@ pub struct RotationEvent {
     /// Phase of the rotation gesture.
     phase: GesturePhase,
     /// Pivot point the rotation is measured around.
-    center: GesturePoint,
+    center: Point,
     /// Current angle in radians relative to the gesture start.
     angle: f32,
     /// Rate of change of the angle, in radians per second.
@@ -440,12 +424,12 @@ impl RotationEvent {
 
     /// Pivot point the rotation is measured around.
     #[must_use]
-    pub const fn center(&self) -> GesturePoint {
+    pub const fn center(&self) -> Point {
         self.center
     }
 
     /// Sets the `center`.
-    pub const fn set_center(&mut self, center: GesturePoint) {
+    pub const fn set_center(&mut self, center: Point) {
         self.center = center;
     }
 
@@ -466,7 +450,7 @@ impl RotationEvent {
     /// A rotation in `phase` about `center`, at `angle` radians from the
     /// gesture start, changing at `velocity` radians per second.
     #[must_use]
-    pub const fn new(phase: GesturePhase, center: GesturePoint, angle: f32, velocity: f32) -> Self {
+    pub const fn new(phase: GesturePhase, center: Point, angle: f32, velocity: f32) -> Self {
         Self {
             phase,
             center,

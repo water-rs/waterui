@@ -270,6 +270,7 @@ pub struct NodeSnapshot {
     pub(crate) id: NodeId,
     pub(crate) role: Role,
     pub(crate) label: Option<String>,
+    pub(crate) description: Option<String>,
     pub(crate) identifier: Option<String>,
     pub(crate) value: Option<String>,
     pub(crate) placeholder: Option<String>,
@@ -304,6 +305,12 @@ impl NodeSnapshot {
     #[must_use]
     pub fn label(&self) -> Option<&str> {
         self.label.as_deref()
+    }
+
+    /// Returns the accessibility description, if any.
+    #[must_use]
+    pub fn description(&self) -> Option<&str> {
+        self.description.as_deref()
     }
 
     /// Returns the stable automation identifier (`a11y_id`), if any.
@@ -443,6 +450,7 @@ impl NodeSnapshot {
             id: NodeId::from(id),
             role: Role(node.role()),
             label: node.label().map(ToOwned::to_owned),
+            description: node.description().map(ToOwned::to_owned),
             identifier: node.author_id().map(ToOwned::to_owned),
             value,
             placeholder: node.placeholder().map(ToOwned::to_owned),

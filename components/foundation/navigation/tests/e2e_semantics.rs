@@ -12,7 +12,7 @@ use waterui_navigation::tab::{Tab, Tabs};
 use waterui_navigation::{
     NavigationLink, NavigationPath, NavigationSplitView, NavigationStack, NavigationView,
 };
-use waterui_testing::{Role, Selector, SemanticApp, UiBuilder};
+use waterui_testing::{Role, SemanticApp, UiBuilder};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum TestRoute {
@@ -270,18 +270,11 @@ fn tabs_tap_switches_selection_and_content(app: &mut SemanticApp) {
         .label("home content")
         .assert_exists();
     app.query().role(Role::TAB).label("Settings Tab").tap();
-    assert!(
-        app.wait_for(
-            &[app.expect_exists(
-                Selector::default()
-                    .role(Role::TAB)
-                    .label("Settings Tab")
-                    .selected(true),
-            )],
-            waterui_testing::WaitOptions::new(Duration::from_millis(200)),
-        ) == waterui_testing::WaitResult::Completed,
-        "settings tab should become selected"
-    );
+    app.query()
+        .role(Role::TAB)
+        .label("Settings Tab")
+        .selected(true)
+        .assert_exists_within(Duration::from_millis(200));
     app.query()
         .role(Role::LABEL)
         .label("settings content")
@@ -301,13 +294,10 @@ fn navigation_link_push_and_back_pop_update_content(app: &mut SemanticApp) {
         .label("detail content")
         .assert_exists();
     app.query().role(Role::BUTTON).label("Back").tap();
-    assert!(
-        app.wait_for(
-            &[app.expect_exists(Selector::default().role(Role::BUTTON).label("Open Detail"),)],
-            waterui_testing::WaitOptions::new(Duration::from_millis(200)),
-        ) == waterui_testing::WaitResult::Completed,
-        "root navigation content should return after back"
-    );
+    app.query()
+        .role(Role::BUTTON)
+        .label("Open Detail")
+        .assert_exists_within(Duration::from_millis(200));
 }
 
 #[waterui::test(path_stack_nested_value_link_view)]
@@ -318,17 +308,10 @@ fn path_stack_keeps_value_links_active_inside_destination(app: &mut SemanticApp)
         .label("Open Second")
         .assert_exists();
     app.query().role(Role::BUTTON).label("Open Second").tap();
-    assert!(
-        app.wait_for(
-            &[app.expect_exists(
-                Selector::default()
-                    .role(Role::LABEL)
-                    .label("second content")
-            )],
-            waterui_testing::WaitOptions::new(Duration::from_millis(200)),
-        ) == waterui_testing::WaitResult::Completed,
-        "second destination content should appear after nested value link tap"
-    );
+    app.query()
+        .role(Role::LABEL)
+        .label("second content")
+        .assert_exists_within(Duration::from_millis(200));
 }
 
 #[waterui::test()]
@@ -369,13 +352,10 @@ fn a_builder_link_in_a_path_stack_pops_without_touching_the_path(ui: UiBuilder) 
     );
 
     app.query().role(Role::BUTTON).label("Back").tap();
-    assert!(
-        app.wait_for(
-            &[app.expect_exists(Selector::default().role(Role::BUTTON).label("Open Builder"))],
-            waterui_testing::WaitOptions::new(Duration::from_millis(200)),
-        ) == waterui_testing::WaitResult::Completed,
-        "the root must return after popping the builder entry"
-    );
+    app.query()
+        .role(Role::BUTTON)
+        .label("Open Builder")
+        .assert_exists_within(Duration::from_millis(200));
     assert_eq!(path.snapshot(), []);
 }
 
@@ -404,17 +384,10 @@ fn a_builder_link_above_a_route_unwinds_in_order(ui: UiBuilder) {
     );
 
     app.query().role(Role::BUTTON).label("Back").tap();
-    assert!(
-        app.wait_for(
-            &[app.expect_exists(
-                Selector::default()
-                    .role(Role::BUTTON)
-                    .label("Open Nested Builder")
-            )],
-            waterui_testing::WaitOptions::new(Duration::from_millis(200)),
-        ) == waterui_testing::WaitResult::Completed,
-        "the first pop must land back on the route destination"
-    );
+    app.query()
+        .role(Role::BUTTON)
+        .label("Open Nested Builder")
+        .assert_exists_within(Duration::from_millis(200));
     assert_eq!(
         path.snapshot(),
         vec![TestRoute::First],
@@ -422,13 +395,10 @@ fn a_builder_link_above_a_route_unwinds_in_order(ui: UiBuilder) {
     );
 
     app.query().role(Role::BUTTON).label("Back").tap();
-    assert!(
-        app.wait_for(
-            &[app.expect_exists(Selector::default().role(Role::BUTTON).label("Open Value"))],
-            waterui_testing::WaitOptions::new(Duration::from_millis(200)),
-        ) == waterui_testing::WaitResult::Completed,
-        "the second pop must reach the explicit path"
-    );
+    app.query()
+        .role(Role::BUTTON)
+        .label("Open Value")
+        .assert_exists_within(Duration::from_millis(200));
     assert_eq!(path.snapshot(), []);
 }
 
@@ -498,18 +468,10 @@ fn restored_path_and_atomic_multi_pop_have_exact_lifecycle(ui: UiBuilder) {
     assert_eq!(destination_popped.get(), 0);
 
     path.clear();
-    assert_eq!(
-        app.wait_for(
-            &[app.expect_exists(
-                Selector::default()
-                    .role(Role::LABEL)
-                    .label("restored root content"),
-            )],
-            waterui_testing::WaitOptions::new(Duration::from_millis(200)),
-        ),
-        waterui_testing::WaitResult::Completed,
-        "atomic path removal should return to the root"
-    );
+    app.query()
+        .role(Role::LABEL)
+        .label("restored root content")
+        .assert_exists_within(Duration::from_millis(200));
     assert_eq!(root_appeared.get(), 1);
     assert_eq!(destination_appeared.get(), 1);
     assert_eq!(destination_disappeared.get(), 1);
@@ -569,11 +531,8 @@ fn split_view_selection_switches_placeholder_to_detail(app: &mut SemanticApp) {
         .label("placeholder content")
         .assert_exists();
     app.query().role(Role::BUTTON).label("Select Detail").tap();
-    assert!(
-        app.wait_for(
-            &[app.expect_exists(Selector::default().role(Role::LABEL).label("detail:7"))],
-            waterui_testing::WaitOptions::new(Duration::from_millis(200)),
-        ) == waterui_testing::WaitResult::Completed,
-        "split detail content should appear after selection"
-    );
+    app.query()
+        .role(Role::LABEL)
+        .label("detail:7")
+        .assert_exists_within(Duration::from_millis(200));
 }

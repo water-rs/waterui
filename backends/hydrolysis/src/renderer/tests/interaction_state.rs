@@ -431,11 +431,11 @@ impl waterui::component::toggle::CustomToggleStyle for TestToggleStyle {
         configuration: waterui::component::toggle::ToggleStyleConfiguration<L>,
     ) -> impl waterui::View + use<L> {
         *self.state_out.borrow_mut() = Some(configuration.interaction_state().clone());
-        let bg = waterui::color::signal_color(nami::SignalExt::select(
+        let bg = nami::SignalExt::select(
             configuration.is_on(),
             Color::srgb_hex("#16A34A"),
             Color::srgb_hex("#52525B"),
-        ));
+        );
         configuration
             .into_label()
             .width(120.0)

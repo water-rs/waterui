@@ -386,7 +386,7 @@ fn text_field_focus_updates_ui_focus(ui: UiBuilder) {
 
     let mut app = ui.mount(move || control_shell(TextField::new("Search", &value_for_view)));
 
-    let selector = Selector::default().role(Role::TEXT_INPUT).label("Search");
+    let selector = Selector::new().role(Role::TEXT_INPUT).label("Search");
     app.query().role(Role::TEXT_INPUT).label("Search").focus();
     app.assert_ui_focus(&selector);
 }

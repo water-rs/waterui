@@ -1,3 +1,4 @@
+use core::borrow::Borrow;
 use core::marker::PhantomData;
 use core::ops::Index;
 use std::collections::BTreeMap;
@@ -34,6 +35,217 @@ pub struct Selector {
 
 impl Default for Selector {
     fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Defines the shared semantic filter methods once so [`Selector`] and
+/// [`crate::Query`] stay identical in signatures, doc comments, and defaults.
+macro_rules! define_selector_filters {
+    (@selector $self:ident) => {
+        define_selector_filters!(@dispatch selector, $self);
+    };
+    (@query $self:ident) => {
+        define_selector_filters!(@dispatch query, $self);
+    };
+    (@dispatch $mode:ident, $self:ident) => {
+        define_selector_filters!(
+            @entries $mode, $self,
+            {
+                /// Restricts matches to an accessibility role.
+                #[must_use]
+                const fn role(role: Role) {
+                    $self.role = Some(role);
+                }
+            },
+            {
+                /// Restricts matches to a stable automation identifier (`a11y_id`).
+                #[must_use]
+                fn identifier(identifier: impl Into<String>) {
+                    $self.identifier = Some(identifier.into());
+                }
+            },
+            {
+                /// Restricts matches to an exact label.
+                #[must_use]
+                fn label(label: impl Into<String>) {
+                    $self.label_exact = Some(label.into());
+                }
+            },
+            {
+                /// Restricts matches to labels containing text.
+                #[must_use]
+                fn label_contains(label: impl Into<String>) {
+                    $self.label_contains = Some(label.into());
+                }
+            },
+            {
+                /// Restricts matches to descendants of `handle`.
+                #[must_use]
+                fn within<U>(handle: impl Borrow<ElementRef<U>>) {
+                    $self.scope = Some(QueryScope::descendants(handle.borrow().clone().into_anchor()));
+                }
+            },
+            {
+                /// Restricts matches to direct children of `handle`.
+                #[must_use]
+                fn children_of<U>(handle: impl Borrow<ElementRef<U>>) {
+                    $self.scope = Some(QueryScope::children(handle.borrow().clone().into_anchor()));
+                }
+            },
+            {
+                /// Restricts matches to an enabled state.
+                #[must_use]
+                const fn enabled(enabled: bool) {
+                    $self.enabled = Some(enabled);
+                }
+            },
+            {
+                /// Restricts matches to a selected state.
+                #[must_use]
+                const fn selected(selected: bool) {
+                    $self.selected = Some(selected);
+                }
+            },
+            {
+                /// Restricts matches to a checked state.
+                #[must_use]
+                const fn checked(checked: bool) {
+                    $self.checked = Some(if checked {
+                        CheckedState::True
+                    } else {
+                        CheckedState::False
+                    });
+                }
+            },
+            {
+                /// Restricts matches to nodes with an indeterminate checked state.
+                #[must_use]
+                const fn mixed() {
+                    $self.checked = Some(CheckedState::Mixed);
+                }
+            },
+            {
+                /// Restricts matches to an expanded state.
+                #[must_use]
+                const fn expanded(expanded: bool) {
+                    $self.expanded = Some(expanded);
+                }
+            },
+            {
+                /// Restricts matches to nodes with the requested busy state.
+                #[must_use]
+                const fn busy(busy: bool) {
+                    $self.busy = Some(busy);
+                }
+            },
+            {
+                /// Restricts matches to an exact value.
+                #[must_use]
+                fn value(value: impl Into<String>) {
+                    $self.value_exact = Some(value.into());
+                }
+            },
+            {
+                /// Restricts matches to values containing text.
+                #[must_use]
+                fn value_contains(value: impl Into<String>) {
+                    $self.value_contains = Some(value.into());
+                }
+            },
+            {
+                /// Restricts matches to an exact placeholder.
+                #[must_use]
+                fn placeholder(placeholder: impl Into<String>) {
+                    $self.placeholder_exact = Some(placeholder.into());
+                }
+            },
+            {
+                /// Restricts matches to placeholders containing text.
+                #[must_use]
+                fn placeholder_contains(placeholder: impl Into<String>) {
+                    $self.placeholder_contains = Some(placeholder.into());
+                }
+            },
+            {
+                /// Includes or excludes hidden nodes.
+                #[must_use]
+                const fn hidden(hidden: bool) {
+                    $self.hidden = Some(hidden);
+                }
+            },
+            {
+                /// Restricts matches to a declared text-field content type.
+                #[must_use]
+                const fn content_type(content_type: ContentType) {
+                    $self.content_type = Some(content_type);
+                }
+            }
+        );
+    };
+    (@entries $mode:ident, $self:ident, $($item:tt),* $(,)?) => {
+        $(define_selector_filters!(@one $mode, $self, $item);)*
+    };
+    (
+        @one selector, $self:ident,
+        {
+            $(#[$meta:meta])*
+            const fn $name:ident($($arg:ident : $ty:ty),* $(,)?) $body:block
+        }
+    ) => {
+        $(#[$meta])*
+        pub const fn $name(mut $self, $($arg : $ty),*) -> Self {
+            $body
+            $self
+        }
+    };
+    (
+        @one query, $self:ident,
+        {
+            $(#[$meta:meta])*
+            const fn $name:ident($($arg:ident : $ty:ty),* $(,)?) $body:block
+        }
+    ) => {
+        $(#[$meta])*
+        pub fn $name(mut $self, $($arg : $ty),*) -> Self {
+            $self.selector = $self.selector.$name($($arg),*);
+            $self
+        }
+    };
+    (
+        @one selector, $self:ident,
+        {
+            $(#[$meta:meta])*
+            fn $name:ident $(<$gen:ident>)? ($($arg:ident : $ty:ty),* $(,)?) $body:block
+        }
+    ) => {
+        $(#[$meta])*
+        pub fn $name $(<$gen>)? (mut $self, $($arg : $ty),*) -> Self {
+            $body
+            $self
+        }
+    };
+    (
+        @one query, $self:ident,
+        {
+            $(#[$meta:meta])*
+            fn $name:ident $(<$gen:ident>)? ($($arg:ident : $ty:ty),* $(,)?) $body:block
+        }
+    ) => {
+        $(#[$meta])*
+        pub fn $name $(<$gen>)? (mut $self, $($arg : $ty),*) -> Self {
+            $self.selector = $self.selector.$name($($arg),*);
+            $self
+        }
+    };
+}
+
+pub(crate) use define_selector_filters;
+
+impl Selector {
+    /// Creates an empty semantic selector matching visible nodes.
+    #[must_use]
+    pub const fn new() -> Self {
         Self {
             role: None,
             identifier: None,
@@ -53,138 +265,8 @@ impl Default for Selector {
             scope: None,
         }
     }
-}
 
-impl Selector {
-    /// Restricts matches to an accessibility role.
-    #[must_use]
-    pub const fn role(mut self, role: Role) -> Self {
-        self.role = Some(role);
-        self
-    }
-
-    /// Restricts matches to a stable automation identifier (`a11y_id`).
-    #[must_use]
-    pub fn identifier(mut self, identifier: impl Into<String>) -> Self {
-        self.identifier = Some(identifier.into());
-        self
-    }
-
-    /// Restricts matches to an exact label.
-    #[must_use]
-    pub fn label(mut self, label: impl Into<String>) -> Self {
-        self.label_exact = Some(label.into());
-        self
-    }
-
-    /// Restricts matches to labels containing text.
-    #[must_use]
-    pub fn label_contains(mut self, label: impl Into<String>) -> Self {
-        self.label_contains = Some(label.into());
-        self
-    }
-
-    /// Restricts matches to an enabled state.
-    #[must_use]
-    pub const fn enabled(mut self, enabled: bool) -> Self {
-        self.enabled = Some(enabled);
-        self
-    }
-
-    /// Restricts matches to a selected state.
-    #[must_use]
-    pub const fn selected(mut self, selected: bool) -> Self {
-        self.selected = Some(selected);
-        self
-    }
-
-    /// Restricts matches to a checked state.
-    #[must_use]
-    pub const fn checked(mut self, checked: bool) -> Self {
-        self.checked = Some(if checked {
-            CheckedState::True
-        } else {
-            CheckedState::False
-        });
-        self
-    }
-
-    /// Restricts matches to nodes with an indeterminate checked state.
-    #[must_use]
-    pub const fn mixed(mut self) -> Self {
-        self.checked = Some(CheckedState::Mixed);
-        self
-    }
-
-    /// Restricts matches to an expanded state.
-    #[must_use]
-    pub const fn expanded(mut self, expanded: bool) -> Self {
-        self.expanded = Some(expanded);
-        self
-    }
-
-    /// Restricts matches to nodes with the requested busy state.
-    #[must_use]
-    pub const fn busy(mut self, busy: bool) -> Self {
-        self.busy = Some(busy);
-        self
-    }
-
-    /// Restricts matches to an exact value.
-    #[must_use]
-    pub fn value(mut self, value: impl Into<String>) -> Self {
-        self.value_exact = Some(value.into());
-        self
-    }
-
-    /// Restricts matches to values containing text.
-    #[must_use]
-    pub fn value_contains(mut self, value: impl Into<String>) -> Self {
-        self.value_contains = Some(value.into());
-        self
-    }
-
-    /// Restricts matches to an exact placeholder.
-    #[must_use]
-    pub fn placeholder(mut self, placeholder: impl Into<String>) -> Self {
-        self.placeholder_exact = Some(placeholder.into());
-        self
-    }
-
-    /// Restricts matches to placeholders containing text.
-    #[must_use]
-    pub fn placeholder_contains(mut self, placeholder: impl Into<String>) -> Self {
-        self.placeholder_contains = Some(placeholder.into());
-        self
-    }
-
-    /// Includes or excludes hidden nodes.
-    #[must_use]
-    pub const fn hidden(mut self, hidden: bool) -> Self {
-        self.hidden = Some(hidden);
-        self
-    }
-
-    /// Restricts matches to a declared text-field content type.
-    #[must_use]
-    pub const fn content_type(mut self, content_type: ContentType) -> Self {
-        self.content_type = Some(content_type);
-        self
-    }
-
-    /// Restricts matches to descendants of `handle`.
-    #[must_use]
-    pub fn within<R>(mut self, handle: ElementRef<R>) -> Self {
-        self.scope = Some(QueryScope::descendants(handle.into_anchor()));
-        self
-    }
-
-    /// Restricts matches to direct children of `handle`.
-    #[must_use]
-    pub fn children_of<R>(mut self, handle: ElementRef<R>) -> Self {
-        self.scope = Some(QueryScope::children(handle.into_anchor()));
-        self
-    }
+    define_selector_filters!(@selector self);
 
     #[must_use]
     pub(crate) const fn scope(&self) -> Option<&QueryScope> {

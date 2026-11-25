@@ -211,12 +211,14 @@ use waterui::window::{Window, WindowState, WindowStyle};
 #[cfg(feature = "menu")]
 use waterui_controls::button::Button;
 use waterui_controls::button::ButtonConfig;
+#[cfg(feature = "menu")]
+use waterui_controls::button::ButtonRole;
 #[cfg(feature = "accessibility")]
 use waterui_controls::input::ContentType;
 #[cfg(feature = "menu")]
 use waterui_controls::label::Label as SemanticLabel;
 #[cfg(feature = "menu")]
-use waterui_controls::menu::{CommandRole, ResolvedCommand, ResolvedMenu, ResolvedMenuItem};
+use waterui_controls::menu::{ResolvedCommand, ResolvedMenu, ResolvedMenuItem};
 #[cfg(feature = "slider")]
 use waterui_controls::slider::SliderConfig;
 #[cfg(feature = "stepper")]

@@ -12,7 +12,10 @@
 //! let badge = badge::Badge::new(5_u32, button("Messages").action(|| {}));
 //! ```
 
-use nami::{Computed, Signal, signal::IntoComputed};
+use nami::{
+    Computed, SignalExt as _,
+    signal::{IntoComputed, IntoSignal},
+};
 pub use waterui_controls::BadgeValue;
 use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 use waterui_core::{AnyView, Environment, Native, NativeView, View};
@@ -78,8 +81,8 @@ impl<C: View> Badge<C> {
     ///
     /// # Arguments
     /// * `color` - The color to use for the badge
-    pub fn color(mut self, color: impl Signal<Output = Color>) -> Self {
-        self.0.color = color.into_computed();
+    pub fn color(mut self, color: impl IntoSignal<Color> + 'static) -> Self {
+        self.0.color = color.into_signal().computed();
         self
     }
 

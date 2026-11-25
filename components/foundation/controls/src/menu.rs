@@ -29,7 +29,7 @@ use waterui_locale::locale_binding;
 use waterui_text::{TextConfig, styled::StyledStr};
 
 use crate::{
-    button::{Button, ButtonStyle},
+    button::{Button, ButtonRole, ButtonStyle},
     label::{
         ControlLabel, IntoAccessibilityLabel, IntoLabel, Label, LabelDisplayMode, LabelKind,
         SemanticLabel,
@@ -734,21 +734,6 @@ impl<L: LabelKind> View for Menu<L> {
     }
 }
 
-/// What a command does to the thing it acts on, which decides how every
-/// menu presents it.
-///
-/// A destructive command is drawn in the platform's destructive style: red
-/// text on iOS, macOS and Android, and the error colour in drawn menus.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[non_exhaustive]
-pub enum CommandRole {
-    /// An ordinary command.
-    #[default]
-    Standard,
-    /// A command that deletes or irreversibly changes data.
-    Destructive,
-}
-
 /// A semantic command that can be reused across menu-like surfaces.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
@@ -764,7 +749,7 @@ pub struct Command {
     /// Optional keyboard shortcut metadata.
     shortcut: Option<Shortcut>,
     /// What the command does, which decides its presentation.
-    role: CommandRole,
+    role: Option<ButtonRole>,
     /// An optional secondary line shown under the label.
     subtitle: Option<Str>,
     /// Local state layered onto the environment when the action runs.
@@ -805,7 +790,7 @@ impl Command {
 
     /// What the command does, which decides its presentation.
     #[must_use]
-    pub const fn command_role(&self) -> CommandRole {
+    pub const fn command_role(&self) -> Option<ButtonRole> {
         self.role
     }
 
@@ -886,15 +871,15 @@ impl Command {
 
     /// Sets what the command does, which decides its presentation.
     #[must_use]
-    pub const fn role(mut self, role: CommandRole) -> Self {
-        self.role = role;
+    pub const fn role(mut self, role: ButtonRole) -> Self {
+        self.role = Some(role);
         self
     }
 
     /// Marks the command as destructive.
     #[must_use]
     pub const fn destructive(self) -> Self {
-        self.role(CommandRole::Destructive)
+        self.role(ButtonRole::Destructive)
     }
 
     /// Shows a secondary line under the command's label.
@@ -945,7 +930,7 @@ impl CommandBuilder {
             disabled: Computed::constant(false),
             selected: Computed::constant(false),
             shortcut: None,
-            role: CommandRole::Standard,
+            role: None,
             subtitle: None,
             captured_env: Environment::new(),
             identity: Rc::new(()),
@@ -1378,7 +1363,7 @@ pub struct ResolvedCommand<S = NoopSlot> {
     /// Optional keyboard shortcut metadata.
     pub shortcut: Option<Shortcut>,
     /// What the command does, which decides its presentation.
-    pub role: CommandRole,
+    pub role: Option<ButtonRole>,
     /// An optional secondary line shown under the label.
     pub subtitle: Option<Str>,
     identity: Rc<()>,
@@ -1988,13 +1973,13 @@ mod tests {
         let ResolvedMenuItem::Command(reply) = &resolved[0] else {
             panic!("first resolved item should be a command");
         };
-        assert_eq!(reply.role, CommandRole::Standard);
+        assert_eq!(reply.role, None);
         assert!(reply.subtitle.is_none());
 
         let ResolvedMenuItem::Command(delete) = &resolved[1] else {
             panic!("second resolved item should be a command");
         };
-        assert_eq!(delete.role, CommandRole::Destructive);
+        assert_eq!(delete.role, Some(ButtonRole::Destructive));
         assert_eq!(delete.subtitle.as_deref(), Some("For everyone"));
     }
 

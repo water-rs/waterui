@@ -1330,6 +1330,12 @@ impl<L, Action, Style> Button<L, Action, Style> {
         self
     }
 
+    /// Extracts the label, action handler, and semantic role for action conversions.
+    #[doc(hidden)]
+    pub fn into_action_parts(self) -> (Label<L>, Action, Option<ButtonRole>) {
+        (self.label, self.action, self.role)
+    }
+
     /// Returns the size this button is drawn at.
     #[must_use]
     pub const fn button_size(&self) -> ControlSize {
@@ -1604,12 +1610,17 @@ where
             mut action,
             style: _,
             explicit_style: _,
-            role: _,
+            role,
             size: _,
         } = value;
-        Self::from_semantic_label(label.into_semantic()).action(move |env: Environment| {
-            action(&env).report_extraction();
-        })
+        let command =
+            Self::from_semantic_label(label.into_semantic()).action(move |env: Environment| {
+                action(&env).report_extraction();
+            });
+        match role {
+            Some(role) => command.role(role),
+            None => command,
+        }
     }
 }
 
@@ -1726,6 +1737,25 @@ mod tests {
             .icon_slot::<AnyView>()
             .expect("icon should be preserved when only the spoken text is overridden");
         assert!(icon.build().downcast_ref::<SearchIcon>().is_some());
+    }
+
+    #[test]
+    fn menu_command_conversion_preserves_button_role() {
+        crate::init_test_executor();
+        let destructive: crate::menu::Command = button("Delete")
+            .role(ButtonRole::Destructive)
+            .action(|| {})
+            .into();
+        assert_eq!(destructive.command_role(), Some(ButtonRole::Destructive));
+
+        let cancel: crate::menu::Command = button("Cancel")
+            .role(ButtonRole::Cancel)
+            .action(|| {})
+            .into();
+        assert_eq!(cancel.command_role(), Some(ButtonRole::Cancel));
+
+        let plain: crate::menu::Command = button("Open").action(|| {}).into();
+        assert_eq!(plain.command_role(), None);
     }
 }
 

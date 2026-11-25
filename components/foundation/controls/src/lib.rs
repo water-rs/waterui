@@ -24,8 +24,8 @@ pub use slot::{IconSlot, NoopSlot, SlotBuilder, StyleSlot};
 pub mod menu;
 #[cfg(feature = "menu")]
 pub use menu::{
-    Command, CommandExt, CommandRole, Menu, MenuBarView, MenuItem, MenuView, NamedKey, Shortcut,
-    ShortcutKey, ShortcutModifiers, ShortcutNamedKey,
+    Command, CommandExt, Menu, MenuBarView, MenuItem, MenuView, NamedKey, Shortcut, ShortcutKey,
+    ShortcutModifiers, ShortcutNamedKey,
 };
 pub mod size;
 pub use size::ControlSize;

@@ -387,7 +387,7 @@ impl CustomButtonStyle for PillButtonStyle {
         configuration
             .into_label()
             .padding_with((8.0, 16.0))
-            .background(signal_color(bg))
+            .background(bg)
             .clip(Capsule)
     }
 }
@@ -417,8 +417,8 @@ impl CustomToggleStyle for PillToggleStyle {
         hstack((
             configuration.into_label(),
             spacer(),
-            signal_color(bg)
-                .size(44.0, 26.0)
+            ().size(44.0, 26.0)
+                .background(bg)
                 .clip(Capsule),
         ))
     }
@@ -489,7 +489,7 @@ a toolbar, a menu, and a keyboard shortcut. `Command` has its own builder chain:
     .selected(checked)                         // signal of bool: a checked / toggled row
     .subtitle("Copy the selection")            // secondary line under the label
     .shortcut(Shortcut::new('c').command())
-"Delete".action(delete_handler).destructive()  // red in every menu; == .role(CommandRole::Destructive)
+"Delete".action(delete_handler).destructive()  // red in every menu; == .role(ButtonRole::Destructive)
 "Delete".action(delete_handler).shortcut(Shortcut::new(ShortcutNamedKey::Delete))
 Shortcut::new('s').command().shift()           // ⇧⌘S; also .option() and .control()
 ```

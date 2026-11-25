@@ -33,7 +33,7 @@ use waterui_core::id::Id;
 use waterui_core::layout::{LayoutDirection, ProposalSize, Size as LayoutSize, ViewDimensions};
 use waterui_core::plugin::Plugin;
 use waterui_core::views::AnyViewsSnapshot;
-use waterui_graphics::color::{Color, signal_color};
+use waterui_graphics::color::Color;
 
 #[cfg(feature = "accessibility")]
 use crate::widgets::util::widget_disabled;
@@ -1064,7 +1064,7 @@ fn tab_reactive_env(
             unselected_color.clone()
         }
     });
-    tab_foreground_env(env, signal_color(combined))
+    tab_foreground_env(env, Color::from_signal(combined))
 }
 
 const fn bottom_floating_margin(look: &TabsLook, style: NativeTabStyle) -> f64 {

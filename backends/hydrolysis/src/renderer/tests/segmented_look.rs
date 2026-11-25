@@ -878,8 +878,7 @@ fn selection_tinted_look() -> SegmentedLook {
         });
         Chrome::new(
             Surface::clear(CornerShape::radius(0.0)),
-            StateLayer::new(waterui_graphics::color::signal_color(color))
-                .opacities(1.0, 0.0, 0.0, 0.0),
+            StateLayer::new(color).opacities(1.0, 0.0, 0.0, 0.0),
             PressFeedback::new(),
             FocusIndicator::Tint,
             linear(15),
