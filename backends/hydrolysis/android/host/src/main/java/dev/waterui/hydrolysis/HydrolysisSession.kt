@@ -3,9 +3,11 @@ package dev.waterui.hydrolysis
 import android.content.Context
 import android.content.MutableContextWrapper
 import android.content.res.Configuration
+import android.database.ContentObserver
 import android.graphics.ColorSpace
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import android.view.Surface
 import android.view.View
 import androidx.lifecycle.Lifecycle
@@ -27,6 +29,8 @@ class HydrolysisSession internal constructor(
     private val onCloseRequested: () -> Unit,
     private val painter: SessionPainter? = null,
 ) {
+    private val appContext: Context = context.applicationContext
+
     /**
      * The opaque native pointer, owned on the UI thread only. It is never
      * read directly: every Kotlin→native call takes it through
@@ -39,10 +43,11 @@ class HydrolysisSession internal constructor(
     private val livePtr: Long =
         NativeBridge.nativeCreateSession(
             this,
-            context.applicationContext,
+            appContext,
             painter,
             NativeBridge.uiThreadServices,
             context.resources.configuration.isNightMode,
+            appContext.isReduceMotionEnabled,
         )
 
     /** [destroy] ran; a second call is a named error. */
@@ -80,6 +85,20 @@ class HydrolysisSession internal constructor(
 
     /** Delivers the native requests that must not run inside a native call. */
     private val mainHandler = Handler(Looper.getMainLooper())
+
+    /** Tracks live changes to Android's global animator duration scale. */
+    private val reduceMotionObserver =
+        object : ContentObserver(mainHandler) {
+            override fun onChange(selfChange: Boolean) {
+                setReduceMotion(appContext.isReduceMotionEnabled)
+            }
+        }
+
+    init {
+        Settings.Global.getUriFor(Settings.Global.ANIMATOR_DURATION_SCALE)?.let { uri ->
+            appContext.contentResolver.registerContentObserver(uri, false, reduceMotionObserver)
+        }
+    }
 
     /**
      * The session's frame pump. It belongs to the session, not to a host
@@ -311,6 +330,7 @@ class HydrolysisSession internal constructor(
         // view under the new configuration — the recreate path delivers no
         // `onConfigurationChanged`, so the bind itself reports the scheme.
         setNightMode(view.resources.configuration.isNightMode)
+        setReduceMotion(appContext.isReduceMotionEnabled)
         setLocale(view.resources.configuration.primaryLocaleTag)
         // The new binding owns the Activity the instances draw on: each
         // `AndroidContent` context wrapper and `HostRebindAware` retargets its
@@ -408,6 +428,17 @@ class HydrolysisSession internal constructor(
     }
 
     /**
+     * Updates the session's Reduce Motion signal when Android's
+     * `Settings.Global.ANIMATOR_DURATION_SCALE` changes.
+     */
+    internal fun setReduceMotion(reduceMotion: Boolean) {
+        if (destroyRequested) return
+        withNativePtr(NativeBridge::nativeSetReduceMotion.name) { ptr ->
+            NativeBridge.nativeSetReduceMotion(ptr, reduceMotion)
+        }
+    }
+
+    /**
      * The configuration's primary BCP 47 locale tag, pushed at bind and on
      * every `onConfigurationChanged`; an unchanged value notifies nothing
      * native-side.
@@ -465,13 +496,17 @@ class HydrolysisSession internal constructor(
         tearDownPending = false
         destroyed = true
         try {
-            NativeBridge.nativeDestroySession(livePtr)
+            appContext.contentResolver.unregisterContentObserver(reduceMotionObserver)
         } finally {
             try {
-                painter?.destroy()
+                NativeBridge.nativeDestroySession(livePtr)
             } finally {
-                mainHandler.removeCallbacksAndMessages(null)
-                frameScheduler.stop()
+                try {
+                    painter?.destroy()
+                } finally {
+                    mainHandler.removeCallbacksAndMessages(null)
+                    frameScheduler.stop()
+                }
             }
         }
     }
@@ -695,3 +730,15 @@ internal val Configuration.isNightMode: Boolean
  */
 internal val Configuration.primaryLocaleTag: String?
     get() = locales.takeIf { !it.isEmpty }?.get(0)?.toLanguageTag()?.takeIf { it.isNotEmpty() }
+
+/**
+ * Whether system animations are disabled (`ANIMATOR_DURATION_SCALE == 0`), matching Android's
+ * standard accessibility Reduce Motion convention.
+ */
+internal val Context.isReduceMotionEnabled: Boolean
+    get() =
+        android.provider.Settings.Global.getFloat(
+            contentResolver,
+            android.provider.Settings.Global.ANIMATOR_DURATION_SCALE,
+            1.0f,
+        ) == 0.0f
