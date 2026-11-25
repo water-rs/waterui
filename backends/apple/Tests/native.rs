@@ -12617,6 +12617,7 @@ mod gesture_events {
         MagnificationEvent, MagnificationGesture, PointerButton, RotationEvent, RotationGesture,
         TapEvent, TapGesture,
     };
+    use waterui::layout::Point;
     use waterui::prelude::text;
 
     use super::{resolve, trial_each};
@@ -12665,7 +12666,7 @@ mod gesture_events {
                 assert_eq!(tap.button(), PointerButton::Primary);
                 assert_eq!(
                     tap.location(),
-                    waterui::gesture::GesturePoint::new(expected.0, expected.1),
+                    Point::new(expected.0, expected.1),
                     "the event names the activation point — the bounds-space center"
                 );
             }
