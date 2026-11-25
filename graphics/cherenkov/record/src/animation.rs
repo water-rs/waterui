@@ -13,7 +13,7 @@ use std::time::Duration;
 use kurbo::{Affine, Point, Rect, Stroke, Vec2};
 use waterui_contract::contract_violation;
 use waterui_easing::SETTLE_TOLERANCE;
-pub use waterui_easing::{CubicBezier, Spring, Timing};
+pub use waterui_easing::{CubicBezier, Playback, Repeat as PlaybackRepeat, Spring, Timing};
 
 use crate::Instant;
 use crate::display_list::Operand;
@@ -249,6 +249,8 @@ pub enum Animation {
     Curve(Curve),
     /// An exponential deceleration; scroll `scroll_offset` only.
     Decay(Decay),
+    /// A spring or curve animation with delay, speed, or repeat modifiers.
+    Scheduled(Playback),
 }
 
 impl Animation {
@@ -272,8 +274,33 @@ impl Animation {
         match self {
             Self::Spring(spring) => Some(Timing::Spring(*spring)),
             Self::Curve(curve) => Some(curve.timing()),
+            Self::Scheduled(playback) => Some(playback.timing),
             Self::Decay(_) => None,
         }
+    }
+
+    /// The full playback schedule including delay, speed, and repeat; `None`
+    /// for a [`Decay`].
+    #[must_use]
+    pub const fn playback(&self) -> Option<Playback> {
+        match self {
+            Self::Spring(spring) => Some(Playback::new(Timing::Spring(*spring))),
+            Self::Curve(curve) => Some(Playback::new(curve.timing())),
+            Self::Scheduled(playback) => Some(*playback),
+            Self::Decay(_) => None,
+        }
+    }
+
+    /// Whether this animation repeats indefinitely until replaced.
+    #[must_use]
+    pub const fn repeats_forever(&self) -> bool {
+        matches!(self, Self::Scheduled(playback) if playback.is_perpetual())
+    }
+}
+
+impl From<Playback> for Animation {
+    fn from(playback: Playback) -> Self {
+        Self::Scheduled(playback)
     }
 }
 
@@ -451,11 +478,11 @@ pub(crate) fn eval_lanes<L: Lanes>(
         let (pos, vel) = decay_step(from, velocity, decay.deceleration, dt);
         return (pos, vel, vel.max_abs() <= SETTLE_TOLERANCE);
     }
-    let timing = animation
-        .timing()
-        .expect("every animation but a decay has a shared timing");
+    let playback = animation
+        .playback()
+        .expect("every animation but a decay has a shared playback");
     let (mut pos, mut vel) = (L::zero(), L::zero());
-    let done = timing.sample_lanes(
+    let done = playback.sample_lanes(
         from.as_ref(),
         velocity.as_ref(),
         target.as_ref(),
@@ -1076,11 +1103,11 @@ pub(crate) enum Motion<V = Operand> {
 }
 
 impl<V> Motion<V> {
-    /// Whether the motion is a keyframe track that repeats until replaced.
+    /// Whether the motion repeats indefinitely until replaced.
     pub(crate) const fn repeats_forever(&self) -> bool {
         match self {
             Self::Keyframes(keyframes) => keyframes.repeats_forever(),
-            Self::Animation(_) => false,
+            Self::Animation(animation) => animation.repeats_forever(),
         }
     }
 
@@ -1228,10 +1255,10 @@ impl<V: AnimLanes + Clone> LaneTrack<V> {
                 }
             }
             Motion::Animation(animation) => {
-                let timing = animation
-                    .timing()
+                let playback = animation
+                    .playback()
                     .expect("a lane-decomposed value never takes a Decay");
-                let running = !timing.sample_lanes(
+                let running = !playback.sample_lanes(
                     &self.from,
                     &self.velocity,
                     &self.target_lanes,

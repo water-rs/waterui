@@ -8,7 +8,12 @@ import SwiftUI
 
 {% for intent in intents %}
 @_extern(c, "{{ intent.symbol }}")
-private func __wui_intent_{{ intent.index }}(_ ptr: UnsafePointer<UInt8>, _ len: Int)
+private func __wui_intent_{{ intent.index }}(
+    _ payloadPtr: UnsafePointer<UInt8>,
+    _ payloadLen: Int,
+    _ storePtr: UnsafePointer<UInt8>,
+    _ storeLen: Int
+)
 
 struct {{ intent.swift_type }}: AppIntent {
     static let title: LocalizedStringResource = {{ intent.display_name }}
@@ -18,14 +23,21 @@ struct {{ intent.swift_type }}: AppIntent {
     @Parameter(title: "Payload")
     var payload: String
 
+    var storePath: String? = nil
+
     init() {}
 
-    init(payload: String) {
+    init(payload: String, storePath: String? = nil) {
         self.payload = payload
+        self.storePath = storePath
     }
 
     func perform() async throws -> some IntentResult {
-        performWidgetIntent(__wui_intent_{{ intent.index }}, payload: payload)
+        performWidgetIntent(
+            __wui_intent_{{ intent.index }},
+            payload: payload,
+            storePath: storePath ?? WUIWidgetStore.sharedContainerPath()
+        )
         return .result()
     }
 }

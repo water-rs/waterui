@@ -172,8 +172,18 @@ fn apply_hidden(target: &PlatformView, hidden: bool, original: bool) {
 
 /// Applies `hidden` — `apply(hidden:)`: unhiding restores `isAccessibilityElement`.
 #[cfg(target_os = "macos")]
-fn apply_hidden(target: &PlatformView, hidden: bool, original: bool) {
-    a11y::set_hidden(target::of(target), if hidden { true } else { !original });
+fn apply_hidden(target: &PlatformView, hidden: bool, original_hidden: bool) {
+    a11y::set_hidden(target::of(target), hidden || original_hidden);
+}
+
+#[cfg(target_os = "ios")]
+fn read_original_hidden(target: &PlatformView) -> bool {
+    a11y::hidden(target::of(target))
+}
+
+#[cfg(target_os = "macos")]
+fn read_original_hidden(target: &PlatformView) -> bool {
+    !a11y::is_element(target::of(target))
 }
 
 /// Shared bind for `AccessibilityState` (constant) and
@@ -210,7 +220,7 @@ fn render_state(
         let wrote_checked = Cell::new(false);
         let original_value = a11y::value(&target);
         let original_hint = a11y::hint(&target);
-        let original_hidden = a11y::hidden(&target);
+        let original_hidden = read_original_hidden(&target);
         leaf.bind(&merged, move |state| {
             apply_state(
                 &target,
@@ -227,10 +237,10 @@ fn render_state(
     }
     #[cfg(target_os = "macos")]
     {
-        let original_element = a11y::is_element(target::of(&target));
+        let original_hidden = read_original_hidden(&target);
         leaf.bind(&merged, move |state| {
             apply_state(&target, &state);
-            apply_hidden(&target, state.is_hidden(), original_element);
+            apply_hidden(&target, state.is_hidden(), original_hidden);
         });
     }
     leaf
@@ -259,7 +269,8 @@ pub fn realize_accessibility_label_metadata(
     let mut leaf = ctx.realize(metadata.content);
     let target = view::retain_base(leaf.view());
     leaf.keep(target.clone());
-    leaf.bind(metadata.value.signal(), move |label| {
+    let signal = metadata.value.resolve(ctx.env());
+    leaf.bind(&signal, move |label| {
         a11y::set_label(target::of(&target), &NSString::from_str(&label));
     });
     leaf
@@ -272,7 +283,8 @@ pub fn realize_accessibility_value_metadata(
     let mut leaf = ctx.realize(metadata.content);
     let target = view::retain_base(leaf.view());
     leaf.keep(target.clone());
-    leaf.bind(metadata.value.signal(), move |value| {
+    let signal = metadata.value.resolve(ctx.env());
+    leaf.bind(&signal, move |value| {
         a11y::set_value(target::of(&target), &NSString::from_str(&value));
     });
     leaf
@@ -304,8 +316,11 @@ pub fn realize_accessibility_hidden_metadata(
 ) -> NativeLeaf {
     let mut leaf = ctx.realize(metadata.content);
     let target = view::retain_base(leaf.view());
-    a11y::set_hidden(target::of(&target), metadata.value.is_hidden());
-    leaf.keep(target);
+    let original_hidden = read_original_hidden(&target);
+    leaf.keep(target.clone());
+    leaf.bind(metadata.value.signal(), move |hidden| {
+        apply_hidden(&target, hidden, original_hidden);
+    });
     leaf
 }
 

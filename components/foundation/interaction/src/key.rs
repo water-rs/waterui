@@ -17,16 +17,17 @@ use core::fmt;
 pub use keyboard_types::{Code, Key, Modifiers, NamedKey};
 
 use waterui_core::{
-    Environment, Error,
-    extract::{ExtractionState, Extractor, State},
-    handler::{BoxedAction, Handler, ReportExtraction, boxed_action},
+    Environment,
+    extract::State,
+    handler::{
+        BoxedEventAction, EventHandler, Handler, ReportExtraction as _, boxed_event_handler,
+    },
     metadata::MetadataKey,
 };
 
 /// A key press delivered to an [`OnKeyPress`] handler.
 ///
-/// Backends install it into the handler's environment via [`State<KeyPress>`],
-/// so a handler reads it directly as `press: KeyPress` or `State(press): State<KeyPress>`.
+/// Passed as the first argument to [`OnKeyPress::new`] / `ViewExt::on_key_press`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct KeyPress {
@@ -80,16 +81,6 @@ impl KeyPress {
     }
 }
 
-impl Extractor for KeyPress {
-    fn extract(env: &Environment) -> Result<Self, Error> {
-        State::<Self>::extract(env).map(|State(press)| press)
-    }
-
-    fn extract_from_action(env: &Environment, state: &mut ExtractionState) -> Result<Self, Error> {
-        State::<Self>::extract_from_action(env, state).map(|State(press)| press)
-    }
-}
-
 /// Whether a key handler consumed a key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[must_use = "a key handler must say whether it consumed the key"]
@@ -107,28 +98,30 @@ pub enum KeyHandling {
 /// A handler for key presses left unconsumed by the focused view and its
 /// descendants.
 pub struct OnKeyPress {
-    handler: BoxedAction<KeyHandling>,
+    handler: BoxedEventAction<KeyPress, KeyHandling>,
 }
 
 impl MetadataKey for OnKeyPress {}
 
 impl OnKeyPress {
-    /// Creates a key handler. It extracts its arguments from the environment,
-    /// [`KeyPress`] among them, and says whether it consumed the key.
+    /// Creates a key handler that consumes the delivered [`KeyPress`] first,
+    /// extracts any remaining arguments from the environment, and says whether
+    /// it consumed the key.
     #[must_use]
-    pub fn new<Args>(handler: impl Handler<Args, KeyHandling>) -> Self {
+    pub fn new<Args>(handler: impl EventHandler<KeyPress, Args, KeyHandling>) -> Self {
         Self {
-            handler: boxed_action(handler),
+            handler: boxed_event_handler(handler),
         }
     }
 
-    /// Invokes the handler with an environment that carries the [`KeyPress`].
+    /// Invokes the handler with an environment that carries [`State<KeyPress>`].
     ///
     /// A handler whose parameters cannot be extracted does not run: the
     /// failure is reported and the key is [`Ignored`](KeyHandling::Ignored),
     /// so it keeps bubbling.
     pub fn handle(&mut self, env: &Environment) -> KeyHandling {
-        (self.handler)(env)
+        Handler::call(&mut |s: State<KeyPress>| s, env)
+            .and_then(|State(press)| (self.handler)(press, env))
             .report_extraction()
             .unwrap_or(KeyHandling::Ignored)
     }
@@ -137,5 +130,36 @@ impl OnKeyPress {
 impl fmt::Debug for OnKeyPress {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("OnKeyPress").finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nami::Signal;
+    use waterui_core::Binding;
+
+    #[test]
+    fn on_key_press_delivers_typed_press_and_state() {
+        let mut env = Environment::new();
+        let handled_count = Binding::i32(0);
+        let mut on_key = OnKeyPress::new(|press: KeyPress, State(count): State<Binding<i32>>| {
+            if *press.key() == Key::Named(NamedKey::Escape) {
+                *count.get_mut() += 1;
+                KeyHandling::Handled
+            } else {
+                KeyHandling::Ignored
+            }
+        });
+        env.insert(State(handled_count.clone()));
+        let press_env = env.extending(State(KeyPress::new(
+            Key::Named(NamedKey::Escape),
+            Code::Escape,
+            Modifiers::empty(),
+            false,
+        )));
+
+        assert_eq!(on_key.handle(&press_env), KeyHandling::Handled);
+        assert_eq!(handled_count.snapshot(), 1);
     }
 }

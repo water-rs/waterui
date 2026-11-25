@@ -5,6 +5,7 @@
 //! slot and checks every view draws its own value.
 
 use super::*;
+use crate::animation::PerpetualAnimation;
 use waterui::animation::Animation;
 use waterui::component::progress;
 
@@ -114,7 +115,10 @@ fn offsets_sharing_a_signal_identity_slide_independently() {
     renderer.set_frame_instant(started + Duration::from_millis(50));
     capture_root_window(&mut renderer, view(), &env, bounds);
     let mid = target_leading_edges(&mut renderer);
-    assert!(renderer.motions_active(), "B's slide must still run");
+    assert!(
+        renderer.motions_active(PerpetualAnimation::Counts),
+        "B's slide must still run"
+    );
     approx::assert_relative_eq!(mid[0], rest[0]);
     assert!(
         mid[1] > rest[1] && mid[1] < rest[1] + 48.0,

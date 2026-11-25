@@ -12,21 +12,50 @@
 
 extern crate alloc;
 
-use nami::{Computed, SignalExt, impl_constant, signal::IntoComputed, zip::zip};
+use alloc::rc::Rc;
+use core::fmt;
+
+use nami::{Computed, Signal, SignalExt, impl_constant, signal::IntoComputed, zip::zip};
 use suiteki::Str;
 
 use waterui_core::layout::{PlacedGeometry, Rect};
 use waterui_core::metadata::MetadataKey;
 use waterui_core::{Environment, Metadata, OneOf2, View};
 
+type TextResolverFn = dyn Fn(&Environment) -> Computed<Str>;
+
+#[derive(Clone)]
+enum TextResolver {
+    Signal(Computed<Str>),
+    Resolved(Rc<TextResolverFn>),
+}
+
+impl fmt::Debug for TextResolver {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Signal(signal) => f.debug_tuple("Signal").field(signal).finish(),
+            Self::Resolved(_) => f.write_str("Resolved(..)"),
+        }
+    }
+}
+
+impl TextResolver {
+    fn resolve(&self, env: &Environment) -> Computed<Str> {
+        match self {
+            Self::Signal(signal) => signal.clone(),
+            Self::Resolved(resolver) => resolver(env),
+        }
+    }
+}
+
 /// Overrides the spoken label for a component when the default text is not
 /// adequate.
 ///
-/// The label is reactive: a label derived from app state (`"3 unread
-/// messages"`) stays current without rebuilding the subtree, matching
-/// [`AccessibilityStateSignal`].
+/// The label is reactive and resolves against the surrounding [`Environment`]
+/// so localized text tracks the active translation catalog and locale without
+/// rebuilding the subtree, matching [`AccessibilityStateSignal`].
 #[derive(Debug, Clone)]
-pub struct AccessibilityLabel(Computed<Str>);
+pub struct AccessibilityLabel(TextResolver);
 
 impl MetadataKey for AccessibilityLabel {}
 
@@ -41,13 +70,19 @@ impl AccessibilityLabel {
     /// let label = AccessibilityLabel::new("Delete draft");
     /// ```
     pub fn new(label: impl IntoComputed<Str>) -> Self {
-        Self(label.into_computed())
+        Self(TextResolver::Signal(label.into_computed()))
     }
 
-    /// The reactive label signal.
+    /// Creates a label resolved against the surrounding [`Environment`] at
+    /// realization time (for example, localized [`Text`](https://docs.rs/waterui-text)).
+    pub fn resolved(resolver: impl Fn(&Environment) -> Computed<Str> + 'static) -> Self {
+        Self(TextResolver::Resolved(Rc::new(resolver)))
+    }
+
+    /// Resolves the reactive label signal against `env`.
     #[must_use]
-    pub const fn signal(&self) -> &Computed<Str> {
-        &self.0
+    pub fn resolve(&self, env: &Environment) -> Computed<Str> {
+        self.0.resolve(env)
     }
 }
 
@@ -60,10 +95,10 @@ impl AccessibilityLabel {
 /// has to replace them. Assistive technologies announce it after the label,
 /// matching `accessibilityValue` on `AppKit` and `aria-valuetext` on the web.
 ///
-/// The value is reactive: a value derived from app state stays current without
-/// rebuilding the subtree, matching [`AccessibilityLabel`].
+/// The value is reactive and resolves against the surrounding [`Environment`],
+/// matching [`AccessibilityLabel`].
 #[derive(Debug, Clone)]
-pub struct AccessibilityValue(Computed<Str>);
+pub struct AccessibilityValue(TextResolver);
 
 impl MetadataKey for AccessibilityValue {}
 
@@ -77,13 +112,19 @@ impl AccessibilityValue {
     /// let value = AccessibilityValue::new("e raised to i pi plus one equals zero");
     /// ```
     pub fn new(value: impl IntoComputed<Str>) -> Self {
-        Self(value.into_computed())
+        Self(TextResolver::Signal(value.into_computed()))
     }
 
-    /// The reactive value signal.
+    /// Creates a value resolved against the surrounding [`Environment`] at
+    /// realization time (for example, localized text).
+    pub fn resolved(resolver: impl Fn(&Environment) -> Computed<Str> + 'static) -> Self {
+        Self(TextResolver::Resolved(Rc::new(resolver)))
+    }
+
+    /// Resolves the reactive value signal against `env`.
     #[must_use]
-    pub const fn signal(&self) -> &Computed<Str> {
-        &self.0
+    pub fn resolve(&self, env: &Environment) -> Computed<Str> {
+        self.0.resolve(env)
     }
 }
 
@@ -223,22 +264,31 @@ pub fn default_role<V: View>(
 }
 
 /// Controls whether this view should participate in accessibility.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AccessibilityHidden(bool);
+///
+/// Accepts a constant `bool` or any reactive boolean signal so toggling
+/// hidden state updates assistive technologies without rebuilding the subtree.
+#[derive(Debug, Clone)]
+pub struct AccessibilityHidden(Computed<bool>);
 
 impl MetadataKey for AccessibilityHidden {}
 
 impl AccessibilityHidden {
     /// Creates a hidden flag for accessibility.
     #[must_use]
-    pub const fn new(hidden: bool) -> Self {
-        Self(hidden)
+    pub fn new(hidden: impl IntoComputed<bool>) -> Self {
+        Self(hidden.into_computed())
+    }
+
+    /// The reactive hidden signal.
+    #[must_use]
+    pub const fn signal(&self) -> &Computed<bool> {
+        &self.0
     }
 
     /// Returns whether this view is hidden from assistive technologies.
     #[must_use]
-    pub const fn is_hidden(&self) -> bool {
-        self.0
+    pub fn is_hidden(&self) -> bool {
+        self.0.snapshot()
     }
 }
 
@@ -367,14 +417,14 @@ impl AccessibilityState {
         self
     }
 
-    /// Sets the checkbox or tri-state checked value; `None` leaves it unset.
+    /// Sets the checkbox or toggle checked value.
     #[must_use]
-    pub const fn checked(mut self, checked: Option<bool>) -> Self {
-        self.checked = match checked {
-            Some(true) => Some(AccessibilityChecked::True),
-            Some(false) => Some(AccessibilityChecked::False),
-            None => None,
-        };
+    pub const fn checked(mut self, checked: bool) -> Self {
+        self.checked = Some(if checked {
+            AccessibilityChecked::True
+        } else {
+            AccessibilityChecked::False
+        });
         self
     }
 
@@ -385,10 +435,10 @@ impl AccessibilityState {
         self
     }
 
-    /// Sets the expanded or collapsed state; `None` leaves it unset.
+    /// Sets the expanded or collapsed state.
     #[must_use]
-    pub const fn expanded(mut self, expanded: Option<bool>) -> Self {
-        self.expanded = expanded;
+    pub const fn expanded(mut self, expanded: bool) -> Self {
+        self.expanded = Some(expanded);
         self
     }
 
@@ -601,5 +651,27 @@ mod tests {
                 .selected(false)
                 .disabled(true)
         );
+    }
+
+    #[test]
+    fn accessibility_hidden_tracks_reactive_signal() {
+        let hidden = nami::Binding::bool(true);
+        let metadata = super::AccessibilityHidden::new(hidden.clone());
+        assert!(metadata.is_hidden());
+        assert!(metadata.signal().snapshot());
+
+        hidden.set(false);
+        assert!(!metadata.is_hidden());
+        assert!(!metadata.signal().snapshot());
+    }
+
+    #[test]
+    fn accessibility_state_checked_and_expanded_accept_booleans() {
+        let state = AccessibilityState::new().checked(true).expanded(false);
+        assert_eq!(
+            state.checked_state(),
+            Some(super::AccessibilityChecked::True)
+        );
+        assert_eq!(state.expanded_state(), Some(false));
     }
 }

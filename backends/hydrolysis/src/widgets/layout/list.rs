@@ -36,6 +36,7 @@ use waterui_backend_core::scroll::{ScrollPositionReport, animated_row_scroll_app
 use waterui_core::Environment;
 use waterui_core::animation::Animation;
 use waterui_core::contract_violation;
+use waterui_core::extract::State;
 use waterui_core::handler::{BoxedAction, boxed_action};
 use waterui_core::id::Id as RawId;
 use waterui_core::layout::{
@@ -1086,13 +1087,20 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
         content_height: f64,
     ) -> Option<ScrollPositionReport> {
         use crate::num_cast::f64_as_f32;
-        self.config.scroll_controller().as_ref().map(|controller| {
-            ScrollPositionReport::new(
-                controller.position_report(),
-                LayoutSize::new(f64_as_f32(viewport_width), f64_as_f32(viewport_height)),
-                LayoutSize::new(f64_as_f32(viewport_width), f64_as_f32(content_height)),
-            )
-        })
+        self.config
+            .scroll_controller()
+            .as_ref()
+            .map(|controller| ScrollPositionReport {
+                binding: controller.position_report(),
+                viewport_size: LayoutSize::new(
+                    f64_as_f32(viewport_width),
+                    f64_as_f32(viewport_height),
+                ),
+                content_size: LayoutSize::new(
+                    f64_as_f32(viewport_width),
+                    f64_as_f32(content_height),
+                ),
+            })
     }
 
     /// Applies the pending scroll request, if there is one. `animate` selects
@@ -1672,12 +1680,11 @@ pub fn list_accessibility<E: crate::text::TextEngine>(
             let row_disabled = renderer.read_signal(&row_disabled_signal);
             // A hidden row vanishes whole — node and content — matching the
             // naming container's treatment of `accessibilityHidden`.
-            let row_hidden = row_a11y_env
-                .get::<AccessibilityHidden>()
-                .is_some_and(AccessibilityHidden::is_hidden)
-                || row_a11y_env
-                    .get::<AccessibilityStateSignal>()
-                    .is_some_and(|signal| renderer.read_signal(signal.state()).is_hidden());
+            let hidden_prop = renderer.is_accessibility_hidden(&row_a11y_env);
+            let hidden_state = row_a11y_env
+                .get::<AccessibilityStateSignal>()
+                .is_some_and(|signal| renderer.read_signal(signal.state()).is_hidden());
+            let row_hidden = hidden_prop || hidden_state;
             let mut row_node = AccessibilityNode::new(
                 crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
                     &row_a11y_env,
@@ -2055,9 +2062,7 @@ pub fn render_list_node<E: crate::text::TextEngine>(
     env: &Environment,
 ) {
     #[cfg(feature = "accessibility")]
-    let hidden = env
-        .get::<waterui::accessibility::AccessibilityHidden>()
-        .is_some_and(waterui::accessibility::AccessibilityHidden::is_hidden);
+    let hidden = ctx.renderer_mut().is_accessibility_hidden(env);
     #[cfg(feature = "accessibility")]
     if hidden {
         ctx.renderer_mut().push_accessibility_suppression();
@@ -3361,7 +3366,10 @@ fn reorder_destination(index: usize, step: f64, span_start: usize, span_end: usi
 /// An action without its [`DragEvent`] is a contract violation by the gesture
 /// engine, reported; the action is then ignored (`None`).
 fn drag_event(env: &Environment) -> Option<DragEvent> {
-    let event = env.extract::<DragEvent>().ok();
+    let event = env
+        .extract::<State<DragEvent>>()
+        .ok()
+        .map(|State(event)| event);
     if event.is_none() {
         contract_violation!(
             "hydrolysis list drag action is missing its DragEvent; the drag is ignored"
@@ -3497,5 +3505,12 @@ pub fn emit_list_accessibility<E: crate::text::TextEngine>(
     state: &Rc<RefCell<ListRenderState<E>>>,
     env: &Environment,
 ) {
+    let hidden = renderer.is_accessibility_hidden(env);
+    if hidden {
+        renderer.push_accessibility_suppression();
+    }
     list_accessibility(renderer, None, None, state, env);
+    if hidden {
+        renderer.pop_accessibility_suppression();
+    }
 }

@@ -721,9 +721,9 @@ mod tests {
     #[test]
     fn should_animate_only_with_animation_metadata() {
         assert!(!should_animate(&Metadata::new()));
-        assert!(should_animate(&Metadata::new().with(Animation::Default)));
+        assert!(should_animate(&Metadata::new().with(Animation::default())));
         assert!(!should_animate(
-            &Metadata::new().with(Animation::Default).with(NoAnimation)
+            &Metadata::new().with(Animation::default()).with(NoAnimation)
         ));
     }
 }

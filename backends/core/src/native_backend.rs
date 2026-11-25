@@ -853,7 +853,7 @@ native_backend! {
         canvas: waterui::graphics::canvas::CanvasView,
         #[cfg(waterui_feature = "gpu")]
         /// GPU content.
-        gpu: waterui::GpuView<alloc::boxed::Box<dyn waterui::graphics::GpuContent>>,
+        gpu: waterui::graphics::backend::GpuContentLeaf,
         #[cfg(waterui_feature = "gpu")]
         /// Frames from an external source.
         external_frame: waterui::graphics::gpu::external::ExternalFrameView,
@@ -881,6 +881,8 @@ native_backend! {
         button<C>: waterui::component::button::ButtonConfig<C>,
         /// A badge.
         badge<C>: waterui::component::badge::BadgeConfig<C>,
+        /// A disclosure group.
+        disclosure<C>: waterui::widget::disclosure::DisclosureConfig<C>,
         /// A progress indicator.
         progress<C>: waterui::component::progress::ProgressConfig<C>,
         #[cfg(waterui_feature = "toggle")]
@@ -1098,6 +1100,13 @@ mod tests {
     impl<C> Parent<C> for waterui::component::badge::BadgeConfig<C> {
         fn children(self) -> Vec<C> {
             alloc::vec![self.content]
+        }
+    }
+
+    impl<C> Parent<C> for waterui::widget::disclosure::DisclosureConfig<C> {
+        fn children(self) -> Vec<C> {
+            let (header, content, _) = self.into_parts();
+            alloc::vec![header.build(), content.build()]
         }
     }
 

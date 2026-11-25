@@ -24,7 +24,7 @@ use waterui_core::{AnyView, Environment, Str};
 use waterui_layout::padding::EdgeInsets;
 use waterui_layout::spacer::spacer;
 use waterui_layout::stack::vstack;
-use waterui_navigation::tab::{Tab, Tabs, tab_style};
+use waterui_navigation::tab::{Tab, TabStyle, Tabs};
 use waterui_navigation::{
     NavigationPath, NavigationSplitView, NavigationStack, NavigationToolbar, NavigationToolbarItem,
     NavigationToolbarPlacement, NavigationTransition, NavigationTransitionDirection,
@@ -329,7 +329,7 @@ fn sidebar_strip_extends_through_the_top_inset_with_a_trailing_divider() {
                 Tab::new("Second", || NavigationView::new("Two", text("two"))),
             ),
         )
-        .style(tab_style::Sidebar),
+        .style(TabStyle::Sidebar),
         &env_with_insets(edge_insets(), EdgeInsets::default()),
         theme,
     );

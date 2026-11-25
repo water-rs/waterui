@@ -73,7 +73,7 @@ fn signal_panel(state: AccessibilityState) -> impl waterui::View {
     vstack((button("Inbox").action(|| {}),))
         .a11y_label("Panel")
         .a11y_role(AccessibilityRole::Group)
-        .a11y_state_signal(Computed::constant(state))
+        .a11y_state(Computed::constant(state))
 }
 
 fn hidden_panel_survives(tree: &AccessibilityTreeUpdate) {
@@ -117,7 +117,7 @@ fn leaf_panel_survives(tree: &AccessibilityTreeUpdate) {
 fn expanded_panel_survives_on_offscreen_mount() {
     let mut app = mount_rendered(
         Environment::new(),
-        move || stateful_panel(AccessibilityState::new().expanded(Some(true))),
+        move || stateful_panel(AccessibilityState::new().expanded(true)),
         300,
         300,
     );
@@ -141,7 +141,7 @@ fn selected_panel_survives_on_offscreen_mount() {
 fn toggled_panel_survives_on_offscreen_mount() {
     let mut app = mount_rendered(
         Environment::new(),
-        move || stateful_panel(AccessibilityState::new().checked(Some(true))),
+        move || stateful_panel(AccessibilityState::new().checked(true)),
         300,
         300,
     );
@@ -165,7 +165,7 @@ fn hidden_panel_survives_on_offscreen_mount() {
 fn leaf_reduced_panel_survives_on_offscreen_mount() {
     let mut app = mount_rendered(
         Environment::new(),
-        move || panel_with_decorative_leaf(AccessibilityState::new().expanded(Some(true))),
+        move || panel_with_decorative_leaf(AccessibilityState::new().expanded(true)),
         300,
         300,
     );

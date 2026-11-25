@@ -70,8 +70,7 @@ as their lowercase forms; `Button::new`, `Slider::new` and `Stepper::new` take a
 `Label`, so write `slider("Volume", &level)` rather than `Slider::new("Volume", &level)`.
 
 There is no `Type::custom(...)` anywhere; if you find yourself looking for one, `new` is
-it. Named exceptions: `FilePicker::open(..)` / `FilePicker::import(..)` are that type's
-constructors, and `progress(..)` takes its label as a `.label(..)` modifier rather than a
+it. `progress(..)` takes its label as a `.label(..)` modifier rather than a
 first argument — the one control that does.
 
 ## Layout containers
@@ -132,13 +131,14 @@ Frame modifiers exist per-axis as well as paired:
 .max_width(f32::INFINITY)                          // idiom: stretch to full container width
 ```
 
-On a view these take a plain `f32` and return a `Frame`; chained on that `Frame` they take
-signals (`IntoSignalF32`), so `.width(120.0).max_height(height_signal)` makes the cap
-reactive. `.min_width`/`.min_height` are how you reserve stage space for a scaled or
-rotated child that overflows its intrinsic size. A `Frame` also takes `.ideal_width(w)` /
-`.ideal_height(h)` (signals): the size it asks for when its parent proposes nothing.
-Unlike `.width(w)`, which pins the minimum, ideal and maximum together, it leaves the frame
-free to be smaller or larger when the parent does propose a size.
+Every sizing shortcut on a view takes a literal or signal (`IntoSignalF32`) and returns a
+`Frame`, so `.height(height_signal)` and `.width(120.0).max_height(height_signal)` are both
+reactive; `.alignment(...)` accepts `Alignment` or an alignment token (`TopLeading`, `Center`,
+…). `.min_width`/`.min_height` are how you reserve stage space for a scaled or rotated child
+that overflows its intrinsic size. Views also take `.ideal_width(w)` / `.ideal_height(h)`
+(signals): the size requested when the parent proposes nothing. Unlike `.width(w)`, which pins
+the minimum, ideal and maximum together, it leaves the frame free to be smaller or larger when
+the parent does propose a size.
 
 Two more sizing modifiers:
 
@@ -309,12 +309,12 @@ button(text!("{edit_label}")).action(|| {}) // a text! satisfies IntoLabel: reac
 
 toggle("Wi-Fi", &enabled)                   // &Binding<bool>
 Toggle::new("Wi-Fi", &enabled).style(ToggleStyle::Switch)     // Automatic | Switch | Checkbox; .switch() / .checkbox()
-slider("Volume", &level).range(0.0..=1.0)   // &Binding<f64>; range is RangeInclusive<f64>
+slider("Volume", &level).range(0.0..=1.0)   // &Binding<T: SliderValue> (f32, f64, ints); range/step accept signals
 slider("Volume", &level).size(ControlSize::Large)      // sliders default ExtraSmall
-    .value_indicator(|v| Str::from(format!("{v:.0}"))) // shown above the thumb while dragging
+    .value_formatter(|v| Str::from(format!("{v:.0}"))) // shown above the thumb while dragging
 slider("Volume", &level).step(0.1).min_value_label("Quiet").max_value_label("Loud")
-stepper("Quantity", &count)                 // &Binding<i32>
-stepper("Items", &count).range(0..=100).step(5)   // range: impl RangeBounds<i32>; step takes a signal
+stepper("Quantity", &count)                 // &Binding<T: StepperValue> (i32, u32, i64, usize, ...)
+stepper("Items", &count).range(0..=100).step(5)   // range and step accept signals
 stepper("Items", &count).value_formatter(|n| format!("{n} items"))   // inline value text; T: Into<StyledStr>
 field("Email", &address)                    // &Binding<Str>
 field("Search", &query).on_submit(handler)  // Return in a line-limited field runs it
@@ -336,7 +336,7 @@ TextField::new("Note", &note).selection_menu((
 ))
 progress(fraction)                          // impl IntoComputed<f64>
 progress(fraction).label("Downloading")     // its label is a modifier — the one exception
-progress(fraction).circular()               // or .linear()
+progress(fraction).style(ProgressStyle::Circular)  // or Linear / Loading (shorthands: .circular(), .linear())
 loading()                                   // indeterminate progress
 link("Docs", "https://waterui.dev")         // a Link-style button that opens the URL
 ```
@@ -345,7 +345,7 @@ Style shorthands on `Button` — `.plain()`, `.link()`, `.borderless()`, `.borde
 `.bordered_prominent()` — equal `.style(..)` and work before or after `.action(..)`.
 `.borderless()` is the idiomatic toolbar-button style; `Link` shows the
 pointing-hand cursor on pointer platforms. `TextField::line_limit(impl IntoComputed<Option<NonZeroUsize>>)` caps the
-lines (pass `None` for unlimited multi-line input, or a signal to toggle it); `TextField::styled(label, &Binding<StyledStr>)` binds styled text. `Switch` and `checkbox` map to different accessibility roles (`SWITCH` vs `CHECKBOX`), which matters to
+lines (pass `None` for unlimited multi-line input, or a signal to toggle it); `TextField::new(label, &value)` accepts both `&Binding<Str>` and `&Binding<StyledStr>` via `TextFieldValue`. `Switch` and `checkbox` map to different accessibility roles (`SWITCH` vs `CHECKBOX`), which matters to
 tests. `ToggleStyle::Automatic` reads the ambient `ToggleStyle` installed in the environment
 (`.with(ToggleStyle::...)`) first, then the backend's platform default (`Switch` on
 Hydrolysis and iOS, `Checkbox` on macOS AppKit). On Hydrolysis, `Role::toggle(ToggleStyle::Automatic)`
@@ -402,9 +402,12 @@ impl PrimitiveButtonStyle for DoubleTapButtonStyle {
         configuration
             .into_label()
             .padding_with((8.0, 16.0))
-            .gesture(TapGesture::repeat(NonZeroU32::new(2).unwrap()), move || {
-                trigger.trigger();
-            })
+            .gesture(
+                TapGesture::repeat(NonZeroU32::new(2).unwrap()),
+                move |_: TapEvent| {
+                    trigger.trigger();
+                },
+            )
     }
 }
 
@@ -581,7 +584,7 @@ Both carry the full font API:
 sets the paragraph alignment of multiline text (a signal works too) and
 `.background_color(color)` paints behind the text run.
 
-`StyledStr` (`waterui::text::StyledStr`; what `TextField::styled` and `text(..)` also accept) takes
+`StyledStr` (`waterui::text::StyledStr`; what `TextField::new` and `text(..)` also accept) takes
 `.strikethrough(bool)` beside `.underline(bool)`, and `.on_tap(payload, handler)` makes the
 whole string a tappable span: the handler receives the payload (`impl IntoComputed<E>`,
 read at tap time, so a `Binding` reports its latest value); a second `.on_tap` replaces the
@@ -852,13 +855,13 @@ Calendar::new("Trip Date", &date)                        // month owned by confi
 MultiDatePicker::new("Available", &date_set)             // Binding<BTreeSet<Date>>; `.visible_month(&shown)` optional
 
 ColorPicker::new("Accent", &color).with_alpha().with_hdr()     // Binding<Color>
-FilePicker::open("Select Files", &urls).max_count(5)           // Binding<Vec<Url>>; `import(..)` copies into app storage
+FilePicker::new("Select Files", &urls).max_count(5)            // Binding<Vec<Url>>; `.import()` copies into app storage
 ```
 
 Seeding a `Binding<Color>` from a constant: `binding(Color::from(Srgb::from_hex("#4A84F6")))`.
 A `Binding<BTreeSet<Date>>` needs the turbofish: `binding(BTreeSet::<Date>::new())`.
 
-## Overlays: snackbars, cards, suspense, full screen
+## Overlays: snackbars, cards, suspense
 
 Attach `.snackbar_host()` to a root view to install a plain `SnackbarManager` (and
 `CodeCopyFeedback` when `flow-markdown` is enabled) into its subtree; it is a `#[state]`-marked
@@ -882,7 +885,8 @@ button("Save").action(|m: SnackbarManager| {
 ```
 
 Placements are independent stacks: a top snackbar never evicts a bottom one, and multiple
-at one placement stack and reflow. `.icon(view)` attaches a typed leading icon (`Snackbar<V>`),
+at one placement stack and reflow. `.icon(|| view)` attaches a typed leading icon builder
+(`Snackbar<V>`, so modified non-`Clone` views like `|| mdi::delete().padding()` work directly),
 `.state(&v)` injects state for the `.action(..)` and
 `.on_dismiss(..)` handlers; `.on_dismiss(|reason: SnackbarDismissReason| ..)` runs once per
 presentation with why it went (`Action`, `Timeout`, `Closed`, `Replaced`, `Programmatic`),
@@ -901,18 +905,13 @@ use_env(|manager: SnackbarManager| {
 ```
 
 ```rust
-use waterui::widget::accordion;                        // not in the prelude
+use waterui::widget::disclosure;                       // not in the prelude
 
 card(content).title("Summary").subtitle("This week")   // Card; .style(CardStyle::Outlined) | Elevated | Filled
 suspense(async { load().await })                       // takes a future, not a closure; .loading(view) overrides the spinner
-accordion(header, || body())                           // disclosure; Accordion::with_toggle(&open, ..) controls it
+disclosure("Header", || body())                        // Disclosure::new(header, ..).expanded(&open) controls it
 view.floating()                                        // themed elevated surface (FloatingStyle-aware)
 ```
-
-Attach `.full_screen_overlay_host::<V>()` to a root view (or wrap the subtree in
-`FullScreenOverlayManager::host(|overlay| ...)`)
-so descendant handlers can take `overlay: FullScreenOverlayManager<V>` bare to present modal,
-window-filling content: `overlay.show(view)` and `overlay.hide()`.
 
 `.secure()` on any view marks it as content that must not appear in screenshots. Only the
 iOS backend enforces it today; macOS and Hydrolysis (Android included) render the content
@@ -956,16 +955,16 @@ use waterui::accessibility::{AccessibilityRole, AccessibilityState};
 .a11y_label("Delete message")          // override the derived label
 .a11y_id("inbox.row.3")                // stable automation id — reaches XCUITest and Android
 .a11y_role(AccessibilityRole::Button)
-.a11y_hidden(true)                     // decorative only
-.a11y_state_signal(active.map(|a| AccessibilityState::new().selected(a)))
+.a11y_hidden(true)                     // or a reactive boolean signal
+.a11y_state(active.map(|a| AccessibilityState::new().selected(a)))
 ```
 
 The idiom for a composed row that should read as a single node: `.a11y_hidden(true)` on
 the inner content, then `.a11y_role(..)` + `.a11y_label(..)` on the wrapper — or better,
 build it with `Label::new(semantic_text, || content)`, which does this for you.
 
-Three more modifiers carry explicit semantics. `.a11y_state(AccessibilityState::new()
-.selected(true))` is the constant form of `a11y_state_signal`. `.a11y_children(
+Three more modifiers carry explicit semantics. `.a11y_state(..)` accepts either a
+constant `AccessibilityState` or a reactive signal of one. `.a11y_children(
 AccessibilityChildren::ExcludeDescendants)` hides every descendant and exposes only this
 node (`Automatic`, the default, leaves it to the backend) — the one-modifier form of the
 hidden-inner idiom above. `.a11y_geometry(AccessibilityGeometry::Allocation)` reports the

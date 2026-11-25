@@ -13,22 +13,33 @@ pub const FONT_FAMILY: &str = "{{ ff.name }}";
 pub use waterui_icon::IconGlyph;
 {% endif -%}
 {%- for icon in icons %}
-{% if let Some(glyph) = icon.glyph -%}
-/// `{{ icon.source_name }}` icon as webfont glyph.
-#[cfg(feature = "webfont")]
-pub const {{ glyph.const_name }}: {{ glyph.type_path }} = {{ glyph.type_path }}::new('{{ glyph.escape }}', FONT_FAMILY);
-{% endif -%}
-{%- if let Some(svg) = icon.svg -%}
+{%- if let Some(svg) = icon.svg %}
 /// SVG path for `{{ icon.source_name }}`.
 pub const {{ svg.path_const }}: &str = {{ svg.path_literal }};
 {% if let Some(vb) = svg.viewbox -%}
+/// SVG viewbox dimensions `(width, height)` for `{{ icon.source_name }}`.
 pub const {{ vb.const_name }}: (f32, f32) = {{ vb.literal }};
 {% endif -%}
 #[cfg(feature = "svg")]
-/// `{{ icon.source_name }}` icon as Svg.
+/// `{{ icon.source_name }}` icon.
 #[inline]
-pub fn {{ svg.fn_name }}() -> crate::Svg {
+pub fn {{ icon.fn_name }}() -> crate::Icon {
     {{ svg.ctor }}
+}
+{% if let Some(glyph) = icon.glyph -%}
+#[cfg(all(feature = "webfont", not(feature = "svg")))]
+/// `{{ icon.source_name }}` icon.
+#[inline]
+pub const fn {{ icon.fn_name }}() -> crate::Icon {
+    crate::Icon::from_glyph({{ glyph.type_path }}::new('{{ glyph.escape }}', FONT_FAMILY))
+}
+{% endif -%}
+{%- else if let Some(glyph) = icon.glyph %}
+#[cfg(feature = "webfont")]
+/// `{{ icon.source_name }}` icon.
+#[inline]
+pub const fn {{ icon.fn_name }}() -> crate::Icon {
+    crate::Icon::from_glyph({{ glyph.type_path }}::new('{{ glyph.escape }}', FONT_FAMILY))
 }
 {% endif -%}
 {% endfor %}

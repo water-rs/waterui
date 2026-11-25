@@ -18,6 +18,7 @@ extern crate alloc;
 #[cfg(target_os = "android")]
 pub mod device;
 pub mod external;
+pub(crate) mod leaf;
 pub mod runtime;
 pub use external::{
     ExternalFrameSource, ExternalFrameStream, ExternalFrameView, FrameOutput, FrameReceiver,
@@ -56,23 +57,25 @@ pub use bytemuck;
 
 use alloc::boxed::Box;
 use alloc::rc::Rc;
-use alloc::string::String;
 use alloc::sync::Arc;
+use core::any::type_name;
 use core::fmt;
 use core::time::Duration;
 
 use cherenkov::Instant;
-use nami::{Computed, Signal};
+use nami::Computed;
 
 use std::sync::Mutex;
 
-use waterui_core::layout::{ProposalSize, Size, StretchAxis, ViewDimensions};
+use waterui_core::backend::cast;
+use waterui_core::layout::{ProposalSize, Size, ViewDimensions};
 use waterui_core::reactive::signal::IntoComputed;
-use waterui_core::{Environment, Native, NativeView, Str, View, contract_violation};
+use waterui_core::{Environment, Native, Str, View};
+use waterui_frame_rate::FrameRate;
 use wgpu::{Adapter, Device, Instance, Queue, Texture, TextureFormat, TextureView};
 
 use crate::draw::kurbo;
-
+use crate::gpu::leaf::GpuContentLeaf;
 use crate::input::SurfaceInputEvent;
 
 /// The GPU layer's shared pointer: `Arc` where device handles and frames
@@ -206,35 +209,38 @@ pub enum SourceRateUpdate {
 #[derive(Debug)]
 pub struct Frame<'a> {
     /// Engine-owned device.
-    pub device: &'a Device,
+    device: &'a Device,
     /// Engine-owned queue.
-    pub queue: &'a Queue,
+    queue: &'a Queue,
     /// Offscreen render target for this frame.
-    pub texture: &'a Texture,
-    /// Color attachment view of [`Self::texture`].
-    pub view: &'a TextureView,
-    /// Format of [`Self::texture`].
-    pub format: TextureFormat,
-    /// Width of [`Self::texture`] in physical pixels.
-    pub width: u32,
-    /// Height of [`Self::texture`] in physical pixels.
-    pub height: u32,
+    texture: &'a Texture,
+    /// Color attachment view of the render target texture.
+    view: &'a TextureView,
+    /// Format of the render target texture.
+    format: TextureFormat,
+    /// Width of the render target texture in physical pixels.
+    width: u32,
+    /// Height of the render target texture in physical pixels.
+    height: u32,
     /// Display scale factor.
-    pub scale: f32,
+    scale: f32,
     /// Elapsed time since the producer's first rendered frame.
-    pub elapsed: Duration,
+    elapsed: Duration,
     /// Time delta since the previous frame.
-    pub delta: Duration,
+    delta: Duration,
     /// The platform's target presentation time for this frame, when available.
-    pub presentation_time: Option<Instant>,
-    redraw_rate: Option<waterui_frame_rate::FrameRate>,
+    presentation_time: Option<Instant>,
+    redraw_rate: Option<FrameRate>,
     source_rate_update: SourceRateUpdate,
 }
 
 impl<'a> Frame<'a> {
     /// A frame that has not yet requested a redraw.
     #[must_use]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "constructs every per-frame render target parameter in one const constructor"
+    )]
     pub const fn new(
         device: &'a Device,
         queue: &'a Queue,
@@ -263,14 +269,86 @@ impl<'a> Frame<'a> {
         }
     }
 
-    /// Asks for another frame after this one at [`FrameRate::FAST`](waterui_frame_rate::FrameRate::FAST).
+    /// Engine-owned device.
+    #[must_use]
+    pub const fn device(&self) -> &'a Device {
+        self.device
+    }
+
+    /// Engine-owned queue.
+    #[must_use]
+    pub const fn queue(&self) -> &'a Queue {
+        self.queue
+    }
+
+    /// Offscreen render target for this frame.
+    #[must_use]
+    pub const fn texture(&self) -> &'a Texture {
+        self.texture
+    }
+
+    /// Color attachment view of [`Self::texture`].
+    #[must_use]
+    pub const fn view(&self) -> &'a TextureView {
+        self.view
+    }
+
+    /// Format of [`Self::texture`].
+    #[must_use]
+    pub const fn format(&self) -> TextureFormat {
+        self.format
+    }
+
+    /// Width of [`Self::texture`] in physical pixels.
+    #[must_use]
+    pub const fn width(&self) -> u32 {
+        self.width
+    }
+
+    /// Height of [`Self::texture`] in physical pixels.
+    #[must_use]
+    pub const fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// Physical pixel dimensions `(width, height)` of [`Self::texture`].
+    #[must_use]
+    pub const fn size(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    /// Display scale factor.
+    #[must_use]
+    pub const fn scale(&self) -> f32 {
+        self.scale
+    }
+
+    /// Elapsed time since the producer's first rendered frame.
+    #[must_use]
+    pub const fn elapsed(&self) -> Duration {
+        self.elapsed
+    }
+
+    /// Time delta since the previous frame.
+    #[must_use]
+    pub const fn delta(&self) -> Duration {
+        self.delta
+    }
+
+    /// The platform's target presentation time for this frame, when available.
+    #[must_use]
+    pub const fn presentation_time(&self) -> Option<Instant> {
+        self.presentation_time
+    }
+
+    /// Asks for another frame after this one at [`FrameRate::FAST`].
     pub const fn request_redraw(&mut self) {
-        self.request_redraw_at(waterui_frame_rate::FrameRate::FAST);
+        self.request_redraw_at(FrameRate::FAST);
     }
 
     /// Asks for another frame after this one at `rate`, combining repeated
     /// requests within one pass by field-wise max.
-    pub const fn request_redraw_at(&mut self, rate: waterui_frame_rate::FrameRate) {
+    pub const fn request_redraw_at(&mut self, rate: FrameRate) {
         self.redraw_rate = Some(match self.redraw_rate {
             Some(current) => current.combine_with(rate),
             None => rate,
@@ -281,7 +359,7 @@ impl<'a> Frame<'a> {
     /// (latched across subsequent frames until replaced or cleared with
     /// `None`). Unlike [`Self::request_redraw_at`], this never requests
     /// another frame on its own.
-    pub const fn set_source_rate(&mut self, rate: Option<waterui_frame_rate::FrameRate>) {
+    pub const fn set_source_rate(&mut self, rate: Option<FrameRate>) {
         self.source_rate_update = match rate {
             Some(rate) => SourceRateUpdate::Set(rate),
             None => SourceRateUpdate::Clear,
@@ -296,7 +374,7 @@ impl<'a> Frame<'a> {
 
     /// The refresh-rate vote requested for the next frame, if any.
     #[must_use]
-    pub const fn redraw_rate(&self) -> Option<waterui_frame_rate::FrameRate> {
+    pub const fn redraw_rate(&self) -> Option<FrameRate> {
         self.redraw_rate
     }
 
@@ -465,8 +543,7 @@ impl SurfaceHooks {
 /// Stretches on both axes unless the content reports an intrinsic size, in
 /// which case it is that size and does not stretch.
 pub struct GpuView<T: GpuContent> {
-    content: Option<T>,
-    content_handle: Option<GpuContentHandle>,
+    content: T,
     intrinsic_size: Option<Size>,
     opaque: bool,
     surface_prefers_hdr: Option<bool>,
@@ -478,7 +555,7 @@ pub struct GpuView<T: GpuContent> {
 impl<T: GpuContent> fmt::Debug for GpuView<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("GpuView")
-            .field("content", &core::any::type_name::<T>())
+            .field("content", &type_name::<T>())
             .field("intrinsic_size", &self.intrinsic_size)
             .field("opaque", &self.opaque)
             .finish_non_exhaustive()
@@ -492,29 +569,11 @@ impl<T: GpuContent> GpuView<T> {
         Self {
             intrinsic_size: content.intrinsic_size(),
             opaque: content.is_opaque(),
-            content: Some(content),
-            content_handle: None,
+            content,
             surface_prefers_hdr: None,
             hooks: SurfaceHooks::default(),
             label: Computed::constant(None),
             value: Computed::constant(None),
-        }
-    }
-
-    /// Type-erases the content into a boxed trait object for backends whose
-    /// retained node or render-thread host stores a single non-generic type.
-    #[must_use]
-    pub fn into_boxed(self) -> GpuView<Box<dyn GpuContent>> {
-        let content = self.content.map(box_content);
-        GpuView {
-            content,
-            content_handle: self.content_handle,
-            intrinsic_size: self.intrinsic_size,
-            opaque: self.opaque,
-            surface_prefers_hdr: self.surface_prefers_hdr,
-            hooks: self.hooks,
-            label: self.label,
-            value: self.value,
         }
     }
 
@@ -540,17 +599,6 @@ impl<T: GpuContent> GpuView<T> {
         self
     }
 
-    /// The content's text caret, if it has one right now.
-    #[must_use]
-    pub fn ime_caret(&self) -> Option<kurbo::Rect> {
-        self.hooks.ime_caret()
-    }
-
-    /// Runs the per-frame UI hook, if any.
-    pub fn frame(&self) {
-        self.hooks.frame();
-    }
-
     /// The accessible name the content offers. An app's own `.a11y_label(…)`
     /// overrides it.
     #[must_use]
@@ -565,59 +613,6 @@ impl<T: GpuContent> GpuView<T> {
     pub fn offered_value(mut self, value: impl IntoComputed<Option<Str>>) -> Self {
         self.value = value.into_computed();
         self
-    }
-
-    /// The reactive accessibility label signal.
-    #[must_use]
-    pub const fn label(&self) -> &Computed<Option<Str>> {
-        &self.label
-    }
-
-    /// The reactive accessibility value signal.
-    #[must_use]
-    pub const fn value(&self) -> &Computed<Option<Str>> {
-        &self.value
-    }
-
-    /// Whether this view takes input events.
-    #[must_use]
-    pub const fn wants_input_events(&self) -> bool {
-        self.hooks.wants_input_events()
-    }
-
-    /// Routes an input event to the content's handler.
-    pub fn input(&self, event: &SurfaceInputEvent) {
-        self.hooks.input(event);
-    }
-
-    /// The natural size of the content, if it has one.
-    #[must_use]
-    pub const fn intrinsic_size(&self) -> Option<Size> {
-        self.intrinsic_size
-    }
-
-    /// Measures this view's content against a layout proposal.
-    ///
-    /// Unlike [`intrinsic_size`](Self::intrinsic_size) — the snapshot taken at
-    /// [`GpuView::new`] — this asks the live content, so a source whose
-    /// size resolves asynchronously reports it once it has one.
-    #[must_use]
-    pub fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
-        self.content_handle.as_ref().map_or_else(
-            || {
-                self.content.as_ref().map_or_else(
-                    || measure_by_intrinsic_size(None, proposal),
-                    |content| content.measure(proposal),
-                )
-            },
-            |handle| handle.measure(proposal),
-        )
-    }
-
-    /// Whether the content is opaque.
-    #[must_use]
-    pub const fn is_opaque(&self) -> bool {
-        self.opaque
     }
 
     /// Prefer HDR presentation formats for this content even when the
@@ -640,118 +635,32 @@ impl<T: GpuContent> GpuView<T> {
         self
     }
 
-    /// Resolves this view's explicit or content-provided HDR preference.
-    ///
-    /// `None` means follow the surrounding platform style.
-    #[must_use]
-    pub fn resolved_hdr_preference(&self) -> Option<bool> {
-        self.surface_prefers_hdr.or_else(|| {
-            self.content_handle
-                .as_ref()
-                .and_then(GpuContentHandle::preferred_surface_hdr)
-                .or_else(|| {
-                    self.content
-                        .as_ref()
-                        .and_then(GpuContent::preferred_surface_hdr)
-                })
-        })
-    }
-
-    /// The accessibility name.
-    #[must_use]
-    pub fn accessibility_label(&self) -> Option<String> {
-        self.label.snapshot().map(|label| label.as_str().to_owned())
-    }
-
-    /// The accessibility value.
-    #[must_use]
-    pub fn accessibility_value(&self) -> Option<String> {
-        self.value.snapshot().map(|value| value.as_str().to_owned())
-    }
-
-    /// Transfers this producer to a Cherenkov GPU layer.
-    ///
-    /// Asynchronous producer work wakes the host through the wake of each
-    /// engine surface that draws the layer. The UI hooks and input handlers
-    /// stay in this view.
-    ///
-    /// Content already taken with [`take_content`](Self::take_content) is a
-    /// contract violation: the layer draws nothing.
-    #[must_use]
-    pub fn take_engine_content(&mut self) -> cherenkov_gpu::interop::GpuContentBox {
-        cherenkov_gpu::interop::GpuContentBox::new(self.engine_content())
-    }
-
-    /// A shareable handle to this view's content for the engine.
-    ///
-    /// Every call answers a handle to the *same* content object: a host that
-    /// rebuilds its engine layer after device loss re-installs a fresh handle
-    /// so the engine's setup runs the one content on the new device, keeping
-    /// the state the content had accumulated.
-    ///
-    /// Content already taken with [`take_content`] is a contract violation:
-    /// the handle is to content that draws nothing.
-    ///
-    /// [`take_content`]: Self::take_content
-    pub fn engine_content(&mut self) -> GpuContentHandle {
-        let content = &mut self.content;
-        self.content_handle
-            .get_or_insert_with(|| GpuContentHandle::new(take_once(content)))
-            .clone()
-    }
-
-    /// Takes the content out for installation on a layer.
-    ///
-    /// Taking it twice is a contract violation, a view being installed once:
-    /// the second call answers content that draws nothing.
-    #[must_use]
-    pub fn take_content(&mut self) -> Box<dyn GpuContent> {
-        take_once(&mut self.content)
+    /// Lowers this authoring view into the backend leaf backends mount.
+    pub(crate) fn into_leaf(self) -> GpuContentLeaf {
+        GpuContentLeaf::from_parts(
+            box_content(self.content),
+            self.intrinsic_size,
+            self.opaque,
+            self.surface_prefers_hdr,
+            self.hooks,
+            self.label,
+            self.value,
+        )
     }
 }
 
 /// Moves `content` into `Box<dyn GpuContent>` without double-boxing when
 /// `T` is already `Box<dyn GpuContent>`.
 fn box_content<T: GpuContent>(content: T) -> Box<dyn GpuContent> {
-    match waterui_core::backend::cast::<T, Box<dyn GpuContent>>(content) {
+    match cast::<T, Box<dyn GpuContent>>(content) {
         Ok(already_boxed) => already_boxed,
         Err(content) => Box::new(content),
     }
 }
 
-/// The content in `slot`, or [`Vacant`] when it was already taken.
-fn take_once<T: GpuContent>(slot: &mut Option<T>) -> Box<dyn GpuContent> {
-    slot.take().map_or_else(
-        || {
-            contract_violation!("GpuView content installed twice; the layer draws nothing");
-            Box::new(Vacant)
-        },
-        box_content,
-    )
-}
-
-/// Content that draws nothing: what a view's second installation gets.
-struct Vacant;
-
-impl GpuContent for Vacant {
-    fn setup(&mut self, _gpu: &Context<'_>) {}
-
-    fn render(&mut self, _frame: &mut Frame<'_>) {}
-}
-
-impl<T: GpuContent> NativeView for GpuView<T> {
-    fn stretch_axis(&self) -> StretchAxis {
-        if self.intrinsic_size.is_some() {
-            StretchAxis::None
-        } else {
-            StretchAxis::Both
-        }
-    }
-}
-
 impl<T: GpuContent> View for GpuView<T> {
     fn body(self, _env: &Environment) -> impl View {
-        Native::new(self.into_boxed())
+        Native::new(self.into_leaf())
     }
 }
 
@@ -843,9 +752,12 @@ impl cherenkov_gpu::interop::GpuContent for GpuContentHandle {
 
 #[cfg(test)]
 mod tests {
+    use waterui_core::NativeView;
+    use waterui_core::layout::StretchAxis;
+
     use super::*;
 
-    /// Content that reports an intrinsic size, so it differs from [`Vacant`].
+    /// Content that reports an intrinsic size, so it differs from `Vacant`.
     struct Sized;
 
     impl GpuContent for Sized {
@@ -861,46 +773,39 @@ mod tests {
     #[test]
     #[cfg_attr(
         debug_assertions,
-        should_panic(expected = "GpuView content installed twice")
+        should_panic(expected = "GpuContentLeaf content installed twice")
     )]
     fn content_taken_twice_draws_nothing() {
-        let mut view = GpuView::new(Sized);
-        assert!(view.take_content().intrinsic_size().is_some());
-        assert!(view.take_content().intrinsic_size().is_none());
+        let mut leaf = GpuContentLeaf::new(Sized);
+        assert!(leaf.take_content().intrinsic_size().is_some());
+        assert!(leaf.take_content().intrinsic_size().is_none());
     }
 
     #[test]
     #[cfg_attr(
         debug_assertions,
-        should_panic(expected = "GpuView content installed twice")
+        should_panic(expected = "GpuContentLeaf content installed twice")
     )]
     fn an_engine_handle_after_taking_the_content_draws_nothing() {
-        let mut view = GpuView::new(Sized);
-        let _ = view.take_content();
-        let handle = view.engine_content();
+        let mut leaf = GpuContentLeaf::new(Sized);
+        let _ = leaf.take_content();
+        let handle = leaf.engine_content();
         assert!(handle.lock().intrinsic_size().is_none());
     }
 
     #[test]
-    fn typed_gpu_view_measures_statically_and_preserves_state_when_boxed() {
-        let view: GpuView<Sized> = GpuView::new(Sized).offered_label(Str::from("Chart"));
+    fn gpu_view_lowers_to_leaf_preserving_metadata_and_measurement() {
+        let leaf = GpuContentLeaf::from(
+            GpuView::new(Sized)
+                .offered_label(Str::from("Chart"))
+                .prefer_hdr_surface(),
+        );
+        assert_eq!(leaf.accessibility_label().as_deref(), Some("Chart"));
+        assert_eq!(leaf.resolved_hdr_preference(), Some(true));
         assert_eq!(
-            view.measure(ProposalSize::UNSPECIFIED).size,
+            leaf.measure(ProposalSize::UNSPECIFIED).size,
             Size::new(4.0, 4.0)
         );
-        assert_eq!(NativeView::stretch_axis(&view), StretchAxis::None);
-
-        let boxed: GpuView<Box<dyn GpuContent>> = view.into_boxed();
-        assert_eq!(boxed.accessibility_label().as_deref(), Some("Chart"));
-        assert_eq!(
-            boxed.measure(ProposalSize::UNSPECIFIED).size,
-            Size::new(4.0, 4.0)
-        );
-        // Converting an already-boxed `GpuView` keeps the existing inner box.
-        let reboxed = boxed.into_boxed();
-        assert_eq!(
-            reboxed.measure(ProposalSize::UNSPECIFIED).size,
-            Size::new(4.0, 4.0)
-        );
+        assert_eq!(NativeView::stretch_axis(&leaf), StretchAxis::None);
     }
 }

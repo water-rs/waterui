@@ -259,6 +259,7 @@ serde_json = { workspace = true }
 # on the facade, and the native suite tests `NativeBackend::offscreen` behind
 # `capture` — the crate's own `waterui` edge enables none of them.
 waterui = { workspace = true, features = ["assets", "capture", "image"] }
+waterui-icons-lucide = { workspace = true }
 # The termination tests park the hook futures on an `async-task` executor.
 executor-core = { workspace = true, features = ["async-task"] }
 # The webview trials drive the shared conformance cases; the crate's own

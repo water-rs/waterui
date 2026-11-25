@@ -208,9 +208,7 @@ pub fn render_color_picker_node<E: crate::text::TextEngine>(
     state: &Rc<RefCell<ColorPickerRenderState<E>>>,
     env: &Environment,
 ) {
-    let hidden = env
-        .get::<waterui::accessibility::AccessibilityHidden>()
-        .is_some_and(waterui::accessibility::AccessibilityHidden::is_hidden);
+    let hidden = ctx.renderer_mut().is_accessibility_hidden(env);
     if !hidden {
         let render_ctx = ctx.render_context();
         color_picker_accessibility(
@@ -378,6 +376,9 @@ pub fn emit_color_picker_accessibility<E: crate::text::TextEngine>(
     state: &Rc<RefCell<ColorPickerRenderState<E>>>,
     env: &Environment,
 ) {
+    if renderer.is_accessibility_hidden(env) {
+        return;
+    }
     color_picker_accessibility(
         renderer,
         None,

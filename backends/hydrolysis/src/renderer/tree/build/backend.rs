@@ -7,7 +7,7 @@ use waterui::animation::FrameRateVote;
 use waterui::sheet::Sheet;
 
 #[cfg(waterui_feature = "gpu")]
-use waterui::graphics::backend::Picture;
+use waterui::graphics::backend::{GpuContentLeaf, Picture};
 #[cfg(waterui_feature = "navigation")]
 use waterui::navigation::ResolvedNavigationView;
 use waterui_backend_core::{
@@ -275,12 +275,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     // setup state, redraw handle), so a reactive swap renders the new content
     // and a per-frame re-flush re-binds the *same* runtime.
     #[cfg(waterui_feature = "gpu")]
-    fn gpu(
-        &mut self,
-        native: waterui::GpuView<Box<dyn waterui::graphics::GpuContent>>,
-        env: &Environment,
-        (): (),
-    ) -> RenderNode<E> {
+    fn gpu(&mut self, native: GpuContentLeaf, env: &Environment, (): ()) -> RenderNode<E> {
         mark_reached!("gpu");
         #[cfg(hydrolysis_gpu)]
         return RenderNode::build_gpu_content(native, self.renderer, env);
@@ -1459,6 +1454,19 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         let renderer = &mut *self.renderer;
         let into_child: fn(C) -> HeldChild<E> = C::into_child;
         RenderNode::build_badge(native.map_slots(into_child), env, renderer)
+    }
+
+    fn disclosure<C: ChildView<Self>>(
+        &mut self,
+        native: waterui::widget::disclosure::DisclosureConfig<C>,
+        env: &Environment,
+        (): (),
+    ) -> RenderNode<E> {
+        use waterui_core::backend::MapSlots as _;
+        mark_reached!("disclosure");
+        let renderer = &mut *self.renderer;
+        let into_child: fn(C) -> HeldChild<E> = C::into_child;
+        RenderNode::build_disclosure(native.map_slots(into_child), env, renderer)
     }
 
     #[cfg(waterui_feature = "list")]

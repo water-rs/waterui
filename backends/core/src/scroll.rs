@@ -65,51 +65,13 @@ const SMOOTH_SCROLL_SETTLE_EPSILON: f64 = 0.1;
 /// and the sizes move together, so a report never pairs the new offset with
 /// stale extents.
 #[derive(Clone, Debug)]
-#[non_exhaustive]
 pub struct ScrollPositionReport {
     /// The binding the measured [`ScrollPosition`] is written into.
-    binding: Binding<Option<ScrollPosition>>,
+    pub binding: Binding<Option<ScrollPosition>>,
     /// The logical viewport size the report describes, in points.
-    viewport_size: Size,
+    pub viewport_size: Size,
     /// The logical content size the report describes, in points.
-    content_size: Size,
-}
-
-impl ScrollPositionReport {
-    /// The binding the measured [`ScrollPosition`] is written into.
-    #[must_use]
-    pub const fn binding(&self) -> &Binding<Option<ScrollPosition>> {
-        &self.binding
-    }
-
-    /// The logical viewport size the report describes, in points.
-    #[must_use]
-    pub const fn viewport_size(&self) -> Size {
-        self.viewport_size
-    }
-
-    /// The logical content size the report describes, in points.
-    #[must_use]
-    pub const fn content_size(&self) -> Size {
-        self.content_size
-    }
-}
-
-impl ScrollPositionReport {
-    /// Creates the report channel: `binding` receives every measured
-    /// [`ScrollPosition`] computed from `viewport_size` and `content_size`.
-    #[must_use]
-    pub const fn new(
-        binding: Binding<Option<ScrollPosition>>,
-        viewport_size: Size,
-        content_size: Size,
-    ) -> Self {
-        Self {
-            binding,
-            viewport_size,
-            content_size,
-        }
-    }
+    pub content_size: Size,
 }
 
 /// Cloneable reference to one scroll view's offset state, valid for the
@@ -2696,11 +2658,11 @@ mod position_tests {
         viewport: f32,
         content: f32,
     ) -> ScrollPositionReport {
-        ScrollPositionReport::new(
+        ScrollPositionReport {
             binding,
-            Size::new(viewport, viewport),
-            Size::new(viewport, content),
-        )
+            viewport_size: Size::new(viewport, viewport),
+            content_size: Size::new(viewport, content),
+        }
     }
 
     /// A sink that appends every received position to `seen`.

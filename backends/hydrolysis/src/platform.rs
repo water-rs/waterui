@@ -7959,7 +7959,7 @@ mod winit_impl {
             use wgpu::CompositeAlphaMode as Mode;
 
             let env = waterui_core::Environment::new();
-            let window = |material| Window::new("", || ()).background(material).into_parts();
+            let window = |material| Window::new("", || ()).background(material).into_parts(&env);
             let select = |material, modes: &[Mode]| {
                 negotiated_alpha_mode(
                     crate::runner::window_requires_transparency(&window(material), &env),

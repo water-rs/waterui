@@ -240,7 +240,7 @@ pub mod skill_block_10 {
 // SKILL.md § "### State" — rust block 11/18
 // ---------------------------------------------------------------------------
 pub fn skill_block_11() {
-    use waterui::media::media_picker::Selected;
+    use waterui::media::Media;
 
     #[derive(Clone)]
     enum Pane {
@@ -257,7 +257,7 @@ pub fn skill_block_11() {
     let count = Binding::i32(0); // bool f32 f64 i32 i64 isize u32 u64 usize
     let flag = Binding::bool(false);
     let name = Binding::container(String::new()); // any Clone type
-    let sel: Binding<Option<Selected>> = Binding::default(); // empty optional
+    let sel: Binding<Option<Media>> = Binding::default(); // empty optional
 
     let pane: Binding<Pane> = binding(Pane::Inbox); // general form, needs an inferable type
     let settings = Settings::binding(); // #[form] types: inference-free
@@ -582,8 +582,9 @@ pub fn skill_block_15() {
     let _ = {
         view.on_tap(|| ()) // [ellipsis filled]
     };
+    use waterui::gesture::GestureEvent;
     let g = Gesture::from(TapGesture::new());
-    let handler = || ();
+    let handler = |_: GestureEvent| ();
     let view = Divider;
     let _ = { view.gesture(g, handler) };
     let items = ("Copy".action(|| ()),);

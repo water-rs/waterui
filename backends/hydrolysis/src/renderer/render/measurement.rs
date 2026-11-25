@@ -363,22 +363,23 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
 #[cfg(feature = "navigation")]
 pub fn tabs_content_proposal(
     proposal: ProposalSize,
-    style: NativeTabStyle,
+    style: TabStyle,
     bar_extent: f64,
 ) -> ProposalSize {
-    match style {
-        NativeTabStyle::Automatic | NativeTabStyle::TabBar => ProposalSize::new(
-            proposal.width,
-            proposal.height.map(|height| {
-                crate::num_cast::f64_as_f32((f64::from(height) - bar_extent).max(0.0))
-            }),
-        ),
-        NativeTabStyle::Sidebar => ProposalSize::new(
+    if matches!(style, TabStyle::Sidebar) {
+        ProposalSize::new(
             proposal
                 .width
                 .map(|width| crate::num_cast::f64_as_f32((f64::from(width) - bar_extent).max(0.0))),
             proposal.height,
-        ),
+        )
+    } else {
+        ProposalSize::new(
+            proposal.width,
+            proposal.height.map(|height| {
+                crate::num_cast::f64_as_f32((f64::from(height) - bar_extent).max(0.0))
+            }),
+        )
     }
 }
 
@@ -387,19 +388,16 @@ pub fn tabs_button_rect(
     bar_rect: kurbo::Rect,
     tab_count: usize,
     index: usize,
-    style: NativeTabStyle,
+    style: TabStyle,
 ) -> kurbo::Rect {
-    match style {
-        NativeTabStyle::Automatic | NativeTabStyle::TabBar => {
-            let button_width = bar_rect.width() / crate::num_cast::usize_as_f64(tab_count);
-            let x0 = button_width.mul_add(crate::num_cast::usize_as_f64(index), bar_rect.x0);
-            kurbo::Rect::new(x0, bar_rect.y0, x0 + button_width, bar_rect.y1)
-        }
-        NativeTabStyle::Sidebar => {
-            let button_height = bar_rect.height() / crate::num_cast::usize_as_f64(tab_count);
-            let y0 = button_height.mul_add(crate::num_cast::usize_as_f64(index), bar_rect.y0);
-            kurbo::Rect::new(bar_rect.x0, y0, bar_rect.x1, y0 + button_height)
-        }
+    if matches!(style, TabStyle::Sidebar) {
+        let button_height = bar_rect.height() / crate::num_cast::usize_as_f64(tab_count);
+        let y0 = button_height.mul_add(crate::num_cast::usize_as_f64(index), bar_rect.y0);
+        kurbo::Rect::new(bar_rect.x0, y0, bar_rect.x1, y0 + button_height)
+    } else {
+        let button_width = bar_rect.width() / crate::num_cast::usize_as_f64(tab_count);
+        let x0 = button_width.mul_add(crate::num_cast::usize_as_f64(index), bar_rect.x0);
+        kurbo::Rect::new(x0, bar_rect.y0, x0 + button_width, bar_rect.y1)
     }
 }
 

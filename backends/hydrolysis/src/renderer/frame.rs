@@ -199,7 +199,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         self.has_pending_semantic_update()
             || self.os_file_drop_pending()
             || self.animations_active()
-            || self.motions_active()
+            || self.motions_active(perpetual)
             || self.engine_tracks_active(perpetual)
             || self.scene_frames_requested(perpetual)
             || self.next_gesture_deadline().is_some()

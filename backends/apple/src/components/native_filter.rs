@@ -66,7 +66,7 @@ use objc2_metal::{
 };
 use objc2_quartz_core::{
     CACurrentMediaTime, CAKeyframeAnimation, CALayer, CAMediaTiming, CAMediaTimingFunction,
-    CATransaction, kCAAnimationLinear, kCAMediaTimingFunctionLinear,
+    CATransaction, kCAAnimationLinear, kCAFillModeBackwards, kCAMediaTimingFunctionLinear,
 };
 use waterui_backend_core::Environment;
 use waterui_core::layout::{
@@ -1102,6 +1102,31 @@ fn write_bound_input_at(
     }
 }
 
+/// Resolves the cycle duration, initial sample offset, and optional `(delay, autoreverse)`
+/// repeat metadata for `live` timelines on a bound filter stream.
+fn bound_stream_timing(
+    animations: &HashMap<AnimKey, ComponentAnim>,
+    effect: usize,
+    live: &[usize],
+    now: f64,
+) -> (Duration, Duration, Option<(Duration, bool)>) {
+    let forever = live.iter().find_map(|flat| {
+        animations[&(effect, *flat)]
+            .interpolator
+            .repeat_forever_cycle()
+    });
+    if let Some((delay, period, autoreverse)) = forever {
+        (period, delay, Some((delay, autoreverse)))
+    } else {
+        let stream = live
+            .iter()
+            .map(|flat| animations[&(effect, *flat)].remaining(now))
+            .max()
+            .unwrap_or_default();
+        (stream, Duration::ZERO, None)
+    }
+}
+
 /// Re-submits one bound input's CA stream so every bound parameter's own
 /// raw timeline stays authoritative: drops settled timelines, then —
 /// when any live curve remains — samples the whole input at `now` plus
@@ -1162,34 +1187,32 @@ fn resample_bound_stream(
     if !force && live.iter().all(|flat| animations[&(effect, *flat)].applied) {
         return;
     }
-    let stream = live
-        .iter()
-        .map(|flat| animations[&(effect, *flat)].remaining(now))
-        .max()
-        .unwrap_or_default();
+    let (stream, cycle_offset, repeat) = bound_stream_timing(animations, effect, &live, now);
     let submitted = match bound {
-        BoundValue::Scalar(bound) => submit_animation(owner, key_path, stream, |elapsed| {
+        BoundValue::Scalar(bound) => submit_animation(owner, key_path, stream, repeat, |elapsed| {
             NSNumber::new_f32(bound.value_at(
                 animations,
                 effect,
                 model,
-                now + elapsed.as_secs_f64(),
+                now + (cycle_offset + elapsed).as_secs_f64(),
                 gamut,
             ))
         }),
-        BoundValue::Vec4(components) => submit_animation(owner, key_path, stream, |elapsed| {
-            let mut value = [0.0f32; 4];
-            for (index, b) in components.iter().enumerate() {
-                value[index] = b.value_at(
-                    animations,
-                    effect,
-                    model,
-                    now + elapsed.as_secs_f64(),
-                    gamut,
-                );
-            }
-            ci_vec4(value)
-        }),
+        BoundValue::Vec4(components) => {
+            submit_animation(owner, key_path, stream, repeat, |elapsed| {
+                let mut value = [0.0f32; 4];
+                for (index, b) in components.iter().enumerate() {
+                    value[index] = b.value_at(
+                        animations,
+                        effect,
+                        model,
+                        now + (cycle_offset + elapsed).as_secs_f64(),
+                        gamut,
+                    );
+                }
+                ci_vec4(value)
+            })
+        }
     };
     if submitted {
         for flat in &live {
@@ -1197,39 +1220,62 @@ fn resample_bound_stream(
                 anim.applied = true;
             }
         }
-        write_bound_input_at(
-            &owner.layer,
-            key_path,
-            bound,
-            animations,
-            effect,
-            model,
-            now + stream.as_secs_f64(),
-            gamut,
-        );
-    } else {
-        write_bound_input_at(
-            &owner.layer,
-            key_path,
-            bound,
-            animations,
-            effect,
-            model,
-            now,
-            gamut,
-        );
     }
+    let write_at = if submitted && repeat.is_none() {
+        now + stream.as_secs_f64()
+    } else {
+        now
+    };
+    write_bound_input_at(
+        &owner.layer,
+        key_path,
+        bound,
+        animations,
+        effect,
+        model,
+        write_at,
+        gamut,
+    );
+}
+
+/// Computes single-cycle sample timestamps for a Core Animation keyframe stream.
+///
+/// For non-autoreversing `Repeat::Forever` streams (`repeat == Some((_, false))`),
+/// the final keyframe is pinned 1 ns before `duration` so `Playback::sample_lanes`
+/// evaluates the cycle's end (`target`) instead of wrapping `rem == 0` back to `from`.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "display frame count across a positive finite cycle duration fits in usize/u32"
+)]
+fn keyframe_sample_offsets(
+    duration: Duration,
+    fps: f32,
+    repeat: Option<(Duration, bool)>,
+) -> Vec<Duration> {
+    let count = ((duration.as_secs_f64() * f64::from(fps)).ceil() as usize).max(2);
+    let step = duration / (count - 1) as u32;
+    let non_autoreverse_forever = matches!(repeat, Some((_, false)));
+    (0..count)
+        .map(|i| {
+            if non_autoreverse_forever && i + 1 == count {
+                duration.saturating_sub(Duration::from_nanos(1))
+            } else {
+                step * i as u32
+            }
+        })
+        .collect()
 }
 
 /// Submits a `CAKeyframeAnimation` on `key_path` — one native value per
 /// display frame of `duration` — at the attached screen's cadence, no
 /// synthetic cap. Returns `false` when the view is not on a screen: no
 /// cadence exists to sample at and the pending timeline stands.
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn submit_animation<T: Message>(
     owner: &NativeFilterOwner,
     key_path: &str,
     duration: Duration,
+    repeat: Option<(Duration, bool)>,
     frames: impl Fn(Duration) -> Retained<T>,
 ) -> bool {
     let Some(fps) = display_fps(&owner.view) else {
@@ -1240,9 +1286,10 @@ fn submit_animation<T: Message>(
     }
     // Every frame of the attached display gets a sample — the cadence is
     // the screen's, not an invented ceiling.
-    let count = ((duration.as_secs_f64() * f64::from(fps)).ceil() as usize).max(2);
-    let step = duration / (count - 1) as u32;
-    let values: Vec<Retained<T>> = (0..count).map(|i| frames(step * i as u32)).collect();
+    let values: Vec<Retained<T>> = keyframe_sample_offsets(duration, fps, repeat)
+        .into_iter()
+        .map(frames)
+        .collect();
     let path = NSString::from_str(key_path);
     let animation = CAKeyframeAnimation::animationWithKeyPath(Some(&path));
     let array = NSArray::from_retained_slice(&values);
@@ -1252,6 +1299,18 @@ fn submit_animation<T: Message>(
         animation.setValues(Some(&*(std::ptr::from_ref(&*array)).cast::<NSArray>()));
     }
     animation.setDuration(duration.as_secs_f64());
+    if let Some((delay, autoreverse)) = repeat {
+        animation.setRepeatCount(f32::INFINITY);
+        animation.setAutoreverses(autoreverse);
+        if !delay.is_zero() {
+            let now = owner
+                .layer
+                .convertTime_fromLayer(CACurrentMediaTime(), None);
+            animation.setBeginTime(now + delay.as_secs_f64());
+            // SAFETY: `kCAFillModeBackwards` is a Core Animation constant.
+            animation.setFillMode(unsafe { kCAFillModeBackwards });
+        }
+    }
     // Explicit linear calculation and pacing — `values` already carry
     // the interpolator's curve, so CA must not pace them a second time.
     // SAFETY: the `kCA…` externs are immutable well-known constant
@@ -2232,4 +2291,27 @@ pub fn mount(
     leaf.keep(guard);
     leaf.keep(owner);
     leaf
+}
+
+#[cfg(test)]
+mod tests {
+    use super::keyframe_sample_offsets;
+    use core::time::Duration;
+    use waterui_core::animation::{Animation, AnimationTrack, Repeat};
+
+    #[test]
+    fn non_autoreversing_repeat_forever_keyframes_do_not_wrap_to_start() {
+        let period = Duration::from_millis(600);
+        let offsets = keyframe_sample_offsets(period, 100.0, Some((Duration::ZERO, false)));
+        let anim = Animation::linear(period).repeat(Repeat::Forever { autoreverse: false });
+        let last = offsets.last().copied().expect("at least 2 keyframes");
+        let mut track = AnimationTrack::new(0.0_f64);
+        track.set_target(1.0, Some(anim));
+        let _ = track.advance(last);
+        let end_value = track.value();
+        assert!(
+            end_value > 0.99,
+            "final keyframe of non-autoreversing forever cycle should reach target, got {end_value}"
+        );
+    }
 }

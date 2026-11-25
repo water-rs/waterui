@@ -12,12 +12,11 @@ readme = "README.md"
 
 [features]
 default = ["svg"]
-svg = ["dep:waterui-svg"]
-webfont = ["dep:waterui-icon"]
+svg = ["waterui-icon/svg"]
+webfont = []
 
 [dependencies]
-waterui-svg = { workspace = true, optional = true }
-waterui-icon = { workspace = true, optional = true }
+waterui-icon.workspace = true
 
 [build-dependencies]
 serde_json = "1.0"

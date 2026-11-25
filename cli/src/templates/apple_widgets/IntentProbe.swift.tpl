@@ -8,17 +8,27 @@ private func recordProvider(
     _ out: UnsafeMutableRawPointer
 )
 
+@_extern(c, "{{ steps_symbol }}")
+private func stepsProvider(
+    _ ptr: UnsafePointer<UInt8>,
+    _ len: Int,
+    _ out: UnsafeMutableRawPointer
+)
+
 private struct RecordPayload: Decodable {
     let outputPath: String
     let value: String
+    let nextSteps: UInt32
 }
 
 @main
 struct IntentProbe {
     static func main() async throws {
+        let storePath = FileManager.default.currentDirectoryPath + "/shared-store"
         let context = WUIWidgetContext(
             family: "systemSmall",
-            displaySize: CGSize(width: 170, height: 44)
+            displaySize: CGSize(width: 170, height: 44),
+            storePath: storePath
         )
         let timeline = try WUITimeline.decode(from: runSnapshot(recordProvider, context: context))
         precondition(timeline.entries.count == 1)
@@ -30,9 +40,28 @@ struct IntentProbe {
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         let payload = try decoder.decode(RecordPayload.self, from: Data(node.payload.utf8))
         precondition(!FileManager.default.fileExists(atPath: payload.outputPath))
-        try await perform({{ intent_type }}(payload: node.payload))
+        try await perform({{ intent_type }}(payload: node.payload, storePath: storePath))
         let actual = try Data(contentsOf: URL(fileURLWithPath: payload.outputPath))
         precondition(actual == Data(payload.value.utf8), "the Rust handler must write its payload")
+
+        // Verify the intent mutated the shared widget store and the next
+        // widget timeline reads the updated value.
+        let steps = try WUITimeline.decode(from: runSnapshot(stepsProvider, context: context))
+        precondition({
+            guard case .background(let bg) = steps.entries[0].content,
+                  case .padding(let padded) = bg.content,
+                  case .stack(let stack) = padded.content
+            else {
+                return false
+            }
+            return stack.children.contains { child in
+                if case .text(let text) = child,
+                   case .verbatim(let raw) = text.content {
+                    return raw.contains("steps=\(payload.nextSteps)")
+                }
+                return false
+            }
+        }(), "steps widget must read the updated step count written by the intent")
     }
 
     private static func perform<I: AppIntent>(_ intent: I) async throws {

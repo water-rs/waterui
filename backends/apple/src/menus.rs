@@ -306,7 +306,6 @@ mod imp {
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use alloc::vec::Vec;
-
     use cocoa_ui::appkit::KeyModifiers;
     use cocoa_ui::menu::MenuTreeNode;
     use waterui::component::label::label;
