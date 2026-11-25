@@ -47,8 +47,6 @@ pub use split::{
     ColumnWidth, NavigationSplitColumnVisibility, NavigationSplitLayout, NavigationSplitStyle,
     NavigationSplitView,
 };
-#[doc(hidden)]
-pub use tab::tab_style;
 pub use tab::{BadgeValue, Tab, TabBarMinimizeBehavior, TabRole, TabStyle, Tabs, TabsLayout};
 use transition::TransitionKeyRegistry;
 pub use transition::{
