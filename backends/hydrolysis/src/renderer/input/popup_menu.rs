@@ -115,6 +115,7 @@ impl<E: crate::text::TextEngine> PopupWindowManager<E> {
     ) {
         (self.0)(crate::runner::window::root_window(
             window_in_opening_environment(window, env),
+            env,
         ));
     }
 }

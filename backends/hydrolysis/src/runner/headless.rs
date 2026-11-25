@@ -707,10 +707,11 @@ impl HeadlessRuntime {
         family_resolution: FontFamilyResolution,
         color_format: HeadlessColorFormat,
     ) -> Self {
+        let window = root_window(default_window(content), &env);
         Self::on_painter(
             painter.into(),
             env,
-            root_window(default_window(content)),
+            window,
             width,
             height,
             style,
@@ -794,10 +795,11 @@ impl HeadlessRuntime {
         family_resolution: FontFamilyResolution,
         color_format: HeadlessColorFormat,
     ) -> Self {
+        let window = root_window(window, &env);
         Self::on_painter(
             painter.into(),
             env,
-            root_window(window),
+            window,
             width,
             height,
             style,
@@ -893,10 +895,11 @@ impl HeadlessRuntime {
         style: impl Style,
         color_format: HeadlessColorFormat,
     ) -> Self {
+        let window = root_window(default_window(content), &env);
         Self::on_painter(
             OffscreenPainter::for_tests(),
             env,
-            root_window(default_window(content)),
+            window,
             width,
             height,
             style,
@@ -921,10 +924,11 @@ impl HeadlessRuntime {
         height: u32,
         style: impl crate::Style,
     ) -> Self {
+        let window = root_window(window, &env);
         Self::on_painter(
             OffscreenPainter::for_tests(),
             env,
-            root_window(window),
+            window,
             width,
             height,
             style,
@@ -2502,10 +2506,12 @@ mod hdr_capture_tests {
     fn cpu_painter_hdr_linear_display_p3_preserves_edr_highlights() {
         let painter = OffscreenPainter::select_with(true)
             .unwrap_or_else(|error| panic!("the CPU painter must open: {error}"));
+        let env = test_environment();
+        let window = root_window(default_window(hdr_white_view()), &env);
         let mut runtime = HeadlessRuntime::on_painter(
             painter,
-            test_environment(),
-            root_window(default_window(hdr_white_view())),
+            env,
+            window,
             32,
             32,
             MinimalTestTheme::default(),

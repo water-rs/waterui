@@ -37,9 +37,12 @@ pub type ToolbarRoot = Box<dyn FnOnce(&Environment, MainThreadMarker) -> NativeL
 pub type RootWindow = WindowParts<Root, Option<ToolbarRoot>>;
 
 /// `window` as this backend holds it.
-pub fn root_window<C: ViewBuilder, T: WindowToolbar>(window: Window<C, T>) -> RootWindow {
+pub fn root_window<C: ViewBuilder, T: WindowToolbar>(
+    window: Window<C, T>,
+    env: &Environment,
+) -> RootWindow {
     let handle = window.handle();
-    window.into_parts().map(
+    window.into_parts(env).map(
         |content| -> Root { Box::new(move |env, mtm| dispatch::render(content.build(), env, mtm)) },
         |toolbar| {
             toolbar.into_view().map(|view| -> ToolbarRoot {
@@ -61,7 +64,7 @@ pub fn connect_windows(windows: impl Windows, env: &Environment) -> Vec<RootWind
     }
     impl WindowSink for Collect<'_> {
         fn window<C: ViewBuilder, T: WindowToolbar>(&mut self, window: Window<C, T>) {
-            self.initial.push(root_window(window));
+            self.initial.push(root_window(window, self.env));
         }
 
         fn channel<C: ViewBuilder, T: WindowToolbar>(&mut self, channel: WindowChannel<C, T>) {
@@ -72,7 +75,11 @@ pub fn connect_windows(windows: impl Windows, env: &Environment) -> Vec<RootWind
                 let _ = self.env;
                 channel.connect(|_| imp::show_unsupported_on_ios())
             };
-            self.initial.extend(queued.into_iter().map(root_window));
+            self.initial.extend(
+                queued
+                    .into_iter()
+                    .map(|window| root_window(window, self.env)),
+            );
         }
     }
     let mut collect = Collect {
@@ -286,7 +293,7 @@ mod imp {
     ) -> Vec<Window<C, T>> {
         let env = env.clone();
         channel.connect(move |window| {
-            let declaration = super::root_window(window);
+            let declaration = super::root_window(window, &env);
             let env = env.clone();
             enqueue_local(mtm(), move |mtm| {
                 track(realize_root(declaration, &env, mtm));
@@ -385,7 +392,7 @@ mod imp {
         env: &Environment,
         mtm: MainThreadMarker,
     ) -> WindowHost {
-        realize_root(super::root_window(declaration), env, mtm)
+        realize_root(super::root_window(declaration, env), env, mtm)
     }
 
     enum StateWiring {
@@ -1631,15 +1638,17 @@ fn into_kit_size(size: WSize) -> Size {
 #[cfg(test)]
 mod tests {
     use super::root_window;
+    use waterui::Environment;
     use waterui::layout::Divider;
     use waterui::window::Window;
 
     #[test]
     fn root_window_preserves_absent_and_present_toolbars() {
-        let plain = root_window(Window::new("Plain", || ()));
+        let env = Environment::new();
+        let plain = root_window(Window::new("Plain", || ()), &env);
         assert!(plain.toolbar.is_none());
 
-        let with_toolbar = root_window(Window::new("Toolbar", || ()).toolbar(Divider));
+        let with_toolbar = root_window(Window::new("Toolbar", || ()).toolbar(Divider), &env);
         assert!(with_toolbar.toolbar.is_some());
     }
 }

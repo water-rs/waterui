@@ -49,8 +49,7 @@ use core::time::Duration;
 use executor_core::spawn_local;
 use nami::Binding;
 use nami::collection::StateList;
-use suiteki::Str;
-use waterui_controls::{Button, ButtonStyle, button, label};
+use waterui_controls::{Button, ButtonStyle, IntoLabel, Label, SemanticLabel, button, label};
 use waterui_core::animation::Animation;
 use waterui_core::extract::State;
 use waterui_core::handler::{
@@ -74,7 +73,7 @@ use waterui_macros::state;
 use waterui_markdown::CodeCopyFeedback;
 #[cfg(feature = "flow-markdown")]
 use waterui_text::code::OnCopied;
-use waterui_text::{font::Font, text::text};
+use waterui_text::{IntoText, Text, font::Font};
 
 use crate::ViewExt;
 use crate::shape::{FilledShape, Path, RoundedRectangle, ShapeExt};
@@ -347,15 +346,15 @@ impl SnackbarPosition {
 #[derive(Clone)]
 pub struct SnackbarAction {
     /// The action button label.
-    label: Str,
+    label: Label<SemanticLabel>,
     /// The callback when action is pressed.
     handler: SharedAction<()>,
 }
 
 impl SnackbarAction {
-    /// The action button label.
+    /// The semantic action button label.
     #[must_use]
-    pub const fn label(&self) -> &Str {
+    pub const fn label(&self) -> &Label<SemanticLabel> {
         &self.label
     }
 }
@@ -459,7 +458,7 @@ impl<V: View> View for BuiltIcon<V> {
 /// ```
 pub struct Snackbar<I = NoIcon> {
     /// The message to display.
-    message: Str,
+    message: Text,
     /// Optional icon builder to display before the message.
     icon: Option<IconFactory<I>>,
     /// Optional action button.
@@ -570,10 +569,13 @@ impl<V: View> From<Snackbar<NoIcon>> for Snackbar<V> {
 
 impl Snackbar<NoIcon> {
     /// Creates a new snackbar with the specified message.
+    ///
+    /// Accepts any [`IntoText`] value so string literals resolve through the
+    /// active translation catalog in the surrounding [`Environment`].
     #[must_use]
-    pub fn new(message: impl Into<Str>) -> Self {
+    pub fn new(message: impl IntoText) -> Self {
         Self {
-            message: message.into(),
+            message: message.into_text(),
             icon: None,
             action: None,
             duration: Duration::from_secs(3),
@@ -635,11 +637,11 @@ impl<I> Snackbar<I> {
     #[must_use]
     pub fn action<Args>(
         mut self,
-        label: impl Into<Str>,
+        label: impl IntoLabel,
         handler: impl Handler<Args, ()> + 'static,
     ) -> Self {
         self.action = Some(SnackbarAction {
-            label: label.into(),
+            label: label.into_label().into_semantic(),
             handler: shared_action(handler),
         });
         self
@@ -1134,11 +1136,16 @@ impl<I: SnackbarIconSlot> StackedSnackbarView<I> {
         let action_button = snackbar.action.map(|action| {
             let captured_env = snackbar.captured_env.clone();
             let manager = manager.clone();
-            button(
-                text(action.label.clone())
-                    .font(theme.action_label_font.clone())
-                    .color(theme.action_label_color.clone()),
-            )
+            let action_label = action.label.clone();
+            let semantic_text = action_label.semantic_text().clone();
+            let action_font = theme.action_label_font.clone();
+            let action_color = theme.action_label_color.clone();
+            button(Label::new(semantic_text, move || {
+                action_label
+                    .clone()
+                    .font(action_font.clone())
+                    .foreground(action_color.clone())
+            }))
             .style(ButtonStyle::Borderless)
             .action(move |env: waterui_core::Environment| {
                 action.handler.run(&captured_env.layered_on(&env));
@@ -1525,7 +1532,7 @@ mod tests {
     #[test]
     fn snackbar_icon_accepts_non_clone_modified_view_builder() {
         use waterui_layout::padding::Padding;
-        use waterui_text::Text;
+        use waterui_text::{Text, text};
 
         install_executor();
         let snackbar = Snackbar::new("Padded").icon(|| text("★").padding());
@@ -1539,5 +1546,45 @@ mod tests {
             "Content"
         });
         let _ = view.body(&Environment::new());
+    }
+
+    #[test]
+    fn snackbar_message_and_action_resolve_through_translation_catalog() {
+        use waterui_locale::{TranslationCatalog, locales};
+
+        let mut env = Environment::new();
+        env.insert(locales::FR);
+        env.insert(
+            TranslationCatalog::new()
+                .add_toml(
+                    locales::FR,
+                    "\"File saved\" = \"Fichier enregistré\"\n\"Undo\" = \"Annuler\"",
+                )
+                .expect("test catalog must parse"),
+        );
+
+        let snackbar = Snackbar::new("File saved").action("Undo", || {});
+        assert_eq!(
+            snackbar
+                .message
+                .resolve(&env)
+                .content()
+                .snapshot()
+                .to_plain()
+                .as_str(),
+            "Fichier enregistré"
+        );
+        let action = snackbar.action.as_ref().expect("action must be present");
+        assert_eq!(
+            action
+                .label()
+                .semantic_text()
+                .resolve(&env)
+                .content()
+                .snapshot()
+                .to_plain()
+                .as_str(),
+            "Annuler"
+        );
     }
 }

@@ -269,7 +269,8 @@ pub fn realize_accessibility_label_metadata(
     let mut leaf = ctx.realize(metadata.content);
     let target = view::retain_base(leaf.view());
     leaf.keep(target.clone());
-    leaf.bind(metadata.value.signal(), move |label| {
+    let signal = metadata.value.resolve(ctx.env());
+    leaf.bind(&signal, move |label| {
         a11y::set_label(target::of(&target), &NSString::from_str(&label));
     });
     leaf
@@ -282,7 +283,8 @@ pub fn realize_accessibility_value_metadata(
     let mut leaf = ctx.realize(metadata.content);
     let target = view::retain_base(leaf.view());
     leaf.keep(target.clone());
-    leaf.bind(metadata.value.signal(), move |value| {
+    let signal = metadata.value.resolve(ctx.env());
+    leaf.bind(&signal, move |value| {
         a11y::set_value(target::of(&target), &NSString::from_str(&value));
     });
     leaf
