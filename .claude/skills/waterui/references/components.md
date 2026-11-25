@@ -168,14 +168,12 @@ pivot on an `Anchor` (in the prelude; normalized, `(0, 0)` top-left: `CENTER`, `
 `TOP_RIGHT`, `BOTTOM_LEFT`, `BOTTOM_RIGHT`, or `Anchor::new(x, y)`). Factors and angles take
 signals (`Angle::degrees(..)`, `Angle::radians(..)`, `Angle::turns(..)`, `Angle::{ZERO, QUARTER, HALF, FULL}`); the anchor is a plain value.
 
-Grid — note the import and the `row` name collision with the list row builder. Rows go in
+Grid — both `grid` and `grid_row` are in the prelude. Rows go in
 a tuple, which lets each row hold different views; an array or `Vec` works when every row
 has the same view types:
 
 ```rust
-use waterui::layout::grid::{grid as layout_grid, row as grid_row};
-
-layout_grid(3, (
+grid(3, (
     grid_row((a, b, c)),
     grid_row((d, e)),          // short rows are fine
 ))
@@ -730,10 +728,12 @@ let drawer = VStack::for_each(rows.clone(), row_view).spacing(4.0);
 ```
 
 Heterogeneous / sectioned static content — rows are *builders*, so the list can rebuild a
-row when it is realized again. `row` and `detail_row` take **two** arguments (label,
-value) and may sit directly in the content tuple:
+row when it is realized again. `waterui::component::list::row` (not in the prelude) and
+`detail_row` take **two** arguments (label, value) and may sit directly in the content tuple:
 
 ```rust
+use waterui::component::list::row;
+
 List::content((
     Section::new("Recent")
         .footer("Sub-pages push onto this tab's own stack.")

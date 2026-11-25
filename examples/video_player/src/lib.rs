@@ -18,7 +18,6 @@ use std::rc::Rc;
 use waterui::ContentLedger;
 use waterui::app::{App, Windows};
 use waterui::color::Srgb;
-use waterui::prelude::grid::{grid as layout_grid, row as grid_row};
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
@@ -245,7 +244,7 @@ fn player_shell<V: View>(
     });
 
     let source_grid = playlist.map(|(controller, ids)| {
-        layout_grid(
+        grid(
             3,
             (
                 grid_row((

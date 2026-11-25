@@ -257,8 +257,6 @@ fn sidebar(
     selection: &Binding<Option<SidebarDestination>>,
     search: &Binding<Str>,
 ) -> impl View + use<> {
-    use waterui::layout::grid::{grid, row};
-
     let query = search
         .clone()
         .map(|value| normalized_search_query(&value))
@@ -271,15 +269,15 @@ fn sidebar(
         grid(
             2,
             [
-                row((
+                grid_row((
                     tile(SidebarDestination::Today),
                     tile(SidebarDestination::Scheduled),
                 )),
-                row((
+                grid_row((
                     tile(SidebarDestination::All),
                     tile(SidebarDestination::Flagged),
                 )),
-                row((
+                grid_row((
                     tile(SidebarDestination::Urgent),
                     tile(SidebarDestination::Completed),
                 )),

@@ -61,7 +61,7 @@ pub use modifiers::{alignment_guide, background, overlay, padding, safe_area};
 pub use spacer::{Spacer, spacer, spacer_min};
 pub mod stack;
 
-pub use grid::{Grid, GridRow, grid, row};
+pub use grid::{Grid, GridRow, grid, grid_row};
 pub use scroll::{
     ScrollController, ScrollRequest, ScrollView, scroll, scroll_both, scroll_horizontal,
 };

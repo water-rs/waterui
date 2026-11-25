@@ -601,9 +601,9 @@ fn grid_with_short_middle_row_view() -> impl View {
     waterui::layout::grid::grid(
         3,
         (
-            waterui::layout::grid::row((cell("a"), cell("b"), cell("c"))),
-            waterui::layout::grid::row((cell("d"),)),
-            waterui::layout::grid::row((cell("e"), cell("f"), cell("g"))),
+            grid_row((cell("a"), cell("b"), cell("c"))),
+            grid_row((cell("d"),)),
+            grid_row((cell("e"), cell("f"), cell("g"))),
         ),
     )
 }

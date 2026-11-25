@@ -213,10 +213,8 @@ pub fn components_block_07() {
     let (a, b, c) = (text("a"), text("b"), text("c"));
     let (d, e) = (text("d"), text("e"));
 
-    use waterui::layout::grid::{grid as layout_grid, row as grid_row};
-
     let _ = {
-        layout_grid(
+        grid(
             3,
             (
                 grid_row((a, b, c)),
@@ -1058,6 +1056,8 @@ pub fn components_block_28() {
 // components.md § "## Lists and collections" — rust block 29/39
 // ---------------------------------------------------------------------------
 pub fn components_block_29() -> impl View {
+    use waterui::component::list::row;
+
     List::content((
         Section::new("Recent")
             .footer("Sub-pages push onto this tab's own stack.")
@@ -1076,6 +1076,7 @@ pub fn components_block_29() -> impl View {
 // the prose's reactive collection.
 // ---------------------------------------------------------------------------
 pub fn components_reactive_section_prose(today: StateList<Record>) -> impl View {
+    use waterui::component::list::row;
     use waterui::views::ForEach;
 
     let _ = row("a", "b")
@@ -1094,6 +1095,7 @@ pub fn components_reactive_section_prose(today: StateList<Record>) -> impl View 
 // and `list_min_row_height`. Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn components_list_item_prose(records: StateList<Record>) {
+    use waterui::component::list::row;
     use waterui::layout::padding::EdgeInsets;
     use waterui::views::ForEach;
 

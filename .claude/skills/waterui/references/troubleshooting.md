@@ -112,8 +112,8 @@ Use `app.pump_for(duration)`.
 | `no method named 'is_empty'` on a signal | signal string methods are prefixed | `.str_is_empty()`, `.str_len()`, `.str_contains(..)` |
 | mismatched arms in `.select(TokenA, TokenB)` | both arms must be one concrete type | convert first: `let a: Color = Accent.into();` |
 | `this function takes 1 argument but 2 were supplied` on `.scale` | uniform scale takes one factor; per-axis is `scale_xy` | `.scale(factor)` or `.scale_xy(x, y)` |
-| `this function takes 2 arguments` on `row("Title")` | `row`/`detail_row` take (label, value) | `row("Streak", "14 days")` |
-| wrong `row` / `grid` resolves | list `row` vs grid `row` name collision | `use waterui::layout::grid::{grid as layout_grid, row as grid_row};` |
+| `this function takes 2 arguments` on `row("Title")` | `waterui::component::list::row` / `detail_row` take (label, value); grid rows use `grid_row` | `waterui::component::list::row("Streak", "14 days")` or `grid_row((a, b))` |
+| `cannot find function 'row'` | list `row` is not in the prelude; grid rows use `grid_row` | `grid(3, [grid_row((a, b, c))])` or `use waterui::component::list::row;` |
 | `` `Row` has no stable identity `` (an unsatisfied `Identifiable` bound) | collection item lacks an id | `#[derive(Clone, Identifiable)]` + `#[id]`, or manual `impl` for enums (disjoint id ranges) |
 | ``cannot borrow `rows` as mutable`` on `push`/`remove`/`replace` | list mutators take `&mut self` | `let mut rows = …`, or `mut state: AppState` in a handler; a clone shares the same list |
 | ``can't compare `Row` with `Row` `` on `replace` or `SignalCollection` | the diff compares surviving rows | `#[derive(Clone, PartialEq, Identifiable)]` |
