@@ -1608,7 +1608,7 @@ pub fn widget_intent(args: TokenStream, input: TokenStream) -> TokenStream {
         #waterui::widgets::__export_intent!(
             #hash_lit,
             #record_lit,
-            [__wui_intent_ptr, __wui_intent_len] => {
+            [__wui_intent_ptr, __wui_intent_len, __wui_store_ptr, __wui_store_len] => {
                 let __wui_action: #type_ident = match #waterui::widgets::serde_json::from_slice(
                     unsafe {
                         ::core::slice::from_raw_parts(
@@ -1625,7 +1625,10 @@ pub fn widget_intent(args: TokenStream, input: TokenStream) -> TokenStream {
                         return;
                     }
                 };
-                <#type_ident as #waterui::widgets::WidgetIntent>::perform(__wui_action);
+                let __wui_store = unsafe {
+                    #waterui::widgets::ffi::decode_store(__wui_store_ptr, __wui_store_len)
+                };
+                <#type_ident as #waterui::widgets::WidgetIntent>::perform(__wui_action, &__wui_store);
             }
         );
 

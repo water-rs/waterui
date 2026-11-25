@@ -14050,10 +14050,13 @@ dependencies = [
 name = "waterui-widgets"
 version = "0.5.1"
 dependencies = [
+ "jni 0.22.4",
  "pastey 0.2.3",
  "serde",
  "serde_json",
  "suiteki",
+ "tempfile",
+ "waterkit-build",
  "waterui-contract",
  "waterui-meta",
  "waterui-text",

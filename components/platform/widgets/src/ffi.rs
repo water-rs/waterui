@@ -6,7 +6,12 @@
 //! serialized [`Timeline`]. The extension frees each buffer through
 //! [`waterui_widgets_snapshot_free`].
 
+use alloc::vec::Vec;
+use core::slice;
+use core::str;
+
 use crate::schema::{Timeline, WidgetContext};
+use crate::store::WidgetStore;
 
 /// An owned byte buffer handed across the FFI boundary.
 ///
@@ -65,7 +70,7 @@ impl Buffer {
 
     /// Leaks `bytes`, transferring ownership of the allocation to the caller.
     #[must_use]
-    pub fn from_vec(mut bytes: alloc::vec::Vec<u8>) -> Self {
+    pub fn from_vec(mut bytes: Vec<u8>) -> Self {
         bytes.shrink_to_fit();
         let (ptr, len, cap) = bytes.into_raw_parts();
         Self { ptr, len, cap }
@@ -83,12 +88,28 @@ impl Buffer {
 pub unsafe fn decode_context(ptr: *const u8, len: usize) -> WidgetContext {
     // SAFETY: the caller contract above requires `ptr`/`len` to name a
     // valid byte slice.
-    let bytes = unsafe { core::slice::from_raw_parts(ptr, len) };
+    let bytes = unsafe { slice::from_raw_parts(ptr, len) };
     serde_json::from_slice(bytes).expect(
         "the generated extension writes the widget context from the same schema, \
          mapping an unknown `WidgetKit` family to a fatal error on its own side \
          before Rust is called, so the JSON always decodes",
     )
+}
+
+/// Decodes the shared [`WidgetStore`] directory path the extension passed to a
+/// `waterui_intent_*` export.
+///
+/// # Safety
+/// `ptr` must point to `len` valid UTF-8 bytes naming the shared widget store
+/// directory.
+#[must_use]
+pub unsafe fn decode_store(ptr: *const u8, len: usize) -> WidgetStore {
+    // SAFETY: the caller contract above requires `ptr`/`len` to name a
+    // valid UTF-8 byte slice.
+    let bytes = unsafe { slice::from_raw_parts(ptr, len) };
+    let path = str::from_utf8(bytes)
+        .expect("the generated extension passes a valid UTF-8 shared store path");
+    WidgetStore::open(path)
 }
 
 /// Frees the allocation a `waterui_widget_*` export's [`Buffer`] owns.
@@ -108,5 +129,5 @@ pub unsafe extern "C" fn waterui_widgets_snapshot_free(ptr: *const u8, len: usiz
     // SAFETY: the caller contract above guarantees `ptr`/`len`/`cap` is a
     // `Vec`'s raw parts handed out exactly once by a `waterui_widget_*`
     // export.
-    drop(unsafe { alloc::vec::Vec::from_raw_parts(ptr.cast_mut(), len, cap) });
+    drop(unsafe { Vec::from_raw_parts(ptr.cast_mut(), len, cap) });
 }

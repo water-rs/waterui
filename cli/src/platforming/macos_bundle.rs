@@ -17,6 +17,8 @@ use smol::stream::StreamExt as _;
 
 // `copy_file` is used by `package_binary_as_app`, which compiles on every
 // host; only the codesign helpers below are macOS-gated.
+#[cfg(target_os = "macos")]
+use crate::apple::widgets::{WIDGET_APP_GROUP_INFO_PLIST_KEY, widget_app_group_entitlements};
 use crate::project_types::AppleBundleIdentifier;
 #[cfg(target_os = "macos")]
 use crate::toolchain::Host;
@@ -191,6 +193,9 @@ pub enum MacOsSigning {
         /// Whether the app declares protected resources and therefore needs a
         /// stable identity so macOS can persist privacy grants across rebuilds.
         requires_stable_identity: bool,
+        /// The entitlements applied to the outermost bundle, when the project
+        /// or its widget extensions declare any.
+        entitlements: Option<PathBuf>,
     },
     /// A distribution signature for delivery outside the developer's
     /// machine: Developer ID, hardened runtime, secure timestamp, then
@@ -317,6 +322,7 @@ pub async fn sign_macos_app(
     match signing {
         MacOsSigning::Development {
             requires_stable_identity,
+            entitlements,
         } => {
             let identities = host
                 .run("security", ["find-identity", "-v", "-p", "codesigning"])
@@ -335,7 +341,15 @@ pub async fn sign_macos_app(
             } else {
                 "-"
             };
-            let plan = codesign_plan(host, app_path, identity, bundle_id.as_str(), None).await?;
+            let plan = codesign_plan(
+                host,
+                app_path,
+                identity,
+                bundle_id.as_str(),
+                Seal::Development,
+                entitlements.as_deref(),
+            )
+            .await?;
             run_sign_plan(host, plan).await
         }
         MacOsSigning::Distribution(distribution) => {
@@ -345,7 +359,8 @@ pub async fn sign_macos_app(
                 app_path,
                 &identity,
                 bundle_id.as_str(),
-                Some(distribution),
+                Seal::Distribution,
+                distribution.entitlements.as_deref(),
             )
             .await?;
             run_sign_plan(host, plan).await?;
@@ -437,10 +452,11 @@ enum Seal {
 
 /// The entitlements a nested-code item's signature declares on top of the
 /// hardened-runtime seal. Requirements are modeled per item: only the CEF
-/// helper variants whose process type needs V8 carry an entitlement, and
-/// nothing else inherits the app's entitlements.
+/// helper variants whose process type needs V8 and `WaterUI` widget extensions
+/// carrying a shared App Group carry entitlements, and nothing else inherits
+/// the app's entitlements.
 #[cfg(target_os = "macos")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum NestedEntitlements {
     /// `com.apple.security.cs.allow-jit` on the `<app> Helper (GPU).app` and
     /// `<app> Helper (Renderer).app` bundles CEF requires: V8 compiles
@@ -449,15 +465,32 @@ enum NestedEntitlements {
     /// and `helper-renderer-entitlements.plist`, mirrored by the pinned CEF
     /// release); the default, plugin and alerts helpers carry none.
     CefJit,
+    /// `com.apple.security.application-groups` on a `WidgetKit` `.appex` whose
+    /// `Info.plist` carries `WaterUIWidgetAppGroup`.
+    WidgetAppGroup(String),
 }
 
 /// The entitlement kind `path` is, when it is one of the CEF helper variant
-/// bundles `package_cef_helper_app` creates under `Contents/Frameworks`.
+/// bundles `package_cef_helper_app` creates under `Contents/Frameworks` or a
+/// `WidgetKit` extension declaring `WaterUIWidgetAppGroup` in its `Info.plist`.
 #[cfg(target_os = "macos")]
 fn nested_entitlements(path: &Path) -> Option<NestedEntitlements> {
     let name = path.file_name().and_then(OsStr::to_str)?;
-    (name.ends_with(" Helper (GPU).app") || name.ends_with(" Helper (Renderer).app"))
-        .then_some(NestedEntitlements::CefJit)
+    if name.ends_with(" Helper (GPU).app") || name.ends_with(" Helper (Renderer).app") {
+        return Some(NestedEntitlements::CefJit);
+    }
+    if path.extension().and_then(OsStr::to_str) == Some("appex") {
+        let plist_path = path.join("Contents/Info.plist");
+        if let Ok(plist::Value::Dictionary(dict)) = plist::Value::from_file(&plist_path)
+            && let Some(app_group) = dict
+                .get(WIDGET_APP_GROUP_INFO_PLIST_KEY)
+                .and_then(plist::Value::as_string)
+            && !app_group.is_empty()
+        {
+            return Some(NestedEntitlements::WidgetAppGroup(app_group.to_owned()));
+        }
+    }
+    None
 }
 
 /// The helper-variant entitlement plists generated for one sign run, keeping
@@ -465,26 +498,59 @@ fn nested_entitlements(path: &Path) -> Option<NestedEntitlements> {
 #[cfg(target_os = "macos")]
 #[derive(Debug)]
 struct HelperEntitlements {
-    _scratch: tempfile::TempDir,
-    cef_jit: PathBuf,
+    scratch: tempfile::TempDir,
+    cef_jit: Option<PathBuf>,
+    widget_groups: Vec<(String, PathBuf)>,
 }
 
 #[cfg(target_os = "macos")]
 impl HelperEntitlements {
-    fn new(host: &crate::toolchain::Host) -> eyre::Result<Self> {
+    fn new(host: &Host) -> eyre::Result<Self> {
         let scratch = tempfile::tempdir_in(host.temp_dir())
             .wrap_err("a scratch directory for helper entitlements must be writable")?;
-        let cef_jit = scratch.path().join("cef-helper.entitlements");
-        plist::Value::Dictionary(plist::Dictionary::from_iter([(
-            String::from("com.apple.security.cs.allow-jit"),
-            plist::Value::Boolean(true),
-        )]))
-        .to_file_xml(&cef_jit)
-        .wrap_err_with(|| format!("failed to write {}", cef_jit.display()))?;
         Ok(Self {
-            _scratch: scratch,
-            cef_jit,
+            scratch,
+            cef_jit: None,
+            widget_groups: Vec::new(),
         })
+    }
+
+    fn cef_jit_path(&mut self) -> eyre::Result<&Path> {
+        if self.cef_jit.is_none() {
+            let cef_jit = self.scratch.path().join("cef-helper.entitlements");
+            plist::Value::Dictionary(plist::Dictionary::from_iter([(
+                String::from("com.apple.security.cs.allow-jit"),
+                plist::Value::Boolean(true),
+            )]))
+            .to_file_xml(&cef_jit)
+            .wrap_err_with(|| format!("failed to write {}", cef_jit.display()))?;
+            self.cef_jit = Some(cef_jit);
+        }
+        Ok(self.cef_jit.as_deref().expect("cef_jit was initialized"))
+    }
+
+    fn widget_app_group_path(&mut self, app_group: &str) -> eyre::Result<&Path> {
+        if let Some(index) = self
+            .widget_groups
+            .iter()
+            .position(|(group, _)| group == app_group)
+        {
+            return Ok(self.widget_groups[index].1.as_path());
+        }
+        let path = self.scratch.path().join(format!(
+            "widget-group-{}.entitlements",
+            self.widget_groups.len()
+        ));
+        plist::Value::Dictionary(widget_app_group_entitlements(app_group))
+            .to_file_xml(&path)
+            .wrap_err_with(|| format!("failed to write {}", path.display()))?;
+        self.widget_groups.push((app_group.to_owned(), path));
+        Ok(self
+            .widget_groups
+            .last()
+            .expect("widget group path was pushed")
+            .1
+            .as_path())
     }
 }
 
@@ -499,7 +565,7 @@ struct CodesignPlan {
 
 /// The `codesign` invocations sealing `app_path` inside out: every nested
 /// code path first — each bundle after the code it itself carries — and the
-/// app last, with its identifier and, for distribution, its entitlements.
+/// app last, with its identifier and entitlements.
 ///
 /// The discovery walk is blocking filesystem work, so the whole plan builds
 /// on `smol::unblock` rather than the async executor.
@@ -509,17 +575,13 @@ async fn codesign_plan(
     app_path: &Path,
     identity: &str,
     bundle_id: &str,
-    distribution: Option<&DistributionSigning>,
+    seal: Seal,
+    app_entitlements: Option<&Path>,
 ) -> eyre::Result<CodesignPlan> {
     let app_path = app_path.to_path_buf();
     let identity = identity.to_owned();
     let bundle_id = bundle_id.to_owned();
-    let seal = if distribution.is_some() {
-        Seal::Distribution
-    } else {
-        Seal::Development
-    };
-    let app_entitlements = distribution.and_then(|d| d.entitlements.clone());
+    let app_entitlements = app_entitlements.map(Path::to_path_buf);
     let host = host.clone();
     smol::unblock(move || {
         let mut invocations = Vec::new();
@@ -527,10 +589,18 @@ async fn codesign_plan(
         for nested in nested_code_paths(&app_path)? {
             let entitlements = match nested_entitlements(&nested) {
                 Some(NestedEntitlements::CefJit) => {
-                    if helpers.is_none() {
-                        helpers = Some(HelperEntitlements::new(&host)?);
-                    }
-                    helpers.as_ref().map(|h| h.cef_jit.as_path())
+                    let holder = match helpers.as_mut() {
+                        Some(holder) => holder,
+                        None => helpers.insert(HelperEntitlements::new(&host)?),
+                    };
+                    Some(holder.cef_jit_path()?.to_path_buf())
+                }
+                Some(NestedEntitlements::WidgetAppGroup(app_group)) => {
+                    let holder = match helpers.as_mut() {
+                        Some(holder) => holder,
+                        None => helpers.insert(HelperEntitlements::new(&host)?),
+                    };
+                    Some(holder.widget_app_group_path(&app_group)?.to_path_buf())
                 }
                 None => None,
             };
@@ -538,7 +608,7 @@ async fn codesign_plan(
                 &nested,
                 &identity,
                 seal,
-                entitlements,
+                entitlements.as_deref(),
                 None,
             ));
         }
@@ -1514,6 +1584,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "fixture builds a full nested macOS app bundle to verify inside-out codesign ordering"
+    )]
     fn codesign_plan_signs_nested_code_inside_out() {
         smol::block_on(async {
             let temporary = tempfile::tempdir().expect("temporary directory must be available");
@@ -1566,15 +1640,21 @@ mod tests {
             };
 
             let host = host_with_temp_dir(temporary.path());
-            let plan =
-                super::codesign_plan(&host, &app, "HASH", "dev.waterui.demo", Some(&distribution))
-                    .await
-                    .expect("the sign plan must build");
+            let plan = super::codesign_plan(
+                &host,
+                &app,
+                "HASH",
+                "dev.waterui.demo",
+                super::Seal::Distribution,
+                distribution.entitlements.as_deref(),
+            )
+            .await
+            .expect("the sign plan must build");
 
             let jit = plan
                 .helpers
                 .as_ref()
-                .map(|helpers| helpers.cef_jit.as_path())
+                .and_then(|helpers| helpers.cef_jit.as_deref())
                 .filter(|jit| jit.starts_with(temporary.path()))
                 .expect(
                     "the CEF JIT helpers must carry entitlements generated in the host temp dir",
@@ -1648,9 +1728,16 @@ mod tests {
                 .expect("library must be written");
 
             let host = host_with_temp_dir(temporary.path());
-            let plan = super::codesign_plan(&host, &app, "-", "dev.waterui.demo", None)
-                .await
-                .expect("the sign plan must build");
+            let plan = super::codesign_plan(
+                &host,
+                &app,
+                "-",
+                "dev.waterui.demo",
+                super::Seal::Development,
+                None,
+            )
+            .await
+            .expect("the sign plan must build");
 
             assert_eq!(
                 plan.invocations,
@@ -1672,6 +1759,57 @@ mod tests {
                         app.as_os_str().to_owned(),
                     ],
                 ]
+            );
+        });
+    }
+
+    #[test]
+    fn codesign_plan_preserves_widget_appex_app_group_entitlement() {
+        use std::fs;
+
+        smol::block_on(async {
+            let temporary = tempfile::tempdir().expect("temporary directory must be available");
+            let app = temporary.path().join("Demo.app");
+            let appex = app.join("Contents/PlugIns/DemoWidgets.appex");
+            fs::create_dir_all(appex.join("Contents")).expect("appex contents");
+            let mut info = plist::Dictionary::new();
+            info.insert(
+                super::WIDGET_APP_GROUP_INFO_PLIST_KEY.to_owned(),
+                plist::Value::String("group.dev.waterui.demo".to_owned()),
+            );
+            plist::Value::Dictionary(info)
+                .to_file_xml(appex.join("Contents/Info.plist"))
+                .expect("write appex Info.plist");
+
+            let app_entitlements = temporary.path().join("Demo.entitlements");
+            let host = host_with_temp_dir(temporary.path());
+            let plan = super::codesign_plan(
+                &host,
+                &app,
+                "-",
+                "dev.waterui.demo",
+                super::Seal::Development,
+                Some(&app_entitlements),
+            )
+            .await
+            .expect("the sign plan must build");
+
+            let widget_entitlements = plan
+                .helpers
+                .as_ref()
+                .and_then(|helpers| helpers.widget_groups.first())
+                .map(|(_, path)| path.as_path())
+                .expect("widget appex must receive an App Group entitlements plist");
+            let contents = fs::read_to_string(widget_entitlements)
+                .expect("generated widget entitlements must be readable");
+            assert!(contents.contains("com.apple.security.application-groups"));
+            assert!(contents.contains("group.dev.waterui.demo"));
+            assert!(
+                plan.invocations[0]
+                    .windows(2)
+                    .any(|pair| pair[0] == "--entitlements" && pair[1] == widget_entitlements),
+                "appex codesign invocation must pass the App Group entitlements: {:?}",
+                plan.invocations[0]
             );
         });
     }
