@@ -21,14 +21,11 @@
 //! ```ignore
 //! use waterui_icons_fontawesome7 as fa;
 //!
-//! // Use icon constants directly (renders as webfont glyph)
-//! fa::solid::HOUSE
-//! fa::solid::USER
-//! fa::regular::HEART
-//! fa::brands::GITHUB
-//!
-//! // With custom size
-//! fa::solid::HOUSE.with_font_size(32.0)
+//! // Every icon constructor returns `waterui_icon::Icon`
+//! fa::solid::house()
+//! fa::solid::user()
+//! fa::regular::heart()
+//! fa::brands::github()
 //! ```
 //!
 //! # Font Bundle Requirements
@@ -42,12 +39,12 @@
 //!
 //! # Usage (SVG - Optional)
 //!
-//! Enable the `svg` feature for SVG rendering:
+//! Enable the `svg` feature for SVG rendering with the same call shape:
 //!
 //! ```ignore
 //! use waterui_icons_fontawesome7 as fa;
 //!
-//! // SVG icons (requires "svg" feature)
+//! // Same function API, backed by SVG paths when the `svg` feature is enabled
 //! fa::solid::house()
 //! fa::brands::github()
 //!
@@ -67,8 +64,10 @@
 
 #![no_std]
 
+pub use waterui_icon::Icon;
+
 #[cfg(feature = "svg")]
-pub use waterui_svg::Svg;
+pub use waterui_icon::Svg;
 
 #[cfg(feature = "webfont")]
 pub use waterui_icon::IconGlyph;

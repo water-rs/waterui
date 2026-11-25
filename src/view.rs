@@ -30,6 +30,7 @@ use waterui_core::{
     plugin::Plugin,
 };
 use waterui_graphics::color::Color;
+use waterui_icon::IconSize;
 
 /// All view-level filter modifiers (`.blur()`, `.brightness()`, ...) come
 /// from [`waterui_graphics::filter_view::FilterViewExt`]. This re-export
@@ -90,6 +91,7 @@ use waterui_interaction::event::{
 use waterui_interaction::interaction::{Disabled, InteractionReport, InteractionState, Selected};
 use waterui_interaction::key::{KeyHandling, KeyPress, OnKeyPress};
 use waterui_structural_transition::{Transition, Transitioned};
+use waterui_text::IntoText;
 
 /// The inset a bare [`ViewExt::padding`] applies.
 ///
@@ -443,6 +445,14 @@ pub trait ViewExt: View + Sized {
     /// ```
     fn tint(self, color: impl IntoSignal<Color> + 'static) -> impl View {
         self.with(theme::Tint::new(color))
+    }
+
+    /// Sets the shared icon size (in points) for icons in this view's subtree.
+    ///
+    /// Icons read the nearest [`IconSize`] in the environment and default to `24.0`
+    /// points when none is installed.
+    fn icon_size(self, size: impl IntoSignalF32) -> With<Self, IconSize> {
+        self.with(IconSize::new(size))
     }
 
     /// Adds an overlay to this view.
@@ -817,13 +827,24 @@ pub trait ViewExt: View + Sized {
 
     /// Sets the accessibility label for this view.
     ///
-    /// The label is reactive: pass a signal and a label derived from app state
-    /// (`"3 unread messages"`) stays current without rebuilding the subtree.
+    /// Accepts any [`IntoText`] value: string literals resolve through the
+    /// active translation catalog in the surrounding [`Environment`], and
+    /// reactive signals stay current without rebuilding the subtree.
     ///
     /// # Arguments
-    /// * `label` - The accessibility label to apply, constant or reactive
-    fn a11y_label(self, label: impl IntoComputed<Str>) -> Metadata<AccessibilityLabel, Self> {
-        Metadata::new(self, accessibility::AccessibilityLabel::new(label))
+    /// * `label` - The accessibility label to apply
+    fn a11y_label(self, label: impl IntoText) -> Metadata<AccessibilityLabel, Self> {
+        let label = label.into_text();
+        Metadata::new(
+            self,
+            accessibility::AccessibilityLabel::resolved(move |env| {
+                label
+                    .resolve(env)
+                    .content()
+                    .map(|styled| styled.to_plain())
+                    .computed()
+            }),
+        )
     }
 
     /// Sets the accessibility value for this view.
@@ -834,13 +855,24 @@ pub trait ViewExt: View + Sized {
     /// applying a human-readable `.a11y_label(...)` no longer discards the
     /// content a component publishes about itself.
     ///
-    /// The value is reactive: pass a signal and it stays current without
-    /// rebuilding the subtree.
+    /// Accepts any [`IntoText`] value: string literals resolve through the
+    /// active translation catalog in the surrounding [`Environment`], and
+    /// reactive signals stay current without rebuilding the subtree.
     ///
     /// # Arguments
-    /// * `value` - The accessibility value to apply, constant or reactive
-    fn a11y_value(self, value: impl IntoComputed<Str>) -> Metadata<AccessibilityValue, Self> {
-        Metadata::new(self, accessibility::AccessibilityValue::new(value))
+    /// * `value` - The accessibility value to apply
+    fn a11y_value(self, value: impl IntoText) -> Metadata<AccessibilityValue, Self> {
+        let value = value.into_text();
+        Metadata::new(
+            self,
+            accessibility::AccessibilityValue::resolved(move |env| {
+                value
+                    .resolve(env)
+                    .content()
+                    .map(|styled| styled.to_plain())
+                    .computed()
+            }),
+        )
     }
 
     /// Sets the accessibility role for this view.

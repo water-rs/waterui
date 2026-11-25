@@ -475,7 +475,7 @@ pub fn styling_filled_shape_morph_prose() {
 // ---------------------------------------------------------------------------
 // styling.md § "## Borders and shadows" — rust block 13/19
 // Listing: a plain border, a configured border, a shadow; then the prose's
-// `Shadow::splat(v)`.
+// `Shadow::new(v)` / `Shadow::splat(v)`.
 // ---------------------------------------------------------------------------
 pub fn styling_block_13() {
     use waterui::border::Border;
@@ -499,7 +499,7 @@ pub fn styling_block_13() {
     let card = Divider;
     let _ = {
         card.shadow(
-            Shadow::splat(8.0)
+            Shadow::new(8.0)
                 .color(Color::srgb(0, 0, 0).with_opacity(0.2))
                 .offset(0.0, 2.0)
                 .silhouette(RoundedRectangle::new(8.0)),
@@ -534,13 +534,11 @@ pub fn styling_block_14() {
     use waterui_icons_material_icon as mdi;
 
     let _ = { mdi::check_circle() };
-    let _ = { mdi::delete().size(20.0, 20.0) };
+    let _ = { mdi::delete().icon_size(20.0) };
     let _ = {
         mdi::flag().foreground(Accent) // theme color
     };
-    let _ = {
-        lucide::star().tint(Color::srgb_hex("#F59E0B")) // explicit tint
-    };
+    let _ = { lucide::star().foreground(Color::srgb_hex("#F59E0B")) };
 }
 
 // ---------------------------------------------------------------------------

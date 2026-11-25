@@ -1255,6 +1255,18 @@ impl CalendarView {
         self.shared.show_model_month();
     }
 
+    /// Replaces the inclusive range of selectable dates.
+    pub fn set_range(&self, range: RangeInclusive<DateParts>) {
+        {
+            let mut model = self.shared.model.borrow_mut();
+            if model.range == range {
+                return;
+            }
+            model.range = range;
+        }
+        self.shared.show_model_month();
+    }
+
     /// Replaces one of the theme colours.
     pub fn set_color(&self, role: CalendarColorRole, color: &NSColor) {
         let color = objc2::Message::retain(color);

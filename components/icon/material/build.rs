@@ -136,11 +136,6 @@ fn mdi_var_to_kebab(var_name: &str) -> String {
 
 /// Generate icons.rs with all icon definitions
 fn generate_icons_rs(out_dir: &str, icons: &[IconMeta], paths: &HashMap<String, String>) {
-    let path_const_names = icons
-        .iter()
-        .filter(|icon| paths.contains_key(&icon.name))
-        .map(|icon| format!("{}_PATH", rust_const_name(&icon.name)))
-        .collect::<HashSet<_>>();
     let mut used_symbols = HashSet::new();
 
     let mut entries = Vec::new();
@@ -150,17 +145,13 @@ fn generate_icons_rs(out_dir: &str, icons: &[IconMeta], paths: &HashMap<String, 
         };
 
         let const_name = rust_const_name(&icon.name);
-        let glyph_const_name = if path_const_names.contains(&const_name) {
-            format!("{const_name}_GLYPH")
-        } else {
-            const_name.clone()
-        };
         let path_const = format!("{const_name}_PATH");
+        let fn_name = rust_fn_name(&icon.name);
         let codepoint = u32::from_str_radix(&icon.codepoint, 16).unwrap_or(0);
 
         assert!(
-            used_symbols.insert(glyph_const_name.clone()),
-            "duplicate generated glyph constant `{glyph_const_name}` for material icon `{}`",
+            used_symbols.insert(fn_name.clone()),
+            "duplicate generated icon function `{fn_name}` for material icon `{}`",
             icon.name
         );
         assert!(
@@ -169,11 +160,11 @@ fn generate_icons_rs(out_dir: &str, icons: &[IconMeta], paths: &HashMap<String, 
             icon.name
         );
 
-        let ctor = format!("crate::Svg::from_path({path_const}, 24.0, 24.0)");
+        let ctor = format!("crate::Icon::from_path({path_const}, 24.0, 24.0)");
         entries.push(IconEntry {
             source_name: icon.name.clone(),
+            fn_name,
             glyph: Some(GlyphConst {
-                const_name: glyph_const_name,
                 type_path: "crate::IconGlyph".to_owned(),
                 escape: format!("\\u{{{codepoint:04X}}}"),
             }),
@@ -181,7 +172,6 @@ fn generate_icons_rs(out_dir: &str, icons: &[IconMeta], paths: &HashMap<String, 
                 path_const,
                 path_literal: format!("{path:?}"),
                 viewbox: None,
-                fn_name: rust_fn_name(&icon.name),
                 ctor,
             }),
         });

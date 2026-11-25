@@ -48,6 +48,11 @@ public indirect enum WUINode: Decodable {
     case stack(WUIStack)
     case shape(WUIShape)
     case color(WUIColor)
+    case padding(WUIPadding)
+    case spacer(WUISpacer)
+    case frame(WUIFrame)
+    case background(WUIBackground)
+    case accessibilityLabel(WUIAccessibilityLabel)
     case link(WUILink)
     case intent(WUIIntent)
 
@@ -60,6 +65,12 @@ public indirect enum WUINode: Decodable {
         case "stack": self = .stack(try WUIStack(from: decoder))
         case "shape": self = .shape(try WUIShape(from: decoder))
         case "color": self = .color(try WUIColor(from: decoder))
+        case "padding": self = .padding(try WUIPadding(from: decoder))
+        case "spacer": self = .spacer(try WUISpacer(from: decoder))
+        case "frame": self = .frame(try WUIFrame(from: decoder))
+        case "background": self = .background(try WUIBackground(from: decoder))
+        case "accessibilityLabel":
+            self = .accessibilityLabel(try WUIAccessibilityLabel(from: decoder))
         case "link": self = .link(try WUILink(from: decoder))
         case "intent": self = .intent(try WUIIntent(from: decoder))
         case let other:
@@ -70,9 +81,59 @@ public indirect enum WUINode: Decodable {
     }
 }
 
+public enum WUILabelText: Decodable {
+    case localized(key: String)
+    case verbatim(text: String)
+
+    private enum CodingKeys: String, CodingKey { case kind, key, text }
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        switch try container.decode(String.self, forKey: .kind) {
+        case "localized":
+            self = .localized(key: try container.decode(String.self, forKey: .key))
+        case "verbatim":
+            self = .verbatim(text: try container.decode(String.self, forKey: .text))
+        case let other:
+            throw DecodingError.dataCorruptedError(
+                forKey: .kind, in: container,
+                debugDescription: "unknown label text kind \(other)")
+        }
+    }
+}
+
+public enum WUITextContent: Decodable {
+    case localized(key: String)
+    case verbatim(text: String)
+    case date(date: Date, style: WUIDateStyle)
+
+    private enum CodingKeys: String, CodingKey { case kind, key, text, date, style }
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        switch try container.decode(String.self, forKey: .kind) {
+        case "localized":
+            self = .localized(key: try container.decode(String.self, forKey: .key))
+        case "verbatim":
+            self = .verbatim(text: try container.decode(String.self, forKey: .text))
+        case "date":
+            self = .date(
+                date: try container.decode(Date.self, forKey: .date),
+                style: try container.decode(WUIDateStyle.self, forKey: .style))
+        case let other:
+            throw DecodingError.dataCorruptedError(
+                forKey: .kind, in: container,
+                debugDescription: "unknown text content kind \(other)")
+        }
+    }
+}
+
+public enum WUIDateStyle: String, Decodable {
+    case relative, offset, timer, date, time
+}
+
 public struct WUIText: Decodable {
-    public let content: String
+    public let content: WUITextContent
     public let font: WUIFont?
+    public let bold: Bool?
     public let color: WUIColor?
     public let lineLimit: UInt32?
 }
@@ -189,6 +250,63 @@ public enum WUIHorizontalAlignment: String, Decodable {
 
 public enum WUIVerticalAlignment: String, Decodable {
     case top, center, bottom
+}
+
+public struct WUIEdgeInsets: Decodable {
+    public let top: Float
+    public let bottom: Float
+    public let leading: Float
+    public let trailing: Float
+}
+
+public struct WUIPadding: Decodable {
+    public let insets: WUIEdgeInsets?
+    public let content: WUINode
+}
+
+public struct WUISpacer: Decodable {
+    public let minLength: Float?
+}
+
+public enum WUIMaxLength: Decodable {
+    case fixed(Float)
+    case infinity
+
+    private enum CodingKeys: String, CodingKey { case kind, value }
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        switch try container.decode(String.self, forKey: .kind) {
+        case "fixed":
+            self = .fixed(try container.decode(Float.self, forKey: .value))
+        case "infinity":
+            self = .infinity
+        case let other:
+            throw DecodingError.dataCorruptedError(
+                forKey: .kind, in: container,
+                debugDescription: "unknown max length kind \(other)")
+        }
+    }
+}
+
+public struct WUIFrame: Decodable {
+    public let width: Float?
+    public let height: Float?
+    public let minWidth: Float?
+    public let maxWidth: WUIMaxLength?
+    public let minHeight: Float?
+    public let maxHeight: WUIMaxLength?
+    public let alignment: WUIAlignment?
+    public let content: WUINode
+}
+
+public struct WUIBackground: Decodable {
+    public let content: WUINode
+    public let background: WUINode
+}
+
+public struct WUIAccessibilityLabel: Decodable {
+    public let label: WUILabelText
+    public let content: WUINode
 }
 
 public struct WUIShape: Decodable {

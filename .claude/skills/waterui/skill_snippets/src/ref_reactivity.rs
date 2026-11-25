@@ -21,7 +21,7 @@ fn glue_row_view(row: Row) -> Text {
 // reactivity.md § "## Creating state" — rust block 1/23
 // ---------------------------------------------------------------------------
 pub fn reactivity_block_01() {
-    use waterui::media::media_picker::Selected;
+    use waterui::media::Media;
     use waterui::window::WindowState;
 
     #[derive(Clone)]
@@ -38,7 +38,7 @@ pub fn reactivity_block_01() {
     let items = Binding::container(Vec::<Row>::new());
     let status = Binding::container("Waiting…"); // Binding<&'static str> — fine for status text
 
-    let sel: Binding<Option<Selected>> = Binding::default(); // empty optional selection
+    let sel: Binding<Option<Media>> = Binding::default(); // empty optional selection
     let pane: Binding<Pane> = binding(Pane::Inbox); // general form
     let ws = binding::<WindowState>(WindowState::default()); // …or pin T with a turbofish
 

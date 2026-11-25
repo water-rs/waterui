@@ -549,7 +549,7 @@ pub fn run<W: Windows, M: AppMenuBar>(app: App<W, M>, style: impl crate::Style) 
         let RootWindows {
             initial: windows,
             channels,
-        } = RootWindows::<crate::text::ParleyEngine>::collect(windows);
+        } = RootWindows::<crate::text::ParleyEngine>::collect(windows, &env);
         let unsupported_opener: Rc<dyn Fn(RootWindow<crate::text::ParleyEngine>)> = Rc::new(|_| {
             contract_violation!(
                 "hydrolysis web runner: secondary windows are unsupported — a browser \
