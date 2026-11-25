@@ -244,13 +244,9 @@ fn combined_section(
     let animated_blur = animated_filter_value(combined_blur, Animation::spring(200.0, 15.0));
     let animated_saturation =
         animated_filter_value(combined_saturation, Animation::spring(200.0, 15.0));
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "slider bindings are f64 while Angle::degrees takes f32; 0..=360 is exact"
-    )]
     let animated_hue = combined_hue
         .clone()
-        .map(|v| Angle::degrees(v as f32))
+        .map(Angle::degrees)
         .with(Animation::ease_in_out(Duration::from_millis(500)));
 
     vstack((
