@@ -17,7 +17,6 @@ use waterui::navigation::{TabBarMinimizeBehavior, TabRole};
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
-use waterui::reactive::collection::List;
 use waterui::shape::{Circle, CornerRadius, RoundedRectangle, ShapeExt};
 use waterui::theme::color::Accent;
 use waterui::views::ForEach;
@@ -39,7 +38,7 @@ pub fn main() -> impl View {
     let panes = [Pane::Surfaces, Pane::Controls, Pane::About, Pane::Search].map(SelfId::new);
     Tabs::new(
         &pane,
-        ForEach::new(List::from(panes.to_vec()), |pane: SelfId<Pane>| {
+        ForEach::new(StateList::from(panes.to_vec()), |pane: SelfId<Pane>| {
             pane_tab(pane.into_inner())
         }),
     )

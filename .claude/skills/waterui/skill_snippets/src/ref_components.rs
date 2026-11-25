@@ -968,12 +968,11 @@ pub fn components_flow_overrides_prose() {
 pub mod components_block_27 {
     use waterui::layout::scroll::ScrollController;
     use waterui::prelude::*;
-    use waterui::reactive::collection::List as ReactiveList;
 
     #[state]
     #[derive(Clone)]
     pub struct AppState {
-        pub rows: ReactiveList<Record>,
+        pub rows: StateList<Record>,
     }
 
     use waterui::Identifiable; // the trait the derive expands to is NOT in the prelude
@@ -993,7 +992,7 @@ pub mod components_block_27 {
     }
 
     pub fn body() {
-        let records = ReactiveList::<Record>::new();
+        let records = StateList::<Record>::new();
         let is_editing = Binding::bool(false);
         let controller = ScrollController::<usize>::new(0);
 
@@ -1035,9 +1034,8 @@ pub mod components_block_27 {
 pub fn components_block_28() {
     use core::time::Duration;
     use waterui::animation::Animation;
-    use waterui::reactive::collection::List as ReactiveList;
 
-    let rows = ReactiveList::<Record>::new();
+    let rows = StateList::<Record>::new();
 
     use waterui::PropertyTransition; // NOT in the prelude
     use waterui::layout::stack::VStack;
@@ -1074,9 +1072,7 @@ pub fn components_block_29() -> impl View {
 // the `Row` modifiers. Not counted as a rust block. Glue: `today` stands for
 // the prose's reactive collection.
 // ---------------------------------------------------------------------------
-pub fn components_reactive_section_prose(
-    today: waterui::reactive::collection::List<Record>,
-) -> impl View {
+pub fn components_reactive_section_prose(today: StateList<Record>) -> impl View {
     use waterui::views::ForEach;
 
     let _ = row("a", "b")
@@ -1094,7 +1090,7 @@ pub fn components_reactive_section_prose(
 // components.md § "## Lists and collections" (prose): the list row modifiers
 // and `list_min_row_height`. Not counted as a rust block.
 // ---------------------------------------------------------------------------
-pub fn components_list_item_prose(records: waterui::reactive::collection::List<Record>) {
+pub fn components_list_item_prose(records: StateList<Record>) {
     use waterui::layout::padding::EdgeInsets;
     use waterui::views::ForEach;
 
@@ -1530,7 +1526,7 @@ pub fn components_table_prose() {
         Name,
     }
 
-    let people = ReactiveList::from(vec![Person {
+    let people = StateList::from(vec![Person {
         id: 1,
         name: "Ada".into(),
     }]);

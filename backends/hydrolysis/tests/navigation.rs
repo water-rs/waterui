@@ -24,7 +24,7 @@ use waterui::component::{hstack, text, vstack};
 use waterui::id::SelfId;
 use waterui::navigation::{NavigationSplitView, NavigationStack, NavigationView, Tab, Tabs};
 use waterui::reactive::Signal as _;
-use waterui::reactive::collection::List as SignalList;
+use waterui::reactive::collection::StateList;
 use waterui::views::ForEach;
 use waterui::{Binding, View, ViewExt};
 use waterui_controls::label::{LabelDisplayMode, label};
@@ -375,17 +375,17 @@ fn a_trailing_bar_action_with_an_icon_label_is_icon_only() {
 // ---------------------------------------------------------------------------
 // Reactive-collection `Tabs` — water-rs/waterui#1194
 //
-// `Tabs` over `nami::collection::List<SelfId<i32>>`: a tab's `SelfId` is its
+// `Tabs` over `nami::collection::StateList<SelfId<i32>>`: a tab's `SelfId` is its
 // identity, a surviving id keeps its retained subviews — content, navigation
 // state — and only inserted ids materialize.
 // ---------------------------------------------------------------------------
 
 /// The tabs fixture's collection handle, kept mutable outside the app.
-type TabIds = SignalList<SelfId<i32>>;
+type TabIds = StateList<SelfId<i32>>;
 
 fn keyed_tabs(ids: Vec<i32>) -> (TabIds, Vec<SelfId<i32>>) {
     let panes: Vec<SelfId<i32>> = ids.into_iter().map(SelfId::new).collect();
-    (SignalList::from(panes.clone()), panes)
+    (StateList::from(panes.clone()), panes)
 }
 
 /// Mounts a `Tabs` whose tabs are keyed by `list`'s `SelfId`s; each tab's

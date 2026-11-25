@@ -3,7 +3,7 @@
 use core::fmt;
 use std::{cell::RefCell, rc::Rc, time::Duration};
 
-use nami::{Computed, Signal, SignalExt as _, collection::List};
+use nami::{Computed, Signal, SignalExt as _, collection::StateList};
 use waterui_core::{Binding, binding, contract_violation};
 
 use crate::{
@@ -50,7 +50,7 @@ pub enum RepeatMode {
 /// A non-empty reactive media playlist.
 #[derive(Clone)]
 pub struct Playlist {
-    items: List<MediaItem>,
+    items: StateList<MediaItem>,
 }
 
 impl fmt::Debug for Playlist {
@@ -72,7 +72,7 @@ impl Playlist {
         let mut items = vec![first.into()];
         items.extend(remaining);
         Self {
-            items: List::from(items),
+            items: StateList::from(items),
         }
     }
 
@@ -514,7 +514,7 @@ impl PlayerController {
     /// Appends one item to the active playlist.
     pub fn add_item(&self, item: impl Into<MediaItem>) {
         let state = self.state.borrow();
-        // `List` handles share one list: mutate through a handle of our own.
+        // `StateList` handles share one list: mutate through a handle of our own.
         state.playlist.items.clone().push(item.into());
         state.update_navigation();
     }

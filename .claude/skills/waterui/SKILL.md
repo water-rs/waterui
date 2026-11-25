@@ -111,7 +111,7 @@ This is the idiomatic shape for a real screen:
 #[state]
 #[derive(Clone)]
 struct Editor {
-    rows: ReactiveList<Row>,
+    rows: StateList<Row>,
     editing: Binding<bool>,
 }
 
@@ -140,12 +140,11 @@ its own clone (`mut state: Editor`).
 ```rust
 use waterui::Identifiable;                             // the trait the derive implements is NOT in the prelude
 use waterui::component::lazy::Lazy;
-use waterui::reactive::collection::List as ReactiveList;
 
 #[derive(Clone, Identifiable)]
 struct Row { #[id] id: u64, title: Str }
 
-let rows = ReactiveList::from(seed_rows);              // bulk-seed; .push/.insert/.remove (&mut self) diff by id
+let rows = StateList::from(seed_rows);                 // bulk-seed; .push/.insert/.remove (&mut self) diff by id
 
 Lazy::for_each(rows.clone(), |row| text(row.title))        // reactive sequence in a stack
 List::for_each(rows.clone(), |row| text(row.title))        // platform list: lazy, editable
@@ -198,13 +197,12 @@ pub fn app(env: Environment) -> App<impl Windows> {
 ```
 
 `use waterui::prelude::*;` brings in views, layout, colors, text, controls, navigation,
-menus, `Binding`, `Computed`, `binding` (the general constructor), `State`, `Str`,
-`AnyView`, `SignalExt`, `AnimationExt`, and, with their features, `Dialog` and
-`Snackbar`. Several everyday names live outside it:
+menus, `Binding`, `Computed`, `binding` (the general constructor), `StateList`,
+`SignalCollection`, `State`, `Str`, `AnyView`, `SignalExt`, `AnimationExt`, and, with
+their features, `Dialog` and `Snackbar`. Several everyday names live outside it:
 
 ```rust
 use waterui::Identifiable;                             // the trait the derive implements
-use waterui::reactive::collection::List as ReactiveList;
 use waterui::widget::condition::when;                  // conditionals
 use waterui::animation::Animation;                     // animation curves
 use waterui::component::lazy::Lazy;                    // reactive stacks over a collection
@@ -515,7 +513,7 @@ web, graphics, and data rows live in [references/media.md](references/media.md).
 | Menus | `Menu` `Command` `.context_menu` `Shortcut` |
 | Interaction | `.on_tap` `.gesture` `TapGesture` `LongPressGesture` `DragGesture` `.draggable` `.drop_destination` `.on_hover_enter` `.cursor` |
 | Text | `text` `text!` `StyledStr` `Code` `RichText` `include_markdown!` `FlowMarkdown` |
-| Collections | `List` `ForEach` `Lazy` `SignalCollection` `ScrollController` `Table` `TableColumn` `TableSort` `SortDirection` `table` `col` |
+| Collections | `List` `ForEach` `Lazy` `StateList` `SignalCollection` `ScrollController` `Table` `TableColumn` `TableSort` `SortDirection` `table` `col` |
 | Content | `Avatar` `Link` `Accordion` `.badge(n)` `loading()` |
 | Navigation | `Tabs` `Tab` `NavigationStack` `NavigationLink` `NavigationSplitView` `Window` |
 | Forms | `#[form]` `form()` `DatePicker` `Calendar` `ColorPicker` `FilePicker` |

@@ -47,7 +47,7 @@ use core::time::Duration;
 
 use executor_core::spawn_local;
 use nami::Binding;
-use nami::collection::List;
+use nami::collection::StateList;
 use suiteki::Str;
 use waterui_controls::{Button, ButtonStyle, button, label};
 use waterui_core::animation::Animation;
@@ -664,7 +664,7 @@ impl<I> Snackbar<I> {
 ///
 /// Every presentation owns its own animation bindings ([`Self::opacity`],
 /// [`Self::entrance_offset`], [`Self::stack_offset`]). The overlay renders the
-/// stack as a [`ForEach`] over the manager's [`List`], so the hydrolysis
+/// stack as a [`ForEach`] over the manager's [`StateList`], so the hydrolysis
 /// collection engine dispatches each presentation's subtree exactly once (keyed
 /// by [`Self::id`]) and reconciles only the items that join or leave. A
 /// presentation that stays on screen is never re-dispatched, so its `on_appear`
@@ -693,11 +693,11 @@ struct ActiveSnackbar<I: 'static = NoIcon> {
 
 /// Internal state for the snackbar manager.
 struct SnackbarManagerState<I: 'static = NoIcon> {
-    /// The active on-screen snackbars, oldest first. A reactive [`List`] so the
+    /// The active on-screen snackbars, oldest first. A reactive [`StateList`] so the
     /// overlay's [`ForEach`] reconciles the stack item-by-item as snackbars are
     /// added and removed; per-row animation bindings live on each
     /// [`ActiveSnackbar`] and are untouched by membership changes.
-    active: List<ActiveSnackbar<I>>,
+    active: StateList<ActiveSnackbar<I>>,
     /// Monotonic presentation identifier used to ignore stale timers.
     next_id: u64,
 }
@@ -754,7 +754,7 @@ impl SnackbarManager<NoIcon> {
 impl<I: SnackbarIconSlot> SnackbarManager<I> {
     /// Creates a new typed snackbar manager and returns the overlay view.
     pub(crate) fn typed() -> (Self, impl View + Clone) {
-        let active = List::new();
+        let active = StateList::new();
         let state = Rc::new(RefCell::new(SnackbarManagerState {
             active: active.clone(),
             next_id: 0,
@@ -983,7 +983,7 @@ impl<I: SnackbarIconSlot> SnackbarManager<I> {
 /// [`StretchAxis::Both`]: waterui_layout::StretchAxis
 /// [`Window`]: crate::runtime::window::Window
 struct SnackbarOverlay<I: 'static = NoIcon> {
-    active: List<ActiveSnackbar<I>>,
+    active: StateList<ActiveSnackbar<I>>,
     manager: SnackbarManager<I>,
 }
 

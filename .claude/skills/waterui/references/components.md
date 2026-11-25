@@ -757,7 +757,7 @@ content). Selection lives on the
 list itself and holds the app's own values — `.selection(&Binding<Option<T>>)` or
 `.multi_selection(&Binding<BTreeSet<T>>)` on both `List` and `ListBuilder`, `T: Ord + Clone`.
 A `ForEach` row — every row of `List::for_each`, or a `ForEach` inside `List::content` —
-is selected by its collection id: `Identifiable::Id` for a `List`/`Vec`/`SignalCollection`,
+is selected by its collection id: `Identifiable::Id` for a `StateList`/`Vec`/`SignalCollection`,
 the index for an array or static slice. A static row of `List::content` is selected by the
 value it is tagged with, like SwiftUI's `.tag(_:)` — `(|| text("Inbox")).tag(Mailbox::Inbox)`
 or `row("Archive", "12").tag(Mailbox::Archive)` — and an untagged static row is not

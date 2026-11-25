@@ -8185,7 +8185,6 @@ mod owner_lifetimes {
     use waterui::component::lazy::Lazy;
     use waterui::prelude::*;
     use waterui::reactive::binding;
-    use waterui::reactive::collection::List as ReactiveList;
     use waterui::views::ForEach;
     use waterui_core::layout::ProposalSize;
 
@@ -8235,10 +8234,7 @@ mod owner_lifetimes {
     /// The hierarchy the repairs cover: `.size`/`padding` wrappers around
     /// `hstack`/`zstack` containers plus a lazy `ForEach` membership — one
     /// tree holding every repaired owner class.
-    fn hierarchy(
-        track: &waterui::reactive::Binding<String>,
-        items: &ReactiveList<Row>,
-    ) -> impl View {
+    fn hierarchy(track: &waterui::reactive::Binding<String>, items: &StateList<Row>) -> impl View {
         let track = track.clone();
         let items = items.clone();
         zstack((
@@ -8354,7 +8350,7 @@ mod owner_lifetimes {
         // afterwards names a real retainer, not a pooled autorelease.
         let mut env = resolve::env();
         let track = binding(String::from("first"));
-        let mut items = ReactiveList::from(vec![Row { id: 1 }, Row { id: 2 }]);
+        let mut items = StateList::from(vec![Row { id: 1 }, Row { id: 2 }]);
         // The theme `Foreground` slot backs every unstyled chunk — the
         // `label_leaf` default watcher this fix touches. Reinstall it
         // from a binding the test keeps, so a live update is reachable.
@@ -13666,8 +13662,7 @@ mod transition {
     use waterui::component::Dynamic;
     use waterui::component::label::label;
     use waterui::component::lazy::Lazy;
-    use waterui::prelude::{VStack, hstack, spacer, text, vstack};
-    use waterui::reactive::collection::List as ReactiveList;
+    use waterui::prelude::{StateList, VStack, hstack, spacer, text, vstack};
     use waterui::views::ForEach;
     use waterui_apple::contract::Mounted;
     use waterui_apple::native_test_support::transition::ManualTransitionClock;
@@ -15296,7 +15291,7 @@ mod transition {
     /// re-measures live members but never the ghost.
     pub fn collection_ghost_keeps_its_last_placement() {
         let _mtm = mtm();
-        let mut items = ReactiveList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
+        let mut items = StateList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
         let leaf = super::resolve::render(VStack::for_each(items.clone(), |row: Row| {
             let height = match row.id % 3 {
                 0 => 20.0,
@@ -15371,7 +15366,7 @@ mod transition {
     /// ghost stays ahead of an insertion at the head, as in Hydrolysis.
     pub fn ghosts_rebase_across_later_edits() {
         let _mtm = mtm();
-        let mut items = ReactiveList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
+        let mut items = StateList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
         // Only row 2 claims a transition — an anchor that ghosts would
         // make "first" ambiguous.
         let leaf = super::resolve::render(VStack::for_each(items.clone(), |row: Row| {
@@ -15438,7 +15433,7 @@ mod transition {
     /// completes on its own clock.
     pub fn reinsertion_creates_a_fresh_instance_beside_the_ghost() {
         let _mtm = mtm();
-        let mut items = ReactiveList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
+        let mut items = StateList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
         let flags: DiedFlags = Rc::new(RefCell::new(Vec::new()));
         let leaf = super::resolve::render(VStack::for_each(items.clone(), {
             let flags = Rc::clone(&flags);
@@ -15510,7 +15505,7 @@ mod transition {
     pub fn unplaced_lazy_row_releases_immediately() {
         let _mtm = mtm();
         let rows: Vec<Row> = (0..40).map(|id| Row { id }).collect();
-        let mut items = ReactiveList::from(rows);
+        let mut items = StateList::from(rows);
         let leaf = super::resolve::render(Lazy::vstack(ForEach::new(items.clone(), |row: Row| {
             Metadata::new(
                 hstack((text(format!("row {}", row.id)), spacer())).size(300.0, 30.0),
@@ -15551,7 +15546,7 @@ mod transition {
         /// How far pixel alignment may move one member against another.
         const PIXEL: f64 = 0.5;
         let _mtm = mtm();
-        let mut items = ReactiveList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
+        let mut items = StateList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
         // Only the middle row claims a transition.
         let leaf = super::resolve::render(VStack::for_each(items.clone(), |row: Row| {
             let height = match row.id {
@@ -15601,7 +15596,7 @@ mod transition {
     /// order, as the fixed path's `reconcile_subviews` keeps it.
     pub fn an_insert_before_existing_members_paints_in_item_order() {
         let _mtm = mtm();
-        let mut items = ReactiveList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
+        let mut items = StateList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
         let leaf = super::resolve::render(VStack::for_each(items.clone(), |row: Row| {
             hstack((text(format!("row {}", row.id)), spacer())).size(200.0, 20.0)
         }));
@@ -15824,7 +15819,7 @@ mod transition {
 
     /// A single-selection list whose every row claims the row transition
     /// — fixed-height rows, so the frozen height is a real contract.
-    fn row_list(items: &ReactiveList<Row>) -> AnyView {
+    fn row_list(items: &StateList<Row>) -> AnyView {
         use waterui::component::list::List;
         use waterui::reactive::binding;
         AnyView::new(
@@ -15842,7 +15837,7 @@ mod transition {
     /// row's last measurement, and completion deletes the row.
     pub fn list_ghost_row_keeps_its_frozen_height() {
         let _mtm = mtm();
-        let mut items = ReactiveList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
+        let mut items = StateList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
         let leaf = super::resolve::render(row_list(&items));
         let _window = super::mount_and_order_front(leaf.view());
         autoreleasepool(|_| view::layout_immediately(leaf.view()));
@@ -15873,7 +15868,7 @@ mod transition {
     /// accessibility tree.
     pub fn list_ghost_row_is_not_selectable_or_accessible() {
         let _mtm = mtm();
-        let mut items = ReactiveList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
+        let mut items = StateList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
         let leaf = super::resolve::render(row_list(&items));
         let _window = super::mount_and_order_front(leaf.view());
         autoreleasepool(|_| view::layout_immediately(leaf.view()));
@@ -15905,7 +15900,7 @@ mod transition {
     /// own transition ramps the host alpha from the absent sample.
     pub fn list_claimed_insertion_plays_without_row_animation() {
         let _mtm = mtm();
-        let mut items = ReactiveList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
+        let mut items = StateList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
         let leaf = super::resolve::render(row_list(&items));
         let _window = super::mount_and_order_front(leaf.view());
         autoreleasepool(|_| view::layout_immediately(leaf.view()));
@@ -17751,7 +17746,7 @@ mod row_major_table {
     use waterui::component::table::{SortDirection, Table, TableColumn, TableSort};
     use waterui::component::text;
     use waterui::id::Identifiable;
-    use waterui::reactive::collection::List as ReactiveList;
+    use waterui::reactive::collection::StateList;
     use waterui::reactive::{Binding, Signal as _};
     use waterui_core::layout::ProposalSize;
 
@@ -17794,7 +17789,7 @@ mod row_major_table {
     }
 
     fn selectable_sortable_table_with_non_text_cell() {
-        let people = ReactiveList::from(vec![
+        let people = StateList::from(vec![
             Person { id: 1, name: "Ada" },
             Person {
                 id: 2,

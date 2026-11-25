@@ -15,7 +15,6 @@ use waterui::background::Material;
 use waterui::component::list::{List, Section};
 use waterui::navigation::NavigationToolbarItems;
 use waterui::prelude::*;
-use waterui::reactive::collection::SignalCollection;
 use waterui::shape::{Circle, CornerRadius, RoundedRectangle};
 use waterui::theme::color::Foreground;
 use waterui::views::ForEach;

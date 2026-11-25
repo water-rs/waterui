@@ -27,7 +27,7 @@ use waterui_layout::container::LazyContainer;
 use waterui_layout::stack::vstack;
 use waterui_layout::stack::zstack;
 
-use nami::collection::List;
+use nami::collection::StateList;
 
 use super::{MinimalTestTheme, test_environment};
 use crate::HeadlessRuntime;
@@ -164,7 +164,7 @@ fn collection_reconcile_replaces_only_the_touched_mounts() {
         }
     }
 
-    let overlay = |list: &List<Shade>| {
+    let overlay = |list: &StateList<Shade>| {
         let list = list.clone();
         AnyView::new(zstack((
             ().size(360.0, 600.0),
@@ -179,7 +179,7 @@ fn collection_reconcile_replaces_only_the_touched_mounts() {
 
     // Removal: only the dropped item's cells leave; every survivor keeps its
     // node.
-    let mut list: List<Shade> = List::from(vec![
+    let mut list: StateList<Shade> = StateList::from(vec![
         Shade { id: 0, level: 0 },
         Shade { id: 1, level: 1 },
         Shade { id: 2, level: 2 },
