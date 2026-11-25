@@ -35,10 +35,7 @@ const MOUNT_FRAME_BUDGET: usize = 60;
 
 use image::ImageEncoder as _;
 use waterui::ViewExt as _;
-use waterui_media::{
-    LivePhoto, Url,
-    live::{Event as LivePhotoEvent, LivePhotoSource},
-};
+use waterui_media::{LivePhoto, LivePhotoEvent, Url, live::LivePhotoSource};
 use waterui_testing::{Role, TestStyle, UiBuilder};
 
 fn sample_image_path() -> String {

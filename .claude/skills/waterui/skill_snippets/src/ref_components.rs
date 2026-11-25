@@ -144,13 +144,15 @@ pub fn components_block_05() {
         view.max_width(f32::INFINITY) // idiom: stretch to full container width
     };
 
-    // Prose: chained on a `Frame`, the per-axis modifiers take signals.
+    // Prose: every sizing shortcut on a view takes signals, and `.alignment(...)` takes tokens.
     let height_signal = Binding::f32(80.0);
+    let _ = Divider.height(height_signal.clone());
     let _ = Divider.width(120.0).max_height(height_signal);
+    let _ = Divider.alignment(TopLeading);
 
-    // Prose (not counted): a `Frame` also takes `.ideal_width(w)` / `.ideal_height(h)`.
-    let _ = Divider.max_width(f32::INFINITY).ideal_width(w);
-    let _ = Divider.max_height(h).ideal_height(h);
+    // Prose (not counted): views also take `.ideal_width(w)` / `.ideal_height(h)`.
+    let _ = Divider.ideal_width(w);
+    let _ = Divider.ideal_height(h);
 }
 
 // ---------------------------------------------------------------------------
@@ -578,13 +580,15 @@ pub fn components_custom_control_styles() {
             configuration: PrimitiveButtonStyleConfiguration<L>,
         ) -> impl View + use<L> {
             use core::num::NonZeroU32;
+            use waterui::gesture::TapEvent;
             let trigger = configuration.trigger().clone();
             configuration
                 .into_label()
                 .padding_with((8.0, 16.0))
-                .gesture(TapGesture::repeat(NonZeroU32::new(2).unwrap()), move || {
-                    trigger.trigger()
-                })
+                .gesture(
+                    TapGesture::repeat(NonZeroU32::new(2).unwrap()),
+                    move |_: TapEvent| trigger.trigger(),
+                )
         }
     }
 

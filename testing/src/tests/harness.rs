@@ -571,14 +571,14 @@ fn ui_test_hover_drag_and_magnify_update_semantic_bounds() {
                 surface
                     .gesture(
                         DragGesture::new(0.0),
-                        |DragOffset(offset): DragOffset, drag: DragEvent| {
+                        |drag: DragEvent, DragOffset(offset): DragOffset| {
                             offset.set(drag.translation().x);
                         },
                     )
                     .state(&drag_offset_state)
                     .gesture(
                         MagnificationGesture::new(1.0),
-                        |ZoomScale(scale): ZoomScale, magnification: MagnificationEvent| {
+                        |magnification: MagnificationEvent, ZoomScale(scale): ZoomScale| {
                             scale.set(magnification.scale());
                         },
                     )

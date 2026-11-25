@@ -108,6 +108,21 @@ impl ImageAsset {
     pub fn url(&self, resources: &ResourceContext) -> Url {
         self.bundle.url(resources, self.logical_path)
     }
+
+    /// Resolves this image asset to a filesystem path.
+    #[must_use]
+    pub fn path(&self, resources: &ResourceContext) -> PathBuf {
+        self.bundle.path(resources, self.logical_path)
+    }
+
+    /// Loads this image asset's encoded bytes into memory.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AssetError`] when the asset cannot be read from disk.
+    pub fn load(&self, resources: &ResourceContext) -> Result<Data, AssetError> {
+        Data::from_local(self.path(resources))
+    }
 }
 
 #[cfg(feature = "media")]

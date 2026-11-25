@@ -12,7 +12,7 @@ use accesskit::Role;
 use nami::collection::SignalCollection;
 use waterui::component::list::List;
 use waterui::component::text;
-use waterui::gesture::LongPressGesture;
+use waterui::gesture::{LongPressEvent, LongPressGesture};
 use waterui::metadata::context_menu::IntoContextMenu;
 use waterui::prelude::ContextMenu;
 use waterui::{AnyView, ViewExt as _};
@@ -142,7 +142,7 @@ fn chat_list_with_long_press<M: IntoContextMenu + 'static>(
                     .size(f32::INFINITY, TAP_ROW_H)
                     .gesture(
                         LongPressGesture::new().minimum_duration(LONG_PRESS_DURATION),
-                        move || {
+                        move |_: LongPressEvent| {
                             *long_presses.borrow_mut() += 1;
                         },
                     ),

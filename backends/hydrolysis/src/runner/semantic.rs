@@ -1180,7 +1180,7 @@ mod tests {
 
     use crate::platform::{KeyCode, Modifiers};
     use keyboard_types::Code;
-    use waterui_core::handler::Handler;
+    use waterui_core::handler::EventHandler;
     use waterui_interaction::key::{Key, KeyHandling, KeyPress, NamedKey};
 
     /// A synthetic press of a named key, carrying both the legacy `KeyCode`
@@ -1246,7 +1246,7 @@ mod tests {
     fn counting_handler(
         hits: Binding<Vec<String>>,
         disposition: KeyHandling,
-    ) -> impl Handler<(KeyPress,), KeyHandling> {
+    ) -> impl EventHandler<KeyPress, (), KeyHandling> {
         move |press: KeyPress| {
             let mut seen = hits.snapshot();
             seen.push(format!("{:?}", press.key()));

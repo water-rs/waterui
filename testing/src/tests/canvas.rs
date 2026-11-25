@@ -172,7 +172,7 @@ fn canvas_gallery_renders_every_paint_and_scope() {
                 // An image clipped to a circle, under a transform.
                 cx.transform(Affine2::translate(310.0, 125.0), |cx| {
                     cx.clip(Circle::new(Point::zero(), 28.0), |cx| {
-                        cx.image(
+                        cx.image_sampled(
                             image.clone(),
                             rect(-28.0, -28.0, 56.0, 56.0),
                             Sampling::Nearest,

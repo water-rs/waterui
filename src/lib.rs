@@ -136,8 +136,9 @@ pub mod prelude {
     #[cfg(feature = "avatar")]
     pub use super::widget::{Avatar, avatar};
     pub use super::widget::{
-        Card, CardStyle, CardStyleTokens, CardTheme, Disclosure, Divider, ErrorView, ResultExt,
-        SuspendedView, Suspense, card, condition::when, disclosure, error_view, suspense,
+        Card, CardStyle, CardStyleTokens, CardTheme, DialogTheme, Disclosure, Divider, ErrorView,
+        ResultExt, SuspendedView, Suspense, card, condition::when, disclosure, error_view,
+        suspense,
     };
     #[cfg(feature = "flow-markdown")]
     pub use super::widget::{
@@ -199,8 +200,6 @@ pub use waterui_form as form;
 pub use waterui_graphics::canvas;
 pub use waterui_graphics::color;
 pub use waterui_graphics::gradient;
-#[cfg(feature = "image")]
-pub use waterui_graphics::image_decode;
 #[cfg(feature = "gpu")]
 pub use waterui_graphics::{GpuContent, GpuView, RedrawHandle};
 #[cfg(any(feature = "gpu", feature = "cpu"))]
