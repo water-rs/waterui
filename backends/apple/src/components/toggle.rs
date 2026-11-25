@@ -10,6 +10,7 @@
 //! the control; the payload's stretch axis picks how the row fills its
 //! offer (`docs/layout-spec.md` §3, §6).
 
+#[cfg(target_os = "macos")]
 use waterui::animation::ChangeAnimation;
 use waterui::component::ControlSize;
 use waterui::component::toggle::{ToggleConfig, ToggleStyle};
@@ -107,8 +108,8 @@ fn state_change(metadata: &Metadata) -> StateChange {
                 ))
             },
         },
-        Timing::Spring(spring) => StateChange::Implicit {
-            seconds: spring.settling_duration(-1.0, 0.0) / speed,
+        Timing::Spring(_) => StateChange::Implicit {
+            seconds: playback.cycle_duration().unwrap_or(0.0) / speed,
             control_points: None,
         },
     }

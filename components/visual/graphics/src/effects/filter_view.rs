@@ -2229,7 +2229,6 @@ mod tests {
     };
 
     use crate::animation::engine_animation;
-    use crate::draw::{Animation as EngineAnimation, Timing as EngineTiming};
     use core::time::Duration;
     use filtrate::Interpolator as _;
     use nami::SignalExt as _;

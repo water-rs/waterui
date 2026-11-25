@@ -8,8 +8,12 @@
 
 use alloc::rc::Rc;
 
+#[cfg(target_os = "macos")]
 use cocoa_ui::objc2_foundation::ns_string;
-use cocoa_ui::{PlatformView, Rect, core_animation, layer, view};
+use cocoa_ui::{PlatformView, Rect, view};
+#[cfg(target_os = "macos")]
+use cocoa_ui::{core_animation, layer};
+#[cfg(target_os = "macos")]
 use waterui::animation::ChangeAnimation;
 use waterui::filter::Opacity;
 use waterui::reactive::Signal;

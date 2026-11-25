@@ -297,8 +297,8 @@ fn value_animation(metadata: &Metadata) -> Option<ValueAnimation> {
                 curve.y2 as f32,
             ],
         },
-        Timing::Spring(spring) => {
-            ValueAnimation::Duration(spring.settling_duration(-1.0, 0.0) / speed)
+        Timing::Spring(_) => {
+            ValueAnimation::Duration(playback.cycle_duration().unwrap_or(0.0) / speed)
         }
     })
 }
