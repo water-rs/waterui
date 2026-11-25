@@ -18,7 +18,7 @@
 //! resolves to a tab bar on a phone and a sidebar on a desktop-class window.
 //! None of that is decided by this file.
 //!
-//! Each tab owns its own navigation container (`Tab::container`), which is what
+//! Each tab owns its own navigation container (`Tab::new`), which is what
 //! makes a tab remember where you left it: push twice in Inbox, visit Settings,
 //! come back, and the two pushed pages are still there.
 
@@ -300,15 +300,14 @@ pub fn demo() -> impl View {
 fn pane_tab(
     pane: Pane,
     mail: &Mail,
-) -> Tab<impl ViewBuilder<Output = NavigationView<impl View + use<>>> + use<>, impl LabelKind + use<>>
-{
+) -> Tab<impl ViewBuilder<Output = impl View + use<>> + use<>, impl LabelKind + use<>> {
     let (title, icon) = match pane {
         Pane::Inbox => ("Inbox", inbox()),
         Pane::Library => ("Library", image_album()),
         Pane::Gallery => ("Gallery", view_gallery()),
         Pane::Settings => ("Settings", cog()),
     };
-    let tab = Tab::container(label(title).icon(icon), {
+    let tab = Tab::new(label(title).icon(icon), {
         let mail = mail.clone();
         move || match pane {
             Pane::Inbox => OneOf4::A(inbox_stack(mail.clone())),
@@ -354,7 +353,8 @@ fn inbox_root(
         .navigation_subtitle(text!("{unread} unread"))
         // A search field inside the bar chrome, not a text field drawn above
         // the content.
-        .searchable(&mail.query, "Search mail")
+        .searchable(&mail.query)
+        .search_prompt("Search mail")
         .navigation_toolbar(
             NavigationToolbar::default()
                 // Leading: the edit affordance, where each platform puts it.
@@ -403,8 +403,8 @@ fn message_list(mail: Mail) -> impl View {
         move |message| message_row(&mail, message)
     })
     .editing(mail.editing)
-    .on_delete(|delete: ListDelete, mail: Mail| delete_message(delete, &mail))
-    .on_move(|list_move: ListMove, mail: Mail| move_message(list_move, &mail))
+    .on_delete(|delete: ListDelete<u64>, mail: Mail| delete_message(delete, &mail))
+    .on_move(|list_move: ListMove<u64>, mail: Mail| move_message(list_move, &mail))
 }
 
 fn message_row(mail: &Mail, message: Message) -> impl View + use<> {
@@ -463,38 +463,24 @@ fn message_row(mail: &Mail, message: Message) -> impl View + use<> {
     )
 }
 
-fn delete_message(ListDelete(index): ListDelete, mail: &Mail) {
-    let Some(id) = visible_id(mail, index) else {
-        return;
-    };
+fn delete_message(ListDelete(id): ListDelete<u64>, mail: &Mail) {
     mail.messages.get_mut().retain(|message| message.id != id);
 }
 
-fn move_message(ListMove(movement): ListMove, mail: &Mail) {
-    let (Some(moved), Some(target)) = (
-        visible_id(mail, movement.from()),
-        visible_id(mail, movement.to()),
-    ) else {
-        return;
-    };
+fn move_message(ListMove(movement): ListMove<u64>, mail: &Mail) {
     let mut messages = mail.messages.get_mut();
     let (Some(from), Some(to)) = (
-        messages.iter().position(|message| message.id == moved),
-        messages.iter().position(|message| message.id == target),
+        messages
+            .iter()
+            .position(|message| message.id == *movement.id()),
+        messages
+            .iter()
+            .position(|message| message.id == *movement.target()),
     ) else {
         return;
     };
     let message = messages.remove(from);
     messages.insert(to, message);
-}
-
-/// Rows are addressed by position in the *filtered* list, so an edit maps back
-/// through the same filter the user is looking at.
-fn visible_id(mail: &Mail, index: usize) -> Option<u64> {
-    let messages = mail.messages.snapshot();
-    let query = mail.query.snapshot();
-    let visible = filter_messages(&messages, &query);
-    visible.as_slice().get(index).map(|message| message.id)
 }
 
 fn message_detail(

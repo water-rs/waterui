@@ -16,7 +16,7 @@ use core::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
-use nami::collection::SignalCollection;
+use nami::collection::{Collection as NamiCollection, SignalCollection};
 use nami::{Binding, Computed, Signal, SignalExt as _};
 use suiteki::Str;
 use waterui_core::id::Identifiable;
@@ -320,11 +320,18 @@ pub fn into_list(collection: &Collection, attributes: ListAttributes) -> AnyView
     // out of the way until edit mode is on.
     let mut list = list.editing(editing.unwrap_or_else(|| Computed::new(false)));
     if let Some(action) = on_delete {
-        list =
-            list.on_delete(move |ListDelete(index): ListDelete| action.call((row_index(index),)));
+        let keys = collection.keys();
+        list = list.on_delete(move |ListDelete(key): ListDelete<ItemKey>| {
+            let Some(index) = keys.with_range(.., |items| {
+                items.iter().position(|candidate| candidate == &key)
+            }) else {
+                return;
+            };
+            action.call((row_index(index),));
+        });
     }
     if let Some(action) = on_move {
-        list = list.on_move(move |ListMove(movement): ListMove| {
+        list = list.on_move(move |ListMove(movement): ListMove<ItemKey>| {
             action.call((row_index(movement.from()), row_index(movement.to())));
         });
     }

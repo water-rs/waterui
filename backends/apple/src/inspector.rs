@@ -195,7 +195,6 @@ fn install_interaction(root: &HostView, inspection: &Rc<Inspection>) {
         objc2_ui_kit::{UIGestureRecognizer, UILongPressGestureRecognizer},
         uikit::gesture,
     };
-    use objc2::MainThreadOnly;
     let weak = Rc::downgrade(inspection);
     let recognizer = Rc::new(std::cell::OnceCell::<Weak<UIGestureRecognizer>>::new());
     let observed = recognizer.clone();

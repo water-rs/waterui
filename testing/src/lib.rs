@@ -93,26 +93,20 @@
 //! # Snapshot Artifacts
 //!
 //! ```ignore
-//! use waterui::Environment;
 //! use waterui::ViewExt as _;
 //! use waterui::graphics::color::Srgb;
-//! use waterui_testing::TestHost;
+//! use waterui_testing::ui;
 //!
-//! let host = TestHost::new(
-//!     Environment::new(),
-//!     320,
-//!     180,
-//!     hydrolysis_m3::Material3::defaults(),
-//! );
-//! let captured = host.capture_snapshot(
-//!     waterui::text("Preview")
-//!         .body()
-//!         .foreground(Srgb::WHITE)
-//!         .background(Srgb::BLACK),
-//!     "docs/visual",
-//!     "text-preview",
-//!     "00_initial",
-//! );
+//! let mut app = ui()
+//!     .viewport(320, 180)
+//!     .theme(hydrolysis_m3::Material3::defaults())
+//!     .mount_offscreen(|| {
+//!         waterui::text("Preview")
+//!             .body()
+//!             .foreground(Srgb::WHITE)
+//!             .background(Srgb::BLACK)
+//!     });
+//! let captured = app.capture_snapshot("docs/visual", "text-preview", "00_initial");
 //! assert!(captured.path().is_file());
 //! ```
 //!
@@ -207,8 +201,6 @@ pub use report::{
 pub use selector::{ElementAnchor, ElementRef, ElementSet, Selector};
 #[cfg(feature = "harness")]
 pub use semantics::{CheckedState, NodeBounds, NodeId, NodeSnapshot, Role, TreeSnapshot};
-#[cfg(feature = "gpu")]
-pub use snapshot::TestHost;
 pub use snapshot::{HdrSnapshot, Snapshot};
 #[cfg(feature = "harness")]
 pub use wait::{Expectation, WaitOptions, WaitResult};

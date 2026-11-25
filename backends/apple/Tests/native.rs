@@ -167,6 +167,13 @@ fn navigation_trials() -> Vec<Trial> {
             },
         ),
         Trial::test(
+            "navigation::a_searchable_page_submits_tracks_active_and_dismisses",
+            || {
+                navigation::a_searchable_page_submits_tracks_active_and_dismisses();
+                Ok(())
+            },
+        ),
+        Trial::test(
             "navigation::a_hidden_tab_split_releases_the_toolbar_sidebar_space",
             || {
                 navigation::a_hidden_tab_split_releases_the_toolbar_sidebar_space();
@@ -1989,8 +1996,8 @@ mod tabs {
             Tabs::new(
                 &pane,
                 (
-                    Tab::container(label("One"), || text("pane one")),
-                    Tab::container(label("Two"), || text("pane two")),
+                    Tab::new(label("One"), || text("pane one")),
+                    Tab::new(label("Two"), || text("pane two")),
                 ),
             )
             .bottom_accessory(accessory),
@@ -2106,7 +2113,7 @@ mod tabs {
         ] {
             let pane = binding(0usize);
             let leaf = resolve::render(
-                Tabs::new(&pane, vec![Tab::container(label("One"), || text("one"))])
+                Tabs::new(&pane, vec![Tab::new(label("One"), || text("one"))])
                     .minimize_behavior(shared),
             );
             assert_eq!(tab_bar_controller(&leaf).tabBarMinimizeBehavior(), native);
@@ -2136,10 +2143,10 @@ mod tabs {
         let leaf = resolve::render(Tabs::new(
             &pane,
             (
-                Tab::container(label("One"), || {
+                Tab::new(label("One"), || {
                     scroll(vstack((text("one"), text("two"), text("three"))))
                 }),
-                Tab::container(label("Two"), || {
+                Tab::new(label("Two"), || {
                     vstack((text("aside"), scroll(text("nested"))))
                 }),
             ),
@@ -2170,8 +2177,8 @@ mod tabs {
         let leaf = resolve::render(Tabs::new(
             &pane,
             (
-                Tab::container(label("One"), || scroll(text("scrollable"))),
-                Tab::container(label("Two"), || text("static")),
+                Tab::new(label("One"), || scroll(text("scrollable"))),
+                Tab::new(label("Two"), || text("static")),
             ),
         ));
         let controllers = tab_bar_controller(&leaf)
@@ -2223,7 +2230,7 @@ mod tabs {
         let leaf = autoreleasepool(|_| {
             resolve::render(Tabs::new(
                 &pane,
-                vec![Tab::container(label("One"), move || {
+                vec![Tab::new(label("One"), move || {
                     Dynamic::watch(content.clone(), |scrolled| {
                         if scrolled {
                             AnyView::new(scroll(text("surface")))
@@ -2321,7 +2328,7 @@ mod tabs {
         let pane = binding(0usize);
         let leaf = resolve::render(Tabs::new(
             &pane,
-            vec![Tab::container(label("One"), || {
+            vec![Tab::new(label("One"), || {
                 NavigationStack::new(NavigationView::new("Root", scroll(text("root"))))
             })],
         ));
@@ -2550,14 +2557,20 @@ mod menus {
 /// namespace the `UIKit` cases own on iOS.
 #[cfg(all(target_os = "macos", feature = "native-test"))]
 mod navigation {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
     use cocoa_ui::appkit::{Segment, SegmentedControl};
+    use cocoa_ui::objc2::sel;
     use cocoa_ui::objc2_app_kit::{
         NSControlSize, NSLayoutAttribute, NSSearchField, NSSegmentDistribution, NSSegmentStyle,
-        NSSegmentedControl, NSSplitView, NSSplitViewController, NSTrackingSeparatorToolbarItem,
+        NSSegmentedControl, NSSplitView, NSSplitViewController,
+        NSStandardKeyBindingResponding as _, NSTrackingSeparatorToolbarItem,
     };
     use cocoa_ui::{PlatformView, Retained, view};
     use objc2::ClassType as _;
     use objc2::runtime::NSObjectProtocol as _;
+    use waterui::Signal as _;
     use waterui::Str;
     use waterui::navigation::{
         NavigationSplitView, NavigationToolbar, NavigationToolbarItem, NavigationToolbarPlacement,
@@ -2579,7 +2592,9 @@ mod navigation {
         let mtm = mtm();
         let query = binding(Str::from(""));
         let page = resolve::render(
-            NavigationView::new("Title", text("body")).searchable(&query, "Search mail"),
+            NavigationView::new("Title", text("body"))
+                .searchable(&query)
+                .search_prompt("Search mail"),
         );
         let window = leaf::attach(mtm, page.view());
         // The platform's reference window: the metrics were measured at an
@@ -2640,6 +2655,105 @@ mod navigation {
         assert!(
             (field_center_x - window_center_x).abs() <= 1.0,
             "the platform centres the field in the window: field at {field_center_x}, window at {window_center_x}"
+        );
+    }
+
+    /// `.searchable` wires `search_active`, `on_search_submit`, optional prompt,
+    /// and `search_suggestions` on `AppKit`'s `NSSearchField`.
+    pub fn a_searchable_page_submits_tracks_active_and_dismisses() {
+        let mtm = mtm();
+        let query = binding(Str::from("inbox"));
+        let active = binding(false);
+        let submits = Rc::new(Cell::new(0usize));
+        let suggestion_builds = Rc::new(Cell::new(0usize));
+        let page = resolve::render(
+            NavigationView::new("Title", text("body"))
+                .searchable(&query)
+                .search_active(&active)
+                .on_search_submit({
+                    let submits = Rc::clone(&submits);
+                    move || submits.set(submits.get() + 1)
+                })
+                .search_suggestions({
+                    let suggestion_builds = Rc::clone(&suggestion_builds);
+                    move || {
+                        suggestion_builds.set(suggestion_builds.get() + 1);
+                        text("Suggestion row")
+                    }
+                }),
+        );
+        let window = leaf::attach(mtm, page.view());
+        window.set_content_rect(cocoa_ui::Rect::new(0.0, 0.0, 800.0, 600.0), false);
+        window.order_front();
+        let native = window.native();
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                native.titlebarAccessoryViewControllers().count() == 1
+            }),
+            "the searchable page must install a titlebar accessory"
+        );
+        assert_eq!(
+            suggestion_builds.get(),
+            0,
+            "search suggestions must build lazily only when active"
+        );
+        let accessory = native.titlebarAccessoryViewControllers().objectAtIndex(0);
+        let field = accessory
+            .view()
+            .subviews()
+            .iter()
+            .find_map(|sub| sub.downcast::<NSSearchField>().ok())
+            .expect("the accessory row hosts an NSSearchField");
+
+        // Programmatic activation focuses the field, updates `active`, and opens the suggestions panel.
+        active.set(true);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                field.currentEditor().is_some()
+                    && native.childWindows().is_some_and(|w| !w.is_empty())
+            }),
+            "setting search_active(true) must focus the field and show suggestions"
+        );
+        assert!(active.snapshot());
+        assert_eq!(
+            suggestion_builds.get(),
+            1,
+            "activating search must build suggestions lazily once"
+        );
+        let panel_window = native
+            .childWindows()
+            .and_then(|children| children.iter().next())
+            .expect("suggestions panel attached");
+        let panel_content = panel_window
+            .contentView()
+            .expect("suggestions panel has contentView");
+        let mounted_suggestions = panel_content
+            .subviews()
+            .into_iter()
+            .next()
+            .expect("suggestions panel mounts live view");
+        assert!(
+            mounted_suggestions.frame().size.width >= field.frame().size.width,
+            "suggestions panel child must receive full proposal width: {:?}",
+            mounted_suggestions.frame()
+        );
+
+        // Sending `insertNewline:` fires `on_search_submit` once.
+        let responder = native
+            .firstResponder()
+            .expect("focused search field editor is first responder");
+        // SAFETY: `insertNewline:` is the standard `NSResponder` newline command.
+        unsafe { responder.doCommandBySelector(sel!(insertNewline:)) };
+        assert_eq!(submits.get(), 1);
+
+        // Setting `search_active` back to `false` ends editing and closes suggestions.
+        active.set(false);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                field.currentEditor().is_none()
+                    && native.childWindows().is_none_or(|w| w.is_empty())
+            }),
+            "setting search_active(false) must dismiss the field and hide suggestions"
         );
     }
 
@@ -2724,7 +2838,7 @@ mod navigation {
                         )]),
                     )
                 }),
-                Tab::container("Split", move || {
+                Tab::new("Split", move || {
                     NavigationSplitView::new(&detail, text("Sidebar"), |id: i32| {
                         NavigationView::new(format!("Detail {id}"), text("detail"))
                     })
@@ -7895,7 +8009,7 @@ mod safe_area {
         let selection = binding(0usize);
         let mount = mount(Tabs::new(
             &selection,
-            vec![Tab::container("Home", move || {
+            vec![Tab::new("Home", move || {
                 NavigationStack::new(
                     NavigationView::new(
                         "Home",
@@ -10765,11 +10879,15 @@ mod webview {
 /// through the generic tree must stay bounded to the realized ones.
 #[cfg(target_os = "macos")]
 mod list_ax {
+    use cocoa_ui::appkit::ListTableView;
+    use cocoa_ui::objc2_app_kit::{NSButton, NSTableViewDataSource};
+    use cocoa_ui::{PlatformView, view};
     use objc2::msg_send;
     use objc2::runtime::AnyObject;
     use objc2_app_kit::{NSAccessibilityChildrenAttribute, NSTableView};
     use objc2_foundation::{NSArray, NSIndexSet};
     use waterui::component::text::Text;
+    use waterui::id::Identifiable;
     use waterui::layout::scroll::ScrollController;
     use waterui_apple::native_test_support::{row_item, row_list, sectioned_row_list};
 
@@ -10936,12 +11054,161 @@ mod list_ax {
         );
     }
 
+    #[derive(Clone, PartialEq, Eq)]
+    struct FilteredListEntry {
+        id: u64,
+        label: &'static str,
+        visible: bool,
+    }
+
+    impl Identifiable for FilteredListEntry {
+        type Id = u64;
+
+        fn id(&self) -> Self::Id {
+            self.id
+        }
+    }
+
+    fn find_list_table(root: &PlatformView) -> Option<Retained<ListTableView>> {
+        let mut stack = vec![view::retain_base(root)];
+        while let Some(current) = stack.pop() {
+            stack.extend(view::subviews(&current));
+            if let Ok(table) = current.downcast::<ListTableView>() {
+                return Some(table);
+            }
+        }
+        None
+    }
+
+    fn find_delete_button(root: &PlatformView) -> Option<Retained<NSButton>> {
+        let mut stack = vec![view::retain_base(root)];
+        while let Some(current) = stack.pop() {
+            stack.extend(view::subviews(&current));
+            if let Ok(button) = current.downcast::<NSButton>()
+                && button.title().to_string() == "Delete"
+            {
+                return Some(button);
+            }
+        }
+        None
+    }
+
+    /// `water-rs/waterui#4295`: a sectioned, mixed, filtered list on `AppKit`
+    /// renders no inline delete control or drag payload for static rows, and
+    /// deletes the intended item by identity from a filtered `ForEach` without
+    /// re-running the filter or tripping a re-entrant borrow.
+    fn sectioned_mixed_and_filtered_list_edits_by_identity() {
+        use waterui::component::list::{ForEachExt as _, List, ListDelete, ListMove, Section, row};
+        use waterui::prelude::text;
+        use waterui::reactive::collection::SignalCollection;
+        use waterui::reactive::{Binding, Signal as _, SignalExt as _};
+        use waterui::views::ForEach;
+
+        let entry = |id, label, visible| FilteredListEntry { id, label, visible };
+        let backing = Binding::container(vec![
+            entry(10, "Alpha", true),
+            entry(15, "Hidden-1", false),
+            entry(20, "Beta", true),
+            entry(25, "Hidden-2", false),
+            entry(30, "Gamma", true),
+        ]);
+        let filtered = SignalCollection::new(
+            backing
+                .map(|items| {
+                    items
+                        .into_iter()
+                        .filter(|item| item.visible)
+                        .collect::<Vec<_>>()
+                })
+                .computed(),
+        );
+        let delete_backing = backing.clone();
+        let move_backing = backing.clone();
+        let leaf = super::resolve::render(
+            List::content((
+                Section::new("Account").content(row("Plan", "Pro")),
+                Section::new("Items").content(
+                    ForEach::new(filtered, |entry: FilteredListEntry| text(entry.label))
+                        .on_delete(move |ListDelete(id): ListDelete<u64>| {
+                            delete_backing
+                                .get_mut()
+                                .retain(|candidate| candidate.id != id);
+                        })
+                        .on_move(move |ListMove(movement): ListMove<u64>| {
+                            let mut items = move_backing.get_mut();
+                            if let (Some(from), Some(to)) = (
+                                items.iter().position(|item| item.id == *movement.id()),
+                                items.iter().position(|item| item.id == *movement.target()),
+                            ) {
+                                let moved = items.remove(from);
+                                items.insert(to, moved);
+                            }
+                        }),
+                ),
+            ))
+            .editing(true),
+        );
+        let _window = leaf::attach(mtm(), leaf.view());
+        leaf.view().setNeedsLayout(true);
+        leaf.view().layoutSubtreeIfNeeded();
+
+        let surface = find_list_table(leaf.view()).expect("list mounts ListTableView");
+        let table = surface.table_view();
+        // Flat rows: 0 Header("Account"), 1 Spacer, 2 Row("Plan"),
+        //            3 Header("Items"), 4 Row("Alpha"), 5 Row("Beta"), 6 Row("Gamma").
+        assert_eq!(table.numberOfRows(), 7);
+        for row_idx in 0..table.numberOfRows() {
+            let _ = table.rowViewAtRow_makeIfNecessary(row_idx, true);
+        }
+
+        let static_row = table
+            .rowViewAtRow_makeIfNecessary(2, false)
+            .expect("static row realized");
+        assert!(
+            find_delete_button(&static_row).is_none(),
+            "static row must not show a Delete button unless asked for"
+        );
+        // SAFETY: `dataSource` is installed on the table and stays alive with `surface`.
+        let data_source = unsafe { table.dataSource() }.expect("table has data source");
+        assert!(
+            data_source
+                .tableView_pasteboardWriterForRow(&table, 2)
+                .is_none(),
+            "static row must not offer a drag payload"
+        );
+        assert!(
+            data_source
+                .tableView_pasteboardWriterForRow(&table, 4)
+                .is_some(),
+            "editable ForEach row must offer a drag payload"
+        );
+
+        let beta_row = table
+            .rowViewAtRow_makeIfNecessary(5, false)
+            .expect("Beta row realized");
+        let delete_button =
+            find_delete_button(&beta_row).expect("Beta row shows inline Delete button");
+        // SAFETY: `performClick:` runs the button's target-action on the main thread.
+        unsafe { delete_button.performClick(None) };
+
+        let remaining: Vec<u64> = backing.snapshot().iter().map(|entry| entry.id).collect();
+        assert_eq!(
+            remaining,
+            vec![10, 15, 25, 30],
+            "clicking Beta's Delete button must delete id 20 from the unfiltered backing Vec"
+        );
+    }
+
     /// The `list_ax::` trials.
     pub fn trials() -> Vec<libtest_mimic::Trial> {
         trial_each(vec![
             (
                 "list_ax::a_sectioned_list_exposes_no_spacer_row".to_owned(),
                 Box::new(a_sectioned_list_exposes_no_spacer_row),
+            ),
+            (
+                "list_ax::sectioned_mixed_and_filtered_list_edits_by_identity".to_owned(),
+                Box::new(sectioned_mixed_and_filtered_list_edits_by_identity),
             ),
             (
                 "list_ax::a_large_list_walk_materializes_no_rows".to_owned(),
@@ -16391,9 +16658,10 @@ mod transition {
                 progress: f32,
                 _geometry: TransitionGeometry,
             ) -> TransitionProperties {
-                let mut properties = TransitionProperties::IDENTITY;
-                properties.set_blur(8.0 * (1.0 - 3.0f32.mul_add(progress, -1.5).abs()).max(0.0));
-                properties
+                TransitionProperties {
+                    blur: 8.0 * (1.0 - 3.0f32.mul_add(progress, -1.5).abs()).max(0.0),
+                    ..TransitionProperties::IDENTITY
+                }
             }
         }
         let _mtm = mtm();

@@ -54,16 +54,14 @@ pub fn main() -> impl View {
 
 /// The tab for `pane`. Every tab shares one root builder, whose page is the
 /// variant of one `OneOf4` its pane picks.
-fn pane_tab(
-    pane: Pane,
-) -> Tab<impl ViewBuilder<Output = NavigationView<impl View>>, IconLabel<SfSymbol>> {
+fn pane_tab(pane: Pane) -> Tab<impl ViewBuilder, IconLabel<SfSymbol>> {
     let (title, symbol) = match pane {
         Pane::Surfaces => ("Surfaces", SfSymbol::SQUARE_ON_SQUARE),
         Pane::Controls => ("Controls", SfSymbol::BUTTON_HORIZONTAL),
         Pane::About => ("About", SfSymbol::INFO_CIRCLE),
         Pane::Search => ("Search", SfSymbol::MAGNIFYINGGLASS),
     };
-    let tab = Tab::container(label(title).icon(symbol), move || match pane {
+    let tab = Tab::new(label(title).icon(symbol), move || match pane {
         Pane::Surfaces => OneOf4::A(surfaces_page()),
         Pane::Controls => OneOf4::B(controls_page()),
         Pane::About => OneOf4::C(about_page()),
@@ -217,7 +215,8 @@ fn search_page() -> impl View {
         .spacing(12.0)
         .padding()
         .navigation_title("Search")
-        .searchable(&query, "Search glass"),
+        .searchable(&query)
+        .search_prompt("Search glass"),
     )
 }
 

@@ -222,7 +222,8 @@ fn inbox(
     List::for_each(visible, thread_row)
         .selection(selected)
         .navigation_title("Inbox")
-        .searchable(query, "Search replies")
+        .searchable(query)
+        .search_prompt("Search replies")
         .navigation_toolbar(
             NavigationToolbar::default()
                 .item(NavigationToolbarItem::action(
@@ -308,17 +309,17 @@ fn reply(selected: Binding<Option<u64>>, destination: &Binding<usize>) -> impl V
     Tabs::new(
         destination,
         (
-            Tab::container(label("Mail").icon(email_outline()), move || {
+            Tab::new(label("Mail").icon(email_outline()), move || {
                 mail(selected.clone())
             })
             .badge(UNREAD),
-            Tab::container(label("Notes").icon(note_outline()), || {
+            Tab::new(label("Notes").icon(note_outline()), || {
                 empty_destination("Notes")
             }),
-            Tab::container(label("Chat").icon(message_outline()), || {
+            Tab::new(label("Chat").icon(message_outline()), || {
                 empty_destination("Chat")
             }),
-            Tab::container(label("Meet").icon(video_outline()), || {
+            Tab::new(label("Meet").icon(video_outline()), || {
                 empty_destination("Meet")
             }),
         ),

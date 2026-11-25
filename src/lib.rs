@@ -93,8 +93,6 @@ pub mod prelude {
         SnackbarTheme,
     };
 
-    pub use super::gesture::GestureObserver;
-
     pub use super::border::Border;
     pub use super::component::badge::BadgeValue;
     pub use super::component::*;
@@ -117,7 +115,7 @@ pub mod prelude {
     pub use super::component::link::{Link, LinkTarget, link};
     #[cfg(feature = "list")]
     pub use super::component::list::{
-        List, ListContent, ListMinRowHeight, Row, Section, detail_row, row,
+        ForEachExt, List, ListContent, ListMinRowHeight, Row, Section, detail_row, row,
     };
     #[cfg(feature = "menu")]
     pub use super::component::menu::{

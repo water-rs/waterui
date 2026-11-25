@@ -293,7 +293,7 @@ fn attach(host: &HostView, gesture: &Gesture, on_recognized: Recognized) -> Vec<
     match gesture {
         Gesture::Tap(tap) => {
             let buttons = button_mask(tap.get_buttons());
-            let count = tap.count();
+            let count = tap.count().get();
             #[cfg(target_os = "ios")]
             {
                 vec![kit::tap(host, count as usize, buttons, {

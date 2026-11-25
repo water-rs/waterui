@@ -75,7 +75,7 @@ fn content(state: MapExampleState) -> impl View {
     let user_location = state.user_location;
     let location_status = state.location_status;
     let locating = state.locating;
-    let map = Map::new(region.clone())
+    let map = Map::new(&region)
         .style(MapStyle::Standard)
         .optional_user_location(user_location.clone())
         .shows_compass(true)

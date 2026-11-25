@@ -129,6 +129,18 @@ pub trait TableSource: 'static {
         false
     }
 
+    /// Clamps a proposed reorder destination to the range the row at `from`
+    /// is allowed to move within. The default accepts `proposed`.
+    fn target_move_index_path(
+        &self,
+        table: &TableView,
+        from: IndexPath,
+        proposed: IndexPath,
+    ) -> IndexPath {
+        let _ = (table, from);
+        proposed
+    }
+
     /// `UIKit` moved the row at `from` to `to`.
     fn move_row(&self, table: &TableView, from: IndexPath, to: IndexPath) {
         let _ = (table, from, to);
@@ -463,6 +475,23 @@ define_class!(
             } else {
                 None
             }
+        }
+
+        #[unsafe(method_id(tableView:targetIndexPathForMoveFromRowAtIndexPath:toProposedIndexPath:))]
+        fn target_index_path_for_move(
+            &self,
+            _table_view: &UITableView,
+            source_index_path: &NSIndexPath,
+            proposed_destination_index_path: &NSIndexPath,
+        ) -> Retained<NSIndexPath> {
+            let target = guarded("uikit::table::source.target_move_index_path", || {
+                let from = table_index(source_index_path);
+                let proposed = table_index(proposed_destination_index_path);
+                self.ivars().source().map_or(proposed, |source| {
+                    source.target_move_index_path(self, from, proposed)
+                })
+            });
+            index_path(target)
         }
 
         #[unsafe(method_id(tableView:willSelectRowAtIndexPath:))]

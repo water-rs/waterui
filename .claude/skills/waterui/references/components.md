@@ -403,7 +403,9 @@ impl PrimitiveButtonStyle for DoubleTapButtonStyle {
         configuration
             .into_label()
             .padding_with((8.0, 16.0))
-            .gesture(TapGesture::repeat(2), move || trigger.trigger())
+            .gesture(TapGesture::repeat(NonZeroU32::new(2).unwrap()), move || {
+                trigger.trigger();
+            })
     }
 }
 
@@ -684,8 +686,12 @@ Lazy::hstack(ForEach::new(records.clone(), record_card)) // record_card: fn(Reco
 
 List::for_each(records.clone(), |r| text(r.title))
     .editing(is_editing.clone())          // impl IntoComputed<bool>
-    .on_delete(|ListDelete(i), mut s: AppState| { let _ = s.rows.remove(i); })
-    .on_move(|ListMove(m), mut s: AppState| {
+    .on_delete(|ListDelete(id): ListDelete<u64>, mut s: AppState| {
+        if let Some(i) = s.rows.snapshot().iter().position(|r| r.id == id) {
+            let _ = s.rows.remove(i);
+        }
+    })
+    .on_move(|ListMove(m): ListMove<u64>, mut s: AppState| {
         let moved = s.rows.remove(m.from());
         s.rows.insert(m.to(), moved);
     })
@@ -693,9 +699,13 @@ List::for_each(records.clone(), |r| text(r.title))
 ```
 
 `Lazy` stacks (`vstack`, `hstack`, `for_each`, and `vstack_spaced(spacing, ..)` /
-`hstack_spaced`) wrap themselves in a scroll view. `ListDelete(index)` destructures to a
-`usize`; `ListMove(m)` exposes `.from()`/`.to()`. `AppState` is an owned `#[state]` type
-(SKILL.md rule 3), so handlers take it bare.
+`hstack_spaced`) wrap themselves in a scroll view. `ListDelete<Id>(id)` carries the deleted
+item's identity; `ListMove<Id>(m)` exposes `.id()`, `.target()` (the item occupying the
+destination slot before the move), and part-local `.from()` / post-removal `.to()`. Inside
+`List::content`, attach `.on_delete` and `.on_move` directly to each `ForEach` (via
+`ForEachExt` in the prelude) or `.on_delete` to an individual `Row`; static rows are not
+deletable unless opted in, and moves stay inside their owning part. `AppState` is an owned
+`#[state]` type (SKILL.md rule 3), so handlers take it bare.
 
 For a reactive collection rendered as an ordinary (non-lazy) stack that still takes stack
 modifiers, `VStack`/`HStack` have `for_each` too; membership animation is declared per row
