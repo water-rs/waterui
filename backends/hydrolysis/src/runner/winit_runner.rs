@@ -1538,7 +1538,10 @@ impl WinitRunner {
         let text = ParleyEngine::from_collection(&self.fonts, FontFamilyResolution::Lenient);
         #[cfg_attr(
             not(any(feature = "menu", feature = "color-picker")),
-            expect(unused_mut)
+            expect(
+                unused_mut,
+                reason = "renderer is only mutated when menu or color-picker attaches popup_window_manager"
+            )
         )]
         let mut renderer = HydrolysisRenderer::with_engine(Rc::clone(&self.theme), text);
         #[cfg(any(feature = "menu", feature = "color-picker"))]
