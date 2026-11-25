@@ -1037,7 +1037,7 @@ mod resolve {
     use waterui::component::slider::slider;
     use waterui::component::stepper::stepper;
     use waterui::component::text_field::TextField;
-    use waterui::component::toggle::Toggle;
+    use waterui::component::toggle::{Toggle, ToggleStyle};
     use waterui::filter::Opacity;
     use waterui::layout::Spacer;
     use waterui::reactive::binding;
@@ -1250,28 +1250,42 @@ mod resolve {
         let cases = [
             (
                 "switch",
-                Toggle::new("Wi-Fi", &on).switch(),
+                AnyView::new(Toggle::new("Wi-Fi", &on).switch()),
                 StretchAxis::Horizontal,
             ),
             (
                 "hidden-label switch",
-                Toggle::new("Wi-Fi", &on).switch().hide_label(),
+                AnyView::new(Toggle::new("Wi-Fi", &on).switch().hide_label()),
                 StretchAxis::None,
             ),
             (
                 "checkbox",
-                Toggle::new("Wi-Fi", &on).checkbox(),
+                AnyView::new(Toggle::new("Wi-Fi", &on).checkbox()),
                 StretchAxis::None,
             ),
             (
                 "hidden-label checkbox",
-                Toggle::new("Wi-Fi", &on).checkbox().hide_label(),
+                AnyView::new(Toggle::new("Wi-Fi", &on).checkbox().hide_label()),
                 StretchAxis::None,
             ),
-            ("automatic", Toggle::new("Wi-Fi", &on), automatic),
+            (
+                "automatic",
+                AnyView::new(Toggle::new("Wi-Fi", &on)),
+                automatic,
+            ),
             (
                 "hidden-label automatic",
-                Toggle::new("Wi-Fi", &on).hide_label(),
+                AnyView::new(Toggle::new("Wi-Fi", &on).hide_label()),
+                StretchAxis::None,
+            ),
+            (
+                "environment switch",
+                AnyView::new(Toggle::new("Wi-Fi", &on).with(ToggleStyle::Switch)),
+                StretchAxis::Horizontal,
+            ),
+            (
+                "environment checkbox",
+                AnyView::new(Toggle::new("Wi-Fi", &on).with(ToggleStyle::Checkbox)),
                 StretchAxis::None,
             ),
         ];

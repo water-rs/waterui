@@ -209,28 +209,30 @@ fn toggle_accessibility_role_follows_the_resolved_style(ui: UiBuilder) {
     let wifi = Binding::bool(false);
     let bluetooth = Binding::bool(false);
     let airdrop = Binding::bool(false);
+    let hotspot = Binding::bool(false);
+    let vpn = Binding::bool(false);
 
     let mut app = ui.mount(move || {
         control_shell(vstack((
             Toggle::new("Wi-Fi", &wifi).switch(),
             Toggle::new("Bluetooth", &bluetooth).checkbox(),
             Toggle::new("AirDrop", &airdrop),
+            vstack((
+                Toggle::new("Hotspot", &hotspot),
+                Toggle::new("VPN", &vpn).switch(),
+            ))
+            .with(ToggleStyle::Checkbox),
         )))
     });
 
     for (label, role) in [
         ("Wi-Fi", Role::SWITCH),
         ("Bluetooth", Role::CHECKBOX),
-        // The default style is the platform's: a checkbox on macOS, a switch
-        // elsewhere.
-        (
-            "AirDrop",
-            if cfg!(target_os = "macos") {
-                Role::CHECKBOX
-            } else {
-                Role::SWITCH
-            },
-        ),
+        // Hydrolysis registers Switch as its default style on every host.
+        ("AirDrop", Role::SWITCH),
+        // Ancestor `.with(ToggleStyle::Checkbox)` changes descendants unless overridden.
+        ("Hotspot", Role::CHECKBOX),
+        ("VPN", Role::SWITCH),
     ] {
         app.query()
             .role(role)
