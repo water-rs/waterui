@@ -20,7 +20,7 @@ use waterui_core::{
     views::{AnyViews, Views},
 };
 
-use crate::scroll::Axis as ScrollAxis;
+use crate::scroll::{Axis as ScrollAxis, ScrollCollectionId, ScrollItemBinder};
 use crate::stack::{LazyStackAxis, lazy_stack_axis};
 use crate::{Layout, StretchAxis};
 
@@ -340,6 +340,8 @@ impl<S: ViewSequence> View for FixedContainer<S> {
     }
 }
 
+type ScrollBindFn = Box<dyn FnOnce(&Environment) -> Option<ScrollCollectionId>>;
+
 /// A view wrapper that executes an arbitrary [`Layout`] implementation
 /// with reconstructable views, which can support lazy layouting.
 ///
@@ -347,27 +349,50 @@ impl<S: ViewSequence> View for FixedContainer<S> {
 /// collection, allowing backends to reconstruct views on-demand for efficient
 /// rendering of large lists. The collection keeps its item view type `V`,
 /// and a backend receives each item in its own child slot.
-#[derive(Debug)]
 pub struct LazyContainer<V> {
     layout: Box<dyn Layout>,
     contents: AnyViews<V>,
     direction: Computed<LayoutDirection>,
     virtualize_axes: Option<ScrollAxis>,
+    bind_scroll: Option<ScrollBindFn>,
+    scroll_collection: Option<ScrollCollectionId>,
+}
+
+impl<V> fmt::Debug for LazyContainer<V> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LazyContainer")
+            .field("layout", &self.layout)
+            .field("contents", &self.contents)
+            .field("direction", &self.direction)
+            .field("virtualize_axes", &self.virtualize_axes)
+            .field("scroll_collection", &self.scroll_collection)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<V: View> LazyContainer<V> {
     /// Wraps the supplied layout object and views into a lazy container view.
-    pub fn new(layout: impl Layout + 'static, contents: impl Views<View = V> + 'static) -> Self {
+    pub fn new<C>(layout: impl Layout + 'static, contents: C) -> Self
+    where
+        C: Views<View = V> + 'static,
+    {
         let layout: Box<dyn Layout> = Box::new(layout);
         let virtualize_axes = lazy_stack_axis(layout.as_ref()).map(|axis| match axis {
             LazyStackAxis::Vertical { .. } => ScrollAxis::Vertical,
             LazyStackAxis::Horizontal { .. } => ScrollAxis::Horizontal,
         });
+        let (contents, mapping) = AnyViews::new_with_ids(contents);
+        let bind_scroll: ScrollBindFn = Box::new(move |env: &Environment| {
+            env.get::<ScrollItemBinder<C::Id>>()
+                .map(|binder| binder.bind(mapping))
+        });
         Self {
             layout,
-            contents: AnyViews::new(contents),
+            contents,
             direction: Computed::constant(LayoutDirection::default()),
             virtualize_axes,
+            bind_scroll: Some(bind_scroll),
+            scroll_collection: None,
         }
     }
 
@@ -384,6 +409,10 @@ impl<V: View> LazyContainer<V> {
     /// The same container under `env`'s layout direction, each item in the
     /// child slot `S`.
     fn resolved<S: ChildSlot>(self, env: &Environment) -> LazyContainer<S> {
+        let scroll_collection = self
+            .bind_scroll
+            .and_then(|bind| bind(env))
+            .or(self.scroll_collection);
         // Keep the concrete stack layout visible to backends: lazy-stack
         // virtualization identifies its axis from that type. Direction is a
         // separate signal so placement can mirror without materializing items.
@@ -397,6 +426,8 @@ impl<V: View> LazyContainer<V> {
             contents: self.contents.map_views(S::from_view),
             direction: layout_direction(env),
             virtualize_axes: self.virtualize_axes,
+            bind_scroll: None,
+            scroll_collection,
         }
     }
 }
@@ -424,6 +455,14 @@ impl<V> LazyContainer<V> {
     #[must_use]
     pub const fn virtualize_axes(&self) -> Option<ScrollAxis> {
         self.virtualize_axes
+    }
+
+    /// Returns the scroll-collection identity binding this container to an
+    /// enclosing identity-controlled [`ScrollView`](crate::scroll::ScrollView),
+    /// if one matched its item identity type.
+    #[must_use]
+    pub const fn scroll_collection(&self) -> Option<ScrollCollectionId> {
+        self.scroll_collection
     }
 
     /// A lazy container cannot enumerate its children without materializing the
@@ -471,6 +510,8 @@ impl<C: 'static> MapSlots<C> for LazyContainer<C> {
             contents: self.contents.map_views(f),
             direction: self.direction,
             virtualize_axes: self.virtualize_axes,
+            bind_scroll: self.bind_scroll,
+            scroll_collection: self.scroll_collection,
         }
     }
 }

@@ -324,6 +324,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     fn build_collection(
         layout: Box<dyn Layout>,
         views: &AnyViews<HeldChild<E>>,
+        scroll_collection: Option<ScrollCollectionId>,
         env: &Environment,
         renderer: &mut SemanticCore<E>,
         layout_guards: Vec<BoxWatcherGuard>,
@@ -396,6 +397,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             core,
             layout,
             snapshot: applied,
+            scroll_collection,
             env: env.clone(),
             accessibility_identity: Rc::new(()),
             #[cfg(feature = "accessibility")]
@@ -424,6 +426,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     fn build_lazy_stack(
         axis: LazyStackAxisConfig,
         views: &AnyViews<HeldChild<E>>,
+        scroll_collection: Option<ScrollCollectionId>,
         env: &Environment,
         renderer: &mut SemanticCore<E>,
         layout_guards: Vec<BoxWatcherGuard>,
@@ -494,6 +497,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             memo_slots: RefCell::default(),
             axis,
             snapshot,
+            scroll_collection,
             env: env.clone(),
             accessibility_identity: Rc::new(()),
             core,

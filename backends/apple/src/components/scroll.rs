@@ -16,19 +16,25 @@
 //! proposals the layout handler issues instead, like every other ported
 //! container.
 
+use alloc::boxed::Box;
 use alloc::rc::Rc;
-use core::cell::Cell;
+use alloc::vec::Vec;
+use core::cell::{Cell, RefCell};
 
 use cocoa_ui::{MainThreadMarker, Retained};
+use waterui::animation::Animation;
 use waterui::layout::scroll::{
-    Axis, ScrollController, ScrollPosition, ScrollRequest, ScrollView, scroll_stretch_axis,
+    Axis, ScrollDriver, ScrollItemTarget, ScrollPosition, ScrollRequest, ScrollTarget, ScrollView,
+    scroll_stretch_axis,
 };
 use waterui::reactive::{Binding, Signal};
+use waterui_backend_core::Environment;
 use waterui_core::layout::{
     LayoutError, Point, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView,
     ViewDimensions,
 };
 
+use crate::animation;
 use crate::contract::{Mounted, NativeLeaf, RenderContext};
 use crate::proposal;
 
@@ -44,6 +50,86 @@ mod platform {
 
 use cocoa_ui::PlatformView;
 use platform::ScrollView as ScrollSurface;
+
+/// Resolved scroll target coordinates for an item inside a `ScrollView`.
+#[derive(Clone, Copy)]
+pub struct ResolvedScrollItem {
+    /// Target origin in inset-relative scroll content coordinates.
+    pub offset: Point,
+    /// Whether the target came from a virtualized lazy stack.
+    pub virtualized: bool,
+    /// Optional approach jump offset for long-distance animated scrolls.
+    pub approach_offset: Option<Point>,
+}
+
+type ScrollItemLocator =
+    Box<dyn Fn(&ScrollItemTarget, &ScrollSurface, bool) -> Option<ResolvedScrollItem>>;
+
+#[derive(Default)]
+struct ScrollItemRegistryInner {
+    locators: Vec<ScrollItemLocator>,
+    on_change: Option<Rc<dyn Fn()>>,
+}
+
+/// Environment-scoped registry connecting a `ScrollView` with descendant
+/// `LazyContainer` collections so identity-keyed scroll requests locate items
+/// without traversing or materializing the view hierarchy.
+#[derive(Clone, Default)]
+pub struct ScrollItemRegistry(Rc<RefCell<ScrollItemRegistryInner>>);
+
+impl ScrollItemRegistry {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn register(
+        &self,
+        locator: impl Fn(&ScrollItemTarget, &ScrollSurface, bool) -> Option<ResolvedScrollItem>
+        + 'static,
+    ) {
+        self.0.borrow_mut().locators.push(Box::new(locator));
+    }
+
+    fn set_on_change(&self, handler: impl Fn() + 'static) {
+        self.0.borrow_mut().on_change = Some(Rc::new(handler));
+    }
+
+    fn locate(
+        &self,
+        target: &ScrollItemTarget,
+        scroll: &ScrollSurface,
+        animate: bool,
+    ) -> Option<ResolvedScrollItem> {
+        let inner = self.0.borrow();
+        inner
+            .locators
+            .iter()
+            .find_map(|locator| locator(target, scroll, animate))
+    }
+
+    pub fn notify_items_changed(&self) {
+        let on_change = self.0.borrow().on_change.clone();
+        if let Some(on_change) = on_change {
+            on_change();
+        }
+    }
+}
+
+/// The view whose coordinate space matches `ScrollView` content offsets: the
+/// flipped document view on `AppKit`, the scroll view itself on `UIKit`.
+#[cfg(target_os = "macos")]
+pub fn content_coordinate_view(scroll: &ScrollSurface) -> Retained<PlatformView> {
+    scroll
+        .document_view()
+        .expect("the kit scroll view always installs its document")
+}
+
+/// The view whose coordinate space matches `ScrollView` content offsets: the
+/// flipped document view on `AppKit`, the scroll view itself on `UIKit`.
+#[cfg(target_os = "ios")]
+pub fn content_coordinate_view(scroll: &ScrollSurface) -> Retained<PlatformView> {
+    cocoa_ui::view::retain_base(scroll)
+}
 
 /// The scroll view as its platform view.
 fn as_view(scroll: &ScrollSurface) -> &PlatformView {
@@ -396,33 +482,32 @@ fn clamped_offset(scroll: &ScrollSurface, target: Point) -> cocoa_ui::Point {
     scroll.clamped_content_offset(raw_content_offset(target, scroll.adjusted_content_inset()))
 }
 
-/// `UIKit`: applies a controller request — `None` is the jump it always
+/// `UIKit`: applies a coordinate scroll target — `None` is the jump it always
 /// was, `Animation::DEFAULT` is `UIKit`'s own animated `contentOffset`
 /// write, and an explicit animation drives the offset on the frame clock,
 /// writing the model along the core curve each tick. The clamped target
 /// is the jump's, so the flight lands where it would have.
 #[cfg(target_os = "ios")]
-fn apply_scroll_request(scroll: &ScrollSurface, request: &ScrollRequest<Point>) {
-    scroll.layout_if_needed();
-    if !(request.target().x.is_finite() && request.target().y.is_finite()) {
+fn apply_point_request(scroll: &ScrollSurface, target: Point, animation: Option<&Animation>) {
+    if !(target.x.is_finite() && target.y.is_finite()) {
         waterui::contract_violation!(
             "WaterUI ScrollView target must contain finite coordinates; the request is ignored"
         );
         return;
     }
-    let offset = clamped_offset(scroll, *request.target());
-    match request.animation() {
+    let offset = clamped_offset(scroll, target);
+    match animation {
         None => scroll.set_content_offset(offset, false),
         Some(animation) if animation.is_default() => scroll.set_content_offset(offset, true),
         Some(animation) => scroll.animate_content_offset(
             offset,
             animation.duration().as_secs_f64(),
-            crate::animation::progress(animation),
+            animation::progress(animation),
         ),
     }
 }
 
-/// `AppKit`: applies a controller request, its target relative to the inset
+/// `AppKit`: applies a coordinate scroll target, relative to the inset
 /// content edge like `UIKit`'s — `None` jumps the clip view as
 /// `applyScrollControllerTarget` did, `Animation::DEFAULT` plays the
 /// system's animated scroll (`boundsOrigin` through the clip's animator
@@ -431,9 +516,8 @@ fn apply_scroll_request(scroll: &ScrollSurface, request: &ScrollRequest<Point>) 
 /// the offset on the frame clock, writing the model along the core curve
 /// each tick.
 #[cfg(target_os = "macos")]
-fn apply_scroll_request(scroll: &ScrollSurface, request: &ScrollRequest<Point>) {
-    scroll.layout_if_needed();
-    if !(request.target().x.is_finite() && request.target().y.is_finite()) {
+fn apply_point_request(scroll: &ScrollSurface, target: Point, animation: Option<&Animation>) {
+    if !(target.x.is_finite() && target.y.is_finite()) {
         waterui::contract_violation!(
             "WaterUI ScrollView target must contain finite coordinates; the request is ignored"
         );
@@ -441,23 +525,111 @@ fn apply_scroll_request(scroll: &ScrollSurface, request: &ScrollRequest<Point>) 
     }
     // The target is relative to the inset content edge; the kit's jump and
     // flights clamp the raw offset to the clip's scrollable bounds.
-    let target = raw_content_offset(*request.target(), scroll.adjusted_content_inset());
-    match request.animation().as_ref() {
+    let target = raw_content_offset(target, scroll.adjusted_content_inset());
+    match animation {
         None => scroll.scroll_to(target),
         Some(animation) if animation.is_default() => scroll.scroll_to_animated(target),
         Some(animation) => scroll.animate_scroll_to(
             target,
             animation.duration().as_secs_f64(),
-            crate::animation::progress(animation),
+            animation::progress(animation),
         ),
+    }
+}
+
+/// Shared state for applying point or item-identity scroll requests.
+struct ScrollControllerState {
+    axis: Axis,
+    registry: ScrollItemRegistry,
+    pending_item: Rc<RefCell<Option<ScrollRequest<ScrollTarget>>>>,
+    measured: Rc<Cell<bool>>,
+    in_layout: Rc<Cell<bool>>,
+}
+
+impl ScrollControllerState {
+    fn apply(&self, scroll: &ScrollSurface, request: &ScrollRequest<ScrollTarget>) {
+        match request.target() {
+            ScrollTarget::Point(point) => {
+                *self.pending_item.borrow_mut() = None;
+                if !self.in_layout.get() {
+                    scroll.layout_if_needed();
+                }
+                apply_point_request(scroll, *point, request.animation());
+            }
+            ScrollTarget::Item(item) => {
+                if !self.in_layout.get() {
+                    scroll.layout_if_needed();
+                }
+                if !self.measured.get() {
+                    *self.pending_item.borrow_mut() = Some(request.clone());
+                    return;
+                }
+                let animate = request.animation().is_some();
+                let Some(resolved) = self.registry.locate(item, scroll, animate) else {
+                    *self.pending_item.borrow_mut() = Some(request.clone());
+                    return;
+                };
+                *self.pending_item.borrow_mut() = None;
+                let current =
+                    inset_relative_offset(scroll.content_offset(), scroll.adjusted_content_inset());
+                let axis_point = |point: Point| match self.axis {
+                    Axis::Vertical => Point::new(current.x, point.y),
+                    Axis::Horizontal => Point::new(point.x, current.y),
+                    _ => point,
+                };
+                let mut final_point = resolved.offset;
+                if animate && let Some(approach) = resolved.approach_offset {
+                    apply_point_request(scroll, axis_point(approach), None);
+                    if !self.in_layout.get() {
+                        scroll.layout_if_needed();
+                        if let Some(refined) = self.registry.locate(item, scroll, false) {
+                            final_point = refined.offset;
+                        }
+                    }
+                }
+                let target_point = axis_point(final_point);
+                apply_point_request(scroll, target_point, request.animation());
+                // On a non-animated jump into an unmeasured virtualized region,
+                // lay out the newly visible window and re-settle once if measured
+                // extents shifted the target's offset.
+                if !animate && resolved.virtualized && !self.in_layout.get() {
+                    scroll.layout_if_needed();
+                    if let Some(settled) = self.registry.locate(item, scroll, false) {
+                        let settled_point = axis_point(settled.offset);
+                        let delta = match self.axis {
+                            Axis::Vertical => (settled_point.y - target_point.y).abs(),
+                            Axis::Horizontal => (settled_point.x - target_point.x).abs(),
+                            _ => (settled_point.x - target_point.x)
+                                .abs()
+                                .max((settled_point.y - target_point.y).abs()),
+                        };
+                        if delta > 0.5 {
+                            apply_point_request(scroll, settled_point, None);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn flush_pending(&self, scroll: &ScrollSurface) {
+        let pending = self.pending_item.borrow_mut().take();
+        if let Some(request) = pending {
+            self.apply(scroll, &request);
+        }
     }
 }
 
 /// Renders a `ScrollView` config into the kit's scroll surface, its content
 /// realized by `realize_content` once the surface exists.
+#[expect(
+    clippy::too_many_lines,
+    reason = "single scroll leaf realization: surface setup, layout/tile handlers, controller and reporting"
+)]
 pub fn realize_scroll_view<C>(
     config: ScrollView<C>,
-    realize_content: impl FnOnce(C) -> NativeLeaf,
+    realize_content: impl FnOnce(C, &Environment) -> NativeLeaf,
     ctx: &RenderContext<'_>,
 ) -> NativeLeaf {
     let (axis, content, controller, offset) = config.into_inner().into_parts();
@@ -479,7 +651,9 @@ pub fn realize_scroll_view<C>(
         _ => (true, false),
     };
     let scroll = ScrollSurface::new(mtm, vertical, horizontal);
-    let child_leaf = realize_content(content);
+    let registry = ScrollItemRegistry::new();
+    let child_env = ctx.env().extending(registry.clone());
+    let child_leaf = realize_content(content, &child_env);
     // `AppKit` mounts on the flipped document; `UIKit` scrolls the view's
     // own content area, so the child mounts on the scroll view itself.
     #[cfg(target_os = "macos")]
@@ -502,13 +676,23 @@ pub fn realize_scroll_view<C>(
     // sink must not see a fabricated `Some` ahead of real layout. The
     // offset binding keeps its existing report-immediately semantics.
     let measured = Rc::new(Cell::new(false));
+    let in_layout = Rc::new(Cell::new(false));
+    let pending_item: Rc<RefCell<Option<ScrollRequest<ScrollTarget>>>> =
+        Rc::new(RefCell::new(None));
+    let controller_state = Rc::new(ScrollControllerState {
+        axis,
+        registry,
+        pending_item,
+        measured: Rc::clone(&measured),
+        in_layout: Rc::clone(&in_layout),
+    });
     // One reporter serves both sinks: `report_offset`'s binding and the
     // controller's position report. Every write is deduped against the
     // binding's current value so the layout handler and the scroll observer
     // may both fire it without double-notifying.
     let report = {
         let offset = offset;
-        let position = controller.as_ref().map(ScrollController::position_report);
+        let position = controller.as_ref().map(ScrollDriver::position_report);
         (offset.is_some() || position.is_some())
             .then(|| scroll_reporter(axis, offset, position, Rc::clone(&measured)))
     };
@@ -524,7 +708,10 @@ pub fn realize_scroll_view<C>(
         let content = Rc::clone(&content);
         let report = report.clone();
         let measured = Rc::clone(&measured);
+        let in_layout = Rc::clone(&in_layout);
+        let controller_state = Rc::clone(&controller_state);
         move |scroll| {
+            in_layout.set(true);
             content.laid_out_viewport.set(layout_viewport(scroll));
             place_child(&content, scroll);
             // The extent `place_child` just committed — and any viewport
@@ -532,6 +719,8 @@ pub fn realize_scroll_view<C>(
             // measured, then report, so a resize or content growth reaches
             // the controller without a scroll happening.
             measured.set(true);
+            controller_state.flush_pending(scroll);
+            in_layout.set(false);
             if let Some(report) = &report {
                 report(scroll);
             }
@@ -590,7 +779,7 @@ pub fn realize_scroll_view<C>(
     leaf.keep(cocoa_ui::HandlerTeardown::new(Retained::clone(&scroll)));
 
     if let Some(controller) = controller {
-        wire_controller(&mut leaf, &scroll, &controller);
+        wire_controller(&mut leaf, &scroll, &controller_state, &controller);
     }
 
     if let Some(report) = &report {
@@ -600,27 +789,40 @@ pub fn realize_scroll_view<C>(
     leaf
 }
 
-/// Wires a `ScrollController` into the scroll surface: a generation bump
-/// applies the latest request — target and animation together. The Swift
+/// Wires a `ScrollDriver<ScrollTarget>` into the scroll surface: a generation
+/// bump applies the latest request — target and animation together. The Swift
 /// port kept the target observations alive with no-op watchers and read
 /// the latest value at apply time — the snapshot here is that same read.
 fn wire_controller(
     leaf: &mut NativeLeaf,
-    scroll: &cocoa_ui::Retained<ScrollSurface>,
-    controller: &ScrollController<Point>,
+    scroll: &Retained<ScrollSurface>,
+    state: &Rc<ScrollControllerState>,
+    controller: &ScrollDriver<ScrollTarget>,
 ) {
     let request = controller.request();
     let generation = controller.generation();
     leaf.watch(&request, |_| {});
+    state.registry.set_on_change({
+        let scroll = cocoa_ui::objc2::rc::Weak::from_retained(scroll);
+        let state = Rc::downgrade(state);
+        move || {
+            if let (Some(scroll), Some(state)) = (scroll.load(), state.upgrade())
+                && !state.in_layout.get()
+            {
+                state.flush_pending(&scroll);
+            }
+        }
+    });
     if generation.snapshot() > 0 {
-        apply_scroll_request(scroll, &request.snapshot());
+        state.apply(scroll, &request.snapshot());
     }
     leaf.watch(&generation, {
         let scroll = Retained::clone(scroll);
         let request = request.clone();
+        let state = Rc::clone(state);
         move |ctx| {
             if *ctx.value() > 0 {
-                apply_scroll_request(&scroll, &request.snapshot());
+                state.apply(&scroll, &request.snapshot());
             }
         }
     });

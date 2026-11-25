@@ -9,13 +9,14 @@
 //! scale with the total — which these tests fail on.
 
 use core::time::Duration;
+use nami::Signal as _;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use waterui_core::animation::Animation;
 use waterui_core::handler::AnyViewBuilder;
-use waterui_core::id::SelfId;
+use waterui_core::id::{Identifiable, SelfId};
 use waterui_core::layout::Point;
 use waterui_core::{AnyView, Dynamic};
 use waterui_layout::scroll::{ScrollController, scroll};
@@ -439,4 +440,129 @@ fn flow_markdown_append_preserves_user_scroll_offset() {
         before_append == after_append,
         "incremental FlowMarkdown growth must not reset the user's scroll offset: left {before_append:?}, right {after_append:?}"
     );
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+struct VirtualRecordId(u64);
+
+#[derive(Clone)]
+struct VirtualRecord {
+    id: VirtualRecordId,
+}
+
+impl Identifiable for VirtualRecord {
+    type Id = VirtualRecordId;
+
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+}
+
+fn assert_scroll_view_identity_materializes_only_target_window(
+    issue: impl FnOnce(&ScrollController<VirtualRecordId>, VirtualRecordId),
+) {
+    const ROWS: usize = 100_000;
+    const TARGET_ROW: usize = 90_000;
+
+    let materialized = Arc::new(AtomicUsize::new(0));
+    let controller = ScrollController::new(VirtualRecordId(0));
+    let target_id = VirtualRecordId(10_000 + TARGET_ROW as u64);
+    let builder = {
+        let materialized = Arc::clone(&materialized);
+        let controller = controller.clone();
+        AnyViewBuilder::<AnyView>::new(move || {
+            let rows: Vec<VirtualRecord> = (0..ROWS)
+                .map(|index| VirtualRecord {
+                    id: VirtualRecordId(10_000 + index as u64),
+                })
+                .collect();
+            let materialized = Arc::clone(&materialized);
+            AnyView::new(
+                scroll(
+                    VStack::for_each(rows, move |record: VirtualRecord| {
+                        materialized.fetch_add(1, Ordering::Relaxed);
+                        let label = if record.id == target_id {
+                            "Target virtual row"
+                        } else {
+                            "Dataset virtual row"
+                        };
+                        vstack((text(label),)).size(360.0, ROW_HEIGHT)
+                    })
+                    .spacing(0.0),
+                )
+                .scroll_controller(&controller),
+            )
+        })
+    };
+    let env = test_environment();
+    let mut runtime = HeadlessRuntime::new_for_tests(
+        env,
+        builder,
+        WINDOW_WIDTH,
+        WINDOW_HEIGHT,
+        MinimalTestTheme::default(),
+    );
+    let start = Instant::now();
+    let _ = runtime.pump_at(false, start);
+    let initial_materialized = materialized.load(Ordering::Relaxed);
+    assert!(
+        initial_materialized < 100,
+        "initial mount of 100k-item VStack::for_each must virtualize: materialized {initial_materialized}"
+    );
+
+    issue(&controller, target_id);
+    let mut last_tree = None;
+    for frame in 1..=FRAMES_TO_SETTLE_JUMP {
+        let result = runtime.pump_at(false, start + Duration::from_millis(16 * u64::from(frame)));
+        #[cfg(feature = "accessibility")]
+        if let Some(update) = result.into_tree_update() {
+            last_tree = Some(update);
+        }
+        #[cfg(not(feature = "accessibility"))]
+        let _ = result;
+    }
+
+    let total_materialized = materialized.load(Ordering::Relaxed);
+    assert!(
+        total_materialized < 500,
+        "scrolling 90,000 items by identity must materialize only the visible window (and at most the 100-item approach stretch): materialized {total_materialized}"
+    );
+    let position = controller
+        .position()
+        .snapshot()
+        .expect("position must be reported after identity scroll");
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "TARGET_ROW is 90_000, exact in f32"
+    )]
+    let expected_y = (TARGET_ROW as f32) * ROW_HEIGHT;
+    assert!(
+        (position.offset().y - expected_y).abs() < ROW_HEIGHT * 2.0,
+        "expected scroll offset near {expected_y}, got {:?}",
+        position.offset()
+    );
+    #[cfg(feature = "accessibility")]
+    assert!(
+        last_tree
+            .into_iter()
+            .flat_map(|update| update.nodes)
+            .any(|(_, node)| node.label() == Some("Target virtual row")),
+        "target item must be present in the settled accessibility tree"
+    );
+    #[cfg(not(feature = "accessibility"))]
+    let _ = last_tree;
+}
+
+#[test]
+fn scroll_view_identity_jump_materializes_only_target_window() {
+    assert_scroll_view_identity_materializes_only_target_window(|controller, target| {
+        controller.scroll_to(target);
+    });
+}
+
+#[test]
+fn scroll_view_identity_animate_materializes_only_target_window() {
+    assert_scroll_view_identity_materializes_only_target_window(|controller, target| {
+        controller.animate_to(target, Animation::default());
+    });
 }

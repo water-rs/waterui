@@ -3,6 +3,8 @@
 
 #[cfg(feature = "accessibility")]
 use super::layout::accessibility_rect;
+#[cfg(feature = "accessibility")]
+use super::layout::apply_scroll_node_controller;
 use super::layout::kurbo_rect;
 use crate::renderer::metadata::resolve_shadow_shape;
 use crate::text::TextEngine;
@@ -1304,20 +1306,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                     handle
                 };
                 let metrics = handle.metrics();
-                if let Some(controller) = &node.controller {
-                    let generation = renderer.read_signal(&controller.generation());
-                    if generation != node.applied_scroll_generation.get() {
-                        let request = renderer.read_signal(&controller.request());
-                        // The semantic domain has no frame pump to advance an
-                        // animation, so a request lands in place whether or
-                        // not it carries one.
-                        let _ = handle.scroll_to(
-                            f64::from(request.target().x),
-                            f64::from(request.target().y),
-                        );
-                        node.applied_scroll_generation.set(generation);
-                    }
-                }
+                apply_scroll_node_controller(node, renderer, &handle, false);
                 renderer.push_accessibility_owner(&node.accessibility_identity);
                 let scroll_accessibility_node =
                     crate::widgets::scroll::register_scroll_accessibility_node(

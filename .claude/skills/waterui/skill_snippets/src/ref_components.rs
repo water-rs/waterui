@@ -339,11 +339,15 @@ pub fn components_block_12() {
     }];
     let content = text("content");
 
-    let rows = ScrollController::<usize>::new(0);
-    let list = List::for_each(records, row_view).scroll_controller(&rows);
-    rows.scroll_to(50_000); // jump — does not materialize rows 0..50_000
+    let rows = ScrollController::<u64>::new(0);
+    let list = List::for_each(records.clone(), row_view).scroll_controller(&rows);
+    rows.scroll_to(50_000); // jump by item id — does not materialize rows 0..50_000
     rows.animate_to(50_000, Animation::default()); // glide with the platform's smooth scroll
     let at_end = rows.position().map(|p| p.is_some_and(|p| p.at_end()));
+
+    let by_id = ScrollController::<u64>::new(0);
+    let feed = scroll(VStack::for_each(records, row_view)).scroll_controller(&by_id);
+    by_id.animate_to(50_000, Animation::default());
 
     let offset = ScrollController::<Point>::new(Point::zero());
     let reported = Binding::new(Point::zero());
@@ -357,7 +361,7 @@ pub fn components_block_12() {
         Animation::ease_in_out(Duration::from_millis(400)),
     );
 
-    let _ = (list, view, at_end, lifted);
+    let _ = (list, feed, view, at_end, lifted);
 }
 
 // ---------------------------------------------------------------------------
@@ -998,7 +1002,7 @@ pub mod components_block_27 {
     pub fn body() {
         let records = StateList::<Record>::new();
         let is_editing = Binding::new(false);
-        let controller = ScrollController::<usize>::new(0);
+        let controller = ScrollController::<u64>::new(0);
 
         // `ForEach` is a `Views` collection, not a `View`: a container consumes it.
         let _ = { scroll(VStack::for_each(records.clone(), |r| text(r.title))) };

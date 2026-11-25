@@ -463,6 +463,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         let renderer = &mut *self.renderer;
         let direction = native.direction();
         let virtualize_axes = native.virtualize_axes();
+        let scroll_collection = native.scroll_collection();
         let (layout, children) = native.into_inner();
         // A function pointer, so the mapped collection does not borrow
         // this backend.
@@ -491,6 +492,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
             return RenderNode::build_lazy_stack(
                 axis,
                 &children,
+                scroll_collection,
                 env,
                 renderer,
                 layout_guards,
@@ -504,6 +506,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         RenderNode::build_collection(
             layout,
             &children,
+            scroll_collection,
             env,
             renderer,
             layout_guards,
@@ -1192,6 +1195,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
             axis,
             child,
             controller,
+            pending_scroll: RefCell::new(None),
             offset,
             applied_scroll_generation: Cell::new(0),
             handle: RefCell::new(None),

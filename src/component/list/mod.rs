@@ -13,12 +13,12 @@ use nami::{Binding, Computed, signal::IntoComputed};
 use crate::component::selection_support::{SelectionThemed, WithId};
 use crate::views::{AnyViews, ForEach, SharedAnyViews, Views};
 use waterui_core::backend::{Backend, ChildSlot, MapSlots};
-use waterui_core::id::Mapping;
+use waterui_core::id::{Id as RawId, Mapping};
 use waterui_core::{
     AnyView, Environment, Native, NativeView, View, handler::Handler, layout::StretchAxis,
 };
 use waterui_layout::padding::EdgeInsets;
-use waterui_layout::scroll::ScrollController;
+use waterui_layout::scroll::{ScrollController, ScrollDriver, ScrollPosition, ScrollRequest};
 use waterui_text::Text;
 
 mod content;
@@ -41,6 +41,60 @@ pub use section::Section;
 use selection::RowTags;
 pub use selection::{ListRowTags, ListSelection, ListTagId, SelectableRows};
 
+/// Erased identity-keyed scroll controller delivered to list backends inside [`ListConfig`].
+///
+/// Pairs the erased [`ScrollDriver<ListTagId>`] with the [`ListRowTags`] lookup
+/// mapping each row's erased id to its scroll target tag.
+#[derive(Clone, Debug)]
+pub struct ListScrollController {
+    driver: ScrollDriver<ListTagId>,
+    tags: ListRowTags,
+}
+
+impl ListScrollController {
+    const fn new(driver: ScrollDriver<ListTagId>, tags: ListRowTags) -> Self {
+        Self { driver, tags }
+    }
+
+    /// Returns the underlying erased [`ScrollDriver`].
+    #[must_use]
+    pub const fn driver(&self) -> &ScrollDriver<ListTagId> {
+        &self.driver
+    }
+
+    /// Returns the latest scroll request as a read-only signal.
+    #[must_use]
+    pub fn request(&self) -> Computed<ScrollRequest<ListTagId>> {
+        self.driver.request()
+    }
+
+    /// Returns the request generation as a read-only signal.
+    #[must_use]
+    pub fn generation(&self) -> Computed<i32> {
+        self.driver.generation()
+    }
+
+    /// Returns the position report sink for the connected controller.
+    #[must_use]
+    pub fn position_report(&self) -> Binding<Option<ScrollPosition>> {
+        self.driver.position_report()
+    }
+
+    /// Maps each row id from [`ListConfig::contents`] to the tag that scroll
+    /// requests target.
+    #[must_use]
+    pub const fn row_tags(&self) -> &ListRowTags {
+        &self.tags
+    }
+
+    fn rekeyed(self, ids: &Mapping<RawId>) -> Self {
+        Self {
+            driver: self.driver,
+            tags: self.tags.rekeyed(ids),
+        }
+    }
+}
+
 /// Configuration for a list component.
 ///
 /// `C` is the content every row carries: the rows' own view type up to
@@ -61,8 +115,8 @@ pub struct ListConfig<C> {
     /// Per-row delete and per-part move routing, keyed by the same row ids
     /// `contents.get_id` returns.
     edits: ListEdits,
-    /// Optional programmatic item-index scroll controller.
-    scroll_controller: Option<ScrollController<usize>>,
+    /// Optional programmatic identity-keyed scroll controller.
+    scroll_controller: Option<ListScrollController>,
     /// The sections `contents` groups into, keyed by the same row ids.
     sections: ListSections,
     /// The minimum height of a row, from [`ListMinRowHeight`] in the list's
@@ -106,9 +160,9 @@ impl<C> ListConfig<C> {
         &self.edits
     }
 
-    /// Optional programmatic item-index scroll controller.
+    /// Optional programmatic identity-keyed scroll controller.
     #[must_use]
-    pub const fn scroll_controller(&self) -> Option<&ScrollController<usize>> {
+    pub const fn scroll_controller(&self) -> Option<&ListScrollController> {
         self.scroll_controller.as_ref()
     }
 
@@ -273,13 +327,18 @@ where
         self.builder().on_move(on_move)
     }
 
-    /// Connects a controller that scrolls the list to a requested item index.
+    /// Connects a controller that scrolls the list to a requested item by
+    /// identity (a `ForEach` row's item id, or a static row's `.tag(…)` value).
     /// [`ScrollController::scroll_to`] jumps; [`ScrollController::animate_to`]
     /// glides along the request's animation. An `animate_to` further than 100
     /// rows away does not fly over every row: the backend jumps to within 100
     /// rows of the target first and animates only that final stretch.
     #[must_use]
-    pub fn scroll_controller(self, controller: &ScrollController<usize>) -> ListBuilder<V> {
+    pub fn scroll_controller<T>(self, controller: &ScrollController<T>) -> ListBuilder<V>
+    where
+        V: SelectableRows<T>,
+        T: 'static + Ord + Clone,
+    {
         self.builder().scroll_controller(controller)
     }
 
@@ -430,7 +489,9 @@ fn resolve_list_config<C: View>(
         min_row_height: env.get::<ListMinRowHeight>().map(|height| height.0),
         selection: config.selection,
         editing: config.editing,
-        scroll_controller: config.scroll_controller,
+        scroll_controller: config
+            .scroll_controller
+            .map(|controller| controller.rekeyed(&ids)),
     }
 }
 
@@ -519,7 +580,7 @@ pub struct ListBuilder<V: Views> {
     edits: RowEdits<V::Id>,
     single_delete: Option<TypedOnDelete<V::Id>>,
     single_move: Option<TypedOnMove<V::Id>>,
-    scroll_controller: Option<ScrollController<usize>>,
+    scroll_controller: Option<(ScrollDriver<ListTagId>, RowTags<V::Id>)>,
     sections: RowSections<V::Id>,
 }
 
@@ -566,14 +627,18 @@ where
         self
     }
 
-    /// Connects a controller that scrolls the list to a requested item index.
-    /// [`ScrollController::scroll_to`] jumps; [`ScrollController::animate_to`]
-    /// glides along the request's animation. An `animate_to` further than 100
-    /// rows away does not fly over every row: the backend jumps to within 100
-    /// rows of the target first and animates only that final stretch.
+    /// Connects a controller that scrolls the list to a requested item by
+    /// identity, as [`List::scroll_controller`].
     #[must_use]
-    pub fn scroll_controller(mut self, controller: &ScrollController<usize>) -> Self {
-        self.scroll_controller = Some(controller.clone());
+    pub fn scroll_controller<T>(mut self, controller: &ScrollController<T>) -> Self
+    where
+        V: SelectableRows<T>,
+        T: 'static + Ord + Clone,
+    {
+        let values = Mapping::new();
+        let tags = RowTags::new(self.contents.row_tags(), &values);
+        let driver = controller.map_driver(move |value| ListTagId::new(values.to_id(value)));
+        self.scroll_controller = Some((driver, tags));
         self
     }
 
@@ -620,7 +685,9 @@ where
             tags: self.tags.erased(&ids),
             editing: self.editing,
             edits: self.edits.erased(&ids),
-            scroll_controller: self.scroll_controller,
+            scroll_controller: self
+                .scroll_controller
+                .map(|(driver, tags)| ListScrollController::new(driver, tags.erased(&ids))),
             sections: self.sections.erased(&ids),
             min_row_height: None,
         }

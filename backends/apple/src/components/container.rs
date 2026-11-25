@@ -22,11 +22,12 @@ use cocoa_ui::scroll::{
 use cocoa_ui::{PlatformView, Rect, Retained, view};
 use waterui::id::Id as RawId;
 use waterui::layout::container::LazyContainer;
-use waterui::layout::scroll::Axis as ScrollAxis;
+use waterui::layout::scroll::{Axis as ScrollAxis, ScrollCollectionId, ScrollItemTarget};
 use waterui::layout::stack::{Axis, LazyStackAxis, lazy_stack_axis_for, lazy_stack_cross_stretch};
 use waterui::reactive::Signal;
 use waterui::reactive::watcher::{BoxWatcherGuard, Metadata};
 use waterui::views::AnyViewsSnapshot;
+use waterui_backend_core::scroll::animated_row_scroll_approach;
 use waterui_backend_core::{Child, ChildView};
 use waterui_core::Computed;
 use waterui_core::layout::{
@@ -37,6 +38,7 @@ use waterui_core::layout::{
 use waterui_core::views::AnyViews;
 
 use crate::backend::AppleBackend;
+use crate::components::scroll::{ResolvedScrollItem, ScrollItemRegistry, content_coordinate_view};
 use crate::contract::{NativeLeaf, Renderer};
 use crate::proposal::{self, CommittedGeometry, Placement, to_proposal};
 use crate::transition::ghost::Ghost;
@@ -45,9 +47,9 @@ use crate::transition::slots::{FrozenPlacement, GhostKey, Slot, SlotSequence};
 
 use crate::contract::RenderContext;
 #[cfg(target_os = "macos")]
-use cocoa_ui::appkit::{HitTest, HostView};
+use cocoa_ui::appkit::{HitTest, HostView, ScrollView as ScrollSurface};
 #[cfg(target_os = "ios")]
-use cocoa_ui::uikit::{HitTest, HostView};
+use cocoa_ui::uikit::{HitTest, HostView, ScrollView as ScrollSurface};
 
 /// A child's identity: the collection id `AnyViews` answers for an index.
 type ItemId = RawId;
@@ -223,6 +225,10 @@ struct ContainerState {
     /// path from its `place_layout` answer, the lazy path from its
     /// virtualized answer. `None` only until the leaf hands it over.
     geometry: Option<CommittedGeometry>,
+    /// The last committed response rect of the lazy layout pass in `host` coordinates.
+    last_response: Rect,
+    /// Enclosing `ScrollView`'s item registry, notified when membership changes.
+    scroll_registry: Option<ScrollItemRegistry>,
 }
 
 impl core::fmt::Debug for ContainerState {
@@ -762,6 +768,7 @@ impl PendingChildren {
 /// the borrow is always free here; the `borrow_mut` asserts it.
 fn deliver_children(state: &Rc<RefCell<ContainerState>>, pending: &Rc<RefCell<PendingChildren>>) {
     pending.borrow_mut().depth += 1;
+    let mut delivered = false;
     loop {
         // `take` inside the loop body, not a `while let` scrutinee — the
         // scrutinee would hold the `RefMut` across the apply, and a
@@ -769,6 +776,7 @@ fn deliver_children(state: &Rc<RefCell<ContainerState>>, pending: &Rc<RefCell<Pe
         let Some((snapshot, ids, metadata)) = pending.borrow_mut().take() else {
             break;
         };
+        delivered = true;
         crate::animation::with_platform_animation(&metadata, {
             let state = Rc::clone(state);
             move || {
@@ -786,6 +794,12 @@ fn deliver_children(state: &Rc<RefCell<ContainerState>>, pending: &Rc<RefCell<Pe
         });
     }
     pending.borrow_mut().depth -= 1;
+    if delivered {
+        let registry = state.borrow().scroll_registry.clone();
+        if let Some(registry) = registry {
+            registry.notify_items_changed();
+        }
+    }
 }
 
 /// Runs `body` as a children transaction: contents emissions raised
@@ -1080,6 +1094,7 @@ fn main_span(viewport: Rect, lazy: &LazyConfig, response: Rect) -> (f64, f64) {
 fn perform_lazy_layout(state: &mut ContainerState) {
     let lazy = state.lazy.clone().expect("lazy path under a stack layout");
     let response = commit_lazy_geometry(state);
+    state.last_response = response;
     if state.item_ids.is_empty() {
         // No live members — only the ghosts a removal left behind, in
         // slot order beneath them.
@@ -1425,6 +1440,176 @@ impl SubView for ContainerSubView {
     }
 }
 
+/// Main-axis extent of one slot in a virtualized stack.
+fn lazy_slot_extent(
+    state: &ContainerState,
+    lazy: &LazyConfig,
+    slot: Slot<ItemId>,
+    estimate: f64,
+) -> f64 {
+    match slot {
+        Slot::Live(id) => state.measured_main.get(&id).copied().unwrap_or(estimate),
+        Slot::Ghost(key) => {
+            ghost_main_cross(
+                state.ghosts[&key]
+                    .slot()
+                    .expect("a container ghost holds a slot"),
+                lazy,
+            )
+            .0
+        }
+    }
+}
+
+/// Cursor and extent of the `target_live_index`-th live slot in a virtualized stack.
+fn lazy_live_slot_cursor(
+    state: &ContainerState,
+    lazy: &LazyConfig,
+    estimate: f64,
+    target_live_index: usize,
+) -> Option<(f64, f64)> {
+    let mut cursor = 0.0_f64;
+    let mut idx = 0_usize;
+    let mut iter = state.slots.iter().peekable();
+    while let Some(slot) = iter.next() {
+        let extent = lazy_slot_extent(state, lazy, slot, estimate);
+        if matches!(slot, Slot::Live(_)) {
+            if idx == target_live_index {
+                return Some((cursor, extent));
+            }
+            idx += 1;
+        }
+        let spacing = if iter.peek().is_some() {
+            lazy.spacing
+        } else {
+            0.0
+        };
+        cursor += extent + spacing;
+    }
+    None
+}
+
+/// Computes the scroll content coordinates of an item owned by this container
+/// without materializing unrendered lazy rows.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    reason = "kit geometry is f64 and scroll offsets are f32; item counts never approach 2^53"
+)]
+fn locate_scroll_item(
+    state: &ContainerState,
+    collection: ScrollCollectionId,
+    target: &ScrollItemTarget,
+    scroll: &ScrollSurface,
+    animate: bool,
+) -> Option<ResolvedScrollItem> {
+    let raw_id = target.id_in(collection)?;
+    let content_view = content_coordinate_view(scroll);
+    let Some(lazy) = state.lazy.as_ref() else {
+        let child = state.rendered.get(&raw_id)?;
+        let local_origin = view::frame(child.view()).origin;
+        let mapped = view::convert_point(&state.host, local_origin, &content_view);
+        return Some(ResolvedScrollItem {
+            offset: Point::new(mapped.x as f32, mapped.y as f32),
+            virtualized: false,
+            approach_offset: None,
+        });
+    };
+
+    if state.item_ids.is_empty() {
+        return None;
+    }
+
+    let estimate = if state.measured_main.is_empty() {
+        0.0
+    } else {
+        state.measured_main.values().sum::<f64>() / state.measured_main.len() as f64
+    };
+    let response = if state.last_response.size.width > 0.0 || state.last_response.size.height > 0.0
+    {
+        state.last_response
+    } else {
+        view::bounds(&state.host)
+    };
+    let rtl = matches!(lazy.main_axis(), Axis::Horizontal)
+        && state.direction.snapshot().is_right_to_left();
+    let viewport_start = animate.then(|| {
+        let (start, end) = main_span(current_viewport(state), lazy, response);
+        if rtl {
+            (response.size.width - end).max(0.0)
+        } else {
+            start
+        }
+    });
+
+    let mut cursor = 0.0_f64;
+    let mut live_index = 0_usize;
+    let mut current_live_index: Option<usize> = None;
+    let mut target_info: Option<(usize, f64, f64)> = None;
+    let mut iter = state.slots.iter().peekable();
+    while let Some(slot) = iter.next() {
+        let extent = lazy_slot_extent(state, lazy, slot, estimate);
+        if let Slot::Live(id) = slot {
+            if let Some(vp_start) = viewport_start
+                && current_live_index.is_none()
+                && cursor + extent > vp_start
+            {
+                current_live_index = Some(live_index);
+            }
+            if id == raw_id {
+                target_info = Some((live_index, cursor, extent));
+                if viewport_start.is_none() || current_live_index.is_some() {
+                    break;
+                }
+            }
+            live_index += 1;
+        }
+        cursor += extent
+            + if iter.peek().is_some() {
+                lazy.spacing
+            } else {
+                0.0
+            };
+    }
+
+    let (target_live_index, target_cursor, target_extent) = target_info?;
+    let map_offset = |item_cursor: f64, item_extent: f64| {
+        let local = match lazy.main_axis() {
+            Axis::Vertical => {
+                cocoa_ui::Point::new(response.origin.x, response.origin.y + item_cursor)
+            }
+            Axis::Horizontal => {
+                let x = if rtl {
+                    response.origin.x + response.size.width - item_cursor - item_extent
+                } else {
+                    response.origin.x + item_cursor
+                };
+                cocoa_ui::Point::new(x, response.origin.y)
+            }
+            _ => unreachable!("lazy stack axis is vertical or horizontal"),
+        };
+        let mapped = view::convert_point(&state.host, local, &content_view);
+        Point::new(mapped.x as f32, mapped.y as f32)
+    };
+
+    let approach_offset = animate
+        .then(|| {
+            animated_row_scroll_approach(
+                current_live_index.unwrap_or(live_index),
+                target_live_index,
+            )
+        })
+        .flatten()
+        .and_then(|approach_index| lazy_live_slot_cursor(state, lazy, estimate, approach_index))
+        .map(|(c, extent)| map_offset(c, extent));
+
+    Some(ResolvedScrollItem {
+        offset: map_offset(target_cursor, target_extent),
+        virtualized: true,
+        approach_offset,
+    })
+}
+
 /// The `container` realization.
 #[expect(
     clippy::too_many_lines,
@@ -1437,6 +1622,8 @@ pub fn realize_lazy_container<C: ChildView<AppleBackend>>(
     let mtm = ctx.mtm();
     let direction = container.direction();
     let virtualize_axes = container.virtualize_axes();
+    let scroll_collection = container.scroll_collection();
+    let scroll_registry = ctx.env().get::<ScrollItemRegistry>().cloned();
     let (layout, contents) = container.into_inner();
     let contents = contents.map_views(C::into_child);
     let host = HostView::new(mtm, Rect::ZERO);
@@ -1466,7 +1653,18 @@ pub fn realize_lazy_container<C: ChildView<AppleBackend>>(
         scroll: None,
         layout_guards: Vec::new(),
         geometry: None,
+        last_response: Rect::ZERO,
+        scroll_registry: scroll_registry.clone(),
     }));
+
+    if let (Some(collection), Some(registry)) = (scroll_collection, scroll_registry) {
+        let weak_state = Rc::downgrade(&state);
+        registry.register(move |target, scroll, animate| {
+            let state = weak_state.upgrade()?;
+            let borrowed = state.borrow();
+            locate_scroll_item(&borrowed, collection, target, scroll, animate)
+        });
+    }
 
     host.set_hit_test_handler(|_host, _point| HitTest::PassIfSelf);
     host.set_intrinsic_auto_layout(true);

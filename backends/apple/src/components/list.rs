@@ -27,12 +27,12 @@ use cocoa_ui::geometry::EdgeInsets as KitInsets;
 use cocoa_ui::{Retained, view};
 use waterui::animation::ChangeAnimation;
 use waterui::component::list::{
-    ListConfig, ListEdits, ListRowDeletable, ListRowInsets, ListRowTags, ListSection, ListSections,
-    ListSelection, ListTagId,
+    ListConfig, ListEdits, ListRowDeletable, ListRowInsets, ListRowTags, ListScrollController,
+    ListSection, ListSections, ListSelection, ListTagId,
 };
 use waterui::id::Id as RawId;
 use waterui::layout::padding::EdgeInsets;
-use waterui::layout::scroll::{Axis, ScrollController, ScrollPosition, ScrollRequest};
+use waterui::layout::scroll::{Axis, ScrollPosition, ScrollRequest};
 use waterui::reactive::Signal;
 use waterui::reactive::binding::Binding;
 use waterui::reactive::collection::{CollectionChange, diff, has_duplicate_ids};
@@ -517,6 +517,13 @@ fn claimed_and_configured(shared: &Shared, id: ItemId) -> bool {
         })
 }
 
+/// A scroll-to-identity request deferred until its target item joins the
+/// table's membership snapshot.
+struct PendingListScroll {
+    request: ScrollRequest<ListTagId>,
+    tags: ListRowTags,
+}
+
 /// The list's live state, shared between the source, watchers, and the
 /// layout face.
 struct Shared {
@@ -600,6 +607,9 @@ struct Shared {
     /// The `ListRowDeletable` signal each rendered row resolved under, by item id.
     #[cfg(target_os = "ios")]
     deletable_rows: RefCell<HashMap<ItemId, Computed<bool>>>,
+    /// Pending scroll request waiting for its target item identity to land
+    /// in `item_ids` (e.g. a newly pushed row whose membership flush is queued).
+    pending_scroll: Option<PendingListScroll>,
 }
 
 impl fmt::Debug for Shared {
@@ -1307,9 +1317,16 @@ fn apply_contents_change(
         // Entries no cell consumed belonged to rows inserted off screen:
         // they drop without playing, the way an unmaterialized lazy row
         // plays nothing.
-        state_inner.borrow_mut().pending_inserted.clear();
-        apply_binding_selection(&state_inner, &table_inner);
+        finish_contents_change(&state_inner, &table_inner);
     });
+}
+
+/// Clears unconsumed insertion rows, reapplies selection, and retries any
+/// deferred identity-keyed scroll after a membership update completes.
+fn finish_contents_change(state: &Rc<RefCell<Shared>>, table: &TableView) {
+    state.borrow_mut().pending_inserted.clear();
+    apply_binding_selection(state, table);
+    flush_pending_scroll(state, table);
 }
 
 /// `applyBindingSelection`: push the binding's selection onto the table
@@ -2578,74 +2595,112 @@ fn approach(state: &Rc<RefCell<Shared>>, table: &TableView, target: usize) {
     table.scroll_row_to_top(rows[item]);
 }
 
-/// Wires a `ScrollController<usize>` into the table: a generation bump
-/// scrolls the target row to the top — with the request's animation, if
-/// it carries one: `Animation::DEFAULT` is the native animated row
-/// scroll, and an explicit animation drives the offset on the frame
-/// clock along the core curve, landing where the jump would have. An
-/// animated request first closes in through [`approach`], so a far
-/// target animates only its final stretch.
+/// Applies one identity-keyed scroll request against the table's current
+/// membership, or stores it in `state.pending_scroll` when the target item
+/// has not yet joined `item_ids`.
+fn apply_list_scroll_request(
+    state: &Rc<RefCell<Shared>>,
+    table: &TableView,
+    request: &ScrollRequest<ListTagId>,
+    tags: &ListRowTags,
+) {
+    // Resolve the row under a short borrow and release it before the
+    // scroll call: driving the table can run `layoutSubviews` → row
+    // measuring, which borrows `state` again — mutably.
+    let resolved = {
+        let mut borrowed = state.borrow_mut();
+        let flat = borrowed
+            .item_ids
+            .iter()
+            .position(|&id| tags.tag(id) == Some(*request.target()));
+        #[cfg(target_os = "ios")]
+        let target = flat.and_then(|flat| {
+            borrowed
+                .display_index_of(DisplayRow::Live(flat))
+                .map(|(section, row)| (flat, IndexPath { section, row }))
+        });
+        #[cfg(target_os = "macos")]
+        let target = flat.and_then(|flat| {
+            borrowed
+                .flat_layout
+                .iter()
+                .position(|entry| *entry == FlatEntry::Row(flat))
+                .map(|row| (flat, row))
+        });
+        if let Some(resolved) = target {
+            borrowed.pending_scroll = None;
+            Some(resolved)
+        } else {
+            borrowed.pending_scroll = Some(PendingListScroll {
+                request: request.clone(),
+                tags: tags.clone(),
+            });
+            None
+        }
+    };
+    let Some((flat, target)) = resolved else {
+        return;
+    };
+    #[cfg(target_os = "ios")]
+    table.layout_if_needed();
+    if request.animation().is_some() {
+        approach(state, table, flat);
+    }
+    match request.animation().as_ref() {
+        #[cfg(target_os = "ios")]
+        None => table.scroll_to_row(target, false),
+        #[cfg(target_os = "ios")]
+        Some(animation) if animation.is_default() => table.scroll_to_row(target, true),
+        #[cfg(target_os = "ios")]
+        Some(animation) => {
+            table.animate_scroll_to_row(
+                target,
+                animation.duration().as_secs_f64(),
+                crate::animation::progress(animation),
+            );
+        }
+        #[cfg(target_os = "macos")]
+        None => table.scroll_row_to_top(target),
+        #[cfg(target_os = "macos")]
+        Some(animation) if animation.is_default() => table.scroll_row_to_top_animated(target),
+        #[cfg(target_os = "macos")]
+        Some(animation) => {
+            table.animate_scroll_row_to_top(
+                target,
+                animation.duration().as_secs_f64(),
+                crate::animation::progress(animation),
+            );
+        }
+    }
+}
+
+/// Retries any deferred identity scroll after a membership update completes.
+fn flush_pending_scroll(state: &Rc<RefCell<Shared>>, table: &TableView) {
+    let pending = state.borrow_mut().pending_scroll.take();
+    if let Some(pending) = pending {
+        apply_list_scroll_request(state, table, &pending.request, &pending.tags);
+    }
+}
+
+/// Wires a `ListScrollController` into the table: a generation bump
+/// scrolls the row carrying the target identity to the top — with the
+/// request's animation, if it carries one: `Animation::DEFAULT` is the
+/// native animated row scroll, and an explicit animation drives the
+/// offset on the frame clock along the core curve, landing where the jump
+/// would have. An animated request first closes in through [`approach`],
+/// so a far target animates only its final stretch.
 fn wire_controller(
     leaf: &mut NativeLeaf,
     table: &Retained<TableView>,
     state: &Rc<RefCell<Shared>>,
-    controller: &ScrollController<usize>,
+    controller: &ListScrollController,
 ) {
     let request = controller.request();
     let generation = controller.generation();
+    let tags = controller.row_tags().clone();
     leaf.watch(&request, |_| {});
-    let apply = |state: &Rc<RefCell<Shared>>, table: &TableView, request: &ScrollRequest<usize>| {
-        // Resolve the row under a short borrow and release it before the
-        // scroll call: driving the table can run `layoutSubviews` → row
-        // measuring, which borrows `state` again — mutably.
-        #[cfg(target_os = "ios")]
-        let target = state
-            .borrow()
-            .display_index_of(DisplayRow::Live(*request.target()))
-            .map(|(section, row)| IndexPath { section, row });
-        #[cfg(target_os = "macos")]
-        let target = state
-            .borrow()
-            .flat_layout
-            .iter()
-            .position(|entry| *entry == FlatEntry::Row(*request.target()));
-        let Some(target) = target else {
-            return;
-        };
-        #[cfg(target_os = "ios")]
-        table.layout_if_needed();
-        if request.animation().is_some() {
-            approach(state, table, *request.target());
-        }
-        match request.animation().as_ref() {
-            #[cfg(target_os = "ios")]
-            None => table.scroll_to_row(target, false),
-            #[cfg(target_os = "ios")]
-            Some(animation) if animation.is_default() => table.scroll_to_row(target, true),
-            #[cfg(target_os = "ios")]
-            Some(animation) => {
-                table.animate_scroll_to_row(
-                    target,
-                    animation.duration().as_secs_f64(),
-                    crate::animation::progress(animation),
-                );
-            }
-            #[cfg(target_os = "macos")]
-            None => table.scroll_row_to_top(target),
-            #[cfg(target_os = "macos")]
-            Some(animation) if animation.is_default() => table.scroll_row_to_top_animated(target),
-            #[cfg(target_os = "macos")]
-            Some(animation) => {
-                table.animate_scroll_row_to_top(
-                    target,
-                    animation.duration().as_secs_f64(),
-                    crate::animation::progress(animation),
-                );
-            }
-        }
-    };
     if generation.snapshot() > 0 {
-        apply(state, table, &request.snapshot());
+        apply_list_scroll_request(state, table, &request.snapshot(), &tags);
     }
     leaf.watch(&generation, {
         let state = Rc::downgrade(state);
@@ -2654,7 +2709,7 @@ fn wire_controller(
             if *ctx.value() > 0
                 && let (Some(state), Some(table)) = (state.upgrade(), table.load())
             {
-                apply(&state, &table, &request.snapshot());
+                apply_list_scroll_request(&state, &table, &request.snapshot(), &tags);
             }
         }
     });
@@ -2737,6 +2792,7 @@ fn render(config: &ListConfig<Held>, ctx: &RenderContext<'_>) -> NativeLeaf {
         disabled_rows: RefCell::new(HashMap::new()),
         #[cfg(target_os = "ios")]
         deletable_rows: RefCell::new(HashMap::new()),
+        pending_scroll: None,
     }));
 
     #[cfg(target_os = "ios")]
@@ -2867,7 +2923,7 @@ fn render(config: &ListConfig<Held>, ctx: &RenderContext<'_>) -> NativeLeaf {
 fn wire_position_report(
     leaf: &mut NativeLeaf,
     table: &Retained<TableView>,
-    controller: &ScrollController<usize>,
+    controller: &ListScrollController,
     _mtm: cocoa_ui::MainThreadMarker,
 ) {
     let position = controller.position_report();
@@ -2931,7 +2987,7 @@ fn wire_position_report(
 fn wire_position_report(
     leaf: &mut NativeLeaf,
     table: &Retained<TableView>,
-    controller: &ScrollController<usize>,
+    controller: &ListScrollController,
     mtm: cocoa_ui::MainThreadMarker,
 ) {
     // `table` is itself the `NSScrollView` — `ListTableView` wraps its

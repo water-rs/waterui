@@ -21,7 +21,7 @@ use support::{
 use waterui::View;
 use waterui::ViewExt as _;
 use waterui::graphics::color::Srgb;
-use waterui::id::SelfId;
+use waterui::id::{Identifiable, SelfId};
 use waterui::navigation::{NavigationStack, NavigationView};
 use waterui::prelude::*;
 use waterui_core::Environment;
@@ -1018,5 +1018,238 @@ fn scroll_position_reports_actual_geometry_not_pending_requests() {
     assert!(
         applied.offset().y > scrolled.offset().y && applied.at_end(),
         "the applied request reports the landed offset, clamped at the extent: {applied:?}"
+    );
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+struct ChatMessageId(u64);
+
+#[derive(Clone, PartialEq, Eq)]
+struct ChatMessage {
+    id: ChatMessageId,
+    label: String,
+}
+
+impl Identifiable for ChatMessage {
+    type Id = ChatMessageId;
+
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+}
+
+#[test]
+fn scroll_view_scrolls_to_virtualized_vstack_item_by_identity() {
+    use core::time::Duration;
+    use waterui::animation::Animation;
+    use waterui_layout::scroll::ScrollController;
+    use waterui_layout::stack::VStack;
+
+    let mut messages = StateList::<ChatMessage>::new();
+    let _ = messages.replace(
+        (0..40_u64)
+            .map(|i| ChatMessage {
+                id: ChatMessageId(1_000 + i * 7),
+                label: format!("Message {i}"),
+            })
+            .collect(),
+    );
+    let controller = ScrollController::new(ChatMessageId(0));
+
+    let mut app = mount_rendered(
+        Environment::new(),
+        {
+            let messages = messages.clone();
+            let controller = controller.clone();
+            move || {
+                scroll(
+                    VStack::for_each(messages.clone(), |msg: ChatMessage| {
+                        text(msg.label).size(240.0, 40.0)
+                    })
+                    .spacing(4.0),
+                )
+                .scroll_controller(&controller)
+                .size(240.0, 160.0)
+                .a11y_label("chat-feed")
+            }
+        },
+        240,
+        160,
+    );
+    app.settle();
+
+    // Jump to an unrealized deep item (index 25 -> offset 25 * 44 = 1100).
+    let deep_target = ChatMessageId(1_000 + 25 * 7);
+    assert!(!node_label_exists(app.tree(), "Message 25"));
+    controller.scroll_to(deep_target);
+    app.settle();
+    assert!(
+        node_label_exists(app.tree(), "Message 25"),
+        "target item must materialize into the viewport after scroll_to"
+    );
+    let deep_position = controller
+        .position()
+        .snapshot()
+        .expect("position reported after jump");
+    assert!(
+        (deep_position.offset().y - 1_100.0).abs() < 2.0,
+        "expected offset near 1100.0, got {:?}",
+        deep_position.offset()
+    );
+
+    // Animated scroll back up to index 5 (offset 5 * 44 = 220).
+    let early_target = ChatMessageId(1_000 + 5 * 7);
+    controller.animate_to(early_target, Animation::linear(Duration::from_millis(64)));
+    app.pump_for(Duration::from_millis(160));
+    assert!(
+        node_label_exists(app.tree(), "Message 5"),
+        "target item must materialize after animate_to"
+    );
+    let early_position = controller.position().snapshot().unwrap();
+    assert!(
+        (early_position.offset().y - 220.0).abs() < 2.0,
+        "expected offset near 220.0, got {:?}",
+        early_position.offset()
+    );
+
+    // Append a new message and immediately animate to its identity.
+    let pushed_id = ChatMessageId(9_999);
+    messages.push(ChatMessage {
+        id: pushed_id,
+        label: String::from("Brand new message"),
+    });
+    controller.animate_to(pushed_id, Animation::linear(Duration::from_millis(64)));
+    app.pump_for(Duration::from_millis(160));
+    assert!(
+        node_label_exists(app.tree(), "Brand new message"),
+        "newly pushed item must materialize after animate_to"
+    );
+    assert!(
+        controller.position().snapshot().unwrap().at_end(),
+        "scrolling to the appended tail must land at_end"
+    );
+
+    // Issue a scroll request before the target item joins the collection, then
+    // append it on a subsequent frame and verify the pending request resolves.
+    let future_id = ChatMessageId(10_000);
+    controller.scroll_to(future_id);
+    app.settle();
+    messages.push(ChatMessage {
+        id: future_id,
+        label: String::from("Future message"),
+    });
+    app.settle();
+    assert!(
+        node_label_exists(app.tree(), "Future message"),
+        "pending identity scroll must resolve once the target item is pushed"
+    );
+    assert!(controller.position().snapshot().unwrap().at_end());
+}
+
+#[test]
+fn scroll_view_scrolls_to_wrapped_for_each_item_by_identity() {
+    use waterui_layout::scroll::ScrollController;
+    use waterui_layout::stack::VStack;
+
+    let messages: Vec<ChatMessage> = (0..30_u64)
+        .map(|i| ChatMessage {
+            id: ChatMessageId(200 + i),
+            label: format!("Wrapped {i}"),
+        })
+        .collect();
+    let controller = ScrollController::new(ChatMessageId(0));
+
+    let mut app = mount_rendered(
+        Environment::new(),
+        {
+            let controller = controller.clone();
+            move || {
+                scroll(
+                    vstack((
+                        text("Header").size(240.0, 80.0),
+                        VStack::for_each(messages.clone(), |msg: ChatMessage| {
+                            text(msg.label).size(240.0, 40.0)
+                        })
+                        .spacing(0.0)
+                        .padding_with(EdgeInsets::new(16.0, 0.0, 0.0, 0.0)),
+                    ))
+                    .spacing(0.0),
+                )
+                .scroll_controller(&controller)
+                .size(240.0, 160.0)
+            }
+        },
+        240,
+        160,
+    );
+    app.settle();
+
+    // Index 15 lies at header (80) + top padding (16) + 15 * 40 = 696.
+    controller.scroll_to(ChatMessageId(215));
+    app.settle();
+    assert!(node_label_exists(app.tree(), "Wrapped 15"));
+    let offset = controller.position().snapshot().unwrap().offset().y;
+    assert!(
+        (offset - 696.0).abs() < 2.0,
+        "wrapped VStack::for_each must include header + padding offset (696), got {offset}"
+    );
+}
+
+#[test]
+fn scroll_horizontal_scrolls_to_hstack_for_each_item_by_identity() {
+    use core::time::Duration;
+    use waterui::animation::Animation;
+    use waterui_layout::scroll::ScrollController;
+    use waterui_layout::stack::HStack;
+
+    let cards: Vec<ChatMessage> = (0..30_u64)
+        .map(|i| ChatMessage {
+            id: ChatMessageId(500 + i * 3),
+            label: format!("Card {i}"),
+        })
+        .collect();
+    let controller = ScrollController::new(ChatMessageId(0));
+
+    let mut app = mount_rendered(
+        Environment::new(),
+        {
+            let controller = controller.clone();
+            move || {
+                scroll_horizontal(
+                    HStack::for_each(cards.clone(), |card: ChatMessage| {
+                        text(card.label).size(80.0, 60.0)
+                    })
+                    .spacing(10.0),
+                )
+                .scroll_controller(&controller)
+                .size(200.0, 80.0)
+            }
+        },
+        200,
+        80,
+    );
+    app.settle();
+
+    // Card 12 starts at 12 * (80 + 10) = 1080.
+    controller.scroll_to(ChatMessageId(500 + 12 * 3));
+    app.settle();
+    assert!(node_label_exists(app.tree(), "Card 12"));
+    let jumped = controller.position().snapshot().unwrap().offset().x;
+    assert!(
+        (jumped - 1_080.0).abs() < 2.0,
+        "expected horizontal offset near 1080.0, got {jumped}"
+    );
+
+    // Animate back to Card 4 at 4 * 90 = 360.
+    controller.animate_to(
+        ChatMessageId(500 + 4 * 3),
+        Animation::linear(Duration::from_millis(64)),
+    );
+    app.pump_for(Duration::from_millis(160));
+    assert!(node_label_exists(app.tree(), "Card 4"));
+    let animated = controller.position().snapshot().unwrap().offset().x;
+    assert!(
+        (animated - 360.0).abs() < 2.0,
+        "expected horizontal offset near 360.0, got {animated}"
     );
 }
