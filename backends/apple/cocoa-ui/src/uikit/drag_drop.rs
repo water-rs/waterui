@@ -294,8 +294,9 @@ impl<'a> DropSession<'a> {
         interaction: &UIDropInteraction,
         session: &'a ProtocolObject<dyn UIDropSession>,
     ) -> Self {
-        let view = interaction.view();
-        let location = session.locationInView(view.as_deref()).into();
+        let location = interaction
+            .view()
+            .map_or(Point::ZERO, |view| session.locationInView(&view).into());
         Self { session, location }
     }
 
