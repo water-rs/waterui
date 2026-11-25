@@ -90,7 +90,7 @@ through these constructors.
 A recognized gesture's payload is passed as the handler's typed first argument — `TapEvent`,
 `LongPressEvent`, `DragEvent` (`location()`, `translation()`, `velocity()`,
 `phase()`), `MagnificationEvent` or `RotationEvent`, all from
-`waterui::gesture` (with `GestureEvent` for composite `Gesture` combinators). Pointer motion inside a view is `.on_hover_move(handler)` (or `.event(Event::HoverMove, handler)`),
+`waterui::gesture` (with `GestureEvent` for composite `Gesture` combinators). Pointer motion inside a view is `.on_hover_move(handler)` (or `.event(HoverMove, handler)`),
 whose handler takes `HoverEvent` (`location()`) (`waterui::event`);
 `.on_hover_enter` / `.on_hover_exit` carry no `HoverEvent`.
 
