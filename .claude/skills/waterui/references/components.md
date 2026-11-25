@@ -882,7 +882,8 @@ button("Save").action(|m: SnackbarManager| {
 ```
 
 Placements are independent stacks: a top snackbar never evicts a bottom one, and multiple
-at one placement stack and reflow. `.icon(view)` attaches a typed leading icon (`Snackbar<V>`),
+at one placement stack and reflow. `.icon(|| view)` attaches a typed leading icon builder
+(`Snackbar<V>`, so modified non-`Clone` views like `|| mdi::delete().padding()` work directly),
 `.state(&v)` injects state for the `.action(..)` and
 `.on_dismiss(..)` handlers; `.on_dismiss(|reason: SnackbarDismissReason| ..)` runs once per
 presentation with why it went (`Action`, `Timeout`, `Closed`, `Replaced`, `Programmatic`),
