@@ -1208,7 +1208,7 @@ mod resolve {
     /// cannot starve a trailing `ScrollView` by handing out space that
     /// only exists because the control claimed it.
     pub fn control_leaves_answer_their_intrinsic_height() {
-        let volume = binding(0.5_f64);
+        let volume = binding::<f64>(0.5);
         let selection = binding("Alpha");
         let text_value = binding(Str::from(""));
         let secret = binding(Secure::new(String::new()));
@@ -1336,7 +1336,7 @@ mod resolve {
     /// visible; a hidden label answers the buttons' intrinsic size
     /// (water-rs/waterui#2364).
     pub fn stepper_leaves_follow_the_stretch_rule() {
-        let quantity = binding(3_i32);
+        let quantity = binding::<i32>(3);
         let cases = [
             (
                 "visible label",

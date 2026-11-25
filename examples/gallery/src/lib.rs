@@ -404,7 +404,7 @@ fn slider_demo(volume: &Binding<f64>) -> impl View {
         slider(label, volume)
             .range(0.0..=100.0)
             .size(size)
-            .value_indicator(|v| Str::from(format!("{v:.0}")))
+            .value_formatter(|v| Str::from(format!("{v:.0}")))
     });
 
     vstack((

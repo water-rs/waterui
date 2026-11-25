@@ -388,8 +388,8 @@ impl<L: LabelKind> Validatable for TextField<L> {
 }
 
 #[cfg(feature = "stepper")]
-impl<L: LabelKind> Validatable for waterui_controls::Stepper<L> {
-    type Value = i32;
+impl<L: LabelKind, T: 'static> Validatable for waterui_controls::Stepper<L, T> {
+    type Value = i64;
 
     fn validable(&mut self) -> &mut Binding<Self::Value> {
         self.value_binding()
@@ -397,7 +397,9 @@ impl<L: LabelKind> Validatable for waterui_controls::Stepper<L> {
 }
 
 #[cfg(feature = "slider")]
-impl<L: LabelKind, Min: View, Max: View> Validatable for waterui_controls::Slider<L, Min, Max> {
+impl<L: LabelKind, Min: View, Max: View, T: 'static> Validatable
+    for waterui_controls::Slider<L, Min, Max, T>
+{
     type Value = f64;
 
     fn validable(&mut self) -> &mut Binding<Self::Value> {
