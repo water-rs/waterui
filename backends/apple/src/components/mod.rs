@@ -91,6 +91,7 @@ pub mod secure;
 #[cfg(feature = "secure_field")]
 pub mod secure_field;
 pub mod shadow;
+pub mod sheet;
 #[cfg(feature = "slider")]
 pub mod slider;
 pub mod spacer;

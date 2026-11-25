@@ -1888,6 +1888,7 @@ dependencies = [
 name = "cherenkov-record"
 version = "0.0.0"
 dependencies = [
+ "cherenkov-shader",
  "color",
  "filtrate-core",
  "kurbo",
@@ -4778,7 +4779,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis-m3"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis-m3?branch=main#4f6c5e577c334a191af9a3b91c9e0b5b9a7313f7"
+source = "git+https://github.com/water-rs/hydrolysis-m3?branch=main#98359851e6cd73d31fd0851a7a38426748d12d0e"
 dependencies = [
  "hydrolysis-style",
  "material-color-utils",
@@ -13323,6 +13324,7 @@ dependencies = [
  "waterui-color",
  "waterui-core",
  "waterui-frame-rate",
+ "waterui-macros",
  "waterui-testing",
  "waterui-text",
  "wgpu",
@@ -13572,6 +13574,7 @@ dependencies = [
 name = "waterui-macros"
 version = "0.5.1"
 dependencies = [
+ "cherenkov-record",
  "heck",
  "icu_locale_core",
  "proc-macro-crate",
@@ -13760,6 +13763,7 @@ dependencies = [
  "waterui-core",
  "waterui-graphics",
  "waterui-icons-lucide",
+ "waterui-structural-transition",
  "waterui-testing",
  "waterui-text",
  "waterui-url",
