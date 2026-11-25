@@ -10,6 +10,7 @@
 
 use std::env;
 use std::path::PathBuf;
+use waterkit_build::SwiftModule;
 
 fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
@@ -30,13 +31,8 @@ fn main() {
 /// shared-container resolution to Rust.
 fn compile_apple_bridge() {
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
-    if target_os != "macos" && target_os != "ios" {
-        return;
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "ios"))]
-    {
-        waterkit_build::SwiftModule::new("WaterUIWidgetsBridge")
+    if target_os == "macos" || target_os == "ios" {
+        SwiftModule::new("WaterUIWidgetsBridge")
             .swift_source("swift_bridge/AppleBridge.swift")
             .framework("Foundation")
             .framework("WidgetKit")
