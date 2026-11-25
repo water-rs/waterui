@@ -15,7 +15,6 @@ use core::ops::Range;
 
 use cocoa_ui::Retained;
 use waterui::Str;
-use waterui::animation::{Animation, ChangeAnimation};
 use waterui::graphics::color::WorkingColor;
 use waterui::reactive::Signal;
 use waterui::reactive::watcher::Metadata;
@@ -250,12 +249,7 @@ fn sync_tap(state: &Rc<RefCell<TextState>>) {
 /// for a change that names no animation or disables it, applies the change
 /// directly — the same table `withCrossDissolveAnimation` uses.
 fn cross_dissolve_duration(metadata: &Metadata) -> Option<f64> {
-    match ChangeAnimation::of(metadata).animation() {
-        None => None,
-        Some(Animation::Default) => Some(0.25),
-        Some(Animation::Bezier { duration, .. }) => Some(duration.as_secs_f64()),
-        Some(Animation::Spring { .. }) => Some(0.15),
-    }
+    crate::animation::cross_dissolve_duration(metadata)
 }
 
 /// A run's foreground: the latest value of its color signal and, on
@@ -720,30 +714,20 @@ pub fn realize_str(text: Str, ctx: &RenderContext<'_>) -> NativeLeaf {
 mod tests {
     use core::time::Duration;
 
+    use waterui::animation::Animation;
+
     use super::*;
 
     #[test]
     fn cross_dissolve_duration_follows_animation_table() {
         assert_eq!(cross_dissolve_duration(&Metadata::new()), None);
         let table: [(Animation, f64); 3] = [
-            (Animation::Default, 0.25),
+            (Animation::default(), 0.25),
             (
-                Animation::Bezier {
-                    duration: Duration::from_millis(300),
-                    x1: 0.0,
-                    y1: 0.0,
-                    x2: 1.0,
-                    y2: 1.0,
-                },
+                Animation::bezier(Duration::from_millis(300), 0.0, 0.0, 1.0, 1.0),
                 0.3,
             ),
-            (
-                Animation::Spring {
-                    stiffness: 170.0,
-                    damping: 15.0,
-                },
-                0.15,
-            ),
+            (Animation::spring(170.0, 15.0), 0.15),
         ];
         for (animation, expected) in table {
             assert_eq!(

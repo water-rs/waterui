@@ -292,7 +292,7 @@ view types that is genuinely open at run time.
 let count = Binding::new(0);                     // inferred as Binding<i32>
 let flag  = binding(false);                      // Binding<bool>; equivalent to Binding::new
 let name  = binding(String::new());              // any Clone type
-let sel: Binding<Option<Selected>> = Binding::default();   // empty optional
+let sel: Binding<Option<Media>> = Binding::default();      // empty optional
 
 let pane = binding(Pane::Inbox);                 // Binding<Pane>
 let settings = Settings::binding();              // #[form] types: inference-free
@@ -513,13 +513,13 @@ web, graphics, and data rows live in [references/media.md](references/media.md).
 | Interaction | `.on_tap` `.gesture` `TapGesture` `LongPressGesture` `DragGesture` `.draggable` `.drop_destination` `.on_hover_enter` `.cursor` |
 | Text | `text` `text!` `StyledStr` `Code` `RichText` `include_markdown!` `FlowMarkdown` |
 | Collections | `List` `ForEach` `Lazy` `StateList` `SignalCollection` `ScrollController` `Table` `TableColumn` `TableSort` `SortDirection` `table` `col` |
-| Content | `Avatar` `Link` `Accordion` `.badge(n)` `loading()` |
+| Content | `Avatar` `Link` `Disclosure` `.badge(n)` `loading()` |
 | Navigation | `Tabs` `Tab` `NavigationStack` `NavigationLink` `NavigationSplitView` `Window` |
 | Forms | `#[form]` `form()` `DatePicker` `Calendar` `ColorPicker` `FilePicker` |
 | Overlays | `.snackbar_host` `.snackbar_host_with_icons` `Snackbar` `SnackbarManager` `.sheet` `Sheet` `SheetDetent` `SheetDismiss` `Card` `suspense` `.anchored_overlay` `AnchoredOverlay` `.dialog` `Dialog` `DialogAction` |
 | Media | `Photo` `Image` `VideoPlayer` `PlaybackSession` `MediaPicker` |
 | Data | `waterui::chart` (13 kinds: `line_chart` `bar_chart` `pie_chart` …) `Map` |
-| Graphics | `Canvas` `Barcode::qr()` `Svg` `shader!` `ParticleSystem` `GpuView` `ExternalFrameView` icon sets |
+| Graphics | `Canvas` `Barcode` `Svg` `shader!` `ParticleSystem` `GpuView` `ExternalFrameView` icon sets |
 | Platform | `WebView` `#[js_api]` `waterui-chromium` `waterui_apple::AppleView` `hydrolysis::AndroidView` |
 
 ## Verify before declaring done

@@ -46,6 +46,7 @@ use waterui_core::plugin::Plugin;
 use waterui_core::{AnyView, Environment, SerialDispatch, View, flatten_signal};
 use waterui_graphics::{Color, color::WorkingColor};
 use waterui_layout::{Point, Rect, Size};
+use waterui_text::{IntoText, Text};
 
 pub use super::window_close::CloseReply;
 use super::window_close::{CloseRequest, Question, WeakCloseRequest};
@@ -67,7 +68,7 @@ use crate::{background::Material, component::label::LabelDisplayMode, theme::col
 /// until [`Window::toolbar`] attaches one), keeping the toolbar view type
 /// intact up to the backend as well.
 pub struct Window<C, T = ()> {
-    title: Computed<Str>,
+    title: Text,
     closable: bool,
     resizable: bool,
     frame: Binding<Rect>,
@@ -1126,18 +1127,22 @@ impl From<WindowStyle> for Binding<WindowStyle> {
 impl<B: ViewBuilder> Window<WindowContent<B>> {
     /// Create a new window with the specified title and content.
     ///
+    /// Accepts any [`IntoText`] value for `title` so string literals resolve
+    /// through the active translation catalog in the application's
+    /// [`Environment`].
+    ///
     /// The window owns a [`WindowState::Normal`] state binding by default so it
     /// opens immediately when declared on [`App`](crate::app::App). Chain
     /// [`Window::state`] to bind the window's lifetime to an external
     /// `Binding<WindowState>`.
     #[must_use]
-    pub fn new(title: impl IntoComputed<Str>, content: B) -> Self {
+    pub fn new(title: impl IntoText, content: B) -> Self {
         let default_frame = Rect::new(Point::zero(), Size::new(800.0, 600.0));
         let content = WindowContent(content);
         let state = Binding::new(WindowState::Normal);
         let close_request = CloseRequest::new(&state);
         Self {
-            title: title.into_computed(),
+            title: title.into_text(),
             closable: true,
             resizable: true,
             frame: Binding::new(default_frame),
@@ -1232,13 +1237,15 @@ impl<C, T> Window<C, T> {
         self.frame.snapshot()
     }
 
-    /// Takes this window apart for a backend runner.
+    /// Takes this window apart for a backend runner, resolving its title
+    /// against `env` so localized titles track the application's translation
+    /// catalog and locale.
     ///
     /// Wraps `content` in [`WindowHandleContent`] with the finalized
     /// [`WindowHandle`] so every view and handler inside the window extracts
     /// its own `WindowHandle` from the environment on every backend.
     #[must_use]
-    pub fn into_parts(self) -> WindowParts<WindowHandleContent<C>, T> {
+    pub fn into_parts(self, env: &Environment) -> WindowParts<WindowHandleContent<C>, T> {
         let handle = self.handle();
         let Self {
             title,
@@ -1263,6 +1270,11 @@ impl<C, T> Window<C, T> {
             close_request,
             focus_request,
         } = self;
+        let title = title
+            .resolve(env)
+            .content()
+            .map(|styled| styled.to_plain())
+            .computed();
         WindowParts {
             title,
             closable,
@@ -1530,9 +1542,12 @@ impl<C, T> Window<C, T> {
     }
 
     /// Set the title of the window.
+    ///
+    /// Accepts any [`IntoText`] value so string literals resolve through the
+    /// active translation catalog in the application's [`Environment`].
     #[must_use]
-    pub fn title(mut self, title: impl IntoComputed<Str>) -> Self {
-        self.title = title.into_computed();
+    pub fn title(mut self, title: impl IntoText) -> Self {
+        self.title = title.into_text();
         self
     }
 
@@ -1548,10 +1563,13 @@ impl<C, T> Window<C, T> {
     /// which leaves the decision to the platform: a bundle knows its own name
     /// and keeps whatever it had.
     #[must_use]
-    pub fn display_title(&self) -> Computed<Str> {
+    pub fn display_title(&self, env: &Environment) -> Computed<Str> {
         let application = application_name();
         self.title
+            .resolve(env)
+            .content()
             .map(move |declared| {
+                let declared = declared.to_plain();
                 if declared.is_empty() {
                     application.clone()
                 } else {
@@ -2131,14 +2149,29 @@ mod tests {
             let manager = manager.clone();
             move |window| {
                 let built: &'static str = window.build_content().0;
-                received.borrow_mut().push((window.title.snapshot(), built));
+                let title = window
+                    .title
+                    .resolve(&Environment::new())
+                    .content()
+                    .snapshot()
+                    .to_plain();
+                received.borrow_mut().push((title, built));
                 if !nested.replace(true) {
                     Window::new("third", body("c")).show(&manager);
                 }
             }
         });
         assert_eq!(queued.len(), 1);
-        assert_eq!(queued[0].title.snapshot().as_str(), "first");
+        assert_eq!(
+            queued[0]
+                .title
+                .resolve(&Environment::new())
+                .content()
+                .snapshot()
+                .to_plain()
+                .as_str(),
+            "first"
+        );
         assert_eq!(queued[0].build_content().0, "a");
 
         Window::new("second", body("b")).show(&manager);
@@ -2167,7 +2200,7 @@ mod tests {
             .state(&state)
             .closable(false)
             .default_size(Size::new(1024.0, 768.0))
-            .into_parts();
+            .into_parts(&Environment::new());
 
         assert!(!parts.closable);
         assert_eq!(
@@ -2183,6 +2216,45 @@ mod tests {
             .expect("Window::into_parts installs WindowHandle as handler state");
         handle.maximize();
         assert_eq!(state.snapshot(), WindowState::Maximized);
+    }
+
+    #[test]
+    fn window_title_resolves_through_translation_catalog_and_a11y_metadata() {
+        use waterui_core::metadata::Metadata;
+        use waterui_locale::{TranslationCatalog, locales};
+
+        use crate::ViewExt as _;
+
+        let locale = Binding::new(locales::EN);
+        let mut env = Environment::new();
+        env.insert(locale.clone());
+        env.insert(
+            TranslationCatalog::new()
+                .add_toml(
+                    locales::FR,
+                    "\"Settings\" = \"Réglages\"\n\"Close window\" = \"Fermer la fenêtre\"\n\"Ready\" = \"Prêt\"",
+                )
+                .expect("test catalog must parse"),
+        );
+
+        let parts = Window::new("Settings", || ()).into_parts(&env);
+        assert_eq!(parts.title.snapshot().as_str(), "Settings");
+
+        let Metadata {
+            value: a11y_label, ..
+        } = ().a11y_label("Close window");
+        let Metadata {
+            value: a11y_value, ..
+        } = ().a11y_value("Ready");
+        let label_signal = a11y_label.resolve(&env);
+        let value_signal = a11y_value.resolve(&env);
+        assert_eq!(label_signal.snapshot().as_str(), "Close window");
+        assert_eq!(value_signal.snapshot().as_str(), "Ready");
+
+        locale.set(locales::FR);
+        assert_eq!(parts.title.snapshot().as_str(), "Réglages");
+        assert_eq!(label_signal.snapshot().as_str(), "Fermer la fenêtre");
+        assert_eq!(value_signal.snapshot().as_str(), "Prêt");
     }
 
     #[test]

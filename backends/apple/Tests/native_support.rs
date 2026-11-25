@@ -80,7 +80,7 @@ pub fn block_on_main<F: core::future::Future>(seconds: f64, future: F) -> F::Out
     }
 }
 
-/// The least wall-clock time a native `Animation::Default` scroll takes.
+/// The least wall-clock time a native `Animation::DEFAULT` scroll takes.
 ///
 /// Measured from the request to the landing, it is well under `AppKit`'s
 /// 0.25 s group and `UIKit`'s own scroll animation. A jump lands at once;
@@ -357,7 +357,7 @@ pub fn realize_into_shown_scene(
     env: &Environment,
     window: cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIWindow>,
 ) -> RealizedScene {
-    let declaration = crate::windows::root_window(declaration);
+    let declaration = crate::windows::root_window(declaration, env);
     let controller = cocoa_ui::uikit::ViewController::new(mtm, cocoa_ui::uikit::window_root(mtm));
     window.setRootViewController(Some(&controller));
     window.makeKeyAndVisible();
@@ -733,7 +733,7 @@ pub mod toolbar_reach {
     use waterui::component::list::List;
     use waterui::id::SelfId;
     use waterui::navigation::{
-        NavigationLink, NavigationPath, NavigationStack, NavigationView, Tab, Tabs, tab_style,
+        NavigationLink, NavigationPath, NavigationStack, NavigationView, Tab, TabStyle, Tabs,
     };
     use waterui::prelude::{scroll, text, vstack, zstack};
     use waterui::reactive::binding;
@@ -1096,7 +1096,7 @@ pub mod toolbar_reach {
                 }),
             ),
         )
-        .style(tab_style::Automatic)
+        .style(TabStyle::Automatic)
     }
 
     /// The navigation example's Inbox: its `List` of navigation-link rows
@@ -2357,7 +2357,7 @@ pub fn inspector_tree(
 pub mod chrome_top {
     use cocoa_ui::objc2_app_kit::{NSSegmentedControl, NSTextField, NSView};
     use cocoa_ui::{MainThreadMarker, Retained};
-    use waterui::navigation::{NavigationView, Tab, Tabs, tab_style};
+    use waterui::navigation::{NavigationView, Tab, TabStyle, Tabs};
     use waterui::prelude::text;
     use waterui::reactive::binding;
     use waterui::window::WindowStyle;
@@ -2486,7 +2486,7 @@ pub mod chrome_top {
                         Tab::new("Second", || text("second")),
                     ),
                 )
-                .style(tab_style::Automatic)
+                .style(TabStyle::Automatic)
             },
             |root| {
                 let (_, window_top) = in_window(root, root.bounds());

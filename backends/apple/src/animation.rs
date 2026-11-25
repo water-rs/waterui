@@ -9,36 +9,25 @@
 
 use std::rc::Rc;
 
-use cocoa_ui::core_animation::Timing;
-use waterui::animation::Animation;
-use waterui::animation::ChangeAnimation;
+use cocoa_ui::core_animation::{Playback, Timing};
+use waterui::animation::{Animation, ChangeAnimation};
 use waterui::reactive::watcher::Metadata;
 
-/// The kit timing `animation` plays under: its shared timing, the one core
-/// and the Cherenkov engine evaluate.
-///
-/// `Default` is the 0.25s ease-in-out bezier core defines it as; `Bezier`
-/// carries the curve's own duration and control points; `Spring` hands the
-/// shared spring to a spring primitive (`UISpringTimingParameters` on iOS,
-/// `CASpringAnimation` on macOS), which takes its stiffness, damping
-/// coefficient and settling duration from it.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "the control points are authored as f32 and widen to f64 exactly, so they narrow back exactly"
-)]
-pub fn timing(animation: &Animation) -> Timing {
-    match animation.clone().validated().timing() {
-        waterui::easing::Timing::Curve { curve, duration } => Timing::Bezier {
-            duration,
-            control_points: [
-                curve.x1 as f32,
-                curve.y1 as f32,
-                curve.x2 as f32,
-                curve.y2 as f32,
-            ],
-        },
-        waterui::easing::Timing::Spring(spring) => Timing::Spring(spring),
-    }
+/// The kit playback specification `animation` plays under: its shared timing,
+/// delay, speed, and repeat policy, matching core and the Cherenkov engine.
+pub fn timing(animation: &Animation) -> Playback {
+    animation.clone().validated().playback()
+}
+
+/// The single-cycle duration `metadata` calls for in a cross-dissolve, in seconds.
+pub fn cross_dissolve_duration(metadata: &Metadata) -> Option<f64> {
+    let animation = ChangeAnimation::of(metadata).animation()?;
+    let playback = timing(&animation);
+    let speed = playback.effective_speed();
+    Some(match playback.timing {
+        Timing::Curve { duration, .. } => duration.max(0.0) / speed,
+        Timing::Spring(_) => 0.15 / speed,
+    })
 }
 
 /// `withPlatformAnimation`: runs `body` under the platform animation
@@ -67,50 +56,78 @@ mod tests {
     use core::time::Duration;
 
     use super::*;
+    use waterui::animation::Repeat;
 
-    /// `Animation::Default` maps to the 0.25s ease-in-out bezier the FFI
+    /// `Animation::DEFAULT` maps to the 0.25s ease-in-out bezier the FFI
     /// spells the system animation as.
     #[test]
     fn default_maps_to_system_bezier() {
-        assert_eq!(
-            timing(&Animation::Default),
-            Timing::Bezier {
-                duration: 0.25,
-                control_points: [0.42, 0.0, 0.58, 1.0],
-            }
-        );
+        let playback = timing(&Animation::DEFAULT);
+        assert_eq!(playback.delay, 0.0);
+        assert_eq!(playback.speed, 1.0);
+        assert_eq!(playback.repeat, Repeat::Once);
+        let Timing::Curve { curve, duration } = playback.timing else {
+            panic!("default animation plays as a bezier curve");
+        };
+        assert!((duration - 0.25).abs() < 1e-12);
+        assert!((curve.x1 - f64::from(0.42_f32)).abs() < 1e-12);
+        assert_eq!(curve.y1, 0.0);
+        assert!((curve.x2 - f64::from(0.58_f32)).abs() < 1e-12);
+        assert_eq!(curve.y2, 1.0);
     }
 
-    /// `Animation::Bezier` carries its own duration and control points.
+    /// `Animation::bezier` carries its own duration and control points.
     #[test]
     fn bezier_maps_duration_and_control_points() {
-        assert_eq!(
-            timing(&Animation::Bezier {
-                duration: Duration::from_millis(400),
-                x1: 0.1,
-                y1: 0.2,
-                x2: 0.9,
-                y2: 0.8,
-            }),
-            Timing::Bezier {
-                duration: 0.4,
-                control_points: [0.1, 0.2, 0.9, 0.8],
-            }
-        );
+        let playback = timing(&Animation::bezier(
+            Duration::from_millis(400),
+            0.1,
+            0.2,
+            0.9,
+            0.8,
+        ));
+        let Timing::Curve { curve, duration } = playback.timing else {
+            panic!("bezier animation plays as a bezier curve");
+        };
+        assert!((duration - 0.4).abs() < 1e-12);
+        assert!((curve.x1 - f64::from(0.1_f32)).abs() < 1e-12);
+        assert!((curve.y1 - f64::from(0.2_f32)).abs() < 1e-12);
+        assert!((curve.x2 - f64::from(0.9_f32)).abs() < 1e-12);
+        assert!((curve.y2 - f64::from(0.8_f32)).abs() < 1e-12);
     }
 
-    /// `Animation::Spring` hands the platform primitive the shared spring,
+    /// `Animation::spring` hands the platform primitive the shared spring,
     /// whose stiffness and damping coefficient are the authored ones.
     #[test]
     fn spring_maps_stiffness_and_damping() {
-        let Timing::Spring(spring) = timing(&Animation::Spring {
-            stiffness: 120.0,
-            damping: 14.0,
-        }) else {
+        let Timing::Spring(spring) = timing(&Animation::spring(120.0, 14.0)).timing else {
             panic!("a spring plays as a spring");
         };
         assert_eq!(spring, waterui::easing::Spring::from_physics(120.0, 14.0));
         assert!((spring.stiffness() - 120.0).abs() < 1e-9);
         assert!((spring.damping_coefficient() - 14.0).abs() < 1e-9);
+    }
+
+    /// `delay`, `speed`, and `repeat` modifiers propagate onto [`Playback`].
+    #[test]
+    fn modifiers_map_onto_playback() {
+        let playback = timing(
+            &Animation::linear(Duration::from_millis(500))
+                .delay(Duration::from_millis(125))
+                .speed(2.0)
+                .repeat(Repeat::Count {
+                    count: 3,
+                    autoreverse: true,
+                }),
+        );
+        assert!((playback.delay - 0.125).abs() < 1e-12);
+        assert!((playback.speed - 2.0).abs() < 1e-12);
+        assert_eq!(
+            playback.repeat,
+            Repeat::Count {
+                count: 3,
+                autoreverse: true,
+            }
+        );
     }
 }

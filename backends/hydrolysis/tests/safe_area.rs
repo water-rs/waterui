@@ -25,6 +25,7 @@ use waterui::layout::safe_area::{EdgeSet, IgnoreSafeArea, SafeAreaRegions};
 use waterui::layout::scroll::ScrollView;
 use waterui::navigation::NavigationView;
 use waterui::prelude::*;
+use waterui::text::IntoText;
 use waterui::{AnyView, Binding, Color, View};
 mod support;
 
@@ -59,7 +60,7 @@ fn card(label: &'static str) -> impl View {
 /// release moves, not the answer-sized response inside it.
 fn edge_probe(
     view: impl View,
-    label: impl signal::IntoComputed<Str>,
+    label: impl IntoText,
     ignore: impl Into<IgnoreSafeArea>,
 ) -> impl View {
     view.ignore_safe_area(ignore)

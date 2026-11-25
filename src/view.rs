@@ -30,6 +30,7 @@ use waterui_core::{
     plugin::Plugin,
 };
 use waterui_graphics::color::Color;
+use waterui_icon::IconSize;
 
 /// All view-level filter modifiers (`.blur()`, `.brightness()`, ...) come
 /// from [`waterui_graphics::filter_view::FilterViewExt`]. This re-export
@@ -85,11 +86,12 @@ use waterui_controls::button::{ButtonStyleHook, IntoButtonStyle};
 use waterui_controls::toggle::{IntoToggleStyle, ToggleStyleHook};
 use waterui_core::id::TaggedView;
 use waterui_interaction::event::{
-    Event, HoverEvent, LifeCycle, LifeCycleHook, OnChange, OnEvent, TaskHook,
+    EventTarget, HoverEvent, LifeCycle, LifeCycleHook, OnChange, OnEvent, TaskHook,
 };
 use waterui_interaction::interaction::{Disabled, InteractionReport, InteractionState, Selected};
 use waterui_interaction::key::{KeyHandling, KeyPress, OnKeyPress};
 use waterui_structural_transition::{Transition, Transitioned};
+use waterui_text::IntoText;
 
 /// The inset a bare [`ViewExt::padding`] applies.
 ///
@@ -445,6 +447,14 @@ pub trait ViewExt: View + Sized {
         self.with(theme::Tint::new(color))
     }
 
+    /// Sets the shared icon size (in points) for icons in this view's subtree.
+    ///
+    /// Icons read the nearest [`IconSize`] in the environment and default to `24.0`
+    /// points when none is installed.
+    fn icon_size(self, size: impl IntoSignalF32) -> With<Self, IconSize> {
+        self.with(IconSize::new(size))
+    }
+
     /// Adds an overlay to this view.
     ///
     /// Unlike `ZStack`, `Overlay` will not affect the size of the base view.
@@ -522,13 +532,23 @@ pub trait ViewExt: View + Sized {
         self.lifecycle(LifeCycle::Appear, handler)
     }
 
-    /// Adds an event handler for the specified interaction event.
+    /// Adds an event handler for the specified interaction event target.
     ///
     /// You may want to use `ViewExt::on_hover_enter`, `ViewExt::on_hover_move`,
     /// or `ViewExt::on_hover_exit` for convenience.
-    fn event<H, Args>(self, event: Event, handler: H) -> Metadata<OnEvent, Self>
+    ///
+    /// Passing a payload-expecting handler for a payload-free event fails to
+    /// compile:
+    ///
+    /// ```compile_fail
+    /// use waterui::event::{HoverEnter, HoverEvent};
+    /// use waterui::prelude::*;
+    ///
+    /// let _ = Divider.event(HoverEnter, |_: HoverEvent| {});
+    /// ```
+    fn event<E, H, Args>(self, event: E, handler: H) -> Metadata<OnEvent, Self>
     where
-        H: Handler<Args, ()>,
+        E: EventTarget<H, Args>,
     {
         Metadata::new(self, OnEvent::new(event, handler))
     }
@@ -540,6 +560,16 @@ pub trait ViewExt: View + Sized {
     ///
     /// # Arguments
     /// * `handler` - The action to execute when hover starts
+    ///
+    /// Hover enter carries no payload, so requesting [`HoverEvent`] fails to
+    /// compile:
+    ///
+    /// ```compile_fail
+    /// use waterui::event::HoverEvent;
+    /// use waterui::prelude::*;
+    ///
+    /// let _ = Divider.on_hover_enter(|_: HoverEvent| {});
+    /// ```
     fn on_hover_enter<H, Args>(self, handler: H) -> Metadata<OnEvent, Self>
     where
         H: Handler<Args, ()>,
@@ -817,13 +847,24 @@ pub trait ViewExt: View + Sized {
 
     /// Sets the accessibility label for this view.
     ///
-    /// The label is reactive: pass a signal and a label derived from app state
-    /// (`"3 unread messages"`) stays current without rebuilding the subtree.
+    /// Accepts any [`IntoText`] value: string literals resolve through the
+    /// active translation catalog in the surrounding [`Environment`], and
+    /// reactive signals stay current without rebuilding the subtree.
     ///
     /// # Arguments
-    /// * `label` - The accessibility label to apply, constant or reactive
-    fn a11y_label(self, label: impl IntoComputed<Str>) -> Metadata<AccessibilityLabel, Self> {
-        Metadata::new(self, accessibility::AccessibilityLabel::new(label))
+    /// * `label` - The accessibility label to apply
+    fn a11y_label(self, label: impl IntoText) -> Metadata<AccessibilityLabel, Self> {
+        let label = label.into_text();
+        Metadata::new(
+            self,
+            accessibility::AccessibilityLabel::resolved(move |env| {
+                label
+                    .resolve(env)
+                    .content()
+                    .map(|styled| styled.to_plain())
+                    .computed()
+            }),
+        )
     }
 
     /// Sets the accessibility value for this view.
@@ -834,13 +875,24 @@ pub trait ViewExt: View + Sized {
     /// applying a human-readable `.a11y_label(...)` no longer discards the
     /// content a component publishes about itself.
     ///
-    /// The value is reactive: pass a signal and it stays current without
-    /// rebuilding the subtree.
+    /// Accepts any [`IntoText`] value: string literals resolve through the
+    /// active translation catalog in the surrounding [`Environment`], and
+    /// reactive signals stay current without rebuilding the subtree.
     ///
     /// # Arguments
-    /// * `value` - The accessibility value to apply, constant or reactive
-    fn a11y_value(self, value: impl IntoComputed<Str>) -> Metadata<AccessibilityValue, Self> {
-        Metadata::new(self, accessibility::AccessibilityValue::new(value))
+    /// * `value` - The accessibility value to apply
+    fn a11y_value(self, value: impl IntoText) -> Metadata<AccessibilityValue, Self> {
+        let value = value.into_text();
+        Metadata::new(
+            self,
+            accessibility::AccessibilityValue::resolved(move |env| {
+                value
+                    .resolve(env)
+                    .content()
+                    .map(|styled| styled.to_plain())
+                    .computed()
+            }),
+        )
     }
 
     /// Sets the accessibility role for this view.
@@ -904,16 +956,6 @@ pub trait ViewExt: View + Sized {
         Metadata::new(self, accessibility::AccessibilityStateSignal::new(state))
     }
 
-    /// Temporary Step-1 compatibility alias until split crates migrate to
-    /// [`ViewExt::a11y_state`].
-    #[doc(hidden)]
-    fn a11y_state_signal(
-        self,
-        state: impl IntoComputed<accessibility::AccessibilityState>,
-    ) -> Metadata<accessibility::AccessibilityStateSignal, Self> {
-        self.a11y_state(state)
-    }
-
     /// Observes a gesture and executes an action whose handler consumes
     /// `G::Event` as its first argument, followed by environment extractors.
     ///
@@ -940,7 +982,7 @@ pub trait ViewExt: View + Sized {
         G: GestureType,
         H: EventHandler<G::Event, Args>,
     {
-        Metadata::new(self, GestureObserver::from_event(gesture, action))
+        Metadata::new(self, GestureObserver::new(gesture, action))
     }
 
     /// Adds a tap gesture recognizer to this view that triggers the specified action.
@@ -1041,7 +1083,11 @@ pub trait ViewExt: View + Sized {
     /// // Simple border on all edges
     /// text!("Hello").border(Color::red(), 2.0);
     /// ```
-    fn border(self, color: impl IntoSignal<Color> + 'static, width: f32) -> Metadata<Border, Self> {
+    fn border(
+        self,
+        color: impl IntoSignal<Color> + 'static,
+        width: impl IntoSignalF32,
+    ) -> Metadata<Border, Self> {
         Metadata::new(self, Border::new(color, width))
     }
 

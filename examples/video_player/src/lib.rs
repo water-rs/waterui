@@ -85,7 +85,7 @@ pub fn demo() -> impl View {
 
     let player = VideoPlayer::new(session)
         .show_controls(true)
-        .content_mode(video::ContentMode::Fit)
+        .content_mode(ContentMode::Fit)
         .on_event({
             let status = status.clone();
             let is_buffering = is_buffering.clone();
@@ -172,7 +172,7 @@ impl View for PreviewPlayer {
         )));
         let player = VideoPlayer::new(PlaybackSession::new(Playlist::single(url)))
             .show_controls(true)
-            .content_mode(video::ContentMode::Fit)
+            .content_mode(ContentMode::Fit)
             .on_event({
                 let status = status.clone();
                 move |event| match event {

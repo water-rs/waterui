@@ -50,7 +50,7 @@ let name  = binding(Str::from("Ada"));           // any Clone type
 let items = binding(Vec::<Row>::new());
 let status = binding("Waiting…");                // Binding<&'static str> — fine for status text
 
-let sel: Binding<Option<Selected>> = Binding::default();   // empty optional selection
+let sel: Binding<Option<Media>> = Binding::default();      // empty optional selection
 let pane = binding(Pane::Inbox);                           // Binding<Pane>
 ```
 
@@ -291,8 +291,8 @@ view.scale(animated)
 
 Curves: `Animation::linear(d)`, `ease_in(d)`, `ease_out(d)`, `ease_in_out(d)`,
 `spring(stiffness, damping)`, `bezier(d, x1, y1, x2, y2)`, and `Animation::default()`
-(the system default). `.with(animation)` is the one attachment spelling to use.
-`.animated()` is shorthand for `.with(Animation::Default)`; it comes from `AnimationExt`,
+(the system default), modified with `.delay(d)`, `.speed(factor)`, and `.repeat(Repeat::Once | Count { count, autoreverse } | Forever { autoreverse })`. `.with(animation)` is the one attachment spelling to use.
+`.animated()` is shorthand for `.with(Animation::default())`; it comes from `AnimationExt`,
 which the prelude re-exports and `waterui::animation` also exports — one trait, one
 meaning, whichever path you import it by.
 

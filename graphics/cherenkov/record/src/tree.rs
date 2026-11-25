@@ -641,7 +641,9 @@ impl<T: Animatable> Track<T> {
             Motion::Animation(Animation::Decay(_)) => {
                 self.last.map_or(self.velocity, |(_, _, vel)| vel).max_abs() >= scale * 60.0
             }
-            Motion::Animation(Animation::Spring(_) | Animation::Curve(_))
+            Motion::Animation(
+                Animation::Spring(_) | Animation::Curve(_) | Animation::Scheduled(_),
+            )
             | Motion::Keyframes(_) => true,
         }
     }

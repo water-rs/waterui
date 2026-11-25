@@ -19,10 +19,13 @@ use std::ptr;
 use nami::{Binding, Computed, Signal, SignalExt as _};
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
-use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
-use objc2_app_kit::{NSAppearance, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplication};
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
+use objc2_app_kit::{
+    NSAppearance, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplication, NSWorkspace,
+    NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification,
+};
 use objc2_foundation::{
-    NSArray, NSDictionary, NSKeyValueObservingOptions, NSObject,
+    NSArray, NSDictionary, NSKeyValueObservingOptions, NSNotification, NSObject,
     NSObjectNSKeyValueObserverRegistration, NSObjectProtocol, NSString, ns_string,
 };
 use waterui::theme::ColorScheme;
@@ -89,24 +92,70 @@ impl AppearanceObserver {
     }
 }
 
-/// The application's appearance as a colour-scheme signal, kept current for
-/// as long as this value lives.
+struct ReduceMotionIvars {
+    reduce_motion: Binding<bool>,
+}
+
+define_class!(
+    // SAFETY: `NSObject` has no subclassing requirements, and the class does
+    // not implement `Drop`.
+    #[unsafe(super(NSObject))]
+    #[name = "WuiHydrolysisReduceMotionObserver"]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = ReduceMotionIvars]
+    struct ReduceMotionObserver;
+
+    // SAFETY: `NSObjectProtocol` asks nothing of an `NSObject` subclass.
+    unsafe impl NSObjectProtocol for ReduceMotionObserver {}
+
+    impl ReduceMotionObserver {
+        // SAFETY: matches the `NSNotificationCenter` observer selector signature.
+        #[unsafe(method(accessibilityDisplayOptionsDidChange:))]
+        fn accessibility_display_options_did_change(&self, _notification: Option<&NSNotification>) {
+            sync_reduce_motion(
+                &self.ivars().reduce_motion,
+                NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion(),
+            );
+        }
+    }
+);
+
+impl ReduceMotionObserver {
+    fn new(mtm: MainThreadMarker, reduce_motion: Binding<bool>) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(ReduceMotionIvars { reduce_motion });
+        // SAFETY: `init` is `NSObject`'s designated initializer.
+        unsafe { msg_send![super(this), init] }
+    }
+}
+
+fn sync_reduce_motion(reduce_motion: &Binding<bool>, reduced: bool) {
+    if reduce_motion.snapshot() != reduced {
+        reduce_motion.set(reduced);
+    }
+}
+
+/// The application's appearance and accessibility motion preference as signals,
+/// kept current for as long as this value lives.
 pub struct SystemAppearance {
     scheme: Binding<ColorScheme>,
+    reduce_motion: Binding<bool>,
     application: Retained<NSApplication>,
     observer: Retained<AppearanceObserver>,
+    reduce_motion_observer: Retained<ReduceMotionObserver>,
 }
 
 impl core::fmt::Debug for SystemAppearance {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("SystemAppearance")
             .field("scheme", &self.scheme.snapshot())
+            .field("reduce_motion", &self.reduce_motion.snapshot())
             .finish_non_exhaustive()
     }
 }
 
 impl SystemAppearance {
-    /// Reads the application's current appearance and observes its changes.
+    /// Reads the application's current appearance and Reduce Motion preference
+    /// and observes their changes.
     ///
     /// Runs on the thread that owns the winit event loop, which on macOS is
     /// the main thread — `NSApplication` is main-thread only.
@@ -117,9 +166,11 @@ impl SystemAppearance {
         let application = NSApplication::sharedApplication(mtm);
         let scheme = nami::binding(color_scheme_of(&application.effectiveAppearance()));
         let observer = AppearanceObserver::new(mtm, scheme.clone());
-        // SAFETY: the observer implements the observation method; it is
-        // registered for one key path and removed for that key path in
-        // `Drop`, before the retained observer is released.
+        let workspace = NSWorkspace::sharedWorkspace();
+        let reduce_motion = Binding::new(workspace.accessibilityDisplayShouldReduceMotion());
+        let reduce_motion_observer = ReduceMotionObserver::new(mtm, reduce_motion.clone());
+        // SAFETY: the observers implement their registration methods; both
+        // are removed in `Drop` before the retained observers are released.
         unsafe {
             application.addObserver_forKeyPath_options_context(
                 &observer,
@@ -127,11 +178,20 @@ impl SystemAppearance {
                 NSKeyValueObservingOptions::New,
                 ptr::null_mut(),
             );
+            let center = workspace.notificationCenter();
+            center.addObserver_selector_name_object(
+                &reduce_motion_observer,
+                sel!(accessibilityDisplayOptionsDidChange:),
+                Some(NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification),
+                None,
+            );
         }
         Self {
             scheme,
+            reduce_motion,
             application,
             observer,
+            reduce_motion_observer,
         }
     }
 
@@ -139,15 +199,23 @@ impl SystemAppearance {
     pub fn scheme(&self) -> Computed<ColorScheme> {
         self.scheme.computed()
     }
+
+    /// The Reduce Motion signal following the system's accessibility preference.
+    pub fn reduce_motion(&self) -> Computed<bool> {
+        self.reduce_motion.computed()
+    }
 }
 
 impl Drop for SystemAppearance {
     fn drop(&mut self) {
-        // SAFETY: removes the registration `observe` made, for the same key
-        // path, while the observer is still retained.
+        // SAFETY: removes the registrations `observe` made while the observers
+        // are still retained.
         unsafe {
             self.application
                 .removeObserver_forKeyPath(&self.observer, key_path());
+            NSWorkspace::sharedWorkspace()
+                .notificationCenter()
+                .removeObserver(&self.reduce_motion_observer);
         }
     }
 }

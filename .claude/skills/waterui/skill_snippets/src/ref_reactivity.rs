@@ -21,7 +21,7 @@ fn glue_row_view(row: Row) -> Text {
 // reactivity.md § "## Creating state" — rust block 1/23
 // ---------------------------------------------------------------------------
 pub fn reactivity_block_01() {
-    use waterui::media::media_picker::Selected;
+    use waterui::media::Media;
     use waterui::window::WindowState;
 
     #[derive(Clone)]
@@ -38,7 +38,7 @@ pub fn reactivity_block_01() {
     let items = Binding::new(Vec::<Row>::new());
     let status = Binding::new("Waiting…"); // Binding<&'static str> — fine for status text
 
-    let sel: Binding<Option<Selected>> = Binding::default(); // empty optional selection
+    let sel: Binding<Option<Media>> = Binding::default(); // empty optional selection
     let pane: Binding<Pane> = binding(Pane::Inbox); // general form
     let ws = binding::<WindowState>(WindowState::default()); // …or pin T with a turbofish
 
@@ -459,14 +459,15 @@ pub fn reactivity_block_14() {
 // reactivity.md § "## Animation" (prose curve list, not a fenced block):
 // `Animation::linear(d)`, `ease_in(d)`, `ease_out(d)`, `ease_in_out(d)`,
 // `spring(stiffness, damping)`, `bezier(d, x1, y1, x2, y2)`,
-// `Animation::default()`, `.with(animation)` as the one attachment spelling,
-// and `.animated()` as shorthand for `.with(Animation::Default)` — one
+// `Animation::default()`, `.delay(d)`, `.speed(factor)`, `.repeat(Repeat::...)`,
+// `.with(animation)` as the one attachment spelling,
+// and `.animated()` as shorthand for `.with(Animation::default())` — one
 // `AnimationExt`, reachable from the prelude and from `waterui::animation`.
 // Not counted as one of the 23 rust blocks.
 // ---------------------------------------------------------------------------
 pub fn reactivity_animation_prose() {
     use core::time::Duration;
-    use waterui::animation::Animation;
+    use waterui::animation::{Animation, Repeat};
 
     let d = Duration::from_millis(250);
     let _ = Animation::linear(d);
@@ -476,10 +477,14 @@ pub fn reactivity_animation_prose() {
     let _ = Animation::spring(300.0, 15.0);
     let _ = Animation::bezier(d, 0.2, 0.0, 0.2, 1.0);
     let _ = Animation::default();
+    let _ = Animation::ease_in_out(d)
+        .delay(Duration::from_millis(60))
+        .speed(1.5)
+        .repeat(Repeat::Forever { autoreverse: true });
 
     let scale = Binding::new(1.0_f32);
     let _ = scale.with(Animation::spring(300.0, 15.0)); // the one attachment spelling
-    let _ = scale.animated(); // shorthand for `.with(Animation::Default)`
+    let _ = scale.animated(); // shorthand for `.with(Animation::default())`
 }
 
 // ---------------------------------------------------------------------------

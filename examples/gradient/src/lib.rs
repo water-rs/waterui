@@ -1,13 +1,14 @@
 //! Gradient Example - Demonstrates `WaterUI`'s gradient system
 //!
 //! This example showcases the gradient views:
-//! - A mesh gradient whose colours follow a signal
+//! - A mesh gradient animated with a repeating hue rotation
 //! - An animated mesh gradient driven by the canvas clock
 //! - A GPU flowing shader gradient
 //! - Linear, radial, angular gradients
 //! - Mesh gradients with per-vertex colors
 //! - Shape fills with gradients
 
+use waterui::animation::{Animation, Repeat};
 use waterui::app::{App, Windows};
 use waterui::color::Working;
 use waterui::color::working::from_linear_srgb;
@@ -15,7 +16,6 @@ use waterui::layout::UnitPoint;
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::shape::{Circle, CornerRadius, RoundedRectangle};
-use waterui::task::sleep;
 
 use core::time::Duration;
 
@@ -25,77 +25,41 @@ fn color(r: f32, g: f32, b: f32) -> Color {
     Color::new(Working(from_linear_srgb([r, g, b], 1.0)))
 }
 
-/// Computes animated mesh colors based on elapsed time.
-/// Uses sine waves with different phases and frequencies for a dreamy fluid effect.
-fn compute_animated_colors(time: f32) -> [Color; 9] {
-    // Base palette - deep blues, purples, teals
-    let base_colors: [[f32; 3]; 9] = [
-        [0.1, 0.1, 0.3],   // Top-left: dark blue
-        [0.2, 0.1, 0.4],   // Top-center: purple
-        [0.3, 0.1, 0.3],   // Top-right: magenta
-        [0.1, 0.2, 0.4],   // Mid-left: blue
-        [0.2, 0.3, 0.5],   // Center: lighter blue
-        [0.3, 0.2, 0.4],   // Mid-right: purple
-        [0.05, 0.15, 0.3], // Bottom-left: dark teal
-        [0.1, 0.2, 0.35],  // Bottom-center: blue
-        [0.15, 0.1, 0.25], // Bottom-right: dark purple
-    ];
-
-    core::array::from_fn(|i| {
-        let base = base_colors[i];
-        // Each vertex has unique phase offsets for organic movement
-        let index = u8::try_from(i).expect("the mesh gradient has 9 vertices");
-        let phase = f32::from(index) * 0.7;
-        let x = f32::from(index % 3);
-        let y = f32::from(index / 3);
-
-        // Multiple sine waves at different frequencies for complex motion
-        let wave1 = time.mul_add(0.5, phase).sin() * 0.15;
-        let wave2 = x.mul_add(0.5, time * 0.3).sin() * 0.1;
-        let wave3 = y.mul_add(0.8, time * 0.7).cos() * 0.08;
-
-        // Apply waves to each color channel with different phases
-        color(
-            wave2.mul_add(0.5, base[0] + wave1).clamp(0.0, 1.0),
-            wave3.mul_add(0.5, base[1] + wave2).clamp(0.0, 1.0),
-            wave1.mul_add(0.5, base[2] + wave3).clamp(0.0, 1.0),
-        )
-    })
+/// Base 3×3 mesh gradient palette (deep blues, purples, teals).
+fn initial_mesh_colors() -> [Color; 9] {
+    [
+        color(0.1, 0.1, 0.3),   // Top-left: dark blue
+        color(0.2, 0.1, 0.4),   // Top-center: purple
+        color(0.3, 0.1, 0.3),   // Top-right: magenta
+        color(0.1, 0.2, 0.4),   // Mid-left: blue
+        color(0.2, 0.3, 0.5),   // Center: lighter blue
+        color(0.3, 0.2, 0.4),   // Mid-right: purple
+        color(0.05, 0.15, 0.3), // Bottom-left: dark teal
+        color(0.1, 0.2, 0.35),  // Bottom-center: blue
+        color(0.15, 0.1, 0.25), // Bottom-right: dark purple
+    ]
 }
 
-#[expect(
-    clippy::future_not_send,
-    reason = "UI animation task runs on the main thread"
-)]
-async fn animate_mesh_colors(colors: Binding<[Color; 9]>) {
-    // `std::time::Instant` panics on wasm32-unknown-unknown; web-time is the
-    // same clock natively and `performance.now()` in a browser.
-    let start = web_time::Instant::now();
-    loop {
-        let elapsed = start.elapsed().as_secs_f32();
-        colors.set(compute_animated_colors(elapsed));
-        sleep(Duration::from_millis(16)).await;
-    }
-}
-
-/// Demo: mesh gradient whose colours follow a signal
+/// Demo: mesh gradient whose hue cycles under a repeating `Animation`
 fn animated_background_section() -> impl View {
-    // Create binding for animated colors
-    let colors: Binding<[Color; 9]> = Binding::new(compute_animated_colors(0.0));
+    let active = Binding::new(false);
+    let hue = active.select(180.0_f32, 0.0_f32).with(
+        Animation::ease_in_out(Duration::from_secs(4))
+            .repeat(Repeat::Forever { autoreverse: true }),
+    );
 
     vstack((
         text("Animated Mesh Gradient").font_size(20.0),
-        "Colours follow a signal; each change updates the paint in place",
-        // The animated mesh gradient
+        "Colors flow under a repeating animation without a manual clock loop",
         zstack((
-            // Background: MeshGradient accepts Signal directly!
-            MeshGradient::new(3, 3, colors.clone()).size(300.0, 200.0),
-            // Overlay content
+            MeshGradient::new(3, 3, initial_mesh_colors())
+                .size(300.0, 200.0)
+                .hue_rotation(hue),
             vstack((
                 text("Fluid Background")
                     .font_size(24.0)
                     .foreground(Color::srgb(255, 255, 255)),
-                text("Colors flow over time").foreground(Color::srgb(200, 200, 255)),
+                text("Colors flow over time").foreground(Color::srgb(200, 220, 255)),
             ))
             .padding(),
         ))
@@ -103,7 +67,7 @@ fn animated_background_section() -> impl View {
     ))
     .spacing(12.0)
     .padding()
-    .task(move || animate_mesh_colors(colors))
+    .on_appear(move || active.set(true))
 }
 
 /// Demo: mesh gradient animated by the canvas clock (no per-frame CPU updates)

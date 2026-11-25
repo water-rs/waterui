@@ -15,8 +15,8 @@ use waterui::layout::frame::Frame;
 use waterui::layout::scroll::scroll;
 use waterui::reactive::collection::StateList;
 use waterui_media::{
-    LivePhoto, Media, MediaPicker, Photo, PhotoCache, PhotoEvent, PhotoStatus, Url,
-    live::LivePhotoSource, media_picker::Selected, photo,
+    LivePhoto, Media, MediaPicker, Photo, PhotoCache, PhotoEvent, PhotoStatus, PickerStatus, Url,
+    live::LivePhotoSource, photo,
 };
 use waterui_testing::{Role, UiBuilder};
 use waterui_testing::{RuntimeDriver, SemanticApp, TestStyle};
@@ -323,13 +323,27 @@ fn photo_in_lazy_list_serves_from_environment_cache_without_refetch(ui: UiBuilde
 
 #[waterui::test(viewport = (320, 200))]
 fn media_picker_exposes_label_to_accessibility_tree(ui: UiBuilder) {
-    let selection = Binding::new(None::<Selected>);
+    let selection = Binding::new(Some(Media::Image(Url::from_file_path_str(
+        "/tmp/seeded-avatar.png",
+    ))));
     let selection_for_second = selection.clone();
+    let photos = Binding::new(Vec::<Media>::new());
+    let status = Binding::new(PickerStatus::Idle);
+    let status_for_view = status.clone();
 
     let mut app = ui.mount(move || {
         waterui::component::vstack((
             MediaPicker::new("Choose photo", &selection),
             MediaPicker::new(label("Choose clip").icon(()), &selection_for_second),
+            MediaPicker::multiple("Choose photos", &photos)
+                .limit(10)
+                .status(&status_for_view),
+            waterui::component::Dynamic::watch(status_for_view.clone(), |current| match current {
+                PickerStatus::Failed(message) => {
+                    waterui::component::text(format!("Picker failed: {message}"))
+                }
+                _ => waterui::component::text("Picker ready"),
+            }),
         ))
     });
 
@@ -340,5 +354,15 @@ fn media_picker_exposes_label_to_accessibility_tree(ui: UiBuilder) {
     app.query()
         .role(Role::BUTTON)
         .label("Choose clip")
+        .assert_exists();
+    app.query()
+        .role(Role::BUTTON)
+        .label("Choose photos")
+        .assert_exists();
+    app.query().label("Picker ready").assert_exists();
+
+    status.set(PickerStatus::Failed("denied photo access".into()));
+    app.query()
+        .label("Picker failed: denied photo access")
         .assert_exists();
 }

@@ -19,4 +19,3 @@ workspace = true
 [dependencies]
 waterui = { workspace = true, features = ["gpu", "assets", "snackbar", "highlight", "locale-datetime", "locale-list", "toggle"] }
 waterui-core.workspace = true
-web-time.workspace = true

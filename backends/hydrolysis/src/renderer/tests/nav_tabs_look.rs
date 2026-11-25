@@ -560,7 +560,7 @@ fn tabs_compact_floating_bar_centers_pill_and_reserves_bottom_margin() {
 fn tabs_sidebar_ignores_compact_and_floating_margin() {
     use super::{capture_root_window, test_renderer_with_theme};
     use waterui_core::Binding;
-    use waterui_navigation::tab::tab_style;
+    use waterui_navigation::tab::TabStyle;
 
     let env = test_environment();
     let window = Rect::new(0.0, 0.0, 400.0, 300.0);
@@ -577,7 +577,7 @@ fn tabs_sidebar_ignores_compact_and_floating_margin() {
             .map(|name| Tab::new(name, move || NavigationView::new(name, text::text("pane"))))
             .collect::<Vec<_>>(),
     )
-    .style(tab_style::Sidebar);
+    .style(TabStyle::Sidebar);
     capture_root_window(&mut renderer, sidebar, &env, window);
     let sidebar_draws = bar_draws.borrow();
     let [sidebar_frame] = sidebar_draws.as_slice() else {

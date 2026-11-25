@@ -95,11 +95,11 @@ pub fn interaction_remaining_gestures_prose() {
 
 // ---------------------------------------------------------------------------
 // interaction.md § "## Gesture recognizers" (prose): the gesture payloads read
-// directly, and `HoverEvent` in an `.event(Event::HoverMove, ..)`
+// directly, and `HoverEvent` in an `.event(HoverMove, ..)`
 // handler. Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn interaction_event_payloads_prose() {
-    use waterui::event::{Event, HoverEvent};
+    use waterui::event::{HoverEvent, HoverMove};
     use waterui::gesture::{
         DragEvent, LongPressEvent, MagnificationEvent, MagnificationGesture, RotationEvent,
         RotationGesture, TapEvent,
@@ -119,7 +119,7 @@ pub fn interaction_event_payloads_prose() {
     });
     let _ = Divider.gesture(MagnificationGesture::new(1.0), |_: MagnificationEvent| ());
     let _ = Divider.gesture(RotationGesture::new(0.0), |_: RotationEvent| ());
-    let _ = Divider.event(Event::HoverMove, |hover: HoverEvent| {
+    let _ = Divider.event(HoverMove, |hover: HoverEvent| {
         let _ = hover.location();
     });
 }
@@ -293,12 +293,25 @@ pub mod interaction_block_08 {
 // counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn interaction_drop_extras_prose() {
+    use waterui::drag_drop::DropInfo;
+    use waterui::layout::Point;
+
+    let indicator = Binding::new(None::<Point>);
     let _ = text("copy me").draggable(Str::from("payload"));
     let _ = Divider.drop_destination(|_text: Str| ());
     let _ = Divider
-        .drop_destination(|_files: Files| ())
-        .on_enter(|| ())
-        .on_exit(|| ());
+        .drop_destination(|_files: Files, info: DropInfo| {
+            let _point = info.location();
+        })
+        .on_enter(
+            |info: DropInfo, State(ind): State<Binding<Option<Point>>>| {
+                ind.set(Some(info.location()));
+            },
+        )
+        .on_exit(|State(ind): State<Binding<Option<Point>>>| {
+            ind.set(None);
+        })
+        .state(&indicator);
 }
 
 /// Glue: keeps the module-scope `Transferable` import proven to resolve.

@@ -25,7 +25,7 @@ You declare *what* they are, and each backend projects that into its own platfor
 notebook on GTK, retained bar chrome in the self-drawn renderers.
 
 The same declaration therefore looks different — correctly — on each platform, and it
-adapts within a platform too: `tab_style::automatic()` is a tab bar on a phone and a
+adapts within a platform too: `TabStyle::Automatic` is a tab bar on a phone and a
 sidebar on a desktop-class window; `.large_title()` collapses on scroll on iOS and becomes
 a large app bar on Android. Do not try to control that from app code.
 
@@ -61,14 +61,14 @@ Tabs::new(
             .role(TabRole::Search), // iOS: the trailing system search tab; elsewhere a regular tab
     ),
 )
-.style(tab_style::automatic())
+.style(TabStyle::Automatic)
 .minimize_behavior(TabBarMinimizeBehavior::OnScrollDown)   // iOS 26 collapses the bar while scrolling; ignored elsewhere
 .bottom_accessory(now_playing_bar())        // iOS 26 glass bar above the tab bar (mini-player slot); not shown elsewhere
 ```
 
 A `Tab` is `Tab::new(label, content)` (`label` is `impl IntoLabel`, `content` any
 `Fn() -> impl View`) with `.badge(value)` (`u32`, `BadgeValue::{Hidden, Dot, Count, Text}`, or signal; `0` hides) and `.enabled(bool)` signals and `.role(..)`.
-Other styles: `tab_style::tab_bar()` and `tab_style::sidebar()` force one presentation;
+Other styles: `TabStyle::TabBar` and `TabStyle::Sidebar` force one presentation;
 `TabBarMinimizeBehavior` is `Automatic | Never | OnScrollDown | OnScrollUp`.
 
 **Give each tab its own navigation container when it pushes or splits** — a
@@ -279,14 +279,14 @@ rather than failing.
 ## Split views
 
 ```rust
-use waterui::navigation::NavigationSplitView;
+use waterui::navigation::{NavigationSplitStyle, NavigationSplitView};
 
 let selection: Binding<Option<Album>> = binding(Some(Album::default()));
 let sidebar_selection = selection.clone();
 
 NavigationSplitView::new(&selection, move || album_sidebar(sidebar_selection.clone()), album_detail)
     .sidebar_width(ColumnWidth::new(220.0, 280.0, 360.0))   // min, ideal, max
-    .style(split_style::prominent_detail())
+    .style(NavigationSplitStyle::ProminentDetail)
     .placeholder(|| text("No album selected"))
 ```
 
@@ -302,7 +302,7 @@ be owned outside them.
 content, detail)` adds a middle column with its own `Binding<Option<C>>`; the `content`
 closure maps the sidebar selection to a `NavigationView`. `.column_visibility(..)` takes a
 `NavigationSplitColumnVisibility` (`Automatic | All | DoubleColumn | DetailOnly`) or a
-signal of one. Styles: `split_style::automatic()`, `balanced()`, `prominent_detail()`.
+signal of one. Styles: `NavigationSplitStyle::{Automatic, Balanced, ProminentDetail}`.
 `ColumnWidth::new` panics unless `0 < min <= ideal <= max`.
 
 At compact widths a two-column split shows exactly one column, chosen by the
@@ -333,8 +333,9 @@ Each window's content and toolbar keep their types up to the backend, so nothing
 
 The `Window` builder, precisely:
 
-- `Window::new(title, content)` — the title is `impl IntoComputed<Str>` (a
-  reactive window title is free), and `content` is any `Fn() -> impl View`, so a bare
+- `Window::new(title, content)` — the title is `impl IntoText` (literals, `text!(...)`,
+  and reactive strings localize through the environment's `TranslationCatalog`), and
+  `content` is any `Fn() -> impl View`, so a bare
   function item works. The window owns an internal `WindowState::Normal` binding by
   default; chain `.state(&window_state)` when external code reads or drives its
   `Binding<WindowState>`. An empty title is shown as the application's own name;

@@ -19,8 +19,8 @@
 //! }
 //! ```
 
-use nami::signal::IntoSignal;
-use waterui_core::metadata::MetadataKey;
+use nami::{Computed, SignalExt, signal::IntoSignal};
+use waterui_core::{IntoSignalF32, metadata::MetadataKey};
 use waterui_graphics::color::Color;
 use waterui_layout::EdgeSet;
 
@@ -53,9 +53,9 @@ pub struct Border {
     /// The color of the border.
     color: Color,
     /// The width of the border in points.
-    width: f32,
+    width: Computed<f32>,
     /// The corner radius for rounded borders (0 = square corners).
-    corner_radius: f32,
+    corner_radius: Computed<f32>,
     /// Which edges to draw the border on (default: all edges).
     edges: EdgeSet,
 }
@@ -69,14 +69,14 @@ impl Border {
 
     /// The width of the border in points.
     #[must_use]
-    pub const fn width(&self) -> f32 {
-        self.width
+    pub const fn width(&self) -> &Computed<f32> {
+        &self.width
     }
 
     /// The corner radius for rounded borders (0 = square corners).
     #[must_use]
-    pub const fn get_corner_radius(&self) -> f32 {
-        self.corner_radius
+    pub const fn get_corner_radius(&self) -> &Computed<f32> {
+        &self.corner_radius
     }
 
     /// Which edges to draw the border on (default: all edges).
@@ -99,11 +99,11 @@ impl Border {
     /// * `color` - The color of the border
     /// * `width` - The width of the border in points
     #[must_use]
-    pub fn new(color: impl IntoSignal<Color> + 'static, width: f32) -> Self {
+    pub fn new(color: impl IntoSignal<Color> + 'static, width: impl IntoSignalF32) -> Self {
         Self {
             color: Color::from_signal(color),
-            width,
-            corner_radius: 0.0,
+            width: width.into_signal_f32().computed(),
+            corner_radius: 0.0_f32.into_signal_f32().computed(),
             edges: EdgeSet::ALL,
         }
     }
@@ -114,8 +114,8 @@ impl Border {
     ///
     /// * `radius` - The corner radius in points (0 = square corners)
     #[must_use]
-    pub const fn corner_radius(mut self, radius: f32) -> Self {
-        self.corner_radius = radius;
+    pub fn corner_radius(mut self, radius: impl IntoSignalF32) -> Self {
+        self.corner_radius = radius.into_signal_f32().computed();
         self
     }
 
@@ -146,11 +146,6 @@ impl Border {
 
 impl Default for Border {
     fn default() -> Self {
-        Self {
-            color: Color::srgb(0, 0, 0),
-            width: 1.0,
-            corner_radius: 0.0,
-            edges: EdgeSet::ALL,
-        }
+        Self::new(Color::srgb(0, 0, 0), 1.0)
     }
 }

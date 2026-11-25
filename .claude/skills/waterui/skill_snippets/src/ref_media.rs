@@ -6,7 +6,7 @@
 //! script file at expansion), `.navigation_policy(..)` (it compiles only for an Apple
 //! deployment target of OS 27, which this crate does not set).
 
-use waterui::media::media_picker::Selected;
+use waterui::media::Media;
 use waterui::prelude::*;
 
 // ---------------------------------------------------------------------------
@@ -84,38 +84,35 @@ pub fn media_block_02() {
 
 // ---------------------------------------------------------------------------
 // media.md § "## Media" — rust block 3/15
-// A statement sequence, then a handler-side line with its own receiver.
 // ---------------------------------------------------------------------------
 pub fn media_block_03() {
-    use waterui::media::media_picker::{MediaFilter, MediaPicker, Selected};
+    use waterui::media::Media;
+    use waterui::media::media_picker::{MediaFilter, MediaPicker, PickerStatus};
 
-    let selection: Binding<Option<Selected>> = Binding::default();
-    let _ = {
-        MediaPicker::new("Pick a photo", &selection).filter(MediaFilter::Image) // Image | Video | LivePhoto (the last two need `video`); takes a signal
-    };
+    let avatar: Binding<Option<Media>> = Binding::default();
+    let photos: Binding<Vec<Media>> = Binding::default();
+    let status: Binding<PickerStatus> = Binding::default();
+    let _ = MediaPicker::new("Avatar", &avatar)
+        .filter(MediaFilter::Image)
+        .status(&status);
+    let _ = MediaPicker::multiple("Photos", &photos)
+        .limit(10)
+        .status(&status);
 
     // The remaining filter variants named in the trailing comment.
     let _ = (MediaFilter::Video, MediaFilter::LivePhoto);
 }
 
-/// The handler-side half of block 3, which needs a `Selected` value in hand.
-pub fn media_block_03_handler(selected: Selected) {
-    // In a handler: Selected::load() is synchronous and consumes the selection.
-    let media = selected.load(); // Media::Image(Url) | Video(Url) | LivePhoto(source)
-
-    let _ = media;
-}
-
 // ---------------------------------------------------------------------------
-// media.md § "## Media" (prose): `Selected::media()`, `LivePhoto::new(
+// media.md § "## Media" (prose): `LivePhoto::new(
 // LivePhotoSource::new(image_url, video_url))` and its events, `video(url)`,
 // `video_player(url)`. Not counted as a rust block.
 // ---------------------------------------------------------------------------
-pub fn media_live_prose(selected: &Selected) -> impl View {
+pub fn media_live_prose(media: &Media) -> impl View {
     use waterui::media::live::LivePhotoSource;
-    use waterui::media::{LivePhoto, LivePhotoEvent, Media, Url};
+    use waterui::media::{LivePhoto, LivePhotoEvent, Url};
 
-    let _: &Media = selected.media();
+    let _: &Media = media;
     let _chromeless = waterui::video::video("https://waterui.dev/a.mp4");
     let _controls = waterui::video::video_player("https://waterui.dev/a.mp4");
 
@@ -134,9 +131,8 @@ pub fn media_live_prose(selected: &Selected) -> impl View {
 // media.md § "## Media" — rust block 4/15
 // ---------------------------------------------------------------------------
 pub fn media_block_04() -> impl View {
-    use waterui::video::{
-        self, MediaItem, PlaybackSession, Playlist, Url, VideoEvent, VideoPlayer,
-    };
+    use waterui::layout::ContentMode;
+    use waterui::video::{MediaItem, PlaybackSession, Playlist, Url, VideoEvent, VideoPlayer};
 
     let first_item = MediaItem::from(Url::parse("https://waterui.dev/a.mp4").expect("valid url"));
     let more_items: Vec<MediaItem> = Vec::new();
@@ -149,7 +145,7 @@ pub fn media_block_04() -> impl View {
 
     VideoPlayer::new(session)
         .show_controls(true)
-        .content_mode(video::ContentMode::Fit) // Fit | Fill | Stretch
+        .content_mode(ContentMode::Fit) // Fit | Fill; `.resizable()` stretches per axis
         .on_event(|event| match event {
             VideoEvent::ReadyToPlay | VideoEvent::Ended => (),
             VideoEvent::Error { message: _ } => (),
@@ -500,9 +496,9 @@ pub fn media_block_08() {
         })
     };
 
-    use waterui::barcode::Barcode; // facade feature `barcode` (the crate is also usable directly)
-    let _ = { Barcode::qr("https://waterui.dev").size(120.0, 120.0) };
-    let _ = { Barcode::code128("012345").size(160.0, 60.0) };
+    use waterui::barcode::{Barcode, BarcodeSymbology}; // facade feature `barcode` (the crate is also usable directly)
+    let _ = { Barcode::new(BarcodeSymbology::Qr, "https://waterui.dev").size(120.0, 120.0) };
+    let _ = { Barcode::new(BarcodeSymbology::Code128, "012345").size(160.0, 60.0) };
 
     use waterui::svg::Svg;
     let _ = { Svg::new(source) };
@@ -585,23 +581,27 @@ pub fn media_canvas_prose(image: waterui::canvas::ImageSource) -> impl View {
 }
 
 // ---------------------------------------------------------------------------
-// media.md § "## Graphics and codes" (prose): `BarcodeSource::qr` /
-// `::code128` pre-validation, `.dark_color` / `.light_color`, and the SVG
-// `.tint(..)` / `Svg::from_path`. Not counted as a rust block.
+// media.md § "## Graphics and codes" (prose): `BarcodeSource::new`
+// pre-validation, `.dark_color` / `.light_color`, and the SVG
+// `.foreground(..)` / `Svg::from_path(..).stroked()`. Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn media_barcode_svg_prose() -> impl View {
-    use waterui::barcode::{Barcode, BarcodeError, BarcodeSource};
+    use waterui::barcode::{Barcode, BarcodeError, BarcodeSource, BarcodeSymbology};
     use waterui::svg::Svg;
 
-    let _qr: Result<BarcodeSource, BarcodeError> = BarcodeSource::qr("https://waterui.dev");
-    let _code: Result<BarcodeSource, BarcodeError> = BarcodeSource::code128("012345");
+    let _qr: Result<BarcodeSource, BarcodeError> =
+        BarcodeSource::new(BarcodeSymbology::Qr, "https://waterui.dev");
+    let _code: Result<BarcodeSource, BarcodeError> =
+        BarcodeSource::new(BarcodeSymbology::Code128, "012345");
     let _path = Svg::from_path("M0 0 L10 10", 24.0, 24.0);
+    let _stroked = Svg::from_path("M0 0 L10 10", 24.0, 24.0).stroked();
 
     vstack((
-        Barcode::qr("https://waterui.dev")
+        Barcode::new(BarcodeSymbology::Qr, "https://waterui.dev")
             .dark_color(Color::srgb(0, 0, 0))
             .light_color(Color::srgb(255, 255, 255)),
-        Svg::new("<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>").tint(Color::srgb(0, 122, 255)),
+        Svg::new("<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>")
+            .foreground(Color::srgb(0, 122, 255)),
     ))
 }
 
@@ -791,6 +791,7 @@ pub fn media_particle_prose() -> impl View {
     use waterui::particle::{ParticleShape, ParticleSystem};
 
     ParticleSystem::new(1_000)
+        .particle_size(0.01, 0.03)
         .emit_from_circle(0.2)
         .angle(0.0, core::f32::consts::TAU)
         .spin(0.0, 1.0)
@@ -814,10 +815,10 @@ pub fn media_particle_prose() -> impl View {
 // media.md § "## Data: charts and maps" — rust block 13/15
 // ---------------------------------------------------------------------------
 pub fn media_block_13() -> impl View {
-    use waterui::color::Srgb;
     use waterui::reactive::binding;
 
     use waterui::chart::{AxisConfig, BarChart, ChartExt, DataBounds, DataPoint, LineChart};
+    use waterui::theme::color::Accent;
 
     let points = vec![DataPoint::new(0.0, 1.0), DataPoint::new(1.0, 2.0)];
 
@@ -825,7 +826,7 @@ pub fn media_block_13() -> impl View {
 
     let bounds = DataBounds::from_points(&points);
     LineChart::new(binding(points))
-        .color(Srgb::from_hex("#22C55E"))
+        .color(Accent)
         .line_width(3.0)
         .axes(bounds) // ChartExt; axes first…
         .y_axis(AxisConfig::new().tick_count(5)) // …then per-axis config on the wrapper
@@ -833,27 +834,37 @@ pub fn media_block_13() -> impl View {
 }
 
 // ---------------------------------------------------------------------------
-// media.md § "## Data: charts and maps" (prose): `.focused(&binding)`,
-// `.focused_tooltip(..)`, `Tooltip` / `TooltipContent`, `Legend`, and
-// `LineChart::fill`. Not counted as a rust block.
+// media.md § "## Data: charts and maps" (prose): `.chart_focus(&binding)`,
+// `.chart_selection(&binding)`, `.focused_tooltip(..)`, `Tooltip` /
+// `TooltipContent`, `Legend`, and `LineChart::fill`. Not counted as a rust
+// block.
 // ---------------------------------------------------------------------------
 pub fn media_chart_interaction_prose() -> impl View {
     use waterui::chart::{
-        DataPoint, HitResult, Legend, LegendItem, LineChart, Tooltip, TooltipContent,
+        AreaSeries, BubblePoint, DataPoint, GaugeRegion, HitResult, Legend, LegendItem, LineChart,
+        RadarSeries, Tooltip, TooltipContent,
     };
-    use waterui::color::Srgb;
+    use waterui::theme::color::{Accent, Tertiary};
 
     let points = Binding::new(vec![DataPoint::new(0.0, 1.0), DataPoint::new(1.0, 2.0)]);
     let focused: Binding<Option<HitResult<DataPoint>>> = Binding::new(None);
+    let selected: Binding<Option<HitResult<DataPoint>>> = Binding::new(None);
+    let _ = (
+        BubblePoint::new(0.0, 1.0, 2.0).color(Accent),
+        GaugeRegion::new(50.0, Accent),
+        RadarSeries::new("A", vec![1.0, 2.0, 3.0]).color(Tertiary),
+        AreaSeries::new("A", vec![1.0, 2.0]).color(Accent),
+    );
 
     vstack((
         LineChart::new(points)
             .fill(0.3)
-            .focused(&focused)
+            .chart_focus(&focused)
+            .chart_selection(&selected)
             .focused_tooltip(|_hit| {
                 Tooltip::new(TooltipContent::new().title("Sales").value("Total", "2.0"))
             }),
-        Legend::new(vec![LegendItem::new("Sales", Srgb::from_hex("#22C55E"))]),
+        Legend::new(vec![LegendItem::new("Sales", Accent)]),
     ))
 }
 
@@ -885,7 +896,7 @@ pub fn media_block_14() -> impl View {
 }
 
 // ---------------------------------------------------------------------------
-// media.md § "## Data: charts and maps" (prose): `Map::centered_on`,
+// media.md § "## Data: charts and maps" (prose): `Map::new(coordinate)`,
 // `Annotation::new(..).subtitle(..)`, `.is_interactive`, `.shows_user_location`
 // and `.status(&binding)`. Not counted as a rust block.
 // ---------------------------------------------------------------------------
@@ -898,7 +909,7 @@ pub fn media_map_prose() -> impl View {
     ]);
     let status = Binding::new(MapStatus::Loading);
 
-    Map::centered_on(coordinate)
+    Map::new(coordinate)
         .annotations(pins)
         .is_interactive(false)
         .shows_user_location(true)
@@ -911,20 +922,20 @@ pub fn media_map_prose() -> impl View {
 // media.md writes `waterui_url::Url` qualified to show which crate owns it.
 #[allow(unknown_lints, qualified_waterui_path)]
 pub fn media_block_15(mut env: Environment) {
-    use waterui_map_gpu::MapGpuOptions;
-    env.insert(MapGpuOptions::new(waterui_url::Url::new(
+    use waterui_map_gpu::MapGpu;
+    env.install(MapGpu::new(waterui_url::Url::new(
         "https://tiles.openfreemap.org/styles/positron",
     )));
 }
 
 // ---------------------------------------------------------------------------
-// media.md § "## Data: charts and maps" (prose): `MapGpuOptions::
+// media.md § "## Data: charts and maps" (prose): `MapGpu::
 // satellite_style_url` / `hybrid_style_url`. Not counted as a rust block.
 // ---------------------------------------------------------------------------
-pub fn media_map_gpu_styles_prose() -> waterui_map_gpu::MapGpuOptions {
-    use waterui_map_gpu::MapGpuOptions;
+pub fn media_map_gpu_styles_prose() -> waterui_map_gpu::MapGpu {
+    use waterui_map_gpu::MapGpu;
 
-    MapGpuOptions::new(waterui_url::Url::new(
+    MapGpu::new(waterui_url::Url::new(
         "https://tiles.openfreemap.org/styles/positron",
     ))
     .satellite_style_url(waterui_url::Url::new(

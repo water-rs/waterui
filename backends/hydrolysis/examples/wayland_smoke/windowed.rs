@@ -14,8 +14,8 @@ use waterui_controls::{slider::slider, stepper::stepper};
 
 fn main_view() -> impl View {
     let toggle_value = binding(true);
-    let slider_value = binding(0.4_f64);
-    let stepper_value = binding(3_i32);
+    let slider_value = binding::<f64>(0.4);
+    let stepper_value = binding::<i32>(3);
 
     scroll(
         vstack((

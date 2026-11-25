@@ -689,4 +689,9 @@ pub trait WidgetTheme {
     /// The look of a table.
     #[cfg(waterui_feature = "table")]
     fn table(&self, env: &Environment) -> super::TableLook;
+
+    /// The look of a disclosure control and its expandable content layout.
+    fn disclosure(&self, spec: &super::DisclosureSpec, env: &Environment) -> super::DisclosureLook {
+        super::disclosure::default_disclosure_look(spec, env)
+    }
 }

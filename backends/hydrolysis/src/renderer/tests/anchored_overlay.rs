@@ -1222,7 +1222,7 @@ mod menu_presentation_motion_tests {
         let open = Binding::new(false);
         let samples = Rc::new(RefCell::new(Vec::new()));
         let mut env = test_environment();
-        env.insert(ReduceMotion(true));
+        env.insert(ReduceMotion::new(true));
         let mut runtime = HeadlessRuntime::new_for_tests(
             env,
             menu_overlay_view(open.clone(), None),

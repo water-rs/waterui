@@ -105,41 +105,21 @@ const fn buffering_event(buffering: &mut bool, empty: bool, waiting: bool) -> Op
 /// Duck volume multiplier while audio focus is lossy, per the Swift apply.
 const DUCK_SCALE: f32 = 0.2;
 
-/// Maps the content mode onto the layer gravity.
-fn gravity(mode: ContentMode) -> VideoGravity {
+/// Maps the content mode onto the layer gravity (`None` stretches per axis).
+const fn gravity(mode: Option<ContentMode>) -> VideoGravity {
     match mode {
-        ContentMode::Fit => VideoGravity::ResizeAspect,
-        ContentMode::Fill => VideoGravity::ResizeAspectFill,
-        ContentMode::Stretch => VideoGravity::Resize,
-        // `ContentMode` is non-exhaustive; the renderers pass only the modes
-        // `supported_mode` admits, so a wildcard that guessed a gravity could
-        // never ship the wrong picture.
-        _ => unreachable!("the renderers admit only fit, fill and stretch content modes"),
-    }
-}
-
-/// The content mode a video is realized with. A variant this realization does
-/// not map is a contract violation of the framework above; the video is
-/// realized as `Fit`.
-fn supported_mode(mode: ContentMode) -> ContentMode {
-    match mode {
-        ContentMode::Fit | ContentMode::Fill | ContentMode::Stretch => mode,
-        other => {
-            waterui::contract_violation!(
-                "apple video: unsupported content mode {other:?}; the video is realized as fit"
-            );
-            ContentMode::Fit
-        }
+        Some(ContentMode::Fit) => VideoGravity::ResizeAspect,
+        Some(ContentMode::Fill) => VideoGravity::ResizeAspectFill,
+        None => VideoGravity::Resize,
     }
 }
 
 /// The stretch axis the leaf reports, identical to `NativeView::stretch_axis`
 /// on the payloads (spherical never reaches here — it is flattened at render).
-fn leaf_stretch_axis(mode: ContentMode) -> StretchAxis {
+const fn leaf_stretch_axis(mode: Option<ContentMode>) -> StretchAxis {
     match mode {
-        ContentMode::Fit => StretchAxis::Horizontal,
-        ContentMode::Fill | ContentMode::Stretch => StretchAxis::Both,
-        _ => unreachable!("the renderers admit only fit, fill and stretch content modes"),
+        Some(ContentMode::Fit) => StretchAxis::Horizontal,
+        Some(ContentMode::Fill) | None => StretchAxis::Both,
     }
 }
 
@@ -147,11 +127,15 @@ fn leaf_stretch_axis(mode: ContentMode) -> StretchAxis {
 /// proposed width and the height `source`'s aspect ratio gives at that width
 /// (16:9 until the item reports its size), whatever height is offered; to an
 /// unspecified width its natural size (320×180 until reported); to a maximum
-/// width an unbounded width at its natural height. `Fill` and `Stretch` fill
-/// the proposal, falling back to 320×180 on an unspecified axis.
-fn measure(mode: ContentMode, source: Option<Size>, proposal: ProposalSize) -> ViewDimensions {
+/// width an unbounded width at its natural height. `Fill` and stretched (`None`)
+/// fill the proposal, falling back to 320×180 on an unspecified axis.
+fn measure(
+    mode: Option<ContentMode>,
+    source: Option<Size>,
+    proposal: ProposalSize,
+) -> ViewDimensions {
     match mode {
-        ContentMode::Fit => {
+        Some(ContentMode::Fit) => {
             let aspect = source.map_or(waterui_video::DEFAULT_ASPECT, |size| {
                 size.width / size.height
             });
@@ -164,17 +148,16 @@ fn measure(mode: ContentMode, source: Option<Size>, proposal: ProposalSize) -> V
                 None => Size::new(natural, natural / aspect),
             })
         }
-        ContentMode::Fill | ContentMode::Stretch => ViewDimensions::new(Size::new(
+        Some(ContentMode::Fill) | None => ViewDimensions::new(Size::new(
             proposal.width.unwrap_or(FALLBACK_WIDTH),
             proposal.height.unwrap_or(FALLBACK_HEIGHT),
         )),
-        _ => unreachable!("the renderers admit only fit, fill and stretch content modes"),
     }
 }
 
 /// Layout face shared by both leaves.
 struct VideoSubView {
-    mode: ContentMode,
+    mode: Option<ContentMode>,
     /// The item's presentation size, once it reports one: written by the
     /// coordinator, which relayouts the leaf when it changes.
     source: Rc<core::cell::Cell<Option<Size>>>,
@@ -1722,7 +1705,7 @@ fn render_video(config: NativeVideoConfig, ctx: &RenderContext<'_>) -> NativeLea
              select the WaterKit self-drawn video realization; the video is drawn flat"
         );
     }
-    let content_mode = supported_mode(config.content_mode);
+    let content_mode = config.content_mode;
     let mtm = ctx.mtm();
     let surface = PlayerLayerView::new(mtm, gravity(content_mode));
     let (coordinator, player) = coordinator(mtm, config.playback);
@@ -1756,7 +1739,7 @@ fn render_video_player(config: NativeVideoPlayerConfig, ctx: &RenderContext<'_>)
              select the WaterKit self-drawn video realization; the video is drawn flat"
         );
     }
-    let content_mode = supported_mode(config.content_mode);
+    let content_mode = config.content_mode;
     let mtm = ctx.mtm();
     let view = Rc::new(PlayerView::new(mtm, gravity(content_mode)));
     view.set_shows_controls(config.show_controls);
@@ -1795,7 +1778,7 @@ fn render_video_player(config: NativeVideoPlayerConfig, ctx: &RenderContext<'_>)
 #[cfg(feature = "video_player")]
 fn build_player_leaf(
     view: &Rc<PlayerView>,
-    mode: ContentMode,
+    mode: Option<ContentMode>,
     source: Rc<core::cell::Cell<Option<Size>>>,
     mtm: MainThreadMarker,
 ) -> NativeLeaf {
@@ -1839,29 +1822,32 @@ mod tests {
     #[test]
     fn gravity_maps_content_mode() {
         assert!(matches!(
-            gravity(ContentMode::Fit),
+            gravity(Some(ContentMode::Fit)),
             VideoGravity::ResizeAspect
         ));
         assert!(matches!(
-            gravity(ContentMode::Fill),
+            gravity(Some(ContentMode::Fill)),
             VideoGravity::ResizeAspectFill
         ));
-        assert!(matches!(
-            gravity(ContentMode::Stretch),
-            VideoGravity::Resize
-        ));
+        assert!(matches!(gravity(None), VideoGravity::Resize));
     }
 
     #[test]
     fn stretch_axis_matches_contract() {
-        assert_eq!(leaf_stretch_axis(ContentMode::Fit), StretchAxis::Horizontal);
-        assert_eq!(leaf_stretch_axis(ContentMode::Fill), StretchAxis::Both);
-        assert_eq!(leaf_stretch_axis(ContentMode::Stretch), StretchAxis::Both);
+        assert_eq!(
+            leaf_stretch_axis(Some(ContentMode::Fit)),
+            StretchAxis::Horizontal
+        );
+        assert_eq!(
+            leaf_stretch_axis(Some(ContentMode::Fill)),
+            StretchAxis::Both
+        );
+        assert_eq!(leaf_stretch_axis(None), StretchAxis::Both);
     }
 
     #[test]
     fn measure_fill_falls_back_to_320x180() {
-        let empty = measure(ContentMode::Fill, None, ProposalSize::new(None, None));
+        let empty = measure(Some(ContentMode::Fill), None, ProposalSize::new(None, None));
         assert!(f32::abs(empty.size.width - FALLBACK_WIDTH) < f32::EPSILON);
         assert!(f32::abs(empty.size.height - FALLBACK_HEIGHT) < f32::EPSILON);
     }
@@ -1869,7 +1855,7 @@ mod tests {
     #[test]
     fn measure_fill_uses_proposal() {
         let proposal = ProposalSize::new(Some(640.0), Some(360.0));
-        let measured = measure(ContentMode::Stretch, None, proposal);
+        let measured = measure(None, None, proposal);
         assert!(f32::abs(measured.size.width - 640.0) < f32::EPSILON);
         assert!(f32::abs(measured.size.height - 360.0) < f32::EPSILON);
     }
@@ -1880,26 +1866,34 @@ mod tests {
     #[test]
     fn measure_fit_follows_the_source_aspect() {
         let proposal = ProposalSize::new(Some(640.0), Some(100.0));
-        let unknown = measure(ContentMode::Fit, None, proposal);
+        let unknown = measure(Some(ContentMode::Fit), None, proposal);
         assert!(f32::abs(unknown.size.width - 640.0) < f32::EPSILON);
         assert!(f32::abs(unknown.size.height - 360.0) < 1e-3);
-        let square = measure(ContentMode::Fit, Some(Size::new(1080.0, 1080.0)), proposal);
+        let square = measure(
+            Some(ContentMode::Fit),
+            Some(Size::new(1080.0, 1080.0)),
+            proposal,
+        );
         assert!(f32::abs(square.size.height - 640.0) < f32::EPSILON);
         let unspecified = measure(
-            ContentMode::Fit,
+            Some(ContentMode::Fit),
             Some(Size::new(1280.0, 720.0)),
             ProposalSize::new(None, None),
         );
         assert!(f32::abs(unspecified.size.width - 1280.0) < f32::EPSILON);
         assert!(f32::abs(unspecified.size.height - 720.0) < f32::EPSILON);
         let maximum = measure(
-            ContentMode::Fit,
+            Some(ContentMode::Fit),
             Some(Size::new(1280.0, 720.0)),
             ProposalSize::new(Some(f32::INFINITY), None),
         );
         assert!(maximum.size.width.is_infinite());
         assert!(f32::abs(maximum.size.height - 720.0) < f32::EPSILON);
-        let minimum = measure(ContentMode::Fit, None, ProposalSize::new(Some(0.0), None));
+        let minimum = measure(
+            Some(ContentMode::Fit),
+            None,
+            ProposalSize::new(Some(0.0), None),
+        );
         assert!(
             minimum.size.width.abs() < f32::EPSILON && minimum.size.height.abs() < f32::EPSILON
         );

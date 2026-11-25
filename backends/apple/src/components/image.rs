@@ -8,7 +8,8 @@
 
 use cocoa_ui::Retained;
 use waterui::graphics::color::WorkingColor;
-use waterui::reactive::Signal;
+use waterui::icon::IconSize;
+use waterui::reactive::{Signal, SignalExt as _};
 use waterui::resolve::Resolvable;
 use waterui::text::font::{Body, ResolvedFont};
 use waterui::theme::color::Foreground;
@@ -164,7 +165,20 @@ pub fn realize_sf_symbol(symbol: SfSymbol, env: &Environment, mtm: MainThreadMar
         move |color| view.set_tint_color(Some(&platform_color(&color)))
     });
     let body = Body.resolve(env);
-    apply_symbol_font(mtm, &view, &body.snapshot());
-    leaf.bind(&body, move |font| apply_symbol_font(mtm, &view, &font));
+    let font_signal = env.get::<IconSize>().map_or_else(
+        || body.computed(),
+        |icon_size| {
+            body.zip(icon_size.size())
+                .map(|(mut font, size)| {
+                    font.set_size(size);
+                    font
+                })
+                .computed()
+        },
+    );
+    apply_symbol_font(mtm, &view, &font_signal.snapshot());
+    leaf.bind(&font_signal, move |font| {
+        apply_symbol_font(mtm, &view, &font);
+    });
     leaf
 }

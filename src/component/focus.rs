@@ -32,7 +32,7 @@
 //! ```
 //! use waterui::prelude::*;
 //! use waterui::ViewExt;
-//! use waterui_core::binding;
+//! use waterui_core::{Str, binding};
 //! use waterui_form::{SecureField, secure::Secure};
 //! use waterui_controls::TextField;
 //! use waterui_layout::stack::vstack;

@@ -16,7 +16,7 @@ use waterui_layout::overlay;
 use crate::{
     PlaybackSession, Playlist, Url,
     photo::Photo,
-    video::{ContentMode as VideoContentMode, Video, VideoEvent},
+    video::{Video, VideoEvent},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -162,6 +162,7 @@ impl View for LivePhoto {
                     motion_source.snapshot(),
                     playback_state.clone(),
                     report.clone(),
+                    resizable,
                     content_mode,
                 )
             })
@@ -232,17 +233,17 @@ fn live_photo_video(
     source: LivePhotoSource,
     is_playing: Binding<bool>,
     report: LivePhotoReporter,
+    resizable: bool,
     content_mode: Option<ContentMode>,
 ) -> Video {
     let session = PlaybackSession::new(Playlist::single(source.video)).autoplay();
     session.controller().muted().set(true);
     let mut video = Video::new(session);
+    if resizable {
+        video = video.resizable();
+    }
     if let Some(mode) = content_mode {
-        let video_mode = match mode {
-            ContentMode::Fit => VideoContentMode::Fit,
-            ContentMode::Fill => VideoContentMode::Fill,
-        };
-        video = video.content_mode(video_mode);
+        video = video.content_mode(mode);
     }
     video.on_event(move |event| {
         // Both outcomes put the still photo back, but they are not the same

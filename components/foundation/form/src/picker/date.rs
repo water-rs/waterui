@@ -4,11 +4,41 @@ use alloc::string::{String, ToString};
 use core::{marker::PhantomData, ops::RangeInclusive};
 
 pub use jiff::civil::{Date, DateTime, Time};
-use nami::Binding;
+use nami::signal::IntoComputed;
+use nami::watcher::BoxWatcherGuard;
+use nami::{Binding, Computed, Signal, SignalExt};
 use waterui_controls::label::{ControlLabel, Label, LabelKind};
 use waterui_controls::{IntoLabel, impl_label_style_methods};
 use waterui_core::backend::{Backend, ChildSlot, MapSlots};
-use waterui_core::{AnyView, Environment, Native, NativeView, View};
+use waterui_core::{AnyView, Environment, Native, NativeView, View, contract_violation};
+
+/// Validates a date-picker range: `start <= end`.
+///
+/// # Contract violation
+///
+/// A reversed range panics in debug builds and logs and clamps to
+/// `start..=start` in release builds.
+#[must_use]
+pub fn sanitize_range(range: RangeInclusive<DateTime>) -> RangeInclusive<DateTime> {
+    let (start, end) = (*range.start(), *range.end());
+    if start <= end {
+        return start..=end;
+    }
+    contract_violation!(
+        "a date picker range must have start <= end, got {start}..={end}; clamping the range"
+    );
+    start..=start
+}
+
+/// Clamps `value` in place when it falls outside `range`.
+pub fn clamp_value_to_range(value: &Binding<DateTime>, range: &RangeInclusive<DateTime>) {
+    let range = sanitize_range(range.clone());
+    let current = value.snapshot();
+    let clamped = current.clamp(*range.start(), *range.end());
+    if clamped != current {
+        value.set(clamped);
+    }
+}
 
 /// Configuration for the `DatePicker` component.
 #[derive(Debug, Clone)]
@@ -19,7 +49,7 @@ pub struct DatePickerConfig<S> {
     /// The binding to the selected value.
     value: Binding<DateTime>,
     /// The range of valid values.
-    range: RangeInclusive<DateTime>,
+    range: Computed<RangeInclusive<DateTime>>,
     /// The type of date picker.
     ty: DatePickerType,
 }
@@ -49,8 +79,18 @@ impl<S> DatePickerConfig<S> {
 
     /// The range of valid values.
     #[must_use]
-    pub const fn range(&self) -> &RangeInclusive<DateTime> {
+    pub const fn range(&self) -> &Computed<RangeInclusive<DateTime>> {
         &self.range
+    }
+
+    /// Watches `range` and re-clamps `value` in place whenever the range
+    /// updates, returning the subscription guard.
+    pub fn watch_range_clamp(&self) -> BoxWatcherGuard {
+        let value = self.value.clone();
+        clamp_value_to_range(&value, &self.range.snapshot());
+        self.range.watch(move |ctx| {
+            clamp_value_to_range(&value, ctx.value());
+        })
     }
 
     /// The type of date picker.
@@ -237,7 +277,7 @@ pub trait TimePickable: DatePickable {
 pub struct DatePicker<L, T = DateTime> {
     label: Label<L>,
     value: Binding<DateTime>,
-    range: RangeInclusive<DateTime>,
+    range: Computed<RangeInclusive<DateTime>>,
     ty: DatePickerType,
     _bound: PhantomData<fn() -> T>,
 }
@@ -326,16 +366,25 @@ impl<L, T: DatePickable> DatePicker<L, T> {
         Self {
             label: label.into_label(),
             value: T::into_datetime_binding(value),
-            range: T::full_range(),
+            range: Computed::constant(T::full_range()),
             ty: T::default_picker_type(),
             _bound: PhantomData,
         }
     }
 
     /// Sets the valid range for the picker, constrained to the bound value type `T`.
-    pub fn range(mut self, range: RangeInclusive<T>) -> Self {
-        let mapped = T::into_picker_range(range);
-        self.value = self.value.clamp(mapped.clone());
+    ///
+    /// # Contract violation
+    ///
+    /// A reversed range panics in debug builds and logs and clamps in release
+    /// builds.
+    pub fn range(mut self, range: impl IntoComputed<RangeInclusive<T>>) -> Self {
+        let mapped = range
+            .into_computed()
+            .map(|range| sanitize_range(T::into_picker_range(range)))
+            .computed();
+        let initial = mapped.snapshot();
+        clamp_value_to_range(&self.value, &initial);
         self.range = mapped;
         self
     }
@@ -613,6 +662,39 @@ mod tests {
                 .config()
                 .ty(),
             DatePickerType::HourMinuteAndSecond
+        );
+    }
+
+    #[test]
+    fn reactive_range_reclamps_bound_date_in_place() {
+        let start = Binding::new(Date::constant(2025, 6, 10));
+        let end = Binding::new(Date::constant(2025, 6, 12));
+        let far_future = Date::constant(2025, 12, 31);
+        let cfg = DatePicker::new("End", &end)
+            .range(start.map(move |s| s..=far_future))
+            .config();
+
+        let _guard = cfg.watch_range_clamp();
+        assert_eq!(end.snapshot(), Date::constant(2025, 6, 12));
+
+        start.set(Date::constant(2025, 6, 20));
+        assert_eq!(end.snapshot(), Date::constant(2025, 6, 20));
+    }
+
+    #[test]
+    #[cfg_attr(
+        debug_assertions,
+        should_panic(expected = "a date picker range must have start <= end")
+    )]
+    fn reversed_date_picker_range_clamps_in_release() {
+        let date = Binding::new(Date::constant(2025, 6, 15));
+        let cfg = DatePicker::new("Due", &date)
+            .range(Date::constant(2025, 6, 20)..=Date::constant(2025, 6, 10))
+            .config();
+        assert_eq!(date.snapshot(), Date::constant(2025, 6, 20));
+        assert_eq!(
+            cfg.range().snapshot().start().date(),
+            Date::constant(2025, 6, 20)
         );
     }
 }

@@ -194,7 +194,7 @@ fn file_picker_section() -> impl View {
         text("FilePicker").headline(),
         text("Select files from the device").body(),
         spacer(),
-        FilePicker::open("Select Files", &selected_files).max_count(5),
+        FilePicker::new("Select Files", &selected_files).max_count(5),
         spacer(),
         text("Selected files:").bold(true),
         file_list(&selected_files),

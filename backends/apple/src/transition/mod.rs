@@ -40,14 +40,14 @@ use waterui_structural_transition::{ReduceMotion, TransitionSpec};
 
 /// The `.transition(...)` declaration a leaf carries until a structural
 /// site claims it: the spec plus the environment answers resolved where
-/// the leaf rendered — each clock resolves Reduce Motion at `start`, and
-/// the slot direction is frozen the same way.
+/// the leaf rendered — each clock samples Reduce Motion at `start`, while
+/// the slot direction is frozen at render.
 #[derive(Clone)]
 pub struct TransitionClaim {
     /// The declared effect and timing.
     pub spec: TransitionSpec,
-    /// The environment's Reduce Motion answer at render.
-    pub reduce_motion: bool,
+    /// The environment's Reduce Motion signal at render; sampled at `start`.
+    pub reduce_motion: ReduceMotion,
     /// The layout direction at render, resolving leading and trailing.
     pub direction: LayoutDirection,
 }
@@ -57,7 +57,7 @@ impl TransitionClaim {
     pub fn new(spec: TransitionSpec, env: &Environment) -> Self {
         Self {
             spec,
-            reduce_motion: env.get::<ReduceMotion>().is_some_and(|flag| flag.0),
+            reduce_motion: env.get::<ReduceMotion>().cloned().unwrap_or_default(),
             direction: layout_direction(env).snapshot(),
         }
     }
@@ -75,3 +75,47 @@ impl core::fmt::Debug for TransitionClaim {
 /// an asymmetric transition can still resolve to a blur or pixel phase.
 #[derive(Clone, Copy, Debug)]
 pub struct SnapshotDemand;
+
+#[cfg(test)]
+mod tests {
+    use core::time::Duration;
+
+    use waterui::reactive::{Binding, Signal as _};
+    use waterui_backend_core::Environment;
+    use waterui_core::animation::Animation;
+    use waterui_core::layout::{LayoutDirection, Size};
+    use waterui_structural_transition::{
+        Edge, PropertyTransition, ReduceMotion, TransitionGeometry, TransitionPhase, TransitionSpec,
+    };
+
+    use super::TransitionClaim;
+
+    #[test]
+    fn transition_claim_reads_live_reduce_motion_at_start() {
+        let setting = Binding::new(false);
+        let mut env = Environment::new();
+        env.insert(ReduceMotion::new(setting.clone()));
+
+        let spec = TransitionSpec::new(PropertyTransition::move_in(Edge::Bottom))
+            .with_animation(Animation::linear(Duration::from_millis(100)));
+        let claim = TransitionClaim::new(spec, &env);
+        let geometry =
+            TransitionGeometry::new(Size::new(200.0, 80.0), LayoutDirection::LeftToRight);
+
+        let mut full = claim
+            .spec
+            .start(TransitionPhase::Insertion, claim.reduce_motion.snapshot());
+        full.advance(Duration::from_millis(50));
+        let full_props = full.properties(geometry);
+        assert!(full_props.translation[1] > 1.0);
+
+        setting.set(true);
+        let mut reduced = claim
+            .spec
+            .start(TransitionPhase::Insertion, claim.reduce_motion.snapshot());
+        reduced.advance(Duration::from_millis(50));
+        let reduced_props = reduced.properties(geometry);
+        assert!(reduced_props.translation[1].abs() < 1e-6);
+        assert!(reduced_props.opacity < 1.0);
+    }
+}

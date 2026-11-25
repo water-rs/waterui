@@ -48,7 +48,6 @@ pub mod live_progress;
 pub mod live_segmented;
 #[cfg(feature = "navigation")]
 pub mod live_tabs;
-#[cfg(any(feature = "toggle", feature = "picker"))]
 pub mod live_toggle;
 pub mod material;
 mod metadata;
@@ -162,7 +161,7 @@ use accesskit::{
     Toggled as AccessibilityToggled, TreeId as AccessibilityTreeId, TreeInfo as AccessibilityTree,
     TreeUpdate as AccessibilityTreeUpdate,
 };
-use cherenkov_record::{Paint, WorkingColor};
+use cherenkov_record::Paint;
 use executor_core::spawn_local;
 use nami::{Binding, Signal};
 use waterkit_clipboard::Clipboard;
@@ -198,7 +197,7 @@ use waterui::metadata::anchored_overlay::AnchoredOverlay;
 #[cfg(feature = "menu")]
 use waterui::metadata::context_menu::ResolvedContextMenu;
 #[cfg(feature = "navigation")]
-use waterui::navigation::tab::{NativeTabStyle, TabsLayout};
+use waterui::navigation::tab::{TabStyle, TabsLayout};
 #[cfg(feature = "navigation")]
 use waterui::navigation::{
     CustomNavigationController, NavigationController, NavigationSplitLayout, NavigationStackLayout,

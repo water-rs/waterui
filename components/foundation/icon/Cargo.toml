@@ -12,12 +12,12 @@ categories = ["gui"]
 
 [features]
 default = []
-svg = ["dep:waterui-svg"]
+svg = ["dep:waterui-svg", "dep:waterui-layout"]
 
 [dependencies]
 waterui-core.workspace = true
-waterui-graphics = { workspace = true, default-features = false }
 waterui-text.workspace = true
+waterui-layout = { workspace = true, optional = true }
 waterui-svg = { workspace = true, optional = true }
 
 [dev-dependencies]

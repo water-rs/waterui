@@ -26,10 +26,12 @@ use wasm_bindgen_futures::JsFuture;
 use waterui::app::{App, AppMenuBar, AppParts, Windows};
 use waterui::window::WindowState;
 use waterui_core::{Environment, Retain, contract_violation};
+use waterui_structural_transition::ReduceMotion;
 use web_sys::Response;
 
 use crate::text::fonts::WebFonts;
 
+use crate::platform::web_appearance::SystemAppearance;
 use crate::platform::web_locale::SystemLocale;
 use crate::platform::{BrowserWindow, PlatformWindow};
 #[cfg(any(feature = "text-field", feature = "secure-field"))]
@@ -547,7 +549,7 @@ pub fn run<W: Windows, M: AppMenuBar>(app: App<W, M>, style: impl crate::Style) 
         let RootWindows {
             initial: windows,
             channels,
-        } = RootWindows::<crate::text::ParleyEngine>::collect(windows);
+        } = RootWindows::<crate::text::ParleyEngine>::collect(windows, &env);
         let unsupported_opener: Rc<dyn Fn(RootWindow<crate::text::ParleyEngine>)> = Rc::new(|_| {
             contract_violation!(
                 "hydrolysis web runner: secondary windows are unsupported — a browser \
@@ -599,8 +601,9 @@ pub fn run<W: Windows, M: AppMenuBar>(app: App<W, M>, style: impl crate::Style) 
         // appearance: `matches` seeds the scheme so the first frame already
         // draws in it, and the query's `change` event writes each later
         // one. The runner holds the observation for its lifetime.
-        let system_appearance = crate::platform::web_appearance::SystemAppearance::observe();
+        let system_appearance = SystemAppearance::observe();
         let system_locale = SystemLocale::observe();
+        env.insert(ReduceMotion::new(system_appearance.reduce_motion()));
         crate::theme::install_theme_tokens(&mut env, Some(&style), system_appearance.scheme());
         let theme: Rc<dyn crate::theme::WidgetTheme> = Rc::new(style);
 

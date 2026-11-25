@@ -175,10 +175,13 @@ impl AnimationController {
         self.motions.insert(key, status);
     }
 
-    /// Whether an engine-run motion's track still runs at `now`.
+    /// Whether an engine-run motion's track still runs at `now`, respecting
+    /// `perpetual`.
     #[must_use]
-    pub fn motions_active(&self, now: Instant) -> bool {
-        self.motions.values().any(|status| status.is_running(now))
+    pub fn motions_active(&self, perpetual: PerpetualAnimation, now: Instant) -> bool {
+        self.motions
+            .values()
+            .any(|status| status.is_running_with(perpetual, now))
     }
 
     /// Fires the settle re-record of every motion whose track ended by

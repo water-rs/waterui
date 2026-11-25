@@ -737,10 +737,8 @@ impl IntoJs for BackgroundValue {
 /// The shadow `shadow` casts, which is the Rust [`Shadow`] spelled as an
 /// object.
 ///
-/// Only the colour is reactive, because only the colour is reactive in Rust:
-/// `Shadow`'s offset, blur radius and corner radius are `f32` fields, and a
-/// signal declared where the framework takes a number would promise an update
-/// nothing delivers.
+/// Only the colour is reactive here: `ShadowValue`'s offset, blur radius and
+/// corner radius are `f32` schema values for TypeScript.
 ///
 /// [`Shadow`]: crate::appearance::style::Shadow
 #[derive(Debug, Clone, PartialEq, TsType)]

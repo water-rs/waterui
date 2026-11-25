@@ -97,81 +97,18 @@ pub enum NavigationSplitColumnVisibility {
 // value as readily as a binding.
 nami::impl_constant!(NavigationSplitColumnVisibility);
 
-/// Native split presentation selected by a public split style.
-#[doc(hidden)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Adaptive presentation style for a [`NavigationSplitView`] container.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(u8)]
-#[expect(
-    clippy::exhaustive_enums,
-    reason = "backends realize each split style variant by variant; a new split style must fail their build instead of falling into a wildcard arm"
-)]
-pub enum NativeNavigationSplitStyle {
+pub enum NavigationSplitStyle {
     /// Platform default adaptive presentation.
+    #[default]
     Automatic = 0,
     /// Keep the leading columns visually prominent where supported.
     Balanced = 1,
     /// Give the detail column visual priority where supported.
     ProminentDetail = 2,
-}
-
-/// Extensible public style contract for native split containers.
-pub trait NavigationSplitStyle: 'static {
-    /// Resolves the native split capability.
-    #[doc(hidden)]
-    fn into_native(self) -> NativeNavigationSplitStyle;
-}
-
-/// Built-in navigation split styles.
-pub mod split_style {
-    use super::{NativeNavigationSplitStyle, NavigationSplitStyle};
-
-    /// Platform-default adaptive split style.
-    #[derive(Debug, Clone, Copy, Default)]
-    pub struct Automatic;
-
-    impl NavigationSplitStyle for Automatic {
-        fn into_native(self) -> NativeNavigationSplitStyle {
-            NativeNavigationSplitStyle::Automatic
-        }
-    }
-
-    /// Balanced leading and detail columns.
-    #[derive(Debug, Clone, Copy, Default)]
-    pub struct Balanced;
-
-    impl NavigationSplitStyle for Balanced {
-        fn into_native(self) -> NativeNavigationSplitStyle {
-            NativeNavigationSplitStyle::Balanced
-        }
-    }
-
-    /// Detail-prominent split style.
-    #[derive(Debug, Clone, Copy, Default)]
-    pub struct ProminentDetail;
-
-    impl NavigationSplitStyle for ProminentDetail {
-        fn into_native(self) -> NativeNavigationSplitStyle {
-            NativeNavigationSplitStyle::ProminentDetail
-        }
-    }
-
-    /// Returns the platform-default adaptive split style.
-    #[must_use]
-    pub const fn automatic() -> Automatic {
-        Automatic
-    }
-
-    /// Returns the balanced split style.
-    #[must_use]
-    pub const fn balanced() -> Balanced {
-        Balanced
-    }
-
-    /// Returns the detail-prominent split style.
-    #[must_use]
-    pub const fn prominent_detail() -> ProminentDetail {
-        ProminentDetail
-    }
 }
 
 /// Selected-column builder used by native split navigation backends, keeping
@@ -246,7 +183,7 @@ pub struct NavigationSplitLayout<S> {
     pub(crate) detail: NavigationSplitDetailBuilder<S>,
     pub(crate) column_visibility: Computed<NavigationSplitColumnVisibility>,
     pub(crate) sidebar_width: ColumnWidth,
-    pub(crate) style: NativeNavigationSplitStyle,
+    pub(crate) style: NavigationSplitStyle,
 }
 
 impl<S> core::fmt::Debug for NavigationSplitLayout<S> {
@@ -364,10 +301,9 @@ impl<S> NavigationSplitLayout<S> {
         self.sidebar_width
     }
 
-    /// Returns the resolved native split style.
-    #[doc(hidden)]
+    /// Returns the resolved split presentation style.
     #[must_use]
-    pub const fn native_style(&self) -> NativeNavigationSplitStyle {
+    pub const fn style(&self) -> NavigationSplitStyle {
         self.style
     }
 
@@ -388,7 +324,7 @@ impl<S> NavigationSplitLayout<S> {
         NavigationSplitDetailBuilder<S>,
         Computed<NavigationSplitColumnVisibility>,
         ColumnWidth,
-        NativeNavigationSplitStyle,
+        NavigationSplitStyle,
     ) {
         (
             self.sidebar,
@@ -485,7 +421,7 @@ pub struct NavigationSplitView<Sidebar, Placeholder, Content, Detail> {
     detail: Detail,
     column_visibility: Computed<NavigationSplitColumnVisibility>,
     sidebar_width: ColumnWidth,
-    style: NativeNavigationSplitStyle,
+    style: NavigationSplitStyle,
 }
 
 impl<Sidebar, Placeholder, Content, Detail> core::fmt::Debug
@@ -544,7 +480,7 @@ impl NavigationSplitView<(), (), (), ()> {
             },
             column_visibility: Computed::constant(NavigationSplitColumnVisibility::Automatic),
             sidebar_width: ColumnWidth::default(),
-            style: NativeNavigationSplitStyle::Automatic,
+            style: NavigationSplitStyle::Automatic,
         }
     }
 
@@ -586,7 +522,7 @@ impl NavigationSplitView<(), (), (), ()> {
             },
             column_visibility: Computed::constant(NavigationSplitColumnVisibility::Automatic),
             sidebar_width: ColumnWidth::default(),
-            style: NativeNavigationSplitStyle::Automatic,
+            style: NavigationSplitStyle::Automatic,
         }
     }
 }
@@ -628,8 +564,8 @@ impl<Sidebar, Placeholder, Content, Detail>
     }
 
     /// Sets the native split presentation style.
-    pub fn style(mut self, style: impl NavigationSplitStyle) -> Self {
-        self.style = style.into_native();
+    pub const fn style(mut self, style: NavigationSplitStyle) -> Self {
+        self.style = style;
         self
     }
 }

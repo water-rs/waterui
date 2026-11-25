@@ -18,7 +18,7 @@ pub(crate) mod selection_support;
 
 pub mod progress;
 #[doc(inline)]
-pub use progress::{Progress, loading, progress};
+pub use progress::{Progress, ProgressStyle, loading, progress};
 
 #[cfg(feature = "table")]
 pub mod table;
@@ -31,7 +31,7 @@ pub use waterui_core::{AnyView, Dynamic, anyview, dynamic};
 pub use link::{Link, link};
 #[cfg(feature = "image")]
 #[doc(inline)]
-pub use media::{Image, MediaPicker, Photo, PhotoEvent, photo};
+pub use media::{Image, MediaPicker, Photo, PhotoEvent, PickerStatus, photo};
 #[cfg(all(feature = "image", feature = "video"))]
 #[doc(inline)]
 pub use media::{LivePhoto, LivePhotoEvent};

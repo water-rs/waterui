@@ -68,7 +68,7 @@ fn now_playing_bar() -> impl View {
 // navigation.md writes `mdi::` qualified so the icon set stays visible.
 #[allow(unknown_lints, qualified_waterui_path)]
 pub fn navigation_block_01() -> impl View {
-    use waterui::navigation::tab_style;
+    use waterui::navigation::TabStyle;
 
     fn inbox_stack() -> impl View {
         text("inbox stack")
@@ -98,7 +98,7 @@ pub fn navigation_block_01() -> impl View {
                 .role(TabRole::Search), // iOS: the trailing system search tab; elsewhere a regular tab
         ),
     )
-    .style(tab_style::automatic())
+    .style(TabStyle::Automatic)
     .minimize_behavior(TabBarMinimizeBehavior::OnScrollDown) // iOS 26 collapses the bar while scrolling; ignored elsewhere
     .bottom_accessory(now_playing_bar()) // iOS 26 glass bar above the tab bar (mini-player slot); not shown elsewhere
 }
@@ -109,7 +109,7 @@ pub fn navigation_block_01() -> impl View {
 // `TabBarMinimizeBehavior` variants. Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn navigation_tabs_prose() -> impl View {
-    use waterui::navigation::tab_style;
+    use waterui::navigation::TabStyle;
 
     let selected = binding(0_usize);
     let _ = TabBarMinimizeBehavior::Automatic;
@@ -119,12 +119,12 @@ pub fn navigation_tabs_prose() -> impl View {
         &selected,
         vec![Tab::new("Raw", || NavigationView::new("Raw", text("raw")))],
     )
-    .style(tab_style::sidebar());
+    .style(TabStyle::Sidebar);
     let _ = Tabs::new(
         &selected,
         vec![Tab::new(label("Library"), library_split).enabled(true)],
     )
-    .style(tab_style::tab_bar());
+    .style(TabStyle::TabBar);
     Tabs::new(
         &selected,
         (
@@ -428,7 +428,7 @@ pub fn navigation_block_10() {
 // navigation.md § "## Split views" — rust block 11/16
 // ---------------------------------------------------------------------------
 pub fn navigation_block_11() -> impl View {
-    use waterui::navigation::{ColumnWidth, split_style};
+    use waterui::navigation::{ColumnWidth, NavigationSplitStyle};
 
     #[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
     enum Album {
@@ -453,7 +453,7 @@ pub fn navigation_block_11() -> impl View {
         album_detail,
     )
     .sidebar_width(ColumnWidth::new(220.0, 280.0, 360.0)) // min, ideal, max
-    .style(split_style::prominent_detail())
+    .style(NavigationSplitStyle::ProminentDetail)
     .placeholder(|| text("No album selected"))
 }
 
@@ -463,7 +463,9 @@ pub fn navigation_block_11() -> impl View {
 // block.
 // ---------------------------------------------------------------------------
 pub fn navigation_split_prose() -> impl View {
-    use waterui::navigation::{NavigationSplitColumnVisibility, NavigationSplitView, split_style};
+    use waterui::navigation::{
+        NavigationSplitColumnVisibility, NavigationSplitStyle, NavigationSplitView,
+    };
 
     #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
     enum Section {
@@ -480,8 +482,8 @@ pub fn navigation_split_prose() -> impl View {
     let _ = NavigationSplitView::new(&sidebar_selection, text("sidebar"), |_: Section| {
         vstack((text("detail"), Divider)).navigation_title("Detail")
     })
-    .style(split_style::automatic())
-    .style(split_style::balanced());
+    .style(NavigationSplitStyle::Automatic)
+    .style(NavigationSplitStyle::Balanced);
 
     NavigationSplitView::three_column(
         &sidebar_selection,

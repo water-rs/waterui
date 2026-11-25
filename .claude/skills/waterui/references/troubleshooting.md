@@ -181,7 +181,7 @@ not from unit-space path commands, which scale with the aspect ratio. Test shape
 against a deliberately non-square rectangle.
 
 **A map renders nothing on a self-drawn backend.** Hydrolysis draws a map only with
-`waterui-map-gpu`: the app must depend on it and put a `MapGpuOptions` tile source into the
+`waterui-map-gpu`: the app must depend on it and install the `MapGpu` plugin into the
 environment in `app(env)`. See [media.md](media.md).
 
 ## Build and run problems

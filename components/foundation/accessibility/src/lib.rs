@@ -12,6 +12,9 @@
 
 extern crate alloc;
 
+use alloc::rc::Rc;
+use core::fmt;
+
 use nami::{Computed, Signal, SignalExt, impl_constant, signal::IntoComputed, zip::zip};
 use suiteki::Str;
 
@@ -19,14 +22,40 @@ use waterui_core::layout::{PlacedGeometry, Rect};
 use waterui_core::metadata::MetadataKey;
 use waterui_core::{Environment, Metadata, OneOf2, View};
 
+type TextResolverFn = dyn Fn(&Environment) -> Computed<Str>;
+
+#[derive(Clone)]
+enum TextResolver {
+    Signal(Computed<Str>),
+    Resolved(Rc<TextResolverFn>),
+}
+
+impl fmt::Debug for TextResolver {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Signal(signal) => f.debug_tuple("Signal").field(signal).finish(),
+            Self::Resolved(_) => f.write_str("Resolved(..)"),
+        }
+    }
+}
+
+impl TextResolver {
+    fn resolve(&self, env: &Environment) -> Computed<Str> {
+        match self {
+            Self::Signal(signal) => signal.clone(),
+            Self::Resolved(resolver) => resolver(env),
+        }
+    }
+}
+
 /// Overrides the spoken label for a component when the default text is not
 /// adequate.
 ///
-/// The label is reactive: a label derived from app state (`"3 unread
-/// messages"`) stays current without rebuilding the subtree, matching
-/// [`AccessibilityStateSignal`].
+/// The label is reactive and resolves against the surrounding [`Environment`]
+/// so localized text tracks the active translation catalog and locale without
+/// rebuilding the subtree, matching [`AccessibilityStateSignal`].
 #[derive(Debug, Clone)]
-pub struct AccessibilityLabel(Computed<Str>);
+pub struct AccessibilityLabel(TextResolver);
 
 impl MetadataKey for AccessibilityLabel {}
 
@@ -41,13 +70,19 @@ impl AccessibilityLabel {
     /// let label = AccessibilityLabel::new("Delete draft");
     /// ```
     pub fn new(label: impl IntoComputed<Str>) -> Self {
-        Self(label.into_computed())
+        Self(TextResolver::Signal(label.into_computed()))
     }
 
-    /// The reactive label signal.
+    /// Creates a label resolved against the surrounding [`Environment`] at
+    /// realization time (for example, localized [`Text`](https://docs.rs/waterui-text)).
+    pub fn resolved(resolver: impl Fn(&Environment) -> Computed<Str> + 'static) -> Self {
+        Self(TextResolver::Resolved(Rc::new(resolver)))
+    }
+
+    /// Resolves the reactive label signal against `env`.
     #[must_use]
-    pub const fn signal(&self) -> &Computed<Str> {
-        &self.0
+    pub fn resolve(&self, env: &Environment) -> Computed<Str> {
+        self.0.resolve(env)
     }
 }
 
@@ -60,10 +95,10 @@ impl AccessibilityLabel {
 /// has to replace them. Assistive technologies announce it after the label,
 /// matching `accessibilityValue` on `AppKit` and `aria-valuetext` on the web.
 ///
-/// The value is reactive: a value derived from app state stays current without
-/// rebuilding the subtree, matching [`AccessibilityLabel`].
+/// The value is reactive and resolves against the surrounding [`Environment`],
+/// matching [`AccessibilityLabel`].
 #[derive(Debug, Clone)]
-pub struct AccessibilityValue(Computed<Str>);
+pub struct AccessibilityValue(TextResolver);
 
 impl MetadataKey for AccessibilityValue {}
 
@@ -77,13 +112,19 @@ impl AccessibilityValue {
     /// let value = AccessibilityValue::new("e raised to i pi plus one equals zero");
     /// ```
     pub fn new(value: impl IntoComputed<Str>) -> Self {
-        Self(value.into_computed())
+        Self(TextResolver::Signal(value.into_computed()))
     }
 
-    /// The reactive value signal.
+    /// Creates a value resolved against the surrounding [`Environment`] at
+    /// realization time (for example, localized text).
+    pub fn resolved(resolver: impl Fn(&Environment) -> Computed<Str> + 'static) -> Self {
+        Self(TextResolver::Resolved(Rc::new(resolver)))
+    }
+
+    /// Resolves the reactive value signal against `env`.
     #[must_use]
-    pub const fn signal(&self) -> &Computed<Str> {
-        &self.0
+    pub fn resolve(&self, env: &Environment) -> Computed<Str> {
+        self.0.resolve(env)
     }
 }
 
@@ -395,10 +436,9 @@ impl AccessibilityState {
     }
 
     /// Sets the expanded or collapsed state.
-    // TODO(#4376): narrow back to `expanded: bool` once `hydrolysis-m3` moves off `Some(...)`.
     #[must_use]
-    pub fn expanded(mut self, expanded: impl Into<Option<bool>>) -> Self {
-        self.expanded = expanded.into();
+    pub const fn expanded(mut self, expanded: bool) -> Self {
+        self.expanded = Some(expanded);
         self
     }
 

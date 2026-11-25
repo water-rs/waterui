@@ -14,7 +14,7 @@ use waterui::component::list::List;
 use waterui::layout::ContentMode;
 use waterui::media::Photo;
 use waterui::navigation::{
-    NavigationSplitView, NavigationStack, NavigationToolbarItems, NavigationView,
+    NavigationSplitView, NavigationStack, NavigationToolbarItems, NavigationView, TabStyle,
 };
 use waterui::prelude::*;
 use waterui::widget::avatar;
@@ -323,7 +323,7 @@ fn reply(selected: Binding<Option<u64>>, destination: &Binding<usize>) -> impl V
             }),
         ),
     )
-    .style(tab_style::automatic())
+    .style(TabStyle::Automatic)
 }
 
 /// Self-contained entry for previews and embedding.

@@ -277,9 +277,12 @@ plain constants and reactive signals.
 
 ---
 
-## 12. Icon packs: function form everywhere
+## 12. Icon packs: one `Icon` type, function form everywhere
 
 Portable icon packs — `lucide`, `material-icon`, and `fontawesome7` — expose
-their icons as **functions** (`lucide::house()`, `mdi::home()`, ...). Apple SF
-Symbols live in `waterui_apple::SfSymbol` as typed constants (`SfSymbol::HOUSE`,
+their icons as snake_case **functions** returning `waterui_icon::Icon`
+(`lucide::house()`, `mdi::home()`, `fa::solid::house()`), regardless of whether
+the pack feature selects SVG paths or webfont glyphs. Colour uses `.foreground(..)`
+and size flows through the shared `IconSize` channel (`.icon_size(..)`). Apple
+SF Symbols live in `waterui_apple::SfSymbol` as typed constants (`SfSymbol::HOUSE`,
 `SfSymbol::HOUSE_FILL`).

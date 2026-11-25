@@ -25,7 +25,7 @@ use std::collections::{HashMap, HashSet};
 
 use cocoa_ui::geometry::EdgeInsets as KitInsets;
 use cocoa_ui::{Retained, view};
-use waterui::animation::{Animation, ChangeAnimation};
+use waterui::animation::ChangeAnimation;
 use waterui::component::list::{
     ListConfig, ListEdits, ListRowDeletable, ListRowInsets, ListRowTags, ListSection, ListSections,
     ListSelection, ListTagId,
@@ -2580,7 +2580,7 @@ fn approach(state: &Rc<RefCell<Shared>>, table: &TableView, target: usize) {
 
 /// Wires a `ScrollController<usize>` into the table: a generation bump
 /// scrolls the target row to the top — with the request's animation, if
-/// it carries one: `Animation::Default` is the native animated row
+/// it carries one: `Animation::DEFAULT` is the native animated row
 /// scroll, and an explicit animation drives the offset on the frame
 /// clock along the core curve, landing where the jump would have. An
 /// animated request first closes in through [`approach`], so a far
@@ -2621,7 +2621,7 @@ fn wire_controller(
             #[cfg(target_os = "ios")]
             None => table.scroll_to_row(target, false),
             #[cfg(target_os = "ios")]
-            Some(Animation::Default) => table.scroll_to_row(target, true),
+            Some(animation) if animation.is_default() => table.scroll_to_row(target, true),
             #[cfg(target_os = "ios")]
             Some(animation) => {
                 table.animate_scroll_to_row(
@@ -2633,7 +2633,7 @@ fn wire_controller(
             #[cfg(target_os = "macos")]
             None => table.scroll_row_to_top(target),
             #[cfg(target_os = "macos")]
-            Some(Animation::Default) => table.scroll_row_to_top_animated(target),
+            Some(animation) if animation.is_default() => table.scroll_row_to_top_animated(target),
             #[cfg(target_os = "macos")]
             Some(animation) => {
                 table.animate_scroll_row_to_top(

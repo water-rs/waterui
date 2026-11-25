@@ -4,9 +4,9 @@
 
 use super::*;
 use crate::theme::TabItemLayout;
-use waterui::navigation::tab::NativeTabStyle;
+use waterui::navigation::tab::TabStyle;
 use waterui_core::handler::ViewBuilder;
-use waterui_navigation::tab::{Tab, Tabs, tab_style};
+use waterui_navigation::tab::{Tab, Tabs};
 
 fn tabs_view(
     count: usize,
@@ -37,7 +37,7 @@ fn icon_tabs_view(count: usize, icon: &str) -> impl View + use<> {
 }
 
 fn sidebar_tabs_view(count: usize) -> impl View + use<> {
-    tabs_view(count).style(tab_style::Sidebar)
+    tabs_view(count).style(TabStyle::Sidebar)
 }
 
 /// Intrinsic width of a plain-text view, measured the same way the
@@ -151,7 +151,7 @@ fn horizontal_highlight_hugs_icon_spacing_label_not_the_button() {
     // content — icon + icon_label_spacing + label — grown by
     // button_horizontal_inset on each side.
     let metrics = MinimalTestTheme::default()
-        .tabs(&TabsSpec::new(NativeTabStyle::TabBar), &env)
+        .tabs(&TabsSpec::new(TabStyle::TabBar), &env)
         .metrics(TabItemLayout::Horizontal);
     let icon_width = measure_plain(&mut renderer, &env, ICON_TEXT);
     let label_width = measure_plain(&mut renderer, &env, "Tab 1");

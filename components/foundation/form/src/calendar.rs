@@ -15,6 +15,7 @@ use jiff::{
     ToSpan,
     civil::{Date, Weekday},
 };
+use nami::watcher::BoxWatcherGuard;
 use nami::{
     Binding, Computed, Signal, SignalExt, collection::SignalCollection, signal::IntoComputed,
 };
@@ -23,7 +24,8 @@ use waterui_controls::{IntoLabel, button, impl_label_style_methods};
 use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 use waterui_core::layout::StretchAxis;
 use waterui_core::{
-    AnyView, Environment, Metadata, Native, NativeView, OneOf2, View, env::use_env, views::ForEach,
+    AnyView, Environment, Metadata, Native, NativeView, OneOf2, Retain, View, contract_violation,
+    env::use_env, views::ForEach,
 };
 use waterui_graphics::color::Color;
 use waterui_interaction::interaction::Disabled;
@@ -44,6 +46,34 @@ const CALENDAR_SELECTED_DAY_SIZE: f32 = 36.0;
 const CALENDAR_CELL_SPACING: f32 = 8.0;
 const CALENDAR_WEEKDAY_HEIGHT: f32 = 24.0;
 
+/// Validates a calendar date range: `start <= end`.
+///
+/// # Contract violation
+///
+/// A reversed range panics in debug builds and logs and clamps to
+/// `start..=start` in release builds.
+#[must_use]
+pub fn sanitize_date_range(range: RangeInclusive<Date>) -> RangeInclusive<Date> {
+    let (start, end) = (*range.start(), *range.end());
+    if start <= end {
+        return start..=end;
+    }
+    contract_violation!(
+        "a calendar range must have start <= end, got {start}..={end}; clamping the range"
+    );
+    start..=start
+}
+
+/// Clamps `value` in place when it falls outside `range`.
+pub fn clamp_date_to_range(value: &Binding<Date>, range: &RangeInclusive<Date>) {
+    let range = sanitize_date_range(range.clone());
+    let current = value.snapshot();
+    let clamped = current.clamp(*range.start(), *range.end());
+    if clamped != current {
+        value.set(clamped);
+    }
+}
+
 /// Configuration for the [`Calendar`] component — what a backend realizes
 /// through its `calendar` method, or a hook targeting `CalendarConfig`.
 #[derive(Debug, Clone)]
@@ -51,7 +81,7 @@ const CALENDAR_WEEKDAY_HEIGHT: f32 = 24.0;
 pub struct CalendarConfig<S> {
     label: ControlLabel<S>,
     value: Binding<Date>,
-    range: RangeInclusive<Date>,
+    range: Computed<RangeInclusive<Date>>,
     decorated: Computed<BTreeSet<Date>>,
     visible_month: Binding<Date>,
 }
@@ -81,8 +111,22 @@ impl<S> CalendarConfig<S> {
 
     /// The inclusive range of selectable dates.
     #[must_use]
-    pub const fn range(&self) -> &RangeInclusive<Date> {
+    pub const fn range(&self) -> &Computed<RangeInclusive<Date>> {
         &self.range
+    }
+
+    /// Watches `range` and re-clamps `value` and `visible_month` in place
+    /// whenever the range updates, returning the subscription guard.
+    pub fn watch_range_clamp(&self) -> BoxWatcherGuard {
+        let value = self.value.clone();
+        let visible_month = self.visible_month.clone();
+        let apply = move |range: &RangeInclusive<Date>| {
+            let range = sanitize_date_range(range.clone());
+            clamp_date_to_range(&value, &range);
+            ensure_visible_month_in_range(&visible_month, Some(value.snapshot()), &range);
+        };
+        apply(&self.range.snapshot());
+        self.range.watch(move |ctx| apply(ctx.value()))
     }
 
     /// The days marked with a passive decoration dot.
@@ -105,7 +149,7 @@ impl<S> CalendarConfig<S> {
 pub struct Calendar<L> {
     label: Label<L>,
     value: Binding<Date>,
-    range: RangeInclusive<Date>,
+    range: Computed<RangeInclusive<Date>>,
     decorated: Computed<BTreeSet<Date>>,
     visible_month: Binding<Date>,
 }
@@ -165,13 +209,13 @@ impl<L> Calendar<L> {
     /// announce. Use [`hide_label`](Self::hide_label) to omit it visually
     /// while keeping it in the accessibility tree.
     pub fn new<I: IntoLabel<Kind = L>>(label: I, date: &Binding<Date>) -> Self {
-        let range = Date::MIN..=Date::MAX;
+        let initial_range = Date::MIN..=Date::MAX;
         let visible_month =
-            Binding::new(initial_visible_month(Some(date.snapshot()), &range).first_day());
+            Binding::new(initial_visible_month(Some(date.snapshot()), &initial_range).first_day());
         Self {
             label: label.into_label(),
             value: date.clone(),
-            range,
+            range: Computed::constant(initial_range),
             decorated: Computed::constant(BTreeSet::new()),
             visible_month,
         }
@@ -182,16 +226,28 @@ impl<L> Calendar<L> {
     }
 
     /// Sets the valid date range.
-    pub fn range(mut self, range: RangeInclusive<Date>) -> Self {
-        ensure_visible_month_in_range(&self.visible_month, Some(self.value.snapshot()), &range);
-        self.range = range;
+    ///
+    /// # Contract violation
+    ///
+    /// A reversed range panics in debug builds and logs and clamps in release
+    /// builds.
+    pub fn range(mut self, range: impl IntoComputed<RangeInclusive<Date>>) -> Self {
+        let mapped = range.into_computed().map(sanitize_date_range).computed();
+        let initial = mapped.snapshot();
+        clamp_date_to_range(&self.value, &initial);
+        ensure_visible_month_in_range(&self.visible_month, Some(self.value.snapshot()), &initial);
+        self.range = mapped;
         self
     }
 
     /// Binds external control over the currently displayed month.
     pub fn visible_month(mut self, month: &Binding<Date>) -> Self {
         let visible_month = month.clone();
-        ensure_visible_month_in_range(&visible_month, Some(self.value.snapshot()), &self.range);
+        ensure_visible_month_in_range(
+            &visible_month,
+            Some(self.value.snapshot()),
+            &self.range.snapshot(),
+        );
         self.visible_month = visible_month;
         self
     }
@@ -271,6 +327,7 @@ impl<S> CalendarGrid<S> {
 
     /// Splits this grid into its resolved label and its composed calendar body.
     pub fn into_parts(self, env: &Environment) -> (ControlLabel<S>, impl View + use<S>) {
+        let range_guard = self.0.watch_range_clamp();
         let CalendarConfig {
             label,
             value: selection,
@@ -287,7 +344,10 @@ impl<S> CalendarGrid<S> {
         let rows = calendar_rows(&visible_month, move |cell| {
             single_day_cell_content(cell, &cell_range, cell_selection.clone(), &cell_decorated)
         });
-        let calendar = CalendarBody::new(locale, range, visible_month, rows);
+        let calendar = Metadata::new(
+            CalendarBody::new(locale, range, visible_month, rows),
+            Retain::new(range_guard),
+        );
         (label, calendar)
     }
 }
@@ -361,7 +421,7 @@ pub(crate) struct DayCell {
 
 pub(crate) struct CalendarBody<Content> {
     locale: Computed<Locale>,
-    range: RangeInclusive<Date>,
+    range: Computed<RangeInclusive<Date>>,
     visible_month: Binding<VisibleMonth>,
     content: Content,
 }
@@ -369,7 +429,7 @@ pub(crate) struct CalendarBody<Content> {
 impl<Content> CalendarBody<Content> {
     pub(crate) const fn new(
         locale: Computed<Locale>,
-        range: RangeInclusive<Date>,
+        range: Computed<RangeInclusive<Date>>,
         visible_month: Binding<VisibleMonth>,
         content: Content,
     ) -> Self {
@@ -387,7 +447,7 @@ impl<Content: View> View for CalendarBody<Content> {
         Padding::new(
             EdgeInsets::all(8.0),
             vstack((
-                build_month_header(&self.locale, self.visible_month, self.range),
+                build_month_header(&self.locale, self.visible_month, &self.range),
                 weekday_header(self.locale),
                 self.content,
             ))
@@ -466,7 +526,7 @@ pub(crate) fn map_visible_month_binding(month: &Binding<Date>) -> Binding<Visibl
 fn build_month_header(
     locale: &Computed<Locale>,
     visible_month: Binding<VisibleMonth>,
-    range: RangeInclusive<Date>,
+    range: &Computed<RangeInclusive<Date>>,
 ) -> impl View + use<> {
     let title = Text::computed(
         locale
@@ -477,13 +537,13 @@ fn build_month_header(
             .computed(),
     )
     .headline();
-    let first_month = month_start(*range.start());
-    let last_month = month_start(*range.end());
     let previous_disabled = visible_month
-        .map(move |month| month.previous().first_day() < first_month)
+        .zip(range)
+        .map(|(month, range)| month.previous().first_day() < month_start(*range.start()))
         .computed();
     let next_disabled = visible_month
-        .map(move |month| month.next().first_day() > last_month)
+        .zip(range)
+        .map(|(month, range)| month.next().first_day() > month_start(*range.end()))
         .computed();
 
     hstack((
@@ -564,12 +624,10 @@ fn weekday_header(locale: Computed<Locale>) -> impl View {
 
 fn single_day_cell_content(
     cell: DayCell,
-    range: &RangeInclusive<Date>,
+    range: &Computed<RangeInclusive<Date>>,
     selection: Binding<Date>,
     decorated_dates: &Computed<BTreeSet<Date>>,
 ) -> impl View + use<> {
-    let is_in_range = range.contains(&cell.date);
-    let is_selectable = cell.in_current_month && is_in_range;
     let selected = selection
         .map(move |selected_date| selected_date == cell.date)
         .computed();
@@ -577,13 +635,20 @@ fn single_day_cell_content(
         .map(move |dates| dates.contains(&cell.date))
         .computed();
 
-    if is_selectable {
+    if cell.in_current_month {
+        let disabled = range
+            .map(move |range| !range.contains(&cell.date))
+            .computed();
+        let range = range.clone();
         OneOf2::A(selectable_day_cell(
             cell.date,
             &decorated,
             &selected,
+            disabled,
             move || {
-                selection.set(cell.date);
+                if range.snapshot().contains(&cell.date) {
+                    selection.set(cell.date);
+                }
             },
         ))
     } else {
@@ -597,12 +662,10 @@ fn single_day_cell_content(
 #[cfg(feature = "multi-date-picker")]
 pub(crate) fn multi_day_cell_content(
     cell: DayCell,
-    range: &RangeInclusive<Date>,
+    range: &Computed<RangeInclusive<Date>>,
     selection: Binding<BTreeSet<Date>>,
     decorated_dates: &Computed<BTreeSet<Date>>,
 ) -> impl View + use<> {
-    let is_in_range = range.contains(&cell.date);
-    let is_selectable = cell.in_current_month && is_in_range;
     let selected = selection
         .map(move |dates| dates.contains(&cell.date))
         .computed();
@@ -610,17 +673,24 @@ pub(crate) fn multi_day_cell_content(
         .map(move |dates| dates.contains(&cell.date))
         .computed();
 
-    if is_selectable {
+    if cell.in_current_month {
+        let disabled = range
+            .map(move |range| !range.contains(&cell.date))
+            .computed();
+        let range = range.clone();
         OneOf2::A(selectable_day_cell(
             cell.date,
             &decorated,
             &selected,
+            disabled,
             move || {
-                selection.with_mut(|dates| {
-                    if !dates.insert(cell.date) {
-                        dates.remove(&cell.date);
-                    }
-                });
+                if range.snapshot().contains(&cell.date) {
+                    selection.with_mut(|dates| {
+                        if !dates.insert(cell.date) {
+                            dates.remove(&cell.date);
+                        }
+                    });
+                }
             },
         ))
     } else {
@@ -639,6 +709,7 @@ fn selectable_day_cell<F: FnMut() + 'static>(
     date: Date,
     decorated: &Computed<bool>,
     selected: &Computed<bool>,
+    disabled: Computed<bool>,
     action: F,
 ) -> impl View + use<F> {
     let foreground = selected.map(|selected| {
@@ -654,12 +725,16 @@ fn selectable_day_cell<F: FnMut() + 'static>(
         .action(action);
     let content = day_grid_cell(button, CALENDAR_DAY_SIZE);
 
-    BackgroundView::new(
+    let cell = BackgroundView::new(
         content,
         Frame::new(Circle.fill(selection_fill_color(selected)))
             .width(CALENDAR_SELECTED_DAY_SIZE)
             .height(CALENDAR_SELECTED_DAY_SIZE),
-    )
+    );
+    use_env(move |mut env: Environment| {
+        Disabled::install(&mut env, disabled);
+        Metadata::new(cell, env)
+    })
 }
 
 fn day_cell_label(date: Date, decorated: &Computed<bool>) -> Text {

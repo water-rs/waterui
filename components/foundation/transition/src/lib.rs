@@ -15,14 +15,18 @@ use core::{fmt, time::Duration};
 
 use waterui_core::animation::Animation;
 use waterui_core::backend::{Backend, ChildSlot, ErasedPayload};
+use waterui_core::extract::Extractor;
 use waterui_core::layout::{
     LayoutDirection, LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView,
     ViewDimensions,
 };
 use waterui_core::metadata::MetadataKey;
+use waterui_core::reactive::signal::IntoComputed;
+use waterui_core::reactive::watcher::Context as WatcherContext;
 use waterui_core::view::hook::{HookList, HookableView};
 use waterui_core::{
-    AnyView, Binding, Computed, Environment, Metadata, NativeView, OneOf2, Signal, SignalExt, View,
+    AnyView, Binding, Computed, Environment, Error, Metadata, NativeView, OneOf2, Signal,
+    SignalExt, View,
 };
 
 /// The structural event starting an independent transition instance.
@@ -74,12 +78,80 @@ waterui_core::impl_constant!(Edge);
 
 /// Environment flag requesting reduced motion.
 ///
-/// Each transition site resolves this when it starts a clock: while present,
-/// `TransitionSpec::start` maps every transition through its declared reduced
-/// form. Platform hosts set this from the system accessibility preference;
-/// test harnesses set it directly in the environment.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct ReduceMotion(pub bool);
+/// Each transition site samples this when it starts a clock: while active,
+/// [`TransitionSpec::start`] maps every transition through its declared reduced
+/// form. Platform hosts install this from the system accessibility preference
+/// and update it when the setting changes; tests and custom scopes can build
+/// one from a `Binding<bool>` or `Computed<bool>`.
+#[derive(Clone, Debug)]
+pub struct ReduceMotion(Computed<bool>);
+
+impl Default for ReduceMotion {
+    fn default() -> Self {
+        Self(Computed::constant(false))
+    }
+}
+
+impl ReduceMotion {
+    /// Creates a reduce-motion setting from a constant or reactive boolean signal.
+    #[must_use]
+    pub fn new(reduced: impl IntoComputed<bool>) -> Self {
+        Self(reduced.into_computed())
+    }
+
+    /// Returns the underlying reactive boolean signal.
+    #[must_use]
+    pub const fn signal(&self) -> &Computed<bool> {
+        &self.0
+    }
+
+    /// Reads whether reduced motion is currently enabled in `env`.
+    #[must_use]
+    pub fn is_reduced(env: &Environment) -> bool {
+        env.get::<Self>().is_some_and(Signal::snapshot)
+    }
+}
+
+impl From<bool> for ReduceMotion {
+    fn from(reduced: bool) -> Self {
+        Self::new(reduced)
+    }
+}
+
+impl From<Computed<bool>> for ReduceMotion {
+    fn from(reduced: Computed<bool>) -> Self {
+        Self(reduced)
+    }
+}
+
+impl From<Binding<bool>> for ReduceMotion {
+    fn from(reduced: Binding<bool>) -> Self {
+        Self::new(reduced)
+    }
+}
+
+impl Signal for ReduceMotion {
+    type Output = bool;
+    type Guard = <Computed<bool> as Signal>::Guard;
+
+    fn snapshot(&self) -> Self::Output {
+        self.0.snapshot()
+    }
+
+    fn watch(&self, watcher: impl Fn(WatcherContext<Self::Output>) + 'static) -> Self::Guard {
+        self.0.watch(watcher)
+    }
+}
+
+impl Extractor for ReduceMotion {
+    fn extract(env: &Environment) -> Result<Self, Error> {
+        env.get::<Self>().cloned().ok_or_else(|| {
+            Error::msg(
+                "ReduceMotion is not installed in the environment; platform hosts install it at startup",
+            )
+        })
+    }
+}
 
 /// Geometry available when resolving native property transitions.
 #[derive(Clone, Copy, Debug)]
@@ -1059,5 +1131,34 @@ mod tests {
         assert!(outgoing.is_complete());
         near(incoming.progress(), 0.0);
         near(outgoing.progress(), 1.0);
+    }
+
+    #[test]
+    fn reduce_motion_follows_reactive_signal_updates() {
+        use core::cell::Cell;
+
+        let setting = Binding::new(false);
+        let flag = ReduceMotion::new(setting.clone());
+        let mut env = Environment::new();
+        env.insert(flag.clone());
+
+        assert!(!flag.snapshot());
+        assert!(!ReduceMotion::is_reduced(&env));
+
+        let seen = Rc::new(Cell::new(false));
+        let seen_watch = Rc::clone(&seen);
+        let _guard = flag.watch(move |ctx| {
+            seen_watch.set(ctx.into_value());
+        });
+
+        setting.set(true);
+        assert!(flag.snapshot());
+        assert!(seen.get());
+        assert!(ReduceMotion::is_reduced(&env));
+
+        setting.set(false);
+        assert!(!flag.snapshot());
+        assert!(!seen.get());
+        assert!(!ReduceMotion::is_reduced(&env));
     }
 }

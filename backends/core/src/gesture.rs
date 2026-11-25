@@ -1553,8 +1553,7 @@ mod tests {
     #[test]
     fn long_press_without_minimum_follows_platform_timeout_and_reports_pointer_up_duration() {
         use std::cell::Cell;
-        use waterui::gesture::LongPressGesture;
-        use waterui_core::handler::boxed_action;
+        use waterui::gesture::{GestureObserver, LongPressGesture};
 
         let mut engine = GestureEngine::default();
         let platform_timeout = Duration::from_millis(750);
@@ -1562,15 +1561,18 @@ mod tests {
         let env = Environment::new();
         let reported = Rc::new(Cell::new(None));
         let reported_cb = Rc::clone(&reported);
+        let (gesture, action) =
+            GestureObserver::new(LongPressGesture::new(), move |event: LongPressEvent| {
+                reported_cb.set(Some(event.duration()));
+            })
+            .into_parts();
         engine.register_target(
             GesturePlacement::new(
                 kurbo::Rect::new(0.0, 0.0, 100.0, 100.0),
                 kurbo::Affine::IDENTITY,
             ),
-            LongPressGesture::new().into(),
-            boxed_action(move |event: LongPressEvent| {
-                reported_cb.set(Some(event.duration()));
-            }),
+            gesture,
+            action,
             0,
             0,
             0,
@@ -1917,8 +1919,7 @@ mod tests {
     #[test]
     fn gesture_engine_dispatches_pointer_input_to_same_group_recognizers() {
         use std::{cell::Cell, rc::Rc};
-        use waterui::gesture::{DragGesture, TapGesture};
-        use waterui_core::handler::boxed_action;
+        use waterui::gesture::{DragGesture, GestureObserver, TapGesture};
 
         let mut engine = GestureEngine::default();
         let env = Environment::new();
@@ -1928,33 +1929,20 @@ mod tests {
 
         {
             let tap_hits = Rc::clone(&tap_hits);
-            engine.register_target(
-                identity_placement(bounds),
-                Gesture::Tap(TapGesture::new()),
-                boxed_action(move |env: Environment| {
-                    env.extract::<TapEvent>()
-                        .expect("tap action missing TapEvent in environment");
-                    tap_hits.set(tap_hits.get() + 1);
-                }),
-                0,
-                3,
-                7,
-            );
+            let (gesture, action) = GestureObserver::new(TapGesture::new(), move |_: TapEvent| {
+                tap_hits.set(tap_hits.get() + 1);
+            })
+            .into_parts();
+            engine.register_target(identity_placement(bounds), gesture, action, 0, 3, 7);
         }
         {
             let drag_hits = Rc::clone(&drag_hits);
-            engine.register_target(
-                identity_placement(bounds),
-                Gesture::Drag(DragGesture::new(8.0)),
-                boxed_action(move |env: Environment| {
-                    env.extract::<DragEvent>()
-                        .expect("drag action missing DragEvent in environment");
+            let (gesture, action) =
+                GestureObserver::new(DragGesture::new(8.0), move |_: DragEvent| {
                     drag_hits.set(drag_hits.get() + 1);
-                }),
-                0,
-                2,
-                7,
-            );
+                })
+                .into_parts();
+            engine.register_target(identity_placement(bounds), gesture, action, 0, 2, 7);
         }
 
         let start = Instant::now();
@@ -1980,8 +1968,7 @@ mod tests {
     #[test]
     fn gesture_engine_dispatches_magnification_to_same_group_recognizers() {
         use std::{cell::Cell, rc::Rc};
-        use waterui::gesture::{DragGesture, MagnificationGesture};
-        use waterui_core::handler::boxed_action;
+        use waterui::gesture::{DragGesture, GestureObserver, MagnificationGesture};
 
         let mut engine = GestureEngine::default();
         let env = Environment::new();
@@ -1991,33 +1978,23 @@ mod tests {
 
         {
             let drag_hits = Rc::clone(&drag_hits);
-            engine.register_target(
-                identity_placement(bounds),
-                Gesture::Drag(DragGesture::new(0.0)),
-                boxed_action(move |env: Environment| {
-                    env.extract::<DragEvent>()
-                        .expect("drag action missing DragEvent in environment");
+            let (gesture, action) =
+                GestureObserver::new(DragGesture::new(0.0), move |_: DragEvent| {
                     drag_hits.set(drag_hits.get() + 1);
-                }),
-                0,
-                3,
-                11,
-            );
+                })
+                .into_parts();
+            engine.register_target(identity_placement(bounds), gesture, action, 0, 3, 11);
         }
         {
             let magnify_hits = Rc::clone(&magnify_hits);
-            engine.register_target(
-                identity_placement(bounds),
-                Gesture::Magnification(MagnificationGesture::new(1.0)),
-                boxed_action(move |env: Environment| {
-                    env.extract::<MagnificationEvent>()
-                        .expect("magnification action missing MagnificationEvent in environment");
+            let (gesture, action) = GestureObserver::new(
+                MagnificationGesture::new(1.0),
+                move |_: MagnificationEvent| {
                     magnify_hits.set(magnify_hits.get() + 1);
-                }),
-                0,
-                2,
-                11,
-            );
+                },
+            )
+            .into_parts();
+            engine.register_target(identity_placement(bounds), gesture, action, 0, 2, 11);
         }
 
         let start = Instant::now();
@@ -2044,8 +2021,7 @@ mod tests {
     #[test]
     fn middle_button_fires_middle_tap_but_not_default_tap() {
         use std::{cell::Cell, rc::Rc};
-        use waterui::gesture::TapGesture;
-        use waterui_core::handler::boxed_action;
+        use waterui::gesture::{GestureObserver, TapGesture};
 
         let mut engine = GestureEngine::default();
         let env = Environment::new();
@@ -2056,36 +2032,24 @@ mod tests {
 
         {
             let default_hits = Rc::clone(&default_hits);
-            engine.register_target(
-                identity_placement(bounds),
-                Gesture::Tap(TapGesture::new()),
-                boxed_action(move |env: Environment| {
-                    env.extract::<TapEvent>()
-                        .expect("tap action missing TapEvent in environment");
-                    default_hits.set(default_hits.get() + 1);
-                }),
-                0,
-                2,
-                7,
-            );
+            let (gesture, action) = GestureObserver::new(TapGesture::new(), move |_: TapEvent| {
+                default_hits.set(default_hits.get() + 1);
+            })
+            .into_parts();
+            engine.register_target(identity_placement(bounds), gesture, action, 0, 2, 7);
         }
         {
             let middle_hits = Rc::clone(&middle_hits);
             let middle_button = Rc::clone(&middle_button);
-            engine.register_target(
-                identity_placement(bounds),
-                Gesture::Tap(TapGesture::new().buttons(PointerButtons::MIDDLE)),
-                boxed_action(move |env: Environment| {
-                    let event = env
-                        .extract::<TapEvent>()
-                        .expect("tap action missing TapEvent in environment");
+            let (gesture, action) = GestureObserver::new(
+                TapGesture::new().buttons(PointerButtons::MIDDLE),
+                move |event: TapEvent| {
                     middle_button.set(Some(event.button()));
                     middle_hits.set(middle_hits.get() + 1);
-                }),
-                0,
-                1,
-                7,
-            );
+                },
+            )
+            .into_parts();
+            engine.register_target(identity_placement(bounds), gesture, action, 0, 1, 7);
         }
 
         let start = Instant::now();
@@ -2105,8 +2069,7 @@ mod tests {
     #[test]
     fn primary_button_does_not_fire_middle_only_tap() {
         use std::{cell::Cell, rc::Rc};
-        use waterui::gesture::TapGesture;
-        use waterui_core::handler::boxed_action;
+        use waterui::gesture::{GestureObserver, TapGesture};
 
         let mut engine = GestureEngine::default();
         let env = Environment::new();
@@ -2115,18 +2078,14 @@ mod tests {
 
         {
             let middle_hits = Rc::clone(&middle_hits);
-            engine.register_target(
-                identity_placement(bounds),
-                Gesture::Tap(TapGesture::new().buttons(PointerButtons::MIDDLE)),
-                boxed_action(move |env: Environment| {
-                    env.extract::<TapEvent>()
-                        .expect("tap action missing TapEvent in environment");
+            let (gesture, action) = GestureObserver::new(
+                TapGesture::new().buttons(PointerButtons::MIDDLE),
+                move |_: TapEvent| {
                     middle_hits.set(middle_hits.get() + 1);
-                }),
-                0,
-                1,
-                7,
-            );
+                },
+            )
+            .into_parts();
+            engine.register_target(identity_placement(bounds), gesture, action, 0, 1, 7);
         }
 
         let start = Instant::now();
@@ -2144,8 +2103,7 @@ mod tests {
     #[test]
     fn second_button_mid_sequence_does_not_join() {
         use std::{cell::Cell, rc::Rc};
-        use waterui::gesture::TapGesture;
-        use waterui_core::handler::boxed_action;
+        use waterui::gesture::{GestureObserver, TapGesture};
 
         let mut engine = GestureEngine::default();
         let env = Environment::new();
@@ -2154,18 +2112,11 @@ mod tests {
 
         {
             let hits = Rc::clone(&hits);
-            engine.register_target(
-                identity_placement(bounds),
-                Gesture::Tap(TapGesture::new()),
-                boxed_action(move |env: Environment| {
-                    env.extract::<TapEvent>()
-                        .expect("tap action missing TapEvent in environment");
-                    hits.set(hits.get() + 1);
-                }),
-                0,
-                1,
-                7,
-            );
+            let (gesture, action) = GestureObserver::new(TapGesture::new(), move |_: TapEvent| {
+                hits.set(hits.get() + 1);
+            })
+            .into_parts();
+            engine.register_target(identity_placement(bounds), gesture, action, 0, 1, 7);
         }
 
         let start = Instant::now();
@@ -2196,8 +2147,7 @@ mod tests {
     #[test]
     fn press_passes_through_group_that_rejects_its_button() {
         use std::{cell::Cell, rc::Rc};
-        use waterui::gesture::TapGesture;
-        use waterui_core::handler::boxed_action;
+        use waterui::gesture::{GestureObserver, TapGesture};
 
         let mut engine = GestureEngine::default();
         let env = Environment::new();
@@ -2206,14 +2156,14 @@ mod tests {
 
         {
             let parent_hits = Rc::clone(&parent_hits);
+            let (gesture, action) = GestureObserver::new(TapGesture::new(), move |_: TapEvent| {
+                parent_hits.set(parent_hits.get() + 1);
+            })
+            .into_parts();
             engine.register_target(
                 identity_placement(kurbo::Rect::new(0.0, 0.0, 200.0, 40.0)),
-                Gesture::Tap(TapGesture::new()),
-                boxed_action(move |env: Environment| {
-                    env.extract::<TapEvent>()
-                        .expect("tap action missing TapEvent in environment");
-                    parent_hits.set(parent_hits.get() + 1);
-                }),
+                gesture,
+                action,
                 0,
                 0,
                 1,
@@ -2221,14 +2171,17 @@ mod tests {
         }
         {
             let child_hits = Rc::clone(&child_hits);
+            let (gesture, action) = GestureObserver::new(
+                TapGesture::new().buttons(PointerButtons::MIDDLE),
+                move |_: TapEvent| {
+                    child_hits.set(child_hits.get() + 1);
+                },
+            )
+            .into_parts();
             engine.register_target(
                 identity_placement(kurbo::Rect::new(0.0, 0.0, 120.0, 40.0)),
-                Gesture::Tap(TapGesture::new().buttons(PointerButtons::MIDDLE)),
-                boxed_action(move |env: Environment| {
-                    env.extract::<TapEvent>()
-                        .expect("tap action missing TapEvent in environment");
-                    child_hits.set(child_hits.get() + 1);
-                }),
+                gesture,
+                action,
                 1,
                 0,
                 2,
@@ -2266,8 +2219,7 @@ mod tests {
     #[test]
     fn drag_event_reports_the_pressing_button() {
         use std::{cell::Cell, rc::Rc};
-        use waterui::gesture::DragGesture;
-        use waterui_core::handler::boxed_action;
+        use waterui::gesture::{DragGesture, GestureObserver};
 
         let mut engine = GestureEngine::default();
         let env = Environment::new();
@@ -2276,21 +2228,14 @@ mod tests {
 
         {
             let last_button = Rc::clone(&last_button);
-            engine.register_target(
-                identity_placement(bounds),
-                Gesture::Drag(
-                    DragGesture::new(8.0).buttons(PointerButtons::PRIMARY | PointerButtons::MIDDLE),
-                ),
-                boxed_action(move |env: Environment| {
-                    let event = env
-                        .extract::<DragEvent>()
-                        .expect("drag action missing DragEvent in environment");
+            let (gesture, action) = GestureObserver::new(
+                DragGesture::new(8.0).buttons(PointerButtons::PRIMARY | PointerButtons::MIDDLE),
+                move |event: DragEvent| {
                     last_button.set(Some(event.button()));
-                }),
-                0,
-                1,
-                7,
-            );
+                },
+            )
+            .into_parts();
+            engine.register_target(identity_placement(bounds), gesture, action, 0, 1, 7);
         }
 
         let start = Instant::now();
@@ -2321,7 +2266,7 @@ mod tests {
         // the transient list and cleared presses whose retained node had
         // not re-registered yet (`.on_tap` presses died under emit storms).
         use std::{cell::Cell, rc::Rc};
-        use waterui::gesture::TapGesture;
+        use waterui::gesture::{GestureObserver, TapGesture};
         use waterui_core::handler::boxed_action;
 
         let mut engine = GestureEngine::default();
@@ -2331,18 +2276,11 @@ mod tests {
 
         let tap_target = {
             let tap_hits = Rc::clone(&tap_hits);
-            engine.register_target(
-                identity_placement(bounds),
-                Gesture::Tap(TapGesture::new()),
-                boxed_action(move |env: Environment| {
-                    env.extract::<TapEvent>()
-                        .expect("tap action missing TapEvent in environment");
-                    tap_hits.set(tap_hits.get() + 1);
-                }),
-                0,
-                0,
-                7,
-            )
+            let (gesture, action) = GestureObserver::new(TapGesture::new(), move |_: TapEvent| {
+                tap_hits.set(tap_hits.get() + 1);
+            })
+            .into_parts();
+            engine.register_target(identity_placement(bounds), gesture, action, 0, 0, 7)
         };
 
         let start = Instant::now();
@@ -2389,8 +2327,7 @@ mod tests {
     #[test]
     fn events_are_delivered_in_the_targets_local_space() {
         use std::{cell::Cell, rc::Rc};
-        use waterui::gesture::{DragGesture, TapGesture};
-        use waterui_core::handler::boxed_action;
+        use waterui::gesture::{DragGesture, GestureObserver, TapGesture};
 
         // A 64×64 view placed at (40, 30) and scaled 2× from its top-left:
         // it covers window (40, 30)–(168, 158), and the window-to-local
@@ -2408,19 +2345,12 @@ mod tests {
         let tap = Rc::new(Cell::new(Option::<Point>::None));
         {
             let tap = Rc::clone(&tap);
-            taps.register_target(
-                placement,
-                Gesture::Tap(TapGesture::new()),
-                boxed_action(move |env: Environment| {
-                    let event = env
-                        .extract::<TapEvent>()
-                        .expect("tap action missing TapEvent");
+            let (gesture, action) =
+                GestureObserver::new(TapGesture::new(), move |event: TapEvent| {
                     tap.set(Some(event.location()));
-                }),
-                0,
-                0,
-                1,
-            );
+                })
+                .into_parts();
+            taps.register_target(placement, gesture, action, 0, 0, 1);
         }
         taps.handle_pointer_down(press, start, PointerButton::Primary, &env);
         assert!(taps.handle_pointer_up(
@@ -2435,19 +2365,12 @@ mod tests {
         let drag = Rc::new(RefCell::new(Option::<DragEvent>::None));
         {
             let drag = Rc::clone(&drag);
-            drags.register_target(
-                placement,
-                Gesture::Drag(DragGesture::new(0.0)),
-                boxed_action(move |env: Environment| {
-                    let event = env
-                        .extract::<DragEvent>()
-                        .expect("drag action missing DragEvent");
+            let (gesture, action) =
+                GestureObserver::new(DragGesture::new(0.0), move |event: DragEvent| {
                     *drag.borrow_mut() = Some(event);
-                }),
-                0,
-                0,
-                1,
-            );
+                })
+                .into_parts();
+            drags.register_target(placement, gesture, action, 0, 0, 1);
         }
         drags.handle_pointer_down(press, start, PointerButton::Primary, &env);
         assert!(drags.handle_pointer_move(

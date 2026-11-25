@@ -199,7 +199,7 @@ impl FormBuilder for String {
 // Other components don't have prompt
 #[cfg(feature = "stepper")]
 impl FormBuilder for i32 {
-    type View<L: LabelKind> = waterui_controls::Stepper<L>;
+    type View<L: LabelKind> = waterui_controls::Stepper<L, Self>;
     fn view<L: IntoLabel>(
         binding: &Binding<Self>,
         label: L,
@@ -247,17 +247,13 @@ impl FormBuilder for f64 {
 
 #[cfg(feature = "slider")]
 impl FormBuilder for f32 {
-    type View<L: LabelKind> = waterui_controls::Slider<L, (), ()>;
+    type View<L: LabelKind> = waterui_controls::Slider<L, (), (), Self>;
     fn view<L: IntoLabel>(
         binding: &Binding<Self>,
         label: L,
         _placeholder: Str,
     ) -> Self::View<L::Kind> {
-        slider(
-            label,
-            #[allow(clippy::cast_possible_truncation)]
-            &Binding::mapping(binding, f64::from, |binding, val| binding.set(val as Self)),
-        )
+        slider(label, binding)
     }
 }
 

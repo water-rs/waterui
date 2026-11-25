@@ -12,14 +12,13 @@ readme = "../../../README.md"
 
 [features]
 default = ["webfont"]
-svg = ["dep:waterui-svg"]
-webfont = ["dep:waterui-icon"]
+svg = ["waterui-icon/svg"]
+webfont = []
 
 [dependencies]
-# Only the two rendering entry points are linked: the generated modules refer
-# to `crate::Svg` (svg feature) and the re-exported `IconGlyph` (webfont).
-waterui-svg = { workspace = true, optional = true }
-waterui-icon = { workspace = true, optional = true }
+# Only `waterui-icon` is linked: generated modules always construct `crate::Icon`
+# using `crate::Svg` / `Icon::from_path` (`svg` feature) or `IconGlyph` (`webfont`).
+waterui-icon.workspace = true
 
 [build-dependencies]
 dirs = "7"

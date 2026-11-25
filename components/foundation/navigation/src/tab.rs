@@ -19,16 +19,16 @@ use waterui_core::{
     views::{AnyViews, ForEach, ViewSnapshot, Views},
 };
 
-/// Native tab presentation selected by a public style.
-#[doc(hidden)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
+/// Adaptive presentation style for a [`Tabs`] container.
 #[expect(
     clippy::exhaustive_enums,
-    reason = "backends realize each tab style variant by variant; a new tab style must fail their build instead of falling into a wildcard arm"
+    reason = "Step 3 marks TabStyle #[non_exhaustive] once split crate hydrolysis-m3 updates its match on item.placement"
 )]
-pub enum NativeTabStyle {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(u8)]
+pub enum TabStyle {
     /// Platform- and window-adaptive default.
+    #[default]
     Automatic = 0,
     /// Always request the platform tab bar presentation.
     TabBar = 1,
@@ -36,63 +36,31 @@ pub enum NativeTabStyle {
     Sidebar = 2,
 }
 
-/// Extensible public tab style contract.
-pub trait TabStyle: 'static {
-    /// Resolves the native presentation capability.
-    #[doc(hidden)]
-    fn into_native(self) -> NativeTabStyle;
-}
+/// Temporary compatibility alias for split crates during the `#4431` migration.
+#[doc(hidden)]
+pub type NativeTabStyle = TabStyle;
 
-/// Built-in tab styles.
+/// Temporary compatibility constructors for split crates during the `#4431` migration.
+#[doc(hidden)]
 pub mod tab_style {
-    use super::{NativeTabStyle, TabStyle};
+    use super::TabStyle;
 
-    /// Platform- and window-adaptive tab style.
-    #[derive(Debug, Clone, Copy, Default)]
-    pub struct Automatic;
-
-    impl TabStyle for Automatic {
-        fn into_native(self) -> NativeTabStyle {
-            NativeTabStyle::Automatic
-        }
-    }
-
-    /// Native tab-bar style.
-    #[derive(Debug, Clone, Copy, Default)]
-    pub struct TabBar;
-
-    impl TabStyle for TabBar {
-        fn into_native(self) -> NativeTabStyle {
-            NativeTabStyle::TabBar
-        }
-    }
-
-    /// Native sidebar or navigation-rail style.
-    #[derive(Debug, Clone, Copy, Default)]
-    pub struct Sidebar;
-
-    impl TabStyle for Sidebar {
-        fn into_native(self) -> NativeTabStyle {
-            NativeTabStyle::Sidebar
-        }
-    }
-
-    /// Returns the platform-adaptive tab style.
+    /// Returns [`TabStyle::Automatic`].
     #[must_use]
-    pub const fn automatic() -> Automatic {
-        Automatic
+    pub const fn automatic() -> TabStyle {
+        TabStyle::Automatic
     }
 
-    /// Returns the native tab-bar style.
+    /// Returns [`TabStyle::TabBar`].
     #[must_use]
-    pub const fn tab_bar() -> TabBar {
-        TabBar
+    pub const fn tab_bar() -> TabStyle {
+        TabStyle::TabBar
     }
 
-    /// Returns the native sidebar or navigation-rail style.
+    /// Returns [`TabStyle::Sidebar`].
     #[must_use]
-    pub const fn sidebar() -> Sidebar {
-        Sidebar
+    pub const fn sidebar() -> TabStyle {
+        TabStyle::Sidebar
     }
 }
 
@@ -482,7 +450,7 @@ pub struct TabsLayout<S> {
     /// The tab collection, keyed by erased tab identity.
     tabs: AnyViews<TabItem<S>>,
     /// Native adaptive style.
-    style: NativeTabStyle,
+    style: TabStyle,
     /// How the bar behaves while content scrolls.
     minimize_behavior: TabBarMinimizeBehavior,
     /// A view the platform floats above the tab bar, when it has such a slot.
@@ -504,7 +472,7 @@ impl<S> TabsLayout<S> {
 
     /// Native adaptive style.
     #[must_use]
-    pub const fn style(&self) -> NativeTabStyle {
+    pub const fn style(&self) -> TabStyle {
         self.style
     }
 
@@ -532,7 +500,7 @@ impl<S> TabsLayout<S> {
     ) -> (
         Binding<Id>,
         AnyViews<TabItem<S>>,
-        NativeTabStyle,
+        TabStyle,
         TabBarMinimizeBehavior,
         Option<S>,
     ) {
@@ -938,7 +906,7 @@ tuple_tab_sets! {
 pub struct Tabs<T: TabSet, A> {
     selection: Binding<T::Id>,
     set: T,
-    style: NativeTabStyle,
+    style: TabStyle,
     minimize_behavior: TabBarMinimizeBehavior,
     bottom_accessory: Option<A>,
 }
@@ -964,7 +932,7 @@ impl<T: TabSet> Tabs<T, ()> {
         Self {
             selection: selection.clone(),
             set: tabs,
-            style: NativeTabStyle::Automatic,
+            style: TabStyle::Automatic,
             minimize_behavior: TabBarMinimizeBehavior::Automatic,
             bottom_accessory: None,
         }
@@ -993,8 +961,8 @@ impl<T: TabSet> Tabs<T, ()> {
 
 impl<T: TabSet, A> Tabs<T, A> {
     /// Sets native adaptive tab presentation.
-    pub fn style(mut self, style: impl TabStyle) -> Self {
-        self.style = style.into_native();
+    pub const fn style(mut self, style: TabStyle) -> Self {
+        self.style = style;
         self
     }
 

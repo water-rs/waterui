@@ -10,7 +10,7 @@ use super::*;
 use crate::renderer::mount::motion::{LayerMotion, Motion};
 use crate::time::Instant;
 use cherenkov::LayerId;
-use waterui::animation::Animation;
+use waterui::animation::{Animation, Repeat};
 use waterui_graphics::animation::engine_animation;
 
 /// The instants after the change at which both sides are compared, in
@@ -80,11 +80,11 @@ fn evaluated_from(
     target: f64,
     elapsed: Duration,
 ) -> (f64, f64) {
-    let timing = engine_animation(animation)
-        .timing()
-        .expect("a curve or spring animation has a timing");
+    let playback = engine_animation(animation)
+        .playback()
+        .expect("a curve or spring animation has a playback");
     let (mut position, mut rate) = ([0.0], [0.0]);
-    timing.sample_lanes(
+    playback.sample_lanes(
         &[from],
         &[velocity],
         &[target],
@@ -398,4 +398,101 @@ fn a_platform_view_under_a_moving_offset_follows_the_track() {
     }
     let _ = runtime.pump_at(true, start + Duration::from_millis(400));
     approx::assert_relative_eq!(placed_x(&runtime), rest + 80.0, epsilon = 1e-3);
+}
+
+/// An animation with `delay`, `speed`, and finite `Repeat::Count` matches
+/// `Animation` across both the engine mirror and placement evaluation, and
+/// ceases to be finite work once all cycles settle.
+#[test]
+fn delay_speed_and_repeat_count_match_evaluator_across_engine_and_placement() {
+    let mut renderer = test_renderer();
+    let env = test_environment();
+    let bounds = Rect::new(0.0, 0.0, 200.0, 200.0);
+    let phase = Binding::new(false);
+    let pulse = Animation::linear(Duration::from_millis(200))
+        .delay(Duration::from_millis(50))
+        .speed(2.0)
+        .repeat(Repeat::Count {
+            count: 2,
+            autoreverse: true,
+        });
+    let signal = phase
+        .map(|on| if on { 0.2_f32 } else { 1.0_f32 })
+        .with(pulse.clone());
+    let view = button("Pulse").action(|| {}).opacity(signal);
+
+    capture_root_window(&mut renderer, view, &env, bounds);
+    renderer.commit_mirror();
+    let found = wrappers(&renderer);
+    let [(layer, motion)] = found.opacity.as_slice() else {
+        panic!("one opacity wrapper");
+    };
+
+    let start = renderer.frame_instant();
+    phase.set(true);
+    renderer.commit_mirror();
+
+    // Total playback = 50ms delay + 2 * (200ms / 2.0) = 250ms.
+    for ms in [0, 25, 50, 100, 150, 200, 250, 300] {
+        let at = start + Duration::from_millis(ms);
+        renderer.set_frame_instant(at);
+        renderer.mirror().sample(at);
+        let sampled = renderer.mirror().layer(*layer).opacity;
+        assert_eq!(sampled, motion.value_at(at), "sampled opacity at {ms}ms");
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "opacity widens from f32 to f64; narrowing back is exact"
+        )]
+        let expected = evaluated(&pulse, 1.0, f64::from(0.2_f32), at - start) as f32;
+        assert_eq!(sampled, expected, "opacity at {ms}ms against evaluator");
+    }
+
+    renderer.set_frame_instant(start + Duration::from_millis(100));
+    assert!(renderer.has_finite_semantic_work());
+    renderer.set_frame_instant(start + Duration::from_millis(300));
+    assert!(!renderer.has_finite_semantic_work());
+}
+
+/// A `Repeat::Forever` motion keeps `has_scheduled_semantic_work` active
+/// indefinitely while `has_finite_semantic_work` treats it as quiescent.
+#[test]
+fn repeat_forever_motion_keeps_scheduled_semantic_work_while_ignoring_finite_settle() {
+    let mut renderer = test_renderer();
+    let env = test_environment();
+    let bounds = Rect::new(0.0, 0.0, 200.0, 200.0);
+    let phase = Binding::new(false);
+    let spin = Animation::linear(Duration::from_millis(100))
+        .delay(Duration::from_millis(20))
+        .repeat(Repeat::Forever { autoreverse: true });
+    let signal = phase
+        .map(|on| if on { 0.25_f32 } else { 1.0_f32 })
+        .with(spin.clone());
+    let view = button("Forever").action(|| {}).opacity(signal);
+
+    capture_root_window(&mut renderer, view, &env, bounds);
+    renderer.commit_mirror();
+    let found = wrappers(&renderer);
+    let [(layer, motion)] = found.opacity.as_slice() else {
+        panic!("one opacity wrapper");
+    };
+
+    let start = renderer.frame_instant();
+    phase.set(true);
+    renderer.commit_mirror();
+
+    for ms in [10, 70, 170, 270, 5_020] {
+        let at = start + Duration::from_millis(ms);
+        renderer.set_frame_instant(at);
+        renderer.mirror().sample(at);
+        let sampled = renderer.mirror().layer(*layer).opacity;
+        assert_eq!(sampled, motion.value_at(at), "forever opacity at {ms}ms");
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "opacity widens from f32 to f64; narrowing back is exact"
+        )]
+        let expected = evaluated(&spin, 1.0, f64::from(0.25_f32), at - start) as f32;
+        assert_eq!(sampled, expected, "forever evaluator at {ms}ms");
+        assert!(renderer.has_scheduled_semantic_work());
+        assert!(!renderer.has_finite_semantic_work());
+    }
 }

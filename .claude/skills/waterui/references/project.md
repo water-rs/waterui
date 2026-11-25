@@ -128,7 +128,7 @@ once it is installed with `.state(&value)`: on a view for that subtree's handler
 `App::state(&value)` for the menu-bar, quit-request and terminate handlers that run under
 the application's environment.
 
-Take `mut env` when the app installs things (a `Theme`, `MapGpuOptions`, an `ApiClient`).
+Take `mut env` when the app installs things (a `Theme`, `MapGpu`, an `ApiClient`).
 
 ## `Cargo.toml`: features that matter
 
@@ -345,11 +345,19 @@ macOS and GTK create it after the tree exists), so there is no moment for one to
 
 Enable the `widgets` feature (outside `all`). A widget is a function that returns a dated
 snapshot, not a view: Apple packaging (`water run`, `water package`) builds a WidgetKit extension that renders
-the serialized snapshot natively. The authoring surface is the closed `waterui::widgets`
-schema: `text`, `vstack` / `hstack` / `zstack`, `fill`, `link(url, content)` and
-`intent(&action, label)`. A WaterUI `View` in widget position does not compile.
+the serialized snapshot natively, and Android stages the Kotlin schema/renderer host alongside it.
+`waterui::widgets::*` exports only widget-specific types (`WidgetContext`, `WidgetContent`,
+`WidgetStore`, `Timeline`, `Date`, `shared_store`, `reload`, `reload_all`, …) so it can be
+glob-imported alongside `waterui::prelude::*`. Inside a widget module or `#[waterui::widget]` body,
+import `waterui::widgets::prelude::*` for the aligned widget vocabulary: `text` (`IntoText`,
+supporting localized `&'static str`, verbatim `String`/`Str`, and `text(Date::now()).relative()`),
+text style shortcuts (`.headline()`, `.title()`, `.caption()`, …), `vstack` / `hstack` / `zstack`,
+`spacer`, `image_system` / `image_data`, `fill`, `link`, `intent`, and `WidgetExt` modifiers
+(`.padding()`, `.padding_with(...)`, `.width(...)`/`.height(...)`/`.size(...)`, `.background(...)`,
+`.a11y_label(...)`). A WaterUI `View` in widget position does not compile.
 
 ```rust
+use waterui::prelude::*;
 use waterui::widgets::*;
 
 #[waterui::widget_intent(name = "Mark done")]
@@ -367,17 +375,26 @@ impl WidgetIntent for MarkDone {
 
 #[waterui::widget(name = "Tasks", description = "Open tasks", families = [systemSmall, systemMedium])]
 pub fn tasks(context: WidgetContext) -> impl WidgetContent {
+    use waterui::widgets::prelude::*;
+
     let completed: u32 = context.shared_store().get("completed").unwrap_or(0);
-    let title = Font::style(if context.family() == WidgetFamily::SystemSmall {
-        FontStyle::Headline
+    let header = if context.family() == WidgetFamily::SystemSmall {
+        text(format!("Completed: {completed}")).headline()
     } else {
-        FontStyle::Title
-    });
+        text(format!("Completed: {completed}")).title()
+    };
     vstack((
-        text(format!("Completed: {completed}")).font(title),
-        intent(&MarkDone { id: 1 }, text("Mark done")),
+        header,
+        spacer(),
+        text(Date::now()).relative(),
+        intent(
+            &MarkDone { id: 1 },
+            image_system("checkmark.circle.fill").a11y_label("Mark done"),
+        ),
     ))
     .alignment(HorizontalAlignment::Leading)
+    .padding()
+    .background(Color::ACCENT)
 }
 ```
 

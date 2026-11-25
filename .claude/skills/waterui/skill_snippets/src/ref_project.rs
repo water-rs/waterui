@@ -83,6 +83,7 @@ pub fn project_block_03() -> impl View {
 // must enable it for this module to compile.
 // ---------------------------------------------------------------------------
 pub mod project_block_04 {
+    use waterui::prelude::*;
     use waterui::widgets::*;
 
     #[waterui::widget_intent(name = "Mark done")]
@@ -100,17 +101,30 @@ pub mod project_block_04 {
 
     #[waterui::widget(name = "Tasks", description = "Open tasks", families = [systemSmall, systemMedium])]
     pub fn tasks(context: WidgetContext) -> impl WidgetContent {
+        use waterui::widgets::prelude::*;
+
         let completed: u32 = context.shared_store().get("completed").unwrap_or(0);
-        let title = Font::style(if context.family() == WidgetFamily::SystemSmall {
-            FontStyle::Headline
+        let header = if context.family() == WidgetFamily::SystemSmall {
+            text(format!("Completed: {completed}")).headline()
         } else {
-            FontStyle::Title
-        });
+            text(format!("Completed: {completed}")).title()
+        };
         vstack((
-            text(format!("Completed: {completed}")).font(title),
-            intent(&MarkDone { id: 1 }, text("Mark done")),
+            header,
+            spacer(),
+            text(Date::now()).relative(),
+            intent(
+                &MarkDone { id: 1 },
+                image_system("checkmark.circle.fill").a11y_label("Mark done"),
+            ),
         ))
         .alignment(HorizontalAlignment::Leading)
+        .padding()
+        .background(Color::ACCENT)
+    }
+
+    pub fn app_view_alongside_widgets() -> impl View {
+        vstack((text("Tasks"), spacer())).padding()
     }
 
     pub fn update_from_app() {
