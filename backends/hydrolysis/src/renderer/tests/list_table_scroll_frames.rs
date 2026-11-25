@@ -450,7 +450,7 @@ fn a_decorated_list_scroll_frame_reuses_row_measurements_and_run_layers() {
                 } else {
                     Computed::constant(20.0)
                 };
-                text(format!("Row {index}")).size(height)
+                text(format!("Row {index}")).font_size(height)
             })
             .selection(&selection_for_list),
         )

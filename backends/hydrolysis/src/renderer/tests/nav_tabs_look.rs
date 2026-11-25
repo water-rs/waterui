@@ -401,7 +401,7 @@ fn navigation_bar_title_font_applies_to_inline_titles_and_keeps_large_titles() {
             .fold(0.0, f64::max)
     };
 
-    let custom_font = Font::new(Body).size(28.0).weight(FontWeight::SemiBold);
+    let custom_font = Font::new(Body).font_size(28.0).weight(FontWeight::SemiBold);
     let default_inline_span = max_bar_glyph_span(
         MinimalTestTheme::default(),
         NavigationTitleDisplayMode::Inline,

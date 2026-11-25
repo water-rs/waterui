@@ -9030,7 +9030,7 @@ mod scroll {
 
         vstack((
             text("Interactive glass answers touch and hover with the platform's own effects.")
-                .size(15.0),
+                .font_size(15.0),
             spacer().size(100.0, 2000.0),
         ))
         .padding()
@@ -16194,7 +16194,7 @@ mod transition {
     #[cfg(feature = "gpu_surface")]
     fn blur_picture() -> impl waterui_backend_core::View {
         use waterui::prelude::{text, vstack};
-        vstack((text("BLUR").size(96.0), gpu_picture()))
+        vstack((text("BLUR").font_size(96.0), gpu_picture()))
     }
 
     /// The blur transition's animation length — on a

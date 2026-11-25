@@ -182,7 +182,7 @@ fn thread_row(thread: Thread) -> impl View {
             hstack((
                 avatar(thread.sender)
                     .image(asset(thread.avatar_asset))
-                    .size(AVATAR),
+                    .side(AVATAR),
                 vstack((
                     text(thread.sender).subheadline(),
                     text(thread.time).caption().muted(),
@@ -234,7 +234,7 @@ fn inbox(
                     NavigationToolbarPlacement::TopBarTrailing,
                     avatar("Me")
                         .image(asset("avatar_10.jpg"))
-                        .size(TOOLBAR_AVATAR),
+                        .side(TOOLBAR_AVATAR),
                 )),
         )
 }
@@ -245,7 +245,7 @@ fn message_card(message: &'static Message) -> impl View {
             hstack((
                 avatar(message.sender)
                     .image(asset(message.avatar_asset))
-                    .size(AVATAR),
+                    .side(AVATAR),
                 vstack((
                     text(message.sender).subheadline(),
                     text(message.time).caption().muted(),

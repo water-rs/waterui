@@ -53,7 +53,7 @@ fn main() -> impl View {
     let count = Binding::i32(0);
 
     vstack((
-        text("Hello, WaterUI!").size(28),
+        text("Hello, WaterUI!").font_size(28),
         text!("Count: {count}"),
         stepper("Count", &count),
     ))

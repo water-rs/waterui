@@ -408,7 +408,7 @@ fn content_header(dest: SidebarDestination) -> impl View {
     // The official app shows the list name as a large bold title in the
     // list's accent color, leading-aligned — no date line underneath.
     text(dest.title())
-        .size(32.0)
+        .font_size(32.0)
         .bold(true)
         .foreground(dest.color())
         .max_width(f32::INFINITY)

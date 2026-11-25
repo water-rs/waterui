@@ -446,9 +446,8 @@ pub fn skill_block_14() {
 // a bare method fragment. Each fragment is applied to a fresh receiver so the
 // method itself is proven to exist. `(..)` markers are ellipsis placeholders.
 //
-// The receiver is `Divider` rather than `text(..)`: the skill itself warns
-// (§ "### Text") that `Text::size(..)` is the font size and shadows the
-// two-argument frame `.size(w, h)`.
+// The receiver is `Divider` to test every `ViewExt` modifier against a bare
+// view type.
 // ---------------------------------------------------------------------------
 pub fn skill_block_15() {
     use waterui::accessibility::AccessibilityRole;

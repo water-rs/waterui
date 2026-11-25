@@ -332,8 +332,8 @@ name, inside macro bodies too: bring it into scope with `use` and write `ForEach
 written `#[waterui::test]`, because the prelude names it `ui_test` so that its glob import
 cannot shadow the built-in `#[test]`, and a bare `#[test]` is the standard one. By
 convention `#[waterui::bench]`, `#[waterui::widget]`, `#[waterui::widget_intent]` and
-`#[waterui::view_builder]` are written qualified too. On a `Text`, `.size(..)`
-is the *font* size (and shadows the two-argument frame `.size(w, h)`). `.monospaced(bool)` is a
+`#[waterui::view_builder]` are written qualified too. On a `Text`, `.font_size(..)`
+sets the font size (leaving the two-argument frame `.size(w, h)` unshadowed). `.monospaced(bool)` is a
 design, not a family: it keeps the slot and size and each backend picks its own monospaced
 face, so never spell a font name for code. A reactive string that is not catalog
 content (a derived id, a debug label) is `s!("{name}-{count}")` from
