@@ -88,6 +88,36 @@ impl fmt::Debug for SphericalViewport {
     }
 }
 
+/// Temporary Step 1 compatibility bridge allowing `SphericalViewport` to accept
+/// either `Angle` or legacy degree floats until split crates migrate.
+#[doc(hidden)]
+pub trait IntoSphericalAngle {
+    /// Converts this value into a camera [`Angle`].
+    fn into_spherical_angle(self) -> Angle;
+}
+
+impl IntoSphericalAngle for Angle {
+    fn into_spherical_angle(self) -> Angle {
+        self
+    }
+}
+
+impl IntoSphericalAngle for f32 {
+    fn into_spherical_angle(self) -> Angle {
+        Angle::degrees(self)
+    }
+}
+
+impl IntoSphericalAngle for f64 {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "temporary f64 compatibility bridge for bare floating-point degree literals"
+    )]
+    fn into_spherical_angle(self) -> Angle {
+        Angle::degrees(self as f32)
+    }
+}
+
 impl SphericalViewport {
     /// Creates a spherical camera with a validated orientation and vertical field of view.
     ///
@@ -98,9 +128,15 @@ impl SphericalViewport {
     /// release build logs it and uses the nearest valid value, with a
     /// non-finite value replaced by the centered camera's.
     #[must_use]
-    pub fn new(yaw: Angle, pitch: Angle, vertical_field_of_view: Angle) -> Self {
-        let (yaw, pitch) = checked_spherical_orientation(yaw, pitch);
-        let vertical_field_of_view = checked_spherical_field_of_view(vertical_field_of_view);
+    pub fn new(
+        yaw: impl IntoSphericalAngle,
+        pitch: impl IntoSphericalAngle,
+        vertical_field_of_view: impl IntoSphericalAngle,
+    ) -> Self {
+        let (yaw, pitch) =
+            checked_spherical_orientation(yaw.into_spherical_angle(), pitch.into_spherical_angle());
+        let vertical_field_of_view =
+            checked_spherical_field_of_view(vertical_field_of_view.into_spherical_angle());
         Self {
             yaw: binding(normalize_yaw(yaw)),
             pitch: binding(pitch),
@@ -139,10 +175,38 @@ impl SphericalViewport {
     /// Both values must be finite and pitch within `-90°..=90°`. Otherwise a
     /// debug build panics; a release build logs it and applies the nearest
     /// valid orientation, with a non-finite value replaced by [`Angle::ZERO`].
-    pub fn set_orientation(&self, yaw: Angle, pitch: Angle) {
-        let (yaw, pitch) = checked_spherical_orientation(yaw, pitch);
+    pub fn set_orientation(&self, yaw: impl IntoSphericalAngle, pitch: impl IntoSphericalAngle) {
+        let (yaw, pitch) =
+            checked_spherical_orientation(yaw.into_spherical_angle(), pitch.into_spherical_angle());
         self.yaw.set(normalize_yaw(yaw));
         self.pitch.set(pitch);
+    }
+
+    /// Temporary Step 1 compatibility shim returning yaw in degrees until split crates migrate.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn yaw_degrees(&self) -> f32 {
+        self.yaw().to_degrees()
+    }
+
+    /// Temporary Step 1 compatibility shim returning pitch in degrees until split crates migrate.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn pitch_degrees(&self) -> f32 {
+        self.pitch().to_degrees()
+    }
+
+    /// Temporary Step 1 compatibility shim returning vertical field of view in degrees until split crates migrate.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn vertical_field_of_view_degrees(&self) -> f32 {
+        self.vertical_field_of_view().to_degrees()
+    }
+
+    /// Temporary Step 1 compatibility shim setting vertical field of view in degrees until split crates migrate.
+    #[doc(hidden)]
+    pub fn set_vertical_field_of_view_degrees(&self, fov: f32) {
+        self.set_vertical_field_of_view(Angle::degrees(fov));
     }
 
     /// Applies an interactive orientation delta, clamping pitch at the poles.
