@@ -78,7 +78,7 @@ fn live_colour_changes_the_committed_top_edge_without_recording() {
     renderer.reset_scene();
     renderer.begin_rebuild_frame();
     renderer.capture_window_tree(
-        AnyView::new(waterui_graphics::color::signal_color(color.clone())),
+        AnyView::new(Color::from_signal(color.clone())),
         &env,
         WINDOW,
         Affine::IDENTITY,

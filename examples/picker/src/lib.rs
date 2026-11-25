@@ -255,7 +255,7 @@ impl ColorSwatch {
 impl View for ColorSwatch {
     fn body(self, _env: &Environment) -> impl View {
         Rectangle
-            .fill(signal_color(self.color))
+            .fill(self.color)
             .size(64.0, 32.0)
             .clip(RoundedRectangle::new(CornerRadius::fraction(0.1)))
     }

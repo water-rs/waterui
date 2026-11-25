@@ -362,9 +362,7 @@ mod tests {
     #[test]
     fn a_tint_signal_change_updates_the_resolved_tint() {
         let source = Binding::container(WorkingColor::new([1.0, 0.0, 0.0, 1.0]));
-        let tint = Tint::new(waterui::graphics::color::signal_color(
-            source.map(|color| Color::new(Working(color))),
-        ));
+        let tint = Tint::new(source.map(|color| Color::new(Working(color))));
         let env = Environment::new().extending(tint);
         let resolved = tint_signal(&env);
         assert_eq!(components(&resolved), [1.0, 0.0, 0.0, 1.0]);

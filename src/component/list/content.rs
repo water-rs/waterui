@@ -32,6 +32,7 @@
 use alloc::vec::Vec;
 
 use nami::collection::Collection;
+use nami::signal::IntoSignal;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::TaggedView;
 use waterui_core::{Environment, OneOf2, View};
@@ -505,11 +506,11 @@ impl<L> Row<L> {
 
     /// Sets the foreground color applied to the value view.
     ///
-    /// Theme tokens like `Accent` and `MutedForeground` work here because
-    /// they implement `Into<Color>` via the theme module.
+    /// Accepts any [`IntoSignal<Color>`]: a constant colour, a theme token such
+    /// as `Accent` or `MutedForeground`, or a reactive colour signal.
     #[must_use]
-    pub fn value_color(mut self, color: impl Into<Color>) -> Self {
-        self.value_color = Some(color.into());
+    pub fn value_color(mut self, color: impl IntoSignal<Color> + 'static) -> Self {
+        self.value_color = Some(Color::from_signal(color));
         self
     }
 

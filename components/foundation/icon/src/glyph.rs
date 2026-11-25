@@ -23,6 +23,7 @@
 //! let tinted = HOUSE.color(Color::red());
 //! ```
 
+use waterui_core::reactive::signal::IntoSignal;
 use waterui_core::{Environment, Str, View};
 use waterui_graphics::color::Color;
 use waterui_text::font::Font;
@@ -123,10 +124,10 @@ impl IconGlyph {
     /// This sets an explicit color for the icon, overriding any inherited
     /// foreground color from the environment.
     #[must_use]
-    pub fn color(self, color: impl Into<Color>) -> ColoredIcon {
+    pub fn color(self, color: impl IntoSignal<Color> + 'static) -> ColoredIcon {
         ColoredIcon {
             glyph: self,
-            color: color.into(),
+            color: Color::from_signal(color),
             styled: self.styled_body(),
         }
     }
@@ -167,8 +168,8 @@ impl ColoredIcon {
 
     /// Returns a new colored icon with a different color.
     #[must_use]
-    pub fn color(mut self, color: impl Into<Color>) -> Self {
-        self.color = color.into();
+    pub fn color(mut self, color: impl IntoSignal<Color> + 'static) -> Self {
+        self.color = Color::from_signal(color);
         self
     }
 }
