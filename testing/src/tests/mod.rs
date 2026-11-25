@@ -815,8 +815,8 @@ fn tap_gesture_publishes_click_action_on_the_wrapped_node() {
 fn text_field_prompt_publishes_placeholder_on_the_node() {
     use waterui::prelude::*;
 
-    let email = Binding::container(Str::from(""));
-    let plain = Binding::container(Str::from(""));
+    let email = Binding::new(Str::from(""));
+    let plain = Binding::new(Str::from(""));
     let mut app = ui().mount(move || {
         vstack((
             TextField::new(text("Email"), &email).prompt("name@example.com"),
@@ -1003,7 +1003,7 @@ fn semantic_mount_drains_spawned_local_work() {
     use waterui::task::spawn_local;
     use waterui::{Binding, ViewExt as _};
 
-    let status = Binding::container(String::from("idle"));
+    let status = Binding::new(String::from("idle"));
     let status_for_view = status.clone();
 
     let mut app = ui().mount(move || {
@@ -1470,9 +1470,9 @@ fn ui_focus_is_separate_from_accessibility_focus() {
         Password,
     }
 
-    let focus = Binding::container(Some(Field::Username));
-    let username = Binding::container(Str::from(""));
-    let password = Binding::container(Secure::default());
+    let focus = Binding::new(Some(Field::Username));
+    let username = Binding::new(Str::from(""));
+    let password = Binding::new(Secure::default());
     let focus_for_view = focus.clone();
     let mut app = ui().mount(move || {
         vstack((
@@ -1537,9 +1537,9 @@ fn runtime_focus_writes_move_and_clear_ui_focus() {
         Password,
     }
 
-    let focus = Binding::container(None::<Field>);
-    let username = Binding::container(Str::from(""));
-    let password = Binding::container(Secure::default());
+    let focus = Binding::new(None::<Field>);
+    let username = Binding::new(Str::from(""));
+    let password = Binding::new(Secure::default());
     let focus_for_view = focus.clone();
     let mut app = ui().mount(move || {
         vstack((
@@ -1575,8 +1575,8 @@ fn runtime_focus_writes_move_and_clear_ui_focus() {
 fn ui_focus_accepts_a_new_target_after_being_cleared() {
     use waterui::prelude::*;
 
-    let focus = Binding::container(None::<i32>);
-    let value = Binding::container(Str::from(""));
+    let focus = Binding::new(None::<i32>);
+    let value = Binding::new(Str::from(""));
     let focus_for_view = focus.clone();
     let mut app =
         ui().mount(move || TextField::new(text("Field"), &value).focused(&focus_for_view, 0));
@@ -1600,7 +1600,7 @@ fn ui_focus_accepts_a_new_target_after_being_cleared() {
 fn focused_modifier_without_a_text_anchor_panics() {
     use waterui::prelude::*;
 
-    let focus = Binding::container(None::<i32>);
+    let focus = Binding::new(None::<i32>);
     let _app = ui().mount(move || button("No anchor").action(|| {}).focused(&focus, 0));
 }
 
@@ -1609,9 +1609,9 @@ fn focused_modifier_without_a_text_anchor_panics() {
 fn focused_modifier_with_two_text_anchors_panics() {
     use waterui::prelude::*;
 
-    let focus = Binding::container(None::<i32>);
-    let first = Binding::container(Str::from(""));
-    let second = Binding::container(Str::from(""));
+    let focus = Binding::new(None::<i32>);
+    let first = Binding::new(Str::from(""));
+    let second = Binding::new(Str::from(""));
     let _app = ui().mount(move || {
         vstack((
             TextField::new(text("First"), &first),
@@ -1626,9 +1626,9 @@ fn focused_modifier_with_two_text_anchors_panics() {
 fn focused_modifier_twice_on_the_same_control_panics() {
     use waterui::prelude::*;
 
-    let focus_a = Binding::container(None::<i32>);
-    let focus_b = Binding::container(None::<i32>);
-    let value = Binding::container(Str::from(""));
+    let focus_a = Binding::new(None::<i32>);
+    let focus_b = Binding::new(None::<i32>);
+    let value = Binding::new(Str::from(""));
     let _app = ui().mount(move || {
         TextField::new(text("Field"), &value)
             .focused(&focus_a, 0)
@@ -1640,7 +1640,7 @@ fn focused_modifier_twice_on_the_same_control_panics() {
 fn committed_text_keeps_the_caret_at_the_end_across_retained_refreshes() {
     use waterui::prelude::*;
 
-    let value = Binding::container(Str::from(""));
+    let value = Binding::new(Str::from(""));
     let value_for_view = value.clone();
     let mut app = ui().mount(move || TextField::new(text("Full Name"), &value_for_view));
 
@@ -1744,7 +1744,7 @@ fn a_visually_animating_app_still_settles_and_stays_current() {
 fn named_key_stroke_activates_a_focused_button_on_both_runtimes() {
     use waterui::prelude::*;
 
-    let count = Binding::i32(0);
+    let count = Binding::new(0_i32);
     let count_for_view = count.clone();
     let mut app = ui().viewport(160, 96).mount(move || {
         waterui::component::button("Increment")
@@ -1761,7 +1761,7 @@ fn named_key_stroke_activates_a_focused_button_on_both_runtimes() {
         "Enter on a focused button must run its action on the semantic runtime"
     );
 
-    let count = Binding::i32(0);
+    let count = Binding::new(0_i32);
     let count_for_view = count.clone();
     let mut app = ui()
         .theme(token_probe::TokenProbeStyle)
@@ -1847,7 +1847,7 @@ fn list_arrow_keys_move_row_focus() {
 /// on every arrow press.
 #[test]
 fn list_arrow_keys_do_not_activate_rows() {
-    let taps = Binding::container(0i32);
+    let taps = Binding::new(0i32);
     let mut app = ui().mount({
         let taps = taps.clone();
         move || {
@@ -1888,7 +1888,7 @@ fn list_arrow_keys_do_not_activate_rows() {
 /// resolves.
 #[test]
 fn list_enter_activates_focused_row() {
-    let taps = Binding::container(0i32);
+    let taps = Binding::new(0i32);
     let mut app = ui().mount({
         let taps = taps.clone();
         move || {

@@ -420,8 +420,8 @@ fn bitmap_cache_reuses_transformed_glyphs_and_uses_font_identity() {
     glyph_mut(&mut first_run).transform = Some(transform);
     let mut second_run = glyph_run(second_font.id(), small, 48.0);
     glyph_mut(&mut second_run).transform = Some(transform);
-    let first = nami::Binding::container(first_run);
-    let second = nami::Binding::container(second_run);
+    let first = nami::Binding::new(first_run);
+    let second = nami::Binding::new(second_run);
     let surface = engine
         .surface(
             Offscreen::new((240, 160), OffscreenFormat::LinearF32),
@@ -476,8 +476,8 @@ fn bitmap_cache_reuses_unchanged_glyphs_and_uses_font_identity() {
         .font(FontSource::bytes(bytes.clone()))
         .expect("first font");
     let second_font = engine.font(FontSource::bytes(bytes)).expect("second font");
-    let first = nami::Binding::container(glyph_run(first_font.id(), small, 48.0));
-    let second = nami::Binding::container(glyph_run(second_font.id(), small, 48.0));
+    let first = nami::Binding::new(glyph_run(first_font.id(), small, 48.0));
+    let second = nami::Binding::new(glyph_run(second_font.id(), small, 48.0));
     let surface = engine
         .surface(
             Offscreen::new((240, 160), OffscreenFormat::LinearF32),

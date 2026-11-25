@@ -395,7 +395,7 @@ fn animated_popup_panel<V: View>(
     group: PopupMenuStateGroup,
     #[cfg(feature = "menu")] motion: Option<&MenuPresentationMotion>,
 ) -> impl View + use<V> {
-    let opacity = Binding::f32(0.0);
+    let opacity = Binding::new(0.0_f32);
     #[cfg(feature = "menu")]
     let (initial_scale, enter_animation) = motion.map_or_else(
         || (0.96, popup_enter_animation()),
@@ -408,7 +408,7 @@ fn animated_popup_panel<V: View>(
     );
     #[cfg(not(feature = "menu"))]
     let (initial_scale, enter_animation) = (0.96, popup_enter_animation());
-    let scale = Binding::f32(initial_scale);
+    let scale = Binding::<f32>::new(initial_scale);
     content
         .opacity(opacity.with(enter_animation.clone()))
         .scale(scale.with(enter_animation))
@@ -899,7 +899,7 @@ pub fn popup_menu_window<E: crate::text::TextEngine>(
     theme: &Rc<dyn crate::theme::WidgetTheme>,
     popup_opener: PopupWindowManager<E>,
 ) -> (Window<impl ViewBuilder>, Binding<WindowState>) {
-    let state = Binding::container(WindowState::Normal);
+    let state = Binding::new(WindowState::Normal);
     let (width, height) = popup_menu_size(&nodes, look.layout(), &text);
     let margin = popup_menu_panel_margin(look, width, height);
     let group_for_content = group;
@@ -929,7 +929,7 @@ pub fn popup_menu_window<E: crate::text::TextEngine>(
             look.get_presentation_motion(),
         )
     };
-    let frame = Binding::container(popup_menu_window_frame(origin, width, height, margin));
+    let frame = Binding::new(popup_menu_window_frame(origin, width, height, margin));
     let popup = Window::new(TEXT_CONTEXT_MENU_WINDOW_TITLE, popup_content)
         .state(&state_for_content)
         .frame(&frame)
@@ -1031,7 +1031,7 @@ pub fn semantic_popup_menu_window<E: crate::text::TextEngine>(
     depth: usize,
     popup_opener: PopupWindowManager<E>,
 ) -> (Window<impl ViewBuilder>, Binding<WindowState>) {
-    let state = Binding::container(WindowState::Normal);
+    let state = Binding::new(WindowState::Normal);
     let group_for_content = group;
     let state_for_content = state.clone();
     let nodes_for_content = nodes;
@@ -1061,7 +1061,7 @@ pub fn semantic_picker_menu_window(
     open: Rc<Cell<bool>>,
     group: PopupMenuStateGroup,
 ) -> (Window<impl ViewBuilder>, Binding<WindowState>) {
-    let state = Binding::container(WindowState::Normal);
+    let state = Binding::new(WindowState::Normal);
     let group_for_content = group;
     let state_for_content = state.clone();
     let entries_for_content = entries;
@@ -1116,7 +1116,7 @@ pub fn picker_menu_window(
     group: PopupMenuStateGroup,
     look: &MenuLook,
 ) -> (Window<impl ViewBuilder>, Binding<WindowState>) {
-    let state = Binding::container(WindowState::Normal);
+    let state = Binding::new(WindowState::Normal);
     let layout = look.layout();
     let height = picker_menu_panel_height(layout, row_height, entries.len());
     let margin = popup_menu_panel_margin(look, width, height);
@@ -1175,7 +1175,7 @@ pub fn picker_menu_window(
             presentation_motion.as_ref(),
         )
     };
-    let frame = Binding::container(popup_menu_window_frame(origin, width, height, margin));
+    let frame = Binding::new(popup_menu_window_frame(origin, width, height, margin));
     let popup = Window::new("WaterUI Picker Menu", popup_content)
         .state(&state_for_content)
         .frame(&frame)
@@ -1260,7 +1260,7 @@ fn color_picker_window_base(
     group: PopupMenuStateGroup,
     env: &Environment,
 ) -> (Window<impl ViewBuilder>, Binding<WindowState>) {
-    let state = Binding::container(WindowState::Normal);
+    let state = Binding::new(WindowState::Normal);
     let (width, _) = color_picker_size(support_alpha, support_hdr);
     let swatch = 40.0;
     let gap = 8.0;
@@ -1376,7 +1376,7 @@ pub fn color_picker_window(
 ) -> (Window<impl ViewBuilder>, Binding<WindowState>) {
     let (popup, state) = color_picker_window_base(value, support_alpha, support_hdr, group, env);
     let (width, height) = color_picker_size(support_alpha, support_hdr);
-    let frame = Binding::container(LayoutRect::new(
+    let frame = Binding::new(LayoutRect::new(
         origin,
         LayoutSize::new(
             crate::num_cast::f64_as_f32(width),
@@ -1456,17 +1456,17 @@ fn date_picker_window_base(
     group: PopupMenuStateGroup,
     env: &Environment,
 ) -> (Window<impl ViewBuilder>, Binding<WindowState>) {
-    let state = Binding::container(WindowState::Normal);
+    let state = Binding::new(WindowState::Normal);
     let initial_range = range.snapshot();
     let current = value
         .snapshot()
         .clamp(*initial_range.start(), *initial_range.end());
-    let staged_date = Binding::container(current.date());
-    let staged_visible_month = Binding::container(current.date());
+    let staged_date = Binding::new(current.date());
+    let staged_visible_month = Binding::new(current.date());
     let current_time = current.time();
-    let staged_hour = Binding::container(i32::from(current_time.hour()));
-    let staged_minute = Binding::container(i32::from(current_time.minute()));
-    let staged_second = Binding::container(i32::from(current_time.second()));
+    let staged_hour = Binding::new(i32::from(current_time.hour()));
+    let staged_minute = Binding::new(i32::from(current_time.minute()));
+    let staged_second = Binding::new(i32::from(current_time.second()));
     let uses_date = matches!(
         ty,
         DatePickerType::Date
@@ -1595,7 +1595,7 @@ pub fn date_picker_window(
 ) -> (Window<impl ViewBuilder>, Binding<WindowState>) {
     let (popup, state) = date_picker_window_base(value, range, ty, group, env);
     let (width, height) = date_picker_size(ty);
-    let frame = Binding::container(LayoutRect::new(
+    let frame = Binding::new(LayoutRect::new(
         origin,
         LayoutSize::new(
             crate::num_cast::f64_as_f32(width),

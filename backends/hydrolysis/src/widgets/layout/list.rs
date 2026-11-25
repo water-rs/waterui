@@ -391,7 +391,7 @@ impl ControlChrome {
     fn new() -> Self {
         Self {
             parts: None,
-            report: nami::Binding::container(InteractionState::empty()),
+            report: nami::Binding::new(InteractionState::empty()),
         }
     }
 }

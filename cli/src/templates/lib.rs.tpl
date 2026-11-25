@@ -17,8 +17,8 @@ struct UserProfile {
 fn main() -> impl View {
     // Reactive state
     let profile = UserProfile::binding();
-    let counter = Binding::i32(0);
-    let progress_value = Binding::f64(0.3);
+    let counter = Binding::new(0);
+    let progress_value = Binding::new(0.3);
 
     scroll(
         vstack((

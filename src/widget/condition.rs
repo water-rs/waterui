@@ -9,14 +9,14 @@
 //! use waterui::prelude::*;
 //! use waterui::widget::condition::when;
 //!
-//! let is_visible = Binding::bool(true);
+//! let is_visible = Binding::new(true);
 //!
 //! // Simple if-else
 //! when(is_visible.clone(), || "Visible")
 //!     .otherwise(|| "Hidden");
 //!
 //! // Multiple conditions (if-elif-else)
-//! let state = Binding::i32(0);
+//! let state = Binding::new(0_i32);
 //! when(state.equal_to(0), || "Loading...")
 //!     .or(state.equal_to(1), || "Ready")
 //!     .or(state.equal_to(2), || "Error")
@@ -198,7 +198,7 @@ where
     /// use waterui::prelude::*;
     /// use waterui::widget::condition::when;
     ///
-    /// let is_visible = Binding::bool(true);
+    /// let is_visible = Binding::new(true);
     /// when(is_visible, || "Visible").otherwise(|| "Hidden");
     /// ```
     pub const fn otherwise<V>(self, otherwise: V) -> WhenComplete<Self, V>

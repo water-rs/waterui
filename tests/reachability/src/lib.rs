@@ -5,7 +5,7 @@ use waterui::app::{App, Windows};
 use waterui::prelude::*;
 
 fn main_view() -> impl View {
-    let count = Binding::i32(0);
+    let count = Binding::new(0_i32);
     vstack((
         text!("Count: {count}"),
         button("Increment")

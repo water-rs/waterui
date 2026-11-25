@@ -8,7 +8,7 @@ use waterui_form::valid::{Plain, Required, ValidatableView};
 use waterui_testing::{Role, SemanticApp};
 
 fn email_view() -> impl View {
-    let value = Binding::container(waterui::Str::from("a@b.c"));
+    let value = Binding::new(waterui::Str::from("a@b.c"));
     ValidatableView::new(TextField::new("Email", &value), Plain(Required))
 }
 

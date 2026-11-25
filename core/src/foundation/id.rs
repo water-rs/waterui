@@ -288,7 +288,7 @@ mod tests {
     #[test]
     fn recomputing_tagged_views_keeps_ids_and_selection_stable() {
         let mapping = Mapping::new();
-        let selected = Binding::container("b");
+        let selected = Binding::new("b");
         let selected_id = mapping.binding(&selected);
 
         let first_pass = ["a", "b", "c"].map(|tag| TaggedView::new(tag, ()).mapping(&mapping).tag);
@@ -306,7 +306,7 @@ mod tests {
     )]
     fn writing_an_unissued_id_keeps_the_source_value() {
         let mapping = Mapping::new();
-        let source: Binding<i32> = Binding::container(5);
+        let source: Binding<i32> = Binding::new(5);
         mapping.to_id(5);
         let ids = mapping.binding(&source);
         ids.set(Id::try_from(99).unwrap());
@@ -320,7 +320,7 @@ mod tests {
     )]
     fn writing_an_unissued_optional_id_keeps_the_source_value() {
         let mapping = Mapping::new();
-        let source: Binding<Option<i32>> = Binding::container(Some(5));
+        let source: Binding<Option<i32>> = Binding::new(Some(5));
         mapping.to_id(5);
         let ids = mapping.optional_binding(&source);
         ids.set(Some(Id::try_from(99).unwrap()));

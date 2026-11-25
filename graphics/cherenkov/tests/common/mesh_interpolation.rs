@@ -37,7 +37,7 @@ pub fn interpolation<B: Backend>(config: B::Config) {
     let surface = wait!(engine
         .surface(Offscreen::new((24, 20), OffscreenFormat::LinearF16), || {}))
         .expect("surface");
-    let value = nami::Binding::container(wait!(mesh(MeshColorInterpolation::Linear)));
+    let value = nami::Binding::new(wait!(mesh(MeshColorInterpolation::Linear)));
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|r| {
             r.fill(Rect::new(0., 0., 18., 20.), value.clone());

@@ -442,7 +442,7 @@ pub fn transition_transform(
         f64::from(properties.translation[0]),
         f64::from(properties.translation[1]),
     )) * kurbo::Affine::translate(centre)
-        * kurbo::Affine::rotate(f64::from(properties.rotation))
+        * kurbo::Affine::rotate(f64::from(properties.rotation.to_radians()))
         * kurbo::Affine::scale_non_uniform(
             f64::from(properties.scale[0]),
             f64::from(properties.scale[1]),
@@ -463,7 +463,7 @@ pub fn record_with_blur_radius<E: TextEngine>(
     if radius_sample > 0.0 {
         let mut slot = blur_slot.borrow_mut();
         let blur = slot.get_or_insert_with(|| {
-            let radius = nami::Binding::container(radius_sample);
+            let radius = nami::Binding::new(radius_sample);
             let mut guards = ParamGuards::default();
             let filter =
                 waterui_graphics::backend::filtrate::filters::Blur(guards.bind(radius.clone()));

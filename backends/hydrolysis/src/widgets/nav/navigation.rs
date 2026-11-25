@@ -93,7 +93,7 @@ impl BackButton {
     fn new() -> Self {
         Self {
             parts: None,
-            report: nami::Binding::container(InteractionState::empty()),
+            report: nami::Binding::new(InteractionState::empty()),
         }
     }
 
@@ -403,7 +403,7 @@ impl<E: crate::text::TextEngine> NavigationViewRenderState<E> {
                 let active = search
                     .active()
                     .cloned()
-                    .or_else(|| search_suggestions.is_some().then(|| Binding::bool(false)));
+                    .or_else(|| search_suggestions.is_some().then(|| Binding::new(false)));
                 let field = match active.as_ref() {
                     Some(active) => {
                         RetainedSubview::new(Metadata::new(field, Focused(active.clone())))
@@ -414,7 +414,7 @@ impl<E: crate::text::TextEngine> NavigationViewRenderState<E> {
                     builder,
                     presentations: Rc::new(RefCell::new(AnchoredPresentations::default())),
                     marker: Rc::new(()),
-                    placed_edge: Binding::container(AnchorEdge::Bottom),
+                    placed_edge: Binding::new(AnchorEdge::Bottom),
                 });
                 (Some(field), active, suggestions)
             },
@@ -3780,7 +3780,7 @@ mod tests {
         // environment — before the compact style injects the reserve — so a
         // selection made after the first frame exercises exactly the stale-env
         // path watergram hits when a chat opens.
-        let selection = Binding::container(Some(1_i64));
+        let selection = Binding::new(Some(1_i64));
         let path = NavigationPath::<i64>::new();
         path.push(9);
         let sel = selection.clone();

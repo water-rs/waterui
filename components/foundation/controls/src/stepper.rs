@@ -553,7 +553,7 @@ mod tests {
     /// a backend receives — an environment-wide hidden mode included.
     #[test]
     fn stretch_axis_follows_label_visibility() {
-        let quantity = Binding::i32(0);
+        let quantity = Binding::new(0_i32);
         let env = test_env();
         for (visible, expected) in [(true, StretchAxis::Horizontal), (false, StretchAxis::None)] {
             let make = || {
@@ -588,7 +588,7 @@ mod tests {
         should_panic(expected = "a stepper step must be positive")
     )]
     fn invalid_step_is_ignored_in_release() {
-        let count = Binding::container(0_i32);
+        let count = Binding::new(0_i32);
         let cfg = stepper("Count", &count).step(3).step(0).config();
         assert_eq!(cfg.step().snapshot(), 3);
     }
@@ -599,7 +599,7 @@ mod tests {
         should_panic(expected = "a stepper range must have start <= end")
     )]
     fn reversed_range_clamps_in_release() {
-        let count = Binding::container(5_i32);
+        let count = Binding::new(5_i32);
         let cfg = stepper("Count", &count)
             .range(RangeInclusive::new(10, 2))
             .config();
@@ -609,8 +609,8 @@ mod tests {
 
     #[test]
     fn generic_u32_stepper_reclamps_in_place_when_range_signal_changes() {
-        let count = Binding::container(8_u32);
-        let upper = Binding::container(10_u32);
+        let count = Binding::new(8_u32);
+        let upper = Binding::new(10_u32);
         let cfg = stepper("Items", &count)
             .range(upper.map(|max| 1_u32..=max))
             .step(2_u32)

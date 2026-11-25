@@ -157,8 +157,10 @@ fn contrast_section(contrast: &Binding<f32>) -> impl View + use<> {
 
 /// Demo: Hue rotation filter - shift colors
 fn hue_rotation_section(hue: &Binding<f32>) -> impl View + use<> {
-    let animated_hue =
-        animated_filter_value(hue, Animation::ease_in_out(Duration::from_millis(400)));
+    let animated_hue = hue
+        .clone()
+        .map(Angle::degrees)
+        .with(Animation::ease_in_out(Duration::from_millis(400)));
 
     vstack((
         text("Hue Rotation").headline(),
@@ -242,10 +244,10 @@ fn combined_section(
     let animated_blur = animated_filter_value(combined_blur, Animation::spring(200.0, 15.0));
     let animated_saturation =
         animated_filter_value(combined_saturation, Animation::spring(200.0, 15.0));
-    let animated_hue = animated_filter_value(
-        combined_hue,
-        Animation::ease_in_out(Duration::from_millis(500)),
-    );
+    let animated_hue = combined_hue
+        .clone()
+        .map(Angle::degrees)
+        .with(Animation::ease_in_out(Duration::from_millis(500)));
 
     vstack((
         text("Combined Filters").headline(),
@@ -290,18 +292,18 @@ fn combined_section(
 /// Root view: interactive showcase of every filter section.
 pub fn demo() -> impl View {
     // State for individual filter sections
-    let blur_radius = Binding::container(0.0_f32);
-    let brightness = Binding::container(0.0_f32);
-    let saturation = Binding::container(1.0_f32);
-    let contrast = Binding::container(1.0_f32);
-    let hue = Binding::container(0.0_f32);
-    let grayscale = Binding::container(0.0_f32);
-    let opacity = Binding::container(1.0_f32);
+    let blur_radius = Binding::new(0.0_f32);
+    let brightness = Binding::new(0.0_f32);
+    let saturation = Binding::new(1.0_f32);
+    let contrast = Binding::new(1.0_f32);
+    let hue = Binding::new(0.0_f32);
+    let grayscale = Binding::new(0.0_f32);
+    let opacity = Binding::new(1.0_f32);
 
     // State for combined filter section
-    let combined_blur = Binding::container(0.0_f32);
-    let combined_saturation = Binding::container(1.0_f32);
-    let combined_hue = Binding::container(0.0_f32);
+    let combined_blur = Binding::new(0.0_f32);
+    let combined_saturation = Binding::new(1.0_f32);
+    let combined_hue = Binding::new(0.0_f32);
 
     scroll(
         vstack((
@@ -464,7 +466,7 @@ fn filter_preview() -> impl View {
         sample_content()
             .blur(4.0)
             .saturation(1.3)
-            .hue_rotation(36.0)
+            .hue_rotation(Angle::degrees(36.0))
             .contrast(1.1)
             .size(220.0, 140.0),
     ))

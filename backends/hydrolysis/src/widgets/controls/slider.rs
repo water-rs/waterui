@@ -126,7 +126,7 @@ impl<E: crate::text::TextEngine> SliderRenderState<E> {
             value_formatter,
             look: None,
             parts: None,
-            report: Binding::container(InteractionState::empty()),
+            report: Binding::new(InteractionState::empty()),
             value_changed: Rc::new(Cell::new(false)),
             value_watch: None,
             indicator_text: None,

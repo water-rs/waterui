@@ -10,6 +10,7 @@
 //! These extensions help create a fluent API for constructing user interfaces.
 
 use crate::animation::{FrameRate, FrameRateVote};
+use crate::appearance::style::IntoRotationAngle;
 use crate::sheet::Sheet;
 #[cfg(feature = "snackbar")]
 use crate::snackbar::SnackbarHost;
@@ -296,8 +297,8 @@ pub trait ViewExt: View + Sized {
     /// ```
     /// use waterui::prelude::*;
     ///
-    /// let selection = Binding::i32(0);
-    /// let last_seen = Binding::i32(0);
+    /// let selection = Binding::new(0_i32);
+    /// let last_seen = Binding::new(0_i32);
     ///
     /// let view = text!("{selection}")
     ///     .on_change(&selection, |value: i32, State(last_seen): State<Binding<i32>>| {
@@ -774,15 +775,15 @@ pub trait ViewExt: View + Sized {
 
     /// Adds padding to this view with custom edge insets.
     ///
-    /// `EdgeInsets` converts from a single `f32` (every edge), a
-    /// `(vertical, horizontal)` pair and a `[top, leading, bottom, trailing]`
-    /// array, so the common shapes need no constructor:
+    /// `EdgeInsets` converts from a single `f32` (every edge) and a
+    /// `[top, leading, bottom, trailing]` array; two-axis padding names its
+    /// axes with [`EdgeInsets::vertical`] / [`EdgeInsets::horizontal`]:
     ///
     /// ```rust
     /// use waterui::prelude::*;
     ///
     /// text!("a").padding_with(16.0);
-    /// text!("b").padding_with((8.0, 16.0));
+    /// text!("b").padding_with(EdgeInsets::vertical(8.0).with_horizontal(16.0));
     /// text!("c").padding_with([4.0, 16.0, 12.0, 16.0]);
     /// ```
     ///
@@ -794,22 +795,12 @@ pub trait ViewExt: View + Sized {
 
     /// Adds padding on the leading and trailing edges only.
     fn padding_horizontal(self, value: impl IntoSignalF32) -> Padding<Self> {
-        Padding::new(
-            value
-                .into_signal_f32()
-                .map(|value| EdgeInsets::symmetric(0.0, value)),
-            self,
-        )
+        Padding::new(value.into_signal_f32().map(EdgeInsets::horizontal), self)
     }
 
     /// Adds padding on the top and bottom edges only.
     fn padding_vertical(self, value: impl IntoSignalF32) -> Padding<Self> {
-        Padding::new(
-            value
-                .into_signal_f32()
-                .map(|value| EdgeInsets::symmetric(value, 0.0)),
-            self,
-        )
+        Padding::new(value.into_signal_f32().map(EdgeInsets::vertical), self)
     }
 
     /// Adds default padding to this view.
@@ -1030,7 +1021,7 @@ pub trait ViewExt: View + Sized {
     /// ```rust
     /// use waterui::prelude::*;
     ///
-    /// let saved_count = Binding::i32(0);
+    /// let saved_count = Binding::new(0_i32);
     /// text!("Saved").sensory_feedback(Feedback::Success, &saved_count);
     /// ```
     #[cfg(feature = "haptics")]
@@ -1206,7 +1197,7 @@ pub trait ViewExt: View + Sized {
     /// Rotations are purely visual and do not affect layout calculations.
     ///
     /// # Arguments
-    /// * `degrees` - The rotation angle in degrees (positive = clockwise)
+    /// * `angle` - The rotation angle (positive = clockwise)
     ///
     /// # Example
     ///
@@ -1214,20 +1205,23 @@ pub trait ViewExt: View + Sized {
     /// use waterui::prelude::*;
     ///
     /// // Rotate 45 degrees
-    /// let tilted = text!("Hello").rotation(45.0);
+    /// let tilted = text!("Hello").rotation(Angle::degrees(45.0));
     ///
     /// // Animate rotation
-    /// let angle = binding::<f32>(0.0_f32).animated();
+    /// let angle = binding::<Angle>(Angle::ZERO).animated();
     /// let spinning = text!("Hello").rotation(angle);
     /// ```
-    fn rotation(self, degrees: impl IntoSignalF32) -> Metadata<Rotation, Self> {
-        Metadata::new(self, Rotation::degrees(degrees))
+    fn rotation<M>(self, angle: impl IntoRotationAngle<M>) -> Metadata<Rotation, Self> {
+        Metadata::new(
+            self,
+            Rotation::from_computed(angle.into_rotation_angle(), Anchor::CENTER),
+        )
     }
 
     /// Applies a rotation transform to this view around a specific anchor point.
     ///
     /// # Arguments
-    /// * `degrees` - The rotation angle in degrees
+    /// * `angle` - The rotation angle
     /// * `anchor` - The anchor point for the rotation
     ///
     /// # Example
@@ -1237,14 +1231,17 @@ pub trait ViewExt: View + Sized {
     /// use waterui::style::Anchor;
     ///
     /// // Rotate around top-left corner
-    /// let tilted = text!("Hello").rotation_from(45.0, Anchor::TOP_LEFT);
+    /// let tilted = text!("Hello").rotation_from(Angle::degrees(45.0), Anchor::TOP_LEFT);
     /// ```
-    fn rotation_from(
+    fn rotation_from<M>(
         self,
-        degrees: impl IntoSignalF32,
+        angle: impl IntoRotationAngle<M>,
         anchor: Anchor,
     ) -> Metadata<Rotation, Self> {
-        Metadata::new(self, Rotation::degrees_from(degrees, anchor))
+        Metadata::new(
+            self,
+            Rotation::from_computed(angle.into_rotation_angle(), anchor),
+        )
     }
 
     /// Applies an offset (translation) transform to this view.
@@ -1822,7 +1819,7 @@ mod tests {
     #[test]
     fn interaction_state_does_not_borrow_the_binding() {
         fn reported(content: AnyView) -> impl View {
-            let state = Binding::container(InteractionState::empty());
+            let state = Binding::new(InteractionState::empty());
             content.interaction_state(&state)
         }
 
@@ -1837,7 +1834,7 @@ mod tests {
         use crate::haptic::Feedback;
 
         fn triggered(content: AnyView) -> impl View {
-            let count = Binding::i32(0);
+            let count = Binding::new(0_i32);
             content.sensory_feedback(Feedback::Success, &count)
         }
 
@@ -1891,12 +1888,43 @@ mod tests {
             AnyView::new(()).dynamic_range(DynamicRange::Standard);
         assert_eq!(constant.value.range().snapshot(), DynamicRange::Standard);
 
-        let range = Binding::container(DynamicRange::Standard);
+        let range = Binding::new(DynamicRange::Standard);
         let reactive: Metadata<DynamicRangeMetadata, AnyView> =
             AnyView::new(()).dynamic_range(range.clone());
         assert_eq!(reactive.value.range().snapshot(), DynamicRange::Standard);
         range.set(DynamicRange::High);
         assert_eq!(reactive.value.range().snapshot(), DynamicRange::High);
+    }
+
+    #[test]
+    fn rotation_gesture_event_binds_directly_without_conversion() {
+        use nami::Signal as _;
+        use waterui_core::Angle;
+        use waterui_core::layout::Point;
+        use waterui_interaction::gesture::{GesturePhase, RotationEvent, RotationGesture};
+
+        use crate::style::Anchor;
+
+        let angle = Binding::new(Angle::ZERO);
+        let tilted = AnyView::new(()).rotation_from(Angle::degrees(45.0), Anchor::TOP_LEFT);
+        assert!((tilted.value.angle().snapshot().to_degrees() - 45.0).abs() < 1e-5);
+        assert_eq!(tilted.value.anchor(), Anchor::TOP_LEFT);
+
+        let rotated =
+            AnyView::new(())
+                .rotation(angle.clone())
+                .gesture(RotationGesture::new(Angle::ZERO), {
+                    let angle = angle.clone();
+                    move |event: RotationEvent| angle.set(event.angle())
+                });
+        let event = RotationEvent::new(
+            GesturePhase::Updated,
+            Point::new(10.0, 20.0),
+            Angle::QUARTER,
+            0.0,
+        );
+        angle.set(event.angle());
+        assert!((rotated.content.value.angle().snapshot().to_degrees() - 90.0).abs() < 1e-5);
     }
 
     #[test]
@@ -1947,9 +1975,9 @@ mod tests {
             }
         }
 
-        let expanded = Binding::bool(false);
+        let expanded = Binding::new(false);
         let animated_height = expanded.select(240.0_f32, 0.0_f32).animated();
-        let width_signal = Binding::f32(120.0);
+        let width_signal = Binding::new(120.0_f32);
 
         let _ = AnyView::new(()).width(width_signal.clone());
         let _ = AnyView::new(()).height(animated_height.clone());
@@ -1988,8 +2016,8 @@ mod tests {
         assert!(invalidations.get() > 0);
         assert!((layout.size_that_fits(proposal, &[]).height - 240.0).abs() < f32::EPSILON);
 
-        let ideal_w = Binding::f32(90.0);
-        let ideal_h = Binding::f32(45.0);
+        let ideal_w = Binding::new(90.0_f32);
+        let ideal_h = Binding::new(45.0_f32);
         let ideal_view = AnyView::new(())
             .ideal_width(ideal_w.clone())
             .ideal_height(ideal_h.clone())

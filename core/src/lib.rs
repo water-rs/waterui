@@ -59,7 +59,7 @@
 //! use waterui_core::{Binding, Signal, SignalExt};
 //!
 //! // Create a reactive state container
-//! let counter = Binding::container(0);
+//! let counter = Binding::new(0);
 //!
 //! // Derive the exact value consumed by a signal-aware component.
 //! let label = counter.map(|count| format!("Current value: {count}"));
@@ -93,12 +93,14 @@ extern crate alloc;
 
 #[macro_use]
 mod macros;
+mod angle;
 mod animation_system;
 mod components;
 mod foundation;
 mod state;
 mod ui;
 
+pub use angle::Angle;
 pub use animation::{Animatable, AnimationExt, AnimationTrack};
 pub use animation_system::{animation, easing, vector_arithmetic};
 pub use anyhow::Error;

@@ -124,8 +124,8 @@ fn navigation_toolbar_items_emit_on_offscreen_mount(ui: UiBuilder) {
 
 #[waterui::test(viewport = (390, 844))]
 fn navigation_search_field_without_prompt_uses_default_label(ui: UiBuilder) {
-    let query = Binding::container(Str::from(""));
-    let active = Binding::bool(false);
+    let query = Binding::new(Str::from(""));
+    let active = Binding::new(false);
     let mut app = ui.mount(move || {
         NavigationView::new("Mail", text("mail body"))
             .searchable(&query)
@@ -141,7 +141,7 @@ fn navigation_search_field_without_prompt_uses_default_label(ui: UiBuilder) {
 
 #[waterui::test(viewport = (390, 844))]
 fn navigation_search_field_emits_on_semantic_mount(ui: UiBuilder) {
-    let query = Binding::container(Str::from(""));
+    let query = Binding::new(Str::from(""));
     let mut app = ui.mount(move || {
         NavigationView::new("Mail", text("mail body"))
             .searchable(&query)
@@ -159,7 +159,7 @@ fn navigation_search_field_emits_on_semantic_mount(ui: UiBuilder) {
 
 #[waterui::test(theme = TestStyle::new(), viewport = (390, 844))]
 fn navigation_search_field_emits_on_offscreen_mount(ui: UiBuilder) {
-    let query = Binding::container(Str::from(""));
+    let query = Binding::new(Str::from(""));
     let mut app = ui.mount_offscreen(move || {
         NavigationView::new("Mail", text("mail body"))
             .searchable(&query)
@@ -241,7 +241,7 @@ fn navigation_back_button_emits_on_offscreen_mount(ui: UiBuilder) {
 /// panes it does not present, the same shape the rendered path produces.
 #[waterui::test(viewport = (390, 844))]
 fn collapsed_split_emits_back_button_and_only_the_front_pane(ui: UiBuilder) {
-    let selection = Binding::container(None::<i32>);
+    let selection = Binding::new(None::<i32>);
     let mut app = ui.mount({
         let selection = selection.clone();
         move || {
@@ -295,7 +295,7 @@ fn collapsed_split_emits_back_button_and_only_the_front_pane(ui: UiBuilder) {
 /// and its activation must navigate back to the sidebar.
 #[waterui::test(theme = TestStyle::new(), viewport = (390, 844))]
 fn collapsed_split_back_button_navigates_on_offscreen_mount(ui: UiBuilder) {
-    let selection = Binding::container(None::<i32>);
+    let selection = Binding::new(None::<i32>);
     let mut app = ui.mount_offscreen({
         let selection = selection.clone();
         move || {
@@ -330,7 +330,7 @@ fn collapsed_split_back_button_navigates_on_offscreen_mount(ui: UiBuilder) {
 /// back affordance appears — the collapsed tree is a narrow-viewport shape.
 #[waterui::test(viewport = (1400, 900))]
 fn expanded_split_emits_every_column_on_semantic_mount(ui: UiBuilder) {
-    let selection = Binding::container(Some(7i32));
+    let selection = Binding::new(Some(7i32));
     let mut app = ui.mount(move || {
         NavigationSplitView::new(
             &selection,
@@ -358,8 +358,8 @@ fn expanded_split_emits_every_column_on_semantic_mount(ui: UiBuilder) {
 /// both presentation paths share one column decision.
 #[waterui::test(viewport = (1400, 900))]
 fn double_column_split_omits_its_sidebar_on_semantic_mount(ui: UiBuilder) {
-    let sidebar_selection = Binding::container(Some(1i32));
-    let content_selection = Binding::container(Some(7i32));
+    let sidebar_selection = Binding::new(Some(1i32));
+    let content_selection = Binding::new(Some(7i32));
     let mut app = ui.mount(move || {
         NavigationSplitView::three_column(
             &sidebar_selection,

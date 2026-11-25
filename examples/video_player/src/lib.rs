@@ -18,7 +18,6 @@ use std::rc::Rc;
 use waterui::ContentLedger;
 use waterui::app::{App, Windows};
 use waterui::color::Srgb;
-use waterui::prelude::grid::{grid as layout_grid, row as grid_row};
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
@@ -72,7 +71,7 @@ const SAMPLES: &[Sample] = &[
 ///
 /// Panics if a built-in sample URL does not parse or the sample list is empty.
 pub fn demo() -> impl View {
-    let status: Binding<Str> = binding("Idle");
+    let status: Binding<Str> = binding(Str::from("Idle"));
     let is_buffering = binding(false);
     let items = SAMPLES
         .iter()
@@ -165,7 +164,7 @@ struct PreviewPlayer;
 impl View for PreviewPlayer {
     fn body(self, env: &Environment) -> impl View {
         let url = Url::parse(SAMPLES[0].url).expect("sample URL should be valid");
-        let status: Binding<Str> = binding("Opening");
+        let status: Binding<Str> = binding(Str::from("Opening"));
         let owed = Rc::new(RefCell::new(ContentLedger::owe::<Self>(
             env,
             url.as_str().to_owned(),
@@ -208,7 +207,7 @@ impl View for PreviewPlayer {
         // The buffering overlay is a repeating animation. A capture cannot
         // settle while one is mounted, so the preview leaves it off and
         // reports buffering through the status line.
-        let selected = Binding::usize(0).computed();
+        let selected = Binding::new(0_usize).computed();
         player_shell(player, &selected, &status, binding(false), None)
     }
 }
@@ -245,7 +244,7 @@ fn player_shell<V: View>(
     });
 
     let source_grid = playlist.map(|(controller, ids)| {
-        layout_grid(
+        grid(
             3,
             (
                 grid_row((

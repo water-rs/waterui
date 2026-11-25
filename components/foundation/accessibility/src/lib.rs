@@ -622,7 +622,7 @@ mod tests {
     /// win, its unset fields inherit, and the merge follows both signals.
     #[test]
     fn nested_state_scopes_merge_field_by_field() {
-        let outer = nami::Binding::container(AccessibilityState::new().hidden(true).selected(true));
+        let outer = nami::Binding::new(AccessibilityState::new().hidden(true).selected(true));
         let mut env = Environment::new();
         AccessibilityStateSignal::install(&mut env, outer.clone());
         AccessibilityStateSignal::install(
@@ -655,7 +655,7 @@ mod tests {
 
     #[test]
     fn accessibility_hidden_tracks_reactive_signal() {
-        let hidden = nami::Binding::bool(true);
+        let hidden = nami::Binding::new(true);
         let metadata = super::AccessibilityHidden::new(hidden.clone());
         assert!(metadata.is_hidden());
         assert!(metadata.signal().snapshot());

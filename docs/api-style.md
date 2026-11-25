@@ -20,7 +20,7 @@ For every public component, **two** entry points coexist by design:
   shape and infers what it can.
 
 - An **inherent constructor** `Type::new(…)`: `VStack::new(…)`,
-  `Binding::f32(…)`, `Text::new(…)`, `Button::new(…)`, `Slider::new(…)`.
+  `Binding::new(…)`, `Text::new(…)`, `Button::new(…)`, `Slider::new(…)`.
   This is the **general/typed** form; it accepts the widest possible argument
   shape and shows up by name in type signatures (`let grid: VStack<_> = …`).
 
@@ -214,12 +214,12 @@ for the list of currently-registered value types.
 ## 8. `impl_constant!` over manual wrappers
 
 If you find yourself writing `Computed::constant(value)` or
-`Binding::container(static_value)` to satisfy an `impl IntoSignal<T>` /
+`Binding::new(static_value)` to satisfy an `impl IntoSignal<T>` /
 `impl IntoComputed<T>` parameter, the type probably wants
 `impl_constant!`. Add it to the type's defining module instead of forcing
 every call site to wrap.
 
-Conversely, do not delete `Computed::constant` / `Binding::container` —
+Conversely, do not delete `Computed::constant` / `Binding::new` —
 they are the load-bearing primitive that `impl_constant!` builds on.
 
 ---

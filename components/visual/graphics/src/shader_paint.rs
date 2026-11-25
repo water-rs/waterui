@@ -840,8 +840,8 @@ fn main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
 
     #[test]
     fn scene_content_retains_static_recordings_and_invalidates_on_signal_changes() {
-        let continuous = Binding::container(false);
-        let param0 = Binding::container(1.0_f32);
+        let continuous = Binding::new(false);
+        let param0 = Binding::new(1.0_f32);
         let mut scene = ShaderPaintView::new(FRAGMENT)
             .expect("valid fragment shader")
             .continuous(continuous.clone())
@@ -923,9 +923,9 @@ fn main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
         use core::cell::RefCell;
         use core::sync::atomic::{AtomicUsize, Ordering};
 
-        let continuous = Binding::container(false);
-        let param0 = Binding::container(1.0_f32);
-        let param1 = Binding::container(2.0_f32);
+        let continuous = Binding::new(false);
+        let param0 = Binding::new(1.0_f32);
+        let param1 = Binding::new(2.0_f32);
         let signal = ShaderParamsSignal::new(
             continuous.computed(),
             vec![param0.computed(), param1.computed()],

@@ -13,6 +13,7 @@ use alloc::boxed::Box;
 use alloc::rc::Rc;
 use core::{fmt, time::Duration};
 
+pub use waterui_core::Angle;
 use waterui_core::animation::Animation;
 use waterui_core::backend::{Backend, ChildSlot, ErasedPayload};
 use waterui_core::extract::Extractor;
@@ -264,7 +265,7 @@ pub struct TransitionProperties {
     /// Physical horizontal and vertical displacement.
     pub translation: [f32; 2],
     /// Clockwise rotation in top-left coordinates.
-    pub rotation: f32,
+    pub rotation: Angle,
     /// Gaussian blur radius.
     pub blur: f32,
 }
@@ -275,7 +276,7 @@ impl TransitionProperties {
         opacity: 1.0,
         scale: [1.0, 1.0],
         translation: [0.0, 0.0],
-        rotation: 0.0,
+        rotation: Angle::ZERO,
         blur: 0.0,
     };
 
@@ -628,11 +629,11 @@ impl PropertyTransition {
         })
     }
 
-    /// Rotates the absent view clockwise by radians.
+    /// Rotates the absent view clockwise by `angle`.
     #[must_use]
-    pub const fn rotation(radians: f32) -> Self {
+    pub const fn rotation(angle: Angle) -> Self {
         Self::new(TransitionProperties {
-            rotation: radians,
+            rotation: angle,
             ..TransitionProperties::IDENTITY
         })
     }
@@ -784,7 +785,7 @@ impl TransitionSpec {
         } else {
             self.transition.clone()
         };
-        let progress = Binding::f32(match phase {
+        let progress = Binding::<f32>::new(match phase {
             TransitionPhase::Insertion => 1.0,
             TransitionPhase::Removal => 0.0,
         });
@@ -1090,18 +1091,20 @@ mod tests {
 
     #[test]
     fn combined_properties_share_timing_and_reduce_motion_is_declared() {
-        let spec =
-            linear(PropertyTransition::scale(0.5).combined(PropertyTransition::rotation(2.0)));
+        let spec = linear(
+            PropertyTransition::scale(0.5)
+                .combined(PropertyTransition::rotation(Angle::radians(2.0))),
+        );
         let mut state = spec.start(TransitionPhase::Removal, false);
         state.advance(Duration::from_millis(50));
         let properties = state.properties(geometry(LayoutDirection::LeftToRight));
         near(properties.scale[0], 0.75);
-        near(properties.rotation, 1.0);
+        near(properties.rotation.to_radians(), 1.0);
         let mut reduced = spec.start(TransitionPhase::Removal, true);
         reduced.advance(Duration::from_millis(50));
         let properties = reduced.properties(geometry(LayoutDirection::LeftToRight));
         near(properties.scale[0], 1.0);
-        near(properties.rotation, 0.0);
+        near(properties.rotation.to_radians(), 0.0);
         near(properties.opacity, 0.25);
         assert!(!reduced.captures_content());
     }
@@ -1117,7 +1120,7 @@ mod tests {
         near(properties.scale[1], 1.0);
         near(properties.translation[0], 20.0);
         near(properties.translation[1], -10.0);
-        near(properties.rotation, 0.0);
+        near(properties.rotation.to_radians(), 0.0);
         near(properties.blur, 0.0);
     }
 
@@ -1137,7 +1140,7 @@ mod tests {
     fn reduce_motion_follows_reactive_signal_updates() {
         use core::cell::Cell;
 
-        let setting = Binding::bool(false);
+        let setting = Binding::new(false);
         let flag = ReduceMotion::new(setting.clone());
         let mut env = Environment::new();
         env.insert(flag.clone());

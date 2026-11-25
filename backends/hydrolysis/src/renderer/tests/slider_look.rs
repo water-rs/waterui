@@ -160,7 +160,7 @@ fn dragging_and_value_changes_record_nothing() {
         slider_track_draws: Rc::clone(&tracks),
         ..Default::default()
     };
-    let value = Binding::container(25.0);
+    let value = Binding::new(25.0);
     let mut runtime = runtime_with(volume(&value), theme, pumped_test_environment());
     let mut frames = Frames::new();
     frames.settle(&mut runtime);
@@ -214,7 +214,7 @@ fn dragging_and_value_changes_record_nothing() {
 /// press anywhere on the slider moves the value there.
 #[test]
 fn absolute_drag_follows_the_pointer() {
-    let value = Binding::container(25.0);
+    let value = Binding::new(25.0);
     let mut runtime = runtime_with(
         volume(&value),
         MinimalTestTheme::default(),
@@ -244,7 +244,7 @@ fn absolute_drag_follows_the_pointer() {
 /// the value with the pointer's travel from where it landed.
 #[test]
 fn relative_drag_moves_with_the_pointers_travel() {
-    let value = Binding::container(25.0);
+    let value = Binding::new(25.0);
     let theme = MinimalTestTheme {
         slider_drag: Some(DragMapping::Relative { knob_only: false }),
         ..Default::default()
@@ -279,7 +279,7 @@ fn knob_only_drag_ignores_a_press_off_the_knob() {
         ..Default::default()
     };
 
-    let value = Binding::container(25.0);
+    let value = Binding::new(25.0);
     let mut runtime = runtime_with(volume(&value), theme(), pumped_test_environment());
     let mut frames = Frames::new();
     frames.settle(&mut runtime);
@@ -293,7 +293,7 @@ fn knob_only_drag_ignores_a_press_off_the_knob() {
         value.get()
     );
 
-    let value = Binding::container(25.0);
+    let value = Binding::new(25.0);
     let mut runtime = runtime_with(volume(&value), theme(), pumped_test_environment());
     let mut frames = Frames::new();
     frames.settle(&mut runtime);
@@ -311,7 +311,7 @@ fn knob_only_drag_ignores_a_press_off_the_knob() {
 /// A drag rounds the value to the step, anchored at the range's start.
 #[test]
 fn drag_rounds_to_the_step() {
-    let value = Binding::container(0.0);
+    let value = Binding::new(0.0);
     let view = AnyView::new(
         slider("Volume", &value)
             .hide_label()
@@ -339,7 +339,7 @@ fn drag_rounds_to_the_step() {
 fn drag_mirrors_in_a_right_to_left_layout() {
     let mut env = pumped_test_environment();
     env.insert(LayoutDirection::RightToLeft);
-    let value = Binding::container(50.0);
+    let value = Binding::new(50.0);
     let mut runtime = runtime_with(volume(&value), MinimalTestTheme::default(), env);
     let mut frames = Frames::new();
     frames.settle(&mut runtime);
@@ -362,7 +362,7 @@ fn measurement_equals_drawing() {
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
     let view = || {
-        slider("Volume", &Binding::container(0.5))
+        slider("Volume", &Binding::new(0.5))
             .range(0.0..=1.0)
             .min_value_label("Quiet")
             .max_value_label("Loud")
@@ -406,7 +406,7 @@ fn no_band_is_reserved_for_a_label_the_look_does_not_draw() {
             ..Default::default()
         });
         Realized::with_theme(
-            AnyView::new(slider("Volume", &Binding::container(0.5)).range(0.0..=1.0)),
+            AnyView::new(slider("Volume", &Binding::new(0.5)).range(0.0..=1.0)),
             &env,
             &theme,
         )
@@ -437,7 +437,7 @@ fn the_spec_carries_the_tint_and_the_structure() {
     let tint = Color::srgb(200, 30, 30);
     capture_root_window(
         &mut renderer,
-        slider("Volume", &Binding::container(5.0))
+        slider("Volume", &Binding::new(5.0))
             .range(0.0..=10.0)
             .step(1.0)
             .size(ControlSize::Large)
@@ -473,7 +473,7 @@ fn knob_only_press_off_the_knob_reaches_the_target_beneath() {
     use waterui_layout::stack::zstack;
 
     let taps = Rc::new(Cell::new(0_u32));
-    let value = Binding::container(25.0);
+    let value = Binding::new(25.0);
     let beneath = {
         let taps = Rc::clone(&taps);
         AnyView::new(button("Beneath").action(move || taps.set(taps.get() + 1)))
@@ -528,8 +528,8 @@ fn external_value_change_reaches_the_accessibility_tree() {
     use waterui_core::Str;
     use waterui_layout::stack::vstack;
 
-    let value = Binding::container(25.0);
-    let other = Binding::container(Str::from("before"));
+    let value = Binding::new(25.0);
+    let other = Binding::new(Str::from("before"));
     let view = AnyView::new(vstack((volume(&value), text(other.clone()))));
     let mut runtime = runtime_with(view, MinimalTestTheme::default(), pumped_test_environment());
     let mut frames = Frames::new();

@@ -214,8 +214,8 @@ fn form_runtime() -> (HeadlessRuntime, Binding<Str>, Binding<bool>) {
 fn form_runtime_on(
     gpu: crate::platform::OffscreenGpuContext,
 ) -> (HeadlessRuntime, Binding<Str>, Binding<bool>) {
-    let value = Binding::container(Str::default());
-    let submitted = Binding::bool(false);
+    let value = Binding::new(Str::default());
+    let submitted = Binding::new(false);
     let view = {
         #[allow(
             clippy::redundant_clone,
@@ -493,8 +493,8 @@ fn replay_against_text_field(loaded: &LoadedFixture, multiline: bool) {
     } else {
         "single-line TextField"
     };
-    let value = Binding::container(Str::default());
-    let submitted = Binding::bool(false);
+    let value = Binding::new(Str::default());
+    let submitted = Binding::new(false);
     let view = {
         #[allow(
             clippy::redundant_clone,
@@ -572,7 +572,7 @@ fn replay_against_text_field(loaded: &LoadedFixture, multiline: bool) {
 
 fn replay_against_secure_field(loaded: &LoadedFixture) {
     let name = loaded.name.as_str();
-    let secret = Binding::container(Secure::new(String::new()));
+    let secret = Binding::new(Secure::new(String::new()));
     let view = {
         #[allow(
             clippy::redundant_clone,
@@ -887,8 +887,8 @@ fn fixtures_replay_against_an_input_wanting_scene_view() {
 /// must cancel it: the marked text is dropped, never committed.
 #[test]
 fn focus_move_or_window_unfocus_cancels_the_composition() {
-    let first = Binding::container(Str::default());
-    let second = Binding::container(Str::default());
+    let first = Binding::new(Str::default());
+    let second = Binding::new(Str::default());
     let view = {
         #[allow(
             clippy::redundant_clone,
@@ -1129,7 +1129,7 @@ fn a_shortcut_after_a_commit_reaches_the_application() {
 #[test]
 fn keys_after_a_composition_commit_in_one_batch_are_ordinary_input() {
     for multiline in [false, true] {
-        let value = Binding::container(Str::default());
+        let value = Binding::new(Str::default());
         let view = {
             let field_view = field("Name", &value);
             let field_view = if multiline {
@@ -1207,7 +1207,7 @@ fn keys_after_a_composition_commit_in_one_batch_are_ordinary_input() {
 #[test]
 fn a_key_between_direct_commits_stays_ordinary_input() {
     for multiline in [false, true] {
-        let value = Binding::container(Str::default());
+        let value = Binding::new(Str::default());
         let view = {
             let field_view = field("Name", &value);
             let field_view = if multiline {
@@ -1416,9 +1416,9 @@ fn tabbing_away_ends_editing_and_shift_tab_restores_the_caret() {
     enum Field {
         Name,
     }
-    let value = Binding::container(Str::default());
-    let focus = Binding::container(None::<Field>);
-    let submitted = Binding::bool(false);
+    let value = Binding::new(Str::default());
+    let focus = Binding::new(None::<Field>);
+    let submitted = Binding::new(false);
     let view = {
         #[allow(
             clippy::redundant_clone,
@@ -1586,9 +1586,9 @@ fn hiding_a_subtree_releases_the_focused_field_inside_it() {
     enum Field {
         Name,
     }
-    let value = Binding::container(Str::default());
-    let focus = Binding::container(None::<Field>);
-    let shown = Binding::container(true);
+    let value = Binding::new(Str::default());
+    let focus = Binding::new(None::<Field>);
+    let shown = Binding::new(true);
     let view = {
         #[allow(
             clippy::redundant_clone,
@@ -1667,11 +1667,11 @@ fn tab_skips_hidden_focusables_and_resumes_from_the_released_slot() {
     enum Field {
         Name,
     }
-    let value = Binding::container(Str::default());
-    let focus = Binding::container(None::<Field>);
-    let shown = Binding::container(true);
-    let first_pressed = Binding::bool(false);
-    let last_pressed = Binding::bool(false);
+    let value = Binding::new(Str::default());
+    let focus = Binding::new(None::<Field>);
+    let shown = Binding::new(true);
+    let first_pressed = Binding::new(false);
+    let last_pressed = Binding::new(false);
     let view = {
         #[allow(
             clippy::redundant_clone,

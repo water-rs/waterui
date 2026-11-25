@@ -994,7 +994,7 @@ pub fn run<W: Windows, M: AppMenuBar>(
     #[cfg(target_os = "windows")]
     let system_color_scheme = nami::binding(ColorScheme::Light);
     #[cfg(target_os = "windows")]
-    let system_reduce_motion = Binding::bool(query_windows_reduce_motion());
+    let system_reduce_motion = Binding::new(query_windows_reduce_motion());
     #[cfg(target_os = "windows")]
     let (appearance, reduce_motion) = (
         system_color_scheme.clone(),
@@ -2455,7 +2455,7 @@ mod tests {
     #[test]
     fn window_attributes_carry_the_requested_frame() {
         use waterui_core::layout::{Point, Rect, Size};
-        let frame = Binding::container(Rect::new(Point::new(12.0, 34.0), Size::new(800.0, 300.0)));
+        let frame = Binding::new(Rect::new(Point::new(12.0, 34.0), Size::new(800.0, 300.0)));
         let env = crate::renderer::tests::test_environment();
         let window = Window::new("", || ()).frame(&frame).into_parts(&env);
 

@@ -10,6 +10,7 @@ use super::*;
 use crate::renderer::mount::motion::{LayerMotion, Motion};
 use crate::time::Instant;
 use cherenkov::LayerId;
+use waterui::Angle;
 use waterui::animation::{Animation, Repeat};
 use waterui_graphics::animation::engine_animation;
 
@@ -107,7 +108,7 @@ fn the_engine_samples_the_tracks_hydrolysis_evaluates() {
     let mut renderer = test_renderer();
     let env = test_environment();
     let bounds = Rect::new(0.0, 0.0, 320.0, 320.0);
-    let phase = Binding::container(false);
+    let phase = Binding::new(false);
     let fade = Animation::ease_in_out(Duration::from_millis(300));
     let stretch = Animation::linear(Duration::from_millis(200));
     let squash = Animation::spring(300.0, 20.0);
@@ -120,9 +121,15 @@ fn the_engine_samples_the_tracks_hydrolysis_evaluates() {
             .map(move |on| if on { moved } else { rest })
             .with(animation.clone())
     };
+    let driven_angle = |rest: Angle, moved: Angle, animation: &Animation| {
+        phase
+            .clone()
+            .map(move |on| if on { moved } else { rest })
+            .with(animation.clone())
+    };
     let view = vstack((button("Probe")
         .action(|| {})
-        .rotation(driven(0.0, 30.0, &turn))
+        .rotation(driven_angle(Angle::ZERO, Angle::degrees(30.0), &turn))
         .scale_xy(driven(1.0, 1.5, &stretch), driven(1.0, 0.5, &squash))
         .offset(driven(0.0, 40.0, &slide), driven(0.0, -20.0, &lift))
         .opacity(driven(1.0, 0.4, &fade)),));
@@ -198,7 +205,7 @@ fn hit_testing_places_the_target_where_the_engine_draws_it() {
     let mut renderer = test_renderer();
     let env = test_environment();
     let bounds = Rect::new(0.0, 0.0, 320.0, 320.0);
-    let phase = Binding::container(false);
+    let phase = Binding::new(false);
     let driven = |rest: f32, moved: f32, animation: Animation| {
         phase
             .clone()
@@ -291,7 +298,7 @@ fn a_remount_mid_spring_keeps_the_track_whole() {
     let mut renderer = test_renderer();
     let env = test_environment();
     let bounds = Rect::new(0.0, 0.0, 320.0, 320.0);
-    let phase = Binding::container(false);
+    let phase = Binding::new(false);
     let lift = Animation::spring(180.0, 14.0);
     let view = vstack((button("Probe").action(|| {}).offset(
         0.0,
@@ -356,7 +363,7 @@ fn a_remount_mid_spring_keeps_the_track_whole() {
 fn a_platform_view_under_a_moving_offset_follows_the_track() {
     let mut env = test_environment();
     env.insert(crate::platform_view::PlatformViewSink::new());
-    let phase = Binding::container(false);
+    let phase = Binding::new(false);
     let slide = Animation::linear(Duration::from_millis(200));
     let builder = {
         let phase = phase.clone();
@@ -408,7 +415,7 @@ fn delay_speed_and_repeat_count_match_evaluator_across_engine_and_placement() {
     let mut renderer = test_renderer();
     let env = test_environment();
     let bounds = Rect::new(0.0, 0.0, 200.0, 200.0);
-    let phase = Binding::container(false);
+    let phase = Binding::new(false);
     let pulse = Animation::linear(Duration::from_millis(200))
         .delay(Duration::from_millis(50))
         .speed(2.0)
@@ -460,7 +467,7 @@ fn repeat_forever_motion_keeps_scheduled_semantic_work_while_ignoring_finite_set
     let mut renderer = test_renderer();
     let env = test_environment();
     let bounds = Rect::new(0.0, 0.0, 200.0, 200.0);
-    let phase = Binding::container(false);
+    let phase = Binding::new(false);
     let spin = Animation::linear(Duration::from_millis(100))
         .delay(Duration::from_millis(20))
         .repeat(Repeat::Forever { autoreverse: true });

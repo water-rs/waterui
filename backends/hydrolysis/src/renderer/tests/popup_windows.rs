@@ -80,7 +80,7 @@ fn secondary_click(x: f32, y: f32) -> [InputEvent; 2] {
 /// host can never reach the menu by label.
 #[test]
 fn secondary_click_merges_the_context_menu_popup_into_the_tree() {
-    let copied = Binding::container(false);
+    let copied = Binding::new(false);
     let copied_for_view = copied.clone();
     let builder = AnyViewBuilder::<AnyView>::new(move || {
         let copied = copied_for_view.clone();
@@ -170,7 +170,7 @@ fn context_menu_item_action_reads_state_inherited_from_the_opening_view() {
     }
 
     let store = Store {
-        hits: Binding::container(0),
+        hits: Binding::new(0),
     };
     let store_for_view = store.clone();
     let builder = AnyViewBuilder::<AnyView>::new(move || {
@@ -327,7 +327,7 @@ fn a_window_with_a_pending_frame_is_not_settled() {
 /// the popup's changed tree anyway.
 #[test]
 fn a_popup_only_change_publishes_the_merged_tree() {
-    let tint = Binding::container(Color::srgb(0, 0, 0));
+    let tint = Binding::new(Color::srgb(0, 0, 0));
     let tint_for_view = tint;
     let mut runtime = HeadlessRuntime::new_for_tests(
         test_environment(),
@@ -432,7 +432,7 @@ fn pump_until_settled(
 /// its snapshot on every pump.
 #[test]
 fn a_clean_pump_publishes_no_tree_update() {
-    let copied = Binding::container(false);
+    let copied = Binding::new(false);
     let copied_for_view = copied;
     let builder = AnyViewBuilder::<AnyView>::new(move || {
         let copied = copied_for_view.clone();
@@ -565,7 +565,7 @@ fn menu_runtime(activations: &Binding<u32>) -> HeadlessRuntime {
 /// and consumes the press, so releasing it never fires the tap.
 #[test]
 fn a_touch_hold_past_the_threshold_mounts_the_menu_at_the_press_point() {
-    let activations = Binding::container(0_u32);
+    let activations = Binding::new(0_u32);
     let mut runtime = menu_runtime(&activations);
     let start = Instant::now();
 
@@ -636,7 +636,7 @@ fn a_touch_hold_past_the_threshold_mounts_the_menu_at_the_press_point() {
 /// longer exists.
 #[test]
 fn a_touch_released_early_fires_the_tap_and_no_menu() {
-    let activations = Binding::container(0_u32);
+    let activations = Binding::new(0_u32);
     let mut runtime = menu_runtime(&activations);
     let start = Instant::now();
     let _ = runtime.pump_at(false, start);
@@ -669,7 +669,7 @@ fn a_touch_released_early_fires_the_tap_and_no_menu() {
 /// check `LongPressDetector` applies — so the threshold tick opens nothing.
 #[test]
 fn a_touch_that_moves_past_slop_opens_nothing() {
-    let activations = Binding::container(0_u32);
+    let activations = Binding::new(0_u32);
     let mut runtime = menu_runtime(&activations);
     let start = Instant::now();
     let _ = runtime.pump_at(false, start);
@@ -696,7 +696,7 @@ fn a_touch_that_moves_past_slop_opens_nothing() {
 /// bind press-and-hold to touch and pen only.
 #[test]
 fn a_held_primary_mouse_button_opens_nothing() {
-    let activations = Binding::container(0_u32);
+    let activations = Binding::new(0_u32);
     let mut runtime = menu_runtime(&activations);
     let start = Instant::now();
     let _ = runtime.pump_at(false, start);
@@ -729,7 +729,7 @@ fn a_held_primary_mouse_button_opens_nothing() {
 /// by which channel delivered the press.
 #[test]
 fn a_pen_hold_behaves_like_a_touch_hold() {
-    let activations = Binding::container(0_u32);
+    let activations = Binding::new(0_u32);
     let mut runtime = menu_runtime(&activations);
     let start = Instant::now();
     let _ = runtime.pump_at(false, start);
@@ -770,7 +770,7 @@ fn a_pen_hold_behaves_like_a_touch_hold() {
 /// the control, not under the origin.
 #[test]
 fn an_accessibility_activated_popup_anchors_under_the_control() {
-    let selection = Binding::i32(0);
+    let selection = Binding::new(0_i32);
     let builder = AnyViewBuilder::<AnyView>::new(move || {
         let selection = selection.clone();
         AnyView::new(vstack((
@@ -865,7 +865,7 @@ fn an_accessibility_activated_popup_anchors_under_the_control() {
 /// the field mounts the popup under the field's window-space bottom edge.
 #[test]
 fn a_pointer_activated_picker_menu_anchors_under_the_field() {
-    let selection = Binding::i32(0);
+    let selection = Binding::new(0_i32);
     let builder = AnyViewBuilder::<AnyView>::new(move || {
         let selection = selection.clone();
         AnyView::new(vstack((

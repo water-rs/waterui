@@ -1039,7 +1039,6 @@ fn render_tree_grid_snapshot() {
     }
 
     fn screen() -> AnyView {
-        use waterui::layout::grid::{grid, row};
         use waterui::prelude::*;
         fn cell(label: &str) -> impl View {
             button(label.to_owned()).action(|| {}).width(92.0)
@@ -1047,9 +1046,9 @@ fn render_tree_grid_snapshot() {
         let controls = grid(
             3,
             [
-                row((cell("Bar"), cell("Line"), cell("Pie"))),
-                row((cell("Scatter"), cell("Candle"), cell("Depth"))),
-                row((cell("Heatmap"), cell("Contour"), cell("Radar"))),
+                grid_row((cell("Bar"), cell("Line"), cell("Pie"))),
+                grid_row((cell("Scatter"), cell("Candle"), cell("Depth"))),
+                grid_row((cell("Heatmap"), cell("Contour"), cell("Radar"))),
             ],
         )
         .spacing(10.0);
@@ -1177,7 +1176,7 @@ fn task_starts_on_appear_extracts_state_and_cancels_on_disappear() {
 
     let started = Rc::new(Cell::new(false));
     let cancelled = Rc::new(Cell::new(false));
-    let counter = Binding::i32(0);
+    let counter = Binding::new(0_i32);
 
     let view = AnyView::new(
         text("Tasked")

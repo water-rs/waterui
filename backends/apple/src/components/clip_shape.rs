@@ -84,8 +84,8 @@ fn commands_path(commands: &[PathCommand], bounds: Rect) -> CFRetained<CGPath> {
                         f64::from(rx) * bounds.size.width,
                         f64::from(ry) * bounds.size.height,
                     ),
-                    f64::from(start),
-                    f64::from(sweep),
+                    f64::from(start.to_radians()),
+                    f64::from(sweep.to_radians()),
                 );
             }
             PathCommand::Close => {

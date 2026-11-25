@@ -51,7 +51,7 @@ fn colr_glyph_renders_and_run_paint_recaches_pixels() {
         y: 64.0,
         transform: None,
     };
-    let value = Binding::container(run(font.id(), vec![glyph]));
+    let value = Binding::new(run(font.id(), vec![glyph]));
     let content = surface.record(|c| {
         c.fill(
             Rect::new(0.0, 0.0, 96.0, 72.0),
@@ -113,7 +113,7 @@ fn image_foreground_alpha_scales_group_opacity() {
         extend_y: Extend::Pad,
         sampling: Sampling::Nearest,
     });
-    let binding = Binding::container(run(
+    let binding = Binding::new(run(
         font.id(),
         vec![Glyph {
             id: G_E300,

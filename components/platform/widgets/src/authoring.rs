@@ -72,13 +72,13 @@ pub trait WidgetExt: WidgetContent + Sized {
     /// Adds leading and trailing padding around this node.
     #[must_use]
     fn padding_horizontal(self, value: f32) -> Padding {
-        Padding::new(EdgeInsets::symmetric(0.0, value), self)
+        Padding::new(EdgeInsets::horizontal(value), self)
     }
 
     /// Adds top and bottom padding around this node.
     #[must_use]
     fn padding_vertical(self, value: f32) -> Padding {
-        Padding::new(EdgeInsets::symmetric(value, 0.0), self)
+        Padding::new(EdgeInsets::vertical(value), self)
     }
 
     /// Fixes this node's width.

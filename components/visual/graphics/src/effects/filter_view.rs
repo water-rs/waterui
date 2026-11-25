@@ -81,7 +81,7 @@ use nami::SignalExt;
 use nami::{Signal, signal::IntoComputed, watcher::Metadata};
 use waterui_core::animation::ChangeAnimation;
 use waterui_core::backend::{Backend, ChildSlot, MapSlots};
-use waterui_core::{AnyView, Environment, IntoSignalF32, Native, View};
+use waterui_core::{Angle, AnyView, Environment, IntoSignalF32, Native, View};
 
 #[cfg(feature = "gpu")]
 mod gpu;
@@ -300,6 +300,22 @@ impl ParamGuards {
         let guard = signal.watch(move |context| {
             let animation = extract_animation(context.metadata());
             notify_slot(&target, context.into_value(), animation);
+        });
+        self.0.push(Box::new(guard));
+        Reactive(slot)
+    }
+
+    /// Binds an angle signal (converting to degrees for `filtrate` shaders) to a new [`Reactive`] slot.
+    pub fn bind_angle(&mut self, value: impl IntoComputed<Angle>) -> Reactive {
+        let signal = value.into_computed();
+        let slot = Arc::new(Slot {
+            value: AtomicU32::new(signal.snapshot().to_degrees().to_bits()),
+            watchers: Watchers::new(),
+        });
+        let target = Arc::clone(&slot);
+        let guard = signal.watch(move |context| {
+            let animation = extract_animation(context.metadata());
+            notify_slot(&target, context.into_value().to_degrees(), animation);
         });
         self.0.push(Box::new(guard));
         Reactive(slot)
@@ -1159,12 +1175,22 @@ impl<V: View, F: Reach + RenderTransfer> Filtered<V, F> {
         filtrate::filters::GaussianBlur::new
     );
     inherent_single_param_filter!(grayscale, Grayscale);
-    inherent_single_param_filter!(hue_rotation, HueRotation);
     inherent_single_param_filter!(pixellate, Pixellate);
     inherent_single_param_filter!(saturation, Saturation);
     inherent_single_param_filter!(sepia, Sepia);
     inherent_single_param_filter!(sharpen, Sharpen);
     inherent_single_param_filter!(vibrance, Vibrance);
+
+    /// Append a `HueRotation` filter to the chain.
+    #[must_use]
+    pub fn hue_rotation<P: IntoComputed<Angle>>(
+        self,
+        angle: P,
+    ) -> Filtered<V, Chain<F, filtrate::filters::HueRotation<Reactive>>> {
+        let mut guards = ParamGuards::default();
+        let filter = filtrate::filters::HueRotation(guards.bind_angle(angle));
+        self.then_bound(filter, guards)
+    }
 
     /// Append an `Invert` filter to the chain.
     #[must_use]
@@ -1416,11 +1442,11 @@ pub trait FilterViewExt: View + Sized {
     }
 
     /// Apply a hue rotation filter.
-    fn hue_rotation<T: IntoSignalF32>(self, angle: T) -> Filtered<Self, HueRotation> {
+    fn hue_rotation<T: IntoComputed<Angle>>(self, angle: T) -> Filtered<Self, HueRotation> {
         let mut guards = ParamGuards::default();
         Filtered::bound(
             self,
-            filtrate::filters::HueRotation(guards.bind(angle)),
+            filtrate::filters::HueRotation(guards.bind_angle(angle)),
             guards,
         )
     }
@@ -1565,7 +1591,7 @@ pub trait FilterViewExt: View + Sized {
     }
 
     /// Apply directional motion blur.
-    fn motion_blur<R: IntoSignalF32, A: IntoSignalF32>(
+    fn motion_blur<R: IntoSignalF32, A: IntoComputed<Angle>>(
         self,
         radius: R,
         angle: A,
@@ -1573,7 +1599,7 @@ pub trait FilterViewExt: View + Sized {
         let mut guards = ParamGuards::default();
         Filtered::bound(
             self,
-            filtrate::filters::MotionBlur(guards.bind(radius), guards.bind(angle)),
+            filtrate::filters::MotionBlur(guards.bind(radius), guards.bind_angle(angle)),
             guards,
         )
     }
@@ -1741,7 +1767,12 @@ pub trait FilterViewExt: View + Sized {
     }
 
     /// Apply twirl distortion around a center.
-    fn twirl_distortion<T: IntoSignalF32, U: IntoSignalF32, V: IntoSignalF32, W: IntoSignalF32>(
+    fn twirl_distortion<
+        T: IntoSignalF32,
+        U: IntoSignalF32,
+        V: IntoSignalF32,
+        W: IntoComputed<Angle>,
+    >(
         self,
         center_x: T,
         center_y: U,
@@ -1755,14 +1786,19 @@ pub trait FilterViewExt: View + Sized {
                 guards.bind(center_x),
                 guards.bind(center_y),
                 guards.bind(radius),
-                guards.bind(angle),
+                guards.bind_angle(angle),
             ]),
             guards,
         )
     }
 
     /// Apply vortex distortion around a center.
-    fn vortex_distortion<T: IntoSignalF32, U: IntoSignalF32, V: IntoSignalF32, W: IntoSignalF32>(
+    fn vortex_distortion<
+        T: IntoSignalF32,
+        U: IntoSignalF32,
+        V: IntoSignalF32,
+        W: IntoComputed<Angle>,
+    >(
         self,
         center_x: T,
         center_y: U,
@@ -1776,7 +1812,7 @@ pub trait FilterViewExt: View + Sized {
                 guards.bind(center_x),
                 guards.bind(center_y),
                 guards.bind(radius),
-                guards.bind(angle),
+                guards.bind_angle(angle),
             ]),
             guards,
         )
@@ -1845,7 +1881,12 @@ pub trait FilterViewExt: View + Sized {
     }
 
     /// Apply a dot halftone effect.
-    fn dot_halftone<T: IntoSignalF32, U: IntoSignalF32, V: IntoSignalF32, W: IntoSignalF32>(
+    fn dot_halftone<
+        T: IntoSignalF32,
+        U: IntoComputed<Angle>,
+        V: IntoSignalF32,
+        W: IntoSignalF32,
+    >(
         self,
         scale: T,
         angle: U,
@@ -1857,7 +1898,7 @@ pub trait FilterViewExt: View + Sized {
             self,
             filtrate::filters::DotHalftone([
                 guards.bind(scale),
-                guards.bind(angle),
+                guards.bind_angle(angle),
                 guards.bind(center_x),
                 guards.bind(center_y),
             ]),
@@ -1866,7 +1907,12 @@ pub trait FilterViewExt: View + Sized {
     }
 
     /// Apply a line halftone effect.
-    fn line_halftone<T: IntoSignalF32, U: IntoSignalF32, V: IntoSignalF32, W: IntoSignalF32>(
+    fn line_halftone<
+        T: IntoSignalF32,
+        U: IntoComputed<Angle>,
+        V: IntoSignalF32,
+        W: IntoSignalF32,
+    >(
         self,
         scale: T,
         angle: U,
@@ -1878,7 +1924,7 @@ pub trait FilterViewExt: View + Sized {
             self,
             filtrate::filters::LineHalftone([
                 guards.bind(scale),
-                guards.bind(angle),
+                guards.bind_angle(angle),
                 guards.bind(center_x),
                 guards.bind(center_y),
             ]),
@@ -1887,7 +1933,12 @@ pub trait FilterViewExt: View + Sized {
     }
 
     /// Apply a kaleidoscope effect.
-    fn kaleidoscope<T: IntoSignalF32, U: IntoSignalF32, V: IntoSignalF32, W: IntoSignalF32>(
+    fn kaleidoscope<
+        T: IntoSignalF32,
+        U: IntoComputed<Angle>,
+        V: IntoSignalF32,
+        W: IntoSignalF32,
+    >(
         self,
         segments: T,
         angle: U,
@@ -1899,7 +1950,7 @@ pub trait FilterViewExt: View + Sized {
             self,
             filtrate::filters::Kaleidoscope([
                 guards.bind(segments),
-                guards.bind(angle),
+                guards.bind_angle(angle),
                 guards.bind(center_x),
                 guards.bind(center_y),
             ]),

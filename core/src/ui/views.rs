@@ -65,7 +65,7 @@ pub trait ViewSnapshot {
 #[diagnostic::on_unimplemented(
     message = "`{Self}` is not a WaterUI view collection",
     label = "expected a collection of views",
-    note = "`Views` is implemented by `ForEach`, `Constant`, `Vec` and arrays of views, and `AnyViews`. To turn a data collection into views use `ForEach::new(data, f)` — exposed as `Lazy::for_each` / `List::for_each` — over any `nami` collection: a `StateList` of `Identifiable` items, or an array or static slice, whose rows are identified by index."
+    note = "`Views` is implemented by `ForEach`, `Constant`, `Vec` and arrays of views, and `AnyViews`. To turn a data collection into views use `ForEach::new(data, f)` — exposed as `VStack::for_each` / `List::for_each` — over any `nami` collection: a `StateList` of `Identifiable` items, or an array or static slice, whose rows are identified by index."
 )]
 pub trait Views {
     /// The type of unique identifier for items in the collection; `Ord` is

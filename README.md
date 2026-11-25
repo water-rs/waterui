@@ -50,7 +50,7 @@ use waterui::window::Window;
 
 #[preview]
 fn main() -> impl View {
-    let count = Binding::i32(0);
+    let count = Binding::new(0);
 
     vstack((
         text("Hello, WaterUI!").font_size(28),
@@ -111,7 +111,7 @@ use waterui::prelude::slider::slider;
 use waterui::prelude::*;
 
 fn progress_editor() -> impl View {
-    let value = Binding::f64(0.25);
+    let value = Binding::new(0.25);
     let percent = value.map(|value| value * 100.0);
 
     vstack((

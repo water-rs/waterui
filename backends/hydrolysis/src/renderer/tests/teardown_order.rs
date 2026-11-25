@@ -65,7 +65,7 @@ fn semantic_flush_releases_frame_state_in_renderer_order() {
     // branch so the subtree's `Retain` is its only owner — a tag shared with
     // the `when` chain would outlive the patch, retained by the `Dynamic`
     // node's own watcher.
-    let show = Binding::container(true);
+    let show = Binding::new(true);
     let view = {
         let show = show.clone();
         let drops = Rc::clone(&drops);

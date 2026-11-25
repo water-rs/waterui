@@ -305,7 +305,7 @@ impl PixelRemoval {
     /// layout handler.
     pub fn start(visual: &RetiredVisual, state: &TransitionState, env: &Environment) -> Rc<Self> {
         let overlay = PixelOverlay::over(&visual.host);
-        let frame = Binding::container(frame_now(
+        let frame = Binding::new(frame_now(
             overlay.view(),
             &visual.host,
             visual.geometry.direction(),
@@ -453,7 +453,7 @@ impl PixelInsertion {
         env: &Environment,
     ) -> Option<Self> {
         let overlay = PixelOverlay::over(&host.host);
-        let frame = Binding::container(frame_now(overlay.view(), &host.host, direction));
+        let frame = Binding::new(frame_now(overlay.view(), &host.host, direction));
         let effects = effects_from_transition(state, frame.computed(), env)?;
         let effect = LiveEffect::from_effects(effects, &host.content_view, overlay.view(), env)?;
         Some(Self {

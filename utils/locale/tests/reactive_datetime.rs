@@ -6,11 +6,11 @@ use waterui::prelude::*;
 
 #[test]
 fn text_macro_formats_jiff_date_signal_reactively_across_locales() {
-    let locale = Binding::container(locales::EN);
+    let locale = Binding::new(locales::EN);
     let mut env = Environment::new();
     env.insert(locale.clone());
 
-    let picked = Binding::container(civil::date(2026, 3, 20));
+    let picked = Binding::new(civil::date(2026, 3, 20));
     let view = text!(
         "Due {due}",
         due = picked.map(|date| date.formatted(DateStyle::Long))
@@ -57,7 +57,7 @@ fn text_macro_formats_jiff_date_signal_reactively_across_locales() {
 
 #[test]
 fn text_macro_formats_constant_zoned_and_relative_time_reactively() {
-    let locale = Binding::container(locales::EN);
+    let locale = Binding::new(locales::EN);
     let mut env = Environment::new();
     env.insert(locale.clone());
 

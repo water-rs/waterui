@@ -114,7 +114,7 @@ fn arrow_down(runtime: &mut HeadlessRuntime) {
 /// still take the focus, so the first `ArrowDown` moves to the next row.
 #[test]
 fn tap_gesture_inside_row_focuses_the_row_for_arrows() {
-    let selection = Binding::container(None::<u64>);
+    let selection = Binding::new(None::<u64>);
     let taps: Rc<RefCell<Vec<u64>>> = Rc::new(RefCell::new(Vec::new()));
     let taps_for_rows = taps.clone();
     let selection_for_list = selection.clone();
@@ -195,7 +195,7 @@ fn tap_gesture_inside_row_focuses_the_row_for_arrows() {
 fn tap_press_target_inside_row_focuses_the_row_for_arrows() {
     let mut env = test_environment();
     env.install(super::invisible_chrome());
-    let selection = Binding::container(None::<u64>);
+    let selection = Binding::new(None::<u64>);
     let taps: Rc<RefCell<Vec<u64>>> = Rc::new(RefCell::new(Vec::new()));
     let taps_for_rows = taps.clone();
     let selection_for_list = selection.clone();

@@ -1625,7 +1625,7 @@ fn session_mounts(
     // `nativeSetColorScheme` pushes, so the default tokens re-resolve on a
     // theme flip the way macOS's appearance binding does (#1972).
     let color_scheme = nami::binding(appearance.color_scheme);
-    let reduce_motion = Binding::bool(appearance.reduce_motion);
+    let reduce_motion = Binding::new(appearance.reduce_motion);
     env.insert(ReduceMotion::new(reduce_motion.clone()));
     crate::theme::install_theme_tokens(&mut env, Some(&*style), color_scheme.clone());
     let theme: Rc<dyn WidgetTheme> = style;

@@ -28,7 +28,7 @@ pub fn retained_and_padded<B: Backend>(config: B::Config) {
         .surface(Offscreen::new((128, 128), OffscreenFormat::LinearF16), || {}))
         .expect("reference");
     let color = WorkingColor::new([0.2, 0.5, 1.0, 0.75]);
-    let shadow = nami::Binding::container(Shadow::new(3.0, color));
+    let shadow = nami::Binding::new(Shadow::new(3.0, color));
     actual.update(|tx| {
         tx[actual.root()].content(actual.record(|r| {
             r.fill(Rect::new(60.0, 60.0, 64.0, 64.0), WorkingColor::WHITE);

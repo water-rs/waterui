@@ -167,7 +167,7 @@ impl SystemAppearance {
         let scheme = nami::binding(color_scheme_of(&application.effectiveAppearance()));
         let observer = AppearanceObserver::new(mtm, scheme.clone());
         let workspace = NSWorkspace::sharedWorkspace();
-        let reduce_motion = Binding::bool(workspace.accessibilityDisplayShouldReduceMotion());
+        let reduce_motion = Binding::new(workspace.accessibilityDisplayShouldReduceMotion());
         let reduce_motion_observer = ReduceMotionObserver::new(mtm, reduce_motion.clone());
         // SAFETY: the observers implement their registration methods; both
         // are removed in `Drop` before the retained observers are released.

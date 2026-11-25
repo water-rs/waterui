@@ -288,7 +288,7 @@ fn a_reactive_line_limit_resizes_text_in_place(ui: UiBuilder) {
     use core::num::NonZeroUsize;
     use waterui::SignalExt as _;
 
-    let expanded = Binding::bool(false);
+    let expanded = Binding::new(false);
     let expanded_for_view = expanded.clone();
     let mut app = ui.mount_offscreen(move || {
         text(LONG)
@@ -349,7 +349,7 @@ fn a_changed_text_is_measured_again_inside_a_retained_sub_view(ui: UiBuilder) {
 
     fn split_detail(status: &Binding<String>) -> AnyView {
         let status = status.clone();
-        let selection = Binding::container(Some(1_i32));
+        let selection = Binding::new(Some(1_i32));
         AnyView::new(NavigationSplitView::new(
             &selection,
             || text("sidebar"),
@@ -379,10 +379,10 @@ fn a_changed_text_is_measured_again_inside_a_retained_sub_view(ui: UiBuilder) {
     for (case, mount) in cases {
         let mut settled = ui
             .clone()
-            .mount_offscreen(move || mount(&Binding::container(LONG.to_owned())));
+            .mount_offscreen(move || mount(&Binding::new(LONG.to_owned())));
         let expected = settled.query().label("status").single().bounds();
 
-        let status = Binding::container(String::from("Al"));
+        let status = Binding::new(String::from("Al"));
         let mut app = ui.clone().mount_offscreen({
             let status = status.clone();
             move || mount(&status)
@@ -441,8 +441,8 @@ fn compressed_button_labels_stay_on_one_line(ui: UiBuilder) {
 /// two fields split the row instead of overflowing at the intrinsic floor.
 /// water-rs/hydrolysis#107.
 fn text_field_row_view() -> impl View {
-    let first = Binding::container(Str::from(""));
-    let last = Binding::container(Str::from(""));
+    let first = Binding::new(Str::from(""));
+    let last = Binding::new(Str::from(""));
     hstack((field("First name", &first), field("Last name", &last))).size(340.0, 60.0)
 }
 
@@ -477,7 +477,7 @@ fn text_fields_share_a_340_row(app: &mut OffscreenApp) {
 
 /// In a 600-wide container the field answers the proposal and fills it.
 fn text_field_in_container_view() -> impl View {
-    let value = Binding::container(Str::from(""));
+    let value = Binding::new(Str::from(""));
     field("Field", &value).size(600.0, 60.0)
 }
 
@@ -502,7 +502,7 @@ fn text_field_fills_wide_container(app: &mut OffscreenApp) {
 /// the field. Its height is its intrinsic one-line height, which an empty
 /// field measures too, so nothing below moves either.
 fn wide_url_field_view() -> impl View {
-    let url = Binding::container(Str::from(""));
+    let url = Binding::new(Str::from(""));
     visual_shell(
         vstack((
             hstack((field("Address", &url), button("Go").action(|| {}))),
@@ -576,7 +576,7 @@ fn compressed_row_view() -> impl View {
         .leading(),
     ))
     .spacing(10.0)
-    .padding_with((6.0, 10.0))
+    .padding_with(EdgeInsets::vertical(6.0).with_horizontal(10.0))
 }
 
 #[waterui::test(compressed_row_view, theme = TestStyle::new(), offscreen, viewport = (340, 200))]
@@ -601,9 +601,9 @@ fn grid_with_short_middle_row_view() -> impl View {
     waterui::layout::grid::grid(
         3,
         (
-            waterui::layout::grid::row((cell("a"), cell("b"), cell("c"))),
-            waterui::layout::grid::row((cell("d"),)),
-            waterui::layout::grid::row((cell("e"), cell("f"), cell("g"))),
+            grid_row((cell("a"), cell("b"), cell("c"))),
+            grid_row((cell("d"),)),
+            grid_row((cell("e"), cell("f"), cell("g"))),
         ),
     )
 }

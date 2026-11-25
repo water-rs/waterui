@@ -43,25 +43,22 @@ and `Picker` all take `&Binding<..>` because they mutate it.
 ```rust
 use waterui::reactive::binding;
 
-let count = Binding::i32(0);                    // typed constructors, primitives:
-let ratio = Binding::f64(1.5);                  // bool f32 f64 i32 i64 isize u32 u64 usize
-let flag  = Binding::bool(false);
-let name  = Binding::container(Str::from("Ada"));  // any Clone type
-let items = Binding::container(Vec::<Row>::new());
-let status = Binding::container("Waiting…");    // Binding<&'static str> — fine for status text
+let count = Binding::new(0);                     // Binding<i32>
+let ratio = binding(1.5_f64);                    // Binding<f64>
+let flag  = binding(false);                      // Binding<bool>
+let name  = binding(Str::from("Ada"));           // any Clone type
+let items = binding(Vec::<Row>::new());
+let status = binding("Waiting…");                // Binding<&'static str> — fine for status text
 
 let sel: Binding<Option<Media>> = Binding::default();      // empty optional selection
-let pane: Binding<Pane> = binding(Pane::Inbox);            // general form
-let ws = binding::<WindowState>(WindowState::default());   // …or pin T with a turbofish
+let pane = binding(Pane::Inbox);                           // Binding<Pane>
 ```
 
-`Binding::new` does not exist. `binding(v)` is declared as `binding<T>(value: impl
-Into<T>)`, so `T` cannot be inferred from the argument alone — it works when something
-downstream pins the type: a `let` annotation, a turbofish, a struct field, a control such
-as `toggle(.., &b)`, or a helper parameter typed `&Binding<i32>`. When a helper with a
-typed parameter consumes the binding, plain `binding(0)` / `binding(false)` is the
-idiomatic spelling — no typed constructor needed. A `#[form]` struct has the cleanest
-form of all: `Settings::binding()` (from `FormBuilder`), which needs no annotation.
+`Binding::new(v)` and `binding(v)` both take `T` directly (no `impl Into<T>`), so Rust
+infers the binding's type from the value without annotations (`binding(0)` is
+`Binding<i32>`). Pass owned values directly (`binding(Str::from("Ada"))`,
+`binding(String::new())`). A `#[form]` struct also provides `Settings::binding()` (from
+`FormBuilder`).
 
 Writing:
 
@@ -147,8 +144,8 @@ arguments.
 ```rust
 use waterui::reactive::s;
 
-let count = Binding::i32(3);
-let total = Binding::i32(10);
+let count = Binding::new(3);
+let total = Binding::new(10);
 let progress = s!("{count} of {total}");   // Signal<Output = String>
 ```
 
@@ -286,7 +283,7 @@ pass the animated signal wherever the plain one would go.
 use core::time::Duration;
 use waterui::animation::Animation;   // not in the prelude
 
-let scale = Binding::f32(1.0);
+let scale = Binding::new(1.0_f32);
 let animated = scale.with(Animation::spring(300.0, 15.0));
 
 view.scale(animated)
@@ -320,7 +317,7 @@ let combined = hover_scale.zip(&drop_bounce).map(|(a, b)| a * b);   // still ani
 sequence: mutating it emits a membership patch rather than a whole-collection invalidation.
 
 ```rust
-use waterui::component::lazy::Lazy;
+use waterui::layout::scroll::scroll_horizontal;
 
 let mut rows = StateList::from(seed_vec);      // bulk-seed in one move — not a push loop
 rows.push(Row { id: 9, title: "Last".into() });
@@ -329,16 +326,17 @@ let _ = rows.remove(0);              // #[must_use] — bind the removed value
 let snapshot = rows.snapshot();      // Vec<Row>, for read-only work
 let _ = rows.replace(new_vec);       // wholesale swap, diffed by id: moves and changed rows
 
-Lazy::for_each(rows.clone(), row_view)          // == Lazy::vstack(ForEach::new(..))
-Lazy::hstack(ForEach::new(rows.clone(), row_view))
+scroll(VStack::for_each(rows.clone(), row_view))
+scroll_horizontal(HStack::for_each(rows.clone(), row_view))
 ```
 
 `ForEach` implements `Views` (a collection of views), not `View`, so a container has to
-consume it. `Lazy::for_each` / `Lazy::vstack` / `Lazy::hstack` defer realization;
-`VStack::for_each` / `HStack::for_each` build an ordinary stack over the same collection
-when you want stack modifiers and eager layout — the stack forms require `Identifiable`
-items (see components.md for the per-row `.transition(PropertyTransition::opacity())`
-membership animation).
+consume it. `VStack::for_each` / `HStack::for_each` virtualize automatically when inside a
+co-axial `ScrollView` (`scroll` / `scroll_horizontal` / `scroll_both`) and materialize
+eagerly outside one (or when `.eager()` is called). They accept any `nami::collection::Collection`
+— a `StateList` of `Identifiable` items, or an array or static slice identified by index
+(see components.md for per-row `.transition(PropertyTransition::opacity())` membership
+animation).
 
 Items must derive `Identifiable` (`use waterui::Identifiable;` — the derive is not in the
 prelude) with an `#[id]` field that is stable across updates of the same logical row.

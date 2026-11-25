@@ -17,11 +17,11 @@ use core::cell::RefCell;
 use cocoa_ui::{Point, Rect, view};
 use waterui::reactive::Signal;
 use waterui::style::Rotation;
-use waterui_core::Metadata;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
     ViewDimensions,
 };
+use waterui_core::{Angle, Metadata};
 
 #[cfg(target_os = "macos")]
 use crate::components::layer_transform;
@@ -38,8 +38,8 @@ use cocoa_ui::uikit::HostView;
 struct RotationState {
     /// The mounted content.
     child: Mounted,
-    /// The current angle in degrees.
-    angle: f32,
+    /// The current angle.
+    angle: Angle,
 }
 
 impl core::fmt::Debug for RotationState {
@@ -54,7 +54,7 @@ fn apply_transform(state: &RotationState, host: &HostView, anchor: Point) {
     #[cfg(target_os = "ios")]
     {
         let _ = (host, anchor);
-        let radians = f64::from(state.angle).to_radians();
+        let radians = f64::from(state.angle.to_radians());
         view::set_transform(
             state.child.view(),
             cocoa_ui::objc2_core_graphics::CGAffineTransformMakeRotation(radians),
@@ -62,7 +62,7 @@ fn apply_transform(state: &RotationState, host: &HostView, anchor: Point) {
     }
     #[cfg(target_os = "macos")]
     {
-        let radians = f64::from(state.angle).to_radians();
+        let radians = f64::from(state.angle.to_radians());
         let layer = layer_transform::wrapper_transform_layer(host);
         let transform = layer_transform::anchored(
             cocoa_ui::objc2_quartz_core::CATransform3D::new_rotation(radians, 0.0, 0.0, 1.0),
@@ -139,7 +139,7 @@ pub fn realize_rotation_metadata(
 
     let state = Rc::new(RefCell::new(RotationState {
         child: mounted,
-        angle: 0.0,
+        angle: Angle::ZERO,
     }));
 
     // The content always fills the wrapper before the transform moves
@@ -217,7 +217,7 @@ pub fn realize_rotation_metadata(
             {
                 let borrowed = state.borrow();
                 let layer = layer_transform::wrapper_transform_layer(&host);
-                let radians = f64::from(borrowed.angle).to_radians();
+                let radians = f64::from(borrowed.angle.to_radians());
                 let transform = layer_transform::anchored(
                     cocoa_ui::objc2_quartz_core::CATransform3D::new_rotation(
                         radians, 0.0, 0.0, 1.0,

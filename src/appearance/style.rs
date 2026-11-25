@@ -16,8 +16,11 @@
 //! }
 //! ```
 
-use nami::{Computed, SignalExt, signal::IntoSignal};
-use waterui_core::{IntoSignalF32, metadata::MetadataKey, plugin::Plugin};
+use nami::{
+    Computed, SignalExt,
+    signal::{IntoComputed, IntoSignal},
+};
+use waterui_core::{Angle, IntoSignalF32, metadata::MetadataKey, plugin::Plugin};
 use waterui_graphics::color::Color;
 use waterui_interaction::interaction::StateValue;
 use waterui_shape::{ClipShape, Shape};
@@ -423,28 +426,28 @@ impl Scale {
 /// use waterui::prelude::*;
 ///
 /// // Rotate around center (default)
-/// let tilted = text!("Hello").rotation(45.0);
+/// let tilted = text!("Hello").rotation(Angle::degrees(45.0));
 ///
 /// // Rotate around top-left corner
-/// let cornered = text!("Hello").rotation_from(45.0, Anchor::TOP_LEFT);
+/// let cornered = text!("Hello").rotation_from(Angle::degrees(45.0), Anchor::TOP_LEFT);
 ///
 /// // Animate rotation
-/// let angle = binding::<f32>(0.0_f32).animated();
+/// let angle = binding::<Angle>(Angle::ZERO).animated();
 /// let spinning = text!("Hello").rotation(angle);
 /// ```
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct Rotation {
-    /// Rotation angle in degrees (positive = clockwise)
-    angle: Computed<f32>,
+    /// Rotation angle (positive = clockwise)
+    angle: Computed<Angle>,
     /// Anchor point for the rotation transform
     anchor: Anchor,
 }
 
 impl Rotation {
-    /// Rotation angle in degrees (positive = clockwise)
+    /// Rotation angle (positive = clockwise)
     #[must_use]
-    pub const fn angle(&self) -> &Computed<f32> {
+    pub const fn angle(&self) -> &Computed<Angle> {
         &self.angle
     }
 
@@ -460,20 +463,68 @@ impl MetadataKey for Rotation {}
 impl Rotation {
     /// Creates a rotation transform around center.
     #[must_use]
-    pub fn degrees(angle: impl IntoSignalF32) -> Self {
+    pub fn new(angle: impl IntoComputed<Angle>) -> Self {
         Self {
-            angle: angle.into_signal_f32().computed(),
+            angle: angle.into_computed(),
             anchor: Anchor::CENTER,
         }
     }
 
     /// Creates a rotation transform around a specific anchor point.
     #[must_use]
-    pub fn degrees_from(angle: impl IntoSignalF32, anchor: Anchor) -> Self {
+    pub fn from_anchor(angle: impl IntoComputed<Angle>, anchor: Anchor) -> Self {
         Self {
-            angle: angle.into_signal_f32().computed(),
+            angle: angle.into_computed(),
             anchor,
         }
+    }
+
+    /// Internal constructor used by the temporary Step 1 `IntoRotationAngle` bridge.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn from_computed(angle: Computed<Angle>, anchor: Anchor) -> Self {
+        Self { angle, anchor }
+    }
+}
+
+/// Temporary Step 1 bridge for `Cargo.lock`-pinned split-repo callers (`hydrolysis-m3`).
+/// Removed once `hydrolysis-m3` migrates to `Angle`.
+#[doc(hidden)]
+pub trait IntoRotationAngle<Marker = ()> {
+    fn into_rotation_angle(self) -> Computed<Angle>;
+}
+
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct ComputedAngleMarker;
+
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct LegacyRotationDegreesMarker;
+
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct LegacyRotationF64Marker;
+
+impl<T: IntoComputed<Angle>> IntoRotationAngle<ComputedAngleMarker> for T {
+    fn into_rotation_angle(self) -> Computed<Angle> {
+        self.into_computed()
+    }
+}
+
+impl IntoRotationAngle<LegacyRotationDegreesMarker> for f32 {
+    fn into_rotation_angle(self) -> Computed<Angle> {
+        Computed::constant(Angle::degrees(self))
+    }
+}
+
+impl IntoRotationAngle<LegacyRotationF64Marker> for f64 {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "temporary Step 1 compatibility bridge for bare float literals in locked split repos"
+    )]
+    fn into_rotation_angle(self) -> Computed<Angle> {
+        Computed::constant(Angle::degrees(self as f32))
     }
 }
 

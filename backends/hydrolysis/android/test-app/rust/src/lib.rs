@@ -118,8 +118,8 @@ fn build_app() -> App<impl Windows> {
         {
             let count = binding(0);
             let enabled = binding(false);
-            let name = binding("");
-            let code = binding("");
+            let name = binding(Str::from(""));
+            let code = binding(Str::from(""));
             let password = binding(waterui::form::secure::Secure::new(String::new()));
             let volume = binding(0.5);
             app_view(count, enabled, name, code, password, volume)

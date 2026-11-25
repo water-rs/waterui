@@ -584,8 +584,8 @@ mod tests {
 
     #[test]
     fn drop_and_enter_deliver_drop_info_and_extractors() {
-        let indicator = Binding::container(None::<Point>);
-        let landed = Binding::container(None::<(Str, Point)>);
+        let indicator = Binding::new(None::<Point>);
+        let landed = Binding::new(None::<(Str, Point)>);
         let env = Environment::new()
             .extending(State(indicator.clone()))
             .extending(State(landed.clone()));

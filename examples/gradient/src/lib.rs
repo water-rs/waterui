@@ -42,8 +42,8 @@ fn initial_mesh_colors() -> [Color; 9] {
 
 /// Demo: mesh gradient whose hue cycles under a repeating `Animation`
 fn animated_background_section() -> impl View {
-    let active = Binding::container(false);
-    let hue = active.select(180.0_f32, 0.0_f32).with(
+    let active = Binding::new(false);
+    let hue = active.select(Angle::degrees(180.0), Angle::ZERO).with(
         Animation::ease_in_out(Duration::from_secs(4))
             .repeat(Repeat::Forever { autoreverse: true }),
     );
@@ -72,7 +72,7 @@ fn animated_background_section() -> impl View {
 
 /// Demo: mesh gradient animated by the canvas clock (no per-frame CPU updates)
 fn gpu_animated_mesh_gradient_section() -> impl View {
-    let animating = Binding::container(true);
+    let animating = Binding::new(true);
     // The configuration is a signal: pausing sets the speed to zero, which
     // holds the gradient still and lets the engine idle.
     let config = animating.map(|animating| {

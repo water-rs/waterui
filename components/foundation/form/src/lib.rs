@@ -352,7 +352,7 @@ mod tests {
 
     #[test]
     fn map_string_binding_round_trip() {
-        let source = Binding::container(String::from("hello"));
+        let source = Binding::new(String::from("hello"));
         let mapped = map_string_binding(&source);
         assert_eq!(mapped.snapshot().as_str(), "hello");
 

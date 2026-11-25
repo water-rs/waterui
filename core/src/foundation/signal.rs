@@ -123,9 +123,9 @@ mod tests {
 
     #[test]
     fn watches_only_the_current_inner_signal() {
-        let first = Binding::container(1);
-        let second = Binding::container(10);
-        let outer = Binding::container(first.computed());
+        let first = Binding::new(1);
+        let second = Binding::new(10);
+        let outer = Binding::new(first.computed());
         let flattened = flatten_signal(outer.clone());
         let updates = Rc::new(RefCell::new(Vec::new()));
         let captured = Rc::clone(&updates);
@@ -144,9 +144,9 @@ mod tests {
 
     #[test]
     fn subscribes_to_outer_before_reading_its_initial_inner_signal() {
-        let first = Binding::container(1);
-        let second = Binding::container(10);
-        let source = Binding::container(first.computed());
+        let first = Binding::new(1);
+        let second = Binding::new(10);
+        let source = Binding::new(first.computed());
         let flattened = flatten_signal(ReplacesBeforeWatch {
             source,
             replacement: second.computed(),

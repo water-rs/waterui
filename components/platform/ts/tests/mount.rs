@@ -100,7 +100,7 @@ fn session(view: AnyView) -> SemanticApp {
 
 #[test]
 fn ts_tsx_mounts_the_module_the_path_names() {
-    let unread = Binding::container(3_u32);
+    let unread = Binding::new(3_u32);
     let dismissed = Rc::new(Cell::new(false));
     let view = {
         let dismissed = Rc::clone(&dismissed);
@@ -135,7 +135,7 @@ fn ts_a_prop_binding_keeps_pushing_after_the_mount_returns() {
     // The mount's exports outlive `try_mount`: the cell pushing `unread` into
     // the module's signal belongs to the mount's scope, and the view carries
     // that scope. Without it this reads "3 unread" for ever.
-    let unread = Binding::container(3_u32);
+    let unread = Binding::new(3_u32);
     let view = tsx!(
         "fixtures/promo.tsx",
         PromoProps {
@@ -179,7 +179,7 @@ fn ts_a_module_with_no_props_is_checked_against_the_empty_contract() {
 fn ts_a_bundle_from_another_build_is_refused_with_both_hashes() {
     let declared = !PromoProps::CONTRACT_HASH;
     let handle = RuntimeHandle::new(runtime_declaring(declared));
-    let error = Mount::new::<PromoProps>(MODULE, props(Binding::container(0)))
+    let error = Mount::new::<PromoProps>(MODULE, props(Binding::new(0)))
         .try_mount(&environment(&handle))
         .expect_err("the bundle was built against another contract");
 
@@ -266,7 +266,7 @@ fn ts_dropping_the_view_disposes_the_mounted_tree() {
         text
     };
 
-    let mounted = Mount::new::<PromoProps>(MODULE, props(Binding::container(3)))
+    let mounted = Mount::new::<PromoProps>(MODULE, props(Binding::new(3)))
         .try_mount(&environment(&handle))
         .unwrap_or_else(|error| panic!("mounting: {error}"));
 

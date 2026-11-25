@@ -86,7 +86,7 @@ impl ButtonChromeState {
         Self {
             look: None,
             parts: None,
-            label_state: nami::Binding::container(InteractionState::empty()),
+            label_state: nami::Binding::new(InteractionState::empty()),
             frame: Rc::new(Cell::new(Rect::ZERO)),
         }
     }
@@ -638,8 +638,8 @@ struct MenuAnchoredState<E: TextEngine> {
 impl<E: TextEngine> MenuAnchoredState<E> {
     fn new() -> Self {
         Self {
-            is_presented: Binding::container(false),
-            placed_edge: Binding::container(AnchorEdge::Bottom),
+            is_presented: Binding::new(false),
+            placed_edge: Binding::new(AnchorEdge::Bottom),
             presentations: Rc::default(),
             marker: Rc::new(()),
             open_env: Rc::new(RefCell::new(None)),
@@ -1753,7 +1753,7 @@ mod tests {
 
     #[test]
     fn a_tint_signal_change_reaches_the_look_without_requesting_it_again() {
-        let source = nami::Binding::container(WorkingColor::new([1.0, 0.0, 0.0, 1.0]));
+        let source = nami::Binding::new(WorkingColor::new([1.0, 0.0, 0.0, 1.0]));
         let tint = waterui::theme::Tint::new(
             source.map(|color| Color::new(waterui_graphics::color::Working(color))),
         );

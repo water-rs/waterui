@@ -22,10 +22,10 @@
 
 extern crate alloc;
 
-use core::f32::consts::{FRAC_PI_2, PI, TAU};
 use core::marker::PhantomData;
 
 use nami::{Computed, SignalExt as _, signal::IntoSignal};
+pub use waterui_core::Angle;
 use waterui_core::{Environment, View, metadata::MetadataKey};
 use waterui_graphics::color::Color;
 
@@ -101,10 +101,10 @@ pub enum PathCommand {
         rx: f32,
         /// Radius y (normalized, relative to height)
         ry: f32,
-        /// Start angle in radians
-        start: f32,
-        /// Sweep angle in radians (positive = clockwise)
-        sweep: f32,
+        /// Start angle
+        start: Angle,
+        /// Sweep angle (positive = clockwise)
+        sweep: Angle,
     },
 
     /// Close the current subpath by drawing a line to the start.
@@ -415,8 +415,8 @@ impl Shape for Circle {
             cy: 0.5,
             rx: 0.5,
             ry: 0.5,
-            start: 0.0,
-            sweep: TAU,
+            start: Angle::ZERO,
+            sweep: Angle::FULL,
         }]
     }
 
@@ -438,8 +438,8 @@ impl Shape for Ellipse {
             cy: 0.5,
             rx: 0.5,
             ry: 0.5,
-            start: 0.0,
-            sweep: TAU,
+            start: Angle::ZERO,
+            sweep: Angle::FULL,
         }]
     }
 
@@ -469,16 +469,16 @@ impl Shape for Capsule {
                 cy: 0.5,
                 rx: 0.5,
                 ry: 0.5,
-                start: -FRAC_PI_2,
-                sweep: PI,
+                start: -Angle::QUARTER,
+                sweep: Angle::HALF,
             },
             PathCommand::Arc {
                 cx: 0.5,
                 cy: 0.5,
                 rx: 0.5,
                 ry: 0.5,
-                start: FRAC_PI_2,
-                sweep: PI,
+                start: Angle::QUARTER,
+                sweep: Angle::HALF,
             },
             PathCommand::Close,
         ]
@@ -545,8 +545,8 @@ impl Shape for RoundedRectangle {
                 cy: tr,
                 rx: tr,
                 ry: tr,
-                start: -FRAC_PI_2,
-                sweep: FRAC_PI_2,
+                start: -Angle::QUARTER,
+                sweep: Angle::QUARTER,
             },
             PathCommand::LineTo {
                 x: 1.0,
@@ -557,8 +557,8 @@ impl Shape for RoundedRectangle {
                 cy: 1.0 - br,
                 rx: br,
                 ry: br,
-                start: 0.0,
-                sweep: FRAC_PI_2,
+                start: Angle::ZERO,
+                sweep: Angle::QUARTER,
             },
             PathCommand::LineTo { x: bl, y: 1.0 },
             PathCommand::Arc {
@@ -566,8 +566,8 @@ impl Shape for RoundedRectangle {
                 cy: 1.0 - bl,
                 rx: bl,
                 ry: bl,
-                start: FRAC_PI_2,
-                sweep: FRAC_PI_2,
+                start: Angle::QUARTER,
+                sweep: Angle::QUARTER,
             },
             PathCommand::LineTo { x: 0.0, y: tl },
             PathCommand::Arc {
@@ -575,8 +575,8 @@ impl Shape for RoundedRectangle {
                 cy: tl,
                 rx: tl,
                 ry: tl,
-                start: PI,
-                sweep: FRAC_PI_2,
+                start: Angle::HALF,
+                sweep: Angle::QUARTER,
             },
             PathCommand::Close,
         ]
@@ -663,7 +663,7 @@ impl Path {
 
     /// Draws an arc.
     #[must_use]
-    pub fn arc(mut self, cx: f32, cy: f32, rx: f32, ry: f32, start: f32, sweep: f32) -> Self {
+    pub fn arc(mut self, cx: f32, cy: f32, rx: f32, ry: f32, start: Angle, sweep: Angle) -> Self {
         self.commands.push(PathCommand::Arc {
             cx,
             cy,

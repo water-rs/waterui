@@ -31,7 +31,7 @@ fn disclosure_view(
 
 #[test]
 fn disclosure_header_is_focusable_toggles_by_keyboard_and_pointer_and_builds_lazily() {
-    let expanded = Binding::bool(false);
+    let expanded = Binding::new(false);
     let body_builds = Rc::new(Cell::new(0_usize));
     let view = disclosure_view(&expanded, Rc::clone(&body_builds));
     let mut app = mount_rendered(Environment::new(), view, 400, 300);
@@ -127,7 +127,7 @@ fn disclosure_header_is_focusable_toggles_by_keyboard_and_pointer_and_builds_laz
     reason = "clamped non-negative accessibility bounds fit pixel coordinates"
 )]
 fn disclosure_renders_visible_indicator_that_updates_with_expanded_state() {
-    let expanded = Binding::bool(false);
+    let expanded = Binding::new(false);
     let body_builds = Rc::new(Cell::new(0_usize));
     let view = disclosure_view(&expanded, body_builds);
     let mut app = mount_rendered(Environment::new(), view, 400, 300);

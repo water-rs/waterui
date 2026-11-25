@@ -183,7 +183,7 @@ impl<E: crate::text::TextEngine> ProgressRenderState<E> {
 
     pub(crate) fn from_config(config: ProgressConfig<HeldChild<E>>) -> Self {
         let (label, value_label, value, style, four_color) = config.into_parts();
-        let determinate = Binding::container(value.snapshot().is_finite());
+        let determinate = Binding::new(value.snapshot().is_finite());
         let determinacy = value.watch({
             let determinate = determinate.clone();
             move |context| {

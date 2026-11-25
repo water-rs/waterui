@@ -2,6 +2,7 @@
 
 use nami::{Binding, Computed};
 use waterui_core::backend::{Backend, ChildSlot, MapSlots};
+use waterui_core::env::with;
 use waterui_core::{AnyView, Environment, Native, NativeView, View, animation::Animation};
 
 use crate::{Point, Size, StretchAxis};
@@ -165,12 +166,12 @@ impl<T: Clone + 'static> ScrollController<T> {
     #[must_use]
     pub fn new(initial_target: T) -> Self {
         Self {
-            request: Binding::container(ScrollRequest {
+            request: Binding::new(ScrollRequest {
                 target: initial_target,
                 animation: None,
             }),
-            generation: Binding::container(0),
-            position: Binding::container(None),
+            generation: Binding::new(0),
+            position: Binding::new(None),
         }
     }
 
@@ -379,6 +380,32 @@ pub enum Axis {
     All,
 }
 
+impl Axis {
+    /// Returns the axes shared by `self` and `other`, or `None` when they are
+    /// orthogonal.
+    #[must_use]
+    pub const fn intersect(self, other: Self) -> Option<Self> {
+        match (self, other) {
+            (Self::All, axis) | (axis, Self::All) => Some(axis),
+            (Self::Horizontal, Self::Horizontal) => Some(Self::Horizontal),
+            (Self::Vertical, Self::Vertical) => Some(Self::Vertical),
+            (Self::Horizontal, Self::Vertical) | (Self::Vertical, Self::Horizontal) => None,
+        }
+    }
+
+    /// Whether this axis includes vertical scrolling.
+    #[must_use]
+    pub const fn allows_vertical(self) -> bool {
+        matches!(self, Self::Vertical | Self::All)
+    }
+
+    /// Whether this axis includes horizontal scrolling.
+    #[must_use]
+    pub const fn allows_horizontal(self) -> bool {
+        matches!(self, Self::Horizontal | Self::All)
+    }
+}
+
 impl<C> ScrollView<C> {
     /// Creates a new `ScrollView` with the specified scroll axis and content.
     #[must_use]
@@ -493,22 +520,32 @@ impl<C: 'static> NativeView for ScrollView<C> {}
 impl<C: View> View for ScrollView<C> {
     /// The erased form, for code that expands views by hand.
     fn body(self, _env: &Environment) -> impl View {
-        Native::new(self.map_content(AnyView::new))
+        let axis = self.axis;
+        Native::new(self.map_content(move |content| AnyView::new(with(content, axis))))
     }
 
-    /// Reaches the backend with the content in the backend's child slot.
+    /// Reaches the backend with the content in the backend's child slot,
+    /// publishing this scroll view's nearest scrolling [`Axis`] into the
+    /// subtree's [`Environment`].
     fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        let axis = self.axis;
         #[cfg(feature = "erased-dispatch")]
         {
             backend.native(
-                self.map_content(|content| B::Slot::from_view(AnyView::new(content))),
+                self.map_content(move |content| {
+                    B::Slot::from_view(AnyView::new(with(content, axis)))
+                }),
                 env,
                 cx,
             )
         }
         #[cfg(not(feature = "erased-dispatch"))]
         {
-            backend.native(self.map_content(B::Slot::from_view), env, cx)
+            backend.native(
+                self.map_content(move |content| B::Slot::from_view(with(content, axis))),
+                env,
+                cx,
+            )
         }
     }
 }

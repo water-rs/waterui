@@ -67,7 +67,7 @@ pub mod styling_block_02 {
     }
 
     pub fn app(mut env: Environment) -> App<impl Windows> {
-        let dark = Binding::bool(true);
+        let dark = Binding::new(true);
         env.install(
             Theme::new()
                 .color_scheme(dark.select(ColorScheme::Dark, ColorScheme::Light))
@@ -141,9 +141,9 @@ pub fn styling_color_transforms_prose() {
     let _ = c.clone().darken(0.1);
     let _ = c.clone().saturate(0.1);
     let _ = c.clone().desaturate(0.1);
-    let _ = c.clone().hue_rotate(30.0);
+    let _ = c.clone().hue_rotate(Angle::degrees(30.0));
     let _ = c.clone().mix(Color::transparent(), 0.5);
-    let _ = c.with_opacity(Binding::f32(0.5));
+    let _ = c.with_opacity(Binding::new(0.5_f32));
 }
 
 // ---------------------------------------------------------------------------
@@ -194,7 +194,7 @@ pub fn styling_block_06() -> impl View {
     use waterui::shape::{Rectangle, ShapeExt};
     use waterui::theme::color::SurfaceVariant;
 
-    let selected = Binding::bool(true);
+    let selected = Binding::new(true);
     let indicator: Color = SurfaceVariant.into();
     let clear = Color::transparent();
 
@@ -305,13 +305,13 @@ pub fn styling_block_09() {
     let rose = Color::srgb_hex("#FF4D80");
     let sky = Color::new(Working(from_linear_srgb([0.3, 0.5, 1.0], 1.0)));
 
-    let progress = Binding::f32(0.5);
+    let progress = Binding::new(0.5_f32);
     let stops_signal = progress.map({
         let rose = rose.clone();
         let sky = sky.clone();
         move |p| vec![(0.0, rose.clone()), (p, sky.clone())]
     });
-    let colors = Binding::container(vec![rose.clone(); 9]);
+    let colors = Binding::new(vec![rose.clone(); 9]);
 
     let _ = {
         // theme tokens, evenly spaced
@@ -334,12 +334,11 @@ pub fn styling_block_09() {
         ))
     };
     let _ = {
-        // radians
         Gradient::angular(
             vec![(0.0, rose), (1.0, sky)],
             UnitPoint::CENTER,
-            0.0,
-            core::f32::consts::TAU,
+            Angle::ZERO,
+            Angle::FULL,
         )
     };
     let _ = {
@@ -427,7 +426,7 @@ pub fn styling_path_cubic_prose() {
     let _ = Path::new()
         .move_to(0.0, 0.0)
         .quad_to(0.5, 0.0, 1.0, 0.5)
-        .arc(0.5, 0.5, 0.5, 0.5, 0.0, core::f32::consts::PI)
+        .arc(0.5, 0.5, 0.5, 0.5, Angle::ZERO, Angle::HALF)
         .cubic_to(0.2, 0.0, 0.8, 1.0, 1.0, 1.0);
 }
 
@@ -443,8 +442,7 @@ pub fn styling_block_12() {
     let shape = Circle;
     let target = Rectangle;
     let fill = Color::srgb_hex("#22C55E");
-
-    let t = Binding::f32(0.5);
+    let t = Binding::new(0.5_f32);
 
     let _ = {
         Circle

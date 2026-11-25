@@ -774,7 +774,7 @@ mod tests {
     #[test]
     fn resolved_text_switches_with_outer_signal() {
         let env = test_env();
-        let key = Binding::container("greeting");
+        let key = Binding::new("greeting");
         let text: Text = key.clone().into();
         let content = text.resolve(&env).content;
 
@@ -881,7 +881,7 @@ mod tests {
     #[test]
     fn size_signal_re_emits_content() {
         let env = type_scale_env();
-        let size = Binding::container(20.0_f64);
+        let size = Binding::new(20.0_f64);
         let content = Text::verbatim("x")
             .font_size(size.clone())
             .body()
@@ -921,11 +921,11 @@ mod tests {
     #[test]
     fn boolean_trait_modifiers_accept_literals_and_reactive_signals() {
         let env = type_scale_env();
-        let bold = Binding::bool(false);
-        let monospaced = Binding::bool(false);
-        let italic = Binding::bool(false);
-        let underline = Binding::bool(false);
-        let strikethrough = Binding::bool(false);
+        let bold = Binding::new(false);
+        let monospaced = Binding::new(false);
+        let italic = Binding::new(false);
+        let underline = Binding::new(false);
+        let strikethrough = Binding::new(false);
 
         let content = Text::verbatim("todo")
             .bold(bold.clone())
@@ -982,7 +982,7 @@ mod tests {
     #[test]
     fn line_limit_accepts_reactive_signal() {
         let env = test_env();
-        let expanded = Binding::bool(false);
+        let expanded = Binding::new(false);
         let text = Text::verbatim("body").line_limit(expanded.select(None, NonZeroUsize::new(3)));
         let config = text.resolve(&env);
 

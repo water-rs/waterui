@@ -691,7 +691,7 @@ mod tests {
 
     #[test]
     fn tint_signal_updates_in_place() {
-        let source = Binding::container(WorkingColor::BLACK);
+        let source = Binding::new(WorkingColor::BLACK);
         let tint = Tint::new(source.map(|color| Color::new(Working(color))));
         let env = Environment::new().extending(tint.clone());
         let resolved = resolve_tint(&env).resolve(&env);
@@ -717,9 +717,9 @@ mod tests {
         use crate::widget::avatar;
         use waterui_icon::{Icon, IconGlyph};
 
-        let selected = Binding::bool(false);
+        let selected = Binding::new(false);
         let signal = selected.select(Color::from(Accent), Color::from(SurfaceVariant));
-        let binding_color = Binding::container(Color::from(Srgb::new(1.0, 0.0, 0.0)));
+        let binding_color = Binding::new(Color::from(Srgb::new(1.0, 0.0, 0.0)));
         let computed_color = binding_color.computed();
 
         // Palette structs and theme tokens work directly across modifiers.
@@ -758,7 +758,7 @@ mod tests {
             .foreground(signal);
 
         // ForegroundOverride resolves a reactive signal in place.
-        let active = Binding::bool(false);
+        let active = Binding::new(false);
         let light = WorkingColor::new([0.1, 0.2, 0.3, 1.0]);
         let dark = WorkingColor::new([0.9, 0.8, 0.7, 1.0]);
         let mut env = Environment::new();
@@ -822,8 +822,8 @@ mod tests {
         let red = WorkingColor::new([1.0, 0.0, 0.0, 1.0]);
         let green = WorkingColor::new([0.0, 1.0, 0.0, 1.0]);
         let blue = WorkingColor::new([0.0, 0.0, 1.0, 1.0]);
-        let light = Binding::container(red);
-        let dark = Binding::container(blue);
+        let light = Binding::new(red);
+        let dark = Binding::new(blue);
         let mut env = Environment::new();
         install_color_scheme(&mut env, Computed::constant(ColorScheme::Light));
         install_color_derivation::<color::Background>(
@@ -854,7 +854,7 @@ mod tests {
 
     #[test]
     fn color_accent_tracks_installed_theme_signal() {
-        let accent = Binding::container(WorkingColor::BLACK);
+        let accent = Binding::new(WorkingColor::BLACK);
         let mut env = Environment::new();
         install_color_signal::<color::Accent>(&mut env, accent.computed());
         let resolved = Color::accent().resolve(&env);

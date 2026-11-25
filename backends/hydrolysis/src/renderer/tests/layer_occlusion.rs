@@ -129,7 +129,7 @@ fn runtime(builder: AnyViewBuilder<AnyView>) -> HeadlessRuntime {
 /// engine see one hit-test order, not two.
 #[test]
 fn when_layer_control_press_does_not_fall_through_to_the_row_tap() {
-    let open = Binding::container(false);
+    let open = Binding::new(false);
     let next = Rc::new(Cell::new(false));
     let taps = Rc::new(RefCell::new(0_u32));
     let view_open = open.clone();
@@ -178,7 +178,7 @@ fn when_layer_control_press_does_not_fall_through_to_the_row_tap() {
 /// outranks the row's control — topmost hittable wins in both directions.
 #[test]
 fn when_layer_tap_press_does_not_fall_through_to_the_row_button() {
-    let open = Binding::container(false);
+    let open = Binding::new(false);
     let layer_taps = Rc::new(RefCell::new(0_u32));
     let row_presses = Rc::new(Cell::new(false));
     let view_open = open.clone();
@@ -226,7 +226,7 @@ fn when_layer_tap_press_does_not_fall_through_to_the_row_button() {
 /// `.on_tap` region, off any control, still reaches exactly one handler.
 #[test]
 fn when_layer_tap_press_does_not_fall_through_to_the_row_tap() {
-    let open = Binding::container(false);
+    let open = Binding::new(false);
     let layer_taps = Rc::new(RefCell::new(0_u32));
     let row_taps = Rc::new(RefCell::new(0_u32));
     let view_open = open.clone();

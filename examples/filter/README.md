@@ -47,13 +47,13 @@ view.opacity(0.8)
 view
     .blur(3.0)
     .saturation(1.5)
-    .hue_rotation(90.0)
+    .hue_rotation(Angle::degrees(90.0))
 ```
 
 ### Animated Filters
 
 ```rust
-let blur_radius = Binding::f32(0.0);
+let blur_radius = Binding::new(0.0_f32);
 
 // Apply animation curve to the binding
 let animated_blur = blur_radius
@@ -68,7 +68,7 @@ sample_view.blur(animated_blur)
 
 ```rust
 // Filters automatically update when bindings change
-let is_focused = Binding::bool(false);
+let is_focused = Binding::new(false);
 
 let blur_amount = is_focused
     .clone()

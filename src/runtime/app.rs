@@ -673,7 +673,7 @@ mod tests {
 
     #[test]
     fn application_direction_tracks_locale_binding() {
-        let locale = Binding::container(locales::AR);
+        let locale = Binding::new(locales::AR);
         let mut env = Environment::new();
         env.insert(locale.clone());
         let app = App::new(env).window(Window::new("", || ()));

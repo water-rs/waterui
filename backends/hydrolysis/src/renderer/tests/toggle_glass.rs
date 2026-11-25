@@ -247,7 +247,7 @@ impl Rig {
         value: bool,
         direction: LayoutDirection,
     ) -> Self {
-        let value = Binding::container(value);
+        let value = Binding::new(value);
         let view = RefCell::new(Some(view(&value)));
         let builder = AnyViewBuilder::<AnyView>::new(move || {
             view.borrow_mut()
@@ -663,7 +663,7 @@ fn a_tinted_toggle_spec_carries_the_tint() {
         seen.borrow_mut().push(spec.tint().resolve(env).snapshot());
         glass_switch(spec, env)
     });
-    let value = Binding::container(false);
+    let value = Binding::new(false);
     let view = RefCell::new(Some(AnyView::new(vstack_of(&value))));
     let builder =
         AnyViewBuilder::<AnyView>::new(move || view.borrow_mut().take().expect("built once"));

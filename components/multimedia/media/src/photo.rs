@@ -1235,7 +1235,7 @@ mod tests {
     #[test]
     fn source_subscription_and_appear_start_each_url_once() {
         let replacement = Url::from_file_path_str("/photos/replacement.png");
-        let source = Binding::container(Url::from_file_path_str("/photos/initial.png"));
+        let source = Binding::new(Url::from_file_path_str("/photos/initial.png"));
         let signal = EmitsDuringSubscription {
             source: source.clone(),
             replacement: replacement.clone(),
@@ -1273,7 +1273,7 @@ mod tests {
         let ledger = ContentLedger::new();
         env.insert(ledger.clone());
         let initial = Url::from_file_path_str("/photos/initial.png");
-        let source = Binding::container(initial.clone());
+        let source = Binding::new(initial.clone());
         let load_state = Rc::new(RefCell::new(PhotoLoadState::default()));
         let owe = move |url: &Url| ContentLedger::owe::<Photo>(&env, url.as_str().to_owned());
 

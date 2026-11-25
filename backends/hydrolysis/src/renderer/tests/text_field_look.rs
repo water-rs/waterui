@@ -139,7 +139,7 @@ impl Fixture {
     }
 
     fn text(direction: LayoutDirection) -> Self {
-        let value = Binding::container(Str::default());
+        let value = Binding::new(Str::default());
         Self::new(
             AnyView::new(vstack((TextField::new("Name", &value),))),
             direction,
@@ -148,7 +148,7 @@ impl Fixture {
 
     /// A labelled field holding `content`, pumped `pumps` frames.
     fn filled(content: &str, look: TextFieldLook, pumps: usize) -> Self {
-        let value = Binding::container(Str::from(content.to_owned()));
+        let value = Binding::new(Str::from(content.to_owned()));
         Self::mount(
             AnyView::new(vstack((TextField::new("Name", &value),))),
             LayoutDirection::LeftToRight,
@@ -166,7 +166,7 @@ impl Fixture {
     }
 
     fn secure() -> Self {
-        let value = Binding::container(Secure::new(String::new()));
+        let value = Binding::new(Secure::new(String::new()));
         Self::new(
             AnyView::new(vstack((secure("Password", &value),))),
             LayoutDirection::LeftToRight,
@@ -503,7 +503,7 @@ fn a_field_mounted_disabled_draws_disabled_from_its_first_frame() {
             .expect("the plain look has an active indicator")
             .clone(),
     );
-    let value = Binding::container(Str::default());
+    let value = Binding::new(Str::default());
     let fixture = Fixture::mount(
         AnyView::new(vstack((TextField::new("Name", &value).disabled(true),))),
         LayoutDirection::LeftToRight,
@@ -559,7 +559,7 @@ fn a_label_view_sits_at_the_leading_inset() {
     // the run's trailing edge.
     const GLYPH: f64 = 16.0;
     for direction in [LayoutDirection::LeftToRight, LayoutDirection::RightToLeft] {
-        let value = Binding::container(Str::default());
+        let value = Binding::new(Str::default());
         let mut fixture = Fixture::new(
             AnyView::new(vstack((TextField::new("Name", &value),))),
             direction,
@@ -632,7 +632,7 @@ fn a_field_mounted_disabled_draws_its_value_disabled_from_its_first_frame() {
     use waterui::ViewExt as _;
 
     let look = valued_look(LookLabel::new().color(value_colours()));
-    let value = Binding::container(Str::from("hello"));
+    let value = Binding::new(Str::from("hello"));
     let fixture = Fixture::mount(
         AnyView::new(vstack((TextField::new("Name", &value).disabled(true),))),
         LayoutDirection::LeftToRight,
@@ -645,7 +645,7 @@ fn a_field_mounted_disabled_draws_its_value_disabled_from_its_first_frame() {
         "the value draws in the look's disabled green, not its resting red"
     );
 
-    let secret = Binding::container(Secure::new("hunter2".to_owned()));
+    let secret = Binding::new(Secure::new("hunter2".to_owned()));
     let fixture = Fixture::mount(
         AnyView::new(vstack((secure("Password", &secret).disabled(true),))),
         LayoutDirection::LeftToRight,
@@ -667,8 +667,8 @@ fn the_value_colour_follows_the_fields_state() {
     use waterui::ViewExt as _;
 
     let look = valued_look(LookLabel::new().color(value_colours()));
-    let value = Binding::container(Str::from("hello"));
-    let disabled = Binding::container(false);
+    let value = Binding::new(Str::from("hello"));
+    let disabled = Binding::new(false);
     let mut fixture = Fixture::mount(
         AnyView::new(vstack((
             TextField::new("Name", &value).disabled(disabled.clone()),

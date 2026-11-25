@@ -141,7 +141,7 @@ fn open_compose(runtime: &mut HeadlessRuntime, clock: &mut Instant) {
 
 #[test]
 fn a_field_on_a_pushed_navigation_page_receives_typed_text() {
-    let value = Binding::container(Str::default());
+    let value = Binding::new(Str::default());
     let (mut runtime, mut clock) = mount(stack_with_field_page(&value));
     open_compose(&mut runtime, &mut clock);
 
@@ -187,7 +187,7 @@ fn a_field_on_a_pushed_navigation_page_receives_typed_text() {
 fn an_editing_session_commit_reaches_the_pushed_page_fields_binding() {
     use crate::runner::editing::EditingSession;
 
-    let value = Binding::container(Str::default());
+    let value = Binding::new(Str::default());
     let (mut runtime, mut clock) = mount(stack_with_field_page(&value));
     open_compose(&mut runtime, &mut clock);
 
@@ -228,7 +228,7 @@ fn an_editing_session_commit_reaches_the_pushed_page_fields_binding() {
 /// field's editing identity.
 #[test]
 fn a_resize_between_focus_and_typing_keeps_the_pushed_page_field_editable() {
-    let value = Binding::container(Str::default());
+    let value = Binding::new(Str::default());
     let (mut runtime, mut clock) = mount(stack_with_field_page(&value));
     open_compose(&mut runtime, &mut clock);
 

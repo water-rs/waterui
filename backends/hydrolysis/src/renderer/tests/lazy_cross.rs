@@ -56,7 +56,9 @@ fn row_long_wrap() -> AnyView {
     reason = "the comparison is exact by design: the lazy stack's cross answer and the item's answer come from the same measurement of the same item, so they must be bit-identical"
 )]
 fn a_lazy_stack_answers_what_its_item_answers() {
-    let env = test_environment();
+    use waterui::layout::scroll::Axis as ScrollAxis;
+
+    let env = test_environment().extending(ScrollAxis::Vertical);
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
 
     let shapes: [(&str, RowFactory); 7] = [
@@ -119,5 +121,89 @@ fn scroll_shell_answers_its_proposal() {
         "scroll wrapping a lazy stack answered {answer:?} under (308, None): left {:?}, right {:?}",
         answer.width,
         308.0
+    );
+}
+
+#[test]
+fn for_each_virtualizes_only_inside_coaxial_scroll_unless_eager() {
+    use waterui::layout::scroll::{scroll_both, scroll_horizontal};
+
+    let env = test_environment();
+    let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
+
+    let coaxial_v = Realized::with_theme(
+        scroll(VStack::for_each(["a", "b", "c"], text)),
+        &env,
+        &theme,
+    );
+    assert!(
+        coaxial_v.node.has_lazy_stack(),
+        "scroll(VStack::for_each(..)) must virtualize along the vertical scroll axis"
+    );
+
+    let eager_opt_out = Realized::with_theme(
+        scroll(VStack::for_each(["a", "b", "c"], text).eager()),
+        &env,
+        &theme,
+    );
+    assert!(
+        eager_opt_out.node.has_collection() && !eager_opt_out.node.has_lazy_stack(),
+        "VStack::for_each(..).eager() must stay eager inside a vertical scroll"
+    );
+
+    let bare_v = Realized::with_theme(VStack::for_each(["a", "b", "c"], text), &env, &theme);
+    assert!(
+        bare_v.node.has_collection() && !bare_v.node.has_lazy_stack(),
+        "bare VStack::for_each(..) outside a ScrollView must materialize eagerly"
+    );
+
+    let orthogonal = Realized::with_theme(
+        scroll_horizontal(VStack::for_each(["a", "b", "c"], text)),
+        &env,
+        &theme,
+    );
+    assert!(
+        orthogonal.node.has_collection() && !orthogonal.node.has_lazy_stack(),
+        "VStack::for_each(..) inside a horizontal-only ScrollView must stay eager"
+    );
+
+    let both_h = Realized::with_theme(
+        scroll_both(HStack::for_each(["a", "b", "c"], text)),
+        &env,
+        &theme,
+    );
+    assert!(
+        both_h.node.has_lazy_stack(),
+        "scroll_both(HStack::for_each(..)) must virtualize along the horizontal axis"
+    );
+}
+
+#[test]
+fn lazy_stack_propagates_sampled_cross_stretch_to_enclosing_scroll() {
+    let env = test_environment();
+    let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
+
+    let stretching = Realized::with_theme(
+        scroll(VStack::for_each(["a", "b", "c"], |label| {
+            hstack((text(label), spacer()))
+        })),
+        &env,
+        &theme,
+    );
+    assert_eq!(
+        stretching.stretch_axis(),
+        StretchAxis::Both,
+        "a vertical scroll over horizontally-stretching lazy rows must stretch on both axes"
+    );
+
+    let intrinsic = Realized::with_theme(
+        scroll(VStack::for_each(["a", "b", "c"], text)),
+        &env,
+        &theme,
+    );
+    assert_eq!(
+        intrinsic.stretch_axis(),
+        StretchAxis::Vertical,
+        "a vertical scroll over content-sized lazy rows stretches only vertically"
     );
 }

@@ -1102,7 +1102,7 @@ mod tests {
 
     #[test]
     fn parameterized_view_preserves_metadata_and_chains_on_frame_in_both_orders() {
-        let param = Binding::container(7_u32);
+        let param = Binding::new(7_u32);
         let before_count = Rc::new(Cell::new(0_usize));
         let before_hook = Rc::clone(&before_count);
         let leaf_before = GpuContentLeaf::from(
@@ -1147,7 +1147,7 @@ mod tests {
 
         let runtime =
             pollster::block_on(GpuRuntime::new()).expect("GPU runtime opens on test hardware");
-        let param = Binding::container(10_u32);
+        let param = Binding::new(10_u32);
         let events = Arc::new(Mutex::new(Vec::new()));
         let hook_runs = Rc::new(Cell::new(0_usize));
         let hook_runs_clone = Rc::clone(&hook_runs);

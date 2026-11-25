@@ -12,11 +12,10 @@
 //! absolute((
 //!     Color::grey(), // Fills container
 //!     text("Center").position_in(UnitPoint::CENTER),
-//!     badge.position_in_offset(
-//!         UnitPoint::TOP_TRAILING,
-//!         UnitPoint::TOP_TRAILING,
-//!         -8.0, 8.0
-//!     ),
+//!     badge
+//!         .position_in(UnitPoint::TOP_TRAILING)
+//!         .anchor(UnitPoint::TOP_TRAILING)
+//!         .offset(-8.0, 8.0),
 //!     panel.pin(PinConstraints::all(16.0)),
 //! ))
 //! # }
@@ -28,7 +27,9 @@ use alloc::vec::Vec;
 use core::fmt;
 
 use nami::{Computed, Signal, SignalExt, watcher::BoxWatcherGuard};
-use waterui_core::{IntoSignalF32, View, layout::LayoutInvalidationCallback, view::ViewSequence};
+use waterui_core::{
+    IntoSignalF32, View, contract_violation, layout::LayoutInvalidationCallback, view::ViewSequence,
+};
 
 use crate::{
     Layout, LayoutError, PlacementInput, Point, ProposalSize, Rect, Size, StretchAxis, SubView,
@@ -466,6 +467,63 @@ impl<V> fmt::Debug for PositionedChild<V> {
     }
 }
 
+impl<V> PositionedChild<V> {
+    /// Sets the point on the child aligned to the target position.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use waterui::prelude::*;
+    /// # fn placed() -> impl View {
+    /// text("Hello").position(100.0, 50.0).anchor(UnitPoint::TOP_LEADING)
+    /// # }
+    /// ```
+    #[must_use]
+    pub const fn anchor(mut self, anchor: UnitPoint) -> Self {
+        self.layout.anchor = anchor;
+        self
+    }
+
+    /// Offsets the positioned target by `(x, y)` points.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use waterui::prelude::*;
+    /// # fn placed(fab: impl View) -> impl View {
+    /// fab.position_in(UnitPoint::BOTTOM_TRAILING)
+    ///     .anchor(UnitPoint::BOTTOM_TRAILING)
+    ///     .offset(-16.0, -16.0)
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn offset(mut self, x: impl IntoSignalF32, y: impl IntoSignalF32) -> Self {
+        let dx = x.into_signal_f32().computed();
+        let dy = y.into_signal_f32().computed();
+        match &mut self.layout.target {
+            PositionTarget::Fractional {
+                offset_x, offset_y, ..
+            } => {
+                *offset_x = dx;
+                *offset_y = dy;
+            }
+            PositionTarget::Absolute {
+                x: base_x,
+                y: base_y,
+            } => {
+                *base_x = base_x.zip(&dx).map(|(a, b)| a + b).computed();
+                *base_y = base_y.zip(&dy).map(|(a, b)| a + b).computed();
+            }
+            PositionTarget::Pinned(_) => {
+                contract_violation!(
+                    "PositionedChild::offset applies to position/position_in targets, not pin"
+                );
+            }
+        }
+        self
+    }
+}
+
 impl<V: View> View for PositionedChild<V> {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         FixedContainer::new(self.layout, (self.content,))
@@ -480,39 +538,23 @@ impl<V: View> View for PositionedChild<V> {
 ///
 /// Use these methods inside an `Absolute` container.
 pub trait PositionExt: View + Sized {
-    /// Position view's center at absolute (x, y) coordinates.
+    /// Position view's center at absolute `(x, y)` coordinates.
+    ///
+    /// Chain [`PositionedChild::anchor`] to align another point of the view
+    /// and [`PositionedChild::offset`] to shift by a point offset.
     ///
     /// # Example
     ///
     /// ```rust
     /// # use waterui::prelude::*;
     /// # fn placed() -> impl View {
-    /// text("Hello").position(100.0, 50.0) // center at (100, 50)
+    /// text("Hello").position(100.0, 50.0).anchor(UnitPoint::TOP_LEADING)
     /// # }
     /// ```
     fn position(self, x: impl IntoSignalF32, y: impl IntoSignalF32) -> PositionedChild<Self> {
-        self.position_anchor(UnitPoint::CENTER, x, y)
-    }
-
-    /// Position view's anchor point at absolute coordinates.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// # use waterui::prelude::*;
-    /// # fn placed() -> impl View {
-    /// text("Hello").position_anchor(UnitPoint::TOP_LEADING, 10.0, 10.0)
-    /// # }
-    /// ```
-    fn position_anchor(
-        self,
-        anchor: UnitPoint,
-        x: impl IntoSignalF32,
-        y: impl IntoSignalF32,
-    ) -> PositionedChild<Self> {
         PositionedChild {
             layout: PositionedLayout {
-                anchor,
+                anchor: UnitPoint::CENTER,
                 target: PositionTarget::Absolute {
                     x: x.into_signal_f32().computed(),
                     y: y.into_signal_f32().computed(),
@@ -525,37 +567,24 @@ pub trait PositionExt: View + Sized {
     /// Position view's center at fractional location in parent.
     ///
     /// The omitted anchor is the view's centre: `UnitPoint::TOP_TRAILING`
-    /// puts the view's centre on the parent's top-trailing corner. Name the
-    /// anchor with [`position_in_anchor`](Self::position_in_anchor) to place
-    /// another point of the view there.
+    /// puts the view's centre on the parent's top-trailing corner. Chain
+    /// [`PositionedChild::anchor`] and [`PositionedChild::offset`] to name the
+    /// child anchor and point offset.
     ///
     /// # Example
     ///
     /// ```rust
     /// # use waterui::prelude::*;
-    /// # fn placed() -> impl View {
-    /// text("Centered").position_in(UnitPoint::CENTER)
+    /// # fn placed(fab: impl View) -> impl View {
+    /// fab.position_in(UnitPoint::BOTTOM_TRAILING)
+    ///     .anchor(UnitPoint::BOTTOM_TRAILING)
+    ///     .offset(-16.0, -16.0)
     /// # }
     /// ```
     fn position_in(self, position: UnitPoint) -> PositionedChild<Self> {
-        self.position_in_anchor(UnitPoint::CENTER, position)
-    }
-
-    /// Position view's anchor at fractional location in parent.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// # use waterui::prelude::*;
-    /// # fn placed(view: impl View) -> impl View {
-    /// // Place view's top-left at parent's center
-    /// view.position_in_anchor(UnitPoint::TOP_LEADING, UnitPoint::CENTER)
-    /// # }
-    /// ```
-    fn position_in_anchor(self, anchor: UnitPoint, position: UnitPoint) -> PositionedChild<Self> {
         PositionedChild {
             layout: PositionedLayout {
-                anchor,
+                anchor: UnitPoint::CENTER,
                 target: PositionTarget::Fractional {
                     unit: position,
                     offset_x: 0.0_f32.into_signal_f32().computed(),
@@ -566,23 +595,22 @@ pub trait PositionExt: View + Sized {
         }
     }
 
-    /// Position with fractional location plus offset.
-    ///
-    /// Great for "16pt from bottom-right corner" patterns.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// # use waterui::prelude::*;
-    /// # fn placed(fab: impl View) -> impl View {
-    /// // FAB at bottom-right with 16pt inset
-    /// fab.position_in_offset(
-    ///     UnitPoint::BOTTOM_TRAILING,
-    ///     UnitPoint::BOTTOM_TRAILING,
-    ///     -16.0, -16.0
-    /// )
-    /// # }
-    /// ```
+    #[doc(hidden)]
+    fn position_anchor(
+        self,
+        anchor: UnitPoint,
+        x: impl IntoSignalF32,
+        y: impl IntoSignalF32,
+    ) -> PositionedChild<Self> {
+        self.position(x, y).anchor(anchor)
+    }
+
+    #[doc(hidden)]
+    fn position_in_anchor(self, anchor: UnitPoint, position: UnitPoint) -> PositionedChild<Self> {
+        self.position_in(position).anchor(anchor)
+    }
+
+    #[doc(hidden)]
     fn position_in_offset(
         self,
         anchor: UnitPoint,
@@ -590,17 +618,9 @@ pub trait PositionExt: View + Sized {
         offset_x: impl IntoSignalF32,
         offset_y: impl IntoSignalF32,
     ) -> PositionedChild<Self> {
-        PositionedChild {
-            layout: PositionedLayout {
-                anchor,
-                target: PositionTarget::Fractional {
-                    unit: position,
-                    offset_x: offset_x.into_signal_f32().computed(),
-                    offset_y: offset_y.into_signal_f32().computed(),
-                },
-            },
-            content: self,
-        }
+        self.position_in(position)
+            .anchor(anchor)
+            .offset(offset_x, offset_y)
     }
 
     /// Position using edge pins and optional explicit size.
@@ -654,7 +674,9 @@ impl<V: View + Sized> PositionExt for V {}
 /// absolute((
 ///     Color::grey(), // Fills automatically (StretchAxis::Both)
 ///     text("Centered").position_in(UnitPoint::CENTER),
-///     fab.position_in_offset(UnitPoint::BOTTOM_TRAILING, UnitPoint::BOTTOM_TRAILING, -16.0, -16.0),
+///     fab.position_in(UnitPoint::BOTTOM_TRAILING)
+///         .anchor(UnitPoint::BOTTOM_TRAILING)
+///         .offset(-16.0, -16.0),
 /// ))
 /// # }
 /// ```
@@ -1018,5 +1040,29 @@ mod tests {
         assert_eq!(placements[0].frame.width(), 100.0);
         assert_eq!(placements[0].frame.height(), 40.0);
         assert_eq!(child.last_width.get(), Some(100.0));
+    }
+
+    #[test]
+    fn positioned_child_builders_set_anchor_and_offset() {
+        let mut child = MockSubView {
+            size: Size::new(50.0, 50.0),
+            stretch_axis: StretchAxis::None,
+        };
+        let children: Vec<&dyn SubView> = vec![&mut child];
+        let bounds = Rect::new(Point::zero(), Size::new(200.0, 200.0));
+        let proposal = ProposalSize::new(Some(200.0), Some(200.0));
+
+        let fractional =
+            ().position_in(UnitPoint::BOTTOM_TRAILING)
+                .anchor(UnitPoint::BOTTOM_TRAILING)
+                .offset(-16.0, -16.0);
+        let placements = fractional.layout.place(bounds, proposal, &children);
+        assert!((placements[0].frame.x() - 134.0).abs() < f32::EPSILON);
+        assert!((placements[0].frame.y() - 134.0).abs() < f32::EPSILON);
+
+        let absolute = ().position(50.0, 40.0).anchor(UnitPoint::TOP_LEADING).offset(10.0, -5.0);
+        let placements = absolute.layout.place(bounds, proposal, &children);
+        assert!((placements[0].frame.x() - 60.0).abs() < f32::EPSILON);
+        assert!((placements[0].frame.y() - 35.0).abs() < f32::EPSILON);
     }
 }

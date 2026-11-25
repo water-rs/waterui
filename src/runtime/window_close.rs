@@ -330,7 +330,7 @@ mod tests {
     }
 
     fn window() -> (Window<impl ViewBuilder>, Binding<WindowState>) {
-        let state = Binding::container(WindowState::Normal);
+        let state = Binding::new(WindowState::Normal);
         let window = Window::new("w", || ()).state(&state);
         (window, state)
     }

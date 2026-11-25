@@ -9,10 +9,10 @@ use waterui::Signal;
 use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityRole;
 use waterui::component::label;
-use waterui::component::lazy::Lazy;
 use waterui::component::text;
 use waterui::layout::frame::Frame;
 use waterui::layout::scroll::scroll;
+use waterui::layout::stack::VStack;
 use waterui::reactive::collection::StateList;
 use waterui_media::{
     LivePhoto, Media, MediaPicker, Photo, PhotoCache, PhotoEvent, PhotoStatus, PickerStatus, Url,
@@ -100,8 +100,8 @@ type UiTestApp = waterui_testing::SemanticApp;
 #[waterui::test()]
 fn photo_exposes_accessibility_image_after_load(ui: UiBuilder) {
     let sample_path = sample_image_path();
-    let loaded = Binding::bool(false);
-    let last_event = Binding::container(String::new());
+    let loaded = Binding::new(false);
+    let last_event = Binding::new(String::new());
     let loaded_for_view = loaded.clone();
     let last_event_for_view = last_event.clone();
     // `PhotoEvent::Loaded` waits for the frame's registration with the engine,
@@ -184,8 +184,8 @@ fn live_photo_exposes_still_image_accessibility_before_activation(ui: UiBuilder)
 fn photo_placeholder_failure_and_status_track_each_source(ui: UiBuilder) {
     let valid_path = sample_image_path();
     let missing_path = format!("{valid_path}.missing");
-    let source = Binding::container(Url::from_file_path_str(valid_path));
-    let status = Binding::container(PhotoStatus::Loading);
+    let source = Binding::new(Url::from_file_path_str(valid_path));
+    let status = Binding::new(PhotoStatus::Loading);
     let source_for_view = source.clone();
     let status_for_view = status.clone();
 
@@ -246,7 +246,7 @@ struct LazyRowItem {
 fn photo_in_lazy_list_serves_from_environment_cache_without_refetch(ui: UiBuilder) {
     let row_zero_path = sample_image_path();
     let row_zero_url = Url::from_file_path_str(row_zero_path.clone());
-    let row_zero_status = Binding::container(PhotoStatus::Loading);
+    let row_zero_status = Binding::new(PhotoStatus::Loading);
     let status_for_view = row_zero_status.clone();
     let cache = PhotoCache::new(1024 * 1024);
 
@@ -262,7 +262,7 @@ fn photo_in_lazy_list_serves_from_environment_cache_without_refetch(ui: UiBuilde
         .theme(TestStyle::default())
         .mount_offscreen(move || {
             let status_for_view = status_for_view.clone();
-            scroll(Lazy::for_each(items_for_view.clone(), move |row| {
+            scroll(VStack::for_each(items_for_view.clone(), move |row| {
                 if let Some(url) = row.url {
                     OneOf2::A(
                         photo(url)
@@ -323,12 +323,12 @@ fn photo_in_lazy_list_serves_from_environment_cache_without_refetch(ui: UiBuilde
 
 #[waterui::test(viewport = (320, 200))]
 fn media_picker_exposes_label_to_accessibility_tree(ui: UiBuilder) {
-    let selection = Binding::container(Some(Media::Image(Url::from_file_path_str(
+    let selection = Binding::new(Some(Media::Image(Url::from_file_path_str(
         "/tmp/seeded-avatar.png",
     ))));
     let selection_for_second = selection.clone();
-    let photos = Binding::container(Vec::<Media>::new());
-    let status = Binding::container(PickerStatus::Idle);
+    let photos = Binding::new(Vec::<Media>::new());
+    let status = Binding::new(PickerStatus::Idle);
     let status_for_view = status.clone();
 
     let mut app = ui.mount(move || {

@@ -90,7 +90,7 @@ fn metrics_list(
     insets_of: impl Fn(u64) -> Option<EdgeInsets> + 'static,
     floor: Option<f32>,
 ) -> AnyViewBuilder<AnyView> {
-    let rows = Binding::container((0..count).map(SelfId::new).collect::<Vec<_>>());
+    let rows = Binding::new((0..count).map(SelfId::new).collect::<Vec<_>>());
     let insets_of: Rc<dyn Fn(u64) -> Option<EdgeInsets>> = Rc::new(insets_of);
     AnyViewBuilder::<AnyView>::new(move || {
         let insets_of = insets_of.clone();
@@ -267,7 +267,7 @@ fn wrapped_label_height(width: f64) -> f64 {
 }
 
 fn wrapping_list() -> AnyViewBuilder<AnyView> {
-    let rows = Binding::container(vec![SelfId::new(0_u64)]);
+    let rows = Binding::new(vec![SelfId::new(0_u64)]);
     AnyViewBuilder::<AnyView>::new(move || {
         AnyView::new(List::for_each(SignalCollection::new(rows.clone()), |_| {
             text(LONG_LABEL)

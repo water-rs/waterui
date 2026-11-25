@@ -197,9 +197,9 @@ fn the_surface_describes_itself_in_typescript() {
 #[test]
 fn a_skipped_method_stays_an_ordinary_rust_method() {
     let app = App {
-        theme: Binding::container(String::from("light")),
-        count: Binding::container(2),
-        last_id: Binding::container(7),
+        theme: Binding::new(String::from("light")),
+        count: Binding::new(2),
+        last_id: Binding::new(7),
     };
 
     assert_eq!(app.internal(3), 6);

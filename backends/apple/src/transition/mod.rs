@@ -92,7 +92,7 @@ mod tests {
 
     #[test]
     fn transition_claim_reads_live_reduce_motion_at_start() {
-        let setting = Binding::bool(false);
+        let setting = Binding::new(false);
         let mut env = Environment::new();
         env.insert(ReduceMotion::new(setting.clone()));
 

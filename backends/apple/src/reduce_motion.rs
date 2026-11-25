@@ -17,7 +17,7 @@ fn sync(binding: &Binding<bool>, reduced: bool) {
 /// in `env` and returns a keep-alive for the system observer.
 #[must_use]
 pub fn install(env: &mut Environment, mtm: MainThreadMarker) -> impl Sized + use<> {
-    let binding = Binding::bool(system_reduce_motion());
+    let binding = Binding::new(system_reduce_motion());
     env.insert(ReduceMotion::new(binding.clone()));
     observe_changes(mtm, move |reduced| sync(&binding, reduced))
 }
@@ -33,7 +33,7 @@ mod tests {
 
     #[test]
     fn sync_updates_binding_only_on_change() {
-        let setting = Binding::bool(false);
+        let setting = Binding::new(false);
         let flag = ReduceMotion::new(setting.clone());
         let mut env = Environment::new();
         env.insert(flag.clone());

@@ -456,7 +456,7 @@ fn perf_run_query_dispatches_in_measured_frame_and_can_fail_budget() {
 
     use crate::bench::enforce_budgets;
 
-    let count = Binding::i32(0);
+    let count = Binding::new(0_i32);
     let for_view = count.clone();
     let report = ui()
         .viewport(240, 120)
@@ -544,9 +544,9 @@ fn ui_test_hover_drag_and_magnify_update_semantic_bounds() {
     #[derive(Clone)]
     struct HoverState(Binding<bool>);
 
-    let offset = Binding::f32(0.0);
-    let scale = Binding::f32(1.0);
-    let hovered = Binding::bool(false);
+    let offset = Binding::new(0.0_f32);
+    let scale = Binding::new(1.0_f32);
+    let hovered = Binding::new(false);
 
     let mut app = ui()
         .viewport(160, 160)
@@ -639,7 +639,7 @@ fn ui_test_drains_local_tasks_through_headless_runtime() {
     use waterui::task::spawn_local;
     use waterui::{Binding, ViewExt as _};
 
-    let status = Binding::container(String::from("idle"));
+    let status = Binding::new(String::from("idle"));
     let status_for_view = status.clone();
 
     let mut app = ui().theme(Material3::defaults()).mount_offscreen(move || {

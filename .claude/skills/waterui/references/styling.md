@@ -86,7 +86,7 @@ takes a **signal**, which is how a runtime dark-mode toggle works with no rebuil
 use waterui::text::font::{FontWeight, ResolvedFont};
 
 pub fn app(mut env: Environment) -> App<impl Windows> {
-    let dark = Binding::bool(true);
+    let dark = Binding::new(true);
     env.install(
         Theme::new()
             .color_scheme(dark.select(ColorScheme::Dark, ColorScheme::Light))
@@ -149,7 +149,7 @@ Blue.with_opacity(0.5)
 ```
 
 Colors transform: `.lighten(a)`, `.darken(a)`, `.saturate(a)`, `.desaturate(a)`,
-`.hue_rotate(deg)`, `.mix(other, factor)`, `.with_opacity(signal)`. Keep the two
+`.hue_rotate(angle)`, `.mix(other, factor)`, `.with_opacity(signal)`. Keep the two
 opacities straight: `Color::with_opacity(..)` bakes alpha into the color *value*;
 `.opacity(signal)` on a view is the reactive modifier — cross-fades stack both layers and
 drive each layer's `.opacity`.
@@ -232,15 +232,15 @@ let sky = Color::new(Working(from_linear_srgb([0.3, 0.5, 1.0], 1.0)));
 Gradient::linear([Accent.into(), Surface.into()], UnitPoint::TOP, UnitPoint::BOTTOM)   // theme tokens, evenly spaced
 Gradient::linear(stops_signal, UnitPoint::LEADING, UnitPoint::TRAILING)   // reactive (offset, Color) stops
 view.background(Gradient::radial([rose.clone(), sky.clone()], UnitPoint::CENTER, 0.0, 0.7))
-Gradient::angular(vec![(0.0, rose), (1.0, sky)], UnitPoint::CENTER, 0.0, core::f32::consts::TAU)   // radians
+Gradient::angular(vec![(0.0, rose), (1.0, sky)], UnitPoint::CENTER, Angle::ZERO, Angle::FULL)
 MeshGradient::new(3, 3, colors.clone()).size(300.0, 200.0)   // colors: any signal of Colors
 AnimatedMeshGradient::new(AnimatedMeshGradientConfig::aqua_bloom())   // flows with the canvas clock, on every backend
 FlowingGradient::new()   // drifting noise bands, GPU only
 ```
 
 A radial gradient's radii are fractions of the box's *shorter side*, so it stays circular
-on a non-square box (the end radius must be above `0.0`); an angular sweep is above `0` and
-at most `TAU`. Violated bounds report a contract violation (panic in debug builds, safe
+on a non-square box (the end radius must be above `0.0`); an angular sweep is above `Angle::ZERO` and
+at most `Angle::FULL`. Violated bounds report a contract violation (panic in debug builds, safe
 fallback in release). `MeshGradient` is the single mesh gradient type and follows signals
 for its colours, its `UnitPoint` control points (`.points(..)`) and its interpolation
 (`.smooths_colors(..)`), and `AnimatedMeshGradient::new` takes a

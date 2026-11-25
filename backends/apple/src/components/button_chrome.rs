@@ -361,7 +361,7 @@ mod tests {
     /// A tint signal's change reaches the resolved tint in place.
     #[test]
     fn a_tint_signal_change_updates_the_resolved_tint() {
-        let source = Binding::container(WorkingColor::new([1.0, 0.0, 0.0, 1.0]));
+        let source = Binding::new(WorkingColor::new([1.0, 0.0, 0.0, 1.0]));
         let tint = Tint::new(source.map(|color| Color::new(Working(color))));
         let env = Environment::new().extending(tint);
         let resolved = tint_signal(&env);

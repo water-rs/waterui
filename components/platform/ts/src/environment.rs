@@ -262,7 +262,7 @@ pub fn theme(environment: &Environment) -> Result<Computed<Theme>, JsError> {
         }
     };
 
-    let binding = Binding::container(snapshot());
+    let binding = Binding::new(snapshot());
     let mut guards: Vec<BoxWatcherGuard> = Vec::with_capacity(tokens.len() + 1);
     guards.push(scheme.watch({
         let binding = binding.clone();

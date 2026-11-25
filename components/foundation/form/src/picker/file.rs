@@ -148,7 +148,7 @@ mod tests {
 
     #[test]
     fn new_defaults_to_open_and_import_enables_sandbox_copy() {
-        let files = Binding::container(Vec::<Url>::new());
+        let files = Binding::new(Vec::<Url>::new());
 
         let opened = FilePicker::new("Select Files", &files);
         assert!(!opened.import);

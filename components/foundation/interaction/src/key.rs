@@ -142,7 +142,7 @@ mod tests {
     #[test]
     fn on_key_press_delivers_typed_press_and_state() {
         let mut env = Environment::new();
-        let handled_count = Binding::i32(0);
+        let handled_count = Binding::new(0_i32);
         let mut on_key = OnKeyPress::new(|press: KeyPress, State(count): State<Binding<i32>>| {
             if *press.key() == Key::Named(NamedKey::Escape) {
                 *count.get_mut() += 1;

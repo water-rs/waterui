@@ -46,7 +46,7 @@ fn count_rgb(rgba8: &[u8], rgb: [u8; 3], tolerance: u8) -> usize {
 
 #[test]
 fn an_opacity_binding_change_reaches_the_flushed_alpha() {
-    let alpha = Binding::container(1.0f32);
+    let alpha = Binding::new(1.0f32);
     let view_alpha = alpha.clone();
     let builder = AnyViewBuilder::<AnyView>::new(move || {
         AnyView::new(Srgb::from(RED).opacity(view_alpha.clone()))

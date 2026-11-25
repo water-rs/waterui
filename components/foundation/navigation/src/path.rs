@@ -209,7 +209,7 @@ impl NavigationPath<ErasedNavigationRoute> {
     /// Creates an empty heterogeneous navigation path.
     pub fn heterogeneous() -> Self {
         Self {
-            inner: Binding::container(Vec::new()),
+            inner: Binding::new(Vec::new()),
             marker: PhantomData,
             #[cfg(feature = "serde")]
             restoration: Rc::new(RefCell::new(RestorationRegistry::default())),
@@ -440,7 +440,7 @@ impl<R: Clone + PartialEq + 'static> Default for NavigationPath<R> {
 impl<R: Clone + PartialEq + 'static> From<Vec<R>> for NavigationPath<R> {
     fn from(routes: Vec<R>) -> Self {
         Self {
-            inner: Binding::container(routes),
+            inner: Binding::new(routes),
             marker: PhantomData,
             #[cfg(feature = "serde")]
             restoration: Rc::new(RefCell::new(RestorationRegistry::default())),

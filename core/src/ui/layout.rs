@@ -37,6 +37,8 @@ use nami::watcher::BoxWatcherGuard;
 use smallvec::SmallVec;
 use thiserror::Error;
 
+use crate::Angle;
+
 /// The logical horizontal direction used by layout containers.
 ///
 /// This is a semantic direction: leading and trailing follow it, while physical
@@ -1831,10 +1833,10 @@ impl Affine2 {
         }
     }
 
-    /// Rotation around the origin by `radians`.
+    /// Rotation around the origin by `angle`.
     #[must_use]
-    pub fn rotate(radians: f32) -> Self {
-        let (s, c) = radians.sin_cos();
+    pub fn rotate(angle: Angle) -> Self {
+        let (s, c) = angle.sin_cos();
         Self {
             a: c,
             b: s,

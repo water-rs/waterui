@@ -993,7 +993,7 @@ mod tests {
 
     #[test]
     fn app_ids_erase_into_the_layout_collection() {
-        let selection = Binding::container(1i32);
+        let selection = Binding::new(1i32);
         let panes = [1, 2, 3].map(SelfId::new);
         let tabs = Tabs::new(
             &selection,
@@ -1020,7 +1020,7 @@ mod tests {
 
     #[test]
     fn the_erased_selection_binding_maps_both_ways() {
-        let selection = Binding::container(1i32);
+        let selection = Binding::new(1i32);
         let panes = [1, 2].map(SelfId::new);
         let tabs = Tabs::new(
             &selection,
@@ -1041,7 +1041,7 @@ mod tests {
 
     #[test]
     fn a_fixed_vec_keys_tabs_by_index() {
-        let selection = Binding::container(0usize);
+        let selection = Binding::new(0usize);
         let tabs = Tabs::new(&selection, vec![tab("One"), tab("Two")]);
         let layout = tabs.into_layout::<AnyView>();
         let snapshot = layout.tabs.snapshot();
@@ -1052,7 +1052,7 @@ mod tests {
     /// Tabs whose roots differ form a tuple, keyed by position.
     #[test]
     fn a_tuple_keys_tabs_of_different_roots_by_index() {
-        let selection = Binding::container(1usize);
+        let selection = Binding::new(1usize);
         let tabs = Tabs::new(
             &selection,
             (
@@ -1072,7 +1072,7 @@ mod tests {
 
     #[test]
     fn an_empty_collection_is_a_valid_layout() {
-        let selection = Binding::container(0usize);
+        let selection = Binding::new(0usize);
         let tabs = Tabs::new(&selection, Vec::<Tab<fn() -> ()>>::new());
         let layout = tabs.into_layout::<AnyView>();
         assert_eq!(layout.tabs.snapshot().len(), 0);
@@ -1086,7 +1086,7 @@ mod tests {
             Settings,
         }
 
-        let pane = Binding::container(Pane::Inbox);
+        let pane = Binding::new(Pane::Inbox);
         let tabs = Tabs::new(
             &pane,
             vec![
@@ -1114,7 +1114,7 @@ mod tests {
             Nav,
         }
 
-        let pane = Binding::container(Pane::Nav);
+        let pane = Binding::new(Pane::Nav);
         let tabs = Tabs::new(
             &pane,
             (
@@ -1140,7 +1140,7 @@ mod tests {
             Second,
         }
 
-        let pane = Binding::container(Pane::Second);
+        let pane = Binding::new(Pane::Second);
         let array_layout = Tabs::new(
             &pane,
             [

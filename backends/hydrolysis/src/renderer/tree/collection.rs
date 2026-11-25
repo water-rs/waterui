@@ -15,6 +15,7 @@ use nami::collection::CollectionChange;
 use waterui_core::backend::ChildSlot;
 use waterui_core::contract_violation;
 use waterui_core::layout::{LayoutError, PlacementInput, ResolvedExtent, resolve_layout_extent};
+use waterui_layout::stack::{Axis as StackAxis, lazy_stack_cross_stretch};
 use waterui_structural_transition::{Ghost, GhostSlot, ReduceMotion, TransitionSpec};
 
 use super::transition::{
@@ -1226,6 +1227,30 @@ impl<E: crate::text::TextEngine> LazyStackNode<E> {
         subview.ensure_built(renderer, &self.env);
         self.transitions.track(id, subview, renderer);
         true
+    }
+
+    /// Projects the pinned sample item's stretch claim onto this stack's cross
+    /// axis so an enclosing `ScrollView` preserves cross-axis filling.
+    pub(super) fn stretch_axis(&self) -> StretchAxis {
+        let snapshot = self.snapshot.borrow();
+        let Some(first_id) = (!snapshot.is_empty())
+            .then(|| item_id(&snapshot, 0))
+            .flatten()
+        else {
+            return StretchAxis::None;
+        };
+        let cache = self.item_cache.borrow();
+        let Some(subview) = cache.get(&first_id) else {
+            return StretchAxis::None;
+        };
+        if !subview.is_built() {
+            return StretchAxis::None;
+        }
+        let stack_axis = match self.axis {
+            LazyStackAxisConfig::Vertical { .. } => StackAxis::Vertical,
+            LazyStackAxisConfig::Horizontal { .. } => StackAxis::Horizontal,
+        };
+        lazy_stack_cross_stretch(stack_axis, subview.stretch_axis())
     }
 
     fn spacing(&self, state: &mut HydroState<E>) -> f64 {

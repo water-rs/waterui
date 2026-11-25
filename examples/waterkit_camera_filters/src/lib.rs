@@ -36,31 +36,29 @@ struct CameraLabState {
 impl CameraLabState {
     fn live() -> Self {
         Self {
-            active_filter: Binding::usize(0),
-            filter_strength: Binding::f64(0.75),
-            reconnect_ticket: Binding::usize(0),
-            preview_status: Binding::container(Str::from("Starting camera renderer...")),
-            waterkit_status: Binding::container(Str::from(
+            active_filter: Binding::new(0_usize),
+            filter_strength: Binding::new(0.75_f64),
+            reconnect_ticket: Binding::new(0_usize),
+            preview_status: Binding::new(Str::from("Starting camera renderer...")),
+            waterkit_status: Binding::new(Str::from(
                 "Not synced. Tap the button below to query Waterkit.",
             )),
-            permission_status: Binding::container(Str::from("Permission status: unknown")),
-            camera_inventory: Binding::container(Str::from("No camera inventory yet.")),
+            permission_status: Binding::new(Str::from("Permission status: unknown")),
+            camera_inventory: Binding::new(Str::from("No camera inventory yet.")),
         }
     }
 
     fn preview() -> Self {
         Self {
-            active_filter: Binding::usize(0),
-            filter_strength: Binding::f64(0.75),
-            reconnect_ticket: Binding::usize(0),
-            preview_status: Binding::container(Str::from(
-                "Synthetic preview frame for Hydrolysis perf.",
-            )),
-            waterkit_status: Binding::container(Str::from(
+            active_filter: Binding::new(0_usize),
+            filter_strength: Binding::new(0.75_f64),
+            reconnect_ticket: Binding::new(0_usize),
+            preview_status: Binding::new(Str::from("Synthetic preview frame for Hydrolysis perf.")),
+            waterkit_status: Binding::new(Str::from(
                 "Preview does not query Waterkit camera devices.",
             )),
-            permission_status: Binding::container(Str::from("Permission status: preview")),
-            camera_inventory: Binding::container(Str::from("Synthetic camera frame.")),
+            permission_status: Binding::new(Str::from("Permission status: preview")),
+            camera_inventory: Binding::new(Str::from("Synthetic camera frame.")),
         }
     }
 }

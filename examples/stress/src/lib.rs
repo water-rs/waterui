@@ -60,7 +60,7 @@ fn system_tile(toggle: &Binding<bool>, index: usize) -> impl View + use<> {
     let amp = ((index % 5) as f32).mul_add(2.0, 8.0);
     let hi_scale = ((index % 4) as f32).mul_add(0.09, 0.9);
     let lo_scale = ((index % 3) as f32).mul_add(0.08, 0.45);
-    let hi_rot = (index % 8) as f32 * 22.5;
+    let hi_rot = Angle::degrees((index % 8) as f32 * 22.5);
 
     let scale = toggle.select(hi_scale, lo_scale).with(easing.clone());
     let rotation = toggle.select(hi_rot, -hi_rot).with(easing);
@@ -110,7 +110,7 @@ fn filter_tile(
 
     let hue = hue_target
         .clone()
-        .map(move |v| idx.mul_add(11.0, v).rem_euclid(360.0) as f32)
+        .map(move |v| Angle::degrees(idx.mul_add(11.0, v).rem_euclid(360.0) as f32))
         .with(Animation::ease_in_out(Duration::from_millis(420)));
 
     zstack((
@@ -202,7 +202,7 @@ fn filter_section(
 
 #[preview]
 fn system_pressure_preview() -> impl View {
-    let toggle = Binding::bool(false);
+    let toggle = Binding::new(false);
     scroll(system_section(120, &toggle))
 }
 
@@ -213,9 +213,9 @@ fn custom_pressure_preview() -> impl View {
 
 #[preview]
 fn filter_pressure_preview() -> impl View {
-    let blur_target = Binding::f64(1.0);
-    let saturation_target = Binding::f64(1.0);
-    let hue_target = Binding::f64(0.0);
+    let blur_target = Binding::new(1.0_f64);
+    let saturation_target = Binding::new(1.0_f64);
+    let hue_target = Binding::new(0.0_f64);
     scroll(filter_section(
         144,
         &blur_target,
@@ -235,11 +235,11 @@ pub fn demo() -> impl View {
     let toggle_ms = env_u64("WATERUI_STRESS_TOGGLE_MS", 680).max(120);
     let filter_toggle_ms = env_u64("WATERUI_STRESS_FILTER_TOGGLE_MS", 240).max(80);
 
-    let system_toggle = Binding::bool(false);
+    let system_toggle = Binding::new(false);
 
-    let blur_target = Binding::f64(1.0);
-    let saturation_target = Binding::f64(1.0);
-    let hue_target = Binding::f64(0.0);
+    let blur_target = Binding::new(1.0_f64);
+    let saturation_target = Binding::new(1.0_f64);
+    let hue_target = Binding::new(0.0_f64);
 
     {
         let system_toggle = system_toggle.clone();
@@ -309,10 +309,10 @@ mod bench {
     /// The three stress pressure paths at their default preview scale, without
     /// the app's background toggle tasks: the bench drives frames itself.
     fn stress_scene() -> impl View {
-        let system_toggle = Binding::bool(true);
-        let blur_target = Binding::f64(1.0);
-        let saturation_target = Binding::f64(1.0);
-        let hue_target = Binding::f64(0.0);
+        let system_toggle = Binding::new(true);
+        let blur_target = Binding::new(1.0_f64);
+        let saturation_target = Binding::new(1.0_f64);
+        let hue_target = Binding::new(0.0_f64);
         scroll(
             vstack((
                 system_section(120, &system_toggle),

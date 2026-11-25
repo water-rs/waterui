@@ -1721,7 +1721,7 @@ mod tests {
             use nami::Binding;
             use waterui::component::slider::slider;
 
-            let value = Binding::f64(0.5);
+            let value = Binding::new(0.5_f64);
             let slider_view = || {
                 slider(Label::new("Volume", Spacer::flexible), &value)
                     .min_value_label(Label::new("Min", Spacer::flexible))
@@ -1748,7 +1748,7 @@ mod tests {
         use nami::Binding;
         use waterui::navigation::{NavigationSplitView, NavigationView};
 
-        let selection = Binding::container(Some(1_i32));
+        let selection = Binding::new(Some(1_i32));
         let authored = || {
             NavigationSplitView::new(&selection, Spacer::flexible(), |_id: i32| {
                 NavigationView::new("Detail", Spacer::flexible())
@@ -1981,7 +1981,7 @@ mod tests {
             }
         }
 
-        let on = Binding::bool(false);
+        let on = Binding::new(false);
         let seen = Rc::new(RefCell::new(0));
         let toggle_tree = Hooks::new(
             scroll(AnyView::new(Toggle::new(

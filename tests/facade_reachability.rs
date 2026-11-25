@@ -86,15 +86,16 @@ fn prelude_exports_app_window_widgets_and_collections_without_shadowing() {
         let _ = Window::new("Title", || {
             let items = StateList::from(vec![RowItem { id: 1 }, RowItem { id: 2 }]);
             let _ = items.len();
-            let flag = Binding::bool(true);
+            let flag = Binding::new(true);
             let _ = when(flag, || "ok");
             let _ = disclosure("Header", || "Body");
             let _ = error_view(io::Error::other("err"));
             let _ = ErrorView::new(io::Error::other("err"));
             let _ = Suspense::new(async { "ready" });
-            let _ = SignalCollection::new(Binding::container(vec![RowItem { id: 3 }]));
+            let _ = SignalCollection::new(Binding::new(vec![RowItem { id: 3 }]));
             let _ = ForEach::new(items, |item| text!("{id}", id = item.id));
-            let presented = Binding::bool(false);
+            let _ = grid(2, [grid_row((text("A"), text("B")))]);
+            let presented = Binding::new(false);
             let _ = "Main".sheet(Sheet::new(&presented, || "Sheet"));
             "Root"
         });

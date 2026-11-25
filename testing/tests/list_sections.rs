@@ -78,7 +78,7 @@ fn outline(app: &mut SemanticApp) -> Vec<String> {
 /// order, when the query widens again.
 #[test]
 fn filtering_removes_and_restores_section_rows() {
-    let query = Binding::container(Str::from(""));
+    let query = Binding::new(Str::from(""));
     let mut app = ui().mount({
         let query = query.clone();
         move || reminders(&query)
@@ -136,7 +136,7 @@ fn filtering_removes_and_restores_section_rows() {
 /// both back when rows return.
 #[test]
 fn emptied_section_drops_and_regains_its_chrome() {
-    let query = Binding::container(Str::from(""));
+    let query = Binding::new(Str::from(""));
     let mut app = ui().mount({
         let query = query.clone();
         move || reminders(&query)
@@ -161,7 +161,7 @@ fn emptied_section_drops_and_regains_its_chrome() {
 /// the first row that remains, and back when the row returns.
 #[test]
 fn section_header_follows_the_first_remaining_row() {
-    let query = Binding::container(Str::from(""));
+    let query = Binding::new(Str::from(""));
     let mut app = ui().mount({
         let query = query.clone();
         move || reminders(&query)

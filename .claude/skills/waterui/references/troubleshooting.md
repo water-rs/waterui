@@ -33,10 +33,10 @@ value is fine — the defect is specifically `.snapshot()` on a signal.)
 
 **Typed input resets, or a control loses focus on every keystroke.** Something above it is a
 `watch` that rebuilds the subtree. Replace it — reactive text with `text!`, a reactive
-property by passing the signal, a dynamic set of views with `Lazy::for_each` / `List::for_each`.
+property by passing the signal, a dynamic set of views with `VStack::for_each` / `List::for_each`.
 
 **A list re-renders entirely when one row changes.** The collection is behind a `watch` over
-a `Vec` instead of a `Lazy::for_each` / `List::for_each` over an `Identifiable` collection.
+a `Vec` instead of a `VStack::for_each` / `List::for_each` over an `Identifiable` collection.
 For a *derived* row set (filtering, sorting), wrap the signal in `SignalCollection` rather
 than reaching for `watch`.
 
@@ -98,8 +98,7 @@ Use `app.pump_for(duration)`.
 
 | Error | Cause | Fix |
 |---|---|---|
-| `no function or associated item named 'new' found for struct 'Binding'` | `Binding::new` does not exist | `Binding::i32(v)` / `Binding::bool(v)` / `Binding::container(v)`; `Binding::default()` for `Binding<Option<T>>` |
-| "type annotations needed for `Binding<_>`" after `binding(v)` | `binding` takes `impl Into<T>`, so `T` is unconstrained | typed constructor, `let` annotation, turbofish `binding::<T>(v)`, or let a control / typed helper parameter pin it |
+| `mismatched types: expected Str, found &str` on `binding("..")` | `binding(v)` / `Binding::new(v)` take `T` directly for inference | pass an owned value: `binding(Str::from(".."))` or `Binding::new(String::from(".."))` |
 | `cannot find function 'when' in this scope` | not in the prelude | `use waterui::widget::condition::when;` |
 | `cannot find macro 's'` (or a lint suggesting `s!`) | `s!` is nami's macro, not in the prelude | `use waterui::reactive::s;` |
 | ``expected trait, found derive macro `Identifiable` `` on a manual `impl` | the prelude carries the derive, not the trait | `use waterui::Identifiable;` |
@@ -112,14 +111,14 @@ Use `app.pump_for(duration)`.
 | `no method named 'is_empty'` on a signal | signal string methods are prefixed | `.str_is_empty()`, `.str_len()`, `.str_contains(..)` |
 | mismatched arms in `.select(TokenA, TokenB)` | both arms must be one concrete type | convert first: `let a: Color = Accent.into();` |
 | `this function takes 1 argument but 2 were supplied` on `.scale` | uniform scale takes one factor; per-axis is `scale_xy` | `.scale(factor)` or `.scale_xy(x, y)` |
-| `this function takes 2 arguments` on `row("Title")` | `row`/`detail_row` take (label, value) | `row("Streak", "14 days")` |
-| wrong `row` / `grid` resolves | list `row` vs grid `row` name collision | `use waterui::layout::grid::{grid as layout_grid, row as grid_row};` |
+| `this function takes 2 arguments` on `row("Title")` | `waterui::component::list::row` / `detail_row` take (label, value); grid rows use `grid_row` | `waterui::component::list::row("Streak", "14 days")` or `grid_row((a, b))` |
+| `cannot find function 'row'` | list `row` is not in the prelude; grid rows use `grid_row` | `grid(3, [grid_row((a, b, c))])` or `use waterui::component::list::row;` |
 | `` `Row` has no stable identity `` (an unsatisfied `Identifiable` bound) | collection item lacks an id | `#[derive(Clone, Identifiable)]` + `#[id]`, or manual `impl` for enums (disjoint id ranges) |
 | ``cannot borrow `rows` as mutable`` on `push`/`remove`/`replace` | list mutators take `&mut self` | `let mut rows = …`, or `mut state: AppState` in a handler; a clone shares the same list |
 | ``can't compare `Row` with `Row` `` on `replace` or `SignalCollection` | the diff compares surviving rows | `#[derive(Clone, PartialEq, Identifiable)]` |
 | `expected 'Binding<T>', found '&Binding<T>'` (or the reverse) | two-way controls borrow, modifiers own | controls take `&binding`; modifiers take `binding.clone()` |
 | `cannot find macro 'text'` | macro not imported | `use waterui::prelude::*;` then bare `text!` — never `waterui::text!` (same rule for `include_markdown!`); `shader!` is not in the prelude: `use waterui::graphics::shader;`, then bare `shader!` |
-| `` `ForEach<..>` is not a WaterUI view `` (or "expected an `FnOnce()` closure") | `ForEach` is a `Views` collection, not a view | `Lazy::for_each(data, f)`, `VStack::for_each(data, f)`, or `List::for_each` |
+| `` `ForEach<..>` is not a WaterUI view `` (or "expected an `FnOnce()` closure") | `ForEach` is a `Views` collection, not a view | `VStack::for_each(data, f)`, `HStack::for_each(data, f)`, or `List::for_each` |
 | `.title("Inbox")` — no matching method or wrong arg count | navigation titles use `.navigation_title(..)` (`.title()` on `Text` is font style) | use `.navigation_title("Inbox")` or `NavigationView::new(title, content)` |
 | `borrowed data escapes outside of function` on a view helper | views are `'static` | take `&'static str` / `Str` / `impl IntoText`; a helper that only *reads* a `&T` during construction can return `impl View + use<>` |
 | `no method named 'map'` on a signal (outside the prelude) | `SignalExt` not in scope | `use waterui::reactive::SignalExt;` |

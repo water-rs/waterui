@@ -466,7 +466,7 @@ mod tests {
 
     #[test]
     fn user_dismiss_respects_dismissible_and_invokes_on_dismiss() {
-        let presented = Binding::bool(true);
+        let presented = Binding::new(true);
         let calls = Rc::new(Cell::new(0_u32));
         let calls_ref = Rc::clone(&calls);
 
@@ -487,7 +487,7 @@ mod tests {
 
     #[test]
     fn dismiss_handle_closes_without_invoking_on_dismiss() {
-        let presented = Binding::bool(true);
+        let presented = Binding::new(true);
         let calls = Rc::new(Cell::new(0_u32));
         let calls_ref = Rc::clone(&calls);
         let sheet =

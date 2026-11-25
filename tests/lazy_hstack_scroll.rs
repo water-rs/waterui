@@ -1,7 +1,9 @@
-//! `Lazy::hstack` and `Lazy::hstack_spaced` are horizontally scrolling lazy
-//! rows: wheel-scrolling along x brings later rows into view.
+//! `scroll_horizontal(HStack::for_each(...))` virtualizes horizontally:
+//! wheel-scrolling along x brings later rows into view.
 
-use waterui::component::{Text, lazy::Lazy, text};
+use core::array;
+use waterui::component::{HStack, text};
+use waterui::layout::scroll::scroll_horizontal;
 use waterui_testing::{OffscreenApp, TestStyle, ui};
 
 fn rows(app: &OffscreenApp) -> Vec<(String, f32)> {
@@ -19,8 +21,8 @@ fn rows(app: &OffscreenApp) -> Vec<(String, f32)> {
     rows
 }
 
-fn items() -> Vec<Text> {
-    (0..30).map(|i| text(format!("Item {i}"))).collect()
+fn item_indices() -> [usize; 30] {
+    array::from_fn(|i| i)
 }
 
 #[test]
@@ -28,7 +30,11 @@ fn lazy_hstack_scrolls_horizontally() {
     let mut app = ui()
         .viewport(400, 300)
         .theme(TestStyle::new())
-        .mount_offscreen(|| Lazy::hstack(items()));
+        .mount_offscreen(|| {
+            scroll_horizontal(HStack::for_each(item_indices(), |i| {
+                text(format!("Item {i}"))
+            }))
+        });
     app.settle();
     let before = rows(&app);
     app.scroll_at(200.0, 150.0, -600.0, 0.0, false);
@@ -36,7 +42,7 @@ fn lazy_hstack_scrolls_horizontally() {
     let after = rows(&app);
     assert_ne!(
         before, after,
-        "horizontal wheel scroll must move the row of Lazy::hstack"
+        "horizontal wheel scroll must move the row of scroll_horizontal(HStack::for_each)"
     );
 }
 
@@ -45,7 +51,11 @@ fn lazy_hstack_spaced_scrolls_horizontally() {
     let mut app = ui()
         .viewport(400, 300)
         .theme(TestStyle::new())
-        .mount_offscreen(|| Lazy::hstack_spaced(8.0, items()));
+        .mount_offscreen(|| {
+            scroll_horizontal(
+                HStack::for_each(item_indices(), |i| text(format!("Item {i}"))).spacing(8.0),
+            )
+        });
     app.settle();
     let before = rows(&app);
     app.scroll_at(200.0, 150.0, -600.0, 0.0, false);
@@ -53,6 +63,6 @@ fn lazy_hstack_spaced_scrolls_horizontally() {
     let after = rows(&app);
     assert_ne!(
         before, after,
-        "horizontal wheel scroll must move the row of Lazy::hstack_spaced"
+        "horizontal wheel scroll must move the row of spaced scroll_horizontal(HStack::for_each)"
     );
 }

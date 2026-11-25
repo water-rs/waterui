@@ -558,7 +558,7 @@ fn a_rust_binding_exported_to_javascript_round_trips() {
     let _scope = bridge.open_scope();
     let hold = function(&runtime, "globalThis.fixture.hold");
 
-    let binding = Binding::container(3_u32);
+    let binding = Binding::new(3_u32);
     let exported = binding
         .clone()
         .into_js(bridge)
@@ -591,7 +591,7 @@ fn a_hole_javascript_authored_is_replaced_by_the_value_rust_holds() {
     let _scope = bridge.open_scope();
     let hold = function(&runtime, "globalThis.fixture.hold");
 
-    let binding = Binding::container(vec![Some(1_u32), Some(2), Some(3)]);
+    let binding = Binding::new(vec![Some(1_u32), Some(2), Some(3)]);
     let exported = binding
         .clone()
         .into_js(bridge)
@@ -629,7 +629,7 @@ fn a_retained_object_pushed_from_rust_crosses_by_identity() {
     let first = bridge.engine().retain(&shape()).expect("retains an object");
     let second = bridge.engine().retain(&shape()).expect("retains another");
 
-    let binding = Binding::container(JsValue::ObjectRef(first));
+    let binding = Binding::new(JsValue::ObjectRef(first));
     let exported = binding
         .clone()
         .into_js(bridge)
@@ -667,7 +667,7 @@ fn a_javascript_write_a_filter_rejects_is_corrected_in_javascript() {
     let _scope = bridge.open_scope();
     let hold = function(&runtime, "globalThis.fixture.hold");
 
-    let source = Binding::container(5_u32);
+    let source = Binding::new(5_u32);
     // Single digits only. A rejected write stores nothing and notifies
     // nobody, so no count of notifications can tell the cell what became of
     // the value: only reading the binding back can.
@@ -695,7 +695,7 @@ fn a_javascript_write_a_setter_normalizes_comes_back_normalized() {
     let _scope = bridge.open_scope();
     let hold = function(&runtime, "globalThis.fixture.hold");
 
-    let source = Binding::container(1_u32);
+    let source = Binding::new(1_u32);
     // The setter clamps, so the binding notifies exactly once — carrying a
     // value JavaScript never sent. Counting the notification would call that
     // one the write's own echo and drop it.
@@ -729,7 +729,7 @@ fn a_watcher_registered_before_the_export_cannot_push_a_stale_value() {
 
     // Registered first, so nami calls it first: by the time the cell's own
     // watcher runs, the value its notification carries is already history.
-    let binding = Binding::container(0_u32);
+    let binding = Binding::new(0_u32);
     let _guard = binding.watch({
         let binding = binding.clone();
         move |context: nami::watcher::Context<u32>| {
@@ -761,7 +761,7 @@ fn a_value_that_is_a_function_is_stored_and_not_called() {
     let _scope = bridge.open_scope();
     let hold = function(&runtime, "globalThis.fixture.hold");
 
-    let binding = Binding::container(JsValue::Number(1.0));
+    let binding = Binding::new(JsValue::Number(1.0));
     let exported = binding.clone().into_js(bridge).expect("a binding exports");
     bridge
         .call(&hold, &[exported])
@@ -795,7 +795,7 @@ fn a_float_keeps_the_value_rust_set_it_to() {
     let _scope = bridge.open_scope();
     let hold = function(&runtime, "globalThis.fixture.hold");
 
-    let binding = Binding::container(0.0_f64);
+    let binding = Binding::new(0.0_f64);
     let exported = binding.clone().into_js(bridge).expect("a binding exports");
     bridge
         .call(&hold, &[exported])
@@ -843,7 +843,7 @@ fn a_rust_computed_exported_to_javascript_is_read_only_and_pushed() {
     let _scope = bridge.open_scope();
     let hold = function(&runtime, "globalThis.fixture.hold");
 
-    let source = Binding::container(2_u32);
+    let source = Binding::new(2_u32);
     let computed = Computed::new(source.clone());
     let exported = computed
         .into_js(bridge)
@@ -905,7 +905,7 @@ fn one_rust_signal_is_one_javascript_signal_however_often_it_crosses() {
 
     // A value that carries a signal, pushed on every change: the field is one
     // Rust binding throughout, so it must be one JavaScript signal throughout.
-    let unread = Binding::container(0_u32);
+    let unread = Binding::new(0_u32);
     let card = |title: &str| Card {
         title: String::from(title),
         status: Status::Idle,
@@ -917,7 +917,7 @@ fn one_rust_signal_is_one_javascript_signal_however_often_it_crosses() {
         identifier: 1,
     };
 
-    let outer = Binding::container(card("first"));
+    let outer = Binding::new(card("first"));
     let exported = outer
         .clone()
         .into_js(bridge)
@@ -958,7 +958,7 @@ fn one_rust_signal_is_one_javascript_signal_however_often_it_crosses() {
 #[test]
 fn exporting_outside_a_mount_is_refused() {
     let runtime = runtime();
-    let error = Binding::container(1_u32)
+    let error = Binding::new(1_u32)
         .into_js(runtime.bridge())
         .expect_err("nothing would own the cell");
     assert!(
@@ -969,7 +969,7 @@ fn exporting_outside_a_mount_is_refused() {
 
 #[test]
 fn disposing_a_mount_releases_everything_it_exported() {
-    let scheme = Binding::container(ColorScheme::Light);
+    let scheme = Binding::new(ColorScheme::Light);
     let environment = Environment::new()
         .store::<ColorScheme, Computed<ColorScheme>>(Computed::new(scheme.clone()));
     let runtime = with_environment(environment);
@@ -1099,7 +1099,7 @@ fn a_derived_struct_projects_the_shape_the_schema_declares() {
         subtitle: None,
         tags: vec![String::from("new")],
         counts: BTreeMap::from([(String::from("seen"), 2_u32)]),
-        unread: Binding::container(1_u32),
+        unread: Binding::new(1_u32),
         identifier: u64::MAX,
     };
 
@@ -1170,7 +1170,7 @@ fn a_derived_struct_round_trips() {
         subtitle: Some(String::from("subtitle")),
         tags: vec![String::from("a"), String::from("b")],
         counts: BTreeMap::from([(String::from("seen"), 2_u32), (String::from("left"), 9_u32)]),
-        unread: Binding::container(4_u32),
+        unread: Binding::new(4_u32),
         identifier: 9_007_199_254_740_993,
     };
 
@@ -1318,7 +1318,7 @@ fn props_cross_one_way_with_their_contract_intact() {
             subtitle: None,
             tags: Vec::new(),
             counts: BTreeMap::new(),
-            unread: Binding::container(0_u32),
+            unread: Binding::new(0_u32),
             identifier: 1,
         },
         on_dismiss: Box::new({
@@ -1624,7 +1624,7 @@ fn the_environment_reaches_javascript_as_theme_and_locale() {
 
 #[test]
 fn a_theme_change_reaches_javascript() {
-    let scheme = Binding::container(ColorScheme::Light);
+    let scheme = Binding::new(ColorScheme::Light);
     let environment = Environment::new()
         .store::<ColorScheme, Computed<ColorScheme>>(Computed::new(scheme.clone()));
     let runtime = with_environment(environment);

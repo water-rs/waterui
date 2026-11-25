@@ -75,7 +75,7 @@ impl<E: crate::text::TextEngine> DatePickerRenderState<E> {
             _range_watch: range_watch,
             look: None,
             parts: None,
-            report: Binding::container(InteractionState::empty()),
+            report: Binding::new(InteractionState::empty()),
         }
     }
 

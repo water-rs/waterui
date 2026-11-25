@@ -112,7 +112,7 @@ struct Rig {
 impl Rig {
     /// A slider at `value` in `direction`, styled by `theme`.
     fn new(theme: MinimalTestTheme, direction: LayoutDirection, value: f64) -> Self {
-        let value = Binding::container(value);
+        let value = Binding::new(value);
         let view = RefCell::new(Some(AnyView::new(
             slider("Volume", &value).hide_label().range(0.0..=1.0),
         )));
@@ -308,7 +308,7 @@ fn a_lens_knob_moves_with_the_painted_knob() {
     save("slider_lens_follows_painted", "mid", &mid);
     save("slider_lens_follows_painted", "after", &after);
 
-    let value = Binding::container(0.2);
+    let value = Binding::new(0.2);
     let mut renderer = super::test_renderer_with_theme(lens_over_painted_knob());
     renderer.reset_scene();
     renderer.begin_rebuild_frame();
@@ -458,7 +458,7 @@ fn a_press_recolours_a_chrome_custom_part() {
         runtime,
         start: Instant::now(),
         next: 0,
-        value: Binding::container(0.0),
+        value: Binding::new(0.0),
     };
     rig.settle();
     let before = rig.snapshot();

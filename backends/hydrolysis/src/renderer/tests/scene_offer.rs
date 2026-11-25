@@ -441,8 +441,9 @@ fn scene_view_panes_take_their_offered_share() {
 /// #162 reopened — the residual: `hstack((pane, divider.width(7), pane))` in
 /// an 800-point window, each pane a lazy horizontal stack of input-receiving
 /// `SceneView`s — the shape a custom pager or split row takes when it builds
-/// on `LazyContainer` directly (the `Lazy::hstack` helper wraps a
-/// `ScrollView`, which answers proposals itself and hides this path).
+/// on `LazyContainer` directly (wrapping `HStack::for_each` in a
+/// `ScrollView` lets the scroll view answer proposals itself and hides this
+/// path).
 ///
 /// The row mapped at 807 because `LazyStackNode::measure` answered the
 /// extent index's cached intrinsic total (`total_extent()`) to every probe —

@@ -36,12 +36,13 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     pub(crate) fn wrapper_motion<S, T>(
         &self,
         signal: &S,
-        map: fn(f32) -> T,
+        map: fn(S::Output) -> T,
         owner: &Rc<NodeCell<E>>,
         gate: bool,
     ) -> Motion<T>
     where
-        S: Signal<Output = f32> + 'static,
+        S: Signal + 'static,
+        S::Output: Clone + 'static,
         T: Animatable + PartialEq,
     {
         let owner = Rc::downgrade(owner);

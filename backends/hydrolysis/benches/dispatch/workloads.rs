@@ -92,7 +92,7 @@ pub fn modifier_chain() -> impl View {
         .border(Color::srgb(10, 10, 10), 1.0)
         .padding()
         .scale(1.0)
-        .rotation(0.0)
+        .rotation(Angle::ZERO)
         .offset(0.0, 0.0)
         .shadow(Shadow::default())
         .padding()
@@ -101,7 +101,7 @@ pub fn modifier_chain() -> impl View {
         .border(Color::srgb(30, 30, 30), 1.0)
         .scale(1.0)
         .padding()
-        .rotation(0.0)
+        .rotation(Angle::ZERO)
         .offset(0.0, 0.0)
         .disabled(false)
         .width(320.0)
@@ -126,15 +126,15 @@ pub fn replacement() -> impl View {
 pub fn settings_form() -> impl View {
     let groups = (0..6)
         .map(|group| {
-            let enabled = Binding::bool(group % 2 == 0);
-            let level = Binding::f64(0.5);
-            let count = Binding::i32(group);
-            let name = Binding::container(Str::from("Device"));
-            let choice = Binding::i32(0);
+            let enabled = Binding::new(group % 2 == 0);
+            let level = Binding::new(0.5_f64);
+            let count = Binding::<i32>::new(group);
+            let name = Binding::new(Str::from("Device"));
+            let choice = Binding::new(0_i32);
             vstack((
                 text(format!("Section {group}")),
                 toggle("Enabled", &enabled),
-                toggle("Notifications", &Binding::bool(true)),
+                toggle("Notifications", &Binding::new(true)),
                 slider("Level", &level),
                 stepper("Count", &count),
                 field("Name", &name),
@@ -251,7 +251,7 @@ pub struct SignalUpdate {
 impl SignalUpdate {
     #[must_use]
     pub fn new() -> Self {
-        let count = Binding::i32(0);
+        let count = Binding::new(0_i32);
         let content = {
             let count = count.clone();
             AnyViewBuilder::new(move || {

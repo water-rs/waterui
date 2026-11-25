@@ -53,7 +53,7 @@ pub fn components_block_02() {
     let stack = vstack((text("a"), text("b")));
     let _ = { stack.padding_with(16.0) };
     let stack = vstack((text("a"), text("b")));
-    let _ = { stack.padding_with((10.0, 16.0)) };
+    let _ = { stack.padding_with(EdgeInsets::vertical(10.0).with_horizontal(16.0)) };
 }
 
 // ---------------------------------------------------------------------------
@@ -145,7 +145,7 @@ pub fn components_block_05() {
     };
 
     // Prose: every sizing shortcut on a view takes signals, and `.alignment(...)` takes tokens.
-    let height_signal = Binding::f32(80.0);
+    let height_signal = Binding::new(80.0_f32);
     let _ = Divider.height(height_signal.clone());
     let _ = Divider.width(120.0).max_height(height_signal);
     let _ = Divider.alignment(TopLeading);
@@ -193,10 +193,10 @@ pub fn components_transforms_prose() {
     // `Anchor` comes from the prelude, as the prose says.
     let _ = text("x").scale(1.5);
     let _ = text("x").scale_xy(1.5, 1.0);
-    let _ = text("x").rotation(45.0);
+    let _ = text("x").rotation(Angle::degrees(45.0));
     let _ = text("x").scale_from(0.5, Anchor::TOP_LEFT);
     let _ = text("x").scale_xy_from(0.5, 1.0, Anchor::TOP_LEFT);
-    let _ = text("x").rotation_from(45.0, Anchor::TOP_LEFT);
+    let _ = text("x").rotation_from(Angle::degrees(45.0), Anchor::TOP_LEFT);
     let _ = [
         Anchor::CENTER,
         Anchor::TOP_RIGHT,
@@ -213,10 +213,8 @@ pub fn components_block_07() {
     let (a, b, c) = (text("a"), text("b"), text("c"));
     let (d, e) = (text("d"), text("e"));
 
-    use waterui::layout::grid::{grid as layout_grid, row as grid_row};
-
     let _ = {
-        layout_grid(
+        grid(
             3,
             (
                 grid_row((a, b, c)),
@@ -246,13 +244,14 @@ pub fn components_block_08() -> impl View {
 
     absolute((
         map_view().pin(PinConstraints::all(0.0)), // stretch to fill
-        status_panel().size(220.0, 64.0).position_in_offset(
-            UnitPoint::TOP_LEADING,
-            UnitPoint::TOP_LEADING, // anchor on child, position in parent
-            16.0,
-            16.0, // offsets — these are signal slots
-        ),
-        controls().position_in_anchor(UnitPoint::BOTTOM_TRAILING, UnitPoint::BOTTOM_TRAILING),
+        status_panel()
+            .size(220.0, 64.0)
+            .position_in(UnitPoint::TOP_LEADING)
+            .anchor(UnitPoint::TOP_LEADING)
+            .offset(16.0, 16.0), // offsets — these are signal slots
+        controls()
+            .position_in(UnitPoint::BOTTOM_TRAILING)
+            .anchor(UnitPoint::BOTTOM_TRAILING),
         dot().pin(
             PinConstraints::new()
                 .trailing(12.0)
@@ -347,7 +346,7 @@ pub fn components_block_12() {
     let at_end = rows.position().map(|p| p.is_some_and(|p| p.at_end()));
 
     let offset = ScrollController::<Point>::new(Point::zero());
-    let reported = Binding::container(Point::zero());
+    let reported = Binding::new(Point::zero());
     let view = scroll(content)
         .scroll_controller(&offset)
         .report_offset(&reported);
@@ -374,7 +373,7 @@ pub fn components_block_13() {
             Divider,
         ))
     }
-    let level = Binding::f64(1.0);
+    let level = Binding::new(1.0_f64);
 
     let _ = {
         // exists on every labeled control
@@ -396,17 +395,17 @@ pub fn components_block_13() {
 // ---------------------------------------------------------------------------
 pub fn components_block_14() {
     fn handler() {}
-    let value = Binding::i32(0);
-    let edit_label = Binding::container(Str::from("Edit"));
-    let enabled = Binding::bool(true);
-    let level = Binding::f64(0.5);
-    let count = Binding::i32(1);
-    let address = Binding::container(Str::from(""));
-    let query = Binding::container(Str::from(""));
-    let name = Binding::container(Str::from(""));
-    let notes = Binding::container(Str::from(""));
-    let code = Binding::container(Str::from(""));
-    let note = Binding::container(Str::from(""));
+    let value = Binding::new(0_i32);
+    let edit_label = Binding::new(Str::from("Edit"));
+    let enabled = Binding::new(true);
+    let level = Binding::new(0.5_f64);
+    let count = Binding::new(1_i32);
+    let address = Binding::new(Str::from(""));
+    let query = Binding::new(Str::from(""));
+    let name = Binding::new(Str::from(""));
+    let notes = Binding::new(Str::from(""));
+    let code = Binding::new(Str::from(""));
+    let note = Binding::new(Str::from(""));
     let fraction = 0.5_f64;
 
     let _ = {
@@ -531,12 +530,12 @@ pub fn components_button_style_shorthands() {
     let _ = LabelDisplayMode::IconOnly;
     let _ = LabelDisplayMode::Hidden;
 
-    let enabled = Binding::bool(true);
+    let enabled = Binding::new(true);
     let _ = Toggle::new("a", &enabled).switch();
     let _ = Toggle::new("a", &enabled).checkbox();
 
-    let text_value = Binding::container(Str::from(""));
-    let styled_value = Binding::container(StyledStr::default());
+    let text_value = Binding::new(Str::from(""));
+    let styled_value = Binding::new(StyledStr::default());
     let _ = TextField::new("a", &text_value).line_limit(NonZeroUsize::new(3));
     let _ = TextField::new("a", &text_value).line_limit(None::<NonZeroUsize>);
     let _ = TextField::new("a", &styled_value);
@@ -546,7 +545,7 @@ pub fn components_button_style_shorthands() {
 // components.md § "### Custom button and toggle styles"
 // ---------------------------------------------------------------------------
 pub fn components_custom_control_styles() {
-    let enabled = Binding::bool(true);
+    let enabled = Binding::new(true);
 
     use waterui::gesture::TapGesture;
     use waterui::shape::Capsule;
@@ -567,7 +566,7 @@ pub fn components_custom_control_styles() {
             let bg = configuration.is_pressed().select(Color::new(Accent), base);
             configuration
                 .into_label()
-                .padding_with((8.0, 16.0))
+                .padding_with(EdgeInsets::vertical(8.0).with_horizontal(16.0))
                 .background(bg)
                 .clip(Capsule)
         }
@@ -585,7 +584,7 @@ pub fn components_custom_control_styles() {
             let trigger = configuration.trigger().clone();
             configuration
                 .into_label()
-                .padding_with((8.0, 16.0))
+                .padding_with(EdgeInsets::vertical(8.0).with_horizontal(16.0))
                 .gesture(
                     TapGesture::repeat(NonZeroU32::new(2).unwrap()),
                     move |_: TapEvent| trigger.trigger(),
@@ -637,8 +636,8 @@ pub fn components_block_15() {
         text("row")
     }
     let message = Str::from("body");
-    let sender = Binding::container(Str::from("Ada"));
-    let subject = Binding::container(Str::from("Hello"));
+    let sender = Binding::new(Str::from("Ada"));
+    let subject = Binding::new(Str::from("Hello"));
 
     use waterui::component::label::label; // also in the prelude
     use waterui_icons_material_icon as mdi; // icons come from an icon-set crate (styling.md)
@@ -671,7 +670,7 @@ pub fn components_block_15() {
 // ---------------------------------------------------------------------------
 pub fn components_block_16() -> impl View {
     fn nested_handler() {}
-    let selected = Binding::container(String::new());
+    let selected = Binding::new(String::new());
 
     Menu::new(
         "Choose an Option",
@@ -692,9 +691,9 @@ pub fn components_block_16() -> impl View {
 pub fn components_block_17() {
     fn copy_handler() {}
     fn delete_handler() {}
-    let clipboard = Binding::container(Str::from(""));
-    let nothing_selected = Binding::bool(true);
-    let checked = Binding::bool(false);
+    let clipboard = Binding::new(Str::from(""));
+    let nothing_selected = Binding::new(true);
+    let checked = Binding::new(false);
 
     let _ = {
         "Copy"
@@ -760,7 +759,7 @@ pub fn components_block_18(env: Environment) -> App<impl Windows, impl AppMenuBa
 pub fn components_block_19() -> impl View {
     fn copy_handler() {}
     fn paste_handler() {}
-    let clipboard = Binding::container(Str::from(""));
+    let clipboard = Binding::new(Str::from(""));
 
     text("Long press me").padding().context_menu((
         "Copy".action(copy_handler).state(&clipboard),
@@ -787,8 +786,8 @@ pub fn components_block_20() -> impl View {
 // Listing: three text constructors.
 // ---------------------------------------------------------------------------
 pub fn components_block_21() {
-    let value = Binding::i32(1);
-    let count = Binding::i32(2);
+    let value = Binding::new(1_i32);
+    let count = Binding::new(2_i32);
 
     let _ = { text("Static string") };
     let _ = { text!("Reactive {value}") };
@@ -831,7 +830,7 @@ pub fn components_block_22() {
 
     // `.line_limit(impl IntoComputed<Option<NonZeroUsize>>)` named in the prose.
     use core::num::NonZeroUsize;
-    let expanded = Binding::bool(false);
+    let expanded = Binding::new(false);
     let _ = text("t").line_limit(NonZeroUsize::new(2));
     let _ = text("t").line_limit(expanded.select(None, NonZeroUsize::new(2)));
 
@@ -851,7 +850,7 @@ pub fn components_block_22() {
 // components.md § "## Text" — rust block 23/39
 // ---------------------------------------------------------------------------
 pub fn components_block_23() -> impl View {
-    let family: Binding<Option<Str>> = Binding::container(None); // e.g. a user setting
+    let family: Binding<Option<Str>> = Binding::new(None); // e.g. a user setting
     text("~/src").font(font::Font::from(font::Body).family(family.clone()))
 }
 
@@ -861,8 +860,8 @@ pub fn components_block_23() -> impl View {
 // data; `copied` for the caller's own state.
 // ---------------------------------------------------------------------------
 pub fn components_block_24(token: &'static str, fence_text: &'static str) {
-    let copied = Binding::bool(false);
-    let source = Binding::container(Str::from("fn main() {}"));
+    let copied = Binding::new(false);
+    let source = Binding::new(Str::from("fn main() {}"));
 
     use waterui::prelude::highlight::Language;
     use waterui::widget::{Code, code};
@@ -916,7 +915,7 @@ pub fn components_block_26() -> impl View {
     use core::time::Duration;
     use waterui::animation::Animation;
 
-    let markdown = Binding::container(Str::from("# Streaming"));
+    let markdown = Binding::new(Str::from("# Streaming"));
 
     use waterui::prelude::flow_markdown::FlowMarkdownConfig;
 
@@ -981,8 +980,8 @@ pub mod components_block_27 {
     }
 
     use waterui::Identifiable; // the trait the derive expands to is NOT in the prelude
-    use waterui::component::lazy::Lazy;
     use waterui::component::list::{ListDelete, ListMove}; // NOT in the prelude
+    use waterui::layout::scroll::scroll_horizontal;
     use waterui::views::ForEach;
 
     #[derive(Clone, Identifiable)]
@@ -998,17 +997,14 @@ pub mod components_block_27 {
 
     pub fn body() {
         let records = StateList::<Record>::new();
-        let is_editing = Binding::bool(false);
+        let is_editing = Binding::new(false);
         let controller = ScrollController::<usize>::new(0);
 
         // `ForEach` is a `Views` collection, not a `View`: a container consumes it.
-        let _ = {
-            // == Lazy::vstack(ForEach::new(..))
-            Lazy::for_each(records.clone(), |r| text(r.title))
-        };
+        let _ = { scroll(VStack::for_each(records.clone(), |r| text(r.title))) };
         let _ = {
             // record_card: fn(Record) -> impl View
-            Lazy::hstack(ForEach::new(records.clone(), record_card))
+            scroll_horizontal(HStack::for_each(records.clone(), record_card))
         };
 
         let _ = {
@@ -1026,9 +1022,10 @@ pub mod components_block_27 {
                 .scroll_controller(&controller)
         };
 
-        // Prose: `Lazy` spaced stacks and `List::new` over pre-built rows.
-        let _ = Lazy::vstack_spaced(8.0, ForEach::new(records.clone(), record_card));
-        let _ = Lazy::hstack_spaced(8.0, ForEach::new(records.clone(), record_card));
+        // Prose: spaced / eager stacks and `List::new` over pre-built rows.
+        let _ = scroll(VStack::for_each(records.clone(), record_card).spacing(8.0));
+        let _ = scroll_horizontal(HStack::for_each(records.clone(), record_card).spacing(8.0));
+        let _ = scroll(VStack::for_each(records.clone(), record_card).eager());
         let _ = List::new(ForEach::new(records, |r: Record| text(r.title)));
     }
 }
@@ -1060,6 +1057,8 @@ pub fn components_block_28() {
 // components.md § "## Lists and collections" — rust block 29/39
 // ---------------------------------------------------------------------------
 pub fn components_block_29() -> impl View {
+    use waterui::component::list::row;
+
     List::content((
         Section::new("Recent")
             .footer("Sub-pages push onto this tab's own stack.")
@@ -1078,6 +1077,7 @@ pub fn components_block_29() -> impl View {
 // the prose's reactive collection.
 // ---------------------------------------------------------------------------
 pub fn components_reactive_section_prose(today: StateList<Record>) -> impl View {
+    use waterui::component::list::row;
     use waterui::views::ForEach;
 
     let _ = row("a", "b")
@@ -1096,6 +1096,7 @@ pub fn components_reactive_section_prose(today: StateList<Record>) -> impl View 
 // and `list_min_row_height`. Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn components_list_item_prose(records: StateList<Record>) {
+    use waterui::component::list::row;
     use waterui::layout::padding::EdgeInsets;
     use waterui::views::ForEach;
 
@@ -1105,10 +1106,10 @@ pub fn components_list_item_prose(records: StateList<Record>) {
         Archive,
     }
 
-    let signal = Binding::bool(true);
-    let selection = Binding::container(None::<Mailbox>);
-    let multi = Binding::container(alloc::collections::BTreeSet::<Mailbox>::new());
-    let record_selection = Binding::container(None::<u64>);
+    let signal = Binding::new(true);
+    let selection = Binding::new(None::<Mailbox>);
+    let multi = Binding::new(alloc::collections::BTreeSet::<Mailbox>::new());
+    let record_selection = Binding::new(None::<u64>);
 
     let _ = text("a").list_row_deletable(signal.clone());
     let _ = text("a").list_row_insets(EdgeInsets::all(4.0));
@@ -1163,7 +1164,7 @@ pub mod components_block_30 {
 // components.md § "## Forms and pickers" — rust block 31/39
 // ---------------------------------------------------------------------------
 pub fn components_block_31() -> impl View {
-    let name = Binding::container(Str::from(""));
+    let name = Binding::new(Str::from(""));
 
     use waterui::form::valid::{Plain, Required, ValidatableView};
 
@@ -1178,7 +1179,7 @@ pub fn components_form_validation_prose() {
     use waterui::form::secure::Secure;
     use waterui::form::valid::{Required, Validator};
 
-    let password = Binding::container(Secure::default());
+    let password = Binding::new(Secure::default());
     let _ = secure("Password", &password);
     // `Required` validates several text types, so `.and` names the one it combines over.
     let _ = Validator::<Str>::and(Required, Required);
@@ -1345,7 +1346,7 @@ pub fn components_block_34() {
 pub fn components_snackbar_prose() {
     use waterui::snackbar::{Snackbar, SnackbarDismissReason, SnackbarManager, SnackbarPosition};
 
-    let value = Binding::i32(0);
+    let value = Binding::new(0_i32);
 
     let _ = SnackbarPosition::TopCenter;
     let _ = SnackbarPosition::BottomLeading;
@@ -1427,7 +1428,7 @@ pub fn components_block_36() {
 pub fn components_overlay_extras_prose() {
     use waterui::widget::Disclosure;
 
-    let open = Binding::bool(false);
+    let open = Binding::new(false);
 
     let _ = card(text("c")).style(CardStyle::Outlined);
     let _ = card(text("c")).style(CardStyle::Elevated);
@@ -1469,8 +1470,8 @@ pub fn components_block_37(photo_url: waterui::Url) {
     enum Field {
         Email,
     }
-    let email = Binding::container(Str::from(""));
-    let focus = Binding::container(None::<Field>);
+    let email = Binding::new(Str::from(""));
+    let focus = Binding::new(None::<Field>);
 
     let _ = {
         text("Inbox").badge(3_u32) // 0 hides; BadgeValue::{Hidden, Dot, Count(u32), Text(Text)}; badge::Badge::new(v, view).color(..)
@@ -1526,8 +1527,8 @@ pub fn components_table_prose() {
         id: 1,
         name: "Ada".into(),
     }]);
-    let sel = Binding::container(Some(1_u64));
-    let order = Binding::container(Some(TableSort::new(Sort::Name, SortDirection::Ascending)));
+    let sel = Binding::new(Some(1_u64));
+    let order = Binding::new(Some(TableSort::new(Sort::Name, SortDirection::Ascending)));
 
     let _ = Table::new(
         people.clone(),
@@ -1547,7 +1548,7 @@ pub fn components_table_prose() {
 // Method-fragment listing applied to fresh receivers.
 // ---------------------------------------------------------------------------
 pub fn components_block_38() {
-    let active = Binding::bool(true);
+    let active = Binding::new(true);
 
     use waterui::accessibility::{AccessibilityRole, AccessibilityState};
 

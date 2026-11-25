@@ -1172,7 +1172,7 @@ impl MacSystemWebViewHandle {
         let handle = Self {
             inner: Rc::new(MacSystemWebViewInner {
                 port: RefCell::new(None),
-                focused: nami::Binding::bool(false),
+                focused: nami::Binding::new(false),
                 _state_observer: state_observer,
                 web_view,
                 delegate,

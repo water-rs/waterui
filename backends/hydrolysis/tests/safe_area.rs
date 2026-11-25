@@ -340,7 +340,7 @@ fn a_retained_navigation_page_keeps_its_context_on_steady_frames() {
 
     let container = waterui::binding(SAFE_INSETS);
     let keyboard = waterui::binding(KEYBOARD_INSETS);
-    let draft = Binding::container(waterui::Str::from(""));
+    let draft = Binding::new(waterui::Str::from(""));
     let mut app = mount_rendered(
         env_with_keyboard(&container, &keyboard),
         move || {
@@ -387,8 +387,8 @@ fn a_second_field_in_a_navigation_stack_still_clears_the_keyboard() {
 
     let container = waterui::binding(SAFE_INSETS);
     let keyboard = waterui::binding(KEYBOARD_INSETS);
-    let first = Binding::container(waterui::Str::from(""));
-    let second = Binding::container(waterui::Str::from(""));
+    let first = Binding::new(waterui::Str::from(""));
+    let second = Binding::new(waterui::Str::from(""));
     let mut app = mount_rendered(
         env_with_keyboard(&container, &keyboard),
         move || {
@@ -703,7 +703,7 @@ fn a_non_fill_background_stays_inside_the_keyboard_region() {
 fn a_scroll_surface_scrolls_the_focused_field_clear_of_the_keyboard() {
     let container = waterui::binding(SAFE_INSETS);
     let keyboard = waterui::binding(KEYBOARD_INSETS);
-    let value = Binding::container(waterui::Str::from(""));
+    let value = Binding::new(waterui::Str::from(""));
     let mut app = mount_rendered(
         env_with_keyboard(&container, &keyboard),
         move || {
@@ -754,7 +754,7 @@ fn a_scroll_surface_scrolls_the_focused_field_clear_of_the_keyboard() {
 fn a_focused_field_clears_to_the_surface_frame_above_a_toolbar() {
     let container = waterui::binding(SAFE_INSETS);
     let keyboard = waterui::binding(KEYBOARD_INSETS);
-    let value = Binding::container(waterui::Str::from(""));
+    let value = Binding::new(waterui::Str::from(""));
     let mut app = mount_rendered(
         env_with_keyboard(&container, &keyboard),
         move || {
@@ -798,7 +798,7 @@ fn a_focused_field_clears_to_the_surface_frame_above_a_toolbar() {
 fn a_list_row_field_scrolls_clear_of_the_keyboard() {
     let container = waterui::binding(SAFE_INSETS);
     let keyboard = waterui::binding(KEYBOARD_INSETS);
-    let value = Binding::container(waterui::Str::from(""));
+    let value = Binding::new(waterui::Str::from(""));
     let field_row = 10;
     let mut app = mount_rendered(
         env_with_keyboard(&container, &keyboard),
@@ -1039,7 +1039,7 @@ fn a_fill_ignore_names_the_only_edge_that_extends() {
 fn navigation_hosted_form_clears_the_focused_field(scale: f64) {
     let container = waterui::binding(SAFE_INSETS);
     let keyboard = waterui::binding(KEYBOARD_INSETS);
-    let value = Binding::container(waterui::Str::from(""));
+    let value = Binding::new(waterui::Str::from(""));
     let mut app = {
         let mut app = mount_rendered(
             env_with_keyboard(&container, &keyboard),
@@ -1285,7 +1285,7 @@ fn a_split_detail_background_does_not_cross_the_sidebar() {
     use waterui::navigation::NavigationSplitView;
 
     let insets = waterui::binding(SAFE_INSETS);
-    let selection = Binding::container(Some(0i32));
+    let selection = Binding::new(Some(0i32));
     let mut app = mount_rendered(
         env_with_insets(&insets),
         move || {
@@ -1387,7 +1387,7 @@ fn nested_releases_never_move_the_navigation_boundary_inward() {
 fn a_keyboard_inset_change_clears_the_field_on_that_frame() {
     let container = waterui::binding(SAFE_INSETS);
     let keyboard = waterui::binding(KEYBOARD_INSETS);
-    let value = Binding::container(waterui::Str::from(""));
+    let value = Binding::new(waterui::Str::from(""));
     let mut app = mount_rendered(
         env_with_keyboard(&container, &keyboard),
         move || {
@@ -1428,7 +1428,7 @@ fn a_keyboard_inset_change_clears_the_field_on_that_frame() {
 fn a_field_in_a_nested_scroll_is_cleared_once() {
     let container = waterui::binding(SAFE_INSETS);
     let keyboard = waterui::binding(KEYBOARD_INSETS);
-    let value = Binding::container(waterui::Str::from(""));
+    let value = Binding::new(waterui::Str::from(""));
     let mut app = mount_rendered(
         env_with_keyboard(&container, &keyboard),
         move || {
@@ -1480,7 +1480,7 @@ fn a_tab_page_background_stops_at_the_tab_bar() {
     use waterui::navigation::{Tab, Tabs};
 
     let insets = waterui::binding(SAFE_INSETS);
-    let selection = Binding::container(0usize);
+    let selection = Binding::new(0usize);
     let mut app = mount_rendered(
         env_with_insets(&insets),
         move || {
@@ -1530,8 +1530,8 @@ fn a_tab_bar_stays_docked_under_the_keyboard() {
 
     let container = waterui::binding(SAFE_INSETS);
     let keyboard = waterui::binding(EdgeInsets::new(0.0, 0.0, 0.0, 0.0));
-    let selection = Binding::container(0usize);
-    let value = Binding::container(waterui::Str::from(""));
+    let selection = Binding::new(0usize);
+    let value = Binding::new(waterui::Str::from(""));
     let mut app = mount_rendered(
         env_with_keyboard(&container, &keyboard),
         move || {
@@ -1693,7 +1693,7 @@ fn a_stack_page_toolbar_inside_a_tab_stacks_on_the_docked_tab_bar() {
 
     let container = waterui::binding(SAFE_INSETS);
     let keyboard = waterui::binding(EdgeInsets::new(0.0, 0.0, 0.0, 0.0));
-    let selection = Binding::container(0usize);
+    let selection = Binding::new(0usize);
     let mut app = mount_rendered(
         env_with_keyboard(&container, &keyboard),
         move || {
@@ -1760,8 +1760,8 @@ fn a_fixed_height_tabs_inside_tab_content_docks_its_own_bar() {
 
     let container = waterui::binding(SAFE_INSETS);
     let keyboard = waterui::binding(EdgeInsets::new(0.0, 0.0, 0.0, 0.0));
-    let selection = Binding::container(0usize);
-    let inner = Binding::container(0usize);
+    let selection = Binding::new(0usize);
+    let inner = Binding::new(0usize);
     let mut app = mount_rendered(
         env_with_keyboard(&container, &keyboard),
         move || {
@@ -2081,7 +2081,7 @@ fn chrome_surface_extension_captures() {
     app.pump_for(Duration::from_millis(180));
     app.capture_snapshot("safe-area", "navigation-chrome-extension", "transition");
 
-    let selection = Binding::container(0usize);
+    let selection = Binding::new(0usize);
     let mut app = mount_rendered(
         env_with_insets(&insets),
         move || {

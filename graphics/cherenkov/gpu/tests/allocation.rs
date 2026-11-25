@@ -666,7 +666,7 @@ fn oversized_picture_keeps_visible_tiles_within_budget() -> Result<(), Box<dyn s
     // 65536 exceeds the native texture dimension on the supported mobile GPUs.
     let picture = Picture::record(|c| c.fill(Rect::new(0.0, 0.0, 65536.0, 64.0),
         WorkingColor::new([0.0, 1.0, 0.0, 1.0])));
-    let placement = Binding::container(Affine::IDENTITY);
+    let placement = Binding::new(Affine::IDENTITY);
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|c| c.picture(&picture, placement.clone())));
     });

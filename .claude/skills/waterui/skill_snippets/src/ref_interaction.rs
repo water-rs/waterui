@@ -19,7 +19,7 @@ use waterui::gesture::{DragGesture, LongPressGesture, TapGesture};
 // interaction.md § "## Tap shortcuts" — rust block 2/12
 // ---------------------------------------------------------------------------
 pub fn interaction_block_02() -> impl View {
-    let taps = Binding::i32(0);
+    let taps = Binding::new(0_i32);
 
     text("Simple Tap")
         .padding()
@@ -39,7 +39,7 @@ pub fn interaction_tap_siblings_prose() {
     use waterui::task::spawn_local;
 
     let handler = || ();
-    let saved_count = Binding::i32(0);
+    let saved_count = Binding::new(0_i32);
     let _ = Divider.on_long_press(handler);
     let _ = Divider.sensory_feedback(Feedback::Success, &saved_count);
     let _ = Divider.on_tap(|| {
@@ -90,7 +90,7 @@ pub fn interaction_remaining_gestures_prose() {
     use waterui::gesture::{MagnificationGesture, RotationGesture};
 
     let _ = MagnificationGesture::new(1.0);
-    let _ = RotationGesture::new(0.0);
+    let _ = RotationGesture::new(Angle::ZERO);
 }
 
 // ---------------------------------------------------------------------------
@@ -118,7 +118,7 @@ pub fn interaction_event_payloads_prose() {
         );
     });
     let _ = Divider.gesture(MagnificationGesture::new(1.0), |_: MagnificationEvent| ());
-    let _ = Divider.gesture(RotationGesture::new(0.0), |_: RotationEvent| ());
+    let _ = Divider.gesture(RotationGesture::new(Angle::ZERO), |_: RotationEvent| ());
     let _ = Divider.event(HoverMove, |hover: HoverEvent| {
         let _ = hover.location();
     });
@@ -145,7 +145,7 @@ pub fn interaction_block_05() -> impl View {
     use core::time::Duration;
     use waterui::gesture::GestureEvent;
 
-    let status = Binding::container("Waiting…");
+    let status = Binding::new("Waiting…");
 
     let view = Divider;
     view.gesture(
@@ -175,7 +175,7 @@ pub fn interaction_combinators_prose() {
 // block.
 // ---------------------------------------------------------------------------
 pub fn interaction_hittable_prose() {
-    let can_interact = Binding::bool(true);
+    let can_interact = Binding::new(true);
     let _ = Divider.hittable(false);
     let _ = Divider.hittable(can_interact);
     let _ = Divider.disabled(false);
@@ -188,7 +188,7 @@ pub fn interaction_block_06() -> impl View {
     fn card() -> impl View {
         text("card")
     }
-    let is_hovered = Binding::bool(false);
+    let is_hovered = Binding::new(false);
 
     card()
         .on_hover_enter(|State(hovered): State<Binding<bool>>| hovered.set(true))
@@ -204,7 +204,7 @@ pub fn interaction_block_07() {
     fn link_row() -> impl View {
         text("link")
     }
-    let dragging = Binding::bool(false);
+    let dragging = Binding::new(false);
 
     let _ = { link_row().cursor(CursorStyle::PointingHand) };
 
@@ -280,8 +280,8 @@ pub mod interaction_block_08 {
     /// `+ use<>` keeps the borrowed parameters out of the returned view's
     /// lifetime, so the view escapes the caller exactly as a real screen needs.
     pub fn use_it() -> impl View {
-        let collected = Binding::container(Vec::<String>::new());
-        let hovering = Binding::bool(false);
+        let collected = Binding::new(Vec::<String>::new());
+        let hovering = Binding::new(false);
         vstack((fruit_card("Apple"), basket(&collected, &hovering)))
     }
 }
@@ -296,7 +296,7 @@ pub fn interaction_drop_extras_prose() {
     use waterui::drag_drop::DropInfo;
     use waterui::layout::Point;
 
-    let indicator = Binding::container(None::<Point>);
+    let indicator = Binding::new(None::<Point>);
     let _ = text("copy me").draggable(Str::from("payload"));
     let _ = Divider.drop_destination(|_text: Str| ());
     let _ = Divider
@@ -325,7 +325,7 @@ impl Transferable for GlueTransferable {}
 pub fn interaction_block_09() -> impl View {
     use waterui::key::{Key, KeyHandling, KeyPress, NamedKey};
 
-    let open = Binding::bool(false);
+    let open = Binding::new(false);
     let search_panel = || text("Search panel");
 
     search_panel()
@@ -363,7 +363,7 @@ pub fn interaction_key_accessors_prose() {
 // 0.0 here is the documented technique, not a visibility toggle.
 #[allow(unknown_lints, opacity_as_visibility)]
 pub fn interaction_block_10() -> impl View {
-    let is_hovered = Binding::bool(false);
+    let is_hovered = Binding::new(false);
 
     use waterui::animation::Animation;
 
