@@ -14,7 +14,6 @@ use crate::fullscreen::FullScreenOverlayHost;
 #[cfg(feature = "snackbar")]
 use crate::snackbar::SnackbarHost;
 use core::future::Future;
-use core::time::Duration;
 use nami::{
     Binding, Computed, Signal, SignalExt as _,
     signal::{IntoComputed, IntoSignal},
@@ -919,25 +918,6 @@ pub trait ViewExt: View + Sized {
         H: Handler<Args, ()>,
     {
         self.gesture(LongPressGesture::new(), action)
-    }
-    /// Adds a long-press gesture recognizer to this view.
-    ///
-    /// Temporary Step 1 migration bridge for `water-rs/waterui#4458` while
-    /// `hydrolysis-m3` updates off milliseconds to [`ViewExt::on_long_press`].
-    #[doc(hidden)]
-    fn on_long_press_gesture<H, Args>(
-        self,
-        minimum_duration_ms: u32,
-        action: H,
-    ) -> Metadata<GestureObserver, Self>
-    where
-        H: Handler<Args, ()>,
-    {
-        self.gesture(
-            LongPressGesture::new()
-                .minimum_duration(Duration::from_millis(u64::from(minimum_duration_ms))),
-            action,
-        )
     }
 
     /// Plays haptic `feedback` whenever `trigger`'s value changes.
