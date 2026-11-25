@@ -1456,7 +1456,7 @@ fn ts_on_tap_gesture_is_the_rust_gesture() {
     assert_same(
         "onTapGesture",
         &module(r#"waterui.jsx("Text", { onTapGesture: () => {}, children: "Tap me" })"#),
-        text("Tap me").on_tap_gesture(|| {}),
+        text("Tap me").on_tap(|| {}),
     );
 }
 

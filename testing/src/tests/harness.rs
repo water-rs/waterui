@@ -507,9 +507,7 @@ fn themed_builder_default_perf_requests_redraw() {
 // Origin: waterui `testing/src/tests.rs`.
 #[test]
 fn ui_test_hover_drag_and_magnify_update_semantic_bounds() {
-    use waterui::gesture::{
-        DragEvent, DragGesture, GestureObserver, MagnificationEvent, MagnificationGesture,
-    };
+    use waterui::gesture::{DragEvent, DragGesture, MagnificationEvent, MagnificationGesture};
     use waterui::prelude::text;
     use waterui::{Binding, SignalExt as _, ViewExt as _, state};
 
@@ -550,19 +548,19 @@ fn ui_test_hover_drag_and_magnify_update_semantic_bounds() {
                     .scale(scale.clone())
                     .opacity(hovered_opacity);
                 surface
-                    .gesture_observer(GestureObserver::new(
+                    .gesture(
                         DragGesture::new(0.0),
                         |DragOffset(offset): DragOffset, drag: DragEvent| {
                             offset.set(drag.translation().x);
                         },
-                    ))
+                    )
                     .state(&drag_offset_state)
-                    .gesture_observer(GestureObserver::new(
+                    .gesture(
                         MagnificationGesture::new(1.0),
                         |ZoomScale(scale): ZoomScale, magnification: MagnificationEvent| {
                             scale.set(magnification.scale());
                         },
-                    ))
+                    )
                     .state(&zoom_scale_state)
                     .on_hover_enter(|HoverState(hovered): HoverState| hovered.set(true))
                     .on_hover_exit(|HoverState(hovered): HoverState| hovered.set(false))

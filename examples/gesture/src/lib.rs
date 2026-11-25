@@ -8,7 +8,7 @@
 //! - Using `on_tap` convenience method
 //! - Non-primary pointer buttons (middle-click closes a tab)
 
-use core::time::Duration;
+use core::{num::NonZeroU32, time::Duration};
 
 use waterui::Identifiable;
 use waterui::app::{App, Windows};
@@ -55,9 +55,12 @@ fn double_tap_section(double_tap_count: &Binding<i32>) -> impl View + use<> {
         text("Double Tap Me!")
             .padding()
             .background(DOUBLE_TAP_COLOR.with_opacity(0.3))
-            .gesture(TapGesture::repeat(2), |State(c): State<Binding<i32>>| {
-                *c.get_mut() += 1;
-            })
+            .gesture(
+                TapGesture::repeat(NonZeroU32::new(2).unwrap()),
+                |State(c): State<Binding<i32>>| {
+                    *c.get_mut() += 1;
+                },
+            )
             .state(double_tap_count),
     ))
     .padding()
