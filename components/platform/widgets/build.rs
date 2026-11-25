@@ -32,7 +32,7 @@ fn main() {
 fn compile_apple_bridge() {
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     if target_os == "macos" || target_os == "ios" {
-        SwiftModule::new("WaterUIWidgetsBridge")
+        let _artifacts = SwiftModule::new("WaterUIWidgetsBridge")
             .swift_source("swift_bridge/AppleBridge.swift")
             .framework("Foundation")
             .framework("WidgetKit")
