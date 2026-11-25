@@ -1390,10 +1390,6 @@ pub enum VideoEvent {
     },
 }
 
-/// Temporary compatibility alias while `waterui-video-gpu` migrates to [`VideoEvent`].
-#[doc(hidden)]
-pub use VideoEvent as Event;
-
 /// Event-handler slot for the video components.
 ///
 /// Carries the user's [`VideoEvent`] callback as a [`BoxedEventAction`], the
