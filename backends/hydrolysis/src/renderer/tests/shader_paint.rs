@@ -61,10 +61,10 @@ fn render_view_pixels(painter: OffscreenPainter, view: impl Fn() -> AnyView + 's
 fn assert_shader_paint_and_flowing_gradient_render_and_react(
     open_painter: fn() -> OffscreenPainter,
 ) {
-    let uniforms = Binding::container(vec![0.1_f32, 0.0, 0.0, 0.0]);
+    let param0 = Binding::f32(0.1_f32);
     let continuous = Binding::container(false);
     let painter = open_painter();
-    let uniforms_for_view = uniforms.clone();
+    let param0_for_view = param0.clone();
     let continuous_for_view = continuous.clone();
     let mut runtime = HeadlessRuntime::new_for_tests_on_context(
         painter,
@@ -72,7 +72,9 @@ fn assert_shader_paint_and_flowing_gradient_render_and_react(
         AnyViewBuilder::<AnyView>::new(move || {
             AnyView::new(
                 ShaderPaintView::new(TIME_SHADER)
-                    .uniforms(uniforms_for_view.clone())
+                    .expect("TIME_SHADER is valid WGSL")
+                    .param(param0_for_view.clone())
+                    .expect("single parameter fits capacity")
                     .continuous(continuous_for_view.clone())
                     .size(48.0, 32.0),
             )
@@ -90,11 +92,11 @@ fn assert_shader_paint_and_flowing_gradient_render_and_react(
         "a static ShaderPaintView must settle after its initial render"
     );
 
-    // Updating `uniforms` invalidates the scene and changes the blue channel.
-    uniforms.set(vec![0.9_f32, 0.0, 0.0, 0.0]);
+    // Updating the bound parameter invalidates the scene and changes the blue channel.
+    param0.set(0.9_f32);
     assert!(
         !runtime.is_settled(),
-        "changing `uniforms` must mark the window pending"
+        "changing a bound parameter must mark the window pending"
     );
     let after_uniforms = capture_at(&mut runtime, t0 + Duration::from_millis(32));
     let center = (16 * 48 + 24) * 4;
@@ -150,13 +152,15 @@ fn shader_paint_and_flowing_gradient_render_and_react_on_cpu_painter() {
 #[cfg(all(hydrolysis_gpu_painter, hydrolysis_cpu_painter))]
 #[test]
 fn shader_paint_is_visually_equivalent_across_gpu_cpu_and_gpu_content() {
-    let params = || vec![0.9_f32, 0.2, 0.1, 1.0, 0.1, 0.4, 0.95, 1.0];
+    let params = [0.9_f32, 0.2, 0.1, 1.0, 0.1, 0.4, 0.95, 1.0];
     let cpu_pixels = render_view_pixels(
         OffscreenPainter::open_cpu().expect("CPU painter opens"),
         move || {
             AnyView::new(
                 ShaderPaintView::new(RAMP_SHADER)
-                    .uniforms(params())
+                    .expect("RAMP_SHADER is valid WGSL")
+                    .params(params)
+                    .expect("8 params fit capacity")
                     .size(64.0, 32.0),
             )
         },
@@ -166,7 +170,9 @@ fn shader_paint_is_visually_equivalent_across_gpu_cpu_and_gpu_content() {
         move || {
             AnyView::new(
                 ShaderPaintView::new(RAMP_SHADER)
-                    .uniforms(params())
+                    .expect("RAMP_SHADER is valid WGSL")
+                    .params(params)
+                    .expect("8 params fit capacity")
                     .size(64.0, 32.0),
             )
         },
@@ -176,7 +182,9 @@ fn shader_paint_is_visually_equivalent_across_gpu_cpu_and_gpu_content() {
         move || {
             AnyView::new(
                 ShaderPaintView::new(RAMP_SHADER)
-                    .uniforms(params())
+                    .expect("RAMP_SHADER is valid WGSL")
+                    .params(params)
+                    .expect("8 params fit capacity")
                     .into_gpu_view()
                     .size(64.0, 32.0),
             )

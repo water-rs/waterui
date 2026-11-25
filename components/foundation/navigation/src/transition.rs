@@ -11,6 +11,9 @@ use core::{
 use waterui_core::{
     Environment, Metadata, View, contract_violation, id::Id, metadata::MetadataKey,
 };
+use waterui_structural_transition::{
+    PropertyTransition, Transition, TransitionProperties, TransitionSpec,
+};
 
 trait KeyTable: Any {
     fn as_any_mut(&mut self) -> &mut dyn Any;
@@ -251,102 +254,58 @@ pub enum NavigationTransitionDirection {
     Pop,
 }
 
-/// Per-layer values resolved by a custom navigation transition.
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[non_exhaustive]
-pub struct NavigationTransitionLayer {
-    /// Horizontal offset as a fraction of the navigation viewport width.
-    offset_x: f32,
-    /// Vertical offset as a fraction of the navigation viewport height.
-    offset_y: f32,
-    /// Uniform scale.
-    scale: f32,
-    /// Layer opacity.
-    opacity: f32,
+/// Converts a core [`Transition`] or [`TransitionSpec`] into a [`TransitionSpec`].
+pub trait IntoTransitionSpec<Marker> {
+    /// Converts `self` into a [`TransitionSpec`].
+    fn into_transition_spec(self) -> TransitionSpec;
 }
 
-impl NavigationTransitionLayer {
-    /// Horizontal offset as a fraction of the navigation viewport width.
-    #[must_use]
-    pub const fn offset_x(&self) -> f32 {
-        self.offset_x
-    }
-
-    /// Vertical offset as a fraction of the navigation viewport height.
-    #[must_use]
-    pub const fn offset_y(&self) -> f32 {
-        self.offset_y
-    }
-
-    /// Uniform scale.
-    #[must_use]
-    pub const fn scale(&self) -> f32 {
-        self.scale
-    }
-
-    /// Layer opacity.
-    #[must_use]
-    pub const fn opacity(&self) -> f32 {
-        self.opacity
+impl<T: Transition> IntoTransitionSpec<CoreTransitionMarker> for T {
+    fn into_transition_spec(self) -> TransitionSpec {
+        TransitionSpec::new(self)
     }
 }
 
-impl NavigationTransitionLayer {
-    /// An unchanged, fully visible layer.
-    pub const IDENTITY: Self = Self::new(0.0, 0.0, 1.0, 1.0);
+impl IntoTransitionSpec<TransitionSpecMarker> for TransitionSpec {
+    fn into_transition_spec(self) -> TransitionSpec {
+        self
+    }
+}
 
-    /// A layer offset by `offset_x` and `offset_y` viewport fractions,
-    /// scaled by `scale`, at `opacity`.
+/// The pair of core transitions driving one navigation step: `incoming` runs
+/// its insertion on the arriving page and `outgoing` runs its removal on the
+/// departing page.
+#[derive(Debug, Clone)]
+pub struct NavigationTransitionPair {
+    /// Core transition whose insertion animates the arriving page.
+    pub incoming: TransitionSpec,
+    /// Core transition whose removal animates the departing page.
+    pub outgoing: TransitionSpec,
+}
+
+impl NavigationTransitionPair {
+    /// A pair applying `incoming` to the arriving page and `outgoing` to the
+    /// departing page.
     #[must_use]
-    pub const fn new(offset_x: f32, offset_y: f32, scale: f32, opacity: f32) -> Self {
+    pub fn new<IncomingMarker, OutgoingMarker>(
+        incoming: impl IntoTransitionSpec<IncomingMarker>,
+        outgoing: impl IntoTransitionSpec<OutgoingMarker>,
+    ) -> Self {
         Self {
-            offset_x,
-            offset_y,
-            scale,
-            opacity,
+            incoming: incoming.into_transition_spec(),
+            outgoing: outgoing.into_transition_spec(),
         }
     }
-}
 
-/// One resolved frame of a navigation transition.
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[non_exhaustive]
-pub struct NavigationTransitionFrame {
-    /// Transform and opacity applied to the page that was active.
-    outgoing: NavigationTransitionLayer,
-    /// Transform and opacity applied to the page becoming active.
-    incoming: NavigationTransitionLayer,
-}
-
-impl NavigationTransitionFrame {
-    /// Transform and opacity applied to the page that was active.
+    /// A symmetric pair applying the same transition to both pages: its
+    /// insertion on the arriving page and its removal on the departing page.
     #[must_use]
-    pub const fn outgoing(&self) -> NavigationTransitionLayer {
-        self.outgoing
-    }
-
-    /// Transform and opacity applied to the page becoming active.
-    #[must_use]
-    pub const fn incoming(&self) -> NavigationTransitionLayer {
-        self.incoming
-    }
-}
-
-impl NavigationTransitionFrame {
-    /// A frame with no visual transition.
-    pub const IDENTITY: Self = Self::new(
-        NavigationTransitionLayer::IDENTITY,
-        NavigationTransitionLayer::IDENTITY,
-    );
-
-    /// A frame applying `outgoing` to the page that was active and `incoming`
-    /// to the page becoming active.
-    #[must_use]
-    pub const fn new(
-        outgoing: NavigationTransitionLayer,
-        incoming: NavigationTransitionLayer,
-    ) -> Self {
-        Self { outgoing, incoming }
+    pub fn symmetric<SpecMarker>(spec: impl IntoTransitionSpec<SpecMarker>) -> Self {
+        let spec = spec.into_transition_spec();
+        Self {
+            incoming: spec.clone(),
+            outgoing: spec,
+        }
     }
 }
 
@@ -354,7 +313,8 @@ impl NavigationTransitionFrame {
 ///
 /// This is deliberately independent of [`NavigationTransition::native`]: a
 /// custom transition is free to report a platform-native projection for Apple
-/// and Android while still resolving its own frames on a retained renderer.
+/// and Android while still supplying its own core transitions on a retained
+/// renderer.
 #[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[expect(
@@ -366,35 +326,28 @@ pub enum RetainedNavigationTransition {
     PlatformDefault,
     /// Animate geometry matched by this identity across the two pages.
     MatchedGeometry(Id),
-    /// Sample [`NavigationTransition::frame`] for every step.
-    Frames,
+    /// Run [`NavigationTransition::transitions`] through the core transition
+    /// engine, using each spec's own animation timing.
+    Transitions,
     /// Apply the transaction with no animation at all.
     None,
 }
 
-/// A navigation transition executable by retained renderers.
+/// A navigation transition executable by retained renderers through core
+/// [`TransitionSpec`]s.
 ///
-/// Apple and Android negotiate [`Self::native`] first. A transition that does
-/// not expose a native representation is reported as custom; native backends
-/// log a warning and apply the transaction without animation.
-///
-/// Retained renderers such as Hydrolysis dispatch on [`Self::retained`], which
-/// defaults to [`RetainedNavigationTransition::Frames`] — so a custom
-/// transition's [`Self::frame`] is always what runs unless it explicitly asks
-/// to be rendered some other way.
+/// Native backends negotiate [`Self::native`] first. Retained renderers such
+/// as Hydrolysis dispatch on [`Self::retained`], which defaults to
+/// [`RetainedNavigationTransition::Transitions`] — running the pair returned
+/// by [`Self::transitions`].
 pub trait NavigationTransition: Debug + 'static {
-    /// Resolves a normalized transition frame.
+    /// Returns the core `(incoming, outgoing)` transitions for `direction`.
     ///
-    /// `progress` is in the inclusive range `0.0..=1.0`. The default is the
-    /// identity frame, which is only ever sampled by transitions that opt out
-    /// of [`RetainedNavigationTransition::Frames`].
-    fn frame(
-        &self,
-        progress: f32,
-        direction: NavigationTransitionDirection,
-    ) -> NavigationTransitionFrame {
-        let _ = (progress, direction);
-        NavigationTransitionFrame::IDENTITY
+    /// The default is the identity pair, used only by transitions that opt out
+    /// of [`RetainedNavigationTransition::Transitions`].
+    fn transitions(&self, direction: NavigationTransitionDirection) -> NavigationTransitionPair {
+        let _ = direction;
+        NavigationTransitionPair::symmetric(PropertyTransition::new(TransitionProperties::IDENTITY))
     }
 
     /// Returns a platform-native representation when one exists.
@@ -406,7 +359,7 @@ pub trait NavigationTransition: Debug + 'static {
     /// Returns how a retained renderer should execute this transition.
     #[doc(hidden)]
     fn retained(&self) -> RetainedNavigationTransition {
-        RetainedNavigationTransition::Frames
+        RetainedNavigationTransition::Transitions
     }
 
     /// Resolves any container-scoped transition keys against `env`.
@@ -433,32 +386,13 @@ impl AnyNavigationTransition {
         Self(alloc::rc::Rc::new(transition))
     }
 
-    /// Resolves a frame for a retained renderer.
-    ///
-    /// # Contract violation
-    ///
-    /// `progress` must be within `0.0..=1.0`. Otherwise a debug build
-    /// panics; a release build logs it and clamps the progress into the
-    /// range (`NaN` becomes `0.0`).
+    /// Returns the core `(incoming, outgoing)` transitions for `direction`.
     #[must_use]
-    pub fn frame(
+    pub fn transitions(
         &self,
-        progress: f32,
         direction: NavigationTransitionDirection,
-    ) -> NavigationTransitionFrame {
-        let progress = if (0.0..=1.0).contains(&progress) {
-            progress
-        } else {
-            contract_violation!(
-                "navigation transition progress must be in 0.0..=1.0; the progress is clamped into the range"
-            );
-            if progress.is_nan() {
-                0.0
-            } else {
-                progress.clamp(0.0, 1.0)
-            }
-        };
-        self.0.frame(progress, direction)
+    ) -> NavigationTransitionPair {
+        self.0.transitions(direction)
     }
 
     /// Resolves the native capability projection.
@@ -486,12 +420,8 @@ impl AnyNavigationTransition {
 }
 
 impl NavigationTransition for AnyNavigationTransition {
-    fn frame(
-        &self,
-        progress: f32,
-        direction: NavigationTransitionDirection,
-    ) -> NavigationTransitionFrame {
-        self.0.frame(progress, direction)
+    fn transitions(&self, direction: NavigationTransitionDirection) -> NavigationTransitionPair {
+        self.0.transitions(direction)
     }
 
     fn native(&self) -> Option<NativeNavigationTransition> {
@@ -500,6 +430,59 @@ impl NavigationTransition for AnyNavigationTransition {
 
     fn retained(&self) -> RetainedNavigationTransition {
         self.0.retained()
+    }
+}
+
+/// Marker for [`IntoNavigationTransition`] implemented by [`NavigationTransition`] types.
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct NavigationTransitionMarker;
+
+/// Marker for [`IntoNavigationTransition`] implemented by core [`Transition`] types.
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct CoreTransitionMarker;
+
+/// Marker for [`IntoNavigationTransition`] implemented by [`TransitionSpec`].
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct TransitionSpecMarker;
+
+/// Marker for [`IntoNavigationTransition`] implemented by [`NavigationTransitionPair`].
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct NavigationTransitionPairMarker;
+
+/// Converts a navigation transition, a core [`Transition`], a [`TransitionSpec`],
+/// or a [`NavigationTransitionPair`] into an [`AnyNavigationTransition`].
+pub trait IntoNavigationTransition<Marker> {
+    /// Erases `self` into an [`AnyNavigationTransition`].
+    fn into_navigation_transition(self) -> AnyNavigationTransition;
+}
+
+impl<T: NavigationTransition> IntoNavigationTransition<NavigationTransitionMarker> for T {
+    fn into_navigation_transition(self) -> AnyNavigationTransition {
+        AnyNavigationTransition::new(self)
+    }
+}
+
+impl<T: Transition> IntoNavigationTransition<CoreTransitionMarker> for T {
+    fn into_navigation_transition(self) -> AnyNavigationTransition {
+        AnyNavigationTransition::new(navigation_transition::Pair::symmetric(TransitionSpec::new(
+            self,
+        )))
+    }
+}
+
+impl IntoNavigationTransition<TransitionSpecMarker> for TransitionSpec {
+    fn into_navigation_transition(self) -> AnyNavigationTransition {
+        AnyNavigationTransition::new(navigation_transition::Pair::symmetric(self))
+    }
+}
+
+impl IntoNavigationTransition<NavigationTransitionPairMarker> for NavigationTransitionPair {
+    fn into_navigation_transition(self) -> AnyNavigationTransition {
+        AnyNavigationTransition::new(navigation_transition::Pair(self))
     }
 }
 
@@ -531,11 +514,12 @@ pub mod navigation_transition {
     };
 
     use super::{
-        AnyNavigationTransition, NativeNavigationTransition, NavigationTransition,
-        NavigationTransitionDirection, NavigationTransitionFrame, NavigationTransitionLayer,
+        AnyNavigationTransition, IntoTransitionSpec, NativeNavigationTransition,
+        NavigationTransition, NavigationTransitionDirection, NavigationTransitionPair,
         RetainedNavigationTransition, resolve_transition_key,
     };
     use waterui_core::{Environment, contract_violation, id::Id};
+    use waterui_structural_transition::{PropertyTransition, Transition as _};
 
     /// Platform-default navigation motion.
     #[derive(Debug, Clone, Copy, Default)]
@@ -544,6 +528,45 @@ pub mod navigation_transition {
     /// Cross-fade navigation motion.
     #[derive(Debug, Clone, Copy, Default)]
     pub struct Fade;
+
+    /// A pair of core transitions for incoming and outgoing pages.
+    #[derive(Debug, Clone)]
+    pub struct Pair(pub(super) NavigationTransitionPair);
+
+    impl Pair {
+        /// Builds a pair from separate `incoming` and `outgoing` transitions.
+        #[must_use]
+        pub fn new<IncomingMarker, OutgoingMarker>(
+            incoming: impl IntoTransitionSpec<IncomingMarker>,
+            outgoing: impl IntoTransitionSpec<OutgoingMarker>,
+        ) -> Self {
+            Self(NavigationTransitionPair::new(incoming, outgoing))
+        }
+
+        /// Builds a symmetric pair using `spec` for both insertion and removal.
+        #[must_use]
+        pub fn symmetric<SpecMarker>(spec: impl IntoTransitionSpec<SpecMarker>) -> Self {
+            Self(NavigationTransitionPair::symmetric(spec))
+        }
+    }
+
+    impl NavigationTransition for Pair {
+        fn transitions(
+            &self,
+            _direction: NavigationTransitionDirection,
+        ) -> NavigationTransitionPair {
+            self.0.clone()
+        }
+    }
+
+    /// Pairs separate `incoming` and `outgoing` core transitions.
+    #[must_use]
+    pub fn pair<IncomingMarker, OutgoingMarker>(
+        incoming: impl IntoTransitionSpec<IncomingMarker>,
+        outgoing: impl IntoTransitionSpec<OutgoingMarker>,
+    ) -> Pair {
+        Pair::new(incoming, outgoing)
+    }
 
     enum ZoomState<K> {
         Unresolved(Option<K>),
@@ -618,21 +641,11 @@ pub mod navigation_transition {
     }
 
     impl NavigationTransition for Fade {
-        fn frame(
+        fn transitions(
             &self,
-            progress: f32,
             _direction: NavigationTransitionDirection,
-        ) -> NavigationTransitionFrame {
-            NavigationTransitionFrame {
-                outgoing: NavigationTransitionLayer {
-                    opacity: 1.0 - progress,
-                    ..NavigationTransitionLayer::IDENTITY
-                },
-                incoming: NavigationTransitionLayer {
-                    opacity: progress,
-                    ..NavigationTransitionLayer::IDENTITY
-                },
-            }
+        ) -> NavigationTransitionPair {
+            NavigationTransitionPair::symmetric(PropertyTransition::opacity())
         }
 
         fn native(&self) -> Option<NativeNavigationTransition> {
@@ -640,19 +653,11 @@ pub mod navigation_transition {
         }
     }
 
-    fn zoom_frame(progress: f32) -> NavigationTransitionFrame {
-        NavigationTransitionFrame {
-            outgoing: NavigationTransitionLayer {
-                scale: 1.0 + 0.05 * progress,
-                opacity: 1.0 - progress,
-                ..NavigationTransitionLayer::IDENTITY
-            },
-            incoming: NavigationTransitionLayer {
-                scale: 0.85 + 0.15 * progress,
-                opacity: progress,
-                ..NavigationTransitionLayer::IDENTITY
-            },
-        }
+    fn zoom_transitions() -> NavigationTransitionPair {
+        NavigationTransitionPair::new(
+            PropertyTransition::opacity().combined(PropertyTransition::scale(0.85)),
+            PropertyTransition::opacity().combined(PropertyTransition::scale(1.05)),
+        )
     }
 
     impl<K: Hash + Eq + 'static> Zoom<K> {
@@ -665,12 +670,11 @@ pub mod navigation_transition {
     }
 
     impl<K: Hash + Eq + 'static> NavigationTransition for Zoom<K> {
-        fn frame(
+        fn transitions(
             &self,
-            progress: f32,
             _direction: NavigationTransitionDirection,
-        ) -> NavigationTransitionFrame {
-            zoom_frame(progress)
+        ) -> NavigationTransitionPair {
+            zoom_transitions()
         }
 
         fn native(&self) -> Option<NativeNavigationTransition> {
@@ -715,12 +719,11 @@ pub mod navigation_transition {
     }
 
     impl NavigationTransition for ResolvedZoom {
-        fn frame(
+        fn transitions(
             &self,
-            progress: f32,
             _direction: NavigationTransitionDirection,
-        ) -> NavigationTransitionFrame {
-            zoom_frame(progress)
+        ) -> NavigationTransitionPair {
+            zoom_transitions()
         }
 
         fn native(&self) -> Option<NativeNavigationTransition> {
@@ -733,14 +736,6 @@ pub mod navigation_transition {
     }
 
     impl NavigationTransition for None {
-        fn frame(
-            &self,
-            _progress: f32,
-            _direction: NavigationTransitionDirection,
-        ) -> NavigationTransitionFrame {
-            NavigationTransitionFrame::IDENTITY
-        }
-
         fn native(&self) -> Option<NativeNavigationTransition> {
             Some(NativeNavigationTransition::None)
         }
@@ -754,53 +749,34 @@ pub mod navigation_transition {
 #[cfg(test)]
 mod tests {
     use super::{
-        AnyNavigationTransition, NativeNavigationTransition, NavigationTransition,
-        NavigationTransitionDirection, NavigationTransitionFrame, NavigationTransitionLayer,
+        AnyNavigationTransition, IntoNavigationTransition as _, NativeNavigationTransition,
+        NavigationTransition, NavigationTransitionDirection, NavigationTransitionPair,
         NavigationTransitionViewExt as _, RetainedNavigationTransition, TransitionKeyRegistry,
         navigation_transition, resolve_transition_key,
     };
     use crate::{IntoNavigationStackLayout as _, NavigationStack, NavigationView};
+    use waterui_core::layout::{LayoutDirection, Size};
     use waterui_core::{AnyView, Environment};
-
-    #[test]
-    #[cfg_attr(
-        debug_assertions,
-        should_panic(expected = "navigation transition progress must be in 0.0..=1.0")
-    )]
-    fn out_of_range_progress_is_clamped() {
-        let transition = AnyNavigationTransition::new(navigation_transition::fade());
-        let direction = NavigationTransitionDirection::Push;
-
-        // Release outcome: the progress is clamped into the range.
-        assert_eq!(
-            transition.frame(2.0, direction),
-            transition.frame(1.0, direction)
-        );
-        assert_eq!(
-            transition.frame(f32::NAN, direction),
-            transition.frame(0.0, direction)
-        );
-    }
+    use waterui_structural_transition::{
+        PropertyTransition, Transition as _, TransitionGeometry, TransitionPhase,
+        TransitionProperties,
+    };
 
     /// A transition that wants the platform's own motion on Apple and Android
-    /// but draws its own curve everywhere else — the combination that used to
-    /// lose its frames on a retained renderer.
+    /// but draws its own core transitions everywhere else — the combination
+    /// that used to lose its custom transitions on a retained renderer.
     #[derive(Debug)]
-    struct NativelyAutomaticButCustomFrames;
+    struct NativelyAutomaticButCustomTransitions;
 
-    impl NavigationTransition for NativelyAutomaticButCustomFrames {
-        fn frame(
+    impl NavigationTransition for NativelyAutomaticButCustomTransitions {
+        fn transitions(
             &self,
-            progress: f32,
             _direction: NavigationTransitionDirection,
-        ) -> NavigationTransitionFrame {
-            NavigationTransitionFrame {
-                outgoing: NavigationTransitionLayer {
-                    scale: 1.0 - progress,
-                    ..NavigationTransitionLayer::IDENTITY
-                },
-                incoming: NavigationTransitionLayer::IDENTITY,
-            }
+        ) -> NavigationTransitionPair {
+            NavigationTransitionPair::new(
+                PropertyTransition::new(TransitionProperties::IDENTITY),
+                PropertyTransition::scale(0.0),
+            )
         }
 
         fn native(&self) -> Option<NativeNavigationTransition> {
@@ -809,20 +785,56 @@ mod tests {
     }
 
     /// Requesting a platform-native projection must not cost a transition its
-    /// own frames: the two capabilities are negotiated independently.
+    /// own core transitions: the two capabilities are negotiated independently.
     #[test]
-    fn a_native_projection_does_not_suppress_custom_frames() {
-        let transition = AnyNavigationTransition::new(NativelyAutomaticButCustomFrames);
+    fn a_native_projection_does_not_suppress_custom_transitions() {
+        let transition = AnyNavigationTransition::new(NativelyAutomaticButCustomTransitions);
 
         assert_eq!(transition.native(), NativeNavigationTransition::Automatic);
-        assert_eq!(transition.retained(), RetainedNavigationTransition::Frames);
-        let scale = transition
-            .frame(1.0, NavigationTransitionDirection::Push)
+        assert_eq!(
+            transition.retained(),
+            RetainedNavigationTransition::Transitions
+        );
+        let pair = transition.transitions(NavigationTransitionDirection::Push);
+        let geometry =
+            TransitionGeometry::new(Size::new(320.0, 200.0), LayoutDirection::LeftToRight);
+        let scale = pair
             .outgoing
-            .scale;
+            .transition()
+            .properties(TransitionPhase::Removal, 1.0, geometry)
+            .scale[0];
         assert!(
             scale.abs() <= f32::EPSILON,
             "the retained renderer must sample this transition's own curve, got {scale}"
+        );
+    }
+
+    #[test]
+    fn core_property_transition_converts_into_navigation_transition() {
+        let transition = PropertyTransition::opacity().into_navigation_transition();
+        assert_eq!(transition.native(), NativeNavigationTransition::Custom);
+        assert_eq!(
+            transition.retained(),
+            RetainedNavigationTransition::Transitions
+        );
+        let pair = transition.transitions(NavigationTransitionDirection::Push);
+        let geometry =
+            TransitionGeometry::new(Size::new(320.0, 200.0), LayoutDirection::LeftToRight);
+        assert!(
+            pair.incoming
+                .transition()
+                .properties(TransitionPhase::Insertion, 1.0, geometry)
+                .opacity
+                .abs()
+                <= f32::EPSILON
+        );
+        assert!(
+            pair.outgoing
+                .transition()
+                .properties(TransitionPhase::Removal, 1.0, geometry)
+                .opacity
+                .abs()
+                <= f32::EPSILON
         );
     }
 
@@ -839,7 +851,7 @@ mod tests {
         );
         assert_eq!(
             AnyNavigationTransition::new(navigation_transition::fade()).retained(),
-            RetainedNavigationTransition::Frames
+            RetainedNavigationTransition::Transitions
         );
         assert_eq!(
             AnyNavigationTransition::new(navigation_transition::none()).retained(),
@@ -883,7 +895,7 @@ mod tests {
             "Gallery",
             ().navigation_transition_source(PhotoRoute(3)),
         ))
-        .transition(navigation_transition::zoom(PhotoRoute(3)))
+        .page_transition(navigation_transition::zoom(PhotoRoute(3)))
         .into_layout::<AnyView>();
         stack_layout.transition = stack_layout.transition.resolve(&stack_env);
 
@@ -896,7 +908,7 @@ mod tests {
 
         let mut resolved_page =
             NavigationView::new("Photo", ().navigation_transition_destination(PhotoRoute(3)))
-                .transition(navigation_transition::zoom(PhotoRoute(3)))
+                .page_transition(navigation_transition::zoom(PhotoRoute(3)))
                 .into_resolved::<AnyView>();
         resolved_page.resolve_native_fields(&stack_env);
         let page_zoom_id = match resolved_page

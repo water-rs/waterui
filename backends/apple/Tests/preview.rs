@@ -1131,7 +1131,9 @@ mod suite {
         const SHADER: &str = include_str!("gpu_set.wgsl");
         vstack((
             text("GPU canvas + filtered views").title(),
-            waterui::graphics::ShaderPaintView::new(SHADER).size(320.0, 96.0),
+            waterui::graphics::ShaderPaintView::new(SHADER)
+                .expect("gpu_set.wgsl is valid")
+                .size(320.0, 96.0),
             text("filtered: grayscale + blur")
                 .grayscale(0.8_f32)
                 .blur(2.0_f32),
@@ -1259,7 +1261,9 @@ mod suite {
             button("Continue")
                 .style(ButtonStyle::BorderedProminent)
                 .action(|| {}),
-            ShaderPaintView::new(SHADER).size(240.0, 96.0),
+            ShaderPaintView::new(SHADER)
+                .expect("gpu_set.wgsl is valid")
+                .size(240.0, 96.0),
         ))
         .spacing(16.0)
         .padding()
@@ -1556,7 +1560,9 @@ mod suite {
         vstack((
             Color::srgb(234, 67, 53).size(120.0, 40.0),
             Color::p3(1.0, 0.0, 0.0).size(120.0, 40.0),
-            ShaderPaintView::new(SHADER).size(120.0, 40.0),
+            ShaderPaintView::new(SHADER)
+                .expect("gpu_set.wgsl is valid")
+                .size(120.0, 40.0),
         ))
         .spacing(0.0)
         .size(120.0, 120.0)

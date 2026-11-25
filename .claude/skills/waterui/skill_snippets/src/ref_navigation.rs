@@ -237,7 +237,7 @@ pub fn navigation_path_operations_prose(navigator: Navigator<MailRoute>) -> impl
     let _ = (path.len(), path.is_empty(), path.snapshot());
     path.truncate(0);
 
-    NavigationStack::new(inbox_root(Mail)).transition(navigation_transition::automatic())
+    NavigationStack::new(inbox_root(Mail)).page_transition(navigation_transition::automatic())
 }
 
 pub fn navigation_route_free_link_prose() -> impl View {
@@ -410,17 +410,20 @@ pub fn navigation_toolbar_prose() {
 // Method-fragment listing applied to a navigation destination receiver.
 // ---------------------------------------------------------------------------
 pub fn navigation_block_09() {
+    use waterui::PropertyTransition;
     use waterui::navigation::navigation_transition;
 
     #[derive(Clone, Copy, Hash, PartialEq, Eq)]
     struct PhotoRoute(usize);
 
     let dest = message_list(Mail).navigation_title("Inbox");
-    let _ = { dest.transition(navigation_transition::zoom(PhotoRoute(1))) };
+    let _ = { dest.page_transition(navigation_transition::zoom(PhotoRoute(1))) };
     let dest = message_list(Mail).navigation_title("Inbox");
-    let _ = { dest.transition(navigation_transition::fade()) };
+    let _ = { dest.page_transition(navigation_transition::fade()) };
     let dest = message_list(Mail).navigation_title("Inbox");
-    let _ = { dest.transition(navigation_transition::none()) };
+    let _ = { dest.page_transition(navigation_transition::none()) };
+    let dest = message_list(Mail).navigation_title("Inbox");
+    let _ = { dest.page_transition(PropertyTransition::opacity()) };
 }
 
 // ---------------------------------------------------------------------------
