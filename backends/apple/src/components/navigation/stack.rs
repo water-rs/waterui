@@ -202,7 +202,9 @@ mod platform {
     use crate::theme::platform_color;
     use crate::transition::live::LiveChild;
 
-    use super::super::bar::{BarItem, BarState, bar_item_frame, search_prompt};
+    use super::super::bar::{
+        BarItem, BarState, bar_item_frame, ios_suggestions_controller, search_prompt,
+    };
     use super::{Fill, Ghosts, Mount, Sink, is_claimed, page_transition, retire_page};
 
     /// A pending transaction: it completes when `UINavigationController`
@@ -830,28 +832,22 @@ mod platform {
         keep: &mut KeepAlive,
     ) -> NavSearch {
         let prompt = search_prompt(search, env);
-        let results_view = suggestions.map(|slot| {
-            let mtm = controller.mtm();
-            let leaf = renderer.realize(slot.build());
-            let host = HostView::new(mtm, KitRect::ZERO);
-            host.set_layout_handler(|host| {
-                let rect = view::bounds(host);
-                for subview in view::subviews(host) {
-                    view::set_frame(&subview, rect);
-                }
-            });
-            let live = LiveChild::mount(leaf, &host, None);
-            let retained = view::retain_base(&*host);
+        let (results_host, sync_results) =
+            ios_suggestions_controller(controller.mtm(), None, suggestions, renderer, keep);
+        let results_view = results_host.as_ref().map(|host| view::retain_base(&**host));
+        if let Some(host) = results_host {
             keep.keep(host);
-            keep.keep(live);
-            retained
-        });
+        }
+        let initial_active = search.active().is_some_and(Signal::snapshot);
+        if initial_active {
+            sync_results(true);
+        }
         let config = NavSearch {
             placeholder: prompt
                 .as_ref()
                 .map(|prompt| prompt.snapshot().to_plain().to_string()),
             text: search.text().snapshot().to_string(),
-            active: search.active().is_some_and(Signal::snapshot),
+            active: initial_active,
             results_view,
             // `.automatic`: on iOS 26 a page pushed by a collapsed split
             // carries the field in the bottom toolbar, matching the
@@ -873,18 +869,24 @@ mod platform {
                 let _ = on_submit.call(&env);
             });
         }
-        if let Some(active) = search.active().cloned() {
-            controller.set_search_active_change_handler({
-                let active = active.clone();
-                move |is_active| {
-                    if active.snapshot() != is_active {
-                        active.set(is_active);
-                    }
+        controller.set_search_active_change_handler({
+            let active = search.active().cloned();
+            let sync_results = Rc::clone(&sync_results);
+            move |is_active| {
+                if let Some(active) = active.as_ref()
+                    && active.snapshot() != is_active
+                {
+                    active.set(is_active);
                 }
-            });
+                sync_results(is_active);
+            }
+        });
+        if let Some(active) = search.active().cloned() {
             let target = controller.clone();
+            let sync_results = Rc::clone(&sync_results);
             keep.bind(&active, move |is_active| {
                 target.set_search_active(is_active);
+                sync_results(is_active);
             });
         }
         let target = controller.clone();

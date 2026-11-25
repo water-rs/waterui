@@ -488,15 +488,20 @@ define_class!(
             &self,
             search_controller: &UISearchController,
         ) {
-            let handler = self.ivars().change.borrow().clone();
-            if let Some(handler) = handler {
-                let text = search_controller
-                    .searchBar()
-                    .text()
-                    .unwrap_or_default()
-                    .to_string();
-                handler(text);
-            }
+            guarded(
+                "SearchUpdater updateSearchResultsForSearchController:",
+                || {
+                    let handler = self.ivars().change.borrow().clone();
+                    if let Some(handler) = handler {
+                        let text = search_controller
+                            .searchBar()
+                            .text()
+                            .unwrap_or_default()
+                            .to_string();
+                        handler(text);
+                    }
+                },
+            );
         }
     }
 
@@ -507,10 +512,12 @@ define_class!(
     unsafe impl UISearchBarDelegate for SearchUpdater {
         #[unsafe(method(searchBarSearchButtonClicked:))]
         fn search_bar_search_button_clicked(&self, _search_bar: &UISearchBar) {
-            let handler = self.ivars().submit.borrow().clone();
-            if let Some(handler) = handler {
-                handler();
-            }
+            guarded("SearchUpdater searchBarSearchButtonClicked:", || {
+                let handler = self.ivars().submit.borrow().clone();
+                if let Some(handler) = handler {
+                    handler();
+                }
+            });
         }
     }
 
@@ -518,18 +525,22 @@ define_class!(
     unsafe impl UISearchControllerDelegate for SearchUpdater {
         #[unsafe(method(didPresentSearchController:))]
         fn did_present_search_controller(&self, _search_controller: &UISearchController) {
-            let handler = self.ivars().active_change.borrow().clone();
-            if let Some(handler) = handler {
-                handler(true);
-            }
+            guarded("SearchUpdater didPresentSearchController:", || {
+                let handler = self.ivars().active_change.borrow().clone();
+                if let Some(handler) = handler {
+                    handler(true);
+                }
+            });
         }
 
         #[unsafe(method(didDismissSearchController:))]
         fn did_dismiss_search_controller(&self, _search_controller: &UISearchController) {
-            let handler = self.ivars().active_change.borrow().clone();
-            if let Some(handler) = handler {
-                handler(false);
-            }
+            guarded("SearchUpdater didDismissSearchController:", || {
+                let handler = self.ivars().active_change.borrow().clone();
+                if let Some(handler) = handler {
+                    handler(false);
+                }
+            });
         }
     }
 );

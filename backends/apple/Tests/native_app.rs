@@ -1894,6 +1894,7 @@ mod navigation {
         let query = binding(Str::from("mail"));
         let active = binding(false);
         let submits = Rc::new(Cell::new(0usize));
+        let suggestion_builds = Rc::new(Cell::new(0usize));
         let page = NavigationView::new("Mail", text("inbox"))
             .searchable(&query)
             .search_prompt("Filter mail")
@@ -1902,7 +1903,13 @@ mod navigation {
                 let submits = Rc::clone(&submits);
                 move || submits.set(submits.get() + 1)
             })
-            .search_suggestions(|| text("Suggestion"));
+            .search_suggestions({
+                let suggestion_builds = Rc::clone(&suggestion_builds);
+                move || {
+                    suggestion_builds.set(suggestion_builds.get() + 1);
+                    text("Suggestion")
+                }
+            });
         let leaf = render(NavigationStack::new(page));
         let window = native_test::window(mtm, Rect::new(0.0, 0.0, 390.0, 844.0));
         let root_controller = UIViewController::new(mtm);
@@ -1930,6 +1937,11 @@ mod navigation {
             "search_suggestions attaches a search results controller"
         );
         assert_eq!(
+            suggestion_builds.get(),
+            0,
+            "search suggestions must build lazily only when active"
+        );
+        assert_eq!(
             controller
                 .searchBar()
                 .placeholder()
@@ -1954,6 +1966,11 @@ mod navigation {
             pump_main_until(MAIN_QUEUE_DEADLINE, || controller.isActive()),
             "setting search_active(true) activates UISearchController"
         );
+        assert_eq!(
+            suggestion_builds.get(),
+            1,
+            "activating search lazily builds search_suggestions"
+        );
         active.set(false);
         assert!(
             pump_main_until(MAIN_QUEUE_DEADLINE, || !controller.isActive()),
@@ -1961,6 +1978,61 @@ mod navigation {
         );
         window.setHidden(true);
         window.setRootViewController(None);
+        assert_standalone_searchable_nav_view();
+    }
+
+    fn assert_standalone_searchable_nav_view() {
+        use cocoa_ui::objc2::msg_send;
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        let mtm = mtm();
+
+        // Standalone `NavigationView` (outside a `NavigationStack`) also wires
+        // `on_search_submit`, two-way `search_active`, and lazy `search_suggestions`.
+        let standalone_submits = Rc::new(Cell::new(0usize));
+        let standalone_builds = Rc::new(Cell::new(0usize));
+        let standalone_active = binding(false);
+        let standalone_query = binding(Str::from("inbox"));
+        let standalone_leaf = render(
+            NavigationView::new("Standalone", text("body"))
+                .searchable(&standalone_query)
+                .search_active(&standalone_active)
+                .on_search_submit({
+                    let standalone_submits = Rc::clone(&standalone_submits);
+                    move || standalone_submits.set(standalone_submits.get() + 1)
+                })
+                .search_suggestions({
+                    let standalone_builds = Rc::clone(&standalone_builds);
+                    move || {
+                        standalone_builds.set(standalone_builds.get() + 1);
+                        text("Standalone Suggestion")
+                    }
+                }),
+        );
+        let host_window = native_test::window(mtm, Rect::new(0.0, 0.0, 390.0, 844.0));
+        let vc = UIViewController::new(mtm);
+        host_window.setRootViewController(Some(&vc));
+        let vc_view = vc.view().expect("standalone vc view loaded");
+        let mounted_standalone = standalone_leaf.mount(&vc_view);
+        view::set_frame(mounted_standalone.view(), view::bounds(&vc_view));
+        host_window.makeKeyAndVisible();
+        host_window.layoutIfNeeded();
+        assert_eq!(standalone_builds.get(), 0);
+        let search_bar = view::subviews(mounted_standalone.view())
+            .into_iter()
+            .find_map(|sub| sub.downcast::<cocoa_ui::uikit::SearchBar>().ok())
+            .expect("standalone iOS NavigationView mounts cocoa_ui SearchBar");
+        if let Some(delegate) = search_bar.delegate() {
+            // SAFETY: SearchBar conforms to UISearchBarDelegate.
+            let _: () = unsafe { msg_send![&delegate, searchBarSearchButtonClicked: &*search_bar] };
+        }
+        assert_eq!(standalone_submits.get(), 1);
+        standalone_active.set(true);
+        assert_eq!(standalone_builds.get(), 1);
+        standalone_active.set(false);
+        host_window.setHidden(true);
+        host_window.setRootViewController(None);
     }
 }
 

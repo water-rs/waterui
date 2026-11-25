@@ -2663,6 +2663,7 @@ mod navigation {
         let query = binding(Str::from("inbox"));
         let active = binding(false);
         let submits = Rc::new(Cell::new(0usize));
+        let suggestion_builds = Rc::new(Cell::new(0usize));
         let page = resolve::render(
             NavigationView::new("Title", text("body"))
                 .searchable(&query)
@@ -2671,7 +2672,13 @@ mod navigation {
                     let submits = Rc::clone(&submits);
                     move || submits.set(submits.get() + 1)
                 })
-                .search_suggestions(|| text("Suggestion row")),
+                .search_suggestions({
+                    let suggestion_builds = Rc::clone(&suggestion_builds);
+                    move || {
+                        suggestion_builds.set(suggestion_builds.get() + 1);
+                        text("Suggestion row")
+                    }
+                }),
         );
         let window = leaf::attach(mtm, page.view());
         window.set_content_rect(cocoa_ui::Rect::new(0.0, 0.0, 800.0, 600.0), false);
@@ -2682,6 +2689,11 @@ mod navigation {
                 native.titlebarAccessoryViewControllers().count() == 1
             }),
             "the searchable page must install a titlebar accessory"
+        );
+        assert_eq!(
+            suggestion_builds.get(),
+            0,
+            "search suggestions must build lazily only when active"
         );
         let accessory = native.titlebarAccessoryViewControllers().objectAtIndex(0);
         let field = accessory
@@ -2701,6 +2713,28 @@ mod navigation {
             "setting search_active(true) must focus the field and show suggestions"
         );
         assert!(active.snapshot());
+        assert_eq!(
+            suggestion_builds.get(),
+            1,
+            "activating search must build suggestions lazily once"
+        );
+        let panel_window = native
+            .childWindows()
+            .and_then(|children| children.iter().next())
+            .expect("suggestions panel attached");
+        let panel_content = panel_window
+            .contentView()
+            .expect("suggestions panel has contentView");
+        let mounted_suggestions = panel_content
+            .subviews()
+            .into_iter()
+            .next()
+            .expect("suggestions panel mounts live view");
+        assert!(
+            mounted_suggestions.frame().size.width >= field.frame().size.width,
+            "suggestions panel child must receive full proposal width: {:?}",
+            mounted_suggestions.frame()
+        );
 
         // Sending `insertNewline:` fires `on_search_submit` once.
         let responder = native
