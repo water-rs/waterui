@@ -41,11 +41,11 @@ id is the tab's identity *and* the type `selection` binds, so you never name an 
 - a tuple of tabs — `(Tab::container(..), Tab::container(..))`, up to twelve — holds tabs
   whose roots differ and is selected by a `Binding<usize>` position;
 - a `Vec` or array of tabs sharing one builder type, also selected by position;
-- `ForEach` over a `List` of `SelfId`s keys tabs by your own enum. Its tabs share one
+- `ForEach` over a `StateList` of `SelfId`s keys tabs by your own enum. Its tabs share one
   builder, so the builder returns the variant of one `OneOfN` its item picks:
 
 ```rust
-use waterui::{id::SelfId, reactive::collection::List, views::ForEach};
+use waterui::id::SelfId;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Pane { Inbox, Library, Settings, Search }
@@ -53,7 +53,7 @@ enum Pane { Inbox, Library, Settings, Search }
 let pane = binding(Pane::Inbox);
 let panes = [Pane::Inbox, Pane::Library, Pane::Settings, Pane::Search].map(SelfId::new);
 
-Tabs::new(&pane, ForEach::new(List::from(panes.to_vec()), move |pane: SelfId<Pane>| {
+Tabs::new(&pane, ForEach::new(StateList::from(panes.to_vec()), move |pane: SelfId<Pane>| {
     let pane = *pane;
     let tab = Tab::container(
         match pane {

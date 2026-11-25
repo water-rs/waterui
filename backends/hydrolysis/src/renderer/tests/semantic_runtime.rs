@@ -1105,7 +1105,7 @@ fn selectable_sortable_table_with_non_text_cell_works() {
         Name,
     }
 
-    let people = nami::collection::List::from(vec![
+    let people = nami::collection::StateList::from(vec![
         Person { id: 1, name: "Ada" },
         Person {
             id: 2,

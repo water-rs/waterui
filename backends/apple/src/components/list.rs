@@ -3084,7 +3084,7 @@ mod tests {
         use waterui::component::list::{ForEachExt as _, List, ListMove, Section, row};
         use waterui::component::text;
         use waterui::id::Identifiable;
-        use waterui::reactive::collection::List as ReactiveList;
+        use waterui::reactive::collection::StateList;
         use waterui::views::ForEach;
 
         #[derive(Clone)]
@@ -3096,8 +3096,8 @@ mod tests {
             }
         }
 
-        let part1 = ReactiveList::from(vec![Entry(10), Entry(20), Entry(30)]);
-        let part2 = ReactiveList::from(vec![Entry(100), Entry(200)]);
+        let part1 = StateList::from(vec![Entry(10), Entry(20), Entry(30)]);
+        let part2 = StateList::from(vec![Entry(100), Entry(200)]);
         let config = List::content((
             Section::new("Account").content(row("Plan", "Pro")),
             Section::new("Items").content(

@@ -357,13 +357,13 @@ fn a_declaration_beneath_a_modifier_is_reported_and_drawn_without_the_transition
 /// the collection.
 #[test]
 fn a_conditional_at_a_collection_row_root_owns_its_ghost() {
-    use nami::collection::List as Membership;
+    use nami::collection::StateList;
     use waterui::layout::stack::VStack;
     use waterui_core::id::SelfId;
 
     let first = Binding::container(true);
     let first_for_view = first.clone();
-    let rows: Membership<SelfId<u64>> = Membership::from(vec![SelfId::new(1), SelfId::new(2)]);
+    let rows: StateList<SelfId<u64>> = StateList::from(vec![SelfId::new(1), SelfId::new(2)]);
     let mut runtime = runtime(move || {
         let first = first_for_view.clone();
         AnyView::new(VStack::for_each(rows.clone(), move |row| {
@@ -705,12 +705,12 @@ fn a_navigation_page_root_transition_replaces_the_stack_transition() {
 /// clock completes.
 #[test]
 fn a_list_row_removal_holds_its_slot_while_it_fades() {
-    use nami::collection::List as Membership;
+    use nami::collection::StateList;
     use waterui::component::list::List;
     use waterui_core::id::SelfId;
 
-    let mut rows: Membership<SelfId<u64>> =
-        Membership::from(vec![SelfId::new(1), SelfId::new(2), SelfId::new(3)]);
+    let mut rows: StateList<SelfId<u64>> =
+        StateList::from(vec![SelfId::new(1), SelfId::new(2), SelfId::new(3)]);
     let rows_for_view = rows.clone();
     let mut runtime = runtime(move || {
         AnyView::new(List::for_each(rows_for_view.clone(), |row| {

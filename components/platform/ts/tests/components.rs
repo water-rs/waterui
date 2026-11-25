@@ -1114,11 +1114,14 @@ fn ts_tabs_is_a_tabs() {
                 .collect::<Vec<_>>();
             Tabs::new(
                 &selection,
-                ForEach::new(nami::collection::List::from(ids), move |id: SelfId<Str>| {
-                    tabs.get(&id.into_inner())
-                        .expect("a keyed tab collection reports a tab for every id")
-                        .clone()
-                }),
+                ForEach::new(
+                    nami::collection::StateList::from(ids),
+                    move |id: SelfId<Str>| {
+                        tabs.get(&id.into_inner())
+                            .expect("a keyed tab collection reports a tab for every id")
+                            .clone()
+                    },
+                ),
             )
         },
     );

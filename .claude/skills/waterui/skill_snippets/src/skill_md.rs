@@ -17,7 +17,6 @@ use waterui::cursor::CursorStyle;
 use waterui::drag_drop::{Files, Transferable};
 use waterui::env::with; // scope a value to a subtree
 use waterui::gesture::{DragGesture, LongPressGesture, TapGesture};
-use waterui::reactive::collection::List as ReactiveList;
 use waterui::task::{sleep, spawn_local}; // async utilities
 use waterui::views::ForEach; // the collection itself
 use waterui::widget::condition::when; // conditionals
@@ -75,7 +74,7 @@ pub fn skill_block_02() {
     let status = Binding::container(Str::from("idle"));
     let blur = Binding::f64(4.0);
     let url = "https://waterui.dev/logo.png";
-    let rows = ReactiveList::<GlueRow>::new();
+    let rows = StateList::<GlueRow>::new();
     let row_view = glue_row_view;
 
     let _ = {
@@ -121,13 +120,13 @@ pub fn skill_block_04() -> impl View {
 // SKILL.md § "### 3. Inject handler state with `.state()`" — rust block 5/18
 // ---------------------------------------------------------------------------
 pub mod skill_block_05 {
-    use super::{GlueRow as Row, ReactiveList, glue_row_view as row_view};
+    use super::{GlueRow as Row, glue_row_view as row_view};
     use waterui::prelude::*;
 
     #[state]
     #[derive(Clone)]
     pub struct Editor {
-        rows: ReactiveList<Row>,
+        rows: StateList<Row>,
         editing: Binding<bool>,
     }
 
@@ -146,7 +145,7 @@ pub mod skill_block_05 {
     /// Glue: constructs an `Editor` and hands it to the snippet's `content`.
     pub fn use_it() -> impl View {
         content(Editor {
-            rows: ReactiveList::new(),
+            rows: StateList::new(),
             editing: Binding::bool(false),
         })
     }
@@ -160,7 +159,6 @@ pub mod skill_block_05 {
 pub fn skill_block_06() {
     use waterui::Identifiable;
     use waterui::component::lazy::Lazy;
-    use waterui::reactive::collection::List as ReactiveList; // the trait the derive implements is NOT in the prelude
 
     #[derive(Clone, Identifiable)]
     struct Row {
@@ -174,7 +172,7 @@ pub fn skill_block_06() {
         title: Str::from("Hello"),
     }];
 
-    let rows = ReactiveList::from(seed_rows); // bulk-seed; .push/.insert/.remove (&mut self) diff by id
+    let rows = StateList::from(seed_rows); // bulk-seed; .push/.insert/.remove (&mut self) diff by id
 
     let _ = {
         Lazy::for_each(rows.clone(), |row| text(row.title)) // reactive sequence in a stack
@@ -697,7 +695,7 @@ pub fn skill_block_08_imports_are_live() {
     let _ = Files::new([waterui::Url::from("file:///tmp/payload")]);
     let _ = text("tab").draggable(GlueTab);
     let _ = Animation::default();
-    let _ = ForEach::new(ReactiveList::<GlueRow>::new(), glue_row_view);
+    let _ = ForEach::new(StateList::<GlueRow>::new(), glue_row_view);
     let _ = binding::<i32>(0);
     let _ = when(Binding::bool(true), || text("a")).otherwise(|| text("b"));
     let _ = with(text("x"), 1_i32);

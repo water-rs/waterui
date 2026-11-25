@@ -18,7 +18,6 @@ use waterui::navigation::{
     NavigationSplitView, NavigationStack, NavigationToolbarItems, NavigationView,
 };
 use waterui::prelude::*;
-use waterui::reactive::collection::SignalCollection;
 use waterui::widget::avatar;
 use waterui::widget::card;
 use waterui_icons_material_icon as mdi;

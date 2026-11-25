@@ -313,14 +313,13 @@ let combined = hover_scale.zip(&drop_bounce).map(|(a, b)| a * b);   // still ani
 
 ## Reactive collections
 
-`waterui::reactive::collection::List<T>` is a reactive sequence: mutating it emits a membership patch
-rather than a whole-collection invalidation.
+`StateList<T>` (in the prelude; `waterui::reactive::collection::StateList`) is a reactive
+sequence: mutating it emits a membership patch rather than a whole-collection invalidation.
 
 ```rust
 use waterui::component::lazy::Lazy;
-use waterui::reactive::collection::List as ReactiveList;
 
-let mut rows = ReactiveList::from(seed_vec);   // bulk-seed in one move — not a push loop
+let mut rows = StateList::from(seed_vec);      // bulk-seed in one move — not a push loop
 rows.push(Row { id: 9, title: "Last".into() });
 rows.insert(0, Row { id: 0, title: "First".into() });   // positional splice, id-diffed
 let _ = rows.remove(0);              // #[must_use] — bind the removed value
@@ -350,8 +349,6 @@ PartialEq` items into a diffable collection. This is the answer to "filter a lis
 user types"; without it the only road is `watch` over a `Vec`, which rule 4 forbids:
 
 ```rust
-use waterui::reactive::collection::SignalCollection;
-
 let visible = SignalCollection::new(
     messages.zip(&query).map(|(all, q)| {
         all.into_iter().filter(|m| m.subject.contains(q.as_str())).collect::<Vec<_>>()

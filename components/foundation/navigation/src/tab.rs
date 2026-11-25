@@ -707,7 +707,7 @@ impl<T: TabSet> Tabs<T, ()> {
     /// Creates a tab container driven by a caller-owned selection.
     ///
     /// `tabs` is a [`TabSet`]: a `Vec` for a fixed set, a tuple for tabs whose
-    /// roots differ, `ForEach` over a reactive [`nami::collection::List`] for a set that
+    /// roots differ, `ForEach` over a reactive [`nami::collection::StateList`] for a set that
     /// changes at runtime. The set's id is the tab's identity — it is also
     /// the type `selection` binds.
     pub fn new(selection: &Binding<T::Id>, tabs: T) -> Self {
@@ -794,7 +794,7 @@ mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
     use nami::Signal as _;
-    use nami::collection::List as SignalList;
+    use nami::collection::StateList;
     use nami::id::SelfId;
 
     /// The label-only `Tab` fixture — content is irrelevant to id erasure.
@@ -808,7 +808,7 @@ mod tests {
         let panes = [1, 2, 3].map(SelfId::new);
         let tabs = Tabs::new(
             &selection,
-            ForEach::new(SignalList::from(panes.to_vec()), |pane: SelfId<i32>| {
+            ForEach::new(StateList::from(panes.to_vec()), |pane: SelfId<i32>| {
                 tab(match *pane {
                     1 => "One",
                     2 => "Two",
@@ -835,7 +835,7 @@ mod tests {
         let panes = [1, 2].map(SelfId::new);
         let tabs = Tabs::new(
             &selection,
-            ForEach::new(SignalList::from(panes.to_vec()), |pane: SelfId<i32>| {
+            ForEach::new(StateList::from(panes.to_vec()), |pane: SelfId<i32>| {
                 tab(if *pane == 1 { "One" } else { "Two" })
             }),
         );

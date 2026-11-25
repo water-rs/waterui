@@ -250,7 +250,7 @@ fn photo_in_lazy_list_serves_from_environment_cache_without_refetch(ui: UiBuilde
     let cache = PhotoCache::new(1024 * 1024);
 
     let mut items =
-        waterui::reactive::collection::List::from_iter((0..12_usize).map(|id| LazyRowItem {
+        waterui::reactive::collection::StateList::from_iter((0..12_usize).map(|id| LazyRowItem {
             id,
             url: (id == 0).then(|| row_zero_url.clone()),
         }));

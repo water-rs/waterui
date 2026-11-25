@@ -9,7 +9,7 @@ use std::{
 use executor_core::spawn_local;
 use nami::{
     Computed, Signal,
-    collection::List as ReactiveList,
+    collection::StateList,
     signal::IntoComputed,
     watcher::{Context, Metadata as WatcherMetadata},
 };
@@ -133,7 +133,7 @@ impl FlowMarkdown {
 impl View for FlowMarkdown {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         let Self { source, config } = self;
-        let blocks = ReactiveList::new();
+        let blocks = StateList::new();
         let runtime = Rc::new(FlowMarkdownRuntime {
             state: Rc::new(RefCell::new(FlowMarkdownState::new(
                 config.snapshot(),
@@ -547,7 +547,7 @@ struct FlowMarkdownState {
     source: String,
     source_end_point: Point,
     blocks: Vec<FlowBlock>,
-    slots: ReactiveList<FlowBlockSlot>,
+    slots: StateList<FlowBlockSlot>,
     rendered_blocks: HashMap<u64, (usize, u64, usize)>,
     next_block_identity: u64,
     configuration_revision: u64,
@@ -565,7 +565,7 @@ struct TypewriterRun {
 }
 
 impl FlowMarkdownState {
-    fn new(config: FlowMarkdownConfig, slots: ReactiveList<FlowBlockSlot>) -> Self {
+    fn new(config: FlowMarkdownConfig, slots: StateList<FlowBlockSlot>) -> Self {
         Self {
             config,
             parser: init_markdown_parser(),
@@ -1889,7 +1889,7 @@ mod tests {
     fn a_nested_update_is_applied_after_the_in_flight_recompute_returns() {
         use nami::collection::Collection as _;
 
-        let slots = ReactiveList::new();
+        let slots = StateList::new();
         let runtime = Rc::new(FlowMarkdownRuntime {
             state: Rc::new(RefCell::new(FlowMarkdownState::new(
                 FlowMarkdownConfig::default(),
@@ -1990,7 +1990,7 @@ mod tests {
             typewriter_token_fade_in: Some(Animation::ease_in_out(Duration::from_millis(140))),
             ..FlowMarkdownConfig::default()
         };
-        let mut state = FlowMarkdownState::new(config, ReactiveList::new());
+        let mut state = FlowMarkdownState::new(config, StateList::new());
 
         state.recompute("# Title", WatcherMetadata::new());
 
@@ -2116,8 +2116,7 @@ mod tests {
         ];
 
         for markdown in DOCS {
-            let mut state =
-                FlowMarkdownState::new(FlowMarkdownConfig::default(), ReactiveList::new());
+            let mut state = FlowMarkdownState::new(FlowMarkdownConfig::default(), StateList::new());
             let saw_typewriter = stream_with_constant_chars_per_second(&mut state, markdown, 16);
             assert!(
                 saw_typewriter,
@@ -2134,7 +2133,7 @@ mod tests {
 
     #[test]
     fn recompute_handles_streaming_append_sequence_with_tables_and_code() {
-        let mut state = FlowMarkdownState::new(FlowMarkdownConfig::default(), ReactiveList::new());
+        let mut state = FlowMarkdownState::new(FlowMarkdownConfig::default(), StateList::new());
         let mut markdown = String::new();
         let chunks = [
             "# Flow Markdown\n\nStreaming response starts here.\n\n",
@@ -2159,7 +2158,7 @@ mod tests {
 
     #[test]
     fn recompute_uses_full_parse_for_rewrites_then_recovers_incremental_appends() {
-        let mut state = FlowMarkdownState::new(FlowMarkdownConfig::default(), ReactiveList::new());
+        let mut state = FlowMarkdownState::new(FlowMarkdownConfig::default(), StateList::new());
 
         let first = state.recompute("# Title", WatcherMetadata::new());
         assert!(
@@ -2189,7 +2188,7 @@ mod tests {
 
     #[test]
     fn incremental_append_preserves_stable_block_identities() {
-        let slots = ReactiveList::new();
+        let slots = StateList::new();
         let mut state = FlowMarkdownState::new(FlowMarkdownConfig::default(), slots.clone());
         state.recompute(
             "# Stable heading\n\n# Streaming body",

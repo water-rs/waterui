@@ -435,11 +435,14 @@ fn navigation(
                 .collect::<Vec<_>>();
             AnyView::new(Tabs::new(
                 attributes.value(),
-                ForEach::new(nami::collection::List::from(ids), move |id: SelfId<Str>| {
-                    tabs.get(&id.into_inner())
+                ForEach::new(
+                    nami::collection::StateList::from(ids),
+                    move |id: SelfId<Str>| {
+                        tabs.get(&id.into_inner())
                         .expect("the ids are built from the keys of this same `tabs` map, so every id has its tab")
                         .clone()
-                }),
+                    },
+                ),
             ))
         }
         "Tab" => {

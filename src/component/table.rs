@@ -33,7 +33,7 @@
 //! }
 //!
 //! fn people_table(
-//!     people: ReactiveList<Person>,
+//!     people: StateList<Person>,
 //!     selection: Binding<Option<u64>>,
 //!     sort_order: Binding<Option<TableSort<PersonSort>>>,
 //! ) -> impl View {
@@ -1028,7 +1028,7 @@ mod tests {
     use alloc::collections::BTreeSet;
     use alloc::vec;
 
-    use nami::collection::List as ReactiveList;
+    use nami::collection::StateList;
     use nami::{Binding, Signal as _};
     use waterui_core::id::{Id as RawId, Identifiable};
 
@@ -1056,8 +1056,8 @@ mod tests {
         Name,
     }
 
-    fn sample_people() -> ReactiveList<Person> {
-        ReactiveList::from(vec![
+    fn sample_people() -> StateList<Person> {
+        StateList::from(vec![
             Person {
                 id: 10,
                 name: "Ada",
