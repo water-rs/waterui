@@ -129,12 +129,6 @@ impl Color {
     }
 }
 
-/// Temporary compatibility shim for downstream crates migrating off `signal_color`.
-#[doc(hidden)]
-pub fn signal_color(source: impl IntoSignal<Color> + 'static) -> Color {
-    Color::from_signal(source)
-}
-
 /// Represents a color with an opacity/alpha value applied.
 ///
 /// This wrapper type allows applying a specific opacity to any color type.
