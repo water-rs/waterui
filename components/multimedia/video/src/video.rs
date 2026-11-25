@@ -32,7 +32,7 @@ use waterui_core::{
     Binding, Computed, Environment, Native, NativeView, SerialDispatch, View, binding,
     contract_violation, layout::StretchAxis,
 };
-use waterui_layout::ContentMode as LayoutContentMode;
+pub use waterui_layout::ContentMode;
 
 use crate::{
     Url,
@@ -40,27 +40,14 @@ use crate::{
     source::{MediaItem, OfflineDrmKeySet},
 };
 
-/// How the decoded picture fills the bounds it is given.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[repr(i32)]
-#[non_exhaustive]
-pub enum ContentMode {
-    /// Fit the video within the bounds while maintaining aspect ratio (letterbox/pillarbox).
-    #[default]
-    Fit = 0,
-    /// Fill the entire bounds, potentially cropping the video.
-    Fill = 1,
-    /// Stretch the video to fill the bounds, ignoring aspect ratio.
-    Stretch = 2,
-}
-
-impl ContentMode {
-    const fn into_layout_mode(self) -> Option<LayoutContentMode> {
-        match self {
-            Self::Fit => Some(LayoutContentMode::Fit),
-            Self::Fill => Some(LayoutContentMode::Fill),
-            Self::Stretch => None,
-        }
+const fn resolve_content_mode(
+    resizable: bool,
+    content_mode: Option<ContentMode>,
+) -> Option<ContentMode> {
+    match (resizable, content_mode) {
+        (_, Some(mode)) => Some(mode),
+        (true, None) => None,
+        (false, None) => Some(ContentMode::Fit),
     }
 }
 
@@ -1649,8 +1636,8 @@ impl<H> PlaybackConfiguration<H> {
 pub struct VideoConfig<H = Option<VideoEventHandler>> {
     /// Shared session state and controls.
     pub playback: PlaybackConfiguration<H>,
-    /// How the picture fills the bounds it is given.
-    pub content_mode: ContentMode,
+    /// How the picture fills the bounds it is given; `None` stretches per axis.
+    pub content_mode: Option<ContentMode>,
     /// Projection used to present decoded frames.
     pub projection: VideoProjection,
 }
@@ -1671,23 +1658,17 @@ impl<H> fmt::Debug for VideoConfig<H> {
 pub type NativeVideoConfig = VideoConfig<Option<BoundVideoEventHandler>>;
 
 impl<H> VideoConfig<H> {
-    /// Temporary migration bridge unpacking the video configuration with the
-    /// shared layout `ContentMode` (`None` for stretch) so split video
-    /// renderers can migrate before `content_mode` changes type.
+    /// Unpacks the video configuration into its playback, content mode, and projection.
     #[doc(hidden)]
     #[must_use]
     pub fn into_parts(
         self,
     ) -> (
         PlaybackConfiguration<H>,
-        Option<LayoutContentMode>,
+        Option<ContentMode>,
         VideoProjection,
     ) {
-        (
-            self.playback,
-            self.content_mode.into_layout_mode(),
-            self.projection,
-        )
+        (self.playback, self.content_mode, self.projection)
     }
 
     fn map_event_handler<T>(self, map: impl FnOnce(H) -> T) -> VideoConfig<T> {
@@ -1716,8 +1697,8 @@ impl NativeView for NativeVideoConfig {
             return StretchAxis::Both;
         }
         match self.content_mode {
-            ContentMode::Fit => StretchAxis::Horizontal,
-            ContentMode::Fill | ContentMode::Stretch => StretchAxis::Both,
+            Some(ContentMode::Fit) => StretchAxis::Horizontal,
+            Some(ContentMode::Fill) | None => StretchAxis::Both,
         }
     }
 }
@@ -1825,7 +1806,8 @@ impl fmt::Debug for VideoSessionSource {
 #[derive(Debug)]
 pub struct Video {
     source: VideoSessionSource,
-    content_mode: ContentMode,
+    resizable: bool,
+    content_mode: Option<ContentMode>,
     projection: VideoProjection,
     on_event: Option<VideoEventHandler>,
 }
@@ -1836,16 +1818,25 @@ impl Video {
     pub fn new(session: PlaybackSession) -> Self {
         Self {
             source: VideoSessionSource::Session(session),
-            content_mode: ContentMode::default(),
+            resizable: false,
+            content_mode: None,
             projection: VideoProjection::default(),
             on_event: None,
         }
     }
 
-    /// Sets how the picture fills the video's bounds.
+    /// Allows the video to stretch to fill the bounds proposed by its parent
+    /// without preserving aspect ratio, unless paired with [`Self::content_mode`].
+    #[must_use]
+    pub const fn resizable(mut self) -> Self {
+        self.resizable = true;
+        self
+    }
+
+    /// Sets how the picture fills the video's bounds while preserving aspect ratio.
     #[must_use]
     pub const fn content_mode(mut self, content_mode: ContentMode) -> Self {
-        self.content_mode = content_mode;
+        self.content_mode = Some(content_mode);
         self
     }
 
@@ -1897,7 +1888,7 @@ impl Video {
         };
         let config = VideoConfig {
             playback: PlaybackConfiguration::from_session(session, self.on_event),
-            content_mode: self.content_mode,
+            content_mode: resolve_content_mode(self.resizable, self.content_mode),
             projection: self.projection,
         };
         Some(config.bind_event_environment(env))
@@ -1922,7 +1913,8 @@ pub fn video(source: impl IntoVideoSource) -> Video {
         }
         VideoSourceInner::Resolve(resolver) => Video {
             source: VideoSessionSource::Deferred(resolver),
-            content_mode: ContentMode::default(),
+            resizable: false,
+            content_mode: None,
             projection: VideoProjection::default(),
             on_event: None,
         },
@@ -1939,8 +1931,8 @@ pub fn video(source: impl IntoVideoSource) -> Video {
 pub struct VideoPlayerConfig<H = Option<VideoEventHandler>> {
     /// Shared session state and controls.
     pub playback: PlaybackConfiguration<H>,
-    /// How the picture fills the bounds it is given.
-    pub content_mode: ContentMode,
+    /// How the picture fills the bounds it is given; `None` stretches per axis.
+    pub content_mode: Option<ContentMode>,
     /// Projection used to present decoded frames.
     pub projection: VideoProjection,
     /// Whether to show interactive playback controls.
@@ -1964,22 +1956,20 @@ impl<H> fmt::Debug for VideoPlayerConfig<H> {
 pub type NativeVideoPlayerConfig = VideoPlayerConfig<Option<BoundVideoEventHandler>>;
 
 impl<H> VideoPlayerConfig<H> {
-    /// Temporary migration bridge unpacking the video player configuration with
-    /// the shared layout `ContentMode` (`None` for stretch) so split video
-    /// renderers can migrate before `content_mode` changes type.
+    /// Unpacks the video player configuration into its playback, content mode, projection, and controls flag.
     #[doc(hidden)]
     #[must_use]
     pub fn into_parts(
         self,
     ) -> (
         PlaybackConfiguration<H>,
-        Option<LayoutContentMode>,
+        Option<ContentMode>,
         VideoProjection,
         bool,
     ) {
         (
             self.playback,
-            self.content_mode.into_layout_mode(),
+            self.content_mode,
             self.projection,
             self.show_controls,
         )
@@ -2013,8 +2003,8 @@ impl NativeView for NativeVideoPlayerConfig {
             return StretchAxis::Both;
         }
         match self.content_mode {
-            ContentMode::Fit => StretchAxis::Horizontal,
-            ContentMode::Fill | ContentMode::Stretch => StretchAxis::Both,
+            Some(ContentMode::Fit) => StretchAxis::Horizontal,
+            Some(ContentMode::Fill) | None => StretchAxis::Both,
         }
     }
 }
@@ -2033,7 +2023,8 @@ impl NativeView for NativeVideoPlayerConfig {
 #[derive(Debug)]
 pub struct VideoPlayer {
     source: VideoSessionSource,
-    content_mode: ContentMode,
+    resizable: bool,
+    content_mode: Option<ContentMode>,
     projection: VideoProjection,
     show_controls: bool,
     on_event: Option<VideoEventHandler>,
@@ -2045,17 +2036,26 @@ impl VideoPlayer {
     pub fn new(session: PlaybackSession) -> Self {
         Self {
             source: VideoSessionSource::Session(session),
-            content_mode: ContentMode::default(),
+            resizable: false,
+            content_mode: None,
             projection: VideoProjection::default(),
             show_controls: true,
             on_event: None,
         }
     }
 
-    /// Sets how the picture fills the player's bounds.
+    /// Allows the video player to stretch to fill the bounds proposed by its parent
+    /// without preserving aspect ratio, unless paired with [`Self::content_mode`].
+    #[must_use]
+    pub const fn resizable(mut self) -> Self {
+        self.resizable = true;
+        self
+    }
+
+    /// Sets how the picture fills the player's bounds while preserving aspect ratio.
     #[must_use]
     pub const fn content_mode(mut self, content_mode: ContentMode) -> Self {
-        self.content_mode = content_mode;
+        self.content_mode = Some(content_mode);
         self
     }
 
@@ -2095,7 +2095,7 @@ impl VideoPlayer {
         };
         let config = VideoPlayerConfig {
             playback: PlaybackConfiguration::from_session(session, self.on_event),
-            content_mode: self.content_mode,
+            content_mode: resolve_content_mode(self.resizable, self.content_mode),
             projection: self.projection,
             show_controls: self.show_controls,
         };
@@ -2119,7 +2119,8 @@ pub fn video_player(source: impl IntoVideoSource) -> VideoPlayer {
         }
         VideoSourceInner::Resolve(resolver) => VideoPlayer {
             source: VideoSessionSource::Deferred(resolver),
-            content_mode: ContentMode::default(),
+            resizable: false,
+            content_mode: None,
             projection: VideoProjection::default(),
             show_controls: true,
             on_event: None,
@@ -2427,5 +2428,36 @@ mod tests {
 
         assert_eq!(config.playback.repeat.snapshot(), RepeatMode::One);
         assert!(config.playback.desired_playing.snapshot());
+    }
+
+    #[test]
+    fn content_mode_and_resizable_resolve_order_independently() {
+        let env = Environment::new();
+        let default_video = video("https://example.com/a.mp4")
+            .resolve_native(&env)
+            .expect("default video resolves");
+        assert_eq!(default_video.content_mode, Some(ContentMode::Fit));
+        assert_eq!(default_video.stretch_axis(), StretchAxis::Horizontal);
+
+        let stretched = video("https://example.com/a.mp4")
+            .resizable()
+            .resolve_native(&env)
+            .expect("resizable video resolves");
+        assert_eq!(stretched.content_mode, None);
+        assert_eq!(stretched.stretch_axis(), StretchAxis::Both);
+
+        let fill_then_resizable = video_player("https://example.com/a.mp4")
+            .content_mode(ContentMode::Fill)
+            .resizable()
+            .resolve_native(&env)
+            .expect("fill then resizable player resolves");
+        let resizable_then_fill = video_player("https://example.com/a.mp4")
+            .resizable()
+            .content_mode(ContentMode::Fill)
+            .resolve_native(&env)
+            .expect("resizable then fill player resolves");
+        assert_eq!(fill_then_resizable.content_mode, Some(ContentMode::Fill));
+        assert_eq!(resizable_then_fill.content_mode, Some(ContentMode::Fill));
+        assert_eq!(fill_then_resizable.stretch_axis(), StretchAxis::Both);
     }
 }
