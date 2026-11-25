@@ -92,10 +92,19 @@ fn present_or_absent(record: Option<waterui_meta::DirRecord<'_>>) {
 
 #[test]
 fn asset_macro_expands_for_every_kind() {
+    use waterui::layout::ContentMode;
+    use waterui::media::photo;
+    use waterui::video::{video, video_player};
+
     // Packaged paths are relative to ResourceContext's assets root.
-    let _local_image: waterui::ImageAsset = asset!("logo.png");
+    let local_image: waterui::ImageAsset = asset!("logo.png");
+    let _photo = photo(local_image)
+        .resizable()
+        .content_mode(ContentMode::Fill);
     let _remote_image = asset!("https://waterui.dev/logo.png");
-    let _local_video: waterui::VideoAsset = asset!("intro.mp4");
+    let local_video: waterui::VideoAsset = asset!("intro.mp4");
+    let _video = video(local_video);
+    let _player = video_player(local_video);
     let _remote_video = asset!("https://waterui.dev/intro.mp4");
     // Font, audio, data, and large-model handles live at the facade root.
     let _font: waterui::FontAsset = asset!("body.ttf");

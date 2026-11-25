@@ -596,6 +596,13 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         self.record_host(&host, |renderer| {
             renderer.render_anchored_overlays(transform, safe_area);
         });
+        // The `.sheet` modal layer draws above regular content and anchored
+        // overlays, and below `.dialog` alerts so a confirmation alert opened
+        // from inside a sheet stacks cleanly above it.
+        let host = self.core.presentation_hosts.sheet.clone();
+        self.record_host(&host, |renderer| {
+            renderer.render_sheets(transform, safe_area);
+        });
         // The `.dialog` modal layer draws above everything: scrim, card and
         // the modal input scope the card registers through its environment.
         #[cfg(waterui_feature = "dialog")]

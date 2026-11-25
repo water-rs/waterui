@@ -11,6 +11,7 @@
 
 use crate::animation::{FrameRate, FrameRateVote};
 use crate::fullscreen::FullScreenOverlayHost;
+use crate::sheet::Sheet;
 #[cfg(feature = "snackbar")]
 use crate::snackbar::SnackbarHost;
 use core::future::Future;
@@ -1312,6 +1313,39 @@ pub trait ViewExt: View + Sized {
     #[cfg(feature = "dialog")]
     fn dialog(self, dialog: crate::dialog::Dialog) -> Metadata<crate::dialog::Dialog, Self> {
         Metadata::new(self, dialog)
+    }
+
+    /// Presents `sheet` window-modal while its `is_presented` binding is `true`.
+    ///
+    /// While presented, everything beneath the sheet is inert to pointer,
+    /// keyboard, and assistive technology; focus moves into the sheet and
+    /// returns to the previously focused element on dismissal. When
+    /// [`Sheet::is_dismissible`](crate::sheet::Sheet::is_dismissible) is `true`,
+    /// Escape, the platform back action, a scrim tap, or interactive swipe-down
+    /// invokes [`Sheet::on_dismiss`](crate::sheet::Sheet::on_dismiss) and writes
+    /// `is_presented = false`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use waterui::prelude::*;
+    /// use waterui::sheet::{Sheet, SheetDetent, SheetDismiss};
+    ///
+    /// let open = binding(false);
+    /// button("Filter")
+    ///     .action({
+    ///         let open = open.clone();
+    ///         move || open.set(true)
+    ///     })
+    ///     .sheet(
+    ///         Sheet::new(&open, || {
+    ///             button("Done").action(|sheet: SheetDismiss| sheet.dismiss())
+    ///         })
+    ///         .detents([SheetDetent::Medium, SheetDetent::Large]),
+    ///     );
+    /// ```
+    fn sheet(self, sheet: Sheet) -> Metadata<Sheet, Self> {
+        Metadata::new(self, sheet)
     }
 
     /// Hosts a [`SnackbarManager`](crate::snackbar::SnackbarManager) and its

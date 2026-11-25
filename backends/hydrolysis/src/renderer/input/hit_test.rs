@@ -3606,7 +3606,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 }) {
                     return None;
                 }
-                if modal_active {
+                if modal_active && !self.semantic_walk {
                     let modal = key.as_ref().is_some_and(|key| {
                         self.hit_test.pointer_targets.iter().any(|target| {
                             target.modal
