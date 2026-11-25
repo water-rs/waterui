@@ -13596,12 +13596,14 @@ dependencies = [
  "suiteki",
  "waterkit-location",
  "waterui-core",
+ "waterui-locale",
+ "waterui-text",
 ]
 
 [[package]]
 name = "waterui-map-gpu"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/map-gpu?branch=main#24ad7552e85fb3e5943b572470bb5bffe2c44237"
+source = "git+https://github.com/water-rs/map-gpu?branch=main#9a1c91e5dc90a1145324983932811f4f7739ad3e"
 dependencies = [
  "arc-swap",
  "blocking",
