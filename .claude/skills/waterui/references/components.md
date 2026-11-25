@@ -348,9 +348,10 @@ Style shorthands on `Button` — `.plain()`, `.link()`, `.borderless()`, `.borde
 `.borderless()` is the idiomatic toolbar-button style; `Link` shows the
 pointing-hand cursor on pointer platforms. `TextField::line_limit(impl IntoComputed<Option<NonZeroUsize>>)` caps the
 lines (pass `None` for unlimited multi-line input, or a signal to toggle it); `TextField::styled(label, &Binding<StyledStr>)` binds styled text. `Switch` and `checkbox` map to different accessibility roles (`SWITCH` vs `CHECKBOX`), which matters to
-tests. `ToggleStyle::Automatic` is the platform's style — a switch on iOS and Android, a
-checkbox on macOS — so a test that must pass on every host queries a default toggle
-with `Role::toggle(ToggleStyle::Automatic)`. A switch with a visible label fills the
+tests. `ToggleStyle::Automatic` reads the ambient `ToggleStyle` installed in the environment
+(`.with(ToggleStyle::...)`) first, then the backend's platform default (`Switch` on
+Hydrolysis and iOS, `Checkbox` on macOS AppKit). On Hydrolysis, `Role::toggle(ToggleStyle::Automatic)`
+maps to `Role::SWITCH`. A switch with a visible label fills the
 width it is offered (label leading, switch trailing); a checkbox and a toggle with a
 hidden label are content-sized.
 
