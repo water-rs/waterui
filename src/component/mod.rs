@@ -13,6 +13,9 @@ pub mod link;
 #[cfg(feature = "list")]
 pub mod list;
 
+#[cfg(any(feature = "list", feature = "table"))]
+pub(crate) mod selection_support;
+
 pub mod progress;
 #[doc(inline)]
 pub use progress::{Progress, loading, progress};

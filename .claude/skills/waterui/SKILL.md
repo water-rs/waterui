@@ -515,7 +515,7 @@ web, graphics, and data rows live in [references/media.md](references/media.md).
 | Menus | `Menu` `Command` `.context_menu` `Shortcut` |
 | Interaction | `.on_tap` `.gesture` `TapGesture` `LongPressGesture` `DragGesture` `.draggable` `.drop_destination` `.on_hover_enter` `.cursor` |
 | Text | `text` `text!` `StyledStr` `Code` `RichText` `include_markdown!` `FlowMarkdown` |
-| Collections | `List` `ForEach` `Lazy` `SignalCollection` `ScrollController` `table` `col` |
+| Collections | `List` `ForEach` `Lazy` `SignalCollection` `ScrollController` `Table` `TableColumn` `TableSort` `SortDirection` `table` `col` |
 | Content | `Avatar` `Link` `Accordion` `.badge(n)` `loading()` |
 | Navigation | `Tabs` `Tab` `NavigationStack` `NavigationLink` `NavigationSplitView` `Window` |
 | Forms | `#[form]` `form()` `DatePicker` `Calendar` `ColorPicker` `FilePicker` |

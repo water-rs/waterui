@@ -116,7 +116,7 @@ pub use list_table::{
     TableView as ListTableView,
 };
 pub use stepper::Stepper;
-pub use table::TableView;
+pub use table::{TableSortIndicator, TableView};
 pub mod text_field;
 pub use popup_button::PopUpButton;
 pub use search_field::SearchField;

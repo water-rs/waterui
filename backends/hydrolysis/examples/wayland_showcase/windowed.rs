@@ -76,30 +76,25 @@ fn main_view() -> impl View {
                 ))
             })
             .editing(list_editing.clone()),
-            table(vec![
-                col(
-                    "Metric",
-                    vec![
-                        text("Window Size"),
-                        text("Surface"),
-                        text("Text Pipeline"),
-                        text("Filters"),
-                    ],
+            table(
+                vec![
+                    SelfId::new(("Window Size", "1366x900", "Ready")),
+                    SelfId::new(("Surface", "Wayland", "Ready")),
+                    SelfId::new(("Text Pipeline", "Parley", "Ready")),
+                    SelfId::new(("Filters", "GPU AppliedFilter", "Ready")),
+                ],
+                (
+                    col("Metric", |row: &SelfId<(&str, &str, &str)>| {
+                        text((*row).into_inner().0)
+                    }),
+                    col("Value", |row: &SelfId<(&str, &str, &str)>| {
+                        text((*row).into_inner().1)
+                    }),
+                    col("Status", |row: &SelfId<(&str, &str, &str)>| {
+                        text((*row).into_inner().2)
+                    }),
                 ),
-                col(
-                    "Value",
-                    vec![
-                        text("1366x900"),
-                        text("Wayland"),
-                        text("Parley"),
-                        text("GPU AppliedFilter"),
-                    ],
-                ),
-                col(
-                    "Status",
-                    vec![text("Ready"), text("Ready"), text("Ready"), text("Ready")],
-                ),
-            ]),
+            ),
         ))
         .spacing(14.0)
         .padding_with(EdgeInsets::all(24.0)),

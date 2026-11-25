@@ -3,11 +3,11 @@
 //!
 //! [`TableView`] is the leaf surface a grid container renders into: the
 //! caller owns the column list (`NSTableColumn`s), answers row counts, row
-//! heights and cell views through the three handlers, and frames both the
-//! table and the header view it asks [`TableView::install_header`] for. The
-//! header is an `NSTableHeaderView` added as a sibling of the table — the
-//! layout that normally comes from an enclosing `NSScrollView` is the
-//! caller's job.
+//! heights, cell views, selection and column-click events through handlers,
+//! and frames both the table and the header view it asks
+//! [`TableView::install_header`] for. The header is an `NSTableHeaderView`
+//! added as a sibling of the table — the layout that normally comes from an
+//! enclosing `NSScrollView` is the caller's job.
 //!
 //! # Safety
 //!
@@ -27,13 +27,29 @@ use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSColor, NSControlTextEditingDelegate, NSTableColumn, NSTableHeaderView, NSTableView,
+    NSColor, NSControlTextEditingDelegate, NSImage, NSTableColumn, NSTableHeaderView, NSTableView,
     NSTableViewColumnAutoresizingStyle, NSTableViewDataSource, NSTableViewDelegate,
     NSTableViewGridLineStyle, NSTableViewStyle, NSView,
 };
-use objc2_foundation::{NSObjectProtocol, NSRect, NSSize};
+use objc2_foundation::{
+    NSIndexSet, NSMutableIndexSet, NSNotFound, NSNotification, NSObjectProtocol, NSRect, NSSize,
+    ns_string,
+};
 
 use crate::callback::guarded;
+
+/// Sort indicator direction rendered inside a macOS table column header.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "sort indicator has exactly two directions"
+)]
+pub enum TableSortIndicator {
+    /// Ascending sort arrow (`NSAscendingSortIndicator`).
+    Ascending,
+    /// Descending sort arrow (`NSDescendingSortIndicator`).
+    Descending,
+}
 
 /// How many rows the table displays.
 type RowCount = Rc<dyn Fn() -> usize>;
@@ -42,6 +58,12 @@ type RowHeight = Rc<dyn Fn(usize) -> f64>;
 /// The view displayed for a column/row intersection, `None` for an empty
 /// cell.
 type CellView = Rc<dyn Fn(&NSTableColumn, usize) -> Option<Retained<NSView>>>;
+/// Whether `row` may be selected.
+type ShouldSelectRow = Rc<dyn Fn(usize) -> bool>;
+/// Invoked when the table's selected row indexes change.
+type SelectionDidChange = Rc<dyn Fn(&[usize])>;
+/// Invoked when a table column header is clicked.
+type ColumnClicked = Rc<dyn Fn(&NSTableColumn)>;
 
 /// The per-instance handlers [`TableView`] stores.
 #[derive(Default)]
@@ -49,12 +71,23 @@ pub struct TableViewIvars {
     row_count: RefCell<Option<RowCount>>,
     row_height: RefCell<Option<RowHeight>>,
     cell_view: RefCell<Option<CellView>>,
+    should_select_row: RefCell<Option<ShouldSelectRow>>,
+    selection_did_change: RefCell<Option<SelectionDidChange>>,
+    column_clicked: RefCell<Option<ColumnClicked>>,
 }
 
 impl std::fmt::Debug for TableViewIvars {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TableViewIvars").finish_non_exhaustive()
     }
+}
+
+fn index_set(indexes: &[usize]) -> Retained<NSIndexSet> {
+    let set = NSMutableIndexSet::new();
+    for &index in indexes {
+        set.addIndex(index);
+    }
+    set.into_super()
 }
 
 define_class!(
@@ -113,6 +146,42 @@ define_class!(
                 })
             })
         }
+
+        /// Whether `row` can be selected.
+        #[unsafe(method(tableView:shouldSelectRow:))]
+        fn table_view_should_select_row(&self, _table_view: &NSTableView, row: isize) -> bool {
+            guarded("TableView tableView:shouldSelectRow:", || {
+                let handler = self.ivars().should_select_row.borrow().as_ref().cloned();
+                handler.is_some_and(|handler| handler(row.cast_unsigned()))
+            })
+        }
+
+        /// Notifies the consumer whenever the selected row set changes.
+        #[unsafe(method(tableViewSelectionDidChange:))]
+        fn table_view_selection_did_change(&self, _notification: &NSNotification) {
+            guarded("TableView tableViewSelectionDidChange:", || {
+                let handler = self.ivars().selection_did_change.borrow().as_ref().cloned();
+                if let Some(handler) = handler {
+                    let selected = self.selected_rows();
+                    handler(&selected);
+                }
+            });
+        }
+
+        /// Notifies the consumer whenever a column header is clicked.
+        #[unsafe(method(tableView:didClickTableColumn:))]
+        fn table_view_did_click_table_column(
+            &self,
+            _table_view: &NSTableView,
+            table_column: &NSTableColumn,
+        ) {
+            guarded("TableView tableView:didClickTableColumn:", || {
+                let handler = self.ivars().column_clicked.borrow().as_ref().cloned();
+                if let Some(handler) = handler {
+                    handler(table_column);
+                }
+            });
+        }
     }
 );
 
@@ -135,6 +204,7 @@ impl TableView {
         this.setAllowsColumnReordering(false);
         this.setAllowsColumnResizing(false);
         this.setAllowsColumnSelection(false);
+        this.setAllowsEmptySelection(true);
         // SAFETY: `this` implements both protocols above; the data source and
         // delegate relationships are non-retained on a view the caller owns.
         unsafe {
@@ -173,6 +243,88 @@ impl TableView {
         handler: impl Fn(&NSTableColumn, usize) -> Option<Retained<NSView>> + 'static,
     ) {
         self.ivars().cell_view.replace(Some(Rc::new(handler)));
+    }
+
+    /// Sets the handler deciding whether a given row may be selected.
+    pub fn set_should_select_row_handler(&self, handler: impl Fn(usize) -> bool + 'static) {
+        self.ivars()
+            .should_select_row
+            .replace(Some(Rc::new(handler)));
+    }
+
+    /// Sets the handler invoked when row selection changes.
+    pub fn set_selection_did_change_handler(&self, handler: impl Fn(&[usize]) + 'static) {
+        self.ivars()
+            .selection_did_change
+            .replace(Some(Rc::new(handler)));
+    }
+
+    /// Sets the handler invoked when a column header is clicked.
+    pub fn set_column_clicked_handler(&self, handler: impl Fn(&NSTableColumn) + 'static) {
+        self.ivars().column_clicked.replace(Some(Rc::new(handler)));
+    }
+
+    /// Configures whether multiple rows may be selected simultaneously.
+    pub fn set_allows_multiple_selection(&self, allows: bool) {
+        self.setAllowsMultipleSelection(allows);
+    }
+
+    /// The row indexes `AppKit` currently reports as selected, ascending.
+    #[must_use]
+    pub fn selected_rows(&self) -> Vec<usize> {
+        let indexes = self.selectedRowIndexes();
+        let mut rows = Vec::with_capacity(indexes.count());
+        let mut index = indexes.firstIndex();
+        while index != NSNotFound.cast_unsigned() {
+            rows.push(index);
+            index = indexes.indexGreaterThanIndex(index);
+        }
+        rows
+    }
+
+    /// Replaces the table's selection with `rows`.
+    pub fn set_selected_rows(&self, rows: &[usize]) {
+        if rows.is_empty() {
+            // SAFETY: `deselectAll:` is a main-thread selection update.
+            unsafe { self.deselectAll(None) };
+        } else {
+            self.selectRowIndexes_byExtendingSelection(&index_set(rows), false);
+        }
+    }
+
+    /// Sets or clears the native sort indicator image on `column`.
+    pub fn set_sort_indicator(
+        &self,
+        column: &NSTableColumn,
+        direction: Option<TableSortIndicator>,
+    ) {
+        let image = direction.and_then(|dir| {
+            let name = match dir {
+                TableSortIndicator::Ascending => ns_string!("NSAscendingSortIndicator"),
+                TableSortIndicator::Descending => ns_string!("NSDescendingSortIndicator"),
+            };
+            NSImage::imageNamed(name)
+        });
+        self.setIndicatorImage_inTableColumn(image.as_deref(), column);
+    }
+
+    /// Highlights the active sort column header, or clears the highlight.
+    pub fn set_highlighted_column(&self, column: Option<&NSTableColumn>) {
+        self.setHighlightedTableColumn(column);
+    }
+
+    /// Returns the current sort indicator image on `column`, if any.
+    #[must_use]
+    pub fn indicator_image(&self, column: &NSTableColumn) -> Option<Retained<NSImage>> {
+        self.indicatorImageInTableColumn(column)
+    }
+
+    /// Programmatically invokes the column-clicked delegate path for `column`.
+    pub fn click_column(&self, column: &NSTableColumn) {
+        let handler = self.ivars().column_clicked.borrow().as_ref().cloned();
+        if let Some(handler) = handler {
+            handler(column);
+        }
     }
 
     /// Makes the table's columns exactly `columns`, in order, removing any

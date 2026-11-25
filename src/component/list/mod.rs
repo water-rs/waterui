@@ -8,18 +8,15 @@
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeSet;
-use alloc::rc::Rc;
-use core::marker::PhantomData;
-use core::ops::{Range, RangeBounds};
-use nami::collection::{Collection, CollectionChange};
-use nami::watcher::Context;
+use nami::collection::Collection;
 use nami::{Binding, Computed, signal::IntoComputed};
 
-use crate::views::{AnyViews, ForEach, SharedAnyViews, ViewSnapshot, Views};
+use crate::component::selection_support::{SelectionThemed, WithId};
+use crate::views::{AnyViews, ForEach, SharedAnyViews, Views};
 use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 use waterui_core::id::Mapping;
 use waterui_core::{
-    AnyView, Environment, Metadata, Native, NativeView, OneOf2, View,
+    AnyView, Environment, Native, NativeView, OneOf2, View,
     extract::State,
     handler::{Handler, shared_action},
     layout::StretchAxis,
@@ -461,10 +458,9 @@ fn resolve_list_config<C: View>(
     // holds tags, which the re-keying leaves alone.
     let selection = config.selection.clone();
     let tags = config.tags.clone();
-    let (contents, ids) = AnyViews::new_with_ids(WithId {
-        contents: config.contents,
-        transform: Rc::new(move |id, item| selection_themed(item, &selection, tags.tag(id))),
-    });
+    let (contents, ids) = AnyViews::new_with_ids(WithId::new(config.contents, move |id, item| {
+        selection_themed(item, &selection, tags.tag(id))
+    }));
     ListConfig {
         contents: SharedAnyViews::from(contents),
         tags: config.tags.rekeyed(&ids),
@@ -495,104 +491,6 @@ fn dispatch_list<B: Backend, C: View>(
 ) -> B::Output {
     let config = resolve_list_config(config, env).map_slots(B::Slot::from_view);
     backend.native(config, env, cx)
-}
-
-/// `Views` adapter that hands each element's id to the mapping closure — the
-/// row-keyed sibling of `Map`, so `selection_themed` can derive a row's
-/// selected state from the list selection and the row's own id.
-struct WithId<C, F> {
-    contents: C,
-    transform: Rc<F>,
-}
-
-/// The immutable snapshot a [`WithId`] captures: the source snapshot plus a
-/// shared handle to the transform, so the id and the view a row reports come
-/// from the same captured source state.
-struct WithIdSnapshot<S, F, V> {
-    contents: S,
-    transform: Rc<F>,
-    _marker: PhantomData<fn() -> V>,
-}
-
-impl<S: Clone, F, V> Clone for WithIdSnapshot<S, F, V> {
-    fn clone(&self) -> Self {
-        Self {
-            contents: self.contents.clone(),
-            transform: self.transform.clone(),
-            _marker: PhantomData,
-        }
-    }
-}
-
-impl<S, F, V> core::fmt::Debug for WithIdSnapshot<S, F, V> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str(core::any::type_name::<Self>())
-    }
-}
-
-impl<S, F, V> ViewSnapshot for WithIdSnapshot<S, F, V>
-where
-    S: ViewSnapshot,
-    F: Fn(S::Id, S::View) -> V,
-    V: View,
-{
-    type Id = S::Id;
-    type View = V;
-
-    fn range(&self) -> Range<usize> {
-        self.contents.range()
-    }
-
-    fn get_id(&self, index: usize) -> Option<Self::Id> {
-        self.contents.get_id(index)
-    }
-
-    fn get_view(&self, index: usize) -> Option<Self::View> {
-        Some((self.transform)(
-            self.contents.get_id(index)?,
-            self.contents.get_view(index)?,
-        ))
-    }
-}
-
-impl<V, C, F> Views for WithId<C, F>
-where
-    V: View,
-    C: Views,
-    F: 'static + Fn(C::Id, C::View) -> V,
-{
-    type Id = C::Id;
-    type Guard = C::Guard;
-    type View = V;
-    type Snapshot = WithIdSnapshot<C::Snapshot, F, V>;
-
-    fn len(&self) -> Computed<usize> {
-        self.contents.len()
-    }
-
-    fn snapshot(&self) -> Self::Snapshot {
-        WithIdSnapshot {
-            contents: self.contents.snapshot(),
-            transform: self.transform.clone(),
-            _marker: PhantomData,
-        }
-    }
-
-    fn watch(
-        &self,
-        range: impl RangeBounds<usize>,
-        watcher: impl Fn(Context<Self::Snapshot>, &CollectionChange) + 'static,
-    ) -> Self::Guard {
-        let transform = self.transform.clone();
-        self.contents.watch(range, move |ctx, change| {
-            let snapshot = ctx.map(|contents| WithIdSnapshot {
-                contents,
-                transform: transform.clone(),
-                _marker: PhantomData,
-            });
-            watcher(snapshot, change);
-        })
-    }
 }
 
 /// Re-themes a row's content while it is selected.
@@ -633,51 +531,7 @@ fn selection_themed<C>(
             ),
         }
     });
-    SelectionThemed { content, selected }
-}
-
-/// A row's content re-themed while the row is selected; see
-/// [`selection_themed`].
-struct SelectionThemed<C> {
-    content: C,
-    /// Whether the row is selected; `None` for a row that never is.
-    selected: Option<Computed<bool>>,
-}
-
-impl<C: View> View for SelectionThemed<C> {
-    fn body(self, env: &Environment) -> impl View {
-        use crate::color::WorkingColor;
-        use crate::theme::{color, install_color_signal};
-        use nami::SignalExt;
-        use waterui_core::resolve::Resolvable;
-
-        let Some(selected) = self.selected else {
-            return OneOf2::A(self.content);
-        };
-        // A sidebar's selection chrome is the unemphasised pill, not the
-        // accent fill `SelectionForeground` is written for — a selected
-        // sidebar row keeps its own colors (water-rs/waterui#1495).
-        if env.get::<SidebarContent>().is_some() {
-            return OneOf2::A(self.content);
-        }
-        let mut env = env.clone();
-        let on_selection = color::SelectionForeground.resolve(&env).computed();
-        let flip = |normal: Computed<WorkingColor>| {
-            selected
-                .clone()
-                .zip(&normal)
-                .zip(&on_selection)
-                .map(|((selected, normal), selection)| if selected { selection } else { normal })
-                .computed()
-        };
-        let foreground = flip(color::Foreground.resolve(&env).computed());
-        let muted = flip(color::MutedForeground.resolve(&env).computed());
-        let accent = flip(color::Accent.resolve(&env).computed());
-        install_color_signal::<color::Foreground>(&mut env, foreground);
-        install_color_signal::<color::MutedForeground>(&mut env, muted);
-        install_color_signal::<color::Accent>(&mut env, accent);
-        OneOf2::B(Metadata::new(self.content, env))
-    }
+    SelectionThemed::for_list(content, selected)
 }
 
 impl<V> View for List<V>

@@ -936,9 +936,7 @@ instead. An avatar renders SDR by default, unlike the framework's HDR default;
 `.dynamic_range(DynamicRange::High)` (in the prelude) opts one back
 in when the picture is the subject, such as a full-width profile header. `.focused(&Binding<Option<T>>, value)` ties a control to a shared focus binding
 (`T: Eq + Clone`): setting the binding moves focus, and focusing a control writes its value.
-`table(columns)` takes a signal of `Vec<TableColumn>` built with `col(label, rows)`, each
-column a `Views` of `Text` rows; both come from `waterui::component::table` (in the
-prelude, `table` names that module, not the function).
+`Table::new(data, (TableColumn::new("Name", |p: &Person| text(p.name.clone())).sortable(Sort::Name), TableColumn::new("Avatar", |p: &Person| avatar(p.name.clone()))))` builds a row-major table over an identifiable `Collection` with arbitrary view-valued cells; chain `.selection(&Binding<Option<C::Id>>)` or `.multi_selection(&Binding<BTreeSet<C::Id>>)` for identity-based row selection and `.sort_order(&Binding<Option<TableSort<K>>>)` when at least one column is marked `.sortable(key)`. Convenience constructors `table(data, columns)` and `col(label, cell)` are exported in the prelude alongside `Table`, `TableColumn`, `TableSort`, and `SortDirection`.
 
 ## Accessibility modifiers
 

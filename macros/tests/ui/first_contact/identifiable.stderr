@@ -23,11 +23,6 @@ help: the following other types implement trait `Identifiable`
 ...
    |   impl<T: Ord + Clone> Identifiable for SelfId<T> {
    |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `SelfId<T>`
-   |
-  ::: $WORKSPACE/src/component/table.rs
-   |
-   |   impl Identifiable for TableColumn {
-   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `TableColumn`
    = note: required for `Vec<Row>` to implement `waterui::nami::collection::Collection`
 note: required by a bound in `waterui::component::lazy::Lazy::for_each`
   --> $WORKSPACE/src/component/lazy.rs
@@ -61,9 +56,4 @@ help: the following other types implement trait `Identifiable`
 ...
    |   impl<T: Ord + Clone> Identifiable for SelfId<T> {
    |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `SelfId<T>`
-   |
-  ::: $WORKSPACE/src/component/table.rs
-   |
-   |   impl Identifiable for TableColumn {
-   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `TableColumn`
    = note: required for `Vec<Row>` to implement `waterui::nami::collection::Collection`

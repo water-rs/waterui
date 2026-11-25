@@ -40,7 +40,7 @@ use waterui_navigation::{NavigationLink, NavigationStack, NavigationView};
 use crate::component::badge::Badge;
 use crate::component::link::Link;
 use crate::component::progress::Progress;
-use crate::component::table::{TableColumn, table};
+use crate::component::table::{Table, TableColumn};
 use crate::widget::Divider;
 use crate::widget::accordion::Accordion;
 use crate::widget::avatar::Avatar;
@@ -48,7 +48,7 @@ use crate::widget::card::Card;
 use waterui_core::handler::ViewBuilder as _;
 #[cfg(feature = "image")]
 use waterui_media::Photo;
-use waterui_text::Text;
+use waterui_text::{IntoText as _, Text};
 use waterui_ts::engine::{JsError, JsFunction, JsValue};
 use waterui_ts::{Bridge, FromJs, HostTable, JsViewBuilder};
 
@@ -355,17 +355,35 @@ fn collections(
         }
         "Table" => {
             TableAttributes::from_js(config, bridge)?;
-            let columns = children::content(bridge, children)?
+            let carried = children::content(bridge, children)?
                 .into_iter()
-                .map(|child| Carried::<TableColumn>::take_from(child, "Column", "Table"))
+                .map(|child| Carried::<(Text, Vec<Text>)>::take_from(child, "Column", "Table"))
                 .collect::<Result<Vec<_>, _>>()?;
-            AnyView::new(table(columns))
+            let row_count = carried
+                .iter()
+                .map(|(_, cells)| cells.len())
+                .max()
+                .unwrap_or(0);
+            let rows: Vec<SelfId<usize>> = (0..row_count).map(SelfId::new).collect();
+            let columns: Vec<TableColumn<SelfId<usize>, _, Text>> = carried
+                .into_iter()
+                .map(|(label, cells)| {
+                    let cells = alloc::rc::Rc::new(cells);
+                    TableColumn::new(label, move |row: &SelfId<usize>| {
+                        cells
+                            .get((*row).into_inner())
+                            .cloned()
+                            .unwrap_or_else(|| Text::verbatim(""))
+                    })
+                })
+                .collect();
+            AnyView::new(Table::new(rows, columns))
         }
         "Column" => {
             let attributes = ColumnAttributes::from_js(config, bridge)?;
             children::none(component, &[])?;
-            AnyView::new(Carried::new(TableColumn::new(
-                attributes.into_label(),
+            AnyView::new(Carried::new((
+                attributes.into_label().into_text(),
                 children::texts(bridge, children)?,
             )))
         }
