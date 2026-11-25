@@ -75,6 +75,7 @@ define_class!(
 );
 
 /// An `AppKit` window presented as a modal sheet on a parent `NSWindow`.
+#[derive(Clone)]
 pub struct SheetWindow {
     window: Retained<CocoaUiSheetWindow>,
 }

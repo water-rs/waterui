@@ -57,7 +57,7 @@ use waterui_core::{AnyView, Environment, OneOf2, View};
 use waterui_graphics::color::Color;
 use waterui_layout::container::FixedContainer;
 use waterui_layout::padding::EdgeInsets;
-use waterui_layout::stack::{HorizontalAlignment, vstack, zstack};
+use waterui_layout::stack::{Alignment, HorizontalAlignment, vstack, zstack};
 use waterui_text::text::{IntoText, Text};
 
 use crate::shape::{CornerRadius, RoundedRectangle, ShapeExt};
@@ -407,8 +407,9 @@ impl View for SheetSurface {
         let content = sheet.build_content().with(SheetContentScope);
         let full_screen = sheet.primary_detent() == SheetDetent::FullScreen;
         if full_screen {
+            let surface = Color::new(Surface).on_tap(|| {}).a11y_hidden(true);
             OneOf2::A(
-                zstack((Color::new(Surface), content))
+                zstack((surface, content))
                     .a11y_label(spoken)
                     .a11y_role(AccessibilityRole::Dialog),
             )
@@ -428,13 +429,15 @@ impl View for SheetSurface {
             } else {
                 OneOf2::B(content)
             };
+            let surface = RoundedRectangle::new(CornerRadius::points(SHEET_CORNER_RADIUS))
+                .fill(Color::new(Surface))
+                .on_tap(|| {})
+                .a11y_hidden(true);
             OneOf2::B(
-                body.background(
-                    RoundedRectangle::new(CornerRadius::points(SHEET_CORNER_RADIUS))
-                        .fill(Color::new(Surface)),
-                )
-                .a11y_label(spoken)
-                .a11y_role(AccessibilityRole::Dialog),
+                zstack((surface, body))
+                    .alignment(Alignment::Top)
+                    .a11y_label(spoken)
+                    .a11y_role(AccessibilityRole::Dialog),
             )
         }
     }

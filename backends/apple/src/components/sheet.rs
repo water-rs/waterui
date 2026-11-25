@@ -51,6 +51,7 @@ struct ActivePresentation {
     sheet_window: SheetWindow,
     host: Retained<HostView>,
     _mounted: Mounted,
+    dismissing: bool,
 }
 
 #[cfg(target_os = "ios")]
@@ -124,8 +125,7 @@ impl SheetQueue {
     }
 
     fn withdraw(&self, state: &Rc<SheetState>) {
-        if let Some(presentation) = state.presentation.borrow_mut().take() {
-            dismiss_presentation(state, &presentation);
+        if dismiss_active(state) {
             return;
         }
         let mut entries = self.entries.borrow_mut();
@@ -291,14 +291,27 @@ fn present(state: &Rc<SheetState>) {
         sheet_window,
         host: sheet_host,
         _mounted: mounted,
+        dismissing: false,
     });
 }
 
 #[cfg(target_os = "macos")]
-fn dismiss_presentation(_state: &Rc<SheetState>, presentation: &ActivePresentation) {
-    presentation.sheet_window.clear_on_cancel();
-    presentation.host.clear_handlers();
-    presentation.sheet_window.dismiss();
+fn dismiss_active(state: &Rc<SheetState>) -> bool {
+    let sheet_window = {
+        let mut slot = state.presentation.borrow_mut();
+        let Some(active) = slot.as_mut() else {
+            return false;
+        };
+        if active.dismissing {
+            return true;
+        }
+        active.dismissing = true;
+        active.sheet_window.clear_on_cancel();
+        active.host.clear_handlers();
+        active.sheet_window.clone()
+    };
+    sheet_window.dismiss();
+    true
 }
 
 #[cfg(target_os = "ios")]
@@ -369,14 +382,20 @@ fn present(state: &Rc<SheetState>) {
 }
 
 #[cfg(target_os = "ios")]
-fn dismiss_presentation(state: &Rc<SheetState>, presentation: &ActivePresentation) {
+fn dismiss_active(state: &Rc<SheetState>) -> bool {
+    let Some(presentation) = state.presentation.borrow_mut().take() else {
+        return false;
+    };
     presentation.controller.clear_callbacks();
     presentation.host.clear_handlers();
     let weak = Rc::downgrade(state);
     let queue = Rc::clone(&state.queue);
-    presentation.controller.dismiss(move || {
+    let controller = presentation.controller.clone();
+    controller.dismiss(move || {
+        drop(presentation);
         queue.finished(&weak);
     });
+    true
 }
 
 fn attachment_changed(state: &Rc<SheetState>) {

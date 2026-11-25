@@ -156,10 +156,12 @@ fn sheet_contains_focus_and_escape_restores_focus_and_runs_on_dismiss() {
 fn rendered_sheet_blocks_underlying_pointer_taps_and_scrim_dismisses() {
     let open = binding(false);
     let underneath_taps = Rc::new(Cell::new(0_u32));
+    let sheet_action_taps = Rc::new(Cell::new(0_u32));
     let dismiss_calls = Rc::new(Cell::new(0_u32));
 
     let open_view = open.clone();
     let underneath_view = Rc::clone(&underneath_taps);
+    let sheet_action_view = Rc::clone(&sheet_action_taps);
     let dismiss_view = Rc::clone(&dismiss_calls);
 
     let mut app = ui()
@@ -167,15 +169,23 @@ fn rendered_sheet_blocks_underlying_pointer_taps_and_scrim_dismisses() {
         .viewport(400, 600)
         .mount_offscreen(move || {
             let underneath = Rc::clone(&underneath_view);
+            let sheet_action = Rc::clone(&sheet_action_view);
             let dismiss_cb = Rc::clone(&dismiss_view);
             vstack((
                 button("Underneath").action(move || underneath.set(underneath.get() + 1)),
                 text("Main content"),
             ))
             .sheet(
-                Sheet::new(&open_view, || text("Medium Sheet"))
-                    .detents([SheetDetent::Medium])
-                    .on_dismiss(move || dismiss_cb.set(dismiss_cb.get() + 1)),
+                Sheet::new(&open_view, move || {
+                    let sheet_action = Rc::clone(&sheet_action);
+                    vstack((
+                        text("Medium Sheet"),
+                        button("Sheet Action")
+                            .action(move || sheet_action.set(sheet_action.get() + 1)),
+                    ))
+                })
+                .detents([SheetDetent::Medium])
+                .on_dismiss(move || dismiss_cb.set(dismiss_cb.get() + 1)),
             )
         });
     app.settle();
@@ -195,10 +205,40 @@ fn rendered_sheet_blocks_underlying_pointer_taps_and_scrim_dismisses() {
         .role(Role::BUTTON)
         .label("Underneath")
         .assert_not_exists();
-    app.query()
+    let dialog_bounds = app.query().role(Role::DIALOG).single().bounds();
+    assert!(
+        (dialog_bounds.width() - 400.0).abs() < 1.0
+            && (dialog_bounds.height() - 300.0).abs() < 1.0
+            && (dialog_bounds.y() - 300.0).abs() < 1.0,
+        "medium detent sheet should fill bottom 400x300 detent rect, got {dialog_bounds:?}"
+    );
+
+    // Tapping non-interactive text and empty surface inside the sheet must not
+    // fall through to the scrim behind it.
+    let label_bounds = app
+        .query()
         .role(Role::LABEL)
         .label("Medium Sheet")
-        .assert_exists();
+        .single()
+        .bounds();
+    app.tap_at(
+        label_bounds.width().mul_add(0.5, label_bounds.x()),
+        label_bounds.height().mul_add(0.5, label_bounds.y()),
+    );
+    app.tap_at(200.0, 560.0);
+    app.settle();
+    assert!(
+        open.snapshot(),
+        "tapping inside the sheet surface must not dismiss it"
+    );
+    assert_eq!(dismiss_calls.get(), 0);
+
+    // Interactive controls inside the sheet still receive pointer taps.
+    app.query().role(Role::BUTTON).label("Sheet Action").tap();
+    app.settle();
+    assert_eq!(sheet_action_taps.get(), 1);
+    assert!(open.snapshot());
+    assert_eq!(dismiss_calls.get(), 0);
 
     // Tapping where "Underneath" sits hits the modal scrim instead of the button.
     app.tap_at(tap_x, tap_y);

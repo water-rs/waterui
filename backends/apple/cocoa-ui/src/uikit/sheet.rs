@@ -33,6 +33,7 @@ use super::window_of;
 use crate::callback::guarded;
 
 /// A detent configuration for [`SheetController`].
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SheetDetentSpec {
     /// System medium detent (`mediumDetent`).
@@ -107,6 +108,7 @@ impl CocoaUiSheetDelegate {
 }
 
 /// A `UIKit` modal sheet controller hosting a [`HostView`].
+#[derive(Clone)]
 pub struct SheetController {
     controller: Retained<ViewController>,
     delegate: Retained<CocoaUiSheetDelegate>,
@@ -196,7 +198,11 @@ impl SheetController {
                 let array = NSArray::from_retained_slice(&ui_detents);
                 sheet.setDetents(&array);
                 sheet.setPrefersGrabberVisible(dismissible);
-                sheet.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
+                // SAFETY: `delegate` is retained on `SheetController` for the lifetime of
+                // `controller`, and `clear_callbacks` clears the Rust closure before drop.
+                unsafe {
+                    sheet.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
+                }
             }
         }
         Self {
