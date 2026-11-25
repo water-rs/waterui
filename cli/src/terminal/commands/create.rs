@@ -73,7 +73,7 @@ enum CreateTemplate {
     /// The standard Rust shell.
     #[default]
     App,
-    /// A Rust shell whose root view is `include_web!(resources, "web")` plus a `web/`
+    /// A Rust shell whose root view is `include_web!("web")` plus a `web/`
     /// Vite frontend.
     Web,
 }
