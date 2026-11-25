@@ -49,8 +49,7 @@
 //!    not simply the topmost view in the Z-order.
 
 use alloc::boxed::Box;
-use core::fmt;
-use core::time::Duration;
+use core::{fmt, num::NonZeroU32, time::Duration};
 
 use waterui_core::{
     Environment, Error,
@@ -466,7 +465,7 @@ impl RotationEvent {
 #[non_exhaustive]
 pub struct TapGesture {
     /// The number of consecutive taps required to trigger this gesture.
-    count: u32,
+    count: NonZeroU32,
     /// The buttons that can tap; [`PointerButtons::PRIMARY`] by default.
     buttons: PointerButtons,
 }
@@ -474,7 +473,7 @@ pub struct TapGesture {
 impl TapGesture {
     /// The number of consecutive taps required to trigger this gesture.
     #[must_use]
-    pub const fn count(&self) -> u32 {
+    pub const fn count(&self) -> NonZeroU32 {
         self.count
     }
 
@@ -488,7 +487,7 @@ impl TapGesture {
 impl TapGesture {
     /// Creates a tap gesture that requires `count` consecutive taps to activate.
     #[must_use]
-    pub const fn repeat(count: u32) -> Self {
+    pub const fn repeat(count: NonZeroU32) -> Self {
         Self {
             count,
             buttons: PointerButtons::PRIMARY,
@@ -498,7 +497,7 @@ impl TapGesture {
     /// Creates a tap gesture that requires a single tap to activate.
     #[must_use]
     pub const fn new() -> Self {
-        Self::repeat(1)
+        Self::repeat(NonZeroU32::MIN)
     }
 
     /// Responds to `buttons` instead of the primary button alone — a middle
@@ -761,12 +760,6 @@ impl Gesture {
         }))
     }
 
-    /// SwiftUI-style alias for [`Gesture::then`].
-    #[must_use]
-    pub fn sequenced_before(self, other: impl Into<Self>) -> Self {
-        self.then(other)
-    }
-
     /// Combines this gesture with another so they can be recognized simultaneously.
     #[must_use]
     pub fn simultaneously_with(self, other: impl Into<Self>) -> Self {
@@ -794,12 +787,6 @@ macro_rules! impl_gesture {
                 #[must_use]
                 pub fn then(self, other: impl Into<Gesture>) -> Gesture {
                     Gesture::$variant(self).then(other)
-                }
-
-                /// SwiftUI-style alias for [`Self::then`].
-                #[must_use]
-                pub fn sequenced_before(self, other: impl Into<Gesture>) -> Gesture {
-                    self.then(other)
                 }
 
                 /// Combines two gestures that can be recognized simultaneously.
@@ -887,12 +874,13 @@ impl GestureObserver {
     ///
     /// With injected state:
     /// ```
+    /// use core::num::NonZeroU32;
     /// use nami::Binding;
     /// use waterui_core::State;
     /// use waterui_interaction::gesture::{GestureObserver, TapGesture};
     ///
     /// let observer = GestureObserver::new(
-    ///     TapGesture::repeat(2),
+    ///     TapGesture::repeat(NonZeroU32::new(2).unwrap()),
     ///     |State(counter): State<Binding<i32>>| *counter.get_mut() += 1,
     /// );
     /// ```
@@ -902,38 +890,6 @@ impl GestureObserver {
             gesture: gesture.into(),
             action: boxed_action(action),
         }
-    }
-
-    /// Creates a gesture observer builder for the given gesture.
-    #[must_use]
-    pub fn builder(gesture: impl Into<Gesture>) -> GestureObserverBuilder {
-        GestureObserverBuilder::new(gesture)
-    }
-}
-
-// ============================================================================
-// GestureObserver Builder
-// ============================================================================
-
-/// Builder for creating gesture observers with extracted actions.
-#[derive(Debug)]
-pub struct GestureObserverBuilder {
-    gesture: Gesture,
-}
-
-impl GestureObserverBuilder {
-    /// Creates a gesture observer builder for the given gesture.
-    #[must_use]
-    pub fn new(gesture: impl Into<Gesture>) -> Self {
-        Self {
-            gesture: gesture.into(),
-        }
-    }
-
-    /// Sets the action handler (no state).
-    #[must_use]
-    pub fn action<Args>(self, action: impl Handler<Args, ()>) -> GestureObserver {
-        GestureObserver::new(self.gesture, action)
     }
 }
 
@@ -970,9 +926,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sequenced_before_aliases_then() {
+    fn tap_gesture_count_tracks_non_zero_repeat() {
+        assert_eq!(TapGesture::new().count(), NonZeroU32::MIN);
+        let double_tap = TapGesture::repeat(NonZeroU32::new(2).unwrap());
+        assert_eq!(double_tap.count().get(), 2);
+    }
+
+    #[test]
+    fn then_sequences_gestures() {
         let gesture = TapGesture::new()
-            .sequenced_before(LongPressGesture::new().minimum_duration(Duration::from_millis(300)));
+            .then(LongPressGesture::new().minimum_duration(Duration::from_millis(300)));
         match gesture {
             Gesture::Then(pair) => {
                 assert!(matches!(pair.first(), Gesture::Tap(_)));

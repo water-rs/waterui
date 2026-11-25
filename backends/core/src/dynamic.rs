@@ -1,4 +1,4 @@
-//! Backend receiver protocol for [`Dynamic`](waterui_core::Dynamic) views.
+//! Backend receiver protocol for [`Dynamic`] views.
 
 use nami::watcher::Context;
 use waterui_core::Dynamic;

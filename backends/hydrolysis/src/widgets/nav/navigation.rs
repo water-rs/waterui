@@ -8,9 +8,9 @@ use crate::renderer::bounded_proposal;
 use crate::renderer::chrome::{ChromeContent, LiveChromeParts};
 use crate::renderer::live_bar::{BarFrames, LiveBarParts};
 use crate::renderer::{
-    Edge, HydroState, HydrolysisRenderer, RenderContext, RetainedSubview, WidgetRenderContext,
-    navigation_back_button_rect, navigation_base_bar_height, navigation_look,
-    split_compact_threshold,
+    AnchoredPresentations, Edge, HydroState, HydrolysisRenderer, RegisteredAnchoredOverlay,
+    RenderContext, RetainedSubview, WidgetRenderContext, navigation_back_button_rect,
+    navigation_base_bar_height, navigation_look, split_compact_threshold,
 };
 use crate::theme::{NavigationBarLook, NavigationMetrics, NavigationSpec, WidgetTheme};
 #[cfg(feature = "accessibility")]
@@ -18,16 +18,18 @@ use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
 };
 use cherenkov_record::{Paint, WorkingColor};
-use nami::{Computed, Signal};
+use nami::{Binding, Computed, Signal};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
+use waterui::component::focus::Focused;
+use waterui::metadata::anchored_overlay::{AnchorEdge, AnchorPlacement, Dismissal, EdgeAlignment};
 use waterui::navigation::split::NavigationSplitDetailBuilder;
 use waterui::navigation::{
     AnyNavigationTransition, Bar, NavigationDestinationState, NavigationSearch,
     NavigationSplitLayout, NavigationStackLayout, NavigationTitleDisplayMode,
     NavigationToolbarPlacement, NavigationTransitionDirection, NavigationView,
-    ResolvedNavigationView, RetainedNavigationTransition,
+    ResolvedNavigationView, RetainedNavigationTransition, SlotBuilder,
 };
 use waterui::theme::color::{Background, Surface};
 use waterui::theme::install_font_signal;
@@ -39,7 +41,7 @@ use waterui_core::id::Id;
 use waterui_core::layout::{
     LayoutDirection, ProposalSize, Size as LayoutSize, ViewDimensions, layout_direction,
 };
-use waterui_core::{Environment, Native};
+use waterui_core::{Environment, Metadata, Native};
 use waterui_graphics::color::Color;
 use waterui_interaction::interaction::InteractionState;
 use waterui_text::font::Body;
@@ -255,6 +257,13 @@ fn presented_page_env(
     env
 }
 
+struct SearchSuggestionsOverlay<E: crate::text::TextEngine> {
+    builder: SlotBuilder<HeldChild<E>>,
+    presentations: Rc<RefCell<AnchoredPresentations<E>>>,
+    marker: Rc<()>,
+    placed_edge: Binding<AnchorEdge>,
+}
+
 /// The retained render state of a `NavigationView`. The bar's semantic title,
 /// subtitle, toolbar items and screen content are move-only `AnyView`s, so the persistent
 /// `Widget` node holds each as a [`RetainedSubview`] built once and re-flushed at
@@ -275,6 +284,10 @@ pub struct NavigationViewRenderState<E: crate::text::TextEngine> {
     /// binding stays live through the node's own re-flush). `Some` exactly when
     /// `search` is present.
     search_field: Option<RetainedSubview<E>>,
+    /// Active state driving [`Focused`] and search suggestions presentation.
+    search_active: Option<Binding<bool>>,
+    /// Optional anchored suggestions overlay shown while search is active.
+    search_suggestions: Option<SearchSuggestionsOverlay<E>>,
     color: Computed<WorkingColor>,
     hidden: Computed<bool>,
     display_mode: NavigationTitleDisplayMode,
@@ -364,15 +377,42 @@ impl<E: crate::text::TextEngine> NavigationViewRenderState<E> {
                 | NavigationToolbarPlacement::TopBarTrailing => trailing.push(retained),
             }
         }
-        let search_field = search.as_ref().map(|search| {
-            // A search field shows only its placeholder, so the prompt doubles
-            // as the accessible name and the visible label is suppressed.
-            RetainedSubview::new(
-                TextField::new(search.prompt().clone(), search.text())
+        let search_suggestions = toolbar.take_search_suggestions();
+        let (search_field, search_active, search_suggestions) = search.as_ref().map_or_else(
+            || (None, None, None),
+            |search| {
+                // A search field shows only its placeholder, so the prompt doubles
+                // as the accessible name and the visible label is suppressed.
+                let prompt = search.prompt().cloned().unwrap_or_else(|| {
+                    waterui::text::Text::localized_or("waterui.navigation.search", "Search")
+                });
+                let mut field = TextField::new(prompt.clone(), search.text())
                     .hide_label()
-                    .prompt(search.prompt().clone()),
-            )
-        });
+                    .prompt(prompt);
+                if let Some(on_submit) = search.on_submit().cloned() {
+                    field = field.on_submit(move |env: Environment| {
+                        let _ = on_submit.call(&env);
+                    });
+                }
+                let active = search
+                    .active()
+                    .cloned()
+                    .or_else(|| search_suggestions.is_some().then(|| Binding::bool(false)));
+                let field = match active.as_ref() {
+                    Some(active) => {
+                        RetainedSubview::new(Metadata::new(field, Focused(active.clone())))
+                    }
+                    None => RetainedSubview::new(field),
+                };
+                let suggestions = search_suggestions.map(|builder| SearchSuggestionsOverlay {
+                    builder,
+                    presentations: Rc::new(RefCell::new(AnchoredPresentations::default())),
+                    marker: Rc::new(()),
+                    placed_edge: Binding::container(AnchorEdge::Bottom),
+                });
+                (Some(field), active, suggestions)
+            },
+        );
         Self {
             title: RetainedSubview::new(title),
             subtitle: RetainedSubview::new(subtitle),
@@ -383,6 +423,8 @@ impl<E: crate::text::TextEngine> NavigationViewRenderState<E> {
             content: RetainedSubview::held(content),
             search,
             search_field,
+            search_active,
+            search_suggestions,
             color,
             hidden,
             display_mode,
@@ -1032,6 +1074,41 @@ pub fn render_navigation_view_parts<E: crate::text::TextEngine>(
                         search_rect,
                         field_area,
                     );
+                }
+                let overlay = {
+                    let state_ref = state.borrow();
+                    state_ref.search_suggestions.as_ref().and_then(|sug| {
+                        state_ref.search_active.as_ref().map(|active| {
+                            (
+                                active.clone(),
+                                sug.builder.clone(),
+                                Rc::clone(&sug.presentations),
+                                Rc::clone(&sug.marker),
+                                sug.placed_edge.clone(),
+                            )
+                        })
+                    })
+                };
+                if let Some((active, builder, presentations, marker, placed_edge)) = overlay {
+                    let anchor = ctx.renderer_mut().resolve_window_rect(search_rect);
+                    let presented = ctx.renderer_mut().read_signal(&active);
+                    ctx.renderer_mut()
+                        .register_anchored_overlay(RegisteredAnchoredOverlay {
+                            anchor,
+                            placement: AnchorPlacement::default()
+                                .edge(AnchorEdge::Bottom)
+                                .alignment(EdgeAlignment::Start)
+                                .gap(4.0),
+                            dismissal: Dismissal::Manual,
+                            presented,
+                            is_presented: active,
+                            placed_edge,
+                            env: env.clone(),
+                            builder: Rc::new(move || builder.build()),
+                            presentations,
+                            marker,
+                            cover_trigger: false,
+                        });
                 }
             }
         }
@@ -2546,7 +2623,7 @@ fn present_page_transition<E: crate::text::TextEngine>(
         page_area,
         PagePresentation {
             layer: transform * local,
-            alpha: paint.properties.opacity(),
+            alpha: paint.properties.opacity,
             clip: Some(local.transform_rect_bbox(paint_bounds)),
             clip_space: transform,
             hit,
