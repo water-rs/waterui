@@ -501,6 +501,13 @@ fn uniform_buffer(device: &wgpu::Device, label: &str, size: u64) -> wgpu::Buffer
 }
 
 #[cfg(feature = "gpu")]
+#[cfg_attr(
+    target_arch = "wasm32",
+    expect(
+        clippy::unnecessary_wraps,
+        reason = "wasm32 does not synchronously poll wgpu validation error scopes"
+    )
+)]
 fn compile_program(
     device: &wgpu::Device,
     format: wgpu::TextureFormat,
