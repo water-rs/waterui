@@ -184,55 +184,17 @@ impl TransitionFrame {
 /// These values compose with the view's ordinary properties rather than
 /// replacing them. No property changes the retained slot's dimensions.
 #[derive(Clone, Copy, Debug, PartialEq)]
-#[non_exhaustive]
 pub struct TransitionProperties {
     /// Multiplicative alpha.
-    opacity: f32,
+    pub opacity: f32,
     /// Multiplicative horizontal and vertical scale.
-    scale: [f32; 2],
+    pub scale: [f32; 2],
     /// Physical horizontal and vertical displacement.
-    translation: [f32; 2],
+    pub translation: [f32; 2],
     /// Clockwise rotation in top-left coordinates.
-    rotation: f32,
+    pub rotation: f32,
     /// Gaussian blur radius.
-    blur: f32,
-}
-
-impl TransitionProperties {
-    /// Multiplicative alpha.
-    #[must_use]
-    pub const fn opacity(&self) -> f32 {
-        self.opacity
-    }
-
-    /// Multiplicative horizontal and vertical scale.
-    #[must_use]
-    pub const fn scale(&self) -> [f32; 2] {
-        self.scale
-    }
-
-    /// Physical horizontal and vertical displacement.
-    #[must_use]
-    pub const fn translation(&self) -> [f32; 2] {
-        self.translation
-    }
-
-    /// Clockwise rotation in top-left coordinates.
-    #[must_use]
-    pub const fn rotation(&self) -> f32 {
-        self.rotation
-    }
-
-    /// Gaussian blur radius.
-    #[must_use]
-    pub const fn blur(&self) -> f32 {
-        self.blur
-    }
-
-    /// Sets the `blur`.
-    pub const fn set_blur(&mut self, blur: f32) {
-        self.blur = blur;
-    }
+    pub blur: f32,
 }
 
 impl TransitionProperties {
@@ -557,6 +519,15 @@ impl PropertyTransition {
     pub const fn scale(absent_scale: f32) -> Self {
         Self::new(TransitionProperties {
             scale: [absent_scale, absent_scale],
+            ..TransitionProperties::IDENTITY
+        })
+    }
+
+    /// Displaces the absent view by `(x, y)` in logical pixels.
+    #[must_use]
+    pub const fn offset(x: f32, y: f32) -> Self {
+        Self::new(TransitionProperties {
+            translation: [x, y],
             ..TransitionProperties::IDENTITY
         })
     }
@@ -1061,6 +1032,21 @@ mod tests {
         near(properties.rotation, 0.0);
         near(properties.opacity, 0.25);
         assert!(!reduced.captures_content());
+    }
+
+    #[test]
+    fn offset_interpolates_translation_only() {
+        let spec = linear(PropertyTransition::offset(40.0, -20.0));
+        let mut state = spec.start(TransitionPhase::Removal, false);
+        state.advance(Duration::from_millis(50));
+        let properties = state.properties(geometry(LayoutDirection::LeftToRight));
+        near(properties.opacity, 1.0);
+        near(properties.scale[0], 1.0);
+        near(properties.scale[1], 1.0);
+        near(properties.translation[0], 20.0);
+        near(properties.translation[1], -10.0);
+        near(properties.rotation, 0.0);
+        near(properties.blur, 0.0);
     }
 
     #[test]
