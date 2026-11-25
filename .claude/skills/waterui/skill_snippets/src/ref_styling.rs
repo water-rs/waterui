@@ -539,7 +539,7 @@ pub fn styling_block_14() {
         mdi::flag().foreground(Accent) // theme color
     };
     let _ = {
-        lucide::star().tint(Color::srgb_hex("#F59E0B")) // explicit tint
+        lucide::star().foreground(Color::srgb_hex("#F59E0B")) // explicit color
     };
 }
 

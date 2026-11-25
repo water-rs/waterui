@@ -61,13 +61,17 @@ fn colored_icons_demo() -> impl View {
     vstack((
         text("Colored Icons").font_size(18.0),
         hstack((
-            heart().tint(Color::srgb_hex("#EF4444")).size(32.0, 32.0),
-            star().tint(Color::srgb_hex("#F59E0B")).size(32.0, 32.0),
+            heart()
+                .foreground(Color::srgb_hex("#EF4444"))
+                .size(32.0, 32.0),
+            star()
+                .foreground(Color::srgb_hex("#F59E0B"))
+                .size(32.0, 32.0),
             check_circle()
-                .tint(Color::srgb_hex("#10B981"))
+                .foreground(Color::srgb_hex("#10B981"))
                 .size(32.0, 32.0),
             information()
-                .tint(Color::srgb_hex("#3B82F6"))
+                .foreground(Color::srgb_hex("#3B82F6"))
                 .size(32.0, 32.0),
         ))
         .spacing(16.0),

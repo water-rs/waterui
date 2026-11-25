@@ -2216,7 +2216,7 @@ checksum = "af491d569909a7e4dee0ad7db7f5341fef5c614d5b8ec8cf765732aba3cff681"
 dependencies = [
  "serde",
  "termcolor",
- "unicode-width 0.1.14",
+ "unicode-width 0.2.2",
 ]
 
 [[package]]
@@ -8838,7 +8838,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "proc-macro2 1.0.107",
  "quote 1.0.47",
  "syn 2.0.119",
@@ -13045,7 +13045,7 @@ dependencies = [
 [[package]]
 name = "waterui-chart"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/chart?branch=main#4c1f44531a340bd15d42811d331452726e7becf9"
+source = "git+https://github.com/water-rs/chart?branch=main#21ced53649e0960e4cc40303a2745e451f98e18f"
 dependencies = [
  "bytemuck",
  "nami",
@@ -13773,7 +13773,7 @@ dependencies = [
 [[package]]
 name = "waterui-particle"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/particle?branch=main#80b2263df87bcbc93272b74e17591f06ac098c0a"
+source = "git+https://github.com/water-rs/particle?branch=main#d57aa84e37765fed01202d9d6b4e6c00655c47a1"
 dependencies = [
  "bytemuck",
  "encase",
@@ -13822,7 +13822,7 @@ dependencies = [
 [[package]]
 name = "waterui-svg"
 version = "0.4.0"
-source = "git+https://github.com/water-rs/svg?branch=main#e65eabadc45daefcf2a488aa027f12a0e5952560"
+source = "git+https://github.com/water-rs/svg?branch=main#a3220aaab98aebd4129b58d4832a53e59ce0a0a1"
 dependencies = [
  "suiteki",
  "tracing",

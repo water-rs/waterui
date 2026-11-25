@@ -315,7 +315,7 @@ rotating token re-encodes in place. The view *panics while rendering* when the c
 exceeds QR capacity or holds characters Code128 cannot encode; validate runtime input
 first with `BarcodeSource::qr(text)` / `BarcodeSource::code128(text)`, which return a
 `Result`. `.dark_color(c)`, `.light_color(c)` and `.linear_gradient(..)` style it.
-`Svg::new(markup)` takes SVG source text (`.tint(color)` recolours it,
+`Svg::new(markup)` takes SVG source text (`.foreground(color)` recolours it,
 `Svg::from_path(path_data, w, h)` draws one path); `waterui::svg` needs the `gpu`
 feature, on by default.
 
@@ -446,9 +446,7 @@ ParticleSystem::new(10_000)             // max particles
 ```
 
 Every numeric builder parameter is a signal slot (`impl IntoSignalF32`; colors take
-`impl IntoSignal<Color>`). Careful: on
-`ParticleSystem`, `.size(min, max)` is the *particle* size range in normalized units —
-it is not the frame modifier. Also available: `.emit_from_point()` / `.emit_from_circle(r)`,
+`impl IntoSignal<Color>`). `.particle_size(min, max)` sets the particle size range in normalized units (while `.size(w, h)` comes from `ViewExt`). Also available: `.emit_from_point()` / `.emit_from_circle(r)`,
 `.angle(min, max)`, `.spin(min, max)`, `.shape(ParticleShape::Circle | Rect)`, `.additive()`,
 `.softness(s)`, `.stretch_with_velocity()`, the forces `.gravity(x, y)`, `.wind(x, y)`,
 `.turbulence(s)`, `.drag(s)`, and collisions (`.collide_with_viewport()`,
@@ -496,7 +494,7 @@ level_count)`; `RadarData::new(axis_count).labels(..).series(RadarSeries::new(na
 kept sorted by threshold), whose `GaugeChart` takes `.arc(ArcAngles::from_degrees(-135.0,
 135.0))` and `.radii(GaugeRadii::new(0.3, 0.45))` (normalized).
 
-Interaction and composition, on every chart: `.focused(&binding)` / `.selected(&binding)`
+Interaction and composition, on every chart: `.chart_focus(&binding)` / `.chart_selection(&binding)`
 write the hit datum into a `Binding<Option<HitResult<T>>>` (`series`, `index`, `value`,
 `anchor`); `.focused_tooltip(|hit| ..)` and `.selected_tooltip(|hit| ..)` draw a view
 anchored at the datum — `Tooltip::new(TooltipContent::new().title(..).value(label, value))`

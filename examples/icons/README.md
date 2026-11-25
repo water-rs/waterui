@@ -37,8 +37,8 @@ mdi::cog()
 lucide::house()
 lucide::settings()
 
-// Tint and size
-mdi::heart().tint(Color::srgb_hex("#EF4444")).size(32.0, 32.0)
+// Color and size
+mdi::heart().foreground(Color::srgb_hex("#EF4444")).size(32.0, 32.0)
 ```
 
 ## Running

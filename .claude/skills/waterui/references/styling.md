@@ -360,7 +360,7 @@ use waterui_icons_lucide as lucide;
 mdi::check_circle()
 mdi::delete().size(20.0, 20.0)
 mdi::flag().foreground(Accent)                      // theme color
-lucide::star().tint(Color::srgb_hex("#F59E0B"))     // explicit tint
+lucide::star().foreground(Color::srgb_hex("#F59E0B"))     // explicit color
 ```
 
 Icon names are `snake_case` (`account-circle` → `account_circle()`); Material and Lucide

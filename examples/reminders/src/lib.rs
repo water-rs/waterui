@@ -328,7 +328,7 @@ fn destination_tile(
 
     vstack((
         hstack((
-            dest.icon().tint(Srgb::WHITE).size(20.0, 20.0),
+            dest.icon().foreground(Srgb::WHITE).size(20.0, 20.0),
             spacer(),
             text!("{count}")
                 .headline()
@@ -357,7 +357,7 @@ fn destination_tile(
 fn user_list_row(name: &'static str, count: i32, color: Srgb) -> impl View {
     hstack((
         r#format_list_bulleted()
-            .tint(Srgb::WHITE)
+            .foreground(Srgb::WHITE)
             .size(14.0, 14.0)
             .padding_with(6.0)
             .background(color)
@@ -455,7 +455,9 @@ fn reminder_item(row: &ReminderRow) -> impl View + use<> {
         .leading(),
         spacer(),
         when(row.flagged, || {
-            flag().tint(Srgb::from_hex("#F28A34")).size(12.0, 12.0)
+            flag()
+                .foreground(Srgb::from_hex("#F28A34"))
+                .size(12.0, 12.0)
         })
         .otherwise(|| spacer().width(12.0)),
     ))
