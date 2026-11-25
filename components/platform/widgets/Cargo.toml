@@ -37,7 +37,11 @@ serde_json.workspace = true
 tempfile = "3.27"
 
 [package.metadata.waterui.android]
-kotlin-sources = ["kotlin/WaterUIWidgetHost.kt"]
+kotlin-sources = [
+    "kotlin/WaterUIWidgetHost.kt",
+    "kotlin/WaterUIWidgetSchema.kt",
+    "kotlin/WaterUIWidgetRenderer.kt",
+]
 
 [[package.metadata.waterui.android.keep]]
 class = "dev.waterui.widgets.WaterUIWidgetHost"

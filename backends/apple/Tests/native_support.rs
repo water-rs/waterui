@@ -357,7 +357,7 @@ pub fn realize_into_shown_scene(
     env: &Environment,
     window: cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIWindow>,
 ) -> RealizedScene {
-    let declaration = crate::windows::root_window(declaration);
+    let declaration = crate::windows::root_window(declaration, env);
     let controller = cocoa_ui::uikit::ViewController::new(mtm, cocoa_ui::uikit::window_root(mtm));
     window.setRootViewController(Some(&controller));
     window.makeKeyAndVisible();

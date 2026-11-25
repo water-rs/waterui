@@ -157,7 +157,7 @@ drive each layer's `.opacity`.
 ## Reactive colors
 
 Colour-taking modifiers (`.fill(..)`, `.background(..)`, `.foreground(..)`, `.tint(..)`,
-`.border(..)`, `Badge::color(..)`, `Avatar::ring(..)`, `IconGlyph::color(..)`) accept any
+`.border(..)`, `Badge::color(..)`, `Avatar::ring(..)`) accept any
 colour signal, palette struct, or theme token directly (`impl IntoSignal<Color>`):
 
 ```rust
@@ -317,7 +317,7 @@ card.border(Color::srgb_hex("#E5E7EB"), 1.0)                       // all edges,
 card.border_with(Border::new(Accent, 1.0).corner_radius(12.0).edges(EdgeSet::BOTTOM))
 avatar.clip(Circle).shadow(4.0)                                    // inherits the caster's `.clip` silhouette
 card.shadow(
-    Shadow::splat(8.0)                                             // blur radius
+    Shadow::new(8.0)                                               // blur radius
         .color(Color::srgb(0, 0, 0).with_opacity(0.2))             // color, with alpha
         .offset(0.0, 2.0)                                          // horizontal and vertical offset
         .silhouette(RoundedRectangle::new(8.0)),                   // explicit silhouette override
@@ -327,7 +327,7 @@ card.shadow(
 `Border`'s `corner_radius` and `RoundedRectangle`'s default radius are both in **points**.
 `Border` (`width`, `corner_radius`, `color`) and `Shadow` (`radius`, `offset`, `color`) accept
 reactive signals (`impl IntoSignalF32` / `impl IntoSignal<Color>`), so animated metrics update in
-place without rebuilding views. `Shadow::splat(v)` / `Shadow::default()` / `.shadow(v)` inherit
+place without rebuilding views. `Shadow::new(v)` / `Shadow::splat(v)` / `Shadow::default()` / `.shadow(v)` inherit
 the caster's `.clip(...)` silhouette automatically (falling back to a rectangle when unclipped)
 unless `.silhouette(...)` sets an explicit shape.
 
@@ -351,9 +351,9 @@ Icons come from packaged icon-set crates. **Pick one set per app** and depend on
 
 | Crate | Set |
 |---|---|
-| `waterui-icons-material-icon` | Material Design Icons (Pictogrammers), SVG |
+| `waterui-icons-material-icon` | Material Design Icons (Pictogrammers), SVG default / webfont optional |
 | `waterui-icons-lucide` | Lucide, SVG |
-| `waterui-icons-fontawesome7` | Font Awesome 7 Free (webfont by default, SVG optional) — constants such as `fa::solid::HOUSE`, `.with_font_size(32.0)` |
+| `waterui-icons-fontawesome7` | Font Awesome 7 Free (webfont default / SVG optional) |
 | `waterui-apple` (`SfSymbol`) | Type-safe Apple SF Symbols (`SfSymbol::HOUSE`, gated by deployment target) — **Apple platforms only** |
 
 ```rust
@@ -361,15 +361,18 @@ use waterui_icons_material_icon as mdi;
 use waterui_icons_lucide as lucide;
 
 mdi::check_circle()
-mdi::delete().size(20.0, 20.0)
+mdi::delete().icon_size(20.0)
 mdi::flag().foreground(Accent)                      // theme color
-lucide::star().tint(Color::srgb_hex("#F59E0B"))     // explicit tint
+lucide::star().foreground(Color::srgb_hex("#F59E0B"))
 ```
 
-Icon names are `snake_case` (`account-circle` → `account_circle()`); Material and Lucide
-icons are 24×24 by default. Font Awesome's default webfont mode draws glyphs from the
-Font Awesome font files (`fa-solid-900.ttf`, `fa-regular-400.ttf`, `fa-brands-400.ttf`),
-which the app must bundle; its `svg` feature needs no font.
+Every pack function returns `waterui_icon::Icon` from a `snake_case` name
+(`account-circle` → `account_circle()`, `fa::solid::house()`); whether it draws from
+an SVG path or a webfont glyph is controlled by the pack's feature rather than a
+separate type. Colour uses `.foreground(..)`, size flows from the shared `IconSize`
+channel (`.icon_size(..)`, defaulting to `24.0` points). Font Awesome's default
+`webfont` mode draws from bundled Font Awesome fonts (`fa-solid-900.ttf`,
+`fa-regular-400.ttf`, `fa-brands-400.ttf`); its `svg` feature needs no font.
 
 Match the set to the design language: a Material 3 app uses Material icons, not Lucide.
 

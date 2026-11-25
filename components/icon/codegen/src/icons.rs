@@ -21,7 +21,7 @@ pub struct IconModule {
     /// Font-family constant emitted under the `webfont` feature, if any.
     pub font_family: Option<FontFamily>,
     /// When `true`, the module re-exports `waterui_icon::IconGlyph` under the
-    /// `webfont` feature so generated glyph constants can name it unqualified.
+    /// `webfont` feature so generated glyph functions can name it unqualified.
     pub reexport_glyph: bool,
     /// The icons rendered into this module, in output order.
     pub icons: Vec<IconEntry>,
@@ -38,22 +38,23 @@ pub struct FontFamily {
     pub cfg_webfont: bool,
 }
 
-/// A single icon: an optional webfont glyph and an optional SVG section.
+/// A single icon: `snake_case` constructor returning `crate::Icon` backed by
+/// SVG path data and/or a webfont glyph depending on pack features.
 #[derive(Debug)]
 pub struct IconEntry {
     /// Original (kebab-case) icon name, used in doc comments.
     pub source_name: String,
-    /// Webfont glyph constant, when the set ships codepoints.
+    /// Constructor function identifier, e.g. `r#ab_testing`.
+    pub fn_name: String,
+    /// Webfont glyph data, when the set ships codepoints.
     pub glyph: Option<GlyphConst>,
     /// SVG path/viewbox/constructor section, when the set ships vector data.
     pub svg: Option<SvgConst>,
 }
 
-/// A webfont glyph constant (`pub const NAME: IconGlyph = ...`).
+/// Webfont glyph data for an icon constructor (`IconGlyph::new('...', FONT_FAMILY)`).
 #[derive(Debug)]
 pub struct GlyphConst {
-    /// Constant identifier (already disambiguated against path constants).
-    pub const_name: String,
     /// How `IconGlyph` is named here (`crate::IconGlyph` or `IconGlyph`).
     pub type_path: String,
     /// Pre-built unicode escape, e.g. `\u{F01C4}`.
@@ -61,7 +62,7 @@ pub struct GlyphConst {
 }
 
 /// The SVG-backed part of an icon: path constant, optional viewbox constant,
-/// and the `Svg` constructor function.
+/// and the `Icon` constructor expression.
 #[derive(Debug)]
 pub struct SvgConst {
     /// Path constant identifier, e.g. `AB_TESTING_PATH`.
@@ -70,9 +71,7 @@ pub struct SvgConst {
     pub path_literal: String,
     /// Viewbox constant, when the set encodes per-icon viewboxes.
     pub viewbox: Option<ViewboxConst>,
-    /// Constructor function identifier, e.g. `r#ab_testing`.
-    pub fn_name: String,
-    /// Full `crate::Svg` constructor expression placed in the function body.
+    /// Full `crate::Icon` constructor expression placed in the function body.
     pub ctor: String,
 }
 
@@ -109,7 +108,7 @@ mod tests {
     }
 
     #[test]
-    fn material_shape_has_glyph_path_and_from_path_fn() {
+    fn material_shape_emits_unified_icon_fn_for_svg_and_webfont() {
         let module = IconModule {
             banner: vec![
                 "Auto-generated Material Design icon definitions.".to_owned(),
@@ -123,8 +122,8 @@ mod tests {
             reexport_glyph: false,
             icons: vec![IconEntry {
                 source_name: "ab-testing".to_owned(),
+                fn_name: "r#ab_testing".to_owned(),
                 glyph: Some(GlyphConst {
-                    const_name: "AB_TESTING".to_owned(),
                     type_path: "crate::IconGlyph".to_owned(),
                     escape: "\\u{F01C4}".to_owned(),
                 }),
@@ -132,8 +131,7 @@ mod tests {
                     path_const: "AB_TESTING_PATH".to_owned(),
                     path_literal: "\"M1,2\"".to_owned(),
                     viewbox: None,
-                    fn_name: "r#ab_testing".to_owned(),
-                    ctor: "crate::Svg::from_path(AB_TESTING_PATH, 24.0, 24.0)".to_owned(),
+                    ctor: "crate::Icon::from_path(AB_TESTING_PATH, 24.0, 24.0)".to_owned(),
                 }),
             }],
         };
@@ -142,12 +140,9 @@ mod tests {
         assert!(out.contains(
             "#[cfg(feature = \"webfont\")]\npub const FONT_FAMILY: &str = \"Material Design Icons\";\n"
         ));
-        assert!(out.contains(
-            "pub const AB_TESTING: crate::IconGlyph = crate::IconGlyph::new('\\u{F01C4}', FONT_FAMILY);\n"
-        ));
         assert!(out.contains("pub const AB_TESTING_PATH: &str = \"M1,2\";\n"));
-        assert!(out.contains("pub fn r#ab_testing() -> crate::Svg {\n"));
-        assert!(out.contains("    crate::Svg::from_path(AB_TESTING_PATH, 24.0, 24.0)\n"));
+        assert!(out.contains("#[cfg(feature = \"svg\")]\n/// `ab-testing` icon.\n#[inline]\npub fn r#ab_testing() -> crate::Icon {\n    crate::Icon::from_path(AB_TESTING_PATH, 24.0, 24.0)\n}\n"));
+        assert!(out.contains("#[cfg(all(feature = \"webfont\", not(feature = \"svg\")))]\n/// `ab-testing` icon.\n#[inline]\npub const fn r#ab_testing() -> crate::Icon {\n    crate::Icon::from_glyph(crate::IconGlyph::new('\\u{F01C4}', FONT_FAMILY))\n}\n"));
         assert!(!out.contains("_VIEWBOX"));
         assert!(!out.contains("pub use waterui_icon::IconGlyph;"));
     }
@@ -164,25 +159,24 @@ mod tests {
             reexport_glyph: false,
             icons: vec![IconEntry {
                 source_name: "activity".to_owned(),
+                fn_name: "r#activity".to_owned(),
                 glyph: None,
                 svg: Some(SvgConst {
                     path_const: "ACTIVITY_PATH".to_owned(),
                     path_literal: "\"M22 12\"".to_owned(),
                     viewbox: None,
-                    fn_name: "r#activity".to_owned(),
-                    ctor: "crate::Svg::from_stroke_path(ACTIVITY_PATH, 24.0, 24.0)".to_owned(),
+                    ctor: "crate::Icon::from_path(ACTIVITY_PATH, 24.0, 24.0).stroked()".to_owned(),
                 }),
             }],
         };
         let out = render(&module);
         assert!(out.contains("pub const ACTIVITY_PATH: &str = \"M22 12\";\n"));
-        assert!(out.contains("    crate::Svg::from_stroke_path(ACTIVITY_PATH, 24.0, 24.0)\n"));
+        assert!(out.contains("    crate::Icon::from_path(ACTIVITY_PATH, 24.0, 24.0).stroked()\n"));
         assert!(!out.contains("IconGlyph"));
-        assert!(!out.contains("icon as webfont glyph"));
     }
 
     #[test]
-    fn fontawesome_shape_has_glyph_viewbox_and_reexport() {
+    fn fontawesome_shape_emits_icon_fn_under_both_features_and_glyph_only() {
         let module = IconModule {
             banner: vec!["Auto-generated Font Awesome 7 solid icons.".to_owned()],
             font_family: Some(FontFamily {
@@ -194,8 +188,8 @@ mod tests {
             icons: vec![
                 IconEntry {
                     source_name: "star".to_owned(),
+                    fn_name: "r#star".to_owned(),
                     glyph: Some(GlyphConst {
-                        const_name: "STAR".to_owned(),
                         type_path: "IconGlyph".to_owned(),
                         escape: "\\u{f005}".to_owned(),
                     }),
@@ -206,16 +200,15 @@ mod tests {
                             const_name: "STAR_VIEWBOX".to_owned(),
                             literal: "(576.0, 512.0)".to_owned(),
                         }),
-                        fn_name: "r#star".to_owned(),
-                        ctor: "crate::Svg::from_path(STAR_PATH, STAR_VIEWBOX.0, STAR_VIEWBOX.1)"
+                        ctor: "crate::Icon::from_path(STAR_PATH, STAR_VIEWBOX.0, STAR_VIEWBOX.1)"
                             .to_owned(),
                     }),
                 },
-                // Glyph-only icon (no vector data): emits the glyph but no path/fn.
+                // Glyph-only icon (no vector data): emits only the webfont function.
                 IconEntry {
                     source_name: "glyph-only".to_owned(),
+                    fn_name: "r#glyph_only".to_owned(),
                     glyph: Some(GlyphConst {
-                        const_name: "GLYPH_ONLY".to_owned(),
                         type_path: "IconGlyph".to_owned(),
                         escape: "\\u{f006}".to_owned(),
                     }),
@@ -224,23 +217,20 @@ mod tests {
             ],
         };
         let out = render(&module);
-        // Font Awesome's `FONT_FAMILY` is intentionally not webfont-gated.
         assert!(out.contains(
             "/// Font family name for solid icons.\npub const FONT_FAMILY: &str = \"Font Awesome 7 Free Solid\";\n"
         ));
         assert!(out.contains("#[cfg(feature = \"webfont\")]\npub use waterui_icon::IconGlyph;\n"));
+        assert!(out.contains("/// SVG viewbox dimensions `(width, height)` for `star`.\npub const STAR_VIEWBOX: (f32, f32) = (576.0, 512.0);\n"));
         assert!(
-            out.contains("pub const STAR: IconGlyph = IconGlyph::new('\\u{f005}', FONT_FAMILY);\n")
-        );
-        assert!(out.contains("pub const STAR_VIEWBOX: (f32, f32) = (576.0, 512.0);\n"));
-        assert!(
-            out.contains("    crate::Svg::from_path(STAR_PATH, STAR_VIEWBOX.0, STAR_VIEWBOX.1)\n")
+            out.contains("    crate::Icon::from_path(STAR_PATH, STAR_VIEWBOX.0, STAR_VIEWBOX.1)\n")
         );
         assert!(out.contains(
-            "pub const GLYPH_ONLY: IconGlyph = IconGlyph::new('\\u{f006}', FONT_FAMILY);\n"
+            "#[cfg(all(feature = \"webfont\", not(feature = \"svg\")))]\n/// `star` icon.\n#[inline]\npub const fn r#star() -> crate::Icon {\n    crate::Icon::from_glyph(IconGlyph::new('\\u{f005}', FONT_FAMILY))\n}\n"
         ));
-        // The glyph-only icon must not emit a path constant or constructor.
+        assert!(out.contains(
+            "#[cfg(feature = \"webfont\")]\n/// `glyph-only` icon.\n#[inline]\npub const fn r#glyph_only() -> crate::Icon {\n    crate::Icon::from_glyph(IconGlyph::new('\\u{f006}', FONT_FAMILY))\n}\n"
+        ));
         assert!(!out.contains("GLYPH_ONLY_PATH"));
-        assert!(!out.contains("pub fn r#glyph_only"));
     }
 }
