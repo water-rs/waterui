@@ -11,7 +11,7 @@
 use std::time::Instant;
 
 use waterui::graphics::Color;
-use waterui::style::{FloatingElevation, FloatingStyle, Shadow, Vector};
+use waterui::style::{FloatingElevation, FloatingStyle, Shadow};
 use waterui::{Binding, View, ViewExt as _};
 use waterui_core::dynamic::watch;
 use waterui_core::handler::AnyViewBuilder;
@@ -32,12 +32,7 @@ fn caster() -> impl View {
             SURFACE_RGB[1],
             SURFACE_RGB[2],
         )))
-        .shadow(Shadow::new(
-            Color::srgb(0, 0, 0),
-            Vector::new(0.0, 0.0),
-            1.0,
-            RoundedRectangle::new(16.0),
-        ))
+        .shadow(Shadow::new(1.0).silhouette(RoundedRectangle::new(16.0)))
 }
 
 /// A 56×56 floating surface at (20,20)–(76,76) whose clip and shadows all carry
@@ -145,12 +140,7 @@ fn translated_shadow_moves_with_the_caster() {
                         SURFACE_RGB[1],
                         SURFACE_RGB[2],
                     )))
-                    .shadow(Shadow::new(
-                        Color::srgb(0, 0, 0),
-                        Vector::new(0.0, 0.0),
-                        2.0,
-                        Ellipse,
-                    ))
+                    .shadow(Shadow::new(2.0).silhouette(Ellipse))
                     .offset(v, 0.0)
             })
         }

@@ -9,7 +9,7 @@
 //! use waterui_graphics::color::Color;
 //!
 //! fn shadow_example() {
-//!     let shadow = style::Shadow::splat(4.0)
+//!     let shadow = style::Shadow::new(4.0)
 //!         .color(Color::srgb(0, 0, 0))
 //!         .offset(2.0, 2.0)
 //!         .silhouette(RoundedRectangle::new(8.0));
@@ -175,18 +175,18 @@ impl Shadow {
         self
     }
 
-    /// Temporary four-argument constructor retained until split crates migrate off it.
-    #[doc(hidden)]
+    /// Creates a black shadow with the given blur radius and zero offset,
+    /// inheriting the caster's clip silhouette.
     #[must_use]
-    #[expect(
-        clippy::needless_pass_by_value,
-        reason = "temporary four-argument compatibility signature for split crates"
-    )]
-    pub fn new(color: Color, offset: Vector<f32>, radius: f32, silhouette: impl Shape) -> Self {
-        Self::splat(radius)
-            .color(color)
-            .offset(offset.x, offset.y)
-            .silhouette(silhouette)
+    pub fn new(radius: impl IntoSignalF32) -> Self {
+        let zero = 0.0_f32.into_signal_f32().computed();
+        Self {
+            color: Color::srgb(0, 0, 0),
+            offset_x: zero.clone(),
+            offset_y: zero,
+            radius: radius.into_signal_f32().computed(),
+            silhouette: None,
+        }
     }
 
     /// Creates a black shadow with the same offset and blur radius in both directions,
@@ -207,7 +207,7 @@ impl Shadow {
 impl Default for Shadow {
     /// A moderate black shadow slightly below the caster.
     fn default() -> Self {
-        Self::splat(4.0).offset(0.0, 2.0)
+        Self::new(4.0).offset(0.0, 2.0)
     }
 }
 
@@ -215,7 +215,7 @@ impl Default for Shadow {
 impl<T: Into<f64>> From<T> for Shadow {
     fn from(value: T) -> Self {
         let v = value.into() as f32;
-        Self::splat(v).offset(0.0, v)
+        Self::new(v).offset(0.0, v)
     }
 }
 
