@@ -20,6 +20,9 @@ use waterui::ViewExt as _;
 use waterui::animation::Animation;
 use waterui::graphics::Color;
 use waterui::graphics::color::Srgb;
+use waterui::navigation::{
+    NavigationTransition, NavigationTransitionDirection, NavigationTransitionPair,
+};
 use waterui::shape::RoundedRectangle;
 use waterui::widget::condition::when;
 use waterui_core::handler::AnyViewBuilder;
@@ -29,7 +32,7 @@ use waterui_layout::padding::EdgeInsets;
 use waterui_layout::spacer::spacer;
 use waterui_layout::stack::vstack;
 use waterui_shape::ShapeExt as _;
-use waterui_structural_transition::{PropertyTransition, Transition};
+use waterui_structural_transition::{Edge, PropertyTransition, Transition, TransitionProperties};
 
 use super::{MinimalTestTheme, test_environment};
 use crate::HeadlessRuntime;
@@ -763,25 +766,16 @@ fn a_list_row_removal_holds_its_slot_while_it_fades() {
 #[derive(Debug)]
 struct EdgeSlide;
 
-impl waterui::navigation::NavigationTransition for EdgeSlide {
-    fn frame(
-        &self,
-        progress: f32,
-        direction: waterui::navigation::NavigationTransitionDirection,
-    ) -> waterui::navigation::NavigationTransitionFrame {
-        use waterui::navigation::{
-            NavigationTransitionDirection, NavigationTransitionFrame, NavigationTransitionLayer,
-        };
-        let moving = |offset_x| NavigationTransitionLayer::new(offset_x, 0.0, 1.0, 1.0);
+impl NavigationTransition for EdgeSlide {
+    fn transitions(&self, direction: NavigationTransitionDirection) -> NavigationTransitionPair {
+        let identity = PropertyTransition::new(TransitionProperties::IDENTITY);
         match direction {
-            NavigationTransitionDirection::Push => NavigationTransitionFrame::new(
-                NavigationTransitionLayer::IDENTITY,
-                moving(1.0 - progress),
-            ),
-            NavigationTransitionDirection::Pop => NavigationTransitionFrame::new(
-                moving(progress),
-                NavigationTransitionLayer::IDENTITY,
-            ),
+            NavigationTransitionDirection::Push => {
+                NavigationTransitionPair::new(PropertyTransition::move_in(Edge::Trailing), identity)
+            }
+            NavigationTransitionDirection::Pop => {
+                NavigationTransitionPair::new(identity, PropertyTransition::move_in(Edge::Trailing))
+            }
         }
     }
 }
@@ -813,7 +807,7 @@ fn edge_pop_stack(
                     builder_path.clone(),
                     NavigationView::new("Root", sized_swatch("root", BLUE, 300.0, 200.0)),
                 )
-                .transition(EdgeSlide)
+                .page_transition(EdgeSlide)
                 .destination(move |_: i64| NavigationView::new("Page", page())),
             )
         }),
@@ -1057,5 +1051,112 @@ fn an_edge_drag_without_a_page_root_declaration_drives_the_stack_style() {
     assert!(
         bounds(&mut runtime, "page").is_some(),
         "the early release keeps the page"
+    );
+}
+
+/// Mixing `NavigationView::page_transition(...)` with a `.transition(...)` on
+/// the page's content no longer aborts: `page_transition` owns the page push/pop
+/// without colliding with `ViewExt::transition`.
+#[test]
+fn mixing_page_transition_and_content_transition_does_not_abort() {
+    use waterui::navigation::{
+        NavigationPath, NavigationStack, NavigationView, navigation_transition,
+    };
+
+    let path = NavigationPath::<i64>::new();
+    let builder_path = path.clone();
+    let mut runtime = HeadlessRuntime::new_for_tests(
+        test_environment(),
+        AnyViewBuilder::<AnyView>::new(move || {
+            AnyView::new(
+                NavigationStack::with_path(
+                    builder_path.clone(),
+                    NavigationView::new("Root", sized_swatch("root", BLUE, 300.0, 200.0)),
+                )
+                .destination(|_: i64| {
+                    NavigationView::new(
+                        "Inbox",
+                        sized_swatch("page", RED, 300.0, 200.0)
+                            .transition(PropertyTransition::opacity()),
+                    )
+                    .page_transition(navigation_transition::fade())
+                }),
+            )
+        }),
+        400,
+        300,
+        MinimalTestTheme::default(),
+    );
+    let mut at = Instant::now();
+    settle(&mut runtime, &mut at);
+    path.push(1);
+    at += Duration::from_millis(16);
+    let _ = frame(&mut runtime, at);
+    settle(&mut runtime, &mut at);
+    assert!(bounds(&mut runtime, "page").is_some());
+
+    let _ = path.pop();
+    at += Duration::from_millis(16);
+    let _ = frame(&mut runtime, at);
+    settle(&mut runtime, &mut at);
+    assert!(bounds(&mut runtime, "root").is_some());
+}
+
+/// `NavigationView::page_transition` accepts a core `TransitionSpec` directly
+/// and drives the push/pop on that spec's own animation timing rather than the
+/// theme's navigation duration.
+#[test]
+fn page_transition_accepts_core_transition_spec_and_uses_its_timing() {
+    use waterui::navigation::{NavigationPath, NavigationStack, NavigationView};
+    use waterui_structural_transition::TransitionSpec;
+
+    let path = NavigationPath::<i64>::new();
+    let builder_path = path.clone();
+    let mut runtime = HeadlessRuntime::new_for_tests(
+        test_environment(),
+        AnyViewBuilder::<AnyView>::new(move || {
+            AnyView::new(
+                NavigationStack::with_path(
+                    builder_path.clone(),
+                    NavigationView::new("Root", sized_swatch("root", BLUE, 300.0, 200.0)),
+                )
+                .destination(|_: i64| {
+                    NavigationView::new("Detail", sized_swatch("page", RED, 300.0, 200.0))
+                        .page_transition(
+                            TransitionSpec::new(PropertyTransition::opacity())
+                                .with_animation(Animation::linear(Duration::from_millis(1000))),
+                        )
+                }),
+            )
+        }),
+        400,
+        300,
+        MinimalTestTheme::default(),
+    );
+    let mut at = Instant::now();
+    settle(&mut runtime, &mut at);
+    let root_rest = frame(&mut runtime, at);
+    let probe = bounds(&mut runtime, "root").expect("root swatch bounds");
+
+    path.push(1);
+    at += Duration::from_millis(16);
+    let _ = frame(&mut runtime, at);
+    // Past the theme's 450ms navigation duration, still midway through the
+    // spec's own 1000ms linear animation.
+    at += Duration::from_millis(500);
+    let mid = frame(&mut runtime, at);
+    at += Duration::from_millis(600);
+    let settled = frame(&mut runtime, at);
+
+    let root_px = centre_pixel(&root_rest, probe);
+    let mid_px = centre_pixel(&mid, probe);
+    let settled_px = centre_pixel(&settled, probe);
+    assert_ne!(
+        mid_px, root_px,
+        "at 500ms of a 1000ms spec the incoming page has started fading in"
+    );
+    assert_ne!(
+        mid_px, settled_px,
+        "at 500ms of a 1000ms spec the transition must still be mid-flight (not finished at the 450ms theme duration)"
     );
 }

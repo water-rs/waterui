@@ -13759,6 +13759,7 @@ dependencies = [
  "waterui-core",
  "waterui-graphics",
  "waterui-icons-lucide",
+ "waterui-structural-transition",
  "waterui-testing",
  "waterui-text",
  "waterui-url",

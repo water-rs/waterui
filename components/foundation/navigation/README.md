@@ -192,7 +192,7 @@ Built-in transitions are platform automatic, fade, matched zoom, and none.
 ```rust
 NavigationStack::with_path(path, root)
     .destination(destination)
-    .transition(navigation_transition::fade())
+    .page_transition(navigation_transition::fade())
 ```
 
 Matched zoom uses one shared key type on the source, destination, and transition:
@@ -211,7 +211,7 @@ NavigationStack::with_path(path, root)
             hero().navigation_transition_destination(key),
         )
     })
-    .transition(navigation_transition::zoom(key))
+    .page_transition(navigation_transition::zoom(key))
 ```
 
 Apple executes supported transitions through native transition systems. Hydrolysis executes the same built-ins, interactive edge-pop motion, matched geometry, and custom `NavigationTransition` implementations on the retained GPU scene. A custom transition without a native projection is intentionally applied without animation on native backends and logged as unsupported there.
