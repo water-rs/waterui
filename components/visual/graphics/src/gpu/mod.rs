@@ -63,7 +63,6 @@ use core::fmt;
 use core::time::Duration;
 
 use cherenkov::Instant;
-use cherenkov_gpu::interop::GpuContentBox;
 use nami::Computed;
 
 use std::sync::Mutex;
@@ -210,38 +209,27 @@ pub enum SourceRateUpdate {
 #[derive(Debug)]
 pub struct Frame<'a> {
     /// Engine-owned device.
-    #[doc(hidden)]
-    pub device: &'a Device,
+    device: &'a Device,
     /// Engine-owned queue.
-    #[doc(hidden)]
-    pub queue: &'a Queue,
+    queue: &'a Queue,
     /// Offscreen render target for this frame.
-    #[doc(hidden)]
-    pub texture: &'a Texture,
+    texture: &'a Texture,
     /// Color attachment view of the render target texture.
-    #[doc(hidden)]
-    pub view: &'a TextureView,
+    view: &'a TextureView,
     /// Format of the render target texture.
-    #[doc(hidden)]
-    pub format: TextureFormat,
+    format: TextureFormat,
     /// Width of the render target texture in physical pixels.
-    #[doc(hidden)]
-    pub width: u32,
+    width: u32,
     /// Height of the render target texture in physical pixels.
-    #[doc(hidden)]
-    pub height: u32,
+    height: u32,
     /// Display scale factor.
-    #[doc(hidden)]
-    pub scale: f32,
+    scale: f32,
     /// Elapsed time since the producer's first rendered frame.
-    #[doc(hidden)]
-    pub elapsed: Duration,
+    elapsed: Duration,
     /// Time delta since the previous frame.
-    #[doc(hidden)]
-    pub delta: Duration,
+    delta: Duration,
     /// The platform's target presentation time for this frame, when available.
-    #[doc(hidden)]
-    pub presentation_time: Option<Instant>,
+    presentation_time: Option<Instant>,
     redraw_rate: Option<FrameRate>,
     source_rate_update: SourceRateUpdate,
 }
@@ -321,6 +309,12 @@ impl<'a> Frame<'a> {
     #[must_use]
     pub const fn height(&self) -> u32 {
         self.height
+    }
+
+    /// Physical pixel dimensions `(width, height)` of [`Self::texture`].
+    #[must_use]
+    pub const fn size(&self) -> (u32, u32) {
+        (self.width, self.height)
     }
 
     /// Display scale factor.
@@ -652,15 +646,6 @@ impl<T: GpuContent> GpuView<T> {
             self.label,
             self.value,
         )
-    }
-
-    /// Temporary by-value bridge while split crates migrate to
-    /// [`GpuContentLeaf::take_engine_content`]. Consumes `self`, so it cannot
-    /// be called twice.
-    #[doc(hidden)]
-    #[must_use]
-    pub fn take_engine_content(self) -> GpuContentBox {
-        self.into_leaf().take_engine_content()
     }
 }
 
