@@ -65,7 +65,7 @@ pub trait ViewSnapshot {
 #[diagnostic::on_unimplemented(
     message = "`{Self}` is not a WaterUI view collection",
     label = "expected a collection of views",
-    note = "`Views` is implemented by `ForEach`, `Constant`, `Vec` and arrays of views, and `AnyViews`. To turn a data collection into views use `ForEach::new(data, f)` — exposed as `Lazy::for_each` / `List::for_each` — over any `nami` collection: a `List` of `Identifiable` items, or an array or static slice, whose rows are identified by index."
+    note = "`Views` is implemented by `ForEach`, `Constant`, `Vec` and arrays of views, and `AnyViews`. To turn a data collection into views use `ForEach::new(data, f)` — exposed as `Lazy::for_each` / `List::for_each` — over any `nami` collection: a `StateList` of `Identifiable` items, or an array or static slice, whose rows are identified by index."
 )]
 pub trait Views {
     /// The type of unique identifier for items in the collection; `Ord` is
@@ -690,7 +690,7 @@ where
 /// transforming data models into view representations.
 ///
 /// Rows take their identity from the source collection's [`Collection::Id`]:
-/// a `List` of [`Identifiable`](crate::id::Identifiable) items identifies a
+/// a `StateList` of [`Identifiable`](crate::id::Identifiable) items identifies a
 /// row by its item's id, and an array or static slice such as `[&str; N]`
 /// identifies a row by its index.
 #[derive(Debug)]
@@ -1386,7 +1386,7 @@ mod tests {
     use crate::id::Identifiable;
     use alloc::{rc::Rc, vec, vec::Vec};
     use core::cell::{Cell, RefCell};
-    use nami::{Binding, Signal, SignalExt, binding, collection::List};
+    use nami::{Binding, Signal, SignalExt, binding, collection::StateList};
 
     #[derive(Clone, Debug)]
     struct TestItem {
@@ -1401,8 +1401,8 @@ mod tests {
         }
     }
 
-    fn items(ids: &[i32]) -> List<TestItem> {
-        List::from(
+    fn items(ids: &[i32]) -> StateList<TestItem> {
+        StateList::from(
             ids.iter()
                 .map(|id| TestItem { id: *id })
                 .collect::<Vec<_>>(),
@@ -1451,12 +1451,12 @@ mod tests {
 
     /// A collection that reports three rows but an id for only the first two.
     #[derive(Clone)]
-    struct MissingId(List<TestItem>);
+    struct MissingId(StateList<TestItem>);
 
     impl Collection for MissingId {
         type Item = TestItem;
         type Id = i32;
-        type Guard = <List<TestItem> as Collection>::Guard;
+        type Guard = <StateList<TestItem> as Collection>::Guard;
 
         fn get_item(&self, index: usize) -> Option<Self::Item> {
             self.0.get_item(index)
@@ -1640,7 +1640,7 @@ mod tests {
     #[test]
     fn snapshot_row_data_stays_live_through_its_signals() {
         let value = binding(10i32);
-        let list = List::from(vec![SignalItem {
+        let list = StateList::from(vec![SignalItem {
             id: 1,
             value: value.clone(),
         }]);

@@ -514,7 +514,7 @@ use waterui::reactive::{Binding, binding};
 #[cfg(target_os = "macos")]
 use waterui::window::{WindowBackground, WindowState, WindowStyle};
 #[cfg(target_os = "macos")]
-use waterui_core::layout::{Point, Rect, Size};
+use waterui_core::layout::Size;
 
 /// Checks that connecting a `WindowChannel` drains pre-queued windows as
 /// typed `RootWindow` declarations without erasing through `Environment`.
@@ -662,6 +662,7 @@ pub fn a_declared_window_realizes_its_declaration(mtm: MainThreadMarker) {
         .state(&state)
         .style(WindowStyle::Titled)
         .background(WindowBackground::Color(Color::srgb(255, 255, 255)))
+        .default_size(Size::new(640.0, 480.0))
         .on_close_request({
             let closed = alloc::rc::Rc::clone(&closed);
             move || {
@@ -673,9 +674,6 @@ pub fn a_declared_window_realizes_its_declaration(mtm: MainThreadMarker) {
             }
         });
 
-    declaration
-        .frame
-        .set(Rect::new(Point::new(0.0, 0.0), Size::new(640.0, 480.0)));
     let host = crate::windows::realize(declaration, &env, mtm);
     let window = host.window();
     let native = window.native();
@@ -740,7 +738,7 @@ pub mod toolbar_reach {
     use waterui::prelude::{scroll, text, vstack, zstack};
     use waterui::reactive::binding;
     use waterui::window::WindowStyle;
-    use waterui_core::layout::{Point, Rect, Size};
+    use waterui_core::layout::Size;
 
     use super::{
         ListSurface, MAIN_QUEUE_DEADLINE, ScrollSurface, pump_main_until, row_item,
@@ -811,10 +809,9 @@ pub mod toolbar_reach {
 
         let (mut env, _theme) = window_environment(mtm);
         env.insert(crate::first_paint::FirstPaint::default());
-        let declaration = Window::new("Toolbar Reach", content).style(WindowStyle::Titled);
-        declaration
-            .frame
-            .set(Rect::new(Point::new(0.0, 0.0), Size::new(700.0, 520.0)));
+        let declaration = Window::new("Toolbar Reach", content)
+            .style(WindowStyle::Titled)
+            .default_size(Size::new(700.0, 520.0));
         let host = crate::windows::realize(declaration, &env, mtm);
         let native = host.window().native();
         assert!(
@@ -1022,16 +1019,16 @@ pub mod toolbar_reach {
         );
     }
 
-    /// `Tabs` whose first tab is a `NavigationStack` over `inbox`, each tab
-    /// a `Tab::container` — the picker sits in the window toolbar.
+    /// `Tabs` whose first tab is a `NavigationStack` over `inbox` —
+    /// the picker sits in the window toolbar.
     fn tabbed<V: waterui::View>(
         inbox: impl Fn() -> NavigationView<V> + 'static,
     ) -> impl waterui::View {
         Tabs::new(
             &binding(0usize),
             (
-                Tab::container("Inbox", move || NavigationStack::new(inbox())),
-                Tab::container("Settings", || {
+                Tab::new("Inbox", move || NavigationStack::new(inbox())),
+                Tab::new("Settings", || {
                     NavigationStack::new(NavigationView::new("Settings", text("settings")))
                 }),
             ),
@@ -1072,29 +1069,29 @@ pub mod toolbar_reach {
         );
     }
 
-    /// The navigation example's structure: automatic-style `Tabs` of
-    /// `Tab::container`s, the Inbox tab a path-backed `NavigationStack`
-    /// whose root page carries a large title, a subtitle and a search
-    /// field in the bar around `content`.
+    /// The navigation example's structure: automatic-style `Tabs` whose
+    /// Inbox tab is a path-backed `NavigationStack` whose root page carries a
+    /// large title, a subtitle and a search field in the bar around `content`.
     fn inbox_tabs<V: waterui::View>(content: impl Fn() -> V + 'static) -> impl waterui::View {
         let content = std::rc::Rc::new(content);
         Tabs::new(
             &binding(0usize),
             (
-                Tab::container("Inbox", move || {
+                Tab::new("Inbox", move || {
                     NavigationStack::with_path(
                         NavigationPath::<u64>::new(),
                         content()
                             .navigation_title("Inbox")
                             .large_title()
                             .navigation_subtitle("3 unread")
-                            .searchable(&binding(Str::from("")), "Search mail"),
+                            .searchable(&binding(Str::from("")))
+                            .search_prompt("Search mail"),
                     )
                     .destination(|id: u64| {
                         NavigationView::new("Message", text(format!("message {id}")))
                     })
                 }),
-                Tab::container("Settings", || {
+                Tab::new("Settings", || {
                     NavigationStack::new(NavigationView::new("Settings", text("settings")))
                 }),
             ),
@@ -2364,7 +2361,7 @@ pub mod chrome_top {
     use waterui::prelude::text;
     use waterui::reactive::binding;
     use waterui::window::WindowStyle;
-    use waterui_core::layout::{Point, Rect, Size};
+    use waterui_core::layout::Size;
 
     use super::{MAIN_QUEUE_DEADLINE, pump_main_until, window_environment};
 
@@ -2427,10 +2424,9 @@ pub mod chrome_top {
 
         let (mut env, _theme) = window_environment(mtm);
         env.insert(crate::first_paint::FirstPaint::default());
-        let declaration = Window::new("Chrome Top", content).style(WindowStyle::Borderless);
-        declaration
-            .frame
-            .set(Rect::new(Point::new(0.0, 0.0), Size::new(700.0, 520.0)));
+        let declaration = Window::new("Chrome Top", content)
+            .style(WindowStyle::Borderless)
+            .default_size(Size::new(700.0, 520.0));
         let host = crate::windows::realize(declaration, &env, mtm);
         let native = host.window().native();
         let root = native
@@ -2486,8 +2482,8 @@ pub mod chrome_top {
                 Tabs::new(
                     &binding(0usize),
                     (
-                        Tab::container("First", || text(MARKER)),
-                        Tab::container("Second", || text("second")),
+                        Tab::new("First", || text(MARKER)),
+                        Tab::new("Second", || text("second")),
                     ),
                 )
                 .style(tab_style::Automatic)

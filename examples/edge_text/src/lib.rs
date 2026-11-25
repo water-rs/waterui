@@ -66,8 +66,8 @@ fn size_extremes() -> impl View {
     section(
         "Size extremes",
         hstack((
-            text("tiny 9").size(9.0),
-            text("huge 48").size(48.0),
+            text("tiny 9").font_size(9.0),
+            text("huge 48").font_size(48.0),
             text("body").body(),
         ))
         .spacing(8.0)

@@ -18,7 +18,7 @@
 //! resolves to a tab bar on a phone and a sidebar on a desktop-class window.
 //! None of that is decided by this file.
 //!
-//! Each tab owns its own navigation container (`Tab::container`), which is what
+//! Each tab owns its own navigation container (`Tab::new`), which is what
 //! makes a tab remember where you left it: push twice in Inbox, visit Settings,
 //! come back, and the two pushed pages are still there.
 
@@ -300,15 +300,14 @@ pub fn demo() -> impl View {
 fn pane_tab(
     pane: Pane,
     mail: &Mail,
-) -> Tab<impl ViewBuilder<Output = NavigationView<impl View + use<>>> + use<>, impl LabelKind + use<>>
-{
+) -> Tab<impl ViewBuilder<Output = impl View + use<>> + use<>, impl LabelKind + use<>> {
     let (title, icon) = match pane {
         Pane::Inbox => ("Inbox", inbox()),
         Pane::Library => ("Library", image_album()),
         Pane::Gallery => ("Gallery", view_gallery()),
         Pane::Settings => ("Settings", cog()),
     };
-    let tab = Tab::container(label(title).icon(icon), {
+    let tab = Tab::new(label(title).icon(icon), {
         let mail = mail.clone();
         move || match pane {
             Pane::Inbox => OneOf4::A(inbox_stack(mail.clone())),
@@ -354,7 +353,8 @@ fn inbox_root(
         .navigation_subtitle(text!("{unread} unread"))
         // A search field inside the bar chrome, not a text field drawn above
         // the content.
-        .searchable(&mail.query, "Search mail")
+        .searchable(&mail.query)
+        .search_prompt("Search mail")
         .navigation_toolbar(
             NavigationToolbar::default()
                 // Leading: the edit affordance, where each platform puts it.

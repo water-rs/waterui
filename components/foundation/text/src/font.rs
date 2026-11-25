@@ -16,7 +16,7 @@
 //!    needs to be parameterized; the `.title()` family is shorthand for
 //!    these.
 //!
-//! 3. **Direct overrides** — `.size(f32)`, `.weight(..)`, `.italic(bool)`,
+//! 3. **Direct overrides** — `.font_size(f32)`, `.weight(..)`, `.italic(bool)`,
 //!    [`Font`](crate::font::Font) constructors with explicit size/weight/family. This is the
 //!    escape hatch for fixed layouts (posters, splash screens, hero
 //!    headlines) and for example/demo code that wants to demonstrate a
@@ -186,7 +186,7 @@ impl ResolvedFont {
     ///
     /// A backend theme declares it for its slot faces, whose bold face the
     /// platform defines per text style. `None` leaves the trait to the
-    /// backend's rule for a face it realizes directly. [`Font::size`],
+    /// backend's rule for a face it realizes directly. [`Font::font_size`],
     /// [`Font::weight`] and a named [`Font::family`] select another face, so
     /// they drop the declaration.
     #[must_use]
@@ -202,7 +202,7 @@ impl ResolvedFont {
     /// from its body text style apply its plain bold under the
     /// [`Self::bold`] trait; a backend without that distinction treats it as
     /// body. Choosing a slot with [`Font::new`], or another face with
-    /// [`Font::size`], [`Font::weight`] or a named [`Font::family`], styles
+    /// [`Font::font_size`], [`Font::weight`] or a named [`Font::family`], styles
     /// the text and clears the mark.
     #[must_use]
     pub const fn unstyled(&self) -> bool {
@@ -504,13 +504,13 @@ impl Font {
     /// text style resized by hand does. A theme slot publishes its own face's
     /// pitch as an absolute line height; carrying that pitch onto a smaller
     /// face would space its lines as the larger one. Call [`Self::line_height`]
-    /// or [`Self::letter_spacing`] after `size` to declare metrics for the
+    /// or [`Self::letter_spacing`] after `font_size` to declare metrics for the
     /// new face. The slot's declared [`ResolvedFont::bold_weight`] and the
     /// [`ResolvedFont::unstyled`] mark are dropped for the same reason: a
     /// [`Self::bold`] trait on the resized font resolves as the platform
     /// bolds a fixed-size face.
     #[must_use]
-    pub fn size(self, size: impl IntoSignalF32) -> Self {
+    pub fn font_size(self, size: impl IntoSignalF32) -> Self {
         self.modified(size.into_signal_f32().computed(), |font, size| {
             font.size = size;
             font.line_height = None;
@@ -719,13 +719,13 @@ mod tests {
         let slot = ResolvedFont::new(17.0, FontWeight::Normal).with_typography_metrics(22.0, 0.4);
         let env = env_with_body(slot);
 
-        let resized = Font::new(Body).size(14.0).resolve(&env).snapshot();
+        let resized = Font::new(Body).font_size(14.0).resolve(&env).snapshot();
         assert!((resized.size - 14.0).abs() < f32::EPSILON);
         assert_eq!(resized.line_height, None);
         assert!(resized.letter_spacing.abs() < f32::EPSILON);
 
         let declared = Font::new(Body)
-            .size(14.0)
+            .font_size(14.0)
             .line_height(18.0)
             .resolve(&env)
             .snapshot();
@@ -810,7 +810,7 @@ mod tests {
         assert!(kept.unstyled());
 
         for font in [
-            Font::default().size(20.0),
+            Font::default().font_size(20.0),
             Font::default().weight(FontWeight::Light),
             Font::default().family("Menlo"),
         ] {
@@ -825,8 +825,8 @@ mod tests {
         let env = env_with_body(slot);
 
         for font in [
-            Font::new(Body).bold(true).size(20.0),
-            Font::new(Body).size(20.0).bold(true),
+            Font::new(Body).bold(true).font_size(20.0),
+            Font::new(Body).font_size(20.0).bold(true),
             Font::new(Body).bold(true).weight(FontWeight::Light),
             Font::new(Body).weight(FontWeight::Light).bold(true),
             Font::new(Body).bold(true).family("Menlo"),

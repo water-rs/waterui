@@ -17,7 +17,7 @@
 //! const HOUSE: IconGlyph = IconGlyph::new('\u{f015}', "FontAwesome7Free-Solid");
 //!
 //! // With a custom size
-//! let large = HOME.with_size(32.0);
+//! let large = HOME.with_font_size(32.0);
 //!
 //! // With an explicit color
 //! let tinted = HOUSE.color(Color::red());
@@ -59,7 +59,7 @@ fn codepoint_to_string(codepoint: char) -> Str {
 ///
 /// // Use in views
 /// fn settings_view() -> impl View {
-///     SETTINGS.with_size(24.0)
+///     SETTINGS.with_font_size(24.0)
 /// }
 ///
 /// // With color
@@ -94,7 +94,7 @@ impl IconGlyph {
 
     /// The font size in points. Default is 24.0.
     #[must_use]
-    pub const fn size(&self) -> f32 {
+    pub const fn font_size(&self) -> f32 {
         self.size
     }
 }
@@ -114,8 +114,8 @@ impl IconGlyph {
         }
     }
 
-    /// Returns a new glyph with the specified size.
-    pub const fn with_size(self, size: f32) -> Self {
+    /// Returns a new glyph with the specified font size.
+    pub const fn with_font_size(self, size: f32) -> Self {
         Self { size, ..self }
     }
 
@@ -133,7 +133,9 @@ impl IconGlyph {
     }
 
     fn font(self) -> Font {
-        Font::default().size(self.size).family(self.font_family)
+        Font::default()
+            .font_size(self.size)
+            .family(self.font_family)
     }
 
     fn styled_body(self) -> StyledStr {
@@ -158,9 +160,9 @@ pub struct ColoredIcon {
 }
 
 impl ColoredIcon {
-    /// Returns a new colored icon with the specified size.
+    /// Returns a new colored icon with the specified font size.
     #[must_use]
-    pub fn with_size(mut self, size: f32) -> Self {
+    pub fn with_font_size(mut self, size: f32) -> Self {
         self.glyph.size = size;
         self.styled = self.glyph.styled_body();
         self

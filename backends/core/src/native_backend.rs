@@ -924,8 +924,6 @@ native_backend! {
         dynamic<C>: waterui_core::Dynamic<C>,
         /// A container whose children are produced lazily.
         lazy_container<C>: waterui::layout::container::LazyContainer<C>,
-        /// A window opened from the view tree.
-        window<C>: waterui::window::Window<waterui::window::WindowSlot<C>, Option<C>>,
         #[cfg(waterui_feature = "effects")]
         /// A view drawn through a filter.
         filtered<C>: waterui::graphics::backend::FilteredView<C>,
@@ -1291,7 +1289,7 @@ mod tests {
             snapshot
                 .range()
                 .filter_map(|index| snapshot.get_view(index))
-                .map(|tab| tab.content().build().content)
+                .map(|tab| tab.content().build())
                 .chain(accessory)
                 .collect()
         }
@@ -1323,14 +1321,6 @@ mod tests {
             let delivered = Rc::new(RefCell::new(Vec::new()));
             Collector(Rc::clone(&delivered)).connect(self);
             delivered.take()
-        }
-    }
-
-    impl<C> Parent<C> for waterui::window::Window<waterui::window::WindowSlot<C>, Option<C>> {
-        fn children(self) -> Vec<C> {
-            let mut children = alloc::vec![self.content.build()];
-            children.extend(self.toolbar);
-            children
         }
     }
 
@@ -1627,43 +1617,6 @@ mod tests {
         assert_eq!(
             reached(AnyView::new(Hooks::new(Fence, FenceAsDivider))),
             ["divider"]
-        );
-    }
-
-    #[test]
-    fn a_window_in_the_tree_reaches_its_backend_with_its_content_typed() {
-        use waterui::window::Window;
-
-        let hits = reached(Window::new("Test", Spacer::flexible));
-        assert_eq!(hits[0], "window");
-        assert_eq!(hits[1], UNHOOKED_CHILD);
-        #[cfg(not(feature = "erased-dispatch"))]
-        assert!(!hits.contains(&"erased child"));
-        #[cfg(feature = "erased-dispatch")]
-        assert!(!hits.contains(&"typed child"));
-        assert!(hits.contains(&"spacer"));
-    }
-
-    #[test]
-    fn a_window_with_a_toolbar_reaches_its_backend_with_both_typed() {
-        use waterui::layout::Divider;
-        use waterui::window::Window;
-
-        let hits = reached(Window::new("Test", Spacer::flexible).toolbar(Divider));
-        #[cfg(not(feature = "erased-dispatch"))]
-        assert!(!hits.contains(&"erased child"));
-        #[cfg(feature = "erased-dispatch")]
-        assert!(!hits.contains(&"typed child"));
-        assert_eq!(
-            hits,
-            [
-                "window",
-                UNHOOKED_CHILD,
-                "spacer",
-                UNHOOKED_CHILD,
-                "environment",
-                "divider",
-            ]
         );
     }
 

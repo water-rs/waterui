@@ -20,8 +20,9 @@ fn the_mounted_window_is_the_apps_window() {
     let frame = binding(Rect::new(Point::new(4.0, 6.0), Size::new(800.0, 600.0)));
     let state = binding(WindowState::Normal);
     let content = AnyViewBuilder::<AnyView>::new(move || AnyView::new(vstack(((),))));
-    let mut window = Window::new("app window", move || content.build()).state(&state);
-    window.frame = frame.clone();
+    let window = Window::new("app window", move || content.build())
+        .state(&state)
+        .frame(&frame);
     let mut rt = crate::HeadlessRuntime::new_for_tests_with_window(
         env,
         window,
@@ -76,10 +77,12 @@ fn a_close_request_closes_only_a_closable_window() {
         closable: bool,
     ) -> (crate::HeadlessRuntime, Binding<WindowState>, Binding<Rect>) {
         let state = binding(WindowState::Normal);
+        let frame = binding(Rect::new(Point::zero(), Size::new(800.0, 600.0)));
         let content = AnyViewBuilder::<AnyView>::new(move || AnyView::new(vstack(((),))));
-        let mut window = Window::new("app window", move || content.build()).state(&state);
-        window.closable = closable;
-        let frame = window.frame.clone();
+        let window = Window::new("app window", move || content.build())
+            .state(&state)
+            .frame(&frame)
+            .closable(closable);
         let rt = crate::HeadlessRuntime::new_for_tests_with_window(
             test_environment(),
             window,

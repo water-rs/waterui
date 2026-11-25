@@ -13,12 +13,19 @@
 
 mod support;
 
-use accesskit::Rect;
-use support::{mount_rendered, node_bounds_with_role, node_label_exists};
+use accesskit::{Rect, Role};
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+use support::{
+    key_press_event, key_release_event, mount_rendered, node_bounds_with_role, node_label_exists,
+};
 use waterui::component::list::List;
 use waterui::component::{hstack, text, vstack};
 use waterui::id::SelfId;
 use waterui::navigation::{NavigationSplitView, NavigationStack, NavigationView, Tab, Tabs};
+use waterui::reactive::Signal as _;
+use waterui::reactive::collection::StateList;
+use waterui::views::ForEach;
 use waterui::{Binding, View, ViewExt};
 use waterui_controls::label::{LabelDisplayMode, label};
 use waterui_core::{AnyView, Environment};
@@ -368,23 +375,17 @@ fn a_trailing_bar_action_with_an_icon_label_is_icon_only() {
 // ---------------------------------------------------------------------------
 // Reactive-collection `Tabs` — water-rs/waterui#1194
 //
-// `Tabs` over `nami::collection::List<SelfId<i32>>`: a tab's `SelfId` is its
+// `Tabs` over `nami::collection::StateList<SelfId<i32>>`: a tab's `SelfId` is its
 // identity, a surviving id keeps its retained subviews — content, navigation
 // state — and only inserted ids materialize.
 // ---------------------------------------------------------------------------
 
-use std::cell::{Cell, RefCell};
-use std::rc::Rc;
-use waterui::reactive::Signal as _;
-use waterui::reactive::collection::List as SignalList;
-use waterui::views::ForEach;
-
 /// The tabs fixture's collection handle, kept mutable outside the app.
-type TabIds = SignalList<SelfId<i32>>;
+type TabIds = StateList<SelfId<i32>>;
 
 fn keyed_tabs(ids: Vec<i32>) -> (TabIds, Vec<SelfId<i32>>) {
     let panes: Vec<SelfId<i32>> = ids.into_iter().map(SelfId::new).collect();
-    (SignalList::from(panes.clone()), panes)
+    (StateList::from(panes.clone()), panes)
 }
 
 /// Mounts a `Tabs` whose tabs are keyed by `list`'s `SelfId`s; each tab's
@@ -593,4 +594,63 @@ fn a_selection_watcher_mutating_the_collection_does_not_deadlock() {
         "the watcher's insertion lands on the next pass"
     );
     drop(guard);
+}
+
+#[test]
+fn navigation_search_submit_active_and_suggestions() {
+    let query = Binding::container(waterui::Str::from("mail"));
+    let active = Binding::bool(false);
+    let submits = Rc::new(Cell::new(0usize));
+
+    let mut app = mount_rendered(
+        Environment::new(),
+        {
+            let active = active.clone();
+            let submits = Rc::clone(&submits);
+            move || {
+                let submits = Rc::clone(&submits);
+                NavigationView::new("Inbox", text("Messages"))
+                    .searchable(&query)
+                    .search_prompt("Filter inbox")
+                    .search_active(&active)
+                    .on_search_submit(move || submits.set(submits.get() + 1))
+                    .search_suggestions(|| text("Recent search"))
+            }
+        },
+        480,
+        640,
+    );
+    app.settle();
+
+    assert!(!active.snapshot());
+    assert!(
+        !node_label_exists(app.tree(), "Recent search"),
+        "suggestions stay hidden while search is inactive"
+    );
+
+    let bounds = node_bounds_with_role(app.tree(), Role::TextInput, "Filter inbox");
+    let center_x = support::f64_as_f32(f64::midpoint(bounds.x0, bounds.x1));
+    let center_y = support::f64_as_f32(f64::midpoint(bounds.y0, bounds.y1));
+    app.tap_at(center_x, center_y);
+    app.pump();
+
+    assert!(active.snapshot(), "tapping the search field activates it");
+    assert!(
+        node_label_exists(app.tree(), "Recent search"),
+        "suggestions render while search is active"
+    );
+
+    app.runtime_mut().push_input_event(key_press_event("Enter"));
+    app.runtime_mut()
+        .push_input_event(key_release_event("Enter"));
+    app.pump();
+    assert_eq!(submits.get(), 1, "Enter submits once per submission");
+
+    active.set(false);
+    app.pump();
+    assert!(!active.snapshot());
+    assert!(
+        !node_label_exists(app.tree(), "Recent search"),
+        "setting search_active to false dismisses the field and hides suggestions"
+    );
 }

@@ -130,8 +130,8 @@ impl Style {
 
     /// Sets the font size in points.
     #[must_use]
-    pub fn size(mut self, size: f32) -> Self {
-        self.font = self.font.size(size);
+    pub fn font_size(mut self, size: f32) -> Self {
+        self.font = self.font.font_size(size);
         self
     }
 
@@ -476,8 +476,8 @@ impl StyledStr {
 
     /// Sets the font size for all chunks.
     #[must_use]
-    pub fn size(self, size: f32) -> Self {
-        self.apply_style(|s| *s = take(s).size(size))
+    pub fn font_size(self, size: f32) -> Self {
+        self.apply_style(|s| *s = take(s).font_size(size))
     }
 
     /// Applies a font over every chunk's font.

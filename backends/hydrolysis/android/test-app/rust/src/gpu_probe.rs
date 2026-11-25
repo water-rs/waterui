@@ -104,9 +104,10 @@ pub fn map() -> impl View {
 
     let manhattan =
         Coordinate::from_degrees(40.7580, -73.9855).expect("the probe's coordinate is valid");
+    let region = binding::<Region>(Region::new(manhattan, 0.030, 0.050));
     view(
         "GPU vector map",
-        Map::new(binding::<Region>(Region::new(manhattan, 0.030, 0.050))).style(MapStyle::Standard),
+        Map::new(&region).style(MapStyle::Standard),
     )
 }
 

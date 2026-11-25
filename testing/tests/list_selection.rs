@@ -12,13 +12,13 @@ use waterui::component::hstack;
 use waterui::component::list::List;
 use waterui::component::text;
 use waterui::id::SelfId;
-use waterui::reactive::collection::List as ReactiveList;
+use waterui::reactive::collection::StateList;
 use waterui_testing::{Modifiers, Role, ui};
 
 const ROW_COUNT: i32 = 5;
 
-fn row_items() -> ReactiveList<SelfId<i32>> {
-    ReactiveList::from((1..=ROW_COUNT).map(SelfId::new).collect::<Vec<_>>())
+fn row_items() -> StateList<SelfId<i32>> {
+    StateList::from((1..=ROW_COUNT).map(SelfId::new).collect::<Vec<_>>())
 }
 
 fn row_label(row: i32) -> String {

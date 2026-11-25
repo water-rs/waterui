@@ -131,7 +131,7 @@ pub fn window_in_opening_environment<C: ViewBuilder, T>(
     window: Window<C, T>,
     env: &Environment,
 ) -> Window<impl ViewBuilder<Output = Metadata<Environment, C::Output>>, T> {
-    let frame = window.frame.snapshot();
+    let frame = window.current_frame();
     let content_env = env.extending(HydrolysisWindowOrigin {
         x: frame.x(),
         y: frame.y(),
@@ -921,15 +921,14 @@ pub fn popup_menu_window<E: crate::text::TextEngine>(
             look.get_presentation_motion(),
         )
     };
-    let mut popup = Window::new(TEXT_CONTEXT_MENU_WINDOW_TITLE, popup_content)
+    let frame = Binding::container(popup_menu_window_frame(origin, width, height, margin));
+    let popup = Window::new(TEXT_CONTEXT_MENU_WINDOW_TITLE, popup_content)
         .state(&state_for_content)
+        .frame(&frame)
         .style(WindowStyle::Borderless)
+        .closable(false)
         .resizable(false)
         .background(Color::transparent());
-    popup.closable = false;
-    popup
-        .frame
-        .set(popup_menu_window_frame(origin, width, height, margin));
     (popup, state)
 }
 
@@ -1034,12 +1033,12 @@ pub fn semantic_popup_menu_window<E: crate::text::TextEngine>(
         depth,
         popup_opener: popup_opener.clone(),
     };
-    let mut popup = Window::new(TEXT_CONTEXT_MENU_WINDOW_TITLE, popup_content)
+    let popup = Window::new(TEXT_CONTEXT_MENU_WINDOW_TITLE, popup_content)
         .state(&state_for_content)
         .style(WindowStyle::Borderless)
+        .closable(false)
         .resizable(false)
         .background(Color::transparent());
-    popup.closable = false;
     (popup, state)
 }
 
@@ -1084,12 +1083,12 @@ pub fn semantic_picker_menu_window(
             .spacing(0.0)
             .with(State(group_for_content.clone()))
     };
-    let mut popup = Window::new("WaterUI Picker Menu", popup_content)
+    let popup = Window::new("WaterUI Picker Menu", popup_content)
         .state(&state_for_content)
         .style(WindowStyle::Borderless)
+        .closable(false)
         .resizable(false)
         .background(Color::transparent());
-    popup.closable = false;
     (popup, state)
 }
 
@@ -1168,15 +1167,14 @@ pub fn picker_menu_window(
             presentation_motion.as_ref(),
         )
     };
-    let mut popup = Window::new("WaterUI Picker Menu", popup_content)
+    let frame = Binding::container(popup_menu_window_frame(origin, width, height, margin));
+    let popup = Window::new("WaterUI Picker Menu", popup_content)
         .state(&state_for_content)
+        .frame(&frame)
         .style(WindowStyle::Borderless)
+        .closable(false)
         .resizable(false)
         .background(Color::transparent());
-    popup.closable = false;
-    popup
-        .frame
-        .set(popup_menu_window_frame(origin, width, height, margin));
     (popup, state)
 }
 
@@ -1347,12 +1345,12 @@ fn color_picker_window_base(
             None,
         )
     };
-    let mut popup = Window::new("WaterUI Color Picker", popup_content)
+    let popup = Window::new("WaterUI Color Picker", popup_content)
         .state(&state_for_content)
         .style(WindowStyle::Borderless)
+        .closable(false)
         .resizable(false)
         .background(Color::transparent());
-    popup.closable = false;
     (popup, state)
 }
 
@@ -1370,14 +1368,14 @@ pub fn color_picker_window(
 ) -> (Window<impl ViewBuilder>, Binding<WindowState>) {
     let (popup, state) = color_picker_window_base(value, support_alpha, support_hdr, group, env);
     let (width, height) = color_picker_size(support_alpha, support_hdr);
-    popup.frame.set(LayoutRect::new(
+    let frame = Binding::container(LayoutRect::new(
         origin,
         LayoutSize::new(
             crate::num_cast::f64_as_f32(width),
             crate::num_cast::f64_as_f32(height),
         ),
     ));
-    (popup, state)
+    (popup.frame(&frame), state)
 }
 
 #[cfg(feature = "date-picker")]
@@ -1564,12 +1562,12 @@ fn date_picker_window_base(
             None,
         )
     };
-    let mut popup = Window::new("WaterUI Date Picker", popup_content)
+    let popup = Window::new("WaterUI Date Picker", popup_content)
         .state(&state_for_content)
         .style(WindowStyle::Borderless)
+        .closable(false)
         .resizable(false)
         .background(Color::transparent());
-    popup.closable = false;
     (popup, state)
 }
 
@@ -1587,14 +1585,14 @@ pub fn date_picker_window(
 ) -> (Window<impl ViewBuilder>, Binding<WindowState>) {
     let (popup, state) = date_picker_window_base(value, range, ty, group, env);
     let (width, height) = date_picker_size(ty);
-    popup.frame.set(LayoutRect::new(
+    let frame = Binding::container(LayoutRect::new(
         origin,
         LayoutSize::new(
             crate::num_cast::f64_as_f32(width),
             crate::num_cast::f64_as_f32(height),
         ),
     ));
-    (popup, state)
+    (popup.frame(&frame), state)
 }
 
 impl<E: crate::text::TextEngine> SemanticCore<E> {

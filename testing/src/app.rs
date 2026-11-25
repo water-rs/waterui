@@ -24,7 +24,7 @@ use waterui::background::Glass;
 use waterui::window::{Window, WindowChannel, WindowState, WindowToolbar};
 use waterui::{ContentLedger, Plugin, ViewExt as _};
 use waterui_core::handler::{AnyViewBuilder, ViewBuilder};
-use waterui_core::{AnyView, Environment, Signal as _, View};
+use waterui_core::{AnyView, Environment, View};
 
 use crate::artifacts::{CapturedSnapshot, TestArtifacts};
 use crate::driver::{
@@ -454,14 +454,14 @@ struct FirstWindow {
 
 impl WindowSink for FirstWindow {
     fn window<C: ViewBuilder, T: WindowToolbar>(&mut self, window: Window<C, T>) {
-        if window.state.snapshot() == WindowState::Closed {
+        if window.current_state() == WindowState::Closed {
             return;
         }
         let Some(mut builder) = self.builder.take() else {
             return;
         };
         if matches!(self.viewport, Viewport::FromWindow) {
-            let size = *window.frame.snapshot().size();
+            let size = *window.current_frame().size();
             builder = builder.viewport(
                 frame_points_as_u32(size.width),
                 frame_points_as_u32(size.height),

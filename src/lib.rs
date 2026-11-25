@@ -102,7 +102,7 @@ pub mod prelude {
     pub use super::layout::*;
     #[cfg(feature = "navigation")]
     pub use super::navigation::{self, *};
-    pub use super::reactive::collection::{List as ReactiveList, SignalCollection};
+    pub use super::reactive::collection::{SignalCollection, StateList};
     pub use super::style::*;
     pub use super::views::ForEach;
     pub use waterui_core::dynamic::{DynamicHandler, watch};

@@ -13,8 +13,8 @@ use std::time::{Duration, Instant};
 
 use accesskit::Role;
 use nami::Binding;
-use nami::collection::List as Membership;
 use nami::collection::SignalCollection;
+use nami::collection::StateList;
 use waterui::animation::Animation;
 use waterui::component::list::List;
 use waterui::component::text;
@@ -871,7 +871,7 @@ fn a_list_row_inside_a_pushed_navigation_page_is_hit_below_the_stack_offset() {
 #[test]
 fn a_collection_entry_mid_transition_is_hit_at_its_single_offset_position() {
     let tapped = Rc::new(Cell::new(None));
-    let mut list: Membership<SelfId<u64>> = Membership::from(vec![SelfId::new(0), SelfId::new(1)]);
+    let mut list: StateList<SelfId<u64>> = StateList::from(vec![SelfId::new(0), SelfId::new(1)]);
     let builder = {
         let list = list.clone();
         let tapped = tapped.clone();

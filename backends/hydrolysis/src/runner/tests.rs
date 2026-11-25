@@ -608,12 +608,11 @@ fn an_infinite_max_size_component_leaves_that_axis_unbounded() {
     should_panic(expected = "Window::frame.width must be finite, got NaN")
 )]
 fn a_nan_frame_reports_the_field_and_value() {
+    use waterui::binding;
     use waterui_core::layout::{Point, Rect, Size};
 
-    let window = Window::new("", || ().size(100.0, 50.0));
-    window
-        .frame
-        .set(Rect::new(Point::new(0.0, 0.0), Size::new(f32::NAN, 300.0)));
+    let frame = binding(Rect::new(Point::new(0.0, 0.0), Size::new(f32::NAN, 300.0)));
+    let window = Window::new("", || ().size(100.0, 50.0)).frame(&frame);
     let mut runtime = runtime_window_for(window, &test_environment());
     let _ = pump_window_semantics(&mut runtime, &test_environment());
     let read = crate::platform::validated_window_frame(runtime.window.frame.snapshot());
@@ -1169,13 +1168,14 @@ fn runtime_window_with_platform(
     mut platform: HeadlessPlatformWindow,
     env: &Environment,
 ) -> RuntimeWindow<HeadlessPlatformWindow, crate::text::ParleyEngine> {
+    let window = root_window(window);
     platform.apply_properties(&window);
     let renderer = HydrolysisRenderer::with_engine(
         Rc::new(MinimalTestTheme::default()),
         ParleyEngine::system(FontFamilyResolution::Strict),
     );
     RuntimeWindow::new_painted(
-        root_window(window),
+        window,
         platform,
         renderer,
         RenderDiagnosticsConfig {
@@ -1420,13 +1420,14 @@ fn sized_test_runtime_window(
     let window = Window::new("", || ());
     let mut platform =
         HeadlessPlatformWindow::on_painter(&OffscreenPainter::for_tests(), width, height);
+    let window = root_window(window);
     platform.apply_properties(&window);
     let renderer = HydrolysisRenderer::with_engine(
         Rc::new(MinimalTestTheme::default()),
         ParleyEngine::system(FontFamilyResolution::Strict),
     );
     RuntimeWindow::new_painted(
-        root_window(window),
+        window,
         platform,
         renderer,
         RenderDiagnosticsConfig {

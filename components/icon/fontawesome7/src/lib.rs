@@ -28,7 +28,7 @@
 //! fa::brands::GITHUB
 //!
 //! // With custom size
-//! fa::solid::HOUSE.with_size(32.0)
+//! fa::solid::HOUSE.with_font_size(32.0)
 //! ```
 //!
 //! # Font Bundle Requirements

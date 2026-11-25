@@ -96,7 +96,7 @@ fn size_driven_list(tall: &Binding<bool>, label: &'static str) -> AnyViewBuilder
             // these tests pin; the text's own wrapped box is not the subject.
             move |_| {
                 text(label)
-                    .size(size.clone())
+                    .font_size(size.clone())
                     .a11y_geometry(AccessibilityGeometry::Allocation)
             },
         ))
@@ -206,7 +206,7 @@ fn growing_row_above_viewport_keeps_anchor_row_position() {
                             SHORT_SIZE
                         }
                     });
-                    text(format!("Row {index}")).size(size)
+                    text(format!("Row {index}")).font_size(size)
                 })
                 .scroll_controller(&controller),
             )
