@@ -407,9 +407,17 @@ mod platform {
         Err(WidgetStoreError::UnsupportedPlatform)
     }
 
-    pub(super) const fn reload(_kind: &str) {}
+    #[expect(
+        clippy::missing_const_for_fn,
+        reason = "matches the non-const platform reload signature used on Apple and Android"
+    )]
+    pub(super) fn reload(_kind: &str) {}
 
-    pub(super) const fn reload_all() {}
+    #[expect(
+        clippy::missing_const_for_fn,
+        reason = "matches the non-const platform reload signature used on Apple and Android"
+    )]
+    pub(super) fn reload_all() {}
 }
 
 #[cfg(test)]
