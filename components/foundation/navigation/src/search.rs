@@ -1,5 +1,6 @@
 use nami::Binding;
 use waterui_core::Str;
+use waterui_core::handler::{Handler, SharedAction};
 use waterui_text::{IntoText, Text};
 
 /// Search field configuration rendered inside navigation chrome.
@@ -8,8 +9,12 @@ use waterui_text::{IntoText, Text};
 pub struct NavigationSearch {
     /// Caller-owned query binding.
     text: Binding<Str>,
-    /// Prompt shown when the query is empty.
-    prompt: Text,
+    /// Optional prompt shown when the query is empty.
+    prompt: Option<Text>,
+    /// Optional caller-owned active state binding.
+    active: Option<Binding<bool>>,
+    /// Optional submit action run when the user commits the search query.
+    on_submit: Option<SharedAction>,
 }
 
 impl NavigationSearch {
@@ -19,25 +24,49 @@ impl NavigationSearch {
         &self.text
     }
 
-    /// Prompt shown when the query is empty.
+    /// Optional prompt shown when the query is empty.
     #[must_use]
-    pub const fn prompt(&self) -> &Text {
-        &self.prompt
+    pub const fn prompt(&self) -> Option<&Text> {
+        self.prompt.as_ref()
     }
 
     /// Sets the `prompt`.
-    pub fn set_prompt(&mut self, prompt: Text) {
-        self.prompt = prompt;
+    pub fn set_prompt(&mut self, prompt: impl IntoText) {
+        self.prompt = Some(prompt.into_text());
+    }
+
+    /// Caller-owned active state binding.
+    #[must_use]
+    pub const fn active(&self) -> Option<&Binding<bool>> {
+        self.active.as_ref()
+    }
+
+    /// Sets the `active` binding.
+    pub fn set_active(&mut self, active: &Binding<bool>) {
+        self.active = Some(active.clone());
+    }
+
+    /// Submit action run when the user commits the search query.
+    #[must_use]
+    pub const fn on_submit(&self) -> Option<&SharedAction> {
+        self.on_submit.as_ref()
+    }
+
+    /// Sets the submit action.
+    pub fn set_on_submit<Args>(&mut self, action: impl Handler<Args, ()>) {
+        self.on_submit = Some(SharedAction::new(action));
     }
 }
 
 impl NavigationSearch {
     /// Creates a new navigation search model.
     #[must_use]
-    pub fn new(text: &Binding<Str>, prompt: impl IntoText) -> Self {
+    pub fn new(text: &Binding<Str>) -> Self {
         Self {
             text: text.clone(),
-            prompt: prompt.into_text(),
+            prompt: None,
+            active: None,
+            on_submit: None,
         }
     }
 }

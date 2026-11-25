@@ -14,7 +14,7 @@ use core::fmt;
 use waterui::component::LabelDisplayMode;
 use waterui::navigation::{
     Bar, BarColor, NavigationSearch, NavigationTitleDisplayMode, NavigationToolbarPlacement,
-    ResolvedNavigationToolbar, ResolvedNavigationToolbarItem,
+    ResolvedNavigationToolbar, ResolvedNavigationToolbarItem, SlotBuilder,
 };
 use waterui::reactive::Computed;
 use waterui_backend_core::Environment;
@@ -86,6 +86,8 @@ pub struct BarState {
     pub items: Vec<BarItem>,
     /// The search drawer config.
     pub search: Option<NavigationSearch>,
+    /// Optional search suggestions builder lowered into the Apple slot.
+    pub search_suggestions: Option<SlotBuilder<Held>>,
     /// The bar's background color, resolved or unset (the theme's `Surface`).
     pub color: Option<BarColor>,
     /// Whether the bar hides.
@@ -113,6 +115,7 @@ impl BarState {
             subtitle,
             items,
             search: bar.search.take(),
+            search_suggestions: bar.toolbar.take_search_suggestions(),
             color: bar.color.take(),
             hidden: bar.hidden.clone(),
             display_mode: bar.display_mode,
@@ -272,12 +275,162 @@ pub fn bar_item_frame(item: &BarItem) -> cocoa_ui::Rect {
     )
 }
 
-/// The search drawer's placeholder signal.
+/// The search drawer's placeholder signal, when a prompt was declared.
 pub fn search_prompt(
     search: &NavigationSearch,
     env: &Environment,
-) -> Computed<waterui::text::StyledStr> {
-    search.prompt().resolve(env).into_content()
+) -> Option<Computed<waterui::text::StyledStr>> {
+    search
+        .prompt()
+        .map(|prompt| prompt.resolve(env).into_content())
+}
+
+/// Wires a macOS [`cocoa_ui::appkit::SearchField`] to a [`NavigationSearch`] and
+/// optional suggestions panel, keeping watchers and panel state inside `keep`.
+#[cfg(target_os = "macos")]
+pub fn bind_macos_search_field(
+    mtm: cocoa_ui::MainThreadMarker,
+    field: &cocoa_ui::Retained<cocoa_ui::appkit::SearchField>,
+    search: &NavigationSearch,
+    suggestions: Option<&SlotBuilder<Held>>,
+    renderer: &crate::contract::Renderer,
+    env: &Environment,
+    keep: &mut crate::contract::KeepAlive,
+) {
+    use alloc::rc::Rc;
+
+    use waterui::Str;
+    use waterui::reactive::Signal;
+
+    field.set_text(search.text().snapshot().as_ref());
+    field.set_change_handler({
+        let text = search.text().clone();
+        move |field| text.set(Str::from(field.text()))
+    });
+    keep.bind(search.text(), {
+        let field = field.clone();
+        move |text: Str| field.set_text(text.as_ref())
+    });
+    if let Some(prompt) = search_prompt(search, env) {
+        keep.bind(&prompt, {
+            let field = field.clone();
+            move |prompt| field.set_placeholder(prompt.to_plain().as_ref())
+        });
+    }
+    if let Some(on_submit) = search.on_submit().cloned() {
+        let env = env.clone();
+        field.set_submit_handler(move |_| {
+            let _ = on_submit.call(&env);
+        });
+    }
+    let sync_suggestions = make_macos_suggestions_sync(mtm, field, suggestions, renderer, keep);
+    let active = search.active().cloned();
+    field.set_begin_editing_handler({
+        let active = active.clone();
+        let sync_suggestions = Rc::clone(&sync_suggestions);
+        move |_| {
+            if let Some(active) = active.as_ref()
+                && !active.snapshot()
+            {
+                active.set(true);
+            }
+            sync_suggestions(true);
+        }
+    });
+    field.set_end_editing_handler({
+        let active = active.clone();
+        let sync_suggestions = Rc::clone(&sync_suggestions);
+        move |_| {
+            if let Some(active) = active.as_ref()
+                && active.snapshot()
+            {
+                active.set(false);
+            }
+            sync_suggestions(false);
+        }
+    });
+    if let Some(active) = active {
+        keep.bind(&active, {
+            let field = field.clone();
+            move |is_active| {
+                field.set_active(is_active);
+                sync_suggestions(is_active);
+            }
+        });
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn make_macos_suggestions_sync(
+    mtm: cocoa_ui::MainThreadMarker,
+    field: &cocoa_ui::Retained<cocoa_ui::appkit::SearchField>,
+    suggestions: Option<&SlotBuilder<Held>>,
+    renderer: &crate::contract::Renderer,
+    keep: &mut crate::contract::KeepAlive,
+) -> alloc::rc::Rc<dyn Fn(bool)> {
+    use alloc::rc::Rc;
+    use core::cell::RefCell;
+
+    use cocoa_ui::appkit::{Panel, convert_to_screen, window_of};
+    use cocoa_ui::geometry::Rect;
+    use cocoa_ui::view;
+
+    use crate::transition::live::LiveChild;
+
+    struct SuggestionsPanel {
+        panel: Panel,
+        _live: LiveChild,
+    }
+
+    impl Drop for SuggestionsPanel {
+        fn drop(&mut self) {
+            self.panel.detach();
+        }
+    }
+
+    let Some(suggestions) = suggestions.cloned() else {
+        return Rc::new(|_| {});
+    };
+    let panel_slot: Rc<RefCell<Option<SuggestionsPanel>>> = Rc::new(RefCell::new(None));
+    keep.keep(Rc::clone(&panel_slot));
+    let field = field.clone();
+    let renderer = renderer.clone();
+    Rc::new(move |shown: bool| {
+        if !shown {
+            *panel_slot.borrow_mut() = None;
+            return;
+        }
+        if panel_slot.borrow().is_some() {
+            return;
+        }
+        let Some(parent) = window_of(&field) else {
+            return;
+        };
+        let leaf = renderer.realize(suggestions.build());
+        let measured = leaf
+            .layout()
+            .measure(ProposalSize {
+                width: None,
+                height: None,
+            })
+            .size;
+        let anchor = view::bounds_in_window(&field);
+        let width = f64::from(measured.width).max(anchor.size.width).max(160.0);
+        let height = f64::from(measured.height).max(1.0);
+        let panel = Panel::new(mtm);
+        panel.attach(&parent);
+        let container = panel.content_view(mtm);
+        let live = LiveChild::mount(leaf, &container, None);
+        view::set_autoresizing_flexible_size(live.view());
+        let frame_window = Rect::new(
+            anchor.origin.x,
+            anchor.origin.y - height - 4.0,
+            width,
+            height,
+        );
+        panel.set_frame(convert_to_screen(&parent, frame_window));
+        *panel_slot.borrow_mut() = Some(SuggestionsPanel { panel, _live: live });
+    })
 }
 
 /// A resolved color signal, when the bar color has resolved.

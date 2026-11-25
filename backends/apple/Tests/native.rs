@@ -167,6 +167,13 @@ fn navigation_trials() -> Vec<Trial> {
             },
         ),
         Trial::test(
+            "navigation::a_searchable_page_submits_tracks_active_and_dismisses",
+            || {
+                navigation::a_searchable_page_submits_tracks_active_and_dismisses();
+                Ok(())
+            },
+        ),
+        Trial::test(
             "navigation::a_hidden_tab_split_releases_the_toolbar_sidebar_space",
             || {
                 navigation::a_hidden_tab_split_releases_the_toolbar_sidebar_space();
@@ -2548,14 +2555,20 @@ mod menus {
 /// namespace the `UIKit` cases own on iOS.
 #[cfg(all(target_os = "macos", feature = "native-test"))]
 mod navigation {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
     use cocoa_ui::appkit::{Segment, SegmentedControl};
+    use cocoa_ui::objc2::sel;
     use cocoa_ui::objc2_app_kit::{
         NSControlSize, NSLayoutAttribute, NSSearchField, NSSegmentDistribution, NSSegmentStyle,
-        NSSegmentedControl, NSSplitView, NSSplitViewController, NSTrackingSeparatorToolbarItem,
+        NSSegmentedControl, NSSplitView, NSSplitViewController,
+        NSStandardKeyBindingResponding as _, NSTrackingSeparatorToolbarItem,
     };
     use cocoa_ui::{PlatformView, Retained, view};
     use objc2::ClassType as _;
     use objc2::runtime::NSObjectProtocol as _;
+    use waterui::Signal as _;
     use waterui::Str;
     use waterui::navigation::{
         NavigationSplitView, NavigationToolbar, NavigationToolbarItem, NavigationToolbarPlacement,
@@ -2577,7 +2590,9 @@ mod navigation {
         let mtm = mtm();
         let query = binding(Str::from(""));
         let page = resolve::render(
-            NavigationView::new("Title", text("body")).searchable(&query, "Search mail"),
+            NavigationView::new("Title", text("body"))
+                .searchable(&query)
+                .search_prompt("Search mail"),
         );
         let window = leaf::attach(mtm, page.view());
         // The platform's reference window: the metrics were measured at an
@@ -2638,6 +2653,71 @@ mod navigation {
         assert!(
             (field_center_x - window_center_x).abs() <= 1.0,
             "the platform centres the field in the window: field at {field_center_x}, window at {window_center_x}"
+        );
+    }
+
+    /// `.searchable` wires `search_active`, `on_search_submit`, optional prompt,
+    /// and `search_suggestions` on `AppKit`'s `NSSearchField`.
+    pub fn a_searchable_page_submits_tracks_active_and_dismisses() {
+        let mtm = mtm();
+        let query = binding(Str::from("inbox"));
+        let active = binding(false);
+        let submits = Rc::new(Cell::new(0usize));
+        let page = resolve::render(
+            NavigationView::new("Title", text("body"))
+                .searchable(&query)
+                .search_active(&active)
+                .on_search_submit({
+                    let submits = Rc::clone(&submits);
+                    move || submits.set(submits.get() + 1)
+                })
+                .search_suggestions(|| text("Suggestion row")),
+        );
+        let window = leaf::attach(mtm, page.view());
+        window.set_content_rect(cocoa_ui::Rect::new(0.0, 0.0, 800.0, 600.0), false);
+        window.order_front();
+        let native = window.native();
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                native.titlebarAccessoryViewControllers().count() == 1
+            }),
+            "the searchable page must install a titlebar accessory"
+        );
+        let accessory = native.titlebarAccessoryViewControllers().objectAtIndex(0);
+        let field = accessory
+            .view()
+            .subviews()
+            .iter()
+            .find_map(|sub| sub.downcast::<NSSearchField>().ok())
+            .expect("the accessory row hosts an NSSearchField");
+
+        // Programmatic activation focuses the field, updates `active`, and opens the suggestions panel.
+        active.set(true);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                field.currentEditor().is_some()
+                    && native.childWindows().is_some_and(|w| !w.is_empty())
+            }),
+            "setting search_active(true) must focus the field and show suggestions"
+        );
+        assert!(active.snapshot());
+
+        // Sending `insertNewline:` fires `on_search_submit` once.
+        let responder = native
+            .firstResponder()
+            .expect("focused search field editor is first responder");
+        // SAFETY: `insertNewline:` is the standard `NSResponder` newline command.
+        unsafe { responder.doCommandBySelector(sel!(insertNewline:)) };
+        assert_eq!(submits.get(), 1);
+
+        // Setting `search_active` back to `false` ends editing and closes suggestions.
+        active.set(false);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                field.currentEditor().is_none()
+                    && native.childWindows().is_none_or(|w| w.is_empty())
+            }),
+            "setting search_active(false) must dismiss the field and hide suggestions"
         );
     }
 

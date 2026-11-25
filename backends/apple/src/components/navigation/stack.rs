@@ -181,6 +181,7 @@ mod platform {
     use cocoa_ui::MainThreadMarker;
     use cocoa_ui::Retained;
     use cocoa_ui::geometry::Rect as KitRect;
+    use cocoa_ui::objc2::MainThreadOnly as _;
     use cocoa_ui::objc2_ui_kit::UIBarButtonItem;
     use cocoa_ui::uikit::{
         HostView, LargeTitle, NavContentController, NavPage, NavSearch, bar_item,
@@ -191,7 +192,7 @@ mod platform {
     use waterui::navigation::{
         AnyNavigationTransition, NativeNavigationTransition, NavigationController,
         NavigationDestinationState, NavigationSearch, NavigationTitleDisplayMode,
-        NavigationTransaction, NavigationTransactionId, ResolvedNavigationView,
+        NavigationTransaction, NavigationTransactionId, ResolvedNavigationView, SlotBuilder,
     };
     use waterui::reactive::Signal;
     use waterui::resolve::Resolvable;
@@ -456,7 +457,14 @@ mod platform {
             let mut keep = KeepAlive::default();
             let mut page = self.nav_page(&bar, root, &mut keep, &state);
             if let Some(search) = bar.search.as_ref() {
-                page.search = Some(attach_search(search, ctx.env(), &controller, &mut keep));
+                page.search = Some(attach_search(
+                    search,
+                    bar.search_suggestions.as_ref(),
+                    ctx.env(),
+                    renderer,
+                    &controller,
+                    &mut keep,
+                ));
             }
             page.hidden = bar.hidden.snapshot();
             controller.set_page(&page);
@@ -810,17 +818,41 @@ mod platform {
         }
     }
 
-    /// The page's search config plus the live bindings that keep the
-    /// drawer's text and placeholder signals flowing both ways.
+    /// Installs `UISearchController` for `search`, keeping the search
+    /// drawer's text, placeholder, active state, submit action and suggestions
+    /// flowing both ways.
     fn attach_search(
         search: &NavigationSearch,
+        suggestions: Option<&SlotBuilder<Held>>,
         env: &Environment,
+        renderer: &Renderer,
         controller: &Retained<NavContentController>,
         keep: &mut KeepAlive,
     ) -> NavSearch {
+        let prompt = search_prompt(search, env);
+        let results_view = suggestions.map(|slot| {
+            let mtm = controller.mtm();
+            let leaf = renderer.realize(slot.build());
+            let host = HostView::new(mtm, KitRect::ZERO);
+            host.set_layout_handler(|host| {
+                let rect = view::bounds(host);
+                for subview in view::subviews(host) {
+                    view::set_frame(&subview, rect);
+                }
+            });
+            let live = LiveChild::mount(leaf, &host, None);
+            let retained = view::retain_base(&*host);
+            keep.keep(host);
+            keep.keep(live);
+            retained
+        });
         let config = NavSearch {
-            placeholder: search_prompt(search, env).snapshot().to_plain().to_string(),
+            placeholder: prompt
+                .as_ref()
+                .map(|prompt| prompt.snapshot().to_plain().to_string()),
             text: search.text().snapshot().to_string(),
+            active: search.active().is_some_and(Signal::snapshot),
+            results_view,
             // `.automatic`: on iOS 26 a page pushed by a collapsed split
             // carries the field in the bottom toolbar, matching the
             // platform's own `.searchable` presentation; `Stacked` would
@@ -835,14 +867,36 @@ mod platform {
         controller.set_search_change_handler(move |text| {
             binding.set(Str::from(text));
         });
+        if let Some(on_submit) = search.on_submit().cloned() {
+            let env = env.clone();
+            controller.set_search_submit_handler(move || {
+                let _ = on_submit.call(&env);
+            });
+        }
+        if let Some(active) = search.active().cloned() {
+            controller.set_search_active_change_handler({
+                let active = active.clone();
+                move |is_active| {
+                    if active.snapshot() != is_active {
+                        active.set(is_active);
+                    }
+                }
+            });
+            let target = controller.clone();
+            keep.bind(&active, move |is_active| {
+                target.set_search_active(is_active);
+            });
+        }
         let target = controller.clone();
         keep.bind(&search.text().clone(), move |text| {
             target.set_search_text(text.as_ref());
         });
-        let target = controller.clone();
-        keep.bind(&search_prompt(search, env), move |prompt| {
-            target.set_search_placeholder(&prompt.to_plain());
-        });
+        if let Some(prompt) = prompt {
+            let target = controller.clone();
+            keep.bind(&prompt, move |prompt| {
+                target.set_search_placeholder(Some(&prompt.to_plain()));
+            });
+        }
         config
     }
 }
@@ -864,7 +918,6 @@ mod platform {
     use cocoa_ui::objc2_app_kit::{NSImage, NSView, NSWindowStyleMask};
     use cocoa_ui::view::{self, bounds, set_frame};
     use waterui::Environment;
-    use waterui::Str;
     use waterui::navigation::{
         AnyNavigationTransition, NativeNavigationTransition, NavigationController,
         NavigationDestinationState, NavigationTransaction, ResolvedNavigationView,
@@ -875,7 +928,7 @@ mod platform {
     use crate::contract::{Held, KeepAlive, NativeLeaf, RenderContext, Renderer};
     use crate::transition::live::LiveChild;
 
-    use super::super::bar::{BarItem, BarItemIcon, BarState, search_prompt};
+    use super::super::bar::{BarItem, BarItemIcon, BarState, bind_macos_search_field};
     use super::{Fill, Ghosts, Mount, Sink, is_claimed, page_transition, retire_page};
 
     /// One page on the stack.
@@ -935,6 +988,8 @@ mod platform {
         toolbar: RefCell<Option<Retained<WindowToolbar>>>,
         /// The search field published for the current top page.
         search_field: RefCell<Option<Retained<SearchField>>>,
+        /// Watchers and suggestion panel for the currently published search field.
+        keep_search: RefCell<KeepAlive>,
         /// Whether the stack currently owns its chrome — `false` inside a
         /// hidden tab page.
         chrome_active: Cell<bool>,
@@ -971,6 +1026,7 @@ mod platform {
                 initial: RefCell::new(Some(Vec::new())),
                 toolbar: RefCell::new(None),
                 search_field: RefCell::new(None),
+                keep_search: RefCell::new(KeepAlive::default()),
                 chrome_active: Cell::new(true),
                 top_view: Cell::new(None),
                 mtm,
@@ -1210,6 +1266,7 @@ mod platform {
             let withdraw = |stack: &Self| {
                 toolbar.clear_content(owner);
                 stack.search_field.replace(None);
+                *stack.keep_search.borrow_mut() = KeepAlive::default();
             };
             if !self.chrome_active.get() {
                 withdraw(self);
@@ -1260,22 +1317,27 @@ mod platform {
             });
             if let Some(search) = top.bar.search.as_ref() {
                 let field = SearchField::new(self.mtm);
-                field.set_placeholder(
-                    search_prompt(search, self.env())
-                        .snapshot()
-                        .to_plain()
-                        .as_ref(),
+                let mut keep_search = KeepAlive::default();
+                let renderer = self
+                    .renderer
+                    .get()
+                    .expect("`prepare` runs before any callback that reads the stack");
+                bind_macos_search_field(
+                    self.mtm,
+                    &field,
+                    search,
+                    top.bar.search_suggestions.as_ref(),
+                    renderer,
+                    self.env(),
+                    &mut keep_search,
                 );
-                field.set_text(search.text().snapshot().as_ref());
-                let binding = search.text().clone();
-                field.set_change_handler(move |field| {
-                    binding.set(Str::from(field.text()));
-                });
                 let source_id = std::ptr::from_ref(&**top) as usize;
                 self.search_field.replace(Some(field.clone()));
+                *self.keep_search.borrow_mut() = keep_search;
                 content.search = Some(HostedSearch { field, source_id });
             } else {
                 self.search_field.replace(None);
+                *self.keep_search.borrow_mut() = KeepAlive::default();
             }
             drop(entries);
             toolbar.set_content(content, owner);

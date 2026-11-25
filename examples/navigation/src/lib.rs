@@ -354,7 +354,8 @@ fn inbox_root(
         .navigation_subtitle(text!("{unread} unread"))
         // A search field inside the bar chrome, not a text field drawn above
         // the content.
-        .searchable(&mail.query, "Search mail")
+        .searchable(&mail.query)
+        .search_prompt("Search mail")
         .navigation_toolbar(
             NavigationToolbar::default()
                 // Leading: the edit affordance, where each platform puts it.

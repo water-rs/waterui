@@ -1526,6 +1526,13 @@ mod navigation {
                     Ok(())
                 },
             ),
+            libtest_mimic::Trial::test(
+                "navigation::a_searchable_page_wires_search_controller_and_results",
+                || {
+                    a_searchable_page_wires_search_controller_and_results();
+                    Ok(())
+                },
+            ),
         ]
     }
 
@@ -1563,7 +1570,8 @@ mod navigation {
                 )
                 .icon(SfSymbol::PLUS);
                 NavigationView::new("Today", text("detail").background(Material::Regular))
-                    .searchable(&query, "Search reminders")
+                    .searchable(&query)
+                    .search_prompt("Search reminders")
                     .navigation_toolbar(
                         NavigationToolbar::default()
                             .item(item)
@@ -1874,6 +1882,85 @@ mod navigation {
             .topViewController()
             .expect("the column stack has a root page");
         assert_content_shown(&window, &top.navigationItem(), &page);
+    }
+
+    fn a_searchable_page_wires_search_controller_and_results() {
+        use cocoa_ui::objc2::msg_send;
+        use std::cell::Cell;
+        use std::rc::Rc;
+        use waterui::navigation::NavigationStack;
+
+        let mtm = mtm();
+        let query = binding(Str::from("mail"));
+        let active = binding(false);
+        let submits = Rc::new(Cell::new(0usize));
+        let page = NavigationView::new("Mail", text("inbox"))
+            .searchable(&query)
+            .search_prompt("Filter mail")
+            .search_active(&active)
+            .on_search_submit({
+                let submits = Rc::clone(&submits);
+                move || submits.set(submits.get() + 1)
+            })
+            .search_suggestions(|| text("Suggestion"));
+        let leaf = render(NavigationStack::new(page));
+        let window = native_test::window(mtm, Rect::new(0.0, 0.0, 390.0, 844.0));
+        let root_controller = UIViewController::new(mtm);
+        window.setRootViewController(Some(&root_controller));
+        let root_view = root_controller
+            .view()
+            .expect("the controller's view is loaded");
+        let mounted = leaf.mount(&root_view);
+        view::set_frame(mounted.view(), view::bounds(&root_view));
+        window.makeKeyAndVisible();
+        window.layoutIfNeeded();
+        let nav = view::subviews(&root_view)
+            .into_iter()
+            .find_map(|sub| {
+                enclosing_controller(&sub).and_then(|c| c.downcast::<UINavigationController>().ok())
+            })
+            .expect("stack mounts a UINavigationController");
+        let top = nav.topViewController().expect("stack has root controller");
+        let controller = top
+            .navigationItem()
+            .searchController()
+            .expect("page installs UISearchController");
+        assert!(
+            controller.searchResultsController().is_some(),
+            "search_suggestions attaches a search results controller"
+        );
+        assert_eq!(
+            controller
+                .searchBar()
+                .placeholder()
+                .map(|p| p.to_string())
+                .as_deref(),
+            Some("Filter mail")
+        );
+
+        let bar = controller.searchBar();
+        if let Some(delegate) = bar.delegate() {
+            // SAFETY: delegate is CocoaUiSearchUpdater conforming to UISearchBarDelegate.
+            let _: () = unsafe { msg_send![&delegate, searchBarSearchButtonClicked: &*bar] };
+        }
+        assert_eq!(
+            submits.get(),
+            1,
+            "search button click fires on_search_submit"
+        );
+
+        active.set(true);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || controller.isActive()),
+            "setting search_active(true) activates UISearchController"
+        );
+        active.set(false);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || !controller.isActive()),
+            "setting search_active(false) dismisses UISearchController"
+        );
+        window.setHidden(true);
+        window.setRootViewController(None);
     }
 }
 
@@ -2415,7 +2502,7 @@ mod list_spacing {
             vstack((list(), list())).background(waterui::background::Material::Regular),
         );
         let page = if searchable {
-            page.searchable(&query, "Search")
+            page.searchable(&query).search_prompt("Search")
         } else {
             page
         };

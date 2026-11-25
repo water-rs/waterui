@@ -28,14 +28,15 @@ use objc2::rc::{Retained, Weak};
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send};
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
-use objc2_foundation::{NSArray, NSDictionary, NSObjectProtocol, NSString};
+use objc2_foundation::{NSArray, NSBundle, NSDictionary, NSObjectProtocol, NSString};
 use objc2_ui_kit::{
     NSDirectionalRectEdge, NSForegroundColorAttributeName, UIBarButtonItem, UIBarButtonItemStyle,
     UIBarPosition, UIBarPositioning, UIBarPositioningDelegate, UIButton, UIColor, UIControl,
     UIGestureRecognizer, UIGestureRecognizerDelegate, UINavigationBar, UINavigationBarAppearance,
     UINavigationBarDelegate, UINavigationController, UINavigationControllerDelegate,
-    UINavigationItem, UINavigationItemLargeTitleDisplayMode, UIScrollView, UISearchController,
-    UISearchResultsUpdating, UITransitionContextFromViewControllerKey, UIViewController,
+    UINavigationItem, UINavigationItemLargeTitleDisplayMode, UIScrollView, UISearchBar,
+    UISearchBarDelegate, UISearchController, UISearchControllerDelegate, UISearchResultsUpdating,
+    UITransitionContextFromViewControllerKey, UIViewController,
     UIViewControllerTransitionCoordinator, UIViewControllerTransitionCoordinatorContext,
 };
 
@@ -46,6 +47,9 @@ type WillAppearHandler = Rc<dyn Fn(bool)>;
 
 /// Answers the page's top-edge scroll view for `contentScrollViewForEdge:`.
 type ScrollSurfaceHandler = Rc<dyn Fn(&NavContentController) -> Option<Retained<UIScrollView>>>;
+
+/// Called when the search controller presents or dismisses.
+type SearchActiveHandler = Rc<dyn Fn(bool)>;
 
 /// A plain content view controller, reporting when its view appears.
 pub struct NavContentControllerIvars {
@@ -59,6 +63,10 @@ pub struct NavContentControllerIvars {
     disappear: RefCell<Option<Rc<dyn Fn()>>>,
     /// The search field's change sink, reporting the current text.
     search_change: RefCell<Option<SearchChangeHandler>>,
+    /// The search field's submit sink, reporting when Search is tapped.
+    search_submit: RefCell<Option<Rc<dyn Fn()>>>,
+    /// The search controller's active-state sink, reporting presentation/dismissal.
+    search_active_change: RefCell<Option<SearchActiveHandler>>,
     /// The page's `UISearchResultsUpdating`, retained for the weak outlet.
     search_updater: RefCell<Option<Retained<SearchUpdater>>>,
     /// The page's search drawer, retained for later updates.
@@ -162,6 +170,8 @@ impl NavContentController {
             will_appear: RefCell::new(None),
             disappear: RefCell::new(None),
             search_change: RefCell::new(None),
+            search_submit: RefCell::new(None),
+            search_active_change: RefCell::new(None),
             search_updater: RefCell::new(None),
             search_controller: RefCell::new(None),
             toolbar_hidden: Cell::new(true),
@@ -235,8 +245,7 @@ impl NavContentController {
     pub fn set_page(&self, page: &NavPage) {
         // SAFETY: `navigationItem` is a `UIViewController` getter on the
         // main thread; the returned item is owned by the controller.
-        let item: Retained<objc2_ui_kit::UINavigationItem> =
-            unsafe { msg_send![self, navigationItem] };
+        let item: Retained<UINavigationItem> = unsafe { msg_send![self, navigationItem] };
         item.setTitle(Some(&NSString::from_str(&page.title)));
         item.setTitleView(page.title_view.as_deref());
         item.setSubtitle(page.subtitle.as_deref().map(NSString::from_str).as_deref());
@@ -271,48 +280,93 @@ impl NavContentController {
             nav.setToolbarHidden_animated(page.bottom.is_empty(), false);
             nav.setNavigationBarHidden_animated(page.hidden, false);
         }
+        self.set_page_search(mtm, &item, page);
+    }
+
+    fn set_page_search(&self, mtm: MainThreadMarker, item: &UINavigationItem, page: &NavPage) {
         self.ivars().search_updater.replace(None);
         self.ivars().search_controller.replace(None);
-        if let Some(search) = &page.search {
-            // SAFETY: `initWithSearchResultsController:` is
-            // `UISearchController`'s designated initializer; a nil
-            // results controller keeps the current content — a
-            // results-less search controller draws over the page
-            // itself.
-            let controller: Retained<UISearchController> = unsafe {
-                msg_send![
-                    mtm.alloc::<UISearchController>(),
-                    initWithSearchResultsController: Option::<&UIViewController>::None
-                ]
-            };
-            let bar = controller.searchBar();
-            bar.setPlaceholder(Some(&NSString::from_str(&search.placeholder)));
-            bar.setText(Some(&NSString::from_str(&search.text)));
-            let updater = SearchUpdater::new(mtm);
-            updater.set_change_handler({
-                let this = Retained::<Self>::from(self);
-                move |text| {
-                    if let Some(handler) = this.ivars().search_change.borrow().as_ref() {
-                        handler(text);
-                    }
-                }
-            });
-            controller.setSearchResultsUpdater(Some(ProtocolObject::from_ref(&*updater)));
-            if let Some(placement) = search.placement {
-                item.setPreferredSearchBarPlacement(placement.native());
-            }
-            if let Some(hides) = search.hides_when_scrolling {
-                item.setHidesSearchBarWhenScrolling(hides);
-            }
-            item.setSearchController(Some(&controller));
-            // `searchResultsUpdater` is a weak outlet — the controller
-            // keeps the updater and drawer alive for the page's life.
-            self.ivars().search_updater.replace(Some(updater));
-            self.ivars().search_controller.replace(Some(controller));
-            self.setDefinesPresentationContext(true);
-        } else {
+        let Some(search) = &page.search else {
             item.setSearchController(None);
+            return;
+        };
+        let results_controller: Option<Retained<UIViewController>> =
+            search.results_view.as_ref().map(|results_view| {
+                // SAFETY: `initWithNibName:bundle:` is `UIViewController`'s designated initializer.
+                let vc: Retained<UIViewController> = unsafe {
+                    msg_send![
+                        mtm.alloc::<UIViewController>(),
+                        initWithNibName: Option::<&NSString>::None,
+                        bundle: Option::<&NSBundle>::None
+                    ]
+                };
+                vc.setView(Some(results_view));
+                vc
+            });
+        // SAFETY: `initWithSearchResultsController:` is
+        // `UISearchController`'s designated initializer; a nil
+        // results controller keeps the current content — a
+        // results-less search controller draws over the page
+        // itself.
+        let controller: Retained<UISearchController> = unsafe {
+            msg_send![
+                mtm.alloc::<UISearchController>(),
+                initWithSearchResultsController: results_controller.as_deref()
+            ]
+        };
+        if search.results_view.is_some() {
+            controller.setShowsSearchResultsController(true);
         }
+        let bar = controller.searchBar();
+        if let Some(placeholder) = search.placeholder.as_deref() {
+            bar.setPlaceholder(Some(&NSString::from_str(placeholder)));
+        } else {
+            bar.setPlaceholder(None);
+        }
+        bar.setText(Some(&NSString::from_str(&search.text)));
+        let updater = SearchUpdater::new(mtm);
+        updater.set_change_handler({
+            let this = Retained::<Self>::from(self);
+            move |text| {
+                if let Some(handler) = this.ivars().search_change.borrow().as_ref() {
+                    handler(text);
+                }
+            }
+        });
+        updater.set_submit_handler({
+            let this = Retained::<Self>::from(self);
+            move || {
+                if let Some(handler) = this.ivars().search_submit.borrow().as_ref() {
+                    handler();
+                }
+            }
+        });
+        updater.set_active_change_handler({
+            let this = Retained::<Self>::from(self);
+            move |active| {
+                if let Some(handler) = this.ivars().search_active_change.borrow().as_ref() {
+                    handler(active);
+                }
+            }
+        });
+        controller.setSearchResultsUpdater(Some(ProtocolObject::from_ref(&*updater)));
+        controller.setDelegate(Some(ProtocolObject::from_ref(&*updater)));
+        bar.setDelegate(Some(ProtocolObject::from_ref(&*updater)));
+        if let Some(placement) = search.placement {
+            item.setPreferredSearchBarPlacement(placement.native());
+        }
+        if let Some(hides) = search.hides_when_scrolling {
+            item.setHidesSearchBarWhenScrolling(hides);
+        }
+        item.setSearchController(Some(&controller));
+        if search.active {
+            controller.setActive(true);
+        }
+        // `searchResultsUpdater` and delegates are weak outlets — the
+        // controller keeps the updater and drawer alive for the page's life.
+        self.ivars().search_updater.replace(Some(updater));
+        self.ivars().search_controller.replace(Some(controller));
+        self.setDefinesPresentationContext(true);
     }
 
     /// The stack's navigation controller while this page is its top —
@@ -338,10 +392,30 @@ impl NavContentController {
         }
     }
 
-    /// Runs `handler` with the search field's text when the user edits it.
     /// Runs `handler` with the search field's current text on each edit.
     pub fn set_search_change_handler(&self, handler: impl Fn(String) + 'static) {
         self.ivars().search_change.replace(Some(Rc::new(handler)));
+    }
+
+    /// Runs `handler` when the user taps the search button.
+    pub fn set_search_submit_handler(&self, handler: impl Fn() + 'static) {
+        self.ivars().search_submit.replace(Some(Rc::new(handler)));
+    }
+
+    /// Runs `handler` when the search controller presents or dismisses.
+    pub fn set_search_active_change_handler(&self, handler: impl Fn(bool) + 'static) {
+        self.ivars()
+            .search_active_change
+            .replace(Some(Rc::new(handler)));
+    }
+
+    /// Presents or dismisses the page's search controller when attached.
+    pub fn set_search_active(&self, active: bool) {
+        if let Some(controller) = self.ivars().search_controller.borrow().as_ref()
+            && controller.isActive() != active
+        {
+            controller.setActive(active);
+        }
     }
 
     /// The current text of the page's search field, when it has one.
@@ -361,7 +435,7 @@ impl NavContentController {
     }
 
     /// The search drawer's placeholder, when one is attached.
-    pub fn set_search_placeholder(&self, placeholder: &str) {
+    pub fn set_search_placeholder(&self, placeholder: Option<&str>) {
         // SAFETY: `navigationItem` is a `UIViewController` getter on the
         // main thread.
         let item: Retained<objc2_ui_kit::UINavigationItem> =
@@ -369,17 +443,21 @@ impl NavContentController {
         if let Some(controller) = item.searchController() {
             controller
                 .searchBar()
-                .setPlaceholder(Some(&NSString::from_str(placeholder)));
+                .setPlaceholder(placeholder.map(NSString::from_str).as_deref());
         }
     }
 }
 
-/// The text-change reporter a page's search drawer fires through —
-/// `UISearchResultsUpdating`'s hook, driving the search binding like
-/// the search drawer's coordinator.
+/// The text-change, submit, and active-state reporter a page's search drawer fires
+/// through — `UISearchResultsUpdating`, `UISearchBarDelegate`, and
+/// `UISearchControllerDelegate`.
 pub struct SearchUpdaterIvars {
     /// Called with the search bar's current text when it changes.
     change: RefCell<Option<SearchChangeHandler>>,
+    /// Called when the user submits the query via the keyboard Search button.
+    submit: RefCell<Option<Rc<dyn Fn()>>>,
+    /// Called when the search controller becomes active or inactive.
+    active_change: RefCell<Option<SearchActiveHandler>>,
 }
 
 impl fmt::Debug for SearchUpdaterIvars {
@@ -396,7 +474,7 @@ define_class!(
     #[thread_kind = MainThreadOnly]
     #[ivars = SearchUpdaterIvars]
     #[derive(Debug)]
-    /// Reports `UISearchController` text edits.
+    /// Reports `UISearchController` text edits, submissions and presentation state.
     pub struct SearchUpdater;
 
     // SAFETY: `NSObjectProtocol` asks nothing of an `NSObject`.
@@ -421,6 +499,39 @@ define_class!(
             }
         }
     }
+
+    // SAFETY: `SearchUpdater` exposes no optional `UIBarPositioningDelegate` methods.
+    unsafe impl UIBarPositioningDelegate for SearchUpdater {}
+
+    // SAFETY: `searchBarSearchButtonClicked:` carries `UISearchBarDelegate`'s signature.
+    unsafe impl UISearchBarDelegate for SearchUpdater {
+        #[unsafe(method(searchBarSearchButtonClicked:))]
+        fn search_bar_search_button_clicked(&self, _search_bar: &UISearchBar) {
+            let handler = self.ivars().submit.borrow().clone();
+            if let Some(handler) = handler {
+                handler();
+            }
+        }
+    }
+
+    // SAFETY: `UISearchControllerDelegate` methods carry `UISearchControllerDelegate`'s signatures.
+    unsafe impl UISearchControllerDelegate for SearchUpdater {
+        #[unsafe(method(didPresentSearchController:))]
+        fn did_present_search_controller(&self, _search_controller: &UISearchController) {
+            let handler = self.ivars().active_change.borrow().clone();
+            if let Some(handler) = handler {
+                handler(true);
+            }
+        }
+
+        #[unsafe(method(didDismissSearchController:))]
+        fn did_dismiss_search_controller(&self, _search_controller: &UISearchController) {
+            let handler = self.ivars().active_change.borrow().clone();
+            if let Some(handler) = handler {
+                handler(false);
+            }
+        }
+    }
 );
 
 impl SearchUpdater {
@@ -429,6 +540,8 @@ impl SearchUpdater {
     pub fn new(mtm: MainThreadMarker) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(SearchUpdaterIvars {
             change: RefCell::new(None),
+            submit: RefCell::new(None),
+            active_change: RefCell::new(None),
         });
         // SAFETY: `init` is `NSObject`'s designated initializer.
         unsafe { msg_send![super(this), init] }
@@ -437,6 +550,16 @@ impl SearchUpdater {
     /// Runs `handler` with the search field's current text on each edit.
     pub fn set_change_handler(&self, handler: impl Fn(String) + 'static) {
         self.ivars().change.replace(Some(Rc::new(handler)));
+    }
+
+    /// Runs `handler` when the user submits from the search keyboard button.
+    pub fn set_submit_handler(&self, handler: impl Fn() + 'static) {
+        self.ivars().submit.replace(Some(Rc::new(handler)));
+    }
+
+    /// Runs `handler` when the search controller presents or dismisses.
+    pub fn set_active_change_handler(&self, handler: impl Fn(bool) + 'static) {
+        self.ivars().active_change.replace(Some(Rc::new(handler)));
     }
 }
 
@@ -484,13 +607,18 @@ impl SearchBarPlacement {
 }
 
 /// A page's search drawer: the field's placeholder, its text at install
-/// time, and where the field sits in the bar.
+/// time, whether it starts active, optional suggestions view, and where the
+/// field sits in the bar.
 #[derive(Debug, Default)]
 pub struct NavSearch {
-    /// The placeholder text.
-    pub placeholder: String,
+    /// The optional placeholder text; `None` keeps the platform's default.
+    pub placeholder: Option<String>,
     /// The text the field starts with — the binding's current value.
     pub text: String,
+    /// Whether the search controller starts active.
+    pub active: bool,
+    /// Optional view rendered inside the search results controller while active.
+    pub results_view: Option<Retained<objc2_ui_kit::UIView>>,
     /// The field's placement in the bar — `preferredSearchBarPlacement`.
     /// `None` leaves the platform default in place.
     pub placement: Option<SearchBarPlacement>,

@@ -294,11 +294,16 @@ pub fn navigation_block_07() -> NavigationView<impl View> {
         let can_leave = Binding::bool(true);
         let unread = Binding::i32(2);
 
+        let searching = Binding::bool(false);
+
         message_list(mail)
             .navigation_title("Inbox") // or .navigation_title(text!("{subject}"))
             .large_title() // or .inline_title()
             .navigation_subtitle(text!("{unread} unread"))
-            .searchable(&query, "Search mail") // a field inside the bar, not above the content
+            .searchable(&query)
+            .search_prompt("Search mail") // a field inside the bar, not above the content
+            .search_active(&searching) // two-way Binding<bool>
+            .on_search_submit(|| {}) // fires when the user commits the query
             .navigation_pop_enabled(can_leave) // refuse a back gesture reactively
             .on_navigation_pop_attempted(|m: SnackbarManager| {
                 m.show(Snackbar::new("Finish the draft first"));

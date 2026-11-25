@@ -116,10 +116,12 @@ mod platform {
                 let field = field.clone();
                 move |text: Str| field.set_text(text.as_ref())
             });
-            keep.bind(&search_prompt(search, env), {
-                let field = field.clone();
-                move |prompt| field.set_placeholder(&prompt.to_plain())
-            });
+            if let Some(prompt) = search_prompt(search, env) {
+                keep.bind(&prompt, {
+                    let field = field.clone();
+                    move |prompt| field.set_placeholder(&prompt.to_plain())
+                });
+            }
             view::add_subview(&host, &field);
             field
         });
@@ -326,15 +328,14 @@ mod platform {
     use cocoa_ui::objc2_app_kit::NSWindowStyleMask;
     use cocoa_ui::text::WrapWidth;
     use cocoa_ui::{Rect, Retained, view};
-    use waterui::Str;
+    use waterui::Signal;
     use waterui::navigation::{
         NavigationController, NavigationToolbarPlacement, ResolvedNavigationView,
     };
-    use waterui::reactive::Signal;
     use waterui_core::layout::ProposalSize;
 
     use crate::components::navigation::bar::{
-        BarItem, BarItemIcon, BarState, bar_color, bar_item_frame, search_prompt,
+        BarItem, BarItemIcon, BarState, bar_color, bar_item_frame, bind_macos_search_field,
     };
     use crate::contract::{Held, KeepAlive, NativeLeaf, RenderContext};
     use crate::theme::platform_color;
@@ -406,18 +407,15 @@ mod platform {
         }
         let search_field = bar.search.as_ref().map(|search| {
             let field = SearchField::new(mtm);
-            field.set_change_handler({
-                let text = search.text().clone();
-                move |field| text.set(Str::from(field.text()))
-            });
-            keep.bind(search.text(), {
-                let field = field.clone();
-                move |text: Str| field.set_text(text.as_ref())
-            });
-            keep.bind(&search_prompt(search, env), {
-                let field = field.clone();
-                move |prompt| field.set_placeholder(prompt.to_plain().as_ref())
-            });
+            bind_macos_search_field(
+                mtm,
+                &field,
+                search,
+                bar.search_suggestions.as_ref(),
+                &ctx.renderer(),
+                env,
+                &mut keep,
+            );
             header.addSubview(&field);
             field
         });
