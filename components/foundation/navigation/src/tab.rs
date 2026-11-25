@@ -2,6 +2,7 @@
 
 use alloc::{rc::Rc, vec, vec::Vec};
 use core::fmt::Debug;
+use core::marker::PhantomData;
 use core::ops::{Range, RangeBounds};
 
 use nami::collection::{Collection, CollectionChange};
@@ -660,19 +661,19 @@ impl<T: Ord + Clone + 'static, S: 'static> Views for TaggedTabItems<T, S> {
 /// Reactive collection wrapper projecting each [`Tab`]'s `.tag(T)` as the collection's `Id`.
 struct TaggedTabViews<V, C, L, T, S> {
     inner: V,
-    _marker: core::marker::PhantomData<fn(C, L, T) -> S>,
+    _marker: PhantomData<fn(C, L, T) -> S>,
 }
 
 struct TaggedTabViewsSnapshot<Snap, C, L, T, S> {
     inner: Snap,
-    _marker: core::marker::PhantomData<fn(C, L, T) -> S>,
+    _marker: PhantomData<fn(C, L, T) -> S>,
 }
 
 impl<Snap: Clone, C, L, T, S> Clone for TaggedTabViewsSnapshot<Snap, C, L, T, S> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
-            _marker: core::marker::PhantomData,
+            _marker: PhantomData,
         }
     }
 }
@@ -723,7 +724,7 @@ where
     fn snapshot(&self) -> Self::Snapshot {
         TaggedTabViewsSnapshot {
             inner: self.inner.snapshot(),
-            _marker: core::marker::PhantomData,
+            _marker: PhantomData,
         }
     }
 
@@ -736,7 +737,7 @@ where
             watcher(
                 ctx.map(|inner| TaggedTabViewsSnapshot {
                     inner,
-                    _marker: core::marker::PhantomData,
+                    _marker: PhantomData,
                 }),
                 change,
             );
@@ -863,7 +864,7 @@ where
     fn into_items<S: ChildSlot>(self) -> (AnyViews<TabItem<S>>, Mapping<T>) {
         let (items, ids) = AnyViews::new_with_ids(TaggedTabViews::<_, C, L, T, S> {
             inner: self,
-            _marker: core::marker::PhantomData,
+            _marker: PhantomData,
         });
         (items.map_views(|SlotTabItem(item)| item), ids)
     }
