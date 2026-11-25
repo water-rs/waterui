@@ -13399,7 +13399,7 @@ dependencies = [
 [[package]]
 name = "waterui-image"
 version = "0.5.0"
-source = "git+https://github.com/water-rs/image?branch=main#b4f287232b8361ccffd94aae7230ef6242ab4772"
+source = "git+https://github.com/water-rs/image?branch=main#e6894e5062a5a9c74b665af4142254bfb91a3cde"
 dependencies = [
  "half",
  "image",

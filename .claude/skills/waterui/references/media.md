@@ -302,7 +302,7 @@ keeps one sub-recording per key and hands the body a `Computed<T>` of its item, 
 `cx.transform(affine, ..)`, `cx.layer(Layer::opacity(0.5), ..)` — never saved and restored.
 `Drawing::record(size, |cx| ..)` records constants, on any thread, for `cx.draw(&drawing,
 transform)` or `Canvas::from(drawing)`, a view of the drawing's size. Images are
-`ImageSource`s the target registers itself (`ImageSource::decode(bytes)` decodes PNG/JPEG/GIF/WebP/BMP/ICO/TIFF/AV1-HEIF without naming the `image` crate, and `ImageSource::new(PixelBuffer::new(..))` wraps raw pixels); `image.status()` reports a refusal. Give a
+`ImageSource`s the target registers itself (`ImageSource::decode(bytes)` decodes PNG/JPEG/GIF/WebP/BMP/ICO/TIFF/AV1-HEIF without naming the `image` crate, and `ImageSource::new(PixelBuffer::new(..))` wraps raw pixels), drawn with `cx.image(src, rect)` (linear filtering) or `cx.image_sampled(src, rect, sampling)`; `image.status()` reports a refusal. Give a
 canvas with a natural size `.intrinsic_size(..)`, and a name with `.offered_label(..)`.
 Beyond `fill` and `stroke`: `cx.shadow(shape, Shadow::new(blur, color).offset(dx, dy))`
 (`color` is a resolved `waterui::graphics::WorkingColor` such as `WorkingColor::BLACK`,

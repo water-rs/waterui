@@ -569,7 +569,8 @@ pub fn media_canvas_prose(image: waterui::canvas::ImageSource) -> impl View {
         cx.clip(Circle::new(Point::new(40.0, 40.0), 30.0), |cx| {
             cx.transform(Affine2::translate(10.0, 0.0), |cx| {
                 cx.layer(Layer::opacity(0.5), |cx| {
-                    cx.image(
+                    cx.image(image.clone(), Rect::from_size(Size::new(80.0, 80.0)));
+                    cx.image_sampled(
                         image,
                         Rect::from_size(Size::new(80.0, 80.0)),
                         Sampling::Linear,
