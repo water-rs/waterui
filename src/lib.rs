@@ -134,8 +134,8 @@ pub mod prelude {
     pub use super::drag_drop::DropDestinationExt;
 
     pub use super::widget::{
-        Accordion, Card, CardStyle, CardStyleTokens, CardTheme, Divider, ErrorView, ResultExt,
-        SuspendedView, Suspense, accordion, card, condition::when, error_view, suspense,
+        Accordion, Card, CardStyle, CardStyleTokens, CardTheme, DialogTheme, Divider, ErrorView,
+        ResultExt, SuspendedView, Suspense, accordion, card, condition::when, error_view, suspense,
     };
     #[cfg(feature = "avatar")]
     pub use super::widget::{Avatar, avatar};
