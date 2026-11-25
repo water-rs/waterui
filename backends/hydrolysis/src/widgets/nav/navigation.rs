@@ -2546,7 +2546,7 @@ fn present_page_transition<E: crate::text::TextEngine>(
         page_area,
         PagePresentation {
             layer: transform * local,
-            alpha: paint.properties.opacity(),
+            alpha: paint.properties.opacity,
             clip: Some(local.transform_rect_bbox(paint_bounds)),
             clip_space: transform,
             hit,

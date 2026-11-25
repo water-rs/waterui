@@ -16544,9 +16544,10 @@ mod transition {
                 progress: f32,
                 _geometry: TransitionGeometry,
             ) -> TransitionProperties {
-                let mut properties = TransitionProperties::IDENTITY;
-                properties.set_blur(8.0 * (1.0 - 3.0f32.mul_add(progress, -1.5).abs()).max(0.0));
-                properties
+                TransitionProperties {
+                    blur: 8.0 * (1.0 - 3.0f32.mul_add(progress, -1.5).abs()).max(0.0),
+                    ..TransitionProperties::IDENTITY
+                }
             }
         }
         let _mtm = mtm();
