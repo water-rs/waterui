@@ -1090,7 +1090,7 @@ mod tests {
 
     #[test]
     fn typed_and_composite_gesture_observers_deliver_expected_events() {
-        use alloc::rc::Rc;
+        use alloc::{rc::Rc, vec, vec::Vec};
         use core::cell::RefCell;
 
         let tap_loc = Rc::new(RefCell::new(None));
@@ -1107,7 +1107,7 @@ mod tests {
         assert!(tap_action(&tap_env).is_ok());
         assert_eq!(*tap_loc.borrow(), Some(Point::new(10.0, 20.0)));
 
-        let composite_events = Rc::new(RefCell::new(alloc::vec::Vec::new()));
+        let composite_events = Rc::new(RefCell::new(Vec::new()));
         let composite_observer = GestureObserver::new(Gesture::from(TapGesture::new()), {
             let composite_events = Rc::clone(&composite_events);
             move |event: GestureEvent| composite_events.borrow_mut().push(event)
@@ -1116,7 +1116,7 @@ mod tests {
         assert!(composite_action(&tap_env).is_ok());
         assert_eq!(
             *composite_events.borrow(),
-            alloc::vec![GestureEvent::Tap(TapEvent::new(
+            vec![GestureEvent::Tap(TapEvent::new(
                 Point::new(10.0, 20.0),
                 1,
                 PointerButton::Primary,
