@@ -11,7 +11,7 @@
 use core::time::Duration;
 use waterui::animation::Animation;
 use waterui::app::{App, Windows};
-use waterui::drag_drop::Transferable;
+use waterui::drag_drop::{DropInfo, Transferable};
 use waterui::prelude::font::Title;
 use waterui::prelude::*;
 use waterui::preview;
@@ -94,8 +94,16 @@ fn fruit_basket(
     .border(Color::srgb_hex("#10B981"), 3.0)
     .drop_destination(
         |fruit: Fruit,
+         info: DropInfo,
          State(collected): State<Binding<Vec<String>>>,
          State(bounce): State<Binding<f32>>| {
+            let point = info.location();
+            waterui::log::debug!(
+                x = point.x,
+                y = point.y,
+                fruit = fruit.label,
+                "Dropped fruit into basket"
+            );
             // Add to collection
             let dropped_item = format!("{} {}", fruit.emoji, fruit.label);
             let mut current_items = collected.snapshot();
@@ -118,7 +126,15 @@ fn fruit_basket(
             .detach();
         },
     )
-    .drop_hover(is_hovering)
+    .on_enter(|info: DropInfo, State(hover): State<Binding<bool>>| {
+        let point = info.location();
+        waterui::log::debug!(x = point.x, y = point.y, "Drag entered basket");
+        hover.set(true);
+    })
+    .on_exit(|State(hover): State<Binding<bool>>| {
+        hover.set(false);
+    })
+    .state(is_hovering)
     .state(collected)
     .state(bounce)
 }
