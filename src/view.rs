@@ -1064,7 +1064,11 @@ pub trait ViewExt: View + Sized {
     /// // Simple border on all edges
     /// text!("Hello").border(Color::red(), 2.0);
     /// ```
-    fn border(self, color: impl IntoSignal<Color> + 'static, width: f32) -> Metadata<Border, Self> {
+    fn border(
+        self,
+        color: impl IntoSignal<Color> + 'static,
+        width: impl IntoSignalF32,
+    ) -> Metadata<Border, Self> {
         Metadata::new(self, Border::new(color, width))
     }
 

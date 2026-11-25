@@ -1312,19 +1312,20 @@ fn ts_opacity_is_the_rust_opacity() {
 #[test]
 fn ts_shadow_is_the_rust_shadow() {
     use waterui::graphics::color::Color;
-    use waterui::style::{Shadow, Vector};
+    use waterui::style::Shadow;
     assert_same_pixels(
         "shadow",
         &Module::mount(&module(
             r#"waterui.jsx("Text", { shadow: { radius: 4, y: 2 }, children: "Raised" })"#,
         ))
         .pixels(),
-        &rust_pixels(text("Raised").shadow(Shadow::new(
-            Color::srgb(0, 0, 0),
-            Vector { x: 0.0, y: 2.0 },
-            4.0,
-            waterui::shape::RoundedRectangle::new(0.0),
-        ))),
+        &rust_pixels(
+            text("Raised").shadow(
+                Shadow::splat(4.0)
+                    .color(Color::srgb(0, 0, 0))
+                    .offset(0.0, 2.0),
+            ),
+        ),
     );
 }
 
