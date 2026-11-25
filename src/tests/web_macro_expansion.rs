@@ -12,13 +12,16 @@
 //! the test compiles only on the other targets.
 #![cfg(all(feature = "webview", feature = "assets", not(target_vendor = "apple")))]
 
+use waterui::include_web;
+use waterui::webview::WebViewOpen;
+
 /// `CARGO_MANIFEST_DIR` is the `waterui` package root (`src/`), so the fixture
 /// web project is addressed as `tests/fixtures/web_project`.
-fn web_view(resources: &waterui::ResourceContext) -> waterui::webview::WebViewOpen {
-    waterui::include_web!(resources, "tests/fixtures/web_project")
+fn web_view() -> WebViewOpen {
+    include_web!("tests/fixtures/web_project")
 }
 
 #[test]
 fn include_web_expands_to_a_webview_open() {
-    let _: fn(&waterui::ResourceContext) -> waterui::webview::WebViewOpen = web_view;
+    let _: fn() -> WebViewOpen = web_view;
 }

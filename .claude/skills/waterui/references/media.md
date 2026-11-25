@@ -154,7 +154,7 @@ from a file at compile time). `.on_event` takes `Fn` — capture cloned bindings
 
 Bundled and controlled content:
 
-- `include_web!(resources, "web")` (features `webview` + `assets`) embeds a web frontend:
+- `include_web!("web")` (features `webview` + `assets`) embeds a web frontend:
   the first argument borrows the app's `ResourceContext`, the second is the web project
   root (relative to the crate's `Cargo.toml`) holding `package.json`; named options
   `out_dir` (`dist`), `entry` (`index.html`), `spa`, `csp`. It expands to a `WebViewOpen`,
