@@ -177,7 +177,7 @@ use waterui_layout::stack::{VStackLayout, hstack, vstack, zstack};
 #[cfg(feature = "accessibility")]
 use waterui_navigation::NavigationView;
 #[cfg(feature = "accessibility")]
-use waterui_navigation::tab::{NativeTabStyle, Tab, Tabs};
+use waterui_navigation::tab::{Tab, TabStyle, Tabs};
 
 #[cfg(feature = "list")]
 use crate::testing::plain_list_look;
@@ -3244,7 +3244,7 @@ fn tab_highlight_strip(item: TabItemGeometry) -> Rect {
         let height = thickness.min(bounds.height());
         let y0 = (bounds.height() - height).mul_add(0.5, bounds.y0);
         Rect::new(bounds.x0, y0, bounds.x1, y0 + height)
-    } else if matches!(item.placement, NativeTabStyle::Sidebar) {
+    } else if matches!(item.placement, TabStyle::Sidebar) {
         Rect::new(
             (bounds.x1 - thickness).max(bounds.x0),
             item.title.y0,

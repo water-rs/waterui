@@ -339,7 +339,7 @@ TextField::new("Note", &note).selection_menu((
 ))
 progress(fraction)                          // impl IntoComputed<f64>
 progress(fraction).label("Downloading")     // its label is a modifier — the one exception
-progress(fraction).circular()               // or .linear()
+progress(fraction).style(ProgressStyle::Circular)  // or Linear / Loading (shorthands: .circular(), .linear())
 loading()                                   // indeterminate progress
 link("Docs", "https://waterui.dev")         // a Link-style button that opens the URL
 ```

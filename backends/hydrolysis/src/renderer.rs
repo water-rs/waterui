@@ -197,7 +197,7 @@ use waterui::metadata::anchored_overlay::AnchoredOverlay;
 #[cfg(feature = "menu")]
 use waterui::metadata::context_menu::ResolvedContextMenu;
 #[cfg(feature = "navigation")]
-use waterui::navigation::tab::{NativeTabStyle, TabsLayout};
+use waterui::navigation::tab::{TabStyle, TabsLayout};
 #[cfg(feature = "navigation")]
 use waterui::navigation::{
     CustomNavigationController, NavigationController, NavigationSplitLayout, NavigationStackLayout,
