@@ -38,10 +38,10 @@ use waterui_core::{Environment, View};
 
 use crate::views::{AnyViews, AnyViewsSnapshot, SharedAnyViews, ViewSnapshot, Views};
 
+use super::ListSection;
 use super::content::{ContentTags, HoldsTag};
 use super::edits::{PartEdits, RowEdits, StaticOnDelete, TypedOnDelete, TypedOnMove, erase_ids};
 use super::selection::SelectableRows;
-use super::{ListItem, ListSection};
 
 // ============================================================================
 // Backend contract: sections over erased row ids
@@ -702,13 +702,6 @@ impl<R: View> ListItemSink<R> {
     /// deletable).
     pub fn push_row(&mut self, builder: AnyViewBuilder<R>) {
         self.push_static(builder, None, None);
-    }
-
-    /// Temporary bridge for external `ListContent` implementers migrating off
-    /// `ListItem` (removed in the closing PR for #4300).
-    #[doc(hidden)]
-    pub fn push(&mut self, builder: AnyViewBuilder<ListItem<R>>) {
-        self.push_row(AnyViewBuilder::new(move || builder.build().into_content()));
     }
 
     /// Pushes one static row with an optional delete handler.
