@@ -93,8 +93,6 @@ pub mod prelude {
         SnackbarTheme,
     };
 
-    pub use super::gesture::GestureObserver;
-
     pub use super::border::Border;
     pub use super::component::badge::BadgeValue;
     pub use super::component::*;

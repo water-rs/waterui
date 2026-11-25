@@ -95,7 +95,7 @@ pub fn apply(
         }
         "onTapGesture" => {
             let action = JsAction::from_js(value, bridge)?;
-            Ok(AnyView::new(view.on_tap_gesture(move || action.call(()))))
+            Ok(AnyView::new(view.on_tap(move || action.call(()))))
         }
         "a11yLabel" => semantic(bridge, view, value, A11yTextKind::Label),
         "a11yValue" => semantic(bridge, view, value, A11yTextKind::Value),
