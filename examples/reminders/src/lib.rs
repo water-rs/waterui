@@ -15,7 +15,6 @@ use waterui::background::Material;
 use waterui::component::list::{List, Section};
 use waterui::navigation::NavigationToolbarItems;
 use waterui::prelude::*;
-use waterui::reactive::collection::SignalCollection;
 use waterui::shape::{Circle, CornerRadius, RoundedRectangle};
 use waterui::theme::color::Foreground;
 use waterui::views::ForEach;
@@ -385,7 +384,8 @@ fn detail_view(
     ))
     .background(Material::Regular)
     .navigation_title(dest.title())
-    .searchable(search, "Search reminders")
+    .searchable(search)
+    .search_prompt("Search reminders")
     .navigation_toolbar(NavigationToolbar::new(vec![NavigationToolbarItem::action(
         NavigationToolbarPlacement::PrimaryAction,
         label("").icon(plus()),
@@ -408,7 +408,7 @@ fn content_header(dest: SidebarDestination) -> impl View {
     // The official app shows the list name as a large bold title in the
     // list's accent color, leading-aligned — no date line underneath.
     text(dest.title())
-        .size(32.0)
+        .font_size(32.0)
         .bold(true)
         .foreground(dest.color())
         .max_width(f32::INFINITY)

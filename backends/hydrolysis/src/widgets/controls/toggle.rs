@@ -205,8 +205,8 @@ pub fn toggle_accessibility<E: crate::text::TextEngine, S>(
 }
 
 /// The native payload's style is resolved before a backend sees it
-/// (`ToggleConfig`'s resolver owns the platform default), so `Automatic`
-/// reaching a match here is a broken contract, not a style to draw.
+/// (`ToggleStyle::resolve` resolves the environment or platform default), so
+/// `Automatic` reaching a match here is a broken contract, not a style to draw.
 const UNRESOLVED_STYLE: &str =
     "the toggle payload reached hydrolysis with an unresolved Automatic style";
 

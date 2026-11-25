@@ -15,16 +15,16 @@ use waterui::preview;
 pub fn demo() -> impl View {
     vstack((
         text("Starfield Animation")
-            .size(24)
+            .font_size(24)
             .foreground(Color::srgb(245, 247, 250)),
         text("GPU-rendered procedural starfield")
-            .size(14)
+            .font_size(14)
             .foreground(Color::srgb(210, 216, 224)),
         shader!("starfield.wgsl")
             .continuous(true)
             .size(400.0, 500.0),
         text("Rendered at 120fps")
-            .size(12)
+            .font_size(12)
             .foreground(Color::srgb(210, 216, 224)),
     ))
     .background(Color::srgb(31, 35, 38))

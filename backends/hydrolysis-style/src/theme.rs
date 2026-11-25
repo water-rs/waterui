@@ -140,6 +140,8 @@ use waterui::{
         install_color_derivation, installed_color_scheme,
     },
 };
+#[cfg(waterui_feature = "toggle")]
+use waterui_controls::toggle::ToggleStyle;
 
 /// The framework's baseline palette for one colour scheme, as encoded sRGB.
 ///
@@ -317,6 +319,8 @@ pub fn install_theme_tokens(
         .fonts(FontSettings::default_scale())
         .install(&mut defaults);
     install_default_colors(&mut defaults);
+    #[cfg(waterui_feature = "toggle")]
+    ToggleStyle::install_default(ToggleStyle::Switch, &mut defaults);
     let mut styled = env.layered_on(&defaults);
     if let Some(style) = style {
         style.install_tokens(&mut styled);

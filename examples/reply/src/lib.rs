@@ -18,7 +18,6 @@ use waterui::navigation::{
     NavigationSplitView, NavigationStack, NavigationToolbarItems, NavigationView,
 };
 use waterui::prelude::*;
-use waterui::reactive::collection::SignalCollection;
 use waterui::widget::avatar;
 use waterui::widget::card;
 use waterui_icons_material_icon as mdi;
@@ -182,7 +181,7 @@ fn thread_row(thread: Thread) -> impl View {
             hstack((
                 avatar(thread.sender)
                     .image(asset(thread.avatar_asset))
-                    .size(AVATAR),
+                    .side(AVATAR),
                 vstack((
                     text(thread.sender).subheadline(),
                     text(thread.time).caption().muted(),
@@ -222,7 +221,8 @@ fn inbox(
     List::for_each(visible, thread_row)
         .selection(selected)
         .navigation_title("Inbox")
-        .searchable(query, "Search replies")
+        .searchable(query)
+        .search_prompt("Search replies")
         .navigation_toolbar(
             NavigationToolbar::default()
                 .item(NavigationToolbarItem::action(
@@ -234,7 +234,7 @@ fn inbox(
                     NavigationToolbarPlacement::TopBarTrailing,
                     avatar("Me")
                         .image(asset("avatar_10.jpg"))
-                        .size(TOOLBAR_AVATAR),
+                        .side(TOOLBAR_AVATAR),
                 )),
         )
 }
@@ -245,7 +245,7 @@ fn message_card(message: &'static Message) -> impl View {
             hstack((
                 avatar(message.sender)
                     .image(asset(message.avatar_asset))
-                    .size(AVATAR),
+                    .side(AVATAR),
                 vstack((
                     text(message.sender).subheadline(),
                     text(message.time).caption().muted(),
@@ -308,17 +308,17 @@ fn reply(selected: Binding<Option<u64>>, destination: &Binding<usize>) -> impl V
     Tabs::new(
         destination,
         (
-            Tab::container(label("Mail").icon(email_outline()), move || {
+            Tab::new(label("Mail").icon(email_outline()), move || {
                 mail(selected.clone())
             })
             .badge(UNREAD),
-            Tab::container(label("Notes").icon(note_outline()), || {
+            Tab::new(label("Notes").icon(note_outline()), || {
                 empty_destination("Notes")
             }),
-            Tab::container(label("Chat").icon(message_outline()), || {
+            Tab::new(label("Chat").icon(message_outline()), || {
                 empty_destination("Chat")
             }),
-            Tab::container(label("Meet").icon(video_outline()), || {
+            Tab::new(label("Meet").icon(video_outline()), || {
                 empty_destination("Meet")
             }),
         ),

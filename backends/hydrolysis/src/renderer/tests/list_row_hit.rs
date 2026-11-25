@@ -80,7 +80,7 @@ fn tap_inside_virtualized_row_during_pending_refresh() {
                     .map(move |grow| if grow && index == GROWN { 60.0 } else { 20.0 });
 
                 text(format!("Row {index}"))
-                    .size(size)
+                    .font_size(size)
                     .on_tap(move || taps.borrow_mut().push(index))
             }))
         })

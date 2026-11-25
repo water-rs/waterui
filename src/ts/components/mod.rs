@@ -21,6 +21,7 @@ mod modifiers;
 
 use core::cell::RefCell;
 
+use nami::collection::StateList;
 use nami::{Computed, SignalExt as _};
 use suiteki::Str;
 use waterui_controls::label::{ErasedLabel, Label, TitleLabel};
@@ -435,7 +436,7 @@ fn navigation(
                 .collect::<Vec<_>>();
             AnyView::new(Tabs::new(
                 attributes.value(),
-                ForEach::new(nami::collection::List::from(ids), move |id: SelfId<Str>| {
+                ForEach::new(StateList::from(ids), move |id: SelfId<Str>| {
                     tabs.get(&id.into_inner())
                         .expect("the ids are built from the keys of this same `tabs` map, so every id has its tab")
                         .clone()
