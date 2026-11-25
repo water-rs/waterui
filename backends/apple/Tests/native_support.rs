@@ -1022,16 +1022,16 @@ pub mod toolbar_reach {
         );
     }
 
-    /// `Tabs` whose first tab is a `NavigationStack` over `inbox`, each tab
-    /// a `Tab::container` — the picker sits in the window toolbar.
+    /// `Tabs` whose first tab is a `NavigationStack` over `inbox` —
+    /// the picker sits in the window toolbar.
     fn tabbed<V: waterui::View>(
         inbox: impl Fn() -> NavigationView<V> + 'static,
     ) -> impl waterui::View {
         Tabs::new(
             &binding(0usize),
             (
-                Tab::container("Inbox", move || NavigationStack::new(inbox())),
-                Tab::container("Settings", || {
+                Tab::new("Inbox", move || NavigationStack::new(inbox())),
+                Tab::new("Settings", || {
                     NavigationStack::new(NavigationView::new("Settings", text("settings")))
                 }),
             ),
@@ -1072,16 +1072,15 @@ pub mod toolbar_reach {
         );
     }
 
-    /// The navigation example's structure: automatic-style `Tabs` of
-    /// `Tab::container`s, the Inbox tab a path-backed `NavigationStack`
-    /// whose root page carries a large title, a subtitle and a search
-    /// field in the bar around `content`.
+    /// The navigation example's structure: automatic-style `Tabs` whose
+    /// Inbox tab is a path-backed `NavigationStack` whose root page carries a
+    /// large title, a subtitle and a search field in the bar around `content`.
     fn inbox_tabs<V: waterui::View>(content: impl Fn() -> V + 'static) -> impl waterui::View {
         let content = std::rc::Rc::new(content);
         Tabs::new(
             &binding(0usize),
             (
-                Tab::container("Inbox", move || {
+                Tab::new("Inbox", move || {
                     NavigationStack::with_path(
                         NavigationPath::<u64>::new(),
                         content()
@@ -1094,7 +1093,7 @@ pub mod toolbar_reach {
                         NavigationView::new("Message", text(format!("message {id}")))
                     })
                 }),
-                Tab::container("Settings", || {
+                Tab::new("Settings", || {
                     NavigationStack::new(NavigationView::new("Settings", text("settings")))
                 }),
             ),
@@ -2486,8 +2485,8 @@ pub mod chrome_top {
                 Tabs::new(
                     &binding(0usize),
                     (
-                        Tab::container("First", || text(MARKER)),
-                        Tab::container("Second", || text("second")),
+                        Tab::new("First", || text(MARKER)),
+                        Tab::new("Second", || text("second")),
                     ),
                 )
                 .style(tab_style::Automatic)

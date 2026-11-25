@@ -92,7 +92,7 @@ pub fn navigation_block_01() -> impl View {
         &pane,
         ForEach::new(List::from(panes.to_vec()), move |pane: SelfId<Pane>| {
             let pane = *pane;
-            let tab = Tab::container(
+            let tab = Tab::new(
                 match pane {
                     Pane::Inbox => label("Inbox").icon(mdi::inbox()),
                     Pane::Library => label("Library").icon(mdi::image_album()),
@@ -137,14 +137,14 @@ pub fn navigation_tabs_prose() -> impl View {
     .style(tab_style::sidebar());
     let _ = Tabs::new(
         &selected,
-        vec![Tab::container(label("Library"), library_split).enabled(true)],
+        vec![Tab::new(label("Library"), library_split).enabled(true)],
     )
     .style(tab_style::tab_bar());
     Tabs::new(
         &selected,
         (
-            Tab::container(label("Library"), library_split),
-            Tab::container(label("Settings"), settings_stack),
+            Tab::new(label("Library"), library_split),
+            Tab::new(label("Settings"), settings_stack),
         ),
     )
 }
