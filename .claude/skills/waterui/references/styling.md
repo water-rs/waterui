@@ -310,23 +310,26 @@ shape.morph_to(target, fill).progress(t.clone())   // or drive it from a 0..=1 s
 
 ```rust
 use waterui::border::Border;
+use waterui::shape::{Circle, RoundedRectangle};
 use waterui::theme::color::Accent;
-use waterui::shape::RoundedRectangle;
 
 card.border(Color::srgb_hex("#E5E7EB"), 1.0)                       // all edges, square corners
 card.border_with(Border::new(Accent, 1.0).corner_radius(12.0).edges(EdgeSet::BOTTOM))
-card.shadow(Shadow::new(
-    Color::srgb(0, 0, 0).with_opacity(0.2),   // color, with alpha
-    Vector::new(0.0, 2.0),                    // offset
-    8.0,                                      // blur radius
-    RoundedRectangle::new(8.0),               // the caster's own shape
-))
+avatar.clip(Circle).shadow(4.0)                                    // inherits the caster's `.clip` silhouette
+card.shadow(
+    Shadow::splat(8.0)                                             // blur radius
+        .color(Color::srgb(0, 0, 0).with_opacity(0.2))             // color, with alpha
+        .offset(0.0, 2.0)                                          // horizontal and vertical offset
+        .silhouette(RoundedRectangle::new(8.0)),                   // explicit silhouette override
+)
 ```
 
-`Border`'s `corner_radius` and `RoundedRectangle`'s default radius are both in **points**,
-and `Shadow`'s third argument is its blur radius. A shadow follows its `silhouette`
-argument, so pass the shape the view is filled or clipped with, or the shadow will not
-match its outline. `Shadow::splat(v)` is a black shadow of a rectangle.
+`Border`'s `corner_radius` and `RoundedRectangle`'s default radius are both in **points**.
+`Border` (`width`, `corner_radius`, `color`) and `Shadow` (`radius`, `offset`, `color`) accept
+reactive signals (`impl IntoSignalF32` / `impl IntoSignal<Color>`), so animated metrics update in
+place without rebuilding views. `Shadow::splat(v)` / `Shadow::default()` / `.shadow(v)` inherit
+the caster's `.clip(...)` silhouette automatically (falling back to a rectangle when unclipped)
+unless `.silhouette(...)` sets an explicit shape.
 
 ## Floating surfaces
 

@@ -1400,7 +1400,7 @@ pub fn components_block_36() {
     let header = text("header");
     let view = Divider;
 
-    use waterui::widget::accordion; // not in the prelude
+    use waterui::widget::disclosure; // not in the prelude
 
     let _ = {
         // Card; .style(CardStyle::Outlined) | Elevated | Filled
@@ -1411,8 +1411,8 @@ pub fn components_block_36() {
         suspense(async { load().await })
     };
     let _ = {
-        // disclosure; Accordion::with_toggle(&open, ..) controls it
-        accordion(header, || body())
+        // Disclosure::new(header, ..).expanded(&open) controls it
+        disclosure(header, || body())
     };
     let _ = {
         view.floating() // themed elevated surface (FloatingStyle-aware)
@@ -1421,10 +1421,10 @@ pub fn components_block_36() {
 
 // ---------------------------------------------------------------------------
 // components.md § "## Overlays: snackbars, cards, suspense, full screen" (prose): `CardStyle`, `Suspense::loading` and
-// `Accordion::with_toggle`. Not counted as a rust block.
+// `Disclosure::expanded`. Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn components_overlay_extras_prose() {
-    use waterui::widget::Accordion;
+    use waterui::widget::Disclosure;
 
     let open = Binding::bool(false);
 
@@ -1432,7 +1432,7 @@ pub fn components_overlay_extras_prose() {
     let _ = card(text("c")).style(CardStyle::Elevated);
     let _ = card(text("c")).style(CardStyle::Filled);
     let _ = suspense(async { text("x") }).loading(text("loading"));
-    let _ = Accordion::with_toggle(&open, text("h"), || text("b"));
+    let _ = Disclosure::new(text("h"), || text("b")).expanded(&open);
 }
 
 // ---------------------------------------------------------------------------
