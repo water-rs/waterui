@@ -96,7 +96,7 @@ fn mixed_link_view_with_path(path: NavigationPath<TestRoute>) -> impl View {
         ),
         TestRoute::Second => NavigationView::new("Second", OneOf2::B(Text::new("second content"))),
     })
-    .transition(waterui_navigation::navigation_transition::none())
+    .page_transition(waterui_navigation::navigation_transition::none())
 }
 
 fn path_root_lifecycle_view(appeared: Rc<Cell<u32>>, disappeared: Rc<Cell<u32>>) -> impl View {
@@ -113,7 +113,7 @@ fn path_root_lifecycle_view(appeared: Rc<Cell<u32>>, disappeared: Rc<Cell<u32>>)
         TestRoute::First => NavigationView::new("Path Detail", Text::new("path detail content")),
         TestRoute::Second => unreachable!("this test never pushes the second route"),
     })
-    .transition(waterui_navigation::navigation_transition::none())
+    .page_transition(waterui_navigation::navigation_transition::none())
 }
 
 fn restored_path_lifecycle_view(
@@ -141,7 +141,7 @@ fn restored_path_lifecycle_view(
             .on_navigation_disappear(move || disappeared.set(disappeared.get() + 1))
             .on_navigation_pop(move || popped.set(popped.get() + 1))
     })
-    .transition(waterui_navigation::navigation_transition::none())
+    .page_transition(waterui_navigation::navigation_transition::none())
 }
 
 fn denied_pop_view(attempts: Rc<Cell<u32>>) -> impl View {
@@ -154,7 +154,7 @@ fn denied_pop_view(attempts: Rc<Cell<u32>>) -> impl View {
                 .on_navigation_pop_attempted(move || attempts.set(attempts.get() + 1))
         }),
     ))
-    .transition(waterui_navigation::navigation_transition::none())
+    .page_transition(waterui_navigation::navigation_transition::none())
 }
 
 fn lifecycle_view(
@@ -174,7 +174,7 @@ fn lifecycle_view(
                 .on_navigation_pop(move || popped.set(popped.get() + 1))
         }),
     ))
-    .transition(waterui_navigation::navigation_transition::none())
+    .page_transition(waterui_navigation::navigation_transition::none())
 }
 
 fn split_view() -> impl View {

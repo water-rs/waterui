@@ -612,15 +612,16 @@ pub fn media_block_09() -> impl View {
 
 // ---------------------------------------------------------------------------
 // media.md § "## Graphics and codes" (prose): `shader!(..)` is a
-// `ShaderPaintView`; `.continuous(signal)` and `.uniforms(signal)`. Not counted as a
+// `ShaderPaintView`; `.continuous(signal)` and `.param(signal)`. Not counted as a
 // rust block.
 // ---------------------------------------------------------------------------
 pub fn media_shader_prose() -> impl View {
     use waterui::graphics::shader;
-    let level = Binding::container(vec![0.5_f32]);
+    let level = Binding::f32(0.5);
     shader!("starfield.wgsl")
         .continuous(true)
-        .uniforms(level)
+        .param(level)
+        .expect("single parameter fits ShaderPaintView capacity")
         .size(400.0, 500.0)
 }
 

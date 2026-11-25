@@ -1,15 +1,17 @@
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::renderer::tree::transition::TransitionRun;
+use crate::text::TextEngine;
 use crate::theme::{ModalInteraction, NavigationMotion};
 use std::collections::BTreeSet;
 use waterui::navigation::{
     AnyNavigationTransition, NavigationDestinationState, NavigationTransactionId,
-    NavigationTransitionDirection, ResolvedNavigationView,
+    NavigationTransitionDirection, NavigationTransitionPair, ResolvedNavigationView,
 };
 use waterui_core::contract_violation;
 use waterui_core::id::Id;
-use waterui_core::layout::{LayoutDirection, layout_direction};
+use waterui_core::layout::{LayoutDirection, Size as LayoutSize, layout_direction};
 use waterui_structural_transition::ReduceMotion;
 
 pub const ROOT_NAVIGATION_IDENTITY: u64 = 0;
@@ -231,6 +233,70 @@ pub struct NavigationTransitionState<E: crate::text::TextEngine> {
     /// replaces `style` for this push or pop, and the transaction lasts as
     /// long as its clock.
     pub(crate) page: Option<Rc<RefCell<PageTransition<E>>>>,
+    /// Core `(outgoing, incoming)` transition pair running when `style` uses
+    /// `RetainedNavigationTransition::Transitions`, so each side follows its
+    /// own `TransitionSpec` animation timing.
+    pub(crate) pair: Option<Rc<RefCell<PagePairTransition<E>>>>,
+}
+
+/// Core `(outgoing, incoming)` transition runs for one navigation push or pop.
+pub struct PagePairTransition<E: TextEngine> {
+    outgoing: TransitionRun<E>,
+    incoming: TransitionRun<E>,
+    running: bool,
+    direction: LayoutDirection,
+}
+
+impl<E: TextEngine> PagePairTransition<E> {
+    pub(crate) fn start(pair: &NavigationTransitionPair, env: &Environment, now: Instant) -> Self {
+        let reduce_motion = env.get::<ReduceMotion>().is_some_and(|flag| flag.0);
+        let outgoing = TransitionRun::removal(&pair.outgoing, reduce_motion, now);
+        let incoming = TransitionRun::insertion(&pair.incoming, reduce_motion, now);
+        Self {
+            outgoing,
+            incoming,
+            running: true,
+            direction: layout_direction(env).snapshot(),
+        }
+    }
+
+    pub(crate) fn advance(&mut self, now: Instant) {
+        let out_running = self.outgoing.advance(now);
+        let in_running = self.incoming.advance(now);
+        self.running = out_running || in_running;
+    }
+
+    pub(crate) fn paint_outgoing<'a>(
+        &'a self,
+        size: LayoutSize,
+        hit: bool,
+        owner: &'a Rc<NodeCell<E>>,
+    ) -> TransitionPaint<'a, E> {
+        TransitionPaint::sample(
+            &self.outgoing.state,
+            size,
+            self.direction,
+            hit,
+            &self.outgoing.runtime,
+            owner,
+        )
+    }
+
+    pub(crate) fn paint_incoming<'a>(
+        &'a self,
+        size: LayoutSize,
+        hit: bool,
+        owner: &'a Rc<NodeCell<E>>,
+    ) -> TransitionPaint<'a, E> {
+        TransitionPaint::sample(
+            &self.incoming.state,
+            size,
+            self.direction,
+            hit,
+            &self.incoming.runtime,
+            owner,
+        )
+    }
 }
 
 /// A page-root declaration running for one push (its insertion) or pop (its
@@ -646,12 +712,19 @@ impl<E: crate::text::TextEngine> NavigationTransitionState<E> {
             started_at,
             duration,
             page: None,
+            pair: None,
         }
     }
 
     /// Runs the moving page's own declaration in place of the stack style.
     pub(crate) fn with_page(mut self, page: PageTransition<E>) -> Self {
         self.page = Some(Rc::new(RefCell::new(page)));
+        self
+    }
+
+    /// Runs a core `(outgoing, incoming)` transition pair for `style`.
+    pub(crate) fn with_pair(mut self, pair: PagePairTransition<E>) -> Self {
+        self.pair = Some(Rc::new(RefCell::new(pair)));
         self
     }
 
@@ -665,9 +738,13 @@ impl<E: crate::text::TextEngine> NavigationTransitionState<E> {
     }
 
     pub(crate) fn is_active(&self, now: Instant) -> bool {
-        self.page
-            .as_ref()
-            .map_or_else(|| self.progress(now) < 1.0, |page| page.borrow().running)
+        if let Some(page) = &self.page {
+            return page.borrow().running;
+        }
+        if let Some(pair) = &self.pair {
+            return pair.borrow().running;
+        }
+        self.progress(now) < 1.0
     }
 }
 
@@ -1333,6 +1410,7 @@ impl<E: crate::text::TextEngine> Clone for NavigationTransitionState<E> {
             started_at: self.started_at,
             duration: self.duration,
             page: self.page.clone(),
+            pair: self.pair.clone(),
         }
     }
 }

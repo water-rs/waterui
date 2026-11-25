@@ -241,6 +241,11 @@ pub struct PopupMenuState<E: crate::text::TextEngine> {
     /// [`PopupMenuSurface`]; `None` outside an animated anchored presentation.
     #[cfg(feature = "menu")]
     pub(crate) active_menu_presentation: Option<ActiveMenuPresentation<E>>,
+    /// The window's open `.sheet` presentations in presentation order.
+    pub(crate) sheet_stack: SheetStack,
+    /// The front sheet this frame's flush registered — its modal environment
+    /// and retained layer slot. The post-flush `render_sheets` takes it.
+    pub(crate) front_sheet: Option<RegisteredSheet<E>>,
     /// The window's open `.dialog` presentations in presentation order —
     /// which one is on screen, which wait, and which closed with their node.
     #[cfg(waterui_feature = "dialog")]
@@ -2144,6 +2149,8 @@ impl<E: crate::text::TextEngine> Default for PopupMenuState<E> {
             presented_anchored_overlays: Vec::default(),
             #[cfg(feature = "menu")]
             active_menu_presentation: None,
+            sheet_stack: SheetStack::default(),
+            front_sheet: Option::default(),
             #[cfg(waterui_feature = "dialog")]
             dialog_stack: DialogStack::default(),
             #[cfg(waterui_feature = "dialog")]

@@ -38,10 +38,12 @@ cherenkov = ["dep:cherenkov"]
 # and needs no device here.
 gpu = [
     "cherenkov",
+    "cherenkov-record/validate",
     "effects",
     "input",
     "filtrate/gpu",
     "dep:cherenkov-gpu",
+    "dep:waterui-macros",
     "dep:wgpu",
     "dep:bytemuck",
     "dep:pollster",
@@ -52,12 +54,20 @@ gpu = [
 # Offscreen rendering through `Engine<Raster>`: pictures rasterised for hosts
 # whose image views take bitmaps, shader paints included. With `effects`,
 # filtered views run on the raster too (`AnyEffect::into_cpu`).
-cpu = ["cherenkov", "dep:cherenkov-cpu", "cherenkov-cpu/shaders", "filtrate?/lanes"]
+cpu = [
+    "cherenkov",
+    "cherenkov-record/validate",
+    "dep:cherenkov-cpu",
+    "dep:waterui-macros",
+    "cherenkov-cpu/shaders",
+    "filtrate?/lanes",
+]
 
 [dependencies]
 arc-swap = { workspace = true, optional = true }
 waterui-core.workspace = true
 waterui-frame-rate.workspace = true
+waterui-macros = { workspace = true, features = ["shader"], optional = true }
 nami.workspace = true
 # The render-target-neutral recorder: always on — `draw`, `SceneContent`,
 # `Picture` and the `SceneResources` contract are all spelled in its types.
