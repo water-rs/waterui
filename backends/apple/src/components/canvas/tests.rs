@@ -4,6 +4,8 @@
 //! each rendered case as a PNG there.
 
 use kurbo::{Affine, Cap, Circle, Rect, RoundedRect, Stroke};
+#[cfg(target_os = "macos")]
+use waterui_core::Angle;
 use waterui_graphics::backend::draw::{
     BlendMode, ColorStop, Content, ContentChange, Draw as _, Group, LayoutSize, LinearGradient,
     Recorder, Shadow, WorkingColor,
@@ -1926,7 +1928,7 @@ mod render {
                         )),
                     }
                     .transformed(Affine2::scale(1.8, 0.6))
-                    .transformed(Affine2::rotate(0.5))
+                    .transformed(Affine2::rotate(Angle::radians(0.5)))
                     .transformed(Affine2::translate(x, y));
                     if row == 0 {
                         cx.fill(rect(x - 50.0, y - 50.0, 100.0, 100.0), paint);

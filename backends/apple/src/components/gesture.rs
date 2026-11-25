@@ -43,13 +43,13 @@ use waterui::gesture::{
     DragEvent, Gesture, GestureObserver, GesturePhase, LongPressEvent, MagnificationEvent,
     PointerButton, RotationEvent, TapEvent,
 };
-use waterui_core::Metadata;
 use waterui_core::extract::State;
 use waterui_core::handler::ReportExtraction as _;
 use waterui_core::layout::{
     LayoutError, Point, ProposalSize, Rect as LayoutRect, ResolvedExtent, StretchAxis, SubView,
     ViewDimensions,
 };
+use waterui_core::{Angle, Metadata};
 
 use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;
@@ -510,7 +510,7 @@ fn attach(host: &HostView, gesture: &Gesture, on_recognized: Recognized) -> Vec<
                         on_recognized(GesturePayload::Rotation(RotationEvent::new(
                             phase,
                             gesture_point(center.x, center.y),
-                            $angle,
+                            Angle::radians($angle),
                             velocity,
                         )));
                     }

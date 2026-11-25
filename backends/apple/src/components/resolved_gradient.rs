@@ -486,6 +486,8 @@ mod tests {
 
     #[test]
     fn angular_gradient_maps_a_partial_sweep() {
+        use waterui::Angle;
+
         let gradient = Gradient::angular(
             vec![
                 (0.0, working(RED)),
@@ -493,8 +495,8 @@ mod tests {
                 (1.0, working(BLUE)),
             ],
             UnitPoint::CENTER,
-            core::f32::consts::FRAC_PI_2,
-            core::f32::consts::FRAC_PI_2 + core::f32::consts::PI,
+            Angle::QUARTER,
+            Angle::QUARTER + Angle::HALF,
         );
         let paint = layer_paint(&resolve_paint(&gradient));
 
@@ -519,11 +521,13 @@ mod tests {
 
     #[test]
     fn angular_gradient_with_a_full_turn_sweep_ends_at_location_one() {
+        use waterui::Angle;
+
         let gradient = Gradient::angular(
             vec![(0.0, working(RED)), (1.0, working(BLUE))],
             UnitPoint::CENTER,
-            0.0,
-            core::f32::consts::TAU,
+            Angle::ZERO,
+            Angle::FULL,
         );
         let paint = layer_paint(&resolve_paint(&gradient));
 

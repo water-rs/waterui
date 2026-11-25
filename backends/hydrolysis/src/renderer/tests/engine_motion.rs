@@ -10,6 +10,7 @@ use super::*;
 use crate::renderer::mount::motion::{LayerMotion, Motion};
 use crate::time::Instant;
 use cherenkov::LayerId;
+use waterui::Angle;
 use waterui::animation::{Animation, Repeat};
 use waterui_graphics::animation::engine_animation;
 
@@ -120,9 +121,15 @@ fn the_engine_samples_the_tracks_hydrolysis_evaluates() {
             .map(move |on| if on { moved } else { rest })
             .with(animation.clone())
     };
+    let driven_angle = |rest: Angle, moved: Angle, animation: &Animation| {
+        phase
+            .clone()
+            .map(move |on| if on { moved } else { rest })
+            .with(animation.clone())
+    };
     let view = vstack((button("Probe")
         .action(|| {})
-        .rotation(driven(0.0, 30.0, &turn))
+        .rotation(driven_angle(Angle::ZERO, Angle::degrees(30.0), &turn))
         .scale_xy(driven(1.0, 1.5, &stretch), driven(1.0, 0.5, &squash))
         .offset(driven(0.0, 40.0, &slide), driven(0.0, -20.0, &lift))
         .opacity(driven(1.0, 0.4, &fade)),));

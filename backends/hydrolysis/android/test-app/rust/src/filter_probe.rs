@@ -70,7 +70,7 @@ pub fn view() -> impl View {
         )),
         hstack((
             tile("Saturation", sample().saturation(0.25f32)),
-            tile("Hue rotation", sample().hue_rotation(90.0f32)),
+            tile("Hue rotation", sample().hue_rotation(Angle::degrees(90.0))),
             tile("Grayscale", sample().grayscale(0.6f32)),
         )),
         hstack((

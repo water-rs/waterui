@@ -47,7 +47,7 @@ view.opacity(0.8)
 view
     .blur(3.0)
     .saturation(1.5)
-    .hue_rotation(90.0)
+    .hue_rotation(Angle::degrees(90.0))
 ```
 
 ### Animated Filters

@@ -51,6 +51,7 @@
 use alloc::boxed::Box;
 use core::{fmt, num::NonZeroU32, time::Duration};
 
+pub use waterui_core::Angle;
 use waterui_core::{
     Environment,
     extract::State,
@@ -398,8 +399,8 @@ pub struct RotationEvent {
     phase: GesturePhase,
     /// Pivot point the rotation is measured around.
     center: Point,
-    /// Current angle in radians relative to the gesture start.
-    angle: f32,
+    /// Current angle relative to the gesture start.
+    angle: Angle,
     /// Rate of change of the angle, in radians per second.
     velocity: f32,
 }
@@ -422,9 +423,9 @@ impl RotationEvent {
         self.center = center;
     }
 
-    /// Current angle in radians relative to the gesture start.
+    /// Current angle relative to the gesture start.
     #[must_use]
-    pub const fn angle(&self) -> f32 {
+    pub const fn angle(&self) -> Angle {
         self.angle
     }
 
@@ -436,10 +437,10 @@ impl RotationEvent {
 }
 
 impl RotationEvent {
-    /// A rotation in `phase` about `center`, at `angle` radians from the
+    /// A rotation in `phase` about `center`, at `angle` from the
     /// gesture start, changing at `velocity` radians per second.
     #[must_use]
-    pub const fn new(phase: GesturePhase, center: Point, angle: f32, velocity: f32) -> Self {
+    pub const fn new(phase: GesturePhase, center: Point, angle: Angle, velocity: f32) -> Self {
         Self {
             phase,
             center,
@@ -630,22 +631,22 @@ impl MagnificationGesture {
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct RotationGesture {
-    /// The initial angle (in radians) when the gesture begins.
-    initial_angle: f32,
+    /// The initial angle when the gesture begins.
+    initial_angle: Angle,
 }
 
 impl RotationGesture {
-    /// The initial angle (in radians) when the gesture begins.
+    /// The initial angle when the gesture begins.
     #[must_use]
-    pub const fn initial_angle(&self) -> f32 {
+    pub const fn initial_angle(&self) -> Angle {
         self.initial_angle
     }
 }
 
 impl RotationGesture {
-    /// Creates a rotation gesture beginning at `initial_angle` radians.
+    /// Creates a rotation gesture beginning at `initial_angle`.
     #[must_use]
-    pub const fn new(initial_angle: f32) -> Self {
+    pub const fn new(initial_angle: Angle) -> Self {
         Self { initial_angle }
     }
 }

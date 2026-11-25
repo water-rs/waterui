@@ -10,6 +10,7 @@
 //! These extensions help create a fluent API for constructing user interfaces.
 
 use crate::animation::{FrameRate, FrameRateVote};
+use crate::appearance::style::IntoRotationAngle;
 use crate::sheet::Sheet;
 #[cfg(feature = "snackbar")]
 use crate::snackbar::SnackbarHost;
@@ -1206,7 +1207,7 @@ pub trait ViewExt: View + Sized {
     /// Rotations are purely visual and do not affect layout calculations.
     ///
     /// # Arguments
-    /// * `degrees` - The rotation angle in degrees (positive = clockwise)
+    /// * `angle` - The rotation angle (positive = clockwise)
     ///
     /// # Example
     ///
@@ -1214,20 +1215,23 @@ pub trait ViewExt: View + Sized {
     /// use waterui::prelude::*;
     ///
     /// // Rotate 45 degrees
-    /// let tilted = text!("Hello").rotation(45.0);
+    /// let tilted = text!("Hello").rotation(Angle::degrees(45.0));
     ///
     /// // Animate rotation
-    /// let angle = binding::<f32>(0.0_f32).animated();
+    /// let angle = binding::<Angle>(Angle::ZERO).animated();
     /// let spinning = text!("Hello").rotation(angle);
     /// ```
-    fn rotation(self, degrees: impl IntoSignalF32) -> Metadata<Rotation, Self> {
-        Metadata::new(self, Rotation::degrees(degrees))
+    fn rotation<M>(self, angle: impl IntoRotationAngle<M>) -> Metadata<Rotation, Self> {
+        Metadata::new(
+            self,
+            Rotation::from_computed(angle.into_rotation_angle(), Anchor::CENTER),
+        )
     }
 
     /// Applies a rotation transform to this view around a specific anchor point.
     ///
     /// # Arguments
-    /// * `degrees` - The rotation angle in degrees
+    /// * `angle` - The rotation angle
     /// * `anchor` - The anchor point for the rotation
     ///
     /// # Example
@@ -1237,14 +1241,17 @@ pub trait ViewExt: View + Sized {
     /// use waterui::style::Anchor;
     ///
     /// // Rotate around top-left corner
-    /// let tilted = text!("Hello").rotation_from(45.0, Anchor::TOP_LEFT);
+    /// let tilted = text!("Hello").rotation_from(Angle::degrees(45.0), Anchor::TOP_LEFT);
     /// ```
-    fn rotation_from(
+    fn rotation_from<M>(
         self,
-        degrees: impl IntoSignalF32,
+        angle: impl IntoRotationAngle<M>,
         anchor: Anchor,
     ) -> Metadata<Rotation, Self> {
-        Metadata::new(self, Rotation::degrees_from(degrees, anchor))
+        Metadata::new(
+            self,
+            Rotation::from_computed(angle.into_rotation_angle(), anchor),
+        )
     }
 
     /// Applies an offset (translation) transform to this view.
@@ -1897,6 +1904,37 @@ mod tests {
         assert_eq!(reactive.value.range().snapshot(), DynamicRange::Standard);
         range.set(DynamicRange::High);
         assert_eq!(reactive.value.range().snapshot(), DynamicRange::High);
+    }
+
+    #[test]
+    fn rotation_gesture_event_binds_directly_without_conversion() {
+        use nami::Signal as _;
+        use waterui_core::Angle;
+        use waterui_core::layout::Point;
+        use waterui_interaction::gesture::{GesturePhase, RotationEvent, RotationGesture};
+
+        use crate::style::Anchor;
+
+        let angle = Binding::container(Angle::ZERO);
+        let tilted = AnyView::new(()).rotation_from(Angle::degrees(45.0), Anchor::TOP_LEFT);
+        assert!((tilted.value.angle().snapshot().to_degrees() - 45.0).abs() < 1e-5);
+        assert_eq!(tilted.value.anchor(), Anchor::TOP_LEFT);
+
+        let rotated =
+            AnyView::new(())
+                .rotation(angle.clone())
+                .gesture(RotationGesture::new(Angle::ZERO), {
+                    let angle = angle.clone();
+                    move |event: RotationEvent| angle.set(event.angle())
+                });
+        let event = RotationEvent::new(
+            GesturePhase::Updated,
+            Point::new(10.0, 20.0),
+            Angle::QUARTER,
+            0.0,
+        );
+        angle.set(event.angle());
+        assert!((rotated.content.value.angle().snapshot().to_degrees() - 90.0).abs() < 1e-5);
     }
 
     #[test]

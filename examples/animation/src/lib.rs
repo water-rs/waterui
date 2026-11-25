@@ -60,7 +60,7 @@ struct TranslationAxes {
 #[derive(Clone)]
 struct ScaleRotation {
     scale: Binding<f32>,
-    rotation: Binding<f32>,
+    rotation: Binding<Angle>,
 }
 
 /// Demo: Scale animation - visual transform on colored boxes
@@ -86,7 +86,7 @@ fn scale_animation_section(scale: &Binding<f32>) -> impl View + use<> {
 }
 
 /// Demo: Rotation animation - spinning box
-fn rotation_animation_section(rotation: &Binding<f32>) -> impl View + use<> {
+fn rotation_animation_section(rotation: &Binding<Angle>) -> impl View + use<> {
     let animated_rotation = rotation.with(Animation::ease_in_out(Duration::from_millis(500)));
 
     vstack((
@@ -101,19 +101,21 @@ fn rotation_animation_section(rotation: &Binding<f32>) -> impl View + use<> {
         vstack((
             hstack((
                 button("-90°")
-                    .action(|State(r): State<Binding<f32>>| *r.get_mut() -= 90.0)
+                    .action(|State(r): State<Binding<Angle>>| *r.get_mut() -= Angle::QUARTER)
                     .state(rotation),
                 button("-45°")
-                    .action(|State(r): State<Binding<f32>>| *r.get_mut() -= 45.0)
+                    .action(|State(r): State<Binding<Angle>>| *r.get_mut() -= Angle::degrees(45.0))
                     .state(rotation),
-                set_f32_button("Reset", 0.0, rotation),
+                button("Reset")
+                    .action(|State(current): State<Binding<Angle>>| current.set(Angle::ZERO))
+                    .state(rotation),
             )),
             hstack((
                 button("+45°")
-                    .action(|State(r): State<Binding<f32>>| *r.get_mut() += 45.0)
+                    .action(|State(r): State<Binding<Angle>>| *r.get_mut() += Angle::degrees(45.0))
                     .state(rotation),
                 button("+90°")
-                    .action(|State(r): State<Binding<f32>>| *r.get_mut() += 90.0)
+                    .action(|State(r): State<Binding<Angle>>| *r.get_mut() += Angle::QUARTER)
                     .state(rotation),
             )),
         )),
@@ -165,7 +167,7 @@ fn translation_animation_section(
 /// Demo: Combined transform animation
 fn combined_transform_section(
     combined_scale: &Binding<f32>,
-    combined_rotation: &Binding<f32>,
+    combined_rotation: &Binding<Angle>,
 ) -> impl View + use<> {
     let animated_scale = combined_scale.with(Animation::spring(250.0, 18.0));
     let animated_rotation =
@@ -189,13 +191,13 @@ fn combined_transform_section(
             button("Reset")
                 .action(|t: ScaleRotation| {
                     t.scale.set(1.0);
-                    t.rotation.set(0.0);
+                    t.rotation.set(Angle::ZERO);
                 })
                 .state(&transform),
             button("Grow + Spin")
                 .action(|t: ScaleRotation| {
                     t.scale.set(1.8);
-                    *t.rotation.get_mut() += 180.0;
+                    *t.rotation.get_mut() += Angle::HALF;
                 })
                 .state(&transform),
             button("Pulse")
@@ -324,7 +326,7 @@ fn toggle_animation_section(toggle_state: &Binding<bool>) -> impl View + use<> {
 
     // Animated rotation
     let indicator_rotation = toggle_state
-        .select(0.0, 180.0)
+        .select(Angle::ZERO, Angle::HALF)
         .with(Animation::ease_in_out(Duration::from_millis(400)));
 
     vstack((
@@ -399,9 +401,13 @@ fn size_indicator_section(size_value: &Binding<f64>) -> impl View + use<> {
         .map(|s| s / 100.0 + 0.1)
         .with(Animation::spring(200.0, 15.0));
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "slider 0..=100 maps to 0..=360 degrees within f32 precision"
+    )]
     let animated_rotation = size_value
         .clone()
-        .map(|s| s * 3.6) // 0-100 maps to 0-360 degrees
+        .map(|s| Angle::degrees((s * 3.6) as f32)) // 0-100 maps to 0-360 degrees
         .with(Animation::ease_in_out(Duration::from_millis(600)));
 
     let animated_y_scale = size_value
@@ -487,11 +493,11 @@ fn custom_gpu_animation_section() -> impl View {
 pub fn demo() -> impl View {
     // State for transform sections
     let scale = Binding::f32(1.0);
-    let rotation = Binding::f32(0.0);
+    let rotation = Binding::container(Angle::ZERO);
     let offset_x = Binding::f32(0.0);
     let offset_y = Binding::f32(0.0);
     let combined_scale = Binding::f32(1.0);
-    let combined_rotation = Binding::f32(0.0);
+    let combined_rotation = Binding::container(Angle::ZERO);
 
     // State for other demo sections
     let progress_value = Binding::f64(0.3);

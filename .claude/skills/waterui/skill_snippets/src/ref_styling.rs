@@ -141,7 +141,7 @@ pub fn styling_color_transforms_prose() {
     let _ = c.clone().darken(0.1);
     let _ = c.clone().saturate(0.1);
     let _ = c.clone().desaturate(0.1);
-    let _ = c.clone().hue_rotate(30.0);
+    let _ = c.clone().hue_rotate(Angle::degrees(30.0));
     let _ = c.clone().mix(Color::transparent(), 0.5);
     let _ = c.with_opacity(Binding::f32(0.5));
 }
@@ -334,12 +334,11 @@ pub fn styling_block_09() {
         ))
     };
     let _ = {
-        // radians
         Gradient::angular(
             vec![(0.0, rose), (1.0, sky)],
             UnitPoint::CENTER,
-            0.0,
-            core::f32::consts::TAU,
+            Angle::ZERO,
+            Angle::FULL,
         )
     };
     let _ = {
@@ -427,7 +426,7 @@ pub fn styling_path_cubic_prose() {
     let _ = Path::new()
         .move_to(0.0, 0.0)
         .quad_to(0.5, 0.0, 1.0, 0.5)
-        .arc(0.5, 0.5, 0.5, 0.5, 0.0, core::f32::consts::PI)
+        .arc(0.5, 0.5, 0.5, 0.5, Angle::ZERO, Angle::HALF)
         .cubic_to(0.2, 0.0, 0.8, 1.0, 1.0, 1.0);
 }
 

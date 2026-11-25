@@ -23,10 +23,10 @@ use waterui::gesture::{
     DragEvent, Gesture, GesturePhase, LongPressEvent, MagnificationEvent, PointerButton,
     PointerButtons, RotationEvent, TapEvent,
 };
-use waterui_core::Environment;
 use waterui_core::extract::State;
 use waterui_core::handler::{BoxedAction, ReportExtraction};
 use waterui_core::layout::Point;
+use waterui_core::{Angle, Environment};
 
 use crate::input::TouchPhase;
 use crate::time::Instant;
@@ -1227,7 +1227,7 @@ impl GestureDetector for RotationDetector {
                 GestureDetection::recognized(GesturePayload::Rotation(RotationEvent::new(
                     mapped_phase,
                     gesture_point(center),
-                    self.angle,
+                    Angle::radians(self.angle),
                     0.0,
                 )))
             }
@@ -1245,7 +1245,7 @@ impl GestureDetector for RotationDetector {
                 GestureDetection::recognized(GesturePayload::Rotation(RotationEvent::new(
                     mapped_phase,
                     gesture_point(center),
-                    self.angle,
+                    Angle::radians(self.angle),
                     delta / dt,
                 )))
             }
@@ -1254,9 +1254,13 @@ impl GestureDetector for RotationDetector {
                     return GestureDetection::default();
                 }
                 self.angle += delta;
-                let detection = GestureDetection::recognized(GesturePayload::Rotation(
-                    RotationEvent::new(mapped_phase, gesture_point(center), self.angle, 0.0),
-                ));
+                let detection =
+                    GestureDetection::recognized(GesturePayload::Rotation(RotationEvent::new(
+                        mapped_phase,
+                        gesture_point(center),
+                        Angle::radians(self.angle),
+                        0.0,
+                    )));
                 self.reset();
                 detection
             }
@@ -1846,7 +1850,7 @@ mod tests {
         );
         assert!(matches!(
             started.recognized,
-            Some(GesturePayload::Rotation(event)) if event.angle() == 0.0
+            Some(GesturePayload::Rotation(event)) if event.angle() == Angle::ZERO
         ));
 
         let moved = detector.input(
@@ -1860,7 +1864,7 @@ mod tests {
         );
         match moved.recognized {
             Some(GesturePayload::Rotation(event)) => {
-                assert!((event.angle() - 0.5).abs() < 1e-6);
+                assert!((event.angle().to_radians() - 0.5).abs() < 1e-6);
                 assert!(event.velocity() > 0.0);
             }
             other => panic!("expected a rotation payload, got {:?}", other.is_some()),
@@ -1877,7 +1881,7 @@ mod tests {
         );
         assert!(matches!(
             ended.recognized,
-            Some(GesturePayload::Rotation(event)) if (event.angle() - 0.75).abs() < 1e-6
+            Some(GesturePayload::Rotation(event)) if (event.angle().to_radians() - 0.75).abs() < 1e-6
         ));
     }
 

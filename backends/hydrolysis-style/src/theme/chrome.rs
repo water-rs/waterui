@@ -1382,8 +1382,8 @@ pub fn path_commands_to_path(
                 let center_y = f64::from(*cy) * height;
                 let radius_x = f64::from(*rx) * width;
                 let radius_y = f64::from(*ry) * height;
-                let start = f64::from(*start);
-                let step = f64::from(*sweep) / 32.0;
+                let start = f64::from(start.to_radians());
+                let step = f64::from(sweep.to_radians()) / 32.0;
 
                 let start_point = Point::new(
                     radius_x.mul_add(start.cos(), center_x),

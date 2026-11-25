@@ -35,6 +35,7 @@ pub use srgb::{BLACK, Srgb, WHITE};
 
 use nami::{Computed, Signal, SignalExt, impl_constant, signal::IntoSignal};
 
+pub use waterui_core::Angle;
 use waterui_core::{
     Environment, IntoSignalF32, View, contract_violation, flatten_signal,
     resolve::{self, AnyResolvable, Resolvable},
@@ -436,9 +437,10 @@ impl Color {
         self.adjust_chroma(1.0 - clamp_unit(amount.max(0.0)))
     }
 
-    /// Rotates the color's hue by the provided number of degrees.
+    /// Rotates the color's hue by `angle`.
     #[must_use]
-    pub fn hue_rotate(self, degrees: f32) -> Self {
+    pub fn hue_rotate(self, angle: Angle) -> Self {
+        let degrees = angle.to_degrees();
         self.map_oklch(move |mut color| {
             color.hue = normalize_hue(color.hue + degrees);
             color
@@ -914,7 +916,10 @@ mod tests {
     #[test]
     fn hue_rotation_wraps_within_range() {
         let env = Environment::new();
-        let rotated = oklch_of(&Color::oklch(0.6, 0.18, 350.0).hue_rotate(40.0), &env);
+        let rotated = oklch_of(
+            &Color::oklch(0.6, 0.18, 350.0).hue_rotate(Angle::degrees(40.0)),
+            &env,
+        );
 
         assert!(approx_eq(rotated.hue, 30.0, EPSILON_WIDE));
     }

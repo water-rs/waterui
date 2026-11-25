@@ -130,7 +130,13 @@ fn apply_command(
             let center = p(cx, cy);
             let rx = f64::from(rx) * w;
             let ry = f64::from(ry) * h;
-            builder.arc(center, rx, ry, f64::from(start), f64::from(sweep));
+            builder.arc(
+                center,
+                rx,
+                ry,
+                f64::from(start.to_radians()),
+                f64::from(sweep.to_radians()),
+            );
         }
         PathCommand::Close => builder.close(),
     }
