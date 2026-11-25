@@ -137,3 +137,27 @@ impl<L: LabelKind> View for FilePicker<L> {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec::Vec;
+    use nami::Binding;
+    use waterui_url::Url;
+
+    use super::FilePicker;
+
+    #[test]
+    fn new_defaults_to_open_and_import_enables_sandbox_copy() {
+        let files = Binding::container(Vec::<Url>::new());
+
+        let opened = FilePicker::new("Select Files", &files);
+        assert!(!opened.import);
+        assert_eq!(opened.num, 1);
+
+        let imported = FilePicker::new("Import Files", &files)
+            .import()
+            .max_count(3);
+        assert!(imported.import);
+        assert_eq!(imported.num, 3);
+    }
+}

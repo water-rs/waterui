@@ -596,6 +596,8 @@ mod private {
     pub struct TwoWayRegion;
     #[derive(Debug)]
     pub struct SignalCenter;
+    #[derive(Debug)]
+    pub struct ConstantLocation;
 }
 
 /// Target center value carried by a one-way signal passed to [`IntoMapRegion`].
@@ -634,6 +636,16 @@ impl private::SealedRegion<private::TwoWayRegion> for &Binding<Region> {}
 impl IntoMapRegion<private::TwoWayRegion> for &Binding<Region> {
     fn into_map_camera(self) -> (Binding<Region>, Option<Computed<Region>>) {
         (self.clone(), None)
+    }
+}
+
+impl private::SealedRegion<private::ConstantLocation> for Location {}
+
+impl IntoMapRegion<private::ConstantLocation> for Location {
+    fn into_map_camera(self) -> (Binding<Region>, Option<Computed<Region>>) {
+        let region_signal = Computed::constant(Region::from_coordinate(Coordinate::from(self)));
+        let camera = Binding::container(region_signal.snapshot());
+        (camera, Some(region_signal))
     }
 }
 
@@ -866,8 +878,38 @@ pub fn map<M>(center: impl IntoMapRegion<M>) -> Map {
 
 #[cfg(test)]
 mod tests {
-    use super::{Annotation, Coordinate, Map, MapStatus, Region};
+    use super::{Annotation, Coordinate, Location, Map, MapStatus, Region, Timestamp, map};
     use nami::{Binding, Signal};
+
+    #[test]
+    fn map_new_accepts_coordinates_locations_and_signals() {
+        let sf = Coordinate::from_degrees(37.7749, -122.4194).expect("valid sf");
+        let nyc = Coordinate::from_degrees(40.7128, -74.0060).expect("valid nyc");
+        let sf_loc = Location::new(sf.latitude, sf.longitude, Timestamp::UNIX_EPOCH);
+        let nyc_loc = Location::new(nyc.latitude, nyc.longitude, Timestamp::UNIX_EPOCH);
+
+        let (config, follows) = Map::new(sf).into_config();
+        assert_eq!(config.camera().snapshot(), Region::from_coordinate(sf));
+        assert!(follows.is_some());
+
+        let coord_binding = Binding::container(sf);
+        let (_, coord_follows) = Map::new(coord_binding.clone()).into_config();
+        let coord_follows = coord_follows.expect("coordinate binding produces region signal");
+        assert_eq!(coord_follows.snapshot(), Region::from_coordinate(sf));
+        coord_binding.set(nyc);
+        assert_eq!(coord_follows.snapshot(), Region::from_coordinate(nyc));
+
+        let (loc_config, loc_follows) = Map::new(sf_loc.clone()).into_config();
+        assert_eq!(loc_config.camera().snapshot(), Region::from_coordinate(sf));
+        assert!(loc_follows.is_some());
+
+        let loc_binding = Binding::container(sf_loc);
+        let (_, loc_follows) = map(loc_binding.clone()).into_config();
+        let loc_follows = loc_follows.expect("location binding produces region signal");
+        assert_eq!(loc_follows.snapshot(), Region::from_coordinate(sf));
+        loc_binding.set(nyc_loc);
+        assert_eq!(loc_follows.snapshot(), Region::from_coordinate(nyc));
+    }
 
     #[test]
     fn a_map_reports_status_into_the_caller_owned_binding() {
