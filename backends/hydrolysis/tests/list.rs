@@ -24,10 +24,11 @@ use nami::collection::List as ReactiveList;
 use support::{
     count_role_label, mount_rendered, mount_semantic, node_id_contains, node_label_exists, nodes,
 };
-use waterui::component::list::{List, ListDelete, ListMove};
+use waterui::component::list::{ForEachExt, List, ListDelete, ListMove, Section, row};
 use waterui::component::{hstack, spacer, text, vstack};
-use waterui::id::SelfId;
+use waterui::id::{Identifiable, SelfId};
 use waterui::layout::scroll::ScrollController;
+use waterui::views::ForEach;
 use waterui::{Binding, View, ViewExt};
 use waterui_core::Environment;
 use waterui_core::dynamic::watch;
@@ -472,7 +473,7 @@ fn row_content_tap_survives_retained_swipe_order_offscreen() {
                             .on_tap(move || taps.set(row))
                     })
                 })
-                .on_delete(|_: ListDelete| {})
+                .on_delete(|_: ListDelete<usize>| {})
             }
         },
         360,
@@ -520,8 +521,10 @@ fn edit_controls_emit_accessibility_nodes_offscreen() {
                 let moves = Rc::clone(&moves);
                 List::for_each([1, 2, 3], move |row: i32| text(format!("row {row}")))
                     .editing(true)
-                    .on_delete(move |ListDelete(index)| deletes.set(index))
-                    .on_move(move |ListMove(reorder)| moves.set((reorder.from(), reorder.to())))
+                    .on_delete(move |ListDelete(id): ListDelete<usize>| deletes.set(id))
+                    .on_move(move |ListMove(reorder): ListMove<usize>| {
+                        moves.set((reorder.from(), reorder.to()));
+                    })
             }
         },
         360,
@@ -572,6 +575,142 @@ fn edit_controls_emit_accessibility_nodes_offscreen() {
         (0, 1),
         "row 0's move-down control moves it down"
     );
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FilteredEntry {
+    id: u64,
+    label: &'static str,
+    visible: bool,
+}
+
+impl Identifiable for FilteredEntry {
+    type Id = u64;
+
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+}
+
+fn filtered_sectioned_list(
+    backing: &Binding<Vec<FilteredEntry>>,
+    archive: &ReactiveList<FilteredEntry>,
+) -> impl View + use<> {
+    use nami::SignalExt as _;
+    use nami::collection::SignalCollection;
+
+    let filtered = SignalCollection::new(
+        backing
+            .map(|items| {
+                items
+                    .into_iter()
+                    .filter(|item| item.visible)
+                    .collect::<Vec<_>>()
+            })
+            .computed(),
+    );
+    let delete_backing = backing.clone();
+    let move_backing = backing.clone();
+    List::content((
+        Section::new("Account").content(row("Plan", "Pro")),
+        Section::new("Items").content(
+            ForEach::new(filtered, |item: FilteredEntry| text(item.label))
+                .on_delete(move |ListDelete(id): ListDelete<u64>| {
+                    delete_backing
+                        .get_mut()
+                        .retain(|candidate| candidate.id != id);
+                })
+                .on_move(move |ListMove(movement): ListMove<u64>| {
+                    let mut items = move_backing.get_mut();
+                    if let (Some(from), Some(to)) = (
+                        items.iter().position(|item| item.id == *movement.id()),
+                        items.iter().position(|item| item.id == *movement.target()),
+                    ) {
+                        let moved = items.remove(from);
+                        items.insert(to, moved);
+                    }
+                }),
+        ),
+        Section::new("Archive").content(
+            ForEach::new(archive.clone(), |item: FilteredEntry| text(item.label))
+                .on_move(|_: ListMove<u64>| {}),
+        ),
+    ))
+    .editing(true)
+}
+
+/// `water-rs/waterui#4295`: a sectioned, mixed and filtered list reports item
+/// identity to `on_delete` and `on_move`, keeps static rows non-deletable by
+/// default, and bounds move controls strictly to each `ForEach` part.
+#[test]
+fn sectioned_mixed_and_filtered_list_edits_by_identity_within_part_offscreen() {
+    use accesskit::Role;
+
+    let entry = |id, label, visible| FilteredEntry { id, label, visible };
+    let backing = Binding::container(vec![
+        entry(10, "Alpha", true),
+        entry(15, "Hidden-1", false),
+        entry(20, "Beta", true),
+        entry(25, "Hidden-2", false),
+        entry(30, "Gamma", true),
+    ]);
+    let archive = ReactiveList::from(vec![entry(100, "Old-1", true), entry(200, "Old-2", true)]);
+
+    let mut app = mount_rendered(
+        Environment::new(),
+        {
+            let backing = backing.clone();
+            move || filtered_sectioned_list(&backing, &archive)
+        },
+        360,
+        640,
+    );
+    app.settle();
+
+    // Only the 3 visible rows in Section "Items" emit Delete controls — never
+    // the static "Plan" row or the non-deletable "Archive" rows.
+    assert_eq!(
+        count_role_label(app.tree(), Role::Button, "Delete"),
+        3,
+        "only the editable ForEach's visible rows expose Delete"
+    );
+    // Moves stay inside each part: "Items" has 3 rows (2 up, 2 down) and
+    // "Archive" has 2 rows (1 up, 1 down), total 3 up and 3 down — NOT 4,
+    // proving part boundaries block cross-part moves.
+    assert_eq!(
+        count_role_label(app.tree(), Role::Button, "Move up"),
+        3,
+        "first row of each part has no Move up button"
+    );
+    assert_eq!(
+        count_role_label(app.tree(), Role::Button, "Move down"),
+        3,
+        "last row of each part has no Move down button"
+    );
+
+    // Delete the 2nd visible row ("Beta", id 20) — must remove id 20 from the
+    // unfiltered backing Vec without touching "Plan" or hidden items.
+    let second_delete = nodes(app.tree())
+        .filter(|(_, node)| node.role() == Role::Button && node.label() == Some("Delete"))
+        .map(|(id, _)| id)
+        .nth(1)
+        .expect("Beta's delete button");
+    app.click(second_delete);
+    app.settle();
+    let ids_after_delete: Vec<u64> = backing.snapshot().iter().map(|item| item.id).collect();
+    assert_eq!(ids_after_delete, vec![10, 15, 25, 30]);
+
+    // Move "Alpha" (id 10) down onto "Gamma" (id 30) without re-running the
+    // filter — Alpha lands after Gamma in the backing Vec.
+    let first_move_down = nodes(app.tree())
+        .filter(|(_, node)| node.role() == Role::Button && node.label() == Some("Move down"))
+        .map(|(id, _)| id)
+        .next()
+        .expect("Alpha's move-down button");
+    app.click(first_move_down);
+    app.settle();
+    let ids_after_move: Vec<u64> = backing.snapshot().iter().map(|item| item.id).collect();
+    assert_eq!(ids_after_move, vec![15, 25, 30, 10]);
 }
 
 /// An item whose id stays stable while a baked field changes — the shape from

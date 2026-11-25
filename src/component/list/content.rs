@@ -33,7 +33,7 @@ use alloc::vec::Vec;
 
 use nami::collection::Collection;
 use nami::signal::IntoSignal;
-use waterui_core::handler::AnyViewBuilder;
+use waterui_core::handler::{AnyViewBuilder, Handler};
 use waterui_core::id::TaggedView;
 use waterui_core::{Environment, OneOf2, View};
 
@@ -49,6 +49,7 @@ use crate::Color;
 use crate::view::ViewExt;
 use crate::views::ForEach;
 
+use super::edits::{StaticOnDelete, static_delete_action};
 use super::rows::ListItemSink;
 
 // ============================================================================
@@ -318,7 +319,7 @@ where
         R: View,
         W: Fn(Self::Row) -> R + Clone + 'static,
     {
-        sink.push_tagged(wrapped_builder(self.content, wrap), self.tag);
+        sink.push_tagged(wrapped_builder(self.content, wrap), self.tag, None);
     }
 }
 
@@ -476,6 +477,7 @@ pub struct Row<L> {
     layout: RowLayout,
     value_color: Option<Color>,
     deletable: Option<bool>,
+    on_delete: Option<StaticOnDelete>,
 }
 
 impl<L> core::fmt::Debug for Row<L> {
@@ -484,6 +486,7 @@ impl<L> core::fmt::Debug for Row<L> {
             .field("layout", &self.layout)
             .field("has_value_color", &self.value_color.is_some())
             .field("deletable_override", &self.deletable)
+            .field("has_delete_handler", &self.on_delete.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -514,7 +517,20 @@ impl<L> Row<L> {
         self
     }
 
-    /// Overrides the deletability of the resulting row.
+    /// Attaches a delete handler to this static row, opting it in to deletion.
+    ///
+    /// Static rows are not deletable unless asked for through this method.
+    #[must_use]
+    pub fn on_delete<H, Args>(mut self, handler: H) -> Self
+    where
+        H: Handler<Args, ()>,
+    {
+        self.on_delete = Some(static_delete_action(handler));
+        self
+    }
+
+    /// Overrides the deletability of this row when it has an [`Row::on_delete`]
+    /// handler.
     #[must_use]
     pub const fn deletable(mut self, deletable: bool) -> Self {
         self.deletable = Some(deletable);
@@ -587,7 +603,11 @@ impl<S, L: LabelKind> ListContent<S> for Row<L> {
         R: View,
         W: Fn(Self::Row) -> R + Clone + 'static,
     {
-        sink.push_row(wrapped_builder(move || self.build_content(), wrap));
+        let on_delete = self.on_delete.clone();
+        sink.push_row_with_delete(
+            wrapped_builder(move || self.build_content(), wrap),
+            on_delete,
+        );
     }
 }
 
@@ -607,7 +627,12 @@ impl<S, T: 'static, L: LabelKind> ListContent<S> for TaggedView<T, Row<L>> {
         W: Fn(Self::Row) -> R + Clone + 'static,
     {
         let row = self.content;
-        sink.push_tagged(wrapped_builder(move || row.build_content(), wrap), self.tag);
+        let on_delete = row.on_delete.clone();
+        sink.push_tagged(
+            wrapped_builder(move || row.build_content(), wrap),
+            self.tag,
+            on_delete,
+        );
     }
 }
 
@@ -632,6 +657,7 @@ pub fn row<L: IntoLabel>(label: L, value: impl IntoText) -> Row<L::Kind> {
         layout: RowLayout::Inline,
         value_color: None,
         deletable: None,
+        on_delete: None,
     }
 }
 

@@ -125,10 +125,10 @@ pub trait TableSource {
         None
     }
 
-    /// Whether a drop landing above `row` (`on_row == false`) or on it is
-    /// acceptable.
-    fn validate_drop(&self, table: &TableView, row: usize, on_row: bool) -> bool {
-        let _ = (table, row, on_row);
+    /// Whether a drop landing above `row` (`on_row == false`) or on it with
+    /// `payload` is acceptable.
+    fn validate_drop(&self, table: &TableView, row: usize, on_row: bool, payload: &str) -> bool {
+        let _ = (table, row, on_row, payload);
         false
     }
 
@@ -396,16 +396,19 @@ define_class!(
         #[unsafe(method(tableView:validateDrop:proposedRow:proposedDropOperation:))]
         fn validate_drop(
             &self,
-            table_view: &NSTableView,
-            _info: &ProtocolObject<dyn NSDraggingInfo>,
+            _table_view: &NSTableView,
+            info: &ProtocolObject<dyn NSDraggingInfo>,
             row: NSInteger,
             drop_operation: NSTableViewDropOperation,
         ) -> NSDragOperation {
             let Some(source) = self.ivars().source() else {
                 return NSDragOperation::None;
             };
+            let Some(payload) = self.drag_payload(info) else {
+                return NSDragOperation::None;
+            };
             let on_row = drop_operation == NSTableViewDropOperation::On;
-            if source.validate_drop(self, row.cast_unsigned(), on_row) {
+            if source.validate_drop(self, row.cast_unsigned(), on_row, &payload) {
                 NSDragOperation::Move
             } else {
                 NSDragOperation::None
@@ -423,16 +426,10 @@ define_class!(
             let Some(source) = self.ivars().source() else {
                 return Bool::NO;
             };
-            let payload = (|| {
-                let drag_types = self.ivars().drag_types.borrow();
-                let drag_type = drag_types.first()?;
-                let items = info.draggingPasteboard().pasteboardItems()?;
-                items.firstObject()?.stringForType(drag_type)
-            })();
-            let Some(payload) = payload else {
+            let Some(payload) = self.drag_payload(info) else {
                 return Bool::NO;
             };
-            Bool::new(source.accept_drop(self, row.cast_unsigned(), &payload.to_string()))
+            Bool::new(source.accept_drop(self, row.cast_unsigned(), &payload))
         }
     }
 
@@ -594,6 +591,18 @@ impl TableView {
     /// seats the header at the very top and leaves the gap to its source
     /// (a spacer row below the header), as `SwiftUI`'s sectioned list does.
     pub const TOP_GAP: f64 = TOP_GAP;
+
+    /// Extracts the string drag payload from `info` using the table's first
+    /// registered drag type.
+    fn drag_payload(&self, info: &ProtocolObject<dyn NSDraggingInfo>) -> Option<String> {
+        let drag_types = self.ivars().drag_types.borrow();
+        let drag_type = drag_types.first()?;
+        let items = info.draggingPasteboard().pasteboardItems()?;
+        items
+            .firstObject()?
+            .stringForType(drag_type)
+            .map(|text| text.to_string())
+    }
 
     /// The gap this table insets its content by: [`Self::TOP_GAP`], or
     /// none when a non-sidebar list's first row is a group row.

@@ -230,7 +230,7 @@ Handler parameters are extractors. Besides `State<T>`:
   parameter bare (`state: Editor`) and it reads what `.state(&value)` / `App::state(&value)`
   injected.
 - Context extractors supplied by components on the same channel, e.g. `Navigator<Route>`,
-  `ListDelete`, `ListMove`, `SnackbarManager`, `WebViewProxy`.
+  `ListDelete<Id>`, `ListMove<Id>`, `SnackbarManager`, `WebViewProxy`.
 
 Repeated parameters of one state type bind positionally: the first `.state()` call feeds
 the first parameter of that type. A parameter that cannot be extracted means the handler
@@ -238,8 +238,10 @@ does not run and the failure is reported as a contract violation (a panic in a d
 build, a log line in release) — take `Option<E>` when absence is legitimate.
 
 ```rust
-fn delete_row(ListDelete(index): ListDelete, mut state: Editor) {
-    let _ = state.rows.remove(index);
+fn delete_row(ListDelete(id): ListDelete<u64>, mut state: Editor) {
+    if let Some(index) = state.rows.snapshot().iter().position(|r| r.id == id) {
+        let _ = state.rows.remove(index);
+    }
 }
 ```
 

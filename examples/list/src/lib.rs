@@ -59,12 +59,15 @@ fn record_row(record: Record) -> impl View {
     .padding_with((10.0, 16.0))
 }
 
-fn delete_record(ListDelete(index): ListDelete, mut state: DemoState) {
-    let _ = state.records.remove(index);
-    *state.remaining.get_mut() -= 1;
+fn delete_record(ListDelete(id): ListDelete<u64>, mut state: DemoState) {
+    let records = state.records.snapshot();
+    if let Some(index) = records.iter().position(|record| record.id == id) {
+        let _ = state.records.remove(index);
+        *state.remaining.get_mut() -= 1;
+    }
 }
 
-fn move_record(ListMove(movement): ListMove, mut state: DemoState) {
+fn move_record(ListMove(movement): ListMove<u64>, mut state: DemoState) {
     let mut records = state.records.snapshot();
     let record = records.remove(movement.from());
     records.insert(movement.to(), record);
