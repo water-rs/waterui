@@ -303,9 +303,9 @@ impl DrawingCx {
         });
     }
 
-    /// Draws `image` scaled into `rect`.
-    pub fn image(&mut self, image: &ImageSource, rect: Rect, sampling: Sampling) {
-        self.image_sampled(image, rect, sampling);
+    /// Draws `image` scaled into `rect` with linear filtering.
+    pub fn image(&mut self, image: &ImageSource, rect: Rect) {
+        self.image_sampled(image, rect, Sampling::Linear);
     }
 
     /// Draws `run`'s glyphs, exactly as positioned, with `paint`.
