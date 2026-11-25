@@ -492,14 +492,19 @@ pub fn realize_resolved_context_menu_metadata(
                 })
             };
             state.borrow_mut().triggers.borrow_mut().extend([
-                uikit::gesture::long_press(&host, 0.5, cocoa_ui::gesture::ButtonMask::PRIMARY, {
-                    let present = Rc::clone(&present);
-                    move |gesture, _recognizer| {
-                        if matches!(gesture, cocoa_ui::gesture::GestureState::Began) {
-                            present();
+                uikit::gesture::long_press(
+                    &host,
+                    Some(0.5),
+                    cocoa_ui::gesture::ButtonMask::PRIMARY,
+                    {
+                        let present = Rc::clone(&present);
+                        move |gesture, _recognizer, _held| {
+                            if matches!(gesture, cocoa_ui::gesture::GestureState::Began) {
+                                present();
+                            }
                         }
-                    }
-                }),
+                    },
+                ),
                 uikit::gesture::tap(
                     &host,
                     1,

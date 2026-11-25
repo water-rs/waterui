@@ -2,7 +2,7 @@
 //! coverage: `ExcludeDescendants` belongs to the element that claims a naming
 //! scope, so a gesture observer that registers no node — a long-press over a
 //! tapped, labelled target — must not suppress the element inside it.
-//! Regression coverage for water-rs/hydrolysis#266: `on_long_press_gesture`
+//! Regression coverage for water-rs/hydrolysis#266: `on_long_press`
 //! wrapping an `a11y_children(ExcludeDescendants)` button emitted zero
 //! accessibility nodes because the observer pushed suppression around the
 //! claim inside.
@@ -24,7 +24,7 @@ fn icon_button_like() -> impl waterui::View {
         .a11y_label("New tab")
         .a11y_role(AccessibilityRole::Button)
         .a11y_children(AccessibilityChildren::ExcludeDescendants)
-        .on_long_press_gesture(500, || {})
+        .on_long_press(|| {})
 }
 
 /// The rendered runtime must keep the claim's node when a non-registering
@@ -50,7 +50,7 @@ fn long_press_observer_over_unclaimed_scope_still_excludes_descendants() {
                 .a11y_label("New tab")
                 .a11y_role(AccessibilityRole::Button)
                 .a11y_children(AccessibilityChildren::ExcludeDescendants)
-                .on_long_press_gesture(500, || {})
+                .on_long_press(|| {})
         },
         320,
         200,
@@ -99,11 +99,7 @@ fn tap_claim_registers_the_button_node() {
 fn long_press_observer_preserves_a_plain_button_node() {
     let mut app = mount_rendered(
         Environment::new(),
-        || {
-            button("New tab")
-                .action(|| {})
-                .on_long_press_gesture(500, || {})
-        },
+        || button("New tab").action(|| {}).on_long_press(|| {}),
         320,
         200,
     );

@@ -11013,7 +11013,7 @@ mod gesture_ax {
         let pressed = Rc::new(Cell::new(0u32));
         let leaf = resolve::render({
             let pressed = Rc::clone(&pressed);
-            text("hold").on_long_press_gesture(500, move || {
+            text("hold").on_long_press(move || {
                 pressed.set(pressed.get() + 1);
             })
         });

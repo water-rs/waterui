@@ -29,6 +29,8 @@
 use alloc::rc::Rc;
 use alloc::vec::Vec;
 use core::cell::{Cell, RefCell};
+#[cfg(test)]
+use core::time::Duration;
 
 use cocoa_ui::Rect;
 use cocoa_ui::gesture::{ButtonMask, GestureState};
@@ -285,8 +287,7 @@ fn pressed_button(
 )]
 #[expect(
     clippy::cast_possible_truncation,
-    clippy::cast_precision_loss,
-    reason = "the gesture contract is f32; kit geometry is f64, and a press duration in milliseconds fits an f32 mantissa"
+    reason = "kit geometry is f64 and the gesture contract uses f32"
 )]
 fn attach(host: &HostView, gesture: &Gesture, on_recognized: Recognized) -> Vec<GestureAttachment> {
     match gesture {
@@ -325,18 +326,17 @@ fn attach(host: &HostView, gesture: &Gesture, on_recognized: Recognized) -> Vec<
             }
         }
         Gesture::LongPress(long_press) => {
-            let seconds = f64::from(long_press.duration()) / 1000.0;
-            let duration = long_press.duration() as f32;
+            let seconds = long_press.get_minimum_duration().map(|d| d.as_secs_f64());
             let buttons = button_mask(long_press.get_buttons());
             #[cfg(target_os = "ios")]
             {
                 vec![kit::long_press(host, seconds, buttons, {
-                    move |state, recognizer| {
+                    move |state, recognizer, held| {
                         if state == GestureState::Began {
                             let location = recognizer.locationInView(recognizer.view().as_deref());
                             on_recognized(GesturePayload::LongPress(LongPressEvent::new(
                                 gesture_point(location.x, location.y),
-                                duration,
+                                held,
                                 pressed_button(recognizer),
                             )));
                         }
@@ -346,12 +346,12 @@ fn attach(host: &HostView, gesture: &Gesture, on_recognized: Recognized) -> Vec<
             #[cfg(target_os = "macos")]
             {
                 vec![kit::press(host, seconds, buttons, {
-                    move |state, recognizer| {
+                    move |state, recognizer, held| {
                         if state == GestureState::Began {
                             let location = recognizer.locationInView(recognizer.view().as_deref());
                             on_recognized(GesturePayload::LongPress(LongPressEvent::new(
                                 gesture_point(location.x, location.y),
-                                duration,
+                                held,
                                 pressed_button(recognizer, buttons),
                             )));
                         }
@@ -867,7 +867,9 @@ mod tests {
     #[test]
     fn activates_on_press_searches_the_composition_for_a_tap() {
         let tap: Gesture = TapGesture::new().into();
-        let hold: Gesture = LongPressGesture::new(500).into();
+        let hold: Gesture = LongPressGesture::new()
+            .minimum_duration(Duration::from_millis(500))
+            .into();
         let drag: Gesture = DragGesture::new(0.0).into();
         assert!(activates_on_press(&tap));
         assert!(!activates_on_press(&hold));

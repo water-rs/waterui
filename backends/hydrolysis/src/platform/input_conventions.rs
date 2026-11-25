@@ -10,6 +10,7 @@
 
 use std::time::Duration;
 
+use waterui_backend_core::gesture::DEFAULT_LONG_PRESS_DURATION;
 use waterui_graphics::input::Key;
 
 use super::{Modifiers, ScrollPlatform};
@@ -124,6 +125,8 @@ pub struct InputConventions {
     pub multi_click: MultiClickConfig,
     /// The paste shortcut.
     pub paste_shortcut: PasteShortcut,
+    /// Default minimum hold duration for a long press when unspecified.
+    pub long_press_timeout: Duration,
 }
 
 impl InputConventions {
@@ -134,6 +137,7 @@ impl InputConventions {
         Self {
             multi_click: MultiClickConfig::for_platform(platform),
             paste_shortcut: PasteShortcut::for_platform(platform),
+            long_press_timeout: DEFAULT_LONG_PRESS_DURATION,
         }
     }
 }

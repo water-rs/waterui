@@ -107,7 +107,7 @@ Use `app.pump_for(duration)`.
 | `cannot find type 'ListDelete' / 'ListMove'` | not in the prelude | `use waterui::component::list::{ListDelete, ListMove};` |
 | `cannot find type 'TapGesture' / 'CursorStyle' / 'Transferable'` | interaction types are not in the prelude | `use waterui::gesture::…;` / `use waterui::cursor::…;` / `use waterui::drag_drop::…;` |
 | `cannot find type 'PhotoEvent'` | the real name is `photo::Event` | `use waterui::media::photo::Event as PhotoEvent;` |
-| mismatched types on `LongPressGesture::new(Duration::…)` | it takes a `u32` in backend time units | `LongPressGesture::new(500)` |
+| `LongPressGesture::new` constructor or duration type error | `LongPressGesture::new()` uses the platform timeout; custom timeout takes `core::time::Duration` via builder | `LongPressGesture::new().minimum_duration(Duration::from_millis(500))` |
 | `no method named 'drop_hover'` | it exists only on the value `.drop_destination(..)` returns | chain it directly after `.drop_destination` |
 | `the trait bound 'MyType: Transferable' is not satisfied` on `.draggable`/`.drop_destination` | a drag value must be marked transferable | `impl Transferable for MyType {}` (plus `impl_constant!(MyType)` to pass a plain value) |
 | `no method named 'is_empty'` on a signal | signal string methods are prefixed | `.str_is_empty()`, `.str_len()`, `.str_contains(..)` |

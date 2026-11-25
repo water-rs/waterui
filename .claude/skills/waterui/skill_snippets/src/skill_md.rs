@@ -691,7 +691,7 @@ pub mod skill_block_16 {
 /// this file consumes proven to resolve.
 pub fn skill_block_08_imports_are_live() {
     let _ = DragGesture::new(5.0);
-    let _ = LongPressGesture::new(500);
+    let _ = LongPressGesture::new();
     let _ = TapGesture::new();
     let _ = CursorStyle::Arrow;
     let _ = Files::new([waterui::Url::from("file:///tmp/payload")]);

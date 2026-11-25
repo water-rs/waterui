@@ -18,20 +18,22 @@
 //! `MainThreadOnly` and the recognizers are attached to views, which are
 //! main-thread objects.
 
+use std::cell::Cell;
 use std::fmt;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use objc2::rc::{Retained, Weak};
-use objc2::runtime::{NSObject, ProtocolObject};
+use objc2::runtime::{AnyObject, NSObject, ProtocolObject};
 use objc2::sel;
 use objc2::{
     ClassType, DefinedClass, DowncastTarget, MainThreadMarker, MainThreadOnly, define_class,
     msg_send,
 };
 use objc2_app_kit::{
-    NSClickGestureRecognizer, NSGestureRecognizer, NSGestureRecognizerDelegate,
-    NSGestureRecognizerState, NSMagnificationGestureRecognizer, NSPanGestureRecognizer,
-    NSPressGestureRecognizer, NSRotationGestureRecognizer, NSView,
+    NSClickGestureRecognizer, NSEvent, NSEventType, NSGestureRecognizer,
+    NSGestureRecognizerDelegate, NSGestureRecognizerState, NSMagnificationGestureRecognizer,
+    NSPanGestureRecognizer, NSPressGestureRecognizer, NSRotationGestureRecognizer, NSView,
 };
 use objc2_foundation::NSObjectProtocol;
 
@@ -147,6 +149,66 @@ impl fmt::Debug for Gate {
     }
 }
 
+struct PressTrackerIvars {
+    started_at: Rc<Cell<Option<Instant>>>,
+}
+
+define_class!(
+    /// Records the press start instant when `NSPressGestureRecognizer` begins
+    /// evaluating a mouse-down / pressure event.
+    // SAFETY: `NSObject` has no subclassing requirements; the class holds a
+    // main-thread cell and does not implement `Drop`.
+    #[unsafe(super(NSObject))]
+    #[name = "CocoaUiAppKitPressTracker"]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = PressTrackerIvars]
+    struct PressTracker;
+
+    // SAFETY: `NSObjectProtocol` asks nothing of an `NSObject` subclass.
+    unsafe impl NSObjectProtocol for PressTracker {}
+
+    // SAFETY: `gestureRecognizer:shouldAttemptToRecognizeWithEvent:` has the
+    // signature `NSGestureRecognizerDelegate` declares.
+    unsafe impl NSGestureRecognizerDelegate for PressTracker {
+        #[unsafe(method(gestureRecognizer:shouldAttemptToRecognizeWithEvent:))]
+        fn should_attempt_to_recognize_with_event(
+            &self,
+            _recognizer: &NSGestureRecognizer,
+            event: &NSEvent,
+        ) -> bool {
+            guarded(
+                "CocoaUiAppKitPressTracker shouldAttemptToRecognizeWithEvent:",
+                || {
+                    if matches!(
+                        event.r#type(),
+                        NSEventType::LeftMouseDown
+                            | NSEventType::RightMouseDown
+                            | NSEventType::OtherMouseDown
+                            | NSEventType::Pressure
+                    ) {
+                        self.ivars().started_at.set(Some(Instant::now()));
+                    }
+                    true
+                },
+            )
+        }
+    }
+);
+
+impl PressTracker {
+    fn new(mtm: MainThreadMarker, started_at: Rc<Cell<Option<Instant>>>) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(PressTrackerIvars { started_at });
+        // SAFETY: `init` is `NSObject`'s designated initializer.
+        unsafe { msg_send![super(this), init] }
+    }
+}
+
+impl fmt::Debug for PressTracker {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PressTracker").finish_non_exhaustive()
+    }
+}
+
 /// A recognizer attached to a view, together with the target that owns its
 /// handler.
 ///
@@ -158,9 +220,9 @@ impl fmt::Debug for Gate {
 pub struct GestureAttachment {
     target: Retained<Target>,
     recognizer: Weak<NSGestureRecognizer>,
-    /// The should-begin gate a gated recognizer carries: the recognizer's
+    /// The delegate a gated or timed recognizer carries: the recognizer's
     /// `delegate` is weak, so the attachment owns it.
-    gate: Option<Retained<Gate>>,
+    delegate: Option<Retained<AnyObject>>,
 }
 
 impl GestureAttachment {
@@ -188,9 +250,9 @@ impl Drop for GestureAttachment {
             }
         }
         let ours = recognizer.delegate().is_some_and(|delegate| {
-            self.gate
+            self.delegate
                 .as_ref()
-                .is_some_and(|gate| Retained::as_ptr(&delegate) == Retained::as_ptr(gate).cast())
+                .is_some_and(|ours| Retained::as_ptr(&delegate).cast() == Retained::as_ptr(ours))
         });
         if ours {
             // Clearing the delegate this attachment installed.
@@ -230,7 +292,7 @@ where
     GestureAttachment {
         target,
         recognizer: Weak::new(&recognizer),
-        gate: None,
+        delegate: None,
     }
 }
 
@@ -269,7 +331,7 @@ pub fn click_gated(
     );
     recognizer.setDelegate(Some(ProtocolObject::from_ref(&*gate)));
     let mut attachment = attach(view, recognizer, handler);
-    attachment.gate = Some(gate);
+    attachment.delegate = Some(gate.into_super().into_super());
     attachment
 }
 
@@ -295,21 +357,43 @@ pub fn click(
 }
 
 /// A press recognizer on `view`: a press of at least `minimum_seconds`
-/// from a pointer button in `buttons`.
+/// (or `AppKit`'s default timeout when `None`) from a pointer button in `buttons`.
 ///
-/// The handler receives the recognizer's normalized state and the
-/// recognizer itself.
+/// The handler receives the recognizer's normalized state, the recognizer
+/// itself, and the elapsed hold duration measured from press start.
 pub fn press(
     view: &NSView,
-    minimum_seconds: f64,
+    minimum_seconds: Option<f64>,
     buttons: ButtonMask,
-    handler: impl Fn(GestureState, &NSPressGestureRecognizer) + 'static,
+    handler: impl Fn(GestureState, &NSPressGestureRecognizer, Duration) + 'static,
 ) -> GestureAttachment {
     let mtm = view.mtm();
     let recognizer = NSPressGestureRecognizer::new(mtm);
-    recognizer.setMinimumPressDuration(minimum_seconds);
+    if let Some(seconds) = minimum_seconds {
+        recognizer.setMinimumPressDuration(seconds);
+    }
     recognizer.setButtonMask(usize::from(buttons.bits()));
-    attach(view, recognizer, handler)
+    let started_at = Rc::new(Cell::new(None));
+    let tracker = PressTracker::new(mtm, Rc::clone(&started_at));
+    recognizer.setDelegate(Some(ProtocolObject::from_ref(&*tracker)));
+    let mut attachment = attach(view, recognizer, move |state, recognizer| {
+        let held = match state {
+            GestureState::Began => started_at.take().map_or_else(
+                || Duration::from_secs_f64(recognizer.minimumPressDuration().max(0.0)),
+                |start| start.elapsed(),
+            ),
+            GestureState::Ended | GestureState::Cancelled | GestureState::Failed => {
+                started_at.set(None);
+                Duration::from_secs_f64(recognizer.minimumPressDuration().max(0.0))
+            }
+            GestureState::Possible | GestureState::Changed => {
+                Duration::from_secs_f64(recognizer.minimumPressDuration().max(0.0))
+            }
+        };
+        handler(state, recognizer, held);
+    });
+    attachment.delegate = Some(tracker.into_super().into_super());
+    attachment
 }
 
 /// A pan recognizer on `view`, from a pointer button in `buttons`.

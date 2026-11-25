@@ -199,9 +199,7 @@ fn install_interaction(root: &HostView, inspection: &Rc<Inspection>) {
     let weak = Rc::downgrade(inspection);
     let recognizer = Rc::new(std::cell::OnceCell::<Weak<UIGestureRecognizer>>::new());
     let observed = recognizer.clone();
-    // Ask UIKit for its default threshold, matching an unconfigured recognizer.
-    let duration = UILongPressGestureRecognizer::new(root.mtm()).minimumPressDuration();
-    let gesture = gesture::long_press(root, duration, ButtonMask::PRIMARY, move |state, _| {
+    let gesture = gesture::long_press(root, None, ButtonMask::PRIMARY, move |state, _, _| {
         if state != GestureState::Began {
             return;
         }
