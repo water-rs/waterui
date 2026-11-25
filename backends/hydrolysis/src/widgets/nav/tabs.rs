@@ -541,9 +541,7 @@ pub fn render_tabs_node<E: crate::text::TextEngine>(
     );
     #[cfg(feature = "accessibility")]
     {
-        let hidden = env
-            .get::<waterui::accessibility::AccessibilityHidden>()
-            .is_some_and(waterui::accessibility::AccessibilityHidden::is_hidden);
+        let hidden = ctx.renderer_mut().is_accessibility_hidden(env);
         if !hidden {
             let selected_id = ctx.renderer_mut().read_signal(&state.borrow().selection);
             let (selection, labels, relocation) = {
@@ -1470,7 +1468,9 @@ pub fn emit_tabs_accessibility<E: crate::text::TextEngine>(
             .collect();
         (state.selection.clone(), state.style, labels)
     };
-    tabs_accessibility(renderer, None, &selection, style, &labels, env);
+    if !renderer.is_accessibility_hidden(env) {
+        tabs_accessibility(renderer, None, &selection, style, &labels, env);
+    }
     if let Some(selected_index) = state.selected_index(selected_id) {
         state.tabs[selected_index]
             .content

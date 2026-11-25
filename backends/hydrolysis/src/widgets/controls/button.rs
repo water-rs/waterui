@@ -615,9 +615,7 @@ pub fn render_button_node<E: crate::text::TextEngine>(
     state: &Rc<RefCell<ButtonRenderState<E>>>,
     env: &Environment,
 ) {
-    let hidden = env
-        .get::<waterui::accessibility::AccessibilityHidden>()
-        .is_some_and(waterui::accessibility::AccessibilityHidden::is_hidden);
+    let hidden = ctx.renderer_mut().is_accessibility_hidden(env);
     if !hidden {
         let render_ctx = ctx.render_context();
         button_accessibility(ctx.renderer_mut(), Some(render_ctx), state, env);
@@ -914,9 +912,7 @@ pub fn render_menu_node<E: crate::text::TextEngine>(
     state: &Rc<RefCell<MenuRenderState<E>>>,
     env: &Environment,
 ) {
-    let hidden = env
-        .get::<waterui::accessibility::AccessibilityHidden>()
-        .is_some_and(waterui::accessibility::AccessibilityHidden::is_hidden);
+    let hidden = ctx.renderer_mut().is_accessibility_hidden(env);
     if !hidden {
         let theme = ctx.theme();
         let render_ctx = ctx.render_context();
@@ -1610,6 +1606,9 @@ pub fn emit_button_accessibility<E: crate::text::TextEngine>(
     state: &Rc<RefCell<ButtonRenderState<E>>>,
     env: &Environment,
 ) {
+    if renderer.is_accessibility_hidden(env) {
+        return;
+    }
     button_accessibility(renderer, None, state, env);
 }
 
@@ -1623,6 +1622,9 @@ pub fn emit_menu_accessibility<E: crate::text::TextEngine>(
     state: &Rc<RefCell<MenuRenderState<E>>>,
     env: &Environment,
 ) {
+    if renderer.is_accessibility_hidden(env) {
+        return;
+    }
     menu_accessibility(renderer, None, None, state, env);
 }
 

@@ -2216,7 +2216,7 @@ checksum = "af491d569909a7e4dee0ad7db7f5341fef5c614d5b8ec8cf765732aba3cff681"
 dependencies = [
  "serde",
  "termcolor",
- "unicode-width 0.1.14",
+ "unicode-width 0.2.2",
 ]
 
 [[package]]
@@ -8838,7 +8838,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "proc-macro2 1.0.107",
  "quote 1.0.47",
  "syn 2.0.119",
@@ -12849,6 +12849,7 @@ dependencies = [
  "waterui-core",
  "waterui-frame-rate",
  "waterui-graphics",
+ "waterui-icons-lucide",
  "waterui-interaction",
  "waterui-locale",
  "waterui-map",
@@ -13044,7 +13045,7 @@ dependencies = [
 [[package]]
 name = "waterui-chart"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/chart?branch=main#5a73dd6fa3c1453f849a07898ebf1abd630c9218"
+source = "git+https://github.com/water-rs/chart?branch=main#4c1f44531a340bd15d42811d331452726e7becf9"
 dependencies = [
  "bytemuck",
  "nami",

@@ -440,10 +440,7 @@ impl<E: crate::text::TextEngine> WidgetBehavior<E> for ProvidedSemanticsNode {
     }
 
     fn emit_accessibility(self: Rc<Self>, renderer: &mut SemanticCore<E>, env: &Environment) {
-        if env
-            .get::<AccessibilityHidden>()
-            .is_some_and(AccessibilityHidden::is_hidden)
-        {
+        if renderer.is_accessibility_hidden(env) {
             return;
         }
         let default_label = self

@@ -853,7 +853,7 @@ native_backend! {
         canvas: waterui::graphics::canvas::CanvasView,
         #[cfg(waterui_feature = "gpu")]
         /// GPU content.
-        gpu: waterui::GpuView<alloc::boxed::Box<dyn waterui::graphics::GpuContent>>,
+        gpu: waterui::graphics::backend::GpuContentLeaf,
         #[cfg(waterui_feature = "gpu")]
         /// Frames from an external source.
         external_frame: waterui::graphics::gpu::external::ExternalFrameView,

@@ -695,7 +695,7 @@ impl GpuContent for DeferredClearRenderer {
             return;
         }
         let mut encoder = frame
-            .device
+            .device()
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("hydrolysis_deferred_gpu_surface_encoder"),
             });
@@ -703,7 +703,7 @@ impl GpuContent for DeferredClearRenderer {
             let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("hydrolysis_deferred_gpu_surface_pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: frame.view,
+                    view: frame.view(),
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -717,7 +717,7 @@ impl GpuContent for DeferredClearRenderer {
                 multiview_mask: None,
             });
         }
-        frame.queue.submit([encoder.finish()]);
+        frame.queue().submit([encoder.finish()]);
     }
 }
 

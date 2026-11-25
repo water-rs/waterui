@@ -189,9 +189,7 @@ pub fn render_text_field_node<E: crate::text::TextEngine>(
     env: &Environment,
 ) {
     #[cfg(feature = "accessibility")]
-    let hidden = env
-        .get::<waterui::accessibility::AccessibilityHidden>()
-        .is_some_and(waterui::accessibility::AccessibilityHidden::is_hidden);
+    let hidden = ctx.renderer_mut().is_accessibility_hidden(env);
     #[cfg(feature = "accessibility")]
     if hidden {
         ctx.renderer_mut().push_accessibility_suppression();
@@ -605,9 +603,7 @@ pub fn render_secure_field_node<E: crate::text::TextEngine>(
     env: &Environment,
 ) {
     #[cfg(feature = "accessibility")]
-    let hidden = env
-        .get::<waterui::accessibility::AccessibilityHidden>()
-        .is_some_and(waterui::accessibility::AccessibilityHidden::is_hidden);
+    let hidden = ctx.renderer_mut().is_accessibility_hidden(env);
     #[cfg(feature = "accessibility")]
     if hidden {
         ctx.renderer_mut().push_accessibility_suppression();
@@ -1225,10 +1221,7 @@ pub fn emit_text_field_accessibility<E: crate::text::TextEngine>(
     state: &Rc<RefCell<TextFieldRenderState<E>>>,
     env: &Environment,
 ) {
-    if env
-        .get::<waterui::accessibility::AccessibilityHidden>()
-        .is_some_and(waterui::accessibility::AccessibilityHidden::is_hidden)
-    {
+    if renderer.is_accessibility_hidden(env) {
         return;
     }
     let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
@@ -1352,10 +1345,7 @@ pub fn emit_secure_field_accessibility<E: crate::text::TextEngine>(
     state: &Rc<RefCell<SecureFieldRenderState<E>>>,
     env: &Environment,
 ) {
-    if env
-        .get::<waterui::accessibility::AccessibilityHidden>()
-        .is_some_and(waterui::accessibility::AccessibilityHidden::is_hidden)
-    {
+    if renderer.is_accessibility_hidden(env) {
         return;
     }
     let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);

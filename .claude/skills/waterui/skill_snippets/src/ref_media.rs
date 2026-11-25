@@ -636,7 +636,21 @@ pub fn media_block_10() -> impl View {
     struct Terminal;
     impl GpuContent for Terminal {
         fn setup(&mut self, _gpu: &Context<'_>) {}
-        fn render(&mut self, _frame: &mut Frame<'_>) {}
+        fn render(&mut self, frame: &mut Frame<'_>) {
+            let _ = (
+                frame.device(),
+                frame.queue(),
+                frame.texture(),
+                frame.view(),
+                frame.format(),
+                frame.width(),
+                frame.height(),
+                frame.scale(),
+                frame.elapsed(),
+                frame.delta(),
+                frame.presentation_time(),
+            );
+        }
     }
     let terminal = Terminal;
     let typed = Binding::container(Str::from(""));

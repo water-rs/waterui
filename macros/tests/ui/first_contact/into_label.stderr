@@ -11,11 +11,11 @@ error[E0277]: `std::option::Option<&str>` cannot be used as a control label
   = help: the following other types implement trait `IntoLabel`:
             &'static str
             Computed<T>
-            Label<K>
             StyledStr
             std::string::String
             waterui::Binding<T>
             waterui::Str
+            waterui::component::Label<K>
             waterui::component::Text
 note: required by a bound in `waterui::component::button`
  --> $WORKSPACE/components/foundation/controls/src/button.rs
@@ -34,9 +34,9 @@ error[E0277]: `std::option::Option<&str>` cannot be used as a control label
   = help: the following other types implement trait `IntoLabel`:
             &'static str
             Computed<T>
-            Label<K>
             StyledStr
             std::string::String
             waterui::Binding<T>
             waterui::Str
+            waterui::component::Label<K>
             waterui::component::Text
