@@ -23,9 +23,6 @@ pub use layout::{DEFAULT_ASPECT, FitVideoLayout, fit_video};
 
 /// Public video view configuration types.
 pub mod video;
-/// Temporary compatibility alias while `waterui-video-gpu` migrates to [`VideoEvent`].
-#[doc(hidden)]
-pub use video::VideoEvent as Event;
 pub use video::{
     AudioTrackInfo, AudioTrackSelection, ContentMode, EquirectangularProjection, IntoVideoSource,
     LiveWindow, NetworkPlaybackPolicy, PlaybackConfiguration, PlaybackMetrics, PlaybackOutputPath,

@@ -3,6 +3,7 @@ pub mod button;
 pub mod color_picker;
 #[cfg(feature = "date-picker")]
 pub mod date_picker;
+pub mod disclosure;
 #[cfg(any(
     feature = "text-field",
     feature = "secure-field",

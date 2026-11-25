@@ -52,6 +52,7 @@
 
 mod badge;
 mod chrome;
+mod disclosure;
 mod glass;
 #[cfg(waterui_feature = "list")]
 mod list;
@@ -86,6 +87,7 @@ pub use chrome::{
     Backdrop, Border, Chrome, ContentEffect, CornerShape, Corners, DragDeformation, Elevation,
     Fill, FocusIndicator, PressFeedback, Ripple, StateLayer, Surface, Wash,
 };
+pub use disclosure::{DisclosureLayout, DisclosureLook, DisclosureSpec};
 pub use glass::GlassLook;
 #[cfg(waterui_feature = "list")]
 pub use list::{ListControls, ListGestures, ListLook, ListSpec};

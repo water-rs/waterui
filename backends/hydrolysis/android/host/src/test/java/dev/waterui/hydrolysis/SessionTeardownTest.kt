@@ -659,6 +659,29 @@ class SessionTeardownTest {
         session.destroy()
     }
 
+    @Test
+    fun animatorDurationScaleSeedsAndUpdatesReduceMotion() {
+        val context = RuntimeEnvironment.getApplication()
+        android.provider.Settings.Global.putFloat(
+            context.contentResolver,
+            android.provider.Settings.Global.ANIMATOR_DURATION_SCALE,
+            0.0f,
+        )
+
+        val session = HydrolysisSession(context, {})
+        assertEquals(listOf(true), ShadowNativeBridge.createReduceMotions)
+
+        android.provider.Settings.Global.putFloat(
+            context.contentResolver,
+            android.provider.Settings.Global.ANIMATOR_DURATION_SCALE,
+            1.0f,
+        )
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(listOf(false), ShadowNativeBridge.reduceMotions)
+
+        session.destroy()
+    }
+
     private companion object {
         /** Long enough for Robolectric's Choreographer to run a posted frame. */
         val FRAME_WINDOW: Duration = Duration.ofSeconds(1)
@@ -757,8 +780,14 @@ class ShadowNativeBridge {
         /** The night-mode flag each `nativeCreateSession` carried. */
         val createNightModes = mutableListOf<Boolean>()
 
+        /** The reduce-motion flag each `nativeCreateSession` carried. */
+        val createReduceMotions = mutableListOf<Boolean>()
+
         /** Every `nativeSetColorScheme` push, in order. */
         val colorSchemes = mutableListOf<Boolean>()
+
+        /** Every `nativeSetReduceMotion` push, in order. */
+        val reduceMotions = mutableListOf<Boolean>()
 
         /** Every `nativeSetLocale` push, in order. */
         val locales = mutableListOf<String>()
@@ -799,7 +828,9 @@ class ShadowNativeBridge {
             visibilities.clear()
             resumptions.clear()
             createNightModes.clear()
+            createReduceMotions.clear()
             colorSchemes.clear()
+            reduceMotions.clear()
             locales.clear()
             frameTimelines.clear()
             backEvents.clear()
@@ -836,9 +867,11 @@ class ShadowNativeBridge {
             @Suppress("UNUSED_PARAMETER") painter: SessionPainter?,
             @Suppress("UNUSED_PARAMETER") uiThreadServices: Long,
             nightMode: Boolean,
+            reduceMotion: Boolean,
         ): Long {
             sessions += 1
             createNightModes += nightMode
+            createReduceMotions += reduceMotion
             return SESSION_PTR
         }
 
@@ -847,6 +880,13 @@ class ShadowNativeBridge {
         fun nativeSetColorScheme(sessionPtr: Long, nightMode: Boolean) {
             assertLive(sessionPtr)
             colorSchemes += nightMode
+        }
+
+        @JvmStatic
+        @Implementation
+        fun nativeSetReduceMotion(sessionPtr: Long, reduceMotion: Boolean) {
+            assertLive(sessionPtr)
+            reduceMotions += reduceMotion
         }
 
         @JvmStatic

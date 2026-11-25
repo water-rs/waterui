@@ -4779,7 +4779,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis-m3"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis-m3?branch=main#98359851e6cd73d31fd0851a7a38426748d12d0e"
+source = "git+https://github.com/water-rs/hydrolysis-m3?branch=main#612c250068a5c3ebe561a7f1cab8c0c29a5250a0"
 dependencies = [
  "hydrolysis-style",
  "material-color-utils",
@@ -13773,7 +13773,7 @@ dependencies = [
 [[package]]
 name = "waterui-particle"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/particle?branch=main#80b2263df87bcbc93272b74e17591f06ac098c0a"
+source = "git+https://github.com/water-rs/particle?branch=main#d57aa84e37765fed01202d9d6b4e6c00655c47a1"
 dependencies = [
  "bytemuck",
  "encase",
