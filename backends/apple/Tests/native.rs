@@ -12028,14 +12028,14 @@ mod a11y_frame {
             fn render(&mut self, frame: &mut Frame<'_>) {
                 let mut encoder =
                     frame
-                        .device
+                        .device()
                         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                             label: Some("a11y_frame gpu surface"),
                         });
                 drop(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("a11y_frame gpu surface"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: frame.view,
+                        view: frame.view(),
                         depth_slice: None,
                         resolve_target: None,
                         ops: wgpu::Operations {
@@ -12048,7 +12048,7 @@ mod a11y_frame {
                     occlusion_query_set: None,
                     multiview_mask: None,
                 }));
-                frame.queue.submit([encoder.finish()]);
+                frame.queue().submit([encoder.finish()]);
             }
 
             fn intrinsic_size(&self) -> Option<Size> {

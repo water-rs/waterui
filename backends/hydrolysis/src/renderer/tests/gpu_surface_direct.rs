@@ -106,21 +106,21 @@ impl GpuContent for FillProbe {
             .formats
             .lock()
             .expect("formats log")
-            .push(frame.format);
+            .push(frame.format());
         self.log
             .sizes
             .lock()
             .expect("sizes log")
-            .push((frame.width, frame.height));
+            .push((frame.width(), frame.height()));
         let mut encoder = frame
-            .device
+            .device()
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("hydrolysis_direct_to_target_probe_encoder"),
             });
         drop(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("hydrolysis_direct_to_target_probe_pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: frame.view,
+                view: frame.view(),
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
@@ -133,7 +133,7 @@ impl GpuContent for FillProbe {
             occlusion_query_set: None,
             multiview_mask: None,
         }));
-        frame.queue.submit([encoder.finish()]);
+        frame.queue().submit([encoder.finish()]);
     }
 
     fn is_opaque(&self) -> bool {

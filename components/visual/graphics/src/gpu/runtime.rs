@@ -14,7 +14,8 @@ use std::sync::Mutex;
 use wgpu::{Adapter, Device, Instance, Queue, TextureFormat};
 
 use super::external::{ExternalFrameStream, FrameReceiver, PresentedSize};
-use super::{GpuContent, GpuView, RedrawHandle, Shared, SourceRateUpdate};
+use super::leaf::GpuContentLeaf;
+use super::{GpuContent, RedrawHandle, Shared, SourceRateUpdate};
 use crate::draw::kurbo::Affine;
 use crate::offscreen::{OffscreenImage, OffscreenSize};
 use cherenkov::{Display, Engine, FrameTime, Layer, Next, Surface};
@@ -1057,7 +1058,7 @@ impl GpuRuntime {
         size: OffscreenSize,
         scale: f32,
     ) -> Result<OffscreenImage, HostedLayerError> {
-        let content = GpuView::new(content).take_engine_content();
+        let content = GpuContentLeaf::new(content).take_engine_content();
         // One frame, read back at once: no host loop exists to wake.
         let mut renderer = GpuContentRenderer::new(
             self,
