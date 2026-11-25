@@ -209,26 +209,18 @@ fn tabs_with_stacks_view() -> impl View {
         &selection,
         (
             Tab::new("Home Tab", || {
-                NavigationView::new(
-                    "Home",
-                    NavigationStack::new(NavigationView::new(
-                        "Home Root",
-                        NavigationLink::new("Open Home Detail", || {
-                            NavigationView::new("Home Detail", Text::new("home detail content"))
-                        }),
-                    )),
-                )
-                .navigation_bar_visibility(false)
+                NavigationStack::new(NavigationView::new(
+                    "Home Root",
+                    NavigationLink::new("Open Home Detail", || {
+                        NavigationView::new("Home Detail", Text::new("home detail content"))
+                    }),
+                ))
             }),
             Tab::new("Settings Tab", || {
-                NavigationView::new(
-                    "Settings",
-                    NavigationStack::new(NavigationView::new(
-                        "Settings Root",
-                        Text::new("settings root content"),
-                    )),
-                )
-                .navigation_bar_visibility(false)
+                NavigationStack::new(NavigationView::new(
+                    "Settings Root",
+                    Text::new("settings root content"),
+                ))
             }),
         ),
     )

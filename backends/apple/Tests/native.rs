@@ -1987,8 +1987,8 @@ mod tabs {
             Tabs::new(
                 &pane,
                 (
-                    Tab::container(label("One"), || text("pane one")),
-                    Tab::container(label("Two"), || text("pane two")),
+                    Tab::new(label("One"), || text("pane one")),
+                    Tab::new(label("Two"), || text("pane two")),
                 ),
             )
             .bottom_accessory(accessory),
@@ -2104,7 +2104,7 @@ mod tabs {
         ] {
             let pane = binding(0usize);
             let leaf = resolve::render(
-                Tabs::new(&pane, vec![Tab::container(label("One"), || text("one"))])
+                Tabs::new(&pane, vec![Tab::new(label("One"), || text("one"))])
                     .minimize_behavior(shared),
             );
             assert_eq!(tab_bar_controller(&leaf).tabBarMinimizeBehavior(), native);
@@ -2134,10 +2134,10 @@ mod tabs {
         let leaf = resolve::render(Tabs::new(
             &pane,
             (
-                Tab::container(label("One"), || {
+                Tab::new(label("One"), || {
                     scroll(vstack((text("one"), text("two"), text("three"))))
                 }),
-                Tab::container(label("Two"), || {
+                Tab::new(label("Two"), || {
                     vstack((text("aside"), scroll(text("nested"))))
                 }),
             ),
@@ -2168,8 +2168,8 @@ mod tabs {
         let leaf = resolve::render(Tabs::new(
             &pane,
             (
-                Tab::container(label("One"), || scroll(text("scrollable"))),
-                Tab::container(label("Two"), || text("static")),
+                Tab::new(label("One"), || scroll(text("scrollable"))),
+                Tab::new(label("Two"), || text("static")),
             ),
         ));
         let controllers = tab_bar_controller(&leaf)
@@ -2221,7 +2221,7 @@ mod tabs {
         let leaf = autoreleasepool(|_| {
             resolve::render(Tabs::new(
                 &pane,
-                vec![Tab::container(label("One"), move || {
+                vec![Tab::new(label("One"), move || {
                     Dynamic::watch(content.clone(), |scrolled| {
                         if scrolled {
                             AnyView::new(scroll(text("surface")))
@@ -2319,7 +2319,7 @@ mod tabs {
         let pane = binding(0usize);
         let leaf = resolve::render(Tabs::new(
             &pane,
-            vec![Tab::container(label("One"), || {
+            vec![Tab::new(label("One"), || {
                 NavigationStack::new(NavigationView::new("Root", scroll(text("root"))))
             })],
         ));
@@ -2722,7 +2722,7 @@ mod navigation {
                         )]),
                     )
                 }),
-                Tab::container("Split", move || {
+                Tab::new("Split", move || {
                     NavigationSplitView::new(&detail, text("Sidebar"), |id: i32| {
                         NavigationView::new(format!("Detail {id}"), text("detail"))
                     })
@@ -7893,7 +7893,7 @@ mod safe_area {
         let selection = binding(0usize);
         let mount = mount(Tabs::new(
             &selection,
-            vec![Tab::container("Home", move || {
+            vec![Tab::new("Home", move || {
                 NavigationStack::new(
                     NavigationView::new(
                         "Home",
