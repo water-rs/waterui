@@ -1128,7 +1128,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         {
             renderer.popup_menu.front_sheet = Some(RegisteredSheet {
                 env: sheet_modal_environment(env, &value.sheet),
-                sheet: value.sheet.clone(),
+                build_layer: Rc::clone(&value.build_layer),
                 content: Rc::clone(&value.content),
             });
         } else {

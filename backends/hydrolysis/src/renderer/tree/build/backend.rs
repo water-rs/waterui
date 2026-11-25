@@ -931,9 +931,13 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
+        let sheet_for_builder = value.clone();
+        let build_layer: Rc<dyn Fn() -> RetainedSubview<E>> =
+            Rc::new(move || RetainedSubview::new(sheet_for_builder.modal_layer()));
         RenderNode::build_wrapper(
             WrapperEffect::Sheet(SheetEffect {
                 content: Rc::new(RefCell::new(None)),
+                build_layer,
                 sheet: value,
                 marker: Rc::new(()),
             }),

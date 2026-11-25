@@ -1122,9 +1122,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                         ) {
                             let env = sheet_modal_environment(child_env, &effect.sheet);
                             let mut slot = effect.content.borrow_mut();
-                            let layer = slot.get_or_insert_with(|| {
-                                RetainedSubview::new(effect.sheet.modal_layer())
-                            });
+                            let layer = slot.get_or_insert_with(|| (effect.build_layer)());
                             layer.emit_accessibility(renderer, &env);
                         } else {
                             *effect.content.borrow_mut() = None;

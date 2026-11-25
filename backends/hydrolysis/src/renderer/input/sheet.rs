@@ -148,7 +148,7 @@ impl SheetStack {
 /// What a `.sheet(...)` node's flush registered for the post-flush pass.
 pub struct RegisteredSheet<E: TextEngine> {
     pub(crate) env: Environment,
-    pub(crate) sheet: Sheet,
+    pub(crate) build_layer: Rc<dyn Fn() -> RetainedSubview<E>>,
     pub(crate) content: Rc<RefCell<Option<RetainedSubview<E>>>>,
 }
 
@@ -183,7 +183,7 @@ impl<E: TextEngine> HydrolysisRenderer<E> {
         let window = self.window_bounds;
         let proposal = bounded_proposal(window);
         let mut slot = front.content.borrow_mut();
-        let content = slot.get_or_insert_with(|| RetainedSubview::new(front.sheet.modal_layer()));
+        let content = slot.get_or_insert_with(|| (front.build_layer)());
         let _ = content.patch_and_measure(self, &front.env, proposal);
         self.register_hit_test_occluder(window);
         content.place_detached(

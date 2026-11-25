@@ -118,7 +118,7 @@ impl fmt::Debug for SheetController {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SheetController")
             .field("controller", &self.controller)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 

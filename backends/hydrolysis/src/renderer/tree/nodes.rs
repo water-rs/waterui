@@ -1232,6 +1232,9 @@ pub struct SheetEffect<E: TextEngine> {
     /// Lazily-built modal layer (`Scrim` plus detent-sized surface), kept alive
     /// while this sheet stays at the front of `SheetStack`.
     pub(crate) content: Rc<RefCell<Option<RetainedSubview<E>>>>,
+    /// Factory created at the `NativeBackend::sheet` dispatch point so
+    /// `Sheet::modal_layer` stays unreachable in apps that never use `.sheet`.
+    pub(crate) build_layer: Rc<dyn Fn() -> RetainedSubview<E>>,
     /// The sheet being presented.
     pub(crate) sheet: Sheet,
     /// The node's identity in the window's sheet stack.
