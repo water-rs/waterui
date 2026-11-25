@@ -234,8 +234,12 @@ pub fn emit_badge_accessibility<E: crate::text::TextEngine>(
     state: &Rc<RefCell<BadgeRenderState<E>>>,
     env: &Environment,
 ) {
+    let hidden = renderer.is_accessibility_hidden(env);
     let mut state = state.borrow_mut();
     state.content.emit_accessibility(renderer, env);
+    if hidden {
+        return;
+    }
     let value = {
         let signal = state.value.clone();
         renderer.read_signal(&signal)

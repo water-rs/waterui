@@ -858,7 +858,7 @@ FilePicker::open("Select Files", &urls).max_count(5)           // Binding<Vec<Ur
 Seeding a `Binding<Color>` from a constant: `binding(Color::from(Srgb::from_hex("#4A84F6")))`.
 A `Binding<BTreeSet<Date>>` needs the turbofish: `binding(BTreeSet::<Date>::new())`.
 
-## Overlays: snackbars, cards, suspense, full screen
+## Overlays: snackbars, cards, suspense
 
 Attach `.snackbar_host()` to a root view to install a plain `SnackbarManager` (and
 `CodeCopyFeedback` when `flow-markdown` is enabled) into its subtree; it is a `#[state]`-marked
@@ -882,7 +882,8 @@ button("Save").action(|m: SnackbarManager| {
 ```
 
 Placements are independent stacks: a top snackbar never evicts a bottom one, and multiple
-at one placement stack and reflow. `.icon(view)` attaches a typed leading icon (`Snackbar<V>`),
+at one placement stack and reflow. `.icon(|| view)` attaches a typed leading icon builder
+(`Snackbar<V>`, so modified non-`Clone` views like `|| mdi::delete().padding()` work directly),
 `.state(&v)` injects state for the `.action(..)` and
 `.on_dismiss(..)` handlers; `.on_dismiss(|reason: SnackbarDismissReason| ..)` runs once per
 presentation with why it went (`Action`, `Timeout`, `Closed`, `Replaced`, `Programmatic`),
@@ -908,11 +909,6 @@ suspense(async { load().await })                       // takes a future, not a 
 accordion(header, || body())                           // disclosure; Accordion::with_toggle(&open, ..) controls it
 view.floating()                                        // themed elevated surface (FloatingStyle-aware)
 ```
-
-Attach `.full_screen_overlay_host::<V>()` to a root view (or wrap the subtree in
-`FullScreenOverlayManager::host(|overlay| ...)`)
-so descendant handlers can take `overlay: FullScreenOverlayManager<V>` bare to present modal,
-window-filling content: `overlay.show(view)` and `overlay.hide()`.
 
 `.secure()` on any view marks it as content that must not appear in screenshots. Only the
 iOS backend enforces it today; macOS and Hydrolysis (Android included) render the content
@@ -956,16 +952,16 @@ use waterui::accessibility::{AccessibilityRole, AccessibilityState};
 .a11y_label("Delete message")          // override the derived label
 .a11y_id("inbox.row.3")                // stable automation id — reaches XCUITest and Android
 .a11y_role(AccessibilityRole::Button)
-.a11y_hidden(true)                     // decorative only
-.a11y_state_signal(active.map(|a| AccessibilityState::new().selected(a)))
+.a11y_hidden(true)                     // or a reactive boolean signal
+.a11y_state(active.map(|a| AccessibilityState::new().selected(a)))
 ```
 
 The idiom for a composed row that should read as a single node: `.a11y_hidden(true)` on
 the inner content, then `.a11y_role(..)` + `.a11y_label(..)` on the wrapper — or better,
 build it with `Label::new(semantic_text, || content)`, which does this for you.
 
-Three more modifiers carry explicit semantics. `.a11y_state(AccessibilityState::new()
-.selected(true))` is the constant form of `a11y_state_signal`. `.a11y_children(
+Three more modifiers carry explicit semantics. `.a11y_state(..)` accepts either a
+constant `AccessibilityState` or a reactive signal of one. `.a11y_children(
 AccessibilityChildren::ExcludeDescendants)` hides every descendant and exposes only this
 node (`Automatic`, the default, leaves it to the backend) — the one-modifier form of the
 hidden-inner idiom above. `.a11y_geometry(AccessibilityGeometry::Allocation)` reports the

@@ -16,7 +16,7 @@ default = ["gpu"]
 text = ["dep:waterui-text"]
 # Interactive surface keyboard, pointer, scroll and IME events (`keyboard-types`).
 input = ["dep:keyboard-types"]
-# Raster image decoding (`image_decode`) and offscreen PNG encoding (`image`, `mp4parse`).
+# Raster image decoding (`ImageSource::decode`, `PixelBuffer::decode`) and offscreen PNG encoding (`image`, `mp4parse`).
 image-decode = ["dep:image", "dep:mp4parse"]
 # Filters on views (`.filter(F)`, `.blur(..)`, …) and the portable description
 # a backend reads from them: the filter's stages with their WGSL snippets, its
@@ -95,9 +95,9 @@ keyboard-types = { workspace = true, optional = true }
 send_wrapper = { version = "0.6", default-features = false }
 thiserror.workspace = true
 # `avif` is `image`'s AVIF *encoder* (ravif -> rav1e), not its decoder
-# (`avif-native`). `image_decode` only decodes, and its HEIF retry hands the
-# patched container to the platform decoder, so the encoder was pure weight.
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff"], optional = true }
+# (`avif-native`). Decoding only needs the raster decoders; the HEIF retry hands
+# a patched container to the decoder when supported.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico", "tiff"], optional = true }
 mp4parse = { version = "0.17", optional = true }
 # Operational failures of the canvas — a refused font, an unlayoutable text —
 # are logged and skipped, with or without the GPU stack.

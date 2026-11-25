@@ -2240,14 +2240,15 @@ mod tests {
     }
 
     #[test]
-    fn window_root_does_not_install_overlay_or_snackbar_managers() {
+    fn window_root_does_not_install_snackbar_manager() {
         use core::any::{Any, TypeId};
 
         use super::WindowRoot;
-        use crate::fullscreen::FullScreenOverlayManager;
+        use crate::View;
+        #[cfg(feature = "snackbar")]
+        use crate::ViewExt as _;
         #[cfg(feature = "snackbar")]
         use crate::snackbar::SnackbarManager;
-        use crate::{View, ViewExt as _};
 
         struct Probe;
 
@@ -2259,8 +2260,6 @@ mod tests {
         let root_body = WindowRoot(Probe).body(&env);
         assert_eq!(Any::type_id(&root_body), TypeId::of::<Probe>());
 
-        let _overlay_host = Probe.full_screen_overlay_host::<()>();
-        assert!(env.get::<FullScreenOverlayManager<()>>().is_none());
         #[cfg(feature = "snackbar")]
         {
             let _snackbar_host = Probe.snackbar_host();

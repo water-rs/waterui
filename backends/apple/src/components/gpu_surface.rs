@@ -31,11 +31,13 @@ use waterui_core::layout::{
 };
 use waterui_core::{NativeView, Str};
 use waterui_frame_rate::{FrameRate, combine};
+use waterui_graphics::backend::GpuContentLeaf;
 use waterui_graphics::backend::cherenkov::Next;
+use waterui_graphics::gpu::interop::GpuContentBox;
 use waterui_graphics::gpu::{
-    Display, ExternalFrameRenderer, ExternalFrameStream, ExternalFrameView, FrameTime, GpuContent,
-    GpuContentRenderer, GpuRuntime, GpuView, HostedFrame, HostedLayerError, RedrawHandle,
-    RenderedFrame, SharedGpuContext, wgpu,
+    Display, ExternalFrameRenderer, ExternalFrameStream, ExternalFrameView, FrameTime,
+    GpuContentRenderer, GpuRuntime, HostedFrame, HostedLayerError, RedrawHandle, RenderedFrame,
+    SharedGpuContext, wgpu,
 };
 use waterui_graphics::input::SurfaceInputEvent;
 use waterui_graphics::offscreen::OffscreenSize;
@@ -360,7 +362,7 @@ impl From<HostedLayerError> for HostedError {
     }
 }
 
-impl<T: GpuContent> HostedView for GpuView<T> {
+impl HostedView for GpuContentLeaf {
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         Self::measure(self, proposal)
     }
@@ -411,7 +413,7 @@ impl<T: GpuContent> HostedView for GpuView<T> {
     ) -> RendererCreation {
         // `engine_content` answers the same content object every time, so a
         // renderer rebuilt after device loss re-installs it with its state.
-        let producer = waterui_graphics::gpu::interop::GpuContentBox::new(self.engine_content());
+        let producer = GpuContentBox::new(self.engine_content());
         let runtime = runtime.clone();
         let context = context.clone();
         let redraw = redraw.clone();
@@ -2974,9 +2976,9 @@ impl SubView for SurfaceSubView {
 
 // MARK: - Install
 
-/// The `gpu_surface` realizations — `Native<GpuView>` and
-/// `Native<ExternalFrameView>` and `Native<SceneView>` share presentation.
-pub fn realize_gpu_view<T: GpuContent>(view: GpuView<T>, ctx: &RenderContext<'_>) -> NativeLeaf {
+/// The `gpu_surface` realizations — `Native<GpuContentLeaf>`,
+/// `Native<ExternalFrameView>`, and `Native<SceneView>` share presentation.
+pub fn realize_gpu_view(view: GpuContentLeaf, ctx: &RenderContext<'_>) -> NativeLeaf {
     build_surface(view, "GPU content", ctx)
 }
 

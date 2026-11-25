@@ -466,6 +466,9 @@ pub struct AccessibilityBuilder<E: crate::text::TextEngine> {
     /// A transform wrapper's motion moves its placement without re-recording,
     /// so a later epoch means published bounds may be stale.
     resolved_epoch: u64,
+    /// Whether this core has produced at least one accessibility tree update,
+    /// distinguishing an all-hidden empty window from an unemitted window.
+    has_emitted: bool,
     /// The numeric values that follow their binding in the published tree
     /// without their widget re-rendering, by the widget's interaction
     /// identity. Kept across flushes.
@@ -534,6 +537,7 @@ impl<E: crate::text::TextEngine> Default for AccessibilityBuilder<E> {
             content_types: BTreeMap::new(),
             pending_tree_update: None,
             resolved_epoch: 0,
+            has_emitted: false,
             live_numeric: BTreeMap::new(),
             live_selection: BTreeMap::new(),
         }
@@ -1264,6 +1268,7 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
         let interaction_nodes = &self.interaction_nodes;
         self.focus_key_handlers
             .retain(|key, _| interaction_nodes.contains_key(key));
+        self.has_emitted = true;
         self.pending_tree_update = Some(self.assembled_tree_update());
     }
 }
@@ -1340,6 +1345,23 @@ pub fn accessibility_container_child_environment(env: &Environment) -> Option<En
 }
 
 impl<E: crate::text::TextEngine> SemanticCore<E> {
+    /// Whether `env` currently hides accessibility output for this view.
+    ///
+    /// Subscribes the active evaluation to the signal so flipping
+    /// `a11y_hidden` back to `false` schedules an accessibility update even
+    /// when the subtree started suppressed.
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn is_accessibility_hidden(&mut self, env: &Environment) -> bool {
+        env.get::<AccessibilityHidden>()
+            .is_some_and(|hidden| self.read_signal(hidden.signal()))
+    }
+
+    #[cfg(not(feature = "accessibility"))]
+    #[expect(dead_code, reason = "called unconditionally from widget render paths")]
+    pub(crate) const fn is_accessibility_hidden(&self, _env: &Environment) -> bool {
+        false
+    }
+
     #[cfg(feature = "accessibility")]
     pub fn set_accessibility_root_label(&mut self, label: &str) {
         self.accessibility.root_label.clear();
@@ -1391,7 +1413,9 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// root's children list is republished whole each merge).
     #[cfg(feature = "accessibility")]
     fn current_accessibility_tree_update(&self) -> Option<AccessibilityTreeUpdate> {
-        (!self.accessibility.nodes.is_empty()).then(|| self.accessibility.assembled_tree_update())
+        self.accessibility
+            .has_emitted
+            .then(|| self.accessibility.assembled_tree_update())
     }
 
     /// The accessibility tree of every open window, merged into one update —
@@ -2169,10 +2193,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             "hydrolysis accessibility container scope requires a role, a label, or a value"
         );
 
-        if env
-            .get::<AccessibilityHidden>()
-            .is_some_and(AccessibilityHidden::is_hidden)
-        {
+        if self.is_accessibility_hidden(env) {
             self.push_accessibility_suppression();
             return AccessibilityContainerScope {
                 parent_pushed: false,
@@ -2219,7 +2240,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         }
         let state_hidden = env
             .get::<AccessibilityStateSignal>()
-            .is_some_and(|signal| signal.state().snapshot().is_hidden());
+            .is_some_and(|signal| self.read_signal(signal.state()).is_hidden());
         let excludes_descendants = env
             .get::<AccessibilityChildren>()
             .is_some_and(AccessibilityChildren::excludes_descendants);

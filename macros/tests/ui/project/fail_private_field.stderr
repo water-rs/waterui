@@ -1,0 +1,5 @@
+error[E0616]: field `token` of struct `AccountProjected` is private
+  --> tests/ui/project/fail_private_field.rs:24:23
+   |
+24 |     account.project().token.set(Str::from("forged"));
+   |                       ^^^^^ private field
