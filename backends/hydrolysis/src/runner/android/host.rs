@@ -1690,6 +1690,7 @@ fn session_mounts(
         safe_area,
         keyboard_area,
         color_scheme,
+        reduce_motion,
         #[cfg(hydrolysis_android_system_webview)]
         android_webview,
     }))

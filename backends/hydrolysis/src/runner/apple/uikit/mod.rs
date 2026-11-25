@@ -101,7 +101,7 @@ pub(super) struct Process {
     /// Keeps state watchers on dormant `Closed` secondary windows alive so
     /// opening one at run time reports the unsupported secondary-window error.
     _dormant_window_watches: Vec<Retain>,
-    /// Keeps the UIKit Reduce Motion notification observer registered for the
+    /// Keeps the `UIKit` Reduce Motion notification observer registered for the
     /// lifetime of the process.
     _reduce_motion: NotificationObserver,
 }

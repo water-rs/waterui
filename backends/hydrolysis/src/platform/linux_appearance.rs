@@ -385,7 +385,7 @@ mod portal {
             |value| sync_portal_color_scheme(&scheme, value),
         );
         apply_portal_key_reply(reduced_reply, "reduced-motion", "no-preference", |value| {
-            sync_portal_reduced_motion(&reduce_motion, value)
+            sync_portal_reduced_motion(&reduce_motion, value);
         });
         initial_read.set(true);
         wake();
