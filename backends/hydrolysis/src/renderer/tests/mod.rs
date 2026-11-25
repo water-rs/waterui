@@ -1791,7 +1791,8 @@ fn a_label_reaches_the_view_a_hook_realizes() {
     let mut renderer = test_renderer();
     // The frame puts the hooked map inside a layout container, one level below
     // the naming scope the build installs.
-    let view = Map::new(Region::new(Coordinate::default(), 1.0, 1.0))
+    let camera = Binding::container(Region::new(Coordinate::default(), 1.0, 1.0));
+    let view = Map::new(&camera)
         .hooks(TextMap)
         .a11y_label("City map")
         .size(120.0, 120.0);

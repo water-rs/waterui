@@ -1293,7 +1293,7 @@ mod tests {
             snapshot
                 .range()
                 .filter_map(|index| snapshot.get_view(index))
-                .map(|tab| tab.content().build().content)
+                .map(|tab| tab.content().build())
                 .chain(accessory)
                 .collect()
         }

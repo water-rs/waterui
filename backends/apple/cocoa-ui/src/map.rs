@@ -16,6 +16,7 @@
 //! is main-thread work, which the `MainThreadOnly` thread kinds and the
 //! [`MainThreadMarker`] constructor enforce.
 
+use core::ptr;
 use std::cell::RefCell;
 use std::fmt;
 use std::rc::Rc;
@@ -29,8 +30,8 @@ use objc2_core_foundation::CGRect;
 use objc2_core_location::CLLocationCoordinate2D;
 use objc2_foundation::{NSError, NSObject, NSObjectProtocol, NSString};
 use objc2_map_kit::{
-    MKCircle, MKCircleRenderer, MKCoordinateRegion, MKCoordinateSpan, MKMapViewDelegate, MKOverlay,
-    MKOverlayRenderer, MKPointAnnotation,
+    MKAnnotation, MKCircle, MKCircleRenderer, MKCoordinateRegion, MKCoordinateSpan,
+    MKMapViewDelegate, MKOverlay, MKOverlayRenderer, MKPointAnnotation,
 };
 
 use crate::callback::guarded;
@@ -139,6 +140,24 @@ mod uikit_map_view {
             pub unsafe fn removeAnnotations(
                 &self,
                 annotations: &NSArray<ProtocolObject<dyn MKAnnotation>>,
+            );
+
+            /// Selects one annotation.
+            #[unsafe(method(selectAnnotation:animated:))]
+            #[unsafe(method_family = none)]
+            pub unsafe fn selectAnnotation_animated(
+                &self,
+                annotation: &ProtocolObject<dyn MKAnnotation>,
+                animated: Bool,
+            );
+
+            /// Deselects one annotation.
+            #[unsafe(method(deselectAnnotation:animated:))]
+            #[unsafe(method_family = none)]
+            pub unsafe fn deselectAnnotation_animated(
+                &self,
+                annotation: Option<&ProtocolObject<dyn MKAnnotation>>,
+                animated: Bool,
             );
 
             /// Adds an overlay above the labels.
@@ -293,11 +312,30 @@ pub struct Annotation {
 }
 
 /// A handle to an [`Annotation`] already on the map. The map owns the
-/// annotation object; the handle lets a caller update or remove a specific
-/// pin.
+/// annotation object; the handle lets a caller update, select, or remove a
+/// specific pin.
 #[derive(Debug)]
 pub struct AnnotationMarker {
     inner: Retained<MKPointAnnotation>,
+}
+
+impl AnnotationMarker {
+    /// Pointer identity of the underlying `MKPointAnnotation`, matching the
+    /// address reported in [`AnnotationSelectionEvent`].
+    #[must_use]
+    pub fn identity(&self) -> usize {
+        ptr::from_ref::<MKPointAnnotation>(&self.inner).cast::<()>() as usize
+    }
+}
+
+/// Annotation selection event reported by `MapKit`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum AnnotationSelectionEvent {
+    /// The annotation with this [`AnnotationMarker::identity`] was selected.
+    Selected(usize),
+    /// The annotation with this [`AnnotationMarker::identity`] was deselected.
+    Deselected(usize),
 }
 
 /// A location the application supplies itself, drawn as the map's own
@@ -340,12 +378,14 @@ fn apply(marker: &MKPointAnnotation, annotation: &Annotation) {
 
 type RegionChangedHandler = Rc<dyn Fn()>;
 type LoadHandler = Rc<dyn Fn(LoadStatus)>;
+type AnnotationSelectionHandler = Rc<dyn Fn(AnnotationSelectionEvent)>;
 
 /// The closures a [`MapDelegate`] forwards `MapKit` delegate calls to.
 #[derive(Default)]
 pub struct DelegateIvars {
     region_changed: RefCell<Option<RegionChangedHandler>>,
     load: RefCell<Option<LoadHandler>>,
+    annotation_selection: RefCell<Option<AnnotationSelectionHandler>>,
 }
 
 impl fmt::Debug for DelegateIvars {
@@ -353,6 +393,10 @@ impl fmt::Debug for DelegateIvars {
         f.debug_struct("DelegateIvars")
             .field("region_changed", &self.region_changed.borrow().is_some())
             .field("load", &self.load.borrow().is_some())
+            .field(
+                "annotation_selection",
+                &self.annotation_selection.borrow().is_some(),
+            )
             .finish()
     }
 }
@@ -382,7 +426,8 @@ define_class!(
         #[unsafe(method(mapView:regionDidChangeAnimated:))]
         fn map_view_region_did_change_animated(&self, _map_view: &MKMapView, _animated: bool) {
             guarded("map region change", || {
-                if let Some(handler) = self.ivars().region_changed.borrow().as_ref() {
+                let handler = self.ivars().region_changed.borrow().clone();
+                if let Some(handler) = handler {
                     handler();
                 }
             });
@@ -421,6 +466,40 @@ define_class!(
             guarded("map load failure", || {
                 if let Some(handler) = self.ivars().load.borrow().as_ref() {
                     handler(LoadStatus::Failed(error.localizedDescription().to_string()));
+                }
+            });
+        }
+
+        // SAFETY: an optional `MKMapViewDelegate` method, called by `MapKit`
+        // on the main thread with a live annotation.
+        #[unsafe(method(mapView:didSelectAnnotation:))]
+        fn map_view_did_select_annotation(
+            &self,
+            _map_view: &MKMapView,
+            annotation: &ProtocolObject<dyn MKAnnotation>,
+        ) {
+            guarded("map annotation select", || {
+                let identity = ptr::from_ref(annotation).cast::<()>() as usize;
+                let handler = self.ivars().annotation_selection.borrow().clone();
+                if let Some(handler) = handler {
+                    handler(AnnotationSelectionEvent::Selected(identity));
+                }
+            });
+        }
+
+        // SAFETY: an optional `MKMapViewDelegate` method, called by `MapKit`
+        // on the main thread with a live annotation.
+        #[unsafe(method(mapView:didDeselectAnnotation:))]
+        fn map_view_did_deselect_annotation(
+            &self,
+            _map_view: &MKMapView,
+            annotation: &ProtocolObject<dyn MKAnnotation>,
+        ) {
+            guarded("map annotation deselect", || {
+                let identity = ptr::from_ref(annotation).cast::<()>() as usize;
+                let handler = self.ivars().annotation_selection.borrow().clone();
+                if let Some(handler) = handler {
+                    handler(AnnotationSelectionEvent::Deselected(identity));
                 }
             });
         }
@@ -474,6 +553,7 @@ impl MapDelegate {
 enum Slot {
     RegionChanged,
     Load,
+    AnnotationSelection,
 }
 
 /// A live event subscription on a [`MapView`]; dropping it removes the
@@ -492,6 +572,9 @@ impl Drop for MapObservation {
             }
             Slot::Load => {
                 self.delegate.ivars().load.take();
+            }
+            Slot::AnnotationSelection => {
+                self.delegate.ivars().annotation_selection.take();
             }
         }
     }
@@ -632,6 +715,23 @@ impl MapView {
         }
     }
 
+    /// Calls `handler` when `MapKit` selects or deselects an annotation.
+    #[must_use]
+    pub fn on_annotation_selection(
+        &self,
+        handler: impl Fn(AnnotationSelectionEvent) + 'static,
+    ) -> MapObservation {
+        let delegate = self.delegate();
+        delegate
+            .ivars()
+            .annotation_selection
+            .replace(Some(Rc::new(handler)));
+        MapObservation {
+            delegate,
+            slot: Slot::AnnotationSelection,
+        }
+    }
+
     /// Moves the map's camera to `region`, animating the transition when
     /// `animated` is set.
     pub fn set_region(&self, region: Region, animated: bool) {
@@ -750,6 +850,16 @@ impl MapView {
                 .map(|marker| marker.inner.clone())
                 .collect::<Vec<_>>(),
         );
+    }
+
+    /// Selects `marker` on the map, animating the transition when `animated` is set.
+    pub fn select_annotation(&self, marker: &AnnotationMarker, animated: bool) {
+        imp::select_annotation(self, &marker.inner, animated);
+    }
+
+    /// Deselects `marker` on the map, animating the transition when `animated` is set.
+    pub fn deselect_annotation(&self, marker: &AnnotationMarker, animated: bool) {
+        imp::deselect_annotation(self, &marker.inner, animated);
     }
 }
 
@@ -895,6 +1005,20 @@ mod imp {
         // SAFETY: `overlay` is a live `MKOverlay` this view added.
         unsafe { view.removeOverlay(ProtocolObject::from_ref(overlay)) };
     }
+
+    /// `selectAnnotation:animated:`.
+    pub(super) fn select_annotation(view: &MapView, marker: &MKPointAnnotation, animated: bool) {
+        // SAFETY: `marker` is a live `MKAnnotation` this view added.
+        unsafe { view.selectAnnotation_animated(ProtocolObject::from_ref(marker), animated) };
+    }
+
+    /// `deselectAnnotation:animated:`.
+    pub(super) fn deselect_annotation(view: &MapView, marker: &MKPointAnnotation, animated: bool) {
+        // SAFETY: `marker` is a live `MKAnnotation` this view added.
+        unsafe {
+            view.deselectAnnotation_animated(Some(ProtocolObject::from_ref(marker)), animated);
+        };
+    }
 }
 
 /// The `UIKit` spelling: `msg_send!` against the hand-declared class.
@@ -1031,6 +1155,30 @@ mod imp {
         // SAFETY: `overlay` is a live `MKOverlay` this view added.
         unsafe {
             MKMapView::removeOverlay(view, ProtocolObject::from_ref(overlay));
+        }
+    }
+
+    /// `selectAnnotation:animated:`.
+    pub(super) fn select_annotation(view: &MapView, marker: &MKPointAnnotation, animated: bool) {
+        // SAFETY: `marker` is a live `MKAnnotation` this view added.
+        unsafe {
+            MKMapView::selectAnnotation_animated(
+                view,
+                ProtocolObject::from_ref(marker),
+                Bool::new(animated),
+            );
+        }
+    }
+
+    /// `deselectAnnotation:animated:`.
+    pub(super) fn deselect_annotation(view: &MapView, marker: &MKPointAnnotation, animated: bool) {
+        // SAFETY: `marker` is a live `MKAnnotation` this view added.
+        unsafe {
+            MKMapView::deselectAnnotation_animated(
+                view,
+                Some(ProtocolObject::from_ref(marker)),
+                Bool::new(animated),
+            );
         }
     }
 }

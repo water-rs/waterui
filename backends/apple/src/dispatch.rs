@@ -1,5 +1,7 @@
 //! Rendering a view tree through [`AppleBackend`].
 
+#[cfg(waterui_feature = "toggle")]
+use waterui::component::toggle::ToggleStyle;
 use waterui_backend_core::{Environment, Realize, View};
 
 use crate::backend::AppleBackend;
@@ -13,6 +15,10 @@ pub fn install(env: &mut Environment) {
     #[cfg(waterui_feature = "dialog")]
     dialog::install(env);
     sheet::install(env);
+    #[cfg(all(waterui_feature = "toggle", target_os = "macos"))]
+    ToggleStyle::install_default(ToggleStyle::Checkbox, env);
+    #[cfg(all(waterui_feature = "toggle", target_os = "ios"))]
+    ToggleStyle::install_default(ToggleStyle::Switch, env);
 }
 
 /// Renders `view` under `env` into the platform view it becomes.
