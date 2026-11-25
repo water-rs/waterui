@@ -177,7 +177,7 @@ impl PresentationMorph {
         let mut position = [0.0_f64];
         let mut vel = [0.0_f64];
         let done = animation
-            .timing()
+            .playback()
             .expect("hydrolysis menu presentation animation is a curve or a spring")
             .sample_lanes(&[from], &[velocity], &[target], dt, &mut position, &mut vel);
         (position[0], vel[0], done)

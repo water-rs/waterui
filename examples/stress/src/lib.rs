@@ -20,7 +20,7 @@
 
 use core::time::Duration;
 
-use waterui::animation::Animation;
+use waterui::animation::{Animation, Repeat};
 use waterui::app::{App, Windows};
 use waterui::prelude::*;
 use waterui::preview;
@@ -83,7 +83,10 @@ fn custom_tile(index: usize) -> impl View {
             RoundedRectangle::new(CornerRadius::fraction(0.26)),
             stress_card_background(index),
         )
-        .duration(Duration::from_millis(duration))
+        .animation(
+            Animation::ease_in_out(Duration::from_millis(duration))
+                .repeat(Repeat::Forever { autoreverse: true }),
+        )
         .size(42.0, 42.0)
 }
 

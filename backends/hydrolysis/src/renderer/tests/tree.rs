@@ -1,6 +1,7 @@
 //! Phase 1 unit tests for the persistent retained render tree.
 
 use super::{MinimalTestTheme, test_environment, test_renderer};
+use crate::animation::PerpetualAnimation;
 use crate::renderer::{ContainerNode, NodeCore, RenderContext, RenderNode, TextNode};
 use core::cell::{Cell, RefCell};
 use kurbo::{Affine, Rect};
@@ -1276,7 +1277,7 @@ fn lifecycle_appear_updates_animate_after_initial_signal_binding() {
         0.0
     );
     assert!(
-        !renderer.motions_active(),
+        !renderer.motions_active(PerpetualAnimation::Counts),
         "building alone must not start an entrance animation"
     );
 
@@ -1300,7 +1301,7 @@ fn lifecycle_appear_updates_animate_after_initial_signal_binding() {
     // The opacity is an engine-run motion (water-rs/waterui#2203): its
     // track runs on the engine's clock, not as a host animation slot.
     assert!(
-        renderer.motions_active(),
+        renderer.motions_active(PerpetualAnimation::Counts),
         "the post-bind target update must leave the entrance animation active"
     );
 }

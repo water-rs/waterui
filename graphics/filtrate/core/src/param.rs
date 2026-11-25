@@ -93,6 +93,12 @@ pub trait Interpolator: Send + 'static {
         elapsed >= self.duration()
     }
 
+    /// For a perpetually repeating animation, returns `(delay, period, autoreverse)`
+    /// where `period` is one speed-scaled cycle; `None` for finite animations.
+    fn repeat_forever_cycle(&self) -> Option<(Duration, Duration, bool)> {
+        None
+    }
+
     /// The smallest and largest values [`Interpolator::interpolate`] returns
     /// for any `elapsed`, given `from` and `to`.
     ///

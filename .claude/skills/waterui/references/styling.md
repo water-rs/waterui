@@ -297,8 +297,10 @@ interpolate and every backend draws the same path:
 ```rust
 Circle
     .morph_to(RoundedRectangle::new(20.0), Color::srgb_hex("#3B82F6"))
-    .duration(Duration::from_millis(600))
-    .autoreverse(true)                       // also .repeat(bool)
+    .animation(
+        Animation::ease_in_out(Duration::from_millis(600))
+            .repeat(Repeat::Forever { autoreverse: true }),
+    )
     .size(90.0, 90.0)
 
 shape.morph_to(target, fill).progress(t.clone())   // or drive it from a 0..=1 signal instead

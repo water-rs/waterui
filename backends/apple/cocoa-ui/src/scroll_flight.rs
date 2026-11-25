@@ -8,7 +8,7 @@
 //! observers follow the flight and lazily built content fills in as it
 //! moves. The flight's landing is the surface's own jump to the target,
 //! so landing equals the jump by construction. `AppKit`'s
-//! `Animation::Default` instead rides an `NSAnimationContext` group on
+//! `Animation::DEFAULT` instead rides an `NSAnimationContext` group on
 //! the clip's `boundsOrigin`, which writes the model per frame itself.
 //!
 //! Either animation is superseded by a jump, a new request, or the
@@ -140,7 +140,7 @@ pub struct FlightPlan {
 }
 
 /// One scroll surface's animation state: a frame clock driving at most
-/// one clocked flight, plus the context group `Animation::Default` rides
+/// one clocked flight, plus the context group `Animation::DEFAULT` rides
 /// on `AppKit`.
 ///
 /// Every mutating entry point first [`cancel`](Self::cancel)s whatever is
@@ -532,7 +532,7 @@ impl ScrollFlight {
         })
     }
 
-    /// `Animation::Default` on `AppKit`: `boundsOrigin` through the
+    /// `Animation::DEFAULT` on `AppKit`: `boundsOrigin` through the
     /// `animator()` proxy inside an `NSAnimationContext` group at the
     /// context's own duration — the platform's counterpart of
     /// `setContentOffset(_:animated: true)`. The group writes the model

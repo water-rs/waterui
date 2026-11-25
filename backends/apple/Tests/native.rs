@@ -597,24 +597,12 @@ fn animation_cases() -> Vec<(&'static str, waterui::animation::Animation)> {
     let mut cases = vec![
         (
             "bezier",
-            Animation::Bezier {
-                duration: Duration::from_millis(500),
-                x1: 0.25,
-                y1: 0.1,
-                x2: 0.25,
-                y2: 1.0,
-            },
+            Animation::bezier(Duration::from_millis(500), 0.25, 0.1, 0.25, 1.0),
         ),
-        (
-            "spring",
-            Animation::Spring {
-                stiffness: 300.0,
-                damping: 30.0,
-            },
-        ),
+        ("spring", Animation::spring(300.0, 30.0)),
     ];
     #[cfg(target_os = "macos")]
-    cases.insert(0, ("default", Animation::Default));
+    cases.insert(0, ("default", Animation::default()));
     cases
 }
 
@@ -8792,7 +8780,7 @@ mod owner_lifetimes {
 
 /// `ScrollController` requests against the kit's real scroll surfaces —
 /// the water-rs/waterui#1901 contract: a bare request jumps to its
-/// target, `Animation::Default` plays the platform's smooth scroll, an
+/// target, `Animation::DEFAULT` plays the platform's smooth scroll, an
 /// explicit animation moves the offset along its timing, and every
 /// flight lands where the jump would have. A request issued mid-flight
 /// takes over.
@@ -8937,7 +8925,7 @@ mod scroll {
     /// wall-clock animation: it does not jump, and it takes time to land.
     fn an_animation_scrolls_to_the_target(name: &'static str, animation: Animation) {
         let fixture = mounted();
-        let native = matches!(animation, Animation::Default);
+        let native = animation.is_default();
         let request = || {
             fixture
                 .controller
@@ -9484,7 +9472,7 @@ mod scroll {
 
 /// `ScrollController<usize>` drives a row target into a mounted list:
 /// a bare request puts the row's top at the clip's top at once, an
-/// animated request lands on the same position — `Animation::Default`
+/// animated request lands on the same position — `Animation::DEFAULT`
 /// through the platform's animated row scroll, an explicit animation
 /// written to the model each frame-clock tick — and a request issued
 /// mid-flight takes over.
@@ -9652,7 +9640,7 @@ mod list_scroll {
     /// animation: it does not jump, and it takes time to land.
     fn an_animation_scrolls_the_row_to_the_top(name: &'static str, animation: Animation) {
         let fixture = mounted();
-        let native = matches!(animation, Animation::Default);
+        let native = animation.is_default();
         let request = || {
             fixture.controller.animate_to(TARGET, animation);
             assert!(
@@ -9697,7 +9685,7 @@ mod list_scroll {
     /// platform's wall-clock animation from the approach row.
     fn a_far_animation_jumps_to_the_approach_row_first(name: &'static str, animation: Animation) {
         let fixture = mounted_with(vec![row_item as fn() -> Text; APPROACH_LIST_ROWS]);
-        let native = matches!(animation, Animation::Default);
+        let native = animation.is_default();
         let request = || {
             fixture
                 .controller
@@ -9753,10 +9741,7 @@ mod list_scroll {
     /// frame's write is clamped, so no sample passes the end as it
     /// stands at that frame, and the flight lands on it.
     fn an_overshooting_spring_toward_the_last_rows_never_passes_the_end() {
-        let spring = Animation::Spring {
-            stiffness: 300.0,
-            damping: 6.0,
-        };
+        let spring = Animation::spring(300.0, 6.0);
         let fixture = mounted_mixed_heights();
         fixture.controller.animate_to(ROWS - 1, spring.clone());
         let from = offset_y(&fixture);

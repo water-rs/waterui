@@ -18,7 +18,7 @@ use core::ops::RangeInclusive;
 
 use cocoa_ui::slider::ValueAnimation;
 use cocoa_ui::{PlatformView, Rect, Retained, view};
-use waterui::animation::{Animation, ChangeAnimation};
+use waterui::animation::ChangeAnimation;
 use waterui::component::slider::{SliderConfig, clamp_value_to_range, snap};
 use waterui::reactive::watcher::Metadata;
 use waterui::reactive::{Binding, Computed, Signal};
@@ -271,27 +271,33 @@ impl SubView for SliderSubView {
 /// directly. `Spring` has no `AppKit` equivalent — `WuiSlider` runs it as a
 /// timed animation of the spring's settling duration, matching
 /// `withPlatformAnimation`.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "CAMediaTimingFunction stores f32 control points"
+)]
 fn value_animation(metadata: &Metadata) -> Option<ValueAnimation> {
-    match ChangeAnimation::of(metadata)
-        .animation()
-        .map(Animation::validated)
-    {
-        None => None,
-        Some(Animation::Default) => Some(ValueAnimation::Duration(0.25)),
-        Some(Animation::Bezier {
-            duration,
-            x1,
-            y1,
-            x2,
-            y2,
-        }) => Some(ValueAnimation::Bezier {
-            duration: duration.as_secs_f64(),
-            control_points: [x1, y1, x2, y2],
-        }),
-        Some(spring @ Animation::Spring { .. }) => {
-            Some(ValueAnimation::Duration(spring.duration().as_secs_f64()))
-        }
+    use cocoa_ui::core_animation::Timing;
+
+    let animation = ChangeAnimation::of(metadata).animation()?;
+    if animation.is_default() {
+        return Some(ValueAnimation::Duration(0.25));
     }
+    let playback = crate::animation::timing(&animation);
+    let speed = playback.effective_speed();
+    Some(match playback.timing {
+        Timing::Curve { curve, duration } => ValueAnimation::Bezier {
+            duration: duration.max(0.0) / speed,
+            control_points: [
+                curve.x1 as f32,
+                curve.y1 as f32,
+                curve.x2 as f32,
+                curve.y2 as f32,
+            ],
+        },
+        Timing::Spring(_) => {
+            ValueAnimation::Duration(playback.cycle_duration().unwrap_or(0.0) / speed)
+        }
+    })
 }
 
 /// A styled string as spoken text: plain text with the bidi control
@@ -483,7 +489,7 @@ pub fn realize_slider_config(config: SliderConfig<Held>, ctx: &RenderContext<'_>
 mod tests {
     use core::time::Duration;
 
-    use waterui::animation::NoAnimation;
+    use waterui::animation::{Animation, NoAnimation};
 
     use super::*;
 
@@ -542,31 +548,28 @@ mod tests {
     fn value_animation_follows_metadata_table() {
         assert_eq!(value_animation(&Metadata::new()), None);
         assert_eq!(
-            value_animation(&Metadata::new().with(Animation::Default)),
+            value_animation(&Metadata::new().with(Animation::default())),
             Some(ValueAnimation::Duration(0.25))
         );
         assert_eq!(
-            value_animation(&Metadata::new().with(Animation::Default).with(NoAnimation)),
+            value_animation(&Metadata::new().with(Animation::default()).with(NoAnimation)),
             None
         );
         assert_eq!(
-            value_animation(&Metadata::new().with(Animation::Bezier {
-                duration: Duration::from_millis(300),
-                x1: 0.1,
-                y1: 0.2,
-                x2: 0.3,
-                y2: 0.4,
-            })),
+            value_animation(&Metadata::new().with(Animation::bezier(
+                Duration::from_millis(300),
+                0.1,
+                0.2,
+                0.3,
+                0.4,
+            ))),
             Some(ValueAnimation::Bezier {
                 duration: 0.3,
                 control_points: [0.1, 0.2, 0.3, 0.4],
             })
         );
         // A spring runs for its own settling duration.
-        let spring = value_animation(&Metadata::new().with(Animation::Spring {
-            stiffness: 170.0,
-            damping: 15.0,
-        }));
+        let spring = value_animation(&Metadata::new().with(Animation::spring(170.0, 15.0)));
         match spring {
             Some(ValueAnimation::Duration(d)) => assert_eq!(
                 d.to_bits(),
