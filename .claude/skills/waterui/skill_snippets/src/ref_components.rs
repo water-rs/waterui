@@ -1346,19 +1346,20 @@ pub fn components_snackbar_prose() {
     let _ = SnackbarPosition::BottomLeading;
     let _ = SnackbarPosition::BottomTrailing;
     let _ = Snackbar::new("x")
-        .icon(mdi::delete())
+        .icon(mdi::delete)
         .state(&value)
         .on_dismiss(|reason: SnackbarDismissReason| {
             let _ = reason;
         });
+    let _ = Snackbar::new("padded").icon(|| mdi::delete().padding());
     let _ = text("host").snackbar_host();
     let _ = text("host").snackbar_host_with_icons::<mdi::Svg>();
     let _ = SnackbarManager::host(|m| {
-        m.show(Snackbar::new("x").icon(mdi::delete()));
+        m.show(Snackbar::new("x").icon(mdi::delete));
         text("host")
     });
     let _ = button("x").action(|m: SnackbarManager<mdi::Svg>| {
-        m.show(Snackbar::new("x").icon(mdi::delete()));
+        m.show(Snackbar::new("x").icon(mdi::delete));
     });
     let _ = button("x").action(|manager: SnackbarManager| manager.dismiss());
 }

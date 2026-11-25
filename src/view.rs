@@ -1350,7 +1350,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// Descendant handlers can extract `SnackbarManager<I>` bare.
     #[cfg(feature = "snackbar")]
-    fn snackbar_host_with_icons<I: View + Clone + 'static>(self) -> SnackbarHost<Self, I> {
+    fn snackbar_host_with_icons<I: View + 'static>(self) -> SnackbarHost<Self, I> {
         SnackbarHost::new(self)
     }
 
