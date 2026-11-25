@@ -904,16 +904,6 @@ pub trait ViewExt: View + Sized {
         Metadata::new(self, accessibility::AccessibilityStateSignal::new(state))
     }
 
-    /// Temporary Step-1 compatibility alias until split crates migrate to
-    /// [`ViewExt::a11y_state`].
-    #[doc(hidden)]
-    fn a11y_state_signal(
-        self,
-        state: impl IntoComputed<accessibility::AccessibilityState>,
-    ) -> Metadata<accessibility::AccessibilityStateSignal, Self> {
-        self.a11y_state(state)
-    }
-
     /// Observes a gesture and executes an action whose handler consumes
     /// `G::Event` as its first argument, followed by environment extractors.
     ///
@@ -1041,7 +1031,11 @@ pub trait ViewExt: View + Sized {
     /// // Simple border on all edges
     /// text!("Hello").border(Color::red(), 2.0);
     /// ```
-    fn border(self, color: impl IntoSignal<Color> + 'static, width: f32) -> Metadata<Border, Self> {
+    fn border(
+        self,
+        color: impl IntoSignal<Color> + 'static,
+        width: impl IntoSignalF32,
+    ) -> Metadata<Border, Self> {
         Metadata::new(self, Border::new(color, width))
     }
 

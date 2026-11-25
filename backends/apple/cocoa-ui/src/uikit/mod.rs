@@ -47,6 +47,7 @@ mod color_view;
 pub mod color_well;
 mod context_menu;
 mod date_picker;
+pub mod disclosure;
 pub mod drag_drop;
 pub mod gesture;
 mod menu_panel;

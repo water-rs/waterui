@@ -471,6 +471,7 @@ fn install_scoped_or_ambient(
     keepalive: &mut KeepAlive,
     ambient: bool,
 ) {
+    keepalive.keep(crate::reduce_motion::install(env, mtm));
     if ambient {
         keepalive.keep(crate::locale::install(env, mtm));
     }

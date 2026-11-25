@@ -101,7 +101,7 @@ let controller = session.controller();                  // Clone; capture before
 
 VideoPlayer::new(session)
     .show_controls(true)
-    .content_mode(video::ContentMode::Fit)              // Fit | Fill | Stretch
+    .content_mode(ContentMode::Fit)                     // Fit | Fill; `.resizable()` stretches per axis
     .on_event(|event| match event {
         VideoEvent::ReadyToPlay | VideoEvent::Ended => (),
         VideoEvent::Error { message: _ } => (),

@@ -20,13 +20,11 @@ use std::rc::{Rc, Weak};
 
 use cherenkov_record::{MaterialEffect, Recorder, ShapeData};
 use kurbo::{Point, Rect, Vec2};
-#[cfg(feature = "toggle")]
 use nami::Binding;
 use nami::Signal;
 use waterui_core::animation::{Animation, ChangeAnimation};
 use waterui_interaction::interaction::InteractionState;
 
-#[cfg(feature = "toggle")]
 use crate::renderer::chrome::varies_live;
 use crate::renderer::chrome::{DragVelocity, LiveSource, opacity_runs};
 use crate::renderer::recording::{LoweredResources, SceneResources};

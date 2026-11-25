@@ -297,9 +297,12 @@ pub struct DelegatedActivation<E: crate::text::TextEngine> {
 pub enum AccessibilityActionTarget<E: crate::text::TextEngine> {
     /// Direct semantic activation: `Click` invokes the widget's own activation
     /// handler, no pointer and no coordinates.
-    Activate { action: AccessibilityActivation<E> },
-    #[cfg(feature = "toggle")]
-    Toggle { binding: nami::Binding<bool> },
+    Activate {
+        action: AccessibilityActivation<E>,
+    },
+    Toggle {
+        binding: nami::Binding<bool>,
+    },
     #[cfg(feature = "slider")]
     Slider {
         value: nami::Binding<f64>,
@@ -328,7 +331,9 @@ pub enum AccessibilityActionTarget<E: crate::text::TextEngine> {
         line_limit: Option<usize>,
     },
     #[cfg(feature = "secure-field")]
-    SecureField { value: nami::Binding<FormSecure> },
+    SecureField {
+        value: nami::Binding<FormSecure>,
+    },
     #[cfg(any(feature = "picker", feature = "navigation"))]
     PickerSelect {
         selection: nami::Binding<waterui_core::id::Id>,
@@ -1657,11 +1662,18 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 AccessibilityAction::Focus => true,
                 _ => declined_action("activation", action),
             },
-            #[cfg(feature = "toggle")]
             AccessibilityActionTarget::Toggle { binding } => match action {
                 AccessibilityAction::Click => {
                     let next = !binding.snapshot();
                     binding.set(next);
+                    true
+                }
+                AccessibilityAction::Expand => {
+                    binding.set(true);
+                    true
+                }
+                AccessibilityAction::Collapse => {
+                    binding.set(false);
                     true
                 }
                 AccessibilityAction::Focus => true,
@@ -3211,7 +3223,6 @@ impl<E: crate::text::TextEngine> Clone for AccessibilityActionTarget<E> {
             Self::Activate { action } => Self::Activate {
                 action: action.clone(),
             },
-            #[cfg(feature = "toggle")]
             Self::Toggle { binding } => Self::Toggle {
                 binding: binding.clone(),
             },
