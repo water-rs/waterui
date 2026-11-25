@@ -141,6 +141,9 @@ pub struct MetricsSnapshot {
     pub(crate) double_tap_timeout_ms: u32,
     /// `ViewConfiguration.getScaledDoubleTapSlop()`, in physical px.
     pub(crate) double_tap_slop_px: f32,
+    /// `ViewConfiguration.getLongPressTimeout()`, in milliseconds — `0`
+    /// until the first `nativeSetMetrics` lands, like `scroll_friction`.
+    pub(crate) long_press_timeout_ms: u32,
 }
 
 impl MetricsSnapshot {
@@ -998,6 +1001,11 @@ impl PlatformWindow for AndroidHostWindow {
                     metrics.double_tap_timeout_ms,
                 )),
                 tolerance: kurbo::Vec2::new(slop, slop),
+            },
+            long_press_timeout: if metrics.long_press_timeout_ms == 0 {
+                waterui_backend_core::gesture::DEFAULT_LONG_PRESS_DURATION
+            } else {
+                std::time::Duration::from_millis(u64::from(metrics.long_press_timeout_ms))
             },
             // Android's paste shortcut, on a hardware keyboard, is Control-V:
             // the non-Apple family's.

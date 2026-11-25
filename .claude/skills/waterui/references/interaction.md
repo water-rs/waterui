@@ -50,7 +50,8 @@ text("Simple Tap")
 ```
 
 Siblings: `.on_tap_gesture(handler)` (alias of `.on_tap`), `.on_tap_gesture_count(2,
-handler)` for a fixed tap count, and `.on_long_press_gesture(milliseconds, handler)`. Behind
+handler)` for a fixed tap count, and `.on_long_press(handler)` (using the platform's
+long-press timeout). Behind
 the opt-in `haptics` cargo feature, attach `.sensory_feedback(Feedback::Success, &trigger)`
 to play feedback whenever a `PartialEq + Clone` signal changes, or call
 `waterui::haptic::Haptic::impact(Intensity::LOW)` inside a gesture handler for an
@@ -65,16 +66,19 @@ role.
 anything `Into<Gesture>`:
 
 ```rust
+use core::time::Duration;
+
 view.gesture(TapGesture::new(), handler)              // single tap
 view.gesture(TapGesture::repeat(2), handler)          // double tap — a count, not a new type
-view.gesture(LongPressGesture::new(500), handler)     // duration is a u32, NOT a core::time::Duration
+view.gesture(LongPressGesture::new().minimum_duration(Duration::from_millis(500)), handler)
 view.gesture(DragGesture::new(5.0), handler)          // minimum pointer travel, f32 layout units
 ```
 
-Two argument types are traps:
+Two details to keep straight:
 
-- `LongPressGesture::new` takes a bare `u32` in backend-interpreted time units (typically
-  milliseconds). `Duration::from_millis(500)` does not compile there.
+- `LongPressGesture::new()` uses the platform's default long-press timeout; call
+  `.minimum_duration(Duration::from_millis(500))` to override it. `LongPressEvent::duration()`
+  reports the `Duration` actually held.
 - `DragGesture::new` takes an `f32` distance threshold. This recognizer only *detects* a
   drag — it moves no data. Moving data between views is the separate drag-and-drop system
   below; do not conflate them.
@@ -113,8 +117,10 @@ view.gesture(TapGesture::new().buttons(PointerButtons::MIDDLE), handler) // midd
 `.then(..)` sequences gestures; the handler fires only after the whole sequence succeeds:
 
 ```rust
+use core::time::Duration;
+
 view.gesture(
-    TapGesture::new().then(LongPressGesture::new(300)),   // tap, then long-press
+    TapGesture::new().then(LongPressGesture::new().minimum_duration(Duration::from_millis(300))), // tap, then long-press
     |State(status): State<Binding<&'static str>>| status.set("Done!"),
 )
 .state(&status)

@@ -16,8 +16,10 @@
 //! signature `UIKit` sends, and every call is a main-thread call: the
 //! classes are `MainThreadOnly` and the recognizers attach to views.
 
+use std::cell::Cell;
 use std::fmt;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use objc2::rc::{Retained, Weak};
 use objc2::runtime::{AnyObject, NSObject, ProtocolObject};
@@ -30,7 +32,7 @@ use objc2_foundation::NSObjectProtocol;
 use objc2_ui_kit::{
     UIEvent, UIGestureRecognizer, UIGestureRecognizerDelegate, UIGestureRecognizerState,
     UILongPressGestureRecognizer, UIPanGestureRecognizer, UIPinchGestureRecognizer,
-    UIRotationGestureRecognizer, UITapGestureRecognizer, UIView,
+    UIRotationGestureRecognizer, UITapGestureRecognizer, UITouchPhase, UIView,
 };
 
 use crate::callback::guarded;
@@ -95,6 +97,7 @@ impl fmt::Debug for Target {
 
 struct FilterIvars {
     buttons: ButtonMask,
+    started_at: Option<Rc<Cell<Option<Instant>>>>,
 }
 
 define_class!(
@@ -136,15 +139,32 @@ define_class!(
                 } else {
                     ButtonMask::from_bits(u8::try_from(mask & 0xff).unwrap_or_default())
                 };
-                buttons.intersects(self.ivars().buttons)
+                let accepted = buttons.intersects(self.ivars().buttons);
+                if accepted
+                    && let Some(started_at) = &self.ivars().started_at
+                    && event.r#type() == objc2_ui_kit::UIEventType::Touches
+                    && event.allTouches().is_some_and(|touches| {
+                        touches.iter().any(|t| t.phase() == UITouchPhase::Began)
+                    })
+                {
+                    started_at.set(Some(Instant::now()));
+                }
+                accepted
             })
         }
     }
 );
 
 impl ButtonFilter {
-    fn new(mtm: MainThreadMarker, buttons: ButtonMask) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(FilterIvars { buttons });
+    fn new(
+        mtm: MainThreadMarker,
+        buttons: ButtonMask,
+        started_at: Option<Rc<Cell<Option<Instant>>>>,
+    ) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(FilterIvars {
+            buttons,
+            started_at,
+        });
         // SAFETY: `init` is `NSObject`'s designated initializer.
         unsafe { msg_send![super(this), init] }
     }
@@ -273,6 +293,19 @@ fn attach<R>(
 where
     R: ClassType<Super = UIGestureRecognizer> + MainThreadOnly + DowncastTarget + 'static,
 {
+    attach_with_timer(view, recognizer, buttons, None, handler)
+}
+
+fn attach_with_timer<R>(
+    view: &UIView,
+    recognizer: Retained<R>,
+    buttons: Option<ButtonMask>,
+    started_at: Option<Rc<Cell<Option<Instant>>>>,
+    handler: impl Fn(GestureState, &R) + 'static,
+) -> GestureAttachment
+where
+    R: ClassType<Super = UIGestureRecognizer> + MainThreadOnly + DowncastTarget + 'static,
+{
     let mtm = recognizer.mtm();
     let target = Target::new(
         mtm,
@@ -290,7 +323,7 @@ where
     // `Drop` removes it while the recognizer may still be alive.
     unsafe { recognizer.addTarget_action(&target, sel!(invoke:)) };
     let filter = buttons.map(|buttons| {
-        let filter = ButtonFilter::new(mtm, buttons);
+        let filter = ButtonFilter::new(mtm, buttons, started_at);
         // Installing the filter as the recognizer's delegate; the
         // attachment owns it.
         recognizer.setDelegate(Some(ProtocolObject::from_ref(&*filter)));
@@ -365,21 +398,47 @@ pub fn tap(
     attach(view, recognizer, None, handler)
 }
 
-/// A long-press recognizer on `view`: a press of at least
-/// `minimum_seconds` from a pointer button in `buttons`.
+/// A long-press recognizer on `view`: a press of at least `minimum_seconds`
+/// (or `UIKit`'s default timeout when `None`) from a pointer button in
+/// `buttons`.
 ///
-/// The handler receives the recognizer's normalized state and the
-/// recognizer itself.
+/// The handler receives the recognizer's normalized state, the recognizer
+/// itself, and the elapsed hold duration measured from press start.
 pub fn long_press(
     view: &UIView,
-    minimum_seconds: f64,
+    minimum_seconds: Option<f64>,
     buttons: ButtonMask,
-    handler: impl Fn(GestureState, &UILongPressGestureRecognizer) + 'static,
+    handler: impl Fn(GestureState, &UILongPressGestureRecognizer, Duration) + 'static,
 ) -> GestureAttachment {
     let mtm = view.mtm();
     let recognizer = UILongPressGestureRecognizer::new(mtm);
-    recognizer.setMinimumPressDuration(minimum_seconds);
-    attach(view, recognizer, Some(buttons), handler)
+    if let Some(seconds) = minimum_seconds {
+        recognizer.setMinimumPressDuration(seconds);
+    }
+    let started_at = Rc::new(Cell::new(None));
+    let started_for_handler = Rc::clone(&started_at);
+    attach_with_timer(
+        view,
+        recognizer,
+        Some(buttons),
+        Some(started_at),
+        move |state, recognizer| {
+            let held = match state {
+                GestureState::Began => started_for_handler.take().map_or_else(
+                    || Duration::from_secs_f64(recognizer.minimumPressDuration().max(0.0)),
+                    |start| start.elapsed(),
+                ),
+                GestureState::Ended | GestureState::Cancelled | GestureState::Failed => {
+                    started_for_handler.set(None);
+                    Duration::from_secs_f64(recognizer.minimumPressDuration().max(0.0))
+                }
+                GestureState::Possible | GestureState::Changed => {
+                    Duration::from_secs_f64(recognizer.minimumPressDuration().max(0.0))
+                }
+            };
+            handler(state, recognizer, held);
+        },
+    )
 }
 
 /// A pan recognizer on `view`, from a pointer button in `buttons`.

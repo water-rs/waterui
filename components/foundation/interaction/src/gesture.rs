@@ -50,6 +50,7 @@
 
 use alloc::boxed::Box;
 use core::fmt;
+use core::time::Duration;
 
 use waterui_core::{
     Environment, Error,
@@ -205,8 +206,8 @@ impl TapEvent {
 pub struct LongPressEvent {
     /// Location of the press in the widget's coordinate space.
     location: Point,
-    /// Duration, in platform-defined time units, that the press was held.
-    duration: f32,
+    /// Duration that the press was held.
+    duration: Duration,
     /// The button that is held.
     button: PointerButton,
 }
@@ -223,9 +224,9 @@ impl LongPressEvent {
         self.location = location;
     }
 
-    /// Duration, in platform-defined time units, that the press was held.
+    /// Duration that the press was held.
     #[must_use]
-    pub const fn duration(&self) -> f32 {
+    pub const fn duration(&self) -> Duration {
         self.duration
     }
 
@@ -239,7 +240,7 @@ impl LongPressEvent {
 impl LongPressEvent {
     /// A press of `button` at `location`, held for `duration`.
     #[must_use]
-    pub const fn new(location: Point, duration: f32, button: PointerButton) -> Self {
+    pub const fn new(location: Point, duration: Duration, button: PointerButton) -> Self {
         Self {
             location,
             duration,
@@ -519,17 +520,17 @@ impl Default for TapGesture {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct LongPressGesture {
-    /// The minimum duration (in time units) the press must be held.
-    duration: u32,
+    /// Explicit minimum duration before recognition; `None` uses the platform long-press timeout.
+    minimum_duration: Option<Duration>,
     /// The buttons that can press; [`PointerButtons::PRIMARY`] by default.
     buttons: PointerButtons,
 }
 
 impl LongPressGesture {
-    /// The minimum duration (in time units) the press must be held.
+    /// Explicit minimum duration before recognition, or `None` to follow the platform timeout.
     #[must_use]
-    pub const fn duration(&self) -> u32 {
-        self.duration
+    pub const fn get_minimum_duration(&self) -> Option<Duration> {
+        self.minimum_duration
     }
 
     /// The buttons that can press; [`PointerButtons::PRIMARY`] by default.
@@ -540,16 +541,20 @@ impl LongPressGesture {
 }
 
 impl LongPressGesture {
-    /// Creates a long-press gesture that activates after holding for `duration` time units.
-    ///
-    /// Backends decide how to interpret the unit (for example milliseconds), allowing
-    /// platform-specific gesture systems to provide consistent behaviour.
+    /// Creates a long-press gesture that uses the platform's default long-press timeout.
     #[must_use]
-    pub const fn new(duration: u32) -> Self {
+    pub const fn new() -> Self {
         Self {
-            duration,
+            minimum_duration: None,
             buttons: PointerButtons::PRIMARY,
         }
+    }
+
+    /// Sets an explicit minimum hold `duration` before the gesture activates.
+    #[must_use]
+    pub const fn minimum_duration(mut self, duration: Duration) -> Self {
+        self.minimum_duration = Some(duration);
+        self
     }
 
     /// Responds to `buttons` instead of the primary button alone.
@@ -557,6 +562,12 @@ impl LongPressGesture {
     pub const fn buttons(mut self, buttons: PointerButtons) -> Self {
         self.buttons = buttons;
         self
+    }
+}
+
+impl Default for LongPressGesture {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -960,7 +971,8 @@ mod tests {
 
     #[test]
     fn sequenced_before_aliases_then() {
-        let gesture = TapGesture::new().sequenced_before(LongPressGesture::new(300));
+        let gesture = TapGesture::new()
+            .sequenced_before(LongPressGesture::new().minimum_duration(Duration::from_millis(300)));
         match gesture {
             Gesture::Then(pair) => {
                 assert!(matches!(pair.first(), Gesture::Tap(_)));
@@ -984,7 +996,9 @@ mod tests {
 
     #[test]
     fn exclusive_composition_contains_primary_and_fallback() {
-        let gesture = TapGesture::new().exclusively_before(LongPressGesture::new(500));
+        let gesture = TapGesture::new().exclusively_before(
+            LongPressGesture::new().minimum_duration(Duration::from_millis(500)),
+        );
         match gesture {
             Gesture::Exclusive(pair) => {
                 assert!(matches!(pair.first(), Gesture::Tap(_)));

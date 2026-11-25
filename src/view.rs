@@ -947,9 +947,20 @@ pub trait ViewExt: View + Sized {
         self.gesture(TapGesture::repeat(count.max(1)), action)
     }
 
+    /// Adds a long-press gesture recognizer to this view using the platform's
+    /// default long-press timeout.
+    fn on_long_press<H, Args>(self, action: H) -> Metadata<GestureObserver, Self>
+    where
+        H: Handler<Args, ()>,
+    {
+        self.gesture(LongPressGesture::new(), action)
+    }
+
     /// Adds a long-press gesture recognizer to this view.
     ///
-    /// `minimum_duration_ms` is expressed in milliseconds.
+    /// Temporary Step 1 migration bridge for `water-rs/waterui#4458` while
+    /// `hydrolysis-m3` updates off milliseconds to [`ViewExt::on_long_press`].
+    #[doc(hidden)]
     fn on_long_press_gesture<H, Args>(
         self,
         minimum_duration_ms: u32,
@@ -958,7 +969,12 @@ pub trait ViewExt: View + Sized {
     where
         H: Handler<Args, ()>,
     {
-        self.gesture(LongPressGesture::new(minimum_duration_ms), action)
+        self.gesture(
+            LongPressGesture::new().minimum_duration(core::time::Duration::from_millis(u64::from(
+                minimum_duration_ms,
+            ))),
+            action,
+        )
     }
 
     /// Plays haptic `feedback` whenever `trigger`'s value changes.

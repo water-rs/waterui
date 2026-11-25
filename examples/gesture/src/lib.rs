@@ -8,6 +8,8 @@
 //! - Using `on_tap` convenience method
 //! - Non-primary pointer buttons (middle-click closes a tab)
 
+use core::time::Duration;
+
 use waterui::Identifiable;
 use waterui::app::{App, Windows};
 use waterui::gesture::{DragGesture, LongPressGesture, PointerButtons, TapGesture};
@@ -74,7 +76,7 @@ fn long_press_section(long_press_count: &Binding<i32>) -> impl View + use<> {
             .padding()
             .background(LONG_PRESS_COLOR.with_opacity(0.3))
             .gesture(
-                LongPressGesture::new(500),
+                LongPressGesture::new().minimum_duration(Duration::from_millis(500)),
                 |State(c): State<Binding<i32>>| *c.get_mut() += 1,
             )
             .state(long_press_count),
@@ -112,7 +114,8 @@ fn chained_section(chained_status: &Binding<&'static str>) -> impl View + use<> 
             .padding()
             .background(CHAINED_COLOR.with_opacity(0.3))
             .gesture(
-                TapGesture::new().then(LongPressGesture::new(300)),
+                TapGesture::new()
+                    .then(LongPressGesture::new().minimum_duration(Duration::from_millis(300))),
                 |State(s): State<Binding<&'static str>>| s.set("Chained gesture completed!"),
             )
             .state(chained_status),

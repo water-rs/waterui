@@ -102,7 +102,7 @@ use super::host::{AndroidSession, MetricsSnapshot, UiThreadServices};
 /// `vsync_id`) through `nativeOnFrame`.
 /// 33 adds `nativeSetLocale` to forward Android configuration locale changes
 /// into `waterui_locale::regional`.
-pub const JNI_SCHEMA: jint = 33;
+pub const JNI_SCHEMA: jint = 34;
 
 /// A failure crossing the JNI boundary as an exception.
 #[derive(Debug)]
@@ -536,6 +536,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeCreateSess
             scroll_friction: 0.0,
             double_tap_timeout_ms: 0,
             double_tap_slop_px: 0.0,
+            long_press_timeout_ms: 0,
         };
         let bridge = std::sync::Arc::new(super::host::HostBridge::new(env, vm, host_view)?);
         #[cfg(hydrolysis_gpu_painter)]
@@ -627,6 +628,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetMetrics
     scroll_friction: jfloat,
     double_tap_timeout_ms: jint,
     double_tap_slop: jfloat,
+    long_press_timeout_ms: jint,
 ) {
     guard(&mut env, |_env| {
         let metrics = MetricsSnapshot {
@@ -643,6 +645,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetMetrics
             scroll_friction: f64::from(scroll_friction),
             double_tap_timeout_ms: crate::num_cast::i32_as_u32(double_tap_timeout_ms.max(0)),
             double_tap_slop_px: double_tap_slop,
+            long_press_timeout_ms: crate::num_cast::i32_as_u32(long_press_timeout_ms.max(0)),
         };
         initializing!(session_ptr, pending, {
             pending.metrics = metrics;
