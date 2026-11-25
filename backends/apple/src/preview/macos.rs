@@ -46,6 +46,7 @@ use crate::locale::install as install_locale;
 use crate::preview::{
     CaptureFailure, PreviewError, RunTask, write_scenario_hdr_sample, write_scenario_sdr_sample,
 };
+use crate::reduce_motion::install as install_reduce_motion;
 use crate::resources::install_application;
 use crate::startup::initialize_for_preview;
 use crate::{capture, theme};
@@ -275,6 +276,7 @@ fn prepare(
 
     let locale = install_locale(&mut env, mtm);
     keepers.keep(locale);
+    keepers.keep(install_reduce_motion(&mut env, mtm));
     keepers.keep(fonts);
     Ok(env)
 }

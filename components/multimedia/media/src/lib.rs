@@ -79,9 +79,6 @@ pub use media_picker::MediaPicker;
 #[cfg(feature = "video")]
 pub use {
     live::{LivePhoto, LivePhotoEvent},
-    // `ContentMode` is deliberately not re-exported unqualified: video's own
-    // gravity mode stays at `media::video::ContentMode` so it stays distinct
-    // from layout and image `ContentMode`.
     video::{
         SubtitleSelection, Video, VideoConfig, VideoEvent, VideoPlayer, VideoPlayerConfig, Volume,
     },

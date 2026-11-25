@@ -480,7 +480,7 @@ pub fn styling_filled_shape_morph_prose() {
 // ---------------------------------------------------------------------------
 pub fn styling_block_13() {
     use waterui::border::Border;
-    use waterui::shape::RoundedRectangle;
+    use waterui::shape::{Circle, RoundedRectangle};
     use waterui::theme::color::Accent;
 
     let card = Divider;
@@ -495,16 +495,17 @@ pub fn styling_block_13() {
                 .edges(EdgeSet::BOTTOM),
         )
     };
+    let avatar = Divider;
+    let _ = { avatar.clip(Circle).shadow(4.0) };
     let card = Divider;
     let _ = {
-        card.shadow(Shadow::new(
-            Color::srgb(0, 0, 0).with_opacity(0.2), // color, with alpha
-            Vector::new(0.0, 2.0),                  // offset
-            8.0,                                    // blur radius
-            RoundedRectangle::new(8.0),             // the caster's own shape
-        ))
+        card.shadow(
+            Shadow::splat(8.0)
+                .color(Color::srgb(0, 0, 0).with_opacity(0.2))
+                .offset(0.0, 2.0)
+                .silhouette(RoundedRectangle::new(8.0)),
+        )
     };
-    let _ = Shadow::splat(4.0);
 }
 
 // ---------------------------------------------------------------------------

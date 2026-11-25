@@ -45,6 +45,7 @@ use crate::fonts::FontRegistrations;
 use crate::gpu_runtime::prepare as prepare_gpu;
 use crate::locale::install as install_locale;
 use crate::preview::{PreviewError, RunTask, write_scenario_hdr_sample, write_scenario_sdr_sample};
+use crate::reduce_motion::install as install_reduce_motion;
 use crate::resources::install_application;
 use crate::startup::initialize_for_preview;
 use crate::theme;
@@ -207,6 +208,7 @@ extern "C" fn on_scene_ready(window_ptr: *mut c_void, user_data: *mut c_void) {
     let installed_theme = Rc::new(theme::install(&mut env, initial_scheme));
     let locale = install_locale(&mut env, mtm);
     keepers.keep(locale);
+    keepers.keep(install_reduce_motion(&mut env, mtm));
     keepers.keep(fonts);
 
     let env_box = Box::new(env);
