@@ -27,8 +27,14 @@
 //! ));
 //! ```
 
-use nami::Signal;
-use nami::signal::{IntoComputed, IntoSignal};
+use nami::cache::Cached;
+use nami::constant::{Constant, Lazy};
+use nami::debug::Debug as DebugSignal;
+use nami::distinct::Distinct;
+use nami::map::Map;
+use nami::scan::Scan;
+use nami::signal::{IntoComputed, IntoSignal, WithMetadata};
+use nami::{Binding, Signal};
 use std::sync::Arc;
 use suiteki::Str;
 use waterui_core::{Computed, Metadata, View, metadata::MetadataKey};
@@ -161,17 +167,17 @@ macro_rules! impl_color_signal_background {
 }
 
 impl_color_signal_background!(
-    nami::Binding<Out> => (Out);
-    nami::Computed<Out> => (Out);
-    nami::map::Map<C, F, Out> => (C, F, Out);
-    nami::constant::Constant<Out> => (Out);
-    nami::constant::Lazy<F, Out> => (F, Out);
-    nami::scan::Scan<Out> => (Out);
-    nami::signal::WithMetadata<C, T> => (C, T);
-    nami::debug::Debug<C> => (C);
+    Binding<Out> => (Out);
+    Computed<Out> => (Out);
+    Map<C, F, Out> => (C, F, Out);
+    Constant<Out> => (Out);
+    Lazy<F, Out> => (F, Out);
+    Scan<Out> => (Out);
+    WithMetadata<C, T> => (C, T);
+    DebugSignal<C> => (C);
 );
 
-impl<C> IntoBackground<ColorSignalBackground> for nami::cache::Cached<C>
+impl<C> IntoBackground<ColorSignalBackground> for Cached<C>
 where
     C: Signal,
     C::Output: Clone,
@@ -184,7 +190,7 @@ where
     }
 }
 
-impl<S> IntoBackground<ColorSignalBackground> for nami::distinct::Distinct<S>
+impl<S> IntoBackground<ColorSignalBackground> for Distinct<S>
 where
     S: Signal,
     S::Output: PartialEq,
