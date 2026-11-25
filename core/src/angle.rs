@@ -289,7 +289,7 @@ impl Interpolatable for Angle {
 mod tests {
     use core::f32::consts::{FRAC_PI_2, PI, TAU};
 
-    use nami::{Binding, Signal};
+    use nami::{Binding, Computed, Signal};
 
     use super::Angle;
     use crate::easing::Interpolatable;
@@ -326,7 +326,7 @@ mod tests {
 
     #[test]
     fn signal_and_into_computed() {
-        fn accept(angle: impl IntoComputed<Angle>) -> nami::Computed<Angle> {
+        fn accept(angle: impl IntoComputed<Angle>) -> Computed<Angle> {
             angle.into_computed()
         }
 
