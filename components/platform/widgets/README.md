@@ -6,10 +6,11 @@ immutable serialized snapshot per dated `TimelineEntry`, reads shared state
 through `WidgetContext::shared_store()`, and interactive `#[waterui::widget_intent]`
 actions mutate the same [`WidgetStore`] before the next timeline renders.
 
-Only the closed schema can cross the extension boundary — text, image,
-stack, shape, color, link and declared intents. A `WaterUI` `View` in a
-widget position is a compile-time error: `WidgetKit` renders in another
-process, where representable embedding cannot reach.
+Only the closed schema can cross the extension boundary — text (localized,
+verbatim, or live host-formatted dates), image, stack, shape, color, padding,
+spacer, frame, background, accessibility label, link and declared intents. A
+`WaterUI` `View` in a widget position is a compile-time error: `WidgetKit`
+renders in another process, where representable embedding cannot reach.
 
 The `water` CLI discovers declarations through the crate's
 `waterui_meta_widget_*` records, provisions the shared App Group container on
