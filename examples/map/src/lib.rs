@@ -140,12 +140,9 @@ fn content(state: MapExampleState) -> impl View {
     .padding_with((10.0, 14.0))
     .background(RoundedRectangle::new(CornerRadius::fraction(0.18)).fill(Surface))
     .size(STATUS_PANEL_WIDTH, STATUS_PANEL_HEIGHT)
-    .position_in_offset(
-        UnitPoint::TOP_LEADING,
-        UnitPoint::TOP_LEADING,
-        STATUS_PANEL_INSET,
-        STATUS_PANEL_INSET,
-    );
+    .position_in(UnitPoint::TOP_LEADING)
+    .anchor(UnitPoint::TOP_LEADING)
+    .offset(STATUS_PANEL_INSET, STATUS_PANEL_INSET);
 
     let controls = use_env(move |env: Environment| {
         // Ambient theme data: a theme that styles floating surfaces supplies
@@ -163,12 +160,9 @@ fn content(state: MapExampleState) -> impl View {
         vstack((location_control, zoom_controls))
             .spacing(MAP_CONTROL_SPACING)
             .width(control_width)
-            .position_in_offset(
-                UnitPoint::BOTTOM_TRAILING,
-                UnitPoint::BOTTOM_TRAILING,
-                -MAP_CONTROL_INSET,
-                -MAP_CONTROL_INSET,
-            )
+            .position_in(UnitPoint::BOTTOM_TRAILING)
+            .anchor(UnitPoint::BOTTOM_TRAILING)
+            .offset(-MAP_CONTROL_INSET, -MAP_CONTROL_INSET)
     });
 
     absolute((map.pin(PinConstraints::all(0.0)), status_panel, controls))

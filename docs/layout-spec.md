@@ -451,9 +451,8 @@ place of the stack's own transition for that page.
   the origin, `leading` and `top` win when both edges are pinned.
   `leading`/`trailing` are logical edges — the resolved layout direction
   mirrors them. A `position_in(p)` / `position(x, y)` places the child's
-  anchor point on the target; the anchor is explicit
-  (`position_in_anchor`, `position_anchor`) and defaults to the child's
-  centre when omitted. Leading and trailing in the anchor and the target
+  anchor point on the target; the anchor is set with `.anchor(...)` (and any
+  offset with `.offset(x, y)`) and defaults to the child's centre when omitted. Leading and trailing in the anchor and the target
   resolve to physical coordinates before placement. A window-level overlay
   layer (snackbar, dialog host) is an `Absolute` with `StretchAxis::Both`,
   never a content-sized `ZStack`.

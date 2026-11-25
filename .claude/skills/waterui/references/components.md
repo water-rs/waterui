@@ -190,11 +190,14 @@ soon as the window is larger than the content. Children place themselves with th
 ```rust
 absolute((
     map_view().pin(PinConstraints::all(0.0)),                 // stretch to fill
-    status_panel().size(220.0, 64.0).position_in_offset(
-        UnitPoint::TOP_LEADING, UnitPoint::TOP_LEADING,       // anchor on child, position in parent
-        16.0, 16.0,                                           // offsets — these are signal slots
-    ),
-    controls().position_in_anchor(UnitPoint::BOTTOM_TRAILING, UnitPoint::BOTTOM_TRAILING),
+    status_panel()
+        .size(220.0, 64.0)
+        .position_in(UnitPoint::TOP_LEADING)
+        .anchor(UnitPoint::TOP_LEADING)
+        .offset(16.0, 16.0),                                  // offsets — these are signal slots
+    controls()
+        .position_in(UnitPoint::BOTTOM_TRAILING)
+        .anchor(UnitPoint::BOTTOM_TRAILING),
     dot().pin(PinConstraints::new().trailing(12.0).bottom(12.0).width(28.0).height(28.0)),
 ))
 ```
