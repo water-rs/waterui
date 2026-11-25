@@ -20,12 +20,13 @@ use std::rc::Rc;
 
 use num_traits::ToPrimitive;
 use waterui::gesture::{
-    DragEvent, Gesture, GesturePhase, GesturePoint, LongPressEvent, MagnificationEvent,
-    PointerButton, PointerButtons, RotationEvent, TapEvent,
+    DragEvent, Gesture, GesturePhase, LongPressEvent, MagnificationEvent, PointerButton,
+    PointerButtons, RotationEvent, TapEvent,
 };
 use waterui_core::Environment;
 use waterui_core::extract::State;
 use waterui_core::handler::{BoxedAction, ReportExtraction};
+use waterui_core::layout::Point;
 
 use crate::input::TouchPhase;
 use crate::time::Instant;
@@ -230,18 +231,18 @@ impl GestureBinding {
 
 /// Maps a window-space position (a location or a center) through the full
 /// window-to-local transform.
-fn local_gesture_point(point: GesturePoint, to_local: kurbo::Affine) -> GesturePoint {
+fn local_gesture_point(point: Point, to_local: kurbo::Affine) -> Point {
     gesture_point(to_local * window_point(point))
 }
 
 /// Maps a window-space displacement (a translation or a velocity) through the
 /// linear part of the window-to-local transform: a displacement has no
 /// position, so the transform's translation does not apply to it.
-fn local_gesture_vector(vector: GesturePoint, to_local: kurbo::Affine) -> GesturePoint {
+fn local_gesture_vector(vector: Point, to_local: kurbo::Affine) -> Point {
     gesture_point(to_local.with_translation(kurbo::Vec2::ZERO) * window_point(vector))
 }
 
-fn window_point(point: GesturePoint) -> kurbo::Point {
+fn window_point(point: Point) -> kurbo::Point {
     kurbo::Point::new(f64::from(point.x), f64::from(point.y))
 }
 
@@ -251,8 +252,8 @@ fn logical_coordinate(value: f64) -> f32 {
     )
 }
 
-fn gesture_point(point: kurbo::Point) -> GesturePoint {
-    GesturePoint::new(logical_coordinate(point.x), logical_coordinate(point.y))
+fn gesture_point(point: kurbo::Point) -> Point {
+    Point::new(logical_coordinate(point.x), logical_coordinate(point.y))
 }
 
 /// Moves a recognized payload from window space into the target's local
@@ -927,8 +928,8 @@ impl DragDetector {
         phase: GesturePhase,
         point: kurbo::Point,
         button: PointerButton,
-        translation: GesturePoint,
-        velocity: GesturePoint,
+        translation: Point,
+        velocity: Point,
     ) -> GesturePayload {
         GesturePayload::Drag(DragEvent::new(
             phase,
@@ -944,12 +945,12 @@ impl DragDetector {
         previous_point: kurbo::Point,
         previous_at: Instant,
         at: Instant,
-    ) -> GesturePoint {
+    ) -> Point {
         let dt = at
             .duration_since(previous_at)
             .as_secs_f32()
             .max(f32::EPSILON);
-        GesturePoint::new(
+        Point::new(
             logical_coordinate(point.x - previous_point.x) / dt,
             logical_coordinate(point.y - previous_point.y) / dt,
         )
@@ -992,7 +993,7 @@ impl GestureDetector for DragDetector {
                         GesturePhase::Started,
                         point,
                         button,
-                        GesturePoint::new(dx, dy),
+                        Point::new(dx, dy),
                         velocity,
                     ));
                 }
@@ -1001,7 +1002,7 @@ impl GestureDetector for DragDetector {
                     GesturePhase::Updated,
                     point,
                     button,
-                    GesturePoint::new(dx, dy),
+                    Point::new(dx, dy),
                     velocity,
                 ))
             }
@@ -1023,7 +1024,7 @@ impl GestureDetector for DragDetector {
                     GesturePhase::Ended,
                     point,
                     button,
-                    GesturePoint::new(dx, dy),
+                    Point::new(dx, dy),
                     velocity,
                 ))
             }
@@ -1043,8 +1044,8 @@ impl GestureDetector for DragDetector {
                     GesturePhase::Cancelled,
                     point,
                     button,
-                    GesturePoint::new(dx, dy),
-                    GesturePoint::new(0.0, 0.0),
+                    Point::new(dx, dy),
+                    Point::new(0.0, 0.0),
                 ))
             }
             _ => GestureDetection::default(),
@@ -2226,7 +2227,7 @@ mod tests {
         let press = kurbo::Point::new(60.0, 50.0);
 
         let mut taps = GestureEngine::default();
-        let tap = Rc::new(Cell::new(Option::<GesturePoint>::None));
+        let tap = Rc::new(Cell::new(Option::<Point>::None));
         {
             let tap = Rc::clone(&tap);
             taps.register_target(
@@ -2250,7 +2251,7 @@ mod tests {
             PointerButton::Primary,
             &env
         ));
-        assert_eq!(tap.get(), Some(GesturePoint::new(10.0, 10.0)));
+        assert_eq!(tap.get(), Some(Point::new(10.0, 10.0)));
 
         let mut drags = GestureEngine::default();
         let drag = Rc::new(RefCell::new(Option::<DragEvent>::None));
@@ -2280,8 +2281,8 @@ mod tests {
         let event = drag.borrow().clone().expect("drag did not fire");
         // The location maps as a point; the 40-point window translation and
         // its velocity map through the linear part only, halving them.
-        assert_eq!(event.location(), GesturePoint::new(30.0, 10.0));
-        assert_eq!(event.translation(), GesturePoint::new(20.0, 0.0));
+        assert_eq!(event.location(), Point::new(30.0, 10.0));
+        assert_eq!(event.translation(), Point::new(20.0, 0.0));
         assert!(
             (event.velocity().x - 1250.0).abs() < 1.0,
             "{:?}",
