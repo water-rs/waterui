@@ -441,7 +441,7 @@ fn the_spec_carries_the_tint_and_the_structure() {
             .range(0.0..=10.0)
             .step(1.0)
             .size(ControlSize::Large)
-            .value_indicator(|value| Str::from(format!("{value:.0}")))
+            .value_formatter(|value| Str::from(format!("{value:.0}")))
             .tint(tint.clone()),
         &env,
         Rect::new(0.0, 0.0, 400.0, 100.0),

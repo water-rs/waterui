@@ -20,7 +20,7 @@ use waterui::theme::color::Foreground;
 use waterui::views::ForEach;
 use waterui::widget::condition::when;
 use waterui_icons_material_icon as mdi;
-use waterui_icons_material_icon::Svg;
+use waterui_icons_material_icon::Icon;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum SidebarDestination {
@@ -44,7 +44,7 @@ impl SidebarDestination {
         }
     }
 
-    fn icon(self) -> Svg {
+    fn icon(self) -> Icon {
         match self {
             Self::Today => calendar_today(),
             Self::Scheduled => calendar_clock(),
@@ -328,7 +328,7 @@ fn destination_tile(
 
     vstack((
         hstack((
-            dest.icon().foreground(Srgb::WHITE).size(20.0, 20.0),
+            dest.icon().foreground(Srgb::WHITE).icon_size(20.0),
             spacer(),
             text!("{count}")
                 .headline()
@@ -358,7 +358,7 @@ fn user_list_row(name: &'static str, count: i32, color: Srgb) -> impl View {
     hstack((
         r#format_list_bulleted()
             .foreground(Srgb::WHITE)
-            .size(14.0, 14.0)
+            .icon_size(14.0)
             .padding_with(6.0)
             .background(color)
             .clip(Circle),
@@ -455,9 +455,7 @@ fn reminder_item(row: &ReminderRow) -> impl View + use<> {
         .leading(),
         spacer(),
         when(row.flagged, || {
-            flag()
-                .foreground(Srgb::from_hex("#F28A34"))
-                .size(12.0, 12.0)
+            flag().foreground(Srgb::from_hex("#F28A34")).icon_size(12.0)
         })
         .otherwise(|| spacer().width(12.0)),
     ))

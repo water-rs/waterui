@@ -37,8 +37,8 @@ mdi::cog()
 lucide::house()
 lucide::settings()
 
-// Color and size
-mdi::heart().foreground(Color::srgb_hex("#EF4444")).size(32.0, 32.0)
+// Colour and size
+mdi::heart().foreground(Color::srgb_hex("#EF4444")).icon_size(32.0)
 ```
 
 ## Running

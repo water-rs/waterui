@@ -64,20 +64,28 @@ let Some(parsed) = Url::parse(entered.snapshot().as_str()) else { return };   //
 photo_slot.set(Photo::new(parsed));
 ```
 
-Media picking — the picker itself is the tappable control:
+Media picking — the picker itself is the tappable control, writing public `Media` directly into
+the bound selection and reporting loading or failure states through `PickerStatus`:
 
 ```rust
-use waterui::media::media_picker::{MediaFilter, MediaPicker, Selected};
+use waterui::media::media_picker::{MediaFilter, MediaPicker, PickerStatus};
+use waterui::media::Media;
 
-let selection: Binding<Option<Selected>> = Binding::default();
-MediaPicker::new("Pick a photo", &selection)
+let avatar: Binding<Option<Media>> = Binding::default();
+let photos: Binding<Vec<Media>> = Binding::default();
+let status: Binding<PickerStatus> = Binding::default();
+
+MediaPicker::new("Avatar", &avatar)
     .filter(MediaFilter::Image)          // Image | Video | LivePhoto (the last two need `video`); takes a signal
+    .status(&status);                    // PickerStatus::Idle | Loading | Failed(Str)
 
-// In a handler: Selected::load() is synchronous and consumes the selection.
-let media = selected.load();             // Media::Image(Url) | Video(Url) | LivePhoto(source)
+MediaPicker::multiple("Photos", &photos)
+    .limit(10)
+    .status(&status);
 ```
 
-`Selected::media()` borrows the payload without consuming it. With `video`,
+Pre-populate `avatar` or `photos` to seed a selection before the user taps; cancelling or failing
+leaves the existing selection intact. With `video`,
 `LivePhoto::new(LivePhotoSource::new(image_url, video_url))` (`waterui::media::live`)
 displays the live-photo variant, `.on_event` reports `MotionStarted` / `MotionEnded` / `MotionFailed(msg)`.
 
@@ -315,7 +323,7 @@ rotating token re-encodes in place. The view *panics while rendering* when the c
 exceeds QR capacity or holds characters Code128 cannot encode; validate runtime input
 first with `BarcodeSource::qr(text)` / `BarcodeSource::code128(text)`, which return a
 `Result`. `.dark_color(c)`, `.light_color(c)` and `.linear_gradient(..)` style it.
-`Svg::new(markup)` takes SVG source text (`.foreground(color)` recolours it,
+`Svg::new(markup)` takes SVG source text (`.foreground(color)` recolours `currentColor`,
 `Svg::from_path(path_data, w, h)` draws one path); `waterui::svg` needs the `gpu`
 feature, on by default.
 

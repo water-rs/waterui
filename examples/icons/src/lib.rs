@@ -63,16 +63,16 @@ fn colored_icons_demo() -> impl View {
         hstack((
             heart()
                 .foreground(Color::srgb_hex("#EF4444"))
-                .size(32.0, 32.0),
+                .icon_size(32.0),
             star()
                 .foreground(Color::srgb_hex("#F59E0B"))
-                .size(32.0, 32.0),
+                .icon_size(32.0),
             check_circle()
                 .foreground(Color::srgb_hex("#10B981"))
-                .size(32.0, 32.0),
+                .icon_size(32.0),
             information()
                 .foreground(Color::srgb_hex("#3B82F6"))
-                .size(32.0, 32.0),
+                .icon_size(32.0),
         ))
         .spacing(16.0),
     ))

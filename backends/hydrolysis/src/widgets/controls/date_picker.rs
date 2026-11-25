@@ -9,6 +9,7 @@ use crate::theme::{MenuPickerLook, PickerSpec, SpecTint};
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
 };
+use nami::watcher::BoxWatcherGuard;
 use nami::{Binding, Signal as _};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -44,6 +45,7 @@ pub fn date_picker_spec(env: &Environment) -> PickerSpec {
 /// content stays live.
 pub struct DatePickerRenderState<E: crate::text::TextEngine> {
     config: DatePickerConfig<HeldChild<E>>,
+    _range_watch: BoxWatcherGuard,
     label_view: RetainedSubview<E>,
     /// The field's look, held while its spec is.
     look: Option<(PickerSpec, MenuPickerLook)>,
@@ -66,9 +68,11 @@ impl<E: crate::text::TextEngine> DatePickerRenderState<E> {
     }
 
     pub(crate) fn from_config(config: DatePickerConfig<HeldChild<E>>) -> Self {
+        let range_watch = config.watch_range_clamp();
         Self {
             label_view: RetainedSubview::held(config.label().build()),
             config,
+            _range_watch: range_watch,
             look: None,
             parts: None,
             report: Binding::container(InteractionState::empty()),
@@ -108,10 +112,11 @@ pub fn date_picker_accessibility<E: crate::text::TextEngine, S>(
     #[cfg(feature = "accessibility")]
     {
         let disabled = renderer.read_signal(&widget_disabled(env));
+        let range_snapshot = renderer.read_signal(date_picker.range());
         let value = date_picker.ty().format_value(
             renderer
                 .read_signal(date_picker.value())
-                .clamp(*date_picker.range().start(), *date_picker.range().end()),
+                .clamp(*range_snapshot.start(), *range_snapshot.end()),
         );
         let default_label = Some(value.clone());
         let mut node = AccessibilityNode::new(
@@ -215,13 +220,14 @@ pub fn measure_date_picker_node<E: crate::text::TextEngine>(
     } else {
         0.0
     };
+    let range = state.measure_signal(config.range());
     let current = state
         .measure_signal(config.value())
-        .clamp(*config.range().start(), *config.range().end());
+        .clamp(*range.start(), *range.end());
     let candidates = [
-        config.ty().format_value(*config.range().start()),
+        config.ty().format_value(*range.start()),
         config.ty().format_value(current),
-        config.ty().format_value(*config.range().end()),
+        config.ty().format_value(*range.end()),
     ];
     let mut field_text_width: f64 = 0.0;
     let mut field_text_height: f64 = 0.0;
@@ -353,14 +359,9 @@ pub fn render_date_picker_parts<E: crate::text::TextEngine>(
     let metrics = look.layout();
     // The value/range/ty are read from the retained config; the label is a retained
     // node sub-view re-flushed at its rect (reactive content stays live).
-    let (value_binding, range, ty) = {
-        let date_picker = &state.config;
-        (
-            date_picker.value().clone(),
-            date_picker.range().clone(),
-            date_picker.ty(),
-        )
-    };
+    let value_binding = state.config.value().clone();
+    let range = state.config.range().clone();
+    let ty = state.config.ty();
     let label_height = place_date_picker_label(
         ctx,
         &mut state,
@@ -378,13 +379,14 @@ pub fn render_date_picker_parts<E: crate::text::TextEngine>(
         return;
     }
 
-    // Reading the value through `read_signal` watches it (registers a
-    // retained-refresh watcher), so a value change schedules a frame and this
+    // Reading the value and range through `read_signal` watches them (registers a
+    // retained-refresh watcher), so a value or range change schedules a frame and this
     // persistent node re-renders the new formatted value.
+    let current_range = ctx.renderer_mut().read_signal(&range);
     let value = ty.format_value(
         ctx.renderer_mut()
             .read_signal(&value_binding)
-            .clamp(*range.start(), *range.end()),
+            .clamp(*current_range.start(), *current_range.end()),
     );
 
     let chrome = look.chrome().clone();

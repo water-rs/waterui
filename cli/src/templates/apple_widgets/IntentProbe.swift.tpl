@@ -48,15 +48,19 @@ struct IntentProbe {
         // widget timeline reads the updated value.
         let steps = try WUITimeline.decode(from: runSnapshot(stepsProvider, context: context))
         precondition({
-            if case .stack(let stack) = steps.entries[0].content {
-                return stack.children.contains { child in
-                    if case .text(let text) = child {
-                        return text.content.contains("steps=\(payload.nextSteps)")
-                    }
-                    return false
-                }
+            guard case .background(let bg) = steps.entries[0].content,
+                  case .padding(let padded) = bg.content,
+                  case .stack(let stack) = padded.content
+            else {
+                return false
             }
-            return false
+            return stack.children.contains { child in
+                if case .text(let text) = child,
+                   case .verbatim(let raw) = text.content {
+                    return raw.contains("steps=\(payload.nextSteps)")
+                }
+                return false
+            }
         }(), "steps widget must read the updated step count written by the intent")
     }
 

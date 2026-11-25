@@ -535,13 +535,11 @@ pub fn styling_block_14() {
     use waterui_icons_material_icon as mdi;
 
     let _ = { mdi::check_circle() };
-    let _ = { mdi::delete().size(20.0, 20.0) };
+    let _ = { mdi::delete().icon_size(20.0) };
     let _ = {
         mdi::flag().foreground(Accent) // theme color
     };
-    let _ = {
-        lucide::star().foreground(Color::srgb_hex("#F59E0B")) // explicit color
-    };
+    let _ = { lucide::star().foreground(Color::srgb_hex("#F59E0B")) };
 }
 
 // ---------------------------------------------------------------------------

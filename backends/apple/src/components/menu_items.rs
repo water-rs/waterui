@@ -59,10 +59,18 @@ pub(super) fn collect_item_watchers(
                         resync(wctx.metadata());
                     })));
                 }
-                let resync = Rc::clone(resync);
-                watchers.push(Box::new(command.label().content().watch(move |wctx| {
-                    resync(wctx.metadata());
+                watchers.push(Box::new(command.label().content().watch({
+                    let resync = Rc::clone(resync);
+                    move |wctx| {
+                        resync(wctx.metadata());
+                    }
                 })));
+                if let Some(subtitle) = command.subtitle() {
+                    let resync = Rc::clone(resync);
+                    watchers.push(Box::new(subtitle.watch(move |wctx| {
+                        resync(wctx.metadata());
+                    })));
+                }
             }
             ResolvedMenuItem::Menu(submenu) => {
                 watchers.push(Box::new(submenu.label().content().watch({
@@ -95,7 +103,9 @@ fn kit_command(command: &ResolvedCommand<Held>, env: &Environment) -> KitCommand
     let (symbol, image) = crate::menus::resolve_menu_icon(command.icon(), env);
     KitCommand {
         label: item_title(&command.label().content().snapshot()),
-        subtitle: command.subtitle().map(ToString::to_string),
+        subtitle: command
+            .subtitle()
+            .map(|subtitle| subtitle.snapshot().to_string()),
         symbol,
         image,
         destructive: matches!(command.role(), Some(ButtonRole::Destructive)),

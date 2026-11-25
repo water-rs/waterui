@@ -21,7 +21,7 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=swift");
     println!("cargo:rerun-if-changed=swift_bridge/AppleBridge.swift");
-    println!("cargo:rerun-if-changed=kotlin/WaterUIWidgetHost.kt");
+    println!("cargo:rerun-if-changed=kotlin");
 
     compile_apple_bridge();
 }

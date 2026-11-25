@@ -9,7 +9,7 @@ use waterui::preview;
 use waterui::snackbar::{Snackbar, SnackbarManager, SnackbarPosition};
 use waterui_icons_material_icon as mdi;
 
-type IconSnackbarManager = SnackbarManager<mdi::Svg>;
+type IconSnackbarManager = SnackbarManager<mdi::Icon>;
 
 /// The snackbar example page, with buttons that show each snackbar variant.
 #[preview]
@@ -66,7 +66,7 @@ pub fn demo() -> impl View {
         ))
         .padding(),
     )
-    .snackbar_host_with_icons::<mdi::Svg>()
+    .snackbar_host_with_icons::<mdi::Icon>()
 }
 
 /// Builds the snackbar example app.
