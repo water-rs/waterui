@@ -115,7 +115,7 @@ pub fn map() -> impl View {
 /// The tile style the GPU map draws from.
 #[cfg(feature = "gpu-map-probe")]
 pub fn install_map(env: &mut Environment) {
-    env.insert(waterui_map_gpu::MapGpuOptions::new(waterui_url::Url::new(
+    env.install(waterui_map_gpu::MapGpu::new(waterui_url::Url::new(
         "https://tiles.openfreemap.org/styles/positron",
     )));
 }
