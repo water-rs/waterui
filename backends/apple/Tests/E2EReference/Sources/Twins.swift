@@ -13,7 +13,7 @@
 //   .width/.height/.size           -> .frame(...)
 //   .min_width/.min_height         -> .frame(minWidth:, minHeight:)
 //   text(...).title()/.headline()  -> .font(.title)/.font(.headline) ...
-//   text(...).size(n)              -> .font(.system(size: n))
+//   text(...).font_size(n)         -> .font(.system(size: n))
 //   .bold()                        -> .bold(): both are the platform bold trait,
 //                                    resolved per face; .fontWeight(.bold) is
 //                                    the explicit weight 700, WaterUI's

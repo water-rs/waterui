@@ -125,7 +125,7 @@ impl AvatarFallback for Monogram {
 
     fn build_fallback(self, spoken: Computed<Str>, inner: f32) -> Self::Output {
         Text::new(spoken.map(|name| initials(&name)).computed())
-            .size(f64::from(inner * INITIALS_SCALE))
+            .font_size(f64::from(inner * INITIALS_SCALE))
             .color(Color::new(MutedForeground))
     }
 }
@@ -166,7 +166,7 @@ impl<F: ViewBuilder> AvatarFallback for F {
 /// avatar("Grace Hopper")
 ///     .image(photo)
 ///     .shape(RoundedRectangle::new(CornerRadius::fraction(0.25)))
-///     .size(64.0)
+///     .side(64.0)
 ///     .ring(Color::accent(), 2.0)
 /// # }
 /// ```
@@ -260,7 +260,7 @@ impl<F> Avatar<F> {
 
     /// Sets the avatar's side length in points. Avatars are square.
     #[must_use]
-    pub const fn size(mut self, side: f32) -> Self {
+    pub const fn side(mut self, side: f32) -> Self {
         self.size = side;
         self
     }
@@ -487,5 +487,11 @@ mod tests {
             CapturedShape::new(&Circle).kind,
             ShapeKind::Circle
         ));
+    }
+
+    #[test]
+    fn avatar_side_does_not_shadow_view_ext_size() {
+        use crate::view::ViewExt as _;
+        let _framed = avatar("Ada Lovelace").side(48.0).size(64.0, 64.0);
     }
 }

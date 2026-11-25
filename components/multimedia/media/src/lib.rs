@@ -91,7 +91,10 @@ pub use {
     },
 };
 pub use {
-    photo::{FailureSlot, Photo, PhotoCache, PhotoEvent, PhotoStatus, PlaceholderSlot, photo},
+    photo::{
+        FailureSlot, IntoPhotoSource, Photo, PhotoCache, PhotoEvent, PhotoSource, PhotoStatus,
+        PlaceholderSlot, ResolvePhotoUrl, photo,
+    },
     waterui_image::Image,
 };
 

@@ -26,9 +26,9 @@ fn main_view(policy: Activation, echoed: Binding<Str>) -> impl View {
         Activation::Never => "activation: never (never takes focus)",
     };
     vstack((
-        text("activation-probe").size(24.0),
-        text(label).size(14.0),
-        text("keys typed here echo below:").size(12.0),
+        text("activation-probe").font_size(24.0),
+        text(label).font_size(14.0),
+        text("keys typed here echo below:").font_size(12.0),
         TextField::new("type something", &echoed),
         RoundedRectangle::new(CornerRadius::fraction(0.2))
             .fill(Color::srgb_hex("#7C3AED"))
@@ -101,7 +101,7 @@ pub fn main() {
                 }
             }
         });
-        text("probe-host (never activates)").size(11.0)
+        text("probe-host (never activates)").font_size(11.0)
     })
     .activation(Activation::Never);
     let probe = Window::new("activation-probe", move || {

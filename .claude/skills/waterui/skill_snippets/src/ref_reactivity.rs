@@ -377,12 +377,11 @@ pub mod reactivity_block_11 {
     use super::Row;
     use waterui::component::list::ListDelete;
     use waterui::prelude::*;
-    use waterui::reactive::collection::List as ReactiveList;
 
     #[state]
     #[derive(Clone)]
     pub struct Editor {
-        pub rows: ReactiveList<Row>,
+        pub rows: StateList<Row>,
     }
 
     fn delete_row(ListDelete(id): ListDelete<u64>, mut state: Editor) {
@@ -542,9 +541,8 @@ pub fn reactivity_block_16() {
     }];
 
     use waterui::component::lazy::Lazy;
-    use waterui::reactive::collection::List as ReactiveList;
 
-    let mut rows = ReactiveList::from(seed_vec); // bulk-seed in one move — not a push loop
+    let mut rows = StateList::from(seed_vec); // bulk-seed in one move — not a push loop
     rows.push(Row {
         id: 9,
         title: "Last".into(),
@@ -574,9 +572,8 @@ pub fn reactivity_block_16() {
 // ---------------------------------------------------------------------------
 pub fn reactivity_stack_for_each_prose() {
     use waterui::layout::stack::{HStack, VStack};
-    use waterui::reactive::collection::List as ReactiveList;
 
-    let rows = ReactiveList::<Row>::new();
+    let rows = StateList::<Row>::new();
     let _ = VStack::for_each(rows.clone(), glue_row_view);
     let _ = HStack::for_each(rows, glue_row_view);
 }
@@ -596,8 +593,6 @@ pub fn reactivity_block_17() {
     }
     let messages = Binding::container(Vec::<Message>::new());
     let query = Binding::container(Str::from(""));
-
-    use waterui::reactive::collection::SignalCollection;
 
     let visible = SignalCollection::new(messages.zip(&query).map(|(all, q)| {
         all.into_iter()

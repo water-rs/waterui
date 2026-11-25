@@ -17,9 +17,11 @@
 //! ```
 
 use alloc::borrow::ToOwned;
+use alloc::boxed::Box;
 use alloc::rc::Rc;
 use alloc::string::String;
 use core::cell::{Cell, RefCell};
+use core::fmt;
 
 use crate::Url;
 use executor_core::spawn_local;
@@ -40,7 +42,8 @@ use waterui_core::handler::{
 use waterui_core::reactive::signal::IntoComputed;
 use waterui_core::reactive::watcher::BoxWatcherGuard;
 use waterui_core::{
-    Binding, Computed, Environment, Metadata, OneOf2, OneOf3, Retain, Signal, Str, View,
+    Binding, Computed, Environment, Metadata, OneOf2, OneOf3, Retain, Signal, SignalExt as _, Str,
+    View,
 };
 use waterui_image::{
     ContentMode, Image, ImageStatus, ReactiveImage, ReactiveImageHandle, reactive_image,
@@ -282,7 +285,111 @@ where
     }
 }
 
-/// A photo component that displays an image from a URL.
+/// Source accepted by [`Photo::new`] and [`photo`]: a URL signal or an
+/// environment-resolved handle (such as an `ImageAsset`).
+pub struct PhotoSource(PhotoSourceInner);
+
+type PhotoSourceResolver = Box<dyn FnOnce(&Environment) -> Option<Computed<Url>>>;
+
+enum PhotoSourceInner {
+    Url(Computed<Url>),
+    Resolve(PhotoSourceResolver),
+}
+
+impl fmt::Debug for PhotoSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.0 {
+            PhotoSourceInner::Url(url) => f.debug_tuple("Url").field(url).finish(),
+            PhotoSourceInner::Resolve(_) => f.write_str("Resolve(..)"),
+        }
+    }
+}
+
+impl PhotoSource {
+    /// Creates a photo source from a URL or reactive signal of URLs.
+    #[must_use]
+    pub fn url(source: impl IntoComputed<Url>) -> Self {
+        Self(PhotoSourceInner::Url(source.into_computed()))
+    }
+
+    /// Creates a photo source resolved from the view's [`Environment`] when
+    /// the [`Photo`] mounts.
+    #[must_use]
+    pub fn from_env(
+        resolver: impl FnOnce(&Environment) -> Option<Computed<Url>> + 'static,
+    ) -> Self {
+        Self(PhotoSourceInner::Resolve(Box::new(resolver)))
+    }
+
+    /// Resolves this photo source against `env`.
+    #[must_use]
+    pub fn resolve(self, env: &Environment) -> Option<Computed<Url>> {
+        match self.0 {
+            PhotoSourceInner::Url(url) => Some(url),
+            PhotoSourceInner::Resolve(resolver) => resolver(env),
+        }
+    }
+}
+
+/// A handle that resolves to a photo [`Url`] against a context extracted once
+/// from the rendering [`Environment`] (`()` for [`Url`] and `&'static str`;
+/// `ResourceContext` for `ImageAsset`).
+pub trait ResolvePhotoUrl: Clone + 'static {
+    /// Context extracted once from [`Environment`] when the [`Photo`] mounts.
+    type Context: Clone + 'static;
+
+    /// Extracts the resolution context from `env`.
+    fn context(env: &Environment) -> Option<Self::Context>;
+
+    /// Resolves this handle into a photo [`Url`] using `context`.
+    fn resolve(&self, context: &Self::Context) -> Url;
+}
+
+impl ResolvePhotoUrl for Url {
+    type Context = ();
+
+    fn context(_env: &Environment) -> Option<Self::Context> {
+        Some(())
+    }
+
+    fn resolve(&self, (): &Self::Context) -> Url {
+        self.clone()
+    }
+}
+
+impl ResolvePhotoUrl for &'static str {
+    type Context = ();
+
+    fn context(_env: &Environment) -> Option<Self::Context> {
+        Some(())
+    }
+
+    fn resolve(&self, (): &Self::Context) -> Url {
+        Url::from(*self)
+    }
+}
+
+/// Input accepted by [`Photo::new`] and [`photo`]: a URL (or signal of URLs)
+/// or an asset handle resolved against the view's [`Environment`] at render time.
+pub trait IntoPhotoSource {
+    /// Converts this input into a [`PhotoSource`].
+    fn into_photo_source(self) -> PhotoSource;
+}
+
+impl<S> IntoPhotoSource for S
+where
+    S: Signal + 'static,
+    S::Output: ResolvePhotoUrl,
+{
+    fn into_photo_source(self) -> PhotoSource {
+        PhotoSource::from_env(move |env| {
+            let context = S::Output::context(env)?;
+            Some(self.map(move |value| value.resolve(&context)).computed())
+        })
+    }
+}
+
+/// A photo component that displays an image from a URL or asset handle.
 ///
 /// `Photo` fetches the image asynchronously, caches decoded frames in the
 /// environment's [`PhotoCache`], and displays them using [`Image`] once loaded.
@@ -296,8 +403,8 @@ where
 /// Photo::new(Url::parse("https://www.rust-lang.org/logos/rust-logo-512x512.png").unwrap());
 /// ```
 pub struct Photo<P = (), F = ()> {
-    /// The URL of the image to display.
-    source: Computed<Url>,
+    /// The image source to resolve and display.
+    source: PhotoSource,
     /// Event handler for photo loading events.
     on_event: Option<BoxedEventAction<PhotoEvent>>,
     /// Caller-owned status binding updated across each source's load lifecycle.
@@ -340,12 +447,18 @@ pub enum PhotoEvent {
 }
 
 impl Photo<(), ()> {
-    /// Creates a new `Photo` component with the specified image source URL.
+    /// Creates a new `Photo` component from a URL signal or asset handle.
     #[must_use]
-    pub fn new(source: impl IntoComputed<Url>) -> Self {
+    pub fn new(source: impl IntoPhotoSource) -> Self {
+        Self::from_source(source.into_photo_source())
+    }
+
+    /// Creates a new `Photo` component from an explicit [`PhotoSource`].
+    #[must_use]
+    pub fn from_source(source: PhotoSource) -> Self {
         let (content_handler, content) = reactive_image();
         Self {
-            source: source.into_computed(),
+            source,
             on_event: None,
             status: None,
             placeholder: (),
@@ -531,6 +644,8 @@ impl<P: PlaceholderSlot, F: FailureSlot> View for Photo<P, F> {
             content_handler,
         } = self;
 
+        let source = source.resolve(env)?;
+
         let cache = env.get::<PhotoCache>().cloned();
         let (overlay_handler, overlay_view) = if P::PRESENT || F::PRESENT {
             let (handler, view) = Dynamic::<OneOf3<(), P::View, F::View>>::new();
@@ -591,7 +706,7 @@ impl<P: PlaceholderSlot, F: FailureSlot> View for Photo<P, F> {
             None => OneOf2::A(content),
         };
 
-        Metadata::new(
+        Some(Metadata::new(
             Metadata::new(
                 composed,
                 LifeCycleHook::new(LifeCycle::Appear, {
@@ -600,7 +715,7 @@ impl<P: PlaceholderSlot, F: FailureSlot> View for Photo<P, F> {
                 }),
             ),
             Retain::new((guard, source, load_state)),
-        )
+        ))
     }
 }
 
@@ -1050,7 +1165,7 @@ fn publish_decoded_frame(handler: &ReactiveImageHandle, image: Image) {
 
 /// Convenience constructor for building a `Photo` component inline.
 #[must_use]
-pub fn photo(source: impl IntoComputed<Url>) -> Photo {
+pub fn photo(source: impl IntoPhotoSource) -> Photo {
     Photo::new(source)
 }
 

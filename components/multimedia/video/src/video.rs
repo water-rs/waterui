@@ -29,11 +29,12 @@ use waterui_core::handler::{
     BoxedEventAction, EventHandler, ReportExtraction as _, boxed_event_handler,
 };
 use waterui_core::{
-    Binding, Computed, Environment, NativeView, SerialDispatch, binding, configurable,
+    Binding, Computed, Environment, Native, NativeView, SerialDispatch, View, binding,
     contract_violation, layout::StretchAxis,
 };
 
 use crate::{
+    Url,
     session::{PlaybackSession, PlayerController, Playlist, RepeatMode},
     source::{MediaItem, OfflineDrmKeySet},
 };
@@ -1695,53 +1696,137 @@ impl NativeView for NativeVideoConfig {
     }
 }
 
-configurable!(
-    /// A raw video view that displays video without controls.
-    ///
-    /// Use this component when you want to display video content and build
-    /// your own custom UI controls. For a full-featured player with interactive
-    /// controls, use [`VideoPlayer`] instead.
-    ///
-    /// # Platform Implementation
-    ///
-    /// - **iOS/macOS**: native-backed raw surface by default
-    /// - **Android**: runtime-managed raw surface
-    Video,
-    VideoConfig,
-    |config| if config.projection.is_spherical() {
-        StretchAxis::Both
-    } else {
-        match config.content_mode {
-            ContentMode::Fit => StretchAxis::Horizontal,
-            ContentMode::Fill | ContentMode::Stretch => StretchAxis::Both,
+/// Source accepted by [`video`] and [`video_player`]: an immediate
+/// [`MediaItem`] or an environment-resolved handle (such as a `VideoAsset`).
+pub struct VideoSource(VideoSourceInner);
+
+type VideoSourceResolver = Box<dyn FnOnce(&Environment) -> Option<MediaItem>>;
+
+enum VideoSourceInner {
+    Item(Box<MediaItem>),
+    Resolve(VideoSourceResolver),
+}
+
+impl fmt::Debug for VideoSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.0 {
+            VideoSourceInner::Item(item) => f.debug_tuple("Item").field(item).finish(),
+            VideoSourceInner::Resolve(_) => f.write_str("Resolve(..)"),
         }
-    },
-    resolve | config,
-    env | config.bind_event_environment(env)
-);
+    }
+}
+
+impl VideoSource {
+    /// Creates a video source from an immediate media item.
+    #[must_use]
+    pub fn item(item: impl Into<MediaItem>) -> Self {
+        Self(VideoSourceInner::Item(Box::new(item.into())))
+    }
+
+    /// Creates a video source resolved from the view's [`Environment`] when
+    /// the video view mounts.
+    #[must_use]
+    pub fn from_env(resolver: impl FnOnce(&Environment) -> Option<MediaItem> + 'static) -> Self {
+        Self(VideoSourceInner::Resolve(Box::new(resolver)))
+    }
+
+    /// Resolves this video source against `env`.
+    #[must_use]
+    pub fn resolve(self, env: &Environment) -> Option<MediaItem> {
+        match self.0 {
+            VideoSourceInner::Item(item) => Some(*item),
+            VideoSourceInner::Resolve(resolver) => resolver(env),
+        }
+    }
+}
+
+/// Input accepted by [`video`] and [`video_player`]: a [`MediaItem`], URL,
+/// static URL string, [`VideoSource`], or an asset handle resolved against the
+/// view's [`Environment`] at render time.
+pub trait IntoVideoSource {
+    /// Converts this input into a [`VideoSource`].
+    fn into_video_source(self) -> VideoSource;
+}
+
+impl IntoVideoSource for VideoSource {
+    fn into_video_source(self) -> VideoSource {
+        self
+    }
+}
+
+impl IntoVideoSource for MediaItem {
+    fn into_video_source(self) -> VideoSource {
+        VideoSource::item(self)
+    }
+}
+
+impl IntoVideoSource for Url {
+    fn into_video_source(self) -> VideoSource {
+        VideoSource::item(self)
+    }
+}
+
+impl IntoVideoSource for &'static str {
+    fn into_video_source(self) -> VideoSource {
+        VideoSource::item(self)
+    }
+}
+
+enum VideoSessionSource {
+    Session(PlaybackSession),
+    Deferred(VideoSourceResolver),
+}
+
+impl fmt::Debug for VideoSessionSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Session(_) => f.write_str("Session(..)"),
+            Self::Deferred(_) => f.write_str("Deferred(..)"),
+        }
+    }
+}
+
+/// A raw video view that displays video without controls.
+///
+/// Use this component when you want to display video content and build
+/// your own custom UI controls. For a full-featured player with interactive
+/// controls, use [`VideoPlayer`] instead.
+///
+/// # Platform Implementation
+///
+/// - **iOS/macOS**: native-backed raw surface by default
+/// - **Android**: runtime-managed raw surface
+#[derive(Debug)]
+pub struct Video {
+    source: VideoSessionSource,
+    content_mode: ContentMode,
+    projection: VideoProjection,
+    on_event: Option<VideoEventHandler>,
+}
 
 impl Video {
     /// Creates a new raw video view.
     #[must_use]
     pub fn new(session: PlaybackSession) -> Self {
-        Self(VideoConfig {
-            playback: PlaybackConfiguration::from_session(session, None),
+        Self {
+            source: VideoSessionSource::Session(session),
             content_mode: ContentMode::default(),
             projection: VideoProjection::default(),
-        })
+            on_event: None,
+        }
     }
 
     /// Sets how the picture fills the video's bounds.
     #[must_use]
     pub const fn content_mode(mut self, content_mode: ContentMode) -> Self {
-        self.0.content_mode = content_mode;
+        self.content_mode = content_mode;
         self
     }
 
     /// Selects planar or equirectangular spherical presentation.
     #[must_use]
     pub fn projection(mut self, projection: VideoProjection) -> Self {
-        self.0.projection = projection;
+        self.projection = projection;
         self
     }
 
@@ -1770,17 +1855,52 @@ impl Video {
     where
         H: EventHandler<VideoEvent, A, ()> + 'static,
     {
-        self.0.playback.on_event = Some(VideoEventHandler::new(boxed_event_handler(handler)));
+        self.on_event = Some(VideoEventHandler::new(boxed_event_handler(handler)));
         self
+    }
+
+    fn resolve_native(self, env: &Environment) -> Option<NativeVideoConfig> {
+        let session = match self.source {
+            VideoSessionSource::Session(session) => session,
+            VideoSessionSource::Deferred(resolver) => {
+                let item = resolver(env)?;
+                let session = PlaybackSession::new(Playlist::single(item)).autoplay();
+                session.controller().set_repeat(RepeatMode::One);
+                session
+            }
+        };
+        let config = VideoConfig {
+            playback: PlaybackConfiguration::from_session(session, self.on_event),
+            content_mode: self.content_mode,
+            projection: self.projection,
+        };
+        Some(config.bind_event_environment(env))
     }
 }
 
-/// Creates an autoplaying, looping raw video session for one media item.
+impl View for Video {
+    fn body(self, env: &Environment) -> impl View {
+        self.resolve_native(env).map(Native::new)
+    }
+}
+
+/// Creates an autoplaying, looping raw video session for one media item or
+/// bundled video asset.
 #[must_use]
-pub fn video(item: impl Into<MediaItem>) -> Video {
-    let session = PlaybackSession::new(Playlist::single(item)).autoplay();
-    session.controller().set_repeat(RepeatMode::One);
-    Video::new(session)
+pub fn video(source: impl IntoVideoSource) -> Video {
+    match source.into_video_source().0 {
+        VideoSourceInner::Item(item) => {
+            let session = PlaybackSession::new(Playlist::single(*item)).autoplay();
+            session.controller().set_repeat(RepeatMode::One);
+            Video::new(session)
+        }
+        VideoSourceInner::Resolve(resolver) => Video {
+            source: VideoSessionSource::Deferred(resolver),
+            content_mode: ContentMode::default(),
+            projection: VideoProjection::default(),
+            on_event: None,
+        },
+    }
 }
 
 // =============================================================================
@@ -1852,62 +1972,57 @@ impl NativeView for NativeVideoPlayerConfig {
     }
 }
 
-configurable!(
-    /// A full-featured video player component.
-    ///
-    /// Use this component when you want a complete video playback experience
-    /// with a platform-appropriate control experience (play/pause, seek,
-    /// fullscreen, etc.).
-    /// For a raw video view without controls, use [`Video`] instead.
-    ///
-    /// # Platform Implementation
-    ///
-    /// - **Apple platforms**: native player controls by default
-    /// - **Android**: WaterUI/Rust player controls
-    VideoPlayer,
-    VideoPlayerConfig,
-    |config| if config.projection.is_spherical() {
-        StretchAxis::Both
-    } else {
-        match config.content_mode {
-            ContentMode::Fit => StretchAxis::Horizontal,
-            ContentMode::Fill | ContentMode::Stretch => StretchAxis::Both,
-        }
-    },
-    resolve | config,
-    env | config.bind_event_environment(env)
-);
+/// A full-featured video player component.
+///
+/// Use this component when you want a complete video playback experience
+/// with a platform-appropriate control experience (play/pause, seek,
+/// fullscreen, etc.).
+/// For a raw video view without controls, use [`Video`] instead.
+///
+/// # Platform Implementation
+///
+/// - **Apple platforms**: native player controls by default
+/// - **Android**: WaterUI/Rust player controls
+#[derive(Debug)]
+pub struct VideoPlayer {
+    source: VideoSessionSource,
+    content_mode: ContentMode,
+    projection: VideoProjection,
+    show_controls: bool,
+    on_event: Option<VideoEventHandler>,
+}
 
 impl VideoPlayer {
     /// Creates a new interactive video player.
     #[must_use]
     pub fn new(session: PlaybackSession) -> Self {
-        Self(VideoPlayerConfig {
-            playback: PlaybackConfiguration::from_session(session, None),
+        Self {
+            source: VideoSessionSource::Session(session),
             content_mode: ContentMode::default(),
             projection: VideoProjection::default(),
             show_controls: true,
-        })
+            on_event: None,
+        }
     }
 
     /// Sets how the picture fills the player's bounds.
     #[must_use]
     pub const fn content_mode(mut self, content_mode: ContentMode) -> Self {
-        self.0.content_mode = content_mode;
+        self.content_mode = content_mode;
         self
     }
 
     /// Selects planar or interactive equirectangular spherical presentation.
     #[must_use]
     pub fn projection(mut self, projection: VideoProjection) -> Self {
-        self.0.projection = projection;
+        self.projection = projection;
         self
     }
 
     /// Sets whether to show interactive playback controls.
     #[must_use]
     pub const fn show_controls(mut self, show_controls: bool) -> Self {
-        self.0.show_controls = show_controls;
+        self.show_controls = show_controls;
         self
     }
 
@@ -1919,15 +2034,50 @@ impl VideoPlayer {
     where
         H: EventHandler<VideoEvent, A, ()> + 'static,
     {
-        self.0.playback.on_event = Some(VideoEventHandler::new(boxed_event_handler(handler)));
+        self.on_event = Some(VideoEventHandler::new(boxed_event_handler(handler)));
         self
+    }
+
+    fn resolve_native(self, env: &Environment) -> Option<NativeVideoPlayerConfig> {
+        let session = match self.source {
+            VideoSessionSource::Session(session) => session,
+            VideoSessionSource::Deferred(resolver) => {
+                let item = resolver(env)?;
+                PlaybackSession::new(Playlist::single(item))
+            }
+        };
+        let config = VideoPlayerConfig {
+            playback: PlaybackConfiguration::from_session(session, self.on_event),
+            content_mode: self.content_mode,
+            projection: self.projection,
+            show_controls: self.show_controls,
+        };
+        Some(config.bind_event_environment(env))
     }
 }
 
-/// Creates a paused interactive player session for one media item.
+impl View for VideoPlayer {
+    fn body(self, env: &Environment) -> impl View {
+        self.resolve_native(env).map(Native::new)
+    }
+}
+
+/// Creates a paused interactive player session for one media item or bundled
+/// video asset.
 #[must_use]
-pub fn video_player(item: impl Into<MediaItem>) -> VideoPlayer {
-    VideoPlayer::new(PlaybackSession::new(Playlist::single(item)))
+pub fn video_player(source: impl IntoVideoSource) -> VideoPlayer {
+    match source.into_video_source().0 {
+        VideoSourceInner::Item(item) => {
+            VideoPlayer::new(PlaybackSession::new(Playlist::single(*item)))
+        }
+        VideoSourceInner::Resolve(resolver) => VideoPlayer {
+            source: VideoSessionSource::Deferred(resolver),
+            content_mode: ContentMode::default(),
+            projection: VideoProjection::default(),
+            show_controls: true,
+            on_event: None,
+        },
+    }
 }
 
 #[cfg(test)]
@@ -2213,7 +2363,9 @@ mod tests {
         ));
         let controller = session.controller();
         controller.set_repeat(RepeatMode::Off);
-        let config = Video::new(session).config();
+        let config = Video::new(session)
+            .resolve_native(&Environment::new())
+            .expect("session-backed video resolves");
 
         assert_eq!(config.playback.repeat.snapshot(), RepeatMode::Off);
         assert_eq!(controller.repeat_mode().snapshot(), RepeatMode::Off);
@@ -2222,7 +2374,9 @@ mod tests {
 
     #[test]
     fn single_item_video_helper_loops_via_repeat_mode_one() {
-        let config = video("https://example.com/ambient.mp4").config();
+        let config = video("https://example.com/ambient.mp4")
+            .resolve_native(&Environment::new())
+            .expect("item-backed video resolves");
 
         assert_eq!(config.playback.repeat.snapshot(), RepeatMode::One);
         assert!(config.playback.desired_playing.snapshot());

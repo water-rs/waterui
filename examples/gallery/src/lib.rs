@@ -42,7 +42,6 @@ use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::Computed;
 use waterui::reactive::binding;
-use waterui::reactive::collection::List as ReactiveList;
 use waterui::shape::Capsule;
 use waterui::theme::color::{Foreground, MutedForeground, SurfaceVariant};
 use waterui_icons_material_icon as mdi;
@@ -140,7 +139,7 @@ fn expanded_rows() -> Vec<Row> {
 /// Expands or collapses a group by reconciling the reactive row collection:
 /// inserting the group's item rows right after its header, or removing them.
 /// The collection engine diffs by id, so only the toggled group's rows change.
-fn set_group_expanded(rows: &mut ReactiveList<Row>, group: usize, expanded: bool) {
+fn set_group_expanded(rows: &mut StateList<Row>, group: usize, expanded: bool) {
     let items = group_item_indices(group);
     if expanded {
         let snapshot = rows.snapshot();
@@ -264,7 +263,7 @@ fn controls() -> Vec<Control> {
 fn catalog(
     selected: &Binding<Option<usize>>,
     groups_open: Vec<Binding<bool>>,
-    rows: ReactiveList<Row>,
+    rows: StateList<Row>,
     state: DemoState,
 ) -> impl View + use<> {
     let sidebar_selected = selected.clone();
@@ -379,7 +378,7 @@ where
 fn sidebar(
     selected: Binding<Option<usize>>,
     groups_open: Vec<Binding<bool>>,
-    rows: ReactiveList<Row>,
+    rows: StateList<Row>,
 ) -> impl View {
     // Animate group expand/collapse with Material 3 emphasized easing: each row
     // declares its own transition, so a row fades in on insert and its ghost
@@ -424,12 +423,12 @@ fn sidebar(
 /// title (in the muted on-surface-variant role, since a header is not selectable)
 /// with a trailing chevron that flips with the open state. Tapping toggles the
 /// group and reconciles the reactive row collection.
-fn group_header(group: usize, open: &Binding<bool>, rows: &ReactiveList<Row>) -> impl View + use<> {
+fn group_header(group: usize, open: &Binding<bool>, rows: &StateList<Row>) -> impl View + use<> {
     let section = Section::ALL[group];
     drawer_headline(
         section.title(),
         open.clone(),
-        move |State(open): State<Binding<bool>>, State(mut rows): State<ReactiveList<Row>>| {
+        move |State(open): State<Binding<bool>>, State(mut rows): State<StateList<Row>>| {
             open.toggle();
             let expanded = open.snapshot();
             set_group_expanded(&mut rows, group, expanded);
@@ -630,7 +629,7 @@ fn progress_demo() -> impl View {
 type CatalogState = (
     Binding<Option<usize>>,
     Vec<Binding<bool>>,
-    ReactiveList<Row>,
+    StateList<Row>,
     DemoState,
 );
 
@@ -639,7 +638,7 @@ type CatalogState = (
 fn new_state() -> CatalogState {
     let selected = Binding::container(Some(0));
     let groups_open = Section::ALL.iter().map(|_| binding(true)).collect();
-    let rows = ReactiveList::from(expanded_rows());
+    let rows = StateList::from(expanded_rows());
     (selected, groups_open, rows, DemoState::new())
 }
 

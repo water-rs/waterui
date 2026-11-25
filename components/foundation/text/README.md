@@ -81,7 +81,7 @@ text("Plain text")
 // Bold text with custom size
 text("Large Title")
     .bold(true)
-    .size(32.0)
+    .font_size(32.0)
 
 // Custom font and color
 text("Custom Style")
@@ -197,7 +197,7 @@ let highlighted = highlight_text(Language::Rust, &code, &mut highlighter);
 - `.italic(bool)` - Toggle italic style
 - `.underline(bool)` - Toggle underline decoration
 - `.strikethrough(bool)` - Toggle strikethrough decoration
-- `.size(f64)` - Set font size in points
+- `.font_size(f64)` - Set font size in points
 - `.weight(FontWeight)` - Set font weight
 - `.font(Font)` - Set complete font configuration
 - `.foreground(Color)` - Set text color

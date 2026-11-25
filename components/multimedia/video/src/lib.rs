@@ -27,10 +27,10 @@ pub mod video;
 #[doc(hidden)]
 pub use video::VideoEvent as Event;
 pub use video::{
-    AudioTrackInfo, AudioTrackSelection, ContentMode, EquirectangularProjection, LiveWindow,
-    NetworkPlaybackPolicy, PlaybackConfiguration, PlaybackMetrics, PlaybackOutputPath,
+    AudioTrackInfo, AudioTrackSelection, ContentMode, EquirectangularProjection, IntoVideoSource,
+    LiveWindow, NetworkPlaybackPolicy, PlaybackConfiguration, PlaybackMetrics, PlaybackOutputPath,
     PlaybackPolicy, PlaybackPowerPolicy, SphericalStereoLayout, SphericalViewport,
     SubtitleSelection, SubtitleTrackInfo, SubtitleTrackOrigin, TimedMetadata, TrackCatalog, Video,
-    VideoConfig, VideoEvent, VideoPlayer, VideoPlayerConfig, VideoProjection, VideoTrackInfo,
-    VideoTrackSelection, Volume, video, video_player,
+    VideoConfig, VideoEvent, VideoPlayer, VideoPlayerConfig, VideoProjection, VideoSource,
+    VideoTrackInfo, VideoTrackSelection, Volume, video, video_player,
 };

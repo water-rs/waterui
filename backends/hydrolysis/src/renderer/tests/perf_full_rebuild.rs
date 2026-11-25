@@ -60,8 +60,8 @@ fn dense_row(i: usize, with_text: bool) -> AnyView {
     let middle: AnyView = if with_text {
         AnyView::new(
             vstack((
-                text(format!("Item {i}")).size(16.0),
-                text("Subtitle line for visual density").size(13.0),
+                text(format!("Item {i}")).font_size(16.0),
+                text("Subtitle line for visual density").font_size(13.0),
             ))
             .spacing(2.0),
         )

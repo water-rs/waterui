@@ -15,16 +15,12 @@ use cocoa_ui::MainThreadMarker;
 use cocoa_ui::geometry::{Rect, Size};
 use waterui::app::{WindowSink, Windows};
 use waterui::handler::ViewBuilder;
-#[cfg(target_os = "macos")]
-use waterui::window::WindowSlot;
-use waterui::window::{Window, WindowChannel, WindowToolbar};
+use waterui::window::{Window, WindowChannel, WindowParts, WindowToolbar};
 use waterui_backend_core::Environment;
-#[cfg(target_os = "macos")]
-use waterui_backend_core::{ChildView as _, IntoChild};
+use waterui_core::extract::State as EnvState;
 
-#[cfg(target_os = "macos")]
-use crate::backend::AppleBackend;
 use crate::contract::NativeLeaf;
+use crate::dispatch;
 use crate::frame_rate::WindowFrameRateVotes;
 
 /// A window's content as this backend holds it: the content builder's type
@@ -38,41 +34,18 @@ pub type Root = Box<dyn Fn(&Environment, MainThreadMarker) -> NativeLeaf>;
 pub type ToolbarRoot = Box<dyn FnOnce(&Environment, MainThreadMarker) -> NativeLeaf>;
 
 /// A window as this backend holds it, see [`Root`] and [`ToolbarRoot`].
-pub type RootWindow = Window<Root, Option<ToolbarRoot>>;
+pub type RootWindow = WindowParts<Root, Option<ToolbarRoot>>;
 
 /// `window` as this backend holds it.
 pub fn root_window<C: ViewBuilder, T: WindowToolbar>(window: Window<C, T>) -> RootWindow {
-    window.map(
-        |content| -> Root {
-            Box::new(move |env, mtm| crate::dispatch::render(content.build(), env, mtm))
-        },
+    let handle = window.handle();
+    window.into_parts().map(
+        |content| -> Root { Box::new(move |env, mtm| dispatch::render(content.build(), env, mtm)) },
         |toolbar| {
             toolbar.into_view().map(|view| -> ToolbarRoot {
-                Box::new(move |env, mtm| crate::dispatch::render(view, env, mtm))
-            })
-        },
-    )
-}
-
-/// A window dispatched from the view tree as this backend holds it.
-#[cfg(target_os = "macos")]
-pub fn slot_root_window<C: IntoChild<AppleBackend>>(
-    window: Window<WindowSlot<C>, Option<C>>,
-) -> RootWindow {
-    window.map(
-        |slot| -> Root {
-            Box::new(move |env, mtm| {
-                slot.build()
-                    .into_child()
-                    .realize(&mut AppleBackend::new(mtm), env, ())
-            })
-        },
-        |toolbar| {
-            toolbar.map(|child| -> ToolbarRoot {
                 Box::new(move |env, mtm| {
-                    child
-                        .into_child()
-                        .realize(&mut AppleBackend::new(mtm), env, ())
+                    let env = env.extending(EnvState(handle.clone()));
+                    dispatch::render(view, &env, mtm)
                 })
             })
         },
@@ -305,20 +278,6 @@ mod imp {
         static DECLARED: RefCell<Vec<DeclaredHandle>> = const { RefCell::new(Vec::new()) };
     }
 
-    /// The application-level environment snapshot under which windows opened
-    /// from the view tree realize, so a window opened from the view tree
-    /// renders under the application's root environment rather than its host
-    /// window's chrome/navigation scopes.
-    #[derive(Clone)]
-    struct RootEnvironment(Environment);
-
-    /// Records `env` as the root environment for windows opened later from a
-    /// view tree.
-    pub fn install_root_environment(env: &mut Environment) {
-        let root = env.clone();
-        env.insert(RootEnvironment(root));
-    }
-
     /// Connects `channel` so each window shown through its manager realizes on
     /// a fresh platform window, deferred to the next main-queue turn.
     pub(super) fn connect_channel<C: ViewBuilder, T: WindowToolbar>(
@@ -329,26 +288,10 @@ mod imp {
         channel.connect(move |window| {
             let declaration = super::root_window(window);
             let env = env.clone();
-            cocoa_ui::main_queue::enqueue_local(mtm(), move |mtm| {
+            enqueue_local(mtm(), move |mtm| {
                 track(realize_root(declaration, &env, mtm));
             });
         })
-    }
-
-    /// Realizes a window dispatched from the view tree on a fresh platform
-    /// window, deferred to the next main-queue turn.
-    pub fn show_from_tree<C: super::IntoChild<super::AppleBackend>>(
-        declaration: Window<super::WindowSlot<C>, Option<C>>,
-        env: &Environment,
-        mtm: MainThreadMarker,
-    ) {
-        let root_env = env
-            .get::<RootEnvironment>()
-            .map_or_else(|| env.clone(), |root| root.0.clone());
-        let declaration = super::slot_root_window(declaration);
-        cocoa_ui::main_queue::enqueue_local(mtm, move |mtm| {
-            track(realize_root(declaration, &root_env, mtm));
-        });
     }
 
     /// Registers an app-declared window under the macOS window manager,
@@ -1644,14 +1587,9 @@ pub use imp::realize;
 #[cfg(all(target_os = "ios", feature = "native-test"))]
 pub use imp::{Pending, Veil, WindowHost, realize};
 #[cfg(target_os = "ios")]
-pub use imp::{
-    Scenes, bind_background, connect, connect_embedded, declare, show_unsupported_on_ios,
-};
+pub use imp::{Scenes, bind_background, connect, connect_embedded, declare};
 #[cfg(target_os = "macos")]
-pub use imp::{
-    bind_background, close_all, declare_embedded, declare_root, install_root_environment,
-    show_from_tree,
-};
+pub use imp::{bind_background, close_all, declare_embedded, declare_root};
 
 /// A waterui layout rect, as the kit sees it.
 #[cfg(target_os = "macos")]

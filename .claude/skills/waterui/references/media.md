@@ -153,14 +153,15 @@ from a file at compile time). `.on_event` takes `Fn` — capture cloned bindings
 
 Bundled and controlled content:
 
-- `include_web!(resources, "web")` (features `webview` + `assets`) embeds a web frontend:
-  the first argument borrows the app's `ResourceContext`, the second is the web project
-  root (relative to the crate's `Cargo.toml`) holding `package.json`; named options
-  `out_dir` (`dist`), `entry` (`index.html`), `spa`, `csp`. It expands to a `WebViewOpen`,
-  so `.serve(..)`, `.inject(..)`, `.on_event(..)` chain on it. The `water` CLI builds and
-  stages the frontend; one per application; main-frame navigations that leave its origin
-  open in the system browser. It installs a navigation policy, which compiles only with
-  the Apple deployment targets raised to `27.0` ([project.md](project.md)).
+- `include_web!("web")` (features `webview` + `assets`) embeds a web frontend:
+  the first argument is the web project root (relative to the crate's `Cargo.toml`)
+  holding `package.json`, and `ResourceContext` is resolved from the rendering
+  environment; named options `out_dir` (`dist`), `entry` (`index.html`), `spa`, `csp`.
+  It expands to a `WebViewOpen`, so `.serve(..)`, `.inject(..)`, `.on_event(..)` chain
+  on it. The `water` CLI builds and stages the frontend; one per application; main-frame
+  navigations that leave its origin open in the system browser. It installs a navigation
+  policy, which compiles only with the Apple deployment targets raised to `27.0`
+  ([project.md](project.md)).
 - `WebView::open_assets(server, entry)` serves `Fn(&AssetRequest) -> AssetResponse`
   (GET/HEAD only) under the engine's local asset origin, a secure context on every
   engine; `DirectoryServer::new(dir).into_server_fn()` is the ready-made server over a

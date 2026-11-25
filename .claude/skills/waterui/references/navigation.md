@@ -41,11 +41,11 @@ id is the tab's identity *and* the type `selection` binds, so you never name an 
 - a tuple of tabs — `(Tab::new(..), Tab::new(..))`, up to twelve — holds tabs
   whose roots differ and is selected by a `Binding<usize>` position;
 - a `Vec` or array of tabs sharing one builder type, also selected by position;
-- `ForEach` over a `List` of `SelfId`s keys tabs by your own enum. Its tabs share one
+- `ForEach` over a `StateList` of `SelfId`s keys tabs by your own enum. Its tabs share one
   builder, so the builder returns the variant of one `OneOfN` its item picks:
 
 ```rust
-use waterui::{id::SelfId, reactive::collection::List, views::ForEach};
+use waterui::id::SelfId;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Pane { Inbox, Library, Settings, Search }
@@ -53,7 +53,7 @@ enum Pane { Inbox, Library, Settings, Search }
 let pane = binding(Pane::Inbox);
 let panes = [Pane::Inbox, Pane::Library, Pane::Settings, Pane::Search].map(SelfId::new);
 
-Tabs::new(&pane, ForEach::new(List::from(panes.to_vec()), move |pane: SelfId<Pane>| {
+Tabs::new(&pane, ForEach::new(StateList::from(panes.to_vec()), move |pane: SelfId<Pane>| {
     let pane = *pane;
     let tab = Tab::new(
         match pane {
@@ -403,23 +403,29 @@ The `Window` builder, precisely:
   (X11 `WM_CLASS` class and instance, Wayland `app_id`). `app_id` defaults to the
   application's identifier and `instance_name` to the resolved `app_id`; Wayland carries
   only `app_id`. Ignored on macOS, iOS, Android and Windows.
-- `closable` is a plain public field (`window.closable = false`): the close button is
-  disabled on macOS and Windows and the request is ignored on Linux.
-- `attention` is a public `Binding<Option<UserAttention>>`: setting it asks the platform
-  to draw the user to the window (taskbar flash, Dock bounce) and the backend resets it to
-  `None` when the window gains focus; `handle().request_attention(..)` writes the same binding.
+- `.closable(bool)` — plain bool, default `true`: when `false`, the close button is
+  disabled on macOS and Windows and close requests are ignored on Linux.
+- `.default_size(Size)` — initial content size (defaults to `800×600`); `.frame(&binding)`
+  binds the window's `Binding<Rect>` when external code reads or drives its geometry.
+- `.attention(&binding)` — binds `Binding<Option<UserAttention>>`: setting it asks the
+  platform to draw the user to the window (taskbar flash, Dock bounce) and the backend
+  resets it to `None` when the window gains focus; `WindowHandle::request_attention(..)`
+  writes the same binding.
 
 `WindowState` variants: `Normal`, `Closed` (**the `Default`**), `Minimized`,
 `Maximized`, `Fullscreen`. `WindowState` is held in a binding, so opening, closing,
-minimizing, maximizing, and restoring are ordinary reactive state changes:
+minimizing, maximizing, and restoring are ordinary reactive state changes.
 
-`Window::handle()` returns a `WindowHandle` that survives after the window is shown:
-`close()`, `request_close()`, `minimize()`, `maximize()`, `fullscreen()`, `restore()`, `focus()` (bring to front and give it the
-keyboard — "show the existing settings window"; panics before the window is realized and
-on headless runners),
-`request_attention(UserAttention::Informational | UserAttention::Critical)` (the
-backend clears it when the window gains focus), `cancel_attention()`, and
-`set_frame(Rect)`.
+Every backend installs a window's `WindowHandle` into the environment of its content,
+toolbar, and `on_close_request` handler, so handlers inside the window extract
+`|window: WindowHandle|` directly without calling `window.handle()` beforehand.
+`Window::handle()` still returns a `WindowHandle` for callers outside the window's tree.
+`WindowHandle` provides: `close()`, `request_close()`, `minimize()`, `maximize()`,
+`fullscreen()`, `restore()`, `focus()` (bring to front and give it the keyboard — "show
+the existing settings window"; panics before the window is realized and on headless
+runners), `request_attention(UserAttention::Informational | UserAttention::Critical)`
+(the backend clears it when the window gains focus), `cancel_attention()`, `set_frame(Rect)`,
+`set_style(WindowStyle)`, `set_background(..)`, and `set_icon(..)`.
 
 ```rust
 button("Open Window")

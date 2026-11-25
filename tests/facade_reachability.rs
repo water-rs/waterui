@@ -84,7 +84,7 @@ fn prelude_exports_app_window_widgets_and_collections_without_shadowing() {
     fn sample_app(env: Environment) -> App<impl Windows, impl AppMenuBar> {
         let _ = WindowState::Normal;
         let _ = Window::new("Title", || {
-            let items = ReactiveList::from(vec![RowItem { id: 1 }, RowItem { id: 2 }]);
+            let items = StateList::from(vec![RowItem { id: 1 }, RowItem { id: 2 }]);
             let _ = items.len();
             let flag = Binding::bool(true);
             let _ = when(flag, || "ok");

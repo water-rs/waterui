@@ -330,10 +330,8 @@ pub fn include_bundle(input: TokenStream) -> TokenStream {
     expand_mount(&args.mount.to_string(), root, path_span).into()
 }
 
-/// Parsed arguments of an `include_web!(resources, "web", out_dir = "…", …)` invocation.
+/// Parsed arguments of an `include_web!("web", out_dir = "…", …)` invocation.
 struct IncludeWebArgs {
-    /// Resource context borrowed from the application's environment.
-    resources: syn::Expr,
     /// Web project root relative to `CARGO_MANIFEST_DIR`.
     root: LitStr,
     /// Build output directory inside the root (`dist` by default).
@@ -348,11 +346,8 @@ struct IncludeWebArgs {
 
 impl Parse for IncludeWebArgs {
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
-        let resources = input.parse()?;
-        input.parse::<Token![,]>()?;
         let root: LitStr = input.parse()?;
         let mut args = Self {
-            resources,
             root,
             out_dir: None,
             entry: None,
@@ -394,11 +389,13 @@ impl Parse for IncludeWebArgs {
 const WEB_MOUNT: &str = "web";
 
 #[proc_macro]
-/// Embeds a web frontend into a view: `include_web!(resources, "web")` expands to the
-/// `WebViewOpen` that serves the project's staged build output over the
-/// engine's asset origin.
+/// Embeds a web frontend into a view.
 ///
-/// The first argument borrows the `ResourceContext`; the second is the web project root, resolved against
+/// `include_web!("web")` expands to a `WebViewOpen` that serves the project's
+/// staged build output over the engine's asset origin, resolving the staged
+/// bundle directory from the rendering `Environment`'s `ResourceContext`.
+///
+/// The first argument is the web project root, resolved against
 /// `CARGO_MANIFEST_DIR`; it must contain a `package.json` (the macro points at
 /// the project, not its build output). Named arguments are the complete
 /// configuration surface:
@@ -428,7 +425,7 @@ const WEB_MOUNT: &str = "web";
 ///
 /// The expansion is an ordinary [`WebViewOpen`](waterui_webview::WebViewOpen),
 /// so everything chains as usual:
-/// `include_web!(resources, "web").serve(MyApi).inject(..).on_event(..)`.
+/// `include_web!("web").serve(MyApi).inject(..).on_event(..)`.
 ///
 /// Requires the `webview` and `assets` features of the `waterui` crate.
 ///
@@ -445,7 +442,6 @@ const WEB_MOUNT: &str = "web";
 /// unaffected.
 pub fn include_web(input: TokenStream) -> TokenStream {
     let args = parse_macro_input!(input as IncludeWebArgs);
-    let resources = &args.resources;
     let root_span = args.root.span();
 
     let root = match crate_root().join(args.root.value()).canonicalize() {
@@ -503,6 +499,7 @@ pub fn include_web(input: TokenStream) -> TokenStream {
     );
     let entry_lit = LitStr::new(&entry, root_span);
     let web_root = LitStr::new(WEB_MOUNT, root_span);
+    let assets_view = expand_include_web_assets(&waterui, &web_root, &entry_lit, spa, csp.as_ref());
 
     quote! {
         {
@@ -537,15 +534,7 @@ pub fn include_web(input: TokenStream) -> TokenStream {
             };
             let view = match dev {
                 ::core::option::Option::Some(url) => #waterui::webview::WebView::open(url),
-                ::core::option::Option::None => #waterui::webview::WebView::open_assets(
-                    #waterui::webview::DirectoryServer::new(
-                        #waterui::Bundle::new(#web_root).path(#resources, "")
-                    )
-                    .spa(#spa)
-                    #csp
-                    .into_server_fn(),
-                    #entry_lit,
-                ),
+                ::core::option::Option::None => #assets_view,
             };
             // A bundled frontend's links that leave its origin open in the
             // system browser; an application's `.navigation_policy(..)`
@@ -557,6 +546,38 @@ pub fn include_web(input: TokenStream) -> TokenStream {
         }
     }
     .into()
+}
+
+fn expand_include_web_assets(
+    waterui: &TokenStream2,
+    web_root: &LitStr,
+    entry_lit: &LitStr,
+    spa: bool,
+    csp: Option<&TokenStream2>,
+) -> TokenStream2 {
+    quote! {
+        #waterui::webview::WebView::open_assets_with(
+            move |env: &#waterui::env::Environment| {
+                let ::core::option::Option::Some(resources) =
+                    #waterui::ResourceContext::from_environment(env)
+                else {
+                    #waterui::contract_violation!(
+                        "include_web! needs the host's ResourceContext in its environment"
+                    );
+                    return ::core::option::Option::None;
+                };
+                ::core::option::Option::Some(
+                    #waterui::webview::DirectoryServer::new(
+                        #waterui::Bundle::new(#web_root).path(resources, "")
+                    )
+                    .spa(#spa)
+                    #csp
+                    .into_server(),
+                )
+            },
+            #entry_lit,
+        )
+    }
 }
 
 #[proc_macro]
