@@ -66,7 +66,7 @@ use crate::{
     border::Border,
     drag_drop::{Draggable, DropDestination, Transferable},
     filter::Opacity,
-    gesture::{Gesture, GestureObserver, LongPressGesture, TapGesture},
+    gesture::{GestureObserver, GestureType, LongPressGesture, TapGesture},
     interaction::Hittable,
     metadata::secure::{DynamicRange, DynamicRangeMetadata, Secure},
     theme,
@@ -85,9 +85,11 @@ use waterui_controls::button::{ButtonStyleHook, IntoButtonStyle};
 #[cfg(feature = "toggle")]
 use waterui_controls::toggle::{IntoToggleStyle, ToggleStyleHook};
 use waterui_core::id::TaggedView;
-use waterui_interaction::event::{Event, LifeCycle, LifeCycleHook, OnChange, OnEvent, TaskHook};
+use waterui_interaction::event::{
+    Event, HoverEvent, LifeCycle, LifeCycleHook, OnChange, OnEvent, TaskHook,
+};
 use waterui_interaction::interaction::{Disabled, InteractionReport, InteractionState, Selected};
-use waterui_interaction::key::{KeyHandling, OnKeyPress};
+use waterui_interaction::key::{KeyHandling, KeyPress, OnKeyPress};
 use waterui_structural_transition::{Transition, Transitioned};
 
 /// The inset a bare [`ViewExt::padding`] applies.
@@ -523,11 +525,8 @@ pub trait ViewExt: View + Sized {
 
     /// Adds an event handler for the specified interaction event.
     ///
-    /// You may want to use `ViewExt::on_hover_enter` or `ViewExt::on_hover_exit` for convenience.
-    ///
-    /// # Arguments
-    /// * `event` - The event to listen for
-    /// * `handler` - The action to execute when the event occurs (can be called multiple times)
+    /// You may want to use `ViewExt::on_hover_enter`, `ViewExt::on_hover_move`,
+    /// or `ViewExt::on_hover_exit` for convenience.
     fn event<H, Args>(self, event: Event, handler: H) -> Metadata<OnEvent, Self>
     where
         H: Handler<Args, ()>,
@@ -546,7 +545,16 @@ pub trait ViewExt: View + Sized {
     where
         H: Handler<Args, ()>,
     {
-        self.event(Event::HoverEnter, handler)
+        Metadata::new(self, OnEvent::hover_enter(handler))
+    }
+
+    /// Adds a handler that triggers when the cursor moves inside this view's bounds,
+    /// delivering [`HoverEvent`] as the handler's first argument.
+    fn on_hover_move<H, Args>(self, handler: H) -> Metadata<OnEvent, Self>
+    where
+        H: EventHandler<HoverEvent, Args>,
+    {
+        Metadata::new(self, OnEvent::hover_move(handler))
     }
 
     /// Adds a handler that triggers when the cursor exits this view's bounds.
@@ -560,7 +568,7 @@ pub trait ViewExt: View + Sized {
     where
         H: Handler<Args, ()>,
     {
-        self.event(Event::HoverExit, handler)
+        Metadata::new(self, OnEvent::hover_exit(handler))
     }
 
     /// Handles key presses that the focused view inside this one leaves
@@ -569,8 +577,8 @@ pub trait ViewExt: View + Sized {
     /// The keyboard goes to the focused view first. A key it does not use —
     /// Escape, or an arrow in a single-line text field — bubbles to its
     /// ancestors, nearest first, until a handler returns
-    /// [`KeyHandling::Handled`]. The handler
-    /// reads the key directly as `press: KeyPress`.
+    /// [`KeyHandling::Handled`]. The handler receives [`KeyPress`] as its first
+    /// argument.
     ///
     /// ```rust
     /// use waterui::prelude::*;
@@ -589,9 +597,18 @@ pub trait ViewExt: View + Sized {
     ///     },
     /// ).state(&open);
     /// ```
+    ///
+    /// Omitting [`KeyPress`] as the first parameter fails to compile:
+    ///
+    /// ```compile_fail
+    /// use waterui::key::KeyHandling;
+    /// use waterui::prelude::*;
+    ///
+    /// text!("Key").on_key_press(|| KeyHandling::Ignored);
+    /// ```
     fn on_key_press<H, Args>(self, handler: H) -> Metadata<OnKeyPress, Self>
     where
-        H: Handler<Args, KeyHandling>,
+        H: EventHandler<KeyPress, Args, KeyHandling>,
     {
         Metadata::new(self, OnKeyPress::new(handler))
     }
@@ -872,7 +889,8 @@ pub trait ViewExt: View + Sized {
         Metadata::new(self, accessibility::AccessibilityStateSignal::new(state))
     }
 
-    /// Observes a gesture and executes an action when the gesture is recognized.
+    /// Observes a gesture and executes an action whose handler consumes
+    /// `G::Event` as its first argument, followed by environment extractors.
     ///
     /// The action resolves its extractors from the environment of the view it
     /// is attached to, so a value it extracts with `State<T>` must be installed
@@ -882,15 +900,22 @@ pub trait ViewExt: View + Sized {
     /// # Arguments
     /// * `gesture` - The gesture to observe
     /// * `action` - The action to execute when the gesture is recognized
-    fn gesture<H, Args>(
-        self,
-        gesture: impl Into<Gesture>,
-        action: H,
-    ) -> Metadata<GestureObserver, Self>
+    ///
+    /// Passing a handler expecting another gesture's event type fails to
+    /// compile:
+    ///
+    /// ```compile_fail
+    /// use waterui::gesture::{DragEvent, TapGesture};
+    /// use waterui::prelude::*;
+    ///
+    /// text!("Tap").gesture(TapGesture::new(), |_: DragEvent| {});
+    /// ```
+    fn gesture<G, H, Args>(self, gesture: G, action: H) -> Metadata<GestureObserver, Self>
     where
-        H: Handler<Args, ()>,
+        G: GestureType,
+        H: EventHandler<G::Event, Args>,
     {
-        Metadata::new(self, GestureObserver::new(gesture, action))
+        Metadata::new(self, GestureObserver::from_event(gesture, action))
     }
 
     /// Adds a tap gesture recognizer to this view that triggers the specified action.
@@ -909,7 +934,10 @@ pub trait ViewExt: View + Sized {
     where
         H: Handler<Args, ()>,
     {
-        self.gesture(TapGesture::new(), action)
+        Metadata::new(
+            self,
+            GestureObserver::without_event(TapGesture::new(), action),
+        )
     }
 
     /// Adds a long-press gesture recognizer to this view using the platform's
@@ -918,7 +946,10 @@ pub trait ViewExt: View + Sized {
     where
         H: Handler<Args, ()>,
     {
-        self.gesture(LongPressGesture::new(), action)
+        Metadata::new(
+            self,
+            GestureObserver::without_event(LongPressGesture::new(), action),
+        )
     }
     /// Adds a long-press gesture recognizer to this view.
     ///
@@ -933,10 +964,13 @@ pub trait ViewExt: View + Sized {
     where
         H: Handler<Args, ()>,
     {
-        self.gesture(
-            LongPressGesture::new()
-                .minimum_duration(Duration::from_millis(u64::from(minimum_duration_ms))),
-            action,
+        Metadata::new(
+            self,
+            GestureObserver::without_event(
+                LongPressGesture::new()
+                    .minimum_duration(Duration::from_millis(u64::from(minimum_duration_ms))),
+                action,
+            ),
         )
     }
 

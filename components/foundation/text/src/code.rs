@@ -410,7 +410,7 @@ fn copy_button(content: Computed<Str>, on_copied: Option<OnCopied>) -> impl View
     Metadata::new(
         Metadata::new(
             text("Copy").color(Color::accent()),
-            GestureObserver::new(TapGesture::new(), move |env: Environment| {
+            GestureObserver::without_event(TapGesture::new(), move |env: Environment| {
                 let text = content.snapshot();
                 copy_to_clipboard(&text);
                 if let Some(on_copied) = &on_copied {

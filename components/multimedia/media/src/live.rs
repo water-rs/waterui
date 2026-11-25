@@ -177,7 +177,7 @@ impl View for LivePhoto {
 
         Metadata::new(
             overlay(still, motion),
-            GestureObserver::new(
+            GestureObserver::without_event(
                 LongPressGesture::new().minimum_duration(activation_duration),
                 move || {
                     if !is_playing_on_press.snapshot() {

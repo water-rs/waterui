@@ -4,7 +4,6 @@
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
-#[cfg(feature = "menu")]
 use crate::num_cast::f64_as_f32;
 #[cfg(feature = "menu")]
 use crate::renderer::chrome::record_surface_at_rest;
@@ -23,6 +22,8 @@ use cherenkov_record::PATH_TOLERANCE;
 use kurbo::{Affine, Rect, RoundedRect, Shape as _, Vec2};
 use waterui_core::contract_violation;
 use waterui_core::handler::ReportExtraction as _;
+use waterui_core::layout::Point;
+use waterui_interaction::gesture::{PointerButton, TapEvent};
 use waterui_shape::CornerRadius;
 
 #[cfg(feature = "menu")]
@@ -513,7 +514,12 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         let action = Rc::clone(action);
         Rc::new(RefCell::new(
             move |_renderer: &mut crate::renderer::SemanticCore<E>, runtime_env: &Environment| {
-                let action_env = captured_env.layered_on(runtime_env);
+                let tap_env = runtime_env.extending(State(TapEvent::new(
+                    Point::new(0.0, 0.0),
+                    1,
+                    PointerButton::Primary,
+                )));
+                let action_env = captured_env.layered_on(&tap_env);
                 action.borrow_mut()(&action_env).report_extraction();
                 true
             },
@@ -763,8 +769,16 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                     target,
                     press_slot,
                     chrome.keyboard_focusable(),
-                    move |_renderer, _point, runtime_env| {
-                        layered_action(runtime_env).report_extraction();
+                    move |_renderer, point, runtime_env| {
+                        let tap_env = runtime_env.extending(State(TapEvent::new(
+                            Point::new(
+                                f64_as_f32(point.x - bounds.x0),
+                                f64_as_f32(point.y - bounds.y0),
+                            ),
+                            1,
+                            PointerButton::Primary,
+                        )));
+                        layered_action(&tap_env).report_extraction();
                         false
                     },
                 );
@@ -807,8 +821,16 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                     bounds,
                     press_slot,
                     true,
-                    move |_renderer, _point, runtime_env| {
-                        layered_action(runtime_env).report_extraction();
+                    move |_renderer, point, runtime_env| {
+                        let tap_env = runtime_env.extending(State(TapEvent::new(
+                            Point::new(
+                                f64_as_f32(point.x - bounds.x0),
+                                f64_as_f32(point.y - bounds.y0),
+                            ),
+                            1,
+                            PointerButton::Primary,
+                        )));
+                        layered_action(&tap_env).report_extraction();
                         false
                     },
                 );

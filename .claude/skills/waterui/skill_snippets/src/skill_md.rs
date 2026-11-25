@@ -586,7 +586,7 @@ pub fn skill_block_15() {
         view.on_tap(|| ()) // [ellipsis filled]
     };
     let g = Gesture::from(TapGesture::new());
-    let handler = || ();
+    let handler = |_: waterui::gesture::GestureEvent| ();
     let view = Divider;
     let _ = { view.gesture(g, handler) };
     let items = ("Copy".action(|| ()),);

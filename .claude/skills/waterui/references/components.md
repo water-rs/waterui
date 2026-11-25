@@ -403,9 +403,12 @@ impl PrimitiveButtonStyle for DoubleTapButtonStyle {
         configuration
             .into_label()
             .padding_with((8.0, 16.0))
-            .gesture(TapGesture::repeat(NonZeroU32::new(2).unwrap()), move || {
-                trigger.trigger();
-            })
+            .gesture(
+                TapGesture::repeat(NonZeroU32::new(2).unwrap()),
+                move |_: TapEvent| {
+                    trigger.trigger();
+                },
+            )
     }
 }
 

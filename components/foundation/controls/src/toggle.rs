@@ -261,11 +261,12 @@ fn compose_custom_toggle<L: View, S: CustomToggleStyle>(
         interaction,
     });
     let tap_toggle = toggle.clone();
-    let gesture = GestureObserver::new(TapGesture::new(), move |action_env: Environment| {
-        if !Disabled::resolve(&action_env, false).snapshot() {
-            tap_toggle.set(!tap_toggle.snapshot());
-        }
-    });
+    let gesture =
+        GestureObserver::without_event(TapGesture::new(), move |action_env: Environment| {
+            if !Disabled::resolve(&action_env, false).snapshot() {
+                tap_toggle.set(!tap_toggle.snapshot());
+            }
+        });
     let with_gesture = Metadata::new(body, gesture);
     let checked_state = AccessibilityStateSignal::resolve(
         env,
