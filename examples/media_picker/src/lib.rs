@@ -2,7 +2,7 @@
 //!
 //! This example showcases:
 //! - `MediaPicker` component for selecting photos, videos, and live photos
-//! - `Selected::load()` for retrieving selected media content
+//! - Binding directly to `Option<Media>` and observing `PickerStatus`
 //! - Displaying loaded media (Photo, Video, `LivePhoto`)
 //! - Filter options for different media types
 
@@ -10,7 +10,7 @@ use waterui::AnyView;
 use waterui::app::{App, Windows};
 use waterui::component::Dynamic;
 use waterui::media::live::LivePhotoSource;
-use waterui::media::media_picker::{MediaFilter, MediaPicker, Selected};
+use waterui::media::media_picker::{MediaFilter, MediaPicker, PickerStatus};
 use waterui::media::{LivePhoto, Media, Url};
 use waterui::prelude::*;
 use waterui::preview;
@@ -32,9 +32,10 @@ impl_constant!(DisplayState);
 pub fn demo() -> impl View {
     // Single state binding for cleaner reactivity
     let display_state: Binding<DisplayState> = binding(DisplayState::Empty);
-    let image_selection: Binding<Option<Selected>> = Binding::default();
-    let video_selection: Binding<Option<Selected>> = Binding::default();
-    let live_photo_selection: Binding<Option<Selected>> = Binding::default();
+    let image_selection: Binding<Option<Media>> = Binding::default();
+    let video_selection: Binding<Option<Media>> = Binding::default();
+    let live_photo_selection: Binding<Option<Media>> = Binding::default();
+    let picker_status: Binding<PickerStatus> = Binding::default();
 
     // Main layout
     vstack((
@@ -49,18 +50,21 @@ pub fn demo() -> impl View {
                 "Pick Image",
                 MediaFilter::Image,
                 &image_selection,
+                &picker_status,
                 &display_state,
             ),
             picker_button(
                 "Pick Video",
                 MediaFilter::Video,
                 &video_selection,
+                &picker_status,
                 &display_state,
             ),
             picker_button(
                 "Pick Live Photo",
                 MediaFilter::LivePhoto,
                 &live_photo_selection,
+                &picker_status,
                 &display_state,
             ),
         ))
@@ -72,6 +76,15 @@ pub fn demo() -> impl View {
         media_display_area(display_state.clone()),
         spacer(),
     ))
+    .on_change(
+        &picker_status,
+        move |status: PickerStatus, State(state): State<Binding<DisplayState>>| {
+            if let Some(error) = status.error() {
+                state.set(DisplayState::Error(error.to_owned()));
+            }
+        },
+    )
+    .state(&display_state)
 }
 
 /// Builds the media picker example app.
@@ -83,22 +96,23 @@ pub fn app(env: Environment) -> App<impl Windows> {
 fn picker_button(
     label: &'static str,
     filter: MediaFilter,
-    selection: &Binding<Option<Selected>>,
+    selection: &Binding<Option<Media>>,
+    status: &Binding<PickerStatus>,
     display_state: &Binding<DisplayState>,
 ) -> impl View + use<> {
     // The picker owns the selection; the display state it drives is injected
     // with `.state(..)` and reaches the change handler as a `State` extractor.
     MediaPicker::new(label, selection)
         .filter(filter)
+        .status(status)
         .on_change(
             selection,
-            move |new_selection: Option<Selected>, State(state): State<Binding<DisplayState>>| {
-                let Some(selected) = new_selection else {
+            move |new_selection: Option<Media>, State(state): State<Binding<DisplayState>>| {
+                let Some(media) = new_selection else {
                     state.set(DisplayState::Empty);
                     return;
                 };
 
-                let media = selected.load();
                 tracing::debug!("Loaded media: {:?}", media);
                 match validate_media_result(&media, filter) {
                     Ok(()) => state.set(DisplayState::Loaded(media)),

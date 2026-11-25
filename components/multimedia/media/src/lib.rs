@@ -67,15 +67,15 @@ pub mod live;
 pub mod photo;
 
 /// Media picker functionality for platform-native media selection.
-#[cfg(feature = "media-picker")]
+#[cfg(all(feature = "media-picker", feature = "std"))]
 pub mod media_picker;
 /// Video components and types re-exported from `waterui-video`.
 #[cfg(feature = "video")]
 pub mod video {
     pub use waterui_video::video::*;
 }
-#[cfg(feature = "media-picker")]
-pub use media_picker::MediaPicker;
+#[cfg(all(feature = "media-picker", feature = "std"))]
+pub use media_picker::{MediaPicker, PickerStatus};
 #[cfg(feature = "video")]
 pub use {
     live::{LivePhoto, LivePhotoEvent},
@@ -108,7 +108,6 @@ pub use url::Url;
 
 #[cfg(feature = "video")]
 use waterui_core::OneOf3;
-#[cfg(feature = "video")]
 use waterui_core::reactive::impl_constant;
 use waterui_core::{Environment, View};
 
@@ -153,8 +152,9 @@ pub enum Media {
     Video(Url),
 }
 
+impl_constant!(Media);
 #[cfg(feature = "video")]
-impl_constant!(LivePhotoSource, Media);
+impl_constant!(LivePhotoSource);
 
 impl View for Media {
     fn body(self, _env: &Environment) -> impl View {
