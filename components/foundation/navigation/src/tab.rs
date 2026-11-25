@@ -20,10 +20,7 @@ use waterui_core::{
 };
 
 /// Adaptive presentation style for a [`Tabs`] container.
-#[expect(
-    clippy::exhaustive_enums,
-    reason = "Step 3 marks TabStyle #[non_exhaustive] once split crate hydrolysis-m3 updates its match on item.placement"
-)]
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(u8)]
 pub enum TabStyle {
@@ -34,34 +31,6 @@ pub enum TabStyle {
     TabBar = 1,
     /// Always request the platform sidebar or navigation-rail presentation.
     Sidebar = 2,
-}
-
-/// Temporary compatibility alias for split crates during the `#4431` migration.
-#[doc(hidden)]
-pub type NativeTabStyle = TabStyle;
-
-/// Temporary compatibility constructors for split crates during the `#4431` migration.
-#[doc(hidden)]
-pub mod tab_style {
-    use super::TabStyle;
-
-    /// Returns [`TabStyle::Automatic`].
-    #[must_use]
-    pub const fn automatic() -> TabStyle {
-        TabStyle::Automatic
-    }
-
-    /// Returns [`TabStyle::TabBar`].
-    #[must_use]
-    pub const fn tab_bar() -> TabStyle {
-        TabStyle::TabBar
-    }
-
-    /// Returns [`TabStyle::Sidebar`].
-    #[must_use]
-    pub const fn sidebar() -> TabStyle {
-        TabStyle::Sidebar
-    }
 }
 
 /// The part a tab plays in the container's chrome.
