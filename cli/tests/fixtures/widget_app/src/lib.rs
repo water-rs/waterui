@@ -1,12 +1,12 @@
 //! Widget declarations and a typed action exercised through native Swift.
 
-use waterui::widgets::*;
+use waterui::widgets::prelude::*;
 
 #[waterui::widget(name = "Steps", description = "Today's step count")]
 fn steps(context: &WidgetContext) -> Timeline {
     // The FFI probe asserts both the context and shared store travel intact —
     // echo the family, proposed size, and stored step count into the produced
-    // content.
+    // content, and exercise the full aligned widget vocabulary.
     let size = context.display_size();
     let count: u32 = context.shared_store().get("steps").unwrap_or(0);
     let steps = format!(
@@ -19,10 +19,17 @@ fn steps(context: &WidgetContext) -> Timeline {
         TimelineEntry::new(
             Date::unix_timestamp(1_700_000_000.0),
             vstack((
-                text("Steps").font(Font::style(FontStyle::Title)),
-                text(steps).color(Color::ACCENT),
-                Shape::capsule().fill(Color::srgb(0.2, 0.6, 0.9)),
-            )),
+                text("Steps").headline(),
+                spacer(),
+                text(Date::unix_timestamp(1_700_000_060.0)).relative(),
+                image_system("figure.walk").a11y_label("Walking"),
+                text(steps).foreground(Color::ACCENT),
+                Shape::capsule()
+                    .fill(Color::srgb(0.2, 0.6, 0.9))
+                    .size(48.0, 8.0),
+            ))
+            .padding()
+            .background(Color::ACCENT),
         ),
         TimelineEntry::new(Date::unix_timestamp(1_700_000_060.0), text("second")),
     ])
@@ -38,7 +45,7 @@ fn steps(context: &WidgetContext) -> Timeline {
     families = [systemSmall]
 )]
 fn now() -> impl WidgetContent {
-    hstack((text("now"), Image::sf_symbol("clock.fill")))
+    hstack((text("now"), image_system("clock.fill")))
 }
 
 /// A serializable widget action — `#[widget_intent]` on the type declares

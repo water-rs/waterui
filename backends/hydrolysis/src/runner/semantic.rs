@@ -222,7 +222,7 @@ impl SemanticRuntime {
         height: u32,
         family_resolution: FontFamilyResolution,
     ) -> Self {
-        let window = root_window(Window::new("", content));
+        let window = root_window(Window::new("", content), &env);
         // A native app loads the fonts its `ResourceContext` stages; a browser
         // page has no synchronous resource directory to scan, so the semantic
         // runtime there shapes with the default collection alone.

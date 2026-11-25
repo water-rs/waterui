@@ -1168,7 +1168,7 @@ fn runtime_window_with_platform(
     mut platform: HeadlessPlatformWindow,
     env: &Environment,
 ) -> RuntimeWindow<HeadlessPlatformWindow, crate::text::ParleyEngine> {
-    let window = root_window(window);
+    let window = root_window(window, env);
     platform.apply_properties(&window);
     let renderer = HydrolysisRenderer::with_engine(
         Rc::new(MinimalTestTheme::default()),
@@ -1199,7 +1199,7 @@ fn host_window_pipeline_requires_no_gpu_surface_trait() {
         env: &Environment,
     ) -> RuntimeWindow<P, E> {
         RuntimeWindow::new(
-            root_window(window),
+            root_window(window, env),
             platform,
             renderer,
             RenderDiagnosticsConfig {
@@ -1420,7 +1420,7 @@ fn sized_test_runtime_window(
     let window = Window::new("", || ());
     let mut platform =
         HeadlessPlatformWindow::on_painter(&OffscreenPainter::for_tests(), width, height);
-    let window = root_window(window);
+    let window = root_window(window, env);
     platform.apply_properties(&window);
     let renderer = HydrolysisRenderer::with_engine(
         Rc::new(MinimalTestTheme::default()),
