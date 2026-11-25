@@ -14,8 +14,8 @@ use waterui::component::text;
 use waterui::layout::frame::Frame;
 use waterui::layout::scroll::scroll;
 use waterui_media::{
-    LivePhoto, Media, MediaPicker, Photo, PhotoCache, PhotoStatus, Url, live::LivePhotoSource,
-    media_picker::Selected, photo, photo::Event as PhotoEvent,
+    LivePhoto, Media, MediaPicker, Photo, PhotoCache, PhotoEvent, PhotoStatus, Url,
+    live::LivePhotoSource, media_picker::Selected, photo,
 };
 use waterui_testing::{Role, UiBuilder};
 use waterui_testing::{RuntimeDriver, SemanticApp, TestStyle};
@@ -103,7 +103,7 @@ fn photo_exposes_accessibility_image_after_load(ui: UiBuilder) {
     let last_event = Binding::container(String::new());
     let loaded_for_view = loaded.clone();
     let last_event_for_view = last_event.clone();
-    // `Event::Loaded` waits for the frame's registration with the engine,
+    // `PhotoEvent::Loaded` waits for the frame's registration with the engine,
     // which only the rendered runtime performs — the semantic runtime never
     // records a scene.
     let mut app = ui.theme(TestStyle::default()).mount_offscreen(move || {

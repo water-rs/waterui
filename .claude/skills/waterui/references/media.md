@@ -24,13 +24,12 @@ behind the `image` feature, which is not on by default: add `features = ["image"
   bridge a native player; Hydrolysis platforms (Android, Windows, Linux) draw video only
   when the app's own `waterui` dependency declares `video-gpu`.
 - `remote` — fetching from web URLs links an HTTP client. Without it a `Photo` pointed
-  at `https://…` reports `Event::Error` naming the feature; bundled and local sources
+  at `https://…` reports `PhotoEvent::Error` naming the feature; bundled and local sources
   need nothing.
 - `webview` — see Web content.
 
 ```rust
-use waterui::media::photo::Event as PhotoEvent;   // the event type needs this alias import
-use waterui::media::{Image, Photo, PhotoCache, PhotoStatus, Url, photo};
+use waterui::media::{Image, Photo, PhotoCache, PhotoEvent, PhotoStatus, Url, photo};
 
 photo("https://waterui.dev/logo.png")        // impl IntoComputed<Url>; Url: From<&'static str>
     .resizable()
@@ -96,8 +95,8 @@ VideoPlayer::new(session)
     .show_controls(true)
     .content_mode(video::ContentMode::Fit)              // Fit | Fill | Stretch
     .on_event(|event| match event {
-        video::Event::ReadyToPlay | video::Event::Ended => (),
-        video::Event::Error { message: _ } => (),
+        VideoEvent::ReadyToPlay | VideoEvent::Ended => (),
+        VideoEvent::Error { message: _ } => (),
         _ => (),                                        // Buffering, PlaybackStateChanged, …
     })
 ```
@@ -123,7 +122,7 @@ the default `vod_default()` buffering. On the controller, `track_catalog()` is a
 `Computed<TrackCatalog>` of audio, video and subtitle tracks, `live_window()` a
 `Computed<Option<LiveWindow>>` (`None` for finite media) with `seek_to_live_edge()` →
 `Result<(), PlaybackError>`, `step_forward()` / `step_backward()` pause and show the next or
-previous frame, and `preserve_pitch()` is a `Binding<bool>`. `video::Event::PlaybackMetrics
+previous frame, and `preserve_pitch()` is a `Binding<bool>`. `VideoEvent::PlaybackMetrics
 { metrics }` arrives periodically while playing.
 
 Runtime capture permissions (camera, microphone, location) are requested through
