@@ -1,3 +1,4 @@
+use crate::num_cast::f64_as_f32;
 use crate::theme::NavigationMotion;
 use waterui::navigation::{
     AnyNavigationTransition, NavigationTransitionDirection, RetainedNavigationTransition,
@@ -48,7 +49,7 @@ pub fn navigation_presentation(
     layout_direction: LayoutDirection,
     reduce_motion: bool,
 ) -> NavigationPresentation {
-    let progress = crate::num_cast::f64_as_f32(progress).clamp(0.0, 1.0);
+    let progress = f64_as_f32(progress).clamp(0.0, 1.0);
     let (outgoing, incoming) = match style.retained() {
         RetainedNavigationTransition::MatchedGeometry(id) => {
             return NavigationPresentation::Matched(id);
@@ -68,8 +69,8 @@ pub fn navigation_presentation(
             let pair = style.transitions(direction);
             let geometry = TransitionGeometry::new(
                 Size::new(
-                    crate::num_cast::f64_as_f32(viewport_size.width),
-                    crate::num_cast::f64_as_f32(viewport_size.height),
+                    f64_as_f32(viewport_size.width),
+                    f64_as_f32(viewport_size.height),
                 ),
                 layout_direction,
             );
@@ -128,7 +129,7 @@ fn material_shared_axis_x_properties(
             TransitionProperties::IDENTITY,
         );
     }
-    let slide_distance = crate::num_cast::f64_as_f32(slide_distance);
+    let slide_distance = f64_as_f32(slide_distance);
     let sign = match direction {
         NavigationTransitionDirection::Push => -1.0,
         NavigationTransitionDirection::Pop => 1.0,
