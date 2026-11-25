@@ -36,7 +36,9 @@ use waterui_capture::ContentLedger;
 use waterui_capture::content_ledger::OwedContent;
 use waterui_core::contract_violation;
 use waterui_core::dynamic::{Dynamic, DynamicHandler};
-use waterui_core::handler::ReportExtraction as _;
+use waterui_core::handler::{
+    BoxedEventAction, EventHandler, ReportExtraction as _, boxed_event_handler,
+};
 use waterui_core::reactive::signal::IntoComputed;
 use waterui_core::reactive::watcher::BoxWatcherGuard;
 use waterui_core::{
@@ -404,7 +406,7 @@ pub struct Photo<P = (), F = ()> {
     /// The image source to resolve and display.
     source: PhotoSource,
     /// Event handler for photo loading events.
-    on_event: Option<waterui_core::handler::BoxedEventAction<Event>>,
+    on_event: Option<BoxedEventAction<PhotoEvent>>,
     /// Caller-owned status binding updated across each source's load lifecycle.
     status: Option<Binding<PhotoStatus>>,
     /// Static placeholder builder shown while a source loads.
@@ -432,10 +434,10 @@ impl<P, F> core::fmt::Debug for Photo<P, F> {
 /// Events emitted by the Photo component.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
-pub enum Event {
+pub enum PhotoEvent {
     /// The picture is on screen: the source's final decoded frame registered
     /// with the scene backend. Registration settles after the frame is
-    /// decoded — a frame the backend refuses reports [`Event::Error`]
+    /// decoded — a frame the backend refuses reports [`PhotoEvent::Error`]
     /// instead, never `Loaded`.
     Loaded,
     /// The image failed to load: the source did not decode, or the render
@@ -544,19 +546,19 @@ impl<P, F> Photo<P, F> {
     /// ```rust
     /// use waterui::prelude::*;
     /// use waterui_media::url::Url;
-    /// use waterui_media::{Photo, photo::Event};
+    /// use waterui_media::{Photo, PhotoEvent};
     ///
     /// # fn gallery() -> impl View {
     /// # let url = Url::parse("https://www.rust-lang.org/logos/rust-logo-512x512.png").unwrap();
-    /// let photo = Photo::new(url.clone()).on_event(|event: Event| match event {
-    ///     Event::Loaded => tracing::debug!("Image loaded!"),
-    ///     Event::Error(msg) => tracing::debug!("Error: {msg}"),
+    /// let photo = Photo::new(url.clone()).on_event(|event: PhotoEvent| match event {
+    ///     PhotoEvent::Loaded => tracing::debug!("Image loaded!"),
+    ///     PhotoEvent::Error(msg) => tracing::debug!("Error: {msg}"),
     ///     _ => {}
     /// });
     ///
     /// let last_status: Binding<String> = binding(String::new());
     /// let photo = Photo::new(url)
-    ///     .on_event(|event: Event, State(last): State<Binding<String>>| {
+    ///     .on_event(|event: PhotoEvent, State(last): State<Binding<String>>| {
     ///         last.set(format!("{event:?}"));
     ///     })
     ///     .state(&last_status);
@@ -566,9 +568,9 @@ impl<P, F> Photo<P, F> {
     #[must_use]
     pub fn on_event<H, A>(mut self, handler: H) -> Self
     where
-        H: waterui_core::handler::EventHandler<Event, A, ()> + 'static,
+        H: EventHandler<PhotoEvent, A, ()> + 'static,
     {
-        self.on_event = Some(waterui_core::handler::boxed_event_handler(handler));
+        self.on_event = Some(boxed_event_handler(handler));
         self
     }
 }
@@ -821,7 +823,7 @@ impl core::fmt::Display for PhotoLoadError {
 
 impl core::error::Error for PhotoLoadError {}
 
-type PhotoEventHandler = Rc<RefCell<Option<waterui_core::handler::BoxedEventAction<Event>>>>;
+type PhotoEventHandler = Rc<RefCell<Option<BoxedEventAction<PhotoEvent>>>>;
 
 #[expect(
     clippy::too_many_arguments,
@@ -904,7 +906,7 @@ fn start_load_task(
                         owed.fail(PhotoLoadError(e.clone()));
                     }
                     if fresh && let Some(on_event) = on_event.borrow_mut().as_mut() {
-                        on_event(Event::Error(e), &env).report_extraction();
+                        on_event(PhotoEvent::Error(e), &env).report_extraction();
                     }
                 }
             }
@@ -1063,7 +1065,7 @@ fn settle_registration_inner(
             if finished {
                 ui_sink.mark_ready();
                 if let Some(on_event) = on_event.borrow_mut().as_mut() {
-                    on_event(Event::Loaded, env).report_extraction();
+                    on_event(PhotoEvent::Loaded, env).report_extraction();
                 }
             }
         }
@@ -1077,7 +1079,7 @@ fn settle_registration_inner(
                 owed.fail(error);
             }
             if let Some(on_event) = on_event.borrow_mut().as_mut() {
-                on_event(Event::Error(message), env).report_extraction();
+                on_event(PhotoEvent::Error(message), env).report_extraction();
             }
         }
         Outcome::Unknown(status) => {
@@ -1177,7 +1179,7 @@ mod tests {
     #[cfg(feature = "remote")]
     use super::fetch_and_decode_streaming;
     use super::{
-        Event, Photo, PhotoCache, PhotoEventHandler, PhotoLoadState, PhotoStatus, PhotoUiSink,
+        Photo, PhotoCache, PhotoEvent, PhotoEventHandler, PhotoLoadState, PhotoStatus, PhotoUiSink,
         appear_photo, begin_source_load, decode_finished, subscribe_photo_source,
         update_photo_source,
     };
@@ -1442,15 +1444,15 @@ mod tests {
         let events = Rc::new(RefCell::new(Vec::new()));
         let handler: PhotoEventHandler = Rc::new(RefCell::new(Some(Box::new({
             let events = Rc::clone(&events);
-            move |event: Event, _: &Environment| {
+            move |event: PhotoEvent, _: &Environment| {
                 events.borrow_mut().push(match event {
-                    Event::Loaded => String::from("Loaded"),
-                    Event::Error(message) => format!("Error({message})"),
+                    PhotoEvent::Loaded => String::from("Loaded"),
+                    PhotoEvent::Error(message) => format!("Error({message})"),
                 });
                 Ok(())
             }
         })
-            as BoxedEventAction<Event>)));
+            as BoxedEventAction<PhotoEvent>)));
         (events, handler)
     }
 
