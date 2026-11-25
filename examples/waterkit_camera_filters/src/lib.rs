@@ -5,6 +5,7 @@
 //! - Waterkit Permission: camera permission check/request
 //! - Waterkit Camera: native camera streaming + device enumeration
 
+use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
 
 use futures::StreamExt;
@@ -79,8 +80,7 @@ pub fn demo() -> impl View {
 #[preview]
 fn camera_filter_lab_preview() -> impl View {
     let state = CameraLabState::preview();
-    let preview =
-        synthetic_camera_surface(state.active_filter.clone(), state.filter_strength.clone());
+    let preview = synthetic_camera_surface(&state.active_filter, &state.filter_strength);
     camera_filter_lab(preview, &state)
 }
 
@@ -182,12 +182,21 @@ fn camera_surface(
     .padding_with(8.0)
 }
 
+fn filter_uniforms_signal(
+    active_filter: &Binding<usize>,
+    filter_strength: &Binding<f64>,
+) -> impl Signal<Output = FilterUniforms> + use<> {
+    active_filter
+        .zip(filter_strength)
+        .map(|(active, strength)| FilterUniforms(filter_params(active, strength_uniform(strength))))
+}
+
 fn synthetic_camera_surface(
-    active_filter: Binding<usize>,
-    filter_strength: Binding<f64>,
-) -> impl View {
-    SyntheticCameraPreviewRenderer::new(active_filter, filter_strength)
-        .into_view()
+    active_filter: &Binding<usize>,
+    filter_strength: &Binding<f64>,
+) -> impl View + use<> {
+    GpuView::new(SyntheticCameraPreviewContent::default())
+        .params(filter_uniforms_signal(active_filter, filter_strength))
         .size(960.0, 540.0)
         .background(Surface)
         .padding_with(8.0)
@@ -203,27 +212,33 @@ fn filter_button(
         .state(active_filter)
 }
 
-/// The newest filter parameters posted from the UI side to the render side.
-///
-/// `Binding`s are UI-thread state and cannot cross into a `GpuContent`, so
-/// the value the shader sees travels through this mailbox instead.
+/// Filter uniforms delivered reactively from the UI thread through
+/// [`GpuContent::update`].
 #[derive(Clone, Copy)]
 struct FilterUniforms([f32; 5]);
 
-/// Render-side half of [`SyntheticCameraPreviewRenderer`]: draws the last
-/// posted uniform set as a flat color.
-struct SyntheticCameraPreviewContent {
-    uniforms: Arc<Mutex<FilterUniforms>>,
+impl Default for FilterUniforms {
+    fn default() -> Self {
+        Self(filter_params(0, 0.75))
+    }
 }
 
-impl GpuContent for SyntheticCameraPreviewContent {
+/// Render-side synthetic preview: draws the latest delivered [`FilterUniforms`]
+/// as a flat color.
+#[derive(Default)]
+struct SyntheticCameraPreviewContent {
+    uniforms: FilterUniforms,
+}
+
+impl GpuContent<FilterUniforms> for SyntheticCameraPreviewContent {
     fn setup(&mut self, _gpu: &Context<'_>) {}
 
+    fn update(&mut self, uniforms: FilterUniforms) {
+        self.uniforms = uniforms;
+    }
+
     fn render(&mut self, frame: &mut Frame<'_>) {
-        let FilterUniforms([brightness, saturation, contrast, tint, vignette]) = *self
-            .uniforms
-            .lock()
-            .expect("synthetic preview uniform mailbox poisoned");
+        let FilterUniforms([brightness, saturation, contrast, tint, vignette]) = self.uniforms;
         let red = f32::mul_add(tint, 0.08, 0.32 + brightness).clamp(0.0, 1.0);
         let green = f32::mul_add(
             vignette,
@@ -266,54 +281,19 @@ impl GpuContent for SyntheticCameraPreviewContent {
     }
 }
 
-/// UI-side half of the synthetic preview: owns the filter bindings and posts
-/// their values to the render side once per frame.
-struct SyntheticCameraPreviewRenderer {
-    active_filter: Binding<usize>,
-    filter_strength: Binding<f64>,
-}
-
-impl SyntheticCameraPreviewRenderer {
-    const fn new(active_filter: Binding<usize>, filter_strength: Binding<f64>) -> Self {
-        Self {
-            active_filter,
-            filter_strength,
-        }
-    }
-
-    fn into_view(self) -> GpuView<SyntheticCameraPreviewContent> {
-        let uniforms = Arc::new(Mutex::new(FilterUniforms(filter_params(0, 0.75))));
-        let bridge = std::cell::RefCell::new(self);
-        GpuView::new(SyntheticCameraPreviewContent {
-            uniforms: Arc::clone(&uniforms),
-        })
-        .on_frame(move || {
-            let bridge = bridge.borrow();
-            *uniforms
-                .lock()
-                .expect("synthetic preview uniform mailbox poisoned") =
-                FilterUniforms(filter_params(
-                    bridge.active_filter.snapshot(),
-                    strength_uniform(bridge.filter_strength.snapshot()),
-                ));
-        })
-    }
-}
-
-/// What the UI side of the camera filter posts to the render side.
+/// Camera device handles and incoming frames shared between the UI camera task
+/// and the render thread.
 struct CameraShared {
     /// The render device's handles, published once at setup so the camera
     /// opens on the device the engine draws with.
     gpu_handles: Option<(wgpu::Device, wgpu::Queue)>,
-    /// The newest filter parameters the bindings produced.
-    uniforms: FilterUniforms,
     /// The newest camera frame the stream task delivered; `None` once the
     /// render side took it.
     latest_frame: Option<waterkit_camera::Frame>,
 }
 
-/// UI-side half of the camera filter: owns the bindings and the task that
-/// opens the camera and drains its frame stream — all confined to the UI
+/// UI-side half of the camera filter: owns the reconnect state and the task
+/// that opens the camera and drains its frame stream — all confined to the UI
 /// thread.
 struct CameraFilterRenderer {
     active_filter: Binding<usize>,
@@ -327,9 +307,11 @@ struct CameraFilterRenderer {
 }
 
 /// Render-side half of the camera filter: pipelines, resources, the frame
-/// converter and the newest converted camera texture — all `Send`.
+/// converter, the newest converted camera texture, and the latest filter
+/// uniforms — all `Send`.
 struct CameraFilterContent {
     shared: Arc<Mutex<CameraShared>>,
+    uniforms: FilterUniforms,
     pipeline: Option<wgpu::RenderPipeline>,
     bind_group_layout: Option<wgpu::BindGroupLayout>,
     sampler: Option<wgpu::Sampler>,
@@ -356,17 +338,18 @@ impl CameraFilterRenderer {
             camera_task: None,
             shared: Arc::new(Mutex::new(CameraShared {
                 gpu_handles: None,
-                uniforms: FilterUniforms(filter_params(0, 0.75)),
                 latest_frame: None,
             })),
         }
     }
 
-    fn into_view(self) -> GpuView<CameraFilterContent> {
+    fn into_view(self) -> impl View {
         let shared = Arc::clone(&self.shared);
-        let bridge = std::cell::RefCell::new(self);
+        let uniforms = filter_uniforms_signal(&self.active_filter, &self.filter_strength);
+        let bridge = RefCell::new(self);
         GpuView::new(CameraFilterContent {
             shared,
+            uniforms: FilterUniforms::default(),
             pipeline: None,
             bind_group_layout: None,
             sampler: None,
@@ -376,19 +359,18 @@ impl CameraFilterRenderer {
             latest_bind_group: None,
             pipeline_format: None,
         })
+        .params(uniforms)
         .on_frame(move || bridge.borrow_mut().frame())
     }
 
-    /// Drives the camera pipeline once per presented frame.
+    /// Drives the camera stream lifecycle once per presented frame.
     fn frame(&mut self) {
-        let gpu_handles = {
-            let mut shared = self.shared.lock().expect("camera mailbox poisoned");
-            shared.uniforms = FilterUniforms(filter_params(
-                self.active_filter.snapshot(),
-                strength_uniform(self.filter_strength.snapshot()),
-            ));
-            shared.gpu_handles.clone()
-        };
+        let gpu_handles = self
+            .shared
+            .lock()
+            .expect("camera mailbox poisoned")
+            .gpu_handles
+            .clone();
         let Some((device, queue)) = gpu_handles else {
             return;
         };
@@ -557,7 +539,7 @@ impl CameraFilterContent {
     }
 }
 
-impl GpuContent for CameraFilterContent {
+impl GpuContent<FilterUniforms> for CameraFilterContent {
     fn setup(&mut self, context: &Context<'_>) {
         self.ensure_pipeline(context);
         self.converter = Some(FrameConverter::new(context.device()));
@@ -567,14 +549,20 @@ impl GpuContent for CameraFilterContent {
             .gpu_handles = Some((context.device().clone(), context.queue().clone()));
     }
 
+    fn update(&mut self, uniforms: FilterUniforms) {
+        self.uniforms = uniforms;
+    }
+
     fn render(&mut self, frame: &mut Frame<'_>) {
-        let (incoming, uniforms) = {
-            let mut shared = self.shared.lock().expect("camera mailbox poisoned");
-            (shared.latest_frame.take(), shared.uniforms)
-        };
+        let incoming = self
+            .shared
+            .lock()
+            .expect("camera mailbox poisoned")
+            .latest_frame
+            .take();
 
         if let Some(uniform_buffer) = &self.uniform_buffer {
-            let FilterUniforms([brightness, saturation, contrast, tint, vignette]) = uniforms;
+            let FilterUniforms([brightness, saturation, contrast, tint, vignette]) = self.uniforms;
             let uniforms: [f32; 8] = [
                 brightness, saturation, contrast, tint, vignette, 0.0, 0.0, 0.0,
             ];

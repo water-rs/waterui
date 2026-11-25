@@ -19,21 +19,21 @@
 extern crate alloc;
 
 use alloc::borrow::Cow;
-use alloc::string::{String, ToString as _};
 #[cfg(feature = "gpu")]
-use alloc::sync::Arc;
+use alloc::rc::Rc;
+use alloc::string::{String, ToString as _};
 use alloc::vec::Vec;
 use core::fmt;
 #[cfg(feature = "gpu")]
 use core::mem::size_of_val;
 
-#[cfg(feature = "gpu")]
-use arc_swap::{ArcSwap, ArcSwapOption};
 use cherenkov_record::wgsl::validate_paint_wgsl;
 #[cfg(feature = "gpu")]
 use cherenkov_record::wgsl::{PAINT_ENTRY, paint_module};
 pub use cherenkov_record::wgsl::{PAINT_MAX_PARAMS as SHADER_MAX_PARAMS, ShaderError};
 use nami::watcher::BoxWatcherGuard;
+#[cfg(feature = "gpu")]
+use nami::watcher::{Context as WatchContext, WatcherGuard};
 use nami::{Computed, Signal, SignalExt};
 use waterui_core::layout::StretchAxis;
 use waterui_core::reactive::signal::IntoComputed;
@@ -41,7 +41,7 @@ use waterui_core::{Environment, IntoSignalF32, Native, NativeView, Str, View, co
 
 use crate::draw::{Draw as _, Paint, Recorder, ShaderId, ShaderPaint, kurbo::Rect};
 #[cfg(feature = "gpu")]
-use crate::gpu::{Context, Frame, GpuContent, GpuView, RedrawHandle};
+use crate::gpu::{Context, Frame, GpuContent, GpuView};
 use crate::scene::resources::{RecordingResources, Registered, SceneResources};
 use crate::scene_view::{
     NextFrame, SceneContent, SceneFrame, SceneInvalidator, SceneUpdate, invalidate_on_change,
@@ -207,15 +207,13 @@ impl ShaderPaintView {
     #[cfg(feature = "gpu")]
     #[must_use]
     pub fn into_gpu_view(self) -> GpuView<impl GpuContent> {
-        let shared = Arc::new(Shared::default());
-        let posting = Posting::new(self.continuous, self.params, Arc::clone(&shared));
+        let params = ShaderParamsSignal::new(self.continuous, self.params);
         GpuView::new(ShaderContent {
             fragment: self.fragment,
-            shared,
+            params: ShaderParams::default(),
             gpu: None,
         })
-        // The hook also keeps the posting's watchers alive with the view.
-        .on_frame(move || posting.post())
+        .params(params)
         .offered_label(self.label)
         .offered_value(self.value)
     }
@@ -377,83 +375,114 @@ impl SceneContent for ShaderPaintScene {
     }
 }
 
-/// What the UI side last read from the signals.
+/// Snapshot of the shader's reactive parameters delivered through
+/// [`GpuContent::update`].
 #[cfg(feature = "gpu")]
-struct Posted {
+#[derive(Clone, Copy)]
+struct ShaderParams {
     continuous: bool,
     params: [f32; SHADER_MAX_PARAMS],
 }
 
-/// The UI side's mailbox to the render thread.
 #[cfg(feature = "gpu")]
-struct Shared {
-    posted: ArcSwap<Posted>,
-    /// The host's wake, known once the content is set up.
-    redraw: ArcSwapOption<RedrawHandle>,
-}
-
-#[cfg(feature = "gpu")]
-impl Default for Shared {
+impl Default for ShaderParams {
     fn default() -> Self {
         Self {
-            posted: ArcSwap::from_pointee(Posted {
-                continuous: false,
-                params: [0.0; SHADER_MAX_PARAMS],
-            }),
-            redraw: ArcSwapOption::empty(),
+            continuous: false,
+            params: [0.0; SHADER_MAX_PARAMS],
         }
     }
 }
 
+/// Watcher guard holding every individual parameter signal subscription alive.
 #[cfg(feature = "gpu")]
-impl Shared {
-    fn wake(&self) {
-        if let Some(redraw) = &*self.redraw.load() {
-            redraw.request_redraw();
-        }
-    }
+struct ShaderParamsGuard {
+    _guards: Vec<BoxWatcherGuard>,
 }
 
-/// The UI-thread half: reads the signals into the mailbox before each frame
-/// and wakes an idle host when one changes.
 #[cfg(feature = "gpu")]
-struct Posting {
+impl WatcherGuard for ShaderParamsGuard {}
+
+/// Reactive signal combining `continuous` and up to [`SHADER_MAX_PARAMS`]
+/// scalar signals into one packed [`ShaderParams`] value.
+#[cfg(feature = "gpu")]
+#[derive(Clone)]
+struct ShaderParamsSignal {
     continuous: Computed<bool>,
-    params: Vec<Computed<f32>>,
-    shared: Arc<Shared>,
-    _watchers: Vec<BoxWatcherGuard>,
+    params: Rc<[Computed<f32>]>,
 }
 
 #[cfg(feature = "gpu")]
-impl Posting {
-    fn new(continuous: Computed<bool>, params: Vec<Computed<f32>>, shared: Arc<Shared>) -> Self {
-        let mut watchers = Vec::with_capacity(1 + params.len());
-        let continuous_shared = Arc::clone(&shared);
-        watchers
-            .push(Box::new(continuous.watch(move |_| continuous_shared.wake())) as BoxWatcherGuard);
-        for param in &params {
-            let param_shared = Arc::clone(&shared);
-            watchers.push(Box::new(param.watch(move |_| param_shared.wake())) as BoxWatcherGuard);
-        }
-        let posting = Self {
+impl ShaderParamsSignal {
+    fn new(continuous: Computed<bool>, params: Vec<Computed<f32>>) -> Self {
+        Self {
             continuous,
-            params,
-            shared,
-            _watchers: watchers,
-        };
-        posting.post();
-        posting
+            params: Rc::from(params),
+        }
     }
 
-    fn post(&self) {
+    fn pack_params(
+        params: &[Computed<f32>],
+        override_slot: Option<(usize, f32)>,
+    ) -> [f32; SHADER_MAX_PARAMS] {
         let mut packed = [0.0; SHADER_MAX_PARAMS];
-        for (dst, signal) in packed.iter_mut().zip(&self.params) {
-            *dst = signal.snapshot();
+        for (index, (dst, signal)) in packed.iter_mut().zip(params).enumerate() {
+            *dst = match override_slot {
+                Some((slot, value)) if slot == index => value,
+                _ => signal.snapshot(),
+            };
         }
-        self.shared.posted.store(Arc::new(Posted {
+        packed
+    }
+}
+
+#[cfg(feature = "gpu")]
+impl Signal for ShaderParamsSignal {
+    type Output = ShaderParams;
+    type Guard = ShaderParamsGuard;
+
+    fn snapshot(&self) -> Self::Output {
+        ShaderParams {
             continuous: self.continuous.snapshot(),
-            params: packed,
-        }));
+            params: Self::pack_params(&self.params, None),
+        }
+    }
+
+    fn watch(&self, watcher: impl Fn(WatchContext<Self::Output>) + 'static) -> Self::Guard {
+        let watcher = Rc::new(watcher);
+        let mut guards = Vec::with_capacity(1 + self.params.len());
+
+        let continuous_watcher = Rc::clone(&watcher);
+        let continuous_params = Rc::clone(&self.params);
+        guards.push(Box::new(self.continuous.watch(move |ctx| {
+            let metadata = ctx.metadata().clone();
+            let continuous = ctx.into_value();
+            let params = Self::pack_params(&continuous_params, None);
+            continuous_watcher(WatchContext::new(
+                ShaderParams { continuous, params },
+                metadata,
+            ));
+        })) as BoxWatcherGuard);
+
+        for (index, param) in self.params.iter().enumerate() {
+            let param_watcher = Rc::clone(&watcher);
+            let continuous = self.continuous.clone();
+            let all_params = Rc::clone(&self.params);
+            guards.push(Box::new(param.watch(move |ctx| {
+                let metadata = ctx.metadata().clone();
+                let value = ctx.into_value();
+                let params = Self::pack_params(&all_params, Some((index, value)));
+                param_watcher(WatchContext::new(
+                    ShaderParams {
+                        continuous: continuous.snapshot(),
+                        params,
+                    },
+                    metadata,
+                ));
+            })) as BoxWatcherGuard);
+        }
+
+        ShaderParamsGuard { _guards: guards }
     }
 }
 
@@ -461,7 +490,7 @@ impl Posting {
 #[cfg(feature = "gpu")]
 struct ShaderContent {
     fragment: Cow<'static, str>,
-    shared: Arc<Shared>,
+    params: ShaderParams,
     gpu: Option<Program>,
 }
 
@@ -588,11 +617,8 @@ fn compile_program(
 }
 
 #[cfg(feature = "gpu")]
-impl GpuContent for ShaderContent {
+impl GpuContent<ShaderParams> for ShaderContent {
     fn setup(&mut self, gpu: &Context<'_>) {
-        self.shared
-            .redraw
-            .store(Some(Arc::new(gpu.redraw().clone())));
         match compile_program(gpu.device(), gpu.format(), &self.fragment) {
             Ok(program) => self.gpu = Some(program),
             Err(error) => {
@@ -602,11 +628,14 @@ impl GpuContent for ShaderContent {
         }
     }
 
+    fn update(&mut self, params: ShaderParams) {
+        self.params = params;
+    }
+
     fn render(&mut self, frame: &mut Frame<'_>) {
         let Some(gpu) = self.gpu.as_ref() else {
             return;
         };
-        let posted = self.shared.posted.load();
         #[expect(clippy::cast_precision_loss, reason = "texture sides fit f32 exactly")]
         let globals = [
             frame.elapsed().as_secs_f32(),
@@ -619,7 +648,7 @@ impl GpuContent for ShaderContent {
             .write_buffer(&gpu.globals, 0, bytemuck::cast_slice(&globals));
         frame
             .queue()
-            .write_buffer(&gpu.params, 0, bytemuck::cast_slice(&posted.params));
+            .write_buffer(&gpu.params, 0, bytemuck::cast_slice(&self.params.params));
         let mut encoder = frame
             .device()
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -644,7 +673,7 @@ impl GpuContent for ShaderContent {
             pass.draw(0..3, 0..1);
         }
         frame.queue().submit([encoder.finish()]);
-        if posted.continuous {
+        if self.params.continuous {
             frame.request_redraw();
         }
     }
@@ -890,39 +919,46 @@ fn main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
     #[cfg(feature = "gpu")]
     #[test]
     fn signals_reach_the_render_side_and_wake_the_host() {
+        use alloc::sync::Arc;
+        use core::cell::RefCell;
         use core::sync::atomic::{AtomicUsize, Ordering};
 
         let continuous = Binding::container(false);
         let param0 = Binding::container(1.0_f32);
         let param1 = Binding::container(2.0_f32);
-        let shared = Arc::new(Shared::default());
-        let wakes = Arc::new(AtomicUsize::new(0));
-        let count = Arc::clone(&wakes);
-        shared
-            .redraw
-            .store(Some(Arc::new(RedrawHandle::new(move || {
-                count.fetch_add(1, Ordering::Relaxed);
-            }))));
-        let posting = Posting::new(
+        let signal = ShaderParamsSignal::new(
             continuous.computed(),
             vec![param0.computed(), param1.computed()],
-            Arc::clone(&shared),
         );
-        assert_eq!(&shared.posted.load().params[..3], &[1.0, 2.0, 0.0]);
-        assert!(!shared.posted.load().continuous);
+        let initial = signal.snapshot();
+        assert_eq!(&initial.params[..3], &[1.0, 2.0, 0.0]);
+        assert!(!initial.continuous);
+
+        let updates = Arc::new(AtomicUsize::new(0));
+        let updates_count = Arc::clone(&updates);
+        let latest = Rc::new(RefCell::new(initial));
+        let latest_slot = Rc::clone(&latest);
+        let _guard = signal.watch(move |ctx| {
+            updates_count.fetch_add(1, Ordering::Relaxed);
+            *latest_slot.borrow_mut() = ctx.into_value();
+        });
 
         param0.set(3.0);
-        assert_eq!(wakes.load(Ordering::Relaxed), 1);
+        assert_eq!(updates.load(Ordering::Relaxed), 1);
+        assert_eq!(&latest.borrow().params[..3], &[3.0, 2.0, 0.0]);
+        assert!(!latest.borrow().continuous);
+
         continuous.set(true);
-        assert_eq!(wakes.load(Ordering::Relaxed), 2);
-        posting.post();
-        assert_eq!(&shared.posted.load().params[..3], &[3.0, 2.0, 0.0]);
-        assert!(shared.posted.load().continuous);
+        assert_eq!(updates.load(Ordering::Relaxed), 2);
+        assert_eq!(&latest.borrow().params[..3], &[3.0, 2.0, 0.0]);
+        assert!(latest.borrow().continuous);
     }
 
     #[cfg(all(feature = "gpu", not(target_arch = "wasm32")))]
     #[test]
     fn gpu_error_scope_catches_invalid_pipeline_without_uncaptured_error() {
+        use alloc::sync::Arc;
+
         let instance = wgpu::Instance::default();
         let Some(adapter) =
             pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {

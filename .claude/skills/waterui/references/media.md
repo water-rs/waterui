@@ -351,8 +351,13 @@ resources; `render(&mut self, frame: &mut Frame<'_>)` draws via accessors such a
 authoring builder `GpuView::new(content).size(w, h)` (which lowers to the backend-only
 `waterui::graphics::backend::GpuContentLeaf`). The content is `Send`
 and lives on the render thread once installed — it must NOT hold `Binding`s or other UI-thread
-state; instead read reactive state in a `.on_frame` hook (UI thread, once per frame) and post
-plain values to the content through shared `Arc<Mutex<..>>` state. `waterui::graphics` re-exports
+state. To feed reactive UI state into GPU content, implement `GpuContent<MyParams>` (where
+`MyParams: Send + Clone + 'static`) overriding `update(&mut self, params: MyParams)` and bind a
+signal with `GpuView::new(content).params(signal)`: the runtime delivers the initial snapshot after
+`setup`, wakes an idle host whenever the signal changes, and delivers the latest value before the
+next `render` (omitting `.params(..)` on parameterized content fails to compile). Reserve
+`.on_frame(..)` for UI-thread-only work such as pumping non-`Send` producers; it composes with
+`.params(..)` in any order. `waterui::graphics` re-exports
 `bytemuck`. Verify GPU components with offscreen rendering, never by reasoning about the code.
 Give any graphics leaf a reactive accessibility name with `.offered_label(..)` and value with `.offered_value(..)` (`impl IntoComputed<Option<Str>>`).
 

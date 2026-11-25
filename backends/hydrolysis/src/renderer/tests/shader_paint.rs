@@ -214,3 +214,116 @@ fn shader_paint_is_visually_equivalent_across_gpu_cpu_and_gpu_content() {
         "GPU Paint::Shader vs GpuContent max channel delta {max_paint_vs_content} > 2"
     );
 }
+
+#[cfg(hydrolysis_gpu_painter)]
+#[test]
+fn parameterized_gpu_view_wakes_idle_hydrolysis_host_and_updates_pixels() {
+    use waterui_graphics::gpu::wgpu;
+    use waterui_graphics::{Context, Frame, GpuContent, GpuView};
+
+    #[derive(Clone, Copy)]
+    struct ClearColor {
+        red: f64,
+        blue: f64,
+    }
+
+    struct ClearContent {
+        color: ClearColor,
+    }
+
+    impl GpuContent<ClearColor> for ClearContent {
+        fn setup(&mut self, _gpu: &Context<'_>) {}
+
+        fn update(&mut self, params: ClearColor) {
+            self.color = params;
+        }
+
+        fn render(&mut self, frame: &mut Frame<'_>) {
+            let mut encoder =
+                frame
+                    .device()
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("parameterized gpu view test"),
+                    });
+            {
+                let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("parameterized gpu view clear"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: frame.view(),
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color {
+                                r: self.color.red,
+                                g: 0.0,
+                                b: self.color.blue,
+                                a: 1.0,
+                            }),
+                            store: wgpu::StoreOp::Store,
+                        },
+                        depth_slice: None,
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+            }
+            frame.queue().submit([encoder.finish()]);
+        }
+    }
+
+    let color = Binding::container(ClearColor {
+        red: 0.9,
+        blue: 0.05,
+    });
+    let color_for_view = color.clone();
+    let painter = OffscreenPainter::select_with(false).expect("GPU painter opens on test hardware");
+    let mut runtime = HeadlessRuntime::new_for_tests_on_context(
+        painter,
+        pumped_test_environment(),
+        AnyViewBuilder::<AnyView>::new(move || {
+            AnyView::new(
+                GpuView::new(ClearContent {
+                    color: ClearColor {
+                        red: 0.0,
+                        blue: 0.0,
+                    },
+                })
+                .params(color_for_view.clone())
+                .size(32.0, 32.0),
+            )
+        }),
+        32,
+        32,
+        MinimalTestTheme::default(),
+    );
+
+    let t0 = Instant::now();
+    let initial = capture_at(&mut runtime, t0);
+    let center = (16 * 32 + 16) * 4;
+    assert!(
+        initial[center] > 180 && initial[center + 2] < 80,
+        "initial params must render predominantly red: rgba={:?}",
+        &initial[center..center + 4]
+    );
+    assert!(
+        runtime.is_settled(),
+        "parameterized GpuView must settle when idle"
+    );
+
+    color.set(ClearColor {
+        red: 0.05,
+        blue: 0.9,
+    });
+
+    let updated = capture_at(&mut runtime, t0 + Duration::from_millis(32));
+    assert!(
+        updated[center + 2] > 180 && updated[center] < 80,
+        "updated params must render predominantly blue: rgba={:?}",
+        &updated[center..center + 4]
+    );
+    assert!(
+        runtime.is_settled(),
+        "parameterized GpuView must return to idle after rendering updated params"
+    );
+}

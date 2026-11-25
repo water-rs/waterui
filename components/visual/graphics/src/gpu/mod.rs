@@ -5,9 +5,8 @@
 //! particle system, a 3D viewport — implements [`GpuContent`] and the backend
 //! installs it on a layer of an engine whose backend hosts GPU content, where
 //! it renders into a texture the engine composites like any other layer. The
-//! content runs on the render thread: it is `Send`, and whatever it shares
-//! with the UI (a pointer position, a simulation parameter) crosses through
-//! its own synchronised state.
+//! content runs on the render thread: it is `Send`, and reactive UI parameters
+//! cross through [`GpuContent::update`] and [`GpuView::params`].
 //!
 //! Frames that already exist in GPU memory — a video decoder's or a camera's
 //! output — do not draw at all: an [`ExternalFrameSource`] publishes them to
@@ -58,12 +57,18 @@ pub use bytemuck;
 use alloc::boxed::Box;
 use alloc::rc::Rc;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::any::type_name;
 use core::fmt;
+use core::marker::PhantomData;
+use core::ptr;
+use core::sync::atomic::{AtomicPtr, Ordering, fence};
 use core::time::Duration;
 
+use arc_swap::ArcSwapOption;
 use cherenkov::Instant;
-use nami::Computed;
+use nami::watcher::BoxWatcherGuard;
+use nami::{Computed, Signal};
 
 use std::sync::Mutex;
 
@@ -386,7 +391,12 @@ impl<'a> Frame<'a> {
 }
 
 /// GPU work the engine composites as a layer.
-pub trait GpuContent: Send + 'static {
+///
+/// The optional parameter type `P` defaults to `()` for parameterless content.
+/// Parameterized content implements `GpuContent<MyParams>`, overrides
+/// [`update`](Self::update), and binds a reactive signal through
+/// [`GpuView::params`] before mounting as a [`View`].
+pub trait GpuContent<P: Send + 'static = ()>: Send + 'static {
     /// Creates pipelines and resources against the engine's device.
     ///
     /// Called on the render thread before the first [`render`](Self::render),
@@ -394,6 +404,16 @@ pub trait GpuContent: Send + 'static {
     /// Each call replaces every device resource the previous call created:
     /// resources from the old device must not be used after it.
     fn setup(&mut self, gpu: &Context<'_>);
+
+    /// Receives updated parameters delivered from the UI thread before the next
+    /// [`render`](Self::render).
+    ///
+    /// For parameterized content bound through [`GpuView::params`], the runtime
+    /// delivers the initial snapshot after [`setup`](Self::setup) and before
+    /// the first [`render`](Self::render), re-delivers the latest value after a
+    /// device-loss re-setup, and delivers any newer value whenever the bound
+    /// signal changes.
+    fn update(&mut self, _params: P) {}
 
     /// Draws one frame into `frame`'s texture.
     ///
@@ -444,9 +464,13 @@ pub trait GpuContent: Send + 'static {
     }
 }
 
-impl GpuContent for Box<dyn GpuContent> {
+impl<P: Send + 'static> GpuContent<P> for Box<dyn GpuContent<P>> {
     fn setup(&mut self, gpu: &Context<'_>) {
         (**self).setup(gpu);
+    }
+
+    fn update(&mut self, params: P) {
+        (**self).update(params);
     }
 
     fn render(&mut self, frame: &mut Frame<'_>) {
@@ -467,6 +491,153 @@ impl GpuContent for Box<dyn GpuContent> {
 
     fn preferred_surface_hdr(&self) -> Option<bool> {
         (**self).preferred_surface_hdr()
+    }
+}
+
+/// Lock-free single-slot mailbox transferring owned `P` values from the UI
+/// thread to the render thread without requiring `P: Sync`.
+struct AtomicSlot<P: Send + 'static> {
+    ptr: AtomicPtr<P>,
+}
+
+// SAFETY: `AtomicSlot` never shares `&P` across threads; every stored `Box<P>`
+// transfers sole ownership into the slot and either out to the render thread on
+// `take` or directly to `drop` when overwritten or when the slot drops.
+unsafe impl<P: Send + 'static> Sync for AtomicSlot<P> {}
+
+impl<P: Send + 'static> AtomicSlot<P> {
+    fn new(initial: P) -> Self {
+        Self {
+            ptr: AtomicPtr::new(Box::into_raw(Box::new(initial))),
+        }
+    }
+
+    fn store(&self, value: P) {
+        let next = Box::into_raw(Box::new(value));
+        let prev = self.ptr.swap(next, Ordering::AcqRel);
+        if !prev.is_null() {
+            // SAFETY: `prev` was produced by `Box::into_raw` in `new`/`store`,
+            // and swapping it out transfers exclusive ownership here.
+            drop(unsafe { Box::from_raw(prev) });
+        }
+    }
+
+    fn take(&self) -> Option<P> {
+        let prev = self.ptr.swap(ptr::null_mut(), Ordering::AcqRel);
+        if prev.is_null() {
+            None
+        } else {
+            // SAFETY: `prev` was produced by `Box::into_raw` in `new`/`store`,
+            // and swapping it out transfers exclusive ownership here.
+            Some(unsafe { *Box::from_raw(prev) })
+        }
+    }
+}
+
+impl<P: Send + 'static> Drop for AtomicSlot<P> {
+    fn drop(&mut self) {
+        let ptr = *self.ptr.get_mut();
+        if !ptr.is_null() {
+            // SAFETY: `ptr` was produced by `Box::into_raw` and `&mut self`
+            // guarantees exclusive access on drop.
+            drop(unsafe { Box::from_raw(ptr) });
+        }
+    }
+}
+
+/// Lock-free parameter channel paired with the render host's wake handle.
+struct ParamMailbox<P: Send + 'static> {
+    pending: AtomicSlot<P>,
+    redraw: ArcSwapOption<RedrawHandle>,
+}
+
+impl<P: Send + 'static> ParamMailbox<P> {
+    fn new(initial: P) -> Self {
+        Self {
+            pending: AtomicSlot::new(initial),
+            redraw: ArcSwapOption::empty(),
+        }
+    }
+
+    fn post(&self, value: P) {
+        self.pending.store(value);
+        // Pair with `set_redraw`'s store + fence + `take_pending` so an update
+        // concurrent with `setup` either is observed by `setup` or sees the
+        // installed `RedrawHandle` and wakes the host.
+        fence(Ordering::SeqCst);
+        if let Some(redraw) = self.redraw.load_full() {
+            redraw.request_redraw();
+        }
+    }
+
+    fn set_redraw(&self, redraw: RedrawHandle) {
+        self.redraw.store(Some(Arc::new(redraw)));
+        fence(Ordering::SeqCst);
+    }
+
+    fn take_pending(&self) -> Option<P> {
+        self.pending.take()
+    }
+}
+
+/// Internal adapter wrapping a [`GpuContent<P>`] bound to a parameter signal
+/// via [`GpuView::params`].
+struct WithParams<T, P: Send + 'static> {
+    inner: T,
+    mailbox: Arc<ParamMailbox<P>>,
+    last_params: Option<P>,
+}
+
+impl<T, P> fmt::Debug for WithParams<T, P>
+where
+    P: Send + 'static,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WithParams")
+            .field("inner", &type_name::<T>())
+            .field("params", &type_name::<P>())
+            .finish_non_exhaustive()
+    }
+}
+
+impl<T, P> GpuContent for WithParams<T, P>
+where
+    T: GpuContent<P>,
+    P: Send + Clone + 'static,
+{
+    fn setup(&mut self, gpu: &Context<'_>) {
+        self.inner.setup(gpu);
+        self.mailbox.set_redraw(gpu.redraw().clone());
+        if let Some(latest) = self.mailbox.take_pending() {
+            self.last_params = Some(latest.clone());
+            self.inner.update(latest);
+        } else if let Some(last) = self.last_params.clone() {
+            self.inner.update(last);
+        }
+    }
+
+    fn render(&mut self, frame: &mut Frame<'_>) {
+        if let Some(latest) = self.mailbox.take_pending() {
+            self.last_params = Some(latest.clone());
+            self.inner.update(latest);
+        }
+        self.inner.render(frame);
+    }
+
+    fn is_opaque(&self) -> bool {
+        self.inner.is_opaque()
+    }
+
+    fn intrinsic_size(&self) -> Option<Size> {
+        self.inner.intrinsic_size()
+    }
+
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+        self.inner.measure(proposal)
+    }
+
+    fn preferred_surface_hdr(&self) -> Option<bool> {
+        self.inner.preferred_surface_hdr()
     }
 }
 
@@ -497,13 +668,14 @@ pub type FrameHook = Rc<dyn Fn()>;
 pub type CaretQuery = Rc<dyn Fn() -> Option<kurbo::Rect>>;
 
 /// The UI-thread hooks a GPU-backed view carries for its host: input
-/// routing, the per-frame pump and the caret query, shared by
-/// [`GpuView`] and [`ExternalFrameView`].
+/// routing, the per-frame pump, reactive parameter watcher guards, and the
+/// caret query, shared by [`GpuView`] and [`ExternalFrameView`].
 #[derive(Default)]
 struct SurfaceHooks {
     input: Option<InputHandler>,
     frame: Option<FrameHook>,
     caret: Option<CaretQuery>,
+    guards: Vec<BoxWatcherGuard>,
 }
 
 impl SurfaceHooks {
@@ -530,6 +702,30 @@ impl SurfaceHooks {
 
 /// A view whose pixels come from [`GpuContent`].
 ///
+/// Parameterless content (`impl GpuContent`) mounts directly as a [`View`].
+/// Parameterized content (`impl GpuContent<MyParams>`) must bind a reactive
+/// signal through [`GpuView::params`] before it implements [`View`]:
+///
+/// ```compile_fail
+/// use waterui_core::View;
+/// use waterui_graphics::{Context, Frame, GpuContent, GpuView};
+///
+/// #[derive(Clone)]
+/// struct Tint(f32);
+///
+/// struct Tinted;
+/// impl GpuContent<Tint> for Tinted {
+///     fn setup(&mut self, _gpu: &Context<'_>) {}
+///     fn update(&mut self, _params: Tint) {}
+///     fn render(&mut self, _frame: &mut Frame<'_>) {}
+/// }
+///
+/// fn assert_view<V: View>(_view: V) {}
+///
+/// // Missing `.params(...)`: a parameterized `GpuView` does not implement `View`.
+/// assert_view(GpuView::new(Tinted));
+/// ```
+///
 /// # Content lifetime
 ///
 /// The view owns one [`GpuContent`] instance for its whole lifetime, and
@@ -542,7 +738,7 @@ impl SurfaceHooks {
 ///
 /// Stretches on both axes unless the content reports an intrinsic size, in
 /// which case it is that size and does not stretch.
-pub struct GpuView<T: GpuContent> {
+pub struct GpuView<T: GpuContent<P>, P: Send + 'static = ()> {
     content: T,
     intrinsic_size: Option<Size>,
     opaque: bool,
@@ -550,9 +746,10 @@ pub struct GpuView<T: GpuContent> {
     hooks: SurfaceHooks,
     label: Computed<Option<Str>>,
     value: Computed<Option<Str>>,
+    _params: PhantomData<fn(P)>,
 }
 
-impl<T: GpuContent> fmt::Debug for GpuView<T> {
+impl<T: GpuContent<P>, P: Send + 'static> fmt::Debug for GpuView<T, P> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("GpuView")
             .field("content", &type_name::<T>())
@@ -562,7 +759,7 @@ impl<T: GpuContent> fmt::Debug for GpuView<T> {
     }
 }
 
-impl<T: GpuContent> GpuView<T> {
+impl<T: GpuContent<P>, P: Send + 'static> GpuView<T, P> {
     /// A view drawing `content`.
     #[must_use]
     pub fn new(content: T) -> Self {
@@ -574,6 +771,7 @@ impl<T: GpuContent> GpuView<T> {
             hooks: SurfaceHooks::default(),
             label: Computed::constant(None),
             value: Computed::constant(None),
+            _params: PhantomData,
         }
     }
 
@@ -634,7 +832,48 @@ impl<T: GpuContent> GpuView<T> {
         self.surface_prefers_hdr = Some(false);
         self
     }
+}
 
+impl<T, P> GpuView<T, P>
+where
+    T: GpuContent<P>,
+    P: Send + Clone + 'static,
+{
+    /// Binds a reactive parameter signal to this GPU content.
+    ///
+    /// The initial snapshot is delivered to [`GpuContent::update`] after
+    /// [`GpuContent::setup`] and before the first [`GpuContent::render`]. When
+    /// `params` changes later, the runtime posts the new value lock-free and
+    /// wakes an idle host so [`GpuContent::update`] runs before the next frame.
+    /// Composes in any order with `.on_frame(...)` and other `GpuView`
+    /// modifiers.
+    #[must_use]
+    pub fn params(mut self, params: impl IntoComputed<P>) -> GpuView<impl GpuContent> {
+        let params = params.into_computed();
+        let mailbox = Arc::new(ParamMailbox::new(params.snapshot()));
+        let watcher_mailbox = Arc::clone(&mailbox);
+        let guard: BoxWatcherGuard = Box::new(params.watch(move |ctx| {
+            watcher_mailbox.post(ctx.into_value());
+        }));
+        self.hooks.guards.push(guard);
+        GpuView {
+            content: WithParams {
+                inner: self.content,
+                mailbox,
+                last_params: None,
+            },
+            intrinsic_size: self.intrinsic_size,
+            opaque: self.opaque,
+            surface_prefers_hdr: self.surface_prefers_hdr,
+            hooks: self.hooks,
+            label: self.label,
+            value: self.value,
+            _params: PhantomData,
+        }
+    }
+}
+
+impl<T: GpuContent> GpuView<T> {
     /// Lowers this authoring view into the backend leaf backends mount.
     pub(crate) fn into_leaf(self) -> GpuContentLeaf {
         GpuContentLeaf::from_parts(
@@ -752,6 +991,10 @@ impl cherenkov_gpu::interop::GpuContent for GpuContentHandle {
 
 #[cfg(test)]
 mod tests {
+    use core::cell::Cell;
+    use core::sync::atomic::AtomicUsize;
+
+    use nami::Binding;
     use waterui_core::NativeView;
     use waterui_core::layout::StretchAxis;
 
@@ -807,5 +1050,202 @@ mod tests {
             Size::new(4.0, 4.0)
         );
         assert_eq!(NativeView::stretch_axis(&leaf), StretchAxis::None);
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum ParamEvent {
+        Setup,
+        Update(u32),
+        Render(u32),
+    }
+
+    struct RecordingContent {
+        current: u32,
+        events: Arc<Mutex<Vec<ParamEvent>>>,
+    }
+
+    impl GpuContent<u32> for RecordingContent {
+        fn setup(&mut self, _gpu: &Context<'_>) {
+            self.events
+                .lock()
+                .expect("event log lock poisoned")
+                .push(ParamEvent::Setup);
+        }
+
+        fn update(&mut self, params: u32) {
+            self.current = params;
+            self.events
+                .lock()
+                .expect("event log lock poisoned")
+                .push(ParamEvent::Update(params));
+        }
+
+        fn render(&mut self, _frame: &mut Frame<'_>) {
+            self.events
+                .lock()
+                .expect("event log lock poisoned")
+                .push(ParamEvent::Render(self.current));
+        }
+
+        fn is_opaque(&self) -> bool {
+            true
+        }
+
+        fn intrinsic_size(&self) -> Option<Size> {
+            Some(Size::new(16.0, 16.0))
+        }
+
+        fn preferred_surface_hdr(&self) -> Option<bool> {
+            Some(true)
+        }
+    }
+
+    #[test]
+    fn parameterized_view_preserves_metadata_and_chains_on_frame_in_both_orders() {
+        let param = Binding::container(7_u32);
+        let before_count = Rc::new(Cell::new(0_usize));
+        let before_hook = Rc::clone(&before_count);
+        let leaf_before = GpuContentLeaf::from(
+            GpuView::new(RecordingContent {
+                current: 0,
+                events: Arc::new(Mutex::new(Vec::new())),
+            })
+            .offered_label(Str::from("Before"))
+            .offered_value(Str::from("Val"))
+            .on_frame(move || before_hook.set(before_hook.get() + 1))
+            .params(param.clone()),
+        );
+        assert!(leaf_before.is_opaque());
+        assert_eq!(leaf_before.intrinsic_size(), Some(Size::new(16.0, 16.0)));
+        assert_eq!(leaf_before.resolved_hdr_preference(), Some(true));
+        assert_eq!(leaf_before.accessibility_label().as_deref(), Some("Before"));
+        assert_eq!(leaf_before.accessibility_value().as_deref(), Some("Val"));
+        leaf_before.frame();
+        assert_eq!(before_count.get(), 1);
+
+        let after_count = Rc::new(Cell::new(0_usize));
+        let after_hook = Rc::clone(&after_count);
+        let leaf_after = GpuContentLeaf::from(
+            GpuView::new(RecordingContent {
+                current: 0,
+                events: Arc::new(Mutex::new(Vec::new())),
+            })
+            .params(param)
+            .on_frame(move || after_hook.set(after_hook.get() + 1)),
+        );
+        leaf_after.frame();
+        assert_eq!(after_count.get(), 1);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn parameterized_view_delivers_initial_and_updated_params_and_wakes_idle_host() {
+        use cherenkov::Next;
+        use cherenkov_gpu::interop::GpuContentBox;
+
+        use crate::OffscreenSize;
+
+        let runtime =
+            pollster::block_on(GpuRuntime::new()).expect("GPU runtime opens on test hardware");
+        let param = Binding::container(10_u32);
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let hook_runs = Rc::new(Cell::new(0_usize));
+        let hook_runs_clone = Rc::clone(&hook_runs);
+
+        let mut leaf = GpuContentLeaf::from(
+            GpuView::new(RecordingContent {
+                current: 0,
+                events: Arc::clone(&events),
+            })
+            .params(param.clone())
+            .on_frame(move || hook_runs_clone.set(hook_runs_clone.get() + 1)),
+        );
+
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let wakes_clone = Arc::clone(&wakes);
+        let size = OffscreenSize::try_from_pixels(16, 16).expect("non-zero test size");
+        let display = Display {
+            scale: 1.0,
+            headroom: 1.0,
+        };
+        let mut renderer = pollster::block_on(GpuContentRenderer::new(
+            &runtime,
+            runtime.context(),
+            leaf.take_engine_content(),
+            size,
+            RedrawHandle::new(move || {
+                wakes_clone.fetch_add(1, Ordering::SeqCst);
+            }),
+        ))
+        .expect("GPU content renderer mounts");
+
+        let take_events = || core::mem::take(&mut *events.lock().expect("event log lock poisoned"));
+
+        // First frame delivers initial params after setup and before render, then idles.
+        leaf.frame();
+        let frame1 = pollster::block_on(renderer.render(size, display, FrameTime::now()))
+            .expect("first hosted frame renders");
+        assert!(matches!(frame1, Next::Idle), "idle content stays idle");
+        assert_eq!(hook_runs.get(), 1);
+        assert_eq!(
+            take_events(),
+            vec![
+                ParamEvent::Setup,
+                ParamEvent::Update(10),
+                ParamEvent::Render(10),
+            ]
+        );
+
+        // Multiple updates before the next frame wake the idle host and coalesce to the latest value.
+        let wakes_before = wakes.load(Ordering::SeqCst);
+        param.set(20);
+        param.set(30);
+        assert!(
+            wakes.load(Ordering::SeqCst) > wakes_before,
+            "signal change must wake an idle GPU host"
+        );
+
+        leaf.frame();
+        let frame2 = pollster::block_on(renderer.render(size, display, FrameTime::now()))
+            .expect("second hosted frame renders");
+        assert!(matches!(frame2, Next::Idle));
+        assert_eq!(hook_runs.get(), 2);
+        assert_eq!(
+            take_events(),
+            vec![ParamEvent::Update(30), ParamEvent::Render(30)]
+        );
+
+        // While quiet, the idle producer does not re-render; a size change renders without re-running `update`.
+        leaf.frame();
+        let _ = pollster::block_on(renderer.render(size, display, FrameTime::now()))
+            .expect("quiet hosted frame renders");
+        assert!(
+            take_events().is_empty(),
+            "idle producer skips render while quiet"
+        );
+        let resized = OffscreenSize::try_from_pixels(24, 24).expect("non-zero resized test size");
+        let _ = pollster::block_on(renderer.render(resized, display, FrameTime::now()))
+            .expect("resized hosted frame renders");
+        assert_eq!(take_events(), vec![ParamEvent::Render(30)]);
+
+        // Re-installing the same handle (simulating device-loss re-setup) re-delivers the latest params.
+        let mut rebuilt = pollster::block_on(GpuContentRenderer::new(
+            &runtime,
+            runtime.context(),
+            GpuContentBox::new(leaf.engine_content()),
+            size,
+            RedrawHandle::new(|| {}),
+        ))
+        .expect("rebuilt GPU content renderer mounts");
+        let _ = pollster::block_on(rebuilt.render(size, display, FrameTime::now()))
+            .expect("rebuilt hosted frame renders");
+        assert_eq!(
+            take_events(),
+            vec![
+                ParamEvent::Setup,
+                ParamEvent::Update(30),
+                ParamEvent::Render(30),
+            ]
+        );
     }
 }

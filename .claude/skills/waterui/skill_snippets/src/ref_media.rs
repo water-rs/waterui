@@ -695,8 +695,25 @@ pub fn media_block_10() -> impl View {
 // block.
 // ---------------------------------------------------------------------------
 pub fn media_gpu_input_prose<C: waterui::graphics::GpuContent>(content: C) -> impl View {
-    use waterui::graphics::GpuView;
     use waterui::graphics::gpu::Rect;
+    use waterui::graphics::{Context, Frame, GpuContent, GpuView};
+
+    #[derive(Clone, Copy)]
+    struct Uniforms(f32);
+
+    struct ParameterizedDemo(f32);
+    impl GpuContent<Uniforms> for ParameterizedDemo {
+        fn setup(&mut self, _gpu: &Context<'_>) {}
+        fn update(&mut self, params: Uniforms) {
+            self.0 = params.0;
+        }
+        fn render(&mut self, _frame: &mut Frame<'_>) {}
+    }
+
+    let gain = Binding::f32(0.5);
+    let _ = GpuView::new(ParameterizedDemo(0.0))
+        .params(gain.map(Uniforms))
+        .on_frame(|| {});
 
     GpuView::new(content)
         .offered_label(Str::from("Terminal"))
