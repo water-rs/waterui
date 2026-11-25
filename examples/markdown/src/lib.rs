@@ -6,9 +6,9 @@
 //! next match.
 use waterui::app::{App, Windows};
 use waterui::key::{Key, KeyHandling, KeyPress, NamedKey};
-use waterui::prelude::theme_color::Surface;
 use waterui::prelude::*;
 use waterui::preview;
+use waterui::theme::color::Surface;
 use waterui::widget::condition::when;
 
 const DOCUMENT: &str = include_str!("example.md");
@@ -126,5 +126,5 @@ pub fn demo() -> impl View {
 
 /// Builds the example app, showing the markdown demo.
 pub fn app(env: Environment) -> App<impl Windows> {
-    App::new(demo, env)
+    App::new(env).window(Window::new("", demo))
 }

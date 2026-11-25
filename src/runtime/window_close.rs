@@ -97,7 +97,7 @@ struct Shared {
     hook: Option<CloseRequestHook>,
     /// The subscription dropping the open question when `window_state`
     /// reaches `Closed` by any path. It lives here so it dies with the machine.
-    _close_watch: <Binding<WindowState> as Signal>::Guard,
+    close_watch: <Binding<WindowState> as Signal>::Guard,
 }
 
 /// The close-request machine one [`Window`](crate::window::Window) carries.
@@ -137,7 +137,7 @@ impl CloseRequest {
                 window_state: window_state.clone(),
                 armed: None,
                 hook: None,
-                _close_watch: close_watch,
+                close_watch,
             })
         });
         Self { inner }
@@ -146,6 +146,22 @@ impl CloseRequest {
     /// Installs the `on_close_request` hook, replacing any set before.
     pub(crate) fn set_hook(&self, hook: CloseRequestHook) {
         self.inner.borrow_mut().hook = Some(hook);
+    }
+
+    /// Rebinds the watched and written `WindowState` binding while preserving
+    /// any previously installed `on_close_request` hook.
+    pub(crate) fn set_state(&self, window_state: &Binding<WindowState>) {
+        let machine = Rc::downgrade(&self.inner);
+        let close_watch = window_state.watch(move |context| {
+            if *context.value() == WindowState::Closed
+                && let Some(inner) = machine.upgrade()
+            {
+                Self { inner }.cancel_question();
+            }
+        });
+        let mut shared = self.inner.borrow_mut();
+        shared.window_state = window_state.clone();
+        shared.close_watch = close_watch;
     }
 
     /// Records the environment the window renders under and its `closable`.
@@ -258,8 +274,6 @@ mod tests {
     use std::cell::Cell;
     use std::future::pending;
 
-    use waterui_core::binding;
-
     use super::super::parked_executor::{drain, install as install_executor};
     use super::*;
     use crate::window::Window;
@@ -276,7 +290,7 @@ mod tests {
     }
 
     fn window() -> Window<impl ViewBuilder> {
-        Window::new("w", binding(WindowState::Normal), || ())
+        Window::new("w", || ())
     }
 
     /// A window whose handler counts its questions and answers `reply`.

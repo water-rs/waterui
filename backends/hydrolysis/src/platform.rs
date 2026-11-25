@@ -7955,14 +7955,11 @@ mod winit_impl {
         #[test]
         fn a_behind_window_material_window_gets_a_multiplied_alpha_mode() {
             use waterui::background::Material;
-            use waterui::window::{Window, WindowState};
+            use waterui::window::Window;
             use wgpu::CompositeAlphaMode as Mode;
 
             let env = waterui_core::Environment::new();
-            let window = |material| {
-                Window::new("", waterui_core::binding(WindowState::Normal), || ())
-                    .background(material)
-            };
+            let window = |material| Window::new("", || ()).background(material);
             let select = |material, modes: &[Mode]| {
                 negotiated_alpha_mode(
                     crate::runner::window_requires_transparency(&window(material), &env),

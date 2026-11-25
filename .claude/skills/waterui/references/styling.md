@@ -32,11 +32,12 @@ over by hardcoding a color in the view.
 ## Theme color tokens
 
 ```rust
-use waterui::prelude::theme_color::{Accent, Foreground, Surface};
+use waterui::theme::color::{Accent, Foreground, Surface};
 
 text("Title").foreground(Foreground)
 text("Caption").caption().muted()   // `.muted()` is `.foreground(MutedForeground)`
 card.background(Surface)
+text("Link").foreground(Color::accent())            // shorthand constructors exist for every token
 button("Delete").action(|| {}).tint(Color::red())   // this subtree's controls draw with red
 ```
 
@@ -92,7 +93,7 @@ pub fn app(mut env: Environment) -> App<impl Windows> {
             .colors(ColorSettings::new().accent(Srgb::from_hex("#0066CC")))   // per-token setters
             .fonts(FontSettings::new().body(ResolvedFont::with_family(16.0, FontWeight::Normal, "Inter"))),
     );
-    App::new(move || root(dark.clone()), env)
+    App::new(env).window(Window::new("Themed", move || root(dark.clone())))
 }
 ```
 
@@ -155,16 +156,16 @@ drive each layer's `.opacity`.
 
 ## Reactive colors
 
-APIs that take a concrete `Color` (`.fill(..)`, `.background(..)`, `.foreground(..)`) do
-not accept a signal directly — wrap the signal with `signal_color` (in the prelude), which
-produces a `Color` that updates in place:
+Colour-taking modifiers (`.fill(..)`, `.background(..)`, `.foreground(..)`, `.tint(..)`,
+`.border(..)`, `Badge::color(..)`, `Avatar::ring(..)`, `IconGlyph::color(..)`) accept any
+colour signal, palette struct, or theme token directly (`impl IntoSignal<Color>`):
 
 ```rust
-let fill = signal_color(selected.select(indicator, clear).computed());
+let fill = selected.select(indicator, clear);
 Rectangle.fill(fill).size(64.0, 32.0)
 ```
 
-Without it, `.fill(binding)` fails to type-check and `.fill(binding.snapshot())` freezes —
+Passing a signal updates the native colour in place; passing `binding.snapshot()` freezes —
 the rule-1 bug in a hat.
 
 ## HDR
@@ -309,7 +310,7 @@ shape.morph_to(target, fill).progress(t.clone())   // or drive it from a 0..=1 s
 
 ```rust
 use waterui::border::Border;
-use waterui::prelude::theme_color::Accent;
+use waterui::theme::color::Accent;
 use waterui::shape::RoundedRectangle;
 
 card.border(Color::srgb_hex("#E5E7EB"), 1.0)                       // all edges, square corners
@@ -429,7 +430,8 @@ Material3::with_color_schemes(&schemes, MaterialColorMode::Light);
 
 Material-specific role tokens live in `hydrolysis_m3::color::*` (`Primary`, `OnPrimary`,
 `PrimaryContainer`, `SurfaceContainerHighest`, `OnSurfaceVariant`, …) and resolve from the
-installed scheme. WaterUI's portable `theme_color::*` tokens map onto the active theme —
+installed scheme. WaterUI's portable `theme::color::*` tokens (and `Color::accent()`,
+`Color::surface()`, … constructors) map onto the active theme —
 prefer the portable ones in views that should also run on native backends, and use the
 Material roles only where the design is specifically Material.
 

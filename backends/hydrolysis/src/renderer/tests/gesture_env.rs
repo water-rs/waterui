@@ -32,7 +32,8 @@ use std::rc::Rc;
 
 use accesskit::{Action, ActionRequest, NodeId, Role, TreeId, TreeUpdate};
 use waterui::accessibility::AccessibilityRole;
-use waterui::gesture::{DragEvent, DragGesture, GesturePoint, TapEvent, TapGesture};
+use waterui::gesture::{DragEvent, DragGesture, TapEvent, TapGesture};
+use waterui::layout::Point;
 use waterui::style::Anchor;
 use waterui::{AnyView, Binding, Color, ViewExt as _};
 use waterui_core::Environment;
@@ -564,7 +565,7 @@ fn gesture_event_locations_are_view_local_under_scale() {
     pointer_up(&mut runtime, 410.0, 20.0);
     assert_eq!(
         taps.borrow().as_slice(),
-        [GesturePoint::new(10.0, 10.0)],
+        [Point::new(10.0, 10.0)],
         "a scaled view's tap location must be mapped through the inverse transform"
     );
 
@@ -584,7 +585,7 @@ fn gesture_event_locations_are_view_local_under_scale() {
     pointer_move(&mut runtime, 450.0, 20.0);
     assert_eq!(
         drags.borrow().last().copied(),
-        Some((GesturePoint::new(30.0, 10.0), GesturePoint::new(20.0, 0.0))),
+        Some((Point::new(30.0, 10.0), Point::new(20.0, 0.0))),
         "a scaled view's drag location maps as a point and its translation as a vector"
     );
 }

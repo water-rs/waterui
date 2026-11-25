@@ -1,6 +1,8 @@
 //! Snippets from `.claude/skills/waterui/references/interaction.md`, in file
 //! order. Transcription conventions are documented in the crate README.
 
+use core::num::NonZeroU32;
+
 use waterui::prelude::*;
 
 // ---------------------------------------------------------------------------
@@ -26,7 +28,8 @@ pub fn interaction_block_02() -> impl View {
 }
 
 // ---------------------------------------------------------------------------
-// interaction.md § "## Tap shortcuts" (prose): `.on_tap_gesture_count(2, h)`,
+// interaction.md § "## Tap shortcuts" (prose):
+// `.on_long_press(h)`,
 // `.sensory_feedback(Feedback::Success, &trigger)`, and imperative
 // `waterui::haptic::Haptic::impact(Intensity::LOW)`.
 // Not counted as a rust block.
@@ -37,9 +40,7 @@ pub fn interaction_tap_siblings_prose() {
 
     let handler = || ();
     let saved_count = Binding::i32(0);
-    let _ = Divider.on_tap_gesture_count(2, handler);
-    let _ = Divider.on_tap_gesture(handler);
-    let _ = Divider.on_long_press_gesture(500, handler);
+    let _ = Divider.on_long_press(handler);
     let _ = Divider.sensory_feedback(Feedback::Success, &saved_count);
     let _ = Divider.on_tap(|| {
         spawn_local(async {
@@ -54,6 +55,8 @@ pub fn interaction_tap_siblings_prose() {
 // Listing: four independent recognizers.
 // ---------------------------------------------------------------------------
 pub fn interaction_block_03() {
+    use core::time::Duration;
+
     let handler = || ();
 
     let view = Divider;
@@ -62,12 +65,14 @@ pub fn interaction_block_03() {
     };
     let view = Divider;
     let _ = {
-        view.gesture(TapGesture::repeat(2), handler) // double tap — a count, not a new type
+        view.gesture(TapGesture::repeat(NonZeroU32::new(2).unwrap()), handler) // double tap — a count, not a new type
     };
     let view = Divider;
     let _ = {
-        // duration is a u32, NOT a core::time::Duration
-        view.gesture(LongPressGesture::new(500), handler)
+        view.gesture(
+            LongPressGesture::new().minimum_duration(Duration::from_millis(500)),
+            handler,
+        )
     };
     let view = Divider;
     let _ = {
@@ -101,7 +106,7 @@ pub fn interaction_event_payloads_prose() {
     let _ = Divider.on_tap(|tap: TapEvent| {
         let _ = tap.location();
     });
-    let _ = Divider.gesture(LongPressGesture::new(500), |_: LongPressEvent| ());
+    let _ = Divider.gesture(LongPressGesture::new(), |_: LongPressEvent| ());
     let _ = Divider.gesture(DragGesture::new(5.0), |drag: DragEvent| {
         let _ = (
             drag.location(),
@@ -115,19 +120,6 @@ pub fn interaction_event_payloads_prose() {
     let _ = Divider.event(Event::HoverMove, |hover: HoverEvent| {
         let _ = hover.location();
     });
-}
-
-// ---------------------------------------------------------------------------
-// interaction.md § "## Gesture recognizers" (prose): `.gesture_observer(..)`
-// with `GestureObserver::new` and the `builder(..).action(..)` form.
-// Not counted as a rust block.
-// ---------------------------------------------------------------------------
-pub fn interaction_gesture_observer_prose() {
-    use waterui::gesture::GestureObserver;
-
-    let handler = || ();
-    let _ = Divider.gesture_observer(GestureObserver::new(TapGesture::new(), handler));
-    let _ = Divider.gesture_observer(GestureObserver::builder(TapGesture::new()).action(handler));
 }
 
 // ---------------------------------------------------------------------------
@@ -146,25 +138,30 @@ pub fn interaction_block_04() {
 // interaction.md § "## Combining gestures" — rust block 5/12
 // ---------------------------------------------------------------------------
 pub fn interaction_block_05() -> impl View {
+    use core::time::Duration;
+
     let status = Binding::container("Waiting…");
 
     let view = Divider;
     view.gesture(
-        TapGesture::new().then(LongPressGesture::new(300)), // tap, then long-press
+        TapGesture::new()
+            .then(LongPressGesture::new().minimum_duration(Duration::from_millis(300))), // tap, then long-press
         |State(status): State<Binding<&'static str>>| status.set("Done!"),
     )
     .state(&status)
 }
 
 // ---------------------------------------------------------------------------
-// interaction.md § "## Combining gestures" (prose): `sequenced_before` (alias of
-// `then`), `simultaneously_with`, `exclusively_before`.
+// interaction.md § "## Combining gestures" (prose): `simultaneously_with`,
+// `exclusively_before`.
 // Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn interaction_combinators_prose() {
-    let _ = TapGesture::new().sequenced_before(LongPressGesture::new(300));
-    let _ = TapGesture::new().simultaneously_with(LongPressGesture::new(300));
-    let _ = TapGesture::new().exclusively_before(LongPressGesture::new(300));
+    use core::time::Duration;
+
+    let hold = LongPressGesture::new().minimum_duration(Duration::from_millis(300));
+    let _ = TapGesture::new().simultaneously_with(hold.clone());
+    let _ = TapGesture::new().exclusively_before(hold);
 }
 
 // ---------------------------------------------------------------------------

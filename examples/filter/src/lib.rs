@@ -477,5 +477,5 @@ fn filter_preview() -> impl View {
 
 /// Builds the example app, showing the filter demo.
 pub fn app(env: Environment) -> App<impl Windows> {
-    App::new(demo, env)
+    App::new(env).window(Window::new("", demo))
 }

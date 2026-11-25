@@ -8,7 +8,7 @@ use waterui::app::App;
 use waterui::layout::Size;
 use waterui::prelude::*;
 use waterui::task::sleep;
-use waterui::window::{UserAttention, Window, WindowHandle, WindowLevel, WindowState};
+use waterui::window::{UserAttention, Window, WindowHandle, WindowLevel};
 
 /// Live probe for the window API (water-rs/waterui#1264, #1268): the window
 /// opens always-on-top with 24x12 resize increments, maximizes itself after a
@@ -16,13 +16,9 @@ use waterui::window::{UserAttention, Window, WindowHandle, WindowLevel, WindowSt
 /// window shows `_NET_WM_STATE_ABOVE`, `_NET_WM_STATE_MAXIMIZED_*`,
 /// `_NET_WM_STATE_DEMANDS_ATTENTION`, and the increment in `WM_NORMAL_HINTS`.
 pub fn main() {
-    let window = Window::new(
-        "window-api-probe",
-        waterui::reactive::binding(WindowState::Normal),
-        || (),
-    )
-    .level(WindowLevel::AlwaysOnTop)
-    .resize_increments(Size::new(24.0, 12.0));
+    let window = Window::new("window-api-probe", || ())
+        .level(WindowLevel::AlwaysOnTop)
+        .resize_increments(Size::new(24.0, 12.0));
 
     let handle: WindowHandle = window.handle();
     let window = window.content(move || {
@@ -40,7 +36,7 @@ pub fn main() {
     });
 
     run(
-        |env| App::new_with_windows([window], env),
+        |env| App::new(env).window(window),
         Environment::new(),
         hydrolysis::testing::TestStyle::new(),
     );

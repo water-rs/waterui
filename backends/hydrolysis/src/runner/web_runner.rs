@@ -25,7 +25,7 @@ use wasm_bindgen::{JsCast, closure::Closure};
 use wasm_bindgen_futures::JsFuture;
 use waterui::app::{App, AppMenuBar, AppParts, Windows};
 use waterui::window::WindowState;
-use waterui_core::{Environment, contract_violation};
+use waterui_core::{Environment, Retain, contract_violation};
 use web_sys::Response;
 
 use crate::text::fonts::WebFonts;
@@ -38,7 +38,9 @@ use crate::renderer::HydrolysisTextContextMenuMode;
 use crate::renderer::MenuShortcutRegistry;
 use crate::renderer::{FontFamilyResolution, HydrolysisRenderer, Next};
 use crate::runner::web_accessibility::WebAccessibilityBridge;
-use crate::runner::window::{FrameMode, RootWindow, RootWindows, self_pace_interval};
+use crate::runner::window::{
+    FrameMode, RootWindow, RootWindows, self_pace_interval, split_open_and_watch_dormant,
+};
 use crate::runner::{
     RenderDiagnosticsConfig, RuntimeWindow, WindowFrame, advance_runtime, handle_input_events,
     render_window,
@@ -252,6 +254,9 @@ struct BrowserRunner {
     fonts_arrived: Rc<Cell<bool>>,
     /// Schedules a frame — what an arriving face wakes the page with.
     wake: Rc<dyn Fn()>,
+    /// Keeps state watchers on dormant `Closed` secondary windows alive so
+    /// opening one at run time reports the unsupported secondary-window error.
+    _dormant_window_watches: Vec<Retain>,
     /// Held for its lifetime: the media-query listener keeps writing the
     /// colour-scheme binding only while the runner holds the observation.
     _appearance: crate::platform::web_appearance::SystemAppearance,
@@ -550,6 +555,12 @@ pub fn run<W: Windows, M: AppMenuBar>(app: App<W, M>, style: impl crate::Style) 
             );
         });
         RootWindows::connect_channels(channels, &unsupported_opener);
+        let (windows, dormant_window_watches) = split_open_and_watch_dormant(windows, || {
+            contract_violation!(
+                "hydrolysis web runner: secondary windows are unsupported — a browser \
+                 page is the application's only window; the window is not shown"
+            );
+        });
         let window_count = windows.len();
         let Ok([window]) = <[RootWindow<crate::text::ParleyEngine>; 1]>::try_from(windows) else {
             let message = format!(
@@ -666,6 +677,7 @@ pub fn run<W: Windows, M: AppMenuBar>(app: App<W, M>, style: impl crate::Style) 
             deferred_fonts,
             fonts_arrived: Rc::new(Cell::new(false)),
             wake: browser_schedule,
+            _dormant_window_watches: dormant_window_watches,
             _appearance: system_appearance,
             _system_locale: system_locale,
             next_paced_due: None,

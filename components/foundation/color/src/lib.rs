@@ -89,6 +89,8 @@ impl Default for Color {
 #[derive(Debug, Clone, Copy)]
 pub struct Working(pub WorkingColor);
 
+impl_constant!(Working);
+
 impl Resolvable for Working {
     type Resolved = WorkingColor;
 
@@ -103,24 +105,28 @@ impl<T: Resolvable<Resolved = WorkingColor> + 'static> From<T> for Color {
     }
 }
 
-#[derive(Debug, Clone)]
-struct SignalColor(Computed<Color>);
+impl Color {
+    /// Wraps a reactive signal of colors as a [`Color`].
+    ///
+    /// Prefer passing signals directly to colour-taking modifiers; this constructor
+    /// exists for modifiers and components that accept `impl IntoSignal<Color> + 'static`
+    /// and store a [`Color`].
+    #[must_use]
+    pub fn from_signal(source: impl IntoSignal<Self> + 'static) -> Self {
+        #[derive(Debug, Clone)]
+        struct ReactiveColor(Computed<Color>);
 
-impl Resolvable for SignalColor {
-    type Resolved = WorkingColor;
+        impl Resolvable for ReactiveColor {
+            type Resolved = WorkingColor;
 
-    fn resolve(&self, env: &Environment) -> impl Signal<Output = Self::Resolved> {
-        let env = env.clone();
-        flatten_signal(self.0.clone().map(move |color| color.resolve(&env)))
+            fn resolve(&self, env: &Environment) -> impl Signal<Output = Self::Resolved> {
+                let env = env.clone();
+                flatten_signal(self.0.clone().map(move |color| color.resolve(&env)))
+            }
+        }
+
+        Self::new(ReactiveColor(source.into_signal().computed()))
     }
-}
-
-/// Creates a semantic color view backed by a reactive color signal.
-///
-/// Both replacement of the selected color and changes inside its environment
-/// resolution update the existing native color node without rebuilding it.
-pub fn signal_color(source: impl IntoSignal<Color> + 'static) -> Color {
-    Color::new(SignalColor(source.into_signal().computed()))
 }
 
 /// Represents a color with an opacity/alpha value applied.
@@ -480,92 +486,6 @@ impl Resolvable for Mix {
     }
 }
 
-macro_rules! environment_color {
-    ($name:ident, $doc:literal) => {
-        #[doc = $doc]
-        #[derive(Debug, Clone, Copy)]
-        pub struct $name;
-
-        impl Resolvable for $name {
-            type Resolved = WorkingColor;
-
-            fn resolve(&self, env: &Environment) -> impl Signal<Output = Self::Resolved> {
-                // A token the host or theme did not install is a contract
-                // violation; the color is transparent, so nothing is drawn
-                // with it.
-                env.query::<Self, Computed<WorkingColor>>()
-                    .cloned()
-                    .unwrap_or_else(|| {
-                        contract_violation!(concat!(
-                            stringify!($name),
-                            " is not installed in the environment; transparent is used"
-                        ));
-                        Computed::constant(WorkingColor::TRANSPARENT)
-                    })
-            }
-        }
-    };
-}
-
-environment_color!(
-    BackgroundColor,
-    "Background color key for environment queries."
-);
-environment_color!(SurfaceColor, "Surface color key for environment queries.");
-environment_color!(
-    SurfaceVariantColor,
-    "Surface-variant color key for environment queries."
-);
-environment_color!(BorderColor, "Border color key for environment queries.");
-environment_color!(
-    ForegroundColor,
-    "Foreground color key for environment queries."
-);
-environment_color!(
-    MutedForegroundColor,
-    "Muted-foreground color key for environment queries."
-);
-environment_color!(
-    TertiaryForegroundColor,
-    "Tertiary-foreground color key for environment queries."
-);
-environment_color!(
-    DisabledForegroundColor,
-    "Disabled-foreground color key for environment queries."
-);
-environment_color!(AccentColor, "Accent color key for environment queries.");
-environment_color!(
-    AccentForegroundColor,
-    "Accent-foreground color key for environment queries."
-);
-environment_color!(
-    AccentContainerColor,
-    "Accent-container color key for environment queries."
-);
-environment_color!(TertiaryColor, "Tertiary color key for environment queries.");
-environment_color!(
-    TertiaryContainerColor,
-    "Tertiary-container color key for environment queries."
-);
-environment_color!(
-    SelectionContainerColor,
-    "Selection-container color key for environment queries."
-);
-environment_color!(
-    SelectionForegroundColor,
-    "Selection-foreground color key for environment queries."
-);
-environment_color!(
-    UnemphasizedSelectionColor,
-    "Unemphasized-selection color key for environment queries."
-);
-environment_color!(ErrorColor, "Error color key for environment queries.");
-environment_color!(
-    ErrorForegroundColor,
-    "Error-foreground color key for environment queries."
-);
-environment_color!(ScrimColor, "Scrim color key for environment queries.");
-
 /// The light or dark appearance the application is drawn in.
 ///
 /// A backend installs the system appearance, or a theme installs a fixed or
@@ -639,6 +559,8 @@ macro_rules! color_const {
                         .unwrap_or_else(|| default_color.resolve())
                 }
             }
+
+            impl_constant!($name);
 
             impl Color{
                 #[doc=$doc]
@@ -935,11 +857,13 @@ mod tests {
     #[test]
     #[cfg_attr(
         debug_assertions,
-        should_panic(expected = "AccentColor is not installed in the environment")
+        should_panic(
+            expected = "is not installed in the environment, so it resolves opaque black"
+        )
     )]
-    fn a_color_token_the_host_did_not_install_is_transparent() {
-        let color = AccentColor.resolve(&Environment::new()).snapshot();
-        assert_eq!(color, WorkingColor::TRANSPARENT);
+    fn a_color_token_the_host_did_not_install_is_opaque_black() {
+        let color = Color::accent().resolve(&Environment::new()).snapshot();
+        assert_eq!(color, WorkingColor::BLACK);
     }
 
     #[test]

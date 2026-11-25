@@ -14,12 +14,12 @@ use waterui::component::label::IconLabel;
 use waterui::handler::ViewBuilder;
 use waterui::id::SelfId;
 use waterui::navigation::{TabBarMinimizeBehavior, TabRole};
-use waterui::prelude::theme_color::Accent;
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
 use waterui::reactive::collection::List;
 use waterui::shape::{Circle, CornerRadius, RoundedRectangle, ShapeExt};
+use waterui::theme::color::Accent;
 use waterui::views::ForEach;
 use waterui_apple::SfSymbol;
 
@@ -263,5 +263,5 @@ fn backdrop() -> impl View {
 
 /// Builds the Liquid Glass example app around [`main`].
 pub fn app(env: Environment) -> App<impl Windows> {
-    App::new(main, env)
+    App::new(env).window(Window::new("", main))
 }

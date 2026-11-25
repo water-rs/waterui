@@ -27,12 +27,17 @@
 //! ));
 //! ```
 
-use nami::signal::IntoComputed;
+use nami::cache::Cached;
+use nami::constant::{Constant, Lazy};
+use nami::debug::Debug as DebugSignal;
+use nami::distinct::Distinct;
+use nami::map::Map;
+use nami::scan::Scan;
+use nami::signal::{IntoSignal, WithMetadata};
+use nami::{Binding, Signal};
 use std::sync::Arc;
-use suiteki::Str;
 use waterui_core::{Computed, Metadata, View, metadata::MetadataKey};
-use waterui_graphics::color::{Color, Srgb};
-use waterui_graphics::gradient::Gradient;
+use waterui_graphics::color::Color;
 use waterui_layout::BackgroundView;
 use waterui_shape::{Capsule, ClipShape, Shape, ShapeKind};
 
@@ -53,12 +58,22 @@ pub struct MaterialBackground(pub Material);
 
 impl MetadataKey for MaterialBackground {}
 
+/// Marker for backgrounds implemented directly as views, [`Material`], or [`Glass`].
+#[derive(Debug, Clone, Copy)]
+pub struct ViewBackground;
+
+/// Marker for reactive colour signals applied directly to `.background(..)`.
+#[derive(Debug, Clone, Copy)]
+pub struct ColorSignalBackground;
+
 /// A trait for types that can be applied as backgrounds.
 ///
 /// This enables a unified `.background()` API that accepts:
 /// - `Material` - Creates a native blur effect (`MaterialBackground` metadata)
+/// - `Glass` - Creates a Liquid Glass background (`GlassBackground` metadata)
 /// - Any [`View`] - Creates a standard background view
-pub trait IntoBackground {
+/// - Any colour [`Signal`] (such as `selected.select(Color::from(Accent), Color::from(SurfaceVariant))`)
+pub trait IntoBackground<Marker = ViewBackground> {
     /// The output view type after applying the background.
     type Output<Content: View>: View;
 
@@ -66,7 +81,7 @@ pub trait IntoBackground {
     fn apply_background<Content: View>(self, content: Content) -> Self::Output<Content>;
 }
 
-impl IntoBackground for Material {
+impl IntoBackground<ViewBackground> for Material {
     type Output<Content: View> = Metadata<MaterialBackground, Content>;
 
     fn apply_background<Content: View>(self, content: Content) -> Self::Output<Content> {
@@ -92,7 +107,7 @@ pub struct GlassBackground(pub Glass);
 
 impl MetadataKey for GlassBackground {}
 
-impl IntoBackground for Glass {
+impl IntoBackground<ViewBackground> for Glass {
     type Output<Content: View> = Metadata<GlassBackground, Content>;
 
     fn apply_background<Content: View>(self, content: Content) -> Self::Output<Content> {
@@ -124,7 +139,7 @@ pub struct MaterialGroup;
 
 impl MetadataKey for MaterialGroup {}
 
-impl<V: View> IntoBackground for V {
+impl<V: View> IntoBackground<ViewBackground> for V {
     type Output<Content: View> = BackgroundView<Content, V>;
 
     fn apply_background<Content: View>(self, content: Content) -> Self::Output<Content> {
@@ -132,23 +147,58 @@ impl<V: View> IntoBackground for V {
     }
 }
 
-/// Represents different kinds of backgrounds that can be applied to UI elements.
-///
-/// A metadata key that nothing in this repository attaches or reads: a
-/// background is any [`View`] passed to
-/// [`background`](crate::ViewExt::background). It remains because renderers
-/// built against this crate still name it.
-#[derive(Debug)]
-#[non_exhaustive]
-pub enum Background {
-    /// A solid color background.
-    Color(Computed<Color>),
-    /// An image background.
-    Image(Computed<Str>),
-    /// A material background (blur effects).
-    Material(Material),
-    /// A gradient background.
-    Gradient(Gradient),
+macro_rules! impl_color_signal_background {
+    ($($ty:ty => ($($generics:ident),*));+ $(;)?) => {
+        $(
+            impl<$($generics),*> IntoBackground<ColorSignalBackground> for $ty
+            where
+                Self: IntoSignal<Color> + 'static,
+            {
+                type Output<Content: View> = BackgroundView<Content, Color>;
+
+                fn apply_background<Content: View>(self, content: Content) -> Self::Output<Content> {
+                    BackgroundView::new(content, Color::from_signal(self))
+                }
+            }
+        )+
+    };
+}
+
+impl_color_signal_background!(
+    Binding<Out> => (Out);
+    Computed<Out> => (Out);
+    Map<C, F, Out> => (C, F, Out);
+    Constant<Out> => (Out);
+    Lazy<F, Out> => (F, Out);
+    Scan<Out> => (Out);
+    WithMetadata<C, T> => (C, T);
+    DebugSignal<C> => (C);
+);
+
+impl<C> IntoBackground<ColorSignalBackground> for Cached<C>
+where
+    C: Signal,
+    C::Output: Clone,
+    Self: IntoSignal<Color> + 'static,
+{
+    type Output<Content: View> = BackgroundView<Content, Color>;
+
+    fn apply_background<Content: View>(self, content: Content) -> Self::Output<Content> {
+        BackgroundView::new(content, Color::from_signal(self))
+    }
+}
+
+impl<S> IntoBackground<ColorSignalBackground> for Distinct<S>
+where
+    S: Signal,
+    S::Output: PartialEq,
+    Self: IntoSignal<Color> + 'static,
+{
+    type Output<Content: View> = BackgroundView<Content, Color>;
+
+    fn apply_background<Content: View>(self, content: Content) -> Self::Output<Content> {
+        BackgroundView::new(content, Color::from_signal(self))
+    }
 }
 
 /// Material types for background blur effects.
@@ -332,8 +382,8 @@ impl Glass {
 
     /// Washes the glass with a color.
     #[must_use]
-    pub fn tint(mut self, color: impl Into<Color>) -> Self {
-        self.tint = Some(color.into());
+    pub fn tint(mut self, color: impl IntoSignal<Color> + 'static) -> Self {
+        self.tint = Some(Color::from_signal(color));
         self
     }
 
@@ -378,44 +428,5 @@ impl Glass {
     #[must_use]
     pub fn outline(&self) -> &ClipShape {
         &self.shape
-    }
-}
-
-impl MetadataKey for Background {}
-
-impl From<Color> for Background {
-    fn from(color: Color) -> Self {
-        Self::Color(Computed::new(color))
-    }
-}
-
-impl From<Srgb> for Background {
-    fn from(color: Srgb) -> Self {
-        Self::from(Color::from(color))
-    }
-}
-
-impl From<Material> for Background {
-    fn from(material: Material) -> Self {
-        Self::Material(material)
-    }
-}
-
-impl From<Gradient> for Background {
-    fn from(gradient: Gradient) -> Self {
-        Self::Gradient(gradient)
-    }
-}
-
-impl Background {
-    /// Creates a new background with a solid color.
-    pub fn color(color: impl IntoComputed<Color>) -> Self {
-        Self::Color(color.into_computed())
-    }
-
-    /// Creates a new background with a blur material effect.
-    #[must_use]
-    pub const fn material(material: Material) -> Self {
-        Self::Material(material)
     }
 }

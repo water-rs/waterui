@@ -114,22 +114,24 @@ use waterui_core::layout::{Point as WPoint, Rect as WRect, Size as WSize};
 
 #[cfg(target_os = "macos")]
 mod imp {
-    use alloc::rc::Rc;
+    use alloc::rc::{Rc, Weak};
     use alloc::vec::Vec;
     use core::cell::{Cell, RefCell};
+    use core::mem::{replace, take};
 
-    use super::RootWindow;
-    use super::WindowFrameRateVotes;
+    use super::{RootWindow, ToolbarRoot, WindowFrameRateVotes};
     use super::{into_kit_rect, into_kit_size, into_layout_rect};
-    use cocoa_ui::appkit::{AttentionRequest, HostView, WindowLevel as KitLevel, WindowStyle};
+    use cocoa_ui::appkit::{
+        Application, AttentionRequest, HostView, WindowLevel as KitLevel, WindowStyle,
+    };
+    use cocoa_ui::main_queue::enqueue_local;
     use cocoa_ui::{MainThreadMarker, Retained};
     use waterui::animation::ChangeAnimation;
     use waterui::handler::ViewBuilder;
     use waterui::reactive::{Binding, Computed, Signal};
-    use waterui::window::Window;
     use waterui::window::{
-        ResolvedWindowBackground, UserAttention, WindowHandle, WindowLevel, WindowState,
-        WindowStyle as WuiStyle, WindowToolbar,
+        Activation, ResolvedWindowBackground, UserAttention, Window, WindowHandle, WindowLevel,
+        WindowState, WindowStyle as WuiStyle, WindowToolbar,
     };
     use waterui_backend_core::Environment;
 
@@ -156,7 +158,7 @@ mod imp {
     /// host clears the root host's handlers, closes the window and stops
     /// the watchers.
     pub struct WindowHost {
-        _window: Rc<cocoa_ui::appkit::Window>,
+        window: Rc<cocoa_ui::appkit::Window>,
         host: Retained<HostView>,
         _keepalive: KeepAlive,
     }
@@ -165,12 +167,8 @@ mod imp {
         /// The realized window — the trials asserting what a declaration
         /// installed drive the platform object through it.
         #[cfg(feature = "native-test")]
-        #[expect(
-            clippy::used_underscore_binding,
-            reason = "the field keeps its ownership-marking name; only the tests read it"
-        )]
         pub fn window(&self) -> &cocoa_ui::appkit::Window {
-            &self._window
+            &self.window
         }
     }
 
@@ -182,15 +180,133 @@ mod imp {
         }
     }
 
+    enum DeclaredPhase {
+        Closed,
+        PendingOpen,
+        Open(WindowHost),
+    }
+
+    /// An app-declared window retained across close/reopen cycles and driven
+    /// by its [`WindowState`] binding.
+    struct DeclaredWindow {
+        declaration: RootWindow,
+        toolbar: RefCell<Option<ToolbarRoot>>,
+        env: Environment,
+        phase: RefCell<DeclaredPhase>,
+        applying_state: Rc<Cell<bool>>,
+        publishing_state: Rc<Cell<bool>>,
+        state_watch: RefCell<Option<KeepAlive>>,
+    }
+
+    /// Owns an app-declared window registration; dropping it stops observing
+    /// its state binding and tears down any open platform window.
+    pub struct DeclaredHandle(Rc<DeclaredWindow>);
+
+    impl Drop for DeclaredHandle {
+        fn drop(&mut self) {
+            self.0.state_watch.borrow_mut().take();
+            let host = replace(&mut *self.0.phase.borrow_mut(), DeclaredPhase::Closed);
+            drop(host);
+        }
+    }
+
+    impl DeclaredWindow {
+        fn take_open_host(&self) -> Option<WindowHost> {
+            let mut phase = self.phase.borrow_mut();
+            if matches!(*phase, DeclaredPhase::Open(_)) {
+                match replace(&mut *phase, DeclaredPhase::Closed) {
+                    DeclaredPhase::Open(host) => Some(host),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        }
+
+        fn handle_state_write(self: &Rc<Self>, mtm: MainThreadMarker) {
+            let target = self.declaration.state.snapshot();
+            if target == WindowState::Closed {
+                let closing_host = {
+                    let mut phase = self.phase.borrow_mut();
+                    match replace(&mut *phase, DeclaredPhase::Closed) {
+                        DeclaredPhase::Open(host) => Some(host),
+                        DeclaredPhase::Closed | DeclaredPhase::PendingOpen => None,
+                    }
+                };
+                if let Some(host) = closing_host {
+                    self.applying_state.set(true);
+                    host.window.close();
+                    self.applying_state.set(false);
+                    // Defer dropping `host` past the current callback so a
+                    // button inside this window closing itself never drops its
+                    // own action closure while it is on the stack.
+                    enqueue_local(mtm, move |_| drop(host));
+                }
+                return;
+            }
+
+            let open_window = {
+                let mut phase = self.phase.borrow_mut();
+                match &*phase {
+                    DeclaredPhase::Closed => {
+                        *phase = DeclaredPhase::PendingOpen;
+                        None
+                    }
+                    DeclaredPhase::PendingOpen => return,
+                    DeclaredPhase::Open(host) => Some(Rc::clone(&host.window)),
+                }
+            };
+
+            if let Some(window) = open_window {
+                self.applying_state.set(true);
+                apply_state(&window, target);
+                self.applying_state.set(false);
+                if target == WindowState::Normal && self.declaration.activation != Activation::Never
+                {
+                    window.make_key_and_order_front();
+                    Application::shared(mtm).activate();
+                }
+                return;
+            }
+
+            let weak = Rc::downgrade(self);
+            enqueue_local(mtm, move |mtm| {
+                let Some(declared) = weak.upgrade() else {
+                    return;
+                };
+                {
+                    let mut phase = declared.phase.borrow_mut();
+                    if !matches!(*phase, DeclaredPhase::PendingOpen) {
+                        return;
+                    }
+                    if declared.declaration.state.snapshot() == WindowState::Closed {
+                        *phase = DeclaredPhase::Closed;
+                        return;
+                    }
+                }
+                let host = realize_declared(&declared, mtm);
+                if declared.declaration.state.snapshot() == WindowState::Closed {
+                    declared.applying_state.set(true);
+                    host.window.close();
+                    declared.applying_state.set(false);
+                    *declared.phase.borrow_mut() = DeclaredPhase::Closed;
+                    drop(host);
+                } else {
+                    *declared.phase.borrow_mut() = DeclaredPhase::Open(host);
+                }
+            });
+        }
+    }
+
     thread_local! {
-        /// Every window the manager has opened, by insertion order: the set
-        /// the `activeWindows` array tracked. A window removes itself on
-        /// close.
+        /// Every imperative window the manager has opened, by insertion order.
         static HOSTS: RefCell<Vec<WindowHost>> = const { RefCell::new(Vec::new()) };
+        /// Every app-declared window, retained across close/reopen cycles.
+        static DECLARED: RefCell<Vec<DeclaredHandle>> = const { RefCell::new(Vec::new()) };
     }
 
     /// The application-level environment snapshot under which windows opened
-    /// from the view tree realize, so a window opened by `conditional_window`
+    /// from the view tree realize, so a window opened from the view tree
     /// renders under the application's root environment rather than its host
     /// window's chrome/navigation scopes.
     #[derive(Clone)]
@@ -219,8 +335,8 @@ mod imp {
         })
     }
 
-    /// Realizes a window dispatched from the view tree (`conditional_window`)
-    /// on a fresh platform window, deferred to the next main-queue turn.
+    /// Realizes a window dispatched from the view tree on a fresh platform
+    /// window, deferred to the next main-queue turn.
     pub fn show_from_tree<C: super::IntoChild<super::AppleBackend>>(
         declaration: Window<super::WindowSlot<C>, Option<C>>,
         env: &Environment,
@@ -235,8 +351,74 @@ mod imp {
         });
     }
 
-    /// Keeps `host` — the window the startup path realized — in the open set.
-    pub fn track(host: WindowHost) {
+    /// Registers an app-declared window under the macOS window manager,
+    /// realizing it immediately when its initial state is not
+    /// [`WindowState::Closed`]. Returns whether a platform window was opened.
+    pub fn declare_root(declaration: RootWindow, env: &Environment, mtm: MainThreadMarker) -> bool {
+        let (handle, opened) = declare_handle(declaration, env, mtm);
+        DECLARED.with(|declared| declared.borrow_mut().push(handle));
+        opened
+    }
+
+    /// Registers an app-declared window scoped to the returned handle's
+    /// lifetime, for embedded macOS mounts.
+    pub fn declare_embedded(
+        declaration: RootWindow,
+        env: &Environment,
+        mtm: MainThreadMarker,
+    ) -> DeclaredHandle {
+        declare_handle(declaration, env, mtm).0
+    }
+
+    fn declare_handle(
+        declaration: RootWindow,
+        env: &Environment,
+        mtm: MainThreadMarker,
+    ) -> (DeclaredHandle, bool) {
+        let mut toolbar = None;
+        let declaration = declaration.map(
+            |content| content,
+            |slot| {
+                toolbar = slot;
+                None
+            },
+        );
+        let declared = Rc::new(DeclaredWindow {
+            declaration,
+            toolbar: RefCell::new(toolbar),
+            env: env.clone(),
+            phase: RefCell::new(DeclaredPhase::Closed),
+            applying_state: Rc::new(Cell::new(false)),
+            publishing_state: Rc::new(Cell::new(false)),
+            state_watch: RefCell::new(None),
+        });
+        let mut watch = KeepAlive::default();
+        watch.watch(&declared.declaration.state, {
+            let weak = Rc::downgrade(&declared);
+            move |_| {
+                let Some(declared) = weak.upgrade() else {
+                    return;
+                };
+                if declared.publishing_state.get() {
+                    return;
+                }
+                declared.handle_state_write(self::mtm());
+            }
+        });
+        *declared.state_watch.borrow_mut() = Some(watch);
+        let opened = if declared.declaration.state.snapshot() == WindowState::Closed {
+            false
+        } else {
+            let host = realize_declared(&declared, mtm);
+            *declared.phase.borrow_mut() = DeclaredPhase::Open(host);
+            true
+        };
+        (DeclaredHandle(declared), opened)
+    }
+
+    /// Keeps `host` — an imperative window realized through a channel — in the
+    /// open set.
+    fn track(host: WindowHost) {
         HOSTS.with(|hosts| hosts.borrow_mut().push(host));
     }
 
@@ -246,7 +428,9 @@ mod imp {
     /// windows in thread-local teardown, where the GPU objects they own
     /// can no longer reach their own thread-locals.
     pub fn close_all() {
-        let hosts = HOSTS.with(|hosts| core::mem::take(&mut *hosts.borrow_mut()));
+        let hosts = HOSTS.with(|hosts| take(&mut *hosts.borrow_mut()));
+        let declared = DECLARED.with(|declared| take(&mut *declared.borrow_mut()));
+        drop(declared);
         drop(hosts);
     }
 
@@ -261,18 +445,52 @@ mod imp {
         realize_root(super::root_window(declaration), env, mtm)
     }
 
+    enum StateWiring {
+        OneShot,
+        Declared(Weak<DeclaredWindow>),
+    }
+
+    fn realize_declared(declared: &Rc<DeclaredWindow>, mtm: MainThreadMarker) -> WindowHost {
+        let toolbar = declared.toolbar.borrow_mut().take();
+        realize_window(
+            &declared.declaration,
+            toolbar,
+            &declared.env,
+            mtm,
+            StateWiring::Declared(Rc::downgrade(declared)),
+        )
+    }
+
     /// Realizes `declaration` as a platform window and returns its host. The
     /// window is ordered front at full transparency and revealed when its
     /// content reports ready — the same path the Swift host took, so a GPU
     /// surface never shows before its first frame.
+    fn realize_root(
+        declaration: RootWindow,
+        env: &Environment,
+        mtm: MainThreadMarker,
+    ) -> WindowHost {
+        let mut toolbar = None;
+        let declaration = declaration.map(
+            |content| content,
+            |slot| {
+                toolbar = slot;
+                None
+            },
+        );
+        realize_window(&declaration, toolbar, env, mtm, StateWiring::OneShot)
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "one sequential realization: order is the point, splitting it obscures the wiring"
     )]
-    pub fn realize_root(
-        declaration: RootWindow,
+    fn realize_window(
+        declaration: &RootWindow,
+        toolbar: Option<ToolbarRoot>,
         env: &Environment,
         mtm: MainThreadMarker,
+        state_wiring: StateWiring,
     ) -> WindowHost {
         let mut keepalive = KeepAlive::default();
 
@@ -293,7 +511,7 @@ mod imp {
             into_kit_rect(frame),
             style,
         ));
-        wire_focus_requests(&declaration, &window, mtm);
+        wire_focus_requests(declaration, &window, mtm);
         window.set_accepts_mouse_moved_events(true);
         window.set_alpha_value(0.0);
 
@@ -340,7 +558,38 @@ mod imp {
         };
         // State, two-way the same way; a chrome zoom arrives as a resize,
         // so the state publish joins the frame publish on that hook.
-        let (applying_state, publish_state) = state_publisher(&declaration.state);
+        let (publish_state, declared_for_close) = match state_wiring {
+            StateWiring::OneShot => {
+                let (applying_state, publish_state) = state_publisher(&declaration.state);
+                keepalive.watch(&declaration.state, {
+                    let window = window.clone();
+                    move |context| {
+                        applying_state.set(true);
+                        apply_state(&window, *context.value());
+                        applying_state.set(false);
+                    }
+                });
+                (publish_state, None)
+            }
+            StateWiring::Declared(declared) => {
+                let publish_state = {
+                    let declared_ref = declared
+                        .upgrade()
+                        .expect("DeclaredWindow outlives its realization call");
+                    let state = declaration.state.clone();
+                    let applying = Rc::clone(&declared_ref.applying_state);
+                    let publishing = Rc::clone(&declared_ref.publishing_state);
+                    Rc::new(move |to: WindowState| {
+                        if !applying.get() && state.snapshot() != to {
+                            publishing.set(true);
+                            state.set(to);
+                            publishing.set(false);
+                        }
+                    }) as Rc<dyn Fn(WindowState)>
+                };
+                (publish_state, Some(declared))
+            }
+        };
         window.on_resize({
             let publish = publish_frame.clone();
             let publish_state = publish_state.clone();
@@ -352,17 +601,16 @@ mod imp {
         });
         window.on_move(publish_frame);
 
-        keepalive.watch(&declaration.state, {
-            let window = window.clone();
-            move |context| {
-                applying_state.set(true);
-                apply_state(&window, *context.value());
-                applying_state.set(false);
-            }
-        });
         window.on_close({
             let publish = publish_state.clone();
-            move || publish(WindowState::Closed)
+            move || {
+                if let Some(declared) = declared_for_close.as_ref().and_then(Weak::upgrade)
+                    && let Some(old_host) = declared.take_open_host()
+                {
+                    enqueue_local(mtm, move |_| drop(old_host));
+                }
+                publish(WindowState::Closed);
+            }
         });
         if declaration.has_close_handler() {
             window.on_should_close(close_gate(declaration.handle()));
@@ -483,7 +731,7 @@ mod imp {
         // The declared toolbar goes through the window's one `NSToolbar`:
         // each child becomes an `NSToolbarItem`, which is what gives it the
         // system's capsule, spacing and overflow.
-        if let Some(toolbar) = declaration.toolbar {
+        if let Some(toolbar) = toolbar {
             let toolbar_env = crate::toolbar_chrome::toolbar_environment(env);
             let toolbar_leaf = toolbar(&toolbar_env, mtm);
             install_toolbar(
@@ -530,7 +778,7 @@ mod imp {
         window.fade_in(0.12);
 
         WindowHost {
-            _window: window,
+            window,
             host,
             _keepalive: keepalive,
         }
@@ -922,8 +1170,9 @@ mod imp {
     use cocoa_ui::{MainThreadMarker, Retained, view};
     use waterui::graphics::Color;
     use waterui::graphics::color::WorkingColor;
-    use waterui::reactive::Computed;
+    use waterui::reactive::{Computed, Signal};
     use waterui::theme::color::Background;
+    use waterui::window::WindowState;
     use waterui_backend_core::Environment;
 
     use crate::contract::KeepAlive;
@@ -1013,6 +1262,7 @@ mod imp {
         hosts: RefCell<std::collections::BTreeMap<String, WindowHost>>,
         pending: RefCell<VecDeque<Pending>>,
         declared: RefCell<Vec<Rc<RootWindow>>>,
+        dormant_watches: RefCell<Vec<KeepAlive>>,
         claimed: Cell<usize>,
         env: RefCell<Option<Environment>>,
     }
@@ -1164,7 +1414,23 @@ mod imp {
         mtm: MainThreadMarker,
     ) {
         *scenes.env.borrow_mut() = Some(env.clone());
-        *scenes.declared.borrow_mut() = windows.into_iter().map(Rc::new).collect();
+        let mut open = Vec::new();
+        let mut dormant_watches = Vec::new();
+        for window in windows {
+            if window.state.snapshot() == WindowState::Closed {
+                let mut watch = KeepAlive::default();
+                watch.watch(&window.state, |ctx| {
+                    if *ctx.value() != WindowState::Closed {
+                        show_unsupported_on_ios();
+                    }
+                });
+                dormant_watches.push(watch);
+            } else {
+                open.push(Rc::new(window));
+            }
+        }
+        *scenes.declared.borrow_mut() = open;
+        *scenes.dormant_watches.borrow_mut() = dormant_watches;
         scenes.claimed.set(claimed);
         loop {
             let pending = scenes.pending.borrow_mut().pop_front();
@@ -1383,7 +1649,8 @@ pub use imp::{
 };
 #[cfg(target_os = "macos")]
 pub use imp::{
-    bind_background, close_all, install_root_environment, realize_root, show_from_tree, track,
+    bind_background, close_all, declare_embedded, declare_root, install_root_environment,
+    show_from_tree,
 };
 
 /// A waterui layout rect, as the kit sees it.
@@ -1426,18 +1693,15 @@ fn into_kit_size(size: WSize) -> Size {
 #[cfg(test)]
 mod tests {
     use super::root_window;
-    use waterui::reactive::binding;
-    use waterui::window::{Window, WindowState};
+    use waterui::layout::Divider;
+    use waterui::window::Window;
 
     #[test]
     fn root_window_preserves_absent_and_present_toolbars() {
-        let plain = root_window(Window::new("Plain", binding(WindowState::Closed), || ()));
+        let plain = root_window(Window::new("Plain", || ()));
         assert!(plain.toolbar.is_none());
 
-        let with_toolbar = root_window(
-            Window::new("Toolbar", binding(WindowState::Closed), || ())
-                .toolbar(waterui::layout::Divider),
-        );
+        let with_toolbar = root_window(Window::new("Toolbar", || ()).toolbar(Divider));
         assert!(with_toolbar.toolbar.is_some());
     }
 }

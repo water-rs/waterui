@@ -38,13 +38,13 @@ use waterui::layout::stack::VStack;
 use waterui::navigation::{NavigationSplitView, NavigationView};
 use waterui::prelude::slider::slider;
 use waterui::prelude::stepper::stepper;
-use waterui::prelude::theme_color::{Foreground, MutedForeground, SurfaceVariant};
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::Computed;
 use waterui::reactive::binding;
 use waterui::reactive::collection::List as ReactiveList;
 use waterui::shape::Capsule;
+use waterui::theme::color::{Foreground, MutedForeground, SurfaceVariant};
 use waterui_icons_material_icon as mdi;
 
 // Material 3 navigation-drawer metrics (M3 reference: list-item / nav-drawer).
@@ -303,10 +303,10 @@ where
 {
     let indicator: Color = SurfaceVariant.into();
     let clear: Color = Srgb::WHITE.with_opacity(0.0).into();
-    let pill = signal_color(active.select(indicator, clear).computed());
+    let pill = active.select(indicator, clear);
     let active_content: Color = Foreground.into();
     let resting_content: Color = MutedForeground.into();
-    let content = signal_color(active.select(active_content, resting_content).computed());
+    let content = active.select(active_content, resting_content);
     let state = active.map(|active| AccessibilityState::new().selected(active));
     // The row is one accessibility node carrying the title, so its own label
     // stays out of the tree rather than repeating it.
@@ -655,10 +655,9 @@ pub fn demo() -> impl View {
 pub fn app(env: Environment) -> App<impl Windows> {
     // Own all mutable state at the window scope so it persists across rebuilds.
     let (selected, groups_open, rows, state) = new_state();
-    App::new(
-        move || catalog(&selected, groups_open.clone(), rows.clone(), state.clone()),
-        env,
-    )
+    App::new(env).window(Window::new("", move || {
+        catalog(&selected, groups_open.clone(), rows.clone(), state.clone())
+    }))
 }
 
 #[cfg(test)]

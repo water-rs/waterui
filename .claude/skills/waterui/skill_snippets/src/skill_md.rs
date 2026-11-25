@@ -206,7 +206,7 @@ pub mod skill_block_07 {
     }
 
     pub fn app(env: Environment) -> App<impl Windows> {
-        App::new(counter, env)
+        App::new(env).window(Window::new("Counter", counter))
     }
 }
 
@@ -233,7 +233,7 @@ pub mod skill_block_10 {
 
     impl View for ColorSwatch {
         fn body(self, _env: &Environment) -> impl View {
-            signal_color(self.color).size(64.0, 32.0) // a Color is itself a view
+            ().size(64.0, 32.0).background(self.color)
         }
     }
 }
@@ -691,7 +691,7 @@ pub mod skill_block_16 {
 /// this file consumes proven to resolve.
 pub fn skill_block_08_imports_are_live() {
     let _ = DragGesture::new(5.0);
-    let _ = LongPressGesture::new(500);
+    let _ = LongPressGesture::new();
     let _ = TapGesture::new();
     let _ = CursorStyle::Arrow;
     let _ = Files::new([waterui::Url::from("file:///tmp/payload")]);

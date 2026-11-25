@@ -578,8 +578,6 @@ mod tests {
             gradient: waterui::graphics::Gradient,
             #[cfg(any(waterui_feature = "gpu", waterui_feature = "cpu"))]
             shader_paint: waterui::graphics::ShaderPaintView,
-            #[cfg(waterui_feature = "table")]
-            table: waterui::component::table::TableConfig,
             #[cfg(waterui_feature = "canvas")]
             canvas: waterui::graphics::canvas::CanvasView,
             #[cfg(waterui_feature = "gpu")]
@@ -635,6 +633,8 @@ mod tests {
             filtered<C>: waterui::graphics::backend::FilteredView<C>,
             #[cfg(waterui_feature = "list")]
             list<C>: waterui::component::list::ListConfig<C>,
+            #[cfg(waterui_feature = "table")]
+            table<C>: waterui::component::table::TableConfig<C>,
             #[cfg(waterui_feature = "navigation")]
             navigation_view<C>: waterui::navigation::ResolvedNavigationView<C>,
             #[cfg(waterui_feature = "navigation")]

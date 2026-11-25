@@ -46,6 +46,7 @@ A `WaterUI` project is a plain Rust crate; the CLI keeps native projects out of 
 use waterui::app::{App, Windows};
 use waterui::prelude::*;
 use waterui::preview;
+use waterui::window::Window;
 
 #[preview]
 fn main() -> impl View {
@@ -60,7 +61,7 @@ fn main() -> impl View {
 }
 
 pub fn app(env: Environment) -> App<impl Windows> {
-    App::new(main, env)
+    App::new(env).window(Window::new("Counter", main))
 }
 ```
 

@@ -3,9 +3,9 @@
 use waterui::app::{App, Windows};
 use waterui::env::with;
 use waterui::locale::{Locale, locales};
-use waterui::prelude::theme_color::SurfaceVariant;
 use waterui::prelude::*;
 use waterui::preview;
+use waterui::theme::color::SurfaceVariant;
 
 fn type_scale() -> impl View {
     vstack((
@@ -122,7 +122,7 @@ pub fn typography_and_rtl() -> impl View {
 
 /// Builds the example app, showing the typography and bidirectional layout demo.
 pub fn app(env: Environment) -> App<impl Windows> {
-    App::new(typography_and_rtl, env)
+    App::new(env).window(Window::new("", typography_and_rtl))
 }
 
 #[cfg(test)]

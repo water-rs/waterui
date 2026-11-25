@@ -3,9 +3,9 @@
 //! The same records `water run --logs debug` prints, so a developer does not
 //! have to choose between watching a terminal and watching the app.
 
-use waterui::prelude::theme_color::MutedForeground;
 use waterui::prelude::*;
 use waterui::reactive::collection::SignalCollection;
+use waterui::theme::color::MutedForeground;
 use waterui::widget::condition::when;
 use waterui_inspector_protocol::LogLevel;
 

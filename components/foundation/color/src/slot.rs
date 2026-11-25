@@ -1,21 +1,18 @@
 //! Environment storage, scheme derivations, and [`Tint`] resolution for theme
 //! colour tokens.
 
-use core::any::{TypeId, type_name};
+use core::any::type_name;
 use core::fmt;
 use core::marker::PhantomData;
 use std::rc::Rc;
 
-use nami::{Computed, Signal, SignalExt, signal::IntoComputed};
+use nami::{
+    Computed, Signal, SignalExt,
+    signal::{IntoComputed, IntoSignal},
+};
 use waterui_core::{Environment, contract_violation, env::Store, resolve::Resolvable};
 
-use crate::{
-    AccentColor, AccentContainerColor, AccentForegroundColor, BackgroundColor, BorderColor, Color,
-    ColorScheme, DisabledForegroundColor, ErrorColor, ErrorForegroundColor, ForegroundColor,
-    MutedForegroundColor, ScrimColor, SelectionContainerColor, SelectionForegroundColor,
-    SurfaceColor, SurfaceVariantColor, TertiaryColor, TertiaryContainerColor,
-    TertiaryForegroundColor, UnemphasizedSelectionColor, WorkingColor, token,
-};
+use crate::{Color, ColorScheme, WorkingColor, token};
 
 pub trait Sealed {}
 
@@ -178,43 +175,13 @@ pub fn rederive_color_slot<T: ColorSlot>(env: &mut Environment, scheme: &Compute
     insert_color_slot::<T>(env, derivation.derive(scheme), Some(derivation));
 }
 
-/// Stores slot `T`'s signal and temporarily mirrors it into the legacy `*Color`
-/// keys until split crates migrate off them in #4423.
+/// Stores slot `T`'s signal in the environment.
 fn insert_color_slot<T: 'static>(
     env: &mut Environment,
     signal: Computed<WorkingColor>,
     derivation: Option<ColorDerivation>,
 ) {
-    env.insert(ColorSlotValue::<T>::new(signal.clone(), derivation));
-
-    macro_rules! mirror_legacy_color {
-        ($theme_slot:ty, $legacy_slot:ty) => {
-            if TypeId::of::<T>() == TypeId::of::<$theme_slot>() {
-                env.insert(Store::<$legacy_slot, Computed<WorkingColor>>::new(signal));
-                return;
-            }
-        };
-    }
-
-    mirror_legacy_color!(token::Background, BackgroundColor);
-    mirror_legacy_color!(token::Surface, SurfaceColor);
-    mirror_legacy_color!(token::SurfaceVariant, SurfaceVariantColor);
-    mirror_legacy_color!(token::Border, BorderColor);
-    mirror_legacy_color!(token::Foreground, ForegroundColor);
-    mirror_legacy_color!(token::MutedForeground, MutedForegroundColor);
-    mirror_legacy_color!(token::TertiaryForeground, TertiaryForegroundColor);
-    mirror_legacy_color!(token::DisabledForeground, DisabledForegroundColor);
-    mirror_legacy_color!(token::Accent, AccentColor);
-    mirror_legacy_color!(token::AccentContainer, AccentContainerColor);
-    mirror_legacy_color!(token::AccentForeground, AccentForegroundColor);
-    mirror_legacy_color!(token::Tertiary, TertiaryColor);
-    mirror_legacy_color!(token::TertiaryContainer, TertiaryContainerColor);
-    mirror_legacy_color!(token::SelectionContainer, SelectionContainerColor);
-    mirror_legacy_color!(token::SelectionForeground, SelectionForegroundColor);
-    mirror_legacy_color!(token::UnemphasizedSelection, UnemphasizedSelectionColor);
-    mirror_legacy_color!(token::Error, ErrorColor);
-    mirror_legacy_color!(token::ErrorForeground, ErrorForegroundColor);
-    mirror_legacy_color!(token::Scrim, ScrimColor);
+    env.insert(ColorSlotValue::<T>::new(signal, derivation));
 }
 
 /// Returns an installed color signal for the requested slot when one exists.
@@ -245,8 +212,8 @@ pub struct Tint(Rc<Color>);
 
 impl Tint {
     /// A tint of `color`.
-    pub fn new(color: impl Into<Color>) -> Self {
-        Self(Rc::new(color.into()))
+    pub fn new(color: impl IntoSignal<Color> + 'static) -> Self {
+        Self(Rc::new(Color::from_signal(color)))
     }
 
     /// The tint colour.

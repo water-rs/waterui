@@ -540,5 +540,5 @@ pub fn demo() -> impl View {
 
 /// Builds the animation example app.
 pub fn app(env: Environment) -> App<impl Windows> {
-    App::new(demo, env)
+    App::new(env).window(Window::new("", demo))
 }

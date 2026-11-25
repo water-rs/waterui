@@ -1,9 +1,6 @@
 #![doc = include_str!("README.md")]
 extern crate alloc;
 extern crate self as waterui;
-#[cfg(feature = "table")]
-#[macro_use]
-mod macros;
 mod appearance;
 pub use appearance::{background, border, filter, floating, shape, style};
 pub mod component;
@@ -88,15 +85,13 @@ pub mod prelude {
 
     pub use super::color::*;
     #[cfg(feature = "dialog")]
-    pub use super::dialog::{Dialog, DialogAction, DialogRole};
+    pub use super::dialog::{Dialog, DialogAction};
     pub use super::fullscreen::*;
     #[cfg(feature = "snackbar")]
     pub use super::snackbar::{
         Snackbar, SnackbarDismissReason, SnackbarHost, SnackbarManager, SnackbarPosition,
         SnackbarTheme,
     };
-
-    pub use super::gesture::GestureObserver;
 
     pub use super::border::Border;
     pub use super::component::badge::BadgeValue;
@@ -112,9 +107,7 @@ pub mod prelude {
     pub use super::views::ForEach;
     pub use waterui_core::dynamic::{DynamicHandler, watch};
 
-    pub use super::theme::{
-        self, ColorScheme, ColorSettings, FontSettings, Theme, Tint, color as theme_color,
-    };
+    pub use super::theme::{self, ColorScheme, ColorSettings, FontSettings, Theme, Tint};
 
     pub use super::text::{TextConfig, font, highlight, styled};
 
@@ -122,12 +115,16 @@ pub mod prelude {
     pub use super::component::link::{Link, LinkTarget, link};
     #[cfg(feature = "list")]
     pub use super::component::list::{
-        List, ListContent, ListMinRowHeight, Row, Section, detail_row, row,
+        ForEachExt, List, ListContent, ListMinRowHeight, Row, Section, detail_row, row,
     };
     #[cfg(feature = "menu")]
     pub use super::component::menu::{
-        Command, CommandExt, CommandRole, Menu, MenuItem, NamedKey, Shortcut, ShortcutKey,
-        ShortcutModifiers, ShortcutNamedKey,
+        Command, CommandExt, Menu, MenuItem, NamedKey, Shortcut, ShortcutKey, ShortcutModifiers,
+        ShortcutNamedKey,
+    };
+    #[cfg(feature = "table")]
+    pub use super::component::table::{
+        SortDirection, SortableTableColumn, Table, TableColumn, TableSort, col, table,
     };
     #[cfg(feature = "menu")]
     pub use super::metadata::context_menu::{ContextMenu, DismissContextMenu};
@@ -155,7 +152,7 @@ pub mod prelude {
     pub use super::gradient::{Gradient, GradientStops, MeshGradient};
 
     // Background types (explicit to avoid module name conflict with layout::background)
-    pub use super::background::{Background, Glass, GlassStyle, Material};
+    pub use super::background::{Glass, GlassStyle, Material};
 
     // Asset types
     #[cfg(all(feature = "assets", feature = "image", not(target_arch = "wasm32")))]

@@ -19,6 +19,7 @@
 //! }
 //! ```
 
+use nami::signal::IntoSignal;
 use waterui_core::metadata::MetadataKey;
 use waterui_graphics::color::Color;
 use waterui_layout::EdgeSet;
@@ -98,9 +99,9 @@ impl Border {
     /// * `color` - The color of the border
     /// * `width` - The width of the border in points
     #[must_use]
-    pub fn new(color: impl Into<Color>, width: f32) -> Self {
+    pub fn new(color: impl IntoSignal<Color> + 'static, width: f32) -> Self {
         Self {
-            color: color.into(),
+            color: Color::from_signal(color),
             width,
             corner_radius: 0.0,
             edges: EdgeSet::ALL,

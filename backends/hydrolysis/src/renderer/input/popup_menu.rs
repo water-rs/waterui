@@ -921,14 +921,11 @@ pub fn popup_menu_window<E: crate::text::TextEngine>(
             look.get_presentation_motion(),
         )
     };
-    let mut popup = Window::new(
-        TEXT_CONTEXT_MENU_WINDOW_TITLE,
-        state_for_content,
-        popup_content,
-    )
-    .style(WindowStyle::Borderless)
-    .resizable(false)
-    .background(Color::transparent());
+    let mut popup = Window::new(TEXT_CONTEXT_MENU_WINDOW_TITLE, popup_content)
+        .state(&state_for_content)
+        .style(WindowStyle::Borderless)
+        .resizable(false)
+        .background(Color::transparent());
     popup.closable = false;
     popup
         .frame
@@ -1037,14 +1034,11 @@ pub fn semantic_popup_menu_window<E: crate::text::TextEngine>(
         depth,
         popup_opener: popup_opener.clone(),
     };
-    let mut popup = Window::new(
-        TEXT_CONTEXT_MENU_WINDOW_TITLE,
-        state_for_content,
-        popup_content,
-    )
-    .style(WindowStyle::Borderless)
-    .resizable(false)
-    .background(Color::transparent());
+    let mut popup = Window::new(TEXT_CONTEXT_MENU_WINDOW_TITLE, popup_content)
+        .state(&state_for_content)
+        .style(WindowStyle::Borderless)
+        .resizable(false)
+        .background(Color::transparent());
     popup.closable = false;
     (popup, state)
 }
@@ -1090,7 +1084,8 @@ pub fn semantic_picker_menu_window(
             .spacing(0.0)
             .with(State(group_for_content.clone()))
     };
-    let mut popup = Window::new("WaterUI Picker Menu", state_for_content, popup_content)
+    let mut popup = Window::new("WaterUI Picker Menu", popup_content)
+        .state(&state_for_content)
         .style(WindowStyle::Borderless)
         .resizable(false)
         .background(Color::transparent());
@@ -1173,7 +1168,8 @@ pub fn picker_menu_window(
             presentation_motion.as_ref(),
         )
     };
-    let mut popup = Window::new("WaterUI Picker Menu", state_for_content, popup_content)
+    let mut popup = Window::new("WaterUI Picker Menu", popup_content)
+        .state(&state_for_content)
         .style(WindowStyle::Borderless)
         .resizable(false)
         .background(Color::transparent());
@@ -1351,7 +1347,8 @@ fn color_picker_window_base(
             None,
         )
     };
-    let mut popup = Window::new("WaterUI Color Picker", state_for_content, popup_content)
+    let mut popup = Window::new("WaterUI Color Picker", popup_content)
+        .state(&state_for_content)
         .style(WindowStyle::Borderless)
         .resizable(false)
         .background(Color::transparent());
@@ -1567,7 +1564,8 @@ fn date_picker_window_base(
             None,
         )
     };
-    let mut popup = Window::new("WaterUI Date Picker", state_for_content, popup_content)
+    let mut popup = Window::new("WaterUI Date Picker", popup_content)
+        .state(&state_for_content)
         .style(WindowStyle::Borderless)
         .resizable(false)
         .background(Color::transparent());

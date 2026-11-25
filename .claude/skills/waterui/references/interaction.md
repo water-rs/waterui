@@ -49,8 +49,8 @@ text("Simple Tap")
     .state(&taps)
 ```
 
-Siblings: `.on_tap_gesture(handler)` (alias of `.on_tap`), `.on_tap_gesture_count(2,
-handler)` for a fixed tap count, and `.on_long_press_gesture(milliseconds, handler)`. Behind
+Sibling: `.on_long_press(handler)` (using the platform's
+long-press timeout). Behind
 the opt-in `haptics` cargo feature, attach `.sensory_feedback(Feedback::Success, &trigger)`
 to play feedback whenever a `PartialEq + Clone` signal changes, or call
 `waterui::haptic::Haptic::impact(Intensity::LOW)` inside a gesture handler for an
@@ -65,16 +65,19 @@ role.
 anything `Into<Gesture>`:
 
 ```rust
-view.gesture(TapGesture::new(), handler)              // single tap
-view.gesture(TapGesture::repeat(2), handler)          // double tap — a count, not a new type
-view.gesture(LongPressGesture::new(500), handler)     // duration is a u32, NOT a core::time::Duration
+use core::{num::NonZeroU32, time::Duration};
+
+view.gesture(TapGesture::new(), handler)                                // single tap
+view.gesture(TapGesture::repeat(NonZeroU32::new(2).unwrap()), handler)    // double tap — a count, not a new type
+view.gesture(LongPressGesture::new().minimum_duration(Duration::from_millis(500)), handler)
 view.gesture(DragGesture::new(5.0), handler)          // minimum pointer travel, f32 layout units
 ```
 
-Two argument types are traps:
+Two details to keep straight:
 
-- `LongPressGesture::new` takes a bare `u32` in backend-interpreted time units (typically
-  milliseconds). `Duration::from_millis(500)` does not compile there.
+- `LongPressGesture::new()` uses the platform's default long-press timeout; call
+  `.minimum_duration(Duration::from_millis(500))` to override it. `LongPressEvent::duration()`
+  reports the `Duration` actually held.
 - `DragGesture::new` takes an `f32` distance threshold. This recognizer only *detects* a
   drag — it moves no data. Moving data between views is the separate drag-and-drop system
   below; do not conflate them.
@@ -90,11 +93,6 @@ A recognized gesture's payload is read in the handler directly as `TapEvent`,
 whose handler reads the local pointer `location()` as `HoverEvent` (both from
 `waterui::event`); `.on_hover_enter` / `.on_hover_exit` carry no `HoverEvent`, so
 `HoverEvent` fails to extract there.
-
-`.gesture(g, handler)` is shorthand for `.gesture_observer(GestureObserver::new(g,
-handler))` (`GestureObserver` from `waterui::gesture`). Use `.gesture_observer(..)` when
-the observer is built or stored separately; `GestureObserver::builder(g).action(handler)`
-is the equivalent builder form.
 
 `.buttons(..)` restricts tap, long-press, and drag recognizers to a `PointerButtons`
 mask (default `PRIMARY`). A recognizer activates only when the pressing
@@ -113,15 +111,17 @@ view.gesture(TapGesture::new().buttons(PointerButtons::MIDDLE), handler) // midd
 `.then(..)` sequences gestures; the handler fires only after the whole sequence succeeds:
 
 ```rust
+use core::time::Duration;
+
 view.gesture(
-    TapGesture::new().then(LongPressGesture::new(300)),   // tap, then long-press
+    TapGesture::new().then(LongPressGesture::new().minimum_duration(Duration::from_millis(300))), // tap, then long-press
     |State(status): State<Binding<&'static str>>| status.set("Done!"),
 )
 .state(&status)
 ```
 
 `.then` returns the erased `Gesture` type. Siblings with the same shape:
-`sequenced_before` (alias of `then`), `simultaneously_with`, `exclusively_before`.
+`simultaneously_with`, `exclusively_before`.
 
 Note in passing: `Binding::container("Waiting…")` infers `Binding<&'static str>`, which is
 a perfectly good status-string binding — `text!("{status}")` accepts it directly.

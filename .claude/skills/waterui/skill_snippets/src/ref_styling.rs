@@ -11,7 +11,7 @@ use waterui::prelude::*;
 // Listing: three token applications.
 // ---------------------------------------------------------------------------
 pub fn styling_block_01() {
-    use waterui::prelude::theme_color::{Accent, Foreground, Surface};
+    use waterui::theme::color::{Accent, Foreground, Surface};
 
     let _: Option<Accent> = None;
 
@@ -28,7 +28,7 @@ pub fn styling_block_01() {
 // Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn styling_token_as_value_prose() {
-    use waterui::prelude::theme_color::{
+    use waterui::theme::color::{
         AccentContainer, AccentForeground, Background, Border, DisabledForeground, Error,
         ErrorForeground, Scrim, SelectionContainer, SelectionForeground, SurfaceVariant, Tertiary,
         TertiaryContainer, TertiaryForeground, UnemphasizedSelection,
@@ -78,7 +78,7 @@ pub mod styling_block_02 {
                     "Inter",
                 ))),
         );
-        App::new(move || root(dark.clone()), env)
+        App::new(env).window(Window::new("Themed", move || root(dark.clone())))
     }
 }
 
@@ -191,14 +191,14 @@ pub fn styling_block_05() {
 // styling.md § "## Reactive colors" — rust block 6/19
 // ---------------------------------------------------------------------------
 pub fn styling_block_06() -> impl View {
-    use waterui::prelude::theme_color::SurfaceVariant;
     use waterui::shape::{Rectangle, ShapeExt};
+    use waterui::theme::color::SurfaceVariant;
 
     let selected = Binding::bool(true);
     let indicator: Color = SurfaceVariant.into();
     let clear = Color::transparent();
 
-    let fill = signal_color(selected.select(indicator, clear).computed());
+    let fill = selected.select(indicator, clear);
     Rectangle.fill(fill).size(64.0, 32.0)
 }
 
@@ -206,8 +206,8 @@ pub fn styling_block_06() -> impl View {
 // styling.md § "## Backgrounds, materials, gradients" — rust block 7/19
 // ---------------------------------------------------------------------------
 pub fn styling_block_07() {
-    use waterui::prelude::theme_color::Surface;
     use waterui::shape::{RoundedRectangle, ShapeExt};
+    use waterui::theme::color::Surface;
 
     use waterui::background::Material;
 
@@ -254,8 +254,8 @@ pub fn styling_material_group_prose() -> impl View {
 // Listing: three glass backgrounds.
 // ---------------------------------------------------------------------------
 pub fn styling_block_08() {
-    use waterui::prelude::theme_color::Accent;
     use waterui::shape::RoundedRectangle;
+    use waterui::theme::color::Accent;
 
     use waterui::background::Glass;
 
@@ -405,8 +405,8 @@ pub fn styling_block_10() {
 // styling.md § "## Shapes" — rust block 11/19
 // ---------------------------------------------------------------------------
 pub fn styling_block_11() -> impl View {
-    use waterui::prelude::theme_color::Accent;
     use waterui::shape::{Path, ShapeExt};
+    use waterui::theme::color::Accent;
 
     let triangle = Path::new()
         .move_to(0.5, 0.0)
@@ -480,8 +480,8 @@ pub fn styling_filled_shape_morph_prose() {
 // ---------------------------------------------------------------------------
 pub fn styling_block_13() {
     use waterui::border::Border;
-    use waterui::prelude::theme_color::Accent;
     use waterui::shape::RoundedRectangle;
+    use waterui::theme::color::Accent;
 
     let card = Divider;
     let _ = {
@@ -528,7 +528,7 @@ pub fn styling_floating_prose() {
 // styling.md writes `mdi::`/`lucide::` qualified so the icon set stays visible.
 #[allow(unknown_lints, qualified_waterui_path)]
 pub fn styling_block_14() {
-    use waterui::prelude::theme_color::Accent;
+    use waterui::theme::color::Accent;
 
     use waterui_icons_lucide as lucide;
     use waterui_icons_material_icon as mdi;
@@ -565,8 +565,8 @@ mod material3 {
     use waterui::prelude::*;
 
     /// Glue: the `app(env) -> App<impl Windows>` every example library exposes.
-    fn app(env: Environment) -> waterui::app::App<impl waterui::app::Windows> {
-        waterui::app::App::new(move || vstack((text("demo"),)), env)
+    fn app(env: Environment) -> App<impl Windows> {
+        App::new(env).window(Window::new("", move || vstack((text("demo"),))))
     }
 
     // -----------------------------------------------------------------------

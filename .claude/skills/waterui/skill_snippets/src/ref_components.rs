@@ -546,8 +546,8 @@ pub fn components_custom_control_styles() {
     let enabled = Binding::bool(true);
 
     use waterui::gesture::TapGesture;
-    use waterui::prelude::theme_color::{Accent, Error, SurfaceVariant};
     use waterui::shape::Capsule;
+    use waterui::theme::color::{Accent, Error, SurfaceVariant};
 
     struct PillButtonStyle;
 
@@ -565,7 +565,7 @@ pub fn components_custom_control_styles() {
             configuration
                 .into_label()
                 .padding_with((8.0, 16.0))
-                .background(signal_color(bg))
+                .background(bg)
                 .clip(Capsule)
         }
     }
@@ -577,11 +577,14 @@ pub fn components_custom_control_styles() {
             &self,
             configuration: PrimitiveButtonStyleConfiguration<L>,
         ) -> impl View + use<L> {
+            use core::num::NonZeroU32;
             let trigger = configuration.trigger().clone();
             configuration
                 .into_label()
                 .padding_with((8.0, 16.0))
-                .gesture(TapGesture::repeat(2), move || trigger.trigger())
+                .gesture(TapGesture::repeat(NonZeroU32::new(2).unwrap()), move || {
+                    trigger.trigger()
+                })
         }
     }
 
@@ -596,8 +599,8 @@ pub fn components_custom_control_styles() {
             hstack((
                 label,
                 spacer(),
-                signal_color(is_on.select(Color::new(Accent), Color::new(SurfaceVariant)))
-                    .size(44.0, 26.0)
+                ().size(44.0, 26.0)
+                    .background(is_on.select(Color::new(Accent), Color::new(SurfaceVariant)))
                     .clip(Capsule),
             ))
         }
@@ -698,7 +701,7 @@ pub fn components_block_17() {
             .shortcut(Shortcut::new('c').command())
     };
     let _ = {
-        "Delete".action(delete_handler).destructive() // red in every menu; == .role(CommandRole::Destructive)
+        "Delete".action(delete_handler).destructive() // red in every menu; == .role(ButtonRole::Destructive)
     };
     let _ = {
         "Delete"
@@ -712,7 +715,7 @@ pub fn components_block_17() {
     // The alternatives named in the trailing comments.
     let _ = "Delete"
         .action(delete_handler)
-        .role(CommandRole::Destructive);
+        .role(ButtonRole::Destructive);
     let _ = Shortcut::new('s').command().option();
     let _ = Shortcut::new('s').command().control();
 }
@@ -733,15 +736,17 @@ pub fn components_block_18(env: Environment) -> App<impl Windows, impl AppMenuBa
 
     use waterui::app::App;
 
-    App::new(move || content(), env).menu_bar(Menu::new(
-        "File",
-        (
-            "Save".action(save).shortcut(Shortcut::new('s').command()),
-            Divider,
-            MenuItem::CloseWindow,
-            MenuItem::Quit,
-        ),
-    ))
+    App::new(env)
+        .window(Window::new("", move || content()))
+        .menu_bar(Menu::new(
+            "File",
+            (
+                "Save".action(save).shortcut(Shortcut::new('s').command()),
+                Divider,
+                MenuItem::CloseWindow,
+                MenuItem::Quit,
+            ),
+        ))
 }
 
 // ---------------------------------------------------------------------------
@@ -1005,10 +1010,12 @@ pub mod components_block_27 {
         let _ = {
             List::for_each(records.clone(), |r| text(r.title))
                 .editing(is_editing.clone()) // impl IntoComputed<bool>
-                .on_delete(|ListDelete(i), mut s: AppState| {
-                    let _ = s.rows.remove(i);
+                .on_delete(|ListDelete(id): ListDelete<u64>, mut s: AppState| {
+                    if let Some(i) = s.rows.snapshot().iter().position(|r| r.id == id) {
+                        let _ = s.rows.remove(i);
+                    }
                 })
-                .on_move(|ListMove(m), mut s: AppState| {
+                .on_move(|ListMove(m): ListMove<u64>, mut s: AppState| {
                     let moved = s.rows.remove(m.from());
                     s.rows.insert(m.to(), moved);
                 })
@@ -1481,7 +1488,7 @@ pub fn components_block_37(photo_url: waterui::Url) {
             .image(photo_url) // a signal of Url: the fallback shows until it decodes
             .shape(RoundedRectangle::new(16.0))
             .size(64.0)
-            .ring(Color::new(theme_color::Accent), 2.0)
+            .ring(Color::accent(), 2.0)
     };
     let _ = {
         field("Email", &email).focused(&focus, Field::Email) // focused while `focus` holds Some(Field::Email)
@@ -1499,6 +1506,48 @@ pub fn components_avatar_prose() {
 
     // Prose (not counted): `.dynamic_range(DynamicRange::High)`.
     let _ = avatar("Grace Hopper").dynamic_range(DynamicRange::High);
+}
+
+// ---------------------------------------------------------------------------
+// components.md § "## Badges, avatars, tables, focus" (prose): row-major
+// `Table` with sortable columns, selection, and view cells. Not counted as a
+// rust block.
+// ---------------------------------------------------------------------------
+pub fn components_table_prose() {
+    #[derive(Clone)]
+    struct Person {
+        id: u64,
+        name: String,
+    }
+    impl Identifiable for Person {
+        type Id = u64;
+        fn id(&self) -> Self::Id {
+            self.id
+        }
+    }
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Sort {
+        Name,
+    }
+
+    let people = ReactiveList::from(vec![Person {
+        id: 1,
+        name: "Ada".into(),
+    }]);
+    let sel = Binding::container(Some(1_u64));
+    let order = Binding::container(Some(TableSort::new(Sort::Name, SortDirection::Ascending)));
+
+    let _ = Table::new(
+        people.clone(),
+        (
+            TableColumn::new("Name", |p: &Person| text(p.name.clone())).sortable(Sort::Name),
+            TableColumn::new("Avatar", |p: &Person| avatar(p.name.clone())),
+        ),
+    )
+    .selection(&sel)
+    .sort_order(&order);
+
+    let _ = table(people, (col("Name", |p: &Person| text(p.name.clone())),));
 }
 
 // ---------------------------------------------------------------------------

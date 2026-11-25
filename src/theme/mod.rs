@@ -633,9 +633,9 @@ pub struct ForegroundOverride {
 
 impl ForegroundOverride {
     /// Creates a new foreground override with the specified color.
-    pub fn new(color: impl Into<Color>) -> Self {
+    pub fn new(color: impl IntoSignal<Color> + 'static) -> Self {
         Self {
-            color: color.into(),
+            color: Color::from_signal(color),
         }
     }
 }
@@ -653,7 +653,7 @@ mod tests {
     use core::cell::Cell;
     use nami::{Binding, Signal, SignalExt};
     use waterui_core::resolve::Resolvable;
-    use waterui_graphics::color::{AccentColor, Color, Working};
+    use waterui_graphics::color::{Color, Working};
 
     use super::*;
 
@@ -692,9 +692,7 @@ mod tests {
     #[test]
     fn tint_signal_updates_in_place() {
         let source = Binding::container(WorkingColor::BLACK);
-        let tint = Tint::new(crate::color::signal_color(
-            source.map(|color| Color::new(Working(color))),
-        ));
+        let tint = Tint::new(source.map(|color| Color::new(Working(color))));
         let env = Environment::new().extending(tint.clone());
         let resolved = resolve_tint(&env).resolve(&env);
         assert!(resolved.snapshot().components[0].abs() < f32::EPSILON);
@@ -706,11 +704,76 @@ mod tests {
     }
 
     #[test]
-    fn tier_tokens_install_and_mirror_into_graphics_keys() {
-        use waterui_graphics::color::{
-            DisabledForegroundColor, TertiaryForegroundColor, UnemphasizedSelectionColor,
-        };
+    fn color_modifiers_accept_tokens_palette_structs_and_signals() {
+        use crate::ViewExt as _;
+        use crate::background::Glass;
+        use crate::border::Border;
+        use crate::color::{Blue, Oklch, P3, Red, Srgb};
+        use crate::component::button;
+        use crate::component::list::row;
+        use crate::shape::{Rectangle, ShapeExt as _};
+        use crate::text::text;
+        use crate::theme::color::{Accent, SurfaceVariant};
+        use crate::widget::avatar;
+        use waterui_icon::IconGlyph;
 
+        let selected = Binding::bool(false);
+        let signal = selected.select(Color::from(Accent), Color::from(SurfaceVariant));
+        let binding_color = Binding::container(Color::from(Srgb::new(1.0, 0.0, 0.0)));
+        let computed_color = binding_color.computed();
+
+        // Palette structs and theme tokens work directly across modifiers.
+        let _ = text("a").foreground(Accent);
+        let _ = text("b").foreground(Red);
+        let _ = text("c").foreground(Srgb::new(0.0, 0.0, 1.0));
+        let _ = text("d").foreground(P3::new(0.2, 0.4, 0.8));
+        let _ = text("e").foreground(Oklch::new(0.6, 0.15, 250.0));
+        let _ = text("f").foreground(signal.clone());
+        let _ = text("g").tint(Accent);
+        let _ = text("h").tint(signal.clone());
+        let _ = text("i").border(Blue, 1.0);
+        let _ = text("j").border(signal.clone(), 1.0);
+        let _ = Border::new(signal.clone(), 2.0);
+        let _ = text("k").background(signal.clone());
+        let _ = text("l").background(binding_color);
+        let _ = text("m").background(computed_color);
+        let _ = Glass::regular().tint(signal.clone());
+        let _ = Rectangle.fill(signal.clone());
+        let _ = Rectangle.fill(Red);
+        let _ = button("Inbox").action(|| {}).badge(3_u32).color(Accent);
+        let _ = button("Inbox")
+            .action(|| {})
+            .badge(3_u32)
+            .color(Srgb::new(1.0, 0.0, 0.0));
+        let _ = button("Inbox")
+            .action(|| {})
+            .badge(3_u32)
+            .color(signal.clone());
+        let _ = avatar("Ada").ring(Accent, 2.0).ring(signal.clone(), 2.0);
+        let _ = row("Key", "Val")
+            .value_color(Accent)
+            .value_color(signal.clone());
+        let _ = IconGlyph::new('\u{e88a}', "MaterialIcons-Regular")
+            .color(Accent)
+            .color(signal);
+
+        // ForegroundOverride resolves a reactive signal in place.
+        let active = Binding::bool(false);
+        let light = WorkingColor::new([0.1, 0.2, 0.3, 1.0]);
+        let dark = WorkingColor::new([0.9, 0.8, 0.7, 1.0]);
+        let mut env = Environment::new();
+        ForegroundOverride::new(
+            active.select(Color::new(Working(dark)), Color::new(Working(light))),
+        )
+        .install(&mut env);
+        let fg = color::Foreground.resolve(&env);
+        assert_eq!(fg.snapshot().components, light.components);
+        active.set(true);
+        assert_eq!(fg.snapshot().components, dark.components);
+    }
+
+    #[test]
+    fn tier_tokens_install_and_resolve_through_color_constructors() {
         let red = WorkingColor::new([1.0, 0.0, 0.0, 1.0]);
         let green = WorkingColor::new([0.0, 1.0, 0.0, 1.0]);
         let blue = WorkingColor::new([0.0, 0.0, 1.0, 1.0]);
@@ -738,30 +801,24 @@ mod tests {
             channel(blue)
         );
         assert_eq!(
-            channel(Color::new(TertiaryForegroundColor).resolve(&env).snapshot()),
+            channel(Color::tertiary_foreground().resolve(&env).snapshot()),
             channel(red)
         );
         assert_eq!(
-            channel(Color::new(DisabledForegroundColor).resolve(&env).snapshot()),
+            channel(Color::disabled_foreground().resolve(&env).snapshot()),
             channel(green)
         );
         assert_eq!(
-            channel(
-                Color::new(UnemphasizedSelectionColor)
-                    .resolve(&env)
-                    .snapshot()
-            ),
+            channel(Color::unemphasized_selection().resolve(&env).snapshot()),
             channel(blue)
         );
     }
 
-    /// A scheme installed on a subtree re-derives a per-scheme slot there,
-    /// the graphics mirror included, and the slot keeps following its
-    /// per-scheme signals; a slot installed as a signal is left as it is.
+    /// A scheme installed on a subtree re-derives a per-scheme slot there, and
+    /// the slot keeps following its per-scheme signals; a slot installed as a
+    /// signal is left as it is.
     #[test]
     fn subtree_scheme_rederives_per_scheme_slots() {
-        use waterui_graphics::color::BackgroundColor;
-
         let red = WorkingColor::new([1.0, 0.0, 0.0, 1.0]);
         let green = WorkingColor::new([0.0, 1.0, 0.0, 1.0]);
         let blue = WorkingColor::new([0.0, 0.0, 1.0, 1.0]);
@@ -782,10 +839,7 @@ mod tests {
         assert_eq!(channels(&env), red.components);
         assert_eq!(channels(&subtree), blue.components);
         assert_eq!(
-            Color::new(BackgroundColor)
-                .resolve(&subtree)
-                .snapshot()
-                .components,
+            Color::background().resolve(&subtree).snapshot().components,
             blue.components
         );
         assert_eq!(
@@ -799,11 +853,11 @@ mod tests {
     }
 
     #[test]
-    fn graphics_accent_color_tracks_installed_theme_signal() {
+    fn color_accent_tracks_installed_theme_signal() {
         let accent = Binding::container(WorkingColor::BLACK);
         let mut env = Environment::new();
         install_color_signal::<color::Accent>(&mut env, accent.computed());
-        let resolved = Color::new(AccentColor).resolve(&env);
+        let resolved = Color::accent().resolve(&env);
         let observed_red = Rc::new(Cell::new(0.0));
         let captured_red = Rc::clone(&observed_red);
         let _guard = resolved.watch(move |context| {

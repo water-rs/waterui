@@ -14,7 +14,11 @@ use crate::fullscreen::FullScreenOverlayHost;
 #[cfg(feature = "snackbar")]
 use crate::snackbar::SnackbarHost;
 use core::future::Future;
-use nami::{Binding, Computed, Signal, SignalExt as _, signal::IntoComputed};
+use core::time::Duration;
+use nami::{
+    Binding, Computed, Signal, SignalExt as _,
+    signal::{IntoComputed, IntoSignal},
+};
 use waterui_core::IntoSignalF32;
 pub use waterui_core::view::*;
 use waterui_core::{
@@ -348,7 +352,7 @@ pub trait ViewExt: View + Sized {
     /// let my_gradient_view = stack::hstack((Color::red(), Color::blue()));
     /// text!("Hello").background(my_gradient_view);
     /// ```
-    fn background<B: IntoBackground>(self, background: B) -> B::Output<Self> {
+    fn background<B: IntoBackground<M>, M>(self, background: B) -> B::Output<Self> {
         background.apply_background(self)
     }
 
@@ -394,7 +398,7 @@ pub trait ViewExt: View + Sized {
     ///     text!("World"),
     /// )).foreground(Color::red());
     /// ```
-    fn foreground(self, color: impl Into<Color>) -> impl View {
+    fn foreground(self, color: impl IntoSignal<Color> + 'static) -> impl View {
         self.install(theme::ForegroundOverride::new(color))
     }
 
@@ -436,7 +440,7 @@ pub trait ViewExt: View + Sized {
     ///     button("Save").action(|| {}),
     /// ));
     /// ```
-    fn tint(self, color: impl Into<Color>) -> impl View {
+    fn tint(self, color: impl IntoSignal<Color> + 'static) -> impl View {
         self.with(theme::Tint::new(color))
     }
 
@@ -889,27 +893,6 @@ pub trait ViewExt: View + Sized {
         Metadata::new(self, GestureObserver::new(gesture, action))
     }
 
-    /// Attaches a pre-built gesture observer to this view.
-    ///
-    /// Use this method when you need the builder pattern for state capture.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use waterui::prelude::*;
-    /// use waterui::gesture::{GestureObserver, TapGesture};
-    ///
-    /// let counted = text!("Tap twice").gesture_observer(
-    ///     GestureObserver::new(
-    ///         TapGesture::repeat(2),
-    ///         |State(counter): State<Binding<i32>>| *counter.get_mut() += 1,
-    ///     )
-    /// );
-    /// ```
-    fn gesture_observer(self, observer: GestureObserver) -> Metadata<GestureObserver, Self> {
-        Metadata::new(self, observer)
-    }
-
     /// Adds a tap gesture recognizer to this view that triggers the specified action.
     ///
     /// # Arguments
@@ -929,27 +912,19 @@ pub trait ViewExt: View + Sized {
         self.gesture(TapGesture::new(), action)
     }
 
-    /// Adds a tap gesture recognizer to this view (`SwiftUI` naming style).
-    ///
-    /// Equivalent to [`ViewExt::on_tap`].
-    fn on_tap_gesture<H, Args>(self, action: H) -> Metadata<GestureObserver, Self>
+    /// Adds a long-press gesture recognizer to this view using the platform's
+    /// default long-press timeout.
+    fn on_long_press<H, Args>(self, action: H) -> Metadata<GestureObserver, Self>
     where
         H: Handler<Args, ()>,
     {
-        self.on_tap(action)
+        self.gesture(LongPressGesture::new(), action)
     }
-
-    /// Adds a tap gesture recognizer requiring an exact tap count.
-    fn on_tap_gesture_count<H, Args>(self, count: u32, action: H) -> Metadata<GestureObserver, Self>
-    where
-        H: Handler<Args, ()>,
-    {
-        self.gesture(TapGesture::repeat(count.max(1)), action)
-    }
-
     /// Adds a long-press gesture recognizer to this view.
     ///
-    /// `minimum_duration_ms` is expressed in milliseconds.
+    /// Temporary Step 1 migration bridge for `water-rs/waterui#4458` while
+    /// `hydrolysis-m3` updates off milliseconds to [`ViewExt::on_long_press`].
+    #[doc(hidden)]
     fn on_long_press_gesture<H, Args>(
         self,
         minimum_duration_ms: u32,
@@ -958,7 +933,11 @@ pub trait ViewExt: View + Sized {
     where
         H: Handler<Args, ()>,
     {
-        self.gesture(LongPressGesture::new(minimum_duration_ms), action)
+        self.gesture(
+            LongPressGesture::new()
+                .minimum_duration(Duration::from_millis(u64::from(minimum_duration_ms))),
+            action,
+        )
     }
 
     /// Plays haptic `feedback` whenever `trigger`'s value changes.
@@ -1025,7 +1004,7 @@ pub trait ViewExt: View + Sized {
     /// // Simple border on all edges
     /// text!("Hello").border(Color::red(), 2.0);
     /// ```
-    fn border(self, color: impl Into<Color>, width: f32) -> Metadata<Border, Self> {
+    fn border(self, color: impl IntoSignal<Color> + 'static, width: f32) -> Metadata<Border, Self> {
         Metadata::new(self, Border::new(color, width))
     }
 

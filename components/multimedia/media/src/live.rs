@@ -146,8 +146,7 @@ impl LivePhoto {
 impl View for LivePhoto {
     fn body(self, env: &Environment) -> impl View {
         let source = self.source;
-        let activation_duration_ms =
-            u32::try_from(self.activation_duration.as_millis()).unwrap_or(u32::MAX);
+        let activation_duration = self.activation_duration;
         let is_playing = self.is_playing;
         let resizable = self.resizable;
         let content_mode = self.content_mode;
@@ -178,12 +177,15 @@ impl View for LivePhoto {
 
         Metadata::new(
             overlay(still, motion),
-            GestureObserver::new(LongPressGesture::new(activation_duration_ms), move || {
-                if !is_playing_on_press.snapshot() {
-                    is_playing_on_press.set(true);
-                    report_on_press.emit(Event::MotionStarted);
-                }
-            }),
+            GestureObserver::new(
+                LongPressGesture::new().minimum_duration(activation_duration),
+                move || {
+                    if !is_playing_on_press.snapshot() {
+                        is_playing_on_press.set(true);
+                        report_on_press.emit(Event::MotionStarted);
+                    }
+                },
+            ),
         )
     }
 }

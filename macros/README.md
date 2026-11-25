@@ -221,7 +221,7 @@ fn login_preview() -> impl View {
 #[waterui::test(login_preview)]
 fn login_smoke(app: &mut waterui_testing::MountedApp) {
     app.assert_exists(
-        waterui_testing::Selector::default()
+        waterui_testing::Selector::new()
             .role(waterui_testing::Role::LABEL)
             .label("Login"),
     );
@@ -234,7 +234,7 @@ For async tests:
 #[waterui::test(login_preview)]
 async fn login_async(app: &mut waterui_testing::MountedApp) {
     let exists = app.wait_for_existence(
-        waterui_testing::Selector::default()
+        waterui_testing::Selector::new()
             .role(waterui_testing::Role::LABEL)
             .label("Login"),
         std::time::Duration::from_millis(200),

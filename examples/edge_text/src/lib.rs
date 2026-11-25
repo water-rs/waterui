@@ -123,5 +123,5 @@ pub fn demo() -> impl View {
 
 /// Builds the edge-case text app around [`demo`].
 pub fn app(env: Environment) -> App<impl Windows> {
-    App::new(demo, env)
+    App::new(env).window(Window::new("", demo))
 }

@@ -337,5 +337,7 @@ pub fn demo() -> impl View {
 pub fn app(env: Environment) -> App<impl Windows> {
     let selected = binding(Some(2u64));
     let destination = binding(0usize);
-    App::new(move || reply(selected.clone(), &destination), env)
+    App::new(env).window(Window::new("", move || {
+        reply(selected.clone(), &destination)
+    }))
 }

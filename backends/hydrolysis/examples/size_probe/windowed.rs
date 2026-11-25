@@ -7,9 +7,8 @@ use hydrolysis::run;
 use waterui::Environment;
 use waterui::app::App;
 use waterui::prelude::*;
-use waterui::reactive::binding;
 use waterui::shape::{CornerRadius, RoundedRectangle, ShapeExt};
-use waterui::window::{Window, WindowState};
+use waterui::window::Window;
 
 /// Bounded-content probe for window size limits: no scroll, so the vstack's
 /// intrinsic minimum (two text lines + a 320x120 fixed chip + padding) is the
@@ -46,16 +45,7 @@ pub fn main() {
     });
 
     run(
-        |env| {
-            App::new_with_windows(
-                [Window::new(
-                    "size-probe",
-                    binding(WindowState::Normal),
-                    main_view,
-                )],
-                env,
-            )
-        },
+        |env| App::new(env).window(Window::new("size-probe", main_view)),
         Environment::new(),
         hydrolysis::testing::TestStyle::new(),
     );

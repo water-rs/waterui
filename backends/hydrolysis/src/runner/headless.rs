@@ -628,11 +628,7 @@ impl Drop for ReclaimGpuOnDrop {
 /// frame.
 #[cfg(not(target_arch = "wasm32"))]
 fn default_window<B: ViewBuilder>(content: B) -> Window<WindowContent<B>> {
-    Window::new(
-        "",
-        waterui_core::binding(waterui::window::WindowState::Normal),
-        content,
-    )
+    Window::new("", content)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -680,8 +676,38 @@ impl HeadlessRuntime {
         family_resolution: FontFamilyResolution,
         color_format: HeadlessColorFormat,
     ) -> Result<Self, PainterUnavailable> {
-        Ok(Self::on_painter(
+        Ok(Self::new_on_painter_with_format(
             OffscreenPainter::select()?,
+            env,
+            content,
+            width,
+            height,
+            style,
+            family_resolution,
+            color_format,
+        ))
+    }
+
+    /// Same as [`Self::new_with_format`] on an already-selected
+    /// [`OffscreenPainter`] so multiple mounts share one GPU device or CPU
+    /// engine without creating one per runtime.
+    #[must_use]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "forwards painter, environment, view builder, geometry, style, font policy, and capture format"
+    )]
+    pub fn new_on_painter_with_format(
+        painter: impl Into<OffscreenPainter>,
+        env: Environment,
+        content: impl ViewBuilder,
+        width: u32,
+        height: u32,
+        style: impl Style,
+        family_resolution: FontFamilyResolution,
+        color_format: HeadlessColorFormat,
+    ) -> Self {
+        Self::on_painter(
+            painter.into(),
             env,
             root_window(default_window(content)),
             width,
@@ -689,7 +715,7 @@ impl HeadlessRuntime {
             style,
             family_resolution,
             color_format,
-        ))
+        )
     }
 
     /// Same as [`Self::new`] around a caller-built [`Window`] — the mount the
@@ -737,8 +763,38 @@ impl HeadlessRuntime {
         family_resolution: FontFamilyResolution,
         color_format: HeadlessColorFormat,
     ) -> Result<Self, PainterUnavailable> {
-        Ok(Self::on_painter(
+        Ok(Self::new_with_window_on_painter_and_format(
             OffscreenPainter::select()?,
+            env,
+            window,
+            width,
+            height,
+            style,
+            family_resolution,
+            color_format,
+        ))
+    }
+
+    /// Same as [`Self::new_with_window_and_format`] on an already-selected
+    /// [`OffscreenPainter`] so multiple mounts share one GPU device or CPU
+    /// engine.
+    #[must_use]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "internal-style constructor forwarding the painter, window, style, font, and capture format configuration"
+    )]
+    pub fn new_with_window_on_painter_and_format<C: ViewBuilder, T: WindowToolbar>(
+        painter: impl Into<OffscreenPainter>,
+        env: Environment,
+        window: Window<C, T>,
+        width: u32,
+        height: u32,
+        style: impl Style,
+        family_resolution: FontFamilyResolution,
+        color_format: HeadlessColorFormat,
+    ) -> Self {
+        Self::on_painter(
+            painter.into(),
             env,
             root_window(window),
             width,
@@ -746,7 +802,7 @@ impl HeadlessRuntime {
             style,
             family_resolution,
             color_format,
-        ))
+        )
     }
 
     /// Renders at `scale_factor` physical pixels per logical pixel.
@@ -898,10 +954,10 @@ impl HeadlessRuntime {
         height: u32,
         style: impl crate::Style,
     ) -> Self {
-        Self::on_painter(
-            painter.into(),
+        Self::new_on_painter_with_format(
+            painter,
             env,
-            root_window(default_window(content)),
+            content,
             width,
             height,
             style,
@@ -1464,7 +1520,9 @@ impl HeadlessRuntime {
         &self,
         index: usize,
     ) -> Option<&RootWindow<crate::text::ParleyEngine>> {
-        self.popup_windows.get(index).map(|runtime| &runtime.window)
+        self.popup_windows
+            .get(index)
+            .map(|runtime| runtime.window.as_ref())
     }
 
     /// Captures the `index`th popup's own rendered frame through

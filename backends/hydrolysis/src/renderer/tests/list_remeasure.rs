@@ -413,7 +413,12 @@ fn a_table_header_names_and_widens_its_column_from_its_current_content() {
     let name = Binding::container(waterui_core::Str::from("Id"));
     let shown = name.clone();
     let mut runtime = runtime(AnyViewBuilder::<AnyView>::new(move || {
-        AnyView::new(table([col(text(shown.clone()), vec![text("1")])]))
+        AnyView::new(table(
+            vec![SelfId::new("1")],
+            (col(text(shown.clone()), |row: &SelfId<&str>| {
+                text((*row).into_inner())
+            }),),
+        ))
     }));
     let mut at = Instant::now();
 

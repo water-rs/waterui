@@ -211,12 +211,14 @@ use waterui::window::{Window, WindowState, WindowStyle};
 #[cfg(feature = "menu")]
 use waterui_controls::button::Button;
 use waterui_controls::button::ButtonConfig;
+#[cfg(feature = "menu")]
+use waterui_controls::button::ButtonRole;
 #[cfg(feature = "accessibility")]
 use waterui_controls::input::ContentType;
 #[cfg(feature = "menu")]
 use waterui_controls::label::Label as SemanticLabel;
 #[cfg(feature = "menu")]
-use waterui_controls::menu::{CommandRole, ResolvedCommand, ResolvedMenu, ResolvedMenuItem};
+use waterui_controls::menu::{ResolvedCommand, ResolvedMenu, ResolvedMenuItem};
 #[cfg(feature = "slider")]
 use waterui_controls::slider::SliderConfig;
 #[cfg(feature = "stepper")]
@@ -593,7 +595,7 @@ pub struct SemanticCore<E: crate::text::TextEngine> {
     /// and needs no signal.
     window_closable: bool,
     /// The runner's callback for opening windows declared inside this
-    /// window's view tree (`conditional_window`). `None` on standalone test
+    /// window's view tree. `None` on standalone test
     /// cores no runner claimed.
     window_opener: Option<Rc<dyn Fn(crate::runner::window::RootWindow<E>)>>,
     /// The window's declared logical frame — the semantic walk's only

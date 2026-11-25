@@ -14,10 +14,10 @@ use waterui::app::{App, Windows};
 use waterui::background::Material;
 use waterui::component::list::{List, Section};
 use waterui::navigation::NavigationToolbarItems;
-use waterui::prelude::theme_color::Foreground;
 use waterui::prelude::*;
 use waterui::reactive::collection::SignalCollection;
 use waterui::shape::{Circle, CornerRadius, RoundedRectangle};
+use waterui::theme::color::Foreground;
 use waterui::views::ForEach;
 use waterui::widget::condition::when;
 use waterui_icons_material_icon as mdi;
@@ -343,7 +343,7 @@ fn destination_tile(
     .spacing(4.0)
     .padding_with(10.0)
     .min_height(56.0)
-    .background(signal_color(bg))
+    .background(bg)
     // ~10pt on the tile's shorter side, matching the official app's tiles.
     .clip(RoundedRectangle::new(CornerRadius::fraction(0.15)))
     .on_tap(
@@ -480,5 +480,5 @@ fn reminder_list(
 
 /// Builds the reminders example app.
 pub fn app(env: Environment) -> App<impl Windows> {
-    App::new(demo, env)
+    App::new(env).window(Window::new("", demo))
 }

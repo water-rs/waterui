@@ -848,9 +848,6 @@ native_backend! {
         #[cfg(any(waterui_feature = "gpu", waterui_feature = "cpu"))]
         /// A WGSL fragment shader fill.
         shader_paint: waterui::graphics::ShaderPaintView,
-        #[cfg(waterui_feature = "table")]
-        /// A table.
-        table: waterui::component::table::TableConfig,
         #[cfg(waterui_feature = "canvas")]
         /// A canvas.
         canvas: waterui::graphics::canvas::CanvasView,
@@ -935,6 +932,9 @@ native_backend! {
         #[cfg(waterui_feature = "list")]
         /// A list, each row's content a child.
         list<C>: waterui::component::list::ListConfig<C>,
+        #[cfg(waterui_feature = "table")]
+        /// A table, each row's cells children.
+        table<C>: waterui::component::table::TableConfig<C>,
         #[cfg(waterui_feature = "navigation")]
         /// A navigation bar around its content.
         navigation_view<C>: waterui::navigation::ResolvedNavigationView<C>,
@@ -1225,6 +1225,19 @@ mod tests {
             snapshot
                 .range()
                 .filter_map(|index| snapshot.get_view(index))
+                .collect()
+        }
+    }
+
+    /// A table's children are its rows' cells.
+    #[cfg(waterui_feature = "table")]
+    impl<C: 'static> Parent<C> for waterui::component::table::TableConfig<C> {
+        fn children(self) -> Vec<C> {
+            let snapshot = self.rows().snapshot();
+            snapshot
+                .range()
+                .filter_map(|index| snapshot.get_view(index))
+                .flat_map(waterui::component::table::TableRow::into_cells)
                 .collect()
         }
     }
@@ -1619,11 +1632,9 @@ mod tests {
 
     #[test]
     fn a_window_in_the_tree_reaches_its_backend_with_its_content_typed() {
-        let hits = reached(waterui::window::Window::new(
-            "Test",
-            waterui::binding(waterui::window::WindowState::Normal),
-            Spacer::flexible,
-        ));
+        use waterui::window::Window;
+
+        let hits = reached(Window::new("Test", Spacer::flexible));
         assert_eq!(hits[0], "window");
         assert_eq!(hits[1], UNHOOKED_CHILD);
         #[cfg(not(feature = "erased-dispatch"))]
@@ -1635,14 +1646,10 @@ mod tests {
 
     #[test]
     fn a_window_with_a_toolbar_reaches_its_backend_with_both_typed() {
-        let hits = reached(
-            waterui::window::Window::new(
-                "Test",
-                waterui::binding(waterui::window::WindowState::Normal),
-                Spacer::flexible,
-            )
-            .toolbar(waterui::layout::Divider),
-        );
+        use waterui::layout::Divider;
+        use waterui::window::Window;
+
+        let hits = reached(Window::new("Test", Spacer::flexible).toolbar(Divider));
         #[cfg(not(feature = "erased-dispatch"))]
         assert!(!hits.contains(&"erased child"));
         #[cfg(feature = "erased-dispatch")]

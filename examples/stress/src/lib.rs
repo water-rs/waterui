@@ -293,7 +293,7 @@ pub fn demo() -> impl View {
 
 /// Standalone entry point for the stress example.
 pub fn app(env: Environment) -> App<impl Windows> {
-    App::new(demo, env)
+    App::new(env).window(Window::new("", demo))
 }
 
 #[cfg(test)]

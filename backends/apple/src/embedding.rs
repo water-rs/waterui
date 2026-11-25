@@ -386,7 +386,7 @@ pub unsafe fn mount<W: Windows, M: AppMenuBar>(
             mtm,
         );
         for window in windows {
-            keepalive.keep(crate::windows::realize_root(window, &env, mtm));
+            keepalive.keep(crate::windows::declare_embedded(window, &env, mtm));
         }
         #[cfg(waterui_feature = "menu")]
         keepalive.keep(parts.menu_bar);

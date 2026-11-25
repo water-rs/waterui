@@ -699,7 +699,7 @@ fn repeated_fixed_clock_captures_are_identical() {
 #[test]
 fn live_colour_updates_without_layout_or_recording() {
     let color = Binding::container(Color::srgb(210, 30, 10));
-    let mut runtime = runtime_with(waterui_graphics::color::signal_color(color.clone()));
+    let mut runtime = runtime_with(Color::from_signal(color.clone()));
     let mut frames = Frames::new();
     let (_, before) = frames.render(&mut runtime);
     let deadline = Instant::now() + Duration::from_secs(2);

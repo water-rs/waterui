@@ -154,18 +154,17 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
     #[cfg(feature = "table")]
     pub(super) fn build_table(
         renderer: &mut SemanticCore<E>,
-        config: TableConfig,
+        config: TableConfig<HeldChild<E>>,
         env: &Environment,
     ) -> Self {
         use crate::widgets::layout::table::TableRenderState;
         let stretch = waterui_core::NativeView::stretch_axis(&config);
-        let state = TableRenderState::from_config(config);
+        let core = renderer.new_core();
+        let state = TableRenderState::from_config(config, &core);
         // The headers are realized under this widget's cell as the record
         // reader, so their nodes attach to the table rather than the window.
-        let core = renderer.new_core();
         renderer.with_probe_reader(&core, ReaderPhase::Record, |renderer| {
-            let columns = renderer.read_signal(&state.config.columns);
-            state.refresh_headers(&columns, env, renderer);
+            state.refresh_headers(env, renderer);
         });
         Self::build_widget_with_core(Rc::new(RefCell::new(state)), stretch, env, core)
     }

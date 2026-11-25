@@ -13,12 +13,12 @@ use waterkit_location::{Location, Permission, PermissionStatus};
 use waterkit_permission::request;
 use waterui::app::{App, Windows};
 use waterui::env::use_env;
-use waterui::prelude::theme_color::Surface;
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::Signal;
 use waterui::reactive::binding;
 use waterui::shape::{CornerRadius, RoundedRectangle, ShapeExt as _};
+use waterui::theme::color::Surface;
 use waterui_icons_lucide as lucide;
 use waterui_map::{Coordinate, Map, MapStyle, Region};
 use waterui_map_gpu::MapGpuOptions;
@@ -195,5 +195,5 @@ fn with_tiles(view: impl View) -> impl View {
 #[must_use]
 pub fn app(env: Environment) -> App<impl Windows> {
     let state = MapExampleState::new();
-    App::new(move || with_tiles(content(state.clone())), env)
+    App::new(env).window(Window::new("", move || with_tiles(content(state.clone()))))
 }

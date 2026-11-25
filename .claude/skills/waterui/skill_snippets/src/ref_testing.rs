@@ -271,19 +271,29 @@ pub mod gated {
     // testing.md § "## Waiting" — rust block 11/15
     // -----------------------------------------------------------------------
     pub fn testing_block_11(app: &mut SemanticApp) {
-        use waterui_testing::{Selector, WaitOptions};
+        use waterui_testing::{Role, WaitOptions};
 
         let timeout = Duration::from_secs(2);
 
-        let selector = Selector::default().label("Done");
+        app.query()
+            .role(Role::IMAGE)
+            .label("Video content")
+            .assert_exists_within_frames(4);
+        app.query()
+            .label("Done")
+            .assert_value_eq_within("Done", Duration::from_secs(2));
 
-        app.wait_for_existence(&selector, Duration::from_secs(2));
-        app.wait_for_nonexistence(&selector, timeout);
-        app.wait_for_value_eq(&selector, "Done", timeout);
-        app.wait_for(
-            &[app.expect_value_eq(selector, "Done")],
-            WaitOptions::new(timeout),
+        assert!(
+            app.query()
+                .label("Done")
+                .wait_for_existence(Duration::from_secs(2)),
+            "missing Done"
         );
+        let _ = app.query().label("Done").wait_for_nonexistence(timeout);
+        let _ = app.query().label("Done").wait_for_value_eq("Done", timeout);
+
+        let ready = app.query().label("Done").expect_value_eq("Done");
+        app.wait_for(&[ready], WaitOptions::new(timeout));
     }
 
     // -----------------------------------------------------------------------
@@ -359,19 +369,21 @@ pub mod gated {
     // block.
     // -----------------------------------------------------------------------
     pub fn testing_waiting_prose(app: &mut SemanticApp) {
-        use waterui_testing::{Selector, WaitOptions, WaitResult};
+        use waterui_testing::{Expectation, Selector, WaitOptions, WaitResult};
 
         let timeout = Duration::from_secs(2);
-        let selector = Selector::default().label("Done");
+        let selector = Selector::new().label("Done");
 
         let _: bool = app.wait_for_existence(&selector, timeout);
         let _: bool = app.wait_for_nonexistence(&selector, timeout);
         let _: bool = app.wait_for_value_eq(&selector, "Done", timeout);
         let _: WaitResult = app.wait_for(
-            &[app.expect_value_eq(selector.clone(), "Done")],
+            &[Expectation::value_eq(selector.clone(), "Done")],
             WaitOptions::new(timeout),
         );
+        let _: bool = app.query().label("Done").wait_for_ui_focus(timeout);
         let _: bool = app.wait_for_ui_focus(&selector, timeout);
+        app.query().label("Done").assert_ui_focus();
         app.assert_value_eq(&selector, "Done");
     }
 

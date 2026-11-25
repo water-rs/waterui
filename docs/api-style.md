@@ -252,20 +252,19 @@ Builder methods come in three flavors; use the one whose semantics fit:
 
 ---
 
-## 10. Window state is not optional
+## 10. Window state is opt-in
 
-`Window::new(title, state, body)` requires the state binding positionally.
-Every example calls it; making it optional was a misleading affordance.
+`Window::new(title, body)` owns a `WindowState::Normal` binding by default, so
+a single-window app declares and titles its window in one expression:
+`App::new(env).window(Window::new("Notes", notes))`.
 
-`WindowState::default()` returns `Closed` so `binding::<WindowState>(default())`
-is the idiomatic "not-yet-shown" initialization. Flip to
-`WindowState::Normal` to open.
-
-For app-internal one-shot windows (the implicit `App::new` window, popups in
-hydrolysis), pass `binding(WindowState::Normal)` explicitly.
-
-`conditional_window(&state, creator)` takes a reference to the state binding;
-the closure receives an owned clone for use inside the rendered Window.
+Chain `.state(&state)` when external code reads or drives the window's
+lifecycle. `WindowState::default()` remains `Closed`, so
+`binding::<WindowState>(default())` is the idiomatic initialization for a
+secondary window declared on `App`: writing `WindowState::Normal` while
+`Closed` (re)creates it, writing `WindowState::Normal` while open restores and
+focuses it, and writing `WindowState::Closed` tears down the platform window
+while keeping the declaration armed.
 
 ---
 

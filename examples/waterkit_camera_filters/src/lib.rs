@@ -15,10 +15,10 @@ use waterui::app::{App, Windows};
 use waterui::graphics::gpu::bytemuck;
 use waterui::graphics::{Context, Frame, GpuContent, GpuView};
 use waterui::prelude::slider::slider;
-use waterui::prelude::theme_color::Surface;
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::task::spawn_local;
+use waterui::theme::color::Surface;
 
 #[state]
 #[derive(Clone)]
@@ -846,5 +846,5 @@ const CAMERA_FILTER_SHADER: CompiledShader =
 
 /// Builds the camera filter lab app around [`demo`].
 pub fn app(env: Environment) -> App<impl Windows> {
-    App::new(demo, env)
+    App::new(env).window(Window::new("", demo))
 }

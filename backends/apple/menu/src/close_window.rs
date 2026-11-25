@@ -1,7 +1,7 @@
 //! The standard Close Window item as the kit's menu-tree payload.
 
 use cocoa_ui::appkit::MenuAction;
-use waterui_controls::menu::{CommandRole, Shortcut};
+use waterui_controls::menu::Shortcut;
 
 use crate::kit_command_fields;
 
@@ -23,7 +23,7 @@ pub fn standard_close_window_command(chord: Option<&Shortcut>) -> cocoa_ui::menu
         None,
         None,
         None,
-        CommandRole::Standard,
+        None,
         chord,
     )
 }

@@ -86,8 +86,9 @@ object NativeBridge {
      * vsync ID (`hasVsyncId`, `vsyncId`) alongside `presentationNanos`.
      * 33 = [nativeSetLocale] forwards the primary BCP 47 locale tag from
      * `Configuration` at bind and on every `onConfigurationChanged`.
+     * 34 = [nativeSetMetrics] carries `ViewConfiguration.getLongPressTimeout()`.
      */
-    private const val SCHEMA: Int = 33
+    private const val SCHEMA: Int = 34
 
     /** Applies the pending GPU result on the UI thread. */
     @JvmStatic external fun nativeCompleteFrame(session: Long)
@@ -231,6 +232,7 @@ object NativeBridge {
         scrollFriction: Float,
         doubleTapTimeoutMs: Int,
         doubleTapSlopPx: Float,
+        longPressTimeoutMs: Int,
     )
 
     /**

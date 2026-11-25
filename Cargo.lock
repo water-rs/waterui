@@ -4779,7 +4779,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis-m3"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis-m3?branch=main#d95be0aed8285bd7336f001d627d2290f840e517"
+source = "git+https://github.com/water-rs/hydrolysis-m3?branch=main#4f6c5e577c334a191af9a3b91c9e0b5b9a7313f7"
 dependencies = [
  "hydrolysis-style",
  "material-color-utils",
@@ -13043,7 +13043,7 @@ dependencies = [
 [[package]]
 name = "waterui-chart"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/chart?branch=main#f357c852c7584823279ef4ec4208791447ad2b54"
+source = "git+https://github.com/water-rs/chart?branch=main#4aeda6a09bb308e4768f1cd6424aedbe57897fc2"
 dependencies = [
  "bytemuck",
  "nami",
@@ -13665,7 +13665,7 @@ dependencies = [
 [[package]]
 name = "waterui-math"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/math?branch=main#dd1aa5784ead6eb13e68b2a32a4d3533838e4f37"
+source = "git+https://github.com/water-rs/math?branch=main#3bf6f29d4ff677e83e04d6f41c941c5dfc47d473"
 dependencies = [
  "kurbo",
  "mathcat",
@@ -13819,7 +13819,7 @@ dependencies = [
 [[package]]
 name = "waterui-svg"
 version = "0.4.0"
-source = "git+https://github.com/water-rs/svg?branch=main#ad60d37ecb46b15f8d4eb29e83cbf6211ed57e9b"
+source = "git+https://github.com/water-rs/svg?branch=main#e65eabadc45daefcf2a488aa027f12a0e5952560"
 dependencies = [
  "suiteki",
  "tracing",
@@ -13856,7 +13856,6 @@ dependencies = [
  "waterui-assets-planner",
  "waterui-core",
  "waterui-preview-protocol",
- "wgpu",
 ]
 
 [[package]]

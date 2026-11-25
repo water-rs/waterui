@@ -255,7 +255,7 @@ impl ColorSwatch {
 impl View for ColorSwatch {
     fn body(self, _env: &Environment) -> impl View {
         Rectangle
-            .fill(signal_color(self.color))
+            .fill(self.color)
             .size(64.0, 32.0)
             .clip(RoundedRectangle::new(CornerRadius::fraction(0.1)))
     }
@@ -277,5 +277,5 @@ fn file_list(files: &Binding<Vec<Url>>) -> impl View + use<> {
 
 /// Builds the example app, showing the picker gallery demo.
 pub fn app(env: Environment) -> App<impl Windows> {
-    App::new(demo, env)
+    App::new(env).window(Window::new("", demo))
 }

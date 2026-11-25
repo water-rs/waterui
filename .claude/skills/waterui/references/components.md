@@ -369,7 +369,7 @@ an outer custom style.
 
 ```rust
 use waterui::gesture::TapGesture;
-use waterui::prelude::theme_color::{Accent, Error, SurfaceVariant};
+use waterui::theme::color::{Accent, Error, SurfaceVariant};
 use waterui::shape::Capsule;
 
 struct PillButtonStyle;
@@ -387,7 +387,7 @@ impl CustomButtonStyle for PillButtonStyle {
         configuration
             .into_label()
             .padding_with((8.0, 16.0))
-            .background(signal_color(bg))
+            .background(bg)
             .clip(Capsule)
     }
 }
@@ -403,7 +403,9 @@ impl PrimitiveButtonStyle for DoubleTapButtonStyle {
         configuration
             .into_label()
             .padding_with((8.0, 16.0))
-            .gesture(TapGesture::repeat(2), move || trigger.trigger())
+            .gesture(TapGesture::repeat(NonZeroU32::new(2).unwrap()), move || {
+                trigger.trigger();
+            })
     }
 }
 
@@ -417,8 +419,8 @@ impl CustomToggleStyle for PillToggleStyle {
         hstack((
             configuration.into_label(),
             spacer(),
-            signal_color(bg)
-                .size(44.0, 26.0)
+            ().size(44.0, 26.0)
+                .background(bg)
                 .clip(Capsule),
         ))
     }
@@ -489,7 +491,7 @@ a toolbar, a menu, and a keyboard shortcut. `Command` has its own builder chain:
     .selected(checked)                         // signal of bool: a checked / toggled row
     .subtitle("Copy the selection")            // secondary line under the label
     .shortcut(Shortcut::new('c').command())
-"Delete".action(delete_handler).destructive()  // red in every menu; == .role(CommandRole::Destructive)
+"Delete".action(delete_handler).destructive()  // red in every menu; == .role(ButtonRole::Destructive)
 "Delete".action(delete_handler).shortcut(Shortcut::new(ShortcutNamedKey::Delete))
 Shortcut::new('s').command().shift()           // ⇧⌘S; also .option() and .control()
 ```
@@ -507,7 +509,9 @@ and headless hosts draw nothing but keep the shortcuts armed:
 ```rust
 use waterui::app::App;
 
-App::new(move || content(), env).menu_bar(Menu::new("File", (
+App::new(env)
+    .window(Window::new("", move || content()))
+    .menu_bar(Menu::new("File", (
     "Save".action(save).shortcut(Shortcut::new('s').command()),
     Divider,
     MenuItem::CloseWindow,
@@ -683,8 +687,12 @@ Lazy::hstack(ForEach::new(records.clone(), record_card)) // record_card: fn(Reco
 
 List::for_each(records.clone(), |r| text(r.title))
     .editing(is_editing.clone())          // impl IntoComputed<bool>
-    .on_delete(|ListDelete(i), mut s: AppState| { let _ = s.rows.remove(i); })
-    .on_move(|ListMove(m), mut s: AppState| {
+    .on_delete(|ListDelete(id): ListDelete<u64>, mut s: AppState| {
+        if let Some(i) = s.rows.snapshot().iter().position(|r| r.id == id) {
+            let _ = s.rows.remove(i);
+        }
+    })
+    .on_move(|ListMove(m): ListMove<u64>, mut s: AppState| {
         let moved = s.rows.remove(m.from());
         s.rows.insert(m.to(), moved);
     })
@@ -692,9 +700,13 @@ List::for_each(records.clone(), |r| text(r.title))
 ```
 
 `Lazy` stacks (`vstack`, `hstack`, `for_each`, and `vstack_spaced(spacing, ..)` /
-`hstack_spaced`) wrap themselves in a scroll view. `ListDelete(index)` destructures to a
-`usize`; `ListMove(m)` exposes `.from()`/`.to()`. `AppState` is an owned `#[state]` type
-(SKILL.md rule 3), so handlers take it bare.
+`hstack_spaced`) wrap themselves in a scroll view. `ListDelete<Id>(id)` carries the deleted
+item's identity; `ListMove<Id>(m)` exposes `.id()`, `.target()` (the item occupying the
+destination slot before the move), and part-local `.from()` / post-removal `.to()`. Inside
+`List::content`, attach `.on_delete` and `.on_move` directly to each `ForEach` (via
+`ForEachExt` in the prelude) or `.on_delete` to an individual `Row`; static rows are not
+deletable unless opted in, and moves stay inside their owning part. `AppState` is an owned
+`#[state]` type (SKILL.md rule 3), so handlers take it bare.
 
 For a reactive collection rendered as an ordinary (non-lazy) stack that still takes stack
 modifiers, `VStack`/`HStack` have `for_each` too; membership animation is declared per row
@@ -925,7 +937,7 @@ avatar("Grace Hopper")                          // initials when there is no ima
     .image(photo_url)                           // a signal of Url: the fallback shows until it decodes
     .shape(RoundedRectangle::new(16.0))
     .size(64.0)
-    .ring(Color::new(theme_color::Accent), 2.0)
+    .ring(Color::accent(), 2.0)
 field("Email", &email).focused(&focus, Field::Email)    // focused while `focus` holds Some(Field::Email)
 ```
 
@@ -934,9 +946,7 @@ instead. An avatar renders SDR by default, unlike the framework's HDR default;
 `.dynamic_range(DynamicRange::High)` (in the prelude) opts one back
 in when the picture is the subject, such as a full-width profile header. `.focused(&Binding<Option<T>>, value)` ties a control to a shared focus binding
 (`T: Eq + Clone`): setting the binding moves focus, and focusing a control writes its value.
-`table(columns)` takes a signal of `Vec<TableColumn>` built with `col(label, rows)`, each
-column a `Views` of `Text` rows; both come from `waterui::component::table` (in the
-prelude, `table` names that module, not the function).
+`Table::new(data, (TableColumn::new("Name", |p: &Person| text(p.name.clone())).sortable(Sort::Name), TableColumn::new("Avatar", |p: &Person| avatar(p.name.clone()))))` builds a row-major table over an identifiable `Collection` with arbitrary view-valued cells; chain `.selection(&Binding<Option<C::Id>>)` or `.multi_selection(&Binding<BTreeSet<C::Id>>)` for identity-based row selection and `.sort_order(&Binding<Option<TableSort<K>>>)` when at least one column is marked `.sortable(key)`. Convenience constructors `table(data, columns)` and `col(label, cell)` are exported in the prelude alongside `Table`, `TableColumn`, `TableSort`, and `SortDirection`.
 
 ## Accessibility modifiers
 

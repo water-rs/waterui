@@ -516,18 +516,12 @@ pub fn navigation_block_12(env: Environment) -> App<impl Windows> {
     }
     let status = Binding::container(Str::from("ready"));
 
-    use waterui::window::{Window, WindowState, WindowStyle};
+    use waterui::window::{Window, WindowStyle};
 
     let _: Option<WindowStyle> = None;
 
-    App::new_with_windows(
-        [Window::new(
-            "WaterUI Menu Examples",
-            binding(WindowState::Normal),
-            move || scene(),
-        )
-        .toolbar(window_toolbar(&status))],
-        env,
+    App::new(env).window(
+        Window::new("WaterUI Menu Examples", move || scene()).toolbar(window_toolbar(&status)),
     )
 }
 
@@ -553,7 +547,8 @@ pub fn navigation_window_builder_prose() {
 
     let state = binding::<WindowState>(WindowState::default());
 
-    let window = Window::new("W", state.clone(), || text("c"))
+    let window = Window::new("W", || text("c"))
+        .state(&state)
         .style(WindowStyle::Titled)
         .background(Color::transparent())
         .resizable(true)
@@ -566,12 +561,14 @@ pub fn navigation_window_builder_prose() {
     handle.request_close();
     handle.request_attention(UserAttention::Informational);
     handle.cancel_attention();
-    let _ = Window::new("W", state.clone(), || text("c"))
+    let _ = Window::new("W", || text("c"))
+        .state(&state)
         .style(WindowStyle::Borderless)
         .background(Material::Regular);
     let style = binding(WindowStyle::Titled);
     let background = binding(WindowBackground::Opaque);
-    let window = Window::new("W", state, || text("c"))
+    let window = Window::new("W", || text("c"))
+        .state(&state)
         .style(style.clone())
         .background(background.clone());
     window.handle().set_style(WindowStyle::Borderless);
@@ -583,13 +580,12 @@ pub fn navigation_window_builder_prose() {
     background.set(WindowBackground::Color(Color::transparent()));
     let icon = WindowIcon::new(1, 1, vec![255_u8, 0, 0, 255]).expect("a one-pixel RGBA icon");
     let themed_icon = binding(None::<WindowIcon>);
-    let _ = Window::new("W", binding(WindowState::Closed), || text("c")).icon(icon.clone());
-    let window =
-        Window::new("W", binding(WindowState::Closed), || text("c")).icon(themed_icon.clone());
+    let _ = Window::new("W", || text("c")).icon(icon.clone());
+    let window = Window::new("W", || text("c")).icon(themed_icon.clone());
     window.handle().set_icon(icon);
     window.handle().set_icon(None);
 
-    let mut window = Window::new("W", binding(WindowState::Closed), || text("c"))
+    let mut window = Window::new("W", || text("c"))
         .title("Renamed")
         .icon(None::<WindowIcon>)
         .placement(MonitorSelector::Pointer, |monitor: &Monitor| {
@@ -649,40 +645,50 @@ pub fn navigation_block_14() -> waterui::window::Window<impl waterui::handler::V
     let confirm_discard = binding(false);
     let window_state = binding(WindowState::Normal);
 
-    Window::new("Editor", window_state.clone(), editor_content).on_close_request(move || {
-        let ask = unsaved.snapshot();
-        confirm_discard.set(ask);
-        async move {
-            if ask {
-                CloseReply::Cancel
-            } else {
-                CloseReply::Close
+    Window::new("Editor", editor_content)
+        .state(&window_state)
+        .on_close_request(move || {
+            let ask = unsaved.snapshot();
+            confirm_discard.set(ask);
+            async move {
+                if ask {
+                    CloseReply::Cancel
+                } else {
+                    CloseReply::Close
+                }
             }
-        }
-    })
+        })
 }
 
 // ---------------------------------------------------------------------------
 // navigation.md § "## Windows that open and close" — rust block 15/16
 // ---------------------------------------------------------------------------
-pub fn navigation_block_15() -> impl View {
+pub fn navigation_block_15(env: Environment) -> App<impl Windows> {
     fn inspector_content() -> impl View {
         text("inspector")
     }
 
-    use waterui::window::{
-        Window, WindowPresentation, WindowState, WindowStyle, conditional_window,
-    };
+    use waterui::app::{App, Windows};
+    use waterui::window::{Window, WindowState, WindowStyle};
 
-    let state = binding::<WindowState>(WindowState::default());
-    let presentation = WindowPresentation::new(&state); // guards against duplicate opens
+    fn app(env: Environment) -> App<impl Windows> {
+        let inspector_state = binding::<WindowState>(WindowState::default()); // starts Closed
+        let main_state = inspector_state.clone();
+        App::new(env)
+            .window(Window::new("Main", move || {
+                button("Inspector")
+                    .action(|State(s): State<Binding<WindowState>>| s.set(WindowState::Normal))
+                    .state(&main_state)
+            }))
+            .window(
+                Window::new("Inspector", inspector_content)
+                    .state(&inspector_state)
+                    .style(WindowStyle::Titled)
+                    .resizable(true),
+            )
+    }
 
-    // An INVISIBLE view — it must still be placed in the tree (e.g. a later zstack child).
-    conditional_window(&presentation, |state| {
-        Window::new("Inspector", state, inspector_content)
-            .style(WindowStyle::Titled)
-            .resizable(true)
-    })
+    app(env)
 }
 
 // ---------------------------------------------------------------------------
@@ -694,19 +700,19 @@ pub fn navigation_block_16(env: Environment) -> App<impl Windows, impl AppMenuBa
     }
 
     use waterui::app::{App, AppMenuBar, LastWindowPolicy, QuitReply, Windows};
-    use waterui::window::{Window, WindowManager, WindowState};
+    use waterui::window::{Window, WindowManager};
 
     fn app(env: Environment) -> App<impl Windows, impl AppMenuBar> {
         let (windows, channel) = WindowManager::new();
-        App::new_with_windows(channel, env)
+        App::new(env)
+            .window(channel)
             .on_last_window_closed(LastWindowPolicy::StayResident)
             .on_quit_request(|| async { QuitReply::Quit })
             .on_terminate(|| async {})
             .menu_bar(Menu::new(
                 "App",
                 "New Window".action(move || {
-                    Window::new("Scratch", binding(WindowState::Normal), scratch_content)
-                        .show(&windows);
+                    Window::new("Scratch", scratch_content).show(&windows);
                 }),
             ))
     }

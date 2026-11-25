@@ -824,7 +824,7 @@ impl<K: Eq + core::hash::Hash + Clone, E: crate::text::TextEngine> VisibleSubvie
 
     /// The already-retained item for `key`, mutably, without marking it
     /// visible this frame.
-    #[cfg(feature = "list")]
+    #[cfg(any(feature = "list", feature = "table"))]
     pub(crate) fn get_mut(&mut self, key: &K) -> Option<&mut RetainedSubview<E>> {
         self.entries.get_mut(key)
     }

@@ -6,6 +6,7 @@
 //! water-rs/waterui#1673: the suite belongs to the crate that owns the
 //! harness.
 
+use std::rc::Rc;
 #[cfg(feature = "gpu")]
 use std::sync::Arc;
 #[cfg(feature = "gpu")]
@@ -28,8 +29,6 @@ use waterui_core::handler::AnyViewBuilder;
 use waterui_core::layout::{Point, Rect, Size};
 use waterui_core::{AnyView, Environment};
 
-#[cfg(feature = "gpu")]
-use crate::TestHost;
 use crate::{PerfConfig, Role, ui};
 /// Installs the custom foreground token the origin tests layered over the
 /// theme package: the harness no longer takes a theme-installer closure, so
@@ -48,16 +47,36 @@ const fn white_foreground() -> ForegroundSlot {
     ForegroundSlot(WorkingColor::new([1.0, 1.0, 1.0, 1.0]))
 }
 
-// Origin: waterui `testing/src/tests.rs`. `TestHost` hands tests a wgpu
-// device, so it exists only with the GPU painter.
-#[cfg(feature = "gpu")]
+// Origin: waterui `testing/src/tests.rs`.
 #[test]
 fn smoke_snapshot_size_matches_target() {
-    let host = TestHost::new(Environment::new(), 64, 48, Material3::defaults());
-    let snapshot = host.render(());
+    let mut app = ui()
+        .viewport(64, 48)
+        .theme(Material3::defaults())
+        .mount_offscreen(|| ());
+    let snapshot = app.snapshot();
     assert_eq!(snapshot.width(), 64);
     assert_eq!(snapshot.height(), 48);
     assert_eq!(snapshot.rgba8().len(), 64 * 48 * 4);
+}
+
+#[test]
+fn ui_builder_clones_reuse_one_painter_across_mounts() {
+    let builder = ui().viewport(64, 48).theme(Material3::defaults());
+    let clone = builder.clone();
+    assert!(Rc::ptr_eq(&builder.painter, &clone.painter));
+    let mut first = builder.clone().mount_offscreen(|| ());
+    assert!(
+        builder.painter.get().is_some(),
+        "mounting should populate the shared painter"
+    );
+    let mut second = clone.mount_offscreen(|| ());
+    assert!(
+        builder.painter.get().is_some(),
+        "shared painter stays populated across cloned builders"
+    );
+    assert_eq!(first.snapshot().width(), 64);
+    assert_eq!(second.snapshot().width(), 64);
 }
 
 // Origin: waterui `testing/src/tests.rs`.
@@ -116,7 +135,9 @@ fn default_theme_renders_hydrolysis_widgets() {
 /// Origin: waterui `testing/src/tests.rs`.
 #[test]
 fn mount_app_hosts_main_window_with_app_environment() {
-    let app = App::new(|| text("Mounted app").body(), Environment::new());
+    use waterui::window::Window;
+
+    let app = App::new(Environment::new()).window(Window::new("", || text("Mounted app").body()));
     let mut app = ui()
         .theme(Material3::defaults())
         .viewport(200, 100)
@@ -140,18 +161,18 @@ fn mount_app_hosts_main_window_with_app_environment() {
 #[test]
 fn max_width_derived_from_the_mounted_window_frame_wraps_text() {
     use waterui::layout::frame::Frame;
-    use waterui::window::{Window, WindowState};
+    use waterui::window::Window;
 
     const LONG: &str = "the quick brown fox jumps over the lazy dog, again and \
         again and again, until the sentence refuses to fit on one line";
 
     let frame = waterui::binding(Rect::new(Point::zero(), Size::new(800.0, 600.0)));
     let cap = frame.map(|f: Rect| f.size().width / 4.0);
-    let mut window = Window::new("app", waterui::binding(WindowState::Normal), move || {
+    let mut window = Window::new("app", move || {
         Frame::new(text(LONG).body()).max_width(cap.clone())
     });
     window.frame = frame;
-    let app = App::new_with_windows([window], Environment::new());
+    let app = App::new(Environment::new()).window(window);
     let mut app = ui()
         .theme(Material3::defaults())
         .viewport(320, 900)
@@ -177,16 +198,16 @@ fn max_width_derived_from_the_mounted_window_frame_wraps_text() {
 #[test]
 fn mount_app_drives_the_app_window_frame_from_the_viewport() {
     use waterui::accessibility::AccessibilityGeometry;
-    use waterui::window::{Window, WindowState};
+    use waterui::window::Window;
 
     let frame = waterui::binding(Rect::new(Point::zero(), Size::new(800.0, 600.0)));
     // The label names its allocation (`docs/layout-spec.md` §7.2): a text
     // root otherwise reports its centred response, not the window's width.
-    let mut window = Window::new("app", waterui::binding(WindowState::Normal), || {
+    let mut window = Window::new("app", || {
         text("app content").a11y_geometry(AccessibilityGeometry::Allocation)
     });
     window.frame = frame.clone();
-    let app = App::new_with_windows([window], Environment::new());
+    let app = App::new(Environment::new()).window(window);
     let mut app = ui()
         .theme(Material3::defaults())
         .viewport(320, 240)
@@ -486,9 +507,7 @@ fn themed_builder_default_perf_requests_redraw() {
 // Origin: waterui `testing/src/tests.rs`.
 #[test]
 fn ui_test_hover_drag_and_magnify_update_semantic_bounds() {
-    use waterui::gesture::{
-        DragEvent, DragGesture, GestureObserver, MagnificationEvent, MagnificationGesture,
-    };
+    use waterui::gesture::{DragEvent, DragGesture, MagnificationEvent, MagnificationGesture};
     use waterui::prelude::text;
     use waterui::{Binding, SignalExt as _, ViewExt as _, state};
 
@@ -529,19 +548,19 @@ fn ui_test_hover_drag_and_magnify_update_semantic_bounds() {
                     .scale(scale.clone())
                     .opacity(hovered_opacity);
                 surface
-                    .gesture_observer(GestureObserver::new(
+                    .gesture(
                         DragGesture::new(0.0),
                         |DragOffset(offset): DragOffset, drag: DragEvent| {
                             offset.set(drag.translation().x);
                         },
-                    ))
+                    )
                     .state(&drag_offset_state)
-                    .gesture_observer(GestureObserver::new(
+                    .gesture(
                         MagnificationGesture::new(1.0),
                         |ZoomScale(scale): ZoomScale, magnification: MagnificationEvent| {
                             scale.set(magnification.scale());
                         },
-                    ))
+                    )
                     .state(&zoom_scale_state)
                     .on_hover_enter(|HoverState(hovered): HoverState| hovered.set(true))
                     .on_hover_exit(|HoverState(hovered): HoverState| hovered.set(false))
@@ -630,7 +649,7 @@ fn ui_test_drains_local_tasks_through_headless_runtime() {
 
 // `GpuView` needs a GPU device, so these run only with the GPU painter.
 #[cfg(feature = "gpu")]
-use waterui::graphics::gpu::{Context as GpuContext, Frame as GpuFrame};
+use waterui::graphics::gpu::{Context as GpuContext, Frame as GpuFrame, wgpu};
 #[cfg(feature = "gpu")]
 use waterui::graphics::{GpuContent, GpuView};
 
@@ -1014,7 +1033,7 @@ fn offscreen_frame_recording_samples_fixed_fps_across_pump_for() {
 
 #[cfg(feature = "gpu")]
 #[test]
-fn test_host_render_hdr_preserves_unclamped_linear_display_p3_headroom() {
+fn offscreen_app_hdr_png_preserves_unclamped_linear_display_p3_headroom_and_cicp() {
     use std::io::Cursor;
 
     use png::{BitDepth, Decoder};
@@ -1022,9 +1041,12 @@ fn test_host_render_hdr_preserves_unclamped_linear_display_p3_headroom() {
 
     use crate::CICP_DISPLAY_P3_PQ;
 
-    let host = TestHost::new(Environment::new(), 64, 48, Material3::defaults());
-    let hdr_white = Color::srgb(255, 255, 255).with_headroom(1.0);
-    let hdr = host.render_hdr(hdr_white);
+    let mut app = ui()
+        .viewport(64, 48)
+        .theme(Material3::defaults())
+        .hdr(true)
+        .mount_offscreen(|| Color::srgb(255, 255, 255).with_headroom(1.0));
+    let hdr = app.snapshot_hdr();
     assert_eq!((hdr.width(), hdr.height()), (64, 48));
     assert!(
         hdr.max_channel() > 1.5,

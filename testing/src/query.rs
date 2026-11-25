@@ -1,4 +1,6 @@
+use core::borrow::Borrow;
 use core::marker::PhantomData;
+use core::time::Duration;
 
 use accesskit::{Action as AccessibilityAction, ActionData as AccessibilityActionData};
 use hydrolysis::HeadlessRuntime;
@@ -6,8 +8,9 @@ use waterui::component::input::ContentType;
 
 use crate::app::{DragOptions, SemanticApp};
 use crate::driver::RuntimeDriver;
-use crate::selector::{ElementRef, ElementSet, Selector};
+use crate::selector::{ElementRef, ElementSet, Selector, define_selector_filters};
 use crate::semantics::{NodeId, Role};
+use crate::wait::{Expectation, WaitOptions, WaitResult};
 
 /// Dispatch mode that settles pending runtime work immediately after each
 /// interaction terminal on [`Query`].
@@ -252,7 +255,7 @@ impl<'a, R> Query<'a, R, Settled> {
     pub(crate) fn settled(app: &'a mut SemanticApp<R>) -> Self {
         Self {
             app,
-            selector: Selector::default(),
+            selector: Selector::new(),
             _mode: PhantomData,
         }
     }
@@ -262,120 +265,14 @@ impl<'a, R> Query<'a, R, Queued> {
     pub(crate) fn queued(app: &'a mut SemanticApp<R>) -> Self {
         Self {
             app,
-            selector: Selector::default(),
+            selector: Selector::new(),
             _mode: PhantomData,
         }
     }
 }
 
 impl<R: RuntimeDriver, M: QueryMode> Query<'_, R, M> {
-    /// Restricts the query to nodes with the given accessibility role.
-    pub fn role(mut self, role: Role) -> Self {
-        self.selector = self.selector.role(role);
-        self
-    }
-
-    /// Restricts the query to nodes with the given automation identifier.
-    pub fn identifier(mut self, identifier: impl Into<String>) -> Self {
-        self.selector = self.selector.identifier(identifier);
-        self
-    }
-
-    /// Restricts the query to nodes with exactly matching labels.
-    pub fn label(mut self, label: impl Into<String>) -> Self {
-        self.selector = self.selector.label(label);
-        self
-    }
-
-    /// Restricts the query to nodes whose labels contain the provided text.
-    pub fn label_contains(mut self, label: impl Into<String>) -> Self {
-        self.selector = self.selector.label_contains(label);
-        self
-    }
-
-    /// Restricts the query to descendants of an element.
-    pub fn within(mut self, handle: &ElementRef<R>) -> Self {
-        self.selector = self.selector.within(handle.clone());
-        self
-    }
-
-    /// Restricts the query to direct children of an element.
-    pub fn children_of(mut self, handle: &ElementRef<R>) -> Self {
-        self.selector = self.selector.children_of(handle.clone());
-        self
-    }
-
-    /// Restricts the query to nodes with the requested enabled state.
-    pub fn enabled(mut self, enabled: bool) -> Self {
-        self.selector = self.selector.enabled(enabled);
-        self
-    }
-
-    /// Restricts the query to nodes with the requested selected state.
-    pub fn selected(mut self, selected: bool) -> Self {
-        self.selector = self.selector.selected(selected);
-        self
-    }
-
-    /// Restricts the query to nodes with the requested checked state.
-    pub fn checked(mut self, checked: bool) -> Self {
-        self.selector = self.selector.checked(checked);
-        self
-    }
-
-    /// Restricts the query to nodes with an indeterminate checked state.
-    pub fn mixed(mut self) -> Self {
-        self.selector = self.selector.mixed();
-        self
-    }
-
-    /// Restricts the query to nodes with the requested expanded state.
-    pub fn expanded(mut self, expanded: bool) -> Self {
-        self.selector = self.selector.expanded(expanded);
-        self
-    }
-
-    /// Restricts the query to nodes with the requested busy state.
-    pub fn busy(mut self, busy: bool) -> Self {
-        self.selector = self.selector.busy(busy);
-        self
-    }
-
-    /// Restricts the query to nodes with exactly matching values.
-    pub fn value(mut self, value: impl Into<String>) -> Self {
-        self.selector = self.selector.value(value);
-        self
-    }
-
-    /// Restricts the query to nodes whose values contain the provided text.
-    pub fn value_contains(mut self, value: impl Into<String>) -> Self {
-        self.selector = self.selector.value_contains(value);
-        self
-    }
-
-    /// Restricts the query to nodes with exactly matching placeholders.
-    pub fn placeholder(mut self, placeholder: impl Into<String>) -> Self {
-        self.selector = self.selector.placeholder(placeholder);
-        self
-    }
-
-    /// Restricts the query to nodes whose placeholders contain the provided text.
-    pub fn placeholder_contains(mut self, placeholder: impl Into<String>) -> Self {
-        self.selector = self.selector.placeholder_contains(placeholder);
-        self
-    }
-
-    /// Includes or excludes hidden nodes.
-    pub fn hidden(mut self, hidden: bool) -> Self {
-        self.selector = self.selector.hidden(hidden);
-        self
-    }
-
-    /// Restricts the query to nodes declaring the given content type.
-    pub fn content_type(mut self, content_type: ContentType) -> Self {
-        self.selector = self.selector.content_type(content_type);
-        self
-    }
+    define_selector_filters!(@query self);
 
     /// Resolves all matching elements.
     #[must_use]
@@ -524,24 +421,207 @@ impl<R: RuntimeDriver, M: QueryMode> Query<'_, R, M> {
     }
 }
 
-/// Wait terminals available only on settled test queries.
+/// Expectation and wait terminals available only on settled test queries.
 impl<R: RuntimeDriver> Query<'_, R, Settled> {
+    fn wait_expectation_within(
+        self,
+        make: impl FnOnce(Selector) -> Expectation,
+        timeout: Duration,
+    ) -> bool {
+        let expectation = make(self.selector);
+        self.app.wait_for(&[expectation], WaitOptions::new(timeout)) == WaitResult::Completed
+    }
+
+    fn wait_expectation_within_frames(
+        self,
+        make: impl FnOnce(Selector) -> Expectation,
+        frame_budget: usize,
+    ) -> bool {
+        let expectation = make(self.selector);
+        self.app.wait_for_frames(&[expectation], frame_budget) == WaitResult::Completed
+    }
+
+    #[track_caller]
+    fn assert_expectation_within(
+        self,
+        make: impl FnOnce(Selector) -> Expectation,
+        what: &str,
+        timeout: Duration,
+    ) {
+        let description = self.selector.describe();
+        let expectation = make(self.selector);
+        let result = self.app.wait_for(&[expectation], WaitOptions::new(timeout));
+        assert_eq!(
+            result,
+            WaitResult::Completed,
+            "waterui-testing expected {what} for selector {description} within {timeout:?}, got {result:?}"
+        );
+    }
+
+    #[track_caller]
+    fn assert_expectation_within_frames(
+        self,
+        make: impl FnOnce(Selector) -> Expectation,
+        what: &str,
+        frame_budget: usize,
+    ) {
+        let description = self.selector.describe();
+        let expectation = make(self.selector);
+        let result = self.app.wait_for_frames(&[expectation], frame_budget);
+        assert_eq!(
+            result,
+            WaitResult::Completed,
+            "waterui-testing expected {what} for selector {description} within {frame_budget} frames, got {result:?}"
+        );
+    }
+
+    /// Turns this query into an existence [`Expectation`].
+    #[must_use]
+    pub fn expect_exists(self) -> Expectation {
+        Expectation::exists(self.selector)
+    }
+
+    /// Turns this query into a non-existence [`Expectation`].
+    #[must_use]
+    pub fn expect_not_exists(self) -> Expectation {
+        Expectation::not_exists(self.selector)
+    }
+
+    /// Turns this query into a value-equality [`Expectation`].
+    #[must_use]
+    pub fn expect_value_eq(self, value: impl Into<String>) -> Expectation {
+        Expectation::value_eq(self.selector, value)
+    }
+
+    /// Turns this query into a UI-focus [`Expectation`].
+    #[must_use]
+    pub fn expect_ui_focus(self) -> Expectation {
+        Expectation::ui_focus(self.selector)
+    }
+
     /// Waits until at least one matching element exists.
     #[must_use]
-    pub fn wait_for_existence(self, timeout: std::time::Duration) -> bool {
-        self.app.wait_for_existence(&self.selector, timeout)
+    pub fn wait_for_existence(self, timeout: Duration) -> bool {
+        self.wait_expectation_within(Expectation::exists, timeout)
     }
 
     /// Waits until no matching element exists.
     #[must_use]
-    pub fn wait_for_nonexistence(self, timeout: std::time::Duration) -> bool {
-        self.app.wait_for_nonexistence(&self.selector, timeout)
+    pub fn wait_for_nonexistence(self, timeout: Duration) -> bool {
+        self.wait_expectation_within(Expectation::not_exists, timeout)
     }
 
     /// Waits until one matching element has the expected value.
     #[must_use]
-    pub fn wait_for_value_eq(self, value: impl Into<String>, timeout: std::time::Duration) -> bool {
-        self.app.wait_for_value_eq(&self.selector, value, timeout)
+    pub fn wait_for_value_eq(self, value: impl Into<String>, timeout: Duration) -> bool {
+        let value = value.into();
+        self.wait_expectation_within(|s| Expectation::value_eq(s, value), timeout)
+    }
+
+    /// Waits until the matching element owns `WaterUI` UI focus.
+    #[must_use]
+    pub fn wait_for_ui_focus(self, timeout: Duration) -> bool {
+        self.wait_expectation_within(Expectation::ui_focus, timeout)
+    }
+
+    /// Waits within `frame_budget` pumped frames until at least one matching
+    /// element exists.
+    #[must_use]
+    pub fn wait_for_existence_within_frames(self, frame_budget: usize) -> bool {
+        self.wait_expectation_within_frames(Expectation::exists, frame_budget)
+    }
+
+    /// Waits within `frame_budget` pumped frames until no matching element
+    /// exists.
+    #[must_use]
+    pub fn wait_for_nonexistence_within_frames(self, frame_budget: usize) -> bool {
+        self.wait_expectation_within_frames(Expectation::not_exists, frame_budget)
+    }
+
+    /// Waits within `frame_budget` pumped frames until one matching element has
+    /// the expected value.
+    #[must_use]
+    pub fn wait_for_value_eq_within_frames(
+        self,
+        value: impl Into<String>,
+        frame_budget: usize,
+    ) -> bool {
+        let value = value.into();
+        self.wait_expectation_within_frames(|s| Expectation::value_eq(s, value), frame_budget)
+    }
+
+    /// Waits within `frame_budget` pumped frames until the matching element
+    /// owns `WaterUI` UI focus.
+    #[must_use]
+    pub fn wait_for_ui_focus_within_frames(self, frame_budget: usize) -> bool {
+        self.wait_expectation_within_frames(Expectation::ui_focus, frame_budget)
+    }
+
+    /// Asserts that at least one matching element exists within `timeout`.
+    #[track_caller]
+    pub fn assert_exists_within(self, timeout: Duration) {
+        self.assert_expectation_within(Expectation::exists, "existence", timeout);
+    }
+
+    /// Asserts that no matching element exists within `timeout`.
+    #[track_caller]
+    pub fn assert_not_exists_within(self, timeout: Duration) {
+        self.assert_expectation_within(Expectation::not_exists, "nonexistence", timeout);
+    }
+
+    /// Asserts that one matching element reaches `value` within `timeout`.
+    #[track_caller]
+    pub fn assert_value_eq_within(self, value: impl Into<String>, timeout: Duration) {
+        let value = value.into();
+        self.assert_expectation_within(
+            |s| Expectation::value_eq(s, value),
+            "value equality",
+            timeout,
+        );
+    }
+
+    /// Asserts that the matching element owns `WaterUI` UI focus within
+    /// `timeout`.
+    #[track_caller]
+    pub fn assert_ui_focus_within(self, timeout: Duration) {
+        self.assert_expectation_within(Expectation::ui_focus, "UI focus", timeout);
+    }
+
+    /// Asserts that at least one matching element exists within `frame_budget`
+    /// pumped frames.
+    #[track_caller]
+    pub fn assert_exists_within_frames(self, frame_budget: usize) {
+        self.assert_expectation_within_frames(Expectation::exists, "existence", frame_budget);
+    }
+
+    /// Asserts that no matching element exists within `frame_budget` pumped
+    /// frames.
+    #[track_caller]
+    pub fn assert_not_exists_within_frames(self, frame_budget: usize) {
+        self.assert_expectation_within_frames(
+            Expectation::not_exists,
+            "nonexistence",
+            frame_budget,
+        );
+    }
+
+    /// Asserts that one matching element reaches `value` within `frame_budget`
+    /// pumped frames.
+    #[track_caller]
+    pub fn assert_value_eq_within_frames(self, value: impl Into<String>, frame_budget: usize) {
+        let value = value.into();
+        self.assert_expectation_within_frames(
+            |s| Expectation::value_eq(s, value),
+            "value equality",
+            frame_budget,
+        );
+    }
+
+    /// Asserts that the matching element owns `WaterUI` UI focus within
+    /// `frame_budget` pumped frames.
+    #[track_caller]
+    pub fn assert_ui_focus_within_frames(self, frame_budget: usize) {
+        self.assert_expectation_within_frames(Expectation::ui_focus, "UI focus", frame_budget);
     }
 }
 

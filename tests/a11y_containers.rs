@@ -176,7 +176,7 @@ fn icon_button_like() -> impl waterui::View {
         .a11y_label("New tab")
         .a11y_role(AccessibilityRole::Button)
         .a11y_children(AccessibilityChildren::ExcludeDescendants)
-        .on_long_press_gesture(500, || {})
+        .on_long_press(|| {})
 }
 
 /// The semantic walk must keep the claim's node when a non-registering
@@ -199,7 +199,7 @@ fn long_press_observer_over_unclaimed_scope_still_excludes_descendants(ui: UiBui
             .a11y_label("New tab")
             .a11y_role(AccessibilityRole::Button)
             .a11y_children(AccessibilityChildren::ExcludeDescendants)
-            .on_long_press_gesture(500, || {})
+            .on_long_press(|| {})
     });
     // No gesture claims the scope, so the container itself claims it: the
     // button node exists and the "+" text leaf stays excluded.
@@ -230,11 +230,7 @@ fn tap_claim_registers_the_button_node(ui: UiBuilder) {
 /// A plain waterui `button` under a long-press observer keeps its node.
 #[waterui::test(viewport = (320, 200))]
 fn long_press_observer_preserves_a_plain_button_node(ui: UiBuilder) {
-    let mut app = ui.mount(|| {
-        button("New tab")
-            .action(|| {})
-            .on_long_press_gesture(500, || {})
-    });
+    let mut app = ui.mount(|| button("New tab").action(|| {}).on_long_press(|| {}));
     app.query()
         .role(Role::BUTTON)
         .label("New tab")

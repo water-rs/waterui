@@ -383,6 +383,8 @@ fn trials() -> Vec<Trial> {
     tests.extend(scroll::trials());
     tests.extend(list_scroll::trials());
     tests.extend(apple_content::trials());
+    #[cfg(target_os = "macos")]
+    tests.extend(row_major_table::trials());
     #[cfg(all(feature = "native-test", feature = "gpu_surface"))]
     tests.extend(capture_colour::trials());
     #[cfg(all(catalyst, feature = "native-test", feature = "gpu_surface"))]
@@ -10763,11 +10765,15 @@ mod webview {
 /// through the generic tree must stay bounded to the realized ones.
 #[cfg(target_os = "macos")]
 mod list_ax {
+    use cocoa_ui::appkit::ListTableView;
+    use cocoa_ui::objc2_app_kit::{NSButton, NSTableViewDataSource};
+    use cocoa_ui::{PlatformView, view};
     use objc2::msg_send;
     use objc2::runtime::AnyObject;
     use objc2_app_kit::{NSAccessibilityChildrenAttribute, NSTableView};
     use objc2_foundation::{NSArray, NSIndexSet};
     use waterui::component::text::Text;
+    use waterui::id::Identifiable;
     use waterui::layout::scroll::ScrollController;
     use waterui_apple::native_test_support::{row_item, row_list, sectioned_row_list};
 
@@ -10934,12 +10940,161 @@ mod list_ax {
         );
     }
 
+    #[derive(Clone, PartialEq, Eq)]
+    struct FilteredListEntry {
+        id: u64,
+        label: &'static str,
+        visible: bool,
+    }
+
+    impl Identifiable for FilteredListEntry {
+        type Id = u64;
+
+        fn id(&self) -> Self::Id {
+            self.id
+        }
+    }
+
+    fn find_list_table(root: &PlatformView) -> Option<Retained<ListTableView>> {
+        let mut stack = vec![view::retain_base(root)];
+        while let Some(current) = stack.pop() {
+            stack.extend(view::subviews(&current));
+            if let Ok(table) = current.downcast::<ListTableView>() {
+                return Some(table);
+            }
+        }
+        None
+    }
+
+    fn find_delete_button(root: &PlatformView) -> Option<Retained<NSButton>> {
+        let mut stack = vec![view::retain_base(root)];
+        while let Some(current) = stack.pop() {
+            stack.extend(view::subviews(&current));
+            if let Ok(button) = current.downcast::<NSButton>()
+                && button.title().to_string() == "Delete"
+            {
+                return Some(button);
+            }
+        }
+        None
+    }
+
+    /// `water-rs/waterui#4295`: a sectioned, mixed, filtered list on `AppKit`
+    /// renders no inline delete control or drag payload for static rows, and
+    /// deletes the intended item by identity from a filtered `ForEach` without
+    /// re-running the filter or tripping a re-entrant borrow.
+    fn sectioned_mixed_and_filtered_list_edits_by_identity() {
+        use waterui::component::list::{ForEachExt as _, List, ListDelete, ListMove, Section, row};
+        use waterui::prelude::text;
+        use waterui::reactive::collection::SignalCollection;
+        use waterui::reactive::{Binding, Signal as _, SignalExt as _};
+        use waterui::views::ForEach;
+
+        let entry = |id, label, visible| FilteredListEntry { id, label, visible };
+        let backing = Binding::container(vec![
+            entry(10, "Alpha", true),
+            entry(15, "Hidden-1", false),
+            entry(20, "Beta", true),
+            entry(25, "Hidden-2", false),
+            entry(30, "Gamma", true),
+        ]);
+        let filtered = SignalCollection::new(
+            backing
+                .map(|items| {
+                    items
+                        .into_iter()
+                        .filter(|item| item.visible)
+                        .collect::<Vec<_>>()
+                })
+                .computed(),
+        );
+        let delete_backing = backing.clone();
+        let move_backing = backing.clone();
+        let leaf = super::resolve::render(
+            List::content((
+                Section::new("Account").content(row("Plan", "Pro")),
+                Section::new("Items").content(
+                    ForEach::new(filtered, |entry: FilteredListEntry| text(entry.label))
+                        .on_delete(move |ListDelete(id): ListDelete<u64>| {
+                            delete_backing
+                                .get_mut()
+                                .retain(|candidate| candidate.id != id);
+                        })
+                        .on_move(move |ListMove(movement): ListMove<u64>| {
+                            let mut items = move_backing.get_mut();
+                            if let (Some(from), Some(to)) = (
+                                items.iter().position(|item| item.id == *movement.id()),
+                                items.iter().position(|item| item.id == *movement.target()),
+                            ) {
+                                let moved = items.remove(from);
+                                items.insert(to, moved);
+                            }
+                        }),
+                ),
+            ))
+            .editing(true),
+        );
+        let _window = leaf::attach(mtm(), leaf.view());
+        leaf.view().setNeedsLayout(true);
+        leaf.view().layoutSubtreeIfNeeded();
+
+        let surface = find_list_table(leaf.view()).expect("list mounts ListTableView");
+        let table = surface.table_view();
+        // Flat rows: 0 Header("Account"), 1 Spacer, 2 Row("Plan"),
+        //            3 Header("Items"), 4 Row("Alpha"), 5 Row("Beta"), 6 Row("Gamma").
+        assert_eq!(table.numberOfRows(), 7);
+        for row_idx in 0..table.numberOfRows() {
+            let _ = table.rowViewAtRow_makeIfNecessary(row_idx, true);
+        }
+
+        let static_row = table
+            .rowViewAtRow_makeIfNecessary(2, false)
+            .expect("static row realized");
+        assert!(
+            find_delete_button(&static_row).is_none(),
+            "static row must not show a Delete button unless asked for"
+        );
+        // SAFETY: `dataSource` is installed on the table and stays alive with `surface`.
+        let data_source = unsafe { table.dataSource() }.expect("table has data source");
+        assert!(
+            data_source
+                .tableView_pasteboardWriterForRow(&table, 2)
+                .is_none(),
+            "static row must not offer a drag payload"
+        );
+        assert!(
+            data_source
+                .tableView_pasteboardWriterForRow(&table, 4)
+                .is_some(),
+            "editable ForEach row must offer a drag payload"
+        );
+
+        let beta_row = table
+            .rowViewAtRow_makeIfNecessary(5, false)
+            .expect("Beta row realized");
+        let delete_button =
+            find_delete_button(&beta_row).expect("Beta row shows inline Delete button");
+        // SAFETY: `performClick:` runs the button's target-action on the main thread.
+        unsafe { delete_button.performClick(None) };
+
+        let remaining: Vec<u64> = backing.snapshot().iter().map(|entry| entry.id).collect();
+        assert_eq!(
+            remaining,
+            vec![10, 15, 25, 30],
+            "clicking Beta's Delete button must delete id 20 from the unfiltered backing Vec"
+        );
+    }
+
     /// The `list_ax::` trials.
     pub fn trials() -> Vec<libtest_mimic::Trial> {
         trial_each(vec![
             (
                 "list_ax::a_sectioned_list_exposes_no_spacer_row".to_owned(),
                 Box::new(a_sectioned_list_exposes_no_spacer_row),
+            ),
+            (
+                "list_ax::sectioned_mixed_and_filtered_list_edits_by_identity".to_owned(),
+                Box::new(sectioned_mixed_and_filtered_list_edits_by_identity),
             ),
             (
                 "list_ax::a_large_list_walk_materializes_no_rows".to_owned(),
@@ -11011,7 +11166,7 @@ mod gesture_ax {
         let pressed = Rc::new(Cell::new(0u32));
         let leaf = resolve::render({
             let pressed = Rc::clone(&pressed);
-            text("hold").on_long_press_gesture(500, move || {
+            text("hold").on_long_press(move || {
                 pressed.set(pressed.get() + 1);
             })
         });
@@ -11928,10 +12083,10 @@ mod embedding {
     use waterui::graphics::color::ColorScheme;
     use waterui::handler::ViewBuilder;
     use waterui::layout::container::FixedContainer;
-    use waterui::reactive::{Computed, binding};
+    use waterui::reactive::Computed;
     use waterui::regional;
     use waterui::text::font::ResolvedFont;
-    use waterui::window::{Window, WindowContent, WindowState};
+    use waterui::window::{Window, WindowContent};
     use waterui::{Environment, Signal};
 
     use crate::mtm;
@@ -12044,20 +12199,16 @@ mod embedding {
         let host_mask = native.styleMask();
 
         let embed = Embed::new(&host, |env| {
-            App::new_with_windows(
-                vec![waterui::window::Window::new(
-                    "Declared Title",
-                    binding(WindowState::Normal),
-                    || Text::new("embedded"),
-                )],
-                env,
-            )
-            .menu_bar(Menu::new(
-                "Embed",
-                vec![MenuItem::Command(
-                    Command::builder("DeclaredItem").action(|| {}),
-                )],
-            ))
+            use waterui::window::Window;
+
+            App::new(env)
+                .window(Window::new("Declared Title", || Text::new("embedded")))
+                .menu_bar(Menu::new(
+                    "Embed",
+                    vec![MenuItem::Command(
+                        Command::builder("DeclaredItem").action(|| {}),
+                    )],
+                ))
         });
 
         assert_eq!(native.title().to_string(), "Host Title");
@@ -12080,7 +12231,11 @@ mod embedding {
         // Detach and remount on the same host.
         drop(embed);
         assert_eq!(view::subviews(&host).len(), 0, "drop detaches the root");
-        let _remounted = Embed::new(&host, |env| App::new(|| Text::new("again"), env));
+        let _remounted = Embed::new(&host, |env| {
+            use waterui::window::Window;
+
+            App::new(env).window(Window::new("", || Text::new("again")))
+        });
         assert_eq!(view::subviews(&host).len(), 1);
         application.setMainMenu(saved_menu.as_deref());
     }
@@ -12101,12 +12256,14 @@ mod embedding {
         let capture = |slot: &Rc<RefCell<Option<Computed<ColorScheme>>>>| {
             let slot = Rc::clone(slot);
             move |env: Environment| {
+                use waterui::window::Window;
+
                 *slot.borrow_mut() = Some(
                     env.query::<ColorScheme, Computed<ColorScheme>>()
                         .cloned()
                         .expect("the mount installs a color scheme"),
                 );
-                App::new(|| Text::new("x"), env)
+                App::new(env).window(Window::new("", || Text::new("x")))
             }
         };
         let embed_a = Embed::new(&host_a, capture(&scheme_a));
@@ -12146,7 +12303,11 @@ mod embedding {
     pub fn the_embedded_root_follows_the_host_bounds_and_detaches_on_drop() {
         let mtm = mtm();
         let host = plain_view(mtm);
-        let embed = Embed::new(&host, |env| App::new(|| Text::new("x"), env));
+        let embed = Embed::new(&host, |env| {
+            use waterui::window::Window;
+
+            App::new(env).window(Window::new("", || Text::new("x")))
+        });
 
         let root = view::subviews(&host)
             .into_iter()
@@ -12184,7 +12345,7 @@ mod embedding {
                     c"/tmp/waterui-embed-test-assets".as_ptr(),
                     c"/tmp/waterui-embed-test-fonts".as_ptr(),
                     None,
-                    |env| App::new_with_windows((), env),
+                    App::new,
                 )
             }
         }));
@@ -12342,7 +12503,8 @@ mod embedding {
         fn app(
             &self,
             seen: Rc<RefCell<Vec<ProposalSize>>>,
-        ) -> impl FnOnce(Environment) -> App<Window<WindowContent<ProbeContent>>> + use<> {
+        ) -> impl FnOnce(Environment) -> App<((), Window<WindowContent<ProbeContent>>)> + use<>
+        {
             let (bodies, scheme, fonts, direction, locale) = (
                 Rc::clone(&self.bodies),
                 Rc::clone(&self.scheme),
@@ -12372,7 +12534,7 @@ mod embedding {
                     &binding.snapshot()
                 );
                 *locale.borrow_mut() = Some(binding);
-                App::new(ProbeContent { seen }, env)
+                App::new(env).window(Window::new("", ProbeContent { seen }))
             }
         }
         fn scheme_now(&self) -> ColorScheme {
@@ -12617,6 +12779,7 @@ mod gesture_events {
         MagnificationEvent, MagnificationGesture, PointerButton, RotationEvent, RotationGesture,
         TapEvent, TapGesture,
     };
+    use waterui::layout::Point;
     use waterui::prelude::text;
 
     use super::{resolve, trial_each};
@@ -12665,7 +12828,7 @@ mod gesture_events {
                 assert_eq!(tap.button(), PointerButton::Primary);
                 assert_eq!(
                     tap.location(),
-                    waterui::gesture::GesturePoint::new(expected.0, expected.1),
+                    Point::new(expected.0, expected.1),
                     "the event names the activation point — the bounds-space center"
                 );
             }
@@ -17443,6 +17606,130 @@ mod apple_content {
         assert_eq!(
             leaf.layout().measure(ProposalSize::UNSPECIFIED).size,
             Size::new(96.0, 44.0)
+        );
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod row_major_table {
+    use cocoa_ui::PlatformView;
+    use cocoa_ui::appkit::TableView;
+    use cocoa_ui::objc2::rc::Retained;
+    use cocoa_ui::view;
+    use libtest_mimic::Trial;
+    use waterui::Color;
+    use waterui::ViewExt as _;
+    use waterui::component::table::{SortDirection, Table, TableColumn, TableSort};
+    use waterui::component::text;
+    use waterui::id::Identifiable;
+    use waterui::reactive::collection::List as ReactiveList;
+    use waterui::reactive::{Binding, Signal as _};
+    use waterui_core::layout::ProposalSize;
+
+    #[derive(Clone)]
+    struct Person {
+        id: u64,
+        name: &'static str,
+    }
+
+    impl Identifiable for Person {
+        type Id = u64;
+
+        fn id(&self) -> Self::Id {
+            self.id
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum PersonSort {
+        Name,
+    }
+
+    fn find_appkit_table(root: &PlatformView) -> Option<Retained<TableView>> {
+        if let Ok(table) = view::retain_base(root).downcast::<TableView>() {
+            return Some(table);
+        }
+        view::subviews(root)
+            .iter()
+            .find_map(|sub| find_appkit_table(sub))
+    }
+
+    pub fn trials() -> Vec<Trial> {
+        vec![Trial::test(
+            "table::selectable_sortable_table_with_non_text_cell",
+            || {
+                selectable_sortable_table_with_non_text_cell();
+                Ok(())
+            },
+        )]
+    }
+
+    fn selectable_sortable_table_with_non_text_cell() {
+        let people = ReactiveList::from(vec![
+            Person { id: 1, name: "Ada" },
+            Person {
+                id: 2,
+                name: "Grace",
+            },
+        ]);
+        let selection = Binding::container(Some(1_u64));
+        let sort_order = Binding::container(Some(TableSort::ascending(PersonSort::Name)));
+        let view = Table::new(
+            people,
+            (
+                TableColumn::new("Name", |p: &Person| text(p.name)).sortable(PersonSort::Name),
+                TableColumn::new("Swatch", |p: &Person| {
+                    let swatch = if p.id == 1 {
+                        Color::srgb(0, 128, 255)
+                    } else {
+                        Color::srgb(255, 128, 0)
+                    };
+                    swatch.size(24.0, 24.0)
+                }),
+            ),
+        )
+        .selection(&selection)
+        .sort_order(&sort_order);
+
+        let leaf = super::resolve::render(view);
+        let measured = leaf.layout().measure(ProposalSize::UNSPECIFIED).size;
+        assert!(measured.width > 0.0 && measured.height > 0.0);
+
+        let table = find_appkit_table(leaf.view()).expect("table mounts an AppKit TableView");
+        assert_eq!(table.numberOfRows(), 2);
+        let columns = table.tableColumns();
+        assert_eq!(columns.count(), 2);
+        let name_col = columns.objectAtIndex(0);
+        let avatar_col = columns.objectAtIndex(1);
+
+        // Initial selection syncs from binding to NSTableView.
+        assert_eq!(table.selected_rows(), vec![0]);
+
+        // Selecting row 1 in NSTableView writes identity 2 back to the binding.
+        table.set_selected_rows(&[1]);
+        assert_eq!(selection.snapshot(), Some(2));
+
+        // Updating the binding pushes selection back onto NSTableView.
+        selection.set(Some(1));
+        assert_eq!(table.selected_rows(), vec![0]);
+
+        // Initial sort indicator is installed on the active sortable column only.
+        assert!(table.indicator_image(&name_col).is_some());
+        assert!(table.indicator_image(&avatar_col).is_none());
+
+        // Clicking the sortable column header toggles direction to Descending.
+        table.click_column(&name_col);
+        assert_eq!(
+            sort_order.snapshot(),
+            Some(TableSort::new(PersonSort::Name, SortDirection::Descending))
+        );
+        assert!(table.indicator_image(&name_col).is_some());
+
+        // Clicking the non-sortable Avatar column leaves sort order unchanged.
+        table.click_column(&avatar_col);
+        assert_eq!(
+            sort_order.snapshot(),
+            Some(TableSort::new(PersonSort::Name, SortDirection::Descending))
         );
     }
 }

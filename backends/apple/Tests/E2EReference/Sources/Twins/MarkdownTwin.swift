@@ -193,7 +193,7 @@ struct MarkdownTwin: View {
         return attributed
     }
 
-    /// `Color::new(SurfaceVariantColor)`: the Apple backend resolves the slot
+    /// `Color::surface_variant()`: the Apple backend resolves the slot
     /// to `tertiarySystemFill` on both platforms
     /// (Sources/WaterUI/WaterUI.swift `makeColorSignalEntries`).
     private var codeSurface: Color {

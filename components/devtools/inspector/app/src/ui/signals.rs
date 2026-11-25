@@ -5,9 +5,9 @@
 //! many watchers it has, and how often it has fired. A node near the top of this
 //! list that you did not expect to be busy is a bug you can now see.
 
-use waterui::prelude::theme_color::MutedForeground;
 use waterui::prelude::*;
 use waterui::reactive::collection::SignalCollection;
+use waterui::theme::color::MutedForeground;
 use waterui::widget::condition::when;
 use waterui_inspector_protocol::ChannelSet;
 

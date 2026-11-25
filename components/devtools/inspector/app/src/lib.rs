@@ -43,7 +43,7 @@ pub fn main() -> impl View {
 /// Application entry point.
 #[must_use]
 pub fn app(env: Environment) -> App<impl Windows> {
-    App::new(main, env)
+    App::new(env).window(Window::new("", main))
 }
 
 /// A populated inspector, for previews and visual review.

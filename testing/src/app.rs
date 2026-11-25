@@ -1,3 +1,4 @@
+use core::cell::OnceCell;
 use std::path::Path;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -16,14 +17,14 @@ use hydrolysis::theme::{
 };
 use hydrolysis::{
     AccessibilityActivationPointError, FontFamilyResolution, HeadlessColorFormat, HeadlessRuntime,
-    KeyCode, Modifiers, PainterUnavailable, PointerKind, SemanticRuntime, Style,
+    KeyCode, Modifiers, OffscreenPainter, PainterUnavailable, PointerKind, SemanticRuntime, Style,
 };
 use waterui::app::{App, AppMenuBar, AppParts, WindowSink, Windows};
 use waterui::background::Glass;
-use waterui::window::{Window, WindowChannel, WindowToolbar};
+use waterui::window::{Window, WindowChannel, WindowState, WindowToolbar};
 use waterui::{ContentLedger, Plugin, ViewExt as _};
 use waterui_core::handler::{AnyViewBuilder, ViewBuilder};
-use waterui_core::{AnyView, Environment, View};
+use waterui_core::{AnyView, Environment, Signal as _, View};
 
 use crate::artifacts::{CapturedSnapshot, TestArtifacts};
 use crate::driver::{
@@ -191,7 +192,10 @@ fn frame_points_as_u32(points: f32) -> u32 {
 /// `UiBuilder`): [`Self::mount`] then applies `Style::install_tokens` to the
 /// mounted view's environment, while [`Self::mount_offscreen`],
 /// [`Self::mount_app`], [`Self::perf`] and [`Self::perf_with`] run the
-/// rendered [`HeadlessRuntime`].
+/// rendered [`HeadlessRuntime`]. Cloned builders share one lazily selected
+/// offscreen painter (GPU device or CPU engine) across mounts, so mounting
+/// multiple views from one configured builder avoids creating a new device
+/// per view.
 ///
 /// Framework tokens are installed by the runtimes themselves; the builder's
 /// environment carries only what the test installs into it.
@@ -204,6 +208,7 @@ pub struct UiBuilder {
     perf_config: PerfConfig,
     scale_factor: f64,
     hdr: bool,
+    pub(crate) painter: Rc<OnceCell<OffscreenPainter>>,
 }
 
 impl core::fmt::Debug for UiBuilder {
@@ -212,6 +217,7 @@ impl core::fmt::Debug for UiBuilder {
             .field("width", &self.width)
             .field("height", &self.height)
             .field("has_theme", &self.style.is_some())
+            .field("has_painter", &self.painter.get().is_some())
             .field("perf_config", &self.perf_config)
             .field("scale_factor", &self.scale_factor)
             .field("hdr", &self.hdr)
@@ -237,7 +243,17 @@ impl UiBuilder {
             perf_config: PerfConfig::default(),
             scale_factor: 1.0,
             hdr: false,
+            painter: Rc::new(OnceCell::new()),
         }
+    }
+
+    fn shared_painter(&self) -> Result<OffscreenPainter, PainterUnavailable> {
+        if let Some(painter) = self.painter.get() {
+            return Ok(painter.clone());
+        }
+        let painter = OffscreenPainter::select()?;
+        let _ = self.painter.set(painter.clone());
+        Ok(painter)
     }
 
     /// Attaches a `hydrolysis` style to the builder.
@@ -438,11 +454,14 @@ struct FirstWindow {
 
 impl WindowSink for FirstWindow {
     fn window<C: ViewBuilder, T: WindowToolbar>(&mut self, window: Window<C, T>) {
+        if window.state.snapshot() == WindowState::Closed {
+            return;
+        }
         let Some(mut builder) = self.builder.take() else {
             return;
         };
         if matches!(self.viewport, Viewport::FromWindow) {
-            let size = *waterui_core::Signal::snapshot(&window.frame).size();
+            let size = *window.frame.snapshot().size();
             builder = builder.viewport(
                 frame_points_as_u32(size.width),
                 frame_points_as_u32(size.height),
@@ -563,6 +582,9 @@ impl UiBuilder {
         mut env: Environment,
         content: AnyViewBuilder<AnyView>,
     ) -> OffscreenApp {
+        let painter = self
+            .shared_painter()
+            .unwrap_or_else(|error| no_painter(error));
         let Self {
             width,
             height,
@@ -581,7 +603,8 @@ impl UiBuilder {
         } else {
             HeadlessColorFormat::SdrSrgb
         };
-        let runtime = HeadlessRuntime::new_with_format(
+        let runtime = HeadlessRuntime::new_on_painter_with_format(
+            painter,
             env,
             content,
             width,
@@ -589,8 +612,7 @@ impl UiBuilder {
             style,
             FontFamilyResolution::Strict,
             color_format,
-        )
-        .unwrap_or_else(|error| no_painter(error));
+        );
         Self::wrap_rendered(runtime, width, height, scale_factor, ledger)
     }
 
@@ -606,6 +628,9 @@ impl UiBuilder {
         mut env: Environment,
         window: Window<C, T>,
     ) -> OffscreenApp {
+        let painter = self
+            .shared_painter()
+            .unwrap_or_else(|error| no_painter(error));
         let Self {
             width,
             height,
@@ -623,7 +648,8 @@ impl UiBuilder {
         } else {
             HeadlessColorFormat::SdrSrgb
         };
-        let runtime = HeadlessRuntime::new_with_window_and_format(
+        let runtime = HeadlessRuntime::new_with_window_on_painter_and_format(
+            painter,
             env,
             window,
             width,
@@ -631,8 +657,7 @@ impl UiBuilder {
             style,
             FontFamilyResolution::Strict,
             color_format,
-        )
-        .unwrap_or_else(|error| no_painter(error));
+        );
         Self::wrap_rendered(runtime, width, height, scale_factor, ledger)
     }
 
@@ -1268,46 +1293,6 @@ impl<R: RuntimeDriver> SemanticApp<R> {
         );
     }
 
-    /// Creates an existence expectation.
-    #[must_use]
-    pub const fn expect_exists(&self, selector: Selector) -> Expectation {
-        Expectation {
-            kind: ExpectationKind::Exists(selector),
-            inverted: false,
-        }
-    }
-
-    /// Creates a non-existence expectation.
-    #[must_use]
-    pub const fn expect_not_exists(&self, selector: Selector) -> Expectation {
-        Expectation {
-            kind: ExpectationKind::NotExists(selector),
-            inverted: false,
-        }
-    }
-
-    /// Creates a value-equality expectation.
-    #[must_use]
-    pub fn expect_value_eq(&self, selector: Selector, value: impl Into<String>) -> Expectation {
-        Expectation {
-            kind: ExpectationKind::ValueEquals {
-                selector,
-                value: value.into(),
-            },
-            inverted: false,
-        }
-    }
-
-    /// Creates a UI-focus expectation: fulfilled once the selector resolves to
-    /// the element holding Hydrolysis UI focus.
-    #[must_use]
-    pub const fn expect_ui_focus(&self, selector: Selector) -> Expectation {
-        Expectation {
-            kind: ExpectationKind::UiFocus(selector),
-            inverted: false,
-        }
-    }
-
     /// Resolves a node id to an [`ElementRef`] bound to the current tree, or
     /// `None` when the id is absent.
     ///
@@ -1486,14 +1471,18 @@ impl<R: RuntimeDriver> SemanticApp<R> {
 
     /// Convenience API mirroring `XCTest` `waitForExistence`.
     pub fn wait_for_existence(&mut self, selector: &Selector, timeout: Duration) -> bool {
-        let expectation = self.expect_exists(selector.clone());
-        self.wait_for(&[expectation], WaitOptions::new(timeout)) == WaitResult::Completed
+        self.wait_for(
+            &[Expectation::exists(selector.clone())],
+            WaitOptions::new(timeout),
+        ) == WaitResult::Completed
     }
 
     /// Convenience API mirroring `XCTest` `waitForNonexistence`.
     pub fn wait_for_nonexistence(&mut self, selector: &Selector, timeout: Duration) -> bool {
-        let expectation = self.expect_not_exists(selector.clone());
-        self.wait_for(&[expectation], WaitOptions::new(timeout)) == WaitResult::Completed
+        self.wait_for(
+            &[Expectation::not_exists(selector.clone())],
+            WaitOptions::new(timeout),
+        ) == WaitResult::Completed
     }
 
     /// Waits for one node's value to equal the expected value.
@@ -1503,42 +1492,18 @@ impl<R: RuntimeDriver> SemanticApp<R> {
         value: impl Into<String>,
         timeout: Duration,
     ) -> bool {
-        let expectation = self.expect_value_eq(selector.clone(), value);
-        self.wait_for(&[expectation], WaitOptions::new(timeout)) == WaitResult::Completed
+        self.wait_for(
+            &[Expectation::value_eq(selector.clone(), value)],
+            WaitOptions::new(timeout),
+        ) == WaitResult::Completed
     }
 
     /// Waits until the selector resolves to the current UI-focused element.
     pub fn wait_for_ui_focus(&mut self, selector: &Selector, timeout: Duration) -> bool {
-        const MIN_IDLE_BACKOFF: Duration = Duration::from_millis(1);
-        const MAX_IDLE_BACKOFF: Duration = Duration::from_millis(16);
-
-        let deadline = Instant::now() + timeout;
-        let mut idle_backoff = Duration::ZERO;
-        loop {
-            if self.matches_ui_focus(selector) {
-                return true;
-            }
-
-            if Instant::now() >= deadline {
-                return false;
-            }
-
-            let _ = self.pump_once();
-            if !self.runtime.is_settled() {
-                idle_backoff = Duration::ZERO;
-                continue;
-            }
-
-            let next_backoff = if idle_backoff.is_zero() {
-                MIN_IDLE_BACKOFF
-            } else {
-                idle_backoff.saturating_mul(2).min(MAX_IDLE_BACKOFF)
-            };
-            idle_backoff = next_backoff;
-            std::thread::sleep(
-                next_backoff.min(deadline.saturating_duration_since(Instant::now())),
-            );
-        }
+        self.wait_for(
+            &[Expectation::ui_focus(selector.clone())],
+            WaitOptions::new(timeout),
+        ) == WaitResult::Completed
     }
 
     fn evaluate_expectation(&mut self, expectation: &Expectation) -> bool {
