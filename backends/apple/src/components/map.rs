@@ -133,6 +133,46 @@ impl MapState {
     }
 }
 
+/// Reconciles `existing_markers` against `values` by [`Id`], updating reused
+/// markers in place, removing absent ones, and batch-adding new ones while
+/// preserving the exact order of `values`.
+fn reconcile_markers<M>(
+    existing_markers: &mut Vec<(Id, M)>,
+    values: &[Annotation<Id>],
+    mut update: impl FnMut(&M, &KitAnnotation),
+    mut remove: impl FnMut(Vec<M>),
+    mut add: impl FnMut(&[KitAnnotation]) -> Vec<M>,
+) {
+    let mut existing: HashMap<Id, M> = existing_markers.drain(..).collect();
+    let mut merged: Vec<Option<(Id, M)>> = (0..values.len()).map(|_| None).collect();
+    let mut added_entries = Vec::new();
+    let mut added_values = Vec::new();
+
+    for (slot, value) in values.iter().enumerate() {
+        let id = *value.id();
+        if let Some(marker) = existing.remove(&id) {
+            update(&marker, &kit_annotation(value));
+            merged[slot] = Some((id, marker));
+        } else {
+            added_entries.push((slot, id));
+            added_values.push(kit_annotation(value));
+        }
+    }
+
+    if !existing.is_empty() {
+        remove(existing.into_values().collect());
+    }
+
+    if !added_values.is_empty() {
+        let added_markers = add(&added_values);
+        for ((slot, id), marker) in added_entries.into_iter().zip(added_markers) {
+            merged[slot] = Some((id, marker));
+        }
+    }
+
+    *existing_markers = merged.into_iter().flatten().collect();
+}
+
 /// Applies `values` onto the map, reconciling rendered markers by [`Id`] so
 /// stable pins keep their native object identity and selection across updates.
 fn reconcile_annotations(
@@ -141,48 +181,17 @@ fn reconcile_annotations(
     values: &[Annotation<Id>],
     suppressing_selection: &Cell<bool>,
 ) {
-    let mut existing: HashMap<Id, AnnotationMarker> = state.markers.drain(..).collect();
-    let mut next_markers = Vec::with_capacity(values.len());
-    let mut added_entries = Vec::new();
-    let mut added_values = Vec::new();
-
-    for value in values {
-        let id = *value.id();
-        if let Some(marker) = existing.remove(&id) {
-            view.update_annotation(&marker, &kit_annotation(value));
-            next_markers.push((id, marker));
-        } else {
-            let slot = next_markers.len();
-            added_entries.push((slot, id));
-            added_values.push(kit_annotation(value));
-        }
-    }
-
-    if !existing.is_empty() {
-        let removed: Vec<AnnotationMarker> = existing.into_values().collect();
-        view.remove_annotations(&removed);
-    }
-
-    if !added_values.is_empty() {
-        let added_markers = view.add_annotations(&added_values);
-        let mut by_slot: HashMap<usize, (Id, AnnotationMarker)> = added_entries
-            .into_iter()
-            .zip(added_markers)
-            .map(|((slot, id), marker)| (slot, (id, marker)))
-            .collect();
-        let mut merged = Vec::with_capacity(values.len());
-        let mut reused_iter = next_markers.into_iter();
-        for index in 0..values.len() {
-            if let Some(entry) = by_slot.remove(&index) {
-                merged.push(entry);
-            } else if let Some(entry) = reused_iter.next() {
-                merged.push(entry);
-            }
-        }
-        next_markers = merged;
-    }
-
-    state.markers = next_markers;
+    reconcile_markers(
+        &mut state.markers,
+        values,
+        |marker, annotation| view.update_annotation(marker, annotation),
+        |removed| {
+            suppressing_selection.set(true);
+            view.remove_annotations(&removed);
+            suppressing_selection.set(false);
+        },
+        |added| view.add_annotations(added),
+    );
 
     if let Some(selected_id) = state.selected
         && let Some(marker) = state.marker_for(selected_id)
@@ -513,5 +522,70 @@ mod tests {
             MapStatus::Failed(reason) => assert_eq!(reason.as_str(), "offline"),
             other => panic!("expected Failed, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn reconcile_markers_tracks_multiple_added_and_reused_annotations_in_order() {
+        use waterui_core::id::Mapping;
+
+        let mapping = Mapping::new();
+        let a = mapping.to_id("a");
+        let b = mapping.to_id("b");
+        let c = mapping.to_id("c");
+        let d = mapping.to_id("d");
+        let coord = Coordinate::default();
+
+        let mut next_token = 1_usize;
+        let mut markers: Vec<(Id, usize)> = Vec::new();
+
+        // Initial mount with three newly added annotations must track all three in order.
+        let initial = vec![
+            Annotation::new(a, coord, "A"),
+            Annotation::new(b, coord, "B"),
+            Annotation::new(c, coord, "C"),
+        ];
+        reconcile_markers(
+            &mut markers,
+            &initial,
+            |_, _| panic!("initial mount has no existing markers to update"),
+            |_| panic!("initial mount removes nothing"),
+            |added| {
+                added
+                    .iter()
+                    .map(|_| {
+                        let token = next_token;
+                        next_token += 1;
+                        token
+                    })
+                    .collect()
+            },
+        );
+        assert_eq!(markers, vec![(a, 1), (b, 2), (c, 3)]);
+
+        // Reconcile with a new leading item `d`, reused `b`, removed `a`/`c`, and updated title.
+        let mut updated_tokens = Vec::new();
+        let mut removed_tokens = Vec::new();
+        let next = vec![
+            Annotation::new(d, coord, "D"),
+            Annotation::new(b, coord, "B updated"),
+        ];
+        reconcile_markers(
+            &mut markers,
+            &next,
+            |token, annotation| updated_tokens.push((*token, annotation.title.clone())),
+            |mut removed| {
+                removed.sort_unstable();
+                removed_tokens = removed;
+            },
+            |added| {
+                assert_eq!(added.len(), 1);
+                let token = next_token;
+                next_token += 1;
+                vec![token]
+            },
+        );
+        assert_eq!(markers, vec![(d, 4), (b, 2)]);
+        assert_eq!(updated_tokens, vec![(2, "B updated".to_owned())]);
+        assert_eq!(removed_tokens, vec![1, 3]);
     }
 }
