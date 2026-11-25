@@ -19,8 +19,6 @@
 extern crate alloc;
 
 use alloc::borrow::Cow;
-#[cfg(feature = "gpu")]
-use alloc::boxed::Box;
 use alloc::string::{String, ToString as _};
 #[cfg(feature = "gpu")]
 use alloc::sync::Arc;
@@ -208,7 +206,7 @@ impl ShaderPaintView {
     /// scene-level `Paint::Shader` run.
     #[cfg(feature = "gpu")]
     #[must_use]
-    pub fn into_gpu_view(self) -> GpuView<Box<dyn GpuContent>> {
+    pub fn into_gpu_view(self) -> GpuView<impl GpuContent> {
         let shared = Arc::new(Shared::default());
         let posting = Posting::new(self.continuous, self.params, Arc::clone(&shared));
         GpuView::new(ShaderContent {
@@ -220,7 +218,6 @@ impl ShaderPaintView {
         .on_frame(move || posting.post())
         .offered_label(self.label)
         .offered_value(self.value)
-        .into_boxed()
     }
 }
 
@@ -612,19 +609,19 @@ impl GpuContent for ShaderContent {
         let posted = self.shared.posted.load();
         #[expect(clippy::cast_precision_loss, reason = "texture sides fit f32 exactly")]
         let globals = [
-            frame.elapsed.as_secs_f32(),
+            frame.elapsed().as_secs_f32(),
             0.0,
-            frame.width as f32,
-            frame.height as f32,
+            frame.width() as f32,
+            frame.height() as f32,
         ];
         frame
-            .queue
+            .queue()
             .write_buffer(&gpu.globals, 0, bytemuck::cast_slice(&globals));
         frame
-            .queue
+            .queue()
             .write_buffer(&gpu.params, 0, bytemuck::cast_slice(&posted.params));
         let mut encoder = frame
-            .device
+            .device()
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("shader paint"),
             });
@@ -632,7 +629,7 @@ impl GpuContent for ShaderContent {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("shader paint"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: frame.view,
+                    view: frame.view(),
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -646,7 +643,7 @@ impl GpuContent for ShaderContent {
             pass.set_bind_group(0, &gpu.bind_group, &[]);
             pass.draw(0..3, 0..1);
         }
-        frame.queue.submit([encoder.finish()]);
+        frame.queue().submit([encoder.finish()]);
         if posted.continuous {
             frame.request_redraw();
         }

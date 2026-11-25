@@ -4,11 +4,11 @@
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
-#[cfg(feature = "menu")]
 use crate::num_cast::f64_as_f32;
 #[cfg(feature = "menu")]
 use crate::renderer::chrome::record_surface_at_rest;
 use crate::renderer::frame::ScopeClip;
+use crate::renderer::input::PressSlot;
 #[cfg(feature = "menu")]
 use crate::renderer::input::{anchored_overlay_scope, menu_look, presentation_content_transform};
 #[cfg(feature = "menu")]
@@ -27,7 +27,9 @@ use nami::{Computed, Signal, SignalExt as _};
 use waterui_core::animation::ChangeAnimation;
 use waterui_core::contract_violation;
 use waterui_core::handler::ReportExtraction as _;
+use waterui_core::layout::Point;
 use waterui_graphics::animation::engine_animation;
+use waterui_interaction::gesture::{PointerButton, TapEvent};
 use waterui_shape::CornerRadius;
 
 /// Adapts a reactive signal so changes carrying a [`waterui_core::animation::Animation`]
@@ -513,6 +515,36 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         render_content(renderer);
     }
 
+    fn extend_primary_tap_env(runtime_env: &Environment, location: Point) -> Environment {
+        runtime_env.extending(State(TapEvent::new(location, 1, PointerButton::Primary)))
+    }
+
+    fn register_primary_tap_target(
+        renderer: &mut Self,
+        target: Rect,
+        bounds: Rect,
+        press_slot: PressSlot,
+        keyboard_focusable: bool,
+        mut action: BoxedAction<()>,
+    ) {
+        renderer.register_interactive_pointer_target_with_keyboard(
+            target,
+            press_slot,
+            keyboard_focusable,
+            move |_renderer, point, runtime_env| {
+                let tap_env = Self::extend_primary_tap_env(
+                    runtime_env,
+                    Point::new(
+                        f64_as_f32(point.x - bounds.x0),
+                        f64_as_f32(point.y - bounds.y0),
+                    ),
+                );
+                action(&tap_env).report_extraction();
+                false
+            },
+        );
+    }
+
     /// The `Click` → `Activate` wiring of a tap gesture's accessibility node:
     /// invoke the gesture's own action with the same layered environment the
     /// pointer path uses (`captured_env.layered_on(runtime_env)`).
@@ -525,7 +557,8 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         let action = Rc::clone(action);
         Rc::new(RefCell::new(
             move |_renderer: &mut crate::renderer::SemanticCore<E>, runtime_env: &Environment| {
-                let action_env = captured_env.layered_on(runtime_env);
+                let tap_env = Self::extend_primary_tap_env(runtime_env, Point::new(0.0, 0.0));
+                let action_env = captured_env.layered_on(&tap_env);
                 action.borrow_mut()(&action_env).report_extraction();
                 true
             },
@@ -585,11 +618,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         // would synthesize, which would otherwise take focus ahead of the
         // visible controls (a dialog's pointer-only scrim).
         #[cfg(feature = "accessibility")]
-        if matches!(effect.gesture, Gesture::Tap(_))
-            && !env
-                .get::<AccessibilityHidden>()
-                .is_some_and(AccessibilityHidden::is_hidden)
-        {
+        if matches!(effect.gesture, Gesture::Tap(_)) && !renderer.is_accessibility_hidden(env) {
             let has_role = env.get::<AccessibilityRole>().is_some();
             let has_scope = env.get::<ScopedAccessibilitySemantics<E>>().is_some();
             if !renderer.accessibility_scope_is_claimed(env) && (has_role || !has_scope) {
@@ -704,7 +733,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         let group_id = renderer.gesture_group_id_for_identity(effect.gesture_group_identity);
         let captured_env = env.clone();
         let action = Rc::clone(&effect.action);
-        let mut layered_action: BoxedAction<()> = Box::new(move |runtime_env: &Environment| {
+        let layered_action: BoxedAction<()> = Box::new(move |runtime_env: &Environment| {
             let action_env = captured_env.layered_on(runtime_env);
             action.borrow_mut()(&action_env)
         });
@@ -771,14 +800,13 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             parts.push_above(renderer, ctx);
 
             if !disabled {
-                renderer.register_interactive_pointer_target_with_keyboard(
+                Self::register_primary_tap_target(
+                    renderer,
                     target,
+                    bounds,
                     press_slot,
                     chrome.keyboard_focusable(),
-                    move |_renderer, _point, runtime_env| {
-                        layered_action(runtime_env).report_extraction();
-                        false
-                    },
+                    layered_action,
                 );
             }
             return;
@@ -815,14 +843,13 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 }
             }
             if !disabled {
-                renderer.register_interactive_pointer_target_with_keyboard(
+                Self::register_primary_tap_target(
+                    renderer,
+                    bounds,
                     bounds,
                     press_slot,
                     true,
-                    move |_renderer, _point, runtime_env| {
-                        layered_action(runtime_env).report_extraction();
-                        false
-                    },
+                    layered_action,
                 );
             }
             return;
@@ -919,10 +946,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             .get::<waterui_interaction::interaction::Disabled>()
             .is_some_and(|disabled| renderer.read_signal(disabled.signal()));
         // A hidden subtree publishes nothing, the claim included.
-        if env
-            .get::<AccessibilityHidden>()
-            .is_some_and(AccessibilityHidden::is_hidden)
-        {
+        if renderer.is_accessibility_hidden(env) {
             return None;
         }
         let has_role = env.get::<AccessibilityRole>().is_some();

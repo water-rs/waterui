@@ -910,6 +910,9 @@ mod tests {
     /// participant polling it.
     #[test]
     fn a_batch_returns_while_the_worker_is_paused_and_wakes_every_participant() {
+        use waterui_graphics::backend::GpuContentLeaf;
+        use waterui_graphics::gpu::interop::GpuContentBox;
+
         let (runtime, context) = gpu();
         let engines = SceneEngine::new();
         let generation = pollster::block_on(engines.generation(&runtime, &context))
@@ -918,13 +921,9 @@ mod tests {
         let second_part = Probe::mount(&generation);
         let (release, gate) = std::sync::mpsc::channel();
         let (announce, entered) = std::sync::mpsc::channel();
-        let producer =
-            generation
-                .engine()
-                .gpu_producer(waterui_graphics::gpu::interop::GpuContentBox::new(
-                    waterui_graphics::gpu::GpuView::new(Paused(Some((announce, gate))))
-                        .engine_content(),
-                ));
+        let producer = generation.engine().gpu_producer(GpuContentBox::new(
+            GpuContentLeaf::new(Paused(Some((announce, gate)))).engine_content(),
+        ));
         first_part.surface.update(|tx| {
             tx[first_part.surface.root()].content(producer.at((1, 1)));
         });

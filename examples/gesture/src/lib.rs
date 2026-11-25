@@ -12,7 +12,10 @@ use core::{num::NonZeroU32, time::Duration};
 
 use waterui::Identifiable;
 use waterui::app::{App, Windows};
-use waterui::gesture::{DragGesture, LongPressGesture, PointerButtons, TapGesture};
+use waterui::gesture::{
+    DragEvent, DragGesture, GestureEvent, LongPressEvent, LongPressGesture, PointerButtons,
+    TapEvent, TapGesture,
+};
 use waterui::graphics::color::Srgb;
 use waterui::prelude::*;
 use waterui::preview;
@@ -34,9 +37,12 @@ fn tap_section(tap_count: &Binding<i32>) -> impl View + use<> {
         text("Tap Me!")
             .padding()
             .background(TAP_COLOR.with_opacity(0.3))
-            .gesture(TapGesture::new(), |State(c): State<Binding<i32>>| {
-                *c.get_mut() += 1;
-            })
+            .gesture(
+                TapGesture::new(),
+                |_: TapEvent, State(c): State<Binding<i32>>| {
+                    *c.get_mut() += 1;
+                },
+            )
             .state(tap_count),
     ))
     .padding()
@@ -56,7 +62,7 @@ fn double_tap_section(double_tap_count: &Binding<i32>) -> impl View + use<> {
             .background(DOUBLE_TAP_COLOR.with_opacity(0.3))
             .gesture(
                 TapGesture::repeat(NonZeroU32::new(2).unwrap()),
-                |State(c): State<Binding<i32>>| {
+                |_: TapEvent, State(c): State<Binding<i32>>| {
                     *c.get_mut() += 1;
                 },
             )
@@ -79,7 +85,7 @@ fn long_press_section(long_press_count: &Binding<i32>) -> impl View + use<> {
             .background(LONG_PRESS_COLOR.with_opacity(0.3))
             .gesture(
                 LongPressGesture::new().minimum_duration(Duration::from_millis(500)),
-                |State(c): State<Binding<i32>>| *c.get_mut() += 1,
+                |_: LongPressEvent, State(c): State<Binding<i32>>| *c.get_mut() += 1,
             )
             .state(long_press_count),
     ))
@@ -97,9 +103,12 @@ fn drag_section(drag_count: &Binding<i32>) -> impl View + use<> {
             .width(200.0)
             .height(100.0)
             .background(DRAG_COLOR.with_opacity(0.3))
-            .gesture(DragGesture::new(5.0), |State(c): State<Binding<i32>>| {
-                *c.get_mut() += 1;
-            })
+            .gesture(
+                DragGesture::new(5.0),
+                |_: DragEvent, State(c): State<Binding<i32>>| {
+                    *c.get_mut() += 1;
+                },
+            )
             .state(drag_count),
     ))
     .padding()
@@ -118,7 +127,9 @@ fn chained_section(chained_status: &Binding<&'static str>) -> impl View + use<> 
             .gesture(
                 TapGesture::new()
                     .then(LongPressGesture::new().minimum_duration(Duration::from_millis(300))),
-                |State(s): State<Binding<&'static str>>| s.set("Chained gesture completed!"),
+                |_: GestureEvent, State(s): State<Binding<&'static str>>| {
+                    s.set("Chained gesture completed!");
+                },
             )
             .state(chained_status),
     ))
@@ -154,7 +165,8 @@ fn middle_click_tab_section(
                     .background(Srgb::from_hex("#607D8B").with_opacity(0.3))
                     .gesture(
                         TapGesture::new().buttons(PointerButtons::MIDDLE),
-                        move |State(mut tabs): State<StateList<TabChip>>,
+                        move |_: TapEvent,
+                              State(mut tabs): State<StateList<TabChip>>,
                               State(open_tabs): State<Binding<i32>>| {
                             if let Some(index) =
                                 tabs.snapshot().iter().position(|tab| tab.id == tab_id)

@@ -10,7 +10,6 @@
 //! These extensions help create a fluent API for constructing user interfaces.
 
 use crate::animation::{FrameRate, FrameRateVote};
-use crate::fullscreen::FullScreenOverlayHost;
 use crate::sheet::Sheet;
 #[cfg(feature = "snackbar")]
 use crate::snackbar::SnackbarHost;
@@ -66,7 +65,7 @@ use crate::{
     border::Border,
     drag_drop::{Draggable, DropDestination, Transferable},
     filter::Opacity,
-    gesture::{Gesture, GestureObserver, LongPressGesture, TapGesture},
+    gesture::{GestureObserver, GestureType, LongPressGesture, TapGesture},
     interaction::Hittable,
     metadata::secure::{DynamicRange, DynamicRangeMetadata, Secure},
     theme,
@@ -85,9 +84,11 @@ use waterui_controls::button::{ButtonStyleHook, IntoButtonStyle};
 #[cfg(feature = "toggle")]
 use waterui_controls::toggle::{IntoToggleStyle, ToggleStyleHook};
 use waterui_core::id::TaggedView;
-use waterui_interaction::event::{Event, LifeCycle, LifeCycleHook, OnChange, OnEvent, TaskHook};
+use waterui_interaction::event::{
+    Event, HoverEvent, LifeCycle, LifeCycleHook, OnChange, OnEvent, TaskHook,
+};
 use waterui_interaction::interaction::{Disabled, InteractionReport, InteractionState, Selected};
-use waterui_interaction::key::{KeyHandling, OnKeyPress};
+use waterui_interaction::key::{KeyHandling, KeyPress, OnKeyPress};
 use waterui_structural_transition::{Transition, Transitioned};
 
 /// The inset a bare [`ViewExt::padding`] applies.
@@ -202,7 +203,7 @@ pub trait ViewExt: View + Sized {
         let opacity_value = visible.map(|visible| if visible { 1.0 } else { 0.0 });
         let hittable_value = visible;
 
-        self.a11y_state_signal(accessibility_state)
+        self.a11y_state(accessibility_state)
             .opacity(opacity_value)
             .hittable(hittable_value)
     }
@@ -523,11 +524,8 @@ pub trait ViewExt: View + Sized {
 
     /// Adds an event handler for the specified interaction event.
     ///
-    /// You may want to use `ViewExt::on_hover_enter` or `ViewExt::on_hover_exit` for convenience.
-    ///
-    /// # Arguments
-    /// * `event` - The event to listen for
-    /// * `handler` - The action to execute when the event occurs (can be called multiple times)
+    /// You may want to use `ViewExt::on_hover_enter`, `ViewExt::on_hover_move`,
+    /// or `ViewExt::on_hover_exit` for convenience.
     fn event<H, Args>(self, event: Event, handler: H) -> Metadata<OnEvent, Self>
     where
         H: Handler<Args, ()>,
@@ -546,7 +544,16 @@ pub trait ViewExt: View + Sized {
     where
         H: Handler<Args, ()>,
     {
-        self.event(Event::HoverEnter, handler)
+        Metadata::new(self, OnEvent::hover_enter(handler))
+    }
+
+    /// Adds a handler that triggers when the cursor moves inside this view's bounds,
+    /// delivering [`HoverEvent`] as the handler's first argument.
+    fn on_hover_move<H, Args>(self, handler: H) -> Metadata<OnEvent, Self>
+    where
+        H: EventHandler<HoverEvent, Args>,
+    {
+        Metadata::new(self, OnEvent::hover_move(handler))
     }
 
     /// Adds a handler that triggers when the cursor exits this view's bounds.
@@ -560,7 +567,7 @@ pub trait ViewExt: View + Sized {
     where
         H: Handler<Args, ()>,
     {
-        self.event(Event::HoverExit, handler)
+        Metadata::new(self, OnEvent::hover_exit(handler))
     }
 
     /// Handles key presses that the focused view inside this one leaves
@@ -569,8 +576,8 @@ pub trait ViewExt: View + Sized {
     /// The keyboard goes to the focused view first. A key it does not use —
     /// Escape, or an arrow in a single-line text field — bubbles to its
     /// ancestors, nearest first, until a handler returns
-    /// [`KeyHandling::Handled`]. The handler
-    /// reads the key directly as `press: KeyPress`.
+    /// [`KeyHandling::Handled`]. The handler receives [`KeyPress`] as its first
+    /// argument.
     ///
     /// ```rust
     /// use waterui::prelude::*;
@@ -589,9 +596,18 @@ pub trait ViewExt: View + Sized {
     ///     },
     /// ).state(&open);
     /// ```
+    ///
+    /// Omitting [`KeyPress`] as the first parameter fails to compile:
+    ///
+    /// ```compile_fail
+    /// use waterui::key::KeyHandling;
+    /// use waterui::prelude::*;
+    ///
+    /// text!("Key").on_key_press(|| KeyHandling::Ignored);
+    /// ```
     fn on_key_press<H, Args>(self, handler: H) -> Metadata<OnKeyPress, Self>
     where
-        H: Handler<Args, KeyHandling>,
+        H: EventHandler<KeyPress, Args, KeyHandling>,
     {
         Metadata::new(self, OnKeyPress::new(handler))
     }
@@ -630,53 +646,75 @@ pub trait ViewExt: View + Sized {
         Badge::new(value, self)
     }
 
-    /// Fixes this view's width to the provided value.
-    fn width(self, width: f32) -> Frame<Self> {
+    /// Fixes this view's width to the provided value or signal.
+    fn width(self, width: impl IntoSignalF32 + 'static) -> Frame<Self> {
         Frame::new(self).width(width)
     }
 
-    /// Fixes this view's height to the provided value.
-    fn height(self, height: f32) -> Frame<Self> {
+    /// Fixes this view's height to the provided value or signal.
+    fn height(self, height: impl IntoSignalF32 + 'static) -> Frame<Self> {
         Frame::new(self).height(height)
     }
 
+    /// Sets the width this view asks for when its parent proposes nothing.
+    fn ideal_width(self, width: impl IntoSignalF32 + 'static) -> Frame<Self> {
+        Frame::new(self).ideal_width(width)
+    }
+
+    /// Sets the height this view asks for when its parent proposes nothing.
+    fn ideal_height(self, height: impl IntoSignalF32 + 'static) -> Frame<Self> {
+        Frame::new(self).ideal_height(height)
+    }
+
     /// Applies a minimum width constraint.
-    fn min_width(self, width: f32) -> Frame<Self> {
+    fn min_width(self, width: impl IntoSignalF32 + 'static) -> Frame<Self> {
         Frame::new(self).min_width(width)
     }
 
     /// Applies a maximum width constraint.
-    fn max_width(self, width: f32) -> Frame<Self> {
+    fn max_width(self, width: impl IntoSignalF32 + 'static) -> Frame<Self> {
         Frame::new(self).max_width(width)
     }
 
     /// Applies a minimum height constraint.
-    fn min_height(self, height: f32) -> Frame<Self> {
+    fn min_height(self, height: impl IntoSignalF32 + 'static) -> Frame<Self> {
         Frame::new(self).min_height(height)
     }
 
     /// Applies a maximum height constraint.
-    fn max_height(self, height: f32) -> Frame<Self> {
+    fn max_height(self, height: impl IntoSignalF32 + 'static) -> Frame<Self> {
         Frame::new(self).max_height(height)
     }
 
     /// Fixes both width and height simultaneously.
-    fn size(self, width: f32, height: f32) -> Frame<Self> {
+    fn size(
+        self,
+        width: impl IntoSignalF32 + 'static,
+        height: impl IntoSignalF32 + 'static,
+    ) -> Frame<Self> {
         Frame::new(self).width(width).height(height)
     }
 
     /// Applies minimum constraints on both axes.
-    fn min_size(self, width: f32, height: f32) -> Frame<Self> {
+    fn min_size(
+        self,
+        width: impl IntoSignalF32 + 'static,
+        height: impl IntoSignalF32 + 'static,
+    ) -> Frame<Self> {
         Frame::new(self).min_width(width).min_height(height)
     }
 
     /// Applies maximum constraints on both axes.
-    fn max_size(self, width: f32, height: f32) -> Frame<Self> {
+    fn max_size(
+        self,
+        width: impl IntoSignalF32 + 'static,
+        height: impl IntoSignalF32 + 'static,
+    ) -> Frame<Self> {
         Frame::new(self).max_width(width).max_height(height)
     }
 
-    /// Aligns this view within its frame using the provided alignment.
-    fn alignment(self, alignment: Alignment) -> Frame<Self> {
+    /// Aligns this view within its frame using the provided alignment or token.
+    fn alignment(self, alignment: impl Into<Alignment>) -> Frame<Self> {
         Frame::new(self).alignment(alignment)
     }
 
@@ -829,7 +867,9 @@ pub trait ViewExt: View + Sized {
     }
 
     /// Overrides whether this view is hidden from assistive technologies.
-    fn a11y_hidden(self, hidden: bool) -> Metadata<AccessibilityHidden, Self> {
+    ///
+    /// Accepts a constant `bool` or any reactive boolean signal.
+    fn a11y_hidden(self, hidden: impl IntoComputed<bool>) -> Metadata<AccessibilityHidden, Self> {
         Metadata::new(self, accessibility::AccessibilityHidden::new(hidden))
     }
 
@@ -856,23 +896,26 @@ pub trait ViewExt: View + Sized {
         Metadata::new(self, behavior)
     }
 
-    /// Applies explicit accessibility state metadata.
+    /// Applies static or reactive accessibility state metadata.
     fn a11y_state(
-        self,
-        state: accessibility::AccessibilityState,
-    ) -> Metadata<AccessibilityState, Self> {
-        Metadata::new(self, state)
-    }
-
-    /// Applies reactive accessibility state metadata.
-    fn a11y_state_signal(
         self,
         state: impl IntoComputed<accessibility::AccessibilityState>,
     ) -> Metadata<accessibility::AccessibilityStateSignal, Self> {
         Metadata::new(self, accessibility::AccessibilityStateSignal::new(state))
     }
 
-    /// Observes a gesture and executes an action when the gesture is recognized.
+    /// Temporary Step-1 compatibility alias until split crates migrate to
+    /// [`ViewExt::a11y_state`].
+    #[doc(hidden)]
+    fn a11y_state_signal(
+        self,
+        state: impl IntoComputed<accessibility::AccessibilityState>,
+    ) -> Metadata<accessibility::AccessibilityStateSignal, Self> {
+        self.a11y_state(state)
+    }
+
+    /// Observes a gesture and executes an action whose handler consumes
+    /// `G::Event` as its first argument, followed by environment extractors.
     ///
     /// The action resolves its extractors from the environment of the view it
     /// is attached to, so a value it extracts with `State<T>` must be installed
@@ -882,15 +925,22 @@ pub trait ViewExt: View + Sized {
     /// # Arguments
     /// * `gesture` - The gesture to observe
     /// * `action` - The action to execute when the gesture is recognized
-    fn gesture<H, Args>(
-        self,
-        gesture: impl Into<Gesture>,
-        action: H,
-    ) -> Metadata<GestureObserver, Self>
+    ///
+    /// Passing a handler expecting another gesture's event type fails to
+    /// compile:
+    ///
+    /// ```compile_fail
+    /// use waterui::gesture::{DragEvent, TapGesture};
+    /// use waterui::prelude::*;
+    ///
+    /// text!("Tap").gesture(TapGesture::new(), |_: DragEvent| {});
+    /// ```
+    fn gesture<G, H, Args>(self, gesture: G, action: H) -> Metadata<GestureObserver, Self>
     where
-        H: Handler<Args, ()>,
+        G: GestureType,
+        H: EventHandler<G::Event, Args>,
     {
-        Metadata::new(self, GestureObserver::new(gesture, action))
+        Metadata::new(self, GestureObserver::from_event(gesture, action))
     }
 
     /// Adds a tap gesture recognizer to this view that triggers the specified action.
@@ -909,7 +959,10 @@ pub trait ViewExt: View + Sized {
     where
         H: Handler<Args, ()>,
     {
-        self.gesture(TapGesture::new(), action)
+        Metadata::new(
+            self,
+            GestureObserver::without_event(TapGesture::new(), action),
+        )
     }
 
     /// Adds a long-press gesture recognizer to this view using the platform's
@@ -918,7 +971,10 @@ pub trait ViewExt: View + Sized {
     where
         H: Handler<Args, ()>,
     {
-        self.gesture(LongPressGesture::new(), action)
+        Metadata::new(
+            self,
+            GestureObserver::without_event(LongPressGesture::new(), action),
+        )
     }
 
     /// Plays haptic `feedback` whenever `trigger`'s value changes.
@@ -1351,18 +1407,8 @@ pub trait ViewExt: View + Sized {
     ///
     /// Descendant handlers can extract `SnackbarManager<I>` bare.
     #[cfg(feature = "snackbar")]
-    fn snackbar_host_with_icons<I: View + Clone + 'static>(self) -> SnackbarHost<Self, I> {
+    fn snackbar_host_with_icons<I: View + 'static>(self) -> SnackbarHost<Self, I> {
         SnackbarHost::new(self)
-    }
-
-    /// Hosts a [`FullScreenOverlayManager<O>`](crate::fullscreen::FullScreenOverlayManager)
-    /// and its overlay for this view subtree.
-    ///
-    /// Descendant handlers can extract `FullScreenOverlayManager<O>` bare
-    /// (`|overlay: FullScreenOverlayManager<O>| ...`). Each built instance
-    /// creates its own manager and overlay view.
-    fn full_screen_overlay_host<O: View>(self) -> FullScreenOverlayHost<Self, O> {
-        FullScreenOverlayHost::new(self)
     }
 
     /// Sets the minimum row height of every list inside this view, in points.
@@ -1617,7 +1663,7 @@ pub trait ViewExt: View + Sized {
         });
         let hittable_value = is_disabled.map(|d| !d);
 
-        self.a11y_state_signal(accessibility_state)
+        self.a11y_state(accessibility_state)
             .hittable(hittable_value)
             .install(DisabledScope(is_disabled))
     }
@@ -1809,5 +1855,119 @@ mod tests {
         assert_eq!(reactive.value.range().snapshot(), DynamicRange::Standard);
         range.set(DynamicRange::High);
         assert_eq!(reactive.value.range().snapshot(), DynamicRange::High);
+    }
+
+    #[test]
+    fn text_font_size_does_not_shadow_view_ext_size() {
+        use waterui_layout::frame::Frame;
+        use waterui_text::{Text, text};
+
+        let _framed: Frame<Text> = text("Hi").font_size(17.0).size(120.0, 40.0);
+    }
+
+    #[test]
+    fn sizing_shortcuts_accept_signals_and_update_layout_without_rebuilding() {
+        use alloc::rc::Rc;
+        use alloc::vec::Vec;
+        use core::cell::Cell;
+
+        use nami::SignalExt as _;
+        use waterui_core::{AnimationExt as _, Environment, Native};
+        use waterui_layout::{
+            LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView,
+            TopLeading, ViewDimensions, container::FixedContainer,
+        };
+
+        struct FlexibleChild;
+
+        impl SubView for FlexibleChild {
+            fn resolve_extent(
+                &self,
+                bounds: Rect,
+                proposal: ProposalSize,
+            ) -> Result<ResolvedExtent, LayoutError> {
+                ResolvedExtent::centred(bounds, self.measure(proposal).size)
+            }
+
+            fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+                ViewDimensions::new(Size::new(
+                    proposal.width.unwrap_or(0.0),
+                    proposal.height.unwrap_or(0.0),
+                ))
+            }
+
+            fn stretch_axis(&self) -> StretchAxis {
+                StretchAxis::Both
+            }
+
+            fn priority(&self) -> i32 {
+                0
+            }
+        }
+
+        let expanded = Binding::bool(false);
+        let animated_height = expanded.select(240.0_f32, 0.0_f32).animated();
+        let width_signal = Binding::f32(120.0);
+
+        let _ = AnyView::new(()).width(width_signal.clone());
+        let _ = AnyView::new(()).height(animated_height.clone());
+        let _ = AnyView::new(()).ideal_width(width_signal.clone());
+        let _ = AnyView::new(()).ideal_height(animated_height.clone());
+        let _ = AnyView::new(()).min_width(width_signal.clone());
+        let _ = AnyView::new(()).max_width(width_signal.clone());
+        let _ = AnyView::new(()).min_height(animated_height.clone());
+        let _ = AnyView::new(()).max_height(animated_height.clone());
+        let _ = AnyView::new(()).size(width_signal.clone(), animated_height.clone());
+        let _ = AnyView::new(()).min_size(width_signal.clone(), animated_height.clone());
+        let _ = AnyView::new(()).max_size(width_signal, animated_height.clone());
+        let _ = AnyView::new(()).alignment(TopLeading);
+
+        let env = Environment::new();
+        let expanded_view = AnyView::new(())
+            .height(animated_height)
+            .body(&env)
+            .body(&env);
+        let native = AnyView::new(expanded_view)
+            .downcast::<Native<FixedContainer<Vec<AnyView>>>>()
+            .expect("Frame expands to Native<FixedContainer>");
+        let container = native.into_inner();
+        let (layout, _) = container.as_parts();
+
+        let invalidations = Rc::new(Cell::new(0usize));
+        let invalidations_for_cb = Rc::clone(&invalidations);
+        let _guards = layout.watch_invalidation(Rc::new(move || {
+            invalidations_for_cb.set(invalidations_for_cb.get() + 1);
+        }));
+
+        let proposal = ProposalSize::new(100.0, 400.0);
+        assert!((layout.size_that_fits(proposal, &[]).height - 0.0).abs() < f32::EPSILON);
+
+        expanded.set(true);
+        assert!(invalidations.get() > 0);
+        assert!((layout.size_that_fits(proposal, &[]).height - 240.0).abs() < f32::EPSILON);
+
+        let ideal_w = Binding::f32(90.0);
+        let ideal_h = Binding::f32(45.0);
+        let ideal_view = AnyView::new(())
+            .ideal_width(ideal_w.clone())
+            .ideal_height(ideal_h.clone())
+            .body(&env)
+            .body(&env);
+        let ideal_native = AnyView::new(ideal_view)
+            .downcast::<Native<FixedContainer<Vec<AnyView>>>>()
+            .expect("ideal Frame expands to Native<FixedContainer>");
+        let ideal_container = ideal_native.into_inner();
+        let (ideal_layout, _) = ideal_container.as_parts();
+        let child = FlexibleChild;
+        let children: [&dyn SubView; 1] = [&child];
+        let initial_ideal = ideal_layout.size_that_fits(ProposalSize::UNSPECIFIED, &children);
+        assert!((initial_ideal.width - 90.0).abs() < f32::EPSILON);
+        assert!((initial_ideal.height - 45.0).abs() < f32::EPSILON);
+
+        ideal_w.set(160.0);
+        ideal_h.set(80.0);
+        let updated_ideal = ideal_layout.size_that_fits(ProposalSize::UNSPECIFIED, &children);
+        assert!((updated_ideal.width - 160.0).abs() < f32::EPSILON);
+        assert!((updated_ideal.height - 80.0).abs() < f32::EPSILON);
     }
 }

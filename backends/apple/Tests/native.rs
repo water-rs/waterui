@@ -290,6 +290,13 @@ fn chrome_trials() -> Vec<Trial> {
                 Ok(())
             },
         ),
+        Trial::test(
+            "menus::a_menu_command_with_a_pack_icon_renders_a_nonempty_nsmenu_image",
+            || {
+                menus::a_menu_command_with_a_pack_icon_renders_a_nonempty_nsmenu_image();
+                Ok(())
+            },
+        ),
         #[cfg(feature = "text_field")]
         Trial::test(
             "text_selection::a_selection_menu_command_edits_the_live_selection",
@@ -375,6 +382,7 @@ fn trials() -> Vec<Trial> {
             },
         ));
         tests.extend(tabs::trials());
+        tests.extend(menus_ios::trials());
         tests.extend(navigation::trials());
         tests.extend(controller_bounds::trials());
         // A Catalyst window carries no container bands, so the suite's
@@ -2562,6 +2570,144 @@ mod menus {
             })
             .collect();
         assert_eq!(enabled, [true, false, false, false]);
+    }
+
+    pub fn a_menu_command_with_a_pack_icon_renders_a_nonempty_nsmenu_image() {
+        use core::ptr::null_mut;
+
+        use cocoa_ui::objc2::Message;
+        use cocoa_ui::objc2_app_kit::NSPopUpButton;
+        use cocoa_ui::objc2_foundation::NSString;
+        use cocoa_ui::view::subviews;
+        use waterui::component::label::label;
+        use waterui::component::menu::{Command as MenuCommand, Menu as MenuView};
+        use waterui::prelude::button;
+        use waterui_icons_lucide as lucide;
+
+        fn find_popup(view: &crate::PlatformView) -> Option<crate::Retained<NSPopUpButton>> {
+            if let Some(button) = view.downcast_ref::<NSPopUpButton>() {
+                return Some(Message::retain(button));
+            }
+            subviews(view).into_iter().find_map(|sub| find_popup(&sub))
+        }
+
+        let leaf = crate::resolve::render(MenuView::new(
+            "Actions",
+            (
+                MenuCommand::builder(label("Delete").icon(lucide::trash())).action(|| {}),
+                button(label("Star").icon(lucide::star())).action(|| {}),
+            ),
+        ));
+        let popup = find_popup(leaf.view()).expect("Menu mounts an NSPopUpButton");
+        let native_menu = popup.menu().expect("Menu attaches an NSMenu");
+        for title in ["Delete", "Star"] {
+            let item = native_menu
+                .itemWithTitle(&NSString::from_str(title))
+                .expect("menu item exists");
+            let image = item
+                .image()
+                .expect("pack icon renders onto AppKit NSMenuItem");
+            assert!(image.isTemplate());
+            let size = image.size();
+            assert!(size.width > 0.0 && size.height > 0.0);
+            // SAFETY: null proposed rect retrieves the image's CGImage.
+            let cg = unsafe { image.CGImageForProposedRect_context_hints(null_mut(), None, None) }
+                .expect("NSImage yields a CGImage");
+            super::assert_menu_cgimage_nonempty(&cg);
+        }
+    }
+}
+
+#[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "native-test"))]
+fn assert_menu_cgimage_nonempty(cg: &cocoa_ui::objc2_core_graphics::CGImage) {
+    use cocoa_ui::Rect;
+    use cocoa_ui::bitmap::{bitmap_context, draw_image};
+    use cocoa_ui::objc2_core_graphics::CGImage;
+
+    let width = CGImage::width(Some(cg));
+    let height = CGImage::height(Some(cg));
+    assert!(
+        width > 0 && height > 0,
+        "nonzero menu icon {width}x{height}"
+    );
+    let mut pixels = vec![0_u8; width * height * 4];
+    let ctx =
+        bitmap_context(&mut pixels, width, height).expect("bitmap context creates for menu icon");
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "icon bitmap dimensions are small integer pixel counts"
+    )]
+    let rect = Rect::new(0.0, 0.0, width as f64, height as f64);
+    draw_image(&ctx, cg, rect);
+    assert!(
+        pixels.as_chunks::<4>().0.iter().any(|px| px[3] > 0),
+        "menu icon bitmap must draw at least one visible pixel"
+    );
+}
+
+#[cfg(all(target_os = "ios", feature = "native-test"))]
+mod menus_ios {
+    use cocoa_ui::objc2::Message;
+    use cocoa_ui::objc2_ui_kit::{UIAction, UIButton, UIImageRenderingMode};
+    use cocoa_ui::view::subviews;
+    use libtest_mimic::Trial;
+    use waterui::component::label::label;
+    use waterui::component::menu::{Command as MenuCommand, Menu as MenuView};
+    use waterui::prelude::button;
+    use waterui_icons_lucide as lucide;
+
+    pub fn trials() -> Vec<Trial> {
+        vec![Trial::test(
+            "menus::a_menu_command_with_a_pack_icon_renders_a_nonempty_uiaction_image",
+            || {
+                a_menu_command_with_a_pack_icon_renders_a_nonempty_uiaction_image();
+                Ok(())
+            },
+        )]
+    }
+
+    fn find_button(view: &crate::PlatformView) -> Option<crate::Retained<UIButton>> {
+        if let Some(button) = view.downcast_ref::<UIButton>() {
+            return Some(Message::retain(button));
+        }
+        subviews(view).into_iter().find_map(|sub| find_button(&sub))
+    }
+
+    fn a_menu_command_with_a_pack_icon_renders_a_nonempty_uiaction_image() {
+        let leaf = crate::resolve::render(MenuView::new(
+            "Actions",
+            (
+                MenuCommand::builder(label("Delete").icon(lucide::trash())).action(|| {}),
+                button(label("Star").icon(lucide::star())).action(|| {}),
+            ),
+        ));
+        let button = find_button(leaf.view()).expect("Menu mounts a UIButton");
+        let native_menu = button.menu().expect("UIButton attaches a UIMenu");
+        let actions: Vec<_> = native_menu
+            .children()
+            .iter()
+            .filter_map(|elem| elem.downcast::<UIAction>().ok())
+            .collect();
+        for title in ["Delete", "Star"] {
+            let action = actions
+                .iter()
+                .find(|a| a.title().to_string() == title)
+                .expect("UIAction item exists");
+            let image = action
+                .image()
+                .expect("pack icon renders onto UIKit UIAction");
+            // SAFETY: `renderingMode`, `size`, and `CGImage` are plain main-thread getters on UIImage.
+            let (rendering_mode, size, cg) = unsafe {
+                (
+                    image.renderingMode(),
+                    image.size(),
+                    image.CGImage().expect("UIImage yields a CGImage"),
+                )
+            };
+            assert_eq!(rendering_mode, UIImageRenderingMode::AlwaysTemplate);
+            assert!(size.width > 0.0 && size.height > 0.0);
+            super::assert_menu_cgimage_nonempty(&cg);
+        }
     }
 }
 
@@ -11330,6 +11476,7 @@ mod gesture_ax {
 /// a union of its descendants.
 #[cfg(target_os = "macos")]
 mod a11y_frame {
+    use cocoa_ui::accessibility as a11y;
     use cocoa_ui::appkit::{ColorView, ImageView, ScrollView};
     use cocoa_ui::geometry::{EdgeInsets as KitInsets, MeasureProposal};
     use cocoa_ui::objc2::runtime::ProtocolObject;
@@ -11354,6 +11501,7 @@ mod a11y_frame {
     use waterui_apple::SfSymbol;
     use waterui_apple::contract::NativeLeaf;
     use waterui_apple::dispatch;
+    use waterui_apple::native_test_support::pump_main_until;
     use waterui_backend_core::{AnyView, View};
     use waterui_core::layout::{LayoutDirection, Point, ProposalSize, Rect, Size};
 
@@ -12030,14 +12178,14 @@ mod a11y_frame {
             fn render(&mut self, frame: &mut Frame<'_>) {
                 let mut encoder =
                     frame
-                        .device
+                        .device()
                         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                             label: Some("a11y_frame gpu surface"),
                         });
                 drop(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("a11y_frame gpu surface"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: frame.view,
+                        view: frame.view(),
                         depth_slice: None,
                         resolve_target: None,
                         ops: wgpu::Operations {
@@ -12050,7 +12198,7 @@ mod a11y_frame {
                     occlusion_query_set: None,
                     multiview_mask: None,
                 }));
-                frame.queue.submit([encoder.finish()]);
+                frame.queue().submit([encoder.finish()]);
             }
 
             fn intrinsic_size(&self) -> Option<Size> {
@@ -12123,6 +12271,37 @@ mod a11y_frame {
         );
     }
 
+    /// `.a11y_hidden` tracks a reactive boolean signal without rebuilding.
+    fn reactive_a11y_hidden_updates_accessibility_element() {
+        let hidden = binding(true);
+        let (leaf, _window) = attached(
+            text("Greeting")
+                .a11y_label("Greeting")
+                .a11y_hidden(hidden.clone()),
+        );
+        let view = leaf.view();
+        let is_ax_element = || {
+            let ax: &ProtocolObject<dyn NSAccessibility> = ProtocolObject::from_ref(view);
+            a11y::is_element(ax)
+        };
+        assert!(
+            !is_ax_element(),
+            "a view starting a11y_hidden(true) must not be an accessibility element"
+        );
+
+        hidden.set(false);
+        assert!(
+            pump_main_until(5.0, is_ax_element),
+            "a11y_hidden flipping false must restore the accessibility element"
+        );
+
+        hidden.set(true);
+        assert!(
+            pump_main_until(5.0, || !is_ax_element()),
+            "a11y_hidden flipping true must hide the accessibility element again"
+        );
+    }
+
     /// One `a11y_frame::` trial: its name inside the module and its body.
     fn case(name: &str, body: fn()) -> (String, Box<dyn FnOnce() + Send>) {
         (format!("a11y_frame::{name}"), Box::new(body))
@@ -12166,6 +12345,7 @@ mod a11y_frame {
             case!(a_list_row_places_its_content_at_the_leading_edge),
             case!(a_right_to_left_list_row_places_its_content_at_the_trailing_edge),
             case!(a_host_view_reports_its_committed_response),
+            case!(reactive_a11y_hidden_updates_accessibility_element),
         ];
         #[cfg(feature = "plain")]
         cases.push(case!(a_plain_label_draws_and_reports_its_response));
@@ -12899,14 +13079,13 @@ mod gesture_events {
         NSRotationGestureRecognizer,
     };
     use cocoa_ui::objc2_foundation::NSPoint;
-    use waterui::ViewExt as _;
-    use waterui::gesture::{Gesture, GesturePhase};
     use waterui::gesture::{
-        MagnificationEvent, MagnificationGesture, PointerButton, RotationEvent, RotationGesture,
-        TapEvent, TapGesture,
+        Gesture, GestureEvent, GesturePhase, MagnificationEvent, MagnificationGesture,
+        PointerButton, RotationEvent, RotationGesture, TapEvent, TapGesture,
     };
     use waterui::layout::Point;
     use waterui::prelude::text;
+    use waterui::{State, ViewExt as _};
 
     use super::{resolve, trial_each};
 
@@ -12924,7 +13103,7 @@ mod gesture_events {
             let gestures = Rc::clone(&gestures);
             text("tap").gesture(
                 TapGesture::new(),
-                move |event: TapEvent, gesture: Gesture| {
+                move |event: TapEvent, State(gesture): State<Gesture>| {
                     taps.borrow_mut().push(event);
                     gestures.borrow_mut().push(gesture);
                 },
@@ -13316,7 +13495,10 @@ mod gesture_events {
             let gestures = Rc::clone(&gestures);
             text("then").gesture(
                 Gesture::Tap(TapGesture::new()).then(RotationGesture::new(0.0)),
-                move |event: RotationEvent, gesture: Gesture| {
+                move |event: GestureEvent, State(gesture): State<Gesture>| {
+                    let GestureEvent::Rotation(event) = event else {
+                        panic!("expected RotationEvent from Then(Tap, Rotation), got {event:?}");
+                    };
                     events.borrow_mut().push(event);
                     gestures.borrow_mut().push(gesture);
                 },

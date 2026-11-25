@@ -10,8 +10,6 @@ use accesskit::{
 use cherenkov_record::Draw as _;
 use nami::SignalExt as _;
 use nami::watcher::BoxWatcherGuard;
-#[cfg(feature = "accessibility")]
-use waterui::accessibility::AccessibilityHidden;
 use waterui::component::table::{SortDirection, TableConfig, TableRow, TableSelection, TableSort};
 use waterui::theme::color;
 use waterui_core::Environment;
@@ -850,9 +848,7 @@ pub fn render_table_node<E: crate::text::TextEngine>(
     env: &Environment,
 ) {
     #[cfg(feature = "accessibility")]
-    let hidden = env
-        .get::<AccessibilityHidden>()
-        .is_some_and(AccessibilityHidden::is_hidden);
+    let hidden = ctx.renderer_mut().is_accessibility_hidden(env);
     #[cfg(feature = "accessibility")]
     if hidden {
         ctx.renderer_mut().push_accessibility_suppression();
@@ -1296,5 +1292,12 @@ pub fn emit_table_accessibility<E: crate::text::TextEngine>(
     state: &Rc<RefCell<TableRenderState<E>>>,
     env: &Environment,
 ) {
+    let hidden = renderer.is_accessibility_hidden(env);
+    if hidden {
+        renderer.push_accessibility_suppression();
+    }
     table_accessibility(renderer, None, None, state, env);
+    if hidden {
+        renderer.pop_accessibility_suppression();
+    }
 }

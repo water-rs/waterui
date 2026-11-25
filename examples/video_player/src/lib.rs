@@ -2,7 +2,7 @@
 //!
 //! This example showcases:
 //! - `VideoPlayer` driven by a reactive `Url` source
-//! - Buffering / playback status surfaced from `video::Event`
+//! - Buffering / playback status surfaced from `VideoEvent`
 //! - Source switching via selector pills
 //!
 //! ## Native vs self-rendered playback
@@ -90,49 +90,49 @@ pub fn demo() -> impl View {
             let status = status.clone();
             let is_buffering = is_buffering.clone();
             move |event| match event {
-                video::Event::ReadyToPlay | video::Event::BufferingEnded => {
+                VideoEvent::ReadyToPlay | VideoEvent::BufferingEnded => {
                     is_buffering.set(false);
                     status.set(Str::from_static("Ready"));
                 }
-                video::Event::Buffering => {
+                VideoEvent::Buffering => {
                     is_buffering.set(true);
                     status.set(Str::from_static("Buffering..."));
                 }
-                video::Event::PlaybackStateChanged { playing } => {
+                VideoEvent::PlaybackStateChanged { playing } => {
                     status.set(if playing {
                         Str::from_static("Playing")
                     } else {
                         Str::from_static("Paused")
                     });
                 }
-                video::Event::PictureInPictureChanged { active } => {
+                VideoEvent::PictureInPictureChanged { active } => {
                     status.set(if active {
                         Str::from_static("Picture in Picture")
                     } else {
                         Str::from_static("Inline Playback")
                     });
                 }
-                video::Event::ExternalPlaybackChanged { active } => {
+                VideoEvent::ExternalPlaybackChanged { active } => {
                     status.set(if active {
                         Str::from_static("External Playback")
                     } else {
                         Str::from_static("Local Playback")
                     });
                 }
-                video::Event::PlaybackOutputPathChanged { path } => {
+                VideoEvent::PlaybackOutputPathChanged { path } => {
                     status.set(format!("Output: {path:?}").into());
                 }
-                video::Event::TimedMetadata { .. } => {
+                VideoEvent::TimedMetadata { .. } => {
                     status.set(Str::from_static("Timed Metadata"));
                 }
-                video::Event::OfflineDrmKeySetChanged { .. } => {
+                VideoEvent::OfflineDrmKeySetChanged { .. } => {
                     status.set(Str::from_static("Offline DRM Key Updated"));
                 }
-                video::Event::Ended => {
+                VideoEvent::Ended => {
                     is_buffering.set(false);
                     status.set(Str::from_static("Ended"));
                 }
-                video::Event::Error { message } => {
+                VideoEvent::Error { message } => {
                     is_buffering.set(false);
                     status.set(format!("Error: {message}").into());
                 }
@@ -176,25 +176,25 @@ impl View for PreviewPlayer {
             .on_event({
                 let status = status.clone();
                 move |event| match event {
-                    video::Event::ReadyToPlay => {
+                    VideoEvent::ReadyToPlay => {
                         if let Some(owed) = owed.borrow_mut().take() {
                             owed.fulfil();
                         }
                         status.set(Str::from_static("Ready"));
                     }
-                    video::Event::Error { message } => {
+                    VideoEvent::Error { message } => {
                         if let Some(owed) = owed.borrow_mut().take() {
                             owed.fail(PlaybackFailed(message.clone()));
                         }
                         status.set(format!("Error: {message}").into());
                     }
-                    video::Event::Buffering => {
+                    VideoEvent::Buffering => {
                         status.set(Str::from_static("Buffering..."));
                     }
-                    video::Event::BufferingEnded => {
+                    VideoEvent::BufferingEnded => {
                         status.set(Str::from_static("Ready"));
                     }
-                    video::Event::PlaybackStateChanged { playing } => {
+                    VideoEvent::PlaybackStateChanged { playing } => {
                         status.set(if playing {
                             Str::from_static("Playing")
                         } else {

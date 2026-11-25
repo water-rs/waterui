@@ -81,20 +81,20 @@ All media components integrate with `WaterUI`'s reactive system via `Binding` an
 
 ### Photo with Loading Events
 
-`Event::Loaded` fires once the picture is actually on screen — when the
+`PhotoEvent::Loaded` fires once the picture is actually on screen — when the
 final decoded frame's registration with the scene backend settles. A frame
 the backend refuses (over its image limits or image budget) reports
-`Event::Error` instead, never `Loaded`.
+`PhotoEvent::Error` instead, never `Loaded`.
 
 ```rust
-use waterui_media::{Photo, photo::Event, Url};
+use waterui_media::{Photo, PhotoEvent, Url};
 
 let photo = Photo::new(Url::new("https://assets.waterui.dev/images/logo.png"))
     .on_event(|event| {
         match event {
-            Event::Loaded => tracing::debug!("Image loaded successfully"),
-            Event::Error(msg) => tracing::debug!("Failed to load: {}", msg),
-            // `Event` is `#[non_exhaustive]`: later releases may add events.
+            PhotoEvent::Loaded => tracing::debug!("Image loaded successfully"),
+            PhotoEvent::Error(msg) => tracing::debug!("Failed to load: {}", msg),
+            // `PhotoEvent` is `#[non_exhaustive]`: later releases may add events.
             _ => {}
         }
     });
@@ -204,7 +204,7 @@ let video = Media::Video(Url::new(
 - `LivePhotoSource` - Pairing of image and video URLs for Live Photos
 - `video::ContentMode` - How the picture fills its bounds: Fit, Fill, Stretch
 - `Volume` - f32 type with special encoding for mute state
-- `Event` - Photo and video event types (loaded, error, buffering, etc.)
+- `PhotoEvent`, `VideoEvent`, `LivePhotoEvent` - Media event types (loaded, error, buffering, motion, etc.)
 - `MediaFilter` - Filters for media picker (Image, Video, `LivePhoto`, combinators)
 - `Selected` - Selected media item with async loading capability
 

@@ -8,6 +8,8 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
+#[cfg(feature = "image")]
+use crate::Url;
 use crate::metadata::secure::DynamicRange;
 use crate::prelude::*;
 use crate::theme::color::{MutedForeground, SurfaceVariant};

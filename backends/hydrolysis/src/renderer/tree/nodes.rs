@@ -1736,10 +1736,10 @@ pub struct GpuContentNode<E: crate::text::TextEngine> {
 #[cfg(hydrolysis_gpu)]
 impl<E: crate::text::TextEngine> GpuContentNode<E> {
     /// The leaf's live measure under `proposal` — the `measure_body`
-    /// arm's own call. [`GpuView::measure`] asks the content
+    /// arm's own call. [`GpuContentLeaf::measure`] asks the content
     /// itself, so a source whose size resolves after mount answers its
     /// new natural size instead of the `intrinsic_size` snapshot
-    /// [`GpuView::new`] took (water-rs/waterui#1958).
+    /// `GpuView::new` took (water-rs/waterui#1958).
     pub(super) fn intrinsic_dimensions(&self, proposal: ProposalSize) -> ViewDimensions {
         self.runtime.borrow().view.measure(proposal)
     }
@@ -2140,10 +2140,7 @@ impl<E: crate::text::TextEngine> TextNode<E> {
         styled: &StyledStr,
         env: &Environment,
     ) -> Option<AccessibilityNodeId> {
-        if env
-            .get::<AccessibilityHidden>()
-            .is_some_and(AccessibilityHidden::is_hidden)
-        {
+        if renderer.is_accessibility_hidden(env) {
             return None;
         }
         let plain = styled.to_semantic().to_string();
@@ -2186,11 +2183,7 @@ impl<E: crate::text::TextEngine> TextNode<E> {
         env: &Environment,
         parent: Option<AccessibilityNodeId>,
     ) {
-        if tap_spans.is_empty()
-            || env
-                .get::<AccessibilityHidden>()
-                .is_some_and(AccessibilityHidden::is_hidden)
-        {
+        if tap_spans.is_empty() || renderer.is_accessibility_hidden(env) {
             return;
         }
         let disabled = env
@@ -2374,10 +2367,7 @@ pub(super) fn emit_graphics_image_accessibility<E: crate::text::TextEngine>(
     default_value: Option<String>,
     focusable: bool,
 ) -> Option<AccessibilityNodeId> {
-    if env
-        .get::<AccessibilityHidden>()
-        .is_some_and(AccessibilityHidden::is_hidden)
-    {
+    if renderer.is_accessibility_hidden(env) {
         return None;
     }
     let mut node = AccessibilityNode::new(SemanticCore::<E>::resolve_accessibility_role(

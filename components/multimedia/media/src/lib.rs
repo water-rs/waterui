@@ -78,11 +78,13 @@ pub mod video {
 pub use media_picker::MediaPicker;
 #[cfg(feature = "video")]
 pub use {
-    live::LivePhoto,
-    // `ContentMode` is deliberately not re-exported unqualified: the layout crate
-    // owns that name in the prelude for its ratio-box fill mode. Video's own
-    // gravity mode stays at `media::video::ContentMode`.
-    video::{Event, SubtitleSelection, Video, VideoConfig, VideoPlayer, VideoPlayerConfig, Volume},
+    live::{LivePhoto, LivePhotoEvent},
+    // `ContentMode` is deliberately not re-exported unqualified: video's own
+    // gravity mode stays at `media::video::ContentMode` so it stays distinct
+    // from layout and image `ContentMode`.
+    video::{
+        SubtitleSelection, Video, VideoConfig, VideoEvent, VideoPlayer, VideoPlayerConfig, Volume,
+    },
     waterui_video::{
         Delivery, MediaItem, MediaItemId, PlaybackError, PlaybackPhase, PlaybackSession,
         PlayerController, Playlist, RepeatMode, SubtitleTrack, video_player,
@@ -90,8 +92,8 @@ pub use {
 };
 pub use {
     photo::{
-        FailureSlot, IntoPhotoSource, Photo, PhotoCache, PhotoSource, PhotoStatus, PlaceholderSlot,
-        ResolvePhotoUrl, photo,
+        FailureSlot, IntoPhotoSource, Photo, PhotoCache, PhotoEvent, PhotoSource, PhotoStatus,
+        PlaceholderSlot, ResolvePhotoUrl, photo,
     },
     waterui_image::Image,
 };

@@ -46,7 +46,7 @@ impl GpuContent for SolidClearRenderer {
 
     fn render(&mut self, frame: &mut GpuFrame<'_>) {
         let mut encoder = frame
-            .device
+            .device()
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("hydrolysis_ext_gpu_surface_test_encoder"),
             });
@@ -54,7 +54,7 @@ impl GpuContent for SolidClearRenderer {
             let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("hydrolysis_ext_gpu_surface_test_pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: frame.view,
+                    view: frame.view(),
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -68,7 +68,7 @@ impl GpuContent for SolidClearRenderer {
                 multiview_mask: None,
             });
         }
-        frame.queue.submit([encoder.finish()]);
+        frame.queue().submit([encoder.finish()]);
     }
 }
 
@@ -84,7 +84,7 @@ impl GpuContent for CountingClearRenderer {
     fn render(&mut self, frame: &mut GpuFrame<'_>) {
         self.calls.fetch_add(1, Ordering::Relaxed);
         let mut encoder = frame
-            .device
+            .device()
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("hydrolysis_ext_counting_gpu_surface_test_encoder"),
             });
@@ -92,7 +92,7 @@ impl GpuContent for CountingClearRenderer {
             let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("hydrolysis_ext_counting_gpu_surface_test_pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: frame.view,
+                    view: frame.view(),
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -106,7 +106,7 @@ impl GpuContent for CountingClearRenderer {
                 multiview_mask: None,
             });
         }
-        frame.queue.submit([encoder.finish()]);
+        frame.queue().submit([encoder.finish()]);
     }
 }
 

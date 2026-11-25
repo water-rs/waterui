@@ -4,12 +4,13 @@ Procedural macros for the `WaterUI` framework, providing automatic derive implem
 
 ## Overview
 
-This crate is the macro engine behind `WaterUI`'s ergonomic APIs. It provides four main categories of macros:
+This crate is the macro engine behind `WaterUI`'s ergonomic APIs. It provides three main categories of macros:
 
 1. **Form Generation** - Automatically generate UI forms from Rust structs with `#[derive(FormBuilder)]` and `#[form]`
-2. **Reactive Projections** - Decompose struct bindings into per-field bindings with `#[derive(Project)]`
-3. **Preview** - Enable instant view previews with `#[preview]`
-4. **UI Testing** - Build accessibility-first unit tests with `#[waterui::test(view_fn)]`
+2. **Preview** - Enable instant view previews with `#[preview]`
+3. **UI Testing** - Build accessibility-first unit tests with `#[waterui::test(view_fn)]`
+
+`#[derive(Project)]` is provided directly by `nami` and re-exported uniformly through `waterui::Project`, `waterui::prelude::Project`, and `waterui::reactive::Project`.
 
 This crate is typically accessed through the main `waterui` crate via `use waterui::prelude::*;` rather than being used directly.
 
@@ -120,50 +121,7 @@ struct AppSettings {
 
 ### Reactive Projection
 
-#### `#[derive(Project)]`
-
-Implements the `Project` trait, enabling decomposition of struct bindings into separate bindings for each field. This is essential for reactive form handling where each field needs independent mutation.
-
-**Supports:**
-
-- Named structs
-- Tuple structs
-- Unit structs
-
-**Example from `derive/src/lib.rs` documentation:**
-
-```rust
-use waterui::Signal;
-use waterui::reactive::{Binding, binding, project::Project};
-use waterui_macros::Project;
-
-#[derive(Project, Clone)]
-struct Person {
-    name: String,
-    age: u32,
-}
-
-let person_binding: Binding<Person> = binding(Person {
-    name: "Alice".to_string(),
-    age: 30,
-});
-
-let projected = person_binding.project();
-projected.name.set("Bob".to_string());
-projected.age.set(25u32);
-
-let person = person_binding.snapshot();
-assert_eq!(person.name, "Bob");
-assert_eq!(person.age, 25);
-```
-
-**Generated code:**
-
-For a struct `MyForm`, the macro generates:
-
-1. A `MyFormProjected` struct with each field wrapped in `Binding<T>`
-2. A `Project` implementation that creates mapped bindings for each field
-3. Proper lifetime bounds (`'static`) on generic parameters
+`#[derive(Project)]` is defined by `nami-derive` and re-exported identically at `waterui::Project`, `waterui::prelude::Project`, and `waterui::reactive::Project`. Each projected field keeps its source field's visibility.
 
 ### Preview
 
@@ -254,7 +212,6 @@ Requirements:
 ### Derive Macros
 
 - **`FormBuilder`** - Generate form UI from struct definition
-- **`Project`** - Enable field-level reactive bindings
 
 ### Attribute Macros
 
@@ -284,7 +241,6 @@ This is a proc-macro crate with no optional features. All macros are always avai
 The macros perform extensive compile-time validation:
 
 - `FormBuilder`: Requires named struct fields
-- `Project`: Rejects enums and unions (only works with structs)
 - `form`: Requires structs with named fields
 
 ### Code Generation Strategy
@@ -294,12 +250,6 @@ The macros perform extensive compile-time validation:
 - Generates type-safe view types using the builder pattern
 - Uses `Quote::quote!` for generating trait implementations
 - Automatically handles `Project` trait bounds for field access
-
-**Project:**
-
-- Creates a parallel struct with `Projected` suffix
-- Uses `Binding::mapping` for bidirectional field synchronization
-- Adds `'static` bounds to generic parameters
 
 **String Formatting:**
 

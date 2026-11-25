@@ -65,3 +65,5 @@ pub use crate::effects::filter_view::ErasedEffect;
 pub use crate::effects::filter_view::{
     AnyEffect, FilterDescription, FilterSignal, FilteredView, OutputSize, ParamGuards, Reactive,
 };
+#[cfg(feature = "gpu")]
+pub use crate::gpu::leaf::GpuContentLeaf;

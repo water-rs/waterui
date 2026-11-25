@@ -13,10 +13,10 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context as TaskContext, Waker};
 
 use cherenkov::{Display, FrameTime, Next};
+use waterui_graphics::backend::GpuContentLeaf;
 use waterui_graphics::gpu::interop::GpuContentBox;
 use waterui_graphics::gpu::{
-    Context, Frame, GpuContent, GpuContentRenderer, GpuRuntime, GpuView, HostedFrame, RedrawHandle,
-    wgpu,
+    Context, Frame, GpuContent, GpuContentRenderer, GpuRuntime, HostedFrame, RedrawHandle, wgpu,
 };
 use waterui_graphics::offscreen::OffscreenSize;
 
@@ -108,7 +108,7 @@ impl Fixture {
         let gates = Arc::new(Mutex::new(Vec::new()));
         let redraws = Arc::new(AtomicUsize::new(0));
         let content = GpuContentBox::new(
-            GpuView::new(Gated {
+            GpuContentLeaf::new(Gated {
                 seen: Arc::clone(&seen),
                 gates: Arc::clone(&gates),
             })

@@ -19,7 +19,7 @@ use kurbo::RoundedRectRadii;
 use nami::Signal as _;
 use waterui::accessibility::AccessibilityRole;
 use waterui::animation::Animation;
-use waterui::gesture::TapGesture;
+use waterui::gesture::{TapEvent, TapGesture};
 use waterui::{AnyView, Color, ViewExt as _};
 use waterui_core::Environment;
 use waterui_core::handler::AnyViewBuilder;
@@ -41,7 +41,7 @@ fn tap_view() -> AnyView {
             AnyView::new(
                 Color::srgb_hex("#3F3F46")
                     .width(20.0)
-                    .gesture(TapGesture::new(), || {})
+                    .gesture(TapGesture::new(), |_: TapEvent| {})
                     .a11y_role(AccessibilityRole::Button),
             ),
             AnyView::new(Color::srgb_hex("#27272A")),
@@ -161,7 +161,7 @@ fn surface_radii_morph_with_reported_state() {
             AnyView::new(
                 Color::srgb_hex("#3F3F46")
                     .width(40.0)
-                    .gesture(TapGesture::new(), || {})
+                    .gesture(TapGesture::new(), |_: TapEvent| {})
                     .a11y_role(AccessibilityRole::Button),
             ),
             AnyView::new(Color::srgb_hex("#27272A")),
@@ -230,7 +230,7 @@ fn interaction_report_follows_hover_and_press() {
             AnyView::new(
                 Color::srgb_hex("#3F3F46")
                     .width(20.0)
-                    .gesture(TapGesture::new(), || {})
+                    .gesture(TapGesture::new(), |_: TapEvent| {})
                     .interaction_state(&report),
             ),
             AnyView::new(Color::srgb_hex("#27272A")),
@@ -271,7 +271,7 @@ fn selected_adds_selected_to_reported_state() {
             AnyView::new(
                 Color::srgb_hex("#3F3F46")
                     .width(20.0)
-                    .gesture(TapGesture::new(), || {})
+                    .gesture(TapGesture::new(), |_: TapEvent| {})
                     .selected(true)
                     .interaction_state(&report),
             ),
@@ -356,7 +356,7 @@ fn selected_sets_the_accessibility_selected_trait() {
             AnyView::new(
                 Color::srgb_hex("#3F3F46")
                     .width(20.0)
-                    .gesture(TapGesture::new(), || {})
+                    .gesture(TapGesture::new(), |_: TapEvent| {})
                     .a11y_role(AccessibilityRole::Button)
                     .a11y_label("handle")
                     .selected(true),
