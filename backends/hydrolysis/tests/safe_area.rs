@@ -2061,7 +2061,8 @@ fn chrome_surface_extension_captures() {
                             button("Mark All").action(|| {}),
                         )),
                 )
-                .searchable(&query, "Search mail"),
+                .searchable(&query)
+                .search_prompt("Search mail"),
             )
         },
         390,

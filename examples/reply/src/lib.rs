@@ -221,7 +221,8 @@ fn inbox(
     List::for_each(visible, thread_row)
         .selection(selected)
         .navigation_title("Inbox")
-        .searchable(query, "Search replies")
+        .searchable(query)
+        .search_prompt("Search replies")
         .navigation_toolbar(
             NavigationToolbar::default()
                 .item(NavigationToolbarItem::action(

@@ -384,7 +384,8 @@ fn detail_view(
     ))
     .background(Material::Regular)
     .navigation_title(dest.title())
-    .searchable(search, "Search reminders")
+    .searchable(search)
+    .search_prompt("Search reminders")
     .navigation_toolbar(NavigationToolbar::new(vec![NavigationToolbarItem::action(
         NavigationToolbarPlacement::PrimaryAction,
         label("").icon(plus()),
