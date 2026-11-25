@@ -4290,7 +4290,6 @@ version = "0.1.0"
 dependencies = [
  "waterui",
  "waterui-core",
- "web-time",
 ]
 
 [[package]]
@@ -13249,6 +13248,9 @@ dependencies = [
 [[package]]
 name = "waterui-easing"
 version = "0.5.1"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "waterui-form"
@@ -13596,12 +13598,14 @@ dependencies = [
  "suiteki",
  "waterkit-location",
  "waterui-core",
+ "waterui-locale",
+ "waterui-text",
 ]
 
 [[package]]
 name = "waterui-map-gpu"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/map-gpu?branch=main#937bd2e0b806d3b01d344b46086b185d89a45afd"
+source = "git+https://github.com/water-rs/map-gpu?branch=main#9a1c91e5dc90a1145324983932811f4f7739ad3e"
 dependencies = [
  "arc-swap",
  "blocking",

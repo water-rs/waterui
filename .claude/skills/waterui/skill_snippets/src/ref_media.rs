@@ -922,20 +922,20 @@ pub fn media_map_prose() -> impl View {
 // media.md writes `waterui_url::Url` qualified to show which crate owns it.
 #[allow(unknown_lints, qualified_waterui_path)]
 pub fn media_block_15(mut env: Environment) {
-    use waterui_map_gpu::MapGpuOptions;
-    env.insert(MapGpuOptions::new(waterui_url::Url::new(
+    use waterui_map_gpu::MapGpu;
+    env.install(MapGpu::new(waterui_url::Url::new(
         "https://tiles.openfreemap.org/styles/positron",
     )));
 }
 
 // ---------------------------------------------------------------------------
-// media.md § "## Data: charts and maps" (prose): `MapGpuOptions::
+// media.md § "## Data: charts and maps" (prose): `MapGpu::
 // satellite_style_url` / `hybrid_style_url`. Not counted as a rust block.
 // ---------------------------------------------------------------------------
-pub fn media_map_gpu_styles_prose() -> waterui_map_gpu::MapGpuOptions {
-    use waterui_map_gpu::MapGpuOptions;
+pub fn media_map_gpu_styles_prose() -> waterui_map_gpu::MapGpu {
+    use waterui_map_gpu::MapGpu;
 
-    MapGpuOptions::new(waterui_url::Url::new(
+    MapGpu::new(waterui_url::Url::new(
         "https://tiles.openfreemap.org/styles/positron",
     ))
     .satellite_style_url(waterui_url::Url::new(

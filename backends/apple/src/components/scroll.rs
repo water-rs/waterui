@@ -20,7 +20,6 @@ use alloc::rc::Rc;
 use core::cell::Cell;
 
 use cocoa_ui::{MainThreadMarker, Retained};
-use waterui::animation::Animation;
 use waterui::layout::scroll::{
     Axis, ScrollController, ScrollPosition, ScrollRequest, ScrollView, scroll_stretch_axis,
 };
@@ -398,7 +397,7 @@ fn clamped_offset(scroll: &ScrollSurface, target: Point) -> cocoa_ui::Point {
 }
 
 /// `UIKit`: applies a controller request — `None` is the jump it always
-/// was, `Animation::Default` is `UIKit`'s own animated `contentOffset`
+/// was, `Animation::DEFAULT` is `UIKit`'s own animated `contentOffset`
 /// write, and an explicit animation drives the offset on the frame clock,
 /// writing the model along the core curve each tick. The clamped target
 /// is the jump's, so the flight lands where it would have.
@@ -414,7 +413,7 @@ fn apply_scroll_request(scroll: &ScrollSurface, request: &ScrollRequest<Point>) 
     let offset = clamped_offset(scroll, *request.target());
     match request.animation() {
         None => scroll.set_content_offset(offset, false),
-        Some(Animation::Default) => scroll.set_content_offset(offset, true),
+        Some(animation) if animation.is_default() => scroll.set_content_offset(offset, true),
         Some(animation) => scroll.animate_content_offset(
             offset,
             animation.duration().as_secs_f64(),
@@ -425,7 +424,7 @@ fn apply_scroll_request(scroll: &ScrollSurface, request: &ScrollRequest<Point>) 
 
 /// `AppKit`: applies a controller request, its target relative to the inset
 /// content edge like `UIKit`'s — `None` jumps the clip view as
-/// `applyScrollControllerTarget` did, `Animation::Default` plays the
+/// `applyScrollControllerTarget` did, `Animation::DEFAULT` plays the
 /// system's animated scroll (`boundsOrigin` through the clip's animator
 /// proxy in an `NSAnimationContext` group, the `AppKit` counterpart of
 /// `setContentOffset(_:animated: true)`), and an explicit animation drives
@@ -445,7 +444,7 @@ fn apply_scroll_request(scroll: &ScrollSurface, request: &ScrollRequest<Point>) 
     let target = raw_content_offset(*request.target(), scroll.adjusted_content_inset());
     match request.animation().as_ref() {
         None => scroll.scroll_to(target),
-        Some(Animation::Default) => scroll.scroll_to_animated(target),
+        Some(animation) if animation.is_default() => scroll.scroll_to_animated(target),
         Some(animation) => scroll.animate_scroll_to(
             target,
             animation.duration().as_secs_f64(),

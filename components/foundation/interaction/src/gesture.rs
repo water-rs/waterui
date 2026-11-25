@@ -52,8 +52,8 @@ use alloc::boxed::Box;
 use core::{fmt, num::NonZeroU32, time::Duration};
 
 use waterui_core::{
-    Environment, Error,
-    extract::{ExtractionState, Extractor, State},
+    Environment,
+    extract::State,
     handler::{
         BoxedAction, EventHandler, ExtractionError, Handler, boxed_action, boxed_event_handler,
     },
@@ -940,22 +940,16 @@ impl GestureObserver {
     ///     |_: TapEvent, State(counter): State<Binding<i32>>| *counter.get_mut() += 1,
     /// );
     /// ```
-    /// Temporary Step 1 implementation keeping `waterui-map-gpu` and
-    /// `waterui-video-gpu` compiling until they migrate to typed gesture args;
-    /// Step 3 switches `new` to [`Self::from_event`]'s typed signature.
+    /// Passing a handler expecting another gesture's event type fails to
+    /// compile:
+    ///
+    /// ```compile_fail
+    /// use waterui_interaction::gesture::{DragEvent, GestureObserver, TapGesture};
+    ///
+    /// let _ = GestureObserver::new(TapGesture::new(), |_: DragEvent| {});
+    /// ```
     #[must_use]
-    pub fn new<Args>(gesture: impl Into<Gesture>, action: impl Handler<Args, ()>) -> Self {
-        Self {
-            gesture: gesture.into(),
-            action: boxed_action(action),
-        }
-    }
-
-    /// Creates a gesture observer for `gesture` whose handler consumes
-    /// `G::Event` as its first argument, followed by environment extractors.
-    #[doc(hidden)]
-    #[must_use]
-    pub fn from_event<G, H, Args>(gesture: G, action: H) -> Self
+    pub fn new<G, H, Args>(gesture: G, action: H) -> Self
     where
         G: GestureType,
         H: EventHandler<G::Event, Args>,
@@ -981,60 +975,6 @@ impl GestureObserver {
             gesture: gesture.into(),
             action: boxed_action(action),
         }
-    }
-}
-
-macro_rules! impl_state_extractor {
-    ($($ty:ty),+ $(,)?) => {
-        $(
-            #[doc(hidden)]
-            impl Extractor for $ty {
-                fn extract(env: &Environment) -> Result<Self, Error> {
-                    State::<Self>::extract(env).map(|State(value)| value)
-                }
-
-                fn extract_from_action(
-                    env: &Environment,
-                    state: &mut ExtractionState,
-                ) -> Result<Self, Error> {
-                    State::<Self>::extract_from_action(env, state).map(|State(value)| value)
-                }
-            }
-        )+
-    };
-}
-
-// Temporary Step 1 bridge for `water-rs/chart`, `water-rs/map-gpu`, and
-// `water-rs/video-gpu` until Step 2 migrates them to typed `GestureObserver::new`.
-impl_state_extractor!(
-    TapEvent,
-    LongPressEvent,
-    DragEvent,
-    MagnificationEvent,
-    RotationEvent,
-    Gesture,
-);
-
-#[doc(hidden)]
-impl Extractor for GestureEvent {
-    fn extract(env: &Environment) -> Result<Self, Error> {
-        if let Ok(State(event)) = State::<TapEvent>::extract(env) {
-            return Ok(Self::Tap(event));
-        }
-        if let Ok(State(event)) = State::<LongPressEvent>::extract(env) {
-            return Ok(Self::LongPress(event));
-        }
-        if let Ok(State(event)) = State::<DragEvent>::extract(env) {
-            return Ok(Self::Drag(event));
-        }
-        if let Ok(State(event)) = State::<MagnificationEvent>::extract(env) {
-            return Ok(Self::Magnification(event));
-        }
-        State::<RotationEvent>::extract(env).map(|State(event)| Self::Rotation(event))
-    }
-
-    fn extract_from_action(env: &Environment, _state: &mut ExtractionState) -> Result<Self, Error> {
-        Self::extract(env)
     }
 }
 
@@ -1094,7 +1034,7 @@ mod tests {
         use core::cell::RefCell;
 
         let tap_loc = Rc::new(RefCell::new(None));
-        let tap_observer = GestureObserver::from_event(TapGesture::new(), {
+        let tap_observer = GestureObserver::new(TapGesture::new(), {
             let tap_loc = Rc::clone(&tap_loc);
             move |tap: TapEvent| *tap_loc.borrow_mut() = Some(tap.location())
         });
@@ -1108,7 +1048,7 @@ mod tests {
         assert_eq!(*tap_loc.borrow(), Some(Point::new(10.0, 20.0)));
 
         let composite_events = Rc::new(RefCell::new(Vec::new()));
-        let composite_observer = GestureObserver::from_event(Gesture::from(TapGesture::new()), {
+        let composite_observer = GestureObserver::new(Gesture::from(TapGesture::new()), {
             let composite_events = Rc::clone(&composite_events);
             move |event: GestureEvent| composite_events.borrow_mut().push(event)
         });

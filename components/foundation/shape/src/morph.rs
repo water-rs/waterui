@@ -10,7 +10,7 @@
 use core::time::Duration;
 
 use nami::{Computed, SignalExt as _, signal::IntoComputed};
-use waterui_core::easing::EasingCurve;
+use waterui_core::animation::{Animation, Repeat};
 use waterui_core::layout::{Point, Size};
 use waterui_core::{Environment, View, contract_violation};
 use waterui_graphics::canvas::{Canvas, Path, PathBuilder};
@@ -152,98 +152,10 @@ impl Silhouette {
     }
 }
 
-/// Configuration for shape morph animations.
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[non_exhaustive]
-pub struct MorphAnimation {
-    /// Duration of one forward morph cycle.
-    duration: Duration,
-    /// Easing curve applied to normalized cycle progress.
-    easing: EasingCurve,
-    /// Whether the animation repeats after reaching the end.
-    repeat: bool,
-    /// Whether repeating animation should play in reverse every other cycle.
-    autoreverse: bool,
-}
-
-impl MorphAnimation {
-    /// Duration of one forward morph cycle.
-    #[must_use]
-    pub const fn duration(&self) -> Duration {
-        self.duration
-    }
-
-    /// Easing curve applied to normalized cycle progress.
-    #[must_use]
-    pub const fn easing(&self) -> EasingCurve {
-        self.easing
-    }
-
-    /// Whether the animation repeats after reaching the end.
-    #[must_use]
-    pub const fn repeat(&self) -> bool {
-        self.repeat
-    }
-
-    /// Whether repeating animation should play in reverse every other cycle.
-    #[must_use]
-    pub const fn autoreverse(&self) -> bool {
-        self.autoreverse
-    }
-}
-
-impl Default for MorphAnimation {
-    fn default() -> Self {
-        Self {
-            duration: Duration::from_millis(900),
-            easing: EasingCurve::EASE_IN_OUT,
-            repeat: true,
-            autoreverse: true,
-        }
-    }
-}
-
-impl MorphAnimation {
-    /// Creates a one-shot morph animation.
-    #[must_use]
-    pub const fn once(duration: Duration, easing: EasingCurve) -> Self {
-        Self {
-            duration,
-            easing,
-            repeat: false,
-            autoreverse: false,
-        }
-    }
-
-    /// The eased progress `elapsed` after the animation started.
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "the morph progress is an f32 operand; the eased cycle lies in [0, 1]"
-    )]
-    fn sample(self, elapsed: Duration) -> f32 {
-        if self.duration.is_zero() {
-            return 1.0;
-        }
-        let raw = elapsed.as_secs_f64() / self.duration.as_secs_f64();
-        let cycle = if self.repeat {
-            let base = raw.fract();
-            // The cycle index is a whole number: odd cycles run backwards.
-            if self.autoreverse && raw.floor().rem_euclid(2.0) > 0.5 {
-                1.0 - base
-            } else {
-                base
-            }
-        } else {
-            raw.clamp(0.0, 1.0)
-        };
-        self.easing.ease(cycle).clamp(0.0, 1.0) as f32
-    }
-}
-
 /// A morphing filled shape view.
 ///
-/// Its progress follows an explicit signal, or the canvas clock through the
-/// [`MorphAnimation`]. The silhouette is one live path operand of a
+/// Its progress follows an explicit signal, or the canvas clock through an
+/// [`Animation`]. The silhouette is one live path operand of a
 /// [`Canvas`]; it re-derives from the box and the progress and nothing else
 /// records again.
 #[derive(Debug, Clone)]
@@ -251,7 +163,7 @@ pub struct MorphShape {
     from: ShapeKind,
     to: ShapeKind,
     fill: Color,
-    animation: MorphAnimation,
+    animation: Animation,
     progress: Option<Computed<f32>>,
 }
 
@@ -279,43 +191,16 @@ impl MorphShape {
             from,
             to,
             fill,
-            animation: MorphAnimation::default(),
+            animation: Animation::ease_in_out(Duration::from_millis(900))
+                .repeat(Repeat::Forever { autoreverse: true }),
             progress: None,
         }
     }
 
     /// Sets explicit animation configuration.
     #[must_use]
-    pub const fn animation(mut self, animation: MorphAnimation) -> Self {
+    pub const fn animation(mut self, animation: Animation) -> Self {
         self.animation = animation;
-        self
-    }
-
-    /// Sets the cycle duration (keeps other animation options unchanged).
-    #[must_use]
-    pub const fn duration(mut self, duration: Duration) -> Self {
-        self.animation.duration = duration;
-        self
-    }
-
-    /// Sets easing (keeps other animation options unchanged).
-    #[must_use]
-    pub const fn easing(mut self, easing: EasingCurve) -> Self {
-        self.animation.easing = easing;
-        self
-    }
-
-    /// Enables/disables repeating.
-    #[must_use]
-    pub const fn repeat(mut self, repeat: bool) -> Self {
-        self.animation.repeat = repeat;
-        self
-    }
-
-    /// Enables/disables autoreverse for repeating animations.
-    #[must_use]
-    pub const fn autoreverse(mut self, autoreverse: bool) -> Self {
-        self.animation.autoreverse = autoreverse;
         self
     }
 
@@ -338,17 +223,21 @@ impl View for MorphShape {
             animation,
             progress,
         } = self;
+        let animation = animation.validated();
         Canvas::new(move |cx| {
+            let animation = animation.clone();
             let progress = progress.unwrap_or_else(|| {
-                // A one-shot morph's clock holds at its end, so the canvas
+                // A finite morph's clock holds at its end, so the canvas
                 // stops presenting frames once it has played.
-                let clock = if animation.repeat {
-                    cx.time()
-                } else {
-                    cx.time_until(animation.duration)
-                };
+                let clock = animation
+                    .total_duration()
+                    .map_or_else(|| cx.time(), |total| cx.time_until(total));
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "morph interpolation progress operates in f32"
+                )]
                 clock
-                    .map(move |elapsed| animation.sample(elapsed))
+                    .map(move |elapsed| animation.progress(elapsed) as f32)
                     .computed()
             });
             let outline = cx
@@ -485,21 +374,23 @@ mod tests {
 
     #[test]
     fn one_shot_animation_reaches_end() {
-        let animation = MorphAnimation::once(Duration::from_millis(200), EasingCurve::LINEAR);
-        assert!((animation.sample(Duration::ZERO) - 0.0).abs() < 1e-6);
-        assert!((animation.sample(Duration::from_millis(100)) - 0.5).abs() < 1e-3);
-        assert!((animation.sample(Duration::from_secs(1)) - 1.0).abs() < 1e-6);
+        let morph = MorphShape::new(ShapeKind::Circle, ShapeKind::Rect, Color::default())
+            .animation(Animation::linear(Duration::from_millis(200)));
+        assert!((morph.animation.progress(Duration::ZERO) - 0.0).abs() < 1e-6);
+        assert!((morph.animation.progress(Duration::from_millis(100)) - 0.5).abs() < 1e-3);
+        assert!((morph.animation.progress(Duration::from_secs(1)) - 1.0).abs() < 1e-6);
     }
 
     #[test]
     fn a_repeating_animation_reverses_every_other_cycle() {
-        let animation = MorphAnimation {
-            easing: EasingCurve::LINEAR,
-            ..MorphAnimation::default()
-        };
-        let cycle = animation.duration();
-        assert!((animation.sample(cycle.mul_f32(0.25)) - 0.25).abs() < 1e-3);
-        assert!((animation.sample(cycle.mul_f32(1.25)) - 0.75).abs() < 1e-3);
-        assert!((animation.sample(cycle.mul_f32(2.25)) - 0.25).abs() < 1e-3);
+        let morph = MorphShape::new(ShapeKind::Circle, ShapeKind::Rect, Color::default())
+            .animation(
+                Animation::linear(Duration::from_millis(900))
+                    .repeat(Repeat::Forever { autoreverse: true }),
+            );
+        let cycle = morph.animation.cycle_duration();
+        assert!((morph.animation.progress(cycle.mul_f32(0.25)) - 0.25).abs() < 1e-3);
+        assert!((morph.animation.progress(cycle.mul_f32(1.25)) - 0.75).abs() < 1e-3);
+        assert!((morph.animation.progress(cycle.mul_f32(2.25)) - 0.25).abs() < 1e-3);
     }
 }

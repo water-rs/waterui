@@ -28,14 +28,17 @@
 
 extern crate alloc;
 
+use alloc::rc::Rc;
 use alloc::vec::Vec;
+use nami::watcher::{BoxWatcherGuard, Context, WatcherGuard};
 use nami::{Binding, Signal, impl_constant, signal::IntoComputed};
 use suiteki::Str;
 use waterui_core::id::{Id, Mapping};
 use waterui_core::{
     Computed, Environment, Metadata, Native, NativeView, OneOf2, Retain, SignalExt, View,
-    layout::StretchAxis,
+    flatten_signal, layout::StretchAxis,
 };
+use waterui_text::{IntoText, Text};
 
 // Re-export waterkit-location for downstream convenience.
 pub use waterkit_location as location;
@@ -152,7 +155,7 @@ impl_constant!(Coordinate, Region, MapStyle, MapStatus);
 /// receive inside [`MapConfig`]. Application code constructs annotations with
 /// any `T: Ord + Clone + 'static` (such as an enum, integer, or string) and
 /// binds selection through [`Map::selection`].
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct Annotation<T = Id> {
     /// Application-defined identity for reconciliation and selection.
@@ -160,9 +163,9 @@ pub struct Annotation<T = Id> {
     /// The coordinate where the annotation is placed.
     coordinate: Coordinate,
     /// The title text shown on the annotation.
-    title: Str,
+    title: Text,
     /// Optional subtitle text.
-    subtitle: Option<Str>,
+    subtitle: Option<Text>,
 }
 
 impl<T> Annotation<T> {
@@ -180,30 +183,30 @@ impl<T> Annotation<T> {
 
     /// The title text shown on the annotation.
     #[must_use]
-    pub const fn title(&self) -> &Str {
+    pub const fn title(&self) -> &Text {
         &self.title
     }
 
     /// Optional subtitle text.
     #[must_use]
-    pub const fn get_subtitle(&self) -> Option<&Str> {
+    pub const fn get_subtitle(&self) -> Option<&Text> {
         self.subtitle.as_ref()
     }
 
     /// Creates a new annotation with an identifier, coordinate, and title.
-    pub fn new(id: T, coordinate: Coordinate, title: impl Into<Str>) -> Self {
+    pub fn new(id: T, coordinate: Coordinate, title: impl IntoText) -> Self {
         Self {
             id,
             coordinate,
-            title: title.into(),
+            title: title.into_text(),
             subtitle: None,
         }
     }
 
     /// Sets the subtitle for this annotation.
     #[must_use]
-    pub fn subtitle(mut self, subtitle: impl Into<Str>) -> Self {
-        self.subtitle = Some(subtitle.into());
+    pub fn subtitle(mut self, subtitle: impl IntoText) -> Self {
+        self.subtitle = Some(subtitle.into_text());
         self
     }
 
@@ -273,7 +276,7 @@ impl ResolvedAnnotation {
 /// Native realizations resolve these against the platform map's own imagery.
 /// The portable GPU realization has no imagery of its own, so an application
 /// asking for [`Self::Satellite`] or [`Self::Hybrid`] must also supply the
-/// matching provider style (`MapGpuOptions::satellite_style_url` and
+/// matching provider style (`MapGpu::satellite_style_url` and
 /// `hybrid_style_url`). The map reports a load failure when it did not, rather
 /// than silently drawing the standard style.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -383,9 +386,6 @@ impl MapInteractivity {
 pub struct MapConfig {
     /// Two-way camera region: app updates move the map, user gestures write back.
     camera: Binding<Region>,
-    /// Temporary unlocalized annotations projection while `waterui-map-gpu`
-    /// migrates to [`Self::resolved_annotations`] (removed in the closing PR for #4343).
-    annotations: Computed<Vec<Annotation<Id>>>,
     /// Resolved annotations (pins) to display on the map, carrying erased [`Id`]s.
     resolved_annotations: Computed<Vec<ResolvedAnnotation>>,
     /// Optional two-way selection of the currently selected annotation [`Id`].
@@ -421,14 +421,6 @@ impl MapConfig {
     #[must_use]
     pub const fn camera(&self) -> &Binding<Region> {
         &self.camera
-    }
-
-    /// Temporary compatibility getter while `waterui-map-gpu` migrates to
-    /// [`Self::resolved_annotations`].
-    #[doc(hidden)]
-    #[must_use]
-    pub const fn annotations(&self) -> &Computed<Vec<Annotation<Id>>> {
-        &self.annotations
     }
 
     /// Resolved annotations (pins) to display on the map, carrying erased [`Id`]s.
@@ -816,28 +808,91 @@ impl<T: 'static> Map<T> {
     }
 }
 
-impl<T: MapAnnotations> Map<T> {
-    fn into_config(self) -> (MapConfig, Option<Computed<Region>>) {
-        let erased = T::erase(self.annotations, self.selection);
-        let resolved_annotations = erased
-            .annotations
-            .map(|items| {
-                items
-                    .into_iter()
-                    .map(|annotation| {
-                        ResolvedAnnotation::new(
-                            *annotation.id(),
-                            annotation.coordinate(),
-                            annotation.title().clone(),
-                            annotation.get_subtitle().cloned(),
-                        )
-                    })
-                    .collect::<Vec<_>>()
+#[derive(Clone)]
+struct CombineResolvedAnnotations(Vec<Computed<ResolvedAnnotation>>);
+
+struct CombineResolvedAnnotationsGuard {
+    _guards: Vec<BoxWatcherGuard>,
+}
+
+impl WatcherGuard for CombineResolvedAnnotationsGuard {}
+
+impl Signal for CombineResolvedAnnotations {
+    type Output = Vec<ResolvedAnnotation>;
+    type Guard = CombineResolvedAnnotationsGuard;
+
+    fn snapshot(&self) -> Self::Output {
+        self.0.iter().map(Signal::snapshot).collect()
+    }
+
+    fn watch(&self, watcher: impl Fn(Context<Self::Output>) + 'static) -> Self::Guard {
+        let watcher = Rc::new(watcher);
+        let signals = self.0.clone();
+        let guards = signals
+            .iter()
+            .map(|signal| {
+                let watcher = Rc::clone(&watcher);
+                let signals = signals.clone();
+                signal.watch(move |ctx| {
+                    let resolved = signals.iter().map(Signal::snapshot).collect();
+                    watcher(Context::new(resolved, ctx.metadata().clone()));
+                })
             })
-            .computed();
+            .collect();
+        CombineResolvedAnnotationsGuard { _guards: guards }
+    }
+}
+
+fn resolve_annotation(
+    annotation: Annotation<Id>,
+    env: &Environment,
+) -> Computed<ResolvedAnnotation> {
+    let id = annotation.id;
+    let coordinate = annotation.coordinate;
+    let title = annotation
+        .title
+        .resolve(env)
+        .content()
+        .map(|styled| styled.to_plain());
+    match annotation.subtitle {
+        Some(subtitle) => {
+            let subtitle = subtitle
+                .resolve(env)
+                .content()
+                .map(|styled| styled.to_plain());
+            title
+                .zip(&subtitle)
+                .map(move |(title, subtitle)| {
+                    ResolvedAnnotation::new(id, coordinate, title, Some(subtitle))
+                })
+                .computed()
+        }
+        None => title
+            .map(move |title| ResolvedAnnotation::new(id, coordinate, title, None))
+            .computed(),
+    }
+}
+
+fn resolve_annotations(
+    annotations: &Computed<Vec<Annotation<Id>>>,
+    env: &Environment,
+) -> Computed<Vec<ResolvedAnnotation>> {
+    let env = env.clone();
+    flatten_signal(annotations.map(move |items| {
+        let resolved = items
+            .into_iter()
+            .map(|annotation| resolve_annotation(annotation, &env))
+            .collect();
+        Computed::new(CombineResolvedAnnotations(resolved))
+    }))
+}
+
+impl<T: MapAnnotations> Map<T> {
+    fn into_config(self, env: &Environment) -> (MapConfig, Option<Computed<Region>>) {
+        let erased = T::erase(self.annotations, self.selection);
+        let resolved_annotations = resolve_annotations(&erased.annotations, env);
         let config = MapConfig {
             camera: self.camera,
-            annotations: erased.annotations,
             resolved_annotations,
             selection: erased.selection,
             style: self.style,
@@ -853,8 +908,8 @@ impl<T: MapAnnotations> Map<T> {
 }
 
 impl<T: MapAnnotations> View for Map<T> {
-    fn body(self, _env: &Environment) -> impl View {
-        let (config, follows_region) = self.into_config();
+    fn body(self, env: &Environment) -> impl View {
+        let (config, follows_region) = self.into_config(env);
         match follows_region {
             Some(region_signal) => {
                 let camera = config.camera.clone();
@@ -878,8 +933,14 @@ pub fn map<M>(center: impl IntoMapRegion<M>) -> Map {
 
 #[cfg(test)]
 mod tests {
+    use alloc::rc::Rc;
+    use core::cell::RefCell;
+
     use super::{Annotation, Coordinate, Location, Map, MapStatus, Region, Timestamp, map};
     use nami::{Binding, Signal};
+    use suiteki::Str;
+    use waterui_core::Environment;
+    use waterui_locale::{TranslationCatalog, locales};
 
     #[test]
     fn map_new_accepts_coordinates_locations_and_signals() {
@@ -887,24 +948,25 @@ mod tests {
         let nyc = Coordinate::from_degrees(40.7128, -74.0060).expect("valid nyc");
         let sf_loc = Location::new(sf.latitude, sf.longitude, Timestamp::UNIX_EPOCH);
         let nyc_loc = Location::new(nyc.latitude, nyc.longitude, Timestamp::UNIX_EPOCH);
+        let env = Environment::new();
 
-        let (config, follows) = Map::new(sf).into_config();
+        let (config, follows) = Map::new(sf).into_config(&env);
         assert_eq!(config.camera().snapshot(), Region::from_coordinate(sf));
         assert!(follows.is_some());
 
         let coord_binding = Binding::container(sf);
-        let (_, coord_follows) = Map::new(coord_binding.clone()).into_config();
+        let (_, coord_follows) = Map::new(coord_binding.clone()).into_config(&env);
         let coord_follows = coord_follows.expect("coordinate binding produces region signal");
         assert_eq!(coord_follows.snapshot(), Region::from_coordinate(sf));
         coord_binding.set(nyc);
         assert_eq!(coord_follows.snapshot(), Region::from_coordinate(nyc));
 
-        let (loc_config, loc_follows) = Map::new(sf_loc.clone()).into_config();
+        let (loc_config, loc_follows) = Map::new(sf_loc.clone()).into_config(&env);
         assert_eq!(loc_config.camera().snapshot(), Region::from_coordinate(sf));
         assert!(loc_follows.is_some());
 
         let loc_binding = Binding::container(sf_loc);
-        let (_, loc_follows) = map(loc_binding.clone()).into_config();
+        let (_, loc_follows) = map(loc_binding.clone()).into_config(&env);
         let loc_follows = loc_follows.expect("location binding produces region signal");
         assert_eq!(loc_follows.snapshot(), Region::from_coordinate(sf));
         loc_binding.set(nyc_loc);
@@ -917,7 +979,8 @@ mod tests {
         let camera = Binding::container(Region::from_coordinate(
             Coordinate::from_degrees(37.7749, -122.4194).expect("valid coordinate"),
         ));
-        let (config, _) = Map::new(&camera).status(&status).into_config();
+        let env = Environment::new();
+        let (config, _) = Map::new(&camera).status(&status).into_config(&env);
 
         let sink = config.status.expect("status sink must be retained");
         sink.set(MapStatus::Failed("style unreachable".into()));
@@ -932,7 +995,8 @@ mod tests {
     #[test]
     fn a_map_without_an_observer_allocates_no_status_sink() {
         let camera = Binding::container(Region::default());
-        let (config, _) = Map::new(&camera).into_config();
+        let env = Environment::new();
+        let (config, _) = Map::new(&camera).into_config(&env);
 
         assert!(config.status.is_none());
     }
@@ -942,7 +1006,8 @@ mod tests {
         let sf = Coordinate::from_degrees(37.7749, -122.4194).expect("valid sf");
         let nyc = Coordinate::from_degrees(40.7128, -74.0060).expect("valid nyc");
         let camera = Binding::container(Region::from_coordinate(sf));
-        let (config, _) = Map::new(&camera).into_config();
+        let env = Environment::new();
+        let (config, _) = Map::new(&camera).into_config(&env);
 
         // Backend writes back panned region into caller's camera binding.
         config.camera().set(Region::from_coordinate(nyc));
@@ -969,13 +1034,14 @@ mod tests {
             Annotation::new(Pin::Ferry, sf, "Ferry Building"),
             Annotation::new(Pin::Bridge, bridge, "Golden Gate Bridge"),
         ];
+        let env = Environment::new();
 
         let (config, _) = Map::new(&camera)
             .annotations(pins)
             .selection(&selected)
-            .into_config();
+            .into_config(&env);
 
-        let erased = config.annotations().snapshot();
+        let erased = config.resolved_annotations().snapshot();
         assert_eq!(erased.len(), 2);
         assert_ne!(erased[0].id(), erased[1].id());
 
@@ -983,15 +1049,90 @@ mod tests {
         assert_eq!(selection.snapshot(), None);
 
         // Backend taps second pin -> caller selection becomes Some(Pin::Bridge).
-        selection.set(Some(*erased[1].id()));
+        selection.set(Some(erased[1].id()));
         assert_eq!(selected.snapshot(), Some(Pin::Bridge));
 
         // Caller changes selection programmatically -> backend sees first pin's Id.
         selected.set(Some(Pin::Ferry));
-        assert_eq!(selection.snapshot(), Some(*erased[0].id()));
+        assert_eq!(selection.snapshot(), Some(erased[0].id()));
 
         // Deselecting clears both sides.
         selection.set(None);
         assert_eq!(selected.snapshot(), None);
+    }
+
+    #[test]
+    fn annotation_title_and_subtitle_resolve_through_translation_catalog() {
+        let tokyo = Coordinate::from_degrees(35.6812, 139.7671).expect("valid tokyo");
+        let shinjuku = Coordinate::from_degrees(35.6895, 139.6917).expect("valid shinjuku");
+        let camera = Binding::container(Region::from_coordinate(tokyo));
+        let pins = Binding::container(vec![
+            Annotation::new(1_u32, tokyo, "Central Station").subtitle("Transit Hub"),
+        ]);
+
+        let locale = Binding::container(locales::EN);
+        let mut env = Environment::new();
+        env.insert(locale.clone());
+        env.insert(
+            TranslationCatalog::new()
+                .add_toml(
+                    locales::ZH_CN,
+                    "\"Central Station\" = \"中央车站\"\n\"Transit Hub\" = \"交通枢纽\"\n\"West Park\" = \"西公园\"",
+                )
+                .expect("zh catalog must parse")
+                .add_toml(
+                    locales::JA,
+                    "\"Central Station\" = \"中央駅\"\n\"Transit Hub\" = \"乗換拠点\"\n\"West Park\" = \"西公園\"",
+                )
+                .expect("ja catalog must parse")
+                .add_toml(
+                    locales::KO,
+                    "\"Central Station\" = \"중앙역\"\n\"Transit Hub\" = \"환승 거점\"\n\"West Park\" = \"서쪽 공원\"",
+                )
+                .expect("ko catalog must parse"),
+        );
+
+        let (config, _) = Map::new(&camera)
+            .annotations(pins.clone())
+            .into_config(&env);
+        let resolved = config.resolved_annotations().clone();
+        let observed = Rc::new(RefCell::new(Vec::new()));
+        let _guard = resolved.watch({
+            let observed = Rc::clone(&observed);
+            move |ctx| {
+                observed.borrow_mut().push(ctx.into_value());
+            }
+        });
+
+        let initial = resolved.snapshot();
+        assert_eq!(initial.len(), 1);
+        assert_eq!(initial[0].title().as_str(), "Central Station");
+        assert_eq!(initial[0].subtitle().map(Str::as_str), Some("Transit Hub"));
+
+        locale.set(locales::ZH_CN);
+        let zh = resolved.snapshot();
+        assert_eq!(zh[0].title().as_str(), "中央车站");
+        assert_eq!(zh[0].subtitle().map(Str::as_str), Some("交通枢纽"));
+
+        locale.set(locales::JA);
+        let ja = resolved.snapshot();
+        assert_eq!(ja[0].title().as_str(), "中央駅");
+        assert_eq!(ja[0].subtitle().map(Str::as_str), Some("乗換拠点"));
+
+        locale.set(locales::KO);
+        let ko = resolved.snapshot();
+        assert_eq!(ko[0].title().as_str(), "중앙역");
+        assert_eq!(ko[0].subtitle().map(Str::as_str), Some("환승 거점"));
+
+        // Replacing the outer annotations list re-resolves in the active locale.
+        pins.set(vec![Annotation::new(2_u32, shinjuku, "West Park")]);
+        let replaced = resolved.snapshot();
+        assert_eq!(replaced.len(), 1);
+        assert_eq!(replaced[0].title().as_str(), "서쪽 공원");
+        assert_eq!(replaced[0].subtitle(), None);
+        assert!(
+            !observed.borrow().is_empty(),
+            "watcher must observe locale and list updates"
+        );
     }
 }

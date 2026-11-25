@@ -33,6 +33,8 @@ pub struct PlacementClock {
     instant: Cell<Option<Instant>>,
     /// When each track started since the last evaluation is done.
     settles: RefCell<Vec<Instant>>,
+    /// Number of active `Repeat::Forever` motions referencing this clock.
+    perpetual: Cell<u32>,
 }
 
 impl PlacementClock {
@@ -42,6 +44,7 @@ impl PlacementClock {
             epoch: Cell::new(0),
             instant: Cell::new(None),
             settles: RefCell::new(Vec::new()),
+            perpetual: Cell::new(0),
         })
     }
 
@@ -65,6 +68,16 @@ impl PlacementClock {
         self.instant.get()
     }
 
+    /// Adjusts the count of running `Repeat::Forever` motions tied to this clock.
+    pub fn note_perpetual(&self, active: bool) {
+        let count = self.perpetual.get();
+        if active {
+            self.perpetual.set(count.saturating_add(1));
+        } else {
+            self.perpetual.set(count.saturating_sub(1));
+        }
+    }
+
     /// A motion changed: it moved, and — with `until` — a track runs until
     /// that instant.
     pub fn note_motion(&self, until: Option<Instant>) {
@@ -83,9 +96,10 @@ impl PlacementClock {
             return;
         }
         let mut settles = self.settles.borrow_mut();
-        let moved = settles
-            .iter()
-            .any(|until| previous.is_none_or(|previous| *until > previous));
+        let moved = self.perpetual.get() > 0
+            || settles
+                .iter()
+                .any(|until| previous.is_none_or(|previous| *until > previous));
         settles.retain(|until| *until > now);
         drop(settles);
         if moved {

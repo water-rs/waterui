@@ -692,7 +692,8 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// The engine samples these and asks for their frames itself, so they
     /// never schedule a host animation frame — they are work for the settle
     /// queries only, known from each track's end without evaluating it.
-    pub(crate) fn motions_active(&self) -> bool {
-        self.animation_controller.motions_active(self.frame_instant)
+    pub(crate) fn motions_active(&self, perpetual: PerpetualAnimation) -> bool {
+        self.animation_controller
+            .motions_active(perpetual, self.frame_instant)
     }
 }

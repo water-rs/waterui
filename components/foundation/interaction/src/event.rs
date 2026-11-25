@@ -10,8 +10,8 @@ use core::{cell::RefCell, fmt, future::Future, pin::Pin};
 use nami::Signal;
 use nami::watcher::BoxWatcherGuard;
 use waterui_core::{
-    Environment, Error, LatestDispatch, Metadata, Retain, View,
-    extract::{ExtractionState, Extractor, State},
+    Environment, LatestDispatch, Metadata, Retain, View,
+    extract::State,
     handler::{
         BoxedAction, BoxedActionOnce, EventHandler, Handler, HandlerOnce, ReportExtraction,
         boxed_action, boxed_action_once, boxed_event_handler,
@@ -157,20 +157,6 @@ impl HoverEvent {
     }
 }
 
-/// Temporary Step 1 migration bridge for `water-rs/waterui#4457` while
-/// `water-rs/chart` moves `OnEvent::new(Event::HoverMove, ...)` onto
-/// [`OnEvent::hover_move`].
-#[doc(hidden)]
-impl Extractor for HoverEvent {
-    fn extract(env: &Environment) -> Result<Self, Error> {
-        State::<Self>::extract(env).map(|State(event)| event)
-    }
-
-    fn extract_from_action(env: &Environment, state: &mut ExtractionState) -> Result<Self, Error> {
-        State::<Self>::extract_from_action(env, state).map(|State(event)| event)
-    }
-}
-
 /// Interaction events that can occur multiple times.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -241,17 +227,14 @@ pub struct OnEvent {
 impl MetadataKey for OnEvent {}
 
 impl OnEvent {
-    /// Creates a new event handler for `event`.
-    ///
-    /// Temporary Step 1 signature for `water-rs/waterui#4457` while
-    /// `water-rs/chart` moves `OnEvent::new(Event::HoverMove, ...)` onto
-    /// [`OnEvent::hover_move`] / [`OnEvent::hover_exit`].
+    /// Creates a repeatable event handler for `event`, typing the handler's
+    /// signature through [`EventTarget`].
     #[must_use]
-    pub fn new<Args>(event: Event, handler: impl Handler<Args, ()>) -> Self {
-        Self {
-            event,
-            handler: boxed_action(handler),
-        }
+    pub fn new<E, H, Args>(event: E, handler: H) -> Self
+    where
+        E: EventTarget<H, Args>,
+    {
+        event.into_on_event(handler)
     }
 
     /// Creates a repeatable handler for pointer enter events (carries no payload).
