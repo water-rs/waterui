@@ -812,10 +812,10 @@ pub fn media_particle_prose() -> impl View {
 // media.md § "## Data: charts and maps" — rust block 13/15
 // ---------------------------------------------------------------------------
 pub fn media_block_13() -> impl View {
-    use waterui::color::Srgb;
     use waterui::reactive::binding;
 
     use waterui::chart::{AxisConfig, BarChart, ChartExt, DataBounds, DataPoint, LineChart};
+    use waterui::theme::color::Accent;
 
     let points = vec![DataPoint::new(0.0, 1.0), DataPoint::new(1.0, 2.0)];
 
@@ -823,7 +823,7 @@ pub fn media_block_13() -> impl View {
 
     let bounds = DataBounds::from_points(&points);
     LineChart::new(binding(points))
-        .color(Srgb::from_hex("#22C55E"))
+        .color(Accent)
         .line_width(3.0)
         .axes(bounds) // ChartExt; axes first…
         .y_axis(AxisConfig::new().tick_count(5)) // …then per-axis config on the wrapper
@@ -838,13 +838,20 @@ pub fn media_block_13() -> impl View {
 // ---------------------------------------------------------------------------
 pub fn media_chart_interaction_prose() -> impl View {
     use waterui::chart::{
-        DataPoint, HitResult, Legend, LegendItem, LineChart, Tooltip, TooltipContent,
+        AreaSeries, BubblePoint, DataPoint, GaugeRegion, HitResult, Legend, LegendItem, LineChart,
+        RadarSeries, Tooltip, TooltipContent,
     };
-    use waterui::color::Srgb;
+    use waterui::theme::color::{Accent, Tertiary};
 
     let points = Binding::container(vec![DataPoint::new(0.0, 1.0), DataPoint::new(1.0, 2.0)]);
     let focused: Binding<Option<HitResult<DataPoint>>> = Binding::container(None);
     let selected: Binding<Option<HitResult<DataPoint>>> = Binding::container(None);
+    let _ = (
+        BubblePoint::new(0.0, 1.0, 2.0).color(Accent),
+        GaugeRegion::new(50.0, Accent),
+        RadarSeries::new("A", vec![1.0, 2.0, 3.0]).color(Tertiary),
+        AreaSeries::new("A", vec![1.0, 2.0]).color(Accent),
+    );
 
     vstack((
         LineChart::new(points)
@@ -854,7 +861,7 @@ pub fn media_chart_interaction_prose() -> impl View {
             .focused_tooltip(|_hit| {
                 Tooltip::new(TooltipContent::new().title("Sales").value("Total", "2.0"))
             }),
-        Legend::new(vec![LegendItem::new("Sales", Srgb::from_hex("#22C55E"))]),
+        Legend::new(vec![LegendItem::new("Sales", Accent)]),
     ))
 }
 
