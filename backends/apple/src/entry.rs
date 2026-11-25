@@ -125,14 +125,15 @@ mod imp {
             ));
         }
         let initial = crate::windows::connect_windows(parts.windows, &app_env);
-        if initial.is_empty() {
-            // A zero-window application acts on its policy at launch.
-            session.no_window_left();
-        } else {
-            for window in initial {
-                let host = crate::windows::realize_root(window, &app_env, mtm);
-                crate::windows::track(host);
+        let mut open_count = 0usize;
+        for window in initial {
+            if crate::windows::declare_root(window, &app_env, mtm) {
+                open_count += 1;
             }
+        }
+        if open_count == 0 {
+            // A zero-open-window application acts on its policy at launch.
+            session.no_window_left();
         }
         // The theme signals, the appearance observation and the locale
         // observer must outlive the process; `app` is already consumed.
@@ -232,7 +233,9 @@ mod imp {
     use cocoa_ui::uikit::{self, ApplicationHandlers};
     use waterui::app::{App, AppMenuBar, Windows};
     use waterui::graphics::Color;
+    use waterui::reactive::Signal as _;
     use waterui::theme::color::Background;
+    use waterui::window::WindowState;
     use waterui_backend_core::Environment;
 
     use crate::theme::ThemeSignals;
@@ -278,7 +281,10 @@ mod imp {
         // returned — its installs are invisible to the host env.
         let app_env = parts.env;
         let initial = crate::windows::connect_windows(parts.windows, &app_env);
-        if initial.is_empty() {
+        if initial
+            .iter()
+            .all(|window| window.state.snapshot() == WindowState::Closed)
+        {
             waterui::contract_violation!(
                 "an iOS application must declare at least one window; the app shows no window"
             );

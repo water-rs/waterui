@@ -38,7 +38,7 @@ use waterui_apple_menu::ios::{Declared, build_handler, declared, install_declare
 use waterui_controls::label::SemanticLabel;
 #[cfg(feature = "menu")]
 use waterui_controls::menu::Menu;
-use waterui_core::Environment;
+use waterui_core::{Environment, Retain, contract_violation};
 use waterui_locale::regional::refresh_system_locale;
 
 use super::session::AppleExecutor;
@@ -54,7 +54,7 @@ use crate::runner::init_main_thread_executors;
 use crate::runner::install_platform_services;
 #[cfg(feature = "menu")]
 use crate::runner::menu_bar;
-use crate::runner::window::{RootWindow, RootWindows};
+use crate::runner::window::{RootWindow, RootWindows, split_open_and_watch_dormant};
 use crate::runner::{install_window_registries, queue_window_opener};
 use crate::text::ParleyEngine;
 use crate::theme::WidgetTheme;
@@ -93,6 +93,9 @@ pub(super) struct Process {
     window: RefCell<Option<RootWindow<ParleyEngine>>>,
     opener: Rc<dyn Fn(RootWindow<ParleyEngine>)>,
     pub(super) pending_window_queue: Rc<RefCell<Vec<RootWindow<ParleyEngine>>>>,
+    /// Keeps state watchers on dormant `Closed` secondary windows alive so
+    /// opening one at run time reports the unsupported secondary-window error.
+    _dormant_window_watches: Vec<Retain>,
 }
 
 impl Process {
@@ -156,7 +159,12 @@ impl UiKitApplication {
             env,
         } = app(env);
         let RootWindows { initial, channels } = windows;
-        let mut windows = initial.into_iter();
+        let (open_windows, dormant_window_watches) = split_open_and_watch_dormant(initial, || {
+            contract_violation!(
+                "hydrolysis UIKit: secondary windows are unsupported — a scene mounts exactly one window; the window is not shown"
+            );
+        });
+        let mut windows = open_windows.into_iter();
         let window = windows
             .next()
             .expect("an iOS application must declare at least one window");
@@ -219,6 +227,7 @@ impl UiKitApplication {
                     window: RefCell::new(Some(window)),
                     opener,
                     pending_window_queue,
+                    _dormant_window_watches: dormant_window_watches,
                 });
             })
             .detach();
