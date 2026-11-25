@@ -77,4 +77,8 @@ fn macro_contracts() {
     cases.compile_fail("tests/ui/waterui_bench/fail_unknown_argument.rs");
     cases.compile_fail("tests/ui/waterui_bench/fail_duplicate_budget.rs");
     cases.compile_fail("tests/ui/waterui_bench/fail_async.rs");
+
+    cases.compile_fail("tests/ui/shader/fail_invalid_wgsl.rs");
+    cases.compile_fail("tests/ui/shader/fail_missing_entry_point.rs");
+    cases.compile_fail("tests/ui/shader/fail_missing_file.rs");
 }

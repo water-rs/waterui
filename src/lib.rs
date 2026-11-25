@@ -13,7 +13,7 @@ mod runtime;
 pub use runtime::dialog;
 #[cfg(feature = "snackbar")]
 pub use runtime::snackbar;
-pub use runtime::{app, fullscreen, metadata, task, window};
+pub use runtime::{app, fullscreen, metadata, sheet, task, window};
 pub use widget::error;
 // Inspection is a TCP endpoint that also launches the inspector application on
 // the developer's machine; a browser page can do neither, so on wasm the
@@ -77,7 +77,7 @@ pub mod prelude {
         OneOf5, OneOf6, OneOf7, OneOf8, Signal, SignalExt, State, Str, View, ViewExt,
         accessibility, animation, app, binding, color, component, cursor, drag_drop, env, error,
         filter, fullscreen, gesture, gradient, id, layout, locale, metadata, reactive, regional,
-        shape, signal, style, task, text, widget, window,
+        shape, sheet, signal, style, task, text, widget, window,
     };
 
     #[cfg(feature = "flow-markdown")]
@@ -87,6 +87,7 @@ pub mod prelude {
     #[cfg(feature = "dialog")]
     pub use super::dialog::{Dialog, DialogAction};
     pub use super::fullscreen::*;
+    pub use super::sheet::{Sheet, SheetDetent, SheetDismiss};
     #[cfg(feature = "snackbar")]
     pub use super::snackbar::{
         Snackbar, SnackbarDismissReason, SnackbarHost, SnackbarManager, SnackbarPosition,
@@ -197,8 +198,6 @@ pub use waterui_barcode as barcode;
 pub use waterui_chart as chart;
 #[cfg(feature = "form")]
 pub use waterui_form as form;
-#[cfg(any(feature = "gpu", feature = "cpu"))]
-pub use waterui_graphics::ShaderPaintView;
 #[cfg(feature = "canvas")]
 pub use waterui_graphics::canvas;
 pub use waterui_graphics::color;
@@ -207,6 +206,8 @@ pub use waterui_graphics::gradient;
 pub use waterui_graphics::image_decode;
 #[cfg(feature = "gpu")]
 pub use waterui_graphics::{GpuContent, GpuView, RedrawHandle};
+#[cfg(any(feature = "gpu", feature = "cpu"))]
+pub use waterui_graphics::{SHADER_MAX_PARAMS, ShaderError, ShaderPaintView};
 pub use waterui_icon as icon;
 #[cfg(feature = "particle")]
 pub use waterui_particle as particle;
@@ -290,9 +291,10 @@ pub use waterui_assets::{
 };
 #[cfg(all(feature = "assets", target_arch = "wasm32"))]
 pub use waterui_assets::{AssetError, AssetKind, Data};
-/// `include_web!(resources, "web")` — the one-macro web frontend. Its expansion speaks
+/// `include_web!("web")` — the one-macro web frontend. Its expansion speaks
 /// [`webview`](crate::webview)'s asset-origin API and serves a staged
-/// [`Bundle`], so it is exported only when both features are on.
+/// [`Bundle`] resolved from the rendering environment's [`ResourceContext`], so
+/// it is exported only when both features are on.
 #[doc(inline)]
 #[cfg(all(feature = "webview", feature = "assets"))]
 pub use waterui_assets_macros::include_web;

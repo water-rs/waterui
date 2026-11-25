@@ -5,6 +5,7 @@ pub mod fullscreen;
 pub mod metadata;
 #[cfg(test)]
 mod parked_executor;
+pub mod sheet;
 #[cfg(feature = "snackbar")]
 pub mod snackbar;
 pub mod task;

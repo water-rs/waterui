@@ -37,7 +37,7 @@ mod suite {
     use libtest_mimic::{Arguments, Trial};
     use png::{BitDepth, ColorType, Decoder};
     use waterui::prelude::*;
-    use waterui::{AnyView, ResourceContext};
+    use waterui::{AnyView, Bundle, ImageAsset, ResourceContext};
     use waterui_apple::preview::{PreviewError, capture_hdr};
     use waterui_preview_protocol::run::{
         DEFAULT_CONTENT_DEADLINE, PREVIEW_RUN_CONFIG_ENV, PreviewRunConfig, PreviewRunMode,
@@ -1037,7 +1037,7 @@ mod suite {
         progress(0.35).label("Downloading"),
         hstack((
             waterui_apple::SfSymbol::STAR_FILL.size(48.0, 48.0),
-            waterui::ImageAsset::new(waterui::Bundle::main(), "image.png").size(48.0, 48.0),
+            photo(ImageAsset::new(Bundle::main(), "image.png")).size(48.0, 48.0),
             Circle.fill(Color::srgb_hex("#3B82F6")).size(48.0, 48.0),
             Rectangle.fill(Color::srgb_hex("#10B981")).size(64.0, 48.0),
             RoundedRectangle::new(CornerRadius::fraction(0.25))
@@ -1068,7 +1068,7 @@ mod suite {
     /// One image asset, large enough to read: the capture must show the
     /// decoded image, not the empty slot its asynchronous load starts as.
     fn image_asset_view() -> impl View {
-        waterui::ImageAsset::new(waterui::Bundle::main(), "image.png")
+        photo(ImageAsset::new(Bundle::main(), "image.png"))
             .size(160.0, 160.0)
             .padding()
     }
@@ -1099,7 +1099,7 @@ mod suite {
     /// An image asset whose file does not exist: its load fails and the
     /// capture reports the failure, naming it.
     fn missing_image_view() -> impl View {
-        waterui::ImageAsset::new(waterui::Bundle::main(), "missing.png").size(48.0, 48.0)
+        photo(ImageAsset::new(Bundle::main(), "missing.png")).size(48.0, 48.0)
     }
 
     /// A content-ledger run that must fail: an image run whose `view` owes
@@ -1131,7 +1131,9 @@ mod suite {
         const SHADER: &str = include_str!("gpu_set.wgsl");
         vstack((
             text("GPU canvas + filtered views").title(),
-            waterui::graphics::ShaderPaintView::new(SHADER).size(320.0, 96.0),
+            waterui::graphics::ShaderPaintView::new(SHADER)
+                .expect("gpu_set.wgsl is valid")
+                .size(320.0, 96.0),
             text("filtered: grayscale + blur")
                 .grayscale(0.8_f32)
                 .blur(2.0_f32),
@@ -1259,7 +1261,9 @@ mod suite {
             button("Continue")
                 .style(ButtonStyle::BorderedProminent)
                 .action(|| {}),
-            ShaderPaintView::new(SHADER).size(240.0, 96.0),
+            ShaderPaintView::new(SHADER)
+                .expect("gpu_set.wgsl is valid")
+                .size(240.0, 96.0),
         ))
         .spacing(16.0)
         .padding()
@@ -1556,7 +1560,9 @@ mod suite {
         vstack((
             Color::srgb(234, 67, 53).size(120.0, 40.0),
             Color::p3(1.0, 0.0, 0.0).size(120.0, 40.0),
-            ShaderPaintView::new(SHADER).size(120.0, 40.0),
+            ShaderPaintView::new(SHADER)
+                .expect("gpu_set.wgsl is valid")
+                .size(120.0, 40.0),
         ))
         .spacing(0.0)
         .size(120.0, 120.0)

@@ -205,7 +205,7 @@ fn a_covered_page_presents_no_gpu_layer() {
     )
     .destination(|_| NavigationView::new("Detail", vstack((gpu(DETAIL_CONTENT),))))
     // Settled at once: the frame shows the detail page alone.
-    .transition(navigation_transition::none());
+    .page_transition(navigation_transition::none());
     let renderer = capture(stack, &env_with_top_inset(TOP_INSET));
     let rect = single(&presented_gpu_rects(&renderer));
     assert!(
@@ -226,7 +226,7 @@ fn a_non_presented_page_unmounts_and_remounts_its_gpu_layers() {
         NavigationView::new("Root", vstack((gpu(ROOT_CONTENT),))),
     )
     .destination(|_| NavigationView::new("Detail", vstack((gpu(DETAIL_CONTENT),))))
-    .transition(navigation_transition::none());
+    .page_transition(navigation_transition::none());
     let env = test_environment();
     let mut renderer = test_renderer();
     let installed = |renderer: &HydrolysisRenderer<crate::text::ParleyEngine>| -> Vec<(f64, f64)> {
@@ -344,7 +344,7 @@ fn a_page_gpu_content_renders_again_after_push_and_pop() {
                 NavigationView::new("Root", vstack((probe_view(probe, ROOT_CONTENT),))),
             )
             .destination(|_| NavigationView::new("Detail", vstack((gpu(DETAIL_CONTENT),))))
-            .transition(navigation_transition::none()),
+            .page_transition(navigation_transition::none()),
         )
     });
     #[expect(

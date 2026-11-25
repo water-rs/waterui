@@ -643,7 +643,7 @@ pub enum InitAction {
     },
     /// `<pm> install` inside `web/`.
     InstallDependencies,
-    /// Scaffold the Rust shell whose root view is `include_web!(resources, <arg>)`.
+    /// Scaffold the Rust shell whose root view is `include_web!(<arg>)`.
     ScaffoldShell {
         /// The `include_web!` argument — `"web"` or a relative path.
         web_arg: String,

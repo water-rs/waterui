@@ -704,7 +704,7 @@ fn photo_page(index: usize) -> NavigationView<impl View + use<>> {
     .navigation_title(text!("Photo {index}"))
     .inline_title()
     // The declaration lives on the destination, because the pair it names does.
-    .transition(navigation_transition::zoom(PhotoRoute(index)))
+    .page_transition(navigation_transition::zoom(PhotoRoute(index)))
 }
 
 /// Six flat swatches standing in for photographs.

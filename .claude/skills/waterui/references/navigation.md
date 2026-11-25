@@ -248,16 +248,17 @@ on the right and Android puts it in the app bar, and that difference is the poin
 
 ## Transitions
 
-How a destination *arrives* is a modifier on the destination:
+How a destination *arrives* and leaves is `.page_transition(..)` on the destination (named separately so it never shadows `ViewExt::transition(..)`). It accepts both built-in platform hints and any core `Transition` or `TransitionSpec`:
 
 ```rust
-.transition(navigation_transition::zoom(PhotoRoute(index)))
-.transition(navigation_transition::fade())
-.transition(navigation_transition::none())
+.page_transition(navigation_transition::zoom(PhotoRoute(index)))
+.page_transition(navigation_transition::fade())
+.page_transition(navigation_transition::none())
+.page_transition(PropertyTransition::opacity())
 ```
 
 `navigation_transition::automatic()` is the platform default. Put a transition on the stack
-(`NavigationStack::transition`) only when every push should move the same way. A **matched
+(`NavigationStack::page_transition`) only when every push should move the same way. A **matched
 zoom belongs on the destination**, because the pair it names differs per destination —
 tile 3 and the page it opens share an identity that tile 4 does not. Mark both halves with
 the application's own hashable key type (`K: Hash + Eq + 'static`, such as your route value):
@@ -270,10 +271,10 @@ hero.navigation_transition_destination(PhotoRoute(index))
 Each `NavigationStack` / `NavigationSplitView` resolves matching `(TypeId::of::<K>(), key)`
 pairs into internal non-zero `Id`s for the backend, so application code never constructs raw `Id`s.
 
-A destination that declares nothing inherits the stack's transition. A destination
-declares its arrival once: `NavigationView::transition(..)` or a `.transition(..)` on its
-content root (its insertion on push, removal on pop), not both. A pair whose halves are
-not both on screen falls back to the platform default rather than failing.
+A destination that declares nothing inherits the stack's transition. `.page_transition(..)`
+on a `NavigationView` takes precedence over a `.transition(..)` on its content root without
+conflicting. A pair whose halves are not both on screen falls back to the platform default
+rather than failing.
 
 ## Split views
 
