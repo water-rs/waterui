@@ -77,14 +77,14 @@ fn kit_command<S>(
     env: &Environment,
     resolve_icon: &IconResolver<S>,
 ) -> cocoa_ui::menu::Command {
-    let (symbol, image) = resolve_icon(command.icon.as_ref(), env);
+    let (symbol, image) = resolve_icon(command.icon(), env);
     kit_command_fields(
-        command.label.content().snapshot().to_plain().to_string(),
-        command.subtitle.as_ref().map(ToString::to_string),
+        command.label().content().snapshot().to_plain().to_string(),
+        command.subtitle().map(ToString::to_string),
         symbol,
         image,
-        command.role,
-        command.shortcut.as_ref(),
+        command.role(),
+        command.shortcut(),
     )
 }
 
@@ -95,9 +95,9 @@ pub fn kit_command_for_menu<S>(
     env: &Environment,
     resolve_icon: &IconResolver<S>,
 ) -> cocoa_ui::menu::Command {
-    let (symbol, image) = resolve_icon(menu.icon.as_ref(), env);
+    let (symbol, image) = resolve_icon(menu.icon(), env);
     kit_command_fields(
-        menu.label.content().snapshot().to_plain().to_string(),
+        menu.label().content().snapshot().to_plain().to_string(),
         None,
         symbol,
         image,
@@ -154,7 +154,7 @@ pub fn menu_tree<S: 'static>(
                 if !command.allowed_in_macos_menu_bar() {
                     return None;
                 }
-                let action = command.action.clone();
+                let action = command.action().clone();
                 let env = env.clone();
                 Some(cocoa_ui::menu::MenuTreeNode::Command(
                     kit_command(command, &env, resolve_icon),
@@ -165,7 +165,7 @@ pub fn menu_tree<S: 'static>(
             }
             ResolvedMenuItem::Menu(menu) => Some(cocoa_ui::menu::MenuTreeNode::Submenu(
                 kit_command_for_menu(menu, env, resolve_icon),
-                menu_tree(&menu.items.snapshot(), env, resolve_icon),
+                menu_tree(&menu.items().snapshot(), env, resolve_icon),
             )),
             // macOS: the standard application menu already ends with Quit
             // (`build_default`), so a declared one is dropped rather than

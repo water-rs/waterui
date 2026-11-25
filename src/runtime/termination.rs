@@ -501,12 +501,12 @@ mod tests {
             "Quit"
         };
         assert_eq!(
-            command.label.content().snapshot().to_plain().as_str(),
+            command.label().content().snapshot().to_plain().as_str(),
             label
         );
-        assert_eq!(command.shortcut, Some(Shortcut::new('q').command()));
+        assert_eq!(command.shortcut(), Some(&Shortcut::new('q').command()));
 
-        command.action.run(&env);
+        command.action().run(&env);
         drain();
         // Only a cancellable request asks `on_quit_request`; a required one
         // would skip straight to terminating.
