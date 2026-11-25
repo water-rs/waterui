@@ -13045,7 +13045,7 @@ dependencies = [
 [[package]]
 name = "waterui-chart"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/chart?branch=main#4c1f44531a340bd15d42811d331452726e7becf9"
+source = "git+https://github.com/water-rs/chart?branch=main#f54200bdaf1534ac6a4fa444083fd2930793ea1e"
 dependencies = [
  "bytemuck",
  "nami",
@@ -13993,7 +13993,7 @@ dependencies = [
 [[package]]
 name = "waterui-video-gpu"
 version = "0.4.0"
-source = "git+https://github.com/water-rs/video-gpu?branch=main#29c6745b2d41d79360d48f01795b3479fc3350d5"
+source = "git+https://github.com/water-rs/video-gpu?branch=main#7f9248d69312f7951ad4c8022361f424c16ce78b"
 dependencies = [
  "async-channel",
  "executor-core",

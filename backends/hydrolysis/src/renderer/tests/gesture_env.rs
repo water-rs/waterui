@@ -39,7 +39,7 @@ use waterui::{AnyView, Binding, Color, ViewExt as _};
 use waterui_core::Environment;
 use waterui_core::extract::State;
 use waterui_core::handler::AnyViewBuilder;
-use waterui_interaction::event::{Event, HoverEvent};
+use waterui_interaction::event::{HoverEvent, HoverMove};
 use waterui_layout::stack::hstack;
 
 use super::{MinimalTestTheme, test_environment};
@@ -535,7 +535,7 @@ fn hover_move_location_is_view_local() {
 
     // The handle sits at x = 390 between two 390-point panes.
     let translated_fired = Rc::new(RefCell::new(Vec::new()));
-    let translated = handle().event(Event::HoverMove, record(Rc::clone(&translated_fired)));
+    let translated = handle().event(HoverMove, record(Rc::clone(&translated_fired)));
     let mut runtime = runtime_with(split(AnyView::new(translated)));
     pointer_move(&mut runtime, 400.0, 300.0);
     assert_eq!(
@@ -547,7 +547,7 @@ fn hover_move_location_is_view_local() {
     // Doubled from its top-left corner: window (400, 300) is local (5, 150).
     let scaled_fired = Rc::new(RefCell::new(Vec::new()));
     let scaled = handle()
-        .event(Event::HoverMove, record(Rc::clone(&scaled_fired)))
+        .event(HoverMove, record(Rc::clone(&scaled_fired)))
         .scale_from(2.0, Anchor::TOP_LEFT);
     let mut runtime = runtime_with(split(AnyView::new(scaled)));
     pointer_move(&mut runtime, 400.0, 300.0);
