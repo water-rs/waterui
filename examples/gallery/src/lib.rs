@@ -12,7 +12,7 @@
 //! so any state created *inside* a demo would reset; owning it externally keeps the
 //! controls live (a button's counter actually counts, a toggle stays toggled).
 
-use mdi::Svg;
+use mdi::Icon;
 use mdi::form_textbox;
 use mdi::format_list_bulleted;
 use mdi::gauge;
@@ -120,7 +120,7 @@ impl DemoState {
 /// A single catalog entry: a control with its drawer icon and live demo.
 struct Control {
     title: &'static str,
-    icon: fn() -> Svg,
+    icon: fn() -> Icon,
     section: Section,
     demo: fn(&DemoState) -> AnyView,
 }
@@ -217,7 +217,7 @@ fn catalog(
 /// layers inside the row's pill, leaving an indicator nested in an indicator.
 fn drawer_item<F, Args>(
     title: &'static str,
-    icon: fn() -> Svg,
+    icon: fn() -> Icon,
     active: &Computed<bool>,
     action: F,
 ) -> impl View + use<F, Args>
