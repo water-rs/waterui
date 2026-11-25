@@ -6,7 +6,7 @@
 //! script file at expansion), `.navigation_policy(..)` (it compiles only for an Apple
 //! deployment target of OS 27, which this crate does not set).
 
-use waterui::media::media_picker::Selected;
+use waterui::media::Media;
 use waterui::prelude::*;
 
 // ---------------------------------------------------------------------------
@@ -84,38 +84,35 @@ pub fn media_block_02() {
 
 // ---------------------------------------------------------------------------
 // media.md § "## Media" — rust block 3/15
-// A statement sequence, then a handler-side line with its own receiver.
 // ---------------------------------------------------------------------------
 pub fn media_block_03() {
-    use waterui::media::media_picker::{MediaFilter, MediaPicker, Selected};
+    use waterui::media::Media;
+    use waterui::media::media_picker::{MediaFilter, MediaPicker, PickerStatus};
 
-    let selection: Binding<Option<Selected>> = Binding::default();
-    let _ = {
-        MediaPicker::new("Pick a photo", &selection).filter(MediaFilter::Image) // Image | Video | LivePhoto (the last two need `video`); takes a signal
-    };
+    let avatar: Binding<Option<Media>> = Binding::default();
+    let photos: Binding<Vec<Media>> = Binding::default();
+    let status: Binding<PickerStatus> = Binding::default();
+    let _ = MediaPicker::new("Avatar", &avatar)
+        .filter(MediaFilter::Image)
+        .status(&status);
+    let _ = MediaPicker::multiple("Photos", &photos)
+        .limit(10)
+        .status(&status);
 
     // The remaining filter variants named in the trailing comment.
     let _ = (MediaFilter::Video, MediaFilter::LivePhoto);
 }
 
-/// The handler-side half of block 3, which needs a `Selected` value in hand.
-pub fn media_block_03_handler(selected: Selected) {
-    // In a handler: Selected::load() is synchronous and consumes the selection.
-    let media = selected.load(); // Media::Image(Url) | Video(Url) | LivePhoto(source)
-
-    let _ = media;
-}
-
 // ---------------------------------------------------------------------------
-// media.md § "## Media" (prose): `Selected::media()`, `LivePhoto::new(
+// media.md § "## Media" (prose): `LivePhoto::new(
 // LivePhotoSource::new(image_url, video_url))` and its events, `video(url)`,
 // `video_player(url)`. Not counted as a rust block.
 // ---------------------------------------------------------------------------
-pub fn media_live_prose(selected: &Selected) -> impl View {
+pub fn media_live_prose(media: &Media) -> impl View {
     use waterui::media::live::LivePhotoSource;
-    use waterui::media::{LivePhoto, LivePhotoEvent, Media, Url};
+    use waterui::media::{LivePhoto, LivePhotoEvent, Url};
 
-    let _: &Media = selected.media();
+    let _: &Media = media;
     let _chromeless = waterui::video::video("https://waterui.dev/a.mp4");
     let _controls = waterui::video::video_player("https://waterui.dev/a.mp4");
 
@@ -134,9 +131,8 @@ pub fn media_live_prose(selected: &Selected) -> impl View {
 // media.md § "## Media" — rust block 4/15
 // ---------------------------------------------------------------------------
 pub fn media_block_04() -> impl View {
-    use waterui::video::{
-        self, MediaItem, PlaybackSession, Playlist, Url, VideoEvent, VideoPlayer,
-    };
+    use waterui::layout::ContentMode;
+    use waterui::video::{MediaItem, PlaybackSession, Playlist, Url, VideoEvent, VideoPlayer};
 
     let first_item = MediaItem::from(Url::parse("https://waterui.dev/a.mp4").expect("valid url"));
     let more_items: Vec<MediaItem> = Vec::new();
@@ -149,7 +145,7 @@ pub fn media_block_04() -> impl View {
 
     VideoPlayer::new(session)
         .show_controls(true)
-        .content_mode(video::ContentMode::Fit) // Fit | Fill | Stretch
+        .content_mode(ContentMode::Fit) // Fit | Fill; `.resizable()` stretches per axis
         .on_event(|event| match event {
             VideoEvent::ReadyToPlay | VideoEvent::Ended => (),
             VideoEvent::Error { message: _ } => (),

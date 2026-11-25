@@ -87,8 +87,10 @@ object NativeBridge {
      * 33 = [nativeSetLocale] forwards the primary BCP 47 locale tag from
      * `Configuration` at bind and on every `onConfigurationChanged`.
      * 34 = [nativeSetMetrics] carries `ViewConfiguration.getLongPressTimeout()`.
+     * 35 = [nativeCreateSession] carries `reduceMotion` and [nativeSetReduceMotion]
+     * forwards live `Settings.Global.ANIMATOR_DURATION_SCALE` changes.
      */
-    private const val SCHEMA: Int = 34
+    private const val SCHEMA: Int = 35
 
     /** Applies the pending GPU result on the UI thread. */
     @JvmStatic external fun nativeCompleteFrame(session: Long)
@@ -178,6 +180,7 @@ object NativeBridge {
         painter: SessionPainter?,
         uiThreadServices: Long,
         nightMode: Boolean,
+        reduceMotion: Boolean,
     ): Long
 
     @JvmStatic external fun nativeDestroySession(sessionPtr: Long)
@@ -188,6 +191,12 @@ object NativeBridge {
      * the colour-scheme signal only when the value moved.
      */
     @JvmStatic external fun nativeSetColorScheme(sessionPtr: Long, nightMode: Boolean)
+
+    /**
+     * The system `ANIMATOR_DURATION_SCALE == 0` preference — pushed on bind
+     * and whenever the global animator duration scale setting changes.
+     */
+    @JvmStatic external fun nativeSetReduceMotion(sessionPtr: Long, reduceMotion: Boolean)
 
     /**
      * The configuration's primary BCP 47 locale tag — pushed when a host view

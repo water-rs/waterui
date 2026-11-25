@@ -333,8 +333,9 @@ Each window's content and toolbar keep their types up to the backend, so nothing
 
 The `Window` builder, precisely:
 
-- `Window::new(title, content)` — the title is `impl IntoComputed<Str>` (a
-  reactive window title is free), and `content` is any `Fn() -> impl View`, so a bare
+- `Window::new(title, content)` — the title is `impl IntoText` (literals, `text!(...)`,
+  and reactive strings localize through the environment's `TranslationCatalog`), and
+  `content` is any `Fn() -> impl View`, so a bare
   function item works. The window owns an internal `WindowState::Normal` binding by
   default; chain `.state(&window_state)` when external code reads or drives its
   `Binding<WindowState>`. An empty title is shown as the application's own name;

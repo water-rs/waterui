@@ -312,12 +312,12 @@ button(text!("{edit_label}")).action(|| {}) // a text! satisfies IntoLabel: reac
 
 toggle("Wi-Fi", &enabled)                   // &Binding<bool>
 Toggle::new("Wi-Fi", &enabled).style(ToggleStyle::Switch)     // Automatic | Switch | Checkbox; .switch() / .checkbox()
-slider("Volume", &level).range(0.0..=1.0)   // &Binding<f64>; range is RangeInclusive<f64>
+slider("Volume", &level).range(0.0..=1.0)   // &Binding<T: SliderValue> (f32, f64, ints); range/step accept signals
 slider("Volume", &level).size(ControlSize::Large)      // sliders default ExtraSmall
-    .value_indicator(|v| Str::from(format!("{v:.0}"))) // shown above the thumb while dragging
+    .value_formatter(|v| Str::from(format!("{v:.0}"))) // shown above the thumb while dragging
 slider("Volume", &level).step(0.1).min_value_label("Quiet").max_value_label("Loud")
-stepper("Quantity", &count)                 // &Binding<i32>
-stepper("Items", &count).range(0..=100).step(5)   // range: impl RangeBounds<i32>; step takes a signal
+stepper("Quantity", &count)                 // &Binding<T: StepperValue> (i32, u32, i64, usize, ...)
+stepper("Items", &count).range(0..=100).step(5)   // range and step accept signals
 stepper("Items", &count).value_formatter(|n| format!("{n} items"))   // inline value text; T: Into<StyledStr>
 field("Email", &address)                    // &Binding<Str>
 field("Search", &query).on_submit(handler)  // Return in a line-limited field runs it
@@ -906,11 +906,11 @@ use_env(|manager: SnackbarManager| {
 ```
 
 ```rust
-use waterui::widget::accordion;                        // not in the prelude
+use waterui::widget::disclosure;                       // not in the prelude
 
 card(content).title("Summary").subtitle("This week")   // Card; .style(CardStyle::Outlined) | Elevated | Filled
 suspense(async { load().await })                       // takes a future, not a closure; .loading(view) overrides the spinner
-accordion(header, || body())                           // disclosure; Accordion::with_toggle(&open, ..) controls it
+disclosure("Header", || body())                        // Disclosure::new(header, ..).expanded(&open) controls it
 view.floating()                                        // themed elevated surface (FloatingStyle-aware)
 ```
 

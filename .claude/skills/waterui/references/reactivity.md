@@ -50,7 +50,7 @@ let name  = Binding::container(Str::from("Ada"));  // any Clone type
 let items = Binding::container(Vec::<Row>::new());
 let status = Binding::container("Waiting…");    // Binding<&'static str> — fine for status text
 
-let sel: Binding<Option<Selected>> = Binding::default();   // empty optional selection
+let sel: Binding<Option<Media>> = Binding::default();      // empty optional selection
 let pane: Binding<Pane> = binding(Pane::Inbox);            // general form
 let ws = binding::<WindowState>(WindowState::default());   // …or pin T with a turbofish
 ```

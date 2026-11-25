@@ -128,6 +128,7 @@ mod semantic_runtime;
 #[cfg(hydrolysis_cherenkov)]
 mod shader_paint;
 mod shadow;
+mod shadow_border_signals;
 mod stepper_look;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod structural_transitions;

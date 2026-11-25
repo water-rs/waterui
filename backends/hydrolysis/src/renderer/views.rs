@@ -94,7 +94,7 @@ fn command_node<S>(command: &ResolvedCommand<S>) -> PopupMenuNode {
         action: command.action().clone(),
         disabled: command.is_disabled().clone(),
         shortcut: command.shortcut().cloned(),
-        subtitle: command.subtitle().cloned(),
+        subtitle: command.subtitle().map(Signal::snapshot),
     }
 }
 

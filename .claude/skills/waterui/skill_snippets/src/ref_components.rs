@@ -433,14 +433,14 @@ pub fn components_block_14() {
         Toggle::new("Wi-Fi", &enabled).style(ToggleStyle::Switch)
     };
     let _ = {
-        slider("Volume", &level).range(0.0..=1.0) // &Binding<f64>; range is RangeInclusive<f64>
+        slider("Volume", &level).range(0.0..=1.0) // &Binding<T: SliderValue>; range/step accept signals
     };
     let _ = {
         // sliders default ExtraSmall;
-        // value_indicator shows the formatted value above the thumb while dragging
+        // value_formatter shows the formatted value above the thumb while dragging
         slider("Volume", &level)
             .size(ControlSize::Large)
-            .value_indicator(|v| Str::from(format!("{v:.0}")))
+            .value_formatter(|v| Str::from(format!("{v:.0}")))
     };
     let _ = {
         slider("Volume", &level)
@@ -449,10 +449,10 @@ pub fn components_block_14() {
             .max_value_label("Loud")
     };
     let _ = {
-        stepper("Quantity", &count) // &Binding<i32>
+        stepper("Quantity", &count) // &Binding<T: StepperValue>
     };
     let _ = {
-        // range: impl RangeBounds<i32>; step takes a signal
+        // range and step accept signals
         stepper("Items", &count).range(0..=100).step(5)
     };
     let _ = {
@@ -1401,7 +1401,7 @@ pub fn components_block_36() {
     let header = text("header");
     let view = Divider;
 
-    use waterui::widget::accordion; // not in the prelude
+    use waterui::widget::disclosure; // not in the prelude
 
     let _ = {
         // Card; .style(CardStyle::Outlined) | Elevated | Filled
@@ -1412,8 +1412,8 @@ pub fn components_block_36() {
         suspense(async { load().await })
     };
     let _ = {
-        // disclosure; Accordion::with_toggle(&open, ..) controls it
-        accordion(header, || body())
+        // Disclosure::new(header, ..).expanded(&open) controls it
+        disclosure(header, || body())
     };
     let _ = {
         view.floating() // themed elevated surface (FloatingStyle-aware)
@@ -1422,10 +1422,10 @@ pub fn components_block_36() {
 
 // ---------------------------------------------------------------------------
 // components.md § "## Overlays: snackbars, cards, suspense, full screen" (prose): `CardStyle`, `Suspense::loading` and
-// `Accordion::with_toggle`. Not counted as a rust block.
+// `Disclosure::expanded`. Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn components_overlay_extras_prose() {
-    use waterui::widget::Accordion;
+    use waterui::widget::Disclosure;
 
     let open = Binding::bool(false);
 
@@ -1433,7 +1433,7 @@ pub fn components_overlay_extras_prose() {
     let _ = card(text("c")).style(CardStyle::Elevated);
     let _ = card(text("c")).style(CardStyle::Filled);
     let _ = suspense(async { text("x") }).loading(text("loading"));
-    let _ = Accordion::with_toggle(&open, text("h"), || text("b"));
+    let _ = Disclosure::new(text("h"), || text("b")).expanded(&open);
 }
 
 // ---------------------------------------------------------------------------

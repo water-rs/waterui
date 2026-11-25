@@ -146,20 +146,18 @@ fn live_photo(still_image: Url, motion_video: Url) -> LivePhoto {
 
 ```rust
 use waterui::prelude::*;
-use waterui_media::{MediaPicker, media_picker::{MediaFilter, Selected}};
+use waterui_media::{Media, MediaPicker, PickerStatus, media_picker::MediaFilter};
 
 fn picker_demo() -> impl View {
-    let selection = binding::<Option<Selected>>(None);
+    let avatar = binding::<Option<Media>>(None);
+    let photos = binding::<Vec<Media>>(Vec::new());
+    let status = binding(PickerStatus::Idle);
 
     vstack((
-        MediaPicker::new("Choose Video", &selection)
-            .filter(MediaFilter::Video),
-
-        // Display selected media
-        selection.snapshot().map(|sel| {
-            // Load media asynchronously and display
-            vstack((text("Media selected"),))
-        }),
+        MediaPicker::new("Avatar", &avatar).filter(MediaFilter::Image),
+        MediaPicker::multiple("Photos", &photos)
+            .limit(10)
+            .status(&status),
     ))
 }
 ```
@@ -202,11 +200,11 @@ let video = Media::Video(Url::new(
 - `Url` - Type-safe URL representation (web, local, data, blob)
 - `Media` - Unified enum for Image, Video, or `LivePhoto`
 - `LivePhotoSource` - Pairing of image and video URLs for Live Photos
-- `video::ContentMode` - How the picture fills its bounds: Fit, Fill, Stretch
+- `ContentMode` (re-exported from `waterui-layout`) - Aspect-preserving framing (`Fit`, `Fill`); call `.resizable()` on `Video` / `VideoPlayer` to stretch without preserving aspect ratio
 - `Volume` - f32 type with special encoding for mute state
 - `PhotoEvent`, `VideoEvent`, `LivePhotoEvent` - Media event types (loaded, error, buffering, motion, etc.)
-- `MediaFilter` - Filters for media picker (Image, Video, `LivePhoto`, combinators)
-- `Selected` - Selected media item with async loading capability
+- `MediaFilter` - Filters for media picker (Image, Video, `LivePhoto`)
+- `PickerStatus` - Picker presentation/load lifecycle (`Idle`, `Loading`, `Failed(Str)`)
 
 ### Image Processing (image module)
 

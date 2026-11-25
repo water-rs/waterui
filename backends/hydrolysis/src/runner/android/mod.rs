@@ -102,7 +102,9 @@ pub fn register_app<W: Windows, M: AppMenuBar>(
 ) {
     let factory: AppFactory = Box::new(move || {
         let (app, style) = factory();
-        let parts = app.into_parts().map_windows(RootWindows::collect);
+        let parts = app.into_parts();
+        let env = parts.env.clone();
+        let parts = parts.map_windows(|windows| RootWindows::collect(windows, &env));
         #[cfg(feature = "menu")]
         let parts =
             parts.map_menu_bar(|menu_bar| menu_bar.into_declared().map(DeclaredMenuBar::new));

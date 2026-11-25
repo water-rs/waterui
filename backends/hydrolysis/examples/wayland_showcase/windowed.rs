@@ -40,8 +40,8 @@ fn main_view() -> impl View {
     let username = binding("lexo");
     let password = binding(Secure::from_str("hunter2").expect("static secure seed must parse"));
     let toggle_value = binding(true);
-    let slider_value = binding(0.62_f64);
-    let stepper_value = binding(4_i32);
+    let slider_value = binding::<f64>(0.62);
+    let stepper_value = binding::<i32>(4);
     let list_editing = binding(false);
     let render_mode = binding(RenderMode::Balanced);
     let diagnostics_rows = vec![
