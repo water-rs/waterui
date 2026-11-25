@@ -102,7 +102,7 @@ pub mod prelude {
     pub use super::layout::*;
     #[cfg(feature = "navigation")]
     pub use super::navigation::{self, *};
-    pub use super::reactive::collection::{List as ReactiveList, SignalCollection};
+    pub use super::reactive::collection::{SignalCollection, StateList};
     pub use super::style::*;
     pub use super::views::ForEach;
     pub use waterui_core::dynamic::{DynamicHandler, watch};
@@ -290,9 +290,10 @@ pub use waterui_assets::{
 };
 #[cfg(all(feature = "assets", target_arch = "wasm32"))]
 pub use waterui_assets::{AssetError, AssetKind, Data};
-/// `include_web!(resources, "web")` — the one-macro web frontend. Its expansion speaks
+/// `include_web!("web")` — the one-macro web frontend. Its expansion speaks
 /// [`webview`](crate::webview)'s asset-origin API and serves a staged
-/// [`Bundle`], so it is exported only when both features are on.
+/// [`Bundle`] resolved from the rendering environment's [`ResourceContext`], so
+/// it is exported only when both features are on.
 #[doc(inline)]
 #[cfg(all(feature = "webview", feature = "assets"))]
 pub use waterui_assets_macros::include_web;

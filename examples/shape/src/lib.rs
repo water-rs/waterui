@@ -26,7 +26,7 @@ const HDR_SHAPES_HEIGHT: f32 = 60.0;
 /// Demo: Circle shape
 fn circle_demo() -> impl View {
     vstack((
-        text("Circle").size(18.0),
+        text("Circle").font_size(18.0),
         "Inscribed in the view bounds",
         hstack((
             // Filled circle
@@ -47,7 +47,7 @@ fn circle_demo() -> impl View {
 /// Demo: Ellipse shape
 fn ellipse_demo() -> impl View {
     vstack((
-        text("Ellipse").size(18.0),
+        text("Ellipse").font_size(18.0),
         "Fills the view bounds as an ellipse",
         hstack((
             // Filled ellipse
@@ -68,7 +68,7 @@ fn ellipse_demo() -> impl View {
 /// Demo: Capsule shape
 fn capsule_demo() -> impl View {
     vstack((
-        text("Capsule").size(18.0),
+        text("Capsule").font_size(18.0),
         "Pill shape with fully rounded ends",
         hstack((
             // Horizontal capsule
@@ -92,7 +92,7 @@ fn capsule_demo() -> impl View {
 /// Demo: Rectangle shapes
 fn rectangle_demo() -> impl View {
     vstack((
-        text("Rectangle").size(18.0),
+        text("Rectangle").font_size(18.0),
         "Sharp corners",
         hstack((
             Rectangle.fill(Color::srgb_hex("#EF4444")).size(80.0, 60.0),
@@ -111,7 +111,7 @@ fn rectangle_demo() -> impl View {
 /// Demo: Rounded rectangle
 fn rounded_rectangle_demo() -> impl View {
     vstack((
-        text("Rounded Rectangle").size(18.0),
+        text("Rounded Rectangle").font_size(18.0),
         "Uniform corner radius (fraction of shorter side)",
         hstack((
             // Small radius
@@ -135,7 +135,7 @@ fn rounded_rectangle_demo() -> impl View {
 /// Demo: Uneven rounded rectangle
 fn uneven_rounded_rectangle_demo() -> impl View {
     vstack((
-        text("Uneven Rounded Rectangle").size(18.0),
+        text("Uneven Rounded Rectangle").font_size(18.0),
         "Independent corner radii",
         hstack((
             // Top rounded only
@@ -204,7 +204,7 @@ fn custom_path_demo() -> impl View {
         .close();
 
     vstack((
-        text("Custom Paths").size(18.0),
+        text("Custom Paths").font_size(18.0),
         "Build arbitrary shapes with Path",
         hstack((
             triangle.fill(Color::srgb_hex("#FBBF24")).size(70.0, 70.0),
@@ -246,7 +246,7 @@ fn hdr_shape_demo(show_hdr: &Binding<bool>) -> impl View + use<> {
     let sdr_opacity = show_hdr.select(0.0, 1.0);
 
     vstack((
-        text("HDR Shapes").size(18.0),
+        text("HDR Shapes").font_size(18.0),
         "Extended range colors via headroom",
         Toggle::new("Show HDR", &show_hdr),
         zstack((
@@ -291,7 +291,7 @@ fn create_star(points: u16, inner_ratio: f32) -> Path {
 /// Demo: Clipping showcase
 fn clip_showcase() -> impl View {
     vstack((
-        text("Clipping Views").size(18.0),
+        text("Clipping Views").font_size(18.0),
         "Apply shapes as masks to any view",
         hstack((
             // Circle clipped gradient
@@ -353,7 +353,7 @@ fn create_hexagon() -> Path {
 /// Demo: Shape layout behavior
 fn layout_demo() -> impl View {
     vstack((
-        text("Layout Behavior").size(18.0),
+        text("Layout Behavior").font_size(18.0),
         "Shapes fill available space like Color",
         hstack((
             // Shape fills container
@@ -378,7 +378,7 @@ fn layout_demo() -> impl View {
 /// Demo: Morphing animation between built-in shapes.
 fn morph_demo() -> impl View {
     vstack((
-        text("Morph Animation").size(18.0),
+        text("Morph Animation").font_size(18.0),
         "Shape morphing for built-in shapes",
         hstack((
             Circle
@@ -410,7 +410,7 @@ pub fn demo() -> impl View {
     scroll(
         vstack((
             // Header
-            text("WaterUI Shape Examples").size(28.0),
+            text("WaterUI Shape Examples").font_size(28.0),
             "Shapes and clipping demonstrations",
             Divider,
             // Basic shapes group

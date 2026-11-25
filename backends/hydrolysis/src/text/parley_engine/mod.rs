@@ -630,7 +630,7 @@ fn push_text_style(
     // preferred metrics (`ResolvedFont` documents it), which parley spells
     // `MetricsRelative(1.0)`. Leaving the span unset would inherit the
     // paragraph default instead — the theme slot's absolute pitch — so a
-    // resized run (whose `Font::size` drops the slot's metrics) would space
+    // resized run (whose `Font::font_size` drops the slot's metrics) would space
     // on the *unresized* face's line height: a 40 pt run inside a 16/24
     // pitch draws its glyph tops above the laid-out frame
     // (water-rs/waterui#2719).

@@ -25,7 +25,7 @@
 mod support;
 
 use nami::Binding;
-use nami::collection::SignalCollection;
+use nami::collection::{SignalCollection, StateList};
 use waterui::component::list::List;
 use waterui::component::table::{col, table};
 use waterui::component::{Link, button, field, label, progress, slider, stepper, toggle};
@@ -1114,7 +1114,7 @@ fn ts_tabs_is_a_tabs() {
                 .collect::<Vec<_>>();
             Tabs::new(
                 &selection,
-                ForEach::new(nami::collection::List::from(ids), move |id: SelfId<Str>| {
+                ForEach::new(StateList::from(ids), move |id: SelfId<Str>| {
                     tabs.get(&id.into_inner())
                         .expect("a keyed tab collection reports a tab for every id")
                         .clone()

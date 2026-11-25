@@ -840,7 +840,7 @@ mod tests {
         use alloc::vec;
         use alloc::vec::Vec;
         use core::cell::{Cell, RefCell};
-        use nami::collection::List as ReactiveList;
+        use nami::collection::StateList;
         use waterui_core::id::Identifiable;
 
         use crate::component::text;
@@ -862,12 +862,12 @@ mod tests {
         let deleted_ids = Rc::new(RefCell::new(Vec::new()));
         let moved_events = Rc::new(RefCell::new(Vec::new()));
 
-        let first = ReactiveList::from(vec![
+        let first = StateList::from(vec![
             Entry { id: 10, title: "A" },
             Entry { id: 20, title: "B" },
             Entry { id: 30, title: "C" },
         ]);
-        let second = ReactiveList::from(vec![
+        let second = StateList::from(vec![
             Entry {
                 id: 100,
                 title: "X",

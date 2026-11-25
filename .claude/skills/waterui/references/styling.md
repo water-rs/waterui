@@ -350,7 +350,7 @@ Icons come from packaged icon-set crates. **Pick one set per app** and depend on
 |---|---|
 | `waterui-icons-material-icon` | Material Design Icons (Pictogrammers), SVG |
 | `waterui-icons-lucide` | Lucide, SVG |
-| `waterui-icons-fontawesome7` | Font Awesome 7 Free (webfont by default, SVG optional) — constants such as `fa::solid::HOUSE`, `.with_size(32.0)` |
+| `waterui-icons-fontawesome7` | Font Awesome 7 Free (webfont by default, SVG optional) — constants such as `fa::solid::HOUSE`, `.with_font_size(32.0)` |
 | `waterui-apple` (`SfSymbol`) | Type-safe Apple SF Symbols (`SfSymbol::HOUSE`, gated by deployment target) — **Apple platforms only** |
 
 ```rust

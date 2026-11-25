@@ -5,7 +5,8 @@
 //! watcher metadata's animation, the control's action writes user edits back
 //! into the binding, `Disabled` pushes `set_enabled`, and the label renders
 //! as a mounted child beside the control. The payload's style arrives
-//! resolved — `ToggleStyle::resolved` owns the platform default — and picks
+//! resolved — [`ToggleStyle::resolve`] reads the environment and the
+//! backend's installed platform default — and picks
 //! the control; the payload's stretch axis picks how the row fills its
 //! offer (`docs/layout-spec.md` §3, §6).
 
@@ -38,8 +39,8 @@ use crate::contract::RenderContext;
 use platform::{Kind, StateChange, Toggle};
 
 /// The control a resolved style draws. The native payload never carries
-/// `Automatic`: `ToggleConfig`'s resolver replaces it with the platform
-/// default before the backend sees the config.
+/// `Automatic`: [`ToggleStyle::resolve`] replaces it with the environment
+/// or platform default before the backend sees the config.
 ///
 /// An unresolved `Automatic` or a style the backend does not know is a
 /// contract violation of the framework above; the switch is drawn.
@@ -264,21 +265,42 @@ mod tests {
 
     #[test]
     fn kind_maps_resolved_styles_like_the_swift_table() {
+        use crate::dispatch;
+        use waterui::{Environment, Plugin as _};
+
+        let mut default_env = Environment::new();
+        dispatch::install(&mut default_env);
         #[cfg(target_os = "macos")]
-        let table = [
-            (ToggleStyle::Automatic, Kind::Checkbox),
-            (ToggleStyle::Switch, Kind::Switch),
-            (ToggleStyle::Checkbox, Kind::Checkbox),
-        ];
+        let default_kind = Kind::Checkbox;
         #[cfg(target_os = "ios")]
-        let table = [
-            (ToggleStyle::Automatic, Kind::Switch),
-            (ToggleStyle::Switch, Kind::Switch),
-            (ToggleStyle::Checkbox, Kind::Checkbox),
-        ];
-        for (style, expected) in table {
-            assert_eq!(kind(style.resolved()), expected);
-        }
+        let default_kind = Kind::Switch;
+
+        assert_eq!(
+            kind(ToggleStyle::Automatic.resolve(&default_env)),
+            default_kind
+        );
+        assert_eq!(
+            kind(ToggleStyle::Switch.resolve(&default_env)),
+            Kind::Switch
+        );
+        assert_eq!(
+            kind(ToggleStyle::Checkbox.resolve(&default_env)),
+            Kind::Checkbox
+        );
+
+        let mut switch_env = default_env.clone();
+        ToggleStyle::Switch.install(&mut switch_env);
+        assert_eq!(
+            kind(ToggleStyle::Automatic.resolve(&switch_env)),
+            Kind::Switch
+        );
+
+        let mut checkbox_env = default_env;
+        ToggleStyle::Checkbox.install(&mut checkbox_env);
+        assert_eq!(
+            kind(ToggleStyle::Automatic.resolve(&checkbox_env)),
+            Kind::Checkbox
+        );
     }
 
     #[test]

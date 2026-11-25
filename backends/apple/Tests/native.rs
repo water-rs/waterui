@@ -167,6 +167,13 @@ fn navigation_trials() -> Vec<Trial> {
             },
         ),
         Trial::test(
+            "navigation::a_searchable_page_submits_tracks_active_and_dismisses",
+            || {
+                navigation::a_searchable_page_submits_tracks_active_and_dismisses();
+                Ok(())
+            },
+        ),
+        Trial::test(
             "navigation::a_hidden_tab_split_releases_the_toolbar_sidebar_space",
             || {
                 navigation::a_hidden_tab_split_releases_the_toolbar_sidebar_space();
@@ -1030,7 +1037,7 @@ mod resolve {
     use waterui::component::slider::slider;
     use waterui::component::stepper::stepper;
     use waterui::component::text_field::TextField;
-    use waterui::component::toggle::Toggle;
+    use waterui::component::toggle::{Toggle, ToggleStyle};
     use waterui::filter::Opacity;
     use waterui::layout::Spacer;
     use waterui::reactive::binding;
@@ -1243,28 +1250,42 @@ mod resolve {
         let cases = [
             (
                 "switch",
-                Toggle::new("Wi-Fi", &on).switch(),
+                AnyView::new(Toggle::new("Wi-Fi", &on).switch()),
                 StretchAxis::Horizontal,
             ),
             (
                 "hidden-label switch",
-                Toggle::new("Wi-Fi", &on).switch().hide_label(),
+                AnyView::new(Toggle::new("Wi-Fi", &on).switch().hide_label()),
                 StretchAxis::None,
             ),
             (
                 "checkbox",
-                Toggle::new("Wi-Fi", &on).checkbox(),
+                AnyView::new(Toggle::new("Wi-Fi", &on).checkbox()),
                 StretchAxis::None,
             ),
             (
                 "hidden-label checkbox",
-                Toggle::new("Wi-Fi", &on).checkbox().hide_label(),
+                AnyView::new(Toggle::new("Wi-Fi", &on).checkbox().hide_label()),
                 StretchAxis::None,
             ),
-            ("automatic", Toggle::new("Wi-Fi", &on), automatic),
+            (
+                "automatic",
+                AnyView::new(Toggle::new("Wi-Fi", &on)),
+                automatic,
+            ),
             (
                 "hidden-label automatic",
-                Toggle::new("Wi-Fi", &on).hide_label(),
+                AnyView::new(Toggle::new("Wi-Fi", &on).hide_label()),
+                StretchAxis::None,
+            ),
+            (
+                "environment switch",
+                AnyView::new(Toggle::new("Wi-Fi", &on).with(ToggleStyle::Switch)),
+                StretchAxis::Horizontal,
+            ),
+            (
+                "environment checkbox",
+                AnyView::new(Toggle::new("Wi-Fi", &on).with(ToggleStyle::Checkbox)),
                 StretchAxis::None,
             ),
         ];
@@ -2550,14 +2571,20 @@ mod menus {
 /// namespace the `UIKit` cases own on iOS.
 #[cfg(all(target_os = "macos", feature = "native-test"))]
 mod navigation {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
     use cocoa_ui::appkit::{Segment, SegmentedControl};
+    use cocoa_ui::objc2::sel;
     use cocoa_ui::objc2_app_kit::{
         NSControlSize, NSLayoutAttribute, NSSearchField, NSSegmentDistribution, NSSegmentStyle,
-        NSSegmentedControl, NSSplitView, NSSplitViewController, NSTrackingSeparatorToolbarItem,
+        NSSegmentedControl, NSSplitView, NSSplitViewController,
+        NSStandardKeyBindingResponding as _, NSTrackingSeparatorToolbarItem,
     };
     use cocoa_ui::{PlatformView, Retained, view};
     use objc2::ClassType as _;
     use objc2::runtime::NSObjectProtocol as _;
+    use waterui::Signal as _;
     use waterui::Str;
     use waterui::navigation::{
         NavigationSplitView, NavigationToolbar, NavigationToolbarItem, NavigationToolbarPlacement,
@@ -2579,7 +2606,9 @@ mod navigation {
         let mtm = mtm();
         let query = binding(Str::from(""));
         let page = resolve::render(
-            NavigationView::new("Title", text("body")).searchable(&query, "Search mail"),
+            NavigationView::new("Title", text("body"))
+                .searchable(&query)
+                .search_prompt("Search mail"),
         );
         let window = leaf::attach(mtm, page.view());
         // The platform's reference window: the metrics were measured at an
@@ -2640,6 +2669,105 @@ mod navigation {
         assert!(
             (field_center_x - window_center_x).abs() <= 1.0,
             "the platform centres the field in the window: field at {field_center_x}, window at {window_center_x}"
+        );
+    }
+
+    /// `.searchable` wires `search_active`, `on_search_submit`, optional prompt,
+    /// and `search_suggestions` on `AppKit`'s `NSSearchField`.
+    pub fn a_searchable_page_submits_tracks_active_and_dismisses() {
+        let mtm = mtm();
+        let query = binding(Str::from("inbox"));
+        let active = binding(false);
+        let submits = Rc::new(Cell::new(0usize));
+        let suggestion_builds = Rc::new(Cell::new(0usize));
+        let page = resolve::render(
+            NavigationView::new("Title", text("body"))
+                .searchable(&query)
+                .search_active(&active)
+                .on_search_submit({
+                    let submits = Rc::clone(&submits);
+                    move || submits.set(submits.get() + 1)
+                })
+                .search_suggestions({
+                    let suggestion_builds = Rc::clone(&suggestion_builds);
+                    move || {
+                        suggestion_builds.set(suggestion_builds.get() + 1);
+                        text("Suggestion row")
+                    }
+                }),
+        );
+        let window = leaf::attach(mtm, page.view());
+        window.set_content_rect(cocoa_ui::Rect::new(0.0, 0.0, 800.0, 600.0), false);
+        window.order_front();
+        let native = window.native();
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                native.titlebarAccessoryViewControllers().count() == 1
+            }),
+            "the searchable page must install a titlebar accessory"
+        );
+        assert_eq!(
+            suggestion_builds.get(),
+            0,
+            "search suggestions must build lazily only when active"
+        );
+        let accessory = native.titlebarAccessoryViewControllers().objectAtIndex(0);
+        let field = accessory
+            .view()
+            .subviews()
+            .iter()
+            .find_map(|sub| sub.downcast::<NSSearchField>().ok())
+            .expect("the accessory row hosts an NSSearchField");
+
+        // Programmatic activation focuses the field, updates `active`, and opens the suggestions panel.
+        active.set(true);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                field.currentEditor().is_some()
+                    && native.childWindows().is_some_and(|w| !w.is_empty())
+            }),
+            "setting search_active(true) must focus the field and show suggestions"
+        );
+        assert!(active.snapshot());
+        assert_eq!(
+            suggestion_builds.get(),
+            1,
+            "activating search must build suggestions lazily once"
+        );
+        let panel_window = native
+            .childWindows()
+            .and_then(|children| children.iter().next())
+            .expect("suggestions panel attached");
+        let panel_content = panel_window
+            .contentView()
+            .expect("suggestions panel has contentView");
+        let mounted_suggestions = panel_content
+            .subviews()
+            .into_iter()
+            .next()
+            .expect("suggestions panel mounts live view");
+        assert!(
+            mounted_suggestions.frame().size.width >= field.frame().size.width,
+            "suggestions panel child must receive full proposal width: {:?}",
+            mounted_suggestions.frame()
+        );
+
+        // Sending `insertNewline:` fires `on_search_submit` once.
+        let responder = native
+            .firstResponder()
+            .expect("focused search field editor is first responder");
+        // SAFETY: `insertNewline:` is the standard `NSResponder` newline command.
+        unsafe { responder.doCommandBySelector(sel!(insertNewline:)) };
+        assert_eq!(submits.get(), 1);
+
+        // Setting `search_active` back to `false` ends editing and closes suggestions.
+        active.set(false);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                field.currentEditor().is_none()
+                    && native.childWindows().is_none_or(|w| w.is_empty())
+            }),
+            "setting search_active(false) must dismiss the field and hide suggestions"
         );
     }
 
@@ -8057,7 +8185,6 @@ mod owner_lifetimes {
     use waterui::component::lazy::Lazy;
     use waterui::prelude::*;
     use waterui::reactive::binding;
-    use waterui::reactive::collection::List as ReactiveList;
     use waterui::views::ForEach;
     use waterui_core::layout::ProposalSize;
 
@@ -8107,10 +8234,7 @@ mod owner_lifetimes {
     /// The hierarchy the repairs cover: `.size`/`padding` wrappers around
     /// `hstack`/`zstack` containers plus a lazy `ForEach` membership — one
     /// tree holding every repaired owner class.
-    fn hierarchy(
-        track: &waterui::reactive::Binding<String>,
-        items: &ReactiveList<Row>,
-    ) -> impl View {
+    fn hierarchy(track: &waterui::reactive::Binding<String>, items: &StateList<Row>) -> impl View {
         let track = track.clone();
         let items = items.clone();
         zstack((
@@ -8226,7 +8350,7 @@ mod owner_lifetimes {
         // afterwards names a real retainer, not a pooled autorelease.
         let mut env = resolve::env();
         let track = binding(String::from("first"));
-        let mut items = ReactiveList::from(vec![Row { id: 1 }, Row { id: 2 }]);
+        let mut items = StateList::from(vec![Row { id: 1 }, Row { id: 2 }]);
         // The theme `Foreground` slot backs every unstyled chunk — the
         // `label_leaf` default watcher this fix touches. Reinstall it
         // from a binding the test keeps, so a live update is reachable.
@@ -9030,7 +9154,7 @@ mod scroll {
 
         vstack((
             text("Interactive glass answers touch and hover with the platform's own effects.")
-                .size(15.0),
+                .font_size(15.0),
             spacer().size(100.0, 2000.0),
         ))
         .padding()
@@ -13545,8 +13669,7 @@ mod transition {
     use waterui::component::Dynamic;
     use waterui::component::label::label;
     use waterui::component::lazy::Lazy;
-    use waterui::prelude::{VStack, hstack, spacer, text, vstack};
-    use waterui::reactive::collection::List as ReactiveList;
+    use waterui::prelude::{StateList, VStack, hstack, spacer, text, vstack};
     use waterui::views::ForEach;
     use waterui_apple::contract::Mounted;
     use waterui_apple::native_test_support::transition::ManualTransitionClock;
@@ -15175,7 +15298,7 @@ mod transition {
     /// re-measures live members but never the ghost.
     pub fn collection_ghost_keeps_its_last_placement() {
         let _mtm = mtm();
-        let mut items = ReactiveList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
+        let mut items = StateList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
         let leaf = super::resolve::render(VStack::for_each(items.clone(), |row: Row| {
             let height = match row.id % 3 {
                 0 => 20.0,
@@ -15250,7 +15373,7 @@ mod transition {
     /// ghost stays ahead of an insertion at the head, as in Hydrolysis.
     pub fn ghosts_rebase_across_later_edits() {
         let _mtm = mtm();
-        let mut items = ReactiveList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
+        let mut items = StateList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
         // Only row 2 claims a transition — an anchor that ghosts would
         // make "first" ambiguous.
         let leaf = super::resolve::render(VStack::for_each(items.clone(), |row: Row| {
@@ -15317,7 +15440,7 @@ mod transition {
     /// completes on its own clock.
     pub fn reinsertion_creates_a_fresh_instance_beside_the_ghost() {
         let _mtm = mtm();
-        let mut items = ReactiveList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
+        let mut items = StateList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
         let flags: DiedFlags = Rc::new(RefCell::new(Vec::new()));
         let leaf = super::resolve::render(VStack::for_each(items.clone(), {
             let flags = Rc::clone(&flags);
@@ -15389,7 +15512,7 @@ mod transition {
     pub fn unplaced_lazy_row_releases_immediately() {
         let _mtm = mtm();
         let rows: Vec<Row> = (0..40).map(|id| Row { id }).collect();
-        let mut items = ReactiveList::from(rows);
+        let mut items = StateList::from(rows);
         let leaf = super::resolve::render(Lazy::vstack(ForEach::new(items.clone(), |row: Row| {
             Metadata::new(
                 hstack((text(format!("row {}", row.id)), spacer())).size(300.0, 30.0),
@@ -15430,7 +15553,7 @@ mod transition {
         /// How far pixel alignment may move one member against another.
         const PIXEL: f64 = 0.5;
         let _mtm = mtm();
-        let mut items = ReactiveList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
+        let mut items = StateList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
         // Only the middle row claims a transition.
         let leaf = super::resolve::render(VStack::for_each(items.clone(), |row: Row| {
             let height = match row.id {
@@ -15480,7 +15603,7 @@ mod transition {
     /// order, as the fixed path's `reconcile_subviews` keeps it.
     pub fn an_insert_before_existing_members_paints_in_item_order() {
         let _mtm = mtm();
-        let mut items = ReactiveList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
+        let mut items = StateList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
         let leaf = super::resolve::render(VStack::for_each(items.clone(), |row: Row| {
             hstack((text(format!("row {}", row.id)), spacer())).size(200.0, 20.0)
         }));
@@ -15703,7 +15826,7 @@ mod transition {
 
     /// A single-selection list whose every row claims the row transition
     /// — fixed-height rows, so the frozen height is a real contract.
-    fn row_list(items: &ReactiveList<Row>) -> AnyView {
+    fn row_list(items: &StateList<Row>) -> AnyView {
         use waterui::component::list::List;
         use waterui::reactive::binding;
         AnyView::new(
@@ -15721,7 +15844,7 @@ mod transition {
     /// row's last measurement, and completion deletes the row.
     pub fn list_ghost_row_keeps_its_frozen_height() {
         let _mtm = mtm();
-        let mut items = ReactiveList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
+        let mut items = StateList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
         let leaf = super::resolve::render(row_list(&items));
         let _window = super::mount_and_order_front(leaf.view());
         autoreleasepool(|_| view::layout_immediately(leaf.view()));
@@ -15752,7 +15875,7 @@ mod transition {
     /// accessibility tree.
     pub fn list_ghost_row_is_not_selectable_or_accessible() {
         let _mtm = mtm();
-        let mut items = ReactiveList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
+        let mut items = StateList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
         let leaf = super::resolve::render(row_list(&items));
         let _window = super::mount_and_order_front(leaf.view());
         autoreleasepool(|_| view::layout_immediately(leaf.view()));
@@ -15784,7 +15907,7 @@ mod transition {
     /// own transition ramps the host alpha from the absent sample.
     pub fn list_claimed_insertion_plays_without_row_animation() {
         let _mtm = mtm();
-        let mut items = ReactiveList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
+        let mut items = StateList::from(vec![Row { id: 1 }, Row { id: 2 }, Row { id: 3 }]);
         let leaf = super::resolve::render(row_list(&items));
         let _window = super::mount_and_order_front(leaf.view());
         autoreleasepool(|_| view::layout_immediately(leaf.view()));
@@ -16354,7 +16477,7 @@ mod transition {
     #[cfg(feature = "gpu_surface")]
     fn blur_picture() -> impl waterui_backend_core::View {
         use waterui::prelude::{text, vstack};
-        vstack((text("BLUR").size(96.0), gpu_picture()))
+        vstack((text("BLUR").font_size(96.0), gpu_picture()))
     }
 
     /// The blur transition's animation length — on a
@@ -17632,7 +17755,7 @@ mod row_major_table {
     use waterui::component::table::{SortDirection, Table, TableColumn, TableSort};
     use waterui::component::text;
     use waterui::id::Identifiable;
-    use waterui::reactive::collection::List as ReactiveList;
+    use waterui::reactive::collection::StateList;
     use waterui::reactive::{Binding, Signal as _};
     use waterui_core::layout::ProposalSize;
 
@@ -17675,7 +17798,7 @@ mod row_major_table {
     }
 
     fn selectable_sortable_table_with_non_text_cell() {
-        let people = ReactiveList::from(vec![
+        let people = StateList::from(vec![
             Person { id: 1, name: "Ada" },
             Person {
                 id: 2,

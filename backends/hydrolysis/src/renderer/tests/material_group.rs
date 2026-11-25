@@ -12,9 +12,9 @@ use std::time::{Duration, Instant};
 
 #[cfg(feature = "accessibility")]
 use accesskit::Role;
-use nami::collection::List as Membership;
 #[cfg(feature = "accessibility")]
 use nami::collection::SignalCollection;
+use nami::collection::StateList;
 use nami::{Binding, Computed, SignalExt as _};
 use waterui::FilterViewExt as _;
 use waterui::ViewExt as _;
@@ -1217,7 +1217,7 @@ fn a_partial_re_record_keeps_the_scope_anchored() {
 /// ordered child list against the mirror (water-rs/waterui#2097, MEDIUM-1).
 #[test]
 fn a_scope_moving_between_lists_keeps_one_owner() {
-    let mut rows: Membership<SelfId<u64>> = Membership::from(vec![SelfId::new(1)]);
+    let mut rows: StateList<SelfId<u64>> = StateList::from(vec![SelfId::new(1)]);
     let mut runtime = {
         let rows = rows.clone();
         let builder = AnyViewBuilder::<AnyView>::new(move || {
@@ -1296,7 +1296,7 @@ fn a_scope_moving_between_lists_keeps_one_owner() {
 
 #[test]
 fn a_scope_enter_completion_keeps_one_direct_owner() {
-    let mut rows: Membership<SelfId<u64>> = Membership::from(vec![]);
+    let mut rows: StateList<SelfId<u64>> = StateList::from(vec![]);
     let builder = {
         let rows = rows.clone();
         AnyViewBuilder::<AnyView>::new(move || {
@@ -1360,7 +1360,7 @@ fn a_scope_enter_completion_keeps_one_direct_owner() {
 
 #[test]
 fn a_scope_reinserted_during_exit_keeps_one_direct_owner() {
-    let mut rows: Membership<SelfId<u64>> = Membership::from(vec![SelfId::new(1)]);
+    let mut rows: StateList<SelfId<u64>> = StateList::from(vec![SelfId::new(1)]);
     let builder = {
         let rows = rows.clone();
         AnyViewBuilder::<AnyView>::new(move || {
