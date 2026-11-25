@@ -595,34 +595,6 @@ pub trait PositionExt: View + Sized {
         }
     }
 
-    #[doc(hidden)]
-    fn position_anchor(
-        self,
-        anchor: UnitPoint,
-        x: impl IntoSignalF32,
-        y: impl IntoSignalF32,
-    ) -> PositionedChild<Self> {
-        self.position(x, y).anchor(anchor)
-    }
-
-    #[doc(hidden)]
-    fn position_in_anchor(self, anchor: UnitPoint, position: UnitPoint) -> PositionedChild<Self> {
-        self.position_in(position).anchor(anchor)
-    }
-
-    #[doc(hidden)]
-    fn position_in_offset(
-        self,
-        anchor: UnitPoint,
-        position: UnitPoint,
-        offset_x: impl IntoSignalF32,
-        offset_y: impl IntoSignalF32,
-    ) -> PositionedChild<Self> {
-        self.position_in(position)
-            .anchor(anchor)
-            .offset(offset_x, offset_y)
-    }
-
     /// Position using edge pins and optional explicit size.
     ///
     /// # Example
