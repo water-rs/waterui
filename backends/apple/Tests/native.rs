@@ -10765,11 +10765,15 @@ mod webview {
 /// through the generic tree must stay bounded to the realized ones.
 #[cfg(target_os = "macos")]
 mod list_ax {
+    use cocoa_ui::appkit::ListTableView;
+    use cocoa_ui::objc2_app_kit::{NSButton, NSTableViewDataSource};
+    use cocoa_ui::{PlatformView, view};
     use objc2::msg_send;
     use objc2::runtime::AnyObject;
     use objc2_app_kit::{NSAccessibilityChildrenAttribute, NSTableView};
     use objc2_foundation::{NSArray, NSIndexSet};
     use waterui::component::text::Text;
+    use waterui::id::Identifiable;
     use waterui::layout::scroll::ScrollController;
     use waterui_apple::native_test_support::{row_item, row_list, sectioned_row_list};
 
@@ -10936,12 +10940,161 @@ mod list_ax {
         );
     }
 
+    #[derive(Clone, PartialEq, Eq)]
+    struct FilteredListEntry {
+        id: u64,
+        label: &'static str,
+        visible: bool,
+    }
+
+    impl Identifiable for FilteredListEntry {
+        type Id = u64;
+
+        fn id(&self) -> Self::Id {
+            self.id
+        }
+    }
+
+    fn find_list_table(root: &PlatformView) -> Option<Retained<ListTableView>> {
+        let mut stack = vec![view::retain_base(root)];
+        while let Some(current) = stack.pop() {
+            stack.extend(view::subviews(&current));
+            if let Ok(table) = current.downcast::<ListTableView>() {
+                return Some(table);
+            }
+        }
+        None
+    }
+
+    fn find_delete_button(root: &PlatformView) -> Option<Retained<NSButton>> {
+        let mut stack = vec![view::retain_base(root)];
+        while let Some(current) = stack.pop() {
+            stack.extend(view::subviews(&current));
+            if let Ok(button) = current.downcast::<NSButton>()
+                && button.title().to_string() == "Delete"
+            {
+                return Some(button);
+            }
+        }
+        None
+    }
+
+    /// `water-rs/waterui#4295`: a sectioned, mixed, filtered list on `AppKit`
+    /// renders no inline delete control or drag payload for static rows, and
+    /// deletes the intended item by identity from a filtered `ForEach` without
+    /// re-running the filter or tripping a re-entrant borrow.
+    fn sectioned_mixed_and_filtered_list_edits_by_identity() {
+        use waterui::component::list::{ForEachExt as _, List, ListDelete, ListMove, Section, row};
+        use waterui::prelude::text;
+        use waterui::reactive::collection::SignalCollection;
+        use waterui::reactive::{Binding, Signal as _, SignalExt as _};
+        use waterui::views::ForEach;
+
+        let entry = |id, label, visible| FilteredListEntry { id, label, visible };
+        let backing = Binding::container(vec![
+            entry(10, "Alpha", true),
+            entry(15, "Hidden-1", false),
+            entry(20, "Beta", true),
+            entry(25, "Hidden-2", false),
+            entry(30, "Gamma", true),
+        ]);
+        let filtered = SignalCollection::new(
+            backing
+                .map(|items| {
+                    items
+                        .into_iter()
+                        .filter(|item| item.visible)
+                        .collect::<Vec<_>>()
+                })
+                .computed(),
+        );
+        let delete_backing = backing.clone();
+        let move_backing = backing.clone();
+        let leaf = super::resolve::render(
+            List::content((
+                Section::new("Account").content(row("Plan", "Pro")),
+                Section::new("Items").content(
+                    ForEach::new(filtered, |entry: FilteredListEntry| text(entry.label))
+                        .on_delete(move |ListDelete(id): ListDelete<u64>| {
+                            delete_backing
+                                .get_mut()
+                                .retain(|candidate| candidate.id != id);
+                        })
+                        .on_move(move |ListMove(movement): ListMove<u64>| {
+                            let mut items = move_backing.get_mut();
+                            if let (Some(from), Some(to)) = (
+                                items.iter().position(|item| item.id == *movement.id()),
+                                items.iter().position(|item| item.id == *movement.target()),
+                            ) {
+                                let moved = items.remove(from);
+                                items.insert(to, moved);
+                            }
+                        }),
+                ),
+            ))
+            .editing(true),
+        );
+        let _window = leaf::attach(mtm(), leaf.view());
+        leaf.view().setNeedsLayout(true);
+        leaf.view().layoutSubtreeIfNeeded();
+
+        let surface = find_list_table(leaf.view()).expect("list mounts ListTableView");
+        let table = surface.table_view();
+        // Flat rows: 0 Header("Account"), 1 Spacer, 2 Row("Plan"),
+        //            3 Header("Items"), 4 Row("Alpha"), 5 Row("Beta"), 6 Row("Gamma").
+        assert_eq!(table.numberOfRows(), 7);
+        for row_idx in 0..table.numberOfRows() {
+            let _ = table.rowViewAtRow_makeIfNecessary(row_idx, true);
+        }
+
+        let static_row = table
+            .rowViewAtRow_makeIfNecessary(2, false)
+            .expect("static row realized");
+        assert!(
+            find_delete_button(&static_row).is_none(),
+            "static row must not show a Delete button unless asked for"
+        );
+        // SAFETY: `dataSource` is installed on the table and stays alive with `surface`.
+        let data_source = unsafe { table.dataSource() }.expect("table has data source");
+        assert!(
+            data_source
+                .tableView_pasteboardWriterForRow(&table, 2)
+                .is_none(),
+            "static row must not offer a drag payload"
+        );
+        assert!(
+            data_source
+                .tableView_pasteboardWriterForRow(&table, 4)
+                .is_some(),
+            "editable ForEach row must offer a drag payload"
+        );
+
+        let beta_row = table
+            .rowViewAtRow_makeIfNecessary(5, false)
+            .expect("Beta row realized");
+        let delete_button =
+            find_delete_button(&beta_row).expect("Beta row shows inline Delete button");
+        // SAFETY: `performClick:` runs the button's target-action on the main thread.
+        unsafe { delete_button.performClick(None) };
+
+        let remaining: Vec<u64> = backing.snapshot().iter().map(|entry| entry.id).collect();
+        assert_eq!(
+            remaining,
+            vec![10, 15, 25, 30],
+            "clicking Beta's Delete button must delete id 20 from the unfiltered backing Vec"
+        );
+    }
+
     /// The `list_ax::` trials.
     pub fn trials() -> Vec<libtest_mimic::Trial> {
         trial_each(vec![
             (
                 "list_ax::a_sectioned_list_exposes_no_spacer_row".to_owned(),
                 Box::new(a_sectioned_list_exposes_no_spacer_row),
+            ),
+            (
+                "list_ax::sectioned_mixed_and_filtered_list_edits_by_identity".to_owned(),
+                Box::new(sectioned_mixed_and_filtered_list_edits_by_identity),
             ),
             (
                 "list_ax::a_large_list_walk_materializes_no_rows".to_owned(),

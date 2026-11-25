@@ -21,6 +21,7 @@
 
 use alloc::boxed::Box;
 use alloc::rc::Rc;
+use alloc::vec;
 use alloc::vec::Vec;
 use core::any::{Any, type_name};
 use core::cell::RefCell;
@@ -38,6 +39,7 @@ use waterui_core::{Environment, View};
 use crate::views::{AnyViews, AnyViewsSnapshot, SharedAnyViews, ViewSnapshot, Views};
 
 use super::content::{ContentTags, HoldsTag};
+use super::edits::{PartEdits, RowEdits, StaticOnDelete, TypedOnDelete, TypedOnMove, erase_ids};
 use super::selection::SelectableRows;
 use super::{ListItem, ListSection};
 
@@ -252,6 +254,16 @@ impl RowSections<RawId> {
 pub struct ListRowId {
     part: usize,
     row: RawId,
+}
+
+impl ListRowId {
+    pub(crate) const fn part(self) -> usize {
+        self.part
+    }
+
+    pub(crate) const fn row(self) -> RawId {
+        self.row
+    }
 }
 
 /// The rows of a [`List::content`](super::List::content) tree: every part of
@@ -620,17 +632,20 @@ struct StaticRow<R> {
     builder: AnyViewBuilder<R>,
     /// The row's `.tag(…)` value; `None` when the row is not selectable.
     tag: Option<Rc<dyn Any>>,
+    /// Delete callback when this static row explicitly opted in to deletion.
+    on_delete: Option<StaticOnDelete>,
 }
 
 /// One part a [`ListItemSink`] is collecting.
 enum SinkPart<R> {
     /// Consecutive static rows of one section.
     Static(Vec<StaticRow<R>>),
-    /// One reactive collection and the `Mapping<Id>` its rows were erased
-    /// through.
+    /// One reactive collection, the `Mapping<Id>` its rows were erased
+    /// through, and any edit handlers attached to it.
     Rows {
         rows: SharedAnyViews<R>,
         ids: Rc<dyn Any>,
+        edits: PartEdits,
     },
 }
 
@@ -683,9 +698,10 @@ impl<R: View> ListItemSink<R> {
     }
 
     /// Pushes one static row built from a cloneable builder. The row carries
-    /// no tag, so it is not selectable.
+    /// no tag (so it is not selectable) and no delete handler (so it is not
+    /// deletable).
     pub fn push_row(&mut self, builder: AnyViewBuilder<R>) {
-        self.push_static(builder, None);
+        self.push_static(builder, None, None);
     }
 
     /// Temporary bridge for external `ListContent` implementers migrating off
@@ -695,22 +711,48 @@ impl<R: View> ListItemSink<R> {
         self.push_row(AnyViewBuilder::new(move || builder.build().into_content()));
     }
 
-    /// Pushes one static row selected by `tag`.
-    pub(crate) fn push_tagged<T: 'static>(&mut self, builder: AnyViewBuilder<R>, tag: T) {
-        self.push_static(builder, Some(Rc::new(tag)));
+    /// Pushes one static row with an optional delete handler.
+    pub(crate) fn push_row_with_delete(
+        &mut self,
+        builder: AnyViewBuilder<R>,
+        on_delete: Option<StaticOnDelete>,
+    ) {
+        self.push_static(builder, None, on_delete);
     }
 
-    fn push_static(&mut self, builder: AnyViewBuilder<R>, tag: Option<Rc<dyn Any>>) {
+    /// Pushes one static row selected by `tag`, with an optional delete handler.
+    pub(crate) fn push_tagged<T: 'static>(
+        &mut self,
+        builder: AnyViewBuilder<R>,
+        tag: T,
+        on_delete: Option<StaticOnDelete>,
+    ) {
+        self.push_static(builder, Some(Rc::new(tag)), on_delete);
+    }
+
+    fn push_static(
+        &mut self,
+        builder: AnyViewBuilder<R>,
+        tag: Option<Rc<dyn Any>>,
+        on_delete: Option<StaticOnDelete>,
+    ) {
         let section = self.open_section();
         if let (Some(SinkPart::Static(rows)), Some(last)) =
             (self.parts.last_mut(), self.part_sections.last())
             && *last == section
         {
-            rows.push(StaticRow { builder, tag });
+            rows.push(StaticRow {
+                builder,
+                tag,
+                on_delete,
+            });
             return;
         }
-        self.parts
-            .push(SinkPart::Static(alloc::vec![StaticRow { builder, tag }]));
+        self.parts.push(SinkPart::Static(vec![StaticRow {
+            builder,
+            tag,
+            on_delete,
+        }]));
         self.part_sections.push(section);
     }
 
@@ -722,11 +764,28 @@ impl<R: View> ListItemSink<R> {
         V: Views + 'static,
         F: Fn(V::View) -> R + Clone + 'static,
     {
+        self.push_editable_rows(rows, row, None, None);
+    }
+
+    /// Pushes a reactive collection of rows with optional per-part delete and
+    /// move handlers carrying the collection's own `V::Id`.
+    pub(crate) fn push_editable_rows<V, F>(
+        &mut self,
+        rows: V,
+        row: F,
+        on_delete: Option<TypedOnDelete<V::Id>>,
+        on_move: Option<TypedOnMove<V::Id>>,
+    ) where
+        V: Views + 'static,
+        F: Fn(V::View) -> R + Clone + 'static,
+    {
         let section = self.open_section();
         let (rows, ids) = AnyViews::new_with_ids(rows);
+        let edits = PartEdits::for_rows(&ids, on_delete, on_move);
         self.parts.push(SinkPart::Rows {
             rows: SharedAnyViews::from(rows.map_views(row)),
-            ids: Rc::new(ids),
+            ids: erase_ids(ids),
+            edits,
         });
         self.part_sections.push(section);
     }
@@ -743,30 +802,53 @@ impl<R: View> ListItemSink<R> {
         self.open = None;
     }
 
-    /// The collected rows of the content `C` and the section each belongs
-    /// to.
-    pub(crate) fn finish<C>(self) -> (ContentRows<C, R>, RowSections<ListRowId>) {
-        let (parts, tags): (Vec<_>, Vec<_>) = self
-            .parts
-            .into_iter()
-            .map(|part| match part {
+    /// The collected rows of the content `C`, the section each belongs to, and
+    /// the per-part edit handlers.
+    pub(crate) fn finish<C>(
+        self,
+    ) -> (
+        ContentRows<C, R>,
+        RowSections<ListRowId>,
+        RowEdits<ListRowId>,
+    ) {
+        let mut parts = Vec::with_capacity(self.parts.len());
+        let mut tags = Vec::with_capacity(self.parts.len());
+        let mut edits = Vec::with_capacity(self.parts.len());
+        for part in self.parts {
+            match part {
                 SinkPart::Static(rows) => {
-                    let (builders, tags): (Vec<_>, Vec<_>) =
-                        rows.into_iter().map(|row| (row.builder, row.tag)).unzip();
+                    let mut builders = Vec::with_capacity(rows.len());
+                    let mut row_tags = Vec::with_capacity(rows.len());
+                    let mut on_deletes = Vec::with_capacity(rows.len());
+                    for row in rows {
+                        builders.push(row.builder);
+                        row_tags.push(row.tag);
+                        on_deletes.push(row.on_delete);
+                    }
                     let (rows, positions) = SharedAnyViews::new_with_ids(StaticRows {
                         builders: Rc::from(builders),
                     });
-                    (
-                        rows,
-                        PartTags::Static {
-                            positions,
-                            tags: Rc::from(tags),
-                        },
-                    )
+                    parts.push(rows);
+                    tags.push(PartTags::Static {
+                        positions: positions.clone(),
+                        tags: Rc::from(row_tags),
+                    });
+                    edits.push(PartEdits::Static {
+                        positions,
+                        on_deletes: Rc::from(on_deletes),
+                    });
                 }
-                SinkPart::Rows { rows, ids } => (rows, PartTags::Items(ids)),
-            })
-            .unzip();
+                SinkPart::Rows {
+                    rows,
+                    ids,
+                    edits: part_edits,
+                } => {
+                    parts.push(rows);
+                    tags.push(PartTags::Items(ids));
+                    edits.push(part_edits);
+                }
+            }
+        }
         let part_sections: Rc<[usize]> = Rc::from(self.part_sections);
         (
             ContentRows {
@@ -778,6 +860,7 @@ impl<R: View> ListItemSink<R> {
                 section_of: Rc::new(move |id: &ListRowId| part_sections[id.part]),
                 sections: Rc::from(self.sections),
             },
+            RowEdits::from_parts(&Rc::from(edits)),
         )
     }
 }

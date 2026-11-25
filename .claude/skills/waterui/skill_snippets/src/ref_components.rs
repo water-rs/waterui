@@ -1007,10 +1007,12 @@ pub mod components_block_27 {
         let _ = {
             List::for_each(records.clone(), |r| text(r.title))
                 .editing(is_editing.clone()) // impl IntoComputed<bool>
-                .on_delete(|ListDelete(i), mut s: AppState| {
-                    let _ = s.rows.remove(i);
+                .on_delete(|ListDelete(id): ListDelete<u64>, mut s: AppState| {
+                    if let Some(i) = s.rows.snapshot().iter().position(|r| r.id == id) {
+                        let _ = s.rows.remove(i);
+                    }
                 })
-                .on_move(|ListMove(m), mut s: AppState| {
+                .on_move(|ListMove(m): ListMove<u64>, mut s: AppState| {
                     let moved = s.rows.remove(m.from());
                     s.rows.insert(m.to(), moved);
                 })
