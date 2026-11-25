@@ -457,7 +457,7 @@ mod widgets_glob_tests {
     fn widgets_root_globs_cleanly_alongside_prelude() {
         let _app_view = vstack((text("App"), spacer())).padding();
         let _now = Date::now();
-        let _timeline = {
+        let timeline = {
             use crate::widgets::prelude::*;
 
             Timeline::new([TimelineEntry::new(
@@ -472,6 +472,6 @@ mod widgets_glob_tests {
                 .background(Color::ACCENT),
             )])
         };
-        assert_eq!(_timeline.entries().len(), 1);
+        assert_eq!(timeline.entries().len(), 1);
     }
 }
