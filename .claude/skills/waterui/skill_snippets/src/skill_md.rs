@@ -464,7 +464,7 @@ pub fn skill_block_15() {
     let view = Divider;
     let _ = { view.padding_with(16.0) };
     let view = Divider;
-    let _ = { view.padding_with((8.0, 16.0)) };
+    let _ = { view.padding_with(EdgeInsets::vertical(8.0).with_horizontal(16.0)) };
     let view = Divider;
     let _ = { view.padding_horizontal(16.0) };
 

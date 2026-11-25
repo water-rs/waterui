@@ -576,7 +576,7 @@ fn compressed_row_view() -> impl View {
         .leading(),
     ))
     .spacing(10.0)
-    .padding_with((6.0, 10.0))
+    .padding_with(EdgeInsets::vertical(6.0).with_horizontal(10.0))
 }
 
 #[waterui::test(compressed_row_view, theme = TestStyle::new(), offscreen, viewport = (340, 200))]

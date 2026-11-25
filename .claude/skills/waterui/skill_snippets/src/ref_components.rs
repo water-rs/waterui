@@ -53,7 +53,7 @@ pub fn components_block_02() {
     let stack = vstack((text("a"), text("b")));
     let _ = { stack.padding_with(16.0) };
     let stack = vstack((text("a"), text("b")));
-    let _ = { stack.padding_with((10.0, 16.0)) };
+    let _ = { stack.padding_with(EdgeInsets::vertical(10.0).with_horizontal(16.0)) };
 }
 
 // ---------------------------------------------------------------------------
@@ -564,7 +564,7 @@ pub fn components_custom_control_styles() {
             let bg = configuration.is_pressed().select(Color::new(Accent), base);
             configuration
                 .into_label()
-                .padding_with((8.0, 16.0))
+                .padding_with(EdgeInsets::vertical(8.0).with_horizontal(16.0))
                 .background(bg)
                 .clip(Capsule)
         }
@@ -581,7 +581,7 @@ pub fn components_custom_control_styles() {
             let trigger = configuration.trigger().clone();
             configuration
                 .into_label()
-                .padding_with((8.0, 16.0))
+                .padding_with(EdgeInsets::vertical(8.0).with_horizontal(16.0))
                 .gesture(TapGesture::repeat(NonZeroU32::new(2).unwrap()), move || {
                     trigger.trigger()
                 })
