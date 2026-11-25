@@ -92,8 +92,7 @@ nothing about the skill.
 
    Each alternative becomes its own expression against a fresh receiver, because that is
    what proves each method individually. Bare method fragments get a receiver supplied by
-   glue; the receiver is chosen to avoid inherent-method shadowing (`Divider`, not
-   `text(..)`, since `Text::size` is the *font* size).
+   glue (such as `Divider`).
 6. **Some blocks are not compilable by design.** A cfg-gated Apple-only import, or a call
    into a backend crate an app does not depend on. Those are recorded in a comment
    explaining why, not transcribed.

@@ -94,10 +94,8 @@ fn prelude_exports_app_window_widgets_and_collections_without_shadowing() {
             let _ = Suspense::new(async { "ready" });
             let _ = SignalCollection::new(Binding::container(vec![RowItem { id: 3 }]));
             let _ = ForEach::new(items, |item| text!("{id}", id = item.id));
-            let _ = FullScreenOverlayManager::host(|overlay| {
-                overlay.show("Overlay");
-                "Main"
-            });
+            let presented = Binding::bool(false);
+            let _ = "Main".sheet(Sheet::new(&presented, || "Sheet"));
             "Root"
         });
         App::new(env).window(Window::new("Hello", || text!("Hello")))
