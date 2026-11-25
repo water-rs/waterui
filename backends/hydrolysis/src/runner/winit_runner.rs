@@ -2367,7 +2367,7 @@ mod tests {
     #[cfg(hydrolysis_wayland_platform)]
     #[test]
     fn window_attributes_split_wm_class_from_instance_name() {
-        use waterui_core::Str;
+        use waterui_core::{Environment, Str};
 
         let env = Environment::new();
         let window = Window::new("", || ())
