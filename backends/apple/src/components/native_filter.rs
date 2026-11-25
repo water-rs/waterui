@@ -1243,7 +1243,11 @@ fn resample_bound_stream(
 /// For non-autoreversing `Repeat::Forever` streams (`repeat == Some((_, false))`),
 /// the final keyframe is pinned 1 ns before `duration` so `Playback::sample_lanes`
 /// evaluates the cycle's end (`target`) instead of wrapping `rem == 0` back to `from`.
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "display frame count across a positive finite cycle duration fits in usize/u32"
+)]
 fn keyframe_sample_offsets(
     duration: Duration,
     fps: f32,
@@ -1267,7 +1271,6 @@ fn keyframe_sample_offsets(
 /// display frame of `duration` — at the attached screen's cadence, no
 /// synthetic cap. Returns `false` when the view is not on a screen: no
 /// cadence exists to sample at and the pending timeline stands.
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn submit_animation<T: Message>(
     owner: &NativeFilterOwner,
     key_path: &str,
