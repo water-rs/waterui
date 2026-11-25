@@ -215,7 +215,8 @@ fn search_page() -> impl View {
         .spacing(12.0)
         .padding()
         .navigation_title("Search")
-        .searchable(&query, "Search glass"),
+        .searchable(&query)
+        .search_prompt("Search glass"),
     )
 }
 

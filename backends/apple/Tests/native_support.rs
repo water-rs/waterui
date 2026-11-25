@@ -1087,7 +1087,8 @@ pub mod toolbar_reach {
                             .navigation_title("Inbox")
                             .large_title()
                             .navigation_subtitle("3 unread")
-                            .searchable(&binding(Str::from("")), "Search mail"),
+                            .searchable(&binding(Str::from("")))
+                            .search_prompt("Search mail"),
                     )
                     .destination(|id: u64| {
                         NavigationView::new("Message", text(format!("message {id}")))

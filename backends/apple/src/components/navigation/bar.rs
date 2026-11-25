@@ -7,21 +7,35 @@
 //! `statusItem` — while `UIKit` lays out every leading and trailing item,
 //! matching the baseline's placement maps.
 
+use alloc::rc::Rc;
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::cell::RefCell;
 use core::fmt;
 
+#[cfg(target_os = "macos")]
+use cocoa_ui::appkit::{Panel, SearchField, convert_to_screen, window_of};
+use cocoa_ui::geometry::Rect;
+#[cfg(target_os = "ios")]
+use cocoa_ui::uikit::HostView;
+use cocoa_ui::{MainThreadMarker, Retained, view};
+#[cfg(target_os = "macos")]
+use waterui::Str;
 use waterui::component::LabelDisplayMode;
 use waterui::navigation::{
     Bar, BarColor, NavigationSearch, NavigationTitleDisplayMode, NavigationToolbarPlacement,
-    ResolvedNavigationToolbar, ResolvedNavigationToolbarItem,
+    ResolvedNavigationToolbar, ResolvedNavigationToolbarItem, SlotBuilder,
 };
 use waterui::reactive::Computed;
+#[cfg(target_os = "macos")]
+use waterui::reactive::Signal;
 use waterui_backend_core::Environment;
 use waterui_core::layout::ProposalSize;
 
-use crate::contract::{Held, NativeLeaf, RenderContext};
+use crate::contract::{Held, KeepAlive, NativeLeaf, RenderContext, Renderer};
+use crate::proposal::{Placement, deliver};
 use crate::sf_symbol::SfSymbolProbe;
+use crate::transition::live::LiveChild;
 
 use super::extract_title_text;
 
@@ -86,6 +100,8 @@ pub struct BarState {
     pub items: Vec<BarItem>,
     /// The search drawer config.
     pub search: Option<NavigationSearch>,
+    /// Optional search suggestions builder lowered into the Apple slot.
+    pub search_suggestions: Option<SlotBuilder<Held>>,
     /// The bar's background color, resolved or unset (the theme's `Surface`).
     pub color: Option<BarColor>,
     /// Whether the bar hides.
@@ -113,6 +129,7 @@ impl BarState {
             subtitle,
             items,
             search: bar.search.take(),
+            search_suggestions: bar.toolbar.take_search_suggestions(),
             color: bar.color.take(),
             hidden: bar.hidden.clone(),
             display_mode: bar.display_mode,
@@ -272,12 +289,264 @@ pub fn bar_item_frame(item: &BarItem) -> cocoa_ui::Rect {
     )
 }
 
-/// The search drawer's placeholder signal.
+/// The search drawer's placeholder signal, when a prompt was declared.
 pub fn search_prompt(
     search: &NavigationSearch,
     env: &Environment,
-) -> Computed<waterui::text::StyledStr> {
-    search.prompt().resolve(env).into_content()
+) -> Option<Computed<waterui::text::StyledStr>> {
+    search
+        .prompt()
+        .map(|prompt| prompt.resolve(env).into_content())
+}
+
+/// Wires a macOS [`SearchField`] to a [`NavigationSearch`] and optional
+/// suggestions panel, keeping watchers and panel state inside `keep`.
+#[cfg(target_os = "macos")]
+pub fn bind_macos_search_field(
+    mtm: MainThreadMarker,
+    field: &Retained<SearchField>,
+    search: &NavigationSearch,
+    suggestions: Option<&SlotBuilder<Held>>,
+    renderer: &Renderer,
+    env: &Environment,
+    keep: &mut KeepAlive,
+) {
+    field.set_text(search.text().snapshot().as_ref());
+    field.set_change_handler({
+        let text = search.text().clone();
+        move |field| text.set(Str::from(field.text()))
+    });
+    keep.bind(search.text(), {
+        let field = field.clone();
+        move |text: Str| field.set_text(text.as_ref())
+    });
+    if let Some(prompt) = search_prompt(search, env) {
+        keep.bind(&prompt, {
+            let field = field.clone();
+            move |prompt| field.set_placeholder(prompt.to_plain().as_ref())
+        });
+    }
+    if let Some(on_submit) = search.on_submit().cloned() {
+        let env = env.clone();
+        field.set_submit_handler(move |_| {
+            let _ = on_submit.call(&env);
+        });
+    }
+    let sync_suggestions = make_macos_suggestions_sync(mtm, field, suggestions, renderer, keep);
+    let active = search.active().cloned();
+    field.set_begin_editing_handler({
+        let active = active.clone();
+        let sync_suggestions = Rc::clone(&sync_suggestions);
+        move |_| {
+            if let Some(active) = active.as_ref()
+                && !active.snapshot()
+            {
+                active.set(true);
+            }
+            sync_suggestions(true);
+        }
+    });
+    field.set_end_editing_handler({
+        let active = active.clone();
+        let sync_suggestions = Rc::clone(&sync_suggestions);
+        move |_| {
+            if let Some(active) = active.as_ref()
+                && active.snapshot()
+            {
+                active.set(false);
+            }
+            sync_suggestions(false);
+        }
+    });
+    if let Some(active) = active {
+        keep.bind(&active, {
+            let field = field.clone();
+            move |is_active| {
+                field.set_active(is_active);
+                sync_suggestions(is_active);
+            }
+        });
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn make_macos_suggestions_sync(
+    mtm: MainThreadMarker,
+    field: &Retained<SearchField>,
+    suggestions: Option<&SlotBuilder<Held>>,
+    renderer: &Renderer,
+    keep: &mut KeepAlive,
+) -> Rc<dyn Fn(bool)> {
+    struct SuggestionsPanel {
+        panel: Panel,
+        _live: LiveChild,
+    }
+
+    impl Drop for SuggestionsPanel {
+        fn drop(&mut self) {
+            self.panel.detach();
+        }
+    }
+
+    let Some(suggestions) = suggestions.cloned() else {
+        return Rc::new(|_| {});
+    };
+    let panel_slot: Rc<RefCell<Option<SuggestionsPanel>>> = Rc::new(RefCell::new(None));
+    keep.keep(Rc::clone(&panel_slot));
+    let field = field.clone();
+    let renderer = renderer.clone();
+    Rc::new(move |shown: bool| {
+        if !shown {
+            *panel_slot.borrow_mut() = None;
+            return;
+        }
+        if panel_slot.borrow().is_some() {
+            return;
+        }
+        let Some(parent) = window_of(&field) else {
+            return;
+        };
+        let leaf = renderer.realize(suggestions.build());
+        let measured = leaf
+            .layout()
+            .measure(ProposalSize {
+                width: None,
+                height: None,
+            })
+            .size;
+        let anchor = view::bounds_in_window(&field);
+        let width = f64::from(measured.width).max(anchor.size.width).max(160.0);
+        let height = f64::from(measured.height).max(1.0);
+        let panel = Panel::new(mtm);
+        panel.attach(&parent);
+        let container = panel.content_view(mtm);
+        let live = LiveChild::mount(leaf, &container, None);
+        view::set_autoresizing_flexible_size(live.view());
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "suggestions panel dimensions fit f32 layout coordinates"
+        )]
+        let proposal = ProposalSize::new(Some(width as f32), Some(height as f32));
+        let content_rect = Rect::new(0.0, 0.0, width, height);
+        deliver(live.view(), Placement::platform_hosted(proposal));
+        view::set_frame(live.view(), content_rect);
+        let frame_window = Rect::new(
+            anchor.origin.x,
+            anchor.origin.y - height - 4.0,
+            width,
+            height,
+        );
+        panel.set_frame(convert_to_screen(&parent, frame_window));
+        *panel_slot.borrow_mut() = Some(SuggestionsPanel { panel, _live: live });
+    })
+}
+
+#[cfg(target_os = "ios")]
+enum SuggestionsSlot {
+    Embedded {
+        host: Retained<HostView>,
+        live: Option<LiveChild>,
+    },
+    Overlay {
+        parent: Retained<HostView>,
+        mounted: Option<(Retained<HostView>, LiveChild)>,
+    },
+}
+
+#[cfg(target_os = "ios")]
+pub(super) type SuggestionsSync = Rc<dyn Fn(bool)>;
+
+/// Builds a lazily mounted search suggestions host controller for iOS.
+///
+/// When `overlay_parent` is `None`, returns a dedicated results host suitable for
+/// `UISearchController.searchResultsController`; when `Some(parent)`, mounts and
+/// removes an overlay host inside `parent` while search is active.
+#[cfg(target_os = "ios")]
+pub(super) fn ios_suggestions_controller(
+    mtm: MainThreadMarker,
+    overlay_parent: Option<&Retained<HostView>>,
+    suggestions: Option<&SlotBuilder<Held>>,
+    renderer: &Renderer,
+    keep: &mut KeepAlive,
+) -> (Option<Retained<HostView>>, SuggestionsSync) {
+    let Some(slot) = suggestions.cloned() else {
+        return (None, Rc::new(|_| {}));
+    };
+    let make_host = move || {
+        let host = HostView::new(mtm, Rect::ZERO);
+        host.set_layout_handler(|host| {
+            let rect = view::bounds(host);
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "search suggestions bounds fit f32 layout coordinates"
+            )]
+            let proposal =
+                ProposalSize::new(Some(rect.size.width as f32), Some(rect.size.height as f32));
+            for subview in view::subviews(host) {
+                deliver(&subview, Placement::platform_hosted(proposal));
+                view::set_frame(&subview, rect);
+            }
+        });
+        host
+    };
+    let (results_host, state) = overlay_parent.map_or_else(
+        || {
+            let host = make_host();
+            (
+                Some(host.clone()),
+                Rc::new(RefCell::new(SuggestionsSlot::Embedded { host, live: None })),
+            )
+        },
+        |parent| {
+            (
+                None,
+                Rc::new(RefCell::new(SuggestionsSlot::Overlay {
+                    parent: parent.clone(),
+                    mounted: None,
+                })),
+            )
+        },
+    );
+    keep.keep(Rc::clone(&state));
+    let renderer = renderer.clone();
+    let sync = Rc::new(move |shown: bool| {
+        let mut slot_state = state.borrow_mut();
+        match &mut *slot_state {
+            SuggestionsSlot::Embedded { host, live } => {
+                if !shown {
+                    *live = None;
+                    return;
+                }
+                if live.is_some() {
+                    return;
+                }
+                let leaf = renderer.realize(slot.build());
+                let child = LiveChild::mount(leaf, host, None);
+                view::set_autoresizing_flexible_size(child.view());
+                *live = Some(child);
+                host.set_needs_layout();
+            }
+            SuggestionsSlot::Overlay { parent, mounted } => {
+                if !shown {
+                    if let Some((panel_host, _child)) = mounted.take() {
+                        view::remove_from_superview(&panel_host);
+                    }
+                    return;
+                }
+                if mounted.is_some() {
+                    return;
+                }
+                let panel_host = make_host();
+                let leaf = renderer.realize(slot.build());
+                let child = LiveChild::mount(leaf, &panel_host, None);
+                view::set_autoresizing_flexible_size(child.view());
+                view::add_subview(parent, &panel_host);
+                *mounted = Some((panel_host, child));
+                parent.set_needs_layout();
+            }
+        }
+    });
+    (results_host, sync)
 }
 
 /// A resolved color signal, when the bar color has resolved.
