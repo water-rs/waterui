@@ -59,7 +59,7 @@ pub use gradient::FlowingGradient;
 pub use gradient::{ANIMATED_MESH_PALETTE_LEN, AnimatedMeshGradient, AnimatedMeshGradientConfig};
 pub use gradient::{Gradient, GradientStops, GradientType, MeshGradient};
 #[cfg(feature = "image-decode")]
-pub use image::image_decode;
+pub use image::ImageDecodeError;
 #[cfg(feature = "input")]
 pub use input::{
     Code, GesturePhase, Key, Modifiers, NamedKey, ScrollPhase, ScrollUnit, SurfaceInputEvent,
