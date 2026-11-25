@@ -190,9 +190,80 @@ macro_rules! impl_slider_wide_unsigned_value {
 }
 
 impl_slider_small_signed_value!(i8, i16, i32);
-impl_slider_wide_signed_value!(i64, isize);
+impl_slider_wide_signed_value!(i64);
 impl_slider_small_unsigned_value!(u8, u16, u32);
-impl_slider_wide_unsigned_value!(u64, usize);
+impl_slider_wide_unsigned_value!(u64);
+
+impl SliderValue for isize {
+    #[cfg_attr(
+        target_pointer_width = "64",
+        expect(
+            clippy::cast_precision_loss,
+            reason = "canonical slider config erases all numeric bindings to f64"
+        )
+    )]
+    fn to_f64(self) -> f64 {
+        self as f64
+    }
+
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "value is rounded and clamped to isize::MIN..=isize::MAX before casting"
+    )]
+    #[cfg_attr(
+        target_pointer_width = "64",
+        expect(
+            clippy::cast_precision_loss,
+            reason = "canonical slider bounds use f64"
+        )
+    )]
+    fn from_f64(value: f64) -> Self {
+        let min = Self::MIN as f64;
+        let max = Self::MAX as f64;
+        let clamped = if value.is_finite() {
+            value.round().clamp(min, max)
+        } else {
+            min
+        };
+        clamped as Self
+    }
+}
+
+impl SliderValue for usize {
+    #[cfg_attr(
+        target_pointer_width = "64",
+        expect(
+            clippy::cast_precision_loss,
+            reason = "canonical slider config erases all numeric bindings to f64"
+        )
+    )]
+    fn to_f64(self) -> f64 {
+        self as f64
+    }
+
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "value is rounded and clamped to 0..=usize::MAX before casting"
+    )]
+    #[cfg_attr(
+        target_pointer_width = "64",
+        expect(
+            clippy::cast_precision_loss,
+            reason = "canonical slider bounds use f64"
+        )
+    )]
+    fn from_f64(value: f64) -> Self {
+        let min = Self::MIN as f64;
+        let max = Self::MAX as f64;
+        let clamped = if value.is_finite() {
+            value.round().clamp(min, max)
+        } else {
+            min
+        };
+        clamped as Self
+    }
+}
 
 /// Validates `range` for a slider: bounds must be finite with `start <= end`.
 ///

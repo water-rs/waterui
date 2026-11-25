@@ -1,4 +1,6 @@
 #[cfg(feature = "accessibility")]
+use crate::num_cast::i64_as_f64;
+#[cfg(feature = "accessibility")]
 use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::chrome::{ChromeContent, LiveChromeParts};
 use crate::renderer::{
@@ -191,12 +193,12 @@ pub fn stepper_accessibility<E: crate::text::TextEngine, S>(
         // Read value/step through `read_signal` so a change schedules a frame and
         // this persistent node re-renders (and re-publishes the a11y value).
         let current = renderer.read_signal(stepper.value()).clamp(start, end);
-        node.set_numeric_value(crate::num_cast::i64_as_f64(current));
-        node.set_min_numeric_value(crate::num_cast::i64_as_f64(start));
-        node.set_max_numeric_value(crate::num_cast::i64_as_f64(end));
+        node.set_numeric_value(i64_as_f64(current));
+        node.set_min_numeric_value(i64_as_f64(start));
+        node.set_max_numeric_value(i64_as_f64(end));
         let step = renderer.read_signal(stepper.step());
         if positive_step(step) {
-            node.set_numeric_value_step(crate::num_cast::i64_as_f64(step));
+            node.set_numeric_value_step(i64_as_f64(step));
         }
         node.add_action(AccessibilityAction::Focus);
         // A disabled stepper stays in the tree (focusable, announced as

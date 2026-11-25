@@ -8,6 +8,9 @@ use waterui::sheet::SheetContentScope;
 use waterui_core::contract_violation;
 
 #[cfg(feature = "accessibility")]
+#[cfg(feature = "stepper")]
+use crate::num_cast::f64_as_i64;
+#[cfg(feature = "accessibility")]
 use crate::theme::InteractionFocusBinding;
 #[cfg(feature = "accessibility")]
 use std::collections::BTreeSet;
@@ -2967,7 +2970,7 @@ fn handle_accessibility_stepper_action(
         AccessibilityAction::Decrement => previous.saturating_sub(step_value).max(start),
         AccessibilityAction::SetValue => match data {
             Some(AccessibilityActionData::NumericValue(target)) => {
-                let rounded = crate::num_cast::f64_as_i64(target.round());
+                let rounded = f64_as_i64(target.round());
                 rounded.clamp(start, end)
             }
             Some(AccessibilityActionData::Value(ref text)) => {
