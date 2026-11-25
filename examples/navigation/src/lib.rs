@@ -31,12 +31,9 @@ use mdi::pencil;
 use mdi::view_gallery;
 use waterui::Identifiable;
 use waterui::app::{App, Windows};
-use waterui::component::label::LabelKind;
 use waterui::component::list::{
     List, ListContent, ListDelete, ListMove, Section, SectionScope, TaggedBy, row,
 };
-use waterui::handler::ViewBuilder;
-use waterui::id::SelfId;
 use waterui::navigation::{NavigationSplitView, NavigationToolbarItems, NavigationView, Navigator};
 use waterui::prelude::*;
 use waterui::preview;
@@ -44,7 +41,6 @@ use waterui::reactive::binding;
 use waterui::reactive::collection::SignalCollection;
 use waterui::shape::{Circle, CornerRadius, RoundedRectangle};
 use waterui::theme::color::{Accent, Foreground, SurfaceVariant};
-use waterui::views::ForEach;
 use waterui_icons_material_icon as mdi;
 
 // ---------------------------------------------------------------------------
@@ -272,54 +268,29 @@ pub fn library_pane() -> impl View {
 }
 
 /// The navigation tour: an inbox, a library, a gallery and settings, each in its own tab.
-///
-/// # Panics
-///
-/// Panics if the tab collection has no tab for one of the four panes. The tabs and
-/// the pane ids are built from the same four panes, so this cannot happen.
 #[preview]
 pub fn demo() -> impl View {
     let mail = Mail::new();
     let pane = binding(Pane::Inbox);
 
-    let panes = [Pane::Inbox, Pane::Library, Pane::Gallery, Pane::Settings].map(SelfId::new);
     Tabs::new(
         &pane,
-        ForEach::new(panes.to_vec(), move |pane: SelfId<Pane>| {
-            pane_tab(pane.into_inner(), &mail)
-        }),
+        (
+            Tab::new(label("Inbox").icon(inbox()), {
+                let mail = mail.clone();
+                move || inbox_stack(mail.clone())
+            })
+            .tag(Pane::Inbox)
+            .badge(mail.unread_count()),
+            Tab::new(label("Library").icon(image_album()), library_split).tag(Pane::Library),
+            Tab::new(label("Gallery").icon(view_gallery()), gallery_stack).tag(Pane::Gallery),
+            Tab::new(label("Settings").icon(cog()), settings_stack).tag(Pane::Settings),
+        ),
     )
     // A tab bar on a phone, a sidebar or navigation rail on a large window: the
     // backend decides from the platform and the current window size.
     .style(tab_style::automatic())
     .snackbar_host()
-}
-
-/// The tab for `pane`. Every tab shares one root builder, whose page is the
-/// variant of one `OneOf4` its pane picks.
-fn pane_tab(
-    pane: Pane,
-    mail: &Mail,
-) -> Tab<impl ViewBuilder<Output = impl View + use<>> + use<>, impl LabelKind + use<>> {
-    let (title, icon) = match pane {
-        Pane::Inbox => ("Inbox", inbox()),
-        Pane::Library => ("Library", image_album()),
-        Pane::Gallery => ("Gallery", view_gallery()),
-        Pane::Settings => ("Settings", cog()),
-    };
-    let tab = Tab::new(label(title).icon(icon), {
-        let mail = mail.clone();
-        move || match pane {
-            Pane::Inbox => OneOf4::A(inbox_stack(mail.clone())),
-            Pane::Library => OneOf4::B(library_split()),
-            Pane::Gallery => OneOf4::C(gallery_stack()),
-            Pane::Settings => OneOf4::D(settings_stack()),
-        }
-    });
-    match pane {
-        Pane::Inbox => tab.badge(mail.unread_count()),
-        Pane::Library | Pane::Gallery | Pane::Settings => tab,
-    }
 }
 
 // ---------------------------------------------------------------------------

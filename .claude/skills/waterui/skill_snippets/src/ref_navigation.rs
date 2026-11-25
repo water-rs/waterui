@@ -75,8 +75,6 @@ pub fn navigation_block_01() -> impl View {
     }
     let unread_count: Binding<u32> = binding(3_u32);
 
-    use waterui::{id::SelfId, views::ForEach};
-
     #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
     enum Pane {
         Inbox,
@@ -86,34 +84,18 @@ pub fn navigation_block_01() -> impl View {
     }
 
     let pane = binding(Pane::Inbox);
-    let panes = [Pane::Inbox, Pane::Library, Pane::Settings, Pane::Search].map(SelfId::new);
 
     Tabs::new(
         &pane,
-        ForEach::new(
-            StateList::from(panes.to_vec()),
-            move |pane: SelfId<Pane>| {
-                let pane = *pane;
-                let tab = Tab::new(
-                    match pane {
-                        Pane::Inbox => label("Inbox").icon(mdi::inbox()),
-                        Pane::Library => label("Library").icon(mdi::image_album()),
-                        Pane::Settings => label("Settings").icon(mdi::cog()),
-                        Pane::Search => label("Search").icon(mdi::magnify()),
-                    },
-                    move || match pane {
-                        Pane::Inbox => OneOf4::A(inbox_stack()),
-                        Pane::Library => OneOf4::B(library_split()),
-                        Pane::Settings => OneOf4::C(settings_stack()),
-                        Pane::Search => OneOf4::D(search_stack()),
-                    },
-                );
-                match pane {
-                    Pane::Inbox => tab.badge(unread_count.clone()),
-                    Pane::Search => tab.role(TabRole::Search), // iOS: the trailing system search tab; elsewhere a regular tab
-                    Pane::Library | Pane::Settings => tab,
-                }
-            },
+        (
+            Tab::new(label("Inbox").icon(mdi::inbox()), inbox_stack)
+                .tag(Pane::Inbox)
+                .badge(unread_count.clone()),
+            Tab::new(label("Library").icon(mdi::image_album()), library_split).tag(Pane::Library),
+            Tab::new(label("Settings").icon(mdi::cog()), settings_stack).tag(Pane::Settings),
+            Tab::new(label("Search").icon(mdi::magnify()), search_stack)
+                .tag(Pane::Search)
+                .role(TabRole::Search), // iOS: the trailing system search tab; elsewhere a regular tab
         ),
     )
     .style(tab_style::automatic())
