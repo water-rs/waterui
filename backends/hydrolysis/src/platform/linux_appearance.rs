@@ -437,9 +437,6 @@ pub use portal::SystemAppearance;
 
 #[cfg(test)]
 mod tests {
-    use core::future::poll_fn;
-    use core::pin::pin;
-    use core::task::Poll;
     use std::cell::Cell;
     use std::rc::Rc;
 
