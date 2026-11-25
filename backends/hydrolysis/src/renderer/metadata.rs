@@ -15,6 +15,7 @@ use crate::renderer::input::{anchored_overlay_scope, menu_look, presentation_con
 use crate::renderer::mount::ScopeKey;
 #[cfg(feature = "menu")]
 use crate::renderer::tree::transition::record_with_blur_radius;
+use crate::text::TextEngine;
 #[cfg(feature = "menu")]
 use crate::theme::{MenuLook, MenuPresentationSample};
 #[cfg(feature = "menu")]
@@ -23,6 +24,7 @@ use cherenkov_record::{Shadow as EngineShadow, ShapeData, WorkingColor as Engine
 #[cfg(feature = "menu")]
 use kurbo::{Affine, Shape as _};
 use kurbo::{Rect, RoundedRect, Stroke, Vec2};
+use nami::watcher::Context as WatcherContext;
 use nami::{Computed, Signal, SignalExt as _};
 use waterui_core::animation::ChangeAnimation;
 use waterui_core::contract_violation;
@@ -45,10 +47,7 @@ impl<S: Signal + Clone + 'static> Signal for EngineAnimated<S> {
         self.0.snapshot()
     }
 
-    fn watch(
-        &self,
-        watcher: impl Fn(nami::watcher::Context<Self::Output>) + 'static,
-    ) -> Self::Guard {
+    fn watch(&self, watcher: impl Fn(WatcherContext<Self::Output>) + 'static) -> Self::Guard {
         self.0.watch(move |change| {
             let (value, metadata) = change.into_parts();
             let next_metadata = match (
@@ -58,12 +57,12 @@ impl<S: Signal + Clone + 'static> Signal for EngineAnimated<S> {
                 (None, Some(animation)) => metadata.with(engine_animation(&animation)),
                 _ => metadata,
             };
-            watcher(nami::watcher::Context::new(value, next_metadata));
+            watcher(WatcherContext::new(value, next_metadata));
         })
     }
 }
 
-fn live_border_edge<E: crate::text::TextEngine>(
+fn live_border_edge<E: TextEngine>(
     renderer: &mut HydrolysisRenderer<E>,
     local: kurbo::Affine,
     paint: Computed<Paint>,

@@ -17646,6 +17646,8 @@ mod border_modifier {
 /// reactively without rebuilding the view (#4418).
 #[cfg(target_os = "macos")]
 mod shadow_modifier {
+    use core::ptr::null;
+
     use cocoa_ui::Rect;
     use cocoa_ui::objc2::rc::autoreleasepool;
     use cocoa_ui::objc2_core_foundation::CGPoint;
@@ -17705,21 +17707,11 @@ mod shadow_modifier {
                 .expect("clipped shadow must materialize shadowPath");
             // SAFETY: CoreGraphics `CGPathContainsPoint` on a valid retained `CGPath`.
             let center_inside = unsafe {
-                CGPath::contains_point(
-                    Some(&path),
-                    core::ptr::null(),
-                    CGPoint::new(40.0, 40.0),
-                    false,
-                )
+                CGPath::contains_point(Some(&path), null(), CGPoint::new(40.0, 40.0), false)
             };
             // SAFETY: CoreGraphics `CGPathContainsPoint` on a valid retained `CGPath`.
             let corner_inside = unsafe {
-                CGPath::contains_point(
-                    Some(&path),
-                    core::ptr::null(),
-                    CGPoint::new(2.0, 2.0),
-                    false,
-                )
+                CGPath::contains_point(Some(&path), null(), CGPoint::new(2.0, 2.0), false)
             };
             assert!(center_inside, "circular shadowPath covers caster center");
             assert!(
@@ -17747,12 +17739,7 @@ mod shadow_modifier {
                 .expect("explicit silhouette shadow must materialize shadowPath");
             // SAFETY: CoreGraphics `CGPathContainsPoint` on a valid retained `CGPath`.
             let corner_inside = unsafe {
-                CGPath::contains_point(
-                    Some(&path),
-                    core::ptr::null(),
-                    CGPoint::new(2.0, 2.0),
-                    false,
-                )
+                CGPath::contains_point(Some(&path), null(), CGPoint::new(2.0, 2.0), false)
             };
             assert!(
                 corner_inside,

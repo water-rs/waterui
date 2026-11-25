@@ -5,12 +5,13 @@
 use super::layout::accessibility_rect;
 use super::layout::kurbo_rect;
 use crate::renderer::metadata::resolve_shadow_shape;
+use crate::text::TextEngine;
 use kurbo::Affine;
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
-fn with_caster_clip<E: crate::text::TextEngine, R>(
+fn with_caster_clip<E: TextEngine, R>(
     node: &RenderNode<E>,
     f: impl FnOnce(Option<&ClipShape>) -> R,
 ) -> R {

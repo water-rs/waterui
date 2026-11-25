@@ -13,6 +13,7 @@ use alloc::vec::Vec;
 use core::cell::Cell;
 
 use cocoa_ui::layer;
+use cocoa_ui::path::ShapeKind as CocoaShapeKind;
 use cocoa_ui::{PlatformView, Rect, Retained, Size, view};
 use waterui::graphics::color::WorkingColor;
 use waterui::reactive::{Computed, Signal};
@@ -24,6 +25,7 @@ use waterui_core::layout::{
     ViewDimensions,
 };
 
+use crate::animation::with_platform_animation;
 use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;
 
@@ -211,7 +213,7 @@ fn watch_shadow_metric(
         slot(&state).set(*wctx.value());
         let state = Rc::clone(&state);
         let host = host.clone();
-        crate::animation::with_platform_animation(wctx.metadata(), move || {
+        with_platform_animation(wctx.metadata(), move || {
             apply_shadow_geometry(&host, &state);
         });
     });
@@ -308,7 +310,7 @@ pub fn realize_shadow_metadata(
         .get_silhouette()
         .or(inherited_clip.as_deref())
         .map_or_else(
-            || (cocoa_ui::path::ShapeKind::Rect, Vec::new()),
+            || (CocoaShapeKind::Rect, Vec::new()),
             |silhouette| {
                 (
                     shape_kind(silhouette.kind()),
@@ -358,7 +360,7 @@ pub fn realize_shadow_metadata(
         move |wctx| {
             let color = *wctx.value();
             let host = host.clone();
-            crate::animation::with_platform_animation(wctx.metadata(), move || {
+            with_platform_animation(wctx.metadata(), move || {
                 apply_shadow_color(&color, &host);
             });
         }

@@ -12,6 +12,7 @@ use alloc::rc::Rc;
 use core::cell::Cell;
 
 use cocoa_ui::layer;
+use cocoa_ui::path::{EdgeMask, border_path};
 use cocoa_ui::{PlatformView, Rect, Retained, view};
 use waterui::border::Border;
 use waterui::graphics::color::WorkingColor;
@@ -23,6 +24,7 @@ use waterui_core::layout::{
     ViewDimensions,
 };
 
+use crate::animation::with_platform_animation;
 use crate::contract::{Held, Mounted, NativeLeaf};
 use crate::proposal;
 
@@ -149,13 +151,13 @@ fn apply_border_metrics(host: &PlatformView, state: &BorderState) {
         let bounds = view::bounds(host);
         if bounds.size.width > 0.0 && bounds.size.height > 0.0 {
             shape.set_frame(bounds);
-            let mask = cocoa_ui::path::EdgeMask {
+            let mask = EdgeMask {
                 top: state.edges.top,
                 leading: state.edges.leading,
                 bottom: state.edges.bottom,
                 trailing: state.edges.trailing,
             };
-            let path = cocoa_ui::path::border_path(bounds, width, corner_radius, mask);
+            let path = border_path(bounds, width, corner_radius, mask);
             shape.set_path(Some(&path));
         }
     } else if let Some(host_layer) = layer::layer_of(host) {
@@ -177,7 +179,7 @@ fn watch_border_metric(
         slot(&state).set(*wctx.value());
         let state = Rc::clone(&state);
         let host = host.clone();
-        crate::animation::with_platform_animation(wctx.metadata(), move || {
+        with_platform_animation(wctx.metadata(), move || {
             apply_border_metrics(&host, &state);
         });
     });
@@ -263,13 +265,13 @@ pub fn realize_border_metadata(
             view::set_frame(state.child.view(), bounds);
             if let Some(shape) = &state.border_layer {
                 shape.set_frame(bounds);
-                let mask = cocoa_ui::path::EdgeMask {
+                let mask = EdgeMask {
                     top: state.edges.top,
                     leading: state.edges.leading,
                     bottom: state.edges.bottom,
                     trailing: state.edges.trailing,
                 };
-                let path = cocoa_ui::path::border_path(
+                let path = border_path(
                     bounds,
                     f64::from(state.width.get().max(0.0)),
                     f64::from(state.corner_radius.get().max(0.0)),
@@ -307,7 +309,7 @@ pub fn realize_border_metadata(
             let color = *wctx.value();
             let state = Rc::clone(&state);
             let host = host.clone();
-            crate::animation::with_platform_animation(wctx.metadata(), move || {
+            with_platform_animation(wctx.metadata(), move || {
                 apply_border_color(&color, &host, state.border_layer.as_ref());
             });
         }
