@@ -1888,6 +1888,7 @@ dependencies = [
 name = "cherenkov-record"
 version = "0.0.0"
 dependencies = [
+ "cherenkov-shader",
  "color",
  "filtrate-core",
  "kurbo",
@@ -13323,6 +13324,7 @@ dependencies = [
  "waterui-color",
  "waterui-core",
  "waterui-frame-rate",
+ "waterui-macros",
  "waterui-testing",
  "waterui-text",
  "wgpu",
@@ -13572,6 +13574,7 @@ dependencies = [
 name = "waterui-macros"
 version = "0.5.1"
 dependencies = [
+ "cherenkov-record",
  "heck",
  "icu_locale_core",
  "proc-macro-crate",
@@ -13760,6 +13763,7 @@ dependencies = [
  "waterui-core",
  "waterui-graphics",
  "waterui-icons-lucide",
+ "waterui-structural-transition",
  "waterui-testing",
  "waterui-text",
  "waterui-url",

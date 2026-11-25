@@ -50,11 +50,12 @@ pub use split::{
 pub use tab::{BadgeValue, Tab, TabBarMinimizeBehavior, TabRole, Tabs, TabsLayout, tab_style};
 use transition::TransitionKeyRegistry;
 pub use transition::{
-    AnyNavigationTransition, KeyedNavigationTransitionDestination, KeyedNavigationTransitionSource,
+    AnyNavigationTransition, CoreTransitionMarker, IntoNavigationTransition, IntoTransitionSpec,
+    KeyedNavigationTransitionDestination, KeyedNavigationTransitionSource,
     NativeNavigationTransition, NavigationTransition, NavigationTransitionDestination,
-    NavigationTransitionDirection, NavigationTransitionFrame, NavigationTransitionLayer,
-    NavigationTransitionSource, NavigationTransitionViewExt, RetainedNavigationTransition,
-    navigation_transition,
+    NavigationTransitionDirection, NavigationTransitionMarker, NavigationTransitionPair,
+    NavigationTransitionPairMarker, NavigationTransitionSource, NavigationTransitionViewExt,
+    RetainedNavigationTransition, TransitionSpecMarker, navigation_transition,
 };
 pub use waterui_controls::{IconSlot as NavigationIconSlot, SlotBuilder};
 
@@ -1915,21 +1916,24 @@ impl<V, P, F, Tb> NavigationStack<V, P, F, Tb> {
         &self.transition
     }
 
-    /// Sets the transition style for push/pop operations.
+    /// Sets the page transition for push and pop operations.
     ///
-    /// This is the default for every page of the stack. A page that declares
-    /// its own arrival replaces it for that page's push and pop, in this
+    /// Accepts any [`NavigationTransition`] (`navigation_transition::{automatic,
+    /// fade, zoom, none, pair}`), any core `Transition` (such as
+    /// `PropertyTransition::opacity()`), a `TransitionSpec`, or a
+    /// [`NavigationTransitionPair`].
+    ///
+    /// This is the default for every page of the stack. A destination that
+    /// declares its own [`NavigationView::page_transition`] (or a content-root
+    /// `.transition(...)`) replaces it for that page's push and pop, in this
     /// order of precedence:
     ///
-    /// 1. A `.transition(...)` on the page's content root: its insertion
-    ///    runs when the page is pushed and its removal when it is popped,
-    ///    while the page beneath stays in place.
-    /// 2. [`NavigationView::transition`] on the destination.
+    /// 1. [`NavigationView::page_transition`] on the destination.
+    /// 2. A `.transition(...)` on the page's content root when no page
+    ///    transition is set on the `NavigationView`.
     /// 3. This stack transition.
-    ///
-    /// A destination may declare 1 or 2, not both.
-    pub fn transition(mut self, transition: impl NavigationTransition) -> Self {
-        self.transition = AnyNavigationTransition::new(transition);
+    pub fn page_transition<M>(mut self, transition: impl IntoNavigationTransition<M>) -> Self {
+        self.transition = transition.into_navigation_transition();
         self
     }
 }
@@ -2354,16 +2358,13 @@ impl<C> NavigationView<C, ()> {
 }
 
 impl<C, T> NavigationView<C, T> {
-    /// Sets how this destination arrives, overriding its stack's transition.
+    /// Sets how this destination arrives and leaves, overriding its stack's
+    /// transition without shadowing `ViewExt::transition`.
     ///
-    /// A `.transition(...)` on the content root is the other way a destination
-    /// declares its arrival — its insertion on push, its removal on pop. A
-    /// destination declares one or the other, not both; see
-    /// [`NavigationStack::transition`] for the precedence.
-    ///
-    /// A stack-wide transition cannot name a matched pair, because the pair
-    /// differs per destination — a gallery's tile and the page it opens share an
-    /// identity the next tile does not:
+    /// Accepts any [`NavigationTransition`] (`navigation_transition::{automatic,
+    /// fade, zoom, none, pair}`), any core `Transition` (such as
+    /// `PropertyTransition::opacity()`), a `TransitionSpec`, or a
+    /// [`NavigationTransitionPair`].
     ///
     /// ```rust
     /// use waterui::navigation::{NavigationView, navigation_transition};
@@ -2374,11 +2375,11 @@ impl<C, T> NavigationView<C, T> {
     ///
     /// fn photo_page(index: i32) -> NavigationView<impl View> {
     ///     NavigationView::new("Photo", text!("photo {index}"))
-    ///         .transition(navigation_transition::zoom(PhotoId(index)))
+    ///         .page_transition(navigation_transition::zoom(PhotoId(index)))
     /// }
     /// ```
-    pub fn transition(mut self, transition: impl NavigationTransition) -> Self {
-        self.transition = Some(AnyNavigationTransition::new(transition));
+    pub fn page_transition<M>(mut self, transition: impl IntoNavigationTransition<M>) -> Self {
+        self.transition = Some(transition.into_navigation_transition());
         self
     }
 

@@ -1,0 +1,11 @@
+error: shader WGSL failed to parse:
+       error: expected `)`, found ";"
+         ┌─ wgsl:3:29
+         │
+       3 │     return vec4<f32>(uv, 0.0;
+         │                             ^ expected `)`
+
+ --> tests/ui/shader/fail_invalid_wgsl.rs:2:40
+  |
+2 |     let _ = waterui::graphics::shader!("invalid.wgsl");
+  |                                        ^^^^^^^^^^^^^^

@@ -1,0 +1,5 @@
+error: shader WGSL declares no `@fragment fn main` entry point
+ --> tests/ui/shader/fail_missing_entry_point.rs:2:40
+  |
+2 |     let _ = waterui::graphics::shader!("missing_entry.wgsl");
+  |                                        ^^^^^^^^^^^^^^^^^^^^

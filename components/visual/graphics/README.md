@@ -110,11 +110,13 @@ let view = ShaderPaintView::new(r#"
         let t = uniforms.time;
         return vec4<f32>(uv.x, uv.y, sin(t), 1.0);
     }
-"#).continuous(true);
+"#)?
+.continuous(true);
 ```
 
-`uniforms.time` and `uniforms.resolution` are injected automatically; extra
-user uniforms follow a signal via `.uniforms(...)`.
+`uniforms.time` and `uniforms.resolution` are injected automatically; up to 64
+scalar `f32` signals bind via `.param(...)` / `.params(...)` and are read in
+WGSL with `shader_param(index)` or `params[...]`.
 
 ## Core Concepts
 

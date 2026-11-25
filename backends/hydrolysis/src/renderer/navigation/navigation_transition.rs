@@ -1,18 +1,43 @@
+use crate::num_cast::f64_as_f32;
 use crate::theme::NavigationMotion;
 use waterui::navigation::{
-    AnyNavigationTransition, NavigationTransitionDirection,
-    NavigationTransitionFrame as ResolvedNavigationTransitionFrame, NavigationTransitionLayer,
-    RetainedNavigationTransition,
+    AnyNavigationTransition, NavigationTransitionDirection, RetainedNavigationTransition,
 };
 use waterui_core::contract_violation;
+use waterui_core::id::Id;
+use waterui_core::layout::{LayoutDirection, Size};
+use waterui_structural_transition::{
+    Transition as _, TransitionGeometry, TransitionPhase, TransitionProperties, TransitionSpec,
+};
 
 /// How a transition presents its two pages this frame.
 pub enum NavigationPresentation {
     /// Both pages cross-fade while the matched element pair flies between
     /// its two frames.
-    Matched(waterui_core::id::Id),
-    /// Each page draws under its own transition layer.
-    Layers(ResolvedNavigationTransitionFrame),
+    Matched(Id),
+    /// Each page draws under its own core [`TransitionProperties`].
+    Properties {
+        /// Properties applied to the departing page.
+        outgoing: TransitionProperties,
+        /// Properties applied to the arriving page.
+        incoming: TransitionProperties,
+    },
+}
+
+fn sample_spec_at(
+    spec: &TransitionSpec,
+    phase: TransitionPhase,
+    absence: f32,
+    geometry: TransitionGeometry,
+    reduce_motion: bool,
+) -> TransitionProperties {
+    if reduce_motion {
+        spec.transition()
+            .reduced()
+            .properties(phase, absence, geometry)
+    } else {
+        spec.transition().properties(phase, absence, geometry)
+    }
 }
 
 pub fn navigation_presentation(
@@ -20,69 +45,92 @@ pub fn navigation_presentation(
     motion: NavigationMotion,
     direction: NavigationTransitionDirection,
     progress: f64,
-    viewport_width: f64,
+    viewport_size: kurbo::Size,
+    layout_direction: LayoutDirection,
+    reduce_motion: bool,
 ) -> NavigationPresentation {
-    let progress = crate::num_cast::f64_as_f32(progress);
-    let resolved = match style.retained() {
+    let progress = f64_as_f32(progress).clamp(0.0, 1.0);
+    let (outgoing, incoming) = match style.retained() {
         RetainedNavigationTransition::MatchedGeometry(id) => {
             return NavigationPresentation::Matched(id);
         }
-        RetainedNavigationTransition::PlatformDefault => material_shared_axis_x_frame(
+        RetainedNavigationTransition::PlatformDefault => material_shared_axis_x_properties(
             progress,
             direction,
             motion.shared_axis_slide_distance,
-            viewport_width,
+            viewport_size.width,
             motion.fade_through_threshold,
         ),
-        RetainedNavigationTransition::None => ResolvedNavigationTransitionFrame::IDENTITY,
-        RetainedNavigationTransition::Frames => style.frame(progress, direction),
+        RetainedNavigationTransition::None => (
+            TransitionProperties::IDENTITY,
+            TransitionProperties::IDENTITY,
+        ),
+        RetainedNavigationTransition::Transitions => {
+            let pair = style.transitions(direction);
+            let geometry = TransitionGeometry::new(
+                Size::new(
+                    f64_as_f32(viewport_size.width),
+                    f64_as_f32(viewport_size.height),
+                ),
+                layout_direction,
+            );
+            (
+                sample_spec_at(
+                    &pair.outgoing,
+                    TransitionPhase::Removal,
+                    progress,
+                    geometry,
+                    reduce_motion,
+                ),
+                sample_spec_at(
+                    &pair.incoming,
+                    TransitionPhase::Insertion,
+                    1.0 - progress,
+                    geometry,
+                    reduce_motion,
+                ),
+            )
+        }
     };
-    NavigationPresentation::Layers(resolved)
+    NavigationPresentation::Properties { outgoing, incoming }
 }
 
-/// A transition layer's transform of its page: the offset as a fraction of
-/// `paint_bounds`, then the scale about the centre of `bounds`.
-pub fn transition_layer_transform(
-    bounds: kurbo::Rect,
-    paint_bounds: kurbo::Rect,
-    layer: NavigationTransitionLayer,
-) -> kurbo::Affine {
-    let center = bounds.center();
-    kurbo::Affine::translate((
-        f64::from(layer.offset_x()) * paint_bounds.width(),
-        f64::from(layer.offset_y()) * paint_bounds.height(),
-    )) * kurbo::Affine::translate((center.x, center.y))
-        * kurbo::Affine::scale(f64::from(layer.scale()))
-        * kurbo::Affine::translate((-center.x, -center.y))
-}
-
-fn material_shared_axis_x_frame(
+fn material_shared_axis_x_properties(
     progress: f32,
     direction: NavigationTransitionDirection,
     slide_distance: f64,
     viewport_width: f64,
     fade_through_threshold: f32,
-) -> ResolvedNavigationTransitionFrame {
+) -> (TransitionProperties, TransitionProperties) {
     if viewport_width <= 0.0 {
         contract_violation!(
             "navigation shared-axis viewport width must be positive; the pages show without a transition"
         );
-        return ResolvedNavigationTransitionFrame::IDENTITY;
+        return (
+            TransitionProperties::IDENTITY,
+            TransitionProperties::IDENTITY,
+        );
     }
     if !(slide_distance >= 0.0 && slide_distance.is_finite()) {
         contract_violation!(
             "navigation shared-axis slide distance must be finite and non-negative; the pages show without a transition"
         );
-        return ResolvedNavigationTransitionFrame::IDENTITY;
+        return (
+            TransitionProperties::IDENTITY,
+            TransitionProperties::IDENTITY,
+        );
     }
     if !(0.0..1.0).contains(&fade_through_threshold) {
         contract_violation!(
             "navigation fade-through threshold must be in 0.0..1.0; the pages show without a transition"
         );
-        return ResolvedNavigationTransitionFrame::IDENTITY;
+        return (
+            TransitionProperties::IDENTITY,
+            TransitionProperties::IDENTITY,
+        );
     }
-    let slide_fraction = crate::num_cast::f64_as_f32(slide_distance / viewport_width);
-    let direction = match direction {
+    let slide_distance = f64_as_f32(slide_distance);
+    let sign = match direction {
         NavigationTransitionDirection::Push => -1.0,
         NavigationTransitionDirection::Pop => 1.0,
     };
@@ -90,19 +138,17 @@ fn material_shared_axis_x_frame(
     let incoming_opacity =
         ((progress - fade_through_threshold) / (1.0 - fade_through_threshold)).clamp(0.0, 1.0);
 
-    ResolvedNavigationTransitionFrame::new(
-        NavigationTransitionLayer::new(
-            direction * slide_fraction * progress,
-            0.0,
-            1.0,
-            outgoing_opacity,
-        ),
-        NavigationTransitionLayer::new(
-            -direction * slide_fraction * (1.0 - progress),
-            0.0,
-            1.0,
-            incoming_opacity,
-        ),
+    (
+        TransitionProperties {
+            translation: [sign * slide_distance * progress, 0.0],
+            opacity: outgoing_opacity,
+            ..TransitionProperties::IDENTITY
+        },
+        TransitionProperties {
+            translation: [-sign * slide_distance * (1.0 - progress), 0.0],
+            opacity: incoming_opacity,
+            ..TransitionProperties::IDENTITY
+        },
     )
 }
 
@@ -128,51 +174,51 @@ pub fn matched_element_transform(bounds: kurbo::Rect, target: kurbo::Rect) -> ku
 
 #[cfg(test)]
 mod tests {
-    use super::material_shared_axis_x_frame;
+    use super::material_shared_axis_x_properties;
     use waterui::navigation::NavigationTransitionDirection;
 
     fn assert_near(actual: f32, expected: f32) {
         assert!(
-            (actual - expected).abs() <= f32::EPSILON,
+            (actual - expected).abs() <= 1e-5,
             "expected {expected}, got {actual}"
         );
     }
 
     #[test]
     fn material_shared_axis_push_uses_thirty_point_travel_and_fade_through() {
-        let start = material_shared_axis_x_frame(
+        let (start_out, start_in) = material_shared_axis_x_properties(
             0.0,
             NavigationTransitionDirection::Push,
             30.0,
             300.0,
             0.35,
         );
-        assert_near(start.outgoing().offset_x(), 0.0);
-        assert_near(start.outgoing().opacity(), 1.0);
-        assert_near(start.incoming().offset_x(), 0.1);
-        assert_near(start.incoming().opacity(), 0.0);
+        assert_near(start_out.translation[0], 0.0);
+        assert_near(start_out.opacity, 1.0);
+        assert_near(start_in.translation[0], 30.0);
+        assert_near(start_in.opacity, 0.0);
 
-        let threshold = material_shared_axis_x_frame(
+        let (threshold_out, threshold_in) = material_shared_axis_x_properties(
             0.35,
             NavigationTransitionDirection::Push,
             30.0,
             300.0,
             0.35,
         );
-        assert_near(threshold.outgoing().opacity(), 0.0);
-        assert_near(threshold.incoming().opacity(), 0.0);
+        assert_near(threshold_out.opacity, 0.0);
+        assert_near(threshold_in.opacity, 0.0);
 
-        let end = material_shared_axis_x_frame(
+        let (end_out, end_in) = material_shared_axis_x_properties(
             1.0,
             NavigationTransitionDirection::Push,
             30.0,
             300.0,
             0.35,
         );
-        assert_near(end.outgoing().offset_x(), -0.1);
-        assert_near(end.outgoing().opacity(), 0.0);
-        assert_near(end.incoming().offset_x(), 0.0);
-        assert_near(end.incoming().opacity(), 1.0);
+        assert_near(end_out.translation[0], -30.0);
+        assert_near(end_out.opacity, 0.0);
+        assert_near(end_in.translation[0], 0.0);
+        assert_near(end_in.opacity, 1.0);
     }
 
     #[test]
@@ -181,17 +227,22 @@ mod tests {
         should_panic(expected = "viewport width must be positive")
     )]
     fn a_zero_viewport_shows_the_pages_without_a_transition() {
-        let frame =
-            material_shared_axis_x_frame(0.5, NavigationTransitionDirection::Push, 30.0, 0.0, 0.35);
-        assert_near(frame.outgoing().offset_x(), 0.0);
-        assert_near(frame.outgoing().opacity(), 1.0);
-        assert_near(frame.incoming().offset_x(), 0.0);
-        assert_near(frame.incoming().opacity(), 1.0);
+        let (outgoing, incoming) = material_shared_axis_x_properties(
+            0.5,
+            NavigationTransitionDirection::Push,
+            30.0,
+            0.0,
+            0.35,
+        );
+        assert_near(outgoing.translation[0], 0.0);
+        assert_near(outgoing.opacity, 1.0);
+        assert_near(incoming.translation[0], 0.0);
+        assert_near(incoming.opacity, 1.0);
     }
 
     #[test]
     fn material_shared_axis_pop_reverses_both_layers() {
-        let middle = material_shared_axis_x_frame(
+        let (middle_out, middle_in) = material_shared_axis_x_properties(
             0.5,
             NavigationTransitionDirection::Pop,
             30.0,
@@ -199,7 +250,7 @@ mod tests {
             0.35,
         );
 
-        assert_near(middle.outgoing().offset_x(), 0.05);
-        assert_near(middle.incoming().offset_x(), -0.05);
+        assert_near(middle_out.translation[0], 15.0);
+        assert_near(middle_in.translation[0], -15.0);
     }
 }
