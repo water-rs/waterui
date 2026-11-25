@@ -30,7 +30,9 @@ use waterui_controls::button::ButtonStyle;
 #[cfg(feature = "menu")]
 use waterui_controls::menu::Shortcut;
 #[cfg(feature = "date-picker")]
-use waterui_controls::{Stepper, stepper::stepper};
+use waterui_controls::{Stepper, label::TitleLabel, stepper::stepper};
+#[cfg(feature = "date-picker")]
+use waterui_core::Computed;
 #[cfg(any(feature = "menu", feature = "color-picker"))]
 use waterui_core::Error;
 #[cfg(any(feature = "menu", feature = "color-picker"))]
@@ -1388,7 +1390,7 @@ fn time_part_binding(
     value: &Binding<i32>,
     range: RangeInclusive<i32>,
     label: String,
-) -> Stepper<waterui_controls::label::TitleLabel> {
+) -> Stepper<TitleLabel, i32> {
     stepper(label, value)
         .range(range)
         .value_formatter(|part| format!("{part:02}"))
@@ -1448,13 +1450,16 @@ const fn date_picker_size(ty: DatePickerType) -> (f64, f64) {
 #[cfg(feature = "date-picker")]
 fn date_picker_window_base(
     value: Binding<DateTime>,
-    range: RangeInclusive<DateTime>,
+    range: Computed<RangeInclusive<DateTime>>,
     ty: DatePickerType,
     group: PopupMenuStateGroup,
     env: &Environment,
 ) -> (Window<impl ViewBuilder>, Binding<WindowState>) {
     let state = Binding::container(WindowState::Normal);
-    let current = value.snapshot().clamp(*range.start(), *range.end());
+    let initial_range = range.snapshot();
+    let current = value
+        .snapshot()
+        .clamp(*initial_range.start(), *initial_range.end());
     let staged_date = Binding::container(current.date());
     let staged_visible_month = Binding::container(current.date());
     let current_time = current.time();
@@ -1472,8 +1477,6 @@ fn date_picker_window_base(
         ty,
         DatePickerType::HourMinuteAndSecond | DatePickerType::DateHourMinuteAndSecond
     );
-    let range_start = *range.start();
-    let range_end = *range.end();
     let group_for_content = group;
     let state_for_content = state.clone();
     let popup_env = env.clone();
@@ -1484,10 +1487,11 @@ fn date_picker_window_base(
         ));
         if uses_date {
             let visible_month = staged_visible_month.clone();
+            let date_range = range.map(|r| r.start().date()..=r.end().date()).computed();
             sections.push(waterui_core::OneOf4::B(
                 Calendar::new(crate::localization::text(&popup_env, "date"), &staged_date)
                     .visible_month(&visible_month)
-                    .range(range_start.date()..=range_end.date())
+                    .range(date_range)
                     .hide_label(),
             ));
         }
@@ -1535,7 +1539,7 @@ fn date_picker_window_base(
                     .action(move || {
                         apply_staged_date_time(
                             &apply_value,
-                            &apply_range,
+                            &apply_range.snapshot(),
                             apply_date.snapshot(),
                             apply_hour.snapshot(),
                             apply_minute.snapshot(),
@@ -1582,7 +1586,7 @@ fn date_picker_window_base(
 #[cfg(feature = "date-picker")]
 pub fn date_picker_window(
     value: Binding<DateTime>,
-    range: RangeInclusive<DateTime>,
+    range: Computed<RangeInclusive<DateTime>>,
     ty: DatePickerType,
     origin: LayoutPoint,
     group: PopupMenuStateGroup,
@@ -2026,7 +2030,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     pub(crate) fn show_date_picker(
         &mut self,
         value: Binding<DateTime>,
-        range: RangeInclusive<DateTime>,
+        range: Computed<RangeInclusive<DateTime>>,
         ty: DatePickerType,
         origin: LayoutPoint,
         env: &Environment,
@@ -2080,7 +2084,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     pub(crate) fn activate_date_picker(
         &mut self,
         value: Binding<DateTime>,
-        range: RangeInclusive<DateTime>,
+        range: Computed<RangeInclusive<DateTime>>,
         ty: DatePickerType,
         env: &Environment,
     ) -> bool {

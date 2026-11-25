@@ -431,14 +431,14 @@ pub fn components_block_14() {
         Toggle::new("Wi-Fi", &enabled).style(ToggleStyle::Switch)
     };
     let _ = {
-        slider("Volume", &level).range(0.0..=1.0) // &Binding<f64>; range is RangeInclusive<f64>
+        slider("Volume", &level).range(0.0..=1.0) // &Binding<T: SliderValue>; range/step accept signals
     };
     let _ = {
         // sliders default ExtraSmall;
-        // value_indicator shows the formatted value above the thumb while dragging
+        // value_formatter shows the formatted value above the thumb while dragging
         slider("Volume", &level)
             .size(ControlSize::Large)
-            .value_indicator(|v| Str::from(format!("{v:.0}")))
+            .value_formatter(|v| Str::from(format!("{v:.0}")))
     };
     let _ = {
         slider("Volume", &level)
@@ -447,10 +447,10 @@ pub fn components_block_14() {
             .max_value_label("Loud")
     };
     let _ = {
-        stepper("Quantity", &count) // &Binding<i32>
+        stepper("Quantity", &count) // &Binding<T: StepperValue>
     };
     let _ = {
-        // range: impl RangeBounds<i32>; step takes a signal
+        // range and step accept signals
         stepper("Items", &count).range(0..=100).step(5)
     };
     let _ = {

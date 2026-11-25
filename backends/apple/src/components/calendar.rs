@@ -22,6 +22,8 @@ use core::ops::RangeInclusive;
 
 use cocoa_ui::date::{CalendarSelectionMode, DateParts, YearMonth};
 use cocoa_ui::{PlatformView, Rect};
+#[cfg(feature = "calendar")]
+use waterui::component::form::calendar::clamp_date_to_range;
 use waterui::component::form::picker::date::Date;
 use waterui::component::label::ControlLabel;
 use waterui::reactive::{Binding, Computed, Signal};
@@ -98,6 +100,9 @@ pub(super) trait CalendarSelection: Signal + Clone + 'static {
 
     /// Applies the user's pick of `day`.
     fn pick(&self, day: Date);
+
+    /// Clamps the bound selection to `range` in place.
+    fn clamp_to_range(&self, range: &RangeInclusive<Date>);
 }
 
 #[cfg(feature = "calendar")]
@@ -111,6 +116,10 @@ impl CalendarSelection for Binding<Date> {
     fn pick(&self, day: Date) {
         self.set(day);
     }
+
+    fn clamp_to_range(&self, range: &RangeInclusive<Date>) {
+        clamp_date_to_range(self, range);
+    }
 }
 
 /// Everything a calendar leaf realizes.
@@ -120,7 +129,7 @@ pub(super) struct CalendarSpec<S> {
     /// The bound selection.
     pub(super) selection: S,
     /// The selectable days.
-    pub(super) range: RangeInclusive<Date>,
+    pub(super) range: Computed<RangeInclusive<Date>>,
     /// The days carrying a decoration dot.
     pub(super) decorated: Computed<BTreeSet<Date>>,
     /// The month shown: any day of it reads as that month; navigation
@@ -433,14 +442,15 @@ mod appearance {
 fn platform_calendar(
     ctx: &RenderContext<'_>,
     mode: CalendarSelectionMode,
-    range: &RangeInclusive<Date>,
+    range: &Computed<RangeInclusive<Date>>,
     month: YearMonth,
     locale: &str,
 ) -> platform::CalendarView {
+    let initial = range.snapshot();
     platform::CalendarView::new(
         ctx.mtm(),
         mode,
-        parts_of(*range.start())..=parts_of(*range.end()),
+        parts_of(*initial.start())..=parts_of(*initial.end()),
         month,
         locale,
         appearance::colors(ctx.env()),
@@ -453,20 +463,58 @@ fn platform_calendar(
 fn platform_calendar(
     ctx: &RenderContext<'_>,
     mode: CalendarSelectionMode,
-    range: &RangeInclusive<Date>,
+    range: &Computed<RangeInclusive<Date>>,
     month: YearMonth,
     locale: &str,
 ) -> platform::CalendarView {
     let calendar = platform::CalendarView::new(ctx.mtm(), mode, locale);
-    if let (Some(start), Some(end)) = (ns_date(*range.start()), ns_date(*range.end())) {
+    let initial = range.snapshot();
+    if let (Some(start), Some(end)) = (ns_date(*initial.start()), ns_date(*initial.end())) {
         calendar.set_available_range(&cocoa_ui::date::interval(&start, &end));
     }
     calendar.set_can_select({
         let range = range.clone();
-        move |parts| range.contains(&to_jiff(parts))
+        move |parts| range.snapshot().contains(&to_jiff(parts))
     });
     calendar.set_visible_month(month);
     calendar
+}
+
+fn bind_calendar_range<S: CalendarSelection>(
+    leaf: &mut NativeLeaf,
+    calendar: &Rc<CalendarLeaf>,
+    range: &Computed<RangeInclusive<Date>>,
+    selection: &S,
+    visible_month: &Binding<Date>,
+) {
+    leaf.bind(range, {
+        let calendar = Rc::clone(calendar);
+        let selection = selection.clone();
+        let visible_month = visible_month.clone();
+        move |bounds: RangeInclusive<Date>| {
+            selection.clamp_to_range(&bounds);
+            let shown = visible_month.snapshot();
+            let first_month = Date::new(bounds.start().year(), bounds.start().month(), 1)
+                .expect("calendar range start month must be valid");
+            let last_month = Date::new(bounds.end().year(), bounds.end().month(), 1)
+                .expect("calendar range end month must be valid");
+            let shown_month =
+                Date::new(shown.year(), shown.month(), 1).expect("visible month must be valid");
+            if shown_month < first_month || shown_month > last_month {
+                visible_month.set(first_month);
+            }
+            #[cfg(target_os = "macos")]
+            calendar
+                .calendar
+                .set_range(parts_of(*bounds.start())..=parts_of(*bounds.end()));
+            #[cfg(target_os = "ios")]
+            if let (Some(start), Some(end)) = (ns_date(*bounds.start()), ns_date(*bounds.end())) {
+                calendar
+                    .calendar
+                    .set_available_range(&cocoa_ui::date::interval(&start, &end));
+            }
+        }
+    });
 }
 
 /// Renders a calendar-shaped component: the label over the platform month
@@ -533,6 +581,7 @@ pub(super) fn render_calendar<S: CalendarSelection>(
         let calendar = Rc::clone(&calendar);
         move |days: BTreeSet<Date>| calendar.calendar.set_decorations(parts_set(&days))
     });
+    bind_calendar_range(&mut leaf, &calendar, &range, &selection, &visible_month);
     leaf.watch(&visible_month, {
         let calendar = Rc::clone(&calendar);
         move |change| {

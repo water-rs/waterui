@@ -17,6 +17,7 @@ use accesskit::{
 use core::any::Any;
 use core::ops::RangeInclusive;
 use kurbo::{Point, Rect, Size};
+use nami::watcher::BoxWatcherGuard;
 use nami::{Binding, Computed, Signal, SignalExt as _};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -48,13 +49,15 @@ pub struct SliderRenderState<E: crate::text::TextEngine> {
     label_view: RetainedSubview<E>,
     min_value_label: RetainedSubview<E>,
     max_value_label: RetainedSubview<E>,
-    range: RangeInclusive<f64>,
-    step: Option<f64>,
+    range: Computed<RangeInclusive<f64>>,
+    step: Computed<Option<f64>>,
     value: Binding<f64>,
+    /// Keeps the reactive range clamp subscription alive while the slider is mounted.
+    _range_watch: BoxWatcherGuard,
     /// The value normalized to the range: what the look's parts follow.
     normalized: Rc<Computed<f64>>,
     size: ControlSize,
-    value_indicator: Option<ValueFormatter>,
+    value_formatter: Option<ValueFormatter>,
     /// The look for the spec it was requested for.
     look: Option<(SliderSpec, SliderLook)>,
     /// The live chrome realizing the look.
@@ -97,14 +100,18 @@ impl<E: crate::text::TextEngine> SliderRenderState<E> {
     }
 
     pub(crate) fn from_config(config: SliderConfig<HeldChild<E>>) -> Self {
-        let (label, min_value_label, max_value_label, range, value, size, value_indicator, step) =
+        let range_watch = config.watch_range_clamp();
+        let (label, min_value_label, max_value_label, range, value, size, value_formatter, step) =
             config.into_parts();
-        let range = valid_range(range);
-        let start = *range.start();
-        let end = *range.end();
-        let normalized = Computed::new(
-            value.map(move |value: f64| (value.clamp(start, end) - start) / (end - start)),
-        );
+        let _ = valid_range(range.snapshot());
+        let normalized = Computed::new(value.zip(&range).map(
+            |(value, range): (f64, RangeInclusive<f64>)| {
+                let range = valid_range(range);
+                let start = *range.start();
+                let end = *range.end();
+                (value.clamp(start, end) - start) / (end - start)
+            },
+        ));
         Self {
             label_view: RetainedSubview::held(label.build()),
             label,
@@ -113,9 +120,10 @@ impl<E: crate::text::TextEngine> SliderRenderState<E> {
             range,
             step,
             value,
+            _range_watch: range_watch,
             normalized: Rc::new(normalized),
             size,
-            value_indicator,
+            value_formatter,
             look: None,
             parts: None,
             report: Binding::container(InteractionState::empty()),
@@ -154,14 +162,19 @@ impl<E: crate::text::TextEngine> SliderRenderState<E> {
             .any(|label| label.node().is_some_and(|node| !node.is_empty()))
     }
 
-    fn spec(&self, env: &Environment) -> SliderSpec {
+    fn spec(
+        &self,
+        range: &RangeInclusive<f64>,
+        step: Option<f64>,
+        env: &Environment,
+    ) -> SliderSpec {
         slider_spec(
             &self.label,
             self.size,
-            &self.range,
-            self.step,
+            range,
+            step,
             self.value_labels(),
-            self.value_indicator.is_some(),
+            self.value_formatter.is_some(),
             env,
         )
     }
@@ -449,7 +462,9 @@ pub fn measure_slider_node<E: crate::text::TextEngine>(
     env: &Environment,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
-    let spec = render_state.spec(env);
+    let range = valid_range(state.measure_signal(&render_state.range));
+    let step = state.measure_signal(&render_state.step);
+    let spec = render_state.spec(&range, step, env);
     let look = render_state.peek(theme, &spec, env);
     let measured = Measured {
         label: render_state.label_view.measure_built(state, env, theme),
@@ -475,14 +490,24 @@ pub fn render_slider_node<E: crate::text::TextEngine>(
         .is_some_and(waterui::accessibility::AccessibilityHidden::is_hidden);
     if !hidden {
         let render_ctx = ctx.render_context();
-        let slider = state.borrow();
+        let (label, range_signal, step_signal, value) = {
+            let slider = state.borrow();
+            (
+                slider.label.clone(),
+                slider.range.clone(),
+                slider.step.clone(),
+                slider.value.clone(),
+            )
+        };
+        let range = valid_range(ctx.renderer_mut().read_signal(&range_signal));
+        let step = ctx.renderer_mut().read_signal(&step_signal);
         slider_accessibility_parts(
             ctx.renderer_mut(),
             Some(render_ctx),
-            &slider.label,
-            &slider.range,
-            slider.step,
-            &slider.value,
+            &label,
+            &range,
+            step,
+            &value,
             env,
             &[crate::renderer::InteractionKey::for_rc(state, 0)],
         );
@@ -543,7 +568,9 @@ pub fn render_slider_parts<E: crate::text::TextEngine>(
     let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
     let theme = ctx.theme();
     let mut state = state.borrow_mut();
-    let spec = state.spec(env);
+    let range = valid_range(ctx.renderer_mut().read_signal(&state.range));
+    let step = ctx.renderer_mut().read_signal(&state.step);
+    let spec = state.spec(&range, step, env);
     let look = state.look(&theme, &spec, env).clone();
     // Reading the disabled signal watches it, so a change schedules a frame
     // and this persistent node re-renders (and re-registers input) with the
@@ -557,8 +584,8 @@ pub fn render_slider_parts<E: crate::text::TextEngine>(
     // accessibility tree through the watcher below, and a drag reads it when
     // the press lands.
     let value_binding = state.value.clone();
-    let range_start = *state.range.start();
-    let range_end = *state.range.end();
+    let range_start = *range.start();
+    let range_end = *range.end();
     let span = range_end - range_start;
     let direction = spec.direction();
     if state.value_watch.is_none() {
@@ -583,7 +610,7 @@ pub fn render_slider_parts<E: crate::text::TextEngine>(
         interaction_key.clone(),
         Rc::clone(&state.value_changed),
         value_binding.clone(),
-        state.range.clone(),
+        range.clone(),
     );
 
     // Every label is a retained node sub-view re-flushed at its rect; reactive
@@ -700,7 +727,7 @@ pub fn render_slider_parts<E: crate::text::TextEngine>(
     let indicator = look
         .get_value_indicator()
         .filter(|_| spec.has_value_indicator())
-        .zip(state.value_indicator.clone())
+        .zip(state.value_formatter.clone())
         .map(|(indicator, formatter)| {
             let font = indicator.get_font().clone();
             let color = indicator.get_color().clone();
@@ -871,7 +898,6 @@ pub fn render_slider_parts<E: crate::text::TextEngine>(
     let placement = ctx.renderer_mut().current_placement();
     let value_epsilon = slider_value_epsilon(span, track.width());
     let mapping = look.get_drag();
-    let step = state.step;
     let drag_value = value_binding.clone();
     let drag_chrome = Rc::clone(&live);
     // A drag that holds the knob alone takes only a press on the knob, at
@@ -890,8 +916,8 @@ pub fn render_slider_parts<E: crate::text::TextEngine>(
                 .contains(local)
         }) as PressFilter
     });
-    let drag_range = state.range.clone();
-    let keyboard_range = state.range.clone();
+    let drag_range = range.clone();
+    let keyboard_range = range;
     let keyboard_value = value_binding;
     let keyboard_step = step.unwrap_or(span / 100.0);
     ctx.renderer_mut().register_interactive_pointer_drag_target(
@@ -957,12 +983,14 @@ pub fn emit_slider_accessibility<E: crate::text::TextEngine>(
 ) {
     let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
     let mut state = state.borrow_mut();
+    let range = valid_range(renderer.read_signal(&state.range));
+    let step = renderer.read_signal(&state.step);
     slider_accessibility_parts(
         renderer,
         None,
         &state.label,
-        &state.range,
-        state.step,
+        &range,
+        step,
         &state.value,
         env,
         &[interaction_key],

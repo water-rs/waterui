@@ -346,8 +346,8 @@ fn note(value: &Binding<Str>) -> impl View {
 | --- | --- | --- |
 | `Button<Action>` | `Button::new(label)`, `button(impl IntoLabel)` | `action` / `action_async`, `style`, `size`; content-sized |
 | `Toggle` | `Toggle::new(label, &Binding<bool>)`, `toggle(label, &binding)` | `switch()` / `checkbox()` presentation |
-| `Slider` | `Slider::new(label, &Binding<f64>)`, `slider(label, &binding)` | `range`, `min_value_label`, `max_value_label` |
-| `Stepper` | `Stepper::new(label, &Binding<i32>)`, `stepper(label, &binding)` | `range`, `step`, `value_formatter` |
+| `Slider` | `Slider::new(label, &Binding<T: SliderValue>)`, `slider(label, &binding)` | `range`, `step`, `value_formatter`, `min_value_label`, `max_value_label` |
+| `Stepper` | `Stepper::new(label, &Binding<T: StepperValue>)`, `stepper(label, &binding)` | `range`, `step`, `value_formatter` |
 | `TextField` | `TextField::new(label, &Binding<Str>)`, `TextField::styled(label, &Binding<StyledStr>)`, `field(label, &binding)` | `prompt`, `keyboard`, `line_limit`, `selection_menu` |
 | `Menu` | `Menu::new(label, impl MenuView)` | Renders as a popup trigger, or nests inside another menu |
 

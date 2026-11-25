@@ -308,14 +308,14 @@ pub enum AccessibilityActionTarget<E: crate::text::TextEngine> {
     },
     #[cfg(feature = "stepper")]
     Stepper {
-        value: nami::Binding<i32>,
-        step: nami::Computed<i32>,
-        range: RangeInclusive<i32>,
+        value: nami::Binding<i64>,
+        step: nami::Computed<i64>,
+        range: RangeInclusive<i64>,
     },
     #[cfg(feature = "date-picker")]
     DatePicker {
         value: nami::Binding<DateTime>,
-        range: RangeInclusive<DateTime>,
+        range: nami::Computed<RangeInclusive<DateTime>>,
         ty: DatePickerType,
         /// Widget-registered popup opener invoked on `Click`, so
         /// `date_picker_window_base` (`Calendar`/`Stepper`) is only reachable
@@ -2923,10 +2923,10 @@ fn handle_accessibility_slider_action(
 )]
 #[cfg(feature = "stepper")]
 fn handle_accessibility_stepper_action(
-    value: &nami::Binding<i32>,
-    step: &nami::Computed<i32>,
-    start: i32,
-    end: i32,
+    value: &nami::Binding<i64>,
+    step: &nami::Computed<i64>,
+    start: i64,
+    end: i64,
     action: AccessibilityAction,
     data: Option<AccessibilityActionData>,
 ) -> bool {
@@ -2946,13 +2946,13 @@ fn handle_accessibility_stepper_action(
         AccessibilityAction::Decrement => previous.saturating_sub(step_value).max(start),
         AccessibilityAction::SetValue => match data {
             Some(AccessibilityActionData::NumericValue(target)) => {
-                let rounded = crate::num_cast::f64_as_i32(target.round());
+                let rounded = crate::num_cast::f64_as_i64(target.round());
                 rounded.clamp(start, end)
             }
             Some(AccessibilityActionData::Value(ref text)) => {
-                let Ok(parsed) = text.parse::<i32>() else {
+                let Ok(parsed) = text.parse::<i64>() else {
                     contract_violation!(
-                        "hydrolysis accessibility stepper SetValue text {text:?} must parse as i32; the action is declined"
+                        "hydrolysis accessibility stepper SetValue text {text:?} must parse as i64; the action is declined"
                     );
                     return false;
                 };
@@ -2977,7 +2977,7 @@ fn handle_accessibility_stepper_action(
 fn handle_accessibility_date_picker_action<E: crate::text::TextEngine>(
     renderer: &mut SemanticCore<E>,
     value: &nami::Binding<DateTime>,
-    range: &RangeInclusive<DateTime>,
+    range: &nami::Computed<RangeInclusive<DateTime>>,
     ty: DatePickerType,
     open_popup: &AccessibilityActivation<E>,
     action: AccessibilityAction,
@@ -3002,6 +3002,7 @@ fn handle_accessibility_date_picker_action<E: crate::text::TextEngine>(
                     return false;
                 }
             };
+            let range = range.snapshot();
             let previous = value.snapshot().clamp(*range.start(), *range.end());
             let next = parsed.clamp(*range.start(), *range.end());
             if next != previous {
