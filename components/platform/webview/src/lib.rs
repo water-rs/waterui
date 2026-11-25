@@ -394,6 +394,35 @@ impl WebView {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    /// Opens a new `WebView` whose local asset server is built from the
+    /// rendering [`Environment`] when the view mounts, then navigates to
+    /// `entry`.
+    ///
+    /// Used by `include_web!` so bundled web frontends resolve their staged
+    /// bundle directory against the environment's `ResourceContext` at render
+    /// time without callers threading the context by hand.
+    pub fn open_assets_with(
+        build_server: impl FnOnce(&Environment) -> Option<AssetServer> + 'static,
+        entry: impl Into<Str>,
+    ) -> WebViewOpen {
+        WebViewOpen {
+            target: WebViewTarget::DeferredAssets {
+                build_server: Box::new(build_server),
+                entry: entry.into(),
+            },
+            redirects_enabled: None,
+            user_agent: None,
+            scripts: Vec::new(),
+            handlers: Vec::new(),
+            event_watchers: Vec::new(),
+            state: Vec::new(),
+            bridge_origins: BridgeOrigins::default(),
+            navigation_policy: None,
+            proxy_slot: None,
+        }
+    }
+
     /// Returns a [`WebViewProxy`] sharing this web view's handle and reactive
     /// page state.
     #[must_use]
@@ -741,6 +770,9 @@ where
 type BoxedMessageHandler = Box<dyn FnOnce(Environment) -> Box<ScriptMessageHandler>>;
 
 /// Where a [`WebViewOpen`] points the native view once it exists.
+#[cfg(not(target_arch = "wasm32"))]
+type AssetServerBuilder = Box<dyn FnOnce(&Environment) -> Option<AssetServer>>;
+
 enum WebViewTarget {
     /// A reactive URL — writing a new one navigates the live view.
     Url(Computed<Url>),
@@ -749,6 +781,15 @@ enum WebViewTarget {
     Assets {
         /// The serving function behind the origin.
         server: AssetServer,
+        /// The path inside the asset set the view navigates to.
+        entry: Str,
+    },
+    #[cfg(not(target_arch = "wasm32"))]
+    /// A bundled asset set whose server is resolved from the rendering
+    /// [`Environment`] when the view opens.
+    DeferredAssets {
+        /// Builds the asset server against the rendering environment.
+        build_server: AssetServerBuilder,
         /// The path inside the asset set the view navigates to.
         entry: Str,
     },
@@ -761,6 +802,11 @@ impl fmt::Debug for WebViewTarget {
             #[cfg(not(target_arch = "wasm32"))]
             Self::Assets { entry, .. } => f
                 .debug_struct("Assets")
+                .field("entry", entry)
+                .finish_non_exhaustive(),
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::DeferredAssets { entry, .. } => f
+                .debug_struct("DeferredAssets")
                 .field("entry", entry)
                 .finish_non_exhaustive(),
         }
@@ -1115,19 +1161,13 @@ impl WebViewOpen {
         // view opens at, the admission rules resolved against it, the
         // application's scripts and the state declarations.
         #[cfg(not(target_arch = "wasm32"))]
-        let (initial, url, asset_server) = match target {
-            WebViewTarget::Url(url) => (url.snapshot(), Some(url), None),
-            WebViewTarget::Assets { server, entry } => {
-                // The origin is the engine's answer, not a constant the shared
-                // layer guesses: it differs across engines by design.
-                let Some(entry_url) = asset_entry_url(controller, &entry) else {
-                    if let Some(slot) = proxy_slot {
-                        slot.bind_unavailable(AnyWebViewHandle::unavailable());
-                    }
-                    return None;
-                };
-                (entry_url, None, Some(server))
+        let Some((initial, url, asset_server)) =
+            resolve_webview_target(target, controller, environment)
+        else {
+            if let Some(slot) = proxy_slot {
+                slot.bind_unavailable(AnyWebViewHandle::unavailable());
             }
+            return None;
         };
         #[cfg(target_arch = "wasm32")]
         let (initial, url) = match target {
@@ -1201,6 +1241,31 @@ impl WebViewOpen {
             webview
         };
         Some(OpenedWebView { typed, webview })
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn resolve_webview_target<C: WebViewController>(
+    target: WebViewTarget,
+    controller: &C,
+    environment: &Environment,
+) -> Option<(Url, Option<Computed<Url>>, Option<AssetServer>)> {
+    match target {
+        WebViewTarget::Url(url) => Some((url.snapshot(), Some(url), None)),
+        WebViewTarget::Assets { server, entry } => {
+            // The origin is the engine's answer, not a constant the shared
+            // layer guesses: it differs across engines by design.
+            let entry_url = asset_entry_url(controller, &entry)?;
+            Some((entry_url, None, Some(server)))
+        }
+        WebViewTarget::DeferredAssets {
+            build_server,
+            entry,
+        } => {
+            let server = build_server(environment)?;
+            let entry_url = asset_entry_url(controller, &entry)?;
+            Some((entry_url, None, Some(server)))
+        }
     }
 }
 
@@ -1589,6 +1654,68 @@ mod tests {
             assert_eq!(title.snapshot().as_str(), "After Drop");
             assert_eq!(url.snapshot(), Some(next_url));
             assert!((progress.snapshot() - f64::from(0.75_f32)).abs() < 1e-6);
+        }
+
+        #[test]
+        fn open_assets_with_resolves_server_from_environment() {
+            use crate::assets::{AssetMethod, AssetRequest, AssetResponse, AssetServer};
+            use std::sync::Arc;
+
+            struct AssetRoot(String);
+            struct AssetOriginController {
+                captured: Rc<RefCell<Option<AssetServer>>>,
+            }
+
+            impl WebViewController for AssetOriginController {
+                type Handle = FakeHandle;
+
+                fn open(&self, config: WebViewConfig) -> Result<Self::Handle, WebViewOpenError> {
+                    *self.captured.borrow_mut() = config.asset_server().cloned();
+                    Ok(FakeHandle::default())
+                }
+
+                fn asset_origin(&self) -> Option<Url> {
+                    Some(Url::new("waterui://localhost"))
+                }
+            }
+
+            let captured = Rc::new(RefCell::new(None));
+            let controller = AssetOriginController {
+                captured: Rc::clone(&captured),
+            };
+            let mut env = Environment::new();
+            env.insert(AssetRoot(String::from("staged-web")));
+
+            let opened = WebView::open_assets_with(
+                |env| {
+                    let root = env.get::<AssetRoot>()?.0.clone();
+                    Some(Arc::new(move |_request: &AssetRequest| {
+                        AssetResponse::ok("text/plain", root.as_bytes().to_vec())
+                    }))
+                },
+                "index.html",
+            )
+            .open_with(&controller, &env)
+            .expect("asset origin controller opens deferred asset web view");
+
+            assert_eq!(
+                opened.webview().url().snapshot().as_ref().map(Url::as_str),
+                Some("waterui://localhost/index.html")
+            );
+            let server = captured
+                .borrow()
+                .clone()
+                .expect("WebViewConfig receives resolved AssetServer");
+            let response = server(&AssetRequest::new(
+                AssetMethod::Get,
+                Str::from_static("/index.html"),
+                None,
+            ));
+            assert_eq!(response.body(), b"staged-web");
+
+            let missing = WebView::open_assets_with(|_env| None, "index.html")
+                .open_with(&controller, &Environment::new());
+            assert!(missing.is_none());
         }
     }
 

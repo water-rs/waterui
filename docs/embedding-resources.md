@@ -11,9 +11,19 @@ override or executable-relative package layout once. An embedded host
 supplies its own directories; asset resolution never mutates process
 environment variables or consults a global resource context.
 
-`ImageAsset` and `VideoAsset` remain views. Their bodies resolve their URLs
-through the context in the rendering environment. Their default stretch
-axes remain identical to `Photo` and fit-mode `Video`, respectively.
+Bundled asset handles pass directly to their components and resolve against the
+rendering environment's `ResourceContext` at render time:
+
+```rust,ignore
+use waterui::layout::ContentMode;
+use waterui::prelude::*;
+
+let hero = photo(waterui::asset!("logo.png"))
+    .resizable()
+    .content_mode(ContentMode::Fill);
+let player = video_player(waterui::asset!("movie.mp4"));
+let site = waterui::include_web!("web");
+```
 
 For operations outside view rendering, pass the context explicitly:
 
@@ -23,8 +33,6 @@ let resources = waterui::ResourceContext::from_environment(&env)
     .expect("the host installs the ResourceContext");
 let data = waterui::asset!("settings.json").load(resources)?;
 let image_url = waterui::asset!("logo.png").url(resources);
-let video = waterui::asset!("movie.mp4").player(resources);
-let site = waterui::include_web!(resources, "web");
 ```
 
 Local `asset!` paths are logical paths inside the packaged asset root.
