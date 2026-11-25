@@ -154,14 +154,15 @@ from a file at compile time). `.on_event` takes `Fn` — capture cloned bindings
 
 Bundled and controlled content:
 
-- `include_web!(resources, "web")` (features `webview` + `assets`) embeds a web frontend:
-  the first argument borrows the app's `ResourceContext`, the second is the web project
-  root (relative to the crate's `Cargo.toml`) holding `package.json`; named options
-  `out_dir` (`dist`), `entry` (`index.html`), `spa`, `csp`. It expands to a `WebViewOpen`,
-  so `.serve(..)`, `.inject(..)`, `.on_event(..)` chain on it. The `water` CLI builds and
-  stages the frontend; one per application; main-frame navigations that leave its origin
-  open in the system browser. It installs a navigation policy, which compiles only with
-  the Apple deployment targets raised to `27.0` ([project.md](project.md)).
+- `include_web!("web")` (features `webview` + `assets`) embeds a web frontend:
+  the first argument is the web project root (relative to the crate's `Cargo.toml`)
+  holding `package.json`, and `ResourceContext` is resolved from the rendering
+  environment; named options `out_dir` (`dist`), `entry` (`index.html`), `spa`, `csp`.
+  It expands to a `WebViewOpen`, so `.serve(..)`, `.inject(..)`, `.on_event(..)` chain
+  on it. The `water` CLI builds and stages the frontend; one per application; main-frame
+  navigations that leave its origin open in the system browser. It installs a navigation
+  policy, which compiles only with the Apple deployment targets raised to `27.0`
+  ([project.md](project.md)).
 - `WebView::open_assets(server, entry)` serves `Fn(&AssetRequest) -> AssetResponse`
   (GET/HEAD only) under the engine's local asset origin, a secure context on every
   engine; `DirectoryServer::new(dir).into_server_fn()` is the ready-made server over a
@@ -326,11 +327,13 @@ use waterui::graphics::shader;
 shader!("starfield.wgsl").size(400.0, 500.0)   // static fragment shader from the .wgsl file beside this source file, no build.rs, no wgpu dep
 ```
 
-`shader!` reads the file next to the calling source file (`include_str!`) and expands to a
-`ShaderPaintView` that fills the space it is given. It renders once per change of its
-inputs; `.continuous(signal)` (a `bool`, `.continuous(true)` for constant) re-renders every
-frame so `uniforms.time` advances, and `.uniforms(signal)` of a `Vec<f32>` (up to 64
-floats) feeds `params`. The WGSL writes `@fragment fn main(@location(0) uv: vec2<f32>) ->
+`shader!` validates the `.wgsl` file next to the calling source file (`include_str!`) at compile
+time and expands to a `ShaderPaintView` that fills the space it is given; `ShaderPaintView::new(src)`
+validates runtime strings and returns `Result<ShaderPaintView, ShaderError>`. It renders once
+per change of its inputs; `.continuous(signal)` (a `bool`, `.continuous(true)` for constant)
+re-renders every frame so `uniforms.time` advances, and `.param(signal)` / `.params([...])`
+(up to 64 scalar `f32` signals, returning `Result<_, ShaderError>`) feeds `shader_param(index)`
+/ `params` (`array<vec4<f32>, 16>`). The WGSL writes `@fragment fn main(@location(0) uv: vec2<f32>) ->
 @location(0) vec4<f32>` (`uv` runs 0..1 from the top-left) against the prelude's
 `uniforms.time`, `uniforms.resolution` and `params` (`array<vec4<f32>, 16>`), returning
 premultiplied linear Display P3; `cherenkov_linear_srgb` converts an sRGB colour. For
@@ -509,21 +512,24 @@ use waterui_map::{Annotation, Coordinate, Map, MapStyle, Region};
 let center = Coordinate::from_degrees(37.33, -122.03).expect("valid coordinate");
 let region: Binding<Region> = binding(Region::new(center, 0.05, 0.05));   // deltas are degree
 // spans; the annotation is needed — `binding`'s `impl Into<T>` cannot infer `T` here
+let selected: Binding<Option<&'static str>> = binding(None);
 
-Map::new(region.clone())                     // impl IntoComputed<Region>
+Map::new(&region)                            // &Binding<Region>: two-way camera
     .style(MapStyle::Standard)               // Standard | Satellite | Hybrid
-    .annotations(pins.clone())               // impl IntoComputed<Vec<Annotation>>
+    .annotations(pins.clone())               // impl IntoComputed<Vec<Annotation<T>>>
+    .selection(&selected)                    // &Binding<Option<T>>: two-way pin selection
     .optional_user_location(loc.clone())     // starts None while permission is pending
     .shows_compass(true).shows_scale(true)   // plain bools
 ```
 
-`Region` has public `center` / `latitude_delta` / `longitude_delta` fields — zooming is a
-handler that `.set()`s a region with scaled deltas. `Coordinate::from_degrees` returns a
-`Result`; out-of-range coordinates are errors, not clamps. Also: `Map::centered_on(coordinate)`
-and `Map::centered_on_location(location)` (signals; default zoom), `Annotation::new(coordinate,
-title).subtitle(..)`, `.is_interactive(false)`, `.shows_user_location(true)`,
-`.follows_location(signal)`, and `.status(&Binding<MapStatus>)`, which the map fills with
-`Loading | Ready | Failed(reason)` so the app can draw its own spinner or error over it.
+`Region` has public `center` / `latitude_delta` / `longitude_delta` fields — user pan and zoom
+gestures write back into the bound `Region`, and zooming or recentering is a handler that
+`.set()`s the region. `Coordinate::from_degrees` returns a `Result`; out-of-range coordinates are
+errors, not clamps. Also: `Map::centered_on(coordinate)` and `Map::centered_on_location(location)`
+(signals; default zoom), `Annotation::new(id, coordinate, title).subtitle(..)`,
+`.is_interactive(false)`, `.shows_user_location(true)`, `.follows_location(signal)`, and
+`.status(&Binding<MapStatus>)`, which the map fills with `Loading | Ready | Failed(reason)` so the
+app can draw its own spinner or error over it.
 
 `waterui-map` is the semantic component; who *draws* it follows the backend and the app's
 dependencies. The Apple backend bridges MapKit and needs nothing. Hydrolysis — Android,

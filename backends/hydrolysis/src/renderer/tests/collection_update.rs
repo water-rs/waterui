@@ -10,7 +10,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use nami::collection::List;
+use nami::collection::StateList;
 use waterui::ViewExt;
 use waterui::graphics::Color;
 use waterui_core::AnyView;
@@ -53,7 +53,7 @@ fn runtime(build: impl Fn() -> AnyView + 'static) -> HeadlessRuntime {
 /// `AbsoluteLayout` in a `LazyContainer` routes the `ForEach` to the
 /// non-virtualized `CollectionNode` path. Items stack at the same origin, so
 /// the last (topmost) row decides the composited pixels.
-fn collection_overlay(list: &List<Shade>) -> AnyView {
+fn collection_overlay(list: &StateList<Shade>) -> AnyView {
     let list = list.clone();
     AnyView::new(zstack((
         ().size(360.0, 600.0),
@@ -70,8 +70,8 @@ fn collection_overlay(list: &List<Shade>) -> AnyView {
 /// re-materialize the retained row's node instead of reusing the stale subtree.
 #[test]
 fn collection_same_id_item_update_rematerializes_row() {
-    let mut list: List<Shade> =
-        List::from(vec![Shade { id: 0, level: 0 }, Shade { id: 1, level: 1 }]);
+    let mut list: StateList<Shade> =
+        StateList::from(vec![Shade { id: 0, level: 0 }, Shade { id: 1, level: 1 }]);
     let mut runtime = {
         let list = list.clone();
         runtime(move || collection_overlay(&list))
@@ -99,8 +99,8 @@ fn collection_same_id_item_update_rematerializes_row() {
 /// virtualized `LazyStackNode` path backed by `VisibleSubviewCache`.
 #[test]
 fn lazy_stack_same_id_item_update_rematerializes_row() {
-    let mut list: List<Shade> =
-        List::from(vec![Shade { id: 0, level: 0 }, Shade { id: 1, level: 1 }]);
+    let mut list: StateList<Shade> =
+        StateList::from(vec![Shade { id: 0, level: 0 }, Shade { id: 1, level: 1 }]);
     let mut runtime = {
         let list = list.clone();
         runtime(move || {
@@ -141,7 +141,7 @@ fn lazy_stack_same_id_item_update_rematerializes_row() {
 #[test]
 fn collection_set_rebuilds_only_the_touched_row() {
     let builds = Rc::new(Cell::new(0usize));
-    let mut list: List<Shade> = List::from(
+    let mut list: StateList<Shade> = StateList::from(
         (0..1000u64)
             .map(|id| Shade { id, level: 0 })
             .collect::<Vec<_>>(),
@@ -185,7 +185,7 @@ fn collection_set_rebuilds_only_the_touched_row() {
 #[test]
 fn collection_push_rebuilds_no_existing_row() {
     let builds = Rc::new(Cell::new(0usize));
-    let mut list: List<Shade> = List::from(
+    let mut list: StateList<Shade> = StateList::from(
         (0..4u64)
             .map(|id| Shade { id, level: 0 })
             .collect::<Vec<_>>(),

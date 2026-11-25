@@ -156,7 +156,7 @@ fn a_truncated_leaf_reports_the_drawn_line() {
 }
 
 /// A resized run spaces on the resized face's own metrics, never the theme
-/// slot's absolute pitch: a `.size(40)` text inside a 16/24 `Body` slot
+/// slot's absolute pitch: a `.font_size(40)` text inside a 16/24 `Body` slot
 /// must not inherit the default's 24 pt line height — that parked the
 /// baseline at 25 pt under a 24 pt frame and cut the glyph tops off at the
 /// window edge (water-rs/waterui#2719).
@@ -170,7 +170,7 @@ fn a_resized_run_spaces_on_its_own_face_metrics() {
         ),
     );
     let mut state = HydroState::new(ParleyEngine::system(FontFamilyResolution::Strict));
-    let styled = StyledStr::plain("Hello 0").size(40.0);
+    let styled = StyledStr::plain("Hello 0").font_size(40.0);
 
     let dimensions = HydrolysisRenderer::measure_text_dimensions(
         &mut state,

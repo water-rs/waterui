@@ -532,11 +532,17 @@ impl Text {
     }
 
     /// Sets the font size, keeping the font's slot; see
-    /// [`Font::size`](crate::font::Font::size).
-    pub fn size(self, size: impl IntoSignal<f64> + 'static) -> Self {
+    /// [`Font::font_size`](crate::font::Font::font_size).
+    pub fn font_size(self, size: impl IntoSignal<f64> + 'static) -> Self {
         #[allow(clippy::cast_possible_truncation)]
         let size = size.into_signal().map(|s| s as f32).computed();
-        self.map_font(size, Font::size)
+        self.map_font(size, Font::font_size)
+    }
+
+    /// Temporary compatibility shim for downstream crates migrating off `Text::size`.
+    #[doc(hidden)]
+    pub fn size(self, size: impl IntoSignal<f64> + 'static) -> Self {
+        self.font_size(size)
     }
 
     /// Sets the font weight, keeping the font's slot; see
@@ -833,10 +839,10 @@ mod tests {
     #[test]
     fn preset_after_size_keeps_size() {
         let env = type_scale_env();
-        let font = first_resolved_font(&Text::verbatim("x").size(40.0).title(), &env);
+        let font = first_resolved_font(&Text::verbatim("x").font_size(40.0).title(), &env);
         assert!(
             (font.size() - 40.0).abs() < f32::EPSILON,
-            "text(..).size(40).title() must keep size 40, got {}",
+            "text(..).font_size(40).title() must keep size 40, got {}",
             font.size()
         );
     }
@@ -883,7 +889,7 @@ mod tests {
         let env = type_scale_env();
         let size = Binding::container(20.0_f64);
         let content = Text::verbatim("x")
-            .size(size.clone())
+            .font_size(size.clone())
             .body()
             .resolve(&env)
             .content();

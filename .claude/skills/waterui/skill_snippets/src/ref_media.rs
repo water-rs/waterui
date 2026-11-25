@@ -612,15 +612,16 @@ pub fn media_block_09() -> impl View {
 
 // ---------------------------------------------------------------------------
 // media.md § "## Graphics and codes" (prose): `shader!(..)` is a
-// `ShaderPaintView`; `.continuous(signal)` and `.uniforms(signal)`. Not counted as a
+// `ShaderPaintView`; `.continuous(signal)` and `.param(signal)`. Not counted as a
 // rust block.
 // ---------------------------------------------------------------------------
 pub fn media_shader_prose() -> impl View {
     use waterui::graphics::shader;
-    let level = Binding::container(vec![0.5_f32]);
+    let level = Binding::f32(0.5);
     shader!("starfield.wgsl")
         .continuous(true)
-        .uniforms(level)
+        .param(level)
+        .expect("single parameter fits ShaderPaintView capacity")
         .size(400.0, 500.0)
 }
 
@@ -844,18 +845,20 @@ pub fn media_block_14() -> impl View {
 
     use waterui_map::{Annotation, Coordinate, Location, Map, MapStyle, Region};
 
-    let pins = Binding::container(Vec::<Annotation>::new());
+    let pins = Binding::container(Vec::<Annotation<&'static str>>::new());
     let loc = Binding::container(None::<Location>);
 
     let center = Coordinate::from_degrees(37.33, -122.03).expect("valid coordinate");
     let region: Binding<Region> = binding(Region::new(center, 0.05, 0.05)); // deltas are degree
     // spans; the annotation is needed — `binding`'s `impl Into<T>` cannot infer `T` here
+    let selected: Binding<Option<&'static str>> = binding(None);
 
     let _ = (MapStyle::Satellite, MapStyle::Hybrid);
 
-    Map::new(region.clone()) // impl IntoComputed<Region>
+    Map::new(&region) // &Binding<Region>: two-way camera
         .style(MapStyle::Standard) // Standard | Satellite | Hybrid
-        .annotations(pins.clone()) // impl IntoComputed<Vec<Annotation>>
+        .annotations(pins.clone()) // impl IntoComputed<Vec<Annotation<T>>>
+        .selection(&selected) // &Binding<Option<T>>: two-way pin selection
         .optional_user_location(loc.clone()) // starts None while permission is pending
         .shows_compass(true)
         .shows_scale(true) // plain bools
@@ -871,7 +874,7 @@ pub fn media_map_prose() -> impl View {
 
     let coordinate = Coordinate::from_degrees(37.33, -122.03).expect("valid coordinate");
     let pins = Binding::container(vec![
-        Annotation::new(coordinate, "Apple Park").subtitle("Cupertino"),
+        Annotation::new("apple-park", coordinate, "Apple Park").subtitle("Cupertino"),
     ]);
     let status = Binding::container(MapStatus::Loading);
 

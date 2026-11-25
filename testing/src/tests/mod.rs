@@ -2,6 +2,7 @@ mod canvas;
 mod harness;
 mod settle;
 mod shape_morph;
+mod sheet;
 mod transitions;
 
 use super::*;
@@ -926,7 +927,7 @@ fn canvas_and_text_expose_accessibility_nodes_semantically() {
             .a11y_role(waterui::accessibility::AccessibilityRole::Image)
             .a11y_label("Canvas layer"),
             text("W")
-                .size(48.0)
+                .font_size(48.0)
                 .color(Srgb::WHITE)
                 .body()
                 .padding_with(6.0)

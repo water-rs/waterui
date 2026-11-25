@@ -10,12 +10,12 @@ use waterui::PropertyTransition;
 use waterui::animation::Animation;
 use waterui::component::text;
 use waterui::layout::stack::VStack;
-use waterui::reactive::collection::List as Membership;
+use waterui::reactive::collection::StateList;
 use waterui_core::id::SelfId;
 
 #[test]
 fn exiting_member_leaves_the_semantic_tree_immediately_but_holds_its_slot() {
-    let mut rows: Membership<SelfId<u64>> = Membership::from(vec![SelfId::new(1), SelfId::new(2)]);
+    let mut rows: StateList<SelfId<u64>> = StateList::from(vec![SelfId::new(1), SelfId::new(2)]);
     let view_rows = rows.clone();
     let mut app = ui()
         .viewport(240, 160)

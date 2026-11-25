@@ -392,7 +392,7 @@ fn default_rendering(env: &Environment, config: CodeConfig) -> impl View {
                 spacer(),
                 copy_button(content_for_copy, on_copied),
             )),
-            text(highlighted).font(Font::from(Body).size(14.0).monospaced(true)),
+            text(highlighted).font(Font::from(Body).font_size(14.0).monospaced(true)),
         ),
     );
     background(

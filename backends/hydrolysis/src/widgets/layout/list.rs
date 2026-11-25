@@ -282,8 +282,8 @@ pub struct ListRenderState<E: crate::text::TextEngine> {
     /// live) and only builds rows entering the window.
     item_cache: RefCell<VisibleSubviewCache<ListItemId, E>>,
     /// What each row in `item_cache` was realized with, keyed by the same id
-    /// and retired with it: the parts of its `ListItem` beside the content and
-    /// the environments the content was built under.
+    /// and retired with it: the row modifiers (`ListRowDeletable`,
+    /// `ListRowInsets`) and the environments the content was built under.
     realized_rows: RefCell<std::collections::HashMap<ListItemId, RealizedRow>>,
     /// One activation claim scope per row, keyed by the same stable id. The
     /// row's content sub-view flushes under the environment it was *built*
@@ -443,8 +443,8 @@ impl RowSectionChrome {
     }
 }
 
-/// What a list row was realized with: the parts of its `ListItem` beside the
-/// content, and the environments its content was built under.
+/// What a list row was realized with: its row modifiers (`ListRowDeletable`,
+/// `ListRowInsets`) and the environments its content was built under.
 struct RealizedRow {
     deletable: waterui_core::Computed<bool>,
     insets: Option<waterui_layout::padding::EdgeInsets>,

@@ -53,7 +53,7 @@ fn main() -> impl View {
     let count = Binding::i32(0);
 
     vstack((
-        text("Hello, WaterUI!").size(28),
+        text("Hello, WaterUI!").font_size(28),
         text!("Count: {count}"),
         stepper("Count", &count),
     ))
@@ -140,7 +140,7 @@ fn contacts() -> impl View {
         Contact { id: 2, name: "Bob Smith" },
     ];
 
-    List::for_each(contacts, |contact| ListItem::new(text(contact.name)))
+    List::for_each(contacts, |contact| text(contact.name))
 }
 ```
 

@@ -27,12 +27,12 @@ use waterui::navigation::tab::{NativeTabStyle, TabItem, TabsLayout};
 use waterui::theme::ForegroundOverride;
 use waterui::theme::color::Foreground;
 use waterui_controls::label::LabelDisplayMode;
+use waterui_core::Environment;
 use waterui_core::contract_violation;
 use waterui_core::id::Id;
 use waterui_core::layout::{LayoutDirection, ProposalSize, Size as LayoutSize, ViewDimensions};
 use waterui_core::plugin::Plugin;
 use waterui_core::views::AnyViewsSnapshot;
-use waterui_core::{Environment, Native};
 use waterui_graphics::color::Color;
 
 #[cfg(feature = "accessibility")]
@@ -61,7 +61,7 @@ impl<E: crate::text::TextEngine> TabRenderState<E> {
             tag,
             label: RetainedSubview::held(label.build()),
             icon: icon.map(|slot| RetainedSubview::held(slot.build())),
-            content: RetainedSubview::new(Native::new(content.build())),
+            content: RetainedSubview::held(content.build()),
             enabled,
             badge,
         }

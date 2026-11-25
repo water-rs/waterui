@@ -4,6 +4,7 @@
 use core::marker::PhantomData;
 
 use waterui::animation::FrameRateVote;
+use waterui::sheet::Sheet;
 
 #[cfg(waterui_feature = "gpu")]
 use waterui::graphics::backend::Picture;
@@ -213,21 +214,6 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
     // `Native<()>` carries no data.
     fn empty(&mut self, (): (), env: &Environment, (): ()) -> RenderNode<E> {
         mark_reached!("empty");
-        RenderNode::build_empty(self.renderer, env)
-    }
-
-    fn window<C: ChildView<Self>>(
-        &mut self,
-        native: waterui::window::Window<waterui::window::WindowSlot<C>, Option<C>>,
-        env: &Environment,
-        (): (),
-    ) -> RenderNode<E> {
-        mark_reached!("window");
-        self.renderer
-            .open_window(crate::runner::window::slot_root_window(native.map(
-                |slot| slot.map(C::into_child),
-                |toolbar| toolbar.map(C::into_child),
-            )));
         RenderNode::build_empty(self.renderer, env)
     }
 
@@ -912,6 +898,32 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
                 placed_edge,
                 placement,
                 dismissal,
+                marker: Rc::new(()),
+            }),
+            content,
+            env,
+            renderer,
+        )
+    }
+
+    fn sheet<C: ChildView<Self>>(
+        &mut self,
+        metadata: Metadata<Sheet, C>,
+        env: &Environment,
+        (): (),
+    ) -> RenderNode<E> {
+        mark_reached!("sheet");
+        let metadata = metadata.map_content(C::into_child);
+        let renderer = &mut *self.renderer;
+        let Metadata { content, value } = metadata;
+        let sheet_for_builder = value.clone();
+        let build_layer: Rc<dyn Fn() -> RetainedSubview<E>> =
+            Rc::new(move || RetainedSubview::new(sheet_for_builder.modal_layer()));
+        RenderNode::build_wrapper(
+            WrapperEffect::Sheet(SheetEffect {
+                content: Rc::new(RefCell::new(None)),
+                build_layer,
+                sheet: value,
                 marker: Rc::new(()),
             }),
             content,

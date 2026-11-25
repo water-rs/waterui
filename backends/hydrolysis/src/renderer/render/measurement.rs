@@ -511,7 +511,7 @@ pub fn list_intrinsic_for_first_row<E: crate::text::TextEngine, C>(
     )
 }
 
-/// Materializes the `ListItem` at `index` from `contents` — an immutable
+/// Materializes the row at `index` from `contents` — an immutable
 /// snapshot of the row collection, so the caller's whole pass (section walk,
 /// accessibility emit, or draw loop) reads one coherent membership.
 #[cfg(feature = "list")]
@@ -528,8 +528,8 @@ pub fn materialize_list_item<E: crate::text::TextEngine>(
 }
 
 /// A list row's extent from its content's measured height: the content plus
-/// the row's vertical insets, floored at the configured minimum. `insets` is
-/// `ListItem::insets` — `None` uses the theme's `vertical_inset` — and
+/// the row's vertical insets, floored at the configured minimum. `insets` comes
+/// from `ListRowInsets` — `None` uses the theme's `vertical_inset` — and
 /// `min_height` is `ListConfig::min_row_height` — `None` uses the theme's
 /// `one_line_row_height`, so both unset reproduces the theme metrics exactly.
 /// The caller measures the content (the realized row's node) and the

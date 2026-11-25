@@ -1796,7 +1796,8 @@ fn a_label_reaches_the_view_a_hook_realizes() {
     let mut renderer = test_renderer();
     // The frame puts the hooked map inside a layout container, one level below
     // the naming scope the build installs.
-    let view = Map::new(Region::new(Coordinate::default(), 1.0, 1.0))
+    let camera = Binding::container(Region::new(Coordinate::default(), 1.0, 1.0));
+    let view = Map::new(&camera)
         .hooks(TextMap)
         .a11y_label("City map")
         .size(120.0, 120.0);
@@ -1841,13 +1842,13 @@ fn a_webview_with_no_engine_to_draw_it_is_reported_and_not_drawn() {
 #[cfg(feature = "accessibility")]
 #[test]
 fn lazy_stack_role_emits_the_container_node_over_its_rows() {
-    use nami::collection::List;
+    use nami::collection::StateList;
     use waterui_core::id::SelfId;
     use waterui_layout::stack::VStack;
 
     let env = test_environment();
     let mut renderer = test_renderer();
-    let rows: List<SelfId<u64>> = List::from(vec![SelfId::new(0), SelfId::new(1)]);
+    let rows: StateList<SelfId<u64>> = StateList::from(vec![SelfId::new(0), SelfId::new(1)]);
     let view = VStack::for_each(rows, |_: SelfId<u64>| text("Row"))
         .a11y_label("Rows")
         .a11y_role(AccessibilityRole::List);
@@ -1879,13 +1880,13 @@ fn lazy_stack_role_emits_the_container_node_over_its_rows() {
 #[cfg(feature = "accessibility")]
 #[test]
 fn overlay_collection_role_emits_the_container_node() {
-    use nami::collection::List;
+    use nami::collection::StateList;
     use waterui_core::id::SelfId;
     use waterui_layout::stack::ZStack;
 
     let env = test_environment();
     let mut renderer = test_renderer();
-    let items: List<SelfId<u64>> = List::from(vec![SelfId::new(0), SelfId::new(1)]);
+    let items: StateList<SelfId<u64>> = StateList::from(vec![SelfId::new(0), SelfId::new(1)]);
     let view = ZStack::for_each(items, |_: SelfId<u64>| text("Card"))
         .a11y_label("Cards")
         .a11y_role(AccessibilityRole::Group);

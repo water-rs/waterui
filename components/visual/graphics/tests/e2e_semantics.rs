@@ -48,6 +48,7 @@ fn animated_mesh_gradient_view() -> impl waterui::View {
 
 fn shader_paint_view() -> impl waterui::View {
     ShaderPaintView::new(include_str!("fixtures/two_tone.wgsl"))
+        .expect("fixture two_tone.wgsl is valid")
         .size(180.0, 120.0)
         .a11y_role(AccessibilityRole::Image)
         .a11y_label("Shader paint")

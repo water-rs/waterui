@@ -29,7 +29,7 @@ use waterui_core::handler::AnyViewBuilder;
 use waterui_core::layout::{Point, Rect, Size};
 use waterui_core::{AnyView, Environment};
 
-use crate::{PerfConfig, Role, ui};
+use crate::{PerfConfig, Role, mount_app, ui};
 /// Installs the custom foreground token the origin tests layered over the
 /// theme package: the harness no longer takes a theme-installer closure, so
 /// the override is a view-scoped plugin — applied after the style's tokens,
@@ -168,10 +168,10 @@ fn max_width_derived_from_the_mounted_window_frame_wraps_text() {
 
     let frame = waterui::binding(Rect::new(Point::zero(), Size::new(800.0, 600.0)));
     let cap = frame.map(|f: Rect| f.size().width / 4.0);
-    let mut window = Window::new("app", move || {
+    let window = Window::new("app", move || {
         Frame::new(text(LONG).body()).max_width(cap.clone())
-    });
-    window.frame = frame;
+    })
+    .frame(&frame);
     let app = App::new(Environment::new()).window(window);
     let mut app = ui()
         .theme(Material3::defaults())
@@ -203,10 +203,10 @@ fn mount_app_drives_the_app_window_frame_from_the_viewport() {
     let frame = waterui::binding(Rect::new(Point::zero(), Size::new(800.0, 600.0)));
     // The label names its allocation (`docs/layout-spec.md` §7.2): a text
     // root otherwise reports its centred response, not the window's width.
-    let mut window = Window::new("app", || {
+    let window = Window::new("app", || {
         text("app content").a11y_geometry(AccessibilityGeometry::Allocation)
-    });
-    window.frame = frame.clone();
+    })
+    .frame(&frame);
     let app = App::new(Environment::new()).window(window);
     let mut app = ui()
         .theme(Material3::defaults())
@@ -219,6 +219,27 @@ fn mount_app_drives_the_app_window_frame_from_the_viewport() {
     );
     let bounds = app.query().role(Role::LABEL).single().bounds();
     approx::assert_relative_eq!(bounds.width(), 320.0);
+}
+
+#[test]
+fn mount_app_installs_window_handle_as_handler_state_and_honors_default_size() {
+    use waterui::binding;
+    use waterui::component::button;
+    use waterui::window::{Window, WindowHandle, WindowState};
+
+    let state = binding(WindowState::Normal);
+    let window = Window::new("Controls", || {
+        button("Maximize").action(|handle: WindowHandle| handle.maximize())
+    })
+    .state(&state)
+    .default_size(Size::new(640.0, 480.0))
+    .closable(false);
+
+    let app = App::new(Environment::new()).window(window);
+    let mut mounted = mount_app(app, Material3::defaults());
+    assert_eq!(mounted.viewport(), (640, 480));
+    mounted.query().role(Role::BUTTON).label("Maximize").tap();
+    assert_eq!(state.snapshot(), WindowState::Maximized);
 }
 
 // Origin: waterui `testing/src/tests.rs`.
@@ -356,7 +377,7 @@ fn ui_test_snapshot_renders_text_after_canvas() {
                 .a11y_role(waterui::accessibility::AccessibilityRole::Image)
                 .a11y_label("Canvas layer"),
                 text("W")
-                    .size(48.0)
+                    .font_size(48.0)
                     .color(Srgb::WHITE)
                     .body()
                     .padding_with(6.0)

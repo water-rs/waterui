@@ -20,7 +20,6 @@ use waterui::graphics::color::Srgb;
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::Binding;
-use waterui::reactive::collection::List as ReactiveList;
 
 const TAP_COLOR: Srgb = Srgb::from_hex("#2196F3");
 const DOUBLE_TAP_COLOR: Srgb = Srgb::from_hex("#4CAF50");
@@ -149,7 +148,7 @@ struct TabChip {
 /// `MIDDLE`-only tap runs alongside its primary selection tap without
 /// competing for the same press.
 fn middle_click_tab_section(
-    tabs: &ReactiveList<TabChip>,
+    tabs: &StateList<TabChip>,
     open_tabs: &Binding<i32>,
 ) -> impl View + use<> {
     let tabs_for_rows = tabs.clone();
@@ -167,7 +166,7 @@ fn middle_click_tab_section(
                     .gesture(
                         TapGesture::new().buttons(PointerButtons::MIDDLE),
                         move |_: TapEvent,
-                              State(mut tabs): State<ReactiveList<TabChip>>,
+                              State(mut tabs): State<StateList<TabChip>>,
                               State(open_tabs): State<Binding<i32>>| {
                             if let Some(index) =
                                 tabs.snapshot().iter().position(|tab| tab.id == tab_id)
@@ -214,7 +213,7 @@ pub fn demo() -> impl View {
     let drag_count = Binding::i32(0);
     let chained_status = Binding::container("Waiting for tap...");
     let open_tabs = Binding::i32(4);
-    let tabs = ReactiveList::from(
+    let tabs = StateList::from(
         ["Overview", "Details", "Activity", "Settings"]
             .iter()
             .enumerate()

@@ -14,6 +14,7 @@ use accesskit::{
 use cherenkov_record::Recorder;
 use nami::Binding;
 use nami::Signal as _;
+use nami::collection::StateList;
 use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityState;
 use waterui::component::list::List;
@@ -1105,7 +1106,7 @@ fn selectable_sortable_table_with_non_text_cell_works() {
         Name,
     }
 
-    let people = nami::collection::List::from(vec![
+    let people = StateList::from(vec![
         Person { id: 1, name: "Ada" },
         Person {
             id: 2,

@@ -29,7 +29,7 @@ use waterui::app::AppParts;
 #[cfg(hydrolysis_run)]
 use waterui::app::{App, AppMenuBar};
 use waterui::app::{WindowSink, Windows};
-use waterui::window::Window;
+use waterui::window::WindowParts;
 #[cfg(all(
     not(target_arch = "wasm32"),
     not(hydrolysis_winit),
@@ -267,7 +267,7 @@ use crate::time::Instant;
 /// the resolved background reads; every runner installs it before mounting
 /// a window.
 fn subscribe_window_declaration_signals<E: crate::text::TextEngine, C, T>(
-    window: &Window<C, T>,
+    window: &WindowParts<C, T>,
     env: &Environment,
     core: &SemanticCore<E>,
 ) -> Vec<Retain> {
@@ -372,8 +372,9 @@ fn install_core_window_openers<E: crate::text::TextEngine>(
     opener: Rc<dyn Fn(window::RootWindow<E>)>,
 ) {
     #[cfg(any(feature = "menu", feature = "color-picker"))]
-    core.set_popup_window_manager(PopupWindowManager::from_opener(Rc::clone(&opener)));
-    core.set_window_opener(opener);
+    core.set_popup_window_manager(PopupWindowManager::from_opener(opener));
+    #[cfg(not(any(feature = "menu", feature = "color-picker")))]
+    let _ = (core, opener);
 }
 
 fn install_window_registries<E: crate::text::TextEngine>(env: &mut Environment) {

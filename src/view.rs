@@ -11,10 +11,10 @@
 
 use crate::animation::{FrameRate, FrameRateVote};
 use crate::fullscreen::FullScreenOverlayHost;
+use crate::sheet::Sheet;
 #[cfg(feature = "snackbar")]
 use crate::snackbar::SnackbarHost;
 use core::future::Future;
-use core::time::Duration;
 use nami::{
     Binding, Computed, Signal, SignalExt as _,
     signal::{IntoComputed, IntoSignal},
@@ -951,28 +951,6 @@ pub trait ViewExt: View + Sized {
             GestureObserver::without_event(LongPressGesture::new(), action),
         )
     }
-    /// Adds a long-press gesture recognizer to this view.
-    ///
-    /// Temporary Step 1 migration bridge for `water-rs/waterui#4458` while
-    /// `hydrolysis-m3` updates off milliseconds to [`ViewExt::on_long_press`].
-    #[doc(hidden)]
-    fn on_long_press_gesture<H, Args>(
-        self,
-        minimum_duration_ms: u32,
-        action: H,
-    ) -> Metadata<GestureObserver, Self>
-    where
-        H: Handler<Args, ()>,
-    {
-        Metadata::new(
-            self,
-            GestureObserver::without_event(
-                LongPressGesture::new()
-                    .minimum_duration(Duration::from_millis(u64::from(minimum_duration_ms))),
-                action,
-            ),
-        )
-    }
 
     /// Plays haptic `feedback` whenever `trigger`'s value changes.
     ///
@@ -1346,6 +1324,39 @@ pub trait ViewExt: View + Sized {
     #[cfg(feature = "dialog")]
     fn dialog(self, dialog: crate::dialog::Dialog) -> Metadata<crate::dialog::Dialog, Self> {
         Metadata::new(self, dialog)
+    }
+
+    /// Presents `sheet` window-modal while its `is_presented` binding is `true`.
+    ///
+    /// While presented, everything beneath the sheet is inert to pointer,
+    /// keyboard, and assistive technology; focus moves into the sheet and
+    /// returns to the previously focused element on dismissal. When
+    /// [`Sheet::is_dismissible`](crate::sheet::Sheet::is_dismissible) is `true`,
+    /// Escape, the platform back action, a scrim tap, or interactive swipe-down
+    /// invokes [`Sheet::on_dismiss`](crate::sheet::Sheet::on_dismiss) and writes
+    /// `is_presented = false`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use waterui::prelude::*;
+    /// use waterui::sheet::{Sheet, SheetDetent, SheetDismiss};
+    ///
+    /// let open = binding(false);
+    /// button("Filter")
+    ///     .action({
+    ///         let open = open.clone();
+    ///         move || open.set(true)
+    ///     })
+    ///     .sheet(
+    ///         Sheet::new(&open, || {
+    ///             button("Done").action(|sheet: SheetDismiss| sheet.dismiss())
+    ///         })
+    ///         .detents([SheetDetent::Medium, SheetDetent::Large]),
+    ///     );
+    /// ```
+    fn sheet(self, sheet: Sheet) -> Metadata<Sheet, Self> {
+        Metadata::new(self, sheet)
     }
 
     /// Hosts a [`SnackbarManager`](crate::snackbar::SnackbarManager) and its

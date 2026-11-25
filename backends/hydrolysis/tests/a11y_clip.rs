@@ -36,7 +36,7 @@ use hydrolysis::{
 use waterui::component::list::List;
 use waterui::component::{hstack, spacer, text};
 use waterui::id::SelfId;
-use waterui::reactive::collection::List as ReactiveList;
+use waterui::reactive::collection::StateList;
 use waterui::{Binding, Signal as _, ViewExt as _};
 use waterui_controls::button;
 use waterui_controls::menu::CommandExt as _;
@@ -55,8 +55,8 @@ const SCROLL: f32 = 40.0;
 const PARTIAL_SCROLL: f32 = 28.0;
 const ROW_COUNT: i32 = 10;
 
-fn row_items() -> ReactiveList<SelfId<i32>> {
-    ReactiveList::from((1..=ROW_COUNT).map(SelfId::new).collect::<Vec<_>>())
+fn row_items() -> StateList<SelfId<i32>> {
+    StateList::from((1..=ROW_COUNT).map(SelfId::new).collect::<Vec<_>>())
 }
 
 fn row_label(row: i32) -> String {

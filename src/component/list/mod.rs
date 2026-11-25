@@ -2,9 +2,9 @@
 //!
 //! This module provides the necessary components to build and configure lists
 //! in the `WaterUI` framework. It includes the `List` component for displaying
-//! collections of data, [`ListItem`] for configuring individual items, and
-//! the [`ListContent`] / [`Section`] / [`row`] surface for composing
-//! heterogeneous lists with sections, static or reactive.
+//! collections of data, row modifiers ([`ListRowDeletable`], [`ListRowInsets`],
+//! [`ListMinRowHeight`]), and the [`ListContent`] / [`Section`] / [`row`]
+//! surface for composing heterogeneous lists with sections, static or reactive.
 
 use alloc::collections::BTreeSet;
 use nami::collection::Collection;
@@ -15,7 +15,7 @@ use crate::views::{AnyViews, ForEach, SharedAnyViews, Views};
 use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 use waterui_core::id::Mapping;
 use waterui_core::{
-    AnyView, Environment, Native, NativeView, OneOf2, View, handler::Handler, layout::StretchAxis,
+    AnyView, Environment, Native, NativeView, View, handler::Handler, layout::StretchAxis,
 };
 use waterui_layout::padding::EdgeInsets;
 use waterui_layout::scroll::ScrollController;
@@ -641,7 +641,7 @@ where
 }
 
 // ============================================================================
-// ListItem - Individual item in a list
+// ListSection - Section chrome descriptor
 // ============================================================================
 
 /// The chrome of one section of a list: its header and footer.
@@ -711,126 +711,13 @@ impl ListSection {
     }
 }
 
-/// An item in a list that can be configured with various behaviors.
-///
-/// There is no per-item selectable flag: selection follows the content's
-/// own disabled state. Wrap the row's content in
-/// [`.disabled(true)`](crate::ViewExt::disabled) to make the row inert to
-/// selection — the way a disabled `Button` cannot be pressed — while its
-/// label and disabled accessibility state still report.
-///
-/// `C` is the row's content, kept as its own view type until the backend
-/// realizes the row.
-#[doc(hidden)]
-#[non_exhaustive]
-pub struct ListItem<C> {
-    /// The view content to display for this item.
-    content: C,
-    /// Read-only signal indicating whether this item can be deleted.
-    deletable: Computed<bool>,
-    /// The insets between the row's edges and its content. `None` uses the
-    /// theme's row insets.
-    insets: Option<EdgeInsets>,
-}
-
-impl<C> ListItem<C> {
-    /// The view content to display for this item.
-    #[must_use]
-    pub const fn content(&self) -> &C {
-        &self.content
-    }
-
-    /// Takes the `content` out of the value.
-    pub fn into_content(self) -> C {
-        self.content
-    }
-
-    /// The same item with its content passed through `f`.
-    pub fn map_content<D>(self, f: impl FnOnce(C) -> D) -> ListItem<D> {
-        ListItem {
-            content: f(self.content),
-            deletable: self.deletable,
-            insets: self.insets,
-        }
-    }
-
-    /// Read-only signal indicating whether this item can be deleted.
-    #[must_use]
-    pub const fn get_deletable(&self) -> &Computed<bool> {
-        &self.deletable
-    }
-
-    /// The insets between the row's edges and its content. `None` uses the
-    /// theme's row insets.
-    #[must_use]
-    pub const fn get_insets(&self) -> Option<&EdgeInsets> {
-        self.insets.as_ref()
-    }
-
-    /// Takes the value apart into its fields, in declaration order.
-    pub fn into_parts(self) -> (C, Computed<bool>, Option<EdgeInsets>) {
-        (self.content, self.deletable, self.insets)
-    }
-}
-
-impl<C: 'static> NativeView for ListItem<C> {}
-
-impl<C: View> View for ListItem<C> {
-    fn body(self, _env: &Environment) -> impl View {
-        use crate::ViewExt;
-        let view = self.content.list_row_deletable(self.deletable);
-        match self.insets {
-            Some(insets) => OneOf2::A(view.list_row_insets(insets)),
-            None => OneOf2::B(view),
-        }
-    }
-}
-
-impl<C> core::fmt::Debug for ListItem<C> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str(core::any::type_name::<Self>())
-    }
-}
-
-impl<C: View> ListItem<C> {
-    /// Creates a new list item with the given content.
-    ///
-    /// By default, the item is deletable when the list has `on_delete`.
-    pub fn new(content: C) -> Self {
-        Self {
-            content,
-            deletable: Computed::new(true),
-            insets: None,
-        }
-    }
-
-    /// Sets whether this item can be deleted using a reactive signal.
-    ///
-    /// When false, swipe-to-delete and delete button are disabled for this item.
-    #[must_use]
-    pub fn deletable(mut self, deletable: impl IntoComputed<bool>) -> Self {
-        self.deletable = deletable.into_computed();
-        self
-    }
-
-    /// Replaces the theme's row insets for this item.
-    ///
-    /// Together with [`ListMinRowHeight`], this lets one row size to its
-    /// content (a one-line event in a chat log, a compact header) while the
-    /// rest keep the list's row metrics.
-    #[must_use]
-    pub const fn insets(mut self, insets: EdgeInsets) -> Self {
-        self.insets = Some(insets);
-        self
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ViewExt;
     use nami::Signal as _;
     use waterui_controls::label::TitleLabel;
+    use waterui_core::OneOf2;
     use waterui_core::backend::peel_metadata;
     use waterui_macros::text;
 
@@ -953,7 +840,7 @@ mod tests {
         use alloc::vec;
         use alloc::vec::Vec;
         use core::cell::{Cell, RefCell};
-        use nami::collection::List as ReactiveList;
+        use nami::collection::StateList;
         use waterui_core::id::Identifiable;
 
         use crate::component::text;
@@ -975,12 +862,12 @@ mod tests {
         let deleted_ids = Rc::new(RefCell::new(Vec::new()));
         let moved_events = Rc::new(RefCell::new(Vec::new()));
 
-        let first = ReactiveList::from(vec![
+        let first = StateList::from(vec![
             Entry { id: 10, title: "A" },
             Entry { id: 20, title: "B" },
             Entry { id: 30, title: "C" },
         ]);
-        let second = ReactiveList::from(vec![
+        let second = StateList::from(vec![
             Entry {
                 id: 100,
                 title: "X",

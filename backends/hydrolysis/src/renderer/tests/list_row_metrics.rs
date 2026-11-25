@@ -99,7 +99,7 @@ fn metrics_list(
             // These tests pin the content rect the row allots, so the label
             // reports its allocation rather than the text's own box.
             let item = text(format!("Row {index}"))
-                .size(LABEL_SIZE)
+                .font_size(LABEL_SIZE)
                 .a11y_geometry(AccessibilityGeometry::Allocation);
             match insets_of(index) {
                 Some(insets) => OneOf2::A(item.list_row_insets(insets)),
