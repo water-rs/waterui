@@ -3,7 +3,7 @@
 use alloc::{vec, vec::Vec};
 use nami::{Computed, Signal, SignalExt, collection::Collection};
 use waterui_core::{
-    IntoSignalF32, View, env::with, id::Identifiable, layout::LayoutInvalidationCallback,
+    Environment, IntoSignalF32, View, env::with, layout::LayoutInvalidationCallback,
     view::ViewSequence, views::ForEach,
 };
 
@@ -11,6 +11,7 @@ use crate::{
     Layout, LayoutError, LazyContainer, PlacedSubview, PlacementInput, Point, ProposalSize, Rect,
     Size, StretchAxis, SubView, SubviewPlacement, UnitPoint,
     container::FixedContainer,
+    scroll::Axis as ScrollAxis,
     stack::{
         Axis, VerticalAlignment,
         distribute::{
@@ -65,6 +66,7 @@ use crate::{
 pub struct HStack<C> {
     layout: HStackLayout,
     contents: C,
+    virtualize_axes: Option<ScrollAxis>,
 }
 
 /// Layout engine shared by the public [`HStack`] view.
@@ -278,6 +280,7 @@ impl<C: ViewSequence> HStack<(C,)> {
                 spacing: Computed::constant(spacing),
             },
             contents: (contents,),
+            virtualize_axes: None,
         }
     }
 }
@@ -311,7 +314,7 @@ impl<C> HStack<C> {
     }
 }
 
-crate::stack::impl_stack_for_each!(HStack, HStackLayout);
+crate::stack::impl_stack_for_each!(HStack, HStackLayout, Some(ScrollAxis::Horizontal));
 
 impl<V> FromIterator<V> for HStack<(Vec<V>,)>
 where
@@ -331,14 +334,18 @@ pub fn hstack<C: ViewSequence>(contents: C) -> HStack<(C,)> {
 impl<C, F, V> View for HStack<ForEach<C, F, V>>
 where
     C: Collection + Clone,
-    C::Item: Identifiable + Clone,
+    C::Item: Clone,
     F: 'static + Fn(C::Item) -> V,
     V: View,
 {
-    fn body(self, _env: &waterui_core::Environment) -> impl View {
+    fn body(self, env: &Environment) -> impl View {
+        let virtualize_axes = self.virtualize_axes.and_then(|axes| {
+            env.get::<ScrollAxis>()
+                .and_then(|scroll_axis| scroll_axis.intersect(axes))
+        });
         // Inject the horizontal axis into the container
         with(
-            LazyContainer::new(self.layout, self.contents),
+            LazyContainer::new(self.layout, self.contents).virtualize(virtualize_axes),
             Axis::Horizontal,
         )
     }

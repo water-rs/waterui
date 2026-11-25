@@ -20,6 +20,8 @@ use waterui_core::{
     views::{AnyViews, Views},
 };
 
+use crate::scroll::Axis as ScrollAxis;
+use crate::stack::{LazyStackAxis, lazy_stack_axis};
 use crate::{Layout, StretchAxis};
 
 struct DirectionalLayout {
@@ -350,16 +352,33 @@ pub struct LazyContainer<V> {
     layout: Box<dyn Layout>,
     contents: AnyViews<V>,
     direction: Computed<LayoutDirection>,
+    virtualize_axes: Option<ScrollAxis>,
 }
 
 impl<V: View> LazyContainer<V> {
     /// Wraps the supplied layout object and views into a lazy container view.
     pub fn new(layout: impl Layout + 'static, contents: impl Views<View = V> + 'static) -> Self {
+        let layout: Box<dyn Layout> = Box::new(layout);
+        let virtualize_axes = lazy_stack_axis(layout.as_ref()).map(|axis| match axis {
+            LazyStackAxis::Vertical { .. } => ScrollAxis::Vertical,
+            LazyStackAxis::Horizontal { .. } => ScrollAxis::Horizontal,
+        });
         Self {
-            layout: Box::new(layout),
+            layout,
             contents: AnyViews::new(contents),
             direction: Computed::constant(LayoutDirection::default()),
+            virtualize_axes,
         }
+    }
+
+    /// Sets the axes along which this container may virtualize its children.
+    ///
+    /// `None` forces eager materialization of all items; `Some(axis)` allows
+    /// backends to virtualize along the matching stack axis.
+    #[must_use]
+    pub const fn virtualize(mut self, axes: Option<ScrollAxis>) -> Self {
+        self.virtualize_axes = axes;
+        self
     }
 
     /// The same container under `env`'s layout direction, each item in the
@@ -377,6 +396,7 @@ impl<V: View> LazyContainer<V> {
             #[cfg(not(feature = "erased-dispatch"))]
             contents: self.contents.map_views(S::from_view),
             direction: layout_direction(env),
+            virtualize_axes: self.virtualize_axes,
         }
     }
 }
@@ -398,6 +418,12 @@ impl<V> LazyContainer<V> {
     #[must_use]
     pub fn direction(&self) -> Computed<LayoutDirection> {
         self.direction.clone()
+    }
+
+    /// Returns the virtualization axes configured for this container (`None` = eager).
+    #[must_use]
+    pub const fn virtualize_axes(&self) -> Option<ScrollAxis> {
+        self.virtualize_axes
     }
 
     /// A lazy container cannot enumerate its children without materializing the
@@ -444,6 +470,7 @@ impl<C: 'static> MapSlots<C> for LazyContainer<C> {
             layout: self.layout,
             contents: self.contents.map_views(f),
             direction: self.direction,
+            virtualize_axes: self.virtualize_axes,
         }
     }
 }

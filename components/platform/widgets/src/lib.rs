@@ -388,7 +388,9 @@ mod tests {
             Node::Shape(Shape::rounded_rectangle(12.0).fill(Color::SECONDARY)),
             Node::Color(Color::srgb_u8(0x33, 0x66, 0xcc)),
             Node::Padding(text("default").padding()),
-            Node::Padding(text("custom").padding_with((8.0, 12.0))),
+            Node::Padding(
+                text("custom").padding_with(EdgeInsets::vertical(8.0).with_horizontal(12.0)),
+            ),
             Node::Spacer(spacer_min(10.0)),
             Node::Frame(
                 text("framed")

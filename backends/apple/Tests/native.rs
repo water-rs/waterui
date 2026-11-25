@@ -8319,10 +8319,8 @@ mod owner_lifetimes {
     use std::rc::Rc;
 
     use waterui::Identifiable;
-    use waterui::component::lazy::Lazy;
     use waterui::prelude::*;
     use waterui::reactive::binding;
-    use waterui::views::ForEach;
     use waterui_core::layout::ProposalSize;
 
     use super::{HostView, Label, MainThreadMarker, PlatformView, Retained, leaf, mtm, resolve};
@@ -8378,7 +8376,7 @@ mod owner_lifetimes {
             hstack((text!("{track}"), spacer()))
                 .padding()
                 .size(320.0, 60.0),
-            Lazy::vstack(ForEach::new(items, |row: Row| {
+            scroll(VStack::for_each(items, |row: Row| {
                 text(format!("row {}", row.id))
             })),
         ))
@@ -13340,12 +13338,17 @@ mod gesture_events {
     /// second conversion (#2757, #3706).
     #[cfg(target_os = "macos")]
     fn a_rotation_gesture_reports_native_radians() {
+        use waterui::Angle;
+
         let rotations = Rc::new(RefCell::new(Vec::new()));
         let leaf = resolve::render({
             let rotations = Rc::clone(&rotations);
-            text("rotate").gesture(RotationGesture::new(0.0), move |e: RotationEvent| {
-                rotations.borrow_mut().push(e);
-            })
+            text("rotate").gesture(
+                RotationGesture::new(Angle::ZERO),
+                move |e: RotationEvent| {
+                    rotations.borrow_mut().push(e);
+                },
+            )
         });
         let host = leaf.view();
         let _window = super::mount_and_order_front(host);
@@ -13363,12 +13366,12 @@ mod gesture_events {
         let e = fire(NSGestureRecognizerState::Began, 0.0);
         assert_eq!(
             (e.phase(), e.angle(), e.velocity()),
-            (GesturePhase::Started, 0.0, 0.0)
+            (GesturePhase::Started, Angle::ZERO, 0.0)
         );
         let e = fire(NSGestureRecognizerState::Changed, 0.75);
         assert_eq!(e.phase(), GesturePhase::Updated);
         assert!(
-            (e.angle() + 0.75).abs() < 1e-6,
+            (e.angle().to_radians() + 0.75).abs() < 1e-6,
             "AppKit's counter-clockwise getter negates into the contract's clockwise angle, saw {}",
             e.angle()
         );
@@ -13378,20 +13381,20 @@ mod gesture_events {
             e.velocity()
         );
         let e = fire(NSGestureRecognizerState::Changed, 1.25);
-        assert!((e.angle() + 1.25).abs() < 1e-6);
+        assert!((e.angle().to_radians() + 1.25).abs() < 1e-6);
         let e = fire(NSGestureRecognizerState::Ended, 1.25);
         assert_eq!((e.phase(), e.velocity()), (GesturePhase::Ended, 0.0));
-        assert!((e.angle() + 1.25).abs() < 1e-6);
+        assert!((e.angle().to_radians() + 1.25).abs() < 1e-6);
 
         // A second gesture reseeds at zero; a negative update and a
         // cancel keep the last angle with zero velocity.
         let e = fire(NSGestureRecognizerState::Began, 0.0);
         assert_eq!(e.phase(), GesturePhase::Started);
         let e = fire(NSGestureRecognizerState::Changed, -0.5);
-        assert!((e.angle() - 0.5).abs() < 1e-6);
+        assert!((e.angle().to_radians() - 0.5).abs() < 1e-6);
         let e = fire(NSGestureRecognizerState::Cancelled, -0.5);
         assert_eq!((e.phase(), e.velocity()), (GesturePhase::Cancelled, 0.0));
-        assert!((e.angle() - 0.5).abs() < 1e-6);
+        assert!((e.angle().to_radians() - 0.5).abs() < 1e-6);
     }
 
     /// `AppKit`: `NSMagnificationGestureRecognizer.magnification` is the
@@ -13474,13 +13477,15 @@ mod gesture_events {
     /// recognizer targets (#2757).
     #[cfg(target_os = "macos")]
     fn a_then_gesture_forwards_after_the_first_completes() {
+        use waterui::Angle;
+
         let events = Rc::new(RefCell::new(Vec::new()));
         let gestures = Rc::new(RefCell::new(Vec::new()));
         let leaf = resolve::render({
             let events = Rc::clone(&events);
             let gestures = Rc::clone(&gestures);
             text("then").gesture(
-                Gesture::Tap(TapGesture::new()).then(RotationGesture::new(0.0)),
+                Gesture::Tap(TapGesture::new()).then(RotationGesture::new(Angle::ZERO)),
                 move |event: GestureEvent, State(gesture): State<Gesture>| {
                     let GestureEvent::Rotation(event) = event else {
                         panic!("expected RotationEvent from Then(Tap, Rotation), got {event:?}");
@@ -13524,7 +13529,7 @@ mod gesture_events {
             };
             assert_eq!(event.phase(), GesturePhase::Started);
             assert!(
-                (event.angle() + 0.5).abs() < 1e-6,
+                (event.angle().to_radians() + 0.5).abs() < 1e-6,
                 "the Then forwards the rotation's clockwise angle, saw {}",
                 event.angle()
             );
@@ -13831,9 +13836,7 @@ mod transition {
     use waterui::animation::Animation;
     use waterui::component::Dynamic;
     use waterui::component::label::label;
-    use waterui::component::lazy::Lazy;
-    use waterui::prelude::{StateList, VStack, hstack, spacer, text, vstack};
-    use waterui::views::ForEach;
+    use waterui::prelude::{StateList, VStack, hstack, scroll, spacer, text, vstack};
     use waterui_apple::contract::Mounted;
     use waterui_apple::native_test_support::transition::ManualTransitionClock;
     use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, pump_main_until};
@@ -15441,7 +15444,7 @@ mod transition {
     }
 
     /// The host that directly owns the member views: `VStack::for_each`
-    /// wraps its container in an environment host and `Lazy::vstack`
+    /// wraps its container in an environment host and `scroll(VStack::for_each(..))`
     /// nests it in scroll chrome, so in both cases the container is the
     /// first descendant with more than two direct subviews.
     fn member_container(view: &PlatformView) -> Option<Retained<PlatformView>> {
@@ -15676,7 +15679,7 @@ mod transition {
         let _mtm = mtm();
         let rows: Vec<Row> = (0..40).map(|id| Row { id }).collect();
         let mut items = StateList::from(rows);
-        let leaf = super::resolve::render(Lazy::vstack(ForEach::new(items.clone(), |row: Row| {
+        let leaf = super::resolve::render(scroll(VStack::for_each(items.clone(), |row: Row| {
             Metadata::new(
                 hstack((text(format!("row {}", row.id)), spacer())).size(300.0, 30.0),
                 row_spec(),
@@ -17521,8 +17524,10 @@ mod transform_modifiers {
     /// and its anchor translation both survive display, and a quarter-x
     /// three-quarter-y anchor recomputes for the new size.
     fn rotation_survives_display_and_resize() {
+        use waterui::Angle;
+
         let (_leaf, wrapper, _window) =
-            mount(label("coming").rotation_from(30.0, Anchor::new(0.25, 0.75)));
+            mount(label("coming").rotation_from(Angle::degrees(30.0), Anchor::new(0.25, 0.75)));
         assert_survives_display_and_resize(
             &wrapper,
             CATransform3D::new_rotation(30f64.to_radians(), 0.0, 0.0, 1.0),

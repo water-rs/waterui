@@ -317,7 +317,7 @@ let combined = hover_scale.zip(&drop_bounce).map(|(a, b)| a * b);   // still ani
 sequence: mutating it emits a membership patch rather than a whole-collection invalidation.
 
 ```rust
-use waterui::component::lazy::Lazy;
+use waterui::layout::scroll::scroll_horizontal;
 
 let mut rows = StateList::from(seed_vec);      // bulk-seed in one move — not a push loop
 rows.push(Row { id: 9, title: "Last".into() });
@@ -326,16 +326,17 @@ let _ = rows.remove(0);              // #[must_use] — bind the removed value
 let snapshot = rows.snapshot();      // Vec<Row>, for read-only work
 let _ = rows.replace(new_vec);       // wholesale swap, diffed by id: moves and changed rows
 
-Lazy::for_each(rows.clone(), row_view)          // == Lazy::vstack(ForEach::new(..))
-Lazy::hstack(ForEach::new(rows.clone(), row_view))
+scroll(VStack::for_each(rows.clone(), row_view))
+scroll_horizontal(HStack::for_each(rows.clone(), row_view))
 ```
 
 `ForEach` implements `Views` (a collection of views), not `View`, so a container has to
-consume it. `Lazy::for_each` / `Lazy::vstack` / `Lazy::hstack` defer realization;
-`VStack::for_each` / `HStack::for_each` build an ordinary stack over the same collection
-when you want stack modifiers and eager layout — the stack forms require `Identifiable`
-items (see components.md for the per-row `.transition(PropertyTransition::opacity())`
-membership animation).
+consume it. `VStack::for_each` / `HStack::for_each` virtualize automatically when inside a
+co-axial `ScrollView` (`scroll` / `scroll_horizontal` / `scroll_both`) and materialize
+eagerly outside one (or when `.eager()` is called). They accept any `nami::collection::Collection`
+— a `StateList` of `Identifiable` items, or an array or static slice identified by index
+(see components.md for per-row `.transition(PropertyTransition::opacity())` membership
+animation).
 
 Items must derive `Identifiable` (`use waterui::Identifiable;` — the derive is not in the
 prelude) with an `#[id]` field that is stable across updates of the same logical row.

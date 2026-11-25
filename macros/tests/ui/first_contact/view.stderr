@@ -28,14 +28,14 @@ error[E0277]: `VStack<((ForEach<Vec<Row>, {closure@$DIR/tests/ui/first_contact/v
    |     --------------------------------------------------- return type was inferred to be `VStack<((ForEach<Vec<Row>, {closure@$DIR/tests/ui/first_contact/view.rs:17:32: 17:37}, waterui::component::Text>,),)>` here
    |
    = help: the trait `waterui::View` is not implemented for `VStack<((ForEach<Vec<Row>, {closure@$DIR/tests/ui/first_contact/view.rs:17:32: 17:37}, waterui::component::Text>,),)>`
-   = note: Any `'static` type implementing `View::body` is a view, as is a function returning `impl View` or a bare `&'static str`, `String`, or `Str`. A `ForEach` is a collection of views, not a view — hand it to a container such as `Lazy::for_each` or `List::for_each`, and unify differing view types with `OneOf2`..`OneOf8`.
+   = note: Any `'static` type implementing `View::body` is a view, as is a function returning `impl View` or a bare `&'static str`, `String`, or `Str`. A `ForEach` is a collection of views, not a view — hand it to a container such as `VStack::for_each` or `List::for_each`, and unify differing view types with `OneOf2`..`OneOf8`.
 help: the following other types implement trait `waterui::View`
   --> $WORKSPACE/components/foundation/layout/src/stack/vstack.rs
    |
    | / impl<C, F, V> View for VStack<ForEach<C, F, V>>
    | | where
    | |     C: Collection + Clone,
-   | |     C::Item: Identifiable + Clone,
+   | |     C::Item: Clone,
    | |     F: 'static + Fn(C::Item) -> V,
    | |     V: View,
    | |____________^ `VStack<ForEach<C, F, V>>`

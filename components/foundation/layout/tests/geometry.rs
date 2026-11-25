@@ -576,7 +576,7 @@ fn compressed_row_view() -> impl View {
         .leading(),
     ))
     .spacing(10.0)
-    .padding_with((6.0, 10.0))
+    .padding_with(EdgeInsets::vertical(6.0).with_horizontal(10.0))
 }
 
 #[waterui::test(compressed_row_view, theme = TestStyle::new(), offscreen, viewport = (340, 200))]
@@ -601,9 +601,9 @@ fn grid_with_short_middle_row_view() -> impl View {
     waterui::layout::grid::grid(
         3,
         (
-            waterui::layout::grid::row((cell("a"), cell("b"), cell("c"))),
-            waterui::layout::grid::row((cell("d"),)),
-            waterui::layout::grid::row((cell("e"), cell("f"), cell("g"))),
+            grid_row((cell("a"), cell("b"), cell("c"))),
+            grid_row((cell("d"),)),
+            grid_row((cell("e"), cell("f"), cell("g"))),
         ),
     )
 }

@@ -9,8 +9,8 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use nami::impl_constant;
-use waterui_core::contract_violation;
 use waterui_core::layout::{Affine2, Point, Vec2};
+use waterui_core::{Angle, contract_violation};
 
 use crate::canvas::names::Names;
 use crate::canvas::resource::ImageSource;
@@ -231,15 +231,15 @@ impl RadialGradient {
 gradient_builders!(RadialGradient);
 
 /// A gradient sweeping around `center` from `start_angle` to `end_angle`
-/// (radians, clockwise from the positive x axis in canvas space).
+/// (clockwise from the positive x axis in canvas space).
 #[derive(Clone, Debug, PartialEq)]
 pub struct ConicGradient {
     /// The centre the gradient sweeps around.
     pub center: Point,
     /// The angle of offset 0.
-    pub start_angle: f32,
+    pub start_angle: Angle,
     /// The angle of offset 1.
-    pub end_angle: f32,
+    pub end_angle: Angle,
     /// The colour stops, in offset order.
     pub stops: Vec<ColorStop>,
     /// How the gradient continues beyond its angles.
@@ -251,7 +251,7 @@ pub struct ConicGradient {
 impl ConicGradient {
     /// A gradient around `center` from `start_angle` to `end_angle`.
     #[must_use]
-    pub const fn new(center: Point, start_angle: f32, end_angle: f32) -> Self {
+    pub const fn new(center: Point, start_angle: Angle, end_angle: Angle) -> Self {
         Self {
             center,
             start_angle,
@@ -265,8 +265,8 @@ impl ConicGradient {
     fn lower(&self) -> draw::SweepGradient {
         draw::SweepGradient {
             center: kpoint(self.center),
-            start_angle: f64::from(self.start_angle),
-            end_angle: f64::from(self.end_angle),
+            start_angle: f64::from(self.start_angle.to_radians()),
+            end_angle: f64::from(self.end_angle.to_radians()),
             stops: stops(&self.stops),
             extend: self.extend.lower(),
             interpolation: self.interpolation.lower(),

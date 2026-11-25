@@ -32,7 +32,7 @@ use mdi::view_gallery;
 use waterui::Identifiable;
 use waterui::app::{App, Windows};
 use waterui::component::list::{
-    List, ListContent, ListDelete, ListMove, Section, SectionScope, TaggedBy, row,
+    List, ListContent, ListDelete, ListMove, Section, SectionScope, TaggedBy,
 };
 use waterui::navigation::{
     NavigationSplitStyle, NavigationSplitView, NavigationToolbarItems, NavigationView, Navigator,
@@ -634,7 +634,7 @@ fn album_row(album: Album) -> impl ListContent<SectionScope> + TaggedBy<Album> {
             text!("{count}").caption().muted(),
         ))
         .spacing(10.0)
-        .padding_with((10.0, 12.0))
+        .padding_with(EdgeInsets::vertical(10.0).with_horizontal(12.0))
     })
     .tag(album)
 }
@@ -775,6 +775,8 @@ fn settings_link(title: &'static str, route: SettingsRoute) -> impl View {
 }
 
 fn appearance_page(compact: Binding<bool>) -> NavigationView<impl View + use<>> {
+    use waterui::component::list::row;
+
     let density = compact.select(Str::from("Compact"), Str::from("Comfortable"));
 
     List::content((Section::new("Density")

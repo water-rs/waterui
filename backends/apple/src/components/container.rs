@@ -22,7 +22,8 @@ use cocoa_ui::scroll::{
 use cocoa_ui::{PlatformView, Rect, Retained, view};
 use waterui::id::Id as RawId;
 use waterui::layout::container::LazyContainer;
-use waterui::layout::stack::{Axis, LazyStackAxis, lazy_stack_axis};
+use waterui::layout::scroll::Axis as ScrollAxis;
+use waterui::layout::stack::{Axis, LazyStackAxis, lazy_stack_axis_for, lazy_stack_cross_stretch};
 use waterui::reactive::Signal;
 use waterui::reactive::watcher::{BoxWatcherGuard, Metadata};
 use waterui::views::AnyViewsSnapshot;
@@ -113,9 +114,10 @@ struct LazyConfig {
 }
 
 impl LazyConfig {
-    /// `LazyStackConfig.init` — `None` for every layout that is not a stack.
-    fn new(layout: &dyn Layout) -> Option<Self> {
-        lazy_stack_axis(layout).map(|axis| {
+    /// `LazyStackConfig.init` — `None` when virtualization is disabled or the
+    /// layout is not a stack matching `virtualize_axes`.
+    fn new(layout: &dyn Layout, virtualize_axes: Option<ScrollAxis>) -> Option<Self> {
+        lazy_stack_axis_for(layout, virtualize_axes).map(|axis| {
             let spacing = match &axis {
                 LazyStackAxis::Vertical { spacing, .. }
                 | LazyStackAxis::Horizontal { spacing, .. } => f64::from(spacing.snapshot()),
@@ -206,6 +208,8 @@ struct ContainerState {
     measured_main: HashMap<ItemId, f64>,
     /// Measured cross-axis extents by id.
     measured_cross: HashMap<ItemId, f64>,
+    /// Cached stretch axis sampled from the first item in lazy mode.
+    sampled_stretch: Option<(ItemId, StretchAxis)>,
     /// The cross-axis constraint the lazy measurements were taken under.
     last_cross: f64,
     /// How the parent layout placed this container: the proposal it
@@ -499,14 +503,23 @@ fn ensure_sample(state: &mut ContainerState, cross: f64, lazy: &LazyConfig) {
     let Some(&first_id) = state.item_ids.first() else {
         return;
     };
-    let size = state.rendered.get(&first_id).map_or_else(
+    let (stretch, size) = state.rendered.get(&first_id).map_or_else(
         || {
             // A measured throwaway — the baseline's `getView(at: 0)` sample.
             let leaf = render_at(state, 0);
-            measure_lazy_child(leaf.layout(), cross, lazy)
+            (
+                leaf.layout().stretch_axis(),
+                measure_lazy_child(leaf.layout(), cross, lazy),
+            )
         },
-        |mounted| measure_lazy_child(mounted.layout(), cross, lazy),
+        |mounted| {
+            (
+                mounted.layout().stretch_axis(),
+                measure_lazy_child(mounted.layout(), cross, lazy),
+            )
+        },
     );
+    state.sampled_stretch = Some((first_id, stretch));
     let (main, cross_axis) = main_cross(size.0, lazy);
     state.measured_main.insert(first_id, main);
     state.measured_cross.insert(first_id, cross_axis);
@@ -827,6 +840,12 @@ fn update_virtual_ids(
     state.built = true;
     state.measured_main.retain(|id, _| seen.contains(id));
     state.measured_cross.retain(|id, _| seen.contains(id));
+    if state
+        .sampled_stretch
+        .is_some_and(|(id, _)| state.item_ids.first().copied() != Some(id))
+    {
+        state.sampled_stretch = None;
+    }
     crate::measure_memo::invalidate();
     invalidate_virtual_layout(state);
 }
@@ -1347,10 +1366,42 @@ impl SubView for ContainerSubView {
         measure(&self.state, &self.pending, proposal)
     }
 
-    /// `LazyContainer::stretch_axis` answers `layout.stretch_axis(&[])` — it
-    /// cannot enumerate children without materializing the collection.
+    /// Propagates the sampled first item's cross-axis stretch claim on lazy
+    /// stacks so enclosing scroll views preserve cross-axis filling, and
+    /// computes the full layout union on eager containers.
     fn stretch_axis(&self) -> StretchAxis {
-        self.state.borrow().layout.stretch_axis(&[])
+        let lazy_axis = {
+            let state = self.state.borrow();
+            let Some(lazy) = state.lazy.as_ref() else {
+                let child_axes: Vec<StretchAxis> = state
+                    .order
+                    .iter()
+                    .map(|id| state.rendered[id].layout().stretch_axis())
+                    .collect();
+                return state.layout.stretch_axis(&child_axes);
+            };
+            let Some(&first_id) = state.item_ids.first() else {
+                return StretchAxis::None;
+            };
+            if let Some(mounted) = state.rendered.get(&first_id) {
+                return lazy_stack_cross_stretch(lazy.main_axis(), mounted.layout().stretch_axis());
+            }
+            if let Some((cached_id, stretch)) = state.sampled_stretch
+                && cached_id == first_id
+            {
+                return lazy_stack_cross_stretch(lazy.main_axis(), stretch);
+            }
+            (lazy.main_axis(), first_id)
+        };
+        let (main_axis, first_id) = lazy_axis;
+        let stretch = with_children_tx(&self.state, &self.pending, || {
+            let mut state = self.state.borrow_mut();
+            let leaf = render_at(&state, 0);
+            let stretch = leaf.layout().stretch_axis();
+            state.sampled_stretch = Some((first_id, stretch));
+            stretch
+        });
+        lazy_stack_cross_stretch(main_axis, stretch)
     }
 
     fn priority(&self) -> i32 {
@@ -1385,11 +1436,12 @@ pub fn realize_lazy_container<C: ChildView<AppleBackend>>(
 ) -> NativeLeaf {
     let mtm = ctx.mtm();
     let direction = container.direction();
+    let virtualize_axes = container.virtualize_axes();
     let (layout, contents) = container.into_inner();
     let contents = contents.map_views(C::into_child);
     let host = HostView::new(mtm, Rect::ZERO);
 
-    let lazy = LazyConfig::new(&*layout);
+    let lazy = LazyConfig::new(&*layout, virtualize_axes);
     let state = Rc::new(RefCell::new(ContainerState {
         layout,
         snapshot: contents.snapshot(),
@@ -1408,6 +1460,7 @@ pub fn realize_lazy_container<C: ChildView<AppleBackend>>(
         built: false,
         measured_main: HashMap::new(),
         measured_cross: HashMap::new(),
+        sampled_stretch: None,
         last_cross: -1.0,
         placement: Cell::new(Placement::UNPLACED),
         scroll: None,

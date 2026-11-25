@@ -55,7 +55,7 @@ fn record_row(record: Record) -> impl View {
             .muted(),
     ))
     .leading()
-    .padding_with((10.0, 16.0))
+    .padding_with(EdgeInsets::vertical(10.0).with_horizontal(16.0))
 }
 
 fn delete_record(ListDelete(id): ListDelete<u64>, mut state: DemoState) {

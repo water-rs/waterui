@@ -13,6 +13,7 @@ use super::{
     Canvas, CanvasSize, Circle, Drawing, ImagePattern, ImageSource, ImageStatus, Layer,
     LinearGradient, Paint, PixelBuffer, PixelFormat, Sampling, StrokeStyle,
 };
+use crate::Angle;
 use crate::color::WorkingColor;
 use crate::draw::{self, Content, ContentChange, LayoutSize, Operand};
 use crate::scene::resources::tests::{Mount, null_resources, removed_images};
@@ -814,7 +815,7 @@ fn the_identity_transform_leaves_a_paint_alone() {
 #[test]
 fn transforming_a_transformed_paint_nests_it() {
     let inner = Affine2::scale(2.0, 3.0);
-    let outer = Affine2::rotate(0.5);
+    let outer = Affine2::rotate(Angle::radians(0.5));
     let paint = Paint::from(red()).transformed(inner).transformed(outer);
     let draw::Paint::Transformed(lowered) = paint.lower(&Names::default()).expect("a colour")
     else {

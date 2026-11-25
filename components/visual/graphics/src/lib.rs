@@ -72,5 +72,6 @@ pub use shader_paint::{SHADER_MAX_PARAMS, ShaderError, ShaderPaintView};
 /// Color types and conversion utilities.
 pub use waterui_color as color;
 pub use waterui_color::{Color, ColorScheme, Colorspace, CurrentColorScheme, WorkingColor};
+pub use waterui_core::Angle;
 #[cfg(any(feature = "gpu", feature = "cpu"))]
 pub use waterui_macros::shader;

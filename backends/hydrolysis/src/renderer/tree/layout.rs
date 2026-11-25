@@ -86,11 +86,10 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             // non-scrolling axis only when its content stretches there
             // (water-rs/waterui#1208).
             Self::Scroll(node) => scroll_stretch_axis(node.axis, node.child.stretch()),
-            // The same stack laid out eagerly is content-sized on both axes, so a
-            // lazy one has to be too: making a stack virtualizable must not change
-            // how it sizes. Rows that want the full cross axis ask for it
-            // themselves, exactly as they do in the eager path.
-            Self::Text(_) | Self::LazyStack(_) => StretchAxis::None,
+            Self::Text(_) => StretchAxis::None,
+            // Propagate the sampled first item's cross-axis stretch claim so an
+            // enclosing `ScrollView` fills the cross axis when its rows do.
+            Self::LazyStack(node) => node.stretch_axis(),
             Self::Container(container) => {
                 // The retained children answer for themselves, so a transparent
                 // layout reports what its content currently claims rather than
@@ -128,9 +127,12 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             #[cfg(waterui_feature = "effects")]
             Self::Filtered(node) => node.child.stretch(),
             Self::Collection(node) => {
-                // A collection's membership is reactive; its layout is one of the
-                // content-sized stacks, which ignores the children anyway.
-                node.layout.stretch_axis(&[])
+                let child_axes: Vec<StretchAxis> = node
+                    .entries
+                    .iter()
+                    .map(|entry| entry.node.stretch())
+                    .collect();
+                node.layout.stretch_axis(&child_axes)
             }
             Self::Wrapper(node) => node.child.stretch(),
             Self::Fill(node) => node.child.stretch(),

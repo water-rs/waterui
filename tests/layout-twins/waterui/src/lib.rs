@@ -12,7 +12,6 @@ use std::num::NonZeroUsize;
 
 use waterui::app::{App, Windows};
 use waterui::layout::HorizontalAlignment;
-use waterui::layout::row as grid_row;
 use waterui::prelude::*;
 
 const ORANGE: &str = "#E67E22";

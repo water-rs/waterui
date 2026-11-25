@@ -4,7 +4,8 @@ use super::*;
 use waterui_core::contract_violation;
 use waterui_core::layout::{LayoutError, PlacementInput};
 use waterui_layout::container::directional_response;
-use waterui_layout::stack::{HStackLayout, LazyStackAxis, VStackLayout};
+use waterui_layout::scroll::Axis as ScrollAxis;
+use waterui_layout::stack::{HStackLayout, LazyStackAxis, VStackLayout, lazy_stack_axis_for};
 
 #[derive(Default)]
 pub struct LazyState {
@@ -113,9 +114,10 @@ impl LazyTableSlot {
 /// and reconciles membership changes incrementally.
 pub fn lazy_stack_axis_config(
     layout: &dyn Layout,
+    virtualize_axes: Option<ScrollAxis>,
     direction: nami::Computed<waterui_core::layout::LayoutDirection>,
 ) -> Option<LazyStackAxisConfig> {
-    waterui_layout::stack::lazy_stack_axis(layout).map(|axis| match axis {
+    lazy_stack_axis_for(layout, virtualize_axes).map(|axis| match axis {
         LazyStackAxis::Vertical { spacing, alignment } => LazyStackAxisConfig::Vertical {
             spacing,
             alignment,

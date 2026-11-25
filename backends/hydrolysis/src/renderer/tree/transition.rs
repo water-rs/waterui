@@ -442,7 +442,7 @@ pub fn transition_transform(
         f64::from(properties.translation[0]),
         f64::from(properties.translation[1]),
     )) * kurbo::Affine::translate(centre)
-        * kurbo::Affine::rotate(f64::from(properties.rotation))
+        * kurbo::Affine::rotate(f64::from(properties.rotation.to_radians()))
         * kurbo::Affine::scale_non_uniform(
             f64::from(properties.scale[0]),
             f64::from(properties.scale[1]),

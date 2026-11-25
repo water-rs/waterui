@@ -12,7 +12,6 @@ use waterui::prelude::*;
 // ---------------------------------------------------------------------------
 use waterui::Identifiable; // the trait the derive implements
 use waterui::animation::Animation; // animation curves
-use waterui::component::lazy::Lazy; // reactive stacks over a collection
 use waterui::cursor::CursorStyle;
 use waterui::drag_drop::{Files, Transferable};
 use waterui::env::with; // scope a value to a subtree
@@ -84,7 +83,7 @@ pub fn skill_block_02() {
         Photo::new(url).blur(blur.clone()) // reactive value — pass the signal
     };
     let _ = {
-        Lazy::for_each(rows.clone(), row_view) // dynamic set of views — a collection
+        VStack::for_each(rows.clone(), row_view) // dynamic set of views — a collection
     };
 }
 
@@ -157,8 +156,7 @@ pub mod skill_block_05 {
 // Prefix is a real statement sequence; the last two lines are a listing.
 // ---------------------------------------------------------------------------
 pub fn skill_block_06() {
-    use waterui::Identifiable;
-    use waterui::component::lazy::Lazy;
+    use waterui::Identifiable; // the trait the derive implements is NOT in the prelude
 
     #[derive(Clone, Identifiable)]
     struct Row {
@@ -175,7 +173,7 @@ pub fn skill_block_06() {
     let rows = StateList::from(seed_rows); // bulk-seed; .push/.insert/.remove (&mut self) diff by id
 
     let _ = {
-        Lazy::for_each(rows.clone(), |row| text(row.title)) // reactive sequence in a stack
+        scroll(VStack::for_each(rows.clone(), |row| text(row.title))) // virtualized inside scroll
     };
     let _ = {
         // platform list: lazy, editable
@@ -454,7 +452,7 @@ pub fn skill_block_15() {
 
     let (w, h) = (100.0_f32, 40.0_f32);
     let (x, y) = (1.5_f32, 2.5_f32);
-    let degrees = 30.0_f32;
+    let angle = Angle::degrees(30.0);
     let width = 2.0_f32;
     use waterui::shape::Circle;
     let shape = Circle;
@@ -464,7 +462,7 @@ pub fn skill_block_15() {
     let view = Divider;
     let _ = { view.padding_with(16.0) };
     let view = Divider;
-    let _ = { view.padding_with((8.0, 16.0)) };
+    let _ = { view.padding_with(EdgeInsets::vertical(8.0).with_horizontal(16.0)) };
     let view = Divider;
     let _ = { view.padding_horizontal(16.0) };
 
@@ -506,7 +504,7 @@ pub fn skill_block_15() {
     let view = Divider;
     let _ = { view.scale_xy(x, y) };
     let view = Divider;
-    let _ = { view.rotation(degrees) };
+    let _ = { view.rotation(angle) };
     let view = Divider;
     let _ = {
         view.offset(x, y) // two arguments, not one
@@ -555,7 +553,7 @@ pub fn skill_block_15() {
     };
     let view = Divider;
     let _ = {
-        view.hue_rotation(30.0) // [ellipsis filled]
+        view.hue_rotation(Angle::degrees(30.0)) // [ellipsis filled]
     };
 
     let view = Divider;

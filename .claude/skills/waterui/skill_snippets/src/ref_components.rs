@@ -53,7 +53,7 @@ pub fn components_block_02() {
     let stack = vstack((text("a"), text("b")));
     let _ = { stack.padding_with(16.0) };
     let stack = vstack((text("a"), text("b")));
-    let _ = { stack.padding_with((10.0, 16.0)) };
+    let _ = { stack.padding_with(EdgeInsets::vertical(10.0).with_horizontal(16.0)) };
 }
 
 // ---------------------------------------------------------------------------
@@ -193,10 +193,10 @@ pub fn components_transforms_prose() {
     // `Anchor` comes from the prelude, as the prose says.
     let _ = text("x").scale(1.5);
     let _ = text("x").scale_xy(1.5, 1.0);
-    let _ = text("x").rotation(45.0);
+    let _ = text("x").rotation(Angle::degrees(45.0));
     let _ = text("x").scale_from(0.5, Anchor::TOP_LEFT);
     let _ = text("x").scale_xy_from(0.5, 1.0, Anchor::TOP_LEFT);
-    let _ = text("x").rotation_from(45.0, Anchor::TOP_LEFT);
+    let _ = text("x").rotation_from(Angle::degrees(45.0), Anchor::TOP_LEFT);
     let _ = [
         Anchor::CENTER,
         Anchor::TOP_RIGHT,
@@ -213,10 +213,8 @@ pub fn components_block_07() {
     let (a, b, c) = (text("a"), text("b"), text("c"));
     let (d, e) = (text("d"), text("e"));
 
-    use waterui::layout::grid::{grid as layout_grid, row as grid_row};
-
     let _ = {
-        layout_grid(
+        grid(
             3,
             (
                 grid_row((a, b, c)),
@@ -246,13 +244,14 @@ pub fn components_block_08() -> impl View {
 
     absolute((
         map_view().pin(PinConstraints::all(0.0)), // stretch to fill
-        status_panel().size(220.0, 64.0).position_in_offset(
-            UnitPoint::TOP_LEADING,
-            UnitPoint::TOP_LEADING, // anchor on child, position in parent
-            16.0,
-            16.0, // offsets — these are signal slots
-        ),
-        controls().position_in_anchor(UnitPoint::BOTTOM_TRAILING, UnitPoint::BOTTOM_TRAILING),
+        status_panel()
+            .size(220.0, 64.0)
+            .position_in(UnitPoint::TOP_LEADING)
+            .anchor(UnitPoint::TOP_LEADING)
+            .offset(16.0, 16.0), // offsets — these are signal slots
+        controls()
+            .position_in(UnitPoint::BOTTOM_TRAILING)
+            .anchor(UnitPoint::BOTTOM_TRAILING),
         dot().pin(
             PinConstraints::new()
                 .trailing(12.0)
@@ -567,7 +566,7 @@ pub fn components_custom_control_styles() {
             let bg = configuration.is_pressed().select(Color::new(Accent), base);
             configuration
                 .into_label()
-                .padding_with((8.0, 16.0))
+                .padding_with(EdgeInsets::vertical(8.0).with_horizontal(16.0))
                 .background(bg)
                 .clip(Capsule)
         }
@@ -585,7 +584,7 @@ pub fn components_custom_control_styles() {
             let trigger = configuration.trigger().clone();
             configuration
                 .into_label()
-                .padding_with((8.0, 16.0))
+                .padding_with(EdgeInsets::vertical(8.0).with_horizontal(16.0))
                 .gesture(
                     TapGesture::repeat(NonZeroU32::new(2).unwrap()),
                     move |_: TapEvent| trigger.trigger(),
@@ -981,8 +980,8 @@ pub mod components_block_27 {
     }
 
     use waterui::Identifiable; // the trait the derive expands to is NOT in the prelude
-    use waterui::component::lazy::Lazy;
     use waterui::component::list::{ListDelete, ListMove}; // NOT in the prelude
+    use waterui::layout::scroll::scroll_horizontal;
     use waterui::views::ForEach;
 
     #[derive(Clone, Identifiable)]
@@ -1002,13 +1001,10 @@ pub mod components_block_27 {
         let controller = ScrollController::<usize>::new(0);
 
         // `ForEach` is a `Views` collection, not a `View`: a container consumes it.
-        let _ = {
-            // == Lazy::vstack(ForEach::new(..))
-            Lazy::for_each(records.clone(), |r| text(r.title))
-        };
+        let _ = { scroll(VStack::for_each(records.clone(), |r| text(r.title))) };
         let _ = {
             // record_card: fn(Record) -> impl View
-            Lazy::hstack(ForEach::new(records.clone(), record_card))
+            scroll_horizontal(HStack::for_each(records.clone(), record_card))
         };
 
         let _ = {
@@ -1026,9 +1022,10 @@ pub mod components_block_27 {
                 .scroll_controller(&controller)
         };
 
-        // Prose: `Lazy` spaced stacks and `List::new` over pre-built rows.
-        let _ = Lazy::vstack_spaced(8.0, ForEach::new(records.clone(), record_card));
-        let _ = Lazy::hstack_spaced(8.0, ForEach::new(records.clone(), record_card));
+        // Prose: spaced / eager stacks and `List::new` over pre-built rows.
+        let _ = scroll(VStack::for_each(records.clone(), record_card).spacing(8.0));
+        let _ = scroll_horizontal(HStack::for_each(records.clone(), record_card).spacing(8.0));
+        let _ = scroll(VStack::for_each(records.clone(), record_card).eager());
         let _ = List::new(ForEach::new(records, |r: Record| text(r.title)));
     }
 }
@@ -1060,6 +1057,8 @@ pub fn components_block_28() {
 // components.md § "## Lists and collections" — rust block 29/39
 // ---------------------------------------------------------------------------
 pub fn components_block_29() -> impl View {
+    use waterui::component::list::row;
+
     List::content((
         Section::new("Recent")
             .footer("Sub-pages push onto this tab's own stack.")
@@ -1078,6 +1077,7 @@ pub fn components_block_29() -> impl View {
 // the prose's reactive collection.
 // ---------------------------------------------------------------------------
 pub fn components_reactive_section_prose(today: StateList<Record>) -> impl View {
+    use waterui::component::list::row;
     use waterui::views::ForEach;
 
     let _ = row("a", "b")
@@ -1096,6 +1096,7 @@ pub fn components_reactive_section_prose(today: StateList<Record>) -> impl View 
 // and `list_min_row_height`. Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn components_list_item_prose(records: StateList<Record>) {
+    use waterui::component::list::row;
     use waterui::layout::padding::EdgeInsets;
     use waterui::views::ForEach;
 

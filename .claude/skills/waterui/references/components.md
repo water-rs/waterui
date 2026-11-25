@@ -86,16 +86,16 @@ Common modifiers on stacks:
 ```rust
 .spacing(8.0)
 .leading()   // or .alignment(Leading); hstack aligns vertically: .top() / .centered() / .bottom()
-.padding()  /  .padding_with(16.0)  /  .padding_with((10.0, 16.0))
+.padding()  /  .padding_with(16.0)  /  .padding_with(EdgeInsets::vertical(10.0).with_horizontal(16.0))
 ```
 
 `.padding()` is 14 pt on every edge. `.padding_with` takes `impl IntoComputed<EdgeInsets>`: a
-bare number (every edge), a `(vertical, horizontal)` pair, a `[top, leading, bottom,
-trailing]` array, an `EdgeInsets`, or a signal of one. `.padding_horizontal(x)` /
-`.padding_vertical(x)` pad one axis. Do not spell `EdgeInsets::all(x)` / `symmetric(v, h)` /
-`new(..)` at a padding call — the number, pair and array are those constructors. The orders
-are traps worth memorizing — `[top, leading, bottom, trailing]` (SwiftUI's order, not CSS)
-and `(vertical, horizontal)`.
+bare number (every edge), a `[top, leading, bottom, trailing]` array, an `EdgeInsets` (using
+`EdgeInsets::vertical(v)` / `EdgeInsets::horizontal(h)` and `.with_horizontal(h)` /
+`.with_vertical(v)` / `.with_top(..)` for named axes), or a signal of one.
+`.padding_horizontal(x)` / `.padding_vertical(x)` pad one axis. Bare `(v, h)` pairs do not
+convert to `EdgeInsets` — always name both axes. The array order is `[top, leading, bottom,
+trailing]` (SwiftUI's order, not CSS).
 
 Alignment is a token or a method, never the qualified constant: `vstack(..).leading()` or
 `.alignment(Leading)`, `hstack(..).top()`, `zstack(..).top_leading()`. The tokens
@@ -162,20 +162,18 @@ chrome) and `keyboard` (the software keyboard) — and `.ignore_safe_area` takes
 the keyboard but above the container inset, `SafeAreaRegions::CONTAINER` / `ALL` name the
 other combinations, and a bare `EdgeSet` ignores every region.
 
-Visual transforms never affect layout. `.scale(factor)` / `.scale_xy(x, y)` and `.rotation(degrees)` pivot on the
-centre; `.scale_from(factor, Anchor::TOP_LEFT)` / `.scale_xy_from(x, y, Anchor::TOP_LEFT)` and `.rotation_from(45.0, Anchor::TOP_LEFT)`
+Visual transforms never affect layout. `.scale(factor)` / `.scale_xy(x, y)` and `.rotation(angle)` pivot on the
+centre; `.scale_from(factor, Anchor::TOP_LEFT)` / `.scale_xy_from(x, y, Anchor::TOP_LEFT)` and `.rotation_from(Angle::degrees(45.0), Anchor::TOP_LEFT)`
 pivot on an `Anchor` (in the prelude; normalized, `(0, 0)` top-left: `CENTER`, `TOP_LEFT`,
 `TOP_RIGHT`, `BOTTOM_LEFT`, `BOTTOM_RIGHT`, or `Anchor::new(x, y)`). Factors and angles take
-signals; the anchor is a plain value.
+signals (`Angle::degrees(..)`, `Angle::radians(..)`, `Angle::turns(..)`, `Angle::{ZERO, QUARTER, HALF, FULL}`); the anchor is a plain value.
 
-Grid — note the import and the `row` name collision with the list row builder. Rows go in
+Grid — both `grid` and `grid_row` are in the prelude. Rows go in
 a tuple, which lets each row hold different views; an array or `Vec` works when every row
 has the same view types:
 
 ```rust
-use waterui::layout::grid::{grid as layout_grid, row as grid_row};
-
-layout_grid(3, (
+grid(3, (
     grid_row((a, b, c)),
     grid_row((d, e)),          // short rows are fine
 ))
@@ -192,11 +190,14 @@ soon as the window is larger than the content. Children place themselves with th
 ```rust
 absolute((
     map_view().pin(PinConstraints::all(0.0)),                 // stretch to fill
-    status_panel().size(220.0, 64.0).position_in_offset(
-        UnitPoint::TOP_LEADING, UnitPoint::TOP_LEADING,       // anchor on child, position in parent
-        16.0, 16.0,                                           // offsets — these are signal slots
-    ),
-    controls().position_in_anchor(UnitPoint::BOTTOM_TRAILING, UnitPoint::BOTTOM_TRAILING),
+    status_panel()
+        .size(220.0, 64.0)
+        .position_in(UnitPoint::TOP_LEADING)
+        .anchor(UnitPoint::TOP_LEADING)
+        .offset(16.0, 16.0),                                  // offsets — these are signal slots
+    controls()
+        .position_in(UnitPoint::BOTTOM_TRAILING)
+        .anchor(UnitPoint::BOTTOM_TRAILING),
     dot().pin(PinConstraints::new().trailing(12.0).bottom(12.0).width(28.0).height(28.0)),
 ))
 ```
@@ -387,7 +388,7 @@ impl CustomButtonStyle for PillButtonStyle {
             .select(Color::new(Accent), base);
         configuration
             .into_label()
-            .padding_with((8.0, 16.0))
+            .padding_with(EdgeInsets::vertical(8.0).with_horizontal(16.0))
             .background(bg)
             .clip(Capsule)
     }
@@ -403,7 +404,7 @@ impl PrimitiveButtonStyle for DoubleTapButtonStyle {
         let trigger = configuration.trigger().clone();
         configuration
             .into_label()
-            .padding_with((8.0, 16.0))
+            .padding_with(EdgeInsets::vertical(8.0).with_horizontal(16.0))
             .gesture(
                 TapGesture::repeat(NonZeroU32::new(2).unwrap()),
                 move |_: TapEvent| {
@@ -676,8 +677,8 @@ keeps an unfinished table readable. The config is a move-builder — reassign it
 realization, swipe-to-delete, reordering, sections, selection).
 
 ```rust
-use waterui::component::lazy::Lazy;
 use waterui::component::list::{ListDelete, ListMove};   // NOT in the prelude
+use waterui::layout::scroll::scroll_horizontal;
 use waterui::views::ForEach;
 use waterui::Identifiable;                              // the trait the derive expands to is NOT in the prelude
 
@@ -685,8 +686,8 @@ use waterui::Identifiable;                              // the trait the derive 
 struct Record { #[id] id: u64, title: Str }
 
 // `ForEach` is a `Views` collection, not a `View`: a container consumes it.
-Lazy::for_each(records.clone(), |r| text(r.title))       // == Lazy::vstack(ForEach::new(..))
-Lazy::hstack(ForEach::new(records.clone(), record_card)) // record_card: fn(Record) -> impl View
+scroll(VStack::for_each(records.clone(), |r| text(r.title)))
+scroll_horizontal(HStack::for_each(records.clone(), record_card)) // record_card: fn(Record) -> impl View
 
 List::for_each(records.clone(), |r| text(r.title))
     .editing(is_editing.clone())          // impl IntoComputed<bool>
@@ -702,8 +703,10 @@ List::for_each(records.clone(), |r| text(r.title))
     .scroll_controller(&controller)
 ```
 
-`Lazy` stacks (`vstack`, `hstack`, `for_each`, and `vstack_spaced(spacing, ..)` /
-`hstack_spaced`) wrap themselves in a scroll view. `ListDelete<Id>(id)` carries the deleted
+`VStack::for_each` and `HStack::for_each` automatically virtualize along their stack axis
+when enclosed by a co-axial `ScrollView` (`scroll` / `scroll_horizontal` / `scroll_both`)
+and stay eager outside one; call `.eager()` to opt out inside a scroll view, and chain
+ordinary stack modifiers like `.spacing(8.0)` directly. `ListDelete<Id>(id)` carries the deleted
 item's identity; `ListMove<Id>(m)` exposes `.id()`, `.target()` (the item occupying the
 destination slot before the move), and part-local `.from()` / post-removal `.to()`. Inside
 `List::content`, attach `.on_delete` and `.on_move` directly to each `ForEach` (via
@@ -711,8 +714,7 @@ destination slot before the move), and part-local `.from()` / post-removal `.to(
 deletable unless opted in, and moves stay inside their owning part. `AppState` is an owned
 `#[state]` type (SKILL.md rule 3), so handlers take it bare.
 
-For a reactive collection rendered as an ordinary (non-lazy) stack that still takes stack
-modifiers, `VStack`/`HStack` have `for_each` too; membership animation is declared per row
+Membership animation on a stack's `for_each` is declared per row
 with `.transition(...)` plus `.animation(...)` (a removed row's ghost holds its slot
 while it fades). `.transition(...)` must be the outermost modifier of the row — or of a
 `when`/`watch` branch, or of the conditional itself; one beneath `.padding()`, `.frame()`
@@ -729,10 +731,12 @@ let drawer = VStack::for_each(rows.clone(), row_view).spacing(4.0);
 ```
 
 Heterogeneous / sectioned static content — rows are *builders*, so the list can rebuild a
-row when it is realized again. `row` and `detail_row` take **two** arguments (label,
-value) and may sit directly in the content tuple:
+row when it is realized again. `waterui::component::list::row` (not in the prelude) and
+`detail_row` take **two** arguments (label, value) and may sit directly in the content tuple:
 
 ```rust
+use waterui::component::list::row;
+
 List::content((
     Section::new("Recent")
         .footer("Sub-pages push onto this tab's own stack.")

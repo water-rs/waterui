@@ -176,9 +176,9 @@ nami::impl_constant!(EdgeInsets);
 
 /// Equal insets on every edge from one number — `.padding_with(16.0)` —
 /// for every numeric type `f64` converts from, which is the set the former
-/// `From<T: Into<f64>>` blanket covered. The blanket had to go so the tuple
-/// and array conversions below could exist beside it (coherence forbids a
-/// concrete `From<(f32, f32)>` next to a blanket over `Into<f64>`).
+/// `From<T: Into<f64>>` blanket covered. The blanket had to go so the array
+/// conversions below could exist beside it (coherence forbids a concrete
+/// `From<[f32; 4]>` next to a blanket over `Into<f64>`).
 macro_rules! from_scalar {
     (lossless: $($ty:ty),+ $(,)?) => {
         $(
@@ -203,24 +203,6 @@ macro_rules! from_scalar {
 
 from_scalar!(lossless: f32, i8, i16, u8, u16);
 from_scalar!(lossy: f64, i32, u32);
-
-/// `(vertical, horizontal)` — the [`EdgeInsets::symmetric`] order:
-/// `.padding_with((8.0, 16.0))`. The `f64` form is what an unsuffixed
-/// literal pair infers to as a constant signal.
-macro_rules! from_pair {
-    ($($ty:ty),+ $(,)?) => {
-        $(
-            #[allow(clippy::cast_possible_truncation)]
-            impl From<($ty, $ty)> for EdgeInsets {
-                fn from((vertical, horizontal): ($ty, $ty)) -> Self {
-                    Self::symmetric(vertical as f32, horizontal as f32)
-                }
-            }
-        )+
-    };
-}
-
-from_pair!(f32, f64);
 
 /// `[top, leading, bottom, trailing]` — the [`EdgeInsets::new`] order:
 /// `.padding_with([4.0, 16.0, 12.0, 16.0])`.
@@ -293,6 +275,62 @@ impl EdgeInsets {
             leading: horizontal,
             trailing: horizontal,
         }
+    }
+
+    /// Returns vertical (top and bottom) insets with zero horizontal insets.
+    #[must_use]
+    pub const fn vertical(value: f32) -> Self {
+        Self::symmetric(value, 0.0)
+    }
+
+    /// Returns horizontal (leading and trailing) insets with zero vertical insets.
+    #[must_use]
+    pub const fn horizontal(value: f32) -> Self {
+        Self::symmetric(0.0, value)
+    }
+
+    /// Returns a copy with top and bottom set to `value`.
+    #[must_use]
+    pub const fn with_vertical(mut self, value: f32) -> Self {
+        self.top = value;
+        self.bottom = value;
+        self
+    }
+
+    /// Returns a copy with leading and trailing set to `value`.
+    #[must_use]
+    pub const fn with_horizontal(mut self, value: f32) -> Self {
+        self.leading = value;
+        self.trailing = value;
+        self
+    }
+
+    /// Returns a copy with the top inset set to `value`.
+    #[must_use]
+    pub const fn with_top(mut self, value: f32) -> Self {
+        self.top = value;
+        self
+    }
+
+    /// Returns a copy with the bottom inset set to `value`.
+    #[must_use]
+    pub const fn with_bottom(mut self, value: f32) -> Self {
+        self.bottom = value;
+        self
+    }
+
+    /// Returns a copy with the leading inset set to `value`.
+    #[must_use]
+    pub const fn with_leading(mut self, value: f32) -> Self {
+        self.leading = value;
+        self
+    }
+
+    /// Returns a copy with the trailing inset set to `value`.
+    #[must_use]
+    pub const fn with_trailing(mut self, value: f32) -> Self {
+        self.trailing = value;
+        self
     }
 
     /// Returns the top inset.
@@ -539,6 +577,26 @@ mod tests {
             placements[0].frame,
             Rect::new(Point::new(-10.0, -10.0), Size::new(20.0, 20.0)),
             "the child sits at the inset offset on the inset region"
+        );
+    }
+
+    #[test]
+    fn named_axis_constructors_and_builders_compose() {
+        assert_eq!(
+            EdgeInsets::vertical(2.0).with_horizontal(12.0),
+            EdgeInsets::new(2.0, 12.0, 2.0, 12.0)
+        );
+        assert_eq!(
+            EdgeInsets::horizontal(12.0).with_vertical(2.0),
+            EdgeInsets::new(2.0, 12.0, 2.0, 12.0)
+        );
+        assert_eq!(
+            EdgeInsets::default()
+                .with_top(1.0)
+                .with_leading(2.0)
+                .with_bottom(3.0)
+                .with_trailing(4.0),
+            EdgeInsets::new(1.0, 2.0, 3.0, 4.0)
         );
     }
 }

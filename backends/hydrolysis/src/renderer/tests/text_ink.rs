@@ -128,7 +128,7 @@ fn row_span<F: Fn([u8; 3]) -> bool>(
 /// twin's ink span is the true painted extent and must fit inside the pill's
 /// measured bounds.
 ///
-/// `padding_with((4.0, 0.0))` gives the capsule exactly the measured advance
+/// `padding_vertical(4.0)` gives the capsule exactly the measured advance
 /// horizontally, so `ink ⊆ capsule` is precisely `ink ⊆ advance`.
 #[test]
 fn painted_ink_stays_within_measured_frame_native_fonts() {
@@ -148,7 +148,7 @@ fn painted_ink_stays_within_measured_frame_native_fonts() {
             },
         )
         .spacing(0.0)
-        .padding_with((4.0, 0.0))
+        .padding_vertical(4.0)
         .foreground(Srgb::from_hex("#1B1B1F"))
         .background(Surface)
         .clip(RoundedRectangle::new(6.0));
@@ -163,7 +163,7 @@ fn painted_ink_stays_within_measured_frame_native_fonts() {
             },
         )
         .spacing(0.0)
-        .padding_with((4.0, 0.0))
+        .padding_vertical(4.0)
         .foreground(Srgb::from_hex("#FFFFFF"));
         AnyView::new(vstack((pill, twin)).background(Srgb::from_hex("#0000FF")))
     });

@@ -93,12 +93,14 @@ extern crate alloc;
 
 #[macro_use]
 mod macros;
+mod angle;
 mod animation_system;
 mod components;
 mod foundation;
 mod state;
 mod ui;
 
+pub use angle::Angle;
 pub use animation::{Animatable, AnimationExt, AnimationTrack};
 pub use animation_system::{animation, easing, vector_arithmetic};
 pub use anyhow::Error;

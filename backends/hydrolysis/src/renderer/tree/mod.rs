@@ -430,4 +430,32 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             Self::Color(_) => None,
         }
     }
+
+    #[cfg(test)]
+    pub(crate) fn has_lazy_stack(&self) -> bool {
+        match self {
+            Self::LazyStack(_) => true,
+            Self::Scroll(node) => node.child.has_lazy_stack(),
+            Self::Env(node) => node.child.has_lazy_stack(),
+            Self::Container(node) => node.children.iter().any(Self::has_lazy_stack),
+            Self::Retain(node) => node.child.has_lazy_stack(),
+            Self::Wrapper(node) => node.child.has_lazy_stack(),
+            Self::Fill(node) => node.child.has_lazy_stack(),
+            _ => false,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_collection(&self) -> bool {
+        match self {
+            Self::Collection(_) => true,
+            Self::Scroll(node) => node.child.has_collection(),
+            Self::Env(node) => node.child.has_collection(),
+            Self::Container(node) => node.children.iter().any(Self::has_collection),
+            Self::Retain(node) => node.child.has_collection(),
+            Self::Wrapper(node) => node.child.has_collection(),
+            Self::Fill(node) => node.child.has_collection(),
+            _ => false,
+        }
+    }
 }
