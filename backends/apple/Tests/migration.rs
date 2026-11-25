@@ -332,7 +332,7 @@ mod uikit_surface {
     use std::cell::Cell;
     use std::rc::Rc;
     use waterui::Identifiable;
-    use waterui::reactive::collection::List as ReactiveList;
+    use waterui::reactive::collection::StateList;
 
     /// `id`-keyed row whose payload flips between a short label and a tall
     /// one — the stable-id replace regression probe.
@@ -347,7 +347,7 @@ mod uikit_surface {
     /// materialization — the reentrant-emission probe for the pending
     /// delivery queue.
     struct ReentrantRow {
-        items: ReactiveList<ProbeRow>,
+        items: StateList<ProbeRow>,
         fired: Rc<Cell<bool>>,
     }
 
@@ -365,7 +365,7 @@ mod uikit_surface {
     /// while its emission is still queued must read the retained
     /// snapshot, never the live source.
     struct RemovingRow {
-        items: ReactiveList<ProbeRow>,
+        items: StateList<ProbeRow>,
         fired: Rc<Cell<bool>>,
     }
 
@@ -715,7 +715,7 @@ mod uikit_surface {
     /// mounted leaf must be re-materialized and its measured contract
     /// re-derived, not reused — the `#306` regression.
     pub fn stable_id_payload_replace_remateries_the_row() {
-        let mut items = ReactiveList::from(vec![
+        let mut items = StateList::from(vec![
             ProbeRow { id: 1, tall: false },
             ProbeRow { id: 2, tall: false },
         ]);
@@ -806,7 +806,7 @@ mod uikit_surface {
     fn mixed_membership_turn_lands_each_contract(
         mount: &waterui_apple::native_test_support::UIKitMount,
         table: &UITableView,
-        items: &mut ReactiveList<ProbeRow>,
+        items: &mut StateList<ProbeRow>,
         first_row: &NSIndexPath,
         short: f64,
     ) {
@@ -857,7 +857,7 @@ mod uikit_surface {
         // Sectioned shape: a labeled section is not a single plain group,
         // so changes apply through the whole-table `reloadData` path —
         // a stable-id replace must still evict the row's measured contract.
-        let mut sectioned = ReactiveList::from(vec![
+        let mut sectioned = StateList::from(vec![
             ProbeRow { id: 10, tall: true },
             ProbeRow {
                 id: 11,
@@ -941,7 +941,7 @@ mod uikit_surface {
     pub fn stable_id_payload_replace_under_reentrant_emission() {
         let env = crate::resolve::env();
         let fired = Rc::new(Cell::new(false));
-        let mut items = ReactiveList::from(vec![
+        let mut items = StateList::from(vec![
             ProbeRow {
                 id: 20,
                 tall: false,
@@ -1056,7 +1056,7 @@ mod uikit_surface {
         let env = crate::resolve::env();
         let fired = Rc::new(Cell::new(false));
         let rendered = Rc::new(std::cell::RefCell::new(Vec::new()));
-        let items = ReactiveList::from(vec![
+        let items = StateList::from(vec![
             ProbeRow {
                 id: 30,
                 tall: false,
@@ -1197,7 +1197,7 @@ mod uikit_surface {
 
         let env = crate::resolve::env();
         let fired = Rc::new(Cell::new(false));
-        let items = ReactiveList::from(vec![
+        let items = StateList::from(vec![
             ProbeRow {
                 id: 40,
                 tall: false,
@@ -1250,7 +1250,7 @@ mod uikit_surface {
         let env = crate::resolve::env();
         let first = Rc::new(Cell::new(false));
         let second = Rc::new(Cell::new(false));
-        let mut items = ReactiveList::from(vec![
+        let mut items = StateList::from(vec![
             ProbeRow {
                 id: 50,
                 tall: false,
@@ -1324,7 +1324,7 @@ mod uikit_surface {
 
         let env = crate::resolve::env();
         let fired = Rc::new(Cell::new(false));
-        let mut items = ReactiveList::from(vec![ProbeRow {
+        let mut items = StateList::from(vec![ProbeRow {
             id: 60,
             tall: false,
         }]);

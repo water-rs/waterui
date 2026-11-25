@@ -8,7 +8,6 @@ use waterui::Identifiable;
 use waterui::app::{App, Windows};
 use waterui::prelude::*;
 use waterui::preview;
-use waterui::reactive::collection::List as ReactiveList;
 use waterui::shape::{Circle, ShapeExt};
 
 const ROW_COUNT: u64 = 200_000;
@@ -68,7 +67,7 @@ fn record_row(index: u64) -> impl View {
 /// The edge-list example page: a list of records with per-row detail.
 #[preview]
 pub fn demo() -> impl View {
-    let records = ReactiveList::from((0..ROW_COUNT).map(|id| Row { id }).collect::<Vec<_>>());
+    let records = StateList::from((0..ROW_COUNT).map(|id| Row { id }).collect::<Vec<_>>());
     let list = List::for_each(records, |row| record_row(row.id));
 
     vstack((

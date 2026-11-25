@@ -26,7 +26,7 @@ use cocoa_ui::uikit::{KeyboardBand, PointerCursor, WindowScene};
 use cocoa_ui::{MainThreadMarker, Retained};
 use nami::Signal as _;
 use waterui::cursor::CursorStyle;
-use waterui::window::{Window, WindowState};
+use waterui::window::{WindowParts, WindowState};
 use waterui_core::Environment;
 use waterui_core::layout::{Size, layout_direction};
 use waterui_frame_rate::FrameRate;
@@ -396,7 +396,7 @@ impl PlatformWindow for UiKitHostWindow {
         self.size_px
     }
 
-    fn apply_properties<C, T>(&mut self, window: &Window<C, T>) {
+    fn apply_properties<C, T>(&mut self, window: &WindowParts<C, T>) {
         if window.state.snapshot() == WindowState::Closed {
             return;
         }

@@ -34,7 +34,7 @@ use waterui::Environment;
 use waterui::app::AppMenuBar;
 use waterui::cursor::CursorStyle;
 use waterui::theme::ColorScheme;
-use waterui::window::WindowState;
+use waterui::window::{WindowParts, WindowState};
 use waterui_backend_core::gesture::DEFAULT_LONG_PRESS_DURATION;
 use waterui_core::layout::LayoutDirection;
 use waterui_core::{Retain, contract_violation};
@@ -869,7 +869,7 @@ impl PlatformWindow for AndroidHostWindow {
         (self.metrics.width_px, self.metrics.height_px)
     }
 
-    fn apply_properties<C, T>(&mut self, window: &waterui::window::Window<C, T>) {
+    fn apply_properties<C, T>(&mut self, window: &WindowParts<C, T>) {
         if window.state.snapshot() == WindowState::Closed {
             return;
         }

@@ -22,6 +22,7 @@ use crate::renderer::accessibility::{
 use crate::renderer::{SemanticCore, WindowId};
 use std::rc::Rc;
 use std::sync::Arc;
+use waterui::window::Window;
 use waterui_core::contract_violation;
 use waterui_structural_transition::ReduceMotion;
 

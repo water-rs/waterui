@@ -213,29 +213,27 @@ fn create_ultra_thin_window(state: &Binding<WindowState>) -> Window<impl ViewBui
 /// increments.
 fn create_controls_window(state: &Binding<WindowState>) -> Window<impl ViewBuilder + use<>> {
     let always_on_top = binding(false);
-    let window = Window::new("Window Controls", || ())
-        .state(state)
-        .style(WindowStyle::Titled)
-        .resizable(true)
-        .level(always_on_top.map(|on| {
-            if on {
-                WindowLevel::AlwaysOnTop
-            } else {
-                WindowLevel::Normal
-            }
-        }))
-        .resize_increments(Size::new(80.0, 24.0));
-    // The content drives the window through its handle, which is only
-    // available once the `Window` exists, so the builder is installed after.
-    let handle = window.handle();
-    window.content(move || controls_window_content(&handle, &always_on_top))
+    let toggle_state = always_on_top.clone();
+    Window::new("Window Controls", move || {
+        controls_window_content(&toggle_state)
+    })
+    .state(state)
+    .default_size(Size::new(640.0, 480.0))
+    .style(WindowStyle::Titled)
+    .resizable(true)
+    .level(always_on_top.map(|on| {
+        if on {
+            WindowLevel::AlwaysOnTop
+        } else {
+            WindowLevel::Normal
+        }
+    }))
+    .resize_increments(Size::new(80.0, 24.0))
 }
 
-/// Content of the controls window: buttons driving its `WindowHandle`.
-fn controls_window_content(
-    handle: &WindowHandle,
-    always_on_top: &Binding<bool>,
-) -> impl View + use<> {
+/// Content of the controls window: buttons extracting the window's own
+/// `WindowHandle` from handler state.
+fn controls_window_content(always_on_top: &Binding<bool>) -> impl View + use<> {
     vstack((
         text("Window Controls").title().bold(true),
         spacer().height(16.0),
@@ -245,34 +243,21 @@ fn controls_window_content(
         toggle("Always on Top", always_on_top),
         spacer().height(12.0),
         hstack((
-            button("Maximize").action({
-                let handle = handle.clone();
-                move || handle.maximize()
-            }),
+            button("Maximize").action(|window: WindowHandle| window.maximize()),
             spacer().width(12.0),
-            button("Restore").action({
-                let handle = handle.clone();
-                move || handle.restore()
-            }),
+            button("Restore").action(|window: WindowHandle| window.restore()),
         )),
         spacer().height(12.0),
         hstack((
-            button("Request Attention in 3s").action({
-                let handle = handle.clone();
-                move || {
-                    let handle = handle.clone();
-                    spawn_local(async move {
-                        sleep(Duration::from_secs(3)).await;
-                        handle.request_attention(UserAttention::Informational);
-                    })
-                    .detach();
-                }
+            button("Request Attention in 3s").action(|window: WindowHandle| {
+                spawn_local(async move {
+                    sleep(Duration::from_secs(3)).await;
+                    window.request_attention(UserAttention::Informational);
+                })
+                .detach();
             }),
             spacer().width(12.0),
-            button("Cancel Attention").action({
-                let handle = handle.clone();
-                move || handle.cancel_attention()
-            }),
+            button("Cancel Attention").action(|window: WindowHandle| window.cancel_attention()),
         )),
     ))
     .padding_with(24.0)

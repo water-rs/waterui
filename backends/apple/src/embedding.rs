@@ -348,10 +348,6 @@ pub unsafe fn mount<W: Windows, M: AppMenuBar>(
     // process without notice — so the termination machine is never started.
     let _ = parts.termination;
     let env = parts.env;
-    #[cfg(target_os = "macos")]
-    let mut env = env;
-    #[cfg(target_os = "macos")]
-    crate::windows::install_root_environment(&mut env);
     let mut windows = crate::windows::connect_windows(parts.windows, &env).into_iter();
     let Some(declaration) = windows.next() else {
         waterui::contract_violation!(

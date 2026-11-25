@@ -70,7 +70,7 @@ discussion. In short:
   and respect accessibility text-size scaling.
 - Use **font slots** when you need to pass the choice around as a value:
   `.font(Title)`, `.font(font::Caption)`.
-- Use **direct overrides** (`.size(f32)`, `.weight(..)`, `.italic(bool)`,
+- Use **direct overrides** (`.font_size(f32)`, `.weight(..)`, `.italic(bool)`,
   explicit `Font` construction) for fixed-layout cases that should NOT
   follow Theme scaling: posters, splash screens, examples that demonstrate
   a specific visual.

@@ -63,15 +63,6 @@ impl From<u32> for BadgeValue {
     }
 }
 
-// Temporary compatibility impl for split-repo transition to `water-rs/hydrolysis-m3`;
-// removed once `MaterialBadge` migrates to `BadgeValue` (Part of #4330).
-#[doc(hidden)]
-impl From<i32> for BadgeValue {
-    fn from(value: i32) -> Self {
-        u32::try_from(value).map_or(Self::Hidden, Self::count)
-    }
-}
-
 impl From<Text> for BadgeValue {
     fn from(value: Text) -> Self {
         Self::Text(value)

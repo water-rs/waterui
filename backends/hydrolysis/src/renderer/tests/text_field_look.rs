@@ -339,7 +339,7 @@ fn sized_look(size: Option<f32>) -> TextFieldLook {
     };
     let floating = plain.floating_label();
     let styled = FloatingLabel::new(
-        LookLabel::new().font(Font::default().size(size)),
+        LookLabel::new().font(Font::default().font_size(size)),
         floating.get_float().clone(),
     )
     .scale(floating.get_scale())
@@ -716,7 +716,7 @@ fn the_value_lays_out_with_the_looks_font() {
     let plain = Fixture::filled("hello", look(), 4);
     let large = Fixture::filled(
         "hello",
-        valued_look(LookLabel::new().font(Font::default().size(40.0))),
+        valued_look(LookLabel::new().font(Font::default().font_size(40.0))),
         4,
     );
     assert!(

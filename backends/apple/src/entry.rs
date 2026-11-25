@@ -102,7 +102,6 @@ mod imp {
         // renders as the standard Quit item, whose `terminate:` reaches the
         // machine through `applicationShouldTerminate:`.
         let session = Session::start(parts.termination, &mut app_env, parts.last_window, mtm);
-        crate::windows::install_root_environment(&mut app_env);
         assert!(
             launch.termination.set(session).is_ok(),
             "`prepared` consumes the one-shot `Launch`, so the termination slot is still empty"

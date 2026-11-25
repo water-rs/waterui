@@ -348,9 +348,10 @@ Style shorthands on `Button` — `.plain()`, `.link()`, `.borderless()`, `.borde
 `.borderless()` is the idiomatic toolbar-button style; `Link` shows the
 pointing-hand cursor on pointer platforms. `TextField::line_limit(impl IntoComputed<Option<NonZeroUsize>>)` caps the
 lines (pass `None` for unlimited multi-line input, or a signal to toggle it); `TextField::styled(label, &Binding<StyledStr>)` binds styled text. `Switch` and `checkbox` map to different accessibility roles (`SWITCH` vs `CHECKBOX`), which matters to
-tests. `ToggleStyle::Automatic` is the platform's style — a switch on iOS and Android, a
-checkbox on macOS — so a test that must pass on every host queries a default toggle
-with `Role::toggle(ToggleStyle::Automatic)`. A switch with a visible label fills the
+tests. `ToggleStyle::Automatic` reads the ambient `ToggleStyle` installed in the environment
+(`.with(ToggleStyle::...)`) first, then the backend's platform default (`Switch` on
+Hydrolysis and iOS, `Checkbox` on macOS AppKit). On Hydrolysis, `Role::toggle(ToggleStyle::Automatic)`
+maps to `Role::SWITCH`. A switch with a visible label fills the
 width it is offered (label leading, switch trailing); a checkbox and a toggle with a
 hidden label are content-sized.
 
@@ -573,7 +574,7 @@ Both carry the full font API:
 
 ```rust
 .title() .headline() .subheadline() .body() .caption() .footnote()
-.size(18.0) .bold(true) .italic(true) .font(font::Caption) .foreground(color)
+.font_size(18.0) .bold(true) .italic(true) .font(font::Caption) .foreground(color)
 .weight(font::FontWeight::SemiBold) .monospaced(true) .underline(true) .strikethrough(true) .color(color)
 ```
 
@@ -591,12 +592,11 @@ first: `text(StyledStr::plain("Terms").on_tap("terms", |page: &'static str| open
 `.font(..)` takes a slot struct from the prelude's `font` module — `font::Title`,
 `Headline`, `Subheadline` (note the spelling; the method is `.subheadline()`), `Body`,
 `Caption`, `Footnote` — the form to use when the style is chosen dynamically. On `Text`,
-`.size(..)` is the *font* size, is reactive (`impl IntoSignal<f64>`), and **shadows** the
-two-argument frame `.size(w, h)` — to give a text a frame, use `.width(..)`/`.height(..)`
-or size its container.
+`.font_size(..)` sets the font size and is reactive (`impl IntoSignal<f64>`), leaving the
+two-argument frame `.size(w, h)` available directly on `Text`.
 
 A `font::Font` built from a slot carries the same overrides, and every one of them —
-`.family(..)`, `.size(..)`, `.weight(..)`, `.design(..)`, `.line_height(..)`,
+`.family(..)`, `.font_size(..)`, `.weight(..)`, `.design(..)`, `.line_height(..)`,
 `.letter_spacing(..)` — takes a plain value or a signal of one. A family that follows a
 setting is a signal, never a `watch(..)`:
 
@@ -757,7 +757,7 @@ content). Selection lives on the
 list itself and holds the app's own values — `.selection(&Binding<Option<T>>)` or
 `.multi_selection(&Binding<BTreeSet<T>>)` on both `List` and `ListBuilder`, `T: Ord + Clone`.
 A `ForEach` row — every row of `List::for_each`, or a `ForEach` inside `List::content` —
-is selected by its collection id: `Identifiable::Id` for a `List`/`Vec`/`SignalCollection`,
+is selected by its collection id: `Identifiable::Id` for a `StateList`/`Vec`/`SignalCollection`,
 the index for an array or static slice. A static row of `List::content` is selected by the
 value it is tagged with, like SwiftUI's `.tag(_:)` — `(|| text("Inbox")).tag(Mailbox::Inbox)`
 or `row("Archive", "12").tag(Mailbox::Archive)` — and an untagged static row is not
@@ -936,7 +936,7 @@ text("Inbox").badge(3_u32)                      // 0 hides; BadgeValue::{Hidden,
 avatar("Grace Hopper")                          // initials when there is no image; the name is always spoken
     .image(photo_url)                           // a signal of Url: the fallback shows until it decodes
     .shape(RoundedRectangle::new(16.0))
-    .size(64.0)
+    .side(64.0)
     .ring(Color::accent(), 2.0)
 field("Email", &email).focused(&focus, Field::Email)    // focused while `focus` holds Some(Field::Email)
 ```
