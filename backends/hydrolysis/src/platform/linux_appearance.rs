@@ -92,6 +92,9 @@ fn no_preference_error_name(name: &str) -> bool {
 /// The XDG desktop portal client behind [`SystemAppearance`].
 #[cfg(all(hydrolysis_winit, target_os = "linux"))]
 mod portal {
+    use core::future::poll_fn;
+    use core::pin::pin;
+    use core::task::Poll;
     use std::cell::Cell;
     use std::rc::Rc;
 
@@ -213,6 +216,38 @@ mod portal {
         error: Box<zbus::Error>,
     }
 
+    /// Polls `first` and `second` concurrently until both resolve.
+    async fn join_two<A, B>(
+        first: impl Future<Output = A>,
+        second: impl Future<Output = B>,
+    ) -> (A, B) {
+        let mut first = pin!(first);
+        let mut second = pin!(second);
+        let mut out_first = None;
+        let mut out_second = None;
+        poll_fn(|cx| {
+            if out_first.is_none()
+                && let Poll::Ready(value) = first.as_mut().poll(cx)
+            {
+                out_first = Some(value);
+            }
+            if out_second.is_none()
+                && let Poll::Ready(value) = second.as_mut().poll(cx)
+            {
+                out_second = Some(value);
+            }
+            match (out_first.take(), out_second.take()) {
+                (Some(a), Some(b)) => Poll::Ready((a, b)),
+                (a, b) => {
+                    out_first = a;
+                    out_second = b;
+                    Poll::Pending
+                }
+            }
+        })
+        .await
+    }
+
     /// Names the step a portal call belongs to, so a failure reports it.
     fn step<T>(result: zbus::Result<T>, step: &'static str) -> Result<T, StepFailed> {
         result.map_err(|error| StepFailed {
@@ -313,10 +348,11 @@ mod portal {
                 proxy.get_property("version").await,
                 "reading the portal Settings version",
             )?;
-            let (scheme_reply, reduced_reply) = futures::join!(
+            let (scheme_reply, reduced_reply) = join_two(
                 read_appearance_key(&proxy, version, COLOR_SCHEME_KEY),
                 read_appearance_key(&proxy, version, REDUCED_MOTION_KEY),
-            );
+            )
+            .await;
             Result::<_, StepFailed>::Ok((proxy, changes, scheme_reply, reduced_reply))
         }
         .await;
@@ -401,6 +437,9 @@ pub use portal::SystemAppearance;
 
 #[cfg(test)]
 mod tests {
+    use core::future::poll_fn;
+    use core::pin::pin;
+    use core::task::Poll;
     use std::cell::Cell;
     use std::rc::Rc;
 
