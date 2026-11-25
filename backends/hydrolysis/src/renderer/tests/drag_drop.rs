@@ -394,9 +394,9 @@ fn drop_and_enter_receive_destination_local_location_and_state_extractors() {
     use waterui_core::layout::Point as LayoutPoint;
     use waterui_core::{Binding, Signal as _, State};
 
-    let entered_at = Binding::container(None::<LayoutPoint>);
-    let dropped = Binding::container(None::<(TabId, LayoutPoint)>);
-    let exited = Binding::container(false);
+    let entered_at = Binding::new(None::<LayoutPoint>);
+    let dropped = Binding::new(None::<(TabId, LayoutPoint)>);
+    let exited = Binding::new(false);
 
     // Two 60x60 views in an hstack with spacing 20.0 centered vertically in the
     // 160x160 test viewport:

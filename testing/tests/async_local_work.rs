@@ -15,7 +15,7 @@ struct DelayedLabel;
 
 impl View for DelayedLabel {
     fn body(self, env: &Environment) -> impl View {
-        let status = Binding::container(String::from("idle"));
+        let status = Binding::new(String::from("idle"));
         let owed = ContentLedger::owe::<Self>(env, "delayed label");
         spawn_local({
             let status = status.clone();

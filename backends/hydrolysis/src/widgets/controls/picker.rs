@@ -131,7 +131,7 @@ impl<E: crate::text::TextEngine> PickerRenderState<E> {
             menu_open: Rc::new(Cell::new(false)),
             menu: None,
             menu_parts: None,
-            menu_report: Binding::container(InteractionState::empty()),
+            menu_report: Binding::new(InteractionState::empty()),
             radio: None,
             radio_parts: BTreeMap::new(),
             segmented: SegmentedState::default(),

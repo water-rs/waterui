@@ -165,7 +165,7 @@ mod tests {
 
     #[test]
     fn locale_binding_prefers_an_explicit_binding_over_a_static_locale() {
-        let binding = nami::Binding::container(locales::ZH_CN);
+        let binding = nami::Binding::new(locales::ZH_CN);
         let mut env = Environment::new();
         env.insert(locales::EN_GB);
         env.insert(binding.clone());

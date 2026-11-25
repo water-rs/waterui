@@ -2129,7 +2129,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 });
             }
             let menu_group = PopupMenuStateGroup::new();
-            let dismiss_state = nami::Binding::container(WindowState::Normal);
+            let dismiss_state = nami::Binding::new(WindowState::Normal);
             menu_group.push(dismiss_state.clone());
             self.text_editing.active_text_context_menu = Some(ActiveTextContextMenu::Overlay {
                 target: target_key,
@@ -2436,7 +2436,7 @@ mod tests {
 
     fn text_field_model(value: &str, line_limit: Option<usize>) -> TextInputModel {
         TextInputModel::TextField {
-            value: Binding::container(StyledStr::plain(value.to_owned())),
+            value: Binding::new(StyledStr::plain(value.to_owned())),
             line_limit,
             on_submit: None,
             selection_menu: empty_selection_menu(),
@@ -2447,7 +2447,7 @@ mod tests {
         let mut secure = FormSecure::default();
         secure.set(value.to_owned());
         TextInputModel::SecureField {
-            value: Binding::container(secure),
+            value: Binding::new(secure),
         }
     }
 

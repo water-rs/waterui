@@ -44,7 +44,7 @@ fn live_stroke_changes_match_cold_coverage_without_relowering_static_content() {
         .into(),
         style: GlyphStyle::Stroke(Stroke::new(1.0)),
     };
-    let value = Binding::container(run.clone());
+    let value = Binding::new(run.clone());
     let fixed = Picture::record(|c| {
         c.fill(Rect::new(1.0, 1.0, 5.0, 5.0), WorkingColor::WHITE);
     });

@@ -157,7 +157,7 @@ fn run_scenario(
     make_view: fn(&Binding<f32>) -> AnyView,
     parametric_frames: u32,
 ) -> ScenarioMetrics {
-    let value = Binding::f32(1.0);
+    let value = Binding::new(1.0_f32);
     let builder = {
         let value = value.clone();
         AnyViewBuilder::<AnyView>::new(move || make_view(&value))
@@ -241,7 +241,7 @@ fn dynamic_runtime(
 /// without any structural rebuild of the rest of the window.
 #[test]
 fn dynamic_content_change_patches_without_rebuild() {
-    let value = Binding::container(0_i32);
+    let value = Binding::new(0_i32);
     let mut runtime = dynamic_runtime(dynamic_same_size, &value);
     let start = Instant::now();
     let _ = runtime.pump_at(false, start);
@@ -283,7 +283,7 @@ fn dynamic_changing_size_visible(value: &Binding<i32>) -> AnyView {
 #[test]
 fn dynamic_size_change_reflows_without_rebuild() {
     // Ground truth: the same composition built statically at the final value.
-    let truth_value = Binding::container(1_i32);
+    let truth_value = Binding::new(1_i32);
     let truth_builder = {
         let value = truth_value;
         AnyViewBuilder::<AnyView>::new(move || dynamic_changing_size_visible(&value))
@@ -301,7 +301,7 @@ fn dynamic_size_change_reflows_without_rebuild() {
         .into_snapshot()
         .expect("ground-truth frame must produce a snapshot");
 
-    let value = Binding::container(0_i32);
+    let value = Binding::new(0_i32);
     let builder = {
         let value = value.clone();
         AnyViewBuilder::<AnyView>::new(move || dynamic_changing_size_visible(&value))
@@ -554,7 +554,7 @@ fn transform_in_scroll_never_rebuilds() {
 fn steady_state_transform_animation_retains_the_tree() {
     use waterui_layout::container::FixedContainer;
 
-    let value = Binding::f32(1.0);
+    let value = Binding::new(1.0_f32);
     let place_calls = Rc::new(Cell::new(0));
     let builder = {
         let value = value.clone();
@@ -696,7 +696,7 @@ fn reactive_bg_collection(selected: &Binding<u32>) -> AnyView {
 #[test]
 fn reused_collection_item_reactive_background_tracks_on_selection() {
     // Ground truth: built fresh with the second item already selected.
-    let truth_selected = Binding::container(1_u32);
+    let truth_selected = Binding::new(1_u32);
     let truth_builder = {
         let selected = truth_selected;
         AnyViewBuilder::<AnyView>::new(move || reactive_bg_collection(&selected))
@@ -717,7 +717,7 @@ fn reused_collection_item_reactive_background_tracks_on_selection() {
     // Subject: start with the first item selected, then select the second. The
     // size-tracking sibling reflows, escalating the change to a structural rebuild
     // that reuses the collection items.
-    let selected = Binding::container(0_u32);
+    let selected = Binding::new(0_u32);
     let builder = {
         let selected = selected.clone();
         AnyViewBuilder::<AnyView>::new(move || reactive_bg_collection(&selected))
@@ -1582,8 +1582,8 @@ fn reduced_pixel_transition_runs_as_opacity() {
 fn live_reduce_motion_toggle_switches_dynamic_transition_variant() {
     use waterui_structural_transition::Edge;
 
-    let setting = Binding::bool(false);
-    let show = Binding::bool(false);
+    let setting = Binding::new(false);
+    let show = Binding::new(false);
     let builder = {
         let show = show.clone();
         AnyViewBuilder::<AnyView>::new(move || {

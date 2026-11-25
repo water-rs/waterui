@@ -96,7 +96,7 @@ fn explicit_silhouette_overrides_inherited_clip_shape() {
 
 #[test]
 fn reactive_shadow_and_border_update_without_rebuilds() {
-    let phase = Binding::container(false);
+    let phase = Binding::new(false);
     let builds = Arc::new(AtomicUsize::new(0));
     let view_builds = Arc::clone(&builds);
     let anim = Animation::linear(Duration::from_millis(160));

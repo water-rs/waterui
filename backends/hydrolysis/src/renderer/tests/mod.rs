@@ -658,7 +658,7 @@ fn wrapper_motion_subscribes_before_reading_its_snapshot() {
 fn labeled_toggle_keeps_label_activation_out_of_switch_visual_interaction() {
     let mut renderer = test_renderer();
     let env = test_environment();
-    let enabled = Binding::bool(false);
+    let enabled = Binding::new(false);
     let bounds = Rect::new(0.0, 0.0, 160.0, 40.0);
 
     capture_root_window(
@@ -773,7 +773,7 @@ fn empty_selection_menu() -> nami::Computed<Vec<ResolvedMenuItem>> {
 
 fn text_field_model(value: &str, line_limit: Option<usize>) -> TextInputModel {
     TextInputModel::TextField {
-        value: Binding::container(StyledStr::plain(value.to_owned())),
+        value: Binding::new(StyledStr::plain(value.to_owned())),
         line_limit,
         selection_menu: empty_selection_menu(),
         on_submit: None,
@@ -784,7 +784,7 @@ fn secure_field_model(value: &str) -> TextInputModel {
     let mut secure = FormSecure::default();
     secure.set(value.to_owned());
     TextInputModel::SecureField {
-        value: Binding::container(secure),
+        value: Binding::new(secure),
     }
 }
 
@@ -882,7 +882,7 @@ fn plain_fixed_container_measurement_mirrors_guides_under_rtl() {
 #[test]
 fn scale_metadata_is_layout_transparent() {
     let env = test_environment();
-    let scale = Binding::f32(1.0);
+    let scale = Binding::new(1.0_f32);
     let mut realized = Realized::new(
         ().size(80.0, 80.0).scale(scale.clone()).min_height(120.0),
         &env,
@@ -900,7 +900,7 @@ fn scale_metadata_is_layout_transparent() {
 fn a_stretch_control_keeps_its_minimum_under_a_zero_width_proposal() {
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
-    let value = Binding::f64(0.5);
+    let value = Binding::new(0.5_f64);
     let view = AnyView::new(slider("Playback position", &value).hide_label());
     let mut subview = Realized::with_theme(view, &env, &theme);
 
@@ -943,7 +943,7 @@ fn a_compressed_button_keeps_its_padded_label() {
 fn state_wrapped_button_remains_non_stretch_for_layout() {
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
-    let expanded = Binding::bool(false);
+    let expanded = Binding::new(false);
     let view = AnyView::new(
         button("Toggle Bars")
             .action(|waterui::State(value): waterui::State<Binding<bool>>| {
@@ -968,7 +968,7 @@ fn state_wrapped_button_remains_non_stretch_for_layout() {
 #[test]
 fn vstack_places_state_wrapped_button_at_intrinsic_width() {
     let env = test_environment();
-    let expanded = Binding::bool(false);
+    let expanded = Binding::new(false);
     let view = vstack((
         hstack((
             ().size(50.0, 80.0).min_height(100.0).min_width(60.0),
@@ -1216,8 +1216,8 @@ fn renderer_magnification_targets_outer_observer_in_stacked_gesture_chain() {
     use std::{cell::Cell, rc::Rc};
     use waterui_core::Metadata;
 
-    let offset = Binding::f32(0.0);
-    let scale = Binding::f32(1.0);
+    let offset = Binding::new(0.0_f32);
+    let scale = Binding::new(1.0_f32);
     let drag_hits = Rc::new(Cell::new(0u32));
     let magnify_hits = Rc::new(Cell::new(0u32));
     let view = {
@@ -1349,7 +1349,7 @@ fn a_segmented_picker_takes_the_width_it_is_offered() {
         node.bounds().expect("the picker must carry bounds").width()
     }
     let picker = |style| {
-        let selection = Binding::i32(0);
+        let selection = Binding::new(0_i32);
         Picker::new(
             "Mode",
             vec![text("One").tag(0), text("Two").tag(1), text("Three").tag(2)],
@@ -1644,7 +1644,7 @@ fn a_naming_container_keeps_the_silenced_taps_activation() {
 fn a_container_named_by_its_content_consumes_text_but_not_controls() {
     let env = test_environment();
     let mut renderer = test_renderer();
-    let field_value = Binding::container(Str::from(""));
+    let field_value = Binding::new(Str::from(""));
     let view = hstack((
         text("Shell"),
         field("Nickname", &field_value),
@@ -1797,7 +1797,7 @@ fn a_label_reaches_the_view_a_hook_realizes() {
     let mut renderer = test_renderer();
     // The frame puts the hooked map inside a layout container, one level below
     // the naming scope the build installs.
-    let camera = Binding::container(Region::new(Coordinate::default(), 1.0, 1.0));
+    let camera = Binding::new(Region::new(Coordinate::default(), 1.0, 1.0));
     let view = Map::new(&camera)
         .hooks(TextMap)
         .a11y_label("City map")
@@ -1984,7 +1984,7 @@ fn accessibility_group_owns_preserved_child_semantics() {
 fn reactive_hidden_accessibility_group_suppresses_descendants() {
     let env = test_environment();
     let mut renderer = test_renderer();
-    let visible = Binding::bool(false);
+    let visible = Binding::new(false);
     let state = visible.map(|visible| AccessibilityState::new().hidden(!visible));
     let view = vstack((text("Hidden child"),))
         .a11y_label("Hidden group")
@@ -2016,7 +2016,7 @@ fn reactive_hidden_accessibility_group_suppresses_descendants() {
 fn mixed_busy_state_is_preserved_and_node_identity_survives_refresh() {
     let env = test_environment();
     let mut renderer = test_renderer();
-    let busy = Binding::bool(false);
+    let busy = Binding::new(false);
     let state = busy.map(|busy| AccessibilityState::new().mixed().busy(busy));
     let view = text("Tri-state")
         .a11y_role(AccessibilityRole::Checkbox)
@@ -2058,7 +2058,7 @@ fn mixed_busy_state_is_preserved_and_node_identity_survives_refresh() {
 fn reactive_a11y_hidden_toggles_leaf_and_container_without_rebuild() {
     let env = test_environment();
     let mut renderer = test_renderer();
-    let hidden = Binding::bool(true);
+    let hidden = Binding::new(true);
     let view = vstack((
         text("Leaf").a11y_hidden(hidden.clone()),
         vstack((text("Inside A"), text("Inside B")))
@@ -2218,7 +2218,7 @@ fn a11y_value_overrides_a_controls_own_value() {
 
     let env = test_environment();
     let mut renderer = test_renderer();
-    let date = Binding::container(Date::new(2025, 1, 10).expect("valid test date"));
+    let date = Binding::new(Date::new(2025, 1, 10).expect("valid test date"));
     let plain = DatePicker::new("Date", &date);
     let overridden = DatePicker::new("Override", &date).a11y_value("January tenth, 2025");
     let view = vstack((plain, overridden));
@@ -2248,11 +2248,11 @@ fn disabled_picker_family_and_tabs_expose_no_mutating_actions() {
 
     let env = test_environment();
     let mut renderer = test_renderer();
-    let picker_selection = Binding::container("Alpha");
-    let date = Binding::container(Date::new(2025, 1, 10).expect("valid test date"));
-    let color = Binding::container(Color::srgb(0, 0, 0));
+    let picker_selection = Binding::new("Alpha");
+    let date = Binding::new(Date::new(2025, 1, 10).expect("valid test date"));
+    let color = Binding::new(Color::srgb(0, 0, 0));
     let tabs = Tabs::new(
-        &Binding::container(0usize),
+        &Binding::new(0usize),
         (
             Tab::new("First tab", || NavigationView::new("First", text("One"))),
             Tab::new("Second tab", || NavigationView::new("Second", text("Two"))),
@@ -2689,7 +2689,7 @@ fn synthetic_focus_release_cancels_armed_keyboard_press() {
 fn interaction_focus_binding_tracks_keyboard_focus() {
     let mut renderer = test_renderer();
     let mut env = test_environment();
-    let focused = Binding::bool(false);
+    let focused = Binding::new(false);
     env.insert(InteractionFocusBinding::new(&focused));
     let owner = Rc::new(());
     let key = InteractionKey::for_rc(&owner, 0);
@@ -2763,7 +2763,7 @@ fn inactive_modal_scope_does_not_trap_keyboard_focus() {
     let mut renderer = test_renderer();
     let env = test_environment();
     let mut dialog_env = env;
-    let active = Binding::bool(false);
+    let active = Binding::new(false);
     dialog_env.insert(
         ModalInteraction::new(false, SharedAction::new(|_: Environment| {})).active(active),
     );
@@ -4303,7 +4303,7 @@ fn tab_badge_draws_only_for_a_nonzero_count() {
             Some(value) => inbox.badge(value),
             None => inbox,
         };
-        let tabs = Tabs::new(&Binding::container(0usize), vec![inbox]);
+        let tabs = Tabs::new(&Binding::new(0usize), vec![inbox]);
         let mut renderer = test_renderer_with_theme(MinimalTestTheme {
             badge_draws: Rc::clone(&log.0),
             ..Default::default()

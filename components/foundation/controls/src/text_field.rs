@@ -374,20 +374,20 @@ mod tests {
 
     #[test]
     fn line_limit_non_one_is_supported() {
-        let value = Binding::container(Str::from(""));
+        let value = Binding::new(Str::from(""));
         let _ = TextField::new("Note", &value).line_limit(NonZeroUsize::new(2));
     }
 
     #[test]
     fn line_limit_none_removes_limit() {
-        let value = Binding::container(Str::from(""));
+        let value = Binding::new(Str::from(""));
         let _ = TextField::new("Note", &value).line_limit(None::<NonZeroUsize>);
     }
 
     #[test]
     fn line_limit_accepts_reactive_signal() {
-        let value = Binding::container(Str::from(""));
-        let limit = Binding::container(NonZeroUsize::new(2));
+        let value = Binding::new(Str::from(""));
+        let limit = Binding::new(NonZeroUsize::new(2));
         let field = TextField::new("Note", &value).line_limit(limit.clone());
         assert_eq!(field.line_limit.snapshot(), NonZeroUsize::new(2));
         limit.set(None);
@@ -396,7 +396,7 @@ mod tests {
 
     #[test]
     fn new_constructor_accepts_styled_binding() {
-        let styled = Binding::container(StyledStr::plain("a"));
+        let styled = Binding::new(StyledStr::plain("a"));
         let _ = TextField::new("Body", &styled);
     }
 
@@ -406,7 +406,7 @@ mod tests {
         should_panic(expected = "cannot accept styled text updates")
     )]
     fn plain_mapping_reports_styled_write_back() {
-        let plain = Binding::container(Str::from("a"));
+        let plain = Binding::new(Str::from("a"));
         let mapped = super::map_plain_binding(&plain);
         mapped.set(StyledStr::plain("b").italic(true));
 
@@ -416,7 +416,7 @@ mod tests {
 
     #[test]
     fn plain_mapping_updates_nested_mapped_source() {
-        let source = Binding::container(String::from("a"));
+        let source = Binding::new(String::from("a"));
         let plain = Binding::mapping(&source, Str::from, |binding, value: Str| {
             binding.set(value.into());
         });

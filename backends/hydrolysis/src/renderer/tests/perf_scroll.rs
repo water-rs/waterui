@@ -400,7 +400,7 @@ fn flow_markdown_append_preserves_user_scroll_offset() {
             out.push_str(&part);
             out
         });
-    let source = Binding::container(Str::from(initial.clone()));
+    let source = Binding::new(Str::from(initial.clone()));
     let builder = {
         let source = source.clone();
         AnyViewBuilder::<AnyView>::new(move || {

@@ -719,7 +719,7 @@ mod tests {
         should_panic(expected = "a slider step must be positive and finite")
     )]
     fn invalid_step_is_ignored() {
-        let value = Binding::container(0.0_f64);
+        let value = Binding::new(0.0_f64);
         let stepped = slider("Volume", &value).step(2.0).step(0.0);
 
         // Release outcome: the slider keeps the step it had.
@@ -732,7 +732,7 @@ mod tests {
         should_panic(expected = "a slider range must have finite bounds with start <= end")
     )]
     fn reversed_range_clamps_without_panicking_in_release() {
-        let value = Binding::container(5.0_f64);
+        let value = Binding::new(5.0_f64);
         let clamped = slider("Volume", &value).range(10.0..=2.0);
         assert_eq!(clamped.range.snapshot(), 10.0..=10.0);
         assert_eq!(snap(5.0, &(10.0..=2.0), None), 10.0);
@@ -752,9 +752,9 @@ mod tests {
         let mut env = Environment::new();
         env.insert(locales::EN);
 
-        let opacity = Binding::container(0.8_f32);
-        let max_opacity = Binding::container(1.0_f32);
-        let step = Binding::container(0.1_f32);
+        let opacity = Binding::new(0.8_f32);
+        let max_opacity = Binding::new(1.0_f32);
+        let step = Binding::new(0.1_f32);
         let cfg = slider("Opacity", &opacity)
             .range(max_opacity.map(|max| 0.0_f32..=max))
             .step(step.clone())
@@ -774,7 +774,7 @@ mod tests {
             Some(25.0)
         );
 
-        let rating = Binding::container(4_u32);
+        let rating = Binding::new(4_u32);
         let u32_cfg = slider("Rating", &rating)
             .range(1_u32..=5_u32)
             .step(1_u32)

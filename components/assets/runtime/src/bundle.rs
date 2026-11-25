@@ -373,7 +373,7 @@ mod tests {
             Url::from_file_path_str("/app/assets/hero.png")
         );
 
-        let selected = Binding::container(hero);
+        let selected = Binding::new(hero);
         let reactive = selected
             .clone()
             .into_photo_source()

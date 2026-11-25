@@ -131,7 +131,7 @@ fn nested_menu_command_dispatches() {
 #[test]
 fn selection_menu_nested_command_dispatches() {
     let fired = Rc::new(Cell::new(0_u32));
-    let value = Binding::container(Str::from("hello"));
+    let value = Binding::new(Str::from("hello"));
     let fired_clone = fired.clone();
     let mut runtime = runtime(AnyViewBuilder::<AnyView>::new(move || {
         let deep = fired_clone.clone();
@@ -269,7 +269,7 @@ fn select_all_and_fire_wrap(runtime: &mut HeadlessRuntime, field_bounds: kurbo::
 fn selection_menu_command_reads_selection() {
     let observed = Rc::new(RefCell::new(String::new()));
     let calls = Rc::new(Cell::new(0u8));
-    let value = Binding::container(Str::from("hello"));
+    let value = Binding::new(Str::from("hello"));
     let value_probe = value.clone();
     let observed_clone = observed.clone();
     let mut runtime = runtime(AnyViewBuilder::<AnyView>::new(move || {

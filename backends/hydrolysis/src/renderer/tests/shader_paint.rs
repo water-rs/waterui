@@ -61,8 +61,8 @@ fn render_view_pixels(painter: OffscreenPainter, view: impl Fn() -> AnyView + 's
 fn assert_shader_paint_and_flowing_gradient_render_and_react(
     open_painter: fn() -> OffscreenPainter,
 ) {
-    let param0 = Binding::f32(0.1_f32);
-    let continuous = Binding::container(false);
+    let param0 = Binding::<f32>::new(0.1_f32);
+    let continuous = Binding::new(false);
     let painter = open_painter();
     let param0_for_view = param0.clone();
     let continuous_for_view = continuous.clone();

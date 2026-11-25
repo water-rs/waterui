@@ -16,7 +16,7 @@ use super::parts;
 
 /// The tree pane.
 pub fn view(model: Model) -> impl View {
-    let filter = Binding::container(Str::from(""));
+    let filter = Binding::new(Str::from(""));
     let empty = model.tree.map(|rows| rows.is_empty()).computed();
 
     vstack((

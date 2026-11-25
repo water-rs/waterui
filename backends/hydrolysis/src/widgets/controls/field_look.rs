@@ -199,7 +199,7 @@ pub struct FieldChrome {
 ))]
 impl FieldChrome {
     pub(crate) fn new() -> Self {
-        let report = Binding::container(InteractionState::empty());
+        let report = Binding::new(InteractionState::empty());
         #[cfg(any(feature = "text-field", feature = "secure-field"))]
         let float = Rc::new(FloatLabel::new());
         #[cfg(any(feature = "text-field", feature = "secure-field"))]

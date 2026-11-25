@@ -10,7 +10,7 @@ fn opacity_change_with_animation_disabled_needs_no_animation_frames() {
     let mut renderer = test_renderer();
     let env = test_environment();
     let bounds = Rect::new(0.0, 0.0, 200.0, 200.0);
-    let source = Binding::container(false);
+    let source = Binding::new(false);
     let view = || {
         text("Fade").opacity(
             source

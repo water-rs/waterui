@@ -154,7 +154,7 @@ mod portal {
             E: LocalExecutor<Task<()> = AsyncTask<()>>,
         {
             let scheme = nami::binding(ColorScheme::Light);
-            let reduce_motion = Binding::bool(false);
+            let reduce_motion = Binding::new(false);
             let initial_read = Rc::new(Cell::new(false));
             let watch = executor.spawn_local(watch(
                 scheme.clone(),

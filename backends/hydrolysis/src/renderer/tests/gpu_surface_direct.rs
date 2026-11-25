@@ -251,8 +251,8 @@ fn settled(runtime: &mut HeadlessRuntime, frames: &mut Frames, log: &ProbeLog) {
 
 fn full_window_bindings() -> (Binding<f32>, Binding<f32>) {
     (
-        Binding::f32(crate::num_cast::u32_as_f32(WINDOW_WIDTH)),
-        Binding::f32(crate::num_cast::u32_as_f32(WINDOW_HEIGHT)),
+        Binding::<f32>::new(crate::num_cast::u32_as_f32(WINDOW_WIDTH)),
+        Binding::<f32>::new(crate::num_cast::u32_as_f32(WINDOW_HEIGHT)),
     )
 }
 

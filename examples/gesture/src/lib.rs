@@ -207,12 +207,12 @@ fn on_tap_section(tap_count: &Binding<i32>) -> impl View + use<> {
 /// Panics if the tab list no longer fits in `u32` ids.
 #[preview]
 pub fn demo() -> impl View {
-    let tap_count = Binding::i32(0);
-    let double_tap_count = Binding::i32(0);
-    let long_press_count = Binding::i32(0);
-    let drag_count = Binding::i32(0);
-    let chained_status = Binding::container("Waiting for tap...");
-    let open_tabs = Binding::i32(4);
+    let tap_count = Binding::new(0_i32);
+    let double_tap_count = Binding::new(0_i32);
+    let long_press_count = Binding::new(0_i32);
+    let drag_count = Binding::new(0_i32);
+    let chained_status = Binding::new("Waiting for tap...");
+    let open_tabs = Binding::new(4_i32);
     let tabs = StateList::from(
         ["Overview", "Details", "Activity", "Settings"]
             .iter()

@@ -67,7 +67,7 @@ fn image_destination_is_live_and_static_picture_stays_retained() {
     let surface = engine
         .surface(Offscreen::new((24, 24), OffscreenFormat::LinearF32), || {})
         .expect("surface");
-    let dst = Binding::container(Rect::new(4.0, 4.0, 8.0, 8.0));
+    let dst = Binding::new(Rect::new(4.0, 4.0, 8.0, 8.0));
     let fixed = Picture::record(|c| c.fill(Rect::new(0.0, 0.0, 2.0, 2.0), WorkingColor::WHITE));
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|c| {

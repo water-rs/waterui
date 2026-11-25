@@ -100,7 +100,7 @@ impl Rig {
 
     /// The rig before its first frame.
     fn mount(theme: MinimalTestTheme, direction: LayoutDirection, disabled: bool) -> Self {
-        let selection = Binding::i32(0);
+        let selection = Binding::new(0_i32);
         let view = RefCell::new(Some(AnyView::new(
             picker(
                 "Mode",
@@ -1013,7 +1013,7 @@ fn show_label_false_omits_visible_heading_and_keeps_accessibility_label() {
 
     let env = test_environment();
     let labelled = || {
-        let selection = Binding::i32(0);
+        let selection = Binding::new(0_i32);
         AnyView::new(
             picker(
                 "View",
@@ -1028,7 +1028,7 @@ fn show_label_false_omits_visible_heading_and_keeps_accessibility_label() {
         )
     };
     let hidden = || {
-        let selection = Binding::i32(0);
+        let selection = Binding::new(0_i32);
         AnyView::new(
             picker(
                 "View",

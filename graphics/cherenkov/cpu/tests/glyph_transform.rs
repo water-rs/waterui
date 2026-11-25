@@ -57,7 +57,7 @@ fn surface_with(
     let surface = engine
         .surface(Offscreen::new((96, 72), OffscreenFormat::LinearF16), || {})
         .expect("surface");
-    let value = Binding::container(run);
+    let value = Binding::new(run);
     let content = surface.record(|c| {
         c.glyphs(value.clone(), WorkingColor::WHITE);
     });

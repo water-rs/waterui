@@ -479,7 +479,7 @@ pub async fn mirrored_state_reaches_only_admitted_documents<C: WebViewController
     ]);
     let refused = PageServer::start(&[("/hostile", "text/html", STATE_HOSTILE_HTML)]);
 
-    let count = Binding::container(0_i64);
+    let count = Binding::new(0_i64);
     let reports = Rc::new(Reports::default());
     let held = Rc::new(Held::default());
     let witness = state_view(controller, admitted.origin(), &count, &reports, &held).await;

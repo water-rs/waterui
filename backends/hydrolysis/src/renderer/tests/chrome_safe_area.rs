@@ -174,7 +174,7 @@ fn assert_content_inside(
 /// The navigation case: a `NavigationStack` whose view carries a trailing
 /// toolbar item, a bottom tool-bar item and a search field.
 fn navigation_view() -> impl waterui_core::View {
-    let query = Binding::container(Str::from(""));
+    let query = Binding::new(Str::from(""));
     NavigationStack::new(
         NavigationView::new("Inbox", text("mail body"))
             .navigation_toolbar(
@@ -261,7 +261,7 @@ fn tab_bar_and_nested_navigation_bar_extend() {
     let theme = MinimalTestTheme::default();
     let tab_draws = Rc::clone(&theme.tabs_bar_draws);
     let nav_draws = Rc::clone(&theme.navigation_bar_draws);
-    let selection = Binding::container(0usize);
+    let selection = Binding::new(0usize);
     let renderer = capture(
         Tabs::new(
             &selection,
@@ -320,7 +320,7 @@ fn sidebar_strip_extends_through_the_top_inset_with_a_trailing_divider() {
     let theme = MinimalTestTheme::default();
     let tab_draws = Rc::clone(&theme.tabs_bar_draws);
     let divider_draws = Rc::clone(&theme.tabs_bar_divider_draws);
-    let selection = Binding::container(0usize);
+    let selection = Binding::new(0usize);
     let _renderer = capture(
         Tabs::new(
             &selection,
@@ -420,7 +420,7 @@ fn the_bottom_bar_extends_through_the_keyboard_region() {
 fn the_docked_tab_bar_surface_reaches_the_window_edge_under_the_keyboard() {
     let theme = MinimalTestTheme::default();
     let tab_draws = Rc::clone(&theme.tabs_bar_draws);
-    let selection = Binding::container(0usize);
+    let selection = Binding::new(0usize);
     capture(
         Tabs::new(
             &selection,
@@ -461,7 +461,7 @@ fn a_nested_bottom_bar_inside_tab_content_does_not_extend() {
     let theme = MinimalTestTheme::default();
     let bar_draws = Rc::clone(&theme.navigation_bar_draws);
     let tab_draws = Rc::clone(&theme.tabs_bar_draws);
-    let selection = Binding::container(0usize);
+    let selection = Binding::new(0usize);
     let renderer = capture(
         Tabs::new(
             &selection,
@@ -527,7 +527,7 @@ fn a_detail_columns_bar_does_not_extend_across_the_leading_edge() {
 
     let theme = MinimalTestTheme::default();
     let bar_draws = Rc::clone(&theme.navigation_bar_draws);
-    let selection = Binding::container(Some(0i32));
+    let selection = Binding::new(Some(0i32));
     let _renderer = capture_in(
         NavigationSplitView::new(
             &selection,

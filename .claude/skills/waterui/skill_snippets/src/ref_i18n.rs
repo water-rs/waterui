@@ -13,7 +13,7 @@ use waterui::prelude::*;
 // Listing: two independent lookups.
 // ---------------------------------------------------------------------------
 pub fn i18n_block_01() {
-    let name = Binding::container(Str::from("Ada"));
+    let name = Binding::new(Str::from("Ada"));
 
     let _ = {
         text!("Welcome Desk") // looked up verbatim as the key "Welcome Desk"
@@ -37,7 +37,7 @@ pub fn i18n_block_01() {
 pub fn i18n_translation_prose() {
     use waterui::text::{StyledStr, Text};
 
-    let radius = Binding::container(1.5_f64);
+    let radius = Binding::new(1.5_f64);
 
     let _ = text("Welcome Desk");
     let _ = text(String::from("Welcome Desk"));
@@ -63,7 +63,7 @@ pub fn i18n_dollar_key_prose() {
 // i18n.md § "## Plurals" — rust block 2/7
 // ---------------------------------------------------------------------------
 pub fn i18n_block_02() -> impl View {
-    let stamp_count = Binding::i32(2);
+    let stamp_count = Binding::new(2_i32);
 
     text!("I have {#count} passport stamp", count = stamp_count)
 }
@@ -72,8 +72,8 @@ pub fn i18n_block_02() -> impl View {
 // i18n.md § "## Plurals" — rust block 3/7
 // ---------------------------------------------------------------------------
 pub fn i18n_block_03() -> impl View {
-    let file_count = Binding::i32(1);
-    let folder_count = Binding::i32(3);
+    let file_count = Binding::new(1_i32);
+    let folder_count = Binding::new(3_i32);
 
     text!(
         "{#files} in {#folders}",
@@ -98,7 +98,7 @@ pub fn i18n_block_04() {
 
 // ---------------------------------------------------------------------------
 // i18n.md § "## Switching locale at runtime" (prose): `locales::` constants
-// used directly (`Binding::container(locales::JA)`), `Locale`'s `language` /
+// used directly (`Binding::new(locales::JA)`), `Locale`'s `language` /
 // `region` fields with `.as_str()` (through its `Deref`), `canonical_tag()`,
 // its `FromStr` impl, and `waterui::locale::locale_binding(&env)`. Not counted
 // as a rust block.
@@ -110,7 +110,7 @@ pub fn i18n_locale_api_prose(env: &Environment) {
     let _ = locales::EN_US;
     let _ = locales::ZH_TW;
     let _ = locales::AR;
-    let _ = Binding::container(locales::JA);
+    let _ = Binding::new(locales::JA);
 
     let l = locales::EN_US;
     let _ = l.language.as_str();
@@ -168,7 +168,7 @@ pub fn i18n_block_06() {
     use waterui::env::with;
 
     let _ = {
-        with(text!("Article").body(), Binding::container(locales::JA)) // Japanese glyph selection
+        with(text!("Article").body(), Binding::new(locales::JA)) // Japanese glyph selection
     };
     let _ = {
         with(arabic_panel(), LayoutDirection::RightToLeft) // RTL for this subtree only
@@ -176,7 +176,7 @@ pub fn i18n_block_06() {
     let _ = {
         // both, nested
         with(
-            with(panel(), Binding::container(locales::AR)),
+            with(panel(), Binding::new(locales::AR)),
             LayoutDirection::RightToLeft,
         )
     };
@@ -198,8 +198,8 @@ pub fn i18n_block_07() -> impl View {
     use waterui::locale::format::unit::{Length, Meter};
     use waterui::locale::{DateStyle, LocalizedDisplay, RelativeTime, locales};
 
-    let locale = Binding::container(locales::EN_US);
-    let picked = Binding::container(civil::date(2026, 3, 20));
+    let locale = Binding::new(locales::EN_US);
+    let picked = Binding::new(civil::date(2026, 3, 20));
 
     let due = picked.map(|date| date.formatted(DateStyle::Long));
     let opens = RelativeTime::days(3);
@@ -291,5 +291,5 @@ pub fn i18n_layout_direction_prose() {
 
     let mut env = Environment::new();
     env.insert(LayoutDirection::RightToLeft);
-    env.insert(Binding::container(LayoutDirection::RightToLeft));
+    env.insert(Binding::new(LayoutDirection::RightToLeft));
 }

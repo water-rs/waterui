@@ -21,7 +21,7 @@ const DEFAULT_TOGGLE: Role = Role::toggle(ToggleStyle::Automatic);
 /// disabled control: the binding stays unchanged.
 #[waterui::test(theme = TestStyle::new(), viewport = (320, 240))]
 fn disabled_toggle_ignores_pointer_input(ui: UiBuilder) {
-    let enabled = Binding::bool(false);
+    let enabled = Binding::new(false);
     let enabled_for_view = enabled.clone();
 
     let mut app = ui
@@ -41,7 +41,7 @@ fn disabled_toggle_ignores_pointer_input(ui: UiBuilder) {
 /// disabled control: the value stays unchanged.
 #[waterui::test(theme = TestStyle::new(), viewport = (320, 240))]
 fn disabled_slider_ignores_pointer_drags(ui: UiBuilder) {
-    let value = Binding::f64(0.5);
+    let value = Binding::new(0.5_f64);
     let value_for_view = value.clone();
 
     let mut app =
@@ -62,7 +62,7 @@ fn disabled_slider_ignores_pointer_drags(ui: UiBuilder) {
 /// disabled control: the action never runs.
 #[waterui::test(theme = TestStyle::new(), viewport = (320, 240))]
 fn disabled_button_ignores_pointer_input(ui: UiBuilder) {
-    let count = Binding::i32(0);
+    let count = Binding::new(0_i32);
     let count_for_view = count.clone();
 
     let mut app = ui.mount_offscreen(move || {

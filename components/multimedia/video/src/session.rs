@@ -747,19 +747,19 @@ impl PlaybackSession {
             video_track_selection: binding(VideoTrackSelection::Auto),
             track_catalog: binding(TrackCatalog::default()),
             live_window: binding(None),
-            has_next: Binding::bool(playlist.len() > 1),
-            has_previous: Binding::bool(false),
+            has_next: Binding::new(playlist.len() > 1),
+            has_previous: Binding::new(false),
             volume: binding(Volume::default()),
-            muted: Binding::bool(false),
+            muted: Binding::new(false),
             playback_rate: binding(1.0_f32),
             preserve_pitch: binding(true),
-            desired_playing: Binding::bool(false),
-            seek_target_seconds: Binding::f64(0.0),
+            desired_playing: Binding::new(false),
+            seek_target_seconds: Binding::new(0.0_f64),
             seek_generation: binding(0_u64),
             step_forward_generation: binding(0_u64),
             step_backward_generation: binding(0_u64),
-            position_seconds: Binding::f64(0.0),
-            duration_seconds: Binding::f64(
+            position_seconds: Binding::new(0.0_f64),
+            duration_seconds: Binding::<f64>::new(
                 first
                     .get_metadata()
                     .duration()
@@ -769,7 +769,7 @@ impl PlaybackSession {
             current_item_id: binding(first.get_id()),
             current_item_index: binding(0_usize),
             repeat: binding(RepeatMode::Off),
-            shuffle: Binding::bool(false),
+            shuffle: Binding::new(false),
             playback_policy,
         };
         Self {

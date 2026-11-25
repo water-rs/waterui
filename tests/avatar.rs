@@ -96,7 +96,7 @@ fn a_pictured_avatar_publishes_the_same_single_node(ui: UiBuilder) {
 
 #[waterui::test]
 fn renaming_relabels_the_node_it_already_published(ui: UiBuilder) {
-    let name = Binding::container(Str::from("Ada Lovelace"));
+    let name = Binding::new(Str::from("Ada Lovelace"));
     let name_for_view = name.clone();
     let mut app = ui
         .viewport(120, 120)
@@ -136,7 +136,7 @@ fn renaming_relabels_the_node_it_already_published(ui: UiBuilder) {
 
 #[waterui::test]
 fn the_monogram_follows_the_name_without_a_second_node(ui: UiBuilder) {
-    let name = Binding::container(Str::from("Ada Lovelace"));
+    let name = Binding::new(Str::from("Ada Lovelace"));
     let name_for_view = name.clone();
     let mut app = ui
         .viewport(120, 120)

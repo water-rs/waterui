@@ -1074,8 +1074,8 @@ mod tests {
     #[test]
     fn row_major_table_maps_heterogeneous_cells_selection_and_sort_order() {
         let people = sample_people();
-        let selection = Binding::container(Some(10_u64));
-        let sort_order = Binding::container(Some(TableSort::ascending(PersonSort::Name)));
+        let selection = Binding::new(Some(10_u64));
+        let sort_order = Binding::new(Some(TableSort::ascending(PersonSort::Name)));
 
         let config = Table::new(
             people,
@@ -1133,7 +1133,7 @@ mod tests {
     #[test]
     fn multi_selection_round_trips_identities() {
         let people = sample_people();
-        let selection = Binding::container(BTreeSet::from([20_u64]));
+        let selection = Binding::new(BTreeSet::from([20_u64]));
         let config = table(people, (col("Name", |p: &Person| text(p.name)),))
             .multi_selection(&selection)
             .config();
@@ -1157,7 +1157,7 @@ mod tests {
     )]
     fn foreign_selection_id_is_rejected() {
         let people = sample_people();
-        let selection = Binding::container(Some(10_u64));
+        let selection = Binding::new(Some(10_u64));
         let config = table(people, (col("Name", |p: &Person| text(p.name)),))
             .selection(&selection)
             .config();

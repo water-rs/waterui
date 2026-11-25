@@ -499,7 +499,7 @@ mod tests {
         should_panic(expected = "more than one Cancel action")
     )]
     fn two_cancel_actions_are_all_kept() {
-        let dialog = Dialog::new(&Binding::bool(true), "Title")
+        let dialog = Dialog::new(&Binding::new(true), "Title")
             .action(DialogAction::cancel("First", || {}))
             .action(DialogAction::cancel("Second", || {}));
         let roles = dialog
@@ -512,7 +512,7 @@ mod tests {
 
     #[test]
     fn button_conversion_preserves_role_in_dialog_actions() {
-        let dialog = Dialog::new(&Binding::bool(true), "Title")
+        let dialog = Dialog::new(&Binding::new(true), "Title")
             .action(button("Save").action(|| {}))
             .action(button("Delete").role(ButtonRole::Destructive).action(|| {}))
             .action(button("Cancel").role(ButtonRole::Cancel).action(|| {}));
@@ -539,7 +539,7 @@ mod tests {
 
         use super::{DialogCard, DialogTheme};
 
-        let dialog = Dialog::new(&Binding::bool(true), "Confirm");
+        let dialog = Dialog::new(&Binding::new(true), "Confirm");
         let default_env = Environment::new();
         let default_view = DialogCard(dialog.clone())
             .body(&default_env)

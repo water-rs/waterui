@@ -37,7 +37,7 @@ const ROWS: usize = 200;
 const COLUMNS: usize = 2;
 
 fn list_runtime() -> HeadlessRuntime {
-    let rows = Binding::container((0..ROWS).map(SelfId::new).collect::<Vec<_>>());
+    let rows = Binding::new((0..ROWS).map(SelfId::new).collect::<Vec<_>>());
     let builder = AnyViewBuilder::<AnyView>::new(move || {
         AnyView::new(List::for_each(SignalCollection::new(rows.clone()), |id| {
             let index = id.into_inner();
@@ -151,7 +151,7 @@ const HEADER_HEIGHT: f64 = 100.0;
 /// exercised through a real placement chain instead of the degenerate
 /// full-window case (water-rs/waterui#1910 review).
 fn headered_list_runtime() -> HeadlessRuntime {
-    let rows = Binding::container((0..ROWS).map(SelfId::new).collect::<Vec<_>>());
+    let rows = Binding::new((0..ROWS).map(SelfId::new).collect::<Vec<_>>());
     let builder = AnyViewBuilder::<AnyView>::new(move || {
         AnyView::new(vstack((
             ().size(0.0, crate::num_cast::f64_as_f32(HEADER_HEIGHT)),
@@ -428,13 +428,13 @@ fn decorated_list_look() -> ListLook {
 
 #[test]
 fn a_decorated_list_scroll_frame_reuses_row_measurements_and_run_layers() {
-    let rows = Binding::container(
+    let rows = Binding::new(
         (0..ROWS)
             .map(|i| SelfId::new(u64::try_from(i).expect("row index fits in u64")))
             .collect::<Vec<_>>(),
     );
-    let selection = Binding::container(None::<u64>);
-    let grow_row_zero = Binding::bool(false);
+    let selection = Binding::new(None::<u64>);
+    let grow_row_zero = Binding::new(false);
     let selection_for_list = selection.clone();
     let grow_for_rows = grow_row_zero.clone();
     let builder = AnyViewBuilder::<AnyView>::new(move || {

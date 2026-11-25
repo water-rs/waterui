@@ -693,7 +693,7 @@ mod tests {
 
     #[test]
     fn a_binding_is_writable_and_a_computed_is_not() {
-        let binding = Binding::container(1_u32);
+        let binding = Binding::new(1_u32);
         assert!(JsField::into_entry(binding.clone()).write.is_some());
 
         let derived: Computed<u32> = binding.map(|value| value * 2).computed();
@@ -703,8 +703,8 @@ mod tests {
     #[test]
     fn the_seed_opens_with_the_origin_guard_and_carries_no_value() {
         let registry = registry();
-        registry.insert("count", Binding::container(7_u32), || {});
-        let derived: Computed<u32> = Binding::container(1_u32).map(|value| value * 2).computed();
+        registry.insert("count", Binding::new(7_u32), || {});
+        let derived: Computed<u32> = Binding::new(1_u32).map(|value| value * 2).computed();
         registry.insert("doubled", derived, || {});
         let initial: Url = "https://app.waterui.dev/start".parse().expect("parses");
         let policy = OriginPolicy::new(BridgeOrigins::Initial, &initial);
@@ -731,7 +731,7 @@ mod tests {
     #[test]
     fn the_seed_does_not_change_when_a_value_does() {
         let registry = registry();
-        let count = Binding::container(7_u32);
+        let count = Binding::new(7_u32);
         registry.insert("count", count.clone(), || {});
         let policy = OriginPolicy::new(
             BridgeOrigins::Any,
@@ -765,8 +765,8 @@ mod tests {
         }
 
         let registry = registry();
-        registry.insert("bad", Binding::container(Unserializable), || {});
-        registry.insert("count", Binding::container(7_u32), || {});
+        registry.insert("bad", Binding::new(Unserializable), || {});
+        registry.insert("count", Binding::new(7_u32), || {});
 
         assert_eq!(
             ready(registry.pull(None).expect("answers")),
@@ -783,8 +783,8 @@ mod tests {
     #[test]
     fn a_null_cursor_gets_every_key_now() {
         let registry = registry();
-        registry.insert("count", Binding::container(7_u32), || {});
-        registry.insert("theme", Binding::container(String::from("dark")), || {});
+        registry.insert("count", Binding::new(7_u32), || {});
+        registry.insert("theme", Binding::new(String::from("dark")), || {});
 
         assert_eq!(
             ready(registry.pull(None).expect("answers")),
@@ -801,9 +801,9 @@ mod tests {
     #[test]
     fn a_pull_waits_for_a_flush_and_then_gets_only_what_changed() {
         let registry = registry();
-        let count = Binding::container(0_u32);
+        let count = Binding::new(0_u32);
         registry.insert("count", count.clone(), || {});
-        registry.insert("theme", Binding::container(String::from("dark")), || {});
+        registry.insert("theme", Binding::new(String::from("dark")), || {});
 
         let reply = parked(registry.pull(Some(0)).expect("answers"));
         count.set(1);
@@ -829,7 +829,7 @@ mod tests {
     #[test]
     fn a_navigation_settles_parked_pulls_with_nothing_at_their_own_cursor() {
         let registry = registry();
-        let count = Binding::container(0_u32);
+        let count = Binding::new(0_u32);
         registry.insert("count", count.clone(), || {});
 
         let reply = parked(registry.pull(Some(0)).expect("answers"));
@@ -849,7 +849,7 @@ mod tests {
     #[test]
     fn a_cursor_never_handed_out_is_refused() {
         let registry = registry();
-        registry.insert("count", Binding::container(0_u32), || {});
+        registry.insert("count", Binding::new(0_u32), || {});
         assert!(matches!(
             registry.pull(Some(9)),
             Err(super::PullError::FutureCursor {
@@ -870,7 +870,7 @@ mod tests {
     #[test]
     fn a_flush_with_nothing_changed_leaves_pulls_parked() {
         let registry = registry();
-        registry.insert("count", Binding::container(0_u32), || {});
+        registry.insert("count", Binding::new(0_u32), || {});
         let mut reply = parked(registry.pull(Some(0)).expect("answers"));
         registry.flush();
         assert!(matches!(reply.try_recv(), Ok(None)), "still waiting");
@@ -881,7 +881,7 @@ mod tests {
     #[test]
     fn applying_a_write_does_not_echo_back_to_the_page() {
         let registry = registry();
-        let theme = Binding::container(String::from("light"));
+        let theme = Binding::new(String::from("light"));
         registry.insert("theme", theme.clone(), || {});
 
         let accepted = registry
@@ -903,7 +903,7 @@ mod tests {
     #[test]
     fn a_write_overtaken_by_a_change_is_corrected() {
         let registry = registry();
-        let theme = Binding::container(String::from("light"));
+        let theme = Binding::new(String::from("light"));
         registry.insert("theme", theme.clone(), || {});
         theme.set(String::from("sepia"));
         registry.flush();
@@ -927,7 +927,7 @@ mod tests {
     #[test]
     fn a_rejected_value_leaves_the_binding_alone_and_reports_why() {
         let registry = registry();
-        registry.insert("count", Binding::container(1_u32), || {});
+        registry.insert("count", Binding::new(1_u32), || {});
 
         let error = registry
             .apply_write(&StateWrite {
@@ -942,7 +942,7 @@ mod tests {
     #[test]
     fn writing_a_derived_value_is_refused() {
         let registry = registry();
-        let count = Binding::container(1_u32);
+        let count = Binding::new(1_u32);
         let derived: Computed<u32> = count.map(|value| value * 2).computed();
         registry.insert("doubled", derived, || {});
 

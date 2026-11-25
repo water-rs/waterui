@@ -22,7 +22,7 @@ impl Drop for DropFlag {
 
 #[test]
 fn suspense_future_dropped_on_unmount() {
-    let shown: Binding<bool> = Binding::container(true);
+    let shown: Binding<bool> = Binding::new(true);
     let dropped = Rc::new(Cell::new(false));
     let flag = shown.clone();
     let probe = Rc::clone(&dropped);

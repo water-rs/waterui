@@ -212,7 +212,7 @@ fn move_pointer(runtime: &mut HeadlessRuntime, x: f64, y: f64) {
 fn an_idle_surface_reuses_its_texture_while_the_window_keeps_drawing() {
     let driver = RenderCounter::animating();
     let probe = RenderCounter::default();
-    let width = Binding::f32(PROBE_WIDTH);
+    let width = Binding::<f32>::new(PROBE_WIDTH);
     let mut runtime = runtime_with(&driver, &probe, &width);
     let mut frames = Frames::new();
     let rendered = settled(&mut runtime, &mut frames, &driver, &probe);
@@ -237,7 +237,7 @@ fn an_idle_surface_reuses_its_texture_while_the_window_keeps_drawing() {
 fn a_pointer_moving_over_an_idle_surface_re_renders_it() {
     let driver = RenderCounter::animating();
     let probe = RenderCounter::default();
-    let width = Binding::f32(PROBE_WIDTH);
+    let width = Binding::<f32>::new(PROBE_WIDTH);
     let handler_probe = probe.clone();
     let mut runtime = runtime_with_probe_view(
         &driver,
@@ -293,7 +293,7 @@ fn a_pointer_moving_over_an_idle_surface_re_renders_it() {
 fn resizing_an_idle_surface_re_renders_it_at_the_new_size() {
     let driver = RenderCounter::animating();
     let probe = RenderCounter::default();
-    let width = Binding::f32(PROBE_WIDTH);
+    let width = Binding::<f32>::new(PROBE_WIDTH);
     let mut runtime = runtime_with(&driver, &probe, &width);
     let mut frames = Frames::new();
     let rendered = settled(&mut runtime, &mut frames, &driver, &probe);
@@ -321,7 +321,7 @@ fn resizing_an_idle_surface_re_renders_it_at_the_new_size() {
 fn a_surface_asking_for_redraws_renders_every_frame_and_then_settles() {
     let driver = RenderCounter::animating();
     let probe = RenderCounter::default();
-    let width = Binding::f32(PROBE_WIDTH);
+    let width = Binding::<f32>::new(PROBE_WIDTH);
     let mut runtime = runtime_with(&driver, &probe, &width);
     let mut frames = Frames::new();
     let rendered = settled(&mut runtime, &mut frames, &driver, &probe);

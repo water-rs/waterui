@@ -71,7 +71,7 @@ impl<E: TextEngine> DisclosureRenderState<E> {
             look: None,
             chrome_parts: None,
             indicator_parts: None,
-            header_state: Binding::container(InteractionState::empty()),
+            header_state: Binding::new(InteractionState::empty()),
             content_dirty: false,
         }
     }

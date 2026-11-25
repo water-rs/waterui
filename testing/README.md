@@ -25,7 +25,7 @@ fn login_flow(app: &mut SemanticApp) {
 // Manual-mount form: the test owns Bindings the view closes over.
 #[waterui::test]
 fn stepper_updates(ui: UiBuilder) {
-    let value = Binding::i32(2);
+    let value = Binding::new(2);
     let value_for_view = value.clone();
     let mut app = ui.mount(move || stepper("Limited", &value_for_view));
     app.query().label("Limited").increment();

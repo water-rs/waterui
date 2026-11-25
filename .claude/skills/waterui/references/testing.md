@@ -119,7 +119,7 @@ use waterui_testing::UiBuilder;
 
 #[waterui::test]
 fn stepper_updates(ui: UiBuilder) {
-    let value = Binding::i32(2);
+    let value = Binding::new(2);
     let for_view = value.clone();
     let mut app = ui.mount(move || stepper("Limited", &for_view));
 
@@ -348,7 +348,7 @@ use waterui_testing::{PerfReport, UiBuilder};
 
 #[waterui::bench(theme = hydrolysis_m3::Material3::defaults(), max_rebuild_ratio = 0.2)]
 fn counter_updates(ui: UiBuilder) -> PerfReport {
-    let value = Binding::i32(0);
+    let value = Binding::new(0);
     let for_view = value.clone();
     ui.perf_with(move || stepper("Count", &for_view), |perf| {
         perf.measure("increment", |run| {

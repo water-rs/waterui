@@ -570,7 +570,7 @@ fn a_nested_scroll_consumes_the_delta_until_it_hits_its_edge() {
 /// its own edge, then the outer scroll takes over.
 #[test]
 fn a_list_inside_a_scroll_consumes_the_delta_until_its_edge() {
-    let rows = Binding::container((0..ROWS as u64).map(SelfId::new).collect::<Vec<_>>());
+    let rows = Binding::new((0..ROWS as u64).map(SelfId::new).collect::<Vec<_>>());
     let builder = AnyViewBuilder::<AnyView>::new(move || {
         AnyView::new(
             scroll(

@@ -59,7 +59,7 @@
 //! use waterui_core::{Binding, Signal, SignalExt};
 //!
 //! // Create a reactive state container
-//! let counter = Binding::container(0);
+//! let counter = Binding::new(0);
 //!
 //! // Derive the exact value consumed by a signal-aware component.
 //! let label = counter.map(|count| format!("Current value: {count}"));

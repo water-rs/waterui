@@ -194,7 +194,7 @@ impl UiKitApplication {
         #[cfg(any(feature = "text-field", feature = "secure-field"))]
         env.insert(HydrolysisTextContextMenuMode::Overlay);
         let mtm = MainThreadMarker::new().expect("launch runs on the main thread");
-        let reduce_motion_binding = Binding::bool(system_reduce_motion());
+        let reduce_motion_binding = Binding::new(system_reduce_motion());
         env.insert(ReduceMotion::new(reduce_motion_binding.clone()));
         let reduce_motion_observer = observe_reduce_motion_changes(mtm, move |reduced| {
             if reduce_motion_binding.snapshot() != reduced {

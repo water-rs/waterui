@@ -797,7 +797,7 @@ struct FetchedState {
 impl FetchedState {
     fn new() -> Self {
         Self {
-            result: Binding::container(None),
+            result: Binding::new(None),
             in_flight: Cell::new(false),
             remaining_attempts: Cell::new(FETCH_RETRY_BUDGET),
         }

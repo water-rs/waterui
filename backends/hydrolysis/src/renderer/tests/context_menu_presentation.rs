@@ -236,7 +236,7 @@ fn near(a: [u8; 4], b: [u8; 4], tolerance: u8) -> bool {
 /// item choice, an outside press, or a dismiss request does.
 #[test]
 fn the_accessory_is_hit_testable_and_acts_without_closing_the_menu() {
-    let fired = Binding::container(false);
+    let fired = Binding::new(false);
     let fired_for_view = fired.clone();
     let mut runtime = runtime(move || {
         let fired = fired_for_view.clone();
@@ -271,7 +271,7 @@ fn the_accessory_is_hit_testable_and_acts_without_closing_the_menu() {
 /// observes and closes on.
 #[test]
 fn a_dismiss_request_from_the_accessory_closes_the_menu() {
-    let fired = Binding::container(false);
+    let fired = Binding::new(false);
     let fired_for_view = fired.clone();
     let mut runtime = runtime(move || {
         let fired = fired_for_view.clone();
@@ -930,7 +930,7 @@ fn the_plain_popup_draws_the_theme_panel() {
 /// enabled row's full contrast, and its press stays inert.
 #[test]
 fn a_disabled_command_draws_its_label_dimmed_and_stays_inert() {
-    let copied = Binding::container(false);
+    let copied = Binding::new(false);
     let copied_for_view = copied.clone();
     let mut runtime = runtime(move || {
         let copied = copied_for_view.clone();

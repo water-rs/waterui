@@ -1176,7 +1176,7 @@ fn task_starts_on_appear_extracts_state_and_cancels_on_disappear() {
 
     let started = Rc::new(Cell::new(false));
     let cancelled = Rc::new(Cell::new(false));
-    let counter = Binding::i32(0);
+    let counter = Binding::new(0_i32);
 
     let view = AnyView::new(
         text("Tasked")

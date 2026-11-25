@@ -72,7 +72,7 @@ fn content_that_does_not_span_the_edge_leaves_the_clear_colour() {
 
 #[test]
 fn live_colour_changes_the_committed_top_edge_without_recording() {
-    let color = Binding::container(Color::srgb(200, 40, 10));
+    let color = Binding::new(Color::srgb(200, 40, 10));
     let env = test_environment();
     let mut renderer = test_renderer_with_theme(MinimalTestTheme::default());
     renderer.reset_scene();

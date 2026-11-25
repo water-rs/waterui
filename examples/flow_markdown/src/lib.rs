@@ -240,15 +240,15 @@ struct StreamControl {
 )]
 #[preview]
 pub fn demo() -> impl View {
-    let markdown: Binding<Str> = Binding::container(Str::from_static(""));
-    let document_index = Binding::i32(0);
-    let char_progress = Binding::i32(0);
-    let streaming = Binding::bool(false);
-    let stream_revision = Binding::i32(0);
-    let stream_cps = Binding::i32(30);
-    let animation_preset = Binding::i32(0);
-    let animation_cps = Binding::i32(64);
-    let token_fade_enabled = Binding::bool(true);
+    let markdown: Binding<Str> = Binding::new(Str::from_static(""));
+    let document_index = Binding::new(0_i32);
+    let char_progress = Binding::new(0_i32);
+    let streaming = Binding::new(false);
+    let stream_revision = Binding::new(0_i32);
+    let stream_cps = Binding::new(30_i32);
+    let animation_preset = Binding::new(0_i32);
+    let animation_cps = Binding::new(64_i32);
+    let token_fade_enabled = Binding::new(true);
 
     let control = StreamControl {
         markdown: markdown.clone(),

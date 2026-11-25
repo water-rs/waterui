@@ -292,18 +292,18 @@ fn combined_section(
 /// Root view: interactive showcase of every filter section.
 pub fn demo() -> impl View {
     // State for individual filter sections
-    let blur_radius = Binding::container(0.0_f32);
-    let brightness = Binding::container(0.0_f32);
-    let saturation = Binding::container(1.0_f32);
-    let contrast = Binding::container(1.0_f32);
-    let hue = Binding::container(0.0_f32);
-    let grayscale = Binding::container(0.0_f32);
-    let opacity = Binding::container(1.0_f32);
+    let blur_radius = Binding::new(0.0_f32);
+    let brightness = Binding::new(0.0_f32);
+    let saturation = Binding::new(1.0_f32);
+    let contrast = Binding::new(1.0_f32);
+    let hue = Binding::new(0.0_f32);
+    let grayscale = Binding::new(0.0_f32);
+    let opacity = Binding::new(1.0_f32);
 
     // State for combined filter section
-    let combined_blur = Binding::container(0.0_f32);
-    let combined_saturation = Binding::container(1.0_f32);
-    let combined_hue = Binding::container(0.0_f32);
+    let combined_blur = Binding::new(0.0_f32);
+    let combined_saturation = Binding::new(1.0_f32);
+    let combined_hue = Binding::new(0.0_f32);
 
     scroll(
         vstack((

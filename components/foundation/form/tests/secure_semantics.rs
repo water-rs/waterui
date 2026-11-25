@@ -10,7 +10,7 @@ use waterui_form::secure::Secure;
 use waterui_testing::{Role, SemanticApp};
 
 fn secure_view() -> impl View {
-    let password = Binding::container(Secure::default());
+    let password = Binding::new(Secure::default());
 
     vstack((
         secure("Password", &password),

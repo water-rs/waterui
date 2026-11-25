@@ -439,7 +439,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         // into the source window's scene by
         // `render_context_menu_presentation`; `menu_state` is the group's
         // close handle exactly as a popup window's would be.
-        let menu_state = Binding::container(WindowState::Normal);
+        let menu_state = Binding::new(WindowState::Normal);
         group.push(menu_state.clone());
         let menu = RetainedSubview::new(
             popup_menu_content::<E>(

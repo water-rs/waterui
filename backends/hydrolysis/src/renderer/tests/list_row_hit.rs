@@ -63,7 +63,7 @@ fn tap_inside_virtualized_row_during_pending_refresh() {
     const GROWN: u64 = 3;
     // The row the pointer taps: inside the first viewport at rest.
     const TAPPED: u64 = 11;
-    let grow = Binding::bool(false);
+    let grow = Binding::new(false);
     let taps: Rc<RefCell<Vec<u64>>> = Rc::new(RefCell::new(Vec::new()));
     let taps2 = taps.clone();
     let builder = {

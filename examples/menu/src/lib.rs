@@ -373,12 +373,12 @@ fn quit_section(quit_answer: &Binding<String>) -> impl View + use<> {
 }
 
 fn scene(toolbar_status: &Binding<String>, quit_answer: &Binding<String>) -> impl View + use<> {
-    let menu_selected = Binding::container(String::from("None"));
-    let styled_action = Binding::container(String::from("No action yet"));
-    let context_action = Binding::container(String::from("No action yet"));
-    let like_label = Binding::container(waterui::Str::from("Like"));
-    let view_action = Binding::container(String::from("No action yet"));
-    let selection_action = Binding::container(String::from("No action yet"));
+    let menu_selected = Binding::new(String::from("None"));
+    let styled_action = Binding::new(String::from("No action yet"));
+    let context_action = Binding::new(String::from("No action yet"));
+    let like_label = Binding::new(waterui::Str::from("Like"));
+    let view_action = Binding::new(String::from("No action yet"));
+    let selection_action = Binding::new(String::from("No action yet"));
 
     scroll(
         vstack((
@@ -420,8 +420,8 @@ fn scene(toolbar_status: &Binding<String>, quit_answer: &Binding<String>) -> imp
 #[preview]
 pub fn demo() -> impl View {
     scene(
-        &Binding::container(String::from("No toolbar action yet")),
-        &Binding::container(String::from("No quit asked yet")),
+        &Binding::new(String::from("No toolbar action yet")),
+        &Binding::new(String::from("No quit asked yet")),
     )
 }
 
@@ -440,10 +440,10 @@ fn quit_menu(refuse_quit: &Binding<bool>) -> impl MenuBarView + use<> {
 /// Builds the menu example app: menu bar, toolbar and the quit-refusal window.
 #[must_use]
 pub fn app(env: Environment) -> App<impl Windows, impl AppMenuBar> {
-    let toolbar_status = Binding::container(String::from("No toolbar action yet"));
+    let toolbar_status = Binding::new(String::from("No toolbar action yet"));
     let content_toolbar_status = toolbar_status.clone();
-    let refuse_quit = Binding::bool(false);
-    let quit_answer = Binding::container(String::from("No quit asked yet"));
+    let refuse_quit = Binding::new(false);
+    let quit_answer = Binding::new(String::from("No quit asked yet"));
     let content_quit_answer = quit_answer.clone();
 
     App::new(env)

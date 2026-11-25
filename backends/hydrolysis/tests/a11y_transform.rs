@@ -26,7 +26,7 @@ fn published(app: &mut RenderedApp, label: &str) -> Rect {
 
 #[test]
 fn accessible_bounds_follow_a_scale_binding() {
-    let factor = Binding::container(1.0_f32);
+    let factor = Binding::new(1.0_f32);
     let view_factor = factor.clone();
     let mut app = mount_rendered(
         Environment::new(),
@@ -55,7 +55,7 @@ fn accessible_bounds_follow_a_scale_binding() {
 
 #[test]
 fn accessible_bounds_follow_an_offset_binding() {
-    let shift = Binding::container(0.0_f32);
+    let shift = Binding::new(0.0_f32);
     let view_shift = shift.clone();
     let mut app = mount_rendered(
         Environment::new(),

@@ -21,7 +21,7 @@ enum TestRoute {
 }
 
 fn tabs_view() -> impl View {
-    let selection = Binding::container(0usize);
+    let selection = Binding::new(0usize);
 
     Tabs::new(
         &selection,
@@ -178,7 +178,7 @@ fn lifecycle_view(
 }
 
 fn split_view() -> impl View {
-    let selection = Binding::container(None::<i32>);
+    let selection = Binding::new(None::<i32>);
 
     NavigationSplitView::new(
         &selection,
@@ -203,7 +203,7 @@ fn split_view() -> impl View {
 /// tab-scoped push navigation: pushing inside one tab must leave the other
 /// tab's stack where the user left it.
 fn tabs_with_stacks_view() -> impl View {
-    let selection = Binding::container(0usize);
+    let selection = Binding::new(0usize);
 
     Tabs::new(
         &selection,

@@ -26,7 +26,7 @@ fn modal_scope(dismiss: Binding<bool>) -> ModalInteraction {
 
 #[test]
 fn modal_escape_dismisses_on_semantic_mount() {
-    let closed = Binding::bool(false);
+    let closed = Binding::new(false);
     let esc = modal_scope(closed.clone());
     let mut app = mount_semantic(
         Environment::new(),
@@ -44,7 +44,7 @@ fn modal_escape_dismisses_on_semantic_mount() {
 
 #[test]
 fn modal_escape_dismisses_on_offscreen_mount() {
-    let closed = Binding::bool(false);
+    let closed = Binding::new(false);
     let esc = modal_scope(closed.clone());
     let mut app = mount_rendered(
         Environment::new(),
@@ -62,7 +62,7 @@ fn modal_escape_dismisses_on_offscreen_mount() {
 
 #[test]
 fn tap_only_modal_escape_dismisses_on_semantic_mount() {
-    let closed = Binding::bool(false);
+    let closed = Binding::new(false);
     let esc = modal_scope(closed.clone());
     let mut app = mount_semantic(
         Environment::new(),
@@ -86,7 +86,7 @@ fn tap_only_modal_escape_dismisses_on_semantic_mount() {
 
 #[test]
 fn tap_only_modal_escape_dismisses_on_offscreen_mount() {
-    let closed = Binding::bool(false);
+    let closed = Binding::new(false);
     let esc = modal_scope(closed.clone());
     let mut app = mount_rendered(
         Environment::new(),

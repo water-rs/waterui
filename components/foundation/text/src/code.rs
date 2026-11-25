@@ -435,7 +435,7 @@ mod tests {
 
     #[test]
     fn code_content_accepts_reactive_signal_and_tracks_updates() {
-        let source = Binding::container(Str::from("fn alpha() {}"));
+        let source = Binding::new(Str::from("fn alpha() {}"));
         let config = Code::new(Language::Rust, source.clone()).config();
         assert_eq!(config.content().snapshot().as_str(), "fn alpha() {}");
 

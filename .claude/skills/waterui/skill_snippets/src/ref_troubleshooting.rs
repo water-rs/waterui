@@ -18,7 +18,7 @@ use waterui::prelude::*;
 // that it compiles while silently freezing the view.
 #[allow(unknown_lints, signal_get_in_view)]
 pub fn troubleshooting_block_01() {
-    let fade = Binding::f32(1.0);
+    let fade = Binding::new(1.0_f32);
 
     let view = Divider;
     let _ = {
@@ -38,7 +38,7 @@ pub fn troubleshooting_block_01() {
 pub fn troubleshooting_table_fixes() {
     use waterui::reactive::SignalExt as _;
 
-    let signal = Binding::bool(true);
+    let signal = Binding::new(true);
 
     // `when(..)` / `.visible(signal)` / `OneOf2::A(..)` / `OneOf2::B(..)`
     let _ = Divider.visible(signal);
@@ -49,7 +49,7 @@ pub fn troubleshooting_table_fixes() {
     let _: Binding<Option<i32>> = Binding::default();
 
     // `use waterui::reactive::SignalExt;` when the prelude is not glob-imported.
-    let _ = Binding::i32(1).map(|v| v + 1);
+    let _ = Binding::new(1_i32).map(|v| v + 1);
 
     // The `Url` row: `Url::parse(s)` yields an `Option`, and
     // `Url::parse_user_input(s)` is the human-typed-address form.
@@ -58,7 +58,7 @@ pub fn troubleshooting_table_fixes() {
     let _: Option<Url> = Url::parse_user_input("waterui.dev");
 
     // `.str_is_empty()` / `.str_len()` / `.str_contains(..)`
-    let s = Binding::container(Str::from("q"));
+    let s = Binding::new(Str::from("q"));
     let _ = (s.str_is_empty(), s.str_len(), s.str_contains("q"));
 }
 
@@ -70,8 +70,8 @@ pub fn troubleshooting_table_fixes() {
 pub fn troubleshooting_when_fn_builder() -> impl View {
     use waterui::widget::condition::when;
 
-    let c = Binding::bool(true);
-    let fade = Binding::f32(1.0);
+    let c = Binding::new(true);
+    let fade = Binding::new(1.0_f32);
     when(c, move || text("Saved").opacity(fade.clone()))
 }
 
@@ -91,7 +91,7 @@ pub fn troubleshooting_imports() {
         }
     }
 
-    let count = Binding::i32(3);
+    let count = Binding::new(3_i32);
     let _ = s!("{count}");
     let _ = Tagged(1).id();
 }

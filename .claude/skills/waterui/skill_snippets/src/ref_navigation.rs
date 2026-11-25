@@ -186,8 +186,8 @@ pub fn navigation_extractor_spellings_prose() {
         text("row")
     }
     let message = Str::from("body");
-    let sender = Binding::container(Str::from("Ada"));
-    let subject = Binding::container(Str::from("Hi"));
+    let sender = Binding::new(Str::from("Ada"));
+    let subject = Binding::new(Str::from("Hi"));
 
     let _ = |State(navigator): State<Navigator<MailRoute>>| navigator.push(MailRoute::Compose);
     let _ = NavigationLink::value(
@@ -260,7 +260,7 @@ pub fn navigation_block_06() -> impl View {
     }
     let mail = Mail;
     let id = 7_u64;
-    let subject = Binding::container(Str::from("Re: hello"));
+    let subject = Binding::new(Str::from("Re: hello"));
 
     message_body(mail.clone(), id)
         .navigation_title(text!("{subject}"))
@@ -275,11 +275,11 @@ pub fn navigation_block_06() -> impl View {
 // ---------------------------------------------------------------------------
 pub fn navigation_block_07() -> NavigationView<impl View> {
     fn message_list_page(mail: Mail) -> NavigationView<impl View> {
-        let query = Binding::container(Str::from(""));
-        let can_leave = Binding::bool(true);
-        let unread = Binding::i32(2);
+        let query = Binding::new(Str::from(""));
+        let can_leave = Binding::new(true);
+        let unread = Binding::new(2_i32);
 
-        let searching = Binding::bool(false);
+        let searching = Binding::new(false);
 
         message_list(mail)
             .navigation_title("Inbox") // or .navigation_title(text!("{subject}"))
@@ -316,7 +316,7 @@ pub fn navigation_view_new_prose() {
 // destination's chrome. Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn navigation_bar_chrome_prose() -> NavigationView<impl View> {
-    let visible = Binding::bool(true);
+    let visible = Binding::new(true);
 
     message_list(Mail)
         .navigation_title("Inbox")
@@ -338,7 +338,7 @@ pub fn navigation_block_08() -> NavigationView<impl View, impl NavigationToolbar
     };
 
     fn toggle_editing() {}
-    let edit_title = Binding::container(Str::from("Edit"));
+    let edit_title = Binding::new(Str::from("Edit"));
 
     message_list(Mail)
         .navigation_title("Inbox")
@@ -509,7 +509,7 @@ pub fn navigation_block_12(env: Environment) -> App<impl Windows> {
     fn window_toolbar(_status: &Binding<Str>) -> impl View + use<> {
         hstack((button("Refresh").action(|| {}), Divider))
     }
-    let status = Binding::container(Str::from("ready"));
+    let status = Binding::new(Str::from("ready"));
 
     use waterui::window::{Window, WindowStyle};
 

@@ -180,7 +180,7 @@ use waterui::app::{App, Windows};
 use waterui::prelude::*;
 
 fn counter() -> impl View {
-    let count = Binding::i32(0);
+    let count = Binding::new(0);
 
     vstack((
         text!("Count: {count}").headline(),
@@ -289,19 +289,18 @@ view types that is genuinely open at run time.
 ### State
 
 ```rust
-let count = Binding::i32(0);                    // bool f32 f64 i32 i64 isize u32 u64 usize
-let flag  = Binding::bool(false);
-let name  = Binding::container(String::new());  // any Clone type
+let count = Binding::new(0);                     // inferred as Binding<i32>
+let flag  = binding(false);                      // Binding<bool>; equivalent to Binding::new
+let name  = binding(String::new());              // any Clone type
 let sel: Binding<Option<Media>> = Binding::default();      // empty optional
 
-let pane: Binding<Pane> = binding(Pane::Inbox); // general form, needs an inferable type
-let settings = Settings::binding();             // #[form] types: inference-free
+let pane = binding(Pane::Inbox);                 // Binding<Pane>
+let settings = Settings::binding();              // #[form] types: inference-free
 ```
 
-There is no `Binding::new`. Prefer the typed constructors: `binding(v)` takes
-`impl Into<T>`, so `T` is frequently ambiguous and you get "type annotations needed"
-unless something downstream pins it (an annotation, a turbofish, a struct field, or a
-control like `toggle`/`slider` that takes `&Binding<bool>` / `&Binding<f64>`).
+`Binding::new(v)` and `binding(v)` both take `T` directly, so Rust infers `T` from the
+argument (`binding(0)` is `Binding<i32>`, `binding(Str::from("hi"))` is `Binding<Str>`).
+Use `Binding::default()` (with an annotation or downstream pin) for empty optionals.
 
 Pass bindings to child views by reference (`&Binding<T>`); clone only when a value must be
 owned by a closure or a modifier.
@@ -463,7 +462,7 @@ let scoped = env.extending(State(client));     // non-mutating overlay
 with(subtree_view, LayoutDirection::RightToLeft)   // free fn: scope a value to one subtree
 
 // Reading, from a view:
-use_env(|client: ApiClient| text!("API: {url}", url = Binding::container(client.base_url)))
+use_env(|client: ApiClient| text!("API: {url}", url = Binding::new(client.base_url)))
 
 // Reading, from a handler — same extractors, no ceremony:
 button("Send").action(|client: ApiClient| send(&client))
@@ -669,7 +668,6 @@ let view = tsx!(
 |---|---|---|
 | UI never updates | `.snapshot()` in a view body | pass the binding |
 | State resets on every keystroke | `watch` rebuilding the subtree | `text!` / signal-taking API / `VStack::for_each` |
-| `no function or associated item named 'new'` on `Binding` | `Binding::new` does not exist | `Binding::i32(v)` / `Binding::container(v)` / `Binding::default()` |
 | `cannot find function 'when'` / `cannot find trait 'Identifiable'` on the derive | not in the prelude (the derive is; the trait it implements is not) | `use waterui::widget::condition::when;` / `use waterui::Identifiable;` |
 | Rounded corners look wrong on non-square sizes | `CornerRadius::fraction(r)` scales with the shorter side | `RoundedRectangle::new(points)` for points, or `Capsule` |
 | A background task dies instantly | the `spawn_local` handle cancels on drop | `.detach()` it |
@@ -682,7 +680,7 @@ let view = tsx!(
 | A test's wait can never fail | query `.wait_for_existence(..)` returns `bool` | wrap it in `assert!` |
 | `use of undeclared crate 'tracing'` | logging is re-exported | `use waterui::log::debug;` then `debug!(..)` |
 | `borrowed data escapes outside of function` | views are `'static` | `&'static str` / `Str` / `impl IntoText`, or `impl View + use<>` |
-| type annotations needed after `binding(v)` | `binding` takes `impl Into<T>` | `Binding::i32(0)` etc., turbofish, or annotate |
+| `mismatched types: expected Str, found &str` on `binding("..")` | `binding(v)` takes `T` directly for inference | `binding(Str::from(".."))` or `Binding::new(Str::from(".."))` |
 
 Rust rules still apply on top of these: no `println!` (import `waterui::log::debug` and
 use `debug!`, surfaced by `water run --logs debug`), and nothing blocking on the UI thread — use

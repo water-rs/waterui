@@ -1330,7 +1330,7 @@ mod tests {
     /// still be attached to the source.
     #[test]
     fn redirect_policy_retains_the_reactive_signal() {
-        let redirects = Binding::container(false);
+        let redirects = Binding::new(false);
         let open = WebView::open("https://waterui.dev").redirects_enabled(redirects.clone());
         let configured = open
             .redirects_enabled
@@ -1413,7 +1413,7 @@ mod tests {
     #[test]
     fn navigation_subscription_does_not_repeat_synchronous_emission() {
         let replacement = Url::new("https://waterui.dev/docs");
-        let source = Binding::container(Url::new("https://waterui.dev"));
+        let source = Binding::new(Url::new("https://waterui.dev"));
         let signal = EmitsDuringSubscription {
             source: source.clone(),
             replacement: replacement.clone(),

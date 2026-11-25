@@ -152,7 +152,7 @@ fn secondary_click_prefers_the_context_menu_over_a_secondary_tap() {
 /// its action nor commits on release, while a primary click still does.
 #[test]
 fn middle_click_does_not_click_a_button() {
-    let fired = Binding::container(false);
+    let fired = Binding::new(false);
     let fired_for_view = fired.clone();
     let mut runtime = runtime(AnyView::new(
         Frame::new(button("target").action(move || {

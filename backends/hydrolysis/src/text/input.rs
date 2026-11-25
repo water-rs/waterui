@@ -492,7 +492,7 @@ mod tests {
         let env = Environment::new().store::<Body, Computed<ResolvedFont>>(Computed::constant(
             ResolvedFont::new(16.0, FontWeight::Normal),
         ));
-        let done = Binding::bool(false);
+        let done = Binding::new(false);
         let content = Text::verbatim("done")
             .strikethrough(done.clone())
             .resolve(&env)

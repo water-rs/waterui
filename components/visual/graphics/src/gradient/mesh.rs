@@ -210,9 +210,9 @@ mod tests {
 
     #[test]
     fn the_paint_follows_its_signals() {
-        let colors = Binding::container(vec![working(WorkingColor::BLACK); 4]);
-        let points = Binding::container(even_grid(2, 2));
-        let smooths = Binding::container(true);
+        let colors = Binding::new(vec![working(WorkingColor::BLACK); 4]);
+        let points = Binding::new(even_grid(2, 2));
+        let smooths = Binding::new(true);
         let paint = MeshGradient::new(2, 2, colors.clone())
             .points(points.clone())
             .smooths_colors(smooths.clone())
@@ -244,7 +244,7 @@ mod tests {
     fn theme_token_mesh_recolours_on_scheme_change() {
         use waterui::theme::color::{Accent, Surface};
 
-        let scheme = Binding::container(ColorScheme::Light);
+        let scheme = Binding::new(ColorScheme::Light);
         let mut env = Environment::new();
         waterui::theme::install_color_scheme(&mut env, scheme.computed());
         waterui::theme::install_color_signal::<Accent>(

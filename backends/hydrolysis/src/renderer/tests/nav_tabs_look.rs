@@ -191,7 +191,7 @@ fn two_tabs() -> AnyView {
             })
         })
         .collect::<Vec<_>>();
-    AnyView::new(Tabs::new(&nami::Binding::container(0usize), tabs))
+    AnyView::new(Tabs::new(&nami::Binding::new(0usize), tabs))
 }
 
 /// Selecting a tab moves the container's operands to the new item and
@@ -500,7 +500,7 @@ fn tabs_compact_floating_bar_centers_pill_and_reserves_bottom_margin() {
     let mut renderer = test_renderer_with_theme(theme);
 
     let tabs = Tabs::new(
-        &Binding::container(0usize),
+        &Binding::new(0usize),
         ["Home", "Work"]
             .into_iter()
             .map(|name| Tab::new(name, move || NavigationView::new(name, text::text("pane"))))
@@ -571,7 +571,7 @@ fn tabs_sidebar_ignores_compact_and_floating_margin() {
         ..Default::default()
     });
     let sidebar = Tabs::new(
-        &Binding::container(0usize),
+        &Binding::new(0usize),
         ["Home", "Work"]
             .into_iter()
             .map(|name| Tab::new(name, move || NavigationView::new(name, text::text("pane"))))
@@ -704,7 +704,7 @@ fn tabs_foreground_overrides_paint_selected_and_unselected_items_on_selection() 
     .selected_foreground(Srgb::from_hex("#FF0000"))
     .unselected_foreground(Srgb::from_hex("#0000FF"));
 
-    let selection = Binding::container(0usize);
+    let selection = Binding::new(0usize);
     let builder = AnyViewBuilder::<AnyView>::new(move || {
         AnyView::new(Tabs::new(
             &selection,

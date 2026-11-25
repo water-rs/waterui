@@ -891,9 +891,9 @@ impl<I: SnackbarIconSlot> SnackbarManager<I> {
         };
         let item = ActiveSnackbar {
             id,
-            opacity: Binding::f32(0.0),
-            entrance_offset: Binding::f32(snackbar.position.initial_offset_y()),
-            stack_offset: Binding::f32(0.0),
+            opacity: Binding::new(0.0_f32),
+            entrance_offset: Binding::<f32>::new(snackbar.position.initial_offset_y()),
+            stack_offset: Binding::new(0.0_f32),
             dismissing: Rc::new(Cell::new(false)),
             snackbar,
         };
@@ -1377,9 +1377,9 @@ mod tests {
     fn presentation(id: u64, snackbar: Snackbar) -> ActiveSnackbar {
         ActiveSnackbar {
             id,
-            opacity: Binding::f32(0.0),
-            entrance_offset: Binding::f32(snackbar.position.initial_offset_y()),
-            stack_offset: Binding::f32(0.0),
+            opacity: Binding::new(0.0_f32),
+            entrance_offset: Binding::<f32>::new(snackbar.position.initial_offset_y()),
+            stack_offset: Binding::new(0.0_f32),
             dismissing: Rc::new(Cell::new(false)),
             snackbar,
         }

@@ -115,7 +115,7 @@ mod tests {
         let parsed = Url::new("https://waterui.dev/docs");
         let _ = link("Url", parsed.clone());
 
-        let url_binding = Binding::container(parsed);
+        let url_binding = Binding::new(parsed);
         let bound_link = Link::new("Binding", url_binding.clone());
         assert_eq!(
             bound_link.url.snapshot().as_str(),

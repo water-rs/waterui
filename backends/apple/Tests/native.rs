@@ -11247,7 +11247,7 @@ mod list_ax {
         use waterui::views::ForEach;
 
         let entry = |id, label, visible| FilteredListEntry { id, label, visible };
-        let backing = Binding::container(vec![
+        let backing = Binding::new(vec![
             entry(10, "Alpha", true),
             entry(15, "Hidden-1", false),
             entry(20, "Beta", true),
@@ -17595,8 +17595,8 @@ mod border_modifier {
     }
 
     fn a_reactive_border_updates_layer_without_rebuilding() {
-        let width = Binding::container(2.0_f32);
-        let corner_radius = Binding::container(4.0_f32);
+        let width = Binding::new(2.0_f32);
+        let corner_radius = Binding::new(4.0_f32);
         let leaf = autoreleasepool(|_| {
             super::resolve::render(label("content").border_with(
                 Border::new(Color::red(), width.clone()).corner_radius(corner_radius.clone()),
@@ -17740,7 +17740,7 @@ mod shadow_modifier {
     }
 
     fn a_reactive_shadow_updates_layer_without_rebuilding() {
-        let phase = Binding::container(false);
+        let phase = Binding::new(false);
         let radius = phase.map(|on| if on { 9.0_f32 } else { 2.0 });
         let offset_x = phase.map(|on| if on { 6.0_f32 } else { 1.0 });
         let color = phase.map(|on| Color::srgb(0, 0, 0).with_opacity(if on { 0.8 } else { 0.2 }));
@@ -18165,8 +18165,8 @@ mod row_major_table {
                 name: "Grace",
             },
         ]);
-        let selection = Binding::container(Some(1_u64));
-        let sort_order = Binding::container(Some(TableSort::ascending(PersonSort::Name)));
+        let selection = Binding::new(Some(1_u64));
+        let sort_order = Binding::new(Some(TableSort::ascending(PersonSort::Name)));
         let view = Table::new(
             people,
             (

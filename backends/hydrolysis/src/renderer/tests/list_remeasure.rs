@@ -85,7 +85,7 @@ fn node_bounds(updates: &[TreeUpdate], role: Role, label: &str) -> Option<Rect> 
 /// and 160 after mount.
 fn size_driven_list(tall: &Binding<bool>, label: &'static str) -> AnyViewBuilder<AnyView> {
     let tall = tall.clone();
-    let rows = Binding::container(vec![SelfId::new(1_u64)]);
+    let rows = Binding::new(vec![SelfId::new(1_u64)]);
     AnyViewBuilder::<AnyView>::new(move || {
         let size = tall
             .clone()
@@ -107,7 +107,7 @@ fn size_driven_list(tall: &Binding<bool>, label: &'static str) -> AnyViewBuilder
 /// hold the content and the label must not be clipped.
 #[test]
 fn list_row_remeasures_when_content_size_grows() {
-    let tall = Binding::bool(false);
+    let tall = Binding::new(false);
     let mut runtime = runtime(size_driven_list(&tall, "growing row"));
     let mut at = Instant::now();
 
@@ -145,7 +145,7 @@ fn list_row_remeasures_when_content_size_grows() {
 /// extent back instead of pinning the list at the old height.
 #[test]
 fn list_row_remeasures_when_content_size_shrinks() {
-    let tall = Binding::bool(true);
+    let tall = Binding::new(true);
     let mut runtime = runtime(size_driven_list(&tall, "shrinking row"));
     let mut at = Instant::now();
 
@@ -188,7 +188,7 @@ fn growing_row_above_viewport_keeps_anchor_row_position() {
     const ANCHOR: usize = 30;
     const GROWN: usize = ANCHOR - 1;
 
-    let grow = Binding::bool(false);
+    let grow = Binding::new(false);
     let controller = ScrollController::new(0usize);
     let builder = {
         let grow = grow.clone();
@@ -287,7 +287,7 @@ fn retained_list_measurement_reuses_the_watcher_snapshot() {
         }
     }
 
-    let rows = Binding::container(vec![SelfId::new(0_u64), SelfId::new(1_u64)]);
+    let rows = Binding::new(vec![SelfId::new(0_u64), SelfId::new(1_u64)]);
     let captures = Rc::new(Cell::new(0));
     let list = List::new(Counted {
         source: ForEach::new(SignalCollection::new(rows.clone()), |_| text("row")),
@@ -330,7 +330,7 @@ fn specified_list_viewport_does_not_materialize_rows() {
 
     let materializations = Rc::new(Cell::new(0));
     let counted = Rc::clone(&materializations);
-    let rows = Binding::container(vec![SelfId::new(0_u64), SelfId::new(1_u64)]);
+    let rows = Binding::new(vec![SelfId::new(0_u64), SelfId::new(1_u64)]);
     let list = List::for_each(SignalCollection::new(rows), move |_| {
         counted.set(counted.get() + 1);
         text("row")
@@ -376,11 +376,11 @@ fn a_visible_row_is_realized_once_and_names_itself_from_its_current_content() {
     use core::cell::Cell;
     use std::rc::Rc;
 
-    let name = Binding::container(waterui_core::Str::from("Alpha"));
+    let name = Binding::new(waterui_core::Str::from("Alpha"));
     let shown = name.clone();
     let built = Rc::new(Cell::new(0_usize));
     let counted = Rc::clone(&built);
-    let rows = Binding::container(vec![SelfId::new(1_u64)]);
+    let rows = Binding::new(vec![SelfId::new(1_u64)]);
     let mut runtime = runtime(AnyViewBuilder::<AnyView>::new(move || {
         let shown = shown.clone();
         let counted = Rc::clone(&counted);
@@ -410,7 +410,7 @@ fn a_visible_row_is_realized_once_and_names_itself_from_its_current_content() {
 
 #[test]
 fn a_table_header_names_and_widens_its_column_from_its_current_content() {
-    let name = Binding::container(waterui_core::Str::from("Id"));
+    let name = Binding::new(waterui_core::Str::from("Id"));
     let shown = name.clone();
     let mut runtime = runtime(AnyViewBuilder::<AnyView>::new(move || {
         AnyView::new(table(

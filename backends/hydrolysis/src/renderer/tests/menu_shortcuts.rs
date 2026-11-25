@@ -264,9 +264,9 @@ fn command_shortcut_renders_a_trailing_aligned_hint() {
 /// own key handling both come later.
 #[test]
 fn menu_shortcut_fires_while_text_field_focused_and_stops_after_unmount() {
-    let hits = Binding::container(0_i32);
-    let draft = Binding::container(waterui_core::Str::from(""));
-    let mounted = Binding::bool(true);
+    let hits = Binding::new(0_i32);
+    let draft = Binding::new(waterui_core::Str::from(""));
+    let mounted = Binding::new(true);
     let view = {
         let hits = hits.clone();
         let draft = draft;
@@ -327,7 +327,7 @@ fn menu_shortcut_fires_while_text_field_focused_and_stops_after_unmount() {
 /// menu), and after the menu closes it is inert again.
 #[test]
 fn context_menu_shortcut_fires_only_while_open() {
-    let hits = Binding::container(0_i32);
+    let hits = Binding::new(0_i32);
     let host = {
         let hits = hits.clone();
         AnyViewBuilder::<AnyView>::new(move || {
@@ -388,8 +388,8 @@ fn context_menu_shortcut_fires_only_while_open() {
 /// one wins.
 #[test]
 fn the_most_recently_mounted_menu_wins_a_chord_conflict() {
-    let first = Binding::container(0_i32);
-    let second = Binding::container(0_i32);
+    let first = Binding::new(0_i32);
+    let second = Binding::new(0_i32);
     let view = {
         let first = first.clone();
         let second = second.clone();
@@ -436,7 +436,7 @@ fn the_most_recently_mounted_menu_wins_a_chord_conflict() {
 /// plain view. (watergram DOGFOOD r43-1)
 #[test]
 fn menu_bar_chord_fires_without_a_mounted_menu() {
-    let fired = Binding::container(0_i32);
+    let fired = Binding::new(0_i32);
     let menu_bar = {
         let fired = fired.clone();
         nami::Computed::constant(vec![
@@ -746,7 +746,7 @@ fn a_declared_close_window_is_omitted_where_windows_cannot_close() {
 #[test]
 fn a_mounted_close_window_follows_the_application_decided_chord() {
     let mut env = test_environment();
-    let bar_fired = Binding::container(0_i32);
+    let bar_fired = Binding::new(0_i32);
     let menu_bar = {
         let bar_fired = bar_fired.clone();
         nami::Computed::constant(vec![
@@ -814,8 +814,8 @@ fn a_mounted_close_window_follows_the_application_decided_chord() {
 /// mounted-vs-mounted order).
 #[test]
 fn a_mounted_menu_wins_the_app_bars_chord_while_mounted() {
-    let bar_fired = Binding::container(0_i32);
-    let menu_fired = Binding::container(0_i32);
+    let bar_fired = Binding::new(0_i32);
+    let menu_fired = Binding::new(0_i32);
     let menu_bar = {
         let bar_fired = bar_fired.clone();
         nami::Computed::constant(vec![
@@ -828,7 +828,7 @@ fn a_mounted_menu_wins_the_app_bars_chord_while_mounted() {
             .into_semantic(),
         ])
     };
-    let mounted = Binding::container(false);
+    let mounted = Binding::new(false);
     let env = test_environment();
     let _menu_bar_items =
         crate::runner::menu_bar::register_menu_bar::<crate::text::ParleyEngine>(&menu_bar, &env);
@@ -895,10 +895,10 @@ fn runtime_with_menu(items: Vec<MenuItem>) -> HeadlessRuntime {
 /// and none fires another.
 #[test]
 fn named_key_chords_fire_their_commands() {
-    let removed = Binding::container(0_i32);
-    let reloaded = Binding::container(0_i32);
-    let switched = Binding::container(0_i32);
-    let back = Binding::container(0_i32);
+    let removed = Binding::new(0_i32);
+    let reloaded = Binding::new(0_i32);
+    let switched = Binding::new(0_i32);
+    let back = Binding::new(0_i32);
     let mut runtime = runtime_with_menu(vec![
         {
             let removed = removed.clone();
@@ -966,9 +966,9 @@ fn named_key_chords_fire_their_commands() {
 /// a `' '` chord fires (water-rs/waterui#2038).
 #[test]
 fn a_bare_space_chord_leaves_the_focused_field_its_space() {
-    let bare = Binding::container(0_i32);
-    let chorded = Binding::container(0_i32);
-    let draft = Binding::container(waterui_core::Str::from(""));
+    let bare = Binding::new(0_i32);
+    let chorded = Binding::new(0_i32);
+    let draft = Binding::new(waterui_core::Str::from(""));
     let view = {
         let bare = bare.clone();
         let chorded = chorded.clone();
@@ -1053,8 +1053,8 @@ fn a_bare_space_chord_leaves_the_focused_field_its_space() {
 /// the chord. With no editor focused the same chord fires.
 #[test]
 fn a_bare_named_key_chord_leaves_the_focused_field_its_key() {
-    let hits = Binding::container(0_i32);
-    let draft = Binding::container(waterui_core::Str::from(""));
+    let hits = Binding::new(0_i32);
+    let draft = Binding::new(waterui_core::Str::from(""));
     let view = {
         let hits = hits.clone();
         let draft = draft.clone();
@@ -1127,9 +1127,9 @@ fn a_bare_named_key_chord_leaves_the_focused_field_its_key() {
 /// text while it holds focus, and fire again once focus leaves.
 #[test]
 fn a_bare_character_chord_fires_only_without_a_focused_field() {
-    let next = Binding::container(0_i32);
-    let shifted = Binding::container(0_i32);
-    let draft = Binding::container(waterui_core::Str::from(""));
+    let next = Binding::new(0_i32);
+    let shifted = Binding::new(0_i32);
+    let draft = Binding::new(waterui_core::Str::from(""));
     let view = {
         let next = next.clone();
         let shifted = shifted.clone();

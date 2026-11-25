@@ -86,7 +86,7 @@ takes a **signal**, which is how a runtime dark-mode toggle works with no rebuil
 use waterui::text::font::{FontWeight, ResolvedFont};
 
 pub fn app(mut env: Environment) -> App<impl Windows> {
-    let dark = Binding::bool(true);
+    let dark = Binding::new(true);
     env.install(
         Theme::new()
             .color_scheme(dark.select(ColorScheme::Dark, ColorScheme::Light))

@@ -20,10 +20,10 @@ use waterui_mcp::{ServerInfo, serve};
 use waterui_testing::{OffscreenApp, ui};
 
 fn mount() -> OffscreenApp {
-    let enabled = Binding::bool(false);
-    let count = Binding::container(0_i32);
-    let label = Binding::container(String::from("count: 0"));
-    let name = Binding::container(Str::from_static(""));
+    let enabled = Binding::new(false);
+    let count = Binding::new(0_i32);
+    let label = Binding::new(String::from("count: 0"));
+    let name = Binding::new(Str::from_static(""));
     ui().theme(hydrolysis_m3::Material3::defaults())
         .viewport(200, 180)
         .mount_offscreen(move || {

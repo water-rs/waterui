@@ -51,7 +51,7 @@ fn erasing_tab_identity_keeps_the_typed_icon() {
     use waterui::AnyView;
     use waterui::navigation::Tabs;
 
-    let selection = Binding::container(0usize);
+    let selection = Binding::new(0usize);
     let tabs = Tabs::new(&selection, vec![tab(label("Home").icon(MarkerIcon))]);
 
     // The icon has to survive the projection into the `Id`-keyed container the

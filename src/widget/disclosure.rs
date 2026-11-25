@@ -100,7 +100,7 @@ where
         Self {
             header: header.into_label(),
             content,
-            expanded: Binding::bool(false),
+            expanded: Binding::new(false),
         }
     }
 

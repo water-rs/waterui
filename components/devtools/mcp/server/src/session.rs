@@ -846,7 +846,7 @@ mod tests {
     /// the paths each delivered `Files` payload carries — the evidence a
     /// `drop_files` command reached the view.
     fn drop_files_session() -> (Session<'static>, Binding<Vec<PathBuf>>) {
-        let received = Binding::container(Vec::<PathBuf>::new());
+        let received = Binding::new(Vec::<PathBuf>::new());
         let recordings = received.clone();
         let session = Session::new(move || {
             let recordings = recordings.clone();

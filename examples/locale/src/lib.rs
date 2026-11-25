@@ -194,7 +194,7 @@ fn scene(system_locale: &Locale) -> impl View + use<> {
     let initial = initial_locale(&catalog, system_locale);
 
     // Create binding for the selected locale.
-    let selection = Binding::container(initial.clone());
+    let selection = Binding::new(initial.clone());
     // Initialize shared runtime locale from the picker's initial value.
     set_locale_tag(initial.canonical_tag()).expect("picker locale tag must be valid");
     let formatted_locale = selection.computed();

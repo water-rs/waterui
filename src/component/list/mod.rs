@@ -788,7 +788,7 @@ mod tests {
             Computed::constant(WorkingColor::new([1.0, 1.0, 1.0, 1.0])),
         );
 
-        let selection = nami::Binding::container(Option::<i32>::None);
+        let selection = nami::Binding::new(Option::<i32>::None);
         let config = render_config(
             List::content((
                 (|| {

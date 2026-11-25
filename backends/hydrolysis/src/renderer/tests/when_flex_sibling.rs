@@ -67,7 +67,7 @@ fn node_bounds(updates: &[TreeUpdate], role: Role, label: &str) -> Option<Rect> 
 /// appearing.
 #[test]
 fn flex_sibling_shrinks_when_when_child_materializes_during_mount() {
-    let docked = Binding::container(false);
+    let docked = Binding::new(false);
     let flip = docked.clone();
     let mut runtime = HeadlessRuntime::new_for_tests(
         test_environment(),

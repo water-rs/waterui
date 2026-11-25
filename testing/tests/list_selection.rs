@@ -47,7 +47,7 @@ macro_rules! assert_row_focused {
 /// binding, and a programmatic write shows the matching row as selected.
 #[test]
 fn single_selection_click_selects_and_programmatic_write_shows() {
-    let selection = Binding::container(Option::<i32>::None);
+    let selection = Binding::new(Option::<i32>::None);
     let binding = selection.clone();
     let mut app = ui().mount(move || {
         List::for_each(row_items(), |item| text(row_label(item.into_inner()))).selection(&binding)
@@ -84,7 +84,7 @@ fn single_selection_click_selects_and_programmatic_write_shows() {
 /// adds and removes single rows, and Shift extends from the anchor.
 #[test]
 fn multi_selection_toggle_modifier_and_shift_range() {
-    let selection = Binding::container(BTreeSet::<i32>::new());
+    let selection = Binding::new(BTreeSet::<i32>::new());
     let binding = selection.clone();
     let mut app = ui().mount(move || {
         List::for_each(row_items(), |item| text(row_label(item.into_inner())))
@@ -133,7 +133,7 @@ fn multi_selection_toggle_modifier_and_shift_range() {
 /// the focus together, Home/End jump to the ends of the list.
 #[test]
 fn keyboard_navigation_moves_selection_and_focus() {
-    let selection = Binding::container(Option::<i32>::None);
+    let selection = Binding::new(Option::<i32>::None);
     let binding = selection.clone();
     let mut app = ui().mount(move || {
         List::for_each(row_items(), |item| text(row_label(item.into_inner()))).selection(&binding)
@@ -166,7 +166,7 @@ fn keyboard_navigation_moves_selection_and_focus() {
 /// (a row's activation stays untouched) and Enter activates the row.
 #[test]
 fn keyboard_without_selection_moves_focus_only_and_enter_activates() {
-    let taps = Binding::container(0_i32);
+    let taps = Binding::new(0_i32);
     let counter = taps.clone();
     let mut app = ui().mount(move || {
         let counter = counter.clone();
@@ -199,7 +199,7 @@ fn keyboard_without_selection_moves_focus_only_and_enter_activates() {
 /// action, and an enabled sibling still selects.
 #[test]
 fn disabled_row_is_inert_to_selection() {
-    let selection = Binding::container(Option::<i32>::None);
+    let selection = Binding::new(Option::<i32>::None);
     let binding = selection.clone();
     let mut app = ui()
         .theme(hydrolysis_m3::Material3::defaults())
@@ -275,7 +275,7 @@ fn disabled_row_is_inert_to_selection() {
 /// descendant installs never leaks into the row's answer.
 #[test]
 fn disabled_child_does_not_disable_row() {
-    let selection = Binding::container(Option::<i32>::None);
+    let selection = Binding::new(Option::<i32>::None);
     let binding = selection.clone();
     let mut app = ui()
         .theme(hydrolysis_m3::Material3::defaults())
@@ -318,9 +318,9 @@ fn disabled_child_does_not_disable_row() {
 /// row's own tap handler still runs.
 #[test]
 fn pointer_click_selects_and_row_tap_handlers_still_run() {
-    let selection = Binding::container(Option::<i32>::None);
+    let selection = Binding::new(Option::<i32>::None);
     let binding = selection.clone();
-    let taps = Binding::container(0_i32);
+    let taps = Binding::new(0_i32);
     let counter = taps.clone();
     let mut app = ui()
         .theme(hydrolysis_m3::Material3::defaults())

@@ -268,7 +268,7 @@ impl GhostRun {
                     tracing::error!("GPU runtime unavailable; the removal blur is not drawn");
                 }
                 realization.blur = Some(Rc::new(RemovalBlur {
-                    radius: waterui::reactive::Binding::container(radius),
+                    radius: waterui::reactive::Binding::new(radius),
                     env: self.env.clone(),
                     runtime,
                     pending: Cell::new(false),

@@ -202,7 +202,7 @@ mod tests {
 
     #[core::prelude::v1::test]
     fn a_channel_toggle_reflects_the_current_subscription() {
-        let subscribed = Binding::container(ChannelSet::default_subscription());
+        let subscribed = Binding::new(ChannelSet::default_subscription());
         let (sender, _receiver) = async_channel::unbounded();
 
         let frames = channel_enabled(Channel::Frames, &subscribed, sender.clone());

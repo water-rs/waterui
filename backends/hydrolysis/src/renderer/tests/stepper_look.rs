@@ -75,7 +75,7 @@ impl Fixture {
         value: i32,
         direction: LayoutDirection,
     ) -> Self {
-        let value = Binding::container(value);
+        let value = Binding::new(value);
         let drawn = Rc::new(RefCell::new(Vec::new()));
         let theme = MinimalTestTheme::default().with_stepper_look(look(&drawn));
         let view = RefCell::new(Some(view(&value)));
@@ -394,7 +394,7 @@ fn the_spec_carries_the_tint_and_the_structure() {
     let tint = Color::srgb(200, 30, 30);
     super::capture_root_window(
         &mut renderer,
-        stepper("Quantity", &Binding::container(1)).tint(tint.clone()),
+        stepper("Quantity", &Binding::new(1)).tint(tint.clone()),
         &env,
         Rect::new(0.0, 0.0, 400.0, 100.0),
     );

@@ -454,7 +454,7 @@ fn custom_button_and_toggle_styles_report_interaction_without_chrome() {
     let button_state = Rc::new(RefCell::new(None));
     let toggle_state = Rc::new(RefCell::new(None));
     let clicks = Rc::new(Cell::new(0u32));
-    let toggled = Binding::bool(false);
+    let toggled = Binding::new(false);
     let disabled = binding(false);
 
     let view = AnyView::new(

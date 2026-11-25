@@ -76,7 +76,7 @@ fn pointer_up(runtime: &mut HeadlessRuntime, x: f32, y: f32) {
 /// the one that must keep seeing the moves.
 #[test]
 fn gesture_recognizer_survives_repaint_mid_drag() {
-    let repaint = Binding::container(Str::from_static("frame 0"));
+    let repaint = Binding::new(Str::from_static("frame 0"));
     let phases = Rc::new(RefCell::new(Vec::new()));
     let view = {
         let phases = Rc::clone(&phases);

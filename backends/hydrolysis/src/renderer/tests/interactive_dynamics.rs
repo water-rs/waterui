@@ -396,7 +396,7 @@ fn gliding_tabs_look() -> (TabsLook, GlidingTabProbes) {
 fn tabs_look_bar_level_selection_indicator_glides_on_tap_and_drag_without_rerecording() {
     let (look, probes) = gliding_tabs_look();
 
-    let selection = Binding::container(0_usize);
+    let selection = Binding::new(0_usize);
     let tabs: Vec<_> = (1..=3)
         .map(|i| {
             Tab::new(format!("Tab {i}"), move || {

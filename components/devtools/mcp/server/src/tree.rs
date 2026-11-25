@@ -237,7 +237,7 @@ mod tests {
     // `TreeSnapshot` cannot be built outside `waterui-testing`, so the
     // renderer is exercised against a mounted view.
     fn mounted_text() -> String {
-        let enabled = waterui::Binding::bool(false);
+        let enabled = waterui::Binding::new(false);
         let app = ui()
             .viewport(200, 100)
             .mount(move || vstack((button("Save").action(|| {}), toggle("Enable", &enabled))));
@@ -298,7 +298,7 @@ mod tests {
 
     #[test]
     fn json_tree_mirrors_node_fields() {
-        let enabled = waterui::Binding::bool(false);
+        let enabled = waterui::Binding::new(false);
         let app = ui()
             .viewport(200, 100)
             .mount(move || vstack((button("Save").action(|| {}), toggle("Enable", &enabled))));

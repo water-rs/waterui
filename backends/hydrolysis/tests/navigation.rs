@@ -116,7 +116,7 @@ fn assert_split_geometry(app: &mut support::RenderedApp, context: &str) {
 
 #[test]
 fn navigation_split_detail_fits_pane_when_selected_after_mount() {
-    let selection = Binding::container(None::<i32>);
+    let selection = Binding::new(None::<i32>);
     let mut app = mount_split(selection.clone());
     app.settle();
     let sidebar_height_before = list_bounds(&mut app, "chats").height();
@@ -147,7 +147,7 @@ fn navigation_split_detail_fits_pane_when_selected_after_mount() {
 
     // The same geometry must result when the selection was already set at
     // mount — issue #153's before/after asymmetry.
-    let mut before = mount_split(Binding::container(Some(7)));
+    let mut before = mount_split(Binding::new(Some(7)));
     before.settle();
     let messages_after = list_bounds(&mut app, "messages");
     let composer_after = label_bounds(&mut app, "composer");
@@ -177,7 +177,7 @@ fn navigation_split_detail_fits_pane_when_selected_after_mount() {
 
 #[test]
 fn navigation_split_detail_fits_pane_when_selected_before_mount() {
-    let mut app = mount_split(Binding::container(Some(7)));
+    let mut app = mount_split(Binding::new(Some(7)));
     app.settle();
     assert_split_geometry(&mut app, "selection set before mount");
 }
@@ -188,7 +188,7 @@ fn navigation_split_detail_fits_pane_when_selected_before_mount() {
 /// window.
 #[test]
 fn tabs_content_fits_pane() {
-    let selection = Binding::container(0usize);
+    let selection = Binding::new(0usize);
     let mut app = mount_rendered(
         Environment::new(),
         move || {
@@ -245,7 +245,7 @@ fn tabs_content_fits_pane() {
 /// must still re-run the sub-view's layout and shift the sibling beside it.
 #[test]
 fn navigation_content_relayouts_when_a_measure_read_text_grows() {
-    let value = Binding::container(String::from("9"));
+    let value = Binding::new(String::from("9"));
     let value_for_view = value.clone();
     let mut app = mount_rendered(
         Environment::new(),
@@ -425,7 +425,7 @@ fn mount_keyed(
 #[test]
 fn an_empty_tab_set_mounts() {
     let (list, _panes) = keyed_tabs(vec![]);
-    let selection = Binding::container(0i32);
+    let selection = Binding::new(0i32);
     let mut app = mount_keyed(&list, &[], &[], selection);
     app.settle();
     // The container mounts — the pump did not assert — and no tab chrome or
@@ -441,7 +441,7 @@ fn inserting_a_tab_keeps_existing_tabs_retained() {
         Rc::new(Cell::new(0usize)),
     ];
     let (mut list, _panes) = keyed_tabs(vec![0, 1]);
-    let selection = Binding::container(0i32);
+    let selection = Binding::new(0i32);
     let mut app = mount_keyed(&list, &["Tab A", "Tab B", "Tab C"], &builds, selection);
     app.settle();
     assert_eq!(builds[0].get(), 1);
@@ -462,7 +462,7 @@ fn inserting_a_tab_keeps_existing_tabs_retained() {
 fn removing_the_selected_tab_relocates_selection() {
     let builds: Vec<_> = (0..3).map(|_| Rc::new(Cell::new(0usize))).collect();
     let (mut list, _panes) = keyed_tabs(vec![0, 1, 2]);
-    let selection = Binding::container(2i32); // trailing tab selected
+    let selection = Binding::new(2i32); // trailing tab selected
     let mut app = mount_keyed(
         &list,
         &["Tab A", "Tab B", "Tab C"],
@@ -487,7 +487,7 @@ fn removing_the_selected_tab_relocates_selection() {
 fn reordering_tabs_keeps_their_state() {
     let builds: Vec<_> = (0..3).map(|_| Rc::new(Cell::new(0usize))).collect();
     let (mut list, _panes) = keyed_tabs(vec![0, 1, 2]);
-    let selection = Binding::container(2i32);
+    let selection = Binding::new(2i32);
     let mut app = mount_keyed(
         &list,
         &["Tab A", "Tab B", "Tab C"],
@@ -511,7 +511,7 @@ fn reordering_tabs_keeps_their_state() {
 fn removing_every_tab_leaves_the_selection_untouched() {
     let builds: Vec<_> = (0..2).map(|_| Rc::new(Cell::new(0usize))).collect();
     let (mut list, _panes) = keyed_tabs(vec![0, 1]);
-    let selection = Binding::container(1i32);
+    let selection = Binding::new(1i32);
     let mut app = mount_keyed(&list, &["Tab A", "Tab B"], &builds, selection.clone());
     app.settle();
 
@@ -532,7 +532,7 @@ fn reinserting_the_selected_tab_after_clearing_restores_it() {
     // the retained tab mounts its content, not a relocated selection.
     let builds: Vec<_> = (0..3).map(|_| Rc::new(Cell::new(0usize))).collect();
     let (mut list, panes) = keyed_tabs(vec![0, 1, 2]);
-    let selection = Binding::container(2i32);
+    let selection = Binding::new(2i32);
     let mut app = mount_keyed(
         &list,
         &["Tab A", "Tab B", "Tab C"],
@@ -567,7 +567,7 @@ fn a_selection_watcher_mutating_the_collection_does_not_deadlock() {
     // render state must not be borrowed while the write publishes.
     let builds: Vec<_> = (0..2).map(|_| Rc::new(Cell::new(0usize))).collect();
     let (mut list, _panes) = keyed_tabs(vec![0, 1]);
-    let selection = Binding::container(0i32);
+    let selection = Binding::new(0i32);
     let mut app = mount_keyed(&list, &["Tab A", "Tab B"], &builds, selection.clone());
     app.settle();
 
@@ -598,8 +598,8 @@ fn a_selection_watcher_mutating_the_collection_does_not_deadlock() {
 
 #[test]
 fn navigation_search_submit_active_and_suggestions() {
-    let query = Binding::container(waterui::Str::from("mail"));
-    let active = Binding::bool(false);
+    let query = Binding::new(waterui::Str::from("mail"));
+    let active = Binding::new(false);
     let submits = Rc::new(Cell::new(0usize));
 
     let mut app = mount_rendered(

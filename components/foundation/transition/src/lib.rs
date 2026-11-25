@@ -785,7 +785,7 @@ impl TransitionSpec {
         } else {
             self.transition.clone()
         };
-        let progress = Binding::f32(match phase {
+        let progress = Binding::<f32>::new(match phase {
             TransitionPhase::Insertion => 1.0,
             TransitionPhase::Removal => 0.0,
         });
@@ -1140,7 +1140,7 @@ mod tests {
     fn reduce_motion_follows_reactive_signal_updates() {
         use core::cell::Cell;
 
-        let setting = Binding::bool(false);
+        let setting = Binding::new(false);
         let flag = ReduceMotion::new(setting.clone());
         let mut env = Environment::new();
         env.insert(flag.clone());

@@ -636,7 +636,7 @@ impl private::SealedRegion<private::ConstantLocation> for Location {}
 impl IntoMapRegion<private::ConstantLocation> for Location {
     fn into_map_camera(self) -> (Binding<Region>, Option<Computed<Region>>) {
         let region_signal = Computed::constant(Region::from_coordinate(Coordinate::from(self)));
-        let camera = Binding::container(region_signal.snapshot());
+        let camera = Binding::new(region_signal.snapshot());
         (camera, Some(region_signal))
     }
 }
@@ -655,7 +655,7 @@ where
 {
     fn into_map_camera(self) -> (Binding<Region>, Option<Computed<Region>>) {
         let region_signal = self.map(MapCenter::into_region).computed();
-        let camera = Binding::container(region_signal.snapshot());
+        let camera = Binding::new(region_signal.snapshot());
         (camera, Some(region_signal))
     }
 }
@@ -954,7 +954,7 @@ mod tests {
         assert_eq!(config.camera().snapshot(), Region::from_coordinate(sf));
         assert!(follows.is_some());
 
-        let coord_binding = Binding::container(sf);
+        let coord_binding = Binding::new(sf);
         let (_, coord_follows) = Map::new(coord_binding.clone()).into_config(&env);
         let coord_follows = coord_follows.expect("coordinate binding produces region signal");
         assert_eq!(coord_follows.snapshot(), Region::from_coordinate(sf));
@@ -965,7 +965,7 @@ mod tests {
         assert_eq!(loc_config.camera().snapshot(), Region::from_coordinate(sf));
         assert!(loc_follows.is_some());
 
-        let loc_binding = Binding::container(sf_loc);
+        let loc_binding = Binding::new(sf_loc);
         let (_, loc_follows) = map(loc_binding.clone()).into_config(&env);
         let loc_follows = loc_follows.expect("location binding produces region signal");
         assert_eq!(loc_follows.snapshot(), Region::from_coordinate(sf));
@@ -975,8 +975,8 @@ mod tests {
 
     #[test]
     fn a_map_reports_status_into_the_caller_owned_binding() {
-        let status = Binding::container(MapStatus::Loading);
-        let camera = Binding::container(Region::from_coordinate(
+        let status = Binding::new(MapStatus::Loading);
+        let camera = Binding::new(Region::from_coordinate(
             Coordinate::from_degrees(37.7749, -122.4194).expect("valid coordinate"),
         ));
         let env = Environment::new();
@@ -994,7 +994,7 @@ mod tests {
 
     #[test]
     fn a_map_without_an_observer_allocates_no_status_sink() {
-        let camera = Binding::container(Region::default());
+        let camera = Binding::new(Region::default());
         let env = Environment::new();
         let (config, _) = Map::new(&camera).into_config(&env);
 
@@ -1005,7 +1005,7 @@ mod tests {
     fn camera_binding_is_two_way() {
         let sf = Coordinate::from_degrees(37.7749, -122.4194).expect("valid sf");
         let nyc = Coordinate::from_degrees(40.7128, -74.0060).expect("valid nyc");
-        let camera = Binding::container(Region::from_coordinate(sf));
+        let camera = Binding::new(Region::from_coordinate(sf));
         let env = Environment::new();
         let (config, _) = Map::new(&camera).into_config(&env);
 
@@ -1028,8 +1028,8 @@ mod tests {
 
         let sf = Coordinate::from_degrees(37.7955, -122.3937).expect("valid ferry");
         let bridge = Coordinate::from_degrees(37.8199, -122.4783).expect("valid bridge");
-        let camera = Binding::container(Region::from_coordinate(sf));
-        let selected = Binding::container(None::<Pin>);
+        let camera = Binding::new(Region::from_coordinate(sf));
+        let selected = Binding::new(None::<Pin>);
         let pins = vec![
             Annotation::new(Pin::Ferry, sf, "Ferry Building"),
             Annotation::new(Pin::Bridge, bridge, "Golden Gate Bridge"),
@@ -1065,12 +1065,12 @@ mod tests {
     fn annotation_title_and_subtitle_resolve_through_translation_catalog() {
         let tokyo = Coordinate::from_degrees(35.6812, 139.7671).expect("valid tokyo");
         let shinjuku = Coordinate::from_degrees(35.6895, 139.6917).expect("valid shinjuku");
-        let camera = Binding::container(Region::from_coordinate(tokyo));
-        let pins = Binding::container(vec![
+        let camera = Binding::new(Region::from_coordinate(tokyo));
+        let pins = Binding::new(vec![
             Annotation::new(1_u32, tokyo, "Central Station").subtitle("Transit Hub"),
         ]);
 
-        let locale = Binding::container(locales::EN);
+        let locale = Binding::new(locales::EN);
         let mut env = Environment::new();
         env.insert(locale.clone());
         env.insert(

@@ -132,7 +132,7 @@ fn retained_command_motion_preserves_background_and_layer_changes() {
         let engine = engine();
         let size = (128, 1024);
         let surface = engine.surface(Offscreen::new(size, format), || {}).unwrap();
-        let shape = nami::Binding::container(Rect::new(20.0, 32.0, 28.0, 40.0));
+        let shape = nami::Binding::new(Rect::new(20.0, 32.0, 28.0, 40.0));
         let background = WorkingColor::new([0.1, 0.3, 0.2, 0.5]);
         let foreground = WorkingColor::new([3.0, 0.2, 0.8, 0.6]);
         surface.update(|tx| {

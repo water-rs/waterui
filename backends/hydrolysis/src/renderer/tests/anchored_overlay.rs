@@ -109,7 +109,7 @@ fn near(left: f64, right: f64) -> bool {
 /// gap 4: the overlay hugs the anchor's bottom edge, centered on it.
 #[test]
 fn a_mid_window_anchor_places_the_overlay_below_it_centered() {
-    let open = Binding::container(false);
+    let open = Binding::new(false);
     let open_for_view = open.clone();
     let view = AnyViewBuilder::<AnyView>::new(move || {
         let open = open_for_view.clone();
@@ -148,7 +148,7 @@ fn a_mid_window_anchor_places_the_overlay_below_it_centered() {
 /// fills the column, so the anchor starts at the window's top edge.
 #[test]
 fn an_overlay_too_tall_for_the_top_edge_flips_below() {
-    let open = Binding::container(true);
+    let open = Binding::new(true);
     let open_for_view = open;
     let view = AnyViewBuilder::<AnyView>::new(move || {
         let open = open_for_view.clone();
@@ -178,7 +178,7 @@ fn an_overlay_too_tall_for_the_top_edge_flips_below() {
 /// overlay past it; `Clamp::Window` pulls it back inside the margin.
 #[test]
 fn a_trailing_edge_overlay_clamps_inside_the_window_margin() {
-    let open = Binding::container(true);
+    let open = Binding::new(true);
     let open_for_view = open;
     let view = AnyViewBuilder::<AnyView>::new(move || {
         let open = open_for_view.clone();
@@ -212,9 +212,9 @@ fn a_trailing_edge_overlay_clamps_inside_the_window_margin() {
 /// same delivery the context menu's outside dismissal uses.
 #[test]
 fn an_outside_press_writes_false_and_still_reaches_its_target() {
-    let open = Binding::container(true);
+    let open = Binding::new(true);
     let open_for_view = open.clone();
-    let pressed = Binding::container(false);
+    let pressed = Binding::new(false);
     let pressed_for_view = pressed.clone();
     let view = AnyViewBuilder::<AnyView>::new(move || {
         let open = open_for_view.clone();
@@ -268,7 +268,7 @@ fn an_outside_press_writes_false_and_still_reaches_its_target() {
 /// only the binding closes it.
 #[test]
 fn a_manual_overlay_ignores_outside_presses() {
-    let open = Binding::container(true);
+    let open = Binding::new(true);
     let open_for_view = open.clone();
     let view = AnyViewBuilder::<AnyView>::new(move || {
         let open = open_for_view.clone();
@@ -315,7 +315,7 @@ fn a_manual_overlay_ignores_outside_presses() {
 /// placement overflows reclamps the frame inside the new margin.
 #[test]
 fn a_window_resize_replaces_the_overlay() {
-    let open = Binding::container(true);
+    let open = Binding::new(true);
     let open_for_view = open;
     let view = AnyViewBuilder::<AnyView>::new(move || {
         let open = open_for_view.clone();
@@ -361,7 +361,7 @@ fn a_window_resize_replaces_the_overlay() {
 /// text wraps into a taller frame instead of overflowing horizontally.
 #[test]
 fn a_long_overlay_wraps_inside_the_window() {
-    let open = Binding::container(true);
+    let open = Binding::new(true);
     let open_for_view = open;
     let view = AnyViewBuilder::<AnyView>::new(move || {
         let open = open_for_view.clone();
@@ -405,9 +405,9 @@ fn a_long_overlay_wraps_inside_the_window() {
 /// animation slots, never on a timeout.
 #[test]
 fn a_closing_overlays_exit_animation_plays_to_completion() {
-    let open = Binding::container(true);
+    let open = Binding::new(true);
     let open_for_view = open.clone();
-    let scale = Binding::f32(1.0);
+    let scale = Binding::new(1.0_f32);
     let scale_for_view = scale.clone();
     let view = AnyViewBuilder::<AnyView>::new(move || {
         let open = open_for_view.clone();
@@ -473,7 +473,7 @@ fn a_closing_overlays_exit_animation_plays_to_completion() {
 /// no slot left to animate.
 #[test]
 fn an_overlay_with_no_exit_animation_is_gone_on_the_dismissal_frame() {
-    let open = Binding::container(true);
+    let open = Binding::new(true);
     let open_for_view = open.clone();
     let view = AnyViewBuilder::<AnyView>::new(move || {
         let open = open_for_view.clone();
@@ -505,9 +505,9 @@ fn an_overlay_with_no_exit_animation_is_gone_on_the_dismissal_frame() {
 /// `<artifacts>/hydrolysis/anchored_overlay_exit/mid-flight.png`.
 #[test]
 fn the_exiting_overlay_draws_its_animation_mid_flight() {
-    let open = Binding::container(true);
+    let open = Binding::new(true);
     let open_for_view = open.clone();
-    let scale = Binding::f32(1.0);
+    let scale = Binding::new(1.0_f32);
     let scale_for_view = scale.clone();
     let view = AnyViewBuilder::<AnyView>::new(move || {
         let open = open_for_view.clone();
@@ -563,13 +563,13 @@ fn the_exiting_overlay_draws_its_animation_mid_flight() {
 /// button the content carries — reaches the content underneath instead.
 #[test]
 fn input_during_the_exit_reaches_the_content_underneath() {
-    let open = Binding::container(true);
+    let open = Binding::new(true);
     let open_for_view = open.clone();
-    let scale = Binding::f32(1.0);
+    let scale = Binding::new(1.0_f32);
     let scale_for_view = scale.clone();
-    let inner = Binding::container(false);
+    let inner = Binding::new(false);
     let inner_for_view = inner.clone();
-    let under_pressed = Binding::container(false);
+    let under_pressed = Binding::new(false);
     let under_for_view = under_pressed.clone();
     let view = AnyViewBuilder::<AnyView>::new(move || {
         let open = open_for_view.clone();
@@ -660,9 +660,9 @@ fn input_during_the_exit_reaches_the_content_underneath() {
 /// the new one is presented at the same placed frame throughout.
 #[test]
 fn re_presenting_mid_exit_enters_a_new_instance_beside_the_exit() {
-    let open = Binding::container(true);
+    let open = Binding::new(true);
     let open_for_view = open.clone();
-    let scale = Binding::f32(1.0);
+    let scale = Binding::new(1.0_f32);
     let scale_for_view = scale.clone();
     let view = AnyViewBuilder::<AnyView>::new(move || {
         let open = open_for_view.clone();
@@ -721,7 +721,7 @@ fn re_presenting_mid_exit_enters_a_new_instance_beside_the_exit() {
 /// new instance beside the leaving one.
 #[test]
 fn an_overlay_body_transition_runs_on_present_and_dismiss() {
-    let open = Binding::container(false);
+    let open = Binding::new(false);
     let open_for_view = open.clone();
     let view = AnyViewBuilder::<AnyView>::new(move || {
         let open = open_for_view.clone();
@@ -817,8 +817,8 @@ fn an_overlay_body_transition_runs_on_present_and_dismiss() {
 /// physical right side converted back.
 #[test]
 fn placed_edge_reports_the_logical_edge_after_a_flip() {
-    let open = Binding::container(true);
-    let placed = Binding::container(AnchorEdge::Top);
+    let open = Binding::new(true);
+    let placed = Binding::new(AnchorEdge::Top);
     let (open_for_view, placed_for_view) = (open, placed.clone());
     let view = AnyViewBuilder::<AnyView>::new(move || {
         let open = open_for_view.clone();
@@ -849,8 +849,8 @@ fn placed_edge_reports_the_logical_edge_after_a_flip() {
     // back as `Leading`.
     let mut env = test_environment();
     env.insert(waterui_core::layout::LayoutDirection::RightToLeft);
-    let open = Binding::container(true);
-    let placed = Binding::container(AnchorEdge::Top);
+    let open = Binding::new(true);
+    let placed = Binding::new(AnchorEdge::Top);
     let (open_for_view, placed_for_view) = (open, placed.clone());
     let view = AnyViewBuilder::<AnyView>::new(move || {
         let open = open_for_view.clone();
@@ -1079,8 +1079,8 @@ mod menu_presentation_motion_tests {
     /// `0.0` on dismiss.
     #[test]
     fn menu_presentation_morphs_from_anchor_and_retains_dismiss_ghost() {
-        let open = Binding::container(false);
-        let under_pressed = Binding::container(false);
+        let open = Binding::new(false);
+        let under_pressed = Binding::new(false);
         let samples = Rc::new(RefCell::new(Vec::new()));
         let mut runtime = HeadlessRuntime::new_for_tests(
             test_environment(),
@@ -1170,7 +1170,7 @@ mod menu_presentation_motion_tests {
     /// jumping to `1.0` or snapping to `0.0`.
     #[test]
     fn interrupting_menu_presentation_mid_flight_dismisses_continuously() {
-        let open = Binding::container(false);
+        let open = Binding::new(false);
         let samples = Rc::new(RefCell::new(Vec::new()));
         let mut runtime = HeadlessRuntime::new_for_tests(
             test_environment(),
@@ -1219,7 +1219,7 @@ mod menu_presentation_motion_tests {
     /// settled on present and removes immediately with no dismissal ghost.
     #[test]
     fn menu_presentation_motion_snaps_without_ghost_under_reduce_motion() {
-        let open = Binding::container(false);
+        let open = Binding::new(false);
         let samples = Rc::new(RefCell::new(Vec::new()));
         let mut env = test_environment();
         env.insert(ReduceMotion::new(true));
@@ -1263,7 +1263,7 @@ mod menu_presentation_motion_tests {
     fn menu_presentation_panel_supports_backdrop_material_recording() {
         use super::super::material_chrome::{GLASS, GLASS_SHADER, glass_plan};
 
-        let open = Binding::container(true);
+        let open = Binding::new(true);
         let look = MinimalTestTheme::menu_look()
             .presentation_motion(test_motion())
             .presentation_panel(|recorder, sample| {

@@ -36,9 +36,9 @@ fn row_label(row: i32) -> String {
 /// app, the row tap counter and the selection binding — the view's
 /// evidence a tap reached the row's `on_tap`.
 fn mount_list() -> (OffscreenApp, Binding<i32>, Binding<Option<i32>>) {
-    let selection = Binding::container(Option::<i32>::None);
+    let selection = Binding::new(Option::<i32>::None);
     let binding = selection.clone();
-    let taps = Binding::container(0_i32);
+    let taps = Binding::new(0_i32);
     let counter = taps.clone();
     let mut app = ui()
         .theme(hydrolysis_m3::Material3::defaults())

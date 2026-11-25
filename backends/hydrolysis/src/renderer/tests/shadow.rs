@@ -70,7 +70,7 @@ fn pixel(snapshot: &crate::runner::HeadlessSnapshot, x: u32, y: u32) -> [u8; 4] 
 }
 
 fn snapshot<V: View + 'static>(view: impl Fn() -> V + 'static) -> crate::runner::HeadlessSnapshot {
-    let value = Binding::container(0_i32);
+    let value = Binding::new(0_i32);
     let builder = AnyViewBuilder::<waterui_core::AnyView>::new(move || {
         let _ = &value;
         waterui_core::AnyView::new(scene(view()))
@@ -124,7 +124,7 @@ fn floating_surface_shadow_follows_clip_silhouette() {
 /// content op; the pixels must still show the shadow actually moving.
 #[test]
 fn translated_shadow_moves_with_the_caster() {
-    let dx = Binding::container(0.0_f32);
+    let dx = Binding::new(0.0_f32);
     let view = {
         let dx = dx.clone();
         move || {
@@ -145,7 +145,7 @@ fn translated_shadow_moves_with_the_caster() {
             })
         }
     };
-    let value = Binding::container(0_i32);
+    let value = Binding::new(0_i32);
     let builder = AnyViewBuilder::<waterui_core::AnyView>::new(move || {
         let _ = &value;
         waterui_core::AnyView::new(scene(view()))

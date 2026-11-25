@@ -438,8 +438,8 @@ mod tests {
     #[test]
     fn seeded_single_selection_survives_cancel_and_failure() {
         let seeded = Media::Image(Url::from_file_path_str("/tmp/avatar.png"));
-        let selection = Binding::container(Some(seeded.clone()));
-        let status = Binding::container(PickerStatus::Idle);
+        let selection = Binding::new(Some(seeded.clone()));
+        let status = Binding::new(PickerStatus::Idle);
         let _picker = MediaPicker::new("Avatar", &selection).status(&status);
 
         // Cancel preserves the seeded selection and returns to Idle.
@@ -467,8 +467,8 @@ mod tests {
 
     #[test]
     fn multiple_selection_populates_vec_and_respects_limit() {
-        let photos = Binding::container(Vec::<Media>::new());
-        let status = Binding::container(PickerStatus::Idle);
+        let photos = Binding::new(Vec::<Media>::new());
+        let status = Binding::new(PickerStatus::Idle);
         let picker = MediaPicker::multiple("Photos", &photos)
             .limit(10)
             .status(&status);
@@ -495,8 +495,8 @@ mod tests {
     #[test]
     fn multiple_selection_reports_failure_status() {
         let existing = vec![Media::Image(Url::from_file_path_str("/tmp/seed.png"))];
-        let photos = Binding::container(existing.clone());
-        let status = Binding::container(PickerStatus::Idle);
+        let photos = Binding::new(existing.clone());
+        let status = Binding::new(PickerStatus::Idle);
 
         block_on(execute_multiple_pick(&photos, Some(&status), || async {
             Err(DialogError::Unsupported(

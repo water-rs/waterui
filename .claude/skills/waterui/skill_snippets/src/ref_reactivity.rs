@@ -31,12 +31,12 @@ pub fn reactivity_block_01() {
 
     use waterui::reactive::binding;
 
-    let count = Binding::i32(0); // typed constructors, primitives:
-    let ratio = Binding::f64(1.5); // bool f32 f64 i32 i64 isize u32 u64 usize
-    let flag = Binding::bool(false);
-    let name = Binding::container(Str::from("Ada")); // any Clone type
-    let items = Binding::container(Vec::<Row>::new());
-    let status = Binding::container("Waiting…"); // Binding<&'static str> — fine for status text
+    let count = Binding::new(0_i32); // typed constructors, primitives:
+    let ratio = Binding::new(1.5_f64); // bool f32 f64 i32 i64 isize u32 u64 usize
+    let flag = Binding::new(false);
+    let name = Binding::new(Str::from("Ada")); // any Clone type
+    let items = Binding::new(Vec::<Row>::new());
+    let status = Binding::new("Waiting…"); // Binding<&'static str> — fine for status text
 
     let sel: Binding<Option<Media>> = Binding::default(); // empty optional selection
     let pane: Binding<Pane> = binding(Pane::Inbox); // general form
@@ -49,9 +49,9 @@ pub fn reactivity_block_01() {
 // reactivity.md § "## Creating state" (Writing) — rust block 2/23
 // ---------------------------------------------------------------------------
 pub fn reactivity_block_02() {
-    let count = Binding::container(Vec::<i32>::new());
-    let items = Binding::container(Vec::<i32>::new());
-    let flag = Binding::bool(false);
+    let count = Binding::new(Vec::<i32>::new());
+    let items = Binding::new(Vec::<i32>::new());
+    let flag = Binding::new(false);
     let x = 7_i32;
 
     // The listing mixes receivers: `count.set(5)` / `*count.get_mut() += 1` /
@@ -59,17 +59,17 @@ pub fn reactivity_block_02() {
     // `items.append(x)` need a container. Each line therefore gets the
     // receiver its own call requires.
     {
-        let count = Binding::i32(0);
+        let count = Binding::new(0_i32);
         count.set(5);
     }
     {
-        let count = Binding::i32(0);
+        let count = Binding::new(0_i32);
         *count.get_mut() += 1; // guard: writes back on drop
     }
     count.with_mut(|v| v.push(x)); // in-place mutation of a container
     items.append(x); // extend a container (`T: Extend<_>`: Vec, String, …)
     {
-        let count = Binding::i32(0);
+        let count = Binding::new(0_i32);
         count.add_assign(1); // also sub_assign, mul_assign, div_assign, …
     }
     flag.toggle(); // bool convenience
@@ -87,7 +87,7 @@ pub fn reactivity_block_03() {
     use waterui::animation::Animation;
 
     // core
-    let n = Binding::i32(2);
+    let n = Binding::new(2_i32);
     let _ = { n.map(|v| v * 2) };
     let _ = { n.computed() };
     let _ = { n.cached() };
@@ -102,8 +102,8 @@ pub fn reactivity_block_03() {
     let _ = { n.with(metadata) };
 
     // bool
-    let b = Binding::bool(true);
-    let other = Binding::bool(false);
+    let b = Binding::new(true);
+    let other = Binding::new(false);
     let _ = { b.not() };
     let _ = { b.and(&other) };
     let _ = { b.or(&other) };
@@ -120,7 +120,7 @@ pub fn reactivity_block_03() {
     let _ = { n.le(8) };
     // `.is_ascii()` in the skill's own closure body pins the receiver to a
     // signal of a character-like value.
-    let ch = Binding::container('a');
+    let ch = Binding::new('a');
     let _ = { ch.condition(|v| v.is_ascii()) };
 
     // numeric
@@ -132,7 +132,7 @@ pub fn reactivity_block_03() {
     let _ = { n.is_zero() };
 
     // Option<T>
-    let opt = Binding::container(Some(1_i32));
+    let opt = Binding::new(Some(1_i32));
     let d = 0_i32;
     let _ = { opt.is_some() };
     let _ = { opt.is_none() };
@@ -144,13 +144,13 @@ pub fn reactivity_block_03() {
     let _ = {
         opt.and_then_some(Some) // [ellipsis filled]
     };
-    let nested = Binding::container(Some(Some(1_i32)));
+    let nested = Binding::new(Some(Some(1_i32)));
     let _ = { nested.flatten() };
     let v = 1_i32;
     let _ = { opt.some_equal_to(v) };
 
     // Result<T, E>
-    let res = Binding::container(Ok::<i32, Str>(1));
+    let res = Binding::new(Ok::<i32, Str>(1));
     let _ = { res.is_ok() };
     let _ = { res.is_err() };
     let _ = { res.ok() };
@@ -163,7 +163,7 @@ pub fn reactivity_block_03() {
     };
 
     // strings — note the str_ prefix; plain .is_empty()/.contains() are NOT signal methods
-    let s = Binding::container(Str::from("query"));
+    let s = Binding::new(Str::from("query"));
     let _ = { s.str_is_empty() };
     let _ = { s.str_len() };
     let _ = { s.str_contains("query") };
@@ -181,7 +181,7 @@ pub fn reactivity_block_03() {
 // receives the source binding. Not counted as one of the 23 rust blocks.
 // ---------------------------------------------------------------------------
 pub fn reactivity_binding_helpers_prose() {
-    let n = Binding::i32(5);
+    let n = Binding::new(5_i32);
     let _ = n.range(0..=10);
     let _ = n.clamp(0..=10);
     let _ = n.filter(|v| *v > 0);
@@ -190,11 +190,11 @@ pub fn reactivity_binding_helpers_prose() {
         slot.set(v as i32);
     });
 
-    let b = Binding::bool(true);
+    let b = Binding::new(true);
     let _ = b.bidirectional_select(1_i32, 0_i32);
     let _ = b.reverse();
 
-    let opt = Binding::container(Some(1_i32));
+    let opt = Binding::new(Some(1_i32));
     let _ = opt.unwrap_or(0);
 }
 
@@ -207,7 +207,7 @@ pub fn reactivity_select_token_conversion() {
 
     let on: Color = Accent.into();
     let off = Color::transparent();
-    let flag = Binding::bool(true);
+    let flag = Binding::new(true);
     let _ = flag.select(on, off);
 }
 
@@ -215,12 +215,12 @@ pub fn reactivity_select_token_conversion() {
 // reactivity.md § "## Combining signals" — rust block 4/23
 // ---------------------------------------------------------------------------
 pub fn reactivity_block_04() {
-    let price = Binding::f64(2.0);
-    let quantity = Binding::f64(3.0);
-    let loaded = Binding::bool(true);
-    let authorized = Binding::bool(true);
-    let count = Binding::i32(3);
-    let unit = Binding::container(Str::from("items"));
+    let price = Binding::new(2.0_f64);
+    let quantity = Binding::new(3.0_f64);
+    let loaded = Binding::new(true);
+    let authorized = Binding::new(true);
+    let count = Binding::new(3_i32);
+    let unit = Binding::new(Str::from("items"));
 
     let total = price.zip(&quantity).map(|(p, q)| p * q);
     let ready = loaded.and(&authorized);
@@ -236,10 +236,10 @@ pub fn reactivity_block_05() {
     fn build_config(_a: i32, _b: i32, _c: i32, _d: i32) -> i32 {
         0
     }
-    let a = Binding::i32(1);
-    let b = Binding::i32(2);
-    let c = Binding::i32(3);
-    let d = Binding::i32(4);
+    let a = Binding::new(1_i32);
+    let b = Binding::new(2_i32);
+    let c = Binding::new(3_i32);
+    let d = Binding::new(4_i32);
 
     let config = a
         .zip(&b)
@@ -257,8 +257,8 @@ pub fn reactivity_block_05() {
 pub fn reactivity_block_06() {
     use waterui::reactive::s;
 
-    let count = Binding::i32(3);
-    let total = Binding::i32(10);
+    let count = Binding::new(3_i32);
+    let total = Binding::new(10_i32);
     let progress = s!("{count} of {total}"); // Signal<Output = String>
 
     let _ = progress;
@@ -324,13 +324,13 @@ pub mod reactivity_block_08 {
 pub fn reactivity_block_09() {
     use waterui::media::Photo;
 
-    let fade = Binding::f32(1.0);
-    let has_items = Binding::bool(true);
-    let is_loading = Binding::bool(false);
-    let zoom = Binding::f32(1.0);
-    let radius = Binding::f64(2.0);
-    let sat = Binding::f64(1.0);
-    let status = Binding::container(Str::from("idle"));
+    let fade = Binding::new(1.0_f32);
+    let has_items = Binding::new(true);
+    let is_loading = Binding::new(false);
+    let zoom = Binding::new(1.0_f32);
+    let radius = Binding::new(2.0_f64);
+    let sat = Binding::new(1.0_f64);
+    let status = Binding::new(Str::from("idle"));
     let url = "https://waterui.dev/logo.png";
 
     let view = Divider;
@@ -446,7 +446,7 @@ pub fn reactivity_block_14() {
     use core::time::Duration;
     use waterui::animation::Animation; // not in the prelude
 
-    let scale = Binding::f32(1.0);
+    let scale = Binding::new(1.0_f32);
     let animated = scale.with(Animation::spring(300.0, 15.0));
 
     let view = Divider;
@@ -482,7 +482,7 @@ pub fn reactivity_animation_prose() {
         .speed(1.5)
         .repeat(Repeat::Forever { autoreverse: true });
 
-    let scale = Binding::f32(1.0);
+    let scale = Binding::new(1.0_f32);
     let _ = scale.with(Animation::spring(300.0, 15.0)); // the one attachment spelling
     let _ = scale.animated(); // shorthand for `.with(Animation::default())`
 }
@@ -496,7 +496,7 @@ pub fn reactivity_animation_prose() {
 pub fn reactivity_no_animation_prose() {
     use waterui::animation::NoAnimation;
 
-    let opacity = Binding::f32(1.0);
+    let opacity = Binding::new(1.0_f32);
     let _ = opacity.with(NoAnimation);
     let _ = opacity.animated().with(NoAnimation);
 }
@@ -506,7 +506,7 @@ pub fn reactivity_no_animation_prose() {
 pub fn reactivity_animation_ext_single_trait() {
     use waterui::animation::AnimationExt as _;
 
-    let scale = Binding::f32(1.0);
+    let scale = Binding::new(1.0_f32);
     let _ = scale.animated();
 }
 
@@ -516,8 +516,8 @@ pub fn reactivity_animation_ext_single_trait() {
 pub fn reactivity_block_15() {
     use waterui::animation::Animation;
 
-    let hovered = Binding::bool(false);
-    let bounce = Binding::f32(1.0);
+    let hovered = Binding::new(false);
+    let bounce = Binding::new(1.0_f32);
 
     let hover_scale = hovered
         .select(1.05_f32, 1.0)
@@ -592,8 +592,8 @@ pub fn reactivity_block_17() {
     fn message_row(m: Message) -> impl View {
         text(m.subject)
     }
-    let messages = Binding::container(Vec::<Message>::new());
-    let query = Binding::container(Str::from(""));
+    let messages = Binding::new(Vec::<Message>::new());
+    let query = Binding::new(Str::from(""));
 
     let visible = SignalCollection::new(messages.zip(&query).map(|(all, q)| {
         all.into_iter()
@@ -641,10 +641,10 @@ pub fn reactivity_block_18() {
     }
 
     let row = RowFlags { flagged: true };
-    let is_new = Binding::bool(true);
-    let logged_in = Binding::bool(true);
-    let state = Binding::i32(0);
-    let is_loading = Binding::bool(false);
+    let is_new = Binding::new(true);
+    let logged_in = Binding::new(true);
+    let state = Binding::new(0_i32);
+    let is_loading = Binding::new(false);
 
     use waterui::widget::condition::when;
 
@@ -688,9 +688,9 @@ pub fn reactivity_block_19() {
     }
 
     let store = Store {
-        items: Binding::container(Vec::new()),
+        items: Binding::new(Vec::new()),
     };
-    let has_items = Binding::bool(false);
+    let has_items = Binding::new(false);
 
     use waterui::widget::condition::when;
 
@@ -706,7 +706,7 @@ pub fn reactivity_block_19() {
 pub fn reactivity_block_20() -> impl View {
     use crate::ref_reactivity::ref_reactivity_charts::{ChartMode, bar_chart, line_chart};
 
-    let mode = Binding::container(ChartMode::Bar);
+    let mode = Binding::new(ChartMode::Bar);
 
     Dynamic::watch(mode.clone(), |mode| match mode {
         ChartMode::Bar => OneOf2::A(bar_chart()),
@@ -738,8 +738,8 @@ pub mod ref_reactivity_charts {
 pub fn reactivity_block_21() -> impl View {
     use waterui::media::{Photo, Url};
 
-    let url = Binding::container(Str::from("https://waterui.dev/logo.png"));
-    let blur = Binding::f64(0.0);
+    let url = Binding::new(Str::from("https://waterui.dev/logo.png"));
+    let blur = Binding::new(0.0_f64);
 
     let (handler, slot) = Dynamic::<Photo>::new();
 
@@ -775,8 +775,8 @@ pub fn reactivity_block_22() {
     }
     async fn warm_cache() {}
 
-    let result = Binding::container(Str::from(""));
-    let query = Binding::container(Str::from(""));
+    let result = Binding::new(Str::from(""));
+    let query = Binding::new(Str::from(""));
 
     button("Fetch")
         .action_async(|State(out): State<Binding<Str>>| async move {
@@ -813,7 +813,7 @@ pub fn reactivity_block_22() {
         let view = Divider;
         view.on_change(&query, |new_value: Str| debug!(?new_value));
     }
-    let history: Binding<Vec<Str>> = Binding::container(Vec::new()); // [glue: bound by the prose]
+    let history: Binding<Vec<Str>> = Binding::new(Vec::new()); // [glue: bound by the prose]
     {
         let view = Divider;
         view.on_change(
@@ -832,7 +832,7 @@ pub fn reactivity_block_22() {
 pub fn reactivity_block_23() {
     use core::time::Duration;
 
-    let bounce = Binding::f32(0.0);
+    let bounce = Binding::new(0.0_f32);
 
     use waterui::task::{sleep, spawn_local};
 

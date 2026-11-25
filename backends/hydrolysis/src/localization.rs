@@ -109,7 +109,7 @@ mod tests {
 
     #[test]
     fn resolves_rtl_and_cjk_builtin_strings() {
-        let locale = Binding::container(locales::AR);
+        let locale = Binding::new(locales::AR);
         let mut env = Environment::new();
         env.insert(locale.clone());
         install(&mut env);

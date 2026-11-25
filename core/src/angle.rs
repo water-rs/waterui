@@ -333,7 +333,7 @@ mod tests {
         let constant_computed = accept(Angle::degrees(45.0));
         assert!((constant_computed.snapshot().to_degrees() - 45.0).abs() < 1e-5);
 
-        let binding = Binding::container(Angle::ZERO);
+        let binding = Binding::new(Angle::ZERO);
         let reactive_computed = accept(binding.clone());
         assert!((reactive_computed.snapshot().to_radians()).abs() < f32::EPSILON);
         binding.set(Angle::QUARTER);

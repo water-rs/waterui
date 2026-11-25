@@ -1124,7 +1124,7 @@ fn the_group_releases_when_its_members_leave() {
         chrome: glass_plan(vec![chrome_draw(GLASS, GLASS_SHADER, vec![])]),
         ..Default::default()
     };
-    let flag = Binding::container(true);
+    let flag = Binding::new(true);
     let shown = flag.clone();
     let builder = AnyViewBuilder::<waterui_core::AnyView>::new(move || {
         waterui_core::AnyView::new(waterui_layout::stack::zstack((

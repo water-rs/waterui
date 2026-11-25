@@ -244,7 +244,7 @@ impl JsApiSchema {
 /// }
 ///
 /// let view = WebView::open("https://app.waterui.dev").serve(Counter {
-///     count: Binding::container(0),
+///     count: Binding::new(0),
 /// });
 /// ```
 ///
