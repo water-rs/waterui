@@ -851,20 +851,15 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         use crate::renderer::floating::FloatingEffect;
         use crate::theme::{FloatingOverride, FloatingScope};
         use nami::binding;
-        use waterui::floating::LegacyFloatingOverride;
         use waterui_interaction::interaction::{InteractionReport, InteractionState};
 
         mark_reached!("floating");
         let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
-        let override_surface = env.get::<FloatingOverride>().cloned().or_else(|| {
-            env.get::<LegacyFloatingOverride>()
-                .map(|legacy| FloatingOverride::legacy(legacy.0.clone()))
-        });
+        let override_surface = env.get::<FloatingOverride>().cloned();
         let reported_state = binding(InteractionState::empty());
         let mut child_env = env.clone();
         child_env.remove::<FloatingOverride>();
-        child_env.remove::<LegacyFloatingOverride>();
         let child_env = child_env
             .extending(FloatingScope::new(override_surface.clone()))
             .extending(InteractionReport(reported_state.clone()));

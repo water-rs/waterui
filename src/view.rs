@@ -77,10 +77,10 @@ use crate::{
         badge::{Badge, BadgeValue},
         focus::Focused,
     },
-    floating::{Floating, LegacyFloatingOverride},
+    floating::Floating,
     prelude::Shadow,
     shape::{ClipShape, Shape},
-    style::{Anchor, FloatingStyle, Offset, Rotation, Scale},
+    style::{Anchor, Offset, Rotation, Scale},
 };
 use waterui_controls::button::{ButtonStyleHook, IntoButtonStyle};
 #[cfg(feature = "toggle")]
@@ -1047,13 +1047,6 @@ pub trait ViewExt: View + Sized {
     /// and elevation treatment to the active backend.
     fn floating(self) -> Metadata<Floating, Self> {
         Metadata::new(self, Floating)
-    }
-
-    /// Transitional compatibility shim for external style packages migrating
-    /// off `FloatingStyle`.
-    #[doc(hidden)]
-    fn floating_with(self, style: FloatingStyle) -> impl View {
-        self.floating().install(LegacyFloatingOverride(style))
     }
 
     /// Applies a border around this view.

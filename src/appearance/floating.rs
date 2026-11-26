@@ -1,8 +1,6 @@
 //! Floating-surface presentation for elevated interactive views.
 
-use waterui_core::{metadata::MetadataKey, plugin::Plugin};
-
-use crate::style::FloatingStyle;
+use waterui_core::metadata::MetadataKey;
 
 /// Marks a view as promoted to the floating interaction layer.
 ///
@@ -13,15 +11,6 @@ use crate::style::FloatingStyle;
 pub struct Floating;
 
 impl MetadataKey for Floating {}
-
-/// Transitional compatibility shim carrying a legacy [`FloatingStyle`]
-/// override for external style crates while they migrate to
-/// `hydrolysis_style::theme::FloatingOverride`.
-#[doc(hidden)]
-#[derive(Debug, Clone)]
-pub struct LegacyFloatingOverride(pub FloatingStyle);
-
-impl Plugin for LegacyFloatingOverride {}
 
 #[cfg(test)]
 mod tests {
