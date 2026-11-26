@@ -265,11 +265,11 @@ pub fn measure_card_node<E: TextEngine>(
     let inner_width = proposal
         .width
         .filter(|w| w.is_finite())
-        .map(|w| f64_as_f32(2.0_f64.mul_add(-h_pad, f64::from(w)).max(0.0)));
+        .map(|w| 2.0_f32.mul_add(-h_pad, w).max(0.0));
     let inner_height = proposal
         .height
         .filter(|h| h.is_finite())
-        .map(|h| 2.0_f64.mul_add(-v_pad, f64::from(h)).max(0.0));
+        .map(|h| 2.0_f32.mul_add(-v_pad, h).max(0.0));
 
     let header_proposal = ProposalSize::new(inner_width, None);
     let title_scoped = render_state.title.as_ref().map(|_| title_env(env, &look));
@@ -290,15 +290,14 @@ pub fn measure_card_node<E: TextEngine>(
         _ => None,
     };
 
-    let header_count = usize::from(title_size.is_some()) + usize::from(subtitle_size.is_some());
-    let total_gaps = f64::from(u32::try_from(header_count).unwrap_or(0)) * layout.content_spacing;
-    let header_height = title_size.map_or(0.0, |s| f64::from(s.height))
-        + subtitle_size.map_or(0.0, |s| f64::from(s.height))
-        + total_gaps;
+    let header_count = u16::from(title_size.is_some()) + u16::from(subtitle_size.is_some());
+    let total_gaps = f32::from(header_count) * layout.content_spacing;
+    let header_height =
+        title_size.map_or(0.0, |s| s.height) + subtitle_size.map_or(0.0, |s| s.height) + total_gaps;
 
     let content_proposal = ProposalSize::new(
         inner_width,
-        inner_height.map(|h| f64_as_f32((h - header_height).max(0.0))),
+        inner_height.map(|h| (h - header_height).max(0.0)),
     );
     let content_size = render_state
         .content
@@ -307,14 +306,15 @@ pub fn measure_card_node<E: TextEngine>(
             c.measure_built_with_proposal(state, env, theme, content_proposal)
         });
 
-    let inner_w = f64::from(content_size.width)
-        .max(title_size.map_or(0.0, |s| f64::from(s.width)))
-        .max(subtitle_size.map_or(0.0, |s| f64::from(s.width)));
-    let inner_h = header_height + f64::from(content_size.height);
+    let inner_w = content_size
+        .width
+        .max(title_size.map_or(0.0, |s| s.width))
+        .max(subtitle_size.map_or(0.0, |s| s.width));
+    let inner_h = header_height + content_size.height;
 
     ViewDimensions::new(LayoutSize::new(
-        f64_as_f32(2.0_f64.mul_add(h_pad, inner_w)),
-        f64_as_f32(2.0_f64.mul_add(v_pad, inner_h)),
+        2.0_f32.mul_add(h_pad, inner_w),
+        2.0_f32.mul_add(v_pad, inner_h),
     ))
 }
 
@@ -339,10 +339,13 @@ fn compute_card_slots<E: TextEngine>(
 ) -> PlacedCardSlots {
     let bounds = ctx.bounds;
     let direction = layout_direction(env).snapshot();
-    let content_left = bounds.x0 + layout.horizontal_padding;
-    let content_right = (bounds.x1 - layout.horizontal_padding).max(content_left);
-    let content_top = bounds.y0 + layout.vertical_padding;
-    let content_bottom = (bounds.y1 - layout.vertical_padding).max(content_top);
+    let h_pad = f64::from(layout.horizontal_padding);
+    let v_pad = f64::from(layout.vertical_padding);
+    let spacing = f64::from(layout.content_spacing);
+    let content_left = bounds.x0 + h_pad;
+    let content_right = (bounds.x1 - h_pad).max(content_left);
+    let content_top = bounds.y0 + v_pad;
+    let content_bottom = (bounds.y1 - v_pad).max(content_top);
     let content_width = (content_right - content_left).max(0.0);
     let content_height = (content_bottom - content_top).max(0.0);
     let header_proposal = ProposalSize::new(Some(f64_as_f32(content_width)), None);
@@ -367,7 +370,7 @@ fn compute_card_slots<E: TextEngine>(
             let top = cursor_y;
             let bottom = (top + f64::from(size.height)).min(content_bottom);
             let rect = Rect::new(left, top, right, bottom);
-            cursor_y = (bottom + layout.content_spacing).min(content_bottom);
+            cursor_y = (bottom + spacing).min(content_bottom);
             title_slot = Some((
                 PlacedCardSlot {
                     bounds: rect,
@@ -392,7 +395,7 @@ fn compute_card_slots<E: TextEngine>(
             let top = cursor_y;
             let bottom = (top + f64::from(size.height)).min(content_bottom);
             let rect = Rect::new(left, top, right, bottom);
-            cursor_y = (bottom + layout.content_spacing).min(content_bottom);
+            cursor_y = (bottom + spacing).min(content_bottom);
             subtitle_slot = Some((
                 PlacedCardSlot {
                     bounds: rect,

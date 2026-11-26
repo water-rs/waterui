@@ -53,7 +53,7 @@ fn linear(millis: u64) -> Motion {
 /// value motions: the knob's takes 100 ms, the strip's 400 ms. Every
 /// recording lists the frame it recorded on.
 fn look(recorded: Rc<RefCell<Vec<Rect>>>, direction: LayoutDirection) -> SwitchLook {
-    let drag = SwitchDrag::new(TRAVEL, direction);
+    let drag = SwitchDrag::new(crate::num_cast::f64_as_f32(TRAVEL), direction);
     let knob = Driven::new(move |inputs: &Inputs<'_, bool>| {
         let at = drag
             .progress(*inputs.value, inputs.drag)

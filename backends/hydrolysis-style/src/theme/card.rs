@@ -17,29 +17,29 @@ use waterui_text::font::{Font, Subheadline, Title};
 use super::{Border, CornerShape, Driven, Elevation, Surface};
 
 /// Default card corner radius in logical points (matching Material 3 / Apple card chrome).
-const DEFAULT_CORNER_RADIUS: f64 = 12.0;
+const DEFAULT_CORNER_RADIUS: f32 = 12.0;
 /// Default horizontal and vertical inner card padding in logical points.
-const DEFAULT_PADDING: f64 = 16.0;
+const DEFAULT_PADDING: f32 = 16.0;
 /// Default vertical gap between title, subtitle, and content in logical points.
-const DEFAULT_CONTENT_SPACING: f64 = 6.0;
+const DEFAULT_CONTENT_SPACING: f32 = 6.0;
 /// Default outline stroke width in logical points.
-const DEFAULT_BORDER_WIDTH: f64 = 1.0;
+const DEFAULT_BORDER_WIDTH: f32 = 1.0;
 
 /// Layout metrics for a card container in logical points.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CardLayout {
     /// Horizontal inner padding on leading and trailing edges.
-    pub horizontal_padding: f64,
+    pub horizontal_padding: f32,
     /// Vertical inner padding on top and bottom edges.
-    pub vertical_padding: f64,
+    pub vertical_padding: f32,
     /// Vertical gap between title, subtitle, and body content.
-    pub content_spacing: f64,
+    pub content_spacing: f32,
 }
 
 impl CardLayout {
     /// Creates a card layout with uniform inner `padding` and vertical `content_spacing`.
     #[must_use]
-    pub const fn uniform(padding: f64, content_spacing: f64) -> Self {
+    pub const fn uniform(padding: f32, content_spacing: f32) -> Self {
         Self {
             horizontal_padding: padding,
             vertical_padding: padding,
@@ -130,7 +130,7 @@ fn token_paint(color: &Color, env: &Environment) -> Driven<Paint> {
     })
 }
 
-fn token_border(width: f64, color: &Color, env: &Environment) -> Driven<Border> {
+fn token_border(width: f32, color: &Color, env: &Environment) -> Driven<Border> {
     Driven::follow(color.resolve(env), move |resolved: &WorkingColor, _| {
         Border::new(width, Paint::from(*resolved))
     })

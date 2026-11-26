@@ -443,7 +443,7 @@ impl MetadataKey for PopupMenuSurface {}
 /// a panel with no elevation.
 #[cfg(feature = "menu")]
 pub fn popup_menu_panel_margin(look: &MenuLook, width: f64, height: f64) -> f64 {
-    look.panel_extent(kurbo::Rect::new(0.0, 0.0, width, height))
+    f64::from(look.panel_extent(kurbo::Rect::new(0.0, 0.0, width, height)))
 }
 
 /// The frame of a menu window whose `width` by `height` panel sits at
@@ -471,10 +471,8 @@ fn popup_menu_window_frame(
 /// (`md.comp.menu.divider.height`, 1 dp) inside the menu's vertical padding
 /// (`md.comp.menu.container.top-space`/`bottom-space`, 8 dp each side).
 #[cfg(feature = "menu")]
-pub const fn popup_menu_divider_height(metrics: MenuLayout) -> f64 {
-    metrics
-        .vertical_padding
-        .mul_add(2.0, metrics.separator_thickness)
+pub fn popup_menu_divider_height(metrics: MenuLayout) -> f64 {
+    f64::from(metrics.vertical_padding).mul_add(2.0, f64::from(metrics.separator_thickness))
 }
 
 /// The horizontal gap between a row's label and its shortcut hint.
@@ -515,23 +513,24 @@ pub fn popup_menu_size(
         0.0
     };
     let width = (text.row_inset.mul_add(2.0, text.max_row_text_width) + hint_width)
-        .clamp(metrics.min_width, metrics.max_width);
+        .clamp(f64::from(metrics.min_width), f64::from(metrics.max_width));
     // `md.comp.menu.list-item.container.height` (48 dp) per row — a
     // subtitled row grows by its supporting line — plus the container's
     // `top-space`/`bottom-space`.
-    let height = metrics.vertical_padding.mul_add(
+    let row_height = f64::from(metrics.row_height);
+    let height = f64::from(metrics.vertical_padding).mul_add(
         2.0,
         nodes
             .iter()
             .map(|node| match node {
                 PopupMenuNode::Command {
                     subtitle: Some(_), ..
-                } => metrics.row_height + text.subtitle_height,
+                } => row_height + text.subtitle_height,
                 PopupMenuNode::Divider => popup_menu_divider_height(metrics),
-                _ => metrics.row_height,
+                _ => row_height,
             })
             .sum::<f64>()
-            .max(metrics.row_height),
+            .max(row_height),
     );
     (width, height)
 }
@@ -735,14 +734,15 @@ impl<E: crate::text::TextEngine> View for PopupMenuContent<E> {
             popup_opener,
         } = self;
         let mut rows = Vec::with_capacity(nodes.len());
-        let mut row_top = metrics.vertical_padding;
+        let mut row_top = f64::from(metrics.vertical_padding);
+        let default_row_height = f64::from(metrics.row_height);
         for node in nodes {
             let row_height = match &node {
                 PopupMenuNode::Command {
                     subtitle: Some(_), ..
-                } => metrics.row_height + text.subtitle_height,
+                } => default_row_height + text.subtitle_height,
                 PopupMenuNode::Divider => popup_menu_divider_height(metrics),
-                _ => metrics.row_height,
+                _ => default_row_height,
             };
             match node {
                 PopupMenuNode::Command {
@@ -833,10 +833,7 @@ impl<E: crate::text::TextEngine> View for PopupMenuContent<E> {
         menu_content
             .alignment(HorizontalAlignment::Leading)
             .spacing(0.0)
-            .padding_with(EdgeInsets::symmetric(
-                crate::num_cast::f64_as_f32(metrics.vertical_padding),
-                0.0,
-            ))
+            .padding_with(EdgeInsets::symmetric(metrics.vertical_padding, 0.0))
             // A menu row's label is body text that happens to be tappable,
             // not button chrome: it draws in the foreground colour, with the
             // destructive role's explicit error colour still winning.
@@ -1161,10 +1158,7 @@ pub fn picker_menu_window(
         let rows = menu_content
             .alignment(HorizontalAlignment::Leading)
             .spacing(0.0)
-            .padding_with(EdgeInsets::symmetric(
-                crate::num_cast::f64_as_f32(layout.vertical_padding),
-                0.0,
-            ))
+            .padding_with(EdgeInsets::symmetric(layout.vertical_padding, 0.0))
             .with(ListRowChrome)
             .with(MenuRowChrome);
         let panel = Metadata::new(rows, PopupMenuSurface { selected_row })
@@ -1191,8 +1185,7 @@ pub fn picker_menu_window(
 /// option rectangles are both derived from it.
 #[cfg(feature = "picker")]
 pub fn picker_menu_panel_height(layout: MenuLayout, row_height: f64, rows: usize) -> f64 {
-    layout
-        .vertical_padding
+    f64::from(layout.vertical_padding)
         .mul_add(2.0, row_height * crate::num_cast::usize_as_f64(rows))
 }
 
@@ -1207,7 +1200,7 @@ pub fn picker_menu_row_rect(
 ) -> kurbo::Rect {
     let y0 = row_height.mul_add(
         crate::num_cast::usize_as_f64(index),
-        layout.vertical_padding,
+        f64::from(layout.vertical_padding),
     );
     kurbo::Rect::new(0.0, y0, width, y0 + row_height)
 }
@@ -1766,7 +1759,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         env: &Environment,
         theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> PopupMenuTextMetrics {
-        let row_inset = metrics.horizontal_padding;
+        let row_inset = f64::from(metrics.horizontal_padding);
         let mut max_row_text_width = 0.0_f64;
         let mut max_hint_width = 0.0_f64;
         for node in nodes {

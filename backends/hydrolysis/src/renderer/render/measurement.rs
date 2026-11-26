@@ -88,16 +88,16 @@ pub fn navigation_look(theme: &Rc<dyn WidgetTheme>, env: &Environment) -> Naviga
 
 /// The height of a bar showing its title in `display_mode`, under `metrics`.
 #[cfg(feature = "navigation")]
-pub const fn navigation_base_bar_height(
+pub fn navigation_base_bar_height(
     display_mode: waterui::navigation::NavigationTitleDisplayMode,
     metrics: NavigationMetrics,
 ) -> f64 {
-    match display_mode {
+    f64::from(match display_mode {
         waterui::navigation::NavigationTitleDisplayMode::Automatic => metrics.automatic_bar_height,
         waterui::navigation::NavigationTitleDisplayMode::Inline => metrics.inline_bar_height,
         waterui::navigation::NavigationTitleDisplayMode::Medium => metrics.medium_bar_height,
         waterui::navigation::NavigationTitleDisplayMode::Large => metrics.large_bar_height,
-    }
+    })
 }
 
 #[cfg(feature = "navigation")]
@@ -408,18 +408,21 @@ pub fn navigation_back_button_rect(
     metrics: NavigationMetrics,
     direction: LayoutDirection,
 ) -> kurbo::Rect {
+    let leading_inset = f64::from(metrics.back_button_leading_inset);
+    let top_inset = f64::from(metrics.back_button_top_inset);
+    let button_size = f64::from(metrics.back_button_size);
     let (x0, x1) = if direction.is_right_to_left() {
-        let x1 = bounds.x1 - metrics.back_button_leading_inset;
-        (x1 - metrics.back_button_size, x1)
+        let x1 = bounds.x1 - leading_inset;
+        (x1 - button_size, x1)
     } else {
-        let x0 = bounds.x0 + metrics.back_button_leading_inset;
-        (x0, x0 + metrics.back_button_size)
+        let x0 = bounds.x0 + leading_inset;
+        (x0, x0 + button_size)
     };
     kurbo::Rect::new(
         x0,
-        bounds.y0 + metrics.back_button_top_inset,
+        bounds.y0 + top_inset,
         x1,
-        bounds.y0 + metrics.back_button_top_inset + metrics.back_button_size,
+        bounds.y0 + top_inset + button_size,
     )
 }
 
@@ -764,21 +767,21 @@ fn measure_menu_picker_intrinsic<E: crate::text::TextEngine>(
     // `label_size.height > 0`.
     let has_label = label_size.height > 0.0;
     let content_width = max_item_width.max(f64::from(label_size.width));
-    let width = (metrics.horizontal_inset.mul_add(2.0, content_width) + metrics.indicator_space)
-        .max(metrics.min_width);
-    let height = metrics
-        .vertical_inset
+    let width = (f64::from(metrics.horizontal_inset).mul_add(2.0, content_width)
+        + f64::from(metrics.indicator_space))
+    .max(f64::from(metrics.min_width));
+    let height = f64::from(metrics.vertical_inset)
         .mul_add(
             2.0,
             max_item_height
                 + f64::from(label_size.height)
                 + if has_label {
-                    metrics.label_spacing
+                    f64::from(metrics.label_spacing)
                 } else {
                     0.0
                 },
         )
-        .max(metrics.min_height);
+        .max(f64::from(metrics.min_height));
     LayoutSize::new(
         crate::num_cast::f64_as_f32(width),
         crate::num_cast::f64_as_f32(height),
@@ -808,7 +811,7 @@ fn measure_radio_picker_intrinsic<E: crate::text::TextEngine>(
         max_item_width = max_item_width.max(f64::from(size.width));
         total_height += f64::from(size.height).max(indicator.size().height);
         if index + 1 < items.len() {
-            total_height += metrics.row_spacing;
+            total_height += f64::from(metrics.row_spacing);
         }
     }
     // A visible group label heads the picker above the option rows: inside
@@ -816,21 +819,20 @@ fn measure_radio_picker_intrinsic<E: crate::text::TextEngine>(
     // and its height plus the metrics' label spacing stacks on top of the
     // rows. A zero-height (hidden) label adds nothing — same presence rule as
     // the menu field label.
-    let content_width = (indicator.size().width + indicator.get_label_spacing() + max_item_width)
-        .max(f64::from(label_size.width));
-    let width = metrics
-        .horizontal_inset
+    let content_width =
+        (indicator.size().width + f64::from(indicator.get_label_spacing()) + max_item_width)
+            .max(f64::from(label_size.width));
+    let width = f64::from(metrics.horizontal_inset)
         .mul_add(2.0, content_width)
-        .max(metrics.min_width);
+        .max(f64::from(metrics.min_width));
     // The minimum height floors the rows block alone: the heading adds on top
     // of it so the rows keep their unlabelled height.
-    let rows_height = metrics
-        .vertical_inset
+    let rows_height = f64::from(metrics.vertical_inset)
         .mul_add(2.0, total_height)
-        .max(metrics.min_height);
+        .max(f64::from(metrics.min_height));
     let height = rows_height
         + if label_size.height > 0.0 {
-            f64::from(label_size.height) + metrics.label_spacing
+            f64::from(label_size.height) + f64::from(metrics.label_spacing)
         } else {
             0.0
         };

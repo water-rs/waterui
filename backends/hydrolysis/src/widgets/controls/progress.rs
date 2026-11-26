@@ -7,7 +7,7 @@ use crate::theme::{
 };
 #[cfg(feature = "accessibility")]
 use accesskit::{Node as AccessibilityNode, Role as AccessibilityNodeRole};
-use kurbo::{Rect, Size, Vec2};
+use kurbo::{Rect, Vec2};
 use nami::{Binding, Computed, Signal};
 use std::any::Any;
 use std::cell::RefCell;
@@ -51,7 +51,7 @@ impl ProgressLook {
         style: ProgressStyle,
         determinate: bool,
         labels: (LayoutSize, LayoutSize),
-    ) -> (Option<f64>, Option<f64>) {
+    ) -> (Option<f32>, Option<f32>) {
         if matches!(style, ProgressStyle::Loading) {
             return (None, None);
         }
@@ -62,10 +62,10 @@ impl ProgressLook {
     fn spec_bands(
         spec: &ProgressSpec,
         labels: (LayoutSize, LayoutSize),
-    ) -> (Option<f64>, Option<f64>) {
+    ) -> (Option<f32>, Option<f32>) {
         (
-            spec.label().then(|| f64::from(labels.0.height)),
-            spec.value_label().then(|| f64::from(labels.1.height)),
+            spec.label().then_some(labels.0.height),
+            spec.value_label().then_some(labels.1.height),
         )
     }
 
@@ -73,52 +73,46 @@ impl ProgressLook {
     /// measured label sizes.
     fn size(
         &self,
-        (label, value_label): (Option<f64>, Option<f64>),
+        (label, value_label): (Option<f32>, Option<f32>),
         labels: (LayoutSize, LayoutSize),
     ) -> LayoutSize {
-        let size = match self {
+        match self {
             Self::Linear(look) => {
-                let label_w = if label.is_some() {
-                    f64::from(labels.0.width)
-                } else {
-                    0.0
-                };
+                let label_w = if label.is_some() { labels.0.width } else { 0.0 };
                 let value_w = if value_label.is_some() {
-                    f64::from(labels.1.width)
+                    labels.1.width
                 } else {
                     0.0
                 };
                 let width = look.minimum_width().max(label_w).max(value_w);
                 let layout = look.layout(width, label, value_label);
-                Size::new(width, layout.height)
+                LayoutSize::new(width, layout.height)
             }
             Self::Indicator(look) => {
                 let label_w = if label.is_some() && look.get_label_spacing().is_some() {
-                    f64::from(labels.0.width)
+                    labels.0.width
                 } else {
                     0.0
                 };
                 let value_w = if value_label.is_some() && look.get_value_label_spacing().is_some() {
-                    f64::from(labels.1.width)
+                    labels.1.width
                 } else {
                     0.0
                 };
-                let width = look.control().size().width.max(label_w).max(value_w);
+                let width = crate::num_cast::f64_as_f32(look.control().size().width)
+                    .max(label_w)
+                    .max(value_w);
                 let layout = look.layout(width, label, value_label);
-                Size::new(width, layout.height)
+                LayoutSize::new(width, layout.height)
             }
-        };
-        LayoutSize::new(
-            crate::num_cast::f64_as_f32(size.width),
-            crate::num_cast::f64_as_f32(size.height),
-        )
+        }
     }
 }
 
 /// The height of a label of `size`, or `None` when it has no extent: the
 /// indicator has no such label.
-fn extent(size: LayoutSize) -> Option<f64> {
-    (size.width > 0.0 || size.height > 0.0).then_some(f64::from(size.height))
+fn extent(size: LayoutSize) -> Option<f32> {
+    (size.width > 0.0 || size.height > 0.0).then_some(size.height)
 }
 
 /// The spec of the indicator `style` is in `env`: `determinate` when its
@@ -381,7 +375,11 @@ pub fn render_progress_parts<E: crate::text::TextEngine>(
     let origin = Vec2::new(ctx.bounds.x0, ctx.bounds.y0);
     let (control, frame): (&ProgressControl, Rect) = match &look {
         ProgressLook::Linear(linear) => {
-            let layout = linear.layout(ctx.bounds.width(), label_height, value_label_height);
+            let layout = linear.layout(
+                crate::num_cast::f64_as_f32(ctx.bounds.width()),
+                label_height,
+                value_label_height,
+            );
             // The labels' semantics are merged into the indicator's own
             // node by `progress_accessibility`, so the sub-views flush
             // visual-only.
@@ -396,7 +394,11 @@ pub fn render_progress_parts<E: crate::text::TextEngine>(
             (linear.control(), layout.bar + origin)
         }
         ProgressLook::Indicator(indicator) => {
-            let layout = indicator.layout(ctx.bounds.width(), label_height, value_label_height);
+            let layout = indicator.layout(
+                crate::num_cast::f64_as_f32(ctx.bounds.width()),
+                label_height,
+                value_label_height,
+            );
             if layout.label.is_none() && layout.value_label.is_none() {
                 (indicator.control(), indicator.frame(ctx.bounds))
             } else {

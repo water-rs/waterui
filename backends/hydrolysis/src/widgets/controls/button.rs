@@ -178,7 +178,7 @@ pub struct MenuRowChrome;
 /// state layer is the foreground colour, inset by the theme's menu-item
 /// inset. A row shows keyboard focus through its state layer alone.
 #[cfg(feature = "menu")]
-fn lower_menu_row(look: &ButtonLook, horizontal_inset: f64) -> ButtonLook {
+fn lower_menu_row(look: &ButtonLook, horizontal_inset: f32) -> ButtonLook {
     let theme_chrome = look.chrome();
     let layer = theme_chrome.state_layer();
     let chrome = Chrome::new(
@@ -251,8 +251,8 @@ fn lower_floating(look: &ButtonLook, floating: &FloatingLook) -> ButtonLook {
     let built = ButtonLook::new(chrome, label)
         .padding(floating.content_inset_x(), floating.content_inset_y())
         .minimum_size(kurbo::Size::new(
-            floating.minimum_width(),
-            floating.minimum_height(),
+            f64::from(floating.minimum_width()),
+            f64::from(floating.minimum_height()),
         ))
         .group_opacity(group_opacity);
     match look.get_group_blend_space() {

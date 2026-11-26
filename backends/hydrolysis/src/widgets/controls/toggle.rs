@@ -234,7 +234,7 @@ fn toggle_size(control: &ToggleControl, label_size: LayoutSize) -> (f64, f64) {
     let label_width = f64::from(label_size.width);
     let size = control.size();
     let width = if label_width > 0.0 {
-        label_width + control.get_label_spacing() + size.width
+        label_width + f64::from(control.get_label_spacing()) + size.width
     } else {
         size.width
     };
@@ -518,7 +518,8 @@ fn label_proposal(bounds: kurbo::Rect, style: ToggleStyle, toggle: &ToggleContro
     if matches!(drawn_style(style), ToggleStyle::Checkbox) {
         return ProposalSize::UNSPECIFIED;
     }
-    let room = (bounds.width() - toggle.size().width - toggle.get_label_spacing()).max(0.0);
+    let room =
+        (bounds.width() - toggle.size().width - f64::from(toggle.get_label_spacing())).max(0.0);
     ProposalSize::new(Some(crate::num_cast::f64_as_f32(room)), None)
 }
 
@@ -551,7 +552,7 @@ fn left_to_right_bounds(
     label_size: LayoutSize,
 ) -> (kurbo::Rect, kurbo::Rect) {
     let size = toggle.size();
-    let spacing = toggle.get_label_spacing();
+    let spacing = f64::from(toggle.get_label_spacing());
     let control_y0 = bounds.y0 + ((bounds.height() - size.height) / 2.0).max(0.0);
     let control_y1 = control_y0 + size.height;
     let has_label = label_size.width > 0.0 || label_size.height > 0.0;
@@ -617,7 +618,7 @@ mod tests {
     use waterui_core::animation::Animation;
     use waterui_core::layout::{LayoutDirection, Size};
 
-    fn control(width: f64, height: f64, spacing: f64) -> ToggleControl {
+    fn control(width: f64, height: f64, spacing: f32) -> ToggleControl {
         ToggleControl::new(
             kurbo::Size::new(width, height),
             Motion::uniform(Animation::linear(Duration::ZERO)),

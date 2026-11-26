@@ -53,13 +53,13 @@ pub struct FloatingStyle {
     /// Normalized corner radius used by the surface and its state layer.
     pub clip_radius: f32,
     /// Horizontal content inset used when measuring a semantic button.
-    pub content_inset_x: f64,
+    pub content_inset_x: f32,
     /// Vertical content inset used when measuring a semantic button.
-    pub content_inset_y: f64,
+    pub content_inset_y: f32,
     /// Theme-provided minimum width for a floating semantic button.
-    pub minimum_width: f64,
+    pub minimum_width: f32,
     /// Theme-provided minimum height for a floating semantic button.
-    pub minimum_height: f64,
+    pub minimum_height: f32,
     /// Opacity applied to floating-button content while disabled.
     pub disabled_content_opacity: f32,
     /// The surface's elevation per interaction state — a floating action
@@ -119,10 +119,10 @@ pub struct FloatingLook {
     motion: Motion,
     content_color: Color,
     state_layer_color: Color,
-    content_inset_x: f64,
-    content_inset_y: f64,
-    minimum_width: f64,
-    minimum_height: f64,
+    content_inset_x: f32,
+    content_inset_y: f32,
+    minimum_width: f32,
+    minimum_height: f32,
     disabled_content_opacity: f32,
 }
 
@@ -184,7 +184,7 @@ impl FloatingLook {
     /// Sets horizontal and vertical content inset for semantic buttons inside
     /// this floating surface.
     #[must_use]
-    pub const fn content_inset(mut self, x: f64, y: f64) -> Self {
+    pub const fn content_inset(mut self, x: f32, y: f32) -> Self {
         self.content_inset_x = x;
         self.content_inset_y = y;
         self
@@ -192,7 +192,7 @@ impl FloatingLook {
 
     /// Sets the minimum size for semantic buttons inside this floating surface.
     #[must_use]
-    pub const fn minimum_size(mut self, width: f64, height: f64) -> Self {
+    pub const fn minimum_size(mut self, width: f32, height: f32) -> Self {
         self.minimum_width = width;
         self.minimum_height = height;
         self
@@ -233,25 +233,25 @@ impl FloatingLook {
 
     /// Horizontal content inset for floating semantic buttons.
     #[must_use]
-    pub const fn content_inset_x(&self) -> f64 {
+    pub const fn content_inset_x(&self) -> f32 {
         self.content_inset_x
     }
 
     /// Vertical content inset for floating semantic buttons.
     #[must_use]
-    pub const fn content_inset_y(&self) -> f64 {
+    pub const fn content_inset_y(&self) -> f32 {
         self.content_inset_y
     }
 
     /// Minimum width for floating semantic buttons.
     #[must_use]
-    pub const fn minimum_width(&self) -> f64 {
+    pub const fn minimum_width(&self) -> f32 {
         self.minimum_width
     }
 
     /// Minimum height for floating semantic buttons.
     #[must_use]
-    pub const fn minimum_height(&self) -> f64 {
+    pub const fn minimum_height(&self) -> f32 {
         self.minimum_height
     }
 

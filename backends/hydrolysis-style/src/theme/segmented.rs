@@ -140,19 +140,19 @@ impl Segment {
 pub struct SegmentedLayout {
     /// The row's least height: the tallest label and its vertical padding
     /// grow it beyond this.
-    pub row_height: f64,
+    pub row_height: f32,
     /// The room around a label inside its segment: `x` on each side, `y`
     /// above and below.
     pub label_padding: Vec2,
     /// The narrowest a segment is measured, its padding included.
-    pub minimum_segment_width: f64,
+    pub minimum_segment_width: f32,
     /// The narrowest the picker is measured.
-    pub minimum_width: f64,
+    pub minimum_width: f32,
     /// The space between the picker's label above the row and the row.
-    pub label_spacing: f64,
+    pub label_spacing: f32,
     /// How far the parts draw beyond the row on every side, so a group
     /// opacity layer does not clip them.
-    pub reach: f64,
+    pub reach: f32,
 }
 
 /// How a segmented picker styles each segment's label: its font and its

@@ -73,8 +73,8 @@ pub struct StepperLook {
     decrement: Chrome,
     increment: Chrome,
     button: Size,
-    spacing: f64,
-    label_spacing: f64,
+    spacing: f32,
+    label_spacing: f32,
 }
 
 impl StepperLook {
@@ -93,14 +93,14 @@ impl StepperLook {
 
     /// Spaces the two ends `spacing` apart.
     #[must_use]
-    pub const fn spacing(mut self, spacing: f64) -> Self {
+    pub const fn spacing(mut self, spacing: f32) -> Self {
         self.spacing = spacing;
         self
     }
 
     /// Spaces the ends `spacing` from the label.
     #[must_use]
-    pub const fn label_spacing(mut self, spacing: f64) -> Self {
+    pub const fn label_spacing(mut self, spacing: f32) -> Self {
         self.label_spacing = spacing;
         self
     }
@@ -125,13 +125,13 @@ impl StepperLook {
 
     /// The space between the two ends.
     #[must_use]
-    pub const fn get_spacing(&self) -> f64 {
+    pub const fn get_spacing(&self) -> f32 {
         self.spacing
     }
 
     /// The space between the label and the ends.
     #[must_use]
-    pub const fn get_label_spacing(&self) -> f64 {
+    pub const fn get_label_spacing(&self) -> f32 {
         self.label_spacing
     }
 
@@ -140,7 +140,7 @@ impl StepperLook {
     #[must_use]
     pub const fn controls(&self) -> Size {
         Size::new(
-            self.button.width.mul_add(2.0, self.spacing),
+            self.button.width.mul_add(2.0, self.spacing as f64),
             self.button.height,
         )
     }

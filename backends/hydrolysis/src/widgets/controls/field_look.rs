@@ -123,7 +123,7 @@ fn indicator_part(indicator: &Driven<Border>) -> Custom<(), (Driven<Paint>, Driv
     Custom::new(
         (
             indicator.map(|border| border.paint),
-            indicator.map(|border| border.width),
+            indicator.map(|border| f64::from(border.width)),
         ),
         |recorder, frame, (paint, width)| {
             use cherenkov_record::Draw as _;

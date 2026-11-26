@@ -59,7 +59,7 @@ pub struct NavigationMotion {
     /// Easing applied to programmatic navigation progress.
     pub transition_easing: EasingCurve,
     /// Absolute travel distance for the Material shared-axis X pattern.
-    pub shared_axis_slide_distance: f64,
+    pub shared_axis_slide_distance: f32,
     /// Progress at which the outgoing layer has faded out and the incoming
     /// layer begins fading in.
     pub fade_through_threshold: f32,
@@ -69,39 +69,39 @@ pub struct NavigationMotion {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NavigationMetrics {
     /// Automatic title-mode bar height.
-    pub automatic_bar_height: f64,
+    pub automatic_bar_height: f32,
     /// Inline title-mode bar height.
-    pub inline_bar_height: f64,
+    pub inline_bar_height: f32,
     /// Medium title-mode bar height.
-    pub medium_bar_height: f64,
+    pub medium_bar_height: f32,
     /// Large title-mode bar height.
-    pub large_bar_height: f64,
+    pub large_bar_height: f32,
     /// Navigation title slot height for inline bars.
-    pub inline_title_height: f64,
+    pub inline_title_height: f32,
     /// Navigation title slot height for medium bars.
-    pub medium_title_height: f64,
+    pub medium_title_height: f32,
     /// Navigation title slot height for large bars.
-    pub large_title_height: f64,
+    pub large_title_height: f32,
     /// Title leading inset when no leading bar item is present.
-    pub title_leading_inset: f64,
+    pub title_leading_inset: f32,
     /// Title trailing inset when no trailing bar item is present.
-    pub title_trailing_inset: f64,
+    pub title_trailing_inset: f32,
     /// Bottom inset for large navigation titles.
-    pub large_title_bottom_inset: f64,
+    pub large_title_bottom_inset: f32,
     /// Horizontal leading/trailing bar inset.
-    pub horizontal_inset: f64,
+    pub horizontal_inset: f32,
     /// Gap between title and adjacent items.
-    pub item_spacing: f64,
+    pub item_spacing: f32,
     /// Search field height.
-    pub search_height: f64,
+    pub search_height: f32,
     /// Vertical search inset.
-    pub search_vertical_inset: f64,
+    pub search_vertical_inset: f32,
     /// Navigation back button size.
-    pub back_button_size: f64,
+    pub back_button_size: f32,
     /// Navigation back button leading inset.
-    pub back_button_leading_inset: f64,
+    pub back_button_leading_inset: f32,
     /// Navigation back button top inset.
-    pub back_button_top_inset: f64,
+    pub back_button_top_inset: f32,
 }
 
 /// How the navigation chrome looks and responds: its [`NavigationMetrics`],

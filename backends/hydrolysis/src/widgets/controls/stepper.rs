@@ -383,7 +383,8 @@ pub fn render_stepper_parts<E: crate::text::TextEngine>(
     let direction = waterui_core::layout::layout_direction(env).snapshot();
     // The label is offered the room before the buttons: a label that
     // stretches fills it, while text keeps its own width at the leading edge.
-    let room = (ctx.bounds.width() - look.controls().width - look.get_label_spacing()).max(0.0);
+    let room =
+        (ctx.bounds.width() - look.controls().width - f64::from(look.get_label_spacing())).max(0.0);
     let label_size = state.label_view.measure(
         ctx.renderer_mut(),
         env,
@@ -505,7 +506,7 @@ fn stepper_size(look: &StepperLook, label: LayoutSize) -> LayoutSize {
     let controls = look.controls();
     let label_width = f64::from(label.width);
     let width = if label_width > 0.0 {
-        label_width + look.get_label_spacing() + controls.width
+        label_width + f64::from(look.get_label_spacing()) + controls.width
     } else {
         controls.width
     };
@@ -576,7 +577,7 @@ fn stepper_rects(
     );
     let label = label_beside_control_bounds(
         bounds.x0,
-        (controls_x0 - look.get_label_spacing()).max(bounds.x0),
+        (controls_x0 - f64::from(look.get_label_spacing())).max(bounds.x0),
         bounds,
         decrement.union(increment),
         kurbo::Size::new(f64::from(label.width), f64::from(label.height)),

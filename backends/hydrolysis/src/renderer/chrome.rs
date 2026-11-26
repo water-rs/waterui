@@ -429,10 +429,11 @@ impl WashOperands {
     fn new(wash: &Wash, frame: Rect, env: &Environment) -> Self {
         let color = wash.color.resolve(env);
         let center = frame.center();
+        let radius = f64::from(wash.radius);
         Self {
-            paint: Operand::new(wash_paint(center, wash.radius, color.snapshot(), 0.0)),
+            paint: Operand::new(wash_paint(center, radius, color.snapshot(), 0.0)),
             color,
-            radius: wash.radius,
+            radius,
             center: Cell::new(center),
         }
     }
@@ -473,7 +474,7 @@ impl SurfaceOperands {
             let resolved = border.target(inputs);
             BorderOperands {
                 shape: Operand::new(shape.outset(silhouette, corners, -resolved.width / 2.0)),
-                stroke: Operand::new(Stroke::new(resolved.width)),
+                stroke: Operand::new(Stroke::new(f64::from(resolved.width))),
                 paint: Operand::new(resolved.paint),
             }
         });
@@ -1073,7 +1074,7 @@ impl LiveChrome {
                 let color = color.resolve(env);
                 Some(RingOperands {
                     shape: Operand::new(shape.outset(silhouette, corners, offset + width / 2.0)),
-                    stroke: Stroke::new(*width),
+                    stroke: Stroke::new(f64::from(*width)),
                     paint: Operand::new(Self::ring_paint(color.snapshot(), state)),
                     color,
                 })
@@ -1405,7 +1406,7 @@ impl LiveChrome {
             );
             set_windowed_operand(
                 &operands.stroke,
-                Stroke::new(resolved.width),
+                Stroke::new(f64::from(resolved.width)),
                 anim.as_ref(),
                 window,
                 reverse,
@@ -1855,22 +1856,24 @@ impl LiveChrome {
         let scaled = Rect::from_center_size(frame.center(), frame.size() * scale);
         let shadow = every_state()
             .map(|state| {
-                self.spec
-                    .surface()
-                    .get_elevation()
-                    .target(&Inputs::at_rest(frame, state, &()))
-                    .extent()
+                f64::from(
+                    self.spec
+                        .surface()
+                        .get_elevation()
+                        .target(&Inputs::at_rest(frame, state, &()))
+                        .extent(),
+                )
             })
             .fold(0.0_f64, f64::max);
         let ring = match self.spec.focus() {
-            FocusIndicator::Ring { width, offset, .. } => offset + width,
+            FocusIndicator::Ring { width, offset, .. } => f64::from(offset + width),
             FocusIndicator::Tint => 0.0,
         };
         let drag = self
             .spec
             .press()
             .get_drag_deformation()
-            .map_or(0.0, |deform| deform.extent(scaled.size()));
+            .map_or(0.0, |deform| f64::from(deform.extent(scaled.size())));
         let reach = shadow.max(ring) + drag;
         scaled
             .inflate(reach, reach)

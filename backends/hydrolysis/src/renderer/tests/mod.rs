@@ -3293,7 +3293,7 @@ impl MinimalTestTheme {
     /// theme's menu panel: its elevation's reach.
     #[cfg(feature = "menu")]
     pub(crate) fn panel_margin() -> f64 {
-        Self::menu_look().panel_extent(Rect::ZERO)
+        f64::from(Self::menu_look().panel_extent(Rect::ZERO))
     }
 }
 
@@ -3464,7 +3464,7 @@ impl WidgetTheme for MinimalTestTheme {
         let layout = SliderLayout {
             // 44pt for the ExtraSmall default, four points deeper per size:
             // the per-size tests read this back off the measured row.
-            row_height: 4.0f64.mul_add(f64::from(spec.size() as u8), 44.0),
+            row_height: 4.0f32.mul_add(f32::from(spec.size() as u8), 44.0),
             track_inset: 12.0,
             label_inset: 12.0,
             label_gap: 8.0,
@@ -3636,7 +3636,7 @@ impl WidgetTheme for MinimalTestTheme {
         });
         // The layout the theme reports: forced, or by width class.
         if let Some(threshold) = self.horizontal_from_width {
-            look = look.horizontal(threshold, metrics);
+            look = look.horizontal(crate::num_cast::f64_as_f32(threshold), metrics);
         } else if self.forced_tab_item_layout == Some(TabItemLayout::Horizontal) {
             look = look.horizontal(0.0, metrics);
         }

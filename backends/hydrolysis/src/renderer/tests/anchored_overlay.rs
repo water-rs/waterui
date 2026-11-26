@@ -1403,8 +1403,8 @@ mod menu_presentation_motion_tests {
         assert!(runtime.is_settled());
         let settled = *samples.borrow().last().expect("settled sample");
         assert!(near(settled.progress, 1.0) && near(settled.vertical_progress, 1.0));
-        assert!(near(settled.content_blur, 0.0));
-        assert!(near(settled.surface_corner_radius, 26.0));
+        assert!(near(f64::from(settled.content_blur), 0.0));
+        assert!(near(f64::from(settled.surface_corner_radius), 26.0));
         let dup_bounds = bounds_of(&mut runtime, "Duplicate");
         let dup_x = f64_as_f32(f64::midpoint(dup_bounds.x0, dup_bounds.x1));
         let dup_y = f64_as_f32(f64::midpoint(dup_bounds.y0, dup_bounds.y1));

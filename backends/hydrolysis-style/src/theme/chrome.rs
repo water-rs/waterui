@@ -79,9 +79,9 @@ impl From<RoundedRectRadii> for Corners {
     }
 }
 
-impl From<f64> for Corners {
-    fn from(radius: f64) -> Self {
-        Self::Radii(RoundedRectRadii::from_single_radius(radius))
+impl From<f32> for Corners {
+    fn from(radius: f32) -> Self {
+        Self::Radii(RoundedRectRadii::from_single_radius(f64::from(radius)))
     }
 }
 
@@ -168,7 +168,7 @@ impl CornerShape {
 
     /// One circular radius on every corner.
     #[must_use]
-    pub fn radius(radius: f64) -> Self {
+    pub fn radius(radius: f32) -> Self {
         Self::new(Corners::from(radius))
     }
 
@@ -229,7 +229,8 @@ impl CornerShape {
     /// stays parallel — the shape a focus ring around the surface, or a
     /// border inside it, follows.
     #[must_use]
-    pub fn outset(&self, rect: Rect, corners: Corners, distance: f64) -> ShapeData {
+    pub fn outset(&self, rect: Rect, corners: Corners, distance: f32) -> ShapeData {
+        let distance = f64::from(distance);
         match &self.outline {
             Outline::Rect => {}
             // A path has no offset curve: a grown or shrunk silhouette is
@@ -316,10 +317,14 @@ impl Elevation {
 
     /// How far the shadows reach beyond the caster's edge.
     #[must_use]
-    pub fn extent(&self) -> f64 {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "logical-pixel shadow reach fits in f32"
+    )]
+    pub fn extent(&self) -> f32 {
         let reach =
             |shadow: &Shadow| shadow.sigma.mul_add(3.0, shadow.spread) + shadow.offset.hypot();
-        reach(&self.key).max(reach(&self.ambient))
+        reach(&self.key).max(reach(&self.ambient)) as f32
     }
 }
 
@@ -328,7 +333,7 @@ impl Elevation {
 pub struct Border {
     /// Stroke width in logical units; the stroke lies wholly inside the
     /// surface's silhouette.
-    pub width: f64,
+    pub width: f32,
     /// The stroke's paint.
     pub paint: Paint,
 }
@@ -336,7 +341,7 @@ pub struct Border {
 impl Border {
     /// A border of `width` painted with `paint`.
     #[must_use]
-    pub fn new(width: f64, paint: impl Into<Paint>) -> Self {
+    pub fn new(width: f32, paint: impl Into<Paint>) -> Self {
         Self {
             width,
             paint: paint.into(),
@@ -652,7 +657,7 @@ impl StateLayer {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Ripple {
     /// The smallest full diameter, so small targets still show a ripple.
-    pub min_diameter: f64,
+    pub min_diameter: f32,
     /// The wave's starting diameter as a fraction of the full diameter.
     pub initial_scale: f64,
     /// How far the wave's centre drifts from the press point towards the
@@ -672,8 +677,15 @@ pub struct Ripple {
 impl Ripple {
     /// The full diameter of a wave on `frame`.
     #[must_use]
-    pub fn diameter(&self, frame: Rect) -> f64 {
-        frame.width().hypot(frame.height()).max(self.min_diameter)
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "logical-pixel ripple diameter fits in f32"
+    )]
+    pub fn diameter(&self, frame: Rect) -> f32 {
+        frame
+            .width()
+            .hypot(frame.height())
+            .max(f64::from(self.min_diameter)) as f32
     }
 
     /// A wave's starting and final circles on `frame` for a press at
@@ -682,7 +694,7 @@ impl Ripple {
     pub fn wave(&self, frame: Rect, origin: Option<Point>) -> (Circle, Circle) {
         let center = frame.center();
         let origin = origin.unwrap_or(center);
-        let radius = self.diameter(frame) / 2.0;
+        let radius = f64::from(self.diameter(frame)) / 2.0;
         let end = origin.lerp(center, self.drift);
         (
             Circle::new(origin, radius * self.initial_scale),
@@ -700,7 +712,7 @@ pub struct Wash {
     /// at `radius`.
     pub color: Color,
     /// How far the highlight reaches from the press point.
-    pub radius: f64,
+    pub radius: f32,
 }
 
 /// Elastic drag deformation for a pressed surface or control: a bounded
@@ -712,12 +724,12 @@ pub struct Wash {
 /// bounds its motion language calls for.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DragDeformation {
-    max_lag: f64,
-    lag_scale: f64,
+    max_lag: f32,
+    lag_scale: f32,
     displacement_gain: f64,
-    displacement_ref: f64,
+    displacement_ref: f32,
     velocity_gain: f64,
-    velocity_ref: f64,
+    velocity_ref: f32,
     min_stretch: f64,
     max_stretch: f64,
     active_motion: Option<Animation>,
@@ -749,7 +761,7 @@ impl DragDeformation {
     /// Configures bounded rubber-band lag along the drag offset:
     /// `max_lag * tanh(|drag| / lag_scale)`.
     #[must_use]
-    pub const fn lag(mut self, max_lag: f64, lag_scale: f64) -> Self {
+    pub const fn lag(mut self, max_lag: f32, lag_scale: f32) -> Self {
         self.max_lag = max_lag;
         self.lag_scale = lag_scale;
         self
@@ -758,7 +770,7 @@ impl DragDeformation {
     /// Configures displacement-driven stretch along the drag offset:
     /// `gain * tanh(|drag| / reference)`.
     #[must_use]
-    pub const fn displacement_stretch(mut self, gain: f64, reference: f64) -> Self {
+    pub const fn displacement_stretch(mut self, gain: f64, reference: f32) -> Self {
         self.displacement_gain = gain;
         self.displacement_ref = reference;
         self
@@ -767,7 +779,7 @@ impl DragDeformation {
     /// Configures velocity-driven stretch along the smoothed pointer velocity:
     /// `gain * tanh(|velocity| / reference)`.
     #[must_use]
-    pub const fn velocity_stretch(mut self, gain: f64, reference: f64) -> Self {
+    pub const fn velocity_stretch(mut self, gain: f64, reference: f32) -> Self {
         self.velocity_gain = gain;
         self.velocity_ref = reference;
         self
@@ -793,13 +805,13 @@ impl DragDeformation {
 
     /// Maximum rubber-band lag in logical points.
     #[must_use]
-    pub const fn get_max_lag(&self) -> f64 {
+    pub const fn get_max_lag(&self) -> f32 {
         self.max_lag
     }
 
     /// Characteristic drag distance for rubber-band lag, in logical points.
     #[must_use]
-    pub const fn get_lag_scale(&self) -> f64 {
+    pub const fn get_lag_scale(&self) -> f32 {
         self.lag_scale
     }
 
@@ -811,7 +823,7 @@ impl DragDeformation {
 
     /// Characteristic displacement for stretch, in logical points.
     #[must_use]
-    pub const fn get_displacement_ref(&self) -> f64 {
+    pub const fn get_displacement_ref(&self) -> f32 {
         self.displacement_ref
     }
 
@@ -823,7 +835,7 @@ impl DragDeformation {
 
     /// Characteristic velocity for stretch, in logical points per second.
     #[must_use]
-    pub const fn get_velocity_ref(&self) -> f64 {
+    pub const fn get_velocity_ref(&self) -> f32 {
         self.velocity_ref
     }
 
@@ -849,28 +861,28 @@ impl DragDeformation {
     #[must_use]
     pub fn lag_offset(&self, drag: Vec2) -> Vec2 {
         let dist = drag.hypot();
-        if self.max_lag <= 0.0 || self.lag_scale <= 0.0 || dist <= 1e-9 || !dist.is_finite() {
+        let max_lag = f64::from(self.max_lag);
+        let lag_scale = f64::from(self.lag_scale);
+        if max_lag <= 0.0 || lag_scale <= 0.0 || dist <= 1e-9 || !dist.is_finite() {
             return Vec2::ZERO;
         }
-        let mag = self.max_lag * (dist / self.lag_scale).tanh();
+        let mag = max_lag * (dist / lag_scale).tanh();
         drag * (mag / dist)
     }
 
     fn drive_vector(&self, drag: Vec2, velocity: Vec2) -> Vec2 {
         let mut drive = Vec2::ZERO;
         let dist = drag.hypot();
-        if self.displacement_gain > 0.0
-            && self.displacement_ref > 0.0
-            && dist > 1e-9
-            && dist.is_finite()
+        let displacement_ref = f64::from(self.displacement_ref);
+        if self.displacement_gain > 0.0 && displacement_ref > 0.0 && dist > 1e-9 && dist.is_finite()
         {
-            let mag = self.displacement_gain * (dist / self.displacement_ref).tanh();
+            let mag = self.displacement_gain * (dist / displacement_ref).tanh();
             drive += drag * (mag / dist);
         }
         let speed = velocity.hypot();
-        if self.velocity_gain > 0.0 && self.velocity_ref > 0.0 && speed > 1e-9 && speed.is_finite()
-        {
-            let mag = self.velocity_gain * (speed / self.velocity_ref).tanh();
+        let velocity_ref = f64::from(self.velocity_ref);
+        if self.velocity_gain > 0.0 && velocity_ref > 0.0 && speed > 1e-9 && speed.is_finite() {
+            let mag = self.velocity_gain * (speed / velocity_ref).tanh();
             drive += velocity * (mag / speed);
         }
         drive
@@ -947,11 +959,15 @@ impl DragDeformation {
 
     /// Worst-case visual expansion beyond `size` on any side, in logical points.
     #[must_use]
-    pub fn extent(&self, size: Size) -> f64 {
-        let lag = self.max_lag.max(0.0);
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "logical-pixel drag deformation extent fits in f32"
+    )]
+    pub fn extent(&self, size: Size) -> f32 {
+        let lag = f64::from(self.max_lag.max(0.0));
         let stretch_excess = (self.max_stretch - 1.0).max(0.0);
         let half_max = 0.5 * size.width.max(size.height).max(0.0);
-        stretch_excess.mul_add(half_max, lag)
+        stretch_excess.mul_add(half_max, lag) as f32
     }
 }
 
@@ -963,7 +979,7 @@ pub struct PressFeedback {
     ripple: Option<Ripple>,
     tint: bool,
     scale: Option<f64>,
-    max_growth: Option<f64>,
+    max_growth: Option<f32>,
     wash: Option<Wash>,
     drag_deformation: Option<DragDeformation>,
 }
@@ -1011,7 +1027,7 @@ impl PressFeedback {
     /// by more than `max_growth` logical points, preserving aspect ratio on
     /// wide or tall controls. Default is `None` (unconstrained uniform scale).
     #[must_use]
-    pub const fn max_growth(mut self, max_growth: f64) -> Self {
+    pub const fn max_growth(mut self, max_growth: f32) -> Self {
         self.max_growth = Some(max_growth);
         self
     }
@@ -1050,7 +1066,7 @@ impl PressFeedback {
 
     /// The half-axis growth cap in logical points, if one is set.
     #[must_use]
-    pub const fn get_max_growth(&self) -> Option<f64> {
+    pub const fn get_max_growth(&self) -> Option<f32> {
         self.max_growth
     }
 
@@ -1068,7 +1084,7 @@ impl PressFeedback {
         if !half_max.is_finite() || half_max <= 0.0 {
             return 1.0 + amount;
         }
-        let limit = cap.max(0.0) / half_max;
+        let limit = f64::from(cap.max(0.0)) / half_max;
         1.0 + amount.clamp(-limit, limit)
     }
 
@@ -1097,9 +1113,9 @@ pub enum FocusIndicator {
     /// included — fading in and out with the focus transition.
     Ring {
         /// Stroke width.
-        width: f64,
+        width: f32,
         /// Gap between the surface's edge and the ring's inner edge.
-        offset: f64,
+        offset: f32,
         /// Ring colour.
         color: Color,
     },

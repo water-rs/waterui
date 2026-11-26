@@ -247,7 +247,7 @@ fn command_shortcut_renders_a_trailing_aligned_hint() {
         (trailing[0].abs_diff(trailing[1])) <= 2,
         "shortcut hints share one trailing edge: {trailing:?}"
     );
-    let hint_edge = crate::num_cast::f64_as_u32(menu_frame.x1 - row_inset);
+    let hint_edge = crate::num_cast::f64_as_u32(menu_frame.x1 - f64::from(row_inset));
     assert!(
         trailing[0].abs_diff(hint_edge) <= 2,
         "hint hugs the row's trailing inset: ink {trailing:?} edge {hint_edge}"

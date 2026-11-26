@@ -121,7 +121,7 @@ pub fn measure_list_row_node<E: TextEngine>(
                 ProposalSize::UNSPECIFIED,
             );
             let spacing = if label_nat.width > 0.0 && value_nat.width > 0.0 {
-                metrics.inline_spacing
+                f64::from(metrics.inline_spacing)
             } else {
                 0.0
             };
@@ -168,7 +168,7 @@ pub fn measure_list_row_node<E: TextEngine>(
             let intrinsic_w = f64::from(label_size.width).max(f64::from(value_size.width));
             let width = proposed_width.map_or(intrinsic_w, |w| w.max(intrinsic_w));
             let spacing = if label_size.height > 0.0 && value_size.height > 0.0 {
-                metrics.detail_spacing
+                f64::from(metrics.detail_spacing)
             } else {
                 0.0
             };
@@ -352,10 +352,10 @@ pub fn render_list_row_node<E: TextEngine>(
         value_rect: value_ltr,
     } = match layout {
         RowLayout::Inline => {
-            measure_inline_placement(ctx, state, env, bounds, metrics.inline_spacing)
+            measure_inline_placement(ctx, state, env, bounds, f64::from(metrics.inline_spacing))
         }
         RowLayout::Detail => {
-            measure_detail_placement(ctx, state, env, bounds, metrics.detail_spacing)
+            measure_detail_placement(ctx, state, env, bounds, f64::from(metrics.detail_spacing))
         }
         _ => {
             contract_violation!("hydrolysis: unsupported RowLayout variant in ListRowConfig");

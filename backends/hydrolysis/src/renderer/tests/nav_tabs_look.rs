@@ -517,7 +517,11 @@ fn tabs_compact_floating_bar_centers_pill_and_reserves_bottom_margin() {
     };
     // Bottom edge is inset by floating_margin (12.0) and height is bar_height (48.0).
     approx::assert_relative_eq!(bar_frame.y1, 288.0, epsilon = 1e-6);
-    approx::assert_relative_eq!(bar_frame.height(), metrics.bar_height, epsilon = 1e-6);
+    approx::assert_relative_eq!(
+        bar_frame.height(),
+        f64::from(metrics.bar_height),
+        epsilon = 1e-6
+    );
     assert!(
         bar_frame.width() >= 176.0 && bar_frame.width() <= 320.0,
         "compact pill width out of range: {bar_frame:?}"

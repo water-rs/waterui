@@ -158,10 +158,9 @@ fn header_height_for(label_size: LayoutSize, look: &DisclosureLook) -> f64 {
     let layout = look.layout();
     let indicator_h = look.control().size().height;
     let inner_h = f64::from(label_size.height).max(indicator_h);
-    layout
-        .vertical_inset
+    f64::from(layout.vertical_inset)
         .mul_add(2.0, inner_h)
-        .max(layout.min_header_height)
+        .max(f64::from(layout.min_header_height))
 }
 
 fn header_intrinsic_width(label_size: LayoutSize, look: &DisclosureLook) -> f64 {
@@ -169,18 +168,18 @@ fn header_intrinsic_width(label_size: LayoutSize, look: &DisclosureLook) -> f64 
     let indicator = look.control();
     let label_w = f64::from(label_size.width);
     let label_part = if label_w > 0.0 {
-        indicator.get_label_spacing() + label_w
+        f64::from(indicator.get_label_spacing()) + label_w
     } else {
         0.0
     };
-    layout.horizontal_inset.mul_add(2.0, indicator.size().width) + label_part
+    f64::from(layout.horizontal_inset).mul_add(2.0, indicator.size().width) + label_part
 }
 
 fn header_label_proposal(header_width: f64, look: &DisclosureLook) -> ProposalSize {
     let layout = look.layout();
     let indicator = look.control();
-    let reserved = layout.horizontal_inset.mul_add(2.0, indicator.size().width)
-        + indicator.get_label_spacing();
+    let reserved = f64::from(layout.horizontal_inset).mul_add(2.0, indicator.size().width)
+        + f64::from(indicator.get_label_spacing());
     ProposalSize::new(Some(f64_as_f32((header_width - reserved).max(0.0))), None)
 }
 
@@ -193,8 +192,9 @@ fn header_part_bounds(
     let layout = look.layout();
     let indicator = look.control();
     let indicator_size = indicator.size();
-    let inner_x0 = header.x0 + layout.horizontal_inset;
-    let inner_x1 = (header.x1 - layout.horizontal_inset).max(inner_x0);
+    let horizontal_inset = f64::from(layout.horizontal_inset);
+    let inner_x0 = header.x0 + horizontal_inset;
+    let inner_x1 = (header.x1 - horizontal_inset).max(inner_x0);
     let ind_y0 = header.y0 + ((header.height() - indicator_size.height) * 0.5).max(0.0);
     let indicator_ltr = Rect::new(
         inner_x0,
@@ -203,7 +203,7 @@ fn header_part_bounds(
         (ind_y0 + indicator_size.height).min(header.y1),
     );
     let label_left = if label_size.width > 0.0 {
-        (indicator_ltr.x1 + indicator.get_label_spacing()).min(inner_x1)
+        (indicator_ltr.x1 + f64::from(indicator.get_label_spacing())).min(inner_x1)
     } else {
         indicator_ltr.x1
     };
@@ -323,18 +323,20 @@ pub fn measure_disclosure_node<E: TextEngine>(
     let expanded = render_state.config.expanded().snapshot();
     if expanded && let Some(content) = &render_state.content_view {
         let layout = look.layout();
-        let content_width = (total_w - layout.content_indent).max(0.0);
+        let content_indent = f64::from(layout.content_indent);
+        let content_spacing = f64::from(layout.content_spacing);
+        let content_width = (total_w - content_indent).max(0.0);
         let content_proposal = ProposalSize::new(
             Some(f64_as_f32(content_width)),
             proposal
                 .height
                 .filter(|h| h.is_finite())
-                .map(|h| (f64::from(h) - header_h - layout.content_spacing).max(0.0))
+                .map(|h| (f64::from(h) - header_h - content_spacing).max(0.0))
                 .map(f64_as_f32),
         );
         let content_size = content.measure_built_with_proposal(state, env, theme, content_proposal);
-        let width = total_w.max(layout.content_indent + f64::from(content_size.width));
-        let height = header_h + layout.content_spacing + f64::from(content_size.height);
+        let width = total_w.max(content_indent + f64::from(content_size.width));
+        let height = header_h + content_spacing + f64::from(content_size.height);
         return ViewDimensions::new(LayoutSize::new(f64_as_f32(width), f64_as_f32(height)));
     }
     ViewDimensions::new(LayoutSize::new(f64_as_f32(total_w), f64_as_f32(header_h)))
@@ -534,15 +536,17 @@ pub fn render_disclosure_node<E: TextEngine>(
 
     if frame.expanded {
         let layout = frame.look.layout();
-        let body_top = (frame.header_bounds.y1 + layout.content_spacing).min(ctx.bounds.y1);
+        let content_indent = f64::from(layout.content_indent);
+        let content_spacing = f64::from(layout.content_spacing);
+        let body_top = (frame.header_bounds.y1 + content_spacing).min(ctx.bounds.y1);
         let (body_left, body_right) = match direction {
             LayoutDirection::LeftToRight => (
-                (ctx.bounds.x0 + layout.content_indent).min(ctx.bounds.x1),
+                (ctx.bounds.x0 + content_indent).min(ctx.bounds.x1),
                 ctx.bounds.x1,
             ),
             LayoutDirection::RightToLeft => (
                 ctx.bounds.x0,
-                (ctx.bounds.x1 - layout.content_indent).max(ctx.bounds.x0),
+                (ctx.bounds.x1 - content_indent).max(ctx.bounds.x0),
             ),
         };
         let content_bounds = Rect::new(body_left, body_top, body_right, ctx.bounds.y1);
