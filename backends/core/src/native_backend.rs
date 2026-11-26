@@ -25,13 +25,7 @@ use waterui::ViewRenderer;
 use waterui::view_renderer::CaptureBinder;
 
 use waterui_core::animation::FrameRateVote;
-#[cfg(any(
-    waterui_feature = "capture",
-    waterui_feature = "menu",
-    waterui_feature = "snackbar"
-))]
-use waterui_core::backend::MapSlots;
-use waterui_core::backend::{Backend, DynBackend, ErasedPayload, HookSlot, cast};
+use waterui_core::backend::{Backend, DynBackend, ErasedPayload, HookSlot, MapSlots, cast};
 use waterui_core::metadata::MetadataKey;
 use waterui_core::view::hook::{ComposeErased, ErasedHooks, HookList, HookableView};
 use waterui_core::{AnyView, Environment, Metadata, NativeView, View, contract_violation};
@@ -883,6 +877,9 @@ native_backend! {
         map: waterui::map::MapConfig,
     }
     parents {
+        #[cfg(waterui_feature = "avatar")]
+        /// An avatar.
+        avatar<C>: waterui::widget::avatar::AvatarConfig<C>,
         /// A button.
         button<C>: waterui::component::button::ButtonConfig<C>,
         #[cfg(waterui_feature = "link")]
@@ -1041,10 +1038,6 @@ native_backend! {
         secure: waterui::metadata::secure::Secure,
         /// Dynamic range.
         dynamic_range: waterui::metadata::secure::DynamicRangeMetadata,
-        /// An anchored overlay.
-        anchored_overlay: waterui::metadata::anchored_overlay::AnchoredOverlay,
-        /// A window-modal sheet.
-        sheet: waterui::sheet::Sheet,
         #[cfg(waterui_feature = "dialog")]
         /// A dialog.
         dialog: waterui::dialog::Dialog,
@@ -1059,6 +1052,10 @@ native_backend! {
         navigation_transition_destination: waterui::navigation::NavigationTransitionDestination,
     }
     parent_metadata {
+        /// An anchored overlay.
+        anchored_overlay<S>: waterui::metadata::anchored_overlay::AnchoredOverlay<S>,
+        /// A window-modal sheet.
+        sheet<S>: waterui::sheet::Sheet<S>,
         #[cfg(waterui_feature = "menu")]
         /// A resolved context menu.
         resolved_context_menu<S>: waterui::metadata::context_menu::ResolvedContextMenu<S>,
@@ -1113,6 +1110,13 @@ mod tests {
     impl<C> Parent<C> for waterui::component::button::ButtonConfig<C> {
         fn children(self) -> Vec<C> {
             alloc::vec![self.label().build()]
+        }
+    }
+
+    #[cfg(waterui_feature = "avatar")]
+    impl<C> Parent<C> for waterui::widget::avatar::AvatarConfig<C> {
+        fn children(mut self) -> Vec<C> {
+            self.take_fallback().into_iter().collect()
         }
     }
 
@@ -1343,6 +1347,20 @@ mod tests {
                 .map(|tab| tab.content().build())
                 .chain(accessory)
                 .collect()
+        }
+    }
+
+    /// An anchored overlay's child is the overlay view its builder constructs.
+    impl<C> Parent<C> for waterui::metadata::anchored_overlay::AnchoredOverlay<C> {
+        fn children(self) -> Vec<C> {
+            alloc::vec![self.content.build()]
+        }
+    }
+
+    /// A sheet's child is the modal content view its builder constructs.
+    impl<C> Parent<C> for waterui::sheet::Sheet<C> {
+        fn children(self) -> Vec<C> {
+            alloc::vec![self.build_content()]
         }
     }
 
@@ -2294,6 +2312,30 @@ mod tests {
         assert_eq!(reached(AnyView::new(GpuView::new(ProbeContent))), ["gpu"]);
     }
 
+    #[test]
+    fn anchored_overlay_content_stays_typed_and_reenters_hooks() {
+        use waterui::ViewExt as _;
+        use waterui::metadata::anchored_overlay::AnchoredOverlay;
+        use waterui_core::binding;
+
+        let shown = binding(true);
+        let view =
+            Spacer::flexible().anchored_overlay(AnchoredOverlay::new(&shown, Spacer::flexible));
+        assert_eq!(
+            reached(view),
+            ["anchored_overlay", "spacer", "typed child", "spacer"]
+        );
+
+        let hooked = Hooks::new(
+            Spacer::flexible().anchored_overlay(AnchoredOverlay::new(&shown, Spacer::flexible)),
+            SpacerAsDivider,
+        );
+        assert_eq!(
+            reached(hooked),
+            ["anchored_overlay", "divider", "typed child", "divider"]
+        );
+    }
+
     #[cfg(any(
         waterui_feature = "gpu",
         waterui_feature = "cpu",
@@ -2378,6 +2420,28 @@ mod tests {
             [core::any::type_name::<
                 Metadata<waterui::view_renderer::CaptureBinder<AnyView>, AnyView>,
             >()]
+        );
+    }
+
+    #[cfg(waterui_feature = "avatar")]
+    #[test]
+    fn an_avatar_keeps_its_fallback_typed() {
+        use waterui::widget::avatar::{Avatar, avatar};
+
+        assert_eq!(reached(avatar("Ada Lovelace")), ["dynamic_range", "avatar"]);
+
+        let custom = || Avatar::new("Katherine Johnson", Spacer::flexible);
+        assert_eq!(
+            reached(custom()),
+            ["dynamic_range", "avatar", "typed child", "spacer"]
+        );
+        assert_eq!(
+            reached(AnyView::new(custom())),
+            ["dynamic_range", "avatar", "erased child", "spacer"]
+        );
+        assert_eq!(
+            reached(Hooks::new(custom(), SpacerAsDivider)),
+            ["dynamic_range", "avatar", "typed child", "divider"]
         );
     }
 
@@ -2627,6 +2691,26 @@ mod tests {
         assert_eq!(
             recorder.reached.borrow().as_slice(),
             ["custom_parent", "typed child", "divider"]
+        );
+    }
+
+    #[test]
+    fn sheet_content_stays_typed_and_reenters_hooks() {
+        use waterui::ViewExt as _;
+        use waterui::sheet::Sheet;
+        use waterui_core::binding;
+
+        let shown = binding(true);
+        let view = Spacer::flexible().sheet(Sheet::new(&shown, Spacer::flexible));
+        assert_eq!(reached(view), ["sheet", "spacer", "typed child", "spacer"]);
+
+        let hooked = Hooks::new(
+            Spacer::flexible().sheet(Sheet::new(&shown, Spacer::flexible)),
+            SpacerAsDivider,
+        );
+        assert_eq!(
+            reached(hooked),
+            ["sheet", "divider", "typed child", "divider"]
         );
     }
 }

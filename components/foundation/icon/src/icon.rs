@@ -3,7 +3,7 @@
 use waterui_core::plugin::Plugin;
 use waterui_core::{Computed, Environment, IntoSignalF32, SignalExt as _, View};
 #[cfg(feature = "svg")]
-use waterui_core::{Str, anyview::AnyView};
+use waterui_core::{OneOf4, Str};
 #[cfg(feature = "svg")]
 use waterui_layout::frame::Frame;
 #[cfg(feature = "svg")]
@@ -140,18 +140,18 @@ fn fit_viewbox(viewbox: Option<(f32, f32)>, size: f32) -> (f32, f32) {
 impl View for Icon {
     fn body(self, env: &Environment) -> impl View {
         match self.backing {
-            IconBacking::Glyph(glyph) => AnyView::new(glyph),
+            IconBacking::Glyph(glyph) => OneOf4::A(glyph),
             IconBacking::Svg { svg, viewbox } => {
                 if let Some(icon_size) = env.get::<IconSize>() {
                     let width = icon_size.size().map(move |s| fit_viewbox(viewbox, s).0);
                     let height = icon_size.size().map(move |s| fit_viewbox(viewbox, s).1);
-                    return AnyView::new(Frame::new(svg).width(width).height(height));
+                    return OneOf4::B(Frame::new(svg).width(width).height(height));
                 }
                 if let Some((vw, vh)) = viewbox
                     && (vw > DEFAULT_ICON_SIZE || vh > DEFAULT_ICON_SIZE)
                 {
                     let (w, h) = fit_viewbox(Some((vw, vh)), DEFAULT_ICON_SIZE);
-                    return AnyView::new(
+                    return OneOf4::C(
                         Frame::new(svg)
                             .ideal_width(w)
                             .ideal_height(h)
@@ -159,7 +159,7 @@ impl View for Icon {
                             .max_height(h),
                     );
                 }
-                AnyView::new(svg)
+                OneOf4::D(svg)
             }
         }
     }
@@ -171,5 +171,101 @@ impl View for Icon {
         match self.backing {
             IconBacking::Glyph(glyph) => glyph,
         }
+    }
+}
+
+#[cfg(all(test, feature = "svg"))]
+mod tests {
+    use alloc::vec::Vec;
+    use core::any::TypeId;
+
+    use waterui_core::backend::{Backend, ChildSlot, cast};
+    use waterui_core::metadata::MetadataKey;
+    use waterui_core::plugin::Plugin;
+    use waterui_core::view::hook::{HookList, HookableView};
+    use waterui_core::{AnyView, Environment, Metadata, NativeView, View};
+    use waterui_layout::container::FixedContainer;
+    use waterui_svg::Svg;
+
+    use crate::{Icon, IconGlyph, IconSize};
+
+    struct RecordedSlot(TypeId);
+
+    impl ChildSlot for RecordedSlot {
+        fn from_view<V: View>(_view: V) -> Self {
+            Self(TypeId::of::<V>())
+        }
+    }
+
+    struct StaticOnlyBackend {
+        reached: usize,
+        child_types: Vec<TypeId>,
+    }
+
+    impl Backend for StaticOnlyBackend {
+        type Output = ();
+        type Ctx = ();
+        type Slot = RecordedSlot;
+
+        fn native<T: NativeView + 'static>(&mut self, native: T, _env: &Environment, (): ()) {
+            self.reached += 1;
+            if let Ok(container) = cast::<T, FixedContainer<Vec<RecordedSlot>>>(native) {
+                let (_, children) = container.into_inner();
+                self.child_types
+                    .extend(children.into_iter().map(|slot| slot.0));
+            }
+        }
+
+        fn metadata<K: MetadataKey>(
+            &mut self,
+            _metadata: Metadata<K, Self::Slot>,
+            _env: &Environment,
+            (): (),
+        ) {
+            self.reached += 1;
+        }
+
+        fn erased(&mut self, _view: AnyView, _env: &Environment, (): ()) {
+            panic!("Icon must dispatch statically without AnyView erasure");
+        }
+
+        fn scoped<H: HookList, V: View>(&mut self, _hooks: H, view: V, env: &Environment, (): ()) {
+            view.dispatch(self, env, ());
+        }
+
+        fn hookable<T: HookableView>(&mut self, view: T, env: &Environment, (): ()) {
+            self.native(view, env, ());
+        }
+    }
+
+    #[test]
+    fn icon_dispatches_glyph_and_framed_svg_without_anyview() {
+        let plain_env = Environment::new();
+        let mut sized_env = Environment::new();
+        IconSize::new(32.0).install(&mut sized_env);
+
+        let glyph = Icon::from_glyph(IconGlyph::new('\u{e5c4}', "TestIcons"));
+        let mut backend = StaticOnlyBackend {
+            reached: 0,
+            child_types: Vec::new(),
+        };
+        glyph.dispatch(&mut backend, &plain_env, ());
+        assert!(backend.reached > 0);
+
+        let sized_svg = Icon::from_path("M0 0h24v24H0z", 24.0, 24.0);
+        let mut backend = StaticOnlyBackend {
+            reached: 0,
+            child_types: Vec::new(),
+        };
+        sized_svg.dispatch(&mut backend, &sized_env, ());
+        assert_eq!(backend.child_types, [TypeId::of::<Svg>()]);
+
+        let oversized_svg = Icon::from_path("M0 0h48v48H0z", 48.0, 48.0);
+        let mut backend = StaticOnlyBackend {
+            reached: 0,
+            child_types: Vec::new(),
+        };
+        oversized_svg.dispatch(&mut backend, &plain_env, ());
+        assert_eq!(backend.child_types, [TypeId::of::<Svg>()]);
     }
 }

@@ -139,6 +139,19 @@ impl<S: ChildSlot> IconSlot<S> {
     }
 }
 
+impl<V: View + Clone> IconSlot<V> {
+    /// Captures a concrete icon view directly into `IconSlot<V>` without
+    /// erasing to [`AnyView`].
+    #[must_use]
+    pub fn from_direct_view(view: V) -> Self {
+        let for_build = view.clone();
+        Self {
+            build: Rc::new(move || for_build.clone()),
+            probe: Rc::new(move |context, env| probe_view_provided(view.clone(), context, env)),
+        }
+    }
+}
+
 impl<S> IconSlot<S> {
     /// Materializes the icon into child slot `S`.
     #[must_use]

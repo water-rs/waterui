@@ -21,11 +21,12 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use kurbo::Affine;
-use nami::Signal as _;
+use nami::{Binding, Signal as _};
 use waterui::accessibility::AccessibilityRole;
 use waterui::sheet::{SHEET_DEFAULT_LABEL_KEY, Sheet, SheetContentScope, SheetDetent};
 use waterui::theme::color::Scrim;
 use waterui::{Computed, Plugin, SignalExt as _, Str, ViewExt as _};
+use waterui_backend_core::SlotView;
 use waterui_core::extract::State as EnvState;
 use waterui_core::handler::shared_action;
 use waterui_core::layout::{
@@ -42,7 +43,7 @@ use waterui_text::text::Text;
 
 use super::InteractionKey;
 use crate::renderer::{
-    HydrolysisRenderer, RenderContext, RetainedSubview, SafeAreaLayout, bounded_proposal,
+    HeldChild, HydrolysisRenderer, RenderContext, RetainedSubview, SafeAreaLayout, bounded_proposal,
 };
 use crate::text::TextEngine;
 use crate::theme::{ModalInteraction, SheetLook};
@@ -60,7 +61,7 @@ impl Plugin for SheetLayerScope {}
 /// One open sheet in the window's presentation order.
 struct StackedSheet {
     marker: Rc<()>,
-    sheet: Sheet,
+    is_presented: Binding<bool>,
     reported: bool,
 }
 
@@ -88,8 +89,7 @@ impl SheetStack {
     /// Opens a whole-tree pass: drops sheets closed since the last pass so the
     /// next sheet in line moves to the front before nodes report.
     pub(crate) fn begin_pass(&mut self) {
-        self.entries
-            .retain(|entry| entry.sheet.is_presented().snapshot());
+        self.entries.retain(|entry| entry.is_presented.snapshot());
         for entry in &mut self.entries {
             entry.reported = false;
         }
@@ -97,10 +97,10 @@ impl SheetStack {
 
     /// Reports a `.sheet` node for this pass and returns whether it is the
     /// front sheet on screen.
-    pub(crate) fn report(
+    pub(crate) fn report<S>(
         &mut self,
         marker: &Rc<()>,
-        sheet: &Sheet,
+        sheet: &Sheet<S>,
         presented: bool,
         focus: Option<InteractionKey>,
     ) -> bool {
@@ -124,7 +124,7 @@ impl SheetStack {
                 }
                 self.entries.push(StackedSheet {
                     marker: Rc::clone(marker),
-                    sheet: sheet.clone(),
+                    is_presented: sheet.is_presented().clone(),
                     reported: true,
                 });
                 self.entries.len() == 1
@@ -137,7 +137,7 @@ impl SheetStack {
     pub(crate) fn finish_pass(&mut self) -> SheetFocus {
         self.entries.retain(|entry| {
             if !entry.reported {
-                entry.sheet.is_presented().set(false);
+                entry.is_presented.set(false);
             }
             entry.reported
         });
@@ -167,7 +167,10 @@ pub struct RegisteredSheet<E: TextEngine> {
 /// Builds Hydrolysis's self-drawn modal layer for `sheet` styled with `look`:
 /// a full-window `Scrim` backdrop (tapping it invokes the user dismiss path)
 /// and the detent-sized modal sheet surface carrying `AccessibilityRole::Dialog`.
-pub fn sheet_modal_layer(sheet: &Sheet, look: SheetLook) -> impl View + use<> {
+pub fn sheet_modal_layer<E: TextEngine>(
+    sheet: &Sheet<HeldChild<E>>,
+    look: SheetLook,
+) -> impl View + use<E> {
     let detent = sheet.primary_detent();
     let max_width = look.max_width;
     let scrim_sheet = sheet.clone();
@@ -247,12 +250,12 @@ impl Layout for SheetLayout {
 /// The sheet surface container drawn on Hydrolysis's modal layer: carries
 /// `AccessibilityRole::Dialog`, resolves the accessible label, and wraps the
 /// user content with [`SheetContentScope`].
-struct SheetSurface {
-    sheet: Sheet,
+struct SheetSurface<E: TextEngine> {
+    sheet: Sheet<HeldChild<E>>,
     look: SheetLook,
 }
 
-impl View for SheetSurface {
+impl<E: TextEngine> View for SheetSurface<E> {
     fn body(self, env: &Environment) -> impl View {
         let Self { sheet, look } = self;
         let spoken: Computed<Str> = sheet
@@ -264,7 +267,7 @@ impl View for SheetSurface {
             .content()
             .map(|styled| styled.to_plain())
             .computed();
-        let content = sheet.build_content().with(SheetContentScope);
+        let content = SlotView::new(sheet.build_content()).with(SheetContentScope);
         let full_screen = sheet.primary_detent() == SheetDetent::FullScreen;
         if full_screen {
             let surface = look.container_color.on_tap(|| {}).a11y_hidden(true);
@@ -307,7 +310,7 @@ impl View for SheetSurface {
 /// node's environment plus `ModalInteraction` (routing Escape and platform back
 /// to [`Sheet::run_user_dismiss`]), [`SheetLayerScope`], and
 /// `State(SheetDismiss)`.
-pub fn sheet_modal_environment(env: &Environment, sheet: &Sheet) -> Environment {
+pub fn sheet_modal_environment<S: 'static>(env: &Environment, sheet: &Sheet<S>) -> Environment {
     let escape = {
         let sheet = sheet.clone();
         shared_action(move |env: Environment| sheet.run_user_dismiss(&env))

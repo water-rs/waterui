@@ -2012,10 +2012,10 @@ fn list_arrow_keys_stop_at_row_boundaries() {
 }
 
 /// `card(text(..))` renders with default padding, `Surface` fill, and `Border`
-/// outline through `NativeBackend::card` and `WidgetTheme::card` even when no
-/// `CardTheme` plugin is installed.
+/// outline through `NativeBackend::card` and `WidgetTheme::card` using the
+/// baseline widget theme default.
 #[test]
-fn card_renders_padding_surface_fill_and_border_without_card_theme() {
+fn card_renders_padding_surface_fill_and_border_with_default_widget_theme() {
     use waterui::theme::{ColorScheme, Theme};
     use waterui::widget::card;
 
@@ -2024,9 +2024,9 @@ fn card_renders_padding_surface_fill_and_border_without_card_theme() {
         [rgba[idx], rgba[idx + 1], rgba[idx + 2], rgba[idx + 3]]
     }
 
-    // Use `TokenProbeStyle` (which installs no `CardTheme` and relies on the
-    // baseline `WidgetTheme::card` default) in dark mode where `Background`
-    // (#111827), `Surface` (#1F2937), and `Border` (#4B5563) are distinct.
+    // Use `TokenProbeStyle` (which relies on the baseline `WidgetTheme::card`
+    // default) in dark mode where `Background` (#111827), `Surface` (#1F2937),
+    // and `Border` (#4B5563) are distinct.
     let mut app = ui()
         .viewport(260, 140)
         .theme(token_probe::TokenProbeStyle)

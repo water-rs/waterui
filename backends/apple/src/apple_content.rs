@@ -373,6 +373,7 @@ pub(crate) fn realize_apple_view<T: AppleContent>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use waterui::metadata::anchored_overlay::AnchoredOverlay;
     use waterui::sheet::Sheet;
     use waterui_backend_core::{
         ChildView, NativeBackend, NativeBackendFamily, Realize, report_unprovided,
@@ -608,6 +609,8 @@ mod tests {
         }
 
         stub_parents! {
+            #[cfg(waterui_feature = "avatar")]
+            avatar<C>: waterui::widget::avatar::AvatarConfig<C>,
             button<C>: waterui::component::button::ButtonConfig<C>,
             #[cfg(waterui_feature = "link")]
             link<C>: waterui::component::link::LinkConfig<C>,
@@ -699,8 +702,6 @@ mod tests {
             secure: waterui::metadata::secure::Secure,
             dynamic_range: waterui::metadata::secure::DynamicRangeMetadata,
             frame_rate: waterui::animation::FrameRateVote,
-            anchored_overlay: waterui::metadata::anchored_overlay::AnchoredOverlay,
-            sheet: Sheet,
             #[cfg(waterui_feature = "dialog")]
             dialog: waterui::dialog::Dialog,
             #[cfg(waterui_feature = "navigation")]
@@ -709,6 +710,22 @@ mod tests {
             navigation_transition_source: waterui::navigation::NavigationTransitionSource,
             #[cfg(waterui_feature = "navigation")]
             navigation_transition_destination: waterui::navigation::NavigationTransitionDestination,
+        }
+
+        fn anchored_overlay<S: ChildView<Self>, C: ChildView<Self>>(
+            &mut self,
+            _: Metadata<AnchoredOverlay<S>, C>,
+            _: &Environment,
+            (): (),
+        ) {
+        }
+
+        fn sheet<S: ChildView<Self>, C: ChildView<Self>>(
+            &mut self,
+            _: Metadata<Sheet<S>, C>,
+            _: &Environment,
+            (): (),
+        ) {
         }
 
         #[cfg(waterui_feature = "menu")]

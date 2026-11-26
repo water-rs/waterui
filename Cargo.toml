@@ -79,10 +79,6 @@ repository.workspace = true
 description = "A modern UI framework for Rust"
 keywords = ["ui", "framework", "rust", "gui", "water"]
 categories = ["gui"]
-# `build.rs` exports the enabled features to direct dependents as
-# `DEP_WATERUI_FEATURES`, so a backend implements exactly the components the
-# application enabled.
-links = "waterui"
 
 # WaterUI framework release policy shared by the `water` CLI and release
 # automation. This table is the framework's own scaffold metadata: the

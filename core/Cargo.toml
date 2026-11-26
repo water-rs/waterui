@@ -10,6 +10,10 @@ rust-version.workspace = true
 description = "Core functionality for the WaterUI framework"
 keywords = ["ui", "core", "framework", "waterui"]
 categories = ["gui"]
+# `build.rs` exports the enabled framework feature markers to direct dependents
+# as `DEP_WATERUI_FEATURES`, so backends and style crates implement exactly the
+# components the application enabled without depending on the `waterui` facade.
+links = "waterui"
 
 [dependencies]
 suiteki.workspace = true
@@ -49,6 +53,104 @@ serde = ["dep:serde", "suiteki/serde", "waterui-easing/serde"]
 # dispatch so application edits do not re-monomorphize them. Off by default;
 # the CLI selects it for debug development builds, never in release.
 erased-dispatch = []
+# Marker features mirroring `waterui`'s facade feature table so `core/build.rs`
+# exports every enabled framework feature to direct dependents as
+# `DEP_WATERUI_FEATURES` without requiring a dependency on the `waterui` facade.
+form = []
+link = []
+avatar = []
+cpu-time = []
+list = []
+table = []
+navigation = []
+menu = []
+calendar = []
+color-picker = []
+date-picker = []
+file-picker = []
+multi-date-picker = []
+picker = []
+secure-field = []
+slider = []
+stepper = []
+text-field = []
+toggle = []
+validation = []
+locale-datetime = []
+locale-list = []
+locale-relative-time = []
+gpu = []
+cpu = []
+effects = []
+highlight = []
+inspector = []
+inspector-signals = []
+dialog = []
+snackbar = []
+assets = []
+image = []
+video = []
+remote = []
+video-gpu = []
+webview = []
+map = []
+widgets = []
+ts = []
+ts-ota = []
+navigation-restoration = []
+flow-markdown = []
+markdown-math = []
+haptics = []
+capture = []
+canvas = []
+chart = []
+barcode = []
+particle = []
+all = [
+    "avatar",
+    "cpu-time",
+    "link",
+    "list",
+    "table",
+    "navigation",
+    "menu",
+    "calendar",
+    "color-picker",
+    "date-picker",
+    "file-picker",
+    "multi-date-picker",
+    "picker",
+    "secure-field",
+    "slider",
+    "stepper",
+    "text-field",
+    "toggle",
+    "validation",
+    "capture",
+    "canvas",
+    "chart",
+    "barcode",
+    "particle",
+    "haptics",
+    "std",
+    "gpu",
+    "highlight",
+    "locale-datetime",
+    "locale-list",
+    "locale-relative-time",
+    "inspector",
+    "inspector-signals",
+    "assets",
+    "image",
+    "webview",
+    "map",
+    "flow-markdown",
+    "video-gpu",
+    "navigation-restoration",
+    "snackbar",
+    "dialog",
+    "remote",
+]
 
 [lints]
 workspace = true

@@ -920,9 +920,9 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         RenderNode::build_wrapper(WrapperEffect::Shadow(value), content, env, renderer)
     }
 
-    fn anchored_overlay<C: ChildView<Self>>(
+    fn anchored_overlay<S: ChildView<Self>, C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::metadata::anchored_overlay::AnchoredOverlay, C>,
+        metadata: Metadata<AnchoredOverlay<S>, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -939,7 +939,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         } = value;
         RenderNode::build_wrapper(
             WrapperEffect::AnchoredOverlay(AnchoredOverlayEffect {
-                builder: Rc::new(move || HeldChild::from_view(overlay_builder.build())),
+                builder: Rc::new(move || S::into_child(overlay_builder.build())),
                 presentations: Rc::default(),
                 is_presented,
                 placed_edge,
@@ -953,16 +953,17 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         )
     }
 
-    fn sheet<C: ChildView<Self>>(
+    fn sheet<S: ChildView<Self>, C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<Sheet, C>,
+        metadata: Metadata<Sheet<S>, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
         mark_reached!("sheet");
-        let metadata = metadata.map_content(C::into_child);
-        let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
+        let content = content.into_child();
+        let value = value.map_slots(S::into_child);
+        let renderer = &mut *self.renderer;
         let sheet_for_builder = value.clone();
         let build_layer: Rc<dyn Fn(SheetLook) -> RetainedSubview<E>> =
             Rc::new(move |look| RetainedSubview::new(sheet_modal_layer(&sheet_for_builder, look)));
@@ -1536,6 +1537,20 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         let renderer = &mut *self.renderer;
         let into_child: fn(C) -> HeldChild<E> = C::into_child;
         RenderNode::build_secure_field(native.map_slots(into_child), env, renderer)
+    }
+
+    #[cfg(waterui_feature = "avatar")]
+    fn avatar<C: ChildView<Self>>(
+        &mut self,
+        native: waterui::widget::avatar::AvatarConfig<C>,
+        env: &Environment,
+        (): (),
+    ) -> RenderNode<E> {
+        use waterui_core::backend::MapSlots as _;
+        mark_reached!("avatar");
+        let renderer = &mut *self.renderer;
+        let into_child: fn(C) -> HeldChild<E> = C::into_child;
+        RenderNode::build_avatar(native.map_slots(into_child), env, renderer)
     }
 
     fn badge<C: ChildView<Self>>(
