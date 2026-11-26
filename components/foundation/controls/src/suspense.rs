@@ -33,13 +33,11 @@
 use core::future::Future;
 
 use waterui_capture::ContentLedger;
-use waterui_core::{Environment, View};
+use waterui_core::{Dynamic, Environment, Metadata, OneOf2, View};
+use waterui_interaction::event::TaskHook;
 use waterui_text::Text;
 
-use crate::{
-    OneOf2, ViewExt,
-    component::{Dynamic, Progress, loading},
-};
+use crate::progress::{Progress, loading};
 
 /// A component that manages asynchronous content loading with loading states.
 ///
@@ -207,13 +205,16 @@ where
         let new_env = env.clone();
         // The view retains the loading task, so unmounting it cancels the
         // future instead of leaving it polled until it completes.
-        view.task(move || async move {
-            let content = SuspendedView::body(self.content, new_env).await;
-            handler.set(OneOf2::B(content));
-            if let Some(owed) = owed {
-                owed.fulfil();
-            }
-        })
+        Metadata::new(
+            view,
+            TaskHook::new(move || async move {
+                let content = SuspendedView::body(self.content, new_env).await;
+                handler.set(OneOf2::B(content));
+                if let Some(owed) = owed {
+                    owed.fulfil();
+                }
+            }),
+        )
     }
 }
 

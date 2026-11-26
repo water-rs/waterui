@@ -19,7 +19,7 @@ pub mod component;
 mod interaction_support;
 pub use interaction_support::{cursor, drag_drop, gesture, interaction};
 #[cfg(feature = "haptics")]
-pub mod haptic;
+pub use waterui_interaction::haptic;
 mod runtime;
 #[cfg(feature = "dialog")]
 pub use runtime::dialog;
@@ -488,5 +488,20 @@ mod widgets_glob_tests {
             )])
         };
         assert_eq!(timeline.entries().len(), 1);
+    }
+}
+
+#[cfg(all(test, feature = "haptics"))]
+mod haptic_tests {
+    #[test]
+    fn facade_exports_haptic_vocabulary() {
+        let _ = (
+            core::any::type_name::<crate::Feedback>(),
+            core::any::type_name::<crate::Haptic>(),
+            core::any::type_name::<crate::Intensity>(),
+            core::any::type_name::<crate::prelude::Feedback>(),
+            core::any::type_name::<crate::prelude::Haptic>(),
+            core::any::type_name::<crate::prelude::Intensity>(),
+        );
     }
 }

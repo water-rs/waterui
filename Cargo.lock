@@ -13224,6 +13224,7 @@ dependencies = [
  "unicode-segmentation",
  "waterui",
  "waterui-accessibility",
+ "waterui-capture",
  "waterui-color",
  "waterui-contract",
  "waterui-core",
@@ -13480,9 +13481,12 @@ name = "waterui-interaction"
 version = "0.5.1"
 dependencies = [
  "bitflags 2.13.2",
+ "executor-core",
  "keyboard-types",
  "nami",
  "suiteki",
+ "tracing",
+ "waterkit-haptic",
  "waterui-core",
  "waterui-url",
 ]
@@ -13502,7 +13506,6 @@ dependencies = [
  "suiteki",
  "thiserror 2.0.21",
  "tracing",
- "waterkit-haptic",
  "waterui",
  "waterui-accessibility",
  "waterui-assets",

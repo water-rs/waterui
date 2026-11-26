@@ -23,8 +23,8 @@
 //!     .otherwise(|| "Unknown");
 //! ```
 
+use alloc::rc::Rc;
 use core::any::Any;
-use std::rc::Rc;
 
 use nami::{Computed, SignalExt, signal::IntoComputed};
 use waterui_core::{Dynamic, Environment, OneOf2, View, handler::ViewBuilder};
