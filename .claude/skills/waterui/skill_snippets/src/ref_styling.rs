@@ -493,7 +493,7 @@ pub fn styling_block_13() {
         )
     };
     let avatar = Divider;
-    let _ = { avatar.clip(Circle).shadow(4.0) };
+    let _ = { avatar.clip(Circle).shadow(Shadow::new(4.0)) };
     let card = Divider;
     let _ = {
         card.shadow(

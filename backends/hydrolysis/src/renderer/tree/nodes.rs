@@ -1596,8 +1596,8 @@ impl<E: crate::text::TextEngine> OffsetNode<E> {
         let clock = Rc::clone(renderer.placement_clock());
         let (core, motion) = moved_core(renderer, |core| {
             LayerMotion::offset(
-                transform_axis(renderer, core, &value.x, unit),
-                transform_axis(renderer, core, &value.y, unit),
+                transform_axis(renderer, core, value.x(), unit),
+                transform_axis(renderer, core, value.y(), unit),
                 clock,
             )
         });

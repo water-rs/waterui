@@ -13,7 +13,7 @@
 use core::cell::RefCell;
 
 #[cfg(target_os = "ios")]
-use waterui::navigation::{Bar, NavigationDestinationState, NavigationView};
+use waterui::navigation::{Bar, NavigationView};
 use waterui::navigation::{
     NavigationSplitLayout, ResolvedNavigationView,
     split::{NavigationSplitDetailBuilder as DetailBuilder, SlotBuilder},
@@ -93,12 +93,8 @@ impl Columns {
         &self,
         destination: Option<ResolvedNavigationView<Held>>,
     ) -> ResolvedNavigationView<Held> {
-        destination.unwrap_or_else(|| NavigationView {
-            bar: Bar::default(),
-            content: self.placeholder.build(),
-            state: NavigationDestinationState::default(),
-            transition: None,
-        })
+        destination
+            .unwrap_or_else(|| NavigationView::with_bar(Bar::default(), self.placeholder.build()))
     }
 }
 
