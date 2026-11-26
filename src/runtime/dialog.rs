@@ -43,9 +43,6 @@ use waterui_core::handler::{
 use waterui_core::metadata::MetadataKey;
 use waterui_text::text::{IntoText, Text};
 
-#[doc(hidden)]
-pub use crate::widget::DialogTheme;
-
 /// Translation key for the acknowledgement button a dialog declared without
 /// actions presents.
 ///
