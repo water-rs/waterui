@@ -564,7 +564,8 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         not(feature = "accessibility"),
         expect(
             clippy::missing_const_for_fn,
-            reason = "with `accessibility` enabled this queries `Environment::get`, which is not const"
+            clippy::needless_pass_by_ref_mut,
+            reason = "with `accessibility` enabled this queries `Environment::get` and reads a signal through `&mut self`"
         )
     )]
     pub(crate) fn is_frame_rate_vote_visible(&mut self, env: &Environment) -> bool {

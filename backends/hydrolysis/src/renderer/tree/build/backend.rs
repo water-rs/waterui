@@ -7,7 +7,13 @@ use waterui::animation::FrameRateVote;
 use waterui::sheet::Sheet;
 
 #[cfg(waterui_feature = "gpu")]
-use waterui::graphics::backend::{GpuContentLeaf, Picture};
+use waterui::graphics::backend::GpuContentLeaf;
+#[cfg(any(
+    waterui_feature = "gpu",
+    waterui_feature = "cpu",
+    waterui_feature = "canvas"
+))]
+use waterui::graphics::backend::Picture;
 #[cfg(waterui_feature = "navigation")]
 use waterui::navigation::ResolvedNavigationView;
 use waterui_backend_core::{
@@ -305,7 +311,11 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         }
     }
 
-    #[cfg(waterui_feature = "gpu")]
+    #[cfg(any(
+        waterui_feature = "gpu",
+        waterui_feature = "cpu",
+        waterui_feature = "canvas"
+    ))]
     fn picture(&mut self, native: Picture, env: &Environment, (): ()) -> RenderNode<E> {
         mark_reached!("picture");
         self.scene(native.into_scene_view(), env, ())
@@ -1261,7 +1271,11 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         }))
     }
 
-    #[cfg(waterui_feature = "gpu")]
+    #[cfg(any(
+        waterui_feature = "gpu",
+        waterui_feature = "cpu",
+        waterui_feature = "canvas"
+    ))]
     fn scene(
         &mut self,
         native: waterui::graphics::backend::SceneView,

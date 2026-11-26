@@ -20,14 +20,14 @@ use waterui_core::layout::{
 use waterui_interaction::interaction::InteractionState;
 
 use crate::num_cast::f64_as_f32;
-#[cfg(feature = "accessibility")]
-use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::chrome::{ChromeContent, LiveChromeParts};
 use crate::renderer::live_toggle::LiveToggleParts;
 use crate::renderer::mount::ScopeKey;
+#[cfg(feature = "accessibility")]
+use crate::renderer::{AccessibilityActionTarget, RenderContext};
 use crate::renderer::{
     GroupOpacity, HeldChild, HydroState, HydrolysisRenderer, InteractionKey, PressSlot,
-    RenderContext, RetainedSubview, SemanticCore, WidgetRenderContext, bounded_proposal,
+    RetainedSubview, SemanticCore, WidgetRenderContext, bounded_proposal,
 };
 use crate::text::TextEngine;
 use crate::theme::{
@@ -225,6 +225,7 @@ fn header_part_bounds(
     }
 }
 
+#[cfg(feature = "accessibility")]
 fn disclosure_accessibility<E: TextEngine>(
     renderer: &mut SemanticCore<E>,
     ctx: Option<RenderContext>,
@@ -232,41 +233,34 @@ fn disclosure_accessibility<E: TextEngine>(
     env: &Environment,
     focus_key: &InteractionKey,
 ) {
-    #[cfg(feature = "accessibility")]
-    {
-        let mut node = AccessibilityNode::new(SemanticCore::<E>::resolve_accessibility_role(
-            env,
-            AccessibilityNodeRole::Button,
-        ));
-        let default_label = renderer.accessibility_label_from_label(config.header(), env);
-        if let Some(label) = renderer.resolve_accessibility_label(env, default_label) {
-            node.set_label(label);
-        }
-        if let Some(value) = renderer.resolve_accessibility_value(env, None) {
-            node.set_value(value);
-        }
-        let expanded = renderer.read_signal(config.expanded());
-        node.set_expanded(expanded);
-        node.add_action(AccessibilityAction::Focus);
-        let disabled = renderer.read_signal(&widget_disabled(env));
-        let action_target = if disabled {
-            node.set_disabled();
-            None
-        } else {
-            node.add_action(AccessibilityAction::Click);
-            node.add_action(AccessibilityAction::Expand);
-            node.add_action(AccessibilityAction::Collapse);
-            Some(AccessibilityActionTarget::Toggle {
-                binding: config.expanded().clone(),
-            })
-        };
-        if let Some(node_id) = renderer.register_accessibility_leaf(ctx, node, env, action_target) {
-            renderer.register_accessibility_focus_link(focus_key, node_id);
-        }
+    let mut node = AccessibilityNode::new(SemanticCore::<E>::resolve_accessibility_role(
+        env,
+        AccessibilityNodeRole::Button,
+    ));
+    let default_label = renderer.accessibility_label_from_label(config.header(), env);
+    if let Some(label) = renderer.resolve_accessibility_label(env, default_label) {
+        node.set_label(label);
     }
-    #[cfg(not(feature = "accessibility"))]
-    {
-        let _ = (renderer, ctx, config, env, focus_key);
+    if let Some(value) = renderer.resolve_accessibility_value(env, None) {
+        node.set_value(value);
+    }
+    let expanded = renderer.read_signal(config.expanded());
+    node.set_expanded(expanded);
+    node.add_action(AccessibilityAction::Focus);
+    let disabled = renderer.read_signal(&widget_disabled(env));
+    let action_target = if disabled {
+        node.set_disabled();
+        None
+    } else {
+        node.add_action(AccessibilityAction::Click);
+        node.add_action(AccessibilityAction::Expand);
+        node.add_action(AccessibilityAction::Collapse);
+        Some(AccessibilityActionTarget::Toggle {
+            binding: config.expanded().clone(),
+        })
+    };
+    if let Some(node_id) = renderer.register_accessibility_leaf(ctx, node, env, action_target) {
+        renderer.register_accessibility_focus_link(focus_key, node_id);
     }
 }
 
@@ -514,11 +508,14 @@ pub fn render_disclosure_node<E: TextEngine>(
     };
     let frame = prepare_disclosure_frame(ctx, state, env, &key, direction, disabled);
 
-    let hidden = ctx.renderer_mut().is_accessibility_hidden(env);
-    if !hidden {
-        let header_ctx = RenderContext::new(ctx.local, frame.header_bounds);
-        let config = &state.borrow().config;
-        disclosure_accessibility(ctx.renderer_mut(), Some(header_ctx), config, env, &key);
+    #[cfg(feature = "accessibility")]
+    {
+        let hidden = ctx.renderer_mut().is_accessibility_hidden(env);
+        if !hidden {
+            let header_ctx = RenderContext::new(ctx.local, frame.header_bounds);
+            let config = &state.borrow().config;
+            disclosure_accessibility(ctx.renderer_mut(), Some(header_ctx), config, env, &key);
+        }
     }
 
     render_disclosure_header(ctx, state, env, &frame, disabled);

@@ -987,10 +987,12 @@ def stage_form(manifest, side):
             "backend_path": str(backend_dir(manifest, side)),
             "scheme": manifest["subjects"]["form"]["scheme"]}}
     write_toml(dest / "Water.toml", water_toml)
-    write_toml(dest / "Cargo.toml", {
+    cargo_toml = {
         "package": {"name": "form_example", "version": "0.1.0", "edition": "2024", "publish": False},
-        "features": {"dev": ["waterui/dynamic_linking"]},
-        "dependencies": {"waterui": {"path": str(waterui_dir(side))}}})
+        "dependencies": {"waterui": {"path": str(waterui_dir(side))}}}
+    if side == "old":
+        cargo_toml["features"] = {"dev": ["waterui/dynamic_linking"]}
+    write_toml(dest / "Cargo.toml", cargo_toml)
     validate_backend_path(manifest, dest / "Water.toml", side)
     return dest
 
