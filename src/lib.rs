@@ -88,9 +88,6 @@ pub mod prelude {
     pub use super::dialog::{Dialog, DialogAction};
     pub use super::sheet::{Sheet, SheetDetent, SheetDismiss};
     #[cfg(feature = "snackbar")]
-    #[doc(hidden)]
-    pub use super::snackbar::SnackbarTheme;
-    #[cfg(feature = "snackbar")]
     pub use super::snackbar::{
         Snackbar, SnackbarDismissReason, SnackbarHost, SnackbarManager, SnackbarPosition,
     };
@@ -114,7 +111,7 @@ pub mod prelude {
     pub use super::text::{TextConfig, font, highlight, styled};
 
     #[cfg(feature = "link")]
-    pub use super::component::link::{Link, LinkTarget, link};
+    pub use super::component::link::{Link, link};
     #[cfg(feature = "list")]
     pub use super::component::list::{
         ForEachExt, List, ListContent, ListMinRowHeight, Row, Section, detail_row,
@@ -138,11 +135,11 @@ pub mod prelude {
     #[cfg(feature = "avatar")]
     pub use super::widget::{Avatar, avatar};
     pub use super::widget::{
-        Card, CardStyle, DialogTheme, Disclosure, Divider, ErrorView, ResultExt, SuspendedView,
-        Suspense, card, condition::when, disclosure, error_view, suspense,
+        Card, CardStyle, Disclosure, Divider, ErrorView, ResultExt, SuspendedView, Suspense, card,
+        condition::when, disclosure, error_view, suspense,
     };
     #[doc(hidden)]
-    pub use super::widget::{CardStyleTokens, CardTheme};
+    pub use super::widget::{CardStyleTokens, CardTheme, DialogTheme};
     #[cfg(feature = "flow-markdown")]
     pub use super::widget::{
         FlowAnimationPolicy, FlowAnimationPreset, FlowElementKind, FlowMarkdown, FlowStreamMode,

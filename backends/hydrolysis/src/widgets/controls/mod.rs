@@ -11,6 +11,8 @@ pub mod disclosure;
     feature = "color-picker"
 ))]
 pub mod field_look;
+#[cfg(feature = "link")]
+pub mod link;
 #[cfg(feature = "picker")]
 pub mod picker;
 pub mod progress;

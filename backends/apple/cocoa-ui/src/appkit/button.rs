@@ -240,6 +240,12 @@ impl Button {
         }
     }
 
+    /// Whether the pointing-hand link cursor is enabled on this button.
+    #[must_use]
+    pub fn has_link_cursor(&self) -> bool {
+        self.ivars().link_cursor.get()
+    }
+
     /// The button's intrinsic size — what a measure pass reports.
     #[must_use]
     pub fn intrinsic_size(&self) -> Size {

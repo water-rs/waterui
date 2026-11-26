@@ -135,9 +135,7 @@ impl NativeBackend for AppleBackend {
         (): (),
     ) -> NativeLeaf {
         mark_reached!("divider");
-        #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
-        self.end_filter_fusion();
-        crate::dispatch::render(native.composed(env), env, self.mtm)
+        crate::components::divider::realize_divider(native, &self.entry(env))
     }
 
     fn fixed_container<C: ChildView<Self>>(
@@ -242,6 +240,20 @@ impl NativeBackend for AppleBackend {
     ) -> NativeLeaf {
         mark_reached!("button");
         crate::components::button::realize_button_config(
+            native.map_slots(C::into_child),
+            &self.entry(env),
+        )
+    }
+
+    #[cfg(waterui_feature = "link")]
+    fn link<C: ChildView<Self>>(
+        &mut self,
+        native: waterui::component::link::LinkConfig<C>,
+        env: &Environment,
+        (): (),
+    ) -> NativeLeaf {
+        mark_reached!("link");
+        crate::components::link::realize_link_config(
             native.map_slots(C::into_child),
             &self.entry(env),
         )
