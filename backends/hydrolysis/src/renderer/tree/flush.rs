@@ -610,9 +610,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                     WrapperEffect::SnackbarHost(value) => {
                         node.child
                             .flush(renderer, ctx, child_env, kurbo::Affine::IDENTITY);
-                        crate::widgets::layout::snackbar::flush_snackbar_host(
-                            renderer, ctx, child_env, value,
-                        );
+                        value.flush(renderer, ctx, child_env);
                     }
                     WrapperEffect::LayoutPriority(_) => {
                         // Layout-only: nothing to apply while drawing.
@@ -1226,9 +1224,7 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                     #[cfg(waterui_feature = "snackbar")]
                     WrapperEffect::SnackbarHost(effect) => {
                         node.child.emit_accessibility(renderer, child_env);
-                        crate::widgets::layout::snackbar::emit_snackbar_host_accessibility(
-                            renderer, child_env, effect,
-                        );
+                        effect.emit_accessibility(renderer, child_env);
                     }
                     WrapperEffect::Transition(declaration) => {
                         declaration.report_unowned();
