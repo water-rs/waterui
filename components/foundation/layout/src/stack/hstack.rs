@@ -273,11 +273,21 @@ impl Layout for HStackLayout {
 impl<C: ViewSequence> HStack<(C,)> {
     /// Creates a horizontal stack with the provided alignment, spacing, and
     /// children.
-    pub fn new(alignment: VerticalAlignment, spacing: f32, contents: C) -> Self {
+    ///
+    /// Accepts the same alignment tokens ([`Top`](crate::Top),
+    /// [`Center`](crate::Center), [`Bottom`](crate::Bottom),
+    /// [`FirstBaseline`](crate::FirstBaseline),
+    /// [`LastBaseline`](crate::LastBaseline)) as [`HStack::alignment`], and any
+    /// numeric literal or `f32` signal accepted by [`HStack::spacing`].
+    pub fn new(
+        alignment: impl Into<VerticalAlignment>,
+        spacing: impl IntoSignalF32 + 'static,
+        contents: C,
+    ) -> Self {
         Self {
             layout: HStackLayout {
-                alignment,
-                spacing: Computed::constant(spacing),
+                alignment: alignment.into(),
+                spacing: spacing.into_signal_f32().computed(),
             },
             contents: (contents,),
             virtualize_axes: None,
@@ -741,5 +751,15 @@ mod tests {
         let intrinsic_size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &children);
         // Should also be 150 because spacer has 0 intrinsic width
         assert!((intrinsic_size.width - 150.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn constructor_accepts_alignment_token_and_signal_spacing() {
+        let spacing = nami::Binding::new(4.0_f32);
+        let stack = HStack::new(crate::FirstBaseline, spacing.clone(), ((), ()));
+        assert_eq!(stack.layout.alignment, VerticalAlignment::FirstBaseline);
+        assert_eq!(stack.layout.spacing.snapshot(), 4.0);
+        spacing.set(18.0);
+        assert_eq!(stack.layout.spacing.snapshot(), 18.0);
     }
 }

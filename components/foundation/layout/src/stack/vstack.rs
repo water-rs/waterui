@@ -275,11 +275,20 @@ pub struct VStack<C> {
 impl<C: ViewSequence> VStack<(C,)> {
     /// Creates a vertical stack with the provided alignment, spacing, and
     /// children.
-    pub fn new(alignment: HorizontalAlignment, spacing: f32, contents: C) -> Self {
+    ///
+    /// Accepts the same alignment tokens ([`Leading`](crate::Leading),
+    /// [`Center`](crate::Center), [`Trailing`](crate::Trailing)) as
+    /// [`VStack::alignment`], and any numeric literal or `f32` signal accepted
+    /// by [`VStack::spacing`].
+    pub fn new(
+        alignment: impl Into<HorizontalAlignment>,
+        spacing: impl IntoSignalF32 + 'static,
+        contents: C,
+    ) -> Self {
         Self {
             layout: VStackLayout {
-                alignment,
-                spacing: Computed::constant(spacing),
+                alignment: alignment.into(),
+                spacing: spacing.into_signal_f32().computed(),
             },
             contents: (contents,),
             virtualize_axes: None,
@@ -672,5 +681,15 @@ mod tests {
             "the middle row reported a 50pt floor, got {}",
             placements[1].frame.height()
         );
+    }
+
+    #[test]
+    fn constructor_accepts_alignment_token_and_signal_spacing() {
+        let spacing = nami::Binding::new(6.0_f32);
+        let stack = VStack::new(crate::Leading, spacing.clone(), ((), ()));
+        assert_eq!(stack.layout.alignment, HorizontalAlignment::Leading);
+        assert_eq!(stack.layout.spacing.snapshot(), 6.0);
+        spacing.set(14.0);
+        assert_eq!(stack.layout.spacing.snapshot(), 14.0);
     }
 }

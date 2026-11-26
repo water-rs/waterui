@@ -20,7 +20,7 @@ use waterui::ViewExt as _;
 use waterui::component::hstack;
 use waterui::graphics::backend::{NextFrame, RecordingResources, SceneContent, SceneView};
 use waterui::layout::frame::Frame;
-use waterui::layout::scroll::ScrollView;
+use waterui::layout::scroll::{Axis, ScrollView};
 use waterui::text::text;
 use waterui_core::Environment;
 use waterui_core::layout::Size;
@@ -112,7 +112,7 @@ fn sizeless_scene() -> impl View {
 fn scene_with_a_natural_size_keeps_it_on_an_unconstrained_scroll_axis() {
     let mut app = mount_rendered(
         Environment::new(),
-        || ScrollView::vertical(naturally_sized_scene()),
+        || ScrollView::new(Axis::Vertical, naturally_sized_scene()),
         100,
         120,
     );
@@ -162,7 +162,7 @@ fn scene_with_a_natural_size_still_fills_a_frame() {
 fn one_named_axis_drives_the_other_by_the_natural_aspect_ratio() {
     let mut app = mount_rendered(
         Environment::new(),
-        || ScrollView::vertical(naturally_sized_scene()),
+        || ScrollView::new(Axis::Vertical, naturally_sized_scene()),
         200,
         120,
     );
@@ -186,7 +186,7 @@ fn one_named_axis_drives_the_other_by_the_natural_aspect_ratio() {
 fn scene_without_a_natural_size_still_fills_its_container() {
     let mut app = mount_rendered(
         Environment::new(),
-        || ScrollView::vertical(sizeless_scene()),
+        || ScrollView::new(Axis::Vertical, sizeless_scene()),
         200,
         120,
     );

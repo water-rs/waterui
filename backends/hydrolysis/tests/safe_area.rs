@@ -22,7 +22,7 @@ use waterui::layout::LayoutDirection;
 use waterui::layout::frame::Frame;
 use waterui::layout::padding::EdgeInsets;
 use waterui::layout::safe_area::{EdgeSet, IgnoreSafeArea, SafeAreaRegions};
-use waterui::layout::scroll::ScrollView;
+use waterui::layout::scroll::{Axis, ScrollView};
 use waterui::navigation::NavigationView;
 use waterui::prelude::*;
 use waterui::text::IntoText;
@@ -394,12 +394,15 @@ fn a_second_field_in_a_navigation_stack_still_clears_the_keyboard() {
         move || {
             NavigationStack::new(NavigationView::new(
                 "Compose",
-                ScrollView::vertical(vstack((
-                    field("First", &first).size(350.0, 44.0),
-                    spacer().size(390.0, 400.0),
-                    field("Second", &second).size(350.0, 44.0),
-                    spacer().size(390.0, 300.0),
-                ))),
+                ScrollView::new(
+                    Axis::Vertical,
+                    vstack((
+                        field("First", &first).size(350.0, 44.0),
+                        spacer().size(390.0, 400.0),
+                        field("Second", &second).size(350.0, 44.0),
+                        spacer().size(390.0, 300.0),
+                    )),
+                ),
             ))
         },
         390,
@@ -707,11 +710,14 @@ fn a_scroll_surface_scrolls_the_focused_field_clear_of_the_keyboard() {
     let mut app = mount_rendered(
         env_with_keyboard(&container, &keyboard),
         move || {
-            ScrollView::vertical(vstack((
-                spacer().size(390.0, 560.0),
-                field("Message", &value).size(350.0, 44.0),
-                spacer().size(390.0, 380.0),
-            )))
+            ScrollView::new(
+                Axis::Vertical,
+                vstack((
+                    spacer().size(390.0, 560.0),
+                    field("Message", &value).size(350.0, 44.0),
+                    spacer().size(390.0, 380.0),
+                )),
+            )
         },
         390,
         844,
@@ -759,11 +765,14 @@ fn a_focused_field_clears_to_the_surface_frame_above_a_toolbar() {
         env_with_keyboard(&container, &keyboard),
         move || {
             vstack((
-                ScrollView::vertical(vstack((
-                    spacer().size(390.0, 560.0),
-                    field("Message", &value).size(350.0, 44.0),
-                    spacer().size(390.0, 380.0),
-                ))),
+                ScrollView::new(
+                    Axis::Vertical,
+                    vstack((
+                        spacer().size(390.0, 560.0),
+                        field("Message", &value).size(350.0, 44.0),
+                        spacer().size(390.0, 380.0),
+                    )),
+                ),
                 card("toolbar").size(390.0, 56.0),
             ))
         },
@@ -848,10 +857,12 @@ fn a_lazy_stack_in_a_scroll_builds_rows_under_the_keyboard_band() {
     let mut app = mount_rendered(
         env_with_keyboard(&container, &keyboard),
         move || {
-            ScrollView::vertical(VStack::for_each(
-                (0..40).map(SelfId::new).collect::<Vec<_>>(),
-                |item| Frame::new(text(format!("row-{}", *item))).size(390.0, 30.0),
-            ))
+            ScrollView::new(
+                Axis::Vertical,
+                VStack::for_each((0..40).map(SelfId::new).collect::<Vec<_>>(), |item| {
+                    Frame::new(text(format!("row-{}", *item))).size(390.0, 30.0)
+                }),
+            )
         },
         390,
         844,
@@ -878,11 +889,14 @@ fn a_touch_drag_over_several_frames_keeps_scrolling_under_nonzero_insets() {
     let mut app = mount_rendered(
         env_with_keyboard(&container, &keyboard),
         move || {
-            ScrollView::vertical(vstack(
-                (0..30)
-                    .map(|i| Frame::new(text(format!("row-{i}"))).size(390.0, 30.0))
-                    .collect::<Vec<_>>(),
-            ))
+            ScrollView::new(
+                Axis::Vertical,
+                vstack(
+                    (0..30)
+                        .map(|i| Frame::new(text(format!("row-{i}"))).size(390.0, 30.0))
+                        .collect::<Vec<_>>(),
+                ),
+            )
         },
         390,
         844,
@@ -1046,11 +1060,14 @@ fn navigation_hosted_form_clears_the_focused_field(scale: f64) {
             move || {
                 NavigationView::new(
                     "Compose",
-                    ScrollView::vertical(vstack((
-                        spacer().size(390.0, 560.0),
-                        field("Message", &value).size(350.0, 44.0),
-                        spacer().size(390.0, 380.0),
-                    ))),
+                    ScrollView::new(
+                        Axis::Vertical,
+                        vstack((
+                            spacer().size(390.0, 560.0),
+                            field("Message", &value).size(350.0, 44.0),
+                            spacer().size(390.0, 380.0),
+                        )),
+                    ),
                 )
             },
             390,
@@ -1109,12 +1126,15 @@ fn a_navigation_page_background_stays_below_the_bar() {
             move || {
                 NavigationView::new(
                     "Home",
-                    ScrollView::vertical(vstack((
-                        card("row one"),
-                        card("row two"),
-                        card("row three"),
-                        spacer().size(390.0, 1400.0),
-                    )))
+                    ScrollView::new(
+                        Axis::Vertical,
+                        vstack((
+                            card("row one"),
+                            card("row two"),
+                            card("row three"),
+                            spacer().size(390.0, 1400.0),
+                        )),
+                    )
                     .report_offset(&offset)
                     .background(Color::new(Srgb::new(0.85, 0.2, 0.3)))
                     .a11y_label("page-scroll"),
@@ -1391,11 +1411,14 @@ fn a_keyboard_inset_change_clears_the_field_on_that_frame() {
     let mut app = mount_rendered(
         env_with_keyboard(&container, &keyboard),
         move || {
-            ScrollView::vertical(vstack((
-                spacer().size(390.0, 560.0),
-                field("Message", &value).size(350.0, 44.0),
-                spacer().size(390.0, 380.0),
-            )))
+            ScrollView::new(
+                Axis::Vertical,
+                vstack((
+                    spacer().size(390.0, 560.0),
+                    field("Message", &value).size(350.0, 44.0),
+                    spacer().size(390.0, 380.0),
+                )),
+            )
         },
         390,
         844,
@@ -1432,16 +1455,22 @@ fn a_field_in_a_nested_scroll_is_cleared_once() {
     let mut app = mount_rendered(
         env_with_keyboard(&container, &keyboard),
         move || {
-            ScrollView::vertical(vstack((
-                spacer().size(390.0, 430.0),
-                ScrollView::vertical(vstack((
-                    spacer().size(350.0, 80.0),
-                    field("Message", &value).size(350.0, 44.0),
-                    spacer().size(350.0, 300.0),
-                )))
-                .size(350.0, 200.0),
-                spacer().size(390.0, 380.0),
-            )))
+            ScrollView::new(
+                Axis::Vertical,
+                vstack((
+                    spacer().size(390.0, 430.0),
+                    ScrollView::new(
+                        Axis::Vertical,
+                        vstack((
+                            spacer().size(350.0, 80.0),
+                            field("Message", &value).size(350.0, 44.0),
+                            spacer().size(350.0, 300.0),
+                        )),
+                    )
+                    .size(350.0, 200.0),
+                    spacer().size(390.0, 380.0),
+                )),
+            )
         },
         390,
         844,
@@ -1544,7 +1573,7 @@ fn a_tab_bar_stays_docked_under_the_keyboard() {
                             NavigationView::new(
                                 "Messages",
                                 zstack((
-                                    ScrollView::vertical(vstack((
+                                    scroll(vstack((
                                         spacer().size(390.0, 560.0),
                                         field("Message", &value).size(350.0, 44.0),
                                         spacer().size(390.0, 380.0),

@@ -406,7 +406,7 @@ impl Axis {
     }
 }
 
-impl<C> ScrollView<C> {
+impl<C: View> ScrollView<C> {
     /// Creates a new `ScrollView` with the specified scroll axis and content.
     #[must_use]
     pub const fn new(axis: Axis, content: C) -> Self {
@@ -417,7 +417,9 @@ impl<C> ScrollView<C> {
             offset: None,
         }
     }
+}
 
+impl<C> ScrollView<C> {
     /// Decomposes the `ScrollView` into its parts.
     #[must_use]
     pub fn into_inner(self) -> ScrollViewParts<C> {
@@ -471,21 +473,6 @@ impl<C> ScrollView<C> {
     pub fn report_offset(mut self, offset: &Binding<Point>) -> Self {
         self.offset = Some(offset.clone());
         self
-    }
-
-    /// Creates a `ScrollView` with horizontal scrolling.
-    pub const fn horizontal(content: C) -> Self {
-        Self::new(Axis::Horizontal, content)
-    }
-
-    /// Creates a `ScrollView` with vertical scrolling.
-    pub const fn vertical(content: C) -> Self {
-        Self::new(Axis::Vertical, content)
-    }
-
-    /// Creates a `ScrollView` with scrolling in both directions.
-    pub const fn both(content: C) -> Self {
-        Self::new(Axis::All, content)
     }
 }
 
@@ -563,7 +550,7 @@ impl<C> MapSlots<C> for ScrollView<C> {
 /// This is the most common scroll direction for lists and long content.
 /// The actual scrolling behavior is implemented by the renderer backend.
 pub const fn scroll<C: View>(content: C) -> ScrollView<C> {
-    ScrollView::vertical(content)
+    ScrollView::new(Axis::Vertical, content)
 }
 
 /// Creates a horizontal `ScrollView` with the given content.
@@ -571,7 +558,7 @@ pub const fn scroll<C: View>(content: C) -> ScrollView<C> {
 /// Useful for wide content that needs to scroll left-right.
 /// The actual scrolling behavior is implemented by the renderer backend.
 pub const fn scroll_horizontal<C: View>(content: C) -> ScrollView<C> {
-    ScrollView::horizontal(content)
+    ScrollView::new(Axis::Horizontal, content)
 }
 
 /// Creates a `ScrollView` that can scroll in both directions.
@@ -579,7 +566,7 @@ pub const fn scroll_horizontal<C: View>(content: C) -> ScrollView<C> {
 /// Useful for large content like images or tables that may need both horizontal and vertical scrolling.
 /// The actual scrolling behavior is implemented by the renderer backend.
 pub const fn scroll_both<C: View>(content: C) -> ScrollView<C> {
-    ScrollView::both(content)
+    ScrollView::new(Axis::All, content)
 }
 
 #[cfg(test)]
@@ -763,5 +750,18 @@ mod tests {
         // … and submitting a request does not move the actual position.
         controller.scroll_to(Point::new(0.0, 240.0));
         assert_eq!(controller.position().snapshot(), Some(reported));
+    }
+
+    #[test]
+    fn constructor_accepts_concrete_view_without_type_erasure() {
+        #[derive(Debug, PartialEq)]
+        struct Leaf;
+        impl waterui_core::View for Leaf {
+            fn body(self, _env: &waterui_core::Environment) -> impl waterui_core::View {}
+        }
+
+        let view = super::ScrollView::new(Axis::Horizontal, Leaf);
+        assert_eq!(view.axis(), Axis::Horizontal);
+        assert_eq!(view.content(), &Leaf);
     }
 }
