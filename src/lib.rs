@@ -88,9 +88,11 @@ pub mod prelude {
     pub use super::dialog::{Dialog, DialogAction};
     pub use super::sheet::{Sheet, SheetDetent, SheetDismiss};
     #[cfg(feature = "snackbar")]
+    #[doc(hidden)]
+    pub use super::snackbar::SnackbarTheme;
+    #[cfg(feature = "snackbar")]
     pub use super::snackbar::{
         Snackbar, SnackbarDismissReason, SnackbarHost, SnackbarManager, SnackbarPosition,
-        SnackbarTheme,
     };
 
     pub use super::border::Border;

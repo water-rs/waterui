@@ -39,6 +39,8 @@ fn with_caster_clip<E: TextEngine, R>(
             WrapperEffect::ContextMenu(_) => with_caster_clip(&wrapper.child, f),
             #[cfg(waterui_feature = "dialog")]
             WrapperEffect::Dialog(_) => with_caster_clip(&wrapper.child, f),
+            #[cfg(waterui_feature = "snackbar")]
+            WrapperEffect::SnackbarHost(_) => with_caster_clip(&wrapper.child, f),
             _ => f(None),
         },
         RenderNode::Opacity(opacity) => with_caster_clip(&opacity.child, f),
@@ -597,6 +599,12 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                         HydrolysisRenderer::apply_dialog(renderer, child_env, value, |r| {
                             node.child.flush(r, ctx, child_env, kurbo::Affine::IDENTITY);
                         });
+                    }
+                    #[cfg(waterui_feature = "snackbar")]
+                    WrapperEffect::SnackbarHost(value) => {
+                        node.child
+                            .flush(renderer, ctx, child_env, kurbo::Affine::IDENTITY);
+                        value.flush(renderer, ctx, child_env);
                     }
                     WrapperEffect::LayoutPriority(_) => {
                         // Layout-only: nothing to apply while drawing.
@@ -1206,6 +1214,11 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                         } else {
                             node.child.emit_accessibility(renderer, child_env);
                         }
+                    }
+                    #[cfg(waterui_feature = "snackbar")]
+                    WrapperEffect::SnackbarHost(effect) => {
+                        node.child.emit_accessibility(renderer, child_env);
+                        effect.emit_accessibility(renderer, child_env);
                     }
                     WrapperEffect::Transition(declaration) => {
                         declaration.report_unowned();

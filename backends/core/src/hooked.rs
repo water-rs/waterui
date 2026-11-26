@@ -410,8 +410,9 @@ impl<F: NativeBackendFamily> core::fmt::Debug for SlotView<F> {
 }
 
 impl<F: NativeBackendFamily> SlotView<F> {
-    #[cfg(waterui_feature = "capture")]
-    pub(crate) const fn new(child: Child<F>) -> Self {
+    /// Wraps a backend child slot as a [`View`] without erasing its type.
+    #[must_use]
+    pub const fn new(child: Child<F>) -> Self {
         Self(child)
     }
 

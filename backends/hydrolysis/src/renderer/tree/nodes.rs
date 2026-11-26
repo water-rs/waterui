@@ -1161,6 +1161,10 @@ pub(super) enum WrapperEffect<E: crate::text::TextEngine> {
     /// plus the composed card.
     #[cfg(waterui_feature = "dialog")]
     Dialog(DialogEffect<E>),
+    /// `.snackbar_host()`: renders the hosted snackbar stack over the wrapped
+    /// content using [`SnackbarLook`](crate::theme::SnackbarLook).
+    #[cfg(waterui_feature = "snackbar")]
+    SnackbarHost(crate::widgets::layout::snackbar::SnackbarHostEffect<E>),
     /// A `.transition(...)` declaration (layout-spec.md §4.5): paint- and
     /// layout-transparent. The structural site that swaps the content claims
     /// it from the built instance; one nobody owns fails when reached.
@@ -1184,6 +1188,10 @@ impl<E: crate::text::TextEngine> WrapperEffect<E> {
         }
         #[cfg(waterui_feature = "dialog")]
         if matches!(self, Self::Dialog(_)) {
+            return true;
+        }
+        #[cfg(waterui_feature = "snackbar")]
+        if matches!(self, Self::SnackbarHost(_)) {
             return true;
         }
         matches!(

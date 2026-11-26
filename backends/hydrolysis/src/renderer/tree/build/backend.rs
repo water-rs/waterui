@@ -955,6 +955,26 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         )
     }
 
+    #[cfg(waterui_feature = "snackbar")]
+    fn snackbar_host<S: ChildView<Self>, C: ChildView<Self>>(
+        &mut self,
+        metadata: Metadata<waterui::snackbar::SnackbarHostConfig<S>, C>,
+        env: &Environment,
+        (): (),
+    ) -> RenderNode<E> {
+        mark_reached!("snackbar_host");
+        let Metadata { content, value } = metadata;
+        let content = content.into_child();
+        let value = value.map_slots(S::into_child);
+        let effect = crate::widgets::layout::snackbar::SnackbarHostEffect::new(value);
+        RenderNode::build_wrapper(
+            WrapperEffect::SnackbarHost(effect),
+            content,
+            env,
+            self.renderer,
+        )
+    }
+
     fn layout_priority<C: ChildView<Self>>(
         &mut self,
         metadata: Metadata<waterui_core::layout::LayoutPriority, C>,
