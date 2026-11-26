@@ -828,6 +828,40 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         )
     }
 
+    fn floating<C: ChildView<Self>>(
+        &mut self,
+        metadata: Metadata<waterui::floating::Floating, C>,
+        env: &Environment,
+        (): (),
+    ) -> RenderNode<E> {
+        use crate::renderer::floating::FloatingEffect;
+        use crate::theme::{FloatingOverride, FloatingScope};
+        use nami::binding;
+        use waterui::floating::LegacyFloatingOverride;
+        use waterui_interaction::interaction::{InteractionReport, InteractionState};
+
+        mark_reached!("floating");
+        let metadata = metadata.map_content(C::into_child);
+        let renderer = &mut *self.renderer;
+        let override_surface = env.get::<FloatingOverride>().cloned().or_else(|| {
+            env.get::<LegacyFloatingOverride>()
+                .map(|legacy| FloatingOverride::legacy(legacy.0.clone()))
+        });
+        let reported_state = binding(InteractionState::empty());
+        let mut child_env = env.clone();
+        child_env.remove::<FloatingOverride>();
+        child_env.remove::<LegacyFloatingOverride>();
+        let child_env = child_env
+            .extending(FloatingScope::new(override_surface.clone()))
+            .extending(InteractionReport(reported_state.clone()));
+        RenderNode::build_wrapper(
+            WrapperEffect::Floating(FloatingEffect::new(override_surface, reported_state)),
+            metadata.content,
+            &child_env,
+            renderer,
+        )
+    }
+
     // Transparent metadata wrappers: each applies its visual/interaction
     // effect every flush and recurses into the child node, so reactive
     // descendants reach their dedicated nodes (instead of freezing inside a

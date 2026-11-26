@@ -153,13 +153,13 @@ mod when_payload;
 mod window_background;
 #[cfg(not(target_arch = "wasm32"))]
 mod window_mount;
+use crate::theme::{FloatingOverride, FloatingStyle};
 use kurbo::{Affine, Point, Rect, Size};
 use waterui::gesture::{
     DragEvent, DragGesture, GestureObserver, MagnificationEvent, MagnificationGesture,
 };
 use waterui::interaction::InteractionState;
 use waterui::prelude::text;
-use waterui::style::FloatingStyle;
 use waterui::widget::Divider;
 use waterui::{Binding, Color, Computed, Signal, SignalExt as _, ViewExt as _};
 use waterui_controls::button::button;
@@ -1015,7 +1015,8 @@ fn floating_button_measurement_uses_style_tokens() {
             .label_style(LabelDisplayMode::IconOnly)
             .plain()
             .action(|| {})
-            .floating_with(floating_style),)),
+            .floating()
+            .install(FloatingOverride::style(floating_style)),)),
         &env,
         Rect::new(0.0, 0.0, 160.0, 160.0),
     );
@@ -1055,7 +1056,7 @@ fn button_outside_a_floating_surface_ignores_ambient_floating_tokens() {
             .label_style(LabelDisplayMode::IconOnly)
             .plain()
             .action(|| {}),))
-        .install(ambient_tokens),
+        .install(FloatingOverride::style(ambient_tokens)),
         &env,
         Rect::new(0.0, 0.0, 400.0, 400.0),
     );

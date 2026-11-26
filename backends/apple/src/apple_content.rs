@@ -677,6 +677,7 @@ mod tests {
             material_background: waterui::background::MaterialBackground,
             glass_background: waterui::background::GlassBackground,
             material_group: waterui::background::MaterialGroup,
+            floating: waterui::floating::Floating,
             ignore_safe_area: waterui::layout::safe_area::IgnoreSafeArea,
             cursor: waterui::cursor::Cursor,
             draggable: waterui::drag_drop::Draggable,

@@ -30,6 +30,7 @@ pub mod accessibility;
 mod bindings;
 pub mod chrome;
 mod effects;
+mod floating;
 mod frame;
 #[cfg(feature = "frame-profile")]
 mod frame_stage_times;

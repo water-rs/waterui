@@ -141,7 +141,8 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 WrapperEffect::Clip(_)
                 | WrapperEffect::Border(_)
                 | WrapperEffect::Shadow(_)
-                | WrapperEffect::Material(_) => true,
+                | WrapperEffect::Material(_)
+                | WrapperEffect::Floating(_) => true,
                 #[cfg(feature = "menu")]
                 WrapperEffect::PopupMenuSurface(_) => true,
                 #[cfg(feature = "navigation")]
@@ -543,6 +544,11 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                     }
                     WrapperEffect::Glass(effect) => {
                         HydrolysisRenderer::apply_glass(renderer, ctx, child_env, effect, |r| {
+                            node.child.flush(r, ctx, child_env, kurbo::Affine::IDENTITY);
+                        });
+                    }
+                    WrapperEffect::Floating(effect) => {
+                        HydrolysisRenderer::apply_floating(renderer, ctx, child_env, effect, |r| {
                             node.child.flush(r, ctx, child_env, kurbo::Affine::IDENTITY);
                         });
                     }

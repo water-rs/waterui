@@ -1626,6 +1626,10 @@ impl LiveChrome {
 
     /// The content-effect shader, uniform operand and live silhouette operand
     /// when the surface declares a content effect; `None` otherwise.
+    pub(crate) fn surface_shape(&self) -> Operand<ShapeData> {
+        self.surface.shape.clone()
+    }
+
     pub(crate) fn content_effect_operands(
         &self,
     ) -> Option<(ContentShader, Operand<MaterialEffect>, Operand<ShapeData>)> {
@@ -2283,6 +2287,31 @@ impl LiveChromeParts {
         if opened {
             renderer.close_scope();
         }
+    }
+
+    /// Runs `render_content` clipped to the chrome's live silhouette (and
+    /// inside its content-effect scope when one is declared).
+    pub(crate) fn wrap_clipped_content<E: TextEngine>(
+        &self,
+        renderer: &mut HydrolysisRenderer<E>,
+        ctx: RenderContext,
+        render_content: impl FnOnce(&mut HydrolysisRenderer<E>),
+    ) {
+        let content_effect = self
+            .chrome
+            .content_effect_operands()
+            .map(|(shader, effect, _)| (shader, effect));
+        renderer.open_clipped_content_scope(
+            ScopeKey {
+                role: "chrome-floating-clip",
+                item: Rc::as_ptr(&self.chrome) as usize as u64,
+            },
+            self.chrome.surface_shape(),
+            content_effect,
+            ctx,
+        );
+        render_content(renderer);
+        renderer.close_scope();
     }
 
     /// Runs `render_content` inside the chrome's content-effect scope when one

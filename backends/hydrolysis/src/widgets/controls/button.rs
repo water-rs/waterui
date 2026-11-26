@@ -14,8 +14,8 @@ use crate::renderer::{
 };
 use crate::text::TextEngine;
 use crate::theme::{
-    ButtonLook, ButtonSpec, Chrome, CornerShape, Corners, Inputs, Label as LookLabel, SpecTint,
-    StateLayer, Surface, WidgetTheme,
+    ButtonLook, ButtonSpec, Chrome, CornerShape, FloatingLook, FloatingScope, Inputs,
+    Label as LookLabel, SpecTint, StateLayer, Surface, WidgetTheme,
 };
 #[cfg(feature = "menu")]
 use crate::theme::{MenuLook, MenuPresentationMotion};
@@ -32,12 +32,10 @@ use nami::{Signal, SignalExt};
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use waterui::floating::FloatingScope;
 #[cfg(feature = "menu")]
 use waterui::metadata::anchored_overlay::{
     AnchorEdge, AnchorPlacement, Clamp, Dismissal, EdgeAlignment,
 };
-use waterui::style::FloatingStyle;
 use waterui::theme::Tint;
 use waterui_controls::ControlSize;
 use waterui_controls::button::{ButtonConfig, ButtonRole, ButtonStyle};
@@ -156,7 +154,7 @@ fn resolve_look(theme: &Rc<dyn WidgetTheme>, spec: &ButtonSpec, env: &Environmen
         );
     }
     match env.get::<FloatingScope>() {
-        Some(FloatingScope(style)) => lower_floating(&look, style),
+        Some(scope) => lower_floating(&look, &scope.resolve(&**theme, env)),
         None => look,
     }
 }
@@ -211,14 +209,12 @@ pub fn menu_row_font(theme: &Rc<dyn WidgetTheme>, env: &Environment) -> Option<F
 /// shadows, so the button keeps the theme look's state-layer tokens, press
 /// feedback, focus indicator, motion and hit region, and takes the floating
 /// style's silhouette, state-layer colour, content colour and metrics.
-fn lower_floating(look: &ButtonLook, style: &FloatingStyle) -> ButtonLook {
+fn lower_floating(look: &ButtonLook, floating: &FloatingLook) -> ButtonLook {
     let theme_chrome = look.chrome();
     let layer = theme_chrome.state_layer();
     let chrome = Chrome::new(
-        Surface::clear(CornerShape::new(Corners::Fraction(f64::from(
-            style.clip_radius,
-        )))),
-        StateLayer::new(style.state_layer_color.clone()).opacities(
+        Surface::clear(floating.surface().shape().clone()),
+        StateLayer::new(floating.state_layer_color().clone()).opacities(
             layer.hover,
             layer.focus,
             layer.pressed,
@@ -229,11 +225,10 @@ fn lower_floating(look: &ButtonLook, style: &FloatingStyle) -> ButtonLook {
         theme_chrome.motion().clone(),
     )
     .hit(*theme_chrome.get_hit());
-    let content = style.content_color.clone();
-    let disabled = style
-        .content_color
+    let content = floating.content_color().clone();
+    let disabled = content
         .clone()
-        .with_opacity(style.disabled_content_opacity);
+        .with_opacity(floating.disabled_content_opacity_value());
     let mut label = LookLabel::new().color(crate::theme::Driven::new(move |inputs| {
         if inputs.state.contains(InteractionState::DISABLED) {
             disabled.clone()
@@ -246,8 +241,11 @@ fn lower_floating(look: &ButtonLook, style: &FloatingStyle) -> ButtonLook {
     }
     let group_opacity = look.get_group_opacity().clone();
     let built = ButtonLook::new(chrome, label)
-        .padding(style.content_inset_x, style.content_inset_y)
-        .minimum_size(kurbo::Size::new(style.minimum_width, style.minimum_height))
+        .padding(floating.content_inset_x(), floating.content_inset_y())
+        .minimum_size(kurbo::Size::new(
+            floating.minimum_width(),
+            floating.minimum_height(),
+        ))
         .group_opacity(group_opacity);
     match look.get_group_blend_space() {
         Some(space) => built.group_blend_space(space),

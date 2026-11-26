@@ -705,4 +705,10 @@ pub trait WidgetTheme {
     fn snackbar(&self, env: &Environment) -> super::SnackbarLook {
         super::snackbar::default_snackbar_look(env)
     }
+
+    /// The look of a `.floating()` surface and the tokens semantic controls
+    /// adopt when placed inside it.
+    fn floating(&self, env: &Environment) -> super::FloatingLook {
+        super::floating::default_floating_look(env)
+    }
 }
