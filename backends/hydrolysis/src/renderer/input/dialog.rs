@@ -31,11 +31,20 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::theme::ModalInteraction;
-use waterui::Plugin;
-use waterui::dialog::Dialog;
-use waterui_core::Environment;
+use crate::theme::{DialogLook, ModalInteraction};
+use waterui::accessibility::AccessibilityRole;
+use waterui::dialog::{Dialog, DialogAction};
+use waterui::theme::color::Scrim;
+use waterui::{Computed, Plugin, SignalExt as _, Str, ViewExt as _};
+use waterui_controls::{ButtonRole, ButtonStyle, button};
 use waterui_core::handler::shared_action;
+use waterui_core::{Environment, OneOf2, View};
+use waterui_graphics::color::Color;
+use waterui_layout::frame::Frame;
+use waterui_layout::padding::EdgeInsets;
+use waterui_layout::stack::{HorizontalAlignment, hstack, vstack, zstack};
+use waterui_shape::{RoundedRectangle, ShapeExt as _};
+use waterui_text::text::text;
 
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
@@ -184,9 +193,130 @@ pub struct RegisteredDialog<E: crate::text::TextEngine> {
     /// environment plus the `ModalInteraction` scope that makes the layer
     /// modal — its targets modal-flagged, Escape routed to the cancel path.
     pub(crate) env: Environment,
+    /// Factory created at the `NativeBackend::dialog` dispatch point so
+    /// [`dialog_modal_layer`] stays unreachable in apps that never use `.dialog`.
+    pub(crate) build_layer: Rc<dyn Fn(DialogLook) -> RetainedSubview<E>>,
     /// The retained layer content — the dialog's scrim-plus-card body —
     /// shared with the effect so it survives across frames.
-    pub(crate) content: Rc<RefCell<RetainedSubview<E>>>,
+    pub(crate) content: Rc<RefCell<Option<RetainedSubview<E>>>>,
+}
+
+/// One dialog action as a card button styled with `look`.
+fn action_button(
+    action: DialogAction,
+    dialog: &Dialog,
+    primary: bool,
+    look: &DialogLook,
+) -> impl View + use<> {
+    let title = text(action.title().clone());
+    let role = action.role();
+    let color = match role {
+        Some(ButtonRole::Destructive) => look.destructive_action_color.clone(),
+        _ if primary => look.primary_action_color.clone(),
+        _ => look.default_action_color.clone(),
+    };
+    let label = title.color(color);
+    let dialog = dialog.clone();
+    let btn = button(label)
+        .style(ButtonStyle::Plain)
+        .action(move |env: Environment| dialog.run_action(&action, &env));
+    match role {
+        Some(role) => btn.role(role),
+        None => btn,
+    }
+}
+
+/// The alert card the Hydrolysis modal layer draws using the active
+/// [`DialogLook`] from [`WidgetTheme::dialog`], carrying the `Dialog`
+/// accessibility role and labelled by the title.
+struct DialogCard {
+    dialog: Dialog,
+    look: DialogLook,
+}
+
+impl View for DialogCard {
+    fn body(self, env: &Environment) -> impl View {
+        let Self { dialog, look } = self;
+        // Resolving first is what lets the label read a localized title: an
+        // unresolved environment-dependent `Text` has no content signal.
+        let spoken = dialog
+            .title()
+            .resolve(env)
+            .content()
+            .map(|title| title.to_plain())
+            .computed();
+        dialog_card(&dialog, spoken, &look)
+    }
+}
+
+fn dialog_card(dialog: &Dialog, label: Computed<Str>, look: &DialogLook) -> impl View + use<> {
+    let actions = dialog.resolved_actions();
+    let mut seen_default = false;
+    let buttons: Vec<_> = actions
+        .into_iter()
+        .map(|action| {
+            let primary = action.role().is_none() && !seen_default;
+            seen_default |= action.role().is_none();
+            action_button(action, dialog, primary, look)
+        })
+        .collect();
+    let headline = text(dialog.title().clone())
+        .headline()
+        .color(look.title_color.clone());
+    let actions_row = Frame::new(
+        hstack(buttons)
+            .spacing(look.actions_spacing)
+            .padding_with(EdgeInsets::new(look.actions_top_padding, 0.0, 0.0, 0.0)),
+    )
+    .max_width(f32::INFINITY)
+    .alignment(look.actions_alignment);
+    let contents = match dialog.message_text() {
+        Some(message) => OneOf2::A(
+            vstack((
+                headline,
+                text(message.clone()).color(look.message_color.clone()),
+                actions_row,
+            ))
+            .alignment(HorizontalAlignment::Leading)
+            .spacing(look.content_spacing),
+        ),
+        None => OneOf2::B(
+            vstack((headline, actions_row))
+                .alignment(HorizontalAlignment::Leading)
+                .spacing(look.content_spacing),
+        ),
+    };
+
+    Frame::new(
+        contents
+            .padding_with(look.content_padding.clone())
+            .background(
+                RoundedRectangle::new(look.corner_radius).fill(look.container_color.clone()),
+            )
+            .a11y_label(label)
+            .a11y_role(AccessibilityRole::Dialog),
+    )
+    .min_width(look.min_width)
+    .max_width(look.max_width)
+}
+
+/// Builds Hydrolysis's self-drawn modal layer for `dialog` styled with `look`:
+/// a full-window `Scrim` backdrop — tapping it runs the cancel path — with the
+/// alert card centered above it.
+pub fn dialog_modal_layer(dialog: &Dialog, look: DialogLook) -> impl View + use<> {
+    let scrim_dialog = dialog.clone();
+    zstack((
+        // The scrim is a pointer target only: the card's own cancel
+        // action and Escape carry dismissal for assistive technology, so
+        // the backdrop must not become a focusable element ahead of them.
+        Color::new(Scrim)
+            .on_tap(move |env: Environment| scrim_dialog.run_cancel(&env))
+            .a11y_hidden(true),
+        DialogCard {
+            dialog: dialog.clone(),
+            look,
+        },
+    ))
 }
 
 /// The environment a dialog's layer content presents in: the declaring
@@ -229,7 +359,9 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         };
         let window = self.window_bounds;
         let proposal = bounded_proposal(window);
-        let mut content = front.content.borrow_mut();
+        let theme = self.theme();
+        let mut slot = front.content.borrow_mut();
+        let content = slot.get_or_insert_with(|| (front.build_layer)(theme.dialog(&front.env)));
         let _ = content.patch_and_measure(self, &front.env, proposal);
         self.register_hit_test_occluder(window);
         content.place_detached(
@@ -240,5 +372,60 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             window,
             Some(safe_area.with_frame(window)),
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use nami::Binding;
+    use waterui::dialog::Dialog;
+    use waterui_core::{AnyView, Environment, Native, View};
+    use waterui_layout::{ProposalSize, container::FixedContainer};
+
+    use super::DialogCard;
+    use crate::theme::DialogLook;
+
+    #[test]
+    fn dialog_look_overrides_card_widths() {
+        let dialog = Dialog::new(&Binding::new(true), "Confirm");
+        let env = Environment::new();
+        let default_view = DialogCard {
+            dialog: dialog.clone(),
+            look: DialogLook::default(),
+        }
+        .body(&env)
+        .body(&env)
+        .body(&env);
+        let default_native = AnyView::new(default_view)
+            .downcast::<Native<FixedContainer<Vec<AnyView>>>>()
+            .expect("DialogCard expands to Native<FixedContainer>");
+        let default_container = default_native.into_inner();
+        let (default_layout, _) = default_container.as_parts();
+        let default_min = default_layout
+            .size_that_fits(ProposalSize::new(100.0, 200.0), &[])
+            .width;
+        assert!((default_min - DialogLook::default().min_width).abs() < f32::EPSILON);
+
+        let custom_look = DialogLook {
+            min_width: 340.0,
+            max_width: 620.0,
+            ..DialogLook::default()
+        };
+        let custom_view = DialogCard {
+            dialog,
+            look: custom_look,
+        }
+        .body(&env)
+        .body(&env)
+        .body(&env);
+        let custom_native = AnyView::new(custom_view)
+            .downcast::<Native<FixedContainer<Vec<AnyView>>>>()
+            .expect("DialogCard expands to Native<FixedContainer>");
+        let custom_container = custom_native.into_inner();
+        let (custom_layout, _) = custom_container.as_parts();
+        let custom_min = custom_layout
+            .size_that_fits(ProposalSize::new(100.0, 200.0), &[])
+            .width;
+        assert!((custom_min - 340.0).abs() < f32::EPSILON);
     }
 }
