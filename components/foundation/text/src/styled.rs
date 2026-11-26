@@ -730,7 +730,10 @@ pub fn heading_style(level: HeadingLevel) -> Style {
     Style::default().font(font).bold(true)
 }
 
-fn inline_code_style(style: Style) -> Style {
+/// Applies the default inline-code styling (monospaced face on the theme's
+/// `SurfaceVariant` background token) to `style`.
+#[must_use]
+pub fn inline_code_style(style: Style) -> Style {
     style.monospaced(true).background(Color::surface_variant())
 }
 

@@ -3,8 +3,11 @@ use std::{mem, num::NonZeroUsize, ops::Range};
 use executor_core::spawn_local;
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, Options, Parser, Tag};
 use suiteki::Str;
-use waterui_color::{Blue, Color, Srgb};
-use waterui_controls::button::{ButtonStyle, button};
+use waterui_color::Color;
+use waterui_controls::{
+    button::{ButtonStyle, button},
+    divider::Divider,
+};
 use waterui_core::{
     Environment, OneOf2, OneOf8, View, backend::ChildSlot, contract_violation, view::ViewSequence,
 };
@@ -22,7 +25,7 @@ use waterui_text::{
     Text,
     code::{CodeLanguage, code as code_widget},
     highlight::Language,
-    styled::{MarkdownInlineBuilder, Style, StyledStr, heading_style},
+    styled::{MarkdownInlineBuilder, Style, StyledStr, heading_style, inline_code_style},
     text,
 };
 
@@ -248,7 +251,7 @@ fn render_tail(element: RichTextElement) -> impl View {
         } else {
             OneOf2::B(VStack::from_iter(elements))
         }),
-        RichTextElement::Divider => OneOf2::B(Frame::new(Color::border()).height(1.0)),
+        RichTextElement::Divider => OneOf2::B(Divider),
         _ => unreachable!("handled by RichTextElement::body"),
     }
 }
@@ -327,7 +330,7 @@ fn render_list(items: &[RichTextElement], ordered: bool, start: usize) -> impl V
 
 fn quote(content: Vec<RichTextElement>) -> impl View {
     // Quote marker: fixed width, stretch to fill height (use max_height to trigger stretch)
-    let quote_marker = Frame::new(Blue).width(4.0).max_height(f32::MAX);
+    let quote_marker = Frame::new(Color::border()).width(4.0).max_height(f32::MAX);
     hstack((
         quote_marker,
         VStack::from_iter(content).alignment(HorizontalAlignment::Leading),
@@ -928,7 +931,10 @@ fn parse_markdown(markdown: &str) -> Vec<RichTextElement> {
                     sink.push_inline_code(text.as_ref());
                 } else {
                     let mut styled = StyledStr::empty();
-                    styled.push(text.as_ref().to_string(), inline_code_style());
+                    styled.push(
+                        text.as_ref().to_string(),
+                        inline_code_style(Style::default()),
+                    );
                     push_to_parent(&mut stack, RichTextElement::Text(styled));
                 }
             }
@@ -1026,13 +1032,6 @@ fn language_from_kind(kind: &CodeBlockKind) -> Language {
         CodeBlockKind::Fenced(info) => CodeLanguage::parse(info.as_ref()).language().clone(),
         CodeBlockKind::Indented => Language::Plaintext,
     }
-}
-
-fn inline_code_style() -> Style {
-    Style::default()
-        .font(waterui_text::font::Body)
-        .monospaced(true)
-        .background(Srgb::new_u8(236, 239, 241))
 }
 
 fn ordered_list_start(start: Option<u64>) -> usize {
@@ -1829,6 +1828,20 @@ fn main() {
             &text.to_plain()[span.range()],
             "WaterUI on GitHub",
             "Link text should be complete"
+        );
+    }
+
+    #[test]
+    fn divider_element_renders_as_semantic_divider() {
+        let elements = parse_markdown("---");
+        assert!(
+            matches!(elements.as_slice(), [RichTextElement::Divider]),
+            "expected a single Divider element, got {elements:?}"
+        );
+        let divider = elements.into_iter().next().expect("checked non-empty");
+        assert!(
+            waterui_core::backend::peel_native::<Divider>(divider, &Environment::new()).is_some(),
+            "RichTextElement::Divider must lower to semantic Divider"
         );
     }
 }
