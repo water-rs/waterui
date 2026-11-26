@@ -291,8 +291,8 @@ fn expand_handler(method: &ImplItemFn, name: &str) -> syn::Result<(TokenStream, 
             // One struct per method so the page sends a named object
             // rather than a positional tuple, which reads the same way
             // the Rust signature does.
-            #[derive(::waterui::webview::serde::Deserialize)]
-            #[serde(crate = "::waterui::webview::serde")]
+            #[derive(::waterui::__private::serde::Deserialize)]
+            #[serde(crate = "::waterui::__private::serde")]
             #[allow(non_camel_case_types)]
             struct #argument_struct {
                 #(#field_idents: #field_types,)*
