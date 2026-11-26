@@ -54,7 +54,6 @@ impl<E: TextEngine> CardRenderState<E> {
             subtitle,
             content,
             style,
-            ..
         } = config;
         Self {
             style,
@@ -151,6 +150,7 @@ impl<E: TextEngine> CardRenderState<E> {
     }
 
     #[cfg(feature = "accessibility")]
+    #[cfg(hydrolysis_cherenkov)]
     fn ensure_header_views_semantic(&mut self, renderer: &mut SemanticCore<E>, env: &Environment) {
         if self.title.is_none()
             && let Some(title) = self.title_text.clone()

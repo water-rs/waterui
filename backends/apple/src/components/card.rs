@@ -285,7 +285,6 @@ pub fn realize_card_config(config: CardConfig<Held>, ctx: &RenderContext<'_>) ->
         subtitle,
         content,
         style,
-        ..
     } = config;
     let mtm = ctx.mtm();
     let host = HostView::new(mtm, KitRect::ZERO);

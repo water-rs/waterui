@@ -24,7 +24,6 @@ pub enum CardStyle {
 
 /// Resolved configuration passed to [`NativeBackend`](crate::Native) for a [`Card`].
 #[derive(Debug, Clone)]
-#[non_exhaustive]
 pub struct CardConfig<S> {
     /// Optional title displayed at the top of the card.
     pub title: Option<Text>,
