@@ -13210,6 +13210,7 @@ dependencies = [
  "thiserror 2.0.21",
  "waterui",
  "waterui-accessibility",
+ "waterui-color",
  "waterui-core",
  "waterui-interaction",
  "waterui-layout",
@@ -13464,7 +13465,9 @@ dependencies = [
  "bitflags 2.13.2",
  "keyboard-types",
  "nami",
+ "suiteki",
  "waterui-core",
+ "waterui-url",
 ]
 
 [[package]]
@@ -13810,6 +13813,7 @@ dependencies = [
  "nami",
  "waterui-core",
  "waterui-graphics",
+ "waterui-layout",
 ]
 
 [[package]]

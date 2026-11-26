@@ -16,11 +16,7 @@
 use core::any::TypeId;
 use core::marker::PhantomData;
 
-use waterui::component::StyleSlot;
-use waterui::component::button::{ButtonConfig, ButtonStyleTarget};
-#[cfg(waterui_feature = "toggle")]
-use waterui::component::toggle::{ToggleConfig, ToggleStyleTarget};
-use waterui_core::backend::{Backend, ErasedPayload, MapSlots};
+use waterui_core::backend::{Backend, ErasedPayload, HookSlot, MapSlots, ParentHookScope};
 use waterui_core::view::hook::{ErasedHooks, HookList};
 use waterui_core::{AnyView, Environment, Native, NativeView, View};
 
@@ -45,8 +41,8 @@ fn has_target<H: HookList, T: 'static>() -> bool {
 /// entered below an [`AnyView`] hop).
 ///
 /// Keeping `NoErased` distinct in the type lets `Hooked::offer` and
-/// unhooked `Hooked::hook_button` / `Hooked::hook_toggle` stay free of
-/// `AnyView::new(SlotView)` and `RealizeDyn` instantiation on the static path.
+/// unhooked `Hooked::hook_parent` calls stay free of `AnyView` and
+/// `RealizeDyn` instantiation on the static path.
 pub trait ErasedScope: Clone + core::fmt::Debug + 'static {
     /// Checks at compile time or run time whether any erased hook targets `T`.
     fn targets_type<T: 'static>(&self) -> bool;
@@ -317,72 +313,30 @@ impl<B: NativeBackend, H: HookList, E: ErasedScope> Hooked<B, H, E> {
         (self.hooks.clone(), self.erased.clone())
     }
 
-    /// Offers a [`ButtonConfig`] to subtree button-style hooks when eligible,
-    /// keeping unhooked buttons and declined hooks strictly typed.
-    pub(crate) fn hook_button<C: ChildView<Self>>(
+    /// Offers a slotted parent payload to subtree style hooks through
+    /// [`MapSlots::offer_style_hook`], keeping unhooked parents and declined
+    /// hooks strictly typed.
+    pub fn hook_parent<C, P>(
         &mut self,
-        native: ButtonConfig<C>,
+        native: P,
         env: &Environment,
         cx: B::Ctx,
-    ) -> B::Output {
-        if native.has_explicit_style() || !self.targets_type::<ButtonStyleTarget>() {
-            let native = MapSlots::map_slots(native, self.rehooker::<C>());
-            return self.inner().button(native, env, cx);
-        }
-        self.offer_button_style(native, env, cx)
-    }
-
-    #[inline(never)]
-    fn offer_button_style<C: ChildView<Self>>(
-        &mut self,
-        native: ButtonConfig<C>,
-        env: &Environment,
-        cx: B::Ctx,
-    ) -> B::Output {
-        let rehook = self.rehooker::<C>();
-        let (target, pending) =
-            native.into_style_pending(move |slot| StyleSlot::new(rehook(slot).into_child()));
-        match self.offer(target, env, cx) {
+        forward: impl FnOnce(
+            &mut B,
+            P::With<Rehook<B::Family, H, E>>,
+            &Environment,
+            B::Ctx,
+        ) -> B::Output,
+    ) -> B::Output
+    where
+        C: ChildView<Self>,
+        P: MapSlots<C>,
+    {
+        match native.offer_style_hook(self, env, cx) {
             Ok(output) => output,
-            Err((_, cx)) => {
-                let restored = MapSlots::map_slots(pending.restore(), self.rehooker::<C>());
-                self.inner().button(restored, env, cx)
-            }
-        }
-    }
-
-    /// Offers a [`ToggleConfig`] to subtree toggle-style hooks when eligible,
-    /// keeping unhooked toggles and declined hooks strictly typed.
-    #[cfg(waterui_feature = "toggle")]
-    pub(crate) fn hook_toggle<C: ChildView<Self>>(
-        &mut self,
-        native: ToggleConfig<C>,
-        env: &Environment,
-        cx: B::Ctx,
-    ) -> B::Output {
-        if native.has_explicit_style() || !self.targets_type::<ToggleStyleTarget>() {
-            let native = MapSlots::map_slots(native, self.rehooker::<C>());
-            return self.inner().toggle(native, env, cx);
-        }
-        self.offer_toggle_style(native, env, cx)
-    }
-
-    #[cfg(waterui_feature = "toggle")]
-    #[inline(never)]
-    fn offer_toggle_style<C: ChildView<Self>>(
-        &mut self,
-        native: ToggleConfig<C>,
-        env: &Environment,
-        cx: B::Ctx,
-    ) -> B::Output {
-        let rehook = self.rehooker::<C>();
-        let (target, pending) =
-            native.into_style_pending(move |slot| StyleSlot::new(rehook(slot).into_child()));
-        match self.offer(target, env, cx) {
-            Ok(output) => output,
-            Err((_, cx)) => {
-                let restored = MapSlots::map_slots(pending.restore(), self.rehooker::<C>());
-                self.inner().toggle(restored, env, cx)
+            Err((native, cx)) => {
+                let mapped = MapSlots::map_slots(native, self.rehooker::<C>());
+                forward(self.inner(), mapped, env, cx)
             }
         }
     }
@@ -396,6 +350,36 @@ impl<B: NativeBackend, H: HookList, E: ErasedScope> Hooked<B, H, E> {
     #[cfg(any(waterui_feature = "capture", waterui_feature = "webview"))]
     pub(crate) const fn inner_ref(&self) -> &B {
         &self.inner
+    }
+}
+
+impl<B, H, E, C> ParentHookScope<C> for Hooked<B, H, E>
+where
+    B: NativeBackend,
+    H: HookList,
+    E: ErasedScope,
+    C: ChildView<Self>,
+{
+    type Output = B::Output;
+    type Ctx = B::Ctx;
+
+    #[inline]
+    fn targets_type<T: 'static>(&self) -> bool {
+        Self::targets_type::<T>(self)
+    }
+
+    fn wrap_slot(&self) -> impl Fn(C) -> HookSlot + Clone + 'static {
+        let rehook = self.rehooker::<C>();
+        move |slot| HookSlot::new(rehook(slot).into_child())
+    }
+
+    fn offer<T: NativeView + 'static>(
+        &mut self,
+        target: T,
+        env: &Environment,
+        cx: Self::Ctx,
+    ) -> Result<Self::Output, (T, Self::Ctx)> {
+        Self::offer(self, target, env, cx)
     }
 }
 

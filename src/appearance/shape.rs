@@ -18,4 +18,8 @@
 //! let dot = Circle.fill(Color::red());
 //! ```
 
-pub use waterui_shape::*;
+pub use waterui_shape::{
+    Angle, Capsule, Circle, ClipShape, CornerRadii, CornerRadius, Ellipse, FilledShape, MorphShape,
+    MorphableShape, Path, PathCommand, Rectangle, ResolvedShape, RoundedRectangle, Shape, ShapeExt,
+    ShapeKind,
+};

@@ -15,7 +15,9 @@ categories = ["gui"]
 bitflags.workspace = true
 keyboard-types.workspace = true
 nami.workspace = true
+suiteki.workspace = true
 waterui-core = { workspace = true, default-features = false }
+waterui-url.workspace = true
 
 [lints]
 workspace = true

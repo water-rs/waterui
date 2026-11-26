@@ -21,9 +21,7 @@ use core::marker::PhantomData;
 
 use nami::watcher::Context;
 
-#[cfg(test)]
-use crate::components::Native;
-use crate::components::{Dynamic, Metadata, NativeView};
+use crate::components::{Dynamic, Metadata, Native, NativeView};
 use crate::metadata::MetadataKey;
 use crate::view::hook::{ComposeErased, ErasedHooks, HookList, HookableView, compose_erased};
 use crate::{AnyView, Environment, View};
@@ -86,6 +84,159 @@ pub trait Backend {
     ) -> Self::Output;
 }
 
+/// Backend-agnostic child slot carried across subtree style hooks without
+/// erasing through [`AnyView`].
+///
+/// A [`HookableParent`] wraps its child slots into `HookSlot` values when
+/// building its concrete [`Hook::Target`](crate::view::hook::Hook::Target),
+/// and the backend decorator unwraps each `HookSlot` back into its concrete
+/// child slot when the style's body realizes it.
+pub struct HookSlot(Box<dyn Any>);
+
+impl HookSlot {
+    /// Wraps a backend-family child slot.
+    #[must_use]
+    pub fn new<T: 'static>(slot: T) -> Self {
+        Self(Box::new(slot))
+    }
+
+    /// Recovers the concrete backend-family child slot.
+    ///
+    /// # Errors
+    ///
+    /// Returns `self` unchanged if `T` does not match the stored slot type.
+    pub fn downcast<T: 'static>(self) -> Result<T, Self> {
+        self.0.downcast::<T>().map(|boxed| *boxed).map_err(Self)
+    }
+}
+
+impl core::fmt::Debug for HookSlot {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("HookSlot")
+    }
+}
+
+impl NativeView for HookSlot {}
+
+impl View for HookSlot {
+    fn body(self, _env: &Environment) -> impl View {
+        Native::new(self)
+    }
+
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        backend.native(self, env, cx)
+    }
+}
+
+/// A hook scope that tests for and offers a slotted parent's style-hook target
+/// before the parent reaches the inner backend.
+pub trait ParentHookScope<S: 'static> {
+    /// What a claimed view realizes into.
+    type Output;
+    /// Context threaded through realization.
+    type Ctx;
+
+    /// Whether any active hook in this scope targets `T`.
+    fn targets_type<T: 'static>(&self) -> bool;
+
+    /// Returns a mapper wrapping each child slot `S` into a [`HookSlot`] that
+    /// re-enters this scope when the style's body realizes it.
+    fn wrap_slot(&self) -> impl Fn(S) -> HookSlot + Clone + 'static;
+
+    /// Offers `target` to the active hooks in this scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns `(target, cx)` when every hook declines `target`.
+    fn offer<T: NativeView + 'static>(
+        &mut self,
+        target: T,
+        env: &Environment,
+        cx: Self::Ctx,
+    ) -> Result<Self::Output, (T, Self::Ctx)>;
+}
+
+/// A slotted native parent payload that participates in subtree style hooks.
+///
+/// Implement this trait alongside [`MapSlots`] and delegate
+/// [`MapSlots::offer_style_hook`] to [`offer_hookable_parent`]. When no active
+/// hook targets [`StyleTarget`](Self::StyleTarget) or
+/// [`is_style_hookable`](Self::is_style_hookable) returns `false`, the payload
+/// stays on the zero-cost typed path without constructing
+/// [`StyleTarget`](Self::StyleTarget) or boxing any [`HookSlot`].
+pub trait HookableParent<S: 'static>: MapSlots<S> {
+    /// The concrete hook target offered to subtree style hooks.
+    type StyleTarget: NativeView + 'static;
+
+    /// Saved typed state restored by [`restore_pending`](Self::restore_pending)
+    /// when every hook declines [`StyleTarget`](Self::StyleTarget).
+    type Pending;
+
+    /// Whether this payload instance is eligible for subtree style hooks (for
+    /// example, `false` when an explicit style was set directly on the view).
+    fn is_style_hookable(&self) -> bool {
+        true
+    }
+
+    /// Splits this payload into its style-hook target (with child slots
+    /// wrapped through `map_slot`) and the pending state for exact typed
+    /// restoration if every hook declines.
+    fn into_style_pending(
+        self,
+        map_slot: impl Fn(S) -> HookSlot + Clone + 'static,
+    ) -> (Self::StyleTarget, Self::Pending);
+
+    /// Restores the original typed payload when every hook declined.
+    fn restore_pending(pending: Self::Pending) -> Self;
+}
+
+/// Runs the fast-check and deferred style-hook offer sequence for a
+/// [`HookableParent`].
+///
+/// Intended as the body of [`MapSlots::offer_style_hook`] for types
+/// implementing [`HookableParent`].
+///
+/// # Errors
+///
+/// Returns `(parent, cx)` unchanged when the parent is not eligible, no active
+/// hook targets [`HookableParent::StyleTarget`], or every hook declines.
+#[inline]
+pub fn offer_hookable_parent<S, P, Scope>(
+    parent: P,
+    scope: &mut Scope,
+    env: &Environment,
+    cx: Scope::Ctx,
+) -> Result<Scope::Output, (P, Scope::Ctx)>
+where
+    S: 'static,
+    P: HookableParent<S>,
+    Scope: ParentHookScope<S>,
+{
+    if !parent.is_style_hookable() || !scope.targets_type::<P::StyleTarget>() {
+        return Err((parent, cx));
+    }
+    offer_hookable_parent_slow(parent, scope, env, cx)
+}
+
+#[inline(never)]
+fn offer_hookable_parent_slow<S, P, Scope>(
+    parent: P,
+    scope: &mut Scope,
+    env: &Environment,
+    cx: Scope::Ctx,
+) -> Result<Scope::Output, (P, Scope::Ctx)>
+where
+    S: 'static,
+    P: HookableParent<S>,
+    Scope: ParentHookScope<S>,
+{
+    let (target, pending) = parent.into_style_pending(scope.wrap_slot());
+    match scope.offer(target, env, cx) {
+        Ok(output) => Ok(output),
+        Err((_, cx)) => Err((P::restore_pending(pending), cx)),
+    }
+}
+
 /// A native payload holding child views in a backend's slot `S`, which can
 /// move them into another slot.
 ///
@@ -98,6 +249,30 @@ pub trait MapSlots<S>: Sized {
 
     /// Moves every child through `f`, now or as the payload produces it.
     fn map_slots<T: 'static>(self, f: impl Fn(S) -> T + Clone + 'static) -> Self::With<T>;
+
+    /// Offers this payload to subtree style hooks in `scope` before forwarding
+    /// it to the inner backend.
+    ///
+    /// Parents without subtree style hooks inherit the default no-op, which
+    /// folds away completely at compile time. Styled parents implement
+    /// [`HookableParent`] and delegate this method to
+    /// [`offer_hookable_parent`].
+    ///
+    /// # Errors
+    ///
+    /// Returns `(self, cx)` unchanged when no hook claims this payload.
+    #[inline]
+    fn offer_style_hook<Scope: ParentHookScope<S>>(
+        self,
+        _scope: &mut Scope,
+        _env: &Environment,
+        cx: Scope::Ctx,
+    ) -> Result<Scope::Output, (Self, Scope::Ctx)>
+    where
+        S: 'static,
+    {
+        Err((self, cx))
+    }
 }
 
 /// A child view of a native payload, held until the backend realizes it.
