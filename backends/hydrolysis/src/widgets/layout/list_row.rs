@@ -50,6 +50,25 @@ impl<E: TextEngine> ListRowRenderState<E> {
     pub(crate) fn take_layout_dirty(&mut self) -> bool {
         self.label.take_layout_dirty_if_built() | self.value.take_layout_dirty_if_built()
     }
+
+    /// The label this row contributes when an enclosing `ListItem` names itself
+    /// from its content: non-empty trimmed label and value strings joined by a
+    /// space, matching [`RenderNode::Container`].
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn contributed_label(
+        &self,
+        renderer: &mut SemanticCore<E>,
+        _env: &Environment,
+    ) -> Option<String> {
+        let labels = [&self.label, &self.value]
+            .into_iter()
+            .filter(|subview| subview.is_built())
+            .filter_map(|subview| subview.accessibility_label(renderer))
+            .map(|label| label.trim().to_owned())
+            .filter(|label| !label.is_empty())
+            .collect::<Vec<_>>();
+        (!labels.is_empty()).then(|| labels.join(" "))
+    }
 }
 
 fn inline_proposals(

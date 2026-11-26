@@ -24,8 +24,8 @@ use nami::Signal as _;
 use nami::collection::StateList;
 use std::time::Duration;
 use support::{
-    count_role_label, mount_rendered, mount_semantic, node_bounds_with_role, node_id_contains,
-    node_label_exists, nodes,
+    count_role_label, mount_rendered, mount_semantic, node_bounds_with_role, node_exists,
+    node_id_contains, node_label_exists, nodes,
 };
 use waterui::animation::Animation;
 use waterui::component::list::{ForEachExt, List, ListDelete, ListMove, Section, detail_row, row};
@@ -34,6 +34,7 @@ use waterui::id::{Identifiable, SelfId};
 use waterui::layout::scroll::ScrollController;
 use waterui::theme::color::Accent;
 use waterui::views::ForEach;
+use waterui::widget::Card;
 use waterui::{Binding, View, ViewExt};
 use waterui_core::Environment;
 use waterui_core::dynamic::watch;
@@ -1372,4 +1373,51 @@ fn row_semantic_tree_exposes_label_and_value() {
     assert!(node_label_exists(tree, "Alice"));
     assert!(node_label_exists(tree, "Bio"));
     assert!(node_label_exists(tree, "Details"));
+}
+
+#[test]
+fn list_item_derives_labels_from_keyed_row_and_card() {
+    let mut rendered = mount_rendered(
+        Environment::new(),
+        || {
+            List::content((row("Archive", "12"), detail_row("Bio", "Details"), || {
+                Card::new(text("Card Body"))
+                    .title("Title")
+                    .subtitle("Subtitle")
+            }))
+        },
+        400,
+        600,
+    );
+    rendered.settle();
+    let tree = rendered.tree();
+    assert!(node_exists(tree, Role::ListItem, "Archive 12"));
+    assert!(node_exists(tree, Role::ListItem, "Bio Details"));
+    assert!(node_exists(
+        tree,
+        Role::ListItem,
+        "Title Subtitle Card Body"
+    ));
+
+    let mut semantic = mount_semantic(
+        Environment::new(),
+        || {
+            List::content((row("Archive", "12"), detail_row("Bio", "Details"), || {
+                Card::new(text("Card Body"))
+                    .title("Title")
+                    .subtitle("Subtitle")
+            }))
+        },
+        400,
+        600,
+    );
+    semantic.settle();
+    let tree = semantic.tree();
+    assert!(node_exists(tree, Role::ListItem, "Archive 12"));
+    assert!(node_exists(tree, Role::ListItem, "Bio Details"));
+    assert!(node_exists(
+        tree,
+        Role::ListItem,
+        "Title Subtitle Card Body"
+    ));
 }

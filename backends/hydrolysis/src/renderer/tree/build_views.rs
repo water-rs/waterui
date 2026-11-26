@@ -35,6 +35,7 @@ impl_widget_behavior!(
     crate::widgets::layout::list_row::measure_list_row_node
     ; dirty: take_layout_dirty
     ; a11y: crate::widgets::layout::list_row::emit_list_row_accessibility
+    ; label: contributed_label
 );
 #[cfg(feature = "table")]
 impl_widget_behavior!(

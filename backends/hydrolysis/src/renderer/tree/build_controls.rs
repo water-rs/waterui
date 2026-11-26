@@ -151,6 +151,7 @@ impl_widget_behavior!(
     ; prepare: prepare
     ; dirty: take_layout_dirty
     ; a11y: crate::widgets::layout::card::emit_card_accessibility
+    ; label: contributed_label
 );
 
 #[cfg(hydrolysis_android_system_webview)]
