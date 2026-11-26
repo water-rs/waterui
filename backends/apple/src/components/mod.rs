@@ -77,7 +77,14 @@ pub mod opacity;
 pub mod passthrough;
 #[cfg(feature = "picker")]
 pub mod picker;
-#[cfg(all(feature = "picture", waterui_feature = "gpu"))]
+#[cfg(all(
+    feature = "picture",
+    any(
+        waterui_feature = "gpu",
+        waterui_feature = "cpu",
+        waterui_feature = "canvas"
+    )
+))]
 pub mod picture;
 #[cfg(feature = "plain")]
 pub mod plain;
