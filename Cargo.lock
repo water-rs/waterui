@@ -2216,7 +2216,7 @@ checksum = "af491d569909a7e4dee0ad7db7f5341fef5c614d5b8ec8cf765732aba3cff681"
 dependencies = [
  "serde",
  "termcolor",
- "unicode-width 0.1.14",
+ "unicode-width 0.2.2",
 ]
 
 [[package]]
@@ -8837,7 +8837,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "proc-macro2 1.0.107",
  "quote 1.0.47",
  "syn 2.0.119",
@@ -13605,7 +13605,7 @@ dependencies = [
 [[package]]
 name = "waterui-map-gpu"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/map-gpu?branch=main#9a1c91e5dc90a1145324983932811f4f7739ad3e"
+source = "git+https://github.com/water-rs/map-gpu?branch=main#e5e768f29511825e91c84d406cf3658ee59b7e6d"
 dependencies = [
  "arc-swap",
  "blocking",
@@ -13774,7 +13774,7 @@ dependencies = [
 [[package]]
 name = "waterui-particle"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/particle?branch=main#d57aa84e37765fed01202d9d6b4e6c00655c47a1"
+source = "git+https://github.com/water-rs/particle?branch=main#e8aa6f835567143310e392f4dd77023231f8b9ff"
 dependencies = [
  "bytemuck",
  "encase",
@@ -13994,7 +13994,7 @@ dependencies = [
 [[package]]
 name = "waterui-video-gpu"
 version = "0.4.0"
-source = "git+https://github.com/water-rs/video-gpu?branch=main#b514813cf25073b74c8f7746c0131362ecaceebc"
+source = "git+https://github.com/water-rs/video-gpu?branch=main#231ac94f2cb6d0d848234e07f2509c4acd6cf3be"
 dependencies = [
  "async-channel",
  "executor-core",

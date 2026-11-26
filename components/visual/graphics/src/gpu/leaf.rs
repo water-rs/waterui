@@ -10,17 +10,17 @@ use waterui_core::layout::{ProposalSize, Size, StretchAxis, ViewDimensions};
 use waterui_core::{Environment, Native, NativeView, Str, View, contract_violation};
 
 use super::content::{Erase, ErasedGpuContent};
-use super::{Context, Frame, GpuContentHandle, SurfaceHooks, legacy, measure_by_intrinsic_size};
-use crate::GpuContent;
+use super::{Context, Frame, GpuContentHandle, SurfaceHooks, measure_by_intrinsic_size};
 use crate::draw::kurbo;
 use crate::input::SurfaceInputEvent;
+use crate::{GpuContent, GpuView};
 
-/// The backend leaf produced by [`GpuView`](crate::GpuView).
+/// The backend leaf produced by [`GpuView`].
 ///
 /// Backends mount this type to consume the one-shot [`GpuContent`] producer
 /// alongside its UI-thread hooks (input, per-frame pump, IME caret, live
 /// measurement, HDR preference, and accessibility metadata). Application code
-/// constructs [`GpuView`](crate::GpuView) instead.
+/// constructs [`GpuView`] instead.
 pub struct GpuContentLeaf {
     content: Option<Box<dyn ErasedGpuContent>>,
     content_handle: Option<GpuContentHandle>,
@@ -43,10 +43,10 @@ impl fmt::Debug for GpuContentLeaf {
 
 impl GpuContentLeaf {
     /// Creates a leaf directly from `content`, for backend hosts and offscreen
-    /// renderers that bypass the authoring [`GpuView`](crate::GpuView) builder.
+    /// renderers that bypass the authoring [`GpuView`] builder.
     #[must_use]
-    pub fn new(content: impl legacy::GpuContent) -> Self {
-        legacy::GpuView::new(content).into_leaf()
+    pub fn new(content: impl GpuContent<Params = ()>) -> Self {
+        GpuView::new(content).into_leaf()
     }
 
     pub(super) const fn from_parts(
