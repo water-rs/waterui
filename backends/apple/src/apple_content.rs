@@ -586,9 +586,17 @@ mod tests {
             gpu: waterui::graphics::backend::GpuContentLeaf,
             #[cfg(waterui_feature = "gpu")]
             external_frame: waterui::graphics::gpu::external::ExternalFrameView,
-            #[cfg(waterui_feature = "gpu")]
+            #[cfg(any(
+                waterui_feature = "gpu",
+                waterui_feature = "cpu",
+                waterui_feature = "canvas"
+            ))]
             scene: waterui::graphics::backend::SceneView,
-            #[cfg(waterui_feature = "gpu")]
+            #[cfg(any(
+                waterui_feature = "gpu",
+                waterui_feature = "cpu",
+                waterui_feature = "canvas"
+            ))]
             picture: waterui::graphics::backend::Picture,
             #[cfg(waterui_feature = "video")]
             video: waterui::video::video::NativeVideoConfig,

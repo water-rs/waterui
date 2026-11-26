@@ -585,7 +585,11 @@ impl NativeBackend for AppleBackend {
         crate::components::gpu_surface::realize_external_frame_view(native, &self.entry(env))
     }
 
-    #[cfg(waterui_feature = "gpu")]
+    #[cfg(any(
+        waterui_feature = "gpu",
+        waterui_feature = "cpu",
+        waterui_feature = "canvas"
+    ))]
     fn scene(
         &mut self,
         native: waterui::graphics::backend::SceneView,
@@ -593,10 +597,24 @@ impl NativeBackend for AppleBackend {
         (): (),
     ) -> NativeLeaf {
         mark_reached!("scene");
-        crate::components::gpu_surface::realize_scene_view(native, &self.entry(env))
+        #[cfg(feature = "gpu_surface")]
+        return crate::components::gpu_surface::realize_scene_view(native, &self.entry(env));
+        #[cfg(not(feature = "gpu_surface"))]
+        {
+            drop(native);
+            report_unprovided(
+                "waterui-apple without its `gpu_surface` feature",
+                "waterui_graphics::backend::SceneView",
+            );
+            self.empty((), env, ())
+        }
     }
 
-    #[cfg(waterui_feature = "gpu")]
+    #[cfg(any(
+        waterui_feature = "gpu",
+        waterui_feature = "cpu",
+        waterui_feature = "canvas"
+    ))]
     fn picture(
         &mut self,
         native: waterui::graphics::backend::Picture,
@@ -604,7 +622,17 @@ impl NativeBackend for AppleBackend {
         (): (),
     ) -> NativeLeaf {
         mark_reached!("picture");
-        crate::components::picture::realize_picture(native, &self.entry(env))
+        #[cfg(feature = "picture")]
+        return crate::components::picture::realize_picture(native, &self.entry(env));
+        #[cfg(not(feature = "picture"))]
+        {
+            drop(native);
+            report_unprovided(
+                "waterui-apple without its `picture` feature",
+                "waterui_graphics::backend::Picture",
+            );
+            self.empty((), env, ())
+        }
     }
 
     #[cfg(waterui_feature = "video")]
