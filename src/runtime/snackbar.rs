@@ -1,7 +1,9 @@
 //! Snackbar notification system for `WaterUI`.
 //!
-//! Snackbars provide brief messages about app processes at the bottom of the screen.
-//! They automatically disappear after a timeout and can optionally include an action button.
+//! Snackbars provide brief messages about app processes. They automatically
+//! disappear after a timeout and can optionally include a leading icon, an
+//! action button, and a close button. Visual presentation, layout, stacking
+//! spacing, and entrance/exit animations belong to each backend.
 //!
 //! # Examples
 //!
@@ -41,271 +43,162 @@
 //! ```
 
 use alloc::rc::Rc;
+use alloc::vec::Vec;
 use core::cell::{Cell, RefCell};
 use core::fmt::{self, Debug, Formatter};
 use core::marker::PhantomData;
 use core::time::Duration;
 
 use executor_core::spawn_local;
-use nami::Binding;
-use nami::collection::StateList;
-use waterui_controls::{Button, ButtonStyle, IntoLabel, Label, SemanticLabel, button, label};
-use waterui_core::animation::Animation;
+use nami::{Binding, Computed, Signal as _, SignalExt as _};
+use waterui_controls::{IntoLabel, Label, SemanticLabel, slot::SlotBuilder};
+use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 use waterui_core::extract::State;
 use waterui_core::handler::{
     BoxedEventAction, EventHandler, Handler, ReportExtraction, SharedAction, ViewBuilder,
     boxed_event_handler, shared_action,
 };
+use waterui_core::metadata::MetadataKey;
 use waterui_core::plugin::Plugin;
-use waterui_core::views::ForEach;
-use waterui_core::{Environment, OneOf2, SignalExt, View};
-use waterui_layout::container::{FixedContainer, LazyContainer};
-use waterui_layout::frame::Frame;
-use waterui_layout::padding::EdgeInsets;
-use waterui_layout::spacer::spacer;
-use waterui_layout::stack::{Alignment, hstack};
-use waterui_layout::{
-    AbsoluteLayout, Layout, LayoutError, PlacementInput, ProposalSize, Rect, Size, StretchAxis,
-    SubView, SubviewPlacement, UnitPoint,
-};
+use waterui_core::{AnyView, Environment, Metadata, View};
 use waterui_macros::state;
 #[cfg(feature = "flow-markdown")]
 use waterui_markdown::CodeCopyFeedback;
 #[cfg(feature = "flow-markdown")]
 use waterui_text::code::OnCopied;
-use waterui_text::{IntoText, Text, font::Font};
+use waterui_text::{IntoText, Text};
 
 use crate::ViewExt;
-use crate::shape::{FilledShape, Path, RoundedRectangle, ShapeExt};
-use crate::style::Shadow;
-use waterui_graphics::color::Color;
 
-/// Maximum number of snackbars visible at once *per placement*. M3 keeps each
-/// on-screen stack small; when a new one arrives over this limit at the same
-/// placement, the oldest at that placement is dismissed.
+/// Maximum number of snackbars visible at once *per placement*. When a new
+/// snackbar arrives over this limit at the same placement, the oldest live one
+/// at that placement is dismissed with [`SnackbarDismissReason::Replaced`].
 const MAX_VISIBLE_SNACKBARS: usize = 3;
 
-/// Vertical gap between stacked snackbars, in logical units.
-const SNACKBAR_STACK_GAP: f32 = 8.0;
+// Temporary compatibility shim kept for `hydrolysis-m3` during the cross-repo
+// transition to `WidgetTheme::snackbar` (`water-rs/waterui#5129`). Removed once
+// `hydrolysis-m3` updates to `SnackbarLook`.
+mod legacy_theme {
+    use core::time::Duration;
 
-/// The grid the close-icon geometry below is authored on, matching the 24dp
-/// viewport every Material icon is drawn in.
-const CLOSE_ICON_GRID: f32 = 24.0;
+    use waterui_core::animation::Animation;
+    use waterui_graphics::color::Color;
+    use waterui_layout::padding::EdgeInsets;
+    use waterui_text::font::Font;
 
-/// Outline of Material's filled `close` icon on the [`CLOSE_ICON_GRID`], as the
-/// twelve corners of the two crossed bars. This is the geometry Compose draws for
-/// `Icons.Filled.Close`, which is what `androidx.compose.material3`'s snackbar
-/// puts in its `dismissAction` slot.
-///
-/// Drawing the real icon rather than a text glyph is what makes the affordance
-/// read at its intended size: a font's multiplication sign inks barely half its
-/// point size, so the previous 22pt "×" rendered as a ~10pt mark.
-const CLOSE_ICON_OUTLINE: [(f32, f32); 12] = [
-    (19.0, 6.41),
-    (17.59, 5.0),
-    (12.0, 10.59),
-    (6.41, 5.0),
-    (5.0, 6.41),
-    (10.59, 12.0),
-    (5.0, 17.59),
-    (6.41, 19.0),
-    (12.0, 13.41),
-    (17.59, 19.0),
-    (19.0, 17.59),
-    (13.41, 12.0),
-];
-
-/// Builds the close icon as a unit-square path, so it scales with whatever frame
-/// the theme sizes it into.
-fn close_icon_path() -> Path {
-    let mut corners = CLOSE_ICON_OUTLINE
-        .into_iter()
-        .map(|(x, y)| (x / CLOSE_ICON_GRID, y / CLOSE_ICON_GRID));
-    let (start_x, start_y) = corners
-        .next()
-        .expect("close icon outline is a non-empty constant");
-    corners
-        .fold(Path::new().move_to(start_x, start_y), |path, (x, y)| {
-            path.line_to(x, y)
-        })
-        .close()
-}
-
-/// The close affordance's visual: the icon drawn at `icon_size`, centered in the
-/// `box_size` square that carries the button's hit area.
-#[derive(Debug, Clone)]
-struct CloseIcon {
-    color: Color,
-    icon_size: f32,
-    box_size: f32,
-}
-
-impl View for CloseIcon {
-    fn body(self, _env: &waterui_core::Environment) -> impl View {
-        FilledShape::new(close_icon_path(), self.color)
-            .size(self.icon_size, self.icon_size)
-            .size(self.box_size, self.box_size)
+    /// Temporary compatibility shim for external style packages migrating to
+    /// `WidgetTheme::snackbar`.
+    #[doc(hidden)]
+    #[derive(Debug, Clone)]
+    pub struct SnackbarTheme {
+        pub container_color: Color,
+        pub supporting_text_color: Color,
+        pub action_label_color: Color,
+        pub supporting_text_font: Font,
+        pub action_label_font: Font,
+        pub content_padding: EdgeInsets,
+        pub viewport_padding: EdgeInsets,
+        pub content_spacing: f32,
+        pub min_width: f32,
+        pub max_width: f32,
+        pub action_trailing_padding: f32,
+        pub close_icon_size: f32,
+        pub close_state_layer_size: f32,
+        pub single_line_min_height: f32,
+        pub corner_radius: f32,
+        pub shadow_color: Color,
+        pub shadow_radius: f32,
+        pub shadow_offset_y: f32,
+        pub ambient_shadow_color: Color,
+        pub ambient_shadow_radius: f32,
+        pub ambient_shadow_offset_y: f32,
+        pub motion_offset_y: f32,
+        pub enter_animation: Animation,
+        pub exit_animation: Animation,
     }
-}
 
-/// Theme tokens used by the snackbar overlay.
-#[derive(Debug, Clone)]
-pub struct SnackbarTheme {
-    /// Container fill color.
-    pub container_color: Color,
-    /// Supporting text and icon color.
-    pub supporting_text_color: Color,
-    /// Action label color.
-    pub action_label_color: Color,
-    /// Supporting text font.
-    pub supporting_text_font: Font,
-    /// Action label font.
-    pub action_label_font: Font,
-    /// Inner content padding.
-    pub content_padding: EdgeInsets,
-    /// Margin between the bar and the window's safe area.
-    ///
-    /// This is spacing only. The backend places the host clear of the
-    /// hardware — notch, status bar, home indicator — so a theme never has to
-    /// guess those insets.
-    pub viewport_padding: EdgeInsets,
-    /// Gap between message and action.
-    pub content_spacing: f32,
-    /// Minimum container width.
-    pub min_width: f32,
-    /// Maximum container width.
-    pub max_width: f32,
-    /// Trailing padding when an action button is present.
-    pub action_trailing_padding: f32,
-    /// Drawn size of the close icon (Material icons are drawn at 24dp).
-    pub close_icon_size: f32,
-    /// Box the close icon is centered in, which is also its hit area.
-    ///
-    /// This is Compose's `IconButtonTokens.StateLayerSize`, the size an
-    /// `IconButton` actually *measures*. Compose then widens only the touch area
-    /// to 48dp via `minimumInteractiveComponentSize()`, which does not affect
-    /// layout; `WaterUI` has no equivalent yet, so hit area is layout size here.
-    /// Sizing this box to 48dp instead would push a single-line snackbar to 72dp
-    /// tall, well past Material's 48dp.
-    pub close_state_layer_size: f32,
-    /// Minimum height for single-line snackbars.
-    pub single_line_min_height: f32,
-    /// Container corner radius in logical units — the same length traces the
-    /// fill and the shadows.
-    pub corner_radius: f32,
-    /// Shadow color.
-    pub shadow_color: Color,
-    /// Shadow blur radius.
-    pub shadow_radius: f32,
-    /// Shadow vertical offset.
-    pub shadow_offset_y: f32,
-    /// Ambient shadow color.
-    pub ambient_shadow_color: Color,
-    /// Ambient shadow blur radius.
-    pub ambient_shadow_radius: f32,
-    /// Ambient shadow vertical offset.
-    pub ambient_shadow_offset_y: f32,
-    /// Entrance and dismissal vertical travel.
-    pub motion_offset_y: f32,
-    /// Entrance animation.
-    pub enter_animation: Animation,
-    /// Dismissal animation.
-    pub exit_animation: Animation,
-}
+    impl SnackbarTheme {
+        #[doc(hidden)]
+        #[must_use]
+        pub fn material() -> Self {
+            Self {
+                container_color: Color::srgb(0x32, 0x2f, 0x35),
+                supporting_text_color: Color::srgb(0xf5, 0xef, 0xf7),
+                action_label_color: Color::srgb(0xd0, 0xbc, 0xff),
+                supporting_text_font: Font::default(),
+                action_label_font: Font::default(),
+                content_padding: EdgeInsets::symmetric(12.0, 16.0),
+                viewport_padding: EdgeInsets::all(16.0),
+                content_spacing: 12.0,
+                min_width: 288.0,
+                max_width: 568.0,
+                action_trailing_padding: 8.0,
+                close_icon_size: 24.0,
+                close_state_layer_size: 40.0,
+                single_line_min_height: 48.0,
+                corner_radius: 4.0,
+                shadow_color: Color::srgb(0, 0, 0).with_opacity(0.2),
+                shadow_radius: 3.0,
+                shadow_offset_y: 3.0,
+                ambient_shadow_color: Color::srgb(0, 0, 0).with_opacity(0.0),
+                ambient_shadow_radius: 0.0,
+                ambient_shadow_offset_y: 0.0,
+                motion_offset_y: 20.0,
+                enter_animation: Animation::bezier(Duration::from_millis(250), 0.0, 0.0, 0.0, 1.0),
+                exit_animation: Animation::bezier(Duration::from_millis(200), 0.3, 0.0, 1.0, 1.0),
+            }
+        }
 
-impl SnackbarTheme {
-    /// The Material 3 snackbar: a full-width bar pinned near the bottom edge,
-    /// leading-aligned text, small corner radius.
-    #[must_use]
-    pub fn material() -> Self {
-        Self {
-            container_color: Color::srgb(0x32, 0x2f, 0x35),
-            supporting_text_color: Color::srgb(0xf5, 0xef, 0xf7),
-            action_label_color: Color::srgb(0xd0, 0xbc, 0xff),
-            supporting_text_font: Font::default(),
-            action_label_font: Font::default(),
-            content_padding: EdgeInsets::symmetric(12.0, 16.0),
-            viewport_padding: EdgeInsets::all(16.0),
-            content_spacing: 12.0,
-            min_width: 288.0,
-            max_width: 568.0,
-            action_trailing_padding: 8.0,
-            close_icon_size: 24.0,
-            close_state_layer_size: 40.0,
-            single_line_min_height: 48.0,
-            corner_radius: 4.0,
-            shadow_color: Color::srgb(0, 0, 0).with_opacity(0.2),
-            shadow_radius: 3.0,
-            shadow_offset_y: 3.0,
-            ambient_shadow_color: Color::srgb(0, 0, 0).with_opacity(0.0),
-            ambient_shadow_radius: 0.0,
-            ambient_shadow_offset_y: 0.0,
-            motion_offset_y: 20.0,
-            enter_animation: Animation::bezier(Duration::from_millis(250), 0.0, 0.0, 0.0, 1.0),
-            exit_animation: Animation::bezier(Duration::from_millis(200), 0.3, 0.0, 1.0, 1.0),
+        #[doc(hidden)]
+        #[must_use]
+        pub fn apple() -> Self {
+            Self {
+                container_color: Color::srgb(0x2c, 0x2c, 0x2e),
+                supporting_text_color: Color::srgb(0xff, 0xff, 0xff),
+                action_label_color: Color::srgb(0x0a, 0x84, 0xff),
+                supporting_text_font: Font::default(),
+                action_label_font: Font::default(),
+                content_padding: EdgeInsets::symmetric(14.0, 24.0),
+                viewport_padding: EdgeInsets::all(16.0),
+                content_spacing: 10.0,
+                min_width: 0.0,
+                max_width: 480.0,
+                action_trailing_padding: 12.0,
+                close_icon_size: 18.0,
+                close_state_layer_size: 32.0,
+                single_line_min_height: 50.0,
+                corner_radius: 15.0,
+                shadow_color: Color::srgb(0, 0, 0).with_opacity(0.18),
+                shadow_radius: 18.0,
+                shadow_offset_y: 6.0,
+                ambient_shadow_color: Color::srgb(0, 0, 0).with_opacity(0.06),
+                ambient_shadow_radius: 2.0,
+                ambient_shadow_offset_y: 1.0,
+                motion_offset_y: 16.0,
+                enter_animation: Animation::bezier(Duration::from_millis(280), 0.2, 0.0, 0.0, 1.0),
+                exit_animation: Animation::bezier(Duration::from_millis(220), 0.4, 0.0, 1.0, 1.0),
+            }
         }
     }
 
-    /// The Apple confirmation banner: the compact rounded capsule Apple Music
-    /// shows for "Added to Library" — content-sized, centered, generously
-    /// rounded, floating above the bottom edge with a soft shadow.
-    #[must_use]
-    pub fn apple() -> Self {
-        Self {
-            container_color: Color::srgb(0x2c, 0x2c, 0x2e),
-            supporting_text_color: Color::srgb(0xff, 0xff, 0xff),
-            action_label_color: Color::srgb(0x0a, 0x84, 0xff),
-            supporting_text_font: Font::default(),
-            action_label_font: Font::default(),
-            content_padding: EdgeInsets::symmetric(14.0, 24.0),
-            viewport_padding: EdgeInsets::all(16.0),
-            content_spacing: 10.0,
-            // Content-sized: no minimum, so the banner hugs its text.
-            min_width: 0.0,
-            max_width: 480.0,
-            action_trailing_padding: 12.0,
-            close_icon_size: 18.0,
-            close_state_layer_size: 32.0,
-            single_line_min_height: 50.0,
-            corner_radius: 15.0,
-            shadow_color: Color::srgb(0, 0, 0).with_opacity(0.18),
-            shadow_radius: 18.0,
-            shadow_offset_y: 6.0,
-            ambient_shadow_color: Color::srgb(0, 0, 0).with_opacity(0.06),
-            ambient_shadow_radius: 2.0,
-            ambient_shadow_offset_y: 1.0,
-            motion_offset_y: 16.0,
-            enter_animation: Animation::bezier(Duration::from_millis(280), 0.2, 0.0, 0.0, 1.0),
-            exit_animation: Animation::bezier(Duration::from_millis(220), 0.4, 0.0, 1.0, 1.0),
-        }
-    }
-}
-
-/// The platform's own notification style: Apple platforms show the compact
-/// Apple-style confirmation banner, everything else the Material 3 bar. Both
-/// remain available by name — the default only picks which one the platform
-/// itself would draw.
-impl Default for SnackbarTheme {
-    fn default() -> Self {
-        #[cfg(any(target_os = "ios", target_os = "macos", target_os = "tvos"))]
-        {
-            Self::apple()
-        }
-        #[cfg(not(any(target_os = "ios", target_os = "macos", target_os = "tvos")))]
-        {
+    impl Default for SnackbarTheme {
+        fn default() -> Self {
             Self::material()
         }
     }
 }
 
+#[doc(hidden)]
+pub use legacy_theme::SnackbarTheme;
+
 /// Position for snackbar display.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum SnackbarPosition {
-    /// Bottom center of the screen (default, Material Design standard).
+    /// Bottom center of the screen (default).
     #[default]
     BottomCenter,
-    /// Top center of the screen (iOS-style notification banner).
+    /// Top center of the screen.
     TopCenter,
     /// Bottom leading (left in LTR).
     BottomLeading,
@@ -314,31 +207,10 @@ pub enum SnackbarPosition {
 }
 
 impl SnackbarPosition {
-    /// Converts position to layout alignment.
-    const fn to_alignment(self) -> Alignment {
-        match self {
-            Self::BottomCenter => Alignment::Bottom,
-            Self::TopCenter => Alignment::Top,
-            Self::BottomLeading => Alignment::BottomLeading,
-            Self::BottomTrailing => Alignment::BottomTrailing,
-        }
-    }
-
-    /// Returns the initial Y offset for the entrance slide (hidden position):
-    /// below the edge for bottom placements, above it for top placements.
-    const fn initial_offset_y(self) -> f32 {
-        if self.is_top() { -20.0 } else { 20.0 }
-    }
-
     /// Whether this placement anchors to the top edge.
-    const fn is_top(self) -> bool {
+    #[must_use]
+    pub const fn is_top(self) -> bool {
         matches!(self, Self::TopCenter)
-    }
-
-    /// The sign of the reflow stack offset: a bottom stack grows upward
-    /// (negative y), a top stack grows downward (positive y).
-    const fn stack_direction(self) -> f32 {
-        if self.is_top() { 1.0 } else { -1.0 }
     }
 }
 
@@ -420,7 +292,7 @@ impl<I> Debug for IconFactory<I> {
 }
 
 /// Cloneable view adapter backed by an [`IconFactory`], allowing non-`Clone`
-/// views inside a snackbar's `Label::icon` slot.
+/// views inside a snackbar's icon slot.
 #[doc(hidden)]
 pub struct BuiltIcon<V>(IconFactory<V>);
 
@@ -467,11 +339,11 @@ pub struct Snackbar<I = NoIcon> {
     duration: Duration,
     /// Position on screen.
     position: SnackbarPosition,
-    /// Whether to show a trailing close button (M3 `closeable`).
+    /// Whether to show a trailing close button.
     closeable: bool,
     /// Callback reporting each presentation's dismissal and its reason.
     dismissal: Option<DismissalCallback>,
-    /// State injected into the action button environment.
+    /// State injected into the action and dismissal handler environments.
     captured_env: waterui_core::Environment,
 }
 
@@ -650,8 +522,8 @@ impl<I> Snackbar<I> {
     /// Registers a handler called when a presentation of this snackbar is
     /// dismissed, with the [`SnackbarDismissReason`] it went away.
     ///
-    /// The handler runs exactly once per presentation, after the exit
-    /// animation completes and the snackbar has been removed from the stack.
+    /// The handler runs exactly once per presentation, after the backend's exit
+    /// presentation completes and the snackbar has been removed from the stack.
     /// Every dismissal reports through it: `Action` when the action button is
     /// pressed, `Timeout` when the duration elapses, `Closed` from the close
     /// button, `Replaced` when a newer snackbar at the same placement evicts
@@ -708,9 +580,9 @@ impl<I> Snackbar<I> {
         self
     }
 
-    /// Shows a trailing close button that dismisses this snackbar (Material 3
-    /// `closeable`). Pair it with `.duration(Duration::ZERO)` for a snackbar that
-    /// stays until the user closes it.
+    /// Shows a trailing close button that dismisses this snackbar. Pair it with
+    /// `.duration(Duration::ZERO)` for a snackbar that stays until the user
+    /// closes it.
     #[must_use]
     pub const fn closeable(mut self) -> Self {
         self.closeable = true;
@@ -726,35 +598,221 @@ impl<I> Snackbar<I> {
     }
 }
 
-/// One on-screen snackbar in the reactive stack.
+/// One active snackbar presentation handed to a native backend.
 ///
-/// Every presentation owns its own animation bindings ([`Self::opacity`],
-/// [`Self::entrance_offset`], [`Self::stack_offset`]). The overlay renders the
-/// stack as a [`ForEach`] over the manager's [`StateList`], so the hydrolysis
-/// collection engine dispatches each presentation's subtree exactly once (keyed
-/// by [`Self::id`]) and reconciles only the items that join or leave. A
-/// presentation that stays on screen is never re-dispatched, so its `on_appear`
-/// entrance fires once and its in-flight animations continue uninterrupted —
-/// without any one-shot latch.
-///
-/// Cloning an `ActiveSnackbar` shares those bindings by reference count, so the
-/// snapshots the manager reflows from all refer to the same animated state.
-#[derive(crate::Identifiable)]
+/// The backend owns all visual presentation (layout, surface styling, close
+/// affordance geometry, stacking offsets, and entrance/exit animations) and
+/// calls [`Self::trigger_action`], [`Self::close`], and
+/// [`Self::complete_dismissal`] to drive the semantic lifecycle.
+#[doc(hidden)]
+pub struct SnackbarPresentation<S> {
+    id: u64,
+    message: Text,
+    icon: Option<SlotBuilder<S>>,
+    action: Option<SnackbarAction>,
+    position: SnackbarPosition,
+    closeable: bool,
+    captured_env: Environment,
+    dismissing: Computed<bool>,
+    on_dismiss_request: Rc<dyn Fn(SnackbarDismissReason)>,
+    on_dismiss_complete: Rc<dyn Fn()>,
+}
+
+impl<S> Clone for SnackbarPresentation<S> {
+    fn clone(&self) -> Self {
+        Self {
+            id: self.id,
+            message: self.message.clone(),
+            icon: self.icon.clone(),
+            action: self.action.clone(),
+            position: self.position,
+            closeable: self.closeable,
+            captured_env: self.captured_env.clone(),
+            dismissing: self.dismissing.clone(),
+            on_dismiss_request: Rc::clone(&self.on_dismiss_request),
+            on_dismiss_complete: Rc::clone(&self.on_dismiss_complete),
+        }
+    }
+}
+
+impl<S> Debug for SnackbarPresentation<S> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SnackbarPresentation")
+            .field("id", &self.id)
+            .field("message", &self.message)
+            .field("has_icon", &self.icon.is_some())
+            .field("action", &self.action)
+            .field("position", &self.position)
+            .field("closeable", &self.closeable)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<S> SnackbarPresentation<S> {
+    /// Stable monotonic presentation identifier.
+    #[must_use]
+    pub const fn id(&self) -> u64 {
+        self.id
+    }
+
+    /// The snackbar's localized reactive message.
+    #[must_use]
+    pub const fn message(&self) -> &Text {
+        &self.message
+    }
+
+    /// Optional leading icon builder in the backend's child slot `S`.
+    #[must_use]
+    pub const fn icon(&self) -> Option<&SlotBuilder<S>> {
+        self.icon.as_ref()
+    }
+
+    /// Optional trailing action button.
+    #[must_use]
+    pub const fn action(&self) -> Option<&SnackbarAction> {
+        self.action.as_ref()
+    }
+
+    /// Screen placement anchor for this snackbar.
+    #[must_use]
+    pub const fn position(&self) -> SnackbarPosition {
+        self.position
+    }
+
+    /// Whether the backend should show a close button.
+    #[must_use]
+    pub const fn closeable(&self) -> bool {
+        self.closeable
+    }
+
+    /// Reactive flag that flips from `false` to `true` once this presentation
+    /// begins dismissing (via timeout, action, close, eviction, or programmatic
+    /// dismissal).
+    #[must_use]
+    pub const fn dismissing(&self) -> &Computed<bool> {
+        &self.dismissing
+    }
+
+    /// Runs the snackbar's action handler against the live `env` layered under
+    /// any state captured via [`Snackbar::state`], then requests dismissal with
+    /// [`SnackbarDismissReason::Action`].
+    pub fn trigger_action(&self, env: &Environment) {
+        if let Some(action) = &self.action {
+            action.handler.run(&self.captured_env.layered_on(env));
+        }
+        (self.on_dismiss_request)(SnackbarDismissReason::Action);
+    }
+
+    /// Requests dismissal with [`SnackbarDismissReason::Closed`].
+    pub fn close(&self) {
+        (self.on_dismiss_request)(SnackbarDismissReason::Closed);
+    }
+
+    /// Notifies the manager that the backend's exit presentation has finished,
+    /// removing the presentation from the active stack and firing `on_dismiss`.
+    pub fn complete_dismissal(&self) {
+        (self.on_dismiss_complete)();
+    }
+}
+
+impl<S: 'static> SnackbarPresentation<S> {
+    /// Maps this presentation's icon slot into another slot type `T`.
+    #[must_use]
+    pub fn map_slots<T: 'static>(
+        self,
+        f: impl Fn(S) -> T + Clone + 'static,
+    ) -> SnackbarPresentation<T> {
+        SnackbarPresentation {
+            id: self.id,
+            message: self.message,
+            icon: self.icon.map(|builder| builder.map_slot(f)),
+            action: self.action,
+            position: self.position,
+            closeable: self.closeable,
+            captured_env: self.captured_env,
+            dismissing: self.dismissing,
+            on_dismiss_request: self.on_dismiss_request,
+            on_dismiss_complete: self.on_dismiss_complete,
+        }
+    }
+}
+
+/// Resolved snackbar host metadata consumed by native backends, carrying the
+/// reactive stack of active [`SnackbarPresentation`]s whose icons live in `S`.
+#[doc(hidden)]
+pub struct SnackbarHostConfig<S> {
+    presentations: Computed<Vec<SnackbarPresentation<S>>>,
+}
+
+impl<S> Debug for SnackbarHostConfig<S> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SnackbarHostConfig").finish_non_exhaustive()
+    }
+}
+
+impl<S: 'static> MetadataKey for SnackbarHostConfig<S> {}
+
+impl<S> SnackbarHostConfig<S> {
+    /// Reactive list of currently active snackbar presentations, oldest first.
+    #[must_use]
+    pub const fn presentations(&self) -> &Computed<Vec<SnackbarPresentation<S>>> {
+        &self.presentations
+    }
+}
+
+impl<S: 'static> SnackbarHostConfig<S> {
+    fn from_active<I: SnackbarIconSlot>(
+        active: &Binding<Vec<ActiveSnackbar<I>>>,
+        manager: SnackbarManager<I>,
+    ) -> Self
+    where
+        S: ChildSlot,
+    {
+        let presentations = active
+            .map(move |items| {
+                items
+                    .into_iter()
+                    .map(|item| item.into_presentation::<S>(&manager))
+                    .collect()
+            })
+            .computed();
+        Self { presentations }
+    }
+
+    /// Maps every active presentation's icon slot through `f`.
+    #[must_use]
+    pub fn map_slots<T: 'static>(
+        self,
+        f: impl Fn(S) -> T + Clone + 'static,
+    ) -> SnackbarHostConfig<T> {
+        SnackbarHostConfig {
+            presentations: self
+                .presentations
+                .map(move |items| {
+                    items
+                        .into_iter()
+                        .map(|item| item.map_slots(f.clone()))
+                        .collect()
+                })
+                .computed(),
+        }
+    }
+}
+
+impl<S: 'static> MapSlots<S> for SnackbarHostConfig<S> {
+    type With<T: 'static> = SnackbarHostConfig<T>;
+
+    fn map_slots<T: 'static>(self, f: impl Fn(S) -> T + Clone + 'static) -> SnackbarHostConfig<T> {
+        Self::map_slots(self, f)
+    }
+}
+
+/// One active snackbar entry owned by [`SnackbarManager`].
 struct ActiveSnackbar<I: 'static = NoIcon> {
-    #[id]
     id: u64,
     snackbar: Snackbar<I>,
-    /// 0 hidden → 1 shown; drives the fade.
-    opacity: Binding<f32>,
-    /// Entrance slide offset: starts at the position's hidden offset, animates
-    /// to 0 on appear.
-    entrance_offset: Binding<f32>,
-    /// Reflow offset from the anchor edge (signed: negative pushes a bottom
-    /// snackbar up, positive pushes a top snackbar down), animated when the
-    /// stack reorders.
-    stack_offset: Binding<f32>,
-    /// Whether this presentation is running its dismissal fade.
-    dismissing: Rc<Cell<bool>>,
+    dismissing: Binding<bool>,
+    dismiss_reason: Rc<Cell<Option<SnackbarDismissReason>>>,
 }
 
 impl<I: 'static> Clone for ActiveSnackbar<I> {
@@ -762,21 +820,47 @@ impl<I: 'static> Clone for ActiveSnackbar<I> {
         Self {
             id: self.id,
             snackbar: self.snackbar.clone(),
-            opacity: self.opacity.clone(),
-            entrance_offset: self.entrance_offset.clone(),
-            stack_offset: self.stack_offset.clone(),
-            dismissing: Rc::clone(&self.dismissing),
+            dismissing: self.dismissing.clone(),
+            dismiss_reason: Rc::clone(&self.dismiss_reason),
+        }
+    }
+}
+
+impl<I: SnackbarIconSlot> ActiveSnackbar<I> {
+    fn into_presentation<S: ChildSlot>(
+        self,
+        manager: &SnackbarManager<I>,
+    ) -> SnackbarPresentation<S> {
+        let id = self.id;
+        let icon = self.snackbar.icon.and_then(|factory| {
+            let icon_view = I::into_icon_view(factory)?;
+            Some(SlotBuilder::new(move || S::from_view(icon_view.clone())))
+        });
+        let manager_for_dismiss = manager.clone();
+        let manager_for_complete = manager.clone();
+        SnackbarPresentation {
+            id,
+            message: self.snackbar.message,
+            icon,
+            action: self.snackbar.action,
+            position: self.snackbar.position,
+            closeable: self.snackbar.closeable,
+            captured_env: self.snackbar.captured_env,
+            dismissing: self.dismissing.computed(),
+            on_dismiss_request: Rc::new(move |reason| {
+                manager_for_dismiss.dismiss_presentation(id, reason);
+            }),
+            on_dismiss_complete: Rc::new(move || {
+                manager_for_complete.complete_dismissal(id);
+            }),
         }
     }
 }
 
 /// Internal state for the snackbar manager.
 struct SnackbarManagerState<I: 'static = NoIcon> {
-    /// The active on-screen snackbars, oldest first. A reactive [`StateList`] so the
-    /// overlay's [`ForEach`] reconciles the stack item-by-item as snackbars are
-    /// added and removed; per-row animation bindings live on each
-    /// [`ActiveSnackbar`] and are untouched by membership changes.
-    active: StateList<ActiveSnackbar<I>>,
+    /// Active snackbars, oldest first.
+    active: Binding<Vec<ActiveSnackbar<I>>>,
     /// Monotonic presentation identifier used to ignore stale timers.
     next_id: u64,
 }
@@ -822,52 +906,30 @@ impl<I: 'static> core::fmt::Debug for SnackbarManager<I> {
     }
 }
 
-impl SnackbarManager<NoIcon> {
-    /// Creates a new snackbar manager and returns the overlay view.
-    #[cfg(test)]
-    pub(crate) fn new() -> (Self, impl View + Clone) {
-        Self::typed()
-    }
-}
-
 impl<I: SnackbarIconSlot> SnackbarManager<I> {
-    /// Creates a new typed snackbar manager and returns the overlay view.
-    pub(crate) fn typed() -> (Self, impl View + Clone) {
-        let active = StateList::new();
+    fn create() -> (Self, Binding<Vec<ActiveSnackbar<I>>>) {
+        let active = Binding::new(Vec::new());
         let state = Rc::new(RefCell::new(SnackbarManagerState {
             active: active.clone(),
             next_id: 0,
         }));
-        let manager = Self { state };
-
-        // The overlay renders the active stack as a ForEach collection; the
-        // engine dispatches each snackbar once and reconciles membership
-        // incrementally. Each snackbar is a full-bleed Frame self-anchored to
-        // its own placement, so mixed placements coexist (see [`ActiveSnackbar`]).
-        let overlay = SnackbarOverlay {
-            active,
-            manager: manager.clone(),
-        };
-        (manager, overlay)
+        (Self { state }, active)
     }
 
-    /// Builds a view subtree paired with a snackbar overlay layer, inferring `I`
-    /// from how `build` uses the handed manager and installing it for descendants.
+    /// Builds a view subtree paired with a snackbar host, inferring `I` from
+    /// how `build` uses the handed manager and installing it for descendants.
     pub fn host<R: View>(build: impl FnOnce(Self) -> R) -> impl View {
-        let (manager, overlay) = Self::typed();
-        let content = build(manager.clone()).overlay(overlay).state(&manager);
-        #[cfg(feature = "flow-markdown")]
-        let content = content.with(CodeCopyFeedback(OnCopied::new({
-            let snackbar = manager;
-            move |_env| {
-                snackbar.show(I::from_plain(Snackbar::new("Copied to clipboard")));
-            }
-        })));
-        content
+        let (manager, active) = Self::create();
+        let content = attach_manager(build(manager.clone()), &manager);
+        SnackbarHostView {
+            content,
+            manager,
+            active,
+        }
     }
 
-    /// Shows a snackbar. Snackbars stack on screen simultaneously, oldest nearest
-    /// the anchor edge. Each placement is an independent stack: a snackbar only
+    /// Shows a snackbar. Snackbars stack simultaneously, oldest nearest the
+    /// anchor edge. Each placement is an independent stack: a snackbar only
     /// interacts with others sharing its [`SnackbarPosition`], and when a
     /// placement already holds `MAX_VISIBLE_SNACKBARS` the oldest *at that
     /// placement* is dismissed to make room — different placements never evict
@@ -891,39 +953,40 @@ impl<I: SnackbarIconSlot> SnackbarManager<I> {
         };
         let item = ActiveSnackbar {
             id,
-            opacity: Binding::new(0.0_f32),
-            entrance_offset: Binding::<f32>::new(snackbar.position.initial_offset_y()),
-            stack_offset: Binding::new(0.0_f32),
-            dismissing: Rc::new(Cell::new(false)),
+            dismissing: Binding::new(false),
+            dismiss_reason: Rc::new(Cell::new(None)),
             snackbar,
         };
 
-        let mut active = self.state.borrow().active.clone();
+        let active = self.state.borrow().active.clone();
 
         // Evict the oldest live snackbar AT THIS PLACEMENT if its stack is
-        // already full, so the new one slides in as the oldest fades out.
+        // already full, so the new one enters as the oldest exits.
         // Snackbars at other placements are untouched.
         let snapshot = active.snapshot();
         let live_here = snapshot
             .iter()
-            .filter(|item| !item.dismissing.get() && item.snackbar.position == position)
+            .filter(|entry| {
+                entry.dismiss_reason.get().is_none() && entry.snackbar.position == position
+            })
             .count();
         if live_here >= MAX_VISIBLE_SNACKBARS {
             let oldest = snapshot
                 .iter()
-                .find(|item| !item.dismissing.get() && item.snackbar.position == position)
-                .map(|item| item.id);
+                .find(|entry| {
+                    entry.dismiss_reason.get().is_none() && entry.snackbar.position == position
+                })
+                .map(|entry| entry.id);
             if let Some(oldest) = oldest {
                 self.dismiss_presentation(oldest, SnackbarDismissReason::Replaced);
             }
         }
         drop(snapshot);
 
-        active.push(item);
-        self.reflow();
+        active.get_mut().push(item);
 
-        // A zero duration disables auto-dismiss (M3 `auto-close-delay = 0`): the
-        // snackbar stays until dismissed by its action or close button.
+        // A zero duration disables auto-dismiss: the snackbar stays until
+        // dismissed by its action, close button, replacement, or `dismiss()`.
         if duration.is_zero() {
             return;
         }
@@ -945,17 +1008,17 @@ impl<I: SnackbarIconSlot> SnackbarManager<I> {
             .snapshot()
             .into_iter()
             .rev()
-            .find(|item| !item.dismissing.get())
+            .find(|item| item.dismiss_reason.get().is_none())
             .map(|item| item.id);
         if let Some(id) = newest {
             self.dismiss_presentation(id, SnackbarDismissReason::Programmatic);
         }
     }
 
-    /// Begins the dismissal fade for one snackbar, then removes it from the
-    /// stack and reflows the remainder once the fade completes. The `reason`
-    /// of the first dismissal wins: later requests for a presentation already
-    /// fading out return here without recording anything.
+    /// Marks one snackbar as dismissing so the backend runs its exit
+    /// presentation and calls [`SnackbarPresentation::complete_dismissal`] when
+    /// done. The `reason` of the first dismissal wins: later requests for a
+    /// presentation already dismissing return without changing anything.
     fn dismiss_presentation(&self, id: u64, reason: SnackbarDismissReason) {
         let item = self
             .state
@@ -967,34 +1030,28 @@ impl<I: SnackbarIconSlot> SnackbarManager<I> {
         let Some(item) = item else {
             return;
         };
-        if item.dismissing.replace(true) {
+        if item.dismiss_reason.get().is_some() {
             return;
         }
-
-        item.opacity.set(0.0);
-        item.entrance_offset
-            .set(item.snackbar.position.initial_offset_y());
-        // The dismissing row no longer occupies a slot: reflow now so the
-        // survivors animate down to close the gap while it fades out.
-        self.reflow();
-
-        let manager = self.clone();
-        let exit = SnackbarTheme::default().exit_animation.duration();
-        spawn_local(async move {
-            native_executor::sleep(exit).await;
-            manager.finish_dismissal(id, reason);
-        })
-        .detach();
+        item.dismiss_reason.set(Some(reason));
+        item.dismissing.set(true);
     }
 
-    fn finish_dismissal(&self, id: u64, reason: SnackbarDismissReason) {
-        let mut active = self.state.borrow().active.clone();
-        let index = active.snapshot().iter().position(|item| item.id == id);
-        let Some(index) = index else {
-            return;
+    /// Removes a dismissed presentation from the active stack and fires its
+    /// `on_dismiss` callback with the recorded dismissal reason.
+    fn complete_dismissal(&self, id: u64) {
+        let active = self.state.borrow().active.clone();
+        let removed = {
+            let mut list = active.get_mut();
+            let Some(index) = list.iter().position(|item| item.id == id) else {
+                return;
+            };
+            list.remove(index)
         };
-        let removed = active.remove(index);
-        self.reflow();
+        let reason = removed
+            .dismiss_reason
+            .get()
+            .unwrap_or(SnackbarDismissReason::Programmatic);
 
         // The presentation is off the stack and no manager state is borrowed:
         // the callback may itself show or dismiss snackbars.
@@ -1002,323 +1059,42 @@ impl<I: SnackbarIconSlot> SnackbarManager<I> {
             dismissal.call(reason, &removed.snackbar.captured_env);
         }
     }
-
-    /// Repositions the stack: within each placement, each live snackbar is offset
-    /// from the anchor edge by the cumulative height of the earlier *live*
-    /// snackbars at that placement (oldest nearest the edge). Mirrors the Material
-    /// `reorderStack`.
-    ///
-    /// Dismissing snackbars are excluded from the count and keep their current
-    /// offset (they fade out in place). Counting them would leave their slot
-    /// occupied for the exit duration, so under rapid show/dismiss new snackbars
-    /// would pile up onto ever-higher offsets instead of the survivors closing
-    /// the gap.
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "the number of simultaneously visible snackbars is exactly representable as f32"
-    )]
-    fn reflow(&self) {
-        // The container is a fixed single-line height; the default theme value
-        // matches the active (M3) theme, so it is a stable stacking increment
-        // without resolving the environment theme here.
-        let row = SnackbarTheme::default().single_line_min_height + SNACKBAR_STACK_GAP;
-        let items = self.state.borrow().active.snapshot();
-        for (index, item) in items.iter().enumerate() {
-            if item.dismissing.get() {
-                continue;
-            }
-            let earlier = items[..index]
-                .iter()
-                .filter(|other| {
-                    !other.dismissing.get() && other.snackbar.position == item.snackbar.position
-                })
-                .count();
-            let offset = item.snackbar.position.stack_direction() * (earlier as f32) * row;
-            item.stack_offset.set(offset);
-        }
-    }
 }
 
-/// Window-level overlay that renders the manager's active snackbar stack.
-///
-/// This is a **full-window layer**, not a content-sized stack: it renders the
-/// reactive snackbar set as a [`ForEach`] in an [`AbsoluteLayout`], which fills
-/// the window ([`StretchAxis::Both`]) and hands every child the full window
-/// bounds. That gives each snackbar a stable, window-sized frame to anchor in,
-/// so bottom/top placement and `max_width` centering stay correct at any window
-/// size — a plain `ZStack` is content-sized and only anchored correctly by
-/// accident in a small window.
-///
-/// The collection engine renders the `ForEach` incrementally: each snackbar is
-/// dispatched once (keyed by id) and a membership change reconciles only the
-/// items that joined or left, re-compositing the window frame in isolation. The
-/// layer's size is constant (full window) regardless of item count, so a change
-/// never reflows the surrounding layout — which is what made rapid show/dismiss
-/// and window resize flicker.
-///
-/// Cloneable so [`Window`] can place one instance per window above the main
-/// content.
-///
-/// [`StretchAxis::Both`]: waterui_layout::StretchAxis
-/// [`Window`]: crate::runtime::window::Window
-struct SnackbarOverlay<I: 'static = NoIcon> {
-    active: StateList<ActiveSnackbar<I>>,
+fn attach_manager<V: View, I: SnackbarIconSlot>(
+    content: V,
+    manager: &SnackbarManager<I>,
+) -> impl View + use<V, I> {
+    let content = content.state(manager);
+    #[cfg(feature = "flow-markdown")]
+    let content = content.with(CodeCopyFeedback(OnCopied::new({
+        let snackbar = manager.clone();
+        move |_env| {
+            snackbar.show(I::from_plain(Snackbar::new("Copied to clipboard")));
+        }
+    })));
+    content
+}
+
+struct SnackbarHostView<V, I: 'static> {
+    content: V,
     manager: SnackbarManager<I>,
+    active: Binding<Vec<ActiveSnackbar<I>>>,
 }
 
-impl<I: 'static> Clone for SnackbarOverlay<I> {
-    fn clone(&self) -> Self {
-        Self {
-            active: self.active.clone(),
-            manager: self.manager.clone(),
-        }
+impl<V: View, I: SnackbarIconSlot> View for SnackbarHostView<V, I> {
+    fn body(self, _env: &Environment) -> impl View {
+        let overlay = SnackbarHostConfig::<AnyView>::from_active(&self.active, self.manager);
+        Metadata::new(self.content, overlay)
     }
-}
 
-impl<I: SnackbarIconSlot> View for SnackbarOverlay<I> {
-    fn body(self, _env: &waterui_core::Environment) -> impl View {
-        let Self { active, manager } = self;
-        // Full-window absolute layer; the engine reconciles the ForEach
-        // membership item-by-item. Every snackbar gets the full window bounds
-        // and self-anchors to its own placement within them.
-        LazyContainer::new(
-            AbsoluteLayout,
-            ForEach::new(active, move |item: ActiveSnackbar<I>| StackedSnackbarView {
-                item,
-                manager: manager.clone(),
-            }),
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        let overlay = SnackbarHostConfig::<B::Slot>::from_active(&self.active, self.manager);
+        backend.metadata(
+            Metadata::new(B::Slot::from_view(self.content), overlay),
+            env,
+            cx,
         )
-    }
-}
-
-/// One snackbar in the reactive stack overlay.
-struct StackedSnackbarView<I: 'static = NoIcon> {
-    item: ActiveSnackbar<I>,
-    manager: SnackbarManager<I>,
-}
-
-impl<I: 'static> Clone for StackedSnackbarView<I> {
-    fn clone(&self) -> Self {
-        Self {
-            item: self.item.clone(),
-            manager: self.manager.clone(),
-        }
-    }
-}
-
-impl<I: SnackbarIconSlot> StackedSnackbarView<I> {
-    #[allow(
-        clippy::needless_pass_by_value,
-        reason = "consumes the snackbar to build its view"
-    )]
-    fn build_content(
-        snackbar: Snackbar<I>,
-        manager: SnackbarManager<I>,
-        id: u64,
-        theme: &SnackbarTheme,
-    ) -> impl View + use<I> {
-        let has_trailing_controls = snackbar.action.is_some() || snackbar.closeable;
-        // Message with optional icon using Label component
-        let label_view =
-            if let Some(icon) = snackbar.icon.and_then(SnackbarIconSlot::into_icon_view) {
-                OneOf2::A(
-                    label(snackbar.message)
-                        .icon(icon)
-                        .font(theme.supporting_text_font.clone()),
-                )
-            } else {
-                OneOf2::B(label(snackbar.message).font(theme.supporting_text_font.clone()))
-            }
-            .foreground(theme.supporting_text_color.clone());
-
-        // Optional trailing action: runs the handler with the live environment,
-        // then dismisses this specific snackbar.
-        let action_button = snackbar.action.map(|action| {
-            let captured_env = snackbar.captured_env.clone();
-            let manager = manager.clone();
-            let action_label = action.label.clone();
-            let semantic_text = action_label.semantic_text().clone();
-            let action_font = theme.action_label_font.clone();
-            let action_color = theme.action_label_color.clone();
-            button(Label::new(semantic_text, move || {
-                action_label
-                    .clone()
-                    .font(action_font.clone())
-                    .foreground(action_color.clone())
-            }))
-            .style(ButtonStyle::Borderless)
-            .action(move |env: waterui_core::Environment| {
-                action.handler.run(&captured_env.layered_on(&env));
-                manager.dismiss_presentation(id, SnackbarDismissReason::Action);
-            })
-        });
-
-        // Optional trailing close button (M3 `closeable`): dismisses on tap.
-        // The icon is drawn at `close_icon_size`, centered in the larger
-        // `close_state_layer_size` box that carries the hit area.
-        let close_button = snackbar.closeable.then(|| {
-            let manager = manager.clone();
-            Button::new(
-                label("Close")
-                    .icon(CloseIcon {
-                        color: theme.supporting_text_color.clone(),
-                        icon_size: theme.close_icon_size,
-                        box_size: theme.close_state_layer_size,
-                    })
-                    .icon_only(),
-            )
-            .style(ButtonStyle::Borderless)
-            .action(move |_env: waterui_core::Environment| {
-                manager.dismiss_presentation(id, SnackbarDismissReason::Closed);
-            })
-        });
-
-        // With trailing controls the text leads and the controls follow the
-        // spacer. Without them the row is just the text, so the banner can hug
-        // its content — the Apple confirmation banner is content-sized, and
-        // the Material bar keeps its width through `min_width` instead of a
-        // spacer. `Option<View>` renders nothing when absent.
-        if !has_trailing_controls {
-            return OneOf2::A(hstack((label_view,)).spacing(theme.content_spacing));
-        }
-        OneOf2::B(
-            hstack((label_view, spacer(), action_button, close_button))
-                .spacing(theme.content_spacing),
-        )
-    }
-}
-
-/// Sizes the bar to its content, floored and capped by the theme's width bounds.
-///
-/// A `Frame` with a `max_width` answers a concrete proposal with the proposal
-/// itself clamped — `SwiftUI`'s expansion semantics — so a bar composed that
-/// way always stretched to its cap, and a closeable snackbar spanned the whole
-/// cap no matter how short its message was. The Material and Apple banners
-/// hug instead: the child row is measured under a proposal capped at `max`, so
-/// text still wraps there, and the bar's own width is the measured content
-/// clamped into `[min, max]`. During placement the row is laid out at the
-/// bar's full width, so the spacer between the message and its trailing
-/// controls still pins those controls to the trailing edge whenever the `min`
-/// floor leaves slack.
-#[derive(Debug, Clone, Copy)]
-struct HugWidth {
-    min: f32,
-    max: f32,
-}
-
-impl Layout for HugWidth {
-    fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
-        // The row is measured *unconstrained* on purpose: it contains a spacer,
-        // and a stack with a spacer answers any concrete width proposal with
-        // that proposal — which is exactly the expansion this layout exists to
-        // stop. The unconstrained answer is the content's own size; the bar is
-        // a fixed-height single line, so nothing needs the cap to wrap at.
-        let child = children.first().map_or_else(Size::zero, |child| {
-            child.measure(ProposalSize::new(None, proposal.height)).size
-        });
-        Size::new(child.width.clamp(self.min, self.max), child.height)
-    }
-
-    /// Anchored top-leading: `place` hands the row `bounds` from its origin.
-    fn resolve_extent(
-        &self,
-        input: PlacementInput,
-        _children: &[&dyn SubView],
-    ) -> Result<Rect, LayoutError> {
-        Ok(input.bounds.align(input.extent()?, UnitPoint::TOP_LEADING))
-    }
-
-    fn place(
-        &self,
-        bounds: Rect,
-        proposal: ProposalSize,
-        children: &[&dyn SubView],
-    ) -> Vec<SubviewPlacement> {
-        // The row fills the resolved bar width; height keeps the incoming proposal.
-        let child_proposal = ProposalSize::new(Some(bounds.width()), proposal.height);
-        children
-            .iter()
-            .map(|_| SubviewPlacement::new(bounds, child_proposal))
-            .collect()
-    }
-
-    fn stretch_axis(&self, children: &[StretchAxis]) -> StretchAxis {
-        // Never horizontally greedy — hugging is the point. Vertical follows
-        // the content, which here is a fixed-height row.
-        match children.first() {
-            Some(StretchAxis::Vertical | StretchAxis::Both) => StretchAxis::Vertical,
-            _ => StretchAxis::None,
-        }
-    }
-}
-
-impl<I: SnackbarIconSlot> View for StackedSnackbarView<I> {
-    fn body(self, env: &waterui_core::Environment) -> impl View {
-        let theme = env.get::<SnackbarTheme>().cloned().unwrap_or_default();
-        let Self { item, manager } = self;
-        let position = item.snackbar.position;
-
-        // M3 trailing inset shrinks to clear a trailing button's own padding.
-        let content_padding = if item.snackbar.action.is_some() || item.snackbar.closeable {
-            EdgeInsets::new(
-                theme.content_padding.top(),
-                theme.content_padding.leading(),
-                theme.content_padding.bottom(),
-                theme.action_trailing_padding,
-            )
-        } else {
-            theme.content_padding.clone()
-        };
-
-        let content = Self::build_content(item.snackbar.clone(), manager, item.id, &theme);
-
-        let enter_animation = theme.enter_animation.clone();
-        let shape = RoundedRectangle::new(theme.corner_radius);
-        let shadow = Shadow::splat(theme.shadow_radius)
-            .color(theme.shadow_color.clone())
-            .offset(0.0, theme.shadow_offset_y)
-            .silhouette(shape);
-        let ambient_shadow = Shadow::splat(theme.ambient_shadow_radius)
-            .color(theme.ambient_shadow_color.clone())
-            .offset(0.0, theme.ambient_shadow_offset_y)
-            .silhouette(shape);
-
-        // The appear hook runs after this subtree's first flush, once the animated
-        // opacity/offset handles have bound their hidden initial values, so the
-        // entrance transitions from hidden to shown. The collection engine
-        // dispatches each snackbar exactly once (keyed by id) and never
-        // re-dispatches a surviving one, so this hook fires once naturally: no
-        // one-shot latch is needed.
-        let entrance_opacity = item.opacity.clone();
-        let entrance_offset = item.entrance_offset.clone();
-
-        Frame::new(
-            FixedContainer::new(
-                HugWidth {
-                    min: theme.min_width,
-                    max: theme.max_width,
-                },
-                (content
-                    .on_appear(move || {
-                        entrance_opacity.set(1.0);
-                        entrance_offset.set(0.0);
-                    })
-                    .padding_with(content_padding)
-                    .height(theme.single_line_min_height),),
-            )
-            .background(shape.fill(theme.container_color.clone()))
-            .shadow(ambient_shadow)
-            .shadow(shadow)
-            .opacity(item.opacity.with(enter_animation.clone()))
-            // Entrance slide and reflow shift are independent animated
-            // bindings (each has a stable identity, so each animates).
-            .offset(0.0, item.entrance_offset.with(enter_animation.clone()))
-            .offset(0.0, item.stack_offset.with(enter_animation)),
-        )
-        .alignment(position.to_alignment())
-        // The backend places this host clear of the hardware; the theme's own
-        // margin keeps the bar off the window edge.
-        .padding_with(theme.viewport_padding)
     }
 }
 
@@ -1349,16 +1125,17 @@ impl<V, I> SnackbarHost<V, I> {
 
 impl<V: View, I: SnackbarIconSlot> View for SnackbarHost<V, I> {
     fn body(self, _env: &Environment) -> impl View {
-        let (manager, overlay) = SnackbarManager::<I>::typed();
-        let content = self.content.overlay(overlay).state(&manager);
-        #[cfg(feature = "flow-markdown")]
-        let content = content.with(CodeCopyFeedback(OnCopied::new({
-            let snackbar = manager;
-            move |_env| {
-                snackbar.show(I::from_plain(Snackbar::new("Copied to clipboard")));
-            }
-        })));
-        content
+        let (manager, active) = SnackbarManager::<I>::create();
+        let content = attach_manager(self.content, &manager);
+        let overlay = SnackbarHostConfig::<AnyView>::from_active(&active, manager);
+        Metadata::new(content, overlay)
+    }
+
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        let (manager, active) = SnackbarManager::<I>::create();
+        let content = attach_manager(self.content, &manager);
+        let overlay = SnackbarHostConfig::<B::Slot>::from_active(&active, manager);
+        backend.metadata(Metadata::new(B::Slot::from_view(content), overlay), env, cx)
     }
 }
 
@@ -1366,27 +1143,28 @@ impl<V: View, I: SnackbarIconSlot> View for SnackbarHost<V, I> {
 mod tests {
     use alloc::vec::Vec;
 
-    use nami::Signal as _;
     use waterui_core::binding;
 
     use super::super::parked_executor::install as install_executor;
     use super::*;
 
-    /// A presentation row built directly, so tests drive `finish_dismissal`
-    /// without a show timer or a running executor.
+    fn new_manager() -> SnackbarManager {
+        SnackbarManager::<NoIcon>::create().0
+    }
+
+    /// A presentation row built directly, so tests drive dismissal without a
+    /// show timer or a running executor.
     fn presentation(id: u64, snackbar: Snackbar) -> ActiveSnackbar {
         ActiveSnackbar {
             id,
-            opacity: Binding::new(0.0_f32),
-            entrance_offset: Binding::<f32>::new(snackbar.position.initial_offset_y()),
-            stack_offset: Binding::new(0.0_f32),
-            dismissing: Rc::new(Cell::new(false)),
+            dismissing: Binding::new(false),
+            dismiss_reason: Rc::new(Cell::new(None)),
             snackbar,
         }
     }
 
     fn present(manager: &SnackbarManager, item: ActiveSnackbar) {
-        manager.state.borrow().active.clone().push(item);
+        manager.state.borrow().active.get_mut().push(item);
     }
 
     fn live_ids(manager: &SnackbarManager) -> Vec<u64> {
@@ -1414,43 +1192,45 @@ mod tests {
 
     #[test]
     fn building_or_showing_a_snackbar_reports_nothing() {
-        let (manager, _overlay) = SnackbarManager::new();
+        let manager = new_manager();
         let (snackbar, reasons) = recording(Snackbar::new("hello"));
         present(&manager, presentation(1, snackbar.clone()));
         present(&manager, presentation(2, snackbar));
         assert!(reasons.borrow().is_empty());
 
-        // A finish for an id that was never presented reports nothing either.
-        manager.finish_dismissal(42, SnackbarDismissReason::Programmatic);
+        // A completion for an id that was never presented reports nothing either.
+        manager.complete_dismissal(42);
         assert!(reasons.borrow().is_empty());
     }
 
     #[test]
     fn removal_reports_the_reason_once() {
-        let (manager, _overlay) = SnackbarManager::new();
+        let manager = new_manager();
         let (snackbar, reasons) = recording(Snackbar::new("bye"));
         present(&manager, presentation(1, snackbar));
 
-        manager.finish_dismissal(1, SnackbarDismissReason::Timeout);
+        manager.dismiss_presentation(1, SnackbarDismissReason::Timeout);
+        manager.complete_dismissal(1);
         assert_eq!(live_ids(&manager), Vec::<u64>::new());
         assert_eq!(*reasons.borrow(), [SnackbarDismissReason::Timeout]);
 
-        // A stale finish for the same presentation reports nothing more.
-        manager.finish_dismissal(1, SnackbarDismissReason::Programmatic);
+        // A stale completion for the same presentation reports nothing more.
+        manager.complete_dismissal(1);
         assert_eq!(*reasons.borrow(), [SnackbarDismissReason::Timeout]);
     }
 
     #[test]
     fn removal_without_a_callback_is_harmless() {
-        let (manager, _overlay) = SnackbarManager::new();
+        let manager = new_manager();
         present(&manager, presentation(1, Snackbar::new("plain")));
-        manager.finish_dismissal(1, SnackbarDismissReason::Timeout);
+        manager.dismiss_presentation(1, SnackbarDismissReason::Timeout);
+        manager.complete_dismissal(1);
         assert_eq!(live_ids(&manager), Vec::<u64>::new());
     }
 
     #[test]
     fn the_callback_observes_removal_and_may_reenter_the_manager() {
-        let (manager, _overlay) = SnackbarManager::new();
+        let manager = new_manager();
         let seen = Rc::new(Cell::new(false));
         let snackbar = Snackbar::new("going").on_dismiss({
             let manager = manager.clone();
@@ -1465,19 +1245,22 @@ mod tests {
         });
         present(&manager, presentation(1, snackbar));
 
-        manager.finish_dismissal(1, SnackbarDismissReason::Programmatic);
+        manager.dismiss_presentation(1, SnackbarDismissReason::Programmatic);
+        manager.complete_dismissal(1);
         assert!(seen.get());
     }
 
     #[test]
     fn each_presentation_of_a_cloned_snackbar_reports_its_own_reason() {
-        let (manager, _overlay) = SnackbarManager::new();
+        let manager = new_manager();
         let (snackbar, reasons) = recording(Snackbar::new("twice"));
         present(&manager, presentation(1, snackbar.clone()));
         present(&manager, presentation(2, snackbar));
 
-        manager.finish_dismissal(1, SnackbarDismissReason::Replaced);
-        manager.finish_dismissal(2, SnackbarDismissReason::Closed);
+        manager.dismiss_presentation(1, SnackbarDismissReason::Replaced);
+        manager.complete_dismissal(1);
+        manager.dismiss_presentation(2, SnackbarDismissReason::Closed);
+        manager.complete_dismissal(2);
         assert_eq!(
             *reasons.borrow(),
             [
@@ -1489,22 +1272,21 @@ mod tests {
 
     #[test]
     fn the_first_dismissal_reason_wins() {
-        install_executor();
-        let (manager, _overlay) = SnackbarManager::new();
+        let manager = new_manager();
         let (snackbar, reasons) = recording(Snackbar::new("raced"));
         present(&manager, presentation(1, snackbar));
 
-        // A timeout already started the fade; the later programmatic dismiss
-        // must not overwrite the reason the exit timer carries.
+        // A timeout already started dismissal; the later programmatic dismiss
+        // must not overwrite the recorded reason.
         manager.dismiss_presentation(1, SnackbarDismissReason::Timeout);
         manager.dismiss_presentation(1, SnackbarDismissReason::Programmatic);
-        manager.finish_dismissal(1, SnackbarDismissReason::Timeout);
+        manager.complete_dismissal(1);
         assert_eq!(*reasons.borrow(), [SnackbarDismissReason::Timeout]);
     }
 
     #[test]
     fn the_handler_extracts_injected_state() {
-        let (manager, _overlay) = SnackbarManager::new();
+        let manager = new_manager();
         let count = binding::<i32>(0);
         let snackbar = Snackbar::new("stateful").state(&count).on_dismiss(
             |reason: SnackbarDismissReason, State(count): State<Binding<i32>>| {
@@ -1514,8 +1296,35 @@ mod tests {
         );
         present(&manager, presentation(1, snackbar));
 
-        manager.finish_dismissal(1, SnackbarDismissReason::Action);
+        manager.dismiss_presentation(1, SnackbarDismissReason::Action);
+        manager.complete_dismissal(1);
         assert_eq!(count.snapshot(), 1);
+    }
+
+    #[test]
+    fn fourth_snackbar_at_same_placement_evicts_oldest_only() {
+        install_executor();
+        let manager = new_manager();
+        let (first, first_reasons) = recording(Snackbar::new("1").duration(Duration::ZERO));
+        let (top, top_reasons) = recording(
+            Snackbar::new("top")
+                .position(SnackbarPosition::TopCenter)
+                .duration(Duration::ZERO),
+        );
+        manager.show(first);
+        manager.show(top);
+        manager.show(Snackbar::new("2").duration(Duration::ZERO));
+        manager.show(Snackbar::new("3").duration(Duration::ZERO));
+        manager.show(Snackbar::new("4").duration(Duration::ZERO));
+
+        let items = manager.state.borrow().active.snapshot();
+        assert!(items[0].dismissing.snapshot());
+        assert!(!items[1].dismissing.snapshot());
+        assert!(!items[2].dismissing.snapshot());
+
+        manager.complete_dismissal(items[0].id);
+        assert_eq!(*first_reasons.borrow(), [SnackbarDismissReason::Replaced]);
+        assert!(top_reasons.borrow().is_empty());
     }
 
     #[test]

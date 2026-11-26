@@ -71,6 +71,7 @@ mod progress;
 mod scroll_indicator;
 #[cfg(waterui_feature = "picker")]
 mod segmented;
+mod snackbar;
 mod stepper;
 #[cfg(waterui_feature = "table")]
 mod table;
@@ -117,6 +118,7 @@ pub use segmented::{
     Segment, SegmentLabel, SegmentedDrag, SegmentedLayout, SegmentedLook, SegmentedSpec,
     SegmentedValue,
 };
+pub use snackbar::SnackbarLook;
 pub use stepper::{StepperLook, StepperSpec};
 #[cfg(waterui_feature = "table")]
 pub use table::TableLook;
