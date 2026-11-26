@@ -138,11 +138,11 @@ pub mod prelude {
     #[cfg(feature = "avatar")]
     pub use super::widget::{Avatar, avatar};
     pub use super::widget::{
-        Card, CardStyle, DialogTheme, Disclosure, Divider, ErrorView, ResultExt, SuspendedView,
-        Suspense, card, condition::when, disclosure, error_view, suspense,
+        Card, CardStyle, Disclosure, Divider, ErrorView, ResultExt, SuspendedView, Suspense, card,
+        condition::when, disclosure, error_view, suspense,
     };
     #[doc(hidden)]
-    pub use super::widget::{CardStyleTokens, CardTheme};
+    pub use super::widget::{CardStyleTokens, CardTheme, DialogTheme};
     #[cfg(feature = "flow-markdown")]
     pub use super::widget::{
         FlowAnimationPolicy, FlowAnimationPreset, FlowElementKind, FlowMarkdown, FlowStreamMode,

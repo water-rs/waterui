@@ -6,6 +6,10 @@ use core::marker::PhantomData;
 use waterui::animation::FrameRateVote;
 use waterui::sheet::Sheet;
 
+#[cfg(waterui_feature = "dialog")]
+use crate::theme::DialogLook;
+use crate::theme::SheetLook;
+
 #[cfg(waterui_feature = "gpu")]
 use waterui::graphics::backend::{GpuContentLeaf, Picture};
 #[cfg(waterui_feature = "navigation")]
@@ -916,8 +920,8 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
         let sheet_for_builder = value.clone();
-        let build_layer: Rc<dyn Fn() -> RetainedSubview<E>> =
-            Rc::new(move || RetainedSubview::new(sheet_for_builder.modal_layer()));
+        let build_layer: Rc<dyn Fn(SheetLook) -> RetainedSubview<E>> =
+            Rc::new(move |look| RetainedSubview::new(sheet_modal_layer(&sheet_for_builder, look)));
         RenderNode::build_wrapper(
             WrapperEffect::Sheet(SheetEffect {
                 content: Rc::new(RefCell::new(None)),
@@ -942,10 +946,14 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
-        let layer = RetainedSubview::new(value.modal_layer());
+        let dialog_for_builder = value.clone();
+        let build_layer: Rc<dyn Fn(DialogLook) -> RetainedSubview<E>> = Rc::new(move |look| {
+            RetainedSubview::new(dialog_modal_layer(&dialog_for_builder, look))
+        });
         RenderNode::build_wrapper(
             WrapperEffect::Dialog(DialogEffect {
-                content: Rc::new(RefCell::new(layer)),
+                content: Rc::new(RefCell::new(None)),
+                build_layer,
                 dialog: value,
                 marker: Rc::new(()),
             }),
