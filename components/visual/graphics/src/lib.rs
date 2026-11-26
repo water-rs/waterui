@@ -49,12 +49,10 @@ pub use filter_view::{
     WhitePoint, ZoomBlur, ZoomTransitionToImage,
 };
 #[cfg(feature = "gpu")]
-pub use gpu::content::{GpuContent, GpuView};
-#[cfg(feature = "gpu")]
 pub use gpu::{
     CaretQuery, Context, DeviceLoss, ExternalFrameSource, ExternalFrameStream, ExternalFrameView,
-    Frame, FrameHook, FrameOutput, GpuContentHandle, GpuRuntime, InputHandler, RedrawHandle,
-    SharedGpuContext,
+    Frame, FrameHook, FrameOutput, GpuContent, GpuContentHandle, GpuRuntime, GpuView, InputHandler,
+    RedrawHandle, SharedGpuContext,
 };
 #[cfg(any(feature = "gpu", feature = "cpu"))]
 pub use gradient::FlowingGradient;

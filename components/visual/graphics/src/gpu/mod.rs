@@ -16,22 +16,17 @@
 
 extern crate alloc;
 
-pub(crate) mod content;
+mod content;
 #[cfg(target_os = "android")]
 pub mod device;
 pub mod external;
 pub(crate) mod leaf;
-mod legacy;
 pub mod runtime;
+pub use content::{GpuContent, GpuView};
 pub use external::{
     ExternalFrameSource, ExternalFrameStream, ExternalFrameView, FrameOutput, FrameReceiver,
     PresentedSize, RetiredOutput,
 };
-// Temporary compatibility shim for split crates (`waterui-particle`,
-// `waterui-map-gpu`, `waterui-video-gpu`) during the `#4419` transition;
-// removed once all three crates migrate to `waterui_graphics::{GpuContent, GpuView}`.
-#[doc(hidden)]
-pub use legacy::{GpuContent, GpuView};
 pub use runtime::{
     DeviceLoss, ExternalFrameRenderer, GpuContentRenderer, GpuRuntime, GpuRuntimeError,
     HostedLayerError, SharedGpuContext, preferred_surface_format,
