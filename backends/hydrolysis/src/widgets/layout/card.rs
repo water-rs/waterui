@@ -105,6 +105,45 @@ impl<E: TextEngine> CardRenderState<E> {
                 .is_some_and(RetainedSubview::take_layout_dirty_if_built)
     }
 
+    /// The label this card contributes when an enclosing `ListItem` or button
+    /// names itself from its content: non-empty trimmed title, subtitle, and
+    /// body content strings joined by a space.
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn contributed_label(
+        &self,
+        renderer: &mut SemanticCore<E>,
+        env: &Environment,
+    ) -> Option<String> {
+        let mut header_label = |subview: Option<&RetainedSubview<E>>, text: Option<&Text>| {
+            subview
+                .filter(|view| view.is_built())
+                .and_then(|view| view.accessibility_label(renderer))
+                .or_else(|| {
+                    text.map(|text| {
+                        let resolved = text.resolve(env);
+                        renderer
+                            .read_signal(&resolved.content())
+                            .to_semantic()
+                            .to_string()
+                    })
+                })
+        };
+        let title = header_label(self.title.as_ref(), self.title_text.as_ref());
+        let subtitle = header_label(self.subtitle.as_ref(), self.subtitle_text.as_ref());
+        let content = self
+            .content
+            .as_ref()
+            .filter(|view| view.is_built())
+            .and_then(|view| view.accessibility_label(renderer));
+        let labels = [title, subtitle, content]
+            .into_iter()
+            .flatten()
+            .map(|label| label.trim().to_owned())
+            .filter(|label| !label.is_empty())
+            .collect::<Vec<_>>();
+        (!labels.is_empty()).then(|| labels.join(" "))
+    }
+
     fn ensure_look(&mut self, theme: &Rc<dyn WidgetTheme>, env: &Environment) -> &CardLook {
         if self.look.is_none() {
             self.look = Some(theme.card(self.style, env));
