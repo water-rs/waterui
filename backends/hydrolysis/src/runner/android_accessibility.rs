@@ -172,6 +172,9 @@ fn node_change_mask(before: &Node, after: &Node) -> Option<i32> {
     }
     if before.value() != after.value() || before.text_selection() != after.text_selection() {
         mask |= CHANGE_TEXT;
+        if before.value() != after.value() && (is_range(before.role()) || is_range(after.role())) {
+            mask |= CHANGE_STATE_DESCRIPTION;
+        }
     }
     if before.toggled() != after.toggled()
         || before.is_selected() != after.is_selected()
@@ -210,6 +213,14 @@ const fn is_editable(role: Role) -> bool {
     matches!(
         role,
         Role::TextInput | Role::MultilineTextInput | Role::SearchInput | Role::PasswordInput
+    )
+}
+
+/// The roles the Kotlin provider exposes with `RangeInfo` and `stateDescription`.
+const fn is_range(role: Role) -> bool {
+    matches!(
+        role,
+        Role::Slider | Role::SpinButton | Role::ProgressIndicator | Role::Meter
     )
 }
 
@@ -672,5 +683,28 @@ mod tests {
                 .iter()
                 .any(|e| e.event_type == TYPE_VIEW_TEXT_CHANGED)
         );
+    }
+
+    #[test]
+    fn range_value_text_change_sets_state_description_mask() {
+        let mut old_slider = node(1, Role::Slider, &[]).1;
+        old_slider.set_value("21 °C");
+        let old = update(
+            vec![node(0, Role::Window, &[1]), (NodeId::from(1), old_slider)],
+            0,
+            1,
+        );
+        let mut new_slider = node(1, Role::Slider, &[]).1;
+        new_slider.set_value("25 °C");
+        let new = update(
+            vec![node(0, Role::Window, &[1]), (NodeId::from(1), new_slider)],
+            0,
+            1,
+        );
+        let events = diff_events(Some(&old), &new);
+        assert!(events.iter().any(|e| {
+            e.node == Some(NodeId::from(1))
+                && e.content_change_types & CHANGE_STATE_DESCRIPTION != 0
+        }));
     }
 }

@@ -184,7 +184,18 @@ pub fn stepper_accessibility<E: crate::text::TextEngine, S>(
         if let Some(label) = label {
             node.set_label(label);
         }
-        if let Some(value) = renderer.resolve_accessibility_value(env, None) {
+        let default_value = if env
+            .get::<waterui::accessibility::AccessibilityValue>()
+            .is_some()
+        {
+            None
+        } else {
+            stepper.value_formatter().and_then(|formatter| {
+                let text = renderer.read_signal(formatter).to_plain();
+                (!text.is_empty()).then(|| text.as_str().to_owned())
+            })
+        };
+        if let Some(value) = renderer.resolve_accessibility_value(env, default_value) {
             node.set_value(value);
         }
         let range = ordered_range(&renderer.read_signal(stepper.range()));

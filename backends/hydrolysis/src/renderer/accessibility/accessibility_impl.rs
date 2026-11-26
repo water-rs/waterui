@@ -487,6 +487,10 @@ pub struct AccessibilityBuilder<E: crate::text::TextEngine> {
     live_selection: BTreeMap<InteractionKey, LiveSelection>,
 }
 
+/// Formats a live numeric value into the accessibility node's spoken value text.
+#[cfg(feature = "accessibility")]
+type LiveNumericFormatter = Rc<dyn Fn(f64) -> Option<String>>;
+
 /// A widget's numeric accessibility value that follows its binding between
 /// renders: the widget's watcher raises `changed`, and the next publish
 /// writes the binding's value into the node it emitted.
@@ -495,6 +499,7 @@ struct LiveNumeric {
     changed: Rc<core::cell::Cell<bool>>,
     value: nami::Binding<f64>,
     range: core::ops::RangeInclusive<f64>,
+    value_formatter: Option<LiveNumericFormatter>,
 }
 
 /// A widget's option nodes whose selected state follows its selection
@@ -1174,9 +1179,15 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
                 continue;
             };
             let node = &mut self.nodes[index].1;
-            node.set_numeric_value(
-                nami::Signal::snapshot(&live.value).clamp(*live.range.start(), *live.range.end()),
-            );
+            let clamped =
+                nami::Signal::snapshot(&live.value).clamp(*live.range.start(), *live.range.end());
+            node.set_numeric_value(clamped);
+            if let Some(formatter) = &live.value_formatter {
+                match formatter(clamped) {
+                    Some(text) => node.set_value(text),
+                    None => node.clear_value(),
+                }
+            }
             changed.push((id, node.clone()));
         }
         self.queue_changed_nodes(changed);
@@ -1809,6 +1820,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
         changed: Rc<core::cell::Cell<bool>>,
         value: nami::Binding<f64>,
         range: core::ops::RangeInclusive<f64>,
+        value_formatter: Option<LiveNumericFormatter>,
     ) {
         self.accessibility.live_numeric.insert(
             key,
@@ -1816,6 +1828,7 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
                 changed,
                 value,
                 range,
+                value_formatter,
             },
         );
     }
