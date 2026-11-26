@@ -10,7 +10,12 @@
 // a test that passes here and fails against the real one has proved nothing.
 // That is why `each` demands a `by` for a non-primitive item — see below.
 
-import { createEffect, createRoot, createSignal } from "../../src/js/signals.js";
+import {
+  bridgeEquals,
+  createEffect,
+  createRoot,
+  createSignal,
+} from "../../src/js/signals.js";
 import { toSignal } from "../../src/js/host.js";
 
 // 2^63: a whole number strictly inside ±2^63 is exactly an i64, and one
@@ -182,22 +187,31 @@ export function createFakeHost(environment = {}) {
             if (kept !== undefined && !kept.used) {
               kept.used = true;
               kept.index.set(index);
+              if (!bridgeEquals(kept.item, item)) {
+                kept.disposeBranch();
+                const inner = render(item, kept.index);
+                kept.item = item;
+                kept.handle = inner.handle;
+                kept.disposeBranch = inner.dispose;
+              }
               return kept;
             }
             const position = createSignal(index);
             const inner = render(item, position);
-            return {
+            const entry = {
               key,
               item,
               index: position,
               handle: inner.handle,
+              disposeBranch: inner.dispose,
               dispose: () => {
-                inner.dispose();
+                entry.disposeBranch();
                 // The key as the author wrote it, not as it is normalized:
                 // what a test asserts on is the value it put in the list.
                 calls.push(["dispose-item", answered]);
               },
             };
+            return entry;
           });
           for (const entry of previous) {
             if (!entry.used) {

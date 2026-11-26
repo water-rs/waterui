@@ -19,10 +19,11 @@ use std::rc::Rc;
 use nami::collection::{Collection as NamiCollection, SignalCollection};
 use nami::{Binding, Computed, Signal, SignalExt as _};
 use suiteki::Str;
+use waterui_core::dynamic::DynamicHandler;
 use waterui_core::id::Identifiable;
 use waterui_core::layout::{Alignment, HorizontalAlignment, VerticalAlignment};
 use waterui_core::views::ForEach;
-use waterui_core::{AnyView, Environment, Metadata, Retain, View};
+use waterui_core::{AnyView, Dynamic, Environment, Metadata, Retain, View};
 use waterui_layout::stack::{HStack, VStack, ZStack};
 
 use crate::component::list::{List, ListDelete, ListMove};
@@ -126,8 +127,10 @@ struct Item {
     /// The accessor the render callback was handed for that position.
     accessor: JsValue,
     /// The branch this item is currently presented through, disposed when the
-    /// item leaves or is realized again.
+    /// item leaves or is replaced on update.
     branch: Option<Branch>,
+    /// The dynamic view slot presenting this item's current branch once realized.
+    slot: Option<DynamicHandler<AnyView>>,
     /// The index accessor this item exported into JavaScript.
     ///
     /// The item owns it rather than the mount: a list that churns adds and
@@ -161,9 +164,11 @@ impl EachState {
     }
 
     /// Takes one snapshot of the list: new keys gain an item, retained keys
-    /// keep theirs and learn their new index, and departed keys lose theirs —
-    /// which disposes the branch they were presented through.
+    /// learn their new index and re-render in place when their item value
+    /// changed, and departed keys lose theirs — which disposes the branch they
+    /// were presented through.
     fn reconcile(&self, bridge: &Bridge, snapshot: &[JsValue]) -> Result<Vec<ItemKey>, JsError> {
+        let mut entries: Vec<(ItemKey, u32, &JsValue)> = Vec::with_capacity(snapshot.len());
         let mut keys: Vec<ItemKey> = Vec::with_capacity(snapshot.len());
         for (position, value) in snapshot.iter().enumerate() {
             let key = self.key(bridge, value)?;
@@ -177,10 +182,16 @@ impl EachState {
             let index = u32::try_from(position).map_err(|_| {
                 JsError::conversion("a <For> list longer than a 32-bit index can address")
             })?;
-            if let Some(item) = self.items.borrow_mut().get_mut(&key) {
-                item.value = value.clone();
-                item.index.set(index);
-                keys.push(key);
+            keys.push(key.clone());
+            entries.push((key, index, value));
+        }
+
+        // Export index accessors for new keys before mutating `self.items`, so
+        // an export error leaves the current rows intact and no `RefCell`
+        // borrow spans a bridge call.
+        let mut new_items: Vec<(ItemKey, Item)> = Vec::new();
+        for &(ref key, index, value) in &entries {
+            if self.items.borrow().contains_key(key) {
                 continue;
             }
             let binding = Binding::new(index);
@@ -190,23 +201,70 @@ impl EachState {
             // callback runs later and under the branch's own scope.
             let scope = bridge.open_scope();
             let accessor = bridge.export_computed(&binding.computed())?;
-            self.items.borrow_mut().insert(
+            new_items.push((
                 key.clone(),
                 Item {
                     value: value.clone(),
                     index: binding,
                     accessor,
                     branch: None,
+                    slot: None,
                     exports: scope.close(),
                 },
-            );
-            keys.push(key);
+            ));
         }
-        self.items.borrow_mut().retain(|key, _| keys.contains(key));
+
+        let (departed, rerender) = {
+            let mut items = self.items.borrow_mut();
+            let mut rerender: Vec<(ItemKey, JsValue, JsValue, DynamicHandler<AnyView>)> =
+                Vec::new();
+            for (key, index, value) in entries {
+                if let Some(item) = items.get_mut(&key) {
+                    item.index.set(index);
+                    if item.value != *value {
+                        item.value = value.clone();
+                        if let Some(slot) = item.slot.clone() {
+                            rerender.push((key, value.clone(), item.accessor.clone(), slot));
+                        }
+                    }
+                }
+            }
+            for (key, item) in new_items {
+                items.insert(key, item);
+            }
+            let mut departed: Vec<Item> = Vec::new();
+            for (key, item) in core::mem::take(&mut *items) {
+                if keys.contains(&key) {
+                    items.insert(key, item);
+                } else {
+                    departed.push(item);
+                }
+            }
+            (departed, rerender)
+        };
+        drop(departed);
+
+        for (key, value, accessor, slot) in rerender {
+            match Branch::render(bridge, &self.render, &[value, accessor]) {
+                Ok((view, branch)) => {
+                    let old_branch = self
+                        .items
+                        .borrow_mut()
+                        .get_mut(&key)
+                        .and_then(|item| item.branch.replace(branch));
+                    drop(old_branch);
+                    slot.set(view);
+                }
+                Err(error) => crate::contract_violation!(
+                    "a <For> item could not be rendered, so it keeps its last view: {error}"
+                ),
+            }
+        }
         Ok(keys)
     }
 
-    /// Renders one item, replacing whatever branch it had.
+    /// Renders one item into a fresh `Dynamic` slot, replacing whatever branch
+    /// it had.
     fn realize(&self, key: &ItemKey) -> Result<AnyView, JsError> {
         let bridge = self.bridge.upgrade().ok_or_else(|| {
             JsError::new(
@@ -224,10 +282,14 @@ impl EachState {
             [item.value.clone(), item.accessor.clone()]
         };
         let (view, branch) = Branch::render(&bridge, &self.render, &arguments)?;
-        if let Some(item) = self.items.borrow_mut().get_mut(key) {
-            item.branch = Some(branch);
-        }
-        Ok(view)
+        let (handler, dynamic) = Dynamic::new();
+        handler.set(view);
+        let old_branch = self.items.borrow_mut().get_mut(key).and_then(|item| {
+            item.slot = Some(handler);
+            item.branch.replace(branch)
+        });
+        drop(old_branch);
+        Ok(AnyView::new(dynamic))
     }
 }
 

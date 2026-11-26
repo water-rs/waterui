@@ -2208,3 +2208,89 @@ fn ts_a11y_label_and_value_respect_verbatim_and_localized_interpolation() {
         .value("주문 #42")
         .assert_exists();
 }
+
+#[test]
+fn repro_13_for_row_at_a_retained_key_shows_the_changed_item() {
+    // The item at key `1` changes its `name` while keeping its `id`. The row
+    // for that key must render the new item, not the one it was built from.
+    let module = Module::mount(&stateful(
+        r#"globalThis.items = waterui.createSignal([{ id: 1, name: "old" }]);"#,
+        r#"waterui.jsx("VStack", {
+            children: waterui.jsx(waterui.For, {
+                each: globalThis.items,
+                by: (item) => item.id,
+                children: (item) => waterui.jsx("Text", { children: item.name }),
+            }),
+        })"#,
+    ));
+    let mut app = module.app();
+    app.query().label("old").assert_exists();
+
+    module.eval(r#"globalThis.items.set([{ id: 1, name: "new" }])"#);
+    app.settle();
+    let tree = support::render(app.tree());
+    assert!(
+        tree.contains("new") && !tree.contains("old"),
+        "the retained key's row shows the changed item: {tree}"
+    );
+}
+
+#[test]
+fn ts_for_retained_key_update_preserves_unchanged_siblings_and_releases_replaced_exports() {
+    // Changing one retained key's item re-renders only that row's branch,
+    // disposes the replaced branch's exports, and leaves unchanged siblings
+    // (and their render counts) undisturbed.
+    let module = Module::mount(&stateful(
+        r#"globalThis.renders = { a: 0, b: 0 };
+           globalThis.live = waterui.createSignal(true);
+           globalThis.items = waterui.createSignal([
+               { id: "a", name: "Alpha" },
+               { id: "b", name: "Beta" },
+           ]);"#,
+        r#"waterui.jsx("VStack", {
+            children: waterui.jsx(waterui.For, {
+                each: globalThis.items,
+                by: (item) => item.id,
+                children: (item) => {
+                    globalThis.renders[item.id] += 1;
+                    return waterui.jsx(waterui.Show, {
+                        when: globalThis.live,
+                        children: () => waterui.jsx("Text", { children: item.name }),
+                    });
+                },
+            }),
+        })"#,
+    ));
+    let mut app = module.app();
+    app.query().label("Alpha").assert_exists();
+    app.query().label("Beta").assert_exists();
+    let baseline = module.bridge().exported_count();
+
+    for round in 0..4 {
+        module.eval(&format!(
+            r#"globalThis.items.set([
+                {{ id: "a", name: "Alpha {round}" }},
+                {{ id: "b", name: "Beta" }},
+            ])"#
+        ));
+        app.settle();
+    }
+
+    app.query().label("Alpha 3").assert_exists();
+    app.query().label("Beta").assert_exists();
+    assert_eq!(
+        module.eval("globalThis.renders.a").as_f64(),
+        Some(5.0),
+        "the changed key re-rendered once initially plus once per item change"
+    );
+    assert_eq!(
+        module.eval("globalThis.renders.b").as_f64(),
+        Some(1.0),
+        "the unchanged sibling kept its branch without re-rendering"
+    );
+    assert_eq!(
+        module.bridge().exported_count(),
+        baseline,
+        "replacing a retained key's branch releases what the old branch exported"
+    );
+}
