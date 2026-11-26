@@ -28,7 +28,7 @@ use waterui_layout::EdgeSet;
 ///     .corner_radius(8.0)
 ///     .edges(EdgeSet::BOTTOM);
 /// ```
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct Border {
     /// The color of the border.
@@ -128,5 +128,34 @@ impl Border {
 impl Default for Border {
     fn default() -> Self {
         Self::new(Color::srgb(0, 0, 0), 1.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use nami::{Computed, Signal};
+    use waterui_core::Environment;
+    use waterui_graphics::color::Srgb;
+    use waterui_graphics::color::install_color_signal;
+    use waterui_graphics::color::token::Foreground;
+    use waterui_layout::EdgeSet;
+
+    use super::Border;
+
+    #[test]
+    fn border_clones_and_accepts_color_tokens() {
+        let mut env = Environment::new();
+        let expected = Srgb::new(0.1, 0.2, 0.3).resolve();
+        install_color_signal::<Foreground>(&mut env, Computed::constant(expected));
+
+        let border = Border::new(Foreground, 2.0)
+            .corner_radius(8.0)
+            .edges(EdgeSet::BOTTOM);
+        let cloned = border.clone();
+        assert_eq!(border.color().resolve(&env).snapshot(), expected);
+        assert_eq!(cloned.color().resolve(&env).snapshot(), expected);
+        assert!((cloned.width().snapshot() - 2.0).abs() < f32::EPSILON);
+        assert!((cloned.get_corner_radius().snapshot() - 8.0).abs() < f32::EPSILON);
+        assert_eq!(cloned.get_edges(), EdgeSet::BOTTOM);
     }
 }

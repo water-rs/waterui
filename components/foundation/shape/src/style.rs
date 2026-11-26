@@ -126,7 +126,7 @@ impl Default for Shadow {
 ///
 /// This type is used to represent positions, sizes, and offsets
 /// in the UI coordinate system.
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Vector<T> {
     /// The x component of the vector.
     pub x: T,
@@ -390,11 +390,13 @@ impl Offset {
 
 #[cfg(test)]
 mod tests {
-    use nami::Signal;
-    use waterui_core::Angle;
+    use nami::{Computed, Signal};
+    use waterui_core::{Angle, Environment};
+    use waterui_graphics::color::token::Foreground;
+    use waterui_graphics::color::{Color, Srgb, install_color_signal};
 
-    use super::{Anchor, Offset, Rotation, Scale, Shadow};
-    use crate::RoundedRectangle;
+    use super::{Anchor, Offset, Rotation, Scale, Shadow, Vector};
+    use crate::{ClipShape, RoundedRectangle};
 
     #[test]
     fn style_transforms_and_shadow_clone_and_expose_accessors() {
@@ -426,5 +428,37 @@ mod tests {
         assert!((offset.x().snapshot() - 12.0).abs() < f32::EPSILON);
         assert!((offset_clone.x().snapshot() - 12.0).abs() < f32::EPSILON);
         assert!((offset_clone.y().snapshot() - (-4.0)).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn shadow_accepts_color_tokens_and_vector_and_clip_shape_clone() {
+        let mut env = Environment::new();
+        let expected = Srgb::new(0.25, 0.5, 0.75).resolve();
+        install_color_signal::<Foreground>(&mut env, Computed::constant(expected));
+
+        let shadow = Shadow::new(8.0)
+            .color(Foreground)
+            .offset(2.0, 4.0)
+            .silhouette(RoundedRectangle::new(12.0));
+        let cloned_shadow = shadow.clone();
+        assert_eq!(shadow.get_color().resolve(&env).snapshot(), expected);
+        assert_eq!(cloned_shadow.get_color().resolve(&env).snapshot(), expected);
+
+        let direct_color = Shadow::new(4.0).color(Color::new(Foreground));
+        assert_eq!(direct_color.get_color().resolve(&env).snapshot(), expected);
+
+        let vec_copy = Vector::new(3_i32, 4_i32);
+        let vec_copied = vec_copy;
+        let vec_cloned = vec_copy;
+        assert_eq!(vec_copied, vec_cloned);
+
+        let vec_non_copy = Vector::new(String::from("x"), String::from("y"));
+        let vec_non_copy_clone = vec_non_copy.clone();
+        assert_eq!(vec_non_copy, vec_non_copy_clone);
+
+        let clip = ClipShape::new(RoundedRectangle::new(10.0));
+        let clip_clone = clip.clone();
+        assert_eq!(clip.kind(), clip_clone.kind());
+        assert_eq!(clip.commands().len(), clip_clone.commands().len());
     }
 }
