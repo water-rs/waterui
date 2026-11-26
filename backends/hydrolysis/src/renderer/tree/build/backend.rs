@@ -919,16 +919,17 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         )
     }
 
-    fn sheet<C: ChildView<Self>>(
+    fn sheet<S: ChildView<Self>, C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<Sheet, C>,
+        metadata: Metadata<Sheet<S>, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
         mark_reached!("sheet");
-        let metadata = metadata.map_content(C::into_child);
-        let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
+        let content = content.into_child();
+        let value = value.map_slots(S::into_child);
+        let renderer = &mut *self.renderer;
         let sheet_for_builder = value.clone();
         let build_layer: Rc<dyn Fn(SheetLook) -> RetainedSubview<E>> =
             Rc::new(move |look| RetainedSubview::new(sheet_modal_layer(&sheet_for_builder, look)));

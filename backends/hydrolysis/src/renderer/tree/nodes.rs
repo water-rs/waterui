@@ -1248,7 +1248,7 @@ pub struct SheetEffect<E: TextEngine> {
     /// `sheet_modal_layer` stays unreachable in apps that never use `.sheet`.
     pub(crate) build_layer: Rc<dyn Fn(SheetLook) -> RetainedSubview<E>>,
     /// The sheet being presented.
-    pub(crate) sheet: Sheet,
+    pub(crate) sheet: Sheet<HeldChild<E>>,
     /// The node's identity in the window's sheet stack.
     pub(crate) marker: Rc<()>,
 }

@@ -695,7 +695,6 @@ mod tests {
             secure: waterui::metadata::secure::Secure,
             dynamic_range: waterui::metadata::secure::DynamicRangeMetadata,
             frame_rate: waterui::animation::FrameRateVote,
-            sheet: Sheet,
             #[cfg(waterui_feature = "dialog")]
             dialog: waterui::dialog::Dialog,
             #[cfg(waterui_feature = "navigation")]
@@ -709,6 +708,14 @@ mod tests {
         fn anchored_overlay<S: ChildView<Self>, C: ChildView<Self>>(
             &mut self,
             _: Metadata<AnchoredOverlay<S>, C>,
+            _: &Environment,
+            (): (),
+        ) {
+        }
+
+        fn sheet<S: ChildView<Self>, C: ChildView<Self>>(
+            &mut self,
+            _: Metadata<Sheet<S>, C>,
             _: &Environment,
             (): (),
         ) {

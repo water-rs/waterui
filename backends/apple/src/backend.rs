@@ -1169,14 +1169,15 @@ impl NativeBackend for AppleBackend {
         )
     }
 
-    fn sheet<C: ChildView<Self>>(
+    fn sheet<S: ChildView<Self>, C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<Sheet, C>,
+        metadata: Metadata<Sheet<S>, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
         mark_reached!("sheet");
-        let metadata = metadata.map_content(C::into_child);
+        let Metadata { content, value } = metadata;
+        let metadata = Metadata::new(content.into_child(), value.map_slots(S::into_child));
         realize_sheet_metadata(metadata, &self.entry(env))
     }
 

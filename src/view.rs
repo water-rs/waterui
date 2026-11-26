@@ -11,7 +11,7 @@
 
 use crate::animation::{FrameRate, FrameRateVote};
 use crate::metadata::anchored_overlay::{AnchoredOverlay, AnchoredOverlayView};
-use crate::sheet::Sheet;
+use crate::sheet::{Sheet, SheetView};
 #[cfg(feature = "snackbar")]
 use crate::snackbar::SnackbarHost;
 use core::future::Future;
@@ -1417,8 +1417,8 @@ pub trait ViewExt: View + Sized {
     ///         .detents([SheetDetent::Medium, SheetDetent::Large]),
     ///     );
     /// ```
-    fn sheet(self, sheet: Sheet) -> Metadata<Sheet, Self> {
-        Metadata::new(self, sheet)
+    fn sheet<V: View>(self, sheet: Sheet<V>) -> SheetView<Self, V> {
+        SheetView::new(self, sheet)
     }
 
     /// Hosts a [`SnackbarManager`](crate::snackbar::SnackbarManager) and its
