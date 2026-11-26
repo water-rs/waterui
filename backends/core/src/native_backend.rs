@@ -857,10 +857,18 @@ native_backend! {
         #[cfg(waterui_feature = "gpu")]
         /// Frames from an external source.
         external_frame: waterui::graphics::gpu::external::ExternalFrameView,
-        #[cfg(waterui_feature = "gpu")]
+        #[cfg(any(
+            waterui_feature = "gpu",
+            waterui_feature = "cpu",
+            waterui_feature = "canvas"
+        ))]
         /// A retained scene.
         scene: waterui::graphics::backend::SceneView,
-        #[cfg(waterui_feature = "gpu")]
+        #[cfg(any(
+            waterui_feature = "gpu",
+            waterui_feature = "cpu",
+            waterui_feature = "canvas"
+        ))]
         /// A recorded picture.
         picture: waterui::graphics::backend::Picture,
         #[cfg(waterui_feature = "video")]
@@ -2273,6 +2281,49 @@ mod tests {
 
         assert_eq!(reached(GpuView::new(ProbeContent)), ["gpu"]);
         assert_eq!(reached(AnyView::new(GpuView::new(ProbeContent))), ["gpu"]);
+    }
+
+    #[cfg(any(
+        waterui_feature = "gpu",
+        waterui_feature = "cpu",
+        waterui_feature = "canvas"
+    ))]
+    #[test]
+    fn scene_and_picture_reach_native_backend_on_static_and_erased_paths() {
+        use waterui::graphics::backend::{
+            NextFrame, Picture, RecordingResources, SceneContent, SceneView, draw::Recorder,
+        };
+        use waterui_core::Computed;
+        use waterui_core::layout::Size;
+
+        struct ProbeScene;
+
+        impl SceneContent for ProbeScene {
+            fn build_scene(
+                &mut self,
+                _recorder: &mut Recorder,
+                _resources: &mut RecordingResources<'_>,
+                _width: f32,
+                _height: f32,
+            ) -> NextFrame {
+                NextFrame::Idle
+            }
+
+            fn rebuild_for_engine(&mut self) {}
+        }
+
+        assert_eq!(reached(SceneView::new(ProbeScene)), ["scene"]);
+        assert_eq!(reached(AnyView::new(SceneView::new(ProbeScene))), ["scene"]);
+
+        let recording = Computed::constant(Picture::record(|_| {}));
+        assert_eq!(
+            reached(Picture::new(Size::new(16.0, 16.0), recording.clone())),
+            ["picture"]
+        );
+        assert_eq!(
+            reached(AnyView::new(Picture::new(Size::new(16.0, 16.0), recording))),
+            ["picture"]
+        );
     }
 
     #[cfg(not(waterui_feature = "capture"))]

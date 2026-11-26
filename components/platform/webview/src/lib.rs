@@ -110,16 +110,16 @@ pub use js_api::{
 pub use waterui_ts_schema::{self as ts_schema, TsType};
 
 #[cfg(not(target_arch = "wasm32"))]
-/// Re-exported so `#[js_api]` can derive `Deserialize` for its argument structs
-/// without the calling crate having to depend on `serde` itself.
 #[doc(hidden)]
-pub use serde;
-#[cfg(not(target_arch = "wasm32"))]
-/// Re-exported for the same reason as [`serde`]: `exec!` and `eval!` serialize
-/// each `@{...}` hole, and the calling crate must not have to depend on
-/// `serde_json` just to write a JavaScript literal.
-#[doc(hidden)]
-pub use serde_json;
+pub mod __private {
+    /// Re-exported so `#[js_api]` can derive `Deserialize` for its argument structs
+    /// without the calling crate having to depend on `serde` itself.
+    pub use serde;
+    /// Re-exported for the same reason as [`serde`]: `exec!` and `eval!` serialize
+    /// each `@{...}` hole, and the calling crate must not have to depend on
+    /// `serde_json` just to write a JavaScript literal.
+    pub use serde_json;
+}
 #[cfg(not(target_arch = "wasm32"))]
 mod big_integers;
 #[cfg(not(target_arch = "wasm32"))]
