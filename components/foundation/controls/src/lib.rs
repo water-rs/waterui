@@ -23,7 +23,7 @@ pub use label::{
 pub mod progress;
 pub use progress::{Progress, ProgressConfig, ProgressStyle, ProgressWithTotal, loading, progress};
 pub mod slot;
-pub use slot::{IconSlot, NoopSlot, SlotBuilder, StyleSlot};
+pub use slot::{IconSlot, NoopSlot, SlotBuilder};
 #[cfg(feature = "menu")]
 pub mod menu;
 #[cfg(feature = "menu")]
