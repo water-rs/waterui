@@ -128,7 +128,7 @@ pub fn content_coordinate_view(scroll: &ScrollSurface) -> Retained<PlatformView>
 /// flipped document view on `AppKit`, the scroll view itself on `UIKit`.
 #[cfg(target_os = "ios")]
 pub fn content_coordinate_view(scroll: &ScrollSurface) -> Retained<PlatformView> {
-    cocoa_ui::view::retain_base(scroll)
+    cocoa_ui::view::retain_base(as_view(scroll))
 }
 
 /// The scroll view as its platform view.

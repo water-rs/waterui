@@ -3,7 +3,7 @@
 
 #[cfg(feature = "accessibility")]
 use super::layout::accessibility_rect;
-#[cfg(feature = "accessibility")]
+#[cfg(all(feature = "accessibility", hydrolysis_cherenkov))]
 use super::layout::apply_scroll_node_controller;
 use super::layout::kurbo_rect;
 use crate::renderer::metadata::resolve_shadow_shape;
