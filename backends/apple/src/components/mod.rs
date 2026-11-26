@@ -54,6 +54,8 @@ pub mod image;
 pub mod layer_transform;
 pub mod layout_priority;
 pub mod lifecycle_hook;
+#[cfg(feature = "link")]
+pub mod link;
 #[cfg(feature = "list")]
 pub mod list;
 #[cfg(feature = "map")]

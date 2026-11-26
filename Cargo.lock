@@ -4722,6 +4722,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "waterkit-clipboard",
+ "waterkit-deeplink",
  "waterkit-menu",
  "waterui",
  "waterui-apple-menu",
@@ -4778,7 +4779,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis-m3"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis-m3?branch=main#86596fce485c7de8c5b72e1d31f3e8836c96e844"
+source = "git+https://github.com/water-rs/hydrolysis-m3?branch=main#37dbc6174321b60053f325a2925ab5d535f70bdf"
 dependencies = [
  "hydrolysis-style",
  "material-color-utils",
@@ -13486,7 +13487,6 @@ dependencies = [
  "thiserror 2.0.21",
  "tracing",
  "unicode-segmentation",
- "waterkit-deeplink",
  "waterkit-haptic",
  "waterui",
  "waterui-accessibility",

@@ -2654,6 +2654,11 @@ const BACKEND_CAPABILITIES: &[Capability] = &[
         feature: Some("validation"),
     },
     Capability {
+        name: "link",
+        package: "waterui-internal",
+        feature: Some("link"),
+    },
+    Capability {
         name: "list",
         package: "waterui-internal",
         feature: Some("list"),

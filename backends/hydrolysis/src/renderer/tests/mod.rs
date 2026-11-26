@@ -1937,6 +1937,72 @@ fn control_consumes_its_role_before_the_containers_inside_it() {
     assert_eq!(links[0].1.label(), Some("Play episode"));
 }
 
+#[cfg(all(feature = "link", feature = "accessibility"))]
+#[test]
+fn link_emits_link_role_pointing_cursor_and_non_stretching_bounds() {
+    use accesskit::Action;
+    use waterui::component::link::link;
+    use waterui::component::{hstack, spacer};
+    use waterui::cursor::CursorStyle;
+
+    let env = test_environment();
+    let mut renderer = test_renderer();
+    let view = hstack((link("Visit Docs", "https://waterui.dev"), spacer()));
+
+    capture_root_window(&mut renderer, view, &env, Rect::new(0.0, 0.0, 320.0, 160.0));
+
+    let update = renderer
+        .take_accessibility_tree_update()
+        .expect("link render must publish an accessibility tree");
+    let (_, link_node) = update
+        .nodes
+        .iter()
+        .find(|(_, node)| node.role() == AccessibilityNodeRole::Link)
+        .expect("link must emit AccessibilityNodeRole::Link");
+    assert_eq!(link_node.label(), Some("Visit Docs"));
+    assert!(link_node.supports_action(Action::Click));
+    assert!(link_node.supports_action(Action::Focus));
+    let bounds = link_node.bounds().expect("rendered link must have bounds");
+    assert!(bounds.x1 - bounds.x0 < 320.0);
+
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "rendered test bounds fit cleanly in f32"
+    )]
+    let (cx, cy) = (
+        f64::midpoint(bounds.x0, bounds.x1) as f32,
+        f64::midpoint(bounds.y0, bounds.y1) as f32,
+    );
+    assert_eq!(renderer.cursor_style_at(cx, cy), CursorStyle::PointingHand);
+    assert_eq!(renderer.cursor_style_at(319.0, 159.0), CursorStyle::Arrow);
+
+    let mut disabled_renderer = test_renderer();
+    let disabled_view = hstack((
+        link("Disabled Docs", "https://waterui.dev").disabled(true),
+        spacer(),
+    ));
+    capture_root_window(
+        &mut disabled_renderer,
+        disabled_view,
+        &env,
+        Rect::new(0.0, 0.0, 320.0, 160.0),
+    );
+    let disabled_update = disabled_renderer
+        .take_accessibility_tree_update()
+        .expect("disabled link must publish an accessibility tree");
+    let (_, disabled_node) = disabled_update
+        .nodes
+        .iter()
+        .find(|(_, node)| node.role() == AccessibilityNodeRole::Link)
+        .expect("disabled link must still emit AccessibilityNodeRole::Link");
+    assert!(disabled_node.is_disabled());
+    assert!(!disabled_node.supports_action(Action::Click));
+    assert_eq!(
+        disabled_renderer.cursor_style_at(cx, cy),
+        CursorStyle::Arrow
+    );
+}
+
 #[cfg(feature = "accessibility")]
 #[test]
 fn accessibility_group_owns_preserved_child_semantics() {

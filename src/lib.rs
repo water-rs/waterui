@@ -88,9 +88,6 @@ pub mod prelude {
     pub use super::dialog::{Dialog, DialogAction};
     pub use super::sheet::{Sheet, SheetDetent, SheetDismiss};
     #[cfg(feature = "snackbar")]
-    #[doc(hidden)]
-    pub use super::snackbar::SnackbarTheme;
-    #[cfg(feature = "snackbar")]
     pub use super::snackbar::{
         Snackbar, SnackbarDismissReason, SnackbarHost, SnackbarManager, SnackbarPosition,
     };
@@ -114,7 +111,7 @@ pub mod prelude {
     pub use super::text::{TextConfig, font, highlight, styled};
 
     #[cfg(feature = "link")]
-    pub use super::component::link::{Link, LinkTarget, link};
+    pub use super::component::link::{Link, link};
     #[cfg(feature = "list")]
     pub use super::component::list::{
         ForEachExt, List, ListContent, ListMinRowHeight, Row, Section, detail_row,

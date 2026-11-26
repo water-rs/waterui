@@ -44,8 +44,6 @@ waterui-meta = { workspace = true, optional = true }
 executor-core.workspace = true
 tracing.workspace = true
 thiserror = { version = "2.0.21", default-features = false }
-# `Link` opens its URL in the system handler.
-waterkit-deeplink = { workspace = true, optional = true }
 # Grapheme clusters for the avatar monogram: a name's first "letter" is a
 # cluster, not a `char`, wherever a combining mark or an emoji sequence is one.
 unicode-segmentation = { version = "1.13", optional = true }
@@ -81,7 +79,7 @@ cpu-time = { workspace = true, optional = true }
 
 [features]
 form = ["dep:waterui-form"]
-link = ["dep:waterkit-deeplink"]
+link = []
 avatar = ["dep:unicode-segmentation"]
 cpu-time = ["dep:cpu-time"]
 list = []
