@@ -1747,13 +1747,18 @@ mod tests {
         std::fs::write(
             root.join("Cargo.toml"),
             format!(
-                "{}\n[workspace]\nmembers = [\"backends/apple\", \"backends/cef\"]\n\n[workspace.dependencies]\nwaterui-browser-cef = {{ path = \"backends/cef\" }}\n",
+                "{}\n[workspace]\nmembers = [\"backends/apple\", \"backends/cef\", \"utils/dylib\"]\n\n[workspace.dependencies]\nwaterui-browser-cef = {{ path = \"backends/cef\" }}\n",
                 manifest("waterui", &["gpu", "video"])
             ),
         )
         .expect("write waterui manifest");
         std::fs::create_dir_all(root.join("src")).expect("waterui src");
         std::fs::write(root.join("src/lib.rs"), "// fixture\n").expect("waterui lib");
+        write_fixture_crate(
+            &root.join("utils/dylib"),
+            "waterui-dylib",
+            &["gpu", "video"],
+        );
         let apple = root.join("backends/apple");
         std::fs::create_dir_all(&apple).expect("apple backend dir");
         std::fs::write(apple.join("Package.swift"), "// swift-tools-version:6.0\n")
@@ -3334,11 +3339,16 @@ mod tests {
         let expected_facade_path = normalize_path_for_config(&expected_facade_path);
 
         assert!(cargo_toml.contains(&format!("path = \"{expected_facade_path}\"")));
-        assert!(cargo_toml.contains("dev = [\"waterui_test/dev\"]"));
+        assert!(cargo_toml.contains("dev = [\"dep:waterui-dylib\"]"));
         assert!(cargo_toml.contains("[workspace]"));
         let manifest = cargo_toml
             .parse::<toml::Table>()
             .expect("companion Cargo.toml should parse");
+        let dylib_dep = manifest["dependencies"]
+            .get("waterui-dylib")
+            .expect("companion declares optional waterui-dylib");
+        assert_eq!(dylib_dep["optional"].as_bool(), Some(true));
+        assert_eq!(dylib_dep["default-features"].as_bool(), Some(false));
         // The map capability reaches the Rust backend: the `map` feature
         // enables `waterui-apple/map`, so the `MKMapView` leaf compiles only
         // for apps whose graph holds `waterui-map`.
@@ -3356,6 +3366,10 @@ mod tests {
                 .is_some()
         );
         let lib = std::fs::read_to_string(companion_dir.join("src/lib.rs")).unwrap();
+        assert!(
+            lib.contains("#[cfg(feature = \"dev\")]\nuse waterui_dylib as _;"),
+            "companion lib must anchor waterui_dylib under its dev feature:\n{lib}"
+        );
         assert!(
             lib.contains("#[cfg(target_vendor = \"apple\")]\nwaterui_apple::export_app!(app);")
         );
@@ -4066,13 +4080,8 @@ mod tests {
         write_fixture_crate(&checkout.join("core"), "waterui-core", &[]);
         let app = directory.join("app");
         std::fs::create_dir_all(&app).expect("project dir");
-        // The companion probes with `--all-features`, which enables the
-        // `dev` feature it forwards onto the project dependency — so the
-        // fixture manifest must declare it, merged into whatever the
-        // caller spelled.
-        let mut manifest: cargo_toml::Manifest<()> =
+        let manifest: cargo_toml::Manifest<()> =
             toml::from_str::<cargo_toml::Manifest<()>>(project_manifest).expect("project manifest");
-        manifest.features.entry("dev".to_string()).or_default();
         std::fs::write(
             app.join("Cargo.toml"),
             toml::to_string(&manifest).expect("serialize project manifest"),
@@ -5044,10 +5053,9 @@ mod tests {
             .map(|feature| feature.as_str().expect("feature name"))
             .collect::<Vec<_>>();
         assert_eq!(video, ["waterui/video"]);
-        assert_eq!(
-            manifest["features"]["dev"].as_array().map(Vec::len),
-            Some(1),
-            "dev stays the dynamic-linking switch only"
+        assert!(
+            manifest["features"].get("dev").is_none(),
+            "user manifests must not carry a dev dynamic_linking feature"
         );
 
         // The manifest documents the switch where the user will look for it.
@@ -5593,6 +5601,25 @@ fn render_native_backend_bin_cargo_toml(
         );
     }
 
+    let waterui_dylib = generated_dependency_from_spec(
+        ctx,
+        NativeBackendDependencySpec::new(
+            "waterui-dylib",
+            &[],
+            NativeBackendDependencySource::WorkspaceSubdir("utils/dylib"),
+        ),
+    )?
+    .with_default_features(false)
+    .with_optional()
+    .into_cargo();
+    manifest.dependencies.insert(
+        "waterui-dylib".to_string(),
+        Dependency::Detailed(Box::new(waterui_dylib)),
+    );
+    manifest
+        .features
+        .insert("dev".to_string(), vec!["dep:waterui-dylib".to_string()]);
+
     manifest.workspace = Some(Workspace::default());
     manifest.patch = generated_crate_patches(ctx)?;
 
@@ -5973,7 +6000,7 @@ async fn configure_apple_target_tables(
 
     manifest
         .features
-        .insert("dev".to_string(), vec![format!("{}/dev", ctx.crate_name)]);
+        .insert("dev".to_string(), vec!["dep:waterui-dylib".to_string()]);
 
     let waterui = generated_dependency_from_spec(
         ctx,
@@ -5988,6 +6015,22 @@ async fn configure_apple_target_tables(
     manifest.dependencies.insert(
         "waterui".to_string(),
         cargo_toml::Dependency::Detailed(Box::new(waterui)),
+    );
+
+    let waterui_dylib = generated_dependency_from_spec(
+        ctx,
+        NativeBackendDependencySpec::new(
+            "waterui-dylib",
+            &[],
+            NativeBackendDependencySource::WorkspaceSubdir("utils/dylib"),
+        ),
+    )?
+    .with_default_features(false)
+    .with_optional()
+    .into_cargo();
+    manifest.dependencies.insert(
+        "waterui-dylib".to_string(),
+        cargo_toml::Dependency::Detailed(Box::new(waterui_dylib)),
     );
 
     // The Rust backend owns the app's whole startup through
@@ -6564,6 +6607,8 @@ pub mod hydrolysis {
         let mut lib = super::generated_lib(&["cdylib", "rlib"]);
         lib.name = Some(hydrolysis_library_target_name(package_name));
         let mut features = BTreeMap::from([
+            // Shared-runtime linkage for non-Windows development and preview builds.
+            ("dev".to_string(), vec!["dep:waterui-dylib".to_string()]),
             // The preview runtime module compiles under the feature
             // alone — it no longer consumes the `waterui-preview`
             // support-app crate.
@@ -6695,6 +6740,24 @@ pub mod hydrolysis {
                         ),
                     )?
                     .with_default_features(false),
+                ),
+            ),
+            (
+                // Optional so static, Windows, and wasm32 builds never compile
+                // it; the launcher's `dev` feature selects it on non-Windows
+                // targets alongside resolved `waterui-dylib/<feature>` forwards.
+                "waterui-dylib".to_string(),
+                GeneratedDependencyValue::detailed(
+                    super::generated_dependency_from_spec(
+                        ctx,
+                        NativeBackendDependencySpec::new(
+                            "waterui-dylib",
+                            &[],
+                            NativeBackendDependencySource::WorkspaceSubdir("utils/dylib"),
+                        ),
+                    )?
+                    .with_default_features(false)
+                    .with_optional(),
                 ),
             ),
             (
@@ -8973,13 +9036,10 @@ pub mod root {
             // workspace members are never matched by `package."*"`, so a
             // self-override would be noise in a file the user owns.
             profile: super::generated_profiles_table(&std::collections::BTreeSet::new()),
-            features: BTreeMap::from([
-                (
-                    "dev".to_string(),
-                    vec!["waterui/dynamic_linking".to_string()],
-                ),
-                (VIDEO_FEATURE.to_string(), vec!["waterui/video".to_string()]),
-            ]),
+            features: BTreeMap::from([(
+                VIDEO_FEATURE.to_string(),
+                vec!["waterui/video".to_string()],
+            )]),
             dependencies: BTreeMap::from([("waterui".to_string(), waterui_dependency.clone())]),
             build_dependencies: BTreeMap::new(),
             target: native_target_section(waterui_dependency, ctx.web_frontend_arg.is_some()),
@@ -9154,15 +9214,10 @@ pub mod inspector {
             dependency_path(&inspector_app_path),
         );
 
-        // The companion scaffold generated alongside this app declares
-        // `dev = ["<app>/dev"]`, so an app without a `dev` feature cannot be
-        // resolved at all: cargo fails the whole metadata query before anything
-        // is built. Every generated project carries this feature; the support
-        // app is no different.
-        let features = BTreeMap::from([(
-            "dev".to_string(),
-            vec!["waterui/dynamic_linking".to_string()],
-        )]);
+        // Shared-runtime linkage lives on the generated host crates rather than
+        // a `dev` feature on the application crate, so the support app carries
+        // no feature table of its own.
+        let features = BTreeMap::new();
 
         write_support_cargo_toml(base_dir, ctx, features, dependencies).await
     }
@@ -9244,24 +9299,55 @@ pub mod inspector {
             });
         }
 
-        /// The companion scaffold generated beside this app declares
-        /// `dev = ["<app>/dev"]`. An app without that feature cannot be
-        /// resolved at all — cargo fails the metadata query and `water
-        /// inspector` dies before building anything, which is exactly what it
-        /// did until this was noticed.
+        /// Generated host crates own shared-runtime linkage directly, so the
+        /// inspector support app does not declare a `dev` feature.
         #[test]
-        fn the_generated_app_declares_the_feature_its_companion_scaffold_requires() {
-            let generated = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("src/project_model/templates.rs");
-            let source = std::fs::read_to_string(generated).expect("the module is readable");
-            let inspector = source
-                .split("pub mod inspector {")
-                .nth(1)
-                .expect("the inspector template module exists");
-            assert!(
-                inspector.contains("\"dev\".to_string()"),
-                "the inspector support app is generated without a `dev` feature"
-            );
+        fn the_generated_app_does_not_declare_a_dev_feature() {
+            use std::collections::BTreeSet;
+            use std::fs;
+
+            use crate::framework::test_fixtures::stable_framework;
+            use crate::project_types::{BundleIdentifier, CrateName};
+            use crate::templates::{LocalBackendSources, SupportAppIdentity, TemplateContext};
+            use crate::toolchain::Host;
+
+            smol::block_on(async {
+                let temporary = tempfile::tempdir().expect("tempdir");
+                let checkout = temporary.path().join("waterui");
+                fs::create_dir_all(checkout.join(super::INSPECTOR_APP_CRATE))
+                    .expect("inspector app crate dir");
+                let app = temporary.path().join("app");
+                let ctx = TemplateContext::for_support_app(
+                    &Host::current(),
+                    SupportAppIdentity {
+                        display_name: "WaterUI Inspector".to_string(),
+                        crate_name: CrateName::try_from("waterui_inspector").expect("crate name"),
+                        bundle_identifier: BundleIdentifier::try_from("dev.waterui.inspector")
+                            .expect("bundle identifier"),
+                    },
+                    Some(checkout),
+                    &stable_framework(),
+                    false,
+                    &LocalBackendSources::default(),
+                )
+                .with_project_packages(BTreeSet::from(["waterui_inspector".to_string()]));
+
+                super::scaffold(&app, &ctx)
+                    .await
+                    .expect("the inspector support crate scaffolds");
+
+                let cargo_toml = fs::read_to_string(app.join("Cargo.toml")).expect("Cargo.toml");
+                let manifest = cargo_toml
+                    .parse::<toml::Table>()
+                    .expect("Cargo.toml parses");
+                assert!(
+                    manifest
+                        .get("features")
+                        .and_then(|features| features.get("dev"))
+                        .is_none(),
+                    "inspector support app should not declare a `dev` feature:\n{cargo_toml}"
+                );
+            });
         }
     }
 }

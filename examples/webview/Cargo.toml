@@ -12,7 +12,6 @@ publish = false
 
 [features]
 default = ["wpe"]
-dev = ["waterui/dynamic_linking"]
 # The bundled WPE WebKit engine, for a Linux build with no system engine to
 # bridge. The CEF variant of this example turns it off and installs CEF instead,
 # so its package stages one browser runtime rather than two.

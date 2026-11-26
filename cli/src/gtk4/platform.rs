@@ -45,16 +45,19 @@ pub async fn build_gtk4(project: &Project, options: BuildOptions) -> eyre::Resul
         );
     }
 
-    let options = options.with_supported_linkage(&TargetPlatform::Linux.triple());
-    let mut build = RustBuild::for_project(project, &backend_path, TargetPlatform::Linux.triple())
+    let linux_triple = TargetPlatform::Linux.triple();
+    let options = options.with_supported_linkage(&linux_triple);
+    let mut build = RustBuild::for_project(project, &backend_path, linux_triple.clone())
         .with_target_dir(project.water_target_dir(options.linkage()).await?)
-        .with_linkage(
-            options.linkage(),
-            &format!("{}/dev", project.crate_name()),
-            &["$ORIGIN"],
-        )
+        .with_linkage(options.linkage(), "dev", &["$ORIGIN"])
         .with_features(options.app_features(project))
         .with_envs(options.cargo_envs().iter().cloned());
+    if options.linkage() == RustLinkage::SharedRuntime {
+        let dylib_features =
+            assets::shared_runtime_features(project, &cargo_toml, &linux_triple, build.features())
+                .await?;
+        build = build.with_features(dylib_features);
+    }
     if let Some(sccache_path) = options.sccache_path() {
         build = build.with_sccache(sccache_path.to_path_buf());
     }

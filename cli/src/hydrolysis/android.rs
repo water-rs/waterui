@@ -1576,7 +1576,7 @@ mod tests {
         crate::framework::test_fixtures::write_vendor_stub(
             &vendor_dir.join("waterui"),
             "waterui",
-            &["dynamic_linking", "image", "video", "webview"],
+            &["image", "video", "webview"],
         );
         let manifest_path = root.join("Cargo.toml");
         let mut document: toml_edit::DocumentMut = std::fs::read_to_string(&manifest_path)
