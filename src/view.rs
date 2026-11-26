@@ -10,6 +10,7 @@
 //! These extensions help create a fluent API for constructing user interfaces.
 
 use crate::animation::{FrameRate, FrameRateVote};
+use crate::metadata::anchored_overlay::{AnchoredOverlay, AnchoredOverlayView};
 use crate::sheet::Sheet;
 #[cfg(feature = "snackbar")]
 use crate::snackbar::SnackbarHost;
@@ -1346,11 +1347,11 @@ pub trait ViewExt: View + Sized {
     ///     })
     ///     .anchored_overlay(AnchoredOverlay::new(&open, move || text!("Popover")).edge(AnchorEdge::Bottom));
     /// ```
-    fn anchored_overlay(
+    fn anchored_overlay<V: View>(
         self,
-        overlay: crate::metadata::anchored_overlay::AnchoredOverlay,
-    ) -> Metadata<crate::metadata::anchored_overlay::AnchoredOverlay, Self> {
-        Metadata::new(self, overlay)
+        overlay: AnchoredOverlay<V>,
+    ) -> AnchoredOverlayView<Self, V> {
+        AnchoredOverlayView::new(self, overlay)
     }
 
     /// Presents `dialog` window-modal while its `is_presented` binding is

@@ -872,9 +872,9 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         RenderNode::build_wrapper(WrapperEffect::Shadow(value), content, env, renderer)
     }
 
-    fn anchored_overlay<C: ChildView<Self>>(
+    fn anchored_overlay<S: ChildView<Self>, C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::metadata::anchored_overlay::AnchoredOverlay, C>,
+        metadata: Metadata<AnchoredOverlay<S>, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -891,7 +891,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         } = value;
         RenderNode::build_wrapper(
             WrapperEffect::AnchoredOverlay(AnchoredOverlayEffect {
-                builder: Rc::new(move || HeldChild::from_view(overlay_builder.build())),
+                builder: Rc::new(move || S::into_child(overlay_builder.build())),
                 presentations: Rc::default(),
                 is_presented,
                 placed_edge,

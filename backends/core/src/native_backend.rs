@@ -1027,8 +1027,6 @@ native_backend! {
         secure: waterui::metadata::secure::Secure,
         /// Dynamic range.
         dynamic_range: waterui::metadata::secure::DynamicRangeMetadata,
-        /// An anchored overlay.
-        anchored_overlay: waterui::metadata::anchored_overlay::AnchoredOverlay,
         /// A window-modal sheet.
         sheet: waterui::sheet::Sheet,
         #[cfg(waterui_feature = "dialog")]
@@ -1045,6 +1043,8 @@ native_backend! {
         navigation_transition_destination: waterui::navigation::NavigationTransitionDestination,
     }
     parent_metadata {
+        /// An anchored overlay.
+        anchored_overlay<S>: waterui::metadata::anchored_overlay::AnchoredOverlay<S>,
         #[cfg(waterui_feature = "menu")]
         /// A resolved context menu.
         resolved_context_menu<S>: waterui::metadata::context_menu::ResolvedContextMenu<S>,
@@ -1314,6 +1314,13 @@ mod tests {
                 .map(|tab| tab.content().build())
                 .chain(accessory)
                 .collect()
+        }
+    }
+
+    /// An anchored overlay's child is the overlay view its builder constructs.
+    impl<C> Parent<C> for waterui::metadata::anchored_overlay::AnchoredOverlay<C> {
+        fn children(self) -> Vec<C> {
+            alloc::vec![self.content.build()]
         }
     }
 
@@ -2263,6 +2270,30 @@ mod tests {
 
         assert_eq!(reached(GpuView::new(ProbeContent)), ["gpu"]);
         assert_eq!(reached(AnyView::new(GpuView::new(ProbeContent))), ["gpu"]);
+    }
+
+    #[test]
+    fn anchored_overlay_content_stays_typed_and_reenters_hooks() {
+        use waterui::ViewExt as _;
+        use waterui::metadata::anchored_overlay::AnchoredOverlay;
+        use waterui_core::binding;
+
+        let shown = binding(true);
+        let view =
+            Spacer::flexible().anchored_overlay(AnchoredOverlay::new(&shown, Spacer::flexible));
+        assert_eq!(
+            reached(view),
+            ["anchored_overlay", "spacer", "typed child", "spacer"]
+        );
+
+        let hooked = Hooks::new(
+            Spacer::flexible().anchored_overlay(AnchoredOverlay::new(&shown, Spacer::flexible)),
+            SpacerAsDivider,
+        );
+        assert_eq!(
+            reached(hooked),
+            ["anchored_overlay", "divider", "typed child", "divider"]
+        );
     }
 
     #[cfg(not(waterui_feature = "capture"))]
