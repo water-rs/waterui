@@ -4,10 +4,30 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use fixed_decimal::Decimal;
 use icu_decimal::{DecimalFormatter, options::DecimalFormatterOptions};
+use icu_experimental::dimension::{
+    currency::{CurrencyType, formatter::CurrencyFormatter, options::CurrencyFormatterOptions},
+    percent::{formatter::PercentFormatter, options::PercentFormatterOptions},
+};
 
 use crate::locale::{Locale, locales};
 
 static NUMBER_FORMATTER_FALLBACK_LOGGED: AtomicBool = AtomicBool::new(false);
+static PERCENT_FORMATTER_FALLBACK_LOGGED: AtomicBool = AtomicBool::new(false);
+static CURRENCY_FORMATTER_FALLBACK_LOGGED: AtomicBool = AtomicBool::new(false);
+
+fn format_non_finite(n: f64) -> Option<String> {
+    if n.is_nan() {
+        return Some("NaN".to_string());
+    }
+    if n.is_infinite() {
+        return Some(if n.is_sign_negative() {
+            "-Infinity".to_string()
+        } else {
+            "Infinity".to_string()
+        });
+    }
+    None
+}
 
 fn decimal_formatter(locale: &Locale) -> Option<DecimalFormatter> {
     match DecimalFormatter::try_new(locale.0.clone().into(), DecimalFormatterOptions::default()) {
@@ -86,15 +106,8 @@ pub(crate) fn format_number_text(locale: &Locale, value: &str) -> String {
 /// ```
 #[must_use]
 pub fn format_number(locale: &Locale, n: f64) -> String {
-    if n.is_nan() {
-        return "NaN".to_string();
-    }
-    if n.is_infinite() {
-        return if n.is_sign_negative() {
-            "-Infinity".to_string()
-        } else {
-            "Infinity".to_string()
-        };
+    if let Some(non_finite) = format_non_finite(n) {
+        return non_finite;
     }
 
     let decimal = to_decimal(n);
@@ -102,6 +115,32 @@ pub fn format_number(locale: &Locale, n: f64) -> String {
         || n.to_string(),
         |formatter| formatter.format(&decimal).to_string(),
     )
+}
+
+fn percent_formatter(locale: &Locale) -> Option<PercentFormatter<DecimalFormatter>> {
+    match PercentFormatter::try_new((&locale.0).into(), PercentFormatterOptions::default()) {
+        Ok(formatter) => Some(formatter),
+        Err(primary_error) => match PercentFormatter::try_new(
+            (&locales::EN.0).into(),
+            PercentFormatterOptions::default(),
+        ) {
+            Ok(formatter) => Some(formatter),
+            Err(fallback_error) => {
+                if PERCENT_FORMATTER_FALLBACK_LOGGED
+                    .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+                    .is_ok()
+                {
+                    tracing::warn!(
+                        locale = locale.canonical_tag(),
+                        primary_error = %primary_error,
+                        fallback_error = %fallback_error,
+                        "waterui-locale percent formatter unavailable"
+                    );
+                }
+                None
+            }
+        },
+    }
 }
 
 /// Format a number as a percentage.
@@ -116,15 +155,17 @@ pub fn format_number(locale: &Locale, n: f64) -> String {
 /// ```
 #[must_use]
 pub fn format_percent(locale: &Locale, n: f64) -> String {
-    let percent_value = n * 100.0;
-    let formatted = format_number(locale, percent_value);
-
-    // Locale-aware percent symbol and spacing.
-    match locale.language.as_str() {
-        "fr" => format!("{formatted}\u{00A0}%"),
-        "ar" => format!("{formatted}٪"),
-        _ => format!("{formatted}%"),
+    if let Some(non_finite) = format_non_finite(n) {
+        return non_finite;
     }
+
+    let mut percent = to_decimal(n);
+    percent.multiply_pow10(2);
+    percent.trim_start();
+    percent_formatter(locale).map_or_else(
+        || format!("{percent}%"),
+        |formatter| formatter.format(&percent).to_string(),
+    )
 }
 
 /// A currency [`format_currency`] knows how to render.
@@ -141,6 +182,12 @@ pub enum Currency {
     JPY,
     /// Chinese Yuan
     CNY,
+    /// South Korean Won
+    KRW,
+    /// Bahraini Dinar
+    BHD,
+    /// Kuwaiti Dinar
+    KWD,
 }
 
 impl Currency {
@@ -152,6 +199,9 @@ impl Currency {
             Self::EUR => "€",
             Self::GBP => "£",
             Self::JPY | Self::CNY => "¥",
+            Self::KRW => "₩",
+            Self::BHD => "BD",
+            Self::KWD => "KD",
         }
     }
 
@@ -164,14 +214,71 @@ impl Currency {
             Self::GBP => "GBP",
             Self::JPY => "JPY",
             Self::CNY => "CNY",
+            Self::KRW => "KRW",
+            Self::BHD => "BHD",
+            Self::KWD => "KWD",
         }
+    }
+
+    const fn icu_type(self) -> CurrencyType {
+        const fn parse(code: &str) -> CurrencyType {
+            match CurrencyType::try_from_str(code) {
+                Ok(currency) => currency,
+                Err(_) => panic!("Currency::code must be a 3-letter ASCII ISO 4217 code"),
+            }
+        }
+        match self {
+            Self::USD => const { parse("USD") },
+            Self::EUR => const { parse("EUR") },
+            Self::GBP => const { parse("GBP") },
+            Self::JPY => const { parse("JPY") },
+            Self::CNY => const { parse("CNY") },
+            Self::KRW => const { parse("KRW") },
+            Self::BHD => const { parse("BHD") },
+            Self::KWD => const { parse("KWD") },
+        }
+    }
+}
+
+fn currency_formatter(
+    locale: &Locale,
+    currency: CurrencyType,
+) -> Option<CurrencyFormatter<DecimalFormatter>> {
+    match CurrencyFormatter::try_new_symbol_narrow(
+        (&locale.0).into(),
+        currency,
+        CurrencyFormatterOptions::default(),
+    ) {
+        Ok(formatter) => Some(formatter),
+        Err(primary_error) => match CurrencyFormatter::try_new_symbol_narrow(
+            (&locales::EN.0).into(),
+            currency,
+            CurrencyFormatterOptions::default(),
+        ) {
+            Ok(formatter) => Some(formatter),
+            Err(fallback_error) => {
+                if CURRENCY_FORMATTER_FALLBACK_LOGGED
+                    .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+                    .is_ok()
+                {
+                    tracing::warn!(
+                        locale = locale.canonical_tag(),
+                        currency = %currency.iso_code(),
+                        primary_error = %primary_error,
+                        fallback_error = %fallback_error,
+                        "waterui-locale currency formatter unavailable"
+                    );
+                }
+                None
+            }
+        },
     }
 }
 
 /// Format a currency amount with locale-appropriate formatting.
 ///
-/// Note: This handles symbol placement and locale number formatting;
-/// no exchange-rate conversion is performed.
+/// Note: This handles symbol placement, currency fraction digits, and locale
+/// number formatting from CLDR; no exchange-rate conversion is performed.
 ///
 /// # Examples
 ///
@@ -189,15 +296,13 @@ impl Currency {
 /// ```
 #[must_use]
 pub fn format_currency(locale: &Locale, amount: f64, currency: Currency) -> String {
-    let formatted_amount = format_number(locale, amount);
-    let symbol = currency.symbol();
-
-    // Symbol position varies by locale.
-    match locale.language.as_str() {
-        "de" | "fr" | "es" | "it" | "pt" | "ru" => {
-            format!("{formatted_amount}\u{00A0}{symbol}")
-        }
-        "ar" => format!("{symbol}\u{00A0}{formatted_amount}"),
-        _ => format!("{symbol}{formatted_amount}"),
+    if let Some(non_finite) = format_non_finite(amount) {
+        return non_finite;
     }
+
+    let decimal = to_decimal(amount);
+    currency_formatter(locale, currency.icu_type()).map_or_else(
+        || format!("{}{}", currency.symbol(), format_number(locale, amount)),
+        |formatter| formatter.format_fixed_decimal(&decimal).to_string(),
+    )
 }

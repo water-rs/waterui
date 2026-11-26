@@ -54,7 +54,7 @@ datetime = ["dep:icu_datetime", "dep:icu_calendar", "dep:icu_time", "dep:jiff"]
 # Locale-aware number, percent and currency formatting (`format::number`), the
 # unit quantities that render through it (`format::unit`), and the numeric
 # interpolation `text!` performs through `LocalizedArgument`.
-number = ["dep:icu_decimal"]
+number = ["dep:icu_decimal", "dep:icu_experimental"]
 # Locale-aware list conjunction (`LocalizedList`).
 list = ["dep:icu_list"]
 # Locale-aware relative time formatting (`format::relative`).
