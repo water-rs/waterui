@@ -19,6 +19,7 @@ mod support;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use accesskit::Role;
 use nami::Signal as _;
 use nami::collection::StateList;
 use std::time::Duration;
@@ -31,6 +32,7 @@ use waterui::component::list::{ForEachExt, List, ListDelete, ListMove, Section, 
 use waterui::component::{hstack, spacer, text, vstack};
 use waterui::id::{Identifiable, SelfId};
 use waterui::layout::scroll::ScrollController;
+use waterui::theme::color::Accent;
 use waterui::views::ForEach;
 use waterui::{Binding, View, ViewExt};
 use waterui_core::Environment;
@@ -1316,7 +1318,7 @@ fn row_label_matches_plain_item_inset() {
             List::content((
                 || text("Plain"),
                 row("Name", "Alice"),
-                detail_row("Bio", "Details").value_color(waterui::theme::color::Accent),
+                detail_row("Bio", "Details").value_color(Accent),
             ))
         },
         400,
@@ -1325,11 +1327,11 @@ fn row_label_matches_plain_item_inset() {
     app.settle();
 
     let tree = app.tree();
-    let plain = node_bounds_with_role(tree, accesskit::Role::Label, "Plain");
-    let name = node_bounds_with_role(tree, accesskit::Role::Label, "Name");
-    let alice = node_bounds_with_role(tree, accesskit::Role::Label, "Alice");
-    let bio = node_bounds_with_role(tree, accesskit::Role::Label, "Bio");
-    let details = node_bounds_with_role(tree, accesskit::Role::Label, "Details");
+    let plain = node_bounds_with_role(tree, Role::Label, "Plain");
+    let name = node_bounds_with_role(tree, Role::Label, "Name");
+    let alice = node_bounds_with_role(tree, Role::Label, "Alice");
+    let bio = node_bounds_with_role(tree, Role::Label, "Bio");
+    let details = node_bounds_with_role(tree, Role::Label, "Details");
 
     assert!(
         (name.x0 - plain.x0).abs() < 0.5,

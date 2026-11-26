@@ -10,11 +10,11 @@ use accesskit::{
 use hydrolysis::draw::{BlendSpace, MaterialRegistry};
 use hydrolysis::theme::{
     BadgeLook, ButtonLook, ButtonSpec, CardLook, CheckboxLook, DisclosureLook, DisclosureSpec,
-    GlassLook, IndicatorLook, LinearProgressLook, ListLook, ListSpec, MenuLook, MenuPickerLook,
-    MenuSpec, NavigationBarLook, NavigationSpec, PickerSpec, ProgressSpec, RadioGroupLook,
-    ScrollIndicatorLook, SegmentedLook, SegmentedSpec, SliderLook, SliderSpec, StepperLook,
-    StepperSpec, SwitchLook, TableLook, TabsLook, TabsSpec, TextFieldLook, TextFieldSpec,
-    ToggleSpec, WidgetTheme,
+    GlassLook, IndicatorLook, LinearProgressLook, ListLook, ListRowLayoutMetrics, ListSpec,
+    MenuLook, MenuPickerLook, MenuSpec, NavigationBarLook, NavigationSpec, PickerSpec,
+    ProgressSpec, RadioGroupLook, ScrollIndicatorLook, SegmentedLook, SegmentedSpec, SliderLook,
+    SliderSpec, StepperLook, StepperSpec, SwitchLook, TableLook, TabsLook, TabsSpec, TextFieldLook,
+    TextFieldSpec, ToggleSpec, WidgetTheme,
 };
 use hydrolysis::{
     AccessibilityActivationPointError, FontFamilyResolution, HeadlessColorFormat, HeadlessRuntime,
@@ -128,6 +128,10 @@ impl WidgetTheme for ErasedStyle {
 
     fn list(&self, spec: &ListSpec, env: &Environment) -> ListLook {
         self.0.list(spec, env)
+    }
+
+    fn list_row_metrics(&self, env: &Environment) -> ListRowLayoutMetrics {
+        self.0.list_row_metrics(env)
     }
 
     fn table(&self, env: &Environment) -> TableLook {
