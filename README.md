@@ -195,7 +195,7 @@ water run --platform macos
 
 ## Contributing
 
-Target the `dev` branch; `main` is for releases. For anything substantial, open an issue first so the design can be discussed before you sink time into it. AI-assisted contributions are welcome as long as a human understands and reviews the result; fully autonomous pull requests are not accepted.
+Target the `main` branch. For anything substantial, open an issue first so the design can be discussed before you sink time into it. AI-assisted contributions are welcome as long as a human understands and reviews the result; fully autonomous pull requests are not accepted.
 
 ## License
 
