@@ -160,20 +160,25 @@ pub fn draw_badge_indicator<E: crate::text::TextEngine>(
 
     let (badge_width, badge_height, offset_x, offset_y) = match &large {
         None => (
-            metrics.small_size,
-            metrics.small_size,
-            metrics.small_offset_x,
-            metrics.small_offset_y,
+            f64::from(metrics.small_size),
+            f64::from(metrics.small_size),
+            f64::from(metrics.small_offset_x),
+            f64::from(metrics.small_offset_y),
         ),
-        Some((_, _, text_size)) => (
-            metrics
-                .large_horizontal_padding
-                .mul_add(2.0, f64::from(text_size.width))
-                .max(metrics.large_size),
-            metrics.large_size,
-            metrics.large_offset_x,
-            metrics.large_offset_y,
-        ),
+        Some((_, _, text_size)) => {
+            let large_size = f64::from(metrics.large_size);
+            (
+                f64::from(
+                    metrics
+                        .large_horizontal_padding
+                        .mul_add(2.0, text_size.width)
+                        .max(metrics.large_size),
+                ),
+                large_size,
+                f64::from(metrics.large_offset_x),
+                f64::from(metrics.large_offset_y),
+            )
+        }
     };
 
     let x0 = if waterui_core::layout::layout_direction(env)

@@ -255,13 +255,14 @@ impl<E: crate::text::TextEngine> TableRenderState<E> {
                 } else {
                     0.0
                 };
-                headers
-                    .get(index)
-                    .map_or(metrics.min_column_width, |header| {
-                        let size = header.measure_built(state, env, theme);
-                        (f64::from(size.width) + metrics.cell_horizontal_padding + sort_extra)
-                            .max(metrics.min_column_width)
-                    })
+                let min_column_width = f64::from(metrics.min_column_width);
+                headers.get(index).map_or(min_column_width, |header| {
+                    let size = header.measure_built(state, env, theme);
+                    (f64::from(size.width)
+                        + f64::from(metrics.cell_horizontal_padding)
+                        + sort_extra)
+                        .max(min_column_width)
+                })
             })
             .collect()
     }
@@ -368,8 +369,9 @@ impl<E: crate::text::TextEngine> TableRenderState<E> {
                     .get(&key)
                     .map(|cell| cell.measure_built(renderer.state_mut(), env, theme));
                 if let Some(size) = size {
-                    let width = (f64::from(size.width) + metrics.cell_horizontal_padding)
-                        .max(metrics.min_column_width);
+                    let width = (f64::from(size.width)
+                        + f64::from(metrics.cell_horizontal_padding))
+                    .max(f64::from(metrics.min_column_width));
                     let mut slot = self.slot.borrow_mut();
                     if slot.column_widths[column_index] < width {
                         slot.column_widths[column_index] = width;
@@ -689,14 +691,16 @@ pub fn table_accessibility<E: crate::text::TextEngine>(
                 renderer,
             );
             let row_rect = layout_metrics.map_or(kurbo::Rect::ZERO, |m| {
-                let y0 = m
-                    .row_height
-                    .mul_add(usize_as_f64(row_index), origin_y + m.header_height);
+                let row_height = f64::from(m.row_height);
+                let y0 = row_height.mul_add(
+                    usize_as_f64(row_index),
+                    origin_y + f64::from(m.header_height),
+                );
                 kurbo::Rect::new(
                     origin_x,
                     y0,
                     origin_x + table_metrics.table_width,
-                    y0 + m.row_height,
+                    y0 + row_height,
                 )
             });
 
@@ -832,9 +836,8 @@ pub fn measure_table_node<E: crate::text::TextEngine>(
     let metrics = table.look(theme, env).metrics();
     let widths = table.header_widths(state, env, theme, metrics);
     let row_count = state.measure_signal(&table.config.rows().len());
-    let height = metrics
-        .row_height
-        .mul_add(usize_as_f64(row_count), metrics.header_height);
+    let height = f64::from(metrics.row_height)
+        .mul_add(usize_as_f64(row_count), f64::from(metrics.header_height));
     ViewDimensions::new(LayoutSize::new(
         f64_as_f32(widths.iter().sum()),
         f64_as_f32(height),
@@ -1062,7 +1065,7 @@ pub fn render_table_parts<E: crate::text::TextEngine>(
             origin_x,
             origin_y,
             origin_x + painted_width,
-            origin_y + layout_metrics.header_height,
+            origin_y + f64::from(layout_metrics.header_height),
         );
         ctx.draw_context(|draw| {
             look.record_background(&mut *draw, table_rect);
@@ -1081,16 +1084,13 @@ pub fn render_table_parts<E: crate::text::TextEngine>(
             let Some(row_id) = snapshot.get_id(row_index) else {
                 continue;
             };
-            let y0 = layout_metrics.row_height.mul_add(
+            let row_height = f64::from(layout_metrics.row_height);
+            let y0 = row_height.mul_add(
                 usize_as_f64(row_index),
-                origin_y + layout_metrics.header_height,
+                origin_y + f64::from(layout_metrics.header_height),
             );
-            let row_rect = kurbo::Rect::new(
-                origin_x,
-                y0,
-                origin_x + painted_width,
-                y0 + layout_metrics.row_height,
-            );
+            let row_rect =
+                kurbo::Rect::new(origin_x, y0, origin_x + painted_width, y0 + row_height);
             if selected_set.contains(&row_id) {
                 ctx.draw_context(|draw| {
                     draw.fill(row_rect, fill);
@@ -1115,7 +1115,8 @@ pub fn render_table_parts<E: crate::text::TextEngine>(
     // Flush visible column headers (with sort hit target & chevron) and data
     // cells, keeping virtualization bounded by visible cells.
     state.borrow().item_cache.borrow_mut().begin_frame();
-    let cell_horizontal_inset = layout_metrics.cell_horizontal_padding * 0.5;
+    let cell_horizontal_inset = f64::from(layout_metrics.cell_horizontal_padding) * 0.5;
+    let cell_vertical_inset = f64::from(layout_metrics.cell_vertical_inset);
 
     // Realize every visible row once before iterating columns.
     for row_index in row_window.start..row_window.end {
@@ -1156,7 +1157,7 @@ pub fn render_table_parts<E: crate::text::TextEngine>(
         let header_rect = inset_rect(
             header_label_bounds,
             cell_horizontal_inset,
-            layout_metrics.cell_vertical_inset,
+            cell_vertical_inset,
         );
         if sortable {
             let key = InteractionKey::for_rc(state, header_interaction_slot(column_index));
@@ -1200,11 +1201,7 @@ pub fn render_table_parts<E: crate::text::TextEngine>(
                 layout_metrics,
             );
             if let Some(row_id) = snapshot.get_id(row_index) {
-                let inset = inset_rect(
-                    cell_rect,
-                    cell_horizontal_inset,
-                    layout_metrics.cell_vertical_inset,
-                );
+                let inset = inset_rect(cell_rect, cell_horizontal_inset, cell_vertical_inset);
                 let key = TableCellKey {
                     row: row_id,
                     column: column_index,

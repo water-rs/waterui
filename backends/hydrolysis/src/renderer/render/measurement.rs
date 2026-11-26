@@ -54,7 +54,7 @@ pub fn table_header_cell_rect(
         origin_x + x_offset,
         origin_y,
         origin_x + x_offset + width,
-        origin_y + metrics.header_height,
+        origin_y + f64::from(metrics.header_height),
     )
 }
 
@@ -67,15 +67,16 @@ pub fn table_data_cell_rect(
     row_index: usize,
     metrics: crate::theme::TableMetrics,
 ) -> kurbo::Rect {
-    let y0 = metrics.row_height.mul_add(
+    let row_height = f64::from(metrics.row_height);
+    let y0 = row_height.mul_add(
         crate::num_cast::usize_as_f64(row_index),
-        origin_y + metrics.header_height,
+        origin_y + f64::from(metrics.header_height),
     );
     kurbo::Rect::new(
         origin_x + x_offset,
         y0,
         origin_x + x_offset + width,
-        y0 + metrics.row_height,
+        y0 + row_height,
     )
 }
 
@@ -432,10 +433,10 @@ pub fn list_row_horizontal_insets(
     metrics: ListMetrics,
     env: &Environment,
 ) -> (f64, f64) {
-    let (leading, trailing) = insets.map_or(
-        (metrics.horizontal_inset, metrics.horizontal_inset),
-        |insets| (f64::from(insets.leading()), f64::from(insets.trailing())),
-    );
+    let default_inset = f64::from(metrics.horizontal_inset);
+    let (leading, trailing) = insets.map_or((default_inset, default_inset), |insets| {
+        (f64::from(insets.leading()), f64::from(insets.trailing()))
+    });
     if layout_direction(env).snapshot().is_right_to_left() {
         (trailing, leading)
     } else {
@@ -475,14 +476,13 @@ pub fn list_intrinsic_for_first_row<E: crate::text::TextEngine, C>(
         metrics,
     );
 
-    let mut row_width = metrics
-        .horizontal_inset
-        .mul_add(2.0, f64::from(content_size.width));
+    let horizontal_inset = f64::from(metrics.horizontal_inset);
+    let mut row_width = horizontal_inset.mul_add(2.0, f64::from(content_size.width));
     if editing && list.edits().has_move() {
-        row_width += metrics.move_control_width + metrics.trailing_control_spacing;
+        row_width += f64::from(metrics.move_control_width + metrics.trailing_control_spacing);
     }
     if editing && list.edits().has_delete() {
-        row_width += metrics.delete_control_width + metrics.trailing_control_spacing;
+        row_width += f64::from(metrics.delete_control_width + metrics.trailing_control_spacing);
     }
     // Section chrome is part of the list's own height: each section holding
     // rows draws its header and footer once. The sections come from row ids,
@@ -493,15 +493,15 @@ pub fn list_intrinsic_for_first_row<E: crate::text::TextEngine, C>(
             continue;
         };
         if section.label().is_some() {
-            section_height += metrics.section_header_height;
+            section_height += f64::from(metrics.section_header_height);
         }
         if section.footer().is_some() {
-            section_height += metrics.section_footer_height;
+            section_height += f64::from(metrics.section_footer_height);
         }
     }
 
     let total_height = row_height.mul_add(crate::num_cast::usize_as_f64(row_count), section_height);
-    let max_width = row_width.max(metrics.horizontal_inset * 2.0);
+    let max_width = row_width.max(horizontal_inset * 2.0);
 
     LayoutSize::new(
         crate::num_cast::f64_as_f32(max_width),
@@ -539,10 +539,11 @@ pub fn list_row_height_for_content(
     min_height: Option<f32>,
     metrics: crate::theme::ListMetrics,
 ) -> f64 {
-    let vertical_insets = insets.map_or(metrics.vertical_inset * 2.0, |insets| {
-        f64::from(insets.top() + insets.bottom())
-    });
-    let floor = min_height.map_or(metrics.one_line_row_height, f64::from);
+    let vertical_insets = insets.map_or_else(
+        || f64::from(metrics.vertical_inset) * 2.0,
+        |insets| f64::from(insets.top() + insets.bottom()),
+    );
+    let floor = f64::from(min_height.unwrap_or(metrics.one_line_row_height));
     (content_height + vertical_insets).max(floor)
 }
 
@@ -588,9 +589,7 @@ pub fn measure_text_field_size_with_label_size<E: crate::text::TextEngine, S>(
     let value_size = HydrolysisRenderer::measure_editable_text_size(state, &value, env, line_limit);
     let label_height = measured_input_label_height(label_size, metrics.label_height);
     let text_height = prompt_size.height.max(value_size.height);
-    let label_width = metrics
-        .horizontal_inset
-        .mul_add(2.0, f64::from(label_size.width));
+    let label_width = metrics.horizontal_inset.mul_add(2.0, label_size.width);
 
     let field_height = measured_input_field_height(text_height, label_height, metrics);
     let width = input_field_width(
@@ -598,10 +597,7 @@ pub fn measure_text_field_size_with_label_size<E: crate::text::TextEngine, S>(
         label_width.max(metrics.min_width),
         label_width,
     );
-    LayoutSize::new(
-        crate::num_cast::f64_as_f32(width),
-        crate::num_cast::f64_as_f32(field_height),
-    )
+    LayoutSize::new(width, field_height)
 }
 
 /// Resolves an input field's width from a proposal: every `Some` proposal is
@@ -609,8 +605,8 @@ pub fn measure_text_field_size_with_label_size<E: crate::text::TextEngine, S>(
 /// probe answers `INFINITY`; `None` answers the `ideal` (theme `min_width`
 /// floor applied). The field's text is not an input to the width.
 #[cfg(any(feature = "text-field", feature = "secure-field"))]
-fn input_field_width(proposal: Option<f32>, ideal: f64, minimum: f64) -> f64 {
-    proposal.map_or(ideal, |width| f64::from(width).max(minimum))
+fn input_field_width(proposal: Option<f32>, ideal: f32, minimum: f32) -> f32 {
+    proposal.map_or(ideal, |width| width.max(minimum))
 }
 
 /// Measures a secure field's size under a concrete proposal, from the label
@@ -642,19 +638,14 @@ pub fn measure_secure_field_size_with_label_size<E: crate::text::TextEngine, S>(
     );
     let value_size = HydrolysisRenderer::measure_editable_text_size(state, &masked, env, None);
     let label_height = measured_input_label_height(label_size, metrics.label_height);
-    let label_width = metrics
-        .horizontal_inset
-        .mul_add(2.0, f64::from(label_size.width));
+    let label_width = metrics.horizontal_inset.mul_add(2.0, label_size.width);
     let field_height = measured_input_field_height(value_size.height, label_height, metrics);
     let width = input_field_width(
         proposal.width,
         label_width.max(metrics.min_width),
         label_width,
     );
-    LayoutSize::new(
-        crate::num_cast::f64_as_f32(width),
-        crate::num_cast::f64_as_f32(field_height),
-    )
+    LayoutSize::new(width, field_height)
 }
 
 /// The band a labeled field reserves for its floating label is exactly the
@@ -662,7 +653,7 @@ pub fn measure_secure_field_size_with_label_size<E: crate::text::TextEngine, S>(
 /// the unscaled label measure only decides whether the band exists, never
 /// how tall it is (water-rs/waterui#2387).
 #[cfg(any(feature = "text-field", feature = "secure-field"))]
-fn measured_input_label_height(label_size: LayoutSize, label_height: f64) -> f64 {
+fn measured_input_label_height(label_size: LayoutSize, label_height: f32) -> f32 {
     if label_size.width > 0.0 || label_size.height > 0.0 {
         label_height
     } else {
@@ -673,10 +664,9 @@ fn measured_input_label_height(label_size: LayoutSize, label_height: f64) -> f64
 #[cfg(any(feature = "text-field", feature = "secure-field"))]
 fn measured_input_field_height(
     text_height: f32,
-    label_height: f64,
+    label_height: f32,
     metrics: crate::theme::InputFieldMetrics,
-) -> f64 {
-    let text_height = f64::from(text_height);
+) -> f32 {
     let measured_height = if label_height > 0.0 {
         label_height + metrics.vertical_inset + text_height + metrics.vertical_inset
     } else {
