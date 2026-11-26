@@ -1048,6 +1048,9 @@ native_backend! {
         #[cfg(waterui_feature = "menu")]
         /// A resolved context menu.
         resolved_context_menu<S>: waterui::metadata::context_menu::ResolvedContextMenu<S>,
+        #[cfg(waterui_feature = "snackbar")]
+        /// A snackbar host overlay.
+        snackbar_host<S>: waterui::snackbar::SnackbarHostConfig<S>,
     }
 }
 
@@ -1319,6 +1322,24 @@ mod tests {
     impl<C> Parent<C> for waterui::metadata::context_menu::ResolvedContextMenu<C> {
         fn children(self) -> Vec<C> {
             self.preview.into_iter().chain(self.accessory).collect()
+        }
+    }
+
+    /// A snackbar host's children are the icon views of active presentations.
+    #[cfg(waterui_feature = "snackbar")]
+    impl<C: 'static> Parent<C> for waterui::snackbar::SnackbarHostConfig<C> {
+        fn children(self) -> Vec<C> {
+            use nami::Signal as _;
+
+            self.presentations()
+                .snapshot()
+                .into_iter()
+                .filter_map(|presentation| {
+                    presentation
+                        .icon()
+                        .map(waterui::widget::disclosure::SlotBuilder::build)
+                })
+                .collect()
         }
     }
 
@@ -1704,6 +1725,74 @@ mod tests {
                 "divider",
                 "typed child",
                 "environment",
+                "divider",
+            ]
+        );
+    }
+
+    #[cfg(waterui_feature = "snackbar")]
+    #[test]
+    fn a_snackbar_host_keeps_its_content_typed() {
+        use waterui::snackbar::{Snackbar, SnackbarManager};
+
+        let authored = || {
+            SnackbarManager::host(|manager: SnackbarManager| {
+                manager.show(Snackbar::new("Saved").duration(core::time::Duration::ZERO));
+                Spacer::flexible()
+            })
+        };
+
+        assert_eq!(
+            reached(authored()),
+            ["snackbar_host", "environment", "spacer"]
+        );
+        assert_eq!(
+            reached(AnyView::new(authored())),
+            ["snackbar_host", "environment", "spacer"]
+        );
+        assert_eq!(
+            reached(Hooks::new(authored(), SpacerAsDivider)),
+            ["snackbar_host", "environment", "divider"]
+        );
+
+        let with_icon = || {
+            SnackbarManager::host(|manager: SnackbarManager<Spacer>| {
+                manager.show(
+                    Snackbar::new("Saved")
+                        .icon(Spacer::flexible)
+                        .duration(core::time::Duration::ZERO),
+                );
+                Spacer::flexible()
+            })
+        };
+
+        assert_eq!(
+            reached(with_icon()),
+            [
+                "snackbar_host",
+                "environment",
+                "spacer",
+                UNHOOKED_CHILD,
+                "spacer",
+            ]
+        );
+        assert_eq!(
+            reached(AnyView::new(with_icon())),
+            [
+                "snackbar_host",
+                "environment",
+                "spacer",
+                "erased child",
+                "spacer",
+            ]
+        );
+        assert_eq!(
+            reached(Hooks::new(with_icon(), SpacerAsDivider)),
+            [
+                "snackbar_host",
+                "environment",
+                "divider",
+                "typed child",
                 "divider",
             ]
         );

@@ -707,6 +707,15 @@ mod tests {
         ) {
         }
 
+        #[cfg(waterui_feature = "snackbar")]
+        fn snackbar_host<S: ChildView<Self>, C: ChildView<Self>>(
+            &mut self,
+            _: Metadata<waterui::snackbar::SnackbarHostConfig<S>, C>,
+            _: &Environment,
+            (): (),
+        ) {
+        }
+
         fn provided<T: NativeView + 'static>(&mut self, _: T, _: &Environment, (): ()) {
             report_unprovided("OtherBackend", core::any::type_name::<T>());
         }
