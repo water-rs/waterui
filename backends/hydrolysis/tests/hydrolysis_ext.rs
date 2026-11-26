@@ -42,6 +42,8 @@ struct SolidClearRenderer {
 }
 
 impl GpuContent for SolidClearRenderer {
+    type Params = ();
+
     fn setup(&mut self, _gpu: &GpuContext<'_>) {}
 
     fn render(&mut self, frame: &mut GpuFrame<'_>) {
@@ -79,6 +81,8 @@ struct CountingClearRenderer {
 }
 
 impl GpuContent for CountingClearRenderer {
+    type Params = ();
+
     fn setup(&mut self, _gpu: &GpuContext<'_>) {}
 
     fn render(&mut self, frame: &mut GpuFrame<'_>) {

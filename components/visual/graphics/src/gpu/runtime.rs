@@ -15,9 +15,10 @@ use wgpu::{Adapter, Device, Instance, Queue, TextureFormat};
 
 use super::external::{ExternalFrameStream, FrameReceiver, PresentedSize};
 use super::leaf::GpuContentLeaf;
-use super::{GpuContent, RedrawHandle, Shared, SourceRateUpdate};
+use super::{RedrawHandle, Shared, SourceRateUpdate};
 use crate::draw::kurbo::Affine;
 use crate::offscreen::{OffscreenImage, OffscreenSize};
+use crate::{GpuContent, GpuView};
 use cherenkov::{Display, Engine, FrameTime, Layer, Next, Surface};
 use cherenkov_gpu::{
     Gpu, GpuConfig,
@@ -1004,7 +1005,7 @@ impl GpuRuntime {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn render_content(
         &self,
-        content: impl GpuContent,
+        content: impl GpuContent<Params = ()>,
         size: OffscreenSize,
         scale: f32,
     ) -> Result<OffscreenImage, HostedLayerError> {
@@ -1023,7 +1024,7 @@ impl GpuRuntime {
     )]
     pub async fn render_content_async(
         &self,
-        content: impl GpuContent,
+        content: impl GpuContent<Params = ()>,
         size: OffscreenSize,
         scale: f32,
     ) -> Result<OffscreenImage, HostedLayerError> {
@@ -1041,7 +1042,7 @@ impl GpuRuntime {
     )]
     pub async fn render_content(
         &self,
-        content: impl GpuContent,
+        content: impl GpuContent<Params = ()>,
         size: OffscreenSize,
         scale: f32,
     ) -> Result<OffscreenImage, HostedLayerError> {
@@ -1054,11 +1055,11 @@ impl GpuRuntime {
     )]
     async fn render_content_inner(
         &self,
-        content: impl GpuContent,
+        content: impl GpuContent<Params = ()>,
         size: OffscreenSize,
         scale: f32,
     ) -> Result<OffscreenImage, HostedLayerError> {
-        let content = GpuContentLeaf::new(content).take_engine_content();
+        let content = GpuContentLeaf::from(GpuView::new(content)).take_engine_content();
         // One frame, read back at once: no host loop exists to wake.
         let mut renderer = GpuContentRenderer::new(
             self,

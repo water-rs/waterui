@@ -344,15 +344,15 @@ re-renders every frame so `uniforms.time` advances, and `.param(signal)` / `.par
 @location(0) vec4<f32>` (`uv` runs 0..1 from the top-left) against the prelude's
 `uniforms.time`, `uniforms.resolution` and `params` (`array<vec4<f32>, 16>`), returning
 premultiplied linear Display P3; `cherenkov_linear_srgb` converts an sRGB colour. For
-full control, implement `GpuContent` (sync `setup(&mut self, gpu: &Context<'_>)` owns persistent GPU
+full control, implement `GpuContent` (`type Params = ();` for parameterless content; sync `setup(&mut self, gpu: &Context<'_>)` owns persistent GPU
 resources; `render(&mut self, frame: &mut Frame<'_>)` draws via accessors such as `frame.device()`,
 `frame.queue()`, `frame.view()`, `frame.width()`, `frame.height()`, `frame.elapsed()`, and
 `frame.delta()`, calling `frame.request_redraw()` at the end to keep animating) and wrap it in the
 authoring builder `GpuView::new(content).size(w, h)` (which lowers to the backend-only
 `waterui::graphics::backend::GpuContentLeaf`). The content is `Send`
 and lives on the render thread once installed — it must NOT hold `Binding`s or other UI-thread
-state. To feed reactive UI state into GPU content, implement `GpuContent<MyParams>` (where
-`MyParams: Send + Clone + 'static`) overriding `update(&mut self, params: MyParams)` and bind a
+state. To feed reactive UI state into GPU content, set `type Params = MyParams;` (where
+`MyParams: Send + Clone + 'static`), override `update(&mut self, params: MyParams)`, and bind a
 signal with `GpuView::new(content).params(signal)`: the runtime delivers the initial snapshot after
 `setup`, wakes an idle host whenever the signal changes, and delivers the latest value before the
 next `render` (omitting `.params(..)` on parameterized content fails to compile). Reserve

@@ -41,12 +41,14 @@ use waterui_core::{Environment, IntoSignalF32, Native, NativeView, Str, View, co
 
 use crate::draw::{Draw as _, Paint, Recorder, ShaderId, ShaderPaint, kurbo::Rect};
 #[cfg(feature = "gpu")]
-use crate::gpu::{Context, Frame, GpuContent, GpuView};
+use crate::gpu::{Context, Frame};
 use crate::scene::resources::{RecordingResources, Registered, SceneResources};
 use crate::scene_view::{
     NextFrame, SceneContent, SceneFrame, SceneInvalidator, SceneUpdate, invalidate_on_change,
 };
 use crate::source::ShaderSource;
+#[cfg(feature = "gpu")]
+use crate::{GpuContent, GpuView};
 
 /// A view painted by a WGSL fragment shader.
 ///
@@ -206,7 +208,7 @@ impl ShaderPaintView {
     /// scene-level `Paint::Shader` run.
     #[cfg(feature = "gpu")]
     #[must_use]
-    pub fn into_gpu_view(self) -> GpuView<impl GpuContent> {
+    pub fn into_gpu_view(self) -> GpuView<impl GpuContent<Params = ()>> {
         let params = ShaderParamsSignal::new(self.continuous, self.params);
         GpuView::new(ShaderContent {
             fragment: self.fragment,
@@ -617,7 +619,9 @@ fn compile_program(
 }
 
 #[cfg(feature = "gpu")]
-impl GpuContent<ShaderParams> for ShaderContent {
+impl GpuContent for ShaderContent {
+    type Params = ShaderParams;
+
     fn setup(&mut self, gpu: &Context<'_>) {
         match compile_program(gpu.device(), gpu.format(), &self.fragment) {
             Ok(program) => self.gpu = Some(program),

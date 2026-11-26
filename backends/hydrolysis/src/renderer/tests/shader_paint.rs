@@ -231,7 +231,9 @@ fn parameterized_gpu_view_wakes_idle_hydrolysis_host_and_updates_pixels() {
         color: ClearColor,
     }
 
-    impl GpuContent<ClearColor> for ClearContent {
+    impl GpuContent for ClearContent {
+        type Params = ClearColor;
+
         fn setup(&mut self, _gpu: &Context<'_>) {}
 
         fn update(&mut self, params: ClearColor) {

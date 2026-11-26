@@ -45,6 +45,8 @@ use waterui::prelude::*;
 struct Flame;
 
 impl GpuContent for Flame {
+    type Params = ();
+
     fn setup(&mut self, gpu: &Context<'_>) {
         // Create pipelines, buffers and bind groups against `gpu.device()`.
     }
@@ -124,7 +126,9 @@ WGSL with `shader_param(index)` or `params[...]`.
 
 ```rust
 pub trait GpuContent: Send + 'static {
+    type Params: Send + 'static;
     fn setup(&mut self, gpu: &Context<'_>);
+    fn update(&mut self, _params: Self::Params) {}
     fn render(&mut self, frame: &mut Frame<'_>);
     fn is_opaque(&self) -> bool { false }
     fn intrinsic_size(&self) -> Option<Size> { None }
@@ -133,7 +137,9 @@ pub trait GpuContent: Send + 'static {
 }
 ```
 
+- `type Params` - Reactive parameter type delivered to `update()`; set `type Params = ();` for parameterless content
 - `setup()` - Called once on the render thread; create pipelines, buffers, bind groups
+- `update()` - Called on the render thread before `render()` with parameters bound via `GpuView::params(...)`
 - `render()` - Called per frame with `Frame` carrying `device`, `queue`, `texture`, `view`, `format`, `width`, `height`, `scale`, `elapsed`, `delta`
 
 ### External Frames

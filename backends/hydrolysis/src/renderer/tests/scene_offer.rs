@@ -56,6 +56,8 @@ struct PaneProbe;
 
 #[cfg(hydrolysis_gpu)]
 impl GpuContent for PaneProbe {
+    type Params = ();
+
     fn setup(&mut self, _gpu: &GpuContext<'_>) {}
 
     fn render(&mut self, _frame: &mut GpuFrame<'_>) {}
@@ -129,6 +131,8 @@ struct DeferredSizeProbe {
 
 #[cfg(hydrolysis_gpu)]
 impl GpuContent for DeferredSizeProbe {
+    type Params = ();
+
     fn setup(&mut self, _gpu: &GpuContext<'_>) {}
 
     fn render(&mut self, _frame: &mut GpuFrame<'_>) {}

@@ -12,8 +12,8 @@
 use std::sync::Arc;
 
 use cherenkov_gpu::interop::SharedDevice;
-use waterui_graphics::OffscreenSize;
-use waterui_graphics::gpu::{Context, Frame, GpuContent, GpuRuntime};
+use waterui_graphics::gpu::{Context, Frame, GpuRuntime};
+use waterui_graphics::{GpuContent, OffscreenSize};
 
 fn runtime() -> GpuRuntime {
     pollster::block_on(GpuRuntime::new()).expect("a GPU adapter is required on test hardware")
@@ -152,6 +152,8 @@ struct BuildsSharedDevice {
 }
 
 impl GpuContent for BuildsSharedDevice {
+    type Params = ();
+
     fn setup(&mut self, gpu: &Context<'_>) {
         let shared = SharedDevice {
             instance: gpu.instance().clone(),

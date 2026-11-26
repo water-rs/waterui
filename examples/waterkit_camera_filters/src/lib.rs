@@ -228,7 +228,9 @@ struct SyntheticCameraPreviewContent {
     uniforms: FilterUniforms,
 }
 
-impl GpuContent<FilterUniforms> for SyntheticCameraPreviewContent {
+impl GpuContent for SyntheticCameraPreviewContent {
+    type Params = FilterUniforms;
+
     fn setup(&mut self, _gpu: &Context<'_>) {}
 
     fn update(&mut self, uniforms: FilterUniforms) {
@@ -537,7 +539,9 @@ impl CameraFilterContent {
     }
 }
 
-impl GpuContent<FilterUniforms> for CameraFilterContent {
+impl GpuContent for CameraFilterContent {
+    type Params = FilterUniforms;
+
     fn setup(&mut self, context: &Context<'_>) {
         self.ensure_pipeline(context);
         self.converter = Some(FrameConverter::new(context.device()));

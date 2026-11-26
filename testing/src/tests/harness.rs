@@ -686,6 +686,8 @@ struct DeferredClearRenderer {
 
 #[cfg(feature = "gpu")]
 impl GpuContent for DeferredClearRenderer {
+    type Params = ();
+
     fn setup(&mut self, _gpu: &GpuContext<'_>) {
         self.ready.store(true, Ordering::Relaxed);
     }

@@ -96,6 +96,8 @@ struct FillProbe {
 }
 
 impl GpuContent for FillProbe {
+    type Params = ();
+
     fn setup(&mut self, _gpu: &GpuContext<'_>) {
         self.log.setups.fetch_add(1, Ordering::Relaxed);
     }

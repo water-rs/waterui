@@ -16,9 +16,10 @@ use cherenkov::{Display, FrameTime, Next};
 use waterui_graphics::backend::GpuContentLeaf;
 use waterui_graphics::gpu::interop::GpuContentBox;
 use waterui_graphics::gpu::{
-    Context, Frame, GpuContent, GpuContentRenderer, GpuRuntime, HostedFrame, RedrawHandle, wgpu,
+    Context, Frame, GpuContentRenderer, GpuRuntime, HostedFrame, RedrawHandle, wgpu,
 };
 use waterui_graphics::offscreen::OffscreenSize;
+use waterui_graphics::{GpuContent, GpuView};
 
 const SDR: Display = Display {
     scale: 1.0,
@@ -59,6 +60,8 @@ struct Gated {
 }
 
 impl GpuContent for Gated {
+    type Params = ();
+
     fn setup(&mut self, _gpu: &Context<'_>) {
         self.seen.setups.fetch_add(1, Ordering::SeqCst);
     }
@@ -108,10 +111,10 @@ impl Fixture {
         let gates = Arc::new(Mutex::new(Vec::new()));
         let redraws = Arc::new(AtomicUsize::new(0));
         let content = GpuContentBox::new(
-            GpuContentLeaf::new(Gated {
+            GpuContentLeaf::from(GpuView::new(Gated {
                 seen: Arc::clone(&seen),
                 gates: Arc::clone(&gates),
-            })
+            }))
             .engine_content(),
         );
         let counted = Arc::clone(&redraws);

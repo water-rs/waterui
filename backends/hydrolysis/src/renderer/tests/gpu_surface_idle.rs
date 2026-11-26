@@ -93,6 +93,8 @@ impl RenderCounter {
 struct CountingView(RenderCounter);
 
 impl GpuContent for CountingView {
+    type Params = ();
+
     fn setup(&mut self, gpu: &GpuContext<'_>) {
         *self.0.redraw.lock().expect("redraw slot") = Some(gpu.redraw().clone());
     }
@@ -121,7 +123,7 @@ fn runtime_with(
 
 /// The same window, with the probe surface's view supplied by the test so it
 /// can carry `on_input` / `on_ime_caret` handlers.
-fn runtime_with_probe_view<T: GpuContent>(
+fn runtime_with_probe_view<T: GpuContent<Params = ()>>(
     driver: &RenderCounter,
     probe_view: GpuView<T>,
     probe_width: &Binding<f32>,

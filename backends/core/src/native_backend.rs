@@ -2086,6 +2086,8 @@ mod tests {
         struct ProbeContent;
 
         impl GpuContent for ProbeContent {
+            type Params = ();
+
             fn setup(&mut self, _gpu: &Context<'_>) {}
 
             fn render(&mut self, _frame: &mut Frame<'_>) {}
