@@ -1330,15 +1330,12 @@ mod tests {
     impl<C: 'static> Parent<C> for waterui::snackbar::SnackbarHostConfig<C> {
         fn children(self) -> Vec<C> {
             use nami::Signal as _;
+            use waterui::widget::disclosure::SlotBuilder;
 
             self.presentations()
                 .snapshot()
                 .into_iter()
-                .filter_map(|presentation| {
-                    presentation
-                        .icon()
-                        .map(waterui::widget::disclosure::SlotBuilder::build)
-                })
+                .filter_map(|presentation| presentation.icon().map(SlotBuilder::build))
                 .collect()
         }
     }
@@ -1733,11 +1730,13 @@ mod tests {
     #[cfg(waterui_feature = "snackbar")]
     #[test]
     fn a_snackbar_host_keeps_its_content_typed() {
+        use core::time::Duration;
+
         use waterui::snackbar::{Snackbar, SnackbarManager};
 
         let authored = || {
             SnackbarManager::host(|manager: SnackbarManager| {
-                manager.show(Snackbar::new("Saved").duration(core::time::Duration::ZERO));
+                manager.show(Snackbar::new("Saved").duration(Duration::ZERO));
                 Spacer::flexible()
             })
         };
@@ -1760,7 +1759,7 @@ mod tests {
                 manager.show(
                     Snackbar::new("Saved")
                         .icon(Spacer::flexible)
-                        .duration(core::time::Duration::ZERO),
+                        .duration(Duration::ZERO),
                 );
                 Spacer::flexible()
             })

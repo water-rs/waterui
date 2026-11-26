@@ -10,20 +10,28 @@ use core::cell::RefCell;
 use core::fmt::{self, Debug, Formatter};
 use core::time::Duration;
 
+#[cfg(target_os = "macos")]
+use cocoa_ui::appkit::{HitTest, HostView};
+use cocoa_ui::core_animation::{animate_with, without_animation};
 use cocoa_ui::geometry::Rect as KitRect;
+#[cfg(target_os = "ios")]
+use cocoa_ui::uikit::{HitTest, HostView};
 use cocoa_ui::{PlatformView, Retained, view};
 use executor_core::spawn_local;
+use native_executor::sleep;
 use waterui::animation::Animation;
+use waterui::border::Border as BorderStyle;
 use waterui::component::{Button, ButtonStyle, Label, button, label};
 use waterui::graphics::color::Color;
 use waterui::layout::padding::EdgeInsets;
 use waterui::layout::stack::hstack;
-use waterui::reactive::Signal as _;
 use waterui::reactive::watcher::BoxWatcherGuard;
+use waterui::reactive::{Computed, Signal as _};
 use waterui::shape::{RoundedRectangle, ShapeExt as _};
 use waterui::snackbar::{SnackbarHostConfig, SnackbarPosition, SnackbarPresentation};
 use waterui::style::Shadow;
 use waterui::theme::color::{Accent, Border, Foreground, Surface};
+use waterui::widget::disclosure::SlotBuilder;
 use waterui::{OneOf2, View, ViewExt as _};
 use waterui_backend_core::{Environment, SlotView};
 use waterui_core::Metadata;
@@ -35,9 +43,11 @@ use waterui_core::layout::{
 use crate::SfSymbol;
 use crate::animation::timing;
 use crate::contract::{Held, Mounted, NativeLeaf, RenderContext, Renderer};
+use crate::native_layout::LayoutContext;
+use crate::primary_content;
 use crate::proposal::{self, Placement};
 
-struct BuiltIconSlot(waterui::widget::disclosure::SlotBuilder<Held>);
+struct BuiltIconSlot(SlotBuilder<Held>);
 
 impl Clone for BuiltIconSlot {
     fn clone(&self) -> Self {
@@ -50,11 +60,6 @@ impl View for BuiltIconSlot {
         SlotView::new(self.0.build())
     }
 }
-
-#[cfg(target_os = "macos")]
-use cocoa_ui::appkit::{HitTest, HostView};
-#[cfg(target_os = "ios")]
-use cocoa_ui::uikit::{HitTest, HostView};
 
 const CONTENT_VERTICAL_PADDING: f32 = 14.0;
 const CONTENT_HORIZONTAL_PADDING: f32 = 20.0;
@@ -159,9 +164,7 @@ fn build_apple_banner(presentation: &SnackbarPresentation<Held>) -> impl View + 
         .padding_with(content_padding)
         .min_height(MIN_BANNER_HEIGHT)
         .background(shape.fill(Surface))
-        .border_with(
-            waterui::border::Border::new(Border, BORDER_WIDTH).corner_radius(CORNER_RADIUS),
-        )
+        .border_with(BorderStyle::new(Border, BORDER_WIDTH).corner_radius(CORNER_RADIUS))
         .shadow(ambient_shadow)
         .shadow(key_shadow)
 }
@@ -180,7 +183,7 @@ struct SnackbarHostState {
     overlay_host: Retained<HostView>,
     child: Mounted,
     renderer: Renderer,
-    direction: waterui::reactive::Computed<LayoutDirection>,
+    direction: Computed<LayoutDirection>,
     rows: RefCell<Vec<AppleSnackbarRow>>,
 }
 
@@ -274,7 +277,7 @@ fn layout_banners(state: &Rc<SnackbarHostState>, animated: bool) {
     if bounds.size.width <= 0.0 || bounds.size.height <= 0.0 {
         return;
     }
-    let safe_rect = crate::native_layout::LayoutContext::of(&state.host).safe_rect();
+    let safe_rect = LayoutContext::of(&state.host).safe_rect();
     let rtl = matches!(state.direction.snapshot(), LayoutDirection::RightToLeft);
     let avail_w = VIEWPORT_PADDING
         .mul_add(-2.0, safe_rect.size.width)
@@ -328,18 +331,18 @@ fn layout_banners(state: &Rc<SnackbarHostState>, animated: bool) {
         if first_appear {
             let mut start = frame;
             start.origin.y += slide_delta(position);
-            cocoa_ui::core_animation::without_animation(|| {
+            without_animation(|| {
                 view::set_frame(&banner_view, start);
                 view::set_alpha(&banner_view, 0.0);
             });
             let target_view = Retained::clone(&banner_view);
-            cocoa_ui::core_animation::animate_with(timing(&enter_animation()), move || {
+            animate_with(timing(&enter_animation()), move || {
                 view::set_frame(&target_view, frame);
                 view::set_alpha(&target_view, 1.0);
             });
         } else if animated {
             let target_view = Retained::clone(&banner_view);
-            cocoa_ui::core_animation::animate_with(timing(&enter_animation()), move || {
+            animate_with(timing(&enter_animation()), move || {
                 view::set_frame(&target_view, frame);
             });
         } else {
@@ -370,13 +373,13 @@ fn begin_row_exit(
     let (banner_view, position) = exiting;
     let mut end_frame = view::frame(&banner_view);
     end_frame.origin.y += slide_delta(position);
-    cocoa_ui::core_animation::animate_with(timing(&exit_animation()), move || {
+    animate_with(timing(&exit_animation()), move || {
         view::set_frame(&banner_view, end_frame);
         view::set_alpha(&banner_view, 0.0);
     });
 
     spawn_local(async move {
-        native_executor::sleep(EXIT_DURATION).await;
+        sleep(EXIT_DURATION).await;
         presentation.complete_dismissal();
     })
     .detach();
@@ -450,7 +453,7 @@ pub fn realize_snackbar_host_metadata(
     let host = HostView::new(mtm, KitRect::ZERO);
     let host_view: &PlatformView = &host;
     let mounted_child = ctx.realize(metadata.content).mount(host_view);
-    crate::primary_content::forward(&host, mounted_child.view());
+    primary_content::forward(&host, mounted_child.view());
 
     let overlay_host = HostView::new(mtm, KitRect::ZERO);
     overlay_host.set_hit_test_handler(|_, _| HitTest::PassIfSelf);
