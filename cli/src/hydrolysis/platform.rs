@@ -149,6 +149,30 @@ fn render_features(
     Ok(features)
 }
 
+async fn append_hydrolysis_resolved_features(
+    project: &Project,
+    cargo_toml: &Path,
+    triple: &Triple,
+    linkage: RustLinkage,
+    mut build: RustBuild,
+) -> eyre::Result<RustBuild> {
+    let backend_features = assets::backend_features(
+        project,
+        cargo_toml,
+        triple,
+        build.features(),
+        &["hydrolysis", "hydrolysis-m3", "hydrolysis-glass"],
+    )
+    .await?;
+    build = build.with_features(backend_features);
+    if linkage == RustLinkage::SharedRuntime {
+        let dylib_features =
+            assets::shared_runtime_features(project, cargo_toml, triple, build.features()).await?;
+        build = build.with_features(dylib_features);
+    }
+    Ok(build)
+}
+
 /// Build hydrolysis binary for the host platform with extra Cargo environment variables and features.
 ///
 /// `offscreen` says the binary renders without a window (`water preview`,
@@ -177,6 +201,9 @@ pub async fn build_hydrolysis_with_envs_and_features(
             backend_path.display(),
         );
     }
+    project
+        .validate_hydrolysis_capabilities(platform, &platform.triple())
+        .await?;
     let render_features = render_features(project, &cargo_toml, platform, offscreen)?;
 
     // The managed crate is its own workspace root, so its `Cargo.lock` is
@@ -190,8 +217,8 @@ pub async fn build_hydrolysis_with_envs_and_features(
     assets::seed_managed_crate_lock(project, &cargo_toml).await?;
 
     // The target owns the linkage decision: a Windows build links
-    // statically, and a project that resolved `waterui/dynamic_linking`
-    // anyway is rejected before anything compiles.
+    // statically, and a project that resolved `waterui-dylib` anyway is
+    // rejected before anything compiles.
     let options = options.with_supported_linkage(&platform.triple());
     crate::build::reject_unsupported_dynamic_linking(project, &cargo_toml, &platform.triple())
         .await?;
@@ -228,22 +255,21 @@ pub async fn build_hydrolysis_with_envs_and_features(
         )
         .with_linkage(
             options.linkage(),
-            &format!("{}/dev", project.crate_name()),
+            "dev",
             hydrolysis_loader_search_paths(platform),
         )
         .with_envs(llvm_envs)
         .with_features(options.app_features(project))
         .with_envs(options.cargo_envs().iter().cloned())
         .with_envs(extra_envs.iter().cloned());
-    let backend_features = assets::backend_features(
+    build = append_hydrolysis_resolved_features(
         project,
-        &backend_path.join("Cargo.toml"),
+        &cargo_toml,
         &platform.triple(),
-        build.features(),
-        &["hydrolysis", "hydrolysis-m3", "hydrolysis-glass"],
+        options.linkage(),
+        build,
     )
     .await?;
-    build = build.with_features(backend_features);
     if let Some(sccache_path) = options.sccache_path() {
         build = build.with_sccache(sccache_path.to_path_buf());
     }
@@ -876,6 +902,9 @@ pub async fn package_hydrolysis_web_site(
             backend_path.display(),
         );
     }
+    project
+        .validate_hydrolysis_capabilities(TargetPlatform::Web, &TargetPlatform::Web.triple())
+        .await?;
 
     // wasm-pack resolves the managed crate the moment its `cargo metadata`
     // and `cargo build` run, so the `Cargo.lock` seed has to land first, the

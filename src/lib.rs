@@ -360,7 +360,7 @@ pub use tracing as log;
 #[macro_export]
 macro_rules! __export_preview {
     ($fn_name:expr, $body:block) => {
-        $crate::pastey::paste! {
+        $crate::__private::pastey::paste! {
             #[doc(hidden)]
             #[cfg(debug_assertions)]
             #[unsafe(no_mangle)]
@@ -372,7 +372,11 @@ macro_rules! __export_preview {
 }
 
 #[doc(hidden)]
-pub use pastey;
+pub mod __private {
+    pub use pastey;
+    #[cfg(all(feature = "webview", not(target_arch = "wasm32")))]
+    pub use waterui_webview::__private::{serde, serde_json};
+}
 
 /// Expands `waterui-ts` runtime conversions (`IntoJs` / `FromJs`) only when the
 /// `ts` feature is enabled on `waterui`, so `#[derive(TsType)]` works cleanly
