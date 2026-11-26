@@ -1415,9 +1415,27 @@ mod tests {
         assert_eq!(
             recorder.reached.borrow().as_slice(),
             [
-                ["scroll", UNHOOKED_CHILD, "layout_priority", "spacer"],
-                ["scroll", "erased child", "layout_priority", "spacer"],
-                ["scroll", UNHOOKED_CHILD, "layout_priority", "spacer"],
+                [
+                    "scroll",
+                    UNHOOKED_CHILD,
+                    "environment",
+                    "layout_priority",
+                    "spacer"
+                ],
+                [
+                    "scroll",
+                    "erased child",
+                    "environment",
+                    "layout_priority",
+                    "spacer"
+                ],
+                [
+                    "scroll",
+                    UNHOOKED_CHILD,
+                    "environment",
+                    "layout_priority",
+                    "spacer"
+                ],
             ]
             .concat()
         );
@@ -1530,8 +1548,10 @@ mod tests {
             [
                 "scroll",
                 "typed child",
+                "environment",
                 "scroll",
                 "typed child",
+                "environment",
                 "layout_priority",
                 "divider"
             ]
@@ -1542,11 +1562,23 @@ mod tests {
     fn the_scope_reaches_through_an_erased_view() {
         assert_eq!(
             reached(Hooks::new(scroll(AnyView::new(tree())), SpacerAsDivider)),
-            ["scroll", "typed child", "layout_priority", "divider"]
+            [
+                "scroll",
+                "typed child",
+                "environment",
+                "layout_priority",
+                "divider"
+            ]
         );
         assert_eq!(
             reached(Hooks::new(AnyView::new(scroll(tree())), SpacerAsDivider)),
-            ["scroll", "typed child", "layout_priority", "divider"]
+            [
+                "scroll",
+                "typed child",
+                "environment",
+                "layout_priority",
+                "divider"
+            ]
         );
     }
 
@@ -1554,7 +1586,13 @@ mod tests {
     fn a_scope_entered_on_the_erased_path_reaches_its_subtree() {
         assert_eq!(
             reached(AnyView::new(Hooks::new(scroll(tree()), SpacerAsDivider))),
-            ["scroll", "typed child", "layout_priority", "divider"]
+            [
+                "scroll",
+                "typed child",
+                "environment",
+                "layout_priority",
+                "divider"
+            ]
         );
     }
 
@@ -1562,11 +1600,23 @@ mod tests {
     fn a_hook_does_not_receive_its_own_target_back() {
         assert_eq!(
             reached(Hooks::new(tree(), SpacerInScroll)),
-            ["layout_priority", "scroll", "typed child", "spacer"]
+            [
+                "layout_priority",
+                "scroll",
+                "typed child",
+                "environment",
+                "spacer"
+            ]
         );
         assert_eq!(
             reached(AnyView::new(Hooks::new(tree(), SpacerInScroll))),
-            ["layout_priority", "scroll", "typed child", "spacer"]
+            [
+                "layout_priority",
+                "scroll",
+                "typed child",
+                "environment",
+                "spacer"
+            ]
         );
     }
 
@@ -1649,7 +1699,7 @@ mod tests {
         assert_eq!(reached(Hooks::new(Fence, FenceAsDivider)), ["divider"]);
         assert_eq!(
             reached(Hooks::new(scroll(AnyView::new(Fence)), FenceAsDivider)),
-            ["scroll", "typed child", "divider"]
+            ["scroll", "typed child", "environment", "divider"]
         );
         assert_eq!(
             reached(AnyView::new(Hooks::new(Fence, FenceAsDivider))),
@@ -1904,11 +1954,13 @@ mod tests {
                 "scroll",
                 "typed child",
                 "environment",
+                "environment",
                 "accessibility_role",
                 "accessibility_label",
                 "gesture_observer",
                 "scroll",
                 "typed child",
+                "environment",
                 "divider"
             ]
         );
@@ -2025,12 +2077,14 @@ mod tests {
                 "scroll",
                 "typed child",
                 "environment",
+                "environment",
                 "accessibility_role",
                 "accessibility_label",
                 "accessibility_state_signal",
                 "gesture_observer",
                 "scroll",
                 "typed child",
+                "environment",
                 "divider"
             ]
         );
