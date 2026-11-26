@@ -13,7 +13,6 @@ publish = false
 [features]
 # project.md § "Cargo.toml: features that matter" says every generated project
 # carries exactly this stanza; the harness carries it so the claim is true of it too.
-dev = ["waterui/dynamic_linking"]
 # Exposes the `#[waterui::test]` / `#[waterui::bench]` transcriptions to the
 # compiler. Non-default on purpose: the workspace-wide `cargo nextest run` must
 # never compile or register them — they address elements that do not exist, by

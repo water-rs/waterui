@@ -8,6 +8,9 @@
 // mains below share this crate root and need only stdio pipes.
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+#[cfg(all(feature = "dev", not(target_os = "windows"), not(target_arch = "wasm32")))]
+use waterui_dylib as _;
+
 #[cfg(all(feature = "waterui-preview-mode", feature = "waterui-preview-test-mode"))]
 compile_error!("enable only one Hydrolysis run feature at a time");
 
@@ -16,6 +19,8 @@ compile_error!("enable only one Hydrolysis run feature at a time");
 
 #[cfg(all(feature = "waterui-preview-test-mode", feature = "waterui-mcp-mode"))]
 compile_error!("enable only one Hydrolysis run feature at a time");
+
+const _: () = hydrolysis::assert_host_capabilities();
 
 #[cfg(feature = "waterui-mcp-mode")]
 mod run_config;
