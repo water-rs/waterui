@@ -132,7 +132,7 @@ impl WeakCloseRequest {
     /// Files a close request if the owning window is still alive.
     pub(crate) fn request(&self) {
         let Some(inner) = self.inner.upgrade() else {
-            crate::contract_violation!(
+            waterui_core::contract_violation!(
                 "a close request was filed for a window that has already been dropped; \
                  the request is dropped"
             );
@@ -236,7 +236,7 @@ impl CloseRequest {
         let (mut hook, env) = {
             let mut shared = self.inner.borrow_mut();
             let Some(armed) = shared.armed.as_ref() else {
-                crate::contract_violation!(
+                waterui_core::contract_violation!(
                     "a close request was filed for a window that was never realized, or whose \
                      platform has no window close request (Android, UIKit, web); \
                      the request is dropped"

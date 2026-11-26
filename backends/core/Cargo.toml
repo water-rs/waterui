@@ -12,9 +12,20 @@ keywords = ["ui", "backend", "waterui", "gui", "framework"]
 categories = ["gui"]
 
 [features]
-default = ["gestures"]
+default = ["gestures", "runtime"]
 # Gesture recognition state machines.
 gestures = []
+# Application, window, termination, task executor, and resource runtime
+# primitives shared by the facade and every backend.
+runtime = [
+    "dep:suiteki",
+    "dep:waterui-locale",
+    "dep:waterui-resources",
+    "dep:executor-core",
+    "dep:native-executor",
+    "dep:thiserror",
+    "dep:waterui-macros",
+]
 # Anchored-overlay window-space placement shared by every backend.
 overlay = []
 # The `WATERUI_LOG` / `RUST_LOG` filter every backend's subscriber shares;
@@ -25,6 +36,10 @@ erased-dispatch = ["waterui-core/erased-dispatch", "waterui-layout/erased-dispat
 # Optional component contract gates propagated from `waterui-internal` (or
 # enabled directly when checking `waterui-backend-core` standalone).
 capture = ["dep:waterui-capture", "waterui-core/capture"]
+cpu-time = ["runtime", "dep:cpu-time", "waterui-core/cpu-time"]
+image = ["runtime", "dep:waterui-media", "waterui-core/image"]
+inspector = ["runtime", "dep:waterui-inspector-runtime", "waterui-core/inspector"]
+inspector-signals = ["inspector", "waterui-inspector-runtime/signals", "waterui-core/inspector-signals"]
 form = ["dep:waterui-form", "waterui-core/form"]
 calendar = ["form", "waterui-form/calendar", "waterui-core/calendar"]
 color-picker = ["form", "waterui-form/color-picker", "waterui-core/color-picker"]
@@ -69,17 +84,31 @@ waterui-navigation = { workspace = true, optional = true }
 waterui-video = { workspace = true, optional = true }
 waterui-webview = { workspace = true, optional = true }
 waterui-map = { workspace = true, optional = true }
+waterui-media = { workspace = true, optional = true }
+waterui-locale = { workspace = true, optional = true }
+waterui-resources = { workspace = true, optional = true }
+waterui-macros = { workspace = true, optional = true }
+suiteki = { workspace = true, optional = true }
+executor-core = { workspace = true, optional = true }
+native-executor = { workspace = true, optional = true }
+thiserror = { version = "2.0.21", default-features = false, optional = true }
 nami.workspace = true
 num-traits = { version = "0.2", default-features = false }
 tracing.workspace = true
 tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter"], optional = true }
 kurbo.workspace = true
 
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+waterui-inspector-runtime = { workspace = true, optional = true }
+
+[target.'cfg(any(unix, windows))'.dependencies]
+cpu-time = { workspace = true, optional = true }
+
 [dev-dependencies]
 waterui-capture.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-web-time = "1"
+web-time.workspace = true
 
 [lints]
 workspace = true

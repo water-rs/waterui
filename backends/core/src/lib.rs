@@ -54,6 +54,8 @@ use core::fmt::{Debug, Formatter, Result as FmtResult};
 use waterui_accessibility::AccessibilityRole;
 use waterui_core::{Computed, Str};
 
+#[cfg(feature = "runtime")]
+pub mod app;
 pub mod child;
 pub mod dynamic;
 pub mod frame_signals;
@@ -66,8 +68,63 @@ pub mod log;
 pub mod native_backend;
 #[cfg(feature = "overlay")]
 pub mod overlay;
+#[cfg(all(test, feature = "runtime"))]
+mod parked_executor;
 pub mod scroll;
+#[cfg(feature = "runtime")]
+pub mod task;
+#[cfg(feature = "runtime")]
+mod termination;
 pub mod time;
+#[cfg(feature = "runtime")]
+pub mod window;
+#[cfg(feature = "runtime")]
+mod window_close;
+#[cfg(feature = "runtime")]
+mod window_focus;
+
+#[cfg(feature = "runtime")]
+pub use waterui_resources::ResourceContext;
+
+/// Capture standalone resource roots once when creating an application environment.
+///
+/// # Contract
+/// When the native executable's location cannot be determined a debug build
+/// panics, and a release build logs the error and installs a context rooted
+/// at `waterui_assets` and `fonts` in the working directory.
+#[cfg(feature = "runtime")]
+#[cfg_attr(target_arch = "wasm32", allow(clippy::missing_const_for_fn))]
+pub fn install_application_resources(env: &mut Environment) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if env.get::<ResourceContext>().is_none() {
+        let context = ResourceContext::application().unwrap_or_else(|error| {
+            waterui_core::contract_violation!(
+                "application resources could not be located ({error}); resolving them against the working directory"
+            );
+            ResourceContext::new("waterui_assets", "fonts")
+        });
+        env.insert(context);
+    }
+    #[cfg(feature = "image")]
+    if env.get::<waterui_media::PhotoCache>().is_none() {
+        env.insert(waterui_media::PhotoCache::default());
+    }
+    #[cfg(all(target_arch = "wasm32", not(feature = "image")))]
+    let _ = env;
+}
+
+/// Plugin that installs standalone application resources (`ResourceContext` and
+/// default media caches) into an environment without overwriting existing entries.
+#[cfg(feature = "runtime")]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ApplicationResources;
+
+#[cfg(feature = "runtime")]
+impl waterui_core::plugin::Plugin for ApplicationResources {
+    fn install(self, env: &mut Environment) {
+        install_application_resources(env);
+    }
+}
 
 pub use child::{Child, ChildView, IntoChild, NativeBackendFamily};
 pub use dynamic::DynamicNode;

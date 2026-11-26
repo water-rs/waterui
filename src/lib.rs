@@ -1,18 +1,6 @@
 #![doc = include_str!("README.md")]
 extern crate alloc;
 extern crate self as waterui;
-// `waterui-internal` forwards optional component gates (`capture`, `form`,
-// `navigation`, `video`, `webview`, `map`) to `waterui-backend-core` so
-// `NativeBackend` links the exact component crates enabled through the facade.
-#[cfg(any(
-    feature = "capture",
-    feature = "form",
-    feature = "navigation",
-    feature = "video",
-    feature = "webview",
-    feature = "map",
-))]
-use waterui_backend_core as _;
 mod appearance;
 pub use appearance::{background, border, filter, floating, shape, style};
 pub mod component;
@@ -305,7 +293,7 @@ pub use waterui_assets_macros::include_web;
 #[doc(inline)]
 #[cfg(feature = "assets")]
 pub use waterui_assets_macros::{asset, assets, include_bundle};
-pub use waterui_resources::ResourceContext;
+pub use waterui_backend_core::ResourceContext;
 pub use waterui_url::Url;
 
 #[doc(inline)]
@@ -408,44 +396,8 @@ macro_rules! __with_ts_runtime {
     ($($item:tt)*) => {};
 }
 
-/// Capture standalone resource roots once when creating an application environment.
-///
-/// # Contract
-/// When the native executable's location cannot be determined a debug build
-/// panics, and a release build logs the error and installs a context rooted
-/// at `waterui_assets` and `fonts` in the working directory.
 #[doc(hidden)]
-#[cfg_attr(target_arch = "wasm32", allow(clippy::missing_const_for_fn))]
-pub fn install_application_resources(env: &mut Environment) {
-    #[cfg(not(target_arch = "wasm32"))]
-    if env.get::<ResourceContext>().is_none() {
-        let context = ResourceContext::application().unwrap_or_else(|error| {
-            contract_violation!(
-                "application resources could not be located ({error}); resolving them against the working directory"
-            );
-            ResourceContext::new("waterui_assets", "fonts")
-        });
-        env.insert(context);
-    }
-    #[cfg(feature = "image")]
-    if env.get::<waterui_media::PhotoCache>().is_none() {
-        env.insert(waterui_media::PhotoCache::default());
-    }
-    #[cfg(all(target_arch = "wasm32", not(feature = "image")))]
-    let _ = env;
-}
-
-/// Plugin that installs standalone application resources (`ResourceContext` and
-/// default media caches) into an environment without overwriting existing entries.
-#[doc(hidden)]
-#[derive(Debug, Clone, Copy, Default)]
-pub struct ApplicationResources;
-
-impl Plugin for ApplicationResources {
-    fn install(self, env: &mut Environment) {
-        install_application_resources(env);
-    }
-}
+pub use waterui_backend_core::{ApplicationResources, install_application_resources};
 
 /// Configures a freshly-created environment with compile-time discovered app plugins.
 ///

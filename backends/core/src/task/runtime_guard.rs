@@ -16,7 +16,8 @@ use std::{
 #[cfg(all(feature = "cpu-time", any(unix, windows)))]
 use cpu_time::ThreadTime;
 use executor_core::LocalExecutor;
-use web_time::Instant;
+
+use crate::time::Instant;
 
 /// The refresh rate a monitored executor derives its frame budget from.
 ///
@@ -602,8 +603,8 @@ mod tests {
         where
             Fut: core::future::Future + 'static,
         {
-            let waker = futures::task::noop_waker();
-            let mut cx = core::task::Context::from_waker(&waker);
+            let waker = core::task::Waker::noop();
+            let mut cx = core::task::Context::from_waker(waker);
             let mut fut = Box::pin(fut);
             let output = match fut.as_mut().poll(&mut cx) {
                 core::task::Poll::Ready(output) => output,

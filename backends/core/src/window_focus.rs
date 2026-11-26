@@ -131,7 +131,7 @@ impl FocusRequest {
         {
             let mut shared = self.inner.borrow_mut();
             if !shared.armed {
-                crate::contract_violation!(
+                waterui_core::contract_violation!(
                     "a focus request was filed for a window that was never \
                      realized, or whose platform cannot activate a mapped window; \
                      the request is dropped",

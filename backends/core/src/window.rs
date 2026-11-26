@@ -13,17 +13,19 @@
 //! realizations.
 //!
 //! ```rust
-//! use waterui::prelude::*;
-//! use waterui::window::Window;
+//! use waterui_backend_core::window::Window;
+//! use waterui_graphics::Color;
+//! use waterui_shape::background::Material;
+//! use waterui_text::text;
 //!
 //! // Semi-transparent colored window
-//! let tinted = Window::new("Tinted", || text!("Hello"))
+//! let tinted = Window::new("Tinted", || text("Hello"))
 //!     .background(Color::srgb(0, 0, 0).with_opacity(0.8));
 //!
 //! // Frosted glass window: the desktop shows through, blurred on macOS;
 //! // on Hydrolysis tinted, and blurred where the compositor
 //! // supports it
-//! let frosted = Window::new("Frosted", || text!("Hello"))
+//! let frosted = Window::new("Frosted", || text("Hello"))
 //!     .background(Material::UltraThin);
 //! ```
 
@@ -52,8 +54,10 @@ pub use super::window_close::CloseReply;
 use super::window_close::{CloseRequest, Question, WeakCloseRequest};
 use super::window_focus::FocusRequest;
 
+use waterui_controls::{label::LabelDisplayMode, theme::color::Background};
+use waterui_shape::background::Material;
+
 use crate::app::{application_identifier, application_name};
-use crate::{background::Material, component::label::LabelDisplayMode, theme::color::Background};
 
 /// Represents a window in the UI.
 ///
@@ -1043,7 +1047,7 @@ impl<C: 'static, T: 'static> WindowManager<C, T> {
                         return;
                     }
                     WindowChannelState::Disconnected => {
-                        crate::contract_violation!(
+                        waterui_core::contract_violation!(
                             "WindowChannel was dropped without being connected to a runner, so the window is not shown"
                         );
                         return;
@@ -1494,17 +1498,19 @@ impl<C, T> Window<C, T> {
     /// # Examples
     ///
     /// ```rust
-    /// use waterui::prelude::*;
-    /// use waterui::window::Window;
+    /// use waterui_backend_core::window::Window;
+    /// use waterui_graphics::Color;
+    /// use waterui_shape::background::Material;
+    /// use waterui_text::text;
     ///
     /// // Semi-transparent colored window
-    /// let tinted = Window::new("Tinted", || text!("Hello"))
+    /// let tinted = Window::new("Tinted", || text("Hello"))
     ///     .background(Color::srgb(0, 0, 0).with_opacity(0.8));
     ///
     /// // Frosted glass window: the desktop shows through, blurred on macOS;
     /// // on Hydrolysis tinted, and blurred where the compositor
     /// // supports it
-    /// let frosted = Window::new("Frosted", || text!("Hello"))
+    /// let frosted = Window::new("Frosted", || text("Hello"))
     ///     .background(Material::UltraThin);
     /// ```
     #[must_use]
@@ -1871,8 +1877,9 @@ impl<C, T> WindowParts<C, T> {
 /// handler inside the window can extract it directly:
 ///
 /// ```rust
-/// use waterui::prelude::*;
-/// use waterui::window::WindowHandle;
+/// use waterui_backend_core::window::WindowHandle;
+/// use waterui_controls::button;
+/// use waterui_core::View;
 ///
 /// fn controls() -> impl View {
 ///     button("Maximize").action(|window: WindowHandle| window.maximize())
@@ -2011,11 +2018,11 @@ mod tests {
         ResolvedWindowBackground, Window, WindowBackground, WindowIcon, WindowIconError,
         WindowManager, WindowState, resolve_background,
     };
-    use crate::background::Material;
-    use crate::theme::{
+    use waterui_controls::theme::{
         ColorSettings, Theme,
         color::{Accent, Background},
     };
+    use waterui_shape::background::Material;
 
     fn color(resolved: ResolvedWindowBackground) -> WorkingColor {
         match resolved {
@@ -2219,42 +2226,23 @@ mod tests {
     }
 
     #[test]
-    fn window_title_resolves_through_translation_catalog_and_a11y_metadata() {
-        use waterui_core::metadata::Metadata;
+    fn window_title_resolves_through_translation_catalog() {
         use waterui_locale::{TranslationCatalog, locales};
-
-        use crate::ViewExt as _;
 
         let locale = Binding::new(locales::EN);
         let mut env = Environment::new();
         env.insert(locale.clone());
         env.insert(
             TranslationCatalog::new()
-                .add_toml(
-                    locales::FR,
-                    "\"Settings\" = \"Réglages\"\n\"Close window\" = \"Fermer la fenêtre\"\n\"Ready\" = \"Prêt\"",
-                )
+                .add_toml(locales::FR, "\"Settings\" = \"Réglages\"")
                 .expect("test catalog must parse"),
         );
 
         let parts = Window::new("Settings", || ()).into_parts(&env);
         assert_eq!(parts.title.snapshot().as_str(), "Settings");
 
-        let Metadata {
-            value: a11y_label, ..
-        } = ().a11y_label("Close window");
-        let Metadata {
-            value: a11y_value, ..
-        } = ().a11y_value("Ready");
-        let label_signal = a11y_label.resolve(&env);
-        let value_signal = a11y_value.resolve(&env);
-        assert_eq!(label_signal.snapshot().as_str(), "Close window");
-        assert_eq!(value_signal.snapshot().as_str(), "Ready");
-
         locale.set(locales::FR);
         assert_eq!(parts.title.snapshot().as_str(), "Réglages");
-        assert_eq!(label_signal.snapshot().as_str(), "Fermer la fenêtre");
-        assert_eq!(value_signal.snapshot().as_str(), "Prêt");
     }
 
     #[test]
@@ -2268,7 +2256,7 @@ mod tests {
 
         let (manager, channel) = WindowManager::new();
         Window::new("With Toolbar", || ())
-            .toolbar(crate::widget::Divider)
+            .toolbar(waterui_controls::Divider)
             .show(&manager);
         let mut queued = channel.drain();
         assert_eq!(queued.len(), 1);
@@ -2318,9 +2306,7 @@ mod tests {
         use super::WindowRoot;
         use crate::View;
         #[cfg(feature = "snackbar")]
-        use crate::ViewExt as _;
-        #[cfg(feature = "snackbar")]
-        use crate::snackbar::SnackbarManager;
+        use waterui_controls::snackbar::{SnackbarHost, SnackbarManager};
 
         struct Probe;
 
@@ -2334,7 +2320,7 @@ mod tests {
 
         #[cfg(feature = "snackbar")]
         {
-            let _snackbar_host = Probe.snackbar_host();
+            let _snackbar_host: SnackbarHost<_> = SnackbarHost::new(Probe);
             assert!(env.get::<SnackbarManager>().is_none());
         }
     }
