@@ -178,6 +178,7 @@ const fn accessibility_role_names_from_contents(role: &AccessibilityRole) -> boo
             | AccessibilityRole::Option
             | AccessibilityRole::Tab
             | AccessibilityRole::Header
+            | AccessibilityRole::Heading(_)
             | AccessibilityRole::Text
     )
 }
@@ -818,6 +819,13 @@ impl<E: crate::text::TextEngine> AccessibilityBuilder<E> {
             self.consumed_semantics_scopes.insert(scope.key());
         }
         Self::apply_state(env, &mut node);
+        if node.role() == AccessibilityNodeRole::Heading
+            && node.level().is_none()
+            && let Some(AccessibilityRole::Heading(level)) = env.get::<AccessibilityRole>()
+            && *level > 0
+        {
+            node.set_level(usize::from(*level));
+        }
         node.set_text_direction(
             if waterui_core::layout::layout_direction(env)
                 .snapshot()
@@ -2773,7 +2781,7 @@ pub fn accessibility_role_to_accesskit_role(role: AccessibilityRole) -> Accessib
         AccessibilityRole::Link => AccessibilityNodeRole::Link,
         AccessibilityRole::Image => AccessibilityNodeRole::Image,
         AccessibilityRole::Text => AccessibilityNodeRole::Label,
-        AccessibilityRole::Header => AccessibilityNodeRole::Heading,
+        AccessibilityRole::Header | AccessibilityRole::Heading(_) => AccessibilityNodeRole::Heading,
         AccessibilityRole::Footer => AccessibilityNodeRole::Footer,
         AccessibilityRole::Navigation => AccessibilityNodeRole::Navigation,
         AccessibilityRole::Main => AccessibilityNodeRole::Main,

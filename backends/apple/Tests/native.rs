@@ -407,6 +407,7 @@ fn trials() -> Vec<Trial> {
     tests.extend(avatar::trials());
     #[cfg(feature = "link")]
     tests.extend(link::trials());
+    tests.extend(markdown_a11y::trials());
     #[cfg(all(feature = "native-test", feature = "gpu_surface"))]
     tests.extend(capture_colour::trials());
     #[cfg(all(catalyst, feature = "native-test", feature = "gpu_surface"))]
@@ -18925,5 +18926,192 @@ mod link {
         assert!(!disabled_button.is_enabled());
         #[cfg(target_os = "ios")]
         assert!(!disabled_button.isEnabled());
+    }
+}
+
+mod markdown_a11y {
+    use cocoa_ui::{PlatformView, Retained, view};
+    use libtest_mimic::Trial;
+    use waterui::widget::RichText;
+
+    #[cfg(target_os = "ios")]
+    use super::mtm;
+    use super::resolve;
+
+    pub fn trials() -> Vec<Trial> {
+        vec![
+            Trial::test(
+                "markdown_a11y::rich_text_headings_publish_heading_role_and_level",
+                || {
+                    rich_text_headings_publish_heading_role_and_level();
+                    Ok(())
+                },
+            ),
+            Trial::test(
+                "markdown_a11y::rich_text_images_publish_alt_label_and_hide_decorative",
+                || {
+                    rich_text_images_publish_alt_label_and_hide_decorative();
+                    Ok(())
+                },
+            ),
+        ]
+    }
+
+    fn collect_views(root: &PlatformView, out: &mut Vec<Retained<PlatformView>>) {
+        out.push(view::retain_base(root));
+        for sub in view::subviews(root) {
+            collect_views(&sub, out);
+        }
+    }
+
+    fn rich_text_headings_publish_heading_role_and_level() {
+        use waterui::reactive::{SignalExt, binding};
+        use waterui::text::font::{FontSlot, Footnote, Headline, Title};
+
+        let leaf = resolve::render_with(
+            RichText::from_markdown("# Setup\n\n## Pipeline\n\nBody text."),
+            |env| {
+                waterui::theme::install_font_signal::<Title>(
+                    env,
+                    binding(Title::DEFAULT).computed(),
+                );
+                waterui::theme::install_font_signal::<Headline>(
+                    env,
+                    binding(Headline::DEFAULT).computed(),
+                );
+                waterui::theme::install_font_signal::<Footnote>(
+                    env,
+                    binding(Footnote::DEFAULT).computed(),
+                );
+            },
+        );
+        let mut views = Vec::new();
+        collect_views(leaf.view(), &mut views);
+
+        #[cfg(target_os = "macos")]
+        {
+            use cocoa_ui::objc2::runtime::{AnyObject, ProtocolObject};
+            use cocoa_ui::objc2_app_kit::{NSAccessibility, NSAccessibilityHeadingRole};
+            use cocoa_ui::objc2_foundation::NSNumber;
+
+            let mut headings: Vec<(String, i32)> = Vec::new();
+            for candidate in &views {
+                let element = ProtocolObject::<dyn NSAccessibility>::from_ref(&**candidate);
+                // SAFETY: `NSAccessibilityHeadingRole` is an immutable AppKit constant.
+                let heading_role = unsafe { NSAccessibilityHeadingRole };
+                if element.accessibilityRole().as_deref() == Some(heading_role) {
+                    let title = element
+                        .accessibilityTitle()
+                        .map_or_default(|t| t.to_string());
+                    let level = element
+                        .accessibilityValue()
+                        .and_then(|val: Retained<AnyObject>| {
+                            val.downcast_ref::<NSNumber>().map(NSNumber::intValue)
+                        })
+                        .unwrap_or(0);
+                    headings.push((title, level));
+                }
+            }
+            assert_eq!(
+                headings,
+                vec![(String::from("Setup"), 1), (String::from("Pipeline"), 2)],
+                "expected AppKit AXHeading elements with levels 1 and 2"
+            );
+        }
+
+        #[cfg(target_os = "ios")]
+        {
+            use cocoa_ui::accessibility::{Role, traits};
+            use cocoa_ui::objc2_ui_kit::NSObjectUIAccessibility;
+
+            let mtm = mtm();
+            let header_trait =
+                traits(Role::Heading(1)).expect("UIKit defines heading accessibility trait");
+            let mut headings: Vec<String> = Vec::new();
+            for candidate in &views {
+                if candidate.accessibilityTraits(mtm) & header_trait != 0 {
+                    let label = candidate
+                        .accessibilityLabel(mtm)
+                        .map_or_default(|s| s.to_string());
+                    headings.push(label);
+                }
+            }
+            assert_eq!(
+                headings,
+                vec![String::from("Setup"), String::from("Pipeline")],
+                "expected UIKit heading elements with labels Setup and Pipeline"
+            );
+        }
+    }
+
+    fn rich_text_images_publish_alt_label_and_hide_decorative() {
+        let leaf = resolve::render(RichText::from_markdown(
+            "![Pipeline diagram](https://example.com/a.png)\n\n![](https://example.com/b.png)",
+        ));
+        let mut views = Vec::new();
+        collect_views(leaf.view(), &mut views);
+
+        #[cfg(target_os = "macos")]
+        {
+            use cocoa_ui::objc2::runtime::ProtocolObject;
+            use cocoa_ui::objc2_app_kit::{NSAccessibility, NSAccessibilityImageRole};
+
+            let mut image_labels: Vec<String> = Vec::new();
+            let mut has_hidden = false;
+            for candidate in &views {
+                let element = ProtocolObject::<dyn NSAccessibility>::from_ref(&**candidate);
+                // SAFETY: `NSAccessibilityImageRole` is an immutable AppKit constant.
+                let image_role = unsafe { NSAccessibilityImageRole };
+                if element.isAccessibilityElement()
+                    && element.accessibilityRole().as_deref() == Some(image_role)
+                {
+                    if let Some(label) = element.accessibilityLabel() {
+                        image_labels.push(label.to_string());
+                    }
+                } else if !element.isAccessibilityElement() {
+                    has_hidden = true;
+                }
+            }
+            assert_eq!(
+                image_labels,
+                vec![String::from("Pipeline diagram")],
+                "expected only the non-empty alt image to publish an accessible image node"
+            );
+            assert!(
+                has_hidden,
+                "expected decorative empty-alt image to be hidden from accessibility"
+            );
+        }
+
+        #[cfg(target_os = "ios")]
+        {
+            use cocoa_ui::accessibility::{Role, traits};
+            use cocoa_ui::objc2_ui_kit::NSObjectUIAccessibility;
+
+            let mtm = mtm();
+            let image_trait = traits(Role::Image).expect("UIKit defines image accessibility trait");
+            let mut image_labels: Vec<String> = Vec::new();
+            let mut has_hidden = false;
+            for candidate in &views {
+                if candidate.accessibilityElementsHidden(mtm) {
+                    has_hidden = true;
+                } else if candidate.isAccessibilityElement(mtm)
+                    && candidate.accessibilityTraits(mtm) & image_trait != 0
+                {
+                    if let Some(label) = candidate.accessibilityLabel(mtm) {
+                        image_labels.push(label.to_string());
+                    }
+                }
+            }
+            assert_eq!(
+                image_labels,
+                vec![String::from("Pipeline diagram")],
+                "expected only the non-empty alt image to publish an accessible image node"
+            );
+            assert!(
+                has_hidden,
+                "expected decorative empty-alt image to be hidden from accessibility"
+            );
+        }
     }
 }

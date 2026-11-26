@@ -31,7 +31,13 @@ fn a_link_does_not_split_its_paragraph() {
 #[test]
 fn a_link_keeps_the_heading_font() {
     let rich = RichText::from_markdown("# Heading [docs](https://example.com) tail");
-    let text = only_text(&rich);
+    let text = match rich.elements() {
+        [RichTextElement::Heading { level: 1, elements }] => match elements.as_slice() {
+            [RichTextElement::Text(text)] => text,
+            other => panic!("expected one flowing heading text element, got {other:?}"),
+        },
+        other => panic!("expected one level-1 heading element, got {other:?}"),
+    };
     let fonts: Vec<String> = text
         .chunks()
         .iter()

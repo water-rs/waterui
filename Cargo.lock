@@ -13674,6 +13674,7 @@ dependencies = [
  "tree-sitter",
  "tree-sitter-md",
  "waterkit-deeplink",
+ "waterui-accessibility",
  "waterui-color",
  "waterui-controls",
  "waterui-core",

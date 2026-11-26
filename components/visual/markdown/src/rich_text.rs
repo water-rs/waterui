@@ -1,15 +1,19 @@
 use std::{mem, num::NonZeroUsize, ops::Range};
 
 use executor_core::spawn_local;
-use pulldown_cmark::{Alignment, CodeBlockKind, Event, Options, Parser, Tag};
+use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag};
 use suiteki::Str;
+use waterui_accessibility::AccessibilityRole;
+#[cfg(feature = "media")]
+use waterui_accessibility::{AccessibilityHidden, AccessibilityLabel};
 use waterui_color::Color;
 use waterui_controls::{
     button::{ButtonStyle, button},
     divider::Divider,
 };
 use waterui_core::{
-    Environment, OneOf2, OneOf8, View, backend::ChildSlot, contract_violation, view::ViewSequence,
+    Environment, Metadata, OneOf2, OneOf3, OneOf8, View, backend::ChildSlot, contract_violation,
+    view::ViewSequence,
 };
 use waterui_layout::{
     Layout, LayoutError, PlacementInput, Point, ProposalSize, Rect, Size, StretchAxis, SubView,
@@ -170,6 +174,14 @@ pub enum RichTextElement {
         /// When `true`, children are rendered in a horizontal stack.
         inline: bool,
     },
+    /// A heading block with its 1-based Markdown outline level (`1..=6`) and
+    /// inline content.
+    Heading {
+        /// Heading level (`1` for `#` through `6` for `######`).
+        level: u8,
+        /// Inline elements comprising the heading.
+        elements: Vec<Self>,
+    },
 }
 
 /// Column alignment metadata for Markdown tables.
@@ -198,7 +210,7 @@ impl View for RichTextElement {
                     .style(ButtonStyle::Link)
                     .action(move || open_url(&url)),
             ),
-            Self::Image { src, alt: _ } => OneOf8::C(render_image(&src)),
+            Self::Image { src, alt } => OneOf8::C(render_image(&src, &alt)),
             Self::Table {
                 headers,
                 rows,
@@ -244,16 +256,29 @@ impl View for RichTextElement {
 
 fn render_tail(element: RichTextElement) -> impl View {
     match element {
-        RichTextElement::Group { elements, inline } => OneOf2::A(if inline {
+        RichTextElement::Group { elements, inline } => OneOf3::A(if inline {
             // Inline content already contains explicit whitespace in the source text.
             // Use zero stack spacing to avoid double-spacing between adjacent spans.
             OneOf2::A(elements.into_iter().collect::<HStack<_>>().spacing(0.0))
         } else {
             OneOf2::B(VStack::from_iter(elements))
         }),
-        RichTextElement::Divider => OneOf2::B(Divider),
+        RichTextElement::Divider => OneOf3::B(Divider),
+        RichTextElement::Heading { level, elements } => OneOf3::C(render_heading(level, elements)),
         _ => unreachable!("handled by RichTextElement::body"),
     }
+}
+
+fn render_heading(level: u8, mut elements: Vec<RichTextElement>) -> impl View {
+    let body = if elements.len() == 1 && matches!(elements[0], RichTextElement::Text(_)) {
+        let Some(RichTextElement::Text(styled)) = elements.pop() else {
+            unreachable!("checked single Text element above");
+        };
+        OneOf2::A(text(styled))
+    } else {
+        OneOf2::B(elements.into_iter().collect::<HStack<_>>().spacing(0.0))
+    };
+    Metadata::new(body, AccessibilityRole::Heading(level))
 }
 
 /// Recognising `$…$` is only correct when something can typeset the result.
@@ -283,7 +308,7 @@ fn render_math(source: Str, block: bool) -> impl View {
     }
 }
 
-fn render_image(src: &Str) -> impl View + use<> {
+fn render_image(src: &Str, alt: &Str) -> impl View + use<> {
     #[cfg(feature = "media")]
     {
         // The source is document content, not the app's own contract: an
@@ -294,11 +319,21 @@ fn render_image(src: &Str) -> impl View + use<> {
             );
             return None;
         };
-        Some(media_photo(url))
+        let photo = media_photo(url);
+        let view = if alt.is_empty() {
+            OneOf2::A(Metadata::new(photo, AccessibilityHidden::new(true)))
+        } else {
+            OneOf2::B(Metadata::new(
+                Metadata::new(photo, AccessibilityRole::Image),
+                AccessibilityLabel::new(alt.clone()),
+            ))
+        };
+        Some(view)
     }
 
     #[cfg(not(feature = "media"))]
     {
+        let _ = alt;
         contract_violation!(
             "RichText image rendering requires the `media` feature, so the image renders nothing: {src}"
         );
@@ -630,7 +665,7 @@ fn element_to_text(element: &RichTextElement) -> Text {
     match element {
         RichTextElement::Text(styled) => Text::from(styled.clone()),
         RichTextElement::Link { label, .. } => Text::from(label.clone()),
-        RichTextElement::Group { elements, .. } => {
+        RichTextElement::Group { elements, .. } | RichTextElement::Heading { elements, .. } => {
             // Concatenate all text from group elements
             let combined: String = elements.iter().map(element_to_plain_text).collect();
             Text::from(combined)
@@ -644,7 +679,7 @@ fn element_to_plain_text(element: &RichTextElement) -> String {
     match element {
         RichTextElement::Text(styled) => styled.to_plain().to_string(),
         RichTextElement::Link { label, .. } => label.to_plain().to_string(),
-        RichTextElement::Group { elements, .. } => {
+        RichTextElement::Group { elements, .. } | RichTextElement::Heading { elements, .. } => {
             elements.iter().map(element_to_plain_text).collect()
         }
         _ => String::new(),
@@ -671,9 +706,10 @@ fn parse_markdown(markdown: &str) -> Vec<RichTextElement> {
                 }
                 Tag::Heading { level, .. } => {
                     flush_list_item_inline(&mut stack);
-                    stack.push(Container::Heading(InlineGroup::with_style(heading_style(
-                        level,
-                    ))));
+                    stack.push(Container::Heading {
+                        level: heading_level_number(level),
+                        group: InlineGroup::with_style(heading_style(level)),
+                    });
                 }
                 Tag::BlockQuote(_) => {
                     flush_list_item_inline(&mut stack);
@@ -773,9 +809,14 @@ fn parse_markdown(markdown: &str) -> Vec<RichTextElement> {
                     }
                 }
                 pulldown_cmark::TagEnd::Heading(_) => {
-                    if let Some(Container::Heading(group)) = stack.pop() {
-                        let element = collapse_inline(group.finish());
-                        push_to_parent(&mut stack, element);
+                    if let Some(Container::Heading { level, group }) = stack.pop() {
+                        push_to_parent(
+                            &mut stack,
+                            RichTextElement::Heading {
+                                level,
+                                elements: group.finish(),
+                            },
+                        );
                     }
                 }
                 pulldown_cmark::TagEnd::BlockQuote(_) => {
@@ -1034,6 +1075,16 @@ fn language_from_kind(kind: &CodeBlockKind) -> Language {
     }
 }
 
+const fn heading_level_number(level: HeadingLevel) -> u8 {
+    match level {
+        HeadingLevel::H1 => 1,
+        HeadingLevel::H2 => 2,
+        HeadingLevel::H3 => 3,
+        HeadingLevel::H4 => 4,
+        HeadingLevel::H5 => 5,
+        HeadingLevel::H6 => 6,
+    }
+}
 fn ordered_list_start(start: Option<u64>) -> usize {
     start
         .and_then(|v| usize::try_from(v).ok())
@@ -1096,7 +1147,7 @@ fn push_inline_element(stack: &mut [Container], element: RichTextElement) {
     for container in stack.iter_mut().rev() {
         match container {
             Container::Paragraph(group)
-            | Container::Heading(group)
+            | Container::Heading { group, .. }
             | Container::TableCell(group)
             | Container::ListItem { inline: group, .. } => {
                 group.push_element(element);
@@ -1199,7 +1250,7 @@ fn current_inline_sink(stack: &mut [Container]) -> Option<InlineSinkMut<'_>> {
         match container {
             Container::InlineImage { alt, .. } => return Some(InlineSinkMut::Builder(alt)),
             Container::Paragraph(group)
-            | Container::Heading(group)
+            | Container::Heading { group, .. }
             | Container::TableCell(group)
             | Container::ListItem { inline: group, .. } => {
                 return Some(InlineSinkMut::Group(group));
@@ -1215,7 +1266,10 @@ fn current_inline_sink(stack: &mut [Container]) -> Option<InlineSinkMut<'_>> {
 enum Container {
     Root(Vec<RichTextElement>),
     Paragraph(InlineGroup),
-    Heading(InlineGroup),
+    Heading {
+        level: u8,
+        group: InlineGroup,
+    },
     BlockQuote(Vec<RichTextElement>),
     List {
         ordered: bool,
@@ -1420,7 +1474,7 @@ mod tests {
     #[test]
     #[cfg(feature = "media")]
     fn an_invalid_image_url_renders_nothing() {
-        let view = render_image(&Str::from("not a url"));
+        let view = render_image(&Str::from("not a url"), &Str::from("Broken image"));
         assert_eq!(
             waterui_core::backend::peel_native::<()>(view, &Environment::new()),
             Some(())
@@ -1442,6 +1496,7 @@ mod tests {
                     RichTextElement::Math { block: true, .. } => *block += 1,
                     RichTextElement::Math { block: false, .. } => *inline += 1,
                     RichTextElement::Group { elements, .. }
+                    | RichTextElement::Heading { elements, .. }
                     | RichTextElement::Quote { content: elements } => {
                         count(elements, inline, block);
                     }
@@ -1533,7 +1588,10 @@ mod tests {
             "expected non-empty elements, got {elements:?}"
         );
 
-        assert!(matches!(elements[0], RichTextElement::Text(_)));
+        assert!(matches!(
+            elements[0],
+            RichTextElement::Heading { level: 1, .. }
+        ));
         assert!(matches!(elements[1], RichTextElement::Text(_)));
         assert!(matches!(elements[2], RichTextElement::List { .. }));
         assert!(matches!(elements[3], RichTextElement::Table { .. }));

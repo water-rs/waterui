@@ -179,6 +179,8 @@ pub enum AccessibilityRole {
     Text,
     /// Section heading.
     Header,
+    /// Document or section heading with its 1-based outline level (`1..=6`).
+    Heading(u8),
     /// Section footer.
     Footer,
     /// Landmark for primary site or app navigation.

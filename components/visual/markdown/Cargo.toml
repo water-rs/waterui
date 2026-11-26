@@ -31,6 +31,7 @@ tracing.workspace = true
 tree-sitter.workspace = true
 tree-sitter-md.workspace = true
 waterkit-deeplink.workspace = true
+waterui-accessibility.workspace = true
 waterui-color.workspace = true
 waterui-controls.workspace = true
 waterui-core.workspace = true

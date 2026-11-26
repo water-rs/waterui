@@ -1311,6 +1311,10 @@ fn normalize_incomplete_link_element(element: RichTextElement) -> RichTextElemen
             elements: normalize_incomplete_link_elements(elements),
             inline,
         },
+        RichTextElement::Heading { level, elements } => RichTextElement::Heading {
+            level,
+            elements: normalize_incomplete_link_elements(elements),
+        },
         RichTextElement::List {
             items,
             ordered,
@@ -1503,13 +1507,17 @@ fn infer_block_kind(
 fn rich_text_contains_kind(element: &RichTextElement, kind: FlowElementKind) -> bool {
     match (element, kind) {
         (RichTextElement::Image { .. }, FlowElementKind::Image)
+        | (RichTextElement::Heading { .. }, FlowElementKind::Heading)
         | (RichTextElement::Table { .. }, FlowElementKind::Table)
         | (RichTextElement::Code { .. }, FlowElementKind::CodeBlock)
         | (RichTextElement::List { .. }, FlowElementKind::ListItem)
         | (RichTextElement::Quote { .. }, FlowElementKind::Quote)
         | (RichTextElement::Link { .. }, FlowElementKind::Link)
         | (RichTextElement::Divider, FlowElementKind::Hr) => true,
-        (RichTextElement::Group { elements, .. }, _) => elements
+        (
+            RichTextElement::Group { elements, .. } | RichTextElement::Heading { elements, .. },
+            _,
+        ) => elements
             .iter()
             .any(|child| rich_text_contains_kind(child, kind)),
         (RichTextElement::List { items, .. }, _) => items
@@ -1585,7 +1593,7 @@ fn rich_text_element_text_len(element: &RichTextElement) -> usize {
         RichTextElement::List { items, .. } => items.iter().map(rich_text_element_text_len).sum(),
         RichTextElement::Code { code, .. } => code.chars().count(),
         RichTextElement::Quote { content } => content.iter().map(rich_text_element_text_len).sum(),
-        RichTextElement::Group { elements, .. } => {
+        RichTextElement::Group { elements, .. } | RichTextElement::Heading { elements, .. } => {
             elements.iter().map(rich_text_element_text_len).sum()
         }
         // A formula's LaTeX source is not prose, so it does not count toward
@@ -1594,6 +1602,22 @@ fn rich_text_element_text_len(element: &RichTextElement) -> usize {
         RichTextElement::Math { .. } => 0,
         RichTextElement::Divider => 0,
     }
+}
+
+fn truncate_rich_text_children(
+    children: &[RichTextElement],
+    remaining: &mut usize,
+) -> Option<Vec<RichTextElement>> {
+    let mut kept = Vec::new();
+    for child in children {
+        if *remaining == 0 {
+            break;
+        }
+        if let Some(next) = truncate_rich_text_element(child, remaining) {
+            kept.push(next);
+        }
+    }
+    (!kept.is_empty()).then_some(kept)
 }
 
 fn truncate_rich_text_element(
@@ -1631,64 +1655,28 @@ fn truncate_rich_text_element(
             }
         }
         RichTextElement::Group { elements, inline } => {
-            let mut kept = Vec::new();
-            for child in elements {
-                if *remaining == 0 {
-                    break;
-                }
-                if let Some(next) = truncate_rich_text_element(child, remaining) {
-                    kept.push(next);
-                }
-            }
-            if kept.is_empty() {
-                None
-            } else {
-                Some(RichTextElement::Group {
-                    elements: kept,
-                    inline: *inline,
-                })
-            }
+            truncate_rich_text_children(elements, remaining).map(|kept| RichTextElement::Group {
+                elements: kept,
+                inline: *inline,
+            })
+        }
+        RichTextElement::Heading { level, elements } => {
+            truncate_rich_text_children(elements, remaining).map(|kept| RichTextElement::Heading {
+                level: *level,
+                elements: kept,
+            })
         }
         RichTextElement::List {
             items,
             ordered,
             start,
-        } => {
-            let mut kept = Vec::new();
-            for item in items {
-                if *remaining == 0 {
-                    break;
-                }
-                if let Some(next) = truncate_rich_text_element(item, remaining) {
-                    kept.push(next);
-                }
-            }
-            if kept.is_empty() {
-                None
-            } else {
-                Some(RichTextElement::List {
-                    items: kept,
-                    ordered: *ordered,
-                    start: *start,
-                })
-            }
-        }
-        RichTextElement::Quote { content } => {
-            let mut kept = Vec::new();
-            for item in content {
-                if *remaining == 0 {
-                    break;
-                }
-                if let Some(next) = truncate_rich_text_element(item, remaining) {
-                    kept.push(next);
-                }
-            }
-            if kept.is_empty() {
-                None
-            } else {
-                Some(RichTextElement::Quote { content: kept })
-            }
-        }
+        } => truncate_rich_text_children(items, remaining).map(|kept| RichTextElement::List {
+            items: kept,
+            ordered: *ordered,
+            start: *start,
+        }),
+        RichTextElement::Quote { content } => truncate_rich_text_children(content, remaining)
+            .map(|kept| RichTextElement::Quote { content: kept }),
         // A formula reveals whole or not at all: there is no meaningful way to
         // show the first few characters of one, and typing out its LaTeX would
         // show the reader the source rather than the formula.

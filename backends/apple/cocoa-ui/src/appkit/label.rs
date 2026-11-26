@@ -23,7 +23,7 @@ use objc2_app_kit::{
 };
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::{
-    NSArray, NSAttributedString, NSDictionary, NSEdgeInsets, NSObjectProtocol, NSString,
+    NSArray, NSAttributedString, NSDictionary, NSEdgeInsets, NSNumber, NSObjectProtocol, NSString,
     NSUnionRect,
 };
 
@@ -44,6 +44,9 @@ pub struct LabelIvars {
     reported_width: Cell<f64>,
     /// How the label was placed as a leaf, and its response rectangle.
     geometry: ResponseGeometry,
+    /// When set, the label is exposed as an `AXHeading` with this 1-based level
+    /// as `accessibilityValue` and its stripped text as `accessibilityTitle`.
+    heading_level: Cell<Option<u8>>,
 }
 
 impl fmt::Debug for LabelIvars {
@@ -53,6 +56,7 @@ impl fmt::Debug for LabelIvars {
             .field("line_limit", &self.line_limit.get())
             .field("reported_width", &self.reported_width.get())
             .field("geometry", &self.geometry)
+            .field("heading_level", &self.heading_level.get())
             .finish()
     }
 }
@@ -75,17 +79,26 @@ define_class!(
     impl Label {
         // SAFETY: see the module safety note.
         #[unsafe(method_id(accessibilityValue))]
-        fn accessibility_value(&self) -> Option<Retained<NSString>> {
+        fn accessibility_value(&self) -> Option<Retained<AnyObject>> {
             guarded("Label accessibilityValue", || {
+                if let Some(level) = self.ivars().heading_level.get() {
+                    let number = NSNumber::new_i32(i32::from(level));
+                    return Some(number.into_super().into_super().into_super());
+                }
+                self.stripped_text()
+                    .map(|text| text.into_super().into_super())
+            })
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method_id(accessibilityTitle))]
+        fn accessibility_title(&self) -> Option<Retained<NSString>> {
+            guarded("Label accessibilityTitle", || {
+                if self.ivars().heading_level.get().is_some() {
+                    return self.stripped_text();
+                }
                 // SAFETY: see the module safety note.
-                let value: Option<Retained<NSString>> =
-                    unsafe { msg_send![super(self), accessibilityValue] };
-                // Bidirectional control characters exist only to shape the
-                // rendering; reading them aloud is noise.
-                value.map(|text| {
-                    let stripped = crate::text::strip_bidi_controls(&text.to_string());
-                    NSString::from_str(&stripped)
-                })
+                unsafe { msg_send![super(self), accessibilityTitle] }
             })
         }
 
@@ -164,6 +177,23 @@ impl ReportsResponse for Label {
 }
 
 impl Label {
+    /// Records the 1-based heading level when this label carries `AXHeading`.
+    pub(crate) fn set_heading_level(&self, level: Option<u8>) {
+        self.ivars().heading_level.set(level);
+    }
+
+    pub(crate) fn stripped_text(&self) -> Option<Retained<NSString>> {
+        // SAFETY: `NSTextField` implements `accessibilityValue` returning an `NSString`.
+        let value: Option<Retained<NSString>> =
+            unsafe { msg_send![super(self), accessibilityValue] };
+        // Bidirectional control characters exist only to shape the
+        // rendering; reading them aloud is noise.
+        value.map(|text| {
+            let stripped = crate::text::strip_bidi_controls(&text.to_string());
+            NSString::from_str(&stripped)
+        })
+    }
+
     /// A wrapped text label, measuring and drawing `attributed` text.
     #[must_use]
     pub fn new(mtm: MainThreadMarker) -> Retained<Self> {
@@ -172,6 +202,7 @@ impl Label {
             line_limit: Cell::new(0),
             reported_width: Cell::new(0.0),
             geometry: ResponseGeometry::default(),
+            heading_level: Cell::new(None),
         });
         // SAFETY: `initWithFrame:` is `NSTextField`'s designated initializer.
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: CGRect::ZERO] };

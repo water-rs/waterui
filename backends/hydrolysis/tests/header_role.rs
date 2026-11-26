@@ -31,3 +31,45 @@ fn header_role_publishes_heading_not_banner() {
         "Header must publish a heading, got {roles:?}"
     );
 }
+
+#[test]
+fn markdown_headings_publish_heading_role_and_level() {
+    use waterui::widget::{RichText, flow_markdown};
+
+    const DOC: &str = "# Setup\n\n## Pipeline\n\n### Details\n\nBody paragraph.";
+
+    let mut rich = mount_semantic(
+        Environment::new(),
+        || RichText::from_markdown(DOC),
+        400,
+        300,
+    );
+    rich.settle();
+    let rich_headings: Vec<_> = nodes(rich.tree())
+        .filter(|(_, n)| n.role() == Role::Heading)
+        .map(|(_, n)| (n.label().map(str::to_owned), n.level()))
+        .collect();
+    assert_eq!(
+        rich_headings,
+        vec![
+            (Some(String::from("Setup")), Some(1)),
+            (Some(String::from("Pipeline")), Some(2)),
+            (Some(String::from("Details")), Some(3)),
+        ]
+    );
+
+    let mut flow = mount_semantic(Environment::new(), || flow_markdown(DOC), 400, 300);
+    flow.settle();
+    let flow_headings: Vec<_> = nodes(flow.tree())
+        .filter(|(_, n)| n.role() == Role::Heading)
+        .map(|(_, n)| (n.label().map(str::to_owned), n.level()))
+        .collect();
+    assert_eq!(
+        flow_headings,
+        vec![
+            (Some(String::from("Setup")), Some(1)),
+            (Some(String::from("Pipeline")), Some(2)),
+            (Some(String::from("Details")), Some(3)),
+        ]
+    );
+}

@@ -27,6 +27,8 @@ pub enum Role {
     Text,
     /// Section heading.
     Header,
+    /// Document or section heading with its 1-based outline level (`1..=6`).
+    Heading(u8),
     /// Section footer.
     Footer,
     /// Landmark for primary site or app navigation.
@@ -142,7 +144,7 @@ mod imp {
                 Role::Text | Role::Footer | Role::Article | Role::ListItem => {
                     UIAccessibilityTraitStaticText
                 }
-                Role::Header => UIAccessibilityTraitHeader,
+                Role::Header | Role::Heading(_) => UIAccessibilityTraitHeader,
                 Role::Search => UIAccessibilityTraitSearchField,
                 Role::Slider => UIAccessibilityTraitAdjustable,
                 Role::ProgressBar => UIAccessibilityTraitUpdatesFrequently,
@@ -166,6 +168,11 @@ mod imp {
     pub fn set_role(view: &UIView, role: Role) {
         let mtm = objc2::MainThreadMarker::from(view);
         view.setIsAccessibilityElement(true, mtm);
+        if let Some(host) = view.downcast_ref::<crate::uikit::HostView>()
+            && matches!(role, Role::Heading(_))
+        {
+            host.set_combines_accessibility_children(true);
+        }
         let Some(role_traits) = traits(role) else {
             return;
         };
@@ -290,11 +297,11 @@ mod imp {
     use objc2::runtime::{AnyObject, ProtocolObject};
     use objc2_app_kit::{
         NSAccessibility, NSAccessibilityButtonRole, NSAccessibilityCheckBoxRole,
-        NSAccessibilityComboBoxRole, NSAccessibilityGroupRole, NSAccessibilityImageRole,
-        NSAccessibilityLinkRole, NSAccessibilityListRole, NSAccessibilityMenuBarRole,
-        NSAccessibilityMenuItemRole, NSAccessibilityMenuRole, NSAccessibilityProgressIndicatorRole,
-        NSAccessibilityRadioButtonRole, NSAccessibilityRole, NSAccessibilitySliderRole,
-        NSAccessibilityStaticTextRole, NSAccessibilityTabGroupRole,
+        NSAccessibilityComboBoxRole, NSAccessibilityGroupRole, NSAccessibilityHeadingRole,
+        NSAccessibilityImageRole, NSAccessibilityLinkRole, NSAccessibilityListRole,
+        NSAccessibilityMenuBarRole, NSAccessibilityMenuItemRole, NSAccessibilityMenuRole,
+        NSAccessibilityProgressIndicatorRole, NSAccessibilityRadioButtonRole, NSAccessibilityRole,
+        NSAccessibilitySliderRole, NSAccessibilityStaticTextRole, NSAccessibilityTabGroupRole,
     };
     use objc2_foundation::{NSArray, NSNumber, NSString};
 
@@ -316,6 +323,7 @@ mod imp {
                 Role::Link => NSAccessibilityLinkRole,
                 Role::Image => NSAccessibilityImageRole,
                 Role::Text => NSAccessibilityStaticTextRole,
+                Role::Heading(_) => NSAccessibilityHeadingRole,
                 Role::List => NSAccessibilityListRole,
                 Role::Checkbox | Role::MenuItemCheckbox => NSAccessibilityCheckBoxRole,
                 Role::RadioButton | Role::MenuItemRadio => NSAccessibilityRadioButtonRole,
@@ -346,8 +354,27 @@ mod imp {
     /// Applies `role` to `element` and marks it an accessibility element.
     pub fn set_role(element: &ProtocolObject<dyn NSAccessibility>, role: Role) {
         element.setAccessibilityElement(true);
-        if let Some(role) = self::role(role) {
-            element.setAccessibilityRole(Some(role));
+        if let Some(ax_role) = self::role(role) {
+            element.setAccessibilityRole(Some(ax_role));
+        }
+        let heading_level = match role {
+            Role::Heading(level) if level > 0 => Some(level),
+            _ => None,
+        };
+        let any: &AnyObject = element.as_ref();
+        if let Some(label) = any.downcast_ref::<crate::appkit::Label>() {
+            label.set_heading_level(heading_level);
+        } else {
+            if let Some(host) = any.downcast_ref::<crate::appkit::HostView>() {
+                host.set_combines_accessibility_title(heading_level.is_some());
+            }
+            if let Some(level) = heading_level {
+                let number = NSNumber::new_i32(i32::from(level));
+                // SAFETY: `NSNumber` is a valid property-list object for `AXHeading`'s `AXValue`.
+                unsafe {
+                    element.setAccessibilityValue(Some(AsRef::<AnyObject>::as_ref(&*number)));
+                }
+            }
         }
     }
 
