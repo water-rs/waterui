@@ -403,6 +403,7 @@ fn trials() -> Vec<Trial> {
     #[cfg(target_os = "macos")]
     tests.extend(row_major_table::trials());
     tests.extend(disclosure::trials());
+    #[cfg(feature = "link")]
     tests.extend(link::trials());
     #[cfg(all(feature = "native-test", feature = "gpu_surface"))]
     tests.extend(capture_colour::trials());

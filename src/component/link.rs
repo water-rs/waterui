@@ -16,7 +16,6 @@ use waterui_url::Url;
 /// Resolved configuration passed to [`NativeBackend`](waterui_backend_core::NativeBackend)
 /// for a [`Link`].
 #[derive(Debug, Clone)]
-#[non_exhaustive]
 pub struct LinkConfig<S> {
     label: ControlLabel<S>,
     url: Computed<Url>,

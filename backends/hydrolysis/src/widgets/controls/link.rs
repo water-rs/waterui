@@ -3,9 +3,10 @@
 //! activation through `waterkit-deeplink`.
 
 use crate::renderer::{
-    HeldChild, HydroState, HydrolysisRenderer, InteractionKey, RenderContext, RetainedSubview,
-    SemanticCore, WidgetRenderContext,
+    HeldChild, HydroState, HydrolysisRenderer, InteractionKey, RetainedSubview, WidgetRenderContext,
 };
+#[cfg(feature = "accessibility")]
+use crate::renderer::{RenderContext, SemanticCore};
 use crate::text::TextEngine;
 use crate::theme::WidgetTheme;
 #[cfg(feature = "accessibility")]
@@ -96,35 +97,28 @@ impl<E: TextEngine> LinkRenderState<E> {
 }
 
 /// Emits a link's accessibility node from its retained state.
-#[cfg_attr(not(feature = "accessibility"), allow(clippy::missing_const_for_fn))]
+#[cfg(feature = "accessibility")]
 pub fn link_accessibility<E: TextEngine>(
     renderer: &mut SemanticCore<E>,
     ctx: Option<RenderContext>,
     state: &Rc<RefCell<LinkRenderState<E>>>,
     env: &Environment,
 ) {
-    #[cfg(feature = "accessibility")]
-    {
-        let label = state.borrow().config.label().clone();
-        let activate_state = Rc::clone(state);
-        control_accessibility(
-            renderer,
-            ctx,
-            state,
-            &label,
-            (AccessibilityNodeRole::Link, None),
-            env,
-            move |_renderer, _env| {
-                let target_url = activate_state.borrow().config.url().snapshot();
-                open_url(target_url.as_str());
-                true
-            },
-        );
-    }
-    #[cfg(not(feature = "accessibility"))]
-    {
-        let _ = (renderer, ctx, state, env);
-    }
+    let label = state.borrow().config.label().clone();
+    let activate_state = Rc::clone(state);
+    control_accessibility(
+        renderer,
+        ctx,
+        state,
+        &label,
+        (AccessibilityNodeRole::Link, None),
+        env,
+        move |_renderer, _env| {
+            let target_url = activate_state.borrow().config.url().snapshot();
+            open_url(target_url.as_str());
+            true
+        },
+    );
 }
 
 /// Measures a retained link leaf from its [`LinkRenderState`].
@@ -151,8 +145,8 @@ pub fn render_link_node<E: TextEngine>(
     state: &Rc<RefCell<LinkRenderState<E>>>,
     env: &Environment,
 ) {
-    let hidden = ctx.renderer_mut().is_accessibility_hidden(env);
-    if !hidden {
+    #[cfg(feature = "accessibility")]
+    if !ctx.renderer_mut().is_accessibility_hidden(env) {
         let render_ctx = ctx.render_context();
         link_accessibility(ctx.renderer_mut(), Some(render_ctx), state, env);
     }
