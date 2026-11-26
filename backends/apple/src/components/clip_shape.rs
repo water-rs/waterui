@@ -119,7 +119,7 @@ fn uneven_rounded_rect(tl: f64, tr: f64, br: f64, bl: f64, bounds: Rect) -> CFRe
 /// Resolves the shape into a `CGPath` in `bounds`, preferring the
 /// structured kind over the unit-space commands so a normalized radius
 /// still resolves against the shorter side.
-fn shape_path(kind: ShapeKind, commands: &[PathCommand], bounds: Rect) -> CFRetained<CGPath> {
+pub fn shape_path(kind: ShapeKind, commands: &[PathCommand], bounds: Rect) -> CFRetained<CGPath> {
     let shorter = bounds.size.width.min(bounds.size.height);
     match kind {
         ShapeKind::Rect => shape::rect_path(bounds),

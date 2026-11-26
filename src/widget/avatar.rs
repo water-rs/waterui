@@ -2,101 +2,139 @@
 //!
 //! An avatar is an image clipped to a shape, with something legible to show
 //! when there is no image: the initials of a name, or a view the caller
-//! supplies. It is a Rust-side composition of primitives that already exist —
-//! a stack, a frame, a clip, theme tokens — and ships no FFI type of its own.
+//! supplies. Backends realize [`AvatarConfig`] directly with platform-native or
+//! theme-driven styling.
 
 use alloc::string::String;
-use alloc::vec::Vec;
+use core::fmt;
 
 #[cfg(feature = "image")]
 use crate::Url;
-use crate::metadata::secure::DynamicRange;
+use crate::metadata::secure::{DynamicRange, DynamicRangeMetadata};
 use crate::prelude::*;
-use crate::theme::color::{MutedForeground, SurfaceVariant};
 use nami::signal::{IntoComputed, IntoSignal};
 use unicode_segmentation::UnicodeSegmentation as _;
-use waterui_accessibility::{AccessibilityChildren, AccessibilityRole};
 use waterui_controls::{IntoLabel, Label, SemanticLabel};
-use waterui_core::OneOf2;
+use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 use waterui_core::handler::ViewBuilder;
-#[cfg(feature = "image")]
-use waterui_layout::ContentMode;
-use waterui_layout::stack::zstack;
-use waterui_shape::{Circle, PathCommand, Shape, ShapeExt, ShapeKind};
-use waterui_text::Text;
+use waterui_core::metadata::Metadata;
+use waterui_core::native::{Native, NativeView};
+use waterui_shape::{ClipShape, Shape};
 
-/// The side length an avatar takes when the caller names none, in points.
-///
-/// A list row's leading avatar, which is what most of them are.
-const DEFAULT_SIZE: f32 = 40.0;
-
-/// Initial glyphs are drawn at this fraction of the avatar's inner side.
-///
-/// Two capitals at 40% of a circle's diameter sit inside it with the optical
-/// margin a monogram wants; larger and the letters touch the clip.
-const INITIALS_SCALE: f32 = 0.4;
-
-/// A shape captured by value so an avatar can both clip to it and fill behind
-/// it.
-///
-/// [`Shape`] is a producer of path commands, not a value: `ClipShape::new`
-/// consumes one and `ShapeExt::fill` consumes another, while an avatar needs
-/// the same silhouette for its clip, its container fill, and its ring. Holding
-/// the resolved [`ShapeKind`] and unit-space commands lets one authored shape
-/// answer all three. The kind is what backends act on — a normalized radius
-/// resolved per axis turns a circular corner elliptical — so it is carried
-/// alongside the commands rather than derived from them.
+/// Decorative ring rendered around an [`Avatar`].
 #[derive(Debug, Clone)]
-struct CapturedShape {
-    kind: ShapeKind,
-    commands: Vec<PathCommand>,
-}
-
-impl CapturedShape {
-    fn new(shape: &impl Shape) -> Self {
-        Self {
-            kind: shape.shape_kind(),
-            commands: shape.path().into_iter().collect(),
-        }
-    }
-
-    /// The corner radius, in points, that a [`Border`] must use to trace this
-    /// shape around a square of `side` points.
-    ///
-    /// An avatar's box is square, so a circle, an ellipse inscribed in it and
-    /// a capsule are the same outline: half the side.
-    fn corner_radius(&self, side: f32) -> f32 {
-        match self.kind {
-            ShapeKind::Rect | ShapeKind::CustomPath => 0.0,
-            ShapeKind::Circle | ShapeKind::Ellipse | ShapeKind::Capsule => side / 2.0,
-            ShapeKind::RoundedRect { radii } => radii
-                .resolve_clockwise(side)
-                .into_iter()
-                .reduce(f32::max)
-                .unwrap_or(0.0),
-        }
-    }
-}
-
-impl Shape for CapturedShape {
-    type Iter = Vec<PathCommand>;
-
-    fn path(&self) -> Self::Iter {
-        self.commands.clone()
-    }
-
-    fn shape_kind(&self) -> ShapeKind {
-        self.kind
-    }
-}
-
-impl ShapeExt for CapturedShape {}
-
-/// The outline drawn around an avatar.
-#[derive(Debug)]
-struct Ring {
+pub struct AvatarRing {
     color: Color,
     width: f32,
+}
+
+impl AvatarRing {
+    /// Creates a ring with `color` and stroke `width` in logical points.
+    #[must_use]
+    pub const fn new(color: Color, width: f32) -> Self {
+        Self { color, width }
+    }
+
+    /// Returns the ring stroke color.
+    #[must_use]
+    pub const fn color(&self) -> &Color {
+        &self.color
+    }
+
+    /// Returns the ring stroke width in logical points.
+    #[must_use]
+    pub const fn width(&self) -> f32 {
+        self.width
+    }
+}
+
+/// Configuration passed to a backend realizing an [`Avatar`].
+#[derive(Debug)]
+pub struct AvatarConfig<S> {
+    spoken: Computed<Str>,
+    monogram: Option<Computed<Str>>,
+    fallback: Option<S>,
+    #[cfg(feature = "image")]
+    image: Option<Computed<Url>>,
+    shape: Option<ClipShape>,
+    side: Option<f32>,
+    ring: Option<AvatarRing>,
+}
+
+impl<S> AvatarConfig<S> {
+    /// Returns the resolved accessibility label for this avatar.
+    #[must_use]
+    pub const fn spoken(&self) -> &Computed<Str> {
+        &self.spoken
+    }
+
+    /// Returns the reactive monogram text derived from the avatar's name, if no
+    /// custom fallback view was supplied.
+    #[must_use]
+    pub const fn monogram(&self) -> Option<&Computed<Str>> {
+        self.monogram.as_ref()
+    }
+
+    /// Returns the custom fallback child view slot, if supplied.
+    #[must_use]
+    pub const fn fallback(&self) -> Option<&S> {
+        self.fallback.as_ref()
+    }
+
+    /// Takes ownership of the custom fallback child view slot, if supplied.
+    pub const fn take_fallback(&mut self) -> Option<S> {
+        self.fallback.take()
+    }
+
+    /// Returns the optional remote or local image URL signal.
+    #[cfg(feature = "image")]
+    #[must_use]
+    pub const fn image(&self) -> Option<&Computed<Url>> {
+        self.image.as_ref()
+    }
+
+    /// Returns the optional clip shape requested by `.shape(...)`.
+    #[must_use]
+    pub const fn shape(&self) -> Option<&ClipShape> {
+        self.shape.as_ref()
+    }
+
+    /// Returns the optional side length in points requested by `.size(...)` / `.side(...)`.
+    #[must_use]
+    pub const fn side(&self) -> Option<f32> {
+        self.side
+    }
+
+    /// Returns the optional ring outline requested by `.ring(...)`.
+    #[must_use]
+    pub const fn ring(&self) -> Option<&AvatarRing> {
+        self.ring.as_ref()
+    }
+}
+
+impl<S: 'static> MapSlots<S> for AvatarConfig<S> {
+    type With<T: 'static> = AvatarConfig<T>;
+
+    fn map_slots<T: 'static>(self, f: impl Fn(S) -> T + Clone + 'static) -> Self::With<T> {
+        AvatarConfig {
+            spoken: self.spoken,
+            monogram: self.monogram,
+            fallback: self.fallback.map(f),
+            #[cfg(feature = "image")]
+            image: self.image,
+            shape: self.shape,
+            side: self.side,
+            ring: self.ring,
+        }
+    }
+}
+
+impl<S: 'static> NativeView for AvatarConfig<S> {}
+
+impl<S> fmt::Display for AvatarConfig<S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Avatar")
+    }
 }
 
 /// Default monogram fallback built from the avatar's name.
@@ -111,32 +149,33 @@ mod sealed {
 /// Fallback view builder used by [`Avatar`].
 #[doc(hidden)]
 pub trait AvatarFallback: sealed::Sealed + 'static {
-    /// Concrete view type built when the avatar has no picture yet.
-    type Output: View;
-
-    /// Builds the fallback view for the resolved spoken name and inner box side.
-    fn build_fallback(self, spoken: Computed<Str>, inner: f32) -> Self::Output;
+    /// Resolves this fallback into either a derived monogram signal or a child slot.
+    fn build_fallback<S: ChildSlot>(
+        self,
+        spoken: &Computed<Str>,
+    ) -> (Option<Computed<Str>>, Option<S>);
 }
 
 impl sealed::Sealed for Monogram {}
 
 impl AvatarFallback for Monogram {
-    type Output = Text;
-
-    fn build_fallback(self, spoken: Computed<Str>, inner: f32) -> Self::Output {
-        Text::new(spoken.map(|name| initials(&name)).computed())
-            .font_size(f64::from(inner * INITIALS_SCALE))
-            .color(Color::new(MutedForeground))
+    fn build_fallback<S: ChildSlot>(
+        self,
+        spoken: &Computed<Str>,
+    ) -> (Option<Computed<Str>>, Option<S>) {
+        let monogram = spoken.map(|name| initials(&name)).computed();
+        (Some(monogram), None)
     }
 }
 
 impl<F: ViewBuilder> sealed::Sealed for F {}
 
 impl<F: ViewBuilder> AvatarFallback for F {
-    type Output = F::Output;
-
-    fn build_fallback(self, _spoken: Computed<Str>, _inner: f32) -> Self::Output {
-        self.build()
+    fn build_fallback<S: ChildSlot>(
+        self,
+        _spoken: &Computed<Str>,
+    ) -> (Option<Computed<Str>>, Option<S>) {
+        (None, Some(S::from_view(self.build())))
     }
 }
 
@@ -176,9 +215,9 @@ pub struct Avatar<F = Monogram> {
     fallback: F,
     #[cfg(feature = "image")]
     image: Option<Computed<Url>>,
-    shape: CapturedShape,
-    size: f32,
-    ring: Option<Ring>,
+    shape: Option<ClipShape>,
+    side: Option<f32>,
+    ring: Option<AvatarRing>,
     dynamic_range: Computed<DynamicRange>,
 }
 
@@ -216,8 +255,8 @@ impl<F> Avatar<F> {
             fallback,
             #[cfg(feature = "image")]
             image: None,
-            shape: CapturedShape::new(&Circle),
-            size: DEFAULT_SIZE,
+            shape: None,
+            side: None,
             ring: None,
             // The issue this component answers, water-rs/waterui#93, is one
             // line: ban HDR by default.
@@ -249,19 +288,15 @@ impl<F> Avatar<F> {
     /// # }
     /// ```
     #[must_use]
-    #[expect(
-        clippy::needless_pass_by_value,
-        reason = "a shape is authored inline (`.shape(RoundedRectangle::new(16.0))`); taking a reference would force the caller to bind it first, and `ClipShape::new` takes it by value for the same reason"
-    )]
     pub fn shape(mut self, shape: impl Shape) -> Self {
-        self.shape = CapturedShape::new(&shape);
+        self.shape = Some(ClipShape::new(shape));
         self
     }
 
     /// Sets the avatar's side length in points. Avatars are square.
     #[must_use]
     pub const fn side(mut self, side: f32) -> Self {
-        self.size = side;
+        self.side = Some(side);
         self
     }
 
@@ -271,10 +306,7 @@ impl<F> Avatar<F> {
     /// changes how much room the avatar takes in a row.
     #[must_use]
     pub fn ring(mut self, color: impl IntoSignal<Color> + 'static, width: f32) -> Self {
-        self.ring = Some(Ring {
-            color: Color::from_signal(color),
-            width,
-        });
+        self.ring = Some(AvatarRing::new(Color::from_signal(color), width));
         self
     }
 
@@ -293,17 +325,21 @@ impl<F> Avatar<F> {
         self.dynamic_range = range.into_computed();
         self
     }
-}
 
-impl<F: AvatarFallback> View for Avatar<F> {
-    fn body(self, env: &Environment) -> impl View {
+    fn into_parts<S: ChildSlot>(
+        self,
+        env: &Environment,
+    ) -> (AvatarConfig<S>, Computed<DynamicRange>)
+    where
+        F: AvatarFallback,
+    {
         let Self {
             label,
             fallback,
             #[cfg(feature = "image")]
             image,
             shape,
-            size,
+            side,
             ring,
             dynamic_range,
         } = self;
@@ -313,41 +349,38 @@ impl<F: AvatarFallback> View for Avatar<F> {
         // signal to take.
         let name = label.resolve(env).accessibility_label();
         let spoken = name.map(|name| name.to_plain()).computed();
+        let (monogram, fallback) = fallback.build_fallback::<S>(&spoken);
 
-        let ring_width = ring.as_ref().map_or(0.0, |ring| ring.width);
-        let inner = f32::mul_add(ring_width, -2.0, size).max(0.0);
-
-        let fallback = fallback.build_fallback(spoken.clone(), inner);
-
-        #[cfg(feature = "image")]
-        let picture = image.map(|source| {
-            Photo::new(source)
-                .resizable()
-                .content_mode(ContentMode::Fill)
-        });
-        #[cfg(not(feature = "image"))]
-        let picture = ();
-
-        let content = zstack((fallback, picture))
-            .size(inner, inner)
-            .background(shape.clone().fill(Color::new(SurfaceVariant)))
-            .clip(shape.clone());
-
-        let framed = match ring {
-            Some(ring) => OneOf2::A(content.padding_with(ring_width).border_with(
-                Border::new(ring.color, ring.width).corner_radius(shape.corner_radius(size)),
-            )),
-            None => OneOf2::B(content),
+        let config = AvatarConfig {
+            spoken,
+            monogram,
+            fallback,
+            #[cfg(feature = "image")]
+            image,
+            shape,
+            side,
+            ring,
         };
+        (config, dynamic_range)
+    }
+}
 
-        framed
-            .a11y_label(spoken)
-            .a11y_role(AccessibilityRole::Image)
-            // The initials and the picture are the avatar's own chrome. Without
-            // this the monogram would announce itself a second time, under the
-            // node that already carries the person's full name.
-            .a11y_children(AccessibilityChildren::ExcludeDescendants)
-            .dynamic_range(dynamic_range)
+impl<F: AvatarFallback> View for Avatar<F> {
+    fn body(self, env: &Environment) -> impl View {
+        let (config, dynamic_range) = self.into_parts::<AnyView>(env);
+        Metadata::new(
+            Native::new(config),
+            DynamicRangeMetadata::new(dynamic_range),
+        )
+    }
+
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        let (config, dynamic_range) = self.into_parts::<B::Slot>(env);
+        Metadata::new(
+            Native::new(config),
+            DynamicRangeMetadata::new(dynamic_range),
+        )
+        .dispatch(backend, env, cx)
     }
 }
 
@@ -399,11 +432,12 @@ fn first_grapheme(word: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{CapturedShape, avatar, initials};
+    use super::{Avatar, AvatarRing, avatar, initials};
     use crate::metadata::secure::{DynamicRange, DynamicRangeMetadata};
-    use nami::{Signal as _, binding};
-    use waterui_core::{Environment, backend::peel_metadata};
-    use waterui_shape::{Circle, CornerRadius, RoundedRectangle, ShapeKind};
+    use nami::{Signal, binding};
+    use waterui_core::{AnyView, Environment, backend::peel_metadata};
+    use waterui_shape::{ClipShape, CornerRadius, RoundedRectangle, ShapeKind};
+    use waterui_text::text;
 
     #[test]
     fn an_avatar_is_standard_dynamic_range_unless_asked_otherwise() {
@@ -470,23 +504,29 @@ mod tests {
     }
 
     #[test]
-    fn a_ring_traces_the_shape_it_surrounds() {
-        assert!((CapturedShape::new(&Circle).corner_radius(40.0) - 20.0).abs() < f32::EPSILON);
-        assert!(
-            (CapturedShape::new(&RoundedRectangle::new(CornerRadius::fraction(0.25)))
-                .corner_radius(40.0)
-                - 10.0)
-                .abs()
-                < f32::EPSILON
-        );
-        assert!(
-            (CapturedShape::new(&RoundedRectangle::new(12.0)).corner_radius(40.0) - 12.0).abs()
-                < f32::EPSILON
-        );
+    fn avatar_config_carries_semantic_attributes() {
+        let env = Environment::new();
+        let (config, _) = avatar("Ada Lovelace").into_parts::<AnyView>(&env);
+        assert_eq!(&*config.spoken().snapshot(), "Ada Lovelace");
+        assert_eq!(config.monogram().map(Signal::snapshot), Some("AL".into()));
+        assert!(config.fallback().is_none());
+        assert!(config.shape().is_none());
+        assert!(config.side().is_none());
+        assert!(config.ring().is_none());
+
+        let (custom, _) = Avatar::new("Katherine Johnson", || text("KJ"))
+            .shape(RoundedRectangle::new(CornerRadius::fraction(0.25)))
+            .side(48.0)
+            .ring(crate::prelude::Color::srgb(255, 0, 0), 2.0)
+            .into_parts::<AnyView>(&env);
+        assert!(custom.monogram().is_none());
+        assert!(custom.fallback().is_some());
         assert!(matches!(
-            CapturedShape::new(&Circle).kind,
-            ShapeKind::Circle
+            custom.shape().map(ClipShape::kind),
+            Some(ShapeKind::RoundedRect { .. })
         ));
+        assert_eq!(custom.side(), Some(48.0));
+        assert_eq!(custom.ring().map(AvatarRing::width), Some(2.0));
     }
 
     #[test]

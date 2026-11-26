@@ -8,6 +8,8 @@
 pub mod accessibility_identifier;
 pub mod accessibility_metadata;
 pub mod anchored_overlay;
+#[cfg(waterui_feature = "avatar")]
+pub mod avatar;
 pub mod badge;
 pub mod border;
 pub mod button;

@@ -9,12 +9,12 @@ use accesskit::{
 };
 use hydrolysis::draw::{BlendSpace, MaterialRegistry};
 use hydrolysis::theme::{
-    BadgeLook, ButtonLook, ButtonSpec, CardLook, CheckboxLook, DialogLook, DisclosureLook,
-    DisclosureSpec, FloatingLook, GlassLook, IndicatorLook, LinearProgressLook, ListLook, ListSpec,
-    MenuLook, MenuPickerLook, MenuSpec, NavigationBarLook, NavigationSpec, PickerSpec,
-    ProgressSpec, RadioGroupLook, ScrollIndicatorLook, SegmentedLook, SegmentedSpec, SheetLook,
-    SliderLook, SliderSpec, SnackbarLook, StepperLook, StepperSpec, SwitchLook, TableLook,
-    TabsLook, TabsSpec, TextFieldLook, TextFieldSpec, ToggleSpec, WidgetTheme,
+    AvatarLook, BadgeLook, ButtonLook, ButtonSpec, CardLook, CheckboxLook, DialogLook,
+    DisclosureLook, DisclosureSpec, FloatingLook, GlassLook, IndicatorLook, LinearProgressLook,
+    ListLook, ListSpec, MenuLook, MenuPickerLook, MenuSpec, NavigationBarLook, NavigationSpec,
+    PickerSpec, ProgressSpec, RadioGroupLook, ScrollIndicatorLook, SegmentedLook, SegmentedSpec,
+    SheetLook, SliderLook, SliderSpec, SnackbarLook, StepperLook, StepperSpec, SwitchLook,
+    TableLook, TabsLook, TabsSpec, TextFieldLook, TextFieldSpec, ToggleSpec, WidgetTheme,
 };
 use hydrolysis::{
     AccessibilityActivationPointError, FontFamilyResolution, HeadlessColorFormat, HeadlessRuntime,
@@ -156,6 +156,10 @@ impl WidgetTheme for ErasedStyle {
 
     fn sheet(&self, env: &Environment) -> SheetLook {
         self.0.sheet(env)
+    }
+
+    fn avatar(&self, env: &Environment) -> AvatarLook {
+        self.0.avatar(env)
     }
 }
 
