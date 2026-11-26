@@ -1679,14 +1679,30 @@ pub fn button<L: IntoLabel>(label: L) -> Button<L::Kind, NoAction> {
 
 #[cfg(all(test, feature = "menu"))]
 mod tests {
+    use core::any::Any;
+
     use super::*;
-    use waterui_core::Signal;
+    use waterui_core::{Native, NativeView, Signal};
+
+    struct SearchIconProbe(bool);
 
     #[derive(Clone, Copy)]
     struct SearchIcon;
 
+    impl NativeView for SearchIcon {
+        fn realize_provided(self, context: &mut dyn Any, _env: &Environment) -> Result<(), Self> {
+            if let Some(probe) = context.downcast_mut::<SearchIconProbe>() {
+                probe.0 = true;
+                return Ok(());
+            }
+            Err(self)
+        }
+    }
+
     impl View for SearchIcon {
-        fn body(self, _env: &Environment) -> impl View {}
+        fn body(self, _env: &Environment) -> impl View {
+            Native::new(self)
+        }
     }
 
     #[test]
@@ -1713,7 +1729,9 @@ mod tests {
             .label()
             .icon_slot::<AnyView>()
             .expect("label icon slot should be preserved");
-        assert!(icon.build().downcast_ref::<SearchIcon>().is_some());
+        let mut probe = SearchIconProbe(false);
+        assert!(icon.probe(&mut probe, &Environment::default()));
+        assert!(probe.0);
     }
 
     #[test]
@@ -1754,7 +1772,9 @@ mod tests {
             .label()
             .icon_slot::<AnyView>()
             .expect("icon should be preserved when only the spoken text is overridden");
-        assert!(icon.build().downcast_ref::<SearchIcon>().is_some());
+        let mut probe = SearchIconProbe(false);
+        assert!(icon.probe(&mut probe, &Environment::default()));
+        assert!(probe.0);
     }
 
     #[test]

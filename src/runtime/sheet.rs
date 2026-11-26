@@ -45,10 +45,12 @@ use alloc::vec::Vec;
 use core::fmt;
 
 use nami::Binding;
-use waterui_core::handler::{AnyViewBuilder, Handler, SharedAction, ViewBuilder, shared_action};
+use waterui_controls::slot::SlotBuilder;
+use waterui_core::backend::{Backend, ChildSlot, MapSlots};
+use waterui_core::handler::{Handler, SharedAction, ViewBuilder, shared_action};
 use waterui_core::metadata::MetadataKey;
 use waterui_core::plugin::Plugin;
-use waterui_core::{AnyView, Environment};
+use waterui_core::{AnyView, Environment, Metadata, View};
 use waterui_text::text::{IntoText, Text};
 
 /// Medium detent proportion of available window height (matches iOS `mediumDetent` / M3 50% sheet).
@@ -151,19 +153,31 @@ impl Plugin for SheetContentScope {}
 ///
 /// One sheet is presented per window at a time; a second one presented while
 /// one is up waits in presentation order.
-#[derive(Clone)]
-pub struct Sheet {
+pub struct Sheet<S = AnyView> {
     is_presented: Binding<bool>,
-    content: AnyViewBuilder<AnyView>,
+    content: SlotBuilder<S>,
     detents: Vec<SheetDetent>,
     dismissible: bool,
     on_dismiss: Option<SharedAction>,
     label: Option<Text>,
 }
 
-impl MetadataKey for Sheet {}
+impl<S> Clone for Sheet<S> {
+    fn clone(&self) -> Self {
+        Self {
+            is_presented: self.is_presented.clone(),
+            content: self.content.clone(),
+            detents: self.detents.clone(),
+            dismissible: self.dismissible,
+            on_dismiss: self.on_dismiss.clone(),
+            label: self.label.clone(),
+        }
+    }
+}
 
-impl fmt::Debug for Sheet {
+impl<S: 'static> MetadataKey for Sheet<S> {}
+
+impl<S> fmt::Debug for Sheet<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Sheet")
             .field("detents", &self.detents)
@@ -174,22 +188,24 @@ impl fmt::Debug for Sheet {
     }
 }
 
-impl Sheet {
+impl<V: View> Sheet<V> {
     /// Creates a modal sheet bound to `is_presented` presenting `content`.
     ///
     /// Defaults to `[SheetDetent::Large]` and `dismissible = true`.
     #[must_use]
-    pub fn new(is_presented: &Binding<bool>, content: impl ViewBuilder) -> Self {
+    pub fn new(is_presented: &Binding<bool>, content: impl ViewBuilder<Output = V>) -> Self {
         Self {
             is_presented: is_presented.clone(),
-            content: AnyViewBuilder::new(content).erase(),
+            content: SlotBuilder::new(move || content.build()),
             detents: vec![SheetDetent::Large],
             dismissible: true,
             on_dismiss: None,
             label: None,
         }
     }
+}
 
+impl<S> Sheet<S> {
     /// Sets the supported detents for this sheet.
     ///
     /// An empty iterator leaves the default `[SheetDetent::Large]`.
@@ -262,9 +278,10 @@ impl Sheet {
         self.label.as_ref()
     }
 
-    /// Builds a fresh content view for a presentation.
+    /// Builds a fresh content slot for a presentation.
     #[doc(hidden)]
-    pub fn build_content(&self) -> AnyView {
+    #[must_use]
+    pub fn build_content(&self) -> S {
         self.content.build()
     }
 
@@ -290,6 +307,63 @@ impl Sheet {
             handler.run(env);
         }
         self.is_presented.set(false);
+    }
+}
+
+impl<S: 'static> Sheet<S> {
+    /// Maps the sheet's built content slot through `f`.
+    #[must_use]
+    pub fn map_slots<T: 'static>(self, f: impl Fn(S) -> T + Clone + 'static) -> Sheet<T> {
+        Sheet {
+            is_presented: self.is_presented,
+            content: self.content.map_slot(f),
+            detents: self.detents,
+            dismissible: self.dismissible,
+            on_dismiss: self.on_dismiss,
+            label: self.label,
+        }
+    }
+}
+
+impl<S: 'static> MapSlots<S> for Sheet<S> {
+    type With<T: 'static> = Sheet<T>;
+
+    fn map_slots<T: 'static>(self, f: impl Fn(S) -> T + Clone + 'static) -> Sheet<T> {
+        Self::map_slots(self, f)
+    }
+}
+
+/// View wrapper that attaches a [`Sheet`] with its modal content projected
+/// into the backend's child slot without `AnyView` erasure.
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct SheetView<Content, V> {
+    content: Content,
+    sheet: Sheet<V>,
+}
+
+impl<Content, V> SheetView<Content, V> {
+    /// Creates a wrapper attaching `sheet` to `content`.
+    #[must_use]
+    pub const fn new(content: Content, sheet: Sheet<V>) -> Self {
+        Self { content, sheet }
+    }
+}
+
+impl<Content: View, V: View> View for SheetView<Content, V> {
+    fn body(self, _env: &Environment) -> impl View {
+        Metadata::new(self.content, self.sheet.map_slots(AnyView::new))
+    }
+
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        backend.metadata(
+            Metadata::new(
+                B::Slot::from_view(self.content),
+                self.sheet.map_slots(B::Slot::from_view),
+            ),
+            env,
+            cx,
+        )
     }
 }
 
@@ -346,5 +420,78 @@ mod tests {
         sheet.dismiss_handle().dismiss();
         assert!(!presented.snapshot());
         assert_eq!(calls.get(), 0);
+    }
+
+    #[test]
+    fn sheet_view_dispatches_typed_slot_without_anyview() {
+        use core::any::TypeId;
+
+        use waterui_core::backend::{Backend, ChildSlot, cast};
+        use waterui_core::metadata::MetadataKey;
+        use waterui_core::view::hook::{HookList, HookableView};
+        use waterui_core::{AnyView, Metadata, NativeView, View};
+
+        use crate::ViewExt as _;
+
+        struct ProbeSheetContent;
+
+        impl View for ProbeSheetContent {
+            fn body(self, _env: &Environment) -> impl View {}
+        }
+
+        struct RecordedSlot(TypeId);
+
+        impl ChildSlot for RecordedSlot {
+            fn from_view<V: View>(_view: V) -> Self {
+                Self(TypeId::of::<V>())
+            }
+        }
+
+        struct CapturingBackend {
+            seen: Option<TypeId>,
+        }
+
+        impl Backend for CapturingBackend {
+            type Output = ();
+            type Ctx = ();
+            type Slot = RecordedSlot;
+
+            fn native<T: NativeView + 'static>(&mut self, _native: T, _env: &Environment, (): ()) {}
+
+            fn metadata<K: MetadataKey>(
+                &mut self,
+                metadata: Metadata<K, Self::Slot>,
+                _env: &Environment,
+                (): (),
+            ) {
+                if let Ok(sheet) = cast::<K, Sheet<RecordedSlot>>(metadata.value) {
+                    self.seen = Some(sheet.build_content().0);
+                }
+            }
+
+            fn erased(&mut self, _view: AnyView, _env: &Environment, (): ()) {
+                panic!("SheetView must dispatch statically without AnyView");
+            }
+
+            fn scoped<H: HookList, V: View>(
+                &mut self,
+                _hooks: H,
+                view: V,
+                env: &Environment,
+                (): (),
+            ) {
+                view.dispatch(self, env, ());
+            }
+
+            fn hookable<T: HookableView>(&mut self, view: T, env: &Environment, (): ()) {
+                self.native(view, env, ());
+            }
+        }
+
+        let presented = Binding::new(true);
+        let view = ().sheet(Sheet::new(&presented, || ProbeSheetContent));
+        let mut backend = CapturingBackend { seen: None };
+        view.dispatch(&mut backend, &Environment::new(), ());
+        assert_eq!(backend.seen, Some(TypeId::of::<ProbeSheetContent>()));
     }
 }

@@ -10,7 +10,8 @@
 //! These extensions help create a fluent API for constructing user interfaces.
 
 use crate::animation::{FrameRate, FrameRateVote};
-use crate::sheet::Sheet;
+use crate::metadata::anchored_overlay::{AnchoredOverlay, AnchoredOverlayView};
+use crate::sheet::{Sheet, SheetView};
 #[cfg(feature = "snackbar")]
 use crate::snackbar::SnackbarHost;
 use core::future::Future;
@@ -1348,11 +1349,11 @@ pub trait ViewExt: View + Sized {
     ///     })
     ///     .anchored_overlay(AnchoredOverlay::new(&open, move || text!("Popover")).edge(AnchorEdge::Bottom));
     /// ```
-    fn anchored_overlay(
+    fn anchored_overlay<V: View>(
         self,
-        overlay: crate::metadata::anchored_overlay::AnchoredOverlay,
-    ) -> Metadata<crate::metadata::anchored_overlay::AnchoredOverlay, Self> {
-        Metadata::new(self, overlay)
+        overlay: AnchoredOverlay<V>,
+    ) -> AnchoredOverlayView<Self, V> {
+        AnchoredOverlayView::new(self, overlay)
     }
 
     /// Presents `dialog` window-modal while its `is_presented` binding is
@@ -1418,8 +1419,8 @@ pub trait ViewExt: View + Sized {
     ///         .detents([SheetDetent::Medium, SheetDetent::Large]),
     ///     );
     /// ```
-    fn sheet(self, sheet: Sheet) -> Metadata<Sheet, Self> {
-        Metadata::new(self, sheet)
+    fn sheet<V: View>(self, sheet: Sheet<V>) -> SheetView<Self, V> {
+        SheetView::new(self, sheet)
     }
 
     /// Hosts a [`SnackbarManager`](crate::snackbar::SnackbarManager) and its

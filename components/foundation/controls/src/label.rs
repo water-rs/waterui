@@ -909,7 +909,7 @@ impl LabelKind for ErasedLabel {
             {
                 *font = default_font;
             }
-            S::from_view(label.body_erased(mode))
+            S::from_view(ResolvedErasedLabel { label, mode })
         })
     }
 
@@ -920,7 +920,52 @@ impl LabelKind for ErasedLabel {
         env: &Environment,
         cx: B::Ctx,
     ) -> B::Output {
-        self.body_erased(mode).dispatch(backend, env, cx)
+        match self {
+            Self::Semantic {
+                text,
+                icon,
+                icon_position,
+                spacing,
+                font,
+                ..
+            } => {
+                let text = match font {
+                    Some(font) => text.font(font),
+                    None => text,
+                };
+                match mode {
+                    LabelDisplayMode::Hidden => ().dispatch(backend, env, cx),
+                    LabelDisplayMode::TitleOnly => text.dispatch(backend, env, cx),
+                    LabelDisplayMode::IconOnly => icon
+                        .expect(
+                            "effective_display_mode answers IconOnly only for a label with an icon",
+                        )
+                        .build()
+                        .dispatch(backend, env, cx),
+                    LabelDisplayMode::TitleAndIcon | LabelDisplayMode::Automatic => {
+                        let icon = icon
+                            .expect(
+                                "effective_display_mode answers TitleAndIcon only for a label with an icon",
+                            )
+                            .build();
+                        match icon_position {
+                            IconPosition::Leading => hstack((icon, text))
+                                .spacing(spacing)
+                                .dispatch(backend, env, cx),
+                            IconPosition::Trailing => hstack((text, icon))
+                                .spacing(spacing)
+                                .dispatch(backend, env, cx),
+                        }
+                    }
+                }
+            }
+            Self::Custom { view, .. } => match mode {
+                LabelDisplayMode::Hidden | LabelDisplayMode::IconOnly => {
+                    ().dispatch(backend, env, cx)
+                }
+                _ => view.build().dispatch(backend, env, cx),
+            },
+        }
     }
 
     fn body_erased(self, mode: LabelDisplayMode) -> AnyView {
@@ -971,17 +1016,18 @@ impl LabelKind for ErasedLabel {
     }
 }
 
-enum ControlLabelIcon<S> {
-    Slot(IconSlot<S>),
-    Erased(IconSlot<AnyView>),
+struct ResolvedErasedLabel {
+    label: ErasedLabel,
+    mode: LabelDisplayMode,
 }
 
-impl<S> Clone for ControlLabelIcon<S> {
-    fn clone(&self) -> Self {
-        match self {
-            Self::Slot(slot) => Self::Slot(slot.clone()),
-            Self::Erased(slot) => Self::Erased(slot.clone()),
-        }
+impl View for ResolvedErasedLabel {
+    fn body(self, _env: &Environment) -> impl View {
+        self.label.body_erased(self.mode)
+    }
+
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        self.label.dispatch(self.mode, backend, env, cx)
     }
 }
 
@@ -990,7 +1036,7 @@ impl<S> Clone for ControlLabelIcon<S> {
 pub struct ControlLabel<S> {
     build: Rc<dyn Fn(Option<Font>) -> S>,
     semantic_text: Text,
-    icon: Option<ControlLabelIcon<S>>,
+    icon: Option<IconSlot<S>>,
     accessibility_text: Option<Text>,
     accessibility_label: Option<Computed<StyledStr>>,
     display_mode: LabelDisplayMode,
@@ -1083,23 +1129,17 @@ impl<S> ControlLabel<S> {
         self.has_icon
     }
 
-    /// Materializes the label's icon in slot `S`, if this label carries a
-    /// slot-built icon.
+    /// Materializes the label's icon in slot `S`, if this label carries an
+    /// icon.
     #[must_use]
     pub fn build_icon(&self) -> Option<S> {
-        match &self.icon {
-            Some(ControlLabelIcon::Slot(slot)) => Some(slot.build()),
-            Some(ControlLabelIcon::Erased(_)) | None => None,
-        }
+        self.icon.as_ref().map(IconSlot::build)
     }
 
-    /// Borrows the label's typed icon slot when resolved into `S`.
+    /// Borrows the label's typed icon slot when present.
     #[must_use]
     pub const fn icon_slot(&self) -> Option<&IconSlot<S>> {
-        match &self.icon {
-            Some(ControlLabelIcon::Slot(slot)) => Some(slot),
-            Some(ControlLabelIcon::Erased(_)) | None => None,
-        }
+        self.icon.as_ref()
     }
 }
 
@@ -1108,10 +1148,7 @@ impl<S: 'static> ControlLabel<S> {
     #[must_use]
     pub fn map_slots<T: 'static>(self, f: impl Fn(S) -> T + Clone + 'static) -> ControlLabel<T> {
         let build = self.build;
-        let icon = self.icon.map(|icon| match icon {
-            ControlLabelIcon::Slot(slot) => ControlLabelIcon::Slot(slot.map_slot(f.clone())),
-            ControlLabelIcon::Erased(slot) => ControlLabelIcon::Erased(slot),
-        });
+        let icon = self.icon.map(|slot| slot.map_slot(f.clone()));
         ControlLabel {
             build: Rc::new(move |font| f(build(font))),
             semantic_text: self.semantic_text,
@@ -1157,10 +1194,9 @@ impl<V: View> LabelKind for ControlLabel<V> {
     }
 
     fn icon_slot<S: ChildSlot>(&self) -> Option<IconSlot<S>> {
-        match self.icon.as_ref()? {
-            ControlLabelIcon::Slot(slot) => Some(slot.clone().map_slot(S::from_view)),
-            ControlLabelIcon::Erased(slot) => Some(slot.clone().map_slot(S::from_view)),
-        }
+        self.icon
+            .as_ref()
+            .map(|slot| slot.clone().map_slot(S::from_view))
     }
 
     fn with_icon<I: View + Clone>(self, icon: I) -> IconLabel<I> {
@@ -1208,8 +1244,12 @@ impl<V: View> LabelKind for ControlLabel<V> {
         mode: LabelDisplayMode,
     ) -> Rc<dyn Fn(Option<Font>) -> S> {
         let build = self.build;
+        let icon = self.icon;
         Rc::new(move |default_font| match mode {
             LabelDisplayMode::Hidden => S::from_view(()),
+            LabelDisplayMode::IconOnly => icon
+                .as_ref()
+                .map_or_else(|| S::from_view(()), |slot| S::from_view(slot.build())),
             _ => S::from_view(build(default_font)),
         })
     }
@@ -1223,6 +1263,10 @@ impl<V: View> LabelKind for ControlLabel<V> {
     ) -> B::Output {
         match mode {
             LabelDisplayMode::Hidden => ().dispatch(backend, env, cx),
+            LabelDisplayMode::IconOnly => match self.icon {
+                Some(icon) => icon.build().dispatch(backend, env, cx),
+                None => ().dispatch(backend, env, cx),
+            },
             _ => self.build().dispatch(backend, env, cx),
         }
     }
@@ -1230,6 +1274,9 @@ impl<V: View> LabelKind for ControlLabel<V> {
     fn body_erased(self, mode: LabelDisplayMode) -> AnyView {
         match mode {
             LabelDisplayMode::Hidden => AnyView::new(()),
+            LabelDisplayMode::IconOnly => self
+                .icon
+                .map_or_else(|| AnyView::new(()), |icon| AnyView::new(icon.build())),
             _ => AnyView::new(self.build()),
         }
     }
@@ -1822,10 +1869,7 @@ impl<K: LabelKind> Label<K> {
         let resolved = self.resolve(env);
         let mode = resolved.display_mode;
         let semantic_text = resolved.content.semantic_text().clone();
-        let icon = resolved
-            .content
-            .icon_slot::<S>()
-            .map(ControlLabelIcon::Slot);
+        let icon = resolved.content.icon_slot::<S>();
         let accessibility_text = resolved.accessibility_text.clone();
         let accessibility_label = resolved.accessibility_label();
         let has_custom_content = resolved.content.has_custom_content();
@@ -1849,10 +1893,9 @@ impl<K: LabelKind> Label<K> {
     pub fn into_unscoped_control_label(self) -> ControlLabel<Self> {
         let mode = self.display_mode;
         let semantic_text = self.content.semantic_text().clone();
-        let icon = self
-            .content
-            .icon_slot::<AnyView>()
-            .map(ControlLabelIcon::Erased);
+        let icon = self.content.has_icon().then(|| {
+            IconSlot::from_direct_view(self.clone().display_mode(LabelDisplayMode::IconOnly))
+        });
         let accessibility_text = self.accessibility_text.clone();
         let accessibility_label = self.accessibility_label.clone();
         let has_custom_content = self.content.has_custom_content();
@@ -1898,12 +1941,16 @@ pub fn label(text: impl IntoText) -> Label<TitleLabel> {
 #[cfg(test)]
 mod tests {
     use alloc::string::String;
+    use core::any::{Any, TypeId};
 
     use nami::{Computed, Signal};
-    use waterui_core::Environment;
+    use waterui_core::backend::{Backend, ChildSlot};
+    use waterui_core::metadata::MetadataKey;
+    use waterui_core::view::hook::{HookList, HookableView};
+    use waterui_core::{AnyView, Environment, Metadata, Native, NativeView, View};
     use waterui_locale::{TranslationCatalog, locales};
 
-    use super::{IntoLabel, LabelKind};
+    use super::{IntoLabel, Label, LabelDisplayMode, LabelKind};
 
     #[test]
     fn computed_string_value_converts_into_label_text() {
@@ -2044,5 +2091,135 @@ mod tests {
             mapped.build_icon(),
             Some(core::any::TypeId::of::<TestIcon>())
         );
+    }
+
+    struct ProbeMarker(bool);
+
+    #[derive(Clone)]
+    struct ProvidedTestIcon;
+
+    impl NativeView for ProvidedTestIcon {
+        fn realize_provided(self, context: &mut dyn Any, _env: &Environment) -> Result<(), Self> {
+            if let Some(marker) = context.downcast_mut::<ProbeMarker>() {
+                marker.0 = true;
+                return Ok(());
+            }
+            Err(self)
+        }
+    }
+
+    impl View for ProvidedTestIcon {
+        fn body(self, _env: &Environment) -> impl View {
+            Native::new(self)
+        }
+    }
+
+    struct StaticOnlyBackend {
+        saw_icon: bool,
+        reached: usize,
+    }
+
+    struct StaticOnlySlot;
+
+    impl ChildSlot for StaticOnlySlot {
+        fn from_view<V: View>(view: V) -> Self {
+            assert_ne!(
+                TypeId::of::<V>(),
+                TypeId::of::<AnyView>(),
+                "static label slot must not receive AnyView",
+            );
+            let mut backend = StaticOnlyBackend {
+                saw_icon: false,
+                reached: 0,
+            };
+            view.dispatch(&mut backend, &Environment::new(), ());
+            assert!(backend.reached > 0);
+            Self
+        }
+    }
+
+    impl Backend for StaticOnlyBackend {
+        type Output = ();
+        type Ctx = ();
+        type Slot = StaticOnlySlot;
+
+        fn native<T: NativeView + 'static>(&mut self, _native: T, _env: &Environment, (): ()) {
+            self.reached += 1;
+            if TypeId::of::<T>() == TypeId::of::<ProvidedTestIcon>() {
+                self.saw_icon = true;
+            }
+        }
+
+        fn metadata<K: MetadataKey>(
+            &mut self,
+            _metadata: Metadata<K, Self::Slot>,
+            _env: &Environment,
+            (): (),
+        ) {
+            self.reached += 1;
+        }
+
+        fn erased(&mut self, _view: AnyView, _env: &Environment, (): ()) {
+            panic!("label dispatch must stay static without hitting Backend::erased");
+        }
+
+        fn scoped<H: HookList, V: View>(&mut self, _hooks: H, view: V, env: &Environment, (): ()) {
+            view.dispatch(self, env, ());
+        }
+
+        fn hookable<T: HookableView>(&mut self, view: T, env: &Environment, (): ()) {
+            self.native(view, env, ());
+        }
+    }
+
+    #[test]
+    fn unscoped_control_label_keeps_icon_static_and_probeable() {
+        let env = test_env();
+        let control = super::label("Close")
+            .icon(ProvidedTestIcon)
+            .into_unscoped_control_label();
+
+        assert!(control.has_icon());
+        let icon = control
+            .icon_slot()
+            .expect("unscoped ControlLabel should expose its typed icon slot");
+        let mut marker = ProbeMarker(false);
+        assert!(icon.probe(&mut marker, &env));
+        assert!(marker.0);
+
+        let mut backend = StaticOnlyBackend {
+            saw_icon: false,
+            reached: 0,
+        };
+        icon.build().dispatch(&mut backend, &env, ());
+        assert!(backend.saw_icon);
+
+        let rewrapped = Label::from_control_label(control, LabelDisplayMode::Automatic)
+            .into_control_label::<StaticOnlySlot>(&env);
+        let rewrapped_icon = rewrapped
+            .icon_slot()
+            .expect("rewrapped ControlLabel should keep its icon slot");
+        let _slot = rewrapped_icon.build();
+    }
+
+    #[test]
+    fn erased_semantic_label_dispatches_text_and_hidden_without_anyview() {
+        let env = test_env();
+
+        let title_only = super::label("Save").erase();
+        let mut backend = StaticOnlyBackend {
+            saw_icon: false,
+            reached: 0,
+        };
+        title_only.dispatch(&mut backend, &env, ());
+        assert!(backend.reached > 0);
+
+        let hidden = super::label("Save").hide_label().erase();
+        let mut backend = StaticOnlyBackend {
+            saw_icon: false,
+            reached: 0,
+        };
+        hidden.dispatch(&mut backend, &env, ());
+        assert!(backend.reached > 0);
     }
 }

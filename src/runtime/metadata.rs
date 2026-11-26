@@ -488,9 +488,11 @@ pub mod context_menu {
 /// Anchored overlay metadata module.
 pub mod anchored_overlay {
     use nami::Binding;
+    use waterui_controls::slot::SlotBuilder;
     use waterui_core::{
-        AnyView,
-        handler::{AnyViewBuilder, ViewBuilder},
+        AnyView, Environment, Metadata, View,
+        backend::{Backend, ChildSlot, MapSlots},
+        handler::ViewBuilder,
         metadata::MetadataKey,
     };
 
@@ -531,9 +533,9 @@ pub mod anchored_overlay {
     /// );
     /// ```
     #[derive(Debug)]
-    pub struct AnchoredOverlay {
+    pub struct AnchoredOverlay<S = AnyView> {
         /// Builds a fresh view for each presentation next to the anchor.
-        pub content: AnyViewBuilder<AnyView>,
+        pub content: SlotBuilder<S>,
         /// Whether the overlay is presented. The backend writes `false` when
         /// it dismisses the overlay itself, as [`dismissal`](Self::dismissal)
         /// allows.
@@ -551,9 +553,9 @@ pub mod anchored_overlay {
         pub placed_edge: Binding<AnchorEdge>,
     }
 
-    impl MetadataKey for AnchoredOverlay {}
+    impl<S: 'static> MetadataKey for AnchoredOverlay<S> {}
 
-    impl AnchoredOverlay {
+    impl<V: View> AnchoredOverlay<V> {
         /// An overlay presenting the view `content` builds while
         /// `is_presented` is `true`.
         ///
@@ -561,16 +563,18 @@ pub mod anchored_overlay {
         /// is no room below, stays inside the window, and closes when the
         /// user interacts outside it.
         #[must_use]
-        pub fn new(is_presented: &Binding<bool>, content: impl ViewBuilder) -> Self {
+        pub fn new(is_presented: &Binding<bool>, content: impl ViewBuilder<Output = V>) -> Self {
             Self {
-                content: AnyViewBuilder::new(content).erase(),
+                content: SlotBuilder::new(move || content.build()),
                 is_presented: is_presented.clone(),
                 placement: AnchorPlacement::default(),
                 dismissal: Dismissal::OutsideInteraction,
                 placed_edge: nami::binding(AnchorPlacement::default().edge),
             }
         }
+    }
 
+    impl<S> AnchoredOverlay<S> {
         /// Places the overlay against `edge` of the anchor.
         #[must_use]
         pub const fn edge(mut self, edge: AnchorEdge) -> Self {
@@ -643,6 +647,66 @@ pub mod anchored_overlay {
         pub fn placed_edge(mut self, placed_edge: &Binding<AnchorEdge>) -> Self {
             self.placed_edge = placed_edge.clone();
             self
+        }
+    }
+
+    impl<S: 'static> AnchoredOverlay<S> {
+        /// Maps the overlay's built content slot through `f`.
+        #[must_use]
+        pub fn map_slots<T: 'static>(
+            self,
+            f: impl Fn(S) -> T + Clone + 'static,
+        ) -> AnchoredOverlay<T> {
+            AnchoredOverlay {
+                content: self.content.map_slot(f),
+                is_presented: self.is_presented,
+                placement: self.placement,
+                dismissal: self.dismissal,
+                placed_edge: self.placed_edge,
+            }
+        }
+    }
+
+    impl<S: 'static> MapSlots<S> for AnchoredOverlay<S> {
+        type With<T: 'static> = AnchoredOverlay<T>;
+
+        fn map_slots<T: 'static>(self, f: impl Fn(S) -> T + Clone + 'static) -> AnchoredOverlay<T> {
+            Self::map_slots(self, f)
+        }
+    }
+
+    /// View wrapper that attaches an [`AnchoredOverlay`] with its overlay
+    /// content projected into the backend's child slot without `AnyView`
+    /// erasure.
+    #[doc(hidden)]
+    #[derive(Debug)]
+    pub struct AnchoredOverlayView<Content, V> {
+        content: Content,
+        overlay: AnchoredOverlay<V>,
+    }
+
+    impl<Content, V> AnchoredOverlayView<Content, V> {
+        /// Creates a wrapper attaching `overlay` to `content`.
+        #[must_use]
+        pub const fn new(content: Content, overlay: AnchoredOverlay<V>) -> Self {
+            Self { content, overlay }
+        }
+    }
+
+    impl<Content: View, V: View> View for AnchoredOverlayView<Content, V> {
+        fn body(self, _env: &Environment) -> impl View {
+            Metadata::new(self.content, self.overlay.map_slots(AnyView::new))
+        }
+
+        fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+            backend.metadata(
+                Metadata::new(
+                    B::Slot::from_view(self.content),
+                    self.overlay.map_slots(B::Slot::from_view),
+                ),
+                env,
+                cx,
+            )
         }
     }
 
@@ -959,22 +1023,92 @@ pub mod anchored_overlay {
                 }
             });
 
-            let first = overlay
-                .content
-                .build()
-                .downcast::<ProbeView>()
-                .expect("the content builder produces ProbeView");
-            let second = overlay
-                .content
-                .build()
-                .downcast::<ProbeView>()
-                .expect("the content builder produces ProbeView");
+            let first = overlay.content.build();
+            let second = overlay.content.build();
 
             assert_eq!(builds.get(), 2);
             assert_ne!(first.build, second.build);
 
             first.shared.set(7);
             assert_eq!(second.shared.snapshot(), 7);
+        }
+
+        #[test]
+        fn anchored_overlay_view_dispatches_typed_slot_without_anyview() {
+            use core::any::TypeId;
+
+            use waterui_core::backend::{Backend, ChildSlot, cast};
+            use waterui_core::metadata::MetadataKey;
+            use waterui_core::view::hook::{HookList, HookableView};
+            use waterui_core::{AnyView, Metadata, NativeView};
+
+            use crate::ViewExt as _;
+
+            struct RecordedSlot(TypeId);
+
+            impl ChildSlot for RecordedSlot {
+                fn from_view<V: View>(_view: V) -> Self {
+                    Self(TypeId::of::<V>())
+                }
+            }
+
+            struct CapturingBackend {
+                seen: Option<TypeId>,
+            }
+
+            impl Backend for CapturingBackend {
+                type Output = ();
+                type Ctx = ();
+                type Slot = RecordedSlot;
+
+                fn native<T: NativeView + 'static>(
+                    &mut self,
+                    _native: T,
+                    _env: &Environment,
+                    (): (),
+                ) {
+                }
+
+                fn metadata<K: MetadataKey>(
+                    &mut self,
+                    metadata: Metadata<K, Self::Slot>,
+                    _env: &Environment,
+                    (): (),
+                ) {
+                    if let Ok(overlay) = cast::<K, AnchoredOverlay<RecordedSlot>>(metadata.value) {
+                        self.seen = Some(overlay.content.build().0);
+                    }
+                }
+
+                fn erased(&mut self, _view: AnyView, _env: &Environment, (): ()) {
+                    panic!("AnchoredOverlayView must dispatch statically without AnyView");
+                }
+
+                fn scoped<H: HookList, V: View>(
+                    &mut self,
+                    _hooks: H,
+                    view: V,
+                    env: &Environment,
+                    (): (),
+                ) {
+                    view.dispatch(self, env, ());
+                }
+
+                fn hookable<T: HookableView>(&mut self, view: T, env: &Environment, (): ()) {
+                    self.native(view, env, ());
+                }
+            }
+
+            let presented = binding(false);
+            let shared = binding(0_i32);
+            let view = ().anchored_overlay(AnchoredOverlay::new(&presented, move || ProbeView {
+                build: 1,
+                shared: shared.clone(),
+            }));
+
+            let mut backend = CapturingBackend { seen: None };
+            view.dispatch(&mut backend, &Environment::new(), ());
+            assert_eq!(backend.seen, Some(TypeId::of::<ProbeView>()));
         }
     }
 }

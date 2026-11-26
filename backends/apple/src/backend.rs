@@ -12,10 +12,12 @@ use waterui_core::backend::{ErasedPayload, MapSlots};
 use waterui_core::metadata::MetadataKey;
 use waterui_core::{Metadata, NativeView};
 
+use crate::components::anchored_overlay::realize_anchored_overlay_metadata;
 use crate::components::frame_rate::realize_frame_rate_metadata;
 use crate::components::sheet::realize_sheet_metadata;
 use crate::contract::{NativeLeaf, RenderContext};
 use waterui::animation::FrameRateVote;
+use waterui::metadata::anchored_overlay::AnchoredOverlay;
 use waterui::sheet::Sheet;
 
 /// Realizes views into `AppKit`/`UIKit` leaves.
@@ -1164,18 +1166,16 @@ impl NativeBackend for AppleBackend {
         realize_frame_rate_metadata(metadata, &self.entry(env))
     }
 
-    fn anchored_overlay<C: ChildView<Self>>(
+    fn anchored_overlay<S: ChildView<Self>, C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::metadata::anchored_overlay::AnchoredOverlay, C>,
+        metadata: Metadata<AnchoredOverlay<S>, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
         mark_reached!("anchored_overlay");
-        let metadata = metadata.map_content(C::into_child);
-        crate::components::anchored_overlay::realize_anchored_overlay_metadata(
-            metadata,
-            &self.entry(env),
-        )
+        let Metadata { content, value } = metadata;
+        let metadata = Metadata::new(content.into_child(), value.map_slots(S::into_child));
+        realize_anchored_overlay_metadata(metadata, &self.entry(env))
     }
 
     #[cfg(waterui_feature = "menu")]
@@ -1194,14 +1194,15 @@ impl NativeBackend for AppleBackend {
         )
     }
 
-    fn sheet<C: ChildView<Self>>(
+    fn sheet<S: ChildView<Self>, C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<Sheet, C>,
+        metadata: Metadata<Sheet<S>, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
         mark_reached!("sheet");
-        let metadata = metadata.map_content(C::into_child);
+        let Metadata { content, value } = metadata;
+        let metadata = Metadata::new(content.into_child(), value.map_slots(S::into_child));
         realize_sheet_metadata(metadata, &self.entry(env))
     }
 
