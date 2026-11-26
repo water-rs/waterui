@@ -708,7 +708,7 @@ impl Shape for Path {
 /// pill. The kind says what the shape *is*, letting a backend resolve a
 /// normalized radius against the shorter side the way [`FilledShape`] already
 /// does. The commands remain the fallback for [`ShapeKind::CustomPath`].
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ClipShape {
     kind: ShapeKind,
     commands: Vec<PathCommand>,

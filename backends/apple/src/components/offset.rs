@@ -207,8 +207,8 @@ pub fn realize_offset_metadata(
     leaf.keep(sink_guard);
 
     let offset = metadata.value;
-    let x = offset.x;
-    let y = offset.y;
+    let x = offset.x();
+    let y = offset.y();
 
     {
         let mut s = state.borrow_mut();
@@ -220,7 +220,7 @@ pub fn realize_offset_metadata(
         apply_transform(&state, &host);
     }
 
-    leaf.watch(&x, {
+    leaf.watch(x, {
         let state = Rc::clone(&state);
         let host = host.clone();
         move |wctx| {
@@ -235,7 +235,7 @@ pub fn realize_offset_metadata(
             });
         }
     });
-    leaf.watch(&y, {
+    leaf.watch(y, {
         let state = Rc::clone(&state);
         move |wctx| {
             state.borrow_mut().y = *wctx.value();
