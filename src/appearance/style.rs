@@ -478,54 +478,6 @@ impl Rotation {
             anchor,
         }
     }
-
-    /// Internal constructor used by the temporary Step 1 `IntoRotationAngle` bridge.
-    #[doc(hidden)]
-    #[must_use]
-    pub const fn from_computed(angle: Computed<Angle>, anchor: Anchor) -> Self {
-        Self { angle, anchor }
-    }
-}
-
-/// Temporary Step 1 bridge for `Cargo.lock`-pinned split-repo callers (`hydrolysis-m3`).
-/// Removed once `hydrolysis-m3` migrates to `Angle`.
-#[doc(hidden)]
-pub trait IntoRotationAngle<Marker = ()> {
-    fn into_rotation_angle(self) -> Computed<Angle>;
-}
-
-#[doc(hidden)]
-#[derive(Debug)]
-pub struct ComputedAngleMarker;
-
-#[doc(hidden)]
-#[derive(Debug)]
-pub struct LegacyRotationDegreesMarker;
-
-#[doc(hidden)]
-#[derive(Debug)]
-pub struct LegacyRotationF64Marker;
-
-impl<T: IntoComputed<Angle>> IntoRotationAngle<ComputedAngleMarker> for T {
-    fn into_rotation_angle(self) -> Computed<Angle> {
-        self.into_computed()
-    }
-}
-
-impl IntoRotationAngle<LegacyRotationDegreesMarker> for f32 {
-    fn into_rotation_angle(self) -> Computed<Angle> {
-        Computed::constant(Angle::degrees(self))
-    }
-}
-
-impl IntoRotationAngle<LegacyRotationF64Marker> for f64 {
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "temporary Step 1 compatibility bridge for bare float literals in locked split repos"
-    )]
-    fn into_rotation_angle(self) -> Computed<Angle> {
-        Computed::constant(Angle::degrees(self as f32))
-    }
 }
 
 // ============================================================================

@@ -10,7 +10,6 @@
 //! These extensions help create a fluent API for constructing user interfaces.
 
 use crate::animation::{FrameRate, FrameRateVote};
-use crate::appearance::style::IntoRotationAngle;
 use crate::sheet::Sheet;
 #[cfg(feature = "snackbar")]
 use crate::snackbar::SnackbarHost;
@@ -22,7 +21,7 @@ use nami::{
 use waterui_core::IntoSignalF32;
 pub use waterui_core::view::*;
 use waterui_core::{
-    Environment, Metadata, Retain,
+    Angle, Environment, Metadata, Retain,
     env::{Installed, With},
     extract::State,
     handler::{EventHandler, Handler, HandlerOnce},
@@ -1211,11 +1210,8 @@ pub trait ViewExt: View + Sized {
     /// let angle = binding::<Angle>(Angle::ZERO).animated();
     /// let spinning = text!("Hello").rotation(angle);
     /// ```
-    fn rotation<M>(self, angle: impl IntoRotationAngle<M>) -> Metadata<Rotation, Self> {
-        Metadata::new(
-            self,
-            Rotation::from_computed(angle.into_rotation_angle(), Anchor::CENTER),
-        )
+    fn rotation(self, angle: impl IntoComputed<Angle>) -> Metadata<Rotation, Self> {
+        Metadata::new(self, Rotation::new(angle))
     }
 
     /// Applies a rotation transform to this view around a specific anchor point.
@@ -1233,15 +1229,12 @@ pub trait ViewExt: View + Sized {
     /// // Rotate around top-left corner
     /// let tilted = text!("Hello").rotation_from(Angle::degrees(45.0), Anchor::TOP_LEFT);
     /// ```
-    fn rotation_from<M>(
+    fn rotation_from(
         self,
-        angle: impl IntoRotationAngle<M>,
+        angle: impl IntoComputed<Angle>,
         anchor: Anchor,
     ) -> Metadata<Rotation, Self> {
-        Metadata::new(
-            self,
-            Rotation::from_computed(angle.into_rotation_angle(), anchor),
-        )
+        Metadata::new(self, Rotation::from_anchor(angle, anchor))
     }
 
     /// Applies an offset (translation) transform to this view.

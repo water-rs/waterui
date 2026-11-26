@@ -310,15 +310,7 @@ impl PathBuilder {
     /// violation: the arc sweeps one full turn in that direction (none when
     /// `sweep` is `NaN`).
     #[must_use]
-    pub fn arc<M1, M2>(
-        mut self,
-        center: Point,
-        radii: (f32, f32),
-        start: impl IntoArcAngle<M1>,
-        sweep: impl IntoArcAngle<M2>,
-    ) -> Self {
-        let start = start.into_arc_angle();
-        let sweep = sweep.into_arc_angle();
+    pub fn arc(mut self, center: Point, radii: (f32, f32), start: Angle, sweep: Angle) -> Self {
         let sweep_radians = if sweep.is_finite() {
             if sweep.abs() > Angle::FULL {
                 contract_violation!("an arc sweeps at most one full turn, got {sweep}");
@@ -373,33 +365,6 @@ impl PathBuilder {
             elements: elements.into(),
             rule: self.rule,
         }
-    }
-}
-
-/// Temporary Step 1 bridge for `Cargo.lock`-pinned split-repo callers (`waterui-chart`).
-/// Removed once `waterui-chart` migrates to `Angle`.
-#[doc(hidden)]
-pub trait IntoArcAngle<Marker = ()> {
-    fn into_arc_angle(self) -> Angle;
-}
-
-#[doc(hidden)]
-#[derive(Debug)]
-pub struct AngleArcMarker;
-
-#[doc(hidden)]
-#[derive(Debug)]
-pub struct LegacyArcRadiansMarker;
-
-impl IntoArcAngle<AngleArcMarker> for Angle {
-    fn into_arc_angle(self) -> Angle {
-        self
-    }
-}
-
-impl IntoArcAngle<LegacyArcRadiansMarker> for f32 {
-    fn into_arc_angle(self) -> Angle {
-        Angle::radians(self)
     }
 }
 
