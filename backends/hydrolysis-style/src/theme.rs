@@ -56,6 +56,7 @@ mod card;
 mod chrome;
 mod dialog;
 mod disclosure;
+mod floating;
 mod glass;
 #[cfg(waterui_feature = "list")]
 mod list;
@@ -96,6 +97,9 @@ pub use chrome::{
 };
 pub use dialog::{DialogLook, default_dialog_look};
 pub use disclosure::{DisclosureLayout, DisclosureLook, DisclosureSpec};
+pub use floating::{
+    FloatingElevation, FloatingLook, FloatingOverride, FloatingScope, FloatingStyle,
+};
 pub use glass::GlassLook;
 #[cfg(waterui_feature = "list")]
 pub use list::{ListControls, ListGestures, ListLook, ListSpec};

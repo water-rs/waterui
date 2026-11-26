@@ -11,7 +11,7 @@
 use std::time::Instant;
 
 use waterui::graphics::Color;
-use waterui::style::{FloatingElevation, FloatingStyle, Shadow};
+use waterui::style::Shadow;
 use waterui::{Binding, View, ViewExt as _};
 use waterui_core::dynamic::watch;
 use waterui_core::handler::AnyViewBuilder;
@@ -20,6 +20,7 @@ use waterui_shape::{Ellipse, RoundedRectangle, ShapeExt as _};
 
 use super::{MinimalTestTheme, pumped_test_environment};
 use crate::HeadlessRuntime;
+use crate::theme::{FloatingElevation, FloatingOverride, FloatingStyle};
 
 const SURFACE_RGB: [u8; 3] = [60, 120, 200];
 
@@ -38,22 +39,24 @@ fn caster() -> impl View {
 /// A 56×56 floating surface at (20,20)–(76,76) whose clip and shadows all carry
 /// the same normalized `RoundedRect` silhouette (0.3 × 56 ≈ 16.8px corners).
 fn floating_caster() -> impl View {
-    ().size(56.0, 56.0).floating_with(FloatingStyle {
-        container_color: Color::srgb(SURFACE_RGB[0], SURFACE_RGB[1], SURFACE_RGB[2]),
-        clip_radius: 0.3,
-        minimum_width: 0.0,
-        minimum_height: 0.0,
-        elevation: FloatingElevation {
-            ambient_shadow_color: Color::srgb(0, 0, 0),
-            ambient_shadow_radius: 1.0,
-            ambient_shadow_offset_y: 0.0,
-            key_shadow_color: Color::srgb(0, 0, 0),
-            key_shadow_radius: 1.0,
-            key_shadow_offset_y: 0.0,
-        }
-        .into(),
-        ..FloatingStyle::default()
-    })
+    ().size(56.0, 56.0)
+        .floating()
+        .install(FloatingOverride::style(FloatingStyle {
+            container_color: Color::srgb(SURFACE_RGB[0], SURFACE_RGB[1], SURFACE_RGB[2]),
+            clip_radius: 0.3,
+            minimum_width: 0.0,
+            minimum_height: 0.0,
+            elevation: FloatingElevation {
+                ambient_shadow_color: Color::srgb(0, 0, 0),
+                ambient_shadow_radius: 1.0,
+                ambient_shadow_offset_y: 0.0,
+                key_shadow_color: Color::srgb(0, 0, 0),
+                key_shadow_radius: 1.0,
+                key_shadow_offset_y: 0.0,
+            }
+            .into(),
+            ..FloatingStyle::default()
+        }))
 }
 
 /// The padded block fills the 120×120 window exactly, so the caster lands at

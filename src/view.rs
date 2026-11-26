@@ -76,7 +76,7 @@ use crate::{
         badge::{Badge, BadgeValue},
         focus::Focused,
     },
-    floating::Floating,
+    floating::{Floating, LegacyFloatingOverride},
     prelude::Shadow,
     shape::{ClipShape, Shape},
     style::{Anchor, FloatingStyle, Offset, Rotation, Scale},
@@ -1042,15 +1042,17 @@ pub trait ViewExt: View + Sized {
     /// Promotes this view to a themed floating surface with elevation.
     ///
     /// Floating presentation is an attribute: applying it to a semantic button
-    /// preserves the button's identity while changing its container, state-layer
-    /// geometry, and elevation.
-    fn floating(self) -> Floating<Self> {
-        Floating::new(self)
+    /// preserves the button's identity while delegating the floating container
+    /// and elevation treatment to the active backend.
+    fn floating(self) -> Metadata<Floating, Self> {
+        Metadata::new(self, Floating)
     }
 
-    /// Promotes this view with explicit floating-surface theme tokens.
-    fn floating_with(self, style: FloatingStyle) -> Floating<Self> {
-        Floating::with_style(self, style)
+    /// Transitional compatibility shim for external style packages migrating
+    /// off `FloatingStyle`.
+    #[doc(hidden)]
+    fn floating_with(self, style: FloatingStyle) -> impl View {
+        self.floating().install(LegacyFloatingOverride(style))
     }
 
     /// Applies a border around this view.

@@ -1062,6 +1062,17 @@ impl NativeBackend for AppleBackend {
         )
     }
 
+    fn floating<C: ChildView<Self>>(
+        &mut self,
+        metadata: Metadata<waterui::floating::Floating, C>,
+        env: &Environment,
+        (): (),
+    ) -> NativeLeaf {
+        mark_reached!("floating");
+        let metadata = metadata.map_content(C::into_child);
+        crate::components::floating::realize_floating_metadata(metadata, &self.entry(env))
+    }
+
     fn ignore_safe_area<C: ChildView<Self>>(
         &mut self,
         metadata: Metadata<waterui::layout::safe_area::IgnoreSafeArea, C>,
