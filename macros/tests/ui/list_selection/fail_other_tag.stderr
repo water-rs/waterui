@@ -9,7 +9,7 @@ error[E0308]: mismatched types
    = note: expected reference `&Binding<Option<&str>>`
               found reference `&Binding<Option<usize>>`
 note: method defined here
-  --> $WORKSPACE/src/component/list/mod.rs
+  --> $WORKSPACE/components/foundation/controls/src/list/mod.rs
    |
    |     pub fn selection<T>(self, selection: &Binding<Option<T>>) -> ListBuilder<V>
    |            ^^^^^^^^^

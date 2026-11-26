@@ -79,6 +79,11 @@ pub struct SectionScope;
 /// blesses (see the module docs). This keeps `List::content` a closed
 /// surface in the same spirit as the `MenuView` trait, so user code cannot
 /// leak arbitrary `View` types into list rows by accident.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not list content",
+    label = "a static row is a builder, not a finished view",
+    note = "a static row is a builder: write `|| text(\"…\")`; a dynamic part is `ForEach::new(data, |item| ..)`"
+)]
 pub trait ListContent<Scope = ListScope> {
     /// The content type every row of this content carries.
     type Row: View;

@@ -1,0 +1,31 @@
+error[E0277]: `(waterui::component::Text, Row<TitleLabel>)` is not list content
+ --> tests/ui/first_contact/list_content.rs:9:19
+  |
+9 |     List::content((text("Inbox"), row("Archive", "12")))
+  |     ------------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ a static row is a builder, not a finished view
+  |     |
+  |     required by a bound introduced by this call
+  |
+  = help: the trait `ListContent` is not implemented for `(waterui::component::Text, Row<TitleLabel>)`
+  = note: a static row is a builder: write `|| text("…")`; a dynamic part is `ForEach::new(data, |item| ..)`
+  = help: the following other types implement trait `ListContent<Scope>`:
+            (T₁, T₂, …, Tₙ) up to tuples of arity 15
+note: required by a bound in `waterui::prelude::List::<ContentRows<C, <C as ListContent>::Row>>::content`
+ --> $WORKSPACE/components/foundation/controls/src/list/mod.rs
+  |
+  | impl<C: ListContent> List<ContentRows<C, C::Row>> {
+  |         ^^^^^^^^^^^ required by this bound in `List::<ContentRows<C, <C as ListContent>::Row>>::content`
+...
+  |     pub fn content(content: C) -> Self {
+  |
+
+error[E0277]: `(waterui::component::Text, Row<TitleLabel>)` is not list content
+ --> tests/ui/first_contact/list_content.rs:9:5
+  |
+9 |     List::content((text("Inbox"), row("Archive", "12")))
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ a static row is a builder, not a finished view
+  |
+  = help: the trait `ListContent` is not implemented for `(waterui::component::Text, Row<TitleLabel>)`
+  = note: a static row is a builder: write `|| text("…")`; a dynamic part is `ForEach::new(data, |item| ..)`
+  = help: the following other types implement trait `ListContent<Scope>`:
+            (T₁, T₂, …, Tₙ) up to tuples of arity 15
