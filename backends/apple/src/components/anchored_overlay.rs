@@ -26,14 +26,14 @@ use waterui::metadata::anchored_overlay::{
     AnchorEdge, AnchorPlacement, AnchoredOverlay, Dismissal,
 };
 use waterui::reactive::{Binding, Signal};
+use waterui::widget::disclosure::SlotBuilder;
 use waterui_backend_core::Environment;
 use waterui_backend_core::overlay::{PhysicalEdge, logical_edge, place_anchored_overlay};
-use waterui_core::handler::AnyViewBuilder;
 use waterui_core::layout::{
     LayoutDirection, LayoutError, Point, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis,
     SubView, ViewDimensions, layout_direction,
 };
-use waterui_core::{AnyView, Computed, Metadata};
+use waterui_core::{Computed, Metadata};
 
 use crate::contract::{Held, Mounted, NativeLeaf, Renderer};
 use crate::transition::ghost::Ghost;
@@ -54,8 +54,8 @@ struct OverlayState {
     host: Retained<HostView>,
     /// The anchor's content, laid out over the host's full bounds.
     child: Mounted,
-    /// Builds a fresh overlay view for each presentation.
-    builder: AnyViewBuilder<AnyView>,
+    /// Builds a fresh overlay child slot for each presentation.
+    builder: SlotBuilder<Held>,
     /// A `'static` render handle the builder's output mounts through.
     renderer: Renderer,
     /// The overlay content, moved into the presentation surface while shown;
@@ -362,7 +362,7 @@ fn present(state: &Rc<OverlayState>) {
         // Every presentation is a fresh instance that plays its
         // insertion — including one overtaking an exit in flight and the
         // first-build present, as Hydrolysis's `present` does.
-        let leaf = state.renderer.render(state.builder.build());
+        let leaf = state.renderer.realize(state.builder.build());
         let overlay = LiveChild::mount_inserted(leaf, host_view, None, &state.env);
         *state.overlay.borrow_mut() = Some(overlay);
         *state.presentation.borrow_mut() = Some(Presentation {
@@ -423,7 +423,7 @@ fn present(state: &Rc<OverlayState>) {
         // insertion — the passthrough host's rule on iOS, Hydrolysis's
         // `present` on both.
         let container = panel.content_view(state.mtm);
-        let leaf = state.renderer.render(state.builder.build());
+        let leaf = state.renderer.realize(state.builder.build());
         let overlay = LiveChild::mount_inserted(leaf, &container, None, &state.env);
         view::set_autoresizing_flexible_size(overlay.view());
         *state.overlay.borrow_mut() = Some(overlay);
@@ -564,7 +564,7 @@ impl SubView for AnchoredSubView {
 /// presents the overlay content in a window-level surface against the
 /// anchor's frame.
 pub fn realize_anchored_overlay_metadata(
-    metadata: Metadata<AnchoredOverlay, Held>,
+    metadata: Metadata<AnchoredOverlay<Held>, Held>,
     ctx: &RenderContext<'_>,
 ) -> NativeLeaf {
     let mtm = ctx.mtm();

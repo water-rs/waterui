@@ -32,12 +32,12 @@ use waterui_core::handler::ReportExtraction as _;
 use waterui_core::layout::Point;
 use waterui_graphics::animation::engine_animation;
 use waterui_interaction::gesture::{PointerButton, TapEvent};
-use waterui_shape::CornerRadius;
+use waterui_shape::{CornerRadius, ShapeKind};
 
 /// Adapts a reactive signal so changes carrying a [`waterui_core::animation::Animation`]
 /// expose the matching [`cherenkov_record::Animation`] in their metadata.
 #[derive(Clone)]
-struct EngineAnimated<S>(S);
+pub struct EngineAnimated<S>(pub S);
 
 impl<S: Signal + Clone + 'static> Signal for EngineAnimated<S> {
     type Output = S::Output;
@@ -78,6 +78,26 @@ fn live_border_edge<E: TextEngine>(
     renderer.scene_mut().live_fill_paint(local, paint, shape);
 }
 
+/// Converts a shape kind and unit-space commands into recorded [`ShapeData`] at `bounds`.
+pub fn shape_data_for_parts(kind: ShapeKind, commands: &[PathCommand], bounds: Rect) -> ShapeData {
+    match kind_clip_shape(kind, bounds) {
+        Some(RegularClipShape::RoundedRect { corner_width, .. }) => {
+            ShapeData::of(&RoundedRect::from_rect(bounds, corner_width))
+        }
+        Some(RegularClipShape::Rect(_)) => ShapeData::of(&bounds),
+        None => {
+            let path = shape_kind_path(kind, bounds)
+                .unwrap_or_else(|| path_commands_to_path(commands, bounds));
+            ShapeData::of(&path)
+        }
+    }
+}
+
+/// Resolves a [`ClipShape`] into recorded [`ShapeData`] at `bounds`.
+pub fn shape_data_for_clip(silhouette: &ClipShape, bounds: Rect) -> ShapeData {
+    shape_data_for_parts(silhouette.kind(), silhouette.commands(), bounds)
+}
+
 /// Resolves the shadow's recorded shape from an explicit override or inherited clip.
 pub fn resolve_shadow_shape(
     bounds: Rect,
@@ -86,17 +106,7 @@ pub fn resolve_shadow_shape(
 ) -> ShapeData {
     shadow.get_silhouette().or(inherited_clip).map_or_else(
         || ShapeData::of(&bounds),
-        |silhouette| match kind_clip_shape(silhouette.kind(), bounds) {
-            Some(RegularClipShape::RoundedRect { corner_width, .. }) => {
-                ShapeData::of(&RoundedRect::from_rect(bounds, corner_width))
-            }
-            Some(RegularClipShape::Rect(_)) => ShapeData::of(&bounds),
-            None => {
-                let path = shape_kind_path(silhouette.kind(), bounds)
-                    .unwrap_or_else(|| path_commands_to_path(silhouette.commands(), bounds));
-                ShapeData::of(&path)
-            }
-        },
+        |s| shape_data_for_clip(s, bounds),
     )
 }
 
@@ -137,6 +147,38 @@ pub(super) struct GestureA11yClaim {
     pub(super) synthesized: bool,
 }
 
+/// Resolves a shape kind and unit-space commands into its path and [`ScopeClip`] for `bounds`.
+pub fn resolve_scope_clip_parts(
+    kind: ShapeKind,
+    commands: &[PathCommand],
+    bounds: Rect,
+) -> (kurbo::BezPath, ScopeClip) {
+    // Resolve from the structured kind, exactly as a fill of the same shape
+    // does, and fall back to the unit-space commands only for a custom path.
+    // The commands are normalized per axis, so resolving them against a
+    // non-square rect makes every circular corner elliptical.
+    let clip_path =
+        shape_kind_path(kind, bounds).unwrap_or_else(|| path_commands_to_path(commands, bounds));
+    let clip = kind_clip_shape(kind, bounds)
+        .or_else(|| regular_clip_shape(commands, bounds))
+        .map_or_else(
+            || ScopeClip::Path(clip_path.clone()),
+            |regular_clip| match regular_clip {
+                RegularClipShape::Rect(rect) => ScopeClip::Rect(rect),
+                RegularClipShape::RoundedRect { rect, .. } => ScopeClip::RoundedRect {
+                    path: clip_path.clone(),
+                    rect,
+                },
+            },
+        );
+    (clip_path, clip)
+}
+
+/// Resolves a [`ClipShape`] into its path and [`ScopeClip`] for `bounds`.
+pub fn resolve_scope_clip(shape: &ClipShape, bounds: Rect) -> (kurbo::BezPath, ScopeClip) {
+    resolve_scope_clip_parts(shape.kind(), shape.commands(), bounds)
+}
+
 impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
     /// Apply a clip-shape prop on the recording node's own frame layer (§A.1):
     /// the wrapper's `frame` carries the clip, not a `("clip", 0)` scope layer.
@@ -148,25 +190,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         value: &ClipShape,
         render_content: impl FnOnce(&mut Self),
     ) {
-        // Resolve from the structured kind, exactly as a fill of the same shape
-        // does, and fall back to the unit-space commands only for a custom path.
-        // The commands are normalized per axis, so resolving them against a
-        // non-square rect makes every circular corner elliptical.
-        let clip_path = shape_kind_path(value.kind(), ctx.bounds())
-            .unwrap_or_else(|| path_commands_to_path(value.commands(), ctx.bounds()));
-        let clip = if let Some(regular_clip) = kind_clip_shape(value.kind(), ctx.bounds())
-            .or_else(|| regular_clip_shape(value.commands(), ctx.bounds()))
-        {
-            match regular_clip {
-                RegularClipShape::Rect(rect) => ScopeClip::Rect(rect),
-                RegularClipShape::RoundedRect { rect, .. } => ScopeClip::RoundedRect {
-                    path: clip_path,
-                    rect,
-                },
-            }
-        } else {
-            ScopeClip::Path(clip_path)
-        };
+        let (_clip_path, clip) = resolve_scope_clip(value, ctx.bounds());
         // The layer clip in the frame's content space — the node's own
         // bounds — with the conservative hit bound the placement scope
         // used to carry now on the node's placement itself.
@@ -1194,6 +1218,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         {
             renderer.popup_menu.front_dialog = Some(RegisteredDialog {
                 env: dialog_modal_environment(env, &value.dialog),
+                build_layer: Rc::clone(&value.build_layer),
                 content: Rc::clone(&value.content),
             });
         }

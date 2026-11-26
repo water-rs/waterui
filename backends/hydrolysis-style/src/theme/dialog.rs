@@ -1,21 +1,20 @@
-//! Theme tokens for the self-drawn `Dialog` card.
+//! The dialog look of the theme contract: what a theme returns for a
+//! self-drawn modal dialog card ([`DialogLook`]).
 
+use waterui::layout::padding::EdgeInsets;
+use waterui::theme::color::{Accent, Error, Foreground, MutedForeground, Surface};
+use waterui_core::Environment;
 use waterui_core::layout::Alignment;
-use waterui_core::plugin::Plugin;
 use waterui_graphics::color::Color;
-use waterui_layout::padding::EdgeInsets;
 
-use crate::theme::color::{Accent, Error, Foreground, MutedForeground, Surface};
-
-/// Visual and layout tokens used by the self-drawn dialog card.
+/// Visual and layout tokens used by Hydrolysis's self-drawn dialog card.
 ///
-/// Style packages install a `DialogTheme` into the [`Environment`](waterui_core::Environment)
-/// through [`Plugin::install`] so Hydrolysis dialogs match the active design
-/// system without compiling style-specific constants into the facade. When no
-/// theme is installed, [`DialogTheme::default`] supplies neutral values built
-/// from standard theme color tokens.
+/// Style packages return a [`DialogLook`] from
+/// [`WidgetTheme::dialog`](super::WidgetTheme::dialog) so Hydrolysis dialogs
+/// match the active design system. [`DialogLook::default`] supplies neutral
+/// baseline values built from standard theme color tokens.
 #[derive(Debug, Clone)]
-pub struct DialogTheme {
+pub struct DialogLook {
     /// Container surface fill color.
     pub container_color: Color,
     /// Headline text color.
@@ -46,7 +45,7 @@ pub struct DialogTheme {
     pub actions_alignment: Alignment,
 }
 
-impl Default for DialogTheme {
+impl Default for DialogLook {
     fn default() -> Self {
         Self {
             container_color: Color::new(Surface),
@@ -69,4 +68,9 @@ impl Default for DialogTheme {
     }
 }
 
-impl Plugin for DialogTheme {}
+/// Default framework dialog look used until a style package overrides
+/// [`WidgetTheme::dialog`](super::WidgetTheme::dialog).
+#[must_use]
+pub fn default_dialog_look(_env: &Environment) -> DialogLook {
+    DialogLook::default()
+}

@@ -35,23 +35,13 @@
 //! ```
 
 use nami::Binding;
-use waterui_accessibility::AccessibilityRole;
-use waterui_controls::{Button, ButtonRole, ButtonStyle, LabelKind, button};
+use waterui_controls::{Button, ButtonRole, LabelKind};
+use waterui_core::Environment;
 use waterui_core::handler::{
     ExtractionError, Handler, ReportExtraction as _, SharedAction, shared_action,
 };
 use waterui_core::metadata::MetadataKey;
-use waterui_core::{Environment, OneOf2, View};
-use waterui_layout::frame::Frame;
-use waterui_layout::padding::EdgeInsets;
-use waterui_layout::stack::{HorizontalAlignment, hstack, vstack, zstack};
-use waterui_text::text::{IntoText, Text, text};
-
-use crate::shape::{RoundedRectangle, ShapeExt};
-use crate::theme::color::Scrim;
-pub use crate::widget::DialogTheme;
-use crate::{Computed, SignalExt as _, Str, ViewExt};
-use waterui_graphics::color::Color;
+use waterui_text::text::{IntoText, Text};
 
 /// Translation key for the acknowledgement button a dialog declared without
 /// actions presents.
@@ -367,125 +357,6 @@ impl Dialog {
     }
 }
 
-/// One dialog action as a card button styled with `theme`.
-fn action_button(
-    action: DialogAction,
-    dialog: &Dialog,
-    primary: bool,
-    theme: &DialogTheme,
-) -> impl View + use<> {
-    let title = text(action.title().clone());
-    let role = action.role();
-    let color = match role {
-        Some(ButtonRole::Destructive) => theme.destructive_action_color.clone(),
-        _ if primary => theme.primary_action_color.clone(),
-        _ => theme.default_action_color.clone(),
-    };
-    let label = title.color(color);
-    let dialog = dialog.clone();
-    let btn = button(label)
-        .style(ButtonStyle::Plain)
-        .action(move |env: Environment| dialog.run_action(&action, &env));
-    match role {
-        Some(role) => btn.role(role),
-        None => btn,
-    }
-}
-
-/// The alert card the Hydrolysis modal layer draws using the active
-/// [`DialogTheme`] from the environment, carrying the `Dialog` accessibility
-/// role and labelled by the title.
-struct DialogCard(Dialog);
-
-impl View for DialogCard {
-    fn body(self, env: &Environment) -> impl View {
-        let dialog = &self.0;
-        let theme = env.get::<DialogTheme>().cloned().unwrap_or_default();
-        // Resolving first is what lets the label read a localized title: an
-        // unresolved environment-dependent `Text` has no content signal.
-        let spoken = dialog
-            .title
-            .resolve(env)
-            .content()
-            .map(|title| title.to_plain())
-            .computed();
-        dialog_card(dialog, spoken, &theme)
-    }
-}
-
-fn dialog_card(dialog: &Dialog, label: Computed<Str>, theme: &DialogTheme) -> impl View + use<> {
-    let actions = dialog.resolved_actions();
-    let mut seen_default = false;
-    let buttons: Vec<_> = actions
-        .into_iter()
-        .map(|action| {
-            let primary = action.role().is_none() && !seen_default;
-            seen_default |= action.role().is_none();
-            action_button(action, dialog, primary, theme)
-        })
-        .collect();
-    let headline = text(dialog.title.clone())
-        .headline()
-        .color(theme.title_color.clone());
-    let actions_row = Frame::new(
-        hstack(buttons)
-            .spacing(theme.actions_spacing)
-            .padding_with(EdgeInsets::new(theme.actions_top_padding, 0.0, 0.0, 0.0)),
-    )
-    .max_width(f32::INFINITY)
-    .alignment(theme.actions_alignment);
-    let contents = match &dialog.message {
-        Some(message) => OneOf2::A(
-            vstack((
-                headline,
-                text(message.clone()).color(theme.message_color.clone()),
-                actions_row,
-            ))
-            .alignment(HorizontalAlignment::Leading)
-            .spacing(theme.content_spacing),
-        ),
-        None => OneOf2::B(
-            vstack((headline, actions_row))
-                .alignment(HorizontalAlignment::Leading)
-                .spacing(theme.content_spacing),
-        ),
-    };
-
-    Frame::new(
-        contents
-            .padding_with(theme.content_padding.clone())
-            .background(
-                RoundedRectangle::new(theme.corner_radius).fill(theme.container_color.clone()),
-            )
-            .a11y_label(label)
-            .a11y_role(AccessibilityRole::Dialog),
-    )
-    .min_width(theme.min_width)
-    .max_width(theme.max_width)
-}
-
-impl Dialog {
-    /// The self-drawn realization a backend's modal layer presents: a
-    /// full-window `Scrim` backdrop — tapping it runs the cancel path — with
-    /// the alert card centered above it.
-    ///
-    /// Backend-facing, like [`Self::run_action`]: an application presents a
-    /// dialog through [`ViewExt::dialog`](crate::ViewExt::dialog) only.
-    #[doc(hidden)]
-    pub fn modal_layer(&self) -> impl View + use<> {
-        let scrim_dialog = self.clone();
-        zstack((
-            // The scrim is a pointer target only: the card's own cancel
-            // action and Escape carry dismissal for assistive technology, so
-            // the backdrop must not become a focusable element ahead of them.
-            Color::new(Scrim)
-                .on_tap(move |env: Environment| scrim_dialog.run_cancel(&env))
-                .a11y_hidden(true),
-            DialogCard(self.clone()),
-        ))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use nami::Binding;
@@ -529,52 +400,5 @@ mod tests {
                 None,
             ]
         );
-    }
-
-    #[test]
-    fn dialog_theme_plugin_overrides_card_widths() {
-        use waterui_core::plugin::Plugin as _;
-        use waterui_core::{AnyView, Environment, Native, View};
-        use waterui_layout::{ProposalSize, container::FixedContainer};
-
-        use super::{DialogCard, DialogTheme};
-
-        let dialog = Dialog::new(&Binding::new(true), "Confirm");
-        let default_env = Environment::new();
-        let default_view = DialogCard(dialog.clone())
-            .body(&default_env)
-            .body(&default_env)
-            .body(&default_env);
-        let default_native = AnyView::new(default_view)
-            .downcast::<Native<FixedContainer<Vec<AnyView>>>>()
-            .expect("DialogCard expands to Native<FixedContainer>");
-        let default_container = default_native.into_inner();
-        let (default_layout, _) = default_container.as_parts();
-        let default_min = default_layout
-            .size_that_fits(ProposalSize::new(100.0, 200.0), &[])
-            .width;
-        assert!((default_min - DialogTheme::default().min_width).abs() < f32::EPSILON);
-
-        let mut custom_env = Environment::new();
-        DialogTheme {
-            min_width: 340.0,
-            max_width: 620.0,
-            ..DialogTheme::default()
-        }
-        .install(&mut custom_env);
-
-        let custom_view = DialogCard(dialog)
-            .body(&custom_env)
-            .body(&custom_env)
-            .body(&custom_env);
-        let custom_native = AnyView::new(custom_view)
-            .downcast::<Native<FixedContainer<Vec<AnyView>>>>()
-            .expect("DialogCard expands to Native<FixedContainer>");
-        let custom_container = custom_native.into_inner();
-        let (custom_layout, _) = custom_container.as_parts();
-        let custom_min = custom_layout
-            .size_that_fits(ProposalSize::new(100.0, 200.0), &[])
-            .width;
-        assert!((custom_min - 340.0).abs() < f32::EPSILON);
     }
 }

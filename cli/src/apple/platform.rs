@@ -296,9 +296,10 @@ pub(crate) async fn apple_rust_build(
         .browser_runtime_plan(platform, TargetBackend::Apple, &triple)
         .await?;
     let features = apple_build_features(project, &browser_runtime_plan, options, &triple).await?;
+    let manifest_path = crate_path.join("Cargo.toml");
     let target = triple.to_string();
     let target_underscore = target.replace('-', "_");
-    let mut build = RustBuild::for_project(project, crate_path, triple)
+    let mut build = RustBuild::for_project(project, crate_path, triple.clone())
         .with_features(features)
         .with_features(options.app_features(project))
         .with_envs(options.cargo_envs().iter().cloned())
@@ -307,7 +308,12 @@ pub(crate) async fn apple_rust_build(
         .with_env(format!("PKG_CONFIG_ALLOW_CROSS_{target}"), "1")
         .with_target_dir(project.water_target_dir(options.linkage()).await?);
     if options.linkage() == RustLinkage::SharedRuntime {
-        build = build.with_preferred_dynamic_linking();
+        let dylib_features =
+            assets::shared_runtime_features(project, &manifest_path, &triple, build.features())
+                .await?;
+        build = build
+            .with_features(dylib_features)
+            .with_preferred_dynamic_linking();
     }
     if let Some(sccache_path) = options.sccache_path() {
         build = build.with_sccache(sccache_path.to_path_buf());

@@ -8,6 +8,8 @@
 pub mod accessibility_identifier;
 pub mod accessibility_metadata;
 pub mod anchored_overlay;
+#[cfg(waterui_feature = "avatar")]
+pub mod avatar;
 pub mod badge;
 pub mod border;
 pub mod button;
@@ -31,6 +33,7 @@ pub mod date_picker;
 #[cfg(feature = "dialog")]
 pub mod dialog;
 pub mod disclosure;
+pub mod divider;
 pub mod draggable;
 pub mod drop_destination;
 pub mod dynamic;
@@ -39,6 +42,7 @@ pub mod empty;
 #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
 pub mod filtered;
 pub mod fixed_container;
+pub mod floating;
 pub mod focused;
 mod font;
 pub mod frame_rate;
@@ -53,6 +57,8 @@ pub mod image;
 pub mod layer_transform;
 pub mod layout_priority;
 pub mod lifecycle_hook;
+#[cfg(feature = "link")]
+pub mod link;
 #[cfg(feature = "list")]
 pub mod list;
 #[cfg(feature = "list")]
@@ -79,7 +85,14 @@ pub mod opacity;
 pub mod passthrough;
 #[cfg(feature = "picker")]
 pub mod picker;
-#[cfg(all(feature = "picture", waterui_feature = "gpu"))]
+#[cfg(all(
+    feature = "picture",
+    any(
+        waterui_feature = "gpu",
+        waterui_feature = "cpu",
+        waterui_feature = "canvas"
+    )
+))]
 pub mod picture;
 #[cfg(feature = "plain")]
 pub mod plain;

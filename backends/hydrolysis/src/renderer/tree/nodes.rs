@@ -14,7 +14,9 @@ use super::*;
 use crate::renderer::ContextMenuPresenter;
 use crate::renderer::mount::motion::{LayerMotion, Motion};
 use crate::text::{TextEngine, TextLayout as _};
-use crate::theme::WidgetTheme;
+#[cfg(waterui_feature = "dialog")]
+use crate::theme::DialogLook;
+use crate::theme::{SheetLook, WidgetTheme};
 use executor_core::{AnyLocalExecutorTask, spawn_local};
 use nami::Signal as _;
 use waterui::gesture::TapGesture;
@@ -1146,6 +1148,9 @@ pub(super) enum WrapperEffect<E: crate::text::TextEngine> {
     /// theme's glass look behind the child, its backdrop material joining the
     /// nearest enclosing `.material_group()` scope. The glass takes no input.
     Glass(crate::renderer::glass::GlassEffect),
+    /// A `.floating()` surface: draws the theme's floating elevation and fill
+    /// behind the child and clips child content to the surface's silhouette.
+    Floating(crate::renderer::floating::FloatingEffect),
     /// An `.anchored_overlay(...)` (water-rs/waterui#1275): every flush the
     /// wrapper registers the anchor's live bounds plus the effect's handles
     /// for the post-flush `render_anchored_overlays` pass, which measures,
@@ -1243,10 +1248,10 @@ pub struct SheetEffect<E: TextEngine> {
     /// while this sheet stays at the front of `SheetStack`.
     pub(crate) content: Rc<RefCell<Option<RetainedSubview<E>>>>,
     /// Factory created at the `NativeBackend::sheet` dispatch point so
-    /// `Sheet::modal_layer` stays unreachable in apps that never use `.sheet`.
-    pub(crate) build_layer: Rc<dyn Fn() -> RetainedSubview<E>>,
+    /// `sheet_modal_layer` stays unreachable in apps that never use `.sheet`.
+    pub(crate) build_layer: Rc<dyn Fn(SheetLook) -> RetainedSubview<E>>,
     /// The sheet being presented.
-    pub(crate) sheet: Sheet,
+    pub(crate) sheet: Sheet<HeldChild<E>>,
     /// The node's identity in the window's sheet stack.
     pub(crate) marker: Rc<()>,
 }
@@ -1256,8 +1261,11 @@ pub struct SheetEffect<E: TextEngine> {
 /// and flushes the modal layer, and the node keeps it built across closes.
 #[cfg(waterui_feature = "dialog")]
 pub struct DialogEffect<E: crate::text::TextEngine> {
-    /// The layer content — the dialog's scrim-plus-card modal layer.
-    pub(crate) content: Rc<RefCell<RetainedSubview<E>>>,
+    /// Lazily-built layer content — the dialog's scrim-plus-card modal layer.
+    pub(crate) content: Rc<RefCell<Option<RetainedSubview<E>>>>,
+    /// Factory created at the `NativeBackend::dialog` dispatch point so
+    /// `dialog_modal_layer` stays unreachable in apps that never use `.dialog`.
+    pub(crate) build_layer: Rc<dyn Fn(DialogLook) -> RetainedSubview<E>>,
     /// The dialog being presented: its cancel path is what the modal
     /// environment routes Escape and the Android system back to. Its
     /// presentation binding is read every flush (subscribing the frame to
@@ -1596,8 +1604,8 @@ impl<E: crate::text::TextEngine> OffsetNode<E> {
         let clock = Rc::clone(renderer.placement_clock());
         let (core, motion) = moved_core(renderer, |core| {
             LayerMotion::offset(
-                transform_axis(renderer, core, &value.x, unit),
-                transform_axis(renderer, core, &value.y, unit),
+                transform_axis(renderer, core, value.x(), unit),
+                transform_axis(renderer, core, value.y(), unit),
                 clock,
             )
         });

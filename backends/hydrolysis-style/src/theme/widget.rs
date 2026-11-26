@@ -711,4 +711,26 @@ pub trait WidgetTheme {
     fn snackbar(&self, env: &Environment) -> super::SnackbarLook {
         super::snackbar::default_snackbar_look(env)
     }
+
+    /// The look of a `.floating()` surface and the tokens semantic controls
+    /// adopt when placed inside it.
+    fn floating(&self, env: &Environment) -> super::FloatingLook {
+        super::floating::default_floating_look(env)
+    }
+
+    /// The look of a self-drawn modal dialog card.
+    fn dialog(&self, env: &Environment) -> super::DialogLook {
+        super::dialog::default_dialog_look(env)
+    }
+
+    /// The look of a self-drawn modal sheet surface.
+    fn sheet(&self, env: &Environment) -> super::SheetLook {
+        super::sheet::default_sheet_look(env)
+    }
+
+    /// The look of an avatar: default dimensions, container backdrop, and
+    /// monogram typography.
+    fn avatar(&self, env: &Environment) -> super::AvatarLook {
+        super::avatar::default_avatar_look(env)
+    }
 }

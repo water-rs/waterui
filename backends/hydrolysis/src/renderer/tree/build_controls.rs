@@ -2,10 +2,23 @@
 //! progress, menu, pickers, text fields, badge): each retains the config's
 //! live signals in a [`WidgetNode`] re-dispatched every flush.
 
+#[cfg(feature = "link")]
+use crate::widgets::controls::link::LinkRenderState;
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
+#[cfg(feature = "link")]
+use waterui::component::link::LinkConfig;
 
+#[cfg(waterui_feature = "avatar")]
+impl_widget_behavior!(
+    crate::widgets::controls::avatar::AvatarRenderState<E>,
+    crate::widgets::controls::avatar::render_avatar_node,
+    crate::widgets::controls::avatar::measure_avatar_node
+    ; dirty: take_layout_dirty
+    ; a11y: crate::widgets::controls::avatar::emit_avatar_accessibility
+    ; label: contributed_label
+);
 impl_widget_behavior!(
     crate::widgets::controls::button::ButtonRenderState<E>,
     crate::widgets::controls::button::render_button_node,
@@ -13,6 +26,16 @@ impl_widget_behavior!(
     ; prepare: ensure_label_built
     ; dirty: take_layout_dirty
     ; a11y: crate::widgets::controls::button::emit_button_accessibility
+    ; label: contributed_label
+);
+#[cfg(feature = "link")]
+impl_widget_behavior!(
+    LinkRenderState<E>,
+    crate::widgets::controls::link::render_link_node,
+    crate::widgets::controls::link::measure_link_node
+    ; prepare: ensure_label_built
+    ; dirty: take_layout_dirty
+    ; a11y: crate::widgets::controls::link::emit_link_accessibility
     ; label: contributed_label
 );
 impl_widget_behavior!(
@@ -188,6 +211,21 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         let mut state = ButtonRenderState::from_config(config);
         // Create the general label sub-view unstyled; the layout-time prepare
         // pass paints it with the theme and builds it before first measure.
+        state.init_label();
+        let state = Rc::new(RefCell::new(state));
+        Self::build_widget(renderer, state, StretchAxis::None, env)
+    }
+
+    /// Build a persistent link node: retains the label and reactive destination
+    /// URL behind an `Rc<RefCell<…>>` and renders with link chrome, pointer cursor,
+    /// and link accessibility semantics.
+    #[cfg(feature = "link")]
+    pub(super) fn build_link(
+        renderer: &SemanticCore<E>,
+        config: LinkConfig<HeldChild<E>>,
+        env: &Environment,
+    ) -> Self {
+        let mut state = LinkRenderState::from_config(config);
         state.init_label();
         let state = Rc::new(RefCell::new(state));
         Self::build_widget(renderer, state, StretchAxis::None, env)
@@ -487,6 +525,26 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             state.prebuild(renderer, env);
         });
         let stretch = state.stretch_axis();
+        let state = Rc::new(RefCell::new(state));
+        Self::build_widget_with_core(state, stretch, env, core)
+    }
+
+    /// Build a persistent avatar node: custom fallback and image sub-views are
+    /// pre-built eagerly so layout measurements and accessibility suppression work
+    /// on first flush.
+    #[cfg(waterui_feature = "avatar")]
+    pub(super) fn build_avatar(
+        config: waterui::widget::avatar::AvatarConfig<HeldChild<E>>,
+        env: &Environment,
+        renderer: &mut SemanticCore<E>,
+    ) -> Self {
+        use crate::widgets::controls::avatar::AvatarRenderState;
+        let stretch = waterui_core::NativeView::stretch_axis(&config);
+        let mut state = AvatarRenderState::from_config(config);
+        let core = renderer.new_core();
+        renderer.with_probe_reader(&core, ReaderPhase::Record, |renderer| {
+            state.prebuild(renderer, env);
+        });
         let state = Rc::new(RefCell::new(state));
         Self::build_widget_with_core(state, stretch, env, core)
     }

@@ -1,4 +1,5 @@
-//! Guards `[features]` symmetry across `waterui`, `waterui-internal`, and `waterui-dylib`.
+//! Guards `[features]` symmetry across `waterui`, `waterui-internal`, `waterui-dylib`,
+//! and `waterui-core`'s `DEP_WATERUI_FEATURES` marker table.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -160,14 +161,21 @@ fn facade_internal_and_dylib_feature_tables_stay_symmetric() {
     let root = parse_features_table(&root_dir.join("Cargo.toml"));
     let internal = parse_features_table(&root_dir.join("src/Cargo.toml"));
     let dylib = parse_features_table(&root_dir.join("utils/dylib/Cargo.toml"));
+    let core = parse_features_table(&root_dir.join("core/Cargo.toml"));
 
-    let root_keys: BTreeSet<&str> = root
-        .keys()
-        .map(String::as_str)
-        .filter(|key| *key != "dynamic_linking")
-        .collect();
+    assert!(
+        !root.contains_key("dynamic_linking"),
+        "waterui facade must not expose `dynamic_linking`; generated host crates own shared-runtime linkage"
+    );
+
+    let root_keys: BTreeSet<&str> = root.keys().map(String::as_str).collect();
     let internal_keys: BTreeSet<&str> = internal.keys().map(String::as_str).collect();
     let dylib_keys: BTreeSet<&str> = dylib.keys().map(String::as_str).collect();
+    let core_keys: BTreeSet<&str> = core
+        .keys()
+        .map(String::as_str)
+        .filter(|key| !matches!(*key, "nightly" | "serde"))
+        .collect();
 
     assert_eq!(
         root_keys, internal_keys,
@@ -176,6 +184,10 @@ fn facade_internal_and_dylib_feature_tables_stay_symmetric() {
     assert_eq!(
         root_keys, dylib_keys,
         "waterui and waterui-dylib [features] keys must match"
+    );
+    assert_eq!(
+        root_keys, core_keys,
+        "waterui-core must declare marker features for every waterui [features] key"
     );
 
     let root_default = feature_set(&root, "Cargo.toml", "default");
@@ -193,6 +205,7 @@ fn facade_internal_and_dylib_feature_tables_stay_symmetric() {
     let root_all = feature_set(&root, "Cargo.toml", "all");
     let internal_all = feature_set(&internal, "src/Cargo.toml", "all");
     let dylib_all = feature_set(&dylib, "utils/dylib/Cargo.toml", "all");
+    let core_all = feature_set(&core, "core/Cargo.toml", "all");
     assert!(
         !dylib_all.contains("waterui-internal/all"),
         "waterui-dylib `all` must enumerate own features instead of forwarding waterui-internal/all"
@@ -205,23 +218,34 @@ fn facade_internal_and_dylib_feature_tables_stay_symmetric() {
         root_all, dylib_all,
         "waterui and waterui-dylib `all` features must match"
     );
+    assert_eq!(
+        root_all, core_all,
+        "waterui and waterui-core `all` features must match"
+    );
 
     for feat in &root_keys {
         if matches!(*feat, "default" | "all") {
             continue;
         }
         let root_entries = &root[*feat];
+        let internal_entries = &internal[*feat];
         let dylib_entries = &dylib[*feat];
 
         let expected_internal = format!("waterui-internal/{feat}");
-        let expected_dylib = format!("waterui-dylib?/{feat}");
+        let expected_core = format!("waterui-core/{feat}");
         assert!(
             root_entries.contains(&expected_internal),
             "Cargo.toml feature `{feat}` must forward `{expected_internal}`"
         );
         assert!(
-            root_entries.contains(&expected_dylib),
-            "Cargo.toml feature `{feat}` must forward `{expected_dylib}`"
+            !root_entries
+                .iter()
+                .any(|entry| entry.contains("waterui-dylib")),
+            "Cargo.toml feature `{feat}` must not forward to `waterui-dylib`: {root_entries:?}"
+        );
+        assert!(
+            internal_entries.contains(&expected_core),
+            "src/Cargo.toml feature `{feat}` must forward `{expected_core}`"
         );
         assert!(
             dylib_entries.contains(&expected_internal),

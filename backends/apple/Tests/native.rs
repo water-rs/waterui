@@ -403,6 +403,10 @@ fn trials() -> Vec<Trial> {
     #[cfg(target_os = "macos")]
     tests.extend(row_major_table::trials());
     tests.extend(disclosure::trials());
+    #[cfg(feature = "avatar")]
+    tests.extend(avatar::trials());
+    #[cfg(feature = "link")]
+    tests.extend(link::trials());
     #[cfg(all(feature = "native-test", feature = "gpu_surface"))]
     tests.extend(capture_colour::trials());
     #[cfg(all(catalyst, feature = "native-test", feature = "gpu_surface"))]
@@ -17934,7 +17938,12 @@ mod shadow_modifier {
 
     fn a_clipped_caster_shadow_inherits_circular_silhouette() {
         let leaf = autoreleasepool(|_| {
-            super::resolve::render(label("avatar").size(80.0, 80.0).clip(Circle).shadow(4.0))
+            super::resolve::render(
+                label("avatar")
+                    .size(80.0, 80.0)
+                    .clip(Circle)
+                    .shadow(Shadow::new(4.0)),
+            )
         });
         let wrapper = autoreleasepool(|_| view::retain_base(leaf.view()));
         let _window = autoreleasepool(|_| attach_offscreen(&wrapper));
@@ -18689,5 +18698,232 @@ mod disclosure {
             expanded_dims.height,
             collapsed_dims.height
         );
+    }
+}
+
+#[cfg(feature = "avatar")]
+mod avatar {
+    use libtest_mimic::Trial;
+    #[cfg(target_os = "macos")]
+    use objc2_foundation::NSString;
+    use waterui::Str;
+    use waterui::component::text;
+    use waterui::reactive::binding;
+    use waterui::shape::{CornerRadius, RoundedRectangle};
+    use waterui::widget::{Avatar, avatar};
+    use waterui_core::layout::ProposalSize;
+    use waterui_graphics::color::Color;
+
+    #[cfg(target_os = "ios")]
+    use cocoa_ui::accessibility::{Role, traits};
+    #[cfg(target_os = "macos")]
+    use cocoa_ui::objc2_app_kit::NSAccessibility;
+    #[cfg(target_os = "ios")]
+    use cocoa_ui::objc2_ui_kit::NSObjectUIAccessibility as _;
+
+    #[cfg(target_os = "ios")]
+    use super::mtm;
+    use super::resolve;
+
+    pub fn trials() -> Vec<Trial> {
+        vec![Trial::test(
+            "avatar::realizes_silhouette_a11y_role_and_reactive_label",
+            || {
+                realizes_silhouette_a11y_role_and_reactive_label();
+                Ok(())
+            },
+        )]
+    }
+
+    fn realizes_silhouette_a11y_role_and_reactive_label() {
+        let name = binding(Str::from("Ada Lovelace"));
+        let default_leaf = resolve::render(avatar(name.clone()));
+        let default_size = default_leaf
+            .layout()
+            .measure(ProposalSize::UNSPECIFIED)
+            .size;
+        assert!((default_size.width - 40.0).abs() < f32::EPSILON);
+        assert!((default_size.height - 40.0).abs() < f32::EPSILON);
+
+        // DynamicRangeMetadata wraps the realized Avatar HostView in one container layer.
+        let children = cocoa_ui::view::subviews(default_leaf.view());
+        assert_eq!(children.len(), 1);
+        let avatar_view = &children[0];
+
+        #[cfg(target_os = "macos")]
+        {
+            assert_eq!(
+                avatar_view.accessibilityLabel().map(|s| s.to_string()),
+                Some(String::from("Ada Lovelace"))
+            );
+            assert_eq!(
+                avatar_view
+                    .accessibilityRole()
+                    .as_deref()
+                    .map(NSString::to_string),
+                Some(String::from("AXImage"))
+            );
+            assert_eq!(
+                avatar_view
+                    .accessibilityChildren()
+                    .map_or(0, |items| items.len()),
+                0
+            );
+            name.set(Str::from("Grace Hopper"));
+            assert_eq!(
+                avatar_view.accessibilityLabel().map(|s| s.to_string()),
+                Some(String::from("Grace Hopper"))
+            );
+        }
+
+        #[cfg(target_os = "ios")]
+        {
+            let mtm = mtm();
+            let image_trait = traits(Role::Image).expect("UIKit defines image accessibility trait");
+            assert!(avatar_view.isAccessibilityElement(mtm));
+            assert!(avatar_view.accessibilityElementsHidden(mtm));
+            assert_eq!(
+                avatar_view.accessibilityTraits(mtm) & image_trait,
+                image_trait
+            );
+            assert_eq!(
+                avatar_view.accessibilityLabel(mtm).map(|s| s.to_string()),
+                Some(String::from("Ada Lovelace"))
+            );
+            name.set(Str::from("Grace Hopper"));
+            assert_eq!(
+                avatar_view.accessibilityLabel(mtm).map(|s| s.to_string()),
+                Some(String::from("Grace Hopper"))
+            );
+        }
+
+        let custom_leaf = resolve::render(
+            Avatar::new("Katherine Johnson", || text("KJ"))
+                .shape(RoundedRectangle::new(CornerRadius::fraction(0.25)))
+                .side(64.0)
+                .ring(Color::srgb(255, 0, 0), 2.0),
+        );
+        let custom_size = custom_leaf.layout().measure(ProposalSize::UNSPECIFIED).size;
+        assert!((custom_size.width - 64.0).abs() < f32::EPSILON);
+        assert!((custom_size.height - 64.0).abs() < f32::EPSILON);
+    }
+}
+
+#[cfg(feature = "link")]
+mod link {
+    use cocoa_ui::accessibility::Role;
+    #[cfg(target_os = "macos")]
+    use cocoa_ui::accessibility::role;
+    #[cfg(target_os = "ios")]
+    use cocoa_ui::accessibility::traits;
+    use cocoa_ui::objc2::Message;
+    #[cfg(target_os = "macos")]
+    use cocoa_ui::objc2_app_kit::NSAccessibility as _;
+    #[cfg(target_os = "ios")]
+    use cocoa_ui::objc2_ui_kit::NSObjectUIAccessibility as _;
+    use cocoa_ui::view::subviews;
+    use cocoa_ui::{PlatformView, Retained};
+    use libtest_mimic::Trial;
+    use waterui::ViewExt as _;
+    use waterui::component::link::link;
+    use waterui_core::layout::{ProposalSize, StretchAxis};
+
+    #[cfg(target_os = "macos")]
+    use cocoa_ui::appkit::Button as PlatformButton;
+    #[cfg(target_os = "ios")]
+    use cocoa_ui::uikit::button::CocoaUiButton as PlatformButton;
+
+    #[cfg(target_os = "ios")]
+    use super::mtm;
+    use super::resolve;
+
+    pub fn trials() -> Vec<Trial> {
+        vec![Trial::test(
+            "link::native_role_label_cursor_sizing_and_disabled",
+            || {
+                native_role_label_cursor_sizing_and_disabled();
+                Ok(())
+            },
+        )]
+    }
+
+    fn find_button(root: &PlatformView) -> Option<Retained<PlatformButton>> {
+        for sub in subviews(root) {
+            if let Some(button) = sub.downcast_ref::<PlatformButton>() {
+                return Some(Message::retain(button));
+            }
+            if let Some(found) = find_button(&sub) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    fn native_role_label_cursor_sizing_and_disabled() {
+        let leaf = resolve::render(link("Visit Docs", "https://waterui.dev"));
+        assert_eq!(leaf.layout().stretch_axis(), StretchAxis::None);
+
+        let size = leaf
+            .layout()
+            .measure(ProposalSize::new(Some(400.0), Some(200.0)))
+            .size;
+        assert!(size.width > 0.0 && size.height > 0.0);
+        assert!(
+            size.width < 400.0,
+            "link must size to its label rather than stretching: {size:?}"
+        );
+
+        let button = find_button(leaf.view()).expect("link leaf must mount a native button");
+        #[cfg(target_os = "macos")]
+        {
+            assert!(
+                button.has_link_cursor(),
+                "AppKit link must enable pointing-hand cursor"
+            );
+            assert_eq!(
+                button.accessibilityRole().as_deref(),
+                role(Role::Link),
+                "AppKit link must expose AXLink accessibility role"
+            );
+            assert_eq!(
+                button.accessibilityLabel().map(|label| label.to_string()),
+                Some(String::from("Visit Docs"))
+            );
+            assert!(button.is_enabled());
+        }
+        #[cfg(target_os = "ios")]
+        {
+            let mtm = mtm();
+            let current_traits = button.accessibilityTraits(mtm);
+            let link_trait = traits(Role::Link).expect("UIKit defines link accessibility trait");
+            let button_trait =
+                traits(Role::Button).expect("UIKit defines button accessibility trait");
+            assert_ne!(
+                current_traits & link_trait,
+                0,
+                "UIKit link must expose UIAccessibilityTraitLink"
+            );
+            assert_eq!(
+                current_traits & button_trait,
+                0,
+                "UIKit link must not remain a plain button trait"
+            );
+            assert_eq!(
+                button
+                    .accessibilityLabel(mtm)
+                    .map(|label| label.to_string()),
+                Some(String::from("Visit Docs"))
+            );
+            assert!(button.isEnabled());
+        }
+
+        let disabled_leaf =
+            resolve::render(link("Disabled Link", "https://waterui.dev").disabled(true));
+        let disabled_button =
+            find_button(disabled_leaf.view()).expect("disabled link must mount a native button");
+        #[cfg(target_os = "macos")]
+        assert!(!disabled_button.is_enabled());
+        #[cfg(target_os = "ios")]
+        assert!(!disabled_button.isEnabled());
     }
 }

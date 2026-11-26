@@ -45,35 +45,14 @@ use alloc::vec::Vec;
 use core::fmt;
 
 use nami::Binding;
-use waterui_accessibility::AccessibilityRole;
-use waterui_core::handler::{AnyViewBuilder, Handler, SharedAction, ViewBuilder, shared_action};
-use waterui_core::layout::{
-    Layout, LayoutError, PlacementInput, Point, ProposalSize, Rect, Size, StretchAxis, SubView,
-    SubviewPlacement,
-};
+use waterui_controls::slot::SlotBuilder;
+use waterui_core::backend::{Backend, ChildSlot, MapSlots};
+use waterui_core::handler::{Handler, SharedAction, ViewBuilder, shared_action};
 use waterui_core::metadata::MetadataKey;
 use waterui_core::plugin::Plugin;
-use waterui_core::{AnyView, Environment, OneOf2, View};
-use waterui_graphics::color::Color;
-use waterui_layout::container::FixedContainer;
-use waterui_layout::padding::EdgeInsets;
-use waterui_layout::stack::{Alignment, HorizontalAlignment, vstack, zstack};
+use waterui_core::{AnyView, Environment, Metadata, View};
 use waterui_text::text::{IntoText, Text};
 
-use crate::shape::{CornerRadius, RoundedRectangle, ShapeExt};
-use crate::theme::color::{MutedForeground, Scrim, Surface};
-use crate::{Computed, SignalExt as _, Str, ViewExt};
-
-/// M3 `sheet.bottom.docked.container.max-width`, in logical points.
-const SHEET_MAX_WIDTH: f32 = 640.0;
-/// M3 `sheet.bottom.docked.container.shape` extra-large corner radius, in logical points.
-const SHEET_CORNER_RADIUS: f32 = 28.0;
-/// M3 `sheet.bottom.docked.drag-handle.width`, in logical points.
-const DRAG_HANDLE_WIDTH: f32 = 32.0;
-/// M3 `sheet.bottom.docked.drag-handle.height`, in logical points.
-const DRAG_HANDLE_HEIGHT: f32 = 4.0;
-/// Vertical padding around the M3 bottom-sheet drag handle, in logical points.
-const DRAG_HANDLE_PADDING: f32 = 12.0;
 /// Medium detent proportion of available window height (matches iOS `mediumDetent` / M3 50% sheet).
 const MEDIUM_DETENT_FRACTION: f32 = 0.5;
 /// Large detent proportion of available window height (matches iOS `largeDetent` / M3 expanded sheet).
@@ -174,19 +153,31 @@ impl Plugin for SheetContentScope {}
 ///
 /// One sheet is presented per window at a time; a second one presented while
 /// one is up waits in presentation order.
-#[derive(Clone)]
-pub struct Sheet {
+pub struct Sheet<S = AnyView> {
     is_presented: Binding<bool>,
-    content: AnyViewBuilder<AnyView>,
+    content: SlotBuilder<S>,
     detents: Vec<SheetDetent>,
     dismissible: bool,
     on_dismiss: Option<SharedAction>,
     label: Option<Text>,
 }
 
-impl MetadataKey for Sheet {}
+impl<S> Clone for Sheet<S> {
+    fn clone(&self) -> Self {
+        Self {
+            is_presented: self.is_presented.clone(),
+            content: self.content.clone(),
+            detents: self.detents.clone(),
+            dismissible: self.dismissible,
+            on_dismiss: self.on_dismiss.clone(),
+            label: self.label.clone(),
+        }
+    }
+}
 
-impl fmt::Debug for Sheet {
+impl<S: 'static> MetadataKey for Sheet<S> {}
+
+impl<S> fmt::Debug for Sheet<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Sheet")
             .field("detents", &self.detents)
@@ -197,22 +188,24 @@ impl fmt::Debug for Sheet {
     }
 }
 
-impl Sheet {
+impl<V: View> Sheet<V> {
     /// Creates a modal sheet bound to `is_presented` presenting `content`.
     ///
     /// Defaults to `[SheetDetent::Large]` and `dismissible = true`.
     #[must_use]
-    pub fn new(is_presented: &Binding<bool>, content: impl ViewBuilder) -> Self {
+    pub fn new(is_presented: &Binding<bool>, content: impl ViewBuilder<Output = V>) -> Self {
         Self {
             is_presented: is_presented.clone(),
-            content: AnyViewBuilder::new(content).erase(),
+            content: SlotBuilder::new(move || content.build()),
             detents: vec![SheetDetent::Large],
             dismissible: true,
             on_dismiss: None,
             label: None,
         }
     }
+}
 
+impl<S> Sheet<S> {
     /// Sets the supported detents for this sheet.
     ///
     /// An empty iterator leaves the default `[SheetDetent::Large]`.
@@ -285,9 +278,10 @@ impl Sheet {
         self.label.as_ref()
     }
 
-    /// Builds a fresh content view for a presentation.
+    /// Builds a fresh content slot for a presentation.
     #[doc(hidden)]
-    pub fn build_content(&self) -> AnyView {
+    #[must_use]
+    pub fn build_content(&self) -> S {
         self.content.build()
     }
 
@@ -314,132 +308,62 @@ impl Sheet {
         }
         self.is_presented.set(false);
     }
+}
 
-    /// The self-drawn realization a backend's modal layer presents: a
-    /// full-window `Scrim` backdrop (tapping it invokes the user dismiss path)
-    /// and the detent-sized modal sheet surface carrying `AccessibilityRole::Dialog`.
-    #[doc(hidden)]
-    pub fn modal_layer(&self) -> impl View + use<> {
-        let detent = self.primary_detent();
-        let scrim_sheet = self.clone();
-        let scrim = Color::new(Scrim)
-            .on_tap(move |env: Environment| scrim_sheet.run_user_dismiss(&env))
-            .a11y_hidden(true);
-        FixedContainer::new(SheetLayout { detent }, (scrim, SheetSurface(self.clone())))
+impl<S: 'static> Sheet<S> {
+    /// Maps the sheet's built content slot through `f`.
+    #[must_use]
+    pub fn map_slots<T: 'static>(self, f: impl Fn(S) -> T + Clone + 'static) -> Sheet<T> {
+        Sheet {
+            is_presented: self.is_presented,
+            content: self.content.map_slot(f),
+            detents: self.detents,
+            dismissible: self.dismissible,
+            on_dismiss: self.on_dismiss,
+            label: self.label,
+        }
     }
 }
 
-/// Layout placing child 0 (scrim) across the full window and child 1 (sheet
-/// surface) at the active [`SheetDetent`].
-#[derive(Debug, Clone, Copy)]
-struct SheetLayout {
-    detent: SheetDetent,
+impl<S: 'static> MapSlots<S> for Sheet<S> {
+    type With<T: 'static> = Sheet<T>;
+
+    fn map_slots<T: 'static>(self, f: impl Fn(S) -> T + Clone + 'static) -> Sheet<T> {
+        Self::map_slots(self, f)
+    }
 }
 
-impl Layout for SheetLayout {
-    fn stretch_axis(&self, _children: &[StretchAxis]) -> StretchAxis {
-        StretchAxis::Both
+/// View wrapper that attaches a [`Sheet`] with its modal content projected
+/// into the backend's child slot without `AnyView` erasure.
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct SheetView<Content, V> {
+    content: Content,
+    sheet: Sheet<V>,
+}
+
+impl<Content, V> SheetView<Content, V> {
+    /// Creates a wrapper attaching `sheet` to `content`.
+    #[must_use]
+    pub const fn new(content: Content, sheet: Sheet<V>) -> Self {
+        Self { content, sheet }
+    }
+}
+
+impl<Content: View, V: View> View for SheetView<Content, V> {
+    fn body(self, _env: &Environment) -> impl View {
+        Metadata::new(self.content, self.sheet.map_slots(AnyView::new))
     }
 
-    fn size_that_fits(&self, proposal: ProposalSize, _children: &[&dyn SubView]) -> Size {
-        Size::new(
-            proposal.width.unwrap_or(0.0),
-            proposal.height.unwrap_or(0.0),
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        backend.metadata(
+            Metadata::new(
+                B::Slot::from_view(self.content),
+                self.sheet.map_slots(B::Slot::from_view),
+            ),
+            env,
+            cx,
         )
-    }
-
-    fn place(
-        &self,
-        bounds: Rect,
-        _proposal: ProposalSize,
-        children: &[&dyn SubView],
-    ) -> Vec<SubviewPlacement> {
-        let mut placements = Vec::with_capacity(children.len());
-        if !children.is_empty() {
-            let full_proposal = ProposalSize::new(Some(bounds.width()), Some(bounds.height()));
-            placements.push(SubviewPlacement::new(bounds, full_proposal));
-        }
-        if children.len() > 1 {
-            let sheet_rect = match self.detent {
-                SheetDetent::FullScreen => bounds,
-                detent => {
-                    let width = bounds.width().min(SHEET_MAX_WIDTH);
-                    let height = detent.resolve_height(bounds.height()).min(bounds.height());
-                    let x = (bounds.width() - width).mul_add(0.5, bounds.x());
-                    let y = bounds.y() + (bounds.height() - height);
-                    Rect::new(Point::new(x, y), Size::new(width, height))
-                }
-            };
-            let sheet_proposal =
-                ProposalSize::new(Some(sheet_rect.width()), Some(sheet_rect.height()));
-            placements.push(SubviewPlacement::new(sheet_rect, sheet_proposal));
-        }
-        placements
-    }
-
-    fn resolve_extent(
-        &self,
-        input: PlacementInput,
-        _children: &[&dyn SubView],
-    ) -> Result<Rect, LayoutError> {
-        Ok(input.bounds)
-    }
-}
-
-/// The sheet surface container drawn on Hydrolysis's modal layer: carries
-/// `AccessibilityRole::Dialog`, resolves the accessible label, and wraps the
-/// user content with [`SheetContentScope`].
-struct SheetSurface(Sheet);
-
-impl View for SheetSurface {
-    fn body(self, env: &Environment) -> impl View {
-        let sheet = self.0;
-        let spoken: Computed<Str> = sheet
-            .label
-            .as_ref()
-            .map_or_else(
-                || Text::localized_or(SHEET_DEFAULT_LABEL_KEY, "Sheet").resolve(env),
-                |label| label.resolve(env),
-            )
-            .content()
-            .map(|styled| styled.to_plain())
-            .computed();
-        let content = sheet.build_content().with(SheetContentScope);
-        let full_screen = sheet.primary_detent() == SheetDetent::FullScreen;
-        if full_screen {
-            let surface = Color::new(Surface).on_tap(|| {}).a11y_hidden(true);
-            OneOf2::A(
-                zstack((surface, content))
-                    .a11y_label(spoken)
-                    .a11y_role(AccessibilityRole::Dialog),
-            )
-        } else {
-            let body = if sheet.dismissible {
-                let handle = RoundedRectangle::new(CornerRadius::fraction(1.0))
-                    .fill(Color::new(MutedForeground).with_opacity(0.4))
-                    .size(DRAG_HANDLE_WIDTH, DRAG_HANDLE_HEIGHT)
-                    .padding_with(EdgeInsets::new(
-                        DRAG_HANDLE_PADDING,
-                        0.0,
-                        DRAG_HANDLE_PADDING,
-                        0.0,
-                    ))
-                    .a11y_hidden(true);
-                OneOf2::A(vstack((handle, content)).alignment(HorizontalAlignment::Center))
-            } else {
-                OneOf2::B(content)
-            };
-            let surface = RoundedRectangle::new(CornerRadius::points(SHEET_CORNER_RADIUS))
-                .fill(Color::new(Surface))
-                .on_tap(|| {})
-                .a11y_hidden(true);
-            OneOf2::B(
-                zstack((surface, body))
-                    .alignment(Alignment::Top)
-                    .a11y_label(spoken)
-                    .a11y_role(AccessibilityRole::Dialog),
-            )
-        }
     }
 }
 
@@ -496,5 +420,78 @@ mod tests {
         sheet.dismiss_handle().dismiss();
         assert!(!presented.snapshot());
         assert_eq!(calls.get(), 0);
+    }
+
+    #[test]
+    fn sheet_view_dispatches_typed_slot_without_anyview() {
+        use core::any::TypeId;
+
+        use waterui_core::backend::{Backend, ChildSlot, cast};
+        use waterui_core::metadata::MetadataKey;
+        use waterui_core::view::hook::{HookList, HookableView};
+        use waterui_core::{AnyView, Metadata, NativeView, View};
+
+        use crate::ViewExt as _;
+
+        struct ProbeSheetContent;
+
+        impl View for ProbeSheetContent {
+            fn body(self, _env: &Environment) -> impl View {}
+        }
+
+        struct RecordedSlot(TypeId);
+
+        impl ChildSlot for RecordedSlot {
+            fn from_view<V: View>(_view: V) -> Self {
+                Self(TypeId::of::<V>())
+            }
+        }
+
+        struct CapturingBackend {
+            seen: Option<TypeId>,
+        }
+
+        impl Backend for CapturingBackend {
+            type Output = ();
+            type Ctx = ();
+            type Slot = RecordedSlot;
+
+            fn native<T: NativeView + 'static>(&mut self, _native: T, _env: &Environment, (): ()) {}
+
+            fn metadata<K: MetadataKey>(
+                &mut self,
+                metadata: Metadata<K, Self::Slot>,
+                _env: &Environment,
+                (): (),
+            ) {
+                if let Ok(sheet) = cast::<K, Sheet<RecordedSlot>>(metadata.value) {
+                    self.seen = Some(sheet.build_content().0);
+                }
+            }
+
+            fn erased(&mut self, _view: AnyView, _env: &Environment, (): ()) {
+                panic!("SheetView must dispatch statically without AnyView");
+            }
+
+            fn scoped<H: HookList, V: View>(
+                &mut self,
+                _hooks: H,
+                view: V,
+                env: &Environment,
+                (): (),
+            ) {
+                view.dispatch(self, env, ());
+            }
+
+            fn hookable<T: HookableView>(&mut self, view: T, env: &Environment, (): ()) {
+                self.native(view, env, ());
+            }
+        }
+
+        let presented = Binding::new(true);
+        let view = ().sheet(Sheet::new(&presented, || ProbeSheetContent));
+        let mut backend = CapturingBackend { seen: None };
+        view.dispatch(&mut backend, &Environment::new(), ());
+        assert_eq!(backend.seen, Some(TypeId::of::<ProbeSheetContent>()));
     }
 }

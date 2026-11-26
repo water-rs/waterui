@@ -12,10 +12,12 @@ use waterui_core::backend::{ErasedPayload, MapSlots};
 use waterui_core::metadata::MetadataKey;
 use waterui_core::{Metadata, NativeView};
 
+use crate::components::anchored_overlay::realize_anchored_overlay_metadata;
 use crate::components::frame_rate::realize_frame_rate_metadata;
 use crate::components::sheet::realize_sheet_metadata;
 use crate::contract::{NativeLeaf, RenderContext};
 use waterui::animation::FrameRateVote;
+use waterui::metadata::anchored_overlay::AnchoredOverlay;
 use waterui::sheet::Sheet;
 
 /// Realizes views into `AppKit`/`UIKit` leaves.
@@ -135,9 +137,7 @@ impl NativeBackend for AppleBackend {
         (): (),
     ) -> NativeLeaf {
         mark_reached!("divider");
-        #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
-        self.end_filter_fusion();
-        crate::dispatch::render(native.composed(env), env, self.mtm)
+        crate::components::divider::realize_divider(native, &self.entry(env))
     }
 
     fn fixed_container<C: ChildView<Self>>(
@@ -242,6 +242,34 @@ impl NativeBackend for AppleBackend {
     ) -> NativeLeaf {
         mark_reached!("button");
         crate::components::button::realize_button_config(
+            native.map_slots(C::into_child),
+            &self.entry(env),
+        )
+    }
+
+    #[cfg(waterui_feature = "avatar")]
+    fn avatar<C: ChildView<Self>>(
+        &mut self,
+        native: waterui::widget::avatar::AvatarConfig<C>,
+        env: &Environment,
+        (): (),
+    ) -> NativeLeaf {
+        mark_reached!("avatar");
+        crate::components::avatar::realize_avatar_config(
+            native.map_slots(C::into_child),
+            &self.entry(env),
+        )
+    }
+
+    #[cfg(waterui_feature = "link")]
+    fn link<C: ChildView<Self>>(
+        &mut self,
+        native: waterui::component::link::LinkConfig<C>,
+        env: &Environment,
+        (): (),
+    ) -> NativeLeaf {
+        mark_reached!("link");
+        crate::components::link::realize_link_config(
             native.map_slots(C::into_child),
             &self.entry(env),
         )
@@ -598,7 +626,11 @@ impl NativeBackend for AppleBackend {
         crate::components::gpu_surface::realize_external_frame_view(native, &self.entry(env))
     }
 
-    #[cfg(waterui_feature = "gpu")]
+    #[cfg(any(
+        waterui_feature = "gpu",
+        waterui_feature = "cpu",
+        waterui_feature = "canvas"
+    ))]
     fn scene(
         &mut self,
         native: waterui::graphics::backend::SceneView,
@@ -606,10 +638,24 @@ impl NativeBackend for AppleBackend {
         (): (),
     ) -> NativeLeaf {
         mark_reached!("scene");
-        crate::components::gpu_surface::realize_scene_view(native, &self.entry(env))
+        #[cfg(feature = "gpu_surface")]
+        return crate::components::gpu_surface::realize_scene_view(native, &self.entry(env));
+        #[cfg(not(feature = "gpu_surface"))]
+        {
+            drop(native);
+            report_unprovided(
+                "waterui-apple without its `gpu_surface` feature",
+                "waterui_graphics::backend::SceneView",
+            );
+            self.empty((), env, ())
+        }
     }
 
-    #[cfg(waterui_feature = "gpu")]
+    #[cfg(any(
+        waterui_feature = "gpu",
+        waterui_feature = "cpu",
+        waterui_feature = "canvas"
+    ))]
     fn picture(
         &mut self,
         native: waterui::graphics::backend::Picture,
@@ -617,7 +663,17 @@ impl NativeBackend for AppleBackend {
         (): (),
     ) -> NativeLeaf {
         mark_reached!("picture");
-        crate::components::picture::realize_picture(native, &self.entry(env))
+        #[cfg(feature = "picture")]
+        return crate::components::picture::realize_picture(native, &self.entry(env));
+        #[cfg(not(feature = "picture"))]
+        {
+            drop(native);
+            report_unprovided(
+                "waterui-apple without its `picture` feature",
+                "waterui_graphics::backend::Picture",
+            );
+            self.empty((), env, ())
+        }
     }
 
     #[cfg(waterui_feature = "video")]
@@ -1023,6 +1079,17 @@ impl NativeBackend for AppleBackend {
         )
     }
 
+    fn floating<C: ChildView<Self>>(
+        &mut self,
+        metadata: Metadata<waterui::floating::Floating, C>,
+        env: &Environment,
+        (): (),
+    ) -> NativeLeaf {
+        mark_reached!("floating");
+        let metadata = metadata.map_content(C::into_child);
+        crate::components::floating::realize_floating_metadata(metadata, &self.entry(env))
+    }
+
     fn ignore_safe_area<C: ChildView<Self>>(
         &mut self,
         metadata: Metadata<waterui::layout::safe_area::IgnoreSafeArea, C>,
@@ -1128,18 +1195,16 @@ impl NativeBackend for AppleBackend {
         realize_frame_rate_metadata(metadata, &self.entry(env))
     }
 
-    fn anchored_overlay<C: ChildView<Self>>(
+    fn anchored_overlay<S: ChildView<Self>, C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::metadata::anchored_overlay::AnchoredOverlay, C>,
+        metadata: Metadata<AnchoredOverlay<S>, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
         mark_reached!("anchored_overlay");
-        let metadata = metadata.map_content(C::into_child);
-        crate::components::anchored_overlay::realize_anchored_overlay_metadata(
-            metadata,
-            &self.entry(env),
-        )
+        let Metadata { content, value } = metadata;
+        let metadata = Metadata::new(content.into_child(), value.map_slots(S::into_child));
+        realize_anchored_overlay_metadata(metadata, &self.entry(env))
     }
 
     #[cfg(waterui_feature = "menu")]
@@ -1158,14 +1223,15 @@ impl NativeBackend for AppleBackend {
         )
     }
 
-    fn sheet<C: ChildView<Self>>(
+    fn sheet<S: ChildView<Self>, C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<Sheet, C>,
+        metadata: Metadata<Sheet<S>, C>,
         env: &Environment,
         (): (),
     ) -> NativeLeaf {
         mark_reached!("sheet");
-        let metadata = metadata.map_content(C::into_child);
+        let Metadata { content, value } = metadata;
+        let metadata = Metadata::new(content.into_child(), value.map_slots(S::into_child));
         realize_sheet_metadata(metadata, &self.entry(env))
     }
 

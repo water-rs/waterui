@@ -8,6 +8,14 @@ use super::layout::apply_scroll_node_controller;
 use super::layout::kurbo_rect;
 use crate::renderer::metadata::resolve_shadow_shape;
 use crate::text::TextEngine;
+#[cfg(all(
+    feature = "accessibility",
+    hydrolysis_cherenkov,
+    waterui_feature = "dialog"
+))]
+use crate::theme::DialogLook;
+#[cfg(all(feature = "accessibility", hydrolysis_cherenkov))]
+use crate::theme::SheetLook;
 use kurbo::Affine;
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
@@ -141,7 +149,8 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                 WrapperEffect::Clip(_)
                 | WrapperEffect::Border(_)
                 | WrapperEffect::Shadow(_)
-                | WrapperEffect::Material(_) => true,
+                | WrapperEffect::Material(_)
+                | WrapperEffect::Floating(_) => true,
                 #[cfg(feature = "menu")]
                 WrapperEffect::PopupMenuSurface(_) => true,
                 #[cfg(feature = "navigation")]
@@ -543,6 +552,11 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                     }
                     WrapperEffect::Glass(effect) => {
                         HydrolysisRenderer::apply_glass(renderer, ctx, child_env, effect, |r| {
+                            node.child.flush(r, ctx, child_env, kurbo::Affine::IDENTITY);
+                        });
+                    }
+                    WrapperEffect::Floating(effect) => {
+                        HydrolysisRenderer::apply_floating(renderer, ctx, child_env, effect, |r| {
                             node.child.flush(r, ctx, child_env, kurbo::Affine::IDENTITY);
                         });
                     }
@@ -1184,7 +1198,8 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                         ) {
                             let env = sheet_modal_environment(child_env, &effect.sheet);
                             let mut slot = effect.content.borrow_mut();
-                            let layer = slot.get_or_insert_with(|| (effect.build_layer)());
+                            let layer = slot
+                                .get_or_insert_with(|| (effect.build_layer)(SheetLook::default()));
                             layer.emit_accessibility(renderer, &env);
                         } else {
                             *effect.content.borrow_mut() = None;
@@ -1207,10 +1222,10 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                             focus,
                         ) {
                             let env = dialog_modal_environment(child_env, &effect.dialog);
-                            effect
-                                .content
-                                .borrow_mut()
-                                .emit_accessibility(renderer, &env);
+                            let mut slot = effect.content.borrow_mut();
+                            let layer = slot
+                                .get_or_insert_with(|| (effect.build_layer)(DialogLook::default()));
+                            layer.emit_accessibility(renderer, &env);
                         } else {
                             node.child.emit_accessibility(renderer, child_env);
                         }

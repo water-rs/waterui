@@ -4722,6 +4722,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "waterkit-clipboard",
+ "waterkit-deeplink",
  "waterkit-menu",
  "waterui",
  "waterui-apple-menu",
@@ -4778,7 +4779,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis-m3"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis-m3?branch=main#77a1f2ad63cb5a9e76d79ce9d25d1b775dac4221"
+source = "git+https://github.com/water-rs/hydrolysis-m3?branch=main#02fe8e598d3a7dada38fe6821f626e35c9ed6368"
 dependencies = [
  "hydrolysis-style",
  "material-color-utils",
@@ -12784,7 +12785,6 @@ version = "0.5.2"
 dependencies = [
  "image",
  "waterui",
- "waterui-dylib",
  "waterui-internal",
  "waterui-testing",
 ]
@@ -13211,6 +13211,7 @@ dependencies = [
  "thiserror 2.0.21",
  "waterui",
  "waterui-accessibility",
+ "waterui-color",
  "waterui-core",
  "waterui-interaction",
  "waterui-layout",
@@ -13465,7 +13466,9 @@ dependencies = [
  "bitflags 2.13.2",
  "keyboard-types",
  "nami",
+ "suiteki",
  "waterui-core",
+ "waterui-url",
 ]
 
 [[package]]
@@ -13484,7 +13487,6 @@ dependencies = [
  "thiserror 2.0.21",
  "tracing",
  "unicode-segmentation",
- "waterkit-deeplink",
  "waterkit-haptic",
  "waterui",
  "waterui-accessibility",
@@ -13811,6 +13813,7 @@ dependencies = [
  "nami",
  "waterui-core",
  "waterui-graphics",
+ "waterui-layout",
 ]
 
 [[package]]
@@ -14230,6 +14233,7 @@ name = "webview-example"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_json",
  "waterui",
  "waterui-browser-wpe",
 ]

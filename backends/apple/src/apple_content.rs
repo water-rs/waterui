@@ -373,6 +373,7 @@ pub(crate) fn realize_apple_view<T: AppleContent>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use waterui::metadata::anchored_overlay::AnchoredOverlay;
     use waterui::sheet::Sheet;
     use waterui_backend_core::{
         ChildView, NativeBackend, NativeBackendFamily, Realize, report_unprovided,
@@ -585,9 +586,17 @@ mod tests {
             gpu: waterui::graphics::backend::GpuContentLeaf,
             #[cfg(waterui_feature = "gpu")]
             external_frame: waterui::graphics::gpu::external::ExternalFrameView,
-            #[cfg(waterui_feature = "gpu")]
+            #[cfg(any(
+                waterui_feature = "gpu",
+                waterui_feature = "cpu",
+                waterui_feature = "canvas"
+            ))]
             scene: waterui::graphics::backend::SceneView,
-            #[cfg(waterui_feature = "gpu")]
+            #[cfg(any(
+                waterui_feature = "gpu",
+                waterui_feature = "cpu",
+                waterui_feature = "canvas"
+            ))]
             picture: waterui::graphics::backend::Picture,
             #[cfg(waterui_feature = "video")]
             video: waterui::video::video::NativeVideoConfig,
@@ -600,7 +609,11 @@ mod tests {
         }
 
         stub_parents! {
+            #[cfg(waterui_feature = "avatar")]
+            avatar<C>: waterui::widget::avatar::AvatarConfig<C>,
             button<C>: waterui::component::button::ButtonConfig<C>,
+            #[cfg(waterui_feature = "link")]
+            link<C>: waterui::component::link::LinkConfig<C>,
             badge<C>: waterui::component::badge::BadgeConfig<C>,
             card<C>: waterui::widget::card::CardConfig<C>,
             disclosure<C>: waterui::widget::disclosure::DisclosureConfig<C>,
@@ -679,6 +692,7 @@ mod tests {
             material_background: waterui::background::MaterialBackground,
             glass_background: waterui::background::GlassBackground,
             material_group: waterui::background::MaterialGroup,
+            floating: waterui::floating::Floating,
             ignore_safe_area: waterui::layout::safe_area::IgnoreSafeArea,
             cursor: waterui::cursor::Cursor,
             draggable: waterui::drag_drop::Draggable,
@@ -688,8 +702,6 @@ mod tests {
             secure: waterui::metadata::secure::Secure,
             dynamic_range: waterui::metadata::secure::DynamicRangeMetadata,
             frame_rate: waterui::animation::FrameRateVote,
-            anchored_overlay: waterui::metadata::anchored_overlay::AnchoredOverlay,
-            sheet: Sheet,
             #[cfg(waterui_feature = "dialog")]
             dialog: waterui::dialog::Dialog,
             #[cfg(waterui_feature = "navigation")]
@@ -698,6 +710,22 @@ mod tests {
             navigation_transition_source: waterui::navigation::NavigationTransitionSource,
             #[cfg(waterui_feature = "navigation")]
             navigation_transition_destination: waterui::navigation::NavigationTransitionDestination,
+        }
+
+        fn anchored_overlay<S: ChildView<Self>, C: ChildView<Self>>(
+            &mut self,
+            _: Metadata<AnchoredOverlay<S>, C>,
+            _: &Environment,
+            (): (),
+        ) {
+        }
+
+        fn sheet<S: ChildView<Self>, C: ChildView<Self>>(
+            &mut self,
+            _: Metadata<Sheet<S>, C>,
+            _: &Environment,
+            (): (),
+        ) {
         }
 
         #[cfg(waterui_feature = "menu")]

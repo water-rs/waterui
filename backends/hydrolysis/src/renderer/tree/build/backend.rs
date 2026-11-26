@@ -6,8 +6,18 @@ use core::marker::PhantomData;
 use waterui::animation::FrameRateVote;
 use waterui::sheet::Sheet;
 
+#[cfg(waterui_feature = "dialog")]
+use crate::theme::DialogLook;
+use crate::theme::SheetLook;
+
 #[cfg(waterui_feature = "gpu")]
-use waterui::graphics::backend::{GpuContentLeaf, Picture};
+use waterui::graphics::backend::GpuContentLeaf;
+#[cfg(any(
+    waterui_feature = "gpu",
+    waterui_feature = "cpu",
+    waterui_feature = "canvas"
+))]
+use waterui::graphics::backend::Picture;
 #[cfg(waterui_feature = "navigation")]
 use waterui::navigation::ResolvedNavigationView;
 use waterui_backend_core::{
@@ -305,7 +315,11 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         }
     }
 
-    #[cfg(waterui_feature = "gpu")]
+    #[cfg(any(
+        waterui_feature = "gpu",
+        waterui_feature = "cpu",
+        waterui_feature = "canvas"
+    ))]
     fn picture(&mut self, native: Picture, env: &Environment, (): ()) -> RenderNode<E> {
         mark_reached!("picture");
         self.scene(native.into_scene_view(), env, ())
@@ -828,6 +842,40 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         )
     }
 
+    fn floating<C: ChildView<Self>>(
+        &mut self,
+        metadata: Metadata<waterui::floating::Floating, C>,
+        env: &Environment,
+        (): (),
+    ) -> RenderNode<E> {
+        use crate::renderer::floating::FloatingEffect;
+        use crate::theme::{FloatingOverride, FloatingScope};
+        use nami::binding;
+        use waterui::floating::LegacyFloatingOverride;
+        use waterui_interaction::interaction::{InteractionReport, InteractionState};
+
+        mark_reached!("floating");
+        let metadata = metadata.map_content(C::into_child);
+        let renderer = &mut *self.renderer;
+        let override_surface = env.get::<FloatingOverride>().cloned().or_else(|| {
+            env.get::<LegacyFloatingOverride>()
+                .map(|legacy| FloatingOverride::legacy(legacy.0.clone()))
+        });
+        let reported_state = binding(InteractionState::empty());
+        let mut child_env = env.clone();
+        child_env.remove::<FloatingOverride>();
+        child_env.remove::<LegacyFloatingOverride>();
+        let child_env = child_env
+            .extending(FloatingScope::new(override_surface.clone()))
+            .extending(InteractionReport(reported_state.clone()));
+        RenderNode::build_wrapper(
+            WrapperEffect::Floating(FloatingEffect::new(override_surface, reported_state)),
+            metadata.content,
+            &child_env,
+            renderer,
+        )
+    }
+
     // Transparent metadata wrappers: each applies its visual/interaction
     // effect every flush and recurses into the child node, so reactive
     // descendants reach their dedicated nodes (instead of freezing inside a
@@ -872,9 +920,9 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         RenderNode::build_wrapper(WrapperEffect::Shadow(value), content, env, renderer)
     }
 
-    fn anchored_overlay<C: ChildView<Self>>(
+    fn anchored_overlay<S: ChildView<Self>, C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<waterui::metadata::anchored_overlay::AnchoredOverlay, C>,
+        metadata: Metadata<AnchoredOverlay<S>, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
@@ -891,7 +939,7 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         } = value;
         RenderNode::build_wrapper(
             WrapperEffect::AnchoredOverlay(AnchoredOverlayEffect {
-                builder: Rc::new(move || HeldChild::from_view(overlay_builder.build())),
+                builder: Rc::new(move || S::into_child(overlay_builder.build())),
                 presentations: Rc::default(),
                 is_presented,
                 placed_edge,
@@ -905,19 +953,20 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         )
     }
 
-    fn sheet<C: ChildView<Self>>(
+    fn sheet<S: ChildView<Self>, C: ChildView<Self>>(
         &mut self,
-        metadata: Metadata<Sheet, C>,
+        metadata: Metadata<Sheet<S>, C>,
         env: &Environment,
         (): (),
     ) -> RenderNode<E> {
         mark_reached!("sheet");
-        let metadata = metadata.map_content(C::into_child);
-        let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
+        let content = content.into_child();
+        let value = value.map_slots(S::into_child);
+        let renderer = &mut *self.renderer;
         let sheet_for_builder = value.clone();
-        let build_layer: Rc<dyn Fn() -> RetainedSubview<E>> =
-            Rc::new(move || RetainedSubview::new(sheet_for_builder.modal_layer()));
+        let build_layer: Rc<dyn Fn(SheetLook) -> RetainedSubview<E>> =
+            Rc::new(move |look| RetainedSubview::new(sheet_modal_layer(&sheet_for_builder, look)));
         RenderNode::build_wrapper(
             WrapperEffect::Sheet(SheetEffect {
                 content: Rc::new(RefCell::new(None)),
@@ -942,10 +991,14 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         let metadata = metadata.map_content(C::into_child);
         let renderer = &mut *self.renderer;
         let Metadata { content, value } = metadata;
-        let layer = RetainedSubview::new(value.modal_layer());
+        let dialog_for_builder = value.clone();
+        let build_layer: Rc<dyn Fn(DialogLook) -> RetainedSubview<E>> = Rc::new(move |look| {
+            RetainedSubview::new(dialog_modal_layer(&dialog_for_builder, look))
+        });
         RenderNode::build_wrapper(
             WrapperEffect::Dialog(DialogEffect {
-                content: Rc::new(RefCell::new(layer)),
+                content: Rc::new(RefCell::new(None)),
+                build_layer,
                 dialog: value,
                 marker: Rc::new(()),
             }),
@@ -1227,7 +1280,11 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         }))
     }
 
-    #[cfg(waterui_feature = "gpu")]
+    #[cfg(any(
+        waterui_feature = "gpu",
+        waterui_feature = "cpu",
+        waterui_feature = "canvas"
+    ))]
     fn scene(
         &mut self,
         native: waterui::graphics::backend::SceneView,
@@ -1301,6 +1358,20 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         let renderer = &mut *self.renderer;
         let into_child: fn(C) -> HeldChild<E> = C::into_child;
         RenderNode::build_button(renderer, native.map_slots(into_child), env)
+    }
+
+    #[cfg(waterui_feature = "link")]
+    fn link<C: ChildView<Self>>(
+        &mut self,
+        native: waterui::component::link::LinkConfig<C>,
+        env: &Environment,
+        (): (),
+    ) -> RenderNode<E> {
+        use waterui_core::backend::MapSlots as _;
+        mark_reached!("link");
+        let renderer = &mut *self.renderer;
+        let into_child: fn(C) -> HeldChild<E> = C::into_child;
+        RenderNode::build_link(renderer, native.map_slots(into_child), env)
     }
 
     #[cfg(waterui_feature = "menu")]
@@ -1466,6 +1537,20 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         let renderer = &mut *self.renderer;
         let into_child: fn(C) -> HeldChild<E> = C::into_child;
         RenderNode::build_secure_field(native.map_slots(into_child), env, renderer)
+    }
+
+    #[cfg(waterui_feature = "avatar")]
+    fn avatar<C: ChildView<Self>>(
+        &mut self,
+        native: waterui::widget::avatar::AvatarConfig<C>,
+        env: &Environment,
+        (): (),
+    ) -> RenderNode<E> {
+        use waterui_core::backend::MapSlots as _;
+        mark_reached!("avatar");
+        let renderer = &mut *self.renderer;
+        let into_child: fn(C) -> HeldChild<E> = C::into_child;
+        RenderNode::build_avatar(native.map_slots(into_child), env, renderer)
     }
 
     fn badge<C: ChildView<Self>>(

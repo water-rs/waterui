@@ -79,10 +79,6 @@ repository.workspace = true
 description = "A modern UI framework for Rust"
 keywords = ["ui", "framework", "rust", "gui", "water"]
 categories = ["gui"]
-# `build.rs` exports the enabled features to direct dependents as
-# `DEP_WATERUI_FEATURES`, so a backend implements exactly the components the
-# application enabled.
-links = "waterui"
 
 # WaterUI framework release policy shared by the `water` CLI and release
 # automation. This table is the framework's own scaffold metadata: the
@@ -159,7 +155,7 @@ scaffold-packages = [
 # matching, and cargo reports the split as hundreds of type errors that
 # never name a version. The `water` CLI fails on that divergence before it
 # reaches the compiler.
-reexported-dependencies = { anyhow = "waterui::Error", bytemuck = "waterui::graphics::gpu::bytemuck", cherenkov = "waterui::graphics::backend::cherenkov", cherenkov-cpu = "waterui::graphics::backend::cherenkov_cpu", cherenkov-gpu = "waterui::graphics::backend::cherenkov_gpu", cherenkov-record = "waterui::graphics::backend::draw", color = "waterui::graphics::Color", executor-core = "waterui::task", filtrate = "waterui::graphics::backend::filtrate", filtrate-core = "waterui::media::Filter", keyboard-types = "waterui::graphics::input", nami = "waterui::reactive", nami-core = "waterui::reactive", native-executor = "waterui::task", pastey = "waterui::pastey", serde = "waterui::webview::serde", serde_json = "waterui::webview::serde_json", suiteki = "waterui::Str", tracing = "waterui::log", url = "waterui::media::Url", waterkit-haptic = "waterui::haptic", wgpu = "waterui::graphics::gpu::wgpu" }
+reexported-dependencies = { anyhow = "waterui::Error", bytemuck = "waterui::graphics::gpu::bytemuck", cherenkov = "waterui::graphics::backend::cherenkov", cherenkov-cpu = "waterui::graphics::backend::cherenkov_cpu", cherenkov-gpu = "waterui::graphics::backend::cherenkov_gpu", cherenkov-record = "waterui::graphics::backend::draw", color = "waterui::graphics::Color", executor-core = "waterui::task", filtrate = "waterui::graphics::backend::filtrate", filtrate-core = "waterui::media::Filter", keyboard-types = "waterui::graphics::input", nami = "waterui::reactive", nami-core = "waterui::reactive", native-executor = "waterui::task", suiteki = "waterui::Str", tracing = "waterui::log", url = "waterui::media::Url", waterkit-haptic = "waterui::haptic", wgpu = "waterui::graphics::gpu::wgpu" }
 
 # Nothing in this workspace links the GTK or WinUI backends: the `water`
 # CLI reads these pins to scaffold a launcher crate. Each pins the
@@ -349,7 +345,6 @@ waterui-preview-protocol = { version = "0.5.1", path = "components/devtools/prev
 waterui-mcp-protocol = { version = "0.5.1", path = "components/devtools/mcp/protocol" }
 waterui-testing = { version = "0.5.1", path = "testing" }
 waterui-internal = { version = "0.5.1", path = "src", default-features = false }
-waterui-dylib = { version = "0.5.1", path = "utils/dylib", default-features = false }
 hydrolysis = { version = "0.3.1", path = "backends/hydrolysis", default-features = false }
 hydrolysis-style = { version = "0.5.1", path = "backends/hydrolysis-style", default-features = false }
 waterui-apple-menu = { version = "0.5.1", path = "backends/apple/menu" }
@@ -416,7 +411,6 @@ tree-sitter-md = "0.5.3"
 
 [dependencies]
 waterui-internal.workspace = true
-waterui-dylib = { workspace = true, optional = true }
 
 
 [dev-dependencies]
@@ -429,26 +423,26 @@ waterui = { path = ".", features = ["image"] }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 
 [features]
-form = ["waterui-internal/form", "waterui-dylib?/form"]
-link = ["waterui-internal/link", "waterui-dylib?/link"]
-avatar = ["waterui-internal/avatar", "waterui-dylib?/avatar"]
-cpu-time = ["waterui-internal/cpu-time", "waterui-dylib?/cpu-time"]
-list = ["waterui-internal/list", "waterui-dylib?/list"]
-table = ["waterui-internal/table", "waterui-dylib?/table"]
-navigation = ["waterui-internal/navigation", "waterui-dylib?/navigation"]
-menu = ["waterui-internal/menu", "waterui-dylib?/menu"]
-calendar = ["waterui-internal/calendar", "waterui-dylib?/calendar"]
-color-picker = ["waterui-internal/color-picker", "waterui-dylib?/color-picker"]
-date-picker = ["waterui-internal/date-picker", "waterui-dylib?/date-picker"]
-file-picker = ["waterui-internal/file-picker", "waterui-dylib?/file-picker"]
-multi-date-picker = ["waterui-internal/multi-date-picker", "waterui-dylib?/multi-date-picker"]
-picker = ["waterui-internal/picker", "waterui-dylib?/picker"]
-secure-field = ["waterui-internal/secure-field", "waterui-dylib?/secure-field"]
-slider = ["waterui-internal/slider", "waterui-dylib?/slider"]
-stepper = ["waterui-internal/stepper", "waterui-dylib?/stepper"]
-text-field = ["waterui-internal/text-field", "waterui-dylib?/text-field"]
-toggle = ["waterui-internal/toggle", "waterui-dylib?/toggle"]
-validation = ["waterui-internal/validation", "waterui-dylib?/validation"]
+form = ["waterui-internal/form"]
+link = ["waterui-internal/link"]
+avatar = ["waterui-internal/avatar"]
+cpu-time = ["waterui-internal/cpu-time"]
+list = ["waterui-internal/list"]
+table = ["waterui-internal/table"]
+navigation = ["waterui-internal/navigation"]
+menu = ["waterui-internal/menu"]
+calendar = ["waterui-internal/calendar"]
+color-picker = ["waterui-internal/color-picker"]
+date-picker = ["waterui-internal/date-picker"]
+file-picker = ["waterui-internal/file-picker"]
+multi-date-picker = ["waterui-internal/multi-date-picker"]
+picker = ["waterui-internal/picker"]
+secure-field = ["waterui-internal/secure-field"]
+slider = ["waterui-internal/slider"]
+stepper = ["waterui-internal/stepper"]
+text-field = ["waterui-internal/text-field"]
+toggle = ["waterui-internal/toggle"]
+validation = ["waterui-internal/validation"]
 default = [
     "avatar",
     "cpu-time",
@@ -482,92 +476,80 @@ default = [
 # The locale formatters reachable through `waterui::locale`. Default-on so the
 # module keeps its full surface; a lean build starts from
 # `default-features = false` and names what it needs.
-locale-datetime = ["waterui-internal/locale-datetime", "waterui-dylib?/locale-datetime"]
-locale-list = ["waterui-internal/locale-list", "waterui-dylib?/locale-list"]
-locale-relative-time = ["waterui-internal/locale-relative-time", "waterui-dylib?/locale-relative-time"]
+locale-datetime = ["waterui-internal/locale-datetime"]
+locale-list = ["waterui-internal/locale-list"]
+locale-relative-time = ["waterui-internal/locale-relative-time"]
 # GPU rendering stack (wgpu via waterui-graphics' Cherenkov engine +
 # waterui-svg). Default-on so every existing consumer is unaffected. Disable
 # it to cross-compile a lean WaterUI app for embedded targets without the GPU
 # stack.
-gpu = ["effects", "waterui-internal/gpu", "waterui-dylib?/gpu"]
+gpu = ["effects", "waterui-internal/gpu"]
 # CPU rendering stack (waterui-graphics' Cherenkov engine on `cherenkov-cpu`),
 # with no wgpu. A self-drawn backend built with both renders on the GPU when
 # the host has a usable hardware adapter and on the CPU otherwise.
-cpu = ["effects", "waterui-internal/cpu", "waterui-dylib?/cpu"]
+cpu = ["effects", "waterui-internal/cpu"]
 # Filters on views and their portable description, without the GPU stack.
 # Implied by `gpu`.
-effects = ["waterui-internal/effects", "waterui-dylib?/effects"]
+effects = ["waterui-internal/effects"]
 # The `Code` widget and the bundled syntect highlighter behind it. Default-on
 # because `code(…)` is a plain authoring API; opting out drops syntect, two-face
 # and the syntax and theme tables they carry.
-highlight = ["waterui-internal/highlight", "waterui-dylib?/highlight"]
+highlight = ["waterui-internal/highlight"]
 # The devtools Inspector hub. Opt-in for packaged builds: `water run` and
 # other development sessions get it through the linkage the CLI selects, while
 # a release package that never attaches the hub leaves its server stack out.
-inspector = ["waterui-internal/inspector", "waterui-dylib?/inspector"]
-inspector-signals = ["inspector", "waterui-internal/inspector-signals", "waterui-dylib?/inspector-signals"]
-dialog = ["waterui-internal/dialog", "waterui-dylib?/dialog"]
-snackbar = ["waterui-internal/snackbar", "waterui-dylib?/snackbar"]
-assets = ["waterui-internal/assets", "waterui-dylib?/assets"]
-image = ["waterui-internal/image", "waterui-dylib?/image"]
-video = ["waterui-internal/video", "waterui-dylib?/video"]
+inspector = ["waterui-internal/inspector"]
+inspector-signals = ["inspector", "waterui-internal/inspector-signals"]
+dialog = ["waterui-internal/dialog"]
+snackbar = ["waterui-internal/snackbar"]
+assets = ["waterui-internal/assets"]
+image = ["waterui-internal/image"]
+video = ["waterui-internal/video"]
 # Remote fetching (`Url::fetch`, `Data::from_remote`/`LargeFile::from_remote`,
 # `Photo` pointed at a web URL) links the `zenwave` HTTP client through
 # `waterui-url`/`waterui-media`. Deliberately not in `default`: an application
 # that never names a remote URL must carry no HTTP client — principle 5.
-remote = ["waterui-internal/remote", "waterui-dylib?/remote"]
+remote = ["waterui-internal/remote"]
 # WaterUI's own GPU video player as Hydrolysis's video realization; the CLI
 # enables Hydrolysis's `video-gpu` feature from it. Deliberately not implied by
 # `video`: a platform that bridges a native player must not link it.
-video-gpu = ["video", "gpu", "waterui-internal/video-gpu", "waterui-dylib?/video-gpu"]
-webview = ["waterui-internal/webview", "waterui-dylib?/webview"]
-map = ["waterui-internal/map", "waterui-dylib?/map"]
+video-gpu = ["video", "gpu", "waterui-internal/video-gpu"]
+webview = ["waterui-internal/webview"]
+map = ["waterui-internal/map"]
 # The `WidgetKit` authoring surface (`waterui::widgets`, `#[waterui::widget]`).
-widgets = ["waterui-internal/widgets", "waterui-dylib?/widgets"]
+widgets = ["waterui-internal/widgets"]
 # TypeScript views: the embedded JavaScript engine, the signal bridge, the
 # `tsx!` mount, and the props contract schema (`waterui::ts::schema`) whose
 # encoded contract the `water` CLI reads back out of a debug artifact.
-ts = ["waterui-internal/ts", "waterui-dylib?/ts"]
+ts = ["waterui-internal/ts"]
 # The over-the-air update client for TypeScript view bundles (`waterui::ts::Ota`).
 # Implies `ts`; off by default and outside `all` for the same reason `ts` is.
-ts-ota = ["ts", "waterui-internal/ts-ota", "waterui-dylib?/ts-ota"]
-navigation-restoration = [
-    "waterui-internal/navigation-restoration",
-    "waterui-dylib?/navigation-restoration",
-]
-flow-markdown = ["waterui-internal/flow-markdown", "waterui-dylib?/flow-markdown"]
+ts-ota = ["ts", "waterui-internal/ts-ota"]
+navigation-restoration = ["waterui-internal/navigation-restoration"]
+flow-markdown = ["waterui-internal/flow-markdown"]
 # Mathematical formulas in Markdown. Deliberately outside `all`: it brings a
 # layout engine, an OpenType `MATH` table reader, a LaTeX parser and MathCAT's
 # speech rules — about 2.7 MiB — and a bundled math font for the asset pipeline,
 # and `all` is what every full-feature CI leg builds on every platform.
-markdown-math = [
-    "flow-markdown",
-    "waterui-internal/markdown-math",
-    "waterui-dylib?/markdown-math",
-]
+markdown-math = ["flow-markdown", "waterui-internal/markdown-math"]
 # Haptic and sensory feedback (`waterui::haptic`, `Feedback`, `Haptic`, `Intensity`,
 # `ViewExt::sensory_feedback`). Opt-in so applications without haptics pay none of it.
-haptics = ["waterui-internal/haptics", "waterui-dylib?/haptics"]
-std = ["waterui-internal/std", "waterui-dylib?/std"]
-dynamic_linking = ["dep:waterui-dylib"]
-erased-dispatch = ["waterui-internal/erased-dispatch", "waterui-dylib?/erased-dispatch"]
+haptics = ["waterui-internal/haptics"]
+std = ["waterui-internal/std"]
+erased-dispatch = ["waterui-internal/erased-dispatch"]
 # In-tree offscreen view capture (`CaptureHandle`, `CaptureScope`, `ViewExt::capture`)
 # and `NativeBackend::offscreen` wiring. Opt-in so `route_metadata_dyn` does not pull
 # the offscreen renderer into binaries that never capture views from inside the tree.
-capture = ["waterui-internal/capture", "waterui-dylib?/capture"]
-canvas = ["waterui-internal/canvas", "waterui-dylib?/canvas"]
-chart = ["waterui-internal/chart", "waterui-dylib?/chart"]
-barcode = ["waterui-internal/barcode", "waterui-dylib?/barcode"]
-particle = ["waterui-internal/particle", "waterui-dylib?/particle"]
-# Every feature the framework offers an application. `dynamic_linking` is
-# deliberately absent: it is a build strategy — one shared copy of the framework
-# for the preview system — not a capability, and `waterui-dylib` exports more
-# symbols than a PE export table can hold, so a Windows build of it cannot link
-# at all. `--all-features` therefore cannot be used on Windows; `--features all`
-# is what CI asks for instead. `ts` is absent too: the TypeScript runtime will
-# link a JavaScript engine and a bundle loader, so an application that mounts
-# TypeScript view modules opts in explicitly rather than paying for them through
-# the full-feature set — the same reasoning that keeps `markdown-math` out.
+capture = ["waterui-internal/capture"]
+canvas = ["waterui-internal/canvas"]
+chart = ["waterui-internal/chart"]
+barcode = ["waterui-internal/barcode"]
+particle = ["waterui-internal/particle"]
+# Every feature the framework offers an application. `ts` is absent: the
+# TypeScript runtime will link a JavaScript engine and a bundle loader, so an
+# application that mounts TypeScript view modules opts in explicitly rather than
+# paying for them through the full-feature set — the same reasoning that keeps
+# `markdown-math` out.
 all = [
     "avatar",
     "cpu-time",

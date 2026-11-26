@@ -88,9 +88,6 @@ pub mod prelude {
     pub use super::dialog::{Dialog, DialogAction};
     pub use super::sheet::{Sheet, SheetDetent, SheetDismiss};
     #[cfg(feature = "snackbar")]
-    #[doc(hidden)]
-    pub use super::snackbar::SnackbarTheme;
-    #[cfg(feature = "snackbar")]
     pub use super::snackbar::{
         Snackbar, SnackbarDismissReason, SnackbarHost, SnackbarManager, SnackbarPosition,
     };
@@ -114,7 +111,7 @@ pub mod prelude {
     pub use super::text::{TextConfig, font, highlight, styled};
 
     #[cfg(feature = "link")]
-    pub use super::component::link::{Link, LinkTarget, link};
+    pub use super::component::link::{Link, link};
     #[cfg(feature = "list")]
     pub use super::component::list::{
         ForEachExt, List, ListContent, ListMinRowHeight, Row, Section, detail_row,
@@ -138,11 +135,9 @@ pub mod prelude {
     #[cfg(feature = "avatar")]
     pub use super::widget::{Avatar, avatar};
     pub use super::widget::{
-        Card, CardStyle, DialogTheme, Disclosure, Divider, ErrorView, ResultExt, SuspendedView,
-        Suspense, card, condition::when, disclosure, error_view, suspense,
+        Card, CardStyle, Disclosure, Divider, ErrorView, ResultExt, SuspendedView, Suspense, card,
+        condition::when, disclosure, error_view, suspense,
     };
-    #[doc(hidden)]
-    pub use super::widget::{CardStyleTokens, CardTheme};
     #[cfg(feature = "flow-markdown")]
     pub use super::widget::{
         FlowAnimationPolicy, FlowAnimationPreset, FlowElementKind, FlowMarkdown, FlowStreamMode,
@@ -363,7 +358,7 @@ pub use tracing as log;
 #[macro_export]
 macro_rules! __export_preview {
     ($fn_name:expr, $body:block) => {
-        $crate::pastey::paste! {
+        $crate::__private::pastey::paste! {
             #[doc(hidden)]
             #[cfg(debug_assertions)]
             #[unsafe(no_mangle)]
@@ -375,7 +370,11 @@ macro_rules! __export_preview {
 }
 
 #[doc(hidden)]
-pub use pastey;
+pub mod __private {
+    pub use pastey;
+    #[cfg(all(feature = "webview", not(target_arch = "wasm32")))]
+    pub use waterui_webview::__private::{serde, serde_json};
+}
 
 /// Expands `waterui-ts` runtime conversions (`IntoJs` / `FromJs`) only when the
 /// `ts` feature is enabled on `waterui`, so `#[derive(TsType)]` works cleanly

@@ -19,6 +19,7 @@ workspace = true
 # dependency in the artifact; the default is everything ported so far.
 default = [
     "applied_filter",
+    "avatar",
     "calendar",
     "canvas",
     "gpu_surface",
@@ -26,6 +27,7 @@ default = [
     "context_menu",
     "date_picker",
     "dialog",
+    "link",
     "menu",
     "list",
     "multi_date_picker",
@@ -41,6 +43,7 @@ default = [
     "view_effect",
 ]
 applied_filter = ["gpu_surface", "dep:objc2-core-image", "waterui/effects"]
+avatar = ["waterui/avatar"]
 calendar = ["waterui/calendar"]
 # The Core Animation realization of `Canvas`.
 canvas = ["dep:block2", "dep:skrifa", "waterui-graphics/text", "waterui/canvas"]
@@ -49,6 +52,7 @@ color_picker = ["waterui/color-picker"]
 context_menu = ["waterui/menu"]
 date_picker = ["waterui/date-picker"]
 dialog = ["waterui/dialog", "cocoa-ui/dialog"]
+link = ["waterui/link"]
 list = ["waterui/list"]
 # `cocoa-ui/map` brings `MKMapView`, the `MapKit` framework link and the
 # `CoreLocation` types; an app that never uses the leaf gets none of it.

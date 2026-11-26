@@ -30,6 +30,7 @@ pub mod accessibility;
 mod bindings;
 pub mod chrome;
 mod effects;
+mod floating;
 mod frame;
 #[cfg(feature = "frame-profile")]
 mod frame_stage_times;
@@ -51,6 +52,8 @@ pub mod live_tabs;
 pub mod live_toggle;
 pub mod material;
 mod metadata;
+#[cfg(waterui_feature = "avatar")]
+pub use metadata::{EngineAnimated, resolve_scope_clip_parts, shape_data_for_parts};
 pub mod mount;
 mod native_measure;
 #[cfg(feature = "navigation")]
@@ -201,7 +204,7 @@ use waterui::navigation::tab::{TabStyle, TabsLayout};
 #[cfg(feature = "navigation")]
 use waterui::navigation::{
     CustomNavigationController, NavigationController, NavigationSplitLayout, NavigationStackLayout,
-    NavigationTransaction, NavigationView,
+    NavigationTransaction,
 };
 use waterui::style::{Offset, Rotation, Scale, Shadow};
 use waterui::widget::Divider;
@@ -2147,6 +2150,17 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     /// folds it into this frame's `structural_change` so the prune cycle runs.
     pub(crate) fn take_subview_structural_change(&mut self) -> bool {
         core::mem::take(&mut self.subview_structural_change)
+    }
+
+    /// Fallback when the `accessibility` feature is disabled so widget render
+    /// paths can query suppression unconditionally without feature gating.
+    #[cfg(not(feature = "accessibility"))]
+    #[expect(
+        clippy::unused_self,
+        reason = "signature matches the `accessibility`-enabled method on `SemanticCore`"
+    )]
+    pub(crate) const fn is_accessibility_hidden(&self, _env: &Environment) -> bool {
+        false
     }
 }
 

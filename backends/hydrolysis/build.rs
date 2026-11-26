@@ -275,6 +275,7 @@ fn facade_features() {
         ("toggle", "toggle"),
         ("menu", "menu"),
         ("list", "list"),
+        ("link", "link"),
         ("table", "table"),
         ("navigation", "navigation"),
     ];

@@ -12,7 +12,6 @@ use lucide::plus;
 use waterkit_location::{Location, Permission, PermissionStatus};
 use waterkit_permission::request;
 use waterui::app::{App, Windows};
-use waterui::env::use_env;
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::Signal;
@@ -24,6 +23,7 @@ use waterui_map::{Coordinate, Map, MapStyle, Region};
 use waterui_map_gpu::MapGpu;
 use waterui_url::Url;
 
+const MAP_CONTROL_WIDTH: f32 = 44.0;
 const MAP_CONTROL_SPACING: f32 = 10.0;
 const MAP_CONTROL_INSET: f32 = 18.0;
 const STATUS_PANEL_WIDTH: f32 = 264.0;
@@ -144,26 +144,15 @@ fn content(state: MapExampleState) -> impl View {
     .anchor(UnitPoint::TOP_LEADING)
     .offset(STATUS_PANEL_INSET, STATUS_PANEL_INSET);
 
-    let controls = use_env(move |env: Environment| {
-        // Ambient theme data: a theme that styles floating surfaces supplies
-        // these, and the framework default applies on backends that do not.
-        let style = env.get::<FloatingStyle>().cloned().unwrap_or_default();
-        // A theme point size (44.0 by default); `f32` represents it exactly.
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "the theme point size is a small finite width that f32 holds exactly"
-        )]
-        let control_width = style.minimum_width as f32;
-        let zoom_controls = vstack((zoom_in, Divider, zoom_out))
-            .width(control_width)
-            .floating_with(style);
-        vstack((location_control, zoom_controls))
-            .spacing(MAP_CONTROL_SPACING)
-            .width(control_width)
-            .position_in(UnitPoint::BOTTOM_TRAILING)
-            .anchor(UnitPoint::BOTTOM_TRAILING)
-            .offset(-MAP_CONTROL_INSET, -MAP_CONTROL_INSET)
-    });
+    let zoom_controls = vstack((zoom_in, Divider, zoom_out))
+        .width(MAP_CONTROL_WIDTH)
+        .floating();
+    let controls = vstack((location_control, zoom_controls))
+        .spacing(MAP_CONTROL_SPACING)
+        .width(MAP_CONTROL_WIDTH)
+        .position_in(UnitPoint::BOTTOM_TRAILING)
+        .anchor(UnitPoint::BOTTOM_TRAILING)
+        .offset(-MAP_CONTROL_INSET, -MAP_CONTROL_INSET);
 
     absolute((map.pin(PinConstraints::all(0.0)), status_panel, controls))
 }

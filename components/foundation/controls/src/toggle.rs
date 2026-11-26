@@ -8,7 +8,9 @@ use nami::{Binding, Computed, Signal as _, SignalExt as _};
 use waterui_accessibility::{
     AccessibilityRole, AccessibilityState, AccessibilityStateSignal, default_role,
 };
-use waterui_core::backend::{Backend, ChildSlot, MapSlots};
+use waterui_core::backend::{
+    Backend, ChildSlot, HookSlot, HookableParent, MapSlots, ParentHookScope, offer_hookable_parent,
+};
 use waterui_core::env::Installed;
 use waterui_core::layout::StretchAxis;
 use waterui_core::plugin::Plugin;
@@ -22,7 +24,6 @@ use crate::label::{
     ControlLabel, IntoLabel, Label, LabelDisplayMode, LabelKind, impl_label_style_methods,
 };
 use crate::size::ControlSize;
-use crate::slot::StyleSlot;
 
 /// Visual style options for toggle controls.
 #[non_exhaustive]
@@ -93,7 +94,7 @@ impl ToggleStyle {
 }
 
 /// The label view passed to a custom [`Toggle`] style.
-pub struct ToggleLabel<L = ControlLabel<StyleSlot>>(L);
+pub struct ToggleLabel<L = ControlLabel<HookSlot>>(L);
 
 impl<L> fmt::Debug for ToggleLabel<L> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -395,7 +396,7 @@ impl<S: CustomToggleStyle> SealedToggleStyle for CustomToggle<S> {
 }
 
 struct ToggleStyleTargetData {
-    label: ControlLabel<StyleSlot>,
+    label: ControlLabel<HookSlot>,
     toggle: Binding<bool>,
     size: ControlSize,
 }
@@ -578,14 +579,17 @@ impl<S> ToggleConfig<S> {
     }
 }
 
-impl<S: 'static> ToggleConfig<S> {
-    /// Splits this configuration into a [`ToggleStyleTarget`] for subtree hooks
-    /// and a [`ToggleStylePending<S>`] to restore the typed configuration if all
-    /// hooks decline.
-    #[doc(hidden)]
-    pub fn into_style_pending(
+impl<S: 'static> HookableParent<S> for ToggleConfig<S> {
+    type StyleTarget = ToggleStyleTarget;
+    type Pending = ToggleStylePending<S>;
+
+    fn is_style_hookable(&self) -> bool {
+        !self.explicit_style
+    }
+
+    fn into_style_pending(
         self,
-        map_slot: impl Fn(S) -> StyleSlot + Clone + 'static,
+        map_slot: impl Fn(S) -> HookSlot + Clone + 'static,
     ) -> (ToggleStyleTarget, ToggleStylePending<S>) {
         let style_label = self.label.clone().map_slots(map_slot);
         let target = ToggleStyleTarget(alloc::boxed::Box::new(ToggleStyleTargetData {
@@ -601,6 +605,10 @@ impl<S: 'static> ToggleConfig<S> {
             size: self.size,
         };
         (target, pending)
+    }
+
+    fn restore_pending(pending: Self::Pending) -> Self {
+        pending.restore()
     }
 }
 
@@ -621,6 +629,15 @@ impl<S: 'static> MapSlots<S> for ToggleConfig<S> {
             explicit_style: self.explicit_style,
             size: self.size,
         }
+    }
+
+    fn offer_style_hook<Scope: ParentHookScope<S>>(
+        self,
+        scope: &mut Scope,
+        env: &Environment,
+        cx: Scope::Ctx,
+    ) -> Result<Scope::Output, (Self, Scope::Ctx)> {
+        offer_hookable_parent(self, scope, env, cx)
     }
 }
 

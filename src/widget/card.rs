@@ -4,7 +4,6 @@ use core::fmt;
 
 use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 use waterui_core::{AnyView, Environment, Native, NativeView, View};
-use waterui_graphics::color::Color;
 use waterui_text::{IntoText, Text};
 
 /// Visual style for a [`Card`].
@@ -71,67 +70,6 @@ impl<S: 'static> MapSlots<S> for CardConfig<S> {
 impl<S: 'static> fmt::Display for CardConfig<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("Card")
-    }
-}
-
-/// Legacy theme tokens kept hidden while downstream style packages migrate to
-/// `WidgetTheme::card`.
-#[doc(hidden)]
-#[derive(Debug, Clone)]
-pub struct CardTheme {
-    /// Default card style.
-    pub default_style: CardStyle,
-    /// Elevated card tokens.
-    pub elevated: CardStyleTokens,
-    /// Filled card tokens.
-    pub filled: CardStyleTokens,
-    /// Outlined card tokens.
-    pub outlined: CardStyleTokens,
-    /// Inner content padding.
-    pub content_padding: f32,
-    /// Gap between title, subtitle, and content.
-    pub content_spacing: f32,
-}
-
-/// Legacy per-style card tokens kept hidden while downstream style packages
-/// migrate to `WidgetTheme::card`.
-#[doc(hidden)]
-#[derive(Debug, Clone)]
-pub struct CardStyleTokens {
-    /// Container fill color.
-    pub container_color: Color,
-    /// Border color.
-    pub outline_color: Color,
-    /// Border width.
-    pub outline_width: f32,
-    /// Corner radius in logical units.
-    pub corner_radius: f32,
-    /// Shadow color.
-    pub shadow_color: Color,
-    /// Shadow blur radius.
-    pub shadow_radius: f32,
-    /// Shadow vertical offset.
-    pub shadow_offset_y: f32,
-    /// Ambient shadow color.
-    pub ambient_shadow_color: Color,
-    /// Ambient shadow blur radius.
-    pub ambient_shadow_radius: f32,
-    /// Ambient shadow vertical offset.
-    pub ambient_shadow_offset_y: f32,
-}
-
-impl CardTheme {
-    /// Returns the tokens for a card style.
-    #[must_use]
-    pub const fn tokens(&self, style: CardStyle) -> &CardStyleTokens {
-        match match style {
-            CardStyle::Automatic => self.default_style,
-            other => other,
-        } {
-            CardStyle::Automatic | CardStyle::Filled => &self.filled,
-            CardStyle::Elevated => &self.elevated,
-            CardStyle::Outlined => &self.outlined,
-        }
     }
 }
 

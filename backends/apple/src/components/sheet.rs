@@ -26,7 +26,7 @@ use cocoa_ui::uikit::{HostView, SheetController, SheetDetentSpec};
 use cocoa_ui::{MainThreadMarker, PlatformView, Retained, view};
 use waterui::reactive::{Binding, Signal};
 use waterui::sheet::{Sheet, SheetDetent};
-use waterui_backend_core::Environment;
+use waterui_backend_core::{Environment, SlotView};
 use waterui_core::Metadata;
 use waterui_core::extract::State as EnvState;
 use waterui_core::layout::{
@@ -68,7 +68,7 @@ struct SheetState {
     child: Mounted,
     env: Environment,
     renderer: Renderer,
-    sheet: Sheet,
+    sheet: Sheet<Held>,
     is_presented: Binding<bool>,
     presentation: RefCell<Option<ActivePresentation>>,
 }
@@ -249,7 +249,10 @@ fn present(state: &Rc<SheetState>) {
     let size = resolve_macos_sheet_size(&window, state.sheet.primary_detent());
     let sheet_host = HostView::new(state.mtm, KitRect::new(0.0, 0.0, size.width, size.height));
     let sheet_host_view: &PlatformView = &sheet_host;
-    let content_view = Metadata::new(state.sheet.build_content(), sheet_content_env(state));
+    let content_view = Metadata::new(
+        SlotView::new(state.sheet.build_content()),
+        sheet_content_env(state),
+    );
     let mounted = state.renderer.render(content_view).mount(sheet_host_view);
     view::set_translates_autoresizing(mounted.view(), true);
     let content_child_view = view::retain_base(mounted.view());
@@ -332,7 +335,10 @@ fn map_detents(detents: &[SheetDetent]) -> Vec<SheetDetentSpec> {
 fn present(state: &Rc<SheetState>) {
     let sheet_host = HostView::new(state.mtm, KitRect::ZERO);
     let sheet_host_view: &PlatformView = &sheet_host;
-    let content_view = Metadata::new(state.sheet.build_content(), sheet_content_env(state));
+    let content_view = Metadata::new(
+        SlotView::new(state.sheet.build_content()),
+        sheet_content_env(state),
+    );
     let mounted = state.renderer.render(content_view).mount(sheet_host_view);
     view::set_translates_autoresizing(mounted.view(), true);
     let content_child_view = view::retain_base(mounted.view());
@@ -416,11 +422,11 @@ pub fn install(env: &mut Environment) {
     env.insert(Rc::new(SheetQueue::default()));
 }
 
-/// Realizes `Metadata<Sheet, Held>` as a transparent wrapper whose attached
-/// modal sheet follows `is_presented`.
+/// Realizes `Metadata<Sheet<Held>, Held>` as a transparent wrapper whose
+/// attached modal sheet follows `is_presented`.
 #[must_use]
 pub fn realize_sheet_metadata(
-    metadata: Metadata<Sheet, Held>,
+    metadata: Metadata<Sheet<Held>, Held>,
     ctx: &RenderContext<'_>,
 ) -> NativeLeaf {
     let Metadata {

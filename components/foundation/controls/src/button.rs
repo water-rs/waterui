@@ -176,7 +176,9 @@ use alloc::rc::Rc;
 use executor_core::spawn_local;
 use nami::{Binding, Computed, Signal as _, SignalExt as _, binding, zip::zip};
 use waterui_accessibility::{AccessibilityLabel, AccessibilityRole, default_role};
-use waterui_core::backend::{Backend, ChildSlot, MapSlots};
+use waterui_core::backend::{
+    Backend, ChildSlot, HookSlot, HookableParent, MapSlots, ParentHookScope, offer_hookable_parent,
+};
 use waterui_core::env::Installed;
 use waterui_core::handler::ReportExtraction;
 use waterui_core::handler::{BoxedAction, ExtractionError, Handler};
@@ -189,7 +191,6 @@ use waterui_text::styled::StyledStr;
 use crate::label::{
     ControlLabel, IntoAccessibilityLabel, IntoLabel, Label, LabelDisplayMode, LabelKind,
 };
-use crate::slot::StyleSlot;
 
 // ============================================================================
 // Macros for reducing boilerplate
@@ -318,7 +319,7 @@ pub enum ButtonRole {
 }
 
 /// The label view passed to a custom [`Button`] style.
-pub struct ButtonLabel<L = ControlLabel<StyleSlot>>(L);
+pub struct ButtonLabel<L = ControlLabel<HookSlot>>(L);
 
 impl<L> fmt::Debug for ButtonLabel<L> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -963,7 +964,7 @@ impl<S: PrimitiveButtonStyle> SealedButtonStyle for PrimitiveButton<S> {
 }
 
 struct ButtonStyleTargetData {
-    label: ControlLabel<StyleSlot>,
+    label: ControlLabel<HookSlot>,
     action: Rc<RefCell<BoxedAction<()>>>,
     role: Option<ButtonRole>,
     size: ControlSize,
@@ -1135,14 +1136,17 @@ impl<S> ButtonConfig<S> {
     }
 }
 
-impl<S: 'static> ButtonConfig<S> {
-    /// Splits this configuration into a [`ButtonStyleTarget`] for subtree hooks
-    /// and a [`ButtonStylePending<S>`] to restore the typed configuration if all
-    /// hooks decline.
-    #[doc(hidden)]
-    pub fn into_style_pending(
+impl<S: 'static> HookableParent<S> for ButtonConfig<S> {
+    type StyleTarget = ButtonStyleTarget;
+    type Pending = ButtonStylePending<S>;
+
+    fn is_style_hookable(&self) -> bool {
+        !self.explicit_style
+    }
+
+    fn into_style_pending(
         self,
-        map_slot: impl Fn(S) -> StyleSlot + Clone + 'static,
+        map_slot: impl Fn(S) -> HookSlot + Clone + 'static,
     ) -> (ButtonStyleTarget, ButtonStylePending<S>) {
         let style_label = self.label.clone().map_slots(map_slot);
         let action: Rc<RefCell<BoxedAction<()>>> = Rc::new(RefCell::new(self.action));
@@ -1161,6 +1165,10 @@ impl<S: 'static> ButtonConfig<S> {
             size: self.size,
         };
         (target, pending)
+    }
+
+    fn restore_pending(pending: Self::Pending) -> Self {
+        pending.restore()
     }
 }
 
@@ -1184,6 +1192,15 @@ impl<S: 'static> MapSlots<S> for ButtonConfig<S> {
             role: self.role,
             size: self.size,
         }
+    }
+
+    fn offer_style_hook<Scope: ParentHookScope<S>>(
+        self,
+        scope: &mut Scope,
+        env: &Environment,
+        cx: Scope::Ctx,
+    ) -> Result<Scope::Output, (Self, Scope::Ctx)> {
+        offer_hookable_parent(self, scope, env, cx)
     }
 }
 
@@ -1662,14 +1679,30 @@ pub fn button<L: IntoLabel>(label: L) -> Button<L::Kind, NoAction> {
 
 #[cfg(all(test, feature = "menu"))]
 mod tests {
+    use core::any::Any;
+
     use super::*;
-    use waterui_core::Signal;
+    use waterui_core::{Native, NativeView, Signal};
+
+    struct SearchIconProbe(bool);
 
     #[derive(Clone, Copy)]
     struct SearchIcon;
 
+    impl NativeView for SearchIcon {
+        fn realize_provided(self, context: &mut dyn Any, _env: &Environment) -> Result<(), Self> {
+            if let Some(probe) = context.downcast_mut::<SearchIconProbe>() {
+                probe.0 = true;
+                return Ok(());
+            }
+            Err(self)
+        }
+    }
+
     impl View for SearchIcon {
-        fn body(self, _env: &Environment) -> impl View {}
+        fn body(self, _env: &Environment) -> impl View {
+            Native::new(self)
+        }
     }
 
     #[test]
@@ -1696,7 +1729,9 @@ mod tests {
             .label()
             .icon_slot::<AnyView>()
             .expect("label icon slot should be preserved");
-        assert!(icon.build().downcast_ref::<SearchIcon>().is_some());
+        let mut probe = SearchIconProbe(false);
+        assert!(icon.probe(&mut probe, &Environment::default()));
+        assert!(probe.0);
     }
 
     #[test]
@@ -1737,7 +1772,9 @@ mod tests {
             .label()
             .icon_slot::<AnyView>()
             .expect("icon should be preserved when only the spoken text is overridden");
-        assert!(icon.build().downcast_ref::<SearchIcon>().is_some());
+        let mut probe = SearchIconProbe(false);
+        assert!(icon.probe(&mut probe, &Environment::default()));
+        assert!(probe.0);
     }
 
     #[test]

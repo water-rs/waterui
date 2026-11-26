@@ -10,7 +10,8 @@
 //! These extensions help create a fluent API for constructing user interfaces.
 
 use crate::animation::{FrameRate, FrameRateVote};
-use crate::sheet::Sheet;
+use crate::metadata::anchored_overlay::{AnchoredOverlay, AnchoredOverlayView};
+use crate::sheet::{Sheet, SheetView};
 #[cfg(feature = "snackbar")]
 use crate::snackbar::SnackbarHost;
 use core::future::Future;
@@ -76,7 +77,7 @@ use crate::{
         badge::{Badge, BadgeValue},
         focus::Focused,
     },
-    floating::Floating,
+    floating::{Floating, LegacyFloatingOverride},
     prelude::Shadow,
     shape::{ClipShape, Shape},
     style::{Anchor, FloatingStyle, Offset, Rotation, Scale},
@@ -1042,15 +1043,17 @@ pub trait ViewExt: View + Sized {
     /// Promotes this view to a themed floating surface with elevation.
     ///
     /// Floating presentation is an attribute: applying it to a semantic button
-    /// preserves the button's identity while changing its container, state-layer
-    /// geometry, and elevation.
-    fn floating(self) -> Floating<Self> {
-        Floating::new(self)
+    /// preserves the button's identity while delegating the floating container
+    /// and elevation treatment to the active backend.
+    fn floating(self) -> Metadata<Floating, Self> {
+        Metadata::new(self, Floating)
     }
 
-    /// Promotes this view with explicit floating-surface theme tokens.
-    fn floating_with(self, style: FloatingStyle) -> Floating<Self> {
-        Floating::with_style(self, style)
+    /// Transitional compatibility shim for external style packages migrating
+    /// off `FloatingStyle`.
+    #[doc(hidden)]
+    fn floating_with(self, style: FloatingStyle) -> impl View {
+        self.floating().install(LegacyFloatingOverride(style))
     }
 
     /// Applies a border around this view.
@@ -1346,11 +1349,11 @@ pub trait ViewExt: View + Sized {
     ///     })
     ///     .anchored_overlay(AnchoredOverlay::new(&open, move || text!("Popover")).edge(AnchorEdge::Bottom));
     /// ```
-    fn anchored_overlay(
+    fn anchored_overlay<V: View>(
         self,
-        overlay: crate::metadata::anchored_overlay::AnchoredOverlay,
-    ) -> Metadata<crate::metadata::anchored_overlay::AnchoredOverlay, Self> {
-        Metadata::new(self, overlay)
+        overlay: AnchoredOverlay<V>,
+    ) -> AnchoredOverlayView<Self, V> {
+        AnchoredOverlayView::new(self, overlay)
     }
 
     /// Presents `dialog` window-modal while its `is_presented` binding is
@@ -1416,8 +1419,8 @@ pub trait ViewExt: View + Sized {
     ///         .detents([SheetDetent::Medium, SheetDetent::Large]),
     ///     );
     /// ```
-    fn sheet(self, sheet: Sheet) -> Metadata<Sheet, Self> {
-        Metadata::new(self, sheet)
+    fn sheet<V: View>(self, sheet: Sheet<V>) -> SheetView<Self, V> {
+        SheetView::new(self, sheet)
     }
 
     /// Hosts a [`SnackbarManager`](crate::snackbar::SnackbarManager) and its

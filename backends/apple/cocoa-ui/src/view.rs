@@ -803,6 +803,20 @@ pub fn set_accessibility_label(view: &PlatformView, label: &str) {
     }
 }
 
+/// Applies `role` to `view` and marks it an accessibility element.
+pub fn set_accessibility_role(view: &PlatformView, role: crate::accessibility::Role) {
+    use crate::accessibility::set_role;
+
+    #[cfg(target_os = "macos")]
+    {
+        use objc2::runtime::ProtocolObject;
+        use objc2_app_kit::NSAccessibility;
+        set_role(ProtocolObject::<dyn NSAccessibility>::from_ref(view), role);
+    }
+    #[cfg(target_os = "ios")]
+    set_role(view, role);
+}
+
 /// Whether `view` clips its subviews to its bounds — `UIView`'s
 /// `clipsToBounds`, a `UIKit`-only property.
 #[cfg(target_os = "ios")]

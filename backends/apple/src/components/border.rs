@@ -12,6 +12,7 @@ use alloc::rc::Rc;
 use core::cell::Cell;
 
 use cocoa_ui::layer;
+use cocoa_ui::objc2_core_graphics::CGColor;
 use cocoa_ui::path::{EdgeMask, border_path};
 use cocoa_ui::{PlatformView, Rect, Retained, view};
 use waterui::border::Border;
@@ -97,6 +98,13 @@ impl core::fmt::Debug for BorderState {
     }
 }
 
+/// Converts a [`WorkingColor`] into a CoreGraphics [`CGColor`](cocoa_ui::objc2_core_graphics::CGColor)
+/// using the extended linear Display-P3 platform conversion.
+pub fn cg_color(color: &WorkingColor) -> Retained<CGColor> {
+    let platform = platform_color(color);
+    platform::colors::cg(&platform)
+}
+
 /// `applyBorderColor`: the resolved color lands on the layer's border and
 /// the stroke layer, then any captured rendering is invalidated.
 fn apply_border_color(
@@ -104,8 +112,7 @@ fn apply_border_color(
     host: &PlatformView,
     border_layer: Option<&layer::ShapeLayer>,
 ) {
-    let platform = platform_color(color);
-    let cg = platform::colors::cg(&platform);
+    let cg = cg_color(color);
     if let Some(layer) = layer::layer_of(host) {
         layer::set_border_color(&layer, Some(&cg));
     }
