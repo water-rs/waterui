@@ -26,8 +26,9 @@ use waterui_core::views::ForEach;
 use waterui_core::{AnyView, Dynamic, Environment, Metadata, Retain, View};
 use waterui_layout::stack::{HStack, VStack, ZStack};
 
-use crate::component::list::{List, ListDelete, ListMove};
-use crate::ts::catalog::ListAttributes;
+use waterui_controls::list::{List, ListDelete, ListMove};
+
+use crate::catalog::ListAttributes;
 use waterui_ts::engine::{JsError, JsFunction, JsValue};
 
 use super::control_flow::Branch;
@@ -255,7 +256,7 @@ impl EachState {
                     drop(old_branch);
                     slot.set(view);
                 }
-                Err(error) => crate::contract_violation!(
+                Err(error) => waterui_core::contract_violation!(
                     "a <For> item could not be rendered, so it keeps its last view: {error}"
                 ),
             }
@@ -302,7 +303,7 @@ struct ItemView {
 impl View for ItemView {
     fn body(self, _env: &Environment) -> impl View {
         self.state.realize(&self.key).unwrap_or_else(|error| {
-            crate::contract_violation!(
+            waterui_core::contract_violation!(
                 "a <For> item could not be rendered, so it renders nothing: {error}"
             );
             AnyView::default()
@@ -441,7 +442,7 @@ pub fn each(
             };
             match state.reconcile(&bridge, &context.into_value()) {
                 Ok(next) => keys.set(next),
-                Err(error) => crate::contract_violation!(
+                Err(error) => waterui_core::contract_violation!(
                     "a <For> list could not be reconciled, so it keeps its last rows: {error}"
                 ),
             }

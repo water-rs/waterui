@@ -164,7 +164,7 @@ cpu = ["effects", "waterui-graphics/cpu", "waterui-core/cpu"]
 # `waterui::video` (`VideoAsset`, behind `waterui-assets`' `video` feature);
 # each is enabled only when both sides are present.
 assets = ["dep:waterui-assets", "dep:waterui-assets-macros", "dep:waterui-meta", "waterui-core/assets"]
-image = ["dep:waterui-media", "waterui-assets?/media", "waterui-controls/image", "waterui-graphics/image-decode", "waterui-markdown?/media", "waterui-backend-core/image", "waterui-core/image"]
+image = ["dep:waterui-media", "waterui-assets?/media", "waterui-controls/image", "waterui-graphics/image-decode", "waterui-markdown?/media", "waterui-ts?/image", "waterui-backend-core/image", "waterui-core/image"]
 video = ["dep:waterui-video", "waterui-media?/video", "waterui-assets?/video", "waterui-core/video", "waterui-backend-core/video"]
 # Remote fetching (`Url::fetch`, `Data::from_remote`, remote `Photo` sources)
 # links the `zenwave` HTTP client through `waterui-url`/`waterui-media`. Off by

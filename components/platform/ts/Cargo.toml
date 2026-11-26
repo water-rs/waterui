@@ -13,12 +13,22 @@ categories = ["gui"]
 [dependencies]
 waterui-ts-engine.workspace = true
 waterui-ts-schema.workspace = true
+waterui-accessibility.workspace = true
+waterui-controls = { workspace = true, features = ["avatar", "link", "list", "table", "slider", "stepper", "text-field", "toggle"] }
 waterui-core.workspace = true
+waterui-form = { workspace = true, features = ["picker"] }
 # The theme the mounted module sees: `ColorScheme` and the environment's
 # colour tokens. `default-features = false` keeps the GPU stack out — this
 # crate reads colour values, it never draws.
 waterui-graphics = { workspace = true, default-features = false }
+waterui-interaction.workspace = true
+waterui-layout.workspace = true
 waterui-locale.workspace = true
+waterui-media = { workspace = true, optional = true }
+waterui-navigation.workspace = true
+waterui-shape = { workspace = true, default-features = false }
+waterui-text.workspace = true
+waterui-url.workspace = true
 nami.workspace = true
 suiteki.workspace = true
 thiserror.workspace = true
@@ -67,6 +77,7 @@ zenwave = { workspace = true, features = ["rustls"], optional = true }
 zenwave = { workspace = true, optional = true }
 
 [features]
+image = ["dep:waterui-media", "waterui-controls/image"]
 # The over-the-air update client: fetches a signed manifest and the bundle it
 # names, verifies both, and caches them for the next launch. Off by default;
 # the loader, the requirement manifest and the baseline are always present.

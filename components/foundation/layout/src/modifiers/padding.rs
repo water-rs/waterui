@@ -10,6 +10,13 @@ use crate::{
     container::FixedContainer,
 };
 
+/// The inset a bare `ViewExt::padding` applies.
+///
+/// It is named because two places need the same number: the modifier, and the
+/// TypeScript catalog's `padding={true}`, which is the same spelling from the
+/// other side of the seam. A second literal would let the two drift.
+pub const DEFAULT_PADDING: f32 = 14.0;
+
 /// Layout that insets its single child by the configured edge values.
 ///
 /// The insets are reactive, so a change to them moves the padded content

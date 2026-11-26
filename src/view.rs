@@ -94,12 +94,7 @@ use waterui_interaction::key::{KeyHandling, KeyPress, OnKeyPress};
 use waterui_structural_transition::{Transition, Transitioned};
 use waterui_text::IntoText;
 
-/// The inset a bare [`ViewExt::padding`] applies.
-///
-/// It is named because two places need the same number: the modifier, and the
-/// TypeScript catalog's `padding={true}`, which is the same spelling from the
-/// other side of the seam. A second literal would let the two drift.
-pub const DEFAULT_PADDING: f32 = 14.0;
+pub use waterui_layout::padding::DEFAULT_PADDING;
 
 /// Extension trait for views, adding common styling and configuration methods.
 pub trait ViewExt: View + Sized {

@@ -18,7 +18,7 @@ use waterui_text::StyledStr;
 use waterui_text::text::{IntoText, Text, TextConfig};
 use waterui_ts::engine::{JsError, JsValue};
 
-use crate::ts::catalog::{ResolvedTextPart, TextContent};
+use crate::catalog::{ResolvedTextPart, TextContent};
 use waterui_ts::Bridge;
 use waterui_ts::FromJs as _;
 use waterui_ts::ViewSlot;
@@ -82,7 +82,7 @@ fn reactive(bridge: &Bridge, child: &JsValue) -> Result<AnyView, JsError> {
     let guard = source.watch(move |context| {
         match build(&context.into_value()) {
             Ok(view) => handler.set(view),
-            Err(error) => crate::contract_violation!(
+            Err(error) => waterui_core::contract_violation!(
                 "a reactive child of a TypeScript view could not be realized, so it keeps its last view: {error}"
             ),
         }

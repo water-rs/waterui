@@ -175,7 +175,7 @@ pub fn show(
     handler.set(build(presented.snapshot())?);
     let guard = presented.watch(move |context| match build(context.into_value()) {
         Ok(view) => handler.set(view),
-        Err(error) => crate::contract_violation!(
+        Err(error) => waterui_core::contract_violation!(
             "a <Show> branch could not be rendered, so it keeps its last view: {error}"
         ),
     });

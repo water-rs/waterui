@@ -63,7 +63,9 @@ extern crate self as waterui_ts;
 mod bridge;
 mod bundle;
 mod callback;
+pub mod catalog;
 mod cell;
+mod components;
 mod convert;
 mod environment;
 mod error;
@@ -91,6 +93,7 @@ pub use bundle::{
     BUNDLE_VARIABLE, Baseline, BundleError, LaunchError, Launched, Loader, Rejection,
     RequiredModule, Requirement, configured_runtime,
 };
+pub use components::Components;
 pub use convert::{FromJs, IntoJs, expected, support};
 pub use environment::{HostLocale, THEME_TOKEN_NAMES, Theme, locale, theme, theme_interface_dts};
 pub use error::{TsError, kind_of};
@@ -102,6 +105,20 @@ pub use ota::{BundleStore, FetchError, MANIFEST_SIZE_LIMIT, Ota, OtaError, Outco
 pub use runtime::TsRuntime;
 pub use runtime_global::RuntimeGlobal;
 pub use view::{JsViewBuilder, ViewSlot};
+
+/// The runtime fingerprint of this build: the JavaScript library
+/// `waterui-ts` embeds and the component [`catalog`] this crate publishes,
+/// under the schema format version.
+///
+/// This is the value the CLI-generated leaf crate writes into its
+/// [`Requirement`], and the value the `water` CLI derives from the two
+/// artifact statics `waterui_meta_ts_runtime_library` and
+/// `waterui_meta_ts_runtime_catalog` when it builds a bundle's manifest. Both
+/// are the same two constants combined by the same constructor, so a bundle
+/// the CLI built for this build verifies against this binary, and one built
+/// for any other does not.
+pub const RUNTIME_FINGERPRINT: schema::RuntimeFingerprint =
+    schema::RuntimeFingerprint::new(LIBRARY_HASH, catalog::CATALOG_HASH);
 
 /// The JavaScript engine implementation for this target.
 #[cfg(all(target_vendor = "apple", not(target_os = "watchos")))]

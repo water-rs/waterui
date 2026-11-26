@@ -5,12 +5,13 @@
 //! modifier chain, and why `padding → background` and `background → padding`
 //! produce different trees here as they do there.
 //!
-//! Every arm calls the same [`ViewExt`] method a Rust author calls. That is
-//! not a style preference: `disabled` is three things at once — an environment
-//! scope, an accessibility state and a hit-test switch — and an arm that
-//! installed only the first would give a TypeScript `<VStack disabled>` a
-//! different accessibility tree from the Rust one, which is the kind of
-//! divergence the equivalence tests exist to catch.
+//! Every arm constructs the exact same underlying view/metadata tree as the
+//! corresponding `ViewExt` method in the facade. That is not a style
+//! preference: `disabled` is three things at once — an environment scope, an
+//! accessibility state and a hit-test switch — and an arm that installed only
+//! the first would give a TypeScript `<VStack disabled>` a different
+//! accessibility tree from the Rust one, which is the kind of divergence the
+//! equivalence tests exist to catch.
 //!
 //! A value is a reactive input wherever the Rust modifier takes one, and a
 //! plain value wherever it takes one of those: `foreground` follows a signal
@@ -19,25 +20,41 @@
 
 use nami::{Computed, SignalExt as _};
 use suiteki::Str;
-use waterui_accessibility::AccessibilityIdentifier;
+use waterui_accessibility::{
+    AccessibilityHidden, AccessibilityIdentifier, AccessibilityLabel, AccessibilityState,
+    AccessibilityStateSignal, AccessibilityValue,
+};
+use waterui_controls::theme::ForegroundOverride;
+use waterui_core::env::Installed;
+use waterui_core::plugin::Plugin;
 use waterui_core::{AnyView, Environment, Metadata, OneOf2, View};
 use waterui_graphics::WorkingColor;
 use waterui_graphics::color::{Color, Working};
+use waterui_interaction::gesture::{GestureObserver, TapGesture};
+use waterui_interaction::interaction::{Disabled, Hittable};
 use waterui_layout::background::BackgroundView;
 use waterui_layout::frame::Frame;
 use waterui_layout::padding::Padding;
 use waterui_locale::locale_binding;
-use waterui_shape::{Capsule, Circle, Ellipse, Rectangle, RoundedRectangle};
+use waterui_shape::border::Border;
+use waterui_shape::filter::Opacity;
+use waterui_shape::style::Shadow;
+use waterui_shape::{Capsule, Circle, ClipShape, Ellipse, Rectangle, RoundedRectangle};
 use waterui_ts::engine::{JsError, JsValue};
 use waterui_ts::{Bridge, FromJs as _};
 
-use crate::ViewExt as _;
-use crate::appearance::border::Border;
-use crate::appearance::style::Shadow;
-use crate::ts::catalog::{
+use crate::catalog::{
     BackgroundValue, BorderValue, JsAction, PaddingValue, ShadowValue, ShapeValue, TextContent,
     color_of,
 };
+
+struct DisabledScope(Computed<bool>);
+
+impl Plugin for DisabledScope {
+    fn install(self, env: &mut Environment) {
+        Disabled::install(env, self.0);
+    }
+}
 
 /// Applies one modifier and returns the view the next one wraps.
 ///
@@ -67,19 +84,22 @@ pub fn apply(
         },
         "foreground" => {
             let color = bridge.materialize_computed(value)?;
-            Ok(AnyView::new(view.foreground(color_of(&color))))
+            Ok(AnyView::new(Installed::new(
+                view,
+                ForegroundOverride::new(color_of(&color)),
+            )))
         }
         "opacity" => {
             let amount: Computed<f32> = bridge.materialize_computed(value)?;
-            Ok(AnyView::new(view.opacity(amount)))
+            Ok(AnyView::new(Metadata::new(view, Opacity::new(amount))))
         }
         "shadow" => {
             let shadow = ShadowValue::from_js(value, bridge)?;
-            Ok(AnyView::new(view.shadow(Shadow::from(shadow))))
+            Ok(AnyView::new(Metadata::new(view, Shadow::from(shadow))))
         }
         "border" => {
             let border = BorderValue::from_js(value, bridge)?;
-            Ok(AnyView::new(view.border_with(Border::from(border))))
+            Ok(AnyView::new(Metadata::new(view, Border::from(border))))
         }
         "clip" => Ok(clip(ShapeValue::from_js(value, bridge)?, view)),
         "width" => frame(bridge, view, value, Frame::width),
@@ -89,12 +109,28 @@ pub fn apply(
         "minHeight" => frame(bridge, view, value, Frame::min_height),
         "maxHeight" => frame(bridge, view, value, Frame::max_height),
         "disabled" => {
-            let disabled: Computed<bool> = bridge.materialize_computed(value)?;
-            Ok(AnyView::new(view.disabled(disabled)))
+            let is_disabled: Computed<bool> = bridge.materialize_computed(value)?;
+            let accessibility_state = is_disabled.map(|disabled| {
+                if disabled {
+                    AccessibilityState::new().disabled(true)
+                } else {
+                    AccessibilityState::new()
+                }
+            });
+            let hittable_value = is_disabled.map(|d| !d);
+            let view = Metadata::new(view, AccessibilityStateSignal::new(accessibility_state));
+            let view = Metadata::new(view, Hittable::new(hittable_value));
+            Ok(AnyView::new(Installed::new(
+                view,
+                DisabledScope(is_disabled),
+            )))
         }
         "onTapGesture" => {
             let action = JsAction::from_js(value, bridge)?;
-            Ok(AnyView::new(view.on_tap(move || action.call(()))))
+            Ok(AnyView::new(Metadata::new(
+                view,
+                GestureObserver::without_event(TapGesture::new(), move || action.call(())),
+            )))
         }
         "a11yLabel" => semantic(bridge, view, value, A11yTextKind::Label),
         "a11yValue" => semantic(bridge, view, value, A11yTextKind::Value),
@@ -107,11 +143,14 @@ pub fn apply(
         }
         "a11yHidden" => {
             let hidden = bool::from_js(value, bridge)?;
-            Ok(AnyView::new(view.a11y_hidden(hidden)))
+            Ok(AnyView::new(Metadata::new(
+                view,
+                AccessibilityHidden::new(hidden),
+            )))
         }
         other => Err(JsError::conversion(format!(
             "`{other}` is not a view modifier. The catalog's modifiers are: {}",
-            crate::ts::catalog::CATALOG
+            crate::catalog::CATALOG
                 .modifiers()
                 .iter()
                 .map(waterui_ts::schema::ModifierSchema::name)
@@ -124,16 +163,19 @@ pub fn apply(
 /// Clips the view to one of the shapes the catalog declares.
 ///
 /// The match is on the shape rather than on an erased value because
-/// `ViewExt::clip` is generic over [`Shape`](waterui_shape::Shape), and the
+/// `ClipShape::new` is generic over [`Shape`](waterui_shape::Shape), and the
 /// clip carries the shape's kind so a backend can round the corners the same
 /// way a fill of the same shape would.
 fn clip(shape: ShapeValue, view: AnyView) -> AnyView {
     match shape {
-        ShapeValue::Rectangle => AnyView::new(view.clip(Rectangle)),
-        ShapeValue::Circle => AnyView::new(view.clip(Circle)),
-        ShapeValue::Capsule => AnyView::new(view.clip(Capsule)),
-        ShapeValue::Ellipse => AnyView::new(view.clip(Ellipse)),
-        ShapeValue::Rounded(radius) => AnyView::new(view.clip(RoundedRectangle::new(radius))),
+        ShapeValue::Rectangle => AnyView::new(Metadata::new(view, ClipShape::new(Rectangle))),
+        ShapeValue::Circle => AnyView::new(Metadata::new(view, ClipShape::new(Circle))),
+        ShapeValue::Capsule => AnyView::new(Metadata::new(view, ClipShape::new(Capsule))),
+        ShapeValue::Ellipse => AnyView::new(Metadata::new(view, ClipShape::new(Ellipse))),
+        ShapeValue::Rounded(radius) => AnyView::new(Metadata::new(
+            view,
+            ClipShape::new(RoundedRectangle::new(radius)),
+        )),
     }
 }
 
@@ -180,8 +222,12 @@ impl View for LocalizedA11y {
             .map(move |(part, locale)| part.render(&env_for_render, &locale))
             .computed();
         match self.kind {
-            A11yTextKind::Label => OneOf2::A(self.view.a11y_label(text)),
-            A11yTextKind::Value => OneOf2::B(self.view.a11y_value(text)),
+            A11yTextKind::Label => {
+                OneOf2::A(Metadata::new(self.view, AccessibilityLabel::new(text)))
+            }
+            A11yTextKind::Value => {
+                OneOf2::B(Metadata::new(self.view, AccessibilityValue::new(text)))
+            }
         }
     }
 }
