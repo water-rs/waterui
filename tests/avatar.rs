@@ -1,8 +1,9 @@
-//! Semantic acceptance for the `Avatar` composer.
+//! Semantic acceptance for `Avatar`.
 //!
-//! Avatar is a Rust-side composition (Framework Design Principle #2) — a
-//! stack, a frame, a clip and theme tokens, with no FFI type of its own — so
-//! its contract is exactly what the accessibility tree exposes.
+//! `Avatar` dispatches `AvatarConfig` through `NativeBackend` so each backend
+//! realizes its silhouette, monogram or fallback view, optional image, and
+//! ring while exposing a single `Role::IMAGE` node named after the person or
+//! entity.
 
 use core::time::Duration;
 use std::path::{Path, PathBuf};
@@ -155,4 +156,23 @@ fn the_monogram_follows_the_name_without_a_second_node(ui: UiBuilder) {
         1,
         "the monogram redraw must not publish a node of its own"
     );
+}
+
+#[waterui::test]
+fn custom_fallback_with_shape_side_and_ring_remains_a_single_image_node(ui: UiBuilder) {
+    use waterui::shape::{CornerRadius, RoundedRectangle};
+    use waterui::widget::Avatar;
+
+    let mut app = ui.viewport(120, 120).mount(|| {
+        Avatar::new("Katherine Johnson", || text("KJ"))
+            .shape(RoundedRectangle::new(CornerRadius::fraction(0.25)))
+            .side(64.0)
+            .ring(Color::srgb(255, 0, 0), 2.0)
+    });
+
+    app.query()
+        .role(Role::IMAGE)
+        .label("Katherine Johnson")
+        .assert_exists();
+    app.query().label("KJ").assert_not_exists();
 }

@@ -1,3 +1,5 @@
+#[cfg(waterui_feature = "avatar")]
+pub mod avatar;
 pub mod button;
 #[cfg(feature = "color-picker")]
 pub mod color_picker;

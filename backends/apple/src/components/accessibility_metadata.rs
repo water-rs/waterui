@@ -44,24 +44,24 @@ use crate::contract::{Held, NativeLeaf, RenderContext};
 use crate::proposal::in_view;
 
 #[cfg(target_os = "macos")]
-mod target {
+pub mod target {
     use cocoa_ui::PlatformView;
     use cocoa_ui::objc2_app_kit::NSAccessibility;
     use objc2::runtime::ProtocolObject;
 
     /// The platform accessibility protocol face of a view — the receiver
     /// every `AppKit` accessibility call takes.
-    pub(super) fn of(view: &PlatformView) -> &ProtocolObject<dyn NSAccessibility> {
+    pub fn of(view: &PlatformView) -> &ProtocolObject<dyn NSAccessibility> {
         ProtocolObject::from_ref(view)
     }
 }
 
 #[cfg(target_os = "ios")]
-mod target {
+pub mod target {
     use cocoa_ui::PlatformView;
 
     /// On `UIKit` the accessibility receiver is the view itself.
-    pub(super) const fn of(view: &PlatformView) -> &PlatformView {
+    pub const fn of(view: &PlatformView) -> &PlatformView {
         view
     }
 }

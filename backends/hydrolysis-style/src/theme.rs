@@ -50,6 +50,7 @@
 //! type scale. A `Style` may overwrite any of them, and the application
 //! overwrites both.
 
+mod avatar;
 mod badge;
 mod card;
 mod chrome;
@@ -84,6 +85,7 @@ mod text_field;
 mod toggle;
 mod widget;
 
+pub use avatar::{AvatarLook, AvatarMetrics};
 pub use badge::BadgeLook;
 pub use card::{CardLayout, CardLook};
 pub use cherenkov_record::MaterialRegistry;

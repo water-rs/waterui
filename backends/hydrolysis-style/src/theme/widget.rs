@@ -721,4 +721,10 @@ pub trait WidgetTheme {
     fn sheet(&self, env: &Environment) -> super::SheetLook {
         super::sheet::default_sheet_look(env)
     }
+
+    /// The look of an avatar: default dimensions, container backdrop, and
+    /// monogram typography.
+    fn avatar(&self, env: &Environment) -> super::AvatarLook {
+        super::avatar::default_avatar_look(env)
+    }
 }
