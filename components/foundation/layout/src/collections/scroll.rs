@@ -571,11 +571,13 @@ pub const fn scroll_both<C: View>(content: C) -> ScrollView<C> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Axis, ScrollController, ScrollPosition, ScrollRequest, scroll_stretch_axis};
+    use super::{
+        Axis, ScrollController, ScrollPosition, ScrollRequest, ScrollView, scroll_stretch_axis,
+    };
     use crate::{Point, Size, StretchAxis};
     use core::time::Duration;
     use nami::Signal;
-    use waterui_core::animation::Animation;
+    use waterui_core::{Environment, View, animation::Animation};
 
     #[test]
     fn repeated_target_requests_advance_generation() {
@@ -756,11 +758,11 @@ mod tests {
     fn constructor_accepts_concrete_view_without_type_erasure() {
         #[derive(Debug, PartialEq)]
         struct Leaf;
-        impl waterui_core::View for Leaf {
-            fn body(self, _env: &waterui_core::Environment) -> impl waterui_core::View {}
+        impl View for Leaf {
+            fn body(self, _env: &Environment) -> impl View {}
         }
 
-        let view = super::ScrollView::new(Axis::Horizontal, Leaf);
+        let view = ScrollView::new(Axis::Horizontal, Leaf);
         assert_eq!(view.axis(), Axis::Horizontal);
         assert_eq!(view.content(), &Leaf);
     }

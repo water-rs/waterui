@@ -499,7 +499,9 @@ mod tests {
 
     #[test]
     fn constructor_accepts_alignment_token() {
-        let stack = ZStack::new(crate::TopLeading, ((), ()));
+        use crate::TopLeading;
+
+        let stack = ZStack::new(TopLeading, ((), ()));
         assert_eq!(stack.layout.alignment, Alignment::TopLeading);
     }
 }

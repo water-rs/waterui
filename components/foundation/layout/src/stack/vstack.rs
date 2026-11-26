@@ -685,8 +685,11 @@ mod tests {
 
     #[test]
     fn constructor_accepts_alignment_token_and_signal_spacing() {
-        let spacing = nami::Binding::new(6.0_f32);
-        let stack = VStack::new(crate::Leading, spacing.clone(), ((), ()));
+        use crate::Leading;
+        use nami::Binding;
+
+        let spacing = Binding::new(6.0_f32);
+        let stack = VStack::new(Leading, spacing.clone(), ((), ()));
         assert_eq!(stack.layout.alignment, HorizontalAlignment::Leading);
         assert_eq!(stack.layout.spacing.snapshot(), 6.0);
         spacing.set(14.0);
