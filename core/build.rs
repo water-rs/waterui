@@ -1,14 +1,15 @@
-//! Exports the facade's enabled features to its direct dependents.
+//! Exports the framework's enabled features to direct dependents.
 //!
 //! Cargo hands a `links` package's `cargo::metadata` to the build scripts of
-//! the packages that depend on it directly, as `DEP_WATERUI_<KEY>`. A
-//! backend reads `DEP_WATERUI_FEATURES` and gates each component it
-//! realizes on the facade feature that provides the component, so it never
-//! has to turn a facade feature on to compile.
+//! the packages that depend on it directly, as `DEP_WATERUI_<KEY>`. Backends
+//! and style crates read `DEP_WATERUI_FEATURES` and gate each component they
+//! realize on the feature that provides it, without depending on the top-level
+//! `waterui` facade.
 
 use std::env;
 
 fn main() {
+    println!("cargo::rerun-if-changed=build.rs");
     let mut features: Vec<String> = env::vars()
         .filter_map(|(key, _)| {
             key.strip_prefix("CARGO_FEATURE_")
