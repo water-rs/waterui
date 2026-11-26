@@ -11,10 +11,11 @@ use hydrolysis::draw::{BlendSpace, MaterialRegistry};
 use hydrolysis::theme::{
     AvatarLook, BadgeLook, ButtonLook, ButtonSpec, CardLook, CheckboxLook, DialogLook,
     DisclosureLook, DisclosureSpec, FloatingLook, GlassLook, IndicatorLook, LinearProgressLook,
-    ListLook, ListSpec, MenuLook, MenuPickerLook, MenuSpec, NavigationBarLook, NavigationSpec,
-    PickerSpec, ProgressSpec, RadioGroupLook, ScrollIndicatorLook, SegmentedLook, SegmentedSpec,
-    SheetLook, SliderLook, SliderSpec, SnackbarLook, StepperLook, StepperSpec, SwitchLook,
-    TableLook, TabsLook, TabsSpec, TextFieldLook, TextFieldSpec, ToggleSpec, WidgetTheme,
+    ListLook, ListRowLayoutMetrics, ListSpec, MenuLook, MenuPickerLook, MenuSpec,
+    NavigationBarLook, NavigationSpec, PickerSpec, ProgressSpec, RadioGroupLook,
+    ScrollIndicatorLook, SegmentedLook, SegmentedSpec, SheetLook, SliderLook, SliderSpec,
+    SnackbarLook, StepperLook, StepperSpec, SwitchLook, TableLook, TabsLook, TabsSpec,
+    TextFieldLook, TextFieldSpec, ToggleSpec, WidgetTheme,
 };
 use hydrolysis::{
     AccessibilityActivationPointError, FontFamilyResolution, HeadlessColorFormat, HeadlessRuntime,
@@ -128,6 +129,10 @@ impl WidgetTheme for ErasedStyle {
 
     fn list(&self, spec: &ListSpec, env: &Environment) -> ListLook {
         self.0.list(spec, env)
+    }
+
+    fn list_row_metrics(&self, env: &Environment) -> ListRowLayoutMetrics {
+        self.0.list_row_metrics(env)
     }
 
     fn table(&self, env: &Environment) -> TableLook {

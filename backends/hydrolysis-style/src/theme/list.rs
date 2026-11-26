@@ -30,6 +30,27 @@ pub struct ListSpec {
     direction: LayoutDirection,
 }
 
+/// Layout metrics for a key/value [`ListRowConfig`](waterui::component::list::ListRowConfig).
+///
+/// The enclosing list already supplies row insets, so these metrics govern only
+/// the internal spacing between the row's label and value.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ListRowLayoutMetrics {
+    /// Horizontal gap between the label and value in inline row layout.
+    pub inline_spacing: f64,
+    /// Vertical gap between the label and value in detail row layout.
+    pub detail_spacing: f64,
+}
+
+impl Default for ListRowLayoutMetrics {
+    fn default() -> Self {
+        Self {
+            inline_spacing: 12.0,
+            detail_spacing: 6.0,
+        }
+    }
+}
+
 impl ListSpec {
     /// The spec of a list laid out `direction`.
     #[must_use]

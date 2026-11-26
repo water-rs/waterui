@@ -648,6 +648,8 @@ mod tests {
             filtered<C>: waterui::graphics::backend::FilteredView<C>,
             #[cfg(waterui_feature = "list")]
             list<C>: waterui::component::list::ListConfig<C>,
+            #[cfg(waterui_feature = "list")]
+            list_row<C>: waterui::component::list::ListRowConfig<C>,
             #[cfg(waterui_feature = "table")]
             table<C>: waterui::component::table::TableConfig<C>,
             #[cfg(waterui_feature = "navigation")]

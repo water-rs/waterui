@@ -940,6 +940,9 @@ native_backend! {
         #[cfg(waterui_feature = "list")]
         /// A list, each row's content a child.
         list<C>: waterui::component::list::ListConfig<C>,
+        #[cfg(waterui_feature = "list")]
+        /// A key/value list row, its label a child slot.
+        list_row<C>: waterui::component::list::ListRowConfig<C>,
         #[cfg(waterui_feature = "table")]
         /// A table, each row's cells children.
         table<C>: waterui::component::table::TableConfig<C>,
@@ -1268,6 +1271,14 @@ mod tests {
                 .range()
                 .filter_map(|index| snapshot.get_view(index))
                 .collect()
+        }
+    }
+
+    /// A key/value list row's child slot is its label content.
+    #[cfg(waterui_feature = "list")]
+    impl<C: 'static> Parent<C> for waterui::component::list::ListRowConfig<C> {
+        fn children(self) -> Vec<C> {
+            alloc::vec![self.into_parts().0.build()]
         }
     }
 

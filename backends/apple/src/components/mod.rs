@@ -61,6 +61,8 @@ pub mod lifecycle_hook;
 pub mod link;
 #[cfg(feature = "list")]
 pub mod list;
+#[cfg(feature = "list")]
+pub mod list_row;
 #[cfg(feature = "map")]
 pub mod map;
 pub mod material_background;

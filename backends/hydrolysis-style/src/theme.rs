@@ -102,7 +102,7 @@ pub use floating::{
 };
 pub use glass::GlassLook;
 #[cfg(waterui_feature = "list")]
-pub use list::{ListControls, ListGestures, ListLook, ListSpec};
+pub use list::{ListControls, ListGestures, ListLook, ListRowLayoutMetrics, ListSpec};
 pub use look::{
     ButtonLook, ButtonSpec, Custom, Driven, DrivenSet, HitRegion, Inputs, Label, Motion, SpecTint,
     Transition, ValueMotion, smoothstep,

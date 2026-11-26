@@ -28,8 +28,8 @@ mod section;
 mod selection;
 
 pub use content::{
-    ContentTags, HoldsTag, ListContent, ListScope, Row, RowContent, RowLayout, SectionScope,
-    TagPresence, Tagged, TaggedBy, Untagged, detail_row, row,
+    ContentTags, HoldsTag, ListContent, ListRowConfig, ListScope, Row, RowContent, RowLayout,
+    SectionScope, TagPresence, Tagged, TaggedBy, Untagged, detail_row, row,
 };
 pub use edits::{EditableForEach, EditableRows, ForEachExt, ListDelete, ListEdits, ListMove, Move};
 use edits::{RowEdits, TypedOnDelete, TypedOnMove, list_delete_action, list_move_action};
