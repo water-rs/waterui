@@ -1,9 +1,9 @@
 //! The sheet look of the theme contract: what a theme returns for a
 //! self-drawn modal sheet surface ([`SheetLook`]).
 
-use waterui::theme::color::{MutedForeground, Surface};
 use waterui_core::Environment;
 use waterui_graphics::color::Color;
+use waterui_graphics::color::token::{MutedForeground, Surface};
 
 /// Baseline maximum width for a docked bottom sheet, in logical points.
 const DEFAULT_SHEET_MAX_WIDTH: f32 = 640.0;

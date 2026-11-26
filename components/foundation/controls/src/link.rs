@@ -5,9 +5,9 @@
 
 use core::fmt;
 
+use crate::{ControlLabel, IntoLabel};
 use nami::Computed;
 use nami::signal::IntoComputed;
-use waterui_controls::{ControlLabel, IntoLabel};
 use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 use waterui_core::layout::StretchAxis;
 use waterui_core::{AnyView, Environment, Native, NativeView, View};

@@ -147,17 +147,15 @@ pub use widget::{
     ListTrailingControlMetrics, ModalInteraction, TableMetrics, TextCaretMotion, WidgetTheme,
 };
 
-use waterui::{
-    Environment, Plugin,
-    color::{Srgb, WorkingColor},
-    reactive::signal::IntoComputed,
-    theme::{
-        ColorDerivation, ColorScheme, ColorSettings, FontSettings, Theme, color as token,
-        install_color_derivation, installed_color_scheme,
-    },
-};
+use nami::signal::IntoComputed;
+use waterui_controls::theme::{ColorSettings, FontSettings, Theme};
 #[cfg(waterui_feature = "toggle")]
 use waterui_controls::toggle::ToggleStyle;
+use waterui_core::{Environment, plugin::Plugin};
+use waterui_graphics::color::{
+    ColorDerivation, ColorScheme, Srgb, WorkingColor, install_color_derivation,
+    installed_color_scheme, token,
+};
 
 /// The framework's baseline palette for one colour scheme, as encoded sRGB.
 ///
@@ -356,14 +354,17 @@ pub fn install_default_tokens(env: &mut Environment) {
 
 #[cfg(test)]
 mod tests {
-    use waterui::reactive::binding;
-    use waterui::theme::color::{Background, Foreground};
-    use waterui::theme::{ColorScheme, Theme, installed_color_scheme, installed_color_signal};
-    use waterui::{Environment, Signal as _};
+    use nami::{Signal as _, binding};
+    use waterui_controls::theme::Theme;
+    use waterui_core::Environment;
+    use waterui_graphics::color::{
+        ColorScheme, WorkingColor, installed_color_scheme, installed_color_signal,
+        token::{Background, Foreground},
+    };
 
     use super::{DARK, LIGHT, color, install_theme_tokens};
 
-    fn bits(color: waterui::color::WorkingColor) -> [u32; 4] {
+    fn bits(color: WorkingColor) -> [u32; 4] {
         color.components.map(f32::to_bits)
     }
 
@@ -398,7 +399,7 @@ mod tests {
     /// the scheme's foreground at the disabled alpha.
     #[test]
     fn default_tokens_carry_the_tier_colors() {
-        use waterui::theme::color::{
+        use waterui_graphics::color::token::{
             DisabledForeground, TertiaryForeground, UnemphasizedSelection,
         };
 

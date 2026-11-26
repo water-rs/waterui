@@ -10,11 +10,10 @@ use core::time::Duration;
 
 use cherenkov_record::{Draw as _, FillRule, Paint, ShapeData, WorkingColor};
 use kurbo::{BezPath, Cap, Join, Rect, Size, Stroke};
-use waterui::Environment;
-use waterui::animation::Animation;
-use waterui::theme::color::{Foreground, MutedForeground};
 use waterui_core::layout::LayoutDirection;
+use waterui_core::{Environment, animation::Animation};
 use waterui_graphics::color::Color;
+use waterui_graphics::color::token::{Foreground, MutedForeground};
 
 use super::look::SpecTint;
 use super::{

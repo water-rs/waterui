@@ -36,7 +36,8 @@ use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::{Id as RawId, Mapping};
 use waterui_core::{Environment, View};
 
-use crate::views::{AnyViews, AnyViewsSnapshot, SharedAnyViews, ViewSnapshot, Views};
+use waterui_contract::contract_violation;
+use waterui_core::views::{AnyViews, AnyViewsSnapshot, SharedAnyViews, ViewSnapshot, Views};
 
 use super::ListSection;
 use super::content::{ContentTags, HoldsTag};
@@ -79,7 +80,7 @@ impl ListSections {
     #[must_use]
     pub fn section_of(&self, id: RawId) -> usize {
         (self.section_of)(id).unwrap_or_else(|| {
-            crate::contract_violation!(
+            contract_violation!(
                 "list row id {id:?} was never reported by the list, so it is placed in section 0"
             );
             0
@@ -96,7 +97,7 @@ impl ListSections {
     #[must_use]
     pub fn section(&self, index: usize) -> Option<&ListSection> {
         let Some(section) = self.sections.get(index) else {
-            crate::contract_violation!(
+            contract_violation!(
                 "list section {index} does not exist, so it has no chrome; the list has {} sections",
                 self.sections.len()
             );
@@ -120,7 +121,7 @@ impl ListSections {
         let range = rows.range();
         let section_at = |index: usize| {
             let Some(id) = rows.get_id(index) else {
-                crate::contract_violation!(
+                contract_violation!(
                     "list row {index} has no id in its snapshot, so it is placed in section 0"
                 );
                 return 0;
@@ -308,7 +309,7 @@ enum TypedPartTags<T> {
 /// the rows its content collects. A debug build panics, and a release build
 /// logs the error and the rows of that part carry no tag.
 fn report_mistagged<T>() {
-    crate::contract_violation!(
+    contract_violation!(
         "a list selected by `{}` holds rows tagged by another type: a `ContentTags` implementation does not match the rows its content collects, so those rows carry no tag",
         type_name::<T>()
     );
@@ -354,7 +355,7 @@ impl<T: Ord + Clone> TypedPartTags<T> {
             Self::Items(ids) => ids.to_data(row).map(Some),
         };
         tag.unwrap_or_else(|| {
-            crate::contract_violation!(
+            contract_violation!(
                 "list row id {row:?} was never reported by its part, so it carries no tag"
             );
             None
@@ -377,7 +378,7 @@ where
         let parts: Rc<[TypedPartTags<T>]> = self.tags.iter().map(PartTags::typed).collect();
         move |id: &ListRowId| {
             let Some(part) = parts.get(id.part) else {
-                crate::contract_violation!(
+                contract_violation!(
                     "list row id names part {}, but the list has {} parts, so it carries no tag",
                     id.part,
                     parts.len()

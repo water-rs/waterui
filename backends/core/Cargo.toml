@@ -21,21 +21,62 @@ overlay = []
 # pulls `tracing-subscriber`.
 log = ["dep:tracing-subscriber"]
 # Build strategy propagated from `waterui/erased-dispatch`.
-erased-dispatch = ["waterui-core/erased-dispatch", "waterui/erased-dispatch"]
+erased-dispatch = ["waterui-core/erased-dispatch", "waterui-layout/erased-dispatch"]
+# Optional component contract gates propagated from `waterui-internal` (or
+# enabled directly when checking `waterui-backend-core` standalone).
+capture = ["dep:waterui-capture", "waterui-core/capture"]
+form = ["dep:waterui-form", "waterui-core/form"]
+calendar = ["form", "waterui-form/calendar", "waterui-core/calendar"]
+color-picker = ["form", "waterui-form/color-picker", "waterui-core/color-picker"]
+date-picker = ["form", "waterui-form/date-picker", "waterui-core/date-picker"]
+multi-date-picker = ["calendar", "waterui-form/multi-date-picker", "waterui-core/multi-date-picker"]
+picker = ["form", "waterui-form/picker", "waterui-core/picker"]
+secure-field = ["form", "waterui-form/secure-field", "waterui-core/secure-field"]
+navigation = ["dep:waterui-navigation", "waterui-core/navigation"]
+video = ["dep:waterui-video", "waterui-core/video"]
+webview = ["dep:waterui-webview", "waterui-core/webview"]
+map = ["dep:waterui-map", "waterui-core/map"]
+avatar = ["waterui-controls/avatar", "waterui-core/avatar"]
+link = ["waterui-controls/link", "waterui-core/link"]
+list = ["waterui-controls/list", "waterui-core/list"]
+table = ["list", "waterui-controls/table", "waterui-core/table"]
+menu = ["waterui-controls/menu", "waterui-core/menu"]
+slider = ["waterui-controls/slider", "waterui-core/slider"]
+stepper = ["waterui-controls/stepper", "waterui-core/stepper"]
+text-field = ["menu", "waterui-controls/text-field", "waterui-core/text-field"]
+toggle = ["waterui-controls/toggle", "waterui-core/toggle"]
+dialog = ["waterui-controls/dialog", "waterui-core/dialog"]
+snackbar = ["waterui-controls/snackbar", "waterui-core/snackbar"]
+canvas = ["waterui-core/canvas"]
+effects = ["waterui-graphics/effects", "waterui-core/effects"]
+gpu = ["effects", "waterui-graphics/gpu", "waterui-core/gpu"]
+cpu = ["effects", "waterui-graphics/cpu", "waterui-core/cpu"]
 
 [dependencies]
-waterui = { version = "0.5.2", path = "../..", default-features = false }
 waterui-structural-transition.workspace = true
 waterui-accessibility.workspace = true
 waterui-interaction.workspace = true
 waterui-core.workspace = true
 waterui-layout.workspace = true
+waterui-shape.workspace = true
+waterui-text.workspace = true
+waterui-graphics = { workspace = true, default-features = false }
+waterui-controls.workspace = true
 waterui-meta.workspace = true
+waterui-capture = { workspace = true, optional = true }
+waterui-form = { workspace = true, optional = true }
+waterui-navigation = { workspace = true, optional = true }
+waterui-video = { workspace = true, optional = true }
+waterui-webview = { workspace = true, optional = true }
+waterui-map = { workspace = true, optional = true }
 nami.workspace = true
 num-traits = { version = "0.2", default-features = false }
 tracing.workspace = true
 tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter"], optional = true }
 kurbo.workspace = true
+
+[dev-dependencies]
+waterui-capture.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 web-time = "1"

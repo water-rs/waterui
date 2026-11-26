@@ -1,12 +1,12 @@
 pub mod app;
 #[cfg(feature = "dialog")]
-pub mod dialog;
+pub use waterui_controls::dialog;
 pub mod metadata;
 #[cfg(test)]
 mod parked_executor;
-pub mod sheet;
+pub use waterui_controls::sheet;
 #[cfg(feature = "snackbar")]
-pub mod snackbar;
+pub use waterui_controls::snackbar;
 pub mod task;
 mod termination;
 pub mod window;

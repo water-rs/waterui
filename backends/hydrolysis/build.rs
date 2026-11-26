@@ -283,7 +283,7 @@ fn facade_features() {
     println!("cargo::rustc-check-cfg=cfg(waterui_feature, values(any()))");
     println!("cargo::rustc-check-cfg=cfg(hydrolysis_scene_view)");
     let features = std::env::var("DEP_WATERUI_FEATURES")
-        .expect("the `waterui` facade's build script exports DEP_WATERUI_FEATURES");
+        .expect("`waterui-core`'s build script exports DEP_WATERUI_FEATURES");
     let mut has_scene_view = false;
     for feature in features.split(',').filter(|feature| !feature.is_empty()) {
         println!("cargo::rustc-cfg=waterui_feature=\"{feature}\"");

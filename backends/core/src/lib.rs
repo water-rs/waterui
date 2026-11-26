@@ -51,7 +51,7 @@ extern crate alloc;
 use alloc::rc::Rc;
 use core::fmt::{Debug, Formatter, Result as FmtResult};
 
-use waterui::accessibility::AccessibilityRole;
+use waterui_accessibility::AccessibilityRole;
 use waterui_core::{Computed, Str};
 
 pub mod child;
@@ -175,7 +175,7 @@ mod tests {
     use core::cell::Cell;
 
     use super::ProvidedSemantics;
-    use waterui::accessibility::AccessibilityRole;
+    use waterui_accessibility::AccessibilityRole;
     use waterui_core::{Computed, Str};
 
     #[test]

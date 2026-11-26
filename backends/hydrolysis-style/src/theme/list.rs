@@ -30,7 +30,7 @@ pub struct ListSpec {
     direction: LayoutDirection,
 }
 
-/// Layout metrics for a key/value [`ListRowConfig`](waterui::component::list::ListRowConfig).
+/// Layout metrics for a key/value [`ListRowConfig`](waterui_controls::list::ListRowConfig).
 ///
 /// The enclosing list already supplies row insets, so these metrics govern only
 /// the internal spacing between the row's label and value.

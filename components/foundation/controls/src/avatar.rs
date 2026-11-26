@@ -8,18 +8,23 @@
 use alloc::string::String;
 use core::fmt;
 
-#[cfg(feature = "image")]
-use crate::Url;
-use crate::metadata::secure::{DynamicRange, DynamicRangeMetadata};
-use crate::prelude::*;
-use nami::signal::{IntoComputed, IntoSignal};
+use nami::{
+    Computed, SignalExt,
+    signal::{IntoComputed, IntoSignal},
+};
 use unicode_segmentation::UnicodeSegmentation as _;
-use waterui_controls::{IntoLabel, Label, SemanticLabel};
+use waterui_color::Color;
 use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 use waterui_core::handler::ViewBuilder;
 use waterui_core::metadata::Metadata;
 use waterui_core::native::{Native, NativeView};
+use waterui_core::{AnyView, Environment, Str, View};
 use waterui_shape::{ClipShape, Shape};
+#[cfg(feature = "image")]
+use waterui_url::Url;
+
+use crate::secure::{DynamicRange, DynamicRangeMetadata};
+use crate::{IntoLabel, Label, SemanticLabel};
 
 /// Decorative ring rendered around an [`Avatar`].
 #[derive(Debug, Clone)]
@@ -433,8 +438,9 @@ fn first_grapheme(word: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{Avatar, AvatarRing, avatar, initials};
-    use crate::metadata::secure::{DynamicRange, DynamicRangeMetadata};
+    use crate::secure::{DynamicRange, DynamicRangeMetadata};
     use nami::{Signal, binding};
+    use waterui_color::Color;
     use waterui_core::{AnyView, Environment, backend::peel_metadata};
     use waterui_shape::{ClipShape, CornerRadius, RoundedRectangle, ShapeKind};
     use waterui_text::text;
@@ -517,7 +523,7 @@ mod tests {
         let (custom, _) = Avatar::new("Katherine Johnson", || text("KJ"))
             .shape(RoundedRectangle::new(CornerRadius::fraction(0.25)))
             .side(48.0)
-            .ring(crate::prelude::Color::srgb(255, 0, 0), 2.0)
+            .ring(Color::srgb(255, 0, 0), 2.0)
             .into_parts::<AnyView>(&env);
         assert!(custom.monogram().is_none());
         assert!(custom.fallback().is_some());
@@ -531,7 +537,7 @@ mod tests {
 
     #[test]
     fn avatar_side_does_not_shadow_view_ext_size() {
-        use crate::view::ViewExt as _;
+        use waterui::ViewExt as _;
         let _framed = avatar("Ada Lovelace").side(48.0).size(64.0, 64.0);
     }
 }

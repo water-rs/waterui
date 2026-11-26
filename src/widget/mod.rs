@@ -1,16 +1,18 @@
 #[cfg(feature = "avatar")]
-pub mod avatar;
-pub mod card;
+pub use waterui_controls::avatar;
+pub use waterui_controls::card;
 pub mod condition;
 pub mod disclosure;
+pub use waterui_controls::divider;
 pub mod error;
 pub mod suspense;
 
 #[cfg(feature = "avatar")]
 pub use avatar::{Avatar, avatar};
-pub use card::{Card, CardConfig, CardStyle, card};
+pub use card::{Card, CardConfig, CardStyle};
 pub use condition::{When, when};
 pub use disclosure::{Disclosure, disclosure};
+pub use divider::Divider;
 pub use error::{DefaultErrorView, ErrorView, ErrorViewBuilder, ResultExt, error_view};
 pub use suspense::{SuspendedView, Suspense, suspense};
 
@@ -32,5 +34,3 @@ pub use waterui_markdown::{
     },
     rich_text::{self, MarkdownTableAlignment, RichText, RichTextElement, rich_text},
 };
-pub mod divider;
-pub use divider::Divider;

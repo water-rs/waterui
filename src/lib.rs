@@ -1,6 +1,18 @@
 #![doc = include_str!("README.md")]
 extern crate alloc;
 extern crate self as waterui;
+// `waterui-internal` forwards optional component gates (`capture`, `form`,
+// `navigation`, `video`, `webview`, `map`) to `waterui-backend-core` so
+// `NativeBackend` links the exact component crates enabled through the facade.
+#[cfg(any(
+    feature = "capture",
+    feature = "form",
+    feature = "navigation",
+    feature = "video",
+    feature = "webview",
+    feature = "map",
+))]
+use waterui_backend_core as _;
 mod appearance;
 pub use appearance::{background, border, filter, floating, shape, style};
 pub mod component;

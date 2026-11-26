@@ -4,7 +4,7 @@
 //! The methods have no defaults, so a backend that misses one does not
 //! compile. A component behind a facade feature has its method only when
 //! the application enabled that feature (`waterui_feature` cfgs, set by
-//! this crate's build script from the facade's `DEP_WATERUI_FEATURES`).
+//! this crate's build script from `waterui-core`'s `DEP_WATERUI_FEATURES`).
 //!
 //! A backend implements [`NativeBackend`] and realizes a tree through
 //! [`Realize`], the core [`Backend`] that routes each payload to its
@@ -20,9 +20,9 @@ use alloc::rc::Rc;
 use core::any::Any;
 
 #[cfg(waterui_feature = "capture")]
-use waterui::ViewRenderer;
+use waterui_capture::ViewRenderer;
 #[cfg(waterui_feature = "capture")]
-use waterui::view_renderer::CaptureBinder;
+use waterui_capture::view_renderer::CaptureBinder;
 
 use waterui_core::animation::FrameRateVote;
 use waterui_core::backend::{Backend, DynBackend, ErasedPayload, HookSlot, MapSlots, cast};
@@ -66,9 +66,9 @@ macro_rules! native_backend {
             /// [`Child`] views of the payloads it receives.
             type Family: NativeBackendFamily<Output = Self::Output, Ctx = Self::Ctx>;
             #[cfg(waterui_feature = "webview")]
-            /// The compile-time selected [`waterui::webview::WebViewController`]
-            /// used to realize [`waterui::webview::WebViewOpen`].
-            type WebViewController: waterui::webview::WebViewController;
+            /// The compile-time selected [`waterui_webview::WebViewController`]
+            /// used to realize [`waterui_webview::WebViewOpen`].
+            type WebViewController: waterui_webview::WebViewController;
 
             /// The backend's offscreen view-to-RGBA renderer.
             #[cfg(waterui_feature = "capture")]
@@ -579,7 +579,7 @@ macro_rules! native_backend {
             type Ctx = ();
             type Family = Self;
             #[cfg(waterui_feature = "webview")]
-            type WebViewController = waterui::webview::UnavailableWebViewController;
+            type WebViewController = waterui_webview::UnavailableWebViewController;
             #[cfg(waterui_feature = "capture")]
             type Offscreen = tests::RecorderOffscreen;
 
@@ -589,7 +589,7 @@ macro_rules! native_backend {
 
             #[cfg(waterui_feature = "webview")]
             fn web_view_controller(&self) -> Self::WebViewController {
-                waterui::webview::UnavailableWebViewController
+                waterui_webview::UnavailableWebViewController
             }
 
             #[cfg(waterui_feature = "capture")]
@@ -824,140 +824,140 @@ native_backend! {
         /// The empty view.
         empty: (),
         /// A run of styled text.
-        text: waterui::text::TextConfig,
+        text: waterui_text::TextConfig,
         /// A plain string label.
         label: waterui_core::Str,
         /// A solid color fill.
-        color: waterui::Color,
+        color: waterui_graphics::color::Color,
         /// A flexible gap in a stack.
-        spacer: waterui::layout::Spacer,
+        spacer: waterui_layout::Spacer,
         /// A line separating content.
-        divider: waterui::layout::Divider,
+        divider: waterui_controls::divider::Divider,
         /// A resolved shape.
-        shape: waterui::shape::ResolvedShape,
+        shape: waterui_shape::ResolvedShape,
         /// A gradient fill.
-        gradient: waterui::graphics::Gradient,
+        gradient: waterui_graphics::Gradient,
         #[cfg(any(waterui_feature = "gpu", waterui_feature = "cpu"))]
         /// A WGSL fragment shader fill.
-        shader_paint: waterui::graphics::ShaderPaintView,
+        shader_paint: waterui_graphics::ShaderPaintView,
         #[cfg(waterui_feature = "canvas")]
         /// A canvas.
-        canvas: waterui::graphics::canvas::CanvasView,
+        canvas: waterui_graphics::canvas::CanvasView,
         #[cfg(waterui_feature = "gpu")]
         /// GPU content.
-        gpu: waterui::graphics::backend::GpuContentLeaf,
+        gpu: waterui_graphics::backend::GpuContentLeaf,
         #[cfg(waterui_feature = "gpu")]
         /// Frames from an external source.
-        external_frame: waterui::graphics::gpu::external::ExternalFrameView,
+        external_frame: waterui_graphics::gpu::external::ExternalFrameView,
         #[cfg(any(
             waterui_feature = "gpu",
             waterui_feature = "cpu",
             waterui_feature = "canvas"
         ))]
         /// A retained scene.
-        scene: waterui::graphics::backend::SceneView,
+        scene: waterui_graphics::backend::SceneView,
         #[cfg(any(
             waterui_feature = "gpu",
             waterui_feature = "cpu",
             waterui_feature = "canvas"
         ))]
         /// A recorded picture.
-        picture: waterui::graphics::backend::Picture,
+        picture: waterui_graphics::backend::Picture,
         #[cfg(waterui_feature = "video")]
         /// A video without controls.
-        video: waterui::video::video::NativeVideoConfig,
+        video: waterui_video::video::NativeVideoConfig,
         #[cfg(waterui_feature = "video")]
         /// A video player.
-        video_player: waterui::video::video::NativeVideoPlayerConfig,
+        video_player: waterui_video::video::NativeVideoPlayerConfig,
         #[cfg(waterui_feature = "webview")]
         /// A web view.
-        web_view: waterui::webview::WebViewOpen,
+        web_view: waterui_webview::WebViewOpen,
         #[cfg(waterui_feature = "map")]
         /// A map.
-        map: waterui::map::MapConfig,
+        map: waterui_map::MapConfig,
     }
     parents {
         #[cfg(waterui_feature = "avatar")]
         /// An avatar.
-        avatar<C>: waterui::widget::avatar::AvatarConfig<C>,
+        avatar<C>: waterui_controls::avatar::AvatarConfig<C>,
         /// A button.
-        button<C>: waterui::component::button::ButtonConfig<C>,
+        button<C>: waterui_controls::button::ButtonConfig<C>,
         #[cfg(waterui_feature = "link")]
         /// A tappable link that opens a URL.
-        link<C>: waterui::component::link::LinkConfig<C>,
+        link<C>: waterui_controls::link::LinkConfig<C>,
         /// A badge.
-        badge<C>: waterui::component::badge::BadgeConfig<C>,
+        badge<C>: waterui_controls::badge::BadgeConfig<C>,
         /// A card container.
-        card<C>: waterui::widget::card::CardConfig<C>,
+        card<C>: waterui_controls::card::CardConfig<C>,
         /// A disclosure group.
-        disclosure<C>: waterui::widget::disclosure::DisclosureConfig<C>,
+        disclosure<C>: waterui_controls::disclosure::DisclosureConfig<C>,
         /// A progress indicator.
-        progress<C>: waterui::component::progress::ProgressConfig<C>,
+        progress<C>: waterui_controls::progress::ProgressConfig<C>,
         #[cfg(waterui_feature = "toggle")]
         /// A toggle.
-        toggle<C>: waterui::component::toggle::ToggleConfig<C>,
+        toggle<C>: waterui_controls::toggle::ToggleConfig<C>,
         #[cfg(waterui_feature = "slider")]
         /// A slider.
-        slider<C>: waterui::component::slider::SliderConfig<C>,
+        slider<C>: waterui_controls::slider::SliderConfig<C>,
         #[cfg(waterui_feature = "stepper")]
         /// A stepper.
-        stepper<C>: waterui::component::stepper::StepperConfig<C>,
+        stepper<C>: waterui_controls::stepper::StepperConfig<C>,
         #[cfg(waterui_feature = "text-field")]
         /// A text field.
-        text_field<C>: waterui::component::text_field::TextFieldConfig<C>,
+        text_field<C>: waterui_controls::text_field::TextFieldConfig<C>,
         #[cfg(waterui_feature = "secure-field")]
         /// A secure text field.
-        secure_field<C>: waterui::form::secure::SecureFieldConfig<C>,
+        secure_field<C>: waterui_form::secure::SecureFieldConfig<C>,
         #[cfg(waterui_feature = "picker")]
         /// A picker.
-        picker<C>: waterui::form::picker::PickerConfig<C>,
+        picker<C>: waterui_form::picker::PickerConfig<C>,
         #[cfg(waterui_feature = "color-picker")]
         /// A color picker.
-        color_picker<C>: waterui::form::picker::color::ColorPickerConfig<C>,
+        color_picker<C>: waterui_form::picker::color::ColorPickerConfig<C>,
         #[cfg(waterui_feature = "date-picker")]
         /// A date picker.
-        date_picker<C>: waterui::form::picker::date::DatePickerConfig<C>,
+        date_picker<C>: waterui_form::picker::date::DatePickerConfig<C>,
         #[cfg(waterui_feature = "multi-date-picker")]
         /// A picker of several dates.
-        multi_date_picker<C>: waterui::form::picker::multi_date::MultiDatePickerConfig<C>,
+        multi_date_picker<C>: waterui_form::picker::multi_date::MultiDatePickerConfig<C>,
         #[cfg(waterui_feature = "calendar")]
         /// A calendar.
-        calendar<C>: waterui::form::calendar::CalendarConfig<C>,
+        calendar<C>: waterui_form::calendar::CalendarConfig<C>,
         #[cfg(waterui_feature = "menu")]
         /// A menu.
-        menu<C>: waterui::component::menu::ResolvedMenu<C>,
+        menu<C>: waterui_controls::menu::ResolvedMenu<C>,
         /// A scroll view.
-        scroll<C>: waterui::layout::scroll::ScrollView<C>,
+        scroll<C>: waterui_layout::scroll::ScrollView<C>,
         /// A container with a fixed child list and a layout.
-        fixed_container<C>: waterui::layout::container::FixedContainer<alloc::vec::Vec<C>>,
+        fixed_container<C>: waterui_layout::container::FixedContainer<alloc::vec::Vec<C>>,
         /// A view whose content a handler replaces.
         dynamic<C>: waterui_core::Dynamic<C>,
         /// A container whose children are produced lazily.
-        lazy_container<C>: waterui::layout::container::LazyContainer<C>,
+        lazy_container<C>: waterui_layout::container::LazyContainer<C>,
         #[cfg(waterui_feature = "effects")]
         /// A view drawn through a filter.
-        filtered<C>: waterui::graphics::backend::FilteredView<C>,
+        filtered<C>: waterui_graphics::backend::FilteredView<C>,
         #[cfg(waterui_feature = "list")]
         /// A list, each row's content a child.
-        list<C>: waterui::component::list::ListConfig<C>,
+        list<C>: waterui_controls::list::ListConfig<C>,
         #[cfg(waterui_feature = "list")]
         /// A key/value list row, its label a child slot.
-        list_row<C>: waterui::component::list::ListRowConfig<C>,
+        list_row<C>: waterui_controls::list::ListRowConfig<C>,
         #[cfg(waterui_feature = "table")]
         /// A table, each row's cells children.
-        table<C>: waterui::component::table::TableConfig<C>,
+        table<C>: waterui_controls::table::TableConfig<C>,
         #[cfg(waterui_feature = "navigation")]
         /// A navigation bar around its content.
-        navigation_view<C>: waterui::navigation::ResolvedNavigationView<C>,
+        navigation_view<C>: waterui_navigation::ResolvedNavigationView<C>,
         #[cfg(waterui_feature = "navigation")]
         /// A split navigation layout.
-        navigation_split<C>: waterui::navigation::split::NavigationSplitLayout<C>,
+        navigation_split<C>: waterui_navigation::split::NavigationSplitLayout<C>,
         #[cfg(waterui_feature = "navigation")]
         /// A navigation stack.
-        navigation_stack<C>: waterui::navigation::NavigationStackLayout<C>,
+        navigation_stack<C>: waterui_navigation::NavigationStackLayout<C>,
         #[cfg(waterui_feature = "navigation")]
         /// Tabs.
-        tabs<C>: waterui::navigation::tab::TabsLayout<C>,
+        tabs<C>: waterui_navigation::tab::TabsLayout<C>,
     }
     metadata {
         /// An environment scope over its content.
@@ -1001,67 +1001,67 @@ native_backend! {
         /// A structural transition.
         transition: waterui_structural_transition::TransitionSpec,
         /// Opacity.
-        opacity: waterui::filter::Opacity,
+        opacity: waterui_shape::filter::Opacity,
         /// A scale transform.
-        scale: waterui::style::Scale,
+        scale: waterui_shape::style::Scale,
         /// A rotation transform.
-        rotation: waterui::style::Rotation,
+        rotation: waterui_shape::style::Rotation,
         /// An offset.
-        offset: waterui::style::Offset,
+        offset: waterui_shape::style::Offset,
         /// A shadow.
-        shadow: waterui::style::Shadow,
+        shadow: waterui_shape::style::Shadow,
         /// A border.
-        border: waterui::border::Border,
+        border: waterui_shape::border::Border,
         /// A clip shape.
-        clip_shape: waterui::shape::ClipShape,
+        clip_shape: waterui_shape::ClipShape,
         /// A material background.
-        material_background: waterui::background::MaterialBackground,
+        material_background: waterui_shape::background::MaterialBackground,
         /// A glass background.
-        glass_background: waterui::background::GlassBackground,
+        glass_background: waterui_shape::background::GlassBackground,
         /// A group sharing one backdrop capture.
-        material_group: waterui::background::MaterialGroup,
+        material_group: waterui_shape::background::MaterialGroup,
         /// A floating surface.
-        floating: waterui::floating::Floating,
+        floating: waterui_shape::floating::Floating,
         /// Safe-area edges the content ignores.
-        ignore_safe_area: waterui::layout::safe_area::IgnoreSafeArea,
+        ignore_safe_area: waterui_layout::safe_area::IgnoreSafeArea,
         /// A cursor.
-        cursor: waterui::cursor::Cursor,
+        cursor: waterui_interaction::cursor::Cursor,
         /// A drag source.
-        draggable: waterui::drag_drop::Draggable,
+        draggable: waterui_interaction::drag_drop::Draggable,
         /// A drop destination.
-        drop_destination: waterui::drag_drop::DropDestination,
+        drop_destination: waterui_interaction::drag_drop::DropDestination,
         /// Hit-testing.
-        hittable: waterui::interaction::Hittable,
+        hittable: waterui_interaction::interaction::Hittable,
         /// Focus.
-        focused: waterui::component::focus::Focused,
+        focused: waterui_interaction::focus::Focused,
         /// Secure content.
-        secure: waterui::metadata::secure::Secure,
+        secure: waterui_controls::secure::Secure,
         /// Dynamic range.
-        dynamic_range: waterui::metadata::secure::DynamicRangeMetadata,
+        dynamic_range: waterui_controls::secure::DynamicRangeMetadata,
         #[cfg(waterui_feature = "dialog")]
         /// A dialog.
-        dialog: waterui::dialog::Dialog,
+        dialog: waterui_controls::dialog::Dialog,
         #[cfg(waterui_feature = "navigation")]
         /// A navigation link hint.
-        navigation_link_hint: waterui::navigation::NavigationLinkHint,
+        navigation_link_hint: waterui_navigation::NavigationLinkHint,
         #[cfg(waterui_feature = "navigation")]
         /// A navigation transition source.
-        navigation_transition_source: waterui::navigation::NavigationTransitionSource,
+        navigation_transition_source: waterui_navigation::NavigationTransitionSource,
         #[cfg(waterui_feature = "navigation")]
         /// A navigation transition destination.
-        navigation_transition_destination: waterui::navigation::NavigationTransitionDestination,
+        navigation_transition_destination: waterui_navigation::NavigationTransitionDestination,
     }
     parent_metadata {
         /// An anchored overlay.
-        anchored_overlay<S>: waterui::metadata::anchored_overlay::AnchoredOverlay<S>,
+        anchored_overlay<S>: waterui_controls::anchored_overlay::AnchoredOverlay<S>,
         /// A window-modal sheet.
-        sheet<S>: waterui::sheet::Sheet<S>,
+        sheet<S>: waterui_controls::sheet::Sheet<S>,
         #[cfg(waterui_feature = "menu")]
         /// A resolved context menu.
-        resolved_context_menu<S>: waterui::metadata::context_menu::ResolvedContextMenu<S>,
+        resolved_context_menu<S>: waterui_controls::context_menu::ResolvedContextMenu<S>,
         #[cfg(waterui_feature = "snackbar")]
         /// A snackbar host overlay.
-        snackbar_host<S>: waterui::snackbar::SnackbarHostConfig<S>,
+        snackbar_host<S>: waterui_controls::snackbar::SnackbarHostConfig<S>,
     }
 }
 
@@ -1071,10 +1071,10 @@ mod tests {
     use alloc::vec::Vec;
     use core::cell::RefCell;
 
-    use waterui::layout::Spacer;
-    use waterui::layout::scroll::scroll;
     use waterui_core::layout::LayoutPriority;
     use waterui_core::view::hook::{Hook, Hooks};
+    use waterui_layout::Spacer;
+    use waterui_layout::scroll::scroll;
 
     use super::*;
 
@@ -1093,12 +1093,13 @@ mod tests {
             &self,
             view: V,
             env: &Environment,
-            _request: waterui::RenderRequest,
-        ) -> impl core::future::Future<Output = Result<waterui::RenderResult, waterui::RenderError>>
-        {
+            _request: waterui_capture::RenderRequest,
+        ) -> impl core::future::Future<
+            Output = Result<waterui_capture::RenderResult, waterui_capture::RenderError>,
+        > {
             let mut recorder = self.0.clone();
             Realize::child(&mut recorder, view, env, ());
-            core::future::ready(Ok(waterui::RenderResult::new(Vec::new(), 1, 1)))
+            core::future::ready(Ok(waterui_capture::RenderResult::new(Vec::new(), 1, 1)))
         }
     }
 
@@ -1107,46 +1108,46 @@ mod tests {
         fn children(self) -> Vec<C>;
     }
 
-    impl<C> Parent<C> for waterui::component::button::ButtonConfig<C> {
+    impl<C> Parent<C> for waterui_controls::button::ButtonConfig<C> {
         fn children(self) -> Vec<C> {
             alloc::vec![self.label().build()]
         }
     }
 
     #[cfg(waterui_feature = "avatar")]
-    impl<C> Parent<C> for waterui::widget::avatar::AvatarConfig<C> {
+    impl<C> Parent<C> for waterui_controls::avatar::AvatarConfig<C> {
         fn children(mut self) -> Vec<C> {
             self.take_fallback().into_iter().collect()
         }
     }
 
     #[cfg(waterui_feature = "link")]
-    impl<C> Parent<C> for waterui::component::link::LinkConfig<C> {
+    impl<C> Parent<C> for waterui_controls::link::LinkConfig<C> {
         fn children(self) -> Vec<C> {
             alloc::vec![self.label().build()]
         }
     }
 
-    impl<C> Parent<C> for waterui::component::badge::BadgeConfig<C> {
+    impl<C> Parent<C> for waterui_controls::badge::BadgeConfig<C> {
         fn children(self) -> Vec<C> {
             alloc::vec![self.content]
         }
     }
 
-    impl<C> Parent<C> for waterui::widget::card::CardConfig<C> {
+    impl<C> Parent<C> for waterui_controls::card::CardConfig<C> {
         fn children(self) -> Vec<C> {
             alloc::vec![self.content]
         }
     }
 
-    impl<C> Parent<C> for waterui::widget::disclosure::DisclosureConfig<C> {
+    impl<C> Parent<C> for waterui_controls::disclosure::DisclosureConfig<C> {
         fn children(self) -> Vec<C> {
             let (header, content, _) = self.into_parts();
             alloc::vec![header.build(), content.build()]
         }
     }
 
-    impl<C> Parent<C> for waterui::component::progress::ProgressConfig<C> {
+    impl<C> Parent<C> for waterui_controls::progress::ProgressConfig<C> {
         fn children(self) -> Vec<C> {
             let (label, value_label, ..) = self.into_parts();
             alloc::vec![label, value_label]
@@ -1154,14 +1155,14 @@ mod tests {
     }
 
     #[cfg(waterui_feature = "toggle")]
-    impl<C> Parent<C> for waterui::component::toggle::ToggleConfig<C> {
+    impl<C> Parent<C> for waterui_controls::toggle::ToggleConfig<C> {
         fn children(self) -> Vec<C> {
             alloc::vec![self.label().build()]
         }
     }
 
     #[cfg(waterui_feature = "slider")]
-    impl<C> Parent<C> for waterui::component::slider::SliderConfig<C> {
+    impl<C> Parent<C> for waterui_controls::slider::SliderConfig<C> {
         fn children(self) -> Vec<C> {
             let (label, min_value_label, max_value_label, ..) = self.into_parts();
             alloc::vec![label.build(), min_value_label, max_value_label]
@@ -1169,75 +1170,75 @@ mod tests {
     }
 
     #[cfg(waterui_feature = "stepper")]
-    impl<C> Parent<C> for waterui::component::stepper::StepperConfig<C> {
+    impl<C> Parent<C> for waterui_controls::stepper::StepperConfig<C> {
         fn children(self) -> Vec<C> {
             alloc::vec![self.label().build()]
         }
     }
 
     #[cfg(waterui_feature = "text-field")]
-    impl<C> Parent<C> for waterui::component::text_field::TextFieldConfig<C> {
+    impl<C> Parent<C> for waterui_controls::text_field::TextFieldConfig<C> {
         fn children(self) -> Vec<C> {
             alloc::vec![self.label().build()]
         }
     }
 
     #[cfg(waterui_feature = "secure-field")]
-    impl<C> Parent<C> for waterui::form::secure::SecureFieldConfig<C> {
+    impl<C> Parent<C> for waterui_form::secure::SecureFieldConfig<C> {
         fn children(self) -> Vec<C> {
             alloc::vec![self.label().build()]
         }
     }
 
     #[cfg(waterui_feature = "picker")]
-    impl<C> Parent<C> for waterui::form::picker::PickerConfig<C> {
+    impl<C> Parent<C> for waterui_form::picker::PickerConfig<C> {
         fn children(self) -> Vec<C> {
             alloc::vec![self.label().build()]
         }
     }
 
     #[cfg(waterui_feature = "color-picker")]
-    impl<C> Parent<C> for waterui::form::picker::color::ColorPickerConfig<C> {
+    impl<C> Parent<C> for waterui_form::picker::color::ColorPickerConfig<C> {
         fn children(self) -> Vec<C> {
             alloc::vec![self.label().build()]
         }
     }
 
     #[cfg(waterui_feature = "date-picker")]
-    impl<C> Parent<C> for waterui::form::picker::date::DatePickerConfig<C> {
+    impl<C> Parent<C> for waterui_form::picker::date::DatePickerConfig<C> {
         fn children(self) -> Vec<C> {
             alloc::vec![self.label().build()]
         }
     }
 
     #[cfg(waterui_feature = "multi-date-picker")]
-    impl<C> Parent<C> for waterui::form::picker::multi_date::MultiDatePickerConfig<C> {
+    impl<C> Parent<C> for waterui_form::picker::multi_date::MultiDatePickerConfig<C> {
         fn children(self) -> Vec<C> {
             alloc::vec![self.label().build()]
         }
     }
 
     #[cfg(waterui_feature = "calendar")]
-    impl<C> Parent<C> for waterui::form::calendar::CalendarConfig<C> {
+    impl<C> Parent<C> for waterui_form::calendar::CalendarConfig<C> {
         fn children(self) -> Vec<C> {
             alloc::vec![self.label().build()]
         }
     }
 
     #[cfg(waterui_feature = "menu")]
-    impl<C> Parent<C> for waterui::component::menu::ResolvedMenu<C> {
+    impl<C> Parent<C> for waterui_controls::menu::ResolvedMenu<C> {
         fn children(self) -> Vec<C> {
             alloc::vec![self.label.build()]
         }
     }
 
-    impl<C> Parent<C> for waterui::layout::container::FixedContainer<Vec<C>> {
+    impl<C> Parent<C> for waterui_layout::container::FixedContainer<Vec<C>> {
         fn children(self) -> Vec<C> {
             self.into_inner().1
         }
     }
 
-    impl<C> Parent<C> for waterui::layout::scroll::ScrollView<C> {
+    impl<C> Parent<C> for waterui_layout::scroll::ScrollView<C> {
         fn children(self) -> Vec<C> {
             let (_, content, _, _) = self.into_inner().into_parts();
             alloc::vec![content]
@@ -1245,7 +1246,7 @@ mod tests {
     }
 
     /// A lazy container's children are the items it currently holds.
-    impl<C: 'static> Parent<C> for waterui::layout::container::LazyContainer<C> {
+    impl<C: 'static> Parent<C> for waterui_layout::container::LazyContainer<C> {
         fn children(self) -> Vec<C> {
             let snapshot = self.into_inner().1.snapshot();
             snapshot
@@ -1256,7 +1257,7 @@ mod tests {
     }
 
     #[cfg(waterui_feature = "effects")]
-    impl<C> Parent<C> for waterui::graphics::backend::FilteredView<C> {
+    impl<C> Parent<C> for waterui_graphics::backend::FilteredView<C> {
         fn children(self) -> Vec<C> {
             alloc::vec![self.content]
         }
@@ -1264,7 +1265,7 @@ mod tests {
 
     /// A list's children are its rows' content.
     #[cfg(waterui_feature = "list")]
-    impl<C: 'static> Parent<C> for waterui::component::list::ListConfig<C> {
+    impl<C: 'static> Parent<C> for waterui_controls::list::ListConfig<C> {
         fn children(self) -> Vec<C> {
             let snapshot = self.contents().snapshot();
             snapshot
@@ -1276,7 +1277,7 @@ mod tests {
 
     /// A key/value list row's child slot is its label content.
     #[cfg(waterui_feature = "list")]
-    impl<C: 'static> Parent<C> for waterui::component::list::ListRowConfig<C> {
+    impl<C: 'static> Parent<C> for waterui_controls::list::ListRowConfig<C> {
         fn children(self) -> Vec<C> {
             alloc::vec![self.into_parts().0.build()]
         }
@@ -1284,19 +1285,19 @@ mod tests {
 
     /// A table's children are its rows' cells.
     #[cfg(waterui_feature = "table")]
-    impl<C: 'static> Parent<C> for waterui::component::table::TableConfig<C> {
+    impl<C: 'static> Parent<C> for waterui_controls::table::TableConfig<C> {
         fn children(self) -> Vec<C> {
             let snapshot = self.rows().snapshot();
             snapshot
                 .range()
                 .filter_map(|index| snapshot.get_view(index))
-                .flat_map(waterui::component::table::TableRow::into_cells)
+                .flat_map(waterui_controls::table::TableRow::into_cells)
                 .collect()
         }
     }
 
     #[cfg(waterui_feature = "navigation")]
-    impl<C> Parent<C> for waterui::navigation::ResolvedNavigationView<C> {
+    impl<C> Parent<C> for waterui_navigation::ResolvedNavigationView<C> {
         fn children(self) -> Vec<C> {
             alloc::vec![self.into_content()]
         }
@@ -1304,7 +1305,7 @@ mod tests {
 
     /// A stack's child is its root page's content.
     #[cfg(waterui_feature = "navigation")]
-    impl<C> Parent<C> for waterui::navigation::NavigationStackLayout<C> {
+    impl<C> Parent<C> for waterui_navigation::NavigationStackLayout<C> {
         fn children(self) -> Vec<C> {
             alloc::vec![self.resolve(&Environment::new()).into_content()]
         }
@@ -1313,7 +1314,7 @@ mod tests {
     /// A split navigation layout's children are its sidebar, placeholder, and
     /// any currently selected middle/detail column content.
     #[cfg(waterui_feature = "navigation")]
-    impl<C: 'static> Parent<C> for waterui::navigation::split::NavigationSplitLayout<C> {
+    impl<C: 'static> Parent<C> for waterui_navigation::split::NavigationSplitLayout<C> {
         fn children(self) -> Vec<C> {
             use nami::Signal as _;
 
@@ -1337,7 +1338,7 @@ mod tests {
 
     /// Tabs' children are each tab's root content and the accessory.
     #[cfg(waterui_feature = "navigation")]
-    impl<C: 'static> Parent<C> for waterui::navigation::tab::TabsLayout<C> {
+    impl<C: 'static> Parent<C> for waterui_navigation::tab::TabsLayout<C> {
         fn children(self) -> Vec<C> {
             let (_, tabs, _, _, accessory) = self.into_parts();
             let snapshot = tabs.snapshot();
@@ -1351,14 +1352,14 @@ mod tests {
     }
 
     /// An anchored overlay's child is the overlay view its builder constructs.
-    impl<C> Parent<C> for waterui::metadata::anchored_overlay::AnchoredOverlay<C> {
+    impl<C> Parent<C> for waterui_controls::anchored_overlay::AnchoredOverlay<C> {
         fn children(self) -> Vec<C> {
             alloc::vec![self.content.build()]
         }
     }
 
     /// A sheet's child is the modal content view its builder constructs.
-    impl<C> Parent<C> for waterui::sheet::Sheet<C> {
+    impl<C> Parent<C> for waterui_controls::sheet::Sheet<C> {
         fn children(self) -> Vec<C> {
             alloc::vec![self.build_content()]
         }
@@ -1366,7 +1367,7 @@ mod tests {
 
     /// A context menu's children are its preview and accessory.
     #[cfg(waterui_feature = "menu")]
-    impl<C> Parent<C> for waterui::metadata::context_menu::ResolvedContextMenu<C> {
+    impl<C> Parent<C> for waterui_controls::context_menu::ResolvedContextMenu<C> {
         fn children(self) -> Vec<C> {
             self.preview.into_iter().chain(self.accessory).collect()
         }
@@ -1374,10 +1375,10 @@ mod tests {
 
     /// A snackbar host's children are the icon views of active presentations.
     #[cfg(waterui_feature = "snackbar")]
-    impl<C: 'static> Parent<C> for waterui::snackbar::SnackbarHostConfig<C> {
+    impl<C: 'static> Parent<C> for waterui_controls::snackbar::SnackbarHostConfig<C> {
         fn children(self) -> Vec<C> {
             use nami::Signal as _;
-            use waterui::widget::disclosure::SlotBuilder;
+            use waterui_controls::slot::SlotBuilder;
 
             self.presentations()
                 .snapshot()
@@ -1509,7 +1510,7 @@ mod tests {
     #[cfg(waterui_feature = "effects")]
     #[test]
     fn a_filtered_view_keeps_its_content_typed() {
-        use waterui::graphics::FilterViewExt as _;
+        use waterui_graphics::filter_view::FilterViewExt as _;
 
         let env = Environment::new();
         let mut recorder = Recorder::default();
@@ -1527,7 +1528,7 @@ mod tests {
 
     #[test]
     fn a_card_keeps_its_content_typed() {
-        use waterui::widget::card;
+        use waterui_controls::card::card;
 
         let env = Environment::new();
         let mut recorder = Recorder::default();
@@ -1560,7 +1561,7 @@ mod tests {
         type Target = Spacer;
 
         fn apply(&self, _target: Spacer, _env: &Environment) -> Result<impl View, Spacer> {
-            Ok::<_, Spacer>(waterui::layout::Divider)
+            Ok::<_, Spacer>(waterui_controls::divider::Divider)
         }
     }
 
@@ -1753,7 +1754,7 @@ mod tests {
         type Target = Fence;
 
         fn apply(&self, _target: Fence, _env: &Environment) -> Result<impl View, Fence> {
-            Ok::<_, Fence>(waterui::layout::Divider)
+            Ok::<_, Fence>(waterui_controls::divider::Divider)
         }
     }
 
@@ -1775,11 +1776,11 @@ mod tests {
     #[cfg(waterui_feature = "menu")]
     #[test]
     fn context_menu_preview_and_accessory_stay_typed_and_reenter_hooks() {
-        use waterui::ViewExt as _;
-        use waterui::metadata::context_menu::ContextMenu;
+        use waterui_controls::context_menu::{ContextMenu, ContextMenuView};
 
         let authored = || {
-            ().context_menu(
+            ContextMenuView::new(
+                (),
                 ContextMenu::new(())
                     .preview(Spacer::flexible())
                     .accessory(Spacer::flexible()),
@@ -1829,7 +1830,7 @@ mod tests {
     fn a_snackbar_host_keeps_its_content_typed() {
         use core::time::Duration;
 
-        use waterui::snackbar::{Snackbar, SnackbarManager};
+        use waterui_controls::snackbar::{Snackbar, SnackbarManager};
 
         let authored = || {
             SnackbarManager::host(|manager: SnackbarManager| {
@@ -1896,10 +1897,10 @@ mod tests {
 
     #[test]
     fn control_labels_stay_typed_and_reenter_hooks() {
-        use waterui::component::badge::Badge;
-        use waterui::component::button::button;
-        use waterui::component::label::Label;
-        use waterui::component::progress::Progress;
+        use waterui_controls::badge::Badge;
+        use waterui_controls::button::button;
+        use waterui_controls::label::Label;
+        use waterui_controls::progress::Progress;
 
         let authored = || {
             Badge::new(
@@ -1930,7 +1931,7 @@ mod tests {
         #[cfg(waterui_feature = "slider")]
         {
             use nami::Binding;
-            use waterui::component::slider::slider;
+            use waterui_controls::slider::slider;
 
             let value = Binding::new(0.5_f64);
             let slider_view = || {
@@ -1957,7 +1958,7 @@ mod tests {
     #[test]
     fn navigation_split_stays_typed_and_reenters_hooks() {
         use nami::Binding;
-        use waterui::navigation::{NavigationSplitView, NavigationView};
+        use waterui_navigation::{NavigationSplitView, NavigationView};
 
         let selection = Binding::new(Some(1_i32));
         let authored = || {
@@ -2009,13 +2010,13 @@ mod tests {
     fn subtree_button_styles_apply_across_containers_and_anyview() {
         use alloc::rc::Rc;
         use core::cell::RefCell;
-        use waterui::ViewExt as _;
-        use waterui::component::badge::Badge;
-        use waterui::component::button::{
-            ButtonRole, ButtonStyleConfiguration, ButtonStyleTarget, CustomButtonStyle,
-            PrimitiveButtonStyle, PrimitiveButtonStyleConfiguration, button,
+        use waterui_controls::badge::Badge;
+        use waterui_controls::button::{
+            ButtonRole, ButtonStyleConfiguration, ButtonStyleHook, ButtonStyleTarget,
+            CustomButtonStyle, IntoButtonStyle, PrimitiveButtonStyle,
+            PrimitiveButtonStyleConfiguration, button,
         };
-        use waterui::component::label::Label;
+        use waterui_controls::label::Label;
 
         struct TaggedButtonStyle {
             seen_roles: Rc<RefCell<Vec<Option<ButtonRole>>>>,
@@ -2075,14 +2076,19 @@ mod tests {
         // Subtree `.button_style(...)` reaches buttons nested in containers and AnyView hops,
         // and inner hooks like `SpacerAsDivider` still re-enter the button's label.
         let roles = Rc::new(RefCell::new(Vec::new()));
-        let tree = scroll(AnyView::new(
-            button(Label::new("Delete", Spacer::flexible))
-                .role(ButtonRole::Destructive)
-                .action(|| {}),
-        ))
-        .button_style(TaggedButtonStyle {
-            seen_roles: Rc::clone(&roles),
-        });
+        let tree = Hooks::new(
+            scroll(AnyView::new(
+                button(Label::new("Delete", Spacer::flexible))
+                    .role(ButtonRole::Destructive)
+                    .action(|| {}),
+            )),
+            ButtonStyleHook::new(
+                TaggedButtonStyle {
+                    seen_roles: Rc::clone(&roles),
+                }
+                .into_button_style(),
+            ),
+        );
         assert_eq!(
             reached(Hooks::new(tree, SpacerAsDivider)),
             [
@@ -2101,12 +2107,11 @@ mod tests {
         );
         assert_eq!(*roles.borrow(), alloc::vec![Some(ButtonRole::Destructive)]);
 
-        // Primitive style also installs cleanly via `.button_style(...)`.
-        let primitive_tree = AnyView::new(
-            button("Go")
-                .action(|| {})
-                .button_style(TaggedPrimitiveStyle),
-        );
+        // Primitive style also installs cleanly via `ButtonStyleHook`.
+        let primitive_tree = AnyView::new(Hooks::new(
+            button("Go").action(|| {}),
+            ButtonStyleHook::new(TaggedPrimitiveStyle.into_button_style()),
+        ));
         assert_eq!(
             reached(primitive_tree),
             [
@@ -2122,11 +2127,11 @@ mod tests {
     fn subtree_button_explicit_style_and_inner_builtin_override_win() {
         use alloc::rc::Rc;
         use core::cell::RefCell;
-        use waterui::ViewExt as _;
-        use waterui::component::button::{
-            ButtonStyle, ButtonStyleConfiguration, CustomButtonStyle, button,
+        use waterui_controls::button::{
+            ButtonStyle, ButtonStyleConfiguration, ButtonStyleHook, CustomButtonStyle,
+            IntoButtonStyle, button,
         };
-        use waterui::component::label::Label;
+        use waterui_controls::label::Label;
 
         struct TaggedButtonStyle {
             seen: Rc<RefCell<u32>>,
@@ -2142,25 +2147,36 @@ mod tests {
             }
         }
 
-        // Explicit `.style(ButtonStyle::Bordered)` wins over outer `.button_style(...)`.
+        // Explicit `.style(ButtonStyle::Bordered)` wins over outer `ButtonStyleHook`.
         let seen_explicit = Rc::new(RefCell::new(0));
-        let explicit = button(Label::new("Save", Spacer::flexible))
-            .style(ButtonStyle::Bordered)
-            .action(|| {})
-            .button_style(TaggedButtonStyle {
-                seen: Rc::clone(&seen_explicit),
-            });
+        let explicit = Hooks::new(
+            button(Label::new("Save", Spacer::flexible))
+                .style(ButtonStyle::Bordered)
+                .action(|| {}),
+            ButtonStyleHook::new(
+                TaggedButtonStyle {
+                    seen: Rc::clone(&seen_explicit),
+                }
+                .into_button_style(),
+            ),
+        );
         assert_eq!(reached(explicit), ["button", "typed child", "spacer"]);
         assert_eq!(*seen_explicit.borrow(), 0);
 
-        // Inner `.button_style(ButtonStyle::Bordered)` overrides outer `.button_style(Custom)`.
+        // Inner `ButtonStyle::Bordered` overrides outer custom button style.
         let seen_override = Rc::new(RefCell::new(0));
-        let overridden = button(Label::new("Save", Spacer::flexible))
-            .action(|| {})
-            .button_style(ButtonStyle::Bordered)
-            .button_style(TaggedButtonStyle {
-                seen: Rc::clone(&seen_override),
-            });
+        let overridden = Hooks::new(
+            Hooks::new(
+                button(Label::new("Save", Spacer::flexible)).action(|| {}),
+                ButtonStyleHook::new(ButtonStyle::Bordered.into_button_style()),
+            ),
+            ButtonStyleHook::new(
+                TaggedButtonStyle {
+                    seen: Rc::clone(&seen_override),
+                }
+                .into_button_style(),
+            ),
+        );
         assert_eq!(
             reached(Hooks::new(overridden, SpacerAsDivider)),
             ["button", "typed child", "divider"]
@@ -2174,10 +2190,10 @@ mod tests {
         use alloc::rc::Rc;
         use core::cell::RefCell;
         use nami::Binding;
-        use waterui::ViewExt as _;
-        use waterui::component::label::Label;
-        use waterui::component::toggle::{
-            CustomToggleStyle, Toggle, ToggleStyle, ToggleStyleConfiguration,
+        use waterui_controls::label::Label;
+        use waterui_controls::toggle::{
+            CustomToggleStyle, IntoToggleStyle, Toggle, ToggleStyle, ToggleStyleConfiguration,
+            ToggleStyleHook,
         };
 
         struct CustomToggleMarkerStyle {
@@ -2197,13 +2213,18 @@ mod tests {
         let on = Binding::new(false);
         let seen = Rc::new(RefCell::new(0));
         let toggle_tree = Hooks::new(
-            scroll(AnyView::new(Toggle::new(
-                Label::new("Wi-Fi", Spacer::flexible),
-                &on,
-            )))
-            .toggle_style(CustomToggleMarkerStyle {
-                seen: Rc::clone(&seen),
-            }),
+            Hooks::new(
+                scroll(AnyView::new(Toggle::new(
+                    Label::new("Wi-Fi", Spacer::flexible),
+                    &on,
+                ))),
+                ToggleStyleHook::new(
+                    CustomToggleMarkerStyle {
+                        seen: Rc::clone(&seen),
+                    }
+                    .into_toggle_style(),
+                ),
+            ),
             SpacerAsDivider,
         );
         assert_eq!(
@@ -2225,13 +2246,20 @@ mod tests {
         );
         assert_eq!(*seen.borrow(), 1);
 
-        // Inner `.toggle_style(ToggleStyle::Checkbox)` overrides outer custom toggle style.
+        // Inner `ToggleStyle::Checkbox` overrides outer custom toggle style.
         let seen_override = Rc::new(RefCell::new(0));
-        let toggle_override = Toggle::new(Label::new("Sync", Spacer::flexible), &on)
-            .toggle_style(ToggleStyle::Checkbox)
-            .toggle_style(CustomToggleMarkerStyle {
-                seen: Rc::clone(&seen_override),
-            });
+        let toggle_override = Hooks::new(
+            Hooks::new(
+                Toggle::new(Label::new("Sync", Spacer::flexible), &on),
+                ToggleStyleHook::new(ToggleStyle::Checkbox.into_toggle_style()),
+            ),
+            ToggleStyleHook::new(
+                CustomToggleMarkerStyle {
+                    seen: Rc::clone(&seen_override),
+                }
+                .into_toggle_style(),
+            ),
+        );
         assert_eq!(
             reached(toggle_override),
             ["toggle", "typed child", "spacer"]
@@ -2246,7 +2274,7 @@ mod tests {
         use core::pin::pin;
         use core::task::{Context, Poll, Waker};
         use core::time::Duration;
-        use waterui::{CaptureHandle, RenderRequest, ViewExt as _};
+        use waterui_capture::{CaptureHandle, RenderRequest};
         use waterui_layout::Size;
 
         fn block_on_ready<F: Future>(future: F) -> F::Output {
@@ -2262,7 +2290,7 @@ mod tests {
         assert!(!handle.is_wired());
         let env = Environment::new();
         let mut recorder = Recorder::default();
-        Realize::child(&mut recorder, Spacer::flexible().capture(&handle), &env, ());
+        Realize::child(&mut recorder, handle.attach(Spacer::flexible()), &env, ());
         assert!(handle.is_wired());
         assert_eq!(recorder.reached.borrow().as_slice(), ["spacer"]);
 
@@ -2280,7 +2308,7 @@ mod tests {
         let mut hooked_recorder = Recorder::default();
         Realize::child(
             &mut hooked_recorder,
-            Hooks::new(Spacer::flexible().capture(&hooked_handle), SpacerAsDivider),
+            Hooks::new(hooked_handle.attach(Spacer::flexible()), SpacerAsDivider),
             &env,
             (),
         );
@@ -2296,7 +2324,7 @@ mod tests {
     #[cfg(waterui_feature = "gpu")]
     #[test]
     fn typed_gpu_view_reaches_native_backend_on_static_and_erased_paths() {
-        use waterui::graphics::{Context, Frame, GpuContent, GpuView};
+        use waterui_graphics::{Context, Frame, GpuContent, GpuView};
 
         struct ProbeContent;
 
@@ -2314,20 +2342,24 @@ mod tests {
 
     #[test]
     fn anchored_overlay_content_stays_typed_and_reenters_hooks() {
-        use waterui::ViewExt as _;
-        use waterui::metadata::anchored_overlay::AnchoredOverlay;
+        use waterui_controls::anchored_overlay::{AnchoredOverlay, AnchoredOverlayView};
         use waterui_core::binding;
 
         let shown = binding(true);
-        let view =
-            Spacer::flexible().anchored_overlay(AnchoredOverlay::new(&shown, Spacer::flexible));
+        let view = AnchoredOverlayView::new(
+            Spacer::flexible(),
+            AnchoredOverlay::new(&shown, Spacer::flexible),
+        );
         assert_eq!(
             reached(view),
             ["anchored_overlay", "spacer", "typed child", "spacer"]
         );
 
         let hooked = Hooks::new(
-            Spacer::flexible().anchored_overlay(AnchoredOverlay::new(&shown, Spacer::flexible)),
+            AnchoredOverlayView::new(
+                Spacer::flexible(),
+                AnchoredOverlay::new(&shown, Spacer::flexible),
+            ),
             SpacerAsDivider,
         );
         assert_eq!(
@@ -2343,11 +2375,11 @@ mod tests {
     ))]
     #[test]
     fn scene_and_picture_reach_native_backend_on_static_and_erased_paths() {
-        use waterui::graphics::backend::{
-            NextFrame, Picture, RecordingResources, SceneContent, SceneView, draw::Recorder,
-        };
         use waterui_core::Computed;
         use waterui_core::layout::Size;
+        use waterui_graphics::backend::{
+            NextFrame, Picture, RecordingResources, SceneContent, SceneView, draw::Recorder,
+        };
 
         struct ProbeScene;
 
@@ -2382,7 +2414,7 @@ mod tests {
     #[cfg(not(waterui_feature = "capture"))]
     #[test]
     fn capture_binder_is_not_routed_without_capture_feature() {
-        use waterui::view_renderer::CaptureHandle;
+        use waterui_capture::view_renderer::{CaptureBinder, CaptureHandle};
 
         let handle = CaptureHandle::<Spacer>::new();
         let scope = handle.attach(Spacer::flexible());
@@ -2394,15 +2426,13 @@ mod tests {
         #[cfg(not(feature = "erased-dispatch"))]
         assert_eq!(
             static_recorder.reached.borrow().first().copied(),
-            Some(core::any::type_name::<
-                waterui::view_renderer::CaptureBinder<Child<Recorder>>,
-            >())
+            Some(core::any::type_name::<CaptureBinder<Child<Recorder>>>())
         );
         #[cfg(feature = "erased-dispatch")]
         assert_eq!(
             static_recorder.reached.borrow().as_slice(),
             [core::any::type_name::<
-                Metadata<waterui::view_renderer::CaptureBinder<AnyView>, AnyView>,
+                Metadata<CaptureBinder<AnyView>, AnyView>,
             >()]
         );
 
@@ -2418,7 +2448,7 @@ mod tests {
         assert_eq!(
             erased_recorder.reached.borrow().as_slice(),
             [core::any::type_name::<
-                Metadata<waterui::view_renderer::CaptureBinder<AnyView>, AnyView>,
+                Metadata<CaptureBinder<AnyView>, AnyView>,
             >()]
         );
     }
@@ -2426,7 +2456,7 @@ mod tests {
     #[cfg(waterui_feature = "avatar")]
     #[test]
     fn an_avatar_keeps_its_fallback_typed() {
-        use waterui::widget::avatar::{Avatar, avatar};
+        use waterui_controls::avatar::{Avatar, avatar};
 
         assert_eq!(reached(avatar("Ada Lovelace")), ["dynamic_range", "avatar"]);
 
@@ -2447,13 +2477,13 @@ mod tests {
 
     #[test]
     fn a_floating_view_reaches_the_floating_metadata_method() {
-        use waterui::ViewExt as _;
+        use waterui_shape::floating::Floating;
 
         let env = Environment::new();
         let mut static_recorder = Recorder::default();
         Realize::child(
             &mut static_recorder,
-            Spacer::flexible().floating(),
+            Metadata::new(Spacer::flexible(), Floating),
             &env,
             (),
         );
@@ -2465,7 +2495,7 @@ mod tests {
         let mut erased_recorder = Recorder::default();
         Realize::child(
             &mut erased_recorder,
-            AnyView::new(Spacer::flexible().floating()),
+            AnyView::new(Metadata::new(Spacer::flexible(), Floating)),
             &env,
             (),
         );
@@ -2479,13 +2509,13 @@ mod tests {
         use alloc::rc::Rc;
         use core::cell::Cell;
 
-        use waterui::layout::Spacer;
-        use waterui::layout::scroll::scroll;
         use waterui_core::backend::{
             ChildSlot, HookSlot, HookableParent, MapSlots, ParentHookScope, offer_hookable_parent,
         };
         use waterui_core::view::hook::Hook;
         use waterui_core::{Environment, NativeView, View};
+        use waterui_layout::Spacer;
+        use waterui_layout::scroll::scroll;
 
         use crate::child::{Child, NativeBackendFamily};
 
@@ -2696,16 +2726,15 @@ mod tests {
 
     #[test]
     fn sheet_content_stays_typed_and_reenters_hooks() {
-        use waterui::ViewExt as _;
-        use waterui::sheet::Sheet;
+        use waterui_controls::sheet::{Sheet, SheetView};
         use waterui_core::binding;
 
         let shown = binding(true);
-        let view = Spacer::flexible().sheet(Sheet::new(&shown, Spacer::flexible));
+        let view = SheetView::new(Spacer::flexible(), Sheet::new(&shown, Spacer::flexible));
         assert_eq!(reached(view), ["sheet", "spacer", "typed child", "spacer"]);
 
         let hooked = Hooks::new(
-            Spacer::flexible().sheet(Sheet::new(&shown, Spacer::flexible)),
+            SheetView::new(Spacer::flexible(), Sheet::new(&shown, Spacer::flexible)),
             SpacerAsDivider,
         );
         assert_eq!(

@@ -8,12 +8,11 @@
 
 use core::time::Duration;
 
-use waterui::Environment;
-use waterui::animation::Animation;
-use waterui::background::Glass;
-use waterui::layout::padding::EdgeInsets;
-use waterui::theme::color::{Accent, Background, Foreground};
+use waterui_core::{Environment, animation::Animation};
 use waterui_graphics::color::Color;
+use waterui_graphics::color::token::{Accent, Background, Foreground};
+use waterui_layout::padding::EdgeInsets;
+use waterui_shape::background::Glass;
 use waterui_text::font::Font;
 
 /// Visual tokens and motion governing how Hydrolysis presents a snackbar banner.

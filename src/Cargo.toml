@@ -31,6 +31,7 @@ native-executor.workspace = true
 waterui-navigation = { workspace = true, optional = true }
 waterui-form = { workspace = true, optional = true }
 waterui-controls.workspace = true
+waterui-backend-core = { workspace = true, default-features = false, optional = true }
 waterui-webview = { workspace = true, optional = true }
 waterui-map = { workspace = true, optional = true }
 waterui-widgets = { workspace = true, optional = true }
@@ -44,9 +45,6 @@ waterui-meta = { workspace = true, optional = true }
 executor-core.workspace = true
 tracing.workspace = true
 thiserror = { version = "2.0.21", default-features = false }
-# Grapheme clusters for the avatar monogram: a name's first "letter" is a
-# cluster, not a `char`, wherever a combining mark or an emoji sequence is one.
-unicode-segmentation = { version = "1.13", optional = true }
 async-channel.workspace = true
 web-time.workspace = true
 waterui-macros.workspace = true
@@ -78,21 +76,21 @@ waterui-inspector-runtime = { workspace = true, optional = true }
 cpu-time = { workspace = true, optional = true }
 
 [features]
-form = ["dep:waterui-form", "waterui-core/form"]
-link = ["waterui-core/link"]
-avatar = ["dep:unicode-segmentation", "waterui-core/avatar"]
+form = ["dep:waterui-form", "waterui-core/form", "waterui-backend-core/form"]
+link = ["waterui-controls/link", "waterui-core/link"]
+avatar = ["waterui-controls/avatar", "waterui-core/avatar"]
 cpu-time = ["dep:cpu-time", "waterui-core/cpu-time"]
-list = ["waterui-core/list"]
-table = ["list", "waterui-core/table"]
-navigation = ["dep:waterui-navigation", "waterui-core/navigation"]
+list = ["waterui-controls/list", "waterui-core/list"]
+table = ["list", "waterui-controls/table", "waterui-core/table"]
+navigation = ["dep:waterui-navigation", "waterui-core/navigation", "waterui-backend-core/navigation"]
 menu = ["waterui-controls/menu", "waterui-core/menu"]
-calendar = ["form", "waterui-form/calendar", "waterui-core/calendar"]
-color-picker = ["form", "waterui-form/color-picker", "waterui-core/color-picker"]
-date-picker = ["form", "waterui-form/date-picker", "waterui-core/date-picker"]
+calendar = ["form", "waterui-form/calendar", "waterui-core/calendar", "waterui-backend-core/calendar"]
+color-picker = ["form", "waterui-form/color-picker", "waterui-core/color-picker", "waterui-backend-core/color-picker"]
+date-picker = ["form", "waterui-form/date-picker", "waterui-core/date-picker", "waterui-backend-core/date-picker"]
 file-picker = ["form", "waterui-form/file-picker", "waterui-core/file-picker"]
-multi-date-picker = ["calendar", "waterui-form/multi-date-picker", "waterui-core/multi-date-picker"]
-picker = ["form", "waterui-form/picker", "waterui-core/picker"]
-secure-field = ["form", "waterui-form/secure-field", "waterui-core/secure-field"]
+multi-date-picker = ["calendar", "waterui-form/multi-date-picker", "waterui-core/multi-date-picker", "waterui-backend-core/multi-date-picker"]
+picker = ["form", "waterui-form/picker", "waterui-core/picker", "waterui-backend-core/picker"]
+secure-field = ["form", "waterui-form/secure-field", "waterui-core/secure-field", "waterui-backend-core/secure-field"]
 slider = ["form", "waterui-form/slider", "waterui-core/slider"]
 stepper = ["form", "waterui-form/stepper", "waterui-core/stepper"]
 text-field = ["menu", "form", "waterui-form/text-field", "waterui-core/text-field"]
@@ -138,7 +136,7 @@ locale-relative-time = ["waterui-locale/relative-time", "waterui-core/locale-rel
 # The `Code` widget and the bundled syntect highlighter behind it. Default-on,
 # because `code(…)` is a plain authoring API; an application that shows no code
 # drops syntect, two-face, and their syntax and theme tables by opting out.
-highlight = ["waterui-text/highlight", "waterui-core/highlight"]
+highlight = ["waterui-text/highlight", "waterui-controls/highlight", "waterui-core/highlight"]
 # The devtools Inspector hub and its wire protocol. Opt-in: a packaged
 # application that never attaches an inspector leaves the hub and its server
 # stack out, and embedded firmware disables it anyway — the hub is desktop
@@ -152,10 +150,10 @@ inspector = ["dep:waterui-inspector-runtime", "waterui-core/inspector"]
 inspector-signals = ["inspector", "waterui-inspector-runtime/signals", "waterui-core/inspector-signals"]
 # Window-modal confirmation / alert dialogs: the `Dialog` semantic and its
 # composed card realization for self-drawn backends.
-dialog = ["waterui-core/dialog"]
+dialog = ["waterui-controls/dialog", "waterui-core/dialog"]
 # Window-owned transient notifications. Embedded apps that do not select this
 # feature omit the manager, overlay, timers, and code-widget feedback path.
-snackbar = ["waterui-core/snackbar"]
+snackbar = ["waterui-controls/snackbar", "waterui-core/snackbar"]
 # Filters on views (`FilterViewExt`) and their portable description, without
 # the GPU stack: a backend that lowers filters into its own primitives reads
 # the description. Implied by `gpu`.
@@ -178,8 +176,8 @@ cpu = ["effects", "waterui-graphics/cpu", "waterui-core/cpu"]
 # `waterui::video` (`VideoAsset`, behind `waterui-assets`' `video` feature);
 # each is enabled only when both sides are present.
 assets = ["dep:waterui-assets", "dep:waterui-assets-macros", "dep:waterui-meta", "waterui-core/assets"]
-image = ["dep:waterui-media", "waterui-assets?/media", "waterui-graphics/image-decode", "waterui-markdown?/media", "waterui-core/image"]
-video = ["dep:waterui-video", "waterui-media?/video", "waterui-assets?/video", "waterui-core/video"]
+image = ["dep:waterui-media", "waterui-assets?/media", "waterui-controls/image", "waterui-graphics/image-decode", "waterui-markdown?/media", "waterui-core/image"]
+video = ["dep:waterui-video", "waterui-media?/video", "waterui-assets?/video", "waterui-core/video", "waterui-backend-core/video"]
 # Remote fetching (`Url::fetch`, `Data::from_remote`, remote `Photo` sources)
 # links the `zenwave` HTTP client through `waterui-url`/`waterui-media`. Off by
 # default so an application that never names a remote URL carries no HTTP
@@ -196,9 +194,9 @@ remote = [
 # and the web the `<video>` element, so an application there would otherwise
 # link and pay for a player it never runs.
 video-gpu = ["video", "gpu", "waterui-core/video-gpu"]
-webview = ["dep:waterui-webview", "waterui-core/webview"]
+webview = ["dep:waterui-webview", "waterui-core/webview", "waterui-backend-core/webview"]
 # Maps (`waterui::map`).
-map = ["dep:waterui-map", "waterui-core/map"]
+map = ["dep:waterui-map", "waterui-core/map", "waterui-backend-core/map"]
 # The `#[waterui::widget]` authoring surface and its `WidgetKit` snapshot
 # schema (`waterui::widgets`). Off by default: an application that declares
 # no widgets pays for none of the schema or its FFI glue — and the `water`
@@ -248,7 +246,7 @@ std = ["waterui-core/std"]
 # In-tree offscreen view capture (`CaptureHandle`, `CaptureScope`, `ViewExt::capture`)
 # and `NativeBackend::offscreen` wiring. Opt-in so `route_metadata_dyn` does not pull
 # the offscreen renderer into binaries that never capture views from inside the tree.
-capture = ["waterui-core/capture"]
+capture = ["waterui-core/capture", "waterui-backend-core/capture"]
 # `waterui::canvas`: the target-neutral drawing API, `waterui_graphics::canvas`.
 # Gates backend canvas realization (`waterui-apple/canvas`, Hydrolysis scene view).
 canvas = ["waterui-core/canvas"]

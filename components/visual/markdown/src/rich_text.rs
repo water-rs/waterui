@@ -6,8 +6,7 @@ use suiteki::Str;
 use waterui_color::{Blue, Color, Srgb};
 use waterui_controls::button::{ButtonStyle, button};
 use waterui_core::{
-    Environment, OneOf2, OneOf8, View, backend::ChildSlot, contract_violation, plugin::Plugin,
-    view::ViewSequence,
+    Environment, OneOf2, OneOf8, View, backend::ChildSlot, contract_violation, view::ViewSequence,
 };
 use waterui_layout::{
     Layout, LayoutError, PlacementInput, Point, ProposalSize, Rect, Size, StretchAxis, SubView,
@@ -18,20 +17,14 @@ use waterui_layout::{
 };
 #[cfg(feature = "media")]
 use waterui_media::{Url, photo::photo as media_photo};
+pub use waterui_text::code::CodeCopyFeedback;
 use waterui_text::{
     Text,
-    code::{CodeLanguage, OnCopied, code as code_widget},
+    code::{CodeLanguage, code as code_widget},
     highlight::Language,
     styled::{MarkdownInlineBuilder, Style, StyledStr, heading_style},
     text,
 };
-
-/// Feedback hook installed by a host window when copying a fenced code block
-/// inside [`RichText`] should notify the user (for example via a snackbar).
-#[derive(Debug, Clone)]
-pub struct CodeCopyFeedback(pub OnCopied);
-
-impl Plugin for CodeCopyFeedback {}
 
 fn open_url(url: &str) {
     let url = url.to_owned();

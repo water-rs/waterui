@@ -44,8 +44,8 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt;
 
+use crate::slot::SlotBuilder;
 use nami::Binding;
-use waterui_controls::slot::SlotBuilder;
 use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 use waterui_core::handler::{Handler, SharedAction, ViewBuilder, shared_action};
 use waterui_core::metadata::MetadataKey;
@@ -431,7 +431,7 @@ mod tests {
         use waterui_core::view::hook::{HookList, HookableView};
         use waterui_core::{AnyView, Metadata, NativeView, View};
 
-        use crate::ViewExt as _;
+        use super::SheetView;
 
         struct ProbeSheetContent;
 
@@ -489,7 +489,7 @@ mod tests {
         }
 
         let presented = Binding::new(true);
-        let view = ().sheet(Sheet::new(&presented, || ProbeSheetContent));
+        let view = SheetView::new((), Sheet::new(&presented, || ProbeSheetContent));
         let mut backend = CapturingBackend { seen: None };
         view.dispatch(&mut backend, &Environment::new(), ());
         assert_eq!(backend.seen, Some(TypeId::of::<ProbeSheetContent>()));

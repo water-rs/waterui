@@ -4,11 +4,12 @@
 use cherenkov_record::{BlendSpace, MaterialRegistry};
 use core::time::Duration;
 use nami::signal::IntoComputed;
-use waterui::widget::CardStyle;
+use waterui_controls::card::CardStyle;
 use waterui_core::animation::Animation;
 use waterui_core::handler::SharedAction;
 use waterui_core::plugin::Plugin;
 use waterui_core::{Binding, Computed, Environment, Signal};
+use waterui_shape::background::Glass;
 
 /// Publishes whether an interactive subtree owns keyboard focus.
 #[derive(Debug, Clone)]
@@ -485,7 +486,7 @@ pub trait WidgetTheme {
     /// The glass takes no part in hit testing: it never intercepts a tap,
     /// so the content and the views beneath it receive their input as if
     /// there were no glass, and it takes no keyboard focus. A glass that is
-    /// [`interactive`](waterui::background::Glass::is_interactive) shows
+    /// [`interactive`](Glass::is_interactive) shows
     /// press feedback through its [`Driven`](super::Driven) values, which
     /// read the interaction state and the press point: a primary press
     /// inside the content's frame sets `PRESSED` and the press point
@@ -493,17 +494,13 @@ pub trait WidgetTheme {
     /// the content included — and moves the point with the pointer. A glass
     /// that is not interactive reads the inputs at rest.
     ///
-    /// The tint is [`Glass::tint_color`](waterui::background::Glass::tint_color),
+    /// The tint is [`Glass::tint_color`](Glass::tint_color),
     /// a live [`Color`](waterui_graphics::color::Color) the look resolves through `env` (`Color::resolve`);
     /// the backend does nothing with it.
     ///
     /// Material-bearing parts need the theme's shaders and capture classes
     /// registered by [`Self::register_backdrop_shaders`].
-    fn glass_background(
-        &self,
-        _glass: &waterui::background::Glass,
-        _env: &Environment,
-    ) -> Option<super::GlassLook> {
+    fn glass_background(&self, _glass: &Glass, _env: &Environment) -> Option<super::GlassLook> {
         None
     }
 

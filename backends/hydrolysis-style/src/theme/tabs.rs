@@ -13,8 +13,8 @@ use std::rc::Rc;
 
 use kurbo::{Rect, Vec2};
 use nami::Computed;
-use waterui::navigation::tab::TabStyle;
 use waterui_graphics::color::Color;
+use waterui_navigation::tab::TabStyle;
 
 use super::Chrome;
 use super::look::{Custom, CustomPart, DrivenSet, Motion};
@@ -588,7 +588,7 @@ mod tests {
 
     use approx::assert_relative_eq;
     use kurbo::{Rect, Vec2};
-    use waterui::navigation::tab::TabStyle;
+    use waterui_navigation::tab::TabStyle;
 
     use super::{TabItemGeometry, TabItemLayout, TabsDrag, TabsValue};
 

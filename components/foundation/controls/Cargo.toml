@@ -22,16 +22,43 @@ nami.workspace = true
 waterui-text.workspace = true
 waterui-locale.workspace = true
 executor-core.workspace = true
+native-executor = { workspace = true, optional = true }
 serde = { workspace = true, optional = true, features = ["derive"] }
 thiserror = { version = "2.0.21", default-features = false }
+tracing = { workspace = true, optional = true }
+unicode-segmentation = { version = "1.13", optional = true }
+waterui-contract = { workspace = true, optional = true }
+waterui-shape = { workspace = true, default-features = false, optional = true }
+waterui-url = { workspace = true, optional = true }
 
 
 [features]
 default = ["all"]
-all = ["menu", "slider", "stepper", "text-field", "toggle"]
+all = [
+    "avatar",
+    "dialog",
+    "image",
+    "link",
+    "list",
+    "menu",
+    "slider",
+    "snackbar",
+    "stepper",
+    "table",
+    "text-field",
+    "toggle",
+]
+avatar = ["dep:unicode-segmentation", "dep:waterui-shape"]
+dialog = ["dep:waterui-contract"]
+highlight = ["waterui-text/highlight"]
+image = ["dep:waterui-url"]
+link = ["dep:waterui-url"]
+list = ["dep:waterui-contract"]
 menu = []
 slider = []
+snackbar = ["dep:native-executor", "dep:tracing"]
 stepper = []
+table = ["list"]
 text-field = ["menu"]
 toggle = []
 # Serialize `ContentType` (camelCase names) — the Hydrolysis Android publish

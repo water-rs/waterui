@@ -25,8 +25,8 @@ use waterui_core::handler::{Handler, shared_action};
 use waterui_core::id::{Id as RawId, Mapping};
 use waterui_core::{Environment, Error, View};
 
-use crate::contract_violation;
-use crate::views::{AnyViewsSnapshot, ForEach, Views};
+use waterui_contract::contract_violation;
+use waterui_core::views::{AnyViewsSnapshot, ForEach, Views};
 
 use super::content::{ContentTags, ListContent, Tagged};
 use super::rows::{ListItemSink, ListRowId};
