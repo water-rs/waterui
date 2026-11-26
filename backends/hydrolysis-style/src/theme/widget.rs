@@ -706,6 +706,16 @@ pub trait WidgetTheme {
         super::snackbar::default_snackbar_look(env)
     }
 
+    /// The look of a self-drawn modal dialog card.
+    fn dialog(&self, env: &Environment) -> super::DialogLook {
+        super::dialog::default_dialog_look(env)
+    }
+
+    /// The look of a self-drawn modal sheet surface.
+    fn sheet(&self, env: &Environment) -> super::SheetLook {
+        super::sheet::default_sheet_look(env)
+    }
+
     /// The look of an avatar: default dimensions, container backdrop, and
     /// monogram typography.
     fn avatar(&self, env: &Environment) -> super::AvatarLook {

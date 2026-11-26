@@ -54,6 +54,7 @@ mod avatar;
 mod badge;
 mod card;
 mod chrome;
+mod dialog;
 mod disclosure;
 mod glass;
 #[cfg(waterui_feature = "list")]
@@ -72,6 +73,7 @@ mod progress;
 mod scroll_indicator;
 #[cfg(waterui_feature = "picker")]
 mod segmented;
+mod sheet;
 mod snackbar;
 mod stepper;
 #[cfg(waterui_feature = "table")]
@@ -92,6 +94,7 @@ pub use chrome::{
     Backdrop, Border, Chrome, ContentEffect, CornerShape, Corners, DragDeformation, Elevation,
     Fill, FocusIndicator, PressFeedback, Ripple, StateLayer, Surface, Wash,
 };
+pub use dialog::{DialogLook, default_dialog_look};
 pub use disclosure::{DisclosureLayout, DisclosureLook, DisclosureSpec};
 pub use glass::GlassLook;
 #[cfg(waterui_feature = "list")]
@@ -120,6 +123,7 @@ pub use segmented::{
     Segment, SegmentLabel, SegmentedDrag, SegmentedLayout, SegmentedLook, SegmentedSpec,
     SegmentedValue,
 };
+pub use sheet::{SheetLook, default_sheet_look};
 pub use snackbar::SnackbarLook;
 pub use stepper::{StepperLook, StepperSpec};
 #[cfg(waterui_feature = "table")]
