@@ -29,7 +29,6 @@
 //! use waterui::drag_drop::Transferable;
 //! use waterui::prelude::*;
 //! use waterui::Str;
-//! use waterui::reactive::impl_constant;
 //!
 //! // Text travels to other applications as plain text.
 //! let source = text!("Drag me!").draggable(Str::from("Hello, World!"));
@@ -38,10 +37,8 @@
 //! });
 //!
 //! // An application type travels within the process only.
-//! #[derive(Debug, Clone, PartialEq)]
+//! #[derive(Debug, Clone, PartialEq, Transferable)]
 //! struct TabId(u64);
-//! impl Transferable for TabId {}
-//! impl_constant!(TabId);
 //!
 //! let tab = text!("Tab 1").draggable(TabId(1));
 //! let tab_bar = text!("Tabs").drop_destination(|tab: TabId| {
@@ -50,6 +47,7 @@
 //! ```
 
 pub use waterui_interaction::drag_drop::{
-    DragPayload, Draggable, DropDestination, DropDestinationExt, DropInfo, Files,
+    DragPayload, Draggable, DropDestination, DropDestinationExt, DropInfo, Files, IntoDragPayload,
     PlatformRepresentation, TransferKind, Transferable,
 };
+pub use waterui_macros::Transferable;

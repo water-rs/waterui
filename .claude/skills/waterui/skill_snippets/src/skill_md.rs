@@ -701,7 +701,5 @@ pub fn skill_block_08_imports_are_live() {
 }
 
 /// Glue: an app type made transferable, as the block 8 import implies.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Transferable)]
 struct GlueTab;
-impl Transferable for GlueTab {}
-waterui::reactive::impl_constant!(GlueTab);

@@ -6,7 +6,16 @@ use alloc::vec::Vec;
 use core::any::{Any, TypeId, type_name};
 use core::fmt;
 
-use nami::{Binding, Computed, Signal, impl_constant, map::map};
+use nami::{
+    Binding, Computed, Signal,
+    cache::Cached,
+    constant::Constant,
+    distinct::Distinct,
+    impl_constant,
+    map::{Map, map},
+    scan::Scan,
+    signal::WithMetadata,
+};
 use suiteki::Str;
 use waterui_core::{
     Environment, Error, contract_violation,
@@ -58,8 +67,9 @@ impl Extractor for DropInfo {
 /// A value that a drag can carry.
 ///
 /// [`Str`], [`Url`] and [`Files`] are transferable and map onto the platform
-/// pasteboard. An application marks its own types transferable with an empty
-/// implementation; such values travel within the process only.
+/// pasteboard. An application marks its own types transferable with
+/// `#[derive(Transferable)]` (or an empty `impl Transferable`); such values
+/// travel within the process only.
 ///
 /// ```rust
 /// use waterui_interaction::drag_drop::Transferable;
@@ -73,6 +83,98 @@ pub trait Transferable: Clone + 'static {}
 impl Transferable for Str {}
 impl Transferable for Url {}
 impl Transferable for Files {}
+
+/// Converts a plain [`Transferable`] value or a reactive signal of one into
+/// a [`DragPayload`] computation.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` cannot be dragged",
+    label = "expected a `Transferable` value or a reactive signal producing one",
+    note = "mark your type with `#[derive(Clone, Transferable)]`, or pass a `Binding<T>` / `Computed<T>` / mapped signal where `T: Transferable`"
+)]
+pub trait IntoDragPayload {
+    /// Converts `self` into the reactive [`DragPayload`] carried by [`Draggable`].
+    fn into_drag_payload(self) -> Computed<DragPayload>;
+}
+
+fn signal_drag_payload<S>(signal: S) -> Computed<DragPayload>
+where
+    S: Signal + Clone + 'static,
+    S::Output: Transferable,
+{
+    Computed::new(map(signal, DragPayload::new::<S::Output>))
+}
+
+impl<T: Transferable> IntoDragPayload for T {
+    fn into_drag_payload(self) -> Computed<DragPayload> {
+        Computed::constant(DragPayload::new(self))
+    }
+}
+
+impl<T: Transferable> IntoDragPayload for Binding<T> {
+    fn into_drag_payload(self) -> Computed<DragPayload> {
+        signal_drag_payload(self)
+    }
+}
+
+impl<T: Transferable> IntoDragPayload for Computed<T> {
+    fn into_drag_payload(self) -> Computed<DragPayload> {
+        signal_drag_payload(self)
+    }
+}
+
+impl<C, F, Output> IntoDragPayload for Map<C, F, Output>
+where
+    C: Signal,
+    F: 'static + Clone + Fn(C::Output) -> Output,
+    Output: Transferable,
+{
+    fn into_drag_payload(self) -> Computed<DragPayload> {
+        signal_drag_payload(self)
+    }
+}
+
+impl<T: Transferable> IntoDragPayload for Constant<T> {
+    fn into_drag_payload(self) -> Computed<DragPayload> {
+        signal_drag_payload(self)
+    }
+}
+
+impl<C> IntoDragPayload for Cached<C>
+where
+    C: Signal,
+    C::Output: Transferable,
+{
+    fn into_drag_payload(self) -> Computed<DragPayload> {
+        signal_drag_payload(self)
+    }
+}
+
+impl<S> IntoDragPayload for Distinct<S>
+where
+    S: Signal,
+    S::Output: Transferable + PartialEq,
+{
+    fn into_drag_payload(self) -> Computed<DragPayload> {
+        signal_drag_payload(self)
+    }
+}
+
+impl<T: Transferable> IntoDragPayload for Scan<T> {
+    fn into_drag_payload(self) -> Computed<DragPayload> {
+        signal_drag_payload(self)
+    }
+}
+
+impl<C, M> IntoDragPayload for WithMetadata<C, M>
+where
+    C: Signal,
+    C::Output: Transferable,
+    M: Clone + 'static,
+{
+    fn into_drag_payload(self) -> Computed<DragPayload> {
+        signal_drag_payload(self)
+    }
+}
 
 /// The files an OS file drag carries, as file URLs.
 ///
@@ -246,16 +348,12 @@ impl MetadataKey for Draggable {}
 
 impl Draggable {
     /// Creates draggable metadata carrying `payload`: a plain transferable value,
-    /// or any signal of one (a `Binding` or `Computed`) to carry its value at the
-    /// time the drag begins.
+    /// or a reactive signal of one (`Binding`, `Computed`, or mapped signal) to
+    /// carry its value at the time the drag begins.
     #[must_use]
-    pub fn new<S>(payload: S) -> Self
-    where
-        S: Signal + Clone + 'static,
-        S::Output: Transferable,
-    {
+    pub fn new(payload: impl IntoDragPayload) -> Self {
         Self {
-            payload: Computed::new(map(payload, DragPayload::new::<S::Output>)),
+            payload: payload.into_drag_payload(),
         }
     }
 
@@ -537,5 +635,50 @@ mod tests {
     #[test]
     fn drop_info_fails_extraction_outside_drop_handlers() {
         assert!(DropInfo::extract(&Environment::new()).is_err());
+    }
+
+    #[test]
+    fn draggable_accepts_plain_transferable_and_reactive_signals() {
+        use nami::{SignalExt as _, binding};
+
+        #[derive(Debug, Clone, PartialEq)]
+        struct PlainTab(u64);
+        impl Transferable for PlainTab {}
+
+        // Plain Transferable value without impl_constant!.
+        let plain = Draggable::new(PlainTab(1));
+        assert_eq!(
+            plain.payload().downcast_ref::<PlainTab>(),
+            Some(&PlainTab(1))
+        );
+
+        // Binding<T>.
+        let tab = binding(PlainTab(2));
+        let from_binding = Draggable::new(tab.clone());
+        assert_eq!(
+            from_binding.payload().downcast_ref::<PlainTab>(),
+            Some(&PlainTab(2))
+        );
+        tab.set(PlainTab(3));
+        assert_eq!(
+            from_binding.payload().downcast_ref::<PlainTab>(),
+            Some(&PlainTab(3))
+        );
+
+        // Computed<T>.
+        let computed = tab.map(|t| PlainTab(t.0 * 10)).computed();
+        let from_computed = Draggable::new(computed);
+        assert_eq!(
+            from_computed.payload().downcast_ref::<PlainTab>(),
+            Some(&PlainTab(30))
+        );
+
+        // Map<...>.
+        let mapped = tab.map(|t| PlainTab(t.0 + 1));
+        let from_mapped = Draggable::new(mapped);
+        assert_eq!(
+            from_mapped.payload().downcast_ref::<PlainTab>(),
+            Some(&PlainTab(4))
+        );
     }
 }

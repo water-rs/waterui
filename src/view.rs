@@ -65,7 +65,7 @@ use crate::{
     },
     background::IntoBackground,
     border::Border,
-    drag_drop::{Draggable, DropDestination, Transferable},
+    drag_drop::{Draggable, DropDestination, IntoDragPayload, Transferable},
     filter::Opacity,
     gesture::{GestureObserver, GestureType, LongPressGesture, TapGesture},
     interaction::Hittable,
@@ -1554,8 +1554,8 @@ pub trait ViewExt: View + Sized {
     /// applications; an application's own [`Transferable`] types stay in the process.
     ///
     /// # Arguments
-    /// * `payload` - The value to transfer: a plain [`Transferable`] value, or a `Binding` /
-    ///   `Computed` of one, read when the drag begins
+    /// * `payload` - The value to transfer: a plain [`Transferable`] value, or a `Binding`,
+    ///   `Computed`, or mapped signal of one, read when the drag begins
     ///
     /// # Example
     ///
@@ -1566,11 +1566,7 @@ pub trait ViewExt: View + Sized {
     /// text!("Drag me")
     ///     .draggable(Str::from("Hello!"));
     /// ```
-    fn draggable<S>(self, payload: S) -> Metadata<Draggable, Self>
-    where
-        S: waterui_core::Signal + Clone + 'static,
-        S::Output: Transferable,
-    {
+    fn draggable(self, payload: impl IntoDragPayload) -> Metadata<Draggable, Self> {
         Metadata::new(self, Draggable::new(payload))
     }
 

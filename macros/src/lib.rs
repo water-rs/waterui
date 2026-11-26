@@ -16,6 +16,7 @@ mod apple_available;
 mod identifiable;
 mod locale;
 mod state;
+mod transferable;
 mod view_builder;
 
 /// `::waterui`, or the name the crate renamed it to. Both `waterui` packages
@@ -56,6 +57,24 @@ fn core_or_facade_path(macro_name: &str) -> syn::Result<TokenStream2> {
                 format!(
                     "{macro_name} requires the `waterui` or `waterui-core` crate as a dependency"
                 ),
+            )
+        })
+}
+
+/// The crate a macro expansion names `drag_drop::Transferable` through:
+/// `waterui-interaction` when the crate depends on it, else `waterui` (and
+/// `::waterui` inside `waterui-internal`).
+fn drag_drop_root_path() -> syn::Result<TokenStream2> {
+    if std::env::var("CARGO_PKG_NAME").as_deref() == Ok("waterui-internal") {
+        return Ok(quote!(::waterui));
+    }
+
+    view_builder::dependency_path("waterui-interaction")
+        .or_else(|| view_builder::dependency_path("waterui"))
+        .ok_or_else(|| {
+            syn::Error::new(
+                Span::call_site(),
+                "#[derive(Transferable)] requires the `waterui` or `waterui-interaction` crate as a dependency",
             )
         })
 }
@@ -370,6 +389,28 @@ pub fn state(args: TokenStream, input: TokenStream) -> TokenStream {
 pub fn derive_identifiable(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     identifiable::expand(input)
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
+/// Derives `Transferable` for an in-process drag payload type.
+///
+/// The type must also implement `Clone + 'static`.
+///
+/// # Example
+///
+/// ```rust
+/// use waterui::prelude::*;
+///
+/// #[derive(Debug, Clone, Transferable)]
+/// struct TabId(u64);
+///
+/// let tab = text!("Tab 1").draggable(TabId(1));
+/// ```
+#[proc_macro_derive(Transferable)]
+pub fn derive_transferable(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    transferable::expand(&input)
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
 }

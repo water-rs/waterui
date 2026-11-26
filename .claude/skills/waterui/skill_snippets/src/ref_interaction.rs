@@ -249,12 +249,9 @@ pub mod interaction_block_08 {
     use waterui::prelude::*;
 
     use waterui::drag_drop::Transferable;
-    use waterui::reactive::impl_constant;
 
-    #[derive(Debug, Clone, PartialEq)]
+    #[derive(Debug, Clone, PartialEq, Transferable)]
     struct Fruit(&'static str);
-    impl Transferable for Fruit {}
-    impl_constant!(Fruit); // lets a plain `Fruit` value be passed to `.draggable(..)`
 
     fn fruit_card(name: &'static str) -> impl View {
         text(name).padding().draggable(Fruit(name))
