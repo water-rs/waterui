@@ -13,6 +13,7 @@ categories = ["gui"]
 [dependencies]
 waterui-core.workspace = true
 waterui-graphics = { workspace = true, default-features = false }
+waterui-layout.workspace = true
 nami.workspace = true
 
 [lints]

@@ -174,6 +174,39 @@ impl Disabled {
     }
 }
 
+/// Controls whether a view responds to hit testing (touch/click events).
+///
+/// When `enabled` is false, touch events pass through the view to views behind it.
+/// This modifier does NOT affect the visual appearance of the view.
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct Hittable {
+    /// Whether hit testing is enabled.
+    /// `true` means the view responds to touch events (default behavior).
+    /// `false` means touch events pass through the view.
+    enabled: Computed<bool>,
+}
+
+impl Hittable {
+    /// Whether hit testing is enabled.
+    /// `true` means the view responds to touch events (default behavior).
+    /// `false` means touch events pass through the view.
+    #[must_use]
+    pub const fn enabled(&self) -> &Computed<bool> {
+        &self.enabled
+    }
+
+    /// Creates a new `Hittable` modifier.
+    #[must_use]
+    pub fn new(enabled: impl IntoComputed<bool>) -> Self {
+        Self {
+            enabled: enabled.into_computed(),
+        }
+    }
+}
+
+impl MetadataKey for Hittable {}
+
 #[cfg(test)]
 mod tests {
     use super::{Disabled, InteractionState, StateValue};

@@ -22,18 +22,30 @@ use std::rc::Rc;
 
 use kurbo::Affine;
 use nami::Signal as _;
-use waterui::Plugin;
-use waterui::sheet::Sheet;
-use waterui_core::Environment;
+use waterui::accessibility::AccessibilityRole;
+use waterui::sheet::{SHEET_DEFAULT_LABEL_KEY, Sheet, SheetContentScope, SheetDetent};
+use waterui::theme::color::Scrim;
+use waterui::{Computed, Plugin, SignalExt as _, Str, ViewExt as _};
 use waterui_core::extract::State as EnvState;
 use waterui_core::handler::shared_action;
+use waterui_core::layout::{
+    Layout, LayoutError, PlacementInput, Point, ProposalSize, Rect, Size, StretchAxis, SubView,
+    SubviewPlacement,
+};
+use waterui_core::{Environment, OneOf2, View};
+use waterui_graphics::color::Color;
+use waterui_layout::container::FixedContainer;
+use waterui_layout::padding::EdgeInsets;
+use waterui_layout::stack::{Alignment, HorizontalAlignment, vstack, zstack};
+use waterui_shape::{CornerRadius, RoundedRectangle, ShapeExt as _};
+use waterui_text::text::Text;
 
 use super::InteractionKey;
 use crate::renderer::{
     HydrolysisRenderer, RenderContext, RetainedSubview, SafeAreaLayout, bounded_proposal,
 };
 use crate::text::TextEngine;
-use crate::theme::ModalInteraction;
+use crate::theme::{ModalInteraction, SheetLook};
 
 /// Marks the environment a presented sheet's modal layer renders in.
 ///
@@ -148,8 +160,147 @@ impl SheetStack {
 /// What a `.sheet(...)` node's flush registered for the post-flush pass.
 pub struct RegisteredSheet<E: TextEngine> {
     pub(crate) env: Environment,
-    pub(crate) build_layer: Rc<dyn Fn() -> RetainedSubview<E>>,
+    pub(crate) build_layer: Rc<dyn Fn(SheetLook) -> RetainedSubview<E>>,
     pub(crate) content: Rc<RefCell<Option<RetainedSubview<E>>>>,
+}
+
+/// Builds Hydrolysis's self-drawn modal layer for `sheet` styled with `look`:
+/// a full-window `Scrim` backdrop (tapping it invokes the user dismiss path)
+/// and the detent-sized modal sheet surface carrying `AccessibilityRole::Dialog`.
+pub fn sheet_modal_layer(sheet: &Sheet, look: SheetLook) -> impl View + use<> {
+    let detent = sheet.primary_detent();
+    let max_width = look.max_width;
+    let scrim_sheet = sheet.clone();
+    let scrim = Color::new(Scrim)
+        .on_tap(move |env: Environment| scrim_sheet.run_user_dismiss(&env))
+        .a11y_hidden(true);
+    FixedContainer::new(
+        SheetLayout { detent, max_width },
+        (
+            scrim,
+            SheetSurface {
+                sheet: sheet.clone(),
+                look,
+            },
+        ),
+    )
+}
+
+/// Layout placing child 0 (scrim) across the full window and child 1 (sheet
+/// surface) at the active [`SheetDetent`].
+#[derive(Debug, Clone, Copy)]
+struct SheetLayout {
+    detent: SheetDetent,
+    max_width: f32,
+}
+
+impl Layout for SheetLayout {
+    fn stretch_axis(&self, _children: &[StretchAxis]) -> StretchAxis {
+        StretchAxis::Both
+    }
+
+    fn size_that_fits(&self, proposal: ProposalSize, _children: &[&dyn SubView]) -> Size {
+        Size::new(
+            proposal.width.unwrap_or(0.0),
+            proposal.height.unwrap_or(0.0),
+        )
+    }
+
+    fn place(
+        &self,
+        bounds: Rect,
+        _proposal: ProposalSize,
+        children: &[&dyn SubView],
+    ) -> Vec<SubviewPlacement> {
+        let mut placements = Vec::with_capacity(children.len());
+        if !children.is_empty() {
+            let full_proposal = ProposalSize::new(Some(bounds.width()), Some(bounds.height()));
+            placements.push(SubviewPlacement::new(bounds, full_proposal));
+        }
+        if children.len() > 1 {
+            let sheet_rect = match self.detent {
+                SheetDetent::FullScreen => bounds,
+                detent => {
+                    let width = bounds.width().min(self.max_width);
+                    let height = detent.resolve_height(bounds.height()).min(bounds.height());
+                    let x = (bounds.width() - width).mul_add(0.5, bounds.x());
+                    let y = bounds.y() + (bounds.height() - height);
+                    Rect::new(Point::new(x, y), Size::new(width, height))
+                }
+            };
+            let sheet_proposal =
+                ProposalSize::new(Some(sheet_rect.width()), Some(sheet_rect.height()));
+            placements.push(SubviewPlacement::new(sheet_rect, sheet_proposal));
+        }
+        placements
+    }
+
+    fn resolve_extent(
+        &self,
+        input: PlacementInput,
+        _children: &[&dyn SubView],
+    ) -> Result<Rect, LayoutError> {
+        Ok(input.bounds)
+    }
+}
+
+/// The sheet surface container drawn on Hydrolysis's modal layer: carries
+/// `AccessibilityRole::Dialog`, resolves the accessible label, and wraps the
+/// user content with [`SheetContentScope`].
+struct SheetSurface {
+    sheet: Sheet,
+    look: SheetLook,
+}
+
+impl View for SheetSurface {
+    fn body(self, env: &Environment) -> impl View {
+        let Self { sheet, look } = self;
+        let spoken: Computed<Str> = sheet
+            .accessible_label()
+            .map_or_else(
+                || Text::localized_or(SHEET_DEFAULT_LABEL_KEY, "Sheet").resolve(env),
+                |label| label.resolve(env),
+            )
+            .content()
+            .map(|styled| styled.to_plain())
+            .computed();
+        let content = sheet.build_content().with(SheetContentScope);
+        let full_screen = sheet.primary_detent() == SheetDetent::FullScreen;
+        if full_screen {
+            let surface = look.container_color.on_tap(|| {}).a11y_hidden(true);
+            OneOf2::A(
+                zstack((surface, content))
+                    .a11y_label(spoken)
+                    .a11y_role(AccessibilityRole::Dialog),
+            )
+        } else {
+            let body = if sheet.is_dismissible() && look.show_drag_handle {
+                let handle = RoundedRectangle::new(CornerRadius::fraction(1.0))
+                    .fill(look.drag_handle_color)
+                    .size(look.drag_handle_width, look.drag_handle_height)
+                    .padding_with(EdgeInsets::new(
+                        look.drag_handle_vertical_padding,
+                        0.0,
+                        look.drag_handle_vertical_padding,
+                        0.0,
+                    ))
+                    .a11y_hidden(true);
+                OneOf2::A(vstack((handle, content)).alignment(HorizontalAlignment::Center))
+            } else {
+                OneOf2::B(content)
+            };
+            let surface = RoundedRectangle::new(CornerRadius::points(look.corner_radius))
+                .fill(look.container_color)
+                .on_tap(|| {})
+                .a11y_hidden(true);
+            OneOf2::B(
+                zstack((surface, body))
+                    .alignment(Alignment::Top)
+                    .a11y_label(spoken)
+                    .a11y_role(AccessibilityRole::Dialog),
+            )
+        }
+    }
 }
 
 /// Builds the environment a sheet's modal layer presents in: the declaring
@@ -182,8 +333,9 @@ impl<E: TextEngine> HydrolysisRenderer<E> {
         };
         let window = self.window_bounds;
         let proposal = bounded_proposal(window);
+        let theme = self.theme();
         let mut slot = front.content.borrow_mut();
-        let content = slot.get_or_insert_with(|| (front.build_layer)());
+        let content = slot.get_or_insert_with(|| (front.build_layer)(theme.sheet(&front.env)));
         let _ = content.patch_and_measure(self, &front.env, proposal);
         self.register_hit_test_occluder(window);
         content.place_detached(
@@ -194,5 +346,59 @@ impl<E: TextEngine> HydrolysisRenderer<E> {
             window,
             Some(safe_area.with_frame(window)),
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SheetLayout;
+    use waterui::sheet::SheetDetent;
+    use waterui_core::layout::{
+        Layout, LayoutError, Point, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView,
+        ViewDimensions,
+    };
+
+    struct DummySubView;
+
+    impl SubView for DummySubView {
+        fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+            ViewDimensions::new(Size::new(
+                proposal.width.unwrap_or(0.0),
+                proposal.height.unwrap_or(0.0),
+            ))
+        }
+
+        fn resolve_extent(
+            &self,
+            bounds: Rect,
+            proposal: ProposalSize,
+        ) -> Result<ResolvedExtent, LayoutError> {
+            ResolvedExtent::centred(bounds, self.measure(proposal).size)
+        }
+
+        fn stretch_axis(&self) -> StretchAxis {
+            StretchAxis::Both
+        }
+
+        fn priority(&self) -> i32 {
+            0
+        }
+    }
+
+    #[test]
+    fn sheet_layout_respects_custom_max_width() {
+        let bounds = Rect::new(Point::new(0.0, 0.0), Size::new(1000.0, 800.0));
+        let children: [&dyn SubView; 2] = [&DummySubView, &DummySubView];
+        let placements = SheetLayout {
+            detent: SheetDetent::Medium,
+            max_width: 500.0,
+        }
+        .place(bounds, ProposalSize::new(1000.0, 800.0), &children);
+        assert_eq!(placements.len(), 2);
+        let surface = placements[1].frame;
+        assert!((surface.width() - 500.0).abs() < f32::EPSILON);
+        assert!((surface.x() - 250.0).abs() < f32::EPSILON);
+        assert!((surface.height() - 400.0).abs() < f32::EPSILON);
+        assert!((surface.y() - 400.0).abs() < f32::EPSILON);
     }
 }

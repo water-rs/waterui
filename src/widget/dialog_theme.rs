@@ -7,13 +7,9 @@ use waterui_layout::padding::EdgeInsets;
 
 use crate::theme::color::{Accent, Error, Foreground, MutedForeground, Surface};
 
-/// Visual and layout tokens used by the self-drawn dialog card.
-///
-/// Style packages install a `DialogTheme` into the [`Environment`](waterui_core::Environment)
-/// through [`Plugin::install`] so Hydrolysis dialogs match the active design
-/// system without compiling style-specific constants into the facade. When no
-/// theme is installed, [`DialogTheme::default`] supplies neutral values built
-/// from standard theme color tokens.
+/// Temporary compatibility shim for style packages migrating from `DialogTheme`
+/// to `hydrolysis_style::theme::DialogLook` (`WidgetTheme::dialog`).
+#[doc(hidden)]
 #[derive(Debug, Clone)]
 pub struct DialogTheme {
     /// Container surface fill color.

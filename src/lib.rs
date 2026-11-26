@@ -135,11 +135,13 @@ pub mod prelude {
     // Drag and drop extension traits
     pub use super::drag_drop::DropDestinationExt;
 
+    #[doc(hidden)]
+    pub use super::widget::DialogTheme;
     #[cfg(feature = "avatar")]
     pub use super::widget::{Avatar, avatar};
     pub use super::widget::{
-        Card, CardStyle, DialogTheme, Disclosure, Divider, ErrorView, ResultExt, SuspendedView,
-        Suspense, card, condition::when, disclosure, error_view, suspense,
+        Card, CardStyle, Disclosure, Divider, ErrorView, ResultExt, SuspendedView, Suspense, card,
+        condition::when, disclosure, error_view, suspense,
     };
     #[cfg(feature = "flow-markdown")]
     pub use super::widget::{

@@ -2,6 +2,7 @@
 pub mod avatar;
 pub mod card;
 pub mod condition;
+#[doc(hidden)]
 pub mod dialog_theme;
 pub mod disclosure;
 pub mod error;
@@ -11,6 +12,7 @@ pub mod suspense;
 pub use avatar::{Avatar, avatar};
 pub use card::{Card, CardConfig, CardStyle, card};
 pub use condition::{When, when};
+#[doc(hidden)]
 pub use dialog_theme::DialogTheme;
 pub use disclosure::{Disclosure, disclosure};
 pub use error::{DefaultErrorView, ErrorView, ErrorViewBuilder, ResultExt, error_view};

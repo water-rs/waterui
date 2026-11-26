@@ -67,7 +67,7 @@ mod platform {
             let content = view::retain_base(content.view());
             move |_host| vec![content.clone()]
         });
-        let state = Rc::new(RefCell::new(view.state));
+        let state = Rc::new(RefCell::new(view.take_state()));
         let mut keep = KeepAlive::default();
         keep.keep(content);
         keep.keep(host.clone());
@@ -104,7 +104,7 @@ mod platform {
         // it, and the hosted content stays clear of both regions (§7.1).
         host.set_manages_safe_area(true);
 
-        let bar = BarState::new(&mut view.bar, ctx);
+        let bar = BarState::new(view.bar_mut(), ctx);
         let bar_view = NavBar::new(mtm);
         view::add_subview(&host, &bar_view);
 
@@ -425,7 +425,7 @@ mod platform {
         let host = HostView::new(mtm, Rect::ZERO);
         view::add_subview(&host, content.view());
         let content_view = view::retain_base(content.view());
-        let state = Rc::new(RefCell::new(view.state));
+        let state = Rc::new(RefCell::new(view.take_state()));
         let mut keep = KeepAlive::default();
         keep.keep(content);
         keep.keep(host.clone());
@@ -457,7 +457,7 @@ mod platform {
         // way.
         host.set_manages_safe_area(true);
 
-        let bar = Rc::new(BarState::new(&mut view.bar, ctx));
+        let bar = Rc::new(BarState::new(view.bar_mut(), ctx));
 
         // In-content chrome: a material header strip with the title and the
         // hosted item views; replaced by the window toolbar on titled
