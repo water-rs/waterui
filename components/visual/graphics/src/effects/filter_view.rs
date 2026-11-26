@@ -1140,65 +1140,6 @@ impl<V: View, E: filtrate::Effect + RenderTransfer> View for WithEffect<V, E> {
     }
 }
 
-/// Generates the inherent method appending a single-parameter filter.
-///
-/// The filter is built by `$constructor` from the bound parameter; without
-/// one, by the filter's tuple constructor.
-macro_rules! inherent_single_param_filter {
-    ($method:ident, $filter:ident) => {
-        inherent_single_param_filter!($method, $filter, filtrate::filters::$filter);
-    };
-    ($method:ident, $filter:ident, $constructor:path) => {
-        #[doc = concat!("Append a `", stringify!($filter), "` filter to the chain.")]
-        #[must_use]
-        pub fn $method<P: IntoSignalF32>(
-            self,
-            value: P,
-        ) -> Filtered<V, Chain<F, filtrate::filters::$filter<Reactive>>> {
-            let mut guards = ParamGuards::default();
-            let filter = $constructor(guards.bind(value));
-            self.then_bound(filter, guards)
-        }
-    };
-}
-
-impl<V: View, F: Reach + RenderTransfer> Filtered<V, F> {
-    inherent_single_param_filter!(blur, Blur);
-    inherent_single_param_filter!(brightness, Brightness);
-    inherent_single_param_filter!(contrast, Contrast);
-    inherent_single_param_filter!(crystallize, Crystallize);
-    inherent_single_param_filter!(exposure, Exposure);
-    inherent_single_param_filter!(gamma, Gamma);
-    inherent_single_param_filter!(
-        gaussian_blur,
-        GaussianBlur,
-        filtrate::filters::GaussianBlur::new
-    );
-    inherent_single_param_filter!(grayscale, Grayscale);
-    inherent_single_param_filter!(pixellate, Pixellate);
-    inherent_single_param_filter!(saturation, Saturation);
-    inherent_single_param_filter!(sepia, Sepia);
-    inherent_single_param_filter!(sharpen, Sharpen);
-    inherent_single_param_filter!(vibrance, Vibrance);
-
-    /// Append a `HueRotation` filter to the chain.
-    #[must_use]
-    pub fn hue_rotation<P: IntoComputed<Angle>>(
-        self,
-        angle: P,
-    ) -> Filtered<V, Chain<F, filtrate::filters::HueRotation<Reactive>>> {
-        let mut guards = ParamGuards::default();
-        let filter = filtrate::filters::HueRotation(guards.bind_angle(angle));
-        self.then_bound(filter, guards)
-    }
-
-    /// Append an `Invert` filter to the chain.
-    #[must_use]
-    pub fn invert(self) -> Filtered<V, Chain<F, filtrate::filters::Invert>> {
-        self.then(filtrate::filters::Invert)
-    }
-}
-
 // Concrete filter aliases with stable type identities.
 /// Alias for the `Blur` filter.
 pub type Blur = filtrate::filters::Blur<Reactive>;
@@ -1333,25 +1274,82 @@ pub type LutColorGrade = filtrate::filters::LutColorGrade<Reactive>;
 /// Alias for the `ToneCurve` filter with reactive parameters.
 pub type ToneCurve = filtrate::filters::ToneCurve<Reactive>;
 
-/// Filters on any view: `.filter(F)`, `.effect(E)` and the named shortcuts.
-pub trait FilterViewExt: View + Sized {
-    /// Apply a `filtrate` filter to this view.
-    fn filter<F: Reach + RenderTransfer>(self, filter: F) -> Filtered<Self, F> {
-        Filtered::new(self, filter)
-    }
+/// Generates both [`FilterViewExt`] shortcuts and inherent chaining methods on
+/// [`Filtered`] from one shared filter list, so every shortcut chains into a
+/// single pass.
+macro_rules! define_filter_shortcuts {
+    (
+        $(
+            $(#[$doc:meta])+
+            fn $method:ident $(<$($gen:ident : $bound:path),+ $(,)?>)? ($($param:ident : $param_ty:ty),* $(,)?) -> $filter_ty:ty {
+                $($body:tt)*
+            }
+        )*
+    ) => {
+        impl<Inner: View, Base: Reach + RenderTransfer> Filtered<Inner, Base> {
+            /// Appends `filter` to the filter chain.
+            #[must_use]
+            pub fn filter<G: Reach + RenderTransfer>(self, filter: G) -> Filtered<Inner, Chain<Base, G>> {
+                self.then(filter)
+            }
 
-    /// Apply a custom `filtrate` effect to this view.
-    ///
-    /// An arbitrary effect has no portable description, so only a backend
-    /// that runs effects on a GPU can realize it. For a
-    /// [`filtrate::ShaderEffect`], the returned [`WithEffect`] binds
-    /// reactive parameters through [`WithEffect::param`] and
-    /// [`WithEffect::animated`].
-    #[cfg(feature = "gpu")]
-    fn effect<E: filtrate::Effect + RenderTransfer>(self, effect: E) -> WithEffect<Self, E> {
-        WithEffect::new(self, effect)
-    }
+            $(
+                #[doc = concat!("Appends a [`", stringify!($filter_ty), "`] filter to the chain.")]
+                #[must_use]
+                pub fn $method $(<$($gen : $bound),+>)? (
+                    self,
+                    $($param : $param_ty),*
+                ) -> Filtered<Inner, Chain<Base, $filter_ty>> {
+                    let (filter, guards) = define_filter_shortcuts!(@build $($body)*);
+                    self.then_bound(filter, guards)
+                }
+            )*
+        }
 
+        /// Filters on any view: `.filter(F)`, `.effect(E)` and the named shortcuts.
+        pub trait FilterViewExt: View + Sized {
+            /// Apply a `filtrate` filter to this view.
+            fn filter<F: Reach + RenderTransfer>(self, filter: F) -> Filtered<Self, F> {
+                Filtered::new(self, filter)
+            }
+
+            /// Apply a custom `filtrate` effect to this view.
+            ///
+            /// An arbitrary effect has no portable description, so only a backend
+            /// that runs effects on a GPU can realize it. For a
+            /// [`filtrate::ShaderEffect`], the returned [`WithEffect`] binds
+            /// reactive parameters through [`WithEffect::param`] and
+            /// [`WithEffect::animated`].
+            #[cfg(feature = "gpu")]
+            fn effect<E: filtrate::Effect + RenderTransfer>(self, effect: E) -> WithEffect<Self, E> {
+                WithEffect::new(self, effect)
+            }
+
+            $(
+                $(#[$doc])+
+                fn $method $(<$($gen : $bound),+>)? (
+                    self,
+                    $($param : $param_ty),*
+                ) -> Filtered<Self, $filter_ty> {
+                    let (filter, guards) = define_filter_shortcuts!(@build $($body)*);
+                    Filtered::bound(self, filter, guards)
+                }
+            )*
+        }
+
+        impl<V: View> FilterViewExt for V {}
+    };
+    (@build pure $filter:expr) => {
+        ($filter, ParamGuards::default())
+    };
+    (@build bound |$guards:ident| $filter:expr) => {{
+        let mut $guards = ParamGuards::default();
+        let filter = $filter;
+        (filter, $guards)
+    }};
+}
+
+define_filter_shortcuts! {
     /// Apply a blur filter.
     ///
     /// Accepts reactive values that will be automatically animated.
@@ -1374,396 +1372,274 @@ pub trait FilterViewExt: View + Sized {
     /// my_view.blur(radius)
     /// # }
     /// ```
-    fn blur<T: IntoSignalF32>(self, radius: T) -> Filtered<Self, Blur> {
-        let mut guards = ParamGuards::default();
-        Filtered::bound(self, filtrate::filters::Blur(guards.bind(radius)), guards)
+    fn blur<T: IntoSignalF32>(radius: T) -> Blur {
+        bound |guards| filtrate::filters::Blur(guards.bind(radius))
     }
 
     /// Apply a brightness filter.
-    fn brightness<T: IntoSignalF32>(self, amount: T) -> Filtered<Self, Brightness> {
-        let mut guards = ParamGuards::default();
-        Filtered::bound(
-            self,
-            filtrate::filters::Brightness(guards.bind(amount)),
-            guards,
-        )
+    fn brightness<T: IntoSignalF32>(amount: T) -> Brightness {
+        bound |guards| filtrate::filters::Brightness(guards.bind(amount))
     }
 
     /// Apply an exposure filter in photographic stops.
-    fn exposure<T: IntoSignalF32>(self, ev: T) -> Filtered<Self, Exposure> {
-        let mut guards = ParamGuards::default();
-        Filtered::bound(self, filtrate::filters::Exposure(guards.bind(ev)), guards)
+    fn exposure<T: IntoSignalF32>(ev: T) -> Exposure {
+        bound |guards| filtrate::filters::Exposure(guards.bind(ev))
     }
 
     /// Apply a gamma adjustment filter.
-    fn gamma<T: IntoSignalF32>(self, gamma: T) -> Filtered<Self, Gamma> {
-        let mut guards = ParamGuards::default();
-        Filtered::bound(self, filtrate::filters::Gamma(guards.bind(gamma)), guards)
+    fn gamma<T: IntoSignalF32>(gamma: T) -> Gamma {
+        bound |guards| filtrate::filters::Gamma(guards.bind(gamma))
     }
 
     /// Apply a contrast filter.
-    fn contrast<T: IntoSignalF32>(self, amount: T) -> Filtered<Self, Contrast> {
-        let mut guards = ParamGuards::default();
-        Filtered::bound(
-            self,
-            filtrate::filters::Contrast(guards.bind(amount)),
-            guards,
-        )
+    fn contrast<T: IntoSignalF32>(amount: T) -> Contrast {
+        bound |guards| filtrate::filters::Contrast(guards.bind(amount))
     }
 
     /// Apply a saturation filter.
-    fn saturation<T: IntoSignalF32>(self, amount: T) -> Filtered<Self, Saturation> {
-        let mut guards = ParamGuards::default();
-        Filtered::bound(
-            self,
-            filtrate::filters::Saturation(guards.bind(amount)),
-            guards,
-        )
+    fn saturation<T: IntoSignalF32>(amount: T) -> Saturation {
+        bound |guards| filtrate::filters::Saturation(guards.bind(amount))
     }
 
     /// Apply a vibrance filter.
-    fn vibrance<T: IntoSignalF32>(self, amount: T) -> Filtered<Self, Vibrance> {
-        let mut guards = ParamGuards::default();
-        Filtered::bound(
-            self,
-            filtrate::filters::Vibrance(guards.bind(amount)),
-            guards,
-        )
+    fn vibrance<T: IntoSignalF32>(amount: T) -> Vibrance {
+        bound |guards| filtrate::filters::Vibrance(guards.bind(amount))
     }
 
     /// Apply a grayscale filter.
-    fn grayscale<T: IntoSignalF32>(self, intensity: T) -> Filtered<Self, Grayscale> {
-        let mut guards = ParamGuards::default();
-        Filtered::bound(
-            self,
-            filtrate::filters::Grayscale(guards.bind(intensity)),
-            guards,
-        )
+    fn grayscale<T: IntoSignalF32>(intensity: T) -> Grayscale {
+        bound |guards| filtrate::filters::Grayscale(guards.bind(intensity))
     }
 
     /// Apply a hue rotation filter.
-    fn hue_rotation<T: IntoComputed<Angle>>(self, angle: T) -> Filtered<Self, HueRotation> {
-        let mut guards = ParamGuards::default();
-        Filtered::bound(
-            self,
-            filtrate::filters::HueRotation(guards.bind_angle(angle)),
-            guards,
-        )
+    fn hue_rotation<T: IntoComputed<Angle>>(angle: T) -> HueRotation {
+        bound |guards| filtrate::filters::HueRotation(guards.bind_angle(angle))
     }
 
     /// Apply an invert filter.
-    fn invert(self) -> Filtered<Self, Invert> {
-        Filtered::new(self, filtrate::filters::Invert)
+    fn invert() -> Invert {
+        pure filtrate::filters::Invert
     }
 
     /// Apply a Sobel edge-detection filter (3x3, gradient magnitude).
-    fn sobel(self) -> Filtered<Self, Sobel> {
-        Filtered::new(self, filtrate::filters::Sobel)
+    fn sobel() -> Sobel {
+        pure filtrate::filters::Sobel
     }
 
     /// Apply a Prewitt edge-detection filter (3x3, uniform-weight kernels).
-    fn prewitt(self) -> Filtered<Self, Prewitt> {
-        Filtered::new(self, filtrate::filters::Prewitt)
+    fn prewitt() -> Prewitt {
+        pure filtrate::filters::Prewitt
     }
 
     /// Apply a 3x3 per-channel median filter for salt-and-pepper denoising.
-    fn median3x3(self) -> Filtered<Self, Median3x3> {
-        Filtered::new(self, filtrate::filters::Median3x3)
+    fn median3x3() -> Median3x3 {
+        pure filtrate::filters::Median3x3
     }
 
     /// Apply a 3x3 convolution filter with a caller-supplied kernel
     /// (row-major, top-left to bottom-right).
-    fn convolution3x3<P: IntoSignalF32>(self, kernel: [P; 9]) -> Filtered<Self, Convolution3x3> {
-        let mut guards = ParamGuards::default();
-        let signals: [Reactive; 9] = kernel.map(|param| guards.bind(param));
-        Filtered::bound(self, filtrate::filters::Convolution3x3(signals), guards)
+    fn convolution3x3<P: IntoSignalF32>(kernel: [P; 9]) -> Convolution3x3 {
+        bound |guards| filtrate::filters::Convolution3x3(kernel.map(|param| guards.bind(param)))
     }
 
     /// Apply a 5x5 convolution filter with a caller-supplied 25-element
     /// kernel (row-major).
-    fn convolution5x5<P: IntoSignalF32>(self, kernel: [P; 25]) -> Filtered<Self, Convolution5x5> {
-        let mut guards = ParamGuards::default();
-        let signals: [Reactive; 25] = kernel.map(|param| guards.bind(param));
-        Filtered::bound(self, filtrate::filters::Convolution5x5(signals), guards)
+    fn convolution5x5<P: IntoSignalF32>(kernel: [P; 25]) -> Convolution5x5 {
+        bound |guards| filtrate::filters::Convolution5x5(kernel.map(|param| guards.bind(param)))
     }
 
     /// Apply a 3x3 morphological erosion (per-channel minimum).
-    fn morphology_min(self) -> Filtered<Self, MorphologyMin> {
-        Filtered::new(self, filtrate::filters::MorphologyMin)
+    fn morphology_min() -> MorphologyMin {
+        pure filtrate::filters::MorphologyMin
     }
 
     /// Apply a 3x3 morphological dilation (per-channel maximum).
-    fn morphology_max(self) -> Filtered<Self, MorphologyMax> {
-        Filtered::new(self, filtrate::filters::MorphologyMax)
+    fn morphology_max() -> MorphologyMax {
+        pure filtrate::filters::MorphologyMax
     }
 
     /// Apply a 3x3 morphological gradient (per-channel max minus min).
-    fn morphology_gradient(self) -> Filtered<Self, MorphologyGradient> {
-        Filtered::new(self, filtrate::filters::MorphologyGradient)
+    fn morphology_gradient() -> MorphologyGradient {
+        pure filtrate::filters::MorphologyGradient
     }
 
     /// Apply the monochrome photo preset.
-    fn photo_effect_mono(self) -> Filtered<Self, PhotoEffectMono> {
-        Filtered::new(self, filtrate::filters::PhotoEffectMono)
+    fn photo_effect_mono() -> PhotoEffectMono {
+        pure filtrate::filters::PhotoEffectMono
     }
 
     /// Apply the noir photo preset.
-    fn photo_effect_noir(self) -> Filtered<Self, PhotoEffectNoir> {
-        Filtered::new(self, filtrate::filters::PhotoEffectNoir)
+    fn photo_effect_noir() -> PhotoEffectNoir {
+        pure filtrate::filters::PhotoEffectNoir
     }
 
     /// Apply the chrome photo preset.
-    fn photo_effect_chrome(self) -> Filtered<Self, PhotoEffectChrome> {
-        Filtered::new(self, filtrate::filters::PhotoEffectChrome)
+    fn photo_effect_chrome() -> PhotoEffectChrome {
+        pure filtrate::filters::PhotoEffectChrome
     }
 
     /// Apply the instant photo preset.
-    fn photo_effect_instant(self) -> Filtered<Self, PhotoEffectInstant> {
-        Filtered::new(self, filtrate::filters::PhotoEffectInstant)
+    fn photo_effect_instant() -> PhotoEffectInstant {
+        pure filtrate::filters::PhotoEffectInstant
     }
 
     /// Apply the fade photo preset.
-    fn photo_effect_fade(self) -> Filtered<Self, PhotoEffectFade> {
-        Filtered::new(self, filtrate::filters::PhotoEffectFade)
+    fn photo_effect_fade() -> PhotoEffectFade {
+        pure filtrate::filters::PhotoEffectFade
     }
 
     /// Apply the process photo preset.
-    fn photo_effect_process(self) -> Filtered<Self, PhotoEffectProcess> {
-        Filtered::new(self, filtrate::filters::PhotoEffectProcess)
+    fn photo_effect_process() -> PhotoEffectProcess {
+        pure filtrate::filters::PhotoEffectProcess
     }
 
     /// Apply the tonal photo preset.
-    fn photo_effect_tonal(self) -> Filtered<Self, PhotoEffectTonal> {
-        Filtered::new(self, filtrate::filters::PhotoEffectTonal)
+    fn photo_effect_tonal() -> PhotoEffectTonal {
+        pure filtrate::filters::PhotoEffectTonal
     }
 
     /// Apply the transfer photo preset.
-    fn photo_effect_transfer(self) -> Filtered<Self, PhotoEffectTransfer> {
-        Filtered::new(self, filtrate::filters::PhotoEffectTransfer)
+    fn photo_effect_transfer() -> PhotoEffectTransfer {
+        pure filtrate::filters::PhotoEffectTransfer
     }
 
     /// Apply a sepia filter.
-    fn sepia<T: IntoSignalF32>(self, intensity: T) -> Filtered<Self, Sepia> {
-        let mut guards = ParamGuards::default();
-        Filtered::bound(
-            self,
-            filtrate::filters::Sepia(guards.bind(intensity)),
-            guards,
-        )
+    fn sepia<T: IntoSignalF32>(intensity: T) -> Sepia {
+        bound |guards| filtrate::filters::Sepia(guards.bind(intensity))
     }
 
     /// Apply a sharpen filter.
-    fn sharpen<T: IntoSignalF32>(self, amount: T) -> Filtered<Self, Sharpen> {
-        let mut guards = ParamGuards::default();
-        Filtered::bound(
-            self,
-            filtrate::filters::Sharpen(guards.bind(amount)),
-            guards,
-        )
+    fn sharpen<T: IntoSignalF32>(amount: T) -> Sharpen {
+        bound |guards| filtrate::filters::Sharpen(guards.bind(amount))
     }
 
     /// Apply a temperature/tint white-balance adjustment.
     fn temperature_tint<T: IntoSignalF32, U: IntoSignalF32>(
-        self,
         temperature: T,
         tint: U,
-    ) -> Filtered<Self, TemperatureTint> {
-        let mut guards = ParamGuards::default();
-        Filtered::bound(
-            self,
-            filtrate::filters::TemperatureTint(guards.bind(temperature), guards.bind(tint)),
-            guards,
-        )
+    ) -> TemperatureTint {
+        bound |guards| filtrate::filters::TemperatureTint(guards.bind(temperature), guards.bind(tint))
     }
 
     /// Recover highlights while lifting shadows.
     fn highlights_shadows<H: IntoSignalF32, S: IntoSignalF32>(
-        self,
         highlights: H,
         shadows: S,
-    ) -> Filtered<Self, HighlightsShadows> {
-        let mut guards = ParamGuards::default();
-        Filtered::bound(
-            self,
-            filtrate::filters::HighlightsShadows(guards.bind(highlights), guards.bind(shadows)),
-            guards,
-        )
+    ) -> HighlightsShadows {
+        bound |guards| filtrate::filters::HighlightsShadows(guards.bind(highlights), guards.bind(shadows))
     }
 
     /// Apply directional motion blur.
-    fn motion_blur<R: IntoSignalF32, A: IntoComputed<Angle>>(
-        self,
-        radius: R,
-        angle: A,
-    ) -> Filtered<Self, MotionBlur> {
-        let mut guards = ParamGuards::default();
-        Filtered::bound(
-            self,
-            filtrate::filters::MotionBlur(guards.bind(radius), guards.bind_angle(angle)),
-            guards,
-        )
+    fn motion_blur<R: IntoSignalF32, A: IntoComputed<Angle>>(radius: R, angle: A) -> MotionBlur {
+        bound |guards| filtrate::filters::MotionBlur(guards.bind(radius), guards.bind_angle(angle))
     }
 
     /// Apply a vignette filter.
-    fn vignette<R: IntoSignalF32, S: IntoSignalF32>(
-        self,
-        radius: R,
-        softness: S,
-    ) -> Filtered<Self, Vignette> {
-        let mut guards = ParamGuards::default();
-        Filtered::bound(
-            self,
-            filtrate::filters::Vignette(guards.bind(radius), guards.bind(softness)),
-            guards,
-        )
+    fn vignette<R: IntoSignalF32, S: IntoSignalF32>(radius: R, softness: S) -> Vignette {
+        bound |guards| filtrate::filters::Vignette(guards.bind(radius), guards.bind(softness))
     }
 
     /// Adjust color balance using an explicit white point triplet.
     fn white_point<R: IntoSignalF32, G: IntoSignalF32, B: IntoSignalF32>(
-        self,
         red: R,
         green: G,
         blue: B,
-    ) -> Filtered<Self, WhitePoint> {
-        let mut guards = ParamGuards::default();
-        Filtered::bound(
-            self,
-            filtrate::filters::WhitePoint(guards.bind(red), guards.bind(green), guards.bind(blue)),
-            guards,
-        )
+    ) -> WhitePoint {
+        bound |guards| {
+            filtrate::filters::WhitePoint(guards.bind(red), guards.bind(green), guards.bind(blue))
+        }
     }
 
     /// Apply radial zoom blur around a focal point.
     fn zoom_blur<A: IntoSignalF32, X: IntoSignalF32, Y: IntoSignalF32>(
-        self,
         amount: A,
         center_x: X,
         center_y: Y,
-    ) -> Filtered<Self, ZoomBlur> {
-        let mut guards = ParamGuards::default();
-        Filtered::bound(
-            self,
+    ) -> ZoomBlur {
+        bound |guards| {
             filtrate::filters::ZoomBlur(
                 guards.bind(amount),
                 guards.bind(center_x),
                 guards.bind(center_y),
-            ),
-            guards,
-        )
+            )
+        }
     }
 
     /// Apply a gaussian blur filter.
-    fn gaussian_blur<T: IntoSignalF32>(self, sigma: T) -> Filtered<Self, GaussianBlur> {
-        let mut guards = ParamGuards::default();
-        Filtered::bound(
-            self,
-            filtrate::filters::GaussianBlur::new(guards.bind(sigma)),
-            guards,
-        )
+    fn gaussian_blur<T: IntoSignalF32>(sigma: T) -> GaussianBlur {
+        bound |guards| filtrate::filters::GaussianBlur::new(guards.bind(sigma))
     }
 
     /// Apply a 3x4 color matrix transform.
-    fn color_matrix(self, matrix: impl IntoComputed<[[f32; 4]; 3]>) -> Filtered<Self, ColorMatrix> {
-        let mut guards = ParamGuards::default();
-        let params = guards.bind_slice(matrix, flatten_color_matrix);
-        Filtered::bound(self, filtrate::filters::ColorMatrix(params), guards)
+    fn color_matrix(matrix: impl IntoComputed<[[f32; 4]; 3]>) -> ColorMatrix {
+        bound |guards| {
+            let params = guards.bind_slice(matrix, flatten_color_matrix);
+            filtrate::filters::ColorMatrix(params)
+        }
     }
 
     /// Apply bloom around bright regions.
     fn bloom<T: IntoSignalF32, U: IntoSignalF32, V: IntoSignalF32>(
-        self,
         radius: T,
         intensity: U,
         threshold: V,
-    ) -> Filtered<Self, Bloom> {
-        let mut guards = ParamGuards::default();
-        Filtered::bound(
-            self,
-            filtrate::filters::Bloom {
-                radius: guards.bind(radius),
-                intensity: guards.bind(intensity),
-                threshold: guards.bind(threshold),
-            },
-            guards,
-        )
+    ) -> Bloom {
+        bound |guards| filtrate::filters::Bloom {
+            radius: guards.bind(radius),
+            intensity: guards.bind(intensity),
+            threshold: guards.bind(threshold),
+        }
     }
 
     /// Apply gloom around bright regions.
     fn gloom<T: IntoSignalF32, U: IntoSignalF32, V: IntoSignalF32>(
-        self,
         radius: T,
         intensity: U,
         threshold: V,
-    ) -> Filtered<Self, Gloom> {
-        let mut guards = ParamGuards::default();
-        Filtered::bound(
-            self,
-            filtrate::filters::Gloom {
-                radius: guards.bind(radius),
-                intensity: guards.bind(intensity),
-                threshold: guards.bind(threshold),
-            },
-            guards,
-        )
+    ) -> Gloom {
+        bound |guards| filtrate::filters::Gloom {
+            radius: guards.bind(radius),
+            intensity: guards.bind(intensity),
+            threshold: guards.bind(threshold),
+        }
     }
 
     /// Apply an unsharp mask.
-    fn unsharp_mask<T: IntoSignalF32, U: IntoSignalF32>(
-        self,
-        radius: T,
-        amount: U,
-    ) -> Filtered<Self, UnsharpMask> {
-        let mut guards = ParamGuards::default();
-        Filtered::bound(
-            self,
-            filtrate::filters::UnsharpMask {
-                radius: guards.bind(radius),
-                intensity: guards.bind(amount),
-            },
-            guards,
-        )
+    fn unsharp_mask<T: IntoSignalF32, U: IntoSignalF32>(radius: T, amount: U) -> UnsharpMask {
+        bound |guards| filtrate::filters::UnsharpMask {
+            radius: guards.bind(radius),
+            intensity: guards.bind(amount),
+        }
     }
 
     /// Apply bump distortion around a center.
     fn bump_distortion<T: IntoSignalF32, U: IntoSignalF32, V: IntoSignalF32, W: IntoSignalF32>(
-        self,
         center_x: T,
         center_y: U,
         radius: V,
         scale: W,
-    ) -> Filtered<Self, BumpDistortion> {
-        let mut guards = ParamGuards::default();
-        Filtered::bound(
-            self,
-            filtrate::filters::BumpDistortion([
-                guards.bind(center_x),
-                guards.bind(center_y),
-                guards.bind(radius),
-                guards.bind(scale),
-            ]),
-            guards,
-        )
+    ) -> BumpDistortion {
+        bound |guards| filtrate::filters::BumpDistortion([
+            guards.bind(center_x),
+            guards.bind(center_y),
+            guards.bind(radius),
+            guards.bind(scale),
+        ])
     }
 
     /// Apply pinch distortion around a center.
     fn pinch_distortion<T: IntoSignalF32, U: IntoSignalF32, V: IntoSignalF32, W: IntoSignalF32>(
-        self,
         center_x: T,
         center_y: U,
         radius: V,
         scale: W,
-    ) -> Filtered<Self, PinchDistortion> {
-        let mut guards = ParamGuards::default();
-        Filtered::bound(
-            self,
-            filtrate::filters::PinchDistortion([
-                guards.bind(center_x),
-                guards.bind(center_y),
-                guards.bind(radius),
-                guards.bind(scale),
-            ]),
-            guards,
-        )
+    ) -> PinchDistortion {
+        bound |guards| filtrate::filters::PinchDistortion([
+            guards.bind(center_x),
+            guards.bind(center_y),
+            guards.bind(radius),
+            guards.bind(scale),
+        ])
     }
 
     /// Apply twirl distortion around a center.
@@ -1773,23 +1649,17 @@ pub trait FilterViewExt: View + Sized {
         V: IntoSignalF32,
         W: IntoComputed<Angle>,
     >(
-        self,
         center_x: T,
         center_y: U,
         radius: V,
         angle: W,
-    ) -> Filtered<Self, TwirlDistortion> {
-        let mut guards = ParamGuards::default();
-        Filtered::bound(
-            self,
-            filtrate::filters::TwirlDistortion([
-                guards.bind(center_x),
-                guards.bind(center_y),
-                guards.bind(radius),
-                guards.bind_angle(angle),
-            ]),
-            guards,
-        )
+    ) -> TwirlDistortion {
+        bound |guards| filtrate::filters::TwirlDistortion([
+            guards.bind(center_x),
+            guards.bind(center_y),
+            guards.bind(radius),
+            guards.bind_angle(angle),
+        ])
     }
 
     /// Apply vortex distortion around a center.
@@ -1799,438 +1669,278 @@ pub trait FilterViewExt: View + Sized {
         V: IntoSignalF32,
         W: IntoComputed<Angle>,
     >(
-        self,
         center_x: T,
         center_y: U,
         radius: V,
         angle: W,
-    ) -> Filtered<Self, VortexDistortion> {
-        let mut guards = ParamGuards::default();
-        Filtered::bound(
-            self,
-            filtrate::filters::VortexDistortion([
-                guards.bind(center_x),
-                guards.bind(center_y),
-                guards.bind(radius),
-                guards.bind_angle(angle),
-            ]),
-            guards,
-        )
+    ) -> VortexDistortion {
+        bound |guards| filtrate::filters::VortexDistortion([
+            guards.bind(center_x),
+            guards.bind(center_y),
+            guards.bind(radius),
+            guards.bind_angle(angle),
+        ])
     }
 
     /// Warp a source quadrilateral into the output rectangle.
-    fn perspective_transform(
-        self,
-        quad: impl IntoComputed<[[f32; 2]; 4]>,
-    ) -> Filtered<Self, PerspectiveTransform> {
-        let mut guards = ParamGuards::default();
-        let params = guards.bind_slice(quad, flatten_quad);
-        Filtered::bound(
-            self,
-            filtrate::filters::PerspectiveTransform(params),
-            guards,
-        )
+    fn perspective_transform(quad: impl IntoComputed<[[f32; 2]; 4]>) -> PerspectiveTransform {
+        bound |guards| {
+            let params = guards.bind_slice(quad, flatten_quad);
+            filtrate::filters::PerspectiveTransform(params)
+        }
     }
 
     /// Correct a perspective-skewed quadrilateral back to a rectangle.
-    fn perspective_correction(
-        self,
-        quad: impl IntoComputed<[[f32; 2]; 4]>,
-    ) -> Filtered<Self, PerspectiveCorrection> {
-        let mut guards = ParamGuards::default();
-        let params = guards.bind_slice(quad, flatten_quad);
-        Filtered::bound(
-            self,
-            filtrate::filters::PerspectiveCorrection(params),
-            guards,
-        )
+    fn perspective_correction(quad: impl IntoComputed<[[f32; 2]; 4]>) -> PerspectiveCorrection {
+        bound |guards| {
+            let params = guards.bind_slice(quad, flatten_quad);
+            filtrate::filters::PerspectiveCorrection(params)
+        }
     }
 
     /// Apply a pixellate effect.
-    fn pixellate<T: IntoSignalF32>(self, size: T) -> Filtered<Self, Pixellate> {
-        let mut guards = ParamGuards::default();
-        Filtered::bound(
-            self,
-            filtrate::filters::Pixellate(guards.bind(size)),
-            guards,
-        )
+    fn pixellate<T: IntoSignalF32>(size: T) -> Pixellate {
+        bound |guards| filtrate::filters::Pixellate(guards.bind(size))
     }
 
     /// Apply a crystallize effect.
-    fn crystallize<T: IntoSignalF32>(self, size: T) -> Filtered<Self, Crystallize> {
-        let mut guards = ParamGuards::default();
-        Filtered::bound(
-            self,
-            filtrate::filters::Crystallize(guards.bind(size)),
-            guards,
-        )
+    fn crystallize<T: IntoSignalF32>(size: T) -> Crystallize {
+        bound |guards| filtrate::filters::Crystallize(guards.bind(size))
     }
 
     /// Apply an edge-work effect.
-    fn edge_work<T: IntoSignalF32, U: IntoSignalF32>(
-        self,
-        radius: T,
-        amount: U,
-    ) -> Filtered<Self, EdgeWork> {
-        let mut guards = ParamGuards::default();
-        Filtered::bound(
-            self,
-            filtrate::filters::EdgeWork([guards.bind(radius), guards.bind(amount)]),
-            guards,
-        )
+    fn edge_work<T: IntoSignalF32, U: IntoSignalF32>(radius: T, amount: U) -> EdgeWork {
+        bound |guards| filtrate::filters::EdgeWork([guards.bind(radius), guards.bind(amount)])
     }
 
     /// Apply a dot halftone effect.
-    fn dot_halftone<
-        T: IntoSignalF32,
-        U: IntoComputed<Angle>,
-        V: IntoSignalF32,
-        W: IntoSignalF32,
-    >(
-        self,
+    fn dot_halftone<T: IntoSignalF32, U: IntoComputed<Angle>, V: IntoSignalF32, W: IntoSignalF32>(
         scale: T,
         angle: U,
         center_x: V,
         center_y: W,
-    ) -> Filtered<Self, DotHalftone> {
-        let mut guards = ParamGuards::default();
-        Filtered::bound(
-            self,
-            filtrate::filters::DotHalftone([
-                guards.bind(scale),
-                guards.bind_angle(angle),
-                guards.bind(center_x),
-                guards.bind(center_y),
-            ]),
-            guards,
-        )
+    ) -> DotHalftone {
+        bound |guards| filtrate::filters::DotHalftone([
+            guards.bind(scale),
+            guards.bind_angle(angle),
+            guards.bind(center_x),
+            guards.bind(center_y),
+        ])
     }
 
     /// Apply a line halftone effect.
-    fn line_halftone<
-        T: IntoSignalF32,
-        U: IntoComputed<Angle>,
-        V: IntoSignalF32,
-        W: IntoSignalF32,
-    >(
-        self,
+    fn line_halftone<T: IntoSignalF32, U: IntoComputed<Angle>, V: IntoSignalF32, W: IntoSignalF32>(
         scale: T,
         angle: U,
         center_x: V,
         center_y: W,
-    ) -> Filtered<Self, LineHalftone> {
-        let mut guards = ParamGuards::default();
-        Filtered::bound(
-            self,
-            filtrate::filters::LineHalftone([
-                guards.bind(scale),
-                guards.bind_angle(angle),
-                guards.bind(center_x),
-                guards.bind(center_y),
-            ]),
-            guards,
-        )
+    ) -> LineHalftone {
+        bound |guards| filtrate::filters::LineHalftone([
+            guards.bind(scale),
+            guards.bind_angle(angle),
+            guards.bind(center_x),
+            guards.bind(center_y),
+        ])
     }
 
     /// Apply a kaleidoscope effect.
-    fn kaleidoscope<
-        T: IntoSignalF32,
-        U: IntoComputed<Angle>,
-        V: IntoSignalF32,
-        W: IntoSignalF32,
-    >(
-        self,
+    fn kaleidoscope<T: IntoSignalF32, U: IntoComputed<Angle>, V: IntoSignalF32, W: IntoSignalF32>(
         segments: T,
         angle: U,
         center_x: V,
         center_y: W,
-    ) -> Filtered<Self, Kaleidoscope> {
-        let mut guards = ParamGuards::default();
-        Filtered::bound(
-            self,
-            filtrate::filters::Kaleidoscope([
-                guards.bind(segments),
-                guards.bind_angle(angle),
-                guards.bind(center_x),
-                guards.bind(center_y),
-            ]),
-            guards,
-        )
+    ) -> Kaleidoscope {
+        bound |guards| filtrate::filters::Kaleidoscope([
+            guards.bind(segments),
+            guards.bind_angle(angle),
+            guards.bind(center_x),
+            guards.bind(center_y),
+        ])
     }
 
     /// Apply mirrored tiling.
-    fn mirror_tile<T: IntoSignalF32, U: IntoSignalF32>(
-        self,
-        repeat_x: T,
-        repeat_y: U,
-    ) -> Filtered<Self, MirrorTile> {
-        let mut guards = ParamGuards::default();
-        Filtered::bound(
-            self,
-            filtrate::filters::MirrorTile([guards.bind(repeat_x), guards.bind(repeat_y)]),
-            guards,
-        )
+    fn mirror_tile<T: IntoSignalF32, U: IntoSignalF32>(repeat_x: T, repeat_y: U) -> MirrorTile {
+        bound |guards| filtrate::filters::MirrorTile([guards.bind(repeat_x), guards.bind(repeat_y)])
     }
 
     /// Blend the current content with an auxiliary image.
     fn blend_with_image<T: IntoSignalF32>(
-        self,
         image: FilterImage,
         amount: T,
         mode: BlendMode,
-    ) -> Filtered<Self, BlendWithImage> {
-        let mut guards = ParamGuards::default();
-        Filtered::bound(
-            self,
-            filtrate::filters::BlendWithImage {
-                image,
-                amount: guards.bind(amount),
-                mode,
-            },
-            guards,
-        )
+    ) -> BlendWithImage {
+        bound |guards| filtrate::filters::BlendWithImage {
+            image,
+            amount: guards.bind(amount),
+            mode,
+        }
     }
 
     /// Apply masked blur using an auxiliary mask image.
     fn masked_blur<T: IntoSignalF32, U: IntoSignalF32>(
-        self,
         mask: FilterImage,
         radius: T,
         strength: U,
-    ) -> Filtered<Self, MaskedBlur> {
-        let mut guards = ParamGuards::default();
-        Filtered::bound(
-            self,
-            filtrate::filters::MaskedBlur {
-                mask,
-                radius: guards.bind(radius),
-                strength: guards.bind(strength),
-            },
-            guards,
-        )
+    ) -> MaskedBlur {
+        bound |guards| filtrate::filters::MaskedBlur {
+            mask,
+            radius: guards.bind(radius),
+            strength: guards.bind(strength),
+        }
     }
 
     /// Transition to another image.
     fn transition_to_image<T: IntoSignalF32, U: IntoSignalF32>(
-        self,
         target: FilterImage,
         progress: T,
         softness: U,
-    ) -> Filtered<Self, TransitionToImage> {
-        let mut guards = ParamGuards::default();
-        Filtered::bound(
-            self,
-            filtrate::filters::TransitionToImage {
-                target,
-                progress: guards.bind(progress),
-                softness: guards.bind(softness),
-            },
-            guards,
-        )
+    ) -> TransitionToImage {
+        bound |guards| filtrate::filters::TransitionToImage {
+            target,
+            progress: guards.bind(progress),
+            softness: guards.bind(softness),
+        }
     }
 
     /// Transition to another image with a directional swipe.
     fn swipe_transition_to_image<T: IntoSignalF32, U: IntoSignalF32>(
-        self,
         target: FilterImage,
         progress: T,
         softness: U,
         direction: TransitionDirection,
-    ) -> Filtered<Self, SwipeTransitionToImage> {
-        let mut guards = ParamGuards::default();
-        Filtered::bound(
-            self,
-            filtrate::filters::SwipeTransitionToImage {
-                target,
-                progress: guards.bind(progress),
-                softness: guards.bind(softness),
-                direction,
-            },
-            guards,
-        )
+    ) -> SwipeTransitionToImage {
+        bound |guards| filtrate::filters::SwipeTransitionToImage {
+            target,
+            progress: guards.bind(progress),
+            softness: guards.bind(softness),
+            direction,
+        }
     }
 
     /// Transition to another image from a radial reveal center.
     fn radial_transition_to_image<T: IntoSignalF32, U: IntoSignalF32>(
-        self,
         target: FilterImage,
         progress: T,
         softness: U,
         center_x: f32,
         center_y: f32,
-    ) -> Filtered<Self, RadialTransitionToImage> {
-        let mut guards = ParamGuards::default();
-        Filtered::bound(
-            self,
-            filtrate::filters::RadialTransitionToImage {
-                target,
-                progress: guards.bind(progress),
-                softness: guards.bind(softness),
-                center_x: guards.bind(center_x),
-                center_y: guards.bind(center_y),
-            },
-            guards,
-        )
+    ) -> RadialTransitionToImage {
+        bound |guards| filtrate::filters::RadialTransitionToImage {
+            target,
+            progress: guards.bind(progress),
+            softness: guards.bind(softness),
+            center_x: guards.bind(center_x),
+            center_y: guards.bind(center_y),
+        }
     }
 
     /// Transition to another image with a zooming blend.
     fn zoom_transition_to_image<T: IntoSignalF32, U: IntoSignalF32>(
-        self,
         target: FilterImage,
         progress: T,
         amount: U,
         center_x: f32,
         center_y: f32,
-    ) -> Filtered<Self, ZoomTransitionToImage> {
-        let mut guards = ParamGuards::default();
-        Filtered::bound(
-            self,
-            filtrate::filters::ZoomTransitionToImage {
-                target,
-                progress: guards.bind(progress),
-                amount: guards.bind(amount),
-                center_x: guards.bind(center_x),
-                center_y: guards.bind(center_y),
-            },
-            guards,
-        )
+    ) -> ZoomTransitionToImage {
+        bound |guards| filtrate::filters::ZoomTransitionToImage {
+            target,
+            progress: guards.bind(progress),
+            amount: guards.bind(amount),
+            center_x: guards.bind(center_x),
+            center_y: guards.bind(center_y),
+        }
     }
 
     /// Transition to another image driven by a displacement map.
     fn displacement_transition_to_image<T: IntoSignalF32, U: IntoSignalF32>(
-        self,
         target: FilterImage,
         map: FilterImage,
         progress: T,
         scale: U,
-    ) -> Filtered<Self, DisplacementTransitionToImage> {
-        let mut guards = ParamGuards::default();
-        Filtered::bound(
-            self,
-            filtrate::filters::DisplacementTransitionToImage {
-                target,
-                map,
-                progress: guards.bind(progress),
-                scale: guards.bind(scale),
-            },
-            guards,
-        )
+    ) -> DisplacementTransitionToImage {
+        bound |guards| filtrate::filters::DisplacementTransitionToImage {
+            target,
+            map,
+            progress: guards.bind(progress),
+            scale: guards.bind(scale),
+        }
     }
 
     /// Warp with an auxiliary displacement map.
     fn displacement_warp<T: IntoSignalF32, U: IntoSignalF32>(
-        self,
         map: FilterImage,
         scale_x: T,
         scale_y: U,
-    ) -> Filtered<Self, DisplacementWarp> {
-        let mut guards = ParamGuards::default();
-        Filtered::bound(
-            self,
-            filtrate::filters::DisplacementWarp {
-                map,
-                scale_x: guards.bind(scale_x),
-                scale_y: guards.bind(scale_y),
-            },
-            guards,
-        )
+    ) -> DisplacementWarp {
+        bound |guards| filtrate::filters::DisplacementWarp {
+            map,
+            scale_x: guards.bind(scale_x),
+            scale_y: guards.bind(scale_y),
+        }
     }
 
     /// Apply guide-image-aware smoothing.
     fn guided_smooth<T: IntoSignalF32, U: IntoSignalF32, W: IntoSignalF32>(
-        self,
         guide: FilterImage,
         radius: T,
         range_sigma: U,
         amount: W,
-    ) -> Filtered<Self, GuidedSmooth> {
-        let mut guards = ParamGuards::default();
-        Filtered::bound(
-            self,
-            filtrate::filters::GuidedSmooth {
-                guide,
-                radius: guards.bind(radius),
-                range_sigma: guards.bind(range_sigma),
-                amount: guards.bind(amount),
-            },
-            guards,
-        )
+    ) -> GuidedSmooth {
+        bound |guards| filtrate::filters::GuidedSmooth {
+            guide,
+            radius: guards.bind(radius),
+            range_sigma: guards.bind(range_sigma),
+            amount: guards.bind(amount),
+        }
     }
 
     /// Apply depth-aware blur using a depth map.
     fn depth_aware_blur<T: IntoSignalF32, U: IntoSignalF32, W: IntoSignalF32>(
-        self,
         depth: FilterImage,
         focus_depth: T,
         aperture: U,
         max_radius: W,
-    ) -> Filtered<Self, DepthAwareBlur> {
-        let mut guards = ParamGuards::default();
-        Filtered::bound(
-            self,
-            filtrate::filters::DepthAwareBlur {
-                depth,
-                focus_depth: guards.bind(focus_depth),
-                aperture: guards.bind(aperture),
-                max_radius: guards.bind(max_radius),
-            },
-            guards,
-        )
+    ) -> DepthAwareBlur {
+        bound |guards| filtrate::filters::DepthAwareBlur {
+            depth,
+            focus_depth: guards.bind(focus_depth),
+            aperture: guards.bind(aperture),
+            max_radius: guards.bind(max_radius),
+        }
     }
 
     /// Temporal denoise/stabilize using history and motion maps.
     fn temporal_denoise<T: IntoSignalF32>(
-        self,
         history: FilterImage,
         motion: FilterImage,
         history_weight: T,
-    ) -> Filtered<Self, TemporalDenoise> {
-        let mut guards = ParamGuards::default();
-        Filtered::bound(
-            self,
-            filtrate::filters::TemporalDenoise {
-                history,
-                motion,
-                history_weight: guards.bind(history_weight),
-            },
-            guards,
-        )
+    ) -> TemporalDenoise {
+        bound |guards| filtrate::filters::TemporalDenoise {
+            history,
+            motion,
+            history_weight: guards.bind(history_weight),
+        }
     }
 
     /// Replace background using matte and background images.
     fn replace_background<T: IntoSignalF32>(
-        self,
         matte: FilterImage,
         background: FilterImage,
         edge_softness: T,
-    ) -> Filtered<Self, BackgroundReplace> {
-        let mut guards = ParamGuards::default();
-        Filtered::bound(
-            self,
-            filtrate::filters::BackgroundReplace {
-                matte,
-                background,
-                edge_softness: guards.bind(edge_softness),
-            },
-            guards,
-        )
+    ) -> BackgroundReplace {
+        bound |guards| filtrate::filters::BackgroundReplace {
+            matte,
+            background,
+            edge_softness: guards.bind(edge_softness),
+        }
     }
 
     /// Apply a 3D LUT color transform encoded as a 2D strip (`size*size x size`).
-    fn lut_color_grade<T: IntoSignalF32>(
-        self,
-        lut: LutImage,
-        intensity: T,
-    ) -> Filtered<Self, LutColorGrade> {
-        let mut guards = ParamGuards::default();
-        Filtered::bound(
-            self,
-            filtrate::filters::LutColorGrade {
-                lut,
-                intensity: guards.bind(intensity),
-            },
-            guards,
-        )
+    fn lut_color_grade<T: IntoSignalF32>(lut: LutImage, intensity: T) -> LutColorGrade {
+        bound |guards| filtrate::filters::LutColorGrade {
+            lut,
+            intensity: guards.bind(intensity),
+        }
     }
 
     /// Apply a simple master tone curve.
@@ -2241,29 +1951,21 @@ pub trait FilterViewExt: View + Sized {
         X: IntoSignalF32,
         Y: IntoSignalF32,
     >(
-        self,
         shadows: T,
         midtones: U,
         highlights: W,
         gamma: X,
         amount: Y,
-    ) -> Filtered<Self, ToneCurve> {
-        let mut guards = ParamGuards::default();
-        Filtered::bound(
-            self,
-            filtrate::filters::ToneCurve {
-                shadows: guards.bind(shadows),
-                midtones: guards.bind(midtones),
-                highlights: guards.bind(highlights),
-                gamma: guards.bind(gamma),
-                amount: guards.bind(amount),
-            },
-            guards,
-        )
+    ) -> ToneCurve {
+        bound |guards| filtrate::filters::ToneCurve {
+            shadows: guards.bind(shadows),
+            midtones: guards.bind(midtones),
+            highlights: guards.bind(highlights),
+            gamma: guards.bind(gamma),
+            amount: guards.bind(amount),
+        }
     }
 }
-
-impl<V: View> FilterViewExt for V {}
 
 #[cfg(test)]
 mod tests {
@@ -2301,6 +2003,35 @@ mod tests {
             assert_ne!(stage.stage.source, "");
             self.0.push(("spatial", stage.stage.name, stage.param_base));
         }
+    }
+
+    #[test]
+    fn every_filter_shortcut_and_filter_method_chains_into_one_pass() {
+        let matrix = [
+            [1.0_f32, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+        ];
+        let chained =
+            ().blur(4.0_f32)
+                .vignette(0.8_f32, 0.3_f32)
+                .bloom(1.0_f32, 0.5_f32, 0.8_f32)
+                .sobel()
+                .motion_blur(2.0_f32, super::Angle::degrees(45.0))
+                .color_matrix(matrix)
+                .photo_effect_noir()
+                .filter(filtrate::filters::Invert);
+
+        let FilteredView {
+            content: (),
+            effect,
+            guards,
+        }: FilteredView<()> = chained.into_filtered_view();
+        let description = effect.description().expect("a chained filter is portable");
+        let mut link_count = 0usize;
+        description.visit_links(|_| link_count += 1);
+        assert_eq!(link_count, 8);
+        drop(guards);
     }
 
     #[test]
