@@ -114,7 +114,7 @@ pub mod prelude {
     pub use super::text::{TextConfig, font, highlight, styled};
 
     #[cfg(feature = "link")]
-    pub use super::component::link::{Link, LinkTarget, link};
+    pub use super::component::link::{Link, link};
     #[cfg(feature = "list")]
     pub use super::component::list::{
         ForEachExt, List, ListContent, ListMinRowHeight, Row, Section, detail_row,

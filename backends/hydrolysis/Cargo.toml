@@ -25,6 +25,7 @@ waterui-layout.workspace = true
 waterui-controls.workspace = true
 waterui-form = { workspace = true, optional = true }
 waterkit-clipboard = { workspace = true, optional = true }
+waterkit-deeplink = { workspace = true, optional = true }
 waterui-locale.workspace = true
 # `std` for `Url::from_file_path`, the OS file-drop path.
 waterui-url = { workspace = true, features = ["std"] }
@@ -521,9 +522,10 @@ text-field = ["menu", "hydrolysis-style/text-field", "waterui/text-field", "dep:
 toggle = ["hydrolysis-style/toggle", "waterui/toggle"]
 validation = ["text-field", "hydrolysis-style/validation", "waterui/validation"]
 list = ["hydrolysis-style/list", "waterui/list"]
+link = ["waterui/link", "dep:waterkit-deeplink"]
 table = ["list", "hydrolysis-style/table", "waterui/table"]
 navigation = ["text-field", "hydrolysis-style/navigation", "waterui/navigation"]
-all-controls = ["menu", "calendar", "color-picker", "date-picker", "file-picker", "multi-date-picker", "picker", "secure-field", "slider", "stepper", "text-field", "toggle", "validation", "list", "table", "navigation"]
+all-controls = ["menu", "calendar", "color-picker", "date-picker", "file-picker", "multi-date-picker", "picker", "secure-field", "slider", "stepper", "text-field", "toggle", "validation", "list", "link", "table", "navigation"]
 default = ["gpu", "all-controls"]
 accessibility = ["dep:accesskit", "dep:accesskit_ios", "dep:serde_json"]
 testing = []

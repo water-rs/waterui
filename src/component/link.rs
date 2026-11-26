@@ -1,35 +1,74 @@
-//! Link component for `WaterUI`
+//! Link component for `WaterUI`.
 //!
-//! This module provides a Link component that displays clickable text that opens a URL.
-//! Link is implemented as a Button with link style, using `waterkit-deeplink` to open URLs.
+//! Displays an interactive hyperlink that delegates its label and destination
+//! URL to the active backend through [`LinkConfig`].
 
-use executor_core::spawn_local;
+use core::fmt;
+
 use nami::Computed;
-use nami::Signal;
 use nami::signal::IntoComputed;
-use waterui_controls::{
-    IntoLabel,
-    button::{ButtonStyle, button},
-};
-use waterui_core::env::with;
-use waterui_core::{Environment, View};
+use waterui_controls::{ControlLabel, IntoLabel};
+use waterui_core::backend::{Backend, ChildSlot, MapSlots};
+use waterui_core::layout::StretchAxis;
+use waterui_core::{AnyView, Environment, Native, NativeView, View};
 use waterui_url::Url;
 
-/// Opens a URL in the system's default browser/handler.
-pub(crate) fn open_url(url: &str) {
-    let url = url.to_owned();
-    spawn_local(async move {
-        if let Err(e) = waterkit_deeplink::open_url(&url).await {
-            tracing::error!("Failed to open URL '{}': {:?}", url, e);
-        }
-    })
-    .detach();
+/// Resolved configuration passed to [`NativeBackend`](waterui_backend_core::NativeBackend)
+/// for a [`Link`].
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct LinkConfig<S> {
+    label: ControlLabel<S>,
+    url: Computed<Url>,
 }
 
-/// A tappable text link that opens a URL.
+impl<S> LinkConfig<S> {
+    /// Returns the semantic label displayed by the link.
+    #[must_use]
+    pub const fn label(&self) -> &ControlLabel<S> {
+        &self.label
+    }
+
+    /// Returns the destination URL opened when the link is activated.
+    #[must_use]
+    pub const fn url(&self) -> &Computed<Url> {
+        &self.url
+    }
+
+    /// Deconstructs the configuration into its label and destination URL.
+    #[must_use]
+    pub fn into_parts(self) -> (ControlLabel<S>, Computed<Url>) {
+        (self.label, self.url)
+    }
+}
+
+impl<S: 'static> MapSlots<S> for LinkConfig<S> {
+    type With<T: 'static> = LinkConfig<T>;
+
+    fn map_slots<T: 'static>(self, f: impl Fn(S) -> T + Clone + 'static) -> LinkConfig<T> {
+        LinkConfig {
+            label: self.label.map_slots(f),
+            url: self.url,
+        }
+    }
+}
+
+impl<S: 'static> NativeView for LinkConfig<S> {
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::None
+    }
+}
+
+impl<S: 'static> fmt::Display for LinkConfig<S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Link")
+    }
+}
+
+/// A tappable link that opens a URL.
 ///
-/// Link displays styled text that navigates to the specified URL when tapped.
-/// Internally, Link uses a Button with `ButtonStyle::Link` styling.
+/// Backends realize `Link` with native link semantics, link styling, pointer
+/// affordances, and system URL activation.
 ///
 /// # Layout Behavior
 ///
@@ -44,7 +83,7 @@ pub(crate) fn open_url(url: &str) {
 /// // Create a simple link
 /// let my_link = link("Visit website", "https://waterui.dev");
 /// ```
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Link<Label> {
     label: Label,
     url: Computed<Url>,
@@ -61,31 +100,25 @@ where
             url: url.into_computed(),
         }
     }
-}
 
-/// The URL a [`link`] points at, published into the subtree's environment.
-///
-/// Backends read it to surface the target natively — an OSC 8 hyperlink
-/// escape on terminal backends, a status-bar preview, an accessibility
-/// description — without intercepting the button's action.
-#[derive(Debug, Clone)]
-pub struct LinkTarget(pub Computed<Url>);
+    fn into_config<S: ChildSlot>(self, env: &Environment) -> LinkConfig<S> {
+        LinkConfig {
+            label: self.label.into_label().into_control_label::<S>(env),
+            url: self.url,
+        }
+    }
+}
 
 impl<Label> View for Link<Label>
 where
     Label: IntoLabel + 'static,
 {
-    fn body(self, _env: &Environment) -> impl View {
-        let url = self.url;
-        let target = url.clone();
+    fn body(self, env: &Environment) -> impl View {
+        Native::new(self.into_config::<AnyView>(env))
+    }
 
-        with(
-            button(self.label).style(ButtonStyle::Link).action(move || {
-                let target_url = url.snapshot();
-                open_url(target_url.as_str());
-            }),
-            LinkTarget(target),
-        )
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        backend.native(self.into_config::<B::Slot>(env), env, cx)
     }
 }
 
@@ -105,9 +138,12 @@ where
 #[cfg(test)]
 mod tests {
     use nami::{Binding, Signal, SignalExt as _};
+    use waterui_core::backend::{MapSlots, peel_native};
+    use waterui_core::layout::StretchAxis;
+    use waterui_core::{AnyView, Environment, NativeView};
     use waterui_url::Url;
 
-    use super::{Link, link};
+    use super::{Link, LinkConfig, link};
 
     #[test]
     fn link_accepts_literal_url_binding_and_computed() {
@@ -132,6 +168,25 @@ mod tests {
         assert_eq!(
             computed_link.url.snapshot().as_str(),
             "https://waterui.dev/api"
+        );
+    }
+
+    #[test]
+    fn link_dispatches_link_config_and_maps_slots() {
+        let env = Environment::new();
+        let config =
+            peel_native::<LinkConfig<AnyView>>(link("Docs", "https://waterui.dev/docs"), &env)
+                .expect("Link must dispatch LinkConfig directly");
+
+        assert_eq!(config.stretch_axis(), StretchAxis::None);
+        assert_eq!(config.url().snapshot().as_str(), "https://waterui.dev/docs");
+
+        let mapped = Link::new("Mapped", "https://waterui.dev/guide")
+            .into_config::<AnyView>(&env)
+            .map_slots(AnyView::new);
+        assert_eq!(
+            mapped.url().snapshot().as_str(),
+            "https://waterui.dev/guide"
         );
     }
 }

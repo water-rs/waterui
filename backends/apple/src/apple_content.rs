@@ -601,6 +601,8 @@ mod tests {
 
         stub_parents! {
             button<C>: waterui::component::button::ButtonConfig<C>,
+            #[cfg(waterui_feature = "link")]
+            link<C>: waterui::component::link::LinkConfig<C>,
             badge<C>: waterui::component::badge::BadgeConfig<C>,
             card<C>: waterui::widget::card::CardConfig<C>,
             disclosure<C>: waterui::widget::disclosure::DisclosureConfig<C>,
