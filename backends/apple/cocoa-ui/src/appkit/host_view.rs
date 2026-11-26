@@ -17,10 +17,12 @@ use objc2::rc::Retained;
 use objc2::runtime::{Bool, ProtocolObject, Sel};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSDragOperation, NSDraggingInfo, NSEvent, NSScreen, NSTrackingArea, NSTrackingAreaOptions,
-    NSView,
+    NSAccessibility, NSDragOperation, NSDraggingInfo, NSEvent, NSScreen, NSTrackingArea,
+    NSTrackingAreaOptions, NSView,
 };
-use objc2_foundation::{NSArray, NSEdgeInsets, NSObjectProtocol, NSPoint, NSRect, NSSize};
+use objc2_foundation::{
+    NSArray, NSEdgeInsets, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
+};
 
 use super::drag_drop::{DragInfo, DropHandlers};
 use crate::callback::guarded;
@@ -122,6 +124,9 @@ pub struct HostViewIvars {
     /// outside hit testing, accessibility and focus. Not a handler slot, so
     /// `clear_handlers` cannot revoke it.
     retired: Cell<bool>,
+    /// When set, an empty `accessibilityTitle` falls back to the combined
+    /// text of visible descendant labels and accessible elements.
+    combines_accessibility_title: Cell<bool>,
 }
 
 impl fmt::Debug for HostViewIvars {
@@ -163,6 +168,10 @@ impl fmt::Debug for HostViewIvars {
             .field("capturable", &self.capturable.get().is_some())
             .field("emitter", &self.emitter)
             .field("retired", &self.retired.get())
+            .field(
+                "combines_accessibility_title",
+                &self.combines_accessibility_title.get(),
+            )
             .finish()
     }
 }
@@ -672,6 +681,24 @@ define_class!(
             unsafe { msg_send![super(self), isAccessibilityElement] }
         }
 
+        // SAFETY: see the module safety note. When combining descendant
+        // titles (for example an `AXHeading` wrapping a `Label` host), an
+        // explicit title set on the host still wins.
+        #[unsafe(method_id(accessibilityTitle))]
+        fn accessibility_title_override(&self) -> Option<Retained<NSString>> {
+            guarded("HostView accessibilityTitle", || {
+                // SAFETY: see the module safety note.
+                let inherited: Option<Retained<NSString>> =
+                    unsafe { msg_send![super(self), accessibilityTitle] };
+                if !self.ivars().combines_accessibility_title.get()
+                    || inherited.as_ref().is_some_and(|title| !title.is_empty())
+                {
+                    return inherited;
+                }
+                self.combined_accessibility_title()
+            })
+        }
+
         // SAFETY: see the module safety note. A retired host refuses first
         // responder — the ghost keeps no focus membership.
         #[unsafe(method(acceptsFirstResponder))]
@@ -1112,6 +1139,46 @@ impl HostView {
                 self.invalidateIntrinsicContentSize();
             }
         }
+    }
+
+    /// Derives `accessibilityTitle` from visible descendant labels and
+    /// accessible elements whenever no explicit title was set on this host.
+    pub(crate) fn set_combines_accessibility_title(&self, combines: bool) {
+        self.ivars().combines_accessibility_title.set(combines);
+    }
+
+    fn combined_accessibility_title(&self) -> Option<Retained<NSString>> {
+        fn collect(view: &NSView, out: &mut Vec<String>) {
+            for subview in &view.subviews() {
+                if subview.isHidden() {
+                    continue;
+                }
+                if let Some(label) = subview.downcast_ref::<super::Label>() {
+                    if let Some(text) = label.stripped_text() {
+                        let text = text.to_string();
+                        if !text.is_empty() {
+                            out.push(text);
+                        }
+                    }
+                    continue;
+                }
+                let element = ProtocolObject::<dyn NSAccessibility>::from_ref(&*subview);
+                if element.isAccessibilityElement() {
+                    let text = element
+                        .accessibilityLabel()
+                        .or_else(|| element.accessibilityTitle())
+                        .map_or_default(|value| value.to_string());
+                    if !text.is_empty() {
+                        out.push(text);
+                        continue;
+                    }
+                }
+                collect(&subview, out);
+            }
+        }
+        let mut parts = Vec::new();
+        collect(self, &mut parts);
+        (!parts.is_empty()).then(|| NSString::from_str(&parts.join(" ")))
     }
 
     /// The distances from each edge within which content is obscured by the

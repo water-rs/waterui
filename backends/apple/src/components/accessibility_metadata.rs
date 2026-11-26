@@ -101,6 +101,7 @@ const fn role(role: &AccessibilityRole) -> Role {
         AccessibilityRole::Image => Role::Image,
         AccessibilityRole::Text => Role::Text,
         AccessibilityRole::Header => Role::Header,
+        AccessibilityRole::Heading(level) => Role::Heading(*level),
         AccessibilityRole::Footer => Role::Footer,
         AccessibilityRole::Navigation => Role::Navigation,
         AccessibilityRole::Main => Role::Main,
