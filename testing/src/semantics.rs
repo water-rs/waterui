@@ -577,6 +577,7 @@ impl TreeSnapshot {
         self.nodes.get(&id)
     }
 
+    #[track_caller]
     pub(crate) fn matching(&self, selector: &Selector) -> Vec<NodeId> {
         self.scoped_ids(selector)
             .into_iter()
@@ -584,6 +585,79 @@ impl TreeSnapshot {
             .collect()
     }
 
+    #[must_use]
+    pub(crate) fn closest_candidates(&self, selector: &Selector, limit: usize) -> String {
+        let candidate_ids = self.scoped_ids_for_diagnostics(selector);
+        let excludes_hidden = selector.excludes_hidden();
+        let mut scored = candidate_ids
+            .into_iter()
+            .filter_map(|id| self.node(id))
+            .filter(|node| !(excludes_hidden && node.hidden()))
+            .map(|node| {
+                let score = selector.candidate_score(node);
+                let has_identity = node.label().is_some_and(|s| !s.is_empty())
+                    || node.identifier().is_some_and(|s| !s.is_empty())
+                    || node.value().is_some_and(|s| !s.is_empty());
+                let non_root = node.id() != self.root;
+                ((score, has_identity, non_root), node)
+            })
+            .collect::<Vec<_>>();
+
+        scored.sort_by(|(a_key, a_node), (b_key, b_node)| {
+            b_key.cmp(a_key).then_with(|| a_node.id().cmp(&b_node.id()))
+        });
+
+        let any_positive = scored.iter().any(|((score, _, _), _)| *score > 0);
+        let chosen = scored
+            .into_iter()
+            .filter(|((score, has_identity, _), _)| {
+                if any_positive {
+                    *score > 0
+                } else {
+                    *has_identity
+                }
+            })
+            .take(limit.max(1))
+            .map(|(_, node)| crate::selector::format_candidate(node))
+            .collect::<Vec<_>>();
+
+        if chosen.is_empty() {
+            String::from("none")
+        } else {
+            chosen.join("; ")
+        }
+    }
+
+    fn scoped_ids_for_diagnostics(&self, selector: &Selector) -> Vec<NodeId> {
+        let Some(scope) = selector.scope() else {
+            return self.nodes.keys().copied().collect();
+        };
+        let parent = scope.handle().id();
+        if self.node(parent).is_none() {
+            return self.nodes.keys().copied().collect();
+        }
+        match scope.relation() {
+            ScopeRelation::Descendants => {
+                let mut descendants = Vec::new();
+                let mut stack = self[parent]
+                    .children()
+                    .iter()
+                    .rev()
+                    .copied()
+                    .collect::<Vec<_>>();
+                while let Some(node_id) = stack.pop() {
+                    if let Some(node) = self.node(node_id) {
+                        descendants.push(node_id);
+                        stack.extend(node.children().iter().rev().copied());
+                    }
+                }
+                descendants
+            }
+            ScopeRelation::Children => self[parent].children().to_vec(),
+        }
+    }
+
+    #[track_caller]
     fn scoped_ids(&self, selector: &Selector) -> Vec<NodeId> {
         let Some(scope) = selector.scope() else {
             return self.nodes.keys().copied().collect();
@@ -594,6 +668,7 @@ impl TreeSnapshot {
         }
     }
 
+    #[track_caller]
     fn descendants_of(&self, parent: NodeId) -> Vec<NodeId> {
         let mut descendants = Vec::new();
         let mut stack = self[parent]
@@ -613,6 +688,7 @@ impl TreeSnapshot {
 impl Index<NodeId> for TreeSnapshot {
     type Output = NodeSnapshot;
 
+    #[track_caller]
     fn index(&self, index: NodeId) -> &Self::Output {
         self.nodes.get(&index).unwrap_or_else(|| {
             panic!(
