@@ -9,21 +9,20 @@ use nami::{Computed, Signal};
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, ViewDimensions};
 use waterui_core::{Environment, Native, NativeView, Str, View, contract_violation};
 
-use super::{
-    Context, Frame, GpuContent, GpuContentHandle, GpuView, SurfaceHooks, box_content,
-    measure_by_intrinsic_size,
-};
+use super::content::{Erase, ErasedGpuContent};
+use super::{Context, Frame, GpuContentHandle, SurfaceHooks, legacy, measure_by_intrinsic_size};
+use crate::GpuContent;
 use crate::draw::kurbo;
 use crate::input::SurfaceInputEvent;
 
-/// The backend leaf produced by [`GpuView`](super::GpuView).
+/// The backend leaf produced by [`GpuView`](crate::GpuView).
 ///
 /// Backends mount this type to consume the one-shot [`GpuContent`] producer
 /// alongside its UI-thread hooks (input, per-frame pump, IME caret, live
 /// measurement, HDR preference, and accessibility metadata). Application code
-/// constructs [`GpuView`](super::GpuView) instead.
+/// constructs [`GpuView`](crate::GpuView) instead.
 pub struct GpuContentLeaf {
-    content: Option<Box<dyn GpuContent>>,
+    content: Option<Box<dyn ErasedGpuContent>>,
     content_handle: Option<GpuContentHandle>,
     intrinsic_size: Option<Size>,
     opaque: bool,
@@ -42,22 +41,16 @@ impl fmt::Debug for GpuContentLeaf {
     }
 }
 
-impl<T: GpuContent> From<GpuView<T>> for GpuContentLeaf {
-    fn from(view: GpuView<T>) -> Self {
-        view.into_leaf()
-    }
-}
-
 impl GpuContentLeaf {
     /// Creates a leaf directly from `content`, for backend hosts and offscreen
-    /// renderers that bypass the authoring [`GpuView`](super::GpuView) builder.
+    /// renderers that bypass the authoring [`GpuView`](crate::GpuView) builder.
     #[must_use]
-    pub fn new(content: impl GpuContent) -> Self {
-        GpuView::new(content).into_leaf()
+    pub fn new(content: impl legacy::GpuContent) -> Self {
+        legacy::GpuView::new(content).into_leaf()
     }
 
     pub(super) const fn from_parts(
-        content: Box<dyn GpuContent>,
+        content: Box<dyn ErasedGpuContent>,
         intrinsic_size: Option<Size>,
         opaque: bool,
         surface_prefers_hdr: Option<bool>,
@@ -153,7 +146,7 @@ impl GpuContentLeaf {
                 .or_else(|| {
                     self.content
                         .as_ref()
-                        .and_then(GpuContent::preferred_surface_hdr)
+                        .and_then(|content| content.preferred_surface_hdr())
                 })
         })
     }
@@ -175,9 +168,6 @@ impl GpuContentLeaf {
     /// Asynchronous producer work wakes the host through the wake of each
     /// engine surface that draws the layer. The UI hooks and input handlers
     /// stay in this leaf.
-    ///
-    /// Content already taken with [`take_content`](Self::take_content) is a
-    /// contract violation: the layer draws nothing.
     #[must_use]
     pub fn take_engine_content(&mut self) -> GpuContentBox {
         GpuContentBox::new(self.engine_content())
@@ -189,43 +179,27 @@ impl GpuContentLeaf {
     /// rebuilds its engine layer after device loss re-installs a fresh handle
     /// so the engine's setup runs the one content on the new device, keeping
     /// the state the content had accumulated.
-    ///
-    /// Content already taken with [`take_content`] is a contract violation:
-    /// the handle is to content that draws nothing.
-    ///
-    /// [`take_content`]: Self::take_content
     pub fn engine_content(&mut self) -> GpuContentHandle {
         let content = &mut self.content;
         self.content_handle
-            .get_or_insert_with(|| GpuContentHandle::new(take_once(content)))
+            .get_or_insert_with(|| {
+                GpuContentHandle::new(content.take().unwrap_or_else(|| {
+                    contract_violation!(
+                        "GpuContentLeaf content missing before engine mount; the layer draws nothing"
+                    );
+                    Box::new(Erase(Vacant))
+                }))
+            })
             .clone()
     }
-
-    /// Takes the content out for installation on a layer.
-    ///
-    /// Taking it twice is a contract violation, a leaf being installed once:
-    /// the second call answers content that draws nothing.
-    #[must_use]
-    pub fn take_content(&mut self) -> Box<dyn GpuContent> {
-        take_once(&mut self.content)
-    }
 }
 
-/// The content in `slot`, or [`Vacant`] when it was already taken.
-fn take_once(slot: &mut Option<Box<dyn GpuContent>>) -> Box<dyn GpuContent> {
-    slot.take().map_or_else(
-        || {
-            contract_violation!("GpuContentLeaf content installed twice; the layer draws nothing");
-            Box::new(Vacant)
-        },
-        box_content,
-    )
-}
-
-/// Content that draws nothing: what a leaf's second installation gets.
+/// Content that draws nothing: fallback if a leaf somehow lost its content.
 struct Vacant;
 
 impl GpuContent for Vacant {
+    type Params = ();
+
     fn setup(&mut self, _gpu: &Context<'_>) {}
 
     fn render(&mut self, _frame: &mut Frame<'_>) {}

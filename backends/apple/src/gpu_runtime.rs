@@ -782,6 +782,7 @@ mod tests {
     use super::*;
     use waterui_graphics::backend::cherenkov::Surface;
     use waterui_graphics::gpu::interop::TextureTarget;
+    use waterui_graphics::{Context as GpuContext, Frame, GpuContent, GpuView};
 
     /// A mounted scene's contract reduced to observation: whether `prepare`
     /// ran and for which timestamp, whether it is owed a later frame, and
@@ -893,10 +894,12 @@ mod tests {
     /// and then waits on a gate the test releases: the paused worker.
     struct Paused(Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>);
 
-    impl waterui_graphics::gpu::GpuContent for Paused {
-        fn setup(&mut self, _gpu: &waterui_graphics::gpu::Context<'_>) {}
+    impl GpuContent for Paused {
+        type Params = ();
 
-        fn render(&mut self, _frame: &mut waterui_graphics::gpu::Frame<'_>) {
+        fn setup(&mut self, _gpu: &GpuContext<'_>) {}
+
+        fn render(&mut self, _frame: &mut Frame<'_>) {
             if let Some((entered, gate)) = self.0.take() {
                 let _ = entered.send(());
                 let _ = gate.recv();
@@ -922,7 +925,7 @@ mod tests {
         let (release, gate) = std::sync::mpsc::channel();
         let (announce, entered) = std::sync::mpsc::channel();
         let producer = generation.engine().gpu_producer(GpuContentBox::new(
-            GpuContentLeaf::new(Paused(Some((announce, gate)))).engine_content(),
+            GpuContentLeaf::from(GpuView::new(Paused(Some((announce, gate))))).engine_content(),
         ));
         first_part.surface.update(|tx| {
             tx[first_part.surface.root()].content(producer.at((1, 1)));

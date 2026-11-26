@@ -43,6 +43,8 @@ fn render_on_cpu(view: impl Fn() -> AnyView + 'static, theme: MinimalTestTheme) 
 struct NoContent;
 
 impl GpuContent for NoContent {
+    type Params = ();
+
     fn setup(&mut self, _gpu: &GpuContext<'_>) {}
 
     fn render(&mut self, _frame: &mut GpuFrame<'_>) {}

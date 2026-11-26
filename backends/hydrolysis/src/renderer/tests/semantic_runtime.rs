@@ -1899,6 +1899,8 @@ struct GpuChart;
 
 #[cfg(hydrolysis_gpu)]
 impl GpuContent for GpuChart {
+    type Params = ();
+
     fn setup(&mut self, _gpu: &GpuContext<'_>) {}
 
     fn render(&mut self, _frame: &mut GpuFrame<'_>) {}

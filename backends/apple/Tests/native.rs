@@ -12151,12 +12151,14 @@ mod a11y_frame {
         use cocoa_ui::appkit::surface_view::SurfaceView;
         use waterui_apple::native_test_support::{block_on_main, install_gpu, pump_main_until};
         use waterui_graphics::gpu::wgpu;
-        use waterui_graphics::gpu::{Context, Frame, GpuContent, GpuRuntime, GpuView};
+        use waterui_graphics::{Context, Frame, GpuContent, GpuRuntime, GpuView};
 
         /// A content of a fixed natural size that clears its frame.
         struct Clear;
 
         impl GpuContent for Clear {
+            type Params = ();
+
             fn setup(&mut self, _gpu: &Context<'_>) {}
 
             fn render(&mut self, frame: &mut Frame<'_>) {

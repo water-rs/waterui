@@ -78,6 +78,8 @@ impl ProbeLog {
 struct InputProbe;
 
 impl GpuContent for InputProbe {
+    type Params = ();
+
     fn setup(&mut self, _gpu: &GpuContext<'_>) {}
 
     fn render(&mut self, _frame: &mut GpuFrame<'_>) {}
@@ -88,6 +90,8 @@ impl GpuContent for InputProbe {
 struct SilentProbe;
 
 impl GpuContent for SilentProbe {
+    type Params = ();
+
     fn setup(&mut self, _gpu: &GpuContext<'_>) {}
 
     fn render(&mut self, _frame: &mut GpuFrame<'_>) {}

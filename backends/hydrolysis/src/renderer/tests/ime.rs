@@ -643,6 +643,8 @@ fn probe_caret() -> Option<kurbo::Rect> {
 struct InputProbe;
 
 impl GpuContent for InputProbe {
+    type Params = ();
+
     fn setup(&mut self, _gpu: &GpuContext<'_>) {}
 
     fn render(&mut self, _frame: &mut GpuFrame<'_>) {}

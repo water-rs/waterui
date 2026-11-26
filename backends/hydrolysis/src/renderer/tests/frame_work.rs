@@ -577,6 +577,8 @@ struct FillProbe {
 }
 
 impl GpuContent for FillProbe {
+    type Params = ();
+
     fn setup(&mut self, _gpu: &GpuContext<'_>) {}
 
     fn render(&mut self, frame: &mut GpuFrame<'_>) {

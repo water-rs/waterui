@@ -645,6 +645,7 @@ pub fn media_block_10() -> impl View {
 
     struct Terminal;
     impl GpuContent for Terminal {
+        type Params = ();
         fn setup(&mut self, _gpu: &Context<'_>) {}
         fn render(&mut self, frame: &mut Frame<'_>) {
             let _ = (
@@ -698,7 +699,9 @@ pub fn media_block_10() -> impl View {
 // `.on_ime_caret(..)`, and a `SceneContent` handling input. Not counted as a rust
 // block.
 // ---------------------------------------------------------------------------
-pub fn media_gpu_input_prose<C: waterui::graphics::GpuContent>(content: C) -> impl View {
+pub fn media_gpu_input_prose<C: waterui::graphics::GpuContent<Params = ()>>(
+    content: C,
+) -> impl View {
     use waterui::graphics::gpu::Rect;
     use waterui::graphics::{Context, Frame, GpuContent, GpuView};
 
@@ -706,7 +709,8 @@ pub fn media_gpu_input_prose<C: waterui::graphics::GpuContent>(content: C) -> im
     struct Uniforms(f32);
 
     struct ParameterizedDemo(f32);
-    impl GpuContent<Uniforms> for ParameterizedDemo {
+    impl GpuContent for ParameterizedDemo {
+        type Params = Uniforms;
         fn setup(&mut self, _gpu: &Context<'_>) {}
         fn update(&mut self, params: Uniforms) {
             self.0 = params.0;
