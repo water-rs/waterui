@@ -2068,21 +2068,15 @@ impl<R: RuntimeDriver> SemanticApp<R> {
         ids.len() == 1 && self.ui_focus == Some(ids[0])
     }
 
-    pub(crate) fn assert_current_element(&self, element: &ElementRef<R>, context: &str) {
+    pub(crate) fn assert_current_element(&mut self, element: &ElementRef<R>, context: &str) {
+        self.sync_tree();
         self.assert_current_anchor(&element.anchor(), context);
     }
 
     pub(crate) fn assert_current_anchor(&self, anchor: &ElementAnchor, context: &str) {
         assert!(
-            anchor.revision() == self.tree.revision(),
-            "waterui-testing stale element handle during {context}: handle revision {} does not match current tree revision {}; re-query the element before interacting. handle={}",
-            anchor.revision(),
-            self.tree.revision(),
-            anchor.debug_summary()
-        );
-        assert!(
             self.tree.node(anchor.id()).is_some(),
-            "waterui-testing missing current node for handle during {context}: handle={} is not present in revision {}",
+            "waterui-testing element node no longer exists in tree during {context}: handle={} is not present in revision {}",
             anchor.debug_summary(),
             self.tree.revision()
         );

@@ -1420,7 +1420,7 @@ fn element_set_index_by_node_id_panics_when_missing() {
 }
 
 #[test]
-fn stale_handle_panics_for_interaction_and_relative_query() {
+fn handle_and_scope_survive_revision_advance_while_node_remains() {
     let mut app = mounted(scoped_tree());
 
     let alpha = app
@@ -1436,14 +1436,42 @@ fn stale_handle_panics_for_interaction_and_relative_query() {
         .single();
     app.tree.revision = 99;
 
+    app.assert_current_element(&edit, "tap");
+    let re_found = app
+        .query()
+        .within(&alpha)
+        .role(Role::BUTTON)
+        .label("Edit")
+        .single();
+    assert_eq!(re_found.id(), edit.id());
+}
+
+#[test]
+fn removed_handle_panics_for_interaction_and_relative_query() {
+    let mut app = mounted(scoped_tree());
+
+    let alpha = app
+        .query()
+        .role(Role::LIST_ITEM)
+        .label("Alpha card")
+        .single();
+    let edit = app
+        .query()
+        .within(&alpha)
+        .role(Role::BUTTON)
+        .label("Edit")
+        .single();
+    app.tree.nodes.remove(&edit.id());
+    app.tree.nodes.remove(&alpha.id());
+
     let interaction = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         edit.tap(&mut app);
     }));
-    let interaction_payload = interaction.expect_err("stale handle should panic");
+    let interaction_payload = interaction.expect_err("removed handle should panic");
     let interaction_message = panic_message(&*interaction_payload);
     assert!(
-        interaction_message.contains("stale element handle"),
-        "unexpected stale interaction panic: {interaction_message}"
+        interaction_message.contains("no longer exists in tree"),
+        "unexpected removed interaction panic: {interaction_message}"
     );
 
     let scoped_query = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1454,11 +1482,11 @@ fn stale_handle_panics_for_interaction_and_relative_query() {
             .label("Edit")
             .single();
     }));
-    let scoped_query_payload = scoped_query.expect_err("stale scoped query should panic");
+    let scoped_query_payload = scoped_query.expect_err("removed scoped query should panic");
     let scoped_query_message = panic_message(&*scoped_query_payload);
     assert!(
-        scoped_query_message.contains("stale element handle"),
-        "unexpected stale scoped query panic: {scoped_query_message}"
+        scoped_query_message.contains("no longer exists in tree"),
+        "unexpected removed scoped query panic: {scoped_query_message}"
     );
 }
 
