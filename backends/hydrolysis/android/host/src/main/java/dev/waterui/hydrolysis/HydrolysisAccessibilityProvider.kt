@@ -355,6 +355,7 @@ internal class HydrolysisAccessibilityProvider(
         info.setBoundsInScreen(screenBounds)
 
         if (isRange(node)) {
+            if (value.isNotEmpty()) info.stateDescription = value
             val min = properties?.optDouble("minNumericValue", 0.0) ?: 0.0
             val max = properties?.optDouble("maxNumericValue", 1.0) ?: 1.0
             val current = properties?.optDouble("numericValue", 0.0) ?: 0.0

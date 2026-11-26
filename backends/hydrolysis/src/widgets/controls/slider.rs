@@ -387,6 +387,7 @@ fn slider_accessibility_parts<E: crate::text::TextEngine, S>(
     range: &RangeInclusive<f64>,
     step: Option<f64>,
     value: &Binding<f64>,
+    value_formatter: Option<&ValueFormatter>,
     env: &Environment,
     focus_keys: &[crate::renderer::InteractionKey],
 ) {
@@ -403,21 +404,32 @@ fn slider_accessibility_parts<E: crate::text::TextEngine, S>(
         if let Some(resolved) = resolved {
             node.set_label(resolved);
         }
-        // The string value is the spoken form of the numeric value: an
-        // explicit `.a11y_value` overrides it while `set_numeric_value` keeps
-        // the raw position, matching `aria-valuetext` beside `aria-valuenow`.
-        if let Some(value) = renderer.resolve_accessibility_value(env, None) {
-            node.set_value(value);
-        }
         let start = *range.start();
         let end = *range.end();
         debug_assert!(
             start < end,
             "the retained slider's range was validated by `SliderRenderState::from_config`"
         );
-        // Read without watching: the node does not re-render for a value
-        // change, the tree follows it through `register_live_numeric`.
-        let current = value.snapshot().clamp(start, end);
+        // Rendered nodes do not re-render on value changes — the tree follows
+        // them through `register_live_numeric`. Semantic walks do not run
+        // `render_slider_parts`, so they subscribe to the value directly.
+        let current = if ctx.is_some() {
+            value.snapshot()
+        } else {
+            renderer.read_signal(value)
+        }
+        .clamp(start, end);
+        // The string value is the spoken form of the numeric value: an
+        // explicit `.a11y_value` overrides the formatter while
+        // `set_numeric_value` keeps the raw position, matching `aria-valuetext`
+        // beside `aria-valuenow`.
+        let default_value = value_formatter.and_then(|formatter| {
+            let text = formatter.format(current);
+            (!text.is_empty()).then(|| text.as_str().to_owned())
+        });
+        if let Some(value) = renderer.resolve_accessibility_value(env, default_value) {
+            node.set_value(value);
+        }
         let step = step.unwrap_or_else(|| slider_step_for_range(range.clone()));
         node.set_numeric_value(current);
         node.set_min_numeric_value(start);
@@ -447,7 +459,17 @@ fn slider_accessibility_parts<E: crate::text::TextEngine, S>(
     }
     #[cfg(not(feature = "accessibility"))]
     {
-        let _ = (renderer, ctx, label, range, step, value, env, focus_keys);
+        let _ = (
+            renderer,
+            ctx,
+            label,
+            range,
+            step,
+            value,
+            value_formatter,
+            env,
+            focus_keys,
+        );
     }
 }
 
@@ -488,13 +510,14 @@ pub fn render_slider_node<E: crate::text::TextEngine>(
     let hidden = ctx.renderer_mut().is_accessibility_hidden(env);
     if !hidden {
         let render_ctx = ctx.render_context();
-        let (label, range_signal, step_signal, value) = {
+        let (label, range_signal, step_signal, value, value_formatter) = {
             let slider = state.borrow();
             (
                 slider.label.clone(),
                 slider.range.clone(),
                 slider.step.clone(),
                 slider.value.clone(),
+                slider.value_formatter.clone(),
             )
         };
         let range = valid_range(ctx.renderer_mut().read_signal(&range_signal));
@@ -506,6 +529,7 @@ pub fn render_slider_node<E: crate::text::TextEngine>(
             &range,
             step,
             &value,
+            value_formatter.as_ref(),
             env,
             &[crate::renderer::InteractionKey::for_rc(state, 0)],
         );
@@ -604,12 +628,29 @@ pub fn render_slider_parts<E: crate::text::TextEngine>(
         armed.set(true);
     }
     #[cfg(feature = "accessibility")]
-    ctx.renderer_mut().register_live_numeric(
-        interaction_key.clone(),
-        Rc::clone(&state.value_changed),
-        value_binding.clone(),
-        range.clone(),
-    );
+    {
+        let live_formatter = if env
+            .get::<waterui::accessibility::AccessibilityValue>()
+            .is_some()
+        {
+            None
+        } else {
+            state.value_formatter.as_ref().map(|formatter| {
+                let formatter = formatter.clone();
+                Rc::new(move |value: f64| {
+                    let text = formatter.format(value);
+                    (!text.is_empty()).then(|| text.as_str().to_owned())
+                }) as Rc<dyn Fn(f64) -> Option<String>>
+            })
+        };
+        ctx.renderer_mut().register_live_numeric(
+            interaction_key.clone(),
+            Rc::clone(&state.value_changed),
+            value_binding.clone(),
+            range.clone(),
+            live_formatter,
+        );
+    }
 
     // Every label is a retained node sub-view re-flushed at its rect; reactive
     // content stays live through the node's own per-frame re-flush, with no
@@ -992,6 +1033,7 @@ pub fn emit_slider_accessibility<E: crate::text::TextEngine>(
             &range,
             step,
             &state.value,
+            state.value_formatter.as_ref(),
             env,
             &[interaction_key],
         );
