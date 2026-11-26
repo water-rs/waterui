@@ -68,6 +68,25 @@ pub fn add_sublayer(layer: &CALayer, child: &CALayer) {
     layer.addSublayer(child);
 }
 
+/// The color filling the layer's background — `None` clears it.
+pub fn set_background_color(layer: &CALayer, color: Option<&objc2_core_graphics::CGColor>) {
+    layer.setBackgroundColor(color);
+}
+
+/// Sets the layer's corner radius in points.
+pub fn set_corner_radius(layer: &CALayer, corner_radius: f64) {
+    layer.setCornerRadius(corner_radius);
+}
+
+/// Selects Core Animation's continuous superellipse corner curve
+/// (`kCACornerCurveContinuous`) on `layer`.
+pub fn set_continuous_corner_curve(layer: &CALayer) {
+    use objc2_quartz_core::kCACornerCurveContinuous;
+    // SAFETY: `kCACornerCurveContinuous` is a `CALayerCornerCurve` constant
+    // Core Animation exports.
+    layer.setCornerCurve(unsafe { kCACornerCurveContinuous });
+}
+
 /// A plain border stroke: `width` in points around `corner_radius`-rounded
 /// corners; `masks_to_bounds` clips the content to them.
 pub fn set_border(layer: &CALayer, width: f64, corner_radius: f64, masks_to_bounds: bool) {

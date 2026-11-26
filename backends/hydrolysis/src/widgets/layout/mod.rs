@@ -1,4 +1,5 @@
 pub mod badge;
+pub mod card;
 pub mod container;
 pub mod divider;
 pub mod dynamic;

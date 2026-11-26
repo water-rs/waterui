@@ -4,6 +4,7 @@
 use cherenkov_record::{BlendSpace, MaterialRegistry};
 use core::time::Duration;
 use nami::signal::IntoComputed;
+use waterui::widget::CardStyle;
 use waterui_core::animation::Animation;
 use waterui_core::handler::SharedAction;
 use waterui_core::plugin::Plugin;
@@ -693,5 +694,10 @@ pub trait WidgetTheme {
     /// The look of a disclosure control and its expandable content layout.
     fn disclosure(&self, spec: &super::DisclosureSpec, env: &Environment) -> super::DisclosureLook {
         super::disclosure::default_disclosure_look(spec, env)
+    }
+
+    /// The look of a card container for `style`.
+    fn card(&self, style: CardStyle, env: &Environment) -> super::CardLook {
+        super::card::default_card_look(style, env)
     }
 }

@@ -16,6 +16,7 @@ mod button_chrome;
 pub mod calendar;
 #[cfg(feature = "canvas")]
 pub mod canvas;
+pub mod card;
 pub mod clip_shape;
 #[cfg(feature = "color_picker")]
 pub mod color_picker;

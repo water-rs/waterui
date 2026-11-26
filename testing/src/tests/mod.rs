@@ -2010,3 +2010,108 @@ fn list_arrow_keys_stop_at_row_boundaries() {
     app.press_named_key("ArrowDown");
     assert_row_focus(&mut app, 2);
 }
+
+/// `card(text(..))` renders with default padding, `Surface` fill, and `Border`
+/// outline through `NativeBackend::card` and `WidgetTheme::card` even when no
+/// `CardTheme` plugin is installed.
+#[test]
+fn card_renders_padding_surface_fill_and_border_without_card_theme() {
+    use waterui::theme::{ColorScheme, Theme};
+    use waterui::widget::card;
+
+    fn pixel_at(rgba: &[u8], width: u32, x: u32, y: u32) -> [u8; 4] {
+        let idx = ((y * width + x) * 4) as usize;
+        [rgba[idx], rgba[idx + 1], rgba[idx + 2], rgba[idx + 3]]
+    }
+
+    // Use `TokenProbeStyle` (which installs no `CardTheme` and relies on the
+    // baseline `WidgetTheme::card` default) in dark mode where `Background`
+    // (#111827), `Surface` (#1F2937), and `Border` (#4B5563) are distinct.
+    let mut app = ui()
+        .viewport(260, 140)
+        .theme(token_probe::TokenProbeStyle)
+        .mount_offscreen(|| {
+            vstack((card(text("Card body"))
+                .title("Summary")
+                .subtitle("This week"),))
+            .padding_with(12.0)
+            .install(Theme::new().color_scheme(ColorScheme::Dark))
+        });
+
+    let title_bounds = app
+        .query()
+        .role(Role::LABEL)
+        .label("Summary")
+        .single()
+        .bounds();
+    let subtitle_bounds = app
+        .query()
+        .role(Role::LABEL)
+        .label("This week")
+        .single()
+        .bounds();
+    let body_bounds = app
+        .query()
+        .role(Role::LABEL)
+        .label("Card body")
+        .single()
+        .bounds();
+
+    // Card inner padding (16pt) + outer container padding (12pt) insets text from edges.
+    assert!(
+        title_bounds.x() >= 27.0 && title_bounds.y() >= 27.0,
+        "card title should be inset by card padding; got {title_bounds:?}"
+    );
+    assert!(
+        subtitle_bounds.y() > title_bounds.y() + title_bounds.height(),
+        "subtitle should sit below title with spacing: title={title_bounds:?}, subtitle={subtitle_bounds:?}"
+    );
+    assert!(
+        body_bounds.y() > subtitle_bounds.y() + subtitle_bounds.height(),
+        "body should sit below subtitle with spacing: subtitle={subtitle_bounds:?}, body={body_bounds:?}"
+    );
+
+    let snapshot = app.snapshot();
+    let rgba = snapshot.rgba8();
+    let width = snapshot.width();
+    let height = snapshot.height();
+
+    // Outer viewport corner at (2, 2) is viewport background.
+    let bg_px = pixel_at(rgba, width, 2, 2);
+
+    // Scan vertically down through the card's horizontal center from above the
+    // card into the top padding band above the title: we must encounter both
+    // border pixels (distinct from bg and surface) and surface fill pixels
+    // (distinct from bg) before reaching the title text.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "viewport bounds are positive pixel coordinates within 260x140"
+    )]
+    let probe_x = title_bounds.width().mul_add(0.5, title_bounds.x()) as u32;
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "viewport bounds are positive pixel coordinates within 260x140"
+    )]
+    let title_top_y = (title_bounds.y().floor() as u32).min(height - 1);
+    assert!(title_top_y > 16, "expected top padding band above title");
+
+    // Interior padding pixel ~8pt above the title should be the card's `Surface` fill.
+    let surface_px = pixel_at(rgba, width, probe_x, title_top_y - 8);
+    assert_ne!(
+        surface_px, bg_px,
+        "card interior padding pixel must be painted with Surface fill, not Background: bg={bg_px:?}, surface={surface_px:?}"
+    );
+
+    // Along the top edge above the padding band (y in 2..title_top_y - 8),
+    // there must be a border stroke distinct from both Background and Surface.
+    let has_border = (2..title_top_y - 8).any(|y| {
+        let px = pixel_at(rgba, width, probe_x, y);
+        px != bg_px && px != surface_px
+    });
+    assert!(
+        has_border,
+        "card perimeter must render a visible Border stroke distinct from Background ({bg_px:?}) and Surface ({surface_px:?})"
+    );
+}
