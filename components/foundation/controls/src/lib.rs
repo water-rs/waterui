@@ -19,7 +19,7 @@ pub use label::{
     LabelDisplayMode, LabelKind, SemanticLabel, TitleLabel, label,
 };
 pub mod slot;
-pub use slot::{IconSlot, NoopSlot, SlotBuilder, StyleSlot};
+pub use slot::{IconSlot, NoopSlot, SlotBuilder};
 #[cfg(feature = "menu")]
 pub mod menu;
 #[cfg(feature = "menu")]

@@ -1,7 +1,6 @@
 //! Typed child-slot builders and backend-provided probes shared across controls
 //! and navigation without `AnyView` erasure.
 
-use alloc::boxed::Box;
 use alloc::rc::Rc;
 use core::any::Any;
 use core::fmt;
@@ -9,7 +8,7 @@ use core::fmt;
 use waterui_core::backend::{Backend, ChildSlot};
 use waterui_core::metadata::MetadataKey;
 use waterui_core::view::hook::{HookList, HookableView};
-use waterui_core::{AnyView, Environment, Metadata, Native, NativeView, View};
+use waterui_core::{AnyView, Environment, Metadata, NativeView, View};
 
 /// A zero-cost [`ChildSlot`] that discards child views without monomorphizing
 /// their dispatch, used by non-rendering probes and chord inspection.
@@ -179,45 +178,5 @@ impl<S> Clone for IconSlot<S> {
 impl<S> fmt::Debug for IconSlot<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("IconSlot")
-    }
-}
-
-/// Backend child slot carried across subtree style hooks (`ButtonStyleHook` /
-/// `ToggleStyleHook`) without erasing through [`AnyView`].
-#[doc(hidden)]
-pub struct StyleSlot(Box<dyn Any>);
-
-impl StyleSlot {
-    /// Wraps a backend-family child slot.
-    #[must_use]
-    pub fn new<T: 'static>(slot: T) -> Self {
-        Self(Box::new(slot))
-    }
-
-    /// Recovers the concrete backend-family child slot.
-    ///
-    /// # Errors
-    ///
-    /// Returns `self` unchanged if `T` does not match the stored slot type.
-    pub fn downcast<T: 'static>(self) -> Result<T, Self> {
-        self.0.downcast::<T>().map(|boxed| *boxed).map_err(Self)
-    }
-}
-
-impl fmt::Debug for StyleSlot {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("StyleSlot")
-    }
-}
-
-impl NativeView for StyleSlot {}
-
-impl View for StyleSlot {
-    fn body(self, _env: &Environment) -> impl View {
-        Native::new(self)
-    }
-
-    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
-        backend.native(self, env, cx)
     }
 }
