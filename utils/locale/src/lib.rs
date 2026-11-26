@@ -57,8 +57,6 @@ mod system;
 
 // Re-exports
 pub use catalog::TranslationCatalog;
-#[cfg(feature = "number")]
-pub use format::LocalizedArgument;
 pub use format::LocalizedDisplay;
 #[cfg(feature = "list")]
 pub use format::LocalizedList;
@@ -75,6 +73,13 @@ pub use format::relative::{
 };
 #[cfg(feature = "number")]
 pub use format::unit::{Feet, Kilometer, Length, LengthUnit, Meter, Mile};
+#[cfg(feature = "number")]
+pub use format::{
+    __LocalizedArgFallback, __LocalizedArgModeNumeric, __LocalizedArgModeToPrimitive,
+    __LocalizedArgModeToPrimitiveDisplay, __LocalizedArgNumber, __LocalizedArgProbe,
+    __LocalizedArgToPrimitive, __LocalizedArgToPrimitiveDisplay, LocalizedArgument,
+    LocalizedNumber,
+};
 pub use locale::{Locale, locales};
 pub use parser::TranslationParseError;
 pub use plural::{PluralCategory, select_plural, valid_categories};

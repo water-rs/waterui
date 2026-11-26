@@ -329,13 +329,9 @@ fn build_format_signal(
     idents: &[Ident],
 ) -> TokenStream2 {
     let locale_ident = unique_ident("__waterui_format_locale", idents);
-    let bindings = idents.iter().map(|ident| {
-        quote! {
-            let #ident = #waterui::locale::LocalizedArgument::new(&#ident, &#locale_ident);
-        }
-    });
+    let bindings = localized_argument_bindings(waterui, idents, &locale_ident);
     let body = quote! {
-        #(#bindings)*
+        #bindings
         #waterui::reactive::__alloc::format!(#format_str)
     };
     let signal = build_signal_map(waterui, idents, &body);
@@ -351,7 +347,15 @@ fn localized_argument_bindings(
     locale_ident: &Ident,
 ) -> TokenStream2 {
     quote! {
-        #(let #idents = #waterui::locale::LocalizedArgument::new(&#idents, &#locale_ident);)*
+        #(let #idents = {
+            use #waterui::locale::{
+                __LocalizedArgFallback as _,
+                __LocalizedArgNumber as _,
+                __LocalizedArgToPrimitive as _,
+                __LocalizedArgToPrimitiveDisplay as _,
+            };
+            (&&&&#waterui::locale::__LocalizedArgProbe(&#idents)).__waterui_localized_arg(&#locale_ident)
+        };)*
     }
 }
 
