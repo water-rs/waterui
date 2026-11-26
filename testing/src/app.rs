@@ -9,12 +9,12 @@ use accesskit::{
 };
 use hydrolysis::draw::{BlendSpace, MaterialRegistry};
 use hydrolysis::theme::{
-    BadgeLook, ButtonLook, ButtonSpec, CardLook, CheckboxLook, DisclosureLook, DisclosureSpec,
-    FloatingLook, GlassLook, IndicatorLook, LinearProgressLook, ListLook, ListSpec, MenuLook,
-    MenuPickerLook, MenuSpec, NavigationBarLook, NavigationSpec, PickerSpec, ProgressSpec,
-    RadioGroupLook, ScrollIndicatorLook, SegmentedLook, SegmentedSpec, SliderLook, SliderSpec,
-    SnackbarLook, StepperLook, StepperSpec, SwitchLook, TableLook, TabsLook, TabsSpec,
-    TextFieldLook, TextFieldSpec, ToggleSpec, WidgetTheme,
+    BadgeLook, ButtonLook, ButtonSpec, CardLook, CheckboxLook, DialogLook, DisclosureLook,
+    DisclosureSpec, FloatingLook, GlassLook, IndicatorLook, LinearProgressLook, ListLook, ListSpec,
+    MenuLook, MenuPickerLook, MenuSpec, NavigationBarLook, NavigationSpec, PickerSpec,
+    ProgressSpec, RadioGroupLook, ScrollIndicatorLook, SegmentedLook, SegmentedSpec, SheetLook,
+    SliderLook, SliderSpec, SnackbarLook, StepperLook, StepperSpec, SwitchLook, TableLook,
+    TabsLook, TabsSpec, TextFieldLook, TextFieldSpec, ToggleSpec, WidgetTheme,
 };
 use hydrolysis::{
     AccessibilityActivationPointError, FontFamilyResolution, HeadlessColorFormat, HeadlessRuntime,
@@ -148,6 +148,14 @@ impl WidgetTheme for ErasedStyle {
 
     fn floating(&self, env: &Environment) -> FloatingLook {
         self.0.floating(env)
+    }
+
+    fn dialog(&self, env: &Environment) -> DialogLook {
+        self.0.dialog(env)
+    }
+
+    fn sheet(&self, env: &Environment) -> SheetLook {
+        self.0.sheet(env)
     }
 }
 

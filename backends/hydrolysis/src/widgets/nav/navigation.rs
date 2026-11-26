@@ -33,8 +33,8 @@ use waterui::navigation::split::NavigationSplitDetailBuilder;
 use waterui::navigation::{
     AnyNavigationTransition, Bar, NavigationDestinationState, NavigationSearch,
     NavigationSplitLayout, NavigationStackLayout, NavigationTitleDisplayMode,
-    NavigationToolbarPlacement, NavigationTransitionDirection, NavigationView,
-    ResolvedNavigationView, RetainedNavigationTransition, SlotBuilder,
+    NavigationToolbarPlacement, NavigationTransitionDirection, ResolvedNavigationView,
+    RetainedNavigationTransition, SlotBuilder,
 };
 use waterui::theme::color::{Background, Surface};
 use waterui::theme::install_font_signal;
@@ -348,7 +348,8 @@ impl<E: crate::text::TextEngine> NavigationViewRenderState<E> {
         navigation: ResolvedNavigationView<HeldChild<E>>,
         env: &Environment,
     ) -> Self {
-        let NavigationView { bar, content, .. } = navigation;
+        let (content, view) = navigation.split_content();
+        let bar = view.into_bar();
         let Bar {
             title,
             subtitle,
@@ -2104,21 +2105,13 @@ impl<E: crate::text::TextEngine> NavigationStackRenderState<E> {
 
     fn resolve_root(&mut self, env: &Environment) -> Option<NavigationDestinationState> {
         let unresolved_root = self.unresolved_root.take()?;
-        let NavigationView {
-            bar,
-            content,
-            state,
-            // The root is never pushed, so it has no arrival to style.
-            transition: _,
-        } = unresolved_root.resolve(env);
+        let mut root = unresolved_root.resolve(env);
+        let state = root.take_state();
+        // The root is never pushed, so it has no arrival to style.
+        let _ = root.take_transition();
         self.background = Some(Color::new(Background).resolve(env));
         self.root = Some(crate::renderer::navigation_state::StackPage::new(
-            waterui_core::Native::new(NavigationView {
-                bar,
-                content,
-                state: NavigationDestinationState::default(),
-                transition: None,
-            }),
+            waterui_core::Native::new(root),
         ));
         Some(state)
     }

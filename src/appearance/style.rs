@@ -108,8 +108,7 @@ impl Default for FloatingStyle {
 /// radius, and an optional silhouette override. When no silhouette is given,
 /// the shadow follows the caster's `.clip(...)` shape (falling back to a
 /// rectangle when unclipped).
-#[derive(Debug)]
-#[non_exhaustive]
+#[derive(Debug, Clone)]
 pub struct Shadow {
     /// The color of the shadow, including alpha for opacity.
     color: Color,
@@ -213,14 +212,6 @@ impl Default for Shadow {
     /// A moderate black shadow slightly below the caster.
     fn default() -> Self {
         Self::new(4.0).offset(0.0, 2.0)
-    }
-}
-
-#[allow(clippy::cast_possible_truncation)]
-impl<T: Into<f64>> From<T> for Shadow {
-    fn from(value: T) -> Self {
-        let v = value.into() as f32;
-        Self::new(v).offset(0.0, v)
     }
 }
 
@@ -336,8 +327,7 @@ impl Default for Anchor {
 /// let factor = binding::<f32>(1.0_f32).animated();
 /// let pulsing = text!("Hello").scale_xy(factor, 1.0);
 /// ```
-#[derive(Debug)]
-#[non_exhaustive]
+#[derive(Debug, Clone)]
 pub struct Scale {
     /// Scale factor along X axis (1.0 = no scale)
     x: Computed<f32>,
@@ -437,8 +427,7 @@ impl Scale {
 /// let angle = binding::<Angle>(Angle::ZERO).animated();
 /// let spinning = text!("Hello").rotation(angle);
 /// ```
-#[derive(Debug)]
-#[non_exhaustive]
+#[derive(Debug, Clone)]
 pub struct Rotation {
     /// Rotation angle (positive = clockwise)
     angle: Computed<Angle>,
@@ -503,12 +492,12 @@ impl Rotation {
 /// let x = binding::<f32>(0.0_f32).animated();
 /// let sliding = text!("Hello").offset(x, 0.0);
 /// ```
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Offset {
     /// Offset along X axis in points
-    pub x: Computed<f32>,
+    x: Computed<f32>,
     /// Offset along Y axis in points
-    pub y: Computed<f32>,
+    y: Computed<f32>,
 }
 
 impl MetadataKey for Offset {}
@@ -521,5 +510,58 @@ impl Offset {
             x: x.into_signal_f32().computed(),
             y: y.into_signal_f32().computed(),
         }
+    }
+
+    /// Offset along X axis in points.
+    #[must_use]
+    pub const fn x(&self) -> &Computed<f32> {
+        &self.x
+    }
+
+    /// Offset along Y axis in points.
+    #[must_use]
+    pub const fn y(&self) -> &Computed<f32> {
+        &self.y
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use nami::Signal;
+    use waterui_core::Angle;
+    use waterui_shape::RoundedRectangle;
+
+    use super::{Anchor, Offset, Rotation, Scale, Shadow};
+
+    #[test]
+    fn style_transforms_and_shadow_clone_and_expose_accessors() {
+        let shadow = Shadow::new(6.0)
+            .offset(1.0, 2.0)
+            .silhouette(RoundedRectangle::new(8.0));
+        let shadow_clone = shadow.clone();
+        assert!((shadow.radius().snapshot() - 6.0).abs() < f32::EPSILON);
+        assert!((shadow_clone.radius().snapshot() - 6.0).abs() < f32::EPSILON);
+        assert!((shadow_clone.offset_x().snapshot() - 1.0).abs() < f32::EPSILON);
+        assert!((shadow_clone.offset_y().snapshot() - 2.0).abs() < f32::EPSILON);
+        assert!(shadow_clone.get_silhouette().is_some());
+
+        let scale = Scale::xy_from(1.25, 0.75, Anchor::TOP_LEFT);
+        let scale_clone = scale.clone();
+        assert_eq!(scale.anchor(), Anchor::TOP_LEFT);
+        assert!((scale_clone.x().snapshot() - 1.25).abs() < f32::EPSILON);
+        assert!((scale_clone.y().snapshot() - 0.75).abs() < f32::EPSILON);
+        assert_eq!(scale_clone.anchor(), Anchor::TOP_LEFT);
+
+        let rotation = Rotation::from_anchor(Angle::degrees(30.0), Anchor::BOTTOM_RIGHT);
+        let rotation_clone = rotation.clone();
+        assert_eq!(rotation.anchor(), Anchor::BOTTOM_RIGHT);
+        assert_eq!(rotation_clone.angle().snapshot(), Angle::degrees(30.0));
+        assert_eq!(rotation_clone.anchor(), Anchor::BOTTOM_RIGHT);
+
+        let offset = Offset::new(12.0, -4.0);
+        let offset_clone = offset.clone();
+        assert!((offset.x().snapshot() - 12.0).abs() < f32::EPSILON);
+        assert!((offset_clone.x().snapshot() - 12.0).abs() < f32::EPSILON);
+        assert!((offset_clone.y().snapshot() - (-4.0)).abs() < f32::EPSILON);
     }
 }

@@ -7,9 +7,7 @@ use nami::Computed;
 #[cfg(feature = "menu")]
 use waterui_controls::menu::{MenuItem, MenuView};
 use waterui_core::layout::StretchAxis;
-use waterui_core::{Environment, View, raw_view};
-use waterui_graphics::color::Color;
-use waterui_layout::{frame::Frame, stack};
+use waterui_core::raw_view;
 
 /// A thin line that separates content.
 ///
@@ -25,21 +23,6 @@ pub struct Divider;
 // thick on the main axis — which orientation that is resolves from
 // `stack::Axis`, but the cross-axis answer is the same either way.
 raw_view!(Divider, StretchAxis::CrossAxis);
-
-impl Divider {
-    /// The divider composed from `WaterUI` views: a one-point line in the
-    /// separator colour, oriented across the enclosing stack. How a backend
-    /// without a separator of its own realizes it.
-    pub fn composed(self, env: &Environment) -> impl View {
-        let vertical_divider = matches!(env.get::<stack::Axis>(), Some(stack::Axis::Horizontal));
-
-        if vertical_divider {
-            Frame::new(Color::border()).width(1.0)
-        } else {
-            Frame::new(Color::border()).height(1.0)
-        }
-    }
-}
 
 #[cfg(feature = "menu")]
 impl From<Divider> for MenuItem {

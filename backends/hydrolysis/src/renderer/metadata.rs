@@ -1194,6 +1194,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         {
             renderer.popup_menu.front_dialog = Some(RegisteredDialog {
                 env: dialog_modal_environment(env, &value.dialog),
+                build_layer: Rc::clone(&value.build_layer),
                 content: Rc::clone(&value.content),
             });
         }
