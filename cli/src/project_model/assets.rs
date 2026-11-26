@@ -30,6 +30,7 @@ use zenwave::{Client as _, Method};
 
 use crate::project::Project;
 use crate::project_model::facts::{Fact, Scope};
+use crate::project_model::project::ResolvedManifestFeatures;
 use crate::project_model::project_types::PermissionKey;
 
 mod android_manifest;
@@ -2706,6 +2707,47 @@ pub async fn backend_features(
     Ok(forwarded_backend_features(&graph, destinations))
 }
 
+/// Resolve the `waterui-dylib/<feature>` forwards for a shared-runtime host build.
+///
+/// Generated non-Windows host crates depend on `waterui-dylib` with
+/// `default-features = false` behind their own `dev` feature. Forwarding every
+/// enabled `waterui` / `waterui-internal` feature that `waterui-dylib` declares
+/// compiles the shared runtime with the exact resolved feature set of the
+/// application.
+///
+/// # Errors
+/// Returns an error when the managed crate's lock cannot be seeded or Cargo
+/// cannot resolve the generated manifest.
+pub async fn shared_runtime_features(
+    project: &Project,
+    build_manifest: &Path,
+    target: &Triple,
+    features: &[String],
+) -> eyre::Result<Vec<String>> {
+    seed_managed_crate_lock(project, build_manifest).await?;
+    let graph = project
+        .generated_manifest_features(build_manifest, target, features)
+        .await?;
+    Ok(forwarded_shared_runtime_features(&graph))
+}
+
+fn forwarded_shared_runtime_features(graph: &ResolvedManifestFeatures) -> Vec<String> {
+    let Some(declared) = graph.declared.get("waterui-dylib") else {
+        return Vec::new();
+    };
+    let mut active = BTreeSet::new();
+    for package in ["waterui", "waterui-internal"] {
+        if let Some(enabled) = graph.enabled.get(package) {
+            active.extend(enabled.iter().map(String::as_str));
+        }
+    }
+    active
+        .into_iter()
+        .filter(|feature| !matches!(*feature, "default" | "all") && declared.contains(*feature))
+        .map(|feature| format!("waterui-dylib/{feature}"))
+        .collect()
+}
+
 fn forwarded_backend_features(
     graph: &super::project::ResolvedManifestFeatures,
     destinations: &[&str],
@@ -2868,6 +2910,40 @@ mod tests {
         assert_eq!(
             forwarded_backend_features(&graph, &["older-backend"]),
             [] as [std::string::String; 0]
+        );
+    }
+
+    #[test]
+    fn shared_runtime_features_forward_resolved_waterui_features_to_dylib() {
+        let graph = ResolvedManifestFeatures {
+            enabled: BTreeMap::from([
+                (
+                    "waterui".into(),
+                    BTreeSet::from(["default".into(), "gpu".into(), "list".into()]),
+                ),
+                (
+                    "waterui-internal".into(),
+                    BTreeSet::from(["inspector".into(), "map".into(), "all".into()]),
+                ),
+            ]),
+            declared: BTreeMap::from([(
+                "waterui-dylib".into(),
+                BTreeSet::from([
+                    "default".into(),
+                    "all".into(),
+                    "gpu".into(),
+                    "inspector".into(),
+                    "list".into(),
+                ]),
+            )]),
+        };
+        assert_eq!(
+            forwarded_shared_runtime_features(&graph),
+            [
+                "waterui-dylib/gpu",
+                "waterui-dylib/inspector",
+                "waterui-dylib/list",
+            ]
         );
     }
 

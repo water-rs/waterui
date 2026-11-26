@@ -11,8 +11,6 @@ publish = false
 [lib]
 crate-type = ["lib"]
 
-[features]
-dev = ["waterui/dynamic_linking"]
 
 [lints]
 workspace = true

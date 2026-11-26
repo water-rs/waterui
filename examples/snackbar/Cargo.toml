@@ -10,8 +10,6 @@ keywords = ["ui", "framework", "example", "snackbar"]
 categories = ["gui"]
 publish = false
 
-[features]
-dev = ["waterui/dynamic_linking"]
 
 [lints]
 workspace = true
