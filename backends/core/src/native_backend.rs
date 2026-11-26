@@ -2375,13 +2375,6 @@ mod tests {
     fn an_avatar_keeps_its_fallback_typed() {
         use waterui::widget::avatar::{Avatar, avatar};
 
-        let env = Environment::new();
-        let reached = |view| {
-            let mut recorder = Recorder::default();
-            Realize::child(&mut recorder, view, &env, ());
-            recorder.reached.into_inner()
-        };
-
         assert_eq!(reached(avatar("Ada Lovelace")), ["dynamic_range", "avatar"]);
 
         let custom = || Avatar::new("Katherine Johnson", Spacer::flexible);
