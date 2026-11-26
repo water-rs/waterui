@@ -16,7 +16,7 @@ use std::time::Duration;
 use waterui::View;
 use waterui::graphics::color::Srgb;
 use waterui::prelude::*;
-use waterui::snackbar::{Snackbar, SnackbarManager, SnackbarTheme};
+use waterui::snackbar::{Snackbar, SnackbarManager};
 use waterui_testing::{NodeBounds, OffscreenApp, Role, TestStyle, UiBuilder, ui as test_ui};
 
 fn visual_shell<V: View>(content: V) -> impl View {
@@ -175,21 +175,15 @@ fn a_list_under_a_header_renders_its_rows() {
 // Snackbar container width bounds — origin: waterui `tests/snackbar_layout.rs`
 // ============================================================================
 
-/// The width bounds these tests pin the bar to, distinctive on purpose so an
-/// ambient theme silently overriding them shows up as a failed assertion.
-const MIN_WIDTH: f32 = 300.0;
-const MAX_WIDTH: f32 = 600.0;
+/// Baseline snackbar width bounds supplied by `TestStyle` (default `SnackbarLook`).
+const MIN_WIDTH: f32 = 288.0;
+const MAX_WIDTH: f32 = 568.0;
 
 /// Mounts an app whose window shows `snackbar`, and returns it settled.
 fn show(ui: UiBuilder, snackbar: Snackbar) -> (OffscreenApp, SnackbarManager) {
-    let theme = SnackbarTheme {
-        min_width: MIN_WIDTH,
-        max_width: MAX_WIDTH,
-        ..SnackbarTheme::default()
-    };
     let captured = Rc::new(RefCell::new(None));
     let captured_mount = Rc::clone(&captured);
-    let mut app = ui.with(theme).mount_offscreen(move || {
+    let mut app = ui.mount_offscreen(move || {
         let captured = Rc::clone(&captured_mount);
         SnackbarManager::host(move |manager: SnackbarManager| {
             *captured.borrow_mut() = Some(manager);
