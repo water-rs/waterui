@@ -36,6 +36,7 @@ impl Default for VStackLayout {
     fn default() -> Self {
         Self {
             alignment: HorizontalAlignment::default(),
+            // Frozen default stack spacing from docs/layout-spec.md (§4.1).
             spacing: Computed::constant(10.0),
         }
     }
@@ -331,13 +332,21 @@ where
 {
     fn from_iter<T: IntoIterator<Item = V>>(iter: T) -> Self {
         let contents = iter.into_iter().collect::<Vec<_>>();
-        Self::new(HorizontalAlignment::default(), 10.0, contents)
+        Self {
+            layout: VStackLayout::default(),
+            contents: (contents,),
+            virtualize_axes: None,
+        }
     }
 }
 
 /// Convenience constructor that centres children and uses the default spacing.
 pub fn vstack<C: ViewSequence>(contents: C) -> VStack<(C,)> {
-    VStack::new(HorizontalAlignment::Center, 10.0, contents)
+    VStack {
+        layout: VStackLayout::default(),
+        contents: (contents,),
+        virtualize_axes: None,
+    }
 }
 
 impl<C, F, V> View for VStack<ForEach<C, F, V>>
@@ -402,10 +411,7 @@ mod tests {
 
     #[test]
     fn test_vstack_size_two_children() {
-        let layout = VStackLayout {
-            alignment: HorizontalAlignment::Center,
-            spacing: Computed::constant(10.0),
-        };
+        let layout = VStackLayout::default();
 
         let mut child1 = MockSubView {
             size: Size::new(100.0, 30.0),
@@ -543,10 +549,7 @@ mod tests {
     #[test]
     fn a_cross_filling_child_still_sets_the_column_width() {
         // TextField-like component: stretches horizontally but has fixed height
-        let layout = VStackLayout {
-            alignment: HorizontalAlignment::Center,
-            spacing: Computed::constant(10.0),
-        };
+        let layout = VStackLayout::default();
 
         let mut label = MockSubView {
             size: Size::new(50.0, 20.0),
@@ -581,10 +584,7 @@ mod tests {
     /// are the same question about the same children.
     #[test]
     fn a_column_reports_its_widest_child_however_it_is_asked() {
-        let layout = VStackLayout {
-            alignment: HorizontalAlignment::Center,
-            spacing: Computed::constant(10.0),
-        };
+        let layout = VStackLayout::default();
 
         let mut label = MockSubView {
             size: Size::new(50.0, 20.0),
