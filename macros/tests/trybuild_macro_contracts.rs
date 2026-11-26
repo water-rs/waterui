@@ -13,9 +13,9 @@
 //! `macro_expansion.rs`, compiled by the test build itself.
 //!
 //! - `first_contact`: the trait-bound errors an author meets first on `View`,
-//!   `Views`, `Handler`, `Extractor`, `Identifiable`, `IntoText` and
-//!   `IntoLabel`; the `.stderr` files pin the WaterUI-specific message, label
-//!   and note each trait reports instead of rustc's bare "trait is not
+//!   `Views`, `Handler`, `Extractor`, `Identifiable`, `IntoText`, `IntoLabel`,
+//!   and `ListContent`; the `.stderr` files pin the WaterUI-specific message,
+//!   label and note each trait reports instead of rustc's bare "trait is not
 //!   implemented".
 //! - `list_selection`: `List::content` rejecting a selection type its rows
 //!   are not tagged by, and a selection over rows none of which is tagged.
@@ -38,6 +38,7 @@ fn macro_contracts() {
     cases.compile_fail("tests/ui/first_contact/identifiable.rs");
     cases.compile_fail("tests/ui/first_contact/into_text.rs");
     cases.compile_fail("tests/ui/first_contact/into_label.rs");
+    cases.compile_fail("tests/ui/first_contact/list_content.rs");
 
     cases.compile_fail("tests/ui/list_selection/fail_untagged_selection.rs");
     cases.compile_fail("tests/ui/list_selection/fail_untagged_multi_selection.rs");

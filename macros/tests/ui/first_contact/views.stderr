@@ -15,13 +15,15 @@ error[E0277]: `waterui::prelude::StateList<Row>` is not a WaterUI view collectio
              SharedAnyViews<V>
              Vec<V>
              [V; N]
-             component::selection_support::WithId<C, F>
              waterui::views::Constant<C>
              waterui::views::Map<C, F>
+             waterui_controls::selection_support::WithId<C, F>
 note: required by a bound in `waterui::prelude::LazyContainer::<V>::new`
   --> $WORKSPACE/components/foundation/layout/src/containers/container.rs
    |
    | impl<V: View> LazyContainer<V> {
    |     /// Wraps the supplied layout object and views into a lazy container view.
-   |     pub fn new(layout: impl Layout + 'static, contents: impl Views<View = V> + 'static) -> Self {
-   |                                                              ^^^^^^^^^^^^^^^ required by this bound in `LazyContainer::<V>::new`
+   |     pub fn new<C>(layout: impl Layout + 'static, contents: C) -> Self
+   |     where
+   |         C: Views<View = V> + 'static,
+   |            ^^^^^^^^^^^^^^^ required by this bound in `LazyContainer::<V>::new`
