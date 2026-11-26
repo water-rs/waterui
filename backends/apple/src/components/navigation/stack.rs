@@ -427,7 +427,7 @@ mod platform {
             let ctx = renderer.context();
             let (body, mut view) = view.split_content();
             let leaf = ctx.realize(body);
-            let bar = BarState::new(&mut view.bar, &ctx);
+            let bar = BarState::new(view.bar_mut(), &ctx);
             let host = HostView::new(self.mtm, KitRect::ZERO);
             host.set_layout_handler(|host| {
                 let rect = view::bounds(host);
@@ -454,8 +454,8 @@ mod platform {
                 crate::primary_content::declared_scroll_view(controller.view()?.as_ref())
             });
             let root = matches!(mount, Mount::Root);
-            let state = Rc::new(RefCell::new(core::mem::take(&mut view.state)));
-            let transition = page_transition(view.transition.as_ref(), &self.transition);
+            let state = Rc::new(RefCell::new(view.take_state()));
+            let transition = page_transition(view.transition(), &self.transition);
             let mut keep = KeepAlive::default();
             let mut page = self.nav_page(&bar, root, &mut keep, &state);
             if let Some(search) = bar.search.as_ref() {
@@ -1101,7 +1101,7 @@ mod platform {
             let ctx = renderer.context();
             let (body, mut view) = view.split_content();
             let leaf = ctx.realize(body);
-            let bar = BarState::new(&mut view.bar, &ctx);
+            let bar = BarState::new(view.bar_mut(), &ctx);
             let host = HostView::new(self.mtm, cocoa_ui::geometry::Rect::ZERO);
             let leaf = match mount {
                 Mount::Top => LiveChild::mount_inserted(leaf, &host, None, self.env()),
@@ -1122,8 +1122,8 @@ mod platform {
                     set_frame(&subview, context.content_frame(&subview));
                 }
             });
-            let state = Rc::new(RefCell::new(core::mem::take(&mut view.state)));
-            let transition = page_transition(view.transition.as_ref(), &self.transition);
+            let state = Rc::new(RefCell::new(view.take_state()));
+            let transition = page_transition(view.transition(), &self.transition);
             let mut keep = KeepAlive::default();
             {
                 let driver = self

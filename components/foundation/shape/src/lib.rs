@@ -29,8 +29,17 @@ pub use waterui_core::Angle;
 use waterui_core::{Environment, View, metadata::MetadataKey};
 use waterui_graphics::color::Color;
 
+pub mod background;
+pub mod border;
+pub mod filter;
 mod morph;
 
+pub use background::{
+    ColorSignalBackground, Glass, GlassBackground, GlassStyle, IntoBackground, Material,
+    MaterialBackground, MaterialGroup, ViewBackground,
+};
+pub use border::Border;
+pub use filter::Opacity;
 pub use morph::MorphShape;
 
 // ============================================================================
@@ -708,7 +717,7 @@ impl Shape for Path {
 /// pill. The kind says what the shape *is*, letting a backend resolve a
 /// normalized radius against the shorter side the way [`FilledShape`] already
 /// does. The commands remain the fallback for [`ShapeKind::CustomPath`].
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ClipShape {
     kind: ShapeKind,
     commands: Vec<PathCommand>,

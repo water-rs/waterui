@@ -25,7 +25,13 @@ use waterui::ViewRenderer;
 use waterui::view_renderer::CaptureBinder;
 
 use waterui_core::animation::FrameRateVote;
-use waterui_core::backend::{Backend, DynBackend, ErasedPayload, MapSlots, cast};
+#[cfg(any(
+    waterui_feature = "capture",
+    waterui_feature = "menu",
+    waterui_feature = "snackbar"
+))]
+use waterui_core::backend::MapSlots;
+use waterui_core::backend::{Backend, DynBackend, ErasedPayload, HookSlot, cast};
 use waterui_core::metadata::MetadataKey;
 use waterui_core::view::hook::{ComposeErased, ErasedHooks, HookList, HookableView};
 use waterui_core::{AnyView, Environment, Metadata, NativeView, View, contract_violation};
@@ -259,17 +265,9 @@ macro_rules! native_backend {
             $(
                 $(#[cfg($pcfg)])*
                 fn $parent<$child: ChildView<Self>>(&mut self, native: $parent_ty, env: &Environment, cx: Self::Ctx) -> Self::Output {
-                    let native = match cast::<$parent_ty, waterui::component::button::ButtonConfig<$child>>(native) {
-                        Ok(config) => return self.hook_button(config, env, cx),
-                        Err(native) => native,
-                    };
-                    #[cfg(waterui_feature = "toggle")]
-                    let native = match cast::<$parent_ty, waterui::component::toggle::ToggleConfig<$child>>(native) {
-                        Ok(config) => return self.hook_toggle(config, env, cx),
-                        Err(native) => native,
-                    };
-                    let native = MapSlots::map_slots(native, self.rehooker::<$child>());
-                    self.inner().$parent(native, env, cx)
+                    self.hook_parent(native, env, cx, |inner, mapped, env, cx| {
+                        inner.$parent(mapped, env, cx)
+                    })
                 }
             )*
 
@@ -298,7 +296,7 @@ macro_rules! native_backend {
                     Ok(slot) => return slot.into_child().realize(self.inner(), env, cx),
                     Err(native) => native,
                 };
-                let native = match cast::<T, waterui::component::StyleSlot>(native) {
+                let native = match cast::<T, HookSlot>(native) {
                     Ok(slot) => match slot.downcast::<$crate::Child<B::Family>>() {
                         Ok(child) => return child.realize(self.inner(), env, cx),
                         Err(slot) => return self.inner().provided(slot, env, cx),
@@ -315,7 +313,7 @@ macro_rules! native_backend {
                 if let Some(slot) = native.take::<$crate::hooked::SlotView<B::Family>>() {
                     return slot.into_child().realize(self.inner(), env, cx);
                 }
-                if let Some(slot) = native.take::<waterui::component::StyleSlot>() {
+                if let Some(slot) = native.take::<HookSlot>() {
                     return match slot.downcast::<$crate::Child<B::Family>>() {
                         Ok(child) => child.realize(self.inner(), env, cx),
                         Err(slot) => self.inner().provided(slot, env, cx),
@@ -365,7 +363,7 @@ macro_rules! native_backend {
                 Ok(slot) => return slot.into_child().realize(backend, env, cx),
                 Err(native) => native,
             };
-            let native = match cast::<T, waterui::component::StyleSlot>(native) {
+            let native = match cast::<T, HookSlot>(native) {
                 Ok(slot) => match slot.downcast::<$crate::Child<B::Family>>() {
                     Ok(child) => return child.realize(backend, env, cx),
                     Err(slot) => return backend.provided(slot, env, cx),
@@ -490,7 +488,7 @@ macro_rules! native_backend {
             if let Some(slot) = native.take::<$crate::hooked::SlotView<B::Family>>() {
                 return slot.into_child().realize(backend, env, cx);
             }
-            if let Some(slot) = native.take::<waterui::component::StyleSlot>() {
+            if let Some(slot) = native.take::<HookSlot>() {
                 return match slot.downcast::<$crate::Child<B::Family>>() {
                     Ok(child) => child.realize(backend, env, cx),
                     Err(slot) => backend.provided(slot, env, cx),
@@ -1284,7 +1282,7 @@ mod tests {
     #[cfg(waterui_feature = "navigation")]
     impl<C> Parent<C> for waterui::navigation::ResolvedNavigationView<C> {
         fn children(self) -> Vec<C> {
-            alloc::vec![self.content]
+            alloc::vec![self.into_content()]
         }
     }
 
@@ -1292,7 +1290,7 @@ mod tests {
     #[cfg(waterui_feature = "navigation")]
     impl<C> Parent<C> for waterui::navigation::NavigationStackLayout<C> {
         fn children(self) -> Vec<C> {
-            alloc::vec![self.resolve(&Environment::new()).content]
+            alloc::vec![self.resolve(&Environment::new()).into_content()]
         }
     }
 
@@ -1308,14 +1306,14 @@ mod tests {
             let mut children = alloc::vec![primary.build(), placeholder.build()];
             if let Some(selected) = primary_sel.snapshot() {
                 if let Some(content) = &content {
-                    children.push(content.build(selected).content);
+                    children.push(content.build(selected).into_content());
                 }
                 if secondary_sel.is_none() {
-                    children.push(detail.build(selected).content);
+                    children.push(detail.build(selected).into_content());
                 }
             }
             if let Some(selected) = secondary_sel.as_ref().and_then(nami::Signal::snapshot) {
-                children.push(detail.build(selected).content);
+                children.push(detail.build(selected).into_content());
             }
             children
         }
@@ -2368,6 +2366,225 @@ mod tests {
             [core::any::type_name::<
                 Metadata<waterui::view_renderer::CaptureBinder<AnyView>, AnyView>,
             >()]
+        );
+    }
+
+    mod custom_parent_fixture {
+        use alloc::rc::Rc;
+        use core::cell::Cell;
+
+        use waterui::layout::Spacer;
+        use waterui::layout::scroll::scroll;
+        use waterui_core::backend::{
+            ChildSlot, HookSlot, HookableParent, MapSlots, ParentHookScope, offer_hookable_parent,
+        };
+        use waterui_core::view::hook::Hook;
+        use waterui_core::{Environment, NativeView, View};
+
+        use crate::child::{Child, NativeBackendFamily};
+
+        pub(super) struct CustomParent<S> {
+            pub(super) child: Rc<dyn Fn() -> S>,
+            pub(super) explicit_style: bool,
+            pub(super) pending_builds: Rc<Cell<u32>>,
+        }
+
+        pub(super) struct CustomStyleTarget {
+            pub(super) child: HookSlot,
+        }
+
+        impl NativeView for CustomStyleTarget {}
+
+        pub(super) struct CustomPending<S> {
+            child: Rc<dyn Fn() -> S>,
+            explicit_style: bool,
+            pending_builds: Rc<Cell<u32>>,
+        }
+
+        impl<S: 'static> MapSlots<S> for CustomParent<S> {
+            type With<T: 'static> = CustomParent<T>;
+
+            fn map_slots<T: 'static>(
+                self,
+                f: impl Fn(S) -> T + Clone + 'static,
+            ) -> CustomParent<T> {
+                let child = self.child;
+                CustomParent {
+                    child: Rc::new(move || f(child())),
+                    explicit_style: self.explicit_style,
+                    pending_builds: self.pending_builds,
+                }
+            }
+
+            fn offer_style_hook<Scope: ParentHookScope<S>>(
+                self,
+                scope: &mut Scope,
+                env: &Environment,
+                cx: Scope::Ctx,
+            ) -> Result<Scope::Output, (Self, Scope::Ctx)> {
+                offer_hookable_parent(self, scope, env, cx)
+            }
+        }
+
+        impl<S: 'static> HookableParent<S> for CustomParent<S> {
+            type StyleTarget = CustomStyleTarget;
+            type Pending = CustomPending<S>;
+
+            fn is_style_hookable(&self) -> bool {
+                !self.explicit_style
+            }
+
+            fn into_style_pending(
+                self,
+                map_slot: impl Fn(S) -> HookSlot + Clone + 'static,
+            ) -> (Self::StyleTarget, Self::Pending) {
+                self.pending_builds.set(self.pending_builds.get() + 1);
+                let style_child = map_slot((self.child)());
+                let pending = CustomPending {
+                    child: self.child,
+                    explicit_style: self.explicit_style,
+                    pending_builds: self.pending_builds,
+                };
+                (CustomStyleTarget { child: style_child }, pending)
+            }
+
+            fn restore_pending(pending: Self::Pending) -> Self {
+                Self {
+                    child: pending.child,
+                    explicit_style: pending.explicit_style,
+                    pending_builds: pending.pending_builds,
+                }
+            }
+        }
+
+        #[derive(Clone)]
+        pub(super) struct AcceptCustomStyle;
+
+        impl Hook for AcceptCustomStyle {
+            type Target = CustomStyleTarget;
+
+            fn apply(
+                &self,
+                target: Self::Target,
+                _env: &Environment,
+            ) -> Result<impl View, Self::Target> {
+                Ok::<_, Self::Target>(scroll(target.child))
+            }
+        }
+
+        #[derive(Clone)]
+        pub(super) struct DeclineCustomStyle;
+
+        impl Hook for DeclineCustomStyle {
+            type Target = CustomStyleTarget;
+
+            fn apply(
+                &self,
+                target: Self::Target,
+                _env: &Environment,
+            ) -> Result<impl View, Self::Target> {
+                if false {
+                    return Ok(());
+                }
+                Err(target)
+            }
+        }
+
+        pub(super) fn make_parent<F: NativeBackendFamily>(
+            explicit_style: bool,
+            pending_builds: Rc<Cell<u32>>,
+        ) -> CustomParent<Child<F>> {
+            CustomParent {
+                child: Rc::new(|| Child::from_view(Spacer::flexible())),
+                explicit_style,
+                pending_builds,
+            }
+        }
+    }
+
+    #[test]
+    fn custom_hookable_parent_interception_decline_and_bypass_stay_typed() {
+        use core::cell::Cell;
+
+        use custom_parent_fixture::{AcceptCustomStyle, DeclineCustomStyle, make_parent};
+
+        let env = Environment::new();
+
+        // 1. Eligible custom parent claimed by hook: style body renders through inner backend
+        // while the HookSlot child re-enters inner hooks (`SpacerAsDivider`).
+        let claimed_builds = Rc::new(Cell::new(0));
+        let recorder = Recorder::default();
+        let mut hooked = Hooked::new(recorder.clone(), (AcceptCustomStyle, SpacerAsDivider));
+        hooked.hook_parent(
+            make_parent(false, Rc::clone(&claimed_builds)),
+            &env,
+            (),
+            |inner, _mapped, _env, ()| {
+                inner.reached.borrow_mut().push("custom_parent");
+            },
+        );
+        assert_eq!(claimed_builds.get(), 1);
+        assert_eq!(
+            recorder.reached.borrow().as_slice(),
+            ["scroll", "typed child", "environment", "divider"]
+        );
+
+        // 2. Declining hook restores the typed parent without `AnyView` erasure and still
+        // re-enters hooks when the forwarded child realizes.
+        let declined_builds = Rc::new(Cell::new(0));
+        let recorder = Recorder::default();
+        let mut hooked = Hooked::new(recorder.clone(), (DeclineCustomStyle, SpacerAsDivider));
+        hooked.hook_parent(
+            make_parent(false, Rc::clone(&declined_builds)),
+            &env,
+            (),
+            |inner, mapped, env, ()| {
+                inner.reached.borrow_mut().push("custom_parent");
+                Recorder::realize_children(inner, alloc::vec![(mapped.child)()], env);
+            },
+        );
+        assert_eq!(declined_builds.get(), 1);
+        assert_eq!(
+            recorder.reached.borrow().as_slice(),
+            ["custom_parent", "typed child", "divider"]
+        );
+
+        // 3. Explicit style bypasses `into_style_pending` completely.
+        let explicit_builds = Rc::new(Cell::new(0));
+        let recorder = Recorder::default();
+        let mut hooked = Hooked::new(recorder.clone(), (AcceptCustomStyle, SpacerAsDivider));
+        hooked.hook_parent(
+            make_parent(true, Rc::clone(&explicit_builds)),
+            &env,
+            (),
+            |inner, mapped, env, ()| {
+                inner.reached.borrow_mut().push("custom_parent");
+                Recorder::realize_children(inner, alloc::vec![(mapped.child)()], env);
+            },
+        );
+        assert_eq!(explicit_builds.get(), 0);
+        assert_eq!(
+            recorder.reached.borrow().as_slice(),
+            ["custom_parent", "typed child", "divider"]
+        );
+
+        // 4. Unrelated hook list skips `into_style_pending` at the fast-check gate.
+        let unhooked_builds = Rc::new(Cell::new(0));
+        let recorder = Recorder::default();
+        let mut hooked = Hooked::new(recorder.clone(), SpacerAsDivider);
+        hooked.hook_parent(
+            make_parent(false, Rc::clone(&unhooked_builds)),
+            &env,
+            (),
+            |inner, mapped, env, ()| {
+                inner.reached.borrow_mut().push("custom_parent");
+                Recorder::realize_children(inner, alloc::vec![(mapped.child)()], env);
+            },
+        );
+        assert_eq!(unhooked_builds.get(), 0);
+        assert_eq!(
+            recorder.reached.borrow().as_slice(),
+            ["custom_parent", "typed child", "divider"]
         );
     }
 }

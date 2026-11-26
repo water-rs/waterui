@@ -11,15 +11,19 @@ pub(crate) fn init_test_executor() {
 }
 
 pub mod badge;
-pub use badge::BadgeValue;
+pub use badge::{Badge, BadgeConfig, BadgeValue};
+pub mod disclosure;
+pub use disclosure::{Disclosure, DisclosureConfig, disclosure};
 pub mod input;
 pub mod label;
 pub use label::{
     Built, ControlLabel, CustomLabel, ErasedLabel, IconLabel, IconPosition, IntoLabel, Label,
     LabelDisplayMode, LabelKind, SemanticLabel, TitleLabel, label,
 };
+pub mod progress;
+pub use progress::{Progress, ProgressConfig, ProgressStyle, ProgressWithTotal, loading, progress};
 pub mod slot;
-pub use slot::{IconSlot, NoopSlot, SlotBuilder, StyleSlot};
+pub use slot::{IconSlot, NoopSlot, SlotBuilder};
 #[cfg(feature = "menu")]
 pub mod menu;
 #[cfg(feature = "menu")]

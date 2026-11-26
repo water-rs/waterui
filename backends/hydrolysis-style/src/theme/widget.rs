@@ -711,4 +711,14 @@ pub trait WidgetTheme {
     fn snackbar(&self, env: &Environment) -> super::SnackbarLook {
         super::snackbar::default_snackbar_look(env)
     }
+
+    /// The look of a self-drawn modal dialog card.
+    fn dialog(&self, env: &Environment) -> super::DialogLook {
+        super::dialog::default_dialog_look(env)
+    }
+
+    /// The look of a self-drawn modal sheet surface.
+    fn sheet(&self, env: &Environment) -> super::SheetLook {
+        super::sheet::default_sheet_look(env)
+    }
 }

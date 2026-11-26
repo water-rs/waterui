@@ -72,21 +72,19 @@ pub type ResolvedNavigationView<S> = NavigationView<S, ResolvedNavigationToolbar
 #[must_use]
 pub struct NavigationView<C, T = ()> {
     /// The navigation bar for this view
-    pub bar: Bar<T>,
+    bar: Bar<T>,
     /// The content to display in this view
-    pub content: C,
+    content: C,
     /// Reactive and callback state associated with this destination.
-    #[doc(hidden)]
-    pub state: NavigationDestinationState,
+    state: NavigationDestinationState,
     /// How this destination arrives, when it wants something other than the
     /// motion its stack declared.
     ///
     /// A stack-wide transition cannot name a *matched* pair, because the pair
     /// differs per destination: a gallery's tile and the page it opens share an
     /// identity that the next tile does not. Declaring it here is what lets each
-    /// destination name its own — the same place SwiftUI puts it.
-    #[doc(hidden)]
-    pub transition: Option<AnyNavigationTransition>,
+    /// destination name its own — the same place `SwiftUI` puts it.
+    transition: Option<AnyNavigationTransition>,
 }
 
 impl<C, T: Debug> Debug for NavigationView<C, T> {
@@ -102,6 +100,86 @@ impl<C, T: Debug> Debug for NavigationView<C, T> {
 }
 
 impl<C, T> NavigationView<C, T> {
+    /// Creates a navigation view with an explicit navigation bar and content.
+    pub fn with_bar(bar: Bar<T>, content: C) -> Self {
+        Self {
+            bar,
+            content,
+            state: NavigationDestinationState::default(),
+            transition: None,
+        }
+    }
+
+    /// Returns the navigation bar configuration for this view.
+    #[must_use]
+    pub const fn bar(&self) -> &Bar<T> {
+        &self.bar
+    }
+
+    /// Returns mutable access to the navigation bar configuration for this view.
+    #[must_use]
+    pub const fn bar_mut(&mut self) -> &mut Bar<T> {
+        &mut self.bar
+    }
+
+    /// Consumes this navigation view and returns its navigation bar configuration.
+    #[must_use]
+    pub fn into_bar(self) -> Bar<T> {
+        self.bar
+    }
+
+    /// Returns the content displayed by this navigation view.
+    #[must_use]
+    pub const fn content(&self) -> &C {
+        &self.content
+    }
+
+    /// Returns mutable access to the content displayed by this navigation view.
+    #[must_use]
+    pub const fn content_mut(&mut self) -> &mut C {
+        &mut self.content
+    }
+
+    /// Consumes this navigation view and returns its content.
+    #[must_use]
+    pub fn into_content(self) -> C {
+        self.content
+    }
+
+    /// Returns the explicit arrival/departure transition configured on this destination, if any.
+    #[must_use]
+    pub const fn transition(&self) -> Option<&AnyNavigationTransition> {
+        self.transition.as_ref()
+    }
+
+    /// Returns the reactive policy and lifecycle handlers attached to this destination.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn state(&self) -> &NavigationDestinationState {
+        &self.state
+    }
+
+    /// Returns mutable access to the reactive policy and lifecycle handlers attached to this destination.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn state_mut(&mut self) -> &mut NavigationDestinationState {
+        &mut self.state
+    }
+
+    /// Takes the destination's lifecycle state, leaving the default state in place.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn take_state(&mut self) -> NavigationDestinationState {
+        core::mem::take(&mut self.state)
+    }
+
+    /// Takes the destination's explicit page transition, leaving `None` in place.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn take_transition(&mut self) -> Option<AnyNavigationTransition> {
+        self.transition.take()
+    }
+
     /// Takes the content out, leaving the bar, state and transition.
     pub fn split_content(self) -> (C, NavigationView<(), T>) {
         let Self {
@@ -2594,11 +2672,13 @@ mod tests {
     use core::cell::{Cell, RefCell};
 
     use super::{
-        CustomNavigationController, IntoNavigationStackLayout, NavigationController,
-        NavigationLink, NavigationPage, NavigationPath, NavigationStack, NavigationTransaction,
-        NavigationValueLink, NavigationView, Navigator, ResolvedNavigationView, shared_prefix_len,
+        Bar, CustomNavigationController, IntoNavigationStackLayout, NavigationController,
+        NavigationLink, NavigationPage, NavigationPath, NavigationStack,
+        NavigationTitleDisplayMode, NavigationTransaction, NavigationValueLink, NavigationView,
+        Navigator, ResolvedNavigationView, navigation_transition, shared_prefix_len,
         subscribe_navigation_path,
     };
+    use nami::Signal as _;
     use waterui_core::{
         AnyView, Environment, Metadata, View,
         backend::ChildSlot,
@@ -2620,6 +2700,36 @@ mod tests {
 
     fn equal<T: PartialEq>(left: &T, right: &T) -> bool {
         left == right
+    }
+
+    #[test]
+    fn navigation_view_typed_constructors_and_accessors() {
+        let mut view = NavigationView::with_bar(Bar::<()>::default(), 42_u32)
+            .navigation_title_display_mode(NavigationTitleDisplayMode::Inline)
+            .page_transition(navigation_transition::fade());
+
+        assert_eq!(view.bar().display_mode, NavigationTitleDisplayMode::Inline);
+        assert_eq!(*view.content(), 42);
+        *view.content_mut() = 99;
+        assert_eq!(*view.content(), 99);
+        assert!(view.transition().is_some());
+        assert!(view.state().pop_enabled().snapshot());
+
+        let state = view.take_state();
+        assert!(state.pop_enabled().snapshot());
+        assert!(view.take_transition().is_some());
+        assert!(view.transition().is_none());
+
+        view.bar_mut().display_mode = NavigationTitleDisplayMode::Large;
+        let (content, without_content) = view.split_content();
+        assert_eq!(content, 99);
+        assert_eq!(
+            without_content.into_bar().display_mode,
+            NavigationTitleDisplayMode::Large
+        );
+
+        let rebuilt = NavigationView::with_bar(Bar::<()>::default(), "body");
+        assert_eq!(rebuilt.into_content(), "body");
     }
 
     /// A stack's root page builds in the environment it resolves in.
