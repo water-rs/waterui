@@ -460,11 +460,6 @@ impl ElementAnchor {
     }
 
     #[must_use]
-    pub(crate) const fn revision(&self) -> u64 {
-        self.revision
-    }
-
-    #[must_use]
     pub(crate) fn debug_summary(&self) -> String {
         let mut summary = format!(
             "id={}, revision={}, role={:?}",
