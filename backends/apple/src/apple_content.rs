@@ -609,6 +609,8 @@ mod tests {
 
         stub_parents! {
             button<C>: waterui::component::button::ButtonConfig<C>,
+            #[cfg(waterui_feature = "link")]
+            link<C>: waterui::component::link::LinkConfig<C>,
             badge<C>: waterui::component::badge::BadgeConfig<C>,
             card<C>: waterui::widget::card::CardConfig<C>,
             disclosure<C>: waterui::widget::disclosure::DisclosureConfig<C>,
@@ -687,6 +689,7 @@ mod tests {
             material_background: waterui::background::MaterialBackground,
             glass_background: waterui::background::GlassBackground,
             material_group: waterui::background::MaterialGroup,
+            floating: waterui::floating::Floating,
             ignore_safe_area: waterui::layout::safe_area::IgnoreSafeArea,
             cursor: waterui::cursor::Cursor,
             draggable: waterui::drag_drop::Draggable,

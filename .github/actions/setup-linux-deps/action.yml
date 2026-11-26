@@ -117,7 +117,13 @@ runs:
         ARCHIVES: ${{ steps.archives.outputs.dir }}
       run: |
         read -ra packages <<< "$PACKAGES"
-        sudo DEBIAN_FRONTEND=noninteractive apt-get --yes -o Dir::Cache::Archives="$ARCHIVES" -o APT::Keep-Downloaded-Packages=true install "${packages[@]}"
+        sudo DEBIAN_FRONTEND=noninteractive apt-get --yes \
+          -o Acquire::Retries=10 \
+          -o Acquire::http::Timeout=30 \
+          -o Acquire::https::Timeout=30 \
+          -o Dir::Cache::Archives="$ARCHIVES" \
+          -o APT::Keep-Downloaded-Packages=true \
+          install "${packages[@]}"
         # apt leaves its lock and partial/ root-only; the cache save runs as
         # the runner user.
         sudo chown -R "$(id -u):$(id -g)" "$ARCHIVES"

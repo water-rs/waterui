@@ -719,6 +719,45 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         self.close_scope();
     }
 
+    /// Opens a child scope clipped to the live `clip` silhouette and optionally
+    /// running `content_effect` over the isolated child content. Close with
+    /// [`Self::close_scope`].
+    pub(crate) fn open_clipped_content_scope(
+        &mut self,
+        key: mount::ScopeKey,
+        clip: Operand<cherenkov_record::ShapeData>,
+        content_effect: Option<(
+            cherenkov_record::ContentShader,
+            Operand<cherenkov_record::MaterialEffect>,
+        )>,
+        ctx: RenderContext,
+    ) {
+        let delta = self.program().origin().inverse() * ctx.local();
+        let scope = ScopeDelta {
+            transform: delta,
+            hit_alpha: 1.0,
+        };
+        self.push_placement_scope(scope, Some(ctx.bounds()));
+        let placement = self.current_placement();
+        self.program().open_scope(
+            key,
+            mount::ScopeProps {
+                transform: delta,
+                clip: None,
+                alpha: 1.0,
+                blend_space: None,
+                live: mount::ScopeLive {
+                    opacity: None,
+                    transform: None,
+                    clip: Some(mount::LiveClip::new(clip)),
+                    content_effect: content_effect
+                        .map(|(shader, effect)| mount::LiveContentEffect::new(shader, effect)),
+                },
+            },
+            placement,
+        );
+    }
+
     /// Opens a content-effect isolation scope in `ctx`'s record space: its
     /// layer clips to the live `clip` silhouette and shades its isolated
     /// subtree through `shader` driven by `effect`. Close with

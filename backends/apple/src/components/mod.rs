@@ -40,6 +40,7 @@ pub mod empty;
 #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
 pub mod filtered;
 pub mod fixed_container;
+pub mod floating;
 pub mod focused;
 mod font;
 pub mod frame_rate;
@@ -54,6 +55,8 @@ pub mod image;
 pub mod layer_transform;
 pub mod layout_priority;
 pub mod lifecycle_hook;
+#[cfg(feature = "link")]
+pub mod link;
 #[cfg(feature = "list")]
 pub mod list;
 #[cfg(feature = "list")]

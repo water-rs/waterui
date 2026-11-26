@@ -245,6 +245,20 @@ impl NativeBackend for AppleBackend {
         )
     }
 
+    #[cfg(waterui_feature = "link")]
+    fn link<C: ChildView<Self>>(
+        &mut self,
+        native: waterui::component::link::LinkConfig<C>,
+        env: &Environment,
+        (): (),
+    ) -> NativeLeaf {
+        mark_reached!("link");
+        crate::components::link::realize_link_config(
+            native.map_slots(C::into_child),
+            &self.entry(env),
+        )
+    }
+
     fn badge<C: ChildView<Self>>(
         &mut self,
         native: waterui::component::badge::BadgeConfig<C>,
@@ -1047,6 +1061,17 @@ impl NativeBackend for AppleBackend {
             metadata,
             &self.entry(env),
         )
+    }
+
+    fn floating<C: ChildView<Self>>(
+        &mut self,
+        metadata: Metadata<waterui::floating::Floating, C>,
+        env: &Environment,
+        (): (),
+    ) -> NativeLeaf {
+        mark_reached!("floating");
+        let metadata = metadata.map_content(C::into_child);
+        crate::components::floating::realize_floating_metadata(metadata, &self.entry(env))
     }
 
     fn ignore_safe_area<C: ChildView<Self>>(

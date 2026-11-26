@@ -14,8 +14,8 @@ use crate::renderer::{
 };
 use crate::text::TextEngine;
 use crate::theme::{
-    ButtonLook, ButtonSpec, Chrome, CornerShape, Corners, Inputs, Label as LookLabel, SpecTint,
-    StateLayer, Surface, WidgetTheme,
+    ButtonLook, ButtonSpec, Chrome, CornerShape, FloatingLook, FloatingScope, Inputs,
+    Label as LookLabel, SpecTint, StateLayer, Surface, WidgetTheme,
 };
 #[cfg(feature = "menu")]
 use crate::theme::{MenuLook, MenuPresentationMotion};
@@ -32,12 +32,10 @@ use nami::{Signal, SignalExt};
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use waterui::floating::FloatingScope;
 #[cfg(feature = "menu")]
 use waterui::metadata::anchored_overlay::{
     AnchorEdge, AnchorPlacement, Clamp, Dismissal, EdgeAlignment,
 };
-use waterui::style::FloatingStyle;
 use waterui::theme::Tint;
 use waterui_controls::ControlSize;
 use waterui_controls::button::{ButtonConfig, ButtonRole, ButtonStyle};
@@ -68,11 +66,19 @@ pub const LIVE_STATES: InteractionState = InteractionState::HOVERED
     .union(InteractionState::FOCUSED)
     .union(InteractionState::DRAGGED);
 
+/// Style and role attributes characterizing a button-like control.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct ControlPresentation {
+    pub(super) style: ButtonStyle,
+    pub(super) size: ControlSize,
+    pub(super) role: Option<ButtonRole>,
+}
+
 /// What a button-like control keeps across renders to realize its look:
 /// the look for the spec it was requested for, the live chrome, the
 /// reported-state binding the label's colour follows, and the chrome frame
 /// the label's [`Inputs`] see.
-struct ButtonChromeState {
+pub(super) struct ButtonChromeState {
     look: Option<(ButtonSpec, ButtonLook)>,
     parts: Option<LiveChromeParts>,
     /// The last [`InteractionState`] the control reported, feeding the
@@ -82,7 +88,7 @@ struct ButtonChromeState {
 }
 
 impl ButtonChromeState {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             look: None,
             parts: None,
@@ -156,7 +162,7 @@ fn resolve_look(theme: &Rc<dyn WidgetTheme>, spec: &ButtonSpec, env: &Environmen
         );
     }
     match env.get::<FloatingScope>() {
-        Some(FloatingScope(style)) => lower_floating(&look, style),
+        Some(scope) => lower_floating(&look, &scope.resolve(&**theme, env)),
         None => look,
     }
 }
@@ -211,14 +217,12 @@ pub fn menu_row_font(theme: &Rc<dyn WidgetTheme>, env: &Environment) -> Option<F
 /// shadows, so the button keeps the theme look's state-layer tokens, press
 /// feedback, focus indicator, motion and hit region, and takes the floating
 /// style's silhouette, state-layer colour, content colour and metrics.
-fn lower_floating(look: &ButtonLook, style: &FloatingStyle) -> ButtonLook {
+fn lower_floating(look: &ButtonLook, floating: &FloatingLook) -> ButtonLook {
     let theme_chrome = look.chrome();
     let layer = theme_chrome.state_layer();
     let chrome = Chrome::new(
-        Surface::clear(CornerShape::new(Corners::Fraction(f64::from(
-            style.clip_radius,
-        )))),
-        StateLayer::new(style.state_layer_color.clone()).opacities(
+        Surface::clear(floating.surface().shape().clone()),
+        StateLayer::new(floating.state_layer_color().clone()).opacities(
             layer.hover,
             layer.focus,
             layer.pressed,
@@ -229,11 +233,10 @@ fn lower_floating(look: &ButtonLook, style: &FloatingStyle) -> ButtonLook {
         theme_chrome.motion().clone(),
     )
     .hit(*theme_chrome.get_hit());
-    let content = style.content_color.clone();
-    let disabled = style
-        .content_color
+    let content = floating.content_color().clone();
+    let disabled = content
         .clone()
-        .with_opacity(style.disabled_content_opacity);
+        .with_opacity(floating.disabled_content_opacity_value());
     let mut label = LookLabel::new().color(crate::theme::Driven::new(move |inputs| {
         if inputs.state.contains(InteractionState::DISABLED) {
             disabled.clone()
@@ -246,8 +249,11 @@ fn lower_floating(look: &ButtonLook, style: &FloatingStyle) -> ButtonLook {
     }
     let group_opacity = look.get_group_opacity().clone();
     let built = ButtonLook::new(chrome, label)
-        .padding(style.content_inset_x, style.content_inset_y)
-        .minimum_size(kurbo::Size::new(style.minimum_width, style.minimum_height))
+        .padding(floating.content_inset_x(), floating.content_inset_y())
+        .minimum_size(kurbo::Size::new(
+            floating.minimum_width(),
+            floating.minimum_height(),
+        ))
         .group_opacity(group_opacity);
     match look.get_group_blend_space() {
         Some(space) => built.group_blend_space(space),
@@ -280,7 +286,7 @@ fn role_label_color(role: Option<ButtonRole>, style: ButtonStyle) -> Option<Colo
 }
 
 /// The spec of a `style` button of `size` in `env`.
-fn button_spec(
+pub(super) fn button_spec(
     style: ButtonStyle,
     size: ControlSize,
     icon_only: bool,
@@ -382,20 +388,7 @@ impl<E: crate::text::TextEngine> ButtonRenderState<E> {
     /// instead would throw that view away. Content kind decides here, not
     /// display mode.
     pub(crate) fn init_label(&mut self) {
-        if renders_as_plain_title(self.config.label()) {
-            return;
-        }
-        self.label_view = Some(RetainedSubview::held(self.config.label().build()));
-    }
-
-    fn spec(&self, env: &Environment) -> ButtonSpec {
-        let role_env = role_environment(self.config.role(), env);
-        button_spec(
-            self.config.style(),
-            self.config.size(),
-            label_resolves_icon_only(self.config.label(), role_env.as_ref()),
-            role_env.as_ref(),
-        )
+        self.label_view = init_control_label(self.config.label());
     }
 
     /// Apply the look's label styling and build the label sub-view. Called from
@@ -408,36 +401,117 @@ impl<E: crate::text::TextEngine> ButtonRenderState<E> {
         renderer: &mut HydrolysisRenderer<E>,
         env: &Environment,
     ) {
-        if self
-            .label_view
-            .as_ref()
-            .is_none_or(RetainedSubview::is_built)
-        {
-            return;
-        }
-        let theme = renderer.theme();
-        let role = self.config.role();
-        let style = self.config.style();
-        let role_env = role_environment(role, env);
-        let spec = self.spec(env);
-        let look = self.chrome.look(&theme, &spec, role_env.as_ref()).clone();
-        let color = if env.get::<ListRowChrome>().is_some() {
-            retained_label_color(&look, &self.chrome, env)
-        } else {
-            role_label_color(role, style).or_else(|| retained_label_color(&look, &self.chrome, env))
+        let presentation = ControlPresentation {
+            style: self.config.style(),
+            size: self.config.size(),
+            role: self.config.role(),
         };
-        let font = look_font(
-            &look,
-            self.chrome.label_state.snapshot(),
-            self.chrome.frame.get(),
+        ensure_control_label_built(
+            renderer,
+            &mut self.label_view,
+            &mut self.chrome,
+            self.config.label(),
+            presentation,
+            env,
         );
-        let child = held_label_view(color, self.config.label().build_with_font(font));
-        let subview = self
-            .label_view
-            .as_mut()
-            .expect("the label sub-view was checked above");
-        *subview = RetainedSubview::held(child);
-        subview.ensure_built(renderer, env);
+    }
+}
+
+pub(super) fn init_control_label<E: crate::text::TextEngine>(
+    label: &ControlLabel<HeldChild<E>>,
+) -> Option<RetainedSubview<E>> {
+    (!renders_as_plain_title(label)).then(|| RetainedSubview::held(label.build()))
+}
+
+pub(super) fn ensure_control_label_built<E: crate::text::TextEngine>(
+    renderer: &mut HydrolysisRenderer<E>,
+    label_view: &mut Option<RetainedSubview<E>>,
+    chrome: &mut ButtonChromeState,
+    label: &ControlLabel<HeldChild<E>>,
+    presentation: ControlPresentation,
+    env: &Environment,
+) {
+    if label_view.as_ref().is_none_or(RetainedSubview::is_built) {
+        return;
+    }
+    let theme = renderer.theme();
+    let role_env = role_environment(presentation.role, env);
+    let spec = button_spec(
+        presentation.style,
+        presentation.size,
+        label_resolves_icon_only(label, role_env.as_ref()),
+        role_env.as_ref(),
+    );
+    let look = chrome.look(&theme, &spec, role_env.as_ref()).clone();
+    let color = if env.get::<ListRowChrome>().is_some() {
+        retained_label_color(&look, chrome, env)
+    } else {
+        role_label_color(presentation.role, presentation.style)
+            .or_else(|| retained_label_color(&look, chrome, env))
+    };
+    let font = look_font(&look, chrome.label_state.snapshot(), chrome.frame.get());
+    let child = held_label_view(color, label.build_with_font(font));
+    let subview = label_view
+        .as_mut()
+        .expect("the label sub-view was checked above");
+    *subview = RetainedSubview::held(child);
+    subview.ensure_built(renderer, env);
+}
+
+#[cfg(feature = "accessibility")]
+pub(super) fn control_accessibility<E: crate::text::TextEngine, S, T: 'static>(
+    renderer: &mut crate::renderer::SemanticCore<E>,
+    ctx: Option<RenderContext>,
+    state: &Rc<RefCell<T>>,
+    label: &ControlLabel<S>,
+    role_meta: (AccessibilityNodeRole, Option<&'static str>),
+    env: &Environment,
+    activate: impl FnMut(&mut crate::renderer::SemanticCore<E>, &Environment) -> bool + 'static,
+) {
+    let (default_role, description) = role_meta;
+    let mut node = AccessibilityNode::new(
+        crate::renderer::SemanticCore::<E>::resolve_accessibility_role(env, default_role),
+    );
+    let default_label = renderer.accessibility_label_from_label(label, env);
+    let resolved_label = renderer.resolve_accessibility_label(env, default_label);
+    if let Some(resolved_label) = resolved_label {
+        node.set_label(resolved_label);
+    }
+    if let Some(value) = renderer.resolve_accessibility_value(env, None) {
+        node.set_value(value);
+    }
+    if let Some(description) = description {
+        node.set_description(description);
+    }
+    node.add_action(AccessibilityAction::Focus);
+    // A control under a `Selected` scope it owns announces the state.
+    if renderer.control_selected(env, &crate::renderer::InteractionKey::for_rc(state, 0)) {
+        node.set_selected(true);
+    }
+    // A disabled control stays in the tree (focusable, announced as
+    // disabled) but exposes no click action and no action target.
+    let disabled = renderer.read_signal(&widget_disabled(env));
+    let action_target = if disabled {
+        node.set_disabled();
+        None
+    } else {
+        node.add_action(AccessibilityAction::Click);
+        Some(AccessibilityActionTarget::Activate {
+            action: Rc::new(RefCell::new(activate)),
+        })
+    };
+    let node_id = match ctx {
+        Some(ctx) => {
+            let bounds = ctx.bounds();
+            renderer.register_accessibility_node(node, bounds, env, action_target)
+        }
+        None => renderer.register_accessibility_node_semantic(node, env, action_target),
+    };
+    if let Some(node_id) = node_id {
+        renderer.register_accessibility_focus_link(
+            &crate::renderer::InteractionKey::for_rc(state, 0),
+            node_id,
+        );
     }
 }
 
@@ -454,82 +528,38 @@ pub fn button_accessibility<E: crate::text::TextEngine>(
 ) {
     #[cfg(feature = "accessibility")]
     {
-        let button = &state.borrow().config;
-        let mut node = AccessibilityNode::new(
-            crate::renderer::SemanticCore::<E>::resolve_accessibility_role(
-                env,
-                match button.style() {
-                    ButtonStyle::Link => AccessibilityNodeRole::Link,
-                    _ => AccessibilityNodeRole::Button,
-                },
-            ),
+        let (label, default_role, description) = {
+            let button = &state.borrow().config;
+            let default_role = match button.style() {
+                ButtonStyle::Link => AccessibilityNodeRole::Link,
+                _ => AccessibilityNodeRole::Button,
+            };
+            let description = match button.role() {
+                Some(ButtonRole::Destructive) => Some("destructive"),
+                Some(ButtonRole::Cancel) => Some("cancel"),
+                _ => None,
+            };
+            (button.label().clone(), default_role, description)
+        };
+        let activate_state = Rc::clone(state);
+        let action_env = env.clone();
+        control_accessibility(
+            renderer,
+            ctx,
+            state,
+            &label,
+            (default_role, description),
+            env,
+            move |_renderer, _env| {
+                (activate_state.borrow_mut().config.action_mut())(&action_env).report_extraction();
+                true
+            },
         );
-        let default_label = renderer.accessibility_label_from_label(button.label(), env);
-        let label = renderer.resolve_accessibility_label(env, default_label);
-        if let Some(label) = label {
-            node.set_label(label);
-        }
-        if let Some(value) = renderer.resolve_accessibility_value(env, None) {
-            node.set_value(value);
-        }
-        match button.role() {
-            Some(ButtonRole::Destructive) => node.set_description("destructive"),
-            Some(ButtonRole::Cancel) => node.set_description("cancel"),
-            _ => {}
-        }
-        node.add_action(AccessibilityAction::Focus);
-        // A button under a `Selected` scope it owns announces the state.
-        if renderer.control_selected(env, &crate::renderer::InteractionKey::for_rc(state, 0)) {
-            node.set_selected(true);
-        }
-        // A disabled button stays in the tree (focusable, announced as
-        // disabled) but exposes no click action and no action target.
-        let disabled = renderer.read_signal(&widget_disabled(env));
-        let action_target = if disabled {
-            node.set_disabled();
-            None
-        } else {
-            node.add_action(AccessibilityAction::Click);
-            Some(AccessibilityActionTarget::Activate {
-                action: button_activation(state, env),
-            })
-        };
-        let node_id = match ctx {
-            Some(ctx) => {
-                let bounds = ctx.bounds();
-                renderer.register_accessibility_node(node, bounds, env, action_target)
-            }
-            None => renderer.register_accessibility_node_semantic(node, env, action_target),
-        };
-        if let Some(node_id) = node_id {
-            renderer.register_accessibility_focus_link(
-                &crate::renderer::InteractionKey::for_rc(state, 0),
-                node_id,
-            );
-        }
     }
     #[cfg(not(feature = "accessibility"))]
     {
         let _ = (renderer, ctx, state, env);
     }
-}
-
-/// The activation closure a button's pointer target and its accessibility
-/// `Click` target share: invokes `config.action` through the retained state
-/// cell so both hit the live config.
-#[cfg(feature = "accessibility")]
-pub fn button_activation<E: crate::text::TextEngine>(
-    state: &Rc<RefCell<ButtonRenderState<E>>>,
-    env: &Environment,
-) -> crate::renderer::AccessibilityActivation<E> {
-    let state = Rc::clone(state);
-    let action_env = env.clone();
-    Rc::new(RefCell::new(
-        move |_renderer: &mut crate::renderer::SemanticCore<E>, _env: &Environment| {
-            (state.borrow_mut().config.action_mut())(&action_env).report_extraction();
-            true
-        },
-    ))
 }
 
 /// Resolves a button's size from the label size and the look's metrics. The
@@ -581,6 +611,38 @@ fn button_size(
     size
 }
 
+/// Measures a retained button-like control from its label, chrome, and style presentation.
+pub(super) fn measure_control_node<E: crate::text::TextEngine>(
+    label: &ControlLabel<HeldChild<E>>,
+    label_view: Option<&RetainedSubview<E>>,
+    chrome: &ButtonChromeState,
+    presentation: ControlPresentation,
+    measure: (
+        ProposalSize,
+        &mut HydroState<E>,
+        &Environment,
+        &Rc<dyn crate::theme::WidgetTheme>,
+    ),
+) -> ViewDimensions {
+    let (proposal, state, env, theme) = measure;
+    let role_env = role_environment(presentation.role, env);
+    let spec = button_spec(
+        presentation.style,
+        presentation.size,
+        label_resolves_icon_only(label, role_env.as_ref()),
+        role_env.as_ref(),
+    );
+    let look = chrome.peek(theme, &spec, role_env.as_ref());
+    let label_size = if let Some(subview) = label_view {
+        subview.measure_built(state, env, theme)
+    } else {
+        let font = look_font(&look, chrome.label_state.snapshot(), chrome.frame.get());
+        let styled = styled_button_title(state, font, label, env);
+        HydrolysisRenderer::measure_text_intrinsic_size(state, styled, env)
+    };
+    ViewDimensions::new(button_size(label_size, &look, proposal, env))
+}
+
 /// Measures a retained button leaf from its [`ButtonRenderState`]: a general label
 /// is measured from its built [`RetainedSubview`], a title from its styled text —
 /// mirroring the render path so layout and render agree.
@@ -591,21 +653,18 @@ pub fn measure_button_node<E: crate::text::TextEngine>(
     env: &Environment,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
-    let role_env = role_environment(render_state.config.role(), env);
-    let spec = render_state.spec(env);
-    let look = render_state.chrome.peek(theme, &spec, role_env.as_ref());
-    let label_size = if let Some(subview) = &render_state.label_view {
-        subview.measure_built(state, env, theme)
-    } else {
-        let font = look_font(
-            &look,
-            render_state.chrome.label_state.snapshot(),
-            render_state.chrome.frame.get(),
-        );
-        let styled = styled_button_title(state, font, render_state.config.label(), env);
-        HydrolysisRenderer::measure_text_intrinsic_size(state, styled, env)
+    let presentation = ControlPresentation {
+        style: render_state.config.style(),
+        size: render_state.config.size(),
+        role: render_state.config.role(),
     };
-    ViewDimensions::new(button_size(label_size, &look, proposal, env))
+    measure_control_node(
+        render_state.config.label(),
+        render_state.label_view.as_ref(),
+        &render_state.chrome,
+        presentation,
+        (proposal, state, env, theme),
+    )
 }
 
 /// Renders a retained button leaf every flush: emits a11y (unless hidden) then the
@@ -1212,17 +1271,20 @@ fn render_title<E: crate::text::TextEngine, S>(
     ctx.render_styled_text_single_line_scaled(styled, env, target, scale, paint.as_ref());
 }
 
-pub fn render_button_parts<E: crate::text::TextEngine>(
+/// Renders a button-like control's chrome and label, returning `(target, press_slot, keyboard_focusable)`
+/// when interactive (`None` when disabled).
+pub(super) fn render_control_parts<E: crate::text::TextEngine>(
     ctx: &mut WidgetRenderContext<'_, E>,
-    state: &Rc<RefCell<ButtonRenderState<E>>>,
+    chrome: &mut ButtonChromeState,
+    label_view: &mut Option<RetainedSubview<E>>,
+    label: &ControlLabel<HeldChild<E>>,
+    presentation: ControlPresentation,
+    key: crate::renderer::InteractionKey,
     env: &Environment,
-) {
+) -> Option<(Rect, crate::renderer::PressSlot, bool)> {
     // Subscribe to the (possibly reactive) title so a label change schedules a frame
     // and this persistent node re-renders the new text.
-    {
-        let label = state.borrow().config.label().clone();
-        watch_button_title(ctx.renderer_mut(), &label, env);
-    }
+    watch_button_title(ctx.renderer_mut(), label, env);
     // Reading the disabled signal watches it, so a change schedules a frame
     // and this persistent node re-renders (and re-registers input) with the
     // new state.
@@ -1230,49 +1292,77 @@ pub fn render_button_parts<E: crate::text::TextEngine>(
         let signal = widget_disabled(env);
         ctx.renderer_mut().read_signal(&signal)
     };
-    let key = crate::renderer::InteractionKey::for_rc(state, 0);
-    let rendered = {
-        let mut state_mut = state.borrow_mut();
-        let spec = state_mut.spec(env);
-        let role_env = role_environment(state_mut.config.role(), env);
-        let title = state_mut.label_view.is_none();
-        bind_button_chrome(
-            ctx,
-            &mut state_mut.chrome,
-            key,
-            &spec,
-            disabled,
-            title,
-            role_env.as_ref(),
-        )
-    };
+    let role_env = role_environment(presentation.role, env);
+    let spec = button_spec(
+        presentation.style,
+        presentation.size,
+        label_resolves_icon_only(label, role_env.as_ref()),
+        role_env.as_ref(),
+    );
+    let title = label_view.is_none();
+    let rendered = bind_button_chrome(ctx, chrome, key, &spec, disabled, title, role_env.as_ref());
     record_button_chrome(ctx, &rendered, |ctx| {
-        let mut state_mut = state.borrow_mut();
-        let state_mut = &mut *state_mut;
-        if let Some(subview) = &mut state_mut.label_view {
+        if let Some(subview) = label_view {
             place_label_view(ctx, &rendered, subview, env);
         } else {
-            let role = state_mut.config.role();
-            let style = state_mut.config.style();
-            render_title(ctx, &rendered, state_mut.config.label(), role, style, env);
+            render_title(
+                ctx,
+                &rendered,
+                label,
+                presentation.role,
+                presentation.style,
+                env,
+            );
         }
     });
 
-    // A disabled button registers no tap target: the pointer neither presses
+    // A disabled control registers no tap target: the pointer neither presses
     // it nor invokes its action. Targets are re-registered every flush, so
     // re-enabling restores interactivity on the next frame.
-    if disabled {
+    (!disabled).then(|| {
+        (
+            rendered.target,
+            rendered.press_slot,
+            rendered.look.chrome().keyboard_focusable(),
+        )
+    })
+}
+
+pub fn render_button_parts<E: crate::text::TextEngine>(
+    ctx: &mut WidgetRenderContext<'_, E>,
+    state: &Rc<RefCell<ButtonRenderState<E>>>,
+    env: &Environment,
+) {
+    let key = crate::renderer::InteractionKey::for_rc(state, 0);
+    let active_target = {
+        let mut state_mut = state.borrow_mut();
+        let state_mut = &mut *state_mut;
+        let presentation = ControlPresentation {
+            style: state_mut.config.style(),
+            size: state_mut.config.size(),
+            role: state_mut.config.role(),
+        };
+        render_control_parts(
+            ctx,
+            &mut state_mut.chrome,
+            &mut state_mut.label_view,
+            state_mut.config.label(),
+            presentation,
+            key,
+            env,
+        )
+    };
+    let Some((target, press_slot, keyboard_focusable)) = active_target else {
         return;
-    }
+    };
     // Invoke the action through the shared state cell so the retained node and the
     // dispatch path register equivalent tap targets without moving the action out.
     let state = Rc::clone(state);
     let action_env = env.clone();
-    let keyboard_focusable = rendered.look.chrome().keyboard_focusable();
     ctx.renderer_mut()
         .register_interactive_pointer_target_with_keyboard(
-            rendered.target,
-            rendered.press_slot,
+            target,
+            press_slot,
             keyboard_focusable,
             move |_renderer, _point, _env| {
                 (state.borrow_mut().config.action_mut())(&action_env).report_extraction();

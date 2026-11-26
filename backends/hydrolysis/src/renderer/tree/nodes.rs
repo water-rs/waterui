@@ -1148,6 +1148,9 @@ pub(super) enum WrapperEffect<E: crate::text::TextEngine> {
     /// theme's glass look behind the child, its backdrop material joining the
     /// nearest enclosing `.material_group()` scope. The glass takes no input.
     Glass(crate::renderer::glass::GlassEffect),
+    /// A `.floating()` surface: draws the theme's floating elevation and fill
+    /// behind the child and clips child content to the surface's silhouette.
+    Floating(crate::renderer::floating::FloatingEffect),
     /// An `.anchored_overlay(...)` (water-rs/waterui#1275): every flush the
     /// wrapper registers the anchor's live bounds plus the effect's handles
     /// for the post-flush `render_anchored_overlays` pass, which measures,

@@ -10,11 +10,12 @@ use accesskit::{
 use hydrolysis::draw::{BlendSpace, MaterialRegistry};
 use hydrolysis::theme::{
     BadgeLook, ButtonLook, ButtonSpec, CardLook, CheckboxLook, DialogLook, DisclosureLook,
-    DisclosureSpec, GlassLook, IndicatorLook, LinearProgressLook, ListLook, ListRowLayoutMetrics,
-    ListSpec, MenuLook, MenuPickerLook, MenuSpec, NavigationBarLook, NavigationSpec, PickerSpec,
-    ProgressSpec, RadioGroupLook, ScrollIndicatorLook, SegmentedLook, SegmentedSpec, SheetLook,
-    SliderLook, SliderSpec, SnackbarLook, StepperLook, StepperSpec, SwitchLook, TableLook,
-    TabsLook, TabsSpec, TextFieldLook, TextFieldSpec, ToggleSpec, WidgetTheme,
+    DisclosureSpec, FloatingLook, GlassLook, IndicatorLook, LinearProgressLook, ListLook,
+    ListRowLayoutMetrics, ListSpec, MenuLook, MenuPickerLook, MenuSpec, NavigationBarLook,
+    NavigationSpec, PickerSpec, ProgressSpec, RadioGroupLook, ScrollIndicatorLook, SegmentedLook,
+    SegmentedSpec, SheetLook, SliderLook, SliderSpec, SnackbarLook, StepperLook, StepperSpec,
+    SwitchLook, TableLook, TabsLook, TabsSpec, TextFieldLook, TextFieldSpec, ToggleSpec,
+    WidgetTheme,
 };
 use hydrolysis::{
     AccessibilityActivationPointError, FontFamilyResolution, HeadlessColorFormat, HeadlessRuntime,
@@ -148,6 +149,10 @@ impl WidgetTheme for ErasedStyle {
 
     fn snackbar(&self, env: &Environment) -> SnackbarLook {
         self.0.snackbar(env)
+    }
+
+    fn floating(&self, env: &Environment) -> FloatingLook {
+        self.0.floating(env)
     }
 
     fn dialog(&self, env: &Environment) -> DialogLook {

@@ -170,6 +170,7 @@ fn facade_features() {
         ("text-field", &["text_field"]),
         ("toggle", &["toggle"]),
         ("menu", &["menu", "context_menu"]),
+        ("link", &["link"]),
         ("list", &["list"]),
         ("table", &["table"]),
         ("navigation", &["navigation"]),
