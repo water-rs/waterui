@@ -881,6 +881,8 @@ native_backend! {
         button<C>: waterui::component::button::ButtonConfig<C>,
         /// A badge.
         badge<C>: waterui::component::badge::BadgeConfig<C>,
+        /// A card container.
+        card<C>: waterui::widget::card::CardConfig<C>,
         /// A disclosure group.
         disclosure<C>: waterui::widget::disclosure::DisclosureConfig<C>,
         /// A progress indicator.
@@ -1098,6 +1100,12 @@ mod tests {
     }
 
     impl<C> Parent<C> for waterui::component::badge::BadgeConfig<C> {
+        fn children(self) -> Vec<C> {
+            alloc::vec![self.content]
+        }
+    }
+
+    impl<C> Parent<C> for waterui::widget::card::CardConfig<C> {
         fn children(self) -> Vec<C> {
             alloc::vec![self.content]
         }
@@ -1429,6 +1437,24 @@ mod tests {
             [
                 ["filtered", UNHOOKED_CHILD, "layout_priority", "spacer"],
                 ["filtered", "erased child", "layout_priority", "spacer"],
+            ]
+            .concat()
+        );
+    }
+
+    #[test]
+    fn a_card_keeps_its_content_typed() {
+        use waterui::widget::card;
+
+        let env = Environment::new();
+        let mut recorder = Recorder::default();
+        Realize::child(&mut recorder, card(tree()), &env, ());
+        Realize::child(&mut recorder, AnyView::new(card(tree())), &env, ());
+        assert_eq!(
+            recorder.reached.borrow().as_slice(),
+            [
+                ["card", UNHOOKED_CHILD, "layout_priority", "spacer"],
+                ["card", "erased child", "layout_priority", "spacer"],
             ]
             .concat()
         );

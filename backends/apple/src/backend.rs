@@ -260,6 +260,19 @@ impl NativeBackend for AppleBackend {
         )
     }
 
+    fn card<C: ChildView<Self>>(
+        &mut self,
+        native: waterui::widget::card::CardConfig<C>,
+        env: &Environment,
+        (): (),
+    ) -> NativeLeaf {
+        mark_reached!("card");
+        crate::components::card::realize_card_config(
+            native.map_slots(C::into_child),
+            &self.entry(env),
+        )
+    }
+
     fn disclosure<C: ChildView<Self>>(
         &mut self,
         native: waterui::widget::disclosure::DisclosureConfig<C>,

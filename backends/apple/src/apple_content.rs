@@ -602,6 +602,7 @@ mod tests {
         stub_parents! {
             button<C>: waterui::component::button::ButtonConfig<C>,
             badge<C>: waterui::component::badge::BadgeConfig<C>,
+            card<C>: waterui::widget::card::CardConfig<C>,
             disclosure<C>: waterui::widget::disclosure::DisclosureConfig<C>,
             progress<C>: waterui::component::progress::ProgressConfig<C>,
             #[cfg(waterui_feature = "toggle")]

@@ -8,25 +8,18 @@
 //! same edges where they fit without flipping.
 
 use waterui::app::{App, Windows};
-use waterui::border::Border;
 use waterui::metadata::anchored_overlay::{
     AnchorEdge, AnchoredOverlay, Clamp, Dismissal, EdgeAlignment,
 };
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
-use waterui::shape::RoundedRectangle;
-use waterui::theme::color::{Border as BorderToken, Surface};
+use waterui::widget::card;
 
 /// The small card every demo presents as overlay content. The label names
 /// the edge the placement asked for.
 fn overlay_card(note: &'static str) -> impl View {
-    text(note)
-        .caption()
-        .padding_with(12.0)
-        .background(Surface)
-        .clip(RoundedRectangle::new(8.0))
-        .border_with(Border::new(BorderToken, 1.0).corner_radius(8.0))
+    card(text(note).caption())
 }
 
 /// A taller overlay card for the flip demos — too tall to fit in the band

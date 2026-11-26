@@ -1461,6 +1461,19 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         RenderNode::build_badge(native.map_slots(into_child), env, renderer)
     }
 
+    fn card<C: ChildView<Self>>(
+        &mut self,
+        native: waterui::widget::card::CardConfig<C>,
+        env: &Environment,
+        (): (),
+    ) -> RenderNode<E> {
+        use waterui_core::backend::MapSlots as _;
+        mark_reached!("card");
+        let renderer = &mut *self.renderer;
+        let into_child: fn(C) -> HeldChild<E> = C::into_child;
+        RenderNode::build_card(native.map_slots(into_child), env, renderer)
+    }
+
     fn disclosure<C: ChildView<Self>>(
         &mut self,
         native: waterui::widget::disclosure::DisclosureConfig<C>,

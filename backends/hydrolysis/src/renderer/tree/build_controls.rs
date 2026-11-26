@@ -121,6 +121,14 @@ impl_widget_behavior!(
     ; dirty: take_layout_dirty
     ; a11y: crate::widgets::layout::badge::emit_badge_accessibility
 );
+impl_widget_behavior!(
+    crate::widgets::layout::card::CardRenderState<E>,
+    crate::widgets::layout::card::render_card_node,
+    crate::widgets::layout::card::measure_card_node
+    ; prepare: prepare
+    ; dirty: take_layout_dirty
+    ; a11y: crate::widgets::layout::card::emit_card_accessibility
+);
 
 #[cfg(hydrolysis_android_system_webview)]
 impl_widget_behavior!(
@@ -460,6 +468,25 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         renderer.with_probe_reader(&core, ReaderPhase::Record, |renderer| {
             state.prebuild_content(renderer, env);
         });
+        let state = Rc::new(RefCell::new(state));
+        Self::build_widget_with_core(state, stretch, env, core)
+    }
+
+    /// Build a persistent card node: its body content is pre-built eagerly so
+    /// the card inherits its content's stretch axis, while optional title and
+    /// subtitle text views are styled from `WidgetTheme::card` during prepare.
+    pub(super) fn build_card(
+        config: waterui::widget::card::CardConfig<HeldChild<E>>,
+        env: &Environment,
+        renderer: &mut SemanticCore<E>,
+    ) -> Self {
+        use crate::widgets::layout::card::CardRenderState;
+        let mut state = CardRenderState::from_config(config);
+        let core = renderer.new_core();
+        renderer.with_probe_reader(&core, ReaderPhase::Record, |renderer| {
+            state.prebuild(renderer, env);
+        });
+        let stretch = state.stretch_axis();
         let state = Rc::new(RefCell::new(state));
         Self::build_widget_with_core(state, stretch, env, core)
     }

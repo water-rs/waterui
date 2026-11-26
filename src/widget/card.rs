@@ -1,11 +1,11 @@
 //! A card is a styled container that groups related content.
-use crate::prelude::*;
-use crate::style::Shadow;
-use waterui_core::OneOf2;
+
+use core::fmt;
+
+use waterui_core::backend::{Backend, ChildSlot, MapSlots};
+use waterui_core::{AnyView, Environment, Native, NativeView, View};
 use waterui_graphics::color::Color;
-use waterui_layout::stack::vstack;
-use waterui_shape::{RoundedRectangle, ShapeExt};
-use waterui_text::{IntoText, font::Title};
+use waterui_text::{IntoText, Text};
 
 /// Visual style for a [`Card`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
@@ -22,7 +22,61 @@ pub enum CardStyle {
     Outlined,
 }
 
-/// Theme tokens used by the Rust-side [`Card`] composer.
+/// Resolved configuration passed to [`NativeBackend`](crate::Native) for a [`Card`].
+#[derive(Debug, Clone)]
+pub struct CardConfig<S> {
+    /// Optional title displayed at the top of the card.
+    pub title: Option<Text>,
+    /// Optional subtitle displayed below the title.
+    pub subtitle: Option<Text>,
+    /// Main content of the card.
+    pub content: S,
+    /// Semantic visual style for the card.
+    pub style: CardStyle,
+}
+
+impl<S> CardConfig<S> {
+    /// Creates a new card configuration.
+    #[must_use]
+    pub const fn new(
+        title: Option<Text>,
+        subtitle: Option<Text>,
+        content: S,
+        style: CardStyle,
+    ) -> Self {
+        Self {
+            title,
+            subtitle,
+            content,
+            style,
+        }
+    }
+}
+
+impl<S: 'static> NativeView for CardConfig<S> {}
+
+impl<S: 'static> MapSlots<S> for CardConfig<S> {
+    type With<T: 'static> = CardConfig<T>;
+
+    fn map_slots<T: 'static>(self, f: impl Fn(S) -> T + Clone + 'static) -> CardConfig<T> {
+        CardConfig {
+            title: self.title,
+            subtitle: self.subtitle,
+            content: f(self.content),
+            style: self.style,
+        }
+    }
+}
+
+impl<S: 'static> fmt::Display for CardConfig<S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Card")
+    }
+}
+
+/// Legacy theme tokens kept hidden while downstream style packages migrate to
+/// `WidgetTheme::card`.
+#[doc(hidden)]
 #[derive(Debug, Clone)]
 pub struct CardTheme {
     /// Default card style.
@@ -39,7 +93,9 @@ pub struct CardTheme {
     pub content_spacing: f32,
 }
 
-/// Per-style card tokens.
+/// Legacy per-style card tokens kept hidden while downstream style packages
+/// migrate to `WidgetTheme::card`.
+#[doc(hidden)]
 #[derive(Debug, Clone)]
 pub struct CardStyleTokens {
     /// Container fill color.
@@ -48,8 +104,7 @@ pub struct CardStyleTokens {
     pub outline_color: Color,
     /// Border width.
     pub outline_width: f32,
-    /// Corner radius in logical units — the same length traces the fill, the
-    /// border, and the shadow.
+    /// Corner radius in logical units.
     pub corner_radius: f32,
     /// Shadow color.
     pub shadow_color: Color,
@@ -82,6 +137,7 @@ impl CardTheme {
 
 /// A card widget that displays optional title, subtitle, and content.
 #[derive(Debug, Clone)]
+#[must_use]
 pub struct Card<Content> {
     title: Option<Text>,
     subtitle: Option<Text>,
@@ -90,8 +146,8 @@ pub struct Card<Content> {
 }
 
 impl<Content: View> Card<Content> {
-    // Creates a new card with the specified content.
-
+    /// Creates a new card with the specified content.
+    ///
     /// # Arguments
     /// * `content` - The main content of the card.
     pub const fn new(content: Content) -> Self {
@@ -102,58 +158,45 @@ impl<Content: View> Card<Content> {
             style: CardStyle::Automatic,
         }
     }
+
     /// Sets the title of the card.
-    #[must_use]
     pub fn title(mut self, title: impl IntoText) -> Self {
-        self.title = Some(title.into_text().font(Title));
+        self.title = Some(title.into_text());
         self
     }
 
     /// Sets the subtitle of the card.
-    #[must_use]
     pub fn subtitle(mut self, subtitle: impl IntoText) -> Self {
         self.subtitle = Some(subtitle.into_text());
         self
     }
 
     /// Sets the card visual style.
-    #[must_use]
     pub const fn style(mut self, style: CardStyle) -> Self {
         self.style = style;
         self
+    }
+
+    fn into_config<S: ChildSlot>(self) -> CardConfig<S> {
+        CardConfig {
+            title: self.title,
+            subtitle: self.subtitle,
+            content: S::from_view(self.content),
+            style: self.style,
+        }
     }
 }
 
 impl<Content> View for Card<Content>
 where
-    Content: View,
+    Content: View + 'static,
 {
-    fn body(self, env: &Environment) -> impl View {
-        let Some(theme) = env.get::<CardTheme>() else {
-            return OneOf2::A(vstack((self.title, self.subtitle, self.content)));
-        };
-        let tokens = theme.tokens(self.style);
-        let shape = RoundedRectangle::new(tokens.corner_radius);
-        let shadow = Shadow::splat(tokens.shadow_radius)
-            .color(tokens.shadow_color.clone())
-            .offset(0.0, tokens.shadow_offset_y)
-            .silhouette(shape);
-        let ambient_shadow = Shadow::splat(tokens.ambient_shadow_radius)
-            .color(tokens.ambient_shadow_color.clone())
-            .offset(0.0, tokens.ambient_shadow_offset_y)
-            .silhouette(shape);
-        OneOf2::B(
-            vstack((self.title, self.subtitle, self.content))
-                .spacing(theme.content_spacing)
-                .padding_with(theme.content_padding)
-                .background(shape.fill(tokens.container_color.clone()))
-                .border_with(
-                    Border::new(tokens.outline_color.clone(), tokens.outline_width)
-                        .corner_radius(tokens.corner_radius),
-                )
-                .shadow(ambient_shadow)
-                .shadow(shadow),
-        )
+    fn body(self, _env: &Environment) -> impl View {
+        Native::new(self.into_config::<AnyView>())
+    }
+
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        backend.native(self.into_config::<B::Slot>(), env, cx)
     }
 }
 

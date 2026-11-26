@@ -9,7 +9,9 @@ pub mod suspense;
 
 #[cfg(feature = "avatar")]
 pub use avatar::{Avatar, avatar};
-pub use card::{Card, CardStyle, CardStyleTokens, CardTheme, card};
+pub use card::{Card, CardConfig, CardStyle, card};
+#[doc(hidden)]
+pub use card::{CardStyleTokens, CardTheme};
 pub use condition::{When, when};
 pub use dialog_theme::DialogTheme;
 pub use disclosure::{Disclosure, disclosure};

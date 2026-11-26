@@ -9,9 +9,9 @@ use accesskit::{
 };
 use hydrolysis::draw::{BlendSpace, MaterialRegistry};
 use hydrolysis::theme::{
-    BadgeLook, ButtonLook, ButtonSpec, CheckboxLook, DisclosureLook, DisclosureSpec, GlassLook,
-    IndicatorLook, LinearProgressLook, ListLook, ListSpec, MenuLook, MenuPickerLook, MenuSpec,
-    NavigationBarLook, NavigationSpec, PickerSpec, ProgressSpec, RadioGroupLook,
+    BadgeLook, ButtonLook, ButtonSpec, CardLook, CheckboxLook, DisclosureLook, DisclosureSpec,
+    GlassLook, IndicatorLook, LinearProgressLook, ListLook, ListSpec, MenuLook, MenuPickerLook,
+    MenuSpec, NavigationBarLook, NavigationSpec, PickerSpec, ProgressSpec, RadioGroupLook,
     ScrollIndicatorLook, SegmentedLook, SegmentedSpec, SliderLook, SliderSpec, StepperLook,
     StepperSpec, SwitchLook, TableLook, TabsLook, TabsSpec, TextFieldLook, TextFieldSpec,
     ToggleSpec, WidgetTheme,
@@ -22,6 +22,7 @@ use hydrolysis::{
 };
 use waterui::app::{App, AppMenuBar, AppParts, WindowSink, Windows};
 use waterui::background::Glass;
+use waterui::widget::CardStyle;
 use waterui::window::{Window, WindowChannel, WindowState, WindowToolbar};
 use waterui::{ContentLedger, Plugin, ViewExt as _};
 use waterui_core::handler::{AnyViewBuilder, ViewBuilder};
@@ -135,6 +136,10 @@ impl WidgetTheme for ErasedStyle {
 
     fn disclosure(&self, spec: &DisclosureSpec, env: &Environment) -> DisclosureLook {
         self.0.disclosure(spec, env)
+    }
+
+    fn card(&self, style: CardStyle, env: &Environment) -> CardLook {
+        self.0.card(style, env)
     }
 }
 

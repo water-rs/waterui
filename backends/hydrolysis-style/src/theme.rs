@@ -51,6 +51,7 @@
 //! overwrites both.
 
 mod badge;
+mod card;
 mod chrome;
 mod disclosure;
 mod glass;
@@ -80,6 +81,7 @@ mod toggle;
 mod widget;
 
 pub use badge::BadgeLook;
+pub use card::{CardLayout, CardLook};
 pub use cherenkov_record::MaterialRegistry;
 #[doc(hidden)]
 pub use chrome::path_commands_to_path;
