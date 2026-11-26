@@ -14229,6 +14229,7 @@ name = "webview-example"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_json",
  "waterui",
  "waterui-browser-wpe",
 ]

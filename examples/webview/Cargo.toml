@@ -27,6 +27,7 @@ waterui = { workspace = true, features = ["webview", "gpu", "assets", "snackbar"
 # cannot be scripted).
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
 
 # Linux has no system web engine to bridge outside GTK, so the app brings one.
 [target.'cfg(target_os = "linux")'.dependencies]
