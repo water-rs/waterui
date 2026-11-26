@@ -17,6 +17,8 @@ pub mod badge;
 pub use badge::{Badge, BadgeConfig, BadgeValue};
 pub mod card;
 pub use card::{Card, CardConfig, CardStyle, card};
+pub mod condition;
+pub use condition::{When, WhenChain, WhenComplete, when};
 #[cfg(feature = "menu")]
 pub mod context_menu;
 #[cfg(feature = "dialog")]
@@ -25,6 +27,10 @@ pub mod disclosure;
 pub use disclosure::{Disclosure, DisclosureConfig, disclosure};
 pub mod divider;
 pub use divider::Divider;
+pub mod error;
+pub use error::{
+    BoxedStdError, DefaultErrorView, ErrorView, ErrorViewBuilder, ResultExt, StdError, error_view,
+};
 pub mod input;
 pub mod label;
 pub use label::{
@@ -80,6 +86,8 @@ pub use toggle::{
 pub mod stepper;
 #[cfg(feature = "stepper")]
 pub use stepper::{Stepper, StepperValue, stepper};
+pub mod suspense;
+pub use suspense::{SuspendedView, Suspense, suspense};
 
 /// Button component and related utilities.
 pub mod button;

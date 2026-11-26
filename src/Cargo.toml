@@ -62,7 +62,6 @@ waterui-markdown = { workspace = true, optional = true }
 waterui-assets = { workspace = true, optional = true }
 waterui-assets-macros = { workspace = true, optional = true }
 waterui-ts = { workspace = true, optional = true }
-waterkit-haptic = { workspace = true, optional = true }
 pastey.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
@@ -241,7 +240,7 @@ flow-markdown = [
 markdown-math = ["flow-markdown", "waterui-markdown?/math", "waterui-core/markdown-math"]
 # Haptic and sensory feedback (`waterui::haptic`, `Feedback`, `Haptic`, `Intensity`,
 # `ViewExt::sensory_feedback`). Opt-in so applications without haptics pay none of it.
-haptics = ["dep:waterkit-haptic", "waterui-core/haptics"]
+haptics = ["waterui-interaction/haptics", "waterui-core/haptics"]
 std = ["waterui-core/std"]
 # In-tree offscreen view capture (`CaptureHandle`, `CaptureScope`, `ViewExt::capture`)
 # and `NativeBackend::offscreen` wiring. Opt-in so `route_metadata_dyn` does not pull

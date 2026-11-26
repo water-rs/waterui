@@ -13,11 +13,17 @@ categories = ["gui"]
 
 [dependencies]
 bitflags.workspace = true
+executor-core = { workspace = true, optional = true }
 keyboard-types.workspace = true
 nami.workspace = true
 suiteki.workspace = true
+tracing = { workspace = true, optional = true }
+waterkit-haptic = { workspace = true, optional = true }
 waterui-core = { workspace = true, default-features = false }
 waterui-url.workspace = true
+
+[features]
+haptics = ["dep:executor-core", "dep:tracing", "dep:waterkit-haptic"]
 
 [lints]
 workspace = true

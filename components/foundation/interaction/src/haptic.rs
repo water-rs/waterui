@@ -6,7 +6,7 @@ pub use waterkit_haptic::{
     Intensity,
 };
 
-/// Feedback kind played by [`ViewExt::sensory_feedback`](crate::ViewExt::sensory_feedback).
+/// Feedback kind played by `ViewExt::sensory_feedback`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]
 pub enum Feedback {
@@ -24,7 +24,8 @@ pub enum Feedback {
 
 impl Feedback {
     /// Triggers this feedback on the platform's haptic engine without blocking the caller.
-    pub(crate) fn trigger(self) {
+    #[doc(hidden)]
+    pub fn trigger(self) {
         spawn_local(async move {
             let result = match self {
                 Self::Success => Haptic::notification_success().await,
@@ -57,17 +58,5 @@ mod tests {
         assert_eq!(variants[0], Feedback::Success);
         assert_ne!(variants[0], variants[4]);
         let _ = Haptic::capabilities;
-    }
-
-    #[test]
-    fn facade_exports_haptic_vocabulary() {
-        let _ = (
-            core::any::type_name::<crate::Feedback>(),
-            core::any::type_name::<crate::Haptic>(),
-            core::any::type_name::<crate::Intensity>(),
-            core::any::type_name::<crate::prelude::Feedback>(),
-            core::any::type_name::<crate::prelude::Haptic>(),
-            core::any::type_name::<crate::prelude::Intensity>(),
-        );
     }
 }

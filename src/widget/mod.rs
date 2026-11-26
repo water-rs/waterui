@@ -1,11 +1,11 @@
 #[cfg(feature = "avatar")]
 pub use waterui_controls::avatar;
 pub use waterui_controls::card;
-pub mod condition;
+pub use waterui_controls::condition;
 pub mod disclosure;
 pub use waterui_controls::divider;
-pub mod error;
-pub mod suspense;
+pub use waterui_controls::error;
+pub use waterui_controls::suspense;
 
 #[cfg(feature = "avatar")]
 pub use avatar::{Avatar, avatar};
@@ -14,7 +14,7 @@ pub use condition::{When, when};
 pub use disclosure::{Disclosure, disclosure};
 pub use divider::Divider;
 pub use error::{DefaultErrorView, ErrorView, ErrorViewBuilder, ResultExt, error_view};
-pub use suspense::{SuspendedView, Suspense, suspense};
+pub use suspense::{SuspendedView, Suspense};
 
 /// Syntax highlighted code widget. It lives in `waterui-text` so a component
 /// crate can claim a fence with a `CodeConfig` hook without depending on
