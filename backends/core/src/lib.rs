@@ -75,6 +75,7 @@ pub use dynamic::DynamicNode;
 pub use hooked::SlotView;
 pub use hooked::{Hooked, HookedFamily};
 pub use native_backend::{NativeBackend, Realize, report_unprovided};
+pub use waterui_core::backend::{HookSlot, HookableParent, ParentHookScope, offer_hookable_parent};
 pub use waterui_meta::mark_reached;
 
 /// Declared accessibility semantics for a backend-provided [`NativeView`](waterui_core::NativeView).
