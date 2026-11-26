@@ -84,7 +84,7 @@ assets = ["waterui-internal/assets"]
 image = ["waterui-internal/image"]
 video = ["waterui-internal/video"]
 remote = ["waterui-internal/remote"]
-video-gpu = ["waterui-internal/video-gpu"]
+video-gpu = ["video", "gpu", "waterui-internal/video-gpu"]
 webview = ["waterui-internal/webview"]
 map = ["waterui-internal/map"]
 widgets = ["waterui-internal/widgets"]
@@ -94,7 +94,7 @@ navigation-restoration = ["waterui-internal/navigation-restoration"]
 snackbar = ["waterui-internal/snackbar"]
 dialog = ["waterui-internal/dialog"]
 flow-markdown = ["waterui-internal/flow-markdown"]
-markdown-math = ["waterui-internal/markdown-math"]
+markdown-math = ["flow-markdown", "waterui-internal/markdown-math"]
 haptics = ["waterui-internal/haptics"]
 std = ["waterui-internal/std"]
 erased-dispatch = ["waterui-internal/erased-dispatch"]
@@ -123,13 +123,30 @@ all = [
     "text-field",
     "toggle",
     "validation",
-    "waterui-internal/all",
-    "navigation-restoration",
+    "capture",
+    "canvas",
+    "chart",
+    "barcode",
+    "particle",
+    "haptics",
+    "std",
+    "gpu",
     "highlight",
     "locale-datetime",
     "locale-list",
     "locale-relative-time",
-    "haptics",
+    "inspector",
+    "inspector-signals",
+    "assets",
+    "image",
+    "webview",
+    "map",
+    "flow-markdown",
+    "video-gpu",
+    "navigation-restoration",
+    "snackbar",
+    "dialog",
+    "remote",
 ]
 
 [lints]
