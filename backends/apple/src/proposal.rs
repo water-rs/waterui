@@ -245,7 +245,14 @@ pub fn response(view: &PlatformView) -> Rect {
 
 /// Where `view` draws its intrinsic content: its committed response
 /// rectangle, or its bounds before its first placement committed one.
-#[cfg(all(feature = "picture", waterui_feature = "gpu"))]
+#[cfg(all(
+    feature = "picture",
+    any(
+        waterui_feature = "gpu",
+        waterui_feature = "cpu",
+        waterui_feature = "canvas"
+    )
+))]
 pub fn content_rect(view: &PlatformView) -> Rect {
     slot_of(view).content_rect(view)
 }

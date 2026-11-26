@@ -28,6 +28,59 @@ compile_error!(
     "hydrolysis: enable at most one webview engine feature (`webview-system`, `webview-cef`, `webview-wpe`)"
 );
 
+/// Whether this build enables `waterui/map` without Hydrolysis's `map-gpu`
+/// realization.
+#[doc(hidden)]
+pub const MAP_ENGINE_MISSING: bool = cfg!(all(waterui_feature = "map", not(feature = "map-gpu")));
+
+/// Whether this build enables `waterui/webview` without a Hydrolysis web
+/// engine feature supported on the target platform.
+#[doc(hidden)]
+pub const WEBVIEW_ENGINE_MISSING: bool = cfg!(all(
+    waterui_feature = "webview",
+    not(any(
+        hydrolysis_webview_engine,
+        hydrolysis_android_system_webview
+    ))
+));
+
+const fn assert_map_capability() {
+    #[cfg(all(waterui_feature = "map", not(feature = "map-gpu")))]
+    panic!(
+        "hydrolysis host enables `waterui/map` without `hydrolysis/map-gpu`; link \
+         `waterui-map-gpu` in the application (or enable `hydrolysis/map-gpu`) so \
+         Hydrolysis can realize `Map`"
+    );
+}
+
+const fn assert_webview_capability() {
+    #[cfg(all(
+        waterui_feature = "webview",
+        not(any(hydrolysis_webview_engine, hydrolysis_android_system_webview))
+    ))]
+    panic!(
+        "hydrolysis host enables `waterui/webview` without a supported web engine \
+         feature for this target; enable `webview-cef` or `webview-wpe` (by linking \
+         `waterui-browser-cef` or `waterui-browser-wpe`), or target a platform that \
+         bridges `webview-system` (`winit` on macOS, `web` on wasm32, or Android)"
+    );
+}
+
+/// Compile-time capability gate invoked by Hydrolysis host launcher crates.
+///
+/// Library crates in a Cargo workspace may unify `waterui/map` or
+/// `waterui/webview` from unrelated members without enabling a Hydrolysis
+/// map or web engine feature, so `hydrolysis` itself cannot emit an
+/// unconditional `compile_error!`. Host crates evaluate this function in a
+/// `const` item (`const _: () = hydrolysis::assert_host_capabilities();`) so
+/// missing engine realizations fail at compile time instead of deferring to
+/// runtime `unsupported_map()` / `UNSUPPORTED_WEBVIEW` contract violations.
+#[doc(hidden)]
+pub const fn assert_host_capabilities() {
+    assert_map_capability();
+    assert_webview_capability();
+}
+
 #[cfg(target_os = "android")]
 pub mod android_content;
 #[cfg(hydrolysis_runtime)]
@@ -191,3 +244,80 @@ pub use widgets::platform::webview::WebSystemWebViewController;
 #[cfg(hydrolysis_android_system_webview)]
 #[doc(hidden)]
 pub use widgets::platform::webview::{AndroidSystemWebViewController, AndroidSystemWebViewHandle};
+
+#[cfg(test)]
+mod capability_gate_tests {
+    use super::{
+        MAP_ENGINE_MISSING, WEBVIEW_ENGINE_MISSING, assert_host_capabilities,
+        assert_map_capability, assert_webview_capability,
+    };
+
+    #[cfg(all(waterui_feature = "map", not(feature = "map-gpu")))]
+    #[test]
+    #[should_panic(expected = "hydrolysis/map-gpu")]
+    fn map_capability_gate_rejects_map_without_map_gpu() {
+        const {
+            assert!(MAP_ENGINE_MISSING);
+        }
+        assert_map_capability();
+    }
+
+    #[cfg(not(all(waterui_feature = "map", not(feature = "map-gpu"))))]
+    #[test]
+    fn map_capability_gate_accepts_build_with_map_engine_or_without_map() {
+        const {
+            assert!(!MAP_ENGINE_MISSING);
+            assert_map_capability();
+        }
+    }
+
+    #[cfg(all(
+        waterui_feature = "webview",
+        not(any(hydrolysis_webview_engine, hydrolysis_android_system_webview))
+    ))]
+    #[test]
+    #[should_panic(expected = "web engine")]
+    fn webview_capability_gate_rejects_webview_without_engine() {
+        const {
+            assert!(WEBVIEW_ENGINE_MISSING);
+        }
+        assert_webview_capability();
+    }
+
+    #[cfg(not(all(
+        waterui_feature = "webview",
+        not(any(hydrolysis_webview_engine, hydrolysis_android_system_webview))
+    )))]
+    #[test]
+    fn webview_capability_gate_accepts_build_with_webview_engine_or_without_webview() {
+        const {
+            assert!(!WEBVIEW_ENGINE_MISSING);
+            assert_webview_capability();
+        }
+    }
+
+    #[cfg(all(
+        not(all(waterui_feature = "map", not(feature = "map-gpu"))),
+        not(all(
+            waterui_feature = "webview",
+            not(any(hydrolysis_webview_engine, hydrolysis_android_system_webview))
+        ))
+    ))]
+    #[test]
+    fn host_capability_gate_evaluates_in_const_context_when_satisfied() {
+        const _: () = assert_host_capabilities();
+    }
+
+    #[cfg(any(
+        all(waterui_feature = "map", not(feature = "map-gpu")),
+        all(
+            waterui_feature = "webview",
+            not(any(hydrolysis_webview_engine, hydrolysis_android_system_webview))
+        )
+    ))]
+    #[test]
+    #[should_panic(expected = "hydrolysis host enables")]
+    fn host_capability_gate_rejects_missing_engine() {
+        assert_host_capabilities();
+    }
+}

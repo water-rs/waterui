@@ -1,5 +1,7 @@
 //! Hydrolysis web entry point for {{ ctx.app_display_name }}.
 
+const _: () = hydrolysis::assert_host_capabilities();
+
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 

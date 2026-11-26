@@ -1,5 +1,8 @@
 //! Generated Apple in-process preview entry for `{{ crate_name_ident }}`.
 
+#[cfg(feature = "dev")]
+use waterui_dylib as _;
+
 mod preview_target;
 
 // Embeds the preview `Info.plist` on iOS Simulator (`UIDeviceFamily` 1 so

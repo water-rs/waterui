@@ -445,6 +445,16 @@ impl<C: 'static> MapSlots<C> for TableConfig<C> {
 
 /// A non-sortable column definition for a [`Table`], building a cell view from
 /// each row item.
+///
+/// Columns always declare an explicit header label via [`TableColumn::new`];
+/// collecting an iterator into a `TableColumn` is rejected rather than
+/// synthesizing a Rust type name as the header:
+///
+/// ```compile_fail,E0277
+/// use waterui::component::table::TableColumn;
+///
+/// let _column: TableColumn<_, _, _> = ["a", "b"].into_iter().collect();
+/// ```
 pub struct TableColumn<Item, F, V> {
     label: Text,
     cell: F,

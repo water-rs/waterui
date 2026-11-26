@@ -1,5 +1,8 @@
 //! Native companion crate for {{ ctx.app_display_name }}.
 
+#[cfg(feature = "dev")]
+use waterui_dylib as _;
+
 use waterui::app::{App, Windows};
 use waterui::env::Environment;
 
