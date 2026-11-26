@@ -27,8 +27,9 @@ use waterui_shape::{ClipShape, Shape};
 
 /// Theme tokens for a view promoted with [`ViewExt::floating`](crate::ViewExt::floating).
 ///
-/// The renderer consumes these values instead of embedding FAB measurements.
-/// An explicit parent size may still constrain the minimum dimensions.
+/// Transitional compatibility shim kept while external style packages migrate
+/// to `hydrolysis_style::theme::FloatingLook`.
+#[doc(hidden)]
 #[derive(Debug, Clone)]
 pub struct FloatingStyle {
     /// Floating surface fill.
@@ -58,6 +59,7 @@ impl Plugin for FloatingStyle {}
 
 /// The two shadows that lift a floating surface: a soft ambient shadow and a
 /// tighter key shadow.
+#[doc(hidden)]
 #[derive(Debug, Clone)]
 pub struct FloatingElevation {
     /// Ambient shadow color.

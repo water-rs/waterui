@@ -1020,6 +1020,8 @@ native_backend! {
         glass_background: waterui::background::GlassBackground,
         /// A group sharing one backdrop capture.
         material_group: waterui::background::MaterialGroup,
+        /// A floating surface.
+        floating: waterui::floating::Floating,
         /// Safe-area edges the content ignores.
         ignore_safe_area: waterui::layout::safe_area::IgnoreSafeArea,
         /// A cursor.
@@ -2365,6 +2367,36 @@ mod tests {
             [core::any::type_name::<
                 Metadata<waterui::view_renderer::CaptureBinder<AnyView>, AnyView>,
             >()]
+        );
+    }
+
+    #[test]
+    fn a_floating_view_reaches_the_floating_metadata_method() {
+        use waterui::ViewExt as _;
+
+        let env = Environment::new();
+        let mut static_recorder = Recorder::default();
+        Realize::child(
+            &mut static_recorder,
+            Spacer::flexible().floating(),
+            &env,
+            (),
+        );
+        assert_eq!(
+            static_recorder.reached.borrow().as_slice(),
+            ["floating", "spacer"]
+        );
+
+        let mut erased_recorder = Recorder::default();
+        Realize::child(
+            &mut erased_recorder,
+            AnyView::new(Spacer::flexible().floating()),
+            &env,
+            (),
+        );
+        assert_eq!(
+            erased_recorder.reached.borrow().as_slice(),
+            ["floating", "spacer"]
         );
     }
 

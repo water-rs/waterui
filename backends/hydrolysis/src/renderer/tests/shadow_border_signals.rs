@@ -9,7 +9,7 @@ use waterui::component::button;
 use waterui::interaction::{InteractionState, StateValue};
 use waterui::prelude::{Color, EdgeInsets};
 use waterui::shape::{Circle, Rectangle};
-use waterui::style::{FloatingElevation, FloatingStyle, Shadow};
+use waterui::style::Shadow;
 use waterui::{AnyView, Binding, SignalExt as _, View, ViewExt as _};
 use waterui_core::handler::AnyViewBuilder;
 use waterui_layout::stack::{vstack, zstack};
@@ -18,6 +18,7 @@ use super::{MinimalTestTheme, pumped_test_environment};
 use crate::HeadlessRuntime;
 use crate::platform::{InputEvent, PointerKind};
 use crate::runner::HeadlessSnapshot;
+use crate::theme::{FloatingElevation, FloatingOverride, FloatingStyle};
 
 const CANVAS: u32 = 160;
 const CASTER: f32 = 80.0;
@@ -220,7 +221,8 @@ fn floating_surface_updates_shadow_on_hover_without_rebuilds() {
         AnyView::new(
             button("Float")
                 .action(|| {})
-                .floating_with(style.clone())
+                .floating()
+                .install(FloatingOverride::style(style.clone()))
                 .padding_with(EdgeInsets::all(24.0)),
         )
     });

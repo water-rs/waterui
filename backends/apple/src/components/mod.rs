@@ -40,6 +40,7 @@ pub mod empty;
 #[cfg(any(feature = "applied_filter", feature = "view_effect"))]
 pub mod filtered;
 pub mod fixed_container;
+pub mod floating;
 pub mod focused;
 mod font;
 pub mod frame_rate;
