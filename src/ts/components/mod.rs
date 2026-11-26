@@ -32,8 +32,8 @@ use waterui_core::layout::{Alignment, HorizontalAlignment, VerticalAlignment};
 use waterui_core::views::ForEach;
 use waterui_core::{AnyView, Environment, Error, View};
 use waterui_form::picker::{Picker, PickerItem};
-use waterui_layout::ScrollView;
 use waterui_layout::Spacer;
+use waterui_layout::scroll::{Axis, ScrollView};
 use waterui_layout::stack::{HStack, HStackLayout, VStack, VStackLayout, ZStack};
 use waterui_navigation::tab::{Tab, Tabs};
 use waterui_navigation::{NavigationLink, NavigationStack, NavigationView};
@@ -192,9 +192,7 @@ fn containers(
             let spacing = spacing.unwrap_or_else(default_vertical_spacing);
             match collection::splice(children::content(bridge, children)?) {
                 Spliced::Lazy(items) => collection::into_vstack(&items, alignment, Some(spacing)),
-                Spliced::Fixed(views) => {
-                    AnyView::new(VStack::new(alignment, 0.0, views).spacing(spacing))
-                }
+                Spliced::Fixed(views) => AnyView::new(VStack::new(alignment, spacing, views)),
             }
         }
         "HStack" => {
@@ -204,9 +202,7 @@ fn containers(
             let spacing = spacing.unwrap_or_else(default_horizontal_spacing);
             match collection::splice(children::content(bridge, children)?) {
                 Spliced::Lazy(items) => collection::into_hstack(&items, alignment, Some(spacing)),
-                Spliced::Fixed(views) => {
-                    AnyView::new(HStack::new(alignment, 0.0, views).spacing(spacing))
-                }
+                Spliced::Fixed(views) => AnyView::new(HStack::new(alignment, spacing, views)),
             }
         }
         "ZStack" => {
@@ -221,24 +217,23 @@ fn containers(
             let attributes = ScrollViewAttributes::from_js(config, bridge)?;
             let content = VStack::new(
                 HorizontalAlignment::Center,
-                0.0,
+                default_vertical_spacing(),
                 children::content(bridge, children)?,
-            )
-            .spacing(default_vertical_spacing());
-            AnyView::new(match attributes.axis().unwrap_or_default() {
-                ScrollAxis::Vertical => ScrollView::vertical(content),
-                ScrollAxis::Horizontal => ScrollView::horizontal(content),
-                ScrollAxis::Both => ScrollView::both(content),
-            })
+            );
+            let axis = match attributes.axis().unwrap_or_default() {
+                ScrollAxis::Vertical => Axis::Vertical,
+                ScrollAxis::Horizontal => Axis::Horizontal,
+                ScrollAxis::Both => Axis::All,
+            };
+            AnyView::new(ScrollView::new(axis, content))
         }
         "Card" => {
             let attributes = CardAttributes::from_js(config, bridge)?;
             let content = VStack::new(
                 HorizontalAlignment::Leading,
-                0.0,
+                default_vertical_spacing(),
                 children::content(bridge, children)?,
-            )
-            .spacing(default_vertical_spacing());
+            );
             let (title, subtitle) = attributes.into_parts();
             let mut card = Card::new(content);
             if let Some(title) = title {
@@ -391,10 +386,9 @@ fn navigation(
             let attributes = NavigationStackAttributes::from_js(config, bridge)?;
             let root = VStack::new(
                 HorizontalAlignment::Center,
-                0.0,
+                default_vertical_spacing(),
                 children::content(bridge, children)?,
-            )
-            .spacing(default_vertical_spacing());
+            );
             AnyView::new(NavigationStack::new(NavigationView::new(
                 title_of(attributes.into_title()),
                 root,

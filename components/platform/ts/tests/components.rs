@@ -31,6 +31,7 @@ use waterui::component::table::{col, table};
 use waterui::component::{Link, button, field, label, progress, slider, stepper, toggle};
 use waterui::form::picker::{Picker, PickerItem};
 use waterui::layout::padding::EdgeInsets;
+use waterui::layout::scroll::Axis;
 use waterui::layout::stack::{HStack, HStackLayout, VStack, VStackLayout, ZStack};
 use waterui::layout::{Divider, ScrollView, Spacer};
 use waterui::navigation::tab::{Tab, Tabs};
@@ -70,7 +71,7 @@ fn stateful(setup: &str, element: &str) -> String {
 /// A vertical stack with the framework's own default spacing, which is what a
 /// `<VStack>` with no `spacing` builds.
 fn vstack(alignment: HorizontalAlignment, children: Vec<AnyView>) -> VStack<(Vec<AnyView>,)> {
-    VStack::new(alignment, 0.0, children).spacing(VStackLayout::default().spacing)
+    VStack::new(alignment, VStackLayout::default().spacing, children)
 }
 
 // ---------------------------------------------------------------------------
@@ -152,10 +153,9 @@ fn ts_hstack_is_an_hstack() {
         ),
         HStack::new(
             VerticalAlignment::Center,
-            0.0,
+            HStackLayout::default().spacing,
             vec![AnyView::new(text("First")), AnyView::new(text("Second"))],
-        )
-        .spacing(HStackLayout::default().spacing),
+        ),
     );
 }
 
@@ -188,10 +188,13 @@ fn ts_scrollview_is_a_scroll_view() {
                 children: waterui.jsx("Text", { children: "Scrolled" }),
             })"#,
         ),
-        ScrollView::vertical(vstack(
-            HorizontalAlignment::Center,
-            vec![AnyView::new(text("Scrolled"))],
-        )),
+        ScrollView::new(
+            Axis::Vertical,
+            vstack(
+                HorizontalAlignment::Center,
+                vec![AnyView::new(text("Scrolled"))],
+            ),
+        ),
     );
     assert_same(
         "ScrollView, horizontal",
@@ -201,10 +204,13 @@ fn ts_scrollview_is_a_scroll_view() {
                 children: waterui.jsx("Text", { children: "Scrolled" }),
             })"#,
         ),
-        ScrollView::horizontal(vstack(
-            HorizontalAlignment::Center,
-            vec![AnyView::new(text("Scrolled"))],
-        )),
+        ScrollView::new(
+            Axis::Horizontal,
+            vstack(
+                HorizontalAlignment::Center,
+                vec![AnyView::new(text("Scrolled"))],
+            ),
+        ),
     );
     assert_same(
         "ScrollView, both axes",
@@ -214,10 +220,13 @@ fn ts_scrollview_is_a_scroll_view() {
                 children: waterui.jsx("Text", { children: "Scrolled" }),
             })"#,
         ),
-        ScrollView::both(vstack(
-            HorizontalAlignment::Center,
-            vec![AnyView::new(text("Scrolled"))],
-        )),
+        ScrollView::new(
+            Axis::All,
+            vstack(
+                HorizontalAlignment::Center,
+                vec![AnyView::new(text("Scrolled"))],
+            ),
+        ),
     );
 }
 

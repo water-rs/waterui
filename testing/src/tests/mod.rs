@@ -30,7 +30,7 @@ use waterui::graphics::backend::draw::{self, Draw as _, Recorder};
 use waterui::graphics::backend::{NextFrame, RecordingResources, SceneContent, SceneView};
 use waterui::graphics::canvas::Canvas;
 use waterui::graphics::color::Srgb;
-use waterui::layout::scroll::ScrollView;
+use waterui::layout::scroll::{Axis, ScrollView};
 use waterui::text::Text;
 use waterui::window::Window;
 use waterui_core::layout::{Point, Rect, Size};
@@ -397,10 +397,13 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 #[test]
 fn scroll_view_and_button_structure_mounts_without_a_style() {
     let mut app = ui().viewport(240, 160).mount(|| {
-        ScrollView::vertical(vstack((
-            waterui::component::button("Submit").action(|| {}),
-            text("Scrolled content").body(),
-        )))
+        ScrollView::new(
+            Axis::Vertical,
+            vstack((
+                waterui::component::button("Submit").action(|| {}),
+                text("Scrolled content").body(),
+            )),
+        )
     });
     assert_eq!(app.query().role(Role::BUTTON).all().len(), 1);
     app.query()

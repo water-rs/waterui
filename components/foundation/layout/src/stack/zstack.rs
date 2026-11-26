@@ -304,12 +304,14 @@ crate::stack::impl_stack_for_each!(ZStack, ZStackLayout);
 impl<C: ViewSequence> ZStack<(C,)> {
     /// Creates a new `ZStack` with the specified alignment and contents.
     ///
-    /// # Arguments
-    /// * `alignment` - The alignment to use for positioning children within the stack
-    /// * `contents` - A collection of views to be stacked
-    pub const fn new(alignment: Alignment, contents: C) -> Self {
+    /// Accepts a [`Alignment`] or any two-dimensional alignment token
+    /// ([`Leading`](crate::Leading), [`TopTrailing`](crate::TopTrailing),
+    /// [`Center`](crate::Center), …) accepted by [`ZStack::alignment`].
+    pub fn new(alignment: impl Into<Alignment>, contents: C) -> Self {
         Self {
-            layout: ZStackLayout { alignment },
+            layout: ZStackLayout {
+                alignment: alignment.into(),
+            },
             contents: (contents,),
         }
     }
@@ -329,7 +331,12 @@ where
 ///
 /// This is a convenience function that creates a `ZStack` with `Alignment::Center`.
 pub const fn zstack<C: ViewSequence>(contents: C) -> ZStack<(C,)> {
-    ZStack::new(Alignment::Center, contents)
+    ZStack {
+        layout: ZStackLayout {
+            alignment: Alignment::Center,
+        },
+        contents: (contents,),
+    }
 }
 
 impl<C> View for ZStack<(C,)>
@@ -488,5 +495,13 @@ mod tests {
         // Child 2: centered in 100x100
         assert!((placements[1].frame.x() - 20.0).abs() < f32::EPSILON); // (100 - 60) / 2
         assert!((placements[1].frame.y() - 30.0).abs() < f32::EPSILON); // (100 - 40) / 2
+    }
+
+    #[test]
+    fn constructor_accepts_alignment_token() {
+        use crate::TopLeading;
+
+        let stack = ZStack::new(TopLeading, ((), ()));
+        assert_eq!(stack.layout.alignment, Alignment::TopLeading);
     }
 }

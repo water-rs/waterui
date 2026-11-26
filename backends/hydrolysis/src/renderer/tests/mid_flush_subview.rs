@@ -33,7 +33,7 @@ use waterui::widget::condition::when;
 use waterui_core::AnyView;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::SelfId;
-use waterui_layout::scroll::ScrollView;
+use waterui_layout::scroll::{Axis, ScrollView};
 use waterui_layout::stack::{VStack, vstack};
 use waterui_navigation::NavigationView;
 
@@ -138,61 +138,66 @@ fn mid_flush_dynamic_apply_in_retained_subview_relayouts() {
             AnyView::new(
                 NavigationView::new(
                     "Chat",
-                    ScrollView::vertical(vstack((
-                        VStack::for_each(messages.clone(), {
-                            let open = open.clone();
-                            move |m: SelfId<u64>| {
+                    ScrollView::new(
+                        Axis::Vertical,
+                        vstack((
+                            VStack::for_each(messages.clone(), {
                                 let open = open.clone();
-                                let inner_items = inner_items.clone();
-                                if m.into_inner() == 2 {
-                                    // Setter row: a lazy stack that gains a row
-                                    // when `inner_items` grows; the row's builder
-                                    // runs at materialization and sets `open`.
-                                    // The rows size to content like the real
-                                    // popup — a fixed-height clamp here would
-                                    // under-provision them and `Frame` would
-                                    // center the overflow into the sibling row.
-                                    AnyView::new(vstack((
-                                        text("setter row")
-                                            .body()
-                                            .background(Srgb::from_hex("#404040")),
-                                        VStack::for_each(
-                                            SignalCollection::new(inner_items.clone()),
-                                            move |i: SelfId<u64>| {
-                                                if inner_items.snapshot().len() > 1 {
-                                                    open.set(true);
-                                                }
-                                                text("inner").body().background(Srgb::from_hex(
-                                                    if i.into_inner() == 7 {
-                                                        "#406040"
-                                                    } else {
-                                                        "#604060"
-                                                    },
-                                                ))
-                                            },
-                                        ),
-                                    )))
-                                } else {
-                                    AnyView::new(text(format!("message {}", m.into_inner())).body())
+                                move |m: SelfId<u64>| {
+                                    let open = open.clone();
+                                    let inner_items = inner_items.clone();
+                                    if m.into_inner() == 2 {
+                                        // Setter row: a lazy stack that gains a row
+                                        // when `inner_items` grows; the row's builder
+                                        // runs at materialization and sets `open`.
+                                        // The rows size to content like the real
+                                        // popup — a fixed-height clamp here would
+                                        // under-provision them and `Frame` would
+                                        // center the overflow into the sibling row.
+                                        AnyView::new(vstack((
+                                            text("setter row")
+                                                .body()
+                                                .background(Srgb::from_hex("#404040")),
+                                            VStack::for_each(
+                                                SignalCollection::new(inner_items.clone()),
+                                                move |i: SelfId<u64>| {
+                                                    if inner_items.snapshot().len() > 1 {
+                                                        open.set(true);
+                                                    }
+                                                    text("inner").body().background(Srgb::from_hex(
+                                                        if i.into_inner() == 7 {
+                                                            "#406040"
+                                                        } else {
+                                                            "#604060"
+                                                        },
+                                                    ))
+                                                },
+                                            ),
+                                        )))
+                                    } else {
+                                        AnyView::new(
+                                            text(format!("message {}", m.into_inner())).body(),
+                                        )
+                                    }
                                 }
-                            }
-                        }),
-                        when(open, || {
-                            VStack::for_each(
-                                SignalCollection::new(Binding::new(
-                                    (1..=2_u64).map(SelfId::new).collect::<Vec<_>>(),
-                                )),
-                                move |id: SelfId<u64>| {
-                                    text(format!("suggestion {}", id.into_inner())).body()
-                                },
-                            )
-                            .spacing(0.0)
-                            .padding_vertical(4.0)
-                            .background(Surface)
-                            .clip(RoundedRectangle::new(6.0))
-                        }),
-                        text("tail").body(),
-                    ))),
+                            }),
+                            when(open, || {
+                                VStack::for_each(
+                                    SignalCollection::new(Binding::new(
+                                        (1..=2_u64).map(SelfId::new).collect::<Vec<_>>(),
+                                    )),
+                                    move |id: SelfId<u64>| {
+                                        text(format!("suggestion {}", id.into_inner())).body()
+                                    },
+                                )
+                                .spacing(0.0)
+                                .padding_vertical(4.0)
+                                .background(Surface)
+                                .clip(RoundedRectangle::new(6.0))
+                            }),
+                            text("tail").body(),
+                        )),
+                    ),
                 )
                 .background(Srgb::from_hex("#141218")),
             )

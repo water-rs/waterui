@@ -22,7 +22,7 @@ use waterui::color::WorkingColor;
 use waterui::component::{text, vstack};
 use waterui::graphics::canvas::Canvas;
 use waterui::graphics::color::Srgb;
-use waterui::layout::scroll::ScrollView;
+use waterui::layout::scroll::{Axis, ScrollView};
 use waterui::theme;
 use waterui::{Computed, Plugin, View};
 use waterui_core::handler::AnyViewBuilder;
@@ -116,10 +116,13 @@ fn default_theme_renders_hydrolysis_widgets() {
         .viewport(240, 160)
         .theme(Material3::defaults())
         .mount_offscreen(|| {
-            ScrollView::vertical(vstack((
-                waterui::component::button("Submit").action(|| {}),
-                text("Scrolled content").body(),
-            )))
+            ScrollView::new(
+                Axis::Vertical,
+                vstack((
+                    waterui::component::button("Submit").action(|| {}),
+                    text("Scrolled content").body(),
+                )),
+            )
         });
     assert_eq!(app.query().role(Role::BUTTON).all().len(), 1);
     let snapshot = app.snapshot();
