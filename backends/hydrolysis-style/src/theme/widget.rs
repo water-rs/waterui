@@ -168,26 +168,26 @@ pub struct TextCaretMotion {
 #[derive(Debug, Clone, Copy)]
 pub struct InputFieldMetrics {
     /// Height reserved for the input label.
-    pub label_height: f64,
+    pub label_height: f32,
     /// Minimum input field width.
-    pub min_width: f64,
+    pub min_width: f32,
     /// Minimum input field height.
-    pub min_height: f64,
+    pub min_height: f32,
     /// Horizontal text inset.
-    pub horizontal_inset: f64,
+    pub horizontal_inset: f32,
     /// Vertical text inset.
-    pub vertical_inset: f64,
+    pub vertical_inset: f32,
 }
 
 impl InputFieldMetrics {
     /// Create text input layout metrics.
     #[must_use]
     pub const fn new(
-        label_height: f64,
-        min_width: f64,
-        min_height: f64,
-        horizontal_inset: f64,
-        vertical_inset: f64,
+        label_height: f32,
+        min_width: f32,
+        min_height: f32,
+        horizontal_inset: f32,
+        vertical_inset: f32,
     ) -> Self {
         Self {
             label_height,
@@ -203,44 +203,44 @@ impl InputFieldMetrics {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ListMetrics {
     /// Minimum one-line row height.
-    pub one_line_row_height: f64,
+    pub one_line_row_height: f32,
     /// Horizontal content inset.
-    pub horizontal_inset: f64,
+    pub horizontal_inset: f32,
     /// Vertical content inset.
-    pub vertical_inset: f64,
+    pub vertical_inset: f32,
     /// Divider leading inset.
-    pub divider_leading_inset: f64,
+    pub divider_leading_inset: f32,
     /// Divider trailing inset.
-    pub divider_trailing_inset: f64,
+    pub divider_trailing_inset: f32,
     /// Width of the row move affordance.
-    pub move_control_width: f64,
+    pub move_control_width: f32,
     /// Width of the row delete affordance.
-    pub delete_control_width: f64,
+    pub delete_control_width: f32,
     /// Gap between trailing row affordances.
-    pub trailing_control_spacing: f64,
+    pub trailing_control_spacing: f32,
     /// Vertical inset for trailing row affordances.
-    pub trailing_control_vertical_inset: f64,
+    pub trailing_control_vertical_inset: f32,
     /// Height reserved above a row that opens a titled section.
-    pub section_header_height: f64,
+    pub section_header_height: f32,
     /// Height reserved below the last row of a section that has a footer.
-    pub section_footer_height: f64,
+    pub section_footer_height: f32,
 }
 
 /// Row metrics for lists.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ListRowMetrics {
     /// Minimum one-line row height.
-    pub one_line_row_height: f64,
+    pub one_line_row_height: f32,
     /// Horizontal content inset.
-    pub horizontal_inset: f64,
+    pub horizontal_inset: f32,
     /// Vertical content inset.
-    pub vertical_inset: f64,
+    pub vertical_inset: f32,
 }
 
 impl ListRowMetrics {
     /// Create list row layout metrics.
     #[must_use]
-    pub const fn new(one_line_row_height: f64, horizontal_inset: f64, vertical_inset: f64) -> Self {
+    pub const fn new(one_line_row_height: f32, horizontal_inset: f32, vertical_inset: f32) -> Self {
         Self {
             one_line_row_height,
             horizontal_inset,
@@ -253,15 +253,15 @@ impl ListRowMetrics {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ListDividerMetrics {
     /// Divider leading inset.
-    pub leading_inset: f64,
+    pub leading_inset: f32,
     /// Divider trailing inset.
-    pub trailing_inset: f64,
+    pub trailing_inset: f32,
 }
 
 impl ListDividerMetrics {
     /// Create list divider layout metrics.
     #[must_use]
-    pub const fn new(leading_inset: f64, trailing_inset: f64) -> Self {
+    pub const fn new(leading_inset: f32, trailing_inset: f32) -> Self {
         Self {
             leading_inset,
             trailing_inset,
@@ -273,23 +273,23 @@ impl ListDividerMetrics {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ListTrailingControlMetrics {
     /// Width of the row move affordance.
-    pub move_width: f64,
+    pub move_width: f32,
     /// Width of the row delete affordance.
-    pub delete_width: f64,
+    pub delete_width: f32,
     /// Gap between trailing row affordances.
-    pub spacing: f64,
+    pub spacing: f32,
     /// Vertical inset for trailing row affordances.
-    pub vertical_inset: f64,
+    pub vertical_inset: f32,
 }
 
 impl ListTrailingControlMetrics {
     /// Create list trailing control layout metrics.
     #[must_use]
     pub const fn new(
-        move_width: f64,
-        delete_width: f64,
-        spacing: f64,
-        vertical_inset: f64,
+        move_width: f32,
+        delete_width: f32,
+        spacing: f32,
+        vertical_inset: f32,
     ) -> Self {
         Self {
             move_width,
@@ -329,15 +329,15 @@ impl ListMetrics {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ListSectionMetrics {
     /// Height reserved above a row that opens a titled section.
-    pub header_height: f64,
+    pub header_height: f32,
     /// Height reserved below the last row of a section that has a footer.
-    pub footer_height: f64,
+    pub footer_height: f32,
 }
 
 impl ListSectionMetrics {
     /// Create list section chrome metrics.
     #[must_use]
-    pub const fn new(header_height: f64, footer_height: f64) -> Self {
+    pub const fn new(header_height: f32, footer_height: f32) -> Self {
         Self {
             header_height,
             footer_height,
@@ -349,38 +349,38 @@ impl ListSectionMetrics {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BadgeMetrics {
     /// Diameter of a small dot badge.
-    pub small_size: f64,
+    pub small_size: f32,
     /// Height and minimum width of a large labeled badge.
-    pub large_size: f64,
+    pub large_size: f32,
     /// Horizontal padding inside a large labeled badge.
-    pub large_horizontal_padding: f64,
+    pub large_horizontal_padding: f32,
     /// Inset of the badge's leading edge from the content's trailing edge for
     /// a small badge. Renderers place the badge's leading edge at
     /// `trailing_edge - small_offset_x` in left-to-right layout and mirror it
     /// to the leading edge in right-to-left layout.
-    pub small_offset_x: f64,
+    pub small_offset_x: f32,
     /// Downward overlap of the badge's bottom edge past the content's top edge
     /// for a small badge: the badge's bottom sits at `top + small_offset_y`.
-    pub small_offset_y: f64,
+    pub small_offset_y: f32,
     /// Inset of the badge's leading edge from the content's trailing edge for
     /// a large badge; mirrors to the leading edge in right-to-left layout.
-    pub large_offset_x: f64,
+    pub large_offset_x: f32,
     /// Downward overlap of the badge's bottom edge past the content's top edge
     /// for a large badge: the badge's bottom sits at `top + large_offset_y`.
-    pub large_offset_y: f64,
+    pub large_offset_y: f32,
 }
 
 impl BadgeMetrics {
     /// Create badge layout metrics.
     #[must_use]
     pub const fn new(
-        small_size: f64,
-        large_size: f64,
-        large_horizontal_padding: f64,
-        small_offset_x: f64,
-        small_offset_y: f64,
-        large_offset_x: f64,
-        large_offset_y: f64,
+        small_size: f32,
+        large_size: f32,
+        large_horizontal_padding: f32,
+        small_offset_x: f32,
+        small_offset_y: f32,
+        large_offset_x: f32,
+        large_offset_y: f32,
     ) -> Self {
         Self {
             small_size,
@@ -398,17 +398,17 @@ impl BadgeMetrics {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TableMetrics {
     /// Minimum table column width.
-    pub min_column_width: f64,
+    pub min_column_width: f32,
     /// Horizontal padding added to measured cell content.
-    pub cell_horizontal_padding: f64,
+    pub cell_horizontal_padding: f32,
     /// Inset used when placing header and row cell content.
-    pub cell_vertical_inset: f64,
+    pub cell_vertical_inset: f32,
     /// Header row height.
-    pub header_height: f64,
+    pub header_height: f32,
     /// Data row height.
-    pub row_height: f64,
+    pub row_height: f32,
     /// Table outline width.
-    pub outline_width: f64,
+    pub outline_width: f32,
 }
 
 /// The widget chrome a style package supplies to Hydrolysis.

@@ -102,7 +102,8 @@ impl LazyStackAxisConfig {
 #[cfg(feature = "table")]
 impl LazyTableSlot {
     pub(crate) fn prepare_columns(&mut self, len: usize, metrics: crate::theme::TableMetrics) {
-        self.column_widths.resize(len, metrics.min_column_width);
+        self.column_widths
+            .resize(len, f64::from(metrics.min_column_width));
     }
 }
 
@@ -408,15 +409,16 @@ pub fn resolve_table_visible_rows(
     max_rows: usize,
     metrics: crate::theme::TableMetrics,
 ) -> VisibleIndexWindow {
-    let data_start = (offset_y - metrics.header_height).max(0.0);
-    let data_end = (offset_y + viewport_height - metrics.header_height).max(0.0);
-    let start =
-        (crate::num_cast::f64_as_usize((data_start / metrics.row_height).floor())).min(max_rows);
-    let end = (crate::num_cast::f64_as_usize((data_end / metrics.row_height).ceil())).min(max_rows);
+    let header_height = f64::from(metrics.header_height);
+    let row_height = f64::from(metrics.row_height);
+    let data_start = (offset_y - header_height).max(0.0);
+    let data_end = (offset_y + viewport_height - header_height).max(0.0);
+    let start = (crate::num_cast::f64_as_usize((data_start / row_height).floor())).min(max_rows);
+    let end = (crate::num_cast::f64_as_usize((data_end / row_height).ceil())).min(max_rows);
     VisibleIndexWindow {
         start,
         end: end.max(start),
-        leading_offset: crate::num_cast::usize_as_f64(start) * metrics.row_height,
+        leading_offset: crate::num_cast::usize_as_f64(start) * row_height,
     }
 }
 
@@ -428,9 +430,9 @@ pub fn table_metrics_from_slot(
     MeasuredTableMetrics {
         column_widths: slot.column_widths.clone(),
         table_width: slot.column_widths.iter().sum(),
-        table_height: metrics.row_height.mul_add(
+        table_height: f64::from(metrics.row_height).mul_add(
             crate::num_cast::usize_as_f64(slot.max_rows),
-            metrics.header_height,
+            f64::from(metrics.header_height),
         ),
     }
 }

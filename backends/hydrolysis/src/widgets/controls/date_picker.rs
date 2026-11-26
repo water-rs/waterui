@@ -212,7 +212,7 @@ pub fn measure_date_picker_node<E: crate::text::TextEngine>(
 ) -> ViewDimensions {
     let config = &render_state.config;
     let metrics = theme.menu_picker(&date_picker_spec(env), env).layout();
-    let label_floor = field_look(theme, env).metrics().label_height;
+    let label_floor = f64::from(field_look(theme, env).metrics().label_height);
     let label_size = render_state.label_view.measure_built(state, env, theme);
     let has_label = label_size.width > 0.0 || label_size.height > 0.0;
     let label_height = if has_label {
@@ -366,7 +366,7 @@ pub fn render_date_picker_parts<E: crate::text::TextEngine>(
         ctx,
         &mut state,
         env,
-        field_look(&theme, env).metrics().label_height,
+        f64::from(field_look(&theme, env).metrics().label_height),
     );
 
     let field_bounds = kurbo::Rect::new(

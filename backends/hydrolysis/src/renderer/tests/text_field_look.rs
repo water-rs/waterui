@@ -265,11 +265,11 @@ fn text_and_secure_fields_lay_out_by_the_look() {
     ];
     for rect in rects {
         assert!(
-            rect.height() >= METRICS.min_height - 1e-6,
+            rect.height() >= f64::from(METRICS.min_height) - 1e-6,
             "the container is at least as tall as the look's metrics ask: {rect:?}"
         );
         assert!(
-            rect.width() >= METRICS.min_width - 1e-6,
+            rect.width() >= f64::from(METRICS.min_width) - 1e-6,
             "the container is at least as wide as the look's metrics ask: {rect:?}"
         );
     }
@@ -574,7 +574,7 @@ fn a_label_view_sits_at_the_leading_inset() {
             visit(&fixture.runtime.renderer().mount_roots(), &mut extent);
             let [(first, last)] =
                 <[_; 1]>::try_from(extent.0).expect("an empty field draws only its label");
-            let inset = METRICS.horizontal_inset;
+            let inset = f64::from(METRICS.horizontal_inset);
             match direction {
                 LayoutDirection::LeftToRight => assert!(
                     (first - (field.x0 + inset)).abs() < 3.0,

@@ -425,7 +425,7 @@ struct RowSectionChrome {
 impl RowSectionChrome {
     const fn header_height(&self, metrics: &crate::theme::ListMetrics) -> f64 {
         if self.header.is_some() {
-            metrics.section_header_height
+            metrics.section_header_height as f64
         } else {
             0.0
         }
@@ -433,7 +433,7 @@ impl RowSectionChrome {
 
     const fn footer_height(&self, metrics: &crate::theme::ListMetrics) -> f64 {
         if self.footer.is_some() {
-            metrics.section_footer_height
+            metrics.section_footer_height as f64
         } else {
             0.0
         }
@@ -1499,9 +1499,10 @@ pub fn list_accessibility<E: crate::text::TextEngine>(
     if let Some(list_metrics) = list_metrics {
         // `min_row_height` is the floor every row is estimated and measured
         // against; unset, the theme's one-line height keeps the same values.
-        let row_floor = list
-            .min_row_height()
-            .map_or(list_metrics.one_line_row_height, f64::from);
+        let row_floor = f64::from(
+            list.min_row_height()
+                .unwrap_or(list_metrics.one_line_row_height),
+        );
         // A 0 floor still needs a positive seed estimate — measured extents
         // replace it row by row anyway.
         let row_estimate = row_floor.max(1.0);
@@ -1685,10 +1686,11 @@ pub fn list_accessibility<E: crate::text::TextEngine>(
             );
             let key_base = row_a11y_key_base(row_id);
             if let Some(header) = chrome.header.clone() {
+                let inset = list_metrics.map_or(0.0, |m| f64::from(m.horizontal_inset));
                 let header_rect = kurbo::Rect::new(
-                    slot_rect.x0 + list_metrics.map_or(0.0, |m| m.horizontal_inset),
+                    slot_rect.x0 + inset,
                     slot_rect.y0,
-                    slot_rect.x1 - list_metrics.map_or(0.0, |m| m.horizontal_inset),
+                    slot_rect.x1 - inset,
                     slot_rect.y0 + header_height,
                 );
                 if let Some(node_id) = register_section_chrome_node(
@@ -1947,10 +1949,11 @@ pub fn list_accessibility<E: crate::text::TextEngine>(
                 }
             }
             if let Some(footer) = chrome.footer {
+                let inset = list_metrics.map_or(0.0, |m| f64::from(m.horizontal_inset));
                 let footer_rect = kurbo::Rect::new(
-                    slot_rect.x0 + list_metrics.map_or(0.0, |m| m.horizontal_inset),
+                    slot_rect.x0 + inset,
                     slot_rect.y1 - footer_height,
-                    slot_rect.x1 - list_metrics.map_or(0.0, |m| m.horizontal_inset),
+                    slot_rect.x1 - inset,
                     slot_rect.y1,
                 );
                 if let Some(node_id) = register_section_chrome_node(
@@ -2143,11 +2146,13 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
     let list_metrics = look.metrics();
     // `min_row_height` is the floor every row is estimated and measured
     // against; unset, the theme's one-line height keeps the same values.
-    let row_floor = state
-        .borrow()
-        .config
-        .min_row_height()
-        .map_or(list_metrics.one_line_row_height, f64::from);
+    let row_floor = f64::from(
+        state
+            .borrow()
+            .config
+            .min_row_height()
+            .unwrap_or(list_metrics.one_line_row_height),
+    );
     // A 0 floor still needs a positive seed estimate — measured extents
     // replace it row by row anyway.
     let row_estimate = row_floor.max(1.0);
@@ -2491,20 +2496,21 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
             let render_ctx = ctx.render_context();
             ctx.renderer_mut().push_live(render_ctx, &source);
         }
+        let horizontal_inset = f64::from(list_metrics.horizontal_inset);
         if let Some(header) = chrome.header.clone() {
             let header_rect = kurbo::Rect::new(
-                slot_rect.x0 + list_metrics.horizontal_inset,
+                slot_rect.x0 + horizontal_inset,
                 slot_rect.y0,
-                slot_rect.x1 - list_metrics.horizontal_inset,
+                slot_rect.x1 - horizontal_inset,
                 slot_rect.y0 + header_height,
             );
             draw_section_label(ctx, header, header_rect, true, &row_env);
         }
         if let Some(footer) = chrome.footer {
             let footer_rect = kurbo::Rect::new(
-                slot_rect.x0 + list_metrics.horizontal_inset,
+                slot_rect.x0 + horizontal_inset,
                 slot_rect.y1 - footer_height,
-                slot_rect.x1 - list_metrics.horizontal_inset,
+                slot_rect.x1 - horizontal_inset,
                 slot_rect.y1,
             );
             draw_section_label(ctx, footer, footer_rect, false, &row_env);
@@ -2869,9 +2875,9 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
         }
 
         let separator = kurbo::Rect::new(
-            row_rect.x0 + list_metrics.divider_leading_inset,
+            row_rect.x0 + f64::from(list_metrics.divider_leading_inset),
             row_rect.y1 - 1.0,
-            row_rect.x1 - list_metrics.divider_trailing_inset,
+            row_rect.x1 - f64::from(list_metrics.divider_trailing_inset),
             row_rect.y1,
         );
         ctx.draw_context(|draw| {
@@ -3114,8 +3120,8 @@ fn row_edit_controls(
     };
     let mut trailing_x = controls.trailing_x;
     if let Some(span) = movable_span {
-        let control_width = metrics.move_control_width;
-        let vertical_inset = metrics.trailing_control_vertical_inset;
+        let control_width = f64::from(metrics.move_control_width);
+        let vertical_inset = f64::from(metrics.trailing_control_vertical_inset);
         let control_height = vertical_inset
             .mul_add(-2.0, slot_height)
             .max(vertical_inset * 2.0);
@@ -3125,7 +3131,7 @@ fn row_edit_controls(
             trailing_x,
             row_rect.y0 + vertical_inset + control_height,
         );
-        trailing_x -= control_width + metrics.trailing_control_spacing;
+        trailing_x -= control_width + f64::from(metrics.trailing_control_spacing);
         let half_height = control_rect.height() / 2.0;
         controls.reorder = Some(control_rect);
         controls.reorder_up = (index > span.start).then(|| {
@@ -3146,13 +3152,14 @@ fn row_edit_controls(
         });
     }
     if delete_enabled {
+        let vertical_inset = f64::from(metrics.trailing_control_vertical_inset);
         let delete_rect = kurbo::Rect::new(
-            trailing_x - metrics.delete_control_width,
-            row_rect.y0 + metrics.trailing_control_vertical_inset,
+            trailing_x - f64::from(metrics.delete_control_width),
+            row_rect.y0 + vertical_inset,
             trailing_x,
-            row_rect.y1 - metrics.trailing_control_vertical_inset,
+            row_rect.y1 - vertical_inset,
         );
-        trailing_x = delete_rect.x0 - metrics.trailing_control_spacing;
+        trailing_x = delete_rect.x0 - f64::from(metrics.trailing_control_spacing);
         controls.delete = Some(delete_rect);
     }
     controls.trailing_x = trailing_x;
@@ -3506,9 +3513,10 @@ fn list_content_rect(
     // full-width hit target). The row's `insets` replace the theme's row
     // insets edge for edge; unset, the theme's symmetric inset keeps the
     // same rect. The row's height was measured at this same width.
-    let vertical_insets = insets.map_or(metrics.vertical_inset * 2.0, |insets| {
-        f64::from(insets.top() + insets.bottom())
-    });
+    let vertical_insets = insets.map_or_else(
+        || f64::from(metrics.vertical_inset) * 2.0,
+        |insets| f64::from(insets.top() + insets.bottom()),
+    );
     let (left_inset, right_inset) = list_row_horizontal_insets(insets, metrics, env);
     let x0 = row_rect.x0 + left_inset;
     let x1 = row_rect.x1 - right_inset;

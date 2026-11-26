@@ -470,8 +470,8 @@ pub fn render_text_field_parts<E: crate::text::TextEngine>(
     };
     let text_bounds = material_input_text_rect(
         field_rect,
-        input_metrics.horizontal_inset,
-        input_metrics.vertical_inset,
+        f64::from(input_metrics.horizontal_inset),
+        f64::from(input_metrics.vertical_inset),
         effective_label_height,
     );
     let committed_layout = HydrolysisRenderer::build_text_layout(
@@ -501,8 +501,12 @@ pub fn render_text_field_parts<E: crate::text::TextEngine>(
         material_input_centered_text_rect(
             field_rect,
             text_bounds,
-            f64::from(committed_layout.height().max(display_layout_height))
-                .max(input_metrics.label_height),
+            f64::from(
+                committed_layout
+                    .height()
+                    .max(display_layout_height)
+                    .max(input_metrics.label_height),
+            ),
         )
     } else {
         text_bounds
@@ -759,8 +763,8 @@ pub fn render_secure_field_parts<E: crate::text::TextEngine>(
     let content_visible = !has_label || float.text_visible();
     let text_bounds = material_input_text_rect(
         field_rect,
-        input_metrics.horizontal_inset,
-        input_metrics.vertical_inset,
+        f64::from(input_metrics.horizontal_inset),
+        f64::from(input_metrics.vertical_inset),
         label_height,
     );
     let masked_display = value_text(
@@ -782,7 +786,7 @@ pub fn render_secure_field_parts<E: crate::text::TextEngine>(
         material_input_centered_text_rect(
             field_rect,
             text_bounds,
-            f64::from(committed_layout.height()).max(input_metrics.label_height),
+            f64::from(committed_layout.height().max(input_metrics.label_height)),
         )
     } else {
         text_bounds
@@ -912,9 +916,9 @@ pub fn measure_secure_field_node<E: crate::text::TextEngine>(
 /// label's own measure only decides whether the band exists; it still sizes
 /// the resting rect and the laid-out label box the transform scales into
 /// the band (water-rs/waterui#2387).
-fn material_input_label_height(label_size: LayoutSize, label_height: f64) -> f64 {
+fn material_input_label_height(label_size: LayoutSize, label_height: f32) -> f64 {
     if label_size.width > 0.0 || label_size.height > 0.0 {
-        label_height
+        f64::from(label_height)
     } else {
         0.0
     }
@@ -973,7 +977,7 @@ impl LabelPlace {
         env: &Environment,
     ) -> Self {
         let direction = waterui_core::layout::layout_direction(env).snapshot();
-        let inset = look.metrics().horizontal_inset;
+        let inset = f64::from(look.metrics().horizontal_inset);
         let floating = look.floating_label();
         let resting = material_input_resting_label_rect(field_rect, inset, measured_label_height);
         let band = material_input_label_rect(field_rect, inset, floating.get_top(), label_height);

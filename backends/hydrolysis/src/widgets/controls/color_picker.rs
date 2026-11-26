@@ -190,13 +190,13 @@ pub fn measure_color_picker_node<E: crate::text::TextEngine>(
     let input_metrics = render_state.field.peek(theme, env).metrics();
     let label_size = render_state.label_view.measure_built(state, env, theme);
     let label_height = if label_size.width > 0.0 || label_size.height > 0.0 {
-        f64::from(label_size.height).max(input_metrics.label_height)
+        label_size.height.max(input_metrics.label_height)
     } else {
         0.0
     };
     ViewDimensions::new(LayoutSize::new(
         COLOR_PICKER_MIN_WIDTH,
-        crate::num_cast::f64_as_f32(label_height + input_metrics.min_height),
+        label_height + input_metrics.min_height,
     ))
 }
 
@@ -248,7 +248,7 @@ pub fn render_color_picker_parts<E: crate::text::TextEngine>(
     let label_size = state.label_view.measure_intrinsic(ctx.renderer_mut(), env);
     let has_label = label_size.width > 0.0 || label_size.height > 0.0;
     let label_height = if has_label {
-        f64::from(label_size.height).max(input_metrics.label_height)
+        f64::from(label_size.height.max(input_metrics.label_height))
     } else {
         0.0
     };
@@ -293,8 +293,8 @@ pub fn render_color_picker_parts<E: crate::text::TextEngine>(
         .bind(ctx, &interaction_key, hit_bounds, env, false, false);
     let content_bounds = inset_rect(
         field_bounds,
-        input_metrics.horizontal_inset,
-        input_metrics.vertical_inset,
+        f64::from(input_metrics.horizontal_inset),
+        f64::from(input_metrics.vertical_inset),
     );
     let swatch_size = COLOR_SWATCH_SIZE.min(content_bounds.height()).max(0.0);
     let swatch_rect = Rect::new(
@@ -324,7 +324,7 @@ pub fn render_color_picker_parts<E: crate::text::TextEngine>(
     }
 
     let text_bounds = Rect::new(
-        swatch_rect.x1 + input_metrics.horizontal_inset,
+        swatch_rect.x1 + f64::from(input_metrics.horizontal_inset),
         content_bounds.y0,
         content_bounds.x1,
         content_bounds.y1,
