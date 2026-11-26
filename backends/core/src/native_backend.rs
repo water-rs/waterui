@@ -1051,6 +1051,9 @@ native_backend! {
         #[cfg(waterui_feature = "menu")]
         /// A resolved context menu.
         resolved_context_menu<S>: waterui::metadata::context_menu::ResolvedContextMenu<S>,
+        #[cfg(waterui_feature = "snackbar")]
+        /// A snackbar host overlay.
+        snackbar_host<S>: waterui::snackbar::SnackbarHostConfig<S>,
     }
 }
 
@@ -1333,6 +1336,21 @@ mod tests {
         }
     }
 
+    /// A snackbar host's children are the icon views of active presentations.
+    #[cfg(waterui_feature = "snackbar")]
+    impl<C: 'static> Parent<C> for waterui::snackbar::SnackbarHostConfig<C> {
+        fn children(self) -> Vec<C> {
+            use nami::Signal as _;
+            use waterui::widget::disclosure::SlotBuilder;
+
+            self.presentations()
+                .snapshot()
+                .into_iter()
+                .filter_map(|presentation| presentation.icon().map(SlotBuilder::build))
+                .collect()
+        }
+    }
+
     /// A dynamic's children are the views it delivers once connected.
     impl<C: 'static> Parent<C> for waterui_core::Dynamic<C> {
         fn children(self) -> Vec<C> {
@@ -1426,9 +1444,27 @@ mod tests {
         assert_eq!(
             recorder.reached.borrow().as_slice(),
             [
-                ["scroll", UNHOOKED_CHILD, "layout_priority", "spacer"],
-                ["scroll", "erased child", "layout_priority", "spacer"],
-                ["scroll", UNHOOKED_CHILD, "layout_priority", "spacer"],
+                [
+                    "scroll",
+                    UNHOOKED_CHILD,
+                    "environment",
+                    "layout_priority",
+                    "spacer"
+                ],
+                [
+                    "scroll",
+                    "erased child",
+                    "environment",
+                    "layout_priority",
+                    "spacer"
+                ],
+                [
+                    "scroll",
+                    UNHOOKED_CHILD,
+                    "environment",
+                    "layout_priority",
+                    "spacer"
+                ],
             ]
             .concat()
         );
@@ -1541,8 +1577,10 @@ mod tests {
             [
                 "scroll",
                 "typed child",
+                "environment",
                 "scroll",
                 "typed child",
+                "environment",
                 "layout_priority",
                 "divider"
             ]
@@ -1553,11 +1591,23 @@ mod tests {
     fn the_scope_reaches_through_an_erased_view() {
         assert_eq!(
             reached(Hooks::new(scroll(AnyView::new(tree())), SpacerAsDivider)),
-            ["scroll", "typed child", "layout_priority", "divider"]
+            [
+                "scroll",
+                "typed child",
+                "environment",
+                "layout_priority",
+                "divider"
+            ]
         );
         assert_eq!(
             reached(Hooks::new(AnyView::new(scroll(tree())), SpacerAsDivider)),
-            ["scroll", "typed child", "layout_priority", "divider"]
+            [
+                "scroll",
+                "typed child",
+                "environment",
+                "layout_priority",
+                "divider"
+            ]
         );
     }
 
@@ -1565,7 +1615,13 @@ mod tests {
     fn a_scope_entered_on_the_erased_path_reaches_its_subtree() {
         assert_eq!(
             reached(AnyView::new(Hooks::new(scroll(tree()), SpacerAsDivider))),
-            ["scroll", "typed child", "layout_priority", "divider"]
+            [
+                "scroll",
+                "typed child",
+                "environment",
+                "layout_priority",
+                "divider"
+            ]
         );
     }
 
@@ -1573,11 +1629,23 @@ mod tests {
     fn a_hook_does_not_receive_its_own_target_back() {
         assert_eq!(
             reached(Hooks::new(tree(), SpacerInScroll)),
-            ["layout_priority", "scroll", "typed child", "spacer"]
+            [
+                "layout_priority",
+                "scroll",
+                "typed child",
+                "environment",
+                "spacer"
+            ]
         );
         assert_eq!(
             reached(AnyView::new(Hooks::new(tree(), SpacerInScroll))),
-            ["layout_priority", "scroll", "typed child", "spacer"]
+            [
+                "layout_priority",
+                "scroll",
+                "typed child",
+                "environment",
+                "spacer"
+            ]
         );
     }
 
@@ -1660,7 +1728,7 @@ mod tests {
         assert_eq!(reached(Hooks::new(Fence, FenceAsDivider)), ["divider"]);
         assert_eq!(
             reached(Hooks::new(scroll(AnyView::new(Fence)), FenceAsDivider)),
-            ["scroll", "typed child", "divider"]
+            ["scroll", "typed child", "environment", "divider"]
         );
         assert_eq!(
             reached(AnyView::new(Hooks::new(Fence, FenceAsDivider))),
@@ -1715,6 +1783,76 @@ mod tests {
                 "divider",
                 "typed child",
                 "environment",
+                "divider",
+            ]
+        );
+    }
+
+    #[cfg(waterui_feature = "snackbar")]
+    #[test]
+    fn a_snackbar_host_keeps_its_content_typed() {
+        use core::time::Duration;
+
+        use waterui::snackbar::{Snackbar, SnackbarManager};
+
+        let authored = || {
+            SnackbarManager::host(|manager: SnackbarManager| {
+                manager.show(Snackbar::new("Saved").duration(Duration::ZERO));
+                Spacer::flexible()
+            })
+        };
+
+        assert_eq!(
+            reached(authored()),
+            ["snackbar_host", "environment", "spacer"]
+        );
+        assert_eq!(
+            reached(AnyView::new(authored())),
+            ["snackbar_host", "environment", "spacer"]
+        );
+        assert_eq!(
+            reached(Hooks::new(authored(), SpacerAsDivider)),
+            ["snackbar_host", "environment", "divider"]
+        );
+
+        let with_icon = || {
+            SnackbarManager::host(|manager: SnackbarManager<Spacer>| {
+                manager.show(
+                    Snackbar::new("Saved")
+                        .icon(Spacer::flexible)
+                        .duration(Duration::ZERO),
+                );
+                Spacer::flexible()
+            })
+        };
+
+        assert_eq!(
+            reached(with_icon()),
+            [
+                "snackbar_host",
+                "environment",
+                "spacer",
+                UNHOOKED_CHILD,
+                "spacer",
+            ]
+        );
+        assert_eq!(
+            reached(AnyView::new(with_icon())),
+            [
+                "snackbar_host",
+                "environment",
+                "spacer",
+                "erased child",
+                "spacer",
+            ]
+        );
+        assert_eq!(
+            reached(Hooks::new(with_icon(), SpacerAsDivider)),
+            [
+                "snackbar_host",
+                "environment",
+                "divider",
+                "typed child",
                 "divider",
             ]
         );
@@ -1915,11 +2053,13 @@ mod tests {
                 "scroll",
                 "typed child",
                 "environment",
+                "environment",
                 "accessibility_role",
                 "accessibility_label",
                 "gesture_observer",
                 "scroll",
                 "typed child",
+                "environment",
                 "divider"
             ]
         );
@@ -2036,12 +2176,14 @@ mod tests {
                 "scroll",
                 "typed child",
                 "environment",
+                "environment",
                 "accessibility_role",
                 "accessibility_label",
                 "accessibility_state_signal",
                 "gesture_observer",
                 "scroll",
                 "typed child",
+                "environment",
                 "divider"
             ]
         );

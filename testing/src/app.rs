@@ -13,8 +13,8 @@ use hydrolysis::theme::{
     GlassLook, IndicatorLook, LinearProgressLook, ListLook, ListRowLayoutMetrics, ListSpec,
     MenuLook, MenuPickerLook, MenuSpec, NavigationBarLook, NavigationSpec, PickerSpec,
     ProgressSpec, RadioGroupLook, ScrollIndicatorLook, SegmentedLook, SegmentedSpec, SliderLook,
-    SliderSpec, StepperLook, StepperSpec, SwitchLook, TableLook, TabsLook, TabsSpec, TextFieldLook,
-    TextFieldSpec, ToggleSpec, WidgetTheme,
+    SliderSpec, SnackbarLook, StepperLook, StepperSpec, SwitchLook, TableLook, TabsLook, TabsSpec,
+    TextFieldLook, TextFieldSpec, ToggleSpec, WidgetTheme,
 };
 use hydrolysis::{
     AccessibilityActivationPointError, FontFamilyResolution, HeadlessColorFormat, HeadlessRuntime,
@@ -144,6 +144,10 @@ impl WidgetTheme for ErasedStyle {
 
     fn card(&self, style: CardStyle, env: &Environment) -> CardLook {
         self.0.card(style, env)
+    }
+
+    fn snackbar(&self, env: &Environment) -> SnackbarLook {
+        self.0.snackbar(env)
     }
 }
 

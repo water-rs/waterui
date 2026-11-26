@@ -1181,6 +1181,19 @@ impl NativeBackend for AppleBackend {
         crate::components::dialog::realize_dialog_metadata(metadata, &self.entry(env))
     }
 
+    #[cfg(waterui_feature = "snackbar")]
+    fn snackbar_host<S: ChildView<Self>, C: ChildView<Self>>(
+        &mut self,
+        metadata: Metadata<waterui::snackbar::SnackbarHostConfig<S>, C>,
+        env: &Environment,
+        (): (),
+    ) -> NativeLeaf {
+        mark_reached!("snackbar_host");
+        let Metadata { content, value } = metadata;
+        let metadata = Metadata::new(content.into_child(), value.map_slots(S::into_child));
+        crate::components::snackbar::realize_snackbar_host_metadata(metadata, &self.entry(env))
+    }
+
     #[cfg(waterui_feature = "navigation")]
     fn navigation_link_hint<C: ChildView<Self>>(
         &mut self,

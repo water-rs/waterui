@@ -706,4 +706,9 @@ pub trait WidgetTheme {
     fn card(&self, style: CardStyle, env: &Environment) -> super::CardLook {
         super::card::default_card_look(style, env)
     }
+
+    /// The look of snackbar overlays presented by a snackbar host.
+    fn snackbar(&self, env: &Environment) -> super::SnackbarLook {
+        super::snackbar::default_snackbar_look(env)
+    }
 }

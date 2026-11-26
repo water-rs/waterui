@@ -10,6 +10,8 @@ mod list_motion;
 #[cfg(feature = "list")]
 pub mod list_row;
 pub mod scroll;
+#[cfg(waterui_feature = "snackbar")]
+pub mod snackbar;
 pub mod spacer;
 #[cfg(feature = "table")]
 pub mod table;
