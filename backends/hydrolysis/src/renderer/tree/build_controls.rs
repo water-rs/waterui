@@ -2,9 +2,13 @@
 //! progress, menu, pickers, text fields, badge): each retains the config's
 //! live signals in a [`WidgetNode`] re-dispatched every flush.
 
+#[cfg(feature = "link")]
+use crate::widgets::controls::link::LinkRenderState;
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
+#[cfg(feature = "link")]
+use waterui::component::link::LinkConfig;
 
 impl_widget_behavior!(
     crate::widgets::controls::button::ButtonRenderState<E>,
@@ -13,6 +17,16 @@ impl_widget_behavior!(
     ; prepare: ensure_label_built
     ; dirty: take_layout_dirty
     ; a11y: crate::widgets::controls::button::emit_button_accessibility
+    ; label: contributed_label
+);
+#[cfg(feature = "link")]
+impl_widget_behavior!(
+    LinkRenderState<E>,
+    crate::widgets::controls::link::render_link_node,
+    crate::widgets::controls::link::measure_link_node
+    ; prepare: ensure_label_built
+    ; dirty: take_layout_dirty
+    ; a11y: crate::widgets::controls::link::emit_link_accessibility
     ; label: contributed_label
 );
 impl_widget_behavior!(
@@ -188,6 +202,21 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         let mut state = ButtonRenderState::from_config(config);
         // Create the general label sub-view unstyled; the layout-time prepare
         // pass paints it with the theme and builds it before first measure.
+        state.init_label();
+        let state = Rc::new(RefCell::new(state));
+        Self::build_widget(renderer, state, StretchAxis::None, env)
+    }
+
+    /// Build a persistent link node: retains the label and reactive destination
+    /// URL behind an `Rc<RefCell<…>>` and renders with link chrome, pointer cursor,
+    /// and link accessibility semantics.
+    #[cfg(feature = "link")]
+    pub(super) fn build_link(
+        renderer: &SemanticCore<E>,
+        config: LinkConfig<HeldChild<E>>,
+        env: &Environment,
+    ) -> Self {
+        let mut state = LinkRenderState::from_config(config);
         state.init_label();
         let state = Rc::new(RefCell::new(state));
         Self::build_widget(renderer, state, StretchAxis::None, env)

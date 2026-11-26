@@ -1326,6 +1326,20 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         RenderNode::build_button(renderer, native.map_slots(into_child), env)
     }
 
+    #[cfg(waterui_feature = "link")]
+    fn link<C: ChildView<Self>>(
+        &mut self,
+        native: waterui::component::link::LinkConfig<C>,
+        env: &Environment,
+        (): (),
+    ) -> RenderNode<E> {
+        use waterui_core::backend::MapSlots as _;
+        mark_reached!("link");
+        let renderer = &mut *self.renderer;
+        let into_child: fn(C) -> HeldChild<E> = C::into_child;
+        RenderNode::build_link(renderer, native.map_slots(into_child), env)
+    }
+
     #[cfg(waterui_feature = "menu")]
     fn menu<C: ChildView<Self>>(
         &mut self,

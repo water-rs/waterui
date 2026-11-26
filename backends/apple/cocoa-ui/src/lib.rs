@@ -166,3 +166,39 @@ pub use objc2_ui_kit;
 pub use objc2_web_kit;
 pub use system_font::{FontMetrics, TextStyle};
 pub use teardown::{HandlerSlots, HandlerTeardown};
+
+/// Opens `url` with the platform's default handler (`NSWorkspace` on macOS,
+/// `UIApplication` on iOS). Returns `false` if `url` is not a valid `NSURL`
+/// or the system rejects opening it.
+#[must_use]
+pub fn open_url(url: &str, mtm: MainThreadMarker) -> bool {
+    use objc2_foundation::{NSString, NSURL};
+
+    let Some(ns_url) = NSURL::URLWithString(&NSString::from_str(url)) else {
+        return false;
+    };
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_app_kit::NSWorkspace;
+
+        let _ = mtm;
+        NSWorkspace::sharedWorkspace().openURL(&ns_url)
+    }
+    #[cfg(target_os = "ios")]
+    {
+        use objc2::runtime::AnyObject;
+        use objc2_foundation::NSDictionary;
+        use objc2_ui_kit::{UIApplication, UIApplicationOpenExternalURLOptionsKey};
+
+        let options: Retained<NSDictionary<UIApplicationOpenExternalURLOptionsKey, AnyObject>> =
+            NSDictionary::new();
+        // SAFETY: `UIApplication::openURL_options_completionHandler` is invoked
+        // on the main thread (guaranteed by `mtm`) with valid `NSURL` and empty
+        // options dictionary.
+        unsafe {
+            UIApplication::sharedApplication(mtm)
+                .openURL_options_completionHandler(&ns_url, &options, None);
+        }
+        true
+    }
+}

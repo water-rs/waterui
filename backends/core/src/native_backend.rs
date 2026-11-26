@@ -879,6 +879,9 @@ native_backend! {
     parents {
         /// A button.
         button<C>: waterui::component::button::ButtonConfig<C>,
+        #[cfg(waterui_feature = "link")]
+        /// A tappable link that opens a URL.
+        link<C>: waterui::component::link::LinkConfig<C>,
         /// A badge.
         badge<C>: waterui::component::badge::BadgeConfig<C>,
         /// A card container.
@@ -1097,6 +1100,13 @@ mod tests {
     }
 
     impl<C> Parent<C> for waterui::component::button::ButtonConfig<C> {
+        fn children(self) -> Vec<C> {
+            alloc::vec![self.label().build()]
+        }
+    }
+
+    #[cfg(waterui_feature = "link")]
+    impl<C> Parent<C> for waterui::component::link::LinkConfig<C> {
         fn children(self) -> Vec<C> {
             alloc::vec![self.label().build()]
         }
