@@ -82,7 +82,7 @@ impl<T: Display> LocalizedDisplay for T {
 
 /// Numeric types whose formatted decimal representation should be localized
 /// (digit shaping and locale-specific grouping and decimal separators) when
-/// interpolated into [`text!`].
+/// interpolated into `text!`.
 #[cfg(feature = "number")]
 pub trait LocalizedNumber: Display {
     /// Formats `self` as a plain ASCII decimal string suitable for locale digit
