@@ -139,8 +139,6 @@ pub mod prelude {
         Card, CardStyle, DialogTheme, Disclosure, Divider, ErrorView, ResultExt, SuspendedView,
         Suspense, card, condition::when, disclosure, error_view, suspense,
     };
-    #[doc(hidden)]
-    pub use super::widget::{CardStyleTokens, CardTheme};
     #[cfg(feature = "flow-markdown")]
     pub use super::widget::{
         FlowAnimationPolicy, FlowAnimationPreset, FlowElementKind, FlowMarkdown, FlowStreamMode,
