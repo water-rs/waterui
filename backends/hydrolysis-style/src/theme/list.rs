@@ -37,9 +37,9 @@ pub struct ListSpec {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ListRowLayoutMetrics {
     /// Horizontal gap between the label and value in inline row layout.
-    pub inline_spacing: f64,
+    pub inline_spacing: f32,
     /// Vertical gap between the label and value in detail row layout.
-    pub detail_spacing: f64,
+    pub detail_spacing: f32,
 }
 
 impl Default for ListRowLayoutMetrics {
@@ -70,10 +70,10 @@ impl ListSpec {
 pub struct ListGestures {
     /// The fraction of a row's width a swipe must cross, on release, to
     /// dismiss the row.
-    pub swipe_threshold: f64,
+    pub swipe_threshold: f32,
     /// The fraction of a slot a reorder drag must cross to step the lifted
     /// row over its neighbour: `0.5` steps at the slot's midpoint.
-    pub reorder_threshold: f64,
+    pub reorder_threshold: f32,
     /// The distance, in points, the pointer travels before a row drag is
     /// recognized; a row can be tapped at all only because a press shorter
     /// than this is no drag.

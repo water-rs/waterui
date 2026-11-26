@@ -585,9 +585,9 @@ pub fn picker_accessibility<E: crate::text::TextEngine>(
                 let selected = renderer.read_signal(picker.selection());
                 let mut row_y = geometry.as_ref().map(|(ctx, look)| {
                     ctx.bounds().y0
-                        + look.layout().vertical_inset
+                        + f64::from(look.layout().vertical_inset)
                         + if group_label_height > 0.0 {
-                            group_label_height + look.layout().label_spacing
+                            group_label_height + f64::from(look.layout().label_spacing)
                         } else {
                             0.0
                         }
@@ -615,7 +615,7 @@ pub fn picker_accessibility<E: crate::text::TextEngine>(
                         let y = row_y.unwrap_or_else(|| ctx.bounds().y0);
                         let rect =
                             radio_row_rect(look, ctx.bounds(), y, f64::from(label_size.height));
-                        row_y = Some(rect.y1 + look.layout().row_spacing);
+                        row_y = Some(rect.y1 + f64::from(look.layout().row_spacing));
                         rect
                     });
                     if let Some(rect) = row_rect
@@ -895,13 +895,13 @@ fn menu_picker_layouts<S>(
 
 /// The height of one row of a menu picker's popup: the menu's row height,
 /// grown to fit the tallest option text inside the field's vertical inset.
-pub const fn menu_picker_row_height(
+pub fn menu_picker_row_height(
     max_item_text_height: f64,
     field: MenuPickerLayout,
     menu: MenuLayout,
 ) -> f64 {
-    menu.row_height
-        .max(field.vertical_inset.mul_add(2.0, max_item_text_height))
+    f64::from(menu.row_height)
+        .max(f64::from(field.vertical_inset).mul_add(2.0, max_item_text_height))
 }
 
 /// Where a menu picker's popup opens for a field at `field_bounds`: its
@@ -911,10 +911,7 @@ pub fn menu_picker_popup_origin(
     field: MenuPickerLayout,
 ) -> waterui_core::layout::Point {
     let anchor = crate::widgets::util::popup_anchor(field_bounds);
-    waterui_core::layout::Point::new(
-        anchor.x,
-        anchor.y + crate::num_cast::f64_as_f32(field.popup_gap),
-    )
+    waterui_core::layout::Point::new(anchor.x, anchor.y + field.popup_gap)
 }
 
 /// The panel of a menu picker's popup for a field at `field_bounds`: the
@@ -928,7 +925,7 @@ pub fn menu_picker_popup_rect(
     field: MenuPickerLayout,
     menu: MenuLayout,
 ) -> kurbo::Rect {
-    let y0 = field_bounds.y1 + field.popup_gap;
+    let y0 = field_bounds.y1 + f64::from(field.popup_gap);
     let y1 = y0 + picker_menu_panel_height(menu, row_height, item_count);
     kurbo::Rect::new(field_bounds.x0, y0, field_bounds.x1, y1)
 }
@@ -1114,20 +1111,22 @@ pub fn menu_picker_content_rects(
 ) -> (Option<kurbo::Rect>, kurbo::Rect) {
     let label_height = f64::from(label_size.height);
     let label_width = f64::from(label_size.width);
-    let text_x0 = bounds.x0 + metrics.horizontal_inset;
-    let text_x1 = (bounds.x1 - metrics.horizontal_inset - metrics.indicator_space).max(text_x0);
-    let text_bottom = bounds.y1 - metrics.vertical_inset;
+    let horizontal_inset = f64::from(metrics.horizontal_inset);
+    let vertical_inset = f64::from(metrics.vertical_inset);
+    let text_x0 = bounds.x0 + horizontal_inset;
+    let text_x1 = (bounds.x1 - horizontal_inset - f64::from(metrics.indicator_space)).max(text_x0);
+    let text_bottom = bounds.y1 - vertical_inset;
     let (label_x0, label_x1) = (text_x0, (text_x0 + label_width).min(text_x1));
     let (label, value) = if label_height > 0.0 {
         let label_rect = kurbo::Rect::new(
             label_x0,
-            bounds.y0 + metrics.vertical_inset,
+            bounds.y0 + vertical_inset,
             label_x1,
-            bounds.y0 + metrics.vertical_inset + label_height,
+            bounds.y0 + vertical_inset + label_height,
         );
         let value_rect = kurbo::Rect::new(
             text_x0,
-            label_rect.y1 + metrics.label_spacing,
+            label_rect.y1 + f64::from(metrics.label_spacing),
             text_x1,
             text_bottom,
         );
@@ -1135,12 +1134,7 @@ pub fn menu_picker_content_rects(
     } else {
         (
             None,
-            kurbo::Rect::new(
-                text_x0,
-                bounds.y0 + metrics.vertical_inset,
-                text_x1,
-                text_bottom,
-            ),
+            kurbo::Rect::new(text_x0, bounds.y0 + vertical_inset, text_x1, text_bottom),
         )
     };
     if right_to_left {
@@ -1166,13 +1160,15 @@ pub fn radio_group_label_area(
     content_y_without_label: f64,
 ) -> (Option<kurbo::Rect>, f64) {
     if label_height > 0.0 {
+        let horizontal_inset = f64::from(metrics.horizontal_inset);
+        let vertical_inset = f64::from(metrics.vertical_inset);
         let heading = kurbo::Rect::new(
-            bounds.x0 + metrics.horizontal_inset,
-            bounds.y0 + metrics.vertical_inset,
-            bounds.x1 - metrics.horizontal_inset,
-            bounds.y0 + metrics.vertical_inset + label_height,
+            bounds.x0 + horizontal_inset,
+            bounds.y0 + vertical_inset,
+            bounds.x1 - horizontal_inset,
+            bounds.y0 + vertical_inset + label_height,
         );
-        (Some(heading), heading.y1 + metrics.label_spacing)
+        (Some(heading), heading.y1 + f64::from(metrics.label_spacing))
     } else {
         (None, content_y_without_label)
     }
@@ -1248,7 +1244,7 @@ pub fn segmented_intrinsic(
                 .label_padding
                 .x
                 .mul_add(2.0, f64::from(size.width))
-                .max(layout.minimum_segment_width)
+                .max(f64::from(layout.minimum_segment_width))
         })
         .sum();
     // The heading spans the row edge to edge: its width competes with the
@@ -1256,11 +1252,11 @@ pub fn segmented_intrinsic(
     // nothing.
     let width = total_width
         .max(f64::from(label_size.width))
-        .max(layout.minimum_width);
+        .max(f64::from(layout.minimum_width));
     let row_height = segmented_row_height(layout, sizes.iter().map(|size| size.height));
     let height = row_height
         + if label_size.height > 0.0 {
-            f64::from(label_size.height) + layout.label_spacing
+            f64::from(label_size.height) + f64::from(layout.label_spacing)
         } else {
             0.0
         };
@@ -1288,7 +1284,7 @@ pub fn segmented_row_height(
             .label_padding
             .y
             .mul_add(2.0, max_item_height)
-            .max(layout.row_height),
+            .max(f64::from(layout.row_height)),
     ))
 }
 
@@ -1430,7 +1426,7 @@ pub fn render_radio_picker<E: crate::text::TextEngine>(
         bounds,
         layout,
         f64::from(label_size.height),
-        bounds.y0 + layout.vertical_inset,
+        bounds.y0 + f64::from(layout.vertical_inset),
     );
     if let Some(heading) = heading {
         flush_picker_label(ctx, &mut owner.borrow_mut().label_view, env, heading);
@@ -1454,7 +1450,7 @@ pub fn render_radio_picker<E: crate::text::TextEngine>(
         if row_rect.height() <= 0.0 {
             break;
         }
-        row_y = row_rect.y1 + layout.row_spacing;
+        row_y = row_rect.y1 + f64::from(layout.row_spacing);
 
         let tag = item.tag;
         let indicator_frame = radio_indicator_frame(&look, row_rect, direction);
@@ -1531,7 +1527,7 @@ fn radio_indicator_frame(look: &RadioGroupLook, row: Rect, direction: LayoutDire
     let size = look.indicator().size();
     let drawn = Rect::from_origin_size(
         Point::new(
-            row.x0 + look.layout().horizontal_inset,
+            row.x0 + f64::from(look.layout().horizontal_inset),
             row.y0 + (row.height() - size.height) / 2.0,
         ),
         size,
@@ -1552,8 +1548,8 @@ fn radio_label_rect(
     label_height: f64,
     direction: LayoutDirection,
 ) -> Rect {
-    let inset = look.layout().horizontal_inset;
-    let spacing = look.indicator().get_label_spacing();
+    let inset = f64::from(look.layout().horizontal_inset);
+    let spacing = f64::from(look.indicator().get_label_spacing());
     let (x0, x1) = if direction.is_right_to_left() {
         (row.x0 + inset, indicator_frame.x0 - spacing)
     } else {
@@ -1972,7 +1968,7 @@ mod tests {
         assert_eq!(label, Rect::new(16.0, 8.0, 56.0, 20.0));
         assert_eq!(value, Rect::new(16.0, 28.0, 286.0, 48.0));
         assert!(bounds.contains_rect(label) && bounds.contains_rect(value));
-        approx::assert_relative_eq!(value.y0, label.y1 + metrics().label_spacing);
+        approx::assert_relative_eq!(value.y0, label.y1 + f64::from(metrics().label_spacing));
     }
 
     /// The label starts at the content's leading edge at its measured width,
@@ -2026,12 +2022,12 @@ mod tests {
     #[test]
     fn radio_label_heading_sits_above_the_rows_with_label_spacing() {
         let bounds = Rect::new(0.0, 0.0, 320.0, 96.0);
-        let default_row_y = bounds.y0 + metrics().vertical_inset;
+        let default_row_y = bounds.y0 + f64::from(metrics().vertical_inset);
         let (heading, row_y) = radio_group_label_area(bounds, radio_metrics(), 12.0, default_row_y);
         let heading = heading.expect("a drawn group label must be placed");
 
         assert_eq!(heading, Rect::new(16.0, 8.0, 304.0, 20.0));
-        approx::assert_relative_eq!(row_y, heading.y1 + radio_metrics().label_spacing);
+        approx::assert_relative_eq!(row_y, heading.y1 + f64::from(radio_metrics().label_spacing));
         assert!(bounds.contains_rect(heading));
     }
 
@@ -2046,7 +2042,7 @@ mod tests {
 
         assert_eq!(heading, Rect::new(0.0, 0.0, 320.0, 12.0));
         assert_eq!(row, Rect::new(0.0, 20.0, 320.0, 64.0));
-        approx::assert_relative_eq!(row.y0, heading.y1 + metrics().label_spacing);
+        approx::assert_relative_eq!(row.y0, heading.y1 + f64::from(metrics().label_spacing));
     }
 
     /// A hidden group label draws nothing and takes no space: no heading rect

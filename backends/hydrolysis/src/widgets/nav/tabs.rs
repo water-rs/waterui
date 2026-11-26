@@ -477,8 +477,11 @@ pub fn measure_tabs_node<E: crate::text::TextEngine>(
         proposal.width.map(f64::from),
         &item_sizes,
     );
-    let content_proposal =
-        tabs_content_proposal(proposal, state.style, metrics.bar_height + margin);
+    let content_proposal = tabs_content_proposal(
+        proposal,
+        state.style,
+        f64::from(metrics.bar_height) + margin,
+    );
     let mut max_content_width: f64 = 0.0;
     let mut max_content_height: f64 = 0.0;
     let mut natural_bar_width = 0.0;
@@ -494,14 +497,16 @@ pub fn measure_tabs_node<E: crate::text::TextEngine>(
     let bar_width = margin.mul_add(2.0, compact_width.unwrap_or(natural_bar_width));
     let (width, height) = if matches!(state.style, TabStyle::Sidebar) {
         (
-            max_content_width + metrics.bar_height,
-            max_content_height
-                .max(metrics.button_min_width * crate::num_cast::usize_as_f64(state.tabs.len())),
+            max_content_width + f64::from(metrics.bar_height),
+            max_content_height.max(
+                f64::from(metrics.button_min_width)
+                    * crate::num_cast::usize_as_f64(state.tabs.len()),
+            ),
         )
     } else {
         (
             max_content_width.max(bar_width),
-            max_content_height + metrics.bar_height + margin,
+            max_content_height + f64::from(metrics.bar_height) + margin,
         )
     };
     ViewDimensions::new(LayoutSize::new(
@@ -532,7 +537,7 @@ pub fn render_tabs_node<E: crate::text::TextEngine>(
     let look = state.borrow_mut().look(&theme, env);
     let (layout, theme_metrics, compact_width, margin) =
         resolve_tabs_layout(ctx, state, env, &theme, &look, style);
-    let chrome = ctx.chrome_splits([(dock_edge, theme_metrics.bar_height + margin)]);
+    let chrome = ctx.chrome_splits([(dock_edge, f64::from(theme_metrics.bar_height) + margin)]);
     let bar_geometry = tabs_bar_geometry(
         &chrome.bars[0],
         &look,
@@ -709,7 +714,7 @@ fn render_tabs_parts<E: crate::text::TextEngine>(
                 TabItemLayout::Horizontal => {
                     let content_x0 = icon.map_or(label.x0, |rect| rect.x0.min(label.x0));
                     let content_x1 = icon.map_or(label.x1, |rect| rect.x1.max(label.x1));
-                    let inset = theme_metrics.button_horizontal_inset;
+                    let inset = f64::from(theme_metrics.button_horizontal_inset);
                     kurbo::Rect::new(
                         (content_x0 - inset).max(button.x0),
                         button.y0,
@@ -1033,7 +1038,7 @@ fn resolve_tabs_layout<E: TextEngine>(
     } else {
         margin.mul_add(-2.0, base_extent).max(0.0)
     };
-    let layout = look.item_layout(extent);
+    let layout = look.item_layout(crate::num_cast::f64_as_f32(extent));
     (layout, look.metrics(layout), None, margin)
 }
 
@@ -1066,13 +1071,13 @@ fn tab_reactive_env(
     tab_foreground_env(env, Color::from_signal(combined))
 }
 
-const fn bottom_floating_margin(look: &TabsLook, style: TabStyle) -> f64 {
+fn bottom_floating_margin(look: &TabsLook, style: TabStyle) -> f64 {
     if matches!(style, TabStyle::Sidebar) {
         return 0.0;
     }
     let margin = look.get_floating_margin();
     if margin.is_finite() && margin > 0.0 {
-        margin
+        f64::from(margin)
     } else {
         0.0
     }
@@ -1131,6 +1136,9 @@ fn tabs_decide_placement(
             max_width,
             horizontal_padding,
         } => {
+            let item_min_width = f64::from(item_min_width);
+            let max_width = max_width.map(f64::from);
+            let horizontal_padding = f64::from(horizontal_padding);
             let vertical_metrics = look.metrics(TabItemLayout::Vertical);
             let mut vertical_width = compact_bar_width(
                 item_sizes,
@@ -1143,7 +1151,7 @@ fn tabs_decide_placement(
             if let Some(available) = available {
                 vertical_width = vertical_width.min(available);
             }
-            let layout = look.item_layout(vertical_width);
+            let layout = look.item_layout(crate::num_cast::f64_as_f32(vertical_width));
             let metrics = look.metrics(layout);
             let mut pill_width = match layout {
                 TabItemLayout::Vertical => vertical_width,
@@ -1199,7 +1207,7 @@ fn tabs_bar_geometry(
         };
     }
     let margin = bottom_floating_margin(look, style);
-    let height = metrics.bar_height.min(bar_band.height());
+    let height = f64::from(metrics.bar_height).min(bar_band.height());
     let y1 = (bar_band.y1 - margin).max(bar_band.y0);
     let y0 = (y1 - height).max(bar_band.y0);
     let available = margin.mul_add(-2.0, bar_band.width()).max(0.0);
@@ -1210,7 +1218,7 @@ fn tabs_bar_geometry(
         TabBarWidth::Compact {
             horizontal_padding, ..
         } if horizontal_padding.is_finite() && horizontal_padding > 0.0 => {
-            horizontal_padding.min(bar_rect.width() * 0.5)
+            f64::from(horizontal_padding).min(bar_rect.width() * 0.5)
         }
         _ => 0.0,
     };
@@ -1263,9 +1271,9 @@ const fn tabs_dock_edge(style: TabStyle, direction: LayoutDirection) -> Edge {
 /// the container is `container_width` wide: a bottom bar's extent is the
 /// container's width; a sidebar strip reports its own thickness — the
 /// vertical metrics' `bar_height` — which never widens into the pane.
-pub const fn tabs_bar_item_extent(container_width: f64, style: TabStyle, look: &TabsLook) -> f64 {
+pub fn tabs_bar_item_extent(container_width: f64, style: TabStyle, look: &TabsLook) -> f64 {
     if matches!(style, TabStyle::Sidebar) {
-        look.metrics(TabItemLayout::Vertical).bar_height
+        f64::from(look.metrics(TabItemLayout::Vertical).bar_height)
     } else {
         // `Automatic`, `TabBar`, and any future bar style span `container_width`.
         container_width
@@ -1307,7 +1315,7 @@ pub fn tabs_decide_layout(
             }
         }
     };
-    let layout = look.item_layout(extent);
+    let layout = look.item_layout(crate::num_cast::f64_as_f32(extent));
     (layout, look.metrics(layout))
 }
 
@@ -1321,15 +1329,16 @@ pub fn tabs_item_natural_width(
 ) -> f64 {
     let content_width = match (layout, icon_size) {
         (TabItemLayout::Horizontal, Some(icon_size)) => {
-            f64::from(icon_size.width) + metrics.icon_label_spacing + f64::from(label_size.width)
+            f64::from(icon_size.width)
+                + f64::from(metrics.icon_label_spacing)
+                + f64::from(label_size.width)
         }
         (_, Some(icon_size)) => f64::from(label_size.width).max(f64::from(icon_size.width)),
         (_, None) => f64::from(label_size.width),
     };
-    metrics
-        .button_horizontal_inset
+    f64::from(metrics.button_horizontal_inset)
         .mul_add(2.0, content_width)
-        .max(metrics.button_min_width)
+        .max(f64::from(metrics.button_min_width))
 }
 
 /// Places a tab item's icon and label inside its button rect. Vertical stacks
@@ -1344,18 +1353,18 @@ fn tabs_item_content_rects(
     let Some(icon_size) = icon_size else {
         return (None, tabs_label_rect(button_rect, label_size, metrics));
     };
-    let max_width = metrics
-        .button_horizontal_inset
+    let max_width = f64::from(metrics.button_horizontal_inset)
         .mul_add(-2.0, button_rect.width())
         .max(0.0);
+    let icon_label_spacing = f64::from(metrics.icon_label_spacing);
     match layout {
         TabItemLayout::Vertical => {
             let icon_width = f64::from(icon_size.width).min(max_width);
             let icon_height = f64::from(icon_size.height).min(button_rect.height());
             let label_width = f64::from(label_size.width).min(max_width);
             let label_height = f64::from(label_size.height)
-                .min((button_rect.height() - icon_height - metrics.icon_label_spacing).max(0.0));
-            let total_height = icon_height + metrics.icon_label_spacing + label_height;
+                .min((button_rect.height() - icon_height - icon_label_spacing).max(0.0));
+            let total_height = icon_height + icon_label_spacing + label_height;
             let y0 = (button_rect.height() - total_height)
                 .max(0.0)
                 .mul_add(0.5, button_rect.y0);
@@ -1368,19 +1377,19 @@ fn tabs_item_content_rects(
                 )),
                 kurbo::Rect::new(
                     (button_rect.width() - label_width).mul_add(0.5, button_rect.x0),
-                    y0 + icon_height + metrics.icon_label_spacing,
+                    y0 + icon_height + icon_label_spacing,
                     button_rect.x0 + f64::midpoint(button_rect.width(), label_width),
-                    y0 + icon_height + metrics.icon_label_spacing + label_height,
+                    y0 + icon_height + icon_label_spacing + label_height,
                 ),
             )
         }
         TabItemLayout::Horizontal => {
             let icon_width = f64::from(icon_size.width).min(max_width);
             let label_width = f64::from(label_size.width)
-                .min((max_width - icon_width - metrics.icon_label_spacing).max(0.0));
+                .min((max_width - icon_width - icon_label_spacing).max(0.0));
             let icon_height = f64::from(icon_size.height).min(button_rect.height());
             let label_height = f64::from(label_size.height).min(button_rect.height());
-            let total_width = icon_width + metrics.icon_label_spacing + label_width;
+            let total_width = icon_width + icon_label_spacing + label_width;
             let x0 = (button_rect.width() - total_width)
                 .max(0.0)
                 .mul_add(0.5, button_rect.x0);
@@ -1392,9 +1401,9 @@ fn tabs_item_content_rects(
                     button_rect.y0 + f64::midpoint(button_rect.height(), icon_height),
                 )),
                 kurbo::Rect::new(
-                    x0 + icon_width + metrics.icon_label_spacing,
+                    x0 + icon_width + icon_label_spacing,
                     (button_rect.height() - label_height).mul_add(0.5, button_rect.y0),
-                    x0 + icon_width + metrics.icon_label_spacing + label_width,
+                    x0 + icon_width + icon_label_spacing + label_width,
                     button_rect.y0 + f64::midpoint(button_rect.height(), label_height),
                 ),
             )
@@ -1407,8 +1416,7 @@ fn tabs_label_rect(
     label_size: waterui_core::layout::Size,
     metrics: &crate::theme::TabsMetrics,
 ) -> kurbo::Rect {
-    let max_width = metrics
-        .button_horizontal_inset
+    let max_width = f64::from(metrics.button_horizontal_inset)
         .mul_add(-2.0, button_rect.width())
         .max(0.0);
     let width = f64::from(label_size.width).min(max_width);

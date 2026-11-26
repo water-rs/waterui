@@ -121,7 +121,7 @@ fn knob_of(drag: SwitchDrag, direction: LayoutDirection, inputs: &Inputs<'_, boo
 /// switch at half opacity when disabled.
 fn glass_switch(spec: &ToggleSpec, env: &Environment) -> SwitchLook {
     let direction = spec.direction();
-    let drag = SwitchDrag::new(TRAVEL, direction);
+    let drag = SwitchDrag::new(crate::num_cast::f64_as_f32(TRAVEL), direction);
     let tint = spec.tint().resolve(env);
     let off = Color::srgb(60, 60, 67).resolve(env).snapshot();
     let off = Paint::from(off.with_alpha(0.30));

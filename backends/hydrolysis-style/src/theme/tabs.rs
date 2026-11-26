@@ -71,12 +71,12 @@ pub enum TabBarWidth {
     /// container and bounded by `max_width` and available container width.
     Compact {
         /// Minimum width reserved for each tab item slot.
-        item_min_width: f64,
+        item_min_width: f32,
         /// Optional maximum width of the bar in logical points.
-        max_width: Option<f64>,
+        max_width: Option<f32>,
         /// Outer horizontal padding inside the bar before the first item and
         /// after the last item.
-        horizontal_padding: f64,
+        horizontal_padding: f32,
     },
 }
 
@@ -103,24 +103,24 @@ pub struct TabItemGeometry {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TabsMetrics {
     /// Tab bar height.
-    pub bar_height: f64,
+    pub bar_height: f32,
     /// Minimum width for one tab button.
-    pub button_min_width: f64,
+    pub button_min_width: f32,
     /// Horizontal label inset inside one tab button.
-    pub button_horizontal_inset: f64,
+    pub button_horizontal_inset: f32,
     /// Gap between a tab item's icon and its label: vertical space when the
     /// icon sits above the label, horizontal space when it sits beside it.
-    pub icon_label_spacing: f64,
+    pub icon_label_spacing: f32,
 }
 
 impl TabsMetrics {
     /// Create tab layout metrics.
     #[must_use]
     pub const fn new(
-        bar_height: f64,
-        button_min_width: f64,
-        button_horizontal_inset: f64,
-        icon_label_spacing: f64,
+        bar_height: f32,
+        button_min_width: f32,
+        button_horizontal_inset: f32,
+        icon_label_spacing: f32,
     ) -> Self {
         Self {
             bar_height,
@@ -307,7 +307,7 @@ type ItemHighlight = dyn Fn(&TabItem) -> Rc<dyn CustomPart<TabItem>>;
 #[derive(Clone)]
 pub struct TabsLook {
     vertical: TabsMetrics,
-    horizontal: Option<(f64, TabsMetrics)>,
+    horizontal: Option<(f32, TabsMetrics)>,
     motion: Motion,
     bar: Rc<dyn CustomPart<()>>,
     divider: Rc<dyn CustomPart<()>>,
@@ -317,7 +317,7 @@ pub struct TabsLook {
     selection_indicator_over_labels: Option<Rc<dyn CustomPart<TabsValue>>>,
     drag: Option<TabsDrag>,
     bar_width: TabBarWidth,
-    floating_margin: f64,
+    floating_margin: f32,
     selected_foreground: Option<Color>,
     unselected_foreground: Option<Color>,
 }
@@ -388,7 +388,7 @@ impl TabsLook {
     /// `from_extent` wide: a width class of the bar's own extent, which for
     /// a sidebar strip is its thickness.
     #[must_use]
-    pub const fn horizontal(mut self, from_extent: f64, metrics: TabsMetrics) -> Self {
+    pub const fn horizontal(mut self, from_extent: f32, metrics: TabsMetrics) -> Self {
         self.horizontal = Some((from_extent, metrics));
         self
     }
@@ -464,7 +464,7 @@ impl TabsLook {
     /// edges). Defaults to `0.0` (flush docked bar). Sidebar strips ignore
     /// this margin.
     #[must_use]
-    pub const fn floating_margin(mut self, margin: f64) -> Self {
+    pub const fn floating_margin(mut self, margin: f32) -> Self {
         self.floating_margin = margin;
         self
     }
@@ -487,7 +487,7 @@ impl TabsLook {
 
     /// How a bar `extent` wide lays its items out.
     #[must_use]
-    pub fn item_layout(&self, extent: f64) -> TabItemLayout {
+    pub fn item_layout(&self, extent: f32) -> TabItemLayout {
         match self.horizontal {
             Some((from, _)) if extent >= from => TabItemLayout::Horizontal,
             _ => TabItemLayout::Vertical,
@@ -523,7 +523,7 @@ impl TabsLook {
 
     /// Outer margin around a floating bottom tab bar in logical points.
     #[must_use]
-    pub const fn get_floating_margin(&self) -> f64 {
+    pub const fn get_floating_margin(&self) -> f32 {
         self.floating_margin
     }
 

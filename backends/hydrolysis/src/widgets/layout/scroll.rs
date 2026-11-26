@@ -157,14 +157,14 @@ pub fn draw_scroll_indicators<E: crate::text::TextEngine>(
     let key = handle.cache_key();
     let dragging = ctx.renderer_mut().scrollbar_drag_active(key);
     let look = ctx.theme().scroll_indicator(env);
-    let thickness = if dragging {
+    let thickness = f64::from(if dragging {
         look.get_drag_thickness()
     } else {
         look.get_thickness()
-    };
-    let edge_inset = look.get_edge_inset();
-    let min_extent = look.get_min_extent();
-    let gutter_width = look.get_gutter();
+    });
+    let edge_inset = f64::from(look.get_edge_inset());
+    let min_extent = f64::from(look.get_min_extent());
+    let gutter_width = f64::from(look.get_gutter());
     let vertical = matches!(axis, ScrollAxis::Vertical | ScrollAxis::All)
         .then(|| {
             indicator_geometry(

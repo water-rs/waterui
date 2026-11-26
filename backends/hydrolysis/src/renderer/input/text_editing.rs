@@ -907,10 +907,13 @@ pub fn text_context_menu_size(nodes: &[PopupMenuNode], metrics: MenuLayout) -> (
             .unwrap_or(0),
     );
     let width = max_label_chars
-        .mul_add(metrics.width_per_char, metrics.horizontal_padding * 2.0)
-        .clamp(metrics.min_width, metrics.max_width);
-    let height =
-        (crate::num_cast::usize_as_f64(nodes.len()) * metrics.row_height).max(metrics.row_height);
+        .mul_add(
+            f64::from(metrics.width_per_char),
+            f64::from(metrics.horizontal_padding) * 2.0,
+        )
+        .clamp(f64::from(metrics.min_width), f64::from(metrics.max_width));
+    let row_height = f64::from(metrics.row_height);
+    let height = (crate::num_cast::usize_as_f64(nodes.len()) * row_height).max(row_height);
     (width, height)
 }
 
@@ -1376,9 +1379,9 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 && !next_is_divider
             {
                 let separator = kurbo::Rect::new(
-                    row.bounds.x0 + metrics.separator_horizontal_inset,
-                    row.bounds.y1 - metrics.separator_thickness,
-                    row.bounds.x1 - metrics.separator_horizontal_inset,
+                    row.bounds.x0 + f64::from(metrics.separator_horizontal_inset),
+                    row.bounds.y1 - f64::from(metrics.separator_thickness),
+                    row.bounds.x1 - f64::from(metrics.separator_horizontal_inset),
                     row.bounds.y1,
                 );
                 self.scene_mut().record_picture(transform, |draw| {
@@ -1391,8 +1394,8 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
                 | PopupMenuNode::Menu { plain_label, .. } => {
                     let text_rect = inset_rect(
                         row.bounds,
-                        metrics.horizontal_padding,
-                        metrics.vertical_padding,
+                        f64::from(metrics.horizontal_padding),
+                        f64::from(metrics.vertical_padding),
                     );
                     let ctx = RenderContext::new(transform, overlay.bounds).child(
                         kurbo::Affine::translate((text_rect.x0, text_rect.y0)),
@@ -2117,12 +2120,10 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             let bounds =
                 text_context_menu_overlay_bounds(point, &nodes, self.window_bounds, metrics);
             let mut rows = Vec::with_capacity(nodes.len());
+            let row_height = f64::from(metrics.row_height);
             for (index, node) in nodes.into_iter().enumerate() {
-                let y0 = metrics
-                    .row_height
-                    .mul_add(crate::num_cast::usize_as_f64(index), bounds.y0);
-                let row_bounds =
-                    kurbo::Rect::new(bounds.x0, y0, bounds.x1, y0 + metrics.row_height);
+                let y0 = row_height.mul_add(crate::num_cast::usize_as_f64(index), bounds.y0);
+                let row_bounds = kurbo::Rect::new(bounds.x0, y0, bounds.x1, y0 + row_height);
                 rows.push(TextContextMenuOverlayRow {
                     bounds: row_bounds,
                     node,

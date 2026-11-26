@@ -98,7 +98,7 @@ pub fn navigation_presentation(
 fn material_shared_axis_x_properties(
     progress: f32,
     direction: NavigationTransitionDirection,
-    slide_distance: f64,
+    slide_distance: f32,
     viewport_width: f64,
     fade_through_threshold: f32,
 ) -> (TransitionProperties, TransitionProperties) {
@@ -129,7 +129,6 @@ fn material_shared_axis_x_properties(
             TransitionProperties::IDENTITY,
         );
     }
-    let slide_distance = f64_as_f32(slide_distance);
     let sign = match direction {
         NavigationTransitionDirection::Push => -1.0,
         NavigationTransitionDirection::Pop => 1.0,

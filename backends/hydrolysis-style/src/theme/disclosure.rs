@@ -52,15 +52,15 @@ impl DisclosureSpec {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DisclosureLayout {
     /// Minimum height of the header row.
-    pub min_header_height: f64,
+    pub min_header_height: f32,
     /// Horizontal inset inside the header row.
-    pub horizontal_inset: f64,
+    pub horizontal_inset: f32,
     /// Vertical inset inside the header row.
-    pub vertical_inset: f64,
+    pub vertical_inset: f32,
     /// Vertical gap between the header row and expanded content.
-    pub content_spacing: f64,
+    pub content_spacing: f32,
     /// Leading indent applied to expanded content (mirrored in RTL).
-    pub content_indent: f64,
+    pub content_indent: f32,
 }
 
 /// Visual look and layout metrics of a disclosure control.

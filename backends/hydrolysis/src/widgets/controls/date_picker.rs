@@ -240,13 +240,12 @@ pub fn measure_date_picker_node<E: crate::text::TextEngine>(
         field_text_width = field_text_width.max(f64::from(size.width));
         field_text_height = field_text_height.max(f64::from(size.height));
     }
-    let field_width = (metrics.horizontal_inset.mul_add(2.0, field_text_width)
-        + metrics.indicator_space)
-        .max(metrics.min_width);
-    let field_height = metrics
-        .vertical_inset
+    let field_width = (f64::from(metrics.horizontal_inset).mul_add(2.0, field_text_width)
+        + f64::from(metrics.indicator_space))
+    .max(f64::from(metrics.min_width));
+    let field_height = f64::from(metrics.vertical_inset)
         .mul_add(2.0, field_text_height)
-        .max(metrics.min_height);
+        .max(f64::from(metrics.min_height));
     let width = f64::from(label_size.width).max(field_width);
     let height = label_height + field_height;
     ViewDimensions::new(LayoutSize::new(
@@ -421,9 +420,9 @@ pub fn render_date_picker_parts<E: crate::text::TextEngine>(
     let content_scoped = parts.open_content_effect(ctx.renderer_mut(), render_ctx);
     let text_bounds = date_picker_value_bounds(
         field_bounds,
-        metrics.horizontal_inset,
-        metrics.vertical_inset,
-        metrics.indicator_space,
+        f64::from(metrics.horizontal_inset),
+        f64::from(metrics.vertical_inset),
+        f64::from(metrics.indicator_space),
         env,
     );
     ctx.render_styled_text(

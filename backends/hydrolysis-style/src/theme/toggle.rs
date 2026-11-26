@@ -128,8 +128,8 @@ impl ToggleBackdrop {
 #[derive(Clone)]
 struct ControlParts {
     size: Size,
-    reach: f64,
-    label_spacing: f64,
+    reach: f32,
+    label_spacing: f32,
     motion: Motion,
     hit: HitRegion,
     group_opacity: Driven<f32, bool>,
@@ -194,7 +194,7 @@ impl ToggleControl {
     /// on every side — an overhanging track, a grown press lens — so a group
     /// opacity layer does not clip them.
     #[must_use]
-    pub fn reach(mut self, reach: f64) -> Self {
+    pub fn reach(mut self, reach: f32) -> Self {
         self.parts_mut().reach = reach;
         self
     }
@@ -244,7 +244,7 @@ impl ToggleControl {
 
     /// Spaces the control `spacing` from its label.
     #[must_use]
-    pub fn label_spacing(mut self, spacing: f64) -> Self {
+    pub fn label_spacing(mut self, spacing: f32) -> Self {
         self.parts_mut().label_spacing = spacing;
         self
     }
@@ -281,7 +281,7 @@ impl ToggleControl {
 
     /// The space between the control and the label.
     #[must_use]
-    pub fn get_label_spacing(&self) -> f64 {
+    pub fn get_label_spacing(&self) -> f32 {
         self.0.label_spacing
     }
 
@@ -306,7 +306,7 @@ impl ToggleControl {
 
     /// How far the parts draw beyond the control's frame.
     #[must_use]
-    pub fn get_reach(&self) -> f64 {
+    pub fn get_reach(&self) -> f32 {
         self.0.reach
     }
 
@@ -371,7 +371,7 @@ impl ToggleControl {
 /// draws and the value the release sets cannot disagree.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SwitchDrag {
-    travel: f64,
+    travel: f32,
     direction: LayoutDirection,
 }
 
@@ -379,13 +379,13 @@ impl SwitchDrag {
     /// A drag over `travel` points of horizontal movement, in a layout
     /// running `direction`.
     #[must_use]
-    pub const fn new(travel: f64, direction: LayoutDirection) -> Self {
+    pub const fn new(travel: f32, direction: LayoutDirection) -> Self {
         Self { travel, direction }
     }
 
     /// The distance the knob travels between its ends.
     #[must_use]
-    pub const fn travel(&self) -> f64 {
+    pub const fn travel(&self) -> f32 {
         self.travel
     }
 
@@ -402,7 +402,7 @@ impl SwitchDrag {
             LayoutDirection::LeftToRight => drag.x,
             LayoutDirection::RightToLeft => -drag.x,
         };
-        (rest + toward_on / self.travel).clamp(0.0, 1.0)
+        (rest + toward_on / f64::from(self.travel)).clamp(0.0, 1.0)
     }
 
     /// The value a release settles on after `drag` of a switch showing

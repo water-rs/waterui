@@ -242,7 +242,7 @@ impl LiveToggle {
     /// The area the control's parts draw in: its frame and its reach.
     #[cfg(feature = "toggle")]
     pub(crate) fn visual_bounds(&self) -> Rect {
-        let reach = self.control.get_reach();
+        let reach = f64::from(self.control.get_reach());
         self.frame.inflate(reach, reach)
     }
 

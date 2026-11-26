@@ -156,9 +156,9 @@ fn horizontal_highlight_hugs_icon_spacing_label_not_the_button() {
     let icon_width = measure_plain(&mut renderer, &env, ICON_TEXT);
     let label_width = measure_plain(&mut renderer, &env, "Tab 1");
     let expected = f64::mul_add(
-        metrics.button_horizontal_inset,
+        f64::from(metrics.button_horizontal_inset),
         2.0,
-        icon_width + metrics.icon_label_spacing + label_width,
+        icon_width + f64::from(metrics.icon_label_spacing) + label_width,
     );
     assert!(
         (bounds.width() - expected).abs() < 0.5,

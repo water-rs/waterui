@@ -5428,8 +5428,8 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             disabled,
             Some(motion),
         );
-        slot.slop = hit.get_slop();
-        slot.cancel_distance = hit.get_cancel_distance();
+        slot.slop = f64::from(hit.get_slop());
+        slot.cancel_distance = f64::from(hit.get_cancel_distance());
         (state, slot, handles)
     }
 

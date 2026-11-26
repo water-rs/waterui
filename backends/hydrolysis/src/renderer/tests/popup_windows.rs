@@ -844,11 +844,12 @@ fn an_accessibility_activated_popup_anchors_under_the_control() {
     // on every side, so its frame origin sits one margin up-and-left of the
     // panel, which opens the look's gap below the field.
     let margin = MinimalTestTheme::panel_margin();
-    let gap = crate::testing::plain_menu_picker_look().layout().popup_gap;
+    let gap = f64::from(crate::testing::plain_menu_picker_look().layout().popup_gap);
     approx::assert_relative_eq!(f64::from(frame.x()), field.x0 - margin, epsilon = 0.5);
     approx::assert_relative_eq!(f64::from(frame.y()), field.y1 + gap - margin, epsilon = 0.5);
     let menu = MinimalTestTheme::menu_layout();
-    let panel_height = crate::renderer::picker_menu_panel_height(menu, menu.row_height, 2);
+    let panel_height =
+        crate::renderer::picker_menu_panel_height(menu, f64::from(menu.row_height), 2);
     approx::assert_relative_eq!(
         f64::from(frame.width()),
         margin.mul_add(2.0, field.width()),
@@ -926,7 +927,7 @@ fn a_pointer_activated_picker_menu_anchors_under_the_field() {
         panic!("the field click must mount one popup window, got {frames:?}")
     };
     let margin = MinimalTestTheme::panel_margin();
-    let gap = crate::testing::plain_menu_picker_look().layout().popup_gap;
+    let gap = f64::from(crate::testing::plain_menu_picker_look().layout().popup_gap);
     approx::assert_relative_eq!(f64::from(frame.x()), field.x0 - margin, epsilon = 0.5);
     approx::assert_relative_eq!(f64::from(frame.y()), field.y1 + gap - margin, epsilon = 0.5);
 }

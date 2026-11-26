@@ -1364,8 +1364,8 @@ impl Label {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct HitRegion {
     minimum: Size,
-    slop: f64,
-    cancel_distance: f64,
+    slop: f32,
+    cancel_distance: f32,
     press_delay: Duration,
 }
 
@@ -1395,14 +1395,14 @@ impl HitRegion {
     /// Keeps a waiting touch press alive while it moves no farther than
     /// `slop` from where it landed.
     #[must_use]
-    pub const fn slop(mut self, slop: f64) -> Self {
+    pub const fn slop(mut self, slop: f32) -> Self {
         self.slop = slop;
         self
     }
 
     /// Activates on a release within `distance` of the target.
     #[must_use]
-    pub const fn cancel_distance(mut self, distance: f64) -> Self {
+    pub const fn cancel_distance(mut self, distance: f32) -> Self {
         self.cancel_distance = distance;
         self
     }
@@ -1424,13 +1424,13 @@ impl HitRegion {
 
     /// The tap slop.
     #[must_use]
-    pub const fn get_slop(&self) -> f64 {
+    pub const fn get_slop(&self) -> f32 {
         self.slop
     }
 
     /// The cancel distance.
     #[must_use]
-    pub const fn get_cancel_distance(&self) -> f64 {
+    pub const fn get_cancel_distance(&self) -> f32 {
         self.cancel_distance
     }
 
@@ -1581,8 +1581,8 @@ impl ButtonLook {
     /// Pads the label by `horizontal` on each side and `vertical` above and
     /// below.
     #[must_use]
-    pub const fn padding(mut self, horizontal: f64, vertical: f64) -> Self {
-        self.padding = Vec2::new(horizontal, vertical);
+    pub const fn padding(mut self, horizontal: f32, vertical: f32) -> Self {
+        self.padding = Vec2::new(horizontal as f64, vertical as f64);
         self
     }
 
@@ -1780,19 +1780,19 @@ impl SliderSpec {
 #[cfg(waterui_feature = "slider")]
 pub struct SliderLayout {
     /// The control row's height: the room the knob travels in.
-    pub row_height: f64,
+    pub row_height: f32,
     /// The distance from the slider's edge to an end of the track with no
     /// label beside it: the room the knob needs beyond the track's end.
-    pub track_inset: f64,
+    pub track_inset: f32,
     /// The distance from the slider's edge to an end label.
-    pub label_inset: f64,
+    pub label_inset: f32,
     /// The gap between an end label and the track.
-    pub label_gap: f64,
+    pub label_gap: f32,
     /// The shortest the track is laid out.
-    pub minimum_track: f64,
+    pub minimum_track: f32,
     /// The space between a label above the row and the row. `None` when the
     /// look draws no label: nothing is reserved for it.
-    pub label_spacing: Option<f64>,
+    pub label_spacing: Option<f32>,
 }
 
 /// The knob of a slider: the extent its parts draw it in, and where it takes
@@ -1860,7 +1860,7 @@ pub struct ValueIndicator {
     color: Color,
     padding: Vec2,
     minimum: Size,
-    gap: f64,
+    gap: f32,
     container: Rc<dyn CustomPart<f64>>,
 }
 
@@ -1903,8 +1903,8 @@ impl ValueIndicator {
     /// Pads the text by `horizontal` on each side and `vertical` above and
     /// below.
     #[must_use]
-    pub const fn padding(mut self, horizontal: f64, vertical: f64) -> Self {
-        self.padding = Vec2::new(horizontal, vertical);
+    pub const fn padding(mut self, horizontal: f32, vertical: f32) -> Self {
+        self.padding = Vec2::new(horizontal as f64, vertical as f64);
         self
     }
 
@@ -1917,7 +1917,7 @@ impl ValueIndicator {
 
     /// Clears the knob's top by `gap`.
     #[must_use]
-    pub const fn gap(mut self, gap: f64) -> Self {
+    pub const fn gap(mut self, gap: f32) -> Self {
         self.gap = gap;
         self
     }
@@ -1949,7 +1949,7 @@ impl ValueIndicator {
 
     /// The gap between the knob's top and the bubble's bottom.
     #[must_use]
-    pub const fn get_gap(&self) -> f64 {
+    pub const fn get_gap(&self) -> f32 {
         self.gap
     }
 

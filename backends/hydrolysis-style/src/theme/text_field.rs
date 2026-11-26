@@ -67,7 +67,7 @@ pub struct FloatingLabel {
     label: Label,
     float: ValueMotion,
     scale: f64,
-    top: f64,
+    top: f32,
 }
 
 impl FloatingLabel {
@@ -93,7 +93,7 @@ impl FloatingLabel {
 
     /// Floats the label's band `top` below the container's top edge.
     #[must_use]
-    pub const fn top(mut self, top: f64) -> Self {
+    pub const fn top(mut self, top: f32) -> Self {
         self.top = top;
         self
     }
@@ -119,7 +119,7 @@ impl FloatingLabel {
     /// The distance from the container's top edge to the floating label's
     /// band.
     #[must_use]
-    pub const fn get_top(&self) -> f64 {
+    pub const fn get_top(&self) -> f32 {
         self.top
     }
 }

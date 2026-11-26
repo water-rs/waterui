@@ -267,15 +267,17 @@ impl Drawn {
     /// The height reserved above the control row for the label.
     fn band(&self, layout: &SliderLayout) -> f64 {
         match layout.label_spacing {
-            Some(spacing) if self.label > 0.0 => self.label + spacing,
+            Some(spacing) if self.label > 0.0 => self.label + f64::from(spacing),
             _ => 0.0,
         }
     }
 
     /// The control row's height: the knob's travel, no shorter than a label
     /// beside the track.
-    const fn row_height(&self, layout: &SliderLayout) -> f64 {
-        layout.row_height.max(self.min.height).max(self.max.height)
+    fn row_height(&self, layout: &SliderLayout) -> f64 {
+        f64::from(layout.row_height)
+            .max(self.min.height)
+            .max(self.max.height)
     }
 
     /// The room beside the track on its left and right: an end label, its
@@ -285,9 +287,9 @@ impl Drawn {
     fn sides(&self, layout: &SliderLayout, direction: LayoutDirection) -> (f64, f64) {
         let side = |label: f64| {
             if label > 0.0 {
-                layout.label_inset + label + layout.label_gap
+                f64::from(layout.label_inset) + label + f64::from(layout.label_gap)
             } else {
-                layout.track_inset
+                f64::from(layout.track_inset)
             }
         };
         match direction {
@@ -303,7 +305,7 @@ fn intrinsic_size(look: &SliderLook, spec: &SliderSpec, measured: &Measured) -> 
     let layout = look.layout();
     let drawn = Drawn::new(look, spec, measured);
     let (left, right) = drawn.sides(layout, spec.direction());
-    let width = f64::from(measured.label.width).max(left + layout.minimum_track + right);
+    let width = f64::from(measured.label.width).max(left + f64::from(layout.minimum_track) + right);
     let height = drawn.band(layout) + drawn.row_height(layout);
     LayoutSize::new(
         crate::num_cast::f64_as_f32(width),
@@ -352,14 +354,15 @@ fn place(look: &SliderLook, spec: &SliderSpec, measured: &Measured, bounds: Rect
     }
     let track = Rect::from_center_size(
         Point::new(f64::midpoint(bounds.x0 + left, bounds.x1 - right), center_y),
-        Size::new(track_width, layout.row_height),
+        Size::new(track_width, f64::from(layout.row_height)),
     );
     let beside = |size: Size, x0: f64| {
         (size.width > 0.0 && row.height() > 0.0)
             .then(|| label_beside_control_bounds(x0, x0 + size.width, row, track, size))
     };
-    let left_label = |size: Size| beside(size, bounds.x0 + layout.label_inset);
-    let right_label = |size: Size| beside(size, bounds.x1 - layout.label_inset - size.width);
+    let label_inset = f64::from(layout.label_inset);
+    let left_label = |size: Size| beside(size, bounds.x0 + label_inset);
+    let right_label = |size: Size| beside(size, bounds.x1 - label_inset - size.width);
     let (min_label, max_label) = match direction {
         LayoutDirection::RightToLeft => (right_label(drawn.min), left_label(drawn.max)),
         LayoutDirection::LeftToRight => (left_label(drawn.min), right_label(drawn.max)),
@@ -803,7 +806,7 @@ pub fn render_slider_parts<E: crate::text::TextEngine>(
                 .mul_add(2.0, f64::from(text_size.height))
                 .max(minimum.height);
             let start = knob_center(track, 0.0, direction);
-            let bottom = start.y - knob.size.height / 2.0 - indicator.get_gap();
+            let bottom = start.y - knob.size.height / 2.0 - f64::from(indicator.get_gap());
             let rest = Rect::new(
                 start.x - width / 2.0,
                 bottom - height,

@@ -564,12 +564,8 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             let (size, _stretch) =
                 accessory.patch_and_measure(self, &presentation_env, ProposalSize::UNSPECIFIED);
             Some((
-                metrics
-                    .horizontal_padding
-                    .mul_add(2.0, f64::from(size.width)),
-                metrics
-                    .vertical_padding
-                    .mul_add(2.0, f64::from(size.height)),
+                f64::from(metrics.horizontal_padding).mul_add(2.0, f64::from(size.width)),
+                f64::from(metrics.vertical_padding).mul_add(2.0, f64::from(size.height)),
             ))
         } else {
             None
@@ -708,7 +704,11 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
 
         if let Some(accessory) = presentation.accessory.as_mut() {
             let frame = presentation.accessory_frame.unwrap_or(layout.lift);
-            let content = inset_rect(frame, metrics.horizontal_padding, metrics.vertical_padding);
+            let content = inset_rect(
+                frame,
+                f64::from(metrics.horizontal_padding),
+                f64::from(metrics.vertical_padding),
+            );
             accessory.place_detached(
                 self,
                 RenderContext::new(transform, window),

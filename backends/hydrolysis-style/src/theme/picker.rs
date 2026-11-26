@@ -70,19 +70,19 @@ impl PickerSpec {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MenuPickerLayout {
     /// Minimum field width.
-    pub min_width: f64,
+    pub min_width: f32,
     /// Minimum field height.
-    pub min_height: f64,
+    pub min_height: f32,
     /// Horizontal inset of the field's content.
-    pub horizontal_inset: f64,
+    pub horizontal_inset: f32,
     /// Vertical inset of the field's content.
-    pub vertical_inset: f64,
+    pub vertical_inset: f32,
     /// Gap between the field's label and its value.
-    pub label_spacing: f64,
+    pub label_spacing: f32,
     /// Space reserved for the dropdown indicator.
-    pub indicator_space: f64,
+    pub indicator_space: f32,
     /// Vertical gap between the field and the popup it opens.
-    pub popup_gap: f64,
+    pub popup_gap: f32,
 }
 
 /// How a menu picker looks: the [`Chrome`] of its field, the measures it is
@@ -139,17 +139,17 @@ impl MenuPickerLook {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RadioLayout {
     /// Minimum group width.
-    pub min_width: f64,
+    pub min_width: f32,
     /// Minimum group height.
-    pub min_height: f64,
+    pub min_height: f32,
     /// Horizontal inset of the rows.
-    pub horizontal_inset: f64,
+    pub horizontal_inset: f32,
     /// Vertical inset of the rows.
-    pub vertical_inset: f64,
+    pub vertical_inset: f32,
     /// Gap between the group's heading and its first row.
-    pub label_spacing: f64,
+    pub label_spacing: f32,
     /// Gap between rows.
-    pub row_spacing: f64,
+    pub row_spacing: f32,
 }
 
 /// How a radio group looks: the [`ToggleControl`] each row draws as its

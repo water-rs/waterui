@@ -404,9 +404,9 @@ fn destructive_draws_in_error_colour_and_subtitle_grows_its_row() {
     // The test theme is not M3 — derive the expectation from its metrics so
     // the test cannot drift from the tokens it is fed.
     let menu_metrics = MinimalTestTheme::menu_layout();
-    let three_plain_rows = 3.0 * menu_metrics.row_height;
+    let three_plain_rows = 3.0 * f64::from(menu_metrics.row_height);
     assert!(
-        menu_frame.height() > three_plain_rows + menu_metrics.vertical_padding,
+        menu_frame.height() > three_plain_rows + f64::from(menu_metrics.vertical_padding),
         "a subtitled row grows the menu, height {}",
         menu_frame.height()
     );
@@ -860,7 +860,7 @@ fn a_divider_row_takes_the_themes_divider_spacing() {
     // "Inspect element" affordance with its own divider and row.
     let menu_metrics = MinimalTestTheme::menu_layout();
     let divider = crate::renderer::input::popup_menu_divider_height(menu_metrics);
-    let row = menu_metrics.row_height;
+    let row = f64::from(menu_metrics.row_height);
     let rows = row
         + row
         + divider
@@ -869,8 +869,10 @@ fn a_divider_row_takes_the_themes_divider_spacing() {
         } else {
             0.0
         };
-    let expected = MinimalTestTheme::panel_margin()
-        .mul_add(2.0, f64::mul_add(menu_metrics.vertical_padding, 2.0, rows));
+    let expected = MinimalTestTheme::panel_margin().mul_add(
+        2.0,
+        f64::mul_add(f64::from(menu_metrics.vertical_padding), 2.0, rows),
+    );
     assert!(
         (f64::from(frame.height()) - expected).abs() < 1.0,
         "the divider takes the theme's divider spacing, height {} vs {expected}",
@@ -946,8 +948,8 @@ fn a_disabled_command_draws_its_label_dimmed_and_stays_inert() {
     // `Paste` — each `row_height` tall inside `vertical_padding`.
     let metrics = MinimalTestTheme::menu_layout();
     let margin = crate::num_cast::f64_as_u32(MinimalTestTheme::panel_margin());
-    let row_top = margin + crate::num_cast::f64_as_u32(metrics.vertical_padding);
-    let row_bottom = row_top + crate::num_cast::f64_as_u32(metrics.row_height);
+    let row_top = margin + crate::num_cast::f64_as_u32(f64::from(metrics.vertical_padding));
+    let row_bottom = row_top + crate::num_cast::f64_as_u32(f64::from(metrics.row_height));
     let (x0, x1) = (margin + 2, pop.width() - margin - 2);
     let darkest_ink = |y0: u32, y1: u32| -> u32 {
         let mut darkest = u32::MAX;
@@ -962,7 +964,7 @@ fn a_disabled_command_draws_its_label_dimmed_and_stays_inert() {
     let disabled_ink = darkest_ink(row_top, row_bottom);
     let enabled_ink = darkest_ink(
         row_bottom,
-        row_bottom + crate::num_cast::f64_as_u32(metrics.row_height),
+        row_bottom + crate::num_cast::f64_as_u32(f64::from(metrics.row_height)),
     );
 
     assert!(
@@ -1062,9 +1064,7 @@ fn popup_menu_divider_draws_through_menu_look_record_separator() {
 
     let margin = MinimalTestTheme::panel_margin();
     let panel_width = margin.mul_add(-2.0, f64::from(pop.width()));
-    let expected_width = metrics
-        .separator_horizontal_inset
-        .mul_add(-2.0, panel_width);
+    let expected_width = f64::from(metrics.separator_horizontal_inset).mul_add(-2.0, panel_width);
     let draws = recorded.borrow();
     assert!(
         !draws.is_empty(),
@@ -1076,7 +1076,7 @@ fn popup_menu_divider_draws_through_menu_look_record_separator() {
         "separator must span panel width minus horizontal insets ({expected_width}), got {first:?}"
     );
     assert!(
-        (first.height() - metrics.separator_thickness).abs() < 0.1,
+        (first.height() - f64::from(metrics.separator_thickness)).abs() < 0.1,
         "separator must use separator_thickness ({}), got {first:?}",
         metrics.separator_thickness
     );
@@ -1086,12 +1086,12 @@ fn popup_menu_divider_draws_through_menu_look_record_separator() {
     // leading inset margin itself remains the panel surface colour.
     let divider_y = f64_as_u32(
         margin
-            + metrics.vertical_padding
-            + metrics.row_height
+            + f64::from(metrics.vertical_padding)
+            + f64::from(metrics.row_height)
             + popup_menu_divider_height(metrics) / 2.0,
     );
     let margin_u32 = f64_as_u32(margin);
-    let inset_u32 = f64_as_u32(metrics.separator_horizontal_inset);
+    let inset_u32 = f64_as_u32(f64::from(metrics.separator_horizontal_inset));
     let sample_xs = [
         margin_u32 + inset_u32 + 4,
         pop.width() / 2,

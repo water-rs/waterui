@@ -980,7 +980,12 @@ impl LabelPlace {
         let inset = f64::from(look.metrics().horizontal_inset);
         let floating = look.floating_label();
         let resting = material_input_resting_label_rect(field_rect, inset, measured_label_height);
-        let band = material_input_label_rect(field_rect, inset, floating.get_top(), label_height);
+        let band = material_input_label_rect(
+            field_rect,
+            inset,
+            f64::from(floating.get_top()),
+            label_height,
+        );
         // The label floats about its leading corner, so it stays at the
         // leading inset as it scales into the band.
         let (band_x, resting_x) = match direction {

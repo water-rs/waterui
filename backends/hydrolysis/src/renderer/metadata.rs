@@ -114,7 +114,7 @@ pub fn resolve_shadow_shape(
 fn presentation_surface_clip(sample: &MenuPresentationSample) -> ScopeClip {
     if sample.surface_corner_radius > 0.0 {
         ScopeClip::RoundedRect {
-            path: RoundedRect::from_rect(sample.surface, sample.surface_corner_radius)
+            path: RoundedRect::from_rect(sample.surface, f64::from(sample.surface_corner_radius))
                 .to_path(PATH_TOLERANCE),
             rect: sample.surface,
         }
@@ -427,7 +427,7 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
             true,
         );
         let blur_radius = if local_sample.content_blur > 0.01 {
-            f64_as_f32(local_sample.content_blur)
+            local_sample.content_blur
         } else {
             0.0
         };

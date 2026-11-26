@@ -26,11 +26,11 @@ use super::look::{Custom, CustomPart, DrivenSet};
 /// part draws over.
 #[derive(Clone)]
 pub struct ScrollIndicatorLook {
-    thickness: f64,
-    drag_thickness: f64,
-    edge_inset: f64,
-    min_extent: f64,
-    gutter: f64,
+    thickness: f32,
+    drag_thickness: f32,
+    edge_inset: f32,
+    min_extent: f32,
+    gutter: f32,
     thumb: Rc<dyn CustomPart<()>>,
 }
 
@@ -51,7 +51,7 @@ impl ScrollIndicatorLook {
     /// dragged, drawn by `thumb`, with no inset, no minimum extent and no
     /// gutter.
     #[must_use]
-    pub fn new<D>(thickness: f64, drag_thickness: f64, thumb: Custom<(), D>) -> Self
+    pub fn new<D>(thickness: f32, drag_thickness: f32, thumb: Custom<(), D>) -> Self
     where
         D: DrivenSet<()> + 'static,
         D::Live: 'static,
@@ -68,52 +68,52 @@ impl ScrollIndicatorLook {
 
     /// Insets the thumb `inset` from the surface's edge.
     #[must_use]
-    pub const fn edge_inset(mut self, inset: f64) -> Self {
+    pub const fn edge_inset(mut self, inset: f32) -> Self {
         self.edge_inset = inset;
         self
     }
 
     /// Holds the thumb at least `extent` long along its track.
     #[must_use]
-    pub const fn min_extent(mut self, extent: f64) -> Self {
+    pub const fn min_extent(mut self, extent: f32) -> Self {
         self.min_extent = extent;
         self
     }
 
     /// Takes a drag in a gutter `width` wide along the surface's edge.
     #[must_use]
-    pub const fn gutter(mut self, width: f64) -> Self {
+    pub const fn gutter(mut self, width: f32) -> Self {
         self.gutter = width;
         self
     }
 
     /// The thumb's thickness at rest.
     #[must_use]
-    pub const fn get_thickness(&self) -> f64 {
+    pub const fn get_thickness(&self) -> f32 {
         self.thickness
     }
 
     /// The thumb's thickness while it is dragged.
     #[must_use]
-    pub const fn get_drag_thickness(&self) -> f64 {
+    pub const fn get_drag_thickness(&self) -> f32 {
         self.drag_thickness
     }
 
     /// The thumb's inset from the surface's edge.
     #[must_use]
-    pub const fn get_edge_inset(&self) -> f64 {
+    pub const fn get_edge_inset(&self) -> f32 {
         self.edge_inset
     }
 
     /// The shortest the thumb gets along its track.
     #[must_use]
-    pub const fn get_min_extent(&self) -> f64 {
+    pub const fn get_min_extent(&self) -> f32 {
         self.min_extent
     }
 
     /// The width of the gutter that takes a drag.
     #[must_use]
-    pub const fn get_gutter(&self) -> f64 {
+    pub const fn get_gutter(&self) -> f32 {
         self.gutter
     }
 

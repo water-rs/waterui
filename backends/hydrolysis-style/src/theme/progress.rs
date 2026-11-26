@@ -231,7 +231,7 @@ impl ProgressControl {
 
 /// Default vertical gap between a circular progress indicator and its label
 /// or value label, matching `WuiProgress`'s 6 pt vertical spacing.
-const DEFAULT_INDICATOR_LABEL_SPACING: f64 = 6.0;
+const DEFAULT_INDICATOR_LABEL_SPACING: f32 = 6.0;
 
 /// How a circular progress indicator or a loading indicator looks: its
 /// [`ProgressControl`], drawn in a square, with optional bands for its label
@@ -239,9 +239,9 @@ const DEFAULT_INDICATOR_LABEL_SPACING: f64 = 6.0;
 #[derive(Debug, Clone)]
 pub struct IndicatorLook {
     control: ProgressControl,
-    label_height: f64,
-    label_spacing: Option<f64>,
-    value_label_spacing: Option<f64>,
+    label_height: f32,
+    label_spacing: Option<f32>,
+    value_label_spacing: Option<f32>,
 }
 
 impl IndicatorLook {
@@ -260,7 +260,7 @@ impl IndicatorLook {
     /// Reserves a label band at least `height` tall above the indicator, with
     /// `spacing` between the band and the indicator.
     #[must_use]
-    pub const fn label_band(mut self, height: f64, spacing: f64) -> Self {
+    pub const fn label_band(mut self, height: f32, spacing: f32) -> Self {
         self.label_height = height;
         self.label_spacing = Some(spacing);
         self
@@ -268,7 +268,7 @@ impl IndicatorLook {
 
     /// Reserves a value-label band below the indicator, `spacing` beneath it.
     #[must_use]
-    pub const fn value_label_band(mut self, spacing: f64) -> Self {
+    pub const fn value_label_band(mut self, spacing: f32) -> Self {
         self.value_label_spacing = Some(spacing);
         self
     }
@@ -290,21 +290,21 @@ impl IndicatorLook {
 
     /// The minimum height of a label band around the indicator.
     #[must_use]
-    pub const fn get_label_height(&self) -> f64 {
+    pub const fn get_label_height(&self) -> f32 {
         self.label_height
     }
 
     /// The space between the label band and the indicator, or `None` when the
     /// look suppresses the visible label.
     #[must_use]
-    pub const fn get_label_spacing(&self) -> Option<f64> {
+    pub const fn get_label_spacing(&self) -> Option<f32> {
         self.label_spacing
     }
 
     /// The space between the indicator and the value-label band, or `None`
     /// when the look suppresses the visible value label.
     #[must_use]
-    pub const fn get_value_label_spacing(&self) -> Option<f64> {
+    pub const fn get_value_label_spacing(&self) -> Option<f32> {
         self.value_label_spacing
     }
 
@@ -320,18 +320,23 @@ impl IndicatorLook {
     /// label is `label` tall and value label `value_label` tall, each `None`
     /// when absent. The origin is the indicator's.
     #[must_use]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "logical-pixel indicator layout height fits in f32"
+    )]
     pub fn layout(
         &self,
-        width: f64,
-        label: Option<f64>,
-        value_label: Option<f64>,
+        width: f32,
+        label: Option<f32>,
+        value_label: Option<f32>,
     ) -> IndicatorLayout {
-        let label_band = label
-            .zip(self.label_spacing)
-            .map(|(height, spacing)| (height.max(self.label_height), spacing));
+        let width_f64 = f64::from(width);
+        let label_band = label.zip(self.label_spacing).map(|(height, spacing)| {
+            (f64::from(height.max(self.label_height)), f64::from(spacing))
+        });
         let indicator_top = label_band.map_or(0.0, |(height, spacing)| height + spacing);
         let control_size = self.control.size();
-        let indicator_x = (width - control_size.width) * 0.5;
+        let indicator_x = (width_f64 - control_size.width) * 0.5;
         let indicator = Rect::new(
             indicator_x,
             indicator_top,
@@ -342,14 +347,19 @@ impl IndicatorLook {
             value_label
                 .zip(self.value_label_spacing)
                 .map(|(height, spacing)| {
-                    let top = indicator.y1 + spacing;
-                    Rect::new(0.0, top, width, top + height.max(self.label_height))
+                    let top = indicator.y1 + f64::from(spacing);
+                    Rect::new(
+                        0.0,
+                        top,
+                        width_f64,
+                        top + f64::from(height.max(self.label_height)),
+                    )
                 });
         IndicatorLayout {
-            label: label_band.map(|(height, _)| Rect::new(0.0, 0.0, width, height)),
+            label: label_band.map(|(height, _)| Rect::new(0.0, 0.0, width_f64, height)),
             indicator,
             value_label: value_label_band,
-            height: value_label_band.map_or(indicator.y1, |band| band.y1),
+            height: value_label_band.map_or(indicator.y1, |band| band.y1) as f32,
         }
     }
 }
@@ -365,7 +375,7 @@ pub struct IndicatorLayout {
     /// The value-label band below the indicator, when drawn.
     pub value_label: Option<Rect>,
     /// The indicator's total height.
-    pub height: f64,
+    pub height: f32,
 }
 
 /// How a linear progress indicator looks: the [`ProgressControl`] of its
@@ -378,17 +388,17 @@ pub struct IndicatorLayout {
 #[derive(Debug, Clone)]
 pub struct LinearProgressLook {
     control: ProgressControl,
-    inset: f64,
-    label_height: f64,
-    label_spacing: f64,
-    value_label_spacing: f64,
+    inset: f32,
+    label_height: f32,
+    label_spacing: f32,
+    value_label_spacing: f32,
 }
 
 impl LinearProgressLook {
     /// A linear indicator whose bar is `control`, inset `inset` from each
     /// side, with no minimum label height and no spacing around the labels.
     #[must_use]
-    pub const fn new(control: ProgressControl, inset: f64) -> Self {
+    pub const fn new(control: ProgressControl, inset: f32) -> Self {
         Self {
             control,
             inset,
@@ -401,7 +411,7 @@ impl LinearProgressLook {
     /// Reserves a label band at least `height` tall above the bar, with
     /// `spacing` between the band and the bar.
     #[must_use]
-    pub const fn label_band(mut self, height: f64, spacing: f64) -> Self {
+    pub const fn label_band(mut self, height: f32, spacing: f32) -> Self {
         self.label_height = height;
         self.label_spacing = spacing;
         self
@@ -409,7 +419,7 @@ impl LinearProgressLook {
 
     /// Reserves a value-label band below the bar, `spacing` beneath it.
     #[must_use]
-    pub const fn value_label_band(mut self, spacing: f64) -> Self {
+    pub const fn value_label_band(mut self, spacing: f32) -> Self {
         self.value_label_spacing = spacing;
         self
     }
@@ -422,25 +432,25 @@ impl LinearProgressLook {
 
     /// How far the bar is inset from each side.
     #[must_use]
-    pub const fn get_inset(&self) -> f64 {
+    pub const fn get_inset(&self) -> f32 {
         self.inset
     }
 
     /// The minimum height of the label band.
     #[must_use]
-    pub const fn get_label_height(&self) -> f64 {
+    pub const fn get_label_height(&self) -> f32 {
         self.label_height
     }
 
     /// The space between the label band and the bar.
     #[must_use]
-    pub const fn get_label_spacing(&self) -> f64 {
+    pub const fn get_label_spacing(&self) -> f32 {
         self.label_spacing
     }
 
     /// The space between the bar and the value-label band.
     #[must_use]
-    pub const fn get_value_label_spacing(&self) -> f64 {
+    pub const fn get_value_label_spacing(&self) -> f32 {
         self.value_label_spacing
     }
 
@@ -448,32 +458,47 @@ impl LinearProgressLook {
     /// label is `label` tall and value label `value_label` tall, each
     /// `None` when the indicator has none. The origin is the indicator's.
     #[must_use]
-    pub fn layout(&self, width: f64, label: Option<f64>, value_label: Option<f64>) -> LinearLayout {
-        let label_band = label.map(|height| height.max(self.label_height));
-        let bar_top = label_band.map_or(0.0, |height| height + self.label_spacing);
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "logical-pixel linear layout height fits in f32"
+    )]
+    pub fn layout(&self, width: f32, label: Option<f32>, value_label: Option<f32>) -> LinearLayout {
+        let width_f64 = f64::from(width);
+        let inset_f64 = f64::from(self.inset);
+        let label_band = label.map(|height| f64::from(height.max(self.label_height)));
+        let bar_top = label_band.map_or(0.0, |height| height + f64::from(self.label_spacing));
         let bar = Rect::new(
-            self.inset,
+            inset_f64,
             bar_top,
-            width - self.inset,
+            width_f64 - inset_f64,
             bar_top + self.control.size().height,
         );
         let value_label_band = value_label.map(|height| {
-            let top = bar.y1 + self.value_label_spacing;
-            Rect::new(0.0, top, width, top + height.max(self.label_height))
+            let top = bar.y1 + f64::from(self.value_label_spacing);
+            Rect::new(
+                0.0,
+                top,
+                width_f64,
+                top + f64::from(height.max(self.label_height)),
+            )
         });
         LinearLayout {
-            label: label_band.map(|height| Rect::new(0.0, 0.0, width, height)),
+            label: label_band.map(|height| Rect::new(0.0, 0.0, width_f64, height)),
             bar,
             value_label: value_label_band,
-            height: value_label_band.map_or(bar.y1, |band| band.y1),
+            height: value_label_band.map_or(bar.y1, |band| band.y1) as f32,
         }
     }
 
     /// The narrowest an indicator is laid out at: the bar's minimum width
     /// with its insets.
     #[must_use]
-    pub fn minimum_width(&self) -> f64 {
-        self.inset.mul_add(2.0, self.control.size().width)
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "logical-pixel linear progress minimum width fits in f32"
+    )]
+    pub fn minimum_width(&self) -> f32 {
+        f64::from(self.inset).mul_add(2.0, self.control.size().width) as f32
     }
 }
 
@@ -488,5 +513,5 @@ pub struct LinearLayout {
     /// The value-label band, when the indicator has a value label.
     pub value_label: Option<Rect>,
     /// The indicator's height.
-    pub height: f64,
+    pub height: f32,
 }

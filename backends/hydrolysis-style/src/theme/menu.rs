@@ -83,7 +83,7 @@ pub struct MenuPresentationMotion {
     /// Starting Gaussian blur radius (in points) applied to menu content at
     /// `progress = 0.0`, clearing to `0.0` across
     /// [`content_blur_window`](Self::content_blur_window). Defaults to `0.0`.
-    pub content_blur_from: f64,
+    pub content_blur_from: f32,
     /// Smoothstep window `(edge0, edge1)` over clamped progress for clearing
     /// [`content_blur_from`](Self::content_blur_from) down to `0.0`. Defaults
     /// to `(0.0, 1.0)`.
@@ -96,7 +96,7 @@ pub struct MenuPresentationMotion {
     /// trigger's capsule radius (`origin.min_side * 0.5`) at `progress = 0.0`
     /// to this value at `progress = 1.0`, used both for content rounded-rect
     /// clipping and as [`MenuPresentationSample::surface_corner_radius`].
-    pub surface_corner_radius: Option<f64>,
+    pub surface_corner_radius: Option<f32>,
     /// Whether a menu trigger's in-window presentation overlays the trigger
     /// anchor (top-aligned with the trigger, centered horizontally) instead of
     /// opening below it. Defaults to `false`.
@@ -202,7 +202,7 @@ impl MenuPresentationMotion {
     /// Sets the starting Gaussian blur radius (in points) for menu content at
     /// `progress = 0.0`.
     #[must_use]
-    pub const fn content_blur_from(mut self, radius: f64) -> Self {
+    pub const fn content_blur_from(mut self, radius: f32) -> Self {
         self.content_blur_from = radius;
         self
     }
@@ -226,7 +226,7 @@ impl MenuPresentationMotion {
     /// Sets the settled panel corner radius (in points), interpolated from the
     /// trigger's capsule radius at `progress = 0.0`.
     #[must_use]
-    pub const fn surface_corner_radius(mut self, radius: f64) -> Self {
+    pub const fn surface_corner_radius(mut self, radius: f32) -> Self {
         self.surface_corner_radius = Some(radius);
         self
     }
@@ -271,15 +271,19 @@ impl MenuPresentationMotion {
 
     /// Menu content Gaussian blur radius (in points) at `progress`.
     #[must_use]
-    pub fn content_blur(&self, progress: f64) -> f64 {
+    pub fn content_blur(&self, progress: f64) -> f32 {
         self.content_blur_for(progress, false)
     }
 
     /// Menu content Gaussian blur radius (in points) at `progress` for present
     /// (`dismissing = false`) or dismiss (`dismissing = true`).
     #[must_use]
-    pub fn content_blur_for(&self, progress: f64, dismissing: bool) -> f64 {
-        let start = self.content_blur_from.max(0.0);
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "logical-pixel blur radius fits in f32"
+    )]
+    pub fn content_blur_for(&self, progress: f64, dismissing: bool) -> f32 {
+        let start = f64::from(self.content_blur_from.max(0.0));
         if start <= 0.0 {
             return 0.0;
         }
@@ -290,7 +294,7 @@ impl MenuPresentationMotion {
             self.content_blur_window
         };
         let t = smoothstep(edge0, edge1, progress.clamp(0.0, 1.0));
-        start * (1.0 - t)
+        (start * (1.0 - t)) as f32
     }
 
     /// Triggering anchor opacity in `[0.0, 1.0]` at `progress`.
@@ -334,16 +338,20 @@ impl MenuPresentationMotion {
     /// capsule radius and [`surface_corner_radius`](Self::surface_corner_radius),
     /// clamped to half of `surface`'s shorter side.
     #[must_use]
-    pub fn surface_corner_radius_at(&self, origin: Rect, surface: Rect, progress: f64) -> f64 {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "logical-pixel corner radius fits in f32"
+    )]
+    pub fn surface_corner_radius_at(&self, origin: Rect, surface: Rect, progress: f64) -> f32 {
         let Some(target) = self.surface_corner_radius else {
             return 0.0;
         };
         let origin_radius = origin.width().min(origin.height()).max(0.0) * 0.5;
         let max_radius = surface.width().min(surface.height()).max(0.0) * 0.5;
         let q = progress.clamp(0.0, 1.0);
-        (target - origin_radius)
+        (f64::from(target) - origin_radius)
             .mul_add(q, origin_radius)
-            .clamp(0.0, max_radius)
+            .clamp(0.0, max_radius) as f32
     }
 
     /// Samples the interpolated surface bounds and reveal curves at isotropic
@@ -407,7 +415,7 @@ pub struct MenuPresentationSample {
     pub surface: Rect,
     /// Interpolated corner radius (in points) of [`surface`](Self::surface),
     /// or `0.0` when [`MenuPresentationMotion::surface_corner_radius`] is unset.
-    pub surface_corner_radius: f64,
+    pub surface_corner_radius: f32,
     /// Horizontal/primary presentation progress (`0.0` at the trigger, `1.0`
     /// settled; may overshoot or undershoot under an underdamped spring).
     pub progress: f64,
@@ -421,7 +429,7 @@ pub struct MenuPresentationSample {
     /// Uniform scale applied to the menu's content.
     pub content_scale: f64,
     /// Gaussian blur radius (in points) applied to the menu's content.
-    pub content_blur: f64,
+    pub content_blur: f32,
     /// Opacity in `[0.0, 1.0]` applied to the triggering anchor's content.
     pub trigger_opacity: f64,
     /// Opacity in `[0.0, 1.0]` applied to the triggering anchor's chrome.
@@ -490,21 +498,21 @@ impl MenuSpec {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MenuLayout {
     /// One-line menu row height.
-    pub row_height: f64,
+    pub row_height: f32,
     /// Horizontal text inset.
-    pub horizontal_padding: f64,
+    pub horizontal_padding: f32,
     /// Vertical inset of the rows inside the panel.
-    pub vertical_padding: f64,
+    pub vertical_padding: f32,
     /// Minimum menu width.
-    pub min_width: f64,
+    pub min_width: f32,
     /// Maximum menu width.
-    pub max_width: f64,
+    pub max_width: f32,
     /// Estimated width per character, used before text layout is available.
-    pub width_per_char: f64,
+    pub width_per_char: f32,
     /// Horizontal inset of a separator.
-    pub separator_horizontal_inset: f64,
+    pub separator_horizontal_inset: f32,
     /// Separator thickness.
-    pub separator_thickness: f64,
+    pub separator_thickness: f32,
 }
 
 /// How a menu looks: its [`MenuLayout`], its panel as a [`Surface`], and the
@@ -644,7 +652,7 @@ impl MenuLook {
     /// `frame`, at rest. A popup window leaves this room on every side of
     /// the panel; `0.0` when the panel casts no shadow.
     #[must_use]
-    pub fn panel_extent(&self, frame: Rect) -> f64 {
+    pub fn panel_extent(&self, frame: Rect) -> f32 {
         self.panel
             .get_elevation()
             .target(&Inputs::at_rest(frame, InteractionState::empty(), &()))
@@ -669,11 +677,13 @@ impl MenuLook {
     #[must_use]
     pub fn separator_rect(&self, row: Rect) -> Rect {
         let y = row.center().y;
+        let horizontal_inset = f64::from(self.layout.separator_horizontal_inset);
+        let half_thickness = f64::from(self.layout.separator_thickness) / 2.0;
         Rect::new(
-            row.x0 + self.layout.separator_horizontal_inset,
-            y - self.layout.separator_thickness / 2.0,
-            row.x1 - self.layout.separator_horizontal_inset,
-            y + self.layout.separator_thickness / 2.0,
+            row.x0 + horizontal_inset,
+            y - half_thickness,
+            row.x1 - horizontal_inset,
+            y + half_thickness,
         )
     }
 }
@@ -775,8 +785,8 @@ mod tests {
         assert!((rest.progress - 1.0).abs() < 1e-12);
         assert!((rest.trigger_opacity - 1.0).abs() < 1e-12);
         assert!((rest.trigger_chrome_opacity - 1.0).abs() < 1e-12);
-        assert!((rest.content_blur - 0.0).abs() < 1e-12);
-        assert!((rest.surface_corner_radius - 0.0).abs() < 1e-12);
+        assert!((rest.content_blur - 0.0).abs() < 1e-6);
+        assert!((rest.surface_corner_radius - 0.0).abs() < 1e-6);
     }
 
     #[test]
@@ -798,19 +808,19 @@ mod tests {
         let panel = Rect::new(40.0, 12.0, 280.0, 172.0); // 240x160 -> target radius 26.0
 
         let start = motion.sample(origin, panel, 0.0);
-        assert!((start.surface_corner_radius - 18.0).abs() < 1e-12);
-        assert!((start.content_blur - 8.0).abs() < 1e-12);
+        assert!((start.surface_corner_radius - 18.0).abs() < 1e-6);
+        assert!((start.content_blur - 8.0).abs() < 1e-6);
         assert!((start.trigger_opacity - 1.0).abs() < 1e-12);
         assert!((start.trigger_chrome_opacity - 0.0).abs() < 1e-12);
 
         let mid = motion.sample(origin, panel, 0.5);
-        assert!((mid.surface_corner_radius - 22.0).abs() < 1e-12);
+        assert!((mid.surface_corner_radius - 22.0).abs() < 1e-6);
         assert!(mid.content_blur > 0.0 && mid.content_blur < 8.0);
         assert!((mid.trigger_opacity - 0.0).abs() < 1e-12);
         assert!((mid.trigger_chrome_opacity - 0.0).abs() < 1e-12);
 
         let end = motion.sample(origin, panel, 1.0);
-        assert!((end.surface_corner_radius - 26.0).abs() < 1e-12);
-        assert!((end.content_blur - 0.0).abs() < 1e-12);
+        assert!((end.surface_corner_radius - 26.0).abs() < 1e-6);
+        assert!((end.content_blur - 0.0).abs() < 1e-6);
     }
 }

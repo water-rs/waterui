@@ -679,7 +679,7 @@ impl LiveSegmented {
     /// The area the parts draw in: the row and the look's reach, and where
     /// the segments' chromes draw, mirrored with them.
     pub(crate) fn visual_bounds(&self) -> Rect {
-        let reach = self.look.layout().reach;
+        let reach = f64::from(self.look.layout().reach);
         let mirror = self.frames.mirror();
         self.chromes
             .iter()

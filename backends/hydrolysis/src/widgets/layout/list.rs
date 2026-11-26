@@ -3242,12 +3242,16 @@ fn register_row_swipe_gesture<E: crate::text::TextEngine>(
                 };
                 match event.phase() {
                     GesturePhase::Started | GesturePhase::Updated => {
-                        if motion.track_swipe(offset, row.width, gestures.swipe_threshold) {
+                        if motion.track_swipe(
+                            offset,
+                            row.width,
+                            f64::from(gestures.swipe_threshold),
+                        ) {
                             owner.borrow().mark_rows_relisted();
                         }
                     }
                     GesturePhase::Ended => {
-                        if offset.abs() >= row.width * gestures.swipe_threshold {
+                        if offset.abs() >= row.width * f64::from(gestures.swipe_threshold) {
                             motion.rest();
                             if edits.can_delete(row_id) {
                                 edits.delete(&action_env, row_id);
@@ -3306,7 +3310,7 @@ fn register_row_reorder_gesture<E: crate::text::TextEngine>(
                 // dragged row's own height tracks the pointer closely enough
                 // to feel direct.
                 let step = if row.height > 0.0 {
-                    (dy.abs() / row.height + 1.0 - gestures.reorder_threshold)
+                    (dy.abs() / row.height + 1.0 - f64::from(gestures.reorder_threshold))
                         .floor()
                         .copysign(dy)
                 } else {

@@ -79,7 +79,7 @@ fn navigation_title_env(
 }
 
 fn back_button_title_reserve(metrics: &crate::theme::NavigationMetrics) -> f64 {
-    metrics.back_button_size + metrics.title_leading_inset
+    f64::from(metrics.back_button_size) + f64::from(metrics.title_leading_inset)
 }
 
 /// What a navigation chrome keeps of one back button across renders: its
@@ -158,9 +158,11 @@ fn push_back_button<E: crate::text::TextEngine>(
 /// `Cancellation` item paints under the button).
 fn navigation_leading_items_inset(leading_reserve: f64, metrics: &NavigationMetrics) -> f64 {
     if leading_reserve > 0.0 {
-        metrics.back_button_leading_inset + metrics.back_button_size + metrics.item_spacing
+        f64::from(metrics.back_button_leading_inset)
+            + f64::from(metrics.back_button_size)
+            + f64::from(metrics.item_spacing)
     } else {
-        metrics.horizontal_inset
+        f64::from(metrics.horizontal_inset)
     }
 }
 
@@ -193,11 +195,12 @@ fn navigation_trailing_items_span(
     metrics: &NavigationMetrics,
     direction: LayoutDirection,
 ) -> (f64, f64) {
+    let horizontal_inset = f64::from(metrics.horizontal_inset);
     if direction.is_right_to_left() {
-        let x0 = (bar_x0 + metrics.horizontal_inset).min(bar_x1);
+        let x0 = (bar_x0 + horizontal_inset).min(bar_x1);
         (x0, (x0 + trailing_width).min(bar_x1))
     } else {
-        let x1 = (bar_x1 - metrics.horizontal_inset).max(bar_x0);
+        let x1 = (bar_x1 - horizontal_inset).max(bar_x0);
         ((x1 - trailing_width).max(bar_x0), x1)
     }
 }
@@ -215,19 +218,19 @@ fn navigation_title_horizontal_span(
     metrics: &NavigationMetrics,
     direction: LayoutDirection,
 ) -> (f64, f64) {
+    let horizontal_inset = f64::from(metrics.horizontal_inset);
+    let item_spacing = f64::from(metrics.item_spacing);
     let leading_offset = if leading_width > 0.0 {
-        navigation_leading_items_inset(leading_reserve, metrics)
-            + leading_width
-            + metrics.item_spacing
+        navigation_leading_items_inset(leading_reserve, metrics) + leading_width + item_spacing
     } else if leading_reserve > 0.0 {
-        metrics.horizontal_inset + leading_reserve + metrics.item_spacing
+        horizontal_inset + leading_reserve + item_spacing
     } else {
-        metrics.title_leading_inset
+        f64::from(metrics.title_leading_inset)
     };
     let trailing_offset = if trailing_width > 0.0 {
-        metrics.horizontal_inset + trailing_width + metrics.item_spacing
+        horizontal_inset + trailing_width + item_spacing
     } else {
-        metrics.title_trailing_inset
+        f64::from(metrics.title_trailing_inset)
     };
     if direction.is_right_to_left() {
         (
@@ -563,14 +566,15 @@ pub fn navigation_view_accessibility<E: crate::text::TextEngine>(
                         ctx.bounds().x1,
                         (ctx.bounds().y0 + bar_height).min(ctx.bounds().y1),
                     );
-                    let title_height = if matches!(display_mode, NavigationTitleDisplayMode::Large)
-                    {
-                        metrics.large_title_height
-                    } else {
-                        metrics.inline_title_height
-                    };
+                    let title_height = f64::from(
+                        if matches!(display_mode, NavigationTitleDisplayMode::Large) {
+                            metrics.large_title_height
+                        } else {
+                            metrics.inline_title_height
+                        },
+                    );
                     let title_y0 = if matches!(display_mode, NavigationTitleDisplayMode::Large) {
-                        bar_rect.y1 - metrics.large_title_bottom_inset - title_height
+                        bar_rect.y1 - f64::from(metrics.large_title_bottom_inset) - title_height
                     } else {
                         (bar_height - title_height).mul_add(0.5, bar_rect.y0)
                     };
@@ -731,9 +735,7 @@ pub fn measure_navigation_view_node<E: crate::text::TextEngine>(
     } else {
         let base = navigation_base_bar_height(state.display_mode, metrics);
         let search_extra = if state.search.is_some() {
-            metrics
-                .search_vertical_inset
-                .mul_add(2.0, metrics.search_height)
+            f64::from(metrics.search_vertical_inset).mul_add(2.0, f64::from(metrics.search_height))
         } else {
             0.0
         };
@@ -769,30 +771,23 @@ pub fn measure_navigation_view_node<E: crate::text::TextEngine>(
             field.measure_built(hydro, env, theme)
         });
     let content_size = state.content.measure_built(hydro, env, theme);
+    let horizontal_inset = f64::from(metrics.horizontal_inset);
     let width = f64::from(content_size.width)
-        .max(metrics.item_spacing.mul_add(
+        .max(f64::from(metrics.item_spacing).mul_add(
             2.0,
-            metrics.horizontal_inset.mul_add(
+            horizontal_inset.mul_add(
                 2.0,
                 f64::from(leading_size.width)
                     + f64::from(title_size.width)
                     + f64::from(trailing_size.width),
             ),
         ))
-        .max(
-            metrics
-                .horizontal_inset
-                .mul_add(2.0, f64::from(search_size.width)),
-        )
-        .max(
-            metrics
-                .horizontal_inset
-                .mul_add(2.0, f64::from(bottom_size.width)),
-        );
+        .max(horizontal_inset.mul_add(2.0, f64::from(search_size.width)))
+        .max(horizontal_inset.mul_add(2.0, f64::from(bottom_size.width)));
     let bottom_height = if state.bottom.is_empty() {
         0.0
     } else {
-        metrics.inline_bar_height
+        f64::from(metrics.inline_bar_height)
     };
     let height = f64::from(content_size.height) + bar_height + bottom_height;
     ViewDimensions::new(LayoutSize::new(
@@ -813,7 +808,7 @@ fn measure_retained_toolbar_group<E: crate::text::TextEngine>(
     for (index, item) in group.iter().enumerate() {
         let size = item.measure_built(hydro, env, theme);
         if index > 0 {
-            width += metrics.item_spacing;
+            width += f64::from(metrics.item_spacing);
         }
         width += f64::from(size.width);
         height = height.max(f64::from(size.height));
@@ -883,9 +878,7 @@ pub fn render_navigation_view_parts<E: crate::text::TextEngine>(
     } else {
         let base = navigation_base_bar_height(display_mode, metrics);
         let search_extra = if search.is_some() {
-            metrics
-                .search_vertical_inset
-                .mul_add(2.0, metrics.search_height)
+            f64::from(metrics.search_vertical_inset).mul_add(2.0, f64::from(metrics.search_height))
         } else {
             0.0
         };
@@ -895,7 +888,7 @@ pub fn render_navigation_view_parts<E: crate::text::TextEngine>(
     // bounds — the extent is not clamped to `bounds.height()` here (a bar
     // the keyboard covers past `bounds` still keeps its height).
     let bottom_bar_height = if has_bottom {
-        metrics.inline_bar_height
+        f64::from(metrics.inline_bar_height)
     } else {
         0.0
     };
@@ -995,7 +988,7 @@ pub fn render_navigation_view_parts<E: crate::text::TextEngine>(
                 leading_rect,
                 ToolbarAlignment::Leading,
                 top,
-                metrics.item_spacing,
+                f64::from(metrics.item_spacing),
             );
             flush_toolbar_group(
                 ctx,
@@ -1004,17 +997,21 @@ pub fn render_navigation_view_parts<E: crate::text::TextEngine>(
                 trailing_rect,
                 ToolbarAlignment::Trailing,
                 top,
-                metrics.item_spacing,
+                f64::from(metrics.item_spacing),
             );
         }
 
-        let title_height = if matches!(display_mode, NavigationTitleDisplayMode::Large) {
-            metrics.large_title_height
-        } else {
-            metrics.inline_title_height
-        };
+        let title_height = f64::from(
+            if matches!(display_mode, NavigationTitleDisplayMode::Large) {
+                metrics.large_title_height
+            } else {
+                metrics.inline_title_height
+            },
+        );
         let title_y0 = if matches!(display_mode, NavigationTitleDisplayMode::Large) {
-            bar_rect.y0 + base_bar_height - metrics.large_title_bottom_inset - title_height
+            bar_rect.y0 + base_bar_height
+                - f64::from(metrics.large_title_bottom_inset)
+                - title_height
         } else {
             (base_bar_height - title_height).mul_add(0.5, bar_rect.y0)
         };
@@ -1051,21 +1048,21 @@ pub fn render_navigation_view_parts<E: crate::text::TextEngine>(
                     title_rect,
                     ToolbarAlignment::Center,
                     top,
-                    metrics.item_spacing,
+                    f64::from(metrics.item_spacing),
                 );
             }
         }
 
         if search.is_some() {
+            let horizontal_inset = f64::from(metrics.horizontal_inset);
+            let search_vertical_inset = f64::from(metrics.search_vertical_inset);
+            let search_height = f64::from(metrics.search_height);
             let search_rect = kurbo::Rect::new(
-                bar_rect.x0 + metrics.horizontal_inset,
-                bar_rect.y0 + base_bar_height + metrics.search_vertical_inset,
-                bar_rect.x1 - metrics.horizontal_inset,
-                (bar_rect.y0
-                    + base_bar_height
-                    + metrics.search_vertical_inset
-                    + metrics.search_height)
-                    .min(bar_rect.y1 - metrics.search_vertical_inset),
+                bar_rect.x0 + horizontal_inset,
+                bar_rect.y0 + base_bar_height + search_vertical_inset,
+                bar_rect.x1 - horizontal_inset,
+                (bar_rect.y0 + base_bar_height + search_vertical_inset + search_height)
+                    .min(bar_rect.y1 - search_vertical_inset),
             );
             if search_rect.width() > 0.0 && search_rect.height() > 0.0 {
                 let render_ctx = ctx.render_context();
@@ -1162,7 +1159,7 @@ pub fn render_navigation_view_parts<E: crate::text::TextEngine>(
             bottom_rect,
             ToolbarAlignment::Center,
             bottom,
-            metrics.item_spacing,
+            f64::from(metrics.item_spacing),
         );
     }
 }
@@ -1185,7 +1182,7 @@ fn measure_toolbar_group_intrinsic<E: crate::text::TextEngine>(
     for (index, item) in group.iter_mut().enumerate() {
         let size = item.measure_intrinsic(renderer, env);
         if index > 0 {
-            width += metrics.item_spacing;
+            width += f64::from(metrics.item_spacing);
         }
         width += f64::from(size.width);
         height = height.max(f64::from(size.height));
@@ -3324,9 +3321,10 @@ pub fn render_navigation_stack_parts<E: crate::text::TextEngine>(
     };
 
     let direction = layout_direction(env).snapshot();
+    let back_button_size = f64::from(metrics.back_button_size);
     let edge_rect = if direction.is_right_to_left() {
         kurbo::Rect::new(
-            (ctx.bounds.x1 - metrics.back_button_size).max(ctx.bounds.x0),
+            (ctx.bounds.x1 - back_button_size).max(ctx.bounds.x0),
             ctx.bounds.y0,
             ctx.bounds.x1,
             ctx.bounds.y1,
@@ -3335,7 +3333,7 @@ pub fn render_navigation_stack_parts<E: crate::text::TextEngine>(
         kurbo::Rect::new(
             ctx.bounds.x0,
             ctx.bounds.y0,
-            (ctx.bounds.x0 + metrics.back_button_size).min(ctx.bounds.x1),
+            (ctx.bounds.x0 + back_button_size).min(ctx.bounds.x1),
             ctx.bounds.y1,
         )
     };
