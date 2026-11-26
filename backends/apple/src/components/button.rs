@@ -13,13 +13,16 @@
 use alloc::rc::Rc;
 use core::cell::RefCell;
 
+use cocoa_ui::accessibility::Role;
 use cocoa_ui::action::ActionTarget;
 use cocoa_ui::{PlatformView, Rect as KitRect, Retained, view};
+use waterui::component::ControlSize;
 use waterui::component::button::{ButtonConfig, ButtonRole, ButtonStyle};
+use waterui::component::label::ControlLabel;
 use waterui::reactive::Computed;
 use waterui::text::StyledStr;
 use waterui_backend_core::Environment;
-use waterui_core::handler::{BoxedAction, ReportExtraction};
+use waterui_core::handler::ReportExtraction;
 use waterui_core::layout::{
     LayoutError, ProposalSize, Rect, ResolvedExtent, Size, StretchAxis, SubView, ViewDimensions,
 };
@@ -40,7 +43,7 @@ mod platform {
 #[cfg(target_os = "ios")]
 mod platform {
     pub(super) use cocoa_ui::action::ControlEvents;
-    pub(super) use cocoa_ui::uikit::{Button, HitTest, HostView};
+    pub(super) use cocoa_ui::uikit::{Button, HitTest, HostView, PointerInteraction};
 
     /// An owned handle to the platform button: the wrapper itself on `UIKit`.
     pub(super) type OwnedButton = Button;
@@ -160,14 +163,39 @@ impl SubView for ButtonSubView {
 
 /// The `button` realization.
 pub fn realize_button_config(config: ButtonConfig<Held>, ctx: &RenderContext<'_>) -> NativeLeaf {
-    let mtm = ctx.mtm();
     let style = config.style();
+    let size = config.size();
     let role = config.role();
+    let (label, mut action, ..) = config.into_parts();
+    realize_control_button(
+        &label,
+        style,
+        size,
+        role,
+        None,
+        move |env| {
+            action(env).report_extraction();
+        },
+        ctx,
+    )
+}
+
+/// Shared realization for native Apple button and link controls.
+pub(super) fn realize_control_button(
+    label: &ControlLabel<Held>,
+    style: ButtonStyle,
+    size: ControlSize,
+    role: Option<ButtonRole>,
+    accessibility_role: Option<Role>,
+    on_activate: impl FnMut(&Environment) + 'static,
+    ctx: &RenderContext<'_>,
+) -> NativeLeaf {
+    let mtm = ctx.mtm();
 
     // The label subtree resolves `Foreground` from the color the style
     // prescribes for its platform, and on `AppKit` its default `Body`
     // from the control size.
-    let label_env = button_chrome::label_environment(style, config.size(), role, ctx.env());
+    let label_env = button_chrome::label_environment(style, size, role, ctx.env());
 
     let container = HostView::new(mtm, cocoa_ui::Rect::ZERO);
     let button = Button::new(mtm);
@@ -178,7 +206,7 @@ pub fn realize_button_config(config: ButtonConfig<Held>, ctx: &RenderContext<'_>
     #[cfg(target_os = "ios")]
     let padding = configure_button(&button, style, mtm);
     #[cfg(target_os = "macos")]
-    let padding = configure_button(&button, style, button_chrome::control_size(config.size()));
+    let padding = configure_button(&button, style, button_chrome::control_size(size));
     #[cfg(target_os = "macos")]
     button.set_destructive(role == Some(ButtonRole::Destructive));
     #[cfg(target_os = "ios")]
@@ -188,7 +216,6 @@ pub fn realize_button_config(config: ButtonConfig<Held>, ctx: &RenderContext<'_>
         _ => cocoa_ui::uikit::button::Role::Normal,
     });
 
-    let (label, action, ..) = config.into_parts();
     let accessibility_label = label.accessibility_label();
     let label_leaf = ctx.with_env(&label_env).realize(label.build());
     let child_view = view::retain_base(label_leaf.view());
@@ -247,31 +274,38 @@ pub fn realize_button_config(config: ButtonConfig<Held>, ctx: &RenderContext<'_>
 
     // The action runs against the button's own environment — the one
     // `Button<Action>` extracted state into — not the label's clone.
-    let action = Rc::new(RefCell::new(action));
+    let on_activate = Rc::new(RefCell::new(on_activate));
     let action_env = ctx.env().clone();
-    wire_action(&mut leaf, &button, action, action_env);
+    wire_action(&mut leaf, &button, on_activate, action_env);
 
     bind_accessibility(&mut leaf, &button, &label_container, &accessibility_label);
+    if let Some(a11y_role) = accessibility_role {
+        view::set_accessibility_role(as_view(&button), a11y_role);
+    }
     bind_disabled(&mut leaf, &button, &label_container, ctx.env());
     button_chrome::bind_tint(&mut leaf, styled(&button), style, role, ctx.env(), mtm);
     #[cfg(target_os = "macos")]
     if style == ButtonStyle::Link {
         enable_link_chrome(&button, &link_child);
     }
+    #[cfg(target_os = "ios")]
+    if style == ButtonStyle::Link {
+        leaf.keep(platform::PointerInteraction::rounded_rect(as_view(&button)));
+    }
     leaf
 }
 
-/// Wires `config.action` through `ActionTarget` so a tap runs it on the
+/// Wires an activation callback through `ActionTarget` so a tap runs it on the
 /// main thread.
-fn wire_action(
+fn wire_action<F: FnMut(&Environment) + 'static>(
     leaf: &mut NativeLeaf,
     button: &Button,
-    action: Rc<RefCell<BoxedAction>>,
+    action: Rc<RefCell<F>>,
     env: Environment,
 ) {
     #[cfg(target_os = "macos")]
     leaf.keep(ActionTarget::new(button.control(), move |_| {
-        (action.borrow_mut())(&env).report_extraction();
+        (action.borrow_mut())(&env);
     }));
 
     #[cfg(target_os = "ios")]
@@ -280,7 +314,7 @@ fn wire_action(
             button.control(),
             platform::ControlEvents::TOUCH_UP_INSIDE,
             move |_| {
-                (action.borrow_mut())(&env).report_extraction();
+                (action.borrow_mut())(&env);
             },
         ));
     }

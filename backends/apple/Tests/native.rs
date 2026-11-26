@@ -405,6 +405,8 @@ fn trials() -> Vec<Trial> {
     tests.extend(disclosure::trials());
     #[cfg(feature = "avatar")]
     tests.extend(avatar::trials());
+    #[cfg(feature = "link")]
+    tests.extend(link::trials());
     #[cfg(all(feature = "native-test", feature = "gpu_surface"))]
     tests.extend(capture_colour::trials());
     #[cfg(all(catalyst, feature = "native-test", feature = "gpu_surface"))]
@@ -18804,5 +18806,124 @@ mod avatar {
         let custom_size = custom_leaf.layout().measure(ProposalSize::UNSPECIFIED).size;
         assert!((custom_size.width - 64.0).abs() < f32::EPSILON);
         assert!((custom_size.height - 64.0).abs() < f32::EPSILON);
+    }
+}
+
+#[cfg(feature = "link")]
+mod link {
+    use cocoa_ui::accessibility::Role;
+    #[cfg(target_os = "macos")]
+    use cocoa_ui::accessibility::role;
+    #[cfg(target_os = "ios")]
+    use cocoa_ui::accessibility::traits;
+    use cocoa_ui::objc2::Message;
+    #[cfg(target_os = "macos")]
+    use cocoa_ui::objc2_app_kit::NSAccessibility as _;
+    #[cfg(target_os = "ios")]
+    use cocoa_ui::objc2_ui_kit::NSObjectUIAccessibility as _;
+    use cocoa_ui::view::subviews;
+    use cocoa_ui::{PlatformView, Retained};
+    use libtest_mimic::Trial;
+    use waterui::ViewExt as _;
+    use waterui::component::link::link;
+    use waterui_core::layout::{ProposalSize, StretchAxis};
+
+    #[cfg(target_os = "macos")]
+    use cocoa_ui::appkit::Button as PlatformButton;
+    #[cfg(target_os = "ios")]
+    use cocoa_ui::uikit::button::CocoaUiButton as PlatformButton;
+
+    #[cfg(target_os = "ios")]
+    use super::mtm;
+    use super::resolve;
+
+    pub fn trials() -> Vec<Trial> {
+        vec![Trial::test(
+            "link::native_role_label_cursor_sizing_and_disabled",
+            || {
+                native_role_label_cursor_sizing_and_disabled();
+                Ok(())
+            },
+        )]
+    }
+
+    fn find_button(root: &PlatformView) -> Option<Retained<PlatformButton>> {
+        for sub in subviews(root) {
+            if let Some(button) = sub.downcast_ref::<PlatformButton>() {
+                return Some(Message::retain(button));
+            }
+            if let Some(found) = find_button(&sub) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    fn native_role_label_cursor_sizing_and_disabled() {
+        let leaf = resolve::render(link("Visit Docs", "https://waterui.dev"));
+        assert_eq!(leaf.layout().stretch_axis(), StretchAxis::None);
+
+        let size = leaf
+            .layout()
+            .measure(ProposalSize::new(Some(400.0), Some(200.0)))
+            .size;
+        assert!(size.width > 0.0 && size.height > 0.0);
+        assert!(
+            size.width < 400.0,
+            "link must size to its label rather than stretching: {size:?}"
+        );
+
+        let button = find_button(leaf.view()).expect("link leaf must mount a native button");
+        #[cfg(target_os = "macos")]
+        {
+            assert!(
+                button.has_link_cursor(),
+                "AppKit link must enable pointing-hand cursor"
+            );
+            assert_eq!(
+                button.accessibilityRole().as_deref(),
+                role(Role::Link),
+                "AppKit link must expose AXLink accessibility role"
+            );
+            assert_eq!(
+                button.accessibilityLabel().map(|label| label.to_string()),
+                Some(String::from("Visit Docs"))
+            );
+            assert!(button.is_enabled());
+        }
+        #[cfg(target_os = "ios")]
+        {
+            let mtm = mtm();
+            let current_traits = button.accessibilityTraits(mtm);
+            let link_trait = traits(Role::Link).expect("UIKit defines link accessibility trait");
+            let button_trait =
+                traits(Role::Button).expect("UIKit defines button accessibility trait");
+            assert_ne!(
+                current_traits & link_trait,
+                0,
+                "UIKit link must expose UIAccessibilityTraitLink"
+            );
+            assert_eq!(
+                current_traits & button_trait,
+                0,
+                "UIKit link must not remain a plain button trait"
+            );
+            assert_eq!(
+                button
+                    .accessibilityLabel(mtm)
+                    .map(|label| label.to_string()),
+                Some(String::from("Visit Docs"))
+            );
+            assert!(button.isEnabled());
+        }
+
+        let disabled_leaf =
+            resolve::render(link("Disabled Link", "https://waterui.dev").disabled(true));
+        let disabled_button =
+            find_button(disabled_leaf.view()).expect("disabled link must mount a native button");
+        #[cfg(target_os = "macos")]
+        assert!(!disabled_button.is_enabled());
+        #[cfg(target_os = "ios")]
+        assert!(!disabled_button.isEnabled());
     }
 }
