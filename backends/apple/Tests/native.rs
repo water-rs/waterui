@@ -19097,10 +19097,9 @@ mod markdown_a11y {
                     has_hidden = true;
                 } else if candidate.isAccessibilityElement(mtm)
                     && candidate.accessibilityTraits(mtm) & image_trait != 0
+                    && let Some(label) = candidate.accessibilityLabel(mtm)
                 {
-                    if let Some(label) = candidate.accessibilityLabel(mtm) {
-                        image_labels.push(label.to_string());
-                    }
+                    image_labels.push(label.to_string());
                 }
             }
             assert_eq!(
