@@ -23,10 +23,11 @@ use nami::Signal as _;
 use nami::collection::StateList;
 use std::time::Duration;
 use support::{
-    count_role_label, mount_rendered, mount_semantic, node_id_contains, node_label_exists, nodes,
+    count_role_label, mount_rendered, mount_semantic, node_bounds_with_role, node_id_contains,
+    node_label_exists, nodes,
 };
 use waterui::animation::Animation;
-use waterui::component::list::{ForEachExt, List, ListDelete, ListMove, Section, row};
+use waterui::component::list::{ForEachExt, List, ListDelete, ListMove, Section, detail_row, row};
 use waterui::component::{hstack, spacer, text, vstack};
 use waterui::id::{Identifiable, SelfId};
 use waterui::layout::scroll::ScrollController;
@@ -1305,4 +1306,68 @@ fn list_content_with_sections_and_tags_scrolls_by_identity() {
         "scrolling to tagged row in first section must return near top, got {}",
         scroll_y(app.tree())
     );
+}
+
+#[test]
+fn row_label_matches_plain_item_inset() {
+    let mut app = mount_rendered(
+        Environment::new(),
+        || {
+            List::content((
+                || text("Plain"),
+                row("Name", "Alice"),
+                detail_row("Bio", "Details").value_color(waterui::theme::color::Accent),
+            ))
+        },
+        400,
+        600,
+    );
+    app.settle();
+
+    let tree = app.tree();
+    let plain = node_bounds_with_role(tree, accesskit::Role::Label, "Plain");
+    let name = node_bounds_with_role(tree, accesskit::Role::Label, "Name");
+    let alice = node_bounds_with_role(tree, accesskit::Role::Label, "Alice");
+    let bio = node_bounds_with_role(tree, accesskit::Role::Label, "Bio");
+    let details = node_bounds_with_role(tree, accesskit::Role::Label, "Details");
+
+    assert!(
+        (name.x0 - plain.x0).abs() < 0.5,
+        "row label inset must match plain item inset: name={name:?}, plain={plain:?}"
+    );
+    assert!(
+        (bio.x0 - plain.x0).abs() < 0.5,
+        "detail_row label inset must match plain item inset: bio={bio:?}, plain={plain:?}"
+    );
+    assert!(
+        alice.x0 > name.x1 && (alice.y0 - name.y0).abs() < 4.0,
+        "inline row value should sit on the trailing edge of the same line: name={name:?}, alice={alice:?}"
+    );
+    assert!(
+        details.y0 > bio.y1 && (details.x0 - bio.x0).abs() < 0.5,
+        "detail_row value should stack directly under the label: bio={bio:?}, details={details:?}"
+    );
+}
+
+#[test]
+fn row_semantic_tree_exposes_label_and_value() {
+    let mut app = mount_semantic(
+        Environment::new(),
+        || {
+            List::content((
+                || text("Plain"),
+                row("Name", "Alice"),
+                detail_row("Bio", "Details"),
+            ))
+        },
+        400,
+        600,
+    );
+    app.settle();
+    let tree = app.tree();
+    assert!(node_label_exists(tree, "Plain"));
+    assert!(node_label_exists(tree, "Name"));
+    assert!(node_label_exists(tree, "Alice"));
+    assert!(node_label_exists(tree, "Bio"));
+    assert!(node_label_exists(tree, "Details"));
 }

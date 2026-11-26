@@ -33,16 +33,13 @@ use alloc::vec::Vec;
 
 use nami::collection::Collection;
 use nami::signal::IntoSignal;
+use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 use waterui_core::handler::{AnyViewBuilder, Handler};
 use waterui_core::id::TaggedView;
-use waterui_core::{Environment, OneOf2, View};
+use waterui_core::layout::StretchAxis;
+use waterui_core::{AnyView, Environment, Native, NativeView, OneOf2, View};
 
-use waterui_controls::label::{IntoLabel, Label, LabelKind};
-use waterui_layout::{
-    padding::EdgeInsets,
-    spacer::spacer,
-    stack::{HorizontalAlignment, hstack, vstack},
-};
+use waterui_controls::label::{ControlLabel, IntoLabel, Label, LabelKind};
 use waterui_text::{IntoText, Text};
 
 use crate::Color;
@@ -466,10 +463,10 @@ pub enum RowLayout {
 
 /// Builder produced by [`row`] / [`detail_row`].
 ///
-/// Composes a label + value pair using the same padding / spacing the
-/// inset-grouped list style expects, and exposes a small fluent surface for
-/// the customizations callers actually need (value foreground color, layout
-/// switch, deletability).
+/// Realized by each backend through [`ListRowConfig`] without adding extra
+/// outer insets on top of the enclosing list's row padding, and exposes a
+/// small fluent surface for the customizations callers need (value foreground
+/// color, layout switch, deletability).
 #[derive(Clone)]
 pub struct Row<L> {
     label: Label<L>,
@@ -558,6 +555,67 @@ impl<L: LabelKind> Row<L> {
     }
 }
 
+/// Resolved configuration passed to [`Backend`](waterui_core::backend::Backend)
+/// for a key/value [`Row`].
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct ListRowConfig<S> {
+    label: ControlLabel<S>,
+    value: Text,
+    layout: RowLayout,
+    value_color: Option<Color>,
+}
+
+impl<S> ListRowConfig<S> {
+    /// Returns the row's label control.
+    #[must_use]
+    pub const fn label(&self) -> &ControlLabel<S> {
+        &self.label
+    }
+
+    /// Returns the row's value text.
+    #[must_use]
+    pub const fn value(&self) -> &Text {
+        &self.value
+    }
+
+    /// Returns the layout variant chosen for the row.
+    #[must_use]
+    pub const fn layout(&self) -> RowLayout {
+        self.layout
+    }
+
+    /// Returns the optional foreground override for the value view.
+    #[must_use]
+    pub const fn value_color(&self) -> Option<&Color> {
+        self.value_color.as_ref()
+    }
+
+    /// Deconstructs the configuration into its label, value, layout, and value color.
+    pub fn into_parts(self) -> (ControlLabel<S>, Text, RowLayout, Option<Color>) {
+        (self.label, self.value, self.layout, self.value_color)
+    }
+}
+
+impl<S: 'static> MapSlots<S> for ListRowConfig<S> {
+    type With<T: 'static> = ListRowConfig<T>;
+
+    fn map_slots<T: 'static>(self, f: impl Fn(S) -> T + Clone + 'static) -> ListRowConfig<T> {
+        ListRowConfig {
+            label: self.label.map_slots(f),
+            value: self.value,
+            layout: self.layout,
+            value_color: self.value_color,
+        }
+    }
+}
+
+impl<S: 'static> NativeView for ListRowConfig<S> {
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::Horizontal
+    }
+}
+
 /// The content of a [`Row`]: its label and value laid out as its
 /// [`RowLayout`] says.
 #[derive(Debug, Clone)]
@@ -569,28 +627,35 @@ pub struct RowContent<L> {
     deletable: Option<bool>,
 }
 
+impl<L: LabelKind> RowContent<L> {
+    fn into_config<S: ChildSlot>(self, env: &Environment) -> ListRowConfig<S> {
+        ListRowConfig {
+            label: self.label.into_control_label::<S>(env),
+            value: self.value,
+            layout: self.layout,
+            value_color: self.value_color,
+        }
+    }
+}
+
 impl<L: LabelKind> View for RowContent<L> {
-    fn body(self, _env: &Environment) -> impl View {
-        let value = match self.value_color {
-            Some(color) => OneOf2::A(self.value.foreground(color)),
-            None => OneOf2::B(self.value),
-        };
-        let body = match self.layout {
-            RowLayout::Inline => OneOf2::A(
-                hstack((self.label, spacer(), value))
-                    .spacing(12.0)
-                    .padding_with(EdgeInsets::symmetric(10.0, 16.0)),
-            ),
-            RowLayout::Detail => OneOf2::B(
-                vstack((self.label, value))
-                    .alignment(HorizontalAlignment::Leading)
-                    .spacing(6.0)
-                    .padding_with(EdgeInsets::symmetric(10.0, 16.0)),
-            ),
-        };
-        match self.deletable {
-            Some(deletable) => OneOf2::A(body.list_row_deletable(deletable)),
-            None => OneOf2::B(body),
+    fn body(self, env: &Environment) -> impl View {
+        let deletable = self.deletable;
+        let native = Native::new(self.into_config::<AnyView>(env));
+        match deletable {
+            Some(deletable) => OneOf2::A(native.list_row_deletable(deletable)),
+            None => OneOf2::B(native),
+        }
+    }
+
+    fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
+        let deletable = self.deletable;
+        let config = self.into_config::<B::Slot>(env);
+        match deletable {
+            Some(deletable) => Native::new(config)
+                .list_row_deletable(deletable)
+                .dispatch(backend, env, cx),
+            None => backend.native(config, env, cx),
         }
     }
 }

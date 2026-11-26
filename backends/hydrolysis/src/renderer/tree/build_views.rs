@@ -28,6 +28,14 @@ impl_widget_behavior!(
     ; a11y: crate::widgets::layout::list::emit_list_accessibility
     ; surface: surface
 );
+#[cfg(feature = "list")]
+impl_widget_behavior!(
+    crate::widgets::layout::list_row::ListRowRenderState<E>,
+    crate::widgets::layout::list_row::render_list_row_node,
+    crate::widgets::layout::list_row::measure_list_row_node
+    ; dirty: take_layout_dirty
+    ; a11y: crate::widgets::layout::list_row::emit_list_row_accessibility
+);
 #[cfg(feature = "table")]
 impl_widget_behavior!(
     crate::widgets::layout::table::TableRenderState<E>,
@@ -141,6 +149,25 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
         let core = renderer.new_core();
         renderer.with_probe_reader(&core, ReaderPhase::Record, |renderer| {
             state.refresh_first_row(env, renderer);
+        });
+        Self::build_widget_with_core(Rc::new(RefCell::new(state)), stretch, env, core)
+    }
+
+    /// Build a persistent key/value list-row node: retains its label and value
+    /// subviews without adding outer padding on top of the enclosing list's
+    /// row insets. Stretch is `Horizontal` (read from the config).
+    #[cfg(feature = "list")]
+    pub(super) fn build_list_row(
+        config: waterui::component::list::ListRowConfig<HeldChild<E>>,
+        env: &Environment,
+        renderer: &mut SemanticCore<E>,
+    ) -> Self {
+        use crate::widgets::layout::list_row::ListRowRenderState;
+        let stretch = waterui_core::NativeView::stretch_axis(&config);
+        let mut state = ListRowRenderState::from_config(config);
+        let core = renderer.new_core();
+        renderer.with_probe_reader(&core, ReaderPhase::Record, |renderer| {
+            state.prebuild(renderer, env);
         });
         Self::build_widget_with_core(Rc::new(RefCell::new(state)), stretch, env, core)
     }

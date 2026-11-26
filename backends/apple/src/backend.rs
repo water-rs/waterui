@@ -464,6 +464,21 @@ impl NativeBackend for AppleBackend {
         crate::components::list::realize_list_config(native, &self.entry(env))
     }
 
+    #[cfg(waterui_feature = "list")]
+    fn list_row<C: ChildView<Self>>(
+        &mut self,
+        native: waterui::component::list::ListRowConfig<C>,
+        env: &Environment,
+        (): (),
+    ) -> NativeLeaf {
+        use waterui_core::backend::MapSlots as _;
+        mark_reached!("list_row");
+        crate::components::list_row::realize_list_row_config(
+            native.map_slots(C::into_child),
+            &self.entry(env),
+        )
+    }
+
     #[cfg(waterui_feature = "table")]
     fn table<C: ChildView<Self>>(
         &mut self,

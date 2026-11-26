@@ -687,6 +687,12 @@ pub trait WidgetTheme {
     #[cfg(waterui_feature = "list")]
     fn list(&self, spec: &super::ListSpec, env: &Environment) -> super::ListLook;
 
+    /// Layout metrics for a key/value list row (`row(...)` / `detail_row(...)`).
+    #[cfg(waterui_feature = "list")]
+    fn list_row_metrics(&self, _env: &Environment) -> super::ListRowLayoutMetrics {
+        super::ListRowLayoutMetrics::default()
+    }
+
     /// The look of a table.
     #[cfg(waterui_feature = "table")]
     fn table(&self, env: &Environment) -> super::TableLook;
