@@ -170,12 +170,28 @@ struct SemanticSnackbarRow<E: TextEngine> {
     subview: RetainedSubview<E>,
 }
 
+type SnackbarHostFlushFn<E> =
+    fn(&mut HydrolysisRenderer<E>, RenderContext, &Environment, &SnackbarHostEffect<E>);
+
+#[cfg(all(feature = "accessibility", hydrolysis_cherenkov))]
+type SnackbarHostAccessibilityFn<E> =
+    fn(&mut SemanticCore<E>, &Environment, &SnackbarHostEffect<E>);
+
 /// Per-node state carried by [`WrapperEffect::SnackbarHost`](crate::renderer::tree::nodes::WrapperEffect).
+///
+/// The flush and accessibility entry points are stored as function pointers
+/// populated only by [`Self::new`] (called from `HydroBackend::snackbar_host`),
+/// so `RenderNode::flush` and `RenderNode::emit_accessibility` never root the
+/// snackbar rendering subtree in applications that do not mount a snackbar
+/// host.
 pub struct SnackbarHostEffect<E: TextEngine> {
     config: SnackbarHostConfig<HeldChild<E>>,
     rows: RefCell<Vec<RetainedSnackbarRow<E>>>,
     #[cfg(all(feature = "accessibility", hydrolysis_cherenkov))]
     semantic_rows: RefCell<Vec<SemanticSnackbarRow<E>>>,
+    flush_fn: SnackbarHostFlushFn<E>,
+    #[cfg(all(feature = "accessibility", hydrolysis_cherenkov))]
+    emit_a11y_fn: SnackbarHostAccessibilityFn<E>,
 }
 
 impl<E: TextEngine> SnackbarHostEffect<E> {
@@ -185,7 +201,24 @@ impl<E: TextEngine> SnackbarHostEffect<E> {
             rows: RefCell::new(Vec::new()),
             #[cfg(all(feature = "accessibility", hydrolysis_cherenkov))]
             semantic_rows: RefCell::new(Vec::new()),
+            flush_fn: flush_snackbar_host,
+            #[cfg(all(feature = "accessibility", hydrolysis_cherenkov))]
+            emit_a11y_fn: emit_snackbar_host_accessibility,
         }
+    }
+
+    pub(crate) fn flush(
+        &self,
+        renderer: &mut HydrolysisRenderer<E>,
+        ctx: RenderContext,
+        env: &Environment,
+    ) {
+        (self.flush_fn)(renderer, ctx, env, self);
+    }
+
+    #[cfg(all(feature = "accessibility", hydrolysis_cherenkov))]
+    pub(crate) fn emit_accessibility(&self, renderer: &mut SemanticCore<E>, env: &Environment) {
+        (self.emit_a11y_fn)(renderer, env, self);
     }
 }
 
@@ -369,7 +402,7 @@ fn build_semantic_snackbar<E: TextEngine>(
     clippy::cast_precision_loss,
     reason = "the number of simultaneously visible snackbars is exactly representable as f32"
 )]
-pub fn flush_snackbar_host<E: TextEngine>(
+fn flush_snackbar_host<E: TextEngine>(
     renderer: &mut HydrolysisRenderer<E>,
     ctx: RenderContext,
     env: &Environment,
@@ -490,7 +523,7 @@ pub fn flush_snackbar_host<E: TextEngine>(
 /// Emits accessibility nodes for live snackbars during a semantic walk without
 /// consulting [`WidgetTheme`](crate::theme::WidgetTheme).
 #[cfg(all(feature = "accessibility", hydrolysis_cherenkov))]
-pub fn emit_snackbar_host_accessibility<E: TextEngine>(
+fn emit_snackbar_host_accessibility<E: TextEngine>(
     renderer: &mut SemanticCore<E>,
     env: &Environment,
     effect: &SnackbarHostEffect<E>,
