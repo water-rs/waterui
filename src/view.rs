@@ -1830,6 +1830,40 @@ mod tests {
         let _ = triggered;
     }
 
+    #[test]
+    fn a11y_metadata_resolves_through_translation_catalog() {
+        use nami::{Binding, Signal as _};
+        use waterui_core::{Environment, metadata::Metadata};
+        use waterui_locale::{TranslationCatalog, locales};
+
+        let locale = Binding::new(locales::EN);
+        let mut env = Environment::new();
+        env.insert(locale.clone());
+        env.insert(
+            TranslationCatalog::new()
+                .add_toml(
+                    locales::FR,
+                    "\"Close window\" = \"Fermer la fenêtre\"\n\"Ready\" = \"Prêt\"",
+                )
+                .expect("test catalog must parse"),
+        );
+
+        let Metadata {
+            value: a11y_label, ..
+        } = ().a11y_label("Close window");
+        let Metadata {
+            value: a11y_value, ..
+        } = ().a11y_value("Ready");
+        let label_signal = a11y_label.resolve(&env);
+        let value_signal = a11y_value.resolve(&env);
+        assert_eq!(label_signal.snapshot().as_str(), "Close window");
+        assert_eq!(value_signal.snapshot().as_str(), "Ready");
+
+        locale.set(locales::FR);
+        assert_eq!(label_signal.snapshot().as_str(), "Fermer la fenêtre");
+        assert_eq!(value_signal.snapshot().as_str(), "Prêt");
+    }
+
     #[cfg(feature = "navigation")]
     #[test]
     fn text_supports_navigation_title_without_shadowing() {

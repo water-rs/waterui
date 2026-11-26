@@ -12934,9 +12934,14 @@ dependencies = [
 name = "waterui-backend-core"
 version = "0.5.2"
 dependencies = [
+ "cpu-time",
+ "executor-core",
  "kurbo",
  "nami",
+ "native-executor",
  "num-traits",
+ "suiteki",
+ "thiserror 2.0.21",
  "tracing",
  "tracing-subscriber",
  "waterui-accessibility",
@@ -12945,11 +12950,16 @@ dependencies = [
  "waterui-core",
  "waterui-form",
  "waterui-graphics",
+ "waterui-inspector-runtime",
  "waterui-interaction",
  "waterui-layout",
+ "waterui-locale",
+ "waterui-macros",
  "waterui-map",
+ "waterui-media",
  "waterui-meta",
  "waterui-navigation",
+ "waterui-resources",
  "waterui-shape",
  "waterui-structural-transition",
  "waterui-text",
@@ -13495,16 +13505,10 @@ dependencies = [
 name = "waterui-internal"
 version = "0.5.1"
 dependencies = [
- "async-channel",
- "cpu-time",
- "executor-core",
- "futures",
  "nami",
- "native-executor",
  "object 0.40.0",
  "pastey 0.2.3",
  "suiteki",
- "thiserror 2.0.21",
  "tracing",
  "waterui",
  "waterui-accessibility",
@@ -13531,7 +13535,6 @@ dependencies = [
  "waterui-meta",
  "waterui-navigation",
  "waterui-particle",
- "waterui-resources",
  "waterui-shape",
  "waterui-structural-transition",
  "waterui-svg",
@@ -13541,7 +13544,6 @@ dependencies = [
  "waterui-video",
  "waterui-webview",
  "waterui-widgets",
- "web-time",
 ]
 
 [[package]]

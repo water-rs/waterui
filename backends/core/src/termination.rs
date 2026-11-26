@@ -368,7 +368,7 @@ impl Quit {
     /// ignores the request.
     pub fn request(&self) {
         let Some(inner) = self.0.upgrade() else {
-            crate::contract_violation!(
+            waterui_core::contract_violation!(
                 "Quit::request called after the runner's termination machine ended, so it is ignored"
             );
             return;
@@ -412,6 +412,7 @@ mod tests {
     use alloc::string::String;
     use alloc::vec::Vec;
 
+    #[cfg(feature = "menu")]
     use nami::Signal as _;
 
     use super::super::parked_executor::{drain, install as install_executor};

@@ -12,14 +12,14 @@ use waterui_core::{
 };
 use waterui_locale::layout_direction_computed;
 
+use crate::window::{AnyWindow, Window, WindowChannel, WindowToolbar};
 #[cfg(feature = "menu")]
-use crate::component::{
+use waterui_controls::{
     label::SemanticLabel,
     menu::{CloseWindowChord, Menu, MenuBarView},
 };
-use crate::window::{AnyWindow, Window, WindowChannel, WindowToolbar};
 
-pub use crate::runtime::termination::{
+pub use crate::termination::{
     Quit, Termination, TerminationHandle, TerminationHost, TerminationKind,
 };
 
@@ -501,18 +501,18 @@ impl<W: Windows, M: AppMenuBar> App<W, M> {
     /// the runner.
     ///
     /// ```
-    /// # use waterui::prelude::*;
-    /// # use waterui::app::{App, AppMenuBar, Windows};
-    /// # use waterui::window::Window;
-    /// #[waterui::state]
+    /// # use waterui_backend_core::app::{App, AppMenuBar, Windows};
+    /// # use waterui_backend_core::window::Window;
+    /// # use waterui_core::Environment;
+    /// # use waterui_text::text;
+    /// #[waterui_macros::state]
     /// #[derive(Clone)]
     /// struct Store;
     ///
     /// fn app(env: Environment) -> App<impl Windows, impl AppMenuBar> {
     ///     App::new(env)
-    ///         .window(Window::new("Counter", || text!("Counter")))
+    ///         .window(Window::new("Counter", || text("Counter")))
     ///         .state(&Store)
-    ///         .menu_bar(Menu::new("App", "Quit".action(|_store: Store| {})))
     /// }
     /// ```
     #[must_use]
@@ -659,8 +659,11 @@ pub enum QuitReply {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "menu")]
     use alloc::rc::Rc;
+    #[cfg(feature = "menu")]
     use alloc::vec::Vec;
+    #[cfg(feature = "menu")]
     use core::cell::{Cell, RefCell};
 
     use nami::{Binding, Signal};
@@ -669,7 +672,7 @@ mod tests {
 
     use super::*;
     #[cfg(feature = "menu")]
-    use crate::component::menu::{CommandExt as _, Shortcut};
+    use waterui_controls::menu::{CommandExt as _, Shortcut};
 
     #[test]
     fn application_direction_tracks_locale_binding() {
@@ -719,8 +722,8 @@ mod tests {
     /// and runs the first command of its first menu.
     #[cfg(feature = "menu")]
     fn run_first_menu_bar_command<W: Windows, M: AppMenuBar>(app: App<W, M>) {
-        use crate::component::NoopSlot;
-        use crate::component::menu::{ResolvedMenuItem, resolve_menu_bar_items};
+        use waterui_controls::NoopSlot;
+        use waterui_controls::menu::{ResolvedMenuItem, resolve_menu_bar_items};
 
         let parts = app.into_parts();
         let menu_bar = parts

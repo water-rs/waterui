@@ -41,13 +41,13 @@ impl LocalExecutor for ParkedExecutor {
 }
 
 /// Installs the parked executor as this process's local executor.
-pub(super) fn install() {
+pub fn install() {
     let _ = executor_core::try_init_local_executor(ParkedExecutor);
 }
 
 /// Runs every parked runnable, and every one those park in turn, until the
 /// queue is empty.
-pub(super) fn drain() {
+pub fn drain() {
     PARKED.with(|(_, receiver)| {
         while let Ok(runnable) = receiver.try_recv() {
             runnable.run();

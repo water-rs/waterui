@@ -20,18 +20,16 @@ path = "lib.rs"
 nami.workspace = true
 waterui-core.workspace = true
 waterui-capture.workspace = true
-waterui-resources.workspace = true
 suiteki.workspace = true
 waterui-url.workspace = true
 waterui-layout.workspace = true
 waterui-text.workspace = true
 waterui-media = { workspace = true, optional = true }
 waterui-video = { workspace = true, optional = true }
-native-executor.workspace = true
 waterui-navigation = { workspace = true, optional = true }
 waterui-form = { workspace = true, optional = true }
 waterui-controls.workspace = true
-waterui-backend-core = { workspace = true, default-features = false, optional = true }
+waterui-backend-core = { workspace = true, default-features = false, features = ["runtime"] }
 waterui-webview = { workspace = true, optional = true }
 waterui-map = { workspace = true, optional = true }
 waterui-widgets = { workspace = true, optional = true }
@@ -42,11 +40,7 @@ waterui-locale = { workspace = true, features = ["number"] }
 # `dir_static!` expansion lands inside the `assets` feature's generated
 # code, so the record helpers it names ride that feature's gate.
 waterui-meta = { workspace = true, optional = true }
-executor-core.workspace = true
 tracing.workspace = true
-thiserror = { version = "2.0.21", default-features = false }
-async-channel.workspace = true
-web-time.workspace = true
 waterui-macros.workspace = true
 waterui-graphics = { workspace = true, default-features = false, features = ["text"] }
 waterui-icon.workspace = true
@@ -69,20 +63,15 @@ pastey.workspace = true
 # application on the developer's machine; a browser page can do neither.
 waterui-inspector-runtime = { workspace = true, optional = true }
 
-# CPU-time profiling (cpu-time) needs a per-thread CPU clock; the runtime guard
-# uses a zero-cost stand-in where there is none.
-[target.'cfg(any(unix, windows))'.dependencies]
-cpu-time = { workspace = true, optional = true }
-
 [features]
 form = ["dep:waterui-form", "waterui-core/form", "waterui-backend-core/form"]
 link = ["waterui-controls/link", "waterui-core/link"]
 avatar = ["waterui-controls/avatar", "waterui-core/avatar"]
-cpu-time = ["dep:cpu-time", "waterui-core/cpu-time"]
+cpu-time = ["waterui-backend-core/cpu-time", "waterui-core/cpu-time"]
 list = ["waterui-controls/list", "waterui-core/list"]
 table = ["list", "waterui-controls/table", "waterui-core/table"]
 navigation = ["dep:waterui-navigation", "waterui-core/navigation", "waterui-backend-core/navigation"]
-menu = ["waterui-controls/menu", "waterui-core/menu"]
+menu = ["waterui-controls/menu", "waterui-backend-core/menu", "waterui-core/menu"]
 calendar = ["form", "waterui-form/calendar", "waterui-core/calendar", "waterui-backend-core/calendar"]
 color-picker = ["form", "waterui-form/color-picker", "waterui-core/color-picker", "waterui-backend-core/color-picker"]
 date-picker = ["form", "waterui-form/date-picker", "waterui-core/date-picker", "waterui-backend-core/date-picker"]
@@ -141,18 +130,18 @@ highlight = ["waterui-text/highlight", "waterui-controls/highlight", "waterui-co
 # stack out, and embedded firmware disables it anyway — the hub is desktop
 # tooling, and its 64-bit sequence counters do not even exist on RV32
 # targets.
-inspector = ["dep:waterui-inspector-runtime", "waterui-core/inspector"]
+inspector = ["dep:waterui-inspector-runtime", "waterui-backend-core/inspector", "waterui-core/inspector"]
 # Reactive-graph tracing for the Inspector's `signals` channel. Development
 # only: it attributes every state-owning signal node and reports every
 # notification. Off by default so release builds pay nothing — see
 # `nami_core::observe`.
-inspector-signals = ["inspector", "waterui-inspector-runtime/signals", "waterui-core/inspector-signals"]
+inspector-signals = ["inspector", "waterui-inspector-runtime/signals", "waterui-backend-core/inspector-signals", "waterui-core/inspector-signals"]
 # Window-modal confirmation / alert dialogs: the `Dialog` semantic and its
 # composed card realization for self-drawn backends.
-dialog = ["waterui-controls/dialog", "waterui-core/dialog"]
+dialog = ["waterui-controls/dialog", "waterui-backend-core/dialog", "waterui-core/dialog"]
 # Window-owned transient notifications. Embedded apps that do not select this
 # feature omit the manager, overlay, timers, and code-widget feedback path.
-snackbar = ["waterui-controls/snackbar", "waterui-core/snackbar"]
+snackbar = ["waterui-controls/snackbar", "waterui-backend-core/snackbar", "waterui-core/snackbar"]
 # Filters on views (`FilterViewExt`) and their portable description, without
 # the GPU stack: a backend that lowers filters into its own primitives reads
 # the description. Implied by `gpu`.
@@ -175,7 +164,7 @@ cpu = ["effects", "waterui-graphics/cpu", "waterui-core/cpu"]
 # `waterui::video` (`VideoAsset`, behind `waterui-assets`' `video` feature);
 # each is enabled only when both sides are present.
 assets = ["dep:waterui-assets", "dep:waterui-assets-macros", "dep:waterui-meta", "waterui-core/assets"]
-image = ["dep:waterui-media", "waterui-assets?/media", "waterui-controls/image", "waterui-graphics/image-decode", "waterui-markdown?/media", "waterui-core/image"]
+image = ["dep:waterui-media", "waterui-assets?/media", "waterui-controls/image", "waterui-graphics/image-decode", "waterui-markdown?/media", "waterui-backend-core/image", "waterui-core/image"]
 video = ["dep:waterui-video", "waterui-media?/video", "waterui-assets?/video", "waterui-core/video", "waterui-backend-core/video"]
 # Remote fetching (`Url::fetch`, `Data::from_remote`, remote `Photo` sources)
 # links the `zenwave` HTTP client through `waterui-url`/`waterui-media`. Off by
@@ -305,7 +294,6 @@ all = [
 ]
 
 [dev-dependencies]
-futures.workspace = true
 # Every doc example in this crate is written the way an application writes it —
 # `use waterui::…` — because these docs are re-exported through that facade and
 # are read there. A doctest compiles as a crate of its own, so it needs the
