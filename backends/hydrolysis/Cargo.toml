@@ -16,7 +16,7 @@ hydrolysis-style.workspace = true
 waterui-core.workspace = true
 waterui-frame-rate.workspace = true
 waterui-interaction.workspace = true
-waterui-structural-transition.workspace = true
+waterui-structural-transition = { workspace = true, optional = true }
 thiserror.workspace = true
 tracing.workspace = true
 nami.workspace = true
@@ -54,16 +54,12 @@ lru = { workspace = true, optional = true }
 executor-core.workspace = true
 rustc-hash.workspace = true
 unicode-segmentation = { version = "1.13", optional = true }
-async-task = "4.7"
-native-executor.workspace = true
+async-task = { version = "4.7", optional = true }
+native-executor = { workspace = true, optional = true }
 keyboard-types.workspace = true
 # `serde` lets the Android host push the merged accesskit tree to its
 # accessibility provider as JSON (src/runner/android/accessibility.rs).
 accesskit = { version = "0.25", optional = true, features = ["serde"] }
-# No facade features forced here: `build.rs` reads `DEP_WATERUI_FEATURES` so
-# `dialog`, `effects`, `gpu`, `canvas`, and other facade features stay under
-# the application's control.
-waterui = { workspace = true }
 waterui-graphics = { workspace = true, features = ["effects", "text", "input"] }
 # `engine` (selected by `gpu` and `cpu`) for the `parley` font context the
 # Cherenkov painters build and install into the environment; the faces come
@@ -153,10 +149,11 @@ accesskit_ios = { version = "0.2.2", default-features = false, optional = true }
 tracing-panic = { workspace = true, optional = true }
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
-# Non-Android builds link `waterui-backend-core` only when a runtime painter
-# (`gpu` or `cpu`) is enabled; Android links it unconditionally so plugin crates
-# using `AndroidContent` / `AndroidView` can depend on `hydrolysis` with
-# `default-features = false`.
+# Non-Android builds link `waterui-backend-core` and `waterui` only when a
+# runtime painter (`gpu` or `cpu`) or component feature is enabled; Android
+# links them unconditionally so plugin crates using `AndroidContent` /
+# `AndroidView` can depend on `hydrolysis` with `default-features = false`.
+waterui = { workspace = true, optional = true }
 waterui-backend-core = { workspace = true, default-features = false, optional = true }
 
 # The GPU video player realizing `Video` off the web (the `video-gpu`
@@ -352,6 +349,7 @@ windows = { workspace = true, features = [
 # carries the eventfd the main-Looper executor wakes on, and `android_logger`
 # + `tracing-log` route `tracing` into logcat.
 [target.'cfg(target_os = "android")'.dependencies]
+waterui = { workspace = true }
 waterui-backend-core = { workspace = true, default-features = false }
 jni.workspace = true
 ndk = { version = "0.9.0", features = ["nativewindow", "api-level-33"] }
@@ -556,6 +554,8 @@ gpu = [
     "dep:pollster",
     "dep:waterkit-clipboard",
     "dep:waterui-assets-core",
+    "dep:native-executor",
+    "dep:waterui-structural-transition",
     "waterui-backend-core/gestures",
     "waterui-backend-core/overlay",
     "waterui-backend-core/log",
@@ -591,6 +591,8 @@ cpu = [
     "cherenkov-cpu/shaders",
     "dep:waterkit-clipboard",
     "dep:waterui-assets-core",
+    "dep:native-executor",
+    "dep:waterui-structural-transition",
     "waterui-backend-core/gestures",
     "waterui-backend-core/overlay",
     "waterui-backend-core/log",
@@ -625,6 +627,8 @@ hwui = [
     "dep:tracing-log",
     "dep:tracing-subscriber",
     "dep:waterkit-clipboard",
+    "dep:native-executor",
+    "dep:waterui-structural-transition",
     "waterui-backend-core/gestures",
     "waterui-backend-core/overlay",
     "waterui-backend-core/log",
@@ -674,6 +678,7 @@ webview-wpe = [
 ]
 winit = [
     "accessibility",
+    "dep:async-task",
     "dep:winit",
     "dep:ui-events-winit",
     "dep:accesskit_winit",
@@ -719,6 +724,7 @@ video = [
 ]
 web = [
     "accessibility",
+    "dep:async-task",
     "dep:console_error_panic_hook",
     "dep:futures",
     "dep:serde",
