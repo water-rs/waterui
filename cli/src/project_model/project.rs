@@ -3,10 +3,11 @@
 pub use super::platforms::{PlatformConfig, PlatformName, resolve_backend};
 
 use std::fmt::Write as _;
+use std::slice;
 
 use cargo_toml::Manifest as CargoManifest;
 use eyre::WrapErr as _;
-use futures_util::future::{BoxFuture, Shared};
+use futures_util::future::{BoxFuture, Shared, try_join3};
 use futures_util::stream::{self, StreamExt as _};
 use futures_util::{FutureExt as _, TryFutureExt as _};
 use target_lexicon::Triple;
@@ -746,7 +747,7 @@ impl Project {
     /// The feature names the application's `cargo tree --edges features
     /// --target <triple>` evaluation reports.
     async fn enabled_features(&self, target: &Triple) -> eyre::Result<BTreeSet<String>> {
-        self.cached_tree_answer("features", std::slice::from_ref(target), |tree| {
+        self.cached_tree_answer("features", slice::from_ref(target), |tree| {
             Ok(enabled_features_from_tree(tree))
         })
         .await
@@ -976,6 +977,20 @@ impl Project {
     /// Returns an error when Cargo metadata cannot be resolved.
     pub async fn uses_map_gpu(&self, target: &Triple) -> eyre::Result<bool> {
         self.links_runtime_package(target, "waterui-map-gpu").await
+    }
+
+    /// Whether the application's graph enables `waterui`'s `map` feature for
+    /// `target`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when Cargo cannot resolve the application graph or
+    /// omits a package referenced by that graph.
+    pub async fn uses_map(&self, target: &Triple) -> eyre::Result<bool> {
+        self.cached_tree_answer("features", slice::from_ref(target), |tree| {
+            Ok(package_enables_feature_in_tree(tree, "waterui", "map"))
+        })
+        .await
     }
 
     /// Whether the application's graph turns on the `video` component for
@@ -1237,6 +1252,30 @@ impl Project {
             cef_webview: matches!(webview, Some(ResolvedWebViewBackend::Cef)),
             chromium,
         })
+    }
+
+    /// Validates that every optional component enabled in the application's
+    /// `waterui` graph has a supported Hydrolysis engine realization for
+    /// `platform` and `target`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `waterui`'s `map` feature is enabled without
+    /// linking `waterui-map-gpu`, or when `waterui`'s `webview` feature is
+    /// enabled without a web engine supported for `(platform, Hydrolysis)`.
+    pub async fn validate_hydrolysis_capabilities(
+        &self,
+        platform: TargetPlatform,
+        target: &Triple,
+    ) -> eyre::Result<()> {
+        let (map_enabled, map_gpu, _browser_plan) = try_join3(
+            self.uses_map(target),
+            self.uses_map_gpu(target),
+            self.browser_runtime_plan(platform, TargetBackend::Hydrolysis, target),
+        )
+        .await?;
+        validate_hydrolysis_map_engine(map_enabled, map_gpu, platform)?;
+        Ok(())
     }
 
     /// The `waterui-browser-wpe` package the application's resolved graph for
@@ -3454,6 +3493,12 @@ fn enabled_features_from_tree(tree: &str) -> BTreeSet<String> {
     features
 }
 
+fn package_enables_feature_in_tree(tree: &str, package: &str, feature: &str) -> bool {
+    let expected = format!("{package} feature \"{feature}\"");
+    tree.lines()
+        .any(|line| line == expected || line.strip_suffix(" (*)") == Some(expected.as_str()))
+}
+
 /// The package directory a `cargo tree --format {p}` line's annotation
 /// carries, when it names a path package. The `{p}` grammar on Cargo 1.99 is
 /// `name vX [annotations] [*]`: a path package annotates its directory as a
@@ -4492,6 +4537,36 @@ pub struct UnsupportedWebViewBackend {
     backend: TargetBackend,
 }
 
+/// Validates that Hydrolysis has a map engine whenever `waterui/map` is enabled.
+///
+/// # Errors
+///
+/// Returns [`MissingHydrolysisMapEngine`] when `map_enabled` is `true` and
+/// `map_gpu` is `false`.
+pub(crate) const fn validate_hydrolysis_map_engine(
+    map_enabled: bool,
+    map_gpu: bool,
+    platform: TargetPlatform,
+) -> Result<(), MissingHydrolysisMapEngine> {
+    if map_enabled && !map_gpu {
+        return Err(MissingHydrolysisMapEngine { platform });
+    }
+    Ok(())
+}
+
+/// Error returned when a Hydrolysis build enables `waterui/map` without linking
+/// `waterui-map-gpu`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "this application enables `waterui`'s `map` feature for {platform:?} with the \
+     Hydrolysis backend, but does not link `waterui-map-gpu` (which enables \
+     `hydrolysis/map-gpu`). Hydrolysis bridges no platform map; add `waterui-map-gpu` \
+     to the application's dependencies or disable `waterui`'s `map` feature."
+)]
+pub struct MissingHydrolysisMapEngine {
+    platform: TargetPlatform,
+}
+
 /// `[assets]` section in `Water.toml`: assets the project bundles beyond what
 /// dependency crates declare through `[package.metadata.waterui.assets]`.
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -5098,8 +5173,8 @@ mod webview_backend_tests {
     use crate::toolchain::Host;
 
     use super::{
-        ResolvedWebViewBackend, TargetBackend, TargetPlatform, resolve_enabled_features,
-        resolve_linked_runtime_packages,
+        ResolvedWebViewBackend, TargetBackend, TargetPlatform, package_enables_feature_in_tree,
+        resolve_enabled_features, resolve_linked_runtime_packages, validate_hydrolysis_map_engine,
     };
 
     /// An application that links no engine crate uses whatever the platform
@@ -5170,6 +5245,53 @@ mod webview_backend_tests {
                 .expect("CEF must compose with the native Apple renderer on macOS"),
             ResolvedWebViewBackend::Cef
         );
+    }
+
+    #[test]
+    fn hydrolysis_map_capability_gate_requires_map_gpu_when_map_is_enabled() {
+        for platform in [
+            TargetPlatform::MacOS,
+            TargetPlatform::Linux,
+            TargetPlatform::Windows,
+            TargetPlatform::Android,
+            TargetPlatform::Web,
+            TargetPlatform::IOS,
+        ] {
+            let err = validate_hydrolysis_map_engine(true, false, platform)
+                .expect_err("waterui/map without waterui-map-gpu must fail before build");
+            let message = err.to_string();
+            assert!(
+                message.contains("waterui-map-gpu") && message.contains("hydrolysis/map-gpu"),
+                "missing-map diagnostic should name both crates/features: {message}"
+            );
+            assert!(validate_hydrolysis_map_engine(true, true, platform).is_ok());
+            assert!(validate_hydrolysis_map_engine(false, false, platform).is_ok());
+        }
+    }
+
+    #[test]
+    fn package_enables_feature_in_tree_matches_only_target_package() {
+        let tree_unrelated =
+            "app v0.1.0\nserde_json feature \"map\"\nwaterui feature \"map-extra\"\n";
+        assert!(!package_enables_feature_in_tree(
+            tree_unrelated,
+            "waterui",
+            "map"
+        ));
+
+        let tree_direct = "app v0.1.0\nwaterui feature \"map\"\n";
+        assert!(package_enables_feature_in_tree(
+            tree_direct,
+            "waterui",
+            "map"
+        ));
+
+        let tree_deduped = "app v0.1.0\nwaterui feature \"map\" (*)\n";
+        assert!(package_enables_feature_in_tree(
+            tree_deduped,
+            "waterui",
+            "map"
+        ));
     }
 
     #[test]

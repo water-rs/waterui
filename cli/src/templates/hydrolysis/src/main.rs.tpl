@@ -17,6 +17,8 @@ compile_error!("enable only one Hydrolysis run feature at a time");
 #[cfg(all(feature = "waterui-preview-test-mode", feature = "waterui-mcp-mode"))]
 compile_error!("enable only one Hydrolysis run feature at a time");
 
+const _: () = hydrolysis::assert_host_capabilities();
+
 #[cfg(feature = "waterui-mcp-mode")]
 mod run_config;
 

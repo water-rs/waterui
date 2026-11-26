@@ -177,6 +177,9 @@ pub async fn build_hydrolysis_with_envs_and_features(
             backend_path.display(),
         );
     }
+    project
+        .validate_hydrolysis_capabilities(platform, &platform.triple())
+        .await?;
     let render_features = render_features(project, &cargo_toml, platform, offscreen)?;
 
     // The managed crate is its own workspace root, so its `Cargo.lock` is
@@ -876,6 +879,9 @@ pub async fn package_hydrolysis_web_site(
             backend_path.display(),
         );
     }
+    project
+        .validate_hydrolysis_capabilities(TargetPlatform::Web, &TargetPlatform::Web.triple())
+        .await?;
 
     // wasm-pack resolves the managed crate the moment its `cargo metadata`
     // and `cargo build` run, so the `Cargo.lock` seed has to land first, the

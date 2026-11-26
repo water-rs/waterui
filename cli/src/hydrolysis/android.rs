@@ -40,7 +40,7 @@ use crate::{
     device::Artifact,
     framework::ResolvedFramework,
     hydrolysis::backend::HydrolysisBackend,
-    platform::{PackageOptions, TargetBackend, TargetPlatform},
+    platform::{PackageOptions, TargetPlatform},
     project::Project,
     templates::{
         self, HydrolysisAndroidPreviewTemplateEntry, HydrolysisAndroidTemplateEntry,
@@ -683,11 +683,11 @@ pub async fn scaffold_android_project(
     host_project_dir: &Path,
 ) -> eyre::Result<()> {
     // Validate the engine plan for this pair before anything is scaffolded:
-    // an app linking an engine (Android, Hydrolysis) cannot host fails here.
+    // an app missing a map engine or linking a web engine (Android, Hydrolysis)
+    // cannot host fails here.
     project
-        .browser_runtime_plan(
+        .validate_hydrolysis_capabilities(
             TargetPlatform::Android,
-            TargetBackend::Hydrolysis,
             &TargetPlatform::Android.triple(),
         )
         .await?;
@@ -843,9 +843,8 @@ pub(crate) async fn prepare_for_build(project: &Project, features: &[String]) ->
     // Validate the engine plan for this pair before any work runs: the same
     // bound the desktop `hydrolysis::backend` enforces on its own path.
     project
-        .browser_runtime_plan(
+        .validate_hydrolysis_capabilities(
             TargetPlatform::Android,
-            TargetBackend::Hydrolysis,
             &TargetPlatform::Android.triple(),
         )
         .await?;

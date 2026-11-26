@@ -4369,6 +4369,30 @@ mod tests {
         assert!(!without_cef.contains("waterui_browser_cef::initialize_macos_application"));
     }
 
+    #[test]
+    fn generated_hydrolysis_host_entrypoints_enforce_compile_time_capability_gate() {
+        let outputs = super::hydrolysis::rendered_outputs_with_painters(
+            &project_ctx(),
+            "waterui-test-hydrolysis-gate",
+        )
+        .expect("hydrolysis outputs should render");
+        for relative in ["src/main.rs", "src/lib.rs"] {
+            let source = outputs
+                .iter()
+                .find_map(|(path, content)| {
+                    (path == Path::new(relative))
+                        .then(|| String::from_utf8(content.clone()).expect("UTF-8 source"))
+                })
+                .unwrap_or_else(|| panic!("hydrolysis {relative} output should exist"));
+            syn::parse_file(&source)
+                .unwrap_or_else(|error| panic!("generated {relative} must parse: {error}"));
+            assert!(
+                source.contains("const _: () = hydrolysis::assert_host_capabilities();"),
+                "generated {relative} must invoke the compile-time capability gate:\n{source}"
+            );
+        }
+    }
+
     /// The companion is rendered on hosts that cannot build for Apple — the
     /// font scan reads its manifest everywhere — so a render without the
     /// Apple pieces names no `waterui-apple` edge and no entry binary.
