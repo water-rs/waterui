@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 mod staging;
 
 use askama::Template;
-use eyre::{Context as _, Result, bail};
+use eyre::{Context as _, Result};
 
 use crate::apple::platform::apple_rust_build;
 use crate::artifact_symbols::ArtifactSymbols;
@@ -33,7 +33,6 @@ use crate::preview::{
 use crate::project::Project;
 use crate::project_model::assets;
 use crate::toolchain::Host;
-use cargo_toml::Manifest as CargoManifest;
 
 use waterui_preview_protocol::run::{
     PreviewColorScheme, PreviewRunConfig, PreviewRunMode, VideoCaptureConfig,
@@ -113,36 +112,6 @@ async fn stage_apple_preview_resources(
         return Ok(());
     }
     assets::copy_fonts(&resolved_fonts, &resources_dir.join("fonts")).await
-}
-
-/// The preview binary links the project's `dev` feature — which must enable
-/// `waterui/dynamic_linking` — so the runtime symbols it resolves come from
-/// the shared dylib it is staged beside.
-///
-/// # Errors
-/// Returns an error when the project does not declare the feature the preview
-/// build requires.
-async fn ensure_project_dev_feature_for_preview(project: &Project) -> Result<()> {
-    let manifest_path = project.root().join("Cargo.toml");
-    let manifest = smol::unblock(move || CargoManifest::from_path(&manifest_path)).await?;
-    let Some(dev_features) = manifest.features.get("dev") else {
-        bail!(
-            "Preview requires `{}/dev` feature. Add `[features] dev = [\"waterui/dynamic_linking\"]` to {}",
-            project.crate_name().as_str(),
-            project.root().join("Cargo.toml").display()
-        );
-    };
-    if !dev_features
-        .iter()
-        .any(|feature| feature == "waterui/dynamic_linking")
-    {
-        bail!(
-            "Preview requires `{}/dev` to include `waterui/dynamic_linking`. Update {}",
-            project.crate_name().as_str(),
-            project.root().join("Cargo.toml").display()
-        );
-    }
-    Ok(())
 }
 
 /// The Apple preview binary [`build_preview_with_apple`] built, with its
@@ -347,7 +316,6 @@ pub async fn build_preview_with_apple(
     // scan reads, and its build already lives in the shared target
     // directory.
     project.scaffold_apple_companion().await?;
-    ensure_project_dev_feature_for_preview(&project).await?;
     project.scaffold_apple_preview_companion().await?;
     write_apple_preview_target(&project, &request.source).await?;
 

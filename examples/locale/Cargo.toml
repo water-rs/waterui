@@ -11,8 +11,6 @@ keywords = ["ui", "framework", "example", "i18n", "locale"]
 categories = ["gui", "internationalization"]
 publish = false
 
-[features]
-dev = ["waterui/dynamic_linking"]
 
 [lints]
 workspace = true

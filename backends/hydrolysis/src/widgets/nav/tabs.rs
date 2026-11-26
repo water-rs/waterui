@@ -264,6 +264,7 @@ impl<E: crate::text::TextEngine> TabsRenderState<E> {
     /// Eagerly build the tab-label and icon sub-views (the measure path has
     /// no renderer to build on). The label builds title-only: the bar places
     /// the icon itself, so the label must not draw it a second time.
+    #[cfg(feature = "accessibility")]
     pub(crate) fn prebuild_labels(&mut self, renderer: &mut SemanticCore<E>, env: &Environment) {
         self.reconcile();
         let look = self.held(self.spec()).cloned();
@@ -603,6 +604,7 @@ pub fn render_tabs_node<E: crate::text::TextEngine>(
 /// Concrete placement rectangles derived for the tab bar chrome split.
 #[derive(Clone, Copy)]
 struct TabsBarGeometry {
+    #[cfg(feature = "accessibility")]
     bar_rect: Rect,
     items_rect: Rect,
     bar_surface: Rect,
@@ -1189,6 +1191,7 @@ fn tabs_bar_geometry(
             ),
         };
         return TabsBarGeometry {
+            #[cfg(feature = "accessibility")]
             bar_rect: bar_band,
             items_rect: bar_band,
             bar_surface,
@@ -1229,6 +1232,7 @@ fn tabs_bar_geometry(
         (bar_rect.y0 + 1.0).min(bar_rect.y1),
     );
     TabsBarGeometry {
+        #[cfg(feature = "accessibility")]
         bar_rect,
         items_rect,
         bar_surface,

@@ -47,7 +47,7 @@ pub async fn build_winui(project: &Project, options: BuildOptions) -> eyre::Resu
     }
 
     // Windows has no shared-runtime linkage: the build links statically,
-    // and a project that resolved `waterui/dynamic_linking` is rejected
+    // and a project that resolved `waterui-dylib` anyway is rejected
     // before anything compiles.
     let options = options.with_supported_linkage(&TargetPlatform::Windows.triple());
     crate::build::reject_unsupported_dynamic_linking(
@@ -71,11 +71,6 @@ pub async fn build_winui(project: &Project, options: BuildOptions) -> eyre::Resu
     let mut build =
         RustBuild::for_project(project, &backend_path, TargetPlatform::Windows.triple())
             .with_target_dir(project.water_target_dir(options.linkage()).await?)
-            .with_linkage(
-                options.linkage(),
-                &format!("{}/dev", project.crate_name()),
-                &[],
-            )
             .with_features(options.app_features(project))
             .with_envs(options.cargo_envs().iter().cloned());
     if let Some(sccache_path) = options.sccache_path() {

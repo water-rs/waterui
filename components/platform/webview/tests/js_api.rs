@@ -18,28 +18,26 @@ use std::collections::{BTreeSet, VecDeque};
 use std::fmt::{Display, Formatter, Result as FmtResult};
 use std::path::PathBuf;
 
-use waterui::webview::{Bytes, Json, TsType, serde};
+use serde::{Deserialize, Serialize};
+use waterui::webview::{Bytes, Json, TsType};
 use waterui::{Binding, Computed, Signal, js_api};
 
 type Id = u64;
 type ThemeSignal = Binding<String>;
 
-#[derive(serde::Serialize, serde::Deserialize, TsType, PartialEq, Debug)]
-#[serde(crate = "waterui::webview::serde")]
+#[derive(Serialize, Deserialize, TsType, PartialEq, Debug)]
 enum Role {
     Admin,
     Guest,
 }
 
-#[derive(serde::Serialize, serde::Deserialize, TsType, PartialEq, Debug)]
-#[serde(crate = "waterui::webview::serde")]
+#[derive(Serialize, Deserialize, TsType, PartialEq, Debug)]
 enum Notice {
     Empty,
     Message { body: String },
 }
 
-#[derive(serde::Serialize, serde::Deserialize, TsType, PartialEq, Debug)]
-#[serde(crate = "waterui::webview::serde")]
+#[derive(Serialize, Deserialize, TsType, PartialEq, Debug)]
 struct Greeting {
     text: String,
     role: Role,

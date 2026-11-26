@@ -161,11 +161,12 @@ fn facade_internal_and_dylib_feature_tables_stay_symmetric() {
     let internal = parse_features_table(&root_dir.join("src/Cargo.toml"));
     let dylib = parse_features_table(&root_dir.join("utils/dylib/Cargo.toml"));
 
-    let root_keys: BTreeSet<&str> = root
-        .keys()
-        .map(String::as_str)
-        .filter(|key| *key != "dynamic_linking")
-        .collect();
+    assert!(
+        !root.contains_key("dynamic_linking"),
+        "waterui facade must not expose `dynamic_linking`; generated host crates own shared-runtime linkage"
+    );
+
+    let root_keys: BTreeSet<&str> = root.keys().map(String::as_str).collect();
     let internal_keys: BTreeSet<&str> = internal.keys().map(String::as_str).collect();
     let dylib_keys: BTreeSet<&str> = dylib.keys().map(String::as_str).collect();
 
@@ -214,14 +215,15 @@ fn facade_internal_and_dylib_feature_tables_stay_symmetric() {
         let dylib_entries = &dylib[*feat];
 
         let expected_internal = format!("waterui-internal/{feat}");
-        let expected_dylib = format!("waterui-dylib?/{feat}");
         assert!(
             root_entries.contains(&expected_internal),
             "Cargo.toml feature `{feat}` must forward `{expected_internal}`"
         );
         assert!(
-            root_entries.contains(&expected_dylib),
-            "Cargo.toml feature `{feat}` must forward `{expected_dylib}`"
+            !root_entries
+                .iter()
+                .any(|entry| entry.contains("waterui-dylib")),
+            "Cargo.toml feature `{feat}` must not forward to `waterui-dylib`: {root_entries:?}"
         );
         assert!(
             dylib_entries.contains(&expected_internal),
