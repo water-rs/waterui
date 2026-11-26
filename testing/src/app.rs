@@ -204,6 +204,7 @@ pub fn ui() -> UiBuilder {
 /// Panics if the app declares no window, or if the initial Hydrolysis
 /// offscreen frame does not produce an accessibility tree.
 #[must_use]
+#[track_caller]
 pub fn mount_app<W: Windows, M: AppMenuBar>(app: App<W, M>, style: impl Style) -> OffscreenApp {
     ui().theme(style)
         .mount_first_window(app, Viewport::FromWindow)
@@ -318,6 +319,7 @@ impl UiBuilder {
     ///
     /// Panics if the initial Hydrolysis semantic pass does not produce an
     /// accessibility tree.
+    #[track_caller]
     pub fn mount<V, F>(mut self, view_fn: F) -> SemanticApp
     where
         V: View + 'static,
@@ -439,6 +441,7 @@ impl UiBuilder {
     /// is assembled. `family_resolution` is [`FontFamilyResolution::Lenient`]
     /// for a style-free mount and [`FontFamilyResolution::Strict`] for a
     /// styled one: the style package's families must be installed.
+    #[track_caller]
     fn mount_semantic(
         self,
         content: AnyViewBuilder<AnyView>,
@@ -520,6 +523,7 @@ impl WindowSink for FirstWindow {
 }
 
 impl UiBuilder {
+    #[track_caller]
     fn require_style(&self, method: &str) {
         assert!(
             self.style.is_some(),
@@ -536,6 +540,7 @@ impl UiBuilder {
     /// [`UiBuilder::scale_factor`] was configured with a non-finite or
     /// non-positive value, or if the initial Hydrolysis offscreen frame does
     /// not produce an accessibility tree.
+    #[track_caller]
     pub fn mount_offscreen<V, F>(self, view_fn: F) -> OffscreenApp
     where
         V: View + 'static,
@@ -572,12 +577,14 @@ impl UiBuilder {
     /// non-finite or non-positive value, or if the initial Hydrolysis offscreen
     /// frame does not produce an accessibility tree.
     #[must_use]
+    #[track_caller]
     pub fn mount_app<W: Windows, M: AppMenuBar>(self, app: App<W, M>) -> OffscreenApp {
         self.require_style("mount_app");
         self.mount_first_window(app, Viewport::Configured)
     }
 
     /// Mounts `app`'s first window, see [`Self::mount_app`].
+    #[track_caller]
     fn mount_first_window<W: Windows, M: AppMenuBar>(
         self,
         app: App<W, M>,
@@ -612,6 +619,7 @@ impl UiBuilder {
     /// Mounts `content` on the rendered runtime — the mount a view-only
     /// `mount_offscreen` performs, wrapped in the runtime's synthetic
     /// default window.
+    #[track_caller]
     fn mount_rendered(
         self,
         mut env: Environment,
@@ -658,6 +666,7 @@ impl UiBuilder {
     /// app's `frame` binding at its initial value, so every signal derived
     /// from it — a `max_width` computed from the frame, a `when()` keyed on
     /// width — would resolve against a size the mounted viewport never had.
+    #[track_caller]
     fn mount_rendered_window<C: ViewBuilder, T: WindowToolbar>(
         self,
         mut env: Environment,
@@ -698,6 +707,7 @@ impl UiBuilder {
 
     /// Wraps a rendered runtime in the offscreen session — the tail shared by
     /// `mount_rendered` and `mount_rendered_window`.
+    #[track_caller]
     fn wrap_rendered(
         runtime: HeadlessRuntime,
         width: u32,
@@ -724,6 +734,7 @@ impl UiBuilder {
     /// # Panics
     ///
     /// Panics if no style was configured via [`UiBuilder::theme`].
+    #[track_caller]
     pub fn perf<V, F>(self, view_fn: F) -> PerfReport
     where
         V: View + 'static,
@@ -743,6 +754,7 @@ impl UiBuilder {
     /// # Panics
     ///
     /// Panics if no style was configured via [`UiBuilder::theme`].
+    #[track_caller]
     pub fn perf_with<V, F, A>(self, view_fn: F, automation: A) -> PerfReport
     where
         V: View + 'static,
@@ -887,6 +899,7 @@ impl OffscreenApp {
     /// # Panics
     ///
     /// Panics if `fps` is zero.
+    #[track_caller]
     pub fn start_frame_recording(
         &mut self,
         fps: u32,
@@ -916,6 +929,7 @@ impl OffscreenApp {
     ///
     /// Panics if `fps` is zero or if this session was not mounted with
     /// [`UiBuilder::hdr`] enabled.
+    #[track_caller]
     pub fn start_hdr_frame_recording(
         &mut self,
         fps: u32,
@@ -980,6 +994,7 @@ impl OffscreenApp {
     ///
     /// Panics if a capture frame carries no snapshot and no device loss
     /// skipped it, or the device is lost past the runtime's recovery budget.
+    #[track_caller]
     pub fn snapshot(&mut self) -> Snapshot {
         self.app.capture_frame()
     }
@@ -992,11 +1007,13 @@ impl OffscreenApp {
     /// Panics if this session was not mounted with [`UiBuilder::hdr`] enabled,
     /// if a capture frame carries no snapshot and no device loss skipped it, or
     /// if the device is lost past the runtime's recovery budget.
+    #[track_caller]
     pub fn snapshot_hdr(&mut self) -> HdrSnapshot {
         self.app.capture_hdr_frame()
     }
 
     /// Captures a snapshot and stores it in `WaterUI`'s canonical artifact layout.
+    #[track_caller]
     pub fn capture_snapshot(
         &mut self,
         suite: impl AsRef<str>,
@@ -1061,6 +1078,7 @@ impl CapturedFrame {
         }
     }
 
+    #[track_caller]
     fn into_hdr(self) -> HdrSnapshot {
         match self {
             Self::Hdr(hdr) => hdr,
@@ -1216,6 +1234,7 @@ impl<R: RuntimeDriver> SemanticApp<R> {
     /// # Panics
     ///
     /// Panics if the initial pump does not produce a semantic tree.
+    #[track_caller]
     pub(crate) fn new(runtime: R, viewport: (u32, u32), ledger: ContentLedger) -> Self {
         let mut app = Self {
             runtime,
@@ -1243,37 +1262,44 @@ impl<R: RuntimeDriver> SemanticApp<R> {
     }
 
     /// Convenience existence assertion.
+    #[track_caller]
     pub fn assert_exists(&mut self, selector: &Selector) {
         let results = self.resolve_elements(selector);
         self.assert_exists_results(&results, selector);
     }
 
+    #[track_caller]
     pub(crate) fn assert_exists_unsynced(&self, selector: &Selector) {
         let results = self.resolve_elements_unsynced(selector);
         self.assert_exists_results(&results, selector);
     }
 
+    #[track_caller]
     fn assert_exists_results(&self, results: &ElementSet<R>, selector: &Selector) {
-        let count = results.len();
-        assert!(
-            (count != 0),
-            "waterui-testing assertion failed: selector {} expected to exist but matched 0 nodes on revision {}",
-            selector.describe(),
-            self.tree.revision()
-        );
+        if results.is_empty() {
+            let nearest = self.tree.closest_candidates(selector, 3);
+            panic!(
+                "waterui-testing assertion failed: selector {} expected to exist but matched 0 nodes on revision {}; nearest: {nearest}",
+                selector.describe(),
+                self.tree.revision()
+            );
+        }
     }
 
     /// Convenience non-existence assertion.
+    #[track_caller]
     pub fn assert_not_exists(&mut self, selector: &Selector) {
         let results = self.resolve_elements(selector);
         Self::assert_not_exists_results(&results, selector);
     }
 
+    #[track_caller]
     pub(crate) fn assert_not_exists_unsynced(&self, selector: &Selector) {
         let results = self.resolve_elements_unsynced(selector);
         Self::assert_not_exists_results(&results, selector);
     }
 
+    #[track_caller]
     fn assert_not_exists_results(results: &ElementSet<R>, selector: &Selector) {
         let count = results.len();
         assert!(
@@ -1285,16 +1311,19 @@ impl<R: RuntimeDriver> SemanticApp<R> {
     }
 
     /// Asserts that the selector resolves to the current UI-focused element.
+    #[track_caller]
     pub fn assert_ui_focus(&mut self, selector: &Selector) {
         let element = self.resolve_single(selector);
         self.assert_ui_focus_element(&element, selector);
     }
 
+    #[track_caller]
     pub(crate) fn assert_ui_focus_unsynced(&self, selector: &Selector) {
         let element = self.resolve_single_unsynced(selector);
         self.assert_ui_focus_element(&element, selector);
     }
 
+    #[track_caller]
     fn assert_ui_focus_element(&self, element: &ElementRef<R>, selector: &Selector) {
         if self.ui_focus == Some(element.id()) {
             return;
@@ -1318,14 +1347,20 @@ impl<R: RuntimeDriver> SemanticApp<R> {
     }
 
     /// Asserts that the selector resolves to exactly one node with the expected value.
+    #[track_caller]
     pub fn assert_value_eq(&mut self, selector: &Selector, value: impl Into<String>) {
         let expected = value.into();
+        let diag_selector = selector.clone().with_expected_value(expected.clone());
         let element = self.resolve_single(selector);
         let actual = element.node().value();
-        assert!(
-            actual == Some(expected.as_str()),
-            "waterui-testing assertion failed: selector value mismatch (expected {expected:?}, got {actual:?})"
-        );
+        if actual != Some(expected.as_str()) {
+            let nearest = self.tree.closest_candidates(&diag_selector, 3);
+            panic!(
+                "waterui-testing assertion failed: selector {} value mismatch on {} (expected {expected:?}, got {actual:?}); nearest: {nearest}",
+                diag_selector.describe(),
+                element.debug_summary()
+            );
+        }
     }
 
     /// Resolves a node id to an [`ElementRef`] bound to the current tree, or
@@ -1342,12 +1377,9 @@ impl<R: RuntimeDriver> SemanticApp<R> {
     }
 
     /// Waits for expectations using XCTest-like semantics.
+    #[track_caller]
     pub fn wait_for(&mut self, expectations: &[Expectation], options: WaitOptions) -> WaitResult {
-        self.wait_bounded(
-            expectations,
-            options.get_enforce_order(),
-            WaitBound::WallClock(Instant::now() + options.timeout()),
-        )
+        self.wait_for_with_stats(expectations, options).result
     }
 
     /// Waits for expectations using XCTest-like semantics, bounded in pumped
@@ -1372,22 +1404,47 @@ impl<R: RuntimeDriver> SemanticApp<R> {
     ///
     /// [`WaitOptions::enforce_order`] does not apply; frame-bounded waits
     /// observe one cascade, not an ordered sequence.
+    #[track_caller]
     pub fn wait_for_frames(
         &mut self,
         expectations: &[Expectation],
         frame_budget: usize,
     ) -> WaitResult {
-        self.wait_bounded(expectations, false, WaitBound::Frames(frame_budget))
+        self.wait_for_frames_with_stats(expectations, frame_budget)
+            .result
+    }
+
+    #[track_caller]
+    pub(crate) fn wait_for_with_stats(
+        &mut self,
+        expectations: &[Expectation],
+        options: WaitOptions,
+    ) -> WaitStats {
+        self.wait_bounded_with_stats(
+            expectations,
+            options.get_enforce_order(),
+            WaitBound::WallClock(Instant::now() + options.timeout()),
+        )
+    }
+
+    #[track_caller]
+    pub(crate) fn wait_for_frames_with_stats(
+        &mut self,
+        expectations: &[Expectation],
+        frame_budget: usize,
+    ) -> WaitStats {
+        self.wait_bounded_with_stats(expectations, false, WaitBound::Frames(frame_budget))
     }
 
     /// The shared [`Self::wait_for`] loop, bounded by either a wall-clock
     /// deadline or a count of frames the runtime may still pump.
-    fn wait_bounded(
+    #[track_caller]
+    fn wait_bounded_with_stats(
         &mut self,
         expectations: &[Expectation],
         enforce_order: bool,
         bound: WaitBound,
-    ) -> WaitResult {
+    ) -> WaitStats {
         const MIN_IDLE_BACKOFF: Duration = Duration::from_millis(1);
         const MAX_IDLE_BACKOFF: Duration = Duration::from_millis(16);
 
@@ -1396,6 +1453,8 @@ impl<R: RuntimeDriver> SemanticApp<R> {
             "waterui-testing wait_for requires at least one expectation"
         );
 
+        let started_at = Instant::now();
+        let mut frames = 0usize;
         let has_inverted = expectations.iter().any(|e| e.inverted);
         let mut progress = WaitProgress::new(expectations);
         let mut bound = bound;
@@ -1404,12 +1463,20 @@ impl<R: RuntimeDriver> SemanticApp<R> {
         loop {
             if let Some(result) = self.poll_expectations(expectations, enforce_order, &mut progress)
             {
-                return result;
+                return WaitStats {
+                    result,
+                    frames,
+                    elapsed: started_at.elapsed(),
+                };
             }
 
             let all_non_inverted = progress.all_non_inverted(expectations);
             if all_non_inverted && !has_inverted {
-                return WaitResult::Completed;
+                return WaitStats {
+                    result: WaitResult::Completed,
+                    frames,
+                    elapsed: started_at.elapsed(),
+                };
             }
 
             let bound_spent = match &bound {
@@ -1417,10 +1484,15 @@ impl<R: RuntimeDriver> SemanticApp<R> {
                 WaitBound::Frames(remaining) => *remaining == 0,
             };
             if bound_spent {
-                return wait_bound_outcome(all_non_inverted);
+                return WaitStats {
+                    result: wait_bound_outcome(all_non_inverted),
+                    frames,
+                    elapsed: started_at.elapsed(),
+                };
             }
 
             let _ = self.pump_once();
+            frames += 1;
             if let WaitBound::Frames(remaining) = &mut bound {
                 *remaining = remaining.saturating_sub(1);
             }
@@ -1472,6 +1544,7 @@ impl<R: RuntimeDriver> SemanticApp<R> {
     /// non-inverted expectations in `progress`, and returns the terminal
     /// result when an inverted expectation fulfilled or enforced order was
     /// violated.
+    #[track_caller]
     fn poll_expectations(
         &mut self,
         expectations: &[Expectation],
@@ -1505,6 +1578,7 @@ impl<R: RuntimeDriver> SemanticApp<R> {
     }
 
     /// Convenience API mirroring `XCTest` `waitForExistence`.
+    #[track_caller]
     pub fn wait_for_existence(&mut self, selector: &Selector, timeout: Duration) -> bool {
         self.wait_for(
             &[Expectation::exists(selector.clone())],
@@ -1513,6 +1587,7 @@ impl<R: RuntimeDriver> SemanticApp<R> {
     }
 
     /// Convenience API mirroring `XCTest` `waitForNonexistence`.
+    #[track_caller]
     pub fn wait_for_nonexistence(&mut self, selector: &Selector, timeout: Duration) -> bool {
         self.wait_for(
             &[Expectation::not_exists(selector.clone())],
@@ -1521,6 +1596,7 @@ impl<R: RuntimeDriver> SemanticApp<R> {
     }
 
     /// Waits for one node's value to equal the expected value.
+    #[track_caller]
     pub fn wait_for_value_eq(
         &mut self,
         selector: &Selector,
@@ -1534,6 +1610,7 @@ impl<R: RuntimeDriver> SemanticApp<R> {
     }
 
     /// Waits until the selector resolves to the current UI-focused element.
+    #[track_caller]
     pub fn wait_for_ui_focus(&mut self, selector: &Selector, timeout: Duration) -> bool {
         self.wait_for(
             &[Expectation::ui_focus(selector.clone())],
@@ -1541,6 +1618,7 @@ impl<R: RuntimeDriver> SemanticApp<R> {
         ) == WaitResult::Completed
     }
 
+    #[track_caller]
     fn evaluate_expectation(&mut self, expectation: &Expectation) -> bool {
         match &expectation.kind {
             ExpectationKind::Exists(selector) => !self.matching_ids(selector).is_empty(),
@@ -1590,16 +1668,19 @@ impl<R: RuntimeDriver> SemanticApp<R> {
         }
     }
 
+    #[track_caller]
     fn matching_ids(&mut self, selector: &Selector) -> Vec<NodeId> {
         self.sync_tree();
         self.matching_ids_unsynced(selector)
     }
 
+    #[track_caller]
     fn matching_ids_unsynced(&self, selector: &Selector) -> Vec<NodeId> {
         self.validate_selector_scope(selector);
         self.tree.matching(selector)
     }
 
+    #[track_caller]
     fn elements_from_ids(&self, ids: Vec<NodeId>) -> ElementSet<R> {
         // Callers that synced first get handles with the post-sync revision.
         let revision = self.tree.revision();
@@ -1611,33 +1692,41 @@ impl<R: RuntimeDriver> SemanticApp<R> {
     }
 
     /// Resolves every element matching `selector` against the current tree.
+    #[track_caller]
     pub fn resolve_elements(&mut self, selector: &Selector) -> ElementSet<R> {
         let ids = self.matching_ids(selector);
         self.elements_from_ids(ids)
     }
 
+    #[track_caller]
     pub(crate) fn resolve_elements_unsynced(&self, selector: &Selector) -> ElementSet<R> {
         self.elements_from_ids(self.matching_ids_unsynced(selector))
     }
 
+    #[track_caller]
     pub(crate) fn resolve_single(&mut self, selector: &Selector) -> ElementRef<R> {
         let results = self.resolve_elements(selector);
         self.expect_single_result(&results, selector)
     }
 
+    #[track_caller]
     pub(crate) fn resolve_single_unsynced(&self, selector: &Selector) -> ElementRef<R> {
         let results = self.resolve_elements_unsynced(selector);
         self.expect_single_result(&results, selector)
     }
 
+    #[track_caller]
     fn expect_single_result(&self, results: &ElementSet<R>, selector: &Selector) -> ElementRef<R> {
         match results.len() {
             1 => results[0].clone(),
-            0 => panic!(
-                "waterui-testing selector {} resolved 0 nodes, expected exactly 1 on revision {}",
-                selector.describe(),
-                self.tree.revision()
-            ),
+            0 => {
+                let nearest = self.tree.closest_candidates(selector, 3);
+                panic!(
+                    "waterui-testing selector {} resolved 0 nodes, expected exactly 1 on revision {}; nearest: {nearest}",
+                    selector.describe(),
+                    self.tree.revision()
+                )
+            }
             n => panic!(
                 "waterui-testing selector {} resolved {n} nodes, expected exactly 1; candidates: {}",
                 selector.describe(),
@@ -1689,28 +1778,46 @@ impl<R: RuntimeDriver> SemanticApp<R> {
         self.runtime.perform_accessibility_action(request)
     }
 
+    #[track_caller]
     pub(crate) fn perform_action_expect(
         &mut self,
         node_id: NodeId,
         action: AccessibilityAction,
         data: Option<AccessibilityActionData>,
     ) {
+        self.sync_tree();
+        if self
+            .tree
+            .node(node_id)
+            .is_some_and(|node| !node.actions().contains(&action))
+        {
+            self.panic_unhandled_action(node_id, action);
+        }
         if !self.perform_action(node_id, action, data) {
             self.panic_unhandled_action(node_id, action);
         }
     }
 
+    #[track_caller]
     pub(crate) fn queue_action_expect(
         &mut self,
         node_id: NodeId,
         action: AccessibilityAction,
         data: Option<AccessibilityActionData>,
     ) {
+        if self
+            .tree
+            .node(node_id)
+            .is_some_and(|node| !node.actions().contains(&action))
+        {
+            self.panic_unhandled_action(node_id, action);
+        }
         if !self.queue_action(node_id, action, data) {
             self.panic_unhandled_action(node_id, action);
         }
     }
 
+    #[track_caller]
     fn panic_unhandled_action(&self, node_id: NodeId, action: AccessibilityAction) -> ! {
         panic!(
             "waterui-testing: accessibility action {action:?} on {} was not handled by the runtime — the target does not support this action",
@@ -1988,6 +2095,7 @@ impl<R: RuntimeDriver> SemanticApp<R> {
     ///
     /// Panics when a capture frame carries no snapshot and no device loss
     /// skipped it.
+    #[track_caller]
     pub(crate) fn capture_frame(&mut self) -> Snapshot {
         let _ = drain_parked_local_work();
         let at = self.tick(self.recording_step_cap());
@@ -2000,6 +2108,7 @@ impl<R: RuntimeDriver> SemanticApp<R> {
         frame.into_sdr()
     }
 
+    #[track_caller]
     pub(crate) fn capture_hdr_frame(&mut self) -> HdrSnapshot {
         let _ = drain_parked_local_work();
         let at = self.tick(self.recording_step_cap());
@@ -2012,18 +2121,21 @@ impl<R: RuntimeDriver> SemanticApp<R> {
         frame.into_hdr()
     }
 
+    #[track_caller]
     pub(crate) fn capture_frame_at(&mut self, at: Instant) -> Snapshot {
         let _ = drain_parked_local_work();
         let (_rebuilt, frame) = self.pump_capture_at(at);
         frame.into_sdr()
     }
 
+    #[track_caller]
     pub(crate) fn capture_hdr_frame_at(&mut self, at: Instant) -> HdrSnapshot {
         let _ = drain_parked_local_work();
         let (_rebuilt, frame) = self.pump_capture_at(at);
         frame.into_hdr()
     }
 
+    #[track_caller]
     fn pump_capture_at(&mut self, at: Instant) -> (bool, CapturedFrame) {
         let mut any_rebuilt = false;
         loop {
@@ -2040,6 +2152,7 @@ impl<R: RuntimeDriver> SemanticApp<R> {
         }
     }
 
+    #[track_caller]
     fn apply_pump_result(&mut self, outcome: DriverPumpResult) -> Option<CapturedFrame> {
         self.ui_focus = outcome.ui_focus;
         if let Some(update) = outcome.tree_update {
@@ -2063,16 +2176,19 @@ impl<R: RuntimeDriver> SemanticApp<R> {
         }
     }
 
+    #[track_caller]
     fn matches_ui_focus(&mut self, selector: &Selector) -> bool {
         let ids = self.matching_ids(selector);
         ids.len() == 1 && self.ui_focus == Some(ids[0])
     }
 
+    #[track_caller]
     pub(crate) fn assert_current_element(&mut self, element: &ElementRef<R>, context: &str) {
         self.sync_tree();
         self.assert_current_anchor(&element.anchor(), context);
     }
 
+    #[track_caller]
     pub(crate) fn assert_current_anchor(&self, anchor: &ElementAnchor, context: &str) {
         assert!(
             self.tree.node(anchor.id()).is_some(),
@@ -2082,6 +2198,7 @@ impl<R: RuntimeDriver> SemanticApp<R> {
         );
     }
 
+    #[track_caller]
     fn validate_selector_scope(&self, selector: &Selector) {
         if let Some(scope) = selector.scope() {
             self.assert_current_anchor(scope.handle(), "scoped query");
@@ -2426,6 +2543,13 @@ impl SemanticApp<HeadlessRuntime> {
     }
 }
 
+/// Outcome and timing statistics reported internally by wait helpers.
+pub struct WaitStats {
+    pub(crate) result: WaitResult,
+    pub(crate) frames: usize,
+    pub(crate) elapsed: Duration,
+}
+
 /// How a [`SemanticApp::wait_for`]-family wait is bounded.
 ///
 /// A wall-clock deadline counts real elapsed time; use it for changes that
@@ -2498,6 +2622,7 @@ const fn wait_bound_outcome(all_non_inverted: bool) -> WaitResult {
 /// Fails a rendered mount whose host has no painter Hydrolysis can render
 /// with — no usable GPU, or a CPU engine that cannot start: a rendered test
 /// cannot run without one.
+#[track_caller]
 fn no_painter(error: PainterUnavailable) -> ! {
     panic!(
         "waterui-testing rendered mount: {:#}",

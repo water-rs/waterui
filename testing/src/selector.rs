@@ -274,6 +274,55 @@ impl Selector {
     }
 
     #[must_use]
+    pub(crate) fn with_expected_value(mut self, value: String) -> Self {
+        self.value_exact = Some(value);
+        self
+    }
+
+    #[must_use]
+    pub(crate) const fn excludes_hidden(&self) -> bool {
+        matches!(self.hidden, Some(false))
+    }
+
+    #[must_use]
+    pub(crate) fn candidate_score(&self, node: &NodeSnapshot) -> u32 {
+        let mut score = 0u32;
+        if let Some(role) = self.role
+            && node.role().as_accesskit() == role.as_accesskit()
+        {
+            score += 4;
+        }
+        score += text_exact_score(self.identifier.as_deref(), node.identifier(), 8, 3, false);
+        score += text_exact_score(self.label_exact.as_deref(), node.label(), 6, 3, true);
+        score += text_contains_score(self.label_contains.as_deref(), node.label(), 5, 3);
+        score += text_exact_score(self.value_exact.as_deref(), node.value(), 3, 1, false);
+        score += text_contains_score(self.value_contains.as_deref(), node.value(), 2, 0);
+        score += text_exact_score(
+            self.placeholder_exact.as_deref(),
+            node.placeholder(),
+            3,
+            1,
+            false,
+        );
+        score += text_contains_score(
+            self.placeholder_contains.as_deref(),
+            node.placeholder(),
+            2,
+            0,
+        );
+        if self.content_type.is_some() && self.content_type == node.content_type() {
+            score += 2;
+        }
+        score += u32::from(self.enabled == Some(node.enabled()));
+        score += u32::from(self.selected == Some(node.selected()));
+        score += u32::from(self.checked.is_some() && self.checked == node.checked_state());
+        score += u32::from(self.expanded.is_some() && self.expanded == node.expanded());
+        score += u32::from(self.busy == Some(node.busy()));
+        score += u32::from(self.hidden == Some(true) && node.hidden());
+        score
+    }
+
+    #[must_use]
     pub(crate) fn describe(&self) -> String {
         let mut parts = Vec::new();
         if let Some(role) = self.role {
@@ -551,21 +600,108 @@ impl<R> ElementRef<R> {
     }
 }
 
+fn text_exact_score(
+    expected: Option<&str>,
+    actual: Option<&str>,
+    exact_points: u32,
+    partial_points: u32,
+    case_insensitive: bool,
+) -> u32 {
+    let (Some(expected), Some(actual)) = (expected, actual) else {
+        return 0;
+    };
+    if actual == expected {
+        exact_points
+    } else if expected.is_empty() || actual.is_empty() {
+        0
+    } else if case_insensitive && actual.eq_ignore_ascii_case(expected) {
+        exact_points.saturating_sub(1)
+    } else if actual.contains(expected) || expected.contains(actual) {
+        partial_points
+    } else {
+        0
+    }
+}
+
+fn text_contains_score(
+    expected: Option<&str>,
+    actual: Option<&str>,
+    exact_points: u32,
+    insensitive_points: u32,
+) -> u32 {
+    let (Some(expected), Some(actual)) = (expected, actual) else {
+        return 0;
+    };
+    if expected.is_empty() || actual.is_empty() {
+        return 0;
+    }
+    if actual.contains(expected) {
+        exact_points
+    } else if insensitive_points > 0
+        && actual
+            .to_ascii_lowercase()
+            .contains(&expected.to_ascii_lowercase())
+    {
+        insensitive_points
+    } else {
+        0
+    }
+}
+
+#[must_use]
+pub fn format_candidate(node: &NodeSnapshot) -> String {
+    let mut out = format!("{:?}", node.role().as_accesskit());
+    if let Some(label) = node.label() {
+        let _ = write!(out, " {label:?}");
+    }
+    if let Some(identifier) = node.identifier() {
+        let _ = write!(out, " id={identifier:?}");
+    }
+    if let Some(value) = node.value() {
+        let _ = write!(out, " value={value:?}");
+    }
+    if let Some(placeholder) = node.placeholder() {
+        let _ = write!(out, " placeholder={placeholder:?}");
+    }
+    if !node.enabled() {
+        out.push_str(" enabled=false");
+    }
+    if node.selected() {
+        out.push_str(" selected=true");
+    }
+    if let Some(checked) = node.checked_state() {
+        let _ = write!(out, " checked={checked:?}");
+    }
+    if let Some(expanded) = node.expanded() {
+        let _ = write!(out, " expanded={expanded}");
+    }
+    if node.busy() {
+        out.push_str(" busy=true");
+    }
+    if node.hidden() {
+        out.push_str(" hidden=true");
+    }
+    out
+}
+
 /// The semantic surface every element handle exposes: accessibility actions.
 impl<R: RuntimeDriver> ElementRef<R> {
     /// Performs a click/tap action.
+    #[track_caller]
     pub fn tap(&self, app: &mut SemanticApp<R>) {
         app.assert_current_element(self, "tap");
         app.perform_action_expect(self.node_id, AccessibilityAction::Click, None);
     }
 
     /// Requests accessibility focus on the element.
+    #[track_caller]
     pub fn focus(&self, app: &mut SemanticApp<R>) {
         app.assert_current_element(self, "focus");
         app.perform_action_expect(self.node_id, AccessibilityAction::Focus, None);
     }
 
     /// Sets textual value on editable controls.
+    #[track_caller]
     pub fn set_text(&self, app: &mut SemanticApp<R>, value: impl Into<String>) {
         app.assert_current_element(self, "set_text");
         app.perform_action_expect(
@@ -578,30 +714,35 @@ impl<R: RuntimeDriver> ElementRef<R> {
     }
 
     /// Increments current value for slider/stepper-like controls.
+    #[track_caller]
     pub fn increment(&self, app: &mut SemanticApp<R>) {
         app.assert_current_element(self, "increment");
         app.perform_action_expect(self.node_id, AccessibilityAction::Increment, None);
     }
 
     /// Decrements current value for slider/stepper-like controls.
+    #[track_caller]
     pub fn decrement(&self, app: &mut SemanticApp<R>) {
         app.assert_current_element(self, "decrement");
         app.perform_action_expect(self.node_id, AccessibilityAction::Decrement, None);
     }
 
     /// Scrolls down when supported by the node.
+    #[track_caller]
     pub fn scroll_down(&self, app: &mut SemanticApp<R>) {
         app.assert_current_element(self, "scroll_down");
         app.perform_action_expect(self.node_id, AccessibilityAction::ScrollDown, None);
     }
 
     /// Expands a collapsible node.
+    #[track_caller]
     pub fn expand(&self, app: &mut SemanticApp<R>) {
         app.assert_current_element(self, "expand");
         app.perform_action_expect(self.node_id, AccessibilityAction::Expand, None);
     }
 
     /// Collapses an expanded node.
+    #[track_caller]
     pub fn collapse(&self, app: &mut SemanticApp<R>) {
         app.assert_current_element(self, "collapse");
         app.perform_action_expect(self.node_id, AccessibilityAction::Collapse, None);
@@ -609,6 +750,7 @@ impl<R: RuntimeDriver> ElementRef<R> {
 }
 
 /// Asserts normalized element coordinates are finite and inside `[0, 1]`.
+#[track_caller]
 fn assert_normalized(normalized_x: f32, normalized_y: f32) {
     assert!(
         normalized_x.is_finite() && normalized_y.is_finite(),
@@ -637,6 +779,7 @@ impl ElementRef<HeadlessRuntime> {
     /// when no reachable point exists — a fully clipped element reports
     /// itself as not visible instead of touching whatever lies under the
     /// clip.
+    #[track_caller]
     pub(crate) fn pointer_point(
         &self,
         app: &SemanticApp<HeadlessRuntime>,
@@ -666,6 +809,7 @@ impl ElementRef<HeadlessRuntime> {
     ///
     /// Panics if the accessibility node does not expose bounds.
     #[must_use]
+    #[track_caller]
     pub fn bounds(&self) -> NodeBounds {
         self.node.bounds().unwrap_or_else(|| {
             panic!(
@@ -677,6 +821,7 @@ impl ElementRef<HeadlessRuntime> {
 
     /// Returns the element center point.
     #[must_use]
+    #[track_caller]
     pub fn center(&self) -> (f32, f32) {
         self.bounds().center()
     }
@@ -687,6 +832,7 @@ impl ElementRef<HeadlessRuntime> {
     ///
     /// Panics if either coordinate is non-finite or outside `[0, 1]`.
     #[must_use]
+    #[track_caller]
     pub fn normalized_point(&self, normalized_x: f32, normalized_y: f32) -> (f32, f32) {
         assert_normalized(normalized_x, normalized_y);
         let bounds = self.bounds();
@@ -707,6 +853,7 @@ impl ElementRef<HeadlessRuntime> {
     /// Panics if either coordinate is non-finite or outside `[0, 1]`, or
     /// when no reachable point exists — a fully clipped element reports
     /// itself as not visible instead of dead-tapping inside the clip.
+    #[track_caller]
     pub fn tap_at(
         &self,
         app: &mut SemanticApp<HeadlessRuntime>,
@@ -725,6 +872,7 @@ impl ElementRef<HeadlessRuntime> {
     ///
     /// Panics when no reachable point exists — a fully clipped element
     /// reports itself as not visible instead of hovering under the clip.
+    #[track_caller]
     pub fn hover(&self, app: &mut SemanticApp<HeadlessRuntime>) {
         app.assert_current_element(self, "hover");
         let (x, y) = self.pointer_point(app, "hover", 0.5, 0.5);
@@ -739,6 +887,7 @@ impl ElementRef<HeadlessRuntime> {
     /// Panics if either coordinate is non-finite or outside `[0, 1]`, or
     /// when no reachable point exists — a fully clipped element reports
     /// itself as not visible instead of hovering under the clip.
+    #[track_caller]
     pub fn hover_at(
         &self,
         app: &mut SemanticApp<HeadlessRuntime>,
@@ -751,6 +900,7 @@ impl ElementRef<HeadlessRuntime> {
     }
 
     /// Drags from the element center by the provided delta.
+    #[track_caller]
     pub fn drag_by(&self, app: &mut SemanticApp<HeadlessRuntime>, dx: f32, dy: f32) {
         self.drag_by_with(app, dx, dy, crate::app::DragOptions::default());
     }
@@ -765,6 +915,7 @@ impl ElementRef<HeadlessRuntime> {
     /// Panics when no reachable start point exists — a fully clipped
     /// element reports itself as not visible instead of pressing under
     /// the clip.
+    #[track_caller]
     pub fn drag_by_with(
         &self,
         app: &mut SemanticApp<HeadlessRuntime>,
@@ -785,6 +936,7 @@ impl ElementRef<HeadlessRuntime> {
     /// Panics if a coordinate is non-finite or outside `[0, 1]`, or when
     /// no reachable point exists — a fully clipped element reports itself
     /// as not visible instead of pressing under the clip.
+    #[track_caller]
     pub fn drag_between(
         &self,
         app: &mut SemanticApp<HeadlessRuntime>,
@@ -807,6 +959,7 @@ impl ElementRef<HeadlessRuntime> {
     /// Panics when no reachable point exists — a fully clipped element
     /// reports itself as not visible instead of magnifying under the
     /// clip.
+    #[track_caller]
     pub fn magnify(&self, app: &mut SemanticApp<HeadlessRuntime>, factor: f32) {
         app.assert_current_element(self, "magnify");
         let (x, y) = self.pointer_point(app, "magnify", 0.5, 0.5);
@@ -894,6 +1047,7 @@ impl<R> ElementSet<R> {
 impl<R> Index<usize> for ElementSet<R> {
     type Output = ElementRef<R>;
 
+    #[track_caller]
     fn index(&self, index: usize) -> &Self::Output {
         self.elements.get(index).unwrap_or_else(|| {
             panic!(
@@ -907,6 +1061,7 @@ impl<R> Index<usize> for ElementSet<R> {
 impl<R> Index<NodeId> for ElementSet<R> {
     type Output = ElementRef<R>;
 
+    #[track_caller]
     fn index(&self, index: NodeId) -> &Self::Output {
         let Some(position) = self.by_id.get(&index) else {
             panic!(
