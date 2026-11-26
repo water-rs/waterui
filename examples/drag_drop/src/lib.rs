@@ -15,20 +15,17 @@ use waterui::drag_drop::{DropInfo, Transferable};
 use waterui::prelude::font::Title;
 use waterui::prelude::*;
 use waterui::preview;
-use waterui::reactive::{Binding, impl_constant};
+use waterui::reactive::Binding;
 use waterui::task::{sleep, spawn_local};
 
 const FRUIT_CARD_WIDTH: f32 = 160.0;
 
 /// The value a fruit card's drag carries. Only the basket accepts it.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Transferable)]
 struct Fruit {
     emoji: &'static str,
     label: &'static str,
 }
-
-impl Transferable for Fruit {}
-impl_constant!(Fruit);
 
 /// A draggable fruit card
 fn fruit_card(emoji: &'static str, label: &'static str, color: Color) -> impl View + use<> {

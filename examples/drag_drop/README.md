@@ -31,10 +31,8 @@ text!("Drop here")
     });
 
 // An app type travels within the process only
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Transferable)]
 struct Fruit { emoji: &'static str, label: &'static str }
-impl Transferable for Fruit {}
-impl_constant!(Fruit);
 
 fruit_card.draggable(Fruit { emoji: "🍎", label: "Apple" });
 basket.drop_destination(|fruit: Fruit| { /* only fruit drags land here */ });

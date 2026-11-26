@@ -183,12 +183,9 @@ argument. `Str`, `Url` and `Files` also cross to other applications; an app type
 
 ```rust
 use waterui::drag_drop::Transferable;
-use waterui::reactive::impl_constant;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Transferable)]
 struct Fruit(&'static str);
-impl Transferable for Fruit {}
-impl_constant!(Fruit); // lets a plain `Fruit` value be passed to `.draggable(..)`
 
 fn fruit_card(name: &'static str) -> impl View {
     text(name).padding().draggable(Fruit(name))
@@ -222,9 +219,10 @@ The parts an agent cannot guess:
   a background or scale signal for a highlight. `.on_enter(handler)` / `.on_exit(handler)`
   chain in the same position, accept extractor parameters (`DropInfo` on enter, `State<T>`
   on both), and *add* handlers rather than replacing them.
-- `.draggable(..)` takes a plain transferable value or any signal of one (`Binding<T>`,
-  `Computed<T>`); the payload type is inferred from it. A plain value of your own type
-  needs `impl_constant!` (as above). Text is `.draggable(Str::from(..))`.
+- `.draggable(..)` takes a plain transferable value or a reactive signal of one
+  (`Binding<T>`, `Computed<T>`, or mapped signal); the payload type is inferred
+  from it. Mark your own type with `#[derive(Clone, Transferable)]` (as above).
+  Text is `.draggable(Str::from(..))`.
 - The initiating gesture is platform-defined: click-drag on macOS, long-press-drag on
   iOS and Android. Do not add your own long-press recognizer on top.
 

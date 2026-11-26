@@ -141,8 +141,8 @@ pub mod prelude {
     pub use super::metadata::context_menu::{ContextMenu, DismissContextMenu};
     pub use super::metadata::secure::DynamicRange;
 
-    // Drag and drop extension traits
-    pub use super::drag_drop::DropDestinationExt;
+    // Drag and drop extension traits and derive macro
+    pub use super::drag_drop::{DropDestinationExt, IntoDragPayload, Transferable};
 
     #[cfg(feature = "avatar")]
     pub use super::widget::{Avatar, avatar};
@@ -240,7 +240,9 @@ pub use waterui_macros::ui_test as test;
 #[doc(inline)]
 pub use waterui_macros::{FormBuilder, form};
 #[doc(inline)]
-pub use waterui_macros::{Identifiable, bench, catalog, preview, state, text, view, view_builder};
+pub use waterui_macros::{
+    Identifiable, Transferable, bench, catalog, preview, state, text, view, view_builder,
+};
 #[cfg(feature = "ts")]
 #[doc(inline)]
 pub use waterui_macros::{TsProps, tsx};

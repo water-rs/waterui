@@ -11,7 +11,6 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use waterui::drag_drop::{DropDestinationExt as _, DropInfo, Files, Transferable};
-use waterui::reactive::impl_constant;
 use waterui::{AnyView, Str, Url, ViewExt as _};
 use waterui_core::handler::AnyViewBuilder;
 use waterui_layout::stack::hstack;
@@ -25,11 +24,8 @@ const SIZE: f32 = 160.0;
 
 /// An application type: `TransferKind::of::<TabId>()` is `InProcess`, so the
 /// payload travels within the process only.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Transferable)]
 struct TabId(u64);
-
-impl Transferable for TabId {}
-impl_constant!(TabId);
 
 fn runtime_with(view: AnyView) -> HeadlessRuntime {
     let view = RefCell::new(Some(view));
