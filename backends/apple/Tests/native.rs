@@ -17934,7 +17934,12 @@ mod shadow_modifier {
 
     fn a_clipped_caster_shadow_inherits_circular_silhouette() {
         let leaf = autoreleasepool(|_| {
-            super::resolve::render(label("avatar").size(80.0, 80.0).clip(Circle).shadow(4.0))
+            super::resolve::render(
+                label("avatar")
+                    .size(80.0, 80.0)
+                    .clip(Circle)
+                    .shadow(Shadow::new(4.0)),
+            )
         });
         let wrapper = autoreleasepool(|_| view::retain_base(leaf.view()));
         let _window = autoreleasepool(|_| attach_offscreen(&wrapper));

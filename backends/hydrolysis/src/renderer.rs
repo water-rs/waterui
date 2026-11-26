@@ -201,7 +201,7 @@ use waterui::navigation::tab::{TabStyle, TabsLayout};
 #[cfg(feature = "navigation")]
 use waterui::navigation::{
     CustomNavigationController, NavigationController, NavigationSplitLayout, NavigationStackLayout,
-    NavigationTransaction, NavigationView,
+    NavigationTransaction,
 };
 use waterui::style::{Offset, Rotation, Scale, Shadow};
 use waterui::widget::Divider;

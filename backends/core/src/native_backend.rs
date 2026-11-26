@@ -1271,7 +1271,7 @@ mod tests {
     #[cfg(waterui_feature = "navigation")]
     impl<C> Parent<C> for waterui::navigation::ResolvedNavigationView<C> {
         fn children(self) -> Vec<C> {
-            alloc::vec![self.content]
+            alloc::vec![self.into_content()]
         }
     }
 
@@ -1279,7 +1279,7 @@ mod tests {
     #[cfg(waterui_feature = "navigation")]
     impl<C> Parent<C> for waterui::navigation::NavigationStackLayout<C> {
         fn children(self) -> Vec<C> {
-            alloc::vec![self.resolve(&Environment::new()).content]
+            alloc::vec![self.resolve(&Environment::new()).into_content()]
         }
     }
 
@@ -1295,14 +1295,14 @@ mod tests {
             let mut children = alloc::vec![primary.build(), placeholder.build()];
             if let Some(selected) = primary_sel.snapshot() {
                 if let Some(content) = &content {
-                    children.push(content.build(selected).content);
+                    children.push(content.build(selected).into_content());
                 }
                 if secondary_sel.is_none() {
-                    children.push(detail.build(selected).content);
+                    children.push(detail.build(selected).into_content());
                 }
             }
             if let Some(selected) = secondary_sel.as_ref().and_then(nami::Signal::snapshot) {
-                children.push(detail.build(selected).content);
+                children.push(detail.build(selected).into_content());
             }
             children
         }

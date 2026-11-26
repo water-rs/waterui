@@ -137,21 +137,12 @@ pub struct HydroNavigationEntry<E: crate::text::TextEngine> {
 }
 
 impl<E: crate::text::TextEngine> HydroNavigationEntry<E> {
-    fn new(identity: u64, view: ResolvedNavigationView<HeldChild<E>>) -> Self {
-        let NavigationView {
-            bar,
-            content,
-            state,
-            transition,
-        } = view;
+    fn new(identity: u64, mut view: ResolvedNavigationView<HeldChild<E>>) -> Self {
+        let state = view.take_state();
+        let transition = view.take_transition();
         Self {
             identity,
-            content: StackPage::new(waterui_core::Native::new(NavigationView {
-                bar,
-                content,
-                state: NavigationDestinationState::default(),
-                transition: None,
-            })),
+            content: StackPage::new(waterui_core::Native::new(view)),
             state,
             transition,
         }
