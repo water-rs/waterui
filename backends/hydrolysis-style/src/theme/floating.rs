@@ -10,7 +10,9 @@ use kurbo::Vec2;
 use nami::Signal as _;
 use waterui::Environment;
 use waterui::animation::Animation;
-use waterui::style::FloatingStyle as LegacyFloatingStyle;
+use waterui::style::{
+    FloatingElevation as LegacyFloatingElevation, FloatingStyle as LegacyFloatingStyle,
+};
 use waterui::theme::{
     ColorScheme,
     color::{Accent, Foreground, Surface as SurfaceToken},
@@ -96,6 +98,148 @@ impl Default for FloatingStyle {
     }
 }
 
+trait ElevationToken: 'static {
+    fn to_elevation(&self, env: &Environment) -> Elevation;
+}
+
+impl ElevationToken for FloatingElevation {
+    fn to_elevation(&self, env: &Environment) -> Elevation {
+        elevation_from_shadows(
+            &self.key_shadow_color,
+            self.key_shadow_radius,
+            self.key_shadow_offset_y,
+            &self.ambient_shadow_color,
+            self.ambient_shadow_radius,
+            self.ambient_shadow_offset_y,
+            env,
+        )
+    }
+}
+
+impl ElevationToken for LegacyFloatingElevation {
+    fn to_elevation(&self, env: &Environment) -> Elevation {
+        elevation_from_shadows(
+            &self.key_shadow_color,
+            self.key_shadow_radius,
+            self.key_shadow_offset_y,
+            &self.ambient_shadow_color,
+            self.ambient_shadow_radius,
+            self.ambient_shadow_offset_y,
+            env,
+        )
+    }
+}
+
+fn elevation_from_shadows(
+    key_color: &Color,
+    key_radius: f32,
+    key_offset_y: f32,
+    ambient_color: &Color,
+    ambient_radius: f32,
+    ambient_offset_y: f32,
+    env: &Environment,
+) -> Elevation {
+    Elevation::new(
+        Shadow {
+            sigma: f64::from(key_radius.max(0.0)),
+            offset: Vec2::new(0.0, f64::from(key_offset_y)),
+            spread: 0.0,
+            color: key_color.resolve(env).snapshot(),
+        },
+        Shadow {
+            sigma: f64::from(ambient_radius.max(0.0)),
+            offset: Vec2::new(0.0, f64::from(ambient_offset_y)),
+            spread: 0.0,
+            color: ambient_color.resolve(env).snapshot(),
+        },
+    )
+}
+
+trait FloatingStyleSource {
+    type Elevation: ElevationToken + Clone;
+
+    fn container_color(&self) -> &Color;
+    fn content_color(&self) -> &Color;
+    fn state_layer_color(&self) -> &Color;
+    fn clip_radius(&self) -> f32;
+    fn content_inset_x(&self) -> f64;
+    fn content_inset_y(&self) -> f64;
+    fn minimum_width(&self) -> f64;
+    fn minimum_height(&self) -> f64;
+    fn disabled_content_opacity(&self) -> f32;
+    fn elevation(&self) -> &StateValue<Self::Elevation>;
+}
+
+impl FloatingStyleSource for FloatingStyle {
+    type Elevation = FloatingElevation;
+
+    fn container_color(&self) -> &Color {
+        &self.container_color
+    }
+    fn content_color(&self) -> &Color {
+        &self.content_color
+    }
+    fn state_layer_color(&self) -> &Color {
+        &self.state_layer_color
+    }
+    fn clip_radius(&self) -> f32 {
+        self.clip_radius
+    }
+    fn content_inset_x(&self) -> f64 {
+        self.content_inset_x
+    }
+    fn content_inset_y(&self) -> f64 {
+        self.content_inset_y
+    }
+    fn minimum_width(&self) -> f64 {
+        self.minimum_width
+    }
+    fn minimum_height(&self) -> f64 {
+        self.minimum_height
+    }
+    fn disabled_content_opacity(&self) -> f32 {
+        self.disabled_content_opacity
+    }
+    fn elevation(&self) -> &StateValue<Self::Elevation> {
+        &self.elevation
+    }
+}
+
+impl FloatingStyleSource for LegacyFloatingStyle {
+    type Elevation = LegacyFloatingElevation;
+
+    fn container_color(&self) -> &Color {
+        &self.container_color
+    }
+    fn content_color(&self) -> &Color {
+        &self.content_color
+    }
+    fn state_layer_color(&self) -> &Color {
+        &self.state_layer_color
+    }
+    fn clip_radius(&self) -> f32 {
+        self.clip_radius
+    }
+    fn content_inset_x(&self) -> f64 {
+        self.content_inset_x
+    }
+    fn content_inset_y(&self) -> f64 {
+        self.content_inset_y
+    }
+    fn minimum_width(&self) -> f64 {
+        self.minimum_width
+    }
+    fn minimum_height(&self) -> f64 {
+        self.minimum_height
+    }
+    fn disabled_content_opacity(&self) -> f32 {
+        self.disabled_content_opacity
+    }
+    fn elevation(&self) -> &StateValue<Self::Elevation> {
+        &self.elevation
+    }
+}
+
 /// The declarative look of a `.floating()` surface: its container [`Surface`],
 /// interaction [`Motion`], and the tokens semantic controls (such as buttons)
 /// adopt when placed inside it.
@@ -135,98 +279,47 @@ impl FloatingLook {
         }
     }
 
+    fn from_source<S: FloatingStyleSource>(style: &S, env: &Environment) -> Self {
+        let shape = CornerShape::new(Corners::Fraction(f64::from(style.clip_radius())));
+        let fill = Driven::follow(
+            style.container_color().resolve(env),
+            |color: &WorkingColor, _| Paint::from(*color),
+        );
+        let style_elevation = style.elevation().clone();
+        let elevation_env = env.clone();
+        let elevation = Driven::follow(
+            current_color_scheme(env),
+            move |_scheme: &ColorScheme, inputs: &Inputs<'_, ()>| {
+                style_elevation
+                    .resolve(inputs.state)
+                    .to_elevation(&elevation_env)
+            },
+        );
+        let surface = Surface::new(shape, fill).elevation(elevation);
+        let motion = Motion::uniform(Animation::linear(Duration::ZERO));
+        Self::new(
+            surface,
+            motion,
+            style.content_color().clone(),
+            style.state_layer_color().clone(),
+        )
+        .content_inset(style.content_inset_x(), style.content_inset_y())
+        .minimum_size(style.minimum_width(), style.minimum_height())
+        .disabled_content_opacity(style.disabled_content_opacity())
+    }
+
     /// Builds a [`FloatingLook`] from a solid-fill [`FloatingStyle`] resolved
     /// against `env`.
     #[must_use]
     pub fn from_style(style: &FloatingStyle, env: &Environment) -> Self {
-        let shape = CornerShape::new(Corners::Fraction(f64::from(style.clip_radius)));
-        let fill = Driven::follow(
-            style.container_color.resolve(env),
-            |color: &WorkingColor, _| Paint::from(*color),
-        );
-        let style_elevation = style.elevation.clone();
-        let elevation_env = env.clone();
-        let elevation = Driven::follow(
-            current_color_scheme(env),
-            move |_scheme: &ColorScheme, inputs: &Inputs<'_, ()>| {
-                let resolved = style_elevation.resolve(inputs.state);
-                Elevation::new(
-                    Shadow {
-                        sigma: f64::from(resolved.key_shadow_radius.max(0.0)),
-                        offset: Vec2::new(0.0, f64::from(resolved.key_shadow_offset_y)),
-                        spread: 0.0,
-                        color: resolved.key_shadow_color.resolve(&elevation_env).snapshot(),
-                    },
-                    Shadow {
-                        sigma: f64::from(resolved.ambient_shadow_radius.max(0.0)),
-                        offset: Vec2::new(0.0, f64::from(resolved.ambient_shadow_offset_y)),
-                        spread: 0.0,
-                        color: resolved
-                            .ambient_shadow_color
-                            .resolve(&elevation_env)
-                            .snapshot(),
-                    },
-                )
-            },
-        );
-        let surface = Surface::new(shape, fill).elevation(elevation);
-        let motion = Motion::uniform(Animation::linear(Duration::ZERO));
-        Self::new(
-            surface,
-            motion,
-            style.content_color.clone(),
-            style.state_layer_color.clone(),
-        )
-        .content_inset(style.content_inset_x, style.content_inset_y)
-        .minimum_size(style.minimum_width, style.minimum_height)
-        .disabled_content_opacity(style.disabled_content_opacity)
+        Self::from_source(style, env)
     }
 
-    /// Transitional Step 1 bridge from `waterui::style::FloatingStyle`.
+    /// Transitional compatibility bridge from `waterui::style::FloatingStyle`.
     #[doc(hidden)]
     #[must_use]
     pub fn from_legacy_style(style: &LegacyFloatingStyle, env: &Environment) -> Self {
-        let shape = CornerShape::new(Corners::Fraction(f64::from(style.clip_radius)));
-        let fill = Driven::follow(
-            style.container_color.resolve(env),
-            |color: &WorkingColor, _| Paint::from(*color),
-        );
-        let style_elevation = style.elevation.clone();
-        let elevation_env = env.clone();
-        let elevation = Driven::follow(
-            current_color_scheme(env),
-            move |_scheme: &ColorScheme, inputs: &Inputs<'_, ()>| {
-                let resolved = style_elevation.resolve(inputs.state);
-                Elevation::new(
-                    Shadow {
-                        sigma: f64::from(resolved.key_shadow_radius.max(0.0)),
-                        offset: Vec2::new(0.0, f64::from(resolved.key_shadow_offset_y)),
-                        spread: 0.0,
-                        color: resolved.key_shadow_color.resolve(&elevation_env).snapshot(),
-                    },
-                    Shadow {
-                        sigma: f64::from(resolved.ambient_shadow_radius.max(0.0)),
-                        offset: Vec2::new(0.0, f64::from(resolved.ambient_shadow_offset_y)),
-                        spread: 0.0,
-                        color: resolved
-                            .ambient_shadow_color
-                            .resolve(&elevation_env)
-                            .snapshot(),
-                    },
-                )
-            },
-        );
-        let surface = Surface::new(shape, fill).elevation(elevation);
-        let motion = Motion::uniform(Animation::linear(Duration::ZERO));
-        Self::new(
-            surface,
-            motion,
-            style.content_color.clone(),
-            style.state_layer_color.clone(),
-        )
-        .content_inset(style.content_inset_x, style.content_inset_y)
-        .minimum_size(style.minimum_width, style.minimum_height)
-        .disabled_content_opacity(style.disabled_content_opacity)
+        Self::from_source(style, env)
     }
 
     /// Sets horizontal and vertical content inset for semantic buttons inside
@@ -341,7 +434,7 @@ impl FloatingOverride {
         Self(FloatingOverrideInner::Style(style))
     }
 
-    /// Transitional Step 1 bridge for `waterui::style::FloatingStyle`.
+    /// Transitional compatibility bridge for `waterui::style::FloatingStyle`.
     #[doc(hidden)]
     #[must_use]
     pub const fn legacy(style: LegacyFloatingStyle) -> Self {
@@ -418,9 +511,8 @@ impl Plugin for FloatingScope {}
 /// [`WidgetTheme::floating`].
 #[must_use]
 pub fn default_floating_look(env: &Environment) -> FloatingLook {
-    // Transitional Step 1 bridge: `hydrolysis-m3@main` still installs
-    // `waterui::style::FloatingStyle` in `install_tokens` until Step 2 moves
-    // it onto `WidgetTheme::floating`.
+    // Transitional compatibility bridge while external style crates migrate
+    // from installing `waterui::style::FloatingStyle` to `WidgetTheme::floating`.
     if let Some(legacy) = env.get::<LegacyFloatingStyle>() {
         return FloatingLook::from_legacy_style(legacy, env);
     }

@@ -1048,8 +1048,8 @@ pub trait ViewExt: View + Sized {
         Metadata::new(self, Floating)
     }
 
-    /// Transitional Step 1 shim for external style packages migrating off
-    /// `FloatingStyle`.
+    /// Transitional compatibility shim for external style packages migrating
+    /// off `FloatingStyle`.
     #[doc(hidden)]
     fn floating_with(self, style: FloatingStyle) -> impl View {
         self.floating().install(LegacyFloatingOverride(style))

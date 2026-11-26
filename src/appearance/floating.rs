@@ -14,8 +14,8 @@ pub struct Floating;
 
 impl MetadataKey for Floating {}
 
-/// Transitional Step 1 shim carrying a legacy [`FloatingStyle`]
-/// override for external style crates (`hydrolysis-m3`) while they migrate to
+/// Transitional compatibility shim carrying a legacy [`FloatingStyle`]
+/// override for external style crates while they migrate to
 /// `hydrolysis_style::theme::FloatingOverride`.
 #[doc(hidden)]
 #[derive(Debug, Clone)]

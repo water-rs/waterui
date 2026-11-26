@@ -719,11 +719,8 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         self.close_scope();
     }
 
-    /// Opens a content-effect isolation scope in `ctx`'s record space: its
-    /// layer clips to the live `clip` silhouette and shades its isolated
-    /// subtree through `shader` driven by `effect`. Close with
     /// Opens a child scope clipped to the live `clip` silhouette and optionally
-    /// running `content_effect` over the isolated child content. Paired with
+    /// running `content_effect` over the isolated child content. Close with
     /// [`Self::close_scope`].
     pub(crate) fn open_clipped_content_scope(
         &mut self,
@@ -761,6 +758,9 @@ impl<E: crate::text::TextEngine> HydrolysisRenderer<E> {
         );
     }
 
+    /// Opens a content-effect isolation scope in `ctx`'s record space: its
+    /// layer clips to the live `clip` silhouette and shades its isolated
+    /// subtree through `shader` driven by `effect`. Close with
     /// [`Self::close_scope`].
     pub(crate) fn open_content_effect_scope(
         &mut self,

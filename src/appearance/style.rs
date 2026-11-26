@@ -27,8 +27,8 @@ use waterui_shape::{ClipShape, Shape};
 
 /// Theme tokens for a view promoted with [`ViewExt::floating`](crate::ViewExt::floating).
 ///
-/// Transitional Step 1 shim kept only while external style packages migrate to
-/// `hydrolysis_style::theme::FloatingLook`.
+/// Transitional compatibility shim kept while external style packages migrate
+/// to `hydrolysis_style::theme::FloatingLook`.
 #[doc(hidden)]
 #[derive(Debug, Clone)]
 pub struct FloatingStyle {

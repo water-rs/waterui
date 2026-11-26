@@ -1624,12 +1624,13 @@ impl LiveChrome {
             || self.spec.press().get_drag_deformation().is_some()
     }
 
-    /// The content-effect shader, uniform operand and live silhouette operand
-    /// when the surface declares a content effect; `None` otherwise.
+    /// The surface's live silhouette operand.
     pub(crate) fn surface_shape(&self) -> Operand<ShapeData> {
         self.surface.shape.clone()
     }
 
+    /// The content-effect shader, uniform operand and live silhouette operand
+    /// when the surface declares a content effect; `None` otherwise.
     pub(crate) fn content_effect_operands(
         &self,
     ) -> Option<(ContentShader, Operand<MaterialEffect>, Operand<ShapeData>)> {
