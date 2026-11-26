@@ -1364,12 +1364,6 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
             .is_some_and(|hidden| self.read_signal(hidden.signal()))
     }
 
-    #[cfg(not(feature = "accessibility"))]
-    #[expect(dead_code, reason = "called unconditionally from widget render paths")]
-    pub(crate) const fn is_accessibility_hidden(&self, _env: &Environment) -> bool {
-        false
-    }
-
     #[cfg(feature = "accessibility")]
     pub fn set_accessibility_root_label(&mut self, label: &str) {
         self.accessibility.root_label.clear();

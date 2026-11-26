@@ -2148,6 +2148,17 @@ impl<E: crate::text::TextEngine> SemanticCore<E> {
     pub(crate) fn take_subview_structural_change(&mut self) -> bool {
         core::mem::take(&mut self.subview_structural_change)
     }
+
+    /// Fallback when the `accessibility` feature is disabled so widget render
+    /// paths can query suppression unconditionally without feature gating.
+    #[cfg(not(feature = "accessibility"))]
+    #[expect(
+        clippy::unused_self,
+        reason = "signature matches the `accessibility`-enabled method on `SemanticCore`"
+    )]
+    pub(crate) const fn is_accessibility_hidden(&self, _env: &Environment) -> bool {
+        false
+    }
 }
 
 #[cfg(hydrolysis_cherenkov)]
