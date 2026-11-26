@@ -1421,7 +1421,7 @@ pub fn components_block_36() {
         disclosure(header, || body())
     };
     let _ = {
-        view.floating() // themed elevated surface (FloatingStyle-aware)
+        view.floating() // backend-realized elevated floating surface
     };
 }
 

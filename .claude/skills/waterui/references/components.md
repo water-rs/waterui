@@ -923,7 +923,7 @@ use waterui::widget::disclosure;                       // not in the prelude
 card(content).title("Summary").subtitle("This week")   // Card; .style(CardStyle::Outlined) | Elevated | Filled
 suspense(async { load().await })                       // takes a future, not a closure; .loading(view) overrides the spinner
 disclosure("Header", || body())                        // Disclosure::new(header, ..).expanded(&open) controls it
-view.floating()                                        // themed elevated surface (FloatingStyle-aware)
+view.floating()                                        // backend-realized elevated floating surface
 ```
 
 `.secure()` on any view marks it as content that must not appear in screenshots. Only the

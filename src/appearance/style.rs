@@ -20,87 +20,9 @@ use nami::{
     Computed, SignalExt,
     signal::{IntoComputed, IntoSignal},
 };
-use waterui_core::{Angle, IntoSignalF32, metadata::MetadataKey, plugin::Plugin};
+use waterui_core::{Angle, IntoSignalF32, metadata::MetadataKey};
 use waterui_graphics::color::Color;
-use waterui_interaction::interaction::StateValue;
 use waterui_shape::{ClipShape, Shape};
-
-/// Theme tokens for a view promoted with [`ViewExt::floating`](crate::ViewExt::floating).
-///
-/// Transitional compatibility shim kept while external style packages migrate
-/// to `hydrolysis_style::theme::FloatingLook`.
-#[doc(hidden)]
-#[derive(Debug, Clone)]
-pub struct FloatingStyle {
-    /// Floating surface fill.
-    pub container_color: Color,
-    /// Foreground used by semantic controls inside the floating surface.
-    pub content_color: Color,
-    /// Hover, focus, press, and ripple color.
-    pub state_layer_color: Color,
-    /// Normalized corner radius used by the surface and its state layer.
-    pub clip_radius: f32,
-    /// Horizontal content inset used when measuring a semantic button.
-    pub content_inset_x: f64,
-    /// Vertical content inset used when measuring a semantic button.
-    pub content_inset_y: f64,
-    /// Theme-provided minimum width for a floating semantic button.
-    pub minimum_width: f64,
-    /// Theme-provided minimum height for a floating semantic button.
-    pub minimum_height: f64,
-    /// Opacity applied to floating-button content while disabled.
-    pub disabled_content_opacity: f32,
-    /// The surface's elevation per interaction state — a floating action
-    /// button rises one level while hovered.
-    pub elevation: StateValue<FloatingElevation>,
-}
-
-impl Plugin for FloatingStyle {}
-
-/// The two shadows that lift a floating surface: a soft ambient shadow and a
-/// tighter key shadow.
-#[doc(hidden)]
-#[derive(Debug, Clone)]
-pub struct FloatingElevation {
-    /// Ambient shadow color.
-    pub ambient_shadow_color: Color,
-    /// Ambient shadow blur radius.
-    pub ambient_shadow_radius: f32,
-    /// Ambient shadow vertical offset.
-    pub ambient_shadow_offset_y: f32,
-    /// Key shadow color.
-    pub key_shadow_color: Color,
-    /// Key shadow blur radius.
-    pub key_shadow_radius: f32,
-    /// Key shadow vertical offset.
-    pub key_shadow_offset_y: f32,
-}
-
-impl Default for FloatingStyle {
-    fn default() -> Self {
-        use crate::theme::color::{Accent, Foreground, Surface};
-
-        Self {
-            container_color: Surface.into(),
-            content_color: Accent.into(),
-            state_layer_color: Accent.into(),
-            clip_radius: 0.25,
-            content_inset_x: 0.0,
-            content_inset_y: 0.0,
-            minimum_width: 44.0,
-            minimum_height: 44.0,
-            disabled_content_opacity: 0.38,
-            elevation: StateValue::new(FloatingElevation {
-                ambient_shadow_color: Color::new(Foreground).with_opacity(0.08),
-                ambient_shadow_radius: 6.0,
-                ambient_shadow_offset_y: 2.0,
-                key_shadow_color: Color::new(Foreground).with_opacity(0.12),
-                key_shadow_radius: 3.0,
-                key_shadow_offset_y: 1.0,
-            }),
-        }
-    }
-}
 
 /// Represents a shadow effect that can be applied to UI elements.
 ///

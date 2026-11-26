@@ -335,17 +335,10 @@ unless `.silhouette(...)` sets an explicit shape.
 
 ## Floating surfaces
 
-`.floating()` promotes any view to a themed elevated surface (shadow, clip radius,
-insets) while preserving the wrapped control's semantic identity; `.floating_with(style)`
-supplies explicit `FloatingStyle` tokens. Themes may install a `FloatingStyle` in the
-environment — read it with `env.get::<FloatingStyle>()` (falling back to
-`FloatingStyle::default()`) when custom chrome must match floating controls.
-
-`FloatingStyle::elevation` is a `StateValue<FloatingElevation>` — the surface's
-ambient and key shadows resolve against the state the control inside reports
-through `.interaction_state`, so a themed FAB can lift on hover
-(`elevation.when(InteractionState::HOVERED, ..)`) without view code wiring
-anything.
+`.floating()` promotes any view to a platform-styled elevated floating surface while
+preserving the wrapped control's semantic identity — Apple backends realize it with
+native floating chrome, and Hydrolysis realizes the active style package's floating
+surface look (including state-driven elevation for semantic controls inside).
 
 ## Icons
 

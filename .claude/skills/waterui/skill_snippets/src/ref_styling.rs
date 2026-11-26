@@ -506,18 +506,11 @@ pub fn styling_block_13() {
 }
 
 // ---------------------------------------------------------------------------
-// styling.md § "## Floating surfaces" (prose): `.floating()`,
-// `.floating_with(style)`, and reading a `FloatingStyle` from the environment.
+// styling.md § "## Floating surfaces" (prose): `.floating()`.
 // Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn styling_floating_prose() {
-    use waterui::style::FloatingStyle;
-
     let _ = Divider.floating();
-    let _ = Divider.floating_with(FloatingStyle::default());
-
-    let env = Environment::new();
-    let _ = env.get::<FloatingStyle>().cloned().unwrap_or_default();
 }
 
 // ---------------------------------------------------------------------------
