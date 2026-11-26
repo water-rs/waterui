@@ -236,6 +236,33 @@ describe("For", () => {
       createRoot(() => jsx(For, { each: [], children: "nope" })),
     ).toThrow(/function child/);
   });
+
+  test("re-renders a retained key when its item value changes without disturbing siblings", () => {
+    const items = createSignal([
+      { id: "a", name: "old" },
+      { id: "b", name: "keep" },
+    ]);
+    const cleanups = [];
+    createRoot((dispose) => {
+      const slot = jsx(For, {
+        each: items,
+        by: (item) => item.id,
+        children: (item) => {
+          onCleanup(() => cleanups.push(`${item.id}:${item.name}`));
+          return jsx("Text", { children: item.name });
+        },
+      });
+      const beforeB = slot.entries[1].handle;
+      items.set([
+        { id: "a", name: "new" },
+        { id: "b", name: "keep" },
+      ]);
+      expect(slot.entries[0].handle.children).toEqual(["new"]);
+      expect(slot.entries[1].handle).toBe(beforeB);
+      expect(cleanups).toEqual(["a:old"]);
+      dispose();
+    });
+  });
 });
 
 describe("Box", () => {

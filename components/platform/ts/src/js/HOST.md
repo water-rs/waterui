@@ -148,11 +148,14 @@ input reading the item list. Identity is `by(item)` when given. Without it an
 item identifies itself, which only a primitive can do: an object crosses the
 engine seam as a copy, so its referential identity is gone by the time the host
 sees it, and a list of objects without `by` is a typed error naming the fix
-rather than a list that silently rebuilds every row. On every change the host
-reconciles: a retained key keeps
-its branch (the branch's `index` accessor updates if its position moved), a
-new key calls `render(item, index)` once, and a removed key's branch is
-disposed. `render` receives the item and an accessor of its current index.
+rather than a list that silently rebuilds every row. On every change the host reconciles: a new key calls `render(item, index)` once
+and presents the returned branch; a retained key updates its `index` accessor
+if its position moved, keeps its existing branch when the item value is
+unchanged (structurally equal for data payloads, identical by reference for
+retained handles and functions), and otherwise disposes its previous branch
+and calls `render(item, index)` again to replace that row's branch without
+disturbing sibling rows; and a removed key's branch is disposed. `render`
+receives the item and an accessor of its current index.
 
 ## `environment() -> HostEnvironment`
 
