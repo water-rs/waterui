@@ -705,4 +705,10 @@ pub trait WidgetTheme {
     fn snackbar(&self, env: &Environment) -> super::SnackbarLook {
         super::snackbar::default_snackbar_look(env)
     }
+
+    /// The look of an avatar: default dimensions, container backdrop, and
+    /// monogram typography.
+    fn avatar(&self, env: &Environment) -> super::AvatarLook {
+        super::avatar::default_avatar_look(env)
+    }
 }

@@ -51,6 +51,8 @@ pub mod live_tabs;
 pub mod live_toggle;
 pub mod material;
 mod metadata;
+#[cfg(waterui_feature = "avatar")]
+pub use metadata::{EngineAnimated, resolve_scope_clip_parts, shape_data_for_parts};
 pub mod mount;
 mod native_measure;
 #[cfg(feature = "navigation")]

@@ -600,6 +600,8 @@ mod tests {
         }
 
         stub_parents! {
+            #[cfg(waterui_feature = "avatar")]
+            avatar<C>: waterui::widget::avatar::AvatarConfig<C>,
             button<C>: waterui::component::button::ButtonConfig<C>,
             badge<C>: waterui::component::badge::BadgeConfig<C>,
             card<C>: waterui::widget::card::CardConfig<C>,

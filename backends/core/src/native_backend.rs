@@ -877,6 +877,9 @@ native_backend! {
         map: waterui::map::MapConfig,
     }
     parents {
+        #[cfg(waterui_feature = "avatar")]
+        /// An avatar.
+        avatar<C>: waterui::widget::avatar::AvatarConfig<C>,
         /// A button.
         button<C>: waterui::component::button::ButtonConfig<C>,
         /// A badge.
@@ -1099,6 +1102,13 @@ mod tests {
     impl<C> Parent<C> for waterui::component::button::ButtonConfig<C> {
         fn children(self) -> Vec<C> {
             alloc::vec![self.label().build()]
+        }
+    }
+
+    #[cfg(waterui_feature = "avatar")]
+    impl<C> Parent<C> for waterui::widget::avatar::AvatarConfig<C> {
+        fn children(mut self) -> Vec<C> {
+            self.take_fallback().into_iter().collect()
         }
     }
 
@@ -2306,6 +2316,35 @@ mod tests {
             [core::any::type_name::<
                 Metadata<waterui::view_renderer::CaptureBinder<AnyView>, AnyView>,
             >()]
+        );
+    }
+
+    #[cfg(waterui_feature = "avatar")]
+    #[test]
+    fn an_avatar_keeps_its_fallback_typed() {
+        use waterui::widget::avatar::{Avatar, avatar};
+
+        let env = Environment::new();
+        let reached = |view| {
+            let mut recorder = Recorder::default();
+            Realize::child(&mut recorder, view, &env, ());
+            recorder.reached.into_inner()
+        };
+
+        assert_eq!(reached(avatar("Ada Lovelace")), ["dynamic_range", "avatar"]);
+
+        let custom = || Avatar::new("Katherine Johnson", Spacer::flexible);
+        assert_eq!(
+            reached(custom()),
+            ["dynamic_range", "avatar", "typed child", "spacer"]
+        );
+        assert_eq!(
+            reached(AnyView::new(custom())),
+            ["dynamic_range", "avatar", "erased child", "spacer"]
+        );
+        assert_eq!(
+            reached(Hooks::new(custom(), SpacerAsDivider)),
+            ["dynamic_range", "avatar", "typed child", "divider"]
         );
     }
 }

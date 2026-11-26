@@ -6,6 +6,15 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
+#[cfg(waterui_feature = "avatar")]
+impl_widget_behavior!(
+    crate::widgets::controls::avatar::AvatarRenderState<E>,
+    crate::widgets::controls::avatar::render_avatar_node,
+    crate::widgets::controls::avatar::measure_avatar_node
+    ; dirty: take_layout_dirty
+    ; a11y: crate::widgets::controls::avatar::emit_avatar_accessibility
+    ; label: contributed_label
+);
 impl_widget_behavior!(
     crate::widgets::controls::button::ButtonRenderState<E>,
     crate::widgets::controls::button::render_button_node,
@@ -487,6 +496,26 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
             state.prebuild(renderer, env);
         });
         let stretch = state.stretch_axis();
+        let state = Rc::new(RefCell::new(state));
+        Self::build_widget_with_core(state, stretch, env, core)
+    }
+
+    /// Build a persistent avatar node: custom fallback and image sub-views are
+    /// pre-built eagerly so layout measurements and accessibility suppression work
+    /// on first flush.
+    #[cfg(waterui_feature = "avatar")]
+    pub(super) fn build_avatar(
+        config: waterui::widget::avatar::AvatarConfig<HeldChild<E>>,
+        env: &Environment,
+        renderer: &mut SemanticCore<E>,
+    ) -> Self {
+        use crate::widgets::controls::avatar::AvatarRenderState;
+        let stretch = waterui_core::NativeView::stretch_axis(&config);
+        let mut state = AvatarRenderState::from_config(config);
+        let core = renderer.new_core();
+        renderer.with_probe_reader(&core, ReaderPhase::Record, |renderer| {
+            state.prebuild(renderer, env);
+        });
         let state = Rc::new(RefCell::new(state));
         Self::build_widget_with_core(state, stretch, env, core)
     }

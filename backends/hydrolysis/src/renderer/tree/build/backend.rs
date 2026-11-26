@@ -1468,6 +1468,20 @@ impl<E: crate::text::TextEngine> NativeBackend for HydroBackend<'_, E> {
         RenderNode::build_secure_field(native.map_slots(into_child), env, renderer)
     }
 
+    #[cfg(waterui_feature = "avatar")]
+    fn avatar<C: ChildView<Self>>(
+        &mut self,
+        native: waterui::widget::avatar::AvatarConfig<C>,
+        env: &Environment,
+        (): (),
+    ) -> RenderNode<E> {
+        use waterui_core::backend::MapSlots as _;
+        mark_reached!("avatar");
+        let renderer = &mut *self.renderer;
+        let into_child: fn(C) -> HeldChild<E> = C::into_child;
+        RenderNode::build_avatar(native.map_slots(into_child), env, renderer)
+    }
+
     fn badge<C: ChildView<Self>>(
         &mut self,
         native: waterui::component::badge::BadgeConfig<C>,

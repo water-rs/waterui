@@ -1292,6 +1292,10 @@ pub fn render_environment() -> Environment {
     // The richer fixtures (list rows, stacked text) resolve muted and
     // accent roles plus the caption/subheadline slots — install them so
     // a theme miss can't masquerade as a render failure.
+    waterui::theme::install_color_signal::<waterui::theme::color::SurfaceVariant>(
+        &mut env,
+        black(),
+    );
     waterui::theme::install_color_signal::<waterui::theme::color::MutedForeground>(
         &mut env,
         black(),

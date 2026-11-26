@@ -19,6 +19,7 @@ workspace = true
 # dependency in the artifact; the default is everything ported so far.
 default = [
     "applied_filter",
+    "avatar",
     "calendar",
     "canvas",
     "gpu_surface",
@@ -41,6 +42,7 @@ default = [
     "view_effect",
 ]
 applied_filter = ["gpu_surface", "dep:objc2-core-image", "waterui/effects"]
+avatar = ["waterui/avatar"]
 calendar = ["waterui/calendar"]
 # The Core Animation realization of `Canvas`.
 canvas = ["dep:block2", "dep:skrifa", "waterui-graphics/text", "waterui/canvas"]

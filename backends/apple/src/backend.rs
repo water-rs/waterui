@@ -247,6 +247,20 @@ impl NativeBackend for AppleBackend {
         )
     }
 
+    #[cfg(waterui_feature = "avatar")]
+    fn avatar<C: ChildView<Self>>(
+        &mut self,
+        native: waterui::widget::avatar::AvatarConfig<C>,
+        env: &Environment,
+        (): (),
+    ) -> NativeLeaf {
+        mark_reached!("avatar");
+        crate::components::avatar::realize_avatar_config(
+            native.map_slots(C::into_child),
+            &self.entry(env),
+        )
+    }
+
     fn badge<C: ChildView<Self>>(
         &mut self,
         native: waterui::component::badge::BadgeConfig<C>,
