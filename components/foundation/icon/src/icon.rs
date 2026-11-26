@@ -151,13 +151,7 @@ impl View for Icon {
                     && (vw > DEFAULT_ICON_SIZE || vh > DEFAULT_ICON_SIZE)
                 {
                     let (w, h) = fit_viewbox(Some((vw, vh)), DEFAULT_ICON_SIZE);
-                    return OneOf4::C(
-                        Frame::new(svg)
-                            .ideal_width(w)
-                            .ideal_height(h)
-                            .max_width(w)
-                            .max_height(h),
-                    );
+                    return OneOf4::C(Frame::new(svg).ideal_width(w).ideal_height(h));
                 }
                 OneOf4::D(svg)
             }
