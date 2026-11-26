@@ -10,10 +10,10 @@ use alloc::collections::BTreeSet;
 use nami::collection::Collection;
 use nami::{Binding, Computed, signal::IntoComputed};
 
-use crate::component::selection_support::{SelectionThemed, WithId};
-use crate::views::{AnyViews, ForEach, SharedAnyViews, Views};
+use crate::selection_support::{SelectionThemed, WithId};
 use waterui_core::backend::{Backend, ChildSlot, MapSlots};
 use waterui_core::id::{Id as RawId, Mapping};
+use waterui_core::views::{AnyViews, ForEach, SharedAnyViews, Views};
 use waterui_core::{
     AnyView, Environment, Native, NativeView, View, handler::Handler, layout::StretchAxis,
 };
@@ -781,11 +781,12 @@ impl ListSection {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ViewExt;
+    use crate::label::TitleLabel;
     use nami::Signal as _;
-    use waterui_controls::label::TitleLabel;
     use waterui_core::OneOf2;
     use waterui_core::backend::peel_metadata;
+    use waterui_core::env::with;
+    use waterui_core::id::TaggedView;
     use waterui_macros::text;
 
     /// Resolves `config` the way `List` does before it reaches a backend,
@@ -807,9 +808,10 @@ mod tests {
     /// included — while a list without the modifier keeps `None`.
     #[test]
     fn min_row_height_resolves_from_the_environment() {
-        let (content, env) = modifier_parts(
-            List::content((row("Alice", "joined"), row("Hello", ""))).list_min_row_height(0.0),
-        );
+        let (content, env) = modifier_parts(with(
+            List::content((row("Alice", "joined"), row("Hello", ""))),
+            ListMinRowHeight(0.0),
+        ));
         let list = *content
             .downcast::<List<
                 ContentRows<
@@ -833,9 +835,9 @@ mod tests {
     /// transforms `resolve_list_config` wraps every row in.
     #[test]
     fn row_modifiers_survive_the_section_and_selection_transform() {
-        use crate::color::WorkingColor;
         use crate::theme::color::{Accent, Foreground, MutedForeground, SelectionForeground};
         use crate::theme::install_color_signal;
+        use waterui_color::WorkingColor;
 
         let mut env = Environment::new();
         install_color_signal::<Foreground>(
@@ -858,13 +860,13 @@ mod tests {
         let selection = nami::Binding::new(Option::<i32>::None);
         let config = render_config(
             List::content((
-                (|| {
-                    text!("Alice joined")
-                        .list_row_insets(EdgeInsets::all(4.0))
-                        .list_row_deletable(false)
-                })
-                .tag(1),
-                (|| text!("Hello")).tag(2),
+                TaggedView::new(1, || {
+                    with(
+                        with(text!("Alice joined"), ListRowInsets(EdgeInsets::all(4.0))),
+                        ListRowDeletable(Computed::constant(false)),
+                    )
+                }),
+                TaggedView::new(2, || text!("Hello")),
             ))
             .selection(&selection)
             .config(),
@@ -910,7 +912,7 @@ mod tests {
         use nami::collection::StateList;
         use waterui_core::id::Identifiable;
 
-        use crate::component::text;
+        use waterui_text::text;
 
         #[derive(Clone)]
         struct Entry {

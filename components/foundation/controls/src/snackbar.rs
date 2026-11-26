@@ -51,8 +51,8 @@ use core::time::Duration;
 
 use executor_core::spawn_local;
 use nami::{Binding, Computed, Signal as _, SignalExt as _};
-use waterui_controls::{IntoLabel, Label, SemanticLabel, slot::SlotBuilder};
 use waterui_core::backend::{Backend, ChildSlot, MapSlots};
+use waterui_core::env::Installed;
 use waterui_core::extract::State;
 use waterui_core::handler::{
     BoxedEventAction, EventHandler, Handler, ReportExtraction, SharedAction, ViewBuilder,
@@ -62,13 +62,11 @@ use waterui_core::metadata::MetadataKey;
 use waterui_core::plugin::Plugin;
 use waterui_core::{AnyView, Environment, Metadata, View};
 use waterui_macros::state;
-#[cfg(feature = "flow-markdown")]
-use waterui_markdown::CodeCopyFeedback;
-#[cfg(feature = "flow-markdown")]
-use waterui_text::code::OnCopied;
+#[cfg(feature = "highlight")]
+use waterui_text::code::{CodeCopyFeedback, OnCopied};
 use waterui_text::{IntoText, Text};
 
-use crate::ViewExt;
+use crate::{IntoLabel, Label, SemanticLabel, slot::SlotBuilder};
 
 /// Maximum number of snackbars visible at once *per placement*. When a new
 /// snackbar arrives over this limit at the same placement, the oldest live one
@@ -945,19 +943,33 @@ impl<I: SnackbarIconSlot> SnackbarManager<I> {
     }
 }
 
+struct SnackbarHostPlugins<I: 'static> {
+    manager: SnackbarManager<I>,
+}
+
+impl<I: SnackbarIconSlot> Plugin for SnackbarHostPlugins<I> {
+    fn install(self, env: &mut Environment) {
+        #[cfg(feature = "highlight")]
+        {
+            let snackbar = self.manager.clone();
+            env.insert(CodeCopyFeedback(OnCopied::new(move |_env| {
+                snackbar.show(I::from_plain(Snackbar::new("Copied to clipboard")));
+            })));
+        }
+        env.insert(State(self.manager));
+    }
+}
+
 fn attach_manager<V: View, I: SnackbarIconSlot>(
     content: V,
     manager: &SnackbarManager<I>,
 ) -> impl View + use<V, I> {
-    let content = content.state(manager);
-    #[cfg(feature = "flow-markdown")]
-    let content = content.with(CodeCopyFeedback(OnCopied::new({
-        let snackbar = manager.clone();
-        move |_env| {
-            snackbar.show(I::from_plain(Snackbar::new("Copied to clipboard")));
-        }
-    })));
-    content
+    Installed::new(
+        content,
+        SnackbarHostPlugins {
+            manager: manager.clone(),
+        },
+    )
 }
 
 struct SnackbarHostView<V, I: 'static> {
@@ -1027,10 +1039,11 @@ impl<V: View, I: SnackbarIconSlot> View for SnackbarHost<V, I> {
 mod tests {
     use alloc::vec::Vec;
 
+    use waterui::ViewExt as _;
     use waterui_core::binding;
 
-    use super::super::parked_executor::install as install_executor;
     use super::*;
+    use crate::init_test_executor as install_executor;
 
     fn new_manager() -> SnackbarManager {
         SnackbarManager::<NoIcon>::create().0
@@ -1230,7 +1243,7 @@ mod tests {
         install_executor();
         let snackbar = Snackbar::new("Padded").icon(|| text("★").padding());
         let cloned = snackbar.clone();
-        let host = text("Content").snackbar_host_with_icons::<Padding<Text>>();
+        let host = SnackbarHost::<_, Padding<Text>>::new(text("Content"));
         let _ = host.body(&Environment::new());
 
         let view = SnackbarManager::host(move |manager| {

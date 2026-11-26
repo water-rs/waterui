@@ -1,11 +1,11 @@
 //! Divider widget shared across `WaterUI` surfaces.
 
 #[cfg(feature = "menu")]
+use crate::menu::{MenuItem, MenuView};
+#[cfg(feature = "menu")]
 use alloc::{vec, vec::Vec};
 #[cfg(feature = "menu")]
 use nami::Computed;
-#[cfg(feature = "menu")]
-use waterui_controls::menu::{MenuItem, MenuView};
 use waterui_core::layout::StretchAxis;
 use waterui_core::raw_view;
 
@@ -40,8 +40,8 @@ impl MenuView for Divider {
 
 #[cfg(all(test, feature = "menu"))]
 mod tests {
+    use crate::menu::{MenuItem, MenuView as _};
     use nami::Signal as _;
-    use waterui_controls::menu::{MenuItem, MenuView as _};
 
     use super::Divider;
 

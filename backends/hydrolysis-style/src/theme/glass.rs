@@ -2,7 +2,7 @@
 //! what a theme returns for a `.background(Glass…)` ([`GlassLook`]).
 //!
 //! The look states what fills the glass's outline and how it answers
-//! interaction; the outline itself is the [`Glass`](waterui::background::Glass)'s
+//! interaction; the outline itself is the [`Glass`](waterui_shape::background::Glass)'s
 //! shape on the content's frame, which Hydrolysis supplies. Hydrolysis
 //! realizes the look as the surface of a chrome — the material, its border
 //! and its elevation — recorded behind the content, with every value that

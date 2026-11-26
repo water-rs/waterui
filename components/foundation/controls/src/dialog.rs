@@ -34,8 +34,11 @@
 //! }
 //! ```
 
+use alloc::{vec, vec::Vec};
 use nami::Binding;
-use waterui_controls::{Button, ButtonRole, LabelKind};
+use waterui_contract::contract_violation;
+
+use crate::{Button, ButtonRole, LabelKind};
 use waterui_core::Environment;
 use waterui_core::handler::{
     ExtractionError, Handler, ReportExtraction as _, SharedAction, shared_action,
@@ -155,7 +158,7 @@ where
 /// A confirmation / alert dialog, presented window-modal by a binding.
 ///
 /// Attach it to the view that owns the alert with
-/// [`ViewExt::dialog`](crate::ViewExt::dialog):
+/// `ViewExt::dialog`:
 ///
 /// ```rust,no_run
 /// use waterui::prelude::*;
@@ -286,7 +289,7 @@ impl Dialog {
             .count()
             > 1
         {
-            crate::contract_violation!(
+            contract_violation!(
                 "Dialog declares more than one Cancel action; every declared action is kept"
             );
         }
@@ -359,8 +362,9 @@ impl Dialog {
 
 #[cfg(test)]
 mod tests {
+    use crate::{ButtonRole, button};
+    use alloc::vec::Vec;
     use nami::Binding;
-    use waterui_controls::{ButtonRole, button};
 
     use super::{Dialog, DialogAction};
 

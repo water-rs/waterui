@@ -6,12 +6,12 @@
 
 use cherenkov_record::{Paint, Shadow, WorkingColor};
 use kurbo::Vec2;
-use waterui::Environment;
-use waterui::theme::color::{
-    Border as BorderToken, MutedForeground, Surface as SurfaceToken, SurfaceVariant,
+use waterui_controls::card::CardStyle;
+use waterui_core::Environment;
+use waterui_graphics::color::{
+    Color,
+    token::{Border as BorderToken, MutedForeground, Surface as SurfaceToken, SurfaceVariant},
 };
-use waterui::widget::CardStyle;
-use waterui_graphics::color::Color;
 use waterui_text::font::{Font, Subheadline, Title};
 
 use super::{Border, CornerShape, Driven, Elevation, Surface};

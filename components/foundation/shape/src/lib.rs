@@ -32,7 +32,9 @@ use waterui_graphics::color::Color;
 pub mod background;
 pub mod border;
 pub mod filter;
+pub mod floating;
 mod morph;
+pub mod style;
 
 pub use background::{
     ColorSignalBackground, Glass, GlassBackground, GlassStyle, IntoBackground, Material,
@@ -40,7 +42,9 @@ pub use background::{
 };
 pub use border::Border;
 pub use filter::Opacity;
+pub use floating::Floating;
 pub use morph::MorphShape;
+pub use style::{Anchor, Offset, Rotation, Scale, Shadow, Vector};
 
 // ============================================================================
 // PathCommand - The primitive operations for drawing paths

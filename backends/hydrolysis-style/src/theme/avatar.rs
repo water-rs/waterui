@@ -4,7 +4,7 @@ use waterui_core::Environment;
 use waterui_graphics::color::Color;
 use waterui_text::font::Font;
 
-use waterui::theme::color::{MutedForeground, SurfaceVariant};
+use waterui_graphics::color::token::{MutedForeground, SurfaceVariant};
 
 /// Default avatar side length in logical points when callers do not specify one.
 const DEFAULT_AVATAR_SIDE: f32 = 40.0;

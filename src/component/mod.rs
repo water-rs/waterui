@@ -3,24 +3,52 @@
 //! This module contains various UI components that can be used to build user interfaces.
 
 #[doc(inline)]
-pub use waterui_controls::*;
+pub use waterui_controls::{
+    Badge, BadgeConfig, BadgeValue, Built, Button, ButtonAction, ButtonLabel, ButtonRole,
+    ButtonStyle, ButtonStyleConfiguration, ButtonTrigger, ControlLabel, ControlSize,
+    CustomButtonStyle, CustomLabel, CustomTextSelection, Disclosure, DisclosureConfig, ErasedLabel,
+    IconLabel, IconPosition, IconSlot, IntoButtonStyle, IntoLabel, Label, LabelDisplayMode,
+    LabelKind, NoopSlot, PrimitiveButtonStyle, PrimitiveButtonStyleConfiguration, Progress,
+    ProgressConfig, ProgressStyle, ProgressWithTotal, SemanticLabel, SlotBuilder, TextSelection,
+    TitleLabel, button, disclosure, input, label, loading, size, slot, text_selection,
+};
+#[cfg(feature = "menu")]
+#[doc(inline)]
+pub use waterui_controls::{
+    Command, CommandExt, Menu, MenuBarView, MenuItem, MenuView, NamedKey, Shortcut, ShortcutKey,
+    ShortcutModifiers, ShortcutNamedKey, menu,
+};
+#[cfg(feature = "toggle")]
+#[doc(inline)]
+pub use waterui_controls::{
+    CustomToggleStyle, IntoToggleStyle, Toggle, ToggleLabel, ToggleStyle, ToggleStyleConfiguration,
+    toggle,
+};
+#[cfg(feature = "slider")]
+#[doc(inline)]
+pub use waterui_controls::{Slider, SliderValue, slider};
+#[cfg(feature = "stepper")]
+#[doc(inline)]
+pub use waterui_controls::{Stepper, StepperValue, stepper};
+#[cfg(feature = "text-field")]
+#[doc(inline)]
+pub use waterui_controls::{TextField, TextFieldValue, field, text_field};
 
 pub mod badge;
 pub mod focus;
 #[cfg(feature = "link")]
-pub mod link;
+#[doc(inline)]
+pub use waterui_controls::link;
 #[cfg(feature = "list")]
-pub mod list;
-
-#[cfg(any(feature = "list", feature = "table"))]
-pub(crate) mod selection_support;
+#[doc(inline)]
+pub use waterui_controls::list;
+#[cfg(feature = "table")]
+#[doc(inline)]
+pub use waterui_controls::table;
 
 pub mod progress;
 #[doc(inline)]
-pub use progress::{Progress, ProgressStyle, loading, progress};
-
-#[cfg(feature = "table")]
-pub mod table;
+pub use progress::progress;
 
 #[doc(inline)]
 pub use waterui_core::{AnyView, Dynamic, anyview, dynamic};

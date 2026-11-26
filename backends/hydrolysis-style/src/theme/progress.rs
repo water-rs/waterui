@@ -18,7 +18,7 @@
 use std::rc::Rc;
 
 use kurbo::{Rect, Size};
-use waterui::component::progress::ProgressStyle;
+use waterui_controls::progress::ProgressStyle;
 use waterui_core::layout::LayoutDirection;
 use waterui_graphics::color::Color;
 

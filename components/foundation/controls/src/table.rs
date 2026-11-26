@@ -64,9 +64,10 @@ use waterui_core::views::{ForEach, SharedAnyViews};
 use waterui_core::{AnyView, Environment, Native, NativeView, OneOf2, View};
 use waterui_text::{IntoText, Text};
 
-pub use crate::component::selection_support::SelectionThemed;
-use crate::component::selection_support::WithId;
-use crate::contract_violation;
+use waterui_contract::contract_violation;
+
+pub use crate::selection_support::SelectionThemed;
+use crate::selection_support::WithId;
 
 /// Direction of an active table column sort.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1043,8 +1044,8 @@ mod tests {
     use waterui_core::id::{Id as RawId, Identifiable};
 
     use super::{SortDirection, Table, TableColumn, TableSelection, TableSort, col, table};
-    use crate::Color;
-    use crate::component::text;
+    use waterui_color::Color;
+    use waterui_text::text;
 
     #[derive(Clone)]
     struct Person {

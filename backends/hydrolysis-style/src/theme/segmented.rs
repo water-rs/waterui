@@ -30,6 +30,7 @@ use nami::Computed;
 use waterui_controls::ControlSize;
 use waterui_core::layout::LayoutDirection;
 use waterui_graphics::color::Color;
+use waterui_graphics::color::token::Foreground;
 use waterui_text::font::Font;
 
 use super::look::{Custom, CustomPart, DrivenSet, HitRegion, Motion, SpecTint};
@@ -322,7 +323,7 @@ impl SegmentedLook {
     pub fn new(layout: SegmentedLayout, label: SegmentLabel, motion: Motion) -> Self {
         let chrome = Chrome::new(
             Surface::clear(CornerShape::radius(0.0)),
-            StateLayer::new(Color::new(waterui::theme::color::Foreground)),
+            StateLayer::new(Color::new(Foreground)),
             PressFeedback::new(),
             FocusIndicator::Tint,
             motion,

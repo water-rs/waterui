@@ -8,15 +8,11 @@ use core::time::Duration;
 use cherenkov_record::{Paint, Shadow, WorkingColor};
 use kurbo::Vec2;
 use nami::Signal as _;
-use waterui::Environment;
-use waterui::animation::Animation;
-use waterui::theme::{
-    ColorScheme,
-    color::{Accent, Foreground, Surface as SurfaceToken},
-    current_color_scheme,
+use waterui_core::{Environment, animation::Animation, plugin::Plugin};
+use waterui_graphics::color::{
+    Color, ColorScheme, current_color_scheme,
+    token::{Accent, Foreground, Surface as SurfaceToken},
 };
-use waterui_core::plugin::Plugin;
-use waterui_graphics::color::Color;
 use waterui_interaction::interaction::StateValue;
 
 use super::{CornerShape, Corners, Driven, Elevation, Inputs, Motion, Surface, WidgetTheme};

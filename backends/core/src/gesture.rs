@@ -19,14 +19,14 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use num_traits::ToPrimitive;
-use waterui::gesture::{
-    DragEvent, Gesture, GesturePhase, LongPressEvent, MagnificationEvent, PointerButton,
-    PointerButtons, RotationEvent, TapEvent,
-};
 use waterui_core::extract::State;
 use waterui_core::handler::{BoxedAction, ReportExtraction};
 use waterui_core::layout::Point;
 use waterui_core::{Angle, Environment};
+use waterui_interaction::gesture::{
+    DragEvent, Gesture, GesturePhase, LongPressEvent, MagnificationEvent, PointerButton,
+    PointerButtons, RotationEvent, TapEvent,
+};
 
 use crate::input::TouchPhase;
 use crate::time::Instant;
@@ -1557,7 +1557,7 @@ mod tests {
     #[test]
     fn long_press_without_minimum_follows_platform_timeout_and_reports_pointer_up_duration() {
         use std::cell::Cell;
-        use waterui::gesture::{GestureObserver, LongPressGesture};
+        use waterui_interaction::gesture::{GestureObserver, LongPressGesture};
 
         let mut engine = GestureEngine::default();
         let platform_timeout = Duration::from_millis(750);
@@ -1923,7 +1923,7 @@ mod tests {
     #[test]
     fn gesture_engine_dispatches_pointer_input_to_same_group_recognizers() {
         use std::{cell::Cell, rc::Rc};
-        use waterui::gesture::{DragGesture, GestureObserver, TapGesture};
+        use waterui_interaction::gesture::{DragGesture, GestureObserver, TapGesture};
 
         let mut engine = GestureEngine::default();
         let env = Environment::new();
@@ -1972,7 +1972,7 @@ mod tests {
     #[test]
     fn gesture_engine_dispatches_magnification_to_same_group_recognizers() {
         use std::{cell::Cell, rc::Rc};
-        use waterui::gesture::{DragGesture, GestureObserver, MagnificationGesture};
+        use waterui_interaction::gesture::{DragGesture, GestureObserver, MagnificationGesture};
 
         let mut engine = GestureEngine::default();
         let env = Environment::new();
@@ -2025,7 +2025,7 @@ mod tests {
     #[test]
     fn middle_button_fires_middle_tap_but_not_default_tap() {
         use std::{cell::Cell, rc::Rc};
-        use waterui::gesture::{GestureObserver, TapGesture};
+        use waterui_interaction::gesture::{GestureObserver, TapGesture};
 
         let mut engine = GestureEngine::default();
         let env = Environment::new();
@@ -2073,7 +2073,7 @@ mod tests {
     #[test]
     fn primary_button_does_not_fire_middle_only_tap() {
         use std::{cell::Cell, rc::Rc};
-        use waterui::gesture::{GestureObserver, TapGesture};
+        use waterui_interaction::gesture::{GestureObserver, TapGesture};
 
         let mut engine = GestureEngine::default();
         let env = Environment::new();
@@ -2107,7 +2107,7 @@ mod tests {
     #[test]
     fn second_button_mid_sequence_does_not_join() {
         use std::{cell::Cell, rc::Rc};
-        use waterui::gesture::{GestureObserver, TapGesture};
+        use waterui_interaction::gesture::{GestureObserver, TapGesture};
 
         let mut engine = GestureEngine::default();
         let env = Environment::new();
@@ -2151,7 +2151,7 @@ mod tests {
     #[test]
     fn press_passes_through_group_that_rejects_its_button() {
         use std::{cell::Cell, rc::Rc};
-        use waterui::gesture::{GestureObserver, TapGesture};
+        use waterui_interaction::gesture::{GestureObserver, TapGesture};
 
         let mut engine = GestureEngine::default();
         let env = Environment::new();
@@ -2223,7 +2223,7 @@ mod tests {
     #[test]
     fn drag_event_reports_the_pressing_button() {
         use std::{cell::Cell, rc::Rc};
-        use waterui::gesture::{DragGesture, GestureObserver};
+        use waterui_interaction::gesture::{DragGesture, GestureObserver};
 
         let mut engine = GestureEngine::default();
         let env = Environment::new();
@@ -2270,8 +2270,8 @@ mod tests {
         // the transient list and cleared presses whose retained node had
         // not re-registered yet (`.on_tap` presses died under emit storms).
         use std::{cell::Cell, rc::Rc};
-        use waterui::gesture::{GestureObserver, TapGesture};
         use waterui_core::handler::boxed_action;
+        use waterui_interaction::gesture::{GestureObserver, TapGesture};
 
         let mut engine = GestureEngine::default();
         let env = Environment::new();
@@ -2331,7 +2331,7 @@ mod tests {
     #[test]
     fn events_are_delivered_in_the_targets_local_space() {
         use std::{cell::Cell, rc::Rc};
-        use waterui::gesture::{DragGesture, GestureObserver, TapGesture};
+        use waterui_interaction::gesture::{DragGesture, GestureObserver, TapGesture};
 
         // A 64×64 view placed at (40, 30) and scaled 2× from its top-left:
         // it covers window (40, 30)–(168, 158), and the window-to-local

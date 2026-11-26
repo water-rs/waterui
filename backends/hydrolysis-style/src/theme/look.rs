@@ -32,7 +32,6 @@ use kurbo::{Point, Rect, Size, Vec2};
 use nami::Signal;
 use nami::signal::IntoComputed;
 use nami::watcher::Context;
-use waterui::theme::Tint;
 use waterui_controls::ControlSize;
 use waterui_controls::button::ButtonStyle;
 use waterui_core::animation::{Animation, ChangeAnimation};
@@ -40,6 +39,7 @@ use waterui_core::layout::LayoutDirection;
 use waterui_core::{Environment, contract_violation};
 use waterui_graphics::animation::engine_animation;
 use waterui_graphics::color::Color;
+use waterui_graphics::color::Tint;
 use waterui_interaction::interaction::{InteractionState, StateValue};
 use waterui_text::font::Font;
 
@@ -2010,12 +2010,14 @@ impl SliderLook {
     /// added.
     #[must_use]
     pub fn new(layout: SliderLayout, knob: Knob, drag: DragMapping, motion: Motion) -> Self {
+        use waterui_graphics::color::token::Foreground;
+
         // The chrome carries what Hydrolysis binds interaction with — the
         // motion and the touch region — and draws nothing of its own: a
         // slider's parts depend on its value.
         let chrome = Chrome::new(
             Surface::clear(CornerShape::radius(0.0)),
-            StateLayer::new(Color::new(waterui::theme::color::Foreground)),
+            StateLayer::new(Color::new(Foreground)),
             PressFeedback::new(),
             FocusIndicator::Tint,
             motion,

@@ -18,6 +18,7 @@ use suiteki::Str;
 use waterui_accessibility::AccessibilityRole;
 use waterui_color::{Color, CurrentColorScheme};
 use waterui_core::backend::Backend;
+use waterui_core::plugin::Plugin;
 use waterui_core::resolve::Resolvable;
 use waterui_core::view::hook::HookableView;
 use waterui_core::{Environment, Metadata, NativeView, View};
@@ -99,6 +100,13 @@ impl fmt::Debug for OnCopied {
         f.write_str("OnCopied(..)")
     }
 }
+
+/// Feedback hook installed by a host window when copying a fenced code block
+/// should notify the user (for example via a snackbar).
+#[derive(Debug, Clone)]
+pub struct CodeCopyFeedback(pub OnCopied);
+
+impl Plugin for CodeCopyFeedback {}
 
 /// A language specification accepted by [`Code::new`] and [`code`].
 ///

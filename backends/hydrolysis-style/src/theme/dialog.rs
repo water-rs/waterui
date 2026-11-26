@@ -1,11 +1,11 @@
 //! The dialog look of the theme contract: what a theme returns for a
 //! self-drawn modal dialog card ([`DialogLook`]).
 
-use waterui::layout::padding::EdgeInsets;
-use waterui::theme::color::{Accent, Error, Foreground, MutedForeground, Surface};
 use waterui_core::Environment;
 use waterui_core::layout::Alignment;
 use waterui_graphics::color::Color;
+use waterui_graphics::color::token::{Accent, Error, Foreground, MutedForeground, Surface};
+use waterui_layout::padding::EdgeInsets;
 
 /// Visual and layout tokens used by Hydrolysis's self-drawn dialog card.
 ///

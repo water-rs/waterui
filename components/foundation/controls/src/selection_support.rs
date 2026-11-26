@@ -14,9 +14,10 @@ use waterui_core::resolve::Resolvable as _;
 use waterui_core::views::{ViewSnapshot, Views};
 use waterui_core::{Environment, Metadata, OneOf2, View};
 
-use crate::color::WorkingColor;
+use waterui_color::WorkingColor;
+
 #[cfg(feature = "list")]
-use crate::component::list::SidebarContent;
+use crate::list::SidebarContent;
 use crate::theme::{color, install_color_signal};
 
 /// A row's or cell's content re-themed to `SelectionForeground` while it is

@@ -17,7 +17,8 @@ use nami::Binding;
 use nami::collection::Collection;
 use waterui_core::id::{Id as RawId, Mapping};
 
-use crate::views::{ForEach, Views};
+use waterui_contract::contract_violation;
+use waterui_core::views::{ForEach, Views};
 
 /// A tag the app selects a row by, erased through the list's value
 /// [`Mapping`].
@@ -64,7 +65,7 @@ pub enum ListSelection<Id: 'static> {
 /// backend wrote back something other than what [`ListRowTags`] gave it. A
 /// debug build panics, and a release build logs the error and drops the tag.
 fn report_foreign_tag() {
-    crate::contract_violation!(
+    contract_violation!(
         "a list selection tag was not taken from the list's rows, so the write ignores it"
     );
 }
@@ -210,7 +211,7 @@ impl<Id: 'static + Ord + Clone> RowTags<Id> {
         ListRowTags {
             tag_of: Rc::new(move |row| {
                 let Some(id) = ids.to_data(row) else {
-                    crate::contract_violation!(
+                    contract_violation!(
                         "list row id {row:?} was never reported by the list, so it carries no tag"
                     );
                     return None;

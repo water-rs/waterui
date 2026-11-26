@@ -188,7 +188,7 @@ fn facade_features() {
 
     println!("cargo::rustc-check-cfg=cfg(waterui_feature, values(any()))");
     let features = std::env::var("DEP_WATERUI_FEATURES")
-        .expect("the `waterui` facade's build script exports DEP_WATERUI_FEATURES");
+        .expect("`waterui-core`'s build script exports DEP_WATERUI_FEATURES");
     let enabled = |feature: &str| {
         std::env::var_os(format!(
             "CARGO_FEATURE_{}",

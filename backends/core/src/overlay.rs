@@ -9,7 +9,7 @@
 //! All geometry is in the window's coordinate space: origin at the window's
 //! top-left corner, `x` growing right and `y` growing down.
 
-use waterui::metadata::anchored_overlay::{AnchorEdge, AnchorPlacement, Clamp, EdgeAlignment};
+use waterui_controls::anchored_overlay::{AnchorEdge, AnchorPlacement, Clamp, EdgeAlignment};
 use waterui_core::layout::{LayoutDirection, Point, Rect, Size};
 
 /// The physical side of the anchor an overlay is placed against.
@@ -85,7 +85,7 @@ impl AnchoredOverlayPlacement {
 }
 
 /// Places an overlay measured at `overlay` against `anchor` inside `window`,
-/// implementing the [`AnchoredOverlay`](waterui::metadata::anchored_overlay::AnchoredOverlay)
+/// implementing the [`AnchoredOverlay`](waterui_controls::anchored_overlay::AnchoredOverlay)
 /// placement contract:
 ///
 /// 1. The overlay sits against `placement.edge` of `anchor`, `placement.gap`

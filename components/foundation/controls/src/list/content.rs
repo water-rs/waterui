@@ -32,19 +32,18 @@
 use alloc::vec::Vec;
 
 use nami::collection::Collection;
-use nami::signal::IntoSignal;
+use nami::signal::{IntoComputed, IntoSignal};
+use waterui_color::Color;
 use waterui_core::backend::{Backend, ChildSlot, MapSlots};
+use waterui_core::env::with;
 use waterui_core::handler::{AnyViewBuilder, Handler};
 use waterui_core::id::TaggedView;
 use waterui_core::layout::StretchAxis;
+use waterui_core::views::ForEach;
 use waterui_core::{AnyView, Environment, Native, NativeView, OneOf2, View};
-
-use waterui_controls::label::{ControlLabel, IntoLabel, Label, LabelKind};
 use waterui_text::{IntoText, Text};
 
-use crate::Color;
-use crate::view::ViewExt;
-use crate::views::ForEach;
+use crate::label::{ControlLabel, IntoLabel, Label, LabelKind};
 
 use super::edits::{StaticOnDelete, static_delete_action};
 use super::rows::ListItemSink;
@@ -643,7 +642,10 @@ impl<L: LabelKind> View for RowContent<L> {
         let deletable = self.deletable;
         let native = Native::new(self.into_config::<AnyView>(env));
         match deletable {
-            Some(deletable) => OneOf2::A(native.list_row_deletable(deletable)),
+            Some(deletable) => OneOf2::A(with(
+                native,
+                super::ListRowDeletable(deletable.into_computed()),
+            )),
             None => OneOf2::B(native),
         }
     }
@@ -652,9 +654,11 @@ impl<L: LabelKind> View for RowContent<L> {
         let deletable = self.deletable;
         let config = self.into_config::<B::Slot>(env);
         match deletable {
-            Some(deletable) => Native::new(config)
-                .list_row_deletable(deletable)
-                .dispatch(backend, env, cx),
+            Some(deletable) => with(
+                Native::new(config),
+                super::ListRowDeletable(deletable.into_computed()),
+            )
+            .dispatch(backend, env, cx),
             None => backend.native(config, env, cx),
         }
     }
