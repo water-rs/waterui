@@ -238,6 +238,13 @@ pub use waterui_macros::{eval, exec, exec_file, js_api, js_file};
 #[cfg(feature = "widgets")]
 #[doc(inline)]
 pub use waterui_macros::{widget, widget_intent};
+#[cfg(feature = "map")]
+pub use waterui_map as map;
+#[cfg(feature = "flow-markdown")]
+pub use waterui_markdown as markdown;
+#[cfg(feature = "flow-markdown")]
+#[doc(inline)]
+pub use waterui_markdown::include_markdown;
 #[cfg(feature = "image")]
 pub use waterui_media as media;
 #[cfg(feature = "navigation")]
@@ -246,14 +253,7 @@ pub use waterui_navigation as navigation;
 pub use waterui_svg as svg;
 pub use waterui_text as text;
 #[cfg(feature = "ts")]
-pub mod ts;
-#[cfg(feature = "map")]
-pub use waterui_map as map;
-#[cfg(feature = "flow-markdown")]
-pub use waterui_markdown as markdown;
-#[cfg(feature = "flow-markdown")]
-#[doc(inline)]
-pub use waterui_markdown::include_markdown;
+pub use waterui_ts as ts;
 #[cfg(feature = "ts")]
 #[doc(hidden)]
 pub use waterui_ts::schema as __ts_schema;
@@ -454,6 +454,29 @@ mod haptic_tests {
             core::any::type_name::<crate::prelude::Feedback>(),
             core::any::type_name::<crate::prelude::Haptic>(),
             core::any::type_name::<crate::prelude::Intensity>(),
+        );
+    }
+}
+
+/// `crate::ts` is the path the derives emit for expansions inside
+/// `waterui-internal`; deriving here exercises that arm, so a typo in it
+/// fails this crate's own tests.
+#[cfg(all(test, feature = "ts"))]
+mod ts_tests {
+    use crate::Binding;
+    use crate::ts::schema::{TsProps, contract_hash};
+
+    /// Props crossing to a mounted TypeScript view.
+    #[derive(TsProps)]
+    struct SidebarProps {
+        unread: Binding<u32>,
+    }
+
+    #[test]
+    fn ts_props_derives_through_the_internal_crate_path() {
+        assert_eq!(
+            SidebarProps::CONTRACT_HASH,
+            contract_hash(SidebarProps::ENCODED)
         );
     }
 }

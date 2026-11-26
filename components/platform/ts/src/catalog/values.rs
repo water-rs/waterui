@@ -652,7 +652,9 @@ impl PaddingValue {
     /// The reactive insets this value composes to.
     pub fn insets(&self) -> Computed<EdgeInsets> {
         match self {
-            Self::Default => Computed::constant(EdgeInsets::all(crate::view::DEFAULT_PADDING)),
+            Self::Default => {
+                Computed::constant(EdgeInsets::all(waterui_layout::padding::DEFAULT_PADDING))
+            }
             Self::None => Computed::constant(EdgeInsets::all(0.0)),
             Self::Uniform(inset) => inset.map(EdgeInsets::all).computed(),
             Self::Edges(edges) => edges.insets(),
@@ -740,7 +742,7 @@ impl IntoJs for BackgroundValue {
 /// Only the colour is reactive here: `ShadowValue`'s offset, blur radius and
 /// corner radius are `f32` schema values for TypeScript.
 ///
-/// [`Shadow`]: crate::appearance::style::Shadow
+/// [`Shadow`]: waterui_shape::style::Shadow
 #[derive(Debug, Clone, PartialEq, TsType)]
 #[non_exhaustive]
 pub struct ShadowValue {
@@ -793,7 +795,7 @@ impl ShadowValue {
 /// The border `border` draws, which is the Rust [`Border`] spelled as an
 /// object.
 ///
-/// [`Border`]: crate::appearance::border::Border
+/// [`Border`]: waterui_shape::border::Border
 #[derive(Debug, Clone, PartialEq, TsType)]
 #[non_exhaustive]
 pub struct BorderValue {

@@ -3,7 +3,7 @@
 //!
 //! [`Components`] is the [`HostTable`] a `TsRuntime` is built with. Every
 //! method here is the Rust half of one entry in HOST.md, and every component
-//! it can create is one entry in [`CATALOG`](crate::ts::catalog::CATALOG) — the
+//! it can create is one entry in [`CATALOG`](crate::catalog::CATALOG) — the
 //! same table `installHost` hands JavaScript its modifier names from, and the
 //! same table `water components --json` prints. A tag with no entry is an
 //! error naming it, because a component that does not exist cannot be made to
@@ -38,14 +38,14 @@ use waterui_layout::stack::{HStack, HStackLayout, VStack, VStackLayout, ZStack};
 use waterui_navigation::tab::{Tab, Tabs};
 use waterui_navigation::{NavigationLink, NavigationStack, NavigationView};
 
-use crate::component::badge::Badge;
-use crate::component::link::Link;
-use crate::component::progress::Progress;
-use crate::component::table::{Table, TableColumn};
-use crate::widget::Divider;
-use crate::widget::avatar::Avatar;
-use crate::widget::card::Card;
-use crate::widget::disclosure::Disclosure;
+use waterui_controls::Divider;
+use waterui_controls::avatar::Avatar;
+use waterui_controls::badge::Badge;
+use waterui_controls::card::Card;
+use waterui_controls::disclosure::Disclosure;
+use waterui_controls::link::Link;
+use waterui_controls::progress::Progress;
+use waterui_controls::table::{Table, TableColumn};
 use waterui_core::handler::ViewBuilder as _;
 #[cfg(feature = "image")]
 use waterui_media::Photo;
@@ -54,8 +54,8 @@ use waterui_ts::engine::{JsError, JsFunction, JsValue};
 use waterui_ts::{Bridge, FromJs, HostTable, JsViewBuilder};
 
 #[cfg(feature = "image")]
-use crate::ts::catalog::ImageAttributes;
-use crate::ts::catalog::{
+use crate::catalog::ImageAttributes;
+use crate::catalog::{
     AvatarAttributes, BadgeAttributes, ButtonAttributes, CardAttributes, ColumnAttributes,
     DisclosureAttributes, HStackAttributes, LinkAttributes, ListAttributes,
     NavigationLinkAttributes, NavigationStackAttributes, PickerAttributes, PickerOption,
@@ -350,7 +350,7 @@ fn collections(
             let columns: Vec<TableColumn<SelfId<usize>, _, Text>> = carried
                 .into_iter()
                 .map(|(label, cells)| {
-                    let cells = alloc::rc::Rc::new(cells);
+                    let cells = std::rc::Rc::new(cells);
                     TableColumn::new(label, move |row: &SelfId<usize>| {
                         cells
                             .get((*row).into_inner())
@@ -449,7 +449,7 @@ type ScriptTab = Tab<AnyViewBuilder<NavigationView<AnyView>>, ErasedLabel>;
 
 /// A navigation title, which every destination carries whether or not the
 /// element named one.
-fn title_of(title: Option<crate::ts::catalog::TextContent>) -> Text {
+fn title_of(title: Option<crate::catalog::TextContent>) -> Text {
     title.map_or_else(|| Text::verbatim(""), Text::new)
 }
 
@@ -647,7 +647,7 @@ impl<T: 'static> View for Carried<T> {
     /// the error and renders nothing.
     fn body(self, _env: &Environment) -> impl View {
         if self.0.borrow().is_some() {
-            crate::contract_violation!(
+            waterui_core::contract_violation!(
                 "this element is a piece of the component that contains it, and was written outside \
                  one: a <Column> belongs in a <Table> and a <Tab> in a <Tabs>; it renders nothing"
             );
