@@ -26,7 +26,7 @@ struct DemoState {
     records: StateList<Record>,
     remaining: Binding<i32>,
     editing: Binding<bool>,
-    scroll: ScrollController<usize>,
+    scroll: ScrollController<u64>,
 }
 
 impl DemoState {
@@ -78,7 +78,9 @@ fn move_record(ListMove(movement): ListMove<u64>, mut state: DemoState) {
     reason = "the button action extracts DemoState by value, as the Handler contract requires"
 )]
 fn scroll_top(state: DemoState) {
-    state.scroll.animate_to(0, Animation::default());
+    if let Some(first) = state.records.snapshot().first() {
+        state.scroll.animate_to(first.id, Animation::default());
+    }
 }
 
 #[expect(
@@ -86,11 +88,10 @@ fn scroll_top(state: DemoState) {
     reason = "the button action extracts DemoState by value, as the Handler contract requires"
 )]
 fn scroll_middle(state: DemoState) {
-    state.scroll.animate_to(
-        usize::try_from(state.remaining.snapshot()).expect("remaining row count is never negative")
-            / 2,
-        Animation::default(),
-    );
+    let records = state.records.snapshot();
+    if let Some(middle) = records.get(records.len() / 2) {
+        state.scroll.animate_to(middle.id, Animation::default());
+    }
 }
 
 #[expect(
@@ -98,12 +99,8 @@ fn scroll_middle(state: DemoState) {
     reason = "the button action extracts DemoState by value, as the Handler contract requires"
 )]
 fn scroll_last(state: DemoState) {
-    let remaining = state.remaining.snapshot();
-    if remaining > 0 {
-        state.scroll.animate_to(
-            usize::try_from(remaining).expect("remaining row count is never negative") - 1,
-            Animation::default(),
-        );
+    if let Some(last) = state.records.snapshot().last() {
+        state.scroll.animate_to(last.id, Animation::default());
     }
 }
 

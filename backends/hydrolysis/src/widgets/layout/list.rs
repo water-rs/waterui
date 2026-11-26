@@ -28,8 +28,8 @@ use accesskit::{
 #[cfg(feature = "accessibility")]
 use waterui::accessibility::{AccessibilityHidden, AccessibilityStateSignal};
 use waterui::component::list::{
-    ListConfig, ListRowDeletable, ListRowInsets, ListRowTags, ListSectionSpan, ListSelection,
-    ListTagId,
+    ListConfig, ListRowDeletable, ListRowInsets, ListRowTags, ListScrollController,
+    ListSectionSpan, ListSelection, ListTagId,
 };
 use waterui::gesture::{DragEvent, DragGesture, Gesture, GesturePhase};
 use waterui_backend_core::scroll::{ScrollPositionReport, animated_row_scroll_approach};
@@ -84,7 +84,8 @@ struct ListViewportAnchor {
 #[derive(Clone)]
 struct PendingScroll {
     generation: i32,
-    index: usize,
+    target: ListTagId,
+    cached_index: Option<usize>,
     animation: Option<Animation>,
     state: PendingScrollState,
 }
@@ -1112,17 +1113,28 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
     /// approach jump, or a landing correction. Arming or refining a run moves
     /// nothing: the run's own ticks carry the offset from here, as
     /// continuation work rather than a change still to be applied.
-    #[must_use]
-    fn apply_scroll_request(
+    fn resolve_scroll_target_index(
+        &self,
+        target: ListTagId,
+        cached_index: Option<usize>,
+        tags: &ListRowTags,
+    ) -> Option<usize> {
+        let snapshot = self.rows_snapshot.borrow();
+        if let Some(index) = cached_index
+            && snapshot.get_id(index).and_then(|id| tags.tag(id)) == Some(target)
+        {
+            return Some(index);
+        }
+        snapshot
+            .range()
+            .find(|&index| snapshot.get_id(index).and_then(|id| tags.tag(id)) == Some(target))
+    }
+
+    fn poll_pending_scroll(
         &self,
         renderer: &mut crate::renderer::SemanticCore<E>,
-        handle: &ScrollHandle,
-        row_count: usize,
-        animate: bool,
-    ) -> bool {
-        let Some(controller) = &self.config.scroll_controller() else {
-            return false;
-        };
+        controller: &ListScrollController,
+    ) -> Option<PendingScroll> {
         let generation = renderer.read_signal(&controller.generation());
         if generation != self.applied_scroll_generation.get()
             && self
@@ -1134,27 +1146,49 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
             let request = renderer.read_signal(&controller.request());
             *self.pending_scroll.borrow_mut() = Some(PendingScroll {
                 generation,
-                index: *request.target(),
+                target: *request.target(),
+                cached_index: None,
                 animation: request.animation().cloned(),
                 state: PendingScrollState::Unarmed,
             });
         }
-        let Some(pending) = self.pending_scroll.borrow().clone() else {
+        self.pending_scroll.borrow().clone()
+    }
+
+    #[must_use]
+    fn apply_scroll_request(
+        &self,
+        renderer: &mut crate::renderer::SemanticCore<E>,
+        handle: &ScrollHandle,
+        row_count: usize,
+        animate: bool,
+    ) -> bool {
+        let Some(controller) = self.config.scroll_controller() else {
             return false;
         };
-        if pending.index >= row_count {
-            // A scroll request names a row the contents may not have yet: a
-            // list materializing mid-flush can be shorter than its pending
-            // target, and a signal-driven collection can shrink below it. The
-            // request stays pending until the collection reaches the index;
-            // a newer generation supersedes it.
+        let Some(pending) = self.poll_pending_scroll(renderer, controller) else {
             return false;
+        };
+        let Some(target_index) = self.resolve_scroll_target_index(
+            pending.target,
+            pending.cached_index,
+            controller.row_tags(),
+        ) else {
+            return false;
+        };
+        if target_index >= row_count {
+            return false;
+        }
+        if pending.cached_index != Some(target_index)
+            && let Some(stored) = self.pending_scroll.borrow_mut().as_mut()
+        {
+            stored.cached_index = Some(target_index);
         }
         // Re-issuing the target every frame is what keeps a virtualized
         // request accurate: rows measured while the list moves past them move
         // `offset_of(index)`, so the destination is refined until it actually
         // lands.
-        let pending_position = self.transitions.row_display(pending.index);
+        let pending_position = self.transitions.row_display(target_index);
         let offset = self.extent_index.borrow().offset_of(pending_position);
         let moved = match pending.animation.clone() {
             Some(animation) if animate => match pending.state {
@@ -1199,7 +1233,7 @@ impl<E: crate::text::TextEngine> ListRenderState<E> {
                     // there, and read as a blur regardless: jump to within
                     // the approach bound of the target and animate only that
                     // final stretch.
-                    let approached = animated_row_scroll_approach(current, pending.index)
+                    let approached = animated_row_scroll_approach(current, target_index)
                         .is_some_and(|approach_index| {
                             let approach = self
                                 .extent_index
@@ -2864,7 +2898,7 @@ pub fn render_list_parts<E: crate::text::TextEngine>(
         .pending_scroll
         .borrow()
         .as_ref()
-        .is_some_and(|pending| pending.index < row_count)
+        .is_some_and(|pending| pending.cached_index.is_some_and(|index| index < row_count))
     {
         let content_height = state
             .borrow()

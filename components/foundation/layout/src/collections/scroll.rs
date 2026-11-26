@@ -1,9 +1,16 @@
 //! Scroll containers that defer behaviour to the active renderer backend.
 
-use nami::{Binding, Computed};
+use alloc::rc::Rc;
+use alloc::vec::Vec;
+use core::cell::RefCell;
+use core::fmt;
+
+use nami::{Binding, Computed, SignalExt};
 use waterui_core::backend::{Backend, ChildSlot, MapSlots};
-use waterui_core::env::with;
-use waterui_core::{AnyView, Environment, Native, NativeView, View, animation::Animation};
+use waterui_core::id::{Id, Mapping};
+use waterui_core::{
+    AnyView, Environment, Metadata, Native, NativeView, View, animation::Animation,
+};
 
 use crate::{Point, Size, StretchAxis};
 
@@ -45,6 +52,13 @@ impl<T> ScrollRequest<T> {
     #[must_use]
     pub const fn animation(&self) -> Option<&Animation> {
         self.animation.as_ref()
+    }
+
+    pub(crate) fn map<U>(self, f: impl FnOnce(T) -> U) -> ScrollRequest<U> {
+        ScrollRequest {
+            target: f(self.target),
+            animation: self.animation,
+        }
     }
 }
 
@@ -236,6 +250,198 @@ impl<T: Clone + 'static> ScrollController<T> {
     pub fn position_report(&self) -> Binding<Option<ScrollPosition>> {
         self.position.clone()
     }
+
+    /// Returns a backend-facing [`ScrollDriver`] reading this controller's
+    /// requests and generation and reporting into its position sink.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn driver(&self) -> ScrollDriver<T> {
+        ScrollDriver {
+            request: self.request(),
+            generation: self.generation(),
+            position: self.position.clone(),
+        }
+    }
+
+    /// Returns a backend-facing [`ScrollDriver`] whose target is mapped by `map`.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn map_driver<U: Clone + 'static>(
+        &self,
+        map: impl Fn(T) -> U + 'static,
+    ) -> ScrollDriver<U> {
+        self.driver().map_target(map)
+    }
+}
+
+/// Identifies a [`LazyContainer`](crate::LazyContainer) bound to an enclosing
+/// [`ScrollView`]'s item-identity [`ScrollController`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ScrollCollectionId(usize);
+
+/// Environment entry installed by an identity-controlled [`ScrollView`] so
+/// descendant [`LazyContainer`](crate::LazyContainer) instances with matching
+/// item identity type `T` register their [`Mapping<T>`] into it.
+pub(crate) struct ScrollItemBinder<T>(Rc<RefCell<Vec<Mapping<T>>>>);
+
+impl<T> Clone for ScrollItemBinder<T> {
+    fn clone(&self) -> Self {
+        Self(Rc::clone(&self.0))
+    }
+}
+
+impl<T: Ord + Clone + 'static> ScrollItemBinder<T> {
+    pub(crate) fn new() -> Self {
+        Self(Rc::new(RefCell::new(Vec::new())))
+    }
+
+    pub(crate) fn bind(&self, mapping: Mapping<T>) -> ScrollCollectionId {
+        let mut mappings = self.0.borrow_mut();
+        let id = ScrollCollectionId(mappings.len());
+        mappings.push(mapping);
+        id
+    }
+
+    fn id_in(&self, collection: ScrollCollectionId, target: &T) -> Option<Id> {
+        self.0
+            .borrow()
+            .get(collection.0)
+            .map(|mapping| mapping.to_id(target.clone()))
+    }
+}
+
+type ResolveItemId = dyn Fn(ScrollCollectionId) -> Option<Id>;
+
+/// An erased item identity carried inside a [`ScrollTarget::Item`] request.
+///
+/// Backends query [`Self::id_in`] against each descendant
+/// [`LazyContainer`](crate::LazyContainer)'s [`ScrollCollectionId`] to obtain
+/// the erased [`Id`] matching `AnyViewsSnapshot::get_id`.
+#[derive(Clone)]
+pub struct ScrollItemTarget {
+    resolve: Rc<ResolveItemId>,
+}
+
+impl fmt::Debug for ScrollItemTarget {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ScrollItemTarget").finish_non_exhaustive()
+    }
+}
+
+impl ScrollItemTarget {
+    fn new<T: Ord + Clone + 'static>(target: T, binder: ScrollItemBinder<T>) -> Self {
+        Self {
+            resolve: Rc::new(move |collection| binder.id_in(collection, &target)),
+        }
+    }
+
+    /// Resolves this request's item identity to the erased [`Id`] used by
+    /// `collection`, or `None` if `collection` is not bound to this controller.
+    #[must_use]
+    pub fn id_in(&self, collection: ScrollCollectionId) -> Option<Id> {
+        (self.resolve)(collection)
+    }
+}
+
+/// What a [`ScrollView`] programmatic scroll request targets.
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub enum ScrollTarget {
+    /// An explicit content offset in points.
+    Point(Point),
+    /// An item inside a scrollable collection, identified by its erased identity.
+    Item(ScrollItemTarget),
+}
+
+/// The backend-facing view of a connected [`ScrollController`].
+///
+/// Carries the reactive request signal (with any typed item identity erased),
+/// the request generation signal, and the position report binding.
+#[derive(Clone, Debug)]
+pub struct ScrollDriver<T: Clone + 'static = ScrollTarget> {
+    request: Computed<ScrollRequest<T>>,
+    generation: Computed<i32>,
+    position: Binding<Option<ScrollPosition>>,
+}
+
+impl<T: Clone + 'static> ScrollDriver<T> {
+    /// Returns the latest request as a read-only signal.
+    #[must_use]
+    pub fn request(&self) -> Computed<ScrollRequest<T>> {
+        self.request.clone()
+    }
+
+    /// Returns the request generation as a read-only signal.
+    #[must_use]
+    pub fn generation(&self) -> Computed<i32> {
+        self.generation.clone()
+    }
+
+    /// The sink a backend writes the measured [`ScrollPosition`] into.
+    #[must_use]
+    pub fn position_report(&self) -> Binding<Option<ScrollPosition>> {
+        self.position.clone()
+    }
+
+    /// Maps the request target through `map`, preserving generation and position reporting.
+    #[must_use]
+    pub fn map_target<U: Clone + 'static>(
+        &self,
+        map: impl Fn(T) -> U + 'static,
+    ) -> ScrollDriver<U> {
+        let map = Rc::new(map);
+        ScrollDriver {
+            request: self
+                .request
+                .clone()
+                .map(move |request| request.map(map.as_ref()))
+                .computed(),
+            generation: self.generation.clone(),
+            position: self.position.clone(),
+        }
+    }
+}
+
+type EnvInstallFn = Rc<dyn Fn(&mut Environment)>;
+
+mod sealed {
+    #[derive(Debug)]
+    pub struct PointTarget;
+    #[derive(Debug)]
+    pub struct ItemTarget;
+    pub trait Sealed<M> {}
+}
+
+/// A [`ScrollController`] accepted by [`ScrollView::scroll_controller`]: either
+/// `&ScrollController<Point>` for explicit pixel offsets or `&ScrollController<T>`
+/// (`T: Ord + Clone + 'static`) for item-identity scrolling.
+pub trait IntoScrollDriver<M>: sealed::Sealed<M> {
+    #[doc(hidden)]
+    fn into_scroll_driver(self) -> (ScrollDriver<ScrollTarget>, Option<EnvInstallFn>);
+}
+
+impl sealed::Sealed<sealed::PointTarget> for &ScrollController<Point> {}
+
+impl IntoScrollDriver<sealed::PointTarget> for &ScrollController<Point> {
+    fn into_scroll_driver(self) -> (ScrollDriver<ScrollTarget>, Option<EnvInstallFn>) {
+        (self.map_driver(ScrollTarget::Point), None)
+    }
+}
+
+impl<T: Ord + Clone + 'static> sealed::Sealed<sealed::ItemTarget> for &ScrollController<T> {}
+
+impl<T: Ord + Clone + 'static> IntoScrollDriver<sealed::ItemTarget> for &ScrollController<T> {
+    fn into_scroll_driver(self) -> (ScrollDriver<ScrollTarget>, Option<EnvInstallFn>) {
+        let binder = ScrollItemBinder::<T>::new();
+        let driver = self.map_driver({
+            let binder = binder.clone();
+            move |target| ScrollTarget::Item(ScrollItemTarget::new(target, binder.clone()))
+        });
+        let install: EnvInstallFn = Rc::new(move |env: &mut Environment| {
+            env.insert(binder.clone());
+        });
+        (driver, Some(install))
+    }
 }
 
 impl<T> Default for ScrollController<T>
@@ -288,12 +494,23 @@ where
 ///
 /// The content keeps its own type, `C`, until the view reaches a backend,
 /// which receives it as its child slot and realizes it in place.
-#[derive(Debug)]
 pub struct ScrollView<C> {
     axis: Axis,
     content: C,
-    controller: Option<ScrollController<Point>>,
+    controller: Option<ScrollDriver<ScrollTarget>>,
+    install_mapping: Option<EnvInstallFn>,
     offset: Option<Binding<Point>>,
+}
+
+impl<C: fmt::Debug> fmt::Debug for ScrollView<C> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ScrollView")
+            .field("axis", &self.axis)
+            .field("content", &self.content)
+            .field("controller", &self.controller)
+            .field("offset", &self.offset)
+            .finish_non_exhaustive()
+    }
 }
 
 /// The parts a [`ScrollView`] is made of, as [`ScrollView::into_inner`]
@@ -305,8 +522,8 @@ pub struct ScrollViewParts<C> {
     axis: Axis,
     /// The scrolled content.
     content: C,
-    /// The programmatic scroll controller, if one is connected.
-    controller: Option<ScrollController<Point>>,
+    /// The programmatic scroll controller driver, if one is connected.
+    controller: Option<ScrollDriver<ScrollTarget>>,
     /// The binding the backend reports the content offset into, if one is
     /// connected.
     offset: Option<Binding<Point>>,
@@ -319,7 +536,7 @@ impl<C> ScrollViewParts<C> {
     ) -> (
         Axis,
         C,
-        Option<ScrollController<Point>>,
+        Option<ScrollDriver<ScrollTarget>>,
         Option<Binding<Point>>,
     ) {
         (self.axis, self.content, self.controller, self.offset)
@@ -330,7 +547,7 @@ impl<C> ScrollViewParts<C> {
     pub const fn new(
         axis: Axis,
         content: C,
-        controller: Option<ScrollController<Point>>,
+        controller: Option<ScrollDriver<ScrollTarget>>,
         offset: Option<Binding<Point>>,
     ) -> Self {
         Self {
@@ -353,9 +570,9 @@ impl<C> ScrollViewParts<C> {
         &self.content
     }
 
-    /// The programmatic scroll controller, if one is connected.
+    /// The programmatic scroll controller driver, if one is connected.
     #[must_use]
-    pub const fn controller(&self) -> Option<&ScrollController<Point>> {
+    pub const fn controller(&self) -> Option<&ScrollDriver<ScrollTarget>> {
         self.controller.as_ref()
     }
 
@@ -414,6 +631,7 @@ impl<C: View> ScrollView<C> {
             axis,
             content,
             controller: None,
+            install_mapping: None,
             offset: None,
         }
     }
@@ -443,20 +661,26 @@ impl<C> ScrollView<C> {
         &self.content
     }
 
-    /// The same view with its content mapped through `f`.
+    /// The same view with its content mapped through `f`, preserving any
+    /// attached controller and offset bindings.
     fn map_content<D>(self, f: impl FnOnce(C) -> D) -> ScrollView<D> {
         ScrollView {
             axis: self.axis,
             content: f(self.content),
             controller: self.controller,
+            install_mapping: self.install_mapping,
             offset: self.offset,
         }
     }
 
-    /// Connects a programmatic scroll controller.
+    /// Connects a programmatic scroll controller: either `&ScrollController<Point>`
+    /// for pixel-offset scrolling or `&ScrollController<Id>` for item-identity
+    /// scrolling over a descendant `ForEach` / lazy stack.
     #[must_use]
-    pub fn scroll_controller(mut self, controller: &ScrollController<Point>) -> Self {
-        self.controller = Some(controller.clone());
+    pub fn scroll_controller<M>(mut self, controller: impl IntoScrollDriver<M>) -> Self {
+        let (driver, install_mapping) = controller.into_scroll_driver();
+        self.controller = Some(driver);
+        self.install_mapping = install_mapping;
         self
     }
 
@@ -504,36 +728,76 @@ pub const fn scroll_stretch_axis(axis: Axis, content: StretchAxis) -> StretchAxi
 /// it from the realized node through [`scroll_stretch_axis`].
 impl<C: 'static> NativeView for ScrollView<C> {}
 
+struct ScrollSubtreeEnv<C> {
+    content: C,
+    axis: Axis,
+    install_mapping: Option<EnvInstallFn>,
+}
+
+impl<C: View> View for ScrollSubtreeEnv<C> {
+    fn body(self, env: &Environment) -> impl View {
+        let mut child_env = env.extending(self.axis);
+        if let Some(install) = self.install_mapping {
+            install(&mut child_env);
+        }
+        Metadata::new(self.content, child_env)
+    }
+}
+
 impl<C: View> View for ScrollView<C> {
     /// The erased form, for code that expands views by hand.
     fn body(self, _env: &Environment) -> impl View {
-        let axis = self.axis;
-        Native::new(self.map_content(move |content| AnyView::new(with(content, axis))))
+        let Self {
+            axis,
+            content,
+            controller,
+            install_mapping,
+            offset,
+        } = self;
+        Native::new(ScrollView {
+            axis,
+            content: AnyView::new(ScrollSubtreeEnv {
+                content,
+                axis,
+                install_mapping,
+            }),
+            controller,
+            install_mapping: None,
+            offset,
+        })
     }
 
     /// Reaches the backend with the content in the backend's child slot,
-    /// publishing this scroll view's nearest scrolling [`Axis`] into the
-    /// subtree's [`Environment`].
+    /// publishing this scroll view's nearest scrolling [`Axis`] and any item
+    /// scroll binder into the subtree's [`Environment`].
     fn dispatch<B: Backend>(self, backend: &mut B, env: &Environment, cx: B::Ctx) -> B::Output {
-        let axis = self.axis;
+        let Self {
+            axis,
+            content,
+            controller,
+            install_mapping,
+            offset,
+        } = self;
+        let wrapped = ScrollSubtreeEnv {
+            content,
+            axis,
+            install_mapping,
+        };
         #[cfg(feature = "erased-dispatch")]
-        {
-            backend.native(
-                self.map_content(move |content| {
-                    B::Slot::from_view(AnyView::new(with(content, axis)))
-                }),
-                env,
-                cx,
-            )
-        }
+        let slot = B::Slot::from_view(AnyView::new(wrapped));
         #[cfg(not(feature = "erased-dispatch"))]
-        {
-            backend.native(
-                self.map_content(move |content| B::Slot::from_view(with(content, axis))),
-                env,
-                cx,
-            )
-        }
+        let slot = B::Slot::from_view(wrapped);
+        backend.native(
+            ScrollView {
+                axis,
+                content: slot,
+                controller,
+                install_mapping: None,
+                offset,
+            },
+            env,
+            cx,
+        )
     }
 }
 
@@ -765,5 +1029,92 @@ mod tests {
         let view = ScrollView::new(Axis::Horizontal, Leaf);
         assert_eq!(view.axis(), Axis::Horizontal);
         assert_eq!(view.content(), &Leaf);
+    }
+
+    #[test]
+    fn item_scroll_controller_binds_into_descendant_lazy_container() {
+        use super::{ScrollCollectionId, ScrollTarget, scroll};
+        use crate::container::LazyContainer;
+        use crate::stack::VStackLayout;
+        use alloc::vec;
+        use waterui_core::{AnyView, Native, id::Identifiable, views::ForEach};
+
+        #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+        struct MessageId(u64);
+
+        #[derive(Clone)]
+        struct Message {
+            id: MessageId,
+        }
+
+        impl Identifiable for Message {
+            type Id = MessageId;
+
+            fn id(&self) -> Self::Id {
+                self.id
+            }
+        }
+
+        let controller = ScrollController::new(MessageId(0));
+        let messages = vec![
+            Message { id: MessageId(10) },
+            Message { id: MessageId(42) },
+            Message { id: MessageId(99) },
+        ];
+        let view = scroll(LazyContainer::new(
+            VStackLayout::default(),
+            ForEach::new(messages, |_| ()),
+        ))
+        .scroll_controller(&controller);
+        let install_mapping = view
+            .install_mapping
+            .clone()
+            .expect("item scroll controller installs a binder");
+        let parts = view.into_inner();
+        let driver = parts
+            .controller
+            .expect("item scroll controller attaches a driver");
+
+        let mut env = Environment::new();
+        env.insert(parts.axis);
+        install_mapping(&mut env);
+
+        let lazy = AnyView::new(View::body(parts.content, &env))
+            .downcast::<Native<LazyContainer<AnyView>>>()
+            .expect("LazyContainer body resolves to Native<LazyContainer<AnyView>>")
+            .into_inner();
+        let collection = lazy
+            .scroll_collection()
+            .expect("matching LazyContainer binds to enclosing ScrollController<MessageId>");
+
+        // Item 1 (MessageId(42)) maps cleanly to its collection Id.
+        let (_, contents) = lazy.into_inner();
+        let expected_id = contents.snapshot().get_id(1).expect("item 1 exists");
+        controller.scroll_to(MessageId(42));
+        match driver.request().snapshot().target() {
+            ScrollTarget::Item(item) => {
+                assert_eq!(item.id_in(collection), Some(expected_id));
+            }
+            other => panic!("expected ScrollTarget::Item, got {other:?}"),
+        }
+
+        // An identity not yet present maps to a fresh Id distinct from existing items
+        // (so a later push of that identity matches the pending request's Id), while
+        // an unrelated collection key returns None.
+        controller.scroll_to(MessageId(999));
+        match driver.request().snapshot().target() {
+            ScrollTarget::Item(item) => {
+                let future_id = item
+                    .id_in(collection)
+                    .expect("bound collection maps future identities");
+                let snapshot = contents.snapshot();
+                assert!(
+                    !(0..3).any(|i| snapshot.get_id(i).expect("item exists") == future_id),
+                    "unseen identity must allocate a distinct id"
+                );
+                assert_eq!(item.id_in(ScrollCollectionId(999)), None);
+            }
+            other => panic!("expected ScrollTarget::Item, got {other:?}"),
+        }
     }
 }

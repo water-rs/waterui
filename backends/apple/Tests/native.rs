@@ -9401,13 +9401,126 @@ mod scroll {
         );
     }
 
+    /// An identity-keyed `ScrollController<Id>` drives a `ScrollView` over a
+    /// virtualized `VStack::for_each`: jumping to an unrealized deep item,
+    /// animating to another item, and scrolling immediately to a newly pushed
+    /// item all resolve by item identity.
+    fn an_identity_controller_scrolls_virtualized_vstack_by_id() {
+        #[cfg(target_os = "macos")]
+        use super::{appkit_input::present_first_frame, mtm};
+        use objc2::Message as _;
+        use waterui::id::Identifiable;
+        use waterui::layout::scroll::scroll;
+        use waterui::layout::stack::VStack;
+        use waterui::prelude::*;
+        use waterui_apple::native_test_support::render;
+
+        #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+        struct EntryId(u64);
+
+        #[derive(Clone, PartialEq, Eq)]
+        struct Entry {
+            id: EntryId,
+            label: String,
+        }
+
+        impl Identifiable for Entry {
+            type Id = EntryId;
+
+            fn id(&self) -> Self::Id {
+                self.id
+            }
+        }
+
+        let mut items = StateList::<Entry>::new();
+        let _ = items.replace(
+            (0..60_u64)
+                .map(|index| Entry {
+                    id: EntryId(1_000 + index * 7),
+                    label: format!("Item {index}"),
+                })
+                .collect(),
+        );
+        let controller = ScrollController::new(EntryId(0));
+        let offset = binding(Point::zero());
+        let leaf = render(
+            scroll(
+                VStack::for_each(items.clone(), |entry: Entry| {
+                    text(entry.label).size(240.0, 40.0)
+                })
+                .spacing(4.0),
+            )
+            .scroll_controller(&controller)
+            .report_offset(&offset),
+        );
+        let surface = leaf
+            .view()
+            .downcast_ref::<ScrollSurface>()
+            .expect("scroll renders the kit's scroll surface")
+            .retain();
+        let _window = mount_and_order_front(leaf.view());
+        surface.set_needs_layout();
+        surface.layout_if_needed();
+        #[cfg(target_os = "macos")]
+        present_first_frame(mtm(), leaf.view());
+
+        // Jump to item 25 (25 * (40 + 4) = 1100 pt).
+        controller.scroll_to(EntryId(1_000 + 25 * 7));
+        assert!(
+            (f64::from(offset.snapshot().y) - 1_100.0).abs() < 2.0,
+            "identity jump to item 25 must land near 1100.0, got {}",
+            offset.snapshot().y
+        );
+
+        // Animate back up to item 5 (5 * 44 = 220 pt).
+        controller.animate_to(
+            EntryId(1_000 + 5 * 7),
+            Animation::linear(Duration::from_millis(200)),
+        );
+        assert!(
+            surface.scroll_animation_in_flight(),
+            "identity animate_to must start a scroll flight"
+        );
+        let _ = pump_flight(
+            || surface.scroll_animation_in_flight(),
+            || f64::from(offset.snapshot().y),
+        );
+        assert!(
+            (f64::from(offset.snapshot().y) - 220.0).abs() < 2.0,
+            "identity animate_to item 5 must land near 220.0, got {}",
+            offset.snapshot().y
+        );
+
+        // Push a new item and immediately jump to its identity.
+        let appended = EntryId(99_999);
+        items.push(Entry {
+            id: appended,
+            label: String::from("Tail item"),
+        });
+        controller.scroll_to(appended);
+        let tail_position = controller
+            .position()
+            .snapshot()
+            .expect("position reported after tail jump");
+        assert!(
+            tail_position.at_end(),
+            "jumping to the appended tail item must land at_end: {tail_position:?}"
+        );
+    }
+
     /// The `scroll::` trials — one per animation case plus the takeover
     /// and clamp cases.
     pub fn trials() -> Vec<libtest_mimic::Trial> {
-        let mut named: Vec<(String, Box<dyn FnOnce() + Send>)> = vec![(
-            "scroll::a_bare_request_jumps_to_the_target".to_owned(),
-            Box::new(a_bare_request_jumps_to_the_target),
-        )];
+        let mut named: Vec<(String, Box<dyn FnOnce() + Send>)> = vec![
+            (
+                "scroll::a_bare_request_jumps_to_the_target".to_owned(),
+                Box::new(a_bare_request_jumps_to_the_target),
+            ),
+            (
+                "scroll::an_identity_controller_scrolls_virtualized_vstack_by_id".to_owned(),
+                Box::new(an_identity_controller_scrolls_virtualized_vstack_by_id),
+            ),
+        ];
         named.extend(animation_cases().into_iter().map(|(name, animation)| {
             let case: Box<dyn FnOnce() + Send> =
                 Box::new(move || an_animation_scrolls_to_the_target(name, animation));
@@ -10007,13 +10120,145 @@ mod list_scroll {
         );
     }
 
+    use waterui::id::Identifiable;
+
+    #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+    struct MsgId(u64);
+
+    #[derive(Clone, PartialEq, Eq)]
+    struct Msg {
+        id: MsgId,
+        label: String,
+    }
+
+    impl Identifiable for Msg {
+        type Id = MsgId;
+
+        fn id(&self) -> Self::Id {
+            self.id
+        }
+    }
+
+    /// A `List::for_each` with a custom non-`usize` identity tracks items by
+    /// identity across earlier deletions and defers a scroll request issued
+    /// synchronously after appending a new item until the coalesced membership
+    /// flush lands.
+    fn custom_identity_scrolls_across_deletions_and_appends() {
+        #[cfg(target_os = "macos")]
+        use super::appkit_input::present_first_frame;
+        use super::mtm;
+        use objc2::Message as _;
+        use waterui::component::list::List;
+        use waterui::prelude::*;
+        use waterui_apple::native_test_support::{
+            MAIN_QUEUE_DEADLINE, drain_main_queue, pump_main_until, render,
+        };
+
+        let mut items = StateList::<Msg>::new();
+        let _ = items.replace(
+            (0..80_u64)
+                .map(|index| Msg {
+                    id: MsgId(5_000 + index * 10),
+                    label: format!("Row {index}"),
+                })
+                .collect(),
+        );
+        let controller = ScrollController::new(MsgId(0));
+        let leaf = render(
+            List::for_each(items.clone(), |msg: Msg| text(msg.label))
+                .scroll_controller(&controller),
+        );
+        let table = leaf
+            .view()
+            .downcast_ref::<TableSurface>()
+            .expect("List renders the kit's table surface")
+            .retain();
+        let _window = mount_and_order_front(leaf.view());
+        table.layout_if_needed();
+        #[cfg(target_os = "macos")]
+        present_first_frame(mtm(), leaf.view());
+
+        let current_offset = || -> f64 {
+            #[cfg(target_os = "macos")]
+            {
+                table
+                    .table_view()
+                    .enclosingScrollView()
+                    .expect("the list table lives in its scroll view")
+                    .contentView()
+                    .bounds()
+                    .origin
+                    .y
+            }
+            #[cfg(target_os = "ios")]
+            {
+                table.contentOffset().y
+            }
+        };
+
+        let target = MsgId(5_000 + 40 * 10);
+        controller.scroll_to(target);
+        assert_offset_eq(
+            current_offset(),
+            list_row_top(&table, 40).y,
+            "identity jump to row 40 lands on row 40's top",
+        );
+
+        // Remove the first 10 items so `target` moves to row index 30.
+        let _ = items.replace(
+            (10..80_u64)
+                .map(|index| Msg {
+                    id: MsgId(5_000 + index * 10),
+                    label: format!("Row {index}"),
+                })
+                .collect(),
+        );
+        assert!(
+            drain_main_queue(mtm()),
+            "main queue must drain coalesced list membership update"
+        );
+        table.layout_if_needed();
+        controller.scroll_to(target);
+        assert_offset_eq(
+            current_offset(),
+            list_row_top(&table, 30).y,
+            "scrolling by the same identity after deleting 10 earlier rows lands on row 30",
+        );
+
+        // Append a new row and immediately scroll to its identity before the
+        // coalesced main-queue membership flush runs.
+        let pushed = MsgId(99_999);
+        items.push(Msg {
+            id: pushed,
+            label: String::from("Newly pushed row"),
+        });
+        controller.scroll_to(pushed);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                table.layout_if_needed();
+                controller
+                    .position()
+                    .snapshot()
+                    .is_some_and(|position| position.at_end())
+            }),
+            "deferred identity scroll to newly pushed row must land at_end: {:?}",
+            controller.position().snapshot()
+        );
+    }
+
     /// The `list_scroll::` trials — one per animation case plus the
     /// takeover and last-row cases.
     pub fn trials() -> Vec<libtest_mimic::Trial> {
-        let mut named: Vec<(String, Box<dyn FnOnce() + Send>)> = vec![(
-            "list_scroll::a_bare_request_scrolls_the_row_to_the_top".to_owned(),
-            Box::new(a_bare_request_scrolls_the_row_to_the_top),
-        )];
+        let mut named: Vec<(String, Box<dyn FnOnce() + Send>)> = vec![
+            (
+                "list_scroll::a_bare_request_scrolls_the_row_to_the_top".to_owned(),
+                Box::new(a_bare_request_scrolls_the_row_to_the_top),
+            ),
+            (
+                "list_scroll::custom_identity_scrolls_across_deletions_and_appends".to_owned(),
+                Box::new(custom_identity_scrolls_across_deletions_and_appends),
+            ),
+        ];
         named.extend(animation_cases().into_iter().map(|(name, animation)| {
             let case: Box<dyn FnOnce() + Send> =
                 Box::new(move || an_animation_scrolls_the_row_to_the_top(name, animation));

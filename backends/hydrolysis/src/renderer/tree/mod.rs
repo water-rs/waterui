@@ -138,17 +138,21 @@ use crate::renderer::lazy::{
     LazyStackAxisConfig, VirtualExtentIndex, lazy_stack_axis_config, place_lazy_stack_item,
 };
 use crate::renderer::render::{MemoGate, NodeMeasureEntry};
-use crate::scroll::ScrollHandle;
+use crate::scroll::{ScrollHandle, ScrollRun, ScrollRunOutcome};
 use core::cell::Cell;
 use core::ops::Range;
 use nami::watcher::BoxWatcherGuard;
 use nami::{Binding, Computed};
 use std::rc::{Rc, Weak};
+use waterui_backend_core::scroll::animated_row_scroll_approach;
 use waterui_core::MainThreadBound;
+use waterui_core::animation::Animation;
 use waterui_core::id::Id as RawId;
 use waterui_core::layout::{LayoutPriority, PlacedGeometry, Point, Rect, Size, UnitPoint};
 use waterui_core::views::{AnyViews, AnyViewsSnapshot};
-use waterui_layout::scroll::{Axis as ScrollAxis, ScrollController};
+use waterui_layout::scroll::{
+    Axis as ScrollAxis, ScrollCollectionId, ScrollDriver, ScrollItemTarget, ScrollTarget,
+};
 
 /// The type-erased item identity used by [`CollectionNode`]'s reconcile.
 type CollectionItemId = RawId;

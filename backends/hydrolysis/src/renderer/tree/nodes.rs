@@ -1601,6 +1601,33 @@ impl<E: crate::text::TextEngine> OffsetNode<E> {
     }
 }
 
+#[derive(Clone)]
+pub(super) struct PendingScrollTarget {
+    pub(super) generation: i32,
+    pub(super) target: ScrollTarget,
+    pub(super) animation: Option<Animation>,
+    pub(super) cached_index: Option<usize>,
+    pub(super) state: PendingScrollTargetState,
+}
+
+#[derive(Clone)]
+pub(super) enum PendingScrollTargetState {
+    Unarmed,
+    Armed { run: ScrollRun },
+}
+
+pub(super) struct ResolvedLazyItem {
+    pub(super) index: usize,
+    pub(super) measured_extent: Option<f64>,
+    pub(super) approach_offset: Option<Point>,
+    pub(super) is_vertical: bool,
+}
+
+pub(super) struct ResolvedScrollItem {
+    pub(super) offset: Point,
+    pub(super) lazy: Option<ResolvedLazyItem>,
+}
+
 pub struct ScrollNode<E: crate::text::TextEngine> {
     /// Per-frame measure memo gate: records whether this node's body was
     /// re-probed within a frame, gating `memo_slots` so a node measured
@@ -1614,7 +1641,11 @@ pub struct ScrollNode<E: crate::text::TextEngine> {
     pub(crate) core: NodeCore<E>,
     pub(super) axis: ScrollAxis,
     pub(super) child: RenderNode<E>,
-    pub(super) controller: Option<ScrollController<Point>>,
+    pub(super) controller: Option<ScrollDriver<ScrollTarget>>,
+    /// Pending item-identity scroll request (retained while an animated run
+    /// glides, a virtualized row settles its measured height, or the requested
+    /// id has not yet entered the collection).
+    pub(super) pending_scroll: RefCell<Option<PendingScrollTarget>>,
     /// Binding `ScrollView::report_offset` connected to this scroll view —
     /// the scroll handle writes the content offset, in points, into it
     /// whenever the offset changes.

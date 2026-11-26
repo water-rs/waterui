@@ -255,23 +255,32 @@ scroll_both(content)
 ```
 
 Programmatic scrolling goes through a `ScrollController`, which is explicit and
-repeatable. `List` addresses item indices; `ScrollView` addresses content coordinates.
-A request carries an optional animation: `scroll_to` jumps, `animate_to` moves
-along the animation's curve. An `animate_to` on a `List` further than 100 rows
-away jumps to within 100 rows of the target first and animates only the final
-stretch — it never flies the viewport through the rows between. A controller's
-`.position()` is a read-only signal of the last position the backend reported
-(`None` until the first layout) with `offset()`, `at_start()` and `at_end()` — a
-follow-tail view reads `at_end`. `ScrollView::report_offset(&Binding<Point>)` writes the
-content offset as it moves, for chrome that follows the scroll; the binding is written
-only, never read.
+repeatable. `List` addresses row identity (`ScrollController<Id>` matching the
+`Identifiable::Id` or `.tag(id)` of its rows); `ScrollView` accepts either
+`&ScrollController<Point>` for content coordinates or `&ScrollController<Id>`
+to scroll to an item by identity inside any descendant `VStack::for_each` /
+`HStack::for_each` / `ZStack::for_each` collection (even when wrapped in
+padding or headers). A request carries an optional animation: `scroll_to` jumps,
+`animate_to` moves along the animation's curve. An `animate_to` on a `List` or
+virtualized stack further than 100 items away jumps to within 100 items of the
+target first and animates only the final stretch — it never flies the viewport
+through the items between. A controller's `.position()` is a read-only signal of
+the last position the backend reported (`None` until the first layout) with
+`offset()`, `at_start()` and `at_end()` — a follow-tail view reads `at_end`.
+`ScrollView::report_offset(&Binding<Point>)` writes the content offset as it
+moves, for chrome that follows the scroll; the binding is written only, never
+read.
 
 ```rust
-let rows = ScrollController::<usize>::new(0);
-let list = List::for_each(records, row_view).scroll_controller(&rows);
-rows.scroll_to(50_000);                          // jump — does not materialize rows 0..50_000
+let rows = ScrollController::<u64>::new(0);
+let list = List::for_each(records.clone(), row_view).scroll_controller(&rows);
+rows.scroll_to(50_000);                          // jump by item id — does not materialize rows 0..50_000
 rows.animate_to(50_000, Animation::default());   // glide with the platform's smooth scroll
 let at_end = rows.position().map(|p| p.is_some_and(|p| p.at_end()));
+
+let by_id = ScrollController::<u64>::new(0);
+let feed = scroll(VStack::for_each(records, row_view)).scroll_controller(&by_id);
+by_id.animate_to(50_000, Animation::default());  // scroll a ScrollView to an item by identity
 
 let offset = ScrollController::<Point>::new(Point::zero());
 let reported = Binding::new(Point::zero());

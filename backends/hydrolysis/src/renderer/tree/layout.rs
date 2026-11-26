@@ -18,7 +18,7 @@ use waterui_core::layout::{
 };
 #[cfg(hydrolysis_scene_view)]
 use waterui_graphics::backend::scene_stretch_axis;
-use waterui_layout::scroll::scroll_stretch_axis;
+use waterui_layout::scroll::{Axis as ScrollAxis, scroll_stretch_axis};
 
 impl<E: crate::text::TextEngine> RenderNode<E> {
     /// The stretch axis this node exposes when it is a layout child.
@@ -829,37 +829,17 @@ impl<E: crate::text::TextEngine> RenderNode<E> {
                     handle.set_position_report(position_report);
                     handle
                 };
-                if let Some(controller) = &node.controller {
-                    let generation = renderer.read_signal(&controller.generation());
-                    if generation != node.applied_scroll_generation.get() {
-                        let request = renderer.read_signal(&controller.request());
-                        // A request carries an optional animation: `None`
-                        // lands in place; `Some` glides along its curve via
-                        // the smooth-scroll pump this render registers.
-                        if let Some(animation) = request.animation().cloned() {
-                            let _ = handle.scroll_to_animated(
-                                f64::from(request.target().x),
-                                f64::from(request.target().y),
-                                animation,
-                                renderer.frame_instant(),
-                            );
-                        } else {
-                            let _ = handle.scroll_to(
-                                f64::from(request.target().x),
-                                f64::from(request.target().y),
-                            );
-                        }
-                        node.applied_scroll_generation.set(generation);
-                    }
-                }
-                *node.handle.borrow_mut() = Some(handle);
+                *node.handle.borrow_mut() = Some(handle.clone());
                 node.content_size = content_size;
                 node.viewport = size;
                 // The content sees no safe-area context: the surface
                 // insets and clears its own subtree, so nothing inside
-                // touches an edge (§7.1).
+                // touches an edge (§7.1). Lay out the child before resolving
+                // item-identity scroll targets so fixed containers and eager
+                // collections have up-to-date child frames.
                 node.child
                     .layout(renderer, env, None, child_proposal, content_size);
+                apply_scroll_node_controller(node, renderer, &handle, true);
             }
             Self::Collection(node) => node.layout(renderer, safe_area.as_ref(), proposal, bounds),
             #[cfg(waterui_feature = "effects")]
@@ -1195,4 +1175,246 @@ fn container_dimensions<E: crate::text::TextEngine>(
         }
     }
     dimensions
+}
+
+impl<E: crate::text::TextEngine> RenderNode<E> {
+    /// Resolves `item` to its content-space offset relative to `self`'s layout
+    /// origin, traversing layout containers and transparent wrappers without
+    /// crossing into a nested `ScrollView`.
+    pub(super) fn resolve_scroll_item_target(
+        &self,
+        item: &ScrollItemTarget,
+        cached_index: Option<usize>,
+        handle: &ScrollHandle,
+    ) -> Option<ResolvedScrollItem> {
+        match self {
+            Self::LazyStack(node) => node.resolve_scroll_item(item, cached_index, handle),
+            Self::Collection(node) => node.resolve_scroll_item(item),
+            Self::Container(node) => {
+                for (child, rect) in node.children.iter().zip(node.placed.iter()) {
+                    if let Some(mut resolved) =
+                        child.resolve_scroll_item_target(item, cached_index, handle)
+                    {
+                        resolved.offset =
+                            Point::new(resolved.offset.x + rect.x(), resolved.offset.y + rect.y());
+                        if let Some(lazy) = &mut resolved.lazy
+                            && let Some(approach) = &mut lazy.approach_offset
+                        {
+                            *approach = Point::new(approach.x + rect.x(), approach.y + rect.y());
+                        }
+                        return Some(resolved);
+                    }
+                }
+                None
+            }
+            Self::Opacity(node) => {
+                node.child
+                    .resolve_scroll_item_target(item, cached_index, handle)
+            }
+            Self::Scale(node) => node
+                .child
+                .resolve_scroll_item_target(item, cached_index, handle),
+            Self::Rotation(node) => {
+                node.child
+                    .resolve_scroll_item_target(item, cached_index, handle)
+            }
+            Self::Offset(node) => node
+                .child
+                .resolve_scroll_item_target(item, cached_index, handle),
+            Self::Retain(node) => node
+                .child
+                .resolve_scroll_item_target(item, cached_index, handle),
+            Self::Env(node) => node
+                .child
+                .resolve_scroll_item_target(item, cached_index, handle),
+            #[cfg(waterui_feature = "effects")]
+            Self::Filtered(node) => {
+                node.child
+                    .resolve_scroll_item_target(item, cached_index, handle)
+            }
+            Self::Dynamic(node) => {
+                node.child
+                    .borrow()
+                    .resolve_scroll_item_target(item, cached_index, handle)
+            }
+            Self::Wrapper(node) => {
+                node.child
+                    .resolve_scroll_item_target(item, cached_index, handle)
+            }
+            Self::Fill(node) => node
+                .child
+                .resolve_scroll_item_target(item, cached_index, handle),
+            Self::Scroll(_) | Self::Color(_) | Self::Text(_) | Self::Widget(_) => None,
+            #[cfg(hydrolysis_scene_view)]
+            Self::SceneView(_) => None,
+            #[cfg(hydrolysis_gpu)]
+            Self::GpuContent(_) | Self::ExternalFrame(_) => None,
+        }
+    }
+}
+
+/// Applies the connected [`ScrollDriver`] request to `node`'s scroll handle.
+///
+/// `ScrollTarget::Point` applies immediately; `ScrollTarget::Item` resolves
+/// against descendant `LazyStack`/`Collection` nodes and remains pending while
+/// an animated scroll glides, a virtualized row settles its measured height,
+/// or the requested identity has not yet entered the collection.
+pub(super) fn apply_scroll_node_controller<E: crate::text::TextEngine>(
+    node: &ScrollNode<E>,
+    renderer: &mut SemanticCore<E>,
+    handle: &ScrollHandle,
+    animate: bool,
+) {
+    let Some(controller) = &node.controller else {
+        return;
+    };
+    let generation = renderer.read_signal(&controller.generation());
+    if generation != node.applied_scroll_generation.get()
+        && node
+            .pending_scroll
+            .borrow()
+            .as_ref()
+            .is_none_or(|pending| pending.generation != generation)
+    {
+        let request = renderer.read_signal(&controller.request());
+        *node.pending_scroll.borrow_mut() = Some(PendingScrollTarget {
+            generation,
+            target: request.target().clone(),
+            animation: request.animation().cloned(),
+            cached_index: None,
+            state: PendingScrollTargetState::Unarmed,
+        });
+    }
+    let Some(pending) = node.pending_scroll.borrow().clone() else {
+        return;
+    };
+    match &pending.target {
+        ScrollTarget::Point(point) => {
+            if animate && let Some(animation) = pending.animation {
+                let _ = handle.scroll_to_animated(
+                    f64::from(point.x),
+                    f64::from(point.y),
+                    animation,
+                    renderer.frame_instant(),
+                );
+            } else {
+                let _ = handle.scroll_to(f64::from(point.x), f64::from(point.y));
+            }
+            node.applied_scroll_generation.set(pending.generation);
+            node.pending_scroll.take();
+        }
+        ScrollTarget::Item(item) => {
+            apply_scroll_item_target(node, renderer, handle, &pending, item, animate);
+        }
+        _ => {
+            node.applied_scroll_generation.set(pending.generation);
+            node.pending_scroll.take();
+        }
+    }
+}
+
+fn apply_scroll_item_target<E: crate::text::TextEngine>(
+    node: &ScrollNode<E>,
+    renderer: &SemanticCore<E>,
+    handle: &ScrollHandle,
+    pending: &PendingScrollTarget,
+    item: &ScrollItemTarget,
+    animate: bool,
+) {
+    let Some(resolved) = node
+        .child
+        .resolve_scroll_item_target(item, pending.cached_index, handle)
+    else {
+        return;
+    };
+    if let Some(lazy) = &resolved.lazy
+        && pending.cached_index != Some(lazy.index)
+        && let Some(stored) = node.pending_scroll.borrow_mut().as_mut()
+    {
+        stored.cached_index = Some(lazy.index);
+    }
+    let metrics = handle.metrics();
+    let axis_xy = |point: Point| match node.axis {
+        ScrollAxis::Vertical => (metrics.offset_x, f64::from(point.y)),
+        ScrollAxis::Horizontal => (f64::from(point.x), metrics.offset_y),
+        _ => (f64::from(point.x), f64::from(point.y)),
+    };
+    let (target_x, target_y) = axis_xy(resolved.offset);
+    match pending.animation.clone() {
+        Some(animation) if animate => match &pending.state {
+            PendingScrollTargetState::Armed { run } => match handle.scroll_run_outcome(run) {
+                ScrollRunOutcome::Running => {
+                    let _ = handle.retarget_animated_scroll(run, target_x, target_y);
+                    return;
+                }
+                ScrollRunOutcome::Landed => {
+                    let _ = handle.scroll_to(target_x, target_y);
+                }
+                ScrollRunOutcome::Interrupted => {
+                    node.applied_scroll_generation.set(pending.generation);
+                    node.pending_scroll.take();
+                    return;
+                }
+            },
+            PendingScrollTargetState::Unarmed => {
+                if let Some(approach) = resolved.lazy.as_ref().and_then(|lazy| lazy.approach_offset)
+                {
+                    let (approach_x, approach_y) = axis_xy(approach);
+                    let _ = handle.scroll_to(approach_x, approach_y);
+                }
+                if let Some(run) = handle.scroll_to_animated(
+                    target_x,
+                    target_y,
+                    animation,
+                    renderer.frame_instant(),
+                ) && let Some(stored) = node.pending_scroll.borrow_mut().as_mut()
+                {
+                    stored.state = PendingScrollTargetState::Armed { run };
+                }
+                return;
+            }
+        },
+        _ => {
+            let _ = handle.scroll_to(target_x, target_y);
+        }
+    }
+
+    let settled = match &resolved.lazy {
+        None => true,
+        Some(lazy) => {
+            if let Some(extent) = lazy.measured_extent {
+                let metrics = handle.metrics();
+                let (row_start, viewport_start, viewport_end) = if lazy.is_vertical {
+                    (
+                        target_y,
+                        metrics.offset_y,
+                        metrics.offset_y + metrics.viewport_height
+                            - node.surface.extension().vertical(),
+                    )
+                } else {
+                    (
+                        target_x,
+                        metrics.offset_x,
+                        metrics.offset_x + metrics.viewport_width
+                            - node.surface.extension().horizontal(),
+                    )
+                };
+                row_start + extent > viewport_start && row_start < viewport_end
+            } else if animate {
+                // Flush this frame will materialize and measure the target
+                // window at the new offset; ask for one follow-up layout pass
+                // so variable-height rows settle accurately.
+                renderer.context_mark_layout();
+                return;
+            } else {
+                true
+            }
+        }
+    };
+    if settled && !handle.is_smooth_scrolling() {
+        node.applied_scroll_generation.set(pending.generation);
+        node.pending_scroll.take();
+    } else if animate {
+        renderer.context_mark_layout();
+    }
 }

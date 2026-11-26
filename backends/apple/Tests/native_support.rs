@@ -2197,8 +2197,13 @@ pub fn row_list<V: waterui::View>(
     controller: &waterui::layout::scroll::ScrollController<usize>,
 ) -> (crate::contract::NativeLeaf, cocoa_ui::Retained<ListSurface>) {
     use objc2::Message;
+    use waterui::component::list::List;
+    use waterui::id::SelfId;
 
-    let leaf = render(waterui::component::list::List::content(rows).scroll_controller(controller));
+    let ids: Vec<SelfId<usize>> = (0..rows.len()).map(SelfId::new).collect();
+    let leaf = render(
+        List::for_each(ids, move |id| rows[id.into_inner()]()).scroll_controller(controller),
+    );
     let table = leaf
         .view()
         .downcast_ref::<ListSurface>()

@@ -63,7 +63,8 @@ pub mod stack;
 
 pub use grid::{Grid, GridRow, grid, grid_row};
 pub use scroll::{
-    ScrollController, ScrollRequest, ScrollView, scroll, scroll_both, scroll_horizontal,
+    IntoScrollDriver, ScrollCollectionId, ScrollController, ScrollDriver, ScrollItemTarget,
+    ScrollRequest, ScrollTarget, ScrollView, scroll, scroll_both, scroll_horizontal,
 };
 
 pub use alignment::{

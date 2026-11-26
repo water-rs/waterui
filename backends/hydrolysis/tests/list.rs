@@ -21,9 +21,11 @@ use std::rc::Rc;
 
 use nami::Signal as _;
 use nami::collection::StateList;
+use std::time::Duration;
 use support::{
     count_role_label, mount_rendered, mount_semantic, node_id_contains, node_label_exists, nodes,
 };
+use waterui::animation::Animation;
 use waterui::component::list::{ForEachExt, List, ListDelete, ListMove, Section, row};
 use waterui::component::{hstack, spacer, text, vstack};
 use waterui::id::{Identifiable, SelfId};
@@ -1177,5 +1179,130 @@ fn scroll_position_watcher_may_mutate_the_list_collection() {
     assert!(
         fired.get(),
         "the position watcher ran without a borrow panic"
+    );
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+struct ThreadMessageId(u64);
+
+#[derive(Clone, PartialEq, Eq)]
+struct ThreadMessage {
+    id: ThreadMessageId,
+    label: String,
+}
+
+impl Identifiable for ThreadMessage {
+    type Id = ThreadMessageId;
+
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+}
+
+#[test]
+fn list_scroll_controller_addresses_custom_identity_across_mutations() {
+    let mut items = StateList::<ThreadMessage>::new();
+    let _ = items.replace(
+        (0..30_u64)
+            .map(|i| ThreadMessage {
+                id: ThreadMessageId(5_000 + i * 10),
+                label: format!("Msg {i}"),
+            })
+            .collect(),
+    );
+    let controller = ScrollController::new(ThreadMessageId(0));
+
+    let mut app = mount_list({
+        let items = items.clone();
+        let controller = controller.clone();
+        move || {
+            List::for_each(items.clone(), |msg: ThreadMessage| text(msg.label))
+                .scroll_controller(&controller)
+                .a11y_label("messages")
+        }
+    });
+
+    // Jump to message 18 by its custom non-index identity.
+    let target = ThreadMessageId(5_000 + 18 * 10);
+    controller.scroll_to(target);
+    app.settle();
+    assert!(node_label_exists(app.tree(), "Msg 18"));
+    let offset_before = scroll_y(app.tree());
+    let expected_before = 18.0 * ROW_HEIGHT;
+    assert!(
+        (offset_before - expected_before).abs() < 2.0,
+        "expected row 18 at {expected_before}, got {offset_before}",
+    );
+
+    // Remove the first 5 items so Msg 18 shifts from index 18 to index 13.
+    let _ = items.replace(
+        (5..30_u64)
+            .map(|i| ThreadMessage {
+                id: ThreadMessageId(5_000 + i * 10),
+                label: format!("Msg {i}"),
+            })
+            .collect(),
+    );
+    app.settle();
+    controller.scroll_to(target);
+    app.settle();
+    assert!(node_label_exists(app.tree(), "Msg 18"));
+    let offset_after = scroll_y(app.tree());
+    let expected_after = 13.0 * ROW_HEIGHT;
+    assert!(
+        (offset_after - expected_after).abs() < 2.0,
+        "after deleting 5 earlier rows, scrolling by the same identity must land at row 13 ({expected_after}), got {offset_after}",
+    );
+
+    // Push a brand new item and immediately animate to its identity.
+    let pushed = ThreadMessageId(99_999);
+    items.push(ThreadMessage {
+        id: pushed,
+        label: String::from("Latest reply"),
+    });
+    controller.animate_to(pushed, Animation::linear(Duration::from_millis(64)));
+    app.pump_for(Duration::from_millis(160));
+    assert!(node_label_exists(app.tree(), "Latest reply"));
+    assert!(controller.position().snapshot().unwrap().at_end());
+}
+
+#[test]
+fn list_content_with_sections_and_tags_scrolls_by_identity() {
+    let items: Vec<ThreadMessage> = (0..25_u64)
+        .map(|i| ThreadMessage {
+            id: ThreadMessageId(100 + i),
+            label: format!("Sectioned {i}"),
+        })
+        .collect();
+    let controller = ScrollController::new(ThreadMessageId(0));
+
+    let mut app = mount_list({
+        let controller = controller.clone();
+        move || {
+            List::content((
+                Section::new("Pinned").content(row("Pinned row", "Top").tag(ThreadMessageId(1))),
+                Section::new("Feed").content(ForEach::new(items.clone(), |msg: ThreadMessage| {
+                    text(msg.label)
+                })),
+            ))
+            .scroll_controller(&controller)
+            .a11y_label("messages")
+        }
+    });
+
+    // Scroll to a ForEach item inside the second section.
+    controller.scroll_to(ThreadMessageId(120));
+    app.settle();
+    assert!(node_label_exists(app.tree(), "Sectioned 20"));
+    assert!(scroll_y(app.tree()) > 500.0);
+
+    // Scroll back to the tagged static row in the first section.
+    controller.scroll_to(ThreadMessageId(1));
+    app.settle();
+    assert!(node_label_exists(app.tree(), "Pinned row"));
+    assert!(
+        scroll_y(app.tree()) < 100.0,
+        "scrolling to tagged row in first section must return near top, got {}",
+        scroll_y(app.tree())
     );
 }

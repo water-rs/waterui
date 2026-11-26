@@ -175,7 +175,7 @@ impl NativeBackend for AppleBackend {
         let ctx = self.entry(env);
         crate::components::scroll::realize_scroll_view(
             native,
-            |content| content.realize(self, env, ()),
+            |content, child_env| content.realize(self, child_env, ()),
             &ctx,
         )
     }

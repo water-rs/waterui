@@ -158,6 +158,9 @@ pub struct CollectionNode<E: crate::text::TextEngine> {
     /// all read exactly the membership the last applied event reported —
     /// never the live source mid-notification. Shared with the watcher.
     pub(super) snapshot: Rc<RefCell<AnyViewsSnapshot<HeldChild<E>>>>,
+    /// Scroll-collection id binding this collection to an enclosing
+    /// identity-controlled `ScrollView`, if one matched its item identity type.
+    pub(super) scroll_collection: Option<ScrollCollectionId>,
     /// Environment captured at build, used to materialize items. Already shielded
     /// when this collection carries accessibility naming metadata — the name
     /// belongs to the collection, not to every item in it.
@@ -231,6 +234,9 @@ pub struct LazyStackNode<E: crate::text::TextEngine> {
     /// window, id keys, and materialization all read one coherent membership
     /// — never the live source mid-notification. Shared with the watcher.
     pub(super) snapshot: Rc<RefCell<AnyViewsSnapshot<HeldChild<E>>>>,
+    /// Scroll-collection id binding this stack to an enclosing
+    /// identity-controlled `ScrollView`, if one matched its item identity type.
+    pub(super) scroll_collection: Option<ScrollCollectionId>,
     /// Environment captured at build, used to materialize and style items. Already
     /// shielded when this stack carries accessibility naming metadata — the name
     /// belongs to the stack, not to every row in it.
@@ -851,7 +857,6 @@ impl<T: 'static, E: crate::text::TextEngine> LazyTransitions<E, T> {
 
     /// The row display position `display` shows — or, for a removal ghost,
     /// the row the ghost sits before.
-    #[cfg(feature = "list")]
     pub(crate) fn row_at(&self, display: usize) -> usize {
         match self.slot_at(display) {
             LazySlot::Row(row) => row,
@@ -1097,7 +1102,101 @@ fn lazy_main_extent(axis: &LazyStackAxisConfig, size: Size) -> f64 {
     }
 }
 
+impl<E: crate::text::TextEngine> CollectionNode<E> {
+    /// Resolves `item` to its laid-out origin inside this collection if this
+    /// collection is bound to `item`'s controller and currently contains it.
+    pub(super) fn resolve_scroll_item(
+        &self,
+        item: &ScrollItemTarget,
+    ) -> Option<ResolvedScrollItem> {
+        let collection = self.scroll_collection?;
+        let target_id = item.id_in(collection)?;
+        let index = self
+            .entries
+            .iter()
+            .position(|entry| entry.id == target_id)?;
+        let rect = self.placed.get(index)?;
+        Some(ResolvedScrollItem {
+            offset: Point::new(rect.x(), rect.y()),
+            lazy: None,
+        })
+    }
+}
+
 impl<E: crate::text::TextEngine> LazyStackNode<E> {
+    /// Resolves `item` to its main-axis offset inside this virtualized stack
+    /// via the Fenwick `extent_index` without materializing preceding rows.
+    pub(super) fn resolve_scroll_item(
+        &self,
+        item: &ScrollItemTarget,
+        cached_index: Option<usize>,
+        handle: &ScrollHandle,
+    ) -> Option<ResolvedScrollItem> {
+        use crate::num_cast::f64_as_f32;
+
+        let collection = self.scroll_collection?;
+        let target_id = item.id_in(collection)?;
+        let snapshot = self.snapshot.borrow();
+        let index = if let Some(cached) = cached_index
+            && item_id(&snapshot, cached) == Some(target_id)
+        {
+            cached
+        } else {
+            snapshot
+                .range()
+                .find(|&idx| item_id(&snapshot, idx) == Some(target_id))?
+        };
+        let display = self.transitions.row_display(index);
+        let extent_index = self.extent_index.borrow();
+        let main_offset = extent_index.offset_of(display);
+        let measured_extent = extent_index.measured(display);
+        let total = extent_index.total_extent();
+        let estimate = self.estimate.get().max(1.0);
+        let is_vertical = matches!(self.axis, LazyStackAxisConfig::Vertical { .. });
+        let is_rtl = self.axis.direction().snapshot().is_right_to_left();
+        let to_point = |main: f64, item_extent: f64| -> Point {
+            if is_vertical {
+                Point::new(0.0, f64_as_f32(main))
+            } else if is_rtl {
+                Point::new(f64_as_f32((total - main - item_extent).max(0.0)), 0.0)
+            } else {
+                Point::new(f64_as_f32(main), 0.0)
+            }
+        };
+        let metrics = handle.metrics();
+        let (viewport_start, viewport_end) = if is_vertical {
+            (metrics.offset_y, metrics.offset_y + metrics.viewport_height)
+        } else if is_rtl {
+            let start = (total - (metrics.offset_x + metrics.viewport_width)).max(0.0);
+            let end = (total - metrics.offset_x).max(start);
+            (start, end)
+        } else {
+            (metrics.offset_x, metrics.offset_x + metrics.viewport_width)
+        };
+        let current_row = self.transitions.row_at(
+            extent_index
+                .visible_window(viewport_start, viewport_end)
+                .start,
+        );
+        let approach_offset =
+            animated_row_scroll_approach(current_row, index).map(|approach_idx| {
+                let approach_display = self.transitions.row_display(approach_idx);
+                let approach_main = extent_index.offset_of(approach_display);
+                let approach_extent = extent_index.measured(approach_display).unwrap_or(estimate);
+                to_point(approach_main, approach_extent)
+            });
+        let offset = to_point(main_offset, measured_extent.unwrap_or(estimate));
+        Some(ResolvedScrollItem {
+            offset,
+            lazy: Some(ResolvedLazyItem {
+                index,
+                measured_extent,
+                approach_offset,
+                is_vertical,
+            }),
+        })
+    }
+
     /// Applies structural updates owned by the currently visible retained items
     /// before the parent scroll view measures this stack. Items whose ids the
     /// stored viewport window covers but that were never materialized — e.g.
@@ -1123,7 +1222,8 @@ impl<E: crate::text::TextEngine> LazyStackNode<E> {
             renderer.state.counters.structural_patches += 1;
         }
         let snapshot = self.snapshot.borrow().clone();
-        let ghosted = transitions.membership.replace(false)
+        let membership_changed = transitions.membership.replace(false);
+        let ghosted = membership_changed
             && transitions.apply_membership(
                 &snapshot,
                 &mut self.item_cache.borrow_mut(),
@@ -1192,7 +1292,13 @@ impl<E: crate::text::TextEngine> LazyStackNode<E> {
         if animating {
             renderer.context_mark_layout();
         }
-        let layout = had_replaced | changed.layout | ghosted | dropped | animating | first_rebuilt;
+        let layout = had_replaced
+            | changed.layout
+            | ghosted
+            | dropped
+            | animating
+            | first_rebuilt
+            | membership_changed;
         PatchOutcome {
             structural: layout | changed.structural | materialized,
             layout,
