@@ -82,6 +82,7 @@ impl Default for HStackLayout {
     fn default() -> Self {
         Self {
             alignment: VerticalAlignment::Center,
+            // Frozen default stack spacing from docs/layout-spec.md (§4.1).
             spacing: Computed::constant(10.0),
         }
     }
@@ -332,13 +333,21 @@ where
 {
     fn from_iter<T: IntoIterator<Item = V>>(iter: T) -> Self {
         let contents = iter.into_iter().collect::<Vec<_>>();
-        Self::new(VerticalAlignment::default(), 10.0, contents)
+        Self {
+            layout: HStackLayout::default(),
+            contents: (contents,),
+            virtualize_axes: None,
+        }
     }
 }
 
 /// Convenience constructor that centres children and uses the default spacing.
 pub fn hstack<C: ViewSequence>(contents: C) -> HStack<(C,)> {
-    HStack::new(VerticalAlignment::Center, 10.0, contents)
+    HStack {
+        layout: HStackLayout::default(),
+        contents: (contents,),
+        virtualize_axes: None,
+    }
 }
 
 impl<C, F, V> View for HStack<ForEach<C, F, V>>
@@ -437,10 +446,7 @@ mod tests {
 
     #[test]
     fn test_hstack_size_two_children() {
-        let layout = HStackLayout {
-            alignment: VerticalAlignment::Center,
-            spacing: Computed::constant(10.0),
-        };
+        let layout = HStackLayout::default();
 
         let mut child1 = MockSubView {
             size: Size::new(50.0, 30.0),
@@ -519,10 +525,7 @@ mod tests {
     fn a_cross_filling_child_still_sets_the_row_height() {
         // Vertical stretch component in HStack: stretches HEIGHT but has fixed WIDTH
         // This is like a Slider/TextField rotated for use in HStack context
-        let layout = HStackLayout {
-            alignment: VerticalAlignment::Center,
-            spacing: Computed::constant(10.0),
-        };
+        let layout = HStackLayout::default();
 
         let mut label = MockSubView {
             size: Size::new(50.0, 20.0),
@@ -600,10 +603,7 @@ mod tests {
         // A 50pt label next to a 200pt text in 140pt of space: the text alone
         // absorbs the deficit (clamped to 90) while the label keeps its
         // intrinsic width.
-        let layout = HStackLayout {
-            alignment: VerticalAlignment::Center,
-            spacing: Computed::constant(10.0),
-        };
+        let layout = HStackLayout::default();
 
         let mut label = MockSubView {
             size: Size::new(50.0, 20.0),
@@ -717,10 +717,7 @@ mod tests {
         // When ProposalSize::ZERO is used (min size query), ALL children's widths
         // should be summed to ensure window minimum width calculation is correct.
         // Previous bug: if spacer (stretch) existed, it would return 0 width for min size query.
-        let layout = HStackLayout {
-            alignment: VerticalAlignment::Center,
-            spacing: Computed::constant(10.0),
-        };
+        let layout = HStackLayout::default();
 
         let mut label = MockSubView {
             size: Size::new(50.0, 20.0),
