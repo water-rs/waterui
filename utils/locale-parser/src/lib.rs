@@ -11,10 +11,9 @@ use toml::de::Error as TomlError;
 use toml::value::Table;
 
 const VALID_PLURAL_FIELDS: &[&str] = &["zero", "one", "two", "few", "many", "other"];
-const VALID_DUAL_PLURAL_FIELDS: &[&str] = &["one_one", "one_other", "other_one", "other_other"];
 
 /// CLDR plural category.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum PluralCategory {
     /// Zero items (used by Arabic, Latvian, Welsh, and others).
@@ -29,6 +28,25 @@ pub enum PluralCategory {
     Many,
     /// Default fallback form required by every language.
     Other,
+}
+
+impl PluralCategory {
+    fn parse(name: &str) -> Option<Self> {
+        match name {
+            "zero" => Some(Self::Zero),
+            "one" => Some(Self::One),
+            "two" => Some(Self::Two),
+            "few" => Some(Self::Few),
+            "many" => Some(Self::Many),
+            "other" => Some(Self::Other),
+            _ => None,
+        }
+    }
+
+    fn parse_dual(name: &str) -> Option<(Self, Self)> {
+        let (first, second) = name.split_once('_')?;
+        Some((Self::parse(first)?, Self::parse(second)?))
+    }
 }
 
 /// Single plural source translation.
@@ -105,36 +123,51 @@ impl PluralForms {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct DualPluralForms {
-    /// one + one
-    one_one: Option<String>,
-
-    /// one + other
-    one_other: Option<String>,
-
-    /// other + one
-    other_one: Option<String>,
+    /// Non-`(Other, Other)` category pairs.
+    forms: BTreeMap<(PluralCategory, PluralCategory), String>,
 
     /// other + other (fallback, required and non-empty)
     other_other: String,
 }
 
 impl DualPluralForms {
+    /// Returns the explicit template configured for `(cat1, cat2)`, if any.
+    #[must_use]
+    pub fn form(&self, cat1: PluralCategory, cat2: PluralCategory) -> Option<&str> {
+        if cat1 == PluralCategory::Other && cat2 == PluralCategory::Other {
+            Some(self.other_other.as_str())
+        } else {
+            self.forms.get(&(cat1, cat2)).map(String::as_str)
+        }
+    }
+
+    /// Iterates over every configured category pair and its template in deterministic order.
+    pub fn iter_forms(&self) -> impl Iterator<Item = ((PluralCategory, PluralCategory), &str)> {
+        self.forms
+            .iter()
+            .map(|(&cats, text)| (cats, text.as_str()))
+            .chain(core::iter::once((
+                (PluralCategory::Other, PluralCategory::Other),
+                self.other_other.as_str(),
+            )))
+    }
+
     /// one + one
     #[must_use]
     pub fn one_one(&self) -> Option<&str> {
-        self.one_one.as_deref()
+        self.form(PluralCategory::One, PluralCategory::One)
     }
 
     /// one + other
     #[must_use]
     pub fn one_other(&self) -> Option<&str> {
-        self.one_other.as_deref()
+        self.form(PluralCategory::One, PluralCategory::Other)
     }
 
     /// other + one
     #[must_use]
     pub fn other_one(&self) -> Option<&str> {
-        self.other_one.as_deref()
+        self.form(PluralCategory::Other, PluralCategory::One)
     }
 
     /// other + other (fallback, required)
@@ -143,17 +176,24 @@ impl DualPluralForms {
         self.other_other.as_str()
     }
 
-    /// Returns the translation for two plural categories, falling back to `other_other`.
+    /// Returns the translation for two plural categories, falling back through
+    /// `(cat1, other)` and `(other, cat2)` to `other_other`.
     #[must_use]
     pub fn get(&self, cat1: PluralCategory, cat2: PluralCategory) -> &str {
-        match (cat1, cat2) {
-            (PluralCategory::One, PluralCategory::One) => {
-                self.one_one.as_deref().unwrap_or(&self.other_other)
-            }
-            (PluralCategory::One, _) => self.one_other.as_deref().unwrap_or(&self.other_other),
-            (_, PluralCategory::One) => self.other_one.as_deref().unwrap_or(&self.other_other),
-            _ => &self.other_other,
+        if let Some(exact) = self.form(cat1, cat2) {
+            return exact;
         }
+        if cat2 != PluralCategory::Other
+            && let Some(first_specific) = self.form(cat1, PluralCategory::Other)
+        {
+            return first_specific;
+        }
+        if cat1 != PluralCategory::Other
+            && let Some(second_specific) = self.form(PluralCategory::Other, cat2)
+        {
+            return second_specific;
+        }
+        &self.other_other
     }
 }
 
@@ -398,20 +438,31 @@ fn parse_plural_table(
 ) -> Result<TranslationValue, TranslationParseError> {
     let is_dual_plural = table.keys().any(|field| field.contains('_'));
     if is_dual_plural {
-        for field in table.keys() {
-            if !VALID_DUAL_PLURAL_FIELDS.contains(&field.as_str()) {
+        let mut forms = BTreeMap::new();
+        let mut other_other: Option<String> = None;
+        for (field, value) in table {
+            let Some((first, second)) = PluralCategory::parse_dual(field) else {
                 return Err(TranslationParseError::UnknownDualPluralField {
                     source: source.map(ToOwned::to_owned),
                     key: key.to_owned(),
                     field: field.clone(),
                 });
+            };
+            let Value::String(text) = value else {
+                return Err(TranslationParseError::InvalidPluralFieldType {
+                    source: source.map(ToOwned::to_owned),
+                    key: key.to_owned(),
+                    field: field.clone(),
+                });
+            };
+            if first == PluralCategory::Other && second == PluralCategory::Other {
+                other_other = Some(text.clone());
+            } else {
+                forms.insert((first, second), text.clone());
             }
         }
 
-        let one_one = parse_plural_field(table, "one_one", key, source)?;
-        let one_other = parse_plural_field(table, "one_other", key, source)?;
-        let other_one = parse_plural_field(table, "other_one", key, source)?;
-        let other_other = parse_plural_field(table, "other_other", key, source)?
+        let other_other = other_other
             .filter(|s| !s.trim().is_empty())
             .ok_or_else(|| TranslationParseError::MissingDualPluralOther {
                 source: source.map(ToOwned::to_owned),
@@ -419,9 +470,7 @@ fn parse_plural_table(
             })?;
 
         Ok(TranslationValue::DualPlural(DualPluralForms {
-            one_one,
-            one_other,
-            other_one,
+            forms,
             other_other,
         }))
     } else {
@@ -558,12 +607,28 @@ mod tests {
         assert!(unknown_single.to_string().contains("i18n/en.toml"));
 
         let unknown_dual = TranslationFile::parse(
-            r#"items = { one_one = "1", few_many = "oops", other_other = "many" }"#,
+            r#"items = { one_one = "1", few_manyy = "oops", other_other = "many" }"#,
         )
         .expect_err("unknown dual plural field must fail");
         assert!(matches!(
             unknown_dual,
             TranslationParseError::UnknownDualPluralField { .. }
+        ));
+
+        let extra_underscore_dual =
+            TranslationFile::parse(r#"items = { one_one_one = "oops", other_other = "many" }"#)
+                .expect_err("multi-underscore dual plural field must fail");
+        assert!(matches!(
+            extra_underscore_dual,
+            TranslationParseError::UnknownDualPluralField { .. }
+        ));
+
+        let non_string_dual_field =
+            TranslationFile::parse(r#"items = { few_few = 1, other_other = "many" }"#)
+                .expect_err("non-string dual plural field must fail");
+        assert!(matches!(
+            non_string_dual_field,
+            TranslationParseError::InvalidPluralFieldType { .. }
         ));
 
         let non_string_field = TranslationFile::parse(r#"apples = { one = 1, other = "many" }"#)
@@ -579,5 +644,58 @@ mod tests {
             non_string_value,
             TranslationParseError::InvalidValueType { .. }
         ));
+    }
+
+    #[test]
+    fn parses_all_cldr_dual_plural_categories_and_fallbacks() {
+        let content = r#"
+"{#apples} jabłko i {#oranges} pomarańcza" = {
+  zero_two = "zero-two",
+  one_one = "one-one",
+  one_few = "one-few",
+  one_other = "one-other",
+  few_one = "few-one",
+  few_few = "few-few",
+  many_many = "many-many",
+  other_few = "other-few",
+  other_other = "other-other"
+}
+"#;
+        let file = TranslationFile::parse_named(content, "i18n/pl.toml")
+            .expect("CLDR dual plural categories should parse");
+        let Some(TranslationValue::DualPlural(forms)) =
+            file.get("{#apples} jabłko i {#oranges} pomarańcza")
+        else {
+            panic!("expected DualPlural");
+        };
+        assert_eq!(
+            forms.get(PluralCategory::Zero, PluralCategory::Two),
+            "zero-two"
+        );
+        assert_eq!(
+            forms.get(PluralCategory::One, PluralCategory::Few),
+            "one-few"
+        );
+        assert_eq!(
+            forms.get(PluralCategory::Few, PluralCategory::Few),
+            "few-few"
+        );
+        assert_eq!(
+            forms.get(PluralCategory::Many, PluralCategory::Many),
+            "many-many"
+        );
+        // Falls back via (cat1, other) before (other, cat2) and other_other.
+        assert_eq!(
+            forms.get(PluralCategory::One, PluralCategory::Many),
+            "one-other"
+        );
+        assert_eq!(
+            forms.get(PluralCategory::Many, PluralCategory::Few),
+            "other-few"
+        );
+        assert_eq!(
+            forms.get(PluralCategory::Many, PluralCategory::One),
+            "other-other"
+        );
     }
 }

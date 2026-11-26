@@ -15,7 +15,9 @@ use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::quote;
 use syn::parse::{Parse, ParseStream};
 use syn::{Expr, Ident, LitStr, Result, Token};
-use waterui_locale_parser::{DualPluralForms, PluralForms, TranslationFile, TranslationValue};
+use waterui_locale_parser::{
+    DualPluralForms, PluralCategory, PluralForms, TranslationFile, TranslationValue,
+};
 
 const PLACEHOLDER_RULE: &str = "placeholders are bare identifiers (`{count}`), optionally with a format spec (`{blur:.1}`) or a plural marker (`{#count}`), and an expression is bound with `name = expr`";
 
@@ -809,15 +811,15 @@ fn generate_plural_translation_arm(
     }
 }
 
-fn optional_format_expr(
-    waterui: &TokenStream2,
-    format_lit: Option<LitStr>,
-    fallback: &LitStr,
-) -> TokenStream2 {
-    format_lit.map_or_else(
-        || quote! { #waterui::reactive::__alloc::format!(#fallback) },
-        |lit| quote! { #waterui::reactive::__alloc::format!(#lit) },
-    )
+fn plural_category_tokens(waterui: &TokenStream2, category: PluralCategory) -> TokenStream2 {
+    match category {
+        PluralCategory::Zero => quote! { #waterui::locale::PluralCategory::Zero },
+        PluralCategory::One => quote! { #waterui::locale::PluralCategory::One },
+        PluralCategory::Two => quote! { #waterui::locale::PluralCategory::Two },
+        PluralCategory::Few => quote! { #waterui::locale::PluralCategory::Few },
+        PluralCategory::Many => quote! { #waterui::locale::PluralCategory::Many },
+        PluralCategory::Other | _ => quote! { #waterui::locale::PluralCategory::Other },
+    }
 }
 
 fn generate_dual_plural_translation_arm(
@@ -833,31 +835,46 @@ fn generate_dual_plural_translation_arm(
     let plural_ident_1 = Ident::new(plural_var_1, Span::call_site());
     let plural_ident_2 = Ident::new(plural_var_2, Span::call_site());
 
-    let one_one_format = forms.one_one().map(translation_format_lit);
-    let one_other_format = forms.one_other().map(translation_format_lit);
-    let other_one_format = forms.other_one().map(translation_format_lit);
+    let mut match_arms = Vec::new();
+    for ((cat1, cat2), text) in forms.iter_forms() {
+        if cat1 != PluralCategory::Other && cat2 != PluralCategory::Other {
+            let pat1 = plural_category_tokens(waterui, cat1);
+            let pat2 = plural_category_tokens(waterui, cat2);
+            let lit = translation_format_lit(text);
+            match_arms.push(quote! {
+                (#pat1, #pat2) => #waterui::reactive::__alloc::format!(#lit),
+            });
+        }
+    }
+    for ((cat1, cat2), text) in forms.iter_forms() {
+        if cat1 != PluralCategory::Other && cat2 == PluralCategory::Other {
+            let pat1 = plural_category_tokens(waterui, cat1);
+            let lit = translation_format_lit(text);
+            match_arms.push(quote! {
+                (#pat1, _) => #waterui::reactive::__alloc::format!(#lit),
+            });
+        }
+    }
+    for ((cat1, cat2), text) in forms.iter_forms() {
+        if cat1 == PluralCategory::Other && cat2 != PluralCategory::Other {
+            let pat2 = plural_category_tokens(waterui, cat2);
+            let lit = translation_format_lit(text);
+            match_arms.push(quote! {
+                (_, #pat2) => #waterui::reactive::__alloc::format!(#lit),
+            });
+        }
+    }
+
     let other_other_lit = translation_format_lit(forms.other_other());
     let locale_ident = unique_ident("__waterui_locale_value", all_idents);
     let localized_bindings = localized_argument_bindings(waterui, all_idents, &locale_ident);
-
-    let one_one_expr = optional_format_expr(waterui, one_one_format, &other_other_lit);
-    let one_other_expr = optional_format_expr(waterui, one_other_format, &other_other_lit);
-    let other_one_expr = optional_format_expr(waterui, other_one_format, &other_other_lit);
 
     let body = quote! {
         let category_1 = #waterui::locale::select_plural(&#locale_ident, &#plural_ident_1);
         let category_2 = #waterui::locale::select_plural(&#locale_ident, &#plural_ident_2);
         #localized_bindings
         match (category_1, category_2) {
-            (#waterui::locale::PluralCategory::One, #waterui::locale::PluralCategory::One) => {
-                #one_one_expr
-            }
-            (#waterui::locale::PluralCategory::One, _) => {
-                #one_other_expr
-            }
-            (_, #waterui::locale::PluralCategory::One) => {
-                #other_one_expr
-            }
+            #(#match_arms)*
             _ => #waterui::reactive::__alloc::format!(#other_other_lit),
         }
     };
@@ -1040,6 +1057,75 @@ mod tests {
         let err = TranslationFile::parse_named(content, "i18n/en.toml")
             .expect_err("unknown dual plural field should fail");
         assert!(err.to_string().contains("Unknown dual plural field"));
+    }
+
+    #[test]
+    fn repro_50_dual_plural_expresses_few_many() {
+        // Polish needs `few` and `many` for both counts; a dual table must accept them.
+        let content = r#"
+"{#apples} jabłko i {#oranges} pomarańcza" = { one_one = "a", one_few = "b", few_one = "c", few_few = "d", other_other = "e" }
+"#;
+        TranslationFile::parse_named(content, "i18n/pl.toml")
+            .expect("dual plural tables must be able to express CLDR few/many categories");
+    }
+
+    #[test]
+    fn generate_dual_plural_arm_emits_arbitrary_cldr_pairs_and_fallbacks() {
+        let content = r#"
+"{#apples} items and {#oranges} items" = { zero_two = "zt", one_few = "of", few_many = "fm", one_other = "oo", other_many = "om", other_other = "other" }
+"#;
+        let file = TranslationFile::parse_named(content, "i18n/ar-EG.toml")
+            .expect("dual plural categories should parse");
+        let Some(super::TranslationValue::DualPlural(forms)) =
+            file.get("{#apples} items and {#oranges} items")
+        else {
+            panic!("expected DualPlural");
+        };
+        let waterui = quote::quote!(::waterui);
+        let locale: icu_locale_core::LanguageIdentifier = "ar-EG".parse().unwrap();
+        let idents = [
+            Ident::new("apples", Span::call_site()),
+            Ident::new("oranges", Span::call_site()),
+        ];
+        let tokens = super::generate_dual_plural_translation_arm(
+            &waterui,
+            &locale,
+            forms,
+            &idents,
+            &["apples", "oranges"],
+        )
+        .to_string();
+
+        assert!(
+            tokens
+                .contains("PluralCategory :: Zero , :: waterui :: locale :: PluralCategory :: Two")
+        );
+        assert!(
+            tokens
+                .contains("PluralCategory :: One , :: waterui :: locale :: PluralCategory :: Few")
+        );
+        assert!(
+            tokens
+                .contains("PluralCategory :: Few , :: waterui :: locale :: PluralCategory :: Many")
+        );
+        assert!(tokens.contains("PluralCategory :: One , _"));
+        assert!(tokens.contains("_ , :: waterui :: locale :: PluralCategory :: Many"));
+        // Exact matches must precede wildcard fallbacks.
+        let exact_pos = tokens
+            .find("PluralCategory :: One , :: waterui :: locale :: PluralCategory :: Few")
+            .unwrap();
+        let fallback_pos = tokens.find("PluralCategory :: One , _").unwrap();
+        assert!(exact_pos < fallback_pos);
+
+        // Also cover CJK + de + en-US dual-plural files in one bundle check.
+        for tag in ["zh-CN", "ja", "ko", "de", "en-US"] {
+            let parsed = TranslationFile::parse_named(
+                r#""{#a} {#b}" = { other_other = "{a} {b}" }"#,
+                &format!("i18n/{tag}.toml"),
+            )
+            .expect("locale dual plural should parse");
+            assert!(parsed.contains_key("{#a} {#b}"));
+        }
     }
 
     #[test]
