@@ -2823,6 +2823,7 @@ pub(crate) const FRAMEWORK_MEMBERS: &[FrameworkMember] = &[APPLE_BACKEND, HYDROL
 const FRAMEWORK_PACKAGES: &[&str] = &[
     "waterui",
     "waterui-core",
+    "waterui-dylib",
     "waterui-testing",
     "waterui-locale",
     "waterui-browser-cef",
@@ -3909,7 +3910,7 @@ pub(crate) mod test_fixtures {
         let mut manifest: toml_edit::DocumentMut = std::fs::read_to_string(&manifest_path)?
             .parse()
             .expect("checkout manifest parses");
-        for feature in ["dynamic_linking", "image", "video"] {
+        for feature in ["image", "video"] {
             if manifest
                 .get("features")
                 .and_then(toml_edit::Item::as_table)
@@ -3922,6 +3923,11 @@ pub(crate) mod test_fixtures {
         std::fs::write(&manifest_path, manifest.to_string())?;
         std::fs::create_dir_all(root.join("src"))?;
         std::fs::write(root.join("src/lib.rs"), "")?;
+        write_vendor_stub(
+            &root.join("utils/dylib"),
+            "waterui-dylib",
+            &["image", "video"],
+        );
         write_vendor_stub(
             &root.join("backends/apple"),
             "waterui-apple",

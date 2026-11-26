@@ -2,11 +2,9 @@
 
 extern crate self as waterui;
 
-// Keep the shared WaterUI runtime in the final link when dynamic linking is enabled.
-#[cfg(feature = "dynamic_linking")]
-use waterui_dylib as _;
-
 pub use waterui_internal::__export_preview;
+#[doc(hidden)]
+pub use waterui_internal::__private;
 pub use waterui_internal::__with_ts_runtime;
 #[cfg(any(feature = "ts", feature = "webview"))]
 pub use waterui_internal::TsType;

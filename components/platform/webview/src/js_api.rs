@@ -283,11 +283,11 @@ impl JsApiSchema {
 /// than silently degrading to `unknown`:
 ///
 /// ```compile_fail
+/// use serde::Serialize;
 /// use waterui::js_api;
-/// use waterui::webview::{Json, serde};
+/// use waterui::webview::Json;
 ///
-/// #[derive(serde::Serialize)]
-/// #[serde(crate = "waterui::webview::serde")]
+/// #[derive(Serialize)]
 /// struct Opaque {
 ///     text: String,
 /// }

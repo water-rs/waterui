@@ -250,7 +250,7 @@ impl Backend for HydrolysisBackend {
             .await;
         }
         project
-            .browser_runtime_plan(platform, TargetBackend::Hydrolysis, &platform.triple())
+            .validate_hydrolysis_capabilities(platform, &platform.triple())
             .await?;
         build_hydrolysis(project, platform, options).await
     }

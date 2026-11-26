@@ -209,10 +209,6 @@ is the project's declared backend; a different CLI/MCP override is rejected befo
 building. Use the declared backend or change the declaration. Linux previews require
 `hydrolysis`, not the default `gtk4`; see [backend selection](project.md#platforms-and-backends).
 
-**`water preview` cannot load the app, or dev rebuilds are cold.** The crate is missing the
-`dev = ["waterui/dynamic_linking"]` feature stanza generated projects carry — see
-`references/project.md`.
-
 **The CLI is out of date, or a change to it has no effect.** The `water` on `PATH` is a
 previously installed binary. `water update` replaces it in place when it was installed by
 the release installer, names the owning package manager's command for a Homebrew or cargo

@@ -1,5 +1,8 @@
 //! GTK entry point for {{ ctx.app_display_name }}.
 
+#[cfg(feature = "dev")]
+use waterui_dylib as _;
+
 use waterui_gtk::{Environment, GtkApp, init_main_thread_executors};
 
 fn main() {

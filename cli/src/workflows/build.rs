@@ -343,26 +343,26 @@ impl RustLinkage {
         }
     }
 
-    /// Whether `triple` supports the shared-runtime linkage, and therefore
-    /// `waterui/dynamic_linking`.
+    /// Whether `triple` supports the shared-runtime linkage (`waterui-dylib`).
     #[must_use]
     pub fn supports_shared_runtime(triple: &Triple) -> bool {
         Self::supported_on(triple).contains(&Self::SharedRuntime)
     }
 }
 
-/// Fail a build whose resolved graph enables `waterui/dynamic_linking` on a
-/// target with no shared-runtime linkage.
+/// Fail a build whose resolved graph includes `waterui-dylib` on a target with
+/// no shared-runtime linkage.
 ///
 /// [`BuildOptions::with_supported_linkage`] resolves the requested linkage to
 /// [`RustLinkage::Static`] on such a target before this runs, so a resolved
-/// `dynamic_linking` is always the project's own request — the `dev` feature
-/// [`RustBuild::with_linkage`] turns on is never enabled there. Failing here
-/// names the request instead of compiling a runtime the target cannot load.
+/// `waterui-dylib` is always the project's own request — the host crate's `dev`
+/// feature that [`RustBuild::with_linkage`] turns on is never enabled there.
+/// Failing here names the request instead of compiling a runtime the target
+/// cannot load.
 ///
 /// # Errors
 /// Returns an error when the managed crate's lock cannot be seeded, its
-/// graph cannot be resolved, or it enables `waterui/dynamic_linking`.
+/// graph cannot be resolved, or it resolves `waterui-dylib`.
 pub(crate) async fn reject_unsupported_dynamic_linking(
     project: &Project,
     build_manifest: &Path,
@@ -372,17 +372,12 @@ pub(crate) async fn reject_unsupported_dynamic_linking(
         return Ok(());
     }
     crate::assets::seed_managed_crate_lock(project, build_manifest).await?;
-    if crate::assets::package_feature_enabled(
-        project,
-        build_manifest,
-        "waterui",
-        "dynamic_linking",
-        triple,
-    )
-    .await?
-    {
+    let graph = project
+        .generated_manifest_features(build_manifest, triple, &[])
+        .await?;
+    if graph.enabled.contains_key("waterui-dylib") {
         bail!(
-            "dynamic linking (`waterui/dynamic_linking`) is not supported on Windows; remove it from the Windows build"
+            "dynamic linking (`waterui-dylib`) is not supported on Windows; remove it from the Windows build"
         );
     }
     Ok(())
@@ -1806,10 +1801,11 @@ impl RustBuild {
 
     /// Configure this build for the selected Rust runtime linkage.
     ///
-    /// A shared-runtime development build enables the project's `dev` feature (which
-    /// resolves the shared `waterui-dylib` runtime), prefers dynamic linking, and —
-    /// when the platform's loader needs them — embeds loader search paths into the
-    /// final artifact only. A static packaging build needs none of this.
+    /// A shared-runtime development build enables the generated host crate's
+    /// `dev` feature (which resolves the shared `waterui-dylib` runtime),
+    /// prefers dynamic linking, and — when the platform's loader needs them —
+    /// embeds loader search paths into the final artifact only. A static
+    /// packaging build needs none of this.
     ///
     /// A platform generally needs more than one: the binary is run both where it was
     /// built, with the runtime staged beside it, and from inside a packaged artifact
@@ -4265,22 +4261,18 @@ mod tests {
         manifest
     }
 
-    /// A Windows build fails when the resolved graph enables
-    /// `waterui/dynamic_linking` — the feature has no linkage to resolve
-    /// against there (water-rs/waterui#3049).
+    /// A Windows build fails when the resolved graph includes `waterui-dylib` —
+    /// the shared runtime has no linkage to resolve against there
+    /// (water-rs/waterui#3049).
     #[test]
     fn windows_rejects_a_project_enabling_dynamic_linking() {
         smol::block_on(async {
             let directory = tempdir().expect("temp project");
-            write_crate(
-                &directory.path().join("waterui"),
-                "waterui",
-                "[features]\ndynamic_linking = []\n",
-            );
+            write_crate(&directory.path().join("waterui-dylib"), "waterui-dylib", "");
             let backend_manifest = write_crate(
                 &directory.path().join("backend"),
                 "app-backend",
-                "[dependencies]\nwaterui = { path = \"../waterui\", features = [\"dynamic_linking\"] }\n\n[workspace]\n",
+                "[dependencies]\nwaterui-dylib = { path = \"../waterui-dylib\" }\n\n[workspace]\n",
             );
 
             // The project the check resolves through, the way the assets
@@ -4309,10 +4301,10 @@ mod tests {
             let error =
                 super::reject_unsupported_dynamic_linking(&project, &backend_manifest, &windows)
                     .await
-                    .expect_err("a resolved dynamic_linking must fail on Windows");
+                    .expect_err("a resolved waterui-dylib must fail on Windows");
             let message = format!("{error:#}");
             assert!(
-                message.contains("waterui/dynamic_linking") && message.contains("Windows"),
+                message.contains("waterui-dylib") && message.contains("Windows"),
                 "{message}"
             );
 

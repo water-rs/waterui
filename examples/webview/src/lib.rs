@@ -22,7 +22,7 @@ use waterui::preview;
 use waterui::reactive::binding;
 use waterui::theme::color::{Foreground, MutedForeground};
 #[cfg(not(target_arch = "wasm32"))]
-use waterui::webview::{Json, ScriptInjectionTime, TsType, serde_json};
+use waterui::webview::{Json, ScriptInjectionTime, TsType};
 use waterui::webview::{Url, WebView, WebViewEvent, WebViewProxy};
 
 #[cfg(not(target_arch = "wasm32"))]

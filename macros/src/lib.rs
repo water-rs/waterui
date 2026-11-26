@@ -90,10 +90,11 @@ mod tsx;
 /// Exposes an `impl` block to the page.
 ///
 /// ```rust
-/// # use waterui::webview::{Json, TsType, WebView, serde};
+/// # use waterui::__private::serde;
+/// # use waterui::webview::{Json, TsType, WebView};
 /// # use waterui::{Binding, Str, Url, View, js_api};
 /// # #[derive(serde::Serialize, TsType)]
-/// # #[serde(crate = "waterui::webview::serde")]
+/// # #[serde(crate = "waterui::__private::serde")]
 /// # struct Greeting {
 /// #     text: String,
 /// # }
