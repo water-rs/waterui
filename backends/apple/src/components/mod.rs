@@ -96,6 +96,8 @@ pub mod shadow;
 pub mod sheet;
 #[cfg(feature = "slider")]
 pub mod slider;
+#[cfg(waterui_feature = "snackbar")]
+pub mod snackbar;
 pub mod spacer;
 #[cfg(feature = "stepper")]
 pub mod stepper;

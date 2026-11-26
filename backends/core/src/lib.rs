@@ -71,6 +71,8 @@ pub mod time;
 
 pub use child::{Child, ChildView, IntoChild, NativeBackendFamily};
 pub use dynamic::DynamicNode;
+#[doc(hidden)]
+pub use hooked::SlotView;
 pub use hooked::{Hooked, HookedFamily};
 pub use native_backend::{NativeBackend, Realize, report_unprovided};
 pub use waterui_meta::mark_reached;
