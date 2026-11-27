@@ -20,6 +20,14 @@ pub struct HydroState<E: crate::text::TextEngine> {
     /// pass reads into it; outside a pass it stays `None` (a pass never
     /// nests: `RenderNode::layout` does not lay out a retained sub-view).
     pub(in crate::renderer) layout_dependencies: Option<LayoutDependencies<E>>,
+    /// Nesting depth of active [`RenderNode::layout_in`] calls; size reports
+    /// queued during layout flush once the outermost pass completes so watchers
+    /// never re-enter an in-flight layout or borrow active tree `RefCell`s.
+    pub(in crate::renderer) layout_depth: usize,
+    /// Committed placed sizes recorded by `WrapperEffect::ReportSize` during
+    /// the current layout pass, drained when `layout_depth` returns to zero.
+    pub(in crate::renderer) pending_size_reports:
+        Vec<(waterui_layout::ReportSize, waterui_core::layout::Size)>,
     /// Advances whenever the session's fonts gain faces after text was
     /// shaped — a web page's faces arriving after its first frame. Every text
     /// measurement reads it through [`Self::measuring_text`], so a cached
@@ -37,6 +45,8 @@ impl<E: crate::text::TextEngine> HydroState<E> {
             measurement: MeasurementCaches::default(),
             counters: FrameWorkCounters::default(),
             layout_dependencies: None,
+            layout_depth: 0,
+            pending_size_reports: Vec::new(),
             font_revision: nami::Binding::new(0),
             #[cfg(all(target_vendor = "apple", hydrolysis_cherenkov))]
             sf_symbols: crate::widgets::visual::sf_symbol::SfSymbolCache::new(),

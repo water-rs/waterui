@@ -25,6 +25,7 @@ use waterui_core::Angle;
 use waterui_core::animation::FrameRateVote;
 use waterui_interaction::event::TaskHook;
 use waterui_interaction::gesture::TapGesture;
+use waterui_layout::report_size::ReportSize;
 use waterui_layout::safe_area::IgnoreSafeArea;
 use waterui_structural_transition::{ReduceMotion, TransitionSpec};
 use waterui_text::styled::TapSpan;
@@ -1075,6 +1076,9 @@ pub(super) enum WrapperEffect<E: crate::text::TextEngine> {
     /// Purely a layout hint: it changes which child a stack compresses first and
     /// draws nothing, so the flush path renders straight through it.
     LayoutPriority(LayoutPriority),
+    /// Observes the child's committed placed size after layout and writes it
+    /// into the bound `Binding<Size>` once the layout pass completes.
+    ReportSize(ReportSize),
     /// `.ignore_safe_area(regions.on(edges))` — the window's safe-area
     /// insets are released through the regions and edges the declaration
     /// names: layout offers the child the window bounds expanded by the
@@ -1451,10 +1455,9 @@ pub struct ContainerNode<E: crate::text::TextEngine> {
     pub(crate) placed: Vec<Rect>,
     /// The geometry this container was committed with at its last layout,
     /// its response resolved by `place_layout` — kept so a naming-scope
-    /// owner reports its response rectangle when the parent assigned more
-    /// than it answered (water-rs/hydrolysis#51). `None` until the first
-    /// layout.
-    #[cfg(feature = "accessibility")]
+    /// owner or `report_size` modifier reads its response rectangle when the
+    /// parent assigned more than it answered (water-rs/hydrolysis#51). `None`
+    /// until the first layout.
     pub(crate) geometry: Option<PlacedGeometry>,
     /// Set by this container's `Layout::watch_invalidation` subscription when a
     /// layout input signal changes (shared with the watcher closure). An outer

@@ -148,6 +148,16 @@ Two more sizing modifiers:
 .layout_priority(1)                                // a stack compresses its lowest-priority children first
 ```
 
+To read back a view's committed placed size (for adaptive layouts driven by available width rather than window or platform checks), attach `.report_size(&Binding<Size>)`. The binding is written after layout commits only when the size changes and never feeds back into layout proposals:
+
+```rust
+let size = binding(Size::zero());
+let adaptive = when(size.map(|s| s.width > 600.0), two_column)
+    .otherwise(one_column)
+    .max_width(f32::INFINITY)
+    .report_size(&size);
+```
+
 `.horizontal_alignment_guide(HorizontalAlignment::Leading, |d| d.size.width / 2.0)` and
 `.vertical_alignment_guide(VerticalAlignment::Center, |d| ..)` move where a view's guide
 sits, so a stack aligned on that guide lines the view up there; the size and placement of the
