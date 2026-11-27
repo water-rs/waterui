@@ -776,12 +776,14 @@ pub fn reactivity_block_22() {
     async fn warm_cache() {}
 
     let result = Binding::new(Str::from(""));
+    let fetching = Binding::new(false);
     let query = Binding::new(Str::from(""));
 
     button("Fetch")
         .action_async(|State(out): State<Binding<Str>>| async move {
             out.set(fetch().await);
         })
+        .pending(&fetching)
         .state(&result);
 
     // These already end in `;`, so each keeps its own statement in its own

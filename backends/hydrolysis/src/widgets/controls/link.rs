@@ -112,6 +112,7 @@ pub fn link_accessibility<E: TextEngine>(
         state,
         &label,
         (AccessibilityNodeRole::Link, None),
+        None,
         env,
         move |_renderer, _env| {
             let target_url = activate_state.borrow().config.url().snapshot();
@@ -161,6 +162,7 @@ pub fn render_link_node<E: TextEngine>(
             state_mut.config.label(),
             LINK_PRESENTATION,
             key,
+            None,
             env,
         )
     };

@@ -176,20 +176,20 @@ fn counter(count: &Binding<i32>) -> impl View {
 ```
 
 `action_async` takes the same handler shape and returns a future, spawned on the
-local executor:
+local executor. It is single-flight: while the future runs, presses are ignored,
+the button's interaction state reports disabled, and accessibility reports busy
+until the future completes or drops. Chain `.pending(&busy)` in either order
+with `.action_async(..)` to mirror that in-flight state into a `Binding<bool>`:
 
 ```rust,no_run
 use waterui::prelude::*;
 
 fn refresh(busy: &Binding<bool>) -> impl View {
     button("Refresh")
-        .action_async(|State(busy): State<Binding<bool>>| async move {
-            busy.set(true);
+        .action_async(|| async {
             // ... await the work ...
-            busy.set(false);
         })
-        .state(busy)
-        .disabled(busy.clone())
+        .pending(busy)
 }
 ```
 

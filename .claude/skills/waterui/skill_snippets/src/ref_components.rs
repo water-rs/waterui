@@ -414,12 +414,14 @@ pub fn components_block_14() {
     let notes = Binding::new(Str::from(""));
     let code = Binding::new(Str::from(""));
     let note = Binding::new(Str::from(""));
+    let saving = Binding::new(false);
     let fraction = 0.5_f64;
 
     let _ = {
         button("Save") // Button<NoAction>
             .action(handler) // -> Button<impl FnMut(&Environment)>
-            .action_async(|| async {}) // [ellipsis filled]
+            .action_async(|| async {}) // [ellipsis filled] single-flight: disables interaction & reports busy until completion or drop
+            .pending(&saving) // mirrors in-flight state into &Binding<bool>; composes before or after .action_async
             .style(ButtonStyle::Plain) // Automatic | Plain | Link | Borderless | Bordered | BorderedProminent
             // | Glass | GlassProminent (Liquid Glass capsules on Apple;
             //   bordered / bordered-prominent elsewhere)

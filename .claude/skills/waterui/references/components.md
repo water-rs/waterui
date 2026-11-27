@@ -311,7 +311,8 @@ renders its title instead, so install it freely on a toolbar and give each label
 ```rust
 button("Save")                              // Button<_, NoAction>: not a View until .action / .action_async is set
     .action(handler)                        // -> Button<_, impl FnMut(&Environment)>
-    .action_async(|| async { … })
+    .action_async(|| async { … })           // single-flight: disables interaction & reports busy until completion or drop
+    .pending(&saving)                       // mirrors in-flight state into &Binding<bool>; composes before or after .action_async
     .style(ButtonStyle::Plain)              // Automatic | Plain | Link | Borderless | Bordered | BorderedProminent
                                             // | Glass | GlassProminent (Liquid Glass capsules on Apple;
                                             //   bordered / bordered-prominent elsewhere)

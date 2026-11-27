@@ -477,6 +477,7 @@ button("Fetch")
     .action_async(|State(out): State<Binding<Str>>| async move {
         out.set(fetch().await);
     })
+    .pending(&fetching)
     .state(&result);
 
 view.task(|| async { warm_cache().await }); // starts on appear, cancels on disappear; supports extractors
