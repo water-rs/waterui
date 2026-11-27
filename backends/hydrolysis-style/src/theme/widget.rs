@@ -732,7 +732,5 @@ pub trait WidgetTheme {
     }
 
     /// The look of a syntax-highlighted code block.
-    fn code(&self, env: &Environment) -> super::CodeLook {
-        super::code::default_code_look(env)
-    }
+    fn code(&self, env: &Environment) -> super::CodeLook;
 }
