@@ -260,8 +260,10 @@ impl<E: crate::text::TextEngine> RetainedSubview<E> {
         let source = core::mem::replace(source, HeldChild::from_view(()));
         let node = if let Some(scoped) = scoped_env.take() {
             let child = RenderNode::build_held(source, &scoped, renderer);
+            let core = renderer.new_core();
+            child.core().cell.set_parent(&core.cell);
             RenderNode::Env(Box::new(EnvNode {
-                core: renderer.new_core(),
+                core,
                 env: scoped,
                 child,
             }))

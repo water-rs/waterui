@@ -283,6 +283,41 @@ impl NavContentController {
         self.set_page_search(mtm, &item, page);
     }
 
+    /// Updates only the bar's title view, leading/trailing bar items, and bottom
+    /// toolbar items without disturbing search or back-action state.
+    pub fn set_items(
+        &self,
+        title_view: Option<&UIView>,
+        leading: &[Retained<UIBarButtonItem>],
+        trailing: &[Retained<UIBarButtonItem>],
+        bottom: &[Retained<UIBarButtonItem>],
+    ) {
+        // SAFETY: `navigationItem` is a `UIViewController` getter on the
+        // main thread; the returned item is owned by the controller.
+        let item: Retained<UINavigationItem> = unsafe { msg_send![self, navigationItem] };
+        item.setTitleView(title_view);
+        if leading.is_empty() {
+            item.setLeftBarButtonItems(None);
+        } else {
+            item.setLeftBarButtonItems(Some(&NSArray::from_retained_slice(leading)));
+        }
+        item.setLeftItemsSupplementBackButton(!leading.is_empty());
+        if trailing.is_empty() {
+            item.setRightBarButtonItems(None);
+        } else {
+            item.setRightBarButtonItems(Some(&NSArray::from_retained_slice(trailing)));
+        }
+        if bottom.is_empty() {
+            self.setToolbarItems(None);
+        } else {
+            self.setToolbarItems(Some(&NSArray::from_retained_slice(bottom)));
+        }
+        self.ivars().toolbar_hidden.set(bottom.is_empty());
+        if let Some(nav) = self.topmost_navigation_controller() {
+            nav.setToolbarHidden_animated(bottom.is_empty(), false);
+        }
+    }
+
     fn set_page_search(&self, mtm: MainThreadMarker, item: &UINavigationItem, page: &NavPage) {
         self.ivars().search_updater.replace(None);
         self.ivars().search_controller.replace(None);
@@ -1013,6 +1048,28 @@ impl NavBar {
         if let Some(on_back) = &page.on_back {
             let on_back = on_back.clone();
             item.setBackAction(Some(&handler_action(self.mtm(), move || on_back())));
+        }
+    }
+
+    /// Updates only the bar's title view and leading/trailing bar items.
+    pub fn set_items(
+        &self,
+        title_view: Option<&UIView>,
+        leading: &[Retained<UIBarButtonItem>],
+        trailing: &[Retained<UIBarButtonItem>],
+    ) {
+        let item = &*self.ivars().item;
+        item.setTitleView(title_view);
+        if leading.is_empty() {
+            item.setLeftBarButtonItems(None);
+        } else {
+            item.setLeftBarButtonItems(Some(&NSArray::from_retained_slice(leading)));
+        }
+        item.setLeftItemsSupplementBackButton(false);
+        if trailing.is_empty() {
+            item.setRightBarButtonItems(None);
+        } else {
+            item.setRightBarButtonItems(Some(&NSArray::from_retained_slice(trailing)));
         }
     }
 }

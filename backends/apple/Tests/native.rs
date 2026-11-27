@@ -194,6 +194,13 @@ fn navigation_trials() -> Vec<Trial> {
                 Ok(())
             },
         ),
+        Trial::test(
+            "navigation::semantic_toolbar_item_respects_disabled_and_visible",
+            || {
+                navigation::semantic_toolbar_item_respects_disabled_and_visible();
+                Ok(())
+            },
+        ),
     ];
     trials.extend(toolbar_reach_trials());
     trials
@@ -3234,6 +3241,83 @@ mod navigation {
         assert!(
             explicit > icon_width + 8.0,
             "an explicit title-and-icon preference keeps its title, got {explicit}"
+        );
+    }
+
+    /// A semantic `NavigationToolbarItem::action` with `.disabled(...)` and
+    /// `.visible(...)` promotes to a real `NSToolbarItem` with its symbol and
+    /// label, tracks enabled state reactively, and is excluded from the toolbar
+    /// while hidden.
+    pub fn semantic_toolbar_item_respects_disabled_and_visible() {
+        use waterui::component::label;
+        use waterui::navigation::NavigationStack;
+        use waterui_apple::SfSymbol;
+
+        const TRAILING: &str = "dev.cocoaui.navigation.trailing";
+
+        let disabled = binding(true);
+        let visible = binding(true);
+        let leaf = resolve::render(NavigationStack::new(
+            NavigationView::new("Compose", text("body")).navigation_toolbar(
+                NavigationToolbar::default().item(
+                    NavigationToolbarItem::action(
+                        NavigationToolbarPlacement::Confirmation,
+                        label("Send").icon(SfSymbol::PAPERPLANE),
+                        || {},
+                    )
+                    .disabled(disabled.clone())
+                    .visible(visible.clone()),
+                ),
+            ),
+        ));
+        let window = leaf::attach(mtm(), leaf.view());
+        let trailing_item = || {
+            window.native().toolbar().and_then(|toolbar| {
+                toolbar
+                    .items()
+                    .iter()
+                    .find(|item| item.itemIdentifier().to_string() == TRAILING)
+            })
+        };
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || trailing_item().is_some()),
+            "the semantic action is promoted into the window toolbar"
+        );
+        let item = trailing_item().expect("trailing toolbar item exists");
+        assert!(
+            item.image().is_some(),
+            "the semantic action keeps its icon image on the NSToolbarItem"
+        );
+        assert_eq!(
+            item.label().to_string(),
+            "Send",
+            "the semantic action keeps its label on the NSToolbarItem"
+        );
+        assert!(
+            !item.isEnabled(),
+            "the toolbar item starts disabled with the signal"
+        );
+
+        disabled.set(false);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                trailing_item().is_some_and(|item| item.isEnabled())
+            }),
+            "the toolbar item re-enables when the disabled signal clears"
+        );
+
+        visible.set(false);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || trailing_item().is_none()),
+            "hiding the toolbar item removes it from the window toolbar"
+        );
+
+        visible.set(true);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                trailing_item().is_some_and(|item| item.isEnabled() && item.image().is_some())
+            }),
+            "showing the toolbar item restores it with its icon and enabled state"
         );
     }
 
@@ -10472,6 +10556,13 @@ mod navigation {
                     Ok(())
                 },
             ),
+            libtest_mimic::Trial::test(
+                "navigation::semantic_toolbar_item_respects_disabled_and_visible",
+                || {
+                    semantic_toolbar_item_respects_disabled_and_visible();
+                    Ok(())
+                },
+            ),
         ]
     }
 
@@ -10799,6 +10890,64 @@ mod navigation {
             trailing.isEnabled(),
             "the bar item follows the checkbox back to enabled"
         );
+    }
+
+    /// A semantic `NavigationToolbarItem::action` with `.disabled(...)` and
+    /// `.visible(...)` preserves its symbol image and accessibility label,
+    /// mirrors disabled state onto `UIBarButtonItem.enabled`, and removes the
+    /// item from the bar while hidden.
+    fn semantic_toolbar_item_respects_disabled_and_visible() {
+        use waterui::component::label;
+
+        let disabled = binding(true);
+        let visible = binding(true);
+        let item = NavigationToolbarItem::action(
+            NavigationToolbarPlacement::Confirmation,
+            label("Send").icon(SfSymbol::PAPERPLANE),
+            || {},
+        )
+        .disabled(disabled.clone())
+        .visible(visible.clone());
+        let leaf = resolve::render(NavigationStack::new(
+            NavigationView::new("Compose", text("root"))
+                .navigation_toolbar(NavigationToolbar::new(vec![item])),
+        ));
+        let nav =
+            nav_controller_in(leaf.view()).expect("the stack mounts a UINavigationController");
+        let top = nav.topViewController().expect("the stack has a root page");
+        let trailing = top
+            .navigationItem()
+            .rightBarButtonItems()
+            .expect("the visible semantic action is present")
+            .objectAtIndex(0);
+        assert!(
+            trailing.image().is_some(),
+            "the semantic action keeps its symbol image"
+        );
+        assert!(
+            !trailing.isEnabled(),
+            "the bar item starts disabled with the semantic disabled signal"
+        );
+        disabled.set(false);
+        assert!(
+            trailing.isEnabled(),
+            "the bar item re-enables when the disabled signal clears"
+        );
+        visible.set(false);
+        assert!(
+            top.navigationItem()
+                .rightBarButtonItems()
+                .is_none_or(|items| items.is_empty()),
+            "hiding the semantic item removes it from rightBarButtonItems"
+        );
+        visible.set(true);
+        let restored = top
+            .navigationItem()
+            .rightBarButtonItems()
+            .expect("showing the semantic item restores it")
+            .objectAtIndex(0);
+        assert!(restored.image().is_some());
+        assert!(restored.isEnabled());
     }
 
     /// The root page's intent is recorded in `set_page` while
