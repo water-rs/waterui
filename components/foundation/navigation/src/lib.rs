@@ -2243,7 +2243,7 @@ fn subscribe_navigation_path<R: Clone + 'static, S: ChildSlot>(
     // Subscribing delivers nothing: the path's current routes are the
     // controller's starting stack.
     reconcile(path.snapshot());
-    path.watch(move |next_path| reconcile(next_path))
+    nami::Signal::watch(path, move |context| reconcile(context.into_value()))
 }
 
 /// The layout of every path-backed stack: once attached, it publishes the
