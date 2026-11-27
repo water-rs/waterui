@@ -4781,15 +4781,23 @@ dependencies = [
 [[package]]
 name = "hydrolysis-m3"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis-m3?branch=main#23692b9e3e90d016220b66a04979ad82f685f7fe"
+source = "git+https://github.com/water-rs/hydrolysis-m3?branch=main#5af4eb97bb9597b34549d886e41064c4cb3714cd"
 dependencies = [
+ "executor-core",
  "hydrolysis-style",
  "material-color-utils",
+ "nami",
+ "native-executor",
  "num-traits",
- "waterui",
+ "waterui-accessibility",
  "waterui-controls",
  "waterui-core",
  "waterui-graphics",
+ "waterui-interaction",
+ "waterui-layout",
+ "waterui-navigation",
+ "waterui-shape",
+ "waterui-text",
 ]
 
 [[package]]

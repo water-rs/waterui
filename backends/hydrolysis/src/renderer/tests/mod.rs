@@ -3674,6 +3674,10 @@ impl WidgetTheme for MinimalTestTheme {
     fn table(&self, _env: &Environment) -> TableLook {
         crate::testing::plain_table_look()
     }
+
+    fn code(&self, env: &Environment) -> crate::theme::CodeLook {
+        crate::theme::default_code_look(env)
+    }
 }
 
 #[test]

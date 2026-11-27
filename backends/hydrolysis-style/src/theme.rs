@@ -96,7 +96,7 @@ pub use chrome::{
     Backdrop, Border, Chrome, ContentEffect, CornerShape, Corners, DragDeformation, Elevation,
     Fill, FocusIndicator, PressFeedback, Ripple, StateLayer, Surface, Wash,
 };
-pub use code::{CodeLook, CodeMetrics};
+pub use code::{CodeLook, CodeMetrics, default_code_look};
 pub use dialog::{DialogLook, default_dialog_look};
 pub use disclosure::{DisclosureLayout, DisclosureLook, DisclosureSpec};
 pub use floating::{

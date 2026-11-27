@@ -611,6 +611,10 @@ mod token_probe {
         fn table(&self, _env: &Environment) -> TableLook {
             hydrolysis::testing::plain_table_look()
         }
+
+        fn code(&self, env: &Environment) -> hydrolysis::theme::CodeLook {
+            hydrolysis::theme::default_code_look(env)
+        }
     }
 }
 

@@ -168,8 +168,8 @@ fn token_border(width: f32, color: &Color, env: &Environment) -> Driven<Border> 
     })
 }
 
-/// Default semantic code-block look used when a theme does not override
-/// [`WidgetTheme::code`](super::WidgetTheme::code).
+/// Baseline semantic code-block look built from theme tokens, reusable by test
+/// themes implementing [`WidgetTheme::code`](super::WidgetTheme::code).
 #[must_use]
 pub fn default_code_look(env: &Environment) -> CodeLook {
     let shape = CornerShape::radius(DEFAULT_CORNER_RADIUS).continuous();

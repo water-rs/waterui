@@ -674,6 +674,10 @@ mod test_style {
         fn table(&self, _env: &Environment) -> TableLook {
             super::plain_table_look()
         }
+
+        fn code(&self, env: &Environment) -> crate::theme::CodeLook {
+            crate::theme::default_code_look(env)
+        }
     }
 }
 
